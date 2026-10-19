@@ -35,7 +35,7 @@ where JP2/JPH decoding needs them. The detailed list is in
 | `j2k-jpeg-cuda`, `j2k-cuda`, `j2k-transcode-cuda` | CUDA adapter | Codec-facing CUDA APIs, persistent batch sessions, route policy, resident output, and validated caller-owned destinations for supported paths. |
 | `j2k-jpeg-metal`, `j2k-metal`, `j2k-transcode-metal` | Metal adapter | macOS Metal adapters built on `j2k-metal-support`. J2K transforms, Tier-1, packetization, store, and resident encode/decode are in the private `j2k-metal::engine` module; the transcode adapter has its own coefficient-domain kernels and does not depend on `j2k-metal`. |
 | `j2k-ml` | framework integration | Thin Burn allocation and codec-interop adapter for owned integer batch output. |
-| `j2k-python` | optional framework integration | Rust PyO3 extension exposing pixels and selected wavelet bands through owned DLPack tensors; optional CUDA decode into PyTorch-owned storage. No Python dependencies in default Rust builds. |
+| `j2k-python` | optional framework integration | Rust PyO3 extension exposing pixels and selected wavelet bands through owned DLPack tensors; optional CUDA decode into PyTorch-owned storage; CPU RGB research encode/decode and float 9/7 transforms. No Python dependencies in default Rust builds. |
 | `j2k-mpsgraph-support` | support | Codec-independent graph submission, callback/error ownership, completion, and retained input lifetime shared with JPEG XR. |
 | `j2k-mpsgraph` | framework integration | Experimental Apple Silicon direct bridge from Metal-resident native integer batches to static rank-four MPSGraph programs. |
 | `j2k-transcode` | transcode | JPEG-to-HTJ2K coefficient-domain transcode algorithms and shared types. |
@@ -94,7 +94,7 @@ j2k-cuda-j2k-engine -> j2k-codec-math, j2k-core, j2k-cuda-runtime, j2k-types
 j2k-cuda-jpeg-engine -> j2k-codec-math, j2k-core, j2k-cuda-runtime
 j2k-cuda-transcode-engine -> j2k-core, j2k-cuda-runtime
 j2k-ml -> j2k, j2k-cuda, j2k-metal, j2k-metal-support
-j2k-python -> j2k, j2k-cuda, j2k-cuda-runtime
+j2k-python -> j2k, j2k-cuda, j2k-cuda-runtime, j2k-jpeg, j2k-native
 j2k-mpsgraph -> j2k, j2k-core, j2k-metal, j2k-metal-support, j2k-mpsgraph-support
 j2k-transcode-metal -> j2k-codec-math, j2k-core, j2k-metal-support, j2k-transcode, j2k-types
 j2k-transcode-cuda -> j2k-core, j2k-cuda-j2k-engine, j2k-cuda-runtime, j2k-cuda-transcode-engine, j2k-native, j2k-transcode

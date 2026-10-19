@@ -10,14 +10,14 @@ use super::super::tile_grid::validate_tile_grid;
 use super::super::tile_parts::{encoded_tile_parts_retained_bytes, EncodedTilePart};
 use super::super::{
     adjust_component_step_sizes_for_guard_delta, adjust_reversible_step_sizes_for_guard_delta,
-    max_total_bitplanes_for_components, maximum_decomposition_levels, quantize,
-    requested_guard_bits, reversible_guard_bits_for_marker_limit,
-    validate_precinct_exponents_for_options, validate_roi_encode_options_nonallocating,
-    BlockCodingMode, EncodeComponentSampleInfo, EncodeOptions, EncodeParams, EncodeRoiRegion,
-    NativeEncodePipelineError, NativeEncodePipelineResult, NativeEncodeSession, QuantStepSize,
-    MAX_RAW_PIXEL_ENCODE_BIT_DEPTH,
+    max_total_bitplanes_for_components, quantize, requested_guard_bits,
+    reversible_guard_bits_for_marker_limit, validate_precinct_exponents_for_options,
+    validate_roi_encode_options_nonallocating, BlockCodingMode, EncodeComponentSampleInfo,
+    EncodeOptions, EncodeParams, EncodeRoiRegion, NativeEncodePipelineError,
+    NativeEncodePipelineResult, NativeEncodeSession, QuantStepSize, MAX_RAW_PIXEL_ENCODE_BIT_DEPTH,
 };
 use super::ownership::encode_options_retained_bytes;
+use j2k_types::encode_geometry::tiled_decomposition_levels;
 
 mod accounting;
 use accounting::{
@@ -80,27 +80,25 @@ pub(super) struct FinalPlanRequest<'a, 'input> {
     pub(super) session: &'a NativeEncodeSession<'input>,
 }
 
+fn loop_decomposition_levels(request: &LoopPlanRequest<'_, '_>) -> u8 {
+    tiled_decomposition_levels(
+        request.width,
+        request.height,
+        request.tile_width,
+        request.tile_height,
+        request.options.num_decomposition_levels,
+    )
+}
+
 pub(super) fn build_loop_plan(
     request: &LoopPlanRequest<'_, '_>,
 ) -> NativeEncodePipelineResult<MultiTileLoopPlan> {
-    let min_tile_width = if request.width.is_multiple_of(request.tile_width) {
-        request.tile_width
-    } else {
-        request.width % request.tile_width
-    };
-    let min_tile_height = if request.height.is_multiple_of(request.tile_height) {
-        request.tile_height
-    } else {
-        request.height % request.tile_height
-    };
-    let num_levels = request
-        .options
-        .num_decomposition_levels
-        .min(maximum_decomposition_levels(
-            min_tile_width,
-            min_tile_height,
-        ));
+    let num_levels = loop_decomposition_levels(request);
     validate_precinct_exponents_for_options(request.options, num_levels)
+        .map_err(NativeEncodePipelineError::invalid_input)?;
+    request
+        .options
+        .validate_component_profile(usize::from(request.num_components), num_levels)
         .map_err(NativeEncodePipelineError::invalid_input)?;
     validate_loop_plan_tile_grid(request, num_levels)?;
     let use_mct = request.options.use_mct && matches!(request.num_components, 3 | 4);
@@ -117,8 +115,13 @@ pub(super) fn build_loop_plan(
         requested_guard_bits
     };
     let guard_delta = guard_bits.saturating_sub(requested_guard_bits);
-    let requested_step_bytes =
-        requested_step_graph_bytes(num_levels, request.component_sample_info.len())?;
+    let requested_step_bytes = requested_step_graph_bytes(
+        num_levels,
+        request
+            .component_sample_info
+            .len()
+            .max(request.options.custom_component_step_count()),
+    )?;
     request
         .session
         .checked_phase(requested_step_bytes, "multi-tile validation step graph")?;
@@ -231,7 +234,10 @@ impl MultiTileLoopPlan {
         let requested_bytes = final_plan_requested_bytes(
             num_levels,
             request.num_components,
-            request.component_sample_info.len(),
+            request
+                .component_sample_info
+                .len()
+                .max(request.options.custom_component_step_count()),
             request.options.precinct_exponents.len(),
         )?;
         request.session.checked_phase(
@@ -368,17 +374,22 @@ fn build_step_graph(
     session: &NativeEncodeSession<'_>,
 ) -> NativeEncodePipelineResult<(Vec<QuantStepSize>, Vec<Vec<QuantStepSize>>)> {
     let step_sizes = try_step_sizes(bit_depth, num_levels, guard_bits, options, 0, session)?;
-    let outer_bytes = checked_element_bytes::<Vec<QuantStepSize>>(
-        component_sample_info.len(),
-        "multi-tile component step owners",
-    )?;
+    let count = if component_sample_info.is_empty() {
+        options.custom_component_step_count()
+    } else {
+        component_sample_info.len()
+    };
+    let outer_bytes =
+        checked_element_bytes::<Vec<QuantStepSize>>(count, "multi-tile component step owners")?;
     let mut component_steps = Vec::new();
     component_steps
-        .try_reserve_exact(component_sample_info.len())
+        .try_reserve_exact(count)
         .map_err(|_| host_allocation_failed("multi-tile component step owners", outer_bytes))?;
-    for (component, info) in component_sample_info.iter().enumerate() {
+    for component in 0..count {
         component_steps.push(try_step_sizes(
-            info.bit_depth,
+            component_sample_info
+                .get(component)
+                .map_or(bit_depth, |info| info.bit_depth),
             num_levels,
             guard_bits,
             options,
@@ -403,6 +414,13 @@ fn try_step_sizes(
     steps
         .try_reserve_exact(count)
         .map_err(|_| host_allocation_failed("multi-tile step sizes", bytes))?;
+    if session.openhtj2k_qfactor().is_some() && options.irreversible_quantization_profile.is_some()
+    {
+        return Err(crate::EncodeError::InvalidInput {
+            what: "Qfactor cannot be combined with a component quantization profile",
+        }
+        .into());
+    }
     if let Some(qfactor) = session.openhtj2k_qfactor() {
         quantize::append_openhtj2k_qfactor_step_sizes(
             &mut steps, bit_depth, num_levels, qfactor, component,
@@ -418,6 +436,15 @@ fn try_step_sizes(
             options.irreversible_quantization_subband_scales,
         );
     }
+    quantize::apply_component_profile(
+        &mut steps,
+        bit_depth,
+        guard_bits,
+        options.irreversible_quantization_scale,
+        options.irreversible_quantization_subband_scales,
+        options.irreversible_quantization_profile.as_deref(),
+        component,
+    )?;
     Ok(steps)
 }
 

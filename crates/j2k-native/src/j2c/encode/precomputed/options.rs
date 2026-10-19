@@ -56,6 +56,11 @@ pub(super) fn try_precomputed_options(
     mode: PrecomputedOptionMode,
     tracker: &mut ConstructionTracker<'_, '_>,
 ) -> NativeEncodePipelineResult<EncodeOptions> {
+    if options.irreversible_quantization_profile.is_some() {
+        return Err(NativeEncodePipelineError::unsupported(
+            "component quantization profiles are not supported for precomputed coefficient input",
+        ));
+    }
     let sampling_count = sampling.len();
     let quality_layer_byte_targets = tracker.try_copy_slice(
         &options.quality_layer_byte_targets,
@@ -91,6 +96,7 @@ pub(super) fn try_precomputed_options(
         validate_high_throughput_codestream: false,
         irreversible_quantization_scale: options.irreversible_quantization_scale,
         irreversible_quantization_subband_scales: options.irreversible_quantization_subband_scales,
+        irreversible_quantization_profile: None,
         component_sampling: Some(component_sampling),
         roi_component_shifts,
         tile_size: options.tile_size,

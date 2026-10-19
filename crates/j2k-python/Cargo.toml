@@ -22,6 +22,8 @@ cuda = ["python", "dep:j2k-cuda", "dep:j2k-cuda-runtime"]
 
 [dependencies]
 j2k = { path = "../j2k" }
+j2k-native = { path = "../j2k-native" }
+j2k-jpeg = { path = "../j2k-jpeg" }
 pyo3 = { version = "0.30.1", features = ["abi3-py310"], optional = true }
 j2k-cuda = { path = "../j2k-cuda", features = ["cuda-runtime"], optional = true }
 j2k-cuda-runtime = { path = "../j2k-cuda-runtime", optional = true }

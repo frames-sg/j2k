@@ -104,6 +104,14 @@ impl<'session, 'input> PlanConstruction<'session, 'input> {
                 what: "single-tile quantization step count",
             })?;
         let mut steps = self.try_vec(count, "single-tile quantization steps")?;
+        if self.session.openhtj2k_qfactor().is_some()
+            && options.irreversible_quantization_profile.is_some()
+        {
+            return Err(crate::EncodeError::InvalidInput {
+                what: "Qfactor cannot be combined with a component quantization profile",
+            }
+            .into());
+        }
         if let Some(qfactor) = self.session.openhtj2k_qfactor() {
             quantize::append_openhtj2k_qfactor_step_sizes(
                 &mut steps, bit_depth, num_levels, qfactor, component,
@@ -119,30 +127,47 @@ impl<'session, 'input> PlanConstruction<'session, 'input> {
                 options.irreversible_quantization_subband_scales,
             );
         }
+        quantize::apply_component_profile(
+            &mut steps,
+            bit_depth,
+            guard_bits,
+            options.irreversible_quantization_scale,
+            options.irreversible_quantization_subband_scales,
+            options.irreversible_quantization_profile.as_deref(),
+            component,
+        )?;
         Ok(steps)
     }
 
     pub(super) fn try_component_step_sizes(
         &mut self,
         component_info: &[EncodeComponentSampleInfo],
+        bit_depth: u8,
         num_levels: u8,
         reversible: bool,
         guard_bits: u8,
         options: &EncodeOptions,
     ) -> NativeEncodePipelineResult<Vec<Vec<QuantStepSize>>> {
-        let mut components = self.try_vec::<Vec<QuantStepSize>>(
-            component_info.len(),
-            "single-tile component step owners",
-        )?;
-        for (component, info) in component_info.iter().enumerate() {
-            components.push(self.try_step_sizes(
-                info.bit_depth,
-                num_levels,
-                reversible,
-                guard_bits,
-                options,
-                component,
-            )?);
+        let count = if component_info.is_empty() {
+            options.custom_component_step_count()
+        } else {
+            component_info.len()
+        };
+        let mut components =
+            self.try_vec::<Vec<QuantStepSize>>(count, "single-tile component step owners")?;
+        for component in 0..count {
+            components.push(
+                self.try_step_sizes(
+                    component_info
+                        .get(component)
+                        .map_or(bit_depth, |info| info.bit_depth),
+                    num_levels,
+                    reversible,
+                    guard_bits,
+                    options,
+                    component,
+                )?,
+            );
         }
         Ok(components)
     }

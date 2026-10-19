@@ -5,6 +5,37 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- Irreversible 9/7 encodes accept per-component quantization profiles:
+  `J2kLossyEncodeOptions::quantization_profile` (`with_quantization_profile`)
+  and `EncodeOptions::irreversible_quantization_profile` take one positive
+  multiplier per band in QCD/QCC order for every component. Rows must match
+  the effective decomposition depth, including the cap from the smallest edge
+  tile. A non-unity profile writes QCC markers; an exact all-ones profile
+  leaves the codestream unchanged. Steps the 5-bit QCD/QCC exponent cannot
+  store are rejected as input errors, and byte, bits-per-pixel and PSNR rate
+  search scale the whole profile only up to its largest representable scale.
+  Reversible, Qfactor, high-bit and precomputed-coefficient encodes reject
+  profiles.
+- The `j2k` Python extension adds CPU research helpers: `encode_rgb` and
+  `decode_rgb` for 8-bit RGB through baseline JPEG 4:4:4, classic JPEG 2000 or
+  HTJ2K (with `quality`, `target_bpp`, `levels` and `profile`), and
+  `forward_rgb97` / `inverse_rgb97` for float 9/7 bands with optional ICT.
+  `j2k-native` exports `inverse_dwt97_reference` and `inverse_ict_reference`.
+- Behavior change: an explicit lossy `max_decomposition_levels` now selects
+  that many levels, capped by geometry, as the lossless option and the field
+  documentation already describe. It previously only capped the default
+  policy, so LRCP and RLCP encodes used one level whatever value was given.
+  Existing lossy encodes that set this option produce different codestreams;
+  encodes that leave it unset are unchanged.
+- Behavior fix: irreversible steps outside the QCD/QCC range from an extreme
+  `irreversible_quantization_scale` or subband scale now saturate at the
+  coarsest or finest stored step instead of panicking or wrapping. Steps of
+  2^32 and coarser, which bit depths above 31 store, are kept exactly and
+  reconstruct without overflowing.
+- Native multi-tile encodes now check a component quantization profile against
+  the edge-tile depth before planning, so `EncodeOptions` callers get the same
+  row count as the `j2k` facade.
+
 - `J2kDecoder::decode_wavelets` extracts selected native wavelet bands on the
   CPU for classic JPEG 2000 and HTJ2K, without inverse DWT, color conversion,
   or pixel packing: reversible 5/3 bands as exact `I64`, irreversible 9/7

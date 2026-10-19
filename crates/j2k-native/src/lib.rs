@@ -255,8 +255,9 @@ pub use j2c::encode::{
     encode_prequantized_htj2k_97_with_accelerator_and_max_host_bytes,
     encode_resident_htj2k_with_accelerator, encode_typed_component_planes_53,
     encode_with_accelerator, encode_with_accelerator_and_roi_regions, encode_with_roi_regions,
-    irreversible_quantization_step_for_subband, EncodeComponentPlane, EncodeOptions,
-    EncodeProgressionOrder, EncodeRoiRegion, EncodeTypedComponentPlane, ResidentHtj2kEncodeError,
+    irreversible_quantization_profile_scale_ceiling, irreversible_quantization_step_for_subband,
+    EncodeComponentPlane, EncodeOptions, EncodeProgressionOrder, EncodeRoiRegion,
+    EncodeTypedComponentPlane, ResidentHtj2kEncodeError,
 };
 pub use j2c::{
     CpuDecodeParallelism, DecoderContext, DecoderWorkspace, DecoderWorkspaceStats,
@@ -415,10 +416,11 @@ pub use scalar::{
     encode_ht_code_block_scalar, encode_ht_code_block_scalar_with_passes,
     encode_ht_code_block_scalar_with_passes_and_workspace, encode_j2k_code_block_scalar_with_style,
     encode_j2k_packetization_scalar, forward_dwt53_reference, forward_dwt97_reference,
-    forward_ict_reference, forward_rct_reference, pack_j2k_code_block_scalar_from_tier1_tokens,
-    quantize_reversible_reference, quantize_subband_reference, try_deinterleave_reference,
-    HtCodeBlockDecodeProfile, HtCodeBlockDecodeWorkspace, HtCodeBlockEncodeWorkspace,
-    J2kCodeBlockDecodeProfile, J2kCodeBlockDecodeWorkspace,
+    forward_ict_reference, forward_rct_reference, inverse_dwt97_reference, inverse_ict_reference,
+    pack_j2k_code_block_scalar_from_tier1_tokens, quantize_reversible_reference,
+    quantize_subband_reference, try_deinterleave_reference, HtCodeBlockDecodeProfile,
+    HtCodeBlockDecodeWorkspace, HtCodeBlockEncodeWorkspace, J2kCodeBlockDecodeProfile,
+    J2kCodeBlockDecodeWorkspace,
 };
 
 /// JP2 signature box: 00 00 00 0C 6A 50 20 20

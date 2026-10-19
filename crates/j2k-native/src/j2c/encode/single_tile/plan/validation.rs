@@ -167,6 +167,25 @@ fn validate_encode_request_header(
             "quality layer byte target count must match quality layer count",
         ));
     }
+    // Multi-tile planning caps the depth by the smallest edge tile, so profile
+    // rows are checked against that same depth here.
+    let profile_levels = match options.tile_size {
+        Some((tile_width, tile_height)) if tile_width > 0 && tile_height > 0 => {
+            j2k_types::encode_geometry::tiled_decomposition_levels(
+                width,
+                height,
+                tile_width,
+                tile_height,
+                options.num_decomposition_levels,
+            )
+        }
+        _ => options.num_decomposition_levels.min(
+            j2k_types::encode_geometry::maximum_decomposition_levels(width, height),
+        ),
+    };
+    options
+        .validate_component_profile(usize::from(num_components), profile_levels)
+        .map_err(NativeEncodePipelineError::invalid_input)?;
     if !options.reversible {
         validate_irreversible_quantization_profile(options)
             .map_err(NativeEncodePipelineError::invalid_input)?;

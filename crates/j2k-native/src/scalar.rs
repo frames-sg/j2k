@@ -33,6 +33,7 @@ pub use self::encode::{
     quantize_subband_reference, try_deinterleave_reference, HtCodeBlockEncodeWorkspace,
 };
 mod ht_decode;
+mod research_transforms;
 #[cfg(feature = "simd")]
 pub(crate) use self::ht_decode::try_decode_ht_code_block_to_f32;
 pub use self::ht_decode::{
@@ -43,6 +44,7 @@ pub use self::ht_decode::{
     decode_ht_code_block_scalar_with_workspace_profiled, HtCodeBlockDecodeProfile,
     HtCodeBlockDecodeWorkspace,
 };
+pub use research_transforms::{inverse_dwt97_reference, inverse_ict_reference};
 
 fn internal_j2k_sub_band_type(sub_band_type: J2kSubBandType) -> j2c::build::SubBandType {
     match sub_band_type {

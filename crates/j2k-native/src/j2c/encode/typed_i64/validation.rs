@@ -5,6 +5,11 @@
 use super::super::{EncodeOptions, NativeEncodePipelineError, NativeEncodePipelineResult};
 
 pub(super) fn validate_high_bit_options(options: &EncodeOptions) -> NativeEncodePipelineResult<()> {
+    if options.irreversible_quantization_profile.is_some() {
+        return Err(NativeEncodePipelineError::invalid_input(
+            "component quantization profile requires irreversible encoding",
+        ));
+    }
     if options.num_layers == 0 {
         return Err(NativeEncodePipelineError::invalid_input(
             "quality layer count must be non-zero",

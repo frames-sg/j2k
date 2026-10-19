@@ -13,6 +13,9 @@ use crate::{
     J2kSubBandType,
 };
 
+/// Largest exponent the 5-bit irreversible QCD/QCC step field stores.
+const MAX_STEP_EXPONENT: u16 = 31;
+
 /// Quantization parameters for a single subband.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct QuantStepSize {
@@ -70,28 +73,83 @@ impl QuantStepSize {
         base * (1.0 + f32::from(self.mantissa) / 2048.0)
     }
 
+    /// Round a step to its stored exponent/mantissa pair, or `None` when the
+    /// rounded pair needs an exponent outside the 5-bit QCD/QCC field.
     #[expect(
         clippy::cast_possible_truncation,
-        reason = "finite quantization values are explicitly rounded and clamped immediately after conversion"
+        reason = "the floored log2 of a finite positive f32 lies within -150..=127"
     )]
-    fn from_delta(range_bits: u8, delta: f32) -> Self {
-        debug_assert!(delta.is_finite() && delta > 0.0);
-
+    fn try_from_delta(range_bits: u8, delta: f32) -> Option<Self> {
+        if !delta.is_finite() || delta <= 0.0 {
+            return None;
+        }
         let floor_log2 = floor_f32(log2_f32(delta)) as i32;
-        let mut exponent = i32::from(range_bits) - floor_log2;
+        let exponent = i32::from(range_bits) - floor_log2;
+        // A mantissa carry lowers the exponent by one, so 32 can still round
+        // into range. Bit depths above 31 store steps of 2^32 and coarser, so
+        // the exponent is the only range check.
+        if !(0..=i32::from(MAX_STEP_EXPONENT) + 1).contains(&exponent) {
+            return None;
+        }
         let normalized = delta / pow2i(floor_log2);
-        let mut mantissa = round_f32((normalized - 1.0) * 2048.0) as i32;
-
-        if mantissa >= 2048 {
-            exponent -= 1;
-            mantissa = 0;
-        }
-
-        Self {
-            exponent: u16::try_from(exponent.clamp(0, 31)).unwrap_or_default(),
-            mantissa: u16::try_from(mantissa.clamp(0, 2047)).unwrap_or_default(),
-        }
+        let mantissa = round_f32((normalized - 1.0) * 2048.0) as i32;
+        let (exponent, mantissa) = if mantissa >= 2048 {
+            (exponent - 1, 0)
+        } else {
+            (exponent, mantissa.max(0))
+        };
+        Some(Self {
+            exponent: u16::try_from(exponent)
+                .ok()
+                .filter(|&exponent| exponent <= MAX_STEP_EXPONENT)?,
+            mantissa: u16::try_from(mantissa).ok()?,
+        })
     }
+
+    /// Round a step to its stored pair, saturating at the coarsest or finest
+    /// step the 5-bit exponent can store.
+    fn from_delta(range_bits: u8, delta: f32) -> Self {
+        Self::try_from_delta(range_bits, delta).unwrap_or_else(|| {
+            if log2_f32(delta) >= f32::from(range_bits) {
+                Self {
+                    exponent: 0,
+                    mantissa: 2047,
+                }
+            } else {
+                Self {
+                    exponent: MAX_STEP_EXPONENT,
+                    mantissa: 0,
+                }
+            }
+        })
+    }
+}
+
+/// Unrounded irreversible step for QCD/QCC position `index` before any
+/// component profile, with invalid multipliers treated as one.
+fn irreversible_step_delta(
+    bit_depth: u8,
+    guard_bits: u8,
+    irreversible_quantization_scale: f32,
+    irreversible_quantization_subband_scales: IrreversibleQuantizationSubbandScales,
+    index: usize,
+) -> f32 {
+    let base_step = QuantStepSize {
+        exponent: u16::from(bit_depth) + u16::from(guard_bits),
+        mantissa: 0,
+    };
+    let scale =
+        if irreversible_quantization_scale.is_finite() && irreversible_quantization_scale > 0.0 {
+            irreversible_quantization_scale
+        } else {
+            1.0
+        };
+    let subband_scales = if subband_scales_all_valid(irreversible_quantization_subband_scales) {
+        irreversible_quantization_subband_scales
+    } else {
+        IrreversibleQuantizationSubbandScales::default()
+    };
+    base_step.delta(bit_depth) * scale * subband_scale_for_step_index(subband_scales, index)
 }
 
 /// Compute the exact irreversible 9/7 quantization step tuple the native encoder
@@ -242,30 +300,124 @@ pub(crate) fn append_step_sizes_with_irreversible_profile(
         // Quality-first irreversible 9-7 default. Use one exponent/mantissa for all
         // subbands and let R_b = bit_depth + log_gain make LL finest and HH
         // coarsest under the decoder's QCD formula.
-        let base_step = QuantStepSize {
-            exponent: u16::from(bit_depth) + u16::from(guard_bits),
-            mantissa: 0,
-        };
-        let scale = if irreversible_quantization_scale.is_finite()
-            && irreversible_quantization_scale > 0.0
-        {
-            irreversible_quantization_scale
-        } else {
-            1.0
-        };
-        let subband_scales = if subband_scales_all_valid(irreversible_quantization_subband_scales) {
-            irreversible_quantization_subband_scales
-        } else {
-            IrreversibleQuantizationSubbandScales::default()
-        };
         let step_count = 1usize + usize::from(num_decompositions) * 3;
 
         for index in 0..step_count {
-            let subband_scale = subband_scale_for_step_index(subband_scales, index);
             step_sizes.push(QuantStepSize::from_delta(
                 bit_depth,
-                base_step.delta(bit_depth) * scale * subband_scale,
+                irreversible_step_delta(
+                    bit_depth,
+                    guard_bits,
+                    irreversible_quantization_scale,
+                    irreversible_quantization_subband_scales,
+                    index,
+                ),
             ));
+        }
+    }
+}
+
+/// Return whether every profile multiplier is exactly one, which keeps the
+/// original quantization markers.
+pub(crate) fn profile_is_unity(profile: &[Vec<f32>]) -> bool {
+    profile
+        .iter()
+        .flatten()
+        .all(|weight| weight.to_bits() == 1.0_f32.to_bits())
+}
+
+/// Replace one component's steps with its profile-weighted steps.
+///
+/// Weights multiply the unrounded step, and every band of a non-unity profile
+/// must be representable. A tiny or huge weight, or a global scale that would
+/// clamp some steps and not others, is rejected rather than silently changing
+/// the profile's ratios.
+pub(crate) fn apply_component_profile(
+    steps: &mut [QuantStepSize],
+    bit_depth: u8,
+    guard_bits: u8,
+    irreversible_quantization_scale: f32,
+    irreversible_quantization_subband_scales: IrreversibleQuantizationSubbandScales,
+    profile: Option<&[Vec<f32>]>,
+    component: usize,
+) -> EncodeResult<()> {
+    let Some(profile) = profile else {
+        return Ok(());
+    };
+    let weights = profile.get(component).ok_or(EncodeError::InvalidInput {
+        what: "quantization profile component count does not match input",
+    })?;
+    if weights.len() != steps.len() {
+        return Err(EncodeError::InvalidInput {
+            what: "quantization profile band count must match actual decomposition levels",
+        });
+    }
+    if profile_is_unity(profile) {
+        return Ok(());
+    }
+    for (index, (step, &weight)) in steps.iter_mut().zip(weights).enumerate() {
+        let delta = irreversible_step_delta(
+            bit_depth,
+            guard_bits,
+            irreversible_quantization_scale,
+            irreversible_quantization_subband_scales,
+            index,
+        ) * weight;
+        *step =
+            QuantStepSize::try_from_delta(bit_depth, delta).ok_or(EncodeError::InvalidInput {
+                what: "quantization profile step is outside the representable QCD/QCC range",
+            })?;
+    }
+    Ok(())
+}
+
+/// Largest global scale, from `start` upward, at which every step of
+/// `profile` stays representable. `start` is returned unchanged when it is
+/// already out of range, so the encode at that scale reports the error.
+pub(crate) fn profile_scale_ceiling(
+    bit_depth: u8,
+    guard_bits: u8,
+    start: f32,
+    irreversible_quantization_subband_scales: IrreversibleQuantizationSubbandScales,
+    profile: &[Vec<f32>],
+) -> f32 {
+    let representable = |scale: f32| {
+        profile.iter().all(|weights| {
+            weights.iter().enumerate().all(|(index, &weight)| {
+                let delta = irreversible_step_delta(
+                    bit_depth,
+                    guard_bits,
+                    scale,
+                    irreversible_quantization_subband_scales,
+                    index,
+                ) * weight;
+                QuantStepSize::try_from_delta(bit_depth, delta).is_some()
+            })
+        })
+    };
+    if !(start.is_finite() && start > 0.0 && representable(start)) {
+        return start;
+    }
+    // A larger scale only coarsens steps, so the representable scales end at
+    // one bound: double past it, then bisect down to the last f32 inside.
+    let mut low = start;
+    let mut high = start * 2.0;
+    while high.is_finite() && representable(high) {
+        low = high;
+        high *= 2.0;
+    }
+    if !high.is_finite() {
+        return low;
+    }
+    loop {
+        let middle = f32::midpoint(low, high);
+        if middle <= low || middle >= high {
+            return low;
+        }
+        if representable(middle) {
+            low = middle;
+        } else {
+            high = middle;
         }
     }
 }
@@ -714,5 +866,168 @@ mod tests {
                 "range_bits={range_bits} step={step:?} quantized={quantized:?} total_bitplanes={total_bitplanes}"
             );
         }
+    }
+
+    #[test]
+    fn step_conversion_rounds_into_range_or_rejects_at_both_limits() {
+        let finest = QuantStepSize {
+            exponent: 31,
+            mantissa: 0,
+        };
+        let coarsest = QuantStepSize {
+            exponent: 0,
+            mantissa: 2047,
+        };
+        // 2^(8 - 31) is the finest step; just below it the mantissa carries in.
+        for delta in [pow2i(-23), pow2i(-24) * (2.0 - 1.0 / 8192.0)] {
+            assert_eq!(QuantStepSize::try_from_delta(8, delta), Some(finest));
+        }
+        assert_eq!(QuantStepSize::try_from_delta(8, 511.875), Some(coarsest));
+        for delta in [
+            pow2i(-24) * 1.5,
+            511.968_75,
+            512.0,
+            1e-20,
+            f32::MIN_POSITIVE,
+            1e-45,
+            1e30,
+            f32::MAX,
+            f32::INFINITY,
+            0.0,
+        ] {
+            assert_eq!(QuantStepSize::try_from_delta(8, delta), None, "{delta}");
+        }
+        // Without a profile, out-of-range steps saturate instead of panicking.
+        for (delta, expected) in [
+            (1e-20, finest),
+            (0.0, finest),
+            (511.968_75, coarsest),
+            (1e30, coarsest),
+            (f32::INFINITY, coarsest),
+        ] {
+            assert_eq!(QuantStepSize::from_delta(8, delta), expected, "{delta}");
+        }
+    }
+
+    #[test]
+    fn global_scale_steps_never_decrease_past_the_coarsest_step() {
+        let mut previous = 0.0;
+        for scale in [1e-30, 1.0, 1024.0, 1536.0, 2048.0, 3072.0, 4096.0, 1e30] {
+            let steps = compute_step_sizes_with_irreversible_scale(8, 0, false, 2, scale);
+            let delta = steps[0].delta(8);
+            assert!(delta >= previous, "scale {scale}: {delta} < {previous}");
+            previous = delta;
+        }
+    }
+
+    #[test]
+    fn high_bit_depth_steps_never_decrease_and_reconstruct_past_2_pow_31() {
+        let finest = QuantStepSize {
+            exponent: 31,
+            mantissa: 0,
+        };
+        let coarsest = QuantStepSize {
+            exponent: 0,
+            mantissa: 2047,
+        };
+        for bit_depth in [30_u8, 32, 33, 38] {
+            let mut previous = 0.0;
+            for scale in (-40..=60).flat_map(|exp| [pow2i(exp), pow2i(exp) * 1.5]) {
+                let steps =
+                    compute_step_sizes_with_irreversible_scale(bit_depth, 0, false, 2, scale);
+                let delta = steps[0].delta(bit_depth);
+                assert!(
+                    delta.is_finite() && delta >= previous,
+                    "bit depth {bit_depth}, scale {scale}: {delta} < {previous}"
+                );
+                previous = delta;
+            }
+            let at = |scale| {
+                compute_step_sizes_with_irreversible_scale(bit_depth, 0, false, 2, scale)[0]
+            };
+            assert_eq!(at(pow2i(-40)), finest, "bit depth {bit_depth}");
+            assert_eq!(at(pow2i(60)), coarsest, "bit depth {bit_depth}");
+        }
+        // A 38-bit step of 2^33 is stored exactly rather than saturated.
+        let step = QuantStepSize::try_from_delta(38, pow2i(33)).unwrap();
+        assert_eq!((step.exponent, step.mantissa), (5, 0));
+        assert_eq!(step.delta(38), pow2i(33));
+        assert_eq!(coarsest.delta(40), pow2i(40) * (1.0 + 2047.0 / 2048.0));
+    }
+
+    fn profiled_ll_delta(weight: f32, scale: f32) -> EncodeResult<f32> {
+        let mut steps = compute_step_sizes_with_irreversible_scale(8, 2, false, 2, scale);
+        let mut weights = vec![1.0; steps.len()];
+        weights[0] = weight;
+        apply_component_profile(
+            &mut steps,
+            8,
+            2,
+            scale,
+            IrreversibleQuantizationSubbandScales::default(),
+            Some(&[weights]),
+            0,
+        )?;
+        Ok(steps[0].delta(8))
+    }
+
+    #[test]
+    fn profile_steps_follow_weight_order_until_they_are_rejected() {
+        // Guard bits 2 make the LL step 0.25 * weight before rounding.
+        assert_eq!(profiled_ll_delta(1536.0, 1.0).ok(), Some(384.0));
+        assert!(profiled_ll_delta(2048.0, 1.0).is_err());
+
+        let mut previous = None;
+        let mut leaving_range = false;
+        let weights = core::iter::successors(Some(1e-12_f32), |weight| Some(weight * 1.13))
+            .take_while(|&weight| weight < 1e12);
+        for weight in weights {
+            match profiled_ll_delta(weight, 1.0) {
+                Ok(delta) => {
+                    assert!(!leaving_range, "weight {weight} re-entered the range");
+                    assert!(previous.is_none_or(|previous| delta >= previous));
+                    previous = Some(delta);
+                }
+                Err(_) => leaving_range = previous.is_some(),
+            }
+        }
+        assert!(leaving_range);
+    }
+
+    #[test]
+    fn profile_weights_the_unrounded_globally_scaled_step() {
+        // 0.25 * 4096 = 1024 is past the coarsest step, but a quarter of it is not.
+        let mut steps = compute_step_sizes_with_irreversible_scale(8, 2, false, 2, 4096.0);
+        apply_component_profile(
+            &mut steps,
+            8,
+            2,
+            4096.0,
+            IrreversibleQuantizationSubbandScales::default(),
+            Some(&[vec![0.25; 7]]),
+            0,
+        )
+        .unwrap();
+        assert!(steps
+            .iter()
+            .all(|step| (step.delta(8) - 256.0).abs() < 0.001));
+        // Unity bands of an active profile must also stay representable.
+        assert!(profiled_ll_delta(0.25, 4096.0).is_err());
+    }
+
+    #[test]
+    fn profile_scale_ceiling_is_the_last_representable_scale() {
+        let profile = [vec![1.0, 3.0, 3.0, 3.0, 5.0, 5.0, 5.0]];
+        let scales = IrreversibleQuantizationSubbandScales::default();
+        let ceiling = profile_scale_ceiling(8, 2, 1.0, scales, &profile);
+        let representable = |scale: f32| {
+            let mut steps = compute_step_sizes_with_irreversible_scale(8, 2, false, 2, scale);
+            apply_component_profile(&mut steps, 8, 2, scale, scales, Some(&profile), 0).is_ok()
+        };
+        assert!(ceiling > 1.0 && ceiling.to_bits() != ceiling.round().to_bits());
+        assert!(representable(ceiling));
+        assert!(!representable(ceiling.next_up()));
+        // An out-of-range start is returned for encode to reject.
+        assert_eq!(profile_scale_ceiling(8, 2, 1e9, scales, &profile), 1e9);
     }
 }

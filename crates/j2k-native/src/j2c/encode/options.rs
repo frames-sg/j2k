@@ -61,6 +61,13 @@ pub struct EncodeOptions {
     /// Per-subband multipliers applied on top of
     /// `irreversible_quantization_scale`.
     pub irreversible_quantization_subband_scales: IrreversibleQuantizationSubbandScales,
+    /// Optional component-specific irreversible multipliers in QCD/QCC order:
+    /// final LL, then HL/LH/HH from coarsest to finest resolution.
+    /// Each component needs exactly `1 + 3 * actual_decomposition_levels` entries.
+    /// Multipliers compose with the global scale and orientation multipliers.
+    /// Raw-pixel irreversible encoding supports this profile; precomputed
+    /// coefficient paths reject it until their metadata contract is extended.
+    pub irreversible_quantization_profile: Option<Vec<Vec<f32>>>,
     /// Optional per-component SIZ sampling factors (`XRsiz`, `YRsiz`).
     ///
     /// `None` means every component is stored at the reference-grid
@@ -160,6 +167,7 @@ impl Default for EncodeOptions {
             irreversible_quantization_scale: 1.0,
             irreversible_quantization_subband_scales:
                 IrreversibleQuantizationSubbandScales::default(),
+            irreversible_quantization_profile: None,
             component_sampling: None,
             roi_component_shifts: Vec::new(),
             tile_size: None,
@@ -297,4 +305,41 @@ pub(super) fn validate_precinct_exponents_for_options(
         }
     }
     Ok(())
+}
+
+impl EncodeOptions {
+    pub(super) fn custom_component_step_count(&self) -> usize {
+        self.irreversible_quantization_profile
+            .as_ref()
+            .filter(|profile| !quantize::profile_is_unity(profile))
+            .map_or(0, Vec::len)
+    }
+
+    pub(super) fn validate_component_profile(
+        &self,
+        components: usize,
+        levels: u8,
+    ) -> Result<(), &'static str> {
+        let Some(profile) = &self.irreversible_quantization_profile else {
+            return Ok(());
+        };
+        if self.reversible {
+            return Err("component quantization profile requires irreversible encoding");
+        }
+        if profile.len() != components {
+            return Err("quantization profile component count does not match input");
+        }
+        let expected = 1 + 3 * usize::from(levels);
+        if profile.iter().any(|row| row.len() != expected) {
+            return Err("quantization profile band count must match actual decomposition levels");
+        }
+        if profile
+            .iter()
+            .flatten()
+            .any(|x| !x.is_finite() || *x <= 0.0)
+        {
+            return Err("quantization profile multipliers must be finite and positive");
+        }
+        Ok(())
+    }
 }

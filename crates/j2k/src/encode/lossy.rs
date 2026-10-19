@@ -135,14 +135,31 @@ pub(super) fn encode_lossy_targeted(
     }
 }
 
+/// Largest scale rate search may try. Past it a component quantization
+/// profile has steps QCD/QCC cannot store, which native encode rejects.
+fn profile_scale_ceiling(
+    samples: J2kLossySamples<'_>,
+    options: &J2kLossyEncodeOptions,
+) -> Result<f32, J2kError> {
+    if options.quantization_profile.is_none() {
+        return Ok(f32::INFINITY);
+    }
+    let native = native_lossy_options(samples, options, 1.0)?;
+    Ok(
+        j2k_native::irreversible_quantization_profile_scale_ceiling(samples.bit_depth, &native)
+            .unwrap_or(f32::INFINITY),
+    )
+}
+
 pub(super) fn encode_lossy_to_byte_target(
-    _samples: J2kLossySamples<'_>,
+    samples: J2kLossySamples<'_>,
     options: &J2kLossyEncodeOptions,
     target_bytes: u64,
     mut encode_at_scale: impl FnMut(f32) -> Result<Vec<u8>, J2kError>,
 ) -> Result<LossyAttempt, J2kError> {
     let tolerance = byte_target_tolerance(target_bytes);
     let maximum_bytes = target_bytes.saturating_add(tolerance);
+    let scale_ceiling = profile_scale_ceiling(samples, options)?.min(1_048_576.0);
     let mut low = 1.0f32;
     let mut high = 1.0f32;
     let initial_codestream = encode_at_scale(high)?;
@@ -154,9 +171,9 @@ pub(super) fn encode_lossy_to_byte_target(
     // while an earlier output allocation escapes its phase budget.
     drop(initial_codestream);
 
-    while current_len > maximum_bytes && high < 1_048_576.0 {
+    while current_len > maximum_bytes && high < scale_ceiling {
         low = high;
-        high *= 2.0;
+        high = (high * 2.0).min(scale_ceiling);
         let codestream = encode_at_scale(high)?;
         let len = codestream.len() as u64;
         current_len = len;
@@ -216,6 +233,7 @@ pub(super) fn encode_lossy_to_psnr_target(
     mut encode_at_scale: impl FnMut(f32) -> Result<Vec<u8>, J2kError>,
 ) -> Result<LossyAttempt, J2kError> {
     let tolerance = options.psnr_tolerance_db;
+    let scale_ceiling = profile_scale_ceiling(samples, options)?;
     let mut low = 1.0f32;
     let mut high = 1.0f32;
     let initial_codestream = encode_at_scale(high)?;
@@ -233,7 +251,10 @@ pub(super) fn encode_lossy_to_psnr_target(
     }
 
     for _ in 0..options.psnr_iteration_budget.max(1) {
-        high *= 2.0;
+        if high >= scale_ceiling {
+            break;
+        }
+        high = (high * 2.0).min(scale_ceiling);
         let codestream = encode_at_scale(high)?;
         let psnr = decoded_psnr(samples, &codestream)?;
         if psnr + tolerance >= target_psnr_db {
@@ -299,6 +320,11 @@ pub(super) fn lossy_quality_layer_byte_targets(
 }
 
 pub(super) fn validate_lossy_options(options: &J2kLossyEncodeOptions) -> Result<(), J2kError> {
+    if options.qfactor.is_some() && options.quantization_profile.is_some() {
+        return Err(J2kError::Unsupported(Unsupported {
+            what: "OpenHTJ2K Qfactor cannot be combined with a quantization profile",
+        }));
+    }
     if let Some(qfactor) = options.qfactor {
         if !(1..=100).contains(&qfactor) {
             return Err(J2kError::Unsupported(Unsupported {

@@ -52,6 +52,7 @@ pub(super) fn try_build_plan_owners(
         construction.try_quantization(&step_sizes, "single-tile default quantization")?;
     let mut component_step_sizes = construction.try_component_step_sizes(
         request.component_sample_info,
+        request.bit_depth,
         geometry.num_levels,
         request.options.reversible,
         geometry.guard_bits,

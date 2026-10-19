@@ -707,6 +707,33 @@ fn ht_target_coding_passes_for_options(
     }
 }
 
+/// Return the largest global irreversible scale, from the options' own scale
+/// upward, at which every step of their component quantization profile is
+/// still representable in QCD/QCC.
+///
+/// Rate search uses this as its ceiling. Past it some profiled steps would be
+/// out of range, which encode rejects rather than clamping them and changing
+/// the profile's ratios. `None` means there is no profile, or an exact
+/// all-ones profile that leaves the default quantization unchanged.
+#[doc(hidden)]
+#[must_use]
+pub fn irreversible_quantization_profile_scale_ceiling(
+    bit_depth: u8,
+    options: &EncodeOptions,
+) -> Option<f32> {
+    let profile = options
+        .irreversible_quantization_profile
+        .as_deref()
+        .filter(|profile| !quantize::profile_is_unity(profile))?;
+    Some(quantize::profile_scale_ceiling(
+        bit_depth,
+        requested_guard_bits(options, options.use_mct, false),
+        options.irreversible_quantization_scale,
+        options.irreversible_quantization_subband_scales,
+        profile,
+    ))
+}
+
 fn requested_guard_bits(options: &EncodeOptions, use_mct: bool, openhtj2k_qfactor: bool) -> u8 {
     if openhtj2k_qfactor {
         1

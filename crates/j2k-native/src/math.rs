@@ -724,16 +724,20 @@ pub(crate) fn log2_f32(x: f32) -> f32 {
     clippy::inline_always,
     reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
 )]
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "powers of two in the supported exponent range are exactly representable in f32"
-)]
 #[inline(always)]
 pub(crate) fn pow2i(exp: i32) -> f32 {
-    if exp >= 0 {
-        (1_u32 << exp) as f32
+    // Build the power from its IEEE-754 bits so every exponent is exact, not
+    // only those a 32-bit shift reaches: high-bit-depth quantization steps
+    // need powers such as 2^38. Below the normal range the result is
+    // subnormal, then zero; above it the result is infinity.
+    if exp > 127 {
+        f32::INFINITY
+    } else if exp >= -126 {
+        f32::from_bits((exp + 127).unsigned_abs() << 23)
+    } else if exp >= -149 {
+        f32::from_bits(1_u32 << (exp + 149).unsigned_abs())
     } else {
-        1.0 / (1_u32 << -exp) as f32
+        0.0
     }
 }
 
@@ -932,7 +936,23 @@ mod simd_operator_tests {
 
 #[cfg(test)]
 mod floating_point_tests {
-    use super::mul_add;
+    use super::{mul_add, pow2i};
+
+    #[test]
+    fn pow2i_is_exact_across_the_whole_f32_exponent_range() {
+        let mut expected = 1.0_f32;
+        for exp in 0..=128 {
+            assert_eq!(pow2i(exp).to_bits(), expected.to_bits(), "2^{exp}");
+            expected *= 2.0;
+        }
+        let mut expected = 1.0_f32;
+        for exp in (-150..=0).rev() {
+            assert_eq!(pow2i(exp).to_bits(), expected.to_bits(), "2^{exp}");
+            expected /= 2.0;
+        }
+        assert_eq!(pow2i(i32::MAX), f32::INFINITY);
+        assert_eq!(pow2i(i32::MIN).to_bits(), 0.0_f32.to_bits());
+    }
     #[cfg(feature = "std")]
     use j2k_codec_math::dwt;
 

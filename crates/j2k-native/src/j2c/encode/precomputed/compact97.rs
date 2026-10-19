@@ -298,6 +298,11 @@ fn validate_compact_request(
             "compact preencoded HTJ2K sampling comes from the compact image",
         ));
     }
+    if options.irreversible_quantization_profile.is_some() {
+        return Err(NativeEncodePipelineError::unsupported(
+            "component quantization profiles are not supported for precomputed coefficient input",
+        ));
+    }
     validate_irreversible_quantization_profile(options)
         .map_err(NativeEncodePipelineError::invalid_input)?;
     if image

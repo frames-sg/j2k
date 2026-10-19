@@ -2787,6 +2787,8 @@ dependencies = [
  "j2k",
  "j2k-cuda",
  "j2k-cuda-runtime",
+ "j2k-jpeg",
+ "j2k-native",
  "pyo3",
  "pyo3-build-config",
 ]

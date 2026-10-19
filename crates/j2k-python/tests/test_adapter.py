@@ -7,6 +7,8 @@ Run after installing the wheel: python -m unittest discover -s crates/j2k-python
 
 import gc
 from pathlib import Path
+import random
+import struct
 import unittest
 
 import numpy as np
@@ -21,6 +23,23 @@ FIXTURES = ROOT / "crates/j2k-test-support/fixtures/htj2k/openjph_batch"
 
 def encoded(name):
     return (FIXTURES / f"{name}.j2c").read_bytes()
+
+
+def component_steps(codestream):
+    """Map each component to its QCC (exponent, mantissa) steps from the main header."""
+    steps, offset = {}, 2
+    while True:
+        marker, length = struct.unpack_from(">HH", codestream, offset)
+        if marker == 0xFF90:
+            return steps
+        if marker == 0xFF5D:
+            values = struct.unpack_from(f">{(length - 4) // 2}H", codestream, offset + 6)
+            steps[codestream[offset + 4]] = [(value >> 11, value & 0x7FF) for value in values]
+        offset += 2 + length
+
+
+def relative_step(exponent, mantissa):
+    return 2.0**-exponent * (1 + mantissa / 2048)
 
 
 class CodecDataset(torch.utils.data.Dataset):
@@ -123,6 +142,63 @@ class AdapterTests(unittest.TestCase):
         batches = list(loader)
         self.assertEqual(torch.cat([labels for _, labels in batches]).tolist(), [0, 1, 2, 3])
         self.assertEqual(sum(images.shape[0] for images, _ in batches), 4)
+
+
+class ProfileEncodeTests(unittest.TestCase):
+    """encode_rgb(profile=...) keeps every profiled step representable."""
+
+    SIZE = 64
+    RAMP = bytes(i % 251 for i in range(SIZE * SIZE * 3))
+
+    def encode(self, pixels, **options):
+        return j2k.encode_rgb(pixels, self.SIZE, self.SIZE, levels=2, **options)
+
+    def test_unrepresentable_weights_raise_value_error(self):
+        constant = bytes([128]) * (self.SIZE * self.SIZE * 3)
+        for weight in (1e-20, 1e-12, 1e9, 3e38):
+            with self.subTest(weight=weight), self.assertRaises(ValueError):
+                self.encode(constant, profile=[[weight] * 7] * 3)
+
+    def test_stored_steps_follow_increasing_weights(self):
+        steps, rejected = [], []
+        for weight in (0.5, 1.5, 64.0, 1024.0, 1536.0, 2000.0, 2047.0, 2048.0, 4096.0):
+            profile = [[1.0] * 7 for _ in range(3)]
+            profile[0][0] = weight
+            try:
+                codestream = self.encode(self.RAMP, profile=profile)
+            except ValueError:
+                rejected.append(weight)
+                continue
+            self.assertFalse(rejected, f"{weight} accepted after rejecting {rejected}")
+            steps.append(relative_step(*component_steps(codestream)[0][0]))
+        self.assertEqual(steps, sorted(steps))
+        self.assertIn(4096.0, rejected)
+
+    def test_all_ones_profile_matches_no_profile(self):
+        for codec in ("j2k", "htj2k"):
+            for target_bpp in (None, 2.0):
+                with self.subTest(codec=codec, target_bpp=target_bpp):
+                    self.assertEqual(
+                        self.encode(self.RAMP, codec=codec, target_bpp=target_bpp, profile=[[1.0] * 7] * 3),
+                        self.encode(self.RAMP, codec=codec, target_bpp=target_bpp),
+                    )
+
+    def test_rate_search_keeps_profile_ratios(self):
+        noise = random.Random(7).randbytes(self.SIZE * self.SIZE * 3)
+        weights = [1.0, 2.0, 2.0, 4.0, 4.0, 4.0, 8.0]
+        for target_bpp in (None, 4.0, 1.0, 0.25):
+            with self.subTest(target_bpp=target_bpp):
+                try:
+                    codestream = self.encode(noise, profile=[weights] * 3, target_bpp=target_bpp)
+                except ValueError as error:
+                    self.assertIn("rate target unreachable", str(error))
+                    continue
+                for steps in component_steps(codestream).values():
+                    low_low = relative_step(*steps[0])
+                    for weight, step in zip(weights, steps):
+                        self.assertAlmostEqual(relative_step(*step) / low_low, weight, delta=weight * 1e-3)
+                width, height, pixels = j2k.decode_rgb(codestream)
+                self.assertEqual((width, height, len(pixels)), (self.SIZE, self.SIZE, len(noise)))
 
 
 if __name__ == "__main__":

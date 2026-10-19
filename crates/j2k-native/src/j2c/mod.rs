@@ -16,7 +16,7 @@ pub(crate) mod ht_block_encode;
 pub(crate) mod ht_encode_tables;
 pub(crate) mod ht_tables;
 pub(crate) mod idwt;
-mod mct;
+pub(crate) mod mct;
 mod mq;
 pub(crate) mod packet_encode;
 mod progression;

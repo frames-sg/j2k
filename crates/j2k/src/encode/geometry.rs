@@ -8,7 +8,7 @@ use super::{
 };
 use j2k_types::encode_geometry::{
     lossless_decomposition_levels as shared_lossless_decomposition_levels,
-    maximum_decomposition_levels,
+    tiled_decomposition_levels,
 };
 
 /// Return the default lossless decomposition level policy used by the facade.
@@ -37,13 +37,21 @@ pub(super) fn j2k_lossy_decomposition_levels_for_options(
         samples.width,
         samples.height,
         options.progression.packetization_order(),
-        None,
+        options.max_decomposition_levels,
     );
-    options.max_decomposition_levels.map_or(levels, |max| {
-        levels
-            .min(max)
-            .min(maximum_decomposition_levels(samples.width, samples.height))
-    })
+    // Native multi-tile encode applies this same cap, so profile validation
+    // and COD agree on the depth the smallest edge tile allows.
+    options
+        .tile_size
+        .map_or(levels, |(tile_width, tile_height)| {
+            tiled_decomposition_levels(
+                samples.width,
+                samples.height,
+                tile_width,
+                tile_height,
+                levels,
+            )
+        })
 }
 
 /// Return the effective lossless decomposition level policy for encode options.

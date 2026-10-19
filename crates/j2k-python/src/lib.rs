@@ -13,7 +13,9 @@ use pyo3::{
 #[cfg(feature = "cuda")]
 mod cuda;
 mod decode;
+mod encode;
 mod tensor;
+mod transforms;
 mod wavelets;
 
 fn value_error(error: impl std::fmt::Display) -> PyErr {
@@ -86,6 +88,10 @@ fn j2k_python(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<wavelets::Component>()?;
     module.add_class::<wavelets::Band>()?;
     module.add_function(wrap_pyfunction!(inspect, module)?)?;
+    module.add_function(wrap_pyfunction!(encode::encode_rgb, module)?)?;
+    module.add_function(wrap_pyfunction!(encode::decode_rgb, module)?)?;
     module.add_function(wrap_pyfunction!(wavelets::decode_wavelets, module)?)?;
+    module.add_function(wrap_pyfunction!(transforms::forward_rgb97, module)?)?;
+    module.add_function(wrap_pyfunction!(transforms::inverse_rgb97, module)?)?;
     Ok(())
 }

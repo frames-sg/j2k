@@ -2612,6 +2612,9 @@ pub fn j2k_native::idwt_band_index(u32, u32, bool) -> u32
 pub fn j2k_native::idwt_required_input_window_for_rects(j2k_native::J2kRequiredBandRegion, j2k_types::decode_plan::J2kRect, j2k_types::decode_plan::J2kRect, bool, bool) -> j2k_native::J2kRequiredBandRegion
 pub fn j2k_native::idwt_required_input_windows(&j2k_types::decode_plan::J2kDirectIdwtStep, j2k_native::J2kRequiredBandRegion) -> j2k_native::J2kIdwtRequiredInputWindows
 pub fn j2k_native::inspect_jp2_container(&[u8]) -> j2k_native::Result<j2k_native::Jp2Container<'_>>
+pub fn j2k_native::inverse_dwt97_reference(&j2k_types::transform::dwt97::J2kForwardDwt97Output) -> j2k_native::Result<alloc::vec::Vec<f32>>
+pub fn j2k_native::inverse_ict_reference(alloc::vec::Vec<alloc::vec::Vec<f32>>) -> j2k_native::Result<alloc::vec::Vec<alloc::vec::Vec<f32>>>
+pub fn j2k_native::irreversible_quantization_profile_scale_ceiling(u8, &j2k_native::EncodeOptions) -> core::option::Option<f32>
 pub fn j2k_native::irreversible_quantization_step_for_subband(u8, u8, f32, j2k_types::transform::quantization::IrreversibleQuantizationSubbandScales, j2k_types::tier1::classic::J2kSubBandType) -> j2k_types::transform::quantization::IrreversibleQuantizationStep
 pub fn j2k_native::pack_j2k_code_block_scalar_from_tier1_tokens(&[u8], &[j2k_native::J2kTier1TokenSegment], u8, u8) -> j2k_native::EncodeResult<j2k_types::tier1::classic::EncodedJ2kCodeBlock>
 pub fn j2k_native::packet_math::HtSegmentLengthError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -3006,6 +3009,7 @@ pub const fn j2k_types::encode_geometry::encode_dwt_level_dimensions_for_input(u
 pub const fn j2k_types::encode_geometry::lossless_decomposition_levels(u32, u32, j2k_types::J2kPacketizationProgressionOrder, core::option::Option<u8>) -> u8
 pub const fn j2k_types::encode_geometry::maximum_decomposition_levels(u32, u32) -> u8
 pub const fn j2k_types::encode_geometry::reversible_subband_total_bitplanes(u8, u8, j2k_types::J2kSubBandType) -> u8
+pub const fn j2k_types::encode_geometry::tiled_decomposition_levels(u32, u32, u32, u32, u8) -> u8
 pub const j2k_types::MAX_JPEG2000_PART1_COMPONENTS: u16
 pub const j2k_types::MAX_JPEG2000_PART1_SAMPLE_BIT_DEPTH: u8
 pub enum j2k_types::encode_geometry::CodeBlockGeometryError
