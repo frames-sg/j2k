@@ -16,7 +16,7 @@ mod kernels {
         dwt53::j2k_fdwt53_sample,
         dwt97::j2k_fdwt97_sample,
         helpers::{
-            forward_ict_rgb, load_f32, load_f32_u64, load_job, load_u8, load_u32, sign_extend_u32,
+            floor_f32, forward_ict_rgb, load_f32_u64, load_job, load_u8, load_u32, sign_extend_u32,
             store_f32, store_f32_u64, store_i32, store_u8, store_u32,
         },
         packetization::{
