@@ -117,9 +117,12 @@ impl TurboV3Encoder {
     fn set(&self, param: c_int, value: c_int) {
         // SAFETY: the live compressor accepts any parameter id; failures are reported.
         let status = unsafe { tj3Set(self.handle.as_ptr(), param, value) };
-        if status != 0 {
-            panic!("TurboJPEG 3 tj3Set({param}, {value}): {}", self.error());
-        }
+        assert_eq!(
+            status,
+            0,
+            "TurboJPEG 3 tj3Set({param}, {value}): {}",
+            self.error()
+        );
     }
 
     fn error(&self) -> String {
@@ -137,7 +140,9 @@ impl TurboV3Encoder {
 
     fn samples(&self) -> usize {
         let channels = if self.pixel_format == TJPF_GRAY { 1 } else { 3 };
-        (self.width as usize) * (self.height as usize) * channels
+        usize::try_from(self.width).expect("benchmark width is nonnegative")
+            * usize::try_from(self.height).expect("benchmark height is nonnegative")
+            * channels
     }
 
     /// Compress 8-bit samples and return a copy of the JPEG bytes.
@@ -216,9 +221,7 @@ impl TurboV3Encoder {
             self.pixel_format,
         );
         let output = OutputBuffer(output);
-        if status != 0 {
-            panic!("TurboJPEG 3 compress: {}", self.error());
-        }
+        assert_eq!(status, 0, "TurboJPEG 3 compress: {}", self.error());
         assert!(!output.0.is_null() && output_size != 0);
         // SAFETY: a successful compress returned this allocated JPEG span.
         // The copy mirrors the owned Vec the j2k encoder returns.
