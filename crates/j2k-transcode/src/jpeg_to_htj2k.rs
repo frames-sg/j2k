@@ -108,6 +108,7 @@ use self::single::jpeg_to_htj2k_with_scratch;
 mod single_tile_encode;
 use self::single_tile_encode::encode_component_batch;
 mod batch;
+use self::batch::jpeg_cpu_tile_batch_to_htj2k_with_scratch;
 pub use self::batch::jpeg_to_htj2k_batch;
 #[cfg(test)]
 use self::batch::{
@@ -179,15 +180,14 @@ impl JpegToHtj2kTranscoder {
     }
 
     /// Transcode many JPEG tiles, preserving per-tile failures in the returned
-    /// batch. Integer-direct 5/3 groups same-geometry components across tiles
-    /// before calling the accelerator.
+    /// batch. CPU work runs in bounded parallel waves while retaining the
+    /// aggregate workspace admission limit. Per-tile stage timings can overlap.
     pub fn transcode_batch(
         &mut self,
         tiles: &[JpegTileBatchInput<'_>],
         options: &JpegToHtj2kOptions,
     ) -> Result<EncodedTranscodeBatch, JpegToHtj2kError> {
-        let mut accelerator = CpuOnlyDctToWaveletStageAccelerator;
-        self.transcode_batch_with_accelerator(tiles, options, &mut accelerator)
+        jpeg_cpu_tile_batch_to_htj2k_with_scratch(tiles, options, &mut self.scratch)
     }
 
     /// Transcode many JPEG tiles with an optional stage accelerator.

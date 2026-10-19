@@ -638,6 +638,38 @@ surface, for example unsupported component counts or bit depths, fail the run
 instead of being silently omitted. Curate separate directories for supported
 throughput fixtures and robustness/parser-only fixtures.
 
+## JPEG-to-HTJ2K CPU and Metal comparison
+
+The opt-in `jpeg_to_htj2k_external_distinct_batch` group in the transcode Metal
+`dct97` bench loads distinct JPEG files through the existing external transcode
+corpus loader. Keep source files outside the repository and select a small,
+representative directory:
+
+```bash
+J2K_REQUIRE_METAL_BENCH=1 \
+J2K_REQUIRE_TRANSCODE_WSI_ROOT=1 \
+J2K_TRANSCODE_WSI_ROOT=/path/to/jpeg-tiles \
+J2K_TRANSCODE_WSI_TILE_LIMIT=32 \
+cargo bench --profile release-bench -p j2k-transcode-metal \
+  --features bench-internals --bench dct97 -- jpeg_to_htj2k_external_distinct_batch
+```
+
+The group compares reversible 5/3 and irreversible 9/7 with CPU, batched CPU,
+an experimental parallel-per-tile CPU schedule, Metal transforms with CPU HT
+encoding, and Metal transforms with Metal HT encoding. The normal routes reuse
+their contexts; the parallel-per-tile experiment creates transcoders per Rayon
+job on each invocation. Throughput counts tiles, and batch size is included in
+each case name. The parallel-per-tile case uses the bounded fixture set and does
+not replace the production batch memory-admission policy.
+
+Correctness probes decode every output before timing. Reversible outputs must
+match the CPU reference exactly; irreversible outputs report their maximum
+sample difference and RMSE against the CPU route. Stage diagnostics are printed
+outside the timed iterations. Their aggregate durations can overlap across
+parallel jobs and must not be added to infer wall time. Leave
+`J2K_TRANSCODE_METAL_PROFILE_STAGES` unset for clean timing of the other groups;
+their optional profile logging runs inside timed iterations.
+
 ## Benchmark Report Rules
 
 A report must include:

@@ -18,11 +18,14 @@ pub struct BatchTranscodeReport {
     pub reversible_dwt53_batches: usize,
     /// Number of reversible 5/3 component jobs in submitted batches.
     pub reversible_dwt53_batch_jobs: usize,
-    /// Batch extraction time in microseconds.
+    /// Extraction time in microseconds. Parallel CPU batches sum per-tile
+    /// wall intervals, which can overlap and exceed batch elapsed time.
     pub extract_us: u128,
-    /// Batch DCT-to-wavelet time in microseconds.
+    /// DCT-to-wavelet time in microseconds, summed across concurrently
+    /// processed tiles for parallel CPU batches.
     pub transform_us: u128,
-    /// Batch HTJ2K encode time in microseconds.
+    /// HTJ2K encode time in microseconds, summed across concurrently
+    /// processed tiles for parallel CPU batches.
     pub encode_us: u128,
     /// Detailed stage timings for the batch. Batch-accelerated 5/3 transform
     /// timings stay here instead of being copied into every tile report.
@@ -94,6 +97,9 @@ macro_rules! push_metrics {
 }
 
 /// Shared transcode batch profile row fields.
+///
+/// `total_us` sums the reported stages. For parallel CPU batches this is
+/// aggregate per-tile service time, not elapsed batch latency.
 #[derive(Debug, PartialEq, Eq)]
 pub struct TranscodeBatchProfileRow {
     fields: Vec<(&'static str, String)>,
@@ -460,7 +466,8 @@ impl BatchTranscodeReport {
 /// Durations are wall-clock microseconds measured around the current Rust API
 /// boundaries. Accelerator time includes backend submission and wait overhead
 /// visible to this crate; backend-specific hardware counters are not exposed
-/// here.
+/// here. Parallel CPU batch reports sum successful per-tile intervals, so
+/// stages can overlap and their sum is not the batch's elapsed wall time.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TranscodeTimingReport {
     /// Raw compressed-tile probe/read time before JPEG DCT extraction.

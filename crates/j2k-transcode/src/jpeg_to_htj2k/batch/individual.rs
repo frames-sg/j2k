@@ -70,7 +70,7 @@ pub(super) fn transcode_tile_batch_individually<
     ))
 }
 
-fn aggregate_tile_timings(
+pub(super) fn aggregate_tile_timings(
     tiles: &[Result<EncodedTranscode, JpegToHtj2kError>],
 ) -> TranscodeTimingReport {
     let mut timings = TranscodeTimingReport::default();

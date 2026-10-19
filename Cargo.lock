@@ -2868,6 +2868,7 @@ dependencies = [
  "j2k-codec-math",
  "j2k-core",
  "j2k-jpeg",
+ "j2k-metal",
  "j2k-metal-support",
  "j2k-native",
  "j2k-profile",

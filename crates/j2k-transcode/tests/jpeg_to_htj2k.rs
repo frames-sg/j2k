@@ -36,6 +36,7 @@ use j2k_test_support::{
     progressive_8x8_jpeg, JPEG_BASELINE_420_16X16, JPEG_BASELINE_422_16X8, JPEG_BASELINE_444_8X8,
     JPEG_GRAYSCALE_8X8,
 };
+use rayon::ThreadPoolBuilder;
 
 #[test]
 fn grayscale_8x8_jpeg_transcodes_to_decodable_htj2k() {
@@ -1202,6 +1203,185 @@ fn batch_transcode_reports_bad_tiles_without_aborting_valid_tiles() {
     assert!(batch.tiles[1].is_err());
     assert!(batch.tiles[2].is_ok());
     assert_eq!(accelerator.reversible_dwt53_batch_sizes, vec![2]);
+}
+
+#[test]
+fn default_batch_parallel_contract_matches_scalar_across_profiles_and_mixed_tiles() {
+    let pool = ThreadPoolBuilder::new()
+        .num_threads(3)
+        .build()
+        .expect("build bounded transcode test pool");
+    pool.install(|| {
+        let inputs = [
+            JpegTileBatchInput {
+                bytes: JPEG_GRAYSCALE_8X8,
+            },
+            JpegTileBatchInput {
+                bytes: JPEG_BASELINE_444_8X8,
+            },
+            JpegTileBatchInput {
+                bytes: b"not a jpeg",
+            },
+            JpegTileBatchInput {
+                bytes: JPEG_BASELINE_422_16X8,
+            },
+            JpegTileBatchInput {
+                bytes: JPEG_BASELINE_420_16X16,
+            },
+            JpegTileBatchInput {
+                bytes: JPEG_GRAYSCALE_8X8,
+            },
+            JpegTileBatchInput {
+                bytes: JPEG_BASELINE_420_16X16,
+            },
+        ];
+        let integer_validation = JpegToHtj2kOptions {
+            validate_against_integer_reference: true,
+            ..JpegToHtj2kOptions::lossless_53()
+        };
+        let float53 = JpegToHtj2kOptions {
+            coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear53,
+            ..JpegToHtj2kOptions::lossless_53()
+        };
+        let float97_validation = JpegToHtj2kOptions {
+            validate_against_float_reference: true,
+            ..JpegToHtj2kOptions::lossy_97()
+        };
+        let profiles = [
+            ("lossless53", JpegToHtj2kOptions::lossless_53()),
+            ("float_direct53", float53),
+            ("lossy97", JpegToHtj2kOptions::lossy_97()),
+            ("integer_reference53", integer_validation.clone()),
+            ("float_reference97", float97_validation),
+        ];
+        let mut transcoder = JpegToHtj2kTranscoder::default();
+        for (profile, options) in profiles {
+            assert_default_batch_matches_scalar(&mut transcoder, &inputs, &options, profile);
+        }
+
+        let smaller_follow_up = [JpegTileBatchInput {
+            bytes: JPEG_GRAYSCALE_8X8,
+        }];
+        assert_default_batch_matches_scalar(
+            &mut transcoder,
+            &smaller_follow_up,
+            &integer_validation,
+            "smaller follow-up after mixed profiles",
+        );
+    });
+}
+
+fn assert_default_batch_matches_scalar(
+    transcoder: &mut JpegToHtj2kTranscoder,
+    inputs: &[JpegTileBatchInput<'_>],
+    options: &JpegToHtj2kOptions,
+    context: &str,
+) {
+    let expected: Vec<_> = inputs
+        .iter()
+        .map(|input| jpeg_to_htj2k(input.bytes, options))
+        .collect();
+    let expected_successes = expected.iter().filter(|tile| tile.is_ok()).count();
+    let expected_components: usize = expected
+        .iter()
+        .filter_map(|tile| tile.as_ref().ok())
+        .map(|tile| tile.report.component_count)
+        .sum();
+    let expected_cpu_fallback_jobs: usize = expected
+        .iter()
+        .filter_map(|tile| tile.as_ref().ok())
+        .map(|tile| tile.report.timings.cpu_fallback_jobs)
+        .sum();
+
+    let batch = transcoder
+        .transcode_batch(inputs, options)
+        .unwrap_or_else(|error| panic!("{context}: default batch failed globally: {error}"));
+
+    assert_eq!(batch.tiles.len(), inputs.len(), "{context}: output count");
+    assert_eq!(
+        batch.report.tile_count,
+        inputs.len(),
+        "{context}: tile count"
+    );
+    assert_eq!(
+        batch.report.successful_tiles, expected_successes,
+        "{context}: successful tile count"
+    );
+    assert_eq!(
+        batch.report.failed_tiles,
+        inputs.len() - expected_successes,
+        "{context}: failed tile count"
+    );
+    assert_eq!(
+        batch.report.transformed_components, expected_components,
+        "{context}: transformed components"
+    );
+    assert_eq!(
+        batch.report.timings.tile_count, expected_successes,
+        "{context}: timing tile count"
+    );
+    assert_eq!(
+        batch.report.timings.component_count, expected_components,
+        "{context}: timing component count"
+    );
+    assert_eq!(
+        batch.report.timings.cpu_fallback_jobs, expected_cpu_fallback_jobs,
+        "{context}: CPU fallback jobs"
+    );
+    assert_eq!(
+        batch.report.timings.accelerator_dispatches, 0,
+        "{context}: default CPU route must not report accelerator dispatches"
+    );
+
+    for (index, (actual, expected)) in batch.tiles.iter().zip(&expected).enumerate() {
+        match (actual, expected) {
+            (Ok(actual), Ok(expected)) => {
+                assert_eq!(
+                    actual.codestream, expected.codestream,
+                    "{context}: tile {index}"
+                );
+                assert_eq!(actual.report.width, expected.report.width);
+                assert_eq!(actual.report.height, expected.report.height);
+                assert_eq!(
+                    actual.report.component_count,
+                    expected.report.component_count
+                );
+                assert_eq!(actual.report.components, expected.report.components);
+                assert_eq!(
+                    actual.report.coefficient_path,
+                    expected.report.coefficient_path
+                );
+                assert_eq!(
+                    actual.report.decomposition_levels,
+                    expected.report.decomposition_levels
+                );
+                assert_eq!(
+                    actual.report.float_reference_metrics,
+                    expected.report.float_reference_metrics
+                );
+                assert_eq!(
+                    actual.report.float_reference_classification,
+                    expected.report.float_reference_classification
+                );
+                assert_eq!(
+                    actual.report.integer_reference_metrics,
+                    expected.report.integer_reference_metrics
+                );
+                assert_eq!(
+                    actual.report.integer_reference_classification,
+                    expected.report.integer_reference_classification
+                );
+            }
+            (Err(actual), Err(expected)) => assert_eq!(
+                std::mem::discriminant(actual),
+                std::mem::discriminant(expected),
+                "{context}: tile {index} error kind"
+            ),
+            (actual, expected) => panic!(
+                "{context}: tile {index} result mismatch: actual={actual:?}, expected={expected:?}"
+            ),
+        }
+    }
 }
 
 #[test]

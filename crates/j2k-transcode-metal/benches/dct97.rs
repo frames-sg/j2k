@@ -23,6 +23,9 @@ use j2k_transcode::{
 };
 use j2k_transcode_metal::{MetalDctToWaveletStageAccelerator, METAL_UNAVAILABLE};
 
+#[path = "dct97/external.rs"]
+mod external;
+
 const WSI_DIMS: [usize; 4] = [224, 512, 1024, 2048];
 const REVERSIBLE_BATCH_SIZES: [usize; 5] = [1, 8, 32, 128, 512];
 const MAX_REVERSIBLE_BATCH_SAMPLES: usize = 512 * 512 * 512;
@@ -1258,6 +1261,7 @@ criterion_group!(
     bench_jpeg_to_htj2k_wsi_integer_53_tile_batch
 );
 criterion_group!(jpeg_to_htj2k_wsi_97, bench_jpeg_to_htj2k_wsi);
+criterion_group!(jpeg_to_htj2k_external, external::bench_external);
 criterion_main!(
     dct53_metal_projection,
     dct97_metal_idct_dwt,
@@ -1268,5 +1272,6 @@ criterion_main!(
     jpeg_to_htj2k_wsi_53,
     jpeg_to_htj2k_wsi_integer_53,
     jpeg_to_htj2k_wsi_integer_53_tile_batch,
-    jpeg_to_htj2k_wsi_97
+    jpeg_to_htj2k_wsi_97,
+    jpeg_to_htj2k_external
 );
