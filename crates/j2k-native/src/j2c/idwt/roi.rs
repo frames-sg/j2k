@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use alloc::vec::Vec;
+use core::mem::size_of;
 
 use super::super::build::{Decomposition, SubBand};
 use super::super::codestream::WaveletTransform;
-use super::super::decode::{DecompositionStorage, TileDecodeContext};
+use super::super::decode::{DecompositionStorage, TileDecodeContext, WorkspaceBytes};
 use super::super::rect::IntRect;
 use super::horizontal::filter_horizontal_codestream;
 use super::model::{CoefficientSource, IDWTOutput};
@@ -99,6 +100,10 @@ pub(super) fn apply_roi(
     // before allocating this component's windows.
     output.coefficients = Vec::new();
     output.rect = IntRect::from_xywh(0, 0, 0, 0);
+    // Everything else the decode holds stays the same while the level
+    // windows below come and go, so sample it once.
+    let workspace = WorkspaceBytes::sample(tile_ctx, storage)?;
+    let output = &mut tile_ctx.idwt_output;
 
     let mut current_coefficients = Vec::new();
     let mut current_rect = IntRect::from_xywh(0, 0, 0, 0);
@@ -128,6 +133,11 @@ pub(super) fn apply_roi(
             storage,
             &mut tile_ctx.debug_counters.idwt_output_samples,
         )?;
+        let window_bytes = (current_coefficients.capacity() + next.capacity()) * size_of::<f32>();
+        tile_ctx
+            .debug_counters
+            .workspace_peak
+            .record(workspace.with_idwt(window_bytes));
         current_coefficients = next;
         current_rect = output_window;
         have_current = true;
