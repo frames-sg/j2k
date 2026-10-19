@@ -82,7 +82,16 @@ fn encode_prepared_subbands_accounted(
         .iter()
         .any(|subband| subband.preencoded_ht_code_blocks.is_some());
 
-    if all_preencoded && any_preencoded {
+    if any_preencoded && !all_preencoded {
+        encode_mixed_ht_subbands(
+            &mut prepared_subbands,
+            &mut precincts,
+            prepared_bytes,
+            packet_structural_bytes,
+            &mut tracker,
+            accelerator,
+        )?;
+    } else if all_preencoded && any_preencoded {
         move_preencoded_ht_blocks(
             &mut prepared_subbands,
             &mut precincts,
@@ -91,11 +100,6 @@ fn encode_prepared_subbands_accounted(
             &mut tracker,
         )?;
     } else {
-        if any_preencoded {
-            return Err(NativeEncodePipelineError::unsupported(
-                "mixed preencoded and quantized HT subbands are unsupported",
-            ));
-        }
         match block_coding_mode {
             Some(BlockCodingMode::HighThroughput) => encode_ht_subbands(
                 &prepared_subbands,
@@ -158,6 +162,55 @@ fn move_preencoded_ht_blocks(
                 ht_encoded_code_block_from_accelerator(encoded),
                 BlockCodingMode::HighThroughput,
             )?;
+        }
+    }
+    Ok(())
+}
+
+// A fused subband hook may decline an edge partition while accepting another
+// band in the same packet. Preserve its payloads and encode only the remaining
+// coefficient owners, under the original packet's retained-memory budget.
+fn encode_mixed_ht_subbands(
+    prepared_subbands: &mut [PreparedEncodeSubband],
+    precincts: &mut [SubbandPrecinct],
+    prepared_bytes: usize,
+    packet_structural_bytes: usize,
+    tracker: &mut Tier1PhaseTracker<'_, '_>,
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+) -> NativeEncodePipelineResult<()> {
+    let mut new_payload_bytes = 0;
+    for (subband, precinct) in prepared_subbands.iter_mut().zip(precincts) {
+        let retained_packet_bytes = checked_add_bytes(
+            packet_structural_bytes,
+            new_payload_bytes,
+            "mixed HT packet owners",
+        )?;
+        if subband.preencoded_ht_code_blocks.is_some() {
+            move_preencoded_ht_blocks(
+                core::slice::from_mut(subband),
+                core::slice::from_mut(precinct),
+                prepared_bytes,
+                retained_packet_bytes,
+                tracker,
+            )?;
+        } else {
+            encode_ht_subbands(
+                core::slice::from_ref(subband),
+                core::slice::from_mut(precinct),
+                prepared_bytes,
+                retained_packet_bytes,
+                tracker,
+                accelerator,
+            )?;
+            // Preencoded payloads remain charged in prepared_bytes as they move.
+            // Only newly encoded payloads add to that retained baseline.
+            for block in &precinct.code_blocks {
+                new_payload_bytes = checked_add_bytes(
+                    new_payload_bytes,
+                    block.data.capacity(),
+                    "mixed HT packet payload",
+                )?;
+            }
         }
     }
     Ok(())

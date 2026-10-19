@@ -191,3 +191,68 @@ fn ht_refinement_frontier_accepts_exact_peak_and_rejects_cap_minus_one() {
 mod accelerator;
 mod accelerator_metadata;
 mod error_taxonomy;
+
+fn mixed_ht_fixture() -> (Vec<PreparedEncodeSubband>, Vec<Vec<u8>>) {
+    let mut subbands = Vec::new();
+    let mut expected = Vec::new();
+    for index in 0..4 {
+        let mut subband = ht_refinement_fixture().pop().expect("one fixture subband");
+        subband.ht_target_coding_passes = 1;
+        subband.total_bitplanes = 7;
+        let PreparedCodeBlockCoefficients::I32(coefficients) =
+            &mut subband.code_blocks[0].coefficients
+        else {
+            panic!("i32 fixture")
+        };
+        for coefficient in coefficients.iter_mut() {
+            *coefficient *= index + 1;
+        }
+        let encoded =
+            crate::encode_ht_code_block_scalar(coefficients, 4, 4, 7).expect("scalar source block");
+        expected.push(encoded.data.clone());
+        if index % 2 == 0 {
+            subband.preencoded_ht_code_blocks = Some(vec![encoded]);
+            subband.code_blocks[0].coefficients = PreparedCodeBlockCoefficients::Empty;
+        }
+        subbands.push(subband);
+    }
+    (subbands, expected)
+}
+
+#[test]
+fn mixed_ht_subbands_preserve_payloads_and_enforce_the_retained_peak() {
+    let (subbands, expected) = mixed_ht_fixture();
+    let session = NativeEncodeSession::try_new(NativeEncodeRetainedInput::none())
+        .expect("measurement session");
+    let measured = encode_prepared_subbands_accounted(
+        subbands,
+        &session,
+        0,
+        &mut CpuOnlyJ2kEncodeStageAccelerator,
+    )
+    .expect("encode quantized bands alongside preencoded bands");
+    let peak = measured.peak_phase_bytes;
+    for (precinct, bytes) in measured.precincts.iter().zip(&expected) {
+        assert_eq!(precinct.code_blocks.len(), 1);
+        assert_eq!(&precinct.code_blocks[0].data, bytes);
+    }
+    for cap in [peak, peak - 1] {
+        let session = NativeEncodeSession::try_with_cap(NativeEncodeRetainedInput::none(), cap)
+            .expect("bounded session");
+        let result = encode_prepared_subbands_for_session(
+            mixed_ht_fixture().0,
+            &session,
+            0,
+            &mut CpuOnlyJ2kEncodeStageAccelerator,
+        )
+        .map_err(NativeEncodePipelineError::into_encode_error);
+        if cap == peak {
+            assert!(result.is_ok(), "exact retained peak must fit");
+        } else {
+            assert!(matches!(
+                result,
+                Err(EncodeError::AllocationTooLarge { .. })
+            ));
+        }
+    }
+}
