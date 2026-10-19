@@ -4,6 +4,7 @@ use super::*;
 use crate::j2c::ComponentData;
 
 mod ht_refinement;
+mod workspace_peak;
 mod workspace_reuse;
 
 #[test]

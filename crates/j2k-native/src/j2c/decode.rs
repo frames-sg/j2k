@@ -38,6 +38,7 @@ use core::ops::Range;
 
 mod allocation;
 mod direct_plan;
+mod peak;
 mod reuse;
 mod store;
 mod subband;
@@ -52,6 +53,7 @@ pub(crate) use self::direct_plan::{
     build_referenced_classic_rgba_plan, build_referenced_htj2k_color_plan,
     build_referenced_htj2k_grayscale_plan, build_referenced_htj2k_rgba_plan,
 };
+pub(crate) use self::peak::{record_workspace, WorkspaceBytes, WorkspacePeak};
 use self::store::{apply_sign_shift_after_mct, component_unsigned_level_shift, store};
 use self::subband::{
     code_block_required_by_index, count_classic_code_blocks, count_ht_code_blocks,
@@ -344,6 +346,8 @@ pub(crate) struct DecodeDebugCounters {
     pub(crate) selection_scanned_packets: usize,
     /// Empty decomposition capacity discarded before region selection.
     pub(crate) selection_released_storage_bytes: usize,
+    /// The largest decode workspace sampled at stage boundaries, by owner.
+    pub(crate) workspace_peak: WorkspacePeak,
     pub(crate) ht_phase_stats: ht_block_decode::HtBlockDecodeStats,
     #[cfg(all(test, feature = "parallel"))]
     pub(crate) ht_parallel_tasks: usize,
@@ -463,10 +467,12 @@ fn decode_tile<'a>(
         build::allocate_deferred_coefficients(storage, header.skipped_resolution_levels)?;
     }
     tile_ctx.debug_counters.stored_coefficients += storage.coefficients.len();
+    record_workspace(tile_ctx, storage, selection_bytes)?;
     profile_timings.build_us += profile::elapsed_us(stage_start);
     // Next, we parse the layers/segments for each code block.
     let stage_start = profile::profile_now(profile_enabled);
     segment::parse_selected(tile, header, storage, selection.as_ref())?;
+    record_workspace(tile_ctx, storage, selection_bytes)?;
     drop(selection);
     storage.structural_workspace_bytes = storage
         .structural_workspace_bytes
@@ -485,8 +491,36 @@ fn decode_tile<'a>(
         cpu_decode_parallelism,
         profile_enabled,
     )?;
+    record_workspace(tile_ctx, storage, 0)?;
     profile_timings.codeblock_us += profile::elapsed_us(stage_start);
 
+    reconstruct_components(
+        tile,
+        header,
+        tile_ctx,
+        storage,
+        ht_decoder,
+        cpu_decode_parallelism,
+        profile_enabled,
+        profile_timings,
+    )
+}
+
+/// Runs the IDWT and store stages for each component of a decoded tile.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the per-component stages share decode_tile's state, adapter, and profiling explicitly"
+)]
+fn reconstruct_components<'a>(
+    tile: &Tile<'a>,
+    header: &Header<'_>,
+    tile_ctx: &mut TileDecodeContext,
+    storage: &DecompositionStorage<'a>,
+    ht_decoder: &mut Option<&mut dyn HtCodeBlockDecoder>,
+    cpu_decode_parallelism: CpuDecodeParallelism,
+    profile_enabled: bool,
+    profile_timings: &mut DecodeProfileTimings,
+) -> Result<()> {
     // Unlike before, we interleave the apply_idwt and store stages
     // for each component tile so we can reuse allocations better.
     for (idx, component_info) in header.component_infos.iter().enumerate() {
@@ -501,6 +535,7 @@ fn decode_tile<'a>(
             ht_decoder,
             cpu_decode_parallelism == CpuDecodeParallelism::Auto,
         )?;
+        record_workspace(tile_ctx, storage, 0)?;
         profile_timings.idwt_us += profile::elapsed_us(stage_start);
         // Finally, we store the raw samples for the tile area in the correct
         // location. Note that in case we have MCT, we are not applying it yet.
@@ -522,6 +557,7 @@ fn decode_tile<'a>(
             ht_decoder,
             cpu_decode_parallelism == CpuDecodeParallelism::Auto,
         )?;
+        record_workspace(tile_ctx, storage, 0)?;
         profile_timings.store_us += profile::elapsed_us(stage_start);
     }
 
@@ -646,6 +682,8 @@ fn emit_decode_profile_row(
     profile_timings: &DecodeProfileTimings,
     total_start: Option<profile::ProfileInstant>,
 ) {
+    let peak = tile_ctx.debug_counters.workspace_peak.bytes();
+    let widen = |bytes: usize| bytes as u128;
     profile::emit_profile_row(
         "decode",
         "cpu",
@@ -691,6 +729,12 @@ fn emit_decode_profile_row(
             ("store_us", profile_timings.store_us),
             ("mct_us", profile_timings.mct_us),
             ("total_us", profile::elapsed_us(total_start)),
+            ("peak_workspace_bytes", widen(peak.total())),
+            ("peak_coefficient_bytes", widen(peak.coefficients)),
+            ("peak_channel_bytes", widen(peak.channels)),
+            ("peak_idwt_bytes", widen(peak.idwt)),
+            ("peak_tier1_bytes", widen(peak.tier1)),
+            ("peak_structure_bytes", widen(peak.structure)),
         ],
     );
 }
