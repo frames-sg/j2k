@@ -199,7 +199,10 @@ fn bench_profile(c: &mut Criterion, profile: Profile, inputs: &[JpegTileBatchInp
     group.finish();
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "benchmark registration keeps route labels and the comparison oracle explicit"
+)]
 fn register_route<F>(
     group: &mut BenchmarkGroup<'_, WallTime>,
     profile: Profile,
