@@ -206,6 +206,12 @@ inline void j2k_mq_finish(thread J2kMqEncoder &encoder) {
    j2k_mq_byte_out(encoder);
     encoder.c <<= encoder.ct;
    j2k_mq_byte_out(encoder);
+    // T.800 B.10.7: code-block bytes must not end in 0xFF. A pending
+    // terminal 0xFF is omitted; the decoder supplies 0xFF past the end.
+    if (encoder.failed == 0u && encoder.len > 1u &&
+        encoder.data[encoder.len - 1u] == uchar(0xFFu)) {
+        encoder.len -= 1u;
+    }
 }
 
 inline void j2k_raw_writer_init(thread J2kRawBitWriter &writer, device uchar *out, uint capacity) {

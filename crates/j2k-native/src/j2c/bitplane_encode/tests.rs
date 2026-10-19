@@ -325,9 +325,9 @@ fn str011a_classic_tier1_byte_baseline() {
     ];
     let expected = [
         (99, 0xfcce_40ac_5a7f_501d, 34, 0, 1, 0x64c9_46a4_01c3_99fb),
-        (150, 0x800f_e1ae_529c_bf1a, 34, 0, 34, 0x2cfa_e242_260a_6925),
-        (113, 0xdf22_abbf_10e1_19e7, 34, 0, 17, 0x631f_df7d_4363_90a3),
-        (105, 0x45c9_9a5b_bfc6_8a4f, 34, 0, 1, 0xf29c_50e4_c7a1_1511),
+        (130, 0xcdf7_5e12_515b_dd00, 34, 0, 34, 0x5029_9d58_2988_06ce),
+        (112, 0x2828_c2eb_1fa9_8008, 34, 0, 17, 0x6706_112a_c1da_7d36),
+        (104, 0x05e7_b41b_483d_1290, 34, 0, 1, 0xdef6_5a04_ddeb_b7c8),
     ];
 
     for (index, style) in styles.iter().enumerate() {

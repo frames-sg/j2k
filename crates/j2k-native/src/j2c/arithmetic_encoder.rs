@@ -261,6 +261,11 @@ impl ArithmeticEncoder {
         if let Some(error) = self.allocation_error.take() {
             return Err(error);
         }
+        // T.800 B.10.7: code-block bytes must not end in 0xFF. A pending
+        // terminal 0xFF is omitted; the decoder supplies 0xFF past the end.
+        if self.data.len() > 1 && self.data.last() == Some(&0xFF) {
+            self.data.pop();
+        }
         // Remove sentinel byte at index 0
         self.data.drain(..1);
         Ok(self.data)

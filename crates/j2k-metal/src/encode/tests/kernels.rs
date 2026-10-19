@@ -671,6 +671,12 @@ fn metal_classic_tier1_kernel_matches_scalar_for_terminated_passes() {
     assert_eq!(gpu.data, cpu.data);
     assert_eq!(gpu.segments.len(), cpu.segments.len());
     for (gpu_segment, cpu_segment) in gpu.segments.iter().zip(cpu.segments.iter()) {
+        // T.800 B.10.7: a terminated MQ segment must not end in 0xFF.
+        let segment_end = usize::try_from(gpu_segment.data_offset + gpu_segment.data_length)
+            .expect("segment end fits usize");
+        if gpu_segment.data_length > 0 {
+            assert_ne!(gpu.data[segment_end - 1], 0xFF, "{gpu_segment:?}");
+        }
         assert_eq!(gpu_segment.data_offset, cpu_segment.data_offset);
         assert_eq!(gpu_segment.data_length, cpu_segment.data_length);
         assert_eq!(gpu_segment.start_coding_pass, cpu_segment.start_coding_pass);
