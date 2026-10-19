@@ -153,3 +153,38 @@ fn profile_scale_ceiling_is_the_last_scale_encode_accepts() {
         Err(EncodeError::InvalidInput { .. })
     ));
 }
+
+#[test]
+fn native_multitile_profile_rows_follow_the_edge_tile_depth() {
+    // The 1-px and 16-px last tile columns cap the depth for every tile.
+    for (width, levels) in [(65_u32, 0_usize), (80, 4)] {
+        let pixels: Vec<u8> = (0..width * 64 * 3)
+            .map(|i| u8::try_from(i % 251).unwrap())
+            .collect();
+        let mut options = options(false);
+        options.num_decomposition_levels = 5;
+        options.tile_size = Some((64, 64));
+        let default = encode(&pixels, width, 64, 3, 8, false, &options).unwrap();
+        options.irreversible_quantization_profile = Some(vec![vec![1.0; 1 + 3 * levels]; 3]);
+        assert_eq!(
+            encode(&pixels, width, 64, 3, 8, false, &options).unwrap(),
+            default,
+            "{width} px all-ones profile"
+        );
+        options.irreversible_quantization_profile.as_mut().unwrap()[1][0] = 4.0;
+        let weighted = encode(&pixels, width, 64, 3, 8, false, &options).unwrap();
+        assert_ne!(weighted, default, "{width} px weighted profile");
+        Image::new(&weighted, &DecodeSettings::default())
+            .unwrap()
+            .decode()
+            .unwrap();
+        options.irreversible_quantization_profile = Some(vec![vec![2.0; 16]; 3]);
+        assert!(
+            matches!(
+                encode(&pixels, width, 64, 3, 8, false, &options),
+                Err(EncodeError::InvalidInput { .. })
+            ),
+            "{width} px rows sized for the requested depth"
+        );
+    }
+}

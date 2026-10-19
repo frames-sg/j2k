@@ -4,7 +4,7 @@ use super::{
     target_bytes_for_bpp, J2kError, J2kLossyEncodeOptions, J2kLossySamples, J2kRateTarget,
     Unsupported,
 };
-use crate::encode_j2k_lossy;
+use crate::{encode_j2k_lossy, J2kProgressionOrder};
 
 mod rate_validation;
 mod target_contracts;
@@ -145,4 +145,30 @@ fn rate_search_stops_at_the_component_profile_scale_ceiling() {
     let encoded = encode_j2k_lossy(samples, &psnr).unwrap();
     assert!(encoded.report.quantization_scale <= ceiling);
     assert!(encoded.report.quantization_scale > ceiling / 2.0);
+}
+
+#[test]
+fn explicit_lossy_max_decomposition_levels_selects_that_depth() {
+    // LRCP and RLCP default to one level; an explicit value selects that many,
+    // capped by geometry, as the lossless option does.
+    let pixels = (0..256 * 256)
+        .map(|i| u8::try_from(i % 251).unwrap())
+        .collect::<Vec<_>>();
+    let samples = J2kLossySamples::new(&pixels, 256, 256, 1, 8, false).unwrap();
+    for progression in [J2kProgressionOrder::Lrcp, J2kProgressionOrder::Rlcp] {
+        let levels = |max| {
+            let options = J2kLossyEncodeOptions::default()
+                .with_cpu_only_backend()
+                .with_progression(progression)
+                .with_max_decomposition_levels(max);
+            let encoded = encode_j2k_lossy(samples, &options).unwrap();
+            j2k_native::inspect_j2k_codestream_header(&encoded.codestream)
+                .unwrap()
+                .resolution_levels
+                - 1
+        };
+        for (max, expected) in [(None, 1), (Some(0), 0), (Some(5), 5), (Some(32), 8)] {
+            assert_eq!(levels(max), expected, "{progression:?} max {max:?}");
+        }
+    }
 }

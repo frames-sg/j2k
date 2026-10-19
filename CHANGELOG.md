@@ -21,12 +21,20 @@ and stale roadmap entries have been removed from the public documentation set.
   HTJ2K (with `quality`, `target_bpp`, `levels` and `profile`), and
   `forward_rgb97` / `inverse_rgb97` for float 9/7 bands with optional ICT.
   `j2k-native` exports `inverse_dwt97_reference` and `inverse_ict_reference`.
-- Behavior fix: an explicit lossy `max_decomposition_levels` now selects that
-  many levels, capped by geometry, as the lossless option does. It previously
-  only capped the default policy, so LRCP and RLCP encodes used one level.
+- Behavior change: an explicit lossy `max_decomposition_levels` now selects
+  that many levels, capped by geometry, as the lossless option and the field
+  documentation already describe. It previously only capped the default
+  policy, so LRCP and RLCP encodes used one level whatever value was given.
+  Existing lossy encodes that set this option produce different codestreams;
+  encodes that leave it unset are unchanged.
 - Behavior fix: irreversible steps outside the QCD/QCC range from an extreme
   `irreversible_quantization_scale` or subband scale now saturate at the
-  coarsest or finest stored step instead of panicking or wrapping.
+  coarsest or finest stored step instead of panicking or wrapping. Steps of
+  2^32 and coarser, which bit depths above 31 store, are kept exactly and
+  reconstruct without overflowing.
+- Native multi-tile encodes now check a component quantization profile against
+  the edge-tile depth before planning, so `EncodeOptions` callers get the same
+  row count as the `j2k` facade.
 
 - `J2kDecoder::decode_wavelets` extracts selected native wavelet bands on the
   CPU for classic JPEG 2000 and HTJ2K, without inverse DWT, color conversion,

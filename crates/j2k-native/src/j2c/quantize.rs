@@ -86,11 +86,9 @@ impl QuantStepSize {
         let floor_log2 = floor_f32(log2_f32(delta)) as i32;
         let exponent = i32::from(range_bits) - floor_log2;
         // A mantissa carry lowers the exponent by one, so 32 can still round
-        // into range. Rejecting the rest first also keeps `pow2i` within the
-        // shift width it supports.
-        if !(0..=i32::from(MAX_STEP_EXPONENT) + 1).contains(&exponent)
-            || !(-31..=31).contains(&floor_log2)
-        {
+        // into range. Bit depths above 31 store steps of 2^32 and coarser, so
+        // the exponent is the only range check.
+        if !(0..=i32::from(MAX_STEP_EXPONENT) + 1).contains(&exponent) {
             return None;
         }
         let normalized = delta / pow2i(floor_log2);
@@ -920,6 +918,41 @@ mod tests {
             assert!(delta >= previous, "scale {scale}: {delta} < {previous}");
             previous = delta;
         }
+    }
+
+    #[test]
+    fn high_bit_depth_steps_never_decrease_and_reconstruct_past_2_pow_31() {
+        let finest = QuantStepSize {
+            exponent: 31,
+            mantissa: 0,
+        };
+        let coarsest = QuantStepSize {
+            exponent: 0,
+            mantissa: 2047,
+        };
+        for bit_depth in [30_u8, 32, 33, 38] {
+            let mut previous = 0.0;
+            for scale in (-40..=60).flat_map(|exp| [pow2i(exp), pow2i(exp) * 1.5]) {
+                let steps =
+                    compute_step_sizes_with_irreversible_scale(bit_depth, 0, false, 2, scale);
+                let delta = steps[0].delta(bit_depth);
+                assert!(
+                    delta.is_finite() && delta >= previous,
+                    "bit depth {bit_depth}, scale {scale}: {delta} < {previous}"
+                );
+                previous = delta;
+            }
+            let at = |scale| {
+                compute_step_sizes_with_irreversible_scale(bit_depth, 0, false, 2, scale)[0]
+            };
+            assert_eq!(at(pow2i(-40)), finest, "bit depth {bit_depth}");
+            assert_eq!(at(pow2i(60)), coarsest, "bit depth {bit_depth}");
+        }
+        // A 38-bit step of 2^33 is stored exactly rather than saturated.
+        let step = QuantStepSize::try_from_delta(38, pow2i(33)).unwrap();
+        assert_eq!((step.exponent, step.mantissa), (5, 0));
+        assert_eq!(step.delta(38), pow2i(33));
+        assert_eq!(coarsest.delta(40), pow2i(40) * (1.0 + 2047.0 / 2048.0));
     }
 
     fn profiled_ll_delta(weight: f32, scale: f32) -> EncodeResult<f32> {
