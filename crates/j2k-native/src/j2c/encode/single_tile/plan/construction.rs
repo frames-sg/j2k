@@ -130,6 +130,9 @@ impl<'session, 'input> PlanConstruction<'session, 'input> {
         quantize::apply_component_profile(
             &mut steps,
             bit_depth,
+            guard_bits,
+            options.irreversible_quantization_scale,
+            options.irreversible_quantization_subband_scales,
             options.irreversible_quantization_profile.as_deref(),
             component,
         )?;

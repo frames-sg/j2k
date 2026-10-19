@@ -1,4 +1,7 @@
-use j2k_native::{encode, DecodeSettings, EncodeOptions, Image};
+use j2k_native::{
+    encode, irreversible_quantization_profile_scale_ceiling, DecodeSettings, EncodeError,
+    EncodeOptions, Image,
+};
 
 fn pixels() -> Vec<u8> {
     (0..64 * 64)
@@ -95,4 +98,58 @@ fn component_profile_survives_multitile_options_copy() {
         .unwrap()
         .decode()
         .unwrap();
+}
+
+#[test]
+fn unrepresentable_profile_weights_are_input_errors() {
+    let pixels = vec![128_u8; 64 * 64 * 3];
+    for ht in [false, true] {
+        for weight in [1e-20, f32::MIN_POSITIVE, 1e9, f32::MAX] {
+            for profile in [vec![vec![weight; 7]; 3], {
+                let mut profile = vec![vec![1.0; 7]; 3];
+                profile[0][0] = weight;
+                profile
+            }] {
+                let mut options = options(ht);
+                options.irreversible_quantization_profile = Some(profile);
+                assert!(
+                    matches!(
+                        encode(&pixels, 64, 64, 3, 8, false, &options),
+                        Err(EncodeError::InvalidInput { .. })
+                    ),
+                    "ht={ht} weight={weight}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn profile_scale_ceiling_is_the_last_scale_encode_accepts() {
+    let pixels = pixels();
+    let mut options = options(true);
+    assert_eq!(
+        irreversible_quantization_profile_scale_ceiling(8, &options),
+        None
+    );
+    options.irreversible_quantization_profile = Some(vec![vec![1.0; 7]; 3]);
+    assert_eq!(
+        irreversible_quantization_profile_scale_ceiling(8, &options),
+        None
+    );
+    options.irreversible_quantization_profile =
+        Some(vec![vec![1.0, 3.0, 3.0, 3.0, 5.0, 5.0, 5.0]; 3]);
+    let ceiling = irreversible_quantization_profile_scale_ceiling(8, &options).unwrap();
+    assert!(ceiling > options.irreversible_quantization_scale);
+    options.irreversible_quantization_scale = ceiling;
+    let encoded = encode(&pixels, 64, 64, 3, 8, false, &options).unwrap();
+    Image::new(&encoded, &DecodeSettings::default())
+        .unwrap()
+        .decode()
+        .unwrap();
+    options.irreversible_quantization_scale = ceiling.next_up();
+    assert!(matches!(
+        encode(&pixels, 64, 64, 3, 8, false, &options),
+        Err(EncodeError::InvalidInput { .. })
+    ));
 }

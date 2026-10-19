@@ -311,13 +311,7 @@ impl EncodeOptions {
     pub(super) fn custom_component_step_count(&self) -> usize {
         self.irreversible_quantization_profile
             .as_ref()
-            .filter(|profile| {
-                // Exact unity preserves the original quantization markers.
-                profile
-                    .iter()
-                    .flatten()
-                    .any(|weight| weight.to_bits() != 1.0_f32.to_bits())
-            })
+            .filter(|profile| !quantize::profile_is_unity(profile))
             .map_or(0, Vec::len)
     }
 

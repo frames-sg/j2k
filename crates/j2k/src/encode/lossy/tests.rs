@@ -106,3 +106,43 @@ fn component_profile_rows_follow_the_smallest_edge_tile_depth() {
         );
     }
 }
+
+#[test]
+fn rate_search_stops_at_the_component_profile_scale_ceiling() {
+    let mut state = 0x2545_f491_u32;
+    let pixels = (0..128 * 128 * 3)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            u8::try_from(state >> 24).unwrap()
+        })
+        .collect::<Vec<_>>();
+    let samples = J2kLossySamples::new(&pixels, 128, 128, 3, 8, false).unwrap();
+    let options = J2kLossyEncodeOptions::default()
+        .with_cpu_only_backend()
+        .with_max_decomposition_levels(Some(2))
+        .with_quantization_profile(Some(vec![
+            vec![
+                1.0, 1000.0, 1000.0, 1000.0, 1000.0, 1000.0, 1000.0
+            ];
+            3
+        ]));
+    // Detail weights cap the scale near 2 while LL is still finely quantized.
+    let ceiling = super::profile_scale_ceiling(samples, &options).unwrap();
+    assert!(ceiling > 1.0 && ceiling < 4.0);
+
+    // Unreachable without pushing detail steps out of range.
+    let tiny = options
+        .clone()
+        .with_rate_target(Some(J2kRateTarget::Bytes(1)));
+    assert!(matches!(
+        encode_j2k_lossy(samples, &tiny),
+        Err(J2kError::RateTargetUnreachable { .. })
+    ));
+
+    // Every scale meets 1 dB, so the search climbs until the ceiling stops it.
+    let mut psnr = options.with_rate_target(Some(J2kRateTarget::PsnrDb(1.0)));
+    psnr.psnr_iteration_budget = 16;
+    let encoded = encode_j2k_lossy(samples, &psnr).unwrap();
+    assert!(encoded.report.quantization_scale <= ceiling);
+    assert!(encoded.report.quantization_scale > ceiling / 2.0);
+}
