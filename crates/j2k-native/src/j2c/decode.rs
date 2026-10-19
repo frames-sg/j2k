@@ -455,6 +455,13 @@ fn decode_tile<'a>(
         tile_ctx.output_region.is_some(),
         build::BuildWorkspace::DecodePixels {
             skipped_resolution_levels: header.skipped_resolution_levels,
+            // A code-block decoder hook may rely on every component's
+            // coefficients being live together, so it keeps the tile layout.
+            coefficient_layout: if ht_decoder.is_some() {
+                build::CoefficientLayout::Tile
+            } else {
+                build::CoefficientLayout::Component
+            },
         },
         selection.as_ref(),
     )?;
@@ -479,22 +486,7 @@ fn decode_tile<'a>(
         .checked_sub(selection_bytes)
         .ok_or(ValidationError::ImageTooLarge)?;
     profile_timings.segment_us += profile::elapsed_us(stage_start);
-    // We then decode the bitplanes of each code block, yielding the
-    // (possibly dequantized) coefficients of each code block.
-    let stage_start = profile::profile_now(profile_enabled);
-    decode_component_tile_bit_planes_budgeted(
-        tile,
-        tile_ctx,
-        storage,
-        header,
-        ht_decoder,
-        cpu_decode_parallelism,
-        profile_enabled,
-    )?;
-    record_workspace(tile_ctx, storage, 0)?;
-    profile_timings.codeblock_us += profile::elapsed_us(stage_start);
-
-    reconstruct_components(
+    decode_components(
         tile,
         header,
         tile_ctx,
@@ -503,27 +495,66 @@ fn decode_tile<'a>(
         cpu_decode_parallelism,
         profile_enabled,
         profile_timings,
-    )
+    )?;
+    Ok(())
 }
 
-/// Runs the IDWT and store stages for each component of a decoded tile.
+/// Runs Tier-1, the IDWT and store for each component of a parsed tile.
+///
+/// With [`build::CoefficientLayout::Component`], every component decodes into
+/// the same coefficient buffer, so each finishes all three stages before the
+/// next is decoded. Otherwise Tier-1 decodes the whole tile first.
 #[expect(
     clippy::too_many_arguments,
     reason = "the per-component stages share decode_tile's state, adapter, and profiling explicitly"
 )]
-fn reconstruct_components<'a>(
+fn decode_components<'a>(
     tile: &Tile<'a>,
     header: &Header<'_>,
     tile_ctx: &mut TileDecodeContext,
-    storage: &DecompositionStorage<'a>,
+    storage: &mut DecompositionStorage<'a>,
     ht_decoder: &mut Option<&mut dyn HtCodeBlockDecoder>,
     cpu_decode_parallelism: CpuDecodeParallelism,
     profile_enabled: bool,
     profile_timings: &mut DecodeProfileTimings,
 ) -> Result<()> {
+    let per_component = storage.coefficient_layout == build::CoefficientLayout::Component;
+    if !per_component {
+        decode_tier1_stage(
+            tile,
+            0..tile.component_infos.len(),
+            header,
+            tile_ctx,
+            storage,
+            ht_decoder,
+            cpu_decode_parallelism,
+            profile_enabled,
+            profile_timings,
+        )?;
+    }
+
     // Unlike before, we interleave the apply_idwt and store stages
     // for each component tile so we can reuse allocations better.
     for (idx, component_info) in header.component_infos.iter().enumerate() {
+        if per_component {
+            if idx > 0 {
+                // Code-blocks the decode skips leave their samples untouched,
+                // so clear the previous component's coefficients first.
+                storage.coefficients.fill(0.0);
+                storage.coefficients_i64.fill(0);
+            }
+            decode_tier1_stage(
+                tile,
+                idx..idx + 1,
+                header,
+                tile_ctx,
+                storage,
+                ht_decoder,
+                cpu_decode_parallelism,
+                profile_enabled,
+                profile_timings,
+            )?;
+        }
         // Next, we apply the inverse discrete wavelet transform.
         let stage_start = profile::profile_now(profile_enabled);
         idwt::apply(
@@ -564,8 +595,47 @@ fn reconstruct_components<'a>(
     Ok(())
 }
 
+/// Decode the code-blocks of `components` and sample the workspace after.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the Tier-1 stage shares decode_tile's state, adapter, and profiling explicitly"
+)]
+fn decode_tier1_stage<'a>(
+    tile: &Tile<'a>,
+    components: Range<usize>,
+    header: &Header<'_>,
+    tile_ctx: &mut TileDecodeContext,
+    storage: &mut DecompositionStorage<'a>,
+    ht_decoder: &mut Option<&mut dyn HtCodeBlockDecoder>,
+    cpu_decode_parallelism: CpuDecodeParallelism,
+    profile_enabled: bool,
+    profile_timings: &mut DecodeProfileTimings,
+) -> Result<()> {
+    // We decode the bitplanes of each code block, yielding the (possibly
+    // dequantized) coefficients of each code block.
+    let stage_start = profile::profile_now(profile_enabled);
+    decode_component_tile_bit_planes_budgeted(
+        tile,
+        components,
+        tile_ctx,
+        storage,
+        header,
+        ht_decoder,
+        cpu_decode_parallelism,
+        profile_enabled,
+    )?;
+    record_workspace(tile_ctx, storage, 0)?;
+    profile_timings.codeblock_us += profile::elapsed_us(stage_start);
+    Ok(())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
+)]
 pub(crate) fn decode_component_tile_bit_planes_budgeted<'a>(
     tile: &Tile<'a>,
+    components: Range<usize>,
     tile_ctx: &mut TileDecodeContext,
     storage: &mut DecompositionStorage<'a>,
     header: &Header<'_>,
@@ -573,9 +643,11 @@ pub(crate) fn decode_component_tile_bit_planes_budgeted<'a>(
     cpu_decode_parallelism: CpuDecodeParallelism,
     profile_enabled: bool,
 ) -> Result<()> {
-    let tier1_workspace_bytes = tier1::prepare_tier1_workspace(tile, header, tile_ctx, storage)?;
+    let tier1_workspace_bytes =
+        tier1::prepare_tier1_workspace(tile, components.clone(), header, tile_ctx, storage)?;
     let decode_result = decode_component_tile_bit_planes(
         tile,
+        components,
         tile_ctx,
         storage,
         header,
@@ -601,7 +673,13 @@ pub(crate) fn decode_selected_wavelet_bands<'a>(
     parallelism: CpuDecodeParallelism,
     selection: &j2k_types::WaveletSelection,
 ) -> Result<()> {
-    let workspace = tier1::prepare_tier1_workspace(tile, header, tile_ctx, storage)?;
+    let workspace = tier1::prepare_tier1_workspace(
+        tile,
+        0..tile.component_infos.len(),
+        header,
+        tile_ctx,
+        storage,
+    )?;
     let result = (|| {
         for (component_index, info) in tile.component_infos.iter().enumerate() {
             if !super::wavelets::select_component(selection, component_index) {
@@ -817,6 +895,8 @@ pub(crate) struct DecompositionStorage<'a> {
     pub(crate) tile_decompositions: Vec<TileDecompositions>,
     pub(crate) roi_plan: Option<RoiPlan>,
     pub(crate) exact_integer_decode: bool,
+    /// How the built sub-bands' coefficient ranges share `coefficients`.
+    pub(crate) coefficient_layout: build::CoefficientLayout,
     /// Planned non-segment live bytes for the active tile and future decode scratch.
     pub(crate) structural_workspace_bytes: usize,
     /// Set when region decode deferred coefficient storage until the ROI
@@ -841,6 +921,7 @@ impl DecompositionStorage<'_> {
         self.tile_decompositions.clear();
         self.roi_plan = None;
         self.exact_integer_decode = false;
+        self.coefficient_layout = build::CoefficientLayout::Tile;
         self.structural_workspace_bytes = 0;
         self.deferred_idwt_workspace_elements = None;
         self.packet_workspace_error = None;

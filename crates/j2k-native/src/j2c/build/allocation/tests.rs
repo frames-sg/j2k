@@ -18,7 +18,8 @@ fn coefficient_plan(baseline: usize, coefficients: usize) -> DecompositionAlloca
     let mut plan =
         DecompositionAllocationPlan::new(baseline, false, false, BuildWorkspace::CoefficientsOnly)
             .expect("baseline");
-    plan.add_coefficients(coefficients).expect("target count");
+    plan.add_component_coefficients(coefficients)
+        .expect("target count");
     plan
 }
 
@@ -36,7 +37,7 @@ fn metadata_plan_retains_logical_samples_without_allocating_pixel_storage() {
             .unwrap();
     plan.sub_bands = 1;
     let logical_samples = DEFAULT_MAX_DECODE_BYTES / size_of::<f32>() + 1;
-    plan.add_coefficients(logical_samples).unwrap();
+    plan.add_component_coefficients(logical_samples).unwrap();
     plan.validate_minimum_live_workspace(0)
         .expect("metadata fits without pixel storage");
     discard_stale_capacity(&mut storage, &plan);

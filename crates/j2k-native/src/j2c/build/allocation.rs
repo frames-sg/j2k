@@ -17,10 +17,23 @@ mod reuse;
 pub(super) use plan::{code_block_grid, tag_tree_node_count};
 pub(super) use reuse::push_preallocated;
 
+/// How sub-band coefficient ranges share [`DecompositionStorage::coefficients`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum CoefficientLayout {
+    /// Every component has its own ranges, and all are live together.
+    #[default]
+    Tile,
+    /// Each component's ranges start at zero in one buffer sized to the
+    /// largest component. A component's Tier-1, IDWT and store must finish
+    /// before the next component is decoded into the buffer.
+    Component,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BuildWorkspace {
     DecodePixels {
         skipped_resolution_levels: u8,
+        coefficient_layout: CoefficientLayout,
     },
     CoefficientsOnly,
     /// Plans code blocks without allocating coefficient storage. Sub-band
@@ -33,8 +46,18 @@ impl BuildWorkspace {
         match self {
             Self::DecodePixels {
                 skipped_resolution_levels,
+                ..
             } => Some(total_count.saturating_sub(usize::from(skipped_resolution_levels))),
             Self::CoefficientsOnly | Self::MetadataOnly => None,
+        }
+    }
+
+    pub(crate) fn coefficient_layout(self) -> CoefficientLayout {
+        match self {
+            Self::DecodePixels {
+                coefficient_layout, ..
+            } => coefficient_layout,
+            Self::CoefficientsOnly | Self::MetadataOnly => CoefficientLayout::Tile,
         }
     }
 }
@@ -100,11 +123,15 @@ impl DecompositionAllocationPlan {
         matches!(self.workspace, BuildWorkspace::DecodePixels { .. }) && !self.defer_coefficients
     }
 
-    fn add_coefficients(&mut self, count: usize) -> Result<()> {
-        self.coefficients = self
-            .coefficients
-            .checked_add(count)
-            .ok_or(ValidationError::ImageTooLarge)?;
+    /// Plan one component's `count` coefficients under the layout.
+    fn add_component_coefficients(&mut self, count: usize) -> Result<()> {
+        self.coefficients = match self.workspace.coefficient_layout() {
+            CoefficientLayout::Tile => self
+                .coefficients
+                .checked_add(count)
+                .ok_or(ValidationError::ImageTooLarge)?,
+            CoefficientLayout::Component => self.coefficients.max(count),
+        };
         Ok(())
     }
 
@@ -296,7 +323,19 @@ pub(crate) fn allocate_deferred_coefficients(
         )?;
     }
     if let Some(roi_plan) = storage.roi_plan.as_ref() {
+        // Build stores each component's sub-bands together, starting with its
+        // LL band, so a component starts where its LL band does.
+        let per_component = storage.coefficient_layout == CoefficientLayout::Component;
+        let mut component_starts = storage
+            .tile_decompositions
+            .iter()
+            .map(|component| component.first_ll_sub_band)
+            .peekable();
+        let mut next_offset = 0usize;
         for (sub_band_idx, sub_band) in storage.sub_bands.iter_mut().enumerate() {
+            if component_starts.next_if_eq(&sub_band_idx).is_some() && per_component {
+                next_offset = 0;
+            }
             let mut stored: Option<IntRect> = None;
             for precinct in &storage.precincts[sub_band.precincts.clone()] {
                 for code_block in &storage.code_blocks[precinct.code_blocks.clone()] {
@@ -312,18 +351,21 @@ pub(crate) fn allocate_deferred_coefficients(
             let count = (stored.width() as usize)
                 .checked_mul(stored.height() as usize)
                 .ok_or(ValidationError::ImageTooLarge)?;
-            let end = coefficient_count
+            let end = next_offset
                 .checked_add(count)
                 .ok_or(ValidationError::ImageTooLarge)?;
-            sub_band.coefficients = coefficient_count..end;
+            sub_band.coefficients = next_offset..end;
             sub_band.storage_rect = stored;
-            coefficient_count = end;
+            next_offset = end;
+            coefficient_count = coefficient_count.max(end);
         }
     } else {
         coefficient_count = storage
             .sub_bands
-            .last()
-            .map_or(0, |sub_band| sub_band.coefficients.end);
+            .iter()
+            .map(|sub_band| sub_band.coefficients.end)
+            .max()
+            .unwrap_or(0);
         checked_include_elements::<f32>(&mut live_bytes, idwt_workspace_elements)?;
     }
     let mut budget = reuse::ReallocationBudget::from_live_bytes(live_bytes)?;

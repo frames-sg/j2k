@@ -143,6 +143,7 @@ fn extract_reversible_53_coefficients_inner<'a>(
     let cpu_decode_parallelism = ctx.cpu_decode_parallelism();
     decode_component_tile_bit_planes_budgeted(
         tile,
+        0..tile.component_infos.len(),
         &mut ctx.tile_decode_context,
         &mut ctx.storage,
         header,

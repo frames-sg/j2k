@@ -12,6 +12,8 @@ use super::{
     Result, SubBand, SubBandDecodeParameters, Tile, TileDecodeContext, Vec, MAX_BITPLANE_COUNT,
 };
 
+use core::ops::Range;
+
 mod classic;
 mod ht;
 #[cfg(feature = "parallel")]
@@ -35,8 +37,14 @@ use self::parallel::{
 use self::pending::{collect_pending_classic_blocks, collect_pending_ht_blocks};
 pub(in crate::j2c::decode) use self::pending::{count_classic_code_blocks, count_ht_code_blocks};
 
+/// Decode the code-blocks of the tile's `components` into their sub-bands.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
+)]
 pub(crate) fn decode_component_tile_bit_planes<'a>(
     tile: &Tile<'a>,
+    components: Range<usize>,
     tile_ctx: &mut TileDecodeContext,
     storage: &mut DecompositionStorage<'a>,
     header: &Header<'_>,
@@ -47,6 +55,7 @@ pub(crate) fn decode_component_tile_bit_planes<'a>(
     #[cfg(feature = "parallel")]
     let cpu_decode_parallelism = match tile_parallel::plan_tile_ht_route(
         tile,
+        components.clone(),
         tile_ctx,
         storage,
         header,
@@ -59,7 +68,11 @@ pub(crate) fn decode_component_tile_bit_planes<'a>(
         tile_parallel::TileHtRoute::PerSubBand => cpu_decode_parallelism,
     };
 
-    for (tile_decompositions_idx, component_info) in tile.component_infos.iter().enumerate() {
+    let component_infos = tile
+        .component_infos
+        .get(components.clone())
+        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+    for (tile_decompositions_idx, component_info) in components.zip(component_infos) {
         // Only decode the resolution levels we actually care about.
         for resolution in
             0..component_info.num_resolution_levels() - header.skipped_resolution_levels
