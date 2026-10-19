@@ -85,7 +85,11 @@ fn assert_burn_case(codec: &str, encoded: &Arc<[u8]>, layout: BatchLayout, reque
     let prepared = decoder
         .prepare(inputs.clone())
         .unwrap_or_else(|error| panic!("prepare {codec} RGBA Burn batch: {error}"));
-    assert!(prepared.errors().is_empty(), "{codec} preflight errors");
+    assert!(
+        prepared.errors().is_empty(),
+        "{codec} {layout:?} {request:?} preflight errors: {:?}",
+        prepared.errors()
+    );
     let [prepared_group] = prepared.groups() else {
         panic!("expected one {codec} RGBA group")
     };
@@ -188,6 +192,7 @@ fn wrap_classic_rgba_jp2(fixture: &Htj2kRgbaFixture) -> Vec<u8> {
         samples,
         &J2kLosslessEncodeOptions::default()
             .with_block_coding_mode(J2kBlockCodingMode::Classic)
+            .with_max_decomposition_levels(Some(1))
             .with_reversible_transform(transform)
             .with_validation(J2kEncodeValidation::External),
     )
