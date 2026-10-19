@@ -22,6 +22,7 @@ pub(super) use typed::{prepare_typed_component_planes_i64_packets, TypedPlanePac
 
 #[derive(Clone, Copy)]
 pub(in crate::j2c::encode) struct I64ComponentPrepareRequest<'a, 'input> {
+    pub(in crate::j2c::encode) origin: (u32, u32),
     pub(in crate::j2c::encode) component: u16,
     pub(in crate::j2c::encode) width: u32,
     pub(in crate::j2c::encode) height: u32,
@@ -34,6 +35,7 @@ pub(in crate::j2c::encode) struct I64ComponentPrepareRequest<'a, 'input> {
 
 #[derive(Clone, Copy)]
 struct BandRequest<'a> {
+    origin: (u32, u32),
     rect: PackedSubbandRect,
     step_size: &'a QuantStepSize,
     sub_band_type: SubBandType,
@@ -64,6 +66,10 @@ pub(in crate::j2c::encode) fn prepare_i64_component_packets(
     Ok(packets)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "resolution assembly keeps subband geometry, retained ownership, and quantization together"
+)]
 fn try_prepare_resolution_packets(
     samples: &[i64],
     geometry: PackedDwtGeometry,
@@ -90,6 +96,11 @@ fn try_prepare_resolution_packets(
     check_component_peak(request.session, retained_source_bytes, &packets, 0)?;
 
     let ll = [BandRequest {
+        origin: super::super::tile_grid::subband_origin(
+            request.origin,
+            request.num_levels,
+            SubBandType::LowLow,
+        )?,
         rect: geometry.ll()?,
         step_size: request.step_sizes.first().ok_or_else(|| {
             NativeEncodePipelineError::internal_invariant("reversible quantization step missing")
@@ -118,6 +129,11 @@ fn try_prepare_resolution_packets(
             .map_err(NativeEncodePipelineError::internal_invariant)?;
         let bands = [
             BandRequest {
+                origin: super::super::tile_grid::subband_origin(
+                    request.origin,
+                    request.num_levels - resolution,
+                    SubBandType::HighLow,
+                )?,
                 rect: level.hl,
                 step_size: request.step_sizes.get(step_base).ok_or_else(|| {
                     NativeEncodePipelineError::internal_invariant(
@@ -128,6 +144,11 @@ fn try_prepare_resolution_packets(
                 roi_scale,
             },
             BandRequest {
+                origin: super::super::tile_grid::subband_origin(
+                    request.origin,
+                    request.num_levels - resolution,
+                    SubBandType::LowHigh,
+                )?,
                 rect: level.lh,
                 step_size: request.step_sizes.get(step_base + 1).ok_or_else(|| {
                     NativeEncodePipelineError::internal_invariant(
@@ -138,6 +159,11 @@ fn try_prepare_resolution_packets(
                 roi_scale,
             },
             BandRequest {
+                origin: super::super::tile_grid::subband_origin(
+                    request.origin,
+                    request.num_levels - resolution,
+                    SubBandType::HighHigh,
+                )?,
                 rect: level.hh,
                 step_size: request.step_sizes.get(step_base + 2).ok_or_else(|| {
                     NativeEncodePipelineError::internal_invariant(
@@ -215,6 +241,7 @@ fn push_resolution_packet(
         )?;
         let view = PackedSubbandView::try_new(request.coefficients, band.rect)?;
         let prepared = prepare_packed_subband_i64(&PackedSubbandRequest {
+            origin: band.origin,
             view,
             step_size: band.step_size,
             sub_band_type: band.sub_band_type,

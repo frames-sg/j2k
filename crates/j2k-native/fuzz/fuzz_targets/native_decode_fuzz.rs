@@ -21,15 +21,28 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
     let (width, height) = (image.width(), image.height());
-    if width == 0 || height == 0 || u64::from(width) * u64::from(height) > MAX_PIXELS {
+    if width == 0 || height == 0 {
+        return;
+    }
+    let large_image = u64::from(width) * u64::from(height) > MAX_PIXELS;
+    if large_image || mode & 2 != 0 {
+        let (roi_width, roi_height) = (width.min(17), height.min(13));
+        let x = if !large_image && mode & 16 == 0 {
+            0
+        } else {
+            width - roi_width
+        };
+        let y = if !large_image && mode & 32 == 0 {
+            0
+        } else {
+            height - roi_height
+        };
+        let _ = image.decode_native_region((x, y, roi_width, roi_height));
+    }
+    if large_image {
         return;
     }
     let _ = image.decode_native();
-    if mode & 2 != 0 {
-        let x = u32::from(mode >> 4) % width;
-        let y = u32::from(mode >> 2 & 3) % height;
-        let _ = image.decode_native_region((x, y, (width - x).min(17), (height - y).min(13)));
-    }
     if mode & 4 != 0 {
         let _ = image.decode_reversible_53_coefficients();
     }

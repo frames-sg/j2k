@@ -1045,7 +1045,7 @@ fn retained_container_metadata_rejects_header_parse_before_decode_growth() {
 #[test]
 fn owned_decode_rejects_large_siz_before_allocating_output() {
     let mut bytes = fixture_gray();
-    rewrite_siz_to_single_large_tile(&mut bytes, 60_000);
+    rewrite_siz_to_single_large_tile(&mut bytes, 65_537);
     let image = Image::new(&bytes, &DecodeSettings::default()).expect("large SIZ parses");
 
     let Err(err) = image.decode() else {
@@ -1058,7 +1058,7 @@ fn owned_decode_rejects_large_siz_before_allocating_output() {
 #[test]
 fn decode_into_rejects_large_siz_before_allocating_component_storage() {
     let mut bytes = fixture_gray();
-    rewrite_siz_to_single_large_tile(&mut bytes, 60_000);
+    rewrite_siz_to_single_large_tile(&mut bytes, 65_537);
     let image = Image::new(&bytes, &DecodeSettings::default()).expect("large SIZ parses");
     let mut context = DecoderContext::default();
     let mut out = [];
@@ -1097,14 +1097,14 @@ fn assert_large_siz_component_budget(error: &DecodeError) {
 #[test]
 fn decode_region_budgets_coefficients_for_the_requested_region() {
     let mut codestream = fixture_gray();
-    rewrite_siz_to_single_large_tile(&mut codestream, 60_000);
+    rewrite_siz_to_single_large_tile(&mut codestream, 65_537);
     let image = Image::new(&codestream, &DecodeSettings::default()).expect("large SIZ parses");
 
-    // A tiny ROI stores only the code-blocks it needs, so the 60000x60000
+    // A tiny ROI stores only the code-blocks it needs, so the 65537x65537
     // tile's 14 GB of coefficients no longer stop it. This fixture's packets
     // are not that large, so decode then fails in packet parsing.
     let Err(tiny) = image.decode_region((0, 0, 1, 1)) else {
-        panic!("rewritten fixture has no packet data for a 60000x60000 tile");
+        panic!("rewritten fixture has no packet data for a 65537x65537 tile");
     };
     assert!(
         matches!(tiny, DecodeError::Decoding(_)),

@@ -21,6 +21,7 @@ pub(super) struct DwtBandEncodeRequest<'a, 'input> {
 }
 
 pub(super) struct DwtBandEncodeSettings<'a, 'input> {
+    pub(super) origin: (u32, u32),
     pub(super) step_size: &'a QuantStepSize,
     pub(super) bit_depth: u8,
     pub(super) guard_bits: u8,
@@ -49,6 +50,7 @@ impl<'a, 'input> DwtBandEncodeSettings<'a, 'input> {
         'a: 'request,
     {
         F32SubbandEncodeRequest {
+            origin: self.origin,
             coefficients,
             width,
             height,

@@ -16,6 +16,28 @@ codestreams, and JPH files. JPX (Part 2) extensions are not supported except
 where JP2/JPH decoding needs them. The detailed list is in
 [`docs/public-support.md`](public-support.md).
 
+## Encode geometry and implementation scope
+
+Multi-tile encode keeps absolute tile-component coordinates through the forward
+transform, subband partitioning, and packet progression. The shared geometry
+helpers implement the reference-grid mappings in ITU-T T.800 (11/2015), B.5–B.7
+and B.12; the odd-origin lifting paths use F.4's symmetric extension and lifting
+equations. CPU, Metal, and CUDA stage adapters carry the same origin and phase.
+Legacy accelerator hooks remain usable for phases equivalent to origin zero.
+The existing smallest-edge-tile decomposition policy still applies.
+
+Image parsing has no 60,000-pixel dimension cap. Grid arithmetic handles clipped
+precinct and code-block endpoints at the `u32` boundary, while decode allocations
+remain subject to structural and retained-memory budgets. Long-image fixtures
+from OpenJPEG cover full decode and far-edge regions.
+
+These changes repair geometry and transform behavior; they do not replace the
+entire historically imported codec. Inherited parsing, entropy coding, packet
+handling, inverse transforms, and shared tables remain subject to the existing
+attribution in `NOTICES.md`. The implementation work involved exposure to that
+source and makes no formal clean-room claim. A complete provenance replacement
+requires separate subsystem work and independently derived table definitions.
+
 ## Crate classes
 
 | Crate | Class | Role |

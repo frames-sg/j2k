@@ -300,7 +300,6 @@ pub use j2c::ht_encode_tables::HtUvlcTableEntry;
 const MAX_CLASSIC_DECODE_BITPLANES: u8 = j2c::MAX_BITPLANE_COUNT;
 const MAX_DEINTERLEAVE_REFERENCE_BIT_DEPTH: u8 = j2k_types::MAX_JPEG2000_PART1_SAMPLE_BIT_DEPTH;
 pub(crate) use j2k_types::MAX_JPEG2000_PART1_COMPONENTS as MAX_J2K_SPEC_COMPONENTS;
-pub(crate) const MAX_J2K_IMAGE_DIMENSION: u32 = 60_000;
 pub(crate) const MAX_J2K_TILE_COUNT: u64 = u16::MAX as u64 + 1;
 #[doc(hidden)]
 pub use j2k_types::{DEFAULT_MAX_CODEC_BYTES, DEFAULT_MAX_DECODE_BYTES};

@@ -45,9 +45,15 @@ impl CudaHtj2kPacketizationTagTreeState {
         host_budget: &mut HostPhaseBudget,
     ) -> PacketizationPlanResult<Self> {
         if width == 0 || height == 0 {
-            return Err(CudaHtj2kPacketizationPlanError::Invalid(
-                "CUDA HTJ2K packetization subband code-block layout mismatch",
-            ));
+            // Empty edge bands have no leaves and emit no tag-tree bits.
+            return Ok(Self {
+                values: Vec::new(),
+                current: Vec::new(),
+                known: Vec::new(),
+                widths: Vec::new(),
+                heights: Vec::new(),
+                offsets: Vec::new(),
+            });
         }
 
         let mut widths =

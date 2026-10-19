@@ -56,12 +56,88 @@ pub const fn encode_dwt_level_dimensions_for_input(
     width: u32,
     height: u32,
 ) -> EncodeDwtLevelDimensions {
+    encode_dwt_level_dimensions_at_origin(width, height, (0, 0))
+}
+
+/// Split a tile-component level using absolute-coordinate parity (T.800 B.5).
+#[must_use]
+pub const fn encode_dwt_level_dimensions_at_origin(
+    width: u32,
+    height: u32,
+    origin: (u32, u32),
+) -> EncodeDwtLevelDimensions {
+    let low_width = width / 2 + (width & !origin.0 & 1);
+    let low_height = height / 2 + (height & !origin.1 & 1);
     EncodeDwtLevelDimensions {
-        low_width: width / 2 + width % 2,
-        low_height: height / 2 + height % 2,
-        high_width: width / 2,
-        high_height: height / 2,
+        low_width,
+        low_height,
+        high_width: width - low_width,
+        high_height: height - low_height,
     }
+}
+
+/// Map a tile-component origin to a subband's coordinate system (T.800 B-15).
+/// `depth` is the band's decomposition level, including zero for undecomposed LL.
+#[must_use]
+pub fn encode_subband_origin(
+    origin: (u32, u32),
+    depth: u8,
+    band: J2kSubBandType,
+) -> Option<(u32, u32)> {
+    if depth > 32 {
+        return None;
+    }
+    let scale = 1_u64 << depth;
+    let coordinate = |value: u32, high: bool| {
+        // The negative numerator at the left image edge is greater than -scale,
+        // so its ceiling quotient is zero, as is the saturated numerator's.
+        let offset = if high && depth != 0 { scale / 2 } else { 0 };
+        u32::try_from(u64::from(value).saturating_sub(offset).div_ceil(scale)).ok()
+    };
+    Some((
+        coordinate(
+            origin.0,
+            matches!(band, J2kSubBandType::HighLow | J2kSubBandType::HighHigh),
+        )?,
+        coordinate(
+            origin.1,
+            matches!(band, J2kSubBandType::LowHigh | J2kSubBandType::HighHigh),
+        )?,
+    ))
+}
+
+/// Number of nonempty cells intersecting an axis on a zero-anchored grid.
+/// A zero span is invalid. Empty axes have no cells (T.800 B.6 and B.7).
+#[must_use]
+pub fn encode_grid_cell_count(origin: u32, extent: u32, span: u32) -> Option<u32> {
+    if span == 0 {
+        return None;
+    }
+    if extent == 0 {
+        return Some(0);
+    }
+    u32::try_from((u64::from(origin % span) + u64::from(extent)).div_ceil(u64::from(span))).ok()
+}
+
+/// Local offset and length of an intersecting zero-anchored grid cell.
+/// The first and last cells are clipped to `origin..origin + extent`.
+#[must_use]
+pub fn encode_grid_cell_span(
+    origin: u32,
+    extent: u32,
+    span: u32,
+    index: u32,
+) -> Option<(u32, u32)> {
+    if index >= encode_grid_cell_count(origin, extent, span)? {
+        return None;
+    }
+    let start = (u64::from(origin / span) + u64::from(index)) * u64::from(span);
+    let end = (start + u64::from(span)).min(u64::from(origin) + u64::from(extent));
+    let clipped_start = start.max(u64::from(origin));
+    Some((
+        u32::try_from(clipped_start - u64::from(origin)).ok()?,
+        u32::try_from(end - clipped_start).ok()?,
+    ))
 }
 
 impl ExactSizeIterator for EncodeDwtLevelDimensionsIter {}

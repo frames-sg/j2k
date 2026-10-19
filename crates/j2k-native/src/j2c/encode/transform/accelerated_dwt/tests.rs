@@ -61,6 +61,7 @@ fn run_dwt(
     let mut line_scratch = vec![0.0; 5];
     encode_forward_dwt(
         ForwardDwtRequest {
+            origin: (0, 0),
             component,
             width: 5,
             height: 4,
@@ -96,8 +97,16 @@ fn declined_acceleration_preserves_scalar_packed_dwt_for_both_filters() {
         let source = samples();
         let mut expected = source.clone();
         let mut expected_scratch = vec![0.0; 5];
-        fdwt::try_forward_dwt_packed_f32(&mut expected, 5, 4, 1, reversible, &mut expected_scratch)
-            .expect("scalar packed DWT reference");
+        fdwt::try_forward_dwt_packed_f32(
+            &mut expected,
+            5,
+            4,
+            1,
+            reversible,
+            &mut expected_scratch,
+            (0, 0),
+        )
+        .expect("scalar packed DWT reference");
         let mut accelerator = FakeDwtAccelerator::default();
 
         let actual = run_dwt(source, reversible, &session(), &mut accelerator)
@@ -109,6 +118,40 @@ fn declined_acceleration_preserves_scalar_packed_dwt_for_both_filters() {
         assert_eq!(actual.coefficients, expected);
         assert_eq!(accelerator.calls53, usize::from(reversible));
         assert_eq!(accelerator.calls97, usize::from(!reversible));
+    }
+}
+
+#[test]
+fn legacy_dwt_hooks_are_not_given_an_incompatible_tile_phase() {
+    for reversible in [true, false] {
+        let mut accelerator = FakeDwtAccelerator {
+            fail53: true,
+            fail97: true,
+            ..FakeDwtAccelerator::default()
+        };
+        let mut scratch = vec![0.0; 5];
+        let session = session();
+        let output = encode_forward_dwt(
+            ForwardDwtRequest {
+                origin: (1, 3),
+                component: samples(),
+                width: 5,
+                height: 4,
+                num_levels: 1,
+                reversible,
+                session: &session,
+                retained_base_bytes: 0,
+                line_scratch: &mut scratch,
+            },
+            &mut accelerator,
+        )
+        .expect("legacy hooks decline a different phase");
+        assert_eq!((accelerator.calls53, accelerator.calls97), (0, 0));
+        let OwnedDwtComponent::Packed(output) = output else {
+            panic!("native transform owns the changed phase");
+        };
+        let ll = output.geometry.ll().expect("LL geometry");
+        assert_eq!((ll.width, ll.height), (2, 2));
     }
 }
 

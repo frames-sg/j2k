@@ -10,7 +10,7 @@ use super::{
 pub(super) fn sort_packet_descriptors_for_tile(
     descriptors: &mut [J2kPacketizationPacketDescriptor],
     params: &EncodeParams,
-    tile_size: (u32, u32),
+    tile_bounds: j2k_types::J2kRect,
 ) -> NativeEncodePipelineResult<()> {
     match params.progression_order {
         EncodeProgressionOrder::Lrcp => descriptors.sort_unstable_by_key(|packet| {
@@ -30,7 +30,7 @@ pub(super) fn sort_packet_descriptors_for_tile(
             )
         }),
         order => {
-            let geometry = PacketGeometry::try_new(params, tile_size)?;
+            let geometry = PacketGeometry::try_new(params, tile_bounds)?;
             // Validate before sorting, so the key calculation is infallible and
             // needs no separately allocated array of positions or packet owners.
             for packet in descriptors.iter() {
@@ -57,17 +57,16 @@ pub(super) fn sort_packet_descriptors_for_tile(
 
 struct PacketGeometry<'a> {
     params: &'a EncodeParams,
-    tile_width: u64,
-    tile_height: u64,
+    tile_bounds: j2k_types::J2kRect,
 }
 
 impl<'a> PacketGeometry<'a> {
     fn try_new(
         params: &'a EncodeParams,
-        tile_size: (u32, u32),
+        tile_bounds: j2k_types::J2kRect,
     ) -> NativeEncodePipelineResult<Self> {
-        if tile_size.0 == 0
-            || tile_size.1 == 0
+        if tile_bounds.x0 >= tile_bounds.x1
+            || tile_bounds.y0 >= tile_bounds.y1
             || params.num_decomposition_levels > 32
             || (!params.precinct_exponents.is_empty()
                 && params.precinct_exponents.len()
@@ -89,8 +88,7 @@ impl<'a> PacketGeometry<'a> {
         }
         Ok(Self {
             params,
-            tile_width: u64::from(tile_size.0),
-            tile_height: u64::from(tile_size.1),
+            tile_bounds,
         })
     }
 
@@ -106,11 +104,8 @@ impl<'a> PacketGeometry<'a> {
                 "packet descriptor exceeds progression bounds",
             ));
         }
-        let (step_x, step_y) = self.packet_grid_steps(packet);
-        let (sampling_x, sampling_y) = self.component_sampling(packet);
-        let columns = self.tile_width.div_ceil(sampling_x).div_ceil(step_x);
-        let rows = self.tile_height.div_ceil(sampling_y).div_ceil(step_y);
-        if packet.precinct >= columns * rows {
+        let grid = self.packet_grid(packet);
+        if packet.precinct >= grid.columns * grid.rows {
             return Err(NativeEncodePipelineError::internal_invariant(
                 "packet descriptor exceeds precinct grid",
             ));
@@ -118,43 +113,72 @@ impl<'a> PacketGeometry<'a> {
         Ok(())
     }
 
-    // Precinct steps in a tile-component resolution, as the splitter uses
-    // them. At most 32 levels and 15 precinct bits keep both within u64.
-    fn packet_grid_steps(&self, packet: &J2kPacketizationPacketDescriptor) -> (u64, u64) {
+    fn packet_grid(&self, packet: &J2kPacketizationPacketDescriptor) -> PacketGrid {
         let (precinct_x, precinct_y) = self
             .params
             .precinct_exponents
             .get(packet.resolution as usize)
             .copied()
             .unwrap_or((15, 15));
-        let level_shift = u32::from(self.params.num_decomposition_levels) - packet.resolution;
-        (
-            1_u64 << (u32::from(precinct_x) + level_shift),
-            1_u64 << (u32::from(precinct_y) + level_shift),
-        )
-    }
-
-    // The splitter partitions each component's own tile-component extent,
-    // ceil(tile / sampling), so precinct indices decode against that grid.
-    fn component_sampling(&self, packet: &J2kPacketizationPacketDescriptor) -> (u64, u64) {
         let (sampling_x, sampling_y) = self
             .params
             .component_sampling
             .get(usize::from(packet.component))
             .copied()
             .unwrap_or((1, 1));
-        (u64::from(sampling_x), u64::from(sampling_y))
+        let (sampling_x, sampling_y) = (u64::from(sampling_x), u64::from(sampling_y));
+        let scale = 1_u64 << (u32::from(self.params.num_decomposition_levels) - packet.resolution);
+        let (span_x, span_y) = (1_u64 << precinct_x, 1_u64 << precinct_y);
+        // T.800 B-12/B-14: round each endpoint in component and then
+        // resolution coordinates before finding the zero-anchored precincts.
+        let x0 = u64::from(self.tile_bounds.x0)
+            .div_ceil(sampling_x)
+            .div_ceil(scale);
+        let y0 = u64::from(self.tile_bounds.y0)
+            .div_ceil(sampling_y)
+            .div_ceil(scale);
+        let x1 = u64::from(self.tile_bounds.x1)
+            .div_ceil(sampling_x)
+            .div_ceil(scale);
+        let y1 = u64::from(self.tile_bounds.y1)
+            .div_ceil(sampling_y)
+            .div_ceil(scale);
+        PacketGrid {
+            first_column: x0 / span_x,
+            first_row: y0 / span_y,
+            columns: if x0 == x1 {
+                0
+            } else {
+                x1.div_ceil(span_x) - x0 / span_x
+            },
+            rows: if y0 == y1 {
+                0
+            } else {
+                y1.div_ceil(span_y) - y0 / span_y
+            },
+            step_x: span_x * scale * sampling_x,
+            step_y: span_y * scale * sampling_y,
+        }
     }
 
     fn position(&self, packet: &J2kPacketizationPacketDescriptor) -> (u64, u64) {
-        let (step_x, step_y) = self.packet_grid_steps(packet);
-        let (sampling_x, sampling_y) = self.component_sampling(packet);
-        let columns = self.tile_width.div_ceil(sampling_x).div_ceil(step_x);
-        // Sampling maps a component's packet position onto the common reference
-        // grid. Validated indices bound each result by a u32 extent times u8.
+        let grid = self.packet_grid(packet);
+        // B.12: the first precinct may start inside its grid cell. Its
+        // progression position is clipped to the tile's reference-grid origin.
         (
-            (packet.precinct % columns) * step_x * sampling_x,
-            (packet.precinct / columns) * step_y * sampling_y,
+            ((grid.first_column + packet.precinct % grid.columns) * grid.step_x)
+                .max(u64::from(self.tile_bounds.x0)),
+            ((grid.first_row + packet.precinct / grid.columns) * grid.step_y)
+                .max(u64::from(self.tile_bounds.y0)),
         )
     }
+}
+
+struct PacketGrid {
+    first_column: u64,
+    first_row: u64,
+    columns: u64,
+    rows: u64,
+    step_x: u64,
+    step_y: u64,
 }

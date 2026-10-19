@@ -99,13 +99,15 @@ impl crate::J2kCudaEngine<'_> {
         let mut current_width = pass.current_width;
         let mut current_height = pass.current_height;
         let mut low_extent = pass.low_extent;
+        let mut phase = pass.phase;
         let mut params = cuda_kernel_params!(
             input_ptr,
             output_ptr,
             full_width,
             current_width,
             current_height,
-            low_extent
+            low_extent,
+            phase
         );
         let geometry = j2k_dwt53_launch_geometry(current_width, current_height).ok_or(
             CudaError::ImageTooLarge {

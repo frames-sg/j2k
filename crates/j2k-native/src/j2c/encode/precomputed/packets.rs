@@ -279,6 +279,7 @@ fn prepared_subband_metadata(
     )
     .map_err(NativeEncodePipelineError::arithmetic_overflow)?;
     Ok(PreparedEncodeSubband {
+        origin: (0, 0),
         code_block_width,
         code_block_height,
         width,

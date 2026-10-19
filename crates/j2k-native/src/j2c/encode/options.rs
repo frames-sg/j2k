@@ -82,11 +82,9 @@ pub struct EncodeOptions {
     pub roi_component_shifts: Vec<u8>,
     /// Optional tile width and height for multi-tile codestream output.
     ///
-    /// Each tile origin must be a multiple of `2^num_decomposition_levels`,
-    /// and no tile may straddle a code-block or precinct boundary of the image
-    /// grid unless it starts on one. Without component subsampling,
-    /// power-of-two tile sizes at least as large as the code-block size
-    /// always qualify. Other grids return [`crate::EncodeError::Unsupported`].
+    /// Tile dimensions need not align with the wavelet, code-block, or precinct
+    /// grids. Each tile is transformed and partitioned at its absolute origin.
+    /// The effective decomposition depth is capped by the smallest tile-component.
     pub tile_size: Option<(u32, u32)>,
     /// Optional maximum number of complete packets to place in each tile-part.
     pub tile_part_packet_limit: Option<u16>,

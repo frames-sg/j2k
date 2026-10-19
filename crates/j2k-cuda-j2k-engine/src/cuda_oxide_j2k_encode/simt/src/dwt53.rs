@@ -1,44 +1,58 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! T.800 F-9/F-10 analysis on an absolute-parity line with symmetric extension.
+
 use crate::helpers::{floor_f32, load_f32};
 
 #[inline(always)]
-pub(crate) fn j2k_fdwt53_predict_row(
-    src: *const f32,
-    row_base: u32,
-    width: u32,
-    high_index: u32,
-) -> f32 {
-    let odd = high_index * 2 + 1;
-    let last_even = if width % 2 == 0 { width - 2 } else { width - 1 };
-    let left = load_f32(src, row_base + odd - 1);
-    let right = if odd + 1 < width {
-        load_f32(src, row_base + odd + 1)
+fn predict(src: *const f32, base: u32, stride: u32, length: u32, index: u32) -> f32 {
+    let left = if index == 0 { 1 } else { index - 1 };
+    let right = if index + 1 < length {
+        index + 1
     } else {
-        load_f32(src, row_base + last_even)
+        index - 1
     };
-    load_f32(src, row_base + odd) - floor_f32((left + right) * 0.5)
+    load_f32(src, base + index * stride)
+        - floor_f32(
+            (load_f32(src, base + left * stride) + load_f32(src, base + right * stride)) * 0.5,
+        )
 }
 
 #[inline(always)]
-pub(crate) fn j2k_fdwt53_predict_col(
+pub(crate) fn j2k_fdwt53_sample(
     src: *const f32,
-    x: u32,
-    full_width: u32,
-    height: u32,
-    high_index: u32,
+    base: u32,
+    stride: u32,
+    length: u32,
+    low_count: u32,
+    phase: u32,
+    output: u32,
 ) -> f32 {
-    let odd = high_index * 2 + 1;
-    let last_even = if height % 2 == 0 {
-        height - 2
+    if length == 1 {
+        return load_f32(src, base) * if phase == 0 { 1.0 } else { 2.0 };
+    }
+    if output < low_count {
+        let index = output * 2 + phase;
+        let left = if index == 0 { 1 } else { index - 1 };
+        let right = if index + 1 < length {
+            index + 1
+        } else {
+            index - 1
+        };
+        load_f32(src, base + index * stride)
+            + floor_f32(
+                (predict(src, base, stride, length, left)
+                    + predict(src, base, stride, length, right))
+                    * 0.25
+                    + 0.5,
+            )
     } else {
-        height - 1
-    };
-    let top = load_f32(src, (odd - 1) * full_width + x);
-    let bottom = if odd + 1 < height {
-        load_f32(src, (odd + 1) * full_width + x)
-    } else {
-        load_f32(src, last_even * full_width + x)
-    };
-    load_f32(src, odd * full_width + x) - floor_f32((top + bottom) * 0.5)
+        predict(
+            src,
+            base,
+            stride,
+            length,
+            (output - low_count) * 2 + 1 - phase,
+        )
+    }
 }

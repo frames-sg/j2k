@@ -35,6 +35,7 @@ pub(super) struct ComponentPacketRequest<'a, 'input, S> {
 }
 
 struct BandSettingsInput<'a> {
+    origin: (u32, u32),
     step_size: &'a crate::j2c::quantize::QuantStepSize,
     bit_depth: u8,
     sub_band_type: SubBandType,
@@ -200,6 +201,11 @@ fn prepare_ll_packet<S: DwtComponentSource>(
             band: ll,
             settings: band_settings(
                 &BandSettingsInput {
+                    origin: super::super::super::tile_grid::subband_origin(
+                        request.plan.component_origin(usize::from(component)),
+                        request.plan.num_levels,
+                        SubBandType::LowLow,
+                    )?,
                     step_size: &steps[0],
                     bit_depth,
                     sub_band_type: SubBandType::LowLow,
@@ -237,6 +243,7 @@ fn prepare_ll_packet<S: DwtComponentSource>(
 
 #[expect(
     clippy::too_many_arguments,
+    clippy::too_many_lines,
     reason = "detail-band preparation keeps component coding metadata and retained owners explicit"
 )]
 fn prepare_detail_packets<S: DwtComponentSource>(
@@ -257,6 +264,14 @@ fn prepare_detail_packets<S: DwtComponentSource>(
                 "DWT source level missing after validated count",
             )
         })?;
+        let depth = u8::try_from(level_idx)
+            .ok()
+            .and_then(|index| request.plan.num_levels.checked_sub(index))
+            .ok_or_else(|| {
+                NativeEncodePipelineError::internal_invariant(
+                    "DWT source level exceeds the planned decomposition depth",
+                )
+            })?;
         let step_base = 1 + level_idx * 3;
         let roi_scale = roi_subband_scale(request.plan.num_levels, Some(level_idx))
             .map_err(NativeEncodePipelineError::internal_invariant)?;
@@ -265,6 +280,11 @@ fn prepare_detail_packets<S: DwtComponentSource>(
                 band: level.hl,
                 settings: band_settings(
                     &BandSettingsInput {
+                        origin: super::super::super::tile_grid::subband_origin(
+                            request.plan.component_origin(usize::from(component)),
+                            depth,
+                            SubBandType::HighLow,
+                        )?,
                         step_size: &steps[step_base],
                         bit_depth,
                         sub_band_type: SubBandType::HighLow,
@@ -288,6 +308,11 @@ fn prepare_detail_packets<S: DwtComponentSource>(
                 band: level.lh,
                 settings: band_settings(
                     &BandSettingsInput {
+                        origin: super::super::super::tile_grid::subband_origin(
+                            request.plan.component_origin(usize::from(component)),
+                            depth,
+                            SubBandType::LowHigh,
+                        )?,
                         step_size: &steps[step_base + 1],
                         bit_depth,
                         sub_band_type: SubBandType::LowHigh,
@@ -311,6 +336,11 @@ fn prepare_detail_packets<S: DwtComponentSource>(
                 band: level.hh,
                 settings: band_settings(
                     &BandSettingsInput {
+                        origin: super::super::super::tile_grid::subband_origin(
+                            request.plan.component_origin(usize::from(component)),
+                            depth,
+                            SubBandType::HighHigh,
+                        )?,
                         step_size: &steps[step_base + 2],
                         bit_depth,
                         sub_band_type: SubBandType::HighHigh,
@@ -353,6 +383,7 @@ fn band_settings<'a, 'input, S>(
     request: &'a ComponentPacketRequest<'a, 'input, S>,
 ) -> DwtBandEncodeSettings<'a, 'input> {
     DwtBandEncodeSettings {
+        origin: input.origin,
         step_size: input.step_size,
         bit_depth: input.bit_depth,
         guard_bits: request.plan.guard_bits,

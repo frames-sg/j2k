@@ -42,6 +42,11 @@ pub(super) fn resident_job_from_host(
 pub(super) fn validate_cuda_htj2k_tile_job(
     job: J2kResidentHtj2kTileEncodeJob<'_>,
 ) -> CudaStageResult<()> {
+    if job.input.width() > (1 << 15) || job.input.height() > (1 << 15) {
+        return Err(J2kEncodeStageError::unsupported(
+            "CUDA resident HTJ2K encode supports one implicit precinct per resolution; use staged host encode for larger tiles",
+        ));
+    }
     let _ = cuda_component_count_u8(
         job.input.num_components(),
         "CUDA HTJ2K tile encode supports at most 255 components",
@@ -89,4 +94,41 @@ pub(super) fn validate_cuda_htj2k_tile_job(
         ));
     }
     Ok(())
+}
+
+#[cfg(all(test, feature = "cuda-runtime"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resident_tile_requires_one_implicit_precinct_before_device_work() {
+        for (width, height, supported) in
+            [(32_768, 4, true), (32_769, 4, false), (4, 32_769, false)]
+        {
+            let job = J2kResidentHtj2kTileEncodeJob {
+                input: J2kResidentEncodeInput::new(width, height, 1, 8, false)
+                    .expect("logical input"),
+                num_decomposition_levels: 0,
+                reversible: true,
+                use_mct: false,
+                guard_bits: 1,
+                code_block_width: 64,
+                code_block_height: 64,
+                progression_order: j2k::J2kPacketizationProgressionOrder::Lrcp,
+                component_sampling: &[(1, 1)],
+                quantization_steps: &[(8, 0)],
+            };
+            let result = validate_cuda_htj2k_tile_job(job);
+            if supported {
+                result.expect("one precinct is supported");
+            } else {
+                assert_eq!(
+                    result
+                        .expect_err("multiple precincts need staged encode")
+                        .kind(),
+                    j2k::J2kEncodeStageErrorKind::Unsupported
+                );
+            }
+        }
+    }
 }

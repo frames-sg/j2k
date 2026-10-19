@@ -96,6 +96,39 @@ fn cuda_packetization_flatten_accepts_cleanup_only_single_block_packet() {
 }
 
 #[test]
+fn cuda_packetization_preserves_empty_edge_subbands() {
+    let payload = [0x12, 0x34, 0x56, 0x78];
+    let descriptors = [packet_descriptor(0, 0)];
+    let mut packet = resolution(vec![ht_block(&payload, 0, 0, 1, 2)], 1, 1);
+    packet.subbands.insert(
+        0,
+        J2kPacketizationSubband {
+            code_blocks: Vec::new(),
+            num_cbs_x: 0,
+            num_cbs_y: 0,
+        },
+    );
+    packet.subbands.push(J2kPacketizationSubband {
+        code_blocks: Vec::new(),
+        num_cbs_x: 0,
+        num_cbs_y: 0,
+    });
+    let resolutions = [packet];
+    let plan =
+        flatten_cuda_htj2k_packetization_job(packetization_job(&descriptors, &resolutions, 1, 1))
+            .expect("empty bands contribute no tag-tree bits");
+    assert_eq!(
+        plan.subbands
+            .iter()
+            .map(|band| band.block_count)
+            .collect::<Vec<_>>(),
+        [0, 1, 0]
+    );
+    assert_eq!(plan.blocks.len(), 1);
+    assert_eq!(plan.payload, payload);
+}
+
+#[test]
 fn cuda_packetization_flatten_accepts_cleanup_only_multi_block_packet() {
     let payloads = vec![
         vec![0x10, 0x11, 0x12],

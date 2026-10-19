@@ -231,13 +231,15 @@ fn inspect_raw_codestream_rejects_zero_component_sampling() {
 }
 
 #[test]
-fn inspect_raw_codestream_rejects_oversized_dimensions() {
-    let mut bytes = minimal_j2k_codestream();
-    rewrite_siz_u32(&mut bytes, 2, 60_001);
-
-    let err = J2kDecoder::inspect(&bytes).expect_err("oversized width must reject");
-
-    assert!(matches!(err, J2kError::InvalidSiz { .. }));
+fn inspect_raw_codestream_accepts_dimensions_above_the_former_cap() {
+    for (field, dimensions, grid) in [(2, (65_537, 64), (1025, 1)), (6, (128, 65_537), (2, 1025))] {
+        let mut bytes = minimal_j2k_codestream();
+        rewrite_siz_u32(&mut bytes, field, 65_537);
+        let info = J2kDecoder::inspect(&bytes).expect("valid large geometry is inspectable");
+        assert_eq!(info.dimensions, dimensions);
+        let tiles = info.tile_layout.expect("tile layout");
+        assert_eq!((tiles.tiles_x, tiles.tiles_y), grid);
+    }
 }
 
 #[test]
@@ -251,15 +253,22 @@ fn inspect_raw_codestream_rejects_bad_tile_origin() {
 }
 
 #[test]
-fn inspect_raw_codestream_rejects_tile_extent_overflow() {
+fn inspect_raw_codestream_clips_tile_extents_beyond_the_reference_grid() {
     let mut bytes = minimal_j2k_codestream();
     rewrite_siz_u32(&mut bytes, 2, u32::MAX);
     rewrite_siz_u32(&mut bytes, 10, u32::MAX - 1);
     rewrite_siz_u32(&mut bytes, 18, 10);
     rewrite_siz_u32(&mut bytes, 26, u32::MAX - 2);
 
-    let err = J2kDecoder::inspect(&bytes).expect_err("overflow must reject");
+    let info = J2kDecoder::inspect(&bytes).expect("the clipped first tile intersects the image");
+    assert_eq!(info.dimensions, (1, 64));
+    let tiles = info.tile_layout.expect("tile layout");
+    assert_eq!((tiles.tile_width, tiles.tile_height), (10, 64));
+    assert_eq!((tiles.tiles_x, tiles.tiles_y), (1, 1));
 
+    rewrite_siz_u32(&mut bytes, 18, 1);
+    let err = J2kDecoder::inspect(&bytes)
+        .expect_err("a first tile ending at the image origin must still reject");
     assert!(matches!(err, J2kError::InvalidSiz { .. }));
 }
 

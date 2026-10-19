@@ -31,6 +31,19 @@ impl crate::J2kCudaEngine<'_> {
         height: u32,
         num_levels: u8,
     ) -> Result<CudaDwt53Output, CudaError> {
+        self.j2k_forward_dwt53_at_origin(samples, width, height, num_levels, (0, 0))
+    }
+
+    /// Run forward DWT with an absolute tile-component origin.
+    #[doc(hidden)]
+    pub fn j2k_forward_dwt53_at_origin(
+        &self,
+        samples: &[f32],
+        width: u32,
+        height: u32,
+        num_levels: u8,
+        origin: (u32, u32),
+    ) -> Result<CudaDwt53Output, CudaError> {
         let expected_len =
             (width as usize)
                 .checked_mul(height as usize)
@@ -46,6 +59,7 @@ impl crate::J2kCudaEngine<'_> {
                 channels: 1,
             });
         }
+        validation::validate_forward_dwt_origin(width, height, origin)?;
         validate_forward_dwt_request(width, height, num_levels)?;
         if samples.is_empty() || num_levels == 0 {
             return Ok(CudaDwt53Output {
@@ -66,6 +80,7 @@ impl crate::J2kCudaEngine<'_> {
             height,
             num_levels,
             0,
+            origin,
         )?;
         let mut host_budget = HostPhaseBudget::new("CUDA forward 5/3 DWT host output");
         host_budget.account_vec(&resident.levels)?;
@@ -120,9 +135,14 @@ impl crate::J2kCudaEngine<'_> {
             height,
             num_levels,
             copy_dispatches,
+            (0, 0),
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "resident DWT keeps device ownership, dimensions, absolute phase, and level count explicit"
+    )]
     fn j2k_forward_dwt53_resident_buffer(
         &self,
         buffer_a: CudaDeviceBuffer,
@@ -131,6 +151,7 @@ impl crate::J2kCudaEngine<'_> {
         height: u32,
         num_levels: u8,
         initial_copy_dispatches: usize,
+        origin: (u32, u32),
     ) -> Result<CudaResidentDwt53Output, CudaError> {
         if sample_count == 0 || num_levels == 0 {
             return Ok(CudaResidentDwt53Output {
@@ -155,6 +176,7 @@ impl crate::J2kCudaEngine<'_> {
         )?;
         let mut current_width = width;
         let mut current_height = height;
+        let mut level_origin = origin;
         let mut levels = try_vec_with_capacity(usize::from(num_levels))?;
         let mut dispatches = 0usize;
         let mut active_is_a = true;
@@ -168,6 +190,7 @@ impl crate::J2kCudaEngine<'_> {
                 &buffer_b,
                 &mut active_is_a,
                 CudaDwt53LevelPass {
+                    origin: level_origin,
                     full_width: width,
                     current_width,
                     current_height,
@@ -177,6 +200,7 @@ impl crate::J2kCudaEngine<'_> {
             levels.push(level_shape);
             current_width = level_shape.low_width;
             current_height = level_shape.low_height;
+            level_origin = (level_origin.0.div_ceil(2), level_origin.1.div_ceil(2));
         }
 
         let buffer = if active_is_a { buffer_a } else { buffer_b };
@@ -204,6 +228,19 @@ impl crate::J2kCudaEngine<'_> {
         height: u32,
         num_levels: u8,
     ) -> Result<CudaDwt97Output, CudaError> {
+        self.j2k_forward_dwt97_at_origin(samples, width, height, num_levels, (0, 0))
+    }
+
+    /// Run forward DWT with an absolute tile-component origin.
+    #[doc(hidden)]
+    pub fn j2k_forward_dwt97_at_origin(
+        &self,
+        samples: &[f32],
+        width: u32,
+        height: u32,
+        num_levels: u8,
+        origin: (u32, u32),
+    ) -> Result<CudaDwt97Output, CudaError> {
         let expected_len =
             (width as usize)
                 .checked_mul(height as usize)
@@ -219,6 +256,7 @@ impl crate::J2kCudaEngine<'_> {
                 channels: 1,
             });
         }
+        validation::validate_forward_dwt_origin(width, height, origin)?;
         validate_forward_dwt_request(width, height, num_levels)?;
         if samples.is_empty() || num_levels == 0 {
             return Ok(CudaDwt97Output {
@@ -239,6 +277,7 @@ impl crate::J2kCudaEngine<'_> {
             height,
             num_levels,
             0,
+            origin,
         )?;
         let mut host_budget = HostPhaseBudget::new("CUDA forward 9/7 DWT host output");
         host_budget.account_vec(&resident.levels)?;
@@ -293,9 +332,14 @@ impl crate::J2kCudaEngine<'_> {
             height,
             num_levels,
             copy_dispatches,
+            (0, 0),
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "resident DWT keeps device ownership, dimensions, absolute phase, and level count explicit"
+    )]
     fn j2k_forward_dwt97_resident_buffer(
         &self,
         buffer_a: CudaDeviceBuffer,
@@ -304,6 +348,7 @@ impl crate::J2kCudaEngine<'_> {
         height: u32,
         num_levels: u8,
         initial_copy_dispatches: usize,
+        origin: (u32, u32),
     ) -> Result<CudaResidentDwt97Output, CudaError> {
         if sample_count == 0 || num_levels == 0 {
             return Ok(CudaResidentDwt97Output {
@@ -328,6 +373,7 @@ impl crate::J2kCudaEngine<'_> {
         )?;
         let mut current_width = width;
         let mut current_height = height;
+        let mut level_origin = origin;
         let mut levels = try_vec_with_capacity(usize::from(num_levels))?;
         let mut dispatches = 0usize;
         let mut active_is_a = true;
@@ -341,6 +387,7 @@ impl crate::J2kCudaEngine<'_> {
                 &buffer_b,
                 &mut active_is_a,
                 CudaDwt53LevelPass {
+                    origin: level_origin,
                     full_width: width,
                     current_width,
                     current_height,
@@ -350,6 +397,7 @@ impl crate::J2kCudaEngine<'_> {
             levels.push(level_shape);
             current_width = level_shape.low_width;
             current_height = level_shape.low_height;
+            level_origin = (level_origin.0.div_ceil(2), level_origin.1.div_ceil(2));
         }
 
         let buffer = if active_is_a { buffer_a } else { buffer_b };
@@ -375,8 +423,13 @@ impl crate::J2kCudaEngine<'_> {
         active_is_a: &mut bool,
         pass: CudaDwt53LevelPass,
     ) -> Result<(usize, CudaDwt53LevelShape), CudaError> {
-        let low_width = pass.current_width.div_ceil(2);
-        let low_height = pass.current_height.div_ceil(2);
+        let dimensions = j2k_types::encode_geometry::encode_dwt_level_dimensions_at_origin(
+            pass.current_width,
+            pass.current_height,
+            pass.origin,
+        );
+        let low_width = dimensions.low_width;
+        let low_height = dimensions.low_height;
         let mut dispatches = 0usize;
 
         if pass.current_height >= 2 {
@@ -390,6 +443,7 @@ impl crate::J2kCudaEngine<'_> {
                     current_width: pass.current_width,
                     current_height: pass.current_height,
                     low_extent: low_height,
+                    phase: pass.origin.1 & 1,
                 },
             )?;
             *active_is_a = !*active_is_a;
@@ -407,6 +461,7 @@ impl crate::J2kCudaEngine<'_> {
                     current_width: pass.current_width,
                     current_height: pass.current_height,
                     low_extent: low_width,
+                    phase: pass.origin.0 & 1,
                 },
             )?;
             *active_is_a = !*active_is_a;
@@ -420,8 +475,8 @@ impl crate::J2kCudaEngine<'_> {
                 height: pass.current_height,
                 low_width,
                 low_height,
-                high_width: pass.current_width / 2,
-                high_height: pass.current_height / 2,
+                high_width: dimensions.high_width,
+                high_height: dimensions.high_height,
             },
         ))
     }
@@ -433,8 +488,13 @@ impl crate::J2kCudaEngine<'_> {
         active_is_a: &mut bool,
         pass: CudaDwt53LevelPass,
     ) -> Result<(usize, CudaDwt53LevelShape), CudaError> {
-        let low_width = pass.current_width.div_ceil(2);
-        let low_height = pass.current_height.div_ceil(2);
+        let dimensions = j2k_types::encode_geometry::encode_dwt_level_dimensions_at_origin(
+            pass.current_width,
+            pass.current_height,
+            pass.origin,
+        );
+        let low_width = dimensions.low_width;
+        let low_height = dimensions.low_height;
         let mut dispatches = 0usize;
 
         if pass.current_height >= 2 {
@@ -448,6 +508,7 @@ impl crate::J2kCudaEngine<'_> {
                     current_width: pass.current_width,
                     current_height: pass.current_height,
                     low_extent: low_height,
+                    phase: pass.origin.1 & 1,
                 },
             )?;
             *active_is_a = !*active_is_a;
@@ -465,6 +526,7 @@ impl crate::J2kCudaEngine<'_> {
                     current_width: pass.current_width,
                     current_height: pass.current_height,
                     low_extent: low_width,
+                    phase: pass.origin.0 & 1,
                 },
             )?;
             *active_is_a = !*active_is_a;
@@ -478,8 +540,8 @@ impl crate::J2kCudaEngine<'_> {
                 height: pass.current_height,
                 low_width,
                 low_height,
-                high_width: pass.current_width / 2,
-                high_height: pass.current_height / 2,
+                high_width: dimensions.high_width,
+                high_height: dimensions.high_height,
             },
         ))
     }

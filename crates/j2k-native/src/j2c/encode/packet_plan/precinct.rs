@@ -11,7 +11,7 @@ use super::super::{
 
 mod geometry;
 use geometry::{
-    component_extent, component_split_packet_count, precinct_exponents_for_resolution,
+    component_bounds, component_split_packet_count, precinct_exponents_for_resolution,
     resolution_precinct_grid,
 };
 mod distribution;
@@ -19,14 +19,9 @@ use distribution::distribute_owned_subband;
 mod ownership;
 use ownership::{try_destination_vec, try_push_planned, PrecinctSplitAccounting};
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "precinct partitioning keeps the reference-grid tile, per-component sampling, level count, precinct exponents, and session budget explicit"
-)]
 pub(in crate::j2c::encode) fn split_component_resolution_packets_by_precinct_for_session(
     component_resolution_packets: Vec<Vec<PreparedResolutionPacket>>,
-    image_width: u32,
-    image_height: u32,
+    tile: j2k_types::J2kRect,
     component_sampling: &[(u8, u8)],
     num_decomposition_levels: u8,
     precinct_exponents: &[(u8, u8)],
@@ -35,8 +30,7 @@ pub(in crate::j2c::encode) fn split_component_resolution_packets_by_precinct_for
 ) -> NativeEncodePipelineResult<Vec<Vec<PreparedResolutionPacket>>> {
     let (packets, _peak_phase_bytes) = split_component_resolution_packets_by_precinct_accounted(
         component_resolution_packets,
-        image_width,
-        image_height,
+        tile,
         component_sampling,
         num_decomposition_levels,
         precinct_exponents,
@@ -46,14 +40,9 @@ pub(in crate::j2c::encode) fn split_component_resolution_packets_by_precinct_for
     Ok(packets)
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "precinct partitioning keeps the reference-grid tile, per-component sampling, level count, precinct exponents, and session budget explicit"
-)]
 fn split_component_resolution_packets_by_precinct_accounted(
     component_resolution_packets: Vec<Vec<PreparedResolutionPacket>>,
-    image_width: u32,
-    image_height: u32,
+    tile: j2k_types::J2kRect,
     component_sampling: &[(u8, u8)],
     num_decomposition_levels: u8,
     precinct_exponents: &[(u8, u8)],
@@ -68,7 +57,25 @@ fn split_component_resolution_packets_by_precinct_accounted(
         source_capacity,
     )?;
     if precinct_exponents.is_empty() {
-        return Ok((component_resolution_packets, accounting.peak_phase_bytes()));
+        // COD's omitted precinct sizes mean 2^15 at every resolution, not an
+        // unbounded precinct. Keep the common one-packet route allocation-free.
+        let mut needs_split = false;
+        for (component, packets) in component_resolution_packets.iter().enumerate() {
+            let bounds = component_bounds(tile, component_sampling, component)?;
+            for packet in packets {
+                let grid = resolution_precinct_grid(
+                    bounds,
+                    num_decomposition_levels,
+                    packet.resolution,
+                    15,
+                    15,
+                )?;
+                needs_split |= grid.columns != 1 || grid.rows != 1;
+            }
+        }
+        if !needs_split {
+            return Ok((component_resolution_packets, accounting.peak_phase_bytes()));
+        }
     }
 
     let component_count = component_resolution_packets.len();
@@ -80,13 +87,11 @@ fn split_component_resolution_packets_by_precinct_accounted(
     for (component, component_packets) in component_resolution_packets.into_iter().enumerate() {
         // Sampled components have smaller resolutions, so their precinct
         // grids come from their own tile-component extent.
-        let (component_width, component_height) =
-            component_extent(image_width, image_height, component_sampling, component)?;
+        let bounds = component_bounds(tile, component_sampling, component)?;
         let component_capacity = component_packets.capacity();
         let split_packet_count = component_split_packet_count(
             &component_packets,
-            component_width,
-            component_height,
+            bounds,
             num_decomposition_levels,
             precinct_exponents,
         )?;
@@ -98,8 +103,7 @@ fn split_component_resolution_packets_by_precinct_accounted(
         for packet in component_packets {
             split_prepared_resolution_packet_by_precinct(
                 packet,
-                component_width,
-                component_height,
+                bounds,
                 num_decomposition_levels,
                 precinct_exponents,
                 &mut split_packets,
@@ -122,8 +126,7 @@ fn split_component_resolution_packets_by_precinct_accounted(
 
 fn split_prepared_resolution_packet_by_precinct(
     packet: PreparedResolutionPacket,
-    component_width: u32,
-    component_height: u32,
+    bounds: j2k_types::J2kRect,
     num_decomposition_levels: u8,
     precinct_exponents: &[(u8, u8)],
     split_packets: &mut Vec<PreparedResolutionPacket>,
@@ -138,8 +141,7 @@ fn split_prepared_resolution_packet_by_precinct(
     let (horizontal_exponent, vertical_exponent) =
         precinct_exponents_for_resolution(precinct_exponents, resolution)?;
     let grid = resolution_precinct_grid(
-        component_width,
-        component_height,
+        bounds,
         num_decomposition_levels,
         resolution,
         horizontal_exponent,

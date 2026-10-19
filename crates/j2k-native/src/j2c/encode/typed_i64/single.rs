@@ -77,6 +77,7 @@ pub(super) fn encode_typed_component_planes_53_i64_single(
     let component_resolution_packets = prepare_typed_component_planes_i64_packets(
         planes,
         TypedPlanePacketRequest {
+            tile_origin: (0, 0),
             component_dimensions: &component_dimensions,
             component_step_sizes: &execution.component_step_sizes,
             num_levels,
@@ -96,6 +97,7 @@ pub(super) fn encode_typed_component_planes_53_i64_single(
     let packetized_tile = packetize_i64_component_resolution_packets(
         component_resolution_packets,
         I64PacketizeRequest {
+            tile_origin: (0, 0),
             width,
             height,
             num_levels,

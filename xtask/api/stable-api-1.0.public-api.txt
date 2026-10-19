@@ -4281,7 +4281,9 @@ pub fn j2k_types::J2kEncodeStageAccelerator::dispatch_report(&self) -> j2k_types
 pub fn j2k_types::J2kEncodeStageAccelerator::encode_deinterleave(&mut self, j2k_types::J2kDeinterleaveToF32Job<'_>) -> j2k_types::J2kEncodeStageResult<core::option::Option<alloc::vec::Vec<alloc::vec::Vec<f32>>>>
 pub fn j2k_types::J2kEncodeStageAccelerator::encode_deinterleave_mct(&mut self, j2k_types::J2kDeinterleaveMctToF32Job<'_>) -> j2k_types::J2kEncodeStageResult<core::option::Option<alloc::vec::Vec<alloc::vec::Vec<f32>>>>
 pub fn j2k_types::J2kEncodeStageAccelerator::encode_forward_dwt53(&mut self, j2k_types::J2kForwardDwt53Job<'_>) -> j2k_types::J2kEncodeStageResult<core::option::Option<j2k_types::J2kForwardDwt53Output>>
+pub fn j2k_types::J2kEncodeStageAccelerator::encode_forward_dwt53_at_origin(&mut self, j2k_types::J2kForwardDwt53Job<'_>, (u32, u32)) -> j2k_types::J2kEncodeStageResult<core::option::Option<j2k_types::J2kForwardDwt53Output>>
 pub fn j2k_types::J2kEncodeStageAccelerator::encode_forward_dwt97(&mut self, j2k_types::J2kForwardDwt97Job<'_>) -> j2k_types::J2kEncodeStageResult<core::option::Option<j2k_types::J2kForwardDwt97Output>>
+pub fn j2k_types::J2kEncodeStageAccelerator::encode_forward_dwt97_at_origin(&mut self, j2k_types::J2kForwardDwt97Job<'_>, (u32, u32)) -> j2k_types::J2kEncodeStageResult<core::option::Option<j2k_types::J2kForwardDwt97Output>>
 pub fn j2k_types::J2kEncodeStageAccelerator::encode_forward_ict(&mut self, j2k_types::J2kForwardIctJob<'_>) -> j2k_types::J2kEncodeStageResult<bool>
 pub fn j2k_types::J2kEncodeStageAccelerator::encode_forward_rct(&mut self, j2k_types::J2kForwardRctJob<'_>) -> j2k_types::J2kEncodeStageResult<bool>
 pub fn j2k_types::J2kEncodeStageAccelerator::encode_ht_code_block(&mut self, j2k_types::J2kHtCodeBlockEncodeJob<'_>) -> j2k_types::J2kEncodeStageResult<core::option::Option<j2k_types::EncodedHtJ2kCodeBlock>>

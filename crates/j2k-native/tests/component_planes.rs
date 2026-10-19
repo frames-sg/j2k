@@ -4,6 +4,69 @@ use j2k_native::{
     EncodeTypedComponentPlane, Image,
 };
 
+#[test]
+fn sampled_high_bit_tiles_preserve_absolute_component_origins() {
+    let (width, height) = (111_u32, 83_u32);
+    let full: Vec<u8> = (0..width * height)
+        .flat_map(|index| (index.wrapping_mul(1_000_003) & ((1 << 29) - 1)).to_le_bytes())
+        .collect();
+    let sampled: Vec<u8> = (0..width.div_ceil(3) * height.div_ceil(2))
+        .flat_map(|index| (index.wrapping_mul(7_000_019) & ((1 << 29) - 1)).to_le_bytes())
+        .collect();
+    let planes = [
+        EncodeTypedComponentPlane {
+            data: &sampled,
+            x_rsiz: 3,
+            y_rsiz: 2,
+            bit_depth: 29,
+            signed: false,
+        },
+        EncodeTypedComponentPlane {
+            data: &full,
+            x_rsiz: 1,
+            y_rsiz: 1,
+            bit_depth: 29,
+            signed: false,
+        },
+    ];
+    for use_ht_block_coding in [false, true] {
+        let options = EncodeOptions {
+            num_decomposition_levels: 2,
+            tile_size: Some((33, 25)),
+            code_block_width_exp: 1,
+            code_block_height_exp: 1,
+            precinct_exponents: vec![(3, 3), (4, 4), (4, 4)],
+            progression_order: EncodeProgressionOrder::Pcrl,
+            use_ht_block_coding,
+            use_mct: false,
+            ..EncodeOptions::default()
+        };
+        let encoded = encode_typed_component_planes_53(&planes, width, height, &options)
+            .expect("encode sampled high-bit tiles");
+        let decoded = Image::new(&encoded, &DecodeSettings::strict())
+            .and_then(|image| image.decode_native_components())
+            .expect("decode sampled high-bit tiles");
+        // Native component output is expanded onto the reference grid.
+        assert_eq!(decoded.planes()[0].dimensions(), (width, height));
+        for y in 0..height {
+            for x in 0..width {
+                let output = ((y * width + x) * 4) as usize;
+                let input = (((y / 2) * width.div_ceil(3) + x / 3) * 4) as usize;
+                assert_eq!(
+                    &decoded.planes()[0].data()[output..output + 4],
+                    &sampled[input..input + 4],
+                    "sampled ({x}, {y}), HT={use_ht_block_coding}"
+                );
+                assert_eq!(
+                    &decoded.planes()[1].data()[output..output + 4],
+                    &full[output..output + 4],
+                    "full ({x}, {y}), HT={use_ht_block_coding}"
+                );
+            }
+        }
+    }
+}
+
 fn fixture() -> Vec<u8> {
     let pixels = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120];
     let options = EncodeOptions {

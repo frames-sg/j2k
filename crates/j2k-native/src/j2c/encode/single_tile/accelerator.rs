@@ -60,6 +60,10 @@ pub(super) fn try_encode_complete_ht_tile(
 ) -> NativeEncodePipelineResult<Option<(Vec<u8>, u128)>> {
     let stage_start = profile::profile_now(profile_enabled);
     if complete_ht_tile_supported(options, plan)
+        // Built-in fused host encoders emit one implicit precinct per resolution.
+        // Wider host tiles use the staged path, which partitions all precincts.
+        && plan.params.width <= (1 << 15)
+        && plan.params.height <= (1 << 15)
         && component_sample_info.is_empty()
         && plan.roi_component_shifts.iter().all(|shift| *shift == 0)
         && roi_regions.is_empty()
@@ -151,8 +155,13 @@ pub(super) fn encode_complete_resident_ht_tile(
 }
 
 fn complete_ht_tile_supported(options: &EncodeOptions, plan: &SingleTilePlan) -> bool {
-    plan.params.block_coding_mode == BlockCodingMode::HighThroughput
+    // Preserve the fused route wherever its zero-origin partition is equivalent.
+    // Other tiles use the staged GPU transforms and code-block encoders.
+    zero_origin_equivalent(plan)
+        && plan.params.block_coding_mode == BlockCodingMode::HighThroughput
         && plan.params.num_layers == 1
+        // Whole-tile jobs have no precinct partition metadata.
+        && options.precinct_exponents.is_empty()
         // Whole-tile jobs do not carry byte targets or a pass-allocation contract.
         && options.quality_layer_byte_targets.is_empty()
         && !(plan.params.write_plt
@@ -162,6 +171,38 @@ fn complete_ht_tile_supported(options: &EncodeOptions, plan: &SingleTilePlan) ->
             || plan.params.write_sop
             || plan.params.write_eph
             || options.tile_part_packet_limit.is_some())
+}
+
+fn zero_origin_equivalent(plan: &SingleTilePlan) -> bool {
+    let Some(x1) = plan.tile_origin.0.checked_add(plan.params.width) else {
+        return false;
+    };
+    let Some(y1) = plan.tile_origin.1.checked_add(plan.params.height) else {
+        return false;
+    };
+    super::super::tile_grid::component_tile_axis_is_aligned(
+        plan.tile_origin.0,
+        x1,
+        plan.num_levels,
+        plan.params.code_block_width_exp + 2,
+        |r| {
+            plan.params
+                .precinct_exponents
+                .get(usize::from(r))
+                .map_or(15, |p| p.0)
+        },
+    ) && super::super::tile_grid::component_tile_axis_is_aligned(
+        plan.tile_origin.1,
+        y1,
+        plan.num_levels,
+        plan.params.code_block_height_exp + 2,
+        |r| {
+            plan.params
+                .precinct_exponents
+                .get(usize::from(r))
+                .map_or(15, |p| p.1)
+        },
+    )
 }
 
 fn resident_htj2k_tile_job<'a>(
@@ -373,6 +414,7 @@ fn prepare_dwt_components(
             .checked_phase(live_before_dwt, "native encode packed DWT phase")?;
         workspace.decompositions.push(encode_forward_dwt(
             ForwardDwtRequest {
+                origin: request.plan.component_origin(component_index),
                 component,
                 width: request.width,
                 height: request.height,

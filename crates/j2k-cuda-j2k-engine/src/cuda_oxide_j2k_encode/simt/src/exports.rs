@@ -10,18 +10,14 @@ mod kernels {
             J2kHtPacketSubband, J2kHtPacketSubbandTagState, J2kHtPacketTagNodeState,
         },
         constants::{
-            J2K_ENCODE_STATUS_OK, J2K_FDWT97_INV_KAPPA, J2K_FDWT97_KAPPA,
-            J2K_HT_COMPACT_ASSEMBLE_FLAG, J2K_HT_COMPACT_LENGTH_MASK, J2K_HT_MEL_OFFSET,
-            J2K_HT_VLC_OFFSET, J2K_HT_VLC_SIZE,
+            J2K_ENCODE_STATUS_OK, J2K_HT_COMPACT_ASSEMBLE_FLAG, J2K_HT_COMPACT_LENGTH_MASK,
+            J2K_HT_MEL_OFFSET, J2K_HT_VLC_OFFSET, J2K_HT_VLC_SIZE,
         },
-        dwt53::{j2k_fdwt53_predict_col, j2k_fdwt53_predict_row},
-        dwt97::{
-            j2k_fdwt97_high2_col, j2k_fdwt97_high2_row, j2k_fdwt97_low2_col,
-            j2k_fdwt97_low2_row,
-        },
+        dwt53::j2k_fdwt53_sample,
+        dwt97::j2k_fdwt97_sample,
         helpers::{
-            floor_f32, forward_ict_rgb, load_f32, load_f32_u64, load_job, load_u8, load_u32,
-            sign_extend_u32, store_f32, store_f32_u64, store_i32, store_u8, store_u32,
+            floor_f32, forward_ict_rgb, load_f32_u64, load_job, load_u8, load_u32, sign_extend_u32,
+            store_f32, store_f32_u64, store_i32, store_u8, store_u32,
         },
         packetization::{
             j2k_packet_build_header_serial, j2k_packet_copy_body_cooperative, j2k_packet_status,
@@ -155,34 +151,16 @@ mod kernels {
         full_width: u32,
         current_width: u32,
         current_height: u32,
-        low_width: u32,
+        low_extent: u32,
+        phase: u32,
     ) {
         let x = thread::index_2d_col() as u32;
         let y = thread::index_2d_row() as u32;
         if x >= current_width || y >= current_height {
             return;
         }
-
-        let row_base = y * full_width;
-        if x < low_width {
-            let even = x * 2;
-            let left = if x > 0 {
-                j2k_fdwt53_predict_row(src, row_base, current_width, x - 1)
-            } else {
-                j2k_fdwt53_predict_row(src, row_base, current_width, 0)
-            };
-            let right = if even + 1 < current_width {
-                j2k_fdwt53_predict_row(src, row_base, current_width, x)
-            } else {
-                left
-            };
-            let value = load_f32(src, row_base + even) + floor_f32((left + right) * 0.25 + 0.5);
-            store_f32(dst, row_base + x, value);
-            return;
-        }
-
-        let value = j2k_fdwt53_predict_row(src, row_base, current_width, x - low_width);
-        store_f32(dst, row_base + x, value);
+        let value = j2k_fdwt53_sample(src, y * full_width, 1, current_width, low_extent, phase, x);
+        store_f32(dst, y * full_width + x, value);
     }
 
     #[kernel]
@@ -192,33 +170,15 @@ mod kernels {
         full_width: u32,
         current_width: u32,
         current_height: u32,
-        low_height: u32,
+        low_extent: u32,
+        phase: u32,
     ) {
         let x = thread::index_2d_col() as u32;
         let y = thread::index_2d_row() as u32;
         if x >= current_width || y >= current_height {
             return;
         }
-
-        if y < low_height {
-            let even = y * 2;
-            let top = if y > 0 {
-                j2k_fdwt53_predict_col(src, x, full_width, current_height, y - 1)
-            } else {
-                j2k_fdwt53_predict_col(src, x, full_width, current_height, 0)
-            };
-            let bottom = if even + 1 < current_height {
-                j2k_fdwt53_predict_col(src, x, full_width, current_height, y)
-            } else {
-                top
-            };
-            let value =
-                load_f32(src, even * full_width + x) + floor_f32((top + bottom) * 0.25 + 0.5);
-            store_f32(dst, y * full_width + x, value);
-            return;
-        }
-
-        let value = j2k_fdwt53_predict_col(src, x, full_width, current_height, y - low_height);
+        let value = j2k_fdwt53_sample(src, x, full_width, current_height, low_extent, phase, y);
         store_f32(dst, y * full_width + x, value);
     }
 
@@ -229,21 +189,16 @@ mod kernels {
         full_width: u32,
         current_width: u32,
         current_height: u32,
-        low_width: u32,
+        low_extent: u32,
+        phase: u32,
     ) {
         let x = thread::index_2d_col() as u32;
         let y = thread::index_2d_row() as u32;
         if x >= current_width || y >= current_height {
             return;
         }
-
-        let row_base = y * full_width;
-        let value = if x < low_width {
-            j2k_fdwt97_low2_row(src, row_base, current_width, x) * J2K_FDWT97_INV_KAPPA
-        } else {
-            j2k_fdwt97_high2_row(src, row_base, current_width, x - low_width) * J2K_FDWT97_KAPPA
-        };
-        store_f32(dst, row_base + x, value);
+        let value = j2k_fdwt97_sample(src, y * full_width, 1, current_width, low_extent, phase, x);
+        store_f32(dst, y * full_width + x, value);
     }
 
     #[kernel]
@@ -253,20 +208,15 @@ mod kernels {
         full_width: u32,
         current_width: u32,
         current_height: u32,
-        low_height: u32,
+        low_extent: u32,
+        phase: u32,
     ) {
         let x = thread::index_2d_col() as u32;
         let y = thread::index_2d_row() as u32;
         if x >= current_width || y >= current_height {
             return;
         }
-
-        let value = if y < low_height {
-            j2k_fdwt97_low2_col(src, x, full_width, current_height, y) * J2K_FDWT97_INV_KAPPA
-        } else {
-            j2k_fdwt97_high2_col(src, x, full_width, current_height, y - low_height)
-                * J2K_FDWT97_KAPPA
-        };
+        let value = j2k_fdwt97_sample(src, x, full_width, current_height, low_extent, phase, y);
         store_f32(dst, y * full_width + x, value);
     }
 

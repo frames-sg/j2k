@@ -19,6 +19,7 @@ mod plan;
 use plan::{empty_prepared_subband, prepared_subband, PackedSubbandPlan};
 
 pub(super) struct PackedSubbandRequest<'a, 'input> {
+    pub(super) origin: (u32, u32),
     pub(super) view: PackedSubbandView<'a, i64>,
     pub(super) step_size: &'a QuantStepSize,
     pub(super) sub_band_type: SubBandType,
@@ -105,21 +106,27 @@ impl BlockGeometry {
         plan: PackedSubbandPlan,
         settings: I64SubbandEncodeSettings<'_>,
     ) -> NativeEncodePipelineResult<Self> {
-        let x0 = cbx
-            .checked_mul(settings.cb_width)
-            .ok_or_else(|| NativeEncodePipelineError::arithmetic_overflow("code-block x offset"))?;
-        let y0 = cby
-            .checked_mul(settings.cb_height)
-            .ok_or_else(|| NativeEncodePipelineError::arithmetic_overflow("code-block y offset"))?;
-        let x1 = x0.saturating_add(settings.cb_width).min(plan.width);
-        let y1 = y0.saturating_add(settings.cb_height).min(plan.height);
+        let (x0, width) = crate::j2c::encode::tile_grid::block_span(
+            plan.origin.0,
+            plan.width,
+            settings.cb_width,
+            cbx,
+        )?;
+        let (y0, height) = crate::j2c::encode::tile_grid::block_span(
+            plan.origin.1,
+            plan.height,
+            settings.cb_height,
+            cby,
+        )?;
+        let x1 = x0 + width;
+        let y1 = y0 + height;
         Ok(Self {
             x0,
             y0,
             x1,
             y1,
-            width: x1 - x0,
-            height: y1 - y0,
+            width,
+            height,
         })
     }
 }

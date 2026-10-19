@@ -189,6 +189,7 @@ fn execute(
             (plane, scratch),
             (job.width, job.height),
             job.num_decomposition_levels,
+            (0, 0),
         )?;
         transformed.push(if layout.active_is_a {
             plane.clone()

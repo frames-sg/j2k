@@ -245,6 +245,8 @@ pub(in crate::engine) fn dispatch_forward_dwt53_on_buffers(
         let low_width = current_width.div_ceil(2);
         let low_height = current_height.div_ceil(2);
         let params = J2kForwardDwt53Params {
+            x_phase: 0,
+            y_phase: 0,
             full_width: width,
             current_width,
             current_height,
@@ -409,6 +411,8 @@ pub(in crate::engine) fn dispatch_forward_dwt53_on_buffers_split_profile(
         let low_width = current_width.div_ceil(2);
         let low_height = current_height.div_ceil(2);
         let params = J2kForwardDwt53Params {
+            x_phase: 0,
+            y_phase: 0,
             full_width: width,
             current_width,
             current_height,

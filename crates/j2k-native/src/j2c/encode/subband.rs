@@ -142,6 +142,7 @@ pub(super) fn prepare_subband(
 ) -> crate::EncodeResult<PreparedEncodeSubband> {
     let session = NativeEncodeSession::try_new(NativeEncodeRetainedInput::none())?;
     let request = F32SubbandEncodeRequest {
+        origin: (0, 0),
         coefficients,
         width,
         height,
@@ -165,6 +166,7 @@ pub(super) fn prepare_subband(
 }
 
 pub(super) struct F32SubbandEncodeRequest<'a, 'input> {
+    pub(super) origin: (u32, u32),
     pub(super) coefficients: &'a [f32],
     pub(super) width: u32,
     pub(super) height: u32,
@@ -234,14 +236,23 @@ impl F32SubbandPlan {
         Ok(Self {
             range_bits: subband_range_bits(request.bit_depth, request.sub_band_type),
             total_bitplanes,
-            num_cbs_x: request.width.div_ceil(request.cb_width),
-            num_cbs_y: request.height.div_ceil(request.cb_height),
+            num_cbs_x: super::tile_grid::block_count(
+                request.origin.0,
+                request.width,
+                request.cb_width,
+            )?,
+            num_cbs_y: super::tile_grid::block_count(
+                request.origin.1,
+                request.height,
+                request.cb_height,
+            )?,
         })
     }
 }
 
 fn empty_prepared_subband(request: &F32SubbandEncodeRequest<'_, '_>) -> PreparedEncodeSubband {
     PreparedEncodeSubband {
+        origin: request.origin,
         code_blocks: Vec::new(),
         preencoded_ht_code_blocks: None,
         preencoded_ht_maximum_cleanup_magnitude: None,
@@ -267,6 +278,10 @@ fn try_prepare_fused_ht_subband(
     if request.block_coding_mode != BlockCodingMode::HighThroughput
         || request.roi_shift != 0
         || request.ht_target_coding_passes != 1
+        || (!request.origin.0.is_multiple_of(request.cb_width)
+            && request.width > request.cb_width - request.origin.0 % request.cb_width)
+        || (!request.origin.1.is_multiple_of(request.cb_height)
+            && request.height > request.cb_height - request.origin.1 % request.cb_height)
     {
         return Ok(None);
     }
@@ -405,12 +420,18 @@ fn prepare_quantized_subband(
 
     for cby in 0..plan.num_cbs_y {
         for cbx in 0..plan.num_cbs_x {
-            let x0 = cbx * request.cb_width;
-            let y0 = cby * request.cb_height;
-            let x1 = (x0 + request.cb_width).min(request.width);
-            let y1 = (y0 + request.cb_height).min(request.height);
-            let cbw = x1 - x0;
-            let cbh = y1 - y0;
+            let (x0, cbw) = super::tile_grid::block_span(
+                request.origin.0,
+                request.width,
+                request.cb_width,
+                cbx,
+            )?;
+            let (y0, cbh) = super::tile_grid::block_span(
+                request.origin.1,
+                request.height,
+                request.cb_height,
+                cby,
+            )?;
 
             let coefficient_count = (cbw as usize).checked_mul(cbh as usize).ok_or(
                 crate::EncodeError::ArithmeticOverflow {
@@ -464,6 +485,7 @@ fn prepared_subband(
     preencoded_ht_maximum_cleanup_magnitude: Option<u64>,
 ) -> PreparedEncodeSubband {
     PreparedEncodeSubband {
+        origin: request.origin,
         code_blocks,
         preencoded_ht_code_blocks,
         preencoded_ht_maximum_cleanup_magnitude,

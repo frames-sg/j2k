@@ -648,6 +648,14 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         &mut self,
         job: J2kForwardDwt53Job<'_>,
     ) -> J2kEncodeStageResult<Option<J2kForwardDwt53Output>> {
+        self.encode_forward_dwt53_at_origin(job, (0, 0))
+    }
+
+    fn encode_forward_dwt53_at_origin(
+        &mut self,
+        job: J2kForwardDwt53Job<'_>,
+        origin: (u32, u32),
+    ) -> J2kEncodeStageResult<Option<J2kForwardDwt53Output>> {
         self.forward_dwt53_attempts = self.forward_dwt53_attempts.saturating_add(1);
         if job.num_levels == 0 {
             return Ok(None);
@@ -670,7 +678,13 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         #[cfg(target_os = "macos")]
         {
             let output = metal_dispatch_option(
-                compute::encode_forward_dwt53(job.samples, job.width, job.height, job.num_levels),
+                compute::encode_forward_dwt53(
+                    job.samples,
+                    job.width,
+                    job.height,
+                    job.num_levels,
+                    origin,
+                ),
                 "forward 5/3 DWT encode",
             )?;
             if output.is_some() {
@@ -680,7 +694,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = job;
+            let _ = (job, origin);
             Ok(None)
         }
     }
@@ -688,6 +702,14 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
     fn encode_forward_dwt97(
         &mut self,
         job: J2kForwardDwt97Job<'_>,
+    ) -> J2kEncodeStageResult<Option<J2kForwardDwt97Output>> {
+        self.encode_forward_dwt97_at_origin(job, (0, 0))
+    }
+
+    fn encode_forward_dwt97_at_origin(
+        &mut self,
+        job: J2kForwardDwt97Job<'_>,
+        origin: (u32, u32),
     ) -> J2kEncodeStageResult<Option<J2kForwardDwt97Output>> {
         self.forward_dwt97_attempts = self.forward_dwt97_attempts.saturating_add(1);
         if job.num_levels == 0 || (job.width < 2 && job.height < 2) {
@@ -711,7 +733,13 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         #[cfg(target_os = "macos")]
         {
             let output = metal_dispatch_option(
-                compute::encode_forward_dwt97(job.samples, job.width, job.height, job.num_levels),
+                compute::encode_forward_dwt97(
+                    job.samples,
+                    job.width,
+                    job.height,
+                    job.num_levels,
+                    origin,
+                ),
                 "forward 9/7 DWT encode",
             )?;
             if output.is_some() {
@@ -721,7 +749,7 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = job;
+            let _ = (job, origin);
             Ok(None)
         }
     }

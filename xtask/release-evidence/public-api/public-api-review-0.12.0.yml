@@ -44,11 +44,11 @@ reviews:
     hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
   j2k-types:
     removed_fingerprint: "none"
-    added_fingerprint: "fnv1a64:5b8f358d6f255688"
-    hidden_count: 103
-    hidden_fingerprint: "fnv1a64:71b5df4e9aaebdcb"
-    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged. Adds CPU wavelet selection and output types for tiles, components, resolutions, and orientations. Reversible samples are I64 and irreversible samples are dequantized F32; geometry, precision, sampling, transform, and quantization metadata travel with the bands."
-    hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
+    added_fingerprint: "fnv1a64:93e96796844eadb4"
+    hidden_count: 110
+    hidden_fingerprint: "fnv1a64:18058dfddbba5045"
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged. Adds CPU wavelet selection and output types for tiles, components, resolutions, and orientations. Reversible samples are I64 and irreversible samples are dequantized F32; geometry, precision, sampling, transform, and quantization metadata travel with the bands. Adds defaulted encode_forward_dwt53_at_origin and encode_forward_dwt97_at_origin hooks. Existing job structs and zero-origin hooks are unchanged; default implementations call legacy hooks only for equivalent phases and decline other phases."
+    hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points. Adds subband-origin, phase-aware dimension, and zero-anchored grid helpers plus default accelerator implementations. Also records the already-merged tiled_decomposition_levels helper; it retains the smallest-edge depth policy."
   j2k-codec-math:
     removed_fingerprint: "fnv1a64:594402a62d9308ce"
     added_fingerprint: "fnv1a64:49ea9cc837e96b09"
@@ -73,10 +73,10 @@ reviews:
   j2k-cuda-j2k-engine:
     removed_fingerprint: "none"
     added_fingerprint: "none"
-    hidden_count: 706
-    hidden_fingerprint: "fnv1a64:f63e72f81a7bb7b3"
+    hidden_count: 708
+    hidden_fingerprint: "fnv1a64:d7eac46c668fbacb"
     rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
-    hidden_rationale: "Three hidden signatures change: both pooled upload methods take &[&[u8]] instead of &[u8], and CudaQueuedHtj2kCleanupGroup::new adds cleanup_capacity and live_host_bytes. Pass &[payload] and the retained group sizes. Six additional methods expose deferred clearing, retained byte counts, batched stores, and deferred final wavelet stages."
+    hidden_rationale: "Three hidden signatures change: both pooled upload methods take &[&[u8]] instead of &[u8], and CudaQueuedHtj2kCleanupGroup::new adds cleanup_capacity and live_host_bytes. Pass &[payload] and the retained group sizes. Six additional methods expose deferred clearing, retained byte counts, batched stores, and deferred final wavelet stages. Adds origin-aware 5/3 and 9/7 DWT methods; the existing methods still pass origin zero and retain their signatures."
   j2k-cuda-jpeg-engine:
     removed_fingerprint: "none"
     added_fingerprint: "fnv1a64:103e0c647d4cb39d"
@@ -107,11 +107,11 @@ reviews:
     hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
   j2k-native:
     removed_fingerprint: "none"
-    added_fingerprint: "fnv1a64:61c95814ea52b3aa"
-    hidden_count: 570
-    hidden_fingerprint: "fnv1a64:94a3e1a6f76d96ce"
-    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged. Adds selected wavelet extraction and shared wavelet type re-exports. It decodes the requested entropy bands without inverse DWT or color conversion and preserves exact reversible integer coefficients; existing pixel APIs retain their signatures."
-    hidden_rationale: "Adds Image::tile_count for allocation-free decode planning; existing native adapters remain compatible. Also records the already-merged HT coding probe, parallel scratch toggle, and J2kClassicReconstruction hooks. Existing classic adapters retain their defaults; supporting reversible midpoint reconstruction requires opting into the new reconstruction hooks."
+    added_fingerprint: "fnv1a64:c7a6a800da202ce6"
+    hidden_count: 573
+    hidden_fingerprint: "fnv1a64:5ebc3f104f4b43c0"
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged. Adds selected wavelet extraction and shared wavelet type re-exports. It decodes the requested entropy bands without inverse DWT or color conversion and preserves exact reversible integer coefficients; existing pixel APIs retain their signatures. Also records the already-merged irreversible_quantization_profile option. Profiles supply per-component band weights; callers using Default or struct update syntax retain the previous no-profile behavior. Exhaustive native EncodeOptions literals must add irreversible_quantization_profile: None or use struct update syntax."
+    hidden_rationale: "Adds Image::tile_count for allocation-free decode planning; existing native adapters remain compatible. Also records the already-merged HT coding probe, parallel scratch toggle, and J2kClassicReconstruction hooks. Existing classic adapters retain their defaults; supporting reversible midpoint reconstruction requires opting into the new reconstruction hooks. Also records the already-merged inverse_dwt97_reference, inverse_ict_reference, and irreversible_quantization_profile_scale_ceiling helpers. These are additive reference and profile-validation entry points."
   j2k-jpeg:
     removed_fingerprint: "none"
     added_fingerprint: "fnv1a64:b13b981667fd252a"
@@ -128,10 +128,10 @@ reviews:
     hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
   j2k:
     removed_fingerprint: "none"
-    added_fingerprint: "fnv1a64:e212123f4c9acc3a"
+    added_fingerprint: "fnv1a64:1ee0b685614c851f"
     hidden_count: 108
     hidden_fingerprint: "fnv1a64:01e74ad6c3ff416e"
-    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged. Adds J2kDecoder::decode_wavelets and shared wavelet type re-exports. Reduced decode requests beyond the main or tile resolution ladder now return an error rather than silently clamping; owned batches report invalid requests with their input index during preparation. Callers must choose an available reduction level."
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged. Adds J2kDecoder::decode_wavelets and shared wavelet type re-exports. Reduced decode requests beyond the main or tile resolution ladder now return an error rather than silently clamping; owned batches report invalid requests with their input index during preparation. Callers must choose an available reduction level. Also records the already-merged quantization_profile field and with_quantization_profile builder on the non-exhaustive lossy options type. Existing builders keep the no-profile default."
     hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
   j2k-transcode:
     removed_fingerprint: "none"
@@ -157,10 +157,10 @@ reviews:
   j2k-metal:
     removed_fingerprint: "none"
     added_fingerprint: "fnv1a64:9828496ce9bcbfd1"
-    hidden_count: 318
-    hidden_fingerprint: "fnv1a64:83bd1c8e3bfbe6e5"
+    hidden_count: 320
+    hidden_fingerprint: "fnv1a64:e93560ee9acea141"
     rationale: "Adds shared group submission and cooperative CPU/Metal decoding; existing entry points are preserved. Also records the already-merged decode_into_metal and decode_into_metal_with_session methods for caller-owned destinations. Existing decoder entry points remain available."
-    hidden_rationale: "Reviewed the generated hidden inventory against v0.11.3; implementation adapters remain part of the release contract. Metal dispatch telemetry adds cpu_tier1_images. The J2kDecoder impl marker moves into the ordinary inventory when its destination methods become public; this is inventory classification, not removal of the decoder or its existing methods."
+    hidden_rationale: "Reviewed the generated hidden inventory against v0.11.3; implementation adapters remain part of the release contract. Metal dispatch telemetry adds cpu_tier1_images. The J2kDecoder impl marker moves into the ordinary inventory when its destination methods become public; this is inventory classification, not removal of the decoder or its existing methods. Adds origin-aware 5/3 and 9/7 accelerator overrides while preserving the existing zero-origin hooks and job structs."
   j2k-transcode-metal:
     removed_fingerprint: "none"
     added_fingerprint: "none"
@@ -178,10 +178,10 @@ reviews:
   j2k-cuda:
     removed_fingerprint: "none"
     added_fingerprint: "none"
-    hidden_count: 191
-    hidden_fingerprint: "fnv1a64:82214b7c64fc5d9c"
+    hidden_count: 193
+    hidden_fingerprint: "fnv1a64:8a9b0ac701f08d00"
     rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
-    hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
+    hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points. Adds origin-aware 5/3 and 9/7 accelerator overrides while preserving the existing zero-origin hooks and job structs."
   j2k-ml:
     removed_fingerprint: "none"
     added_fingerprint: "none"

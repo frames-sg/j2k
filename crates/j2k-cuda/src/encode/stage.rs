@@ -543,6 +543,14 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         &mut self,
         job: J2kForwardDwt53Job<'_>,
     ) -> CudaStageResult<Option<J2kForwardDwt53Output>> {
+        self.encode_forward_dwt53_at_origin(job, (0, 0))
+    }
+
+    fn encode_forward_dwt53_at_origin(
+        &mut self,
+        job: J2kForwardDwt53Job<'_>,
+        origin: (u32, u32),
+    ) -> CudaStageResult<Option<J2kForwardDwt53Output>> {
         self.forward_dwt53_attempts = self.forward_dwt53_attempts.saturating_add(1);
         if job.num_levels == 0 {
             emit_cuda_encode_route!(
@@ -559,11 +567,12 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
                 &context,
                 self.collect_profile,
                 || {
-                    j2k_cuda_j2k_engine::J2kCudaEngine::new(&context).j2k_forward_dwt53(
+                    j2k_cuda_j2k_engine::J2kCudaEngine::new(&context).j2k_forward_dwt53_at_origin(
                         job.samples,
                         job.width,
                         job.height,
                         job.num_levels,
+                        origin,
                     )
                 },
             )
@@ -583,7 +592,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
             return Ok(Some(cuda_dwt53_output_to_j2k(&output)?));
         }
         #[cfg(not(feature = "cuda-runtime"))]
-        let _ = job;
+        let _ = (job, origin);
         emit_cuda_encode_route!(
             ("op", "encode_forward_dwt53"),
             ("decision", "cpu_fallback"),
@@ -595,6 +604,14 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
     fn encode_forward_dwt97(
         &mut self,
         job: J2kForwardDwt97Job<'_>,
+    ) -> CudaStageResult<Option<J2kForwardDwt97Output>> {
+        self.encode_forward_dwt97_at_origin(job, (0, 0))
+    }
+
+    fn encode_forward_dwt97_at_origin(
+        &mut self,
+        job: J2kForwardDwt97Job<'_>,
+        origin: (u32, u32),
     ) -> CudaStageResult<Option<J2kForwardDwt97Output>> {
         self.forward_dwt97_attempts = self.forward_dwt97_attempts.saturating_add(1);
         if job.num_levels == 0 {
@@ -612,11 +629,12 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
                 &context,
                 self.collect_profile,
                 || {
-                    j2k_cuda_j2k_engine::J2kCudaEngine::new(&context).j2k_forward_dwt97(
+                    j2k_cuda_j2k_engine::J2kCudaEngine::new(&context).j2k_forward_dwt97_at_origin(
                         job.samples,
                         job.width,
                         job.height,
                         job.num_levels,
+                        origin,
                     )
                 },
             )
@@ -636,7 +654,7 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
             return Ok(Some(cuda_dwt97_output_to_j2k(&output)?));
         }
         #[cfg(not(feature = "cuda-runtime"))]
-        let _ = job;
+        let _ = (job, origin);
         emit_cuda_encode_route!(
             ("op", "encode_forward_dwt97"),
             ("decision", "cpu_fallback"),

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{forward_lift_53, forward_lift_53_i64, forward_lift_97};
+use super::{forward_lift_53_i64_phase, forward_lift_53_phase, forward_lift_97_phase};
 use crate::{EncodeError, EncodeResult};
-use j2k_types::encode_geometry::encode_dwt_level_dimensions_for_input;
+use j2k_types::encode_geometry::encode_dwt_level_dimensions_at_origin;
 
 fn usize_from_u32(value: u32, what: &'static str) -> EncodeResult<usize> {
     usize::try_from(value).map_err(|_| EncodeError::ArithmeticOverflow { what })
@@ -15,6 +15,7 @@ fn u32_from_usize(value: usize, what: &'static str) -> EncodeResult<u32> {
 /// Geometry left in the top-left quadrant after an in-place forward DWT.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PackedDwtShape {
+    pub(crate) origin: (u32, u32),
     pub(crate) ll_width: u32,
     pub(crate) ll_height: u32,
     pub(crate) num_levels: u8,
@@ -121,15 +122,18 @@ impl PackedDwtGeometry {
         validate_packed_dwt_plane(plane_len, plane_width, plane_height)?;
         let mut current_width = plane_width;
         let mut current_height = plane_height;
+        let mut origin = shape.origin;
         for _ in 0..shape.num_levels {
             if current_width < 2 && current_height < 2 {
                 return Err(EncodeError::InternalInvariant {
                     what: "packed forward DWT geometry has too many levels",
                 });
             }
-            let level = encode_dwt_level_dimensions_for_input(current_width, current_height);
+            let level =
+                encode_dwt_level_dimensions_at_origin(current_width, current_height, origin);
             current_width = level.low_width;
             current_height = level.low_height;
+            origin = (origin.0.div_ceil(2), origin.1.div_ceil(2));
         }
         if current_width != shape.ll_width || current_height != shape.ll_height {
             return Err(EncodeError::InternalInvariant {
@@ -159,13 +163,16 @@ impl PackedDwtGeometry {
         let forward_level = self.shape.num_levels - resolution_index - 1;
         let mut current_width = self.plane_width;
         let mut current_height = self.plane_height;
+        let mut origin = self.shape.origin;
         for _ in 0..forward_level {
-            let level = encode_dwt_level_dimensions_for_input(current_width, current_height);
+            let level =
+                encode_dwt_level_dimensions_at_origin(current_width, current_height, origin);
             current_width = level.low_width;
             current_height = level.low_height;
+            origin = (origin.0.div_ceil(2), origin.1.div_ceil(2));
         }
 
-        let level = encode_dwt_level_dimensions_for_input(current_width, current_height);
+        let level = encode_dwt_level_dimensions_at_origin(current_width, current_height, origin);
         let low_width = level.low_width;
         let low_height = level.low_height;
         let high_width = level.high_width;
@@ -246,63 +253,70 @@ fn forward_dwt_packed_core<T: Copy>(
     height: usize,
     num_levels: u8,
     line_scratch: &mut [T],
-    mut lift: impl FnMut(&mut [T]),
+    origin: (u32, u32),
+    mut lift: impl FnMut(&mut [T], bool),
 ) -> EncodeResult<PackedDwtShape> {
     let mut current_width = width;
     let mut current_height = height;
     let mut actual_levels = 0_u8;
+    let mut level_origin = origin;
 
     for _ in 0..num_levels {
         if current_width < 2 && current_height < 2 {
             break;
         }
-        let level = encode_dwt_level_dimensions_for_input(
+        let level = encode_dwt_level_dimensions_at_origin(
             u32_from_usize(current_width, "packed forward DWT level width")?,
             u32_from_usize(current_height, "packed forward DWT level height")?,
+            level_origin,
         );
         let low_width = usize_from_u32(level.low_width, "packed forward DWT low width")?;
         let low_height = usize_from_u32(level.low_height, "packed forward DWT low height")?;
+        let x_phase = (level_origin.0 & 1) as usize;
+        let y_phase = (level_origin.1 & 1) as usize;
 
         // Analysis is vertical first and horizontal second because synthesis
         // applies the inverse operations in the opposite order.
-        if current_height >= 2 {
+        if current_height != 0 {
             for x in 0..current_width {
                 for y in 0..current_height {
                     line_scratch[y] = coefficients[y * width + x];
                 }
-                lift(&mut line_scratch[..current_height]);
+                lift(&mut line_scratch[..current_height], y_phase != 0);
 
                 for i in 0..low_height {
-                    coefficients[i * width + x] = line_scratch[i * 2];
+                    coefficients[i * width + x] = line_scratch[i * 2 + y_phase];
                 }
-                for i in 0..current_height / 2 {
-                    coefficients[(low_height + i) * width + x] = line_scratch[i * 2 + 1];
+                for i in 0..current_height - low_height {
+                    coefficients[(low_height + i) * width + x] = line_scratch[i * 2 + 1 - y_phase];
                 }
             }
         }
 
-        if current_width >= 2 {
+        if current_width != 0 {
             for y in 0..current_height {
                 let row_start = y * width;
                 line_scratch[..current_width]
                     .copy_from_slice(&coefficients[row_start..row_start + current_width]);
-                lift(&mut line_scratch[..current_width]);
+                lift(&mut line_scratch[..current_width], x_phase != 0);
 
                 for i in 0..low_width {
-                    coefficients[row_start + i] = line_scratch[i * 2];
+                    coefficients[row_start + i] = line_scratch[i * 2 + x_phase];
                 }
-                for i in 0..current_width / 2 {
-                    coefficients[row_start + low_width + i] = line_scratch[i * 2 + 1];
+                for i in 0..current_width - low_width {
+                    coefficients[row_start + low_width + i] = line_scratch[i * 2 + 1 - x_phase];
                 }
             }
         }
 
         current_width = low_width;
         current_height = low_height;
+        level_origin = (level_origin.0.div_ceil(2), level_origin.1.div_ceil(2));
         actual_levels += 1;
     }
 
     Ok(PackedDwtShape {
+        origin,
         ll_width: u32_from_usize(current_width, "packed forward DWT LL width")?,
         ll_height: u32_from_usize(current_height, "packed forward DWT LL height")?,
         num_levels: actual_levels,
@@ -318,6 +332,7 @@ pub(crate) fn try_forward_dwt_packed_f32(
     num_levels: u8,
     reversible: bool,
     line_scratch: &mut [f32],
+    origin: (u32, u32),
 ) -> EncodeResult<PackedDwtShape> {
     validate_packed_dwt_plane(coefficients.len(), width, height)?;
     validate_line_scratch(line_scratch.len(), width, height)?;
@@ -327,11 +342,12 @@ pub(crate) fn try_forward_dwt_packed_f32(
         usize_from_u32(height, "packed forward DWT height")?,
         num_levels,
         line_scratch,
-        |line| {
+        origin,
+        |line, odd_origin| {
             if reversible {
-                forward_lift_53(line);
+                forward_lift_53_phase(line, odd_origin);
             } else {
-                forward_lift_97(line);
+                forward_lift_97_phase(line, odd_origin);
             }
         },
     )
@@ -344,6 +360,7 @@ pub(crate) fn try_forward_dwt_packed_i64(
     height: u32,
     num_levels: u8,
     line_scratch: &mut [i64],
+    origin: (u32, u32),
 ) -> EncodeResult<PackedDwtShape> {
     validate_packed_dwt_plane(coefficients.len(), width, height)?;
     validate_line_scratch(line_scratch.len(), width, height)?;
@@ -353,7 +370,8 @@ pub(crate) fn try_forward_dwt_packed_i64(
         usize_from_u32(height, "packed forward DWT height")?,
         num_levels,
         line_scratch,
-        forward_lift_53_i64,
+        origin,
+        forward_lift_53_i64_phase,
     )
 }
 
@@ -436,7 +454,7 @@ mod tests {
         let expected = forward_dwt(&original, 7, 5, 3, true);
         let mut packed = original;
         let mut scratch = vec![0.0_f32; 7];
-        let shape = try_forward_dwt_packed_f32(&mut packed, 7, 5, 3, true, &mut scratch)
+        let shape = try_forward_dwt_packed_f32(&mut packed, 7, 5, 3, true, &mut scratch, (0, 0))
             .expect("valid packed reversible transform");
         let geometry =
             PackedDwtGeometry::try_new(7, 5, packed.len(), shape).expect("valid geometry");
@@ -466,7 +484,7 @@ mod tests {
         let expected = forward_dwt(&original, 8, 8, 3, false);
         let mut packed = original;
         let mut scratch = vec![0.0_f32; 8];
-        let shape = try_forward_dwt_packed_f32(&mut packed, 8, 8, 3, false, &mut scratch)
+        let shape = try_forward_dwt_packed_f32(&mut packed, 8, 8, 3, false, &mut scratch, (0, 0))
             .expect("valid packed irreversible transform");
         let geometry =
             PackedDwtGeometry::try_new(8, 8, packed.len(), shape).expect("valid geometry");
@@ -501,7 +519,7 @@ mod tests {
             .collect::<Vec<_>>();
         let mut packed = original;
         let mut scratch = vec![0_i64; 5];
-        let shape = try_forward_dwt_packed_i64(&mut packed, 5, 5, 2, &mut scratch)
+        let shape = try_forward_dwt_packed_i64(&mut packed, 5, 5, 2, &mut scratch, (0, 0))
             .expect("valid exact packed transform");
         let geometry =
             PackedDwtGeometry::try_new(5, 5, packed.len(), shape).expect("valid geometry");
@@ -540,8 +558,9 @@ mod tests {
     fn odd_geometry_descriptors_use_original_plane_stride() {
         let mut coefficients = vec![0.0_f32; 15];
         let mut scratch = vec![0.0_f32; 5];
-        let shape = try_forward_dwt_packed_f32(&mut coefficients, 5, 3, 2, true, &mut scratch)
-            .expect("valid odd transform");
+        let shape =
+            try_forward_dwt_packed_f32(&mut coefficients, 5, 3, 2, true, &mut scratch, (0, 0))
+                .expect("valid odd transform");
         let geometry =
             PackedDwtGeometry::try_new(5, 3, coefficients.len(), shape).expect("valid geometry");
 
@@ -586,27 +605,27 @@ mod tests {
     fn packed_transform_rejects_zero_axes_and_wrong_storage_lengths() {
         let mut empty = Vec::<f32>::new();
         assert_eq!(
-            try_forward_dwt_packed_f32(&mut empty, 0, 1, 1, true, &mut [0.0]),
+            try_forward_dwt_packed_f32(&mut empty, 0, 1, 1, true, &mut [0.0], (0, 0)),
             Err(EncodeError::InvalidInput {
                 what: "packed forward DWT dimensions must be non-zero",
             })
         );
         assert_eq!(
-            try_forward_dwt_packed_f32(&mut empty, 1, 0, 1, true, &mut [0.0]),
+            try_forward_dwt_packed_f32(&mut empty, 1, 0, 1, true, &mut [0.0], (0, 0)),
             Err(EncodeError::InvalidInput {
                 what: "packed forward DWT dimensions must be non-zero",
             })
         );
         let mut one_short = vec![0.0_f32; 14];
         assert_eq!(
-            try_forward_dwt_packed_f32(&mut one_short, 5, 3, 1, true, &mut [0.0; 5]),
+            try_forward_dwt_packed_f32(&mut one_short, 5, 3, 1, true, &mut [0.0; 5], (0, 0)),
             Err(EncodeError::InvalidInput {
                 what: "packed forward DWT coefficient length mismatch",
             })
         );
         let mut one_over = vec![0_i64; 16];
         assert_eq!(
-            try_forward_dwt_packed_i64(&mut one_over, 5, 3, 1, &mut [0; 5]),
+            try_forward_dwt_packed_i64(&mut one_over, 5, 3, 1, &mut [0; 5], (0, 0)),
             Err(EncodeError::InvalidInput {
                 what: "packed forward DWT coefficient length mismatch",
             })
@@ -617,14 +636,21 @@ mod tests {
     fn packed_transform_accepts_exact_scratch_and_rejects_one_short() {
         let mut coefficients = vec![0.0_f32; 15];
         assert_eq!(
-            try_forward_dwt_packed_f32(&mut coefficients, 5, 3, 1, true, &mut [0.0; 4]),
+            try_forward_dwt_packed_f32(&mut coefficients, 5, 3, 1, true, &mut [0.0; 4], (0, 0)),
             Err(EncodeError::InvalidInput {
                 what: "packed forward DWT line scratch is too short",
             })
         );
-        let shape =
-            try_forward_dwt_packed_f32(&mut coefficients, 5, 3, u8::MAX, true, &mut [0.0; 5])
-                .expect("exact scratch length is accepted");
+        let shape = try_forward_dwt_packed_f32(
+            &mut coefficients,
+            5,
+            3,
+            u8::MAX,
+            true,
+            &mut [0.0; 5],
+            (0, 0),
+        )
+        .expect("exact scratch length is accepted");
         assert_eq!(shape.num_levels, 3);
         assert_eq!((shape.ll_width, shape.ll_height), (1, 1));
     }

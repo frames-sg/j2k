@@ -19,6 +19,7 @@ use crate::j2c::encode::{
 
 #[derive(Clone, Copy)]
 pub(in crate::j2c::encode::typed_i64) struct TypedPlanePacketRequest<'a, 'input> {
+    pub(in crate::j2c::encode::typed_i64) tile_origin: (u32, u32),
     pub(in crate::j2c::encode::typed_i64) component_dimensions: &'a [(u32, u32)],
     pub(in crate::j2c::encode::typed_i64) component_step_sizes: &'a [Vec<QuantStepSize>],
     pub(in crate::j2c::encode::typed_i64) num_levels: u8,
@@ -77,6 +78,10 @@ pub(in crate::j2c::encode::typed_i64) fn prepare_typed_component_planes_i64_pack
         let packets = prepare_i64_component_packets(
             samples,
             I64ComponentPrepareRequest {
+                origin: (
+                    request.tile_origin.0.div_ceil(u32::from(plane.x_rsiz)),
+                    request.tile_origin.1.div_ceil(u32::from(plane.y_rsiz)),
+                ),
                 component: u16::try_from(component_idx).map_err(|_| {
                     NativeEncodePipelineError::internal_invariant(
                         "validated component index exceeds u16",

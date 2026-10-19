@@ -12,6 +12,7 @@ use crate::j2c::encode::{
 
 #[derive(Clone, Copy)]
 pub(super) struct PackedSubbandPlan {
+    pub(super) origin: (u32, u32),
     pub(super) width: u32,
     pub(super) height: u32,
     pub(super) total_bitplanes: u8,
@@ -42,8 +43,16 @@ impl PackedSubbandPlan {
             })?;
         let width = request.view.width();
         let height = request.view.height();
-        let num_cbs_x = width.div_ceil(request.settings.cb_width);
-        let num_cbs_y = height.div_ceil(request.settings.cb_height);
+        let num_cbs_x = crate::j2c::encode::tile_grid::block_count(
+            request.origin.0,
+            width,
+            request.settings.cb_width,
+        )?;
+        let num_cbs_y = crate::j2c::encode::tile_grid::block_count(
+            request.origin.1,
+            height,
+            request.settings.cb_height,
+        )?;
         let block_count = usize::try_from(num_cbs_x)
             .map_err(|_| {
                 NativeEncodePipelineError::arithmetic_overflow("code-block count exceeds usize")
@@ -53,6 +62,7 @@ impl PackedSubbandPlan {
             })?)
             .ok_or_else(|| NativeEncodePipelineError::arithmetic_overflow("code-block count"))?;
         Ok(Self {
+            origin: request.origin,
             width,
             height,
             total_bitplanes,
@@ -67,6 +77,7 @@ pub(super) fn empty_prepared_subband(
     request: &PackedSubbandRequest<'_, '_>,
 ) -> PreparedEncodeSubband {
     PreparedEncodeSubband {
+        origin: request.origin,
         code_blocks: Vec::new(),
         preencoded_ht_code_blocks: None,
         preencoded_ht_maximum_cleanup_magnitude: None,
@@ -89,6 +100,7 @@ pub(super) fn prepared_subband(
     code_blocks: Vec<PreparedEncodeCodeBlock>,
 ) -> PreparedEncodeSubband {
     PreparedEncodeSubband {
+        origin: request.origin,
         code_blocks,
         preencoded_ht_code_blocks: None,
         preencoded_ht_maximum_cleanup_magnitude: None,

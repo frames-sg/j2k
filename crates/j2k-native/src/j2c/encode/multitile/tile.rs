@@ -160,6 +160,7 @@ impl<'iteration, 'request, 'input> TileIteration<'iteration, 'request, 'input> {
                 self.request.component_sample_info,
                 &child_session,
                 accelerator,
+                (self.position.origin_x, self.position.origin_y),
             )?
         };
         let packetized_bytes = packet_encode::packetized_tile_retained_bytes(&packetized)?;

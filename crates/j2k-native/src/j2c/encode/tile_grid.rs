@@ -1,20 +1,69 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Multi-tile encode geometry the tile-at-a-time encoder can represent.
+//! Absolute tile/subband geometry and selection of zero-origin fused encoders.
 //!
-//! Multi-tile encode codes each tile as a standalone image whose origin is
-//! zero. A decoder instead places every tile on the image grid: the wavelet
-//! low/high split follows the parity of absolute coordinates (Formula B-15),
-//! and code-block and precinct partitions are anchored at zero in sub-band
-//! and resolution coordinates (B.6, B.7). The two agree only when each
-//! component-tile origin is a multiple of `2^levels` and no sub-band or
-//! resolution of the tile crosses a code-block or precinct boundary unless it
-//! starts on one. Other geometries would produce codestreams that decode to
-//! the wrong samples, so they are rejected.
+//! The staged encoder carries absolute origins. Fused whole-tile kernels can
+//! use local coordinates only when their wavelet, block, and precinct
+//! partitions are equivalent to the absolute partitions (T.800 B.5-B.7).
+
+use super::{NativeEncodePipelineError, NativeEncodePipelineResult, SubBandType};
+
+pub(super) fn subband_origin(
+    origin: (u32, u32),
+    depth: u8,
+    band: SubBandType,
+) -> NativeEncodePipelineResult<(u32, u32)> {
+    j2k_types::encode_geometry::encode_subband_origin(
+        origin,
+        depth,
+        super::public_sub_band_type(band),
+    )
+    .ok_or_else(|| {
+        NativeEncodePipelineError::internal_invariant(
+            "subband origin exceeds supported decomposition depth",
+        )
+    })
+}
+
+pub(super) fn block_count(origin: u32, extent: u32, span: u32) -> NativeEncodePipelineResult<u32> {
+    j2k_types::encode_geometry::encode_grid_cell_count(origin, extent, span)
+        .ok_or_else(|| NativeEncodePipelineError::internal_invariant("invalid code-block grid"))
+}
+
+pub(super) fn block_span(
+    origin: u32,
+    extent: u32,
+    span: u32,
+    index: u32,
+) -> NativeEncodePipelineResult<(u32, u32)> {
+    j2k_types::encode_geometry::encode_grid_cell_span(origin, extent, span, index).ok_or_else(
+        || NativeEncodePipelineError::internal_invariant("code-block index exceeds subband grid"),
+    )
+}
+
+pub(super) fn tile_bounds(
+    width: u32,
+    height: u32,
+    origin: (u32, u32),
+) -> NativeEncodePipelineResult<j2k_types::J2kRect> {
+    Ok(j2k_types::J2kRect {
+        x0: origin.0,
+        y0: origin.1,
+        x1: origin
+            .0
+            .checked_add(width)
+            .ok_or_else(|| NativeEncodePipelineError::arithmetic_overflow("tile x endpoint"))?,
+        y1: origin
+            .1
+            .checked_add(height)
+            .ok_or_else(|| NativeEncodePipelineError::arithmetic_overflow("tile y endpoint"))?,
+    })
+}
 
 /// Default precinct exponent when no precinct partition is signalled.
 const DEFAULT_PRECINCT_EXPONENT: u8 = 15;
 
+#[cfg(test)]
 pub(super) const MISALIGNED_TILE_GRID: &str =
     "multi-tile encode requires tile origins on the wavelet, code-block, and precinct grids";
 
@@ -71,6 +120,7 @@ fn range_respects_grid(start: u64, end: u64, grid: u64) -> bool {
 
 /// Validate every tile origin of a rectangular tile grid on one axis for a
 /// component with sampling factor `sampling`.
+#[cfg(test)]
 pub(super) fn tile_axis_is_aligned(
     image_extent: u32,
     tile_extent: u32,
@@ -102,6 +152,7 @@ pub(super) fn tile_axis_is_aligned(
 /// Validate a tile grid for components with the given sampling factors.
 /// `code_block_exponents` and `precinct_exponents` use the
 /// [`super::EncodeOptions`] conventions.
+#[cfg(test)]
 pub(super) fn validate_tile_grid(
     image: (u32, u32),
     tile: (u32, u32),

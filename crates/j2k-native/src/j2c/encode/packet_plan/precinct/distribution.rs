@@ -136,6 +136,7 @@ fn append_split_subbands(
         try_push_planned(
             &mut packet.subbands,
             PreparedEncodeSubband {
+                origin: geometry.origin,
                 code_blocks,
                 preencoded_ht_code_blocks,
                 preencoded_ht_maximum_cleanup_magnitude,

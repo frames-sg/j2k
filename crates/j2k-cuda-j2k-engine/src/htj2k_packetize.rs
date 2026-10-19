@@ -481,9 +481,6 @@ pub(crate) fn htj2k_packetization_kernel_packets(
             return Err(CudaError::LengthTooLarge { len: subband_end });
         }
         for subband in &subbands[subband_start..subband_end] {
-            if subband.num_cbs_x == 0 || subband.num_cbs_y == 0 {
-                return Err(CudaError::LengthTooLarge { len: 0 });
-            }
             let subband_block_start = subband.block_start as usize;
             let subband_block_count = subband.block_count as usize;
             let subband_block_end = subband_block_start
@@ -589,9 +586,8 @@ pub(crate) fn htj2k_packetization_tag_tree_node_count(
     height: u32,
 ) -> Result<usize, CudaError> {
     if width == 0 || height == 0 {
-        return Err(CudaError::InvalidArgument {
-            message: "HTJ2K packetization tag-tree dimensions must be nonzero".to_string(),
-        });
+        // Empty edge subbands contain no code blocks or tag-tree nodes (T.800 B.10).
+        return Ok(0);
     }
     let mut levels = 0usize;
     let mut total = 0usize;
@@ -620,5 +616,81 @@ pub(crate) fn htj2k_packetization_tag_tree_node_count(
         }
         w = w.div_ceil(2);
         h = h.div_ceil(2);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_edge_subbands_pass_preflight_without_accepting_inconsistent_counts() {
+        let packets = [CudaHtj2kPacketizationPacket {
+            block_start: 0,
+            block_count: 1,
+            subband_start: 0,
+            subband_count: 2,
+            output_capacity: 16,
+            layer: 0,
+        }];
+        let blocks = [CudaHtj2kPacketizationBlock {
+            data_offset: 0,
+            data_len: 1,
+            cleanup_length: 1,
+            refinement_length: 0,
+            num_coding_passes: 1,
+            num_zero_bitplanes: 0,
+            l_block: 3,
+            previously_included: 0,
+            inclusion_layer: 0,
+        }];
+        let states = [
+            CudaHtj2kPacketizationSubbandTagState::default(),
+            CudaHtj2kPacketizationSubbandTagState {
+                inclusion_node_start: 0,
+                zero_bitplane_node_start: 1,
+                node_count: 1,
+                reserved0: 0,
+            },
+        ];
+        let nodes = [CudaHtj2kPacketizationTagNodeState::default(); 2];
+        for (width, height) in [(0, 0), (0, 1), (1, 0)] {
+            let mut subbands = [
+                CudaHtj2kPacketizationSubband {
+                    block_start: 0,
+                    block_count: 0,
+                    num_cbs_x: width,
+                    num_cbs_y: height,
+                },
+                CudaHtj2kPacketizationSubband {
+                    block_start: 0,
+                    block_count: 1,
+                    num_cbs_x: 1,
+                    num_cbs_y: 1,
+                },
+            ];
+            let mut budget = HostPhaseBudget::new("packetization test metadata");
+            let planned =
+                htj2k_packetization_kernel_packets(&packets, &subbands, &blocks, 1, &mut budget)
+                    .expect("valid empty edge subband");
+            assert_eq!(planned.len(), 1);
+            validate_htj2k_packetization_tag_state(&subbands, &states, &nodes)
+                .expect("empty bands have zero tag-tree nodes");
+            let mut invalid_states = states;
+            invalid_states[0].node_count = 1;
+            assert!(
+                validate_htj2k_packetization_tag_state(&subbands, &invalid_states, &nodes,)
+                    .is_err()
+            );
+            subbands[0].block_count = 1;
+            assert!(htj2k_packetization_kernel_packets(
+                &packets,
+                &subbands,
+                &blocks,
+                1,
+                &mut budget,
+            )
+            .is_err());
+        }
     }
 }

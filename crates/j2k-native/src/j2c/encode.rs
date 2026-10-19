@@ -768,6 +768,7 @@ struct PreparedEncodeCodeBlock {
 }
 
 struct PreparedEncodeSubband {
+    origin: (u32, u32),
     code_blocks: Vec<PreparedEncodeCodeBlock>,
     preencoded_ht_code_blocks: Option<Vec<EncodedHtJ2kCodeBlock>>,
     preencoded_ht_maximum_cleanup_magnitude: Option<u64>,
