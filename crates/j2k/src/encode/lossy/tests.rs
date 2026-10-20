@@ -127,7 +127,9 @@ fn rate_search_stops_at_the_component_profile_scale_ceiling() {
             3
         ]));
     // Detail weights cap the scale near 2 while LL is still finely quantized.
-    let ceiling = super::profile_scale_ceiling(samples, &options).unwrap();
+    let ceiling = super::quantization_scale_bounds(samples, &options)
+        .unwrap()
+        .1;
     assert!(ceiling > 1.0 && ceiling < 4.0);
 
     // Unreachable without pushing detail steps out of range.
@@ -170,5 +172,25 @@ fn explicit_lossy_max_decomposition_levels_selects_that_depth() {
         for (max, expected) in [(None, 1), (Some(0), 0), (Some(5), 5), (Some(32), 8)] {
             assert_eq!(levels(max), expected, "{progression:?} max {max:?}");
         }
+    }
+}
+
+#[test]
+fn rate_search_starts_at_the_finest_admissible_profile_scale() {
+    let pixels = vec![128_u8; 64 * 64];
+    let samples = J2kLossySamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
+    let options = J2kLossyEncodeOptions::default()
+        .with_cpu_only_backend()
+        .with_max_decomposition_levels(Some(0))
+        .with_quantization_profile(Some(vec![vec![1.0 / 16_777_216.0]]));
+    // At scale 1 the step is 2^-26, below the finest QCD step 2^-23.
+    // Explicit encoding must still reject it, while rate search can use ~8.
+    assert!(encode_j2k_lossy(samples, &options).is_err());
+    for target in [J2kRateTarget::Bytes(1000), J2kRateTarget::PsnrDb(40.0)] {
+        let encoded = encode_j2k_lossy(samples, &options.clone().with_rate_target(Some(target)))
+            .expect("a representable candidate meets the target");
+        assert!(encoded.report.quantization_scale > 7.0);
+        let header = j2k_native::inspect_j2k_codestream_header(&encoded.codestream).unwrap();
+        assert_eq!(header.resolution_levels, 1);
     }
 }

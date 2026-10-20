@@ -5,6 +5,17 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- Resolve lossless facade depth against edge tiles before reporting effective
+  geometry or required accelerator stages, matching the emitted COD depth.
+- Evaluate extreme irreversible quantization products without losing a valid
+  result to intermediate overflow or underflow. Rate search now resolves both
+  profile scale bounds and preserves feasible minimum-PSNR candidates after an
+  initial quality dip; invalid fixed-scale profiles remain ordinary input errors.
+- Align CUDA requested-format precision thresholds and synthesized 16-bit alpha
+  with the CPU contract, and round centered non-MCT color samples before shifting.
+  Metal signed sources below eight bits now widen correctly to requested Gray16
+  in both fused and separate stores. Native batch sample preservation is unchanged.
+
 - Image opening and header inspection accept valid dimensions beyond 60,000
   pixels. Precinct and code-block edges are clipped without coordinate
   overflow, and reference-grid strides use wide arithmetic. Decode allocation

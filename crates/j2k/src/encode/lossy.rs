@@ -135,20 +135,22 @@ pub(super) fn encode_lossy_targeted(
     }
 }
 
-/// Largest scale rate search may try. Past it a component quantization
-/// profile has steps QCD/QCC cannot store, which native encode rejects.
-fn profile_scale_ceiling(
+/// Resolve the entire admissible interval before encoding any rate candidate.
+fn quantization_scale_bounds(
     samples: J2kLossySamples<'_>,
     options: &J2kLossyEncodeOptions,
-) -> Result<f32, J2kError> {
-    if options.quantization_profile.is_none() {
-        return Ok(f32::INFINITY);
-    }
+) -> Result<(f32, f32), J2kError> {
     let native = native_lossy_options(samples, options, 1.0)?;
-    Ok(
-        j2k_native::irreversible_quantization_profile_scale_ceiling(samples.bit_depth, &native)
-            .unwrap_or(f32::INFINITY),
-    )
+    let (lower, upper) =
+        j2k_native::irreversible_quantization_scale_bounds(samples.bit_depth, &native);
+    let lower = lower.max(1.0);
+    if lower > upper {
+        return Err(J2kError::RateTargetUnreachable {
+            target: "a representable component quantization profile at scale >= 1".into(),
+            best: "no common admissible scale".into(),
+        });
+    }
+    Ok((lower, upper))
 }
 
 pub(super) fn encode_lossy_to_byte_target(
@@ -159,9 +161,9 @@ pub(super) fn encode_lossy_to_byte_target(
 ) -> Result<LossyAttempt, J2kError> {
     let tolerance = byte_target_tolerance(target_bytes);
     let maximum_bytes = target_bytes.saturating_add(tolerance);
-    let scale_ceiling = profile_scale_ceiling(samples, options)?.min(1_048_576.0);
-    let mut low = 1.0f32;
-    let mut high = 1.0f32;
+    let (scale_floor, scale_ceiling) = quantization_scale_bounds(samples, options)?;
+    let mut low = scale_floor;
+    let mut high = scale_floor;
     let initial_codestream = encode_at_scale(high)?;
     let mut best_len = initial_codestream.len() as u64;
     let mut current_len = best_len;
@@ -198,6 +200,9 @@ pub(super) fn encode_lossy_to_byte_target(
 
     for _ in 0..options.psnr_iteration_budget.max(1) {
         let mid = f32::midpoint(low, high);
+        if mid <= low || mid >= high {
+            break;
+        }
         let codestream = encode_at_scale(mid)?;
         let len = codestream.len() as u64;
         let diff = byte_target_diff(len, target_bytes);
@@ -233,22 +238,16 @@ pub(super) fn encode_lossy_to_psnr_target(
     mut encode_at_scale: impl FnMut(f32) -> Result<Vec<u8>, J2kError>,
 ) -> Result<LossyAttempt, J2kError> {
     let tolerance = options.psnr_tolerance_db;
-    let scale_ceiling = profile_scale_ceiling(samples, options)?;
-    let mut low = 1.0f32;
-    let mut high = 1.0f32;
+    let (scale_floor, scale_ceiling) = quantization_scale_bounds(samples, options)?;
+    let mut low = scale_floor;
+    let mut high = scale_floor;
     let initial_codestream = encode_at_scale(high)?;
     let initial_psnr = decoded_psnr(samples, &initial_codestream)?;
     // The selected scale is re-encoded once after the search. Keeping the
     // earlier output here would undercount it during every later candidate.
     drop(initial_codestream);
-    let mut best_scale = high;
-    let best_psnr = initial_psnr;
-    if best_psnr + tolerance < target_psnr_db {
-        return Err(J2kError::RateTargetUnreachable {
-            target: format!("{target_psnr_db:.3} dB"),
-            best: format!("{best_psnr:.3} dB"),
-        });
-    }
+    let mut best_scale = (initial_psnr + tolerance >= target_psnr_db).then_some(high);
+    let mut best_psnr = initial_psnr;
 
     for _ in 0..options.psnr_iteration_budget.max(1) {
         if high >= scale_ceiling {
@@ -257,25 +256,47 @@ pub(super) fn encode_lossy_to_psnr_target(
         high = (high * 2.0).min(scale_ceiling);
         let codestream = encode_at_scale(high)?;
         let psnr = decoded_psnr(samples, &codestream)?;
+        best_psnr = best_psnr.max(psnr);
         if psnr + tolerance >= target_psnr_db {
-            best_scale = high;
+            best_scale = Some(high);
             low = high;
-        } else {
+        } else if best_scale.is_some() {
             break;
+        }
+        // A failed initial quality measurement is not a proof that every
+        // coarser candidate fails: reconstructed PSNR need not be monotonic.
+    }
+    // Always inspect the admissible endpoint if no probe has met the target.
+    if best_scale.is_none() && high < scale_ceiling {
+        high = scale_ceiling;
+        let codestream = encode_at_scale(high)?;
+        let psnr = decoded_psnr(samples, &codestream)?;
+        best_psnr = best_psnr.max(psnr);
+        if psnr + tolerance >= target_psnr_db {
+            best_scale = Some(high);
+            low = high;
         }
     }
 
     for _ in 0..options.psnr_iteration_budget.max(1) {
         let mid = f32::midpoint(low, high);
+        if mid <= low || mid >= high {
+            break;
+        }
         let codestream = encode_at_scale(mid)?;
         let psnr = decoded_psnr(samples, &codestream)?;
+        best_psnr = best_psnr.max(psnr);
         if psnr + tolerance >= target_psnr_db {
-            best_scale = mid;
+            best_scale = Some(mid);
             low = mid;
         } else {
             high = mid;
         }
     }
+    let best_scale = best_scale.ok_or_else(|| J2kError::RateTargetUnreachable {
+        target: format!("{target_psnr_db:.3} dB"),
+        best: format!("{best_psnr:.3} dB"),
+    })?;
     let codestream = encode_at_scale(best_scale)?;
     let final_psnr = decoded_psnr(samples, &codestream)?;
     if final_psnr + tolerance < target_psnr_db {

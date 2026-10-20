@@ -64,7 +64,14 @@ pub struct EncodeOptions {
     /// Optional component-specific irreversible multipliers in QCD/QCC order:
     /// final LL, then HL/LH/HH from coarsest to finest resolution.
     /// Each component needs exactly `1 + 3 * actual_decomposition_levels` entries.
-    /// Multipliers compose with the global scale and orientation multipliers.
+    /// An active profile multiplies the unrounded nominal step
+    /// `2^-guard_bits * global_scale * orientation_scale`, then rounds once to
+    /// the stored tuple. Every resulting tuple must be representable; active
+    /// profiles never silently saturate. An exact all-ones profile disables
+    /// weighting and is byte-identical to no profile, including global saturation.
+    /// For example, at precision 30 and two guard bits the nominal 0.25 step
+    /// clips to 0.5 without a profile. Active weights 0.99 or 1.01 are rejected;
+    /// weight 2 is representable. Weights are not based on the clipped 0.5 step.
     /// Raw-pixel irreversible encoding supports this profile; precomputed
     /// coefficient paths reject it until their metadata contract is extended.
     pub irreversible_quantization_profile: Option<Vec<Vec<f32>>>,

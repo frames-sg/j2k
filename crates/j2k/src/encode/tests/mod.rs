@@ -130,3 +130,32 @@ fn lossless_facade_roundtrips_four_component_via_public_api() {
         .expect("2-component samples must be accepted by the public constructor");
     assert_eq!(two_component.components, 2);
 }
+
+#[test]
+fn effective_lossless_depth_matches_cod_for_edge_tiles() {
+    for (width, height, tile, expected) in [
+        (65, 64, 64, 0),
+        (64, 65, 64, 0),
+        (80, 64, 64, 4),
+        (64, 80, 64, 4),
+        (128, 128, 64, 5),
+        (64, 64, 128, 5),
+    ] {
+        let pixels = vec![128_u8; (width * height) as usize];
+        let samples = J2kLosslessSamples::new(&pixels, width, height, 1, 8, false).unwrap();
+        let options = J2kLosslessEncodeOptions::default()
+            .with_cpu_only_backend()
+            .with_max_decomposition_levels(Some(5))
+            .with_tile_size(Some((tile, tile)));
+        let encoded = encode_j2k_lossless(samples, &options).unwrap();
+        let signaled = j2k_native::inspect_j2k_codestream_header(&encoded.codestream)
+            .unwrap()
+            .resolution_levels
+            - 1;
+        assert_eq!(signaled, expected);
+        assert_eq!(
+            j2k_lossless_decomposition_levels_for_options(samples, options),
+            signaled
+        );
+    }
+}

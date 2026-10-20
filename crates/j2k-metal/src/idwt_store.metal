@@ -28,8 +28,7 @@ struct J2kStoreGrayI16 {
 // `j2k_store_component_gray_i8_widened_u16` does.
 struct J2kStoreGrayI8WidenedU16 {
     static ushort pack(float value, float max_value, float, float) {
-        const short sample = j2k_pack_native_i16(value, max_value);
-        return ushort(uchar(char(sample))) * 257u;
+        return j2k_pack_signed_narrow_u16(value, max_value);
     }
 };
 

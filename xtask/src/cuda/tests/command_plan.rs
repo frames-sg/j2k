@@ -13,6 +13,7 @@ fn quick_cuda_plan_uses_one_production_feature_runtime_graph_and_fast_profile() 
     assert!(!tests.contains(&"--release"));
     for package in [
         "j2k-cuda-runtime",
+        "j2k-cuda-j2k-engine",
         "j2k-jpeg-cuda",
         "j2k-cuda",
         "j2k-transcode-cuda",

@@ -142,6 +142,15 @@ inline short j2k_pack_native_i16(float value, float positive_max) {
     return short(rint(clamp(value, negative_min, positive_max)));
 }
 
+// Match native signed-byte storage followed by the requested Gray16 widening.
+// Sub-eight-bit negative bytes exceed the declared unsigned range and saturate.
+inline ushort j2k_pack_signed_narrow_u16(float value, float positive_max) {
+    const short sample = j2k_pack_native_i16(value, positive_max);
+    const uint stored = uint(uchar(char(sample)));
+    const uint maximum = uint(positive_max) * 2u + 1u;
+    return ushort(min((stored * 65535u + maximum / 2u) / maximum, 65535u));
+}
+
 inline J2kStoreWindowIndices j2k_store_window_indices(
     uint input_width,
     uint output_width,
@@ -375,8 +384,8 @@ kernel void j2k_store_component_gray_u16(
 }
 
 // Signed sources of at most eight bits written to Gray16: the CPU takes the
-// sample's two's-complement byte and widens it like any eight-bit sample
-// (x * 257), so -128 becomes 0x8080.
+// sample's two's-complement byte and widens it using the declared precision.
+// At eight bits this is x * 257, so -128 becomes 0x8080.
 kernel void j2k_store_component_gray_i8_widened_u16(
     device const float *input [[buffer(0)]],
     device ushort *output [[buffer(1)]],
@@ -398,11 +407,10 @@ kernel void j2k_store_component_gray_i8_widened_u16(
         0u,
         params.output_item_offset
     );
-    const short sample = j2k_pack_native_i16(
+    output[indices.dst_idx] = j2k_pack_signed_narrow_u16(
         j2k_shift_centered_sample(input[indices.src_idx], params.addend, true),
         params.max_value
     );
-    output[indices.dst_idx] = ushort(uchar(char(sample))) * 257u;
 }
 
 kernel void j2k_store_component_gray_i16(

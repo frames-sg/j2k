@@ -183,6 +183,16 @@ class ProfileEncodeTests(unittest.TestCase):
                         self.encode(self.RAMP, codec=codec, target_bpp=target_bpp),
                     )
 
+    def test_rate_search_resolves_a_profile_lower_scale_bound(self):
+        constant = bytes([128]) * (self.SIZE * self.SIZE * 3)
+        profile = [[2.0 ** -24] * 7] * 3
+        for codec in ("j2k", "htj2k"):
+            with self.subTest(codec=codec):
+                with self.assertRaises(ValueError):
+                    self.encode(constant, codec=codec, profile=profile)
+                encoded = self.encode(constant, codec=codec, profile=profile, target_bpp=8.0)
+                self.assertEqual(j2k.decode_rgb(encoded), (self.SIZE, self.SIZE, constant))
+
     def test_rate_search_keeps_profile_ratios(self):
         noise = random.Random(7).randbytes(self.SIZE * self.SIZE * 3)
         weights = [1.0, 2.0, 2.0, 4.0, 4.0, 4.0, 8.0]

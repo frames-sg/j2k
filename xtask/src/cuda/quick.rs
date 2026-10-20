@@ -5,6 +5,7 @@ use super::CUDA_RUNTIME_TEST_TARGETS;
 const QUICK_CUDA_FEATURES: &str = "j2k-cuda-runtime/cuda-oxide,j2k-jpeg-cuda/cuda-runtime,j2k-cuda/cuda-runtime,j2k-transcode-cuda/cuda-runtime,j2k-ml/cuda";
 const QUICK_CUDA_PACKAGES: &[&str] = &[
     "j2k-cuda-runtime",
+    "j2k-cuda-j2k-engine",
     "j2k-jpeg-cuda",
     "j2k-cuda",
     "j2k-transcode-cuda",

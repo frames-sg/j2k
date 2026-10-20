@@ -45,3 +45,41 @@ only when one of those recoveries was actually used.
 - [Pure-Rust JPEG 2000 codec documentation](https://frames-sg.com/j2k/rust-jpeg2000-codec/)
 - Repository: <https://github.com/frames-sg/j2k>
 - Support policy: <https://github.com/frames-sg/j2k/blob/main/docs/public-support.md>
+
+## Encode depth, quantization, and output samples
+
+The decomposition option selects a depth under the existing progression policy;
+images narrower than 64 samples retain the undecomposed default. The encoder
+then constrains that selection by the smallest tile component, including partial
+edge tiles and component sampling. The effective-depth helper, transform plan,
+profile row length (`1 + 3 * depth`), and COD signaling use that resolved depth.
+
+An active component quantization profile weights the unrounded nominal step,
+before stored-step rounding. It rejects unrepresentable weighted steps. An exact
+all-ones profile is the explicit identity/disabled profile and preserves the
+no-profile codestream, whose global steps may saturate. This distinction matters
+at high precision: with 30-bit input and two guard bits, nominal 0.25 clips to the
+finest stored step 0.5. Active weights near one remain below the representable
+range; weight two reaches it. Applying weights to an already clipped rate-search
+candidate would change that contract and the profile's ratios.
+
+Rate search uses scales at or above one within the common admissible interval of
+all weighted steps. Byte/BPP targets accept results within the size allowance;
+PSNR specifies a minimum quality within `psnr_tolerance_db`. Search uses doubling
+and bounded bisection, evaluates an encountered admissible boundary, retains a
+feasible candidate, and validates the final re-encode. PSNR search also probes
+beyond an initial quality miss and checks the endpoint if no probe succeeds;
+it does not exhaustively enumerate potentially non-monotonic quality islands.
+
+Prepared native batches preserve significant sample values and signed storage.
+For the supported 1–16-bit source routes, requested `Gray8`/`Rgb8`/`Rgba8`
+output scales unsigned sample ranges to 0–255 (negative samples clamp to zero).
+Requested `Gray16`/`Rgb16`/`Rgba16` output widens sources of at most eight bits
+to 0–65535 and preserves native values for 9–16-bit sources. Signed sources
+above eight bits preserve their two's-complement storage; signed sources of at
+most eight bits first form their two's-complement byte and widen that byte using
+the declared precision, saturating at 65535. Synthesized alpha uses the
+output storage maximum (the native significant maximum above eight bits), while
+genuine alpha is converted as a source component. Irreversible integer output
+rounds the centered 9/7 sample ties-to-even before applying the unsigned level
+shift. Supported formats and backend routing remain API-specific.

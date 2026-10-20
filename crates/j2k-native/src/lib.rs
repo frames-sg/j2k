@@ -255,9 +255,9 @@ pub use j2c::encode::{
     encode_prequantized_htj2k_97_with_accelerator_and_max_host_bytes,
     encode_resident_htj2k_with_accelerator, encode_typed_component_planes_53,
     encode_with_accelerator, encode_with_accelerator_and_roi_regions, encode_with_roi_regions,
-    irreversible_quantization_profile_scale_ceiling, irreversible_quantization_step_for_subband,
-    EncodeComponentPlane, EncodeOptions, EncodeProgressionOrder, EncodeRoiRegion,
-    EncodeTypedComponentPlane, ResidentHtj2kEncodeError,
+    irreversible_quantization_profile_scale_ceiling, irreversible_quantization_scale_bounds,
+    irreversible_quantization_step_for_subband, EncodeComponentPlane, EncodeOptions,
+    EncodeProgressionOrder, EncodeRoiRegion, EncodeTypedComponentPlane, ResidentHtj2kEncodeError,
 };
 pub use j2c::{
     CpuDecodeParallelism, DecoderContext, DecoderWorkspace, DecoderWorkspaceStats,

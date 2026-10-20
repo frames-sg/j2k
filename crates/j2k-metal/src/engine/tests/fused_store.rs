@@ -36,7 +36,7 @@ fn seeded_image(
             if bit_depth <= 8 {
                 samples.push(value.to_le_bytes()[0]);
             } else {
-                samples.extend_from_slice(&i16::try_from(value).expect("fits i16").to_le_bytes());
+                samples.extend_from_slice(&value.to_le_bytes()[..2]);
             }
         }
     }
@@ -56,7 +56,16 @@ fn fused_last_level_stores_match_the_cpu_for_every_gray_output() {
     let (width, height) = (157_u32, 93_u32);
     for reversible in [true, false] {
         for (bit_depth, signed, fmt) in [
+            (7, false, PixelFormat::Gray8),
+            (7, false, PixelFormat::Gray16),
+            (7, true, PixelFormat::Gray16),
             (8, false, PixelFormat::Gray8),
+            (9, false, PixelFormat::Gray8),
+            (9, false, PixelFormat::Gray16),
+            (9, true, PixelFormat::Gray16),
+            (16, false, PixelFormat::Gray8),
+            (16, false, PixelFormat::Gray16),
+            (16, true, PixelFormat::Gray16),
             (8, false, PixelFormat::Gray16),
             (12, false, PixelFormat::Gray16),
             (12, true, PixelFormat::Gray16),
@@ -82,11 +91,14 @@ fn fused_last_level_stores_match_the_cpu_for_every_gray_output() {
                 1,
                 "{label}: fused store not used"
             );
-            assert_eq!(
-                surface.as_bytes().expect("surface bytes").as_ref(),
-                expected.as_slice(),
-                "{label}"
-            );
+            let actual = surface.as_bytes().expect("surface bytes");
+            assert_eq!(actual.len(), expected.len(), "{label}");
+            if let Some(index) = actual.iter().zip(&expected).position(|(a, b)| a != b) {
+                panic!(
+                    "{label}: byte {index}: GPU={}, CPU={}",
+                    actual[index], expected[index]
+                );
+            }
         }
     }
 }
@@ -113,7 +125,15 @@ fn stacked_batches_store_their_last_level_directly_and_match_the_cpu() {
         .expect("Metal batch decoder");
     let mut cpu = j2k::CpuBatchDecoder::new(options);
     for reversible in [true, false] {
-        for (bit_depth, signed) in [(8, false), (12, false), (12, true)] {
+        for (bit_depth, signed) in [
+            (7, false),
+            (7, true),
+            (8, false),
+            (9, false),
+            (9, true),
+            (12, false),
+            (12, true),
+        ] {
             let label = format!("{bit_depth}-bit signed={signed} reversible={reversible}");
             // Distinct images of one geometry form one stacked group.
             let inputs = || {
@@ -209,4 +229,47 @@ fn stacked_groups_split_into_runs_keep_every_image_in_place() {
         }
     }
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn separate_signed_seven_bit_store_uses_requested_gray16_widening() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+    let source = [-64_i8, -1, 0, 63];
+    let pixels: Vec<_> = source
+        .into_iter()
+        .map(|value| value.to_le_bytes()[0])
+        .collect();
+    let bytes = encode_htj2k(
+        &pixels,
+        4,
+        1,
+        1,
+        7,
+        true,
+        &EncodeOptions {
+            num_decomposition_levels: 0,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let header = j2k_native::inspect_j2k_codestream_header(&bytes).unwrap();
+    assert_eq!(header.resolution_levels, 1);
+    assert_eq!(header.component_info[0].bit_depth, 7);
+    assert!(header.component_info[0].signed);
+    reset_fused_idwt_stores_for_test();
+    let surface = J2kDecoder::new(&bytes)
+        .unwrap()
+        .decode_request_to_device(MetalDecodeRequest::full(
+            PixelFormat::Gray16,
+            BackendRequest::Metal,
+        ))
+        .unwrap();
+    assert_eq!(fused_idwt_stores_for_test(), 0);
+    let expected: Vec<_> = [65535_u16, 65535, 0, 32509]
+        .into_iter()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    assert_eq!(surface.as_bytes().unwrap().as_ref(), expected);
 }

@@ -734,6 +734,36 @@ pub fn irreversible_quantization_profile_scale_ceiling(
     ))
 }
 
+/// Resolve the rate-search scale interval from every weighted QCD/QCC step.
+///
+/// Options must already have valid positive scales and profile shape. An
+/// inverted interval means no common representable scale exists. With no
+/// active profile, the interval includes scale one and ends at global
+/// saturation. Explicit fixed-scale encoding still rejects unrepresentable
+/// active profiles instead of adjusting their scale.
+#[doc(hidden)]
+#[must_use]
+pub fn irreversible_quantization_scale_bounds(
+    bit_depth: u8,
+    options: &EncodeOptions,
+) -> (f32, f32) {
+    let guard_bits = requested_guard_bits(options, options.use_mct, false);
+    // HT block coding supports at most 31 coded bitplanes. For irreversible
+    // steps Mb = guard_bits + exponent - 1, which may narrow the QCD range.
+    let maximum_exponent = if options.use_ht_block_coding {
+        32_u16.saturating_sub(u16::from(guard_bits)).min(31)
+    } else {
+        31
+    };
+    quantize::quantization_scale_bounds(
+        bit_depth,
+        guard_bits,
+        options.irreversible_quantization_subband_scales,
+        options.irreversible_quantization_profile.as_deref(),
+        maximum_exponent,
+    )
+}
+
 fn requested_guard_bits(options: &EncodeOptions, use_mct: bool, openhtj2k_qfactor: bool) -> u8 {
     if openhtj2k_qfactor {
         1
