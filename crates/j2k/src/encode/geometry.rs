@@ -33,25 +33,13 @@ pub(super) fn j2k_lossy_decomposition_levels_for_options(
     samples: J2kLossySamples<'_>,
     options: &J2kLossyEncodeOptions,
 ) -> u8 {
-    let levels = shared_lossless_decomposition_levels(
+    decomposition_levels_for_geometry(
         samples.width,
         samples.height,
-        options.progression.packetization_order(),
+        options.progression,
         options.max_decomposition_levels,
-    );
-    // Native multi-tile encode applies this same cap, so profile validation
-    // and COD agree on the depth the smallest edge tile allows.
-    options
-        .tile_size
-        .map_or(levels, |(tile_width, tile_height)| {
-            tiled_decomposition_levels(
-                samples.width,
-                samples.height,
-                tile_width,
-                tile_height,
-                levels,
-            )
-        })
+        options.tile_size,
+    )
 }
 
 /// Return the effective lossless decomposition level policy for encode options.
@@ -67,10 +55,28 @@ pub(super) fn j2k_lossless_decomposition_levels_for_resident_geometry(
     height: u32,
     options: J2kLosslessEncodeOptions,
 ) -> u8 {
-    shared_lossless_decomposition_levels(
+    decomposition_levels_for_geometry(
         width,
         height,
-        options.progression.packetization_order(),
+        options.progression,
         options.max_decomposition_levels,
+        options.tile_size,
     )
+}
+
+fn decomposition_levels_for_geometry(
+    width: u32,
+    height: u32,
+    progression: J2kProgressionOrder,
+    requested: Option<u8>,
+    tile_size: Option<(u32, u32)>,
+) -> u8 {
+    let selected = shared_lossless_decomposition_levels(
+        width,
+        height,
+        progression.packetization_order(),
+        requested,
+    );
+    let (tile_width, tile_height) = tile_size.unwrap_or((width, height));
+    tiled_decomposition_levels(width, height, tile_width, tile_height, selected)
 }

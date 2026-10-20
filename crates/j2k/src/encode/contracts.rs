@@ -354,7 +354,7 @@ pub enum J2kRateTarget {
     BitsPerPixel(f64),
     /// Target total codestream byte size.
     Bytes(u64),
-    /// Target decoded peak signal-to-noise ratio in dB.
+    /// Minimum decoded peak signal-to-noise ratio in dB, within the configured tolerance.
     PsnrDb(f64),
 }
 
@@ -417,7 +417,14 @@ pub struct J2kLossyEncodeOptions {
     /// Positive irreversible step multipliers per component, in QCD/QCC order:
     /// final LL, then HL/LH/HH from coarsest to finest detail resolution.
     /// Each row must match the actual decomposition count selected for the image.
-    /// A common rate-search scale multiplies the fixed profile shape.
+    /// An active profile weights the unrounded nominal steps. Each weighted
+    /// step must round to a representable QCD/QCC tuple. An exact all-ones
+    /// profile disables weighting, preserving no-profile bytes even when the
+    /// nominal defaults saturate. Nearby non-neutral weights can therefore be
+    /// rejected at a clipped default (for example precision 30, weight 1.01).
+    /// Rate search keeps this shape fixed and resolves both scale bounds from
+    /// every band, starting at the first admissible scale at or above one.
+    /// Fixed-scale encoding rejects out-of-range active profiles.
     pub quantization_profile: Option<Vec<Vec<f32>>>,
     /// Optional tile width and height.
     ///

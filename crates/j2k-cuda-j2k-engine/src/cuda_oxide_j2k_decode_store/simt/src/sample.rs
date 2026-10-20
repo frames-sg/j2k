@@ -25,6 +25,9 @@ fn round_f32(value: f32) -> f32 {
 
 #[inline(always)]
 pub(crate) fn round_ties_even_f32(value: f32) -> f32 {
+    if !value.is_finite() || value.abs() >= 8_388_608.0 {
+        return value;
+    }
     let lower = floor_f32(value);
     let upper = lower + 1.0;
     let midpoint = lower + 0.5;
@@ -68,11 +71,11 @@ fn max_int_for_bit_depth(bit_depth: u32) -> u32 {
 #[inline(always)]
 pub(crate) fn sample_as_u8(sample: f32, bit_depth: u32) -> u8 {
     let rounded = round_f32(sample);
-    if bit_depth >= 8 {
+    if bit_depth == 8 {
         return clamp_f32(rounded, 0.0, 255.0) as u8;
     }
 
-    let max_int = (1_u32 << bit_depth) - 1;
+    let max_int = max_int_for_bit_depth(bit_depth.min(16));
     let max_value = if max_int > 1 { max_int as f32 } else { 1.0 };
     round_f32((clamp_f32(rounded, 0.0, max_value) / max_value) * 255.0) as u8
 }
@@ -80,8 +83,8 @@ pub(crate) fn sample_as_u8(sample: f32, bit_depth: u32) -> u8 {
 #[inline(always)]
 pub(crate) fn sample_as_u16(sample: f32, bit_depth: u32) -> u16 {
     let rounded = round_f32(sample);
-    if bit_depth >= 16 {
-        return clamp_f32(rounded, 0.0, 65535.0) as u16;
+    if bit_depth > 8 {
+        return sample_as_native_u16(rounded, bit_depth);
     }
 
     let max_int = max_int_for_bit_depth(bit_depth);
@@ -110,4 +113,15 @@ pub(crate) fn sample_as_native_i16(sample: f32, bit_depth: u32) -> i16 {
         (-magnitude) as f32,
         (magnitude - 1) as f32,
     ) as i16
+}
+
+// Synthesized alpha follows the requested U16 storage domain: widened through
+// eight bits, native significant precision above eight bits.
+#[inline(always)]
+pub(crate) fn opaque_alpha_u16(bit_depth: u32) -> u16 {
+    if bit_depth <= 8 {
+        65535
+    } else {
+        max_int_for_bit_depth(bit_depth.min(16)) as u16
+    }
 }
