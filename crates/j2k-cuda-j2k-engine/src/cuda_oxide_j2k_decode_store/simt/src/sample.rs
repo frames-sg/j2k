@@ -25,7 +25,10 @@ fn round_f32(value: f32) -> f32 {
 
 #[inline(always)]
 pub(crate) fn round_ties_even_f32(value: f32) -> f32 {
-    if !value.is_finite() || value.abs() >= 8_388_608.0 {
+    // Ordered comparisons also preserve NaN/infinity and integral f32 values
+    // at magnitude >= 2^23. Avoid abs(): CUDA-Oxide lowers it to libdevice,
+    // switching this PTX-only store build to NVVM IR.
+    if !(value > -8_388_608.0 && value < 8_388_608.0) {
         return value;
     }
     let lower = floor_f32(value);

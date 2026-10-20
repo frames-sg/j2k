@@ -520,6 +520,21 @@ fn native_signed_samples_and_centered_rounding_have_exact_boundaries() {
             value.round_ties_even() + 32768.0
         );
     }
+    for value in [
+        8_388_608.0_f32.next_down(),
+        8_388_608.0,
+        8_388_609.0,
+        f32::MAX,
+        f32::INFINITY,
+    ] {
+        for signed in [value, -value] {
+            assert_eq!(
+                device_sample::round_ties_even_f32(signed),
+                signed.round_ties_even()
+            );
+        }
+    }
+    assert!(device_sample::round_ties_even_f32(f32::NAN).is_nan());
 }
 
 #[test]
