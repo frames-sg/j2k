@@ -139,7 +139,7 @@ fn psnr_search_keeps_a_feasible_candidate_after_initial_quality_dip() {
     let low_quality = encode(0);
     let feasible = encode(128);
     let result = encode_lossy_to_psnr_target(samples, &options, 40.0, |scale| {
-        Ok(if scale == 2.0 {
+        Ok(if scale.to_bits() == 2.0_f32.to_bits() {
             feasible.clone()
         } else {
             low_quality.clone()
@@ -159,7 +159,7 @@ fn byte_search_evaluates_a_profile_boundary_between_doubling_steps() {
     let mut boundary_seen = false;
     let result = encode_lossy_to_byte_target(samples, &options, 1000, |scale| {
         assert!(scale <= ceiling);
-        if scale == ceiling {
+        if scale.to_bits() == ceiling.to_bits() {
             boundary_seen = true;
             Ok(vec![0; 300])
         } else {
