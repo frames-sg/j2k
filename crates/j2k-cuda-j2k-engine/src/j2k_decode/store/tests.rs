@@ -467,7 +467,6 @@ fn partial_contiguous_rgb_batch_zeroes_unwritten_pixels_when_required() {
 
 // Exercise the same scalar source compiled into the device store, even on hosts
 // without CUDA. Device launch and ABI coverage remain in the runtime tests.
-#[allow(dead_code)]
 #[expect(
     clippy::inline_always,
     clippy::cast_possible_truncation,
