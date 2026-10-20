@@ -163,6 +163,7 @@ fn irreversible_step_delta(
 
 /// Compute the exact irreversible 9/7 quantization step tuple the native encoder
 /// writes for one subband under a global plus per-subband profile.
+///
 /// Invalid scale arguments are treated as one; valid positive products
 /// saturate monotonically at the complete stored-step endpoints.
 #[must_use]
