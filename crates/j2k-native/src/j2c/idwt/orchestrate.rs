@@ -4,7 +4,9 @@ use super::super::codestream::WaveletTransform;
 use super::super::decode::{DecompositionStorage, TileDecodeContext};
 use super::direct::apply_level;
 use super::interleave_i64::apply_level_i64;
-use super::model::{idwt_buffer_size, IDWTInput, IDWTInputI64, IDWTTempOutput, InputSource};
+use super::model::{
+    idwt_buffer_size, IDWTInput, IDWTInputI64, IDWTTempOutput, IdwtPlacement, InputSource,
+};
 use super::roi::apply_roi;
 use crate::error::{bail, DecodingError};
 use crate::j2c::Header;
@@ -28,7 +30,7 @@ pub(crate) fn apply(
     backend: &mut Option<&mut dyn HtCodeBlockDecoder>,
     parallel: bool,
 ) -> Result<()> {
-    tile_ctx.idwt_output.in_channel_data = false;
+    tile_ctx.idwt_output.placement = IdwtPlacement::Coefficients;
     if storage.exact_integer_decode {
         return apply_i64(storage, tile_ctx, component_idx, header, transform);
     }

@@ -5,6 +5,7 @@ use super::{
     bail, ComponentInfo, ComponentTile, DecodingError, Header, HtCodeBlockDecoder,
     J2kStoreComponentJob, OutputRegion, ResolutionTile, Result, Tile, TileDecodeContext,
 };
+use crate::j2c::idwt::IdwtPlacement;
 use crate::j2c::roi::{output_grid_offset, output_region_rect};
 use crate::math::round_ties_even_then_add;
 
@@ -543,7 +544,7 @@ fn store_region<'a>(
     let region_y1 = output_region.y + output_region.height;
     let output_width = output_region.width as usize;
 
-    if idwt_output.in_channel_data {
+    if idwt_output.placement == IdwtPlacement::ChannelPadding {
         // The IDWT wrote its last level, the window `idwt_output.rect`, into
         // this plane's padding, and the tile covers the whole region.
         let region_rect = output_region_rect(&header.size_data, output_region);
@@ -569,7 +570,7 @@ fn store_region<'a>(
                 |row| shift.apply(row),
             )
             .map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
-        idwt_output.in_channel_data = false;
+        idwt_output.placement = IdwtPlacement::Coefficients;
         return Ok(());
     }
 
@@ -599,6 +600,25 @@ fn store_region<'a>(
             .y1
             .min(resolution_tile.rect.y1)
             .min(region_rect_y1);
+
+        if idwt_output.placement == IdwtPlacement::ChannelPlane {
+            // The row-streamed IDWT already wrote this overlap into the plane.
+            let shift = SampleShift::new(
+                sign_shift,
+                component_info.wavelet_transform(),
+                round_irreversible_output,
+            );
+            if copy_x0 < copy_x1 && copy_y0 < copy_y1 {
+                let copy_width = (copy_x1 - copy_x0) as usize;
+                for y in copy_y0..copy_y1 {
+                    let start = (y - region_rect_y0) as usize * output_width
+                        + (copy_x0 - region_rect_x0) as usize;
+                    shift.apply(&mut channel_data.container[start..start + copy_width]);
+                }
+            }
+            idwt_output.placement = IdwtPlacement::Coefficients;
+            return Ok(());
+        }
 
         let handled = if !round_irreversible_output
             || component_info.wavelet_transform() != WaveletTransform::Irreversible97

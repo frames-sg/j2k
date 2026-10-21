@@ -246,12 +246,23 @@ fn decode_parsed_tiles<'a>(
     if tiles.is_empty() {
         bail!(TileError::Invalid);
     }
+    let line_region_idwt = ctx.line_region_idwt
+        && ctx.tile_decode_context.line_region_idwt_permitted
+        && region_decode_without_hook_or_special_samples(
+            tiles,
+            ctx.tile_decode_context.output_region,
+            ht_decoder.is_some(),
+        );
+    ctx.tile_decode_context.line_region_idwt = line_region_idwt;
+    // The row-streamed IDWT writes rows straight into the planes, so they
+    // need no padding.
     let last_idwt_level_padding = last_idwt_level_padding(
         header,
         tiles,
         ctx.tile_decode_context.output_region,
         ht_decoder.is_some(),
-    );
+    )
+    .filter(|_| !line_region_idwt);
     #[cfg(test)]
     let last_idwt_level_padding =
         last_idwt_level_padding.filter(|_| !ctx.tile_decode_context.separate_last_idwt_level);
@@ -338,15 +349,11 @@ fn last_idwt_level_padding(
     output_region: Option<OutputRegion>,
     hooked: bool,
 ) -> Option<(u32, u32)> {
-    let output_region = output_region.filter(|_| !hooked)?;
-    let components = &tiles.first()?.component_infos;
-    if components.iter().any(|component| {
-        component.requires_exact_integer_decode()
-            || component.size_info.horizontal_resolution != 1
-            || component.size_info.vertical_resolution != 1
-    }) {
+    if !region_decode_without_hook_or_special_samples(tiles, output_region, hooked) {
         return None;
     }
+    let output_region = output_region?;
+    let components = &tiles.first()?.component_infos;
     let mut covering = tiles
         .iter()
         .filter(|tile| tile_intersects_output_region(tile.rect, &header.size_data, output_region));
@@ -378,6 +385,25 @@ fn last_idwt_level_padding(
     let padding = window - u64::from(output_region.width) * u64::from(output_region.height);
     let planes = u64::try_from(components.len()).ok()?;
     (planes.checked_mul(padding)? < window).then_some((width, height))
+}
+
+/// Whether a decode is a region decode without a code-block decoder hook,
+/// whose components need neither exact-integer samples nor subsampling: the
+/// decodes whose region IDWT may write into `channel_data` itself.
+fn region_decode_without_hook_or_special_samples(
+    tiles: &ParsedTiles<'_>,
+    output_region: Option<OutputRegion>,
+    hooked: bool,
+) -> bool {
+    output_region.is_some()
+        && !hooked
+        && tiles.first().is_some_and(|tile| {
+            tile.component_infos.iter().all(|component| {
+                !component.requires_exact_integer_decode()
+                    && component.size_info.horizontal_resolution == 1
+                    && component.size_info.vertical_resolution == 1
+            })
+        })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -539,8 +565,9 @@ fn decode_tile<'a>(
         if storage.roi_plan.is_none() {
             build::release_unused_roi_workspace(storage, tile.component_infos.len())?;
         }
+        storage.line_region_idwt = tile_ctx.line_region_idwt && storage.roi_plan.is_some();
         storage.last_idwt_level_in_channels =
-            idwt::last_level_fits_channels(storage, tile_ctx, header)?;
+            !storage.line_region_idwt && idwt::last_level_fits_channels(storage, tile_ctx, header)?;
         // Region decode sizes coefficient storage to the code-blocks the ROI
         // plan keeps, clipped to the windows the IDWT reads unless a hook
         // writes whole code-blocks, or to the whole tile when there is no plan.
@@ -980,6 +1007,8 @@ pub(crate) struct DecompositionStorage<'a> {
     /// Whether the region IDWT writes each component's last level into the
     /// padding of its `channel_data` plane, for `store` to compact in place.
     pub(crate) last_idwt_level_in_channels: bool,
+    /// Whether the region IDWT streams this tile's levels a row at a time.
+    pub(crate) line_region_idwt: bool,
     /// Planned non-segment live bytes for the active tile and future decode scratch.
     pub(crate) structural_workspace_bytes: usize,
     /// Set when region decode deferred coefficient storage until the ROI
@@ -1006,6 +1035,7 @@ impl DecompositionStorage<'_> {
         self.exact_integer_decode = false;
         self.coefficient_layout = build::CoefficientLayout::Tile;
         self.last_idwt_level_in_channels = false;
+        self.line_region_idwt = false;
         self.structural_workspace_bytes = 0;
         self.deferred_idwt_workspace_elements = None;
         self.packet_workspace_error = None;
@@ -1065,6 +1095,8 @@ pub(crate) struct TileDecodeContext {
     pub(crate) idwt_band_scratch: Vec<f32>,
     /// A scratch buffer used during exact reversible integer IDWT.
     pub(crate) idwt_scratch_buffer_i64: Vec<i64>,
+    /// The rings of rows the row-streamed region IDWT keeps for each level.
+    pub(crate) idwt_line_rings: Vec<f32>,
     /// A reusable context for decoding code blocks.
     pub(crate) bit_plane_decode_context: BitPlaneDecodeContext,
     /// Reusable buffers for decoding bitplanes.
@@ -1103,6 +1135,11 @@ pub(crate) struct TileDecodeContext {
     /// padded size, so a tile covering the whole region can write its last
     /// IDWT level into them.
     pub(crate) last_idwt_level_padding: Option<(u32, u32)>,
+    /// Whether the current call may use the row-streamed region IDWT. Set
+    /// around a decode by the outputs that allow it, like `output_region`.
+    pub(crate) line_region_idwt_permitted: bool,
+    /// Whether this decode streams the region IDWT a row at a time.
+    pub(crate) line_region_idwt: bool,
     /// Debug counters for tests and ROI instrumentation.
     pub(crate) debug_counters: DecodeDebugCounters,
 }
@@ -1111,6 +1148,7 @@ impl TileDecodeContext {
     fn release_all_allocations(&mut self) {
         let output_region = self.output_region;
         let round_irreversible_output = self.round_irreversible_output;
+        let line_region_idwt_permitted = self.line_region_idwt_permitted;
         #[cfg(all(test, feature = "parallel"))]
         let force_per_sub_band_ht = self.force_per_sub_band_ht;
         #[cfg(test)]
@@ -1120,6 +1158,7 @@ impl TileDecodeContext {
         *self = Self::default();
         self.output_region = output_region;
         self.round_irreversible_output = round_irreversible_output;
+        self.line_region_idwt_permitted = line_region_idwt_permitted;
         #[cfg(all(test, feature = "parallel"))]
         {
             self.force_per_sub_band_ht = force_per_sub_band_ht;
@@ -1196,6 +1235,7 @@ impl TileDecodeContext {
         include_capacity::<f32>(&mut bytes, self.idwt_scratch_buffer.capacity())?;
         include_capacity::<f32>(&mut bytes, self.idwt_band_scratch.capacity())?;
         include_capacity::<i64>(&mut bytes, self.idwt_scratch_buffer_i64.capacity())?;
+        include_capacity::<f32>(&mut bytes, self.idwt_line_rings.capacity())?;
         Ok(bytes)
     }
 
@@ -1210,6 +1250,7 @@ impl TileDecodeContext {
         self.idwt_scratch_buffer = Vec::new();
         self.idwt_band_scratch = Vec::new();
         self.idwt_scratch_buffer_i64 = Vec::new();
+        self.idwt_line_rings = Vec::new();
     }
 }
 

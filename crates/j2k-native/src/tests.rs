@@ -7,6 +7,7 @@ mod component_layout;
 mod ht_refinement;
 mod idwt_into_channels;
 mod idwt_window_storage;
+mod line_region_idwt;
 mod workspace_peak;
 mod workspace_reuse;
 
