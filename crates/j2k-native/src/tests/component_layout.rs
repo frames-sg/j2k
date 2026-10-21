@@ -9,8 +9,9 @@ use alloc::vec::Vec;
 
 use super::gradient_pixels;
 use crate::{
-    encode, encode_component_planes_53, DecodeSettings, DecoderContext, EncodeComponentPlane,
-    EncodeOptions, HtCodeBlockDecoder, Image,
+    encode, encode_component_planes_53, encode_typed_component_planes_53, j2c, DecodeSettings,
+    DecoderContext, EncodeComponentPlane, EncodeOptions, EncodeTypedComponentPlane,
+    HtCodeBlockDecoder, Image,
 };
 
 const WIDTH: u32 = 61;
@@ -190,6 +191,141 @@ fn component_at_a_time_decode_matches_the_whole_tile_layout_bit_for_bit() {
                                 "{label}: {component_coefficients} >= {tile_coefficients}"
                             );
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Precision above the f32 path, so the decode keeps exact `i64` samples.
+const HIGH_BIT_DEPTH: u8 = 29;
+
+/// Little-endian `u32` samples spanning the full 29-bit range.
+fn high_bit_samples(width: u32, height: u32, seed: u32) -> Vec<u8> {
+    let mask = (1_u32 << HIGH_BIT_DEPTH) - 1;
+    (0..height)
+        .flat_map(|y| (0..width).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            x.wrapping_mul(0x0135_7b9f)
+                .wrapping_add(y.wrapping_mul(0x00ae_4c23))
+                .wrapping_add(seed.wrapping_mul(0x0d1f_0e57))
+                & mask
+        })
+        .flat_map(u32::to_le_bytes)
+        .collect()
+}
+
+fn high_bit_codestream(components: Components, ht: bool, tiled: bool) -> Vec<u8> {
+    let chroma_sampling = if matches!(components, Components::Subsampled) {
+        2
+    } else {
+        1
+    };
+    let chroma_size = (
+        WIDTH.div_ceil(u32::from(chroma_sampling)),
+        HEIGHT.div_ceil(u32::from(chroma_sampling)),
+    );
+    let luma = high_bit_samples(WIDTH, HEIGHT, 0);
+    let blue = high_bit_samples(chroma_size.0, chroma_size.1, 1);
+    let red = high_bit_samples(chroma_size.0, chroma_size.1, 2);
+    let plane = |data, sampling| EncodeTypedComponentPlane {
+        data,
+        x_rsiz: sampling,
+        y_rsiz: sampling,
+        bit_depth: HIGH_BIT_DEPTH,
+        signed: false,
+    };
+    let planes = [
+        plane(&luma, 1),
+        plane(&blue, chroma_sampling),
+        plane(&red, chroma_sampling),
+    ];
+    let component_count = if matches!(components, Components::Gray) {
+        1
+    } else {
+        planes.len()
+    };
+    encode_typed_component_planes_53(
+        &planes[..component_count],
+        WIDTH,
+        HEIGHT,
+        &EncodeOptions {
+            use_mct: matches!(components, Components::RgbWithMct),
+            ..options(true, ht, tiled)
+        },
+    )
+    .expect("encode high-bit layout fixture")
+}
+
+/// Exact integer component planes, and the peak coefficient bytes, which
+/// include the `i64` buffer. No public API returns these planes through a hook, so this calls
+/// the codestream decoder directly. Whole images only: 25-38 bit region
+/// decode is not supported yet.
+fn decode_exact_planes(image: &Image<'_>, hook: bool) -> (Vec<Vec<i64>>, usize) {
+    let mut context = DecoderContext::default();
+    let mut hook_decoder = DecliningDecoder;
+    let mut ht_decoder: Option<&mut dyn HtCodeBlockDecoder> =
+        if hook { Some(&mut hook_decoder) } else { None };
+    j2c::decode(
+        image.codestream,
+        &image.header,
+        0,
+        &mut context,
+        &mut ht_decoder,
+    )
+    .expect("decode high-bit layout fixture");
+    let planes = context
+        .tile_decode_context
+        .channel_data
+        .iter()
+        .map(|component| {
+            component
+                .integer_container
+                .clone()
+                .expect("29-bit decode keeps exact integer samples")
+        })
+        .collect();
+    (
+        planes,
+        context
+            .tile_decode_context
+            .debug_counters
+            .workspace_peak
+            .bytes()
+            .coefficients,
+    )
+}
+
+#[test]
+fn high_bit_component_at_a_time_decode_matches_the_whole_tile_layout() {
+    let cases = [
+        Components::Gray,
+        Components::RgbWithMct,
+        Components::RgbWithoutMct,
+        Components::Subsampled,
+    ];
+    for components in cases {
+        for ht in [false, true] {
+            for tiled in [false, true] {
+                let bytes = high_bit_codestream(components, ht, tiled);
+                for reduction in [0_u8, 1] {
+                    let image =
+                        Image::new_with_reduction(&bytes, &DecodeSettings::default(), reduction)
+                            .expect("parse high-bit layout fixture");
+                    let label = format!(
+                        "{components:?} ht={ht} tiled={tiled} \
+                         reduction={reduction}"
+                    );
+                    let (tile_layout, tile_coefficients) = decode_exact_planes(&image, true);
+                    let (component_layout, component_coefficients) =
+                        decode_exact_planes(&image, false);
+                    assert_eq!(component_layout, tile_layout, "{label}");
+                    if !matches!(components, Components::Gray) {
+                        assert!(
+                            component_coefficients < tile_coefficients,
+                            "{label}: {component_coefficients} >= {tile_coefficients}"
+                        );
                     }
                 }
             }
