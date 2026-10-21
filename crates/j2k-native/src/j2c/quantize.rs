@@ -166,10 +166,11 @@ fn irreversible_step_delta(
     }
 }
 
-/// Compute the exact irreversible 9/7 quantization step tuple the native encoder
-/// writes for one subband at `level` (1 is the finest; LL lies at `levels`) of a
-/// `levels`-level decomposition, under a global plus per-subband profile.
+/// Compute the irreversible 9/7 step tuple the native encoder writes for one subband.
 ///
+/// `level` is 1 for the finest bands; LL lies at `levels`, the decomposition
+/// depth. The step includes the band's synthesis-norm weight and the global and
+/// per-subband scales.
 /// Invalid scale arguments are treated as one; valid positive products
 /// saturate monotonically at the complete stored-step endpoints.
 #[must_use]
