@@ -393,11 +393,13 @@ fn write_ht_code_block_output(
 #[cfg(test)]
 mod tests {
     #[cfg(feature = "simd")]
-    use super::try_decode_ht_code_block_to_f32;
     use super::{
         decode_ht_code_block_scalar_with_workspace,
-        decode_ht_code_block_scalar_with_workspace_midpoint, write_ht_code_block_output,
-        CodeBlockOutputLayout, HtCodeBlockDecodeJob, HtCodeBlockDecodeWorkspace,
+        decode_ht_code_block_scalar_with_workspace_midpoint, try_decode_ht_code_block_to_f32,
+    };
+    use super::{
+        write_ht_code_block_output, CodeBlockOutputLayout, HtCodeBlockDecodeJob,
+        HtCodeBlockDecodeWorkspace,
     };
     #[cfg(feature = "simd")]
     use crate::encode_ht_code_block_scalar;
