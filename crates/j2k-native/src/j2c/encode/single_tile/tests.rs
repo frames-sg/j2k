@@ -216,7 +216,8 @@ fn reference_codestreams_remain_byte_exact() {
         ],
         [
             (289, 10_919_473_942_675_803_716),
-            (204, 5_990_149_759_059_656_670),
+            // Irreversible: detail steps follow 9/7 synthesis norms.
+            (205, 2_029_000_814_618_401_571),
             (120, 14_442_175_691_548_962_802),
         ]
     );

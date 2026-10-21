@@ -72,10 +72,19 @@ fn edge_tile_profiles_signal_resolved_depth_and_decode_in_openjpeg() {
             depth,
             "COD depth {width}x{height}"
         );
+        // The profile scales LL by 1.5 and leaves the default detail steps.
+        let qcd = steps(&plain, 0x5c);
         let qcc = steps(&encoded, 0x5d);
         assert_eq!(qcc.len(), 1 + 3 * usize::from(depth));
-        assert_eq!(qcc[0], (10, 1024));
-        assert!(qcc[1..].iter().all(|step| *step == (10, 0)));
+        assert_eq!(qcc[1..], qcd[1..]);
+        let step = |(exponent, mantissa): (u8, u16)| {
+            2.0_f64.powi(-i32::from(exponent)) * (1.0 + f64::from(mantissa) / 2048.0)
+        };
+        let ll_ratio = step(qcc[0]) / step(qcd[0]);
+        assert!(
+            (ll_ratio - 1.5).abs() <= 1e-3,
+            "{width}x{height}: LL ratio {ll_ratio}"
+        );
         let reference =
             openjpeg::decode_components(&encoded).expect("OpenJPEG decodes the same encoded bytes");
         assert_eq!(reference.dimensions, (width, height));
@@ -98,7 +107,7 @@ fn edge_tile_profiles_signal_resolved_depth_and_decode_in_openjpeg() {
             max_decoder_error = max_decoder_error.max((external - i32::from(actual)).abs());
             squared_error += f64::from(error).powi(2);
         }
-        // A fine (LL=0.375, detail <=1) deadzone quantizer with up to five
+        // A fine (LL <=0.375, detail <=1) deadzone quantizer with up to five
         // 9/7 levels may differ by a few integer codes after reconstruction.
         assert!(
             max_source_error <= 4,

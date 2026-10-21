@@ -126,6 +126,9 @@ fn checked_code_block_dim(
 }
 
 /// Shared `(exponent, mantissa)` for the irreversible 9/7 quantizer.
+///
+/// Code-block jobs carry one decomposition level, so every subband uses the
+/// steps the native encoder signals for a one-level 9/7 decomposition.
 fn htj2k97_step(options: Htj2k97CodeBlockOptions, sub_band_type: J2kSubBandType) -> (u8, u16) {
     let step = irreversible_quantization_step_for_subband(
         options.bit_depth,
@@ -133,6 +136,8 @@ fn htj2k97_step(options: Htj2k97CodeBlockOptions, sub_band_type: J2kSubBandType)
         options.irreversible_quantization_scale,
         options.irreversible_quantization_subband_scales,
         sub_band_type,
+        1,
+        1,
     );
     (step.exponent, step.mantissa)
 }
@@ -287,5 +292,67 @@ mod tests {
             htj2k97_subband_total_bitplanes(options, J2kSubBandType::HighHigh),
             default_hh_bitplanes
         );
+    }
+
+    /// Guard bits and `(exponent, mantissa)` steps from the main-header QCD.
+    fn main_header_qcd(codestream: &[u8]) -> (u8, Vec<(u8, u16)>) {
+        let at = codestream
+            .windows(2)
+            .position(|marker| marker == [0xff, 0x5c])
+            .expect("QCD marker");
+        let length = usize::from(u16::from_be_bytes([codestream[at + 2], codestream[at + 3]]));
+        let steps = codestream[at + 5..at + 2 + length]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&pair| {
+                let value = u16::from_be_bytes(pair);
+                (u8::try_from(value >> 11).unwrap(), value & 0x7ff)
+            })
+            .collect();
+        (codestream[at + 4] >> 5, steps)
+    }
+
+    #[test]
+    fn one_level_codeblock_steps_match_the_native_qcd() {
+        // GPU code-block jobs quantize with these steps while the native encoder
+        // writes the QCD a decoder dequantizes with; they must be identical.
+        let pixels = (0..32 * 32)
+            .map(|i| u8::try_from((i * 7) % 251).unwrap())
+            .collect::<Vec<_>>();
+        for (scale, high_high) in [(1.0, 1.0), (1.9, 1.5)] {
+            let subband_scales = IrreversibleQuantizationSubbandScales {
+                high_high,
+                ..IrreversibleQuantizationSubbandScales::default()
+            };
+            let native = j2k_native::EncodeOptions {
+                reversible: false,
+                use_mct: false,
+                use_ht_block_coding: true,
+                num_decomposition_levels: 1,
+                guard_bits: 2,
+                irreversible_quantization_scale: scale,
+                irreversible_quantization_subband_scales: subband_scales,
+                ..j2k_native::EncodeOptions::default()
+            };
+            let codestream = j2k_native::encode(&pixels, 32, 32, 1, 8, false, &native).unwrap();
+            let (guard_bits, qcd) = main_header_qcd(&codestream);
+            let options = Htj2k97CodeBlockOptions {
+                bit_depth: 8,
+                guard_bits,
+                code_block_width_exp: 4,
+                code_block_height_exp: 4,
+                irreversible_quantization_scale: scale,
+                irreversible_quantization_subband_scales: subband_scales,
+            };
+            let oracle = [
+                J2kSubBandType::LowLow,
+                J2kSubBandType::HighLow,
+                J2kSubBandType::LowHigh,
+                J2kSubBandType::HighHigh,
+            ]
+            .map(|subband| htj2k97_step(options, subband));
+            assert_eq!(qcd, oracle, "scale {scale}");
+        }
     }
 }

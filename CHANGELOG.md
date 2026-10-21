@@ -5,6 +5,15 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- Default irreversible 9/7 quantization steps now follow each band's synthesis
+  norm, as standard JPEG 2000 encoders signal them: steps grow about twofold per
+  finer level instead of staying uniform across levels. The band with the
+  smallest norm keeps its previous step, so no band is quantized more coarsely;
+  default-scale lossy codestreams are larger and more accurate, and rate-targeted
+  encodes gain fidelity at equal bytes. Quantization profiles weight these steps.
+  `irreversible_quantization_step_for_subband` takes the band's level and the
+  decomposition depth, and JPEG-to-HTJ2K code-block quantizers use the one-level
+  steps written to QCD.
 - Resolve lossless facade depth against edge tiles before reporting effective
   geometry or required accelerator stages, matching the emitted COD depth.
 - Evaluate extreme irreversible quantization products without losing a valid
