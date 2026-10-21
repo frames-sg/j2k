@@ -34,6 +34,10 @@ pub(crate) struct IDWTOutput {
     /// sub-bands that form a tile aren't necessarily aligned to it. Therefore,
     /// the samples need to be trimmed to the tile rectangle afterward.
     pub(crate) rect: IntRect,
+    /// Set when the region IDWT wrote the last level into the padding of the
+    /// component's `channel_data` plane instead of `coefficients`. `rect` is
+    /// then that window, which `store` compacts in place.
+    pub(crate) in_channel_data: bool,
 }
 
 impl Default for IDWTOutput {
@@ -42,6 +46,7 @@ impl Default for IDWTOutput {
             coefficients: Vec::new(),
             coefficients_i64: Vec::new(),
             rect: IntRect::from_ltrb(0, 0, u32::MAX, u32::MAX),
+            in_channel_data: false,
         }
     }
 }
