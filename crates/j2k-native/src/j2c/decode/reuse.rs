@@ -507,10 +507,14 @@ mod tests {
 
         context.unzeroed_plane_samples = 3 * 64;
         context.stored_plane_samples = 3 * 64 - 1;
+        let error = context
+            .ensure_unzeroed_planes_overwritten()
+            .expect_err("a partly stored plane must fail");
         assert!(matches!(
-            context.ensure_unzeroed_planes_overwritten(),
-            Err(DecodeError::Decoding(DecodingError::IncompletePlaneStore))
+            error,
+            DecodeError::Decoding(DecodingError::IncompletePlaneStore)
         ));
+        assert!(error.to_string().contains("not fully written"), "{error}");
 
         context.stored_plane_samples = 3 * 64;
         context
