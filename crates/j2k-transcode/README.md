@@ -18,6 +18,7 @@ their constructors check the metadata.
 
 ## Links
 
+- Project website: <https://frames-sg.com/jpeg-to-htj2k-transcoding/>
 - API docs: <https://docs.rs/j2k-transcode>
 - Repository: <https://github.com/frames-sg/j2k>
 - Support policy: <https://github.com/frames-sg/j2k/blob/main/docs/public-support.md>

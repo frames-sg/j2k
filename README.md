@@ -233,6 +233,9 @@ The minimum supported Rust version is 1.99.0.
 
 - [API docs on docs.rs](https://docs.rs/j2k)
 - [Project website](https://frames-sg.com/j2k/rust-jpeg2000-codec/)
+- [Rust JPEG codec](https://frames-sg.com/rust-jpeg-codec/)
+- [JPEG-to-HTJ2K transcoding](https://frames-sg.com/jpeg-to-htj2k-transcoding/)
+- [GPU image decoding for AI pipelines](https://frames-sg.com/gpu-image-decoding-ai/)
 - [docs/public-support.md](docs/public-support.md): every supported and
   unsupported feature of the format
 - [docs/architecture.md](docs/architecture.md): how the crates fit together

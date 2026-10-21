@@ -3,6 +3,9 @@
 `j2k-ml` is an independent integration for Burn 0.21 that adapts owned JPEG
 2000 and HTJ2K batches. It is maintained by the `j2k` project and is not an official Tracel or Burn crate.
 
+[GPU image decoding for AI pipelines](https://frames-sg.com/gpu-image-decoding-ai/)
+provides the project-level overview of the tensor and resident-device routes.
+
 ## Quick start
 
 The portable route decodes with the CPU codec and creates the resulting tensor

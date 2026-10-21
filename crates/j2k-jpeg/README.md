@@ -75,6 +75,7 @@ converted.
 
 ## Links
 
+- Project website: <https://frames-sg.com/rust-jpeg-codec/>
 - API docs: <https://docs.rs/j2k-jpeg>
 - Repository: <https://github.com/frames-sg/j2k>
 - Support policy: <https://github.com/frames-sg/j2k/blob/main/docs/public-support.md>
