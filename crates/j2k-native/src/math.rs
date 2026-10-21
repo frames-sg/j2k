@@ -835,6 +835,71 @@ impl<const N: usize> SimdBuffer<N> {
         Ok(Self { data, original_len })
     }
 
+    /// Create a zeroed buffer of `original_len` samples whose allocation also
+    /// holds `capacity_len` samples, for callers that later fill it through
+    /// [`Self::padded_scratch`].
+    pub(crate) fn try_zeros_with_capacity(
+        original_len: usize,
+        capacity_len: usize,
+    ) -> core::result::Result<Self, SimdBufferAllocationError> {
+        let padded_len = Self::padded_len(original_len).ok_or(SimdBufferAllocationError)?;
+        let capacity =
+            Self::padded_len(capacity_len.max(original_len)).ok_or(SimdBufferAllocationError)?;
+        let mut data = Vec::new();
+        data.try_reserve_exact(capacity)
+            .map_err(|_| SimdBufferAllocationError)?;
+        data.resize(padded_len, 0.0);
+        Ok(Self { data, original_len })
+    }
+
+    /// The first `len` samples of the allocation, which may extend past the
+    /// logical length into retained capacity. Returns `None` when the
+    /// allocation is smaller. Never reallocates. The logical samples keep their
+    /// values; samples past them are zero the first time they are exposed.
+    /// Callers must restore the layout with [`Self::compact_from_padding`].
+    pub(crate) fn padded_scratch(&mut self, len: usize) -> Option<&mut [f32]> {
+        if len > self.data.capacity() {
+            return None;
+        }
+        if self.data.len() < len {
+            self.data.resize(len, 0.0);
+        }
+        Some(&mut self.data[..len])
+    }
+
+    /// Move a `width` x `height` window at (`x`, `y`) of a row-major image
+    /// `stride` samples wide, written through [`Self::padded_scratch`], to the
+    /// front as the buffer's `width`-wide samples, passing each moved row to
+    /// `finish_row`. Restores the logical length with zeroed SIMD padding.
+    pub(crate) fn compact_from_padding(
+        &mut self,
+        stride: usize,
+        (x, y): (usize, usize),
+        (width, height): (usize, usize),
+        mut finish_row: impl FnMut(&mut [f32]),
+    ) -> core::result::Result<(), SimdBufferAllocationError> {
+        let fits = x.checked_add(width).is_some_and(|end| end <= stride)
+            && width.checked_mul(height) == Some(self.original_len)
+            && y.checked_add(height)
+                .and_then(|rows| rows.checked_mul(stride))
+                .is_some_and(|end| end <= self.data.len());
+        if !fits {
+            return Err(SimdBufferAllocationError);
+        }
+        // Each destination row starts at or before its source row, so moving
+        // rows front to back never overwrites a row still to be moved.
+        for row in 0..height {
+            let source = (y + row) * stride + x;
+            let target = row * width;
+            self.data.copy_within(source..source + width, target);
+            finish_row(&mut self.data[target..target + width]);
+        }
+        let padded_len = Self::padded_len(self.original_len).ok_or(SimdBufferAllocationError)?;
+        self.data.truncate(padded_len);
+        self.data[self.original_len..].fill(0.0);
+        Ok(())
+    }
+
     /// Reset the logical length and zero every accessible sample while retaining
     /// an existing allocation whenever it is large enough.
     pub(crate) fn try_reset_zeros(
@@ -885,6 +950,52 @@ impl<const N: usize> core::ops::DerefMut for SimdBuffer<N> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.data
+    }
+}
+
+#[cfg(test)]
+mod simd_buffer_padding_tests {
+    use super::{SimdBuffer, SIMD_WIDTH};
+
+    #[test]
+    fn a_window_written_into_padding_compacts_to_the_logical_samples() {
+        // A 3 x 2 plane whose allocation also holds a 5 x 4 window.
+        let mut buffer = SimdBuffer::<SIMD_WIDTH>::try_zeros_with_capacity(6, 20).expect("alloc");
+        let capacity = buffer.capacity();
+        let window = buffer.padded_scratch(20).expect("room for the window");
+        for (sample, index) in window.iter_mut().zip(0_u8..) {
+            *sample = f32::from(index);
+        }
+        buffer
+            .compact_from_padding(5, (1, 1), (3, 2), |row| {
+                for sample in row {
+                    *sample += 0.5;
+                }
+            })
+            .expect("compact");
+        assert_eq!(buffer.truncated(), &[6.5, 7.5, 8.5, 11.5, 12.5, 13.5]);
+        assert_eq!(
+            buffer.len(),
+            SimdBuffer::<SIMD_WIDTH>::padded_len(6).unwrap()
+        );
+        assert!(buffer[6..].iter().all(|&sample| sample == 0.0));
+        assert_eq!(buffer.capacity(), capacity);
+    }
+
+    #[test]
+    fn padding_is_never_grown_and_compaction_checks_the_window() {
+        let mut buffer = SimdBuffer::<SIMD_WIDTH>::try_zeros(6).expect("alloc");
+        assert!(buffer.padded_scratch(buffer.capacity() + 1).is_none());
+        buffer.padded_scratch(6).expect("logical samples");
+        assert!(buffer
+            .compact_from_padding(3, (1, 0), (3, 2), |_| {})
+            .is_err());
+        assert!(buffer
+            .compact_from_padding(3, (0, 0), (2, 2), |_| {})
+            .is_err());
+        assert!(buffer
+            .compact_from_padding(3, (0, 0), (3, 2), |_| {})
+            .is_ok());
     }
 }
 

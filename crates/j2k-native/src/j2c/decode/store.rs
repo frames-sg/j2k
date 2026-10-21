@@ -297,6 +297,23 @@ impl SampleShift {
         }
     }
 
+    /// Transform `samples` in place, as [`Self::copy`] would.
+    fn apply(self, samples: &mut [f32]) {
+        match self {
+            Self::Copy => {}
+            Self::Add(addend) => {
+                for sample in samples {
+                    *sample += addend;
+                }
+            }
+            Self::RoundThenAdd(addend) => {
+                for sample in samples {
+                    *sample = round_ties_even_then_add(*sample, addend);
+                }
+            }
+        }
+    }
+
     fn copy(self, input: &[f32], output: &mut [f32]) {
         match self {
             Self::Copy => output.copy_from_slice(input),
@@ -517,6 +534,36 @@ fn store_region<'a>(
     let region_x1 = output_region.x + output_region.width;
     let region_y1 = output_region.y + output_region.height;
     let output_width = output_region.width as usize;
+
+    if idwt_output.in_channel_data {
+        // The IDWT wrote its last level, the window `idwt_output.rect`, into
+        // this plane's padding, and the tile covers the whole region.
+        let region_rect = output_region_rect(&header.size_data, output_region);
+        let offset = |region: u32, window: u32| {
+            region
+                .checked_sub(window)
+                .ok_or(DecodingError::CodeBlockDecodeFailure)
+        };
+        let shift = SampleShift::new(
+            sign_shift,
+            component_info.wavelet_transform(),
+            round_irreversible_output,
+        );
+        channel_data
+            .container
+            .compact_from_padding(
+                idwt_output.rect.width() as usize,
+                (
+                    offset(region_rect.x0, idwt_output.rect.x0)? as usize,
+                    offset(region_rect.y0, idwt_output.rect.y0)? as usize,
+                ),
+                (output_width, output_region.height as usize),
+                |row| shift.apply(row),
+            )
+            .map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
+        idwt_output.in_channel_data = false;
+        return Ok(());
+    }
 
     if scale_x == 1 && scale_y == 1 {
         let region_rect = output_region_rect(&header.size_data, output_region);

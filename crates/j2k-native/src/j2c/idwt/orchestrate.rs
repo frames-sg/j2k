@@ -28,6 +28,7 @@ pub(crate) fn apply(
     backend: &mut Option<&mut dyn HtCodeBlockDecoder>,
     parallel: bool,
 ) -> Result<()> {
+    tile_ctx.idwt_output.in_channel_data = false;
     if storage.exact_integer_decode {
         return apply_i64(storage, tile_ctx, component_idx, header, transform);
     }

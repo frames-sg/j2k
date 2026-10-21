@@ -5,6 +5,7 @@ use crate::j2c::ComponentData;
 
 mod component_layout;
 mod ht_refinement;
+mod idwt_into_channels;
 mod workspace_peak;
 mod workspace_reuse;
 
@@ -1122,30 +1123,57 @@ fn decode_region_budgets_coefficients_for_the_requested_region() {
     );
 }
 
+/// Declines every code-block, so the CPU decodes everything, but as a
+/// hooked decode: whole code-block storage and a separate IDWT window.
+struct DecliningHtDecoder;
+
+impl HtCodeBlockDecoder for DecliningHtDecoder {}
+
 #[test]
 fn decode_region_budgets_the_windowed_idwt_peak_before_packet_parsing() {
     // One component, one decomposition level, one tile. A full-image region
     // keeps an f32 decoded-component buffer and f32 coefficients for the
-    // whole image, and the single IDWT level allocates an f32 output window
-    // of the same size while both are live.
+    // whole image, and the single IDWT level needs an f32 output window of
+    // the same size while both are live.
     let mut codestream = fixture_gray();
     rewrite_siz_to_single_large_tile(&mut codestream, 7_168);
     let image = Image::new(&codestream, &DecodeSettings::default()).expect("large SIZ parses");
 
     // 196 MiB of output plus 196 MiB of coefficients fit under the 512 MiB
-    // cap, but the 196 MiB reconstruction window does not.
-    let Err(full) = image.decode_region((0, 0, 7_168, 7_168)) else {
+    // cap, but a separate 196 MiB reconstruction window does not. A hooked
+    // decode keeps that window, so it is rejected before packet parsing.
+    let mut context = DecoderContext::default();
+    let Err(hooked) = image.decode_region_components_with_ht_decoder(
+        &mut context,
+        (0, 0, 7_168, 7_168),
+        &mut DecliningHtDecoder,
+    ) else {
         panic!("rewritten fixture has no packet data for a 7168x7168 tile");
     };
     assert_eq!(
-        full,
+        hooked,
         DecodeError::Validation(ValidationError::ImageTooLarge),
         "the windowed IDWT peak must be charged before packet parsing"
     );
 
-    // About 412 MiB for all three fits, so the request gets past the budget
-    // and fails in packet parsing instead.
-    let Err(smaller) = image.decode_region((0, 0, 6_000, 6_000)) else {
+    // Without a hook the level is written into the output plane, whose 5/3
+    // margin padding is under 2 MiB, so the same request gets past the budget.
+    let Err(full) = image.decode_region((0, 0, 7_168, 7_168)) else {
+        panic!("rewritten fixture has no packet data for a 7168x7168 tile");
+    };
+    assert!(
+        matches!(full, DecodeError::Decoding(_)),
+        "a last level written into the output plane must get past the budget: {full:?}"
+    );
+
+    // For a hooked 6000x6000 region, about 412 MiB for all three fits, so
+    // the request gets past the budget and fails in packet parsing instead.
+    let mut context = DecoderContext::default();
+    let Err(smaller) = image.decode_region_components_with_ht_decoder(
+        &mut context,
+        (0, 0, 6_000, 6_000),
+        &mut DecliningHtDecoder,
+    ) else {
         panic!("rewritten fixture has no packet data for a 6000x6000 region");
     };
     assert!(
