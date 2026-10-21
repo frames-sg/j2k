@@ -269,7 +269,7 @@ fn native_wavelet_transform(transform: WaveletTransform) -> crate::J2kWaveletTra
     }
 }
 
-fn roi_required_output_margin(transform: WaveletTransform) -> u32 {
+pub(crate) fn roi_required_output_margin(transform: WaveletTransform) -> u32 {
     crate::idwt_required_output_margin(native_wavelet_transform(transform))
 }
 

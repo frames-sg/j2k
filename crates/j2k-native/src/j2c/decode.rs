@@ -11,7 +11,7 @@ use super::build::{CodeBlock, Decomposition, Layer, Precinct, Segment, SubBand, 
 use super::codestream::{ComponentInfo, Header, QuantizationStyle, WaveletTransform};
 use super::ht_block_decode::{self, HtBlockDecodeContext};
 use super::idwt::IDWTOutput;
-use super::roi::{tile_intersects_output_region, RoiPlan};
+use super::roi::{roi_required_output_margin, tile_intersects_output_region, RoiPlan};
 use super::tag_tree::TagNode;
 use super::tile::{ComponentTile, ParsedTiles, ResolutionTile, Tile};
 use super::{bitplane, build, idwt, mct, segment, tile, ComponentData};
@@ -246,12 +246,22 @@ fn decode_parsed_tiles<'a>(
     if tiles.is_empty() {
         bail!(TileError::Invalid);
     }
+    let last_idwt_level_padding = last_idwt_level_padding(
+        header,
+        tiles,
+        ctx.tile_decode_context.output_region,
+        ht_decoder.is_some(),
+    );
+    #[cfg(test)]
+    let last_idwt_level_padding =
+        last_idwt_level_padding.filter(|_| !ctx.tile_decode_context.separate_last_idwt_level);
     let retained_decode_baseline = ctx.reset(
         header,
         &tiles[0],
         structural_workspace_bytes,
         reused_baseline.channel_capacity,
         ht_decoder.is_some(),
+        last_idwt_level_padding,
     )?;
     let retained_decode_base_without_scratch = retained_decode_baseline
         .checked_sub(reused_baseline.scratch_capacity)
@@ -311,6 +321,63 @@ fn decode_parsed_tiles<'a>(
     storage.release_all_allocations();
 
     Ok(())
+}
+
+/// The padded size each component plane reserves so that a region decode can
+/// write its last IDWT level straight into the plane: the region expanded by
+/// the IDWT margin on every side, within the image. `None` when it cannot or
+/// would not save memory. A hook may store IDWT output itself, exact-integer
+/// and subsampled decodes take other paths, and when several tiles meet the
+/// region no one tile owns the plane. Every plane holds its padding for the
+/// whole decode while the padding replaces one component's window at a time,
+/// so it pays off only when all planes' padding together is smaller than one
+/// padded window.
+fn last_idwt_level_padding(
+    header: &Header<'_>,
+    tiles: &ParsedTiles<'_>,
+    output_region: Option<OutputRegion>,
+    hooked: bool,
+) -> Option<(u32, u32)> {
+    let output_region = output_region.filter(|_| !hooked)?;
+    let components = &tiles.first()?.component_infos;
+    if components.iter().any(|component| {
+        component.requires_exact_integer_decode()
+            || component.size_info.horizontal_resolution != 1
+            || component.size_info.vertical_resolution != 1
+    }) {
+        return None;
+    }
+    let mut covering = tiles
+        .iter()
+        .filter(|tile| tile_intersects_output_region(tile.rect, &header.size_data, output_region));
+    covering.next()?;
+    if covering.next().is_some() {
+        return None;
+    }
+    let margin = components
+        .iter()
+        .map(|component| roi_required_output_margin(component.wavelet_transform()))
+        .max()?;
+    let padded = |start: u32, len: u32, bound: u32| {
+        let end = start.checked_add(len)?;
+        let after = bound.checked_sub(end)?;
+        len.checked_add(margin.min(start))?
+            .checked_add(margin.min(after))
+    };
+    let width = padded(
+        output_region.x,
+        output_region.width,
+        header.size_data.image_width(),
+    )?;
+    let height = padded(
+        output_region.y,
+        output_region.height,
+        header.size_data.image_height(),
+    )?;
+    let window = u64::from(width) * u64::from(height);
+    let padding = window - u64::from(output_region.width) * u64::from(output_region.height);
+    let planes = u64::try_from(components.len()).ok()?;
+    (planes.checked_mul(padding)? < window).then_some((width, height))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -472,9 +539,19 @@ fn decode_tile<'a>(
         if storage.roi_plan.is_none() {
             build::release_unused_roi_workspace(storage, tile.component_infos.len())?;
         }
+        storage.last_idwt_level_in_channels =
+            idwt::last_level_fits_channels(storage, tile_ctx, header)?;
         // Region decode sizes coefficient storage to the code-blocks the ROI
-        // plan keeps, or to the whole tile when there is no plan.
-        build::allocate_deferred_coefficients(storage, header.skipped_resolution_levels)?;
+        // plan keeps, clipped to the windows the IDWT reads unless a hook
+        // writes whole code-blocks, or to the whole tile when there is no plan.
+        let clip_to_idwt_windows = ht_decoder.is_none();
+        #[cfg(test)]
+        let clip_to_idwt_windows = clip_to_idwt_windows && !tile_ctx.store_whole_code_blocks;
+        build::allocate_deferred_coefficients(
+            storage,
+            header.skipped_resolution_levels,
+            clip_to_idwt_windows,
+        )?;
     }
     tile_ctx.debug_counters.stored_coefficients += storage.coefficients.len();
     record_workspace(tile_ctx, storage, selection_bytes)?;
@@ -900,6 +977,9 @@ pub(crate) struct DecompositionStorage<'a> {
     pub(crate) exact_integer_decode: bool,
     /// How the built sub-bands' coefficient ranges share `coefficients`.
     pub(crate) coefficient_layout: build::CoefficientLayout,
+    /// Whether the region IDWT writes each component's last level into the
+    /// padding of its `channel_data` plane, for `store` to compact in place.
+    pub(crate) last_idwt_level_in_channels: bool,
     /// Planned non-segment live bytes for the active tile and future decode scratch.
     pub(crate) structural_workspace_bytes: usize,
     /// Set when region decode deferred coefficient storage until the ROI
@@ -925,6 +1005,7 @@ impl DecompositionStorage<'_> {
         self.roi_plan = None;
         self.exact_integer_decode = false;
         self.coefficient_layout = build::CoefficientLayout::Tile;
+        self.last_idwt_level_in_channels = false;
         self.structural_workspace_bytes = 0;
         self.deferred_idwt_workspace_elements = None;
         self.packet_workspace_error = None;
@@ -968,6 +1049,13 @@ fn include_capacity<T>(bytes: &mut usize, capacity: usize) -> Result<()> {
 /// Some of the fields are temporary in nature and reset after moving on to the
 /// next tile, some contain global state.
 #[derive(Default)]
+#[cfg_attr(
+    all(test, feature = "parallel"),
+    expect(
+        clippy::struct_excessive_bools,
+        reason = "test builds add independent switches that pin the per-sub-band HT, whole-code-block storage, and separate last-level IDWT paths"
+    )
+)]
 pub(crate) struct TileDecodeContext {
     /// A reusable buffer for the IDWT output.
     pub(crate) idwt_output: IDWTOutput,
@@ -991,6 +1079,15 @@ pub(crate) struct TileDecodeContext {
     /// slab and bank behavior stays covered.
     #[cfg(all(test, feature = "parallel"))]
     pub(crate) force_per_sub_band_ht: bool,
+    /// Test-only switch that stores whole code-blocks in region decode, as a
+    /// hooked decode does, so clipped storage can be compared against it.
+    #[cfg(test)]
+    pub(crate) store_whole_code_blocks: bool,
+    /// Test-only switch that keeps the region IDWT's last level in its own
+    /// window, as a hooked decode does, so writing it into `channel_data`
+    /// can be compared against it.
+    #[cfg(test)]
+    pub(crate) separate_last_idwt_level: bool,
     /// The raw, decoded samples for each channel.
     pub(crate) channel_data: Vec<ComponentData>,
     /// Optional output window for region-local decode storage.
@@ -1002,6 +1099,10 @@ pub(crate) struct TileDecodeContext {
     pub(crate) unzeroed_plane_samples: usize,
     /// Component-plane samples `store` wrote during the current decode.
     pub(crate) stored_plane_samples: usize,
+    /// Set for a region decode whose component planes reserve room for this
+    /// padded size, so a tile covering the whole region can write its last
+    /// IDWT level into them.
+    pub(crate) last_idwt_level_padding: Option<(u32, u32)>,
     /// Debug counters for tests and ROI instrumentation.
     pub(crate) debug_counters: DecodeDebugCounters,
 }
@@ -1012,12 +1113,21 @@ impl TileDecodeContext {
         let round_irreversible_output = self.round_irreversible_output;
         #[cfg(all(test, feature = "parallel"))]
         let force_per_sub_band_ht = self.force_per_sub_band_ht;
+        #[cfg(test)]
+        let store_whole_code_blocks = self.store_whole_code_blocks;
+        #[cfg(test)]
+        let separate_last_idwt_level = self.separate_last_idwt_level;
         *self = Self::default();
         self.output_region = output_region;
         self.round_irreversible_output = round_irreversible_output;
         #[cfg(all(test, feature = "parallel"))]
         {
             self.force_per_sub_band_ht = force_per_sub_band_ht;
+        }
+        #[cfg(test)]
+        {
+            self.store_whole_code_blocks = store_whole_code_blocks;
+            self.separate_last_idwt_level = separate_last_idwt_level;
         }
     }
 
@@ -1290,8 +1400,7 @@ mod tests {
             .map(|value| f32::from(u8::try_from(value).expect("test value fits u8")))
             .collect::<Vec<_>>();
         let block = super::DecodedBlock {
-            output_x: 0,
-            output_y: 0,
+            placement: super::subband::BlockPlacement::whole(0, 0, 4, 3),
             width: 4,
             height: 3,
             coefficients: &mut coefficients,
@@ -1321,8 +1430,7 @@ mod tests {
         let mut coefficient_stats = super::ParallelCoefficientStats::default();
         let mut coefficients = vec![1.0, 2.0, 3.0, 4.0];
         let block = super::DecodedBlock {
-            output_x: 3,
-            output_y: 1,
+            placement: super::subband::BlockPlacement::whole(3, 1, 2, 2),
             width: 2,
             height: 2,
             coefficients: &mut coefficients,
@@ -1353,8 +1461,7 @@ mod tests {
         let mut coefficient_stats = super::ParallelCoefficientStats::default();
         let mut coefficients = vec![1.0, 2.0];
         let block = super::DecodedBlock {
-            output_x: 4,
-            output_y: 1,
+            placement: super::subband::BlockPlacement::whole(4, 1, 2, 1),
             width: 2,
             height: 1,
             coefficients: &mut coefficients,

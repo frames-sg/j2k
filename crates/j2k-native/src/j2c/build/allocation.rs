@@ -300,9 +300,13 @@ pub(super) fn prepare_decomposition_storage(
 /// With a plan, each sub-band stores only the union of the code-blocks the
 /// plan requires; every other code-block would be left zero anyway, and
 /// [`super::SubBand::storage_rect`] readers treat samples outside the stored
-/// rectangle as zero. The windowed IDWT's peak buffers are charged in place of
-/// the whole-plane workspace. Without a plan, the whole tile is stored and the
-/// whole-plane IDWT workspace is charged as an ordinary decode would.
+/// rectangle as zero. With `clip_to_idwt_windows`, that union is further
+/// clipped to the window the IDWT reads, so code-blocks on the window's edge
+/// keep only the samples inside it. A code-block decoder hook writes whole
+/// code-blocks, so hooked decodes keep the whole union. The windowed IDWT's
+/// peak buffers are charged in place of the whole-plane workspace. Without a
+/// plan, the whole tile is stored and the whole-plane IDWT workspace is
+/// charged as an ordinary decode would.
 ///
 /// Like the whole-plane workspace, the windowed IDWT charge stays in
 /// `structural_workspace_bytes` for the rest of the tile, so packet parsing
@@ -310,6 +314,7 @@ pub(super) fn prepare_decomposition_storage(
 pub(crate) fn allocate_deferred_coefficients(
     storage: &mut DecompositionStorage<'_>,
     skipped_resolution_levels: u8,
+    clip_to_idwt_windows: bool,
 ) -> Result<()> {
     let Some(idwt_workspace_elements) = storage.deferred_idwt_workspace_elements.take() else {
         return Ok(());
@@ -347,6 +352,15 @@ pub(crate) fn allocate_deferred_coefficients(
                 }
             }
             let stored = stored
+                .and_then(|stored| {
+                    if !clip_to_idwt_windows {
+                        return Some(stored);
+                    }
+                    roi_plan
+                        .sub_band_window(sub_band_idx)
+                        .filter(|window| window.intersects(stored))
+                        .map(|window| window.intersect(stored))
+                })
                 .unwrap_or_else(|| IntRect::from_xywh(sub_band.rect.x0, sub_band.rect.y0, 0, 0));
             let count = (stored.width() as usize)
                 .checked_mul(stored.height() as usize)

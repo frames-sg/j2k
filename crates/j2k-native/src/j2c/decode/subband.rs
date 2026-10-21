@@ -19,6 +19,7 @@ mod ht;
 #[cfg(feature = "parallel")]
 mod parallel;
 mod pending;
+mod placement;
 #[cfg(feature = "parallel")]
 mod tile_parallel;
 use self::classic::decode_sub_band_classic_blocks;
@@ -36,6 +37,7 @@ use self::parallel::{
 };
 use self::pending::{collect_pending_classic_blocks, collect_pending_ht_blocks};
 pub(in crate::j2c::decode) use self::pending::{count_classic_code_blocks, count_ht_code_blocks};
+pub(crate) use self::placement::BlockPlacement;
 
 /// Decode the code-blocks of the tile's `components` into their sub-bands.
 #[expect(
@@ -207,6 +209,11 @@ pub(super) fn decode_sub_band_bitplanes(
         dequantization_step,
         irreversible_midpoint,
     )
+}
+
+/// Where `code_block` lands in `sub_band`'s stored rectangle.
+fn stored_placement(code_block: &CodeBlock, sub_band: &SubBand) -> BlockPlacement {
+    BlockPlacement::new(code_block.rect, sub_band.storage_rect)
 }
 
 pub(super) fn code_block_required_by_index(

@@ -105,6 +105,7 @@ impl DecoderContext<'_> {
         retained_baseline_bytes: usize,
         retained_channel_bytes: usize,
         store_backend: bool,
+        last_idwt_level_padding: Option<(u32, u32)>,
     ) -> Result<usize> {
         let retained_decode_baseline = self.tile_decode_context.reset(
             header,
@@ -112,6 +113,7 @@ impl DecoderContext<'_> {
             retained_baseline_bytes,
             retained_channel_bytes,
             store_backend,
+            last_idwt_level_padding,
         )?;
         self.storage.reset_for_next_tile();
         Ok(retained_decode_baseline)
@@ -138,6 +140,9 @@ impl TileDecodeContext {
         Ok(())
     }
 
+    /// With `last_idwt_level_padding`, each component plane also reserves room
+    /// for that many samples, so the region IDWT can write its last level
+    /// straight into the plane.
     fn reset(
         &mut self,
         header: &Header<'_>,
@@ -145,8 +150,10 @@ impl TileDecodeContext {
         retained_baseline_bytes: usize,
         retained_channel_bytes: usize,
         store_backend: bool,
+        last_idwt_level_padding: Option<(u32, u32)>,
     ) -> Result<usize> {
         self.debug_counters = super::DecodeDebugCounters::default();
+        self.last_idwt_level_padding = last_idwt_level_padding;
 
         let (output_width, output_height) = self.output_region.map_or(
             (
@@ -156,6 +163,10 @@ impl TileDecodeContext {
             super::OutputRegion::dimensions,
         );
         let sample_count = checked_decode_sample_count(output_width, output_height)?;
+        let capacity_samples = match last_idwt_level_padding {
+            Some((width, height)) => checked_decode_sample_count(width, height)?,
+            None => sample_count,
+        };
         let exact_integer_decode = initial_tile
             .component_infos
             .iter()
@@ -186,7 +197,7 @@ impl TileDecodeContext {
         let reused = reset_channel_data(
             &mut self.channel_data,
             &initial_tile.component_infos,
-            sample_count,
+            (sample_count, capacity_samples),
             exact_integer_decode,
             store_overwrites_planes,
             &mut budget,
@@ -199,7 +210,7 @@ impl TileDecodeContext {
                 reset_channel_data(
                     &mut self.channel_data,
                     &initial_tile.component_infos,
-                    sample_count,
+                    (sample_count, capacity_samples),
                     exact_integer_decode,
                     store_overwrites_planes,
                     &mut fresh_budget,
@@ -235,10 +246,13 @@ fn store_overwrites_every_plane_sample(
             .all(|size| size.horizontal_resolution == 1 && size.vertical_resolution == 1)
 }
 
+/// Prepare one plane of `sample_count` samples per component, whose
+/// float allocation holds at least `capacity_samples`. Planes are zeroed
+/// unless `store_overwrites_planes`.
 fn reset_channel_data(
     components: &mut Vec<ComponentData>,
     component_infos: &[super::ComponentInfo],
-    sample_count: usize,
+    (sample_count, capacity_samples): (usize, usize),
     exact_integer_decode: bool,
     store_overwrites_planes: bool,
     budget: &mut ContextCapacityBudget,
@@ -286,7 +300,13 @@ fn reset_channel_data(
     }
 
     for (component, info) in components.iter_mut().zip(component_infos) {
-        reset_simd_samples(component, sample_count, store_overwrites_planes, budget)?;
+        reset_simd_samples(
+            component,
+            sample_count,
+            capacity_samples,
+            store_overwrites_planes,
+            budget,
+        )?;
         if exact_integer_decode {
             reset_integer_samples(component, sample_count, budget)?;
         }
@@ -301,11 +321,12 @@ fn reset_channel_data(
 fn reset_simd_samples(
     component: &mut ComponentData,
     sample_count: usize,
+    capacity_samples: usize,
     store_overwrites_planes: bool,
     budget: &mut ContextCapacityBudget,
 ) -> Result<()> {
-    let planned_capacity =
-        SimdBuffer::<SIMD_WIDTH>::padded_len(sample_count).ok_or(ValidationError::ImageTooLarge)?;
+    let planned_capacity = SimdBuffer::<SIMD_WIDTH>::padded_len(capacity_samples.max(sample_count))
+        .ok_or(ValidationError::ImageTooLarge)?;
     if component.container.capacity() >= planned_capacity {
         let reset = if store_overwrites_planes {
             component.container.try_reset_for_overwrite(sample_count)
@@ -320,8 +341,8 @@ fn reset_simd_samples(
     component.container = SimdBuffer::empty();
     budget.release_elements::<f32>(released_capacity)?;
     budget.include_elements::<f32>(planned_capacity)?;
-    let prepared =
-        SimdBuffer::try_zeros(sample_count).map_err(|_| DecodingError::HostAllocationFailed)?;
+    let prepared = SimdBuffer::try_zeros_with_capacity(sample_count, capacity_samples)
+        .map_err(|_| DecodingError::HostAllocationFailed)?;
     budget.include_capacity_overage::<f32>(planned_capacity, prepared.capacity())?;
     component.container = prepared;
     Ok(())
@@ -614,7 +635,7 @@ mod tests {
         let mut budget = ContextCapacityBudget::with_cap(owner_bytes, owner_bytes)
             .expect("existing owners fit exact test cap");
 
-        reset_simd_samples(&mut component, 3, false, &mut budget).expect("reuse SIMD owner");
+        reset_simd_samples(&mut component, 3, 3, false, &mut budget).expect("reuse SIMD owner");
         reset_integer_samples(&mut component, 3, &mut budget).expect("reuse integer owner");
 
         assert_eq!(component.container.as_ptr(), sample_ptr);
@@ -632,7 +653,7 @@ mod tests {
             .as_mut()
             .expect("integer owner")
             .fill(29);
-        reset_simd_samples(&mut component, 17, false, &mut budget).expect("regrow SIMD owner");
+        reset_simd_samples(&mut component, 17, 17, false, &mut budget).expect("regrow SIMD owner");
         reset_integer_samples(&mut component, 17, &mut budget).expect("regrow integer owner");
 
         assert_eq!(component.container.as_ptr(), sample_ptr);

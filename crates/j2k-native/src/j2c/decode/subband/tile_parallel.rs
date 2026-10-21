@@ -19,15 +19,19 @@ use rayon::prelude::*;
 
 use super::{
     add_roi_shift_to_bitplanes, code_block_required_by_index, ht_code_block_has_decodable_passes,
-    sub_band_decode_parameters, CpuDecodeParallelism, DecodeAllocationBudget, DecompositionStorage,
-    Header, HtCodeBlockDecodeJob, HtCodeBlockDecoder, Result, Tile, TileDecodeContext,
+    stored_placement, sub_band_decode_parameters, BlockPlacement, CpuDecodeParallelism,
+    DecodeAllocationBudget, DecompositionStorage, Header, HtCodeBlockDecodeJob, HtCodeBlockDecoder,
+    Result, Tile, TileDecodeContext,
 };
 use crate::error::{DecodingError, ValidationError};
 use crate::j2c::build::{CodeBlock, CodeBlockCoding};
 use crate::j2c::decode::workspace::{ht_task_workspace_bytes, HtTaskWorkspace};
 use crate::j2c::ht_block_decode::{ht_decode_workspace_bytes, selected_code_block_segment_lengths};
 use crate::scalar::decode_ht_code_block_scalar_with_workspace_midpoint;
-use crate::{decode_ht_code_block_scalar_with_workspace, HtCodeBlockDecodeWorkspace};
+use crate::{
+    decode_ht_code_block_scalar_with_workspace, try_resize_decode_elements,
+    HtCodeBlockDecodeWorkspace,
+};
 
 /// Below this many coded bytes per tile (about 45 us of serial entropy decode
 /// on an Apple M4 Pro core) a Rayon fork-join costs more than it saves, so
@@ -66,8 +70,8 @@ struct BlockJob<'a> {
     code_block: usize,
     cleanup_length: u32,
     refinement_length: u32,
-    x_offset: u32,
-    y_offset: u32,
+    /// The samples of the block that its sub-band stores.
+    placement: BlockPlacement,
     width: u32,
     height: u32,
     missing_bit_planes: u8,
@@ -93,6 +97,9 @@ struct TilePlan<'a> {
     coded_bytes: usize,
     max_width: u32,
     max_height: u32,
+    /// Samples in the largest block its sub-band stores only part of. Each
+    /// worker decodes such blocks into scratch of this size.
+    max_clipped_samples: usize,
     strict: bool,
 }
 
@@ -229,6 +236,7 @@ fn plan_tile<'a>(
         coded_bytes: 0,
         max_width: 0,
         max_height: 0,
+        max_clipped_samples: 0,
         strict: header.strict,
     };
     budget.reserve_new(&mut plan.jobs, storage.code_blocks.len())?;
@@ -295,12 +303,17 @@ fn plan_tile<'a>(
                         let job = plan_block(
                             code_block,
                             code_block_idx,
-                            sub_band.storage_rect.x0,
-                            sub_band.storage_rect.y0,
+                            stored_placement(code_block, sub_band),
                             band,
                             storage,
                             &mut arena_len,
                         )?;
+                        if !job.placement.is_whole(job.width, job.height) {
+                            let samples = (job.width as usize)
+                                .checked_mul(job.height as usize)
+                                .ok_or(ValidationError::ImageTooLarge)?;
+                            plan.max_clipped_samples = plan.max_clipped_samples.max(samples);
+                        }
                         plan.coded_bytes = plan
                             .coded_bytes
                             .saturating_add(job.cleanup_length as usize)
@@ -334,15 +347,10 @@ fn plan_tile<'a>(
     Ok(Some(plan))
 }
 
-#[expect(
-    clippy::similar_names,
-    reason = "x0 and y0 name the sub-band origin coordinates"
-)]
 fn plan_block<'a>(
     code_block: &CodeBlock,
     code_block_idx: usize,
-    sub_band_x0: u32,
-    sub_band_y0: u32,
+    placement: BlockPlacement,
     band: usize,
     storage: &DecompositionStorage<'a>,
     arena_len: &mut usize,
@@ -367,8 +375,7 @@ fn plan_block<'a>(
             .map_err(|_| DecodingError::CodeBlockDecodeFailure)?,
         refinement_length: u32::try_from(refinement_length)
             .map_err(|_| DecodingError::CodeBlockDecodeFailure)?,
-        x_offset: code_block.rect.x0 - sub_band_x0,
-        y_offset: code_block.rect.y0 - sub_band_y0,
+        placement,
         width: code_block.rect.width(),
         height: code_block.rect.height(),
         missing_bit_planes: code_block.missing_bit_planes,
@@ -406,8 +413,9 @@ fn single_cleanup_segment<'a>(
     Ok(cleanup)
 }
 
-/// Group one sub-band's jobs into rows of code blocks. Returns `false` when
-/// the blocks do not tile the sub-band in rows of equal height.
+/// Group one sub-band's jobs into rows of code blocks. A strip covers the
+/// stored rows of its blocks. Returns `false` when the stored parts of the
+/// blocks do not tile the sub-band in rows of equal height.
 fn plan_band_strips(
     plan: &mut TilePlan<'_>,
     first_job: usize,
@@ -416,27 +424,28 @@ fn plan_band_strips(
     band_height: u32,
 ) -> Result<bool> {
     let band_jobs = &mut plan.jobs[first_job..];
-    band_jobs.sort_unstable_by_key(|job| (job.y_offset, job.x_offset));
+    band_jobs.sort_unstable_by_key(|job| (job.placement.target_y, job.placement.target_x));
     let stride = band_width as usize;
     let mut index = first_job;
     while index < plan.jobs.len() {
-        let first = &plan.jobs[index];
-        let (y_offset, height) = (first.y_offset, first.height);
+        let first = plan.jobs[index].placement;
+        let (y_offset, height) = (first.target_y, first.height);
         let mut end = index;
         let mut work = 0usize;
         let mut next_x = 0u32;
-        while end < plan.jobs.len() && plan.jobs[end].y_offset == y_offset {
+        while end < plan.jobs.len() && plan.jobs[end].placement.target_y == y_offset {
             let job = &plan.jobs[end];
-            let fits = job.height == height
-                && job.x_offset >= next_x
-                && job
-                    .x_offset
-                    .checked_add(job.width)
-                    .is_some_and(|right| right <= band_width);
+            let placement = job.placement;
+            let fits = placement.height == height
+                && placement.source_y == first.source_y
+                && placement.target_x >= next_x
+                && placement
+                    .validate(job.width, job.height, band_width, band_height)
+                    .is_ok();
             if !fits {
                 return Ok(false);
             }
-            next_x = job.x_offset + job.width;
+            next_x = placement.target_x + placement.width;
             work = work
                 .saturating_add(job.cleanup_length as usize)
                 .saturating_add(job.refinement_length as usize)
@@ -630,6 +639,12 @@ fn decode_strips(
     // Largest rows first so stragglers are small.
     tasks.sort_unstable_by_key(|(_, strip)| core::cmp::Reverse(strip.work));
     let workers = rayon::current_num_threads().min(tasks.len());
+    // Each worker allocates its clipped-block scratch on first use.
+    budget.include_elements::<f32>(
+        workers
+            .checked_mul(plan.max_clipped_samples)
+            .ok_or(ValidationError::ImageTooLarge)?,
+    )?;
     let queue = Mutex::new(tasks.into_iter());
     let failed = AtomicBool::new(false);
     // Each worker owns one already-budgeted workspace for the whole tile.
@@ -639,6 +654,7 @@ fn decode_strips(
         .par_iter_mut()
         .with_max_len(1)
         .try_for_each(|slot| -> Result<()> {
+            let mut clipped_scratch = Vec::new();
             while !failed.load(Ordering::Relaxed) {
                 let next = queue
                     .lock()
@@ -647,7 +663,13 @@ fn decode_strips(
                 let Some((output, strip)) = next else {
                     break;
                 };
-                if let Err(error) = decode_strip(plan, strip, output, &mut slot.workspace) {
+                if let Err(error) = decode_strip(
+                    plan,
+                    strip,
+                    output,
+                    &mut slot.workspace,
+                    &mut clipped_scratch,
+                ) {
                     failed.store(true, Ordering::Relaxed);
                     return Err(error);
                 }
@@ -661,47 +683,81 @@ fn decode_strip(
     strip: &Strip,
     output: &mut [f32],
     workspace: &mut HtCodeBlockDecodeWorkspace,
+    clipped_scratch: &mut Vec<f32>,
 ) -> Result<()> {
     for job in &plan.jobs[strip.jobs.clone()] {
-        let band = plan.bands[job.band];
-        let total = job.cleanup_length as usize + job.refinement_length as usize;
-        let data = match job.payload {
-            Payload::Borrowed(data) => data,
-            Payload::Gathered(start) => plan
-                .arena
-                .get(start..start + total)
-                .ok_or(DecodingError::CodeBlockDecodeFailure)?,
+        // The strip starts at the block row's first stored row.
+        let placement = BlockPlacement {
+            target_y: 0,
+            ..job.placement
         };
-        let decode_job = HtCodeBlockDecodeJob {
-            data,
-            cleanup_length: job.cleanup_length,
-            refinement_length: job.refinement_length,
-            width: job.width,
-            height: job.height,
-            output_stride: strip.stride,
-            missing_bit_planes: job.missing_bit_planes,
-            number_of_coding_passes: job.number_of_coding_passes,
-            num_bitplanes: band.num_bitplanes,
-            roi_shift: band.roi_shift,
-            stripe_causal: band.stripe_causal,
-            strict: plan.strict,
-            dequantization_step: band.dequantization_step,
-        };
-        let output = &mut output[job.x_offset as usize..];
-        #[cfg(feature = "simd")]
-        if crate::scalar::try_decode_ht_code_block_to_f32(
-            decode_job,
-            output,
-            workspace,
-            band.irreversible_midpoint,
-        )? {
-            continue;
-        }
-        if band.irreversible_midpoint {
-            decode_ht_code_block_scalar_with_workspace_midpoint(decode_job, output, workspace)?;
+        let whole = placement.is_whole(job.width, job.height);
+        // The decoder writes every row and column of the block, so a block
+        // the sub-band stores only part of goes through scratch.
+        let (block_output, output_stride) = if whole {
+            (&mut output[placement.target_x as usize..], strip.stride)
         } else {
-            decode_ht_code_block_scalar_with_workspace(decode_job, output, workspace)?;
+            if clipped_scratch.is_empty() {
+                try_resize_decode_elements(clipped_scratch, plan.max_clipped_samples, 0.0)?;
+            }
+            let block = clipped_scratch
+                .get_mut(..job.width as usize * job.height as usize)
+                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+            block.fill(0.0);
+            (block, job.width as usize)
+        };
+        decode_strip_block(plan, job, block_output, output_stride, workspace)?;
+        if !whole {
+            placement.copy_from_block(clipped_scratch, job.width, output, strip.stride)?;
         }
+    }
+    Ok(())
+}
+
+fn decode_strip_block(
+    plan: &TilePlan<'_>,
+    job: &BlockJob<'_>,
+    output: &mut [f32],
+    output_stride: usize,
+    workspace: &mut HtCodeBlockDecodeWorkspace,
+) -> Result<()> {
+    let band = plan.bands[job.band];
+    let total = job.cleanup_length as usize + job.refinement_length as usize;
+    let data = match job.payload {
+        Payload::Borrowed(data) => data,
+        Payload::Gathered(start) => plan
+            .arena
+            .get(start..start + total)
+            .ok_or(DecodingError::CodeBlockDecodeFailure)?,
+    };
+    let decode_job = HtCodeBlockDecodeJob {
+        data,
+        cleanup_length: job.cleanup_length,
+        refinement_length: job.refinement_length,
+        width: job.width,
+        height: job.height,
+        output_stride,
+        missing_bit_planes: job.missing_bit_planes,
+        number_of_coding_passes: job.number_of_coding_passes,
+        num_bitplanes: band.num_bitplanes,
+        roi_shift: band.roi_shift,
+        stripe_causal: band.stripe_causal,
+        strict: plan.strict,
+        dequantization_step: band.dequantization_step,
+    };
+    #[cfg(feature = "simd")]
+    if crate::scalar::try_decode_ht_code_block_to_f32(
+        decode_job,
+        output,
+        workspace,
+        band.irreversible_midpoint,
+    )? {
+        return Ok(());
+    }
+    if band.irreversible_midpoint {
+        decode_ht_code_block_scalar_with_workspace_midpoint(decode_job, output, workspace)?;
+    } else {
+        decode_ht_code_block_scalar_with_workspace(decode_job, output, workspace)?;
     }
     Ok(())
 }

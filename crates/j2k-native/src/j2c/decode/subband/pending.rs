@@ -4,8 +4,8 @@
 
 use super::{
     add_roi_shift_to_bitplanes, code_block_required_by_index, collect_classic_code_block_data,
-    ht_block_decode, ht_code_block_has_decodable_passes, ComponentInfo, DecodeAllocationBudget,
-    DecompositionStorage, Header, Result, SubBand, Vec,
+    ht_block_decode, ht_code_block_has_decodable_passes, stored_placement, BlockPlacement,
+    ComponentInfo, DecodeAllocationBudget, DecompositionStorage, Header, Result, SubBand, Vec,
 };
 use crate::error::ValidationError;
 use crate::j2c::build::CodeBlockCoding;
@@ -13,8 +13,7 @@ use crate::J2kCodeBlockSegment;
 
 pub(super) struct PendingHtBlock {
     pub(super) combined: ht_block_decode::CombinedCodeBlockData,
-    pub(super) output_x: u32,
-    pub(super) output_y: u32,
+    pub(super) placement: BlockPlacement,
     pub(super) width: u32,
     pub(super) height: u32,
     pub(super) missing_bit_planes: u8,
@@ -24,8 +23,7 @@ pub(super) struct PendingHtBlock {
 pub(super) struct PendingClassicBlock {
     pub(super) combined_data: Vec<u8>,
     pub(super) segments: Vec<J2kCodeBlockSegment>,
-    pub(super) output_x: u32,
-    pub(super) output_y: u32,
+    pub(super) placement: BlockPlacement,
     pub(super) width: u32,
     pub(super) height: u32,
     pub(super) missing_bit_planes: u8,
@@ -90,8 +88,7 @@ pub(super) fn collect_pending_classic_blocks(
             pending_blocks.push(PendingClassicBlock {
                 combined_data,
                 segments,
-                output_x: code_block.rect.x0 - sub_band.storage_rect.x0,
-                output_y: code_block.rect.y0 - sub_band.storage_rect.y0,
+                placement: stored_placement(code_block, sub_band),
                 width: code_block.rect.width(),
                 height: code_block.rect.height(),
                 missing_bit_planes: code_block.missing_bit_planes,
@@ -161,8 +158,7 @@ pub(super) fn collect_pending_ht_blocks(
 
             pending_blocks.push(PendingHtBlock {
                 combined: ht_block_decode::collect_code_block_data(code_block, storage, budget)?,
-                output_x: code_block.rect.x0 - sub_band.storage_rect.x0,
-                output_y: code_block.rect.y0 - sub_band.storage_rect.y0,
+                placement: stored_placement(code_block, sub_band),
                 width: code_block.rect.width(),
                 height: code_block.rect.height(),
                 missing_bit_planes: code_block.missing_bit_planes,

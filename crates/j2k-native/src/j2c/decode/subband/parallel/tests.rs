@@ -9,6 +9,7 @@ use super::{
 use crate::error::{DecodeError, ValidationError};
 use crate::j2c::build::{SubBand, SubBandType};
 use crate::j2c::decode::subband::pending::PendingHtBlock;
+use crate::j2c::decode::subband::BlockPlacement;
 use crate::j2c::decode::DecodeAllocationBudget;
 use crate::j2c::ht_block_decode::CombinedCodeBlockData;
 use crate::j2c::rect::IntRect;
@@ -26,8 +27,7 @@ fn ht_pending(dimensions: &[(u32, u32)]) -> Vec<PendingHtBlock> {
                 cleanup_length: 0,
                 refinement_length: 0,
             },
-            output_x: 0,
-            output_y: 0,
+            placement: BlockPlacement::whole(0, 0, width, height),
             width,
             height,
             missing_bit_planes: 0,
@@ -374,7 +374,12 @@ fn coefficient_total_rejects_overflow_before_output_allocation() {
         storage_rect: IntRect::from_xywh(0, 0, u32::MAX, u32::MAX),
     };
     let error = validate_pending_blocks(
-        [(0, 0, u32::MAX, u32::MAX), (0, 0, u32::MAX, u32::MAX)].into_iter(),
+        [(
+            BlockPlacement::whole(0, 0, u32::MAX, u32::MAX),
+            u32::MAX,
+            u32::MAX,
+        ); 2]
+            .into_iter(),
         &sub_band,
     )
     .expect_err("aggregate coefficient count must reject overflow");
@@ -387,7 +392,7 @@ fn coefficient_total_rejects_overflow_before_output_allocation() {
 #[test]
 fn descriptor_preflight_rejects_a_late_invalid_block_before_touching_retained_slab() {
     let mut pending = ht_pending(&[(2, 2), (2, 2)]);
-    pending[1].output_x = 4;
+    pending[1].placement.target_x = 4;
     let sub_band = test_sub_band(5, 3);
     let mut coefficients = vec![7.0; 16];
     let retained_capacity = coefficients.capacity();
@@ -454,14 +459,9 @@ fn descriptor_reservation_releases_an_oversized_retained_slab_under_a_tight_cap(
         &mut decoded,
         &mut coefficients,
         pending.len(),
-        pending.iter().map(|pending| {
-            (
-                pending.output_x,
-                pending.output_y,
-                pending.width,
-                pending.height,
-            )
-        }),
+        pending
+            .iter()
+            .map(|pending| (pending.placement, pending.width, pending.height)),
     )
     .unwrap();
 
@@ -537,8 +537,7 @@ fn classic_workspace_cap_can_release_an_oversized_coefficient_slab() {
         .map(|index| super::PendingClassicBlock {
             combined_data: Vec::new(),
             segments: Vec::new(),
-            output_x: index * 32,
-            output_y: 0,
+            placement: BlockPlacement::whole(index * 32, 0, 32, 32),
             width: 32,
             height: 32,
             missing_bit_planes: 0,
