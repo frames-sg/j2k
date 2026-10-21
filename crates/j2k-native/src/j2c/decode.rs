@@ -1049,6 +1049,13 @@ fn include_capacity<T>(bytes: &mut usize, capacity: usize) -> Result<()> {
 /// Some of the fields are temporary in nature and reset after moving on to the
 /// next tile, some contain global state.
 #[derive(Default)]
+#[cfg_attr(
+    all(test, feature = "parallel"),
+    expect(
+        clippy::struct_excessive_bools,
+        reason = "test builds add independent switches that pin the per-sub-band HT, whole-code-block storage, and separate last-level IDWT paths"
+    )
+)]
 pub(crate) struct TileDecodeContext {
     /// A reusable buffer for the IDWT output.
     pub(crate) idwt_output: IDWTOutput,
