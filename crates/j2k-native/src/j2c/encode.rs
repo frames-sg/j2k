@@ -760,6 +760,7 @@ pub fn irreversible_quantization_scale_bounds(
         guard_bits,
         options.irreversible_quantization_subband_scales,
         options.irreversible_quantization_profile.as_deref(),
+        options.num_decomposition_levels,
         maximum_exponent,
     )
 }
