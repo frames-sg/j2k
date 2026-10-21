@@ -24,7 +24,9 @@ use crate::CpuDecodeParallelism;
 
 mod retained;
 
-pub(crate) use self::retained::{retained_inner_parallelism, run_retained_chunks};
+pub(crate) use self::retained::{
+    decode_retained_tiles, retained_inner_parallelism, run_retained_chunks,
+};
 
 pub(super) type ScopedWorkerHandle<'scope> = (
     usize,
@@ -73,11 +75,12 @@ pub(super) fn plan_batch(
     Ok(with_inner_parallelism(plan, job_count, options, available))
 }
 
-/// A lone job always may parallelize internally. Otherwise, when the caller
-/// left the worker count to the codec and memory admission granted fewer
-/// workers than the host has threads, each worker spreads one decode's code
-/// blocks and wavelet bands over the shared pool so the remaining cores work
-/// too. An explicit worker count keeps every decode on its worker's thread.
+/// A lone job always may parallelize internally, whatever the worker count.
+/// Otherwise, when the caller left the worker count to the codec and memory
+/// admission granted fewer workers than the host has threads, each worker
+/// spreads one decode's code blocks and wavelet bands over the shared pool so
+/// the remaining cores work too. An explicit worker count keeps every decode
+/// of a multi-job batch on its worker's thread.
 fn with_inner_parallelism(
     mut plan: BatchPlan,
     job_count: usize,
@@ -264,6 +267,27 @@ fn available_tile_batch_workers() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lone_job_parallelizes_internally_and_explicit_workers_keep_batches_serial() {
+        for workers in [1, 4] {
+            let options = TileBatchOptions {
+                workers: NonZeroUsize::new(workers),
+            };
+            let lone =
+                with_inner_parallelism(select_batch_plan(1, workers).unwrap(), 1, options, 16);
+            assert_eq!(lone.inner_parallelism, CpuDecodeParallelism::Auto);
+            let batch =
+                with_inner_parallelism(select_batch_plan(8, workers).unwrap(), 8, options, 16);
+            assert_eq!(batch.inner_parallelism, CpuDecodeParallelism::Serial);
+        }
+        for job_count in [1, 8] {
+            let plan = select_batch_plan(job_count, 4).unwrap();
+            let automatic =
+                with_inner_parallelism(plan, job_count, TileBatchOptions::default(), 16);
+            assert_eq!(automatic.inner_parallelism, CpuDecodeParallelism::Auto);
+        }
+    }
 
     #[test]
     fn empty_batch_is_allocation_free() {

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! `MagSgn` decoding of two quads at a time in 4-lane vectors.
+//! `MagSgn` decoding of two quads at a time in an 8-lane vector.
 //!
 //! A quad's lanes follow its sample order: (x, y), (x, y + 1), (x + 1, y),
 //! (x + 1, y + 1). The quad's bit lengths are prefix-summed, so all four
@@ -8,7 +8,7 @@
 //! instead of one after another. Each lane computes exactly what
 //! [`super::decode_mag_sgn_sample_with_vn`] computes for that sample.
 
-use fearless_simd::{f32x4, i32x4, u32x4, u8x16, Bytes, Simd, SimdBase};
+use fearless_simd::{f32x8, i32x8, u32x4, u32x8, u8x16, u8x32, Bytes, Simd, SimdBase};
 
 use super::super::cleanup::{
     decode_cleanup_first_row_pair, decode_cleanup_row_pair, decode_cleanup_symbols_first_row,
@@ -25,25 +25,14 @@ use super::decode_magnitude_sign_pair_from_cleanup;
 /// `p >= 7`, so the 31-bit `p == 0` reconstruction never occurs here.
 pub(super) const MAX_SIMD_MMSBP2: u32 = 25;
 
-/// Set-bit counts for the sixteen 4-bit values, packed into nibbles so the
-/// `MagSgn` position chain does not wait on two scalar table loads per quad.
-const NIBBLE_ONES: u64 = 0x4332_3221_3221_2110;
-
-#[expect(clippy::inline_always, reason = "per-quad position update")]
-#[inline(always)]
-fn nibble_ones(value: u32) -> u32 {
-    ((NIBBLE_ONES >> (value << 2)) & 0xF) as u32
-}
-
 #[derive(Clone, Copy)]
 struct Lanes<S: Simd> {
     simd: S,
-    zero: u32x4<S>,
-    sig_shift: u32x4<S>,
-    emb_k_shift: u32x4<S>,
-    emb_1_shift: u32x4<S>,
-    byte_spread: u32x4<S>,
-    byte_offsets: u32x4<S>,
+    sig_shift: u32x8<S>,
+    emb_k_shift: u32x8<S>,
+    emb_1_shift: u32x8<S>,
+    byte_spread: u32x8<S>,
+    byte_offsets: u32x8<S>,
 }
 
 #[derive(Clone, Copy)]
@@ -62,63 +51,62 @@ impl<S: Simd> Lanes<S> {
     fn new(simd: S) -> Self {
         Self {
             simd,
-            zero: u32x4::splat(simd, 0),
-            sig_shift: u32x4::from_slice(simd, &[4, 5, 6, 7]),
-            emb_k_shift: u32x4::from_slice(simd, &[12, 13, 14, 15]),
-            emb_1_shift: u32x4::from_slice(simd, &[8, 9, 10, 11]),
-            byte_spread: u32x4::splat(simd, 0x0101_0101),
-            byte_offsets: u32x4::splat(simd, 0x0302_0100),
+            sig_shift: u32x8::from_slice(simd, &[4, 5, 6, 7, 4, 5, 6, 7]),
+            emb_k_shift: u32x8::from_slice(simd, &[12, 13, 14, 15, 12, 13, 14, 15]),
+            emb_1_shift: u32x8::from_slice(simd, &[8, 9, 10, 11, 8, 9, 10, 11]),
+            byte_spread: u32x8::splat(simd, 0x0101_0101),
+            byte_offsets: u32x8::splat(simd, 0x0302_0100),
         }
     }
 }
 
-/// Bits a quad consumes: `uq` per significant sample, less each of their
-/// `e_k` bits. Matches the sum of the lanes' `m_n`.
-#[expect(clippy::inline_always, reason = "per-quad position update")]
-#[inline(always)]
-fn quad_bits(inf: u32, uq: u32) -> usize {
-    let rho = (inf >> 4) & 0xF;
-    let emb_k = (inf >> 12) & rho;
-    let significant = nibble_ones(rho);
-    let refined = nibble_ones(emb_k);
-    (uq * significant - refined) as usize
-}
-
-/// One quad's decoded samples and `v_n` values, starting at bit `position`.
+/// Two quads' decoded samples and `v_n` values. Each 128-bit half owns
+/// one quad, so prefix sums and byte gathers cannot cross quad boundaries.
 #[expect(clippy::inline_always, reason = "per-quad hot path")]
 #[inline(always)]
-fn decode_quad<S: Simd>(
+fn decode_quad_pair<S: Simd>(
     lanes: &Lanes<S>,
-    magsgn: &FlatBitReader<'_>,
-    position: usize,
-    inf: u32,
-    uq: u32,
+    magsgn: &mut FlatBitReader<'_>,
+    quads: [(u32, u32); 2],
     p_shift: u32,
-) -> (u32x4<S>, u32x4<S>) {
+) -> (u32x8<S>, u32x8<S>) {
     let simd = lanes.simd;
-    let inf_v = u32x4::splat(simd, inf);
-    let significant = lanes.zero - ((inf_v >> lanes.sig_shift) & 1);
+    let pair =
+        |first, second| simd.combine_u32x4(u32x4::splat(simd, first), u32x4::splat(simd, second));
+    let zero = pair(0, 0);
+    let [(inf0, uq0), (inf1, uq1)] = quads;
+    let inf_v = pair(inf0, inf1);
+    let significant = zero - ((inf_v >> lanes.sig_shift) & 1);
     let emb_k = (inf_v >> lanes.emb_k_shift) & 1;
     let emb_1 = (inf_v >> lanes.emb_1_shift) & 1;
-    let m_n = (u32x4::splat(simd, uq) - emb_k) & significant;
+    let m_n = (pair(uq0, uq1) - emb_k) & significant;
 
     // Exclusive prefix sum: each lane's bit offset within the quad.
-    let shifted = lanes.zero.slide::<3>(m_n);
-    let pairs = shifted + lanes.zero.slide::<3>(shifted);
-    let offsets = pairs + lanes.zero.slide::<2>(pairs);
+    let pairs = m_n + zero.slide_within_blocks::<3>(m_n);
+    let inclusive = pairs + zero.slide_within_blocks::<2>(pairs);
+    let offsets = zero.slide_within_blocks::<3>(inclusive);
+    let [_, _, _, first_bits, _, _, _, second_bits] = inclusive.to_array();
+    let first = magsgn.position();
+    let second = first + first_bits as usize;
 
-    let (window, first_bit) = magsgn.window16(position);
-    let bits = offsets + first_bit;
-    let indices = (bits >> 3) * lanes.byte_spread + lanes.byte_offsets;
-    let window = u8x16::from_slice(simd, window);
-    let gathered: u32x4<S> = window.swizzle_dyn(indices.bitcast::<u8x16<S>>()).bitcast();
-    let ms_val = gathered >> (bits & 7);
+    let (window0, bit0) = magsgn.window16(first);
+    let (window1, bit1) = magsgn.window16(second);
+    let positions = offsets + pair(bit0, bit1);
+    let indices = (positions >> 3) * lanes.byte_spread + lanes.byte_offsets;
+    let window = simd.combine_u8x16(
+        u8x16::from_slice(simd, window0),
+        u8x16::from_slice(simd, window1),
+    );
+    let gathered: u32x8<S> = window
+        .swizzle_dyn_within_blocks(indices.bitcast::<u8x32<S>>())
+        .bitcast();
+    let ms_val = gathered >> (positions & 7);
+    magsgn.advance_to(second + second_bits as usize);
 
-    // `1 << m_n` with `m_n <= 32`, split so no lane shifts by 32 or more.
-    let half = m_n >> 1;
-    let rest = m_n - half;
-    let mask = !((!lanes.zero << half) << rest);
-    let e1 = (emb_1 << half) << rest;
+    // The caller checks uq <= mmsbp2 <= MAX_SIMD_MMSBP2 (25), so
+    // every m_n fits a single variable shift, including zero-length lanes.
+    let mask = !(!zero << m_n);
+    let e1 = emb_1 << m_n;
     let v_n = ((ms_val & mask) | e1 | 1) & significant;
     let magnitude = (v_n + 2) << p_shift;
     (((ms_val << 31) | magnitude) & significant, v_n)
@@ -164,11 +152,9 @@ fn decode_two_quads<S: Simd>(
         return Some(());
     }
 
-    let first = magsgn.position();
-    let second = first + quad_bits(inf0, uq0);
-    let (samples0, v_n0) = decode_quad(lanes, magsgn, first, inf0, uq0, p_shift);
-    let (samples1, v_n1) = decode_quad(lanes, magsgn, second, inf1, uq1, p_shift);
-    magsgn.advance_to(second + quad_bits(inf1, uq1));
+    let (samples, v_n) = decode_quad_pair(lanes, magsgn, quads, p_shift);
+    let (samples0, samples1) = lanes.simd.split_u32x8(samples);
+    let (v_n0, v_n1) = lanes.simd.split_u32x8(v_n);
 
     samples0
         .unzip_low(samples1)
@@ -192,19 +178,19 @@ fn decode_two_quads<S: Simd>(
 #[inline(always)]
 fn final_samples<const IRREVERSIBLE_MIDPOINT: bool, S: Simd>(
     lanes: &Lanes<S>,
-    samples: u32x4<S>,
+    samples: u32x8<S>,
     output: FinalOutput,
-) -> f32x4<S> {
+) -> f32x8<S> {
     let magnitude = samples & 0x7FFF_FFFF;
     let values = if IRREVERSIBLE_MIDPOINT {
-        let magnitude = lanes.simd.cvt_f32_u32x4(magnitude) * output.midpoint_scale;
-        let signed = magnitude.bitcast::<u32x4<S>>() | (samples & 0x8000_0000);
-        signed.bitcast::<f32x4<S>>()
+        let magnitude = lanes.simd.cvt_f32_u32x8(magnitude) * output.midpoint_scale;
+        let signed = magnitude.bitcast::<u32x8<S>>() | (samples & 0x8000_0000);
+        signed.bitcast::<f32x8<S>>()
     } else {
         let magnitude = magnitude >> output.coefficient_shift;
-        let sign = lanes.zero - (samples >> 31);
-        let signed = ((magnitude ^ sign) - sign).bitcast::<i32x4<S>>();
-        lanes.simd.cvt_f32_i32x4(signed)
+        let sign = u32x8::splat(lanes.simd, 0) - (samples >> 31);
+        let signed = ((magnitude ^ sign) - sign).bitcast::<i32x8<S>>();
+        lanes.simd.cvt_f32_i32x8(signed)
     };
     values * output.dequantization_step
 }
@@ -239,7 +225,9 @@ fn decode_two_quads_to_f32<const IRREVERSIBLE_MIDPOINT: bool, S: Simd>(
     }
 
     if (inf0 | inf1) & 0xF0 == 0 {
-        let zero = final_samples::<IRREVERSIBLE_MIDPOINT, _>(lanes, lanes.zero, output);
+        let zero =
+            final_samples::<IRREVERSIBLE_MIDPOINT, _>(lanes, u32x8::splat(lanes.simd, 0), output);
+        let (zero, _) = lanes.simd.split_f32x8(zero);
         zero.store_slice(&mut decoded_data[dp..dp + 4]);
         if second_row_present {
             zero.store_slice(&mut decoded_data[dp + stride..dp + stride + 4]);
@@ -250,16 +238,17 @@ fn decode_two_quads_to_f32<const IRREVERSIBLE_MIDPOINT: bool, S: Simd>(
         return Some(());
     }
 
-    let first = magsgn.position();
-    let second = first + quad_bits(inf0, uq0);
-    let (samples0, v_n0) = decode_quad(lanes, magsgn, first, inf0, uq0, p_shift);
-    let (samples1, v_n1) = decode_quad(lanes, magsgn, second, inf1, uq1, p_shift);
-    magsgn.advance_to(second + quad_bits(inf1, uq1));
+    let (samples, v_n) = decode_quad_pair(lanes, magsgn, quads, p_shift);
+    let samples = final_samples::<IRREVERSIBLE_MIDPOINT, _>(lanes, samples, output);
+    let (samples0, samples1) = lanes.simd.split_f32x8(samples);
+    let (v_n0, v_n1) = lanes.simd.split_u32x8(v_n);
 
-    final_samples::<IRREVERSIBLE_MIDPOINT, _>(lanes, samples0.unzip_low(samples1), output)
+    samples0
+        .unzip_low(samples1)
         .store_slice(&mut decoded_data[dp..dp + 4]);
     if second_row_present {
-        final_samples::<IRREVERSIBLE_MIDPOINT, _>(lanes, samples0.unzip_high(samples1), output)
+        samples0
+            .unzip_high(samples1)
             .store_slice(&mut decoded_data[dp + stride..dp + stride + 4]);
     }
     let [c0, c1, c2, c3] = v_n0.unzip_high(v_n1).to_array();

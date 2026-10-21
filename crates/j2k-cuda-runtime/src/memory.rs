@@ -318,6 +318,40 @@ impl<'a> CudaExternalDeviceBufferViewMut<'a> {
     pub fn byte_len(&self) -> usize {
         self.len
     }
+
+    /// Borrow `offset..offset + len` of this view as a narrower exclusive view.
+    pub fn sub_view_mut(
+        &mut self,
+        offset: usize,
+        len: usize,
+    ) -> Result<CudaExternalDeviceBufferViewMut<'_>, CudaError> {
+        if len == 0 {
+            return Err(CudaError::InvalidArgument {
+                message: "external CUDA sub-view must not be empty".to_string(),
+            });
+        }
+        let end = offset
+            .checked_add(len)
+            .ok_or(CudaError::LengthTooLarge { len })?;
+        if end > self.len {
+            return Err(CudaError::OutputTooSmall {
+                required: end,
+                have: self.len,
+            });
+        }
+        let offset_u64 =
+            u64::try_from(offset).map_err(|_| CudaError::LengthTooLarge { len: offset })?;
+        let ptr = self
+            .ptr
+            .checked_add(offset_u64)
+            .ok_or(CudaError::LengthTooLarge { len: offset })?;
+        Ok(CudaExternalDeviceBufferViewMut {
+            context: self.context.clone(),
+            ptr,
+            len,
+            _exclusive: std::marker::PhantomData,
+        })
+    }
 }
 
 impl<T> CudaDeviceBufferViewMut<'_, T> {
@@ -368,6 +402,27 @@ impl CudaDeviceBuffer {
     /// Device allocation length in bytes.
     pub fn byte_len(&self) -> usize {
         self.len
+    }
+
+    #[doc(hidden)]
+    /// Borrow this owned allocation as an exclusive destination view.
+    ///
+    /// `cuMemAlloc` completes before this buffer exists, and the mutable
+    /// borrow excludes every other access while the view is live.
+    pub fn destination_view_mut(
+        &mut self,
+    ) -> Result<CudaExternalDeviceBufferViewMut<'_>, CudaError> {
+        if self.len == 0 {
+            return Err(CudaError::InvalidArgument {
+                message: "CUDA destination buffer must not be empty".to_string(),
+            });
+        }
+        Ok(CudaExternalDeviceBufferViewMut {
+            context: self.context.clone(),
+            ptr: self.ptr,
+            len: self.len,
+            _exclusive: std::marker::PhantomData,
+        })
     }
 
     #[doc(hidden)]

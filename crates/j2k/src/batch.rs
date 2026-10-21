@@ -16,6 +16,7 @@ mod direct;
 mod host_memory;
 mod planning;
 pub(crate) mod scheduler;
+mod shared_workers;
 pub(crate) mod worker;
 
 use admission::BatchAllocationBudget;
@@ -134,15 +135,41 @@ pub fn decode_tile_region_scaled_into_in_context(
 /// per-operation bound. When `options.workers` is unset and
 /// fewer workers are admitted than the host has threads, each worker decodes
 /// its tile with internal code-block and wavelet parallelism; an explicit
-/// worker count keeps every decode on its worker's thread.
+/// worker count keeps every decode of a multi-tile batch on its worker's
+/// thread. A batch of one tile may always use internal parallelism.
+///
+/// The process keeps one set of worker decode workspaces (decoded-component,
+/// Tier-1, and IDWT allocations) between calls, so repeated batches do not
+/// reallocate and page-fault them. After a call the set is kept only while it
+/// holds at most 256 MiB; [`retained_tile_batch_workspace_bytes`] reports it
+/// and [`release_tile_batch_workspaces`] frees it. A call made while another
+/// is using the set decodes with per-call workspaces instead of waiting.
+/// [`CpuBatchDecoder::decode_tiles_into`](crate::CpuBatchDecoder::decode_tiles_into)
+/// gives a caller-owned set instead.
 pub fn decode_tiles_into(
     jobs: &mut [TileDecodeJob<'_, '_>],
     fmt: PixelFormat,
     options: TileBatchOptions,
 ) -> Result<Vec<BatchOutcome>, TileBatchError> {
-    scheduler::decode_batch(jobs, options, |worker, chunk, results| {
-        worker.decode_tile_jobs(chunk, results, fmt)
-    })
+    shared_workers::decode_tiles_with_shared_workers(jobs, fmt, options)
+}
+
+/// Bytes of decode workspace [`decode_tiles_into`] currently keeps between calls.
+///
+/// This never waits for a running batch; it reports the set as the most
+/// recent call left it.
+#[must_use]
+pub fn retained_tile_batch_workspace_bytes() -> usize {
+    shared_workers::shared_tile_workspace_bytes()
+}
+
+/// Free the decode workspaces [`decode_tiles_into`] keeps between calls.
+///
+/// Later calls allocate them again. Long-running services can call this after
+/// a burst of decoding to return the memory. This never waits: workspaces a
+/// running batch is using are freed as soon as that batch finishes.
+pub fn release_tile_batch_workspaces() {
+    shared_workers::release_shared_tile_workers();
 }
 
 /// Decode independent J2K/HTJ2K tile regions into caller-owned output buffers.

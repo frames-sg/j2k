@@ -61,9 +61,37 @@ fn exact_rgba_resident_and_external_match_cpu_across_codecs_types_geometry_and_l
         for (codec, encoded) in encodings {
             for layout in [BatchLayout::Nhwc, BatchLayout::Nchw] {
                 for request in requests {
-                    assert_one_case(&context, codec, &encoded, layout, request);
+                    assert_one_case(&context, codec, &encoded, layout, request, 1);
                 }
             }
+        }
+    }
+}
+
+#[test]
+fn exact_rgba_groups_above_the_decode_chunk_match_cpu_across_sample_types() {
+    if !j2k_test_support::cuda_runtime_gate(module_path!()) {
+        return;
+    }
+    // One more image than the 32-image CUDA colour decode chunk.
+    let count = 33;
+    let context = CudaContext::system_default().expect("CUDA context");
+    for profile in [
+        Htj2kRgbaSampleProfile::U8Rct,
+        Htj2kRgbaSampleProfile::U12,
+        Htj2kRgbaSampleProfile::I16,
+    ] {
+        let fixture = generated_htj2k_rgba_fixture(profile, Htj2kRgbaAlpha::Straight);
+        let encoded = Arc::<[u8]>::from(wrap_rgba_jph(&fixture));
+        for layout in [BatchLayout::Nhwc, BatchLayout::Nchw] {
+            assert_one_case(
+                &context,
+                "HTJ2K",
+                &encoded,
+                layout,
+                DecodeRequest::Full,
+                count,
+            );
         }
     }
 }
@@ -74,13 +102,14 @@ fn assert_one_case(
     encoded: &Arc<[u8]>,
     layout: BatchLayout,
     request: DecodeRequest,
+    count: usize,
 ) {
     let options = BatchDecodeOptions {
         layout,
         ..BatchDecodeOptions::default()
     };
     let prepared = prepare_batch(
-        vec![EncodedImage::new(Arc::clone(encoded), request)],
+        vec![EncodedImage::new(Arc::clone(encoded), request); count],
         options,
     )
     .unwrap_or_else(|error| panic!("prepare {codec} RGBA: {error}"));

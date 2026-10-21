@@ -162,16 +162,19 @@ pub(super) fn store<'a>(
             component_info.wavelet_transform(),
             round_irreversible_output,
         );
+        // Each row returns the samples it wrote, so a reused plane's coverage
+        // is counted from what was actually stored.
         let copy_row = |input_row: &[f32], output_row: &mut [f32]| {
             let input_row = &input_row[skip_x..];
             let output_row = &mut output_row[output_x..][..input_row.len()];
             shift.copy(input_row, output_row);
+            output_row.len()
         };
 
         #[cfg(feature = "parallel")]
         if parallel && input_width * input_rows >= PARALLEL_STORE_SAMPLES {
             use rayon::prelude::*;
-            idwt_output
+            let stored = idwt_output
                 .coefficients
                 .par_chunks_exact(input_width)
                 .skip(skip_y)
@@ -183,13 +186,15 @@ pub(super) fn store<'a>(
                         .skip(output_y),
                 )
                 .with_min_len(16)
-                .for_each(|(input_row, output_row)| copy_row(input_row, output_row));
+                .map(|(input_row, output_row)| copy_row(input_row, output_row))
+                .sum::<usize>();
+            tile_ctx.stored_plane_samples = tile_ctx.stored_plane_samples.saturating_add(stored);
             return Ok(());
         }
         #[cfg(not(feature = "parallel"))]
         let _ = parallel;
 
-        for (input_row, output_row) in idwt_output
+        let stored = idwt_output
             .coefficients
             .chunks_exact(input_width)
             .skip(skip_y)
@@ -200,9 +205,9 @@ pub(super) fn store<'a>(
                     .chunks_exact_mut(output_width)
                     .skip(output_y),
             )
-        {
-            copy_row(input_row, output_row);
-        }
+            .map(|(input_row, output_row)| copy_row(input_row, output_row))
+            .sum::<usize>();
+        tile_ctx.stored_plane_samples = tile_ctx.stored_plane_samples.saturating_add(stored);
     } else {
         apply_float_sign_shift(
             &mut idwt_output.coefficients,
@@ -275,7 +280,10 @@ pub(super) fn store<'a>(
 }
 
 /// Stores with at least this many samples copy rows in parallel.
-#[cfg(feature = "parallel")]
+/// On x86, scheduling the rows of a 1 MiB plane costs more than its copy.
+#[cfg(all(feature = "parallel", target_arch = "x86_64"))]
+const PARALLEL_STORE_SAMPLES: usize = 1024 * 1024;
+#[cfg(all(feature = "parallel", not(target_arch = "x86_64")))]
 const PARALLEL_STORE_SAMPLES: usize = 512 * 512;
 
 /// The per-sample output transform of [`apply_float_sign_shift`].

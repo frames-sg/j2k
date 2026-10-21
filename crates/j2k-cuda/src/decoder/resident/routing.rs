@@ -7,7 +7,10 @@ use super::super::color_batch::{
     decode_color_cuda_resident_batch_surfaces_with_profile,
     decode_color_cuda_resident_region_scaled_surface, decode_color_cuda_resident_region_surface,
     decode_color_cuda_resident_scaled_surface, decode_color_cuda_resident_surface_with_profile,
+    offset_color_batch_error, COLOR_BATCH_CHUNK_IMAGES,
 };
+#[cfg(feature = "cuda-runtime")]
+use super::super::decode_profile::add_decode_report;
 #[cfg(feature = "cuda-runtime")]
 use super::super::grayscale_batch::decode_grayscale_cuda_resident_batch_surfaces_with_profile;
 use super::super::{
@@ -17,6 +20,8 @@ use super::super::{
 };
 #[cfg(feature = "cuda-runtime")]
 use super::surface::decode_grayscale_cuda_resident_surface_with_plan_profile;
+#[cfg(feature = "cuda-runtime")]
+use crate::allocation::try_vec_with_capacity;
 
 #[cfg(feature = "cuda-runtime")]
 pub(in crate::decoder) fn decode_to_cuda_resident_surface_impl(
@@ -101,7 +106,7 @@ pub(in crate::decoder) fn decode_batch_to_cuda_resident_surface_with_profile_con
             )
         }
         PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Rgb16 | PixelFormat::Rgba16 => {
-            decode_color_cuda_resident_batch_surfaces_with_profile(
+            decode_color_cuda_resident_batch_surfaces_bounded(
                 inputs,
                 session,
                 fmt,
@@ -112,6 +117,54 @@ pub(in crate::decoder) fn decode_batch_to_cuda_resident_surface_with_profile_con
             j2k_core::CapabilityRejection::unsupported_format(CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED),
         )),
     }
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn decode_color_cuda_resident_batch_surfaces_bounded(
+    inputs: &[&[u8]],
+    session: &mut CudaSession,
+    fmt: PixelFormat,
+    collect_stage_timings: bool,
+) -> Result<(Vec<Surface>, CudaHtj2kProfileReport), Error> {
+    if inputs.len() <= COLOR_BATCH_CHUNK_IMAGES {
+        return decode_color_cuda_resident_batch_surfaces_with_profile(
+            inputs,
+            session,
+            fmt,
+            collect_stage_timings,
+        );
+    }
+
+    let wall_started = profile::profile_now(collect_stage_timings);
+    let mut surfaces = try_vec_with_capacity(inputs.len(), "chunked CUDA surface batch output")?;
+    let mut aggregate = CudaHtj2kProfileReport {
+        residency: SurfaceResidency::CudaResidentDecode,
+        ..CudaHtj2kProfileReport::default()
+    };
+    for (chunk_index, inputs) in inputs.chunks(COLOR_BATCH_CHUNK_IMAGES).enumerate() {
+        let source_index_base = chunk_index.saturating_mul(COLOR_BATCH_CHUNK_IMAGES);
+        let ht_job_index_base = aggregate.ht_block_count;
+        let classic_job_index_base = aggregate.classic_block_count;
+        let (mut chunk_surfaces, report) = decode_color_cuda_resident_batch_surfaces_with_profile(
+            inputs,
+            session,
+            fmt,
+            collect_stage_timings,
+        )
+        .map_err(|error| {
+            offset_color_batch_error(
+                error,
+                source_index_base,
+                ht_job_index_base,
+                classic_job_index_base,
+            )
+        })?;
+        add_decode_report(&mut aggregate, &report);
+        surfaces.append(&mut chunk_surfaces);
+    }
+    aggregate.detail.wall_total_us = profile::elapsed_us(wall_started);
+    profile::finalize_decode_total_us(&mut aggregate);
+    Ok((surfaces, aggregate))
 }
 
 #[cfg(feature = "cuda-runtime")]

@@ -16,7 +16,7 @@ pub struct CudaExternalBatchGroup {
     pub(super) ranges: Vec<j2k_cuda_runtime::CudaDeviceBufferRange>,
 }
 
-/// Asynchronously submitted CUDA external-destination batch.
+/// Submitted CUDA external-destination batch whose final store may be pending.
 ///
 /// The destination ranges are metadata-only until the caller stream has been
 /// ordered after codec completion or [`Self::wait`] succeeds. Dropping this

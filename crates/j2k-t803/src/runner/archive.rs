@@ -217,11 +217,11 @@ fn ensure_empty_directory(path: &Path) -> Result<(), RunnerError> {
 fn validate_entry_name<R: Read + ?Sized>(
     entry: &zip::read::ZipFile<'_, R>,
 ) -> Result<String, RunnerError> {
-    let name = entry.name();
+    let name = entry.name()?;
     if name.contains('\\') || entry.enclosed_name().is_none() {
         return validation(format!("archive entry {name:?} has an unsafe path"));
     }
-    let normalized = name.strip_suffix('/').unwrap_or(name);
+    let normalized = name.strip_suffix('/').unwrap_or(name.as_ref());
     if normalized.is_empty() {
         return validation("archive contains an empty path");
     }

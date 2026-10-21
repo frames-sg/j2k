@@ -7,6 +7,8 @@ use super::execution::{
     COLOR_HT_PAYLOAD_CHUNK_BYTES,
 };
 use super::preparation::prepare_color_cuda_resident_batch;
+use super::test_fixtures::{four_level_rgb8_fixture, invalidate_first_cleanup_scup};
+use crate::decoder::color_batch::COLOR_BATCH_CHUNK_IMAGES;
 use crate::{CudaSession, Error, J2kDecoder, Surface};
 use j2k_core::{HtGpuJobChunkLimits, PixelFormat};
 
@@ -81,35 +83,6 @@ fn force_uploaded_entropy_pipeline(session: &mut CudaSession, inputs: &[&[u8]]) 
     ));
 }
 
-fn invalidate_first_cleanup_scup(encoded: &mut [u8]) -> (usize, usize) {
-    let prepared = prepare_color_cuda_resident_batch(&[encoded], PixelFormat::Rgb8)
-        .expect("prepare cleanup corruption fixture");
-    let payload_parts = prepared
-        .payload_parts_with_live_bytes(0)
-        .expect("borrowed cleanup payload");
-    assert_eq!(payload_parts[0].as_ptr(), encoded.as_ptr());
-    let mut local_job_index = 0usize;
-    let mut selected = None;
-    for component in &prepared.colors[0].components {
-        for block in component.code_blocks() {
-            if selected.is_none() && block.cleanup_length >= 2 {
-                let start = usize::try_from(block.payload_offset).expect("payload offset");
-                let cleanup_len = usize::try_from(block.cleanup_length).expect("cleanup length");
-                selected = Some((local_job_index, start + cleanup_len));
-            }
-            local_job_index += 1;
-        }
-    }
-    let total_jobs = local_job_index;
-    let (corrupted_job, cleanup_end) = selected.expect("nonempty HT cleanup job");
-    assert!(cleanup_end <= encoded.len());
-    drop(payload_parts);
-    drop(prepared);
-    encoded[cleanup_end - 2] = 0;
-    encoded[cleanup_end - 1] = 0;
-    (corrupted_job, total_jobs)
-}
-
 #[test]
 fn pipelined_color_entropy_preserves_order_across_four_plus_two_groups() {
     if !j2k_test_support::cuda_runtime_and_strict_oxide_gate(module_path!()) {
@@ -156,6 +129,117 @@ fn pipelined_color_entropy_preserves_order_across_four_plus_two_groups() {
         .expect("batch pool");
     assert_eq!(batch.reuse_holds, 0);
     assert_eq!(batch.deferred_buffers, 0);
+}
+
+#[test]
+fn large_surface_batch_preserves_order_and_reuses_bounded_scratch() {
+    if !j2k_test_support::cuda_runtime_and_strict_oxide_gate(module_path!()) {
+        return;
+    }
+    let (first, first_pixels) = four_level_rgb8_fixture(17);
+    let (second, second_pixels) = four_level_rgb8_fixture(29);
+    let mut inputs = Vec::with_capacity(65);
+    let mut expected = Vec::with_capacity(first_pixels.len() * 65);
+    for index in 0_usize..65 {
+        let (encoded, pixels) = if index.is_multiple_of(2) {
+            (&first, &first_pixels)
+        } else {
+            (&second, &second_pixels)
+        };
+        inputs.push(encoded.as_slice());
+        expected.extend_from_slice(pixels);
+    }
+
+    let mut session = CudaSession::default();
+    let surfaces =
+        J2kDecoder::decode_batch_to_device_with_session(&inputs, PixelFormat::Rgb8, &mut session)
+            .expect("first bounded surface batch");
+    assert_eq!(surfaces.len(), inputs.len());
+    assert_eq!(
+        Surface::download_batch_tight(&surfaces).expect("first bounded batch readback"),
+        expected
+    );
+    drop(surfaces);
+
+    let allocations_before = session
+        .diagnostics()
+        .expect("warm bounded-batch diagnostics")
+        .runtime
+        .expect("CUDA runtime")
+        .device_allocation_operations;
+    let surfaces =
+        J2kDecoder::decode_batch_to_device_with_session(&inputs, PixelFormat::Rgb8, &mut session)
+            .expect("reused bounded surface batch");
+    let runtime_before_readback = session
+        .diagnostics()
+        .expect("pre-readback diagnostics")
+        .runtime
+        .expect("CUDA runtime");
+    assert_eq!(
+        Surface::download_batch_tight(&surfaces).expect("reused bounded batch readback"),
+        expected
+    );
+    let runtime_after_readback = session
+        .diagnostics()
+        .expect("post-readback diagnostics")
+        .runtime
+        .expect("CUDA runtime");
+    assert_eq!(
+        runtime_after_readback.device_to_host_operations
+            - runtime_before_readback.device_to_host_operations,
+        u64::try_from(inputs.len().div_ceil(COLOR_BATCH_CHUNK_IMAGES))
+            .expect("chunk count fits in u64"),
+        "readback must copy each chunk's contiguous outputs with one transfer"
+    );
+    drop(surfaces);
+    let allocations_after = session
+        .diagnostics()
+        .expect("reused bounded-batch diagnostics")
+        .runtime
+        .expect("CUDA runtime")
+        .device_allocation_operations;
+    assert_eq!(
+        allocations_after, allocations_before,
+        "a warm large batch must reuse the bounded scratch and output working sets"
+    );
+}
+
+#[test]
+fn chunked_surface_batch_drops_completed_prefix_after_late_plan_error() {
+    if !j2k_test_support::cuda_runtime_and_strict_oxide_gate(module_path!()) {
+        return;
+    }
+    let (valid, valid_pixels) = j2k_test_support::htj2k_rgb8_fixture_with_pixels(129, 131);
+    let invalid = [0x00_u8, 0x01];
+    let mut inputs = vec![valid.as_slice(); 33];
+    inputs.push(invalid.as_slice());
+    let expected = prepare_color_cuda_resident_batch(&[invalid.as_slice()], PixelFormat::Rgb8)
+        .err()
+        .expect("invalid color input");
+    let mut session = CudaSession::default();
+
+    let actual =
+        J2kDecoder::decode_batch_to_device_with_session(&inputs, PixelFormat::Rgb8, &mut session)
+            .expect_err("the second surface chunk must reject its invalid input");
+    assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
+    let batch = session
+        .decode_pool_diagnostics()
+        .expect("retired chunk failure pools")
+        .batch_decode
+        .expect("batch pool");
+    assert_eq!(batch.reuse_holds, 0);
+    assert_eq!(batch.deferred_buffers, 0);
+
+    let surfaces = J2kDecoder::decode_batch_to_device_with_session(
+        &[valid.as_slice()],
+        PixelFormat::Rgb8,
+        &mut session,
+    )
+    .expect("session reuse after late chunk plan failure");
+    assert_eq!(
+        Surface::download_batch_tight(&surfaces).expect("download reused session output"),
+        valid_pixels
+    );
 }
 
 #[test]
@@ -243,6 +327,15 @@ fn pipelined_color_entropy_maps_late_kernel_failure_to_global_source_and_job() {
         8,
         false,
     );
+    assert_late_kernel_failure_mapping(
+        &valid,
+        &corrupted,
+        corrupted_job,
+        jobs_per_image,
+        34,
+        33,
+        true,
+    );
 }
 
 #[test]
@@ -300,10 +393,13 @@ fn assert_late_kernel_failure_mapping(
     )
     .expect("valid pipelined warm decode");
     drop(warm);
-    if chunked {
-        assert!(session.last_htj2k_decode_chunk_count_for_test() > 0);
-    } else {
-        assert_eq!(session.last_htj2k_decode_chunk_count_for_test(), 0);
+    // Larger surface batches run in groups, so the counter reflects only the last group.
+    if input_count <= COLOR_BATCH_CHUNK_IMAGES {
+        if chunked {
+            assert!(session.last_htj2k_decode_chunk_count_for_test() > 0);
+        } else {
+            assert_eq!(session.last_htj2k_decode_chunk_count_for_test(), 0);
+        }
     }
 
     let error = J2kDecoder::decode_batch_to_device_with_session(

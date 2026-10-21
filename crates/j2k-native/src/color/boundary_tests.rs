@@ -111,6 +111,50 @@ fn interleaver_covers_two_channel_fast_path_and_mixed_depth_scaling() {
 }
 
 #[test]
+fn rgb8_interleaving_preserves_rounding_clamping_and_tail() {
+    let mut samples = vec![f32::NAN, f32::NEG_INFINITY, f32::INFINITY, -1.0, -0.0];
+    for integer in 0..=255_u16 {
+        let half = f32::from(integer) + 0.5;
+        samples.extend([half.next_down(), half, half.next_up()]);
+    }
+    let specs = (0..3)
+        .map(|channel| {
+            let mut values = samples.clone();
+            values.rotate_left(channel * 13);
+            (values, 8, false)
+        })
+        .collect::<Vec<_>>();
+    let boxes = ImageBoxes::default();
+    let mut planes = components(&specs);
+    let mut image = DecodedImage {
+        decoded_components: &mut planes,
+        boxes: &boxes,
+    };
+    let mut output = vec![17; samples.len() * 3 + 7];
+    interleave_and_convert(&mut image, &mut output).expect("RGB8 projection");
+    for (index, pixel) in output[..samples.len() * 3]
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .enumerate()
+    {
+        for channel in 0..3 {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "the scalar round-and-saturate output contract"
+            )]
+            let expected = specs[channel].0[index].round() as u8;
+            assert_eq!(
+                pixel[channel], expected,
+                "sample {index}, channel {channel}"
+            );
+        }
+    }
+    assert_eq!(&output[samples.len() * 3..], &[17; 7]);
+}
+
+#[test]
 fn region_interleaver_matches_fast_and_slow_full_projection_crops() {
     let boxes = ImageBoxes::default();
     let roi = (1, 0, 1, 2);

@@ -121,18 +121,23 @@ unsafe extern "C" {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn decodes_pinned_gray8_fixture_in_process() {
-        let fixture = j2k_test_support::openjph_batch_fixtures()
-            .iter()
-            .find(|fixture| fixture.name == "openjph-gray-u8-53-raw")
-            .expect("pinned gray8 OpenJPH fixture");
-
+    fn decodes_pinned_gray8_and_rgb8_fixtures_in_process() {
         if !super::is_available() {
             return;
         }
-        let decoded =
-            super::decode_gray(fixture.encoded, 0).expect("decode through pinned OpenJPH library");
-        assert_eq!(decoded, fixture.oracle);
+        for name in ["openjph-gray-u8-53-raw", "openjph-rgb-u8-53-raw"] {
+            let fixture = j2k_test_support::openjph_batch_fixtures()
+                .iter()
+                .find(|fixture| fixture.name == name)
+                .expect("pinned OpenJPH fixture");
+            let decoded = if fixture.components == 1 {
+                super::decode_gray(fixture.encoded, 0)
+            } else {
+                super::decode_rgb(fixture.encoded, 0)
+            }
+            .expect("decode through pinned OpenJPH library");
+            assert_eq!(decoded, fixture.oracle, "{name}");
+        }
         assert_eq!(super::version(), "0.31.0");
     }
 }

@@ -8,6 +8,10 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[package.metadata.cargo-machete]
+# Used from build.rs when the optional Python extension feature is enabled.
+ignored = ["pyo3-build-config"]
+
 [lib]
 name = "j2k_python"
 crate-type = ["cdylib", "rlib"]

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+mod chunked;
 mod completion;
 mod execution;
 mod prepare;
@@ -14,7 +15,7 @@ use super::{
     append_color_payload_to_shared, build_color_component_work, cuda_error,
     finalize_color_batch_decode_report, host_owners, profile, run_color_component_idwt_batches,
     CudaHtj2kColorDecodePlans, CudaHtj2kProfileReport, CudaQueuedIdwtBatch, CudaSession, Error,
-    NativeDecoderContext,
+    NativeDecoderContext, COLOR_BATCH_CHUNK_IMAGES,
 };
 use crate::allocation::HostPhaseBudget;
 use crate::decoder::pending_completion::PendingDecodeCompletion;
@@ -28,8 +29,10 @@ use crate::decoder::resident::{
 };
 use crate::decoder::CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED;
 
+use self::chunked::{submit_native_color_chunks_into, submit_native_color_resident_chunks};
 use self::completion::{
-    NativeColorBatchOutput, NativeColorPendingCompletion, StoredNativeColorBatch,
+    ColorJobIndexBases, NativeColorBatchOutput, NativeColorPendingCompletion,
+    StoredNativeColorBatch,
 };
 pub(crate) use self::completion::{
     SubmittedNativeColorExternalBatch, SubmittedNativeColorResidentBatch,
@@ -54,7 +57,24 @@ pub(crate) struct NativeColorOwnedBatch {
     pub(crate) execution: j2k_cuda_runtime::CudaExecutionStats,
 }
 
+/// Submit exact-native colour output into a caller-owned CUDA destination.
+///
+/// Groups above [`COLOR_BATCH_CHUNK_IMAGES`] decode in successive bounded
+/// chunks; every chunk except the last completes before this returns.
 pub(crate) fn submit_native_color_resident_prepared_batch_into(
+    inputs: &[NativeColorBatchInput<'_>],
+    session: &mut CudaSession,
+    fmt: PixelFormat,
+    layout: BatchLayout,
+    destination: &mut CudaExternalDeviceBufferViewMut<'_>,
+) -> Result<SubmittedNativeColorExternalBatch, Error> {
+    if inputs.len() > COLOR_BATCH_CHUNK_IMAGES {
+        return submit_native_color_chunks_into(inputs, session, fmt, layout, destination);
+    }
+    submit_native_color_group_into(inputs, session, fmt, layout, destination)
+}
+
+fn submit_native_color_group_into(
     inputs: &[NativeColorBatchInput<'_>],
     session: &mut CudaSession,
     fmt: PixelFormat,
@@ -63,7 +83,7 @@ pub(crate) fn submit_native_color_resident_prepared_batch_into(
 ) -> Result<SubmittedNativeColorExternalBatch, Error> {
     let (output, report, completion) =
         decode_native_color_batch(inputs, session, fmt, layout, Some(destination), true)?;
-    let NativeColorBatchOutput::External(ranges) = output else {
+    let NativeColorBatchOutput::External { ranges, execution } = output else {
         return Err(Error::capability_rejected(
             j2k_core::CapabilityRejection::unsupported_format(CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED),
         ));
@@ -75,17 +95,26 @@ pub(crate) fn submit_native_color_resident_prepared_batch_into(
     ))?;
     Ok(SubmittedNativeColorExternalBatch {
         ranges,
+        execution,
         report,
         completion: Some(completion),
+        job_index_bases: ColorJobIndexBases::default(),
     })
 }
 
+/// Submit exact-native colour output into one codec-owned dense allocation.
+///
+/// Groups above [`COLOR_BATCH_CHUNK_IMAGES`] decode in successive bounded
+/// chunks; every chunk except the last completes before this returns.
 pub(crate) fn submit_native_color_resident_prepared_batch(
     inputs: &[NativeColorBatchInput<'_>],
     session: &mut CudaSession,
     fmt: PixelFormat,
     layout: BatchLayout,
 ) -> Result<SubmittedNativeColorResidentBatch, Error> {
+    if inputs.len() > COLOR_BATCH_CHUNK_IMAGES {
+        return submit_native_color_resident_chunks(inputs, session, fmt, layout);
+    }
     let (output, report, completion) =
         decode_native_color_batch(inputs, session, fmt, layout, None, true)?;
     let NativeColorBatchOutput::Owned(output) = output else {
@@ -102,6 +131,7 @@ pub(crate) fn submit_native_color_resident_prepared_batch(
         output: Some(output),
         report,
         completion: Some(completion),
+        job_index_bases: ColorJobIndexBases::default(),
     })
 }
 

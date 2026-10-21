@@ -3179,6 +3179,7 @@ pub fn j2k_cuda_runtime::CudaContext::time_default_stream_named_us_if<T>(&self, 
 pub fn j2k_cuda_runtime::CudaContext::validate_device_pointer(&self, u64) -> core::result::Result<u64, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::validate_disjoint_device_buffers<'a>(&self, impl core::iter::traits::collect::IntoIterator<Item = &'a j2k_cuda_runtime::CudaDeviceBuffer>) -> core::result::Result<(), j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaContext::with_nvtx_range<T>(&self, &str, impl core::ops::function::FnOnce() -> core::result::Result<T, j2k_cuda_runtime::CudaError>) -> core::result::Result<T, j2k_cuda_runtime::CudaError>
+pub fn j2k_cuda_runtime::CudaDeviceBuffer::destination_view_mut(&mut self) -> core::result::Result<j2k_cuda_runtime::CudaExternalDeviceBufferViewMut<'_>, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaDeviceBuffer::is_owned_by(&self, &j2k_cuda_runtime::CudaContext) -> bool
 pub fn j2k_cuda_runtime::CudaDeviceBuffer::overlaps(&self, &Self) -> core::result::Result<bool, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaDeviceBuffer::typed_view<T>(&self) -> core::result::Result<j2k_cuda_runtime::CudaDeviceBufferView<'_, T>, j2k_cuda_runtime::CudaError>
@@ -3200,6 +3201,7 @@ pub fn j2k_cuda_runtime::CudaEvent::synchronize(&self) -> core::result::Result<(
 pub fn j2k_cuda_runtime::CudaExternalDeviceBufferViewMut<'a>::byte_len(&self) -> usize
 pub fn j2k_cuda_runtime::CudaExternalDeviceBufferViewMut<'a>::context(&self) -> &j2k_cuda_runtime::CudaContext
 pub fn j2k_cuda_runtime::CudaExternalDeviceBufferViewMut<'a>::device_ptr(&self) -> u64
+pub fn j2k_cuda_runtime::CudaExternalDeviceBufferViewMut<'a>::sub_view_mut(&mut self, usize, usize) -> core::result::Result<j2k_cuda_runtime::CudaExternalDeviceBufferViewMut<'_>, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaExternalHostOwner::context_live_bytes(&self) -> core::result::Result<usize, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaExternalHostOwner::context_live_bytes_excluding(&self, usize) -> core::result::Result<usize, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::CudaExternalHostOwner::drop(&mut self)

@@ -346,6 +346,26 @@ impl<'a> J2kDecoder<'a> {
         self.decode_into_cached(out, stride, fmt)
     }
 
+    /// Decode like [`Self::decode_into`], borrowing the decoded-component,
+    /// Tier-1, and IDWT allocations of a retained worker workspace.
+    pub(crate) fn decode_into_with_workspace(
+        &mut self,
+        workspace: &mut j2k_native::DecoderWorkspace,
+        out: &mut [u8],
+        stride: usize,
+        fmt: PixelFormat,
+    ) -> Result<J2kDecodeOutcome, J2kError> {
+        let parallelism = self.native_context.cpu_decode_parallelism();
+        self.native_context =
+            j2k_native::DecoderContext::from_workspace(core::mem::take(workspace));
+        self.native_context.set_cpu_decode_parallelism(parallelism);
+        let result = self.decode_into_cached(out, stride, fmt);
+        // Parsed graphs borrow this image; into_workspace releases them even
+        // after a failed decode and retains only lifetime-free allocations.
+        *workspace = core::mem::take(&mut self.native_context).into_workspace();
+        result
+    }
+
     fn decode_into_cached(
         &mut self,
         out: &mut [u8],

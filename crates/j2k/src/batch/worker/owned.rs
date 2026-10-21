@@ -2,10 +2,11 @@
 
 //! Owned-batch lifecycle for reusable native worker state.
 
-use j2k_core::ScratchPool;
+use j2k_core::{BatchInfrastructureError, PixelFormat, ScratchPool};
 
 use super::BatchWorker;
-use crate::CpuDecodeParallelism;
+use crate::batch::{J2kBatchResultSlot, TileDecodeJob};
+use crate::{CpuDecodeParallelism, DecodeSettings, J2kDecoder};
 
 impl BatchWorker {
     pub(crate) fn new_owned(batch_size: usize) -> Self {
@@ -24,6 +25,34 @@ impl BatchWorker {
 
     pub(crate) fn set_owned_inner_parallelism(&mut self, parallelism: CpuDecodeParallelism) {
         self.owned_inner_parallelism = parallelism;
+    }
+
+    /// Full-tile jobs for a retained session worker. The native decode
+    /// workspace stays with this worker across tiles and calls instead of
+    /// being reallocated for every tile.
+    pub(crate) fn decode_retained_tile_jobs(
+        &mut self,
+        jobs: &mut [TileDecodeJob<'_, '_>],
+        results: &mut [J2kBatchResultSlot],
+        fmt: PixelFormat,
+        settings: DecodeSettings,
+    ) -> Result<(), BatchInfrastructureError> {
+        super::ensure_disjoint_result_slots(jobs.len(), results.len())?;
+        let parallelism = self.prepare_owned_decode();
+        for (job, slot) in jobs.iter_mut().zip(results) {
+            let outcome =
+                J2kDecoder::new_with_settings(job.input, settings).and_then(|mut decoder| {
+                    decoder.set_cpu_decode_parallelism(parallelism);
+                    decoder.decode_into_with_workspace(
+                        &mut self.native_workspace,
+                        job.out,
+                        job.stride,
+                        fmt,
+                    )
+                });
+            *slot = Some(super::heap_free_decode_result(outcome));
+        }
+        Ok(())
     }
 
     pub(crate) fn take_native_workspace(&mut self) -> j2k_native::DecoderWorkspace {

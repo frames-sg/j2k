@@ -25,7 +25,8 @@ impl TileDecompress for LzwCodec {
         input: &[u8],
         out: &mut [u8],
     ) -> Result<usize, Self::Error> {
-        let mut decoder = Decoder::new(BitOrder::Msb, 8);
+        // TIFF LZW widens codes one dictionary entry before standard LZW does.
+        let mut decoder = Decoder::with_tiff_size_switch(BitOrder::Msb, 8);
         let limit = out.len().saturating_add(1);
         if pool.scratch.len() != limit {
             pool.scratch.resize(limit, 0);

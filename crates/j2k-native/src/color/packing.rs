@@ -224,6 +224,12 @@ pub(crate) fn interleave_and_convert(
                 let c1 = &c1.container[..sample_count];
                 let c2 = &c2.container[..sample_count];
 
+                #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+                {
+                    use fearless_simd::{dispatch, Level};
+                    dispatch!(Level::new(), simd => pack_rgb8(simd, [c0, c1, c2], buf));
+                }
+                #[cfg(not(all(feature = "simd", target_arch = "x86_64")))]
                 for i in 0..sample_count {
                     *output_iter.next().unwrap() = policy.quantize(&components[0], c0[i]);
                     *output_iter.next().unwrap() = policy.quantize(&components[1], c1[i]);
@@ -256,6 +262,49 @@ pub(crate) fn interleave_and_convert(
     }
 
     Ok(())
+}
+
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[inline(always)]
+fn pack_rgb8<S: fearless_simd::Simd>(simd: S, planes: [&[f32]; 3], output: &mut [u8]) {
+    use fearless_simd::{f32x8, u32x8, u8x16, Bytes, Select, SimdBase, SimdFloat};
+
+    let zero = f32x8::splat(simd, 0.0);
+    let max = f32x8::splat(simd, 255.0);
+    let half = f32x8::splat(simd, 0.5);
+    let one = f32x8::splat(simd, 1.0);
+    let indices = u8x16::from_slice(simd, &[0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 0, 0, 0, 0]);
+    let vector_len = planes[0].len() / 8 * 8;
+    for start in (0..vector_len).step_by(8) {
+        let channels = planes.map(|plane| {
+            let value = f32x8::from_slice(simd, &plane[start..start + 8]);
+            // Match Rust's saturating float-to-u8 cast, including NaN -> 0.
+            let value = value.simd_ge(zero).select(value, zero).min(max);
+            let integral = value.floor();
+            // Adding 0.5 before rounding would incorrectly round the float
+            // immediately below 0.5 up to 1. Compare the fractional part.
+            let rounded = integral + (value - integral).simd_ge(half).select(one, zero);
+            simd.cvt_u32_f32x8(rounded)
+        });
+        let packed: u32x8<S> = channels[0] | (channels[1] << 8) | (channels[2] << 16);
+        let (first, second) = simd.split_u32x8(packed);
+        for (offset, words) in [(0, first), (12, second)] {
+            let bytes = words.bitcast::<u8x16<S>>().swizzle_dyn(indices).to_array();
+            output[start * 3 + offset..start * 3 + offset + 12].copy_from_slice(&bytes[..12]);
+        }
+    }
+    for index in vector_len..planes[0].len() {
+        for channel in 0..3 {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "pixel samples are rounded and saturated to the 8-bit output format"
+            )]
+            {
+                output[index * 3 + channel] = math::round_f32(planes[channel][index]) as u8;
+            }
+        }
+    }
 }
 
 pub(crate) fn interleave_and_convert_region(

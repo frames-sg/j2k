@@ -5,6 +5,10 @@ mod execution;
 mod preparation;
 
 #[cfg(test)]
+mod owned_chunk_tests;
+#[cfg(test)]
+mod test_fixtures;
+#[cfg(test)]
 mod tests;
 
 use self::{

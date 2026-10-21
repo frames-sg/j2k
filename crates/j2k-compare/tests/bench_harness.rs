@@ -9,6 +9,69 @@ use j2k::{
 use j2k_test_support::{fnv1a64_hex, patterned_gray8, wrap_jp2_codestream};
 
 #[test]
+fn batch_compare_checks_rgb_output_and_reports_reference_thread_policy() {
+    let fixture = j2k_test_support::openjph_batch_fixtures()
+        .iter()
+        .find(|fixture| fixture.name == "openjph-rgb-u8-53-raw")
+        .expect("RGB8 lossless fixture");
+    let dir = std::env::current_dir()
+        .expect("current dir")
+        .join("target/j2k-fixture-bench")
+        .join(format!("batch-rgb-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create fixture directory");
+    std::fs::write(dir.join("rgb.j2c"), fixture.encoded).expect("write fixture");
+    let output = Command::new(env!("CARGO_BIN_EXE_jp2k_batch_compare"))
+        .arg(&dir)
+        .arg("1")
+        .env("J2K_BATCH_COMPARE_REPEATS", "2")
+        .env("J2K_BATCH_COMPARE_THREADS", "2")
+        .env("J2K_BATCH_COMPARE_MAX_ABS_DIFF", "0")
+        .output()
+        .expect("run batch compare");
+    assert_success(&output);
+    let stdout = String::from_utf8(output.stdout).expect("UTF-8 output");
+    assert_eq!(metadata_value(&stdout, "openjpeg_max_abs_diff"), "0");
+    if j2k_compare::grok::is_available() {
+        assert_eq!(metadata_value(&stdout, "grok_max_abs_diff"), "0");
+        assert_eq!(metadata_value(&stdout, "grok_pool_threads"), "2");
+        assert_eq!(
+            metadata_value(&stdout, "grok_version"),
+            j2k_compare::grok::version()
+        );
+    }
+    if j2k_compare::openjph::is_available() {
+        assert_eq!(metadata_value(&stdout, "openjph_max_abs_diff"), "0");
+    }
+    assert_eq!(
+        metadata_value(&stdout, "timing_boundary"),
+        "in-process-parse-decode-pack-allocate-free-no-file-io"
+    );
+    assert_eq!(
+        metadata_value(&stdout, "sample_order"),
+        "rotating-decoder-order"
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_jp2k_batch_compare"))
+        .arg(&dir)
+        .arg("1")
+        .env("J2K_BATCH_COMPARE_REPEATS", "2")
+        .env("J2K_BATCH_COMPARE_DECODER", "j2k")
+        .env("J2K_BATCH_COMPARE_MAX_ABS_DIFF", "0")
+        .output()
+        .expect("run native-only profile workload");
+    assert_success(&output);
+    let stdout = String::from_utf8(output.stdout).expect("UTF-8 output");
+    assert_eq!(metadata_value(&stdout, "openjpeg_max_abs_diff"), "0");
+    assert_eq!(metadata_value(&stdout, "measured_decoder"), "j2k");
+    assert!(stdout.lines().any(|line| line.starts_with("j2k\t1\t2\t")));
+    for decoder in ["openjpeg", "grok", "openhtj2k", "openjph"] {
+        assert!(!stdout
+            .lines()
+            .any(|line| line.starts_with(&format!("{decoder}\t"))));
+    }
+}
+
+#[test]
 fn encode_compare_j2k_smoke_emits_completion_and_publishability_metadata() {
     let output = encode_compare_command()
         .arg("generated_gray8_128")

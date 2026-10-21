@@ -294,7 +294,12 @@ fn cargo_oxide_build_status(
     project_dir: &Path,
     arch: &str,
 ) -> io::Result<std::process::ExitStatus> {
-    Command::new("cargo")
+    cargo_oxide_build_command(project_dir, arch).status()
+}
+
+fn cargo_oxide_build_command(project_dir: &Path, arch: &str) -> Command {
+    let mut command = Command::new("cargo");
+    command
         .args(["oxide", "build", "--arch"])
         .arg(arch)
         .env_remove("RUSTUP_TOOLCHAIN")
@@ -304,8 +309,11 @@ fn cargo_oxide_build_status(
         .env_remove("RUSTDOC")
         .env_remove("RUSTFLAGS")
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
-        .current_dir(project_dir)
-        .status()
+        // A caller's shared target directory would let a freshly staged
+        // project reuse another OUT_DIR's fresh device build and emit no PTX.
+        .env("CARGO_TARGET_DIR", project_dir.join("target"))
+        .current_dir(project_dir);
+    command
 }
 
 fn skip_project(

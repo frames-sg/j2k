@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use crate::decoder::color_batch::offset_color_batch_error;
 use crate::decoder::resident::{
     enqueue_chunked_htj2k_cleanup_dequant, enqueue_component_cleanup_dequant_batches,
     ChunkedHtj2kCleanup,
@@ -108,7 +109,9 @@ impl PendingColorCleanup {
                 source_index_base,
                 job_index_base,
             } => queued.finish().map_err(|error| {
-                offset_color_cleanup_error(error, source_index_base, job_index_base)
+                // The chunked cleanup decodes HTJ2K jobs only, so both job
+                // bases are the HTJ2K base.
+                offset_color_batch_error(error, source_index_base, job_index_base, job_index_base)
             }),
         }
     }
@@ -130,25 +133,6 @@ impl ColorCleanupJobMapping {
             original_job_index: self.job_index_base.saturating_add(local_job_index),
             source: error,
         }
-    }
-}
-
-fn offset_color_cleanup_error(
-    error: Error,
-    source_index_base: usize,
-    job_index_base: usize,
-) -> Error {
-    match error {
-        Error::CudaTier1JobFailed {
-            source_index,
-            original_job_index,
-            source,
-        } => Error::CudaTier1JobFailed {
-            source_index: source_index.saturating_add(source_index_base),
-            original_job_index: original_job_index.saturating_add(job_index_base),
-            source,
-        },
-        error => error,
     }
 }
 

@@ -811,3 +811,199 @@ fn ht_workers_preserve_entropy_error_and_context_recovery() {
         });
     }
 }
+
+/// IDWT level and band-scratch samples zero-initialized while serially decoding
+/// one 256x256, five-level HTJ2K tile with `components` components.
+fn idwt_zero_initialized_samples(components: u8) -> usize {
+    let (width, height) = (256, 256);
+    let pixels = super::gradient_pixels(width, height, components);
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 5,
+        ..EncodeOptions::default()
+    };
+    let bytes = crate::encode_htj2k(
+        &pixels,
+        width,
+        height,
+        components.into(),
+        8,
+        false,
+        &options,
+    )
+    .expect("encode IDWT fixture");
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("IDWT fixture");
+    let mut context = DecoderContext::default();
+    context.set_cpu_decode_parallelism(crate::CpuDecodeParallelism::Serial);
+    crate::j2c::idwt::reset_zero_initialized_samples();
+    let decoded = image
+        .decode_with_context(&mut context)
+        .expect("decode IDWT fixture");
+    assert_eq!(decoded.data, pixels);
+    crate::j2c::idwt::zero_initialized_samples()
+}
+
+#[test]
+fn idwt_buffers_are_zero_initialized_once_per_tile_not_once_per_component() {
+    let gray = idwt_zero_initialized_samples(1);
+    let rgb = idwt_zero_initialized_samples(3);
+
+    assert!(gray > 0);
+    // Every level overwrites the samples it uses, so later components reuse
+    // the samples the first component already initialized.
+    assert_eq!(rgb, gray);
+}
+
+/// Decode `bytes` twice with one context, serially. Before the second decode
+/// every retained component-plane sample is poisoned with a value no decode
+/// produces, so any sample `store` does not overwrite shows up in the output.
+/// Returns (first output, second output, retained plane samples the second
+/// decode zeroed).
+fn decode_twice_with_poisoned_planes(
+    bytes: &[u8],
+    settings: &DecodeSettings,
+) -> (Vec<u8>, Vec<u8>, usize) {
+    let image = Image::new(bytes, settings).expect("plane reuse fixture");
+    let mut context = DecoderContext::default();
+    context.set_cpu_decode_parallelism(crate::CpuDecodeParallelism::Serial);
+    let first = image
+        .decode_with_context(&mut context)
+        .expect("first decode")
+        .data;
+    for component in &mut context.tile_decode_context.channel_data {
+        component.container.fill(77.0);
+    }
+    crate::math::reset_retained_zeroed_samples();
+    let second = image
+        .decode_with_context(&mut context)
+        .expect("second decode")
+        .data;
+    (first, second, crate::math::retained_zeroed_samples())
+}
+
+fn rgb_plane_fixture(width: u32, height: u32, tile_size: Option<(u32, u32)>) -> Vec<u8> {
+    let pixels = super::gradient_pixels(width, height, 3);
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 2,
+        tile_size,
+        ..EncodeOptions::default()
+    };
+    crate::encode_htj2k(&pixels, width, height, 3, 8, false, &options)
+        .expect("encode RGB plane fixture")
+}
+
+#[test]
+fn retained_planes_are_not_rezeroed_when_store_overwrites_every_sample() {
+    for (name, bytes) in [
+        ("single tile", rgb_plane_fixture(64, 64, None)),
+        (
+            "partial edge tiles",
+            rgb_plane_fixture(64, 64, Some((24, 24))),
+        ),
+    ] {
+        let (first, second, zeroed) =
+            decode_twice_with_poisoned_planes(&bytes, &DecodeSettings::default());
+        assert_eq!(second, first, "{name}");
+        assert_eq!(
+            zeroed, 0,
+            "{name}: 64x64 planes have no SIMD padding to zero"
+        );
+    }
+}
+
+#[test]
+fn retained_planes_store_does_not_fully_cover_are_still_zeroed() {
+    let reduced = DecodeSettings {
+        target_resolution: Some((16, 16)),
+        ..DecodeSettings::default()
+    };
+    let full = super::gradient_pixels(32, 32, 1);
+    let chroma = super::gradient_pixels(16, 16, 1);
+    let subsampled = encode_typed_component_planes_53(
+        &[
+            EncodeTypedComponentPlane {
+                data: &full,
+                x_rsiz: 1,
+                y_rsiz: 1,
+                bit_depth: 8,
+                signed: false,
+            },
+            EncodeTypedComponentPlane {
+                data: &chroma,
+                x_rsiz: 2,
+                y_rsiz: 2,
+                bit_depth: 8,
+                signed: false,
+            },
+            EncodeTypedComponentPlane {
+                data: &chroma,
+                x_rsiz: 2,
+                y_rsiz: 2,
+                bit_depth: 8,
+                signed: false,
+            },
+        ],
+        32,
+        32,
+        &EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 2,
+            use_mct: false,
+            ..EncodeOptions::default()
+        },
+    )
+    .expect("encode subsampled fixture");
+    for (name, bytes, settings) in [
+        (
+            "reduced resolution",
+            rgb_plane_fixture(64, 64, Some((24, 24))),
+            reduced,
+        ),
+        ("mixed subsampling", subsampled, DecodeSettings::default()),
+    ] {
+        let (first, second, zeroed) = decode_twice_with_poisoned_planes(&bytes, &settings);
+        assert_eq!(second, first, "{name}");
+        assert!(
+            zeroed > 0,
+            "{name}: planes store may not cover must be zeroed"
+        );
+    }
+}
+
+#[test]
+fn planes_left_unzeroed_count_every_stored_sample() {
+    let reduced = DecodeSettings {
+        target_resolution: Some((16, 16)),
+        ..DecodeSettings::default()
+    };
+    for (name, tile_size, settings, unzeroed) in [
+        ("single tile", None, DecodeSettings::default(), 3 * 64 * 64),
+        (
+            "partial edge tiles",
+            Some((24, 24)),
+            DecodeSettings::default(),
+            3 * 64 * 64,
+        ),
+        (
+            "reduced resolution zeroes its planes",
+            Some((24, 24)),
+            reduced,
+            0,
+        ),
+    ] {
+        let bytes = rgb_plane_fixture(64, 64, tile_size);
+        let image = Image::new(&bytes, &settings).expect("plane store fixture");
+        let mut context = DecoderContext::default();
+        context.set_cpu_decode_parallelism(crate::CpuDecodeParallelism::Serial);
+        image
+            .decode_with_context(&mut context)
+            .expect("plane store decode");
+
+        let tile_context = &context.tile_decode_context;
+        assert_eq!(tile_context.unzeroed_plane_samples, unzeroed, "{name}");
+        if unzeroed != 0 {
+            assert_eq!(tile_context.stored_plane_samples, unzeroed, "{name}");
+        }
+    }
+}

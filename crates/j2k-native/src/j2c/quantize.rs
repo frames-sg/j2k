@@ -547,12 +547,9 @@ fn d97_synthesis_norm(subband: J2kSubBandType, level: u8) -> f64 {
         J2kSubBandType::HighLow | J2kSubBandType::LowHigh => low * high,
         J2kSubBandType::HighHigh => high * high,
     };
-    // Each directional gain doubles per level beyond the table, so the norm does too.
-    let extra_levels = usize::from(level) - tabulated;
-    libm::scalbn(
-        libm::sqrt(energy),
-        i32::try_from(extra_levels).expect("at most 255 levels beyond the table"),
-    )
+    // Each directional gain doubles per level beyond the table, so the norm
+    // does too. Doubling is exact, as scaling by a power of two would be.
+    (tabulated..usize::from(level)).fold(libm::sqrt(energy), |norm, _| norm * 2.0)
 }
 
 /// Subband and level of QCD/QCC position `index` in a `levels`-level
@@ -1219,6 +1216,24 @@ mod tests {
         assert!(!representable(ceiling.next_up()));
         // An out-of-range start is returned for encode to reject.
         assert_eq!(profile_scale_ceiling(8, 2, 1e9, scales, &profile), 1e9);
+    }
+
+    #[test]
+    fn synthesis_norms_double_per_level_beyond_the_table() {
+        for subband in [
+            J2kSubBandType::LowLow,
+            J2kSubBandType::HighLow,
+            J2kSubBandType::LowHigh,
+            J2kSubBandType::HighHigh,
+        ] {
+            let last = d97_synthesis_norm(subband, 16);
+            assert_eq!(d97_synthesis_norm(subband, 17), last * 2.0);
+            assert_eq!(d97_synthesis_norm(subband, 32), last * 65_536.0);
+            assert_eq!(
+                d97_synthesis_norm(subband, u8::MAX),
+                libm::scalbn(last, 239)
+            );
+        }
     }
 
     #[test]

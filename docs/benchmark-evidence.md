@@ -19,6 +19,745 @@ cargo run -p xtask --features adoption -- adoption-report --run-dir target/j2k-a
 Speed comparisons must use the manifest-backed external rows, not the
 generated in-repo fixtures.
 
+## HTJ2K CPU comparator and WSI development run - 2026-10-20
+
+This run checks the in-process OpenJPH and Grok integrations on pathology
+pixels. It is development evidence on one ARM machine, not an overall HTJ2K
+codec ranking or a complete `adoption-report` publication bundle. Kakadu was
+not available. OpenJPEG is retained as a correctness/context row, not the
+HTJ2K performance baseline.
+
+### Hardware and reference builds
+
+- Apple M4 Pro, native `aarch64`, 12 CPU cores (8 performance, 4 efficiency),
+  48 GiB RAM; macOS 27.0.1 (26A434). All rows use the CPU.
+- j2k 0.12.0 working tree, Rust 1.99.0, Cargo `release-bench`: optimization
+  level 3, fat LTO, one codegen unit, debug symbols retained. The measured
+  executable was held fixed across rounds while other work continued in the
+  checkout.
+- OpenJPH 0.31.0, rebuilt by `scripts/prepare-openjph-reference.sh` using
+  Apple Clang 21.0.0 and CMake 4.2.1. Its generated CMake cache and compiler
+  flags confirm `Release`, `-O3 -DNDEBUG -arch arm64`,
+  `OJPH_DISABLE_SIMD=OFF`, and `OJPH_DISABLE_NEON=OFF`.
+  **Those settings do not imply a specialized NEON decoder.** In this pinned
+  OpenJPH version, the ARM branches in `codeblock_fun::init`, the wavelet
+  dispatch, and the color dispatch are empty; they retain the generic C++
+  kernels, which the compiler may auto-vectorize. The specialized AVX2 paths
+  are selected on x86, not this host. These results establish nothing about
+  performance against AVX2 OpenJPH.
+- Grok 20.3.2, the installed Homebrew `arm64` bottle, linked in-process. Its
+  installation receipt records a Clang build; the bottle's original compiler
+  flags were not retained locally, so this is not a source-build/SIMD audit of
+  Grok. OpenJPEG context rows use vendored OpenJPEG 2.5.3, not the system CLI.
+
+The October 15 Kodak result of 2.10x versus OpenJPH used a single *batch
+worker*. That run's Grok binary had a 12-thread process pool even in the
+one-worker row, so it must not be described as an all-codec single-thread
+comparison. Its original OpenJPH build directory was no longer present for
+inspection. The rebuilt reference and explicit thread policies below
+supersede that run for this discussion.
+
+### Timing, threads, and RGB8 equivalence
+
+`jp2k_batch_compare` loads compressed inputs before timing and calls each
+library directly. No decoder subprocess, file read, or file write is inside
+the timed boundary. Timings include header parsing, decoding, inverse color
+transform, conversion/interleaving to owned RGB8, allocation, per-batch outer
+worker startup, and destruction. Grok's persistent pool is initialized before
+timing. Each decoder retains all final image buffers until the end
+of the batch. j2k reuses its context/scratch within a batch worker; reference
+wrappers construct a decoder per input. Prepared decoder state is not cached
+between timed batches.
+
+For batches with multiple inputs, explicit worker counts keep j2k serial
+within each image. A later `perf` investigation found that a one-input batch
+incorrectly enabled internal parallelism even with an explicit worker count.
+Thus the historical mosaic rows below used j2k's shared Rayon pool; they are
+not single-thread comparisons. The x86 optimization follow-up below fixes
+this exception and supplies corrected measurements. OpenJPH is serial
+within each image; OpenJPEG requests one decoder thread. Grok requests one
+decode thread per job, and its process-wide Taskflow pool is now initialized
+to the stated worker count before any preflight or timing. Its worker threads
+are in addition to the submitting threads, which can wait on that pool; the
+worker column is not a count of all OS threads. The one-worker runs use a
+one-thread Grok pool. Separate runtime checks confirmed that
+`grk_num_workers()` reports 1 and 12 for the respective initializations.
+A fresh process is used when changing the pool size.
+
+Every selected input is full-resolution, unsigned RGB8, with three equally
+sampled components and reversible color transform. There is no subsampling,
+ICC transform, precision reduction, ROI, or lossy rounding in these rows.
+The native path writes interleaved `Rgb8`; OpenJPH supplies reconstructed
+component lines that the shim clamps/interleaves; Grok supplies reconstructed
+planes that its shim clamps/interleaves. The preflight now compares every
+available reference against j2k and requires maximum absolute byte
+difference **zero**, including Grok and OpenJPEG. A failure prevents timing.
+This numerical preflight decodes one input at a time; timed throughput uses
+the stated batch concurrency.
+
+The audit also fixed the OpenJPH wrapper's order of operations: `set_planar`
+must follow `read_headers`, which can reset the layout for RGB without MCT.
+The existing no-MCT RGB fixture exposed this bug; the WSI and Kodak inputs
+here use MCT. An unnecessary zero-filled intermediate output and full-image
+copy were removed from that shim.
+
+The output contracts are equivalent, but the integration costs are not
+identical: both OpenJPH and Grok still pack into a C-owned buffer and copy it
+once into a Rust `Vec`; j2k writes directly into its output `Vec`. Thus the
+rows measure these complete integrations, not isolated entropy-decoder
+throughput or the fastest possible output adapter for each library. Both
+external packers are the repository's checked conversion loops.
+
+A separate allocation/copy/free diagnostic (`copy_cost.rs` in the run
+directory, compiled with `rustc -O`, one warm-up and 101 samples) measured one
+additional full-output copy at 0.415 ms for 32 WSI frames, 0.504 ms for 24
+Kodak images, and 0.392 ms for the mosaic. Those warmed-memory measurements
+are small relative to the complete decode times, but do not isolate the
+packing loops, decoder setup, or scratch reuse. They are not subtracted from
+the reported results. Image dimensions alone do not establish that per-image
+overhead dominates.
+
+### Inputs and encoding parameters
+
+The primary set contains the 32 largest level-zero tissue frames from
+`Pancreas.dicom.cpu-pyramid`, a local WSI DICOM export written on 2026-06-16
+with the j2k 0.10-era encoder. It uses HTJ2K lossless RPCL transfer syntax
+`1.2.840.10008.1.2.4.202`. These are tissue-heavy selections from one slide,
+not a random sample of all tissue and background tiles. The retained
+extracted copies set the missing SIZ HT capability bit (`Rsiz=0x4000`) so
+OpenJPH accepts them; compressed pixel payloads and the original DICOM were
+not modified.
+
+A second set encodes those same reconstructed pixels with OpenJPH 0.31.0.
+A larger diagnostic arranges the 32 decoded tiles in filename order in an
+8-by-4 mosaic and encodes it as one 4096 x 2048 image with 32 codestream tiles.
+The mosaic is constructed from real tissue pixels; it is not a contiguous
+slide region or a whole-slide read benchmark. Kodak is supplementary context.
+No WSI inputs were skipped. The Kodak directory's 24 `._` metadata sidecars
+were counted as unsupported inputs; all 24 actual codestreams were selected.
+
+| Set | Inputs / dimensions | Encoder | Codestream tile size | Code-block | Layers | DWT levels | Progression |
+| --- | --- | --- | --- | --- | ---: | ---: | --- |
+| Original WSI frames | 32 x 512 x 512 RGB8 | j2k 0.10-era WSI writer | 512 x 512 | 64 x 64 | 1 | 3 | RPCL |
+| OpenJPH WSI frames | Same 32 RGB8 images | OpenJPH 0.31.0 | 512 x 512 | 64 x 64 | 1 | 3 | RPCL |
+| Tiled tissue mosaic | 1 x 4096 x 2048 RGB8 | OpenJPH 0.31.0 | 512 x 512 (32 tiles) | 64 x 64 | 1 | 3 | RPCL |
+| Kodak context | 24; 768 x 512 or 512 x 768 RGB8 | Retained earlier j2k materialization; exact historical encoder version unrecorded | Full image | 64 x 64 | 1 | 2 | LRCP |
+
+These parameters were read from SIZ/COD markers in every selected codestream.
+All use reversible 5/3, RCT, HT block style `0x40`, and default precinct
+partitioning (`Scod=0`). The OpenJPH encoding command for each staged PPM was:
+
+```bash
+ojph_compress -i tile.ppm -o tile.j2c \
+  -reversible true -colour_trans true -num_decomps 3 \
+  -block_size '{64,64}' -prog_order RPCL -tlm_marker true
+# For the 4096 x 2048 mosaic, also pass: -tile_size '{512,512}'
+```
+
+### Results and limits
+
+Across all 18 runs, every preflight passed exact RGB8 comparison against
+OpenJPH, Grok, and OpenJPEG, covering 89 selected codestreams. Times below are
+milliseconds for the **entire input set**, not per-image latency. Each cell
+is the median of three run medians; parentheses show the lowest and highest
+run median.
+
+| Set | Workers | j2k | OpenJPH 0.31.0 | Grok 20.3.2 |
+| --- | ---: | ---: | ---: | ---: |
+| Original WSI frames, 32 | 1 | 62.58 (57.50–66.81) | 135.77 (131.28–141.74) | 182.41 (175.47–201.09) |
+| Original WSI frames, 32 | 12 | 12.70 (12.56–13.58) | 23.75 (23.04–23.79) | 44.86 (35.86–46.46) |
+| OpenJPH WSI frames, 32 | 1 | 58.85 (57.95–60.76) | 134.60 (131.48–134.86) | 183.84 (179.43–185.11) |
+| OpenJPH WSI frames, 32 | 12 | 14.31 (13.93–17.81) | 25.60 (22.67–27.91) | 48.70 (39.15–53.81) |
+| Tiled tissue mosaic, 1 | 1 | 45.59 (40.53–79.51) | 146.02 (140.42–152.96) | 190.11 (179.97–197.44) |
+| Kodak context, 24 | 1 | 66.05 (63.63–73.46) | 146.69 (144.15–157.01) | 201.37 (192.71–273.95) |
+
+The worker column is the requested batch-worker count. In this historical
+run, j2k's mosaic row also used internal parallelism, as described above.
+
+For the original WSI frames, the median of the within-run speed ratios was
+2.17x versus OpenJPH and 3.01x versus Grok with one worker; with 12 workers it
+was 1.84x and 3.42x. On OpenJPH-encoded WSI frames those ratios were 2.27x and
+3.05x with one worker, and 1.63x and 3.02x with 12 workers. The ratios are
+computed per run before taking their median, so they need not equal the
+ratio of the table's independently aggregated time columns.
+
+This was a busy shared host: the one-minute load average at configuration
+starts ranged from 11.2 to 23.6, and unrelated compression work continued
+throughout. The native mosaic median varied almost twofold; its within-run
+lead over OpenJPH ranged from 1.92x to 3.46x. Treat these as workload-specific
+development observations. An isolated-host Mac run, more independent slides,
+other bit depths/lossy profiles, and Kakadu are still needed before making a
+broader performance claim. The x86 AVX2 follow-up is recorded below.
+
+### Reproduction
+
+Use a separate output directory and the retained WSI frame directory, or
+provide another explicitly described corpus. The local run directory is
+`target/htj2k-comparison-20261020`; it contains the input preparation script,
+run script, raw TSV samples, and reference build log. No raw slide pixels
+are committed with this document.
+
+```bash
+scripts/prepare-openjph-reference.sh
+export J2K_OPENJPH_SOURCE_DIR="$PWD/target/reference/openjph-0.31.0"
+cargo build --profile release-bench -p j2k-compare --bin jp2k_batch_compare
+
+J2K_BATCH_COMPARE_REPEATS=21 J2K_BATCH_COMPARE_THREADS=1 \
+J2K_BATCH_COMPARE_MAX_ABS_DIFF=0 RAYON_NUM_THREADS=12 \
+  target/release-bench/jp2k_batch_compare "$WSI_DIR" 32
+# Repeat with J2K_BATCH_COMPARE_THREADS=12 for tile-batch throughput.
+# For the directory containing only the mosaic, use batch size 1 and workers 1.
+```
+
+Each process runs one warm-up batch per decoder, then rotates the starting
+decoder across 21 timed rounds. Three fresh processes measure each
+configuration; corpus/configuration order also rotates between runs.
+
+## HTJ2K CPU comparison on the CUDA host - 2026-10-20
+
+This follow-up uses the same 89 compressed inputs, RGB8 output contract,
+correctness gate, and rotating timing protocol as the M4 run above. It tests
+CPU decoding on the x86 test machine described below; the GPU is not used.
+
+- AMD Ryzen 7 5800X3D: 8 physical cores, 16 logical CPUs, AVX2/FMA available.
+  Ubuntu 24.04.4 under WSL2, kernel
+  `5.15.153.1-microsoft-standard-WSL2`, about 47 GiB RAM visible to Linux.
+  The installed GPU is an NVIDIA GeForce RTX 4070 SUPER with 12 GiB VRAM.
+- j2k 0.12.0 working-tree source export, Rust 1.99.0, `release-bench`, with
+  the default `std`, `simd`, and `parallel` features. No extra
+  `target-cpu=native` compiler flag was used. The export was built in a
+  separate run directory without changing the existing remote source
+  snapshot.
+- OpenJPH 0.31.0, built with GCC 13.3.0 and CMake 3.30.5, `Release`,
+  `-O3 -DNDEBUG`, `OJPH_DISABLE_SIMD=OFF`, and
+  `OJPH_DISABLE_AVX2=OFF`. A probe linked to the same static library reported
+  CPU extension level 10 (AVX2/FMA) and confirmed that the reversible
+  `decode_cb32` function pointer equals `ojph_decode_codeblock_avx2`.
+  This verifies runtime dispatch, not merely the build option.
+- Grok 20.3.2 from the existing clean tagged source tree, built with GCC
+  in `Release` mode with `-O3 -DNDEBUG`. Its pool is explicitly set to 1 or
+  16 threads, matching the selected batch-worker setting. OpenJPEG 2.5.3 is
+  retained only for correctness/context.
+
+The host was idle when the run began (one-minute load average 0.04).
+Each configuration uses three fresh processes, one warm-up per decoder and
+21 interleaved timed samples per process. Tile batches use 1 and 16 workers;
+the single large tiled image and supplementary Kodak set request one worker.
+The original mosaic measurement nevertheless enabled internal Rayon work
+because of the single-input scheduling bug described above.
+The M4's full-host rows use 12 workers, so those rows compare different
+machine capacities, not equal thread counts.
+
+All 18 runs passed the exact RGB8 preflight for every selected codestream
+against OpenJPH, Grok, and OpenJPEG. The table reports milliseconds for the
+entire input set, as the median of three run medians; parentheses give the
+lowest and highest run median.
+
+| Set | Workers | j2k | OpenJPH 0.31.0, AVX2 | Grok 20.3.2 |
+| --- | ---: | ---: | ---: | ---: |
+| Original WSI frames, 32 | 1 | 196.80 (196.25–197.19) | 116.73 (116.66–119.26) | 246.86 (245.84–247.74) |
+| Original WSI frames, 32 | 16 | 32.78 (32.76–33.80) | 17.13 (16.83–17.43) | 45.69 (44.94–46.03) |
+| OpenJPH WSI frames, 32 | 1 | 197.74 (197.07–200.77) | 115.18 (112.44–118.64) | 246.57 (242.98–247.59) |
+| OpenJPH WSI frames, 32 | 16 | 33.38 (32.76–34.38) | 16.89 (16.78–17.52) | 43.96 (43.92–44.74) |
+| Tiled tissue mosaic, 1 | 1 | 313.98 (310.99–314.51) | 120.87 (119.97–121.05) | 248.88 (248.57–249.64) |
+| Kodak context, 24 | 1 | 285.09 (285.06–286.29) | 132.05 (130.78–132.19) | 273.71 (271.01–274.58) |
+
+The OpenJPH result reverses on this host. For the original WSI set, OpenJPH
+has 1.68x our throughput with one worker and 1.91x with 16 workers. We have
+1.26x Grok's throughput with one worker and 1.39x with 16 workers. On the
+OpenJPH-encoded WSI set, OpenJPH has 1.71x and 1.94x our throughput, while
+we have 1.23x and 1.32x Grok's. These are medians of within-run ratios.
+
+In the original large-image measurement, OpenJPH has 2.60x our
+throughput, and Grok has about 1.26x. That row includes the native scheduling
+bug and is superseded by the optimization results below. On Kodak, OpenJPH has 2.17x our
+throughput and Grok has about 1.05x. The M4 lead therefore does not
+generalize to this x86 host, and the Grok comparison depends on whether
+the input is an independent tile batch or one larger tiled codestream.
+
+The same separate allocation/copy/free diagnostic measured 8.470 ms for the
+32 WSI output buffers, 9.678 ms for the 24 Kodak buffers, and 0.586 ms for
+the single mosaic buffer. These serial warmed-memory diagnostics were not
+subtracted from the decode times and do not isolate the packing loops.
+Both external integrations still include their extra FFI output copy.
+
+The x86 measurements began on an idle host, whereas the earlier M4 run had
+unrelated load. Together with different CPUs, compilers, operating systems,
+and full-host worker counts, this prevents treating the absolute latency
+difference between machines as a controlled measurement of architecture
+alone. The within-host codec comparison is the useful result. Kakadu,
+additional slides, lossy profiles, and other bit depths remain unmeasured
+in this follow-up.
+
+The local results directory is
+`target/htj2k-comparison-20261020/cuda`. The remote run is under the existing
+`j2k-review-20261019/target/htj2k-comparison-20261020` snapshot. It contains
+the narrow source export, the copied codestreams, reference build logs,
+AVX2 dispatch probe, run script, and raw TSV samples. Input file I/O remains
+outside the timer.
+
+## x86 HTJ2K optimization follow-up - 2026-10-20
+
+Hardware, inputs, reference libraries, build profile, and RGB8 contract are
+the same as the CUDA-host CPU run above. The original executable was retained
+for comparison. The primary A/B experiment uses three fresh processes per
+configuration, one warm-up and 11 rotating decoder samples per process.
+Baseline/candidate order alternates between runs. No profiled run contributes
+to the timing table.
+
+`perf record -e cycles:u -F 999 --call-graph dwarf,16384` and the existing
+stage summaries identified three distinct costs:
+
+- A one-input batch ignored an explicit worker count and used internal
+  Rayon parallelism. Entropy work was similar for separate frames and the
+  mosaic, but IDWT and store took much longer in the mosaic. Correcting the
+  worker policy alone reduced the mosaic from 313.04 to 206.55 ms in a
+  seven-sample development comparison; separate frames took 198.36 ms.
+- Parallel wavelet strips crossed a Rayon callback boundary without
+  re-entering the SIMD target-feature scope. The x86 profile showed calls
+  to individual AVX2 arithmetic helpers inside these workers. Each strip
+  now establishes that scope. On x86, a 512 x 512 component copy also stays
+  serial; larger copies can still use the pool.
+- The RGB8 interleaver used scalar rounding calls. The x86 path now packs
+  eight pixels at a time with the existing safe SIMD library, preserving
+  saturating conversion and ties-away-from-zero rounding. HT magnitude
+  extraction also uses the already-validated 25-bit limit to replace split
+  shifts with single shifts.
+
+The OpenJPH AVX2 and Metal cleanup/store implementations were inspected as
+references. These changes reuse the existing Rust kernels and SIMD library;
+they introduce no unsafe code or new dependencies. The new packer and copy
+threshold are x86-specific. A preliminary shared-M4 check did not favor the
+new packer, so ARM retains its existing packing and copy paths.
+
+Times are milliseconds for the whole input set, reported as the median of
+three process medians. Reference columns are from the candidate runs.
+
+| Set | Explicit workers | Original j2k | Optimized j2k | Time reduction | OpenJPH AVX2 | Grok |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Original WSI frames, 32 | 1 | 198.09 | 146.49 | 26.1% | 118.75 | 261.43 |
+| Original WSI frames, 32 | 16 | 33.27 | 27.06 | 18.7% | 17.76 | 50.24 |
+| Tiled tissue mosaic, 1 | 1 | 312.47 | 157.74 | 49.5% | 119.54 | 262.64 |
+
+Candidate process medians ranged from 146.46–146.52 ms, 26.51–27.79 ms, and
+156.16–159.31 ms, respectively. The mosaic improvement includes correcting
+the original thread-policy bug; it is not a 49.5% kernel-only improvement.
+OpenJPH still has about 1.23x our serial WSI throughput, 1.52x with 16
+workers, and 1.32x on the mosaic. We remain faster than the measured Grok
+integration on these configurations. Grok's candidate-run medians were
+somewhat higher than its baseline-run medians (248.36/47.78/249.81 ms);
+these comparisons describe complete integrations, including allocation and
+packing, rather than isolated library kernels.
+
+Supplementary seven-sample A/B runs measured 200.06 to 147.42 ms for the
+32 OpenJPH-encoded WSI frames and 286.11 to 228.49 ms for Kodak. Together
+with the primary runs, all 89 codestreams passed exact RGB8 comparison.
+For the mosaic with automatic internal parallelism enabled in both
+binaries, native time fell from 306.89 to 170.06 ms. Thus the changes also
+improve that execution mode, although the explicit serial run remains
+faster on this host. These supplementary results are single-process
+medians, not three-run aggregates.
+
+The final M4 spot check measured 57.03 to 55.90 ms for the serial original
+WSI batch and 37.82 to 37.15 ms for the automatically parallel mosaic.
+Both passed exact RGB8 comparison. Shared-host load and only seven samples
+per process make this a regression check, not evidence of an ARM speedup.
+The follow-up x86 cycle profile still identifies HT cleanup/magnitude
+decoding as the largest native hotspot; the RGB8 packing hotspot is much
+smaller.
+
+All 18 primary runs passed exact RGB8 preflight against OpenJPH, Grok, and
+OpenJPEG. Focused HT decode, wavelet, packing, and scheduling tests passed
+on x86 and ARM, including existing scalar/SIMD comparisons for encoded and
+arbitrary HT bytes. The worker-count regression failed before the fix and
+passed afterward. The new packing test checks every 8-bit half-integer and
+its adjacent floats, clipping, nonfinite values, tail pixels, and output
+buffer preservation.
+
+Native library and test Clippy checks passed on x86 and ARM, using the
+repository's allocation-lint exemptions for test targets. A broader
+`j2k` library Clippy invocation remains blocked by the existing missing
+`#[must_use]` on `J2kToHtj2kOptions::with_coefficient_only` in `src/recode.rs`.
+
+Raw samples, stage summaries, scripts, and text profiles are in
+`target/htj2k-comparison-20261020/cuda/x86-opt`; `perf.data` recordings and
+the retained executables remain in the matching remote directory. This
+remains a development measurement on one x86 machine and one WSI source,
+not a claim about all x86 systems or HTJ2K coding profiles.
+
+## x86 SIMD and CUDA Oxide follow-up - 2026-10-20
+
+This pass compares against the optimized CPU executable in the preceding
+section, on the same Ryzen 7 5800X3D. CUDA uses the RTX 4070 SUPER, driver
+610.88, Rust CUDA Oxide kernels built for sm_89, and a reused CUDA session.
+OpenJPH 0.31.0 uses its AVX2 decoder.
+
+The CPU change handles two quads and final coefficient conversion in eight
+SIMD lanes, reusing prefix sums to remove scalar bit-count work. Separate
+VLC/MagSgn staging was slower and was reverted. The
+[HTJ2K design paper](https://kakadusoftware.com/wp-content/uploads/icip2019.pdf)
+and [Intel's AVX optimization report](https://cdrdv2-public.intel.com/839078/J2K%20HTJ2K%20AVX%20Optimizations%20WP_Final_110424.pdf)
+informed these experiments.
+
+Primary CPU figures are medians of three process medians, nine samples
+per process with rotating codec order and alternating before/after order.
+All times below are milliseconds for the complete batch.
+
+| Input | Workers | Previous pass | This pass | Time reduction | OpenJPH |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 32 original WSI tiles | 1 | 147.61 | 136.63 | 7.4% | 119.18 |
+| 32 original WSI tiles | 16 | 27.35 | 26.01 | 4.9% | 16.37 |
+| One 32-tile mosaic | 1 | 155.03 | 146.27 | 5.7% | 120.83 |
+
+CPU medians ranged over 135.82–140.71, 24.77–26.23, and 144.73–146.42 ms.
+Single-process supplements measured
+147.33 to 135.76 ms for OpenJPH-encoded WSI and 231.51 to 216.71 ms for Kodak.
+
+CUDA figures use three fresh processes, three pixel-verified warmups, and
+31 timed samples per process. Compressed inputs are loaded before timing;
+parsing, planning, upload, decode, output destruction, and host readback
+are timed. CUDA context/session initialization, first-use module loading,
+and the three warmups are excluded. The compressed codestream upload is
+included on every timed decode. CPU also returns RGB8 host output. Profiling
+runs are excluded.
+
+| Input | CUDA API | CUDA including readback | OpenJPH, 1 worker |
+| --- | --- | ---: | ---: |
+| 1 original WSI tile | surface | 0.608 | 3.533 |
+| 8 distinct original WSI tiles | surface | 2.318 | 30.697 |
+| 32 distinct original WSI tiles | surface | 7.462 | 119.179 |
+| 32 distinct original WSI tiles | owned NHWC | 9.335 | 119.179 |
+| One 32-tile mosaic | owned NHWC | 10.155 | 120.826 |
+
+For 32 tiles, OpenJPH with 16 workers takes 16.369 ms: CUDA is 2.19x
+faster through the surface API and 1.75x through the owned API. Resident
+surface output takes 5.158 ms, excluding readback. Owned NHWC includes
+grouping and dense-output work; these APIs are not interchangeable costs.
+The surface API rejects this mosaic; the owned API supports it. CUDA owned
+single-process supplements took 9.581 ms for OpenJPH WSI and 13.173 ms
+for Kodak.
+
+These ratios compare one RTX 4070 SUPER with one 8-core/16-thread desktop
+CPU. They do not establish a comparison with a larger CPU server or with
+another GPU decoder. The nvJPEG2000 comparison and larger-batch measurements
+below use separate runs on the same GPU.
+
+Nsight Systems attributes approximately 51% of kernel time to HT symbol
+and magnitude decoding, 32% to IDWT, and 17% to fused final transform/store.
+Batching already combines work into eight launches for 32 WSI tiles.
+Eight symbol jobs per warp, tiled horizontal IDWT, and grouped MEL reads
+did not consistently improve timings; all three were reverted. No CUDA
+kernel speedup is claimed. The profiler now exposes both APIs, optional
+readback, and unsorted samples. This follows
+[NVIDIA's transfer batching guidance](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html#data-transfer-between-host-and-device).
+
+All 28 CPU and 20 CUDA processes passed exact RGB8 checks, covering the
+89 codestreams. After local disk space was freed, the 32 focused HT tests
+and native library Clippy also passed on ARM. CUDA-enabled profiler Clippy
+passed on x86.
+
+The final M4 Pro regression check used three fresh processes per version,
+seven samples per process, alternating version order, and one explicit
+worker. Median time changed from 55.89 to 54.35 ms for 32 WSI tiles and
+from 62.53 to 59.76 ms for the mosaic. Current process medians ranged over
+53.44–54.72 and 59.50–60.67 ms respectively. All 12 processes passed exact
+RGB8 comparison. These shared-host measurements show no regression on
+the checked workloads; they do not establish a general ARM speedup.
+
+The raw timing and validation logs, scripts, and Nsight trace have been
+copied locally to `target/htj2k-comparison-20261020/cuda/round2`, alongside
+the final ARM results. The original x86/CUDA files remain in the matching
+remote directory under `j2k-review-20261019/target/htj2k-comparison-20261020`.
+
+## CUDA batch scaling, nvJPEG2000, and Burn handoff - 2026-10-20
+
+This pass uses the same Ryzen 7 5800X3D, RTX 4070 SUPER, driver, CUDA Oxide
+sm_89 build, and 32 original WSI tiles as the preceding section. Batches
+larger than 32 cycle the same 32 distinct tiles; they are not larger
+unique-input sets.
+
+### CPU worker scaling
+
+The CPU executable decoded the 32 tiles with 1, 4, 8, and 16 explicit
+workers. Every process passed an exact RGB8 preflight
+(`J2K_BATCH_COMPARE_MAX_ABS_DIFF=0`) against OpenJPEG, OpenJPH, and Grok. Each
+configuration used three fresh processes, five in the A/B comparisons, and
+worker and binary order alternated between runs. Times are milliseconds, as
+the median of process medians. The host was shared with another session and a
+GitHub Actions runner during this pass. Every reported process therefore ran
+under a shared lock, started only when no CI job was running, and recorded the
+host CPU used by other processes; runs from an earlier overlapping window were
+discarded. "Before" is the source export before this pass; "after" adds the
+three changes described below.
+
+The first table uses the original protocol: all four decoders alternate within
+each process, with nine samples per process. OpenJPH is from the "after"
+processes.
+
+| Workers | j2k before | j2k after | OpenJPH 0.31.0, AVX2 |
+| ---: | ---: | ---: | ---: |
+| 1 | 135.69 | 134.54 | 118.81 |
+| 4 | 54.44 | 40.16 | 36.24 |
+| 8 | 33.34 | 28.79 | 22.83 |
+| 16 | 25.43 | 22.67 | 16.61 |
+
+The second table times one decoder per process (`J2K_BATCH_COMPARE_DECODER`),
+with 15 samples per process; the reference preflight still runs.
+
+| Workers | j2k before | j2k after | OpenJPH 0.31.0, AVX2 |
+| ---: | ---: | ---: | ---: |
+| 1 | 134.98 | 133.03 | 116.20 |
+| 4 | 50.19 | 36.55 | 33.77 |
+| 8 | 31.51 | 26.85 | 23.02 |
+| 16 | 26.67 | 21.04 | 19.63 |
+
+From 1 to 16 workers, j2k now speeds up 6.32x when timed alone (5.06x before)
+and 5.93x in the alternating protocol (5.34x before). OpenJPH speeds up 5.92x
+alone and 7.16x alternating. Its 16-worker time is 16.61 ms alternating but
+19.63 ms alone, because its per-tile allocations reuse memory the other
+decoders just freed. The original scaling comparison therefore partly measured
+allocator state rather than the decoders.
+
+Root cause. Each 512x512 RGB tile allocated about 5.5 MB of f32 decode
+buffers (three component planes, the coefficient buffer, and the IDWT output
+and scratch), zero-filled them, and freed them. glibc's dynamic trim and mmap
+thresholds returned that memory to the kernel, so the next tile page-faulted
+and the kernel zero-filled it again. At 16 workers the batch API took 859
+page faults and 19% system time per tile; with the buffers retained (change 2
+below) it takes 191 faults, all first writes to the caller's output buffers,
+and 5%. As a diagnostic, pinning the glibc thresholds made j2k, with only
+change 1, 7–32% faster across worker counts when timed alone. Lock contention
+and load imbalance do not explain the gap: it closes when allocator churn is
+removed, the tiles are within 3% of one another in compressed size, and worker
+start and end skew matched between the batch API and a hand-built equivalent.
+
+A smaller, structural part remains. j2k holds the whole tile as f32 planes,
+about 6.7 MB per worker including input and output, while OpenJPH decodes a
+few lines at a time. With allocator churn removed, j2k fills 1.4 MB per tile
+from DRAM with one worker and 3.0 MB with 16, once 16 working sets exceed the
+96 MiB L3; OpenJPH fills 0.09 and 0.38 MB. From one to 16 workers, per-tile
+user cycles grow 1.81x for j2k and 1.50x for OpenJPH. The HT cleanup kernel,
+which writes each component's coefficients into a full-tile buffer, grows
+1.86x and accounts for two thirds of j2k's extra cycles; zero-filling and
+copying the planes (memset and memmove) grow 2.3x and account for another
+fifth.
+Closing that gap needs a banded decode that keeps IDWT, colour transform, and
+packing within a few rows; this pass does not attempt it.
+
+Three changes were retained, each introduced test-first:
+
+1. IDWT level and band buffers only grow. Later components and levels reuse
+   samples already initialized instead of truncating and zero-filling them
+   again, which saves about 2.5 MiB of writes per tile. Alone, this changed
+   time by −1.1%, 0.0%, −2.7%, and −2.2% at 1, 4, 8, and 16 workers.
+2. `CpuBatchDecoder::decode_tiles_into` decodes caller-owned tiles on the
+   session's retained workers. Each worker keeps its decoded-component,
+   Tier-1, and IDWT allocations across tiles and calls. When `store` writes
+   every plane sample (a full decode with 1x1 sampling, no resolution
+   reduction, and no store backend), retained planes are no longer
+   zero-filled first. With that re-zeroing, the copy from IDWT output into
+   the retained planes took 36% of the process's DRAM fills, and retained
+   buffers were 2–7% slower than fresh ones with allocator churn disabled.
+   Without it, retained buffers are faster than fresh ones at every worker
+   count under default glibc, and within 4% of them with churn disabled. The
+   decoder counts the samples `store` writes into planes it did not zero, and
+   a tile that leaves any of them unwritten fails with
+   `DecodingError::IncompletePlaneStore` instead of exposing stale samples.
+3. `decode_tiles_into` keeps one process-wide set of those workers between
+   calls, so existing callers benefit without code changes. After a call the
+   set is kept only while it retains at most 256 MiB.
+   `retained_tile_batch_workspace_bytes` reports it and
+   `release_tile_batch_workspaces` frees it; neither waits for a running
+   batch, and a release requested during one takes effect when it ends. A
+   call made while another holds the set uses per-call workers instead of
+   waiting.
+
+Against the export before this pass, the unchanged harness timed alone changed
+by −1.3%, −23.5%, −11.2%, and −17.9% at 1, 4, 8, and 16 workers, with no
+overlap between the five before and five after processes at 4, 8, or 16
+workers. Those runs predate the plane-coverage check and the non-blocking
+release in changes 2 and 3. Rerun on the final source with the same protocol,
+the changes were −0.8%, −25.0%, −13.1%, and −19.5% (134.62 to 133.61, 50.18
+to 37.62, 31.20 to 27.11, and 26.84 to 21.60 ms), again with no overlap at 4,
+8, or 16 workers.
+
+Three approaches were rejected. Reusing the workspace only within a batch
+gained 12% at four workers but lost 4% serially and gained nothing at 8 or 16,
+where each worker decodes four or two tiles. Capping glibc arenas at 16
+changed nothing at 16 workers. glibc tunables are process-wide, so a library
+cannot set them. The per-component coefficient zero-fill (about 2 MiB per
+tile) remains. Removing it needs targeted zeroing of the code blocks each
+Tier-1 route skips.
+
+The scripts, probe source (`scaling_probe.rs`), and summaries are in
+`target/htj2k-comparison-20261020/cuda/scaling`; raw TSVs remain in the remote
+run directory.
+
+### CUDA surface batches above 32 images
+
+The original surface API decoded all colour inputs in one group. The session
+retains at most 2,048 batch scratch buffers (2 GiB), and one 32-tile batch
+retains about 1,253 of them. Larger batches therefore allocated and freed
+uncached scratch on every decode. The earlier 1024-image failure was not a
+decode failure: the profile harness validated the batch with one 768 MiB host
+readback, which exceeds the 512 MiB default host allocation cap.
+
+The surface API now decodes colour batches in successive 32-image groups on
+the same session. It keeps the caller's output order and the scratch cache
+limits, aggregates profile reports, and rebases source and code-block error
+indices to the whole batch. Each group's outputs share one device allocation,
+so `Surface::download_batch_tight` and `download_batch_tight_into` now copy
+each adjacent run of surfaces with one transfer instead of one transfer per
+surface. The profile harness now validates and reads back into a
+zero-initialized host buffer per batch. This matches the nvJPEG2000 harness
+and allows batches above the 512 MiB single-allocation cap.
+
+The baseline was built from the same source export with `routing.rs` and
+`surface.rs` restored to `HEAD`; both binaries use the updated harness.
+nvJPEG2000 0.10.0.49 uses ten pipeline states and streams, interleaved RGB8,
+and a per-batch `cudaMalloc` output. It validates its warmups against the
+same PPM references. Each decoder, batch size, and readback mode used three
+fresh processes, three pixel-verified warmups, and 31 timed samples. Case
+order rotated between runs and decoder order rotated between cases. Timed
+samples include parsing, compressed-input upload, decode, synchronization,
+and per-batch device output allocation and destruction. Context and library
+initialization and the warmups are excluded. Times are milliseconds, as the
+median of three process medians.
+
+| Images | HEAD resident | Grouped resident | nvJPEG2000 resident | HEAD with readback | Grouped with readback | nvJPEG2000 with readback |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 32 | 5.14 | 5.21 | 9.80 | 8.54 | 8.29 | 13.32 |
+| 64 | 71.50 | 10.54 | 18.01 | 79.99 | 20.08 | 28.77 |
+| 128 | 216.56 | 20.41 | 35.11 | 255.15 | 41.07 | 55.67 |
+| 256 | 547.30 | 41.05 | 63.93 | 589.48 | 81.59 | 106.70 |
+| 1024 | 2870.22 | 168.49 | 260.07 | 3099.52 | 330.80 | 427.55 |
+
+All 90 processes passed exact RGB8 checks, including every 1024-image run.
+Grouped resident cost stays between 0.159 and 0.165 ms per image from 32 to
+1024 images, while `HEAD` already takes 13.9x longer for 64 images than for 32.
+The grouped path is 6.79x faster than `HEAD` at 64 resident images and 17.0x
+faster at 1024. Compared with nvJPEG2000, it has 1.78x the throughput at 32
+resident images, 1.55x at 1024, and 1.62x to 1.29x with readback. These ratios
+are medians of within-run ratios. Above 32 images, readback adds about
+0.16 ms per image for both decoders, so host allocation and pageable copies
+dominate that column rather than codec work.
+
+Do not cite these nvJPEG2000 ratios as a general comparison; a follow-up
+audit found three limits:
+- **Inputs:** all 32 inputs are lossless (reversible 5/3, RCT, three
+  decomposition levels, 64×64 HT code blocks). Lossy 9/7 was not timed.
+- **Output format:** nvJPEG2000 was configured for interleaved RGB8. A
+  screening run suggested that its native planar output is substantially
+  faster. That screen overlapped another benchmark on the same host, so it is
+  not evidence.
+- **Host threads:** j2k plans batches across 16 Rayon threads, while this
+  harness submitted nvJPEG2000 work from one host thread.
+
+nvJPEG2000 0.10.0.49 has no batched decode call; this harness used ten decode
+states on ten streams. Both decoders read back into pageable host memory. A
+fair re-measurement compares planar with planar and interleaved with
+interleaved, gives nvJPEG2000 its best host-thread configuration, and adds
+lossy inputs. It has not been completed.
+
+At 32 images both binaries run the same unchunked decode. The grouped binary
+measured 1.4% slower resident (process medians 5.19–5.53 against
+5.14–5.14 ms) and 2.9% faster with readback; this pass does not attribute a
+32-image change to the grouping code.
+
+### Owned `CudaBatchDecoder` batches above 32 images
+
+The owned API, which `j2k-ml` uses, has its own execution path and the same
+problem: one warm 65-image group made 1,274 device allocations, against 2 for
+a warm 32-image group. RGB and RGBA groups larger than 32 images now decode in
+successive 32-image chunks into one dense allocation (or into consecutive
+ranges of a caller's destination). Each chunk except the last completes before
+the next starts, so its scratch returns to the cache, and `submit_batch` now
+waits for all but the final chunk. Removing those host waits would need the
+batch pool to reuse buffers in stream order; today it reuses a buffer only
+after the host has confirmed that the GPU finished with it. Error source indices are already global;
+code-block job indices are rebased, including for a failure surfaced by the
+final chunk's wait.
+
+The "before" binary is the grouped-surface build above, whose owned path is
+unchanged from `HEAD`. Both binaries use the same harness and protocol, with
+`J2K_CUDA_PROFILE_API=owned` (NHWC output). Times are milliseconds, as the
+median of three process medians.
+
+| Images | Before resident | After resident | Speedup | Before with readback | After with readback |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 32 | 6.80 | 6.98 | 0.99x | 10.44 | 10.54 |
+| 64 | 65.54 | 13.09 | 4.97x | 75.95 | 24.62 |
+| 128 | 203.00 | 25.92 | 7.83x | 228.36 | 46.54 |
+| 256 | 547.88 | 53.02 | 10.31x | 573.40 | 92.94 |
+| 1024 | 2617.90 | 219.10 | 11.96x | 2885.52 | 385.00 |
+
+All 60 processes passed exact RGB8 checks. Owned resident cost stays between
+0.20 and 0.22 ms per image from 32 to 1024 images. At 32 images the code path
+is unchanged; the 0.99x ratio is within the process ranges (6.79–6.89 and
+6.78–7.05 ms). The owned API remains about 0.05 ms per image slower than the
+surface API because it also groups images and writes dense NHWC output.
+
+With both changes, the complete strict j2k-cuda suite passed on the RTX 4070
+SUPER with `J2K_REQUIRE_CUDA_RUNTIME=1` and `J2K_REQUIRE_CUDA_OXIDE_BUILD=1`:
+300 passed, none failed or were ignored. For the surface API it checks 65-image
+output order, warm allocations, and one readback transfer per group; cleanup
+and session reuse after a later group's planning failure; and global error
+indices for a failure in the second group. For the owned API it checks NHWC and
+NCHW 65-image output against the CPU decoder, bounded warm allocations, a
+65-image caller destination, and global source/job indices for failures in a
+middle chunk and in the final chunk, followed by session reuse. A separate
+large-group test covering 8-bit, 12-bit, and signed 16-bit RGBA in both layouts
+also passed, as did the 107 `j2k-cuda-runtime` library tests, including
+bounds checks for the new destination sub-views.
+
+### Direct CUDA-to-Burn handoff
+
+`CudaDirectBurnDecoder` decodes into Burn-owned CUDA storage and registers that
+allocation as the tensor. `CudaUploadBurnDecoder` stages the completed codec
+output through host memory and uploads it with Burn. Both use the owned
+`CudaBatchDecoder` with NCHW output, so these rows are not comparable with the
+surface API's 5.21 ms resident result above.
+
+For these runs only, a benchmark overlay (not committed) loaded the 32
+original WSI codestreams into `batch_decode_cuda`; batches of 128 and 256 cycle
+those tiles. Before timing, every process checked all 32 distinct RGB8 outputs
+from both Burn APIs against `CpuBatchDecoder`. The larger batches use the owned
+path whose exact output is checked by the owned API runs and tests above. Each
+row ran in its own process, three times with rotating row order. Criterion used
+its default warmup and 100 samples; the table gives the median of the three
+per-process Criterion medians, in milliseconds. The normalized rows convert the
+`U8` tensor to `f32`, divide by 255, and synchronize the Burn device inside
+each iteration. These runs include the owned API chunking above.
+
+| WSI tiles, full decode | Owned NCHW codec decode, no Burn | Staged Burn upload and normalization | Direct Burn destination and normalization | Staged / direct |
+| ---: | ---: | ---: | ---: | ---: |
+| 32 | 6.84 | 18.34 | 8.08 | 2.28x |
+| 128 | 25.48 | 85.28 | 28.51 | 2.99x |
+| 256 | 53.72 | 162.05 | 55.87 | 2.91x |
+
+Direct process medians ranged over 8.05–8.18, 28.34–28.81, and 55.70–55.90 ms.
+The direct route adds 1.2–3.2 ms to the owned codec decode for the Burn
+allocation, registration, synchronization, and normalization, and settles at
+about 0.22 ms per image. Ratios are medians of within-run comparisons. An
+earlier 32-image run, made before the owned API change, measured 6.85, 18.45,
+and 8.22 ms for the same three rows.
+
+The strict j2k-ml CUDA tests passed on the RTX 4070 SUPER (19 tests,
+including two distinct RGB8 codestreams checked against an independent CPU
+oracle with status-only codec readback), and the `cuda_direct` example ran.
+
+The first benchmark build exposed a build bug: nested `cargo oxide build`
+invocations inherited the caller's `CARGO_TARGET_DIR`. A newly staged device
+project could then be treated as a fresh build from another `OUT_DIR` and
+produce no PTX. `j2k-cuda-build-support` now gives each staged project its own
+target directory. The staged device crates still have no lockfile, so a fresh
+build resolves their crates.io dependencies at build time and contacts the
+network even under `--offline`.
+
+Results, scripts, the overlay files, and the copied JSON summaries are in
+`target/htj2k-comparison-20261020/cuda/scaling`. Raw per-process outputs,
+logs, and executables remain in the matching remote `scaling` directory.
+
 ## HTJ2K kernel optimization development run - 2026-10-17
 
 These are incremental measurements against the working tree after rebasing on

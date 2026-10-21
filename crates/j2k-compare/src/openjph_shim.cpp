@@ -9,9 +9,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
-#include <cstring>
 #include <limits>
-#include <vector>
+#include <memory>
 
 namespace {
 constexpr std::size_t OUTPUT_CAP_BYTES = std::size_t{512} * 1024 * 1024;
@@ -63,8 +62,10 @@ extern "C" int j2k_openjph_decode_u8(
     ojph::mem_infile input;
     input.open(bytes, len);
     ojph::codestream codestream;
-    codestream.set_planar(false);
     codestream.read_headers(&input);
+    // read_headers chooses a default from the color-transform flag.
+    // Override it afterwards, including RGB streams without an MCT.
+    codestream.set_planar(false);
     codestream.restrict_input_resolution(reduce, reduce);
     const ojph::param_siz siz = codestream.access_siz();
     if (siz.get_num_components() < channels) {
@@ -82,7 +83,11 @@ extern "C" int j2k_openjph_decode_u8(
     if (!checked_output_len(width, height, channels, required)) {
       return 0;
     }
-    std::vector<std::uint8_t> output(required);
+    std::unique_ptr<std::uint8_t, decltype(&std::free)> output(
+        static_cast<std::uint8_t *>(std::malloc(required)), &std::free);
+    if (!output) {
+      return 0;
+    }
     codestream.create();
     for (std::uint32_t y = 0; y < height; ++y) {
       const std::size_t row_offset =
@@ -97,7 +102,7 @@ extern "C" int j2k_openjph_decode_u8(
         const std::uint32_t depth = siz.get_bit_depth(component);
         const bool signedness = siz.is_signed(component);
         for (std::uint32_t x = 0; x < width; ++x) {
-          output[row_offset + static_cast<std::size_t>(x) * channels + component] =
+          output.get()[row_offset + static_cast<std::size_t>(x) * channels + component] =
               sample_u8(line->i32[x], depth, signedness);
         }
       }
@@ -105,13 +110,8 @@ extern "C" int j2k_openjph_decode_u8(
     codestream.close();
     input.close();
 
-    auto *allocation = static_cast<std::uint8_t *>(std::malloc(output.size()));
-    if (allocation == nullptr) {
-      return 0;
-    }
-    std::memcpy(allocation, output.data(), output.size());
-    *out_data = allocation;
-    *out_len = output.size();
+    *out_data = output.release();
+    *out_len = required;
     *out_width = width;
     *out_height = height;
     return 1;

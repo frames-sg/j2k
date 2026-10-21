@@ -106,7 +106,7 @@ struct SubmittedResidentGroup {
     pending: SubmittedResidentCodecGroup,
 }
 
-/// Asynchronously submitted codec-owned CUDA resident batch.
+/// Submitted codec-owned CUDA resident batch whose final work may be pending.
 ///
 /// Every homogeneous group owns its final CUDA allocation before submission.
 /// [`Self::wait`] exposes those allocations only after final-store completion
@@ -198,7 +198,9 @@ impl SubmittedCudaResidentBatch {
 }
 
 impl CudaBatchDecoder {
-    /// Prepare and asynchronously submit a codec-owned CUDA resident batch.
+    /// Prepare and submit a codec-owned CUDA resident batch.
+    ///
+    /// Waits on the host like [`Self::submit_prepared`].
     pub fn submit_batch(
         &mut self,
         inputs: Vec<EncodedImage>,
@@ -207,10 +209,16 @@ impl CudaBatchDecoder {
         self.submit_prepared(&prepared)
     }
 
-    /// Asynchronously submit reusable prepared inputs to codec-owned CUDA output.
+    /// Submit reusable prepared inputs to codec-owned CUDA output, leaving each
+    /// group's final store pending.
     ///
     /// Recoverable execution failures remain group-local and do not suppress
     /// later groups. No decoded host staging or final device copy is used.
+    ///
+    /// RGB and RGBA groups larger than 32 images decode in successive 32-image
+    /// chunks into one dense allocation, so decode scratch stays within the
+    /// session cache. Submission blocks the host until every chunk except the
+    /// last has completed.
     pub fn submit_prepared(
         &mut self,
         prepared: &PreparedBatch,

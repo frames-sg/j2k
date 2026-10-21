@@ -2,11 +2,11 @@
 
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use j2k::{decode_tiles_into, J2kDecoder, PixelFormat, TileBatchOptions, TileDecodeJob};
 use j2k_compare::{
-    grok, measure_repeated, openhtj2k, openjpeg, openjph, parse_positive_usize, sample_stats,
-    usize_to_f64,
+    grok, openhtj2k, openjpeg, openjph, parse_positive_usize, sample_stats, usize_to_f64,
 };
 use j2k_core::tile_batch_worker_count;
 
@@ -37,6 +37,7 @@ struct RunOptions {
     batch_sizes: Vec<usize>,
     repeats: usize,
     workers: Option<NonZeroUsize>,
+    measured_decoder: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -48,7 +49,7 @@ enum ExternalDecoder {
 }
 
 impl ExternalDecoder {
-    const OPTIONAL: [Self; 3] = [Self::Grok, Self::OpenHtj2k, Self::OpenJph];
+    const ALL: [Self; 4] = [Self::OpenJpeg, Self::Grok, Self::OpenHtj2k, Self::OpenJph];
 
     const fn label(self) -> &'static str {
         match self {
@@ -87,6 +88,18 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let options = parse_run_options()?;
+    let pool_threads = options.workers.map_or_else(
+        || std::thread::available_parallelism().map_or(1, NonZeroUsize::get),
+        NonZeroUsize::get,
+    );
+    if grok::is_available() {
+        grok::initialize_with_threads(
+            u32::try_from(pool_threads)
+                .ok()
+                .and_then(std::num::NonZeroU32::new)
+                .ok_or("Grok pool thread count exceeds u32")?,
+        )?;
+    }
     let max_batch_size = options
         .batch_sizes
         .iter()
@@ -105,15 +118,8 @@ fn run() -> Result<(), String> {
     if !tiles.iter().all(|tile| tile.format == format) {
         return Err("selected tiles do not share one output pixel format".to_string());
     }
-    let (openhtj2k_max_abs_diff, openjph_max_abs_diff) = reference_parity(&tiles, format)?;
-    emit_configuration(
-        &options,
-        &tiles,
-        skipped,
-        format,
-        &openhtj2k_max_abs_diff,
-        &openjph_max_abs_diff,
-    );
+    let parity = reference_parity(&tiles, format)?;
+    emit_configuration(&options, &tiles, skipped, format, &parity, pool_threads);
     emit_all_measurements(&options, &tiles)
 }
 
@@ -148,16 +154,32 @@ fn parse_run_options() -> Result<RunOptions, String> {
         .map(|value| parse_positive_usize(&value, "J2K_BATCH_COMPARE_THREADS"))
         .transpose()?
         .map(|value| NonZeroUsize::new(value).expect("positive value was validated"));
+    let measured_decoder = std::env::var("J2K_BATCH_COMPARE_DECODER").ok();
+    if let Some(label) = measured_decoder.as_deref() {
+        if label != "j2k" {
+            let decoder = ExternalDecoder::ALL
+                .into_iter()
+                .find(|decoder| decoder.label() == label)
+                .ok_or_else(|| format!("unknown J2K_BATCH_COMPARE_DECODER {label:?}"))?;
+            if !decoder.is_available() {
+                return Err(format!("requested decoder {label:?} is unavailable"));
+            }
+        }
+    }
 
     Ok(RunOptions {
         tile_dir,
         batch_sizes,
         repeats,
         workers,
+        measured_decoder,
     })
 }
 
-fn reference_parity(tiles: &[TileInput], format: PixelFormat) -> Result<(String, String), String> {
+fn reference_parity(
+    tiles: &[TileInput],
+    format: PixelFormat,
+) -> Result<Vec<(ExternalDecoder, String)>, String> {
     let allowed_reference_difference = std::env::var("J2K_BATCH_COMPARE_MAX_ABS_DIFF")
         .ok()
         .map(|value| {
@@ -167,20 +189,13 @@ fn reference_parity(tiles: &[TileInput], format: PixelFormat) -> Result<(String,
         })
         .transpose()?
         .unwrap_or(1);
-    let openhtj2k_max_abs_diff = reference_parity_result(
-        tiles,
-        format,
-        ExternalDecoder::OpenHtj2k,
-        allowed_reference_difference,
-    )?;
-    let openjph_max_abs_diff = reference_parity_result(
-        tiles,
-        format,
-        ExternalDecoder::OpenJph,
-        allowed_reference_difference,
-    )?;
-
-    Ok((openhtj2k_max_abs_diff, openjph_max_abs_diff))
+    ExternalDecoder::ALL
+        .into_iter()
+        .map(|decoder| {
+            reference_parity_result(tiles, format, decoder, allowed_reference_difference)
+                .map(|difference| (decoder, difference))
+        })
+        .collect()
 }
 
 fn emit_configuration(
@@ -188,11 +203,11 @@ fn emit_configuration(
     tiles: &[TileInput],
     skipped: usize,
     format: PixelFormat,
-    openhtj2k_max_abs_diff: &str,
-    openjph_max_abs_diff: &str,
+    parity: &[(ExternalDecoder, String)],
+    pool_threads: usize,
 ) {
     println!(
-        "tile_dir\t{}\nloaded_tiles\t{}\nskipped_unsupported\t{}\nformat\t{:?}\nworkers\t{}\nopenjpeg_available\t{}\ngrok_available\t{}\nopenhtj2k_available\t{}\nopenhtj2k_version\t{}\nopenhtj2k_library\t{}\nopenhtj2k_max_abs_diff\t{}\nopenjph_available\t{}\nopenjph_version\t{}\nopenjph_library\t{}\nopenjph_max_abs_diff\t{}",
+        "tile_dir\t{}\nloaded_tiles\t{}\nskipped_unsupported\t{}\nformat\t{:?}\nworkers\t{}",
         options.tile_dir.display(),
         tiles.len(),
         skipped,
@@ -200,17 +215,32 @@ fn emit_configuration(
         options
             .workers
             .map_or_else(|| "auto".to_string(), |value| value.get().to_string()),
-        openjpeg::is_available(),
-        grok::is_available(),
-        openhtj2k::is_available(),
-        openhtj2k::version(),
-        openhtj2k::library_path(),
-        openhtj2k_max_abs_diff,
-        openjph::is_available(),
-        openjph::version(),
-        openjph::library_path(),
-        openjph_max_abs_diff,
     );
+    for (decoder, difference) in parity {
+        let name = decoder.label();
+        let (version, library) = match decoder {
+            ExternalDecoder::OpenJpeg => (openjpeg::version(), openjpeg::library_path()),
+            ExternalDecoder::Grok => (grok::version().to_owned(), grok::library_path()),
+            ExternalDecoder::OpenHtj2k => {
+                (openhtj2k::version().to_owned(), openhtj2k::library_path())
+            }
+            ExternalDecoder::OpenJph => (openjph::version().to_owned(), openjph::library_path()),
+        };
+        println!(
+            "{name}_available\t{}\n{name}_version\t{version}\n{name}_library\t{library}\n{name}_max_abs_diff\t{difference}",
+            decoder.is_available()
+        );
+    }
+    if grok::is_available() {
+        println!("grok_pool_threads\t{pool_threads}\ngrok_decode_threads\t1");
+    }
+    println!("timing_boundary\tin-process-parse-decode-pack-allocate-free-no-file-io");
+    println!("sample_order\trotating-decoder-order");
+    println!(
+        "measured_decoder\t{}",
+        options.measured_decoder.as_deref().unwrap_or("all")
+    );
+    println!("warmup_batches_per_decoder\t1");
     println!(
         "decoder\tbatch_size\trepeats\tmedian_ms\tmean_ms\ttiles_per_second_median\tdecoded_bytes_per_repeat\tsamples_ms"
     );
@@ -218,32 +248,53 @@ fn emit_configuration(
 
 fn emit_all_measurements(options: &RunOptions, tiles: &[TileInput]) -> Result<(), String> {
     for &batch_size in &options.batch_sizes {
-        emit_measurement(measure_j2k(
-            &tiles[..batch_size],
-            options.repeats,
-            options.workers,
-        )?);
-        emit_measurement(measure_external(
-            &tiles[..batch_size],
-            options.repeats,
-            options.workers,
-            ExternalDecoder::OpenJpeg,
-        )?);
-        for decoder in ExternalDecoder::OPTIONAL {
-            if decoder.is_available() {
-                emit_measurement(measure_external(
-                    &tiles[..batch_size],
-                    options.repeats,
-                    options.workers,
-                    decoder,
-                )?);
-            } else {
-                println!(
-                    "{}\t{batch_size}\t{}\tNA\tNA\tNA\tNA\tunavailable",
-                    decoder.label(),
-                    options.repeats
-                );
+        let inputs = &tiles[..batch_size];
+        let decoders = std::iter::once(None)
+            .chain(
+                ExternalDecoder::ALL
+                    .into_iter()
+                    .filter(|d| d.is_available())
+                    .map(Some),
+            )
+            .filter(|decoder| {
+                options
+                    .measured_decoder
+                    .as_deref()
+                    .is_none_or(|label| decoder.map_or("j2k", ExternalDecoder::label) == label)
+            })
+            .collect::<Vec<_>>();
+        let mut samples = vec![Vec::with_capacity(options.repeats); decoders.len()];
+        let mut decoded_bytes = vec![0; decoders.len()];
+        for decoder in &decoders {
+            std::hint::black_box(decode_once(inputs, options.workers, *decoder)?);
+        }
+        for round in 0..options.repeats {
+            for offset in 0..decoders.len() {
+                let index = (round + offset) % decoders.len();
+                let started = Instant::now();
+                let bytes = decode_once(inputs, options.workers, decoders[index])?;
+                samples[index].push(started.elapsed().as_secs_f64() * 1000.0);
+                decoded_bytes[index] = std::hint::black_box(bytes);
             }
+        }
+        for ((decoder, samples), bytes) in decoders.into_iter().zip(samples).zip(decoded_bytes) {
+            emit_measurement(measurement(
+                decoder.map_or("j2k", ExternalDecoder::label),
+                batch_size,
+                options.repeats,
+                samples,
+                bytes,
+            )?);
+        }
+        for decoder in ExternalDecoder::ALL
+            .into_iter()
+            .filter(|d| options.measured_decoder.is_none() && !d.is_available())
+        {
+            println!(
+                "{}\t{batch_size}\t{}\tNA\tNA\tNA\tNA\tunavailable",
+                decoder.label(),
+                options.repeats
+            );
         }
     }
 
@@ -323,21 +374,15 @@ fn pixel_format(components: u16, bit_depth: u8) -> Option<PixelFormat> {
     }
 }
 
-fn measure_j2k(
+fn decode_once(
     tiles: &[TileInput],
-    repeats: usize,
     workers: Option<NonZeroUsize>,
-) -> Result<Measurement, String> {
-    let format = tiles[0].format;
-    let (samples, decoded_bytes_per_repeat) =
-        measure_repeated(repeats, 1000.0, || decode_j2k_once(tiles, format, workers))?;
-    measurement(
-        "j2k",
-        tiles.len(),
-        repeats,
-        samples,
-        decoded_bytes_per_repeat,
-    )
+    decoder: Option<ExternalDecoder>,
+) -> Result<usize, String> {
+    match decoder {
+        Some(decoder) => decode_external_once(tiles, workers, decoder),
+        None => decode_j2k_once(tiles, tiles[0].format, workers),
+    }
 }
 
 fn decode_j2k_once(
@@ -345,10 +390,9 @@ fn decode_j2k_once(
     format: PixelFormat,
     workers: Option<NonZeroUsize>,
 ) -> Result<usize, String> {
-    Ok(decode_j2k_outputs(tiles, format, workers)?
-        .iter()
-        .map(Vec::len)
-        .sum())
+    let outputs = decode_j2k_outputs(tiles, format, workers)?;
+    std::hint::black_box(&outputs);
+    Ok(outputs.iter().map(Vec::len).sum())
 }
 
 fn decode_j2k_outputs(
@@ -425,25 +469,6 @@ fn maximum_absolute_byte_difference(left: &[u8], right: &[u8]) -> u8 {
         .unwrap_or(0)
 }
 
-fn measure_external(
-    tiles: &[TileInput],
-    repeats: usize,
-    workers: Option<NonZeroUsize>,
-    decoder: ExternalDecoder,
-) -> Result<Measurement, String> {
-    let decoder_name = decoder.label();
-    let (samples, decoded_bytes_per_repeat) = measure_repeated(repeats, 1000.0, || {
-        decode_external_once(tiles, workers, decoder)
-    })?;
-    measurement(
-        decoder_name,
-        tiles.len(),
-        repeats,
-        samples,
-        decoded_bytes_per_repeat,
-    )
-}
-
 fn decode_external_once(
     tiles: &[TileInput],
     workers: Option<NonZeroUsize>,
@@ -455,27 +480,28 @@ fn decode_external_once(
         std::thread::available_parallelism().map_or(1, NonZeroUsize::get),
     );
     let chunk_size = tiles.len().div_ceil(worker_count);
-    let total_decoded = std::thread::scope(|scope| {
+    let outputs = std::thread::scope(|scope| {
         let mut handles = Vec::with_capacity(worker_count);
         for chunk in tiles.chunks(chunk_size) {
             handles.push(scope.spawn(move || {
                 chunk
                     .iter()
                     .map(|tile| decode_external_tile(tile, decoder))
-                    .try_fold(0usize, |acc, decoded| decoded.map(|data| acc + data.len()))
+                    .collect::<Result<Vec<_>, _>>()
             }));
         }
-        let mut decoded_bytes = 0usize;
+        let mut outputs = Vec::with_capacity(tiles.len());
         for handle in handles {
             match handle.join() {
-                Ok(Ok(bytes)) => decoded_bytes += bytes,
+                Ok(Ok(mut chunk)) => outputs.append(&mut chunk),
                 Ok(Err(err)) => return Err(err),
                 Err(payload) => std::panic::resume_unwind(payload),
             }
         }
-        Ok(decoded_bytes)
+        Ok(outputs)
     })?;
-    Ok(total_decoded)
+    std::hint::black_box(&outputs);
+    Ok(outputs.iter().map(Vec::len).sum())
 }
 
 fn decode_external_tile(tile: &TileInput, decoder: ExternalDecoder) -> Result<Vec<u8>, String> {

@@ -595,6 +595,13 @@ fn lossy_97_source_uses_pixel_preserving_recode() {
     )
     .expect("lossy 9/7 encode");
 
+    let error = j2k::recode_j2k_to_htj2k_lossless(
+        &lossy,
+        J2kToHtj2kOptions::default().with_coefficient_only(),
+    )
+    .expect_err("strict recoding must reject the pixel fallback before decoding");
+    assert!(error.to_string().contains("pixel-domain re-encoding"));
+
     let recoded = j2k::recode_j2k_to_htj2k_lossless(&lossy, J2kToHtj2kOptions::default())
         .expect("lossy source should use pixel fallback");
 

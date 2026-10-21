@@ -96,6 +96,9 @@ pub(crate) fn apply(
     let mut use_scratch = decompositions.len().is_multiple_of(2);
     let mut current_source = InputSource::SubBand;
     let mut current_rect = ll_sub_band.rect;
+    // Level buffers only grow, so the previous level's samples are the first
+    // `current_len` of whichever buffer holds them.
+    let mut current_len = 0;
     let mut temp_output = IDWTTempOutput {
         rect: ll_sub_band.rect,
     };
@@ -123,7 +126,7 @@ pub(crate) fn apply(
                 parallel,
             )?,
             (InputSource::Scratch, false) => apply_level(
-                IDWTInput::from_output(scratch_buf, current_rect),
+                IDWTInput::from_output(&scratch_buf[..current_len], current_rect),
                 &mut output.coefficients,
                 band_scratch,
                 decomposition,
@@ -133,7 +136,7 @@ pub(crate) fn apply(
                 parallel,
             )?,
             (InputSource::Output, true) => apply_level(
-                IDWTInput::from_output(&output.coefficients, current_rect),
+                IDWTInput::from_output(&output.coefficients[..current_len], current_rect),
                 scratch_buf,
                 band_scratch,
                 decomposition,
@@ -158,9 +161,13 @@ pub(crate) fn apply(
             .debug_counters
             .idwt_output_samples
             .saturating_add(output_samples);
+        current_len = output_samples;
         use_scratch = !use_scratch;
     }
 
+    // The last level always writes `output`; drop samples a larger earlier
+    // component left past it so readers see exactly this rect.
+    output.coefficients.truncate(current_len);
     output.rect = temp_output.rect;
     Ok(())
 }

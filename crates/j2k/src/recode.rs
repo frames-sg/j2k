@@ -44,6 +44,9 @@ pub struct J2kToHtj2kOptions {
     pub progression: J2kProgressionOrder,
     /// Optional decoded-pixel validation of the produced codestream.
     pub validation: J2kEncodeValidation,
+    /// Reject profiles requiring decoded-pixel re-encoding. Passthrough and
+    /// codestream/coefficient-preserving routes remain available.
+    pub coefficient_only: bool,
 }
 
 impl Default for J2kToHtj2kOptions {
@@ -52,6 +55,7 @@ impl Default for J2kToHtj2kOptions {
             output_payload_kind: CompressedPayloadKind::Jpeg2000Codestream,
             progression: J2kProgressionOrder::Lrcp,
             validation: J2kEncodeValidation::CpuRoundTrip,
+            coefficient_only: false,
         }
     }
 }
@@ -67,7 +71,15 @@ impl J2kToHtj2kOptions {
             output_payload_kind,
             progression,
             validation,
+            coefficient_only: false,
         }
+    }
+
+    /// Require preservation of the source codestream or wavelet coefficients.
+    #[must_use]
+    pub const fn with_coefficient_only(mut self) -> Self {
+        self.coefficient_only = true;
+        self
     }
 }
 
