@@ -1,9 +1,9 @@
 use std::{ffi::OsString, fs, panic::catch_unwind, path::Path};
 
 use super::{
-    codec_math_crate_path, compile_project, copy_file_as, fallback_codec_math_crate_path,
-    j2k_types_crate_path, skip_project, stage_cuda_oxide_dependency_config, CudaOxideProject,
-    CODEC_MATH_MANIFEST_DIR_ENV,
+    cargo_oxide_build_command, codec_math_crate_path, compile_project, copy_file_as,
+    fallback_codec_math_crate_path, j2k_types_crate_path, skip_project,
+    stage_cuda_oxide_dependency_config, CudaOxideProject, CODEC_MATH_MANIFEST_DIR_ENV,
 };
 
 struct TestDir(std::path::PathBuf);
@@ -46,6 +46,23 @@ impl Drop for EnvironmentRestore {
             std::env::remove_var(self.key);
         }
     }
+}
+
+#[test]
+fn cargo_oxide_build_uses_the_staged_project_target_dir() {
+    let project_dir = Path::new("/tmp/out/cuda_oxide_example");
+    let command = cargo_oxide_build_command(project_dir, "sm_89");
+
+    let target_dir = command
+        .get_envs()
+        .find(|(key, _)| *key == "CARGO_TARGET_DIR")
+        .and_then(|(_, value)| value);
+    assert_eq!(
+        target_dir,
+        Some(project_dir.join("target").as_os_str()),
+        "nested device builds must not share the caller's target directory"
+    );
+    assert_eq!(command.get_current_dir(), Some(project_dir));
 }
 
 #[test]

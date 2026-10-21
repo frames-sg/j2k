@@ -3,9 +3,10 @@
 //! Thin Burn tensor adapter for the `j2k` owned batch codec.
 //!
 //! The codec crates own parsing, grouping, decoding, and accelerator execution.
-//! This crate materializes CPU groups or stages completed CUDA and Metal codec
-//! output through host memory before an ordinary Burn upload. Casting and
-//! normalization stay in ordinary Burn tensor operations after decode.
+//! This crate materializes CPU groups, decodes CUDA groups directly into
+//! Burn-owned device storage, or stages completed CUDA and Metal codec output
+//! through host memory before an ordinary Burn upload. Casting and normalization
+//! stay in ordinary Burn tensor operations after decode.
 
 #![deny(missing_docs)]
 
@@ -35,7 +36,8 @@ pub mod metal;
 pub use cpu::CpuBurnDecoder;
 #[cfg(feature = "cuda")]
 pub use cuda::{
-    CudaBurnDecoder, CudaUploadBurnDecoder, SubmittedCudaBurnBatch, SubmittedCudaUploadBurnBatch,
+    CudaBurnDecoder, CudaDirectBurnDecoder, CudaUploadBurnDecoder, SubmittedCudaBurnBatch,
+    SubmittedCudaUploadBurnBatch,
 };
 pub use error::BurnDecodeError;
 #[cfg(feature = "metal")]

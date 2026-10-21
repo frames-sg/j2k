@@ -186,8 +186,13 @@ impl CudaBatchDecoder {
         unsafe { self.submit_batch_into(group, destination) }?.wait()
     }
 
-    /// Submit one prepared exact-native Gray/RGB/RGBA group into CUDA storage
-    /// without a host completion wait.
+    /// Submit one prepared exact-native Gray/RGB/RGBA group into CUDA storage,
+    /// leaving its final store pending.
+    ///
+    /// RGB and RGBA groups larger than 32 images decode in successive 32-image
+    /// chunks into consecutive ranges of `destination`. To keep decode scratch
+    /// within the session cache, submission blocks the host until every chunk
+    /// except the last has completed; only the final chunk remains pending.
     ///
     /// Callers integrating another CUDA runtime must use
     /// [`j2k_cuda_runtime::CudaContext::with_primary_stream_ordering`] around

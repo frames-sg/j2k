@@ -10,6 +10,8 @@ use super::{
     NonZeroUsize, PreparedBatch, PreparedImage, Rect, Vec,
 };
 use crate::batch::allocation::try_vec_with_capacity;
+use crate::batch::scheduler::decode_retained_tiles;
+use crate::{DecodeOutcome, PixelFormat, TileBatchError, TileBatchOptions, TileDecodeJob};
 
 /// Native-width contiguous samples returned by the CPU batch decoder.
 #[derive(Debug, PartialEq, Eq)]
@@ -284,6 +286,36 @@ impl CpuBatchDecoder {
         aggregate.output_group_allocations = fast.output_group_allocations;
         aggregate.output_compaction_copied_samples = fast.output_compaction_copied_samples;
         aggregate
+    }
+
+    /// Decode independent J2K/HTJ2K tiles into caller-owned output buffers.
+    ///
+    /// Behaves like [`decode_tiles_into`](crate::decode_tiles_into) with this
+    /// session's worker count and decoder settings; `layout` does not apply
+    /// because `fmt` defines the output. Each retained worker keeps its
+    /// decoded-component, Tier-1, and IDWT allocations across tiles and calls,
+    /// so repeated batches neither reallocate nor re-fault them.
+    ///
+    /// # Errors
+    /// Same as [`decode_tiles_into`](crate::decode_tiles_into).
+    pub fn decode_tiles_into(
+        &mut self,
+        jobs: &mut [TileDecodeJob<'_, '_>],
+        fmt: PixelFormat,
+    ) -> Result<Vec<DecodeOutcome<J2kDecodeWarning>>, TileBatchError> {
+        let workers = self
+            .workers
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        decode_retained_tiles(
+            workers,
+            jobs,
+            fmt,
+            TileBatchOptions {
+                workers: self.options.workers,
+            },
+            self.options.settings,
+        )
     }
 
     /// Inspect and group owned encoded inputs for repeated decode.

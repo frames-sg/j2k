@@ -5,7 +5,7 @@ use burn_cuda::{Cuda, CudaDevice};
 use criterion::{BenchmarkId, Criterion, Throughput};
 use j2k::{BatchDecodeOptions, EncodedImage, PreparedBatch};
 use j2k_cuda::{CudaBatchDecodeResult, CudaBatchDecoder};
-use j2k_ml::{CpuBurnDecoder, CudaUploadBurnDecoder};
+use j2k_ml::{BurnBatchDecode, CpuBurnDecoder, CudaDirectBurnDecoder, CudaUploadBurnDecoder};
 
 mod cuda_telemetry;
 #[path = "batch_decode_cuda/profile.rs"]
@@ -31,6 +31,7 @@ fn main() {
             let mut criterion = Criterion::default().configure_from_args();
             bench_codec_resident(&mut criterion, &workload_specs, input_mode);
             bench_burn_upload(&mut criterion, &workload_specs, input_mode);
+            bench_burn_direct(&mut criterion, &workload_specs, input_mode);
             criterion.final_summary();
         }
         ProcessMode::Profile => profile::run(&workload_specs, input_mode),
@@ -171,7 +172,58 @@ fn bench_burn_upload(
                 };
                 bench_staged_burn(&mut group, case, &mut staged, &device);
                 bench_one_shot_burn(&mut group, case, &mut one_shot, &device);
+                bench_one_shot_normalized_burn(&mut group, case, &mut one_shot, &device);
                 bench_prepared_burn(&mut group, case, &mut prepared_decoder, &device);
+            }
+        }
+    }
+    group.finish();
+}
+
+fn bench_burn_direct(
+    criterion: &mut Criterion,
+    workload_specs: &[WorkloadSpec],
+    input_mode: InputMode,
+) {
+    let options = BatchDecodeOptions::default();
+    let device = CudaDevice::default();
+    let mut group = criterion.benchmark_group(format!(
+        "j2k_owned_batch_burn_direct_cuda/input_{}",
+        input_mode.label()
+    ));
+
+    for &spec in workload_specs {
+        let workload = materialize_workload(spec, input_mode);
+        let mut decoder = CudaDirectBurnDecoder::new(device.clone(), options);
+        for (request_name, request, output_pixels) in requests(workload.dimensions, true) {
+            for &batch_size in BATCH_SIZES {
+                let inputs = workload.inputs(request, batch_size);
+                group.throughput(Throughput::Elements(decoded_pixels_per_batch(
+                    output_pixels,
+                    batch_size,
+                )));
+                group.bench_with_input(
+                    BenchmarkId::new(
+                        format!(
+                            "{}/{request_name}/one_shot_normalized_pixels",
+                            workload.name
+                        ),
+                        batch_size,
+                    ),
+                    &inputs,
+                    |bencher, inputs| {
+                        bencher.iter(|| {
+                            let completed = decoder
+                                .decode(std::hint::black_box(inputs.clone()))
+                                .expect("direct CUDA Burn batch decode");
+                            let completed = require_burn_success(completed);
+                            let normalized = normalize_burn_batch(completed);
+                            <Cuda as Backend>::sync(&device)
+                                .expect("synchronize direct CUDA Burn consumer completion");
+                            std::hint::black_box(normalized)
+                        });
+                    },
+                );
             }
         }
     }
@@ -244,6 +296,36 @@ fn bench_one_shot_burn(
     );
 }
 
+fn bench_one_shot_normalized_burn(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    case: BurnBenchCase<'_>,
+    decoder: &mut CudaUploadBurnDecoder,
+    device: &CudaDevice,
+) {
+    group.bench_with_input(
+        BenchmarkId::new(
+            format!(
+                "{}/{}/one_shot_normalized_pixels",
+                case.workload.name, case.request_name
+            ),
+            case.batch_size,
+        ),
+        case.inputs,
+        |bencher, inputs| {
+            bencher.iter(|| {
+                let completed = decoder
+                    .decode(std::hint::black_box(inputs.to_vec()))
+                    .expect("staged CUDA Burn batch decode and upload");
+                let completed = require_burn_success(completed);
+                let normalized = normalize_burn_batch(completed);
+                <Cuda as Backend>::sync(device)
+                    .expect("synchronize staged CUDA Burn consumer completion");
+                std::hint::black_box(normalized)
+            });
+        },
+    );
+}
+
 fn bench_prepared_burn(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     case: BurnBenchCase<'_>,
@@ -294,4 +376,27 @@ fn require_codec_success(decoded: CudaBatchDecodeResult) -> CudaBatchDecodeResul
         "benchmark workload must decode to exactly one homogeneous group"
     );
     decoded
+}
+
+fn normalize_burn_batch(decoded: BurnBatchDecode<Cuda>) -> Vec<burn_core::tensor::Tensor<Cuda, 4>> {
+    decoded
+        .groups
+        .into_iter()
+        .map(|group| {
+            let magnitude_bits = if group.info.signed {
+                group.info.precision.saturating_sub(1)
+            } else {
+                group.info.precision
+            };
+            let scale = if group.info.signed {
+                1_u32 << magnitude_bits
+            } else {
+                (1_u32 << magnitude_bits) - 1
+            };
+            let divisor = f32::from(
+                u16::try_from(scale).expect("benchmark native sample precision fits u16"),
+            );
+            group.tensor.into_tensor().float().div_scalar(divisor)
+        })
+        .collect()
 }

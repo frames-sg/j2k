@@ -63,8 +63,9 @@ pub use batch::{
     decode_tile_into_in_context, decode_tile_region_into_in_context,
     decode_tile_region_scaled_into_in_context, decode_tile_scaled_into_in_context,
     decode_tiles_into, decode_tiles_region_into, decode_tiles_region_scaled_into,
-    decode_tiles_scaled_into, TileBatchError, TileBatchOptions, TileDecodeJob, TileDecodeOutput,
-    TileRegionDecodeJob, TileRegionScaledDecodeJob, TileScaledDecodeJob,
+    decode_tiles_scaled_into, release_tile_batch_workspaces, retained_tile_batch_workspace_bytes,
+    TileBatchError, TileBatchOptions, TileDecodeJob, TileDecodeOutput, TileRegionDecodeJob,
+    TileRegionScaledDecodeJob, TileScaledDecodeJob,
 };
 
 pub use decode::{

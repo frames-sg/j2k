@@ -3,10 +3,11 @@
 use std::{num::NonZeroUsize, sync::Arc};
 
 use j2k::{
-    prepare_batch, BatchDecodeOptions, BatchLayout, CpuBatchDecoder, CpuBatchSamples,
-    DecodeRequest, Downscale, EncodedImage, PreparationDepth, Rect,
+    decode_tiles_into, prepare_batch, BatchDecodeOptions, BatchLayout, CpuBatchDecoder,
+    CpuBatchSamples, DecodeRequest, Downscale, EncodedImage, PixelFormat, PreparationDepth, Rect,
+    TileBatchOptions, TileDecodeJob,
 };
-use j2k_native::{encode, EncodeOptions};
+use j2k_native::{encode, encode_htj2k, EncodeOptions};
 
 use super::fixtures::{
     classic_gray8_fixture, classic_gray8_fixture_with_tile_size, htj2k_gray8_fixture,
@@ -358,4 +359,115 @@ fn cpu_session_retained_workspace_stabilizes_during_thousand_batch_soak() {
         soaked.retained_prepared_plan_classic_workspace_bytes(),
         warmed.retained_prepared_plan_classic_workspace_bytes()
     );
+}
+
+/// Distinct 32x32 RGB HTJ2K tiles with two decomposition levels.
+fn htj2k_rgb8_tiles(count: u8) -> Vec<Vec<u8>> {
+    (0..count)
+        .map(|tile| {
+            let pixels = (0..32_u32 * 32 * 3)
+                .map(|index| {
+                    u8::try_from((index * 7 + u32::from(tile) * 29) & 0xff).expect("masked")
+                })
+                .collect::<Vec<_>>();
+            encode_htj2k(
+                &pixels,
+                32,
+                32,
+                3,
+                8,
+                false,
+                &EncodeOptions {
+                    reversible: true,
+                    num_decomposition_levels: 2,
+                    ..EncodeOptions::default()
+                },
+            )
+            .expect("encode RGB8 HTJ2K tile")
+        })
+        .collect()
+}
+
+/// Zeroed 32x32 RGB8 output buffers, one per tile.
+fn rgb8_outputs(count: usize) -> Vec<Vec<u8>> {
+    (0..count)
+        .map(|_| std::iter::repeat_n(0_u8, 32 * 32 * 3).collect())
+        .collect()
+}
+
+fn rgb8_jobs<'i, 'o>(
+    inputs: &'i [Vec<u8>],
+    outputs: &'o mut [Vec<u8>],
+) -> Vec<TileDecodeJob<'i, 'o>> {
+    inputs
+        .iter()
+        .zip(outputs.iter_mut())
+        .map(|(input, out)| TileDecodeJob {
+            input,
+            out,
+            stride: 32 * 3,
+        })
+        .collect()
+}
+
+#[test]
+fn cpu_session_decodes_tiles_into_caller_buffers_and_reuses_workspaces_across_calls() {
+    let workers = NonZeroUsize::new(2);
+    let inputs = htj2k_rgb8_tiles(4);
+    let mut expected = rgb8_outputs(inputs.len());
+    decode_tiles_into(
+        &mut rgb8_jobs(&inputs, &mut expected),
+        PixelFormat::Rgb8,
+        TileBatchOptions { workers },
+    )
+    .expect("one-shot reference decode");
+    let mut session = CpuBatchDecoder::new(BatchDecodeOptions {
+        workers,
+        ..BatchDecodeOptions::default()
+    });
+
+    for call in 0..2 {
+        let mut outputs = rgb8_outputs(inputs.len());
+        let outcomes = session
+            .decode_tiles_into(&mut rgb8_jobs(&inputs, &mut outputs), PixelFormat::Rgb8)
+            .unwrap_or_else(|error| panic!("session call {call}: {error}"));
+        assert_eq!(outcomes.len(), inputs.len());
+        assert_eq!(outputs, expected, "session call {call}");
+    }
+
+    // Two retained workers decode two tiles each per call; every decode after
+    // a worker's first reuses that worker's component owners.
+    let stats = session.workspace_stats();
+    assert_eq!(stats.decode_calls(), 8);
+    assert_eq!(stats.component_owner_reuses(), 6);
+    assert_eq!(stats.idwt_owner_reuses(), 6);
+}
+
+#[test]
+fn cpu_session_decode_tiles_into_reports_tile_error_and_stays_reusable() {
+    let mut session = CpuBatchDecoder::new(BatchDecodeOptions {
+        workers: NonZeroUsize::new(1),
+        ..BatchDecodeOptions::default()
+    });
+    let mut inputs = htj2k_rgb8_tiles(3);
+    inputs[1].truncate(16);
+    let mut outputs = rgb8_outputs(inputs.len());
+    let error = session
+        .decode_tiles_into(&mut rgb8_jobs(&inputs, &mut outputs), PixelFormat::Rgb8)
+        .expect_err("truncated tile must fail");
+    assert_eq!(error.tile_error().map(|tile| tile.index), Some(1));
+
+    let valid = htj2k_rgb8_tiles(3);
+    let mut expected = rgb8_outputs(valid.len());
+    decode_tiles_into(
+        &mut rgb8_jobs(&valid, &mut expected),
+        PixelFormat::Rgb8,
+        TileBatchOptions::default(),
+    )
+    .expect("one-shot reference decode");
+    let mut recovered = rgb8_outputs(valid.len());
+    session
+        .decode_tiles_into(&mut rgb8_jobs(&valid, &mut recovered), PixelFormat::Rgb8)
+        .expect("session reuse after a tile error");
+    assert_eq!(recovered, expected);
 }

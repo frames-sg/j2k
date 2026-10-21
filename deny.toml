@@ -19,6 +19,16 @@ ignore     = [
     # - https://rustsec.org/advisories/RUSTSEC-2025-0141.html
     # - https://github.com/tracel-ai/burn/tree/v0.21.0/crates/burn-core
     "RUSTSEC-2025-0141",
+    # Transitive via serde_yaml_ng 0.10, used only by the unpublished xtask to
+    # parse checked-in GitHub Actions workflows in tests. RUSTSEC-2024-0449 is
+    # an unmaintained advisory, not a known vulnerability, and has no safe
+    # upgrade. Replacing the YAML parser solely for these tests is currently
+    # disproportionate; re-evaluate with the parser dependency.
+    # Review-by: 2027-01-31.
+    # Sources:
+    # - https://rustsec.org/advisories/RUSTSEC-2024-0449.html
+    # - https://github.com/acatton/serde-yaml-ng/tree/0.10.0
+    "RUSTSEC-2024-0449",
 ]
 
 [licenses]

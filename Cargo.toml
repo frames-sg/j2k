@@ -124,7 +124,7 @@ serde_yaml_ng = "0.10"
 sha2 = "0.10.9"
 syn = "2.0.117"
 toml = "1.1.2"
-zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib"] }
+zip = { version = "9.0.0", default-features = false, features = ["deflate-flate2-zlib"] }
 burn-core = { version = "0.21.0", default-features = false, features = ["dataset", "std"] }
 burn-autodiff = { version = "0.21.0", default-features = false, features = ["std"] }
 burn-flex = { version = "0.21.0", default-features = false, features = ["std"] }

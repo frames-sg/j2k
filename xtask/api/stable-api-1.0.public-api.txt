@@ -158,6 +158,7 @@ pub const fn j2k::J2kScratchPool::new() -> Self
 pub const fn j2k::J2kSrgb8Image::dimensions(&self) -> (u32, u32)
 pub const fn j2k::J2kSrgb8Image::layout(&self) -> j2k::J2kSrgb8Layout
 pub const fn j2k::J2kToHtj2kOptions::new(j2k_core::passthrough::CompressedPayloadKind, j2k::J2kProgressionOrder, j2k::J2kEncodeValidation) -> Self
+pub const fn j2k::J2kToHtj2kOptions::with_coefficient_only(self) -> Self
 pub const fn j2k::PreparedBatch::options(&self) -> j2k::BatchDecodeOptions
 pub const fn j2k::PreparedBatchGroup::options(&self) -> j2k::BatchDecodeOptions
 pub enum j2k::CpuDecodeParallelism
@@ -199,6 +200,7 @@ pub fn j2k::CpuBatchDecoder::decode_prepared(&mut self, &j2k::PreparedBatch) -> 
 pub fn j2k::CpuBatchDecoder::decode_prepared(&mut self, &j2k::PreparedBatch) -> core::result::Result<j2k::CpuBatchDecodeResult, j2k_core::batch::BatchInfrastructureError>
 pub fn j2k::CpuBatchDecoder::decode_prepared_images(&mut self, alloc::vec::Vec<j2k::PreparedImage>) -> core::result::Result<Self::Output, Self::Error>
 pub fn j2k::CpuBatchDecoder::decode_prepared_images(&mut self, alloc::vec::Vec<j2k::PreparedImage>) -> core::result::Result<j2k::CpuBatchDecodeResult, j2k_core::batch::BatchInfrastructureError>
+pub fn j2k::CpuBatchDecoder::decode_tiles_into(&mut self, &mut [j2k::TileDecodeJob<'_, '_>], j2k_core::pixel::PixelFormat) -> core::result::Result<alloc::vec::Vec<j2k_core::types::DecodeOutcome<j2k::J2kDecodeWarning>>, j2k::TileBatchError>
 pub fn j2k::CpuBatchDecoder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn j2k::CpuBatchDecoder::new(j2k::BatchDecodeOptions) -> Self
 pub fn j2k::CpuBatchDecoder::options(&self) -> j2k::BatchDecodeOptions
@@ -374,6 +376,8 @@ pub fn j2k::j2k_lossless_decomposition_levels_for_progression(j2k::J2kLosslessSa
 pub fn j2k::prepare_batch(alloc::vec::Vec<j2k::EncodedImage>, j2k::BatchDecodeOptions) -> core::result::Result<j2k::PreparedBatch, j2k_core::batch::BatchInfrastructureError>
 pub fn j2k::prepare_batch_from_images(alloc::vec::Vec<j2k::PreparedImage>, j2k::BatchDecodeOptions) -> core::result::Result<j2k::PreparedBatch, j2k_core::batch::BatchInfrastructureError>
 pub fn j2k::recode_j2k_to_htj2k_lossless(&[u8], j2k::J2kToHtj2kOptions) -> core::result::Result<j2k::ReencodedHtj2k, j2k::J2kError>
+pub fn j2k::release_tile_batch_workspaces()
+pub fn j2k::retained_tile_batch_workspace_bytes() -> usize
 pub fn j2k::wrap_j2k_codestream(&[u8], j2k::J2kFileWrapOptions<'_>) -> core::result::Result<alloc::vec::Vec<u8>, j2k::J2kError>
 pub j2k::BackendErrorKind::Buffer
 pub j2k::BackendErrorKind::InternalInvariant
@@ -683,6 +687,7 @@ pub j2k::J2kToHtj2kMode::CodestreamPreserving
 pub j2k::J2kToHtj2kMode::CoefficientPreserving
 pub j2k::J2kToHtj2kMode::Passthrough
 pub j2k::J2kToHtj2kMode::PixelPreserving
+pub j2k::J2kToHtj2kOptions::coefficient_only: bool
 pub j2k::J2kToHtj2kOptions::output_payload_kind: j2k_core::passthrough::CompressedPayloadKind
 pub j2k::J2kToHtj2kOptions::progression: j2k::J2kProgressionOrder
 pub j2k::J2kToHtj2kOptions::validation: j2k::J2kEncodeValidation
@@ -3989,6 +3994,7 @@ pub j2k_native::DecodingError::CodeBlockDecodeFailure
 pub j2k_native::DecodingError::CodeBlockDecodeFailureWithContext(&'static str)
 pub j2k_native::DecodingError::DirectPlanUnsupported(j2k_native::DirectPlanUnsupportedReason)
 pub j2k_native::DecodingError::HostAllocationFailed
+pub j2k_native::DecodingError::IncompletePlaneStore
 pub j2k_native::DecodingError::InvalidBitplaneCount
 pub j2k_native::DecodingError::InvalidPrecinct
 pub j2k_native::DecodingError::InvalidProgressionIterator
@@ -4989,6 +4995,7 @@ impl core::fmt::Debug for j2k_ml::SubmittedCudaBurnBatch
 impl core::fmt::Debug for j2k_ml::SubmittedMetalBurnBatch
 impl j2k_ml::BurnBatchGroupError
 impl j2k_ml::CudaBurnDecoder
+impl j2k_ml::CudaDirectBurnDecoder
 impl j2k_ml::MetalBurnDecoder
 impl j2k_ml::SubmittedCudaBurnBatch
 impl j2k_ml::SubmittedMetalBurnBatch
@@ -5000,6 +5007,8 @@ pub const fn j2k_ml::CpuBurnDecoder<B>::codec(&self) -> &j2k::owned_batch::cpu::
 pub const fn j2k_ml::CpuBurnDecoder<B>::device(&self) -> &<B as burn_backend::backend::base::BackendTypes>::Device
 pub const fn j2k_ml::CudaBurnDecoder::codec(&self) -> &j2k_cuda::batch::decoder::CudaBatchDecoder
 pub const fn j2k_ml::CudaBurnDecoder::device(&self) -> &cubecl_cuda::device::CudaDevice
+pub const fn j2k_ml::CudaDirectBurnDecoder::codec(&self) -> &j2k_cuda::batch::decoder::CudaBatchDecoder
+pub const fn j2k_ml::CudaDirectBurnDecoder::device(&self) -> &cubecl_cuda::device::CudaDevice
 pub const fn j2k_ml::MetalBurnDecoder::codec(&self) -> &j2k_metal::batch_decoder::decoder::MetalBatchDecoder
 pub const fn j2k_ml::MetalBurnDecoder::device(&self) -> &cubecl_wgpu::device::WgpuDevice
 pub enum j2k_ml::BurnBatchTensor<B: burn_backend::backend::base::Backend>
@@ -5021,6 +5030,12 @@ pub fn j2k_ml::CudaBurnDecoder::prepare(&self, alloc::vec::Vec<j2k::owned_batch:
 pub fn j2k_ml::CudaBurnDecoder::prepare_prepared_images(&self, alloc::vec::Vec<j2k::owned_batch::prepared::PreparedImage>) -> core::result::Result<j2k::owned_batch::prepared::PreparedBatch, j2k_ml::BurnDecodeError>
 pub fn j2k_ml::CudaBurnDecoder::submit(&mut self, alloc::vec::Vec<j2k::owned_batch::contracts::EncodedImage>) -> core::result::Result<j2k_ml::SubmittedCudaBurnBatch, j2k_ml::BurnDecodeError>
 pub fn j2k_ml::CudaBurnDecoder::submit_prepared(&mut self, &j2k::owned_batch::prepared::PreparedBatch) -> core::result::Result<j2k_ml::SubmittedCudaBurnBatch, j2k_ml::BurnDecodeError>
+pub fn j2k_ml::CudaDirectBurnDecoder::decode(&mut self, alloc::vec::Vec<j2k::owned_batch::contracts::EncodedImage>) -> core::result::Result<j2k_ml::BurnBatchDecode<burn_cuda::Cuda<f32, i32>>, j2k_ml::BurnDecodeError>
+pub fn j2k_ml::CudaDirectBurnDecoder::decode_prepared(&mut self, &j2k::owned_batch::prepared::PreparedBatch) -> core::result::Result<j2k_ml::BurnBatchDecode<burn_cuda::Cuda<f32, i32>>, j2k_ml::BurnDecodeError>
+pub fn j2k_ml::CudaDirectBurnDecoder::decode_prepared_images(&mut self, alloc::vec::Vec<j2k::owned_batch::prepared::PreparedImage>) -> core::result::Result<j2k_ml::BurnBatchDecode<burn_cuda::Cuda<f32, i32>>, j2k_ml::BurnDecodeError>
+pub fn j2k_ml::CudaDirectBurnDecoder::new(cubecl_cuda::device::CudaDevice, j2k::owned_batch::contracts::BatchDecodeOptions) -> Self
+pub fn j2k_ml::CudaDirectBurnDecoder::prepare(&self, alloc::vec::Vec<j2k::owned_batch::contracts::EncodedImage>) -> core::result::Result<j2k::owned_batch::prepared::PreparedBatch, j2k_ml::BurnDecodeError>
+pub fn j2k_ml::CudaDirectBurnDecoder::prepare_prepared_images(&self, alloc::vec::Vec<j2k::owned_batch::prepared::PreparedImage>) -> core::result::Result<j2k::owned_batch::prepared::PreparedBatch, j2k_ml::BurnDecodeError>
 pub fn j2k_ml::MetalBurnDecoder::decode(&mut self, alloc::vec::Vec<j2k::owned_batch::contracts::EncodedImage>) -> core::result::Result<j2k_ml::BurnBatchDecode<burn_wgpu::Wgpu>, j2k_ml::BurnDecodeError>
 pub fn j2k_ml::MetalBurnDecoder::decode_prepared(&mut self, &j2k::owned_batch::prepared::PreparedBatch) -> core::result::Result<j2k_ml::BurnBatchDecode<burn_wgpu::Wgpu>, j2k_ml::BurnDecodeError>
 pub fn j2k_ml::MetalBurnDecoder::decode_prepared_images(&mut self, alloc::vec::Vec<j2k::owned_batch::prepared::PreparedImage>) -> core::result::Result<j2k_ml::BurnBatchDecode<burn_wgpu::Wgpu>, j2k_ml::BurnDecodeError>
@@ -5069,11 +5084,13 @@ pub struct j2k_ml::BurnBatchGroup<B: burn_backend::backend::base::Backend>
 pub struct j2k_ml::BurnBatchGroupError
 pub struct j2k_ml::CpuBurnDecoder<B: burn_backend::backend::base::Backend>
 pub struct j2k_ml::CudaBurnDecoder
+pub struct j2k_ml::CudaDirectBurnDecoder
 pub struct j2k_ml::MetalBurnDecoder
 pub struct j2k_ml::SubmittedCudaBurnBatch
 pub struct j2k_ml::SubmittedMetalBurnBatch
 pub struct j2k_ml::cpu::CpuBurnDecoder<B: burn_backend::backend::base::Backend>
 pub struct j2k_ml::cuda::CudaBurnDecoder
+pub struct j2k_ml::cuda::CudaDirectBurnDecoder
 pub struct j2k_ml::cuda::SubmittedCudaBurnBatch
 pub struct j2k_ml::metal::MetalBurnDecoder
 pub struct j2k_ml::metal::SubmittedMetalBurnBatch

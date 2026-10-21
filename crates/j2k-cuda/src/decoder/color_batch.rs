@@ -6,6 +6,8 @@ use core::cell::Cell;
 #[cfg(feature = "cuda-runtime")]
 mod batch_execution;
 #[cfg(feature = "cuda-runtime")]
+mod chunking;
+#[cfg(feature = "cuda-runtime")]
 mod finish;
 #[cfg(feature = "cuda-runtime")]
 mod host_owners;
@@ -20,6 +22,8 @@ mod store;
 pub(in crate::decoder) use self::batch_execution::{
     decode_color_cuda_resident_batch_surfaces_with_profile, finalize_color_batch_decode_report,
 };
+#[cfg(feature = "cuda-runtime")]
+pub(in crate::decoder) use self::chunking::{offset_color_batch_error, COLOR_BATCH_CHUNK_IMAGES};
 #[cfg(feature = "cuda-runtime")]
 use self::finish::{
     finish_color_cuda_resident_surface_with_component_work, FinishColorCudaResidentSurfaceRequest,

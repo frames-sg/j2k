@@ -47,6 +47,24 @@ pub(crate) fn auditable_rust_sources(
     Ok(sources.into_values().collect())
 }
 
+/// Symlinks are skipped, so only a link to a regular non-Rust file, such as a
+/// crate's license, is allowed. A link to a directory or a Rust file, or one
+/// that does not resolve, could hide sources from the audit.
+fn ensure_symlink_cannot_hide_rust_sources(path: &Path) -> Result<(), String> {
+    let unsupported = || {
+        format!(
+            "source-audit scope contains unsupported symlink {}",
+            path.display()
+        )
+    };
+    let target = fs::canonicalize(path).map_err(|_| unsupported())?;
+    let is_rust = |path: &Path| path.extension() == Some(OsStr::new("rs"));
+    if !target.is_file() || is_rust(path) || is_rust(&target) {
+        return Err(unsupported());
+    }
+    Ok(())
+}
+
 fn collect_rust_sources(
     repository_root: &Path,
     directory: &Path,
@@ -76,10 +94,8 @@ fn collect_rust_sources(
         })?;
         let path = entry.path();
         if file_type.is_symlink() {
-            return Err(format!(
-                "source-audit scope contains unsupported symlink {}",
-                path.display()
-            ));
+            ensure_symlink_cannot_hide_rust_sources(&path)?;
+            continue;
         }
         if file_type.is_dir() {
             if entry.file_name().to_str().is_some_and(|name| {

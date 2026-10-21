@@ -226,6 +226,12 @@ pub(super) fn filter_2d(
     interleave_samples(input, decomposition, coefficients, storage)?;
 
     if decomposition.rect.width() > 0 && decomposition.rect.height() > 0 {
+        // The buffer may hold more samples than this level; filter only its own.
+        let level_len = checked_decode_usize_product2(
+            decomposition.rect.width() as usize,
+            decomposition.rect.height() as usize,
+        )?;
+        let coefficients = &mut coefficients[..level_len];
         filter_horizontal_codestream(coefficients, decomposition.rect, transform);
         filter_vertical_codestream(coefficients, decomposition.rect, transform);
     }

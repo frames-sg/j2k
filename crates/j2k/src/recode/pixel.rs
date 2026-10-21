@@ -24,6 +24,11 @@ pub(super) fn recode(
     options: J2kToHtj2kOptions,
     output_transfer_syntax: CompressedTransferSyntax,
 ) -> Result<ReencodedHtj2k, J2kError> {
+    if options.coefficient_only {
+        return Err(j2k_core::Unsupported {
+            what: "coefficient-only J2K to HTJ2K recode: source profile requires pixel-domain re-encoding",
+        }.into());
+    }
     let encode_options = encode_options(parsed, options);
     let resolve_to_reference_grid = parsed.file_metadata.as_ref().is_some_and(|metadata| {
         metadata.palette.is_some() || !metadata.component_mappings.is_empty()

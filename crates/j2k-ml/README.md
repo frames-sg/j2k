@@ -23,7 +23,18 @@ receives `&self`, preserves label order through each codec group's
 `source_indices`, then casts and normalizes with ordinary Burn tensor
 operations.
 
-Explicit accelerator-decode-and-upload examples are:
+CUDA can decode directly into Burn-owned device storage:
+
+```bash
+cargo run -p j2k-ml --example cuda_direct --features cuda
+```
+
+`CudaDirectBurnDecoder` allocates the destination through Burn/CubeCL, decodes
+into that allocation, validates synchronous codec completion, and then returns
+the same allocation as an ordinary fused `burn_cuda::Cuda` tensor. Decoded
+pixels do not pass through host memory or an intermediate device copy.
+
+Explicit staged accelerator-decode-and-upload examples are:
 
 ```bash
 cargo run -p j2k-ml --example cuda_upload --features cuda
@@ -32,7 +43,7 @@ cargo run -p j2k-ml --example metal_upload --features metal
 
 `CudaUploadBurnDecoder` and `MetalUploadBurnDecoder` run codec decoding on the
 GPU, copy the decoded pixels to host memory, and then upload them with Burn's
-ordinary tensor API. Pixels are not handed to Burn directly in GPU memory.
+ordinary tensor API.
 
 ## Who owns batching?
 
@@ -40,7 +51,7 @@ ordinary tensor API. Pixels are not handed to Burn directly in GPU memory.
 | --- | --- |
 | Dataset reads, labels, sampling, prefetch, resizing, augmentation, and training batches | The Burn application and its `Dataset`/`DataLoader`/`Batcher` |
 | Parsing, compatible-image grouping, preparation reuse, and JPEG 2000/HTJ2K execution | The `j2k` codec crates |
-| Host staging and ordinary Burn tensor materialization/upload | `j2k-ml` |
+| Direct CUDA destinations, host staging, and ordinary Burn tensor materialization/upload | `j2k-ml` |
 | Float conversion and normalization | Ordinary Burn tensor operations in the application |
 
 One application batch can yield multiple codec groups when images have
@@ -53,7 +64,8 @@ its `source_indices`.
 | Feature | Codec execution | Burn destination |
 | --- | --- | --- |
 | `cpu` | Persistent CPU batch decoder | Any compatible Burn backend; placing the `TensorData` on a GPU backend performs an upload |
-| `cuda` | Persistent CUDA decoder, then decoded-pixel readback | Ordinary Burn CUDA upload |
+| `cuda` direct | Persistent CUDA decoder | Synchronous decode into Burn-owned CUDA storage |
+| `cuda` staged | Persistent CUDA decoder, then decoded-pixel readback | Ordinary Burn CUDA upload |
 | `metal` | Persistent Metal decoder, then decoded-pixel readback | Ordinary Burn wgpu/Metal upload |
 
 The adapter returns ordinary rank-4 NCHW or NHWC `U8`, `U16`, or `I16` Burn

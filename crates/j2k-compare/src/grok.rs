@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(have_grok)]
-use std::{ffi::c_void, ptr, sync::Once};
+use std::{ffi::c_void, ptr, sync::OnceLock};
 
 use crate::ExternalDecodeRequest;
 
@@ -20,7 +20,30 @@ pub fn library_path() -> &'static str {
 crate::external_decode_wrappers!(decode);
 
 #[cfg(have_grok)]
-static GROK_INIT: Once = Once::new();
+static GROK_INIT: OnceLock<u32> = OnceLock::new();
+
+/// Configure Grok's process-wide pool before the first decode.
+///
+/// Other callers retain the one-thread default. A running pool cannot be
+/// resized; benchmark configurations must run in separate processes.
+pub fn initialize_with_threads(threads: std::num::NonZeroU32) -> Result<(), String> {
+    #[cfg(have_grok)]
+    {
+        let requested = threads.get();
+        let actual = *GROK_INIT.get_or_init(|| initialize_runtime(requested));
+        if actual != requested {
+            return Err(format!(
+                "grok: pool already initialized with {actual} threads, requested {requested}"
+            ));
+        }
+        Ok(())
+    }
+    #[cfg(not(have_grok))]
+    {
+        let _ = threads;
+        Err("grok: local library not available".to_string())
+    }
+}
 
 #[cfg(have_grok)]
 struct GrokOutput(*mut u8);
@@ -43,14 +66,18 @@ impl Drop for GrokOutput {
 #[cfg(have_grok)]
 #[expect(
     unsafe_code,
-    reason = "Rust Once serializes the Grok process-global runtime initializer"
+    reason = "Rust OnceLock serializes the Grok process-global runtime initializer"
 )]
+fn initialize_runtime(threads: u32) -> u32 {
+    // SAFETY: called only by GROK_INIT's initializer, before any shim decode;
+    // every caller supplies a positive thread count.
+    unsafe { j2k_grok_initialize(threads) };
+    threads
+}
+
+#[cfg(have_grok)]
 fn initialize() {
-    GROK_INIT.call_once(|| {
-        // SAFETY: `Once` guarantees the process-global Grok initializer runs once,
-        // before any shim decode is allowed to proceed.
-        unsafe { j2k_grok_initialize() };
-    });
+    GROK_INIT.get_or_init(|| initialize_runtime(1));
 }
 
 #[cfg_attr(
@@ -144,7 +171,7 @@ fn checked_region_bounds(roi: j2k_core::Rect) -> Result<[u32; 4], String> {
     reason = "these declarations are the optional Grok C shim's complete ABI"
 )]
 unsafe extern "C" {
-    fn j2k_grok_initialize();
+    fn j2k_grok_initialize(threads: u32);
     fn j2k_grok_decode_u8(
         bytes: *const u8,
         len: usize,
@@ -205,5 +232,8 @@ mod tests {
                 scope.spawn(super::initialize);
             }
         });
+        super::initialize_with_threads(std::num::NonZeroU32::new(1).unwrap())
+            .expect("same pool configuration");
+        assert!(super::initialize_with_threads(std::num::NonZeroU32::new(2).unwrap()).is_err());
     }
 }

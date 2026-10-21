@@ -26,8 +26,9 @@ use super::filter_common::{periodic_symmetric_extension_left, periodic_symmetric
 use super::horizontal::filter_row;
 use super::interleave::interleave_row;
 use super::model::{IDWTInput, IDWTTempOutput};
+use super::try_grow_level_buffer;
 use crate::math::{self, dispatch, f32x8, Level, Simd, SIMD_WIDTH};
-use crate::{checked_decode_usize_product2, try_resize_decode_elements, Result, ValidationError};
+use crate::{checked_decode_usize_product2, Result, ValidationError};
 use j2k_codec_math::dwt;
 
 /// Halo rows needed on each side of a band: one per vertical lifting step.
@@ -271,7 +272,7 @@ pub(super) fn filter_2d_banded_from_bands(
     let width = rect.width() as usize;
     let height = rect.height() as usize;
     let required_len = checked_decode_usize_product2(width, height)?;
-    try_resize_decode_elements(target, required_len, 0.0)?;
+    try_grow_level_buffer(target, required_len)?;
 
     // See Figure F.8 and `interleave_samples`.
     let (u0, u1, v0, v1) = (rect.x0, rect.x1, rect.y0, rect.y1);
@@ -314,7 +315,7 @@ pub(super) fn filter_2d_banded_from_bands(
     let target = &mut target[..required_len];
     let Some(parallel_layout) = parallel_strip_layout(width, height, parallel)? else {
         let scratch_len = horizontal_scratch_elements(width)?;
-        try_resize_decode_elements(band_scratch, scratch_len, 0.0)?;
+        try_grow_level_buffer(band_scratch, scratch_len)?;
         dispatch!(Level::new(), simd => stream_level(
             simd,
             level,
@@ -332,7 +333,7 @@ pub(super) fn filter_2d_banded_from_bands(
         let scratch_len = per_worker
             .checked_mul(parallel_layout.concurrent_strips)
             .ok_or(ValidationError::ImageTooLarge)?;
-        try_resize_decode_elements(band_scratch, scratch_len, 0.0)?;
+        try_grow_level_buffer(band_scratch, scratch_len)?;
         let wave_len = parallel_layout
             .strip_len
             .checked_mul(parallel_layout.concurrent_strips)
@@ -372,6 +373,15 @@ fn run_strips<S: Simd>(
             .for_each(|(index, (output, worker_scratch))| {
                 let strip = wave * strips_per_wave + index;
                 let first_row = strip * strip_len / level.width;
+                // Rayon invokes this closure outside the caller's target-feature
+                // scope. Re-enter it so AVX2 operations inline into the strip,
+                // instead of making an out-of-line call for each vector operation.
+                #[cfg(feature = "simd")]
+                simd.vectorize(
+                    #[inline(always)]
+                    || stream_strip(simd, level, first_row, output, worker_scratch),
+                );
+                #[cfg(not(feature = "simd"))]
                 stream_strip(simd, level, first_row, output, worker_scratch);
             });
     }

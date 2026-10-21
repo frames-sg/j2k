@@ -82,6 +82,7 @@ mod imp {
 mod tests {
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
+    #[cfg_attr(miri, ignore = "Miri does not emulate the host physical-memory query")]
     fn supported_desktop_hosts_report_physical_memory() {
         let bytes = super::host_physical_memory_bytes().expect("host physical memory");
         // Any host able to build the workspace has at least 256 MiB.

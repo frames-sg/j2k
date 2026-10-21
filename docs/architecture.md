@@ -115,7 +115,7 @@ j2k-cuda-runtime -> j2k-core
 j2k-cuda-j2k-engine -> j2k-codec-math, j2k-core, j2k-cuda-runtime, j2k-types
 j2k-cuda-jpeg-engine -> j2k-codec-math, j2k-core, j2k-cuda-runtime
 j2k-cuda-transcode-engine -> j2k-core, j2k-cuda-runtime
-j2k-ml -> j2k, j2k-cuda, j2k-metal, j2k-metal-support
+j2k-ml -> j2k, j2k-cuda, j2k-cuda-runtime, j2k-metal, j2k-metal-support
 j2k-python -> j2k, j2k-cuda, j2k-cuda-runtime, j2k-jpeg, j2k-native
 j2k-mpsgraph -> j2k, j2k-core, j2k-metal, j2k-metal-support, j2k-mpsgraph-support
 j2k-transcode-metal -> j2k-codec-math, j2k-core, j2k-metal-support, j2k-transcode, j2k-types
@@ -186,6 +186,11 @@ Oxide projects; the Rust host code drives them through the Driver API.
 The Burn CUDA upload adapter waits for the decoded GPU output, copies the
 pixels to host memory, and creates the Burn tensor with Burn's public upload
 API.
+The direct Burn CUDA adapter instead allocates Burn-owned CUDA storage,
+checks that it belongs to the codec's CUDA context, decodes into it, waits
+for codec completion, and registers that same allocation as the Burn tensor.
+It uses `j2k-cuda-runtime` for the checked external-destination view and for
+the completion guard that protects the allocation during error unwinding.
 
 Metal adapters use `j2k-metal-support` for device, queue, shader-library,
 pipeline loading, checked buffer access, and route-label helpers. All raw

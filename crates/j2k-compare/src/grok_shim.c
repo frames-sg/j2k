@@ -7,9 +7,9 @@
 #define GROK_OUTPUT_CAP_BYTES ((size_t)512 * 1024 * 1024)
 
 #if GRK_VERSION_MAJOR == 10
-void j2k_grok_initialize(void) { (void)grk_initialize(NULL, 1); }
+void j2k_grok_initialize(uint32_t threads) { (void)grk_initialize(NULL, threads); }
 #elif GRK_VERSION_MAJOR == 20
-void j2k_grok_initialize(void) { grk_initialize(NULL, 1, NULL); }
+void j2k_grok_initialize(uint32_t threads) { grk_initialize(NULL, threads, NULL); }
 #else
 #error "j2k Grok shim supports Grok 10.x and 20.x"
 #endif

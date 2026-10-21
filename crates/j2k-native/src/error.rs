@@ -285,6 +285,9 @@ pub enum DecodingError {
     OutputBufferTooSmall,
     /// A bounded host decode workspace could not be allocated.
     HostAllocationFailed,
+    /// Component planes reused without zeroing were not written in full, so
+    /// samples from a previous image would have reached the output.
+    IncompletePlaneStore,
 }
 
 /// Errors related to color space and component handling.
@@ -497,6 +500,12 @@ impl fmt::Display for DecodingError {
             Self::UnexpectedEof => write!(f, "unexpected end of data"),
             Self::OutputBufferTooSmall => write!(f, "output buffer is too small"),
             Self::HostAllocationFailed => write!(f, "host decode workspace allocation failed"),
+            Self::IncompletePlaneStore => {
+                write!(
+                    f,
+                    "component planes reused without zeroing were not fully written"
+                )
+            }
         }
     }
 }

@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! CUDA codec decode followed by an explicit staged Burn upload.
+//! CUDA codec decode into staged or Burn-owned device storage.
 
 mod batch;
+mod direct;
 
 pub use batch::{CudaBurnDecoder, SubmittedCudaBurnBatch};
+pub use direct::CudaDirectBurnDecoder;
 
 /// Explicit name for [`CudaBurnDecoder`]'s staged host-memory upload behavior.
 ///

@@ -46,7 +46,10 @@ fn enqueue_external_rgb_store(
     };
     let (ranges, queued) = result.map_err(cuda_error)?;
     Ok(StoredNativeColorBatch {
-        output: NativeColorBatchOutput::External(ranges),
+        output: NativeColorBatchOutput::External {
+            ranges,
+            execution: queued.execution(),
+        },
         queued: Some(queued),
     })
 }
@@ -72,7 +75,10 @@ fn enqueue_external_rgba_store(
     };
     let (ranges, queued) = result.map_err(cuda_error)?;
     Ok(StoredNativeColorBatch {
-        output: NativeColorBatchOutput::External(ranges),
+        output: NativeColorBatchOutput::External {
+            ranges,
+            execution: queued.execution(),
+        },
         queued: Some(queued),
     })
 }

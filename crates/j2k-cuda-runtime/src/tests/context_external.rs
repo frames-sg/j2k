@@ -160,3 +160,47 @@ fn external_cuda_view_rejects_foreign_context_and_never_owns_memory_when_require
     .expect_err("foreign context must fail");
     assert!(matches!(error, CudaError::InvalidArgument { .. }));
 }
+
+#[test]
+fn destination_sub_views_stay_inside_the_owned_allocation_when_required() {
+    if !cuda_runtime_gate() {
+        return;
+    }
+
+    let context = CudaContext::system_default().expect("CUDA context");
+    let mut allocation = context.allocate(64).expect("device allocation");
+    let ptr = allocation.device_ptr();
+    let mut destination = allocation
+        .destination_view_mut()
+        .expect("owned destination view");
+    assert!(destination.context().is_same_context(&context));
+    assert_eq!(destination.device_ptr(), ptr);
+    assert_eq!(destination.byte_len(), 64);
+
+    let tail = destination
+        .sub_view_mut(48, 16)
+        .expect("in-bounds tail view");
+    assert_eq!(tail.device_ptr(), ptr + 48);
+    assert_eq!(tail.byte_len(), 16);
+    assert!(matches!(
+        destination.sub_view_mut(48, 17),
+        Err(CudaError::OutputTooSmall {
+            required: 65,
+            have: 64
+        })
+    ));
+    assert!(matches!(
+        destination.sub_view_mut(64, 0),
+        Err(CudaError::InvalidArgument { .. })
+    ));
+    assert!(matches!(
+        destination.sub_view_mut(usize::MAX, 2),
+        Err(CudaError::LengthTooLarge { .. })
+    ));
+
+    let mut empty = context.allocate(0).expect("empty allocation");
+    assert!(matches!(
+        empty.destination_view_mut(),
+        Err(CudaError::InvalidArgument { .. })
+    ));
+}

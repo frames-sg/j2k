@@ -6,8 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::paths::production_path_for_test;
 use super::{
-    inventory_panic_macro_sites, mask_test_only_syntax, retain_test_only_syntax,
-    PanicMacroInventory,
+    inventory_panic_macro_sites, mask_test_only_syntax, production_rust_sources,
+    retain_test_only_syntax, PanicMacroInventory,
 };
 
 const INLINE_TEST_A: &str = include_str!("../../tests/fixtures/clone_audit/inline_test_a.rs");
@@ -203,6 +203,74 @@ fn source_audit_resolves_raw_identifier_modules_without_changing_paths() {
     assert_eq!(masked.text, "mod r#box;\n");
 
     fs::remove_dir_all(root).expect("remove raw-module fixture");
+}
+
+#[cfg(unix)]
+#[test]
+fn source_audit_ignores_non_rust_symlinks() {
+    use std::os::unix::fs::symlink;
+
+    let root = temp_dir("non-rust-symlink");
+    let crate_dir = root.join("crates/fixture");
+    let source_dir = crate_dir.join("src");
+    fs::create_dir_all(&source_dir).expect("create fixture source");
+    fs::write(source_dir.join("lib.rs"), "pub fn value() -> u8 { 7 }\n")
+        .expect("write fixture source");
+    fs::write(root.join("LICENSE-APACHE"), "fixture license\n").expect("write fixture license");
+    symlink("../../LICENSE-APACHE", crate_dir.join("LICENSE-APACHE"))
+        .expect("link fixture license");
+
+    let sources = production_rust_sources(&root, &[root.join("crates")])
+        .expect("non-Rust symlink must not affect source collection");
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0].relative, Path::new("crates/fixture/src/lib.rs"));
+
+    fs::remove_dir_all(root).expect("remove non-Rust symlink fixture");
+}
+
+#[cfg(unix)]
+#[test]
+fn source_audit_rejects_rust_symlinks() {
+    use std::os::unix::fs::symlink;
+
+    let root = temp_dir("rust-symlink");
+    let source_dir = root.join("crates/fixture/src");
+    fs::create_dir_all(&source_dir).expect("create fixture source");
+    fs::write(source_dir.join("lib.rs"), "pub fn value() -> u8 { 7 }\n")
+        .expect("write fixture source");
+    symlink("lib.rs", source_dir.join("linked.rs")).expect("link fixture source");
+
+    let error = production_rust_sources(&root, &[root.join("crates")])
+        .expect_err("Rust symlink must be rejected");
+    assert!(error.contains("unsupported symlink"), "{error}");
+    assert!(error.contains("linked.rs"), "{error}");
+
+    fs::remove_dir_all(root).expect("remove Rust symlink fixture");
+}
+
+#[cfg(unix)]
+#[test]
+fn source_audit_rejects_symlinks_that_could_hide_rust_sources() {
+    use std::os::unix::fs::symlink;
+
+    for (name, target) in [
+        ("linked_dir", "../src"),
+        ("linked_source", "lib.rs"),
+        ("dangling", "missing"),
+    ] {
+        let root = temp_dir(&format!("hidden-rust-{name}"));
+        let source_dir = root.join("crates/fixture/src");
+        fs::create_dir_all(&source_dir).expect("create fixture source");
+        fs::write(source_dir.join("lib.rs"), "pub fn value() -> u8 { 7 }\n")
+            .expect("write fixture source");
+        symlink(target, source_dir.join(name)).expect("link fixture path");
+
+        let error = production_rust_sources(&root, &[root.join("crates")])
+            .expect_err("a symlink that may hide Rust sources must be rejected");
+        assert!(error.contains(name), "{name}: {error}");
+
+        fs::remove_dir_all(root).expect("remove hidden-Rust symlink fixture");
+    }
 }
 
 fn longest_shared_nonblank_run(left: &str, right: &str) -> usize {

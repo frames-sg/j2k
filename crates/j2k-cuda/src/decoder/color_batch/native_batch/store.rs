@@ -57,7 +57,7 @@ pub(super) fn finish_and_store_native_color(
     let store_execution = match (&stored.output, stored.queued.as_ref()) {
         (_, Some(queued)) => queued.execution(),
         (NativeColorBatchOutput::Owned(output), None) => output.execution,
-        (NativeColorBatchOutput::External(_), None) => {
+        (NativeColorBatchOutput::External { .. }, None) => {
             return Err(Error::capability_rejected(
                 j2k_core::CapabilityRejection::geometry_mismatch(
                     "CUDA exact RGB external store lost its execution counters",

@@ -6,8 +6,9 @@ use super::super::build::Decomposition;
 use super::super::decode::DecompositionStorage;
 use super::super::rect::IntRect;
 use super::model::IDWTInput;
+use super::try_grow_level_buffer;
 use crate::math::{dispatch, f32x8, Level, Simd, SIMD_WIDTH};
-use crate::{checked_decode_usize_product2, try_resize_decode_elements, Result};
+use crate::{checked_decode_usize_product2, Result};
 
 /// The `2D_INTERLEAVE` procedure described in F.3.3.
 pub(super) fn interleave_samples(
@@ -20,7 +21,8 @@ pub(super) fn interleave_samples(
         decomposition.rect.width() as usize,
         decomposition.rect.height() as usize,
     )?;
-    try_resize_decode_elements(coefficients, required_len, 0.0)?;
+    try_grow_level_buffer(coefficients, required_len)?;
+    let coefficients = &mut coefficients[..required_len];
     let level = Level::new();
     dispatch!(level, simd => {
         interleave_samples_inner::<_>(simd, input, decomposition, coefficients, storage);

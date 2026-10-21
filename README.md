@@ -148,9 +148,11 @@ Rust callers can use `J2kDecoder::decode_wavelets` to obtain exact reversible
 The decoder skips entropy work for unrequested bands and omits inverse DWT.
 
 `j2k-ml` decodes batches of JPEG 2000 images into
-[Burn](https://burn.dev) tensors (`U8`, `U16`, or `I16`, NCHW or NHWC). Its
-CUDA and Metal modes decode on the GPU but copy the pixels through host memory
-before Burn uploads them. See [docs/j2k-ml.md](docs/j2k-ml.md).
+[Burn](https://burn.dev) tensors (`U8`, `U16`, or `I16`, NCHW or NHWC).
+`CudaDirectBurnDecoder` decodes directly into Burn-owned CUDA storage and
+waits for completion before returning the tensor. The staged CUDA and Metal
+adapters copy pixels through host memory before Burn uploads them.
+See [docs/j2k-ml.md](docs/j2k-ml.md).
 
 `j2k-mpsgraph` hands decoded batches to Apple's MPSGraph without leaving the
 GPU. See [docs/j2k-mpsgraph.md](docs/j2k-mpsgraph.md).
@@ -186,7 +188,7 @@ published as ITU-T T.803). The CPU decoder passes all 160 test cases for the
 profiles J2K supports (90 for classic JPEG 2000 and 70 for HTJ2K) on macOS,
 Linux, and Windows. The CUDA and Metal builds pass the same 160; in those runs
 81 cases use the GPU for some stages and 79 run on the CPU. These results
-are for release 0.11.2; details and the exact profiles are in
+are for release 0.12.0; details and the exact profiles are in
 [docs/t803-conformance.md](docs/t803-conformance.md).
 
 **Safety.** The public API is safe Rust and is built to take untrusted files:

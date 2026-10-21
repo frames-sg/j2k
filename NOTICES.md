@@ -1,13 +1,9 @@
 # Notices
 
-`j2k` includes an in-repository pure-Rust JPEG 2000 codec engine imported from
-[`dicom-toolkit-jpeg2000` 0.5.0](https://docs.rs/dicom-toolkit-jpeg2000/0.5.0/dicom_toolkit_jpeg2000/)
-and adapted for this workspace. The source project is
-[`dicom-toolkit-rs`](https://github.com/knopkem/dicom-toolkit-rs), and that
-codec is a maintained fork of the original `hayro-jpeg2000` project from the
-upstream [`Hayro`](https://github.com/LaurenzV/hayro) repository. The retained
-MIT license at `crates/j2k-native/LICENSE-MIT` identifies "The Hayro Authors"
-as the copyright holders.
+Portions of the native JPEG 2000 engine were originally imported from
+dicom-toolkit-jpeg2000 0.5.0, a Hayro-derived implementation, and have since
+been modified and extended for j2k. Applicable upstream copyright and license
+notices are retained.
 
 The following standards and implementations were also used for design,
 verification, generated tables, or small test/data assets as noted. This file

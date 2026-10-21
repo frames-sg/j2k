@@ -66,9 +66,31 @@ fn zstd_codec_roundtrips_payload() {
 }
 
 #[test]
+fn lzw_codec_decodes_tiff_early_change_payloads() {
+    // Varied bytes push the dictionary past 510 codes, where TIFF LZW widens
+    // its codes one entry earlier than standard LZW.
+    let source = (0_u32..64 * 1024)
+        .map(|index| {
+            u8::try_from((index.wrapping_mul(2_654_435_761) >> 24) & 0xff).expect("masked")
+        })
+        .collect::<Vec<_>>();
+    let encoded_bytes = Encoder::with_tiff_size_switch(BitOrder::Msb, 8)
+        .encode(&source)
+        .expect("TIFF lzw encode");
+
+    let mut pool = LzwPool::new();
+    let mut out = std::iter::repeat_n(0_u8, source.len()).collect::<Vec<_>>();
+    let written =
+        LzwCodec::decompress_into(&mut pool, &encoded_bytes, &mut out).expect("TIFF lzw decode");
+
+    assert_eq!(written, source.len());
+    assert_eq!(out, source);
+}
+
+#[test]
 fn lzw_codec_roundtrips_payload() {
     let source = sample_bytes();
-    let mut compressor = Encoder::new(BitOrder::Msb, 8);
+    let mut compressor = Encoder::with_tiff_size_switch(BitOrder::Msb, 8);
     let encoded_bytes = compressor.encode(&source).expect("lzw encode");
 
     let mut pool = LzwPool::new();
@@ -110,7 +132,7 @@ fn malformed_payloads_are_not_truncated_for_codec_error_classifier() {
 #[test]
 fn truncated_payloads_are_input_errors_for_codec_error_classifier() {
     let source = sample_bytes();
-    let mut lzw_encoder = Encoder::new(BitOrder::Msb, 8);
+    let mut lzw_encoder = Encoder::with_tiff_size_switch(BitOrder::Msb, 8);
     let mut lzw = lzw_encoder.encode(&source).expect("lzw encode");
     lzw.pop();
 
@@ -148,7 +170,7 @@ fn codecs_reject_undersized_output() {
     let deflate = zlib.finish().expect("finish zlib");
 
     let zstd = zstd::stream::encode_all(std::io::Cursor::new(&source), 1).expect("zstd encode");
-    let mut lzw_encoder = Encoder::new(BitOrder::Msb, 8);
+    let mut lzw_encoder = Encoder::with_tiff_size_switch(BitOrder::Msb, 8);
     let lzw = lzw_encoder.encode(&source).expect("lzw encode");
 
     let mut deflate_pool = DeflatePool::new();
@@ -231,7 +253,7 @@ fn zstd_codec_rejects_oversized_payload_without_full_scratch_allocation() {
 #[cfg_attr(miri, ignore = "large LZW stress case is too slow under Miri")]
 fn lzw_codec_rejects_oversized_payload_without_full_scratch_allocation() {
     let source = vec![0x33; 1 << 20];
-    let mut compressor = Encoder::new(BitOrder::Msb, 8);
+    let mut compressor = Encoder::with_tiff_size_switch(BitOrder::Msb, 8);
     let encoded_bytes = compressor.encode(&source).expect("lzw encode");
 
     let mut pool = LzwPool::new();

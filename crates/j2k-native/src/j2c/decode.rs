@@ -251,6 +251,7 @@ fn decode_parsed_tiles<'a>(
         &tiles[0],
         structural_workspace_bytes,
         reused_baseline.channel_capacity,
+        ht_decoder.is_some(),
     )?;
     let retained_decode_base_without_scratch = retained_decode_baseline
         .checked_sub(reused_baseline.scratch_capacity)
@@ -287,6 +288,8 @@ fn decode_parsed_tiles<'a>(
             retained_decode_base_without_scratch,
         )?;
     }
+
+    tile_ctx.ensure_unzeroed_planes_overwritten()?;
 
     // Note that this assumes that either all tiles have MCT or none of them.
     // In theory, only some could have it... But hopefully no such cursed
@@ -994,6 +997,11 @@ pub(crate) struct TileDecodeContext {
     pub(crate) output_region: Option<OutputRegion>,
     /// Whether irreversible samples are being decoded for an integer output.
     pub(crate) round_irreversible_output: bool,
+    /// Samples, over all components, that `store` must write because the
+    /// planes were reused without zeroing; zero when the planes were zeroed.
+    pub(crate) unzeroed_plane_samples: usize,
+    /// Component-plane samples `store` wrote during the current decode.
+    pub(crate) stored_plane_samples: usize,
     /// Debug counters for tests and ROI instrumentation.
     pub(crate) debug_counters: DecodeDebugCounters,
 }

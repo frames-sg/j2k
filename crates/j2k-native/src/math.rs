@@ -802,6 +802,28 @@ crate::move_only::assert_move_only!(SimdBuffer<8>);
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SimdBufferAllocationError;
 
+#[cfg(test)]
+std::thread_local! {
+    static RETAINED_ZEROED_SAMPLES: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_retained_zeroed_samples() {
+    RETAINED_ZEROED_SAMPLES.set(0);
+}
+
+/// Samples of retained (reset, not freshly allocated) buffers zeroed on this
+/// thread since the last reset.
+#[cfg(test)]
+pub(crate) fn retained_zeroed_samples() -> usize {
+    RETAINED_ZEROED_SAMPLES.get()
+}
+
+#[cfg(test)]
+fn note_retained_zeroed(samples: usize) {
+    RETAINED_ZEROED_SAMPLES.set(RETAINED_ZEROED_SAMPLES.get() + samples);
+}
+
 impl<const N: usize> SimdBuffer<N> {
     /// Create an empty buffer without allocating.
     pub(crate) const fn empty() -> Self {
@@ -847,6 +869,29 @@ impl<const N: usize> SimdBuffer<N> {
         }
         self.data.resize(padded_len, 0.0);
         self.data.fill(0.0);
+        #[cfg(test)]
+        note_retained_zeroed(padded_len);
+        self.original_len = original_len;
+        Ok(())
+    }
+
+    /// Reset the logical length for a decode that overwrites every sample in
+    /// `[0, original_len)`, retaining an existing allocation whenever it is
+    /// large enough. Those samples keep stale values until overwritten; only
+    /// newly grown samples and the SIMD padding tail are zeroed.
+    pub(crate) fn try_reset_for_overwrite(
+        &mut self,
+        original_len: usize,
+    ) -> core::result::Result<(), SimdBufferAllocationError> {
+        let padded_len = Self::padded_len(original_len).ok_or(SimdBufferAllocationError)?;
+        if padded_len > self.data.capacity() {
+            return Err(SimdBufferAllocationError);
+        }
+        // Growth and the tail together zero exactly [min(len, original_len), padded_len).
+        #[cfg(test)]
+        note_retained_zeroed(padded_len - self.data.len().min(original_len));
+        self.data.resize(padded_len, 0.0);
+        self.data[original_len..].fill(0.0);
         self.original_len = original_len;
         Ok(())
     }

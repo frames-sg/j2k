@@ -225,9 +225,9 @@ impl Surface {
 
     /// Download a sequence of surfaces into a tightly concatenated output buffer.
     ///
-    /// CUDA surfaces produced from one contiguous batch allocation are copied
-    /// with one device-to-host transfer. Other layouts fall back to downloading
-    /// each surface tightly in order.
+    /// Adjacent CUDA surfaces that share one device allocation are copied with
+    /// one device-to-host transfer per adjacent run. Other surfaces are
+    /// downloaded tightly one at a time, in order.
     pub fn download_batch_tight(surfaces: &[Self]) -> Result<Vec<u8>, Error> {
         let required = batch_tight_required_len(surfaces)?;
         if required == 0 {
@@ -235,16 +235,7 @@ impl Surface {
         }
 
         #[cfg(feature = "cuda-runtime")]
-        if let Some((buffer, offset)) = contiguous_cuda_batch_range(surfaces) {
-            let mut out = try_vec_with_capacity(required, "j2k CUDA contiguous batch download")?;
-            buffer
-                .copy_range_to_host_uninit(offset, &mut out.spare_capacity_mut()[..required])
-                .map_err(cuda_error)?;
-            // SAFETY: the CUDA copy above initialized exactly `required`
-            // bytes in this Vec's spare capacity and returned success.
-            unsafe {
-                out.set_len(required);
-            }
+        if let Some(out) = download_cuda_runs_uninit(surfaces, required)? {
             return Ok(out);
         }
 
@@ -255,9 +246,9 @@ impl Surface {
 
     /// Download a sequence of surfaces into a tightly concatenated output buffer.
     ///
-    /// CUDA surfaces produced from one contiguous batch allocation are copied
-    /// with one device-to-host transfer. Other layouts fall back to downloading
-    /// each surface tightly in order.
+    /// Adjacent CUDA surfaces that share one device allocation are copied with
+    /// one device-to-host transfer per adjacent run. Other surfaces are
+    /// downloaded tightly one at a time, in order.
     pub fn download_batch_tight_into(surfaces: &[Self], out: &mut [u8]) -> Result<(), Error> {
         let required = batch_tight_required_len(surfaces)?;
         if out.len() < required {
@@ -271,18 +262,23 @@ impl Surface {
             return Ok(());
         }
 
-        #[cfg(feature = "cuda-runtime")]
-        if let Some((buffer, offset)) = contiguous_cuda_batch_range(surfaces) {
-            return buffer
-                .copy_range_to_host(offset, &mut out[..required])
-                .map_err(cuda_error);
-        }
-
         let mut cursor = 0usize;
-        for surface in surfaces {
+        let mut remaining = surfaces;
+        while let Some(surface) = remaining.first() {
+            #[cfg(feature = "cuda-runtime")]
+            if let Some(run) = leading_cuda_download_run(remaining) {
+                let end = cursor + run.len;
+                run.buffer
+                    .copy_range_to_host(run.offset, &mut out[cursor..end])
+                    .map_err(cuda_error)?;
+                cursor = end;
+                remaining = &remaining[run.surfaces..];
+                continue;
+            }
             let len = surface.byte_len();
             surface.download_into(&mut out[cursor..cursor + len], surface.pitch_bytes)?;
             cursor += len;
+            remaining = &remaining[1..];
         }
         Ok(())
     }
@@ -324,18 +320,90 @@ pub(crate) fn cuda_pooled_range_storage(
     }
 }
 
+/// Leading surfaces whose tight bytes are adjacent in one CUDA allocation.
 #[cfg(feature = "cuda-runtime")]
-fn contiguous_cuda_batch_range(surfaces: &[Surface]) -> Option<(&CudaDeviceBuffer, usize)> {
-    let (first_buffer, first_offset, first_len) = surfaces.first()?.storage.cuda_buffer_range()?;
-    let mut expected_offset = first_offset.checked_add(first_len)?;
-    for surface in &surfaces[1..] {
-        let (buffer, offset, len) = surface.storage.cuda_buffer_range()?;
-        if !core::ptr::eq(first_buffer, buffer) || offset != expected_offset {
-            return None;
-        }
-        expected_offset = expected_offset.checked_add(len)?;
+struct CudaDownloadRun<'a> {
+    buffer: &'a CudaDeviceBuffer,
+    offset: usize,
+    len: usize,
+    surfaces: usize,
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn leading_cuda_download_run(surfaces: &[Surface]) -> Option<CudaDownloadRun<'_>> {
+    let (first, rest) = surfaces.split_first()?;
+    let (buffer, offset, available) = first.storage.cuda_buffer_range()?;
+    let mut len = first.byte_len();
+    if available < len {
+        return None;
     }
-    Some((first_buffer, first_offset))
+    let mut count = 1usize;
+    for surface in rest {
+        let Some((next_buffer, next_offset, next_available)) = surface.storage.cuda_buffer_range()
+        else {
+            break;
+        };
+        let next_len = surface.byte_len();
+        let adjacent = offset.checked_add(len) == Some(next_offset);
+        if !core::ptr::eq(buffer, next_buffer) || !adjacent || next_available < next_len {
+            break;
+        }
+        let Some(extended) = len.checked_add(next_len) else {
+            break;
+        };
+        len = extended;
+        count += 1;
+    }
+    Some(CudaDownloadRun {
+        buffer,
+        offset,
+        len,
+        surfaces: count,
+    })
+}
+
+/// Download all-CUDA surfaces run by run into uninitialized host output.
+///
+/// Returns `None` when any surface needs the per-surface fallback.
+#[cfg(feature = "cuda-runtime")]
+fn download_cuda_runs_uninit(
+    surfaces: &[Surface],
+    required: usize,
+) -> Result<Option<Vec<u8>>, Error> {
+    let downloadable = surfaces.iter().all(|surface| {
+        surface
+            .storage
+            .cuda_buffer_range()
+            .is_some_and(|(_, _, available)| available >= surface.byte_len())
+    });
+    if !downloadable {
+        return Ok(None);
+    }
+    let mut out = try_vec_with_capacity(required, "j2k CUDA contiguous batch download")?;
+    let spare = &mut out.spare_capacity_mut()[..required];
+    let mut cursor = 0usize;
+    let mut remaining = surfaces;
+    while let Some(run) = leading_cuda_download_run(remaining) {
+        let end = cursor + run.len;
+        run.buffer
+            .copy_range_to_host_uninit(run.offset, &mut spare[cursor..end])
+            .map_err(cuda_error)?;
+        cursor = end;
+        remaining = &remaining[run.surfaces..];
+    }
+    if !remaining.is_empty() || cursor != required {
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::contract_violation(
+                "CUDA batch download runs did not cover every surface",
+            ),
+        ));
+    }
+    // SAFETY: the successful run copies above initialized `required`
+    // consecutive bytes from the start of this Vec's spare capacity.
+    unsafe {
+        out.set_len(required);
+    }
+    Ok(Some(out))
 }
 
 #[cfg(any(feature = "cuda-runtime", test))]

@@ -119,6 +119,8 @@ impl CudaBurnDecoder {
 
     /// Submit CUDA codec work. The later [`SubmittedCudaBurnBatch::wait`]
     /// performs a synchronous device-to-host copy and ordinary Burn upload.
+    ///
+    /// Waits on the host like [`Self::submit_prepared`].
     pub fn submit(
         &mut self,
         inputs: Vec<EncodedImage>,
@@ -128,6 +130,10 @@ impl CudaBurnDecoder {
     }
 
     /// Submit a reusable preparation to codec-owned CUDA output.
+    ///
+    /// RGB and RGBA groups larger than 32 images decode in 32-image chunks,
+    /// and this blocks the host until every chunk except the last has
+    /// completed, which keeps decode scratch bounded.
     pub fn submit_prepared(
         &mut self,
         prepared: &PreparedBatch,
