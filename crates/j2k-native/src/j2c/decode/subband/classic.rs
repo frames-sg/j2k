@@ -7,10 +7,10 @@ use super::{
     classic_decode_job_parameters, code_block_required_by_index, collect_pending_classic_blocks,
     count_classic_code_blocks, decode_j2k_code_block_scalar_with_workspace,
     decode_j2k_code_block_scalar_with_workspace_midpoint,
-    should_decode_classic_sub_band_in_parallel, ComponentInfo, CpuDecodeParallelism,
-    DecodeAllocationBudget, DecodingError, DecompositionStorage, Header, HtCodeBlockDecoder,
-    J2kCodeBlockBatchJob, J2kCodeBlockDecodeJob, J2kCodeBlockDecodeWorkspace, J2kSubBandDecodeJob,
-    Result, SubBand, TileDecodeContext, Vec, MAX_BITPLANE_COUNT,
+    should_decode_classic_sub_band_in_parallel, stored_placement, ComponentInfo,
+    CpuDecodeParallelism, DecodeAllocationBudget, DecodingError, DecompositionStorage, Header,
+    HtCodeBlockDecoder, J2kCodeBlockBatchJob, J2kCodeBlockDecodeJob, J2kCodeBlockDecodeWorkspace,
+    J2kSubBandDecodeJob, Result, SubBand, TileDecodeContext, Vec, MAX_BITPLANE_COUNT,
 };
 use crate::backend::{j2k_code_block_reconstruction, j2k_sub_band_reconstruction};
 use crate::j2c::build::CodeBlockCoding;
@@ -74,9 +74,13 @@ pub(super) fn decode_sub_band_classic_blocks(
         let mut batch_jobs = Vec::new();
         budget.reserve_new(&mut batch_jobs, pending_blocks.len())?;
         for pending in &pending_blocks {
+            // A hooked decode stores whole code-blocks.
+            let (output_x, output_y) = pending
+                .placement
+                .whole_target(pending.width, pending.height)?;
             batch_jobs.push(J2kCodeBlockBatchJob {
-                output_x: pending.output_x,
-                output_y: pending.output_y,
+                output_x,
+                output_y,
                 code_block: J2kCodeBlockDecodeJob {
                     data: &pending.combined_data,
                     segments: &pending.segments,
@@ -253,11 +257,8 @@ pub(super) fn decode_sub_band_classic_blocks(
                 continue;
             }
             tile_ctx.debug_counters.decoded_code_blocks += 1;
-            let x_offset = code_block.rect.x0 - sub_band.storage_rect.x0;
-            let y_offset = code_block.rect.y0 - sub_band.storage_rect.y0;
+            let placement = stored_placement(code_block, sub_band);
             let output_stride = sub_band.storage_rect.width() as usize;
-            let mut base_idx =
-                (y_offset * sub_band.storage_rect.width()) as usize + x_offset as usize;
 
             bitplane::decode(
                 code_block,
@@ -273,21 +274,24 @@ pub(super) fn decode_sub_band_classic_blocks(
                 code_block.number_of_coding_passes,
                 component_info.roi_shift,
             );
-            for coefficients in tile_ctx.bit_plane_decode_context.coefficient_rows() {
-                let out_row = &mut base_store[base_idx..];
-                if irreversible_midpoint {
-                    midpoint.dequantize_row(coefficients, out_row, dequantization_step);
-                } else {
-                    for (output, coefficient) in out_row.iter_mut().zip(coefficients) {
-                        *output = apply_roi_maxshift_inverse_i64(
-                            midpoint.reconstruct_reversible(*coefficient),
-                            component_info.roi_shift,
-                        ) as f32
-                            * dequantization_step;
+            placement.store_rows(
+                tile_ctx.bit_plane_decode_context.coefficient_rows(),
+                base_store,
+                output_stride,
+                |coefficients, out_row| {
+                    if irreversible_midpoint {
+                        midpoint.dequantize_row(coefficients, out_row, dequantization_step);
+                    } else {
+                        for (output, coefficient) in out_row.iter_mut().zip(coefficients) {
+                            *output = apply_roi_maxshift_inverse_i64(
+                                midpoint.reconstruct_reversible(*coefficient),
+                                component_info.roi_shift,
+                            ) as f32
+                                * dequantization_step;
+                        }
                     }
-                }
-                base_idx += output_stride;
-            }
+                },
+            )?;
         }
     }
     Ok(())
@@ -320,11 +324,8 @@ fn decode_sub_band_classic_blocks_i64(
                 continue;
             }
             tile_ctx.debug_counters.decoded_code_blocks += 1;
-            let x_offset = code_block.rect.x0 - sub_band.storage_rect.x0;
-            let y_offset = code_block.rect.y0 - sub_band.storage_rect.y0;
+            let placement = stored_placement(code_block, sub_band);
             let output_stride = sub_band.storage_rect.width() as usize;
-            let mut base_idx =
-                (y_offset * sub_band.storage_rect.width()) as usize + x_offset as usize;
 
             bitplane::decode(
                 code_block,
@@ -340,16 +341,21 @@ fn decode_sub_band_classic_blocks_i64(
                 code_block.number_of_coding_passes,
                 component_info.roi_shift,
             );
-            for coefficients in tile_ctx.bit_plane_decode_context.coefficient_rows() {
-                let out_row = &mut base_store[base_idx..];
-                for (output, coefficient) in out_row.iter_mut().zip(coefficients.iter().copied()) {
-                    *output = apply_roi_maxshift_inverse_i64(
-                        midpoint.reconstruct_reversible(coefficient),
-                        component_info.roi_shift,
-                    );
-                }
-                base_idx += output_stride;
-            }
+            placement.store_rows(
+                tile_ctx.bit_plane_decode_context.coefficient_rows(),
+                base_store,
+                output_stride,
+                |coefficients, out_row| {
+                    for (output, coefficient) in
+                        out_row.iter_mut().zip(coefficients.iter().copied())
+                    {
+                        *output = apply_roi_maxshift_inverse_i64(
+                            midpoint.reconstruct_reversible(coefficient),
+                            component_info.roi_shift,
+                        );
+                    }
+                },
+            )?;
         }
     }
     Ok(())
