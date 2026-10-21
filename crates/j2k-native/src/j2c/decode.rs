@@ -473,8 +473,16 @@ fn decode_tile<'a>(
             build::release_unused_roi_workspace(storage, tile.component_infos.len())?;
         }
         // Region decode sizes coefficient storage to the code-blocks the ROI
-        // plan keeps, or to the whole tile when there is no plan.
-        build::allocate_deferred_coefficients(storage, header.skipped_resolution_levels)?;
+        // plan keeps, clipped to the windows the IDWT reads unless a hook
+        // writes whole code-blocks, or to the whole tile when there is no plan.
+        let clip_to_idwt_windows = ht_decoder.is_none();
+        #[cfg(test)]
+        let clip_to_idwt_windows = clip_to_idwt_windows && !tile_ctx.store_whole_code_blocks;
+        build::allocate_deferred_coefficients(
+            storage,
+            header.skipped_resolution_levels,
+            clip_to_idwt_windows,
+        )?;
     }
     tile_ctx.debug_counters.stored_coefficients += storage.coefficients.len();
     record_workspace(tile_ctx, storage, selection_bytes)?;
@@ -991,6 +999,10 @@ pub(crate) struct TileDecodeContext {
     /// slab and bank behavior stays covered.
     #[cfg(all(test, feature = "parallel"))]
     pub(crate) force_per_sub_band_ht: bool,
+    /// Test-only switch that stores whole code-blocks in region decode, as a
+    /// hooked decode does, so clipped storage can be compared against it.
+    #[cfg(test)]
+    pub(crate) store_whole_code_blocks: bool,
     /// The raw, decoded samples for each channel.
     pub(crate) channel_data: Vec<ComponentData>,
     /// Optional output window for region-local decode storage.
@@ -1012,12 +1024,18 @@ impl TileDecodeContext {
         let round_irreversible_output = self.round_irreversible_output;
         #[cfg(all(test, feature = "parallel"))]
         let force_per_sub_band_ht = self.force_per_sub_band_ht;
+        #[cfg(test)]
+        let store_whole_code_blocks = self.store_whole_code_blocks;
         *self = Self::default();
         self.output_region = output_region;
         self.round_irreversible_output = round_irreversible_output;
         #[cfg(all(test, feature = "parallel"))]
         {
             self.force_per_sub_band_ht = force_per_sub_band_ht;
+        }
+        #[cfg(test)]
+        {
+            self.store_whole_code_blocks = store_whole_code_blocks;
         }
     }
 
@@ -1290,8 +1308,7 @@ mod tests {
             .map(|value| f32::from(u8::try_from(value).expect("test value fits u8")))
             .collect::<Vec<_>>();
         let block = super::DecodedBlock {
-            output_x: 0,
-            output_y: 0,
+            placement: super::subband::BlockPlacement::whole(0, 0, 4, 3),
             width: 4,
             height: 3,
             coefficients: &mut coefficients,
@@ -1321,8 +1338,7 @@ mod tests {
         let mut coefficient_stats = super::ParallelCoefficientStats::default();
         let mut coefficients = vec![1.0, 2.0, 3.0, 4.0];
         let block = super::DecodedBlock {
-            output_x: 3,
-            output_y: 1,
+            placement: super::subband::BlockPlacement::whole(3, 1, 2, 2),
             width: 2,
             height: 2,
             coefficients: &mut coefficients,
@@ -1353,8 +1369,7 @@ mod tests {
         let mut coefficient_stats = super::ParallelCoefficientStats::default();
         let mut coefficients = vec![1.0, 2.0];
         let block = super::DecodedBlock {
-            output_x: 4,
-            output_y: 1,
+            placement: super::subband::BlockPlacement::whole(4, 1, 2, 1),
             width: 2,
             height: 1,
             coefficients: &mut coefficients,

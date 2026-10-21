@@ -3,8 +3,8 @@
 //! Fallible parallel code-block output assembly.
 
 use super::pending::{PendingClassicBlock, PendingHtBlock};
-use super::{DecodeAllocationBudget, DecompositionStorage, SubBand};
-use crate::error::{bail, DecodingError, Result, ValidationError};
+use super::{BlockPlacement, DecodeAllocationBudget, DecompositionStorage, SubBand};
+use crate::error::{DecodingError, Result, ValidationError};
 use crate::j2c::bitplane::classic_decode_workspace_bytes;
 use crate::j2c::decode::workspace::{ht_task_workspace_bytes, HtTaskWorkspace};
 use crate::j2c::ht_block_decode::ht_decode_workspace_bytes;
@@ -40,8 +40,8 @@ impl PreparedTaskPlan {
 }
 
 pub(crate) struct DecodedBlock<'a> {
-    pub(crate) output_x: u32,
-    pub(crate) output_y: u32,
+    /// The samples of the block that its sub-band stores.
+    pub(crate) placement: BlockPlacement,
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) coefficients: &'a mut [f32],
@@ -99,14 +99,9 @@ pub(super) fn decode_classic_sub_band_blocks_parallel<'a>(
         &mut decoded_blocks,
         coefficient_slab,
         total_coefficients,
-        pending_blocks.iter().map(|pending| {
-            (
-                pending.output_x,
-                pending.output_y,
-                pending.width,
-                pending.height,
-            )
-        }),
+        pending_blocks
+            .iter()
+            .map(|pending| (pending.placement, pending.width, pending.height)),
     )?;
     decoded_blocks
         .par_iter_mut()
@@ -151,14 +146,9 @@ fn prepare_classic_outputs<'a>(
     budget: &mut DecodeAllocationBudget,
 ) -> Result<(Vec<DecodedBlock<'a>>, usize)> {
     let total_coefficients = validate_pending_blocks(
-        pending_blocks.iter().map(|pending| {
-            (
-                pending.output_x,
-                pending.output_y,
-                pending.width,
-                pending.height,
-            )
-        }),
+        pending_blocks
+            .iter()
+            .map(|pending| (pending.placement, pending.width, pending.height)),
         sub_band,
     )?;
     let decoded_blocks = reserve_decoded_block_descriptors(
@@ -295,14 +285,9 @@ pub(super) fn decode_ht_sub_band_blocks_parallel<'a>(
         &mut decoded_blocks,
         coefficient_slab,
         total_coefficients,
-        pending_blocks.iter().map(|pending| {
-            (
-                pending.output_x,
-                pending.output_y,
-                pending.width,
-                pending.height,
-            )
-        }),
+        pending_blocks
+            .iter()
+            .map(|pending| (pending.placement, pending.width, pending.height)),
     )?;
     #[cfg(test)]
     {
@@ -364,14 +349,9 @@ fn prepare_ht_outputs<'a>(
     budget: &mut DecodeAllocationBudget,
 ) -> Result<(Vec<DecodedBlock<'a>>, usize)> {
     let total_coefficients = validate_pending_blocks(
-        pending_blocks.iter().map(|pending| {
-            (
-                pending.output_x,
-                pending.output_y,
-                pending.width,
-                pending.height,
-            )
-        }),
+        pending_blocks
+            .iter()
+            .map(|pending| (pending.placement, pending.width, pending.height)),
         sub_band,
     )?;
     let decoded_blocks = reserve_decoded_block_descriptors(
@@ -735,19 +715,16 @@ fn ht_chunk_dimensions(chunk: &[PendingHtBlock]) -> (u32, u32) {
 }
 
 fn validate_pending_blocks(
-    mut blocks: impl Iterator<Item = (u32, u32, u32, u32)>,
+    mut blocks: impl Iterator<Item = (BlockPlacement, u32, u32)>,
     sub_band: &SubBand,
 ) -> Result<usize> {
-    blocks.try_fold(0usize, |total, (output_x, output_y, width, height)| {
-        if output_x
-            .checked_add(width)
-            .is_none_or(|x1| x1 > sub_band.storage_rect.width())
-            || output_y
-                .checked_add(height)
-                .is_none_or(|y1| y1 > sub_band.storage_rect.height())
-        {
-            return Err(DecodingError::CodeBlockDecodeFailure.into());
-        }
+    blocks.try_fold(0usize, |total, (placement, width, height)| {
+        placement.validate(
+            width,
+            height,
+            sub_band.storage_rect.width(),
+            sub_band.storage_rect.height(),
+        )?;
         total
             .checked_add(block_coefficient_count(width, height)?)
             .ok_or(ValidationError::ImageTooLarge.into())
@@ -758,18 +735,17 @@ fn install_decoded_blocks<'a>(
     decoded_blocks: &mut Vec<DecodedBlock<'a>>,
     coefficient_slab: &'a mut [f32],
     total_coefficients: usize,
-    blocks: impl Iterator<Item = (u32, u32, u32, u32)>,
+    blocks: impl Iterator<Item = (BlockPlacement, u32, u32)>,
 ) -> Result<()> {
     let mut remaining = coefficient_slab
         .get_mut(..total_coefficients)
         .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-    for (output_x, output_y, width, height) in blocks {
+    for (placement, width, height) in blocks {
         let coefficient_count = block_coefficient_count(width, height)?;
         let (coefficients, tail) = remaining.split_at_mut(coefficient_count);
         remaining = tail;
         decoded_blocks.push(DecodedBlock {
-            output_x,
-            output_y,
+            placement,
             width,
             height,
             coefficients,
@@ -935,40 +911,20 @@ fn copy_decoded_blocks_to_sub_band(
     #[cfg(test)]
     let mut scattered_bytes = 0usize;
     for block in decoded_blocks {
-        let output_x = block.output_x;
-        let output_y = block.output_y;
-        let width = block.width;
-        let height = block.height;
-        if output_x
-            .checked_add(width)
-            .is_none_or(|x1| x1 > sub_band.storage_rect.width())
-            || output_y
-                .checked_add(height)
-                .is_none_or(|y1| y1 > sub_band.storage_rect.height())
+        let placement = block.placement;
+        placement.validate(
+            block.width,
+            block.height,
+            sub_band.storage_rect.width(),
+            sub_band.storage_rect.height(),
+        )?;
+        placement.copy_from_block(block.coefficients, block.width, base_store, sub_band_width)?;
+        #[cfg(test)]
         {
-            bail!(DecodingError::CodeBlockDecodeFailure);
-        }
-        let block_width = width as usize;
-        for row in 0..height as usize {
-            let dst_start = (output_y as usize + row)
-                .checked_mul(sub_band_width)
-                .and_then(|offset| offset.checked_add(output_x as usize))
-                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-            let dst_end = dst_start
-                .checked_add(block_width)
-                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-            let src_start = row
-                .checked_mul(block_width)
-                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-            let src_end = src_start
-                .checked_add(block_width)
-                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-            base_store[dst_start..dst_end].copy_from_slice(&block.coefficients[src_start..src_end]);
-            #[cfg(test)]
-            {
-                scattered_bytes = scattered_bytes
-                    .saturating_add(block_width.saturating_mul(core::mem::size_of::<f32>()));
-            }
+            scattered_bytes = scattered_bytes.saturating_add(
+                (placement.width as usize * placement.height as usize)
+                    .saturating_mul(core::mem::size_of::<f32>()),
+            );
         }
     }
     #[cfg(test)]

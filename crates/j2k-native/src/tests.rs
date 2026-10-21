@@ -5,6 +5,7 @@ use crate::j2c::ComponentData;
 
 mod component_layout;
 mod ht_refinement;
+mod idwt_window_storage;
 mod workspace_peak;
 mod workspace_reuse;
 

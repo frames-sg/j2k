@@ -3,10 +3,10 @@
 use super::{
     add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_i64, code_block_required_by_index,
     collect_pending_ht_blocks, count_ht_code_blocks, ht_block_decode,
-    ht_code_block_has_decodable_passes, should_decode_ht_sub_band_in_parallel, ComponentInfo,
-    CpuDecodeParallelism, DecodeAllocationBudget, DecodingError, DecompositionStorage, Header,
-    HtCodeBlockBatchJob, HtCodeBlockDecodeJob, HtCodeBlockDecoder, HtSubBandDecodeJob, Result,
-    SubBand, TileDecodeContext, Vec,
+    ht_code_block_has_decodable_passes, should_decode_ht_sub_band_in_parallel, stored_placement,
+    ComponentInfo, CpuDecodeParallelism, DecodeAllocationBudget, DecodingError,
+    DecompositionStorage, Header, HtCodeBlockBatchJob, HtCodeBlockDecodeJob, HtCodeBlockDecoder,
+    HtSubBandDecodeJob, Result, SubBand, TileDecodeContext, Vec,
 };
 use crate::j2c::build::CodeBlockCoding;
 
@@ -71,26 +71,24 @@ pub(super) fn decode_sub_band_ht_blocks_i64(
                 profile_enabled,
             )?;
 
-            let x_offset = code_block.rect.x0 - sub_band.storage_rect.x0;
-            let y_offset = code_block.rect.y0 - sub_band.storage_rect.y0;
             let base_store = &mut storage.coefficients_i64[sub_band.coefficients.clone()];
-            let mut base_idx =
-                (y_offset * sub_band.storage_rect.width()) as usize + x_offset as usize;
-            let output_stride = sub_band.storage_rect.width() as usize;
-
-            for coefficients in tile_ctx.ht_block_decode_context.coefficient_rows() {
-                let out_row = &mut base_store[base_idx..];
-
-                for (output, coefficient) in out_row.iter_mut().zip(coefficients.iter().copied()) {
-                    let coefficient = i64::from(ht_block_decode::coefficient_to_i32(
-                        coefficient,
-                        coded_bitplanes,
-                    ));
-                    *output = apply_roi_maxshift_inverse_i64(coefficient, component_info.roi_shift);
-                }
-
-                base_idx += output_stride;
-            }
+            stored_placement(code_block, sub_band).store_rows(
+                tile_ctx.ht_block_decode_context.coefficient_rows(),
+                base_store,
+                sub_band.storage_rect.width() as usize,
+                |coefficients, out_row| {
+                    for (output, coefficient) in
+                        out_row.iter_mut().zip(coefficients.iter().copied())
+                    {
+                        let coefficient = i64::from(ht_block_decode::coefficient_to_i32(
+                            coefficient,
+                            coded_bitplanes,
+                        ));
+                        *output =
+                            apply_roi_maxshift_inverse_i64(coefficient, component_info.roi_shift);
+                    }
+                },
+            )?;
         }
     }
 
@@ -141,9 +139,13 @@ pub(super) fn decode_sub_band_ht_blocks(
         let mut batch_jobs = Vec::new();
         budget.reserve_new(&mut batch_jobs, pending_blocks.len())?;
         for pending in &pending_blocks {
+            // A hooked decode stores whole code-blocks.
+            let (output_x, output_y) = pending
+                .placement
+                .whole_target(pending.width, pending.height)?;
             batch_jobs.push(HtCodeBlockBatchJob {
-                output_x: pending.output_x,
-                output_y: pending.output_y,
+                output_x,
+                output_y,
                 code_block: HtCodeBlockDecodeJob {
                     data: &pending.combined.data,
                     cleanup_length: pending.combined.cleanup_length,
@@ -281,6 +283,8 @@ pub(super) fn decode_sub_band_ht_blocks(
         }
     }
 
+    #[cfg(feature = "simd")]
+    let mut clipped_block_scratch = Vec::new();
     for precinct in sub_band
         .precincts
         .clone()
@@ -310,12 +314,29 @@ pub(super) fn decode_sub_band_ht_blocks(
                 header.strict,
                 profile_enabled,
             )? {
-                let x_offset = code_block.rect.x0 - sub_band.storage_rect.x0;
-                let y_offset = code_block.rect.y0 - sub_band.storage_rect.y0;
-                let output_stride = sub_band.storage_rect.width();
-                let base_idx = (y_offset * output_stride) as usize + x_offset as usize;
+                let placement = stored_placement(code_block, sub_band);
+                let whole = placement.is_whole(code_block.rect.width(), code_block.rect.height());
+                let stored_stride = sub_band.storage_rect.width();
                 let base_store = &mut storage.coefficients[sub_band.coefficients.clone()];
-                let output = &mut base_store[base_idx..];
+                // The decoder writes every row and column of the block, so a
+                // block the sub-band stores only part of goes through scratch.
+                let (output, output_stride) = if whole {
+                    (
+                        &mut base_store[placement.target_index(stored_stride as usize)?..],
+                        stored_stride,
+                    )
+                } else {
+                    let mut budget = DecodeAllocationBudget::for_storage(storage)?;
+                    (
+                        super::placement::zeroed_block_scratch(
+                            &mut clipped_block_scratch,
+                            code_block.rect.width(),
+                            code_block.rect.height(),
+                            &mut budget,
+                        )?,
+                        code_block.rect.width(),
+                    )
+                };
                 if irreversible_midpoint {
                     ht_block_decode::decode_prepared_cleanup_to_f32::<true>(
                         prepared,
@@ -341,6 +362,14 @@ pub(super) fn decode_sub_band_ht_blocks(
                         &mut tile_ctx.debug_counters.ht_phase_stats,
                     )?;
                 }
+                if !whole {
+                    placement.copy_from_block(
+                        &clipped_block_scratch,
+                        code_block.rect.width(),
+                        &mut storage.coefficients[sub_band.coefficients.clone()],
+                        stored_stride as usize,
+                    )?;
+                }
                 continue;
             }
 
@@ -355,27 +384,22 @@ pub(super) fn decode_sub_band_ht_blocks(
                 profile_enabled,
             )?;
 
-            let x_offset = code_block.rect.x0 - sub_band.storage_rect.x0;
-            let y_offset = code_block.rect.y0 - sub_band.storage_rect.y0;
             let base_store = &mut storage.coefficients[sub_band.coefficients.clone()];
-            let mut base_idx =
-                (y_offset * sub_band.storage_rect.width()) as usize + x_offset as usize;
-            let output_stride = sub_band.storage_rect.width() as usize;
-
-            for coefficients in tile_ctx.ht_block_decode_context.coefficient_rows() {
-                let out_row = &mut base_store[base_idx..];
-
-                ht_block_decode::store_coefficient_row(
-                    coefficients,
-                    out_row,
-                    coded_bitplanes,
-                    component_info.roi_shift,
-                    irreversible_midpoint,
-                    dequantization_step,
-                );
-
-                base_idx += output_stride;
-            }
+            stored_placement(code_block, sub_band).store_rows(
+                tile_ctx.ht_block_decode_context.coefficient_rows(),
+                base_store,
+                sub_band.storage_rect.width() as usize,
+                |coefficients, out_row| {
+                    ht_block_decode::store_coefficient_row(
+                        coefficients,
+                        out_row,
+                        coded_bitplanes,
+                        component_info.roi_shift,
+                        irreversible_midpoint,
+                        dequantization_step,
+                    );
+                },
+            )?;
         }
     }
 
