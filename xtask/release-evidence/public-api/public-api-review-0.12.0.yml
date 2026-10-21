@@ -66,10 +66,10 @@ reviews:
   j2k-cuda-runtime:
     removed_fingerprint: "none"
     added_fingerprint: "none"
-    hidden_count: 253
-    hidden_fingerprint: "fnv1a64:d9d18ccf7cefb706"
+    hidden_count: 255
+    hidden_fingerprint: "fnv1a64:57c61a4568990ce6"
     rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
-    hidden_rationale: "Adds pooled uploads from multiple payload slices, with synchronous and queued variants; existing uploads remain available."
+    hidden_rationale: "Adds pooled uploads from multiple payload slices, with synchronous and queued variants; existing uploads remain available. Adds CudaDeviceBuffer::destination_view_mut and CudaExternalDeviceBufferViewMut::sub_view_mut, which borrow an owned allocation or a sub-range of a view as an exclusive destination view; existing views are unchanged."
   j2k-cuda-j2k-engine:
     removed_fingerprint: "none"
     added_fingerprint: "none"
@@ -107,11 +107,11 @@ reviews:
     hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
   j2k-native:
     removed_fingerprint: "none"
-    added_fingerprint: "fnv1a64:c7a6a800da202ce6"
+    added_fingerprint: "fnv1a64:7debc570e375354a"
     hidden_count: 574
-    hidden_fingerprint: "fnv1a64:bb48491ed197775c"
-    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged. Adds selected wavelet extraction and shared wavelet type re-exports. It decodes the requested entropy bands without inverse DWT or color conversion and preserves exact reversible integer coefficients; existing pixel APIs retain their signatures. Also records the already-merged irreversible_quantization_profile option. Profiles supply per-component band weights; callers using Default or struct update syntax retain the previous no-profile behavior. Exhaustive native EncodeOptions literals must add irreversible_quantization_profile: None or use struct update syntax."
-    hidden_rationale: "Adds Image::tile_count for allocation-free decode planning; existing native adapters remain compatible. Also records the already-merged HT coding probe, parallel scratch toggle, and J2kClassicReconstruction hooks. Existing classic adapters retain their defaults; supporting reversible midpoint reconstruction requires opting into the new reconstruction hooks. Also records the already-merged inverse_dwt97_reference, inverse_ict_reference, and irreversible_quantization_profile_scale_ceiling helpers. These are additive reference and profile-validation entry points. Adds irreversible_quantization_scale_bounds so facade rate search uses the same weighted-step limits as native quantization, including the HT coded-bitplane ceiling. Existing signatures and the legacy scale-ceiling helper remain compatible; no caller migration is required."
+    hidden_fingerprint: "fnv1a64:b1eee962bb044bac"
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged. Adds selected wavelet extraction and shared wavelet type re-exports. It decodes the requested entropy bands without inverse DWT or color conversion and preserves exact reversible integer coefficients; existing pixel APIs retain their signatures. Also records the already-merged irreversible_quantization_profile option. Profiles supply per-component band weights; callers using Default or struct update syntax retain the previous no-profile behavior. Exhaustive native EncodeOptions literals must add irreversible_quantization_profile: None or use struct update syntax. Adds DecodingError::IncompletePlaneStore, returned when component planes reused without zeroing are not fully written; DecodingError is non_exhaustive."
+    hidden_rationale: "Adds Image::tile_count for allocation-free decode planning; existing native adapters remain compatible. Also records the already-merged HT coding probe, parallel scratch toggle, and J2kClassicReconstruction hooks. Existing classic adapters retain their defaults; supporting reversible midpoint reconstruction requires opting into the new reconstruction hooks. Also records the already-merged inverse_dwt97_reference, inverse_ict_reference, and irreversible_quantization_profile_scale_ceiling helpers. These are additive reference and profile-validation entry points. Adds irreversible_quantization_scale_bounds so facade rate search uses the same weighted-step limits as native quantization, including the HT coded-bitplane ceiling. Existing signatures and the legacy scale-ceiling helper remain compatible; no caller migration is required. irreversible_quantization_step_for_subband also takes the sub-band's decomposition level and the level count, so default 9/7 steps can be weighted by synthesis norm; callers pass both."
   j2k-jpeg:
     removed_fingerprint: "none"
     added_fingerprint: "fnv1a64:b13b981667fd252a"
@@ -128,10 +128,10 @@ reviews:
     hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
   j2k:
     removed_fingerprint: "none"
-    added_fingerprint: "fnv1a64:1ee0b685614c851f"
+    added_fingerprint: "fnv1a64:377da2726c99db74"
     hidden_count: 108
     hidden_fingerprint: "fnv1a64:01e74ad6c3ff416e"
-    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged. Adds J2kDecoder::decode_wavelets and shared wavelet type re-exports. Reduced decode requests beyond the main or tile resolution ladder now return an error rather than silently clamping; owned batches report invalid requests with their input index during preparation. Callers must choose an available reduction level. Also records the already-merged quantization_profile field and with_quantization_profile builder on the non-exhaustive lossy options type. Existing builders keep the no-profile default."
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged. Adds J2kDecoder::decode_wavelets and shared wavelet type re-exports. Reduced decode requests beyond the main or tile resolution ladder now return an error rather than silently clamping; owned batches report invalid requests with their input index during preparation. Callers must choose an available reduction level. Also records the already-merged quantization_profile field and with_quantization_profile builder on the non-exhaustive lossy options type. Existing builders keep the no-profile default. Adds CpuBatchDecoder::decode_tiles_into, retained_tile_batch_workspace_bytes, release_tile_batch_workspaces, and the non_exhaustive J2kToHtj2kOptions::coefficient_only field with with_coefficient_only."
     hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
   j2k-transcode:
     removed_fingerprint: "none"
@@ -184,10 +184,10 @@ reviews:
     hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points. Adds origin-aware 5/3 and 9/7 accelerator overrides while preserving the existing zero-origin hooks and job structs."
   j2k-ml:
     removed_fingerprint: "none"
-    added_fingerprint: "none"
+    added_fingerprint: "fnv1a64:17eb94accf6a78ef"
     hidden_count: 0
     hidden_fingerprint: "none"
-    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged. Adds CudaDirectBurnDecoder, which decodes into Burn-owned CUDA storage and waits for completion before returning the tensor."
     hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
   j2k-mpsgraph:
     removed_fingerprint: "none"
