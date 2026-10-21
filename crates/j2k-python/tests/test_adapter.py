@@ -161,7 +161,9 @@ class ProfileEncodeTests(unittest.TestCase):
 
     def test_stored_steps_follow_increasing_weights(self):
         steps, rejected = [], []
-        for weight in (0.5, 1.5, 64.0, 1024.0, 1536.0, 2000.0, 2047.0, 2048.0, 4096.0):
+        # The LL default step is finer than the finest-band step, so LL reaches
+        # the top of the representable range near weight 4174.
+        for weight in (0.5, 1.5, 64.0, 1024.0, 2048.0, 4096.0, 4160.0, 4400.0):
             profile = [[1.0] * 7 for _ in range(3)]
             profile[0][0] = weight
             try:
@@ -172,7 +174,7 @@ class ProfileEncodeTests(unittest.TestCase):
             self.assertFalse(rejected, f"{weight} accepted after rejecting {rejected}")
             steps.append(relative_step(*component_steps(codestream)[0][0]))
         self.assertEqual(steps, sorted(steps))
-        self.assertIn(4096.0, rejected)
+        self.assertEqual(rejected, [4400.0])
 
     def test_all_ones_profile_matches_no_profile(self):
         for codec in ("j2k", "htj2k"):
@@ -200,13 +202,18 @@ class ProfileEncodeTests(unittest.TestCase):
             with self.subTest(target_bpp=target_bpp):
                 try:
                     codestream = self.encode(noise, profile=[weights] * 3, target_bpp=target_bpp)
+                    # A uniform non-unity profile writes QCC steps that carry only
+                    # the default per-band ratios.
+                    uniform = self.encode(noise, profile=[[2.0] * 7] * 3, target_bpp=target_bpp)
                 except ValueError as error:
                     self.assertIn("rate target unreachable", str(error))
                     continue
-                for steps in component_steps(codestream).values():
-                    low_low = relative_step(*steps[0])
-                    for weight, step in zip(weights, steps):
-                        self.assertAlmostEqual(relative_step(*step) / low_low, weight, delta=weight * 1e-3)
+                defaults = component_steps(uniform)
+                for component, steps in component_steps(codestream).items():
+                    scales = [relative_step(*step) / relative_step(*default)
+                              for step, default in zip(steps, defaults[component])]
+                    for weight, scale in zip(weights, scales):
+                        self.assertAlmostEqual(scale / scales[0], weight, delta=weight * 1e-3)
                 width, height, pixels = j2k.decode_rgb(codestream)
                 self.assertEqual((width, height, len(pixels)), (self.SIZE, self.SIZE, len(noise)))
 
