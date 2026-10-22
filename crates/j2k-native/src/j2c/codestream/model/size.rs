@@ -92,14 +92,18 @@ impl SizeData {
             .expect("validated JPEG 2000 vertical shrink factors")
     }
 
+    // On the shrunk grid the image spans [ceil(origin / s), ceil(extent / s)),
+    // which can be one sample narrower than ceil((extent - origin) / s).
     pub(crate) fn checked_image_width(&self) -> Result<u32> {
         let shrink_factor = self.checked_x_shrink_factor()?;
-        Ok((self.reference_grid_width - self.image_area_x_offset).div_ceil(shrink_factor))
+        Ok(self.reference_grid_width.div_ceil(shrink_factor)
+            - self.image_area_x_offset.div_ceil(shrink_factor))
     }
 
     pub(crate) fn checked_image_height(&self) -> Result<u32> {
         let shrink_factor = self.checked_y_shrink_factor()?;
-        Ok((self.reference_grid_height - self.image_area_y_offset).div_ceil(shrink_factor))
+        Ok(self.reference_grid_height.div_ceil(shrink_factor)
+            - self.image_area_y_offset.div_ceil(shrink_factor))
     }
 
     pub(crate) fn checked_x_shrink_factor(&self) -> Result<u32> {

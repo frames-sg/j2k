@@ -5,6 +5,9 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- Reduced-resolution decodes of images whose origin is not a multiple of the
+  reduction factor no longer panic on edge tiles without samples, and match the
+  standard's output size instead of adding an unwritten row or column.
 - CPU rate- and PSNR-targeted lossy encodes of single-tile images run the
   colour transform and DWT once per search instead of once per candidate scale;
   output is unchanged. The retained coefficients (4 bytes per sample) count
