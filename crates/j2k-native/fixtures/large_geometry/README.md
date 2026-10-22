@@ -22,6 +22,17 @@ default precincts, and packet-length markers. Tests derive expected full and
 far-edge region samples directly from the formula. The reduced-region check
 also exercises the final output sample at half resolution.
 
+`openjpeg_5x5_origin3_tile4.j2k` is a 5 x 5 image with the same formula,
+placed at reference-grid origin (3, 3) with 4 x 4 tiles:
+
+```sh
+opj_compress -i 5x5.pgm -o openjpeg_5x5_origin3_tile4.j2k -n 2 -d 3,3 -t 4,4
+```
+
+Three of its four tiles are one sample wide or tall, so they have no samples at
+half resolution. The expected half-resolution samples come from
+`opj_decompress -r 1`.
+
 The samples are generated for j2k and contain no externally sourced image
 content. OpenJPEG is an independent fixture encoder, not a production codec
 dependency.

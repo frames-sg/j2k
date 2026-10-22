@@ -110,26 +110,29 @@ pub(super) fn store<'a>(
             .min(idwt_output.rect.height().saturating_sub(source_y));
         let output_x = resolution_tile.rect.x0.saturating_sub(image_x_offset);
         let output_y = resolution_tile.rect.y0.saturating_sub(image_y_offset);
+        // A tile narrower or shorter than the reduction factor can have no
+        // samples at a reduced resolution.
+        if copy_width == 0 || copy_height == 0 {
+            return Ok(());
+        }
 
         let handled = if !round_irreversible_output
             || component_info.wavelet_transform() != WaveletTransform::Irreversible97
         {
             if let Some(backend) = backend.as_deref_mut() {
-                copy_width > 0
-                    && copy_height > 0
-                    && backend.decode_store_component(J2kStoreComponentJob {
-                        input: &idwt_output.coefficients,
-                        input_width: idwt_output.rect.width(),
-                        source_x,
-                        source_y,
-                        copy_width,
-                        copy_height,
-                        output: &mut channel_data.container,
-                        output_width: header.size_data.image_width(),
-                        output_x,
-                        output_y,
-                        addend: sign_shift,
-                    })?
+                backend.decode_store_component(J2kStoreComponentJob {
+                    input: &idwt_output.coefficients,
+                    input_width: idwt_output.rect.width(),
+                    source_x,
+                    source_y,
+                    copy_width,
+                    copy_height,
+                    output: &mut channel_data.container,
+                    output_width: header.size_data.image_width(),
+                    output_x,
+                    output_y,
+                    addend: sign_shift,
+                })?
             } else {
                 false
             }

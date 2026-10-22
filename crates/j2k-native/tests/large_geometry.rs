@@ -132,3 +132,27 @@ fn first_tile_may_extend_past_the_reference_grid() {
         .expect("decode clipped first tile");
     assert_eq!(decoded.data, pixels);
 }
+
+#[test]
+fn reduced_decode_skips_edge_tiles_without_samples() {
+    // Origin (3, 3) with 4 x 4 tiles leaves one-sample edge tiles, which have
+    // no samples at half resolution.
+    let bytes = include_bytes!("../fixtures/large_geometry/openjpeg_5x5_origin3_tile4.j2k");
+    let decoded = Image::new(bytes, &DecodeSettings::strict())
+        .and_then(|image| image.decode_native())
+        .expect("decode offset image");
+    assert_eq!(decoded.data, source(5, 5));
+
+    let reduced = Image::new(
+        bytes,
+        &DecodeSettings {
+            target_resolution: Some((3, 3)),
+            ..DecodeSettings::strict()
+        },
+    )
+    .and_then(|image| image.decode_native())
+    .expect("decode offset image at half resolution");
+    // `opj_decompress -r 1` produces the same samples.
+    assert_eq!((reduced.width, reduced.height), (2, 2));
+    assert_eq!(reduced.data, [42, 71, 107, 136]);
+}
