@@ -64,6 +64,18 @@ impl WorkspaceBytes {
         }
     }
 
+    /// The per-owner sum of two samples live at the same time.
+    #[cfg(feature = "parallel")]
+    pub(crate) fn plus(self, other: Self) -> Self {
+        Self {
+            coefficients: self.coefficients.saturating_add(other.coefficients),
+            channels: self.channels.saturating_add(other.channels),
+            idwt: self.idwt.saturating_add(other.idwt),
+            tier1: self.tier1.saturating_add(other.tier1),
+            structure: self.structure.saturating_add(other.structure),
+        }
+    }
+
     pub(crate) fn total(self) -> usize {
         self.coefficients
             .saturating_add(self.channels)

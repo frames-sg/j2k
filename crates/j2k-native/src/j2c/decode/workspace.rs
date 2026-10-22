@@ -78,7 +78,7 @@ pub(in crate::j2c::decode) fn task_workspace_bytes<W: TaskScratch>(
 /// CPU parallelism policy for native JPEG 2000 decode.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum CpuDecodeParallelism {
-    /// Allow a single tile decode to use internal code-block parallelism.
+    /// Allow concurrent tile decode and internal code-block parallelism.
     #[default]
     Auto,
     /// Keep code-block decode serial for callers that already parallelize tiles.

@@ -44,6 +44,8 @@ mod store;
 mod subband;
 mod subband_params;
 mod tier1;
+#[cfg(feature = "parallel")]
+mod tile_workers;
 mod workspace;
 pub(crate) use self::allocation::DecodeAllocationBudget;
 use self::direct_plan::collect_classic_code_block_data;
@@ -54,7 +56,9 @@ pub(crate) use self::direct_plan::{
     build_referenced_htj2k_grayscale_plan, build_referenced_htj2k_rgba_plan,
 };
 pub(crate) use self::peak::{record_workspace, WorkspaceBytes, WorkspacePeak};
-use self::store::{apply_sign_shift_after_mct, component_unsigned_level_shift, store};
+use self::store::{
+    apply_sign_shift_after_mct, component_unsigned_level_shift, store, store_rows, TileRows,
+};
 use self::subband::{
     code_block_required_by_index, count_classic_code_blocks, count_ht_code_blocks,
     decode_component_tile_bit_planes,
@@ -280,7 +284,17 @@ fn decode_parsed_tiles<'a>(
     let cpu_decode_parallelism = ctx.cpu_decode_parallelism;
     let (tile_ctx, storage) = (&mut ctx.tile_decode_context, &mut ctx.storage);
 
-    for tile in tiles.iter() {
+    // Under Auto, the tiles may decode at once on worker contexts. On any
+    // failure the loop below decodes every tile again, in order.
+    #[cfg(feature = "parallel")]
+    let decoded_by_workers = cpu_decode_parallelism == CpuDecodeParallelism::Auto
+        && ht_decoder.is_none()
+        && !profile_enabled
+        && tile_workers::decode_tiles(header, tiles, tile_ctx, retained_decode_baseline).is_some();
+    #[cfg(not(feature = "parallel"))]
+    let decoded_by_workers = false;
+
+    for tile in tiles.iter().filter(|_| !decoded_by_workers) {
         ltrace!(
             "tile {} rect [{},{} {}x{}]",
             tile.idx,
@@ -307,6 +321,7 @@ fn decode_parsed_tiles<'a>(
             profile_enabled,
             &mut profile_timings,
             retained_decode_base_without_scratch,
+            None,
         )?;
     }
 
@@ -509,6 +524,7 @@ fn decode_tile<'a>(
     profile_enabled: bool,
     profile_timings: &mut DecodeProfileTimings,
     retained_decode_baseline: usize,
+    tile_rows: Option<&mut TileRows<'_>>,
 ) -> Result<()> {
     storage.reset_for_next_tile();
     let retained_decode_baseline = retained_decode_baseline
@@ -617,6 +633,7 @@ fn decode_tile<'a>(
         cpu_decode_parallelism,
         profile_enabled,
         profile_timings,
+        tile_rows,
     )?;
     Ok(())
 }
@@ -625,7 +642,8 @@ fn decode_tile<'a>(
 ///
 /// With [`build::CoefficientLayout::Component`], every component decodes into
 /// the same coefficient buffer, so each finishes all three stages before the
-/// next is decoded. Otherwise Tier-1 decodes the whole tile first.
+/// next is decoded. Otherwise Tier-1 decodes the whole tile first. With
+/// `tile_rows`, a tile worker stores into its own rows of the planes.
 #[expect(
     clippy::too_many_arguments,
     reason = "the per-component stages share decode_tile's state, adapter, and profiling explicitly"
@@ -639,6 +657,7 @@ fn decode_components<'a>(
     cpu_decode_parallelism: CpuDecodeParallelism,
     profile_enabled: bool,
     profile_timings: &mut DecodeProfileTimings,
+    mut tile_rows: Option<&mut TileRows<'_>>,
 ) -> Result<()> {
     let per_component = storage.coefficient_layout == build::CoefficientLayout::Component;
     if !per_component {
@@ -701,15 +720,21 @@ fn decode_components<'a>(
         // store one IDWT output at a time, allowing for better reuse of
         // allocations.
         let stage_start = profile::profile_now(profile_enabled);
-        store(
-            tile,
-            header,
-            tile_ctx,
-            component_info,
-            idx,
-            ht_decoder,
-            cpu_decode_parallelism == CpuDecodeParallelism::Auto,
-        )?;
+        let parallel = cpu_decode_parallelism == CpuDecodeParallelism::Auto;
+        match tile_rows.as_deref_mut() {
+            Some(rows) => {
+                store_rows(rows, tile, header, tile_ctx, component_info, idx, parallel)?;
+            }
+            None => store(
+                tile,
+                header,
+                tile_ctx,
+                component_info,
+                idx,
+                ht_decoder,
+                parallel,
+            )?,
+        }
         record_workspace(tile_ctx, storage, 0)?;
         profile_timings.store_us += profile::elapsed_us(stage_start);
     }

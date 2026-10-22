@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use alloc::vec::Vec;
+
 use super::super::codestream::WaveletTransform;
 use super::{
     bail, ComponentInfo, ComponentTile, DecodingError, Header, HtCodeBlockDecoder,
     J2kStoreComponentJob, OutputRegion, ResolutionTile, Result, Tile, TileDecodeContext,
 };
 use crate::j2c::idwt::IdwtPlacement;
+use crate::j2c::rect::IntRect;
 use crate::j2c::roi::{output_grid_offset, output_region_rect};
 use crate::math::round_ties_even_then_add;
 
@@ -303,6 +306,121 @@ pub(super) fn store<'a>(
 const PARALLEL_STORE_SAMPLES: usize = 1024 * 1024;
 #[cfg(all(feature = "parallel", not(target_arch = "x86_64")))]
 const PARALLEL_STORE_SAMPLES: usize = 512 * 512;
+
+/// One tile's slices of the plane rows `rect` covers, `rect.height()` per
+/// component, component-major, for a tile worker to store into.
+#[cfg_attr(
+    not(feature = "parallel"),
+    expect(
+        dead_code,
+        reason = "only tile workers split the planes into row slices"
+    )
+)]
+pub(super) struct TileRows<'p> {
+    /// Index of the tile in the parsed tile list.
+    pub(super) index: usize,
+    pub(super) rect: IntRect,
+    pub(super) rows: Vec<&'p mut [f32]>,
+}
+
+/// The plane rectangle the 1x1 fast path of [`store`] writes for one
+/// component of `tile`, or `None` when the decode skips more resolution
+/// levels than the component has.
+pub(super) fn store_rect(
+    tile: &Tile<'_>,
+    component_info: &ComponentInfo,
+    header: &Header<'_>,
+) -> Option<IntRect> {
+    let resolution = component_info
+        .num_resolution_levels()
+        .checked_sub(1)?
+        .checked_sub(header.skipped_resolution_levels)?;
+    if resolution > component_info.num_decomposition_levels() {
+        return None;
+    }
+    let rect = ResolutionTile::new(ComponentTile::new(tile, component_info), resolution).rect;
+    let (x_offset, y_offset) = output_grid_offset(&header.size_data);
+    Some(IntRect::from_ltrb(
+        rect.x0.saturating_sub(x_offset),
+        rect.y0.saturating_sub(y_offset),
+        rect.x1.saturating_sub(x_offset),
+        rect.y1.saturating_sub(y_offset),
+    ))
+}
+
+/// Store one component of `tile` into `rows` as the 1x1 fast path of
+/// [`store`] would. Fails before writing unless the IDWT output covers
+/// exactly the planned rectangle.
+pub(super) fn store_rows(
+    rows: &mut TileRows<'_>,
+    tile: &Tile<'_>,
+    header: &Header<'_>,
+    tile_ctx: &mut TileDecodeContext,
+    component_info: &ComponentInfo,
+    component_idx: usize,
+    parallel: bool,
+) -> Result<()> {
+    let TileDecodeContext {
+        idwt_output,
+        round_irreversible_output,
+        stored_plane_samples,
+        ..
+    } = tile_ctx;
+    let (image_x_offset, image_y_offset) = output_grid_offset(&header.size_data);
+    let skip_x = image_x_offset.saturating_sub(idwt_output.rect.x0) as usize;
+    let skip_y = image_y_offset.saturating_sub(idwt_output.rect.y0) as usize;
+    let input_width = idwt_output.rect.width() as usize;
+    // The IDWT rows `store` copies: those below `skip_y`, within the rect.
+    let input_rows = (idwt_output.coefficients.len().checked_div(input_width))
+        .unwrap_or(0)
+        .saturating_sub(skip_y)
+        .min(idwt_output.rect.height() as usize);
+    let (width, height) = (rows.rect.width() as usize, rows.rect.height() as usize);
+    let planned = idwt_output.placement == IdwtPlacement::Coefficients
+        && store_rect(tile, component_info, header)
+            .is_some_and(|rect| (rect.x0, rect.y0) == (rows.rect.x0, rows.rect.y0))
+        && input_width.checked_sub(skip_x) == Some(width)
+        && input_rows == height;
+    let first = component_idx * height;
+    let output = rows
+        .rows
+        .get_mut(first..first + height)
+        .filter(|_| planned)
+        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+    *stored_plane_samples = stored_plane_samples.saturating_add(width * height);
+
+    let sign_shift = if tile.mct {
+        0.0
+    } else {
+        component_unsigned_level_shift(component_info)
+    };
+    let shift = SampleShift::new(
+        sign_shift,
+        component_info.wavelet_transform(),
+        *round_irreversible_output && !tile.mct,
+    );
+    let copy_row = |output_row: &mut [f32], input_row: &[f32]| {
+        shift.copy(&input_row[skip_x..], output_row);
+    };
+    let input = &idwt_output.coefficients;
+    #[cfg(feature = "parallel")]
+    if parallel && width * height >= PARALLEL_STORE_SAMPLES {
+        use rayon::prelude::*;
+        output
+            .par_iter_mut()
+            .zip(input.par_chunks_exact(input_width).skip(skip_y))
+            .with_min_len(16)
+            .for_each(|(output_row, input_row)| copy_row(output_row, input_row));
+        return Ok(());
+    }
+    #[cfg(not(feature = "parallel"))]
+    let _ = parallel;
+    output
+        .iter_mut()
+        .zip(input.chunks_exact(input_width).skip(skip_y))
+        .for_each(|(output_row, input_row)| copy_row(output_row, input_row));
+    Ok(())
+}
 
 /// The per-sample output transform of [`apply_float_sign_shift`].
 #[derive(Clone, Copy)]

@@ -3,7 +3,7 @@
 /// CPU parallelism policy for JPEG 2000 decode.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum CpuDecodeParallelism {
-    /// Allow a single tile decode to use internal code-block parallelism.
+    /// Allow concurrent tile decode and internal code-block parallelism.
     #[default]
     Auto,
     /// Keep code-block decode serial for callers that already parallelize tiles.
