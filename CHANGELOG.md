@@ -5,6 +5,10 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CPU rate- and PSNR-targeted lossy encodes of single-tile images run the
+  colour transform and DWT once per search instead of once per candidate scale;
+  output is unchanged. The retained coefficients (4 bytes per sample) count
+  against the encode and PSNR-decode budgets.
 - Default irreversible 9/7 quantization steps now follow each band's synthesis
   norm, as standard JPEG 2000 encoders signal them: steps grow about twofold per
   finer level instead of staying uniform across levels. The band with the

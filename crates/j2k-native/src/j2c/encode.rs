@@ -167,6 +167,8 @@ use self::samples::{
 };
 mod single_tile;
 use self::single_tile::ownership::{cpu_dwt_transient_bytes, dwt_decompositions_retained_bytes};
+#[doc(hidden)]
+pub use self::single_tile::IrreversibleScaleEncoder;
 use self::single_tile::{
     encode_impl, encode_precomputed_53_single_tile, encode_precomputed_97_single_tile,
     encode_resident_impl,

@@ -22,11 +22,18 @@ fn validation_image<'a>(
 
 // This intentionally receives the `Vec`: validation budgets its retained
 // allocation capacity before passing the initialized bytes to the parser.
+// `additional_retained_bytes` are caller allocations that stay live meanwhile.
 pub(super) fn decode_native_for_validation(
     codestream: &Vec<u8>,
+    additional_retained_bytes: usize,
     context: &'static str,
 ) -> Result<RawBitmap, J2kError> {
-    let retained_capacity = validation_retained_capacity(codestream.capacity(), context)?;
+    let retained_capacity = validation_retained_capacity(
+        codestream
+            .capacity()
+            .saturating_add(additional_retained_bytes),
+        context,
+    )?;
     validation_image(codestream, retained_capacity, context)?
         .decode_native_with_retained_capacity(retained_capacity)
         .map_err(|source| validation_decode_error(source, context))

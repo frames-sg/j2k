@@ -34,7 +34,7 @@ pub(super) fn validate_lossy_roundtrip(
     }
 
     let decoded =
-        decode_native_for_validation(codestream, "encoded JPEG 2000 lossy validation failed")?;
+        decode_native_for_validation(codestream, 0, "encoded JPEG 2000 lossy validation failed")?;
     if !raw_bitmap_metadata_matches(
         &decoded,
         samples.width,
@@ -51,13 +51,18 @@ pub(super) fn validate_lossy_roundtrip(
     Ok(Some(psnr_from_decoded(samples, &decoded.data)?))
 }
 
-// See `validate_lossy_roundtrip` for the `Vec` ownership contract.
+// See `validate_lossy_roundtrip` for the `Vec` ownership contract. The decode
+// budget also charges `additional_retained_bytes` of other live allocations.
 pub(super) fn decoded_psnr(
     samples: J2kLossySamples<'_>,
     codestream: &Vec<u8>,
+    additional_retained_bytes: usize,
 ) -> Result<f64, J2kError> {
-    let decoded =
-        decode_native_for_validation(codestream, "encoded JPEG 2000 PSNR validation failed")?;
+    let decoded = decode_native_for_validation(
+        codestream,
+        additional_retained_bytes,
+        "encoded JPEG 2000 PSNR validation failed",
+    )?;
     psnr_from_validated_bitmap(samples, &decoded)
 }
 
@@ -154,8 +159,11 @@ pub(super) fn validate_lossless_roundtrip(
     if validation == J2kEncodeValidation::External {
         return Ok(());
     }
-    let decoded =
-        decode_native_for_validation(codestream, "encoded JPEG 2000 lossless validation failed")?;
+    let decoded = decode_native_for_validation(
+        codestream,
+        0,
+        "encoded JPEG 2000 lossless validation failed",
+    )?;
     if !raw_bitmap_metadata_matches(
         &decoded,
         samples.width,

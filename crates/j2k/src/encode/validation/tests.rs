@@ -3,6 +3,7 @@
 use super::first_native_sample_mismatch;
 
 mod errors;
+mod retained;
 
 #[test]
 fn lossless_comparison_masks_unused_unsigned_bits() {
