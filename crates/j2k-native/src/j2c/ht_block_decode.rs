@@ -34,7 +34,7 @@ pub(crate) use state::{
 };
 pub(crate) use stats::HtBlockDecodeStats;
 pub(crate) use validation::decode_segments_validated_with_scratch_for_phase;
-#[cfg(feature = "simd")]
+#[cfg(all(feature = "simd", any(feature = "parallel", test)))]
 pub(crate) use validation::{decode_cleanup_validated_to_f32, supports_cleanup_to_f32};
 #[cfg(test)]
 pub(crate) use validation::{

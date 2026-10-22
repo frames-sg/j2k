@@ -6,10 +6,11 @@ use j2k_core::{
 use j2k_cuda::{Codec, CudaSession, Error, J2kDecoder, SurfaceResidency};
 use j2k_native::{encode, encode_htj2k, EncodeOptions};
 use j2k_test_support::{
-    cuda_device_unavailable_is_skip, cuda_runtime_and_strict_oxide_gate, cuda_runtime_gate,
-    htj2k_gray8_97_fixture, htj2k_gray8_fixture, htj2k_rgb8_97_fixture,
-    htj2k_rgb8_fixture_with_pixels, htj2k_rgb8_pattern_fixture, openhtj2k_refinement_odd_fixture,
-    rgb16ne_to_opaque_rgba16ne, wrap_jp2_codestream,
+    cuda_device_unavailable_is_skip, cuda_oxide_ptx_missing_is_skip,
+    cuda_runtime_and_strict_oxide_gate, cuda_runtime_gate, htj2k_gray8_97_fixture,
+    htj2k_gray8_fixture, htj2k_rgb8_97_fixture, htj2k_rgb8_fixture_with_pixels,
+    htj2k_rgb8_pattern_fixture, openhtj2k_refinement_odd_fixture, rgb16ne_to_opaque_rgba16ne,
+    wrap_jp2_codestream,
 };
 
 fn fixture() -> Vec<u8> {
@@ -2023,6 +2024,9 @@ fn decode_tiles_to_device_explicit_cuda_returns_cuda_surfaces_or_clear_unavailab
                 assert_resident_cuda_surface(&surface);
             }
         }
-        Err(error) => assert!(error.is_unsupported()),
+        Err(error) => assert!(
+            error.is_unsupported() || cuda_oxide_ptx_missing_is_skip(&error, module_path!()),
+            "{error}"
+        ),
     }
 }

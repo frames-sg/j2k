@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#[cfg(j2k_cuda_oxide_enabled)]
 use crate::error::CudaError;
 
+#[cfg(j2k_cuda_oxide_enabled)]
 const REQUIRE_CUDA_OXIDE_BUILD_ENV_VAR: &str = "J2K_REQUIRE_CUDA_OXIDE_BUILD";
 
+#[cfg(j2k_cuda_oxide_enabled)]
 fn ensure_cuda_oxide_ptx_built(built: bool, display_name: &str) -> Result<(), CudaError> {
     if built {
         Ok(())

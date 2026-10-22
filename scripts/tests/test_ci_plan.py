@@ -8,20 +8,32 @@ from scripts import ci_plan
 
 
 def metadata() -> dict[str, object]:
-    def package(name: str, dependencies: list[str]) -> dict[str, object]:
+    def package(
+        name: str,
+        dependencies: list[str],
+        *,
+        published: bool = True,
+        dev_dependencies: tuple[str, ...] = (),
+    ) -> dict[str, object]:
         return {
             "name": name,
             "manifest_path": f"/repo/crates/{name}/Cargo.toml",
+            # Cargo metadata reports `publish = false` as an empty registry list.
+            "publish": None if published else [],
             "dependencies": [
                 {"name": dependency, "kind": None, "target": None}
                 for dependency in dependencies
+            ]
+            + [
+                {"name": dependency, "kind": "dev", "target": None}
+                for dependency in dev_dependencies
             ],
         }
 
     return {
         "workspace_root": "/repo",
         "packages": [
-            package("j2k-core", []),
+            package("j2k-core", [], dev_dependencies=("j2k-test-support",)),
             package("j2k-profile", []),
             package("j2k-cuda-runtime", ["j2k-core", "j2k-profile"]),
             package("j2k-jpeg-cuda", ["j2k-cuda-runtime", "j2k-core"]),
@@ -32,8 +44,10 @@ def metadata() -> dict[str, object]:
             package("j2k-metal", ["j2k-metal-support", "j2k-core", "j2k-profile"]),
             package("j2k-transcode-metal", ["j2k-metal-support", "j2k-core"]),
             package("j2k-ml", ["j2k-cuda", "j2k-metal"]),
-            package("j2k-python", ["j2k-core", "j2k-cuda"]),
+            package("j2k-python", ["j2k-core", "j2k-cuda"], published=False),
             package("j2k-cli", ["j2k-core"]),
+            package("j2k-test-support", ["j2k-core"], published=False),
+            package("j2k-compare", ["j2k-core"], published=False),
         ],
     }
 
@@ -108,6 +122,53 @@ class ClassificationTests(unittest.TestCase):
         self.assertFalse(plan.cuda)
         self.assertFalse(plan.metal)
         self.assertFalse(plan.metal_compile)
+        self.assertFalse(plan.public_api)
+
+    def test_published_crate_changes_require_public_api_review(self) -> None:
+        for path in (
+            "crates/j2k-core/src/lib.rs",
+            "crates/j2k-cuda/src/lib.rs",
+            "crates/j2k-metal/Cargo.toml",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(self.classify(path).public_api)
+
+    def test_unpublished_and_dev_only_crates_skip_public_api_review(self) -> None:
+        for path in (
+            "crates/j2k-compare/src/main.rs",
+            "crates/j2k-test-support/src/lib.rs",
+            "crates/j2k-python/src/lib.rs",
+        ):
+            with self.subTest(path=path):
+                plan = self.classify(path)
+                self.assertTrue(plan.rust)
+                self.assertFalse(plan.public_api)
+
+    def test_unpublished_dependency_of_a_published_crate_requires_public_api_review(
+        self,
+    ) -> None:
+        fixture = metadata()
+        packages = fixture["packages"]
+        assert isinstance(packages, list)
+        for package in packages:
+            if package["name"] == "j2k-profile":
+                package["publish"] = []
+
+        plan = ci_plan.classify_paths(("crates/j2k-profile/src/lib.rs",), fixture)
+
+        self.assertTrue(plan.public_api)
+
+    def test_missing_publish_metadata_requires_public_api_review(self) -> None:
+        fixture = metadata()
+        packages = fixture["packages"]
+        assert isinstance(packages, list)
+        for package in packages:
+            if package["name"] == "j2k-compare":
+                del package["publish"]
+
+        plan = ci_plan.classify_paths(("crates/j2k-compare/src/main.rs",), fixture)
+
+        self.assertTrue(plan.public_api)
 
     def test_unknown_top_level_documentation_folder_fails_closed(self) -> None:
         plan = self.classify("engineering/notes.md")
@@ -132,6 +193,7 @@ class ClassificationTests(unittest.TestCase):
                 self.assertTrue(plan.cuda)
                 self.assertTrue(plan.metal)
                 self.assertTrue(plan.metal_compile)
+                self.assertTrue(plan.public_api)
 
     def test_root_metadata_unknown_infrastructure_and_planner_fail_closed(self) -> None:
         for path in (
@@ -139,6 +201,8 @@ class ClassificationTests(unittest.TestCase):
             ".cargo/config.toml",
             "build-support/unknown-tool.cfg",
             "scripts/ci_plan.py",
+            "xtask/src/semver.rs",
+            "crates/unknown-crate/src/lib.rs",
         ):
             with self.subTest(path=path):
                 plan = self.classify(path)
@@ -146,26 +210,46 @@ class ClassificationTests(unittest.TestCase):
                 self.assertTrue(plan.cuda)
                 self.assertTrue(plan.metal)
                 self.assertTrue(plan.metal_compile)
+                self.assertTrue(plan.public_api)
+
+    def test_repository_metadata_stays_out_of_public_api_review(self) -> None:
+        plan = self.classify(".github/CODEOWNERS")
+
+        self.assertTrue(plan.rust)
+        self.assertFalse(plan.public_api)
 
 
 class AggregateTests(unittest.TestCase):
     def test_required_jobs_must_succeed_and_optional_jobs_may_skip(self) -> None:
         ci_plan.validate_aggregate(
-            {"rust-quality": True, "docs": False, "metal-compile": False},
+            {"rust-quality": True, "docs": False, "metal-compile": False, "public-api": False},
             {
                 "planner": {"result": "success"},
                 "gpu-evidence": {"result": "success"},
                 "rust-quality": {"result": "success"},
                 "docs": {"result": "skipped"},
                 "metal-compile": {"result": "skipped"},
+                "public-api": {"result": "skipped"},
             },
             always_required=("planner", "gpu-evidence"),
         )
 
+    def test_planned_public_api_review_cannot_be_skipped(self) -> None:
+        with self.assertRaisesRegex(ci_plan.PlanError, "public-api"):
+            ci_plan.validate_aggregate(
+                {"rust-quality": True, "docs": False, "metal-compile": False, "public-api": True},
+                {
+                    "rust-quality": {"result": "success"},
+                    "docs": {"result": "skipped"},
+                    "metal-compile": {"result": "skipped"},
+                    "public-api": {"result": "skipped"},
+                },
+            )
+
     def test_expectation_map_must_name_every_conditional_job(self) -> None:
         with self.assertRaisesRegex(ci_plan.PlanError, "missing conditional jobs"):
             ci_plan.validate_aggregate(
-                {"rust-quality": True, "metal-compile": False},
+                {"rust-quality": True, "metal-compile": False, "public-api": False},
                 {
                     "rust-quality": {"result": "success"},
                     "docs": {"result": "skipped"},
@@ -176,23 +260,23 @@ class AggregateTests(unittest.TestCase):
     def test_missing_malformed_failed_and_unexpected_skips_fail_closed(self) -> None:
         cases = (
             (
-                {"rust-quality": True, "docs": False, "metal-compile": False},
+                {"rust-quality": True, "docs": False, "metal-compile": False, "public-api": False},
                 {},
             ),
             (
-                {"rust-quality": True, "docs": False, "metal-compile": False},
+                {"rust-quality": True, "docs": False, "metal-compile": False, "public-api": False},
                 {"rust-quality": "success"},
             ),
             (
-                {"rust-quality": True, "docs": False, "metal-compile": False},
+                {"rust-quality": True, "docs": False, "metal-compile": False, "public-api": False},
                 {"rust-quality": {"result": "failure"}},
             ),
             (
-                {"rust-quality": True, "docs": False, "metal-compile": False},
+                {"rust-quality": True, "docs": False, "metal-compile": False, "public-api": False},
                 {"rust-quality": {"result": "skipped"}},
             ),
             (
-                {"rust-quality": False, "docs": False, "metal-compile": False},
+                {"rust-quality": False, "docs": False, "metal-compile": False, "public-api": False},
                 {"rust-quality": {"result": "success"}, "planner": {"result": "cancelled"}},
             ),
         )

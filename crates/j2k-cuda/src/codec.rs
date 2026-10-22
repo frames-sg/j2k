@@ -308,7 +308,9 @@ impl TileBatchDecodeManyDevice for Codec {
 #[cfg(all(test, feature = "cuda-runtime"))]
 mod tests {
     use j2k_core::{BackendRequest, PixelFormat, TileBatchDecodeManyDevice};
-    use j2k_test_support::{cuda_runtime_required, htj2k_rgb8_pattern_fixture};
+    use j2k_test_support::{
+        cuda_oxide_ptx_missing_is_skip, cuda_runtime_required, htj2k_rgb8_pattern_fixture,
+    };
 
     use super::{Codec, CpuJ2kContext, CpuJ2kScratchPool};
     use crate::decoder::{
@@ -344,7 +346,10 @@ mod tests {
             Err(Error::CudaUnavailable) => {
                 assert!(!cuda_runtime_required());
             }
-            Err(error) => panic!("unexpected strict CUDA RGB batch error: {error}"),
+            Err(error) => assert!(
+                cuda_oxide_ptx_missing_is_skip(&error, module_path!()),
+                "unexpected strict CUDA RGB batch error: {error}"
+            ),
         }
     }
 

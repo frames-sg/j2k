@@ -35,7 +35,10 @@ mod route;
 
 pub(super) use codestream::{codestream_requirements, CodestreamRequirements};
 pub(super) use file_format::{run_jp2_cases, run_jph_cases};
-#[cfg(any(feature = "cuda-runner", feature = "metal-runner"))]
+#[cfg(any(
+    feature = "cuda-runner",
+    all(feature = "metal-runner", target_os = "macos")
+))]
 pub(super) use route::parse_only_route;
 pub(super) use route::{cpu_route, RouteEvidence};
 
@@ -555,7 +558,10 @@ mod tests {
     fn requirements(component_transform: Option<Colorspace>) -> CodestreamRequirements {
         CodestreamRequirements {
             component_transform,
-            #[cfg(any(feature = "cuda-runner", feature = "metal-runner"))]
+            #[cfg(any(
+                feature = "cuda-runner",
+                all(feature = "metal-runner", target_os = "macos")
+            ))]
             high_throughput: false,
             part15: None,
         }

@@ -10,6 +10,7 @@
 #![deny(missing_docs)]
 #![warn(unreachable_pub)]
 
+#[cfg(any(feature = "cuda-oxide-jpeg-decode", feature = "cuda-oxide-jpeg-encode"))]
 macro_rules! cuda_kernel_params {
     ($($arg:ident),+ $(,)?) => {
         [$(cuda_kernel_param(&mut $arg)),+]
@@ -24,13 +25,15 @@ mod jpeg;
 mod kernels;
 
 mod execution {
-    pub(crate) use j2k_cuda_runtime::{cuda_kernel_param, CudaExecutionStats, CudaKernelOutput};
+    #[cfg(j2k_cuda_oxide_enabled)]
+    pub(crate) use j2k_cuda_runtime::cuda_kernel_param;
+    pub(crate) use j2k_cuda_runtime::{CudaExecutionStats, CudaKernelOutput};
 }
 
 mod memory {
-    pub(crate) use j2k_cuda_runtime::{
-        CudaDeviceBuffer, CudaPinnedUploadOperationGuard, CudaPinnedUploadStagingCheckout,
-    };
+    #[cfg(feature = "cuda-oxide-jpeg-decode")]
+    pub(crate) use j2k_cuda_runtime::CudaPinnedUploadStagingCheckout;
+    pub(crate) use j2k_cuda_runtime::{CudaDeviceBuffer, CudaPinnedUploadOperationGuard};
 }
 
 pub use jpeg::{
@@ -47,6 +50,7 @@ use j2k_cuda_runtime::{
     CudaContext, CudaDeviceBuffer, CudaError, CudaExecutionStats, CudaKernelOutput,
     CudaPinnedUploadOperationGuard,
 };
+#[cfg(j2k_cuda_oxide_enabled)]
 use kernels::{CudaKernel, CudaLaunchGeometry};
 
 /// Borrowed JPEG codec operations over one low-level CUDA context.
@@ -68,14 +72,17 @@ impl<'context> JpegCudaEngine<'context> {
         self.context
     }
 
+    #[cfg(j2k_cuda_oxide_enabled)]
     fn allocate(self, len: usize) -> Result<CudaDeviceBuffer, CudaError> {
         self.context.allocate(len)
     }
 
+    #[cfg(j2k_cuda_oxide_enabled)]
     fn upload(self, bytes: &[u8]) -> Result<CudaDeviceBuffer, CudaError> {
         self.context.upload(bytes)
     }
 
+    #[cfg(feature = "cuda-oxide-jpeg-decode")]
     fn memset_d8(
         self,
         output: &CudaDeviceBuffer,
@@ -91,6 +98,7 @@ impl<'context> JpegCudaEngine<'context> {
         self.context.begin_pinned_upload_operation()
     }
 
+    #[cfg(j2k_cuda_oxide_enabled)]
     fn launch_kernel(
         self,
         kernel: CudaKernel,

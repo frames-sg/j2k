@@ -9,10 +9,10 @@ use j2k_cuda_j2k_engine::{
 use j2k_cuda_runtime::{CudaBufferPool, CudaBufferPoolLimits, CudaContext, CudaContextDiagnostics};
 #[cfg(feature = "cuda-runtime")]
 use j2k_native::{ht_uvlc_table0, ht_uvlc_table1, ht_vlc_table0, ht_vlc_table1};
+#[cfg(all(test, feature = "cuda-runtime"))]
+use std::cell::Cell;
 #[cfg(feature = "cuda-runtime")]
 use std::num::NonZeroUsize;
-#[cfg(all(test, feature = "cuda-runtime"))]
-use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(feature = "cuda-runtime")]
 use std::sync::Arc;
 
@@ -21,10 +21,12 @@ use crate::runtime::cuda_error;
 #[cfg(feature = "cuda-runtime")]
 use crate::Error;
 
+// Per thread, so tests uploading tables in parallel don't count each other's.
 #[cfg(all(test, feature = "cuda-runtime"))]
-static HTJ2K_DECODE_TABLE_UPLOADS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(all(test, feature = "cuda-runtime"))]
-static CLASSIC_DECODE_TABLE_UPLOADS: AtomicUsize = AtomicUsize::new(0);
+std::thread_local! {
+    static HTJ2K_DECODE_TABLE_UPLOADS: Cell<usize> = const { Cell::new(0) };
+    static CLASSIC_DECODE_TABLE_UPLOADS: Cell<usize> = const { Cell::new(0) };
+}
 
 /// Stable retention snapshot for one internal CUDA decode buffer pool.
 #[cfg(feature = "cuda-runtime")]
@@ -236,7 +238,7 @@ impl CudaSession {
             .upload_htj2k_decode_table_resources(tables)
             .map_err(cuda_error)?;
         #[cfg(test)]
-        HTJ2K_DECODE_TABLE_UPLOADS.fetch_add(1, Ordering::Relaxed);
+        HTJ2K_DECODE_TABLE_UPLOADS.with(|uploads| uploads.set(uploads.get() + 1));
         self.htj2k_decode_tables = Some(resources.clone());
         Ok(resources)
     }
@@ -253,7 +255,7 @@ impl CudaSession {
             .upload_classic_decode_table_resources()
             .map_err(cuda_error)?;
         #[cfg(test)]
-        CLASSIC_DECODE_TABLE_UPLOADS.fetch_add(1, Ordering::Relaxed);
+        CLASSIC_DECODE_TABLE_UPLOADS.with(|uploads| uploads.set(uploads.get() + 1));
         self.classic_decode_tables = Some(tables.clone());
         Ok(tables)
     }
@@ -418,22 +420,22 @@ impl j2k_core::AcceleratorSession for CudaSession {
 
 #[cfg(all(test, feature = "cuda-runtime"))]
 pub(crate) fn reset_htj2k_decode_table_uploads_for_test() {
-    HTJ2K_DECODE_TABLE_UPLOADS.store(0, Ordering::Relaxed);
+    HTJ2K_DECODE_TABLE_UPLOADS.with(|uploads| uploads.set(0));
 }
 
 #[cfg(all(test, feature = "cuda-runtime"))]
 pub(crate) fn htj2k_decode_table_uploads_for_test() -> usize {
-    HTJ2K_DECODE_TABLE_UPLOADS.load(Ordering::Relaxed)
+    HTJ2K_DECODE_TABLE_UPLOADS.with(Cell::get)
 }
 
 #[cfg(all(test, feature = "cuda-runtime"))]
 pub(crate) fn reset_classic_decode_table_uploads_for_test() {
-    CLASSIC_DECODE_TABLE_UPLOADS.store(0, Ordering::Relaxed);
+    CLASSIC_DECODE_TABLE_UPLOADS.with(|uploads| uploads.set(0));
 }
 
 #[cfg(all(test, feature = "cuda-runtime"))]
 pub(crate) fn classic_decode_table_uploads_for_test() -> usize {
-    CLASSIC_DECODE_TABLE_UPLOADS.load(Ordering::Relaxed)
+    CLASSIC_DECODE_TABLE_UPLOADS.with(Cell::get)
 }
 
 impl std::fmt::Debug for CudaSession {

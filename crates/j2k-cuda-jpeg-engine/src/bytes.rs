@@ -144,6 +144,7 @@ impl_cuda_gpu_abi! {
     },
 }
 
+#[cfg(any(feature = "cuda-oxide-jpeg-decode", feature = "cuda-oxide-jpeg-encode"))]
 macro_rules! gpu_ref_bytes {
     ($($name:ident: $ty:ty;)+) => {
         $(
@@ -154,6 +155,7 @@ macro_rules! gpu_ref_bytes {
     };
 }
 
+#[cfg(any(feature = "cuda-oxide-jpeg-decode", feature = "cuda-oxide-jpeg-encode"))]
 macro_rules! gpu_slice_bytes {
     ($($name:ident: $ty:ty;)+) => {
         $(
@@ -164,6 +166,7 @@ macro_rules! gpu_slice_bytes {
     };
 }
 
+#[cfg(any(feature = "cuda-oxide-jpeg-decode", feature = "cuda-oxide-jpeg-encode"))]
 macro_rules! gpu_slice_bytes_mut {
     ($($name:ident: $ty:ty;)+) => {
         $(
@@ -174,25 +177,40 @@ macro_rules! gpu_slice_bytes_mut {
     };
 }
 
+#[cfg(feature = "cuda-oxide-jpeg-decode")]
 gpu_ref_bytes! {
     cuda_jpeg_huffman_table_as_bytes: CudaJpegHuffmanTable;
+}
+
+#[cfg(feature = "cuda-oxide-jpeg-encode")]
+gpu_ref_bytes! {
     cuda_jpeg_baseline_encode_huffman_table_as_bytes: CudaJpegBaselineEncodeHuffmanTable;
 }
 
+#[cfg(feature = "cuda-oxide-jpeg-decode")]
 gpu_slice_bytes! {
     u16_slice_as_bytes: u16;
     cuda_jpeg_entropy_checkpoints_as_bytes: CudaJpegEntropyCheckpoint;
     cuda_jpeg_decode_statuses_as_bytes: CudaJpegDecodeStatus;
     cuda_jpeg_entropy_sync_states_as_bytes: CudaJpegEntropySyncState;
     cuda_jpeg_entropy_overflow_states_as_bytes: CudaJpegEntropyOverflowState;
+}
+
+#[cfg(feature = "cuda-oxide-jpeg-encode")]
+gpu_slice_bytes! {
     cuda_jpeg_baseline_encode_params_as_bytes: CudaJpegBaselineEncodeParams;
     cuda_jpeg_baseline_encode_statuses_as_bytes: CudaJpegBaselineEncodeStatus;
 }
 
+#[cfg(feature = "cuda-oxide-jpeg-decode")]
 gpu_slice_bytes_mut! {
     cuda_jpeg_decode_statuses_as_bytes_mut: CudaJpegDecodeStatus;
     cuda_jpeg_entropy_sync_states_as_bytes_mut: CudaJpegEntropySyncState;
     cuda_jpeg_entropy_overflow_states_as_bytes_mut: CudaJpegEntropyOverflowState;
+}
+
+#[cfg(feature = "cuda-oxide-jpeg-encode")]
+gpu_slice_bytes_mut! {
     cuda_jpeg_baseline_encode_statuses_as_bytes_mut: CudaJpegBaselineEncodeStatus;
 }
 

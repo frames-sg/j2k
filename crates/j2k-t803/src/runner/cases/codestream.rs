@@ -8,7 +8,10 @@ use crate::{HtCodeBlockSetMode, Part15CodestreamEvidence};
 #[derive(Clone, Debug)]
 pub(in crate::runner) struct CodestreamRequirements {
     pub(in crate::runner) component_transform: Option<Colorspace>,
-    #[cfg(any(feature = "cuda-runner", feature = "metal-runner"))]
+    #[cfg(any(
+        feature = "cuda-runner",
+        all(feature = "metal-runner", target_os = "macos")
+    ))]
     pub(in crate::runner) high_throughput: bool,
     pub(in crate::runner) part15: Option<Part15CodestreamEvidence>,
 }
@@ -59,7 +62,10 @@ pub(in crate::runner) fn codestream_requirements(
         } else {
             Colorspace::Ict
         }),
-        #[cfg(any(feature = "cuda-runner", feature = "metal-runner"))]
+        #[cfg(any(
+            feature = "cuda-runner",
+            all(feature = "metal-runner", target_os = "macos")
+        ))]
         high_throughput: header.high_throughput,
         part15,
     })

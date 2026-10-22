@@ -17,6 +17,7 @@ use super::{
 use crate::allocation::HostPhaseBudget;
 
 impl CudaHtj2kDecodePlan {
+    #[cfg(feature = "cuda-runtime")]
     pub(crate) fn from_referenced_tile_grayscale_plan_direct_source(
         plan: &J2kDirectGrayscalePlan,
         ht_payloads: &[HtCodeBlockPayloadRanges],
@@ -114,13 +115,18 @@ impl CudaHtj2kDecodePlan {
                     )?;
                 }
                 J2kDirectGrayscaleStep::ClassicSubBand(subband) => {
-                    let ReferencedHtPayloadMode::Compact(shared_payload) = &mut payload_mode else {
+                    #[cfg(feature = "cuda-runtime")]
+                    let ReferencedHtPayloadMode::Compact(shared_payload) = &mut payload_mode
+                    else {
                         return Err(Error::capability_rejected(
                             j2k_core::CapabilityRejection::unsupported_operation(
                                 "direct-source CUDA HTJ2K payloads do not support classic code blocks",
                             ),
                         ));
                     };
+                    // Without the runtime, compact payloads are the only mode.
+                    #[cfg(not(feature = "cuda-runtime"))]
+                    let ReferencedHtPayloadMode::Compact(shared_payload) = &mut payload_mode;
                     append_referenced_classic_subband(
                         &mut owners,
                         subband,

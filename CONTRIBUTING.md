@@ -76,6 +76,11 @@ surface behavior should update:
   codec support changes
 - `cargo xtask semver` for the stable published libraries
 
+A pull request that can change a published crate's API runs the `Public API
+review` job, which runs `cargo xtask stable-api` and `cargo xtask semver` on
+hosted macOS. Update the snapshots and the reviewed API evidence in the same
+pull request, so the change is reviewed before it reaches `main`.
+
 ## Releases
 
 The release process and its required checks are in

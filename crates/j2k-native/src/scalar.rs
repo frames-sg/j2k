@@ -34,7 +34,7 @@ pub use self::encode::{
 };
 mod ht_decode;
 mod research_transforms;
-#[cfg(feature = "simd")]
+#[cfg(all(feature = "simd", feature = "parallel"))]
 pub(crate) use self::ht_decode::try_decode_ht_code_block_to_f32;
 pub use self::ht_decode::{
     decode_ht_code_block_scalar, decode_ht_code_block_scalar_until_phase,

@@ -400,6 +400,7 @@ impl CudaHtj2kDecodePlan {
         Self::from_grayscale_direct_plan_region(plan, output_format, output_origin, plan.dimensions)
     }
 
+    #[cfg(feature = "cuda-runtime")]
     pub(crate) fn from_grayscale_direct_plan_with_budget(
         plan: &J2kDirectGrayscalePlan,
         output_format: PixelFormat,

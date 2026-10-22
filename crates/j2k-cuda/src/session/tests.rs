@@ -39,6 +39,36 @@ fn htj2k_decode_tables_are_uploaded_once_per_session() {
 }
 
 #[test]
+fn decode_table_upload_counts_ignore_other_threads() {
+    // Tests run in parallel, so uploads on another thread must not count here.
+    crate::session::reset_htj2k_decode_table_uploads_for_test();
+    crate::session::reset_classic_decode_table_uploads_for_test();
+    let (htj2k, classic) = std::thread::spawn(|| {
+        let mut session = CudaSession::default();
+        (
+            session.htj2k_decode_table_resources().map(drop),
+            session.classic_decode_table_resources().map(drop),
+        )
+    })
+    .join()
+    .expect("upload thread");
+    if [&htj2k, &classic].into_iter().any(|upload| {
+        matches!(
+            upload,
+            Err(Error::CudaUnavailable | Error::CudaRuntime { .. })
+        )
+    }) && !cuda_required()
+    {
+        return;
+    }
+    htj2k.expect("HTJ2K decode table upload on another thread");
+    classic.expect("classic decode table upload on another thread");
+
+    assert_eq!(crate::session::htj2k_decode_table_uploads_for_test(), 0);
+    assert_eq!(crate::session::classic_decode_table_uploads_for_test(), 0);
+}
+
+#[test]
 fn classic_decode_tables_are_uploaded_once_per_session() {
     crate::session::reset_classic_decode_table_uploads_for_test();
     let mut session = CudaSession::default();
