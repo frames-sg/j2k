@@ -147,6 +147,7 @@ pub(in crate::j2c::decode) fn plan_tile_ht_route<'a>(
         return Ok(TileHtRoute::PerSubBand);
     }
 
+    let has_later_components = components.end < tile.component_infos.len();
     let mut budget = DecodeAllocationBudget::for_storage(storage)?;
     let plan = match plan_tile(tile, components, storage, header, &mut budget) {
         Ok(Some(plan)) => plan,
@@ -167,6 +168,35 @@ pub(in crate::j2c::decode) fn plan_tile_ht_route<'a>(
     }
 
     let workers = rayon::current_num_threads().min(plan.strips.len());
+    let mut tasks: Vec<(&mut [f32], &Strip)> = Vec::new();
+    let route_budget = (|| -> Result<()> {
+        tasks
+            .try_reserve_exact(plan.strips.len())
+            .map_err(|_| DecodingError::HostAllocationFailed)?;
+        budget.include_capacity_overage::<(&mut [f32], &Strip)>(
+            plan.strips.len(),
+            tasks.capacity(),
+        )?;
+        // Each worker allocates its clipped-block scratch on first use.
+        budget.include_elements::<f32>(
+            workers
+                .checked_mul(plan.max_clipped_samples)
+                .ok_or(ValidationError::ImageTooLarge)?,
+        )?;
+        if has_later_components {
+            // Component-at-a-time decoding retains this serial context while
+            // preparing the next component. Do not commit a parallel bank
+            // that leaves too little headroom for that replacement peak.
+            budget.include_bytes(tile_ctx.serial_tier1_capacity_bytes()?)?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = route_budget {
+        if crate::j2c::decode::reuse::is_capacity_error(&error) {
+            return Ok(TileHtRoute::PerSubBand);
+        }
+        return Err(error);
+    }
     let Ok(growths) = prepare_uniform_task_workspaces(
         &mut tile_ctx.ht_task_workspaces,
         workers,
@@ -180,7 +210,7 @@ pub(in crate::j2c::decode) fn plan_tile_ht_route<'a>(
     };
 
     let mut coefficients = core::mem::take(&mut storage.coefficients);
-    let result = decode_strips(&plan, &mut coefficients, tile_ctx, &mut budget);
+    let result = decode_strips(&plan, &mut coefficients, tile_ctx, tasks);
     storage.coefficients = coefficients;
     result?;
 
@@ -612,19 +642,14 @@ fn prepare_uniform_task_workspaces(
     Ok(growths)
 }
 
-fn decode_strips(
-    plan: &TilePlan<'_>,
-    coefficients: &mut [f32],
+fn decode_strips<'plan, 'coefficients>(
+    plan: &'plan TilePlan<'_>,
+    coefficients: &'coefficients mut [f32],
     tile_ctx: &mut TileDecodeContext,
-    budget: &mut DecodeAllocationBudget,
+    mut tasks: Vec<(&'coefficients mut [f32], &'plan Strip)>,
 ) -> Result<()> {
     // Strips are sorted by start offset, so carving them front to back yields
     // disjoint mutable outputs.
-    let mut tasks = Vec::new();
-    tasks
-        .try_reserve_exact(plan.strips.len())
-        .map_err(|_| DecodingError::HostAllocationFailed)?;
-    budget.include_capacity_overage::<(&mut [f32], &Strip)>(plan.strips.len(), tasks.capacity())?;
     let mut rest = coefficients;
     let mut consumed = 0usize;
     for strip in &plan.strips {
@@ -639,12 +664,6 @@ fn decode_strips(
     // Largest rows first so stragglers are small.
     tasks.sort_unstable_by_key(|(_, strip)| core::cmp::Reverse(strip.work));
     let workers = rayon::current_num_threads().min(tasks.len());
-    // Each worker allocates its clipped-block scratch on first use.
-    budget.include_elements::<f32>(
-        workers
-            .checked_mul(plan.max_clipped_samples)
-            .ok_or(ValidationError::ImageTooLarge)?,
-    )?;
     let queue = Mutex::new(tasks.into_iter());
     let failed = AtomicBool::new(false);
     // Each worker owns one already-budgeted workspace for the whole tile.
