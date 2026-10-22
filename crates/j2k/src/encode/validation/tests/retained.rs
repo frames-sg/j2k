@@ -21,6 +21,14 @@ fn textured_rgb() -> Vec<u8> {
 }
 
 #[test]
+fn retained_quality_decode_matches_plain_decode_up_to_its_refusal_with_three_threads() {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(3)
+        .build()
+        .expect("three-thread validation pool");
+    pool.install(retained_quality_decode_matches_plain_decode_up_to_its_refusal);
+}
+
 fn retained_quality_decode_matches_plain_decode_up_to_its_refusal() {
     let pixels = textured_rgb();
     let samples = J2kLossySamples::new(&pixels, 128, 96, 3, 8, false).expect("fixture samples");
