@@ -5,6 +5,10 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CPU HTJ2K cleanup decoding decodes each quad pair's symbols in one call with
+  the MEL and VLC refills inlined and masked VLC table indexes, and its
+  magnitude and sign row loops are reorganized around those pairs. Output is
+  unchanged.
 - CPU HTJ2K encodes of cleanup-only code blocks keep the cleanup segment as
   the block's payload instead of copying it into a second buffer. Output is
   unchanged.

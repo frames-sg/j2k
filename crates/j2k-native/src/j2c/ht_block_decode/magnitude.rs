@@ -463,14 +463,10 @@ pub(super) fn decode_cleanup_and_magnitude_sign_to_f32<const IRREVERSIBLE_MIDPOI
     }
     v_n_scratch[..v_n_width].fill(0);
 
-    let mut mel = MelDecoder::new(coded_data, lcup, scup);
-    let mut vlc = ReverseBitReader::new_vlc(coded_data, lcup, scup);
     let consumable = (width as usize)
         .checked_mul(height as usize)?
         .checked_mul(4)?;
     let flat = unstuff_magsgn(&coded_data[..lcup - scup], magsgn_buffer, consumable)?;
-    let mut magsgn = FlatBitReader::new(flat)?;
-    let mut run = mel.get_run()?;
     let output = simd::FinalOutput {
         coefficient_shift: 31 - u32::from(coded_bitplanes),
         midpoint_scale: crate::math::pow2i(-(31_i32 - i32::from(coded_bitplanes))),
@@ -479,10 +475,10 @@ pub(super) fn decode_cleanup_and_magnitude_sign_to_f32<const IRREVERSIBLE_MIDPOI
 
     dispatch!(Level::new(), simd => simd::decode_cleanup_and_magnitude_sign_to_f32_rows::<IRREVERSIBLE_MIDPOINT, _>(
         simd,
-        &mut mel,
-        &mut vlc,
-        &mut run,
-        &mut magsgn,
+        coded_data,
+        lcup,
+        scup,
+        flat,
         scratch,
         decoded_data,
         v_n_scratch,
