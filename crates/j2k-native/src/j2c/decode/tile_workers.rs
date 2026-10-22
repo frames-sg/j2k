@@ -67,10 +67,13 @@ pub(super) fn decode_tiles(
         .saturating_mul(largest_tile)
         .saturating_add(EST_FIXED_WORKER_BYTES)
         .saturating_add(EST_BYTES_PER_POOL_THREAD.saturating_mul(threads));
-    let workers = max_workers.min(remaining / worker_bytes);
-    if workers < 2 {
+    // Workers the cap holds below `max_workers` run inner Auto, which can
+    // outgrow a worker's share and leave the serial loop to decode the image
+    // again, so such images decode serially from the start.
+    if remaining / worker_bytes < max_workers {
         return None;
     }
+    let workers = max_workers;
     let worker_baseline = DEFAULT_MAX_DECODE_BYTES - remaining / workers;
     // The caller's owners and the job tables stay live beside the workers.
     let shared_bytes = WorkspaceBytes {
