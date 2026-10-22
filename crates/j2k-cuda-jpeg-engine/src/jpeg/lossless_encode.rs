@@ -116,6 +116,7 @@ impl JpegCudaEngine<'_> {
 }
 
 /// Check the parameter block against itself and the input buffer.
+#[cfg(feature = "cuda-oxide-jpeg-lossless-encode")]
 pub(super) fn validate_lossless_encode_job(
     job: &CudaJpegLosslessEncodeJob<'_>,
 ) -> Result<(), CudaError> {

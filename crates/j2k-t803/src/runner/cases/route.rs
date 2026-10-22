@@ -15,7 +15,10 @@ pub(in crate::runner) fn cpu_route(mct: bool) -> RouteEvidence {
     route_evidence(ExecutionLocation::Cpu, None, mct)
 }
 
-#[cfg(any(feature = "cuda-runner", feature = "metal-runner"))]
+#[cfg(any(
+    feature = "cuda-runner",
+    all(feature = "metal-runner", target_os = "macos")
+))]
 pub(in crate::runner) fn parse_only_route() -> RouteEvidence {
     RouteEvidence {
         kind: RouteKind::Cpu,

@@ -25,6 +25,7 @@ jobs:
       cuda: ${{ steps.plan.outputs.cuda }}
       metal: ${{ steps.plan.outputs.metal }}
       metal_compile: ${{ steps.plan.outputs.metal_compile }}
+      public_api: ${{ steps.plan.outputs.public_api }}
       expectations: ${{ steps.plan.outputs.expectations }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -139,6 +140,32 @@ jobs:
           save-if: false
       - run: cargo xtask metal-compile
 
+  public-api:
+    name: Public API review
+    needs: [planner]
+    if: ${{ needs.planner.outputs.public_api == 'true' }}
+    # Published Metal baselines include macOS-gated public API, so the API
+    # snapshots and cargo-semver-checks run on macOS, as in full validation.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: "1.99.0"
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: nightly-2026-08-13
+          targets: aarch64-apple-darwin
+      - uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7
+        with:
+          tool: cargo-public-api@0.52.0
+      - run: cargo public-api --version || cargo install cargo-public-api --version 0.52.0 --locked
+      - run: cargo install cargo-semver-checks --version 0.51.0 --locked
+      - run: cargo xtask stable-api
+      - run: cargo xtask semver
+
   gpu-evidence:
     name: GPU evidence policy
     needs: [planner]
@@ -190,6 +217,7 @@ jobs:
       - rust-quality
       - docs
       - metal-compile
+      - public-api
       - gpu-evidence
     runs-on: ubuntu-latest
     env:

@@ -33,8 +33,9 @@ pub use auto_routing::{
 pub use corpus::{collect_jpeg_paths, is_jpeg_path, paths_from_env};
 pub use cuda::{
     cuda_device_unavailable_is_skip, cuda_jpeg_hardware_decode_gate,
-    cuda_jpeg_hardware_decode_required, cuda_runtime_and_strict_oxide_gate, cuda_runtime_gate,
-    cuda_runtime_required, cuda_strict_oxide_gate, cuda_strict_oxide_required,
+    cuda_jpeg_hardware_decode_required, cuda_oxide_ptx_missing_is_skip,
+    cuda_runtime_and_strict_oxide_gate, cuda_runtime_gate, cuda_runtime_required,
+    cuda_strict_oxide_gate, cuda_strict_oxide_required,
 };
 pub use dicom_matrix::{dicom_matrix_cases, DicomMatrixCase};
 pub use fixtures::{

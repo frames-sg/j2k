@@ -6,6 +6,7 @@ use j2k_cuda_j2k_engine::{
     CudaJ2kInverseMctJob, CudaJ2kStoreGray16Job, CudaJ2kStoreRgb16Job, CudaJ2kStoreRgb8Job,
     J2kCudaEngine,
 };
+#[cfg(feature = "cuda-runtime")]
 use j2k_cuda_runtime::CudaContext;
 #[cfg(feature = "cuda-runtime")]
 use j2k_native::{

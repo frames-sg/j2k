@@ -4,6 +4,7 @@
 use j2k_cuda_j2k_engine::{
     CudaHtj2kCleanupTarget, CudaHtj2kCodeBlockJob, CudaHtj2kDecodeTables, J2kCudaEngine,
 };
+#[cfg(feature = "cuda-runtime")]
 use j2k_cuda_runtime::CudaContext;
 #[cfg(feature = "cuda-runtime")]
 use j2k_native::{

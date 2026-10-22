@@ -32,6 +32,7 @@ use j2k_native::{DecodeSettings, Image};
 // Gating helper — mirrors the pattern in htj2k_cuda_kernels.rs (line 24–26).
 // ---------------------------------------------------------------------------
 
+use j2k_test_support::cuda_oxide_ptx_missing_is_skip;
 #[cfg(feature = "cuda-runtime")]
 use j2k_test_support::cuda_runtime_gate;
 
@@ -735,9 +736,9 @@ fn lossless_facade_in_scope_input_never_hits_ok_none_fallback() {
             );
         }
         Err(err) => {
-            // Strict encode error is expected when CUDA is unavailable.
+            // Strict encode error is expected when CUDA or its kernels are unavailable.
             assert!(
-                err.is_unsupported(),
+                err.is_unsupported() || cuda_oxide_ptx_missing_is_skip(&err, module_path!()),
                 "rejection for an in-scope input must be a typed unsupported error, not an internal panic or silent fallback: {err}"
             );
         }

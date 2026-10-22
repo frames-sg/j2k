@@ -96,6 +96,7 @@ pub(super) fn append_ht_subband(
 
 pub(super) enum ReferencedHtPayloadMode<'a> {
     Compact(&'a mut Vec<u8>),
+    #[cfg(feature = "cuda-runtime")]
     DirectSource,
 }
 
@@ -152,6 +153,7 @@ pub(super) fn append_referenced_ht_subband_with_mode<'a>(
                 j2k_core::CapabilityRejection::unsupported_bit_depth(PLAN_BITPLANES_UNSUPPORTED),
             ));
         }
+        #[cfg(feature = "cuda-runtime")]
         if matches!(payload_mode, ReferencedHtPayloadMode::DirectSource)
             && (required_regions.is_some()
                 || job.number_of_coding_passes > 1
@@ -165,11 +167,14 @@ pub(super) fn append_referenced_ht_subband_with_mode<'a>(
         }
         let compact_offset = match payload_mode {
             ReferencedHtPayloadMode::Compact(bytes) => Some(bytes.len()),
+            #[cfg(feature = "cuda-runtime")]
             ReferencedHtPayloadMode::DirectSource => None,
         };
         let output = match payload_mode {
             ReferencedHtPayloadMode::Compact(bytes) if required => Some(&mut **bytes),
-            ReferencedHtPayloadMode::Compact(_) | ReferencedHtPayloadMode::DirectSource => None,
+            ReferencedHtPayloadMode::Compact(_) => None,
+            #[cfg(feature = "cuda-runtime")]
+            ReferencedHtPayloadMode::DirectSource => None,
         };
         let (payload_len, _, source_offset) =
             consume_referenced_ht_payload(payloads, job, encoded, output)?;

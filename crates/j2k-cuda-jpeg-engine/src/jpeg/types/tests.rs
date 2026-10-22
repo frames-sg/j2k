@@ -169,7 +169,7 @@ fn entropy_self_sync_decodes_zero_stream_when_required() {
         .diagnose_jpeg_420_entropy_self_sync(&plan)
         .expect("cuda-oxide JPEG entropy self-sync");
     assert_eq!(report.subsequence_count(), 1);
-    assert!(report.overflows.is_empty());
+    assert_eq!(report.overflows, [] as [CudaJpegEntropyOverflowState; 0]);
     assert_eq!(report.execution.kernel_dispatches(), 1);
     assert_eq!(report.states[0].code, 0);
     assert_eq!(report.states[0].start_bit, 0);

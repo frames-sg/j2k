@@ -271,7 +271,7 @@ fn cuda_encode_stage_accelerator_preserves_cpu_codestream_validity() {
     };
     let mut accelerator = CudaEncodeStageAccelerator::default();
 
-    let codestream = encode_with_cuda_test_accelerator(CudaTestEncodeRequest {
+    let encoded = encode_with_cuda_test_accelerator(CudaTestEncodeRequest {
         pixels: &pixels,
         width: 8,
         height: 8,
@@ -280,8 +280,17 @@ fn cuda_encode_stage_accelerator_preserves_cpu_codestream_validity() {
         signed: false,
         options: &options,
         accelerator: &mut accelerator,
-    })
-    .expect("encode with CUDA stage accelerator");
+    });
+    let codestream = match encoded {
+        Ok(codestream) => codestream,
+        Err(error) => {
+            assert!(
+                j2k_test_support::cuda_oxide_ptx_missing_is_skip(&error, module_path!()),
+                "encode with CUDA stage accelerator: {error:?}"
+            );
+            return;
+        }
+    };
     let decoded = Image::new(&codestream, &DecodeSettings::default())
         .expect("codestream parses")
         .decode_native()

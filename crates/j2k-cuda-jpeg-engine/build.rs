@@ -33,5 +33,6 @@ const PROJECTS: &[CudaOxideProject] = &[
 ];
 
 fn main() -> Result<(), Box<dyn Error>> {
-    build_cuda_oxide_projects(PROJECTS, None)
+    // Launch plumbing shared by the kernel features compiles only with one of them.
+    build_cuda_oxide_projects(PROJECTS, Some("j2k_cuda_oxide_enabled"))
 }

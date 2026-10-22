@@ -60,7 +60,7 @@ BROAD_PATHS = frozenset(
     }
 )
 BROAD_PREFIXES = (".cargo/", ".github/workflows/", "scripts/", "xtask/")
-CONDITIONAL_JOBS = ("rust-quality", "docs", "metal-compile")
+CONDITIONAL_JOBS = ("rust-quality", "docs", "metal-compile", "public-api")
 
 
 class PlanError(RuntimeError):
@@ -74,6 +74,7 @@ class Plan:
     cuda: bool
     metal: bool
     metal_compile: bool
+    public_api: bool
     paths: tuple[str, ...]
 
     def expectations(self) -> dict[str, bool]:
@@ -81,6 +82,7 @@ class Plan:
             "rust-quality": self.rust,
             "docs": self.docs,
             "metal-compile": self.metal_compile,
+            "public-api": self.public_api,
         }
 
 
@@ -140,9 +142,16 @@ def _string(value: Any, context: str) -> str:
     return value
 
 
-def _metadata_graph(
-    metadata: Mapping[str, Any],
-) -> tuple[dict[str, str], dict[str, set[str]]]:
+@dataclass(frozen=True)
+class _Workspace:
+    package_roots: dict[str, str]
+    dependencies: dict[str, set[str]]
+    # Only normal dependencies can reach a published crate's public API.
+    normal_dependencies: dict[str, set[str]]
+    published: frozenset[str]
+
+
+def _metadata_graph(metadata: Mapping[str, Any]) -> _Workspace:
     root = Path(_string(metadata.get("workspace_root"), "metadata workspace_root"))
     packages_value = metadata.get("packages")
     if not isinstance(packages_value, list) or not packages_value:
@@ -150,6 +159,8 @@ def _metadata_graph(
 
     package_roots: dict[str, str] = {}
     dependencies: dict[str, set[str]] = {}
+    normal_dependencies: dict[str, set[str]] = {}
+    published: set[str] = set()
     raw_packages: list[Mapping[str, Any]] = []
     for index, value in enumerate(packages_value):
         package = _object(value, f"metadata package {index}")
@@ -168,6 +179,10 @@ def _metadata_graph(
             raise PlanError(f"duplicate workspace package metadata for {name}")
         package_roots[relative_root] = name
         dependencies[name] = set()
+        normal_dependencies[name] = set()
+        # `publish = false` is an empty registry list; a missing key fails closed.
+        if package.get("publish", None) != []:
+            published.add(name)
         raw_packages.append(package)
 
     workspace_names = set(dependencies)
@@ -183,7 +198,14 @@ def _metadata_graph(
             )
             if dependency_name in workspace_names:
                 dependencies[name].add(dependency_name)
-    return package_roots, dependencies
+                if dependency.get("kind") is None:
+                    normal_dependencies[name].add(dependency_name)
+    return _Workspace(
+        package_roots=package_roots,
+        dependencies=dependencies,
+        normal_dependencies=normal_dependencies,
+        published=frozenset(published),
+    )
 
 
 def _dependency_closure(roots: Iterable[str], dependencies: Mapping[str, set[str]]) -> set[str]:
@@ -194,7 +216,7 @@ def _dependency_closure(roots: Iterable[str], dependencies: Mapping[str, set[str
         if package in closure:
             continue
         if package not in dependencies:
-            raise PlanError(f"GPU root package is absent from cargo metadata: {package}")
+            raise PlanError(f"root package is absent from cargo metadata: {package}")
         closure.add(package)
         pending.extend(dependencies[package] - closure)
     return closure
@@ -223,20 +245,23 @@ def classify_paths(paths: Iterable[str], metadata: Mapping[str, Any]) -> Plan:
     normalized_paths = tuple(dict.fromkeys(_safe_repo_path(path) for path in paths))
     if not normalized_paths:
         raise PlanError("at least one changed path is required")
-    package_roots, dependencies = _metadata_graph(metadata)
-    cuda_dependencies = _dependency_closure(CUDA_ROOTS, dependencies)
-    metal_dependencies = _dependency_closure(METAL_ROOTS, dependencies)
+    workspace = _metadata_graph(metadata)
+    cuda_dependencies = _dependency_closure(CUDA_ROOTS, workspace.dependencies)
+    metal_dependencies = _dependency_closure(METAL_ROOTS, workspace.dependencies)
+    public_api_packages = _dependency_closure(workspace.published, workspace.normal_dependencies)
 
     rust = False
     docs = False
     cuda = False
     metal = False
+    public_api = False
     for path in normalized_paths:
         if _is_quality_evidence(path):
             docs = True
             rust = True
             cuda = True
             metal = True
+            public_api = True
             continue
         if _is_documentation(path):
             docs = True
@@ -245,11 +270,13 @@ def classify_paths(paths: Iterable[str], metadata: Mapping[str, Any]) -> Plan:
             rust = True
             cuda = True
             metal = True
+            public_api = True
             continue
 
-        package = _package_for_path(path, package_roots)
+        package = _package_for_path(path, workspace.package_roots)
         if package is not None:
             rust = True
+            public_api = public_api or package in public_api_packages
             if package in SHARED_GPU_PACKAGES:
                 cuda = True
                 metal = True
@@ -262,12 +289,14 @@ def classify_paths(paths: Iterable[str], metadata: Mapping[str, Any]) -> Plan:
             rust = True
             cuda = True
             metal = True
+            public_api = True
             continue
 
         if path.endswith((".rs", ".toml", ".lock", ".py", ".sh", ".yml", ".yaml")):
             rust = True
             cuda = True
             metal = True
+            public_api = True
             continue
 
         # Known repository metadata stays hosted-only. Everything else fails broad.
@@ -277,6 +306,7 @@ def classify_paths(paths: Iterable[str], metadata: Mapping[str, Any]) -> Plan:
         rust = True
         cuda = True
         metal = True
+        public_api = True
 
     return Plan(
         rust=rust,
@@ -284,6 +314,7 @@ def classify_paths(paths: Iterable[str], metadata: Mapping[str, Any]) -> Plan:
         cuda=cuda,
         metal=metal,
         metal_compile=metal,
+        public_api=public_api,
         paths=normalized_paths,
     )
 
@@ -373,6 +404,7 @@ def _write_outputs(plan: Plan, output_path: str | None) -> None:
         "cuda": plan.cuda,
         "metal": plan.metal,
         "metal_compile": plan.metal_compile,
+        "public_api": plan.public_api,
         "expectations": plan.expectations(),
         "plan": asdict(plan),
     }

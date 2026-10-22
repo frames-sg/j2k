@@ -50,7 +50,7 @@ Stability values:
 | `J2K_METAL_CLASSIC_TIER1_SPLIT_MQ_BYTE_GPU_TOKEN_PACK` | Set to `1` to request, or `0` to disable, the split MQ-byte GPU token-pack route. | Auto | Experimental |
 | `J2K_HYBRID_FLAT_CPU_TIER1` | Forces flat CPU Tier-1 batching for J2K Metal hybrid decode when set to a truthy value accepted by the adapter. | Adapter default | Experimental |
 | `J2K_CUDA_OXIDE_ARCH` | Overrides the cuda-oxide build target when a `j2k-cuda-runtime/cuda-oxide-*` feature is enabled. | `sm_80` | Experimental |
-| `J2K_REQUIRE_CUDA_OXIDE_BUILD` | Requires every enabled cuda-oxide PTX project to build successfully. Use this on Linux/NVIDIA validation and benchmark hosts. | Disabled | Test/CI |
+| `J2K_REQUIRE_CUDA_OXIDE_BUILD` | Requires every enabled cuda-oxide PTX project to build successfully, and makes CUDA tests fail instead of skipping when a kernel's PTX was not built. Use this on Linux/NVIDIA validation and benchmark hosts. | Disabled; tests skip when PTX was not built | Test/CI |
 
 ## Test And CI Gates
 

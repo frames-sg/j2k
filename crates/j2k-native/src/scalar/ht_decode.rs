@@ -130,7 +130,7 @@ pub struct HtCodeBlockDecodeProfile {
 /// Whole-image cleanup-only fast path. Unlike the public scalar helpers, this
 /// may publish a prefix before malformed entropy is rejected; callers discard
 /// their internal coefficient plane when the image decode returns an error.
-#[cfg(feature = "simd")]
+#[cfg(all(feature = "simd", any(feature = "parallel", test)))]
 pub(crate) fn try_decode_ht_code_block_to_f32(
     job: HtCodeBlockDecodeJob<'_>,
     output: &mut [f32],

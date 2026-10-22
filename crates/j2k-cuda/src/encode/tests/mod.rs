@@ -68,6 +68,10 @@ use j2k_native::{
 };
 
 fn assert_strict_cuda_classic_tier1_error<E: CodecError + ?Sized>(err: &E, context: &str) {
+    // A CUDA host whose build skipped cuda-oxide fails before tier-1.
+    if j2k_test_support::cuda_oxide_ptx_missing_is_skip(err, context) {
+        return;
+    }
     assert!(err.is_unsupported());
     let message = err.to_string();
     assert!(
