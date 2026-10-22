@@ -65,3 +65,61 @@ fn byte_target_reencoding_is_deterministic() {
     assert!(first.report.actual_bytes <= target + 512);
     assert_strictly_decodes(&first.codestream);
 }
+
+fn textured_rgb(width: u32, height: u32) -> Vec<u8> {
+    let mut state = 0x2545_f491_u32;
+    (0..width * height * 3)
+        .map(|index| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            u8::try_from(((index % (width * 3)) / 3 + (state >> 26)) & 0xff).expect("masked sample")
+        })
+        .collect()
+}
+
+/// The CPU facade shares one colour transform and DWT across rate-search
+/// candidates; the accelerator facade with CPU-only hooks encodes each one
+/// independently. The `lossy::candidates` unit tests are the full oracle.
+#[test]
+fn cpu_rate_search_matches_accelerator_facade_route() {
+    use j2k::{
+        encode_j2k_lossy_with_accelerator, BackendKind, CpuOnlyJ2kEncodeStageAccelerator,
+        J2kBlockCodingMode, J2kEncodeValidation,
+    };
+
+    let (width, height) = (96, 72);
+    let pixels = textured_rgb(width, height);
+    let samples = J2kLossySamples::new(&pixels, width, height, 3, 8, false).expect("samples");
+    for mode in [
+        J2kBlockCodingMode::HighThroughput,
+        J2kBlockCodingMode::Classic,
+    ] {
+        for target in [
+            J2kRateTarget::BitsPerPixel(0.5),
+            J2kRateTarget::Bytes(3_000),
+            J2kRateTarget::PsnrDb(32.0),
+        ] {
+            let mut options = options(target)
+                .with_block_coding_mode(mode)
+                .with_validation(J2kEncodeValidation::CpuRoundTrip);
+            options.psnr_iteration_budget = 6;
+            let cpu = encode_j2k_lossy(samples, &options).expect("CPU rate search");
+            let accelerated = encode_j2k_lossy_with_accelerator(
+                samples,
+                &options.clone().with_backend(EncodeBackendPreference::Auto),
+                BackendKind::Cpu,
+                &mut CpuOnlyJ2kEncodeStageAccelerator,
+            )
+            .expect("accelerator-facade rate search");
+            let outcome = |encoded: j2k::EncodedLossyJ2k| {
+                let report = encoded.report;
+                let psnr = report.psnr_db.map(f64::to_bits);
+                (
+                    encoded.codestream,
+                    report.quantization_scale.to_bits(),
+                    psnr,
+                )
+            };
+            assert_eq!(outcome(cpu), outcome(accelerated), "{mode:?} {target:?}");
+        }
+    }
+}

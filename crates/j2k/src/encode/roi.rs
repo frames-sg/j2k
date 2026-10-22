@@ -14,8 +14,7 @@ use super::contracts::{
 use super::cpu::encode_cpu_with_roi_regions;
 use super::high_bit;
 use super::lossy::{
-    effective_lossy_target, encode_cpu_lossy_with_roi_regions, encode_lossy_targeted, lossy_report,
-    validate_lossy_options,
+    effective_lossy_target, encode_cpu_lossy_targeted, lossy_report, validate_lossy_options,
 };
 use super::samples::{J2kLosslessSamples, J2kLossySamples, J2kRoiRegion};
 use super::validation::validate_lossless_roundtrip;
@@ -128,9 +127,7 @@ pub(super) fn encode_lossy(
         roi_regions,
     )?;
     let target = effective_lossy_target(options)?;
-    let attempt = encode_lossy_targeted(samples, options, target, |scale| {
-        encode_cpu_lossy_with_roi_regions(samples, options, scale, &native_roi_regions)
-    })?;
+    let attempt = encode_cpu_lossy_targeted(samples, options, target, Some(&native_roi_regions))?;
     let report = lossy_report(samples, options, target, &attempt)?;
     Ok(EncodedLossyJ2k {
         codestream: attempt.codestream,

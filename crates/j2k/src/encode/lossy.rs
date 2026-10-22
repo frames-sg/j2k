@@ -12,8 +12,15 @@ use super::contracts::{
 use super::cpu::native_lossy_options;
 use super::high_bit;
 use super::samples::J2kLossySamples;
-use super::validation::{decoded_psnr, validate_lossy_roundtrip};
+use super::validation::validate_lossy_roundtrip;
 use crate::{J2kEncodeDispatchReport, J2kError};
+
+mod candidates;
+use self::candidates::{CpuCandidates, LossyCandidates};
+
+/// Error contexts of CPU lossy encodes, shared with reused-transform candidates.
+const LOSSY_ENCODE_CONTEXT: &str = "native JPEG 2000 lossy encode failed";
+const LOSSY_ROI_ENCODE_CONTEXT: &str = "native JPEG 2000 lossy ROI encode failed";
 
 pub(super) struct LossyAttempt {
     pub(super) codestream: Vec<u8>,
@@ -27,9 +34,7 @@ pub(super) fn encode(
     validate_lossy_options(options)?;
     high_bit::validate_lossy_options(samples, options)?;
     let target = effective_lossy_target(options)?;
-    let attempt = encode_lossy_targeted(samples, options, target, |scale| {
-        encode_cpu_lossy(samples, options, scale)
-    })?;
+    let attempt = encode_cpu_lossy_targeted(samples, options, target, None)?;
     let report = lossy_report(samples, options, target, &attempt)?;
     Ok(EncodedLossyJ2k {
         codestream: attempt.codestream,
@@ -76,10 +81,7 @@ pub(super) fn encode_cpu_lossy(
         },
     );
     encode_result.map_err(|source| {
-        J2kError::from_native_encode_error_with_context(
-            source,
-            "native JPEG 2000 lossy encode failed",
-        )
+        J2kError::from_native_encode_error_with_context(source, LOSSY_ENCODE_CONTEXT)
     })
 }
 
@@ -101,36 +103,48 @@ pub(super) fn encode_cpu_lossy_with_roi_regions(
         roi_regions,
     )
     .map_err(|source| {
-        J2kError::from_native_encode_error_with_context(
-            source,
-            "native JPEG 2000 lossy ROI encode failed",
-        )
+        J2kError::from_native_encode_error_with_context(source, LOSSY_ROI_ENCODE_CONTEXT)
     })
+}
+
+/// CPU lossy encode at the target's selected scale; `roi_regions` selects the
+/// ROI encoder. Rate and PSNR searches share one colour transform and DWT
+/// across candidates, each byte-identical to an independent encode.
+pub(super) fn encode_cpu_lossy_targeted(
+    samples: J2kLossySamples<'_>,
+    options: &J2kLossyEncodeOptions,
+    target: Option<J2kRateTarget>,
+    roi_regions: Option<&[NativeEncodeRoiRegion]>,
+) -> Result<LossyAttempt, J2kError> {
+    // Fixed-scale encodes have one candidate; Qfactor has its own entry point.
+    let reuse = target.is_some() && options.qfactor.is_none();
+    let mut candidates = CpuCandidates::new(samples, options, roi_regions, reuse);
+    encode_lossy_targeted(samples, options, target, &mut candidates)
 }
 
 pub(super) fn encode_lossy_targeted(
     samples: J2kLossySamples<'_>,
     options: &J2kLossyEncodeOptions,
     target: Option<J2kRateTarget>,
-    mut encode_at_scale: impl FnMut(f32) -> Result<Vec<u8>, J2kError>,
+    candidates: &mut impl LossyCandidates,
 ) -> Result<LossyAttempt, J2kError> {
     match target {
         None => {
-            let codestream = encode_at_scale(1.0)?;
+            let codestream = candidates.encode_candidate(1.0)?;
             Ok(LossyAttempt {
                 codestream,
                 quantization_scale: 1.0,
             })
         }
         Some(J2kRateTarget::Bytes(bytes)) => {
-            encode_lossy_to_byte_target(samples, options, bytes, encode_at_scale)
+            encode_lossy_to_byte_target(samples, options, bytes, candidates)
         }
         Some(J2kRateTarget::BitsPerPixel(bits_per_pixel)) => {
             let target_bytes = target_bytes_for_bpp(samples, bits_per_pixel)?;
-            encode_lossy_to_byte_target(samples, options, target_bytes, encode_at_scale)
+            encode_lossy_to_byte_target(samples, options, target_bytes, candidates)
         }
         Some(J2kRateTarget::PsnrDb(psnr_db)) => {
-            encode_lossy_to_psnr_target(samples, options, psnr_db, encode_at_scale)
+            encode_lossy_to_psnr_target(samples, options, psnr_db, candidates)
         }
     }
 }
@@ -157,14 +171,14 @@ pub(super) fn encode_lossy_to_byte_target(
     samples: J2kLossySamples<'_>,
     options: &J2kLossyEncodeOptions,
     target_bytes: u64,
-    mut encode_at_scale: impl FnMut(f32) -> Result<Vec<u8>, J2kError>,
+    candidates: &mut impl LossyCandidates,
 ) -> Result<LossyAttempt, J2kError> {
     let tolerance = byte_target_tolerance(target_bytes);
     let maximum_bytes = target_bytes.saturating_add(tolerance);
     let (scale_floor, scale_ceiling) = quantization_scale_bounds(samples, options)?;
     let mut low = scale_floor;
     let mut high = scale_floor;
-    let initial_codestream = encode_at_scale(high)?;
+    let initial_codestream = candidates.encode_candidate(high)?;
     let mut best_len = initial_codestream.len() as u64;
     let mut current_len = best_len;
     let mut best_scale = high;
@@ -176,7 +190,7 @@ pub(super) fn encode_lossy_to_byte_target(
     while current_len > maximum_bytes && high < scale_ceiling {
         low = high;
         high = (high * 2.0).min(scale_ceiling);
-        let codestream = encode_at_scale(high)?;
+        let codestream = candidates.encode_candidate(high)?;
         let len = codestream.len() as u64;
         current_len = len;
         let diff = byte_target_diff(len, target_bytes);
@@ -203,7 +217,7 @@ pub(super) fn encode_lossy_to_byte_target(
         if mid <= low || mid >= high {
             break;
         }
-        let codestream = encode_at_scale(mid)?;
+        let codestream = candidates.encode_candidate(mid)?;
         let len = codestream.len() as u64;
         let diff = byte_target_diff(len, target_bytes);
         if len <= maximum_bytes && diff < best_diff {
@@ -217,7 +231,7 @@ pub(super) fn encode_lossy_to_byte_target(
         }
     }
 
-    let codestream = encode_at_scale(best_scale)?;
+    let codestream = candidates.encode_candidate(best_scale)?;
     let final_len = codestream.len() as u64;
     if final_len > maximum_bytes {
         return Err(J2kError::RateTargetUnreachable {
@@ -235,14 +249,14 @@ pub(super) fn encode_lossy_to_psnr_target(
     samples: J2kLossySamples<'_>,
     options: &J2kLossyEncodeOptions,
     target_psnr_db: f64,
-    mut encode_at_scale: impl FnMut(f32) -> Result<Vec<u8>, J2kError>,
+    candidates: &mut impl LossyCandidates,
 ) -> Result<LossyAttempt, J2kError> {
     let tolerance = options.psnr_tolerance_db;
     let (scale_floor, scale_ceiling) = quantization_scale_bounds(samples, options)?;
     let mut low = scale_floor;
     let mut high = scale_floor;
-    let initial_codestream = encode_at_scale(high)?;
-    let initial_psnr = decoded_psnr(samples, &initial_codestream)?;
+    let initial_codestream = candidates.encode_candidate(high)?;
+    let initial_psnr = candidates.candidate_psnr(samples, &initial_codestream)?;
     // The selected scale is re-encoded once after the search. Keeping the
     // earlier output here would undercount it during every later candidate.
     drop(initial_codestream);
@@ -254,8 +268,8 @@ pub(super) fn encode_lossy_to_psnr_target(
             break;
         }
         high = (high * 2.0).min(scale_ceiling);
-        let codestream = encode_at_scale(high)?;
-        let psnr = decoded_psnr(samples, &codestream)?;
+        let codestream = candidates.encode_candidate(high)?;
+        let psnr = candidates.candidate_psnr(samples, &codestream)?;
         best_psnr = best_psnr.max(psnr);
         if psnr + tolerance >= target_psnr_db {
             best_scale = Some(high);
@@ -269,8 +283,8 @@ pub(super) fn encode_lossy_to_psnr_target(
     // Always inspect the admissible endpoint if no probe has met the target.
     if best_scale.is_none() && high < scale_ceiling {
         high = scale_ceiling;
-        let codestream = encode_at_scale(high)?;
-        let psnr = decoded_psnr(samples, &codestream)?;
+        let codestream = candidates.encode_candidate(high)?;
+        let psnr = candidates.candidate_psnr(samples, &codestream)?;
         best_psnr = best_psnr.max(psnr);
         if psnr + tolerance >= target_psnr_db {
             best_scale = Some(high);
@@ -283,8 +297,8 @@ pub(super) fn encode_lossy_to_psnr_target(
         if mid <= low || mid >= high {
             break;
         }
-        let codestream = encode_at_scale(mid)?;
-        let psnr = decoded_psnr(samples, &codestream)?;
+        let codestream = candidates.encode_candidate(mid)?;
+        let psnr = candidates.candidate_psnr(samples, &codestream)?;
         best_psnr = best_psnr.max(psnr);
         if psnr + tolerance >= target_psnr_db {
             best_scale = Some(mid);
@@ -297,8 +311,8 @@ pub(super) fn encode_lossy_to_psnr_target(
         target: format!("{target_psnr_db:.3} dB"),
         best: format!("{best_psnr:.3} dB"),
     })?;
-    let codestream = encode_at_scale(best_scale)?;
-    let final_psnr = decoded_psnr(samples, &codestream)?;
+    let codestream = candidates.encode_candidate(best_scale)?;
+    let final_psnr = candidates.candidate_psnr(samples, &codestream)?;
     if final_psnr + tolerance < target_psnr_db {
         return Err(J2kError::RateTargetUnreachable {
             target: format!("{target_psnr_db:.3} dB"),
