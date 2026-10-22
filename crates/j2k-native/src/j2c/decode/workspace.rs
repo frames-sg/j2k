@@ -259,8 +259,8 @@ impl DecoderContext<'_> {
 
     /// Opt in to the row-streamed region IDWT, an internal experiment that
     /// lowers region-decode memory without changing output.
-    #[doc(hidden)]
-    pub fn set_line_region_idwt(&mut self, enabled: bool) {
+    #[cfg(test)]
+    pub(crate) fn set_line_region_idwt(&mut self, enabled: bool) {
         self.line_region_idwt = enabled;
     }
 
