@@ -251,6 +251,7 @@ impl<'a> Image<'a> {
         let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
         decoder_context.set_output_region(Some(roi));
         decoder_context.set_round_irreversible_output(true);
+        decoder_context.permit_line_region_idwt(self.permits_line_region_idwt());
         let decode_result = j2c::decode(
             self.codestream,
             &self.header,
@@ -260,6 +261,7 @@ impl<'a> Image<'a> {
         );
         decoder_context.set_output_region(None);
         decoder_context.set_round_irreversible_output(false);
+        decoder_context.permit_line_region_idwt(false);
         decode_result?;
 
         let components = &decoder_context.tile_decode_context.channel_data;

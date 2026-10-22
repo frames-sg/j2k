@@ -8,7 +8,8 @@ use super::super::codestream::WaveletTransform;
 use super::super::decode::{DecompositionStorage, TileDecodeContext, WorkspaceBytes};
 use super::super::rect::IntRect;
 use super::horizontal::filter_horizontal_codestream;
-use super::model::{CoefficientSource, IDWTOutput};
+use super::lines::{reconstruct_rows, ring_samples};
+use super::model::{CoefficientSource, IDWTOutput, IdwtPlacement};
 use super::vertical::filter_vertical_codestream;
 use crate::error::{DecodingError, ValidationError};
 use crate::j2c::roi::output_region_rect;
@@ -22,7 +23,9 @@ use crate::{checked_decode_usize_product2, try_resize_decode_elements, Result};
 /// only buffer. Components run one after another, and [`apply_roi`] releases
 /// the previous component's output before it allocates, so the peak is the
 /// largest per-component peak rather than their sum. A last level written
-/// into a `channel_data` plane uses padding the plane already holds.
+/// into a `channel_data` plane uses padding the plane already holds. The
+/// row-streamed IDWT instead holds every level's ring of rows at once, charged
+/// at the 9/7 ring depth whatever the component's transform.
 pub(crate) fn roi_idwt_peak_elements(
     storage: &DecompositionStorage<'_>,
     skipped_resolution_levels: u8,
@@ -43,6 +46,15 @@ pub(crate) fn roi_idwt_peak_elements(
             {
                 peak = peak.max(window_elements(window)?);
             }
+            continue;
+        }
+        if storage.line_region_idwt {
+            let windows = tile_decompositions
+                .decompositions
+                .clone()
+                .take(active_len)
+                .map_while(|decomposition_idx| roi_plan.idwt_window(decomposition_idx));
+            peak = peak.max(ring_samples(windows, WaveletTransform::Irreversible97)?);
             continue;
         }
         let mut previous = 0usize;
@@ -154,6 +166,16 @@ pub(super) fn apply_roi(
     // before allocating this component's windows.
     output.coefficients = Vec::new();
     output.rect = IntRect::from_xywh(0, 0, 0, 0);
+    if storage.line_region_idwt {
+        return apply_roi_lines(
+            storage,
+            tile_ctx,
+            component_idx,
+            &decompositions[..active_len],
+            header,
+            transform,
+        );
+    }
     // Everything else the decode holds stays the same while the level
     // windows below come and go, so sample it once.
     let workspace = WorkspaceBytes::sample(tile_ctx, storage)?;
@@ -199,7 +221,7 @@ pub(super) fn apply_roi(
                 .record(workspace.with_idwt(window_bytes));
             output.coefficients = Vec::new();
             output.rect = output_window;
-            output.in_channel_data = true;
+            output.placement = IdwtPlacement::ChannelPadding;
             return Ok(());
         }
 
@@ -225,6 +247,95 @@ pub(super) fn apply_roi(
 
     output.coefficients = current_coefficients;
     output.rect = current_rect;
+    Ok(())
+}
+
+/// Stream the component's active levels a row at a time and write the last
+/// level's rows inside the tile and output region into its `channel_data`
+/// plane, leaving the level shift to `store`.
+fn apply_roi_lines(
+    storage: &DecompositionStorage<'_>,
+    tile_ctx: &mut TileDecodeContext,
+    component_idx: usize,
+    decompositions: &[Decomposition],
+    header: &Header<'_>,
+    transform: WaveletTransform,
+) -> Result<()> {
+    let roi_plan = storage
+        .roi_plan
+        .as_ref()
+        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+    let tile_decompositions = &storage.tile_decompositions[component_idx];
+    let mut windows = Vec::new();
+    windows
+        .try_reserve_exact(decompositions.len())
+        .map_err(|_| DecodingError::HostAllocationFailed)?;
+    for decomposition_idx in tile_decompositions
+        .decompositions
+        .clone()
+        .take(decompositions.len())
+    {
+        // Without a window the level has nothing to reconstruct, as in the
+        // whole-window path.
+        let Some(window) = roi_plan.idwt_window(decomposition_idx) else {
+            return Ok(());
+        };
+        windows.push(window);
+    }
+    let (Some(last_window), Some(final_window), Some(output_region)) = (
+        windows.last().copied(),
+        roi_plan.final_window(component_idx),
+        tile_ctx.output_region,
+    ) else {
+        return Ok(());
+    };
+    let copy = last_window.intersect(final_window);
+    let region = output_region_rect(&header.size_data, output_region);
+
+    let mut ring = core::mem::take(&mut tile_ctx.idwt_line_rings);
+    let ring_len = ring_samples(windows.iter().copied(), transform)?;
+    if ring.len() < ring_len {
+        try_resize_decode_elements(&mut ring, ring_len, 0.0)?;
+    }
+    tile_ctx.idwt_line_rings = ring;
+    record_workspace_now(tile_ctx, storage)?;
+    let mut ring = core::mem::take(&mut tile_ctx.idwt_line_rings);
+
+    let plane = &mut tile_ctx.channel_data[component_idx].container;
+    let plane_width = region.width() as usize;
+    let mut write_row = |y: u32, samples: &[f32]| -> Result<()> {
+        let start = (y - region.y0) as usize * plane_width + (copy.x0 - region.x0) as usize;
+        plane
+            .get_mut(start..start + samples.len())
+            .ok_or(DecodingError::CodeBlockDecodeFailure)?
+            .copy_from_slice(samples);
+        Ok(())
+    };
+    let ll_sub_band = &storage.sub_bands[tile_decompositions.first_ll_sub_band];
+    let result = reconstruct_rows(
+        storage,
+        decompositions,
+        &windows,
+        CoefficientSource::from_sub_band(ll_sub_band, storage),
+        transform,
+        &mut ring[..ring_len],
+        copy,
+        &mut write_row,
+        &mut tile_ctx.debug_counters.idwt_output_samples,
+    );
+    tile_ctx.idwt_line_rings = ring;
+    result?;
+    tile_ctx.idwt_output.rect = last_window;
+    tile_ctx.idwt_output.placement = IdwtPlacement::ChannelPlane;
+    Ok(())
+}
+
+fn record_workspace_now(
+    tile_ctx: &mut TileDecodeContext,
+    storage: &DecompositionStorage<'_>,
+) -> Result<()> {
+    let workspace = WorkspaceBytes::sample(tile_ctx, storage)?;
+    tile_ctx.debug_counters.workspace_peak.record(workspace);
     Ok(())
 }
 

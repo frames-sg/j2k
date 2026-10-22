@@ -139,6 +139,10 @@ pub struct DecoderContext<'a> {
     #[cfg(test)]
     pub(crate) direct_plan_code_blocks: usize,
     pub(super) cpu_decode_parallelism: CpuDecodeParallelism,
+    /// Internal opt-in for the row-streamed region IDWT. Outputs that permit
+    /// it, and only for images without palette, component-definition or
+    /// sYCC/CIELab post-processing, use it for region decodes without a hook.
+    pub(crate) line_region_idwt: bool,
     workspace_stats: DecoderWorkspaceStats,
 }
 
@@ -150,6 +154,7 @@ impl Default for DecoderContext<'_> {
             #[cfg(test)]
             direct_plan_code_blocks: 0,
             cpu_decode_parallelism: CpuDecodeParallelism::Auto,
+            line_region_idwt: false,
             workspace_stats: DecoderWorkspaceStats::default(),
         }
     }
@@ -165,6 +170,7 @@ impl DecoderContext<'_> {
             #[cfg(test)]
             direct_plan_code_blocks: 0,
             cpu_decode_parallelism: workspace.cpu_decode_parallelism,
+            line_region_idwt: false,
             workspace_stats: workspace.stats,
         }
     }
@@ -249,5 +255,17 @@ impl DecoderContext<'_> {
     /// Set the native CPU decode parallelism policy.
     pub fn set_cpu_decode_parallelism(&mut self, parallelism: CpuDecodeParallelism) {
         self.cpu_decode_parallelism = parallelism;
+    }
+
+    /// Opt in to the row-streamed region IDWT, an internal experiment that
+    /// lowers region-decode memory without changing output.
+    #[cfg(test)]
+    pub(crate) fn set_line_region_idwt(&mut self, enabled: bool) {
+        self.line_region_idwt = enabled;
+    }
+
+    /// Allow the current call to use the row-streamed region IDWT.
+    pub(crate) fn permit_line_region_idwt(&mut self, permitted: bool) {
+        self.tile_decode_context.line_region_idwt_permitted = permitted;
     }
 }

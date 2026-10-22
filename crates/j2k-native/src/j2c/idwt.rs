@@ -10,6 +10,7 @@ mod filter_common;
 mod horizontal;
 mod interleave;
 mod interleave_i64;
+mod lines;
 mod model;
 mod orchestrate;
 mod roi;
@@ -20,7 +21,7 @@ pub(crate) use direct::apply_codestream_single_decomposition_idwt_job;
 pub(crate) use direct::apply_single_decomposition_idwt_job;
 #[cfg(test)]
 pub(crate) use horizontal::test_irreversible_filter_97i;
-pub(crate) use model::{idwt_buffer_size, IDWTOutput};
+pub(crate) use model::{idwt_buffer_size, IDWTOutput, IdwtPlacement};
 pub(crate) use orchestrate::apply;
 pub(crate) use roi::{last_level_fits_channels, roi_idwt_peak_elements};
 

@@ -683,6 +683,7 @@ impl<'a> Image<'a> {
         validate_roi((self.width(), self.height()), roi)?;
         (|| {
             let retained_image_bytes = self.retained_metadata_bytes()?;
+            decoder_context.permit_line_region_idwt(self.permits_line_region_idwt());
             let mut decoded_image =
                 self.decode_image(decoder_context, Some(roi), None, true, retained_image_bytes)?;
             let component_owner_capacity = decoded_image.decoded_components.capacity();
@@ -780,8 +781,25 @@ impl<'a> Image<'a> {
         );
         decoder_context.set_output_region(None);
         decoder_context.set_round_irreversible_output(false);
+        decoder_context.permit_line_region_idwt(false);
         decode_result?;
         self.finish_decoded_image(decoder_context, retained_baseline_bytes)
+    }
+
+    /// Whether a packed region output of this image may use the row-streamed
+    /// region IDWT: it has no palette, component-definition, sYCC or `CIELab`
+    /// post-processing, which keep the whole-window path.
+    pub(crate) fn permits_line_region_idwt(&self) -> bool {
+        self.boxes.palette.is_none()
+            && self.boxes.channel_definition.is_none()
+            && !matches!(
+                self.boxes
+                    .primary_color_specification()
+                    .map(|specification| &specification.color_space),
+                Some(jp2::colr::ColorSpace::Enumerated(
+                    EnumeratedColorspace::Sycc | EnumeratedColorspace::CieLab(_)
+                ))
+            )
     }
 
     fn finish_decoded_image<'ctx>(
