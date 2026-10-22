@@ -14,6 +14,7 @@ pub(in crate::j2c::encode) mod ownership;
 mod plan;
 mod precomputed;
 mod resident;
+mod retained;
 mod reversible_i64;
 #[cfg(test)]
 mod tests;
@@ -37,6 +38,7 @@ pub(super) use precomputed::{
     encode_precomputed_53_single_tile, encode_precomputed_97_single_tile,
 };
 pub(super) use resident::encode_resident_impl;
+pub use retained::IrreversibleScaleEncoder;
 use reversible_i64::{encode_reversible_i64_single_tile_packets, ReversibleI64SingleTileRequest};
 use tile_encode::{encode_tile_packets, EncodedTilePackets};
 

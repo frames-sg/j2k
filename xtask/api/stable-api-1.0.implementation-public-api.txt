@@ -2441,6 +2441,7 @@ impl j2k_native::Jp2ChannelDefinition
 impl j2k_native::PreparedRegionDecoder<'_, '_, '_>
 impl j2k_native::Reversible53CoefficientImage
 impl j2k_native::packet_math::HtSegmentLengthError
+impl<'a> j2k_native::IrreversibleScaleEncoder<'a>
 impl<'a> j2k_native::J2kDirectDecodedPlane<'a>
 pub const fn j2k_native::Image<'a>::used_lenient_metadata_recovery(&self) -> bool
 pub const fn j2k_native::J2kDirectCpuScratch::new() -> Self
@@ -2511,6 +2512,9 @@ pub fn j2k_native::Image<'a>::retained_allocation_bytes(&self) -> j2k_native::Re
 pub fn j2k_native::Image<'a>::supports_direct_device_plane_reuse(&self) -> bool
 pub fn j2k_native::Image<'a>::tile_count(&self) -> u32
 pub fn j2k_native::Image<'a>::uses_high_throughput_block_coding(&self) -> bool
+pub fn j2k_native::IrreversibleScaleEncoder<'a>::encode_at_scale(&mut self, f32) -> j2k_native::EncodeResult<alloc::vec::Vec<u8>>
+pub fn j2k_native::IrreversibleScaleEncoder<'a>::new(&'a [u8], u32, u32, u16, u8, bool, j2k_native::EncodeOptions, &'a [j2k_native::EncodeRoiRegion]) -> Self
+pub fn j2k_native::IrreversibleScaleEncoder<'a>::retained_bytes(&self) -> usize
 pub fn j2k_native::J2kCodeBlockDecodeProfile::new() -> Self
 pub fn j2k_native::J2kCodeBlockDecodeWorkspace::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn j2k_native::J2kDirectCpuEntropyWorkspace::retained_classic_bytes(&self) -> usize
@@ -2876,6 +2880,7 @@ pub struct j2k_native::HtCodeBlockDecodeWorkspace
 pub struct j2k_native::HtCodeBlockEncodeWorkspace
 pub struct j2k_native::HtSigPropBenchmarkState(_)
 pub struct j2k_native::HtSubBandDecodeJob<'a>
+pub struct j2k_native::IrreversibleScaleEncoder<'a>
 pub struct j2k_native::J2kCodeBlockBatchJob<'a>
 pub struct j2k_native::J2kCodeBlockDecodeJob<'a>
 pub struct j2k_native::J2kCodeBlockDecodeWorkspace

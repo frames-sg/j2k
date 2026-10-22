@@ -26,7 +26,7 @@ fn target_dispatch_preserves_none_bytes_and_bpp_semantics() {
         ..J2kLossyEncodeOptions::default()
     };
     let mut scales = Vec::new();
-    let attempt = encode_lossy_targeted(samples, &options, None, |scale| {
+    let attempt = encode_lossy_targeted(samples, &options, None, &mut |scale: f32| {
         scales.push(scale);
         Ok(vec![1, 2, 3])
     })
@@ -36,7 +36,7 @@ fn target_dispatch_preserves_none_bytes_and_bpp_semantics() {
     assert_eq!(attempt.quantization_scale.to_bits(), 1.0_f32.to_bits());
 
     for target in [J2kRateTarget::Bytes(1), J2kRateTarget::BitsPerPixel(8.0)] {
-        let attempt = encode_lossy_targeted(samples, &options, Some(target), |scale| {
+        let attempt = encode_lossy_targeted(samples, &options, Some(target), &mut |scale: f32| {
             let len = if scale <= 1.0 { 600 } else { 1 };
             Ok(vec![0; len])
         })

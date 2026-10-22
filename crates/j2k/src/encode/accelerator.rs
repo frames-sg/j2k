@@ -109,7 +109,7 @@ pub(super) fn encode_lossy(
     let target = effective_lossy_target(options)?;
     let required_stages = required_lossy_encode_stages(samples, options, accelerated_backend);
     let mut final_dispatch = J2kEncodeDispatchReport::default();
-    let attempt = encode_lossy_targeted(samples, options, target, |scale| {
+    let attempt = encode_lossy_targeted(samples, options, target, &mut |scale| {
         let before = accelerator.dispatch_report();
         let result = encode_lossy_with_native_accelerator(samples, options, scale, accelerator);
         final_dispatch = accelerator.dispatch_report().saturating_delta(before);
