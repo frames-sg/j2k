@@ -193,6 +193,8 @@ fn check_regions(case: &Case, source: &[u8], codestream: &[u8]) {
             .unwrap_or_else(|err| panic!("parse {name}: {err:?}"));
         let (width, height) = (image.width(), image.height());
         let mut context = DecoderContext::default();
+        let mut lines = DecoderContext::default();
+        lines.set_line_region_idwt(true);
         let native = image
             .decode_native_with_context(&mut context)
             .expect(name)
@@ -219,21 +221,23 @@ fn check_regions(case: &Case, source: &[u8], codestream: &[u8]) {
             (width - 13, height - 9, 13, 9),
             (width - 1, height - 1, 1, 1),
         ] {
-            let label = format!("{name} reduction={reduction} roi={roi:?}");
-            let region = image
-                .decode_native_region_with_context(roi, &mut context)
-                .expect(&label);
-            assert!(
-                region.data == crop(&native, width, height, roi),
-                "{label}: native"
-            );
-            let region = image
-                .decode_region_with_context(roi, &mut context)
-                .expect(&label);
-            assert!(
-                region.data == crop(&packed, width, height, roi),
-                "{label}: packed"
-            );
+            for (context, idwt) in [(&mut context, "whole-window"), (&mut lines, "streamed")] {
+                let label = format!("{name} reduction={reduction} roi={roi:?} {idwt}");
+                let region = image
+                    .decode_native_region_with_context(roi, context)
+                    .expect(&label);
+                assert!(
+                    region.data == crop(&native, width, height, roi),
+                    "{label}: native"
+                );
+                let region = image
+                    .decode_region_with_context(roi, context)
+                    .expect(&label);
+                assert!(
+                    region.data == crop(&packed, width, height, roi),
+                    "{label}: packed"
+                );
+            }
         }
     }
 }
