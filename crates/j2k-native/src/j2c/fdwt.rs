@@ -11,11 +11,14 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::mem::size_of;
 
+#[cfg(test)]
 use crate::math::{floor_f32, floor_half_sum_f32, mul_add};
 use crate::{EncodeError, EncodeResult};
 use j2k_codec_math::dwt;
 
+mod lifting;
 mod packed;
+pub(crate) use lifting::packed_dwt_scratch_len;
 pub(crate) use packed::{
     try_forward_dwt_packed_f32, try_forward_dwt_packed_i64, PackedDwtGeometry, PackedSubbandRect,
     PackedSubbandView,
@@ -103,12 +106,6 @@ pub(crate) fn try_forward_dwt(
     reversible: bool,
 ) -> EncodeResult<DwtDecomposition> {
     packed::validate_packed_dwt_plane(samples.len(), width, height)?;
-    let w = usize::try_from(width).map_err(|_| EncodeError::ArithmeticOverflow {
-        what: "forward DWT width",
-    })?;
-    let h = usize::try_from(height).map_err(|_| EncodeError::ArithmeticOverflow {
-        what: "forward DWT height",
-    })?;
 
     // Legacy decomposed output uses the same packed transform core as the
     // allocation-aware encode path, then extracts bands for compatibility.
@@ -127,7 +124,7 @@ pub(crate) fn try_forward_dwt(
             bytes: sample_bytes,
         })?;
     buffer.extend_from_slice(samples);
-    let scratch_count = w.max(h);
+    let scratch_count = packed_dwt_scratch_len(width, height)?;
     let scratch_bytes =
         scratch_count
             .checked_mul(size_of::<f32>())
@@ -210,6 +207,7 @@ pub(crate) fn forward_dwt(
 ///   s(n) = x(2n)   + floor((d(n-1) + d(n)) / 4 + 0.5)
 ///
 /// Applied in-place: even indices are low-pass, odd indices are high-pass.
+#[cfg(test)]
 fn forward_lift_53_phase(data: &mut [f32], odd_origin: bool) {
     if !odd_origin {
         forward_lift_53(data);
@@ -251,6 +249,7 @@ fn forward_lift_53_i64_phase(data: &mut [i64], odd_origin: bool) {
     }
 }
 
+#[cfg(test)]
 fn forward_lift_97_phase(data: &mut [f32], odd_origin: bool) {
     if !odd_origin {
         forward_lift_97(data);
@@ -283,6 +282,7 @@ fn lifting_neighbors<T: Copy>(data: &[T], index: usize) -> (T, T) {
     )
 }
 
+#[cfg(test)]
 fn forward_lift_53(data: &mut [f32]) {
     let n = data.len();
     if n < 2 {
@@ -345,6 +345,7 @@ fn forward_lift_53_i64(data: &mut [i64]) {
     }
 }
 
+#[cfg(test)]
 fn forward_lift_53_even(data: &mut [f32]) {
     let n = data.len();
     debug_assert!(n >= 2);
@@ -401,6 +402,7 @@ fn floor_div4_plus_half_i64(value: i64) -> i64 {
 ///   4. s(n) += δ * (d(n-1) + d(n))     (second update)
 ///   5. s(n) *= 1/κ                       (scale low-pass)
 ///   6. d(n) *= κ                         (scale high-pass)
+#[cfg(test)]
 fn forward_lift_97(data: &mut [f32]) {
     let n = data.len();
     if n < 2 {

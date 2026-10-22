@@ -5,6 +5,10 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CPU encodes lift the packed `f32` forward DWT in SIMD column strips of one or
+  two cache lines per row, copied into a scratch block of their low-pass rows
+  then their high-pass rows, instead of one column at a time through the line
+  transform. Every sample sees the same operations. Output is unchanged.
 - Fused RGB8 CPU decodes of single-tile colour images no longer allocate and
   zero a last component plane that they then free unused. The last
   component's coefficient buffer becomes its plane, so a fresh decoder

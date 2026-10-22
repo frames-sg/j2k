@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{forward_lift_53_i64_phase, forward_lift_53_phase, forward_lift_97_phase};
+use super::{forward_lift_53_i64_phase, lifting};
+use crate::math::{dispatch, Level};
 use crate::{EncodeError, EncodeResult};
 use j2k_types::encode_geometry::encode_dwt_level_dimensions_at_origin;
 
-fn usize_from_u32(value: u32, what: &'static str) -> EncodeResult<usize> {
+pub(super) fn usize_from_u32(value: u32, what: &'static str) -> EncodeResult<usize> {
     usize::try_from(value).map_err(|_| EncodeError::ArithmeticOverflow { what })
 }
 
@@ -247,6 +248,20 @@ impl PackedDwtGeometry {
     }
 }
 
+/// One level of the packed transform: the `width` x `height` region in the
+/// top-left corner of a plane with row stride `stride`, its low-pass size, and
+/// whether its first column and row sit at odd coordinates.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct LevelRegion {
+    pub(super) stride: usize,
+    pub(super) width: usize,
+    pub(super) height: usize,
+    pub(super) low_width: usize,
+    pub(super) low_height: usize,
+    pub(super) odd_x: bool,
+    pub(super) odd_y: bool,
+}
+
 fn forward_dwt_packed_core<T: Copy>(
     coefficients: &mut [T],
     width: usize,
@@ -254,7 +269,7 @@ fn forward_dwt_packed_core<T: Copy>(
     num_levels: u8,
     line_scratch: &mut [T],
     origin: (u32, u32),
-    mut lift: impl FnMut(&mut [T], bool),
+    mut transform_level: impl FnMut(&mut [T], &mut [T], LevelRegion) -> EncodeResult<()>,
 ) -> EncodeResult<PackedDwtShape> {
     let mut current_width = width;
     let mut current_height = height;
@@ -272,42 +287,19 @@ fn forward_dwt_packed_core<T: Copy>(
         );
         let low_width = usize_from_u32(level.low_width, "packed forward DWT low width")?;
         let low_height = usize_from_u32(level.low_height, "packed forward DWT low height")?;
-        let x_phase = (level_origin.0 & 1) as usize;
-        let y_phase = (level_origin.1 & 1) as usize;
-
-        // Analysis is vertical first and horizontal second because synthesis
-        // applies the inverse operations in the opposite order.
-        if current_height != 0 {
-            for x in 0..current_width {
-                for y in 0..current_height {
-                    line_scratch[y] = coefficients[y * width + x];
-                }
-                lift(&mut line_scratch[..current_height], y_phase != 0);
-
-                for i in 0..low_height {
-                    coefficients[i * width + x] = line_scratch[i * 2 + y_phase];
-                }
-                for i in 0..current_height - low_height {
-                    coefficients[(low_height + i) * width + x] = line_scratch[i * 2 + 1 - y_phase];
-                }
-            }
-        }
-
-        if current_width != 0 {
-            for y in 0..current_height {
-                let row_start = y * width;
-                line_scratch[..current_width]
-                    .copy_from_slice(&coefficients[row_start..row_start + current_width]);
-                lift(&mut line_scratch[..current_width], x_phase != 0);
-
-                for i in 0..low_width {
-                    coefficients[row_start + i] = line_scratch[i * 2 + x_phase];
-                }
-                for i in 0..current_width - low_width {
-                    coefficients[row_start + low_width + i] = line_scratch[i * 2 + 1 - x_phase];
-                }
-            }
-        }
+        transform_level(
+            coefficients,
+            line_scratch,
+            LevelRegion {
+                stride: width,
+                width: current_width,
+                height: current_height,
+                low_width,
+                low_height,
+                odd_x: level_origin.0 & 1 != 0,
+                odd_y: level_origin.1 & 1 != 0,
+            },
+        )?;
 
         current_width = low_width;
         current_height = low_height;
@@ -323,8 +315,64 @@ fn forward_dwt_packed_core<T: Copy>(
     })
 }
 
+/// Lift every column, then every row, of one level as an interleaved line in
+/// the line scratch and write the line back as its packed halves.
+fn line_level<T: Copy>(
+    coefficients: &mut [T],
+    line_scratch: &mut [T],
+    level: LevelRegion,
+    lift: impl Fn(&mut [T], bool),
+) {
+    let LevelRegion {
+        stride,
+        width,
+        height,
+        low_width,
+        low_height,
+        odd_x,
+        odd_y,
+    } = level;
+    let (x_phase, y_phase) = (usize::from(odd_x), usize::from(odd_y));
+
+    // Analysis is vertical first and horizontal second because synthesis
+    // applies the inverse operations in the opposite order.
+    if height != 0 {
+        for x in 0..width {
+            for y in 0..height {
+                line_scratch[y] = coefficients[y * stride + x];
+            }
+            lift(&mut line_scratch[..height], odd_y);
+
+            for i in 0..low_height {
+                coefficients[i * stride + x] = line_scratch[i * 2 + y_phase];
+            }
+            for i in 0..height - low_height {
+                coefficients[(low_height + i) * stride + x] = line_scratch[i * 2 + 1 - y_phase];
+            }
+        }
+    }
+
+    if width != 0 {
+        for y in 0..height {
+            let row_start = y * stride;
+            line_scratch[..width].copy_from_slice(&coefficients[row_start..row_start + width]);
+            lift(&mut line_scratch[..width], odd_x);
+
+            for i in 0..low_width {
+                coefficients[row_start + i] = line_scratch[i * 2 + x_phase];
+            }
+            for i in 0..width - low_width {
+                coefficients[row_start + low_width + i] = line_scratch[i * 2 + 1 - x_phase];
+            }
+        }
+    }
+}
+
 /// Transform one f32 sample plane in place while retaining its packed quadrant
-/// layout. The caller owns the coefficient plane and one reusable line buffer.
+/// layout. The caller owns the coefficient plane and one reusable scratch of at
+/// least `max(width, height)` samples; `packed_dwt_scratch_len` samples let the
+/// vertical pass lift full-width column strips. The output does not depend on
+/// the scratch length.
 pub(crate) fn try_forward_dwt_packed_f32(
     coefficients: &mut [f32],
     width: u32,
@@ -343,12 +391,10 @@ pub(crate) fn try_forward_dwt_packed_f32(
         num_levels,
         line_scratch,
         origin,
-        |line, odd_origin| {
-            if reversible {
-                forward_lift_53_phase(line, odd_origin);
-            } else {
-                forward_lift_97_phase(line, odd_origin);
-            }
+        |coefficients, scratch, level| {
+            dispatch!(Level::new(), simd => {
+                lifting::transform_level(simd, coefficients, scratch, level, reversible)
+            })
         },
     )
 }
@@ -371,7 +417,10 @@ pub(crate) fn try_forward_dwt_packed_i64(
         num_levels,
         line_scratch,
         origin,
-        forward_lift_53_i64_phase,
+        |coefficients, scratch, level| {
+            line_level(coefficients, scratch, level, forward_lift_53_i64_phase);
+            Ok(())
+        },
     )
 }
 
@@ -417,7 +466,9 @@ mod tests {
     use alloc::vec::Vec;
 
     use super::*;
-    use crate::j2c::fdwt::forward_dwt;
+    use crate::j2c::fdwt::{
+        forward_dwt, forward_lift_53_phase, forward_lift_97_phase, packed_dwt_scratch_len,
+    };
 
     #[cfg(target_pointer_width = "64")]
     #[test]
@@ -653,5 +704,124 @@ mod tests {
         .expect("exact scratch length is accepted");
         assert_eq!(shape.num_levels, 3);
         assert_eq!((shape.ll_width, shape.ll_height), (1, 1));
+    }
+
+    /// The column-at-a-time transform that the SIMD strips replaced.
+    fn line_transform(
+        plane: &mut [f32],
+        (width, height): (usize, usize),
+        num_levels: u8,
+        origin: (u32, u32),
+        reversible: bool,
+    ) -> EncodeResult<PackedDwtShape> {
+        let lift = if reversible {
+            forward_lift_53_phase
+        } else {
+            forward_lift_97_phase
+        };
+        let mut line = vec![0.0; width.max(height)];
+        forward_dwt_packed_core(
+            plane,
+            width,
+            height,
+            num_levels,
+            &mut line,
+            origin,
+            |p, l, r| {
+                line_level(p, l, r, lift);
+                Ok(())
+            },
+        )
+    }
+
+    #[test]
+    fn f32_packed_transform_matches_line_transform_bit_for_bit() {
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            f32::from(u16::try_from(state >> 48).expect("16-bit sample")) - 32768.0
+        };
+        let geometries = [
+            (1, 1),
+            (1, 9),
+            (9, 1),
+            (2, 2),
+            (3, 5),
+            (8, 8),
+            (31, 33),
+            (33, 31),
+            (64, 17),
+            (65, 70),
+            (100, 3),
+            (2049, 5),
+            (2112, 3),
+        ];
+        for ((width, height), origin, reversible, num_levels, extreme) in geometries
+            .into_iter()
+            .flat_map(|g| [(0, 0), (1, 1), (1, 0), (3, 6)].map(|o| (g, o)))
+            .flat_map(|(g, o)| [true, false].map(|r| (g, o, r)))
+            .flat_map(|(g, o, r)| [1, 2, u8::MAX].map(|n| (g, o, r, n)))
+            .flat_map(|(g, o, r, n)| [false, true].map(|e| (g, o, r, n, e)))
+        {
+            // Extreme samples make the even-length 5/3 edge forms overflow.
+            let original = (0..width * height)
+                .map(|_| match (next(), extreme) {
+                    (value, true) if value < -28672.0 => f32::MAX.copysign(value + 32000.0),
+                    (value, _) if reversible => value,
+                    (value, _) => value / 64.0,
+                })
+                .collect::<Vec<_>>();
+            let mut expected = original.clone();
+            let expected_shape = line_transform(
+                &mut expected,
+                (width, height),
+                num_levels,
+                origin,
+                reversible,
+            );
+            let (w, h) = (
+                u32::try_from(width).expect("width"),
+                u32::try_from(height).expect("height"),
+            );
+            for scratch_len in [
+                width.max(height),
+                width.max(5 * height),
+                packed_dwt_scratch_len(w, h).expect("strip scratch"),
+            ] {
+                let mut actual = original.clone();
+                let mut scratch = vec![0.0; scratch_len];
+                let shape = try_forward_dwt_packed_f32(
+                    &mut actual,
+                    w,
+                    h,
+                    num_levels,
+                    reversible,
+                    &mut scratch,
+                    origin,
+                );
+                let context = format!(
+                    "{width}x{height} origin {origin:?} levels {num_levels} \
+                     reversible {reversible} extreme {extreme} scratch {scratch_len}"
+                );
+                assert_eq!(shape, expected_shape, "{context}");
+                let bits = |plane: &[f32]| plane.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+                assert_eq!(bits(&actual), bits(&expected), "{context}");
+            }
+        }
+    }
+
+    #[test]
+    fn strip_scratch_covers_full_strips_and_rows() {
+        for (width, height, expected) in [
+            (10, 7, 70),
+            (100, 7, 224),
+            (100, 2, 100),
+            (4096, 3, 4096),
+            (4096, 100, 6400),
+        ] {
+            assert_eq!(packed_dwt_scratch_len(width, height), Ok(expected));
+        }
     }
 }
