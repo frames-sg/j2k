@@ -5,6 +5,10 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- Metal single-image colour decodes keep each MCT component's final
+  coefficient plane when the component ends in an identity store of the whole
+  plane, instead of copying it into a second plane, as stacked decodes already
+  did. Output is unchanged.
 - The Metal HT cleanup decode packs each quad's VLC word into the first half of
   its row for code blocks at most 64 samples wide, so the round trip between its
   two kernels writes and reads half the memory lines. A 4096 x 2048 RGB HTJ2K
