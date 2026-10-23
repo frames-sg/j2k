@@ -78,12 +78,9 @@ pub(super) fn encode_resident_ht_tile_body_with_cpu_packetization(
         code_blocks,
     )?;
     let resident_tier1 =
-        compute::encode_ht_prepared_device_code_blocks_resident(session, prepared)?;
+        compute::encode_ht_prepared_device_code_blocks_resident(session, prepared, true)?;
     let (encoded_blocks, required_ht_magnitude_bound) =
-        compute::read_resident_ht_tier1_code_blocks_for_cpu_packetization(
-            session,
-            &resident_tier1,
-        )?;
+        compute::read_resident_ht_tier1_code_blocks_for_cpu_packetization(&resident_tier1)?;
     let packetization_resolutions = cpu_packetization_resolutions_from_lossless_device_plan(
         &plan,
         code_block_count,
@@ -117,6 +114,9 @@ pub(super) fn encode_resident_ht_tile_body_with_cpu_packetization(
                 message: format!("J2K Metal resident hybrid CPU packetization failed: {reason}"),
             }
         })?;
+    // Packetization copied the borrowed block bytes, so the pooled buffers can
+    // go back to the runtime.
+    compute::recycle_resident_ht_tier1_buffers(session, resident_tier1)?;
 
     Ok(Some(ResidentHybridHtTileBody {
         tile_data,

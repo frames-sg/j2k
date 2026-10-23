@@ -218,23 +218,30 @@ pub(super) fn with_runtime<R>(
         return f(&runtime);
     }
 
+    with_default_session(|session| with_runtime_for_session(session, f))
+}
+
+/// Run `f` on the thread's default session, which this initializes on first
+/// use.
+fn with_default_session<R>(
+    f: impl FnOnce(&crate::MetalBackendSession) -> Result<R, Error>,
+) -> Result<R, Error> {
     DEFAULT_METAL_SESSION.with(|session| {
         let mut session = session.borrow_mut();
-        if session.is_none() {
-            *session = Some(
-                j2k_metal_support::system_default_device().map(crate::MetalBackendSession::new),
-            );
-        }
-        let Some(session) = session.as_ref() else {
-            return Err(Error::MetalRuntime {
-                message: "J2K Metal default session was not initialized".to_string(),
-            });
-        };
+        let session = session.get_or_insert_with(|| {
+            j2k_metal_support::system_default_device().map(crate::MetalBackendSession::new)
+        });
         match session {
-            Ok(session) => with_runtime_for_session(session, f),
+            Ok(session) => f(session),
             Err(error) => Err(runtime_initialization_error(error)),
         }
     })
+}
+
+/// The thread's default session, which this initializes on first use; a
+/// clone shares its runtime, queue, buffer pools and heaps.
+pub(crate) fn default_session() -> Result<crate::MetalBackendSession, Error> {
+    with_default_session(|session| Ok(session.clone()))
 }
 
 /// The runtime [`with_runtime`] would run on: the test override, or the
@@ -245,21 +252,7 @@ pub(crate) fn current_runtime() -> Result<Arc<MetalRuntime>, Error> {
         return Ok(runtime);
     }
 
-    DEFAULT_METAL_SESSION.with(|session| {
-        let mut session = session.borrow_mut();
-        if session.is_none() {
-            *session = Some(
-                j2k_metal_support::system_default_device().map(crate::MetalBackendSession::new),
-            );
-        }
-        match session.as_ref() {
-            Some(Ok(session)) => session.runtime(),
-            Some(Err(error)) => Err(runtime_initialization_error(error)),
-            None => Err(Error::MetalRuntime {
-                message: "J2K Metal default session was not initialized".to_string(),
-            }),
-        }
-    })
+    with_default_session(crate::MetalBackendSession::runtime)
 }
 
 pub(crate) fn current_runtime_device_registry_id() -> Result<u64, Error> {

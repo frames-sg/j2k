@@ -14,16 +14,20 @@ use super::abi::{
     J2kHtEncodeBatchJob, J2kHtEncodeParams, J2kHtEncodeStatus, J2kPacketEncodeStatus,
     J2K_ENCODE_STATUS_FAIL, J2K_ENCODE_STATUS_OK, J2K_ENCODE_STATUS_UNSUPPORTED,
 };
-use super::resident_tier1::{J2kResidentLosslessHtCodeBlocks, J2kResidentLosslessTier1CodeBlocks};
+use super::resident_tier1::{
+    J2kResidentHtEncodedBlock, J2kResidentLosslessHtCodeBlocks, J2kResidentLosslessTier1CodeBlocks,
+};
 use super::{
     checked_buffer_read, checked_buffer_slice, checked_buffer_slice_at,
     classic_encode_code_blocks_pipeline, classic_encode_output_capacity,
     classic_encode_segment_capacity, classic_style_flags, commit_and_wait_metal,
-    copied_slice_buffer, ht_encode_output_capacity, new_blit_command_encoder, new_command_buffer,
-    new_compute_command_encoder, new_private_buffer, new_shared_buffer, with_runtime,
-    with_runtime_for_session, zeroed_shared_buffer, Buffer, EncodedHtJ2kCodeBlock,
-    EncodedJ2kCodeBlock, Error, J2kCodeBlockSegment, J2kHtCodeBlockEncodeJob,
-    J2kLosslessDeviceCodeBlock, J2kPreparedLosslessDeviceCodeBlocks, J2kTier1CodeBlockEncodeJob,
+    completed_metal_buffer_bytes, copied_slice_buffer, ht_encode_output_capacity,
+    new_command_buffer, new_compute_command_encoder, new_private_buffer, new_shared_buffer,
+    recycle_private_buffers, recycle_shared_buffers, take_recyclable_shared_buffer,
+    wait_for_completion_metal, with_runtime, with_runtime_for_session, zeroed_shared_buffer,
+    Buffer, EncodedHtJ2kCodeBlock, EncodedJ2kCodeBlock, Error, J2kCodeBlockSegment,
+    J2kHtCodeBlockEncodeJob, J2kLosslessDeviceCodeBlock, J2kPreparedLosslessDeviceCodeBlocks,
+    J2kTier1CodeBlockEncodeJob,
 };
 
 fn checked_type_buffer_bytes<T>(count: usize, context: &'static str) -> Result<usize, Error> {
@@ -575,6 +579,9 @@ pub(crate) fn encode_classic_tier1_prepared_device_code_blocks_resident(
     })
 }
 
+/// With `host_readback` the output is a pooled shared buffer the CPU reads in
+/// place; [`recycle_resident_ht_tier1_buffers`] returns the result's pooled
+/// buffers to the runtime. Otherwise the output is private.
 #[cfg(target_os = "macos")]
 #[expect(
     clippy::too_many_lines,
@@ -583,6 +590,7 @@ pub(crate) fn encode_classic_tier1_prepared_device_code_blocks_resident(
 pub(crate) fn encode_ht_prepared_device_code_blocks_resident(
     session: &crate::MetalBackendSession,
     prepared: J2kPreparedLosslessDeviceCodeBlocks,
+    host_readback: bool,
 ) -> Result<J2kResidentLosslessHtCodeBlocks, Error> {
     let J2kPreparedLosslessDeviceCodeBlocks {
         coefficient_buffer,
@@ -590,7 +598,7 @@ pub(crate) fn encode_ht_prepared_device_code_blocks_resident(
         coefficient_byte_len: _,
         coefficient_buffer_is_batch_shared: _,
         code_blocks,
-        recyclable_private_buffers: _,
+        recyclable_private_buffers,
         _prepare_command_buffer: prepare_command_buffer,
         _prepare_deinterleave_rct_command_buffer: _,
         _prepare_dwt53_command_buffer: _,
@@ -623,6 +631,9 @@ pub(crate) fn encode_ht_prepared_device_code_blocks_resident(
                 plane_buffers,
                 scratch_buffers,
                 _coefficient_job_buffer: coefficient_job_buffer,
+                recyclable_private_buffers,
+                recyclable_shared_buffers: Vec::new(),
+                host_readable_output: false,
             });
         }
 
@@ -663,7 +674,16 @@ pub(crate) fn encode_ht_prepared_device_code_blocks_resident(
         }
 
         let job_buffer = copied_slice_buffer(&runtime.device, &batch_jobs)?;
-        let output = new_private_buffer(&runtime.device, output_capacity_total.max(1))?;
+        let mut recyclable_shared_buffers = Vec::new();
+        let output = if host_readback {
+            take_recyclable_shared_buffer(
+                runtime,
+                output_capacity_total,
+                &mut recyclable_shared_buffers,
+            )?
+        } else {
+            new_private_buffer(&runtime.device, output_capacity_total.max(1))?
+        };
         let status_buffer = zeroed_shared_buffer(
             &runtime.device,
             checked_type_buffer_bytes::<J2kHtEncodeStatus>(
@@ -707,7 +727,25 @@ pub(crate) fn encode_ht_prepared_device_code_blocks_resident(
             plane_buffers,
             scratch_buffers,
             _coefficient_job_buffer: coefficient_job_buffer,
+            recyclable_private_buffers,
+            recyclable_shared_buffers,
+            host_readable_output: host_readback,
         })
+    })
+}
+
+/// Waits for `tier1`'s command buffers, then returns its pooled buffers to the
+/// session runtime's pools.
+#[cfg(target_os = "macos")]
+pub(crate) fn recycle_resident_ht_tier1_buffers(
+    session: &crate::MetalBackendSession,
+    tier1: J2kResidentLosslessHtCodeBlocks,
+) -> Result<(), Error> {
+    with_runtime_for_session(session, |runtime| {
+        wait_for_completion_metal(&tier1.prepare_command_buffer)?;
+        wait_for_completion_metal(&tier1.tier1_command_buffer)?;
+        recycle_private_buffers(runtime, tier1.recyclable_private_buffers)?;
+        recycle_shared_buffers(runtime, tier1.recyclable_shared_buffers)
     })
 }
 
@@ -922,12 +960,25 @@ pub(super) fn read_ht_encoded_code_block(
     } else {
         checked_buffer_slice_at::<u8>(output, output_offset, data_len, "HTJ2K encode payload")?
     };
-    let cleanup_length = status.cleanup_length;
-    let refinement_length = status.sigprop_length + status.magref_length;
+    let block = ht_encoded_block(status, &[])?;
     Ok(EncodedHtJ2kCodeBlock {
         data,
-        cleanup_length,
-        refinement_length,
+        cleanup_length: block.cleanup_length,
+        refinement_length: block.refinement_length,
+        num_coding_passes: block.num_coding_passes,
+        num_zero_bitplanes: block.num_zero_bitplanes,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn ht_encoded_block(
+    status: J2kHtEncodeStatus,
+    data: &[u8],
+) -> Result<J2kResidentHtEncodedBlock<'_>, Error> {
+    Ok(J2kResidentHtEncodedBlock {
+        data,
+        cleanup_length: status.cleanup_length,
+        refinement_length: status.sigprop_length + status.magref_length,
         num_coding_passes: u8::try_from(status.num_coding_passes).map_err(|_| {
             Error::MetalKernel {
                 message: "HTJ2K Metal encode pass count exceeds u8".to_string(),
@@ -941,87 +992,67 @@ pub(super) fn read_ht_encoded_code_block(
     })
 }
 
+/// Waits for `tier1`'s host-readable Tier-1 encode and returns each code
+/// block's encoded bytes borrowed in place from its output.
 #[cfg(target_os = "macos")]
 pub(crate) fn read_resident_ht_tier1_code_blocks_for_cpu_packetization(
-    session: &crate::MetalBackendSession,
     tier1: &J2kResidentLosslessHtCodeBlocks,
-) -> Result<(Vec<EncodedHtJ2kCodeBlock>, u8), Error> {
-    with_runtime_for_session(session, |runtime| {
-        if tier1.batch_jobs.is_empty() {
-            return Ok((Vec::new(), 8));
-        }
-        let output_bytes = tier1.output_capacity_total.max(1);
-        let status_bytes = tier1
-            .batch_jobs
-            .len()
-            .checked_mul(size_of::<J2kHtEncodeStatus>())
-            .ok_or_else(|| Error::MetalKernel {
-                message: "HTJ2K Metal resident status readback size overflow".to_string(),
+) -> Result<(Vec<J2kResidentHtEncodedBlock<'_>>, u8), Error> {
+    if tier1.batch_jobs.is_empty() {
+        return Ok((Vec::new(), 8));
+    }
+    if !tier1.host_readable_output {
+        return Err(Error::MetalKernel {
+            message: "HTJ2K Metal resident Tier-1 output is not host-readable".to_string(),
+        });
+    }
+    let mut result_budget = crate::batch_allocation::BatchMetadataBudget::new(
+        "HTJ2K Metal resident Tier-1 readback metadata",
+    );
+    result_budget.account_capacity::<J2kHtEncodeBatchJob>(tier1.batch_jobs.capacity())?;
+    result_budget.account_capacity::<J2kLosslessDeviceCodeBlock>(tier1.code_blocks.capacity())?;
+    result_budget.account_capacity::<Buffer>(tier1.plane_buffers.capacity())?;
+    result_budget.account_capacity::<Buffer>(tier1.scratch_buffers.capacity())?;
+    result_budget.preflight(&[crate::batch_allocation::BatchMetadataRequest::of::<
+        J2kResidentHtEncodedBlock<'_>,
+    >(tier1.batch_jobs.len())])?;
+    let mut encoded_blocks = result_budget.try_vec(
+        tier1.batch_jobs.len(),
+        "HTJ2K Metal resident Tier-1 encoded block results",
+    )?;
+    let mut required_magnitude_bound = 8u8;
+    wait_for_completion_metal(&tier1.tier1_command_buffer)?;
+    let statuses = checked_buffer_slice::<J2kHtEncodeStatus>(
+        &tier1.status_buffer,
+        tier1.batch_jobs.len(),
+        "resident HT encode statuses",
+    )?;
+    for (batch_job, status) in tier1.batch_jobs.iter().zip(statuses.iter().copied()) {
+        let output_offset =
+            usize::try_from(batch_job.output_offset).map_err(|_| Error::MetalKernel {
+                message: "HTJ2K Metal resident output offset exceeds usize".to_string(),
             })?;
-        let mut result_budget = crate::batch_allocation::BatchMetadataBudget::new(
-            "HTJ2K Metal resident Tier-1 readback metadata",
+        let output_capacity =
+            usize::try_from(batch_job.output_capacity).map_err(|_| Error::MetalKernel {
+                message: "HTJ2K Metal resident output capacity exceeds usize".to_string(),
+            })?;
+        let data_len = validate_ht_encoded_status(status, output_capacity)?;
+        // SAFETY: The Tier-1 command buffer, the output's only writer, has
+        // completed, and `tier1` stays borrowed, so the pooled output cannot
+        // be recycled or written while the bytes are borrowed.
+        let data =
+            unsafe { completed_metal_buffer_bytes(&tier1.output_buffer, output_offset, data_len) }
+                .map_err(|source| {
+                    crate::error::metal_kernel_support_error("HTJ2K encode payload", source)
+                })?;
+        // Successful HT statuses expose the exact maximum that the existing
+        // kernel already computes, matching the CUDA HT status contract.
+        required_magnitude_bound = required_magnitude_bound.max(
+            j2k_native::htj2k_required_magnitude_bound(u64::from(status.detail), true, 0),
         );
-        result_budget.account_capacity::<J2kHtEncodeBatchJob>(tier1.batch_jobs.capacity())?;
-        result_budget
-            .account_capacity::<J2kLosslessDeviceCodeBlock>(tier1.code_blocks.capacity())?;
-        result_budget.account_capacity::<Buffer>(tier1.plane_buffers.capacity())?;
-        result_budget.account_capacity::<Buffer>(tier1.scratch_buffers.capacity())?;
-        result_budget.preflight(&[crate::batch_allocation::BatchMetadataRequest::of::<
-            EncodedHtJ2kCodeBlock,
-        >(tier1.batch_jobs.len())])?;
-        let mut encoded_blocks = result_budget.try_vec(
-            tier1.batch_jobs.len(),
-            "HTJ2K Metal resident Tier-1 encoded block results",
-        )?;
-        let mut required_magnitude_bound = 8u8;
-        let output = new_shared_buffer(&runtime.device, output_bytes)?;
-        let status_buffer = zeroed_shared_buffer(&runtime.device, status_bytes)?;
-
-        let command_buffer = new_command_buffer(&runtime.queue)?;
-        label_command_buffer(&command_buffer, "j2k htj2k resident tier1 cpu readback");
-        let blit = new_blit_command_encoder(&command_buffer)?;
-        blit.copy_from_buffer(
-            &tier1.output_buffer,
-            0,
-            &output,
-            0,
-            tier1.output_capacity_total as u64,
-        )?;
-        blit.copy_from_buffer(
-            &tier1.status_buffer,
-            0,
-            &status_buffer,
-            0,
-            status_bytes as u64,
-        )?;
-        blit.endEncoding();
-        commit_and_wait_metal(&command_buffer)?;
-
-        let statuses = checked_buffer_slice::<J2kHtEncodeStatus>(
-            &status_buffer,
-            tier1.batch_jobs.len(),
-            "resident HT encode statuses",
-        )?;
-        for (batch_job, status) in tier1.batch_jobs.iter().zip(statuses.iter().copied()) {
-            let encoded = read_ht_encoded_code_block(
-                status,
-                &output,
-                usize::try_from(batch_job.output_offset).map_err(|_| Error::MetalKernel {
-                    message: "HTJ2K Metal resident output offset exceeds usize".to_string(),
-                })?,
-                usize::try_from(batch_job.output_capacity).map_err(|_| Error::MetalKernel {
-                    message: "HTJ2K Metal resident output capacity exceeds usize".to_string(),
-                })?,
-            )?;
-            // Successful HT statuses expose the exact maximum that the existing
-            // kernel already computes, matching the CUDA HT status contract.
-            required_magnitude_bound = required_magnitude_bound.max(
-                j2k_native::htj2k_required_magnitude_bound(u64::from(status.detail), true, 0),
-            );
-            encoded_blocks.push(encoded);
-        }
-        Ok((encoded_blocks, required_magnitude_bound.min(74)))
-    })
+        encoded_blocks.push(ht_encoded_block(status, data)?);
+    }
+    Ok((encoded_blocks, required_magnitude_bound.min(74)))
 }
 
 #[cfg(target_os = "macos")]

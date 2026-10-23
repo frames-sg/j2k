@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::*;
+use crate::engine::new_blit_command_encoder;
 
 #[cfg(all(test, target_os = "macos"))]
 #[expect(

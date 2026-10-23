@@ -174,6 +174,7 @@ use self::host_fallback::encode_lossless_tile_with_report;
 #[cfg(target_os = "macos")]
 use self::resident_hybrid::{
     encode_resident_ht_tile_body_with_cpu_packetization, lossless_device_coefficient_count,
+    ResidentHybridHtTileBody,
 };
 #[cfg(target_os = "macos")]
 use self::resident_plan::plan_resident_lossless_buffer_encode;

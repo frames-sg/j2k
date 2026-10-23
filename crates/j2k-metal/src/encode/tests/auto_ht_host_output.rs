@@ -32,6 +32,28 @@ fn auto_routes_the_verified_rgb8_1024_cell_through_resident_ht_tier1() {
     );
 }
 
+#[test]
+fn repeated_host_output_encodes_match_cpu_with_pooled_buffers() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    // Same-shape encodes on one thread reuse the previous encode's pooled
+    // buffers, so stale contents must never reach the codestream.
+    let patterned = j2k_test_support::patterned_rgb8(1024, 1024);
+    let inverted: Vec<u8> = patterned.iter().map(|sample| !sample).collect();
+    let flat = vec![128u8; patterned.len()];
+    for pixels in [&patterned, &inverted, &flat, &patterned] {
+        assert_resident_ht_host_output_matches_cpu(
+            1024,
+            1024,
+            3,
+            pixels,
+            MetalEncodeStageAccelerator::for_auto_host_output(),
+        );
+    }
+}
+
 fn assert_resident_ht_host_output_matches_cpu(
     width: u32,
     height: u32,

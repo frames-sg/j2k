@@ -6,7 +6,7 @@ use super::{
     dispatch_forward_dwt53_on_buffers, dispatch_forward_rct_on_buffers,
     dispatch_lossless_deinterleave, dispatch_lossless_deinterleave_rct_rgb8,
     dispatch_lossless_extract_coefficients, lossless_deinterleave_rct_rgb8_supported,
-    lossless_prepare_sizes, new_command_buffer, new_private_buffer, size_of,
+    lossless_prepare_sizes, new_command_buffer, size_of, take_recyclable_private_buffer,
     with_runtime_for_session, zeroed_shared_buffer, Error, J2kLosslessCoefficientJob,
     J2kLosslessDeviceCodeBlock, J2kLosslessDevicePrepareJob, J2kMctStatus,
     J2kPreparedLosslessDeviceCodeBlocks,
@@ -56,13 +56,28 @@ pub(crate) fn prepare_lossless_device_code_blocks(
             usize::from(job.component_count),
             "J2K Metal lossless scratch plane handles",
         )?;
+        // Pooled, so repeated encodes reuse mapped memory; the caller recycles
+        // them once the encode completes.
+        let mut recyclable_private_buffers = Vec::new();
         for _ in 0..3 {
-            plane_buffers.push(new_private_buffer(&runtime.device, sizes.plane_bytes)?);
+            plane_buffers.push(take_recyclable_private_buffer(
+                runtime,
+                sizes.plane_bytes,
+                &mut recyclable_private_buffers,
+            )?);
         }
         for _ in 0..job.component_count {
-            scratch_buffers.push(new_private_buffer(&runtime.device, sizes.plane_bytes)?);
+            scratch_buffers.push(take_recyclable_private_buffer(
+                runtime,
+                sizes.plane_bytes,
+                &mut recyclable_private_buffers,
+            )?);
         }
-        let coefficient_buffer = new_private_buffer(&runtime.device, sizes.coefficient_bytes)?;
+        let coefficient_buffer = take_recyclable_private_buffer(
+            runtime,
+            sizes.coefficient_bytes,
+            &mut recyclable_private_buffers,
+        )?;
         let status_buffer = zeroed_shared_buffer(&runtime.device, size_of::<J2kMctStatus>())?;
         let command_buffer = new_command_buffer(&runtime.queue)?;
 
@@ -137,7 +152,7 @@ pub(crate) fn prepare_lossless_device_code_blocks(
             coefficient_byte_len: sizes.coefficient_bytes,
             coefficient_buffer_is_batch_shared: false,
             code_blocks,
-            recyclable_private_buffers: Vec::new(),
+            recyclable_private_buffers,
             _prepare_command_buffer: command_buffer,
             _prepare_deinterleave_rct_command_buffer: None,
             _prepare_dwt53_command_buffer: None,

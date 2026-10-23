@@ -125,9 +125,15 @@ use self::direct_plan_validation::{
     prepared_direct_color_plan_supports_runtime, store_shapes_match,
 };
 mod direct_scratch;
+#[cfg(target_os = "macos")]
+pub(crate) use self::direct_scratch::{
+    copied_session_shared_buffer, recycle_session_shared_buffers,
+};
+#[cfg(target_os = "macos")]
 use self::direct_scratch::{
     recycle_private_buffers, recycle_scratch_buffers, recycle_shared_buffers,
-    take_f32_scratch_buffer, take_recyclable_private_buffer, DirectScratchBuffer,
+    take_f32_scratch_buffer, take_recyclable_private_buffer, take_recyclable_shared_buffer,
+    DirectScratchBuffer,
 };
 #[cfg(target_os = "macos")]
 mod direct_status;
@@ -248,8 +254,8 @@ use self::runtime::{
 };
 #[cfg(target_os = "macos")]
 pub(crate) use self::runtime::{
-    current_runtime, current_runtime_device_registry_id, runtime_initialization_error,
-    with_runtime_for_session, MetalRuntime,
+    current_runtime, current_runtime_device_registry_id, default_session,
+    runtime_initialization_error, with_runtime_for_session, MetalRuntime,
 };
 #[cfg(all(target_os = "macos", test))]
 pub(crate) use j2k_metal_support::MetalSupportError;
@@ -401,8 +407,8 @@ pub(crate) use self::resident_tier1::{
     J2kLosslessCodestreamBlockCodingMode, J2kLosslessDeviceBatchPrepareItem,
     J2kLosslessDeviceCodeBlock, J2kLosslessDevicePrepareJob,
     J2kPendingResidentLosslessCodestreamBatch, J2kPreparedLosslessDeviceCodeBlocks,
-    J2kResidentPacketizationEncodeJob, J2kResidentPacketizationResolution,
-    J2kResidentPacketizationSubband,
+    J2kResidentHtEncodedBlock, J2kResidentPacketizationEncodeJob,
+    J2kResidentPacketizationResolution, J2kResidentPacketizationSubband,
 };
 #[cfg(target_os = "macos")]
 mod tier1_encode;
@@ -412,7 +418,7 @@ pub(crate) use self::tier1_encode::{
     encode_classic_tier1_prepared_device_code_blocks_resident, encode_ht_cleanup_code_block,
     encode_ht_cleanup_code_blocks, encode_ht_code_block_sets,
     encode_ht_prepared_device_code_blocks_resident,
-    read_resident_ht_tier1_code_blocks_for_cpu_packetization,
+    read_resident_ht_tier1_code_blocks_for_cpu_packetization, recycle_resident_ht_tier1_buffers,
 };
 #[cfg(all(target_os = "macos", test))]
 pub(crate) use self::tier1_encode::{

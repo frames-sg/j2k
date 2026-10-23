@@ -47,6 +47,18 @@ pub(crate) struct J2kLosslessDeviceBatchPrepareItem<'a> {
     pub(crate) code_blocks: Vec<J2kLosslessDeviceCodeBlock>,
 }
 
+/// An HT code block's encoded bytes, borrowed from a completed resident
+/// Tier-1 output, with the status fields CPU packetization needs.
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct J2kResidentHtEncodedBlock<'a> {
+    pub(crate) data: &'a [u8],
+    pub(crate) cleanup_length: u32,
+    pub(crate) refinement_length: u32,
+    pub(crate) num_coding_passes: u8,
+    pub(crate) num_zero_bitplanes: u8,
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) struct J2kPreparedLosslessDeviceCodeBlocks {
     pub(in crate::engine) coefficient_buffer: Buffer,
@@ -151,6 +163,12 @@ pub(crate) struct J2kResidentLosslessHtCodeBlocks {
     pub(in crate::engine) plane_buffers: Vec<Buffer>,
     pub(in crate::engine) scratch_buffers: Vec<Buffer>,
     pub(in crate::engine) _coefficient_job_buffer: Buffer,
+    /// Pooled buffers, including a host-readable output when
+    /// `host_readable_output`, returned to the runtime's pools by
+    /// `recycle_resident_ht_tier1_buffers` after the encode completes.
+    pub(in crate::engine) recyclable_private_buffers: Vec<crate::buffer_pool::PooledBuffer>,
+    pub(in crate::engine) recyclable_shared_buffers: Vec<crate::buffer_pool::PooledBuffer>,
+    pub(in crate::engine) host_readable_output: bool,
 }
 
 /// Family descriptor that lets the resident Tier-1 codestream drivers run

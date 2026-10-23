@@ -21,7 +21,7 @@ use j2k_core::PixelFormat;
 use super::{
     copy_padded_metal_buffer_from_bytes, encode_resident_ht_tile_body_with_cpu_packetization,
     lossless_options_for_resident_htj2k_tile_job, should_use_resident_htj2k_host_tile_for_auto,
-    MetalEncodeInputStaging, MetalLosslessEncodeTile,
+    MetalEncodeInputStaging, MetalLosslessEncodeTile, ResidentHybridHtTileBody,
 };
 
 /// Encode-stage accelerator for JPEG 2000 Metal work.
@@ -434,6 +434,58 @@ pub(super) fn metal_dispatch_option<T>(
         Err(crate::Error::MetalUnavailable) => Ok(None),
         Err(source) => Err(J2kEncodeStageError::backend("metal", operation, source)),
     }
+}
+
+/// Uploads `job`'s pixels through a pooled staging buffer, encodes the tile
+/// body, and returns the staging buffer to the pool once the encode is done.
+#[cfg(target_os = "macos")]
+fn encode_staged_resident_ht_tile(
+    session: &crate::MetalBackendSession,
+    job: J2kHtj2kTileEncodeJob<'_>,
+    options: J2kLosslessEncodeOptions,
+    format: PixelFormat,
+) -> J2kEncodeStageResult<Option<ResidentHybridHtTileBody>> {
+    let mut staging = Vec::new();
+    let Some(source_buffer) = metal_dispatch_option(
+        copy_padded_metal_buffer_from_bytes(session, job.pixels, &mut staging),
+        "HTJ2K hybrid input upload",
+    )?
+    else {
+        return Ok(None);
+    };
+    let pitch_bytes = (job.width as usize)
+        .checked_mul(usize::from(job.num_components))
+        .ok_or_else(|| J2kEncodeStageError::arithmetic_overflow("Metal HTJ2K hybrid tile pitch"))?;
+    let tile = MetalLosslessEncodeTile {
+        buffer: &source_buffer,
+        byte_offset: 0,
+        width: job.width,
+        height: job.height,
+        pitch_bytes,
+        output_width: job.width,
+        output_height: job.height,
+        format,
+    };
+    let Some(Some(encoded)) = metal_dispatch_option(
+        encode_resident_ht_tile_body_with_cpu_packetization(
+            tile,
+            options,
+            session,
+            MetalEncodeInputStaging::AlreadyPaddedContiguous,
+            job.code_block_width,
+            job.code_block_height,
+        ),
+        "resident HTJ2K hybrid tile encode",
+    )?
+    else {
+        return Ok(None);
+    };
+    // The encode has waited for the GPU work that read the input.
+    metal_dispatch_option(
+        compute::recycle_session_shared_buffers(session, staging),
+        "HTJ2K hybrid input recycle",
+    )?;
+    Ok(Some(encoded))
 }
 
 #[doc(hidden)]
@@ -986,46 +1038,14 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
                 3 => PixelFormat::Rgb8,
                 _ => return Ok(None),
             };
-            let Some(session) = metal_dispatch_option(
-                crate::MetalBackendSession::system_default(),
-                "HTJ2K hybrid session creation",
-            )?
+            // The thread's default session keeps its queue, pools and heaps
+            // across encodes, so their buffers are reused instead of faulted in.
+            let Some(session) =
+                metal_dispatch_option(crate::engine::default_session(), "HTJ2K hybrid session")?
             else {
                 return Ok(None);
             };
-            let Some(source_buffer) = metal_dispatch_option(
-                copy_padded_metal_buffer_from_bytes(&session, job.pixels),
-                "HTJ2K hybrid input upload",
-            )?
-            else {
-                return Ok(None);
-            };
-            let pitch_bytes = (job.width as usize)
-                .checked_mul(usize::from(job.num_components))
-                .ok_or_else(|| {
-                    J2kEncodeStageError::arithmetic_overflow("Metal HTJ2K hybrid tile pitch")
-                })?;
-            let tile = MetalLosslessEncodeTile {
-                buffer: &source_buffer,
-                byte_offset: 0,
-                width: job.width,
-                height: job.height,
-                pitch_bytes,
-                output_width: job.width,
-                output_height: job.height,
-                format,
-            };
-            let Some(Some(encoded)) = metal_dispatch_option(
-                encode_resident_ht_tile_body_with_cpu_packetization(
-                    tile,
-                    options,
-                    &session,
-                    MetalEncodeInputStaging::AlreadyPaddedContiguous,
-                    job.code_block_width,
-                    job.code_block_height,
-                ),
-                "resident HTJ2K hybrid tile encode",
-            )?
+            let Some(encoded) = encode_staged_resident_ht_tile(&session, job, options, format)?
             else {
                 return Ok(None);
             };

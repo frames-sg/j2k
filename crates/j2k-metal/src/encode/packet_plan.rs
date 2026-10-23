@@ -5,10 +5,9 @@ use j2k::{
     J2kProgressionOrder, ReversibleTransform,
 };
 use j2k_native::{
-    sort_packet_descriptors_for_progression, EncodeProgressionOrder, EncodedHtJ2kCodeBlock,
-    J2kHtj2kTileEncodeJob, J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock,
-    J2kPacketizationPacketDescriptor, J2kPacketizationProgressionOrder, J2kPacketizationResolution,
-    J2kPacketizationSubband,
+    sort_packet_descriptors_for_progression, EncodeProgressionOrder, J2kHtj2kTileEncodeJob,
+    J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock, J2kPacketizationPacketDescriptor,
+    J2kPacketizationProgressionOrder, J2kPacketizationResolution, J2kPacketizationSubband,
 };
 
 use super::plan::LosslessDeviceEncodePlan;
@@ -197,7 +196,7 @@ pub(super) fn packetization_progression_order(
 pub(super) fn cpu_packetization_resolutions_from_lossless_device_plan<'a>(
     plan: &LosslessDeviceEncodePlan,
     expected_code_block_count: usize,
-    encoded_blocks: &'a [EncodedHtJ2kCodeBlock],
+    encoded_blocks: &[compute::J2kResidentHtEncodedBlock<'a>],
 ) -> Result<Vec<J2kPacketizationResolution<'a>>, crate::Error> {
     if encoded_blocks.len() != expected_code_block_count {
         return Err(crate::Error::MetalKernel {
@@ -266,7 +265,7 @@ pub(super) fn cpu_packetization_resolutions_from_lossless_device_plan<'a>(
                 budget.try_vec(encoded.len(), "J2K Metal CPU packetization code blocks")?;
             for block in encoded {
                 code_blocks.push(J2kPacketizationCodeBlock {
-                    data: block.data.as_slice(),
+                    data: block.data,
                     ht_cleanup_length: block.cleanup_length,
                     ht_refinement_length: block.refinement_length,
                     num_coding_passes: block.num_coding_passes,
