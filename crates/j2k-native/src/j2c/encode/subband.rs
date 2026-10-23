@@ -480,11 +480,18 @@ fn try_quantize_subband(
     Ok((quantized, actual_bytes))
 }
 
+/// Waking the pool for a band smaller than this costs more than its few code
+/// blocks take on one thread (two 64x64 blocks: about 30 us serial against
+/// 35-80 us on ten M4 threads); four blocks already gain.
+#[cfg(feature = "parallel")]
+const MIN_PARALLEL_BAND_SAMPLES: usize = 4 * 64 * 64;
+
 /// Cleanup-only HT blocks of a single-layer codestream quantize from the
 /// packed band into a worker's buffer and are encoded at once, so their
 /// coefficients never make a round trip through memory; Tier-1 then takes the
 /// payloads as preencoded, with the exact magnitude bound. `None` when the
 /// workers' scratch does not fit the cap, so success never depends on it.
+/// Bands under `MIN_PARALLEL_BAND_SAMPLES` are coded on the calling thread.
 fn try_prepare_encoded_ht_blocks(
     request: &F32SubbandEncodeRequest<'_, '_>,
     plan: F32SubbandPlan,
@@ -501,6 +508,10 @@ fn try_prepare_encoded_ht_blocks(
             NativeEncodePipelineError::arithmetic_overflow("prepared code-block count")
         })?;
     // As in the Tier-1 driver, a worker past the block count holds no scratch.
+    #[cfg(feature = "parallel")]
+    let parallel = parallel
+        && (request.width as usize).saturating_mul(request.height as usize)
+            >= MIN_PARALLEL_BAND_SAMPLES;
     #[cfg(feature = "parallel")]
     let workers = if parallel {
         rayon::current_num_threads().min(count)
