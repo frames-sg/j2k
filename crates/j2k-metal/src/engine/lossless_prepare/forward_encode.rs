@@ -4,11 +4,12 @@
 use crate::metal_types::prelude::*;
 
 use super::{
-    checked_buffer_read, checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer,
-    decode_mct_status_error, dispatch_1d_pipeline, label_command_buffer, label_compute_encoder,
-    new_command_buffer, new_compute_command_encoder, new_shared_buffer, size_of, with_runtime,
-    zeroed_shared_buffer, Error, J2kForwardIctParams, J2kForwardRctParams, J2kMctStatus,
-    J2kQuantizeSubbandJob, J2kQuantizeSubbandParams, J2K_MCT_STATUS_OK,
+    checked_buffer_copy_into, checked_buffer_read, checked_buffer_slice, commit_and_wait_metal,
+    copied_recyclable_shared_slice_buffer, copied_slice_buffer, decode_mct_status_error,
+    dispatch_1d_pipeline, label_command_buffer, label_compute_encoder, new_command_buffer,
+    new_compute_command_encoder, recycle_shared_buffers, size_of, take_recyclable_shared_buffer,
+    with_runtime, zeroed_shared_buffer, Error, J2kForwardIctParams, J2kForwardRctParams,
+    J2kMctStatus, J2kQuantizeSubbandJob, J2kQuantizeSubbandParams, J2K_MCT_STATUS_OK,
 };
 
 #[cfg(target_os = "macos")]
@@ -117,9 +118,11 @@ pub(crate) fn encode_forward_ict(
             _reserved1: 0,
             _reserved2: 0,
         };
-        let plane0_buffer = copied_slice_buffer(&runtime.device, plane0)?;
-        let plane1_buffer = copied_slice_buffer(&runtime.device, plane1)?;
-        let plane2_buffer = copied_slice_buffer(&runtime.device, plane2)?;
+        // Pooled, so repeated stage calls reuse mapped memory.
+        let mut pooled = Vec::new();
+        let plane0_buffer = copied_recyclable_shared_slice_buffer(runtime, plane0, &mut pooled)?;
+        let plane1_buffer = copied_recyclable_shared_slice_buffer(runtime, plane1, &mut pooled)?;
+        let plane2_buffer = copied_recyclable_shared_slice_buffer(runtime, plane2, &mut pooled)?;
         let status_buffer = zeroed_shared_buffer(&runtime.device, size_of::<J2kMctStatus>())?;
 
         let command_buffer = new_command_buffer(&runtime.queue)?;
@@ -147,23 +150,10 @@ pub(crate) fn encode_forward_ict(
         if status.code != J2K_MCT_STATUS_OK {
             return Err(decode_mct_status_error(status));
         }
-        plane0.copy_from_slice(&checked_buffer_slice::<f32>(
-            &plane0_buffer,
-            len,
-            "forward ICT plane 0",
-        )?);
-        plane1.copy_from_slice(&checked_buffer_slice::<f32>(
-            &plane1_buffer,
-            len,
-            "forward ICT plane 1",
-        )?);
-        plane2.copy_from_slice(&checked_buffer_slice::<f32>(
-            &plane2_buffer,
-            len,
-            "forward ICT plane 2",
-        )?);
-
-        Ok(())
+        checked_buffer_copy_into(&plane0_buffer, 0, plane0, "forward ICT plane 0")?;
+        checked_buffer_copy_into(&plane1_buffer, 0, plane1, "forward ICT plane 1")?;
+        checked_buffer_copy_into(&plane2_buffer, 0, plane2, "forward ICT plane 2")?;
+        recycle_shared_buffers(runtime, pooled)
     })
 }
 
@@ -214,8 +204,11 @@ pub(crate) fn encode_quantize_subband(job: J2kQuantizeSubbandJob<'_>) -> Result<
         })?;
 
     with_runtime(|runtime| {
-        let input_buffer = copied_slice_buffer(&runtime.device, job.coefficients)?;
-        let output_buffer = new_shared_buffer(&runtime.device, output_bytes)?;
+        // Pooled, so the per-sub-band calls reuse mapped memory.
+        let mut pooled = Vec::new();
+        let input_buffer =
+            copied_recyclable_shared_slice_buffer(runtime, job.coefficients, &mut pooled)?;
+        let output_buffer = take_recyclable_shared_buffer(runtime, output_bytes, &mut pooled)?;
         let params = J2kQuantizeSubbandParams {
             _len: len_u32,
             _step_exponent: u32::from(job.step_exponent),
@@ -243,6 +236,8 @@ pub(crate) fn encode_quantize_subband(job: J2kQuantizeSubbandJob<'_>) -> Result<
         encoder.endEncoding();
         commit_and_wait_metal(&command_buffer)?;
 
-        checked_buffer_slice::<i32>(&output_buffer, len, "quantized subband")
+        let coefficients = checked_buffer_slice::<i32>(&output_buffer, len, "quantized subband")?;
+        recycle_shared_buffers(runtime, pooled)?;
+        Ok(coefficients)
     })
 }

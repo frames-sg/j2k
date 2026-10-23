@@ -65,7 +65,7 @@ pub(crate) use self::direct_buffers::{
 #[cfg(target_os = "macos")]
 use self::direct_buffers::{
     checked_buffer_copy_into, copied_recyclable_shared_slice_buffer, copied_slice_buffer,
-    new_private_buffer, new_shared_buffer, new_shared_buffer_with_slice,
+    new_private_buffer, new_shared_buffer, new_shared_buffer_with_slice, read_completed_buffer,
     take_classic_coefficients_scratch_buffer, take_classic_states_scratch_buffer,
     zeroed_recyclable_shared_buffer, zeroed_shared_buffer,
 };

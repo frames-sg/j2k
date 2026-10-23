@@ -23,9 +23,10 @@ use super::resident_tier1::J2kBatchedPacketPayloadCopyDispatch;
 #[cfg(test)]
 use super::test_counters;
 use super::{
-    checked_buffer_read, checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer,
-    decode_mct_status_error, new_command_buffer, new_compute_command_encoder,
-    new_resident_encode_command_buffer, new_shared_buffer, take_recyclable_private_buffer,
+    checked_buffer_copy_into, checked_buffer_read, checked_buffer_slice, commit_and_wait_metal,
+    copied_recyclable_shared_slice_buffer, copied_slice_buffer, decode_mct_status_error,
+    new_command_buffer, new_compute_command_encoder, new_resident_encode_command_buffer,
+    recycle_shared_buffers, take_recyclable_private_buffer, take_recyclable_shared_buffer,
     with_runtime, with_runtime_for_session, zeroed_shared_buffer, Buffer, CommandBuffer,
     CommandBufferRef, Error, J2kLosslessDeviceBatchPrepareItem, J2kLosslessDeviceCodeBlock,
     J2kLosslessDevicePrepareJob, J2kPreparedLosslessDeviceCodeBlocks, J2kQuantizeSubbandJob,

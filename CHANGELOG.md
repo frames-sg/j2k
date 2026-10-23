@@ -5,6 +5,10 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- The Metal lossy encode stages, deinterleave, ICT, 9/7 DWT and sub-band
+  quantization, take their upload and result buffers from the runtime's pools
+  instead of allocating them on every call, and copy each result out once.
+  Output is unchanged.
 - Metal lossless single-tile encodes run the RCT and each 5/3 wavelet level in
   one dispatch that lifts tiles in threadgroup memory and writes the sub-bands
   straight into their code blocks, instead of separate deinterleave, vertical,
