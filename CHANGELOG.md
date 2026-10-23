@@ -7,6 +7,10 @@ and stale roadmap entries have been removed from the public documentation set.
 
 Staged workspace version: `0.13.2`.
 
+- Byte and bits-per-pixel lossy targets start from a guessed quantization scale,
+  interpolate from measured sizes and return the first candidate within 1% of the
+  target, or the closest one within the size allowance: about 3 encodes instead of
+  about 15. Output changes within that allowance.
 - CPU HTJ2K encodes of single-layer, cleanup-only code blocks scan each
   quantized block once for its largest magnitude instead of twice: the block
   encoder takes the maximum the sub-band step already found. Output is

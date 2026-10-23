@@ -5,11 +5,10 @@ use alloc::{vec, vec::Vec};
 use j2k_native::{DecodeSettings, EncodeRoiRegion, Image};
 
 use super::super::{
-    bits_per_pixel, byte_target_diff, byte_target_tolerance, effective_lossy_target,
-    encode_cpu_lossy, encode_cpu_lossy_with_roi_regions, encode_lossy_targeted,
-    lossy_quality_layer_byte_targets, lossy_quality_layer_count, lossy_report,
-    validate_lossy_options, validate_rate_target, J2kBlockCodingMode, J2kError,
-    J2kLossyEncodeOptions, J2kRateTarget, LossyAttempt,
+    bits_per_pixel, byte_target_tolerance, effective_lossy_target, encode_cpu_lossy,
+    encode_cpu_lossy_with_roi_regions, encode_lossy_targeted, lossy_quality_layer_byte_targets,
+    lossy_quality_layer_count, lossy_report, validate_lossy_options, validate_rate_target,
+    J2kBlockCodingMode, J2kError, J2kLossyEncodeOptions, J2kRateTarget, LossyAttempt,
 };
 use super::single_pixel_samples;
 use crate::{J2kEncodeValidation, J2kLossySamples, J2kQualityLayer};
@@ -266,8 +265,6 @@ fn rate_target_and_metric_helpers_cover_numeric_edges() {
 
     assert_eq!(byte_target_tolerance(1), 512);
     assert_eq!(byte_target_tolerance(100_000), 1_000);
-    assert_eq!(byte_target_diff(2, 9), 7);
-    assert_eq!(byte_target_diff(9, 2), 7);
     assert_eq!(
         bits_per_pixel(single_pixel_samples(), 2).to_bits(),
         16.0_f64.to_bits()
@@ -313,15 +310,16 @@ fn terminal_byte_probe_reuse_preserves_search_decisions() {
         }
     }
     let mut options = J2kLossyEncodeOptions::default();
-    for (lengths, budget, hit) in [
-        ([1200, 0, 0], 8, true),
-        ([2000, 500, 1000], 8, false),
-        ([2000, 500, 1001], 1, true),
-        ([2000, 500, 1001], 0, true),
-        ([2000, 900, 1300], 1, false),
-        ([2000, 900, 1100], 1, false),
-        ([2000, 500, 990], 1, true),
-        ([2000, 908, 0], 64, true),
+    let (mut reused_terminal, mut re_encoded_closest) = (false, false);
+    for (lengths, budget) in [
+        ([1200, 0, 0], 8),
+        ([2000, 500, 1000], 8),
+        ([2000, 500, 1001], 1),
+        ([2000, 500, 1001], 0),
+        ([2000, 900, 1300], 1),
+        ([2000, 900, 1100], 1),
+        ([2000, 500, 990], 1),
+        ([2000, 908, 0], 64),
     ] {
         options.psnr_iteration_budget = budget;
         let mut reference = Probes {
@@ -338,9 +336,17 @@ fn terminal_byte_probe_reuse_preserves_search_decisions() {
             (result.codestream, result.quantization_scale.to_bits())
         };
         assert_eq!(run(&mut reused), run(&mut reference));
+        // Reuse saves only the final encode of the probe the search returned;
+        // every probe before it is the same.
+        let hit = reference.calls.len() == reused.calls.len() + 1;
         if hit {
+            assert_eq!(reference.calls.last(), reused.calls.last());
             reference.calls.pop();
+            reused_terminal = true;
+        } else {
+            re_encoded_closest = true;
         }
         assert_eq!(reused.calls, reference.calls, "budget {budget}, hit {hit}");
     }
+    assert!(reused_terminal && re_encoded_closest);
 }

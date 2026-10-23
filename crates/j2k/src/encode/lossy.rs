@@ -167,6 +167,31 @@ fn quantization_scale_bounds(
     Ok((lower, upper))
 }
 
+/// Size slope (d log bytes / d log scale) assumed until two probes measure one.
+const INITIAL_SIZE_SLOPE: f64 = -0.8;
+/// Least scale change per probe until the target is bracketed, so the floor or
+/// the ceiling is reached in a bounded number of encodes.
+const MIN_SCALE_GROWTH: f64 = 1.25;
+/// First-probe rate model, fitted on natural 8-bit RGB images: the scale meeting
+/// a target of `b` bits per sample is near `exp(START_LOG_SCALE) * b^START_RATE_EXPONENT`,
+/// doubling per extra bit of depth, and `exp(UNTRANSFORMED_LOG_SCALE)` times
+/// larger without the multi-component transform, whose chroma samples are the
+/// cheapest. A poor guess costs probes, not the result, and needs no encode,
+/// unlike starting from the finest scale.
+const START_LOG_SCALE: f64 = 2.42;
+const START_RATE_EXPONENT: f64 = -0.8;
+const UNTRANSFORMED_LOG_SCALE: f64 = 0.8;
+
+/// Every probe is a full encode at one global scale, the first one at the rate
+/// model's guess. Until the target is bracketed, the next scale extrapolates
+/// the last two (log scale, log bytes) points, up after a probe that is too
+/// large and down after one that is too small; once it is bracketed, it
+/// interpolates inside the bracket, bisecting whenever the bracket fails to
+/// halve. The first probe within 1% of the target is returned as encoded, as is
+/// the finest admissible scale when it fits and the coarsest when it is too
+/// large but within the size allowance. After `psnr_iteration_budget`
+/// bracketed probes, the probe closest to the target within the allowance is
+/// re-encoded so the result is always the final encode.
 pub(super) fn encode_lossy_to_byte_target(
     samples: J2kLossySamples<'_>,
     options: &J2kLossyEncodeOptions,
@@ -175,92 +200,140 @@ pub(super) fn encode_lossy_to_byte_target(
 ) -> Result<LossyAttempt, J2kError> {
     let tolerance = byte_target_tolerance(target_bytes);
     let maximum_bytes = target_bytes.saturating_add(tolerance);
+    // The allowance's 512-byte floor is too loose for a small target, so only
+    // a probe within 1% ends the search; others within it are fallbacks.
+    let near = target_bytes.div_ceil(100);
+    let near_target = target_bytes.saturating_sub(near)..=target_bytes.saturating_add(near);
     let (scale_floor, scale_ceiling) = quantization_scale_bounds(samples, options)?;
-    let mut low = scale_floor;
-    let mut high = scale_floor;
-    let initial_codestream = candidates.encode_candidate(high)?;
-    let mut best_len = initial_codestream.len() as u64;
-    let mut current_len = best_len;
-    let mut best_scale = high;
-    let mut best_diff = byte_target_diff(best_len, target_bytes);
-    // With low == high no bisection probe can follow this one.
-    if best_len <= maximum_bytes && candidates.reuse_terminal_byte_output() {
-        return Ok(LossyAttempt {
-            codestream: initial_codestream,
-            quantization_scale: best_scale,
-        });
-    }
-    // Retain only scalar search state so the next native encode is not run
-    // while an earlier output allocation escapes its phase budget.
-    drop(initial_codestream);
+    let log_target = u64_to_f64(target_bytes).ln();
+    let unreachable = |len: u64| J2kError::RateTargetUnreachable {
+        target: format!("{target_bytes} bytes"),
+        best: format!("{len} bytes"),
+    };
 
-    while current_len > maximum_bytes && high < scale_ceiling {
-        low = high;
-        high = (high * 2.0).min(scale_ceiling);
-        let codestream = candidates.encode_candidate(high)?;
+    let mut next = start_log_scale(samples, target_bytes).max(f64::from(scale_floor).ln());
+    let (mut too_large, mut too_small) = (None::<(f64, f64)>, None::<(f64, f64)>);
+    let (mut previous, mut closest) = (None::<(f64, f64)>, None::<(u64, f32)>);
+    let (mut bracket_width, mut bracketed_probes) = (f64::INFINITY, 0_u8);
+    loop {
+        let scale = f64_to_f32(next.exp()).clamp(scale_floor, scale_ceiling);
+        let codestream = candidates.encode_candidate(scale)?;
         let len = codestream.len() as u64;
-        current_len = len;
-        let diff = byte_target_diff(len, target_bytes);
-        if diff < best_diff {
-            best_len = len;
-            best_scale = high;
-            best_diff = diff;
+        // The finest scale is returned whenever it fits and the coarsest when it
+        // is too large but within the allowance: no other scale moves closer.
+        let bounded = (scale <= scale_floor || (scale >= scale_ceiling && len > target_bytes))
+            && len <= maximum_bytes;
+        if near_target.contains(&len) || bounded {
+            if candidates.reuse_terminal_byte_output() {
+                return Ok(LossyAttempt {
+                    codestream,
+                    quantization_scale: scale,
+                });
+            }
+            // Accelerator candidates keep the final encode of the selected scale.
+            drop(codestream);
+            return encode_selected_byte_target_scale(
+                candidates,
+                scale,
+                maximum_bytes,
+                unreachable,
+            );
         }
-    }
-
-    if current_len > maximum_bytes {
-        return Err(J2kError::RateTargetUnreachable {
-            target: format!("{target_bytes} bytes"),
-            best: format!("{best_len} bytes"),
-        });
-    }
-    if best_len > maximum_bytes {
-        best_scale = high;
-        best_diff = byte_target_diff(current_len, target_bytes);
-    }
-
-    let budget = options.psnr_iteration_budget.max(1);
-    for iteration in 0..budget {
-        let mid = f32::midpoint(low, high);
-        if mid <= low || mid >= high {
-            break;
+        // Retain only scalar search state so the next native encode is not run
+        // while an earlier output allocation escapes its phase budget.
+        drop(codestream);
+        let diff = len.abs_diff(target_bytes);
+        if len <= maximum_bytes && closest.is_none_or(|(best, _)| diff < best) {
+            closest = Some((diff, scale));
         }
-        let codestream = candidates.encode_candidate(mid)?;
-        let len = codestream.len() as u64;
-        let diff = byte_target_diff(len, target_bytes);
-        if len <= maximum_bytes && diff < best_diff {
-            best_scale = mid;
-            best_diff = diff;
-        }
-        if len > target_bytes {
-            low = mid;
+        let point = log_point(scale, len);
+        if len < target_bytes {
+            too_small = Some(point);
+        } else if scale >= scale_ceiling {
+            return Err(unreachable(len));
         } else {
-            high = mid;
+            too_large = Some(point);
         }
-        let next = f32::midpoint(low, high);
-        if candidates.reuse_terminal_byte_output()
-            && best_scale.to_bits() == mid.to_bits()
-            && (iteration + 1 == budget || next <= low || next >= high)
-        {
-            return Ok(LossyAttempt {
-                codestream,
-                quantization_scale: best_scale,
-            });
-        }
+        next = if let (Some(too_large), Some(fit)) = (too_large, too_small) {
+            if bracketed_probes >= options.psnr_iteration_budget.max(1) {
+                // The too-small probe fits, so a closest probe exists.
+                let Some((_, fit_scale)) = closest else {
+                    return Err(unreachable(len));
+                };
+                return encode_selected_byte_target_scale(
+                    candidates,
+                    fit_scale,
+                    maximum_bytes,
+                    unreachable,
+                );
+            }
+            bracketed_probes += 1;
+            let width = fit.0 - too_large.0;
+            let secant = too_large.0 + (log_target - too_large.1) * width / (fit.1 - too_large.1);
+            let halving = width <= bracket_width / 2.0;
+            bracket_width = width;
+            if halving && too_large.0 < secant && secant < fit.0 {
+                secant
+            } else {
+                too_large.0 + width / 2.0
+            }
+        } else {
+            let slope = previous.map_or(INITIAL_SIZE_SLOPE, |p| (point.1 - p.1) / (point.0 - p.0));
+            let slope = if slope.is_finite() {
+                slope.clamp(-3.0, -0.25)
+            } else {
+                INITIAL_SIZE_SLOPE
+            };
+            let (step, least) = ((log_target - point.1) / slope, MIN_SCALE_GROWTH.ln());
+            point.0
+                + if too_large.is_some() {
+                    step.max(least)
+                } else {
+                    step.min(-least)
+                }
+        };
+        previous = Some(point);
     }
+}
 
-    let codestream = candidates.encode_candidate(best_scale)?;
-    let final_len = codestream.len() as u64;
-    if final_len > maximum_bytes {
-        return Err(J2kError::RateTargetUnreachable {
-            target: format!("{target_bytes} bytes"),
-            best: format!("{final_len} bytes"),
-        });
+/// The final encode of a byte-target search's selected scale, which must still
+/// fit the size allowance.
+fn encode_selected_byte_target_scale(
+    candidates: &mut impl LossyCandidates,
+    scale: f32,
+    maximum_bytes: u64,
+    unreachable: impl Fn(u64) -> J2kError,
+) -> Result<LossyAttempt, J2kError> {
+    let codestream = candidates.encode_candidate(scale)?;
+    let len = codestream.len() as u64;
+    if len > maximum_bytes {
+        return Err(unreachable(len));
     }
     Ok(LossyAttempt {
         codestream,
-        quantization_scale: best_scale,
+        quantization_scale: scale,
     })
+}
+
+/// The first probe's log scale under the rate model.
+fn start_log_scale(samples: J2kLossySamples<'_>, target_bytes: u64) -> f64 {
+    let count =
+        f64::from(samples.width) * f64::from(samples.height) * f64::from(samples.components);
+    let bits_per_sample = u64_to_f64(target_bytes) * 8.0 / count;
+    // As `native_lossy_options` decides the multi-component transform.
+    let untransformed = if matches!(samples.components, 3 | 4) {
+        0.0
+    } else {
+        UNTRANSFORMED_LOG_SCALE
+    };
+    START_LOG_SCALE
+        + START_RATE_EXPONENT * bits_per_sample.ln()
+        + (f64::from(samples.bit_depth) - 8.0) * core::f64::consts::LN_2
+        + untransformed
+}
+
+fn log_point(scale: f32, len: u64) -> (f64, f64) {
+    (f64::from(scale).ln(), u64_to_f64(len.max(1)).ln())
 }
 
 pub(super) fn encode_lossy_to_psnr_target(
@@ -539,10 +612,6 @@ pub(super) fn byte_target_tolerance(target_bytes: u64) -> u64 {
     target_bytes.div_ceil(100).max(512)
 }
 
-pub(super) fn byte_target_diff(actual: u64, target: u64) -> u64 {
-    actual.abs_diff(target)
-}
-
 pub(super) fn bits_per_pixel(samples: J2kLossySamples<'_>, bytes: u64) -> f64 {
     (u64_to_f64(bytes) * 8.0) / (f64::from(samples.width) * f64::from(samples.height))
 }
@@ -561,6 +630,14 @@ pub(super) fn usize_to_f64(value: usize) -> f64 {
 )]
 pub(super) fn u64_to_f64(value: u64) -> f64 {
     value as f64
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "search scales are clamped to the f32 admissible interval after narrowing"
+)]
+fn f64_to_f32(value: f64) -> f32 {
+    value as f32
 }
 
 #[cfg(test)]

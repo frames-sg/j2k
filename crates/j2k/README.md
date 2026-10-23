@@ -72,14 +72,20 @@ range; weight two reaches it. Applying weights to an already clipped rate-search
 candidate would change that contract and the profile's ratios.
 
 Rate search uses scales at or above one within the common admissible interval of
-all weighted steps. Byte/BPP targets accept results within the size allowance;
-PSNR specifies a minimum quality within `psnr_tolerance_db`. Search uses doubling
-and bounded bisection, evaluates an encountered admissible boundary, retains a
-feasible candidate, and validates the returned codestream. CPU byte and
-bits-per-pixel searches return the last probe directly when it is the selected
-scale; other searches re-encode the selected scale. PSNR search also probes beyond an initial quality
-miss and checks the endpoint if no probe succeeds; it does not exhaustively
-enumerate potentially non-monotonic quality islands.
+all weighted steps. Byte/BPP targets return the first candidate within 1% of the
+target: each probe is a full encode, the first at a scale guessed from the
+target bits per sample, the bit depth and whether the multi-component transform
+applies, and the next scale is interpolated from
+the measured log sizes, bisecting a bracket that fails to halve. The finest
+admissible scale is returned when it fits. After
+`psnr_iteration_budget` bracketed probes, the candidate closest to the target
+within the size allowance is re-encoded. CPU searches return the selected probe
+directly; accelerator searches re-encode the selected scale.
+PSNR specifies a minimum quality within `psnr_tolerance_db`; its search uses
+doubling and bounded bisection, evaluates an encountered admissible boundary,
+retains a feasible candidate, and validates the returned codestream. It also probes
+beyond an initial quality miss and checks the endpoint if no probe succeeds;
+it does not exhaustively enumerate potentially non-monotonic quality islands.
 
 Prepared native batches preserve significant sample values and signed storage.
 For the supported 1–16-bit source routes, requested `Gray8`/`Rgb8`/`Rgba8`

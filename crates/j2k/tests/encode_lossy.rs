@@ -1323,7 +1323,8 @@ fn lossy_require_device_uses_only_the_selected_final_attempt_dispatch() {
         .with_backend(EncodeBackendPreference::RequireDevice)
         .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
         .with_max_decomposition_levels(Some(0))
-        .with_rate_target(Some(J2kRateTarget::Bytes(100_000)))
+        // Below the finest-scale size, so the search encodes more than once.
+        .with_rate_target(Some(J2kRateTarget::Bytes(200)))
         .with_validation(J2kEncodeValidation::External);
     options.psnr_iteration_budget = 1;
     let mut accelerator = FirstAttemptOnlyDispatch::default();
