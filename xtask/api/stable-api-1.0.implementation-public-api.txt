@@ -3025,6 +3025,7 @@ pub const j2k_types::MAX_JPEG2000_PART1_COMPONENTS: u16
 pub const j2k_types::MAX_JPEG2000_PART1_SAMPLE_BIT_DEPTH: u8
 pub enum j2k_types::encode_geometry::CodeBlockGeometryError
 pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::begin_encode(&mut self, j2k_types::J2kEncodeContext) -> j2k_types::J2kEncodeStageResult<()>
+pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::declines_every_stage(&self) -> bool
 pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::dispatch_report(&self) -> j2k_types::J2kEncodeDispatchReport
 pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::encode_deinterleave(&mut self, j2k_types::J2kDeinterleaveToF32Job<'_>) -> j2k_types::J2kEncodeStageResult<core::option::Option<alloc::vec::Vec<alloc::vec::Vec<f32>>>>
 pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::encode_deinterleave_mct(&mut self, j2k_types::J2kDeinterleaveMctToF32Job<'_>) -> j2k_types::J2kEncodeStageResult<core::option::Option<alloc::vec::Vec<alloc::vec::Vec<f32>>>>

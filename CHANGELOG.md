@@ -5,6 +5,14 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- `J2kEncodeStageAccelerator::declines_every_stage`, defaulting to `false`, lets
+  an accelerator permit native encode to skip the remaining per-stage hooks of
+  the current encode once the whole-tile hooks have declined, and the buffers
+  only those hooks read. `CpuOnlyJ2kEncodeStageAccelerator` returns `true`, so
+  CPU encodes quantize code blocks straight from the packed DWT rows and encode
+  single-layer cleanup-only HT blocks as they quantize, each worker keeping one
+  block buffer and workspace. A band whose worst-case output does not fit the
+  memory cap takes the Tier-1 path instead. Output is unchanged.
 - CPU 9/7 encodes lift each even-origin row of the forward DWT in one
   register-window pass, splitting each block of samples into its low and high
   samples once, running all four lifting steps and the scaling in registers,

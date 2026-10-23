@@ -4283,6 +4283,7 @@ pub fn j2k_types::J2kEncodeDispatchReport::any(self) -> bool
 pub fn j2k_types::J2kEncodeDispatchReport::saturating_delta(self, Self) -> Self
 pub fn j2k_types::J2kEncodeDispatchReport::total(self) -> usize
 pub fn j2k_types::J2kEncodeStageAccelerator::begin_encode(&mut self, j2k_types::J2kEncodeContext) -> j2k_types::J2kEncodeStageResult<()>
+pub fn j2k_types::J2kEncodeStageAccelerator::declines_every_stage(&self) -> bool
 pub fn j2k_types::J2kEncodeStageAccelerator::dispatch_report(&self) -> j2k_types::J2kEncodeDispatchReport
 pub fn j2k_types::J2kEncodeStageAccelerator::encode_deinterleave(&mut self, j2k_types::J2kDeinterleaveToF32Job<'_>) -> j2k_types::J2kEncodeStageResult<core::option::Option<alloc::vec::Vec<alloc::vec::Vec<f32>>>>
 pub fn j2k_types::J2kEncodeStageAccelerator::encode_deinterleave_mct(&mut self, j2k_types::J2kDeinterleaveMctToF32Job<'_>) -> j2k_types::J2kEncodeStageResult<core::option::Option<alloc::vec::Vec<alloc::vec::Vec<f32>>>>
