@@ -235,26 +235,27 @@ fn encode_mag_signs(
     ms: &mut MagSgnEncoder,
 ) -> Result<(), &'static str> {
     let e_k = u32::from(tuple & 0xF);
-    // The quad's payloads go out as one word, least significant first, as
-    // separate writes would; a word only flushes early past 64 bits.
-    let (mut word, mut word_bits) = (0_u64, 0_u32);
-    for sample in 0..4 {
-        if (rho & (1 << sample)) == 0 {
-            continue;
+    // Payloads go out least significant first, as separate writes would. An
+    // insignificant sample has a 0-bit payload, so packing needs no branches.
+    // U <= 32 bounds a payload; with U <= 16 the quad fits one 64-bit word.
+    let pack = |first: usize, count: usize| {
+        let (mut word, mut word_bits) = (0_u64, 0_u32);
+        for sample in first..first + count {
+            let significant = ((rho >> sample) & 1) as u32;
+            let magnitude_bits = significant * (u_q as u32 - ((e_k >> sample) & 1));
+            let payload = u64::from(s[offset + sample]) & ((1_u64 << magnitude_bits) - 1);
+            word |= payload << word_bits;
+            word_bits += magnitude_bits;
         }
-        // U <= 32, so a payload is at most 32 bits.
-        let magnitude_bits = (u_q - ((e_k >> sample) & 1) as i32) as u32;
-        if magnitude_bits == 0 {
-            continue;
-        }
-        if word_bits + magnitude_bits > u64::BITS {
-            ms.encode(word, word_bits)?;
-            (word, word_bits) = (0, 0);
-        }
-        let payload = u64::from(s[offset + sample]) & ((1_u64 << magnitude_bits) - 1);
-        word |= payload << word_bits;
-        word_bits += magnitude_bits;
+        (word, word_bits)
+    };
+    if u_q <= 16 {
+        let (word, word_bits) = pack(0, 4);
+        return ms.encode(word, word_bits);
     }
+    let (word, word_bits) = pack(0, 2);
+    ms.encode(word, word_bits)?;
+    let (word, word_bits) = pack(2, 2);
     ms.encode(word, word_bits)
 }
 
