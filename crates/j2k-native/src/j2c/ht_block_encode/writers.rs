@@ -85,6 +85,11 @@ impl MelEncoder {
         clippy::cast_possible_truncation,
         reason = "MEL exponents are at most five, so the packed run and count fit u8"
     )]
+    #[expect(
+        clippy::inline_always,
+        reason = "runs once per quad in the cleanup hot path"
+    )]
+    #[inline(always)]
     pub(super) fn encode(&mut self, bit: bool) -> Result<(), &'static str> {
         if bit {
             let t = MEL_EXP[self.k];
@@ -147,6 +152,11 @@ impl VlcEncoder {
         clippy::cast_possible_truncation,
         reason = "the mask is bounded by the available byte bits before packing into the VLC reservoir"
     )]
+    #[expect(
+        clippy::inline_always,
+        reason = "runs once per quad pair in the cleanup hot path"
+    )]
+    #[inline(always)]
     pub(super) fn encode(
         &mut self,
         mut codeword: u64,

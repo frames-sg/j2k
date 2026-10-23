@@ -35,6 +35,8 @@ impl PairVlc {
 }
 
 impl EncodeQuadSink<'_> {
+    #[expect(clippy::inline_always, reason = "runs once per quad pair")]
+    #[inline(always)]
     fn flush_pair_vlc(&mut self) -> Result<(), &'static str> {
         self.vlc.encode(self.pair_vlc.bits, self.pair_vlc.len)
     }
@@ -258,6 +260,11 @@ fn encode_mag_signs(
     clippy::cast_sign_loss,
     reason = "branch guards and max operations make every UVLC table index and suffix nonnegative"
 )]
+#[expect(
+    clippy::inline_always,
+    reason = "runs once per quad pair in the cleanup hot path"
+)]
+#[inline(always)]
 fn encode_uvlc(u_q0: i32, u_q1: i32, vlc: &mut PairVlc) {
     if u_q0 > 2 && u_q1 > 2 {
         let first = HT_UVLC_ENCODE_TABLE[(u_q0 - 2) as usize];
@@ -279,12 +286,22 @@ fn encode_uvlc(u_q0: i32, u_q1: i32, vlc: &mut PairVlc) {
     clippy::cast_sign_loss,
     reason = "max with zero makes both non-initial UVLC table indices nonnegative"
 )]
+#[expect(
+    clippy::inline_always,
+    reason = "runs once per quad pair in the cleanup hot path"
+)]
+#[inline(always)]
 fn encode_uvlc_non_initial(u_q0: i32, u_q1: i32, vlc: &mut PairVlc) {
     let first = HT_UVLC_ENCODE_TABLE[u_q0.max(0) as usize];
     let second = HT_UVLC_ENCODE_TABLE[u_q1.max(0) as usize];
     encode_uvlc_pair(vlc, first, second);
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "runs once per quad pair in the cleanup hot path"
+)]
+#[inline(always)]
 fn encode_uvlc_pair(vlc: &mut PairVlc, first: HtUvlcTableEntry, second: HtUvlcTableEntry) {
     vlc.push(u32::from(first.pre), first.pre_len);
     vlc.push(u32::from(second.pre), second.pre_len);

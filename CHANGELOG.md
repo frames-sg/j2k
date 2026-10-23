@@ -5,6 +5,10 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- The CPU HTJ2K block encoder packs a quad's MagSgn payloads and computes its
+  eps mask without branches, codes zero quad pairs under zero context as MEL
+  zeros alone, and inlines its per-pair MEL, VLC and UVLC writers. Output is
+  unchanged.
 - The CPU HTJ2K block encoder computes each row pair's exponents and MagSgn
   values in a vectorized pre-pass into zero-padded rows, writes a quad pair's
   CxtVLC and UVLC bits to the VLC stream at once and a quad's MagSgn payloads
