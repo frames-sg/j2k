@@ -371,8 +371,9 @@ fn line_level<T: Copy>(
 /// Transform one f32 sample plane in place while retaining its packed quadrant
 /// layout. The caller owns the coefficient plane and one reusable scratch of at
 /// least `max(width, height)` samples; `packed_dwt_scratch_len` samples let the
-/// vertical pass lift full-width column strips. The output does not depend on
-/// the scratch length.
+/// vertical pass lift full-width column strips, and each further multiple of it
+/// lets one more Rayon worker lift strips and rows. The output does not depend
+/// on the scratch length.
 pub(crate) fn try_forward_dwt_packed_f32(
     coefficients: &mut [f32],
     width: u32,
@@ -384,6 +385,7 @@ pub(crate) fn try_forward_dwt_packed_f32(
 ) -> EncodeResult<PackedDwtShape> {
     validate_packed_dwt_plane(coefficients.len(), width, height)?;
     validate_line_scratch(line_scratch.len(), width, height)?;
+    let workers = line_scratch.len() / lifting::packed_dwt_scratch_len(width, height)?;
     forward_dwt_packed_core(
         coefficients,
         usize_from_u32(width, "packed forward DWT width")?,
@@ -393,7 +395,7 @@ pub(crate) fn try_forward_dwt_packed_f32(
         origin,
         |coefficients, scratch, level| {
             dispatch!(Level::new(), simd => {
-                lifting::transform_level(simd, coefficients, scratch, level, reversible)
+                lifting::transform_level(simd, coefficients, scratch, workers, level, reversible)
             })
         },
     )
@@ -757,6 +759,8 @@ mod tests {
             (100, 3),
             (2049, 5),
             (2112, 3),
+            (300, 260),
+            (517, 131),
         ];
         for ((width, height), origin, reversible, num_levels, extreme) in geometries
             .into_iter()
@@ -785,10 +789,13 @@ mod tests {
                 u32::try_from(width).expect("width"),
                 u32::try_from(height).expect("height"),
             );
+            let strip_scratch = packed_dwt_scratch_len(w, h).expect("strip scratch");
+            // Three strip scratches run three workers on large levels.
             for scratch_len in [
                 width.max(height),
                 width.max(5 * height),
-                packed_dwt_scratch_len(w, h).expect("strip scratch"),
+                strip_scratch,
+                3 * strip_scratch,
             ] {
                 let mut actual = original.clone();
                 let mut scratch = vec![0.0; scratch_len];

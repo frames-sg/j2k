@@ -5,6 +5,12 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CPU encodes lift the forward DWT's column strips and rows on the pool when
+  one strip scratch per worker fits the memory cap, and run the RGB8
+  deinterleave, subband quantization and code-block copies on the pool. HT code
+  blocks take small batches from a shared queue, and the all-at-once memory
+  bound charges each worker's scratch once instead of every block's. Output is
+  unchanged.
 - CPU encodes lift the packed `f32` forward DWT in SIMD column strips of one or
   two cache lines per row, copied into a scratch block of their low-pass rows
   then their high-pass rows, instead of one column at a time through the line

@@ -82,6 +82,7 @@ pub(crate) fn deinterleave_to_f32(
 }
 
 /// Fallible production deinterleave used by the phase-bounded encode path.
+/// `parallel` lets 8-bit RGB planes fill on the Rayon pool.
 #[expect(
     clippy::cast_precision_loss,
     reason = "the codec float domain intentionally receives bounded integer samples at this rounding boundary"
@@ -92,9 +93,10 @@ pub(crate) fn try_deinterleave_to_f32(
     num_components: u16,
     bit_depth: u8,
     signed: bool,
+    parallel: bool,
 ) -> EncodeResult<Vec<Vec<f32>>> {
     if num_components == 3 && bit_depth == 8 && !signed {
-        return try_deinterleave_rgb8_unsigned_to_f32(pixels, num_pixels);
+        return try_deinterleave_rgb8_unsigned_to_f32(pixels, num_pixels, parallel);
     }
 
     let component_count = usize::from(num_components);
@@ -155,6 +157,7 @@ pub(crate) fn try_deinterleave_to_f32(
 fn try_deinterleave_rgb8_unsigned_to_f32(
     pixels: &[u8],
     num_pixels: usize,
+    parallel: bool,
 ) -> EncodeResult<Vec<Vec<f32>>> {
     let plane_bytes = num_pixels.checked_mul(core::mem::size_of::<f32>()).ok_or(
         EncodeError::ArithmeticOverflow {
@@ -164,10 +167,14 @@ fn try_deinterleave_rgb8_unsigned_to_f32(
     let mut r = try_reserve_f32_plane(num_pixels, plane_bytes)?;
     let mut g = try_reserve_f32_plane(num_pixels, plane_bytes)?;
     let mut b = try_reserve_f32_plane(num_pixels, plane_bytes)?;
-    for pixel in pixels.as_chunks::<3>().0.iter().take(num_pixels) {
-        r.push(f32::from(pixel[0]) - 128.0);
-        g.push(f32::from(pixel[1]) - 128.0);
-        b.push(f32::from(pixel[2]) - 128.0);
+    let pixels = pixels.as_chunks::<3>().0;
+    let pixels = &pixels[..num_pixels.min(pixels.len())];
+    if !fill_rgb_planes_on_pool(pixels, [&mut r, &mut g, &mut b], parallel) {
+        for pixel in pixels {
+            r.push(f32::from(pixel[0]) - 128.0);
+            g.push(f32::from(pixel[1]) - 128.0);
+            b.push(f32::from(pixel[2]) - 128.0);
+        }
     }
     let mut components = Vec::new();
     components
@@ -180,6 +187,31 @@ fn try_deinterleave_rgb8_unsigned_to_f32(
     components.push(g);
     components.push(b);
     Ok(components)
+}
+
+/// Smaller images fill their planes on one thread.
+#[cfg(feature = "parallel")]
+const PARALLEL_DEINTERLEAVE_PIXELS: usize = 1 << 16;
+
+/// Fill each plane on the Rayon pool when that is allowed and worth it; one
+/// thread is faster filling all three in one pass.
+#[cfg(feature = "parallel")]
+fn fill_rgb_planes_on_pool(pixels: &[[u8; 3]], planes: [&mut Vec<f32>; 3], parallel: bool) -> bool {
+    use rayon::prelude::*;
+    if !parallel || pixels.len() < PARALLEL_DEINTERLEAVE_PIXELS || rayon::current_num_threads() < 2
+    {
+        return false;
+    }
+    for (channel, plane) in planes.into_iter().enumerate() {
+        let sample = move |pixel: &[u8; 3]| f32::from(pixel[channel]) - 128.0;
+        plane.par_extend(pixels.par_iter().with_min_len(1 << 14).map(sample));
+    }
+    true
+}
+
+#[cfg(not(feature = "parallel"))]
+fn fill_rgb_planes_on_pool(_: &[[u8; 3]], _: [&mut Vec<f32>; 3], _: bool) -> bool {
+    false
 }
 
 fn try_reserve_f32_plane(count: usize, bytes: usize) -> EncodeResult<Vec<f32>> {

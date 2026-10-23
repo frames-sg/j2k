@@ -771,6 +771,7 @@ pub(crate) fn try_quantize_subband(
     step_size: &QuantStepSize,
     range_bits: u8,
     reversible: bool,
+    parallel: bool,
 ) -> EncodeResult<Vec<i32>> {
     let requested_bytes = coefficients
         .len()
@@ -786,28 +787,76 @@ pub(crate) fn try_quantize_subband(
             bytes: requested_bytes,
         })?;
     if reversible {
-        for &coefficient in coefficients {
-            quantized.push(round_f32(coefficient) as i32);
-        }
+        extend_quantized(&mut quantized, coefficients, parallel, |c| {
+            round_f32(c) as i32
+        });
         return Ok(quantized);
     }
-
     let delta = step_size.delta(range_bits);
     if delta <= 0.0 {
         quantized.resize(coefficients.len(), 0);
         return Ok(quantized);
     }
-    for &coefficient in coefficients {
-        let sign = if coefficient < 0.0 { -1 } else { 1 };
-        let magnitude = floor_f32(coefficient.abs() / delta) as i32;
-        quantized.push(sign * magnitude);
-    }
+    extend_quantized(&mut quantized, coefficients, parallel, |c| {
+        let sign = if c < 0.0 { -1 } else { 1 };
+        sign * floor_f32(c.abs() / delta) as i32
+    });
     Ok(quantized)
 }
+
+fn extend_quantized(
+    quantized: &mut Vec<i32>,
+    coefficients: &[f32],
+    parallel: bool,
+    quantize: impl Fn(f32) -> i32 + Send + Sync,
+) {
+    #[cfg(feature = "parallel")]
+    if parallel
+        && coefficients.len() >= PARALLEL_QUANTIZE_SAMPLES
+        && rayon::current_num_threads() > 1
+    {
+        use rayon::prelude::*;
+        quantized.par_extend(
+            coefficients
+                .par_iter()
+                .with_min_len(1 << 14)
+                .map(|&c| quantize(c)),
+        );
+        return;
+    }
+    let _ = parallel;
+    quantized.extend(coefficients.iter().map(|&c| quantize(c)));
+}
+
+/// Smaller subbands quantize on one thread.
+#[cfg(feature = "parallel")]
+const PARALLEL_QUANTIZE_SAMPLES: usize = 1 << 16;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fallible_quantization_matches_the_reference_on_one_thread_and_the_pool() {
+        // 70,000 samples are enough to quantize on the Rayon pool when allowed.
+        let coefficients = (0..70_000_u32)
+            .map(|index| {
+                f32::from(u16::try_from(index * 7919 % 65_536).expect("u16")) / 7.0 - 4681.0
+            })
+            .collect::<Vec<_>>();
+        let step = QuantStepSize {
+            exponent: 9,
+            mantissa: 1000,
+        };
+        for (reversible, parallel) in [(true, false), (true, true), (false, false), (false, true)] {
+            assert_eq!(
+                try_quantize_subband(&coefficients, &step, 9, reversible, parallel)
+                    .expect("fallible quantization"),
+                quantize_subband(&coefficients, &step, 9, reversible),
+                "reversible {reversible}, parallel {parallel}"
+            );
+        }
+    }
 
     #[test]
     fn openhtj2k_qfactor_90_matches_reference_qcd_and_qcc() {

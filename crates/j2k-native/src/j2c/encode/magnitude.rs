@@ -81,13 +81,9 @@ fn maximum_cleanup_magnitude(subband: &PreparedEncodeSubband) -> u64 {
     for block in &subband.code_blocks {
         match &block.coefficients {
             PreparedCodeBlockCoefficients::I32(values) => {
-                maximum = maximum.max(
-                    values
-                        .iter()
-                        .map(|value| u64::from(value.unsigned_abs()))
-                        .max()
-                        .unwrap_or(0),
-                );
+                // A u32 maximum vectorizes; widening first does not.
+                let block_maximum = values.iter().map(|value| value.unsigned_abs()).max();
+                maximum = maximum.max(u64::from(block_maximum.unwrap_or(0)));
             }
             PreparedCodeBlockCoefficients::I64(values) => {
                 maximum = maximum.max(

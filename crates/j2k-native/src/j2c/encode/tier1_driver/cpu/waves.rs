@@ -11,7 +11,6 @@ use super::validate_ht_cpu_jobs;
 #[cfg(feature = "parallel")]
 use rayon::prelude::{
     IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator,
-    ParallelSlice, ParallelSliceMut,
 };
 
 pub(in crate::j2c::encode::tier1_driver) type Tier1CpuSlot =
@@ -54,10 +53,10 @@ pub(in crate::j2c::encode::tier1_driver) fn encode_ht_cpu_results_accounted(
             outer_bytes,
             workspace_owner_bytes,
         ];
-        // Charging every job's output and scratch makes this deliberately
-        // independent of Rayon scheduling. If that conservative frontier is
-        // too large, the bounded worker-sized waves below remain available.
-        if try_check_full_ht_wave(jobs, tracker, &full_fixed)? {
+        // Charging every job's output and every worker's scratch makes this
+        // independent of Rayon scheduling. If that frontier is too large, the
+        // bounded worker-sized waves below remain available.
+        if try_check_full_ht_wave(jobs, wave_size, tracker, &full_fixed)? {
             try_fill_ht_workspaces(&mut workspaces, wave_size)?;
             encode_ht_parallel_with_workspaces(jobs, &mut encoded, &mut workspaces);
             retained_payload_bytes = checked_wave_payload_bytes(
@@ -124,10 +123,11 @@ pub(in crate::j2c::encode::tier1_driver) fn encode_ht_cpu_results_accounted(
 #[cfg(any(feature = "parallel", test))]
 fn try_check_full_ht_wave(
     jobs: &[crate::J2kHtCodeBlockEncodeJob<'_>],
+    workers: usize,
     tracker: &mut Tier1PhaseTracker<'_, '_>,
     fixed_and_retained_output: &[usize],
 ) -> NativeEncodePipelineResult<bool> {
-    match check_ht_wave(jobs, tracker, fixed_and_retained_output, jobs.len()) {
+    match check_ht_wave(jobs, tracker, fixed_and_retained_output, workers) {
         Ok(_) => Ok(true),
         Err(NativeEncodePipelineError::Typed(crate::EncodeError::AllocationTooLarge {
             ..
@@ -249,13 +249,17 @@ fn encode_ht_parallel_with_workspaces(
     slots: &mut [Tier1CpuSlot],
     workspaces: &mut [ht_block_encode::HtEncodeWorkspace],
 ) {
-    let chunk_len = jobs.len().div_ceil(workspaces.len());
-    slots
-        .par_chunks_mut(chunk_len)
-        .zip(jobs.par_chunks(chunk_len))
-        .zip(workspaces.par_iter_mut())
-        .for_each(|((slot_chunk, job_chunk), workspace)| {
-            encode_ht_wave_serial(job_chunk, slot_chunk, workspace);
+    // Workers pull small batches so slower cores and denser bands do not
+    // hold the others up; one fixed chunk per worker scaled 1.9x on 10 cores.
+    let batch = (jobs.len() / (4 * workspaces.len())).clamp(1, 8);
+    let batches = std::sync::Mutex::new(slots.chunks_mut(batch).zip(jobs.chunks(batch)));
+    workspaces
+        .par_iter_mut()
+        .with_max_len(1)
+        .for_each(|workspace| {
+            while let Some((slots, jobs)) = batches.lock().ok().and_then(|mut b| b.next()) {
+                encode_ht_wave_serial(jobs, slots, workspace);
+            }
         });
 }
 
@@ -454,9 +458,34 @@ mod tests {
             .expect("one-worker session");
         let mut tracker = Tier1PhaseTracker::new(&session, 0);
 
-        assert!(!try_check_full_ht_wave(&jobs, &mut tracker, &[])
+        assert!(!try_check_full_ht_wave(&jobs, 2, &mut tracker, &[])
             .expect("full-wave capacity fallback should be typed"));
         check_ht_wave(&jobs[..1], &mut tracker, &[], 1)
             .expect("one worker remains within the same cap");
+    }
+
+    #[test]
+    fn full_ht_wave_charges_every_output_but_one_scratch_per_worker() {
+        let coefficients = [1_i32; 16];
+        let jobs = [crate::J2kHtCodeBlockEncodeJob {
+            coefficients: &coefficients,
+            width: 4,
+            height: 4,
+            total_bitplanes: 1,
+            target_coding_passes: 1,
+        }; 3];
+        let worker = ht_block_encode::ht_worker_allocation(4, 4, 1).expect("worker allocation");
+        for workers in [1, 2, 3] {
+            let frontier = 3 * worker.output_bytes + workers * worker.scratch_bytes;
+            for (cap, fits) in [(frontier, true), (frontier - 1, false)] {
+                let session =
+                    NativeEncodeSession::try_with_cap(NativeEncodeRetainedInput::none(), cap)
+                        .expect("session");
+                let mut tracker = Tier1PhaseTracker::new(&session, 0);
+                let actual = try_check_full_ht_wave(&jobs, workers, &mut tracker, &[])
+                    .expect("capacity fallback should be typed");
+                assert_eq!(actual, fits, "{workers} workers, cap {cap}");
+            }
+        }
     }
 }

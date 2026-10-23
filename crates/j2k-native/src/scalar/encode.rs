@@ -429,8 +429,15 @@ pub fn try_deinterleave_reference(
     if pixels.len() != expected_len {
         bail!(ValidationError::InvalidComponentMetadata);
     }
-    j2c::encode::try_deinterleave_to_f32(pixels, num_pixels, num_components, bit_depth, signed)
-        .map_err(|error| map_deinterleave_encode_error(&error))
+    j2c::encode::try_deinterleave_to_f32(
+        pixels,
+        num_pixels,
+        num_components,
+        bit_depth,
+        signed,
+        false,
+    )
+    .map_err(|error| map_deinterleave_encode_error(&error))
 }
 
 fn map_deinterleave_encode_error(error: &EncodeError) -> crate::DecodeError {
