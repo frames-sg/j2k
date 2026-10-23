@@ -396,6 +396,7 @@ fn band_settings<'a, 'input, S>(
         roi_regions: input.roi_regions,
         roi_scale: input.roi_scale,
         ht_target_coding_passes: request.plan.ht_target_coding_passes,
+        single_layer: request.plan.params.num_layers == 1,
         session: request.session,
         retained_base_bytes: input.retained_base_bytes,
     }

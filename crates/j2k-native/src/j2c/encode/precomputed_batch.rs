@@ -264,6 +264,7 @@ fn try_prepared_subband(
         roi_regions: &[],
         roi_scale: 1,
         ht_target_coding_passes: 1,
+        single_layer: false,
         session,
         retained_base_bytes,
     };

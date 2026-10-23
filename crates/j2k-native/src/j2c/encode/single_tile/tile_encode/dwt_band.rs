@@ -35,6 +35,7 @@ pub(super) struct DwtBandEncodeSettings<'a, 'input> {
     pub(super) roi_regions: &'a [ComponentRoiEncodeRegion],
     pub(super) roi_scale: u32,
     pub(super) ht_target_coding_passes: u8,
+    pub(super) single_layer: bool,
     pub(super) session: &'a NativeEncodeSession<'input>,
     pub(super) retained_base_bytes: usize,
 }
@@ -67,6 +68,7 @@ impl<'a, 'input> DwtBandEncodeSettings<'a, 'input> {
             roi_regions: self.roi_regions,
             roi_scale: self.roi_scale,
             ht_target_coding_passes: self.ht_target_coding_passes,
+            single_layer: self.single_layer,
             session: self.session,
             retained_base_bytes,
         }
