@@ -546,14 +546,15 @@ fn forward_rgb8(
             }
         }
     }
-    let [first, second, third] = outputs.map(|output| {
+    // The levels after the first, for one plane on `workers` scratch parts.
+    let later_levels = |output: &mut [f32], scratch: &mut [f32], workers: usize| {
         let mut first_level = true;
         forward_dwt_packed_core(
             output,
             width,
             height,
             num_levels,
-            line_scratch,
+            scratch,
             origin,
             |plane, scratch, level| {
                 if core::mem::take(&mut first_level) {
@@ -564,10 +565,36 @@ fn forward_rgb8(
                 })
             },
         )
-    });
-    // The three planes share one geometry, so one shape describes them.
-    second?;
-    third?;
+    };
+    let [luma, blue, red] = outputs;
+    // On the pool the three planes run side by side, each on a third of the
+    // workers, so one plane's per-level barriers and its small, poorly scaling
+    // levels overlap the others' work. Each plane sees the same operations.
+    // With no later level there is nothing to fork for.
+    #[cfg(feature = "parallel")]
+    if workers >= 3 && num_levels > 1 {
+        let part = workers / 3 * (line_scratch.len() / workers);
+        let (luma_scratch, rest) = line_scratch.split_at_mut(part);
+        let (blue_scratch, rest) = rest.split_at_mut(part);
+        let red_scratch = &mut rest[..part];
+        let per_plane = workers / 3;
+        let ((first, second), third) = rayon::join(
+            || {
+                rayon::join(
+                    || later_levels(luma, luma_scratch, per_plane),
+                    || later_levels(blue, blue_scratch, per_plane),
+                )
+            },
+            || later_levels(red, red_scratch, per_plane),
+        );
+        // The three planes share one geometry, so one shape describes them.
+        second?;
+        third?;
+        return first;
+    }
+    let first = later_levels(luma, line_scratch, workers);
+    later_levels(blue, line_scratch, workers)?;
+    later_levels(red, line_scratch, workers)?;
     first
 }
 
