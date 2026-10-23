@@ -5,6 +5,14 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CPU region decodes reconstruct the IDWT a row at a time, holding a few rows
+  per level instead of each level's whole window, and write the last level
+  straight into the output planes. This applies to packed, native and
+  component-plane region outputs and to `PreparedRegionDecoder`, and lowers the
+  peak workspace of a 1024 x 1024 region of a large RGB image from 29.1 to
+  25.1 MiB. Output is unchanged. Hooked decodes, palette, component-definition,
+  sYCC and CIELab images, subsampled components and exact-integer decodes keep
+  the whole-window IDWT.
 - Reduced-resolution decodes of images whose origin is not a multiple of the
   reduction factor no longer panic on edge tiles without samples, and match the
   standard's output size instead of adding an unwritten row or column.

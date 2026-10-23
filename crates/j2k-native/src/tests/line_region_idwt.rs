@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! The row-streamed region IDWT behind `DecoderContext::set_line_region_idwt`
-//! must match the whole-window region IDWT bit for bit, for packed outputs
-//! and component planes alike, and must leave every image it does not cover
-//! on the whole-window path.
+//! The row-streamed region IDWT, on by default and switched off in tests with
+//! `DecoderContext::set_line_region_idwt`, must match the whole-window region
+//! IDWT bit for bit, for packed outputs and component planes alike, and must
+//! leave every image it does not cover on the whole-window path.
 
 use alloc::vec::Vec;
 
@@ -200,8 +200,9 @@ struct ComponentPlanes {
     planes: Vec<Vec<Vec<u32>>>,
     /// Bytes of each native plane.
     native: Vec<Vec<u8>>,
-    /// Peak IDWT workspace across all of them.
-    peak_idwt: usize,
+    /// Peak IDWT workspace of each output, borrowed planes first. The
+    /// counters restart with every decode, so each is read straight after it.
+    peak_idwt: Vec<usize>,
 }
 
 fn decode_component_planes(
@@ -222,33 +223,42 @@ fn decode_component_planes(
             })
             .collect()
     }
+    fn peak_idwt(context: &DecoderContext<'_>) -> usize {
+        context
+            .tile_decode_context
+            .debug_counters
+            .workspace_peak
+            .bytes()
+            .idwt
+    }
     let mut context = DecoderContext::default();
     context.set_line_region_idwt(lines);
     let mut planes = Vec::new();
+    let mut peaks = Vec::new();
     planes.push(bits(
         &image
             .decode_region_components_with_context(roi, &mut context)
             .expect("component planes"),
     ));
+    peaks.push(peak_idwt(&context));
     planes.push(bits(
         &image
             .decode_region_components_for_integer_output_with_context(roi, &mut context)
             .expect("integer-output component planes"),
     ));
-    {
+    peaks.push(peak_idwt(&context));
+    for integer_output in [false, true] {
         let mut prepared = image
             .prepare_region_decoder_with_context(&mut context)
             .expect("prepare");
-        planes.push(bits(
-            &prepared
-                .decode_region_components(roi)
-                .expect("prepared region"),
-        ));
-        planes.push(bits(
-            &prepared
-                .decode_region_components_for_integer_output(roi)
-                .expect("prepared integer-output region"),
-        ));
+        let decoded = if integer_output {
+            prepared.decode_region_components_for_integer_output(roi)
+        } else {
+            prepared.decode_region_components(roi)
+        };
+        planes.push(bits(&decoded.expect("prepared region")));
+        drop(prepared);
+        peaks.push(peak_idwt(&context));
     }
     let native = image
         .decode_native_region_components_with_context(roi, &mut context)
@@ -257,16 +267,11 @@ fn decode_component_planes(
         .iter()
         .map(|plane| plane.data().to_vec())
         .collect();
-    let peak_idwt = context
-        .tile_decode_context
-        .debug_counters
-        .workspace_peak
-        .bytes()
-        .idwt;
+    peaks.push(peak_idwt(&context));
     ComponentPlanes {
         planes,
         native,
-        peak_idwt,
+        peak_idwt: peaks,
     }
 }
 
@@ -282,12 +287,14 @@ fn component_plane_outputs_take_the_streamed_path() {
             assert_eq!(lines.planes, windows.planes, "{label}");
             assert_eq!(lines.native, windows.native, "{label}");
             if roi.2 > 1 {
-                assert!(
-                    lines.peak_idwt < windows.peak_idwt,
-                    "{label}: idwt {} vs {}",
-                    lines.peak_idwt,
-                    windows.peak_idwt
-                );
+                for (output, (line_peak, window_peak)) in
+                    lines.peak_idwt.iter().zip(&windows.peak_idwt).enumerate()
+                {
+                    assert!(
+                        line_peak < window_peak,
+                        "{label} output {output}: idwt {line_peak} vs {window_peak}"
+                    );
+                }
             }
         }
     }
