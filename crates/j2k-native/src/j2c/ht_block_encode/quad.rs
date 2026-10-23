@@ -12,6 +12,9 @@ const ROW_PAIR_COLUMNS: usize = 1024 + 4;
 pub(super) struct RowPair {
     exponents: [[u8; ROW_PAIR_COLUMNS]; 2],
     values: [[u32; ROW_PAIR_COLUMNS]; 2],
+    /// Per quad: its significance pattern `rho` and largest exponent.
+    rho: [u8; ROW_PAIR_COLUMNS / 2],
+    e_qmax: [u8; ROW_PAIR_COLUMNS / 2],
 }
 
 impl RowPair {
@@ -19,6 +22,8 @@ impl RowPair {
         Self {
             exponents: [[0; ROW_PAIR_COLUMNS]; 2],
             values: [[0; ROW_PAIR_COLUMNS]; 2],
+            rho: [0; ROW_PAIR_COLUMNS / 2],
+            e_qmax: [0; ROW_PAIR_COLUMNS / 2],
         }
     }
 
@@ -41,6 +46,18 @@ impl RowPair {
                 0
             };
             exponents[filled..width + 4].fill(0);
+        }
+        // An indexed loop over quads vectorizes; the walk then loads each
+        // quad's pattern and maximum instead of deriving them per sample.
+        let [upper, lower] = &self.exponents;
+        for quad in 0..width / 2 + 2 {
+            let (left, right) = (2 * quad, 2 * quad + 1);
+            let samples = [upper[left], lower[left], upper[right], lower[right]];
+            self.rho[quad] = u8::from(samples[0] != 0)
+                | u8::from(samples[1] != 0) << 1
+                | u8::from(samples[2] != 0) << 2
+                | u8::from(samples[3] != 0) << 3;
+            self.e_qmax[quad] = samples[0].max(samples[1]).max(samples[2].max(samples[3]));
         }
         Ok(())
     }
@@ -79,12 +96,11 @@ fn load_quad(
     e_qmax: &mut i32,
     s: &mut [u32; 8],
 ) {
+    *rho = i32::from(rows.rho[x / 2 + quad]);
+    *e_qmax = i32::from(rows.e_qmax[x / 2 + quad]);
     for sample in 0..4 {
         let (row, column) = (sample & 1, x + 2 * quad + sample / 2);
-        let exponent = i32::from(rows.exponents[row][column]);
-        *rho |= i32::from(exponent != 0) << sample;
-        e_q[4 * quad + sample] = exponent;
-        *e_qmax = (*e_qmax).max(exponent);
+        e_q[4 * quad + sample] = i32::from(rows.exponents[row][column]);
         s[4 * quad + sample] = rows.values[row][column];
     }
 }
