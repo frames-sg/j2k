@@ -9,11 +9,13 @@ use crate::{HtCodeBlockDecoder, J2kInverseMctJob, J2kWaveletTransform};
 use j2k_codec_math::mct;
 
 /// Apply the inverse multi-component transform, as specified in G.2 and G.3.
+/// `parallel` lets the CPU transform run on the Rayon pool.
 pub(crate) fn apply_inverse(
     tile_ctx: &mut TileDecodeContext,
     component_infos: &[super::codestream::ComponentInfo],
     header: &Header<'_>,
     backend: &mut Option<&mut dyn HtCodeBlockDecoder>,
+    parallel: bool,
 ) -> Result<()> {
     if tile_ctx.channel_data.len() < 3 {
         return if header.strict {
@@ -81,23 +83,64 @@ pub(crate) fn apply_inverse(
         false
     };
 
+    let planes = (
+        &mut s0.container[..],
+        &mut s1.container[..],
+        &mut s2.container[..],
+    );
+    // Centered output never goes to the backend, so its rounding always runs
+    // with the CPU transform.
     if !handled {
-        apply_inner(
-            transform,
-            &mut s0.container,
-            &mut s1.container,
-            &mut s2.container,
-            transform_addends,
-        );
-    }
-
-    if centered_output {
-        round_centered_and_shift(&mut s0.container, addends[0]);
-        round_centered_and_shift(&mut s1.container, addends[1]);
-        round_centered_and_shift(&mut s2.container, addends[2]);
+        let rounding = centered_output.then_some(addends);
+        transform_planes(transform, planes, transform_addends, rounding, parallel);
     }
 
     Ok(())
+}
+
+/// Samples per plane in one chunk: three planes' worth stays in cache
+/// between the transform and the rounding.
+const MCT_CHUNK: usize = 1 << 14;
+
+/// Samples per plane from which the chunks run on the pool. Below it, as for
+/// most region decodes, fanning the chunks out costs more than it saves once
+/// other decodes share the machine.
+#[cfg(any(feature = "parallel", test))]
+const MCT_POOL_SAMPLES: usize = 1 << 22;
+
+/// The CPU inverse transform, then (for centered 9/7 output) the rounding
+/// and level shift, chunk by chunk so each chunk makes one trip to memory.
+/// Chunks are multiples of the SIMD width, so every sample sees the same
+/// operations as a whole-plane pass. `parallel` runs the chunks on the pool.
+fn transform_planes(
+    transform: WaveletTransform,
+    (s0, s1, s2): (&mut [f32], &mut [f32], &mut [f32]),
+    addends: [f32; 3],
+    rounding: Option<[f32; 3]>,
+    parallel: bool,
+) {
+    let run = |s0: &mut [f32], s1: &mut [f32], s2: &mut [f32]| {
+        apply_inner(transform, s0, s1, s2, addends);
+        if let Some(shift) = rounding {
+            round_centered_and_shift(s0, shift[0]);
+            round_centered_and_shift(s1, shift[1]);
+            round_centered_and_shift(s2, shift[2]);
+        }
+    };
+    #[cfg(feature = "parallel")]
+    if parallel && s0.len() >= MCT_POOL_SAMPLES && rayon::current_num_threads() > 1 {
+        use rayon::prelude::*;
+        s0.par_chunks_mut(MCT_CHUNK)
+            .zip(s1.par_chunks_mut(MCT_CHUNK))
+            .zip(s2.par_chunks_mut(MCT_CHUNK))
+            .for_each(|((s0, s1), s2)| run(s0, s1, s2));
+        return;
+    }
+    let _ = parallel;
+    let chunks = s0.chunks_mut(MCT_CHUNK).zip(s1.chunks_mut(MCT_CHUNK));
+    for ((s0, s1), s2) in chunks.zip(s2.chunks_mut(MCT_CHUNK)) {
+        run(s0, s1, s2);
+    }
 }
 
 fn round_centered_and_shift(samples: &mut [f32], addend: f32) {
@@ -282,6 +325,69 @@ fn apply_inner_impl<S: Simd>(
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn chunked_inverse_mct_matches_whole_plane_passes() {
+        // Serial cases: planes a few chunks long with a ragged tail. Pool
+        // cases: planes past the pool floor, in a two-thread pool so the pool
+        // path runs on any machine.
+        let small = 2 * MCT_CHUNK + 13;
+        let large = MCT_POOL_SAMPLES + 13;
+        let plane = |seed: u32, len: usize| {
+            (0..len)
+                .map(|index| {
+                    let index = u32::try_from(index).expect("index fits u32");
+                    f32::from(u16::try_from((index * seed) % 4093).expect("u16")) / 8.0 - 255.0
+                })
+                .collect::<Vec<_>>()
+        };
+        let planes = |len| [plane(7, len), plane(13, len), plane(29, len)];
+        let addends = [128.0, 0.0, 2048.0];
+        for transform in [
+            WaveletTransform::Reversible53,
+            WaveletTransform::Irreversible97,
+        ] {
+            for (rounding, parallel, len) in [
+                (None, false, small),
+                (None, true, large),
+                (Some(addends), false, small),
+                (Some(addends), true, large),
+            ] {
+                let mut expected = planes(len);
+                let [e0, e1, e2] = &mut expected;
+                apply_inner(transform, e0, e1, e2, addends);
+                if let Some(shift) = rounding {
+                    for (plane, shift) in [e0, e1, e2].into_iter().zip(shift) {
+                        round_centered_and_shift(plane, shift);
+                    }
+                }
+                let mut actual = planes(len);
+                let [a0, a1, a2] = &mut actual;
+                let mut run =
+                    || transform_planes(transform, (a0, a1, a2), addends, rounding, parallel);
+                #[cfg(feature = "parallel")]
+                if parallel {
+                    rayon::ThreadPoolBuilder::new()
+                        .num_threads(2)
+                        .build()
+                        .expect("two-thread pool")
+                        .install(run);
+                } else {
+                    run();
+                }
+                #[cfg(not(feature = "parallel"))]
+                run();
+                assert!(
+                    actual
+                        .iter()
+                        .flatten()
+                        .map(|v| v.to_bits())
+                        .eq(expected.iter().flatten().map(|v| v.to_bits())),
+                    "{transform:?} {rounding:?} {parallel}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn inverse_mct_applies_mixed_addends_to_simd_chunks_and_scalar_tail() {

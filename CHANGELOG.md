@@ -5,6 +5,11 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CPU decodes of colour images run the inverse multi-component transform and
+  the rounding of 9/7 output to integers together in cache-sized chunks,
+  instead of making three more passes over the planes. Planes of at least
+  2048x2048 samples run their chunks on the pool when the decode may use more
+  than one thread. Output is unchanged.
 - Auto full-image RGB8 decodes keep tiled images on the CPU, avoiding
   repeated per-stage Metal round trips. Explicit Metal requests keep resident
   decoding.

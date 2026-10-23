@@ -317,7 +317,14 @@ fn decode_parsed_tiles<'a>(
     // images exist!
     if tiles[0].mct {
         let stage_start = profile::profile_now(profile_enabled);
-        mct::apply_inverse(tile_ctx, &tiles[0].component_infos, header, ht_decoder)?;
+        let parallel = cpu_decode_parallelism == CpuDecodeParallelism::Auto;
+        mct::apply_inverse(
+            tile_ctx,
+            &tiles[0].component_infos,
+            header,
+            ht_decoder,
+            parallel,
+        )?;
         apply_sign_shift_after_mct(tile_ctx, &header.component_infos);
         profile_timings.mct_us += profile::elapsed_us(stage_start);
     }
