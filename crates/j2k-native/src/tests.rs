@@ -2029,30 +2029,32 @@ fn native_region_decode_reuses_region_sized_component_storage() {
 struct ChannelCapacitySnapshot {
     outer_ptr: *const ComponentData,
     outer_capacity: usize,
-    components: Vec<ComponentCapacitySnapshot>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct ComponentCapacitySnapshot {
-    sample_ptr: *const f32,
-    sample_capacity: usize,
-    integer_owner: Option<(*const i64, usize)>,
+    /// Sample planes and the IDWT output, sorted: storing a whole plane swaps
+    /// its allocation with the IDWT output's instead of copying.
+    sample_owners: Vec<(*const f32, usize)>,
+    integer_owners: Vec<Option<(*const i64, usize)>>,
 }
 
 fn channel_capacity_snapshot(context: &DecoderContext<'_>) -> ChannelCapacitySnapshot {
     let components = &context.tile_decode_context.channel_data;
+    let idwt_output = &context.tile_decode_context.idwt_output.coefficients;
+    let mut sample_owners = components
+        .iter()
+        .map(|component| (component.container.as_ptr(), component.container.capacity()))
+        .chain([(idwt_output.as_ptr(), idwt_output.capacity())])
+        .collect::<Vec<_>>();
+    sample_owners.sort_unstable();
     ChannelCapacitySnapshot {
         outer_ptr: components.as_ptr(),
         outer_capacity: components.capacity(),
-        components: components
+        sample_owners,
+        integer_owners: components
             .iter()
-            .map(|component| ComponentCapacitySnapshot {
-                sample_ptr: component.container.as_ptr(),
-                sample_capacity: component.container.capacity(),
-                integer_owner: component
+            .map(|component| {
+                component
                     .integer_container
                     .as_ref()
-                    .map(|samples| (samples.as_ptr(), samples.capacity())),
+                    .map(|samples| (samples.as_ptr(), samples.capacity()))
             })
             .collect(),
     }
