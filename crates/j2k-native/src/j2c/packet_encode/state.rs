@@ -257,15 +257,10 @@ fn materialize_packet_states<'a>(
             let mut inclusion_tree = TagTreeEncoder::try_new(num_cbs_x, num_cbs_y, allocations)?;
             let mut zero_bitplane_tree =
                 TagTreeEncoder::try_new(num_cbs_x, num_cbs_y, allocations)?;
-            for (index, block_state) in code_blocks.iter().enumerate() {
-                let index_u32 = u32::try_from(index).map_err(|_| EncodeError::InvalidInput {
-                    what: "packet state code-block index exceeds u32",
-                })?;
-                let x = index_u32 % num_cbs_x;
-                let y = index_u32 / num_cbs_x;
-                inclusion_tree.set_value(x, y, block_state.first_inclusion_layer)?;
-                zero_bitplane_tree.set_value(x, y, block_state.zero_bitplane_value)?;
-            }
+            inclusion_tree
+                .set_leaves(code_blocks.iter().map(|block| block.first_inclusion_layer))?;
+            zero_bitplane_tree
+                .set_leaves(code_blocks.iter().map(|block| block.zero_bitplane_value))?;
             subbands.try_push(PacketSubbandState {
                 inclusion_tree,
                 zero_bitplane_tree,

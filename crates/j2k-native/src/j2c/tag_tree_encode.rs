@@ -100,69 +100,38 @@ impl<'a> TagTreeEncoder<'a> {
         })
     }
 
-    /// Set the value of a leaf node at position (x, y).
-    #[expect(
-        clippy::similar_names,
-        reason = "paired axis, subband, and marker names follow JPEG 2000 specification notation"
-    )]
-    pub(crate) fn set_value(&mut self, x: u32, y: u32, value: u32) -> EncodeResult<()> {
-        if x >= self.width || y >= self.height {
-            return Err(EncodeError::InvalidInput {
-                what: "tag-tree leaf coordinate is out of range",
-            });
-        }
-        let idx = checked_node_index(self.level_offsets[0], self.width, x, y)?;
-        let node = self
+    /// Set every leaf from `values` in row-major order, then each parent to
+    /// the minimum of its children, one level at a time.
+    pub(crate) fn set_leaves(
+        &mut self,
+        values: impl ExactSizeIterator<Item = u32>,
+    ) -> EncodeResult<()> {
+        let (mut width, mut height) = (self.width as usize, self.height as usize);
+        let leaves = self
             .nodes
-            .get_mut(idx)
-            .ok_or(EncodeError::InternalInvariant {
-                what: "tag-tree leaf index exceeded allocated nodes",
+            .get_mut(..width * height)
+            .filter(|leaves| leaves.len() == values.len())
+            .ok_or(EncodeError::InvalidInput {
+                what: "tag-tree leaf count differs from its grid",
             })?;
-        node.value = value;
-
-        // Propagate minimum up the tree
-        let mut cx = x;
-        let mut cy = y;
-        let mut cw = self.width;
-        let mut ch = self.height;
-
+        for (leaf, value) in leaves.iter_mut().zip(values) {
+            leaf.value = value;
+        }
         for level in 1..self.num_levels {
-            let prev_w = cw;
-            let prev_h = ch;
-            cx /= 2;
-            cy /= 2;
-            cw = cw.div_ceil(2);
-            ch = ch.div_ceil(2);
-
-            let parent_idx = checked_node_index(self.level_offsets[level], cw, cx, cy)?;
-
-            // Parent's value is the minimum of all its children
-            let child_x_start = cx * 2;
-            let child_y_start = cy * 2;
-            let child_x_end = ((cx + 1) * 2).min(prev_w);
-            let child_y_end = ((cy + 1) * 2).min(prev_h);
-
-            let mut min_val = u32::MAX;
-            for ccy in child_y_start..child_y_end {
-                for ccx in child_x_start..child_x_end {
-                    let child_idx =
-                        checked_node_index(self.level_offsets[level - 1], prev_w, ccx, ccy)?;
-                    let child =
-                        self.nodes
-                            .get(child_idx)
-                            .ok_or(EncodeError::InternalInvariant {
-                                what: "tag-tree child index exceeded allocated nodes",
-                            })?;
-                    min_val = min_val.min(child.value);
-                }
+            let (lower, upper) = self.nodes.split_at_mut(self.level_offsets[level]);
+            let children = &lower[self.level_offsets[level - 1]..];
+            let parent_width = width.div_ceil(2);
+            for (index, parent) in upper[..parent_width * height.div_ceil(2)]
+                .iter_mut()
+                .enumerate()
+            {
+                let (x, y) = (2 * (index % parent_width), 2 * (index / parent_width));
+                parent.value = (y..height.min(y + 2))
+                    .flat_map(|row| &children[row * width + x..row * width + width.min(x + 2)])
+                    .map(|child| child.value)
+                    .fold(u32::MAX, u32::min);
             }
-            let parent = self
-                .nodes
-                .get_mut(parent_idx)
-                .ok_or(EncodeError::InternalInvariant {
-                    what: "tag-tree parent index exceeded allocated nodes",
-                })?;
-            parent.value = min_val;
+            (width, height) = (parent_width, height.div_ceil(2));
         }
         Ok(())
     }
@@ -260,7 +229,7 @@ mod tests {
     fn test_single_value() {
         let allocations = EncodeAllocationLedger::new(0).expect("test allocation ledger");
         let mut tree = TagTreeEncoder::try_new(1, 1, &allocations).expect("valid tree");
-        tree.set_value(0, 0, 3).expect("valid leaf");
+        tree.set_leaves(core::iter::once(3)).expect("valid leaves");
 
         let mut writer = checked_writer(&allocations);
         tree.encode(0, 0, 4, &mut writer).expect("encode tree");
@@ -308,12 +277,9 @@ mod tests {
         assert_eq!(values.len(), usize::try_from(width * height).unwrap());
         let allocations = EncodeAllocationLedger::new(0).expect("test allocation ledger");
         let mut encoder = TagTreeEncoder::try_new(width, height, &allocations).expect("valid tree");
-        for (idx, value) in values.iter().copied().enumerate() {
-            let index = u32::try_from(idx).expect("test tag-tree index fits u32");
-            encoder
-                .set_value(index % width, index / width, value)
-                .expect("valid leaf");
-        }
+        encoder
+            .set_leaves(values.iter().copied())
+            .expect("valid leaves");
 
         let mut writer = checked_writer(&allocations);
         for (idx, value) in values.iter().copied().enumerate() {
