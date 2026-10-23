@@ -136,7 +136,9 @@ pub(super) fn retire_direct_status_checks(
         .map_or(Ok(()), Err)
 }
 
-fn validate_direct_status_contents(status_check: &DirectStatusCheck) -> Result<(), Error> {
+pub(super) fn validate_direct_status_contents(
+    status_check: &DirectStatusCheck,
+) -> Result<(), Error> {
     match status_check {
         DirectStatusCheck::Classic {
             buffer,

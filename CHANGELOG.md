@@ -7,6 +7,11 @@ and stale roadmap entries have been removed from the public documentation set.
 
 Staged workspace version: `0.13.2`.
 
+- Metal single-image RGB8 decodes of classic J2K images decode each
+  component's finest sub-bands on the CPU pool while the GPU decodes the rest,
+  then run the inverse transforms on the GPU. The CPU's share of the coded
+  bytes follows the measured CPU and GPU rates, per wavelet transform. Output
+  is unchanged.
 - `decode_region_into`, `decode_region_scaled_pow2_into`, `decode_into`,
   and `decode_rows_u8_bounded` accept a JP2 whose ICC profile is equivalent
   to IEC 61966-2-1 sRGB when the output is `Rgb8` or `Rgba8`, writing its

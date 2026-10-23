@@ -17,8 +17,8 @@ use super::direct_commands::new_compute_command_encoder;
 use super::direct_grayscale_execute::{
     checked_coefficient_len, encode_merged_final_level_ht_groups,
     encode_prepared_direct_component_plane_before_final_level,
-    encode_prepared_direct_component_plane_in_command_buffer, final_identity_stored_level,
-    DirectComponentPlaneRequest, FinalLevelInputs,
+    encode_prepared_direct_component_plane_in_command_buffer, encode_split_classic_first_groups,
+    final_identity_stored_level, DirectComponentPlaneRequest, FinalLevelInputs,
 };
 use super::{
     build_flattened_cpu_tier1_cache, elapsed_us,
@@ -75,6 +75,9 @@ pub(super) struct DirectColorPlanRequest<'a> {
     pub(super) plan: &'a PreparedDirectColorPlan,
     pub(super) fmt: PixelFormat,
     pub(super) tier1_mode: DirectTier1Mode,
+    /// Whether classic Tier-1 may be shared with the CPU pool, which waits
+    /// for its GPU part: only for a batch's sole plan.
+    pub(super) split_classic_tier1: bool,
     pub(super) stage_timings: &'a mut DirectHybridStageTimings,
     pub(super) retained_buffers: &'a mut Vec<Buffer>,
     pub(super) status_checks: &'a mut Vec<DirectStatusCheck>,
@@ -94,6 +97,7 @@ pub(super) fn encode_prepared_direct_color_plan_in_command_buffer(
         plan,
         fmt,
         tier1_mode,
+        split_classic_tier1: _,
         stage_timings,
         retained_buffers,
         status_checks,
@@ -234,7 +238,17 @@ fn try_encode_fused_mct_rgb8_color_plan(
             request.scratch_buffers,
         );
         encoder.endEncoding();
-        merged = decoded?.map(Vec::into_iter);
+        merged = match decoded? {
+            None if request.split_classic_tier1 => encode_split_classic_first_groups(
+                runtime,
+                &components,
+                request.retained_buffers,
+                request.status_checks,
+                request.scratch_buffers,
+            )?,
+            decoded => decoded,
+        }
+        .map(Vec::into_iter);
     }
     let mut inputs = budget.try_vec(3, "J2K MetalDirect fused colour level inputs")?;
     for (component_plan, idwt) in plan.component_plans.iter().zip(&finals) {

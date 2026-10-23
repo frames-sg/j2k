@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::time::Instant;
+use std::{ops::Range, time::Instant};
 
 use j2k_native::{
     decode_ht_code_block_scalar_with_workspace,
@@ -109,6 +109,62 @@ pub(super) struct ClassicCpuDecodeScratch {
     decode: J2kCodeBlockDecodeWorkspace,
 }
 
+/// Decodes, in one pass on the pool, each `(group, first job, base, output)`:
+/// the group's jobs from its first job on, in ascending output order, into
+/// `output`, which holds the group's coefficients from `base` on. One task
+/// decodes each code-block row: its jobs share output rows that no other row's
+/// jobs touch.
+pub(super) fn decode_classic_jobs_on_pool(
+    spans: Vec<(&PreparedClassicSubBandGroup, usize, usize, &mut [f32])>,
+) -> Result<(), Error> {
+    let invalid = || Error::MetalKernel {
+        message: "classic J2K MetalDirect CPU jobs are outside or out of order".to_string(),
+    };
+    let job_count =
+        (spans.iter()).map(|(group, first, ..)| group.jobs.len().saturating_sub(*first));
+    let mut tasks = crate::batch_allocation::try_vec(job_count.sum(), "J2K Metal CPU tasks")?;
+    let mut rows: Vec<(Range<usize>, Range<usize>)> = Vec::new();
+    for (group, first_job, base, output) in spans {
+        let jobs = group.jobs.get(first_job..).ok_or_else(invalid)?;
+        rows.clear();
+        crate::batch_allocation::try_reserve_to(
+            &mut rows,
+            jobs.len(),
+            "J2K Metal classic CPU rows",
+        )?;
+        for (index, job) in jobs.iter().enumerate() {
+            let start = job.output_offset as usize;
+            let len = required_classic_output_len(prepared_classic_decode_job(&[], &[], job)?)?;
+            let end = start.checked_add(len).ok_or_else(invalid)?;
+            match rows.last_mut() {
+                Some((_, range)) if start < range.start => return Err(invalid()),
+                Some((run, range)) if start < range.end => {
+                    (run.end, range.end) = (index + 1, range.end.max(end));
+                }
+                _ => rows.push((index..index + 1, start..end)),
+            }
+        }
+        let (mut rest, mut consumed) = (output, base);
+        // `rows` keeps its capacity for the next group, which clears it.
+        for (run, range) in &rows {
+            let skip = range.start.checked_sub(consumed).ok_or_else(invalid)?;
+            let (_, tail) = rest.split_at_mut_checked(skip).ok_or_else(invalid)?;
+            let (view, tail) = tail.split_at_mut_checked(range.len()).ok_or_else(invalid)?;
+            let inputs = (group.coded_data.as_slice(), group.segments.as_slice());
+            tasks.push((inputs, &jobs[run.clone()], range.start, view));
+            (rest, consumed) = (tail, range.end);
+        }
+    }
+    tasks.into_par_iter().try_for_each_init(
+        ClassicCpuDecodeScratch::default,
+        |scratch, ((coded_data, segments), jobs, base, view)| {
+            decode_prepared_classic_jobs_on_cpu_with_scratch_impl::<false>(
+                coded_data, segments, jobs, view, scratch, None, base,
+            )
+        },
+    )
+}
+
 fn decode_prepared_classic_jobs_on_cpu(
     coded_data: &[u8],
     segments: &[J2kClassicSegment],
@@ -133,7 +189,7 @@ pub(super) fn decode_prepared_classic_jobs_on_cpu_with_scratch(
     scratch: &mut ClassicCpuDecodeScratch,
 ) -> Result<(), Error> {
     decode_prepared_classic_jobs_on_cpu_with_scratch_impl::<false>(
-        coded_data, segments, jobs, output, scratch, None,
+        coded_data, segments, jobs, output, scratch, None, 0,
     )
 }
 
@@ -152,6 +208,7 @@ pub(super) fn decode_prepared_classic_jobs_on_cpu_with_scratch_profiled(
         output,
         scratch,
         Some(profile_counters),
+        0,
     )
 }
 
@@ -162,10 +219,16 @@ fn decode_prepared_classic_jobs_on_cpu_with_scratch_impl<const PROFILE: bool>(
     output: &mut [f32],
     scratch: &mut ClassicCpuDecodeScratch,
     profile_counters: Option<&CpuTier1DecodeSubstageCounters>,
+    output_base: usize,
 ) -> Result<(), Error> {
     for job in jobs {
         let prep_started = PROFILE.then(Instant::now);
-        let start = job.output_offset as usize;
+        let start = (job.output_offset as usize)
+            .checked_sub(output_base)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "classic J2K MetalDirect hybrid output offset precedes its slice"
+                    .to_string(),
+            })?;
         let segment_window = prepared_classic_segment_window(segments, job)?;
         scratch.segments.clear();
         crate::batch_allocation::try_reserve_to(

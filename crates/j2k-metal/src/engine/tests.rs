@@ -2,6 +2,7 @@
 
 mod capacity;
 mod classic;
+mod classic_split;
 mod decode_stage_profile;
 mod fused_store;
 mod grouping;

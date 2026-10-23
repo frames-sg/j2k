@@ -16,7 +16,6 @@ use super::decode_dispatch::{
     dispatch_reversible53_single_decomposition_buffers_in_encoder_with_offsets,
     dispatch_store_component_buffer_in_encoder_with_offsets,
     encode_gray_store_to_destination_in_encoder, encode_gray_store_to_surface_in_encoder,
-    encode_prepared_classic_sub_band_group_to_buffer_in_encoder,
     encode_prepared_classic_sub_band_to_buffer_in_encoder,
     encode_prepared_ht_sub_band_group_to_buffer_in_encoder,
     encode_prepared_ht_sub_band_to_buffer_in_encoder, GrayStoreDestinationRequest,
@@ -74,11 +73,12 @@ pub(crate) use self::color_destination::{
     submit_prepared_direct_color_plan_batches_into_groups, ColorGroupSubmission,
 };
 pub(in crate::engine) use self::component_plane::{
-    checked_coefficient_len, encode_merged_final_level_ht_groups,
+    checked_coefficient_len, encode_classic_group_on_gpu, encode_merged_final_level_ht_groups,
     encode_prepared_direct_component_plane_before_final_level,
     encode_prepared_direct_component_plane_in_command_buffer,
-    encode_prepared_direct_component_plane_in_encoder, final_identity_stored_level,
-    upload_cpu_decoded_coefficients, DirectComponentPlaneRequest, FinalLevelInputs,
+    encode_prepared_direct_component_plane_in_encoder, encode_split_classic_first_groups,
+    final_identity_stored_level, upload_cpu_decoded_coefficients, DirectComponentPlaneRequest,
+    FinalLevelInputs,
 };
 pub(crate) use self::destination::{
     submit_prepared_direct_grayscale_plan_batch_into_group, DirectDestinationConsumerOrdering,
@@ -401,6 +401,7 @@ fn encode_direct_color_plans_individually(
                 plan,
                 fmt,
                 tier1_mode,
+                split_classic_tier1: plans.len() == 1,
                 stage_timings,
                 retained_buffers: &mut metadata.retained_buffers,
                 status_checks: &mut metadata.status_checks,

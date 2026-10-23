@@ -19,9 +19,10 @@ use crate::{
 mod execution;
 
 pub(in crate::engine) use self::execution::{
-    encode_merged_final_level_ht_groups, encode_prepared_direct_component_plane_before_final_level,
-    encode_prepared_direct_component_plane_in_encoder, final_identity_stored_level,
-    FinalLevelInputs,
+    encode_classic_group_on_gpu, encode_merged_final_level_ht_groups,
+    encode_prepared_direct_component_plane_before_final_level,
+    encode_prepared_direct_component_plane_in_encoder, encode_split_classic_first_groups,
+    final_identity_stored_level, FinalLevelInputs,
 };
 
 #[cfg(target_os = "macos")]

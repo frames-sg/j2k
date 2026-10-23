@@ -32,7 +32,7 @@ fn encoded_rgb(seed: u8, (width, height): (u32, u32)) -> Vec<u8> {
     encode(&pixels, width, height, 3, 8, false, &options).expect("encode classic RGB")
 }
 
-fn prepared_plan(bytes: &[u8]) -> PreparedDirectColorPlan {
+pub(super) fn prepared_plan(bytes: &[u8]) -> PreparedDirectColorPlan {
     let image = Image::new(bytes, &DecodeSettings::default()).expect("image");
     let plan = image
         .build_direct_color_plan_with_context(&mut DecoderContext::default())
@@ -40,7 +40,7 @@ fn prepared_plan(bytes: &[u8]) -> PreparedDirectColorPlan {
     prepare_direct_color_plan(&plan).expect("prepared color plan")
 }
 
-fn cpu_rgb8(bytes: &[u8], (width, height): (u32, u32)) -> Vec<u8> {
+pub(super) fn cpu_rgb8(bytes: &[u8], (width, height): (u32, u32)) -> Vec<u8> {
     let mut decoder = j2k::J2kDecoder::new(bytes).expect("CPU decoder");
     let row_bytes = width as usize * 3;
     let mut output = vec![0; row_bytes * height as usize];

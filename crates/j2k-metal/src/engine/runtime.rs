@@ -5,7 +5,11 @@ use crate::metal_types::prelude::*;
 
 use std::{
     cell::RefCell,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc, Mutex,
+    },
+    time::Duration,
 };
 
 use crate::metal_types::{Buffer, CommandBufferRef, CommandQueue, Device};
@@ -13,6 +17,7 @@ use j2k_metal_support::{
     checked_command_queue, checked_shared_buffer, commit_and_wait, wait_for_completion,
     MetalSupportError,
 };
+use j2k_native::J2kWaveletTransform;
 
 use crate::{
     buffer_pool::{MetalBufferPools, PooledBuffer},
@@ -56,6 +61,10 @@ pub(crate) struct MetalRuntime {
         Mutex<super::decode_dispatch::PreparedMetalHtExecutionCache>,
     pub(in crate::engine) ht_input_heap: super::ReusableHeap,
     output_heap: super::ReusableHeap,
+    /// Per wavelet transform (5/3, 9/7), the share of a split classic decode's
+    /// coded bytes given to the CPU pool, as `f32` bits, balanced from the
+    /// measured CPU and GPU rates.
+    classic_cpu_shares: [AtomicU32; 2],
 }
 
 #[expect(
@@ -115,6 +124,7 @@ impl MetalRuntime {
                 OUTPUT_HEAP_MIN_BYTES,
                 crate::buffer_pool::shared_retained_bytes_for_device(device),
             ),
+            classic_cpu_shares: [0.5_f32, 0.5].map(|share| AtomicU32::new(share.to_bits())),
         })
     }
 
@@ -197,6 +207,32 @@ impl MetalRuntime {
     /// runtime's output heap when it has room.
     pub(crate) fn new_output_buffer(&self, bytes: usize) -> Result<Buffer, Error> {
         self.output_heap.allocate(&self.device, bytes)
+    }
+
+    pub(super) fn classic_cpu_share(&self, transform: J2kWaveletTransform) -> f64 {
+        let share = &self.classic_cpu_shares[transform as usize];
+        f64::from(f32::from_bits(share.load(Ordering::Relaxed)))
+    }
+
+    /// Moves the CPU share halfway to the one that would have finished both
+    /// sides of the last split decode together.
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        reason = "the share is a rough balance that needs no more precision than f32"
+    )]
+    pub(super) fn record_classic_split(
+        &self,
+        transform: J2kWaveletTransform,
+        (cpu_bytes, cpu_time): (u64, Duration),
+        (gpu_bytes, gpu_time): (u64, Duration),
+    ) {
+        let rate = |bytes: u64, time: Duration| bytes as f64 / time.as_secs_f64().max(1e-6);
+        let (cpu_rate, gpu_rate) = (rate(cpu_bytes, cpu_time), rate(gpu_bytes, gpu_time));
+        let balanced = cpu_rate / (cpu_rate + gpu_rate);
+        let share = f64::midpoint(self.classic_cpu_share(transform), balanced).clamp(0.05, 0.95);
+        self.classic_cpu_shares[transform as usize]
+            .store((share as f32).to_bits(), Ordering::Relaxed);
     }
 
     pub(super) fn take_shared_buffer(&self, bytes: usize) -> Result<PooledBuffer, Error> {

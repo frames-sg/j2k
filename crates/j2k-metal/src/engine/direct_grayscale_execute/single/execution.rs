@@ -11,11 +11,9 @@ use j2k_native::J2kDirectStoreStep;
 use super::super::{
     dispatch_irreversible97_single_decomposition_buffers_in_encoder_with_offsets,
     dispatch_reversible53_single_decomposition_buffers_in_encoder_with_offsets,
-    dispatch_store_component_buffer_in_encoder_with_offsets,
+    dispatch_store_component_buffer_in_encoder_with_offsets, encode_classic_group_on_gpu,
     encode_gray_plane_to_surface_in_encoder, encode_gray_store_to_destination_in_encoder,
-    encode_gray_store_to_surface_in_encoder,
-    encode_prepared_classic_sub_band_group_to_buffer_in_encoder,
-    encode_prepared_classic_sub_band_to_buffer_in_encoder,
+    encode_gray_store_to_surface_in_encoder, encode_prepared_classic_sub_band_to_buffer_in_encoder,
     encode_prepared_ht_sub_band_group_to_buffer_in_encoder,
     encode_prepared_ht_sub_band_to_buffer_in_encoder, extend_preallocated_retained_buffers,
     idwt_input_windows_from_slices, j2k_scalar_pack_params, lookup_direct_band_slice,
@@ -64,31 +62,21 @@ impl SingleGrayscaleExecution<'_> {
         &mut self,
         group: &PreparedClassicSubBandGroup,
     ) -> Result<(), Error> {
-        let output_span = checked_f32_span(
-            group.total_coefficients,
-            1,
-            "classic J2K MetalDirect single grouped coefficients",
-        )?;
-        let output = take_f32_scratch_buffer(self.runtime, output_span.elements)?;
-        let (buffers, status_check) = encode_prepared_classic_sub_band_group_to_buffer_in_encoder(
+        let buffer = encode_classic_group_on_gpu(
             self.runtime,
             self.encoder,
             group,
-            &output.buffer,
+            self.retained_buffers,
+            self.status_checks,
             self.scratch_buffers,
         )?;
-        extend_preallocated_retained_buffers(self.retained_buffers, buffers)?;
-        self.status_checks.push(status_check);
-        self.encoder
-            .memory_barrier_with_resources(&[&output.buffer]);
+        self.encoder.memory_barrier_with_resources(&[&buffer]);
         let members = group.members.iter();
         push_member_band_slices(
             &mut self.bands,
-            &output.buffer,
+            &buffer,
             members.map(|member| (member.band_id, member.offset_elements, member.window)),
-        )?;
-        self.scratch_buffers.push(output);
-        Ok(())
+        )
     }
 
     pub(super) fn encode_ht_group(&mut self, group: &PreparedHtSubBandGroup) -> Result<(), Error> {

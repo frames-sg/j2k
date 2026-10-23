@@ -53,8 +53,10 @@ use crate::engine::{
 };
 use crate::{profile_env::metal_profile_stages_enabled, Error};
 
+mod classic_split;
 mod final_plane;
 
+pub(in crate::engine) use self::classic_split::encode_split_classic_first_groups;
 use self::final_plane::FinalComponentPlane;
 
 struct ComponentPlaneExecution<'a> {
@@ -102,28 +104,17 @@ impl ComponentPlaneExecution<'_> {
     }
 
     fn encode_classic_group(&mut self, group: &PreparedClassicSubBandGroup) -> Result<(), Error> {
-        let output_span = checked_f32_span(
-            group.total_coefficients,
-            1,
-            "classic J2K MetalDirect grouped coefficients",
-        )?;
         let buffer = match self.tier1_mode {
             DirectTier1Mode::Metal => {
-                let output = take_f32_scratch_buffer(self.runtime, output_span.elements)?;
-                let (buffers, status_check) =
-                    encode_prepared_classic_sub_band_group_to_buffer_in_encoder(
-                        self.runtime,
-                        self.encoder,
-                        group,
-                        &output.buffer,
-                        self.scratch_buffers,
-                    )?;
-                extend_preallocated_retained_buffers(self.retained_buffers, buffers)?;
-                self.status_checks.push(status_check);
-                self.encoder
-                    .memory_barrier_with_resources(&[&output.buffer]);
-                let buffer = output.buffer.clone();
-                self.scratch_buffers.push(output);
+                let buffer = encode_classic_group_on_gpu(
+                    self.runtime,
+                    self.encoder,
+                    group,
+                    self.retained_buffers,
+                    self.status_checks,
+                    self.scratch_buffers,
+                )?;
+                self.encoder.memory_barrier_with_resources(&[&buffer]);
                 buffer
             }
             DirectTier1Mode::CpuUpload => self.decode_and_upload_cpu(|counters| {
@@ -506,6 +497,37 @@ pub(in crate::engine) type FinalLevelInputs = (
     [Option<BandCells>; 3],
 );
 
+/// Encodes `group`'s jobs into a new scratch buffer, laid out as the group's
+/// coefficients, and returns that buffer. Readers in the same encoder need a
+/// barrier after it.
+pub(in crate::engine) fn encode_classic_group_on_gpu(
+    runtime: &MetalRuntime,
+    encoder: &ComputeCommandEncoderRef,
+    group: &PreparedClassicSubBandGroup,
+    retained_buffers: &mut Vec<Buffer>,
+    status_checks: &mut Vec<DirectStatusCheck>,
+    scratch_buffers: &mut Vec<DirectScratchBuffer>,
+) -> Result<Buffer, Error> {
+    let span = checked_f32_span(
+        group.total_coefficients,
+        1,
+        "classic J2K MetalDirect grouped coefficients",
+    )?;
+    let output = take_f32_scratch_buffer(runtime, span.elements)?;
+    let (buffers, status_check) = encode_prepared_classic_sub_band_group_to_buffer_in_encoder(
+        runtime,
+        encoder,
+        group,
+        &output.buffer,
+        scratch_buffers,
+    )?;
+    extend_preallocated_retained_buffers(retained_buffers, buffers)?;
+    status_checks.push(status_check);
+    let buffer = output.buffer.clone();
+    scratch_buffers.push(output);
+    Ok(buffer)
+}
+
 /// Encodes every step of `request.plan` before `idwt`, its
 /// [`final_identity_stored_level`], and returns that level's inputs. That
 /// level's kernel must read uncovered high-pass cells as zero.
@@ -513,7 +535,7 @@ pub(in crate::engine) fn encode_prepared_direct_component_plane_before_final_lev
     request: DirectComponentPlaneRequest<'_>,
     encoder: &ComputeCommandEncoderRef,
     idwt: &PreparedDirectIdwt,
-    decoded: Option<DecodedHtGroup>,
+    decoded: Option<DecodedFirstGroup>,
 ) -> Result<FinalLevelInputs, Error> {
     let steps = request.plan.steps.len();
     let mut execution = component_plane_execution(request, encoder)?;
@@ -592,10 +614,12 @@ fn final_level_high_bands(idwt: &PreparedDirectIdwt) -> [Option<J2kDirectBandId>
     ]
 }
 
-/// A component's first HT group decoded by
-/// [`encode_merged_final_level_ht_groups`]: its sub-band slices, the cell maps
-/// of its last level's sparse high-pass sub-bands, and the step after it.
-pub(in crate::engine) struct DecodedHtGroup {
+/// A component's first Tier-1 group decoded ahead of its plane, by
+/// [`encode_merged_final_level_ht_groups`] or
+/// [`encode_split_classic_first_groups`]: its sub-band slices, the cell maps
+/// of its last level's sparse high-pass sub-bands (HT only), and the step
+/// after it.
+pub(in crate::engine) struct DecodedFirstGroup {
     bands: Vec<DirectBandSlice>,
     band_cells: Vec<(J2kDirectBandId, BandCells)>,
     end_step: usize,
@@ -614,7 +638,7 @@ pub(in crate::engine) fn encode_merged_final_level_ht_groups(
     retained_buffers: &mut Vec<Buffer>,
     status_checks: &mut Vec<DirectStatusCheck>,
     scratch_buffers: &mut Vec<DirectScratchBuffer>,
-) -> Result<Option<Vec<DecodedHtGroup>>, Error> {
+) -> Result<Option<Vec<DecodedFirstGroup>>, Error> {
     let Some(groups) = components
         .iter()
         .map(|(plan, _)| plan.ht_group_starting_at(0))
@@ -634,7 +658,7 @@ pub(in crate::engine) fn encode_merged_final_level_ht_groups(
             &final_level_high_bands(idwt),
             &mut band_cells,
         )?);
-        decoded.push(DecodedHtGroup {
+        decoded.push(DecodedFirstGroup {
             bands: Vec::new(),
             band_cells,
             end_step: group.end_step,

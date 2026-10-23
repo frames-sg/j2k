@@ -51,11 +51,30 @@ impl ReusableHeap {
         device: &Device,
         bytes: usize,
     ) -> Result<Buffer, Error> {
+        self.allocate_with_room(device, bytes, 2)
+    }
+
+    /// As [`Self::allocate`], but a heap it grows has room for only one such
+    /// buffer, for large buffers that one decode at a time uses.
+    pub(in crate::engine) fn allocate_single(
+        &self,
+        device: &Device,
+        bytes: usize,
+    ) -> Result<Buffer, Error> {
+        self.allocate_with_room(device, bytes, 1)
+    }
+
+    fn allocate_with_room(
+        &self,
+        device: &Device,
+        bytes: usize,
+        copies: usize,
+    ) -> Result<Buffer, Error> {
         let bytes = bytes.max(1);
         let mut heap = self.heap.lock().map_err(|_| Error::MetalStatePoisoned {
             state: "J2K Metal reusable heap",
         })?;
-        let Some(size) = self.heap_size_for(device, bytes) else {
+        let Some(size) = self.heap_size_for(device, bytes, copies) else {
             return new_shared_buffer(device, bytes);
         };
         if let Some(current) = heap.as_ref() {
@@ -78,14 +97,14 @@ impl ReusableHeap {
         }
     }
 
-    /// The heap size that serves `bytes`: room for two such buffers when that
-    /// fits the limits, else for one, else `None`.
-    fn heap_size_for(&self, device: &Device, bytes: usize) -> Option<usize> {
+    /// The heap size that serves `bytes`: room for `copies` such buffers when
+    /// that fits the limits, else for one, else `None`.
+    fn heap_size_for(&self, device: &Device, bytes: usize, copies: usize) -> Option<usize> {
         let limit = self
             .max_bytes
             .min(device.maxBufferLength())
             .min(j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES);
-        [bytes.checked_mul(2), Some(bytes)]
+        [bytes.checked_mul(copies), Some(bytes)]
             .into_iter()
             .flatten()
             .filter_map(usize::checked_next_power_of_two)
@@ -210,11 +229,13 @@ mod tests {
         let cap = j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES;
         let heap = ReusableHeap::new(64 << 20, usize::MAX);
         // Twice the request fits under the cap: room for two buffers.
-        assert_eq!(heap.heap_size_for(&device, 100 << 20), Some(256 << 20));
+        assert_eq!(heap.heap_size_for(&device, 100 << 20, 2), Some(256 << 20));
+        // Room for one when asked, as for a split classic decode.
+        assert_eq!(heap.heap_size_for(&device, 100 << 20, 1), Some(128 << 20));
         // Only one fits, as for a 16-image mammogram batch output.
-        assert_eq!(heap.heap_size_for(&device, 464 << 20), Some(cap));
+        assert_eq!(heap.heap_size_for(&device, 464 << 20, 2), Some(cap));
         // Larger requests get their own buffers.
-        assert_eq!(heap.heap_size_for(&device, cap + 1), None);
+        assert_eq!(heap.heap_size_for(&device, cap + 1, 2), None);
         let output = heap.allocate(&device, 464 << 20).expect("large output");
         assert!(heap_of(&output).is_some());
     }
