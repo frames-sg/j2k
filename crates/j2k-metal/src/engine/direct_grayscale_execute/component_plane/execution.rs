@@ -402,18 +402,32 @@ impl ComponentPlaneExecution<'_> {
         Ok(())
     }
 
+    /// Takes the sub-bands and cell maps of `decoded`, and returns the step
+    /// after it (0 without it).
+    fn resume_after(&mut self, decoded: Option<DecodedFirstGroup>) -> usize {
+        decoded.map_or(0, |decoded| {
+            self.bands = decoded.bands;
+            self.band_cells = decoded.band_cells;
+            decoded.end_step
+        })
+    }
+
     fn finish(self) -> Result<Buffer, Error> {
         self.final_plane.finish()
     }
 }
 
+/// Encodes every step of `request.plan`, after those of its `decoded` first
+/// group, and returns the plane.
 pub(in crate::engine) fn encode_prepared_direct_component_plane_in_encoder(
     request: DirectComponentPlaneRequest<'_>,
     encoder: &ComputeCommandEncoderRef,
+    decoded: Option<DecodedFirstGroup>,
 ) -> Result<Buffer, Error> {
     let steps = request.plan.steps.len();
     let mut execution = component_plane_execution(request, encoder)?;
-    execution.encode_steps(0, steps)?;
+    let start = execution.resume_after(decoded);
+    execution.encode_steps(start, steps)?;
     execution.finish()
 }
 
@@ -540,14 +554,7 @@ pub(in crate::engine) fn encode_prepared_direct_component_plane_before_final_lev
     let steps = request.plan.steps.len();
     let mut execution = component_plane_execution(request, encoder)?;
     execution.sparse_bands = final_level_high_bands(idwt);
-    let start = match decoded {
-        Some(decoded) => {
-            execution.bands = decoded.bands;
-            execution.band_cells = decoded.band_cells;
-            decoded.end_step
-        }
-        None => 0,
-    };
+    let start = execution.resume_after(decoded);
     execution.encode_steps(start, steps.saturating_sub(2))?;
     let band = |id, rect| lookup_direct_band_slice_entry(&execution.bands, id, rect);
     let ll = band(idwt.step.ll_band_id, idwt.step.ll)?;

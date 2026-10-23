@@ -18,7 +18,7 @@ use super::direct_grayscale_execute::{
     checked_coefficient_len, encode_merged_final_level_ht_groups,
     encode_prepared_direct_component_plane_before_final_level,
     encode_prepared_direct_component_plane_in_command_buffer, encode_split_classic_first_groups,
-    final_identity_stored_level, DirectComponentPlaneRequest, FinalLevelInputs,
+    final_identity_stored_level, DecodedFirstGroup, DirectComponentPlaneRequest, FinalLevelInputs,
 };
 use super::{
     build_flattened_cpu_tier1_cache, elapsed_us,
@@ -91,6 +91,7 @@ pub(super) fn encode_prepared_direct_color_plan_in_command_buffer(
     if let Some(surface) = try_encode_fused_mct_rgb8_color_plan(&mut request)? {
         return Ok(surface);
     }
+    let mut first_groups = split_classic_first_groups(&mut request)?.map(Vec::into_iter);
     let DirectColorPlanRequest {
         runtime,
         command_buffer,
@@ -119,6 +120,7 @@ pub(super) fn encode_prepared_direct_color_plan_in_command_buffer(
                 status_checks,
                 scratch_buffers,
             },
+            first_groups.as_mut().and_then(Iterator::next),
         )?);
     }
 
@@ -187,6 +189,25 @@ pub(super) fn encode_prepared_direct_color_plan_in_command_buffer(
     surface
 }
 
+/// Each component's first classic group, decoded by the GPU and the CPU pool
+/// together when the request runs Tier-1 on Metal and allows the split.
+#[cfg(target_os = "macos")]
+fn split_classic_first_groups(
+    request: &mut DirectColorPlanRequest<'_>,
+) -> Result<Option<Vec<DecodedFirstGroup>>, Error> {
+    if request.tier1_mode != DirectTier1Mode::Metal || !request.split_classic_tier1 {
+        return Ok(None);
+    }
+    encode_split_classic_first_groups(
+        request.runtime,
+        &request.plan.component_plans,
+        request.plan.transform,
+        request.retained_buffers,
+        request.status_checks,
+        request.scratch_buffers,
+    )
+}
+
 /// Encodes an MCT RGB8 `request` whose components each end in a last wavelet
 /// level and an identity store of the whole plane: the steps before each last
 /// level, then one kernel that synthesizes the three last levels and writes
@@ -239,13 +260,7 @@ fn try_encode_fused_mct_rgb8_color_plan(
         );
         encoder.endEncoding();
         merged = match decoded? {
-            None if request.split_classic_tier1 => encode_split_classic_first_groups(
-                runtime,
-                &components,
-                request.retained_buffers,
-                request.status_checks,
-                request.scratch_buffers,
-            )?,
+            None => split_classic_first_groups(request)?,
             decoded => decoded,
         }
         .map(Vec::into_iter);

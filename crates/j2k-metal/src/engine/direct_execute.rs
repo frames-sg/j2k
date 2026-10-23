@@ -28,6 +28,7 @@ pub(crate) fn prepare_direct_color_plan(
     prepare_direct_color_plan_with_tier1_mode(plan, DirectTier1Mode::Metal)
 }
 
+#[cfg(test)]
 pub(crate) fn prepare_direct_color_plan_for_cpu_upload(
     plan: &J2kDirectColorPlan,
 ) -> Result<PreparedDirectColorPlan, Error> {

@@ -286,6 +286,7 @@ impl ColorGroupEncoder<'_> {
                     scratch_buffers: &mut self.metadata.scratch_buffers,
                 },
                 self.compute_encoder,
+                None,
             )?;
             planes.push(self.expand_sampled_component(&plan, index, plane, 1)?);
         }
@@ -453,6 +454,7 @@ impl ColorGroupEncoder<'_> {
                         scratch_buffers: &mut self.metadata.scratch_buffers,
                     },
                     self.compute_encoder,
+                    None,
                 )?;
                 planes.push(self.expand_sampled_component(&plan, index, plane, 1)?);
             }

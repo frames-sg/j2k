@@ -25,7 +25,7 @@ pub(super) fn emit_region_scaled_color_plan_build_timings(
     for (stage, elapsed_us) in [
         ("native_image", native_image_us),
         ("direct_color_plan", direct_plan_us),
-        ("prepare_cpu_upload", prepare_us),
+        ("prepare", prepare_us),
         ("crop_prepared_plan", crop_us),
         ("plan_total", total_us),
     ] {
@@ -55,7 +55,7 @@ pub(super) fn emit_region_scaled_color_plan_build_timings(
 
 fn plan_stage_processor(stage: &str) -> &'static str {
     match stage {
-        "native_image" | "direct_color_plan" | "prepare_cpu_upload" | "crop_prepared_plan" => "cpu",
+        "native_image" | "direct_color_plan" | "prepare" | "crop_prepared_plan" => "cpu",
         _ => "hybrid",
     }
 }
@@ -64,7 +64,7 @@ fn plan_stage_metric(stage: &str) -> &'static str {
     match stage {
         "native_image" => "native_image_us",
         "direct_color_plan" => "direct_color_plan_us",
-        "prepare_cpu_upload" => "prepare_cpu_upload_us",
+        "prepare" => "prepare_us",
         "crop_prepared_plan" => "crop_prepared_plan_us",
         "plan_total" => "plan_total_us",
         _ => "wall_us",

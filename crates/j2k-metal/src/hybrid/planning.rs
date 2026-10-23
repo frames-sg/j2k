@@ -174,7 +174,7 @@ fn build_region_scaled_direct_color_plan(
         .map(elapsed_since_us)
         .unwrap_or_default();
     let prepare_started = profile_stages.then(Instant::now);
-    let mut prepared = crate::engine::prepare_direct_color_plan_for_cpu_upload(&plan)?;
+    let mut prepared = crate::engine::prepare_direct_color_plan(&plan)?;
     let prepare_us = prepare_started.map(elapsed_since_us).unwrap_or_default();
     let crop_started = profile_stages.then(Instant::now);
     crate::engine::crop_prepared_direct_color_plan_to_output_region(&mut prepared, output_region)?;

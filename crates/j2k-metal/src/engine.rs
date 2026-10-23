@@ -344,10 +344,12 @@ use self::direct_surface_pack::{
 };
 #[cfg(target_os = "macos")]
 mod direct_execute;
+#[cfg(all(target_os = "macos", test))]
+pub(crate) use self::direct_execute::prepare_direct_color_plan_for_cpu_upload;
 #[cfg(target_os = "macos")]
 pub(crate) use self::direct_execute::{
     crop_prepared_direct_color_plan_to_output_region, prepare_direct_color_plan,
-    prepare_direct_color_plan_for_cpu_upload, prune_prepared_direct_color_plan_to_stores,
+    prune_prepared_direct_color_plan_to_stores,
 };
 #[cfg(all(target_os = "macos", test))]
 use self::direct_execute::{

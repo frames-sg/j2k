@@ -144,6 +144,7 @@ fn encode_sampled_plan(
                 status_checks: &mut metadata.status_checks,
                 scratch_buffers: &mut metadata.scratch_buffers,
             },
+            None,
         )?;
         planes[index] = Some(if plan.component_sampling(index) == (1, 1) {
             plane

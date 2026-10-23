@@ -52,19 +52,10 @@ fn execute_region_scaled_direct_plan(
                 Err(error) => Err(error),
             }
         }
-        PreparedRegionScaledDirectPlan::Color(plan) => {
-            match crate::engine::execute_hybrid_cpu_tier1_direct_color_plan(plan, fmt) {
-                Ok(surface) => Ok(Some(surface)),
-                Err(error) if is_direct_region_scaled_runtime_fallback_error(&error) => {
-                    Err(Error::capability_rejected(
-                        j2k_core::CapabilityRejection::unsupported_operation(
-                            RGB_REGION_SCALED_METAL_DIRECT_UNSUPPORTED,
-                        ),
-                    ))
-                }
-                Err(error) => Err(error),
-            }
-        }
+        PreparedRegionScaledDirectPlan::Color(plan) => execute_color_plan(
+            || crate::engine::execute_prepared_direct_color_plan(plan.clone(), fmt),
+            || crate::engine::execute_hybrid_cpu_tier1_direct_color_plan(plan.clone(), fmt),
+        ),
     }
 }
 
@@ -83,20 +74,43 @@ fn execute_region_scaled_direct_plan_with_device(
                 Err(error) => Err(error),
             }
         }
-        PreparedRegionScaledDirectPlan::Color(plan) => {
-            match crate::engine::execute_hybrid_cpu_tier1_direct_color_plan_with_device(
-                plan, fmt, device,
-            ) {
-                Ok(surface) => Ok(Some(surface)),
-                Err(error) if is_direct_region_scaled_runtime_fallback_error(&error) => {
-                    Err(Error::capability_rejected(
-                        j2k_core::CapabilityRejection::unsupported_operation(
-                            RGB_REGION_SCALED_METAL_DIRECT_UNSUPPORTED,
-                        ),
-                    ))
-                }
-                Err(error) => Err(error),
-            }
-        }
+        PreparedRegionScaledDirectPlan::Color(plan) => execute_color_plan(
+            || {
+                crate::engine::execute_prepared_direct_color_plan_with_device(
+                    plan.clone(),
+                    fmt,
+                    device,
+                )
+            },
+            || {
+                crate::engine::execute_hybrid_cpu_tier1_direct_color_plan_with_device(
+                    plan.clone(),
+                    fmt,
+                    device,
+                )
+            },
+        ),
+    }
+}
+
+/// Runs a colour plan on the Metal route, as a full-image decode does, and on
+/// the CPU Tier-1 route when that one rejects the plan's code blocks, which
+/// the CPU decodes whatever their size.
+fn execute_color_plan(
+    metal: impl FnOnce() -> Result<Surface, Error>,
+    cpu_tier1: impl FnOnce() -> Result<Surface, Error>,
+) -> Result<Option<Surface>, Error> {
+    let surface = match metal() {
+        Err(error) if is_direct_region_scaled_runtime_fallback_error(&error) => cpu_tier1(),
+        result => result,
+    };
+    match surface {
+        Ok(surface) => Ok(Some(surface)),
+        Err(error) if is_direct_region_scaled_runtime_fallback_error(&error) => Err(
+            Error::capability_rejected(j2k_core::CapabilityRejection::unsupported_operation(
+                RGB_REGION_SCALED_METAL_DIRECT_UNSUPPORTED,
+            )),
+        ),
+        Err(error) => Err(error),
     }
 }

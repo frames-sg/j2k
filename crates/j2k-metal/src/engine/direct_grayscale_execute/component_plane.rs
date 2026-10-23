@@ -22,7 +22,7 @@ pub(in crate::engine) use self::execution::{
     encode_classic_group_on_gpu, encode_merged_final_level_ht_groups,
     encode_prepared_direct_component_plane_before_final_level,
     encode_prepared_direct_component_plane_in_encoder, encode_split_classic_first_groups,
-    final_identity_stored_level, FinalLevelInputs,
+    final_identity_stored_level, DecodedFirstGroup, FinalLevelInputs,
 };
 
 #[cfg(target_os = "macos")]
@@ -61,10 +61,11 @@ pub(in crate::engine) struct DirectComponentPlaneRequest<'a> {
 #[cfg(target_os = "macos")]
 pub(in crate::engine) fn encode_prepared_direct_component_plane_in_command_buffer(
     request: DirectComponentPlaneRequest<'_>,
+    decoded: Option<DecodedFirstGroup>,
 ) -> Result<Buffer, Error> {
     let command_buffer = request.command_buffer;
     let encoder = new_compute_command_encoder(command_buffer)?;
-    let result = encode_prepared_direct_component_plane_in_encoder(request, &encoder);
+    let result = encode_prepared_direct_component_plane_in_encoder(request, &encoder, decoded);
     encoder.endEncoding();
     result
 }

@@ -25,9 +25,7 @@ use crate::engine::{
     decode_dispatch::{encode_distinct_classic_batches_to_buffer_in_encoder, DistinctClassicBatch},
     direct_cpu::decode_classic_jobs_on_pool,
     direct_grayscale_execute::extend_preallocated_retained_buffers,
-    direct_plan_types::{
-        PreparedClassicSubBandGroup, PreparedDirectGrayscalePlan, PreparedDirectIdwt,
-    },
+    direct_plan_types::{PreparedClassicSubBandGroup, PreparedDirectGrayscalePlan},
     direct_roi::checked_f32_span,
     direct_scratch::DirectScratchBuffer,
     direct_stacked_batch::push_member_band_slices,
@@ -38,6 +36,7 @@ use crate::engine::{
 use crate::metal_types::Buffer;
 use crate::profile_env::label_command_buffer;
 use crate::{batch_allocation::try_vec, error::metal_kernel_support_error, Error};
+use j2k_native::J2kWaveletTransform;
 
 /// Decodes each component's first classic group, which covers all of its code
 /// blocks, on the GPU and the CPU pool together. `None` when a component has
@@ -45,14 +44,15 @@ use crate::{batch_allocation::try_vec, error::metal_kernel_support_error, Error}
 /// no split, or the CPU part fails.
 pub(in crate::engine) fn encode_split_classic_first_groups(
     runtime: &MetalRuntime,
-    components: &[(&PreparedDirectGrayscalePlan, &PreparedDirectIdwt)],
+    components: &[PreparedDirectGrayscalePlan],
+    transform: J2kWaveletTransform,
     retained_buffers: &mut Vec<Buffer>,
     status_checks: &mut Vec<DirectStatusCheck>,
     scratch_buffers: &mut Vec<DirectScratchBuffer>,
 ) -> Result<Option<Vec<DecodedFirstGroup>>, Error> {
     let Some(groups) = components
         .iter()
-        .map(|(plan, _)| plan.classic_group_starting_at(0))
+        .map(|plan| plan.classic_group_starting_at(0))
         .collect::<Option<Vec<_>>>()
     else {
         return Ok(None);
@@ -62,7 +62,6 @@ pub(in crate::engine) fn encode_split_classic_first_groups(
         return Ok(None);
     }
     let total: u64 = groups.iter().map(|group| coded_bytes(&group.jobs)).sum();
-    let transform = components[0].1.step.transform;
     let share = runtime.classic_cpu_share(transform);
     let Some(splits) = plan_classic_splits(&groups, share, total)? else {
         return Ok(None);

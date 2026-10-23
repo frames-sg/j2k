@@ -7,6 +7,10 @@ and stale roadmap entries have been removed from the public documentation set.
 
 Staged workspace version: `0.13.2`.
 
+- Metal region and region-scaled colour decodes run Tier-1 on the Metal route a
+  full-image decode uses, instead of on one CPU thread per component, and fall
+  back to the CPU Tier-1 route only for code blocks the GPU kernels reject.
+  Output is unchanged.
 - Metal single-image RGB8 decodes of classic J2K images decode each
   component's finest sub-bands on the CPU pool while the GPU decodes the rest,
   then run the inverse transforms on the GPU. The CPU's share of the coded
