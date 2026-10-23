@@ -334,16 +334,11 @@ pub(super) fn filter_2d_banded_from_bands(
             .checked_mul(parallel_layout.concurrent_strips)
             .ok_or(ValidationError::ImageTooLarge)?;
         try_grow_level_buffer(band_scratch, scratch_len)?;
-        let wave_len = parallel_layout
-            .strip_len
-            .checked_mul(parallel_layout.concurrent_strips)
-            .ok_or(ValidationError::ImageTooLarge)?;
         dispatch!(Level::new(), simd => run_strips(
             simd,
             level,
             target,
             parallel_layout.strip_len,
-            wave_len,
             &mut band_scratch[..scratch_len],
             per_worker,
         ));
@@ -358,33 +353,39 @@ fn run_strips<S: Simd>(
     level: Level2d<'_>,
     target: &mut [f32],
     strip_len: usize,
-    wave_len: usize,
     scratch: &mut [f32],
     per_worker: usize,
 ) {
     use rayon::prelude::*;
+    use std::sync::Mutex;
 
-    let strips_per_wave = scratch.len() / per_worker;
-    for (wave, outputs) in target.chunks_mut(wave_len).enumerate() {
-        outputs
-            .par_chunks_mut(strip_len)
-            .zip(scratch.par_chunks_mut(per_worker))
-            .enumerate()
-            .for_each(|(index, (output, worker_scratch))| {
-                let strip = wave * strips_per_wave + index;
+    // Each worker takes the next strip as it finishes the last, so slower
+    // cores do not hold up a wave of equal strips.
+    let strips = Mutex::new(target.chunks_mut(strip_len).enumerate());
+    let next = || strips.lock().ok().and_then(|mut strips| strips.next());
+    scratch
+        .par_chunks_mut(per_worker)
+        .with_max_len(1)
+        .for_each(|worker_scratch| {
+            // Rayon invokes this closure outside the caller's target-feature
+            // scope. Re-enter it so AVX2 operations inline into the strip,
+            // instead of making an out-of-line call for each vector operation.
+            #[cfg(feature = "simd")]
+            simd.vectorize(
+                #[inline(always)]
+                || {
+                    while let Some((strip, output)) = next() {
+                        let first_row = strip * strip_len / level.width;
+                        stream_strip(simd, level, first_row, output, worker_scratch);
+                    }
+                },
+            );
+            #[cfg(not(feature = "simd"))]
+            while let Some((strip, output)) = next() {
                 let first_row = strip * strip_len / level.width;
-                // Rayon invokes this closure outside the caller's target-feature
-                // scope. Re-enter it so AVX2 operations inline into the strip,
-                // instead of making an out-of-line call for each vector operation.
-                #[cfg(feature = "simd")]
-                simd.vectorize(
-                    #[inline(always)]
-                    || stream_strip(simd, level, first_row, output, worker_scratch),
-                );
-                #[cfg(not(feature = "simd"))]
                 stream_strip(simd, level, first_row, output, worker_scratch);
-            });
-    }
+            }
+        });
 }
 
 /// One vertical lifting step: the rows it updates have parity `parity`.
