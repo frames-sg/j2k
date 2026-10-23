@@ -7,6 +7,9 @@ and stale roadmap entries have been removed from the public documentation set.
 
 Staged workspace version: `0.13.2`.
 
+- CPU packetization of large single-layer tiles builds packet tag trees,
+  forms packet headers and copies code-block bodies into the tile data on the
+  pool. Output is unchanged.
 - Byte and bits-per-pixel lossy targets start from a guessed quantization scale,
   interpolate from measured sizes and return the first candidate within 1% of the
   target, or the closest one within the size allowance: about 3 encodes instead of

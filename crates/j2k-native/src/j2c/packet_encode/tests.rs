@@ -802,3 +802,91 @@ fn implicit_progression_rejects_multidimensional_packetization() {
         Err(expected()),
     );
 }
+
+/// `count` packets of three subbands with `side` x `side` classic code blocks
+/// each. Block bodies vary in length around `block_len`, and every seventh
+/// block has no coding passes.
+#[cfg(feature = "parallel")]
+fn grid_packets(count: u32, side: u32, block_len: usize) -> Vec<ResolutionPacket> {
+    let block = |index: u32| CodeBlockPacketData {
+        data: vec![u8::try_from(index % 251).expect("byte"); block_len + (index % 13) as usize],
+        ht_cleanup_length: 0,
+        ht_refinement_length: 0,
+        ht_sigprop_length: 0,
+        ht_magref_length: 0,
+        ht_distortion_deltas: [0.0; 3],
+        num_coding_passes: u8::from(!index.is_multiple_of(7)),
+        classic_segment_lengths: Vec::new(),
+        num_zero_bitplanes: u8::try_from(index % 5).expect("bit planes"),
+        previously_included: false,
+        l_block: 3,
+        block_coding_mode: BlockCodingMode::Classic,
+    };
+    (0..count)
+        .map(|packet| ResolutionPacket {
+            subbands: (0..3)
+                .map(|subband| SubbandPrecinct {
+                    code_blocks: (0..side * side)
+                        .map(|index| block(index + 3 * packet + subband))
+                        .collect(),
+                    num_cbs_x: side,
+                    num_cbs_y: side,
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+#[cfg(feature = "parallel")]
+#[test]
+fn pool_packetization_matches_one_thread() {
+    let separate = PacketMarkerOptions {
+        separate_packet_headers: true,
+        ..PacketMarkerOptions::default()
+    };
+    let sop_eph = PacketMarkerOptions {
+        write_sop: true,
+        write_eph: true,
+        separate_packet_headers: false,
+    };
+    // Too few blocks for the pool; states and headers on the pool; and bodies
+    // of about 6 MB copied on the pool too.
+    let cases = [(2, 4, 9), (4, 20, 9), (4, 20, 1500)]
+        .into_iter()
+        .flat_map(|case| {
+            [PacketMarkerOptions::default(), sop_eph, separate].map(|markers| (case, markers))
+        });
+    for ((count, side, block_len), markers) in cases {
+        let mut packets = grid_packets(count, side, block_len);
+        let descriptors = (0..count)
+            .rev()
+            .map(|index| PacketDescriptor {
+                packet_index: index,
+                state_index: index,
+                layer: 0,
+                resolution: count - index,
+                component: 0,
+                precinct: 0,
+            })
+            .collect::<Vec<_>>();
+        let mut form = |threads| {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("test pool");
+            pool.install(|| {
+                form::form_tile_bitstream_with_descriptors_lengths_and_markers(
+                    &mut packets,
+                    &descriptors,
+                    markers,
+                )
+                .expect("packetization")
+            })
+        };
+        let (serial, pooled) = (form(1), form(4));
+        let context = format!("{count} packets of 3 x {side}x{side} blocks, {markers:?}");
+        assert_eq!(pooled.data, serial.data, "{context}");
+        assert_eq!(pooled.packet_lengths, serial.packet_lengths, "{context}");
+        assert_eq!(pooled.packet_headers, serial.packet_headers, "{context}");
+    }
+}

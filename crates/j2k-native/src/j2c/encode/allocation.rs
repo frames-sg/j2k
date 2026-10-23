@@ -411,6 +411,14 @@ impl<T: Clone> BudgetedVec<'_, T> {
         self.values.extend_from_slice(values);
         Ok(())
     }
+
+    pub(crate) fn try_resize(&mut self, new_len: usize, value: T) -> EncodeResult<()> {
+        if new_len > self.values.capacity() {
+            return Err(EncodeError::InternalInvariant { what: self.what });
+        }
+        self.values.resize(new_len, value);
+        Ok(())
+    }
 }
 
 pub(crate) fn checked_add_bytes(

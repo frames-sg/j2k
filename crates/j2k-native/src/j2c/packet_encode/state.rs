@@ -119,6 +119,7 @@ pub(super) fn build_packet_states<'a, R, D>(
     packets: &[R],
     descriptors: &[D],
     allocations: &'a EncodeAllocationLedger,
+    pool: bool,
 ) -> EncodeResult<BudgetedVec<'a, PacketState<'a>>>
 where
     R: ResolutionView,
@@ -126,7 +127,7 @@ where
 {
     let state_count = packet_state_count(descriptors)?;
     let seeds = build_packet_state_seeds(packets, descriptors, state_count, allocations)?;
-    materialize_packet_states(seeds, state_count, allocations)
+    materialize_packet_states(seeds, state_count, allocations, pool)
 }
 
 fn packet_state_count<D: DescriptorView>(descriptors: &[D]) -> EncodeResult<usize> {
@@ -221,22 +222,16 @@ fn materialize_packet_states<'a>(
     mut seeds: BudgetedVec<'a, Option<PacketStateSeed<'a>>>,
     state_count: usize,
     allocations: &'a EncodeAllocationLedger,
+    pool: bool,
 ) -> EncodeResult<BudgetedVec<'a, PacketState<'a>>> {
     let mut states =
         allocations.try_vec_with_capacity(state_count, "packet state table capacity exhausted")?;
-    for state_index in 0..state_count {
-        let seed = seeds
-            .get_mut(state_index)
-            .ok_or(EncodeError::InternalInvariant {
-                what: "packet state seed index exceeded planned table",
-            })?
-            .take();
+    let materialize = |seed: Option<PacketStateSeed<'a>>| -> EncodeResult<PacketState<'a>> {
         let Some(mut seed) = seed else {
-            states.try_push(PacketState {
+            return Ok(PacketState {
                 subbands: allocations
                     .try_vec_with_capacity(0, "empty packet state subband capacity exhausted")?,
-            })?;
-            continue;
+            });
         };
 
         let mut subbands = allocations.try_vec_with_capacity(
@@ -269,8 +264,36 @@ fn materialize_packet_states<'a>(
                 num_cbs_y,
             })?;
         }
-        states.try_push(PacketState { subbands })?;
         drop(seed);
+        Ok(PacketState { subbands })
+    };
+    // States are independent: on the pool each one's tag trees are one task.
+    #[cfg(feature = "parallel")]
+    if pool {
+        use rayon::prelude::*;
+        for _ in 0..state_count {
+            states.try_push(materialize(None)?)?;
+        }
+        states
+            .par_iter_mut()
+            .zip(seeds.par_iter_mut())
+            .with_max_len(1)
+            .try_for_each(|(state, seed)| {
+                *state = materialize(seed.take())?;
+                EncodeResult::Ok(())
+            })?;
+        return Ok(states);
+    }
+    #[cfg(not(feature = "parallel"))]
+    let _ = pool;
+    for state_index in 0..state_count {
+        let seed = seeds
+            .get_mut(state_index)
+            .ok_or(EncodeError::InternalInvariant {
+                what: "packet state seed index exceeded planned table",
+            })?
+            .take();
+        states.try_push(materialize(seed)?)?;
     }
     drop(seeds);
     Ok(states)

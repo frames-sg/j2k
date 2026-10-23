@@ -7,7 +7,7 @@ use crate::{
     J2kPacketizationResolution, J2kPacketizationSubband,
 };
 
-pub(super) trait CodeBlockView {
+pub(super) trait CodeBlockView: Sync {
     fn data(&self) -> &[u8];
     fn ht_cleanup_length(&self) -> u32;
     fn ht_refinement_length(&self) -> u32;
@@ -19,7 +19,7 @@ pub(super) trait CodeBlockView {
     fn block_coding_mode(&self) -> BlockCodingMode;
 }
 
-pub(super) trait SubbandView {
+pub(super) trait SubbandView: Sync {
     type CodeBlock: CodeBlockView;
 
     fn code_blocks(&self) -> &[Self::CodeBlock];
@@ -27,13 +27,13 @@ pub(super) trait SubbandView {
     fn num_cbs_y(&self) -> u32;
 }
 
-pub(super) trait ResolutionView {
+pub(super) trait ResolutionView: Sync {
     type Subband: SubbandView;
 
     fn subbands(&self) -> &[Self::Subband];
 }
 
-pub(super) trait DescriptorView {
+pub(super) trait DescriptorView: Sync {
     fn packet_index(&self) -> u32;
     fn state_index(&self) -> u32;
     fn layer(&self) -> u8;
