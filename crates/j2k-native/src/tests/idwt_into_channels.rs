@@ -55,6 +55,9 @@ struct Decoded {
 
 fn decode(image: &Image<'_>, roi: (u32, u32, u32, u32), separate_last_level: bool) -> Decoded {
     let mut context = DecoderContext::default();
+    // The row-streamed IDWT replaces the padded last level, so compare the
+    // whole-window paths.
+    context.set_line_region_idwt(false);
     context.tile_decode_context.separate_last_idwt_level = separate_last_level;
     let planes: Vec<Vec<u32>> = {
         let decoded = image

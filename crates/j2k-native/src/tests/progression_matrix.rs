@@ -193,8 +193,8 @@ fn check_regions(case: &Case, source: &[u8], codestream: &[u8]) {
             .unwrap_or_else(|err| panic!("parse {name}: {err:?}"));
         let (width, height) = (image.width(), image.height());
         let mut context = DecoderContext::default();
+        context.set_line_region_idwt(false);
         let mut lines = DecoderContext::default();
-        lines.set_line_region_idwt(true);
         let native = image
             .decode_native_with_context(&mut context)
             .expect(name)

@@ -178,7 +178,7 @@ fn scale_row<S: Simd>(simd: S, row: &mut [f32], factor: f32) {
 
 /// The row at `index` of a `width`-wide `scanline` to update, and the rows
 /// at `above` and `below`, which must differ from it.
-fn split_rows(
+pub(super) fn split_rows(
     scanline: &mut [f32],
     width: usize,
     index: usize,

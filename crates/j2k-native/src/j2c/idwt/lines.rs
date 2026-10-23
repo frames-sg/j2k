@@ -26,8 +26,8 @@ use super::horizontal::filter_row;
 use super::model::CoefficientSource;
 use super::roi::interleave_samples_roi;
 use super::vertical::{
-    irreversible_row_scale, lift_one_row, scale_one_row, vertical_step_count, vertical_steps,
-    VerticalStep,
+    irreversible_row_scale, lift_one_row, scale_one_row, split_rows, vertical_step_count,
+    vertical_steps, VerticalStep,
 };
 use crate::error::{DecodingError, ValidationError};
 use crate::Result;
@@ -315,14 +315,6 @@ fn lift_level_row(
 ) {
     let width = level.width();
     let (target, above, below) = (level.slot(row), level.slot(above), level.slot(below));
-    let (head, tail) = level.ring.split_at_mut(target * width);
-    let (row_samples, rest) = tail.split_at_mut(width);
-    let other = |slot: usize| -> &[f32] {
-        if slot < target {
-            &head[slot * width..][..width]
-        } else {
-            &rest[(slot - target - 1) * width..][..width]
-        }
-    };
-    lift_one_row(step, row_samples, other(above), other(below));
+    let (row_samples, above, below) = split_rows(level.ring, width, target, above, below);
+    lift_one_row(step, row_samples, above, below);
 }

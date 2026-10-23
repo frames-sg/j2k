@@ -683,7 +683,6 @@ impl<'a> Image<'a> {
         validate_roi((self.width(), self.height()), roi)?;
         (|| {
             let retained_image_bytes = self.retained_metadata_bytes()?;
-            decoder_context.permit_line_region_idwt(self.permits_line_region_idwt());
             let mut decoded_image =
                 self.decode_image(decoder_context, Some(roi), None, true, retained_image_bytes)?;
             let component_owner_capacity = decoded_image.decoded_components.capacity();
@@ -772,6 +771,7 @@ impl<'a> Image<'a> {
         let mut ht_decoder = ht_decoder;
         decoder_context.set_output_region(output_region);
         decoder_context.set_round_irreversible_output(round_irreversible_output);
+        decoder_context.permit_line_region_idwt(self.permits_line_region_idwt());
         let decode_result = j2c::decode(
             self.codestream,
             &self.header,
@@ -786,8 +786,8 @@ impl<'a> Image<'a> {
         self.finish_decoded_image(decoder_context, retained_baseline_bytes)
     }
 
-    /// Whether a packed region output of this image may use the row-streamed
-    /// region IDWT: it has no palette, component-definition, sYCC or `CIELab`
+    /// Whether a region decode of this image may use the row-streamed region
+    /// IDWT: it has no palette, component-definition, sYCC or `CIELab`
     /// post-processing, which keep the whole-window path.
     pub(crate) fn permits_line_region_idwt(&self) -> bool {
         self.boxes.palette.is_none()
@@ -879,6 +879,8 @@ impl PreparedRegionDecoder<'_, '_, '_> {
         self.decoder_context.set_output_region(Some(roi));
         self.decoder_context
             .set_round_irreversible_output(round_irreversible_output);
+        self.decoder_context
+            .permit_line_region_idwt(self.image.permits_line_region_idwt());
         let decode_result = j2c::decode_preparsed(
             &self.image.header,
             self.retained_image_bytes,
@@ -887,6 +889,7 @@ impl PreparedRegionDecoder<'_, '_, '_> {
         );
         self.decoder_context.set_output_region(None);
         self.decoder_context.set_round_irreversible_output(false);
+        self.decoder_context.permit_line_region_idwt(false);
         decode_result?;
         let (_x, _y, width, height) = roi;
         let decoded_image = self

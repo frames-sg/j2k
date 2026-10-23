@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! The row-streamed region IDWT behind `DecoderContext::set_line_region_idwt`
-//! must match the whole-window region IDWT bit for bit, and must leave every
-//! output it does not cover on the whole-window path.
+//! The row-streamed region IDWT, on by default and switched off in tests with
+//! `DecoderContext::set_line_region_idwt`, must match the whole-window region
+//! IDWT bit for bit, for packed outputs and component planes alike, and must
+//! leave every image it does not cover on the whole-window path.
 
 use alloc::vec::Vec;
 
 use crate::{
-    encode, encode_component_planes_53, DecodeSettings, DecoderContext, EncodeComponentPlane,
-    EncodeOptions, Image,
+    encode, encode_component_planes_53, DecodeSettings, DecodedComponents, DecoderContext,
+    EncodeComponentPlane, EncodeOptions, Image,
 };
 
 const WIDTH: u32 = 203;
@@ -138,53 +139,165 @@ fn line_region_idwt_matches_the_whole_window_idwt_bit_for_bit() {
     }
 }
 
-#[test]
-fn component_plane_outputs_keep_the_whole_window_idwt() {
-    let bytes = codestream(3, 8, false, false);
-    let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse");
-    let roi = (10, 10, 150, 120);
-    let peak = |lines: bool| {
-        let mut context = DecoderContext::default();
-        context.set_line_region_idwt(lines);
-        drop(
-            image
-                .decode_region_components_with_context(roi, &mut context)
-                .expect("component planes"),
-        );
-        let planes_peak = context
-            .tile_decode_context
-            .debug_counters
-            .workspace_peak
-            .bytes()
-            .idwt;
-        drop(
-            image
-                .decode_region_components_for_integer_output_with_context(roi, &mut context)
-                .expect("integer-output component planes"),
-        );
-        let integer_peak = context
-            .tile_decode_context
-            .debug_counters
-            .workspace_peak
-            .bytes()
-            .idwt;
-        (planes_peak, integer_peak)
-    };
-    assert_eq!(peak(true), peak(false));
+/// Images at odd reference-grid origins; see `fixtures/image_origin`.
+const ORIGIN_FIXTURES: [(&str, &[u8]); 2] = [
+    (
+        "5/3 at (5, 3)",
+        include_bytes!("../../fixtures/image_origin/openjpeg_71x53_origin5x3_53.j2k"),
+    ),
+    (
+        "9/7 at (7, 1), 32x32 tiles from (3, 1)",
+        include_bytes!("../../fixtures/image_origin/openjpeg_71x53_origin7x1_tile32_97.j2k"),
+    ),
+];
 
-    // The same request through a packed output does take the streamed path.
+#[test]
+fn line_region_idwt_matches_at_a_non_zero_image_origin() {
+    for (name, bytes) in ORIGIN_FIXTURES {
+        for reduction in [0_u8, 1, 2] {
+            let image = Image::new_with_reduction(bytes, &DecodeSettings::default(), reduction)
+                .expect("parse origin fixture");
+            let (width, height) = (image.width(), image.height());
+            let whole = image.decode_native().expect("decode origin fixture").data;
+            let large = (1, 2, width - 3, height - 3);
+            let regions = [
+                (0, 0, width, height),
+                large,
+                (width / 3, height / 3, width / 4, height / 5),
+                (width - 1, height - 1, 1, 1),
+            ];
+            for roi in regions {
+                let label = format!("{name} reduction={reduction} roi={roi:?}");
+                let windows = decode(&image, roi, false);
+                let lines = decode(&image, roi, true);
+                assert_eq!(lines.packed, windows.packed, "{label}");
+                assert_eq!(lines.native, windows.native, "{label}");
+                let (x, y, region_width, _) = roi;
+                let expected: Vec<u8> = whole
+                    .chunks_exact(width as usize)
+                    .skip(y as usize)
+                    .take(roi.3 as usize)
+                    .flat_map(|row| &row[x as usize..(x + region_width) as usize])
+                    .copied()
+                    .collect();
+                assert_eq!(lines.native, expected, "{label}");
+                if roi == large && reduction == 0 {
+                    assert!(
+                        lines.peak_idwt < windows.peak_idwt,
+                        "{label}: idwt {} vs {}",
+                        lines.peak_idwt,
+                        windows.peak_idwt
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// What each component-plane output returns for one region.
+struct ComponentPlanes {
+    /// Sample bits of each borrowed-plane output, plane by plane.
+    planes: Vec<Vec<Vec<u32>>>,
+    /// Bytes of each native plane.
+    native: Vec<Vec<u8>>,
+    /// Peak IDWT workspace of each output, borrowed planes first. The
+    /// counters restart with every decode, so each is read straight after it.
+    peak_idwt: Vec<usize>,
+}
+
+fn decode_component_planes(
+    image: &Image<'_>,
+    roi: (u32, u32, u32, u32),
+    lines: bool,
+) -> ComponentPlanes {
+    fn bits(planes: &DecodedComponents<'_>) -> Vec<Vec<u32>> {
+        planes
+            .planes()
+            .iter()
+            .map(|plane| {
+                plane
+                    .samples()
+                    .iter()
+                    .map(|sample| sample.to_bits())
+                    .collect()
+            })
+            .collect()
+    }
+    fn peak_idwt(context: &DecoderContext<'_>) -> usize {
+        context
+            .tile_decode_context
+            .debug_counters
+            .workspace_peak
+            .bytes()
+            .idwt
+    }
     let mut context = DecoderContext::default();
-    context.set_line_region_idwt(true);
-    image
-        .decode_region_with_context(roi, &mut context)
-        .expect("packed region");
-    let packed_peak = context
-        .tile_decode_context
-        .debug_counters
-        .workspace_peak
-        .bytes()
-        .idwt;
-    assert!(packed_peak < peak(false).0);
+    context.set_line_region_idwt(lines);
+    let mut planes = Vec::new();
+    let mut peaks = Vec::new();
+    planes.push(bits(
+        &image
+            .decode_region_components_with_context(roi, &mut context)
+            .expect("component planes"),
+    ));
+    peaks.push(peak_idwt(&context));
+    planes.push(bits(
+        &image
+            .decode_region_components_for_integer_output_with_context(roi, &mut context)
+            .expect("integer-output component planes"),
+    ));
+    peaks.push(peak_idwt(&context));
+    for integer_output in [false, true] {
+        let mut prepared = image
+            .prepare_region_decoder_with_context(&mut context)
+            .expect("prepare");
+        let decoded = if integer_output {
+            prepared.decode_region_components_for_integer_output(roi)
+        } else {
+            prepared.decode_region_components(roi)
+        };
+        planes.push(bits(&decoded.expect("prepared region")));
+        drop(prepared);
+        peaks.push(peak_idwt(&context));
+    }
+    let native = image
+        .decode_native_region_components_with_context(roi, &mut context)
+        .expect("native component planes")
+        .planes()
+        .iter()
+        .map(|plane| plane.data().to_vec())
+        .collect();
+    peaks.push(peak_idwt(&context));
+    ComponentPlanes {
+        planes,
+        native,
+        peak_idwt: peaks,
+    }
+}
+
+#[test]
+fn component_plane_outputs_take_the_streamed_path() {
+    for reversible in [true, false] {
+        let bytes = codestream(3, 8, reversible, false);
+        let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse");
+        for roi in [(10, 10, 150, 120), (WIDTH - 1, HEIGHT - 1, 1, 1)] {
+            let label = format!("reversible={reversible} roi={roi:?}");
+            let windows = decode_component_planes(&image, roi, false);
+            let lines = decode_component_planes(&image, roi, true);
+            assert_eq!(lines.planes, windows.planes, "{label}");
+            assert_eq!(lines.native, windows.native, "{label}");
+            if roi.2 > 1 {
+                for (output, (line_peak, window_peak)) in
+                    lines.peak_idwt.iter().zip(&windows.peak_idwt).enumerate()
+                {
+                    assert!(
+                        line_peak < window_peak,
+                        "{label} output {output}: idwt {line_peak} vs {window_peak}"
+                    );
+                }
+            }
+        }
+    }
 }
 
 fn jp2_box(kind: [u8; 4], payload: &[u8]) -> Vec<u8> {
@@ -269,32 +382,10 @@ fn line_region_idwt_skips_images_with_colour_post_processing() {
     let windows = decode(&image, roi, false);
     assert_eq!(lines.packed, windows.packed);
     assert_eq!(lines.peak_idwt, windows.peak_idwt);
-}
-
-#[test]
-fn prepared_region_decoder_keeps_the_whole_window_idwt() {
-    let bytes = codestream(3, 8, false, false);
-    let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse");
-    let peak = |lines: bool| {
-        let mut context = DecoderContext::default();
-        context.set_line_region_idwt(lines);
-        let mut prepared = image
-            .prepare_region_decoder_with_context(&mut context)
-            .expect("prepare");
-        drop(
-            prepared
-                .decode_region_components((10, 10, 150, 120))
-                .expect("prepared region"),
-        );
-        drop(prepared);
-        context
-            .tile_decode_context
-            .debug_counters
-            .workspace_peak
-            .bytes()
-            .idwt
-    };
-    assert_eq!(peak(true), peak(false));
+    let lines = decode_component_planes(&image, roi, true);
+    let windows = decode_component_planes(&image, roi, false);
+    assert_eq!(lines.planes, windows.planes);
+    assert_eq!(lines.peak_idwt, windows.peak_idwt);
 }
 
 #[test]
