@@ -812,6 +812,9 @@ constant uint J2K_IDWT53_2D_ROWS = 8u;
 // A loaded row spans the tile and both halos: 32 low-pass and 32 high-pass
 // samples, one of each per lane.
 constant uint J2K_IDWT53_2D_STRIDE = J2K_IDWT53_2D_TILE_W + 2u * J2K_IDWT53_HALO;
+// Rows of the haloed tile each SIMD group loads: the halo makes it 64 rows.
+constant uint J2K_IDWT53_2D_LOAD_ROWS =
+    (J2K_IDWT53_2D_TILE_H + 2u * J2K_IDWT53_HALO) / J2K_IDWT53_2D_ROWS;
 
 inline float idwt53_band_sample(
     device const float *band,
@@ -892,26 +895,40 @@ inline J2kIdwtTile idwt53_fused_2d_tile(
     const uint xl = low_x + 2u * local.x;
     const uint xh = high_x + 2u * local.x;
     const bool low_first = low_x < high_x;
-    for (uint y = ly0 + local.y; y < ly1; y += J2K_IDWT53_2D_ROWS) {
+    // Every row's band samples are loaded before any row is lifted, so the
+    // loads overlap instead of each row waiting for its own. The 9/7 tile
+    // measured slower this way.
+    float lows[J2K_IDWT53_2D_LOAD_ROWS];
+    float highs[J2K_IDWT53_2D_LOAD_ROWS];
+    for (uint k = 0u; k < J2K_IDWT53_2D_LOAD_ROWS; ++k) {
+        const uint y = ly0 + local.y + k * J2K_IDWT53_2D_ROWS;
         const uint global_y = origin_y + y;
         const bool low_y = (global_y & 1u) == 0u;
         const uint band_y = low_y ? low_index(global_y, params.y0) : high_index(global_y, params.y0);
-        float low = 0.0f;
-        float high = 0.0f;
-        if (xl < lx1) {
-            low = low_y
+        lows[k] = 0.0f;
+        highs[k] = 0.0f;
+        if (y < ly1 && xl < lx1) {
+            lows[k] = low_y
                 ? idwt53_band_sample(ll, params.ll_width, params.ll_height,
                     low_band_x + local.x - params.ll_x, band_y - params.ll_y)
                 : idwt53_band_sample(lh, params.lh_width, params.lh_height,
                     low_band_x + local.x - params.lh_x, band_y - params.lh_y);
         }
-        if (xh < lx1) {
-            high = low_y
+        if (y < ly1 && xh < lx1) {
+            highs[k] = low_y
                 ? idwt53_band_sample(hl, params.hl_width, params.hl_height,
                     high_band_x + local.x - params.hl_x, band_y - params.hl_y)
                 : idwt53_band_sample(hh, params.hh_width, params.hh_height,
                     high_band_x + local.x - params.hh_x, band_y - params.hh_y);
         }
+    }
+    for (uint k = 0u; k < J2K_IDWT53_2D_LOAD_ROWS; ++k) {
+        const uint y = ly0 + local.y + k * J2K_IDWT53_2D_ROWS;
+        if (y >= ly1) {
+            break;
+        }
+        float low = lows[k];
+        float high = highs[k];
         float adjacent = low_first
             ? simd_shuffle_up(high, 1u) : simd_shuffle_down(high, 1u);
         float left = xl == 0u ? high : (low_first ? adjacent : high);

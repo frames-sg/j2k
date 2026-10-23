@@ -5,6 +5,11 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- Metal single-image MCT RGB8 decodes synthesize the last wavelet level of the
+  three components and pack RGB8 in one tile kernel when each component ends in
+  that level and an identity store of the whole plane, so the last-level float
+  planes are never written. The fused 5/3 tile loads all its rows before
+  lifting them. Output is unchanged.
 - Metal single-image colour decodes keep each MCT component's final
   coefficient plane when the component ends in an identity store of the whole
   plane, instead of copying it into a second plane, as stacked decodes already
