@@ -5,6 +5,15 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CPU decodes run the inverse MCT and 9/7 rounding in cache-sized chunks on the
+  pool, adopt the IDWT output as an unshifted whole plane instead of copying it,
+  and stream parallel IDWT strips from a queue, reconstructing each strip's rows
+  in place. Single-tile 8-bit RGB decodes of plain colour images fuse the last
+  IDWT level and the inverse MCT with the RGB8 pack, so the full-size IDWT output
+  buffer is no longer allocated. Coefficient buffers are zeroed by the HT strips
+  or while packet headers are parsed. Tag trees are stored as one grid per level
+  in smaller nodes, so some precinct layouts that exceeded the structural decode
+  cap now decode. Output is unchanged.
 - CPU region decodes reconstruct the IDWT a row at a time, holding a few rows
   per level instead of each level's whole window, and write the last level
   straight into the output planes. This applies to packed, native and
