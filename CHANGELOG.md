@@ -5,6 +5,10 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- The CPU HTJ2K block encoder derives every quad's rho, maximum exponent, eps
+  reach mask, context, CxtVLC index, u_q and MagSgn bound in the row pre-pass
+  instead of in the quad walk, drains MagSgn words with one whole-word store,
+  and keeps its row pair in the worker's workspace. Output is unchanged.
 - The CPU HTJ2K block encoder packs a quad's MagSgn payloads and computes its
   eps mask without branches, codes zero quad pairs under zero context as MEL
   zeros alone, and inlines its per-pair MEL, VLC and UVLC writers. Output is

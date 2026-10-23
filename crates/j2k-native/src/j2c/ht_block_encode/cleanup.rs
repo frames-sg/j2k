@@ -3,7 +3,6 @@
 use alloc::vec::Vec;
 
 use super::emit::encode_quad_pair;
-use super::quad::RowPair;
 use super::workspace::HtEncodeWorkspace;
 use super::writers::terminate_mel_vlc;
 #[cfg(test)]
@@ -115,10 +114,10 @@ fn try_encode_cleanup_segment_from_source<S: CleanupCoefficientSource + ?Sized>(
         mel,
         vlc,
         mag_sgn: ms,
+        rows,
     } = workspace;
 
     let p = 30_u32.saturating_sub(u32::from(missing_msbs));
-    let mut rows = RowPair::new();
     for y in (0..height).step_by(2) {
         rows.fill(coefficients, y, width, height, p)
             .map_err(ht_cleanup_invariant)?;
@@ -131,9 +130,9 @@ fn try_encode_cleanup_segment_from_source<S: CleanupCoefficientSource + ?Sized>(
                 continue;
             }
             if y == 0 {
-                encode_quad_pair::<true>(&rows, width, x, mel, vlc, ms)
+                encode_quad_pair::<true>(rows, width, x, mel, vlc, ms)
             } else {
-                encode_quad_pair::<false>(&rows, width, x, mel, vlc, ms)
+                encode_quad_pair::<false>(rows, width, x, mel, vlc, ms)
             }
             .map_err(ht_cleanup_invariant)?;
         }

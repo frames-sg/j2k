@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use super::quad::RowPair;
 use super::writers::{MagSgnEncoder, MelEncoder, VlcEncoder};
 use super::writers::{MEL_SIZE, MS_SIZE, VLC_SIZE};
 use crate::EncodeResult;
@@ -9,6 +10,9 @@ pub(crate) struct HtEncodeWorkspace {
     pub(super) mel: MelEncoder,
     pub(super) vlc: VlcEncoder,
     pub(super) mag_sgn: MagSgnEncoder,
+    /// Rewritten wherever a block reads it, so blocks share it without
+    /// zeroing its 15 KiB each time.
+    pub(super) rows: RowPair,
 }
 
 impl HtEncodeWorkspace {
@@ -19,6 +23,7 @@ impl HtEncodeWorkspace {
             mel: MelEncoder::try_new()?,
             vlc: VlcEncoder::try_new()?,
             mag_sgn: MagSgnEncoder::try_new()?,
+            rows: RowPair::new(),
         })
     }
 
