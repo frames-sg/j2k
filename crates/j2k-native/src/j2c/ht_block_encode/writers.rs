@@ -149,14 +149,13 @@ impl VlcEncoder {
     )]
     pub(super) fn encode(
         &mut self,
-        codeword: u32,
+        mut codeword: u64,
         mut codeword_len: u8,
     ) -> Result<(), &'static str> {
         if codeword_len == 0 {
             return Ok(());
         }
-        let mut codeword = u64::from(codeword);
-        if codeword_len < u32::BITS as u8 {
+        if codeword_len < u64::BITS as u8 {
             codeword &= (1u64 << codeword_len) - 1;
         }
         loop {
@@ -242,14 +241,13 @@ impl MagSgnEncoder {
     #[inline(always)]
     pub(super) fn encode(
         &mut self,
-        codeword: u32,
+        mut codeword: u64,
         mut codeword_len: u32,
     ) -> Result<(), &'static str> {
         if codeword_len == 0 {
             return Ok(());
         }
-        let mut codeword = u64::from(codeword);
-        if codeword_len < u32::BITS {
+        if codeword_len < u64::BITS {
             codeword &= (1u64 << codeword_len) - 1;
         }
         loop {

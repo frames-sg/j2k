@@ -5,6 +5,10 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- The CPU HTJ2K block encoder computes each row pair's exponents and MagSgn
+  values in a vectorized pre-pass into zero-padded rows, writes a quad pair's
+  CxtVLC and UVLC bits to the VLC stream at once and a quad's MagSgn payloads
+  as one word. Output is unchanged.
 - CPU encodes of 8-bit RGB under the forward MCT lift the first DWT level
   straight from the pixels in cache-sized bands, without writing and rereading
   three transformed planes or taking a spare plane, and with three or more

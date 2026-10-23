@@ -49,8 +49,8 @@ fn writer_state_and_termination_match_pre_split_goldens() {
 #[test]
 fn magsgn_stuffs_after_ff_across_a_full_reservoir() {
     let mut magsgn = MagSgnEncoder::new();
-    magsgn.encode(u32::MAX, 32).expect("MagSgn bits");
-    magsgn.encode(u32::MAX, 32).expect("MagSgn bits");
+    magsgn.encode(u64::from(u32::MAX), 32).expect("MagSgn bits");
+    magsgn.encode(u64::from(u32::MAX), 32).expect("MagSgn bits");
     magsgn.terminate().expect("terminate MagSgn");
 
     assert_eq!(
@@ -95,7 +95,7 @@ fn writers_ignore_bits_above_the_declared_codeword_length() {
     let mut vlc_a = VlcEncoder::new();
     let mut vlc_b = VlcEncoder::new();
     vlc_a.encode(1, 1).expect("VLC bit");
-    vlc_b.encode(u32::MAX, 1).expect("masked VLC bit");
+    vlc_b.encode(u64::MAX, 1).expect("masked VLC bit");
     terminate_mel_vlc(&mut mel_a, &mut vlc_a).expect("terminate MEL/VLC");
     terminate_mel_vlc(&mut mel_b, &mut vlc_b).expect("terminate MEL/VLC");
     assert_eq!(&mel_a.buffer[..mel_a.pos], &mel_b.buffer[..mel_b.pos]);
@@ -107,7 +107,7 @@ fn writers_ignore_bits_above_the_declared_codeword_length() {
     let mut magsgn_a = MagSgnEncoder::new();
     let mut magsgn_b = MagSgnEncoder::new();
     magsgn_a.encode(1, 1).expect("MagSgn bit");
-    magsgn_b.encode(u32::MAX, 1).expect("masked MagSgn bit");
+    magsgn_b.encode(u64::MAX, 1).expect("masked MagSgn bit");
     magsgn_a.terminate().expect("terminate MagSgn");
     magsgn_b.terminate().expect("terminate MagSgn");
     assert_eq!(

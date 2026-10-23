@@ -9,7 +9,7 @@ use super::cleanup::{
 use super::facade::MAX_HT_BITPLANES;
 use super::quad::{
     first_quad_pair, non_initial_quad_pair, FirstQuadPairRequest, InitialQuadRow,
-    NonInitialQuadPairRequest, NonInitialQuadRow, QuadMarkerRows, QuadPairState, QuadSink,
+    NonInitialQuadPairRequest, NonInitialQuadRow, QuadMarkerRows, QuadPairState, QuadSink, RowPair,
 };
 use crate::j2c::coefficient_view::{validate_tier1_code_block_geometry, CoefficientBlockView};
 use crate::{EncodeError, EncodeResult, HtCleanupEncodeDistribution};
@@ -133,7 +133,8 @@ pub(crate) fn collect_encode_distribution(
         width,
         height,
         &mut distribution,
-    );
+    )
+    .map_err(|what| EncodeError::InternalInvariant { what })?;
     Ok(distribution)
 }
 
@@ -143,9 +144,10 @@ fn collect_encode_distribution_from_source<S: CleanupCoefficientSource + ?Sized>
     width: usize,
     height: usize,
     distribution: &mut HtCleanupEncodeDistribution,
-) {
+) -> Result<(), &'static str> {
     let p = 30_u32.saturating_sub(u32::from(missing_msbs));
-    let stride = width;
+    let mut rows = RowPair::new();
+    rows.fill(coefficients, 0, width, height, p)?;
 
     let mut e_val = [0u8; 514];
     let mut cx_val = [0u8; 514];
@@ -155,17 +157,13 @@ fn collect_encode_distribution_from_source<S: CleanupCoefficientSource + ?Sized>
     let mut rho = [0i32; 2];
     let mut c_q0 = 0usize;
     let mut s = [0u32; 8];
-    let mut sp = 0usize;
     let mut x = 0usize;
 
     while x < width {
         collect_first_quad_pair(
             FirstQuadPairRequest {
-                coefficients,
-                stride,
-                height,
-                p,
-                sp: &mut sp,
+                rows: &rows,
+                width,
                 x,
                 markers: QuadMarkerRows {
                     e_val: &mut e_val,
@@ -197,18 +195,13 @@ fn collect_encode_distribution_from_source<S: CleanupCoefficientSource + ?Sized>
         c_q0 = usize::from(cx_val[lcxp]) + (usize::from(cx_val[lcxp + 1]) << 2);
         cx_val[lcxp] = 0;
 
-        sp = y * stride;
+        rows.fill(coefficients, y, width, height, p)?;
         x = 0;
         while x < width {
             collect_non_initial_quad_pair(
                 NonInitialQuadPairRequest {
-                    coefficients,
-                    stride,
+                    rows: &rows,
                     width,
-                    height,
-                    y,
-                    p,
-                    sp: &mut sp,
                     x,
                     markers: QuadMarkerRows {
                         e_val: &mut e_val,
@@ -232,6 +225,7 @@ fn collect_encode_distribution_from_source<S: CleanupCoefficientSource + ?Sized>
 
         y += 2;
     }
+    Ok(())
 }
 
 struct CollectQuadSink<'a> {
@@ -274,8 +268,8 @@ impl QuadSink for CollectQuadSink<'_> {
 
 #[expect(clippy::inline_always, reason = "fuse the collector quad walker")]
 #[inline(always)]
-fn collect_first_quad_pair<C: CleanupCoefficientSource + ?Sized>(
-    request: FirstQuadPairRequest<'_, C>,
+fn collect_first_quad_pair(
+    request: FirstQuadPairRequest<'_>,
     distribution: &mut HtCleanupEncodeDistribution,
 ) {
     match first_quad_pair(request, &mut CollectQuadSink { distribution }) {
@@ -286,8 +280,8 @@ fn collect_first_quad_pair<C: CleanupCoefficientSource + ?Sized>(
 
 #[expect(clippy::inline_always, reason = "fuse the collector quad walker")]
 #[inline(always)]
-fn collect_non_initial_quad_pair<C: CleanupCoefficientSource + ?Sized>(
-    request: NonInitialQuadPairRequest<'_, C>,
+fn collect_non_initial_quad_pair(
+    request: NonInitialQuadPairRequest<'_>,
     distribution: &mut HtCleanupEncodeDistribution,
 ) {
     match non_initial_quad_pair(request, &mut CollectQuadSink { distribution }) {

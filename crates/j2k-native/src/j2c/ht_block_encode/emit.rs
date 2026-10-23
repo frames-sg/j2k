@@ -3,7 +3,6 @@
 use super::super::ht_encode_tables::{
     HtUvlcTableEntry, HT_UVLC_ENCODE_TABLE, HT_VLC_ENCODE_TABLE0, HT_VLC_ENCODE_TABLE1,
 };
-use super::cleanup::CleanupCoefficientSource;
 use super::quad::{
     first_quad_pair, non_initial_quad_pair, FirstQuadPairRequest, InitialQuadRow,
     NonInitialQuadPairRequest, NonInitialQuadRow, QuadSink,
@@ -14,6 +13,31 @@ struct EncodeQuadSink<'a> {
     mel: &'a mut MelEncoder,
     vlc: &'a mut VlcEncoder,
     ms: &'a mut MagSgnEncoder,
+    pair_vlc: PairVlc,
+}
+
+/// The VLC bits of one quad pair: its `CxtVLC` codewords, then its UVLC
+/// prefixes and suffixes, written to the VLC stream in one call. At most
+/// 2 * 7 + 2 * (3 + 5) bits.
+#[derive(Default)]
+struct PairVlc {
+    bits: u64,
+    len: u8,
+}
+
+impl PairVlc {
+    #[expect(clippy::inline_always, reason = "runs several times per quad pair")]
+    #[inline(always)]
+    fn push(&mut self, codeword: u32, len: u8) {
+        self.bits |= (u64::from(codeword) & ((1 << len) - 1)) << self.len;
+        self.len += len;
+    }
+}
+
+impl EncodeQuadSink<'_> {
+    fn flush_pair_vlc(&mut self) -> Result<(), &'static str> {
+        self.vlc.encode(self.pair_vlc.bits, self.pair_vlc.len)
+    }
 }
 
 impl QuadSink for EncodeQuadSink<'_> {
@@ -22,13 +46,13 @@ impl QuadSink for EncodeQuadSink<'_> {
     #[expect(clippy::inline_always, reason = "erase encoder sink dispatch")]
     #[inline(always)]
     fn quad_initial(&mut self, row: InitialQuadRow<'_>) -> Result<i32, Self::Error> {
-        encode_quad_initial_row(row, self.mel, self.vlc, self.ms)
+        encode_quad_initial_row(row, self.mel, &mut self.pair_vlc, self.ms)
     }
 
     #[expect(clippy::inline_always, reason = "erase encoder sink dispatch")]
     #[inline(always)]
     fn quad_non_initial(&mut self, row: NonInitialQuadRow<'_>) -> Result<i32, Self::Error> {
-        encode_quad_non_initial_row(row, self.mel, self.vlc, self.ms)
+        encode_quad_non_initial_row(row, self.mel, &mut self.pair_vlc, self.ms)
     }
 
     #[expect(clippy::inline_always, reason = "erase encoder sink dispatch")]
@@ -37,42 +61,63 @@ impl QuadSink for EncodeQuadSink<'_> {
         if u_q0 > 0 && u_q1 > 0 {
             self.mel.encode(u_q0.min(u_q1) > 2)?;
         }
-        encode_uvlc(u_q0, u_q1, self.vlc)
+        encode_uvlc(u_q0, u_q1, &mut self.pair_vlc);
+        self.flush_pair_vlc()
     }
 
     #[expect(clippy::inline_always, reason = "erase encoder sink dispatch")]
     #[inline(always)]
     fn initial_uvlc_lone(&mut self, u_q0: i32) -> Result<(), Self::Error> {
-        encode_uvlc(u_q0, 0, self.vlc)
+        encode_uvlc(u_q0, 0, &mut self.pair_vlc);
+        self.flush_pair_vlc()
     }
 
     #[expect(clippy::inline_always, reason = "erase encoder sink dispatch")]
     #[inline(always)]
     fn non_initial_uvlc(&mut self, u_q0: i32, u_q1: i32) -> Result<(), Self::Error> {
-        encode_uvlc_non_initial(u_q0, u_q1, self.vlc)
+        encode_uvlc_non_initial(u_q0, u_q1, &mut self.pair_vlc);
+        self.flush_pair_vlc()
     }
 }
 
 #[expect(clippy::inline_always, reason = "fuse the encoder quad walker")]
 #[inline(always)]
-pub(super) fn encode_first_quad_pair<C: CleanupCoefficientSource + ?Sized>(
-    request: FirstQuadPairRequest<'_, C>,
+pub(super) fn encode_first_quad_pair(
+    request: FirstQuadPairRequest<'_>,
     mel: &mut MelEncoder,
     vlc: &mut VlcEncoder,
     ms: &mut MagSgnEncoder,
 ) -> Result<(), &'static str> {
-    first_quad_pair(request, &mut EncodeQuadSink { mel, vlc, ms })
+    let pair_vlc = PairVlc::default();
+    first_quad_pair(
+        request,
+        &mut EncodeQuadSink {
+            mel,
+            vlc,
+            ms,
+            pair_vlc,
+        },
+    )
 }
 
 #[expect(clippy::inline_always, reason = "fuse the encoder quad walker")]
 #[inline(always)]
-pub(super) fn encode_non_initial_quad_pair<C: CleanupCoefficientSource + ?Sized>(
-    request: NonInitialQuadPairRequest<'_, C>,
+pub(super) fn encode_non_initial_quad_pair(
+    request: NonInitialQuadPairRequest<'_>,
     mel: &mut MelEncoder,
     vlc: &mut VlcEncoder,
     ms: &mut MagSgnEncoder,
 ) -> Result<(), &'static str> {
-    non_initial_quad_pair(request, &mut EncodeQuadSink { mel, vlc, ms })
+    let pair_vlc = PairVlc::default();
+    non_initial_quad_pair(
+        request,
+        &mut EncodeQuadSink {
+            mel,
+            vlc,
+            ms,
+            pair_vlc,
+        },
+    )
 }
 
 #[expect(
@@ -85,7 +130,7 @@ pub(super) fn encode_non_initial_quad_pair<C: CleanupCoefficientSource + ?Sized>
 fn encode_quad_initial_row(
     row: InitialQuadRow<'_>,
     mel: &mut MelEncoder,
-    vlc: &mut VlcEncoder,
+    vlc: &mut PairVlc,
     ms: &mut MagSgnEncoder,
 ) -> Result<i32, &'static str> {
     let InitialQuadRow {
@@ -116,7 +161,7 @@ fn encode_quad_initial_row(
     cx_val[lcxp + 1] = ((rho & 8) >> 3) as u8;
 
     let tuple = HT_VLC_ENCODE_TABLE0[(c_q << 8) | ((rho as usize) << 4) | eps as usize];
-    vlc.encode(u32::from(tuple >> 8), ((tuple >> 4) & 0x7) as u8)?;
+    vlc.push(u32::from(tuple >> 8), ((tuple >> 4) & 0x7) as u8);
 
     if c_q == 0 {
         mel.encode(rho != 0)?;
@@ -136,7 +181,7 @@ fn encode_quad_initial_row(
 fn encode_quad_non_initial_row(
     row: NonInitialQuadRow<'_>,
     mel: &mut MelEncoder,
-    vlc: &mut VlcEncoder,
+    vlc: &mut PairVlc,
     ms: &mut MagSgnEncoder,
 ) -> Result<i32, &'static str> {
     let NonInitialQuadRow {
@@ -164,7 +209,7 @@ fn encode_quad_non_initial_row(
     }
 
     let tuple = HT_VLC_ENCODE_TABLE1[(c_q << 8) | ((rho as usize) << 4) | eps as usize];
-    vlc.encode(u32::from(tuple >> 8), ((tuple >> 4) & 0x7) as u8)?;
+    vlc.push(u32::from(tuple >> 8), ((tuple >> 4) & 0x7) as u8);
 
     if c_q == 0 {
         mel.encode(rho != 0)?;
@@ -189,49 +234,48 @@ fn encode_mag_signs(
     offset: usize,
     ms: &mut MagSgnEncoder,
 ) -> Result<(), &'static str> {
-    let e_k = tuple & 0xF;
-    let mut encode = |bit: i32, shift: u32, sample_offset: usize| -> Result<(), &'static str> {
-        let sample_mask = 1 << bit;
-        if (rho & sample_mask) == 0 {
-            return Ok(());
+    let e_k = u32::from(tuple & 0xF);
+    // The quad's payloads go out as one word, least significant first, as
+    // separate writes would; a word only flushes early past 64 bits.
+    let (mut word, mut word_bits) = (0_u64, 0_u32);
+    for sample in 0..4 {
+        if (rho & (1 << sample)) == 0 {
+            continue;
         }
-
-        let reduction = ((u32::from(e_k) >> shift) & 1) as i32;
-        let magnitude_bits = (u_q - reduction) as u32;
-        let payload = match magnitude_bits {
-            0 => 0,
-            32.. => s[offset + sample_offset],
-            bits => s[offset + sample_offset] & ((1u32 << bits) - 1),
-        };
-        ms.encode(payload, magnitude_bits)
-    };
-
-    encode(0, 0, 0)?;
-    encode(1, 1, 1)?;
-    encode(2, 2, 2)?;
-    encode(3, 3, 3)?;
-
-    Ok(())
+        // U <= 32, so a payload is at most 32 bits.
+        let magnitude_bits = (u_q - ((e_k >> sample) & 1) as i32) as u32;
+        if magnitude_bits == 0 {
+            continue;
+        }
+        if word_bits + magnitude_bits > u64::BITS {
+            ms.encode(word, word_bits)?;
+            (word, word_bits) = (0, 0);
+        }
+        let payload = u64::from(s[offset + sample]) & ((1_u64 << magnitude_bits) - 1);
+        word |= payload << word_bits;
+        word_bits += magnitude_bits;
+    }
+    ms.encode(word, word_bits)
 }
 
 #[expect(
     clippy::cast_sign_loss,
     reason = "branch guards and max operations make every UVLC table index and suffix nonnegative"
 )]
-fn encode_uvlc(u_q0: i32, u_q1: i32, vlc: &mut VlcEncoder) -> Result<(), &'static str> {
+fn encode_uvlc(u_q0: i32, u_q1: i32, vlc: &mut PairVlc) {
     if u_q0 > 2 && u_q1 > 2 {
         let first = HT_UVLC_ENCODE_TABLE[(u_q0 - 2) as usize];
         let second = HT_UVLC_ENCODE_TABLE[(u_q1 - 2) as usize];
-        encode_uvlc_pair(vlc, first, second)
+        encode_uvlc_pair(vlc, first, second);
     } else if u_q0 > 2 && u_q1 > 0 {
         let first = HT_UVLC_ENCODE_TABLE[u_q0 as usize];
-        vlc.encode(u32::from(first.pre), first.pre_len)?;
-        vlc.encode((u_q1 - 1) as u32, 1)?;
-        vlc.encode(u32::from(first.suf), first.suf_len)
+        vlc.push(u32::from(first.pre), first.pre_len);
+        vlc.push((u_q1 - 1) as u32, 1);
+        vlc.push(u32::from(first.suf), first.suf_len);
     } else {
         let first = HT_UVLC_ENCODE_TABLE[u_q0.max(0) as usize];
         let second = HT_UVLC_ENCODE_TABLE[u_q1.max(0) as usize];
-        encode_uvlc_pair(vlc, first, second)
+        encode_uvlc_pair(vlc, first, second);
     }
 }
 
@@ -239,19 +283,15 @@ fn encode_uvlc(u_q0: i32, u_q1: i32, vlc: &mut VlcEncoder) -> Result<(), &'stati
     clippy::cast_sign_loss,
     reason = "max with zero makes both non-initial UVLC table indices nonnegative"
 )]
-fn encode_uvlc_non_initial(u_q0: i32, u_q1: i32, vlc: &mut VlcEncoder) -> Result<(), &'static str> {
+fn encode_uvlc_non_initial(u_q0: i32, u_q1: i32, vlc: &mut PairVlc) {
     let first = HT_UVLC_ENCODE_TABLE[u_q0.max(0) as usize];
     let second = HT_UVLC_ENCODE_TABLE[u_q1.max(0) as usize];
-    encode_uvlc_pair(vlc, first, second)
+    encode_uvlc_pair(vlc, first, second);
 }
 
-fn encode_uvlc_pair(
-    vlc: &mut VlcEncoder,
-    first: HtUvlcTableEntry,
-    second: HtUvlcTableEntry,
-) -> Result<(), &'static str> {
-    vlc.encode(u32::from(first.pre), first.pre_len)?;
-    vlc.encode(u32::from(second.pre), second.pre_len)?;
-    vlc.encode(u32::from(first.suf), first.suf_len)?;
-    vlc.encode(u32::from(second.suf), second.suf_len)
+fn encode_uvlc_pair(vlc: &mut PairVlc, first: HtUvlcTableEntry, second: HtUvlcTableEntry) {
+    vlc.push(u32::from(first.pre), first.pre_len);
+    vlc.push(u32::from(second.pre), second.pre_len);
+    vlc.push(u32::from(first.suf), first.suf_len);
+    vlc.push(u32::from(second.suf), second.suf_len);
 }

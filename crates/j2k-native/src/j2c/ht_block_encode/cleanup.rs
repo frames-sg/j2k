@@ -3,7 +3,9 @@
 use alloc::vec::Vec;
 
 use super::emit::{encode_first_quad_pair, encode_non_initial_quad_pair};
-use super::quad::{FirstQuadPairRequest, NonInitialQuadPairRequest, QuadMarkerRows, QuadPairState};
+use super::quad::{
+    FirstQuadPairRequest, NonInitialQuadPairRequest, QuadMarkerRows, QuadPairState, RowPair,
+};
 use super::workspace::HtEncodeWorkspace;
 use super::writers::terminate_mel_vlc;
 #[cfg(test)]
@@ -119,7 +121,9 @@ fn try_encode_cleanup_segment_from_source<S: CleanupCoefficientSource + ?Sized>(
     } = workspace;
 
     let p = 30_u32.saturating_sub(u32::from(missing_msbs));
-    let stride = width;
+    let mut rows = RowPair::new();
+    rows.fill(coefficients, 0, width, height, p)
+        .map_err(ht_cleanup_invariant)?;
 
     let mut e_val = [0u8; 514];
     let mut cx_val = [0u8; 514];
@@ -129,17 +133,13 @@ fn try_encode_cleanup_segment_from_source<S: CleanupCoefficientSource + ?Sized>(
     let mut rho = [0i32; 2];
     let mut c_q0 = 0usize;
     let mut s = [0u32; 8];
-    let mut sp = 0usize;
     let mut x = 0usize;
 
     while x < width {
         encode_first_quad_pair(
             FirstQuadPairRequest {
-                coefficients,
-                stride,
-                height,
-                p,
-                sp: &mut sp,
+                rows: &rows,
+                width,
                 x,
                 markers: QuadMarkerRows {
                     e_val: &mut e_val,
@@ -174,18 +174,14 @@ fn try_encode_cleanup_segment_from_source<S: CleanupCoefficientSource + ?Sized>(
         c_q0 = usize::from(cx_val[lcxp]) + (usize::from(cx_val[lcxp + 1]) << 2);
         cx_val[lcxp] = 0;
 
-        sp = y * stride;
+        rows.fill(coefficients, y, width, height, p)
+            .map_err(ht_cleanup_invariant)?;
         x = 0;
         while x < width {
             encode_non_initial_quad_pair(
                 NonInitialQuadPairRequest {
-                    coefficients,
-                    stride,
+                    rows: &rows,
                     width,
-                    height,
-                    y,
-                    p,
-                    sp: &mut sp,
                     x,
                     markers: QuadMarkerRows {
                         e_val: &mut e_val,
