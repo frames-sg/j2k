@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Tile-wide HTJ2K code-block decode with in-place output.
+//! Tile-wide code-block decode with in-place output.
 //!
 //! The per-sub-band path joins once per sub-band, copies every code-block
 //! payload, decodes into a slab, and scatters the slab serially. Here every
 //! row of code blocks in every sub-band of the tile is one task. A row of code
 //! blocks owns a contiguous range of its sub-band's coefficients, so tasks
 //! write their output in place through disjoint slices and Rayon balances
-//! them with work stealing. Cleanup-only payloads are borrowed from the
-//! codestream; only payloads that span several segments are gathered.
+//! them with work stealing. HT cleanup-only and single-segment classic
+//! payloads are borrowed from the codestream; only payloads that span several
+//! segments are gathered. Classic blocks take this route when each decodes as
+//! one arithmetic segment: no selective bypass or per-pass termination.
 
 use alloc::vec::Vec;
 use core::ops::Range;
@@ -18,35 +20,72 @@ use std::sync::Mutex;
 use rayon::prelude::*;
 
 use super::{
-    add_roi_shift_to_bitplanes, code_block_required_by_index, ht_code_block_has_decodable_passes,
-    stored_placement, sub_band_decode_parameters, BlockPlacement, CpuDecodeParallelism,
-    DecodeAllocationBudget, DecompositionStorage, Header, HtCodeBlockDecodeJob, HtCodeBlockDecoder,
-    Result, Tile, TileDecodeContext,
+    add_roi_shift_to_bitplanes, classic_decode_job_parameters, code_block_required_by_index,
+    ht_code_block_has_decodable_passes, stored_placement, sub_band_decode_parameters,
+    BlockPlacement, ClassicJobParameters, CpuDecodeParallelism, DecodeAllocationBudget,
+    DecompositionStorage, Header, HtCodeBlockDecodeJob, HtCodeBlockDecoder,
+    J2kCodeBlockDecodeWorkspace, Result, Tile, TileDecodeContext, MAX_BITPLANE_COUNT,
 };
 use crate::error::{DecodingError, ValidationError};
 use crate::j2c::build::{CodeBlock, CodeBlockCoding};
+use crate::j2c::codestream::CodeBlockStyle;
+use crate::j2c::decode::direct_plan::classic_allocation_counts;
 use crate::j2c::decode::peak::WorkspaceBytes;
-use crate::j2c::decode::workspace::{ht_task_workspace_bytes, HtTaskWorkspace};
-use crate::j2c::ht_block_decode::{ht_decode_workspace_bytes, selected_code_block_segment_lengths};
+use crate::j2c::decode::workspace::{task_workspace_bytes, TaskScratch, TaskWorkspace};
+use crate::j2c::ht_block_decode::selected_code_block_segment_lengths;
+use crate::j2c::tile::{ComponentTile, ResolutionTile};
 use crate::scalar::decode_ht_code_block_scalar_with_workspace_midpoint;
 use crate::{
     decode_ht_code_block_scalar_with_workspace, try_resize_decode_elements,
-    HtCodeBlockDecodeWorkspace,
+    HtCodeBlockDecodeWorkspace, J2kCodeBlockSegment,
 };
 
 /// Below this many coded bytes per tile (about 45 us of serial entropy decode
 /// on an Apple M4 Pro core) a Rayon fork-join costs more than it saves, so
-/// the tile decodes serially. Unit tests use tiny fixtures and take the
-/// parallel route unconditionally; `tile_route_threshold` covers the cutoff.
+/// the tile decodes serially. Classic MQ decoding costs far more per byte, so
+/// classic tiles fork from an eighth of this: on an M4 at 4 threads, routed
+/// classic tiles of 1.6 to 8 KiB decoded 4% to 50% faster than serially, and
+/// tiles under 1 KiB per component broke even. Unit tests use tiny fixtures
+/// and take the parallel route unconditionally; `tile_route` covers the cutoffs.
 #[cfg(not(test))]
 const MIN_PARALLEL_CODED_BYTES: usize = 8 * 1024;
 #[cfg(test)]
 const MIN_PARALLEL_CODED_BYTES: usize = 0;
 
-/// Whether a tile with `strips` rows of code blocks and `coded_bytes` of
-/// payload is worth decoding in parallel.
-fn worth_parallel_decode(strips: usize, coded_bytes: usize, min_coded_bytes: usize) -> bool {
-    strips >= 2 && coded_bytes >= min_coded_bytes
+/// Where a tile of `coding` blocks with `strips` rows of code blocks and
+/// `coded_bytes` of payload decodes on `threads` workers: on the route
+/// (`None`), serially, or per sub-band. A classic tile with fewer rows than
+/// workers leaves some idle, while the per-sub-band path splits each row's
+/// blocks among them.
+fn route_fallback(
+    coding: CodeBlockCoding,
+    strips: usize,
+    coded_bytes: usize,
+    threads: usize,
+    min_coded_bytes: usize,
+) -> Option<TileRoute> {
+    let classic = coding == CodeBlockCoding::Classic;
+    if too_few_coded_bytes(coding, coded_bytes, min_coded_bytes) {
+        Some(TileRoute::Serial)
+    } else if classic && strips < threads {
+        Some(TileRoute::PerSubBand)
+    } else if strips < 2 {
+        Some(TileRoute::Serial)
+    } else {
+        None
+    }
+}
+
+/// Whether `coded_bytes` of `coding` blocks are too few to fork for.
+fn too_few_coded_bytes(
+    coding: CodeBlockCoding,
+    coded_bytes: usize,
+    min_coded_bytes: usize,
+) -> bool {
+    match coding {
+        CodeBlockCoding::Classic => coded_bytes < min_coded_bytes / 8,
+        CodeBlockCoding::HighThroughput => coded_bytes < min_coded_bytes,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -60,7 +99,7 @@ struct BandParameters {
 
 #[derive(Clone, Copy)]
 enum Payload<'a> {
-    /// A single cleanup segment borrowed from the codestream.
+    /// A single segment borrowed from the codestream.
     Borrowed(&'a [u8]),
     /// Gathered segments starting at this offset of the payload arena.
     Gathered(usize),
@@ -69,7 +108,10 @@ enum Payload<'a> {
 struct BlockJob<'a> {
     payload: Payload<'a>,
     code_block: usize,
-    cleanup_length: u32,
+    /// Bytes of the cleanup and refinement segments of an HT block, or of the
+    /// arithmetic segment of a classic one.
+    payload_length: u32,
+    /// Bytes at the end of the payload that are an HT refinement segment.
     refinement_length: u32,
     /// The samples of the block that its sub-band stores.
     placement: BlockPlacement,
@@ -90,10 +132,15 @@ struct Strip {
 }
 
 struct TilePlan<'a> {
+    coding: CodeBlockCoding,
     bands: Vec<BandParameters>,
+    classic_bands: Vec<ClassicJobParameters>,
+    strict: bool,
     jobs: Vec<BlockJob<'a>>,
     strips: Vec<Strip>,
     arena: Vec<u8>,
+    /// Bytes of the payloads to gather into `arena` once the route is taken.
+    arena_len: usize,
     skipped: usize,
     coded_bytes: usize,
     max_width: u32,
@@ -101,12 +148,12 @@ struct TilePlan<'a> {
     /// Samples in the largest block its sub-band stores only part of. Each
     /// worker decodes such blocks into scratch of this size.
     max_clipped_samples: usize,
-    strict: bool,
 }
 
-/// How [`plan_tile_ht_route`] wants the tile's code blocks decoded.
-pub(in crate::j2c::decode) enum TileHtRoute {
-    /// Every HT code block of the tile was decoded in place.
+/// How [`plan_tile_route`] wants the tile's code blocks decoded.
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+pub(in crate::j2c::decode) enum TileRoute {
+    /// Every code block of the tile was decoded in place.
     Decoded,
     /// Too little work to fork: decode the tile serially.
     Serial,
@@ -114,11 +161,11 @@ pub(in crate::j2c::decode) enum TileHtRoute {
     PerSubBand,
 }
 
-/// Decode every HT code block of the tile in parallel when all of its
-/// components use HT block coding only and the tile carries enough coded
-/// data to amortize a fork-join. Returns without side effects for the
-/// non-`Decoded` routes.
-pub(in crate::j2c::decode) fn plan_tile_ht_route<'a>(
+/// Decode every code block of the tile in parallel when all of its
+/// components use HT block coding only, or classic coding with one arithmetic
+/// segment per block, and the tile carries enough coded data to amortize a
+/// fork-join. Returns without side effects for the non-`Decoded` routes.
+pub(in crate::j2c::decode) fn plan_tile_route<'a>(
     tile: &Tile<'a>,
     components: Range<usize>,
     tile_ctx: &mut TileDecodeContext,
@@ -126,10 +173,10 @@ pub(in crate::j2c::decode) fn plan_tile_ht_route<'a>(
     header: &Header<'_>,
     ht_decoder: &Option<&mut dyn HtCodeBlockDecoder>,
     cpu_decode_parallelism: CpuDecodeParallelism,
-) -> Result<TileHtRoute> {
+) -> Result<TileRoute> {
     #[cfg(test)]
-    if tile_ctx.force_per_sub_band_ht {
-        return Ok(TileHtRoute::PerSubBand);
+    if tile_ctx.force_per_sub_band {
+        return Ok(TileRoute::PerSubBand);
     }
     // One worker cannot overlap entropy jobs; the serial path keeps its own
     // context and allocates no parallel workspace bank.
@@ -137,34 +184,61 @@ pub(in crate::j2c::decode) fn plan_tile_ht_route<'a>(
         || rayon::current_num_threads() < 2
         || ht_decoder.is_some()
         || storage.exact_integer_decode
-        || !components_use_ht_only(tile, components.clone())
     {
-        return Ok(TileHtRoute::PerSubBand);
+        return Ok(TileRoute::PerSubBand);
     }
+    let Some(coding) = tile_route_coding(tile, components.clone()) else {
+        return Ok(TileRoute::PerSubBand);
+    };
 
     let has_later_components = components.end < tile.component_infos.len();
+    // Segment bytes bound the coded bytes, so a tile below the cutoff decodes
+    // serially before anything is planned.
+    let (required, segment_bytes, rows) =
+        required_code_blocks(tile, components.clone(), storage, header, coding)?;
+    if let Some(route) = route_fallback(
+        coding,
+        rows,
+        segment_bytes,
+        rayon::current_num_threads(),
+        MIN_PARALLEL_CODED_BYTES,
+    ) {
+        return Ok(route);
+    }
     let mut budget = DecodeAllocationBudget::for_storage(storage)?;
-    let plan = match plan_tile(tile, components, storage, header, &mut budget) {
+    let mut plan = match plan_tile(
+        tile,
+        components,
+        storage,
+        header,
+        &mut budget,
+        coding,
+        required,
+    ) {
         Ok(Some(plan)) => plan,
-        Ok(None) => return Ok(TileHtRoute::PerSubBand),
+        Ok(None) => return Ok(TileRoute::PerSubBand),
         // Planning metadata did not fit the decode budget; the per-sub-band
         // path needs less and reports its own limits.
         Err(error) if crate::j2c::decode::reuse::is_capacity_error(&error) => {
-            return Ok(TileHtRoute::PerSubBand);
+            return Ok(TileRoute::PerSubBand);
         }
         Err(error) => return Err(error),
     };
-    if !worth_parallel_decode(
+    if let Some(route) = route_fallback(
+        coding,
         plan.strips.len(),
         plan.coded_bytes,
+        rayon::current_num_threads(),
         MIN_PARALLEL_CODED_BYTES,
     ) {
-        return Ok(TileHtRoute::Serial);
+        return Ok(route);
     }
 
     let workers = rayon::current_num_threads().min(plan.strips.len());
     let mut tasks: Vec<(&mut [f32], &Strip)> = Vec::new();
     let route_budget = (|| -> Result<()> {
+        // Payloads are gathered only once the tile takes the route.
+        gather_payloads(&mut plan, storage, &mut budget)?;
         tasks
             .try_reserve_exact(plan.strips.len())
             .map_err(|_| DecodingError::HostAllocationFailed)?;
@@ -188,48 +262,93 @@ pub(in crate::j2c::decode) fn plan_tile_ht_route<'a>(
     })();
     if let Err(error) = route_budget {
         if crate::j2c::decode::reuse::is_capacity_error(&error) {
-            return Ok(TileHtRoute::PerSubBand);
+            return Ok(TileRoute::PerSubBand);
         }
         return Err(error);
     }
-    let Ok(growths) = prepare_uniform_task_workspaces(
-        &mut tile_ctx.ht_task_workspaces,
-        workers,
-        plan.max_width,
-        plan.max_height,
-        &mut storage.structural_workspace_bytes,
-        &mut budget,
-    ) else {
+    let Some(growths) =
+        decode_with_retained_bank(&plan, workers, tasks, tile_ctx, storage, &mut budget)?
+    else {
         // The per-sub-band path has its own smaller-footprint fallbacks.
-        return Ok(TileHtRoute::PerSubBand);
+        return Ok(TileRoute::PerSubBand);
     };
-
-    let mut coefficients = core::mem::take(&mut storage.coefficients);
-    let result = decode_strips(&plan, &mut coefficients, tile_ctx, tasks);
-    storage.coefficients = coefficients;
-    result?;
+    #[cfg(test)]
+    if let Some(post_decode) = tile_ctx.tile_route_post_decode.take() {
+        post_decode(storage)?;
+    }
     record_route_peak(tile_ctx, storage, &plan, workers)?;
+    count_decoded_blocks(tile_ctx, &plan, workers, growths);
+    Ok(TileRoute::Decoded)
+}
 
+/// Decode the plan with the retained bank of its block coding. Returns the
+/// bank's growths, or `None` when the bank does not fit the budget.
+fn decode_with_retained_bank<'a>(
+    plan: &TilePlan<'a>,
+    workers: usize,
+    tasks: Vec<(&mut [f32], &Strip)>,
+    tile_ctx: &mut TileDecodeContext,
+    storage: &mut DecompositionStorage<'a>,
+    budget: &mut DecodeAllocationBudget,
+) -> Result<Option<usize>> {
+    match plan.coding {
+        CodeBlockCoding::Classic => decode_with_bank(
+            plan,
+            workers,
+            tasks,
+            &mut tile_ctx.classic_task_workspaces,
+            storage,
+            budget,
+            |job, output, stride, workspace| {
+                decode_classic_strip_block(plan, job, output, stride, workspace)
+            },
+        ),
+        CodeBlockCoding::HighThroughput => decode_with_bank(
+            plan,
+            workers,
+            tasks,
+            &mut tile_ctx.ht_task_workspaces,
+            storage,
+            budget,
+            |job, output, stride, workspace| {
+                decode_strip_block(plan, job, output, stride, workspace)
+            },
+        ),
+    }
+}
+
+/// Count the decoded plan's blocks and, for HT, its phase statistics.
+fn count_decoded_blocks(
+    tile_ctx: &mut TileDecodeContext,
+    plan: &TilePlan<'_>,
+    workers: usize,
+    growths: usize,
+) {
     let counters = &mut tile_ctx.debug_counters;
     counters.decoded_code_blocks += plan.jobs.len();
     counters.skipped_code_blocks += plan.skipped;
-    let stats = &mut counters.ht_phase_stats;
-    for job in &plan.jobs {
-        stats.blocks += 1;
-        stats.cleanup_bytes += u128::from(job.cleanup_length);
-        if job.refinement_length > 0 {
-            stats.refinement_blocks += 1;
-            stats.refinement_bytes += u128::from(job.refinement_length);
+    if plan.coding == CodeBlockCoding::HighThroughput {
+        let stats = &mut counters.ht_phase_stats;
+        for job in &plan.jobs {
+            stats.blocks += 1;
+            stats.cleanup_bytes += u128::from(job.payload_length - job.refinement_length);
+            if job.refinement_length > 0 {
+                stats.refinement_blocks += 1;
+                stats.refinement_bytes += u128::from(job.refinement_length);
+            }
+        }
+        #[cfg(test)]
+        {
+            counters.ht_parallel_tasks = counters.ht_parallel_tasks.max(workers);
+            counters.ht_task_workspace_growths += growths;
         }
     }
     #[cfg(test)]
-    {
-        counters.ht_parallel_tasks = counters.ht_parallel_tasks.max(workers);
-        counters.ht_task_workspace_growths += growths;
+    if plan.coding == CodeBlockCoding::Classic {
+        counters.classic_task_workspace_growths += growths;
     }
     #[cfg(not(test))]
-    let _ = growths;
-    Ok(TileHtRoute::Decoded)
+    let _ = (workers, growths);
 }
 
 /// Record the decode's workspace peak while the plan, its tasks and each
@@ -243,6 +362,7 @@ fn record_route_peak(
 ) -> Result<()> {
     let route_bytes = [
         plan.bands.capacity() * size_of::<BandParameters>(),
+        plan.classic_bands.capacity() * size_of::<ClassicJobParameters>(),
         plan.jobs.capacity() * size_of::<BlockJob<'_>>(),
         plan.strips.capacity() * size_of::<Strip>(),
         plan.arena.capacity(),
@@ -258,14 +378,61 @@ fn record_route_peak(
     Ok(())
 }
 
-fn components_use_ht_only(tile: &Tile<'_>, components: Range<usize>) -> bool {
-    let Some(component_infos) = tile.component_infos.get(components) else {
-        return false;
+/// Prepare one workspace per worker in the retained `bank`, then decode the
+/// plan's strips into `storage`'s coefficients in place through
+/// `decode_block`. Returns the bank's growths, or `None` when the bank does
+/// not fit the budget.
+fn decode_with_bank<'a, W: TaskScratch>(
+    plan: &TilePlan<'a>,
+    workers: usize,
+    tasks: Vec<(&mut [f32], &Strip)>,
+    bank: &mut Vec<TaskWorkspace<W>>,
+    storage: &mut DecompositionStorage<'a>,
+    budget: &mut DecodeAllocationBudget,
+    decode_block: impl Fn(&BlockJob<'_>, &mut [f32], usize, &mut W) -> Result<()> + Sync,
+) -> Result<Option<usize>> {
+    let Ok(growths) = prepare_uniform_task_workspaces(
+        bank,
+        workers,
+        plan.max_width,
+        plan.max_height,
+        &mut storage.structural_workspace_bytes,
+        budget,
+    ) else {
+        return Ok(None);
     };
-    component_infos.iter().all(|component_info| {
-        let style = component_info.coding_style.parameters.code_block_style;
+    let mut coefficients = core::mem::take(&mut storage.coefficients);
+    let result = decode_strips(
+        plan,
+        &mut coefficients,
+        &mut bank[..workers],
+        tasks,
+        |job, output, stride, slot| decode_block(job, output, stride, &mut slot.workspace),
+    );
+    storage.coefficients = coefficients;
+    result.map(|()| Some(growths))
+}
+
+/// The block coding of every component in `components` when the route can
+/// decode it: HT only, or classic with one arithmetic segment per block.
+fn tile_route_coding(tile: &Tile<'_>, components: Range<usize>) -> Option<CodeBlockCoding> {
+    let mut styles = tile
+        .component_infos
+        .get(components)?
+        .iter()
+        .map(|component_info| component_info.coding_style.parameters.code_block_style);
+    if styles.clone().all(|style| {
         style.uses_high_throughput_block_coding() && !style.allows_mixed_block_coding()
-    })
+    }) {
+        return Some(CodeBlockCoding::HighThroughput);
+    }
+    styles
+        .all(|style| {
+            !style.uses_high_throughput_block_coding()
+                && !style.allows_mixed_block_coding()
+                && style.single_codeword_segment()
+        })
+        .then_some(CodeBlockCoding::Classic)
 }
 
 #[expect(
@@ -278,24 +445,33 @@ fn plan_tile<'a>(
     storage: &DecompositionStorage<'a>,
     header: &Header<'_>,
     budget: &mut DecodeAllocationBudget,
+    coding: CodeBlockCoding,
+    required: usize,
 ) -> Result<Option<TilePlan<'a>>> {
     let mut plan = TilePlan {
+        coding,
         bands: Vec::new(),
+        classic_bands: Vec::new(),
+        strict: header.strict,
         jobs: Vec::new(),
         strips: Vec::new(),
         arena: Vec::new(),
+        arena_len: 0,
         skipped: 0,
         coded_bytes: 0,
         max_width: 0,
         max_height: 0,
         max_clipped_samples: 0,
-        strict: header.strict,
     };
     // A region decode may need only a few of the tile's code blocks.
-    let required = required_code_blocks(tile, components.clone(), storage, header)?;
     budget.reserve_new(&mut plan.jobs, required)?;
     budget.reserve_new(&mut plan.strips, required)?;
-    budget.reserve_new(&mut plan.bands, storage.sub_bands.len())?;
+    // Classic job metadata must not enlarge the HT plan's band entries.
+    if coding == CodeBlockCoding::Classic {
+        budget.reserve_new(&mut plan.classic_bands, storage.sub_bands.len())?;
+    } else {
+        budget.reserve_new(&mut plan.bands, storage.sub_bands.len())?;
+    }
     let mut arena_len = 0usize;
 
     let component_infos = tile
@@ -303,11 +479,8 @@ fn plan_tile<'a>(
         .get(components.clone())
         .ok_or(DecodingError::CodeBlockDecodeFailure)?;
     for (component_idx, component_info) in components.zip(component_infos) {
-        let stripe_causal = component_info
-            .coding_style
-            .parameters
-            .code_block_style
-            .vertically_causal_context;
+        let style = component_info.coding_style.parameters.code_block_style;
+        let classic_style = (coding == CodeBlockCoding::Classic).then_some(style);
         let resolutions = component_info
             .num_resolution_levels()
             .checked_sub(header.skipped_resolution_levels)
@@ -321,16 +494,37 @@ fn plan_tile<'a>(
                 let coded_bitplanes = add_roi_shift_to_bitplanes(
                     parameters.num_bitplanes,
                     component_info.roi_shift,
-                    31,
+                    if classic_style.is_some() {
+                        MAX_BITPLANE_COUNT
+                    } else {
+                        31
+                    },
                 )?;
-                let band = plan.bands.len();
-                plan.bands.push(BandParameters {
-                    num_bitplanes: parameters.num_bitplanes,
-                    roi_shift: component_info.roi_shift,
-                    stripe_causal,
-                    dequantization_step: parameters.dequantization_step,
-                    irreversible_midpoint: parameters.irreversible_midpoint,
-                });
+                let band = if classic_style.is_some() {
+                    let (sub_band_type, job_style) =
+                        classic_decode_job_parameters(sub_band.sub_band_type, component_info);
+                    let band = plan.classic_bands.len();
+                    plan.classic_bands.push(ClassicJobParameters {
+                        sub_band_type,
+                        style: job_style,
+                        strict: header.strict,
+                        total_bitplanes: parameters.num_bitplanes,
+                        roi_shift: component_info.roi_shift,
+                        dequantization_step: parameters.dequantization_step,
+                        irreversible_midpoint: parameters.irreversible_midpoint,
+                    });
+                    band
+                } else {
+                    let band = plan.bands.len();
+                    plan.bands.push(BandParameters {
+                        num_bitplanes: parameters.num_bitplanes,
+                        roi_shift: component_info.roi_shift,
+                        stripe_causal: style.vertically_causal_context,
+                        dequantization_step: parameters.dequantization_step,
+                        irreversible_midpoint: parameters.irreversible_midpoint,
+                    });
+                    band
+                };
 
                 let first_job = plan.jobs.len();
                 for precinct in sub_band
@@ -340,18 +534,20 @@ fn plan_tile<'a>(
                 {
                     for code_block_idx in precinct.code_blocks.clone() {
                         let code_block = &storage.code_blocks[code_block_idx];
-                        if code_block.coding != Some(CodeBlockCoding::HighThroughput) {
+                        if code_block.coding != Some(coding) {
                             continue;
                         }
                         if !code_block_required_by_index(storage, sub_band_idx, code_block) {
                             plan.skipped += 1;
                             continue;
                         }
-                        if !ht_code_block_has_decodable_passes(
-                            code_block,
-                            coded_bitplanes,
-                            header.strict,
-                        )? {
+                        if classic_style.is_none()
+                            && !ht_code_block_has_decodable_passes(
+                                code_block,
+                                coded_bitplanes,
+                                header.strict,
+                            )?
+                        {
                             continue;
                         }
                         let job = plan_block(
@@ -361,6 +557,7 @@ fn plan_tile<'a>(
                             band,
                             storage,
                             &mut arena_len,
+                            classic_style,
                         )?;
                         if !job.placement.is_whole(job.width, job.height) {
                             let samples = (job.width as usize)
@@ -368,10 +565,8 @@ fn plan_tile<'a>(
                                 .ok_or(ValidationError::ImageTooLarge)?;
                             plan.max_clipped_samples = plan.max_clipped_samples.max(samples);
                         }
-                        plan.coded_bytes = plan
-                            .coded_bytes
-                            .saturating_add(job.cleanup_length as usize)
-                            .saturating_add(job.refinement_length as usize);
+                        plan.coded_bytes =
+                            plan.coded_bytes.saturating_add(job.payload_length as usize);
                         plan.max_width = plan.max_width.max(job.width);
                         plan.max_height = plan.max_height.max(job.height);
                         if plan.jobs.len() == plan.jobs.capacity() {
@@ -396,49 +591,82 @@ fn plan_tile<'a>(
     if !strips_are_disjoint(&mut plan.strips, storage.coefficients.len()) {
         return Ok(None);
     }
-    gather_payloads(&mut plan, storage, arena_len, budget)?;
+    plan.arena_len = arena_len;
     budget.include_elements::<(&mut [f32], &Strip)>(plan.strips.len())?;
     Ok(Some(plan))
 }
 
-/// The HT code blocks of `components` that the decode needs, which bounds
-/// the plan's jobs and strips.
+/// The code blocks of `components` with `coding` that the decode needs,
+/// which bounds the plan's jobs and strips, and the bytes of all their
+/// segments. The stored block grid bounds the number of strips without
+/// allocating or sorting jobs, so skinny classic tiles can decline early.
 fn required_code_blocks(
     tile: &Tile<'_>,
     components: Range<usize>,
     storage: &DecompositionStorage<'_>,
     header: &Header<'_>,
-) -> Result<usize> {
+    coding: CodeBlockCoding,
+) -> Result<(usize, usize, usize)> {
     let mut count = 0usize;
+    let mut segment_bytes = 0usize;
+    // HT retains its exact strip check after planning.
+    let mut rows = if coding == CodeBlockCoding::Classic {
+        0
+    } else {
+        usize::MAX
+    };
     for component_idx in components {
-        let resolutions = tile
+        let component_info = tile
             .component_infos
             .get(component_idx)
-            .ok_or(DecodingError::CodeBlockDecodeFailure)?
+            .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+        let resolutions = component_info
             .num_resolution_levels()
             .checked_sub(header.skipped_resolution_levels)
             .ok_or(DecodingError::CodeBlockDecodeFailure)?;
         let tile_composition = &storage.tile_decompositions[component_idx];
         for resolution in 0..resolutions {
+            let block_height = (coding == CodeBlockCoding::Classic).then(|| {
+                ResolutionTile::new(ComponentTile::new(tile, component_info), resolution)
+                    .code_block_height()
+            });
             for sub_band_idx in tile_composition.sub_band_iter(resolution, &storage.decompositions)
             {
-                for precinct in storage.sub_bands[sub_band_idx].precincts.clone() {
-                    count += storage.precincts[precinct]
+                let sub_band = &storage.sub_bands[sub_band_idx];
+                if let Some(height) = block_height {
+                    let rect = sub_band.storage_rect;
+                    if !rect.is_empty() {
+                        rows += (rect.y1.div_ceil(height) - rect.y0 / height) as usize;
+                    }
+                }
+                for precinct in sub_band.precincts.clone() {
+                    for code_block in storage.precincts[precinct]
                         .code_blocks
                         .clone()
-                        .filter(|&idx| {
-                            let code_block = &storage.code_blocks[idx];
-                            code_block.coding == Some(CodeBlockCoding::HighThroughput)
+                        .map(|idx| &storage.code_blocks[idx])
+                        .filter(|code_block| {
+                            code_block.coding == Some(coding)
                                 && code_block_required_by_index(storage, sub_band_idx, code_block)
                         })
-                        .count();
+                    {
+                        count += 1;
+                        segment_bytes = storage.layers[code_block.layers.clone()]
+                            .iter()
+                            .filter_map(|layer| layer.segments.clone())
+                            .flat_map(|range| &storage.segments[range])
+                            .fold(segment_bytes, |bytes, segment| {
+                                bytes.saturating_add(segment.data.len())
+                            });
+                    }
                 }
             }
         }
     }
-    Ok(count)
+    Ok((count, segment_bytes, rows))
 }
 
+/// A block's job. A payload in one codestream segment is borrowed; others
+/// get room in the arena.
 fn plan_block<'a>(
     code_block: &CodeBlock,
     code_block_idx: usize,
@@ -446,24 +674,25 @@ fn plan_block<'a>(
     band: usize,
     storage: &DecompositionStorage<'a>,
     arena_len: &mut usize,
+    classic_style: Option<CodeBlockStyle>,
 ) -> Result<BlockJob<'a>> {
-    let (cleanup_length, refinement_length) =
-        selected_code_block_segment_lengths(code_block, storage)?;
-    let payload = match single_cleanup_segment(code_block, storage)? {
-        Some(cleanup) if refinement_length == 0 => Payload::Borrowed(cleanup),
-        _ => {
-            let start = *arena_len;
-            *arena_len = start
-                .checked_add(cleanup_length)
-                .and_then(|end| end.checked_add(refinement_length))
-                .ok_or(ValidationError::ImageTooLarge)?;
-            Payload::Gathered(start)
-        }
+    let (payload_length, refinement_length, single) = match classic_style {
+        Some(style) => classic_payload(code_block, style, storage)?,
+        None => ht_payload(code_block, storage)?,
+    };
+    let payload = if let Some(data) = single {
+        Payload::Borrowed(data)
+    } else {
+        let start = *arena_len;
+        *arena_len = start
+            .checked_add(payload_length)
+            .ok_or(ValidationError::ImageTooLarge)?;
+        Payload::Gathered(start)
     };
     Ok(BlockJob {
         payload,
         code_block: code_block_idx,
-        cleanup_length: u32::try_from(cleanup_length)
+        payload_length: u32::try_from(payload_length)
             .map_err(|_| DecodingError::CodeBlockDecodeFailure)?,
         refinement_length: u32::try_from(refinement_length)
             .map_err(|_| DecodingError::CodeBlockDecodeFailure)?,
@@ -474,6 +703,45 @@ fn plan_block<'a>(
         number_of_coding_passes: code_block.number_of_coding_passes,
         band,
     })
+}
+
+/// An HT block's payload and refinement lengths, and its cleanup segment when
+/// that is the only selected segment.
+fn ht_payload<'a>(
+    code_block: &CodeBlock,
+    storage: &DecompositionStorage<'a>,
+) -> Result<(usize, usize, Option<&'a [u8]>)> {
+    let (cleanup_length, refinement_length) =
+        selected_code_block_segment_lengths(code_block, storage)?;
+    let single = single_cleanup_segment(code_block, storage)?.filter(|_| refinement_length == 0);
+    let payload_length = cleanup_length
+        .checked_add(refinement_length)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    Ok((payload_length, refinement_length, single))
+}
+
+/// A classic block's payload length, checked as
+/// `collect_classic_code_block_data` checks it, and its segment data when at
+/// most one segment holds any.
+fn classic_payload<'a>(
+    code_block: &CodeBlock,
+    style: CodeBlockStyle,
+    storage: &DecompositionStorage<'a>,
+) -> Result<(usize, usize, Option<&'a [u8]>)> {
+    let counts = classic_allocation_counts(code_block, style, storage)?;
+    if counts.coding_passes != code_block.number_of_coding_passes {
+        return Err(DecodingError::CodeBlockDecodeFailure.into());
+    }
+    let single = (counts.fragments <= 1).then(|| {
+        storage.layers[code_block.layers.clone()]
+            .iter()
+            .filter_map(|layer| layer.segments.clone())
+            .flat_map(|range| &storage.segments[range])
+            .map(|segment| segment.data)
+            .find(|data| !data.is_empty())
+            .unwrap_or_default()
+    });
+    Ok((counts.data_bytes, 0, single))
 }
 
 /// The block's cleanup segment when it is the only selected segment.
@@ -539,8 +807,7 @@ fn plan_band_strips(
             }
             next_x = placement.target_x + placement.width;
             work = work
-                .saturating_add(job.cleanup_length as usize)
-                .saturating_add(job.refinement_length as usize)
+                .saturating_add(job.payload_length as usize)
                 .saturating_add((job.width as usize * job.height as usize) / 8);
             end += 1;
         }
@@ -593,13 +860,12 @@ fn strips_are_disjoint(strips: &mut [Strip], coefficient_len: usize) -> bool {
 fn gather_payloads<'a>(
     plan: &mut TilePlan<'a>,
     storage: &DecompositionStorage<'a>,
-    arena_len: usize,
     budget: &mut DecodeAllocationBudget,
 ) -> Result<()> {
-    if arena_len == 0 {
+    if plan.arena_len == 0 {
         return Ok(());
     }
-    budget.reserve_new(&mut plan.arena, arena_len)?;
+    budget.reserve_new(&mut plan.arena, plan.arena_len)?;
     for job in &mut plan.jobs {
         let Payload::Gathered(_) = job.payload else {
             continue;
@@ -609,23 +875,33 @@ fn gather_payloads<'a>(
         let start = plan.arena.len();
         job.payload = Payload::Gathered(start);
         let code_block = &storage.code_blocks[job.code_block];
-        let selected_set = code_block
-            .ht_selected_set
-            .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-        let cleanup_index = selected_set
-            .checked_mul(2)
-            .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+        // A classic payload is every segment; an HT payload the selected
+        // set's cleanup and refinement segments.
+        let cleanup_index = if plan.coding == CodeBlockCoding::Classic {
+            None
+        } else {
+            let selected_set = code_block
+                .ht_selected_set
+                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+            Some(
+                selected_set
+                    .checked_mul(2)
+                    .ok_or(DecodingError::CodeBlockDecodeFailure)?,
+            )
+        };
         for layer in &storage.layers[code_block.layers.clone()] {
             let Some(range) = layer.segments.clone() else {
                 continue;
             };
             for segment in &storage.segments[range] {
-                if segment.idx == cleanup_index || segment.idx == cleanup_index + 1 {
+                if cleanup_index
+                    .is_none_or(|index| segment.idx == index || segment.idx == index + 1)
+                {
                     plan.arena.extend_from_slice(segment.data);
                 }
             }
         }
-        let expected = job.cleanup_length as usize + job.refinement_length as usize;
+        let expected = job.payload_length as usize;
         if plan.arena.len() - start != expected {
             return Err(DecodingError::CodeBlockDecodeFailure.into());
         }
@@ -647,8 +923,8 @@ fn charge_actual_workspace(
 
 /// Make the first `count` retained workspaces fit `width` x `height` blocks,
 /// replacing the bank in one budgeted transaction when any slot is short.
-fn prepare_uniform_task_workspaces(
-    workspaces: &mut Vec<HtTaskWorkspace>,
+fn prepare_uniform_task_workspaces<W: TaskScratch>(
+    workspaces: &mut Vec<TaskWorkspace<W>>,
     count: usize,
     width: u32,
     height: u32,
@@ -662,7 +938,7 @@ fn prepare_uniform_task_workspaces(
     {
         return Ok(0);
     }
-    let old_bank_bytes = ht_task_workspace_bytes(workspaces)?;
+    let old_bank_bytes = task_workspace_bytes(workspaces)?;
     let mut trial = *budget;
     let mut replacement = Vec::new();
     let count = count.max(workspaces.len());
@@ -675,24 +951,24 @@ fn prepare_uniform_task_workspaces(
                 height.max(old.prepared_height),
             )
         });
-        let planned = ht_decode_workspace_bytes(slot_width, slot_height)?;
+        let planned = W::planned_bytes(slot_width, slot_height)?;
         trial.include_bytes(planned)?;
-        let mut workspace = HtCodeBlockDecodeWorkspace::default();
-        workspace.reserve(slot_width, slot_height)?;
-        charge_actual_workspace(&mut trial, planned, workspace.allocated_bytes()?)?;
+        let mut workspace = W::default();
+        workspace.prepare_for(slot_width, slot_height)?;
+        charge_actual_workspace(&mut trial, planned, workspace.owned_bytes()?)?;
         let grew = workspaces
             .get(index)
             .map_or(Ok(true), |old| -> Result<bool> {
-                Ok(workspace.allocated_bytes()? > old.workspace.allocated_bytes()?)
+                Ok(workspace.owned_bytes()? > old.workspace.owned_bytes()?)
             })?;
         growths += usize::from(grew);
-        replacement.push(HtTaskWorkspace {
+        replacement.push(TaskWorkspace {
             workspace,
             prepared_width: slot_width,
             prepared_height: slot_height,
         });
     }
-    let new_bank_bytes = ht_task_workspace_bytes(&replacement)?;
+    let new_bank_bytes = task_workspace_bytes(&replacement)?;
     trial.release_bytes(old_bank_bytes)?;
     let structural = structural_workspace_bytes
         .checked_sub(old_bank_bytes)
@@ -704,11 +980,14 @@ fn prepare_uniform_task_workspaces(
     Ok(growths)
 }
 
-fn decode_strips<'plan, 'coefficients>(
+/// Decode the strips on one worker per workspace, each block through
+/// `decode_block`.
+fn decode_strips<'plan, 'coefficients, W: Send>(
     plan: &'plan TilePlan<'_>,
     coefficients: &'coefficients mut [f32],
-    tile_ctx: &mut TileDecodeContext,
+    workspaces: &mut [W],
     mut tasks: Vec<(&'coefficients mut [f32], &'plan Strip)>,
+    decode_block: impl Fn(&BlockJob<'_>, &mut [f32], usize, &mut W) -> Result<()> + Sync,
 ) -> Result<()> {
     // Strips are sorted by start offset, so carving them front to back yields
     // disjoint mutable outputs.
@@ -725,16 +1004,15 @@ fn decode_strips<'plan, 'coefficients>(
 
     // Largest rows first so stragglers are small.
     tasks.sort_unstable_by_key(|(_, strip)| core::cmp::Reverse(strip.work));
-    let workers = rayon::current_num_threads().min(tasks.len());
     let queue = Mutex::new(tasks.into_iter());
     let failed = AtomicBool::new(false);
     // Each worker owns one already-budgeted workspace for the whole tile.
     // A single queue pop per strip keeps work balanced across unequal cores
     // without forking a Rayon job and borrowing/returning scratch for each row.
-    tile_ctx.ht_task_workspaces[..workers]
+    workspaces
         .par_iter_mut()
         .with_max_len(1)
-        .try_for_each(|slot| -> Result<()> {
+        .try_for_each(|workspace| -> Result<()> {
             let mut clipped_scratch = Vec::new();
             while !failed.load(Ordering::Relaxed) {
                 let next = queue
@@ -748,8 +1026,9 @@ fn decode_strips<'plan, 'coefficients>(
                     plan,
                     strip,
                     output,
-                    &mut slot.workspace,
+                    workspace,
                     &mut clipped_scratch,
+                    &decode_block,
                 ) {
                     failed.store(true, Ordering::Relaxed);
                     return Err(error);
@@ -759,12 +1038,13 @@ fn decode_strips<'plan, 'coefficients>(
         })
 }
 
-fn decode_strip(
+fn decode_strip<W>(
     plan: &TilePlan<'_>,
     strip: &Strip,
     output: &mut [f32],
-    workspace: &mut HtCodeBlockDecodeWorkspace,
+    workspace: &mut W,
     clipped_scratch: &mut Vec<f32>,
+    decode_block: &impl Fn(&BlockJob<'_>, &mut [f32], usize, &mut W) -> Result<()>,
 ) -> Result<()> {
     for job in &plan.jobs[strip.jobs.clone()] {
         // The strip starts at the block row's first stored row.
@@ -787,7 +1067,7 @@ fn decode_strip(
             block.fill(0.0);
             (block, job.width as usize)
         };
-        decode_strip_block(plan, job, block_output, output_stride, workspace)?;
+        decode_block(job, block_output, output_stride, workspace)?;
         if !whole {
             placement.copy_from_block(clipped_scratch, job.width, output, strip.stride)?;
         }
@@ -803,17 +1083,9 @@ fn decode_strip_block(
     workspace: &mut HtCodeBlockDecodeWorkspace,
 ) -> Result<()> {
     let band = plan.bands[job.band];
-    let total = job.cleanup_length as usize + job.refinement_length as usize;
-    let data = match job.payload {
-        Payload::Borrowed(data) => data,
-        Payload::Gathered(start) => plan
-            .arena
-            .get(start..start + total)
-            .ok_or(DecodingError::CodeBlockDecodeFailure)?,
-    };
     let decode_job = HtCodeBlockDecodeJob {
-        data,
-        cleanup_length: job.cleanup_length,
+        data: job_payload(plan, job)?,
+        cleanup_length: job.payload_length - job.refinement_length,
         refinement_length: job.refinement_length,
         width: job.width,
         height: job.height,
@@ -843,14 +1115,66 @@ fn decode_strip_block(
     Ok(())
 }
 
+fn decode_classic_strip_block(
+    plan: &TilePlan<'_>,
+    job: &BlockJob<'_>,
+    output: &mut [f32],
+    output_stride: usize,
+    workspace: &mut J2kCodeBlockDecodeWorkspace,
+) -> Result<()> {
+    let band = plan.classic_bands[job.band];
+    let segments = [J2kCodeBlockSegment {
+        data_offset: 0,
+        data_length: job.payload_length,
+        start_coding_pass: 0,
+        end_coding_pass: job.number_of_coding_passes,
+        use_arithmetic: true,
+    }];
+    let decode_job = band.job(
+        job_payload(plan, job)?,
+        &segments,
+        job.width,
+        job.height,
+        output_stride,
+        job.missing_bit_planes,
+        job.number_of_coding_passes,
+    );
+    band.decode(decode_job, output, workspace)
+}
+
+/// The job's payload, borrowed from the codestream or from the arena.
+fn job_payload<'p>(plan: &'p TilePlan<'_>, job: &BlockJob<'p>) -> Result<&'p [u8]> {
+    match job.payload {
+        Payload::Borrowed(data) => Ok(data),
+        Payload::Gathered(start) => plan
+            .arena
+            .get(start..start + job.payload_length as usize)
+            .ok_or_else(|| DecodingError::CodeBlockDecodeFailure.into()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::worth_parallel_decode;
+    use super::{route_fallback, CodeBlockCoding, TileRoute};
 
     #[test]
-    fn tile_route_threshold() {
-        assert!(!worth_parallel_decode(1, usize::MAX, 8192));
-        assert!(!worth_parallel_decode(16, 8191, 8192));
-        assert!(worth_parallel_decode(2, 8192, 8192));
+    fn tile_route() {
+        let (ht, classic) = (CodeBlockCoding::HighThroughput, CodeBlockCoding::Classic);
+        // (coding, strips, coded bytes, threads, expected fallback) with an 8 KiB cutoff.
+        for (coding, strips, coded_bytes, threads, expected) in [
+            (ht, 1, usize::MAX, 4, Some(TileRoute::Serial)),
+            (ht, 16, 8191, 4, Some(TileRoute::Serial)),
+            (ht, 2, 8192, 4, None),
+            (classic, 16, 1023, 4, Some(TileRoute::Serial)),
+            (classic, 16, 1024, 4, None),
+            (classic, 3, 1024, 4, Some(TileRoute::PerSubBand)),
+            (classic, 1, usize::MAX, 2, Some(TileRoute::PerSubBand)),
+        ] {
+            assert_eq!(
+                route_fallback(coding, strips, coded_bytes, threads, 8192),
+                expected,
+                "{coding:?} {strips} strips, {coded_bytes} bytes, {threads} threads"
+            );
+        }
     }
 }

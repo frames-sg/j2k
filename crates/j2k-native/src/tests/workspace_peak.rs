@@ -11,6 +11,9 @@ const COMPONENTS: usize = 3;
 fn decode_context(bytes: &[u8], roi: Option<(u32, u32, u32, u32)>) -> DecoderContext<'_> {
     let image = Image::new(bytes, &DecodeSettings::default()).expect("image");
     let mut context = DecoderContext::default();
+    // Off the tile-wide route, whose worker workspaces would make Tier-1 the
+    // peak of this small image instead of the stages checked here.
+    context.tile_decode_context.force_per_sub_band = true;
     match roi {
         Some(roi) => {
             image

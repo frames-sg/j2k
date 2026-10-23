@@ -59,6 +59,9 @@ fn decode(image: &Image<'_>, roi: (u32, u32, u32, u32), separate_last_level: boo
     // whole-window paths.
     context.set_line_region_idwt(false);
     context.tile_decode_context.separate_last_idwt_level = separate_last_level;
+    // Off the tile-wide route, whose worker workspaces would make Tier-1 the
+    // peak of these small images and hide the IDWT bytes compared here.
+    context.tile_decode_context.force_per_sub_band = true;
     let planes: Vec<Vec<u32>> = {
         let decoded = image
             .decode_region_components_with_context(roi, &mut context)

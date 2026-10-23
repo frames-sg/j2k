@@ -17,6 +17,17 @@ and stale roadmap entries have been removed from the public documentation set.
   into the output planes instead of copying it through an IDWT buffer first,
   saving one component's region of `f32` samples (0.8 of 10.8 MiB for a 1/32
   scale decode of an 18000 x 12000 RGB image). Output is unchanged.
+- CPU decodes under `CpuDecodeParallelism::Auto` decode the classic Part 1
+  code blocks of a component tile-wide, as HT blocks already were, when every
+  block is one arithmetic segment, with no selective bypass and no termination
+  on each pass. Rows of code blocks are tasks on one queue and write their
+  coefficients in place, with one Tier-1 workspace per worker, kept by the
+  decoder context for later components and decodes, instead of one per code
+  block and no per-sub-band staging slab or serial copy. Classic tiles with
+  less than 1 KiB of coded data decode serially, and those with fewer rows of
+  code blocks than workers keep the per-sub-band path. Tiles of either coding
+  below their coded-data cutoff now go serial before the route plans them.
+  Output is unchanged.
 - CPU classic Part 1 decodes build each code-block decode job and pick its
   reconstruction in one place for every path. Output is unchanged.
 - `J2kDecoder::decode_region_into` releases its component planes and other

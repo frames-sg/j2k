@@ -3,7 +3,7 @@
 //! Region decode stores each sub-band only where the IDWT reads it, so
 //! code-blocks on the edge of that window keep part of their samples. That
 //! must match storing whole code-blocks bit for bit on every Tier-1 writer:
-//! serial, per-sub-band parallel, and the tile-wide HT route.
+//! serial, per-sub-band parallel, and the tile-wide route.
 
 use alloc::vec::Vec;
 
@@ -50,7 +50,7 @@ fn codestream(reversible: bool, ht: bool, tiled: bool) -> Vec<u8> {
 enum Route {
     Serial,
     Parallel,
-    /// Parallel, with HT tiles kept off the tile-wide route.
+    /// Parallel, with tiles kept off the tile-wide route.
     PerSubBand,
 }
 
@@ -68,7 +68,7 @@ fn decode_region(
     });
     #[cfg(feature = "parallel")]
     {
-        context.tile_decode_context.force_per_sub_band_ht = matches!(route, Route::PerSubBand);
+        context.tile_decode_context.force_per_sub_band = matches!(route, Route::PerSubBand);
     }
     context.tile_decode_context.store_whole_code_blocks = whole_code_blocks;
     let decoded = image

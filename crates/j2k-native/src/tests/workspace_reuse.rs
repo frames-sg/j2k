@@ -308,7 +308,7 @@ fn ht_task_workspaces_match_serial_and_reuse_capacity() {
                 .expect("test pool");
             pool.install(|| {
                 let mut context = DecoderContext::default();
-                context.tile_decode_context.force_per_sub_band_ht = per_sub_band;
+                context.tile_decode_context.force_per_sub_band = per_sub_band;
                 let first = image
                     .decode_with_context(&mut context)
                     .expect("first decode");
@@ -355,7 +355,7 @@ fn ht_task_workspaces_survive_input_lifetimes_and_region_errors() {
                 let bytes = parallel_gray_fixture(257, 263, true, true);
                 let image = Image::new(&bytes, &DecodeSettings::default()).expect("first image");
                 let mut context = DecoderContext::default();
-                context.tile_decode_context.force_per_sub_band_ht = per_sub_band;
+                context.tile_decode_context.force_per_sub_band = per_sub_band;
                 let decoded = image
                     .decode_with_context(&mut context)
                     .expect("first decode");
@@ -368,7 +368,7 @@ fn ht_task_workspaces_survive_input_lifetimes_and_region_errors() {
             let bytes = parallel_gray_fixture(241, 127, true, true);
             let image = Image::new(&bytes, &DecodeSettings::default()).expect("second image");
             let mut context = DecoderContext::from_workspace(workspace);
-            context.tile_decode_context.force_per_sub_band_ht = per_sub_band;
+            context.tile_decode_context.force_per_sub_band = per_sub_band;
             let decoded = image
                 .decode_with_context(&mut context)
                 .expect("second decode");
@@ -434,7 +434,7 @@ fn ht_task_workspaces_remain_reusable_across_classic_decode() {
             Image::new(&classic_bytes, &DecodeSettings::default()).expect("classic image");
         pool.install(|| {
             let mut context = DecoderContext::default();
-            context.tile_decode_context.force_per_sub_band_ht = per_sub_band;
+            context.tile_decode_context.force_per_sub_band = per_sub_band;
             let first = ht
                 .decode_with_context(&mut context)
                 .expect("first HT decode");
@@ -475,6 +475,81 @@ fn ht_task_workspaces_remain_reusable_across_classic_decode() {
 
 #[cfg(feature = "parallel")]
 #[test]
+fn classic_tile_route_matches_serial_decode() {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(2)
+        .build()
+        .expect("test pool");
+    let gradient = |components: u8, num_layers: u8| {
+        let pixels = super::gradient_pixels(257, 263, components);
+        let options = EncodeOptions {
+            reversible: true,
+            guard_bits: 1,
+            num_decomposition_levels: 3,
+            num_layers,
+            ..EncodeOptions::default()
+        };
+        encode(&pixels, 257, 263, components.into(), 8, false, &options)
+            .expect("encode classic fixture")
+    };
+    // (case, codestream, decoded in place on the tile route). The later
+    // components of a colour image decode into the reused coefficient buffer,
+    // most blocks of the three-layer OpenJPEG fixture gather their payloads,
+    // and the crate's own layered classic encode terminates every pass, which
+    // keeps it on the per-sub-band path.
+    for (case, bytes, in_place) in [
+        ("lossless colour", gradient(3, 1), true),
+        (
+            "three layers",
+            include_bytes!("../../fixtures/quality_layers/openjpeg_rgb_96x80_3layers_97.j2k")
+                .to_vec(),
+            true,
+        ),
+        (
+            "ROI shift",
+            include_bytes!(
+                "../../fixtures/reversible_early_stop/openjpeg_53_rate3_roi2_gray8_19x13.j2k"
+            )
+            .to_vec(),
+            true,
+        ),
+        ("pass termination", gradient(1, 3), false),
+    ] {
+        let image = Image::new(&bytes, &DecodeSettings::default()).expect("classic image");
+        let mut serial = DecoderContext::default();
+        serial.set_cpu_decode_parallelism(crate::CpuDecodeParallelism::Serial);
+        let expected = image
+            .decode_with_context(&mut serial)
+            .expect("serial oracle");
+        pool.install(|| {
+            let mut context = DecoderContext::default();
+            let actual = image
+                .decode_with_context(&mut context)
+                .expect("Auto decode");
+            assert_eq!(actual.data, expected.data, "{case}");
+            let staged = context
+                .tile_decode_context
+                .debug_counters
+                .parallel_coefficients
+                .allocations;
+            assert_eq!(staged == 0, in_place, "{case}");
+            // The route keeps one classic workspace per worker over all the
+            // components, and for the next decode with the context.
+            let counters = &context.tile_decode_context.debug_counters;
+            let growths = counters.classic_task_workspace_growths;
+            assert_eq!(growths > 0 && growths <= 2, in_place, "{case}");
+            let warm = image
+                .decode_with_context(&mut context)
+                .expect("warm Auto decode");
+            assert_eq!(warm.data, expected.data, "{case}");
+            let counters = &context.tile_decode_context.debug_counters;
+            assert_eq!(counters.classic_task_workspace_growths, 0, "{case}");
+        });
+    }
+}
+
+#[cfg(feature = "parallel")]
+#[test]
 #[ignore = "coefficient allocation measurement; run explicitly with --ignored --nocapture"]
 fn parallel_coefficient_allocation_report() {
     let pool = rayon::ThreadPoolBuilder::new()
@@ -487,7 +562,7 @@ fn parallel_coefficient_allocation_report() {
             let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
             pool.install(|| {
                 let mut context = DecoderContext::default();
-                context.tile_decode_context.force_per_sub_band_ht = true;
+                context.tile_decode_context.force_per_sub_band = true;
                 let cold = image.decode_with_context(&mut context).expect("cold decode");
                 let cold_stats = context.tile_decode_context.debug_counters.parallel_coefficients;
                 let cold_retained = context.tile_decode_context.tier1_capacity_bytes().expect("retained bytes");
@@ -520,9 +595,9 @@ fn parallel_coefficient_buffers_reuse_capacity_across_fitting_images() {
                 Image::new(&second_bytes, &DecodeSettings::default()).expect("second image");
             pool.install(|| {
                 let mut context = DecoderContext::default();
-                // The slab belongs to the per-sub-band path; tile-wide HT
+                // The slab belongs to the per-sub-band path; tile-wide
                 // decode writes code blocks in place.
-                context.tile_decode_context.force_per_sub_band_ht = true;
+                context.tile_decode_context.force_per_sub_band = true;
                 first.decode_with_context(&mut context).expect("reserve coefficient buffers");
                 assert!(context.tile_decode_context.debug_counters.parallel_coefficients.allocations > 0);
                 for image in [&first, &second, &first] {
@@ -1004,6 +1079,144 @@ fn planes_left_unzeroed_count_every_stored_sample() {
         assert_eq!(tile_context.unzeroed_plane_samples, unzeroed, "{name}");
         if unzeroed != 0 {
             assert_eq!(tile_context.stored_plane_samples, unzeroed, "{name}");
+        }
+    }
+}
+
+#[cfg(feature = "parallel")]
+#[test]
+fn malformed_classic_tile_route_matches_serial_error() {
+    let mut state = 0x1234_5678_u32;
+    let pixels: Vec<u8> = (0..257 * 263)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            (state >> 24) as u8
+        })
+        .collect();
+    let bytes = encode(
+        &pixels,
+        257,
+        263,
+        1,
+        8,
+        false,
+        &EncodeOptions {
+            reversible: true,
+            guard_bits: 1,
+            num_decomposition_levels: 3,
+            ..EncodeOptions::default()
+        },
+    )
+    .expect("classic fixture");
+    let qcd = bytes
+        .windows(2)
+        .position(|w| w == [0xff, 0x5c])
+        .expect("QCD");
+    assert_eq!(bytes[qcd + 4] & 31, 0);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(2)
+        .build()
+        .expect("test pool");
+    // A later invalid band must not hide the earlier coding-pass error.
+    // Keeping that later band valid also exercises failure during execution.
+    for next_exponent in [0, bytes[qcd + 6]] {
+        let mut malformed = bytes.clone();
+        malformed[qcd + 4] = 0;
+        malformed[qcd + 5] = 2 << 3;
+        malformed[qcd + 6] = next_exponent;
+        let image = Image::new(&malformed, &DecodeSettings::default()).expect("malformed image");
+        pool.install(|| {
+            for mode in [
+                crate::CpuDecodeParallelism::Serial,
+                crate::CpuDecodeParallelism::Auto,
+            ] {
+                let mut context = DecoderContext::default();
+                context.set_cpu_decode_parallelism(mode);
+                let error = image
+                    .decode_with_context(&mut context)
+                    .err()
+                    .expect("coding-pass error");
+                assert_eq!(
+                    error,
+                    crate::DecodeError::Decoding(crate::DecodingError::TooManyCodingPasses)
+                );
+            }
+        });
+    }
+}
+
+#[cfg(feature = "parallel")]
+#[test]
+fn failed_tile_route_clears_coefficients_before_serial_retry() {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(2)
+        .build()
+        .expect("test pool");
+    for ht in [false, true] {
+        for components in [1_u8, 3] {
+            let pixels: Vec<u8> = (0..257_u32 * 263)
+                .flat_map(|i| {
+                    let value = if i % 257 < 128 { (i % 251) as u8 } else { 128 };
+                    core::iter::repeat_n(value, usize::from(components))
+                })
+                .collect();
+            let bytes = encode(
+                &pixels,
+                257,
+                263,
+                components.into(),
+                8,
+                false,
+                &EncodeOptions {
+                    reversible: true,
+                    use_ht_block_coding: ht,
+                    num_decomposition_levels: 0,
+                    ..EncodeOptions::default()
+                },
+            )
+            .expect("fixture with coded and empty blocks");
+            for strict in [false, true] {
+                let image = Image::new(
+                    &bytes,
+                    &DecodeSettings {
+                        strict,
+                        ..DecodeSettings::default()
+                    },
+                )
+                .expect("image");
+                pool.install(|| {
+                    let mut serial = DecoderContext::default();
+                    serial.set_cpu_decode_parallelism(crate::CpuDecodeParallelism::Serial);
+                    let expected = image
+                        .decode_with_context(&mut serial)
+                        .expect("serial oracle");
+                    let mut context = DecoderContext::default();
+                    context.tile_decode_context.tile_route_post_decode = Some(|storage| {
+                        assert!(storage.coefficients.iter().any(|value| *value != 0.0));
+                        assert!(storage
+                            .code_blocks
+                            .iter()
+                            .any(|block| block.coding.is_none()));
+                        // Simulate a partially written failed block, including
+                        // samples the serial retry skips because it has no passes.
+                        storage.coefficients.fill(123.0);
+                        Err(crate::DecodingError::CodeBlockDecodeFailure.into())
+                    });
+                    let actual = image
+                        .decode_with_context(&mut context)
+                        .expect("serial retry");
+                    assert!(
+                        context.tile_decode_context.tile_route_post_decode.is_none(),
+                        "route must run"
+                    );
+                    assert_eq!(
+                        actual.data, expected.data,
+                        "ht={ht} components={components} strict={strict}"
+                    );
+                });
+            }
         }
     }
 }
