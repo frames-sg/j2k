@@ -5,6 +5,11 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CPU decodes of a later component on the tile-wide route zero the previous
+  component's stale coefficients on the route's workers, each strip its own
+  rows and separate tasks the ranges between strips, instead of clearing the
+  whole buffer on one thread first. Other routes still clear it. Output is
+  unchanged.
 - CPU decodes under `CpuDecodeParallelism::Auto` decode the tiles of a
   multi-tile image concurrently when every component is sampled 1x1, each
   worker storing into its own rows of the output planes. The workers share the
