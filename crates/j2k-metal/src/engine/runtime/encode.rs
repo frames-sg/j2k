@@ -13,6 +13,7 @@ pub(crate) struct EncodeKernels {
     pub(in crate::engine) fdwt53_vertical: ComputePipelineState,
     pub(in crate::engine) fdwt53_horizontal_batched: ComputePipelineState,
     pub(in crate::engine) fdwt53_vertical_batched: ComputePipelineState,
+    pub(in crate::engine) fdwt53_fused_level: ComputePipelineState,
     pub(in crate::engine) fdwt97_lift_horizontal: ComputePipelineState,
     pub(in crate::engine) fdwt97_lift_vertical: ComputePipelineState,
     pub(in crate::engine) fdwt97_deinterleave_horizontal: ComputePipelineState,
@@ -59,6 +60,7 @@ impl EncodeKernels {
             fdwt53_vertical: loader.pipeline("j2k_forward_dwt53_vertical")?,
             fdwt53_horizontal_batched: loader.pipeline("j2k_forward_dwt53_horizontal_batched")?,
             fdwt53_vertical_batched: loader.pipeline("j2k_forward_dwt53_vertical_batched")?,
+            fdwt53_fused_level: loader.pipeline("j2k_forward_dwt53_fused_level")?,
             fdwt97_lift_horizontal: loader.pipeline("j2k_forward_dwt97_lift_horizontal")?,
             fdwt97_lift_vertical: loader.pipeline("j2k_forward_dwt97_lift_vertical")?,
             fdwt97_deinterleave_horizontal: loader

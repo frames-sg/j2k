@@ -381,6 +381,29 @@ pub(crate) struct J2kForwardDwt53BatchedParams {
 
 #[cfg(target_os = "macos")]
 #[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct J2kFusedDwt53LevelParams {
+    pub(crate) input: J2kLosslessDeinterleaveParams,
+    pub(crate) current_width: u32,
+    pub(crate) current_height: u32,
+    pub(crate) code_block_width_log2: u32,
+    pub(crate) code_block_height_log2: u32,
+    pub(crate) first_band: u32,
+    pub(crate) from_samples: u32,
+    pub(crate) low_to_coefficients: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct J2kFusedDwt53Band {
+    pub(crate) coefficient_offset: u32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub(crate) struct J2kMctStatus {
     pub(crate) code: u32,
@@ -1137,6 +1160,8 @@ impl_gpu_readback_abi!(
     J2kLossyCoefficientJob,
     J2kForwardDwt53Params,
     J2kForwardDwt53BatchedParams,
+    J2kFusedDwt53LevelParams,
+    J2kFusedDwt53Band,
     J2kMctStatus,
     J2kStoreParams,
     J2kRepeatedStoreParams,

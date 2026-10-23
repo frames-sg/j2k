@@ -3,13 +3,13 @@
 use crate::metal_types::prelude::*;
 
 use super::{
-    dispatch_forward_dwt53_on_buffers, dispatch_forward_rct_on_buffers,
-    dispatch_lossless_deinterleave, dispatch_lossless_deinterleave_rct_rgb8,
-    dispatch_lossless_extract_coefficients, lossless_deinterleave_rct_rgb8_supported,
-    lossless_prepare_sizes, new_command_buffer, size_of, take_recyclable_private_buffer,
-    with_runtime_for_session, zeroed_shared_buffer, Error, J2kLosslessCoefficientJob,
-    J2kLosslessDeviceCodeBlock, J2kLosslessDevicePrepareJob, J2kMctStatus,
-    J2kPreparedLosslessDeviceCodeBlocks,
+    dispatch_forward_rct_on_buffers, dispatch_lossless_deinterleave,
+    dispatch_lossless_deinterleave_rct_rgb8, dispatch_lossless_extract_coefficients,
+    forward_dwt53_levels, lossless_deinterleave_rct_rgb8_supported, lossless_prepare_sizes,
+    new_command_buffer, prepare_fused_lossless_device_code_blocks, size_of,
+    take_recyclable_private_buffer, with_runtime_for_session, zeroed_shared_buffer, Error,
+    J2kLosslessCoefficientJob, J2kLosslessDeviceCodeBlock, J2kLosslessDevicePrepareJob,
+    J2kMctStatus, J2kPreparedLosslessDeviceCodeBlocks,
 };
 
 #[cfg(target_os = "macos")]
@@ -22,6 +22,11 @@ pub(crate) fn prepare_lossless_device_code_blocks(
     job: J2kLosslessDevicePrepareJob<'_>,
     code_blocks: Vec<J2kLosslessDeviceCodeBlock>,
 ) -> Result<J2kPreparedLosslessDeviceCodeBlocks, Error> {
+    let levels = forward_dwt53_levels(job)?;
+    if !levels.is_empty() {
+        return prepare_fused_lossless_device_code_blocks(session, job, code_blocks, &levels);
+    }
+    // No 5/3 level runs: the coefficients are the (colour-transformed) samples.
     let sizes = lossless_prepare_sizes(job)?;
     let mut metadata_budget = crate::batch_allocation::BatchMetadataBudget::new(
         "J2K Metal lossless prepare code-block metadata",
@@ -52,22 +57,11 @@ pub(crate) fn prepare_lossless_device_code_blocks(
         );
         let mut plane_buffers =
             buffer_budget.try_vec(3, "J2K Metal lossless input plane handles")?;
-        let mut scratch_buffers = buffer_budget.try_vec(
-            usize::from(job.component_count),
-            "J2K Metal lossless scratch plane handles",
-        )?;
         // Pooled, so repeated encodes reuse mapped memory; the caller recycles
         // them once the encode completes.
         let mut recyclable_private_buffers = Vec::new();
         for _ in 0..3 {
             plane_buffers.push(take_recyclable_private_buffer(
-                runtime,
-                sizes.plane_bytes,
-                &mut recyclable_private_buffers,
-            )?);
-        }
-        for _ in 0..job.component_count {
-            scratch_buffers.push(take_recyclable_private_buffer(
                 runtime,
                 sizes.plane_bytes,
                 &mut recyclable_private_buffers,
@@ -113,33 +107,10 @@ pub(crate) fn prepare_lossless_device_code_blocks(
             )?;
         }
 
-        let mut active_planes = buffer_budget.try_vec(
-            usize::from(job.component_count).max(3),
-            "J2K Metal lossless active plane handles",
-        )?;
-        for component in 0..usize::from(job.component_count) {
-            if job.num_decomposition_levels == 0 {
-                active_planes.push(plane_buffers[component].clone());
-            } else {
-                active_planes.push(dispatch_forward_dwt53_on_buffers(
-                    runtime,
-                    &command_buffer,
-                    &plane_buffers[component],
-                    &scratch_buffers[component],
-                    job.output_width,
-                    job.output_height,
-                    job.num_decomposition_levels,
-                )?);
-            }
-        }
-        while active_planes.len() < 3 {
-            active_planes.push(active_planes[0].clone());
-        }
-
         let coefficient_job_buffer = dispatch_lossless_extract_coefficients(
             runtime,
             &command_buffer,
-            &active_planes,
+            &plane_buffers,
             &coefficient_buffer,
             &coefficient_jobs,
             job.output_width,
@@ -161,7 +132,7 @@ pub(crate) fn prepare_lossless_device_code_blocks(
             _prepare_coefficient_extract_command_buffer: None,
             _deinterleave_status_buffer: status_buffer,
             _plane_buffers: plane_buffers,
-            _scratch_buffers: scratch_buffers,
+            _scratch_buffers: Vec::new(),
             _coefficient_job_buffer: coefficient_job_buffer,
         })
     })
