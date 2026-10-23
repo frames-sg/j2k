@@ -294,10 +294,6 @@ impl DecoderContext<'_> {
         self.tile_decode_context.defer_mct = enabled;
     }
 
-    pub(crate) fn take_deferred_mct(&mut self) -> Option<crate::j2c::mct::DeferredMct> {
-        self.tile_decode_context.deferred_mct.take()
-    }
-
     /// Return the native CPU decode parallelism policy.
     #[must_use]
     pub fn cpu_decode_parallelism(&self) -> CpuDecodeParallelism {

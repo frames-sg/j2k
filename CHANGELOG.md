@@ -5,6 +5,12 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- RGB8 CPU decodes of single-tile colour images with three 8-bit, fully
+  sampled components and at least two decomposition levels reconstruct the
+  last IDWT level inside the RGB8 pack, a few rows at a time, instead of
+  writing it as three float planes and reading them back. The decode no
+  longer needs the full-size IDWT output buffer, so its peak memory drops.
+  Output is unchanged.
 - RGB8 CPU decodes of plain colour images, without a palette, channel
   definitions, sYCC or CIELab, leave the inverse MCT to the RGB8 pack, which
   transforms each cache-sized chunk and packs it at once, instead of

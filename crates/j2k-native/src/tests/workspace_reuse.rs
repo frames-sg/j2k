@@ -910,6 +910,9 @@ fn idwt_zero_initialized_samples(components: u8) -> usize {
     let image = Image::new(&bytes, &DecodeSettings::default()).expect("IDWT fixture");
     let mut context = DecoderContext::default();
     context.set_cpu_decode_parallelism(crate::CpuDecodeParallelism::Serial);
+    // The fused last level keeps an LL band per component; see
+    // `fused_last_level`.
+    context.tile_decode_context.staged_rgb8_pack = true;
     crate::j2c::idwt::reset_zero_initialized_samples();
     let decoded = image
         .decode_with_context(&mut context)

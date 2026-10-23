@@ -1,9 +1,12 @@
 //! The irreversible multi-component transformation, as specified in
 //! Annex G.2 and G.3.
 
+use alloc::vec::Vec;
+
 use super::codestream::{ComponentInfo, Header, WaveletTransform};
 use super::decode::TileDecodeContext;
-use crate::error::{bail, err, ColorError, Result};
+use super::idwt::{pack_last_level, LastLevel};
+use crate::error::{bail, err, ColorError, DecodingError, Result};
 use crate::math::{dispatch, f32x8, floor_f32, mul_add, round_ties_even_then_add, Level, Simd};
 use crate::{HtCodeBlockDecoder, J2kInverseMctJob, J2kWaveletTransform};
 use j2k_codec_math::mct;
@@ -60,6 +63,7 @@ pub(crate) fn apply_inverse(
             transform,
             addends: transform_addends,
             rounding: centered_output.then_some(addends),
+            last_level: tile_ctx.fused_last_level.take(),
         });
         return Ok(());
     }
@@ -129,6 +133,9 @@ pub(crate) struct DeferredMct {
     transform: WaveletTransform,
     addends: [f32; 3],
     rounding: Option<[f32; 3]>,
+    /// The last IDWT level the decode also left to the pack: each plane
+    /// holds its sub-bands rather than samples.
+    last_level: Option<LastLevel>,
 }
 
 /// Samples per plane in one fused pack chunk: the three planes' scratch
@@ -141,8 +148,16 @@ const PACK_CHUNK: usize = 1 << 10;
 const PACK_TASK_CHUNKS: usize = 64;
 
 impl DeferredMct {
-    /// Transform the planes in place, as [`apply_inverse`] would have.
-    pub(crate) fn apply(self, planes: (&mut [f32], &mut [f32], &mut [f32]), parallel: bool) {
+    /// Transform the planes in place, as [`apply_inverse`] would have. Planes
+    /// that hold a last level's sub-bands are left to [`Self::pack_rgb8`].
+    pub(crate) fn apply(
+        self,
+        planes: (&mut [f32], &mut [f32], &mut [f32]),
+        parallel: bool,
+    ) -> Result<()> {
+        if self.last_level.is_some() {
+            bail!(DecodingError::IncompletePlaneStore);
+        }
         transform_planes(
             self.transform,
             planes,
@@ -150,6 +165,7 @@ impl DeferredMct {
             self.rounding,
             parallel,
         );
+        Ok(())
     }
 
     /// Transform the planes chunk by chunk and pack each chunk as RGB8 with
@@ -157,14 +173,31 @@ impl DeferredMct {
     /// whole planes and the pack reads them again. On the pool each chunk is
     /// transformed in scratch, so the planes are not written back: the
     /// workers share memory bandwidth. One thread transforms in place, which
-    /// costs less than the copy.
+    /// costs less than the copy. With a last level, the planes hold its
+    /// sub-bands but the LL bands, which are in `ll_bands`, and each
+    /// reconstructed row is transformed and packed.
     pub(crate) fn pack_rgb8(
         self,
         [r, g, b]: [&mut [f32]; 3],
+        ll_bands: &[Vec<f32>; 3],
         output: &mut [u8],
         parallel: bool,
         pack: impl Fn([&[f32]; 3], &mut [u8]) + Sync,
-    ) {
+    ) -> Result<()> {
+        if let Some(level) = self.last_level {
+            let planes = [&*r, &*g, &*b];
+            return pack_last_level(
+                level,
+                planes,
+                ll_bands,
+                output,
+                parallel,
+                |[r, g, b], output| {
+                    self.transform_chunk((&mut *r, &mut *g, &mut *b));
+                    pack([r, g, b], output);
+                },
+            );
+        }
         #[cfg(feature = "parallel")]
         if parallel && r.len() > PACK_CHUNK && rayon::current_num_threads() > 1 {
             use rayon::prelude::*;
@@ -190,7 +223,7 @@ impl DeferredMct {
                     || [[0.0; PACK_CHUNK]; 3],
                     |scratch, ((output, rg), b)| run(scratch, output, (rg, b)),
                 );
-            return;
+            return Ok(());
         }
         let _ = parallel;
         let chunks = r.chunks_mut(PACK_CHUNK).zip(g.chunks_mut(PACK_CHUNK));
@@ -199,6 +232,7 @@ impl DeferredMct {
             self.transform_chunk((s0, s1, s2));
             pack([s0, s1, s2], output);
         }
+        Ok(())
     }
 
     fn transform_chunk(self, planes: (&mut [f32], &mut [f32], &mut [f32])) {
@@ -506,8 +540,16 @@ mod tests {
                     transform,
                     addends,
                     rounding,
+                    last_level: None,
                 }
-                .pack_rgb8([&mut s0, &mut s1, &mut s2], &mut fused, parallel, pack);
+                .pack_rgb8(
+                    [&mut s0, &mut s1, &mut s2],
+                    &Default::default(),
+                    &mut fused,
+                    parallel,
+                    pack,
+                )
+                .expect("fused pack");
                 assert_eq!(fused, packed, "fused {transform:?} {rounding:?} {parallel}");
             }
         }

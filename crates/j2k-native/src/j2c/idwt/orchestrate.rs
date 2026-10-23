@@ -42,9 +42,11 @@ pub(crate) fn apply(
 
     let mut decompositions = &storage.decompositions[tile_decompositions.decompositions.clone()];
     // If we requested a lower resolution level, we can skip some decompositions.
-    decompositions = &decompositions[..decompositions
-        .len()
-        .saturating_sub(header.skipped_resolution_levels as usize)];
+    // A last level left to the RGB8 pack stays in its sub-bands.
+    decompositions = &decompositions[..decompositions.len().saturating_sub(
+        header.skipped_resolution_levels as usize
+            + usize::from(tile_ctx.fused_last_level.is_some()),
+    )];
     let ll_sub_band = &storage.sub_bands[tile_decompositions.first_ll_sub_band];
 
     // To explain a bit why we have this scratch buffer and another coefficient

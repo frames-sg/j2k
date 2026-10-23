@@ -31,6 +31,10 @@ use crate::math::{self, dispatch, f32x8, Level, Simd, SIMD_WIDTH};
 use crate::{checked_decode_usize_product2, Result, ValidationError};
 use j2k_codec_math::dwt;
 
+mod last_level;
+
+pub(crate) use last_level::{pack_last_level, LastLevel};
+
 /// Halo rows needed on each side of a band: one per vertical lifting step.
 const HALO_ROWS_53: usize = 2;
 const HALO_ROWS_97: usize = 4;
@@ -211,6 +215,59 @@ struct Level2d<'a> {
     high_pass: f32,
 }
 
+impl<'a> Level2d<'a> {
+    /// The level `rect` of packed LL, HL, LH, and HH bands (row-major, each
+    /// as wide as its rectangle in [`packed_band_rects`]).
+    #[expect(
+        clippy::similar_names,
+        reason = "paired LL, HL, LH, and HH band names follow JPEG 2000 specification notation"
+    )]
+    fn new(
+        rect: IntRect,
+        [ll, hl, lh, hh]: [&'a [f32]; 4],
+        transform: WaveletTransform,
+        high_pass: f32,
+    ) -> Self {
+        // See Figure F.8 and `interleave_samples`.
+        let (u0, u1, v0, v1) = (rect.x0, rect.x1, rect.y0, rect.y1);
+        let num_u_low = (u1.div_ceil(2) - u0.div_ceil(2)) as usize;
+        let num_u_high = (u1 / 2 - u0 / 2) as usize;
+        let num_v_low = (v1.div_ceil(2) - v0.div_ceil(2)) as usize;
+        let num_v_high = (v1 / 2 - v0 / 2) as usize;
+        let (first_width, second_width) = if u0 % 2 == 0 {
+            (num_u_low, num_u_high)
+        } else {
+            (num_u_high, num_u_low)
+        };
+        let (first_even, second_even) = if u0 % 2 == 0 { (ll, hl) } else { (hl, ll) };
+        let (first_odd, second_odd) = if u0 % 2 == 0 { (lh, hh) } else { (hh, lh) };
+        Self {
+            even: RowSource {
+                first: first_even,
+                second: second_even,
+                first_width,
+                second_width,
+                start_row: usize::from(v0 % 2 != 0),
+                rows: num_v_low,
+            },
+            odd: RowSource {
+                first: first_odd,
+                second: second_odd,
+                first_width,
+                second_width,
+                start_row: usize::from(v0 % 2 == 0),
+                rows: num_v_high,
+            },
+            width: rect.width() as usize,
+            height: rect.height() as usize,
+            x0: u0 as usize,
+            y0: v0 as usize,
+            transform,
+            high_pass,
+        }
+    }
+}
+
 pub(super) fn filter_2d_banded(
     input: IDWTInput<'_>,
     decomposition: &Decomposition,
@@ -256,13 +313,9 @@ pub(super) fn packed_band_rects(rect: IntRect) -> [IntRect; 4] {
 
 /// Reconstruct the level `rect` from its packed LL, HL, LH, and HH bands
 /// (row-major, each as wide as its rectangle in [`packed_band_rects`]).
-#[expect(
-    clippy::similar_names,
-    reason = "paired LL, HL, LH, and HH band names follow JPEG 2000 specification notation"
-)]
 pub(super) fn filter_2d_banded_from_bands(
     rect: IntRect,
-    [ll, hl, lh, hh]: [&[f32]; 4],
+    bands: [&[f32]; 4],
     target: &mut Vec<f32>,
     band_scratch: &mut Vec<f32>,
     transform: WaveletTransform,
@@ -273,44 +326,7 @@ pub(super) fn filter_2d_banded_from_bands(
     let height = rect.height() as usize;
     let required_len = checked_decode_usize_product2(width, height)?;
     try_grow_level_buffer(target, required_len)?;
-
-    // See Figure F.8 and `interleave_samples`.
-    let (u0, u1, v0, v1) = (rect.x0, rect.x1, rect.y0, rect.y1);
-    let num_u_low = (u1.div_ceil(2) - u0.div_ceil(2)) as usize;
-    let num_u_high = (u1 / 2 - u0 / 2) as usize;
-    let num_v_low = (v1.div_ceil(2) - v0.div_ceil(2)) as usize;
-    let num_v_high = (v1 / 2 - v0 / 2) as usize;
-    let (first_width, second_width) = if u0 % 2 == 0 {
-        (num_u_low, num_u_high)
-    } else {
-        (num_u_high, num_u_low)
-    };
-    let (first_even, second_even) = if u0 % 2 == 0 { (ll, hl) } else { (hl, ll) };
-    let (first_odd, second_odd) = if u0 % 2 == 0 { (lh, hh) } else { (hh, lh) };
-    let level = Level2d {
-        even: RowSource {
-            first: first_even,
-            second: second_even,
-            first_width,
-            second_width,
-            start_row: usize::from(v0 % 2 != 0),
-            rows: num_v_low,
-        },
-        odd: RowSource {
-            first: first_odd,
-            second: second_odd,
-            first_width,
-            second_width,
-            start_row: usize::from(v0 % 2 == 0),
-            rows: num_v_high,
-        },
-        width,
-        height,
-        x0: u0 as usize,
-        y0: v0 as usize,
-        transform,
-        high_pass,
-    };
+    let level = Level2d::new(rect, bands, transform, high_pass);
 
     let target = &mut target[..required_len];
     let Some(parallel_layout) = parallel_strip_layout(width, height, parallel)? else {

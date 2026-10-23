@@ -57,7 +57,8 @@ pub(crate) use self::direct_plan::{
 };
 pub(crate) use self::peak::{record_workspace, WorkspaceBytes, WorkspacePeak};
 use self::store::{
-    apply_sign_shift_after_mct, component_unsigned_level_shift, store, store_rows, TileRows,
+    apply_sign_shift_after_mct, component_unsigned_level_shift, fused_last_level, store,
+    store_last_level_bands, store_rows, TileRows,
 };
 use self::subband::{
     code_block_required_by_index, count_classic_code_blocks, count_ht_code_blocks,
@@ -294,6 +295,7 @@ fn decode_parsed_tiles<'a>(
     #[cfg(not(feature = "parallel"))]
     let decoded_by_workers = false;
 
+    tile_ctx.fused_last_level = None;
     for tile in tiles.iter().filter(|_| !decoded_by_workers) {
         ltrace!(
             "tile {} rect [{},{} {}x{}]",
@@ -343,6 +345,10 @@ fn decode_parsed_tiles<'a>(
         )?;
         apply_sign_shift_after_mct(tile_ctx, &header.component_infos);
         profile_timings.mct_us += profile::elapsed_us(stage_start);
+    }
+    // Planes holding a last level's sub-bands need the deferred MCT's pack.
+    if tile_ctx.fused_last_level.take().is_some() {
+        bail!(DecodingError::IncompletePlaneStore);
     }
 
     if profile_enabled {
@@ -677,6 +683,11 @@ fn decode_components<'a>(
 
     // Unlike before, we interleave the apply_idwt and store stages
     // for each component tile so we can reuse allocations better.
+    tile_ctx.fused_last_level = tile_rows
+        .is_none()
+        .then(|| fused_last_level(tile, header, tile_ctx, storage, ht_decoder.is_some()))
+        .flatten();
+    let fused = tile_ctx.fused_last_level.is_some();
     for (idx, component_info) in header.component_infos.iter().enumerate() {
         if per_component {
             // Code-blocks the decode skips leave their samples untouched, so
@@ -694,9 +705,13 @@ fn decode_components<'a>(
                 profile_timings,
             )?;
         }
-        // Next, we apply the inverse discrete wavelet transform.
+        // Next, we apply the inverse discrete wavelet transform. A last level
+        // left to the pack ends in the component's own LL band buffer.
         let stage_start = profile::profile_now(profile_enabled);
-        idwt::apply(
+        if let Some(ll_band) = tile_ctx.fused_ll_bands.get_mut(idx).filter(|_| fused) {
+            core::mem::swap(&mut tile_ctx.idwt_output.coefficients, ll_band);
+        }
+        let idwt_result = idwt::apply(
             storage,
             tile_ctx,
             idx,
@@ -704,7 +719,11 @@ fn decode_components<'a>(
             component_info.wavelet_transform(),
             ht_decoder,
             cpu_decode_parallelism == CpuDecodeParallelism::Auto,
-        )?;
+        );
+        if let Some(ll_band) = tile_ctx.fused_ll_bands.get_mut(idx).filter(|_| fused) {
+            core::mem::swap(&mut tile_ctx.idwt_output.coefficients, ll_band);
+        }
+        idwt_result?;
         record_workspace(tile_ctx, storage, 0)?;
         profile_timings.idwt_us += profile::elapsed_us(stage_start);
         // Finally, we store the raw samples for the tile area in the correct
@@ -719,19 +738,23 @@ fn decode_components<'a>(
         // allocations.
         let stage_start = profile::profile_now(profile_enabled);
         let parallel = cpu_decode_parallelism == CpuDecodeParallelism::Auto;
-        match tile_rows.as_deref_mut() {
-            Some(rows) => {
-                store_rows(rows, tile, header, tile_ctx, component_info, idx, parallel)?;
+        if let Some(level) = tile_ctx.fused_last_level {
+            store_last_level_bands(tile_ctx, storage, idx, &level)?;
+        } else {
+            match tile_rows.as_deref_mut() {
+                Some(rows) => {
+                    store_rows(rows, tile, header, tile_ctx, component_info, idx, parallel)?;
+                }
+                None => store(
+                    tile,
+                    header,
+                    tile_ctx,
+                    component_info,
+                    idx,
+                    ht_decoder,
+                    parallel,
+                )?,
             }
-            None => store(
-                tile,
-                header,
-                tile_ctx,
-                component_info,
-                idx,
-                ht_decoder,
-                parallel,
-            )?,
         }
         record_workspace(tile_ctx, storage, 0)?;
         profile_timings.store_us += profile::elapsed_us(stage_start);
@@ -1130,7 +1153,7 @@ fn include_capacity<T>(bytes: &mut usize, capacity: usize) -> Result<()> {
 #[derive(Default)]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "the rounding, deferred-MCT and row-streamed IDWT switches are independent, and test builds add switches that pin the per-sub-band HT, whole-code-block storage and separate last-level IDWT paths"
+    reason = "the rounding, deferred-MCT and row-streamed IDWT switches are independent, and test builds add switches that pin the per-sub-band HT, whole-code-block storage, separate last-level IDWT and staged RGB8 pack paths"
 )]
 pub(crate) struct TileDecodeContext {
     /// A reusable buffer for the IDWT output.
@@ -1173,6 +1196,10 @@ pub(crate) struct TileDecodeContext {
     /// can be compared against it.
     #[cfg(test)]
     pub(crate) separate_last_idwt_level: bool,
+    /// Test-only switch that keeps an RGB8 decode's last IDWT level and its
+    /// pack apart, so the fused pass can be compared against them.
+    #[cfg(test)]
+    pub(crate) staged_rgb8_pack: bool,
     /// The raw, decoded samples for each channel.
     pub(crate) channel_data: Vec<ComponentData>,
     /// Optional output window for region-local decode storage.
@@ -1184,6 +1211,12 @@ pub(crate) struct TileDecodeContext {
     pub(crate) defer_mct: bool,
     /// The inverse MCT this decode left to the caller.
     pub(crate) deferred_mct: Option<super::mct::DeferredMct>,
+    /// The last IDWT level this decode leaves to the RGB8 pack with the
+    /// deferred MCT: the IDWT stops one level short, at the level's LL band,
+    /// and each plane receives the level's other sub-bands instead of samples.
+    pub(crate) fused_last_level: Option<idwt::LastLevel>,
+    /// Each component's LL band of `fused_last_level`, as its IDWT output.
+    pub(crate) fused_ll_bands: [Vec<f32>; 3],
     /// Samples, over all components, that `store` must write because the
     /// planes were reused without zeroing; zero when the planes were zeroed.
     pub(crate) unzeroed_plane_samples: usize,
@@ -1216,6 +1249,8 @@ impl TileDecodeContext {
         let store_whole_code_blocks = self.store_whole_code_blocks;
         #[cfg(test)]
         let separate_last_idwt_level = self.separate_last_idwt_level;
+        #[cfg(test)]
+        let staged_rgb8_pack = self.staged_rgb8_pack;
         *self = Self::default();
         self.output_region = output_region;
         self.round_irreversible_output = round_irreversible_output;
@@ -1230,6 +1265,7 @@ impl TileDecodeContext {
         {
             self.store_whole_code_blocks = store_whole_code_blocks;
             self.separate_last_idwt_level = separate_last_idwt_level;
+            self.staged_rgb8_pack = staged_rgb8_pack;
         }
     }
 
@@ -1300,6 +1336,9 @@ impl TileDecodeContext {
         include_capacity::<f32>(&mut bytes, self.idwt_band_scratch.capacity())?;
         include_capacity::<i64>(&mut bytes, self.idwt_scratch_buffer_i64.capacity())?;
         include_capacity::<f32>(&mut bytes, self.idwt_line_rings.capacity())?;
+        for band in &self.fused_ll_bands {
+            include_capacity::<f32>(&mut bytes, band.capacity())?;
+        }
         Ok(bytes)
     }
 
@@ -1315,6 +1354,7 @@ impl TileDecodeContext {
         self.idwt_band_scratch = Vec::new();
         self.idwt_scratch_buffer_i64 = Vec::new();
         self.idwt_line_rings = Vec::new();
+        self.fused_ll_bands = Default::default();
     }
 }
 
