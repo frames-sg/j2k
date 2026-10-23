@@ -258,6 +258,7 @@ pub(in crate::j2c::encode) fn finish_plan(
         prepared_packets.iter(),
         params.num_decomposition_levels,
         params.reversible,
+        false,
     )?;
     let packet_descriptors = packet_descriptors_for_session(
         &prepared_packets,

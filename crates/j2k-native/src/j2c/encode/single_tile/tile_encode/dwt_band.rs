@@ -14,6 +14,7 @@ use crate::j2c::encode::{
 };
 
 use super::super::coefficient_source::DwtBandView;
+use crate::j2c::fdwt::PackedSubbandView;
 
 pub(super) struct DwtBandEncodeRequest<'a, 'input> {
     pub(super) band: DwtBandView<'a>,
@@ -132,14 +133,8 @@ pub(super) fn prepare_dwt_band_for_session(
             settings
                 .session
                 .checked_phase(retained_base_bytes, "packed DWT contiguous subband copy")?;
-            for row_index in 0..view.height() {
-                let row = view
-                    .row(row_index)
-                    .ok_or(crate::EncodeError::InternalInvariant {
-                        what: "validated packed DWT subband row is missing",
-                    })?;
-                coefficients.extend_from_slice(row);
-            }
+            let parallel = accelerator.prefer_parallel_cpu_code_block_fallback();
+            copy_band_rows(view, &mut coefficients, coefficient_count, parallel)?;
             if coefficients.len() != coefficient_count {
                 return Err(crate::EncodeError::InternalInvariant {
                     what: "packed DWT contiguous subband copy length mismatch",
@@ -157,4 +152,39 @@ pub(super) fn prepare_dwt_band_for_session(
             )
         }
     }
+}
+
+/// Copy a packed band's rows into `coefficients`, reserved for all of them;
+/// `parallel` lets large bands copy their rows on the Rayon pool.
+fn copy_band_rows(
+    view: PackedSubbandView<'_, f32>,
+    coefficients: &mut Vec<f32>,
+    coefficient_count: usize,
+    parallel: bool,
+) -> NativeEncodePipelineResult<()> {
+    let missing = || crate::EncodeError::InternalInvariant {
+        what: "validated packed DWT subband row is missing",
+    };
+    #[cfg(feature = "parallel")]
+    if parallel && coefficient_count >= 1 << 16 && rayon::current_num_threads() > 1 {
+        use rayon::prelude::*;
+        coefficients.resize(coefficient_count, 0.0);
+        let width = coefficient_count / view.height() as usize;
+        return coefficients
+            .par_chunks_mut(width)
+            .enumerate()
+            .try_for_each(|(y, out)| {
+                let row = u32::try_from(y)
+                    .ok()
+                    .and_then(|y| view.row(y))
+                    .ok_or_else(missing)?;
+                out.copy_from_slice(row);
+                Ok(())
+            });
+    }
+    let _ = (parallel, coefficient_count);
+    for row_index in 0..view.height() {
+        coefficients.extend_from_slice(view.row(row_index).ok_or_else(missing)?);
+    }
+    Ok(())
 }

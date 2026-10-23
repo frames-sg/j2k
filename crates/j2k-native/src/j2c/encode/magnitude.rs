@@ -4,7 +4,8 @@
 
 use super::{
     ht_block_encode, BlockCodingMode, NativeEncodePipelineError, NativeEncodePipelineResult,
-    PreparedCodeBlockCoefficients, PreparedEncodeSubband, PreparedResolutionPacket,
+    PreparedCodeBlockCoefficients, PreparedEncodeCodeBlock, PreparedEncodeSubband,
+    PreparedResolutionPacket,
 };
 use crate::j2c::capabilities::required_magnitude_bound;
 
@@ -30,10 +31,12 @@ pub(super) fn decomposition_level_for_resolution(
     }
 }
 
+/// `parallel` lets each subband's code blocks be scanned on the Rayon pool.
 pub(super) fn required_ht_magnitude_bound<'a>(
     packets: impl IntoIterator<Item = &'a PreparedResolutionPacket>,
     num_decomposition_levels: u8,
     reversible: bool,
+    parallel: bool,
 ) -> NativeEncodePipelineResult<Option<u8>> {
     let mut required = None::<u8>;
     for packet in packets {
@@ -43,7 +46,7 @@ pub(super) fn required_ht_magnitude_bound<'a>(
             if subband.block_coding_mode != BlockCodingMode::HighThroughput {
                 continue;
             }
-            let maximum = maximum_cleanup_magnitude(subband);
+            let maximum = maximum_cleanup_magnitude(subband, parallel);
             let subband_required =
                 required_magnitude_bound(maximum, reversible, decomposition_level);
             required = Some(required.map_or(subband_required, |bound| bound.max(subband_required)));
@@ -69,34 +72,57 @@ pub(super) fn cleanup_magnitude_upper_bound(
     }
 }
 
-fn maximum_cleanup_magnitude(subband: &PreparedEncodeSubband) -> u64 {
+/// A code block's largest magnitude, and whether it holds coefficients.
+fn code_block_maximum(block: &PreparedEncodeCodeBlock) -> (u64, bool) {
+    match &block.coefficients {
+        // A u32 maximum vectorizes; widening first does not.
+        PreparedCodeBlockCoefficients::I32(values) => (
+            u64::from(
+                values
+                    .iter()
+                    .map(|value| value.unsigned_abs())
+                    .max()
+                    .unwrap_or(0),
+            ),
+            true,
+        ),
+        PreparedCodeBlockCoefficients::I64(values) => (
+            values
+                .iter()
+                .map(|value| value.unsigned_abs())
+                .max()
+                .unwrap_or(0),
+            true,
+        ),
+        PreparedCodeBlockCoefficients::Empty => (0, false),
+    }
+}
+
+fn maximum_cleanup_magnitude(subband: &PreparedEncodeSubband, parallel: bool) -> u64 {
     let refinement_shift = u8::from(
         ht_block_encode::effective_coding_passes(
             subband.total_bitplanes,
             subband.ht_target_coding_passes,
         ) >= 2,
     );
-    let mut maximum = 0_u64;
-    let mut exact = subband.preencoded_ht_code_blocks.is_none();
-    for block in &subband.code_blocks {
-        match &block.coefficients {
-            PreparedCodeBlockCoefficients::I32(values) => {
-                // A u32 maximum vectorizes; widening first does not.
-                let block_maximum = values.iter().map(|value| value.unsigned_abs()).max();
-                maximum = maximum.max(u64::from(block_maximum.unwrap_or(0)));
-            }
-            PreparedCodeBlockCoefficients::I64(values) => {
-                maximum = maximum.max(
-                    values
-                        .iter()
-                        .map(|value| value.unsigned_abs())
-                        .max()
-                        .unwrap_or(0),
-                );
-            }
-            PreparedCodeBlockCoefficients::Empty => exact = false,
-        }
-    }
+    let merge =
+        |(a, a_exact): (u64, bool), (b, b_exact): (u64, bool)| (a.max(b), a_exact && b_exact);
+    let blocks = &subband.code_blocks;
+    #[cfg(feature = "parallel")]
+    let (mut maximum, all_blocks_exact) =
+        if parallel && blocks.len() > 1 && rayon::current_num_threads() > 1 {
+            use rayon::prelude::*;
+            let maxima = blocks.par_iter().with_min_len(8).map(code_block_maximum);
+            maxima.reduce(|| (0, true), merge)
+        } else {
+            blocks.iter().map(code_block_maximum).fold((0, true), merge)
+        };
+    #[cfg(not(feature = "parallel"))]
+    let (mut maximum, all_blocks_exact) = {
+        let _ = parallel;
+        blocks.iter().map(code_block_maximum).fold((0, true), merge)
+    };
+    let exact = all_blocks_exact && subband.preencoded_ht_code_blocks.is_none();
     maximum >>= u32::from(refinement_shift);
     if let Some(exact) = subband.preencoded_ht_maximum_cleanup_magnitude {
         return maximum.max(exact);
