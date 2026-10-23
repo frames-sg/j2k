@@ -7,10 +7,7 @@ use super::cleanup::{
     max_nonzero_magnitude_view, CleanupCoefficientSource, I32CleanupCoefficients,
 };
 use super::facade::MAX_HT_BITPLANES;
-use super::quad::{
-    first_quad_pair, non_initial_quad_pair, FirstQuadPairRequest, InitialQuadRow,
-    NonInitialQuadPairRequest, NonInitialQuadRow, QuadMarkerRows, QuadPairState, QuadSink, RowPair,
-};
+use super::quad::{quad_pair, CodedQuad, QuadSink, RowPair};
 use crate::j2c::coefficient_view::{validate_tier1_code_block_geometry, CoefficientBlockView};
 use crate::{EncodeError, EncodeResult, HtCleanupEncodeDistribution};
 
@@ -147,83 +144,20 @@ fn collect_encode_distribution_from_source<S: CleanupCoefficientSource + ?Sized>
 ) -> Result<(), &'static str> {
     let p = 30_u32.saturating_sub(u32::from(missing_msbs));
     let mut rows = RowPair::new();
-    rows.fill(coefficients, 0, width, height, p)?;
-
-    let mut e_val = [0u8; 514];
-    let mut cx_val = [0u8; 514];
-
-    let mut e_qmax = [0i32; 2];
-    let mut e_q = [0i32; 8];
-    let mut rho = [0i32; 2];
-    let mut c_q0 = 0usize;
-    let mut s = [0u32; 8];
-    let mut x = 0usize;
-
-    while x < width {
-        collect_first_quad_pair(
-            FirstQuadPairRequest {
-                rows: &rows,
-                width,
-                x,
-                markers: QuadMarkerRows {
-                    e_val: &mut e_val,
-                    cx_val: &mut cx_val,
-                },
-                state: QuadPairState {
-                    c_q0: &mut c_q0,
-                    rho: &mut rho,
-                    e_q: &mut e_q,
-                    e_qmax: &mut e_qmax,
-                    s: &mut s,
-                },
-            },
-            distribution,
-        );
-        x += 4;
-    }
-
-    let e_val_sentinel = width.div_ceil(2) + 1;
-    e_val[e_val_sentinel] = 0;
-
-    let mut y = 2usize;
-    while y < height {
-        let mut lep = 0usize;
-        let mut max_e = i32::from(e_val[lep].max(e_val[lep + 1])) - 1;
-        e_val[lep] = 0;
-
-        let mut lcxp = 0usize;
-        c_q0 = usize::from(cx_val[lcxp]) + (usize::from(cx_val[lcxp + 1]) << 2);
-        cx_val[lcxp] = 0;
-
+    let mut sink = CollectQuadSink { distribution };
+    for y in (0..height).step_by(2) {
         rows.fill(coefficients, y, width, height, p)?;
-        x = 0;
-        while x < width {
-            collect_non_initial_quad_pair(
-                NonInitialQuadPairRequest {
-                    rows: &rows,
-                    width,
-                    x,
-                    markers: QuadMarkerRows {
-                        e_val: &mut e_val,
-                        cx_val: &mut cx_val,
-                    },
-                    lep: &mut lep,
-                    lcxp: &mut lcxp,
-                    max_e: &mut max_e,
-                    state: QuadPairState {
-                        c_q0: &mut c_q0,
-                        rho: &mut rho,
-                        e_q: &mut e_q,
-                        e_qmax: &mut e_qmax,
-                        s: &mut s,
-                    },
-                },
-                distribution,
-            );
-            x += 4;
+        for x in (0..width).step_by(4) {
+            let collected = if y == 0 {
+                quad_pair::<true, _>(&rows, width, x, &mut sink)
+            } else {
+                quad_pair::<false, _>(&rows, width, x, &mut sink)
+            };
+            match collected {
+                Ok(()) => {}
+                Err(err) => match err {},
+            }
         }
-
-        y += 2;
     }
     Ok(())
 }
@@ -237,14 +171,23 @@ impl QuadSink for CollectQuadSink<'_> {
 
     #[expect(clippy::inline_always, reason = "erase collector sink dispatch")]
     #[inline(always)]
-    fn quad_initial(&mut self, row: InitialQuadRow<'_>) -> Result<i32, Self::Error> {
-        Ok(collect_quad_initial_row(row, self.distribution))
-    }
-
-    #[expect(clippy::inline_always, reason = "erase collector sink dispatch")]
-    #[inline(always)]
-    fn quad_non_initial(&mut self, row: NonInitialQuadRow<'_>) -> Result<i32, Self::Error> {
-        Ok(collect_quad_non_initial_row(row, self.distribution))
+    fn quad<const INITIAL: bool>(&mut self, quad: CodedQuad) -> Result<(), Self::Error> {
+        let table = if INITIAL {
+            &HT_VLC_ENCODE_TABLE0
+        } else {
+            &HT_VLC_ENCODE_TABLE1
+        };
+        let tuple = table[usize::from(quad.index)];
+        let (rho, e_qmax) = (i32::from(quad.rho()), i32::from(quad.e_qmax));
+        let (u_q, bound) = (i32::from(quad.u_q), i32::from(quad.bound));
+        if INITIAL {
+            record_distribution_initial_quad(self.distribution, rho, e_qmax, u_q);
+        } else {
+            // `u_q` is `max(e_qmax, kappa) - kappa`.
+            record_distribution_non_initial_quad(self.distribution, rho, e_qmax, bound - u_q, u_q);
+        }
+        record_distribution_mag_signs(self.distribution, rho, bound, tuple);
+        Ok(())
     }
 
     #[expect(clippy::inline_always, reason = "erase collector sink dispatch")]
@@ -264,115 +207,6 @@ impl QuadSink for CollectQuadSink<'_> {
     fn non_initial_uvlc(&mut self, _u_q0: i32, _u_q1: i32) -> Result<(), Self::Error> {
         Ok(())
     }
-}
-
-#[expect(clippy::inline_always, reason = "fuse the collector quad walker")]
-#[inline(always)]
-fn collect_first_quad_pair(
-    request: FirstQuadPairRequest<'_>,
-    distribution: &mut HtCleanupEncodeDistribution,
-) {
-    match first_quad_pair(request, &mut CollectQuadSink { distribution }) {
-        Ok(()) => {}
-        Err(err) => match err {},
-    }
-}
-
-#[expect(clippy::inline_always, reason = "fuse the collector quad walker")]
-#[inline(always)]
-fn collect_non_initial_quad_pair(
-    request: NonInitialQuadPairRequest<'_>,
-    distribution: &mut HtCleanupEncodeDistribution,
-) {
-    match non_initial_quad_pair(request, &mut CollectQuadSink { distribution }) {
-        Ok(()) => {}
-        Err(err) => match err {},
-    }
-}
-
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::inline_always,
-    reason = "packed quad fields are bounded by HT tables and the collector mirrors the encoder hot path"
-)]
-#[inline(always)]
-fn collect_quad_initial_row(
-    row: InitialQuadRow<'_>,
-    distribution: &mut HtCleanupEncodeDistribution,
-) -> i32 {
-    let InitialQuadRow {
-        offset,
-        c_q,
-        rho,
-        e_qmax,
-        e_q,
-        lep,
-        lcxp,
-        e_val,
-        cx_val,
-        ..
-    } = row;
-    let u_q = e_qmax.max(1) - 1;
-    let mut eps = 0u16;
-
-    if u_q > 0 {
-        eps |= u16::from(u8::from(e_q[offset] == e_qmax));
-        eps |= u16::from(u8::from(e_q[offset + 1] == e_qmax)) << 1;
-        eps |= u16::from(u8::from(e_q[offset + 2] == e_qmax)) << 2;
-        eps |= u16::from(u8::from(e_q[offset + 3] == e_qmax)) << 3;
-    }
-
-    e_val[lep] = e_val[lep].max(e_q[offset + 1] as u8);
-    e_val[lep + 1] = e_q[offset + 3] as u8;
-    cx_val[lcxp] |= ((rho & 2) >> 1) as u8;
-    cx_val[lcxp + 1] = ((rho & 8) >> 3) as u8;
-
-    let tuple = HT_VLC_ENCODE_TABLE0[(c_q << 8) | ((rho as usize) << 4) | eps as usize];
-    record_distribution_initial_quad(distribution, rho, e_qmax, u_q);
-    record_distribution_mag_signs(distribution, rho, e_qmax.max(1), tuple);
-    u_q
-}
-
-#[expect(
-    clippy::cast_sign_loss,
-    clippy::inline_always,
-    clippy::needless_pass_by_value,
-    reason = "the by-value row matches the sink contract and its bounded packed fields index HT tables"
-)]
-#[inline(always)]
-fn collect_quad_non_initial_row(
-    row: NonInitialQuadRow<'_>,
-    distribution: &mut HtCleanupEncodeDistribution,
-) -> i32 {
-    let NonInitialQuadRow {
-        offset,
-        c_q,
-        rho,
-        e_qmax,
-        max_e,
-        e_q,
-        ..
-    } = row;
-    let kappa = if (rho & (rho - 1)) != 0 {
-        max_e.max(1)
-    } else {
-        1
-    };
-    let u_q = e_qmax.max(kappa) - kappa;
-    let mut eps = 0u16;
-
-    if u_q > 0 {
-        eps |= u16::from(u8::from(e_q[offset] == e_qmax));
-        eps |= u16::from(u8::from(e_q[offset + 1] == e_qmax)) << 1;
-        eps |= u16::from(u8::from(e_q[offset + 2] == e_qmax)) << 2;
-        eps |= u16::from(u8::from(e_q[offset + 3] == e_qmax)) << 3;
-    }
-
-    let tuple = HT_VLC_ENCODE_TABLE1[(c_q << 8) | ((rho as usize) << 4) | eps as usize];
-    record_distribution_non_initial_quad(distribution, rho, e_qmax, kappa, u_q);
-    record_distribution_mag_signs(distribution, rho, e_qmax.max(kappa), tuple);
-    u_q
 }
 
 #[cfg(test)]

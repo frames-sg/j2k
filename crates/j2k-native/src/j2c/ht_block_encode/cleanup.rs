@@ -2,10 +2,8 @@
 
 use alloc::vec::Vec;
 
-use super::emit::{encode_first_quad_pair, encode_non_initial_quad_pair};
-use super::quad::{
-    FirstQuadPairRequest, NonInitialQuadPairRequest, QuadMarkerRows, QuadPairState, RowPair,
-};
+use super::emit::encode_quad_pair;
+use super::quad::RowPair;
 use super::workspace::HtEncodeWorkspace;
 use super::writers::terminate_mel_vlc;
 #[cfg(test)]
@@ -103,8 +101,7 @@ pub(super) fn encode_cleanup_segment(
 
 #[expect(
     clippy::cast_possible_truncation,
-    clippy::too_many_lines,
-    reason = "locator fields are normatively bounded to 12 bits and this function preserves cleanup pass order"
+    reason = "locator fields are normatively bounded to 12 bits"
 )]
 fn try_encode_cleanup_segment_from_source<S: CleanupCoefficientSource + ?Sized>(
     coefficients: &S,
@@ -122,124 +119,24 @@ fn try_encode_cleanup_segment_from_source<S: CleanupCoefficientSource + ?Sized>(
 
     let p = 30_u32.saturating_sub(u32::from(missing_msbs));
     let mut rows = RowPair::new();
-    rows.fill(coefficients, 0, width, height, p)
-        .map_err(ht_cleanup_invariant)?;
-
-    let mut e_val = [0u8; 514];
-    let mut cx_val = [0u8; 514];
-
-    let mut e_qmax = [0i32; 2];
-    let mut e_q = [0i32; 8];
-    let mut rho = [0i32; 2];
-    let mut c_q0 = 0usize;
-    let mut s = [0u32; 8];
-    let mut x = 0usize;
-
-    while x < width {
-        // A zero quad pair under zero context codes one MEL zero per quad: its
-        // CxtVLC codewords, UVLC and MagSgn bits are empty, and the marker
-        // rows it would write are still zero in the first row pair.
-        if c_q0 == 0 && rows.pair_is_zero(x) {
-            mel.encode(false).map_err(ht_cleanup_invariant)?;
-            if x + 2 < width {
-                mel.encode(false).map_err(ht_cleanup_invariant)?;
-            }
-            x += 4;
-            continue;
-        }
-        encode_first_quad_pair(
-            FirstQuadPairRequest {
-                rows: &rows,
-                width,
-                x,
-                markers: QuadMarkerRows {
-                    e_val: &mut e_val,
-                    cx_val: &mut cx_val,
-                },
-                state: QuadPairState {
-                    c_q0: &mut c_q0,
-                    rho: &mut rho,
-                    e_q: &mut e_q,
-                    e_qmax: &mut e_qmax,
-                    s: &mut s,
-                },
-            },
-            mel,
-            vlc,
-            ms,
-        )
-        .map_err(ht_cleanup_invariant)?;
-        x += 4;
-    }
-
-    let e_val_sentinel = width.div_ceil(2) + 1;
-    e_val[e_val_sentinel] = 0;
-
-    let mut y = 2usize;
-    while y < height {
-        let mut lep = 0usize;
-        let mut max_e = i32::from(e_val[lep].max(e_val[lep + 1])) - 1;
-        e_val[lep] = 0;
-
-        let mut lcxp = 0usize;
-        c_q0 = usize::from(cx_val[lcxp]) + (usize::from(cx_val[lcxp + 1]) << 2);
-        cx_val[lcxp] = 0;
-
+    for y in (0..height).step_by(2) {
         rows.fill(coefficients, y, width, height, p)
             .map_err(ht_cleanup_invariant)?;
-        x = 0;
-        while x < width {
-            // Below the first row pair the second quad's context also comes
-            // from the markers above; the marker rows advance as for any
-            // quad with rho = 0.
-            if c_q0 == 0 && rows.pair_is_zero(x) && cx_val[lcxp + 1] | cx_val[lcxp + 2] == 0 {
+        for x in (0..width).step_by(4) {
+            if rows.pair_is_zero(x, width) {
                 mel.encode(false).map_err(ht_cleanup_invariant)?;
                 if x + 2 < width {
                     mel.encode(false).map_err(ht_cleanup_invariant)?;
-                    e_val[lep + 1] = 0;
-                    max_e = i32::from(e_val[lep + 2].max(e_val[lep + 3])) - 1;
-                    e_val[lep + 2] = 0;
-                    c_q0 = usize::from(cx_val[lcxp + 3]) << 2;
-                    lep += 2;
-                    lcxp += 2;
-                } else {
-                    max_e = i32::from(e_val[lep + 1].max(e_val[lep + 2])) - 1;
-                    e_val[lep + 1] = 0;
-                    lep += 1;
-                    lcxp += 1;
                 }
-                x += 4;
                 continue;
             }
-            encode_non_initial_quad_pair(
-                NonInitialQuadPairRequest {
-                    rows: &rows,
-                    width,
-                    x,
-                    markers: QuadMarkerRows {
-                        e_val: &mut e_val,
-                        cx_val: &mut cx_val,
-                    },
-                    lep: &mut lep,
-                    lcxp: &mut lcxp,
-                    max_e: &mut max_e,
-                    state: QuadPairState {
-                        c_q0: &mut c_q0,
-                        rho: &mut rho,
-                        e_q: &mut e_q,
-                        e_qmax: &mut e_qmax,
-                        s: &mut s,
-                    },
-                },
-                mel,
-                vlc,
-                ms,
-            )
+            if y == 0 {
+                encode_quad_pair::<true>(&rows, width, x, mel, vlc, ms)
+            } else {
+                encode_quad_pair::<false>(&rows, width, x, mel, vlc, ms)
+            }
             .map_err(ht_cleanup_invariant)?;
-            x += 4;
         }
-
-        y += 2;
     }
 
     terminate_mel_vlc(mel, vlc).map_err(ht_cleanup_invariant)?;

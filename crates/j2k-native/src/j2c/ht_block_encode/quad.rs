@@ -5,18 +5,31 @@ use super::cleanup::CleanupCoefficientSource;
 /// Samples per row a row pair holds: the widest code block plus the columns
 /// a final, partial quad pair reads past the right edge.
 const ROW_PAIR_COLUMNS: usize = 1024 + 4;
+const QUADS: usize = ROW_PAIR_COLUMNS / 2;
 
 /// Two code-block rows as sample exponents and `MagSgn` values, zero past the
-/// block's right and bottom edges, so the quad walk loads samples without
-/// per-sample branches or edge tests.
+/// block's right and bottom edges, with every quad's cleanup coding values
+/// derived up front. The quad walk then loads them without per-sample
+/// branches, edge tests or the serial marker rows a quad's context and
+/// `kappa` would otherwise come from.
 pub(super) struct RowPair {
     exponents: [[u8; ROW_PAIR_COLUMNS]; 2],
     values: [[u32; ROW_PAIR_COLUMNS]; 2],
     /// Per quad: its significance pattern `rho`, largest exponent, and which
     /// samples reach it.
-    rho: [u8; ROW_PAIR_COLUMNS / 2],
-    e_qmax: [u8; ROW_PAIR_COLUMNS / 2],
-    reach: [u8; ROW_PAIR_COLUMNS / 2],
+    rho: [u8; QUADS],
+    e_qmax: [u8; QUADS],
+    reach: [u8; QUADS],
+    /// Per quad, from the row above it (the previous pair's lower row): its
+    /// context bits 0 and 2, and the largest exponent of the four samples
+    /// above and diagonally above it.
+    above_context: [u8; QUADS],
+    above_exponent: [u8; QUADS],
+    /// Per quad: its `CxtVLC` table index `(c_q << 8) | (rho << 4) | eps`, its
+    /// `u_q`, and `max(e_qmax, kappa)`, which bounds its `MagSgn` payloads.
+    index: [u16; QUADS],
+    u_q: [u8; QUADS],
+    bound: [u8; QUADS],
 }
 
 impl RowPair {
@@ -24,9 +37,14 @@ impl RowPair {
         Self {
             exponents: [[0; ROW_PAIR_COLUMNS]; 2],
             values: [[0; ROW_PAIR_COLUMNS]; 2],
-            rho: [0; ROW_PAIR_COLUMNS / 2],
-            e_qmax: [0; ROW_PAIR_COLUMNS / 2],
-            reach: [0; ROW_PAIR_COLUMNS / 2],
+            rho: [0; QUADS],
+            e_qmax: [0; QUADS],
+            reach: [0; QUADS],
+            above_context: [0; QUADS],
+            above_exponent: [0; QUADS],
+            index: [0; QUADS],
+            u_q: [0; QUADS],
+            bound: [0; QUADS],
         }
     }
 
@@ -39,6 +57,10 @@ impl RowPair {
         height: usize,
         p: u32,
     ) -> Result<(), &'static str> {
+        let quads = width.div_ceil(2);
+        if y > 0 {
+            self.fill_above(quads);
+        }
         let rows = self.exponents.iter_mut().zip(&mut self.values);
         for (row, (exponents, values)) in rows.enumerate() {
             let filled = if y + row < height {
@@ -67,120 +89,137 @@ impl RowPair {
                 | u8::from(samples[2] == e_qmax) << 2
                 | u8::from(samples[3] == e_qmax) << 3;
         }
+        self.fill_coding(quads, y == 0);
         Ok(())
+    }
+
+    /// What the encoder's marker rows held for each quad of the next pair:
+    /// read from the lower row before it is overwritten. Column pair `j` is
+    /// columns `2j - 1` and `2j` (column -1 lies outside the block); quad `j`
+    /// sees column pairs `j` and `j + 1`. Zipped slices keep both passes
+    /// vectorized.
+    fn fill_above(&mut self, quads: usize) {
+        let mut pair_max = [0_u8; QUADS + 1];
+        let above = &self.exponents[1][..=2 * quads];
+        pair_max[0] = above[0];
+        let pairs = above[1..].as_chunks::<2>().0;
+        for (max, pair) in pair_max[1..=quads].iter_mut().zip(pairs) {
+            *max = pair[0].max(pair[1]);
+        }
+        let (left, right) = (&pair_max[..quads], &pair_max[1..=quads]);
+        let targets = self.above_exponent[..quads].iter_mut();
+        let contexts = self.above_context[..quads].iter_mut();
+        for (((exponent, context), &left), &right) in targets.zip(contexts).zip(left).zip(right) {
+            *exponent = left.max(right);
+            *context = u8::from(left != 0) | u8::from(right != 0) << 2;
+        }
+    }
+
+    /// Each quad's `CxtVLC` index, `u_q` and payload bound. A first-row quad's
+    /// context comes from its left neighbor alone and its `kappa` is 1; below
+    /// the first row the context adds the row above, and a quad with two or
+    /// more significant samples takes `kappa` from the exponents above it.
+    fn fill_coding(&mut self, quads: usize, initial: bool) {
+        let mut left_rho = [0_u8; QUADS];
+        left_rho[1..quads].copy_from_slice(&self.rho[..quads - 1]);
+        let fields = self.rho[..quads]
+            .iter()
+            .zip(&left_rho[..quads])
+            .zip(&self.e_qmax[..quads])
+            .zip(&self.reach[..quads])
+            .zip(&self.above_context[..quads])
+            .zip(&self.above_exponent[..quads]);
+        let outputs = self.index[..quads]
+            .iter_mut()
+            .zip(&mut self.u_q[..quads])
+            .zip(&mut self.bound[..quads]);
+        for ((((((&rho, &left), &e_qmax), &reach), &above), &above_e), ((index, u_q), bound)) in
+            fields.zip(outputs)
+        {
+            let (context, kappa) = if initial {
+                ((left >> 1) | (left & 1), 1)
+            } else {
+                let multiple = u8::from(rho & rho.wrapping_sub(1) != 0);
+                let kappa = (multiple * above_e.saturating_sub(1)).max(1);
+                (above | (((left >> 2) | (left >> 3)) & 1) << 1, kappa)
+            };
+            *bound = e_qmax.max(kappa);
+            *u_q = *bound - kappa;
+            let eps = reach & (u8::from(*u_q > 0) * 0xF);
+            *index = u16::from(context) << 8 | u16::from(rho) << 4 | u16::from(eps);
+        }
     }
 }
 
 impl RowPair {
-    /// Whether every sample of the quad pair at column `x` is insignificant.
+    /// Whether the quad pair at column `x` codes as MEL zeros alone: no
+    /// significant sample and zero context in either quad, so its `CxtVLC`
+    /// codewords, UVLC and `MagSgn` bits are empty.
     #[expect(
         clippy::inline_always,
         reason = "tested once per quad pair in the cleanup hot path"
     )]
     #[inline(always)]
-    pub(super) fn pair_is_zero(&self, x: usize) -> bool {
-        let word = |row: &[u8; ROW_PAIR_COLUMNS]| {
-            u32::from_ne_bytes([row[x], row[x + 1], row[x + 2], row[x + 3]])
-        };
-        word(&self.exponents[0]) | word(&self.exponents[1]) == 0
+    pub(super) fn pair_is_zero(&self, x: usize, width: usize) -> bool {
+        let quad = x / 2;
+        self.index[quad] == 0 && (x + 2 >= width || self.index[quad + 1] == 0)
+    }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "quad loads are fused into the per-quad cleanup hot path"
+    )]
+    #[inline(always)]
+    fn coded_quad(&self, quad: usize) -> CodedQuad {
+        let (column, [upper, lower]) = (2 * quad, &self.values);
+        CodedQuad {
+            index: self.index[quad],
+            e_qmax: self.e_qmax[quad],
+            u_q: self.u_q[quad],
+            bound: self.bound[quad],
+            values: [
+                upper[column],
+                lower[column],
+                upper[column + 1],
+                lower[column + 1],
+            ],
+        }
     }
 }
 
-/// Load quad `quad` (0 or 1) of the quad pair at column `x` into slots
-/// `4 * quad..4 * quad + 4`: upper and lower sample of its left column, then
-/// of its right column. An insignificant sample has exponent 0, and its value
-/// is never emitted.
-#[expect(
-    clippy::inline_always,
-    reason = "sample loads are fused into the per-quad cleanup hot path"
-)]
-#[inline(always)]
-fn load_quad(
-    rows: &RowPair,
-    x: usize,
-    quad: usize,
-    rho: &mut i32,
-    e_q: &mut [i32; 8],
-    e_qmax: &mut i32,
-    s: &mut [u32; 8],
-) {
-    *rho = i32::from(rows.rho[x / 2 + quad]);
-    *e_qmax = i32::from(rows.e_qmax[x / 2 + quad]);
-    for sample in 0..4 {
-        let (row, column) = (sample & 1, x + 2 * quad + sample / 2);
-        e_q[4 * quad + sample] = i32::from(rows.exponents[row][column]);
-        s[4 * quad + sample] = rows.values[row][column];
+/// One quad's cleanup coding values. Its `MagSgn` values run upper and lower
+/// sample of its left column, then of its right column; an insignificant
+/// sample's value is never emitted.
+#[derive(Clone, Copy)]
+pub(super) struct CodedQuad {
+    pub(super) index: u16,
+    pub(super) e_qmax: u8,
+    pub(super) u_q: u8,
+    pub(super) bound: u8,
+    pub(super) values: [u32; 4],
+}
+
+impl CodedQuad {
+    pub(super) fn context(self) -> u16 {
+        self.index >> 8
     }
-}
 
-pub(super) struct QuadPairState<'a> {
-    pub(super) c_q0: &'a mut usize,
-    pub(super) rho: &'a mut [i32; 2],
-    pub(super) e_q: &'a mut [i32; 8],
-    pub(super) e_qmax: &'a mut [i32; 2],
-    pub(super) s: &'a mut [u32; 8],
-}
-
-pub(super) struct QuadMarkerRows<'a> {
-    pub(super) e_val: &'a mut [u8; 514],
-    pub(super) cx_val: &'a mut [u8; 514],
-}
-
-pub(super) struct FirstQuadPairRequest<'a> {
-    pub(super) rows: &'a RowPair,
-    pub(super) width: usize,
-    pub(super) x: usize,
-    pub(super) markers: QuadMarkerRows<'a>,
-    pub(super) state: QuadPairState<'a>,
-}
-
-pub(super) struct NonInitialQuadPairRequest<'a> {
-    pub(super) rows: &'a RowPair,
-    pub(super) width: usize,
-    pub(super) x: usize,
-    pub(super) markers: QuadMarkerRows<'a>,
-    pub(super) lep: &'a mut usize,
-    pub(super) lcxp: &'a mut usize,
-    pub(super) max_e: &'a mut i32,
-    pub(super) state: QuadPairState<'a>,
-}
-
-pub(super) struct InitialQuadRow<'a> {
-    pub(super) offset: usize,
-    pub(super) c_q: usize,
-    pub(super) rho: i32,
-    pub(super) e_qmax: i32,
-    /// Which samples reach `e_qmax`.
-    pub(super) reach: u16,
-    pub(super) e_q: &'a [i32; 8],
-    pub(super) s: &'a [u32; 8],
-    pub(super) lep: usize,
-    pub(super) lcxp: usize,
-    pub(super) e_val: &'a mut [u8; 514],
-    pub(super) cx_val: &'a mut [u8; 514],
-}
-
-pub(super) struct NonInitialQuadRow<'a> {
-    pub(super) offset: usize,
-    pub(super) c_q: usize,
-    pub(super) rho: i32,
-    pub(super) e_qmax: i32,
-    /// Which samples reach `e_qmax`.
-    pub(super) reach: u16,
-    pub(super) max_e: i32,
-    pub(super) e_q: &'a [i32; 8],
-    pub(super) s: &'a [u32; 8],
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "rho is the four-bit field of the table index"
+    )]
+    pub(super) fn rho(self) -> u8 {
+        (self.index >> 4) as u8 & 0xF
+    }
 }
 
 /// Per-quad operations that differ between the byte-emitting encoder and the
-/// distribution collector; the quad-pair walking logic itself is shared by
-/// `first_quad_pair` / `non_initial_quad_pair`.
+/// distribution collector; the quad-pair walk itself is shared by
+/// [`quad_pair`]. `INITIAL` selects the first row pair's tables.
 pub(super) trait QuadSink {
     type Error;
 
-    fn quad_initial(&mut self, row: InitialQuadRow<'_>) -> Result<i32, Self::Error>;
-
-    fn quad_non_initial(&mut self, row: NonInitialQuadRow<'_>) -> Result<i32, Self::Error>;
+    fn quad<const INITIAL: bool>(&mut self, quad: CodedQuad) -> Result<(), Self::Error>;
 
     fn initial_uvlc_pair(&mut self, u_q0: i32, u_q1: i32) -> Result<(), Self::Error>;
 
@@ -189,191 +228,33 @@ pub(super) trait QuadSink {
     fn non_initial_uvlc(&mut self, u_q0: i32, u_q1: i32) -> Result<(), Self::Error>;
 }
 
+/// Code the quad pair at column `x` of the first (`INITIAL`) or a later row
+/// pair; the pair's second quad exists unless the block ends inside it.
 #[expect(
-    clippy::cast_sign_loss,
     clippy::inline_always,
-    reason = "rho is a nonnegative four-bit mask and this normative quad walk stays fused per sink"
+    reason = "this normative quad walk stays fused per sink"
 )]
 #[inline(always)]
-pub(super) fn first_quad_pair<S: QuadSink>(
-    request: FirstQuadPairRequest<'_>,
+pub(super) fn quad_pair<const INITIAL: bool, S: QuadSink>(
+    rows: &RowPair,
+    width: usize,
+    x: usize,
     sink: &mut S,
 ) -> Result<(), S::Error> {
-    let FirstQuadPairRequest {
-        rows,
-        width,
-        x,
-        markers,
-        state,
-    } = request;
-    let lep = x / 2;
-    let lcxp = x / 2;
-
-    load_quad(
-        rows,
-        x,
-        0,
-        &mut state.rho[0],
-        state.e_q,
-        &mut state.e_qmax[0],
-        state.s,
-    );
-    let u_q0 = sink.quad_initial(InitialQuadRow {
-        offset: 0,
-        c_q: *state.c_q0,
-        rho: state.rho[0],
-        e_qmax: state.e_qmax[0],
-        reach: u16::from(rows.reach[x / 2]),
-        e_q: &*state.e_q,
-        s: &*state.s,
-        lep,
-        lcxp,
-        e_val: &mut *markers.e_val,
-        cx_val: &mut *markers.cx_val,
-    })?;
-
+    let quad = x / 2;
+    sink.quad::<INITIAL>(rows.coded_quad(quad))?;
+    let u_q0 = i32::from(rows.u_q[quad]);
     if x + 2 < width {
-        load_quad(
-            rows,
-            x,
-            1,
-            &mut state.rho[1],
-            state.e_q,
-            &mut state.e_qmax[1],
-            state.s,
-        );
-
-        let c_q1 = ((state.rho[0] >> 1) | (state.rho[0] & 1)) as usize;
-        let u_q1 = sink.quad_initial(InitialQuadRow {
-            offset: 4,
-            c_q: c_q1,
-            rho: state.rho[1],
-            e_qmax: state.e_qmax[1],
-            reach: u16::from(rows.reach[x / 2 + 1]),
-            e_q: &*state.e_q,
-            s: &*state.s,
-            lep: lep + 1,
-            lcxp: lcxp + 1,
-            e_val: &mut *markers.e_val,
-            cx_val: &mut *markers.cx_val,
-        })?;
-
-        sink.initial_uvlc_pair(u_q0, u_q1)?;
-        *state.c_q0 = ((state.rho[1] >> 1) | (state.rho[1] & 1)) as usize;
+        sink.quad::<INITIAL>(rows.coded_quad(quad + 1))?;
+        let u_q1 = i32::from(rows.u_q[quad + 1]);
+        if INITIAL {
+            sink.initial_uvlc_pair(u_q0, u_q1)
+        } else {
+            sink.non_initial_uvlc(u_q0, u_q1)
+        }
+    } else if INITIAL {
+        sink.initial_uvlc_lone(u_q0)
     } else {
-        sink.initial_uvlc_lone(u_q0)?;
-        *state.c_q0 = 0;
+        sink.non_initial_uvlc(u_q0, 0)
     }
-
-    *state.rho = [0; 2];
-    *state.e_q = [0; 8];
-    *state.e_qmax = [0; 2];
-    *state.s = [0; 8];
-
-    Ok(())
-}
-
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::inline_always,
-    reason = "bounded HT quad fields feed packed marker rows in this normative fused quad walk"
-)]
-#[inline(always)]
-pub(super) fn non_initial_quad_pair<S: QuadSink>(
-    request: NonInitialQuadPairRequest<'_>,
-    sink: &mut S,
-) -> Result<(), S::Error> {
-    let NonInitialQuadPairRequest {
-        rows,
-        width,
-        x,
-        markers,
-        lep,
-        lcxp,
-        max_e,
-        state,
-    } = request;
-    load_quad(
-        rows,
-        x,
-        0,
-        &mut state.rho[0],
-        state.e_q,
-        &mut state.e_qmax[0],
-        state.s,
-    );
-
-    let prev_max = *max_e;
-    let u_q0 = sink.quad_non_initial(NonInitialQuadRow {
-        offset: 0,
-        c_q: *state.c_q0,
-        rho: state.rho[0],
-        e_qmax: state.e_qmax[0],
-        reach: u16::from(rows.reach[x / 2]),
-        max_e: prev_max,
-        e_q: &*state.e_q,
-        s: &*state.s,
-    })?;
-
-    markers.e_val[*lep] = markers.e_val[*lep].max(state.e_q[1] as u8);
-    *lep += 1;
-    *max_e = i32::from(markers.e_val[*lep].max(markers.e_val[*lep + 1])) - 1;
-    markers.e_val[*lep] = state.e_q[3] as u8;
-    markers.cx_val[*lcxp] |= ((state.rho[0] & 2) >> 1) as u8;
-    *lcxp += 1;
-    let c_q1 = usize::from(markers.cx_val[*lcxp]) + (usize::from(markers.cx_val[*lcxp + 1]) << 2);
-    markers.cx_val[*lcxp] = ((state.rho[0] & 8) >> 3) as u8;
-
-    let mut u_q1 = 0;
-    if x + 2 < width {
-        load_quad(
-            rows,
-            x,
-            1,
-            &mut state.rho[1],
-            state.e_q,
-            &mut state.e_qmax[1],
-            state.s,
-        );
-
-        let mut c_q1_local = c_q1;
-        c_q1_local |= ((state.rho[0] & 4) >> 1) as usize;
-        c_q1_local |= ((state.rho[0] & 8) >> 2) as usize;
-
-        u_q1 = sink.quad_non_initial(NonInitialQuadRow {
-            offset: 4,
-            c_q: c_q1_local,
-            rho: state.rho[1],
-            e_qmax: state.e_qmax[1],
-            reach: u16::from(rows.reach[x / 2 + 1]),
-            max_e: *max_e,
-            e_q: &*state.e_q,
-            s: &*state.s,
-        })?;
-
-        markers.e_val[*lep] = markers.e_val[*lep].max(state.e_q[5] as u8);
-        *lep += 1;
-        *max_e = i32::from(markers.e_val[*lep].max(markers.e_val[*lep + 1])) - 1;
-        markers.e_val[*lep] = state.e_q[7] as u8;
-        markers.cx_val[*lcxp] |= ((state.rho[1] & 2) >> 1) as u8;
-        *lcxp += 1;
-        *state.c_q0 =
-            usize::from(markers.cx_val[*lcxp]) + (usize::from(markers.cx_val[*lcxp + 1]) << 2);
-        markers.cx_val[*lcxp] = ((state.rho[1] & 8) >> 3) as u8;
-
-        *state.c_q0 |= ((state.rho[1] & 4) >> 1) as usize;
-        *state.c_q0 |= ((state.rho[1] & 8) >> 2) as usize;
-    } else {
-        *state.c_q0 = 0;
-    }
-
-    sink.non_initial_uvlc(u_q0, u_q1)?;
-
-    *state.rho = [0; 2];
-    *state.e_q = [0; 8];
-    *state.e_qmax = [0; 2];
-    *state.s = [0; 8];
-
-    Ok(())
 }
