@@ -137,6 +137,17 @@ mod inner {
             }
         }
 
+        /// The even lanes of `self` then of `next`, and their odd lanes.
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
+        #[inline(always)]
+        pub(crate) fn deinterleave(self, next: Self) -> (Self, Self) {
+            let (even, odd) = self.inner.deinterleave(next.inner);
+            (Self { inner: even }, Self { inner: odd })
+        }
+
         #[expect(
             clippy::inline_always,
             reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
@@ -433,6 +444,22 @@ mod inner {
                 val,
                 _marker: PhantomData,
             }
+        }
+
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
+        #[inline(always)]
+        pub(crate) fn deinterleave(self, next: Self) -> (Self, Self) {
+            let lanes = |parity: usize| Self {
+                val: core::array::from_fn(|lane| {
+                    let index = 2 * lane + parity;
+                    *self.val.get(index).unwrap_or(&next.val[index % SIMD_WIDTH])
+                }),
+                _marker: PhantomData,
+            };
+            (lanes(0), lanes(1))
         }
 
         #[expect(
