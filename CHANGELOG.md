@@ -5,6 +5,10 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CPU encodes lift the first forward DWT level out of place in bands of 16
+  rows when a spare plane fits the memory cap, so each band's column strips and
+  rows are lifted while cached instead of in two passes over the whole plane.
+  Without the spare the level runs in place as before. Output is unchanged.
 - CPU packet encoding builds each tag tree in one pass, setting the leaves
   and then each level from the one below, instead of updating the path to
   the root for every code block. Output is unchanged.

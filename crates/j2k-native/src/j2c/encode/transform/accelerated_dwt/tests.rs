@@ -70,6 +70,7 @@ fn run_dwt(
             session,
             retained_base_bytes: 0,
             line_scratch: &mut line_scratch,
+            spare: None,
         },
         accelerator,
     )
@@ -104,6 +105,7 @@ fn declined_acceleration_preserves_scalar_packed_dwt_for_both_filters() {
             1,
             reversible,
             &mut expected_scratch,
+            None,
             (0, 0),
         )
         .expect("scalar packed DWT reference");
@@ -142,6 +144,7 @@ fn legacy_dwt_hooks_are_not_given_an_incompatible_tile_phase() {
                 session: &session,
                 retained_base_bytes: 0,
                 line_scratch: &mut scratch,
+                spare: None,
             },
             &mut accelerator,
         )

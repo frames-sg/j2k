@@ -146,6 +146,7 @@ pub(crate) fn try_forward_dwt(
         num_levels,
         reversible,
         &mut line_buf,
+        None,
         (0, 0),
     )?;
     let geometry = PackedDwtGeometry::try_new(width, height, buffer.len(), shape)?;
@@ -524,6 +525,7 @@ mod tests {
             2,
             true,
             &mut scratch_f32,
+            None,
             (0, 0),
         )
         .expect("valid reversible packed transform");

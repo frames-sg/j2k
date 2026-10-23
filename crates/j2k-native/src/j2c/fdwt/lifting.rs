@@ -9,6 +9,8 @@
 //! so every sample sees the operands and IEEE operations of the line transform
 //! in `fdwt.rs` and the output is bit-identical for any strip width.
 
+use alloc::vec::Vec;
+
 use super::packed::{usize_from_u32, LevelRegion};
 use super::{ALPHA, BETA, DELTA, GAMMA, INV_KAPPA, KAPPA};
 use crate::j2c::idwt::{lift_rows, scale_samples};
@@ -95,6 +97,143 @@ pub(super) fn transform_level<S: Simd>(
         lift_row(simd, &mut row[..level.width], line, level, reversible);
     }
     Ok(())
+}
+
+/// Core rows of each band and pass in a band of [`transform_level_into`].
+const BAND_ROWS: usize = 16;
+/// Rows of each band lifted above and below a band's core. The lifting steps
+/// reach two rows into the other band, so core rows see no block edge.
+const HALO_ROWS: usize = 2;
+
+/// One level out of place in horizontal bands. A band's column strips, with
+/// a halo, are gathered from `input` and lifted in a cache-sized block, its
+/// core rows go to their packed rows of `output`, and those rows are lifted
+/// while still cached. Each sample is read about once and written once,
+/// against two full passes for [`transform_level`], and every core sample sees
+/// the same operations. `scratch` must hold `workers` parts of at least
+/// [`packed_dwt_scratch_len`] samples.
+#[expect(
+    clippy::inline_always,
+    reason = "the level transform is specialized inside each SIMD dispatch target"
+)]
+#[inline(always)]
+pub(super) fn transform_level_into<S: Simd>(
+    simd: S,
+    input: &[f32],
+    output: &mut [f32],
+    scratch: &mut [f32],
+    workers: usize,
+    level: LevelRegion,
+    reversible: bool,
+) -> EncodeResult<()> {
+    if level.width == 0 || level.height == 0 {
+        return Ok(());
+    }
+    let per_worker = scratch.len() / workers.max(1);
+    let block_rows = level.height.min(2 * (BAND_ROWS + 2 * HALO_ROWS));
+    let strip = strip_columns(level.stride)
+        .min(level.width)
+        .min(per_worker / block_rows);
+    if strip == 0 || per_worker < level.width {
+        return Err(EncodeError::InternalInvariant {
+            what: "packed forward DWT scratch is shorter than a band strip or row",
+        });
+    }
+    let high_height = level.height - level.low_height;
+    let rows = &mut output[..level.height * level.stride];
+    let (low_rows, high_rows) = rows.split_at_mut(level.low_height * level.stride);
+    let mut low_bands = low_rows.chunks_mut(BAND_ROWS * level.stride);
+    let mut high_bands = high_rows.chunks_mut(BAND_ROWS * level.stride);
+    let bands = (0..level.low_height.max(high_height).div_ceil(BAND_ROWS))
+        .map(|band| {
+            let low = low_bands.next().unwrap_or_default();
+            (band * BAND_ROWS, low, high_bands.next().unwrap_or_default())
+        })
+        .collect::<Vec<_>>();
+    #[cfg(feature = "parallel")]
+    if workers > 1 && level.width * level.height >= MIN_PARALLEL_SAMPLES {
+        use rayon::prelude::*;
+        let queue = std::sync::Mutex::new(bands.into_iter());
+        scratch
+            .par_chunks_mut(per_worker)
+            .with_max_len(1)
+            .for_each(|scratch| {
+                in_simd_scope(
+                    simd,
+                    #[inline(always)]
+                    || {
+                        while let Some(band) = queue.lock().ok().and_then(|mut bands| bands.next())
+                        {
+                            transform_band(simd, input, band, scratch, strip, level, reversible);
+                        }
+                    },
+                );
+            });
+        return Ok(());
+    }
+    for band in bands {
+        transform_band(simd, input, band, scratch, strip, level, reversible);
+    }
+    Ok(())
+}
+
+/// Lift one band `(first core row, low-pass rows, high-pass rows)` of
+/// [`transform_level_into`] in strips of `strip` columns.
+#[expect(
+    clippy::inline_always,
+    reason = "the lifting kernels are specialized inside each SIMD dispatch target"
+)]
+#[inline(always)]
+fn transform_band<S: Simd>(
+    simd: S,
+    input: &[f32],
+    (first_row, low_rows, high_rows): (usize, &mut [f32], &mut [f32]),
+    scratch: &mut [f32],
+    strip: usize,
+    level: LevelRegion,
+    reversible: bool,
+) {
+    let top = first_row.saturating_sub(HALO_ROWS);
+    let end = first_row + BAND_ROWS + HALO_ROWS;
+    let low_count = end.min(level.low_height).saturating_sub(top);
+    let high_count = end.min(level.height - level.low_height).saturating_sub(top);
+    for first in (0..level.width).step_by(strip) {
+        let columns = strip.min(level.width - first);
+        let block = &mut scratch[..(low_count + high_count) * columns];
+        for y in 2 * top..level.height.min(2 * end) {
+            let k = y / 2 - top;
+            let band_row = if (y % 2 == 1) == level.odd_y {
+                k
+            } else {
+                low_count + k
+            };
+            let row = &input[y * level.stride + first..][..columns];
+            copy_row(simd, &mut block[band_row * columns..][..columns], row);
+        }
+        let (low, high) = block.split_at_mut(low_count * columns);
+        lift(
+            simd,
+            low,
+            high,
+            columns,
+            level.height,
+            level.odd_y,
+            reversible,
+        );
+        for (rows, lifted) in [(&mut *low_rows, &*low), (&mut *high_rows, &*high)] {
+            for (k, row) in rows.chunks_mut(level.stride).enumerate() {
+                let core = &lifted[(first_row + k - top) * columns..][..columns];
+                copy_row(simd, &mut row[first..][..columns], core);
+            }
+        }
+    }
+    let line = &mut scratch[..level.width];
+    for row in low_rows
+        .chunks_mut(level.stride)
+        .chain(high_rows.chunks_mut(level.stride))
+    {
+        lift_row(simd, &mut row[..level.width], line, level, reversible);
+    }
 }
 
 /// The level on several workers. Each takes the next column strip, peeled off
@@ -231,7 +370,15 @@ fn lift_strip<S: Simd>(
     reversible: bool,
 ) {
     let (low, high) = block.split_at_mut(level.low_height * columns);
-    lift(simd, low, high, columns, level.odd_y, reversible);
+    lift(
+        simd,
+        low,
+        high,
+        columns,
+        level.height,
+        level.odd_y,
+        reversible,
+    );
 }
 
 #[expect(
@@ -278,12 +425,14 @@ fn lift_row<S: Simd>(
     if let ([last], Some(even)) = (tail, even.last_mut()) {
         *even = *last;
     }
-    lift(simd, low, high, 1, level.odd_x, reversible);
+    lift(simd, low, high, 1, level.width, level.odd_x, reversible);
 }
 
 /// Lift `columns` parallel lines held as their low-pass rows `low` and their
 /// high-pass rows `high`. At an even origin high sample `k` lies between low
-/// samples `k` and `k + 1`; at an odd origin, between `k - 1` and `k`.
+/// samples `k` and `k + 1`; at an odd origin, between `k - 1` and `k`. The
+/// rows may be a window of longer lines of `samples` samples each, whose
+/// length selects the reversible edge forms.
 #[expect(
     clippy::inline_always,
     reason = "the lifting kernels are specialized inside each SIMD dispatch target"
@@ -294,10 +443,10 @@ fn lift<S: Simd>(
     low: &mut [f32],
     high: &mut [f32],
     columns: usize,
+    samples: usize,
     odd_origin: bool,
     reversible: bool,
 ) {
-    let samples = (low.len() + high.len()) / columns;
     if samples < 2 {
         // T.800 F.4.6: a single sample at an odd coordinate is high-pass and
         // doubled; at an even one it is low-pass and unchanged.

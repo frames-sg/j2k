@@ -20,6 +20,9 @@ pub(in crate::j2c::encode) struct ForwardDwtRequest<'a, 'input> {
     pub(in crate::j2c::encode) session: &'a NativeEncodeSession<'input>,
     pub(in crate::j2c::encode) retained_base_bytes: usize,
     pub(in crate::j2c::encode) line_scratch: &'a mut [f32],
+    /// A plane as long as `component` for the out-of-place first level; it
+    /// comes back holding the consumed input plane.
+    pub(in crate::j2c::encode) spare: Option<&'a mut Vec<f32>>,
 }
 
 pub(in crate::j2c::encode) fn encode_forward_dwt(
@@ -36,6 +39,7 @@ pub(in crate::j2c::encode) fn encode_forward_dwt(
         session,
         retained_base_bytes,
         line_scratch,
+        mut spare,
     } = request;
     if reversible {
         let output = accelerator
@@ -94,8 +98,12 @@ pub(in crate::j2c::encode) fn encode_forward_dwt(
         num_levels,
         reversible,
         line_scratch,
+        spare.as_deref_mut().map(Vec::as_mut_slice),
         origin,
     )?;
+    if let Some(spare) = spare {
+        core::mem::swap(&mut component, spare);
+    }
     let geometry = fdwt::PackedDwtGeometry::try_new(width, height, component.len(), shape)?;
     Ok(OwnedDwtComponent::Packed(PackedF32DwtComponent {
         coefficients: component,
