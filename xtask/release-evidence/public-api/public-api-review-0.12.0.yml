@@ -157,10 +157,10 @@ reviews:
   j2k-metal:
     removed_fingerprint: "none"
     added_fingerprint: "fnv1a64:9828496ce9bcbfd1"
-    hidden_count: 320
-    hidden_fingerprint: "fnv1a64:e93560ee9acea141"
+    hidden_count: 321
+    hidden_fingerprint: "fnv1a64:41513c1e93413909"
     rationale: "Adds shared group submission and cooperative CPU/Metal decoding; existing entry points are preserved. Also records the already-merged decode_into_metal and decode_into_metal_with_session methods for caller-owned destinations. Existing decoder entry points remain available."
-    hidden_rationale: "Reviewed the generated hidden inventory against v0.11.3; implementation adapters remain part of the release contract. Metal dispatch telemetry adds cpu_tier1_images. The J2kDecoder impl marker moves into the ordinary inventory when its destination methods become public; this is inventory classification, not removal of the decoder or its existing methods. Adds origin-aware 5/3 and 9/7 accelerator overrides while preserving the existing zero-origin hooks and job structs."
+    hidden_rationale: "Reviewed the generated hidden inventory against v0.11.3; implementation adapters remain part of the release contract. Metal dispatch telemetry adds cpu_tier1_images. The J2kDecoder impl marker moves into the ordinary inventory when its destination methods become public; this is inventory classification, not removal of the decoder or its existing methods. Adds origin-aware 5/3 and 9/7 accelerator overrides while preserving the existing zero-origin hooks and job structs. MetalEncodeStageAccelerator overrides declines_every_stage, which is true only for the Auto host-output profile when every remaining hook declines; routing is unchanged."
   j2k-transcode-metal:
     removed_fingerprint: "none"
     added_fingerprint: "none"

@@ -1253,6 +1253,7 @@ pub fn j2k_metal::J2kDecoder<'a>::submit_to_device(&mut self, &mut Self::Session
 pub fn j2k_metal::MetalBackendSession::backend_kind(&self) -> j2k_core::backend::BackendKind
 pub fn j2k_metal::MetalBackendSession::uses_command_queue(&self, &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLCommandQueue::MTLCommandQueue>) -> core::result::Result<bool, j2k_metal::Error>
 pub fn j2k_metal::MetalEncodeStageAccelerator::begin_encode(&mut self, j2k_types::dispatch::accelerator::J2kEncodeContext) -> j2k_types::dispatch::error::J2kEncodeStageResult<()>
+pub fn j2k_metal::MetalEncodeStageAccelerator::declines_every_stage(&self) -> bool
 pub fn j2k_metal::MetalEncodeStageAccelerator::dispatch_report(&self) -> j2k_types::dispatch::report::J2kEncodeDispatchReport
 pub fn j2k_metal::MetalEncodeStageAccelerator::encode_deinterleave(&mut self, j2k_types::dispatch::accelerator::J2kDeinterleaveToF32Job<'_>) -> j2k_types::dispatch::error::J2kEncodeStageResult<core::option::Option<alloc::vec::Vec<alloc::vec::Vec<f32>>>>
 pub fn j2k_metal::MetalEncodeStageAccelerator::encode_deinterleave_mct(&mut self, j2k_types::dispatch::accelerator::J2kDeinterleaveMctToF32Job<'_>) -> j2k_types::dispatch::error::J2kEncodeStageResult<core::option::Option<alloc::vec::Vec<alloc::vec::Vec<f32>>>>
