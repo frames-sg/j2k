@@ -177,7 +177,7 @@ mod subband;
 #[cfg(test)]
 use self::subband::prepare_subband;
 use self::subband::{
-    prepare_subband_for_session, F32SubbandEncodeRequest, I64SubbandEncodeSettings,
+    prepare_subband_for_session, F32SubbandEncodeRequest, I64SubbandEncodeSettings, SubbandSamples,
 };
 mod tier1_allocation;
 mod tier1_driver;

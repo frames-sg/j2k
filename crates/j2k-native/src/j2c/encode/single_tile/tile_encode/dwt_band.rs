@@ -10,7 +10,7 @@ use crate::j2c::encode::allocation::{
 use crate::j2c::encode::{
     prepare_subband_for_session, BlockCodingMode, ComponentRoiEncodeRegion,
     F32SubbandEncodeRequest, J2kEncodeStageAccelerator, NativeEncodePipelineResult,
-    NativeEncodeSession, PreparedEncodeSubband, QuantStepSize, SubBandType,
+    NativeEncodeSession, PreparedEncodeSubband, QuantStepSize, SubBandType, SubbandSamples,
 };
 
 use super::super::coefficient_source::DwtBandView;
@@ -42,7 +42,7 @@ pub(super) struct DwtBandEncodeSettings<'a, 'input> {
 impl<'a, 'input> DwtBandEncodeSettings<'a, 'input> {
     fn with_coefficients<'request>(
         self,
-        coefficients: &'request [f32],
+        coefficients: SubbandSamples<'request>,
         width: u32,
         height: u32,
         retained_base_bytes: usize,
@@ -85,8 +85,21 @@ pub(super) fn prepare_dwt_band_for_session(
             height,
         } => {
             let retained_base_bytes = settings.retained_base_bytes;
+            let samples = SubbandSamples::Contiguous(coefficients);
             prepare_subband_for_session(
-                &settings.with_coefficients(coefficients, width, height, retained_base_bytes),
+                &settings.with_coefficients(samples, width, height, retained_base_bytes),
+                accelerator,
+            )
+        }
+        // No stage hook reads the band, so code blocks quantize from its rows.
+        DwtBandView::Packed(view)
+            if accelerator.declines_every_stage() && settings.roi_shift == 0 =>
+        {
+            let (width, height) = (view.width(), view.height());
+            let retained_base_bytes = settings.retained_base_bytes;
+            let samples = SubbandSamples::Packed(view);
+            prepare_subband_for_session(
+                &settings.with_coefficients(samples, width, height, retained_base_bytes),
                 accelerator,
             )
         }
@@ -143,7 +156,7 @@ pub(super) fn prepare_dwt_band_for_session(
             }
             prepare_subband_for_session(
                 &settings.with_coefficients(
-                    &coefficients,
+                    SubbandSamples::Contiguous(&coefficients),
                     view.width(),
                     view.height(),
                     retained_base_bytes,

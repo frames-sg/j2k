@@ -277,6 +277,15 @@ pub trait J2kEncodeStageAccelerator {
         false
     }
 
+    /// Whether native encode may skip the remaining per-stage hooks for the
+    /// current encode. Native encode asks after `begin_encode` and after the
+    /// whole-tile hooks have declined; `true` lets it skip those hooks and the
+    /// inputs only they read, and fuse CPU stages. Return `false`, the default,
+    /// unless every remaining hook would decline.
+    fn declines_every_stage(&self) -> bool {
+        false
+    }
+
     /// Optionally packetize prepared packet contributions.
     fn encode_packetization(
         &mut self,
@@ -293,6 +302,10 @@ impl J2kEncodeStageAccelerator for CpuOnlyJ2kEncodeStageAccelerator {
     }
 
     fn prefer_parallel_cpu_tile_encode(&self) -> bool {
+        true
+    }
+
+    fn declines_every_stage(&self) -> bool {
         true
     }
 }

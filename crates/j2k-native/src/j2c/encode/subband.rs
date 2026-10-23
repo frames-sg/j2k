@@ -13,6 +13,7 @@ use super::{
     NativeEncodePipelineResult, NativeEncodeSession, PreparedEncodeCodeBlock,
     PreparedEncodeSubband, QuantStepSize, SubBandType, Vec,
 };
+use crate::j2c::fdwt::PackedSubbandView;
 
 fn apply_roi_maxshift_encode_for_session(
     coefficients: &mut [i32],
@@ -143,7 +144,7 @@ pub(super) fn prepare_subband(
     let session = NativeEncodeSession::try_new(NativeEncodeRetainedInput::none())?;
     let request = F32SubbandEncodeRequest {
         origin: (0, 0),
-        coefficients,
+        coefficients: SubbandSamples::Contiguous(coefficients),
         width,
         height,
         step_size,
@@ -165,9 +166,19 @@ pub(super) fn prepare_subband(
         .map_err(NativeEncodePipelineError::into_encode_error)
 }
 
+/// A subband's transform coefficients.
+#[derive(Clone, Copy)]
+pub(super) enum SubbandSamples<'a> {
+    /// Row-major samples, as the stage hooks take them.
+    Contiguous(&'a [f32]),
+    /// Rows of a packed transform plane. Only an accelerator that declines
+    /// every stage gets these: each code block quantizes from the rows.
+    Packed(PackedSubbandView<'a, f32>),
+}
+
 pub(super) struct F32SubbandEncodeRequest<'a, 'input> {
     pub(super) origin: (u32, u32),
-    pub(super) coefficients: &'a [f32],
+    pub(super) coefficients: SubbandSamples<'a>,
     pub(super) width: u32,
     pub(super) height: u32,
     pub(super) step_size: &'a QuantStepSize,
@@ -196,21 +207,65 @@ pub(super) fn prepare_subband_for_session(
     }
 
     let plan = F32SubbandPlan::try_new(request)?;
-    if let Some(prepared) = try_prepare_fused_ht_subband(request, plan, &mut tracker, accelerator)?
+    let parallel = accelerator.prefer_parallel_cpu_code_block_fallback();
+    let coefficients = match request.coefficients {
+        SubbandSamples::Contiguous(coefficients) => coefficients,
+        SubbandSamples::Packed(view)
+            if accelerator.declines_every_stage() && request.roi_shift == 0 =>
+        {
+            let quantizer =
+                quantize::Quantizer::new(request.step_size, plan.range_bits, request.reversible);
+            return prepare_code_blocks(
+                request,
+                plan,
+                0,
+                &mut tracker,
+                parallel,
+                |x0, y0, width, height, out| {
+                    for y in y0..y0 + height {
+                        let row = view.row(y).ok_or_else(|| {
+                            NativeEncodePipelineError::internal_invariant(
+                                "packed subband row is missing",
+                            )
+                        })?;
+                        quantizer.extend(out, &row[x0 as usize..][..width as usize]);
+                    }
+                    Ok(())
+                },
+            );
+        }
+        SubbandSamples::Packed(_) => {
+            return Err(NativeEncodePipelineError::internal_invariant(
+                "packed subband samples need an accelerator that declines every stage",
+            ));
+        }
+    };
+    if let Some(prepared) =
+        try_prepare_fused_ht_subband(request, coefficients, plan, &mut tracker, accelerator)?
     {
         return Ok(prepared);
     }
 
     let (mut quantized, quantized_bytes) =
-        try_quantize_subband(request, plan, &mut tracker, accelerator)?;
+        try_quantize_subband(request, coefficients, plan, &mut tracker, accelerator)?;
     apply_roi_maxshift_encode_for_session(&mut quantized, request, quantized_bytes, &mut tracker)?;
-    prepare_quantized_subband(
+    prepare_code_blocks(
         request,
         plan,
-        &quantized,
         quantized_bytes,
         &mut tracker,
-        accelerator.prefer_parallel_cpu_code_block_fallback(),
+        parallel,
+        |x0, y0, width, height, out| {
+            copy_code_block_coefficients_into(
+                &quantized,
+                request.width as usize,
+                x0 as usize,
+                y0 as usize,
+                width as usize,
+                height as usize,
+                out,
+            )
+        },
     )
 }
 
@@ -278,6 +333,7 @@ fn empty_prepared_subband(request: &F32SubbandEncodeRequest<'_, '_>) -> Prepared
 
 fn try_prepare_fused_ht_subband(
     request: &F32SubbandEncodeRequest<'_, '_>,
+    coefficients: &[f32],
     plan: F32SubbandPlan,
     tracker: &mut Tier1PhaseTracker<'_, '_>,
     accelerator: &mut impl J2kEncodeStageAccelerator,
@@ -294,7 +350,7 @@ fn try_prepare_fused_ht_subband(
     }
     let encoded = accelerator
         .encode_ht_subband(J2kHtSubbandEncodeJob {
-            coefficients: request.coefficients,
+            coefficients,
             width: request.width,
             height: request.height,
             step_exponent: request.step_size.exponent,
@@ -358,16 +414,17 @@ fn try_prepare_fused_ht_subband(
 
 fn try_quantize_subband(
     request: &F32SubbandEncodeRequest<'_, '_>,
+    coefficients: &[f32],
     plan: F32SubbandPlan,
     tracker: &mut Tier1PhaseTracker<'_, '_>,
     accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> NativeEncodePipelineResult<(Vec<i32>, usize)> {
     let requested_bytes =
-        checked_element_bytes::<i32>(request.coefficients.len(), "quantized subband coefficients")?;
+        checked_element_bytes::<i32>(coefficients.len(), "quantized subband coefficients")?;
     tracker.check([requested_bytes], "quantized subband coefficients")?;
     let quantized = accelerator
         .encode_quantize_subband(J2kQuantizeSubbandJob {
-            coefficients: request.coefficients,
+            coefficients,
             step_exponent: request.step_size.exponent,
             step_mantissa: request.step_size.mantissa,
             range_bits: plan.range_bits,
@@ -379,7 +436,7 @@ fn try_quantize_subband(
         })?;
     let quantized = match quantized {
         Some(quantized) => {
-            if quantized.len() != request.coefficients.len() {
+            if quantized.len() != coefficients.len() {
                 return Err(crate::EncodeError::Accelerator {
                     operation: "subband quantization",
                     source: crate::J2kEncodeStageError::internal_invariant(
@@ -391,7 +448,7 @@ fn try_quantize_subband(
             quantized
         }
         None => quantize::try_quantize_subband(
-            request.coefficients,
+            coefficients,
             request.step_size,
             plan.range_bits,
             request.reversible,
@@ -404,13 +461,16 @@ fn try_quantize_subband(
     Ok((quantized, actual_bytes))
 }
 
-fn prepare_quantized_subband(
+/// Split a subband into code blocks, each filled by `fill(x0, y0, width,
+/// height, block)` with its row-major quantized samples. `source_bytes` are
+/// the bytes the fill reads from while the blocks are built.
+fn prepare_code_blocks(
     request: &F32SubbandEncodeRequest<'_, '_>,
     plan: F32SubbandPlan,
-    quantized: &[i32],
-    quantized_bytes: usize,
+    source_bytes: usize,
     tracker: &mut Tier1PhaseTracker<'_, '_>,
     parallel: bool,
+    fill: impl Fn(u32, u32, u32, u32, &mut Vec<i32>) -> NativeEncodePipelineResult<()> + Sync,
 ) -> NativeEncodePipelineResult<PreparedEncodeSubband> {
     let code_block_count = usize::try_from(plan.num_cbs_x.checked_mul(plan.num_cbs_y).ok_or(
         crate::EncodeError::ArithmeticOverflow {
@@ -422,15 +482,18 @@ fn prepare_quantized_subband(
     })?;
     let (mut code_blocks, code_block_owner_bytes) = tracker.try_vec::<PreparedEncodeCodeBlock>(
         code_block_count,
-        [quantized_bytes],
+        [source_bytes],
         "prepared code-block owners",
     )?;
     // The blocks tile the subband, so charging all of its samples up front
     // lets the blocks fill in any order.
     let what = "prepared i32 code-block coefficients";
-    let coefficient_bytes = checked_element_bytes::<i32>(quantized.len(), what)?;
+    let samples = (request.width as usize)
+        .checked_mul(request.height as usize)
+        .ok_or_else(|| NativeEncodePipelineError::arithmetic_overflow("subband sample count"))?;
+    let coefficient_bytes = checked_element_bytes::<i32>(samples, what)?;
     tracker.check(
-        [quantized_bytes, code_block_owner_bytes, coefficient_bytes],
+        [source_bytes, code_block_owner_bytes, coefficient_bytes],
         what,
     )?;
     code_blocks.resize_with(code_block_count, || PreparedEncodeCodeBlock {
@@ -457,15 +520,12 @@ fn prepare_quantized_subband(
         cb_coeffs
             .try_reserve_exact(count)
             .map_err(|_| host_allocation_failed(what, count.saturating_mul(4)))?;
-        copy_code_block_coefficients_into(
-            quantized,
-            width as usize,
-            x0 as usize,
-            y0 as usize,
-            cbw as usize,
-            cbh as usize,
-            &mut cb_coeffs,
-        )?;
+        fill(x0, y0, cbw, cbh, &mut cb_coeffs)?;
+        if cb_coeffs.len() != count {
+            return Err(NativeEncodePipelineError::internal_invariant(
+                "prepared code-block coefficient count changed",
+            ));
+        }
         *block = PreparedEncodeCodeBlock {
             coefficients: super::PreparedCodeBlockCoefficients::I32(cb_coeffs),
             width: cbw,

@@ -12,8 +12,8 @@ use super::{
     prepare_subband_for_session, BlockCodingMode, CpuOnlyJ2kEncodeStageAccelerator, EncodeOptions,
     F32SubbandEncodeRequest, NativeEncodePipelineError, NativeEncodePipelineResult,
     NativeEncodeSession, PrecomputedHtj2k97Component, PrecomputedHtj2k97Image,
-    PreparedEncodeSubband, PreparedResolutionPacket, QuantStepSize, SubBandType, Vec,
-    MAX_J2K_SPEC_COMPONENTS,
+    PreparedEncodeSubband, PreparedResolutionPacket, QuantStepSize, SubBandType, SubbandSamples,
+    Vec, MAX_J2K_SPEC_COMPONENTS,
 };
 
 pub(super) fn prepare_precomputed_htj2k97_image_for_batch(
@@ -249,7 +249,7 @@ fn try_prepared_subband(
     let retained_base_bytes = tracker.retained_bytes("batch precomputed 9/7 prepared graph")?;
     let request = F32SubbandEncodeRequest {
         origin: (0, 0),
-        coefficients,
+        coefficients: SubbandSamples::Contiguous(coefficients),
         width,
         height,
         step_size: &step_size,
