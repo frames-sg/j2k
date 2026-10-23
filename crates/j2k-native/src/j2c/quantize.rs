@@ -782,7 +782,7 @@ pub(crate) fn try_quantize_subband(
             what: "quantized subband coefficients",
             bytes: requested_bytes,
         })?;
-    match Quantizer::new(step_size, range_bits, reversible) {
+    match Quantizer::new(*step_size, range_bits, reversible) {
         Quantizer::Round => extend_quantized(&mut quantized, coefficients, parallel, round_sample),
         Quantizer::Zero => quantized.resize(coefficients.len(), 0),
         Quantizer::Deadzone(delta) => {
@@ -804,7 +804,7 @@ pub(crate) enum Quantizer {
 }
 
 impl Quantizer {
-    pub(crate) fn new(step_size: &QuantStepSize, range_bits: u8, reversible: bool) -> Self {
+    pub(crate) fn new(step_size: QuantStepSize, range_bits: u8, reversible: bool) -> Self {
         if reversible {
             return Self::Round;
         }
