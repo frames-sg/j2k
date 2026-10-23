@@ -5,6 +5,10 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- Metal single-image colour decodes whose components all start with an HT
+  group decode the three components' HT code blocks into one coefficient buffer
+  with one set of dispatches, instead of one encoder per component, so each
+  dispatch holds enough blocks to keep the GPU busy. Output is unchanged.
 - Metal single-image colour decodes no longer zero the last wavelet level's
   high-band code blocks that have no coding passes. A cell map built from the
   decode jobs lets the fused last-level kernel read those blocks as zero, and a
