@@ -42,8 +42,8 @@ const MIN_BANDED_SAMPLES: usize = 64 * 64;
 #[cfg(feature = "parallel")]
 const MIN_PARALLEL_SAMPLES: usize = 256 * 256;
 
-/// Ring rows a strip worker keeps: the row being lifted with both of its
-/// neighbors, plus one row per lifting step still to finish.
+/// Halo rows a strip worker keeps: one per lifting step, shared by the rows
+/// above and below the strip, with room for both neighbors of a row.
 const RING_ROWS: usize = MAX_HALO_ROWS + 2;
 
 /// Strips shorter than this would spend too much on their halos.
@@ -516,11 +516,12 @@ fn stream_level<S: Simd>(
     }
 }
 
-/// Reconstruct level rows `[first_row, first_row + output.len() / width)` into
-/// `output` with the schedule of [`stream_level`], keeping the live rows in
-/// `ring` and starting and ending one halo row per lifting step beyond the
-/// strip. A halo row whose neighbor is outside the halo skips that step; the
-/// resulting error stays inside the halo.
+/// Reconstruct level rows `[first_row, first_row + output.len() / width)` in
+/// `output` with the schedule of [`stream_level`], starting and ending one
+/// halo row per lifting step beyond the strip. A halo row whose neighbor is
+/// outside the halo skips that step; the resulting error stays inside the
+/// halo. The strip's own rows are reconstructed in place; halo rows live in
+/// the worker's scratch.
 #[cfg(feature = "parallel")]
 #[expect(
     clippy::inline_always,
@@ -540,14 +541,19 @@ fn stream_strip<S: Simd>(
     let end = first_row + output.len() / width;
     let lo = first_row.saturating_sub(count);
     let hi = (end + count).min(height);
-    let ring_rows = count + 2;
-    let ring_capacity = RING_ROWS * width;
-    let (ring, horizontal_scratch) = worker_scratch.split_at_mut(ring_capacity);
-    let ring = &mut ring[..ring_rows * width];
+    let (halo, horizontal_scratch) = worker_scratch.split_at_mut(RING_ROWS * width);
     let (low, high) = split_horizontal_scratch(level, horizontal_scratch);
+    let mut rows = StripRows {
+        output,
+        halo,
+        first_row,
+        end,
+        lo,
+        width,
+    };
     for arrival in lo..hi + count {
         if arrival < hi {
-            let row = &mut ring[(arrival % ring_rows) * width..][..width];
+            let row = rows.row_mut(arrival);
             synthesize_level_row(simd, level, arrival, row, low, high);
         }
         for (index, &(parity, step)) in steps[..count].iter().enumerate() {
@@ -562,23 +568,79 @@ fn stream_strip<S: Simd>(
             if above < lo || below >= hi {
                 continue;
             }
-            let (current, above, below) = three_rows(
-                ring,
-                width,
-                row % ring_rows,
-                above % ring_rows,
-                below % ring_rows,
-            );
+            let (current, above, below) = rows.three(row, above, below);
             apply_vertical_step(simd, step, current, above, below);
         }
-        // The row `count` arrivals back has taken its last step, and its
-        // ring slot is not reused before two more arrivals.
-        if let Some(done) = arrival.checked_sub(count) {
-            if (first_row..end).contains(&done) {
-                output[(done - first_row) * width..][..width]
-                    .copy_from_slice(&ring[(done % ring_rows) * width..][..width]);
-            }
+    }
+}
+
+/// Rows `lo..` of one parallel strip: its own rows `first_row..end` in
+/// `output`, and its halo rows in `halo`. The rows above and below the strip
+/// share halo slots: every strip with rows below it spans at least
+/// [`MIN_STRIP_ROWS`] rows, so the rows above have taken their last step
+/// before the first row below arrives.
+#[cfg(feature = "parallel")]
+struct StripRows<'a> {
+    output: &'a mut [f32],
+    halo: &'a mut [f32],
+    first_row: usize,
+    end: usize,
+    lo: usize,
+    width: usize,
+}
+
+#[cfg(feature = "parallel")]
+impl StripRows<'_> {
+    /// Whether `row` lies in `output`, and its index in that buffer.
+    fn locate(&self, row: usize) -> (bool, usize) {
+        if row < self.first_row {
+            (false, row - self.lo)
+        } else if row < self.end {
+            (true, row - self.first_row)
+        } else {
+            (false, row - self.end)
         }
+    }
+
+    fn row_mut(&mut self, row: usize) -> &mut [f32] {
+        let (in_output, index) = self.locate(row);
+        let rows = if in_output {
+            &mut *self.output
+        } else {
+            &mut *self.halo
+        };
+        &mut rows[index * self.width..][..self.width]
+    }
+
+    /// Row `current` mutably, with rows `above` and `below` shared.
+    fn three(
+        &mut self,
+        current: usize,
+        above: usize,
+        below: usize,
+    ) -> (&mut [f32], &[f32], &[f32]) {
+        let width = self.width;
+        let locate = |row| self.locate(row);
+        let ((current_in_output, index), above, below) =
+            (locate(current), locate(above), locate(below));
+        let (same, other): (&mut [f32], &[f32]) = if current_in_output {
+            (&mut *self.output, &*self.halo)
+        } else {
+            (&mut *self.halo, &*self.output)
+        };
+        let (before, rest) = same.split_at_mut(index * width);
+        let (current_row, after) = rest.split_at_mut(width);
+        let (before, after): (&[f32], &[f32]) = (before, after);
+        let neighbor = |(in_output, neighbor): (bool, usize)| -> &[f32] {
+            if in_output != current_in_output {
+                &other[neighbor * width..][..width]
+            } else if neighbor < index {
+                &before[neighbor * width..][..width]
+            } else {
+                &after[(neighbor - index - 1) * width..][..width]
+            }
+        };
+        (current_row, neighbor(above), neighbor(below))
     }
 }
 
