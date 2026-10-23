@@ -3,19 +3,17 @@
 //! Fallible parallel code-block output assembly.
 
 use super::pending::{PendingClassicBlock, PendingHtBlock};
-use super::{BlockPlacement, DecodeAllocationBudget, DecompositionStorage, SubBand};
+use super::{
+    BlockPlacement, ClassicJobParameters, DecodeAllocationBudget, DecompositionStorage, SubBand,
+};
 use crate::error::{DecodingError, Result, ValidationError};
 use crate::j2c::bitplane::classic_decode_workspace_bytes;
 use crate::j2c::decode::workspace::{ht_task_workspace_bytes, HtTaskWorkspace};
 use crate::j2c::ht_block_decode::ht_decode_workspace_bytes;
-use crate::scalar::{
-    decode_ht_code_block_scalar_with_workspace_midpoint,
-    decode_j2k_code_block_scalar_with_workspace_midpoint,
-};
+use crate::scalar::decode_ht_code_block_scalar_with_workspace_midpoint;
 use crate::{
-    decode_ht_code_block_scalar_with_workspace, decode_j2k_code_block_scalar_with_workspace,
-    try_resize_decode_elements, HtCodeBlockDecodeJob, HtCodeBlockDecodeWorkspace,
-    J2kCodeBlockDecodeJob, J2kCodeBlockDecodeWorkspace, J2kCodeBlockStyle, J2kSubBandType,
+    decode_ht_code_block_scalar_with_workspace, try_resize_decode_elements, HtCodeBlockDecodeJob,
+    HtCodeBlockDecodeWorkspace, J2kCodeBlockDecodeWorkspace,
 };
 use alloc::vec::Vec;
 use rayon::prelude::*;
@@ -48,17 +46,6 @@ pub(crate) struct DecodedBlock<'a> {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct ClassicParallelParameters {
-    pub(super) sub_band_type: J2kSubBandType,
-    pub(super) style: J2kCodeBlockStyle,
-    pub(super) strict: bool,
-    pub(super) total_bitplanes: u8,
-    pub(super) roi_shift: u8,
-    pub(super) dequantization_step: f32,
-    pub(super) irreversible_midpoint: bool,
-}
-
-#[derive(Clone, Copy)]
 pub(super) struct HtParallelParameters {
     pub(super) strict: bool,
     pub(super) num_bitplanes: u8,
@@ -71,7 +58,7 @@ pub(super) struct HtParallelParameters {
 pub(super) fn decode_classic_sub_band_blocks_parallel<'a>(
     pending_blocks: &[PendingClassicBlock],
     sub_band: &SubBand,
-    parameters: ClassicParallelParameters,
+    parameters: ClassicJobParameters,
     coefficient_slab: &'a mut Vec<f32>,
     structural_workspace_bytes: &mut usize,
     #[cfg(test)] coefficient_stats: &mut super::super::ParallelCoefficientStats,
@@ -109,30 +96,16 @@ pub(super) fn decode_classic_sub_band_blocks_parallel<'a>(
         .zip(workspaces.par_iter_mut())
         .try_for_each(|((decoded, pending), workspace)| -> Result<()> {
             decoded.coefficients.fill(0.0);
-            let decode = if parameters.irreversible_midpoint {
-                decode_j2k_code_block_scalar_with_workspace_midpoint
-            } else {
-                decode_j2k_code_block_scalar_with_workspace
-            };
-            decode(
-                J2kCodeBlockDecodeJob {
-                    data: &pending.combined_data,
-                    segments: &pending.segments,
-                    width: pending.width,
-                    height: pending.height,
-                    output_stride: pending.width as usize,
-                    missing_bit_planes: pending.missing_bit_planes,
-                    number_of_coding_passes: pending.number_of_coding_passes,
-                    total_bitplanes: parameters.total_bitplanes,
-                    roi_shift: parameters.roi_shift,
-                    sub_band_type: parameters.sub_band_type,
-                    style: parameters.style,
-                    strict: parameters.strict,
-                    dequantization_step: parameters.dequantization_step,
-                },
-                decoded.coefficients,
-                workspace,
-            )
+            let job = parameters.job(
+                &pending.combined_data,
+                &pending.segments,
+                pending.width,
+                pending.height,
+                pending.width as usize,
+                pending.missing_bit_planes,
+                pending.number_of_coding_passes,
+            );
+            parameters.decode(job, decoded.coefficients, workspace)
         })?;
     Ok(decoded_blocks)
 }
