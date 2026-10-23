@@ -548,6 +548,60 @@ fn metal_htj2k_quality_layers_use_native_candidates_and_match_scalar_output() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn metal_all_stage_lossy_encodes_match_cpu_bytes_with_empty_code_blocks() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    // The left half is textured and the right half flat, so detail bands hold
+    // empty code-blocks beside coded ones in the same tag trees.
+    let (width, height) = (256_u32, 256_u32);
+    let pixels: Vec<u8> = (0..width * height * 3)
+        .map(|idx| {
+            let x = (idx / 3) % width;
+            let texture = if x < width / 2 {
+                (idx * 37 + idx / 7) & 0x07
+            } else {
+                0
+            };
+            u8::try_from((x / 4 + texture) & 0xFF).expect("masked pixel")
+        })
+        .collect();
+    let samples =
+        J2kLossySamples::new(&pixels, width, height, 3, 8, false).expect("valid RGB samples");
+    for (mode, qfactor) in [
+        (J2kBlockCodingMode::HighThroughput, Some(60)),
+        (J2kBlockCodingMode::HighThroughput, None),
+        (J2kBlockCodingMode::Classic, None),
+    ] {
+        let options = J2kLossyEncodeOptions::default()
+            .with_block_coding_mode(mode)
+            .with_max_decomposition_levels(Some(2))
+            .with_qfactor(qfactor)
+            .with_validation(J2kEncodeValidation::External);
+        let cpu = j2k::encode_j2k_lossy(
+            samples,
+            &options
+                .clone()
+                .with_backend(EncodeBackendPreference::CpuOnly),
+        )
+        .expect("CPU lossy encode");
+        let mut accelerator = MetalEncodeStageAccelerator::default();
+        let metal = encode_j2k_lossy_with_accelerator(
+            samples,
+            &options.with_backend(EncodeBackendPreference::RequireDevice),
+            BackendKind::Metal,
+            &mut accelerator,
+        )
+        .expect("Metal all-stage lossy encode");
+
+        assert_eq!(metal.backend, BackendKind::Metal, "{mode:?} {qfactor:?}");
+        assert_eq!(metal.codestream, cpu.codestream, "{mode:?} {qfactor:?}");
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn metal_htj2k_lossy_rgb_facade_reports_forward_ict_dispatch() {
     if !should_run_metal_runtime() {
         return;

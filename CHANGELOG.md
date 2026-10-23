@@ -28,6 +28,10 @@ and stale roadmap entries have been removed from the public documentation set.
   it out. This affected the CPU and Metal batches alike. On the 19 x 13
   OpenJPH fixture in 11 x 7 tiles, 4,598 of the 17,290 half-scale regions
   failed to prepare; all now match single-image decode.
+- All-stage Metal lossy encodes seed code-blocks without coding passes with zero
+  in the zero-bitplane tag tree, as the CPU encoder does, so their packet headers
+  match the CPU's byte for byte. Earlier codestreams were valid but could differ
+  from the CPU's by a few header bytes.
 - `j2k-tilecodec` LZW decode no longer reports valid TIFF strips and tiles
   as truncated. weezl reads input ahead of decoding, so the call that
   consumes the last byte can still hold codes up to the end code, often in
