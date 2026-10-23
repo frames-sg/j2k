@@ -12,9 +12,11 @@ const ROW_PAIR_COLUMNS: usize = 1024 + 4;
 pub(super) struct RowPair {
     exponents: [[u8; ROW_PAIR_COLUMNS]; 2],
     values: [[u32; ROW_PAIR_COLUMNS]; 2],
-    /// Per quad: its significance pattern `rho` and largest exponent.
+    /// Per quad: its significance pattern `rho`, largest exponent, and which
+    /// samples reach it.
     rho: [u8; ROW_PAIR_COLUMNS / 2],
     e_qmax: [u8; ROW_PAIR_COLUMNS / 2],
+    reach: [u8; ROW_PAIR_COLUMNS / 2],
 }
 
 impl RowPair {
@@ -24,6 +26,7 @@ impl RowPair {
             values: [[0; ROW_PAIR_COLUMNS]; 2],
             rho: [0; ROW_PAIR_COLUMNS / 2],
             e_qmax: [0; ROW_PAIR_COLUMNS / 2],
+            reach: [0; ROW_PAIR_COLUMNS / 2],
         }
     }
 
@@ -57,7 +60,12 @@ impl RowPair {
                 | u8::from(samples[1] != 0) << 1
                 | u8::from(samples[2] != 0) << 2
                 | u8::from(samples[3] != 0) << 3;
-            self.e_qmax[quad] = samples[0].max(samples[1]).max(samples[2].max(samples[3]));
+            let e_qmax = samples[0].max(samples[1]).max(samples[2].max(samples[3]));
+            self.e_qmax[quad] = e_qmax;
+            self.reach[quad] = u8::from(samples[0] == e_qmax)
+                | u8::from(samples[1] == e_qmax) << 1
+                | u8::from(samples[2] == e_qmax) << 2
+                | u8::from(samples[3] == e_qmax) << 3;
         }
         Ok(())
     }
@@ -142,6 +150,8 @@ pub(super) struct InitialQuadRow<'a> {
     pub(super) c_q: usize,
     pub(super) rho: i32,
     pub(super) e_qmax: i32,
+    /// Which samples reach `e_qmax`.
+    pub(super) reach: u16,
     pub(super) e_q: &'a [i32; 8],
     pub(super) s: &'a [u32; 8],
     pub(super) lep: usize,
@@ -155,6 +165,8 @@ pub(super) struct NonInitialQuadRow<'a> {
     pub(super) c_q: usize,
     pub(super) rho: i32,
     pub(super) e_qmax: i32,
+    /// Which samples reach `e_qmax`.
+    pub(super) reach: u16,
     pub(super) max_e: i32,
     pub(super) e_q: &'a [i32; 8],
     pub(super) s: &'a [u32; 8],
@@ -211,6 +223,7 @@ pub(super) fn first_quad_pair<S: QuadSink>(
         c_q: *state.c_q0,
         rho: state.rho[0],
         e_qmax: state.e_qmax[0],
+        reach: u16::from(rows.reach[x / 2]),
         e_q: &*state.e_q,
         s: &*state.s,
         lep,
@@ -236,6 +249,7 @@ pub(super) fn first_quad_pair<S: QuadSink>(
             c_q: c_q1,
             rho: state.rho[1],
             e_qmax: state.e_qmax[1],
+            reach: u16::from(rows.reach[x / 2 + 1]),
             e_q: &*state.e_q,
             s: &*state.s,
             lep: lep + 1,
@@ -296,6 +310,7 @@ pub(super) fn non_initial_quad_pair<S: QuadSink>(
         c_q: *state.c_q0,
         rho: state.rho[0],
         e_qmax: state.e_qmax[0],
+        reach: u16::from(rows.reach[x / 2]),
         max_e: prev_max,
         e_q: &*state.e_q,
         s: &*state.s,
@@ -331,6 +346,7 @@ pub(super) fn non_initial_quad_pair<S: QuadSink>(
             c_q: c_q1_local,
             rho: state.rho[1],
             e_qmax: state.e_qmax[1],
+            reach: u16::from(rows.reach[x / 2 + 1]),
             max_e: *max_e,
             e_q: &*state.e_q,
             s: &*state.s,

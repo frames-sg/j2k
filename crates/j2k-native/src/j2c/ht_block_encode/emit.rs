@@ -140,6 +140,7 @@ fn encode_quad_initial_row(
         c_q,
         rho,
         e_qmax,
+        reach,
         e_q,
         s,
         lep,
@@ -148,7 +149,7 @@ fn encode_quad_initial_row(
         cx_val,
     } = row;
     let u_q = e_qmax.max(1) - 1;
-    let eps = quad_eps(e_q, offset, e_qmax, u_q);
+    let eps = quad_eps(reach, u_q);
 
     e_val[lep] = e_val[lep].max(e_q[offset + 1] as u8);
     e_val[lep + 1] = e_q[offset + 3] as u8;
@@ -184,9 +185,10 @@ fn encode_quad_non_initial_row(
         c_q,
         rho,
         e_qmax,
+        reach,
         max_e,
-        e_q,
         s,
+        ..
     } = row;
     let kappa = if (rho & (rho - 1)) != 0 {
         max_e.max(1)
@@ -194,7 +196,7 @@ fn encode_quad_non_initial_row(
         1
     };
     let u_q = e_qmax.max(kappa) - kappa;
-    let eps = quad_eps(e_q, offset, e_qmax, u_q);
+    let eps = quad_eps(reach, u_q);
 
     let tuple = HT_VLC_ENCODE_TABLE1[(c_q << 8) | ((rho as usize) << 4) | eps as usize];
     vlc.push(u32::from(tuple >> 8), ((tuple >> 4) & 0x7) as u8);
@@ -211,10 +213,8 @@ fn encode_quad_non_initial_row(
 /// is 0. Computed without branches, since `u_q > 0` is data dependent.
 #[expect(clippy::inline_always, reason = "runs once per quad")]
 #[inline(always)]
-fn quad_eps(e_q: &[i32; 8], offset: usize, e_qmax: i32, u_q: i32) -> u16 {
-    let reaches = |sample: usize| u16::from(e_q[offset + sample] == e_qmax) << sample;
-    let eps = reaches(0) | reaches(1) | reaches(2) | reaches(3);
-    eps & (u16::from(u_q > 0) * 0xF)
+fn quad_eps(reach: u16, u_q: i32) -> u16 {
+    reach & (u16::from(u_q > 0) * 0xF)
 }
 
 #[expect(
