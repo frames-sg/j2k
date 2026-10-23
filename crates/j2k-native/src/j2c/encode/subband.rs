@@ -591,7 +591,7 @@ fn try_prepare_encoded_ht_blocks(
         slots
             .par_iter_mut()
             .enumerate()
-            .with_min_len(4)
+            .with_min_len(1)
             .for_each_init(init, |state, (index, slot)| {
                 *slot = Some(encode(state, index));
             });
