@@ -157,6 +157,81 @@ fn auto_classic_host_output_stays_cpu_without_metal_dispatches() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn auto_host_output_declines_every_stage_only_outside_measured_cells() {
+    let context = |num_pixels, reversible| J2kEncodeContext {
+        num_pixels,
+        num_components: 3,
+        bit_depth: 8,
+        signed: false,
+        reversible,
+    };
+    let mut auto = MetalEncodeStageAccelerator::for_auto_host_output();
+    auto.begin_encode(context(2592 * 1944, true))
+        .expect("begin lossless encode");
+    assert!(auto.declines_every_stage());
+    auto.begin_encode(context(2592 * 1944, false))
+        .expect("begin measured lossy encode");
+    assert!(!auto.declines_every_stage());
+    let mut explicit = MetalEncodeStageAccelerator::default();
+    explicit
+        .begin_encode(context(64 * 64, true))
+        .expect("begin explicit encode");
+    assert!(!explicit.declines_every_stage());
+
+    // The CPU encodes Auto then takes its fused paths with unchanged bytes.
+    let (width, height) = (96u32, 80u32);
+    let pixels: Vec<u8> = (0..width * height * 3)
+        .map(|i| u8::try_from((i * 37 + i / 7) & 0xff).expect("masked pixel fits u8"))
+        .collect();
+    for mode in [
+        J2kBlockCodingMode::HighThroughput,
+        J2kBlockCodingMode::Classic,
+    ] {
+        let options = |backend| {
+            J2kLosslessEncodeOptions::default()
+                .with_backend(backend)
+                .with_block_coding_mode(mode)
+                .with_validation(J2kEncodeValidation::External)
+        };
+        let samples = || J2kLosslessSamples::new(&pixels, width, height, 3, 8, false).unwrap();
+        let cpu = encode_j2k_lossless(samples(), &options(EncodeBackendPreference::CpuOnly))
+            .expect("CPU lossless encode");
+        let actual = encode_j2k_lossless_with_accelerator(
+            samples(),
+            &options(EncodeBackendPreference::Auto),
+            BackendKind::Metal,
+            &mut MetalEncodeStageAccelerator::for_auto_host_output(),
+        )
+        .expect("Auto lossless encode");
+        assert_eq!(actual.backend, BackendKind::Cpu);
+        assert_eq!(actual.codestream, cpu.codestream, "{mode:?} lossless");
+
+        let lossy_options = |backend| {
+            J2kLossyEncodeOptions::default()
+                .with_backend(backend)
+                .with_block_coding_mode(mode)
+                .with_validation(J2kEncodeValidation::External)
+        };
+        let lossy_samples = || J2kLossySamples::new(&pixels, width, height, 3, 8, false).unwrap();
+        let cpu = j2k::encode_j2k_lossy(
+            lossy_samples(),
+            &lossy_options(EncodeBackendPreference::CpuOnly),
+        )
+        .expect("CPU lossy encode");
+        let actual = encode_j2k_lossy_with_accelerator(
+            lossy_samples(),
+            &lossy_options(EncodeBackendPreference::Auto),
+            BackendKind::Metal,
+            &mut MetalEncodeStageAccelerator::for_auto_host_output(),
+        )
+        .expect("Auto lossy encode");
+        assert_eq!(actual.dispatch_report, J2kEncodeDispatchReport::default());
+        assert_eq!(actual.codestream, cpu.codestream, "{mode:?} lossy");
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn host_output_benchmark_route_forces_small_prep_stages_only() {
     if !should_run_metal_runtime() {
         return;

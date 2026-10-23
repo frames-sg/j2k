@@ -530,6 +530,13 @@ impl J2kEncodeStageAccelerator for MetalEncodeStageAccelerator {
         self.parallel_cpu_code_block_fallback
     }
 
+    // Outside its measured cells Auto declines every stage hook after the
+    // whole-tile one, so the CPU encode may take its fused paths.
+    fn declines_every_stage(&self) -> bool {
+        self.route_profile == MetalEncodeRouteProfile::AutoHostOutput
+            && (self.auto_host_output_force_cpu_fallback || !self.host_output_stages_enabled)
+    }
+
     fn ht_tile_required_magnitude_bound(&self) -> Option<u8> {
         self.ht_tile_required_magnitude_bound
     }
