@@ -301,7 +301,7 @@ pub(crate) use self::direct_grayscale_execute::{
 #[cfg(target_os = "macos")]
 mod direct_prepare;
 #[cfg(target_os = "macos")]
-use self::direct_prepare::append_span_rects;
+use self::direct_prepare::{append_span_rects, band_cells, BandCells};
 #[cfg(target_os = "macos")]
 pub(crate) use self::direct_prepare::{
     prepare_direct_grayscale_plan, prepare_referenced_classic_color_plan,

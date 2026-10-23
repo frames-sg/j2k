@@ -828,6 +828,40 @@ inline float idwt53_band_sample(
         : 0.0f;
 }
 
+// Reads the high-pass sub-bands of a fused 2D level, indexed HL 0, LH 1, HH 2.
+// Dense sub-bands store every sample.
+struct J2kDenseBands {
+    float sample(uint, device const float *band, uint width, uint height, uint x, uint y) const {
+        return idwt53_band_sample(band, width, height, x, y);
+    }
+};
+
+// One byte per `1 << shift`-sample square cell of a sub-band, from `offset`,
+// `row_cells` per row: zero for a cell no code block covers. Its samples are
+// zero and were never written.
+struct J2kBandCells {
+    uint offset;
+    uint row_cells;
+    uint shift;
+    uint reserved;
+};
+
+struct J2kSparseBands {
+    device const uchar *cells;
+    constant J2kBandCells *bands;
+
+    float sample(uint index, device const float *band, uint width, uint height, uint x, uint y)
+        const {
+        if (x >= width || y >= height) {
+            return 0.0f;
+        }
+        const J2kBandCells b = bands[index];
+        return cells[b.offset + (y >> b.shift) * b.row_cells + (x >> b.shift)] != 0u
+            ? band[y * width + x]
+            : 0.0f;
+    }
+};
+
 // One 5/3 synthesis level in a single pass: each threadgroup loads its output
 // tile plus a two-sample halo from the four sub-bands, lifts the rows, then
 // the tile's columns, and writes the tile once. Every sample sees the same
@@ -859,7 +893,7 @@ struct J2kIdwtTile {
 
 // `idwt53_fused_2d_core` up to its final writes: the tile then holds the
 // synthesized samples.
-template<typename Params>
+template<typename Params, typename Bands = J2kDenseBands>
 inline J2kIdwtTile idwt53_fused_2d_tile(
     device const float *ll,
     device const float *hl,
@@ -868,7 +902,8 @@ inline J2kIdwtTile idwt53_fused_2d_tile(
     constant Params &params,
     uint2 group,
     uint2 local,
-    threadgroup float *tile
+    threadgroup float *tile,
+    Bands bands = Bands()
 ) {
     const uint width = params.width;
     const uint height = params.height;
@@ -911,14 +946,14 @@ inline J2kIdwtTile idwt53_fused_2d_tile(
             lows[k] = low_y
                 ? idwt53_band_sample(ll, params.ll_width, params.ll_height,
                     low_band_x + local.x - params.ll_x, band_y - params.ll_y)
-                : idwt53_band_sample(lh, params.lh_width, params.lh_height,
+                : bands.sample(1u, lh, params.lh_width, params.lh_height,
                     low_band_x + local.x - params.lh_x, band_y - params.lh_y);
         }
         if (y < ly1 && xh < lx1) {
             highs[k] = low_y
-                ? idwt53_band_sample(hl, params.hl_width, params.hl_height,
+                ? bands.sample(0u, hl, params.hl_width, params.hl_height,
                     high_band_x + local.x - params.hl_x, band_y - params.hl_y)
-                : idwt53_band_sample(hh, params.hh_width, params.hh_height,
+                : bands.sample(2u, hh, params.hh_width, params.hh_height,
                     high_band_x + local.x - params.hh_x, band_y - params.hh_y);
         }
     }
@@ -1418,7 +1453,7 @@ constant uint J2K_IDWT97_2D_STRIDE = J2K_IDWT97_2D_TILE_W + 2u * J2K_IDWT97_HALO
 // run the four vertical steps, and write the tile. Each sample sees the same
 // operations in the same order as the fused horizontal and vertical kernels.
 // Needs width and height of at least 2.
-template<typename Params>
+template<typename Params, typename Bands = J2kDenseBands>
 inline J2kIdwtTile idwt97_fused_2d_tile(
     device const float *ll,
     device const float *hl,
@@ -1429,7 +1464,8 @@ inline J2kIdwtTile idwt97_fused_2d_tile(
     constant J2kIdwt97LiftSteps &vertical,
     uint2 group,
     uint2 local,
-    threadgroup float *tile
+    threadgroup float *tile,
+    Bands bands = Bands()
 ) {
     const uint width = params.width;
     const uint height = params.height;
@@ -1468,15 +1504,15 @@ inline J2kIdwtTile idwt97_fused_2d_tile(
             low = low_y
                 ? idwt53_band_sample(ll, params.ll_width, params.ll_height,
                     low_band_x + local.x - params.ll_x, band_y - params.ll_y)
-                : idwt53_band_sample(lh, params.lh_width, params.lh_height,
+                : bands.sample(1u, lh, params.lh_width, params.lh_height,
                     low_band_x + local.x - params.lh_x, band_y - params.lh_y);
             low *= KAPPA;
         }
         if (xh < lx1) {
             high = low_y
-                ? idwt53_band_sample(hl, params.hl_width, params.hl_height,
+                ? bands.sample(0u, hl, params.hl_width, params.hl_height,
                     high_band_x + local.x - params.hl_x, band_y - params.hl_y)
-                : idwt53_band_sample(hh, params.hh_width, params.hh_height,
+                : bands.sample(2u, hh, params.hh_width, params.hh_height,
                     high_band_x + local.x - params.hh_x, band_y - params.hh_y);
             high *= high_pass;
         }

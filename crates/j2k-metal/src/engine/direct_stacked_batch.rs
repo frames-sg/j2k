@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use crate::metal_types::{Buffer, CommandBufferRef, ComputeCommandEncoderRef};
 
-use super::abi::J2kIdwtSingleDecompositionParams;
+use super::abi::J2kBandCells;
 use super::decode_dispatch::mct::dispatch_inverse_mct_buffers_in_command_buffer;
 use super::decode_dispatch::{
     fused_idwt_mct_rgb8_supported, FusedIdwtStoreSource, IdwtSubBandBuffers,
@@ -17,7 +17,7 @@ use super::direct_commands::new_compute_command_encoder;
 use super::direct_grayscale_execute::{
     checked_coefficient_len, encode_prepared_direct_component_plane_before_final_level,
     encode_prepared_direct_component_plane_in_command_buffer, final_identity_stored_level,
-    DirectComponentPlaneRequest,
+    DirectComponentPlaneRequest, FinalLevelInputs,
 };
 use super::{
     build_flattened_cpu_tier1_cache, elapsed_us,
@@ -233,6 +233,10 @@ fn try_encode_fused_mct_rgb8_color_plan(
         encoder.endEncoding();
         inputs.push(level?);
     }
+    let cells = fused_band_cells(runtime, &inputs)?;
+    if let Some((buffer, _)) = &cells {
+        request.retained_buffers.push(buffer.clone());
+    }
     encode_fused_idwt_mct_rgb8_to_surface_in_command_buffer(
         runtime,
         command_buffer,
@@ -241,6 +245,7 @@ fn try_encode_fused_mct_rgb8_color_plan(
             fused_level_source(&inputs[1], transform),
             fused_level_source(&inputs[2], transform),
         ],
+        cells.as_ref().map(|(buffer, bands)| (buffer, bands)),
         plan.dimensions,
         plan.bit_depths,
         plan.transform,
@@ -248,9 +253,60 @@ fn try_encode_fused_mct_rgb8_color_plan(
     .map(Some)
 }
 
+/// One buffer holding the cell maps of the three components' high-pass
+/// sub-bands, HL, LH, HH per component, after a leading covered cell that a
+/// sub-band zeroed as usual reads for every sample; `None` when every
+/// sub-band was zeroed as usual.
+#[cfg(target_os = "macos")]
+fn fused_band_cells(
+    runtime: &MetalRuntime,
+    inputs: &[FinalLevelInputs],
+) -> Result<Option<(Buffer, [J2kBandCells; 9])>, Error> {
+    if inputs
+        .iter()
+        .all(|(_, _, cells)| cells.iter().all(Option::is_none))
+    {
+        return Ok(None);
+    }
+    let dense = J2kBandCells {
+        offset: 0,
+        row_cells: 1,
+        shift: 31,
+        reserved: 0,
+    };
+    let mut bands = [dense; 9];
+    let len = 1 + inputs
+        .iter()
+        .flat_map(|(_, _, cells)| cells.iter().flatten())
+        .map(|cells| cells.covered.len())
+        .sum::<usize>();
+    let mut bytes = crate::batch_allocation::BatchMetadataBudget::new("J2K MetalDirect cell maps")
+        .try_vec(len, "J2K MetalDirect sub-band cell maps")?;
+    bytes.push(1u8);
+    for (band, cells) in bands
+        .iter_mut()
+        .zip(inputs.iter().flat_map(|(_, _, cells)| cells))
+    {
+        if let Some(cells) = cells {
+            *band = J2kBandCells {
+                offset: u32::try_from(bytes.len()).map_err(|_| Error::MetalKernel {
+                    message: "J2K Metal sub-band cell map exceeds u32".to_string(),
+                })?,
+                row_cells: cells.row_cells,
+                shift: cells.shift,
+                reserved: 0,
+            };
+            bytes.extend_from_slice(&cells.covered);
+        }
+    }
+    let buffer = super::HtInputAllocator::new(&runtime.device, &runtime.ht_input_heap)
+        .copied_slice(&bytes)?;
+    Ok(Some((buffer, bands)))
+}
+
 #[cfg(target_os = "macos")]
 fn fused_level_source(
-    (bands, params): &([DirectBandSlice; 4], J2kIdwtSingleDecompositionParams),
+    (bands, params, _): &FinalLevelInputs,
     transform: J2kWaveletTransform,
 ) -> FusedIdwtStoreSource<'_> {
     let [ll, hl, lh, hh] = bands;

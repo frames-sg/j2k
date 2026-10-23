@@ -554,6 +554,19 @@ pub(crate) struct J2kZeroRect {
     pub(crate) stride: u32,
 }
 
+/// One sub-band's cell map for the fused last-level colour kernels: one byte
+/// per `1 << shift` square cell from byte `offset`, `row_cells` per row;
+/// mirrors `J2kBandCells` in `idwt.metal`.
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct J2kBandCells {
+    pub(crate) offset: u32,
+    pub(crate) row_cells: u32,
+    pub(crate) shift: u32,
+    pub(crate) reserved: u32,
+}
+
 /// A stacked grayscale group's final store applied by its last wavelet level;
 /// mirrors `J2kStackedGrayStoreParams` in `idwt_store.metal`.
 #[cfg(target_os = "macos")]
@@ -1135,6 +1148,7 @@ impl_gpu_readback_abi!(
     J2kHtRepeatedBatchParams,
     J2kHtVlcDispatchParams,
     J2kZeroRect,
+    J2kBandCells,
     J2kStackedGrayStoreParams,
     J2kClassicRepeatedBatchParams,
     J2kHtStatus,

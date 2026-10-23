@@ -6,11 +6,12 @@ use crate::metal_types::prelude::*;
 use std::time::Instant;
 
 use crate::metal_types::{Buffer, ComputeCommandEncoderRef};
-use j2k_native::{J2kDirectStoreStep, J2kWaveletTransform};
+use j2k_native::{J2kDirectBandId, J2kDirectStoreStep, J2kWaveletTransform};
 
 use super::{upload_cpu_decoded_coefficients, DirectComponentPlaneRequest};
 use crate::engine::{
-    abi::{J2kIdwtSingleDecompositionParams, J2kStoreParams},
+    abi::{J2kIdwtSingleDecompositionParams, J2kStoreParams, J2kZeroRect},
+    band_cells,
     decode_dispatch::{
         encode_prepared_classic_sub_band_group_to_buffer_in_encoder,
         encode_prepared_classic_sub_band_to_buffer_in_encoder,
@@ -45,7 +46,7 @@ use crate::engine::{
     },
     direct_status::DirectStatusCheck,
     direct_tier1::DirectTier1Mode,
-    MetalRuntime,
+    BandCells, MetalRuntime,
 };
 use crate::{profile_env::metal_profile_stages_enabled, Error};
 
@@ -66,6 +67,10 @@ struct ComponentPlaneExecution<'a> {
     bands: Vec<DirectBandSlice>,
     final_plane: FinalComponentPlane,
     round_centered_store: bool,
+    /// Sub-bands whose only reader treats uncovered code-block cells as zero,
+    /// so decoding records their cell maps instead of zeroing them.
+    sparse_bands: [Option<J2kDirectBandId>; 3],
+    band_cells: Vec<(J2kDirectBandId, BandCells)>,
 }
 
 impl ComponentPlaneExecution<'_> {
@@ -148,11 +153,13 @@ impl ComponentPlaneExecution<'_> {
         let buffer = match self.tier1_mode {
             DirectTier1Mode::Metal => {
                 let output = take_f32_scratch_buffer(self.runtime, output_span.elements)?;
+                let sparse_zero_rects = self.sparse_zero_rects(group)?;
                 let (buffers, status_check) =
                     encode_prepared_ht_sub_band_group_to_buffer_in_encoder(
                         self.runtime,
                         self.encoder,
                         group,
+                        sparse_zero_rects.as_deref().unwrap_or(&group.zero_rects),
                         &output.buffer,
                     )?;
                 extend_preallocated_retained_buffers(self.retained_buffers, buffers)?;
@@ -182,6 +189,50 @@ impl ComponentPlaneExecution<'_> {
             });
         }
         Ok(())
+    }
+
+    /// The group's zero rectangles without those of its sparse sub-bands
+    /// whose cell maps it records, or `None` when it records none.
+    fn sparse_zero_rects(
+        &mut self,
+        group: &PreparedHtSubBandGroup,
+    ) -> Result<Option<Vec<J2kZeroRect>>, Error> {
+        let mut skipped = Vec::new();
+        for member in &group.members {
+            if !self.sparse_bands.contains(&Some(member.band_id)) {
+                continue;
+            }
+            let (width, height) = (member.window.width(), member.window.height());
+            let span =
+                member.offset_elements..member.offset_elements + width as usize * height as usize;
+            // A sub-band its jobs cover entirely reads densely.
+            if !group
+                .zero_rects
+                .iter()
+                .any(|rect| span.contains(&(rect.offset as usize)))
+            {
+                continue;
+            }
+            if let Some(cells) = band_cells(member.offset_elements, width, height, &group.jobs)? {
+                self.band_cells.push((member.band_id, cells));
+                skipped.push(
+                    member.offset_elements
+                        ..member.offset_elements + width as usize * height as usize,
+                );
+            }
+        }
+        if skipped.is_empty() {
+            return Ok(None);
+        }
+        let mut budget =
+            crate::batch_allocation::BatchMetadataBudget::new("HTJ2K MetalDirect zero rectangles");
+        let mut rects = budget.try_vec(group.zero_rects.len(), "HT sparse zero rectangles")?;
+        rects.extend(group.zero_rects.iter().copied().filter(|rect| {
+            !skipped
+                .iter()
+                .any(|range| range.contains(&(rect.offset as usize)))
+        }));
+        Ok(Some(rects))
     }
 
     fn encode_classic_sub_band(&mut self, sub_band: &PreparedClassicSubBand) -> Result<(), Error> {
@@ -462,15 +513,30 @@ pub(in crate::engine) fn final_identity_stored_level(
         .then_some(idwt)
 }
 
+/// The inputs of a component's last wavelet level, with the cell maps of its
+/// high-pass sub-bands whose uncovered cells were left unzeroed (`None` for a
+/// sub-band zeroed as usual).
+pub(in crate::engine) type FinalLevelInputs = (
+    [DirectBandSlice; 4],
+    J2kIdwtSingleDecompositionParams,
+    [Option<BandCells>; 3],
+);
+
 /// Encodes every step of `request.plan` before `idwt`, its
-/// [`final_identity_stored_level`], and returns that level's inputs.
+/// [`final_identity_stored_level`], and returns that level's inputs. That
+/// level's kernel must read uncovered high-pass cells as zero.
 pub(in crate::engine) fn encode_prepared_direct_component_plane_before_final_level(
     request: DirectComponentPlaneRequest<'_>,
     encoder: &ComputeCommandEncoderRef,
     idwt: &PreparedDirectIdwt,
-) -> Result<([DirectBandSlice; 4], J2kIdwtSingleDecompositionParams), Error> {
+) -> Result<FinalLevelInputs, Error> {
     let steps = request.plan.steps.len();
     let mut execution = component_plane_execution(request, encoder)?;
+    execution.sparse_bands = [
+        Some(idwt.step.hl_band_id),
+        Some(idwt.step.lh_band_id),
+        Some(idwt.step.hh_band_id),
+    ];
     execution.encode_steps(steps.saturating_sub(2))?;
     let band = |id, rect| lookup_direct_band_slice_entry(&execution.bands, id, rect);
     let ll = band(idwt.step.ll_band_id, idwt.step.ll)?;
@@ -478,7 +544,19 @@ pub(in crate::engine) fn encode_prepared_direct_component_plane_before_final_lev
     let lh = band(idwt.step.lh_band_id, idwt.step.lh)?;
     let hh = band(idwt.step.hh_band_id, idwt.step.hh)?;
     let params = prepared_idwt_params(idwt, idwt_input_windows_from_slices(&ll, &hl, &lh, &hh));
-    Ok(([ll, hl, lh, hh], params))
+    let mut cells = |id| {
+        let index = execution
+            .band_cells
+            .iter()
+            .position(|(band, _)| *band == id)?;
+        Some(execution.band_cells.swap_remove(index).1)
+    };
+    let cells = [
+        cells(idwt.step.hl_band_id),
+        cells(idwt.step.lh_band_id),
+        cells(idwt.step.hh_band_id),
+    ];
+    Ok(([ll, hl, lh, hh], params, cells))
 }
 
 fn component_plane_execution<'a>(
@@ -512,5 +590,7 @@ fn component_plane_execution<'a>(
         bands,
         final_plane: FinalComponentPlane::empty(),
         round_centered_store: plan.round_centered_store,
+        sparse_bands: [None; 3],
+        band_cells: Vec::new(),
     })
 }

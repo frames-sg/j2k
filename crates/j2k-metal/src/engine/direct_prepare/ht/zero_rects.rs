@@ -84,6 +84,85 @@ pub(super) fn append_uncovered_rects(
     Ok(())
 }
 
+/// Which square cells of a sub-band its code-block jobs cover; the cell map
+/// `J2kSparseBands` reads in `idwt.metal`.
+pub(in crate::engine) struct BandCells {
+    pub(in crate::engine) row_cells: u32,
+    pub(in crate::engine) shift: u32,
+    pub(in crate::engine) covered: Vec<u8>,
+}
+
+/// Smallest cell edge, so a cell map stays small.
+const MIN_CELL_SHIFT: u32 = 3;
+/// Largest cell edge: the 64-sample HT code block.
+const MAX_CELL_SHIFT: u32 = 6;
+
+/// The cells of one `width` x `height` sub-band, stored row-major at arena
+/// word `base`, that the jobs among `jobs` inside it cover, or `None` when a
+/// job edge inside the band is not on a cell edge of at least
+/// `1 << MIN_CELL_SHIFT` samples. Each cell is then inside one job, which
+/// writes all of it, or outside every job, so all its samples are zero.
+pub(in crate::engine) fn band_cells(
+    base: usize,
+    width: u32,
+    height: u32,
+    jobs: &[J2kHtCleanupBatchJob],
+) -> Result<Option<BandCells>, Error> {
+    let end = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|len| base.checked_add(len))
+        .ok_or_else(|| outside("sub-band extent overflows"))?;
+    let mut budget =
+        crate::batch_allocation::BatchMetadataBudget::new("HTJ2K MetalDirect band cells");
+    let mut blocks = budget.try_vec(jobs.len(), "HT band-cell blocks")?;
+    let mut shift = MAX_CELL_SHIFT;
+    for job in jobs {
+        let offset = job.output_offset as usize;
+        if job.width == 0 || job.height == 0 || offset < base || offset >= end {
+            continue;
+        }
+        let local = offset - base;
+        let x = u32::try_from(local % width as usize).map_err(|_| outside("job column"))?;
+        let y = u32::try_from(local / width as usize).map_err(|_| outside("job row"))?;
+        if job.output_stride != width
+            || x.checked_add(job.width).is_none_or(|end| end > width)
+            || y.checked_add(job.height).is_none_or(|end| end > height)
+        {
+            return Err(outside("job does not lie within its sub-band"));
+        }
+        for (edge, extent) in [
+            (x, width),
+            (x + job.width, width),
+            (y, height),
+            (y + job.height, height),
+        ] {
+            if edge != 0 && edge != extent {
+                shift = shift.min(edge.trailing_zeros());
+            }
+        }
+        blocks.push((x, y, job.width, job.height));
+    }
+    if shift < MIN_CELL_SHIFT {
+        return Ok(None);
+    }
+    let cell = 1u32 << shift;
+    let row_cells = width.div_ceil(cell);
+    let cells = row_cells as usize * height.div_ceil(cell) as usize;
+    let mut covered = budget.try_vec(cells, "HT band-cell map")?;
+    covered.resize(cells, 0u8);
+    for (x, y, w, h) in blocks {
+        for cy in y >> shift..(y + h).div_ceil(cell) {
+            let row = cy as usize * row_cells as usize;
+            covered[row + (x >> shift) as usize..row + (x + w).div_ceil(cell) as usize].fill(1);
+        }
+    }
+    Ok(Some(BandCells {
+        row_cells,
+        shift,
+        covered,
+    }))
+}
+
 /// Appends `len` contiguous words from `offset` as rectangles of whole rows.
 pub(in crate::engine) fn append_span_rects(
     offset: usize,
@@ -170,7 +249,9 @@ fn outside(reason: &'static str) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{append_span_rects, append_uncovered_rects, J2kZeroRect, MAX_RECT_ROWS};
+    use super::{
+        append_span_rects, append_uncovered_rects, band_cells, J2kZeroRect, MAX_RECT_ROWS,
+    };
     use crate::engine::abi::J2kHtCleanupBatchJob;
 
     fn job(
@@ -214,6 +295,49 @@ mod tests {
             }
         }
         words
+    }
+
+    #[test]
+    fn band_cells_cover_exactly_the_blocks_with_jobs() {
+        // A 100 x 40 sub-band at word 7 with 32 x 16 blocks, clipped at the
+        // right and bottom edges; blocks (32, 0) and (64, 32) have no job.
+        let (base, width, height) = (7_u32, 100_u32, 40_u32);
+        let mut jobs = Vec::new();
+        for by in (0..height).step_by(16) {
+            for bx in (0..width).step_by(32) {
+                if (bx, by) != (32, 0) && (bx, by) != (64, 32) {
+                    let (w, h) = ((width - bx).min(32), (height - by).min(16));
+                    jobs.push(job(base, width, bx, by, w, h));
+                }
+            }
+        }
+        // A job of another sub-band is ignored.
+        jobs.push(job(base + width * height, 8, 0, 0, 8, 8));
+        let cells = band_cells(base as usize, width, height, &jobs)
+            .unwrap()
+            .expect("aligned job edges");
+        assert_eq!((cells.shift, cells.row_cells), (4, 7));
+        for y in 0..height {
+            for x in 0..width {
+                let covered = cells.covered
+                    [((y >> cells.shift) * cells.row_cells + (x >> cells.shift)) as usize];
+                let block = (x / 32 * 32, y / 16 * 16);
+                assert_eq!(
+                    covered != 0,
+                    block != (32, 0) && block != (64, 32),
+                    "({x}, {y})"
+                );
+            }
+        }
+
+        // An edge 4 samples into the band could leave a cell half covered.
+        let jobs = [
+            job(base, width, 0, 0, 4, 40),
+            job(base, width, 4, 0, 96, 40),
+        ];
+        assert!(band_cells(base as usize, width, height, &jobs)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
