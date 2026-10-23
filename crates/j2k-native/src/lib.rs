@@ -165,7 +165,7 @@ use crate::math::{dispatch, Level};
 #[cfg(test)]
 use color::cielab_to_rgb;
 pub(crate) use color::{
-    convert_color_space, interleave_and_convert, interleave_and_convert_region,
+    convert_color_space, interleave_and_convert_after_mct, interleave_and_convert_region,
     resolve_alpha_and_color_space, resolve_palette_indices, validate_and_reorder_channels,
     validate_interleaved_output_buffer,
 };

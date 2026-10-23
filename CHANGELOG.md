@@ -5,6 +5,12 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- RGB8 CPU decodes of plain colour images, without a palette, channel
+  definitions, sYCC or CIELab, leave the inverse MCT to the RGB8 pack, which
+  transforms each cache-sized chunk and packs it at once, instead of
+  transforming the three planes in place and reading them again. On the pool
+  each chunk is transformed in scratch, so the planes are not written back.
+  Output is unchanged.
 - CPU decodes of a later component on the tile-wide route zero the previous
   component's stale coefficients on the route's workers, each strip its own
   rows and separate tasks the ranges between strips, instead of clearing the

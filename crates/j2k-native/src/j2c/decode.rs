@@ -330,6 +330,7 @@ fn decode_parsed_tiles<'a>(
     // Note that this assumes that either all tiles have MCT or none of them.
     // In theory, only some could have it... But hopefully no such cursed
     // images exist!
+    tile_ctx.deferred_mct = None;
     if tiles[0].mct {
         let stage_start = profile::profile_now(profile_enabled);
         let parallel = cpu_decode_parallelism == CpuDecodeParallelism::Auto;
@@ -1127,12 +1128,9 @@ fn include_capacity<T>(bytes: &mut usize, capacity: usize) -> Result<()> {
 /// Some of the fields are temporary in nature and reset after moving on to the
 /// next tile, some contain global state.
 #[derive(Default)]
-#[cfg_attr(
-    all(test, feature = "parallel"),
-    expect(
-        clippy::struct_excessive_bools,
-        reason = "test builds add independent switches that pin the per-sub-band HT, whole-code-block storage, and separate last-level IDWT paths"
-    )
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the rounding, deferred-MCT and row-streamed IDWT switches are independent, and test builds add switches that pin the per-sub-band HT, whole-code-block storage and separate last-level IDWT paths"
 )]
 pub(crate) struct TileDecodeContext {
     /// A reusable buffer for the IDWT output.
@@ -1181,6 +1179,11 @@ pub(crate) struct TileDecodeContext {
     pub(crate) output_region: Option<OutputRegion>,
     /// Whether irreversible samples are being decoded for an integer output.
     pub(crate) round_irreversible_output: bool,
+    /// Whether the inverse MCT is left to the caller's RGB8 pack, set
+    /// around a decode like `round_irreversible_output`.
+    pub(crate) defer_mct: bool,
+    /// The inverse MCT this decode left to the caller.
+    pub(crate) deferred_mct: Option<super::mct::DeferredMct>,
     /// Samples, over all components, that `store` must write because the
     /// planes were reused without zeroing; zero when the planes were zeroed.
     pub(crate) unzeroed_plane_samples: usize,
@@ -1203,6 +1206,7 @@ impl TileDecodeContext {
     fn release_all_allocations(&mut self) {
         let output_region = self.output_region;
         let round_irreversible_output = self.round_irreversible_output;
+        let defer_mct = self.defer_mct;
         let line_region_idwt_permitted = self.line_region_idwt_permitted;
         #[cfg(all(test, feature = "parallel"))]
         let force_per_sub_band = self.force_per_sub_band;
@@ -1215,6 +1219,7 @@ impl TileDecodeContext {
         *self = Self::default();
         self.output_region = output_region;
         self.round_irreversible_output = round_irreversible_output;
+        self.defer_mct = defer_mct;
         self.line_region_idwt_permitted = line_region_idwt_permitted;
         #[cfg(all(test, feature = "parallel"))]
         {

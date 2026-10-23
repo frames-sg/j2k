@@ -24,7 +24,8 @@ pub use output_planes::{
     NativeComponentPlaneParts,
 };
 pub(crate) use packing::{
-    interleave_and_convert, interleave_and_convert_region, validate_interleaved_output_buffer,
+    interleave_and_convert_after_mct, interleave_and_convert_region,
+    validate_interleaved_output_buffer,
 };
 pub(crate) use palette::resolve_palette_indices;
 pub use types::{Bitmap, ColorSpace, RawBitmap};

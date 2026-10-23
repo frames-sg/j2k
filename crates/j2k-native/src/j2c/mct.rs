@@ -50,6 +50,20 @@ pub(crate) fn apply_inverse(
         round_irreversible_output && transform == WaveletTransform::Irreversible97;
     let transform_addends = if centered_output { [0.0; 3] } else { addends };
 
+    if tile_ctx.defer_mct
+        && backend.is_none()
+        && s0.integer_container.is_none()
+        && s1.integer_container.is_none()
+        && s2.integer_container.is_none()
+    {
+        tile_ctx.deferred_mct = Some(DeferredMct {
+            transform,
+            addends: transform_addends,
+            rounding: centered_output.then_some(addends),
+        });
+        return Ok(());
+    }
+
     if s0.integer_container.is_some()
         || s1.integer_container.is_some()
         || s2.integer_container.is_some()
@@ -107,6 +121,90 @@ const MCT_CHUNK: usize = 1 << 14;
 /// other decodes share the machine.
 #[cfg(any(feature = "parallel", test))]
 const MCT_POOL_SAMPLES: usize = 1 << 22;
+
+/// The CPU inverse transform of the first three planes that
+/// [`apply_inverse`] left to the RGB8 pack of a plain colour image.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DeferredMct {
+    transform: WaveletTransform,
+    addends: [f32; 3],
+    rounding: Option<[f32; 3]>,
+}
+
+/// Samples per plane in one fused pack chunk: the three planes' scratch
+/// stays small on the stack and in L1, and chunks are multiples of the SIMD
+/// width (see [`transform_planes`]).
+const PACK_CHUNK: usize = 1 << 10;
+
+/// Fewest chunks per fused pack task.
+#[cfg(feature = "parallel")]
+const PACK_TASK_CHUNKS: usize = 64;
+
+impl DeferredMct {
+    /// Transform the planes in place, as [`apply_inverse`] would have.
+    pub(crate) fn apply(self, planes: (&mut [f32], &mut [f32], &mut [f32]), parallel: bool) {
+        transform_planes(
+            self.transform,
+            planes,
+            self.addends,
+            self.rounding,
+            parallel,
+        );
+    }
+
+    /// Transform the planes chunk by chunk and pack each chunk as RGB8 with
+    /// `pack` while it is in cache, where [`Self::apply`] transforms the
+    /// whole planes and the pack reads them again. On the pool each chunk is
+    /// transformed in scratch, so the planes are not written back: the
+    /// workers share memory bandwidth. One thread transforms in place, which
+    /// costs less than the copy.
+    pub(crate) fn pack_rgb8(
+        self,
+        [r, g, b]: [&mut [f32]; 3],
+        output: &mut [u8],
+        parallel: bool,
+        pack: impl Fn([&[f32]; 3], &mut [u8]) + Sync,
+    ) {
+        #[cfg(feature = "parallel")]
+        if parallel && r.len() > PACK_CHUNK && rayon::current_num_threads() > 1 {
+            use rayon::prelude::*;
+            type Scratch = [[f32; PACK_CHUNK]; 3];
+            let run = |scratch: &mut Scratch,
+                       output: &mut [u8],
+                       ((r, g), b): ((&[f32], &[f32]), &[f32])| {
+                let [s0, s1, s2] = scratch;
+                let (s0, s1, s2) = (&mut s0[..r.len()], &mut s1[..g.len()], &mut s2[..b.len()]);
+                s0.copy_from_slice(r);
+                s1.copy_from_slice(g);
+                s2.copy_from_slice(b);
+                self.transform_chunk((s0, s1, s2));
+                pack([s0, s1, s2], output);
+            };
+            output
+                .par_chunks_mut(3 * PACK_CHUNK)
+                .zip(r.par_chunks(PACK_CHUNK).zip(g.par_chunks(PACK_CHUNK)))
+                .zip(b.par_chunks(PACK_CHUNK))
+                // Each task zeroes one scratch; long tasks keep that rare.
+                .with_min_len(PACK_TASK_CHUNKS)
+                .for_each_init(
+                    || [[0.0; PACK_CHUNK]; 3],
+                    |scratch, ((output, rg), b)| run(scratch, output, (rg, b)),
+                );
+            return;
+        }
+        let _ = parallel;
+        let chunks = r.chunks_mut(PACK_CHUNK).zip(g.chunks_mut(PACK_CHUNK));
+        let outputs = output.chunks_mut(3 * PACK_CHUNK);
+        for (output, ((s0, s1), s2)) in outputs.zip(chunks.zip(b.chunks_mut(PACK_CHUNK))) {
+            self.transform_chunk((s0, s1, s2));
+            pack([s0, s1, s2], output);
+        }
+    }
+
+    fn transform_chunk(self, planes: (&mut [f32], &mut [f32], &mut [f32])) {
+        transform_planes(self.transform, planes, self.addends, self.rounding, false);
+    }
+}
 
 /// The CPU inverse transform, then (for centered 9/7 output) the rounding
 /// and level shift, chunk by chunk so each chunk makes one trip to memory.
@@ -327,6 +425,11 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the test pack rounds and saturates to 8 bits like the RGB8 output"
+    )]
     fn chunked_inverse_mct_matches_whole_plane_passes() {
         // Serial cases: planes a few chunks long with a ragged tail. Pool
         // cases: planes past the pool floor, in a two-thread pool so the pool
@@ -385,6 +488,27 @@ mod tests {
                         .eq(expected.iter().flatten().map(|v| v.to_bits())),
                     "{transform:?} {rounding:?} {parallel}"
                 );
+
+                // The pack that fuses the deferred transform writes the same bytes.
+                let pack = |[r, g, b]: [&[f32]; 3], output: &mut [u8]| {
+                    let samples = r.iter().zip(g).zip(b);
+                    for (pixel, ((r, g), b)) in
+                        output.as_chunks_mut::<3>().0.iter_mut().zip(samples)
+                    {
+                        pixel.copy_from_slice(&[*r, *g, *b].map(|v| v.round() as u8));
+                    }
+                };
+                let mut packed = vec![0_u8; 3 * len];
+                pack([&expected[0], &expected[1], &expected[2]], &mut packed);
+                let [mut s0, mut s1, mut s2] = planes(len);
+                let mut fused = vec![0_u8; 3 * len];
+                DeferredMct {
+                    transform,
+                    addends,
+                    rounding,
+                }
+                .pack_rgb8([&mut s0, &mut s1, &mut s2], &mut fused, parallel, pack);
+                assert_eq!(fused, packed, "fused {transform:?} {rounding:?} {parallel}");
             }
         }
     }
