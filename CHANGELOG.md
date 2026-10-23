@@ -5,6 +5,11 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- The Metal HT cleanup decode packs each quad's VLC word into the first half of
+  its row for code blocks at most 64 samples wide, so the round trip between its
+  two kernels writes and reads half the memory lines. A 4096 x 2048 RGB HTJ2K
+  decode took 7.1 ms against 8.4 ms lossless and 5.8 ms against 6.1 ms at 2 bpp.
+  Output is unchanged.
 - The `j2k-metal` `J2kDecoder` copies the codestream for a referenced HTJ2K
   plan on a pool worker while the packet headers are parsed, instead of after
   them. A 4096 x 2048 RGB HTJ2K lossless decode to an RGB8 surface took 7.56 ms
