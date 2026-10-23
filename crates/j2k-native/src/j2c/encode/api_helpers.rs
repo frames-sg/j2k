@@ -176,6 +176,10 @@ fn try_deinterleave_rgb8_unsigned_to_f32(
             b.push(f32::from(pixel[2]) - 128.0);
         }
     }
+    rgb_components(r, g, b)
+}
+
+fn rgb_components(r: Vec<f32>, g: Vec<f32>, b: Vec<f32>) -> EncodeResult<Vec<Vec<f32>>> {
     let mut components = Vec::new();
     components
         .try_reserve_exact(3)

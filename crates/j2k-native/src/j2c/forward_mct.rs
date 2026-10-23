@@ -30,18 +30,19 @@ pub(crate) fn forward_rct(components: &mut [Vec<f32>]) {
         .zip(g_components.iter_mut())
         .zip(b_components.iter_mut())
     {
-        let r0 = *r;
-        let g0 = *g;
-        let b0 = *b;
-
-        let y = floor_f32((r0 + 2.0 * g0 + b0) * mct::RCT_QUARTER);
-        let cb = b0 - g0;
-        let cr = r0 - g0;
-
-        *r = y;
-        *g = cb;
-        *b = cr;
+        [*r, *g, *b] = rct_pixel(*r, *g, *b);
     }
+}
+
+/// The forward RCT of one (R, G, B) sample triple.
+#[expect(clippy::inline_always, reason = "runs once per pixel")]
+#[inline(always)]
+pub(crate) fn rct_pixel(r: f32, g: f32, b: f32) -> [f32; 3] {
+    [
+        floor_f32((r + 2.0 * g + b) * mct::RCT_QUARTER),
+        b - g,
+        r - g,
+    ]
 }
 
 /// Apply the forward Irreversible Color Transform (ICT) in-place.
@@ -65,30 +66,30 @@ pub(crate) fn forward_ict(components: &mut [Vec<f32>]) {
         .zip(g_components.iter_mut())
         .zip(b_components.iter_mut())
     {
-        let r0 = *r;
-        let g0 = *g;
-        let b0 = *b;
-
-        let y = mul_add(
-            mct::ICT_FWD_Y_B,
-            b0,
-            mul_add(mct::ICT_FWD_Y_R, r0, mct::ICT_FWD_Y_G * g0),
-        );
-        let cb = mul_add(
-            mct::ICT_FWD_CB_B,
-            b0,
-            mul_add(mct::ICT_FWD_CB_R, r0, mct::ICT_FWD_CB_G * g0),
-        );
-        let cr = mul_add(
-            mct::ICT_FWD_CR_B,
-            b0,
-            mul_add(mct::ICT_FWD_CR_R, r0, mct::ICT_FWD_CR_G * g0),
-        );
-
-        *r = y;
-        *g = cb;
-        *b = cr;
+        [*r, *g, *b] = ict_pixel(*r, *g, *b);
     }
+}
+
+/// The forward ICT of one (R, G, B) sample triple.
+#[expect(clippy::inline_always, reason = "runs once per pixel")]
+#[inline(always)]
+pub(crate) fn ict_pixel(r: f32, g: f32, b: f32) -> [f32; 3] {
+    let y = mul_add(
+        mct::ICT_FWD_Y_B,
+        b,
+        mul_add(mct::ICT_FWD_Y_R, r, mct::ICT_FWD_Y_G * g),
+    );
+    let cb = mul_add(
+        mct::ICT_FWD_CB_B,
+        b,
+        mul_add(mct::ICT_FWD_CB_R, r, mct::ICT_FWD_CB_G * g),
+    );
+    let cr = mul_add(
+        mct::ICT_FWD_CR_B,
+        b,
+        mul_add(mct::ICT_FWD_CR_R, r, mct::ICT_FWD_CR_G * g),
+    );
+    [y, cb, cr]
 }
 
 #[cfg(test)]
