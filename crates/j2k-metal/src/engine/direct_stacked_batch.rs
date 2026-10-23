@@ -1,19 +1,28 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(target_os = "macos")]
+use crate::metal_types::prelude::*;
+#[cfg(target_os = "macos")]
 use std::sync::Arc;
 use std::time::Instant;
 
 use crate::metal_types::{Buffer, CommandBufferRef, ComputeCommandEncoderRef};
 
+use super::abi::J2kIdwtSingleDecompositionParams;
 use super::decode_dispatch::mct::dispatch_inverse_mct_buffers_in_command_buffer;
+use super::decode_dispatch::{
+    fused_idwt_mct_rgb8_supported, FusedIdwtStoreSource, IdwtSubBandBuffers,
+};
+use super::direct_commands::new_compute_command_encoder;
 use super::direct_grayscale_execute::{
-    checked_coefficient_len, encode_prepared_direct_component_plane_in_command_buffer,
+    checked_coefficient_len, encode_prepared_direct_component_plane_before_final_level,
+    encode_prepared_direct_component_plane_in_command_buffer, final_identity_stored_level,
     DirectComponentPlaneRequest,
 };
 use super::{
     build_flattened_cpu_tier1_cache, elapsed_us,
     encode_batched_mct_rgb8_to_surfaces_in_command_buffer,
+    encode_fused_idwt_mct_rgb8_to_surface_in_command_buffer,
     encode_mct_rgb8_to_surface_in_command_buffer, encode_plane_stage_to_surface_in_command_buffer,
     encode_repeated_mct_rgb8_to_surfaces_in_command_buffer, flattened_hybrid_cpu_tier1_enabled,
     metal_profile_stages_enabled, record_hybrid_stacked_component_batch,
@@ -23,6 +32,7 @@ use super::{
     NativeColorSpace, PixelFormat, PlaneStage, PreparedDirectColorPlan,
     PreparedDirectGrayscalePlan, SharedClassicTier1Group, Surface,
 };
+use j2k_native::J2kWaveletTransform;
 
 mod command_submission;
 mod repeated_grayscale;
@@ -64,8 +74,11 @@ pub(super) struct DirectColorPlanRequest<'a> {
 
 #[cfg(target_os = "macos")]
 pub(super) fn encode_prepared_direct_color_plan_in_command_buffer(
-    request: DirectColorPlanRequest<'_>,
+    mut request: DirectColorPlanRequest<'_>,
 ) -> Result<Surface, Error> {
+    if let Some(surface) = try_encode_fused_mct_rgb8_color_plan(&mut request)? {
+        return Ok(surface);
+    }
     let DirectColorPlanRequest {
         runtime,
         command_buffer,
@@ -77,14 +90,6 @@ pub(super) fn encode_prepared_direct_color_plan_in_command_buffer(
         status_checks,
         scratch_buffers,
     } = request;
-    if plan.component_plans.len() != 3 {
-        return Err(Error::MetalKernel {
-            message: format!(
-                "J2K MetalDirect color execution expected 3 component plans, got {}",
-                plan.component_plans.len()
-            ),
-        });
-    }
 
     let mut plane_budget =
         crate::batch_allocation::BatchMetadataBudget::new("J2K MetalDirect component planes");
@@ -169,6 +174,100 @@ pub(super) fn encode_prepared_direct_color_plan_in_command_buffer(
         stage_timings.metal_mct_pack_encode += elapsed_us(started);
     }
     surface
+}
+
+/// Encodes an MCT RGB8 `request` whose components each end in a last wavelet
+/// level and an identity store of the whole plane: the steps before each last
+/// level, then one kernel that synthesizes the three last levels and writes
+/// RGB8, so the float planes are never written. `None` encodes nothing; a
+/// plan without three components is an error on either route.
+#[cfg(target_os = "macos")]
+fn try_encode_fused_mct_rgb8_color_plan(
+    request: &mut DirectColorPlanRequest<'_>,
+) -> Result<Option<Surface>, Error> {
+    let (runtime, command_buffer, plan) = (request.runtime, request.command_buffer, request.plan);
+    if plan.component_plans.len() != 3 {
+        return Err(Error::MetalKernel {
+            message: format!(
+                "J2K MetalDirect color execution expected 3 component plans, got {}",
+                plan.component_plans.len()
+            ),
+        });
+    }
+    if !plan.mct || request.fmt != PixelFormat::Rgb8 {
+        return Ok(None);
+    }
+    let Some(finals) = plan
+        .component_plans
+        .iter()
+        .map(|component| final_identity_stored_level(component, plan.dimensions))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Ok(None);
+    };
+    let transform = finals[0].step.transform;
+    if !finals.iter().all(|idwt| idwt.step.transform == transform)
+        || !fused_idwt_mct_rgb8_supported(runtime.decode()?, transform, plan.dimensions)
+    {
+        return Ok(None);
+    }
+    let mut inputs =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K MetalDirect fused colour levels")
+            .try_vec(3, "J2K MetalDirect fused colour level inputs")?;
+    for (component_plan, idwt) in plan.component_plans.iter().zip(&finals) {
+        let encoder = new_compute_command_encoder(command_buffer)?;
+        let level = encode_prepared_direct_component_plane_before_final_level(
+            DirectComponentPlaneRequest {
+                runtime,
+                command_buffer,
+                plan: component_plan,
+                tier1_mode: request.tier1_mode,
+                stage_timings: &mut *request.stage_timings,
+                retained_buffers: &mut *request.retained_buffers,
+                status_checks: &mut *request.status_checks,
+                scratch_buffers: &mut *request.scratch_buffers,
+            },
+            &encoder,
+            idwt,
+        );
+        encoder.endEncoding();
+        inputs.push(level?);
+    }
+    encode_fused_idwt_mct_rgb8_to_surface_in_command_buffer(
+        runtime,
+        command_buffer,
+        &[
+            fused_level_source(&inputs[0], transform),
+            fused_level_source(&inputs[1], transform),
+            fused_level_source(&inputs[2], transform),
+        ],
+        plan.dimensions,
+        plan.bit_depths,
+        plan.transform,
+    )
+    .map(Some)
+}
+
+#[cfg(target_os = "macos")]
+fn fused_level_source(
+    (bands, params): &([DirectBandSlice; 4], J2kIdwtSingleDecompositionParams),
+    transform: J2kWaveletTransform,
+) -> FusedIdwtStoreSource<'_> {
+    let [ll, hl, lh, hh] = bands;
+    FusedIdwtStoreSource {
+        sub_bands: IdwtSubBandBuffers {
+            ll: &ll.buffer,
+            ll_offset: ll.offset_bytes,
+            hl: &hl.buffer,
+            hl_offset: hl.offset_bytes,
+            lh: &lh.buffer,
+            lh_offset: lh.offset_bytes,
+            hh: &hh.buffer,
+            hh_offset: hh.offset_bytes,
+        },
+        params: *params,
+        transform,
+    }
 }
 
 #[cfg(target_os = "macos")]

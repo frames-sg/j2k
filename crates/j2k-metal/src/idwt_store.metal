@@ -200,3 +200,113 @@ kernel void j2k_idwt_irreversible97_fused_2d_batched_gray_store_##SUFFIX(       
 J2K_IDWT_STACKED_GRAY_STORE_KERNELS(J2kStoreGrayU8, uchar, u8)
 J2K_IDWT_STACKED_GRAY_STORE_KERNELS(J2kStoreGrayU16, ushort, u16)
 J2K_IDWT_STACKED_GRAY_STORE_KERNELS(J2kStoreGrayI16, short, i16)
+
+// The last 5/3 or 9/7 level of three colour components fused with
+// `j2k_pack_mct_rgb8`: each component's tile is synthesized in turn into the
+// shared tile, the first two are kept in registers, and every pixel is packed
+// from its three samples, so the float planes are never written or read back.
+// Thread `local` owns rows `ty0 + local.y + 8k` and columns `tx0 + 2 local.x + j`.
+template<uint ROWS>
+inline void idwt_keep_tile(
+    thread float (&kept)[ROWS][2],
+    threadgroup const float *tile,
+    uint stride,
+    J2kIdwtTile t,
+    uint2 local
+) {
+    for (uint k = 0u; k < ROWS; ++k) {
+        const uint y = t.ty0 + local.y + k * J2K_IDWT53_2D_ROWS;
+        for (uint j = 0u; j < 2u; ++j) {
+            const uint x = t.tx0 + 2u * local.x + j;
+            kept[k][j] = (y < t.ty1 && x < t.tx1) ? tile[(y - t.ly0) * stride + x - t.lx0] : 0.0f;
+        }
+    }
+}
+
+template<uint ROWS>
+inline void idwt_pack_tile_mct_rgb8(
+    thread const float (&first)[ROWS][2],
+    thread const float (&second)[ROWS][2],
+    threadgroup const float *tile,
+    uint stride,
+    J2kIdwtTile t,
+    uint2 local,
+    constant J2kMctRgb8PackParams &pack,
+    device uchar *out
+) {
+    for (uint k = 0u; k < ROWS; ++k) {
+        const uint y = t.ty0 + local.y + k * J2K_IDWT53_2D_ROWS;
+        for (uint j = 0u; j < 2u; ++j) {
+            const uint x = t.tx0 + 2u * local.x + j;
+            if (y < t.ty1 && x < t.tx1) {
+                j2k_store_mct_rgb8_pixel(
+                    first[k][j], second[k][j], tile[(y - t.ly0) * stride + x - t.lx0], pack, out,
+                    y * pack.out_stride + x * 3u
+                );
+            }
+        }
+    }
+}
+
+#define J2K_IDWT_MCT_RGB8_BANDS                                                                \
+    device const float *ll0 [[buffer(0)]], device const float *hl0 [[buffer(1)]],               \
+    device const float *lh0 [[buffer(2)]], device const float *hh0 [[buffer(3)]],               \
+    device const float *ll1 [[buffer(4)]], device const float *hl1 [[buffer(5)]],               \
+    device const float *lh1 [[buffer(6)]], device const float *hh1 [[buffer(7)]],               \
+    device const float *ll2 [[buffer(8)]], device const float *hl2 [[buffer(9)]],               \
+    device const float *lh2 [[buffer(10)]], device const float *hh2 [[buffer(11)]],             \
+    device uchar *out [[buffer(12)]],                                                          \
+    constant J2kMctRgb8PackParams &pack [[buffer(13)]],                                        \
+    constant J2kIdwtSingleDecompositionParams &params0 [[buffer(14)]],                         \
+    constant J2kIdwtSingleDecompositionParams &params1 [[buffer(15)]],                         \
+    constant J2kIdwtSingleDecompositionParams &params2 [[buffer(16)]]
+
+kernel void j2k_idwt_reversible53_fused_2d_mct_rgb8(
+    J2K_IDWT_MCT_RGB8_BANDS,
+    uint2 group [[threadgroup_position_in_grid]],
+    uint2 local [[thread_position_in_threadgroup]]
+) {
+    threadgroup float tile[(J2K_IDWT53_2D_TILE_H + 2u * J2K_IDWT53_HALO) * J2K_IDWT53_2D_STRIDE];
+    float first[8][2];
+    float second[8][2];
+    const J2kIdwtTile t = idwt53_fused_2d_tile(ll0, hl0, lh0, hh0, params0, group, local, tile);
+    if (!t.valid) {
+        return;
+    }
+    idwt_keep_tile<8>(first, tile, J2K_IDWT53_2D_STRIDE, t, local);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    idwt53_fused_2d_tile(ll1, hl1, lh1, hh1, params1, group, local, tile);
+    idwt_keep_tile<8>(second, tile, J2K_IDWT53_2D_STRIDE, t, local);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    idwt53_fused_2d_tile(ll2, hl2, lh2, hh2, params2, group, local, tile);
+    idwt_pack_tile_mct_rgb8<8>(first, second, tile, J2K_IDWT53_2D_STRIDE, t, local, pack, out);
+}
+
+kernel void j2k_idwt_irreversible97_fused_2d_mct_rgb8(
+    J2K_IDWT_MCT_RGB8_BANDS,
+    constant J2kIdwt97LiftSteps &horizontal0 [[buffer(17)]],
+    constant J2kIdwt97LiftSteps &vertical0 [[buffer(18)]],
+    constant J2kIdwt97LiftSteps &horizontal1 [[buffer(19)]],
+    constant J2kIdwt97LiftSteps &vertical1 [[buffer(20)]],
+    constant J2kIdwt97LiftSteps &horizontal2 [[buffer(21)]],
+    constant J2kIdwt97LiftSteps &vertical2 [[buffer(22)]],
+    uint2 group [[threadgroup_position_in_grid]],
+    uint2 local [[thread_position_in_threadgroup]]
+) {
+    threadgroup float tile[(J2K_IDWT97_2D_TILE_H + 2u * J2K_IDWT97_HALO) * J2K_IDWT97_2D_STRIDE];
+    float first[7][2];
+    float second[7][2];
+    const J2kIdwtTile t = idwt97_fused_2d_tile(
+        ll0, hl0, lh0, hh0, params0, horizontal0, vertical0, group, local, tile
+    );
+    if (!t.valid) {
+        return;
+    }
+    idwt_keep_tile<7>(first, tile, J2K_IDWT97_2D_STRIDE, t, local);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    idwt97_fused_2d_tile(ll1, hl1, lh1, hh1, params1, horizontal1, vertical1, group, local, tile);
+    idwt_keep_tile<7>(second, tile, J2K_IDWT97_2D_STRIDE, t, local);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    idwt97_fused_2d_tile(ll2, hl2, lh2, hh2, params2, horizontal2, vertical2, group, local, tile);
+    idwt_pack_tile_mct_rgb8<7>(first, second, tile, J2K_IDWT97_2D_STRIDE, t, local, pack, out);
+}

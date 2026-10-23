@@ -33,6 +33,9 @@ pub(in crate::engine) struct DecodeKernels {
     pub(in crate::engine) idwt_reversible53_vertical_fused: ComputePipelineState,
     pub(in crate::engine) idwt_reversible53_fused_2d: ComputePipelineState,
     pub(in crate::engine) idwt_irreversible97_fused_2d: ComputePipelineState,
+    /// Last-level 5/3 and 9/7 tile kernels for three components writing MCT RGB8.
+    pub(in crate::engine) idwt53_mct_rgb8: ComputePipelineState,
+    pub(in crate::engine) idwt97_mct_rgb8: ComputePipelineState,
     pub(in crate::engine) idwt_reversible53_fused_2d_batched: ComputePipelineState,
     /// Last-level 5/3 and 9/7 tile kernels writing a grayscale store,
     /// indexed by `GrayStoreKind`.
@@ -142,6 +145,8 @@ impl DecodeKernels {
                 .pipeline("j2k_idwt_reversible53_vertical_fused")?,
             idwt_reversible53_fused_2d: loader.pipeline("j2k_idwt_reversible53_fused_2d")?,
             idwt_irreversible97_fused_2d: loader.pipeline("j2k_idwt_irreversible97_fused_2d")?,
+            idwt53_mct_rgb8: loader.pipeline("j2k_idwt_reversible53_fused_2d_mct_rgb8")?,
+            idwt97_mct_rgb8: loader.pipeline("j2k_idwt_irreversible97_fused_2d_mct_rgb8")?,
             idwt_reversible53_fused_2d_batched: loader
                 .pipeline("j2k_idwt_reversible53_fused_2d_batched")?,
             idwt53_gray_store: [

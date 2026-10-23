@@ -276,6 +276,7 @@ mod direct_plane_pack;
 #[cfg(target_os = "macos")]
 use self::direct_plane_pack::{
     encode_batched_mct_rgb8_to_surfaces_in_command_buffer,
+    encode_fused_idwt_mct_rgb8_to_surface_in_command_buffer,
     encode_mct_rgb8_to_surface_in_command_buffer, encode_plane_stage_to_surface_in_command_buffer,
     encode_repeated_mct_rgb8_to_surfaces_in_command_buffer,
     repeated_shared_direct_color_plan_count, PlaneStage,
