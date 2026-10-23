@@ -32,8 +32,6 @@ pub(crate) struct TagTree {
     root: usize,
     width: u32,
     height: u32,
-    /// The root's level; the leaves are level zero.
-    top_level: u8,
 }
 
 impl TagTree {
@@ -55,7 +53,6 @@ impl TagTree {
             root,
             width,
             height,
-            top_level,
         }
     }
 
@@ -72,7 +69,9 @@ impl TagTree {
         debug_assert!(x < self.width && y < self.height);
         let mut level_start = self.root;
         let mut parent_val = 0;
-        for level in (0..=self.top_level).rev() {
+        // The root's level; the leaves are level zero.
+        let top_level = ceil_log2_u32(self.width.max(self.height));
+        for level in (0..=top_level).rev() {
             let width = level_len(self.width, level);
             let index = (y >> level) as usize * width + (x >> level) as usize;
             let node = nodes.get_mut(level_start + index)?;

@@ -5,6 +5,8 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- Tag trees no longer store their root level, which is derived from the grid
+  size when read: 16 bytes less per precinct. Output is unchanged.
 - CPU decodes run the inverse MCT and 9/7 rounding in cache-sized chunks on the
   pool, adopt the IDWT output as an unshifted whole plane instead of copying it,
   and stream parallel IDWT strips from a queue, reconstructing each strip's rows
