@@ -322,7 +322,7 @@ use self::direct_stacked_batch::{
     encode_stacked_direct_component_plane_batch,
     encode_stacked_direct_component_plane_batch_with_shared_tier1,
     encode_stacked_direct_gray_batch, lookup_direct_band_slice, lookup_direct_band_slice_entry,
-    signed_sample_bias, supports_stacked_direct_component_plane_batch,
+    push_member_band_slices, signed_sample_bias, supports_stacked_direct_component_plane_batch,
     try_encode_stacked_mct_rgb8_direct_color_batch, DirectBandSlice, DirectColorPlanRequest,
     RepeatedDirectGrayscalePlanRequest, StackedDirectColorBatchRequest,
     StackedDirectComponentPlaneBatchRequest, StackedGrayBatch, StackedGrayOutput,

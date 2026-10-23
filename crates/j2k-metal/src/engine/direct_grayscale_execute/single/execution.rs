@@ -20,10 +20,10 @@ use super::super::{
     encode_prepared_ht_sub_band_to_buffer_in_encoder, extend_preallocated_retained_buffers,
     idwt_input_windows_from_slices, j2k_scalar_pack_params, lookup_direct_band_slice,
     lookup_direct_band_slice_entry, prepared_idwt_output_len, prepared_idwt_params,
-    take_f32_scratch_buffer, BandRequiredRegion, Buffer, DirectBandSlice, DirectScratchBuffer,
-    DirectStatusCheck, Error, GrayStoreDestinationRequest, IdwtSubBandBuffers, J2kGrayStoreParams,
-    J2kStoreParams, J2kWaveletTransform, MetalRuntime, PixelFormat, PreparedDirectGrayscaleStep,
-    SingleIdwtDispatch, Surface,
+    push_member_band_slices, take_f32_scratch_buffer, BandRequiredRegion, Buffer, DirectBandSlice,
+    DirectScratchBuffer, DirectStatusCheck, Error, GrayStoreDestinationRequest, IdwtSubBandBuffers,
+    J2kGrayStoreParams, J2kStoreParams, J2kWaveletTransform, MetalRuntime, PixelFormat,
+    PreparedDirectGrayscaleStep, SingleIdwtDispatch, Surface,
 };
 use crate::engine::abi::J2kIdwtSingleDecompositionParams;
 use crate::engine::decode_dispatch::{
@@ -76,20 +76,12 @@ impl SingleGrayscaleExecution<'_> {
         self.status_checks.push(status_check);
         self.encoder
             .memory_barrier_with_resources(&[&output.buffer]);
-        for member in &group.members {
-            let offset_bytes = checked_f32_span(
-                member.offset_elements,
-                1,
-                "classic J2K MetalDirect single grouped member offset",
-            )?
-            .bytes;
-            self.bands.push(DirectBandSlice {
-                band_id: member.band_id,
-                buffer: output.buffer.clone(),
-                offset_bytes,
-                window: member.window,
-            });
-        }
+        let members = group.members.iter();
+        push_member_band_slices(
+            &mut self.bands,
+            &output.buffer,
+            members.map(|member| (member.band_id, member.offset_elements, member.window)),
+        )?;
         self.scratch_buffers.push(output);
         Ok(())
     }
@@ -112,20 +104,12 @@ impl SingleGrayscaleExecution<'_> {
         self.status_checks.push(status_check);
         self.encoder
             .memory_barrier_with_resources(&[&output.buffer]);
-        for member in &group.members {
-            let offset_bytes = checked_f32_span(
-                member.offset_elements,
-                1,
-                "HTJ2K MetalDirect single grouped member offset",
-            )?
-            .bytes;
-            self.bands.push(DirectBandSlice {
-                band_id: member.band_id,
-                buffer: output.buffer.clone(),
-                offset_bytes,
-                window: member.window,
-            });
-        }
+        let members = group.members.iter();
+        push_member_band_slices(
+            &mut self.bands,
+            &output.buffer,
+            members.map(|member| (member.band_id, member.offset_elements, member.window)),
+        )?;
         self.scratch_buffers.push(output);
         Ok(())
     }
