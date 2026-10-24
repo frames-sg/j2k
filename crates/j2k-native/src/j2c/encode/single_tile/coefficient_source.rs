@@ -68,6 +68,26 @@ pub(super) trait DwtComponentSource {
         )?;
         Ok((width, height))
     }
+
+    /// Bytes an encode frees by dropping this source once it has read it.
+    /// A borrowed source frees nothing.
+    fn owned_bytes(&self) -> NativeEncodePipelineResult<usize> {
+        Ok(0)
+    }
+}
+
+impl<T: DwtComponentSource> DwtComponentSource for &T {
+    fn ll(&self) -> NativeEncodePipelineResult<DwtBandView<'_>> {
+        (**self).ll()
+    }
+
+    fn level_count(&self) -> usize {
+        (**self).level_count()
+    }
+
+    fn level(&self, index: usize) -> NativeEncodePipelineResult<Option<DwtLevelView<'_>>> {
+        (**self).level(index)
+    }
 }
 
 pub(super) fn validate_component_sampling_dwt_geometry<S: DwtComponentSource>(

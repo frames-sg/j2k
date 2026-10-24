@@ -22,13 +22,13 @@ mod ownership;
 
 use ownership::{subband_prepare_retained_bytes, try_own_packet_subbands};
 
-pub(super) struct ComponentPacketRequest<'a, 'input, S> {
+#[derive(Clone, Copy)]
+pub(super) struct ComponentPacketRequest<'a, 'input> {
     pub(super) num_components: u16,
     pub(super) bit_depth: u8,
     pub(super) options: &'a EncodeOptions,
     pub(super) component_sample_info: &'a [EncodeComponentSampleInfo],
     pub(super) plan: &'a SingleTilePlan,
-    pub(super) decompositions: &'a [S],
     pub(super) retained_base_bytes: usize,
     pub(super) profile_enabled: bool,
     pub(super) session: &'a NativeEncodeSession<'input>,
@@ -45,11 +45,15 @@ struct BandSettingsInput<'a> {
     retained_base_bytes: usize,
 }
 
+/// Prepare every component's packets, dropping each source once its code
+/// blocks are prepared: they own their samples, so a source taken by value
+/// frees its coefficients there. Returns the bytes those drops freed.
 pub(super) fn prepare_component_packets<S: DwtComponentSource>(
-    request: &ComponentPacketRequest<'_, '_, S>,
+    request: &ComponentPacketRequest<'_, '_>,
+    decompositions: impl ExactSizeIterator<Item = S>,
     accelerator: &mut impl J2kEncodeStageAccelerator,
-) -> NativeEncodePipelineResult<(Vec<Vec<PreparedResolutionPacket>>, u128)> {
-    if request.decompositions.len() != usize::from(request.num_components) {
+) -> NativeEncodePipelineResult<(Vec<Vec<PreparedResolutionPacket>>, u128, usize)> {
+    if decompositions.len() != usize::from(request.num_components) {
         return Err(NativeEncodePipelineError::internal_invariant(
             "DWT source count does not match component count",
         ));
@@ -73,22 +77,43 @@ pub(super) fn prepare_component_packets<S: DwtComponentSource>(
             host_allocation_failed("prepared component packet owners", component_owner_bytes)
         })?;
     let stage_start = profile::profile_now(request.profile_enabled);
-    for (component_idx, decomposition) in request.decompositions.iter().enumerate() {
+    let mut released = 0;
+    for (component_idx, decomposition) in decompositions.enumerate() {
+        let retained_base_bytes = request
+            .retained_base_bytes
+            .checked_sub(released)
+            .ok_or_else(|| {
+                NativeEncodePipelineError::internal_invariant(
+                    "released DWT sources exceed the retained baseline",
+                )
+            })?;
         prepare_one_component(
             component_idx,
-            decomposition,
-            request,
+            &decomposition,
+            &ComponentPacketRequest {
+                retained_base_bytes,
+                ..*request
+            },
             &mut component_packets,
             accelerator,
         )?;
+        released = checked_add_bytes(
+            released,
+            decomposition.owned_bytes()?,
+            "released DWT sources",
+        )?;
     }
-    Ok((component_packets, profile::elapsed_us(stage_start)))
+    Ok((
+        component_packets,
+        profile::elapsed_us(stage_start),
+        released,
+    ))
 }
 
 fn prepare_one_component<S: DwtComponentSource>(
     component_idx: usize,
     decomposition: &S,
-    request: &ComponentPacketRequest<'_, '_, S>,
+    request: &ComponentPacketRequest<'_, '_>,
     completed: &mut Vec<Vec<PreparedResolutionPacket>>,
     accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> NativeEncodePipelineResult<()> {
@@ -190,7 +215,7 @@ fn prepare_ll_packet<S: DwtComponentSource>(
     roi_shift: u8,
     roi_regions: &[crate::j2c::encode::ComponentRoiEncodeRegion],
     decomposition: &S,
-    request: &ComponentPacketRequest<'_, '_, S>,
+    request: &ComponentPacketRequest<'_, '_>,
     completed: &Vec<Vec<PreparedResolutionPacket>>,
     packets: &mut Vec<PreparedResolutionPacket>,
     accelerator: &mut impl J2kEncodeStageAccelerator,
@@ -253,7 +278,7 @@ fn prepare_detail_packets<S: DwtComponentSource>(
     roi_shift: u8,
     roi_regions: &[crate::j2c::encode::ComponentRoiEncodeRegion],
     decomposition: &S,
-    request: &ComponentPacketRequest<'_, '_, S>,
+    request: &ComponentPacketRequest<'_, '_>,
     completed: &Vec<Vec<PreparedResolutionPacket>>,
     packets: &mut Vec<PreparedResolutionPacket>,
     accelerator: &mut impl J2kEncodeStageAccelerator,
@@ -378,9 +403,9 @@ fn prepare_detail_packets<S: DwtComponentSource>(
     Ok(())
 }
 
-fn band_settings<'a, 'input, S>(
+fn band_settings<'a, 'input>(
     input: &BandSettingsInput<'a>,
-    request: &'a ComponentPacketRequest<'a, 'input, S>,
+    request: &'a ComponentPacketRequest<'a, 'input>,
 ) -> DwtBandEncodeSettings<'a, 'input> {
     DwtBandEncodeSettings {
         origin: input.origin,

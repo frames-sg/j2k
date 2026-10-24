@@ -45,8 +45,9 @@ pub(super) fn encode_tile_packets<S: DwtComponentSource>(
     options: &EncodeOptions,
     component_sample_info: &[EncodeComponentSampleInfo],
     plan: &SingleTilePlan,
-    decompositions: &[S],
+    decompositions: impl ExactSizeIterator<Item = S>,
     source_retained_bytes: usize,
+    source_owner_bytes: usize,
     profile_enabled: bool,
     session: &NativeEncodeSession<'_>,
     accelerator: &mut impl J2kEncodeStageAccelerator,
@@ -56,20 +57,33 @@ pub(super) fn encode_tile_packets<S: DwtComponentSource>(
         source_retained_bytes,
         "retained transform and single-tile plan owners",
     )?;
-    let (component_resolution_packets, subband_prepare_us) = prepare_component_packets(
-        &ComponentPacketRequest {
-            num_components,
-            bit_depth,
-            options,
-            component_sample_info,
-            plan,
+    let (component_resolution_packets, subband_prepare_us, released_source_bytes) =
+        prepare_component_packets(
+            &ComponentPacketRequest {
+                num_components,
+                bit_depth,
+                options,
+                component_sample_info,
+                plan,
+                retained_base_bytes,
+                profile_enabled,
+                session,
+            },
             decompositions,
-            retained_base_bytes,
-            profile_enabled,
-            session,
-        },
-        accelerator,
+            accelerator,
+        )?;
+    // Later phases no longer hold the sources the preparation dropped, nor
+    // the vector that owned them.
+    let released_source_bytes = checked_add_bytes(
+        released_source_bytes,
+        source_owner_bytes,
+        "released DWT sources and their owner",
     )?;
+    let retained_base_bytes = retained_base_bytes
+        .checked_sub(released_source_bytes)
+        .ok_or(crate::EncodeError::InternalInvariant {
+            what: "released DWT sources exceed the retained baseline",
+        })?;
     let required_ht_magnitude_bound = required_ht_magnitude_bound(
         component_resolution_packets.iter().flatten(),
         plan.num_levels,
@@ -153,9 +167,8 @@ pub(super) fn encode_tile_packets<S: DwtComponentSource>(
     let block_encode_us = profile::elapsed_us(stage_start);
 
     let stage_start = profile::profile_now(profile_enabled);
-    let packet_phase_owners = (plan, decompositions);
     let packet_session = session.checked_child_session(
-        &packet_phase_owners,
+        plan,
         retained_base_bytes,
         "retained transform and single-tile plan owners",
     )?;
