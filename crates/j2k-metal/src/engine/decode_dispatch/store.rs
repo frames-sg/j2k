@@ -320,10 +320,8 @@ pub(in crate::engine) enum GraySourceSigning {
 
 impl GraySourceSigning {
     /// Mirror the CPU's Gray8/Gray16 conversion for a single-component plan.
-    /// Such a plan level-shifts unsigned samples by `2^(bit_depth - 1) >= 1`
-    /// and signed samples by zero.
-    pub(in crate::engine) fn for_store(fmt: PixelFormat, bit_depth: u8, addend: f32) -> Self {
-        if fmt != PixelFormat::Gray16 || addend != 0.0 {
+    pub(in crate::engine) fn for_source(fmt: PixelFormat, bit_depth: u8, signed: bool) -> Self {
+        if fmt != PixelFormat::Gray16 || !signed {
             Self::Unsigned
         } else if bit_depth > 8 {
             Self::SignedWide

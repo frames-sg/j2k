@@ -188,6 +188,7 @@ fn encode_prepared_direct_grayscale_plan_in_command_buffer_inner(
         fmt,
         dimensions: plan.dimensions,
         bit_depth: plan.bit_depth,
+        signed: plan.signed,
         retained_buffers,
         status_checks,
         scratch_buffers,

@@ -504,6 +504,7 @@ fn repeated_gray_store_detects_contiguous_full_wsi_tiles() {
         max_value: 255.0,
         u8_scale: 1.0,
         u16_scale: 257.0,
+        is_signed: 0,
     };
     assert!(
         repeated_gray_store_is_contiguous_full_surface(full_tile),

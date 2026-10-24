@@ -64,9 +64,9 @@ pub(crate) fn execute_prepared_direct_grayscale_plan_batch(
     plans: &[Arc<PreparedDirectGrayscalePlan>],
     fmt: PixelFormat,
 ) -> Result<Vec<Surface>, Error> {
-    if plans.is_empty() {
+    let Some(first) = plans.first() else {
         return Ok(Vec::new());
-    }
+    };
 
     with_runtime(|runtime| {
         let step_count = crate::batch_allocation::checked_count_sum(
@@ -121,10 +121,6 @@ pub(crate) fn execute_prepared_direct_grayscale_plan_batch(
                     scratch_buffers: &mut scratch_buffers,
                 },
             )?;
-            let first = plans.first().ok_or(Error::MetalStateInvariant {
-                state: "J2K Metal direct grayscale batch",
-                reason: "stacked batch selected without a prepared plan",
-            })?;
             if stacked_plane.dimensions == first.dimensions && stacked_plane.count == plans.len() {
                 surfaces = encode_repeated_gray_plane_to_surfaces_in_command_buffer(
                     runtime,
@@ -132,6 +128,7 @@ pub(crate) fn execute_prepared_direct_grayscale_plan_batch(
                     &stacked_plane.buffer,
                     first.dimensions,
                     first.bit_depth,
+                    first.signed,
                     fmt,
                     plans.len(),
                 )?;

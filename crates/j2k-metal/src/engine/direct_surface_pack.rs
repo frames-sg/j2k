@@ -86,14 +86,19 @@ pub(super) fn encode_gray_plane_to_surface_in_encoder(
     plane: &Buffer,
     dims: (u32, u32),
     bit_depth: u8,
+    signed: bool,
     fmt: PixelFormat,
 ) -> Result<Surface, Error> {
     encode_gray_plane_to_surface_in_encoder_with_offset(
-        runtime, encoder, plane, 0, dims, bit_depth, fmt,
+        runtime, encoder, plane, 0, dims, bit_depth, signed, fmt,
     )
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "carry source signing with the existing plane and output geometry"
+)]
 pub(super) fn encode_gray_plane_to_surface_in_command_buffer_with_offset(
     runtime: &MetalRuntime,
     command_buffer: &CommandBufferRef,
@@ -101,6 +106,7 @@ pub(super) fn encode_gray_plane_to_surface_in_command_buffer_with_offset(
     plane_offset_bytes: usize,
     dims: (u32, u32),
     bit_depth: u8,
+    signed: bool,
     fmt: PixelFormat,
 ) -> Result<Surface, Error> {
     let encoder = new_compute_command_encoder(command_buffer)?;
@@ -111,6 +117,7 @@ pub(super) fn encode_gray_plane_to_surface_in_command_buffer_with_offset(
         plane_offset_bytes,
         dims,
         bit_depth,
+        signed,
         fmt,
     );
     encoder.endEncoding();
@@ -118,6 +125,10 @@ pub(super) fn encode_gray_plane_to_surface_in_command_buffer_with_offset(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "carry source signing with the existing plane and output geometry"
+)]
 pub(super) fn encode_gray_plane_to_surface_in_encoder_with_offset(
     runtime: &MetalRuntime,
     encoder: &ComputeCommandEncoderRef,
@@ -125,6 +136,7 @@ pub(super) fn encode_gray_plane_to_surface_in_encoder_with_offset(
     plane_offset_bytes: usize,
     dims: (u32, u32),
     bit_depth: u8,
+    signed: bool,
     fmt: PixelFormat,
 ) -> Result<Surface, Error> {
     let (pitch_bytes, surface_bytes) = checked_metal_surface_len(
@@ -147,6 +159,7 @@ pub(super) fn encode_gray_plane_to_surface_in_encoder_with_offset(
         max_values,
         u8_scales,
         u16_scales,
+        signed_mask: u32::from(signed),
     };
 
     encoder.setComputePipelineState(pipeline);
@@ -162,12 +175,17 @@ pub(super) fn encode_gray_plane_to_surface_in_encoder_with_offset(
 }
 
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "carry source signing with the existing plane and output geometry"
+)]
 pub(super) fn encode_repeated_gray_plane_to_surfaces_in_command_buffer(
     runtime: &MetalRuntime,
     command_buffer: &CommandBufferRef,
     plane: &Buffer,
     dims: (u32, u32),
     bit_depth: u8,
+    signed: bool,
     fmt: PixelFormat,
     count: usize,
 ) -> Result<Vec<Surface>, Error> {
@@ -194,6 +212,7 @@ pub(super) fn encode_repeated_gray_plane_to_surfaces_in_command_buffer(
         max_value: scale.max_value,
         u8_scale: scale.u8_scale,
         u16_scale: scale.u16_scale,
+        is_signed: u32::from(signed),
     };
     let pipeline = match fmt {
         PixelFormat::Gray8 => &runtime.decode()?.pack_u8_repeated_gray,

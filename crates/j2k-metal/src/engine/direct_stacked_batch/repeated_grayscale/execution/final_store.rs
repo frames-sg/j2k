@@ -58,6 +58,7 @@ impl RepeatedGrayscaleExecution<'_> {
                         max_value: scale.max_value,
                         u8_scale: scale.u8_scale,
                         u16_scale: scale.u16_scale,
+                        is_signed: u32::from(self.signed),
                     },
                     self.dimensions,
                     self.fmt,
@@ -103,6 +104,7 @@ impl RepeatedGrayscaleExecution<'_> {
                     &output.buffer,
                     self.dimensions,
                     self.bit_depth,
+                    self.signed,
                     self.fmt,
                     self.count,
                 )?);
@@ -152,6 +154,7 @@ impl RepeatedGrayscaleExecution<'_> {
                     0,
                     self.dimensions,
                     self.bit_depth,
+                    self.signed,
                     self.fmt,
                 )?);
             self.scratch_buffers.push(output);

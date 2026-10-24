@@ -5,6 +5,11 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- Metal device decodes follow CPU sample conversion for signed grayscale and
+  colour sources, including prepared, referenced, repeated and distinct batches.
+  Component plans retain source signedness at construction and reject mixed
+  colour signedness. Signed MCT takes no unsigned level shift and 16-bit plane
+  packs preserve two's-complement samples.
 - `j2k-native` has a `profile` feature, on by default, for its stage
   profiling (`J2K_PROFILE_STAGES`). Without it, profiling compiles to no-ops,
   and `std` no longer turns on `j2k-profile/std`. A single-threaded wasm32

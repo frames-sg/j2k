@@ -43,6 +43,7 @@ fn prepare_direct_color_plan_with_tier1_mode(
             ),
         });
     }
+    let signed = super::direct_plan_types::color_signedness(&plan.component_plans)?;
     let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
         "J2K MetalDirect prepared color component plans",
     );
@@ -60,7 +61,7 @@ fn prepare_direct_color_plan_with_tier1_mode(
         dimensions: plan.dimensions,
         bit_depths: plan.bit_depths,
         alpha_bit_depth: None,
-        signed: false,
+        signed,
         mct: plan.mct,
         transform: plan.transform,
         component_plans: with_color_store_rounding(component_plans, plan.mct),

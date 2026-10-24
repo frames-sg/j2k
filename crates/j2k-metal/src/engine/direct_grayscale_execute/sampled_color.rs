@@ -167,6 +167,7 @@ fn encode_sampled_plan(
             u32::from(plan.bit_depths[2]),
             0,
         ],
+        signed_mask: if plan.signed { 0b111 } else { 0 },
         planes,
     };
     encode_plane_stage_to_surface_in_command_buffer(runtime, command, &stage, fmt)
