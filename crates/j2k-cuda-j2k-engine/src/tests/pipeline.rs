@@ -2264,7 +2264,7 @@ fn j2k_quantized_coefficients_in_reused_pool_allocations_download_and_encode_whe
     let quantize_and_encode = |pool: &j2k_cuda_runtime::CudaBufferPool| {
         let engine = crate::J2kCudaEngine::new(&context);
         let quantized = engine
-            .j2k_quantize_subband_region_resident(&sample_buffer, region, pool)
+            .j2k_quantize_subband_regions_resident(&sample_buffer, &[region], pool)
             .expect("quantize into a pool allocation");
         let coefficients = quantized
             .download_coefficients()
@@ -2305,7 +2305,7 @@ fn j2k_quantized_coefficients_in_reused_pool_allocations_download_and_encode_whe
 }
 
 #[test]
-fn j2k_quantize_strided_resident_subband_matches_contiguous_when_runtime_required() {
+fn j2k_quantize_strided_resident_subbands_match_contiguous_when_runtime_required() {
     if !cuda_runtime_gate() {
         return;
     }
@@ -2319,27 +2319,37 @@ fn j2k_quantize_strided_resident_subband_matches_contiguous_when_runtime_require
         range_bits: 8,
         reversible: true,
     };
+    let region = |x0, y0, width, height| CudaJ2kQuantizeSubbandRegionJob {
+        x0,
+        y0,
+        width,
+        height,
+        stride: 4,
+        quantization,
+    };
+    // Regions are stored back to back in job order; empty regions take no space.
     let resident = crate::J2kCudaEngine::new(&context)
-        .j2k_quantize_subband_region_resident(
+        .j2k_quantize_subband_regions_resident(
             &sample_buffer,
-            CudaJ2kQuantizeSubbandRegionJob {
-                x0: 1,
-                y0: 1,
-                width: 2,
-                height: 2,
-                stride: 4,
-                quantization,
-            },
+            &[region(1, 1, 2, 2), region(3, 0, 0, 3), region(0, 0, 1, 3)],
             &context.buffer_pool(),
         )
         .expect("resident strided quantize");
-    let contiguous = [samples[5], samples[6], samples[9], samples[10]];
+    let contiguous = [
+        samples[5],
+        samples[6],
+        samples[9],
+        samples[10],
+        samples[0],
+        samples[4],
+        samples[8],
+    ];
     let expected = crate::J2kCudaEngine::new(&context)
         .j2k_quantize_subband(&contiguous, quantization)
         .expect("contiguous quantize");
 
-    assert_eq!(resident.coefficient_count(), 4);
-    assert_eq!(resident.execution().kernel_dispatches(), 1);
+    assert_eq!(resident.coefficient_count(), 7);
+    assert_eq!(resident.execution().kernel_dispatches(), 2);
     assert_eq!(
         resident
             .download_coefficients()

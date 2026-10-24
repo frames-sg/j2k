@@ -5,6 +5,15 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CUDA HTJ2K tile encodes bound each code-block scratch request to 384 MiB,
+  keeping small-block images within the scratch offset range. Blocks retain
+  their submission order and encoded bytes are unchanged.
+
+- CUDA HTJ2K tile encodes quantize every sub-band of a component into one
+  buffer and code its blocks in bounded dispatches. Sub-bands share a dispatch
+  when their combined jobs fit the scratch budget, and the encode report
+  counts the actual HT code-block dispatches. Output is unchanged.
+
 - A `CudaEncodeStageAccelerator`, and so a `CudaLosslessEncoder`, keeps one
   best-fit device-buffer pool across its encodes, and HTJ2K tile encodes take
   each sub-band's quantized coefficients from it, so repeated encodes no

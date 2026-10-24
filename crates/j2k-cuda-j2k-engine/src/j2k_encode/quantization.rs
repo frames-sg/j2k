@@ -72,21 +72,29 @@ impl crate::J2kCudaEngine<'_> {
         })
     }
 
-    /// Quantize a resident strided DWT sub-band rectangle into resident `i32`
-    /// coefficients held in a buffer taken from `pool`; callers may recycle it
-    /// into `pool` once work reading it has completed.
+    /// Quantize resident strided DWT sub-band rectangles into resident `i32`
+    /// coefficients, stored back to back in job order in one buffer taken from
+    /// `pool`; callers may recycle it into `pool` once work reading it has
+    /// completed.
     #[doc(hidden)]
-    pub fn j2k_quantize_subband_region_resident(
+    pub fn j2k_quantize_subband_regions_resident(
         &self,
         samples: &CudaDeviceBuffer,
-        job: CudaJ2kQuantizeSubbandRegionJob,
+        jobs: &[CudaJ2kQuantizeSubbandRegionJob],
         pool: &CudaBufferPool,
     ) -> Result<CudaJ2kResidentQuantizedSubband, CudaError> {
         validate_encode_context_matches([
             samples.is_owned_by(self.context),
             pool.is_owned_by(self.context),
         ])?;
-        let coefficient_count = checked_image_words(job.width, job.height, 1)?;
+        let available_samples = samples.typed_view::<f32>()?.len();
+        let mut coefficient_count = 0usize;
+        for job in jobs {
+            validate_quantize_region(*job, available_samples)?;
+            coefficient_count = coefficient_count
+                .checked_add(checked_image_words(job.width, job.height, 1)?)
+                .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?;
+        }
         if coefficient_count == 0 {
             return Ok(CudaJ2kResidentQuantizedSubband {
                 coefficients: self.allocate(0)?,
@@ -95,8 +103,6 @@ impl crate::J2kCudaEngine<'_> {
             });
         }
 
-        let available_samples = samples.typed_view::<f32>()?.len();
-        validate_quantize_region(job, available_samples)?;
         self.prepare_operation()?;
         let coefficient_buffer = pool
             .take(
@@ -107,12 +113,26 @@ impl crate::J2kCudaEngine<'_> {
                     })?,
             )?
             .into_device_buffer()?;
-        self.launch_j2k_quantize_subband_region(samples, &coefficient_buffer, job)?;
+        let mut offset = 0usize;
+        let mut dispatches = 0usize;
+        for job in jobs {
+            let count = checked_image_words(job.width, job.height, 1)?;
+            if count != 0 {
+                self.launch_j2k_quantize_subband_region(
+                    samples,
+                    &coefficient_buffer,
+                    offset,
+                    *job,
+                )?;
+                offset += count;
+                dispatches += 1;
+            }
+        }
 
         Ok(CudaJ2kResidentQuantizedSubband {
             coefficients: coefficient_buffer,
             coefficient_count,
-            execution: CudaExecutionStats::new(1, 0, 0, false),
+            execution: CudaExecutionStats::new(dispatches, 0, 0, false),
         })
     }
 }

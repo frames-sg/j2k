@@ -327,7 +327,7 @@ pub(super) fn validate_resident_coefficient_capacity(
     Ok(())
 }
 
-/// Host-visible HTJ2K cleanup-pass encode batch produced by one CUDA kernel dispatch.
+/// Host-visible HTJ2K cleanup-pass encode batch produced by CUDA kernel dispatches.
 #[doc(hidden)]
 #[derive(Debug)]
 pub struct CudaHtj2kEncodedCodeBlocks {

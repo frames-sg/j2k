@@ -181,7 +181,7 @@ fn cuda_lossy_htj2k_facade_require_device_dispatches_supported_stages_when_runti
     assert_eq!(accelerator.deinterleave_dispatches(), 1);
     assert!(accelerator.forward_dwt97_dispatches() > 0);
     assert_eq!(accelerator.quantize_subband_dispatches(), 4);
-    assert_eq!(accelerator.ht_code_block_dispatches(), 4);
+    assert_eq!(accelerator.ht_code_block_dispatches(), 1);
     assert_eq!(accelerator.packetization_dispatches(), 1);
 }
 

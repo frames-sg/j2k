@@ -16,7 +16,7 @@ use super::super::{
     cuda_component_count_u8, cuda_encode_format, time_cuda_stage, CudaEncodeStageTimings,
     CudaLosslessEncodeTile,
 };
-use super::code_blocks::cuda_encode_tile_subband_region;
+use super::code_blocks::cuda_encode_tile_subband_regions;
 use super::host_budget::account_encoded_resolution_owners;
 use super::htj2k_allocation_error;
 use super::ordering::cuda_order_component_resolution_packets;
@@ -207,28 +207,22 @@ fn cuda_encode_htj2k_resident_components_body(
             let y0 = u32::from(component)
                 .checked_mul(job.input.height())
                 .ok_or_else(|| arithmetic_overflow("CUDA HTJ2K tile component offset"))?;
-            let subband = cuda_encode_tile_subband_region(
+            let subbands = cuda_encode_tile_subband_regions(
                 runtime,
                 components.buffer(),
-                CudaTileSubbandRegion {
+                &[CudaTileSubbandRegion {
                     x0: 0,
                     y0,
                     width: job.input.width(),
                     height: job.input.height(),
                     stride: job.input.width(),
                     decomposition_level: 0,
-                },
-                job.quantization_steps[0],
+                    quantization_step: job.quantization_steps[0],
+                    kind: CudaTileSubbandKind::LowLow,
+                }],
                 job,
-                CudaTileSubbandKind::LowLow,
                 &mut stats,
             )?;
-            let mut subbands = crate::allocation::try_vec_with_capacity(
-                1,
-                "j2k CUDA HTJ2K LL subband descriptors",
-            )
-            .map_err(htj2k_allocation_error)?;
-            subbands.push(subband);
             let mut packets = crate::allocation::try_vec_with_capacity(
                 1,
                 "j2k CUDA HTJ2K LL resolution descriptors",
@@ -359,36 +353,21 @@ fn cuda_encode_dwt_component_packets(
     }
     let (ll_width, ll_height) = ll_dimensions;
     let full_width = levels.first().map_or(ll_width, |level| level.width);
-    let mut packets = crate::allocation::try_vec_with_capacity(
-        levels.len().saturating_add(1),
-        "j2k CUDA HTJ2K resolution descriptors",
+    let mut regions = crate::allocation::try_vec_with_capacity(
+        levels.len().saturating_mul(3).saturating_add(1),
+        "j2k CUDA HTJ2K tile sub-band regions",
     )
     .map_err(htj2k_allocation_error)?;
-
-    let ll_subband = cuda_encode_tile_subband_region(
-        runtime,
-        transformed,
-        CudaTileSubbandRegion {
-            x0: 0,
-            y0: 0,
-            width: ll_width,
-            height: ll_height,
-            stride: full_width,
-            decomposition_level: job.num_decomposition_levels,
-        },
-        job.quantization_steps[0],
-        job,
-        CudaTileSubbandKind::LowLow,
-        stats,
-    )?;
-    let mut ll_subbands =
-        crate::allocation::try_vec_with_capacity(1, "j2k CUDA HTJ2K LL subband descriptors")
-            .map_err(htj2k_allocation_error)?;
-    ll_subbands.push(ll_subband);
-    packets.push(CudaEncodedHtj2kResolution {
-        subbands: ll_subbands,
+    regions.push(CudaTileSubbandRegion {
+        x0: 0,
+        y0: 0,
+        width: ll_width,
+        height: ll_height,
+        stride: full_width,
+        decomposition_level: job.num_decomposition_levels,
+        quantization_step: job.quantization_steps[0],
+        kind: CudaTileSubbandKind::LowLow,
     });
-
     for (level_idx, level) in levels.iter().rev().enumerate() {
         let decomposition_level = job
             .num_decomposition_levels
@@ -399,59 +378,60 @@ fn cuda_encode_dwt_component_packets(
         let step_base = 1usize
             .checked_add(level_idx.saturating_mul(3))
             .ok_or_else(|| arithmetic_overflow("CUDA HTJ2K tile quantization step index"))?;
-        let hl = cuda_encode_tile_subband_region(
-            runtime,
-            transformed,
-            CudaTileSubbandRegion {
-                x0: level.low_width,
-                y0: 0,
-                width: level.high_width,
-                height: level.low_height,
-                stride: full_width,
-                decomposition_level,
-            },
-            job.quantization_steps[step_base],
-            job,
-            CudaTileSubbandKind::HighLow,
-            stats,
-        )?;
-        let lh = cuda_encode_tile_subband_region(
-            runtime,
-            transformed,
-            CudaTileSubbandRegion {
-                x0: 0,
-                y0: level.low_height,
-                width: level.low_width,
-                height: level.high_height,
-                stride: full_width,
-                decomposition_level,
-            },
-            job.quantization_steps[step_base + 1],
-            job,
-            CudaTileSubbandKind::LowHigh,
-            stats,
-        )?;
-        let hh = cuda_encode_tile_subband_region(
-            runtime,
-            transformed,
-            CudaTileSubbandRegion {
-                x0: level.low_width,
-                y0: level.low_height,
-                width: level.high_width,
-                height: level.high_height,
-                stride: full_width,
-                decomposition_level,
-            },
-            job.quantization_steps[step_base + 2],
-            job,
-            CudaTileSubbandKind::HighHigh,
-            stats,
-        )?;
-        let mut subbands =
-            crate::allocation::try_vec_with_capacity(3, "j2k CUDA HTJ2K high subband descriptors")
+        let region = |x0, y0, width, height, step: usize, kind| CudaTileSubbandRegion {
+            x0,
+            y0,
+            width,
+            height,
+            stride: full_width,
+            decomposition_level,
+            quantization_step: job.quantization_steps[step],
+            kind,
+        };
+        regions.extend([
+            region(
+                level.low_width,
+                0,
+                level.high_width,
+                level.low_height,
+                step_base,
+                CudaTileSubbandKind::HighLow,
+            ),
+            region(
+                0,
+                level.low_height,
+                level.low_width,
+                level.high_height,
+                step_base + 1,
+                CudaTileSubbandKind::LowHigh,
+            ),
+            region(
+                level.low_width,
+                level.low_height,
+                level.high_width,
+                level.high_height,
+                step_base + 2,
+                CudaTileSubbandKind::HighHigh,
+            ),
+        ]);
+    }
+    let subbands = cuda_encode_tile_subband_regions(runtime, transformed, &regions, job, stats)?;
+
+    // Resolution 0 holds LL; each later resolution holds one level's HL, LH and HH.
+    let mut packets = crate::allocation::try_vec_with_capacity(
+        levels.len().saturating_add(1),
+        "j2k CUDA HTJ2K resolution descriptors",
+    )
+    .map_err(htj2k_allocation_error)?;
+    let mut subbands = subbands.into_iter();
+    for count in std::iter::once(1).chain(std::iter::repeat_n(3, levels.len())) {
+        let mut resolution =
+            crate::allocation::try_vec_with_capacity(count, "j2k CUDA HTJ2K subband descriptors")
                 .map_err(htj2k_allocation_error)?;
-        subbands.extend([hl, lh, hh]);
-        packets.push(CudaEncodedHtj2kResolution { subbands });
+        resolution.extend(subbands.by_ref().take(count));
+        packets.push(CudaEncodedHtj2kResolution {
+            subbands: resolution,
+        });
     }
 
     Ok(packets)

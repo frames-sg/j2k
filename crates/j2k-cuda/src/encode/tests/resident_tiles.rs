@@ -102,7 +102,7 @@ fn cuda_encode_uses_resident_dwt_tile_body_when_runtime_required() {
     assert_eq!(accelerator.quantize_subband_attempts(), 4);
     assert_eq!(accelerator.quantize_subband_dispatches(), 4);
     assert_eq!(accelerator.ht_code_block_attempts(), 4);
-    assert_eq!(accelerator.ht_code_block_dispatches(), 4);
+    assert_eq!(accelerator.ht_code_block_dispatches(), 1);
     assert_eq!(accelerator.packetization_attempts(), 1);
     assert_eq!(accelerator.packetization_dispatches(), 1);
 }
@@ -155,7 +155,7 @@ fn cuda_encode_uses_resident_mct_dwt_tile_body_when_runtime_required() {
     assert_eq!(accelerator.quantize_subband_attempts(), 12);
     assert_eq!(accelerator.quantize_subband_dispatches(), 12);
     assert_eq!(accelerator.ht_code_block_attempts(), 12);
-    assert_eq!(accelerator.ht_code_block_dispatches(), 12);
+    assert_eq!(accelerator.ht_code_block_dispatches(), 3);
     assert_eq!(accelerator.packetization_attempts(), 1);
     assert_eq!(accelerator.packetization_dispatches(), 1);
 }
@@ -207,7 +207,7 @@ fn cuda_encode_uses_resident_dwt97_tile_body_when_runtime_required() {
     assert_eq!(accelerator.quantize_subband_attempts(), 4);
     assert_eq!(accelerator.quantize_subband_dispatches(), 4);
     assert_eq!(accelerator.ht_code_block_attempts(), 4);
-    assert_eq!(accelerator.ht_code_block_dispatches(), 4);
+    assert_eq!(accelerator.ht_code_block_dispatches(), 1);
     assert_eq!(accelerator.packetization_attempts(), 1);
     assert_eq!(accelerator.packetization_dispatches(), 1);
 }
@@ -290,4 +290,77 @@ fn tile_test_pixels(width: u32, height: u32, components: u8) -> Vec<u8> {
         }
     }
     pixels
+}
+
+#[cfg(feature = "cuda-runtime")]
+#[test]
+fn cuda_large_tiles_with_small_blocks_match_cpu_codestreams() {
+    if !j2k_test_support::cuda_runtime_and_strict_oxide_gate(module_path!()) {
+        return;
+    }
+
+    for (width, height, components, levels, block_exp, precincts) in [
+        (2048u32, 2048u32, 1u8, 1u8, 0, true),
+        (513, 515, 3, 2, 0, true),
+        (513, 515, 4, 2, 1, false),
+    ] {
+        let pixels: Vec<u8> = (0..width * height * u32::from(components))
+            .map(|i| u8::try_from((i * 17 + i / 31) & 255).expect("masked sample"))
+            .collect();
+        let options = EncodeOptions {
+            reversible: true,
+            use_ht_block_coding: true,
+            use_mct: components >= 3,
+            num_decomposition_levels: levels,
+            code_block_width_exp: block_exp,
+            code_block_height_exp: block_exp,
+            // Explicit precincts keep large packet tag trees within the device limit.
+            // The resident case crosses a chunk boundary across its four components.
+            precinct_exponents: if precincts {
+                vec![(7, 7); usize::from(levels) + 1]
+            } else {
+                Vec::new()
+            },
+            ..EncodeOptions::default()
+        };
+        let expected = j2k_native::encode_htj2k(
+            &pixels,
+            width,
+            height,
+            u16::from(components),
+            8,
+            false,
+            &options,
+        )
+        .expect("CPU encode with small blocks");
+        let mut accelerator = CudaEncodeStageAccelerator::default();
+        let actual = encode_with_cuda_test_accelerator(CudaTestEncodeRequest {
+            pixels: &pixels,
+            width,
+            height,
+            components,
+            bit_depth: 8,
+            signed: false,
+            options: &options,
+            accelerator: &mut accelerator,
+        });
+        let device = accelerator
+            .cuda_context()
+            .expect("CUDA context")
+            .expect("resident encoder")
+            .diagnostics()
+            .expect("device memory diagnostics");
+        eprintln!("{width}x{height} components={components} device_peak_bytes={} device_retained_bytes={}",
+            device.peak_live_device_bytes, device.live_device_bytes);
+        let actual = actual.expect("CUDA encode with bounded code-block scratch");
+        assert!(
+            actual == expected,
+            "{width}x{height}, {components} components"
+        );
+        assert_eq!(accelerator.htj2k_tile_dispatches(), usize::from(!precincts));
+        assert!(accelerator.ht_code_block_dispatches() > 1);
+        if precincts {
+            assert!(accelerator.ht_subband_dispatches() > 0);
+        }
+    }
 }

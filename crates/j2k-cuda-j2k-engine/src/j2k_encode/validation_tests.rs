@@ -112,16 +112,16 @@ fn safe_encode_resident_apis_reject_foreign_context_buffers() {
         ),
     );
     assert_encode_context_mismatch(
-        crate::J2kCudaEngine::new(&context).j2k_quantize_subband_region_resident(
+        crate::J2kCudaEngine::new(&context).j2k_quantize_subband_regions_resident(
             &foreign_pixels,
-            CudaJ2kQuantizeSubbandRegionJob {
+            &[CudaJ2kQuantizeSubbandRegionJob {
                 x0: 0,
                 y0: 0,
                 width: 0,
                 height: 0,
                 stride: 0,
                 quantization: QUANTIZATION,
-            },
+            }],
             &context.buffer_pool(),
         ),
     );

@@ -25,6 +25,9 @@ use super::{
 mod host_execution;
 mod resources;
 
+// Bound the 24 KiB per-block scratch request to 384 MiB and every scratch offset in u32.
+const MAX_REGION_ENCODE_JOBS: usize = 16 * 1024;
+
 impl crate::J2kCudaEngine<'_> {
     /// Encode multiple HTJ2K cleanup-pass code blocks with one CUDA dispatch.
     #[doc(hidden)]
@@ -281,6 +284,16 @@ impl crate::J2kCudaEngine<'_> {
             return Ok(empty_htj2k_encoded_code_blocks());
         }
         validate_resident_coefficient_capacity(coefficients, coefficient_count)?;
+        if jobs.len() > MAX_REGION_ENCODE_JOBS {
+            return self.encode_htj2k_region_chunks(
+                coefficients,
+                coefficient_count,
+                jobs,
+                resources,
+                pool,
+                live_host_bytes,
+            );
+        }
         let kernel_jobs = htj2k_encode_region_kernel_jobs_with_live_host_bytes(
             jobs,
             coefficient_count,
