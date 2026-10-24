@@ -734,7 +734,8 @@ const MIN_SIMD_ROW_WIDTH: usize = 2 * SIMD_WIDTH;
 /// the interleaved row seen from the other parity.
 #[expect(
     clippy::too_many_arguments,
-    reason = "the row synthesis keeps its geometry, two sources, output, and exact scratch explicit"
+    clippy::too_many_lines,
+    reason = "the row synthesis keeps its geometry, two sources, output, and exact scratch explicit, and its window and step passes together"
 )]
 #[inline(always)]
 fn synthesize_row<S: Simd>(
@@ -769,8 +770,6 @@ fn synthesize_row<S: Simd>(
     } else {
         (second, first)
     };
-    load_ghosted(low, low_source);
-    load_ghosted(high, high_source);
     // Ghost-relative neighbor offsets: a low sample's high neighbors sit at
     // (k - 1, k) when the row starts low and at (k, k + 1) otherwise; a high
     // sample's low neighbors are the other way around.
@@ -782,6 +781,8 @@ fn synthesize_row<S: Simd>(
 
     match level.transform {
         WaveletTransform::Reversible53 => {
+            load_ghosted(low, low_source);
+            load_ghosted(high, high_source);
             // Equation (F-5), then (F-6).
             let quarter = f32x8::splat(simd, 0.25);
             let half = f32x8::splat(simd, 0.5);
@@ -810,6 +811,21 @@ fn synthesize_row<S: Simd>(
             );
         }
         WaveletTransform::Irreversible97 => {
+            // An even-origin row lifts its first `window` pairs in one pass
+            // (`lift_row_97_window`); the steps below cover the rest, from
+            // `WINDOW_HALO_PAIRS` pairs earlier, so their wrong left edge
+            // lands only on pairs that pass then overwrites.
+            let window = if low_first {
+                window_pairs_97(high_source.len())
+            } else {
+                0
+            };
+            let start = window.saturating_sub(WINDOW_HALO_PAIRS);
+            let low = &mut low[..low_source.len() - start + 2];
+            let high = &mut high[..high_source.len() - start + 2];
+            load_ghosted(low, &low_source[start..]);
+            load_ghosted(high, &high_source[start..]);
+            let tail = &mut row[2 * start..];
             // Steps 1 and 2.
             scale_row(simd, low, KAPPA);
             scale_row(simd, high, level.high_pass);
@@ -844,14 +860,103 @@ fn synthesize_row<S: Simd>(
                 low,
                 high_reads,
                 low_first,
-                row,
+                tail,
                 row_scale,
                 #[inline(always)]
                 |s, a, b| (a + b).mul_add(coefficient_simd, s),
                 #[inline(always)]
                 |s, a, b| math::mul_add(a + b, NEG_ALPHA, s),
             );
+            if window > 0 {
+                let row = &mut row[..2 * window];
+                lift_row_97_window(
+                    simd,
+                    low_source,
+                    high_source,
+                    row,
+                    level.high_pass,
+                    row_scale,
+                );
+            }
         }
+    }
+}
+
+/// Pairs before the row's remaining pairs that their multi-pass lifting
+/// starts from: a wrong left edge spreads one pair per two lifting steps.
+const WINDOW_HALO_PAIRS: usize = 2;
+
+/// Pairs that [`lift_row_97_window`] lifts in a row with `high_len` high-pass
+/// samples: whole blocks of `SIMD_WIDTH` pairs, each followed by the two
+/// blocks its window reads.
+fn window_pairs_97(high_len: usize) -> usize {
+    high_len.saturating_sub(2 * SIMD_WIDTH) / SIMD_WIDTH * SIMD_WIDTH
+}
+
+/// The horizontal 9-7I synthesis of the first `row.len() / 2` pairs of an
+/// even-origin row from its `low` and `high` band rows, in one pass of
+/// `SIMD_WIDTH`-pair blocks: both bands are scaled as they are loaded, the
+/// delta, gamma, beta and alpha steps run a block apart with their neighbors
+/// taken across blocks by `slide`, and each block is interleaved, scaled by
+/// `row_scale` and stored. Each sample sees the operations of the multi-pass
+/// steps in [`synthesize_row`].
+#[expect(
+    clippy::inline_always,
+    reason = "the lifting kernels are specialized inside each SIMD dispatch target"
+)]
+#[inline(always)]
+fn lift_row_97_window<S: Simd>(
+    simd: S,
+    low: &[f32],
+    high: &[f32],
+    row: &mut [f32],
+    high_pass: f32,
+    row_scale: f32,
+) {
+    let [kappa, high_pass, row_scale] =
+        [dwt::DWT97_KAPPA_F32, high_pass, row_scale].map(|value| f32x8::splat(simd, value));
+    let [delta, gamma, beta, alpha] = [
+        dwt::IDWT97_NEG_DELTA_F32,
+        dwt::IDWT97_NEG_GAMMA_F32,
+        dwt::IDWT97_NEG_BETA_F32,
+        dwt::IDWT97_NEG_ALPHA_F32,
+    ]
+    .map(|value| f32x8::splat(simd, value));
+    let load = |block: usize| {
+        let samples =
+            |band: &[f32]| f32x8::from_slice(simd, &band[block * SIMD_WIDTH..][..SIMD_WIDTH]);
+        (samples(low) * kappa, samples(high) * high_pass)
+    };
+    // Low sample `k` lies between high samples `k - 1` and `k`; high sample
+    // `k` between low samples `k` and `k + 1`.
+    let update =
+        |previous: f32x8<S>, high, low, c| (previous.slide::<7>(high) + high).mul_add(c, low);
+    let predict =
+        |low: f32x8<S>, next: f32x8<S>, high, c| (low + low.slide::<1>(next)).mul_add(c, high);
+    // T.800 F.3.7: high sample -1 mirrors high sample 0, which a block
+    // rotated by one lane holds in its last lane.
+    let mirror = |high: f32x8<S>| high.slide::<1>(high);
+    let (low0, high0) = load(0);
+    let (next_low0, mut next_high0) = load(1);
+    let low1 = update(mirror(high0), high0, low0, delta);
+    let mut next_low1 = update(high0, next_high0, next_low0, delta);
+    let mut high1 = predict(low1, next_low1, high0, gamma);
+    let mut low2 = update(mirror(high1), high1, low1, beta);
+    for (block, out) in row
+        .as_chunks_mut::<{ 2 * SIMD_WIDTH }>()
+        .0
+        .iter_mut()
+        .enumerate()
+    {
+        let (block_low0, block_high0) = load(block + 2);
+        let block_low1 = update(next_high0, block_high0, block_low0, delta);
+        let next_high1 = predict(next_low1, block_low1, next_high0, gamma);
+        let next_low2 = update(high1, next_high1, next_low1, beta);
+        let high2 = predict(low2, next_low2, high1, alpha);
+        let (first, second) = out.split_at_mut(SIMD_WIDTH);
+        (low2.zip_low(high2) * row_scale).store(first);
+        (low2.zip_high(high2) * row_scale).store(second);
+        (next_high0, next_low1, high1, low2) = (block_high0, block_low1, next_high1, next_low2);
     }
 }
 

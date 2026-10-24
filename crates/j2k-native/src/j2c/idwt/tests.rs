@@ -464,6 +464,12 @@ fn banded_2d_matches_plain_2d_bit_for_bit() {
                 (16, 300),
                 (17, 300),
                 (18, 260),
+                // Around the first row width whose 9-7I horizontal synthesis
+                // starts with a register-window pass, and its tail.
+                (47, 100),
+                (48, 100),
+                (49, 100),
+                (81, 60),
                 // High-first width whose longer high band ends on a SIMD
                 // boundary in the fused final horizontal lifting step.
                 (31, 300),

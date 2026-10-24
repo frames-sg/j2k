@@ -5,6 +5,9 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- The CPU 9/7 inverse DWT synthesizes most of each even-origin row in one
+  register-window pass, instead of copying both band rows and making a pass per
+  scaling and lifting step. Output is unchanged.
 - CPU HTJ2K cleanup decoding of non-initial quad rows reads both U-VLC values
   of a quad pair and their length with one lookup in a 4096-entry table when the
   codewords fit in ten bits, instead of decoding prefix and suffix in turn.
