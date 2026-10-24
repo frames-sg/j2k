@@ -184,6 +184,7 @@ pub(crate) fn interleave_and_convert_after_mct(
     buf: &mut [u8],
     mct: Option<DeferredMct>,
     ll_bands: &[Vec<f32>; 3],
+    scratch: [&mut [f32]; 2],
     parallel: bool,
 ) -> Result<()> {
     let Some(mct) = mct else {
@@ -201,7 +202,14 @@ pub(crate) fn interleave_and_convert_after_mct(
     };
     if fused {
         let planes = [s0, s1, s2].map(|component| &mut component.container[..len]);
-        return mct.pack_rgb8(planes, ll_bands, &mut buf[..3 * len], parallel, pack_rgb8);
+        return mct.pack_rgb8(
+            planes,
+            ll_bands,
+            scratch,
+            &mut buf[..3 * len],
+            parallel,
+            pack_rgb8,
+        );
     }
     mct.apply(
         (

@@ -119,6 +119,7 @@ pub(crate) fn pack_last_level(
     level: LastLevel,
     planes: [&[f32]; 3],
     ll_bands: &[Vec<f32>; 3],
+    scratch: [&mut [f32]; 2],
     output: &mut [u8],
     parallel: bool,
     emit: impl Fn([&mut [f32]; 3], &mut [u8]) + Sync,
@@ -135,10 +136,17 @@ pub(crate) fn pack_last_level(
     }
     let Some(layout) = parallel_strip_layout(width, height, parallel)? else {
         let batch = SERIAL_BATCH_ROWS;
-        let mut scratch = Vec::new();
-        try_resize_decode_elements(&mut scratch, worker_scratch_elements(width, batch)?, 0.0)?;
+        let required = worker_scratch_elements(width, batch)?;
+        let mut owned = Vec::new();
+        let scratch =
+            if let Some(buffer) = scratch.into_iter().find(|buffer| buffer.len() >= required) {
+                &mut buffer[..required]
+            } else {
+                try_resize_decode_elements(&mut owned, required, 0.0)?;
+                &mut owned
+            };
         dispatch!(Level::new(), simd => stream_rows(
-            simd, &levels, 0, batch, output, &mut scratch, &emit,
+            simd, &levels, 0, batch, output, scratch, &emit,
         ));
         return Ok(());
     };
@@ -148,7 +156,7 @@ pub(crate) fn pack_last_level(
         let workers = layout.concurrent_strips;
         let per_worker = worker_scratch_elements(width, PARALLEL_BATCH_ROWS)?;
         let complete = dispatch!(Level::new(), simd => run_strips(
-            simd, &levels, output, strip_bytes, workers, per_worker, &emit,
+            simd, &levels, output, strip_bytes, workers, per_worker, scratch, &emit,
         ));
         if !complete {
             bail!(DecodingError::HostAllocationFailed);
@@ -163,6 +171,10 @@ pub(crate) fn pack_last_level(
 /// with its own scratch. Returns `false` when a worker could not allocate it.
 #[cfg(feature = "parallel")]
 #[inline(always)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the strip driver keeps geometry and reused scratch explicit"
+)]
 fn run_strips<S: Simd>(
     simd: S,
     levels: &[Level2d<'_>; 3],
@@ -170,6 +182,7 @@ fn run_strips<S: Simd>(
     strip_bytes: usize,
     workers: usize,
     per_worker: usize,
+    scratch: [&mut [f32]; 2],
     emit: &(impl Fn([&mut [f32]; 3], &mut [u8]) + Sync),
 ) -> bool {
     use core::sync::atomic::{AtomicBool, Ordering};
@@ -181,13 +194,26 @@ fn run_strips<S: Simd>(
     // finishes the last.
     let strips = Mutex::new(output.chunks_mut(strip_bytes).enumerate());
     let next = || strips.lock().ok().and_then(|mut strips| strips.next());
+    // Coarse reconstruction has finished. Its initialized scratch can
+    // serve pack workers without changing the context's retained capacity.
+    let [coarse, bands] = scratch;
+    let spare = Mutex::new(
+        coarse
+            .chunks_exact_mut(per_worker)
+            .chain(bands.chunks_exact_mut(per_worker)),
+    );
     let failed = AtomicBool::new(false);
     (0..workers).into_par_iter().with_max_len(1).for_each(|_| {
-        let mut scratch = Vec::new();
-        if try_resize_decode_elements(&mut scratch, per_worker, 0.0).is_err() {
-            failed.store(true, Ordering::Relaxed);
-            return;
-        }
+        let mut owned = Vec::new();
+        let scratch = if let Some(scratch) = spare.lock().ok().and_then(|mut spare| spare.next()) {
+            scratch
+        } else {
+            if try_resize_decode_elements(&mut owned, per_worker, 0.0).is_err() {
+                failed.store(true, Ordering::Relaxed);
+                return;
+            }
+            &mut owned
+        };
         // Re-enter the caller's target-feature scope, as `super::run_strips`.
         #[cfg(feature = "simd")]
         simd.vectorize(
@@ -201,7 +227,7 @@ fn run_strips<S: Simd>(
                         first_row,
                         PARALLEL_BATCH_ROWS,
                         output,
-                        &mut scratch,
+                        scratch,
                         emit,
                     );
                 }
@@ -216,7 +242,7 @@ fn run_strips<S: Simd>(
                 first_row,
                 PARALLEL_BATCH_ROWS,
                 output,
-                &mut scratch,
+                scratch,
                 emit,
             );
         }

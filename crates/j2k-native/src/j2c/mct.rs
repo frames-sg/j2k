@@ -180,6 +180,7 @@ impl DeferredMct {
         self,
         [r, g, b]: [&mut [f32]; 3],
         ll_bands: &[Vec<f32>; 3],
+        scratch: [&mut [f32]; 2],
         output: &mut [u8],
         parallel: bool,
         pack: impl Fn([&[f32]; 3], &mut [u8]) + Sync,
@@ -190,6 +191,7 @@ impl DeferredMct {
                 level,
                 planes,
                 ll_bands,
+                scratch,
                 output,
                 parallel,
                 |[r, g, b], output| {
@@ -545,6 +547,7 @@ mod tests {
                 .pack_rgb8(
                     [&mut s0, &mut s1, &mut s2],
                     &Default::default(),
+                    [&mut [], &mut []],
                     &mut fused,
                     parallel,
                     pack,
