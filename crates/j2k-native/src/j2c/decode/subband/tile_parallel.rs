@@ -269,8 +269,10 @@ fn plan_tile<'a>(
         max_clipped_samples: 0,
         strict: header.strict,
     };
-    budget.reserve_new(&mut plan.jobs, storage.code_blocks.len())?;
-    budget.reserve_new(&mut plan.strips, storage.code_blocks.len())?;
+    // A region decode may need only a few of the tile's code blocks.
+    let required = required_code_blocks(tile, components.clone(), storage, header)?;
+    budget.reserve_new(&mut plan.jobs, required)?;
+    budget.reserve_new(&mut plan.strips, required)?;
     budget.reserve_new(&mut plan.bands, storage.sub_bands.len())?;
     let mut arena_len = 0usize;
 
@@ -375,6 +377,44 @@ fn plan_tile<'a>(
     gather_payloads(&mut plan, storage, arena_len, budget)?;
     budget.include_elements::<(&mut [f32], &Strip)>(plan.strips.len())?;
     Ok(Some(plan))
+}
+
+/// The HT code blocks of `components` that the decode needs, which bounds
+/// the plan's jobs and strips.
+fn required_code_blocks(
+    tile: &Tile<'_>,
+    components: Range<usize>,
+    storage: &DecompositionStorage<'_>,
+    header: &Header<'_>,
+) -> Result<usize> {
+    let mut count = 0usize;
+    for component_idx in components {
+        let resolutions = tile
+            .component_infos
+            .get(component_idx)
+            .ok_or(DecodingError::CodeBlockDecodeFailure)?
+            .num_resolution_levels()
+            .checked_sub(header.skipped_resolution_levels)
+            .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+        let tile_composition = &storage.tile_decompositions[component_idx];
+        for resolution in 0..resolutions {
+            for sub_band_idx in tile_composition.sub_band_iter(resolution, &storage.decompositions)
+            {
+                for precinct in storage.sub_bands[sub_band_idx].precincts.clone() {
+                    count += storage.precincts[precinct]
+                        .code_blocks
+                        .clone()
+                        .filter(|&idx| {
+                            let code_block = &storage.code_blocks[idx];
+                            code_block.coding == Some(CodeBlockCoding::HighThroughput)
+                                && code_block_required_by_index(storage, sub_band_idx, code_block)
+                        })
+                        .count();
+                }
+            }
+        }
+    }
+    Ok(count)
 }
 
 fn plan_block<'a>(

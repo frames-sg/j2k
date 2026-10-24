@@ -5,6 +5,10 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CPU tile-wide HTJ2K decodes size their code-block plan by the blocks the
+  decode needs in the planned components instead of every block in the tile,
+  so region decodes of large tiles without packet length markers no longer
+  reserve megabytes per component.
 - CPU region decodes reconstruct the IDWT a row at a time, holding a few rows
   per level instead of each level's whole window, and write the last level
   straight into the output planes. This applies to packed, native and
