@@ -5,6 +5,11 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- The classic Part 1 MQ arithmetic encoder codes each symbol with selects
+  instead of branches on the MPS/LPS decision and the conditional exchange,
+  takes its next state from the packed table the decoder uses, and
+  renormalizes by the leading-zero count of A in one shift between byte
+  boundaries instead of one bit at a time. Output is unchanged.
 - CPU classic Part 1 encodes run Tier-1 code-block coding in the longest
   waves whose worst-case output and worker scratch fit the memory cap,
   doubling from one block per worker, instead of always one block per worker.

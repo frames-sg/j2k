@@ -4,9 +4,10 @@
 //! It uses the same QE probability table and context state machine.
 
 use alloc::vec::Vec;
+use core::hint::select_unpredictable;
 
 use super::encode::allocation::{try_reserve_untracked_bounded, try_untracked_vec};
-use super::mq::QE_TABLE;
+use super::mq::PACKED_DECODER_STATES;
 use crate::{EncodeError, EncodeResult};
 
 /// MQ arithmetic encoder context (identical layout to decoder context).
@@ -17,11 +18,7 @@ use crate::{EncodeError, EncodeResult};
 pub(crate) struct ArithmeticEncoderContext(u8);
 
 impl ArithmeticEncoderContext {
-    #[expect(
-        clippy::inline_always,
-        reason = "MQ state transitions are measured per-symbol hot paths"
-    )]
-    #[inline(always)]
+    #[cfg(test)]
     pub(crate) fn index(self) -> u32 {
         u32::from(self.0 & 0x7F)
     }
@@ -33,24 +30,6 @@ impl ArithmeticEncoderContext {
     #[inline(always)]
     pub(crate) fn mps(self) -> u32 {
         u32::from(self.0 >> 7)
-    }
-
-    #[expect(
-        clippy::inline_always,
-        reason = "MQ state transitions are measured per-symbol hot paths"
-    )]
-    #[inline(always)]
-    fn set_index(&mut self, index: u8) {
-        self.0 = (self.0 & 0x80) | index;
-    }
-
-    #[expect(
-        clippy::inline_always,
-        reason = "MQ state transitions are measured per-symbol hot paths"
-    )]
-    #[inline(always)]
-    fn xor_mps(&mut self, val: u32) {
-        self.0 ^= u8::from(val & 1 != 0) << 7;
     }
 
     #[expect(
@@ -124,81 +103,58 @@ impl ArithmeticEncoder {
         clippy::inline_always,
         reason = "MQ state transitions are measured per-symbol hot paths"
     )]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the packed MQ state holds Qe in 16 bits and each next state in 8"
+    )]
     #[inline(always)]
     pub(crate) fn encode(&mut self, bit: u32, context: &mut ArithmeticEncoderContext) {
-        if self.allocation_error.is_some() {
-            return;
-        }
-        let qe_entry = &QE_TABLE[context.index() as usize];
-        self.a -= qe_entry.qe;
-
-        if bit == context.mps() {
-            // MPS path (CODEMPS, C.2.6)
-            if self.a & 0x8000 != 0 {
-                // No renormalization needed: fast path
-                self.c += qe_entry.qe;
-                return;
-            }
-            if self.a < qe_entry.qe {
-                // Conditional exchange: MPS coded in lower sub-interval
-                // C stays (don't add Qe), A takes the larger Qe value
-                self.a = qe_entry.qe;
-            } else {
-                // Normal: MPS coded in upper sub-interval
-                self.c += qe_entry.qe;
-            }
-            context.set_index(qe_entry.nmps);
-        } else {
-            // LPS path (CODELPS, C.2.6)
-            if self.a < qe_entry.qe {
-                // Conditional exchange: LPS coded in upper sub-interval
-                self.c += qe_entry.qe;
-            } else {
-                // Normal: LPS coded in lower sub-interval, A = Qe
-                self.a = qe_entry.qe;
-            }
-            if qe_entry.switch {
-                context.xor_mps(1);
-            }
-            context.set_index(qe_entry.nlps);
-        }
-
-        self.renormalize();
+        // CODEMPS and CODELPS, T.800 C.2.6, as selects rather than branches, since
+        // near-equiprobable contexts make the MPS test unpredictable: with
+        // the conditional exchange the MPS keeps the larger sub-interval and
+        // the LPS the smaller, C adds Qe exactly when the coded symbol takes
+        // the upper one, and the MPS state moves only when A renormalizes.
+        let state = PACKED_DECODER_STATES[usize::from(context.0)];
+        let qe = (state & 0xFFFF) as u32;
+        let a = self.a - qe;
+        let is_mps = bit == context.mps();
+        self.c += select_unpredictable(is_mps == (a >= qe), qe, 0);
+        let next_a = select_unpredictable(is_mps, a.max(qe), a.min(qe));
+        let next_mps = select_unpredictable(next_a < 0x8000, (state >> 24) as u8, context.0);
+        context.0 = select_unpredictable(is_mps, next_mps, (state >> 32) as u8);
+        self.a = next_a;
+        self.renormalize(next_a.leading_zeros() - 16);
     }
 
-    /// Renormalize the encoder (C.2.7 RENORME).
-    fn renormalize(&mut self) {
-        loop {
-            if self.allocation_error.is_some() {
-                return;
-            }
-            self.a <<= 1;
-            self.c <<= 1;
-            self.ct -= 1;
-            if self.ct == 0 {
-                self.byte_out();
-                if self.allocation_error.is_some() {
-                    return;
-                }
-            }
-            if self.a & 0x8000 != 0 {
-                break;
-            }
+    /// Renormalize the encoder, T.800 C.2.7 RENORME, by the `shifts` that bring A
+    /// back to at least 0x8000, emitting a byte whenever CT runs out.
+    #[expect(
+        clippy::inline_always,
+        reason = "MQ state transitions are measured per-symbol hot paths"
+    )]
+    #[inline(always)]
+    fn renormalize(&mut self, mut shifts: u32) {
+        self.a <<= shifts;
+        while shifts >= self.ct {
+            self.c <<= self.ct;
+            shifts -= self.ct;
+            self.byte_out();
         }
+        self.c <<= shifts;
+        self.ct -= shifts;
     }
 
     /// Output a byte with carry propagation and bit stuffing (C.2.8 BYTEOUT).
     ///
     /// After 0xFF, only 7 bits are extracted (bit stuffing) to prevent
-    /// marker-like byte sequences in the output.
+    /// marker-like byte sequences in the output. After an allocation error
+    /// the registers keep advancing but nothing more is stored; the error is
+    /// returned when the encoder finishes.
     #[expect(
         clippy::cast_possible_truncation,
         reason = "MQ register masks bound every emitted chunk to one byte"
     )]
     fn byte_out(&mut self) {
-        if self.allocation_error.is_some() {
-            return;
-        }
         let last_byte = *self.data.last().unwrap();
         if last_byte == 0xFF {
             // 7-bit mode after 0xFF (bit stuffing)
@@ -272,6 +228,9 @@ impl ArithmeticEncoder {
     }
 
     fn try_push_byte(&mut self, byte: u8) {
+        if self.allocation_error.is_some() {
+            return;
+        }
         if self
             .byte_limit
             .is_some_and(|limit| self.data.len() >= limit)
