@@ -25,7 +25,9 @@ use crate::{checked_decode_usize_product2, try_resize_decode_elements, Result};
 /// largest per-component peak rather than their sum. A last level written
 /// into a `channel_data` plane uses padding the plane already holds. The
 /// row-streamed IDWT instead holds every level's ring of rows at once, charged
-/// at the 9/7 ring depth whatever the component's transform.
+/// at the 9/7 ring depth whatever the component's transform. With no active
+/// level it holds nothing, since it copies the LL window straight into the
+/// plane.
 pub(crate) fn roi_idwt_peak_elements(
     storage: &DecompositionStorage<'_>,
     skipped_resolution_levels: u8,
@@ -40,6 +42,9 @@ pub(crate) fn roi_idwt_peak_elements(
             .len()
             .saturating_sub(usize::from(skipped_resolution_levels));
         if active_len == 0 {
+            if storage.line_region_idwt {
+                continue;
+            }
             if let Some(window) = roi_plan
                 .sub_band_window(tile_decompositions.first_ll_sub_band)
                 .or_else(|| roi_plan.final_window(component_idx))
@@ -150,16 +155,7 @@ pub(super) fn apply_roi(
         .saturating_sub(header.skipped_resolution_levels as usize);
 
     if active_len == 0 {
-        let Some(window) = roi_plan
-            .sub_band_window(tile_decompositions.first_ll_sub_band)
-            .or_else(|| roi_plan.final_window(component_idx))
-        else {
-            output.coefficients.clear();
-            output.rect = IntRect::from_xywh(0, 0, 0, 0);
-            return Ok(());
-        };
-        copy_sub_band_window_to_output(ll_sub_band, storage, window, output)?;
-        return Ok(());
+        return apply_roi_without_levels(storage, tile_ctx, component_idx, header);
     }
 
     // The previous component's output is never reused here, so release it
@@ -327,6 +323,81 @@ fn apply_roi_lines(
     result?;
     tile_ctx.idwt_output.rect = last_window;
     tile_ctx.idwt_output.placement = IdwtPlacement::ChannelPlane;
+    Ok(())
+}
+
+/// With no level left to reconstruct, the output is the LL sub-band's window.
+fn apply_roi_without_levels(
+    storage: &DecompositionStorage<'_>,
+    tile_ctx: &mut TileDecodeContext,
+    component_idx: usize,
+    header: &Header<'_>,
+) -> Result<()> {
+    let roi_plan = storage
+        .roi_plan
+        .as_ref()
+        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+    let first_ll_sub_band = storage.tile_decompositions[component_idx].first_ll_sub_band;
+    let output = &mut tile_ctx.idwt_output;
+    let Some(window) = roi_plan
+        .sub_band_window(first_ll_sub_band)
+        .or_else(|| roi_plan.final_window(component_idx))
+    else {
+        output.coefficients.clear();
+        output.rect = IntRect::from_xywh(0, 0, 0, 0);
+        return Ok(());
+    };
+    if storage.line_region_idwt {
+        return copy_ll_window_into_plane(storage, tile_ctx, component_idx, window, header);
+    }
+    copy_sub_band_window_to_output(
+        &storage.sub_bands[first_ll_sub_band],
+        storage,
+        window,
+        output,
+    )
+}
+
+/// With no level left to reconstruct, write the LL sub-band's overlap with
+/// the component's final window straight into its `channel_data` plane, as
+/// the streamed IDWT writes its last level, instead of copying the window into
+/// the IDWT output for `store` to copy again.
+fn copy_ll_window_into_plane(
+    storage: &DecompositionStorage<'_>,
+    tile_ctx: &mut TileDecodeContext,
+    component_idx: usize,
+    window: IntRect,
+    header: &Header<'_>,
+) -> Result<()> {
+    let roi_plan = storage
+        .roi_plan
+        .as_ref()
+        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+    let (Some(final_window), Some(output_region)) =
+        (roi_plan.final_window(component_idx), tile_ctx.output_region)
+    else {
+        return Ok(());
+    };
+    let copy = window.intersect(final_window);
+    let region = output_region_rect(&header.size_data, output_region);
+    let ll_sub_band =
+        &storage.sub_bands[storage.tile_decompositions[component_idx].first_ll_sub_band];
+    let source = CoefficientSource::from_sub_band(ll_sub_band, storage);
+    let plane = &mut tile_ctx.channel_data[component_idx].container;
+    let plane_width = region.width() as usize;
+    for y in copy.y0..copy.y1 {
+        let start = (y - region.y0) as usize * plane_width + (copy.x0 - region.x0) as usize;
+        let row = plane
+            .get_mut(start..start + copy.width() as usize)
+            .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+        for (sample, x) in row.iter_mut().zip(copy.x0..copy.x1) {
+            *sample = source.get(x, y);
+        }
+    }
+    let output = &mut tile_ctx.idwt_output;
+    output.coefficients = Vec::new();
+    output.rect = window;
+    output.placement = IdwtPlacement::ChannelPlane;
     Ok(())
 }
 
