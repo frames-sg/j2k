@@ -72,7 +72,7 @@ impl J2kDecoder<'_> {
         }
 
         let retained_image_bytes = component_handoff_image_bytes(&image)?;
-        let mut native_context = self.scaled_decode_native_context();
+        let mut native_context = self.fresh_native_context();
         let decoded = image
             .decode_native_components_with_context(&mut native_context)
             .map_err(J2kError::from_native_decode_error)?;
@@ -122,7 +122,7 @@ impl J2kDecoder<'_> {
         validate_region(scaled_roi, image_dims)?;
 
         let warnings = decode_warnings_for_image(&image);
-        let mut native_context = self.scaled_decode_native_context();
+        let mut native_context = self.fresh_native_context();
         decode_image_region_into_with_native_context(
             &image,
             &mut native_context,
