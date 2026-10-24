@@ -102,20 +102,24 @@ fn mixed_tail_case(
 ) -> MixedTailCase {
     let low_width = (width + 1 - (x0 & 1)) / 2;
     let low_height = (height + 1 - (y0 & 1)) / 2;
+    // Absolute band rectangles: low bands start at ceil(origin / 2), high
+    // bands at floor(origin / 2).
+    let low = (x0.div_ceil(2), y0.div_ceil(2));
+    let high = (x0 / 2, y0 / 2);
     let rects = [
-        (low_width, low_height),
-        (width - low_width, low_height),
-        (low_width, height - low_height),
-        (width - low_width, height - low_height),
+        (low.0, low.1, low_width, low_height),
+        (high.0, low.1, width - low_width, low_height),
+        (low.0, high.1, low_width, height - low_height),
+        (high.0, high.1, width - low_width, height - low_height),
     ]
-    .map(|(x1, y1)| CudaJ2kRect {
-        x0: 0,
-        y0: 0,
-        x1,
-        y1,
+    .map(|(x0, y0, w, h)| CudaJ2kRect {
+        x0,
+        y0,
+        x1: x0 + w,
+        y1: y0 + h,
     });
     let bands = rects.map(|rect| {
-        let samples = (0..rect.x1 * rect.y1)
+        let samples = (0..(rect.x1 - rect.x0) * (rect.y1 - rect.y0))
             .map(|index| f32::from(i16::try_from(index % 71).unwrap() - 35) * 0.125)
             .collect::<Vec<_>>();
         context
@@ -516,21 +520,21 @@ fn j2k_inverse_dwt_batch_odd_origin_matches_single_when_runtime_required() {
             y1: 4,
         },
         ll_rect: CudaJ2kRect {
-            x0: 0,
-            y0: 0,
-            x1: 1,
-            y1: 1,
+            x0: 1,
+            y0: 1,
+            x1: 2,
+            y1: 2,
         },
         hl_rect: CudaJ2kRect {
             x0: 0,
-            y0: 0,
+            y0: 1,
             x1: 2,
-            y1: 1,
+            y1: 2,
         },
         lh_rect: CudaJ2kRect {
-            x0: 0,
+            x0: 1,
             y0: 0,
-            x1: 1,
+            x1: 2,
             y1: 2,
         },
         hh_rect: CudaJ2kRect {
@@ -901,11 +905,12 @@ fn j2k_inverse_dwt_batch_2592_wide_matches_single_for_both_transforms_when_runti
         .upload(super::super::f32_slice_as_bytes(&hh_values))
         .expect("upload wide HH");
     for irreversible97 in [0, 1] {
-        let band_rect = CudaJ2kRect {
-            x0: 0,
-            y0: 0,
-            x1: band_width_u32,
-            y1: band_height_u32,
+        // The output starts at (1, 1): low bands start at 1, high bands at 0.
+        let band_rect = |x0, y0| CudaJ2kRect {
+            x0,
+            y0,
+            x1: x0 + band_width_u32,
+            y1: y0 + band_height_u32,
         };
         let job = CudaJ2kIdwtJob {
             rect: CudaJ2kRect {
@@ -914,10 +919,10 @@ fn j2k_inverse_dwt_batch_2592_wide_matches_single_for_both_transforms_when_runti
                 x1: width_u32 + 1,
                 y1: height_u32 + 1,
             },
-            ll_rect: band_rect,
-            hl_rect: band_rect,
-            lh_rect: band_rect,
-            hh_rect: band_rect,
+            ll_rect: band_rect(1, 1),
+            hl_rect: band_rect(0, 1),
+            lh_rect: band_rect(1, 0),
+            hh_rect: band_rect(0, 0),
             irreversible97,
         };
         let single = crate::J2kCudaEngine::new(&context)

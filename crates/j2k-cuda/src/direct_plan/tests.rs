@@ -208,7 +208,10 @@ fn full_frame_plan_keeps_all_blocks_while_region_plan_prunes() {
 
     assert_eq!(full.code_blocks().len(), 2);
     assert_eq!(region.code_blocks().len(), 1);
-    assert_eq!(region.code_blocks()[0].output_x, 1);
+    // The region's band window starts at the retained block.
+    assert_eq!(region.code_blocks()[0].output_x, 0);
+    assert_eq!(region.subbands[0].x0, full.subbands[0].x0 + 1);
+    assert_eq!(region.subbands[0].width, 1);
 }
 
 #[test]
