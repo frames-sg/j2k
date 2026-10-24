@@ -111,7 +111,10 @@ impl J2kDecoder<'_> {
         let plan_start = profile::profile_now(true);
         let mut native_context = NativeDecoderContext::default();
         let native_plan = image
-            .build_direct_color_plan_with_context(&mut native_context)
+            .build_direct_color_plan_region_with_context(
+                &mut native_context,
+                (roi.x, roi.y, roi.w, roi.h),
+            )
             .map_err(native_decode_error)?;
         let plan_us = profile::elapsed_us(plan_start);
 
@@ -154,7 +157,7 @@ impl J2kDecoder<'_> {
         Ok(CudaHtj2kColorDecodePlans {
             output_index: 0,
             dimensions: (roi.w, roi.h),
-            mct_dimensions: native_plan.dimensions,
+            mct_dimensions: final_band_dimensions(&components),
             bit_depths: rgba_bit_depths_from_rgb(native_plan.bit_depths),
             mct: native_plan.mct,
             transform: CudaHtj2kTransform::from_native(native_plan.transform),
@@ -187,7 +190,10 @@ impl J2kDecoder<'_> {
         let plan_start = profile::profile_now(true);
         let mut native_context = NativeDecoderContext::default();
         let native_plan = image
-            .build_direct_color_plan_with_context(&mut native_context)
+            .build_direct_color_plan_region_with_context(
+                &mut native_context,
+                (scaled_roi.x, scaled_roi.y, scaled_roi.w, scaled_roi.h),
+            )
             .map_err(native_decode_error)?;
         let plan_us = profile::elapsed_us(plan_start);
 
@@ -230,7 +236,7 @@ impl J2kDecoder<'_> {
         Ok(CudaHtj2kColorDecodePlans {
             output_index: 0,
             dimensions: (scaled_roi.w, scaled_roi.h),
-            mct_dimensions: native_plan.dimensions,
+            mct_dimensions: final_band_dimensions(&components),
             bit_depths: rgba_bit_depths_from_rgb(native_plan.bit_depths),
             mct: native_plan.mct,
             transform: CudaHtj2kTransform::from_native(native_plan.transform),
@@ -239,4 +245,19 @@ impl J2kDecoder<'_> {
             report,
         })
     }
+}
+
+/// Dimensions of the reconstructed component planes the colour stores read: a
+/// region plan's native dimensions are the region, not the planes.
+#[cfg(feature = "cuda-runtime")]
+fn final_band_dimensions(components: &[CudaHtj2kDecodePlan]) -> (u32, u32) {
+    components
+        .first()
+        .and_then(|component| component.store_steps().first())
+        .map_or((0, 0), |store| {
+            (
+                store.input_rect.x1.saturating_sub(store.input_rect.x0),
+                store.input_rect.y1.saturating_sub(store.input_rect.y0),
+            )
+        })
 }

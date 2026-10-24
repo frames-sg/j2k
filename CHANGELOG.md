@@ -300,6 +300,10 @@ and stale roadmap entries have been removed from the public documentation set.
   packet headers are still checked as before. A 1024 x 1024 region of an
   18000 x 12000 RGB RPCL image needs 13 to 29 MiB of packet-header state
   instead of 27 to 60 MiB, depending on where it lies. Output is unchanged.
+- CUDA colour region decodes plan only the code blocks, packets and wavelet
+  levels the region needs, as grayscale region decodes already did, instead
+  of decoding every code block of the image and uploading its whole
+  codestream. Output is unchanged.
 - Region decodes reduced past every wavelet level write the LL band straight
   into the output planes instead of copying it through an IDWT buffer first,
   saving one component's region of `f32` samples (0.8 of 10.8 MiB for a 1/32
