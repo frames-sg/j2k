@@ -136,17 +136,10 @@ pub(crate) fn pack_last_level(
     }
     let Some(layout) = parallel_strip_layout(width, height, parallel)? else {
         let batch = SERIAL_BATCH_ROWS;
-        let required = worker_scratch_elements(width, batch)?;
-        let mut owned = Vec::new();
-        let scratch =
-            if let Some(buffer) = scratch.into_iter().find(|buffer| buffer.len() >= required) {
-                &mut buffer[..required]
-            } else {
-                try_resize_decode_elements(&mut owned, required, 0.0)?;
-                &mut owned
-            };
+        let mut scratch = Vec::new();
+        try_resize_decode_elements(&mut scratch, worker_scratch_elements(width, batch)?, 0.0)?;
         dispatch!(Level::new(), simd => stream_rows(
-            simd, &levels, 0, batch, output, scratch, &emit,
+            simd, &levels, 0, batch, output, &mut scratch, &emit,
         ));
         return Ok(());
     };
@@ -163,7 +156,7 @@ pub(crate) fn pack_last_level(
         }
     }
     #[cfg(not(feature = "parallel"))]
-    let _ = layout;
+    let _ = (layout, scratch);
     Ok(())
 }
 
