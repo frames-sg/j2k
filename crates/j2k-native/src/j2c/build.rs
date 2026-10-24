@@ -2,6 +2,7 @@
 
 use super::decode::{DecompositionStorage, TileDecompositions};
 use super::rect::IntRect;
+use super::roi::RoiPlan;
 use super::tag_tree::TagTree;
 use super::tile::{ResolutionTile, Tile};
 use crate::error::{DecodingError, Result, ValidationError};
@@ -39,10 +40,6 @@ pub(crate) fn build(
     )
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one pass builds each component's sub-band, precinct, and coefficient ranges in decode order"
-)]
 fn build_decompositions(
     tile: &Tile<'_>,
     storage: &mut DecompositionStorage<'_>,
@@ -64,6 +61,40 @@ fn build_decompositions(
         selection,
     )?;
     resize_planned_coefficients(storage, &plan)?;
+    // Building reads the ROI plan while it fills the rest of storage, so it
+    // is held aside until the components are built.
+    let roi_plan = storage.roi_plan.take();
+    let built = build_components(
+        tile,
+        storage,
+        &plan,
+        workspace,
+        selection,
+        selection.and(roi_plan.as_ref()),
+    );
+    storage.roi_plan = roi_plan;
+    let coefficient_extent = built?;
+
+    validate_built_storage(&plan, storage, coefficient_extent)?;
+    storage.structural_workspace_bytes = plan.total_bytes;
+    Ok(())
+}
+
+/// Build each component's sub-bands, precincts and code-blocks in decode
+/// order, and return the end of the furthest coefficient range. With
+/// `roi_plan`, only the code-blocks it requires get layer records.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one pass builds each component's sub-band, precinct, and coefficient ranges in decode order"
+)]
+fn build_components(
+    tile: &Tile<'_>,
+    storage: &mut DecompositionStorage<'_>,
+    plan: &DecompositionAllocationPlan,
+    workspace: BuildWorkspace,
+    selection: Option<&PrecinctSelection>,
+    roi_plan: Option<&RoiPlan>,
+) -> Result<usize> {
     let coefficient_layout = workspace.coefficient_layout();
     storage.coefficient_layout = coefficient_layout;
     let mut coefficient_counter = 0usize;
@@ -106,7 +137,14 @@ fn build_decompositions(
             );
 
             let keep = selected_precincts(selection, run)?;
-            let precincts = build_precincts(resolution_tile, sub_band_rect, tile, keep, storage)?;
+            let precincts = build_precincts(
+                resolution_tile,
+                sub_band_rect,
+                tile,
+                keep,
+                roi_plan,
+                storage,
+            )?;
 
             let added_coefficients = (sub_band_rect.width() as usize)
                 .checked_mul(sub_band_rect.height() as usize)
@@ -173,9 +211,7 @@ fn build_decompositions(
         )?;
     }
 
-    validate_built_storage(&plan, storage, coefficient_extent)?;
-    storage.structural_workspace_bytes = plan.total_bytes;
-    Ok(())
+    Ok(coefficient_extent)
 }
 
 fn resize_planned_coefficients(
@@ -253,9 +289,14 @@ fn build_precincts(
     sub_band_rect: IntRect,
     tile: &Tile<'_>,
     keep: Option<&[PrecinctUse]>,
+    roi_plan: Option<&RoiPlan>,
     storage: &mut DecompositionStorage<'_>,
 ) -> Result<Range<usize>> {
     let start = storage.precincts.len();
+    // The sub-band is pushed after its precincts, at this index.
+    let sub_band_idx = storage.sub_bands.len();
+    let required =
+        |rect: IntRect| roi_plan.is_none_or(|plan| plan.code_block_required(sub_band_idx, rect));
 
     for (precinct_idx, precinct_data) in resolution_tile
         .precincts()
@@ -290,6 +331,7 @@ fn build_precincts(
             grid.columns,
             grid.rows,
             tile,
+            &required,
             storage,
         )?;
 
@@ -323,6 +365,12 @@ fn build_precincts(
     Ok(start..end)
 }
 
+/// Build a precinct's code-blocks. Only those `required` keeps get layer
+/// records: packet parsing reads the others' contributions only to skip them.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the code-block grid, its tile, and the region filter stay explicit beside the storage they fill"
+)]
 fn build_code_blocks(
     code_block_area: IntRect,
     sub_band_rect: IntRect,
@@ -330,6 +378,7 @@ fn build_code_blocks(
     code_blocks_x: u32,
     code_blocks_y: u32,
     tile: &Tile<'_>,
+    required: &dyn Fn(IntRect) -> bool,
     storage: &mut DecompositionStorage<'_>,
 ) -> Result<Range<usize>> {
     let mut y = code_block_area.y0;
@@ -364,8 +413,13 @@ fn build_code_blocks(
             );
 
             let start = storage.layers.len();
+            let layer_count = if required(area) {
+                usize::from(tile.num_layers)
+            } else {
+                0
+            };
             let end = start
-                .checked_add(usize::from(tile.num_layers))
+                .checked_add(layer_count)
                 .ok_or(ValidationError::ImageTooLarge)?;
             if end > storage.layers.capacity() {
                 return Err(DecodingError::HostAllocationFailed.into());
@@ -376,7 +430,7 @@ fn build_code_blocks(
                     // layer segments.
                     segments: None,
                 },
-                tile.num_layers as usize,
+                layer_count,
             ));
             if storage.layers.len() != end {
                 return Err(DecodingError::InvalidPrecinct.into());

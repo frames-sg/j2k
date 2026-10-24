@@ -42,9 +42,11 @@ fn parse_packet(
             ..Default::default()
         },
         block,
-        segments,
-        0,
-        &mut allocation_error,
+        &mut SegmentSink::Record {
+            segments,
+            structural_workspace_bytes: 0,
+            packet_workspace_error: &mut allocation_error,
+        },
     );
     assert!(allocation_error.is_none());
     result
@@ -70,9 +72,11 @@ fn mixed_length_without_ht_discriminator_selects_classic() {
             ..Default::default()
         },
         &mut block,
-        &mut segments,
-        0,
-        &mut allocation_error,
+        &mut SegmentSink::Record {
+            segments: &mut segments,
+            structural_workspace_bytes: 0,
+            packet_workspace_error: &mut allocation_error,
+        },
     )
     .unwrap();
 
@@ -103,9 +107,11 @@ fn mixed_length_with_zero_msb_selects_ht_cleanup() {
             ..Default::default()
         },
         &mut block,
-        &mut segments,
-        0,
-        &mut allocation_error,
+        &mut SegmentSink::Record {
+            segments: &mut segments,
+            structural_workspace_bytes: 0,
+            packet_workspace_error: &mut allocation_error,
+        },
     )
     .unwrap();
 
@@ -136,9 +142,11 @@ fn mixed_placeholder_consumes_the_full_classic_width_once() {
             ..Default::default()
         },
         &mut block,
-        &mut segments,
-        0,
-        &mut allocation_error,
+        &mut SegmentSink::Record {
+            segments: &mut segments,
+            structural_workspace_bytes: 0,
+            packet_workspace_error: &mut allocation_error,
+        },
     )
     .unwrap();
 

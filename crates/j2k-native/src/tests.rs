@@ -1333,7 +1333,7 @@ fn region_selection_releases_the_previous_tiles_retained_decomposition_capacity(
 }
 
 #[test]
-fn decode_region_rejects_code_block_layer_metadata_amplification() {
+fn decode_region_budgets_layer_metadata_for_the_code_blocks_it_reads() {
     let pixels: Vec<u8> = (0..64).collect();
     let options = EncodeOptions {
         reversible: true,
@@ -1345,14 +1345,104 @@ fn decode_region_rejects_code_block_layer_metadata_amplification() {
     };
     let mut bytes =
         encode(&pixels, 8, 8, 1, 8, false, &options).expect("encode many-layer classic fixture");
+    // About a million 4x4 code-blocks with 32 layers each: their layer
+    // records alone would exceed the decode budget.
     rewrite_siz_to_single_large_tile(&mut bytes, 4_096);
     let image = Image::new(&bytes, &DecodeSettings::default()).expect("large SIZ parses");
 
-    let Err(err) = image.decode_region((0, 0, 1, 1)) else {
-        panic!("tiny ROI must not bypass the structural metadata budget");
+    // A region reading every code-block must still be rejected up front.
+    let Err(err) = image.decode_region((0, 0, 4_096, 4_096)) else {
+        panic!("a whole-image ROI must not bypass the structural metadata budget");
     };
-
     assert_eq!(err, DecodeError::Validation(ValidationError::ImageTooLarge));
+
+    // A tiny region gives layer records only to the code-blocks it reads, so
+    // it gets as far as the packets, which the rewritten header outruns.
+    let Err(err) = image.decode_region((0, 0, 1, 1)) else {
+        panic!("the rewritten header has no packet data for its code-blocks");
+    };
+    assert!(
+        matches!(
+            err,
+            DecodeError::Decoding(DecodingError::PacketParseFailure(_))
+        ),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn region_decode_without_plt_keeps_no_layer_records_for_code_blocks_it_skips() {
+    const SIZE: u32 = 256;
+    const LAYERS: u8 = 4;
+    let mut state = 0x9e37_79b9_u32;
+    let pixels: Vec<u8> = (0..SIZE * SIZE)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            (state >> 24) as u8
+        })
+        .collect();
+    for use_ht_block_coding in [false, true] {
+        let options = EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 2,
+            code_block_width_exp: 0,
+            code_block_height_exp: 0,
+            precinct_exponents: vec![(4, 4); 3],
+            progression_order: EncodeProgressionOrder::Rpcl,
+            num_layers: LAYERS,
+            use_ht_block_coding,
+            ..EncodeOptions::default()
+        };
+        let bytes =
+            encode(&pixels, SIZE, SIZE, 1, 8, false, &options).expect("encode RPCL fixture");
+        let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse RPCL fixture");
+        let whole = image.decode_native().expect("decode whole image").data;
+
+        // The bottom-right corner comes last in RPCL, so without PLT every
+        // earlier precinct is parsed only to reach it.
+        let roi = (SIZE - 24, SIZE - 24, 24, 24);
+        let mut context = DecoderContext::default();
+        let region = image
+            .decode_native_region_with_context(roi, &mut context)
+            .expect("decode corner region");
+        let expected: Vec<u8> = whole
+            .chunks_exact(image.width() as usize)
+            .skip(roi.1 as usize)
+            .take(roi.3 as usize)
+            .flat_map(|row| &row[roi.0 as usize..(roi.0 + roi.2) as usize])
+            .copied()
+            .collect();
+        assert_eq!(region.data, expected, "ht={use_ht_block_coding}");
+
+        let counters = context.tile_decode_context.debug_counters;
+        let layers = usize::from(LAYERS);
+        assert!(counters.built_layer_records > 0, "ht={use_ht_block_coding}");
+        assert_eq!(
+            counters.built_layer_records % layers,
+            0,
+            "ht={use_ht_block_coding}"
+        );
+        assert!(
+            counters.built_layer_records * 4 < counters.built_code_blocks * layers,
+            "ht={use_ht_block_coding}: {} layer records for {} code-blocks",
+            counters.built_layer_records,
+            counters.built_code_blocks
+        );
+
+        // A whole-image decode reads every code-block.
+        let mut context = DecoderContext::default();
+        image
+            .decode_native_with_context(&mut context)
+            .expect("decode whole image");
+        let counters = context.tile_decode_context.debug_counters;
+        assert_eq!(
+            counters.built_layer_records,
+            counters.built_code_blocks * layers,
+            "ht={use_ht_block_coding}"
+        );
+    }
 }
 
 fn fixture_ht_gray() -> Vec<u8> {

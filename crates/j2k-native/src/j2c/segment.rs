@@ -20,6 +20,89 @@ mod ht;
 pub(crate) const MAX_BITPLANE_COUNT: u8 = 63;
 type PacketResult<T = ()> = core::result::Result<T, &'static str>;
 
+/// Where packet-header parsing puts a code-block contribution's segments.
+pub(super) enum SegmentSink<'s, 'a> {
+    /// Record each segment, for a code-block the decode reads.
+    Record {
+        segments: &'s mut Vec<Segment<'a>>,
+        structural_workspace_bytes: usize,
+        packet_workspace_error: &'s mut Option<DecodeError>,
+    },
+    /// Add up the segment lengths, for a code-block whose body is skipped.
+    Skip(&'s mut usize),
+}
+
+impl<'a> SegmentSink<'_, 'a> {
+    fn push(&mut self, segment: Segment<'a>) -> Option<()> {
+        match self {
+            Self::Record {
+                segments,
+                structural_workspace_bytes,
+                packet_workspace_error,
+            } => push_segment_or_record_error(
+                segments,
+                *structural_workspace_bytes,
+                packet_workspace_error,
+                segment,
+            ),
+            Self::Skip(bytes) => {
+                **bytes = bytes.checked_add(usize::try_from(segment.data_length).ok()?)?;
+                Some(())
+            }
+        }
+    }
+}
+
+/// The body bytes of one packet that belong to code-blocks the decode does
+/// not read, in body order, so the body can be skipped without recording
+/// their segments.
+pub(super) struct PacketSkips {
+    /// (code-block index, body bytes) for each contribution to skip.
+    entries: Vec<(usize, usize)>,
+}
+
+impl PacketSkips {
+    /// Room for every code-block of one packet: a packet holds one precinct
+    /// of each of a resolution's (at most three) sub-bands. Code-blocks are
+    /// only skipped this way when an ROI plan leaves some out.
+    fn new(storage: &DecompositionStorage<'_>, live_bytes: usize) -> Result<Self> {
+        let capacity = if storage.roi_plan.is_some() {
+            storage
+                .precincts
+                .iter()
+                .map(|precinct| precinct.code_blocks.len())
+                .max()
+                .unwrap_or(0)
+                .checked_mul(3)
+                .ok_or(ValidationError::ImageTooLarge)?
+        } else {
+            0
+        };
+        let mut entries = Vec::new();
+        DecodeAllocationBudget::from_live_bytes(live_bytes)?.reserve_new(&mut entries, capacity)?;
+        Ok(Self { entries })
+    }
+
+    fn owned_bytes(&self) -> usize {
+        self.entries.capacity() * size_of::<(usize, usize)>()
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    pub(super) fn push(&mut self, code_block: usize, bytes: usize) -> PacketResult {
+        if bytes == 0 {
+            return Ok(());
+        }
+        if self.entries.len() == self.entries.capacity() {
+            return Err("packet has more skipped contributions than code-blocks");
+        }
+        self.entries.push((code_block, bytes));
+        Ok(())
+    }
+}
+
 pub(crate) fn parse<'a>(
     tile: &Tile<'a>,
     header: &Header<'_>,
@@ -42,15 +125,31 @@ pub(crate) fn parse_selected<'a>(
     }
     let retained_live_bytes = DecodeAllocationBudget::for_storage(storage)?.live_bytes();
     let mut progression_iterator = progression_iterator(tile, retained_live_bytes)?;
-    let progression_bytes = progression_iterator.owned_bytes();
-    storage.structural_workspace_bytes = storage
-        .structural_workspace_bytes
-        .checked_add(progression_bytes)
+    let mut skips = PacketSkips::new(
+        storage,
+        retained_live_bytes
+            .checked_add(progression_iterator.owned_bytes())
+            .ok_or(ValidationError::ImageTooLarge)?,
+    )?;
+    let parse_bytes = progression_iterator
+        .owned_bytes()
+        .checked_add(skips.owned_bytes())
         .ok_or(ValidationError::ImageTooLarge)?;
-    let result = parse_selected_inner(tile, &mut progression_iterator, header, storage, selection);
     storage.structural_workspace_bytes = storage
         .structural_workspace_bytes
-        .checked_sub(progression_bytes)
+        .checked_add(parse_bytes)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    let result = parse_selected_inner(
+        tile,
+        &mut progression_iterator,
+        &mut skips,
+        header,
+        storage,
+        selection,
+    );
+    storage.structural_workspace_bytes = storage
+        .structural_workspace_bytes
+        .checked_sub(parse_bytes)
         .ok_or(ValidationError::ImageTooLarge)?;
     result
 }
@@ -58,6 +157,7 @@ pub(crate) fn parse_selected<'a>(
 fn parse_selected_inner<'a>(
     tile: &Tile<'a>,
     progression_iterator: &mut dyn Iterator<Item = ProgressionData>,
+    skips: &mut PacketSkips,
     header: &Header<'_>,
     storage: &mut DecompositionStorage<'a>,
     selection: Option<&PrecinctSelection>,
@@ -80,7 +180,9 @@ fn parse_selected_inner<'a>(
                     cursor,
                     progression_iterator,
                     &tile.component_infos,
+                    tile.num_layers,
                     storage,
+                    skips,
                     relevance.as_mut(),
                 )
             });
@@ -146,7 +248,9 @@ fn parse_inner<'a>(
     mut tile_part: TilePartCursor<'_, 'a>,
     progression_iterator: &mut dyn Iterator<Item = ProgressionData>,
     component_infos: &[ComponentInfo],
+    num_layers: u8,
     storage: &mut DecompositionStorage<'a>,
+    skips: &mut PacketSkips,
     mut relevance: Option<&mut PacketRelevance<'_>>,
 ) -> PacketResult<bool> {
     while !tile_part.header().at_end() {
@@ -207,6 +311,7 @@ fn parse_inner<'a>(
         // "The first bit in the packet header denotes whether the packet has a length of zero
         // (empty packet). The value 0 indicates a zero length; no code-blocks are included in this
         // case. The value 1 indicates a non-zero length."
+        skips.clear();
         if !zero_length {
             for sub_band in sub_band_iter.clone() {
                 resolve_segments(
@@ -215,6 +320,8 @@ fn parse_inner<'a>(
                     header_reader,
                     storage,
                     component_info,
+                    num_layers,
+                    skips,
                 )?;
             }
         }
@@ -234,16 +341,27 @@ fn parse_inner<'a>(
         let body_reader = tile_part.body();
 
         if !zero_length {
+            let mut skipped = skips.entries.iter().peekable();
             for sub_band_idx in sub_band_iter {
-                let sub_band = &mut storage.sub_bands[sub_band_idx];
-                let precinct = &mut storage.precincts[sub_band.precincts.clone()][precinct_index];
-                let code_blocks = &mut storage.code_blocks[precinct.code_blocks.clone()];
+                let sub_band = &storage.sub_bands[sub_band_idx];
+                let precinct = &storage.precincts[sub_band.precincts.clone()][precinct_index];
 
-                for code_block in code_blocks {
-                    let required = storage
-                        .roi_plan
-                        .as_ref()
-                        .is_none_or(|plan| plan.code_block_required(sub_band_idx, code_block.rect));
+                for code_block_idx in precinct.code_blocks.clone() {
+                    // A code-block the decode doesn't read has no layers; its
+                    // contribution, if any, is skipped as one run.
+                    if let Some(&(_, bytes)) =
+                        skipped.next_if(|&&(block, _)| block == code_block_idx)
+                    {
+                        body_reader
+                            .skip_bytes(bytes)
+                            .ok_or("skipped packet body is shorter than its segment lengths")?;
+                        continue;
+                    }
+                    let code_block = &storage.code_blocks[code_block_idx];
+                    if code_block.layers.is_empty() {
+                        continue;
+                    }
+                    let required = code_block_is_read(storage, sub_band_idx, code_block);
                     let layer = &mut storage.layers[code_block.layers.clone()]
                         [progression_data.layer_num as usize];
 
@@ -383,6 +501,8 @@ fn resolve_segments(
     reader: &mut BitReader<'_>,
     storage: &mut DecompositionStorage<'_>,
     component_info: &ComponentInfo,
+    num_layers: u8,
+    skips: &mut PacketSkips,
 ) -> PacketResult {
     if component_info
         .coding_style
@@ -396,6 +516,8 @@ fn resolve_segments(
             reader,
             storage,
             component_info,
+            num_layers,
+            skips,
         )
     } else {
         classic::resolve_segments(
@@ -404,8 +526,23 @@ fn resolve_segments(
             reader,
             storage,
             component_info,
+            num_layers,
+            skips,
         )
     }
+}
+
+/// Whether the decode reads `code_block` of `sub_band_idx`: always without an
+/// ROI plan. Only these code-blocks have layer records.
+fn code_block_is_read(
+    storage: &DecompositionStorage<'_>,
+    sub_band_idx: usize,
+    code_block: &CodeBlock,
+) -> bool {
+    storage
+        .roi_plan
+        .as_ref()
+        .is_none_or(|plan| plan.code_block_required(sub_band_idx, code_block.rect))
 }
 
 #[derive(Clone, Copy)]

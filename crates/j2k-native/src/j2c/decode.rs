@@ -437,6 +437,10 @@ pub(crate) struct DecodeDebugCounters {
     pub(crate) idwt_output_samples: usize,
     /// Sub-band coefficients held in storage, summed over decoded tiles.
     pub(crate) stored_coefficients: usize,
+    /// Code-blocks built, and the layer records built for them, summed over
+    /// decoded tiles. Region decodes give layers only to code-blocks they read.
+    pub(crate) built_code_blocks: usize,
+    pub(crate) built_layer_records: usize,
     /// Progression positions region precinct selection walked, summed over
     /// decoded tiles.
     pub(crate) selection_scanned_packets: usize,
@@ -581,6 +585,8 @@ fn decode_tile<'a>(
         )?;
     }
     tile_ctx.debug_counters.stored_coefficients += storage.coefficients.len();
+    tile_ctx.debug_counters.built_code_blocks += storage.code_blocks.len();
+    tile_ctx.debug_counters.built_layer_records += storage.layers.len();
     record_workspace(tile_ctx, storage, selection_bytes)?;
     profile_timings.build_us += profile::elapsed_us(stage_start);
     // Next, we parse the layers/segments for each code block.
