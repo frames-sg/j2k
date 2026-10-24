@@ -5,6 +5,9 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CPU HTJ2K encodes of cleanup-only code blocks keep the cleanup segment as
+  the block's payload instead of copying it into a second buffer. Output is
+  unchanged.
 - The CPU classic Part 1 encoder plans at most 15/7 bytes per MQ symbol and
   2.5 symbols per coefficient and bitplane, plus four for segmentation
   symbols, instead of 4 bytes and 3 symbols, with the same per-pass
