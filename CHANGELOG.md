@@ -5,6 +5,9 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CPU HTJ2K cleanup decoding skips the VLC decode of quad pairs whose two quads
+  are zeros of the current MEL run, which code no other bits. Output is
+  unchanged.
 - CPU HTJ2K cleanup decoding reads MEL symbols from a 64-bit reservoir through
   a table, eight runs at a time and out of the quad-pair loop, instead of bit by
   bit. Output is unchanged.

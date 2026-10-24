@@ -667,7 +667,15 @@ fn decode_first_row_to_f32<const IRREVERSIBLE_MIDPOINT: bool, S: Simd>(
     let mut c_q = 0;
     let mut carry = 0;
     for index in 0..row.first.len() {
-        let symbols = decode_initial_pair_symbols::<true>(mel, vlc, run, &mut c_q, true)?;
+        // Two quads in zero context inside one MEL run of zeros code no VLC,
+        // U-VLC or MagSgn bits: skip to the symbols they decode to (the
+        // initial row's `u` values start at one).
+        let symbols = if c_q == 0 && *run >= 4 {
+            *run -= 4;
+            [0, 1, 0, 1]
+        } else {
+            decode_initial_pair_symbols::<true>(mel, vlc, run, &mut c_q, true)?
+        };
         *row.symbols.get_mut(index)? = symbols.map(|symbol| symbol as u16);
         let [t0, u0, t1, u1] = symbols;
         let quads = [(t0, u0), (t1, u1)];
@@ -711,7 +719,18 @@ fn decode_row_to_f32<const IRREVERSIBLE_MIDPOINT: bool, S: Simd>(
     for index in 0..row.first.len() {
         let [above0, above1] = above.get(index..)?.first_chunk::<2>()?;
         let above = |k: usize| u32::from(if k < 4 { above0[k] } else { above1[0] });
-        let symbols = decode_pair_symbols::<true>(mel, vlc, run, &mut c_q, above, true)?;
+        // As in the first row; zero context also needs the bits of the row
+        // above that `decode_pair_symbols` reads.
+        let symbols = if c_q == 0
+            && *run >= 4
+            && (above0[0] | above0[2]) & 0xA0 == 0
+            && above1[0] & 0x20 == 0
+        {
+            *run -= 4;
+            [0; 4]
+        } else {
+            decode_pair_symbols::<true>(mel, vlc, run, &mut c_q, above, true)?
+        };
         *row.symbols.get_mut(index)? = symbols.map(|symbol| symbol as u16);
         // As `with_kappa`: the row above's `v_n`, read before this pair's.
         let [v_n0, v_n1] = *row.v_n.get(index)?;
