@@ -294,7 +294,7 @@ fn try_prepare_rgb8_dwt_components(
     let owner_phase_bytes = checked_add_bytes(plan_bytes, owner_bytes, "DWT owner phase")?;
     let scratch_count = dwt_scratch_count(
         request,
-        3,
+        crate::j2c::fdwt::packed_rgb8_dwt_scratch_len,
         checked_add_bytes(owner_phase_bytes, planes_bytes, "DWT owner phase")?,
         accelerator.prefer_parallel_cpu_code_block_fallback(),
     )?;
@@ -618,7 +618,12 @@ fn try_dwt_workspace(
         requested_owner_bytes,
         "DWT owner phase",
     )?;
-    let scratch_count = dwt_scratch_count(request, 1, owner_phase_bytes, parallel)?;
+    let scratch_count = dwt_scratch_count(
+        request,
+        crate::j2c::fdwt::packed_dwt_scratch_len,
+        owner_phase_bytes,
+        parallel,
+    )?;
     let requested_scratch_bytes =
         checked_element_bytes::<f32>(scratch_count, "packed DWT line scratch")?;
     request.session.checked_phase(
@@ -673,17 +678,16 @@ fn try_dwt_workspace(
     })
 }
 
-/// One strip scratch per Rayon worker, holding the band blocks of `planes`
-/// planes, so the CPU transform runs in parallel, when that fits the cap;
-/// otherwise one, so success never depends on the thread count.
+/// One strip scratch of `scratch_len` samples per Rayon worker, so the CPU
+/// transform runs in parallel, when that fits the cap; otherwise one, so
+/// success never depends on the thread count.
 fn dwt_scratch_count(
     request: &AcceleratedComponentRequest<'_, '_>,
-    planes: usize,
+    scratch_len: fn(u32, u32) -> crate::EncodeResult<usize>,
     owner_phase_bytes: usize,
     parallel: bool,
 ) -> NativeEncodePipelineResult<usize> {
-    let serial =
-        crate::j2c::fdwt::packed_planes_dwt_scratch_len(request.width, request.height, planes)?;
+    let serial = scratch_len(request.width, request.height)?;
     #[cfg(feature = "parallel")]
     if let Some(count) = serial
         .checked_mul(rayon::current_num_threads())
