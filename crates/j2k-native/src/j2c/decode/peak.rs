@@ -10,9 +10,9 @@ use crate::Result;
 /// Decode workspace bytes live at one sampled point, by owner.
 ///
 /// Covers what the decoder context owns, plus allocations a stage holds
-/// outside it that the caller adds in (the windowed IDWT's level buffers and
-/// the region precinct selection). The parsed codestream graph and the
-/// caller's output buffer are not included.
+/// outside it that the caller adds in (the windowed IDWT's level buffers, the
+/// region precinct selection and the tile-wide Tier-1 plan). The parsed
+/// codestream graph and the caller's output buffer are not included.
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct WorkspaceBytes {
     /// Sub-band coefficient storage.
@@ -52,6 +52,14 @@ impl WorkspaceBytes {
     pub(crate) fn with_structure(self, bytes: usize) -> Self {
         Self {
             structure: self.structure.saturating_add(bytes),
+            ..self
+        }
+    }
+
+    #[cfg(feature = "parallel")]
+    pub(crate) fn with_tier1(self, bytes: usize) -> Self {
+        Self {
+            tier1: self.tier1.saturating_add(bytes),
             ..self
         }
     }

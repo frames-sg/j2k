@@ -1284,12 +1284,12 @@ fn many_precinct_layer_codestream(dimensions: u32) -> Vec<u8> {
 
 #[test]
 fn decode_region_rejects_an_oversized_precinct_layout_before_walking_the_progression() {
-    // 2048x2048 with these precincts has about 2.1M (component, resolution)
-    // precincts and 4.2M sub-band precincts. Their precinct records and root
+    // 4096x4096 with these precincts has about 8.4M (component, resolution)
+    // precincts and 16.8M sub-band precincts. Their precinct records and root
     // tag-tree nodes alone exceed the cap, however few the region keeps, and
-    // at 32 layers the progression has about 67M positions. The selection
+    // at 32 layers the progression has about 268M positions. The selection
     // must reject the tile from its counts, without walking any of them.
-    let codestream = many_precinct_layer_codestream(2_048);
+    let codestream = many_precinct_layer_codestream(4_096);
     let image = Image::new(&codestream, &DecodeSettings::default()).expect("large SIZ parses");
     let mut context = DecoderContext::default();
     let Err(error) = image.decode_region_with_context((0, 0, 1, 1), &mut context) else {
