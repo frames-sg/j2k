@@ -5,6 +5,10 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- The CPU classic Part 1 Tier-1 encoder clears its per-bitplane visit marks
+  with one pass over the block's state bytes instead of recording every
+  visited coefficient's index, so each code block no longer allocates a
+  pointer-sized scratch entry per coefficient. Output is unchanged.
 - The classic Part 1 MQ arithmetic encoder codes each symbol with selects
   instead of branches on the MPS/LPS decision and the conditional exchange,
   takes its next state from the packed table the decoder uses, and
