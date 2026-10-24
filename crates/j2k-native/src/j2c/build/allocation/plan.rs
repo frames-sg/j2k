@@ -207,7 +207,8 @@ fn include_sub_band_allocations(
 }
 
 /// Count `code_block_count` code-blocks, of which `layered_blocks` get one
-/// layer record per quality layer.
+/// layer record per quality layer. The others' layer records are charged but
+/// never built.
 fn include_code_blocks(
     plan: &mut DecompositionAllocationPlan,
     code_block_count: usize,
@@ -215,8 +216,14 @@ fn include_code_blocks(
     tile: &Tile<'_>,
 ) -> Result<()> {
     DecompositionAllocationPlan::checked_add_count(&mut plan.code_blocks, code_block_count)?;
+    let layers = usize::from(tile.num_layers);
+    let parse_only_count = code_block_count
+        .checked_sub(layered_blocks)
+        .and_then(|blocks| blocks.checked_mul(layers))
+        .ok_or(ValidationError::ImageTooLarge)?;
+    DecompositionAllocationPlan::checked_add_count(&mut plan.parse_only_layers, parse_only_count)?;
     let layer_count = layered_blocks
-        .checked_mul(usize::from(tile.num_layers))
+        .checked_mul(layers)
         .ok_or(ValidationError::ImageTooLarge)?;
     DecompositionAllocationPlan::checked_add_count(&mut plan.layers, layer_count)
 }

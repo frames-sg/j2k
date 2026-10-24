@@ -1333,7 +1333,7 @@ fn region_selection_releases_the_previous_tiles_retained_decomposition_capacity(
 }
 
 #[test]
-fn decode_region_budgets_layer_metadata_for_the_code_blocks_it_reads() {
+fn decode_region_rejects_code_block_layer_metadata_amplification() {
     let pixels: Vec<u8> = (0..64).collect();
     let options = EncodeOptions {
         reversible: true,
@@ -1350,24 +1350,15 @@ fn decode_region_budgets_layer_metadata_for_the_code_blocks_it_reads() {
     rewrite_siz_to_single_large_tile(&mut bytes, 4_096);
     let image = Image::new(&bytes, &DecodeSettings::default()).expect("large SIZ parses");
 
-    // A region reading every code-block must still be rejected up front.
-    let Err(err) = image.decode_region((0, 0, 4_096, 4_096)) else {
-        panic!("a whole-image ROI must not bypass the structural metadata budget");
-    };
-    assert_eq!(err, DecodeError::Validation(ValidationError::ImageTooLarge));
-
-    // A tiny region gives layer records only to the code-blocks it reads, so
-    // it gets as far as the packets, which the rewritten header outruns.
-    let Err(err) = image.decode_region((0, 0, 1, 1)) else {
-        panic!("the rewritten header has no packet data for its code-blocks");
-    };
-    assert!(
-        matches!(
-            err,
-            DecodeError::Decoding(DecodingError::PacketParseFailure(_))
-        ),
-        "{err:?}"
-    );
+    // A tiny region builds layer records only for the code-blocks it reads,
+    // but is charged for all of them, so it is rejected up front like a
+    // region reading every code-block.
+    for roi in [(0, 0, 4_096, 4_096), (0, 0, 1, 1)] {
+        let Err(err) = image.decode_region(roi) else {
+            panic!("ROI {roi:?} must not bypass the structural metadata budget");
+        };
+        assert_eq!(err, DecodeError::Validation(ValidationError::ImageTooLarge));
+    }
 }
 
 #[test]
