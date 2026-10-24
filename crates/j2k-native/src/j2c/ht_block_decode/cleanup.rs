@@ -20,6 +20,38 @@ pub(super) fn cleanup_segment_suffix_length(coded_data: &[u8], lcup: usize) -> O
     Some(scup)
 }
 
+/// Non-initial U-VLC decoding of both quads in one lookup, indexed by the
+/// two U-offset flags and the next ten VLC bits: `consumed | u0 << 8 |
+/// u1 << 20`, or `WIDE_UVLC_FALLBACK` when the codewords are longer.
+const UVLC_WIDE1: [u32; 4096] = uvlc_wide1();
+const WIDE_UVLC_FALLBACK: u32 = 0x10;
+
+#[expect(clippy::cast_possible_truncation, reason = "table indexes below 4096")]
+const fn uvlc_wide1() -> [u32; 4096] {
+    let mut table = [0; 4096];
+    let mut index = 0;
+    while index < 4096 {
+        let (mode, bits) = ((index >> 10) as u32, (index & 0x3FF) as u32);
+        let mut entry = UVLC_TABLE1[((mode << 6) + (bits & 0x3F)) as usize] as u32;
+        let prefix = entry & 0x7;
+        entry >>= 3;
+        let suffix = entry & 0xF;
+        table[index] = if prefix + suffix > 10 {
+            WIDE_UVLC_FALLBACK
+        } else {
+            let tmp = (bits >> prefix) & ((1 << suffix) - 1);
+            entry >>= 4;
+            let len = entry & 0x7;
+            entry >>= 3;
+            let u0 = ((entry & 0x7) + (tmp & !(0xFF << len))) & 0xFFFF;
+            let u1 = ((entry >> 3) + (tmp >> len)) & 0xFFFF;
+            (prefix + suffix) | (u0 << 8) | (u1 << 20)
+        };
+        index += 1;
+    }
+    table
+}
+
 /// VLC table index for context `c_q` and the next VLC bits. `c_q` holds
 /// only bits 7-9, so the mask never changes the index; it only drops the
 /// bounds check on the 1024-entry tables.
@@ -217,6 +249,11 @@ pub(super) fn decode_pair_symbols<const INLINE_REFILLS: bool>(
 
     // The mode is at most 0xC0, so the mask only drops the bounds check.
     let uvlc_mode = ((t0 & 0x8) << 3) | ((t1 & 0x8) << 4);
+    let wide = UVLC_WIDE1[(((uvlc_mode << 4) | (vlc_val & 0x3FF)) & 0xFFF) as usize];
+    if wide & WIDE_UVLC_FALLBACK == 0 {
+        let _ = vlc.advance(wide & 0xF);
+        return Some([t0, (wide >> 8) & 0xFFF, t1, wide >> 20]);
+    }
     let mut uvlc_entry = u32::from(UVLC_TABLE1[((uvlc_mode + (vlc_val & 0x3F)) & 0xFF) as usize]);
     vlc_val = vlc.advance(uvlc_entry & 0x7);
     uvlc_entry >>= 3;
