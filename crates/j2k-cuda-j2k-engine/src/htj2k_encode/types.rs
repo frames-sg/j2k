@@ -310,7 +310,9 @@ pub(super) fn validate_resident_coefficient_capacity(
     coefficients: &CudaDeviceBuffer,
     coefficient_count: usize,
 ) -> Result<(), CudaError> {
-    let available_coefficients = coefficients.typed_view::<i32>()?.len();
+    // Count whole coefficients: a reused pool allocation may be longer than the
+    // coefficients written to it, or not a multiple of their size.
+    let available_coefficients = coefficients.byte_len() / std::mem::size_of::<i32>();
     if available_coefficients < coefficient_count {
         return Err(CudaError::OutputTooSmall {
             required: coefficient_count

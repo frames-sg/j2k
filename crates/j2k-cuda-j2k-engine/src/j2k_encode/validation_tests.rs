@@ -122,6 +122,7 @@ fn safe_encode_resident_apis_reject_foreign_context_buffers() {
                 stride: 0,
                 quantization: QUANTIZATION,
             },
+            &context.buffer_pool(),
         ),
     );
 

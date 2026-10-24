@@ -5,6 +5,12 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- A `CudaEncodeStageAccelerator`, and so a `CudaLosslessEncoder`, keeps one
+  best-fit device-buffer pool across its encodes, and HTJ2K tile encodes take
+  each sub-band's quantized coefficients from it, so repeated encodes no
+  longer allocate and free those buffers for every sub-band. The pool keeps
+  up to 512 MiB of idle device memory between encodes. Output is unchanged.
+
 - CUDA HTJ2K code-block encode kernels launch 32 threads per code block
   instead of 128. Each code block is coded by one thread, so the smaller
   thread blocks let more code blocks run at once. Output is unchanged.

@@ -4,11 +4,12 @@ use crate::{
     bytes::f32_slice_as_bytes,
     error::CudaError,
     execution::CudaExecutionStats,
-    memory::{checked_image_words, CudaDeviceBuffer},
+    memory::{checked_image_words, CudaBufferPool, CudaDeviceBuffer},
 };
 
 use super::{
-    validate_encode_buffer_context, validate_quantize_region, CudaJ2kQuantizeJob,
+    validate_encode_buffer_context, validate_quantize_region,
+    validation::validate_encode_context_matches, CudaJ2kQuantizeJob,
     CudaJ2kQuantizeSubbandRegionJob, CudaJ2kQuantizedSubband, CudaJ2kResidentQuantizedSubband,
 };
 
@@ -71,14 +72,20 @@ impl crate::J2kCudaEngine<'_> {
         })
     }
 
-    /// Quantize a resident strided DWT sub-band rectangle into resident `i32` coefficients.
+    /// Quantize a resident strided DWT sub-band rectangle into resident `i32`
+    /// coefficients held in a buffer taken from `pool`; callers may recycle it
+    /// into `pool` once work reading it has completed.
     #[doc(hidden)]
     pub fn j2k_quantize_subband_region_resident(
         &self,
         samples: &CudaDeviceBuffer,
         job: CudaJ2kQuantizeSubbandRegionJob,
+        pool: &CudaBufferPool,
     ) -> Result<CudaJ2kResidentQuantizedSubband, CudaError> {
-        validate_encode_buffer_context(self.context, [samples])?;
+        validate_encode_context_matches([
+            samples.is_owned_by(self.context),
+            pool.is_owned_by(self.context),
+        ])?;
         let coefficient_count = checked_image_words(job.width, job.height, 1)?;
         if coefficient_count == 0 {
             return Ok(CudaJ2kResidentQuantizedSubband {
@@ -91,13 +98,15 @@ impl crate::J2kCudaEngine<'_> {
         let available_samples = samples.typed_view::<f32>()?.len();
         validate_quantize_region(job, available_samples)?;
         self.prepare_operation()?;
-        let coefficient_buffer = self.allocate(
-            coefficient_count
-                .checked_mul(std::mem::size_of::<i32>())
-                .ok_or(CudaError::LengthTooLarge {
-                    len: coefficient_count,
-                })?,
-        )?;
+        let coefficient_buffer = pool
+            .take(
+                coefficient_count
+                    .checked_mul(std::mem::size_of::<i32>())
+                    .ok_or(CudaError::LengthTooLarge {
+                        len: coefficient_count,
+                    })?,
+            )?
+            .into_device_buffer()?;
         self.launch_j2k_quantize_subband_region(samples, &coefficient_buffer, job)?;
 
         Ok(CudaJ2kResidentQuantizedSubband {

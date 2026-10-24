@@ -8,7 +8,7 @@ use j2k_cuda_j2k_engine::{
     CudaHtj2kEncodeCodeBlockJob, CudaHtj2kEncodeCodeBlockRegionJob, CudaHtj2kEncodeResources,
     CudaHtj2kEncodeTables, CudaJ2kQuantizeJob, CudaJ2kQuantizeSubbandRegionJob,
 };
-use j2k_cuda_runtime::{CudaContext, CudaDeviceBuffer};
+use j2k_cuda_runtime::{CudaBufferPool, CudaContext, CudaDeviceBuffer};
 
 use crate::allocation::{try_vec_push, try_vec_with_capacity, HostPhaseBudget};
 use crate::encode::stage_error::{arithmetic_overflow, runtime_error, CudaStageResult};
@@ -242,6 +242,7 @@ pub(super) fn cuda_ht_region_jobs(
 pub(in crate::encode) fn cuda_encode_ht_subband(
     context: &CudaContext,
     encode_resources: &CudaHtj2kEncodeResources,
+    pool: &CudaBufferPool,
     job: J2kHtSubbandEncodeJob<'_>,
     collect_profile: bool,
 ) -> CudaStageResult<CudaEncodedHtSubband> {
@@ -285,14 +286,13 @@ pub(in crate::encode) fn cuda_encode_ht_subband(
     host_budget
         .account_vec(&cuda_jobs)
         .map_err(htj2k_allocation_error)?;
-    let pool = context.buffer_pool();
     let encoded = j2k_cuda_j2k_engine::J2kCudaEngine::new(context)
         .encode_htj2k_codeblock_regions_resident_with_resources_and_pool_and_live_host_bytes(
             quantized.buffer(),
             quantized.coefficient_count(),
             &cuda_jobs,
             encode_resources,
-            &pool,
+            pool,
             host_budget.live_bytes(),
         )
         .map_err(|error| runtime_error("encode CUDA HTJ2K resident subband", error))?;
@@ -322,6 +322,10 @@ fn cuda_ht_subband_region_jobs(
 }
 
 #[cfg(feature = "cuda-runtime")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "tile sub-band encode keeps quantize, encode and buffer recycling in stage order"
+)]
 pub(super) fn cuda_encode_tile_subband_region(
     runtime: CudaHtj2kEncodeRuntime<'_>,
     source: &CudaDeviceBuffer,
@@ -371,6 +375,7 @@ pub(super) fn cuda_encode_tile_subband_region(
                             reversible: job.reversible,
                         },
                     },
+                    runtime.pool,
                 )
         },
     )
@@ -403,6 +408,11 @@ pub(super) fn cuda_encode_tile_subband_region(
             host_budget.live_bytes(),
         )
         .map_err(|error| runtime_error("encode CUDA HTJ2K tile code blocks", error))?;
+    // The encode read the coefficients synchronously, so the buffer is idle.
+    runtime
+        .pool
+        .recycle(quantized.into_buffer())
+        .map_err(|error| runtime_error("recycle CUDA HTJ2K tile subband", error))?;
     stats.ht_code_block_dispatches = stats
         .ht_code_block_dispatches
         .saturating_add(encoded.execution().kernel_dispatches());

@@ -5,7 +5,7 @@ use j2k_cuda_j2k_engine::{
     CudaDwt53LevelShape, CudaHtj2kEncodeResources, CudaJ2kResidentComponents,
     CudaJ2kStridedInterleavedPixels,
 };
-use j2k_cuda_runtime::{CudaContext, CudaDeviceBuffer};
+use j2k_cuda_runtime::{CudaBufferPool, CudaContext, CudaDeviceBuffer};
 
 use crate::allocation::HostPhaseBudget;
 use crate::encode::stage_error::{
@@ -31,6 +31,7 @@ use super::validation::{resident_job_from_host, validate_cuda_htj2k_tile_job};
 pub(in crate::encode) fn cuda_encode_htj2k_tile_body(
     context: &CudaContext,
     encode_resources: &CudaHtj2kEncodeResources,
+    pool: &CudaBufferPool,
     job: J2kHtj2kTileEncodeJob<'_>,
     collect_profile: bool,
 ) -> CudaStageResult<Option<CudaEncodedHtj2kTile>> {
@@ -61,6 +62,7 @@ pub(in crate::encode) fn cuda_encode_htj2k_tile_body(
     cuda_encode_htj2k_resident_components_body(
         context,
         encode_resources,
+        pool,
         resident_job,
         components,
         deinterleave_us,
@@ -72,6 +74,7 @@ pub(in crate::encode) fn cuda_encode_htj2k_tile_body(
 pub(in crate::encode) fn cuda_encode_htj2k_device_tile_body(
     context: &CudaContext,
     encode_resources: &CudaHtj2kEncodeResources,
+    pool: &CudaBufferPool,
     tile: CudaLosslessEncodeTile<'_>,
     job: J2kResidentHtj2kTileEncodeJob<'_>,
     collect_profile: bool,
@@ -126,6 +129,7 @@ pub(in crate::encode) fn cuda_encode_htj2k_device_tile_body(
     cuda_encode_htj2k_resident_components_body(
         context,
         encode_resources,
+        pool,
         job,
         components,
         deinterleave_us,
@@ -141,6 +145,7 @@ pub(in crate::encode) fn cuda_encode_htj2k_device_tile_body(
 fn cuda_encode_htj2k_resident_components_body(
     context: &CudaContext,
     encode_resources: &CudaHtj2kEncodeResources,
+    pool: &CudaBufferPool,
     job: J2kResidentHtj2kTileEncodeJob<'_>,
     mut components: CudaJ2kResidentComponents,
     deinterleave_us: u128,
@@ -155,11 +160,10 @@ fn cuda_encode_htj2k_resident_components_body(
         },
         ..CudaHtj2kTileEncodeStats::default()
     };
-    let pool = context.buffer_pool();
     let runtime = CudaHtj2kEncodeRuntime {
         context,
         resources: encode_resources,
-        pool: &pool,
+        pool,
     };
 
     if job.use_mct {

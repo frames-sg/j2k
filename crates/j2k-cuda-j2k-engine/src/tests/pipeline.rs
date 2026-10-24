@@ -2226,6 +2226,85 @@ fn j2k_quantize_subband_matches_cpu_when_runtime_required() {
 }
 
 #[test]
+fn j2k_quantized_coefficients_in_reused_pool_allocations_download_and_encode_when_runtime_required()
+{
+    if !cuda_runtime_gate() {
+        return;
+    }
+
+    let samples: Vec<f32> = (0u16..16)
+        .map(|value| f32::from(value) * 3.0 - 20.0)
+        .collect();
+    let context = CudaContext::system_default().expect("CUDA context");
+    let sample_buffer = context.upload_f32(&samples).expect("resident samples");
+    let region = CudaJ2kQuantizeSubbandRegionJob {
+        x0: 1,
+        y0: 1,
+        width: 2,
+        height: 2,
+        stride: 4,
+        quantization: CudaJ2kQuantizeJob {
+            step_exponent: 8,
+            step_mantissa: 0,
+            range_bits: 8,
+            reversible: true,
+        },
+    };
+    let vlc_table0 = [0u16; 2048];
+    let vlc_table1 = [0u16; 2048];
+    let uvlc_table = vec![0u8; HTJ2K_UVLC_ENCODE_TABLE_BYTES];
+    let jobs = [CudaHtj2kEncodeCodeBlockRegionJob {
+        coefficient_offset: 0,
+        coefficient_stride: 2,
+        width: 2,
+        height: 2,
+        total_bitplanes: 8,
+        target_coding_passes: 1,
+    }];
+    let quantize_and_encode = |pool: &j2k_cuda_runtime::CudaBufferPool| {
+        let engine = crate::J2kCudaEngine::new(&context);
+        let quantized = engine
+            .j2k_quantize_subband_region_resident(&sample_buffer, region, pool)
+            .expect("quantize into a pool allocation");
+        let coefficients = quantized
+            .download_coefficients()
+            .expect("download quantized coefficients");
+        let encoded = engine
+            .encode_htj2k_codeblock_regions_resident(
+                quantized.buffer(),
+                quantized.coefficient_count(),
+                &jobs,
+                CudaHtj2kEncodeTables {
+                    vlc_table0: &vlc_table0,
+                    vlc_table1: &vlc_table1,
+                    uvlc_table: &uvlc_table,
+                },
+            )
+            .expect("encode quantized coefficients");
+        let blocks: Vec<_> = encoded
+            .into_code_blocks()
+            .into_iter()
+            .map(CudaHtj2kEncodedCodeBlock::into_exact_parts)
+            .collect();
+        (coefficients, blocks)
+    };
+
+    let exact = quantize_and_encode(&context.buffer_pool());
+    // The pool hands its one cached allocation, odd-length or oversized, to the
+    // 16-byte coefficient request.
+    for cached_len in [17, 32] {
+        let pool = context.buffer_pool();
+        pool.recycle(context.allocate(cached_len).expect("cached allocation"))
+            .expect("cache allocation");
+        assert_eq!(
+            quantize_and_encode(&pool),
+            exact,
+            "coefficients in a cached {cached_len}-byte allocation"
+        );
+    }
+}
+
+#[test]
 fn j2k_quantize_strided_resident_subband_matches_contiguous_when_runtime_required() {
     if !cuda_runtime_gate() {
         return;
@@ -2251,6 +2330,7 @@ fn j2k_quantize_strided_resident_subband_matches_contiguous_when_runtime_require
                 stride: 4,
                 quantization,
             },
+            &context.buffer_pool(),
         )
         .expect("resident strided quantize");
     let contiguous = [samples[5], samples[6], samples[9], samples[10]];

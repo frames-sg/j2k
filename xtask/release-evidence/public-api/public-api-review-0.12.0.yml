@@ -73,10 +73,10 @@ reviews:
   j2k-cuda-j2k-engine:
     removed_fingerprint: "none"
     added_fingerprint: "none"
-    hidden_count: 712
-    hidden_fingerprint: "fnv1a64:f5a260b6797b2712"
+    hidden_count: 713
+    hidden_fingerprint: "fnv1a64:8a4a6c9103593196"
     rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
-    hidden_rationale: "Three hidden signatures change: both pooled upload methods take &[&[u8]] instead of &[u8], and CudaQueuedHtj2kCleanupGroup::new adds cleanup_capacity and live_host_bytes. Pass &[payload] and the retained group sizes. Six additional methods expose deferred clearing, retained byte counts, batched stores, and deferred final wavelet stages. Adds origin-aware 5/3 and 9/7 DWT methods; the existing methods still pass origin zero and retain their signatures. Adds signed to CudaJ2kStoreGray16Job and CudaJ2kStoreRgb16Job, plus native_samples to CudaJ2kStoreGray8Target and CudaJ2kStoreGray16Target. These rustdoc-hidden public fields break exhaustive struct literals and are approved for 0.13.0. Job literals set signed to zero for unsigned sources or one for signed sources. Target literals set native_samples to true for native sample preservation or false for requested-format conversion, or use struct update syntax with a matching existing job or target."
+    hidden_rationale: "Three hidden signatures change: both pooled upload methods take &[&[u8]] instead of &[u8], and CudaQueuedHtj2kCleanupGroup::new adds cleanup_capacity and live_host_bytes. Pass &[payload] and the retained group sizes. Six additional methods expose deferred clearing, retained byte counts, batched stores, and deferred final wavelet stages. Adds origin-aware 5/3 and 9/7 DWT methods; the existing methods still pass origin zero and retain their signatures. Adds signed to CudaJ2kStoreGray16Job and CudaJ2kStoreRgb16Job, plus native_samples to CudaJ2kStoreGray8Target and CudaJ2kStoreGray16Target. These rustdoc-hidden public fields break exhaustive struct literals and are approved for 0.13.0. Job literals set signed to zero for unsigned sources or one for signed sources. Target literals set native_samples to true for native sample preservation or false for requested-format conversion, or use struct update syntax with a matching existing job or target. Quantization now accepts the caller buffer pool, and resident coefficient results expose into_buffer for recycling after synchronous use. Callers pass their context-owned pool and preserve the logical coefficient count independently of allocation capacity."
   j2k-cuda-jpeg-engine:
     removed_fingerprint: "none"
     added_fingerprint: "fnv1a64:103e0c647d4cb39d"
