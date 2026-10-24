@@ -255,33 +255,30 @@ pub(crate) fn j2k_packet_copy_body_cooperative(
     header_len: u32,
     body_len: u32,
 ) {
-    let mut body_byte = thread::threadIdx_x();
+    // Walk the blocks once and copy each block's bytes with the whole thread
+    // block; the header pass already bounded the running offset by `body_len`.
     let step = thread::blockDim_x();
-    while body_byte < body_len {
-        let mut remaining = body_byte;
-        let mut copied = false;
-        let mut subband_idx = 0_u32;
-        while subband_idx < packet.subband_count && !copied {
-            let subband = load_job(subbands, packet.subband_start + subband_idx);
-            let mut idx = 0_u32;
-            while idx < subband.block_count {
-                let block = load_job(blocks, subband.block_start + idx);
-                if block.num_coding_passes != 0 && block.data_len != 0 {
-                    if remaining < block.data_len {
-                        store_u8(
-                            packet_out,
-                            (header_len + body_byte) as u64,
-                            load_u8(payload, (block.data_offset + remaining) as u64),
-                        );
-                        copied = true;
-                        break;
-                    }
-                    remaining -= block.data_len;
+    let mut block_body_start = 0_u32;
+    let mut subband_idx = 0_u32;
+    while subband_idx < packet.subband_count && block_body_start < body_len {
+        let subband = load_job(subbands, packet.subband_start + subband_idx);
+        let mut idx = 0_u32;
+        while idx < subband.block_count {
+            let block = load_job(blocks, subband.block_start + idx);
+            if block.num_coding_passes != 0 && block.data_len != 0 {
+                let mut byte = thread::threadIdx_x();
+                while byte < block.data_len {
+                    store_u8(
+                        packet_out,
+                        (header_len + block_body_start + byte) as u64,
+                        load_u8(payload, (block.data_offset + byte) as u64),
+                    );
+                    byte += step;
                 }
-                idx += 1;
+                block_body_start += block.data_len;
             }
-            subband_idx += 1;
+            idx += 1;
         }
-        body_byte += step;
+        subband_idx += 1;
     }
 }

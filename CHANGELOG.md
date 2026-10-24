@@ -256,6 +256,10 @@ and stale roadmap entries have been removed from the public documentation set.
   18000 x 12000 RGB RPCL image peaks at 20 to 21 MiB of heap wherever it
   lies, instead of 24 to 32 MiB, about the same as with PLT. Output is
   unchanged.
+- CUDA HTJ2K packetization copies each packet body one code block at a time
+  with every thread of the packet's thread block, instead of having each
+  thread search the packet's code blocks for every body byte it copies.
+  Output is unchanged.
 - Region decodes of codestreams without PLT markers keep no layer or segment
   records for the code-blocks they parse only to reach later packets. Their
   packet headers are still checked as before. A 1024 x 1024 region of an
