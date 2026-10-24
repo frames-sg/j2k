@@ -72,6 +72,10 @@ pub(super) struct DecompositionAllocationPlan {
     pub(super) precincts: usize,
     pub(super) code_blocks: usize,
     pub(super) layers: usize,
+    /// Layer records of the code-blocks a region decode only parses. They are
+    /// never built but are charged like built ones, so the budget rejects a
+    /// tile exactly where building every code-block's layers would.
+    pub(super) parse_only_layers: usize,
     pub(super) tag_tree_nodes: usize,
     exact_integer_decode: bool,
     include_roi_workspace: bool,
@@ -101,6 +105,7 @@ impl DecompositionAllocationPlan {
             precincts: 0,
             code_blocks: 0,
             layers: 0,
+            parse_only_layers: 0,
             tag_tree_nodes: 0,
             exact_integer_decode,
             include_roi_workspace,
@@ -151,6 +156,7 @@ impl DecompositionAllocationPlan {
         checked_include_elements::<Precinct>(&mut total_bytes, self.precincts)?;
         checked_include_elements::<CodeBlock>(&mut total_bytes, self.code_blocks)?;
         checked_include_elements::<Layer>(&mut total_bytes, self.layers)?;
+        checked_include_elements::<Layer>(&mut total_bytes, self.parse_only_layers)?;
         checked_include_elements::<TagNode>(&mut total_bytes, self.tag_tree_nodes)?;
         checked_include_elements::<f32>(&mut total_bytes, self.coefficient_storage_len())?;
         if self.exact_integer_decode {
@@ -212,6 +218,7 @@ impl DecompositionAllocationPlan {
             storage.layers.capacity(),
             self.layers,
         )?;
+        checked_include_elements::<Layer>(&mut total_bytes, self.parse_only_layers)?;
         checked_include_reusable_elements::<TagNode>(
             &mut total_bytes,
             storage.tag_tree_nodes.capacity(),
@@ -280,6 +287,8 @@ pub(super) fn prepare_decomposition_storage(
         include_roi_workspace,
         workspace,
         selection,
+        // A selection always comes with the ROI plan it was made from.
+        selection.and(storage.roi_plan.as_ref()),
     )?;
 
     // Capacity retention must never make a smaller valid tile fail in a later

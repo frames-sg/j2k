@@ -8,6 +8,7 @@ use crate::error::{DecodingError, Result, ValidationError};
 use crate::j2c::build::SubBandType;
 use crate::j2c::idwt::idwt_buffer_size;
 use crate::j2c::rect::IntRect;
+use crate::j2c::roi::RoiPlan;
 use crate::j2c::tile::{ResolutionTile, Tile};
 
 #[derive(Clone, Copy)]
@@ -24,6 +25,7 @@ pub(super) fn build_allocation_plan(
     include_roi_workspace: bool,
     workspace: BuildWorkspace,
     selection: Option<&PrecinctSelection>,
+    roi_plan: Option<&RoiPlan>,
 ) -> Result<(DecompositionAllocationPlan, usize)> {
     let mut plan = DecompositionAllocationPlan::new(
         retained_baseline_bytes,
@@ -56,6 +58,7 @@ pub(super) fn build_allocation_plan(
             SubBandType::LowLow,
             tile,
             keep(resolution_run)?,
+            roi_plan,
             &mut plan,
         )?;
         resolution_run += 1;
@@ -89,6 +92,7 @@ pub(super) fn build_allocation_plan(
                     sub_band_type,
                     tile,
                     resolution_keep,
+                    roi_plan,
                     &mut plan,
                 )?;
             }
@@ -110,14 +114,19 @@ pub(super) fn build_allocation_plan(
 
 /// Count one sub-band's precincts, code-blocks, layers and tag-tree nodes.
 /// With `keep`, precincts it excludes are counted as `build` makes them: no
-/// code-blocks and root-only tag trees.
+/// code-blocks and root-only tag trees. With `roi_plan`, only the code-blocks
+/// it requires get layers, as `build` makes them.
 fn include_sub_band_allocations(
     resolution_tile: &ResolutionTile<'_>,
     sub_band_type: SubBandType,
     tile: &Tile<'_>,
     keep: Option<&[PrecinctUse]>,
+    roi_plan: Option<&RoiPlan>,
     plan: &mut DecompositionAllocationPlan,
 ) -> Result<()> {
+    // Sub-bands are counted in build order, so this is the index `build`
+    // gives the sub-band.
+    let sub_band_idx = plan.sub_bands;
     DecompositionAllocationPlan::checked_add_count(&mut plan.sub_bands, 1)?;
 
     let sub_band_rect = resolution_tile.sub_band_rect(sub_band_type);
@@ -133,7 +142,7 @@ fn include_sub_band_allocations(
     } else {
         0
     };
-    include_code_blocks(plan, code_block_count, tile)?;
+    include_code_blocks(plan, code_block_count, code_block_count, tile)?;
 
     // Every tag tree has a root even when its code-block grid is empty. Count
     // both roots up front and reject a metadata bomb before walking precincts.
@@ -167,7 +176,15 @@ fn include_sub_band_allocations(
             .checked_add(block_count)
             .ok_or(ValidationError::ImageTooLarge)?;
         if keep.is_some() {
-            include_code_blocks(plan, block_count, tile)?;
+            let layered_blocks = roi_plan.map_or(block_count, |roi_plan| {
+                required_code_block_count(
+                    &grid,
+                    resolution_tile,
+                    sub_band_rect,
+                    roi_plan.sub_band_window(sub_band_idx),
+                )
+            });
+            include_code_blocks(plan, block_count, layered_blocks, tile)?;
         }
 
         let nodes_per_tree = tag_tree_node_count(grid.columns, grid.rows)?;
@@ -189,14 +206,24 @@ fn include_sub_band_allocations(
     Ok(())
 }
 
+/// Count `code_block_count` code-blocks, of which `layered_blocks` get one
+/// layer record per quality layer. The others' layer records are charged but
+/// never built.
 fn include_code_blocks(
     plan: &mut DecompositionAllocationPlan,
     code_block_count: usize,
+    layered_blocks: usize,
     tile: &Tile<'_>,
 ) -> Result<()> {
     DecompositionAllocationPlan::checked_add_count(&mut plan.code_blocks, code_block_count)?;
-    let layer_count = code_block_count
-        .checked_mul(usize::from(tile.num_layers))
+    let layers = usize::from(tile.num_layers);
+    let parse_only_count = code_block_count
+        .checked_sub(layered_blocks)
+        .and_then(|blocks| blocks.checked_mul(layers))
+        .ok_or(ValidationError::ImageTooLarge)?;
+    DecompositionAllocationPlan::checked_add_count(&mut plan.parse_only_layers, parse_only_count)?;
+    let layer_count = layered_blocks
+        .checked_mul(layers)
         .ok_or(ValidationError::ImageTooLarge)?;
     DecompositionAllocationPlan::checked_add_count(&mut plan.layers, layer_count)
 }
@@ -290,6 +317,43 @@ pub(in crate::j2c::build) fn code_block_grid(
         columns,
         rows,
     })
+}
+
+/// The code-blocks of `grid` the ROI plan requires: those whose rectangles,
+/// clipped to the sub-band, meet the sub-band's `window`. They form a run of
+/// columns by a run of rows, so they are counted without walking the grid,
+/// and an oversized precinct is still rejected from its block count alone.
+fn required_code_block_count(
+    grid: &CodeBlockGrid,
+    resolution_tile: &ResolutionTile<'_>,
+    sub_band_rect: IntRect,
+    window: Option<IntRect>,
+) -> usize {
+    let Some(window) = window.filter(|window| window.intersects(sub_band_rect)) else {
+        return 0;
+    };
+    // The cells that start at `start` and step by `size`, `count` of them, which
+    // meet the span from `low` to `high` the way `IntRect::intersects` does.
+    let cells = |start: u32, size: u32, count: u32, low: u32, high: u32| {
+        let first = (low.saturating_sub(start) / size).min(count);
+        let end = high.saturating_sub(start).div_ceil(size).min(count);
+        end.saturating_sub(first) as usize
+    };
+    let columns = cells(
+        grid.area.x0,
+        resolution_tile.code_block_width(),
+        grid.columns,
+        window.x0,
+        window.x1,
+    );
+    let rows = cells(
+        grid.area.y0,
+        resolution_tile.code_block_height(),
+        grid.rows,
+        window.y0,
+        window.y1,
+    );
+    columns * rows
 }
 
 fn checked_rect_elements(rect: IntRect) -> Result<usize> {
