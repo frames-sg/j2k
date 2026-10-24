@@ -5,6 +5,11 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- `J2kDecoder::decode_region_into` releases its component planes and other
+  decode buffers when it returns, as the scaled region decode already does,
+  instead of keeping about 12.7 MB per 1024² RGB region in an idle decoder. The
+  planes were zeroed before every region decode anyway, so allocating them again
+  adds under 0.5% to the next decode. Output is unchanged.
 - Tag trees no longer store their root level, which is derived from the grid
   size when read: 16 bytes less per precinct. Output is unchanged.
 - Tag trees are stored as one grid per level in smaller nodes, so some precinct
