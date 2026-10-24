@@ -150,6 +150,7 @@ pub fn encode_ht_code_block_scalar_with_passes_and_workspace(
         height,
         total_bitplanes,
         target_coding_passes,
+        None,
         &mut workspace.inner,
     )?;
     Ok(encoded_ht_code_block_from_internal(encoded))

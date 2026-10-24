@@ -745,6 +745,7 @@ fn encode_ht_code_block_typed(
             job.height,
             job.total_bitplanes,
             job.target_coding_passes,
+            None,
             workspace,
         )?,
     )

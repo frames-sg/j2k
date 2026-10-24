@@ -276,6 +276,7 @@ fn encode_ht_wave_serial(
                 job.height,
                 job.total_bitplanes,
                 job.target_coding_passes,
+                None,
                 workspace,
             ),
         );

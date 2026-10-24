@@ -820,6 +820,7 @@ fn encode_preencoded_ht_block(
         height,
         plan.total_bitplanes,
         1,
+        Some(maximum),
         workspace,
     )?;
     let block = crate::EncodedHtJ2kCodeBlock {

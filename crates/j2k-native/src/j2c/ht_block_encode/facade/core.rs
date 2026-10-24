@@ -22,6 +22,7 @@ pub(super) fn try_encode_code_block_set_view_in_workspace(
     cleanup_bitplane: u8,
     target_coding_passes: u8,
     collect_distortion: bool,
+    max_magnitude: Option<u32>,
     workspace: &mut HtEncodeWorkspace,
 ) -> EncodeResult<EncodedCodeBlock> {
     validate_set_request(total_bitplanes, cleanup_bitplane, target_coding_passes)?;
@@ -31,7 +32,8 @@ pub(super) fn try_encode_code_block_set_view_in_workspace(
         target_coding_passes,
     )?;
 
-    let Some(max_magnitude) = max_nonzero_magnitude_view(coefficients) else {
+    let max_magnitude = max_magnitude.or_else(|| max_nonzero_magnitude_view(coefficients));
+    let Some(max_magnitude) = max_magnitude.filter(|&maximum| maximum != 0) else {
         return Ok(EncodedCodeBlock {
             data: Vec::new(),
             num_coding_passes: 0,

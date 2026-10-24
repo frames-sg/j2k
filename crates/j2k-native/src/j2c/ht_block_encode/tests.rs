@@ -44,6 +44,7 @@ fn reusable_workspace_is_byte_exact_across_shrinking_and_growing_blocks() {
             height,
             10,
             1,
+            None,
             &mut workspace,
         )
         .expect("reused-workspace encode");

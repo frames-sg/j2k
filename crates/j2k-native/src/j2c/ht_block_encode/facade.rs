@@ -71,16 +71,20 @@ pub(crate) fn try_encode_code_block_with_passes(
         height,
         total_bitplanes,
         target_coding_passes,
+        None,
         &mut workspace,
     )
 }
 
+/// `max_magnitude` is the block's largest magnitude when the caller already
+/// has it; `None` scans the block for it.
 pub(crate) fn try_encode_code_block_with_passes_in_workspace(
     coefficients: &[i32],
     width: u32,
     height: u32,
     total_bitplanes: u8,
     target_coding_passes: u8,
+    max_magnitude: Option<u32>,
     workspace: &mut HtEncodeWorkspace,
 ) -> EncodeResult<EncodedCodeBlock> {
     let coefficients =
@@ -89,6 +93,7 @@ pub(crate) fn try_encode_code_block_with_passes_in_workspace(
         coefficients,
         total_bitplanes,
         target_coding_passes,
+        max_magnitude,
         workspace,
     )
 }
@@ -110,6 +115,7 @@ pub(crate) fn try_encode_code_block_set_with_workspace(
         cleanup_bitplane,
         target_coding_passes,
         true,
+        None,
         workspace,
     )
 }
@@ -125,6 +131,7 @@ pub(crate) fn try_encode_code_block_view(
         coefficients,
         total_bitplanes,
         target_coding_passes,
+        None,
         &mut workspace,
     )
 }
@@ -133,6 +140,7 @@ fn try_encode_code_block_view_in_workspace(
     coefficients: CoefficientBlockView<'_, i32>,
     total_bitplanes: u8,
     target_coding_passes: u8,
+    max_magnitude: Option<u32>,
     workspace: &mut HtEncodeWorkspace,
 ) -> EncodeResult<EncodedCodeBlock> {
     let cleanup_bitplane = u8::from(target_coding_passes >= 2 && total_bitplanes > 1);
@@ -142,6 +150,7 @@ fn try_encode_code_block_view_in_workspace(
         cleanup_bitplane,
         target_coding_passes,
         false,
+        max_magnitude,
         workspace,
     )
 }

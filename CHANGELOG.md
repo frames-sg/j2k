@@ -7,6 +7,10 @@ and stale roadmap entries have been removed from the public documentation set.
 
 Staged workspace version: `0.13.2`.
 
+- CPU HTJ2K encodes of single-layer, cleanup-only code blocks scan each
+  quantized block once for its largest magnitude instead of twice: the block
+  encoder takes the maximum the sub-band step already found. Output is
+  unchanged.
 - CPU decodes grow their packet segment list by moving it into a new
   allocation instead of with `realloc`. macOS 26 never reuses a freed block that
   `realloc` grew, so every decode left its last segment block in the allocator's
