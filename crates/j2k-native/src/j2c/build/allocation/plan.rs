@@ -177,9 +177,12 @@ fn include_sub_band_allocations(
             .ok_or(ValidationError::ImageTooLarge)?;
         if keep.is_some() {
             let layered_blocks = roi_plan.map_or(block_count, |roi_plan| {
-                required_code_block_count(&grid, resolution_tile, sub_band_rect, |rect| {
-                    roi_plan.code_block_required(sub_band_idx, rect)
-                })
+                required_code_block_count(
+                    &grid,
+                    resolution_tile,
+                    sub_band_rect,
+                    roi_plan.sub_band_window(sub_band_idx),
+                )
             });
             include_code_blocks(plan, block_count, layered_blocks, tile)?;
         }
@@ -309,42 +312,41 @@ pub(in crate::j2c::build) fn code_block_grid(
     })
 }
 
-/// The rectangle `build` gives code-block (`x_idx`, `y_idx`) of `grid`:
-/// its grid cell clipped to the sub-band.
-pub(in crate::j2c::build) fn code_block_rect(
-    grid: &CodeBlockGrid,
-    resolution_tile: &ResolutionTile<'_>,
-    sub_band_rect: IntRect,
-    x_idx: u32,
-    y_idx: u32,
-) -> IntRect {
-    let width = resolution_tile.code_block_width();
-    let height = resolution_tile.code_block_height();
-    let x = grid.area.x0.saturating_add(x_idx.saturating_mul(width));
-    let y = grid.area.y0.saturating_add(y_idx.saturating_mul(height));
-    IntRect::from_ltrb(x, y, x.saturating_add(width), y.saturating_add(height))
-        .intersect(sub_band_rect)
-}
-
-/// The code-blocks of `grid` that `required` keeps.
+/// The code-blocks of `grid` the ROI plan requires: those whose rectangles,
+/// clipped to the sub-band, meet the sub-band's `window`. They form a run of
+/// columns by a run of rows, so they are counted without walking the grid,
+/// and an oversized precinct is still rejected from its block count alone.
 fn required_code_block_count(
     grid: &CodeBlockGrid,
     resolution_tile: &ResolutionTile<'_>,
     sub_band_rect: IntRect,
-    required: impl Fn(IntRect) -> bool,
+    window: Option<IntRect>,
 ) -> usize {
-    (0..grid.rows)
-        .flat_map(|y_idx| (0..grid.columns).map(move |x_idx| (x_idx, y_idx)))
-        .filter(|&(x_idx, y_idx)| {
-            required(code_block_rect(
-                grid,
-                resolution_tile,
-                sub_band_rect,
-                x_idx,
-                y_idx,
-            ))
-        })
-        .count()
+    let Some(window) = window.filter(|window| window.intersects(sub_band_rect)) else {
+        return 0;
+    };
+    // The cells that start at `start` and step by `size`, `count` of them, which
+    // meet the span from `low` to `high` the way `IntRect::intersects` does.
+    let cells = |start: u32, size: u32, count: u32, low: u32, high: u32| {
+        let first = (low.saturating_sub(start) / size).min(count);
+        let end = high.saturating_sub(start).div_ceil(size).min(count);
+        end.saturating_sub(first) as usize
+    };
+    let columns = cells(
+        grid.area.x0,
+        resolution_tile.code_block_width(),
+        grid.columns,
+        window.x0,
+        window.x1,
+    );
+    let rows = cells(
+        grid.area.y0,
+        resolution_tile.code_block_height(),
+        grid.rows,
+        window.y0,
+        window.y1,
+    );
+    columns * rows
 }
 
 fn checked_rect_elements(rect: IntRect) -> Result<usize> {
