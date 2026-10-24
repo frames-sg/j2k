@@ -10,6 +10,24 @@ and stale roadmap entries have been removed from the public documentation set.
   packet headers are still checked as before. A 1024 x 1024 region of an
   18000 x 12000 RGB RPCL image needs 13 to 29 MiB of packet-header state
   instead of 27 to 60 MiB, depending on where it lies. Output is unchanged.
+- `J2kDecoder::decode_region_into` releases its component planes and other
+  decode buffers when it returns, as the scaled region decode already does,
+  instead of keeping about 12.7 MB per 1024² RGB region in an idle decoder. The
+  planes were zeroed before every region decode anyway, so allocating them again
+  adds under 0.5% to the next decode. Output is unchanged.
+- Tag trees no longer store their root level, which is derived from the grid
+  size when read: 16 bytes less per precinct. Output is unchanged.
+- Tag trees are stored as one grid per level in smaller nodes, so some precinct
+  layouts that exceeded the structural decode cap now decode. Output is
+  unchanged.
+- CPU decodes with `J2K_PROFILE_STAGES` set take the tile-wide HTJ2K route as
+  unprofiled decodes do, and its plan, tasks and worker scratch count towards
+  the reported workspace peak. HTJ2K phase timings now cover serially decoded
+  code blocks only, such as decodes on one thread.
+- CPU tile-wide HTJ2K decodes size their code-block plan by the blocks the
+  decode needs in the planned components instead of every block in the tile,
+  so region decodes of large tiles without packet length markers no longer
+  reserve megabytes per component.
 - CPU region decodes reconstruct the IDWT a row at a time, holding a few rows
   per level instead of each level's whole window, and write the last level
   straight into the output planes. This applies to packed, native and
