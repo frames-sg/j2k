@@ -280,6 +280,8 @@ pub(super) fn prepare_decomposition_storage(
         include_roi_workspace,
         workspace,
         selection,
+        // A selection always comes with the ROI plan it was made from.
+        selection.and(storage.roi_plan.as_ref()),
     )?;
 
     // Capacity retention must never make a smaller valid tile fail in a later

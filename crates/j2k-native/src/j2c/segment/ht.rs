@@ -3,10 +3,10 @@
 //! HTJ2K packet contributions and codeword-segment lengths.
 
 use super::{
-    classic, decode_num_coding_passes, push_segment_or_record_error, read_lblock_increment,
-    read_segment_length, resolve_code_block_inclusion, PacketResult, MAX_BITPLANE_COUNT,
+    classic, code_block_is_read, decode_num_coding_passes, read_lblock_increment,
+    read_segment_length, resolve_code_block_inclusion, PacketResult, PacketSkips, SegmentSink,
+    MAX_BITPLANE_COUNT,
 };
-use crate::error::DecodeError;
 use crate::j2c::build::{CodeBlock, CodeBlockCoding, Segment};
 use crate::j2c::codestream::{CodeBlockStyle, ComponentInfo};
 use crate::j2c::decode::DecompositionStorage;
@@ -19,21 +19,27 @@ pub(super) fn resolve_segments(
     reader: &mut BitReader<'_>,
     storage: &mut DecompositionStorage<'_>,
     component_info: &ComponentInfo,
+    num_layers: u8,
+    skips: &mut PacketSkips,
 ) -> PacketResult {
     const MAX_CODING_PASSES: u8 = 1 + 3 * (MAX_BITPLANE_COUNT - 1);
 
     let sub_band = &storage.sub_bands[sub_band_dx];
-    let precincts = &mut storage.precincts[sub_band.precincts.clone()];
+    let precinct_range = sub_band.precincts.clone();
     let precinct_index = usize::try_from(progression_data.precinct)
         .map_err(|_| "HT packet precinct index does not fit the platform")?;
-    let Some(precinct) = precincts.get_mut(precinct_index) else {
+    let Some(code_block_range) = storage.precincts[precinct_range.clone()]
+        .get(precinct_index)
+        .map(|precinct| precinct.code_blocks.clone())
+    else {
         lwarn!("progression data yielded invalid precinct index");
 
         return Err("HT packet references a missing precinct");
     };
-    let code_blocks = &mut storage.code_blocks[precinct.code_blocks.clone()];
 
-    for code_block in code_blocks {
+    for code_block_idx in code_block_range {
+        let precinct = &mut storage.precincts[precinct_range.clone()][precinct_index];
+        let code_block = &mut storage.code_blocks[code_block_idx];
         let inclusion = resolve_code_block_inclusion(
             code_block,
             precinct,
@@ -47,13 +53,26 @@ pub(super) fn resolve_segments(
             continue;
         }
 
-        let layer = storage.layers[code_block.layers.clone()]
-            .get_mut(usize::from(progression_data.layer_num))
-            .ok_or("HT packet references a missing quality layer")?;
-
-        if layer.segments.is_some() {
-            return Err("HT quality layer already owns segment metadata");
-        }
+        // Only code-blocks the decode reads have layer records; the others'
+        // contributions are checked the same way and then skipped. The
+        // progression yields each packet once, so a skipped code-block can't
+        // see a layer twice.
+        let read = code_block_is_read(storage, sub_band_dx, &storage.code_blocks[code_block_idx]);
+        let layer_num = usize::from(progression_data.layer_num);
+        let code_block = &mut storage.code_blocks[code_block_idx];
+        let layer = if read {
+            let layer = storage.layers[code_block.layers.clone()]
+                .get_mut(layer_num)
+                .ok_or("HT packet references a missing quality layer")?;
+            if layer.segments.is_some() {
+                return Err("HT quality layer already owns segment metadata");
+            }
+            Some(layer)
+        } else if layer_num < usize::from(num_layers) {
+            None
+        } else {
+            return Err("HT packet references a missing quality layer");
+        };
 
         let raw_num_passes = decode_num_coding_passes(reader)
             .ok_or("HT coding-pass count is truncated or invalid")?;
@@ -64,7 +83,6 @@ pub(super) fn resolve_segments(
 
         ltrace!("HT raw number of coding passes: {}", raw_num_passes);
 
-        let start = storage.segments.len();
         if inclusion.included_first_time
             && (code_block.number_of_coding_passes != 0
                 || code_block.ht_total_coding_passes != 0
@@ -76,18 +94,31 @@ pub(super) fn resolve_segments(
             return Err("first HT inclusion has stale coding-pass state");
         }
 
-        parse_segment_lengths(
-            reader,
-            raw_num_passes,
-            component_info.code_block_style(),
-            code_block,
-            &mut storage.segments,
-            storage.structural_workspace_bytes,
-            &mut storage.packet_workspace_error,
-        )?;
-
-        let end = storage.segments.len();
-        layer.segments = Some(start..end);
+        if let Some(layer) = layer {
+            let start = storage.segments.len();
+            parse_segment_lengths(
+                reader,
+                raw_num_passes,
+                component_info.code_block_style(),
+                code_block,
+                &mut SegmentSink::Record {
+                    segments: &mut storage.segments,
+                    structural_workspace_bytes: storage.structural_workspace_bytes,
+                    packet_workspace_error: &mut storage.packet_workspace_error,
+                },
+            )?;
+            layer.segments = Some(start..storage.segments.len());
+        } else {
+            let mut bytes = 0;
+            parse_segment_lengths(
+                reader,
+                raw_num_passes,
+                component_info.code_block_style(),
+                code_block,
+                &mut SegmentSink::Skip(&mut bytes),
+            )?;
+            skips.push(code_block_idx, bytes)?;
+        }
         code_block.non_empty_layer_count = code_block
             .non_empty_layer_count
             .checked_add(1)
@@ -106,9 +137,7 @@ fn parse_segment_lengths(
     raw_num_passes: u8,
     style: CodeBlockStyle,
     code_block: &mut CodeBlock,
-    segments: &mut alloc::vec::Vec<Segment<'_>>,
-    structural_workspace_bytes: usize,
-    packet_workspace_error: &mut Option<DecodeError>,
+    sink: &mut SegmentSink<'_, '_>,
 ) -> PacketResult {
     const MAX_CODING_PASSES: u8 = 1 + 3 * (MAX_BITPLANE_COUNT - 1);
 
@@ -132,24 +161,17 @@ fn parse_segment_lengths(
             None,
             code_block,
             style,
-            segments,
-            structural_workspace_bytes,
-            packet_workspace_error,
+            sink,
         );
     }
 
     let mut push_segment = |idx: u8, coding_passes: u8, data_length: u32| -> PacketResult {
-        push_segment_or_record_error(
-            segments,
-            structural_workspace_bytes,
-            packet_workspace_error,
-            Segment {
-                idx,
-                coding_pases: coding_passes,
-                data_length,
-                data: &[],
-            },
-        )
+        sink.push(Segment {
+            idx,
+            coding_pases: coding_passes,
+            data_length,
+            data: &[],
+        })
         .ok_or("HT segment metadata allocation failed")
     };
 
@@ -200,9 +222,7 @@ fn parse_segment_lengths(
                     Some(cleanup_length),
                     code_block,
                     style,
-                    segments,
-                    structural_workspace_bytes,
-                    packet_workspace_error,
+                    sink,
                 );
             }
             if ht_discriminator {

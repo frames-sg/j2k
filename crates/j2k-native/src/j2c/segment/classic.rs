@@ -3,10 +3,9 @@
 //! Original JPEG 2000 code-block packet contributions.
 
 use super::{
-    decode_num_coding_passes, push_segment_or_record_error, read_lblock_increment,
-    read_segment_length, resolve_code_block_inclusion, PacketResult, MAX_BITPLANE_COUNT,
+    code_block_is_read, decode_num_coding_passes, read_lblock_increment, read_segment_length,
+    resolve_code_block_inclusion, PacketResult, PacketSkips, SegmentSink, MAX_BITPLANE_COUNT,
 };
-use crate::error::DecodeError;
 use crate::j2c::build::{CodeBlock, CodeBlockCoding, Segment};
 use crate::j2c::codestream::{CodeBlockStyle, ComponentInfo};
 use crate::j2c::decode::DecompositionStorage;
@@ -19,18 +18,24 @@ pub(super) fn resolve_segments(
     reader: &mut BitReader<'_>,
     storage: &mut DecompositionStorage<'_>,
     component_info: &ComponentInfo,
+    num_layers: u8,
+    skips: &mut PacketSkips,
 ) -> PacketResult {
     let sub_band = &storage.sub_bands[sub_band_idx];
-    let precincts = &mut storage.precincts[sub_band.precincts.clone()];
+    let precinct_range = sub_band.precincts.clone();
     let precinct_index = usize::try_from(progression_data.precinct)
         .map_err(|_| "classic packet precinct index does not fit the platform")?;
-    let Some(precinct) = precincts.get_mut(precinct_index) else {
+    let Some(code_block_range) = storage.precincts[precinct_range.clone()]
+        .get(precinct_index)
+        .map(|precinct| precinct.code_blocks.clone())
+    else {
         lwarn!("progression data yielded invalid precinct index");
         return Err("classic packet references a missing precinct");
     };
-    let code_blocks = &mut storage.code_blocks[precinct.code_blocks.clone()];
 
-    for code_block in code_blocks {
+    for code_block_idx in code_block_range {
+        let precinct = &mut storage.precincts[precinct_range.clone()][precinct_index];
+        let code_block = &mut storage.code_blocks[code_block_idx];
         let inclusion = resolve_code_block_inclusion(
             code_block,
             precinct,
@@ -43,9 +48,22 @@ pub(super) fn resolve_segments(
             continue;
         }
 
-        let layer = storage.layers[code_block.layers.clone()]
-            .get_mut(usize::from(progression_data.layer_num))
-            .ok_or("classic packet references a missing quality layer")?;
+        // Only code-blocks the decode reads have layer records; the others'
+        // contributions are checked the same way and then skipped.
+        let read = code_block_is_read(storage, sub_band_idx, &storage.code_blocks[code_block_idx]);
+        let layer_num = usize::from(progression_data.layer_num);
+        let code_block = &mut storage.code_blocks[code_block_idx];
+        let layer = if read {
+            Some(
+                storage.layers[code_block.layers.clone()]
+                    .get_mut(layer_num)
+                    .ok_or("classic packet references a missing quality layer")?,
+            )
+        } else if layer_num < usize::from(num_layers) {
+            None
+        } else {
+            return Err("classic packet references a missing quality layer");
+        };
         let added_coding_passes = decode_num_coding_passes(reader)
             .ok_or("classic coding-pass count is truncated or invalid")?;
         code_block.l_block = code_block
@@ -55,18 +73,33 @@ pub(super) fn resolve_segments(
             )
             .ok_or("classic Lblock increment overflows")?;
 
-        let start = storage.segments.len();
-        parse_contribution_lengths(
-            reader,
-            added_coding_passes,
-            None,
-            code_block,
-            component_info.code_block_style(),
-            &mut storage.segments,
-            storage.structural_workspace_bytes,
-            &mut storage.packet_workspace_error,
-        )?;
-        layer.segments = Some(start..storage.segments.len());
+        if let Some(layer) = layer {
+            let start = storage.segments.len();
+            parse_contribution_lengths(
+                reader,
+                added_coding_passes,
+                None,
+                code_block,
+                component_info.code_block_style(),
+                &mut SegmentSink::Record {
+                    segments: &mut storage.segments,
+                    structural_workspace_bytes: storage.structural_workspace_bytes,
+                    packet_workspace_error: &mut storage.packet_workspace_error,
+                },
+            )?;
+            layer.segments = Some(start..storage.segments.len());
+        } else {
+            let mut bytes = 0;
+            parse_contribution_lengths(
+                reader,
+                added_coding_passes,
+                None,
+                code_block,
+                component_info.code_block_style(),
+                &mut SegmentSink::Skip(&mut bytes),
+            )?;
+            skips.push(code_block_idx, bytes)?;
+        }
         code_block.coding = Some(CodeBlockCoding::Classic);
         code_block.non_empty_layer_count = code_block
             .non_empty_layer_count
@@ -76,19 +109,13 @@ pub(super) fn resolve_segments(
     Ok(())
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "packet parsing keeps the code-block state, bounded segment owner, and input cursor explicit"
-)]
 pub(super) fn parse_contribution_lengths(
     reader: &mut BitReader<'_>,
     added_coding_passes: u8,
     mut first_length: Option<u32>,
     code_block: &mut CodeBlock,
     style: CodeBlockStyle,
-    segments: &mut alloc::vec::Vec<Segment<'_>>,
-    structural_workspace_bytes: usize,
-    packet_workspace_error: &mut Option<DecodeError>,
+    sink: &mut SegmentSink<'_, '_>,
 ) -> PacketResult {
     const MAX_CODING_PASSES: u8 = 1 + 3 * (MAX_BITPLANE_COUNT - 1);
 
@@ -115,17 +142,12 @@ pub(super) fn parse_contribution_lengths(
         } else {
             read_segment_length(reader, code_block.l_block, coding_passes)?
         };
-        push_segment_or_record_error(
-            segments,
-            structural_workspace_bytes,
-            packet_workspace_error,
-            Segment {
-                idx,
-                data_length: length,
-                coding_pases: coding_passes,
-                data: &[],
-            },
-        )
+        sink.push(Segment {
+            idx,
+            data_length: length,
+            coding_pases: coding_passes,
+            data: &[],
+        })
         .ok_or("classic segment metadata allocation failed")
     };
 

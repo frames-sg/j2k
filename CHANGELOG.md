@@ -5,6 +5,11 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- Region decodes of codestreams without PLT markers keep no layer or segment
+  records for the code-blocks they parse only to reach later packets. Their
+  packet headers are still checked as before. A 1024 x 1024 region of an
+  18000 x 12000 RGB RPCL image needs 13 to 29 MiB of packet-header state
+  instead of 27 to 60 MiB, depending on where it lies. Output is unchanged.
 - CPU region decodes reconstruct the IDWT a row at a time, holding a few rows
   per level instead of each level's whole window, and write the last level
   straight into the output planes. This applies to packed, native and
