@@ -44,10 +44,10 @@ reviews:
     hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points."
   j2k-types:
     removed_fingerprint: "none"
-    added_fingerprint: "fnv1a64:f241e9662318242a"
+    added_fingerprint: "fnv1a64:5d2f27924d0d36ee"
     hidden_count: 111
     hidden_fingerprint: "fnv1a64:6eaf63f068893d17"
-    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged. Adds CPU wavelet selection and output types for tiles, components, resolutions, and orientations. Reversible samples are I64 and irreversible samples are dequantized F32; geometry, precision, sampling, transform, and quantization metadata travel with the bands. Adds defaulted encode_forward_dwt53_at_origin and encode_forward_dwt97_at_origin hooks. Existing job structs and zero-origin hooks are unchanged; default implementations call legacy hooks only for equivalent phases and decline other phases. Adds the defaulted declines_every_stage method: true permits native encode to skip the remaining per-stage hooks of the current encode, asked after begin_encode and after the whole-tile hooks decline, along with the inputs only those hooks read; the default false keeps existing accelerators on their current path."
+    rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged. Adds CPU wavelet selection and output types for tiles, components, resolutions, and orientations. Reversible samples are I64 and irreversible samples are dequantized F32; geometry, precision, sampling, transform, and quantization metadata travel with the bands. Adds defaulted encode_forward_dwt53_at_origin and encode_forward_dwt97_at_origin hooks. Existing job structs and zero-origin hooks are unchanged; default implementations call legacy hooks only for equivalent phases and decline other phases. Adds the defaulted declines_every_stage method: true permits native encode to skip the remaining per-stage hooks of the current encode, asked after begin_encode and after the whole-tile hooks decline, along with the inputs only those hooks read; the default false keeps existing accelerators on their current path. Adds J2kDirectGrayscalePlan::signed so retained component plans carry source signedness. The maintainer approved this source-breaking field addition for 0.13.0. Exhaustive struct literals must add signed from source metadata or use struct update syntax with an existing plan that has the correct signedness."
     hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points. Adds subband-origin, phase-aware dimension, and zero-anchored grid helpers plus default accelerator implementations. Also records the already-merged tiled_decomposition_levels helper; it retains the smallest-edge depth policy. CpuOnlyJ2kEncodeStageAccelerator overrides declines_every_stage to return true, since all of its hooks decline."
   j2k-codec-math:
     removed_fingerprint: "fnv1a64:594402a62d9308ce"
@@ -73,10 +73,10 @@ reviews:
   j2k-cuda-j2k-engine:
     removed_fingerprint: "none"
     added_fingerprint: "none"
-    hidden_count: 708
-    hidden_fingerprint: "fnv1a64:d7eac46c668fbacb"
+    hidden_count: 712
+    hidden_fingerprint: "fnv1a64:f5a260b6797b2712"
     rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged."
-    hidden_rationale: "Three hidden signatures change: both pooled upload methods take &[&[u8]] instead of &[u8], and CudaQueuedHtj2kCleanupGroup::new adds cleanup_capacity and live_host_bytes. Pass &[payload] and the retained group sizes. Six additional methods expose deferred clearing, retained byte counts, batched stores, and deferred final wavelet stages. Adds origin-aware 5/3 and 9/7 DWT methods; the existing methods still pass origin zero and retain their signatures."
+    hidden_rationale: "Three hidden signatures change: both pooled upload methods take &[&[u8]] instead of &[u8], and CudaQueuedHtj2kCleanupGroup::new adds cleanup_capacity and live_host_bytes. Pass &[payload] and the retained group sizes. Six additional methods expose deferred clearing, retained byte counts, batched stores, and deferred final wavelet stages. Adds origin-aware 5/3 and 9/7 DWT methods; the existing methods still pass origin zero and retain their signatures. Adds signed to CudaJ2kStoreGray16Job and CudaJ2kStoreRgb16Job, plus native_samples to CudaJ2kStoreGray8Target and CudaJ2kStoreGray16Target. These rustdoc-hidden public fields break exhaustive struct literals and are approved for 0.13.0. Job literals set signed to zero for unsigned sources or one for signed sources. Target literals set native_samples to true for native sample preservation or false for requested-format conversion, or use struct update syntax with a matching existing job or target."
   j2k-cuda-jpeg-engine:
     removed_fingerprint: "none"
     added_fingerprint: "fnv1a64:103e0c647d4cb39d"

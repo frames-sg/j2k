@@ -59,9 +59,9 @@ pub(in crate::decoder::color_batch) fn prepare_rgb8_mct_batch_store(
     }
 
     let addends = [
-        bit_depth_addend(color.bit_depths[0]),
-        bit_depth_addend(color.bit_depths[1]),
-        bit_depth_addend(color.bit_depths[2]),
+        bit_depth_addend(color.bit_depths[0], color.signed()),
+        bit_depth_addend(color.bit_depths[1], color.signed()),
+        bit_depth_addend(color.bit_depths[2], color.signed()),
     ];
     let store_plan = ColorStorePlan::new(
         stores,

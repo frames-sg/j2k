@@ -46,6 +46,7 @@ pub(super) fn flatten_cuda_color_components_with_budget(
     host_cap: usize,
     host_budget: &mut HostPhaseBudget,
 ) -> Result<(Vec<u8>, Vec<CudaHtj2kDecodePlan>), Error> {
+    super::validate_color_signedness(&native_plan.component_plans)?;
     let mut components = host_budget.try_vec_with_capacity(native_plan.component_plans.len())?;
     let payload_capacity = native_plan
         .component_plans

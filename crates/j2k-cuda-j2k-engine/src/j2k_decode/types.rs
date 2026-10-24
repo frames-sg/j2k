@@ -130,12 +130,17 @@ pub struct CudaJ2kStoreGray16Job {
     pub addend: f32,
     /// Source component bit depth.
     pub bit_depth: u32,
+    /// Nonzero for signed sources: Gray16 keeps their two's-complement
+    /// pattern, as the CPU decoder does.
+    pub signed: u32,
 }
 
 /// One Gray8 store item for a batched dispatch.
 #[derive(Clone, Copy, Debug)]
 #[doc(hidden)]
 pub struct CudaJ2kStoreGray8Target<'a> {
+    /// Preserve native sample values instead of requested-format conversion.
+    pub native_samples: bool,
     /// Dense output index; consecutive tile stores may write disjoint rectangles.
     pub output_index: usize,
     /// Source reconstructed component plane.
@@ -148,6 +153,8 @@ pub struct CudaJ2kStoreGray8Target<'a> {
 #[derive(Clone, Copy, Debug)]
 #[doc(hidden)]
 pub struct CudaJ2kStoreGray16Target<'a> {
+    /// Preserve native sample values instead of requested-format conversion.
+    pub native_samples: bool,
     /// Dense output image receiving this store.
     pub output_index: usize,
     /// Source reconstructed component plane.
@@ -174,7 +181,7 @@ pub(crate) struct CudaJ2kStoreGray8BatchJob {
     pub(crate) input_ptr: CuDevicePtr,
     pub(crate) output_ptr: CuDevicePtr,
     pub(crate) job: CudaJ2kStoreGray8Job,
-    pub(crate) reserved_tail: u32,
+    pub(crate) native_samples: u32,
 }
 
 #[repr(C)]
@@ -183,6 +190,7 @@ pub(crate) struct CudaJ2kStoreGray16BatchJob {
     pub(crate) input_ptr: CuDevicePtr,
     pub(crate) output_ptr: CuDevicePtr,
     pub(crate) job: CudaJ2kStoreGray16Job,
+    pub(crate) native_samples: u32,
     pub(crate) reserved_tail: u32,
 }
 
@@ -192,7 +200,6 @@ pub(crate) struct CudaJ2kStoreGrayI16BatchJob {
     pub(crate) input_ptr: CuDevicePtr,
     pub(crate) output_ptr: CuDevicePtr,
     pub(crate) job: CudaJ2kStoreGray16Job,
-    pub(crate) reserved_tail: u32,
 }
 
 /// In-place inverse MCT dispatch over three device f32 component planes.
@@ -312,6 +319,9 @@ pub struct CudaJ2kStoreRgb16Job {
     pub bit_depth2: u32,
     /// Nonzero to write RGBA16 with opaque alpha; zero writes RGB16.
     pub rgba: u32,
+    /// Nonzero for signed sources: RGB16 keeps their two's-complement
+    /// pattern, as the CPU decoder does.
+    pub signed: u32,
 }
 
 /// Fused inverse RCT/ICT and packed RGB8/RGBA8 store dispatch.

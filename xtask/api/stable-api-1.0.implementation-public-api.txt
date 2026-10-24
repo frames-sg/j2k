@@ -3988,10 +3988,12 @@ pub j2k_cuda_j2k_engine::CudaJ2kStoreGray16Job::output_height: u32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGray16Job::output_width: u32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGray16Job::output_x: u32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGray16Job::output_y: u32
+pub j2k_cuda_j2k_engine::CudaJ2kStoreGray16Job::signed: u32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGray16Job::source_x: u32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGray16Job::source_y: u32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGray16Target::input: &'a j2k_cuda_runtime::memory::CudaDeviceBuffer
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGray16Target::job: j2k_cuda_j2k_engine::CudaJ2kStoreGray16Job
+pub j2k_cuda_j2k_engine::CudaJ2kStoreGray16Target::native_samples: bool
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGray16Target::output_index: usize
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGray8Job::addend: f32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGray8Job::bit_depth: u32
@@ -4006,6 +4008,7 @@ pub j2k_cuda_j2k_engine::CudaJ2kStoreGray8Job::source_x: u32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGray8Job::source_y: u32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGray8Target::input: &'a j2k_cuda_runtime::memory::CudaDeviceBuffer
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGray8Target::job: j2k_cuda_j2k_engine::CudaJ2kStoreGray8Job
+pub j2k_cuda_j2k_engine::CudaJ2kStoreGray8Target::native_samples: bool
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGray8Target::output_index: usize
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGrayI16Target::input: &'a j2k_cuda_runtime::memory::CudaDeviceBuffer
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGrayI16Target::job: j2k_cuda_j2k_engine::CudaJ2kStoreGray16Job
@@ -4026,6 +4029,7 @@ pub j2k_cuda_j2k_engine::CudaJ2kStoreRgb16Job::output_width: u32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreRgb16Job::output_x: u32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreRgb16Job::output_y: u32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreRgb16Job::rgba: u32
+pub j2k_cuda_j2k_engine::CudaJ2kStoreRgb16Job::signed: u32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreRgb16Job::source_x0: u32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreRgb16Job::source_x1: u32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreRgb16Job::source_x2: u32

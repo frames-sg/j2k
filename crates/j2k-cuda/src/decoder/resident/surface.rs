@@ -77,6 +77,7 @@ pub(super) fn decode_grayscale_cuda_resident_surface_with_plan_profile(
                             output_y: component.store.output_y,
                             addend: component.store.addend,
                             bit_depth: u32::from(plan.bit_depth()),
+                            signed: u32::from(plan.signed()),
                         },
                     ),
                 _ => Err(CudaError::InvalidArgument {

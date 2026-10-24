@@ -10,6 +10,14 @@ and stale roadmap entries have been removed from the public documentation set.
   and `std` no longer turns on `j2k-profile/std`. A single-threaded wasm32
   decoder built with only `std` and `simd` is 16.8 KB smaller gzipped (216 KB
   instead of 233 KB). Default builds are unchanged.
+- CUDA device decodes follow CPU sample conversion for signed grayscale and
+  colour sources, including prepared and referenced batches. Component plans
+  retain source signedness at construction and reject mixed-signedness colour
+  stores. Signed MCT takes no unsigned level shift, native batches preserve
+  sample values, and requested 16-bit outputs keep two's-complement samples.
+  For 0.13.0, `J2kDirectGrayscalePlan` adds the public `signed: bool` field.
+  Struct literals must add `signed` from the source metadata, or use struct
+  update syntax with an existing plan that has the correct signedness.
 - Tight RGBA8 output from RGB images decodes into the caller's allocation
   and adds opaque alpha in place, avoiding a separate full RGB8 buffer.
   Pixel values and padded-output handling are unchanged.

@@ -7,7 +7,7 @@ use super::{
     CudaDeviceBufferRange, CudaExternalDeviceBufferViewMut, CudaHtj2kDecodePlan,
     CudaJ2kStoreGray16Job, CudaJ2kStoreGray16Target, CudaJ2kStoreGray8Job, CudaJ2kStoreGray8Target,
     CudaJ2kStoreGrayI16Target, CudaSurfaceStats, Error, GrayscaleBatchOutput, GrayscaleOwnedBatch,
-    PixelFormat, StoredGrayscaleBatch, Surface, SurfaceResidency,
+    GrayscaleSampleConversion, PixelFormat, StoredGrayscaleBatch, Surface, SurfaceResidency,
 };
 
 fn gray_store_job(component: &CudaDecodedComponent) -> (u32, super::super::CudaHtj2kStoreStep) {
@@ -16,6 +16,10 @@ fn gray_store_job(component: &CudaDecodedComponent) -> (u32, super::super::CudaH
     (input_width, store)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "keep native sample policy explicit alongside execution and destination controls"
+)]
 pub(super) fn store_gray8_batch(
     context: &j2k_cuda_runtime::CudaContext,
     plans: &[CudaHtj2kDecodePlan],
@@ -24,6 +28,7 @@ pub(super) fn store_gray8_batch(
     decoded: &[CudaDecodedComponent],
     external: Option<&mut CudaExternalDeviceBufferViewMut<'_>>,
     enqueue_external: bool,
+    conversion: GrayscaleSampleConversion,
 ) -> Result<StoredGrayscaleBatch, Error> {
     let targets = plans
         .iter()
@@ -32,6 +37,7 @@ pub(super) fn store_gray8_batch(
         .map(|((plan, component), output_index)| {
             let (input_width, store) = gray_store_job(component);
             Ok(CudaJ2kStoreGray8Target {
+                native_samples: matches!(conversion, GrayscaleSampleConversion::Native),
                 output_index,
                 input: pooled_cuda_buffer(&component.buffer)?,
                 job: CudaJ2kStoreGray8Job {
@@ -126,6 +132,10 @@ fn materialize_gray8_output(
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "keep native sample policy explicit alongside execution and destination controls"
+)]
 pub(super) fn store_gray16_batch(
     context: &j2k_cuda_runtime::CudaContext,
     plans: &[CudaHtj2kDecodePlan],
@@ -134,6 +144,7 @@ pub(super) fn store_gray16_batch(
     decoded: &[CudaDecodedComponent],
     external: Option<&mut CudaExternalDeviceBufferViewMut<'_>>,
     enqueue_external: bool,
+    conversion: GrayscaleSampleConversion,
 ) -> Result<StoredGrayscaleBatch, Error> {
     let targets = plans
         .iter()
@@ -142,6 +153,7 @@ pub(super) fn store_gray16_batch(
         .map(|((plan, component), output_index)| {
             let (input_width, store) = gray_store_job(component);
             Ok(CudaJ2kStoreGray16Target {
+                native_samples: matches!(conversion, GrayscaleSampleConversion::Native),
                 output_index,
                 input: pooled_cuda_buffer(&component.buffer)?,
                 job: CudaJ2kStoreGray16Job {
@@ -156,6 +168,7 @@ pub(super) fn store_gray16_batch(
                     output_y: store.output_y,
                     addend: store.addend,
                     bit_depth: u32::from(plan.bit_depth()),
+                    signed: u32::from(plan.signed()),
                 },
             })
         })
@@ -250,6 +263,7 @@ pub(super) fn store_grayi16_batch(
                     output_y: store.output_y,
                     addend: store.addend,
                     bit_depth: u32::from(plan.bit_depth()),
+                    signed: u32::from(plan.signed()),
                 },
             })
         })

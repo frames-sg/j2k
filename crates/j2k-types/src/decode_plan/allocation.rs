@@ -260,6 +260,7 @@ mod tests {
             },
         ));
         let plan = J2kDirectGrayscalePlan {
+            signed: false,
             dimensions: (1, 1),
             bit_depth: 8,
             steps,

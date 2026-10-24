@@ -16,13 +16,13 @@ mod kernels {
         },
         layout::{output_pixel_index, pixel_coords, source_index},
         memory::{load_f32, load_job, store_f32, store_i16, store_u8, store_u16},
-        sample::{
-            round_integer_output_then_add, sample_as_native_i16, sample_as_native_u8,
-            sample_as_native_u16, sample_as_u8, sample_as_u16,
-        },
         native_color::{
             store_rgb8_native_sample, store_rgb16_native_sample, store_rgba8_native_sample,
             store_rgba16_native_sample, store_rgbai16_native_sample, store_rgbi16_native_sample,
+        },
+        sample::{
+            round_integer_output_then_add, sample_as_native_i16, sample_as_native_u8,
+            sample_as_native_u16, sample_as_u8, sample_as_u16,
         },
         transform::inverse_mct_sample,
     };
@@ -76,6 +76,7 @@ mod kernels {
             sample_as_u16(
                 round_integer_output_then_add(load_f32(input, src), job.addend),
                 job.bit_depth,
+                job.signed != 0,
             ),
         );
     }
@@ -120,13 +121,15 @@ mod kernels {
         let (row, col) = pixel_coords(gid, job.copy_width);
         let src = source_index(job.input_width, job.source_x, job.source_y, row, col);
         let dst = output_pixel_index(job.output_width, job.output_x, job.output_y, row, col);
+        let sample = round_integer_output_then_add(load_f32(input, src), job.addend);
         store_u8(
             output,
             dst,
-            sample_as_native_u8(
-                round_integer_output_then_add(load_f32(input, src), job.addend),
-                job.bit_depth,
-            ),
+            if item.native_samples != 0 {
+                sample_as_native_u8(sample, job.bit_depth)
+            } else {
+                sample_as_u8(sample, job.bit_depth)
+            },
         );
     }
 
@@ -145,13 +148,15 @@ mod kernels {
         let (row, col) = pixel_coords(gid, job.copy_width);
         let src = source_index(job.input_width, job.source_x, job.source_y, row, col);
         let dst = output_pixel_index(job.output_width, job.output_x, job.output_y, row, col);
+        let sample = round_integer_output_then_add(load_f32(input, src), job.addend);
         store_u16(
             output,
             dst,
-            sample_as_native_u16(
-                round_integer_output_then_add(load_f32(input, src), job.addend),
-                job.bit_depth,
-            ),
+            if item.native_samples != 0 {
+                sample_as_native_u16(sample, job.bit_depth)
+            } else {
+                sample_as_u16(sample, job.bit_depth, job.signed != 0)
+            },
         );
     }
 

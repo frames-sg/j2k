@@ -272,6 +272,14 @@ pub(crate) struct CudaHtj2kDecodePlan {
         not(feature = "cuda-runtime"),
         expect(
             dead_code,
+            reason = "sample metadata is consumed only by CUDA decode routes"
+        )
+    )]
+    signed: bool,
+    #[cfg_attr(
+        not(feature = "cuda-runtime"),
+        expect(
+            dead_code,
             reason = "output format is consumed only by CUDA decode routes"
         )
     )]

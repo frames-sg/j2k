@@ -1826,6 +1826,7 @@ fn j2k_store_rgb16_mct_matches_inverse_mct_plus_store_when_runtime_required() {
         bit_depth1: 16,
         bit_depth2: 16,
         rgba: 0,
+        signed: 0,
     };
     let legacy_output = crate::J2kCudaEngine::new(&context)
         .j2k_store_rgb16_device(&legacy0, &legacy1, &legacy2, store_job)

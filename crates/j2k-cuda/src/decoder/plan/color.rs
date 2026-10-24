@@ -183,7 +183,6 @@ pub(in crate::decoder) fn build_cuda_htj2k_color_plans_from_bytes_with_profile_a
         ..CudaHtj2kProfileReport::default()
     };
     report.emit("plan");
-
     Ok(CudaHtj2kColorDecodePlans {
         output_index: 0,
         dimensions: native_plan.dimensions,

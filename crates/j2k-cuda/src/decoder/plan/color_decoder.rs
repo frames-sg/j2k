@@ -82,7 +82,6 @@ impl J2kDecoder<'_> {
             ..CudaHtj2kProfileReport::default()
         };
         report.emit("plan");
-
         Ok(CudaHtj2kColorDecodePlans {
             output_index: 0,
             dimensions: native_plan.dimensions,
@@ -152,7 +151,6 @@ impl J2kDecoder<'_> {
             ..CudaHtj2kProfileReport::default()
         };
         report.emit("plan");
-
         Ok(CudaHtj2kColorDecodePlans {
             output_index: 0,
             dimensions: (roi.w, roi.h),
@@ -229,7 +227,6 @@ impl J2kDecoder<'_> {
             ..CudaHtj2kProfileReport::default()
         };
         report.emit("plan");
-
         Ok(CudaHtj2kColorDecodePlans {
             output_index: 0,
             dimensions: (scaled_roi.w, scaled_roi.h),

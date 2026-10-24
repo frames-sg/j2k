@@ -115,24 +115,25 @@ impl_cuda_gpu_abi! {
         output_y: u32,
         addend: f32,
         bit_depth: u32,
+        signed: u32,
     },
     CudaJ2kStoreGray8BatchJob {
         input_ptr: u64,
         output_ptr: u64,
         job: CudaJ2kStoreGray8Job,
-        reserved_tail: u32,
+        native_samples: u32,
     },
     CudaJ2kStoreGray16BatchJob {
         input_ptr: u64,
         output_ptr: u64,
         job: CudaJ2kStoreGray16Job,
+        native_samples: u32,
         reserved_tail: u32,
     },
     CudaJ2kStoreGrayI16BatchJob {
         input_ptr: u64,
         output_ptr: u64,
         job: CudaJ2kStoreGray16Job,
-        reserved_tail: u32,
     },
     CudaJ2kInverseMctJob {
         len: u32,
@@ -188,6 +189,7 @@ impl_cuda_gpu_abi! {
         bit_depth1: u32,
         bit_depth2: u32,
         rgba: u32,
+        signed: u32,
     },
     CudaJ2kStoreRgb8MctJob {
         store: CudaJ2kStoreRgb8Job,

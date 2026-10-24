@@ -4410,6 +4410,7 @@ pub j2k_types::J2kDirectColorPlan::mct: bool
 pub j2k_types::J2kDirectColorPlan::transform: j2k_types::J2kWaveletTransform
 pub j2k_types::J2kDirectGrayscalePlan::bit_depth: u8
 pub j2k_types::J2kDirectGrayscalePlan::dimensions: (u32, u32)
+pub j2k_types::J2kDirectGrayscalePlan::signed: bool
 pub j2k_types::J2kDirectGrayscalePlan::steps: alloc::vec::Vec<j2k_types::J2kDirectGrayscaleStep>
 pub j2k_types::J2kDirectGrayscaleStep::ClassicSubBand(j2k_types::J2kOwnedSubBandPlan)
 pub j2k_types::J2kDirectGrayscaleStep::HtSubBand(j2k_types::HtOwnedSubBandPlan)

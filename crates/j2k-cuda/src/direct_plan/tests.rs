@@ -13,6 +13,7 @@ fn one_block_direct_plan(
     output_stride: usize,
 ) -> J2kDirectGrayscalePlan {
     J2kDirectGrayscalePlan {
+        signed: false,
         dimensions: (1, 1),
         bit_depth: 8,
         steps: vec![
@@ -76,6 +77,7 @@ fn one_block_plan(data: Vec<u8>) -> CudaHtj2kDecodePlan {
 
 fn two_block_direct_plan() -> J2kDirectGrayscalePlan {
     J2kDirectGrayscalePlan {
+        signed: false,
         dimensions: (2, 1),
         bit_depth: 8,
         steps: vec![

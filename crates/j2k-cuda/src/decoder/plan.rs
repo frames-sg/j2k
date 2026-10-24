@@ -185,6 +185,22 @@ pub(super) fn parse_with_host_cap<'a>(
     Ok((image, budget))
 }
 
+/// Color stores share one signedness across their component planes. Validate
+/// it for owned, referenced, direct-source and tiled plans before flattening.
+#[cfg(feature = "cuda-runtime")]
+fn validate_color_signedness(plans: &[j2k_native::J2kDirectGrayscalePlan]) -> Result<(), Error> {
+    if let Some(first) = plans.first() {
+        if plans.iter().any(|plan| plan.signed != first.signed) {
+            return Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::unsupported_operation(
+                    "CUDA decode needs every component to share one signedness",
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Smallest host cap at which `plan` succeeds, found by bisection. Any error
 /// other than the host planning limit fails the calling test.
 #[cfg(test)]

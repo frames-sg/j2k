@@ -28,6 +28,7 @@ pub(super) struct ColorStoreInputs<'a> {
     pub(super) buffers: [&'a CudaDeviceBuffer; 3],
     pub(super) stores: [&'a CudaHtj2kStoreStep; 3],
     pub(super) bit_depths: [u8; 3],
+    pub(super) signed: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -121,7 +122,7 @@ impl ColorStorePlan {
         }
     }
 
-    fn rgb16_job(self, rgba: bool) -> CudaJ2kStoreRgb16Job {
+    fn rgb16_job(self, rgba: bool, signed: bool) -> CudaJ2kStoreRgb16Job {
         CudaJ2kStoreRgb16Job {
             input_width0: self.input_widths[0],
             input_width1: self.input_widths[1],
@@ -145,6 +146,7 @@ impl ColorStorePlan {
             bit_depth1: u32::from(self.bit_depths[1]),
             bit_depth2: u32::from(self.bit_depths[2]),
             rgba: u32::from(rgba),
+            signed: u32::from(signed),
         }
     }
 
@@ -218,9 +220,9 @@ pub(super) fn run_color_mct(
 ) -> Result<ColorMctOutcome, Error> {
     let irreversible97 = u32::from(transform == CudaHtj2kTransform::Irreversible97);
     let mct_store_addends = [
-        bit_depth_addend(inputs.bit_depths[0]),
-        bit_depth_addend(inputs.bit_depths[1]),
-        bit_depth_addend(inputs.bit_depths[2]),
+        bit_depth_addend(inputs.bit_depths[0], inputs.signed),
+        bit_depth_addend(inputs.bit_depths[1], inputs.signed),
+        bit_depth_addend(inputs.bit_depths[2], inputs.signed),
     ];
     let can_fuse_store = mct && can_fuse_mct_store_for_stores(inputs.stores);
     let store_route = ColorStoreRoute::for_mct(can_fuse_store, transform);
@@ -316,7 +318,7 @@ fn dispatch_color_store_u16(
     plan: ColorStorePlan,
     rgba: bool,
 ) -> Result<CudaKernelOutput, CudaError> {
-    let store_job = plan.rgb16_job(rgba);
+    let store_job = plan.rgb16_job(rgba, inputs.signed);
     if plan.uses_fused_store() {
         j2k_cuda_j2k_engine::J2kCudaEngine::new(inputs.context).j2k_store_rgb16_mct_device(
             inputs.buffers[0],
@@ -406,7 +408,7 @@ mod tests {
 
         assert_eq!(plan.route(), ColorStoreRoute::FusedReversible);
         let rgb8 = plan.rgb8_job(false);
-        let rgb16 = plan.rgb16_job(false);
+        let rgb16 = plan.rgb16_job(false, false);
 
         assert_eq!(
             [rgb8.input_width0, rgb8.input_width1, rgb8.input_width2],
@@ -456,7 +458,7 @@ mod tests {
             [8, 10, 12]
         );
         assert_eq!(rgb16.rgba, 0);
-        assert_eq!(plan.rgb16_job(true).rgba, 1);
+        assert_eq!(plan.rgb16_job(true, false).rgba, 1);
     }
 
     #[test]
