@@ -5,6 +5,12 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CPU classic Part 1 decodes on one thread decode each sub-band's code
+  blocks straight into its coefficients, as HTJ2K decodes on one thread
+  already do, instead of staging them in a sub-band slab with a Tier-1
+  workspace for every code block and copying them back. A one-thread decode
+  of a 4096 by 2048 RGB image needs about 25 MB less heap and 47 MB less
+  resident memory. Output is unchanged.
 - The Metal lossy encode stages, deinterleave, ICT, 9/7 DWT and sub-band
   quantization, take their upload and result buffers from the runtime's pools
   instead of allocating them on every call, and copy each result out once.
