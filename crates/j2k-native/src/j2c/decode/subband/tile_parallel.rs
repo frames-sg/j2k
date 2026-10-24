@@ -25,6 +25,7 @@ use super::{
 };
 use crate::error::{DecodingError, ValidationError};
 use crate::j2c::build::{CodeBlock, CodeBlockCoding};
+use crate::j2c::decode::peak::WorkspaceBytes;
 use crate::j2c::decode::workspace::{ht_task_workspace_bytes, HtTaskWorkspace};
 use crate::j2c::ht_block_decode::{ht_decode_workspace_bytes, selected_code_block_segment_lengths};
 use crate::scalar::decode_ht_code_block_scalar_with_workspace_midpoint;
@@ -117,10 +118,6 @@ pub(in crate::j2c::decode) enum TileHtRoute {
 /// components use HT block coding only and the tile carries enough coded
 /// data to amortize a fork-join. Returns without side effects for the
 /// non-`Decoded` routes.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "routing sees the tile, component range, state buffers, adapter, and options explicitly"
-)]
 pub(in crate::j2c::decode) fn plan_tile_ht_route<'a>(
     tile: &Tile<'a>,
     components: Range<usize>,
@@ -129,7 +126,6 @@ pub(in crate::j2c::decode) fn plan_tile_ht_route<'a>(
     header: &Header<'_>,
     ht_decoder: &Option<&mut dyn HtCodeBlockDecoder>,
     cpu_decode_parallelism: CpuDecodeParallelism,
-    profile_enabled: bool,
 ) -> Result<TileHtRoute> {
     #[cfg(test)]
     if tile_ctx.force_per_sub_band_ht {
@@ -139,7 +135,6 @@ pub(in crate::j2c::decode) fn plan_tile_ht_route<'a>(
     // context and allocates no parallel workspace bank.
     if cpu_decode_parallelism != CpuDecodeParallelism::Auto
         || rayon::current_num_threads() < 2
-        || profile_enabled
         || ht_decoder.is_some()
         || storage.exact_integer_decode
         || !components_use_ht_only(tile, components.clone())
@@ -213,6 +208,7 @@ pub(in crate::j2c::decode) fn plan_tile_ht_route<'a>(
     let result = decode_strips(&plan, &mut coefficients, tile_ctx, tasks);
     storage.coefficients = coefficients;
     result?;
+    record_route_peak(tile_ctx, storage, &plan, workers)?;
 
     let counters = &mut tile_ctx.debug_counters;
     counters.decoded_code_blocks += plan.jobs.len();
@@ -234,6 +230,32 @@ pub(in crate::j2c::decode) fn plan_tile_ht_route<'a>(
     #[cfg(not(test))]
     let _ = growths;
     Ok(TileHtRoute::Decoded)
+}
+
+/// Record the decode's workspace peak while the plan, its tasks and each
+/// worker's clipped-block scratch, as budgeted, are live next to the retained
+/// workspace bank.
+fn record_route_peak(
+    tile_ctx: &mut TileDecodeContext,
+    storage: &DecompositionStorage<'_>,
+    plan: &TilePlan<'_>,
+    workers: usize,
+) -> Result<()> {
+    let route_bytes = [
+        plan.bands.capacity() * size_of::<BandParameters>(),
+        plan.jobs.capacity() * size_of::<BlockJob<'_>>(),
+        plan.strips.capacity() * size_of::<Strip>(),
+        plan.arena.capacity(),
+        plan.strips.len() * size_of::<(&mut [f32], &Strip)>(),
+        workers
+            .saturating_mul(plan.max_clipped_samples)
+            .saturating_mul(size_of::<f32>()),
+    ]
+    .into_iter()
+    .fold(0, usize::saturating_add);
+    let sample = WorkspaceBytes::sample(tile_ctx, storage)?.with_tier1(route_bytes);
+    tile_ctx.debug_counters.workspace_peak.record(sample);
+    Ok(())
 }
 
 fn components_use_ht_only(tile: &Tile<'_>, components: Range<usize>) -> bool {

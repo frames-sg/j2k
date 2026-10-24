@@ -63,7 +63,6 @@ pub(crate) fn decode_component_tile_bit_planes<'a>(
         header,
         ht_decoder,
         cpu_decode_parallelism,
-        profile_enabled,
     )? {
         tile_parallel::TileHtRoute::Decoded => return Ok(()),
         tile_parallel::TileHtRoute::Serial => CpuDecodeParallelism::Serial,
