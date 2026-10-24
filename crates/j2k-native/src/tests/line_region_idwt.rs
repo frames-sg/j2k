@@ -194,6 +194,52 @@ fn line_region_idwt_matches_at_a_non_zero_image_origin() {
     }
 }
 
+#[test]
+fn region_decode_without_levels_writes_the_ll_band_into_the_planes() {
+    // Reducing by every decomposition level leaves only the LL band, which
+    // goes straight into the planes instead of through the IDWT output.
+    let mut images = Vec::new();
+    for (components, reversible, tiled) in [(1_u8, true, false), (3, false, false), (3, true, true)]
+    {
+        let label = format!("components={components} reversible={reversible} tiled={tiled}");
+        images.push((label, codestream(components, 8, reversible, tiled)));
+    }
+    for (name, bytes) in ORIGIN_FIXTURES {
+        images.push((String::from(name), bytes.to_vec()));
+    }
+    for (name, bytes) in &images {
+        // The deepest reduction the codestream's shortest ladder allows.
+        let (reduction, image) = (0..=32_u8)
+            .rev()
+            .find_map(|reduction| {
+                Image::new_with_reduction(bytes, &DecodeSettings::default(), reduction)
+                    .ok()
+                    .map(|image| (reduction, image))
+            })
+            .expect("parse fixture without levels");
+        assert!(reduction > 0, "{name}");
+        let (width, height) = (image.width(), image.height());
+        for roi in [
+            (0, 0, width, height),
+            (1, 1, width - 2, height - 2),
+            (width - 1, height - 1, 1, 1),
+        ] {
+            let label = format!("{name} reduction={reduction} roi={roi:?}");
+            let windows = decode(&image, roi, false);
+            let lines = decode(&image, roi, true);
+            assert_eq!(lines.packed, windows.packed, "{label}");
+            assert_eq!(lines.native, windows.native, "{label}");
+            assert_eq!(lines.peak_idwt, 0, "{label}");
+            assert!(windows.peak_idwt > 0, "{label}");
+            let windows = decode_component_planes(&image, roi, false);
+            let lines = decode_component_planes(&image, roi, true);
+            assert_eq!(lines.planes, windows.planes, "{label}");
+            assert_eq!(lines.native, windows.native, "{label}");
+            assert!(lines.peak_idwt.iter().all(|&peak| peak == 0), "{label}");
+        }
+    }
+}
+
 /// What each component-plane output returns for one region.
 struct ComponentPlanes {
     /// Sample bits of each borrowed-plane output, plane by plane.
