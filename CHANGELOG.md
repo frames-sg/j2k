@@ -5,6 +5,12 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- Metal fallback decodes of tiled images store each tile on the CPU instead of
+  copying the whole output plane to the GPU and back for every tile and
+  component, and keeping each copy until the decode ends. Stores that fill the
+  whole plane still run on the GPU when coverage is unambiguous. Narrow stores
+  with trailing padding stay on the CPU so partial captures cannot replace the
+  completed plane. Decoded pixels match the CPU output.
 - Metal lossless HTJ2K host encodes reuse the thread's default Metal session,
   take their buffers from its pools, stage the input in a pooled buffer and read
   the encoded blocks in place, so repeated encodes no longer create a session or
