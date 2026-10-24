@@ -8,7 +8,7 @@ use j2k_alloc_probe::{assert_allocations, live_bytes, measure, peak_bytes, reset
 use j2k_native::{
     decode_ht_code_block_scalar_with_workspace, encode,
     encode_ht_code_block_scalar_with_passes_and_workspace,
-    encode_precomputed_htj2k_97_with_accelerator_and_max_host_bytes,
+    encode_precomputed_htj2k_97_with_accelerator_and_max_host_bytes, CpuDecodeParallelism,
     CpuOnlyJ2kEncodeStageAccelerator, DecodeErrorClass, DecodeSettings, DecoderContext,
     EncodeError, EncodeOptions, HtCodeBlockDecodeJob, HtCodeBlockDecodeWorkspace,
     HtCodeBlockEncodeWorkspace, Image, J2kForwardDwt97Output, PrecomputedHtj2k97Component,
@@ -64,6 +64,10 @@ fn main() {
         (
             "warmed_decoder_context_has_bounded_transients",
             warmed_decoder_context_has_bounded_transients,
+        ),
+        (
+            "serial_region_decode_grows_packet_storage_without_reallocating",
+            serial_region_decode_grows_packet_storage_without_reallocating,
         ),
         (
             "profile_row_formatting_is_single_allocation",
@@ -435,6 +439,45 @@ fn reduced_decodes_reject_a_precinct_grid_past_the_cap_before_walking_it() {
         decode_peak <= PLANE + PEAK,
         "planes decode held {decode_peak} bytes"
     );
+}
+
+/// macOS 26 never reuses a freed block that `realloc` grew, so decode
+/// buffers that grow while packets are parsed must not grow by `realloc`.
+fn serial_region_decode_grows_packet_storage_without_reallocating() {
+    let pool = probe_pool();
+    let (width, height) = (128, 128);
+    let pixels = (0..width * height)
+        .map(|index| u8::try_from((index * 37 + index / width * 11) % 251).expect("sample"))
+        .collect::<Vec<_>>();
+    // 64 code-blocks of 16x16, one packet segment each: the segment list
+    // grows several times while the region's packets are parsed.
+    let encoded = pool
+        .install(|| {
+            encode(
+                &pixels,
+                width,
+                height,
+                1,
+                8,
+                false,
+                &EncodeOptions {
+                    reversible: true,
+                    num_decomposition_levels: 2,
+                    code_block_width_exp: 2,
+                    code_block_height_exp: 2,
+                    ..EncodeOptions::default()
+                },
+            )
+        })
+        .expect("encode region fixture");
+    let image = Image::new(&encoded, &DecodeSettings::default()).expect("parse region fixture");
+    let mut context = DecoderContext::default();
+    context.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
+
+    let (decoded, stats) =
+        measure(|| pool.install(|| image.decode_region_with_context((8, 8, 96, 96), &mut context)));
+    decoded.expect("serial region decode");
+    assert_eq!(stats.reallocations, 0, "{stats:?}");
 }
 
 fn profile_row_formatting_is_single_allocation() {

@@ -742,7 +742,13 @@ fn try_push_segment_with_budget<'a>(
             required_count,
             target_capacity,
         )?;
-        try_reserve_decode_elements(segments, target_capacity)?;
+        // Grow into a fresh allocation, not by `realloc`: macOS 26 never
+        // reuses a freed block that realloc grew, so every decode's last
+        // segment block would stay dirty in its large-allocation cache.
+        let mut grown = Vec::new();
+        try_reserve_decode_elements(&mut grown, target_capacity)?;
+        grown.append(segments);
+        *segments = grown;
         validate_segment_reallocation_peak(
             structural_workspace_bytes,
             old_capacity,
