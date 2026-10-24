@@ -5,6 +5,10 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CUDA HTJ2K code-block encode kernels launch 32 threads per code block
+  instead of 128. Each code block is coded by one thread, so the smaller
+  thread blocks let more code blocks run at once. Output is unchanged.
+
 - CUDA sessions reuse decode device buffers best-fit, taking the smallest
   cached buffer that is large enough, instead of first-fit, so small requests no
   longer take large cached buffers and repeated full-image decodes stop
