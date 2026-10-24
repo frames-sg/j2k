@@ -1419,18 +1419,20 @@ fn region_decode_without_plt_keeps_no_layer_records_for_code_blocks_it_skips() {
             code_block_width_exp: 0,
             code_block_height_exp: 0,
             precinct_exponents: vec![(4, 4); 3],
-            progression_order: EncodeProgressionOrder::Rpcl,
+            progression_order: EncodeProgressionOrder::Lrcp,
             num_layers: LAYERS,
             use_ht_block_coding,
             ..EncodeOptions::default()
         };
         let bytes =
-            encode(&pixels, SIZE, SIZE, 1, 8, false, &options).expect("encode RPCL fixture");
-        let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse RPCL fixture");
+            encode(&pixels, SIZE, SIZE, 1, 8, false, &options).expect("encode LRCP fixture");
+        let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse LRCP fixture");
         let whole = image.decode_native().expect("decode whole image").data;
 
-        // The bottom-right corner comes last in RPCL, so without PLT every
-        // earlier precinct is parsed only to reach it.
+        // In LRCP the bottom-right corner's last packet comes last, so
+        // without PLT every earlier precinct is parsed only to reach it. LRCP
+        // returns to each precinct once per layer, so those precincts keep
+        // their own code-blocks.
         let roi = (SIZE - 24, SIZE - 24, 24, 24);
         let mut context = DecoderContext::default();
         let region = image
@@ -1471,6 +1473,82 @@ fn region_decode_without_plt_keeps_no_layer_records_for_code_blocks_it_skips() {
             counters.built_code_blocks * layers,
             "ht={use_ht_block_coding}"
         );
+    }
+}
+
+#[test]
+fn region_decode_parses_skipped_precincts_in_shared_scratch() {
+    const SIZE: u32 = 96;
+    const COMPONENTS: u16 = 3;
+    const LAYERS: u8 = 4;
+    // The largest precinct has 2x2 code-blocks: 8x8 samples at resolution 0.
+    const SCRATCH_CODE_BLOCKS: usize = 3 * 4;
+    let components = u32::from(COMPONENTS);
+    let mut state = 0x9e37_79b9_u32;
+    let pixels: Vec<u8> = (0..SIZE * SIZE * components)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            (state >> 24) as u8
+        })
+        .collect();
+    // LRCP comes back to each precinct once per layer, so it keeps them.
+    for (progression_order, in_scratch) in [
+        (EncodeProgressionOrder::Lrcp, false),
+        (EncodeProgressionOrder::Rpcl, true),
+        (EncodeProgressionOrder::Pcrl, true),
+        (EncodeProgressionOrder::Cprl, true),
+    ] {
+        for use_ht_block_coding in [false, true] {
+            let case = format!("{progression_order:?}, ht={use_ht_block_coding}");
+            let options = EncodeOptions {
+                reversible: true,
+                num_decomposition_levels: 2,
+                code_block_width_exp: 0,
+                code_block_height_exp: 0,
+                precinct_exponents: vec![(3, 3); 3],
+                progression_order,
+                num_layers: LAYERS,
+                use_ht_block_coding,
+                ..EncodeOptions::default()
+            };
+            let bytes = encode(&pixels, SIZE, SIZE, COMPONENTS, 8, false, &options)
+                .expect("encode fixture");
+            let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse fixture");
+            let whole = image.decode_native().expect("decode whole image").data;
+
+            // Without PLT, every precinct before a region's last packet is
+            // parsed only to reach it. Only the code-blocks the region reads
+            // get layer records; in scratch, the others are not built at all
+            // beyond the scratch precincts.
+            for roi in [(SIZE - 12, SIZE - 12, 12, 12), (40, 52, 14, 10)] {
+                let mut context = DecoderContext::default();
+                let region = image
+                    .decode_native_region_with_context(roi, &mut context)
+                    .expect("decode region");
+                let row_bytes = (image.width() * components) as usize;
+                let expected: Vec<u8> = whole
+                    .chunks_exact(row_bytes)
+                    .skip(roi.1 as usize)
+                    .take(roi.3 as usize)
+                    .flat_map(|row| {
+                        &row[(roi.0 * components) as usize..((roi.0 + roi.2) * components) as usize]
+                    })
+                    .copied()
+                    .collect();
+                assert_eq!(region.data, expected, "{case}, {roi:?}");
+
+                let counters = context.tile_decode_context.debug_counters;
+                let unlayered =
+                    counters.built_code_blocks - counters.built_layer_records / usize::from(LAYERS);
+                assert_eq!(
+                    unlayered <= SCRATCH_CODE_BLOCKS,
+                    in_scratch,
+                    "{case}, {roi:?}: {unlayered} built code-blocks without layer records"
+                );
+            }
+        }
     }
 }
 

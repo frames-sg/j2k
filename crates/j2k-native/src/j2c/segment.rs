@@ -3,7 +3,9 @@
 use alloc::vec::Vec;
 use core::mem::size_of;
 
-use super::build::{CodeBlock, Precinct, PrecinctSelection, PrecinctUse, Segment};
+use super::build::{
+    CodeBlock, ParseScratch, Precinct, PrecinctSelection, PrecinctUse, Segment,
+};
 use super::codestream::markers::{EPH, SOP};
 use super::codestream::{ComponentInfo, Header};
 use super::decode::{DecodeAllocationBudget, DecompositionStorage};
@@ -63,7 +65,8 @@ pub(super) struct PacketSkips {
 
 impl PacketSkips {
     /// Room for every code-block of one packet: a packet holds one precinct
-    /// of each of a resolution's (at most three) sub-bands. Code-blocks are
+    /// of each of a resolution's (at most three) sub-bands, built or borrowing
+    /// scratch. Code-blocks are
     /// only skipped this way when an ROI plan leaves some out.
     fn new(storage: &DecompositionStorage<'_>, live_bytes: usize) -> Result<Self> {
         let capacity = if storage.roi_plan.is_some() {
@@ -71,6 +74,7 @@ impl PacketSkips {
                 .precincts
                 .iter()
                 .map(|precinct| precinct.code_blocks.len())
+                .chain(storage.parse_scratch.map(|scratch| scratch.code_blocks()))
                 .max()
                 .unwrap_or(0)
                 .checked_mul(3)
@@ -162,7 +166,29 @@ fn parse_selected_inner<'a>(
     storage: &mut DecompositionStorage<'a>,
     selection: Option<&PrecinctSelection>,
 ) -> Result<()> {
-    let mut relevance = selection.map(PacketRelevance::new);
+    let mut relevance = selection.map(|selection| PacketRelevance::new(selection, storage));
+    let result = parse_tile_parts(
+        tile,
+        progression_iterator,
+        skips,
+        header,
+        storage,
+        relevance.as_mut(),
+    );
+    if let Some(mut scratch) = relevance.and_then(|relevance| relevance.scratch) {
+        scratch.give_all_back(&mut storage.precincts);
+    }
+    result
+}
+
+fn parse_tile_parts<'a>(
+    tile: &Tile<'a>,
+    progression_iterator: &mut dyn Iterator<Item = ProgressionData>,
+    skips: &mut PacketSkips,
+    header: &Header<'_>,
+    storage: &mut DecompositionStorage<'a>,
+    mut relevance: Option<&mut PacketRelevance<'_>>,
+) -> Result<()> {
     for tile_part in &tile.tile_parts {
         if relevance
             .as_ref()
@@ -183,7 +209,7 @@ fn parse_selected_inner<'a>(
                     tile.num_layers,
                     storage,
                     skips,
-                    relevance.as_mut(),
+                    relevance.as_deref_mut(),
                 )
             });
         if let Some(error) = storage.packet_workspace_error.take() {
@@ -208,14 +234,57 @@ fn parse_selected_inner<'a>(
 struct PacketRelevance<'s> {
     selection: &'s PrecinctSelection,
     remaining_packets: usize,
+    /// The scratch precincts parsed-only precincts borrow, taken from the
+    /// storage while parsing.
+    scratch: Option<ParseScratch>,
 }
 
 impl<'s> PacketRelevance<'s> {
-    fn new(selection: &'s PrecinctSelection) -> Self {
+    fn new(selection: &'s PrecinctSelection, storage: &mut DecompositionStorage<'_>) -> Self {
         Self {
             selection,
             remaining_packets: selection.required_packets(),
+            scratch: storage.parse_scratch.take(),
         }
+    }
+
+    /// Lend a parsed-only packet's precincts their scratch precincts, one per
+    /// sub-band, before its header is parsed.
+    fn lend_scratch(
+        relevance: Option<&mut Self>,
+        packet: &ProgressionData,
+        sub_bands: impl Iterator<Item = usize>,
+        storage: &mut DecompositionStorage<'_>,
+    ) -> PacketResult {
+        let Some(relevance) = relevance else {
+            return Ok(());
+        };
+        let Some(scratch) = relevance.scratch.as_mut() else {
+            return Ok(());
+        };
+        if relevance.selection.packet_use(packet) != Some(PrecinctUse::Parsed) {
+            return Ok(());
+        }
+        let precinct_index = usize::try_from(packet.precinct)
+            .map_err(|_| "packet precinct index does not fit the platform")?;
+        for (slot, sub_band_idx) in sub_bands.enumerate() {
+            let precinct = storage.sub_bands[sub_band_idx]
+                .precincts
+                .start
+                .checked_add(precinct_index)
+                .ok_or("packet precinct index overflows")?;
+            scratch
+                .lend(
+                    slot,
+                    precinct,
+                    packet.layer_num,
+                    &mut storage.precincts,
+                    &mut storage.code_blocks,
+                    &mut storage.tag_tree_nodes,
+                )
+                .ok_or("parsed-only precinct cannot borrow its scratch precinct")?;
+        }
+        Ok(())
     }
 
     /// Whether a packet must be parsed: always without a selection. A packet
@@ -312,6 +381,14 @@ fn parse_inner<'a>(
         // (empty packet). The value 0 indicates a zero length; no code-blocks are included in this
         // case. The value 1 indicates a non-zero length."
         skips.clear();
+        // Even an empty packet starts its precinct: a precinct's first packet
+        // is the one that borrows its scratch.
+        PacketRelevance::lend_scratch(
+            relevance.as_deref_mut(),
+            &progression_data,
+            sub_band_iter.clone(),
+            storage,
+        )?;
         if !zero_length {
             for sub_band in sub_band_iter.clone() {
                 resolve_segments(
