@@ -5,6 +5,11 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- `J2kDecoder::decode_region_into` releases its component planes and other
+  decode buffers when it returns, as the scaled region decode already does,
+  instead of keeping about 12.7 MB per 1024² RGB region in an idle decoder. The
+  planes were zeroed before every region decode anyway, so allocating them again
+  adds under 0.5% to the next decode. Output is unchanged.
 - CPU region decodes reconstruct the IDWT a row at a time, holding a few rows
   per level instead of each level's whole window, and write the last level
   straight into the output planes. This applies to packed, native and

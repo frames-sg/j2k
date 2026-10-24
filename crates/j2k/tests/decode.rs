@@ -1045,7 +1045,13 @@ fn reused_decoder_region_scaled_decodes_match_fresh_decodes_across_scales() {
     let mut reused = J2kDecoder::new(&codestream).expect("reused decoder");
     let mut reused_pool = j2k::J2kScratchPool::new();
 
-    for scale in [Downscale::Quarter, Downscale::Half, Downscale::Quarter] {
+    for scale in [
+        Downscale::Quarter,
+        Downscale::None,
+        Downscale::Half,
+        Downscale::None,
+        Downscale::Quarter,
+    ] {
         let scaled_roi = roi.scaled_covering(scale);
         let stride = scaled_roi.w as usize * PixelFormat::Rgb8.bytes_per_pixel();
         let mut expected = vec![0_u8; stride * scaled_roi.h as usize];

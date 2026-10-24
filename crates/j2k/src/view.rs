@@ -417,11 +417,21 @@ impl<'a> J2kDecoder<'a> {
         let (Some(image), native_context) = (self.image.as_ref(), &mut self.native_context) else {
             return Err(J2kError::internal_backend("internal image cache missing"));
         };
-        decode_image_region_into_with_native_context(image, native_context, out, stride, fmt, roi)?;
-        Ok(j2k_core::DecodeOutcome::new(
+        let decoded = decode_image_region_into_with_native_context(
+            image,
+            native_context,
+            out,
+            stride,
+            fmt,
             roi,
-            decode_warnings_for_image(image),
-        ))
+        );
+        let warnings = decode_warnings_for_image(image);
+        // Region planes are zeroed before every region decode, so keeping
+        // them would only save their allocation. Release them and the other
+        // decode buffers rather than hold them while the decoder is idle.
+        self.native_context = self.fresh_native_context();
+        decoded?;
+        Ok(j2k_core::DecodeOutcome::new(roi, warnings))
     }
 
     /// Decode the full image at a reduced resolution.
@@ -448,7 +458,7 @@ impl<'a> J2kDecoder<'a> {
         let warnings = decode_warnings_for_image(&image);
         let image_dims = (image.width(), image.height());
         validate_buffer(image_dims, out.len(), stride, fmt)?;
-        let mut native_context = self.scaled_decode_native_context();
+        let mut native_context = self.fresh_native_context();
         decode_image_into_with_native_context(&image, &mut native_context, out, stride, fmt)?;
         Ok(j2k_core::DecodeOutcome::new(
             Rect::full(image_dims),
@@ -485,7 +495,7 @@ impl<'a> J2kDecoder<'a> {
         let warnings = decode_warnings_for_image(&image);
         let image_dims = (image.width(), image.height());
         validate_region(scaled_roi, image_dims)?;
-        let mut native_context = self.scaled_decode_native_context();
+        let mut native_context = self.fresh_native_context();
         decode_image_region_into_with_native_context(
             &image,
             &mut native_context,
@@ -513,7 +523,7 @@ impl<'a> J2kDecoder<'a> {
             .ok_or_else(|| J2kError::internal_backend("internal image cache missing"))
     }
 
-    fn scaled_decode_native_context(&self) -> j2k_native::DecoderContext<'a> {
+    fn fresh_native_context(&self) -> j2k_native::DecoderContext<'a> {
         let mut native_context = j2k_native::DecoderContext::default();
         native_context.set_cpu_decode_parallelism(self.native_context.cpu_decode_parallelism());
         native_context
