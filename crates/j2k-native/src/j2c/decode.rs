@@ -470,6 +470,9 @@ pub(crate) struct DecodeDebugCounters {
     /// decoded tiles. Region decodes give layers only to code-blocks they read.
     pub(crate) built_code_blocks: usize,
     pub(crate) built_layer_records: usize,
+    /// Precinct records built, summed over decoded tiles. Region decodes
+    /// build none for precincts they never parse.
+    pub(crate) built_precincts: usize,
     /// Progression positions region precinct selection walked, summed over
     /// decoded tiles.
     pub(crate) selection_scanned_packets: usize,
@@ -619,6 +622,7 @@ fn decode_tile<'a>(
     tile_ctx.debug_counters.stored_coefficients += storage.coefficients.len();
     tile_ctx.debug_counters.built_code_blocks += storage.code_blocks.len();
     tile_ctx.debug_counters.built_layer_records += storage.layers.len();
+    tile_ctx.debug_counters.built_precincts += storage.precincts.len();
     record_workspace(tile_ctx, storage, selection_bytes)?;
     profile_timings.build_us += profile::elapsed_us(stage_start);
     // Next, we parse the layers/segments for each code block.

@@ -13,9 +13,14 @@ use crate::j2c::decode::DecompositionStorage;
 use crate::j2c::progression::ProgressionData;
 use crate::reader::BitReader;
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the packet, its precinct's offset among the records, and the parser state it fills stay explicit"
+)]
 pub(super) fn resolve_segments(
     sub_band_dx: usize,
     progression_data: &ProgressionData,
+    precinct_offset: usize,
     reader: &mut BitReader<'_>,
     storage: &mut DecompositionStorage<'_>,
     component_info: &ComponentInfo,
@@ -26,10 +31,8 @@ pub(super) fn resolve_segments(
 
     let sub_band = &storage.sub_bands[sub_band_dx];
     let precinct_range = sub_band.precincts.clone();
-    let precinct_index = usize::try_from(progression_data.precinct)
-        .map_err(|_| "HT packet precinct index does not fit the platform")?;
     let Some(code_block_range) = storage.precincts[precinct_range.clone()]
-        .get(precinct_index)
+        .get(precinct_offset)
         .map(|precinct| precinct.code_blocks.clone())
     else {
         lwarn!("progression data yielded invalid precinct index");
@@ -38,7 +41,7 @@ pub(super) fn resolve_segments(
     };
 
     for code_block_idx in code_block_range {
-        let precinct = &mut storage.precincts[precinct_range.clone()][precinct_index];
+        let precinct = &mut storage.precincts[precinct_range.clone()][precinct_offset];
         let code_block = &mut storage.code_blocks[code_block_idx];
         let inclusion = resolve_code_block_inclusion(
             code_block,

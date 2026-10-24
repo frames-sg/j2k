@@ -26,13 +26,12 @@ use crate::j2c::roi::RoiPlan;
 use crate::j2c::tag_tree::TagNode;
 use crate::j2c::tile::Tile;
 use crate::DEFAULT_MAX_DECODE_BYTES;
-use core::mem::size_of;
 
 /// How region decode uses one precinct of one component and resolution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub(crate) enum PrecinctUse {
-    /// Never parsed: built with no code-blocks and root-only tag trees.
+    /// Never parsed: `build` gives it no precinct record.
     Unused,
     /// Parsed only to reach later packets; its code-blocks are not decoded.
     /// When the selection parses these in scratch, they are built like
@@ -40,18 +39,6 @@ pub(crate) enum PrecinctUse {
     Parsed,
     /// Holds a code-block the ROI plan requires.
     Required,
-}
-
-impl PrecinctUse {
-    /// Whether `build` gives the precinct its own code-blocks and tag trees,
-    /// when parsed-only precincts are parsed in scratch or not.
-    pub(crate) const fn is_built(self, parsed_in_scratch: bool) -> bool {
-        match self {
-            Self::Unused => false,
-            Self::Parsed => !parsed_in_scratch,
-            Self::Required => true,
-        }
-    }
 }
 
 /// The precincts a region decode builds and parses, from selection through
@@ -64,6 +51,12 @@ pub(crate) struct PrecinctSelection {
     runs: Vec<usize>,
     /// First run of each component.
     component_runs: Vec<usize>,
+    /// The number of each precinct with a precinct record, in build order,
+    /// so in increasing order within each run: the `i`-th number of a run
+    /// is the precinct at offset `i` of each of the run's sub-bands.
+    records: Vec<u32>,
+    /// Start of each run in `records`.
+    record_runs: Vec<usize>,
     /// Whether every packet of the tile can be skipped by its PLT length.
     skip_by_length: bool,
     /// Whether parsed-only precincts share scratch state instead of their
@@ -123,6 +116,23 @@ impl PrecinctSelection {
 
     pub(crate) const fn released_storage_bytes(&self) -> usize {
         self.released_storage_bytes
+    }
+
+    /// Where the packet's precinct lies among its sub-bands' precinct
+    /// records, or `None` when it has none.
+    pub(crate) fn record_offset(&self, packet: &ProgressionData) -> Option<usize> {
+        let run = self
+            .component_runs
+            .get(usize::from(packet.component))?
+            .checked_add(usize::from(packet.resolution))?;
+        let start = *self.record_runs.get(run)?;
+        let end = self
+            .record_runs
+            .get(run + 1)
+            .copied()
+            .unwrap_or(self.records.len());
+        let number = u32::try_from(packet.precinct).ok()?;
+        self.records.get(start..end)?.binary_search(&number).ok()
     }
 
     fn index(&self, packet: &ProgressionData) -> Option<usize> {
@@ -445,37 +455,68 @@ fn select(
         }
     }
 
-    let owned_bytes = uses
-        .capacity()
-        .checked_mul(size_of::<PrecinctUse>())
-        .and_then(|bytes| {
-            runs.capacity()
-                .checked_mul(size_of::<usize>())
-                .and_then(|run_bytes| bytes.checked_add(run_bytes))
-        })
-        .and_then(|bytes| {
-            component_runs
-                .capacity()
-                .checked_mul(size_of::<usize>())
-                .and_then(|component_bytes| bytes.checked_add(component_bytes))
-        })
-        .ok_or(ValidationError::ImageTooLarge)?;
     let skip_by_length = packets_skippable_by_length(tile, counts, layers)?;
     let mut selection = PrecinctSelection {
         uses,
         runs,
         component_runs,
+        records: Vec::new(),
+        record_runs: Vec::new(),
         skip_by_length,
         parsed_in_scratch: !skip_by_length && reads_precinct_layers_in_a_row(tile),
         required_packets,
-        owned_bytes,
+        // Counted once the records are indexed.
+        owned_bytes: 0,
         scanned_packets: 0,
         released_storage_bytes,
     };
     if !selection.skip_by_length {
         mark_precincts_parsed_before_last_required(tile, &mut selection, budget.live_bytes())?;
     }
+    index_records(&mut selection, budget)?;
     Ok(selection)
+}
+
+/// List the precincts that get precinct records, every one but the unused,
+/// for the parser to find a packet's precinct among them, and count the
+/// bytes the selection owns.
+fn index_records(
+    selection: &mut PrecinctSelection,
+    budget: &mut DecodeAllocationBudget,
+) -> Result<()> {
+    let count = selection
+        .uses
+        .iter()
+        .filter(|precinct_use| **precinct_use != PrecinctUse::Unused)
+        .count();
+    budget.reserve_new(&mut selection.records, count)?;
+    budget.reserve_new(&mut selection.record_runs, selection.runs.len())?;
+    for (run, &start) in selection.runs.iter().enumerate() {
+        push_within_capacity(&mut selection.record_runs, selection.records.len())?;
+        let end = selection
+            .runs
+            .get(run + 1)
+            .copied()
+            .unwrap_or(selection.uses.len());
+        let uses = selection
+            .uses
+            .get(start..end)
+            .ok_or(DecodingError::InvalidPrecinct)?;
+        for (number, precinct_use) in uses.iter().enumerate() {
+            if *precinct_use != PrecinctUse::Unused {
+                let number = u32::try_from(number).map_err(|_| ValidationError::ImageTooLarge)?;
+                push_within_capacity(&mut selection.records, number)?;
+            }
+        }
+    }
+    let mut bytes = 0;
+    checked_include_elements::<PrecinctUse>(&mut bytes, selection.uses.capacity())?;
+    checked_include_elements::<usize>(&mut bytes, selection.runs.capacity())?;
+    checked_include_elements::<usize>(&mut bytes, selection.component_runs.capacity())?;
+    checked_include_elements::<u32>(&mut bytes, selection.records.capacity())?;
+    checked_include_elements::<usize>(&mut bytes, selection.record_runs.capacity())?;
+    selection.owned_bytes = bytes;
+    Ok(())
 }
 
 /// Whether every packet of the tile can be skipped by its PLT length: every
