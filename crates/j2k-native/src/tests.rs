@@ -1186,6 +1186,44 @@ fn decode_region_budgets_the_windowed_idwt_peak_before_packet_parsing() {
 }
 
 #[test]
+fn decode_region_without_levels_budgets_the_ll_window_only_where_it_is_copied() {
+    // Reduced by its one decomposition level, the image is its LL band. A
+    // full region keeps an f32 decoded-component buffer and the band's f32
+    // coefficients, 196 MiB each, which fit under the 512 MiB cap.
+    let mut codestream = fixture_gray();
+    rewrite_siz_to_single_large_tile(&mut codestream, 14_336);
+    let image = Image::new_with_reduction(&codestream, &DecodeSettings::default(), 1)
+        .expect("large SIZ parses");
+    let region = (0, 0, 7_168, 7_168);
+
+    // The streamed path copies the band straight into the output plane, so
+    // the request gets past the budget and fails in packet parsing.
+    let Err(streamed) = image.decode_region(region) else {
+        panic!("rewritten fixture has no packet data for a 14336x14336 tile");
+    };
+    assert!(
+        matches!(streamed, DecodeError::Decoding(_)),
+        "a band written into the output plane must get past the budget: {streamed:?}"
+    );
+
+    // A hooked decode first copies the band into a separate 196 MiB window,
+    // which does not fit, so it is rejected before packet parsing.
+    let mut context = DecoderContext::default();
+    let Err(hooked) = image.decode_region_components_with_ht_decoder(
+        &mut context,
+        region,
+        &mut DecliningHtDecoder,
+    ) else {
+        panic!("rewritten fixture has no packet data for a 14336x14336 tile");
+    };
+    assert_eq!(
+        hooked,
+        DecodeError::Validation(ValidationError::ImageTooLarge),
+        "a copied LL window must be charged before packet parsing"
+    );
+}
+
+#[test]
 fn rgb_decode_budgets_one_component_of_coefficients_at_a_time() {
     // Each component finishes Tier-1, the IDWT and store before the next
     // reuses its coefficient buffer, so a three-component tile charges one

@@ -25,7 +25,9 @@ use crate::{checked_decode_usize_product2, try_resize_decode_elements, Result};
 /// largest per-component peak rather than their sum. A last level written
 /// into a `channel_data` plane uses padding the plane already holds. The
 /// row-streamed IDWT instead holds every level's ring of rows at once, charged
-/// at the 9/7 ring depth whatever the component's transform.
+/// at the 9/7 ring depth whatever the component's transform. With no active
+/// level it holds nothing, since it copies the LL window straight into the
+/// plane.
 pub(crate) fn roi_idwt_peak_elements(
     storage: &DecompositionStorage<'_>,
     skipped_resolution_levels: u8,
@@ -40,6 +42,9 @@ pub(crate) fn roi_idwt_peak_elements(
             .len()
             .saturating_sub(usize::from(skipped_resolution_levels));
         if active_len == 0 {
+            if storage.line_region_idwt {
+                continue;
+            }
             if let Some(window) = roi_plan
                 .sub_band_window(tile_decompositions.first_ll_sub_band)
                 .or_else(|| roi_plan.final_window(component_idx))
