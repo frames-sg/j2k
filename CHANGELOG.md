@@ -5,6 +5,11 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- Tag trees no longer store their root level, which is derived from the grid
+  size when read: 16 bytes less per precinct. Output is unchanged.
+- Tag trees are stored as one grid per level in smaller nodes, so some precinct
+  layouts that exceeded the structural decode cap now decode. Output is
+  unchanged.
 - CPU decodes with `J2K_PROFILE_STAGES` set take the tile-wide HTJ2K route as
   unprofiled decodes do, and its plan, tasks and worker scratch count towards
   the reported workspace peak. HTJ2K phase timings now cover serially decoded
