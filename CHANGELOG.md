@@ -5,6 +5,10 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- Region decodes reduced past every wavelet level write the LL band straight
+  into the output planes instead of copying it through an IDWT buffer first,
+  saving one component's region of `f32` samples (0.8 of 10.8 MiB for a 1/32
+  scale decode of an 18000 x 12000 RGB image). Output is unchanged.
 - CPU region decodes reconstruct the IDWT a row at a time, holding a few rows
   per level instead of each level's whole window, and write the last level
   straight into the output planes. This applies to packed, native and
