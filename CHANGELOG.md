@@ -5,6 +5,11 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CUDA sessions reuse decode device buffers best-fit, taking the smallest
+  cached buffer that is large enough, instead of first-fit, so small requests no
+  longer take large cached buffers and repeated full-image decodes stop
+  allocating and freeing device memory on every decode. Output is unchanged.
+
 - CUDA HTJ2K packetization builds each packet header with the whole thread
   block: every thread codes one code block's tag-tree, pass and length bits
   and one thread appends them, instead of one thread coding the whole packet.
