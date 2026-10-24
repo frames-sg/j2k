@@ -5,6 +5,10 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- Fused RGB8 CPU decodes of single-tile colour images no longer allocate and
+  zero a last component plane that they then free unused. The last
+  component's coefficient buffer becomes its plane, so a fresh decoder
+  allocates one image-sized buffer less. Output is unchanged.
 - RGB8 CPU decodes of single-tile colour images with three 8-bit, fully
   sampled components and at least two decomposition levels reconstruct the
   last IDWT level inside the RGB8 pack, a few rows at a time, instead of

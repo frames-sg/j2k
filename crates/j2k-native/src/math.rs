@@ -1003,6 +1003,22 @@ impl<const N: usize> SimdBuffer<N> {
         true
     }
 
+    /// Take `samples` as the logical samples of an unallocated buffer, when
+    /// they have room for the SIMD padding; `samples` is left empty. Returns
+    /// `false`, changing nothing, otherwise.
+    pub(crate) fn adopt_samples(&mut self, samples: &mut Vec<f32>) -> bool {
+        let Some(padded_len) = Self::padded_len(samples.len()) else {
+            return false;
+        };
+        if self.data.capacity() != 0 || samples.capacity() < padded_len {
+            return false;
+        }
+        self.original_len = samples.len();
+        self.data = core::mem::take(samples);
+        self.data.resize(padded_len, 0.0);
+        true
+    }
+
     /// Returns only the original (non-padded) data as an immutable slice.
     pub(crate) fn truncated(&self) -> &[f32] {
         &self.data[..self.original_len]

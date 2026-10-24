@@ -688,6 +688,9 @@ fn decode_components<'a>(
         .then(|| fused_last_level(tile, header, tile_ctx, storage, ht_decoder.is_some()))
         .flatten();
     let fused = tile_ctx.fused_last_level.is_some();
+    if !fused {
+        tile_ctx.prepare_deferred_plane()?;
+    }
     for (idx, component_info) in header.component_infos.iter().enumerate() {
         if per_component {
             // Code-blocks the decode skips leave their samples untouched, so
@@ -1222,6 +1225,9 @@ pub(crate) struct TileDecodeContext {
     pub(crate) unzeroed_plane_samples: usize,
     /// Component-plane samples `store` wrote during the current decode.
     pub(crate) stored_plane_samples: usize,
+    /// The sample count of the last component's plane when `reset` left it
+    /// unallocated for a fused RGB8 decode to fill with its coefficients.
+    pub(crate) deferred_plane: Option<usize>,
     /// Set for a region decode whose component planes reserve room for this
     /// padded size, so a tile covering the whole region can write its last
     /// IDWT level into them.

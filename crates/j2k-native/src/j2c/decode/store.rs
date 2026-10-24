@@ -350,12 +350,16 @@ pub(super) fn fused_last_level(
             .filter(|_| decompositions.len() >= 2)?;
         let size = &info.size_info;
         let bands = last.sub_bands.map(|band| &storage.sub_bands[band]);
+        let plane_len = match tile_ctx.deferred_plane {
+            Some(samples) if idx == 2 => samples,
+            _ => channel.container.truncated().len(),
+        };
         if size.precision != 8
             || (size.horizontal_resolution, size.vertical_resolution) != (1, 1)
             || info.wavelet_transform() != transform
             || tile.component_infos.get(idx)?.wavelet_transform() != transform
             || channel.integer_container.is_some()
-            || channel.container.truncated().len() != storage.coefficients.len()
+            || plane_len != storage.coefficients.len()
             || last.rect != image
             || bands.iter().any(|band| band.storage_rect != band.rect)
         {
@@ -390,15 +394,21 @@ pub(super) fn store_last_level_bands(
         bail!(DecodingError::CodeBlockDecodeFailure);
     }
     let samples = storage.coefficients.len();
-    if !tile_ctx.channel_data[component_idx]
-        .container
-        .swap_samples(&mut storage.coefficients)
-    {
-        bail!(DecodingError::CodeBlockDecodeFailure);
-    }
-    storage.coefficients.truncate(samples);
-    if storage.coefficients.len() != samples {
-        bail!(DecodingError::CodeBlockDecodeFailure);
+    let plane = &mut tile_ctx.channel_data[component_idx].container;
+    if component_idx == 2 && tile_ctx.deferred_plane.take().is_some() {
+        // The last plane was left unallocated: it takes the buffer, which
+        // no later component needs.
+        if !plane.adopt_samples(&mut storage.coefficients) {
+            bail!(DecodingError::CodeBlockDecodeFailure);
+        }
+    } else {
+        if !plane.swap_samples(&mut storage.coefficients) {
+            bail!(DecodingError::CodeBlockDecodeFailure);
+        }
+        storage.coefficients.truncate(samples);
+        if storage.coefficients.len() != samples {
+            bail!(DecodingError::CodeBlockDecodeFailure);
+        }
     }
     tile_ctx.stored_plane_samples = tile_ctx.stored_plane_samples.saturating_add(samples);
     Ok(())
