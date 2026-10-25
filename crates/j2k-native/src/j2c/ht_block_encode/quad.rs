@@ -2,33 +2,75 @@
 
 use super::cleanup::CleanupCoefficientSource;
 
+/// Samples per row a row pair holds: the widest code block plus the columns
+/// a final, partial quad pair reads past the right edge.
+const ROW_PAIR_COLUMNS: usize = 1024 + 4;
+
+/// Two code-block rows as sample exponents and `MagSgn` values, zero past the
+/// block's right and bottom edges, so the quad walk loads samples without
+/// per-sample branches or edge tests.
+pub(super) struct RowPair {
+    exponents: [[u8; ROW_PAIR_COLUMNS]; 2],
+    values: [[u32; ROW_PAIR_COLUMNS]; 2],
+}
+
+impl RowPair {
+    pub(super) fn new() -> Self {
+        Self {
+            exponents: [[0; ROW_PAIR_COLUMNS]; 2],
+            values: [[0; ROW_PAIR_COLUMNS]; 2],
+        }
+    }
+
+    /// Load rows `y` and `y + 1` of a `width` x `height` block at cleanup shift `p`.
+    pub(super) fn fill<C: CleanupCoefficientSource + ?Sized>(
+        &mut self,
+        coefficients: &C,
+        y: usize,
+        width: usize,
+        height: usize,
+        p: u32,
+    ) -> Result<(), &'static str> {
+        let rows = self.exponents.iter_mut().zip(&mut self.values);
+        for (row, (exponents, values)) in rows.enumerate() {
+            let filled = if y + row < height {
+                let start = (y + row) * width;
+                coefficients.fill_row(start, p, &mut exponents[..width], &mut values[..width])?;
+                width
+            } else {
+                0
+            };
+            exponents[filled..width + 4].fill(0);
+        }
+        Ok(())
+    }
+}
+
+/// Load quad `quad` (0 or 1) of the quad pair at column `x` into slots
+/// `4 * quad..4 * quad + 4`: upper and lower sample of its left column, then
+/// of its right column. An insignificant sample has exponent 0, and its value
+/// is never emitted.
 #[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
     clippy::inline_always,
-    reason = "shift bounds keep the intermediate in 32 bits and its bit width in i32 on the per-sample hot path"
+    reason = "sample loads are fused into the per-quad cleanup hot path"
 )]
 #[inline(always)]
-fn process_sample(
-    slot: usize,
-    value: u32,
-    p: u32,
-    rho_acc: &mut i32,
+fn load_quad(
+    rows: &RowPair,
+    x: usize,
+    quad: usize,
+    rho: &mut i32,
     e_q: &mut [i32; 8],
     e_qmax: &mut i32,
     s: &mut [u32; 8],
 ) {
-    let magnitude = value & 0x7FFF_FFFF;
-    let mut val = (u64::from(magnitude) << 1) >> p;
-    val &= !1u64;
-    if val != 0 {
-        *rho_acc |= 1 << (slot & 0x3);
-        val -= 1;
-        let val_u32 = val as u32;
-        e_q[slot] = val_u32.bit_width() as i32;
-        *e_qmax = (*e_qmax).max(e_q[slot]);
-        val -= 1;
-        s[slot] = (val as u32) + (value >> 31);
+    for sample in 0..4 {
+        let (row, column) = (sample & 1, x + 2 * quad + sample / 2);
+        let exponent = i32::from(rows.exponents[row][column]);
+        *rho |= i32::from(exponent != 0) << sample;
+        e_q[4 * quad + sample] = exponent;
+        *e_qmax = (*e_qmax).max(exponent);
+        s[4 * quad + sample] = rows.values[row][column];
     }
 }
 
@@ -45,25 +87,17 @@ pub(super) struct QuadMarkerRows<'a> {
     pub(super) cx_val: &'a mut [u8; 514],
 }
 
-pub(super) struct FirstQuadPairRequest<'a, C: CleanupCoefficientSource + ?Sized> {
-    pub(super) coefficients: &'a C,
-    pub(super) stride: usize,
-    pub(super) height: usize,
-    pub(super) p: u32,
-    pub(super) sp: &'a mut usize,
+pub(super) struct FirstQuadPairRequest<'a> {
+    pub(super) rows: &'a RowPair,
+    pub(super) width: usize,
     pub(super) x: usize,
     pub(super) markers: QuadMarkerRows<'a>,
     pub(super) state: QuadPairState<'a>,
 }
 
-pub(super) struct NonInitialQuadPairRequest<'a, C: CleanupCoefficientSource + ?Sized> {
-    pub(super) coefficients: &'a C,
-    pub(super) stride: usize,
+pub(super) struct NonInitialQuadPairRequest<'a> {
+    pub(super) rows: &'a RowPair,
     pub(super) width: usize,
-    pub(super) height: usize,
-    pub(super) y: usize,
-    pub(super) p: u32,
-    pub(super) sp: &'a mut usize,
     pub(super) x: usize,
     pub(super) markers: QuadMarkerRows<'a>,
     pub(super) lep: &'a mut usize,
@@ -115,24 +149,16 @@ pub(super) trait QuadSink {
 #[expect(
     clippy::cast_sign_loss,
     clippy::inline_always,
-    clippy::too_many_lines,
     reason = "rho is a nonnegative four-bit mask and this normative quad walk stays fused per sink"
 )]
 #[inline(always)]
-pub(super) fn first_quad_pair<C, S>(
-    request: FirstQuadPairRequest<'_, C>,
+pub(super) fn first_quad_pair<S: QuadSink>(
+    request: FirstQuadPairRequest<'_>,
     sink: &mut S,
-) -> Result<(), S::Error>
-where
-    C: CleanupCoefficientSource + ?Sized,
-    S: QuadSink,
-{
+) -> Result<(), S::Error> {
     let FirstQuadPairRequest {
-        coefficients,
-        stride,
-        height,
-        p,
-        sp,
+        rows,
+        width,
         x,
         markers,
         state,
@@ -140,56 +166,15 @@ where
     let lep = x / 2;
     let lcxp = x / 2;
 
-    process_sample(
+    load_quad(
+        rows,
+        x,
         0,
-        coefficients.aligned_value(*sp),
-        p,
         &mut state.rho[0],
         state.e_q,
         &mut state.e_qmax[0],
         state.s,
     );
-    process_sample(
-        1,
-        if height > 1 {
-            coefficients.aligned_value(*sp + stride)
-        } else {
-            0
-        },
-        p,
-        &mut state.rho[0],
-        state.e_q,
-        &mut state.e_qmax[0],
-        state.s,
-    );
-    *sp += 1;
-
-    if x + 1 < stride {
-        process_sample(
-            2,
-            coefficients.aligned_value(*sp),
-            p,
-            &mut state.rho[0],
-            state.e_q,
-            &mut state.e_qmax[0],
-            state.s,
-        );
-        process_sample(
-            3,
-            if height > 1 {
-                coefficients.aligned_value(*sp + stride)
-            } else {
-                0
-            },
-            p,
-            &mut state.rho[0],
-            state.e_q,
-            &mut state.e_qmax[0],
-            state.s,
-        );
-        *sp += 1;
-    }
-
     let u_q0 = sink.quad_initial(InitialQuadRow {
         offset: 0,
         c_q: *state.c_q0,
@@ -203,56 +188,16 @@ where
         cx_val: &mut *markers.cx_val,
     })?;
 
-    if x + 2 < stride {
-        process_sample(
-            4,
-            coefficients.aligned_value(*sp),
-            p,
+    if x + 2 < width {
+        load_quad(
+            rows,
+            x,
+            1,
             &mut state.rho[1],
             state.e_q,
             &mut state.e_qmax[1],
             state.s,
         );
-        process_sample(
-            5,
-            if height > 1 {
-                coefficients.aligned_value(*sp + stride)
-            } else {
-                0
-            },
-            p,
-            &mut state.rho[1],
-            state.e_q,
-            &mut state.e_qmax[1],
-            state.s,
-        );
-        *sp += 1;
-
-        if x + 3 < stride {
-            process_sample(
-                6,
-                coefficients.aligned_value(*sp),
-                p,
-                &mut state.rho[1],
-                state.e_q,
-                &mut state.e_qmax[1],
-                state.s,
-            );
-            process_sample(
-                7,
-                if height > 1 {
-                    coefficients.aligned_value(*sp + stride)
-                } else {
-                    0
-                },
-                p,
-                &mut state.rho[1],
-                state.e_q,
-                &mut state.e_qmax[1],
-                state.s,
-            );
-            *sp += 1;
-        }
 
         let c_q1 = ((state.rho[0] >> 1) | (state.rho[0] & 1)) as usize;
         let u_q1 = sink.quad_initial(InitialQuadRow {
@@ -287,26 +232,16 @@ where
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::inline_always,
-    clippy::too_many_lines,
     reason = "bounded HT quad fields feed packed marker rows in this normative fused quad walk"
 )]
 #[inline(always)]
-pub(super) fn non_initial_quad_pair<C, S>(
-    request: NonInitialQuadPairRequest<'_, C>,
+pub(super) fn non_initial_quad_pair<S: QuadSink>(
+    request: NonInitialQuadPairRequest<'_>,
     sink: &mut S,
-) -> Result<(), S::Error>
-where
-    C: CleanupCoefficientSource + ?Sized,
-    S: QuadSink,
-{
+) -> Result<(), S::Error> {
     let NonInitialQuadPairRequest {
-        coefficients,
-        stride,
+        rows,
         width,
-        height,
-        y,
-        p,
-        sp,
         x,
         markers,
         lep,
@@ -314,55 +249,15 @@ where
         max_e,
         state,
     } = request;
-    process_sample(
+    load_quad(
+        rows,
+        x,
         0,
-        coefficients.aligned_value(*sp),
-        p,
         &mut state.rho[0],
         state.e_q,
         &mut state.e_qmax[0],
         state.s,
     );
-    process_sample(
-        1,
-        if y + 1 < height {
-            coefficients.aligned_value(*sp + stride)
-        } else {
-            0
-        },
-        p,
-        &mut state.rho[0],
-        state.e_q,
-        &mut state.e_qmax[0],
-        state.s,
-    );
-    *sp += 1;
-
-    if x + 1 < width {
-        process_sample(
-            2,
-            coefficients.aligned_value(*sp),
-            p,
-            &mut state.rho[0],
-            state.e_q,
-            &mut state.e_qmax[0],
-            state.s,
-        );
-        process_sample(
-            3,
-            if y + 1 < height {
-                coefficients.aligned_value(*sp + stride)
-            } else {
-                0
-            },
-            p,
-            &mut state.rho[0],
-            state.e_q,
-            &mut state.e_qmax[0],
-            state.s,
-        );
-        *sp += 1;
-    }
 
     let prev_max = *max_e;
     let u_q0 = sink.quad_non_initial(NonInitialQuadRow {
@@ -386,55 +281,15 @@ where
 
     let mut u_q1 = 0;
     if x + 2 < width {
-        process_sample(
-            4,
-            coefficients.aligned_value(*sp),
-            p,
+        load_quad(
+            rows,
+            x,
+            1,
             &mut state.rho[1],
             state.e_q,
             &mut state.e_qmax[1],
             state.s,
         );
-        process_sample(
-            5,
-            if y + 1 < height {
-                coefficients.aligned_value(*sp + stride)
-            } else {
-                0
-            },
-            p,
-            &mut state.rho[1],
-            state.e_q,
-            &mut state.e_qmax[1],
-            state.s,
-        );
-        *sp += 1;
-
-        if x + 3 < width {
-            process_sample(
-                6,
-                coefficients.aligned_value(*sp),
-                p,
-                &mut state.rho[1],
-                state.e_q,
-                &mut state.e_qmax[1],
-                state.s,
-            );
-            process_sample(
-                7,
-                if y + 1 < height {
-                    coefficients.aligned_value(*sp + stride)
-                } else {
-                    0
-                },
-                p,
-                &mut state.rho[1],
-                state.e_q,
-                &mut state.e_qmax[1],
-                state.s,
-            );
-            *sp += 1;
-        }
 
         let mut c_q1_local = c_q1;
         c_q1_local |= ((state.rho[0] & 4) >> 1) as usize;

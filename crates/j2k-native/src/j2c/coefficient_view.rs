@@ -146,16 +146,6 @@ impl<T: Copy> CoefficientBlockView<'_, T> {
     pub(crate) fn get(self, x: usize, y: usize) -> Option<T> {
         self.row(y).and_then(|row| row.get(x)).copied()
     }
-
-    /// Load a coefficient using the validated row-major block index.
-    ///
-    /// Callers must pass an index below `width * height`, matching ordinary
-    /// slice indexing used by contiguous coefficient sources.
-    pub(crate) fn value_at_linear_index(self, index: usize) -> T {
-        let y = index / self.width;
-        let x = index % self.width;
-        self.values[self.offset + y * self.row_stride + x]
-    }
 }
 
 pub(crate) trait SignedCoefficient: Copy {

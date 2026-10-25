@@ -45,17 +45,56 @@ pub(in crate::j2c::ht_block_encode) fn max_nonzero_magnitude_view(
 }
 
 pub(in crate::j2c::ht_block_encode) trait CleanupCoefficientSource {
-    fn aligned_value(&self, index: usize) -> u32;
+    /// Exponents and `MagSgn` values, at cleanup shift `p`, of the
+    /// `exponents.len()` samples from row-major index `start` of one row.
+    fn fill_row(
+        &self,
+        start: usize,
+        p: u32,
+        exponents: &mut [u8],
+        values: &mut [u32],
+    ) -> Result<(), &'static str>;
+}
+
+/// Exponent `E` and `MagSgn` value `2 * (mu - 1) + sign` of a row's samples,
+/// given each one's aligned sign-magnitude form. `E` is 0 for an
+/// insignificant sample, whose value is never emitted. An indexed loop
+/// without branches is what LLVM vectorizes (NEON `clz`); a zipped iterator
+/// chain stays scalar.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::inline_always,
+    reason = "a u32 bit width fits u8, and this indexed row loop is the vectorized per-sample work"
+)]
+#[inline(always)]
+fn fill_samples<T: Copy>(
+    row: &[T],
+    aligned: impl Fn(T) -> u32,
+    p: u32,
+    exponents: &mut [u8],
+    values: &mut [u32],
+) {
+    let samples = row.len().min(exponents.len()).min(values.len());
+    for index in 0..samples {
+        let value = aligned(row[index]);
+        let doubled = (((value & 0x7FFF_FFFF) << 1) >> p) & !1;
+        let width = doubled.wrapping_sub(1).bit_width();
+        exponents[index] = if doubled == 0 { 0 } else { width as u8 };
+        values[index] = doubled.wrapping_sub(2).wrapping_add(value >> 31);
+    }
 }
 
 impl CleanupCoefficientSource for [u32] {
-    #[expect(
-        clippy::inline_always,
-        reason = "coefficient loads are fused into the per-sample cleanup hot path"
-    )]
-    #[inline(always)]
-    fn aligned_value(&self, index: usize) -> u32 {
-        self[index]
+    fn fill_row(
+        &self,
+        start: usize,
+        p: u32,
+        exponents: &mut [u8],
+        values: &mut [u32],
+    ) -> Result<(), &'static str> {
+        let row = &self[start..start + exponents.len()];
+        fill_samples(row, |value| value, p, exponents, values);
+        Ok(())
     }
 }
 
@@ -65,13 +104,17 @@ pub(in crate::j2c::ht_block_encode) struct I32CleanupCoefficients<'a> {
 }
 
 impl CleanupCoefficientSource for I32CleanupCoefficients<'_> {
-    #[expect(
-        clippy::inline_always,
-        reason = "coefficient conversion is fused into the per-sample cleanup hot path"
-    )]
-    #[inline(always)]
-    fn aligned_value(&self, index: usize) -> u32 {
-        aligned_sign_magnitude(self.coefficients[index], self.shift)
+    fn fill_row(
+        &self,
+        start: usize,
+        p: u32,
+        exponents: &mut [u8],
+        values: &mut [u32],
+    ) -> Result<(), &'static str> {
+        let row = &self.coefficients[start..start + exponents.len()];
+        let aligned = |value| aligned_sign_magnitude(value, self.shift);
+        fill_samples(row, aligned, p, exponents, values);
+        Ok(())
     }
 }
 
@@ -90,14 +133,20 @@ impl<'a> I32CleanupBlockView<'a> {
 }
 
 impl CleanupCoefficientSource for I32CleanupBlockView<'_> {
-    #[expect(
-        clippy::inline_always,
-        reason = "strided coefficient loads are fused into the per-sample cleanup hot path"
-    )]
-    #[inline(always)]
-    fn aligned_value(&self, index: usize) -> u32 {
-        let coefficient = self.coefficients.value_at_linear_index(index);
-        aligned_sign_magnitude(coefficient, self.shift)
+    fn fill_row(
+        &self,
+        start: usize,
+        p: u32,
+        exponents: &mut [u8],
+        values: &mut [u32],
+    ) -> Result<(), &'static str> {
+        let row = self
+            .coefficients
+            .row(start / self.coefficients.width())
+            .ok_or("HTJ2K cleanup row is outside its coefficient block")?;
+        let aligned = |value| aligned_sign_magnitude(value, self.shift);
+        fill_samples(row, aligned, p, exponents, values);
+        Ok(())
     }
 }
 
