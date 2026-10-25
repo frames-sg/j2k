@@ -366,7 +366,13 @@ impl MagSgnEncoder {
         if end > self.buffer.len() {
             return Err("HTJ2K magnitude/sign encoder buffer is full");
         }
-        self.buffer[self.pos..end].copy_from_slice(&word.to_le_bytes()[..byte_count]);
+        // A whole-word store is one instruction where a short copy is a
+        // memmove call; the bytes past `end` are later overwritten or unused.
+        if let Some(slot) = self.buffer.get_mut(self.pos..self.pos + 8) {
+            slot.copy_from_slice(&word.to_le_bytes());
+        } else {
+            self.buffer[self.pos..end].copy_from_slice(&word.to_le_bytes()[..byte_count]);
+        }
         self.pos = end;
         Ok(())
     }
