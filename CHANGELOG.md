@@ -5,6 +5,11 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CPU decodes under `CpuDecodeParallelism::Auto` decode the tiles of a
+  multi-tile image concurrently when every component is sampled 1x1, each
+  worker storing into its own rows of the output planes. The workers share the
+  decode memory cap, and the image decodes serially when the cap would limit
+  them or any tile fails. Output is unchanged.
 - CPU decodes store a whole-image component whose samples need no shift by
   swapping the IDWT output's allocation with the component plane instead of
   copying the samples. Reused decoders keep the same allocations, rotated

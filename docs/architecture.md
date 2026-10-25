@@ -221,6 +221,12 @@ more threads than admitted workers, each worker decodes its image with internal 
 prepared HTJ2K plans decode their rows of code blocks and wavelet bands on the
 shared Rayon pool, still without reparsing.
 
+Under `CpuDecodeParallelism::Auto`, a multi-tile full-image decode whose components
+are all sampled 1x1 decodes its tiles concurrently, without a code-block hook. Each
+worker owns its scratch and stores into its own row slices of the component planes,
+so the output is bit-identical. The workers split the bytes the decode cap leaves; on
+any failure the serial tile loop decodes the image again and reports its error.
+
 Single-image CPU decode under `CpuDecodeParallelism::Auto` decodes every code
 block of an HT-only tile in one parallel pass, one row of code blocks per task,
 writing coefficients in place. The inverse wavelet transform reconstructs each
