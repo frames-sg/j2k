@@ -5,6 +5,11 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CPU banded inverse wavelet transforms on the pool hand out their strips
+  from a queue, so each worker takes the next strip when it finishes the last
+  instead of waiting for a wave of equal strips. Each strip reconstructs its
+  own rows in the output and keeps only its halo rows in worker scratch,
+  instead of copying every row out of a ring buffer. Output is unchanged.
 - The CPU 9/7 inverse DWT synthesizes most of each even-origin row in one
   register-window pass, instead of copying both band rows and making a pass per
   scaling and lifting step. Output is unchanged.
