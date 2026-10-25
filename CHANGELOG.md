@@ -5,6 +5,11 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- Metal single-image colour decodes no longer zero the last wavelet level's
+  high-band code blocks that have no coding passes. A cell map built from the
+  decode jobs lets the fused last-level kernel read those blocks as zero, and a
+  band whose job edges do not fit the map is zeroed as before. Output is
+  unchanged.
 - Metal single-image MCT RGB8 decodes synthesize the last wavelet level of the
   three components and pack RGB8 in one tile kernel when each component ends in
   that level and an identity store of the whole plane, so the last-level float

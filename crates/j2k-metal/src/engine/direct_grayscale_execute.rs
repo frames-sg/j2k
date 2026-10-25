@@ -75,7 +75,7 @@ pub(in crate::engine) use self::component_plane::{
     checked_coefficient_len, encode_prepared_direct_component_plane_before_final_level,
     encode_prepared_direct_component_plane_in_command_buffer,
     encode_prepared_direct_component_plane_in_encoder, final_identity_stored_level,
-    upload_cpu_decoded_coefficients, DirectComponentPlaneRequest,
+    upload_cpu_decoded_coefficients, DirectComponentPlaneRequest, FinalLevelInputs,
 };
 pub(crate) use self::destination::{
     submit_prepared_direct_grayscale_plan_batch_into_group, DirectDestinationConsumerOrdering,

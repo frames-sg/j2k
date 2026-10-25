@@ -11,7 +11,7 @@ use crate::profile_env::{
     hybrid_stage_signpost, label_compute_encoder, SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE,
 };
 
-use super::abi::{J2kBatchedMctRgb8PackParams, J2kMctRgb8PackParams, J2kPackParams};
+use super::abi::{J2kBandCells, J2kBatchedMctRgb8PackParams, J2kMctRgb8PackParams, J2kPackParams};
 use super::decode_dispatch::{dispatch_fused_idwt_mct_rgb8, FusedIdwtStoreSource};
 use super::direct_surface_pack::checked_metal_surface_len;
 use super::{
@@ -280,6 +280,7 @@ pub(super) fn encode_fused_idwt_mct_rgb8_to_surface_in_command_buffer(
     runtime: &MetalRuntime,
     command_buffer: &CommandBufferRef,
     sources: &[FusedIdwtStoreSource<'_>; 3],
+    cells: Option<(&Buffer, &[J2kBandCells; 9])>,
     dims: (u32, u32),
     bit_depths: [u8; 3],
     transform: J2kWaveletTransform,
@@ -288,7 +289,14 @@ pub(super) fn encode_fused_idwt_mct_rgb8_to_surface_in_command_buffer(
     let out_buffer = runtime.new_output_buffer(surface_bytes)?;
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K decode fused last level MCT RGB8 pack");
-    dispatch_fused_idwt_mct_rgb8(&encoder, runtime.decode()?, sources, &out_buffer, &params);
+    dispatch_fused_idwt_mct_rgb8(
+        &encoder,
+        runtime.decode()?,
+        sources,
+        cells,
+        &out_buffer,
+        &params,
+    );
     encoder.endEncoding();
     Surface::from_metal_buffer(out_buffer, dims, PixelFormat::Rgb8)
 }

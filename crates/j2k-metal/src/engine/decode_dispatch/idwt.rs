@@ -824,10 +824,11 @@ pub(in crate::engine) fn dispatch_fused_idwt_gray_store(
 fn fused_idwt_mct_rgb8_pipeline(
     kernels: &crate::engine::runtime::DecodeKernels,
     transform: super::J2kWaveletTransform,
+    sparse: bool,
 ) -> &ComputePipelineState {
     match transform {
-        super::J2kWaveletTransform::Reversible53 => &kernels.idwt53_mct_rgb8,
-        super::J2kWaveletTransform::Irreversible97 => &kernels.idwt97_mct_rgb8,
+        super::J2kWaveletTransform::Reversible53 => &kernels.idwt53_mct_rgb8[usize::from(sparse)],
+        super::J2kWaveletTransform::Irreversible97 => &kernels.idwt97_mct_rgb8[usize::from(sparse)],
     }
 }
 
@@ -841,7 +842,7 @@ pub(in crate::engine) fn fused_idwt_mct_rgb8_supported(
 ) -> bool {
     supports_fused_2d_idwt(
         kernels,
-        fused_idwt_mct_rgb8_pipeline(kernels, transform),
+        fused_idwt_mct_rgb8_pipeline(kernels, transform, false),
         width,
         height,
     )
@@ -854,11 +855,20 @@ pub(in crate::engine) fn dispatch_fused_idwt_mct_rgb8(
     encoder: &ComputeCommandEncoderRef,
     kernels: &crate::engine::runtime::DecodeKernels,
     sources: &[FusedIdwtStoreSource<'_>; 3],
+    cells: Option<(&Buffer, &[crate::engine::abi::J2kBandCells; 9])>,
     output: &crate::metal_types::BufferRef,
     pack: &crate::engine::abi::J2kMctRgb8PackParams,
 ) {
     let transform = sources[0].transform;
-    encoder.setComputePipelineState(fused_idwt_mct_rgb8_pipeline(kernels, transform));
+    encoder.setComputePipelineState(fused_idwt_mct_rgb8_pipeline(
+        kernels,
+        transform,
+        cells.is_some(),
+    ));
+    if let Some((cells, band_cells)) = cells {
+        encoder.set_buffer(23, Some(cells), 0);
+        encoder.set_bytes::<[crate::engine::abi::J2kBandCells; 9]>(24, band_cells);
+    }
     // The single-image 9/7 route's high-pass gain.
     let high_pass = j2k_codec_math::dwt::IDWT97_OPENJPEG_TWO_INV_KAPPA_F32 * 0.5;
     for (component, source) in (0_u64..).zip(sources) {

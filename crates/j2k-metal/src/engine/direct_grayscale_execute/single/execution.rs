@@ -105,6 +105,7 @@ impl SingleGrayscaleExecution<'_> {
             self.runtime,
             self.encoder,
             group,
+            &group.zero_rects,
             &output.buffer,
         )?;
         extend_preallocated_retained_buffers(self.retained_buffers, buffers)?;
