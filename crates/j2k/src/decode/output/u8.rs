@@ -251,26 +251,24 @@ fn add_opaque_alpha_u8(src: &[u8], out: &mut [u8], stride: usize, width: usize, 
 }
 
 /// Expand a packed RGB prefix into the same tight RGBA output allocation.
-/// Copying a small chunk first permits vectorization without overlapping
-/// source and destination borrows. Reverse order preserves unread RGB.
+/// The last quarter's RGBA positions start beyond the remaining RGB bytes.
+/// Convert that disjoint suffix, then repeat on the untouched prefix.
 pub(in crate::decode) fn expand_rgb8_to_rgba8(out: &mut [u8]) {
-    const CHUNK_PIXELS: usize = 256;
-    let mut rgb = [0_u8; CHUNK_PIXELS * 3];
-    let pixels = out.len() / 4;
-    for start in (0..pixels).step_by(CHUNK_PIXELS).rev() {
-        let count = (pixels - start).min(CHUNK_PIXELS);
-        let source = &mut rgb[..count * 3];
-        source.copy_from_slice(&out[start * 3..(start + count) * 3]);
-        let target = &mut out[start * 4..(start + count) * 4];
-        for (rgb, rgba) in source
-            .as_chunks::<3>()
-            .0
-            .iter()
-            .zip(target.as_chunks_mut::<4>().0)
-        {
-            rgba[..3].copy_from_slice(rgb);
-            rgba[3] = u8::MAX;
-        }
+    let mut pixels = out.len() / 4;
+    while pixels >= 4 {
+        let count = pixels / 4;
+        let start = pixels - count;
+        let (prefix, rgba) = out[..pixels * 4].split_at_mut(start * 4);
+        let rgb = &prefix[start * 3..pixels * 3];
+        add_opaque_alpha_u8(rgb, rgba, count * 4, count, 1);
+        pixels = start;
+    }
+    for pixel in (0..pixels).rev() {
+        let source = pixel * 3;
+        let rgb = [out[source], out[source + 1], out[source + 2]];
+        let target = pixel * 4;
+        out[target..target + 3].copy_from_slice(&rgb);
+        out[target + 3] = u8::MAX;
     }
 }
 
