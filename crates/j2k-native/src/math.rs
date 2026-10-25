@@ -125,6 +125,18 @@ mod inner {
             }
         }
 
+        /// Lanes `SHIFT..` of `self` followed by the first `SHIFT` lanes of `next`.
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
+        #[inline(always)]
+        pub(crate) fn slide<const SHIFT: usize>(self, next: Self) -> Self {
+            Self {
+                inner: self.inner.slide::<SHIFT>(next.inner),
+            }
+        }
+
         #[expect(
             clippy::inline_always,
             reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
@@ -404,6 +416,21 @@ mod inner {
                     self.val[7],
                     other.val[7],
                 ],
+                _marker: PhantomData,
+            }
+        }
+
+        #[expect(
+            clippy::inline_always,
+            reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+        )]
+        #[inline(always)]
+        pub(crate) fn slide<const SHIFT: usize>(self, next: Self) -> Self {
+            let mut val = [0.0f32; SIMD_WIDTH];
+            val[..SIMD_WIDTH - SHIFT].copy_from_slice(&self.val[SHIFT..]);
+            val[SIMD_WIDTH - SHIFT..].copy_from_slice(&next.val[..SHIFT]);
+            Self {
+                val,
                 _marker: PhantomData,
             }
         }
