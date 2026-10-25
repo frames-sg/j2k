@@ -283,3 +283,43 @@ fn encoded_bytes_match_recorded_reference_streams() {
         assert_eq!((bytes.len(), digest), expected, "seed {seed}");
     }
 }
+
+#[test]
+fn codewords_stay_within_fifteen_bits_per_symbol_plus_the_flush() {
+    // A symbol renormalizes by at most 15 bits and a byte carries at least 7,
+    // so N symbols give at most 15 N / 7 bytes plus two flush bytes. Patterns:
+    // every symbol the MPS, every symbol the LPS, alternating, random at one
+    // half and one in twenty, and an adversary that drives a context to the
+    // smallest Qe with MPS symbols and then codes its LPS, the costliest
+    // symbol there is.
+    for pattern in 0..6 {
+        for symbols in [1_usize, 2, 7, 15, 100, 10_000, 200_000] {
+            let mut encoder = ArithmeticEncoder::new();
+            let mut contexts = [ArithmeticEncoderContext::default(); 19];
+            let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+            for index in 0..symbols {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                let label = index % 19;
+                let context = &mut contexts[label];
+                let mps = context.mps();
+                let bit = match pattern {
+                    0 => mps,
+                    1 => 1 - mps,
+                    2 => u32::from(index % 2 == 0),
+                    3 => u32::from(state >> 63 == 1),
+                    4 => u32::from(state.is_multiple_of(20)),
+                    _ if context.index() == 45 => 1 - mps,
+                    _ => mps,
+                };
+                encoder.encode(bit, context);
+            }
+            let bytes = encoder.finish().len();
+            assert!(
+                bytes <= (15 * symbols).div_ceil(7) + 2,
+                "pattern {pattern}, {symbols} symbols: {bytes} bytes"
+            );
+        }
+    }
+}

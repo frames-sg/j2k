@@ -5,6 +5,13 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- The CPU classic Part 1 encoder plans at most 15/7 bytes per MQ symbol and
+  2.5 symbols per coefficient and bitplane, plus four for segmentation
+  symbols, instead of 4 bytes and 3 symbols, with the same per-pass
+  termination allowance. The bound follows from Qe being at least 1 and a
+  byte taking at least 7 renormalization bits, so a block's worst-case output
+  reservation is about 2.2 times smaller and longer Tier-1 waves fit the
+  memory cap. Output is unchanged; decoding does not use this plan.
 - The CPU classic Part 1 Tier-1 encoder clears its per-bitplane visit marks
   with one pass over the block's state bytes instead of recording every
   visited coefficient's index, so each code block no longer allocates a

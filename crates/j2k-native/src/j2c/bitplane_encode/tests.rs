@@ -13,9 +13,10 @@ use super::passes::{
 };
 use super::preparation::prepare_padded_coefficients;
 use super::{
-    encode_code_block, encode_code_block_i64, encode_code_block_segments_with_style,
-    encode_code_block_segments_with_style_i64, encode_code_block_view,
-    pack_classic_selective_bypass_tier1_tokens, ClassicTier1TokenSegment, EncodedCodeBlock,
+    classic_worker_allocation, encode_code_block, encode_code_block_i64,
+    encode_code_block_segments_with_style, encode_code_block_segments_with_style_i64,
+    encode_code_block_view, pack_classic_selective_bypass_tier1_tokens, ClassicTier1TokenSegment,
+    EncodedCodeBlock,
 };
 
 fn assert_encoded_blocks_equal(actual: &EncodedCodeBlock, expected: &EncodedCodeBlock) {
@@ -368,5 +369,114 @@ fn str011a_classic_tier1_byte_baseline() {
             expected[index],
             "classic Tier-1 bytes or segment accounting changed for style {index}",
         );
+    }
+}
+
+#[test]
+fn worst_case_blocks_stay_within_the_worker_payload_plan() {
+    // Rows: width, height and the total bitplanes to try. Small blocks try
+    // every count up to 64, the widest u64 magnitude; large ones the widest,
+    // tallest and largest shapes at 1, 16 and 31 bitplanes.
+    let every: Vec<u8> = (1..=64).collect();
+    let few = [1_u8, 16, 31];
+    let shapes: [(usize, usize, &[u8]); 8] = [
+        (1, 1, &every),
+        (4, 4, &every),
+        (3, 5, &every),
+        (64, 64, &few),
+        (7, 64, &few),
+        (64, 7, &few),
+        (1024, 4, &few),
+        (4, 1024, &few),
+    ];
+    let styles = [
+        CodeBlockStyle::default(),
+        CodeBlockStyle {
+            vertically_causal_context: true,
+            ..CodeBlockStyle::default()
+        },
+        CodeBlockStyle {
+            selective_arithmetic_coding_bypass: true,
+            ..CodeBlockStyle::default()
+        },
+        CodeBlockStyle {
+            termination_on_each_pass: true,
+            ..CodeBlockStyle::default()
+        },
+        CodeBlockStyle {
+            reset_context_probabilities: true,
+            segmentation_symbols: true,
+            ..CodeBlockStyle::default()
+        },
+        CodeBlockStyle {
+            selective_arithmetic_coding_bypass: true,
+            reset_context_probabilities: true,
+            termination_on_each_pass: true,
+            vertically_causal_context: true,
+            segmentation_symbols: true,
+            ..CodeBlockStyle::default()
+        },
+    ];
+    let mut state = 0x2545_f491_4f6c_dd1d_u64;
+    for &(width, height, bitplane_counts) in &shapes {
+        for &total_bitplanes in bitplane_counts {
+            let top = (1_u64 << (total_bitplanes - 1)) - 1 + (1_u64 << (total_bitplanes - 1));
+            // Draws: uniform noise over every bitplane, one bit at a random
+            // plane, every coefficient at the top plane, which makes each
+            // full cleanup column a run-length interruption followed by three
+            // significance and sign pairs, and alternating extremes.
+            for draw in 0..4 {
+                let coefficients: Vec<i64> = (0..width * height)
+                    .map(|index| {
+                        state ^= state << 13;
+                        state ^= state >> 7;
+                        state ^= state << 17;
+                        let magnitude = match draw {
+                            0 => state & top,
+                            1 => 1 << (state % u64::from(total_bitplanes)),
+                            2 => 1 << (total_bitplanes - 1),
+                            _ => top,
+                        };
+                        let negative =
+                            (draw == 3 && index % 2 == 0) || (draw != 3 && state >> 63 == 1);
+                        match i64::try_from(magnitude) {
+                            Ok(value) if negative => -value,
+                            Ok(value) => value,
+                            Err(_) => i64::MIN,
+                        }
+                    })
+                    .collect();
+                let plan = classic_worker_allocation(width, height, total_bitplanes)
+                    .expect("valid code-block plan");
+                for (index, style) in styles.iter().enumerate() {
+                    let sub_band_type = [
+                        SubBandType::LowLow,
+                        SubBandType::HighLow,
+                        SubBandType::LowHigh,
+                        SubBandType::HighHigh,
+                    ][(index + draw) % 4];
+                    let encoded = super::try_encode_code_block_segments_with_style_i64(
+                        &coefficients,
+                        u32::try_from(width).expect("width fits u32"),
+                        u32::try_from(height).expect("height fits u32"),
+                        sub_band_type,
+                        total_bitplanes,
+                        style,
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "{width}x{height}, {total_bitplanes} bitplanes, draw {draw}: {error}"
+                        )
+                    });
+                    assert!(
+                        encoded.data.len() <= plan.payload_bytes,
+                        "{width}x{height}, {total_bitplanes} bitplanes, draw {draw}, style {index}: \
+                         {} bytes over the {} byte plan",
+                        encoded.data.len(),
+                        plan.payload_bytes
+                    );
+                }
+            }
+        }
     }
 }
