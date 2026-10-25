@@ -90,23 +90,45 @@ pub(super) fn decode_classic_sub_band_blocks_parallel<'a>(
             .iter()
             .map(|pending| (pending.placement, pending.width, pending.height)),
     )?;
-    decoded_blocks
-        .par_iter_mut()
-        .zip(pending_blocks.par_iter())
-        .zip(workspaces.par_iter_mut())
-        .try_for_each(|((decoded, pending), workspace)| -> Result<()> {
-            decoded.coefficients.fill(0.0);
-            let job = parameters.job(
-                &pending.combined_data,
-                &pending.segments,
-                pending.width,
-                pending.height,
-                pending.width as usize,
-                pending.missing_bit_planes,
-                pending.number_of_coding_passes,
-            );
-            parameters.decode(job, decoded.coefficients, workspace)
-        })?;
+    let decode = |decoded: &mut DecodedBlock<'_>,
+                  pending: &PendingClassicBlock,
+                  workspace: &mut J2kCodeBlockDecodeWorkspace|
+     -> Result<()> {
+        decoded.coefficients.fill(0.0);
+        let job = parameters.job(
+            &pending.combined_data,
+            &pending.segments,
+            pending.width,
+            pending.height,
+            pending.width as usize,
+            pending.missing_bit_planes,
+            pending.number_of_coding_passes,
+        );
+        parameters.decode(job, decoded.coefficients, workspace)
+    };
+    if workspaces.len() == pending_blocks.len() {
+        // A small band already fits one workspace per job. Preserve its
+        // individual edge-block sizes and avoid introducing a queue.
+        decoded_blocks
+            .par_iter_mut()
+            .zip(pending_blocks.par_iter())
+            .zip(workspaces.par_iter_mut())
+            .try_for_each(|((decoded, pending), workspace)| decode(decoded, pending, workspace))?;
+    } else {
+        // Reuse one workspace per worker. The slab slices stay disjoint,
+        // and a costly block does not hold up a fixed worker-sized chunk.
+        let pending = std::sync::Mutex::new(decoded_blocks.iter_mut().zip(pending_blocks));
+        let next = || pending.lock().ok().and_then(|mut pending| pending.next());
+        workspaces
+            .par_iter_mut()
+            .with_max_len(1)
+            .try_for_each(|workspace| -> Result<()> {
+                while let Some((decoded, pending)) = next() {
+                    decode(decoded, pending, workspace)?;
+                }
+                Ok(())
+            })?;
+    }
     Ok(decoded_blocks)
 }
 
@@ -189,24 +211,33 @@ fn try_preallocate_classic_workspaces(
     pending_blocks: &[PendingClassicBlock],
     budget: &mut DecodeAllocationBudget,
 ) -> Result<Vec<J2kCodeBlockDecodeWorkspace>> {
-    let planned_bytes =
-        pending_blocks
-            .iter()
-            .try_fold(0usize, |bytes, pending| -> Result<usize> {
-                bytes
-                    .checked_add(classic_decode_workspace_bytes(
-                        pending.width,
-                        pending.height,
-                    )?)
-                    .ok_or_else(|| ValidationError::ImageTooLarge.into())
-            })?;
+    let workers = rayon::current_num_threads().min(pending_blocks.len());
+    let (width, height) = pending_blocks
+        .iter()
+        .fold((0_u32, 0_u32), |(width, height), pending| {
+            (width.max(pending.width), height.max(pending.height))
+        });
+    let dimensions = |index: usize| {
+        if workers == pending_blocks.len() {
+            (pending_blocks[index].width, pending_blocks[index].height)
+        } else {
+            (width, height)
+        }
+    };
+    let planned_bytes = (0..workers).try_fold(0_usize, |bytes, index| -> Result<usize> {
+        let (width, height) = dimensions(index);
+        bytes
+            .checked_add(classic_decode_workspace_bytes(width, height)?)
+            .ok_or_else(|| ValidationError::ImageTooLarge.into())
+    })?;
     budget.include_bytes(planned_bytes)?;
     let mut workspaces = Vec::new();
-    budget.reserve_new(&mut workspaces, pending_blocks.len())?;
-    for pending in pending_blocks {
-        let planned = classic_decode_workspace_bytes(pending.width, pending.height)?;
+    budget.reserve_new(&mut workspaces, workers)?;
+    for index in 0..workers {
+        let (width, height) = dimensions(index);
+        let planned = classic_decode_workspace_bytes(width, height)?;
         let mut workspace = J2kCodeBlockDecodeWorkspace::default();
-        workspace.prepare(pending.width, pending.height)?;
+        workspace.prepare(width, height)?;
         let actual = workspace.allocated_bytes()?;
         if actual > planned {
             budget.include_bytes(actual - planned)?;

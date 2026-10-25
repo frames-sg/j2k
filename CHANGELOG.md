@@ -5,6 +5,9 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- Classic CPU sub-band decoding reuses one Tier-1 workspace per worker
+  across pending code blocks, bounding fallback scratch by active workers.
+  Decoded pixels and code-block ordering are unchanged.
 - ARM64 CPU decodes fuse the inverse ICT, rounding and RGB8 stores in one
   vector loop for streamed 9/7 output. Output is unchanged.
 - Fused RGB8 CPU decodes reconstruct later components into the consumed
