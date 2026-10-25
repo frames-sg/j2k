@@ -15,8 +15,8 @@ mod output;
 mod settings;
 mod srgb8;
 use output::{
-    can_decode_u8_directly, write_components_u16_output, write_components_u8_output,
-    write_u16_output, write_u8_output,
+    can_decode_u8_directly, expand_rgb8_to_rgba8, write_components_u16_output,
+    write_components_u8_output, write_u16_output, write_u8_output,
 };
 pub use settings::DecodeSettings;
 pub(crate) use srgb8::decode_image_srgb8;
@@ -76,6 +76,25 @@ pub(crate) fn decode_image_into_with_native_context<'a>(
                 image
                     .decode_into(out, native_context)
                     .map_err(J2kError::from_native_decode_error)?;
+                return Ok(());
+            }
+            if fmt == PixelFormat::Rgba8
+                && stride == dims.0 as usize * 4
+                && can_decode_u8_directly(
+                    image.color_space(),
+                    image.has_alpha(),
+                    dims,
+                    dims.0 as usize * 3,
+                    PixelFormat::Rgb8,
+                )
+            {
+                // The caller's validated tight RGBA buffer also fits RGB.
+                // Keep the fused RGB route, then expand within that allocation.
+                let pixels = dims.0 as usize * dims.1 as usize;
+                image
+                    .decode_into(&mut out[..pixels * 3], native_context)
+                    .map_err(J2kError::from_native_decode_error)?;
+                expand_rgb8_to_rgba8(&mut out[..pixels * 4]);
                 return Ok(());
             }
             let decoded = image

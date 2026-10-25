@@ -322,14 +322,51 @@ fn decoder_reuses_native_context_across_multiple_decode_calls() {
 
 #[test]
 fn decode_rgba8_fills_opaque_alpha_for_rgb_source() {
-    let pixels = [1, 2, 3, 4, 5, 6];
-    let codestream = encode_codestream(&pixels, 2, 1, 3, 8, true);
-    let mut decoder = J2kDecoder::new(&codestream).expect("decoder");
-    let mut out = [0_u8; 8];
-    decoder
-        .decode_into(&mut out, 2 * 4, PixelFormat::Rgba8)
-        .expect("decode");
-    assert_eq!(out, [1, 2, 3, 255, 4, 5, 6, 255]);
+    for (width, height) in [(2_u32, 1_u32), (96, 80), (97, 88)] {
+        let pixels: Vec<_> = (0..width * height * 3)
+            .map(|i| (i * 37 + i / 17).to_le_bytes()[0])
+            .collect();
+        for reversible in [true, false] {
+            let options = EncodeOptions {
+                reversible,
+                num_decomposition_levels: if width < 64 { 1 } else { 3 },
+                ..EncodeOptions::default()
+            };
+            let bytes = encode(&pixels, width, height, 3, 8, false, &options).expect("encode");
+            let expected = backend_decode_u8(&bytes);
+            if reversible {
+                assert_eq!(expected, pixels);
+            }
+            let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
+            for padding in [0, 7] {
+                let stride = width as usize * 4 + padding;
+                let mut out = vec![0x5a; stride * height as usize + 13];
+                for _ in 0..2 {
+                    decoder
+                        .decode_into(&mut out, stride, PixelFormat::Rgba8)
+                        .expect("decode");
+                    for (rgb, rgba) in expected
+                        .chunks_exact(width as usize * 3)
+                        .zip(out.chunks_exact(stride).take(height as usize))
+                    {
+                        for (rgb, rgba) in rgb
+                            .as_chunks::<3>()
+                            .0
+                            .iter()
+                            .zip(rgba[..width as usize * 4].as_chunks::<4>().0)
+                        {
+                            assert_eq!(&rgba[..3], rgb);
+                            assert_eq!(rgba[3], 255);
+                        }
+                        assert!(rgba[width as usize * 4..].iter().all(|&byte| byte == 0x5a));
+                    }
+                    assert!(out[stride * height as usize..]
+                        .iter()
+                        .all(|&byte| byte == 0x5a));
+                }
+            }
+        }
+    }
 }
 
 #[test]

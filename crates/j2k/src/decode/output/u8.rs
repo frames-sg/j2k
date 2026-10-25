@@ -250,6 +250,28 @@ fn add_opaque_alpha_u8(src: &[u8], out: &mut [u8], stride: usize, width: usize, 
     }
 }
 
+/// Expand a packed RGB prefix into the same tight RGBA output allocation.
+/// The last quarter's RGBA positions start beyond the remaining RGB bytes.
+/// Convert that disjoint suffix, then repeat on the untouched prefix.
+pub(in crate::decode) fn expand_rgb8_to_rgba8(out: &mut [u8]) {
+    let mut pixels = out.len() / 4;
+    while pixels >= 4 {
+        let count = pixels / 4;
+        let start = pixels - count;
+        let (prefix, rgba) = out[..pixels * 4].split_at_mut(start * 4);
+        let rgb = &prefix[start * 3..pixels * 3];
+        add_opaque_alpha_u8(rgb, rgba, count * 4, count, 1);
+        pixels = start;
+    }
+    for pixel in (0..pixels).rev() {
+        let source = pixel * 3;
+        let rgb = [out[source], out[source + 1], out[source + 2]];
+        let target = pixel * 4;
+        out[target..target + 3].copy_from_slice(&rgb);
+        out[target + 3] = u8::MAX;
+    }
+}
+
 fn drop_alpha_u8(src: &[u8], out: &mut [u8], stride: usize, width: usize, height: usize) {
     let src_row_bytes = width * 4;
     let dst_row_bytes = width * 3;

@@ -5,6 +5,9 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- Tight RGBA8 output from RGB images decodes into the caller's allocation
+  and adds opaque alpha in place, avoiding a separate full RGB8 buffer.
+  Pixel values and padded-output handling are unchanged.
 - Classic CPU sub-band decoding reuses one Tier-1 workspace per worker
   across pending code blocks, bounding fallback scratch by active workers.
   Decoded pixels and code-block ordering are unchanged.
