@@ -486,3 +486,75 @@ fn repeated_region_scaled_color_batch_reuses_prepared_plan() {
 
 #[cfg(target_os = "macos")]
 mod sampled;
+
+#[cfg(target_os = "macos")]
+#[test]
+fn auto_full_decode_keeps_tiled_ht_rgb8_on_cpu() {
+    use PixelFormat::{Gray8, Rgb8};
+
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    for (width, height, format, tile_size, auto_resident) in [
+        (639, 480, Rgb8, None, false),
+        (640, 480, Rgb8, None, true),
+        (640, 480, Rgb8, Some((640, 480)), true),
+        (640, 480, Rgb8, Some((320, 480)), false),
+        (640, 480, Rgb8, Some((640, 240)), false),
+        (641, 481, Rgb8, Some((321, 241)), false),
+        (640, 480, Gray8, None, true),
+        (640, 480, Gray8, Some((320, 480)), true),
+    ] {
+        let components: u16 = if format == Gray8 { 1 } else { 3 };
+        let pixels = j2k_test_support::gradient_u8(width, height, usize::from(components));
+        for reversible in [true, false] {
+            let bytes = j2k_native::encode_htj2k(
+                &pixels,
+                width,
+                height,
+                components,
+                8,
+                false,
+                &j2k_native::EncodeOptions {
+                    reversible,
+                    tile_size,
+                    num_decomposition_levels: 2,
+                    ..j2k_native::EncodeOptions::default()
+                },
+            )
+            .expect("encode routing fixture");
+            let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
+            let reference = decoder
+                .decode_request_to_device(MetalDecodeRequest::full(format, BackendRequest::Cpu))
+                .expect("CPU reference");
+            for backend in [BackendRequest::Auto, BackendRequest::Metal] {
+                let surface = decoder
+                    .decode_request_to_device(MetalDecodeRequest::full(format, backend))
+                    .expect("decode");
+                let resident = backend == BackendRequest::Metal || auto_resident;
+                assert_eq!(
+                    surface.residency(),
+                    if resident {
+                        SurfaceResidency::MetalResidentDecode
+                    } else {
+                        SurfaceResidency::Host
+                    },
+                    "{width}x{height} {format:?} tile={tile_size:?} reversible={reversible} backend={backend:?}"
+                );
+                assert_eq!(
+                    surface.backend_kind(),
+                    if resident {
+                        BackendKind::Metal
+                    } else {
+                        BackendKind::Cpu
+                    }
+                );
+                assert!(
+                    surface.as_bytes().expect("output") == reference.as_bytes().expect("reference"),
+                    "{width}x{height} {format:?} tile={tile_size:?} reversible={reversible} backend={backend:?}"
+                );
+            }
+        }
+    }
+}

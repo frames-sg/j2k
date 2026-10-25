@@ -5,6 +5,9 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- Auto full-image RGB8 decodes keep tiled images on the CPU, avoiding
+  repeated per-stage Metal round trips. Explicit Metal requests keep resident
+  decoding.
 - Region decodes of codestreams without PLT markers keep no layer or segment
   records for the code-blocks they parse only to reach later packets. Their
   packet headers are still checked as before. A 1024 x 1024 region of an
