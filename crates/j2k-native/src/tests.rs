@@ -1481,8 +1481,8 @@ fn region_decode_parses_skipped_precincts_in_shared_scratch() {
     const SIZE: u32 = 96;
     const COMPONENTS: u16 = 3;
     const LAYERS: u8 = 4;
-    // The largest precinct has 2x2 code-blocks: 8x8 samples at resolution 0.
-    const SCRATCH_CODE_BLOCKS: usize = 3 * 4;
+    // LL has 2x2 code-blocks in slot 0; LH and HH each need one.
+    const SCRATCH_CODE_BLOCKS: usize = 4 + 1 + 1;
     let components = u32::from(COMPONENTS);
     let mut state = 0x9e37_79b9_u32;
     let pixels: Vec<u8> = (0..SIZE * SIZE * components)
@@ -1546,6 +1546,110 @@ fn region_decode_parses_skipped_precincts_in_shared_scratch() {
                     unlayered <= SCRATCH_CODE_BLOCKS,
                     in_scratch,
                     "{case}, {roi:?}: {unlayered} built code-blocks without layer records"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn region_decode_scratch_keeps_state_across_tile_parts() {
+    const WIDTH: u32 = 64;
+    const HEIGHT: u32 = 32;
+    let mut state = 0x9e37_79b9_u32;
+    let pixels: Vec<u8> = (0..WIDTH * HEIGHT)
+        .map(|i| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            // The first precinct's small contribution goes in the last layer
+            // when layer 0 has a small byte target.
+            if i % WIDTH < 8 && i / WIDTH < 8 {
+                128 + (i % 2) as u8
+            } else {
+                (state >> 24) as u8
+            }
+        })
+        .collect();
+    for progression_order in [
+        EncodeProgressionOrder::Rpcl,
+        EncodeProgressionOrder::Pcrl,
+        EncodeProgressionOrder::Cprl,
+    ] {
+        // Classic byte targets provide an empty first packet without changing pixels.
+        for (use_ht_block_coding, empty_first) in [(false, false), (false, true), (true, false)] {
+            for late_poc in [false, true] {
+                let case = format!("{progression_order:?}, ht={use_ht_block_coding}, empty={empty_first}, poc={late_poc}");
+                let options = EncodeOptions {
+                    reversible: true,
+                    num_decomposition_levels: 0,
+                    code_block_width_exp: 0,
+                    code_block_height_exp: 0,
+                    precinct_exponents: vec![(3, 3)],
+                    progression_order,
+                    num_layers: 2,
+                    quality_layer_byte_targets: if empty_first {
+                        vec![0, 8192]
+                    } else {
+                        Vec::new()
+                    },
+                    tile_part_packet_limit: Some(1),
+                    use_ht_block_coding,
+                    ..EncodeOptions::default()
+                };
+                let mut bytes = encode(&pixels, WIDTH, HEIGHT, 1, 8, false, &options)
+                    .unwrap_or_else(|error| panic!("{case}: encode fixture: {error:?}"));
+                let first = bytes
+                    .windows(2)
+                    .position(|w| w == [0xff, 0x90])
+                    .expect("first SOT");
+                let length =
+                    u32::from_be_bytes(bytes[first + 6..first + 10].try_into().unwrap()) as usize;
+                let second = first + length;
+                assert_eq!(&bytes[second..second + 2], &[0xff, 0x90]);
+                // One packet per tile-part splits the first precinct's layers.
+                if empty_first {
+                    assert_eq!(bytes[first + 14], 0, "{case}: empty layer 0");
+                    assert_ne!(bytes[second + 14], 0, "{case}: nonempty layer 1");
+                }
+                if late_poc {
+                    // The later header covers the same progression, but its POC
+                    // must disable scratch before any packet is parsed.
+                    let order = match progression_order {
+                        EncodeProgressionOrder::Rpcl => 2,
+                        EncodeProgressionOrder::Pcrl => 3,
+                        EncodeProgressionOrder::Cprl => 4,
+                        _ => unreachable!(),
+                    };
+                    let poc = [0xff, 0x5f, 0, 9, 0, 0, 0, 2, 1, 1, order];
+                    let length =
+                        u32::from_be_bytes(bytes[second + 6..second + 10].try_into().unwrap());
+                    bytes[second + 6..second + 10]
+                        .copy_from_slice(&(length + poc.len() as u32).to_be_bytes());
+                    bytes.splice(second + 12..second + 12, poc);
+                }
+                let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse fixture");
+                let whole = image.decode_native().expect("decode whole image").data;
+                assert_eq!(whole, pixels, "{case}");
+                let mut context = DecoderContext::default();
+                let region = image
+                    .decode_native_region_with_context((WIDTH - 8, HEIGHT - 8, 8, 8), &mut context)
+                    .expect("decode region");
+                let expected: Vec<u8> = whole
+                    .as_chunks::<{ WIDTH as usize }>()
+                    .0
+                    .iter()
+                    .skip((HEIGHT - 8) as usize)
+                    .flat_map(|row| &row[(WIDTH - 8) as usize..])
+                    .copied()
+                    .collect();
+                assert_eq!(region.data, expected, "{case}");
+                let counters = context.tile_decode_context.debug_counters;
+                let unlayered = counters.built_code_blocks - counters.built_layer_records / 2;
+                assert_eq!(
+                    unlayered <= 4,
+                    !late_poc,
+                    "{case}: {unlayered} unlayered blocks"
                 );
             }
         }
