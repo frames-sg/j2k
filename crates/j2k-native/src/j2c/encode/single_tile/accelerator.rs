@@ -331,6 +331,7 @@ fn prepare_deinterleaved_components(
                 request.num_components,
                 request.bit_depth,
                 request.signed,
+                accelerator.prefer_parallel_cpu_code_block_fallback(),
             )?,
         }
     };
@@ -383,7 +384,13 @@ fn prepare_dwt_components(
     accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> NativeEncodePipelineResult<(Vec<OwnedDwtComponent>, u128)> {
     let stage_start = profile::profile_now(request.profile_enabled);
-    let mut workspace = try_dwt_workspace(request, components.len(), component_bytes, plan_bytes)?;
+    let mut workspace = try_dwt_workspace(
+        request,
+        components.len(),
+        component_bytes,
+        plan_bytes,
+        accelerator.prefer_parallel_cpu_code_block_fallback(),
+    )?;
     for component_index in 0..components.len() {
         let component = core::mem::take(&mut components[component_index]);
         let remaining_component_bytes =
@@ -465,21 +472,23 @@ fn try_dwt_workspace(
     component_count: usize,
     component_bytes: usize,
     plan_bytes: usize,
+    parallel: bool,
 ) -> NativeEncodePipelineResult<DwtWorkspace> {
     let requested_owner_bytes = checked_element_bytes::<OwnedDwtComponent>(
         component_count,
         "transform DWT component owners",
     )?;
-    let scratch_count = crate::j2c::fdwt::packed_dwt_scratch_len(request.width, request.height)?;
+    let owner_phase_bytes = checked_add_bytes(
+        checked_add_bytes(plan_bytes, component_bytes, "DWT owner phase")?,
+        requested_owner_bytes,
+        "DWT owner phase",
+    )?;
+    let scratch_count = dwt_scratch_count(request, owner_phase_bytes, parallel)?;
     let requested_scratch_bytes =
         checked_element_bytes::<f32>(scratch_count, "packed DWT line scratch")?;
     request.session.checked_phase(
         checked_add_bytes(
-            checked_add_bytes(
-                checked_add_bytes(plan_bytes, component_bytes, "DWT owner phase")?,
-                requested_owner_bytes,
-                "DWT owner phase",
-            )?,
+            owner_phase_bytes,
             requested_scratch_bytes,
             "DWT owner phase",
         )?,
@@ -518,6 +527,39 @@ fn try_dwt_workspace(
         line_scratch,
         scratch_bytes,
     })
+}
+
+/// One strip scratch per Rayon worker, so the CPU transform runs in parallel,
+/// when that fits the cap; otherwise one, so success never depends on the
+/// thread count.
+fn dwt_scratch_count(
+    request: &AcceleratedComponentRequest<'_, '_>,
+    owner_phase_bytes: usize,
+    parallel: bool,
+) -> NativeEncodePipelineResult<usize> {
+    let serial = crate::j2c::fdwt::packed_dwt_scratch_len(request.width, request.height)?;
+    #[cfg(feature = "parallel")]
+    if let Some(count) = serial
+        .checked_mul(rayon::current_num_threads())
+        .filter(|&count| parallel && count > serial)
+    {
+        let phase_bytes = checked_element_bytes::<f32>(count, "parallel packed DWT scratch")
+            .and_then(|bytes| checked_add_bytes(owner_phase_bytes, bytes, "DWT owner phase"));
+        match phase_bytes.and_then(|bytes| {
+            request
+                .session
+                .checked_phase(bytes, "native encode DWT owner phase")
+        }) {
+            Ok(_) => return Ok(count),
+            Err(
+                crate::EncodeError::AllocationTooLarge { .. }
+                | crate::EncodeError::ArithmeticOverflow { .. },
+            ) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let _ = (owner_phase_bytes, parallel);
+    Ok(serial)
 }
 
 #[cfg(test)]

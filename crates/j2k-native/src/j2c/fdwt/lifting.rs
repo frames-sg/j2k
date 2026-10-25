@@ -40,9 +40,17 @@ pub(crate) fn packed_dwt_scratch_len(width: u32, height: u32) -> EncodeResult<us
         })
 }
 
-/// Lift one level's columns in strips, then its rows. `scratch` holds at
-/// least `max(width, height)` samples; a shorter one than
-/// [`packed_dwt_scratch_len`] only narrows the strips.
+/// Levels with fewer samples than this stay on one thread.
+#[cfg(feature = "parallel")]
+const MIN_PARALLEL_SAMPLES: usize = 256 * 256;
+
+/// Rows a horizontal-pass worker takes at a time.
+#[cfg(feature = "parallel")]
+const ROW_BATCH: usize = 8;
+
+/// Lift one level's columns in strips, then its rows. `scratch` holds
+/// `workers` equal parts of at least `max(width, height)` samples each; a part
+/// shorter than [`packed_dwt_scratch_len`] only narrows the strips.
 #[expect(
     clippy::inline_always,
     reason = "the level transform is specialized inside each SIMD dispatch target"
@@ -52,67 +60,225 @@ pub(super) fn transform_level<S: Simd>(
     simd: S,
     plane: &mut [f32],
     scratch: &mut [f32],
+    workers: usize,
     level: LevelRegion,
     reversible: bool,
 ) -> EncodeResult<()> {
     if level.width == 0 || level.height == 0 {
         return Ok(());
     }
+    let per_worker = scratch.len() / workers.max(1);
     let strip = strip_columns(level.stride)
         .min(level.width)
-        .min(scratch.len() / level.height);
+        .min(per_worker / level.height);
     if strip == 0 {
         return Err(EncodeError::InternalInvariant {
             what: "packed forward DWT scratch is shorter than a column",
         });
     }
+    #[cfg(feature = "parallel")]
+    if workers > 1 && level.width * level.height >= MIN_PARALLEL_SAMPLES {
+        transform_level_parallel(simd, plane, scratch, per_worker, level, strip, reversible);
+        return Ok(());
+    }
     for first in (0..level.width).step_by(strip) {
         let columns = strip.min(level.width - first);
         let block = &mut scratch[..level.height * columns];
         let rows = plane[first..].chunks(level.stride).take(level.height);
-        for (y, row) in rows.enumerate() {
-            let band_row = if (y % 2 == 1) == level.odd_y {
-                y / 2
-            } else {
-                level.low_height + y / 2
-            };
-            copy_row(
-                simd,
-                &mut block[band_row * columns..][..columns],
-                &row[..columns],
-            );
-        }
-        let (low, high) = block.split_at_mut(level.low_height * columns);
-        lift(simd, low, high, columns, level.odd_y, reversible);
-        for (row, packed) in plane[first..]
-            .chunks_mut(level.stride)
-            .zip(block.chunks_exact(columns))
-        {
-            copy_row(simd, &mut row[..columns], packed);
-        }
+        gather_strip(simd, block, columns, rows.map(|row| &row[..columns]), level);
+        lift_strip(simd, block, columns, level, reversible);
+        let rows = plane[first..].chunks_mut(level.stride);
+        scatter_strip(simd, block, columns, rows.map(|row| &mut row[..columns]));
     }
-
     let line = &mut scratch[..level.width];
     for row in plane.chunks_mut(level.stride).take(level.height) {
-        let row = &mut row[..level.width];
-        line.copy_from_slice(row);
-        let (low, high) = row.split_at_mut(level.low_width);
-        let (even, odd) = if level.odd_x {
-            (&mut *high, &mut *low)
-        } else {
-            (&mut *low, &mut *high)
-        };
-        let (pairs, tail) = line.as_chunks::<2>();
-        for ((even, odd), &[first, second]) in even.iter_mut().zip(odd.iter_mut()).zip(pairs) {
-            *even = first;
-            *odd = second;
-        }
-        if let ([last], Some(even)) = (tail, even.last_mut()) {
-            *even = *last;
-        }
-        lift(simd, low, high, 1, level.odd_x, reversible);
+        lift_row(simd, &mut row[..level.width], line, level, reversible);
     }
     Ok(())
+}
+
+/// The level on several workers. Each takes the next column strip, peeled off
+/// every row, and then the next batch of rows as it finishes the last, so
+/// slower cores do not hold the level up. Every strip and row goes through
+/// the same operations as on one thread.
+#[cfg(feature = "parallel")]
+fn transform_level_parallel<S: Simd>(
+    simd: S,
+    plane: &mut [f32],
+    scratch: &mut [f32],
+    per_worker: usize,
+    level: LevelRegion,
+    strip: usize,
+    reversible: bool,
+) {
+    use rayon::prelude::*;
+    use std::sync::Mutex;
+
+    let rows = plane.chunks_mut(level.stride).take(level.height);
+    let remaining = Mutex::new(rows.map(|row| &mut row[..level.width]).collect::<Vec<_>>());
+    scratch
+        .par_chunks_mut(per_worker)
+        .with_max_len(1)
+        .for_each(|block| {
+            let mut segments = Vec::new();
+            in_simd_scope(
+                simd,
+                #[inline(always)]
+                || {
+                    while let Some(columns) = next_strip(&remaining, strip, &mut segments) {
+                        let block = &mut block[..level.height * columns];
+                        let rows = segments.iter().map(|row| &**row);
+                        gather_strip(simd, block, columns, rows, level);
+                        lift_strip(simd, block, columns, level, reversible);
+                        let rows = segments.iter_mut().map(|row| &mut **row);
+                        scatter_strip(simd, block, columns, rows);
+                    }
+                },
+            );
+        });
+    let batches =
+        Mutex::new(plane[..level.height * level.stride].chunks_mut(level.stride * ROW_BATCH));
+    scratch
+        .par_chunks_mut(per_worker)
+        .with_max_len(1)
+        .for_each(|line| {
+            let line = &mut line[..level.width];
+            in_simd_scope(
+                simd,
+                #[inline(always)]
+                || {
+                    while let Some(batch) = batches.lock().ok().and_then(|mut rows| rows.next()) {
+                        for row in batch.chunks_mut(level.stride) {
+                            lift_row(simd, &mut row[..level.width], line, level, reversible);
+                        }
+                    }
+                },
+            );
+        });
+}
+
+/// Peel the next strip of up to `strip` columns off every remaining row into
+/// `segments`; `None` once the rows are used up.
+#[cfg(feature = "parallel")]
+fn next_strip<'p>(
+    remaining: &std::sync::Mutex<Vec<&'p mut [f32]>>,
+    strip: usize,
+    segments: &mut Vec<&'p mut [f32]>,
+) -> Option<usize> {
+    let mut rows = remaining.lock().ok()?;
+    let columns = strip.min(rows.first()?.len());
+    segments.clear();
+    segments.extend(rows.iter_mut().map(|row| {
+        let (head, tail) = core::mem::take(row).split_at_mut(columns);
+        *row = tail;
+        head
+    }));
+    drop(rows);
+    (columns > 0).then_some(columns)
+}
+
+/// Run `work` inside `simd`'s target-feature scope. Rayon calls workers
+/// outside the caller's scope, so the lifting kernels would not inline.
+#[cfg(feature = "parallel")]
+#[expect(
+    clippy::inline_always,
+    reason = "the worker body must inline into the SIMD target-feature scope"
+)]
+#[inline(always)]
+fn in_simd_scope<S: Simd>(simd: S, work: impl FnOnce()) {
+    #[cfg(feature = "simd")]
+    simd.vectorize(work);
+    #[cfg(not(feature = "simd"))]
+    {
+        let _ = simd;
+        work();
+    }
+}
+
+/// Copy a strip's rows into `block`: its low-pass rows, then its high-pass rows.
+#[expect(
+    clippy::inline_always,
+    reason = "strip copies are specialized inside each SIMD dispatch target"
+)]
+#[inline(always)]
+fn gather_strip<'a, S: Simd>(
+    simd: S,
+    block: &mut [f32],
+    columns: usize,
+    rows: impl Iterator<Item = &'a [f32]>,
+    level: LevelRegion,
+) {
+    for (y, row) in rows.enumerate() {
+        let band_row = if (y % 2 == 1) == level.odd_y {
+            y / 2
+        } else {
+            level.low_height + y / 2
+        };
+        copy_row(simd, &mut block[band_row * columns..][..columns], row);
+    }
+}
+
+#[expect(
+    clippy::inline_always,
+    reason = "the lifting kernels are specialized inside each SIMD dispatch target"
+)]
+#[inline(always)]
+fn lift_strip<S: Simd>(
+    simd: S,
+    block: &mut [f32],
+    columns: usize,
+    level: LevelRegion,
+    reversible: bool,
+) {
+    let (low, high) = block.split_at_mut(level.low_height * columns);
+    lift(simd, low, high, columns, level.odd_y, reversible);
+}
+
+#[expect(
+    clippy::inline_always,
+    reason = "strip copies are specialized inside each SIMD dispatch target"
+)]
+#[inline(always)]
+fn scatter_strip<'a, S: Simd>(
+    simd: S,
+    block: &[f32],
+    columns: usize,
+    rows: impl Iterator<Item = &'a mut [f32]>,
+) {
+    for (row, packed) in rows.zip(block.chunks_exact(columns)) {
+        copy_row(simd, row, packed);
+    }
+}
+
+/// Split one row into its packed halves through `line`, then lift it.
+#[expect(
+    clippy::inline_always,
+    reason = "the lifting kernels are specialized inside each SIMD dispatch target"
+)]
+#[inline(always)]
+fn lift_row<S: Simd>(
+    simd: S,
+    row: &mut [f32],
+    line: &mut [f32],
+    level: LevelRegion,
+    reversible: bool,
+) {
+    line.copy_from_slice(row);
+    let (low, high) = row.split_at_mut(level.low_width);
+    let (even, odd) = if level.odd_x {
+        (&mut *high, &mut *low)
+    } else {
+        (&mut *low, &mut *high)
+    };
+    let (pairs, tail) = line.as_chunks::<2>();
+    for ((even, odd), &[first, second]) in even.iter_mut().zip(odd.iter_mut()).zip(pairs) {
+        *even = first;
+        *odd = second;
+    }
+    if let ([last], Some(even)) = (tail, even.last_mut()) {
+        *even = *last;
+    }
+    lift(simd, low, high, 1, level.odd_x, reversible);
 }
 
 /// Lift `columns` parallel lines held as their low-pass rows `low` and their

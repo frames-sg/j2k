@@ -193,6 +193,7 @@ impl J2kEncodeStageAccelerator for CombinedInputRecordingAccelerator {
             3,
             job.bit_depth,
             job.signed,
+            false,
         )
         .expect("valid test pixels");
         if job.reversible {

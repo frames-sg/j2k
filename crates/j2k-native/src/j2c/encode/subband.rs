@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::allocation::{checked_add_bytes, checked_element_bytes};
+use super::allocation::{checked_element_bytes, host_allocation_failed};
 use super::code_block_metadata::validate_accelerated_ht_code_block;
 use super::tier1_allocation::{
     prepared_subbands_ownership, public_ht_blocks_ownership, Tier1PhaseTracker,
@@ -204,7 +204,14 @@ pub(super) fn prepare_subband_for_session(
     let (mut quantized, quantized_bytes) =
         try_quantize_subband(request, plan, &mut tracker, accelerator)?;
     apply_roi_maxshift_encode_for_session(&mut quantized, request, quantized_bytes, &mut tracker)?;
-    prepare_quantized_subband(request, plan, &quantized, quantized_bytes, &mut tracker)
+    prepare_quantized_subband(
+        request,
+        plan,
+        &quantized,
+        quantized_bytes,
+        &mut tracker,
+        accelerator.prefer_parallel_cpu_code_block_fallback(),
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -388,6 +395,7 @@ fn try_quantize_subband(
             request.step_size,
             plan.range_bits,
             request.reversible,
+            accelerator.prefer_parallel_cpu_code_block_fallback(),
         )?,
     };
     let actual_bytes =
@@ -402,6 +410,7 @@ fn prepare_quantized_subband(
     quantized: &[i32],
     quantized_bytes: usize,
     tracker: &mut Tier1PhaseTracker<'_, '_>,
+    parallel: bool,
 ) -> NativeEncodePipelineResult<PreparedEncodeSubband> {
     let code_block_count = usize::try_from(plan.num_cbs_x.checked_mul(plan.num_cbs_y).ok_or(
         crate::EncodeError::ArithmeticOverflow {
@@ -416,58 +425,69 @@ fn prepare_quantized_subband(
         [quantized_bytes],
         "prepared code-block owners",
     )?;
-    let mut prepared_coefficient_bytes = 0usize;
-
-    for cby in 0..plan.num_cbs_y {
-        for cbx in 0..plan.num_cbs_x {
-            let (x0, cbw) = super::tile_grid::block_span(
-                request.origin.0,
-                request.width,
-                request.cb_width,
-                cbx,
-            )?;
-            let (y0, cbh) = super::tile_grid::block_span(
-                request.origin.1,
-                request.height,
-                request.cb_height,
-                cby,
-            )?;
-
-            let coefficient_count = (cbw as usize).checked_mul(cbh as usize).ok_or(
-                crate::EncodeError::ArithmeticOverflow {
-                    what: "prepared code-block coefficient count",
-                },
-            )?;
-            let (mut cb_coeffs, cb_bytes) = tracker.try_vec::<i32>(
-                coefficient_count,
-                [
-                    quantized_bytes,
-                    code_block_owner_bytes,
-                    prepared_coefficient_bytes,
-                ],
-                "prepared i32 code-block coefficients",
-            )?;
-            copy_code_block_coefficients_into(
-                quantized,
-                request.width as usize,
-                x0 as usize,
-                y0 as usize,
-                cbw as usize,
-                cbh as usize,
-                &mut cb_coeffs,
-            )?;
-            prepared_coefficient_bytes = checked_add_bytes(
-                prepared_coefficient_bytes,
-                cb_bytes,
-                "prepared i32 code-block coefficient graph",
-            )?;
-
-            code_blocks.push(PreparedEncodeCodeBlock {
-                coefficients: super::PreparedCodeBlockCoefficients::I32(cb_coeffs),
-                width: cbw,
-                height: cbh,
-            });
-        }
+    // The blocks tile the subband, so charging all of its samples up front
+    // lets the blocks fill in any order.
+    let what = "prepared i32 code-block coefficients";
+    let coefficient_bytes = checked_element_bytes::<i32>(quantized.len(), what)?;
+    tracker.check(
+        [quantized_bytes, code_block_owner_bytes, coefficient_bytes],
+        what,
+    )?;
+    code_blocks.resize_with(code_block_count, || PreparedEncodeCodeBlock {
+        coefficients: super::PreparedCodeBlockCoefficients::Empty,
+        width: 0,
+        height: 0,
+    });
+    let (origin, width, height) = (request.origin, request.width, request.height);
+    let (cb_width, cb_height) = (request.cb_width, request.cb_height);
+    let fill = |(index, block): (usize, &mut PreparedEncodeCodeBlock)| {
+        let index = u32::try_from(index).map_err(|_| crate::EncodeError::ArithmeticOverflow {
+            what: "prepared code-block count",
+        })?;
+        let (x0, cbw) =
+            super::tile_grid::block_span(origin.0, width, cb_width, index % plan.num_cbs_x)?;
+        let (y0, cbh) =
+            super::tile_grid::block_span(origin.1, height, cb_height, index / plan.num_cbs_x)?;
+        let count = (cbw as usize).checked_mul(cbh as usize).ok_or(
+            crate::EncodeError::ArithmeticOverflow {
+                what: "prepared code-block coefficient count",
+            },
+        )?;
+        let mut cb_coeffs = Vec::new();
+        cb_coeffs
+            .try_reserve_exact(count)
+            .map_err(|_| host_allocation_failed(what, count.saturating_mul(4)))?;
+        copy_code_block_coefficients_into(
+            quantized,
+            width as usize,
+            x0 as usize,
+            y0 as usize,
+            cbw as usize,
+            cbh as usize,
+            &mut cb_coeffs,
+        )?;
+        *block = PreparedEncodeCodeBlock {
+            coefficients: super::PreparedCodeBlockCoefficients::I32(cb_coeffs),
+            width: cbw,
+            height: cbh,
+        };
+        Ok::<(), NativeEncodePipelineError>(())
+    };
+    #[cfg(feature = "parallel")]
+    if parallel && code_block_count > 1 && rayon::current_num_threads() > 1 {
+        use rayon::prelude::*;
+        code_blocks
+            .par_iter_mut()
+            .enumerate()
+            .with_min_len(4)
+            .try_for_each(fill)?;
+    } else {
+        code_blocks.iter_mut().enumerate().try_for_each(fill)?;
+    }
+    #[cfg(not(feature = "parallel"))]
+    {
+        let _ = parallel;
+        code_blocks.iter_mut().enumerate().try_for_each(fill)?;
     }
 
     let prepared = prepared_subband(request, plan, code_blocks, None, None);

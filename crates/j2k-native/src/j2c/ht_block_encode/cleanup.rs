@@ -56,10 +56,22 @@ pub(super) fn try_encode_cleanup_segment_from_view_in_workspace(
     total_bitplanes: u8,
     workspace: &mut HtEncodeWorkspace,
 ) -> EncodeResult<Vec<u8>> {
-    let source = I32CleanupBlockView::new(
-        coefficients,
-        u32::from(31_u8.saturating_sub(total_bitplanes)),
-    );
+    let shift = u32::from(31_u8.saturating_sub(total_bitplanes));
+    // Gap-free blocks index samples directly; the strided view divides by
+    // the width for every sample.
+    if let Some(samples) = coefficients.contiguous() {
+        return try_encode_cleanup_segment_from_source(
+            &I32CleanupCoefficients {
+                coefficients: samples,
+                shift,
+            },
+            missing_msbs,
+            coefficients.width(),
+            coefficients.height(),
+            workspace,
+        );
+    }
+    let source = I32CleanupBlockView::new(coefficients, shift);
     try_encode_cleanup_segment_from_source(
         &source,
         missing_msbs,
