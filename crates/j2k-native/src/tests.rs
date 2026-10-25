@@ -4,6 +4,7 @@ use super::*;
 use crate::j2c::ComponentData;
 
 mod component_layout;
+mod fused_last_level;
 mod ht_refinement;
 mod idwt_into_channels;
 mod idwt_window_storage;

@@ -4,13 +4,15 @@ use alloc::vec::Vec;
 
 use super::super::codestream::WaveletTransform;
 use super::{
-    bail, ComponentInfo, ComponentTile, DecodingError, Header, HtCodeBlockDecoder,
-    J2kStoreComponentJob, OutputRegion, ResolutionTile, Result, Tile, TileDecodeContext,
+    bail, ComponentInfo, ComponentTile, DecodingError, DecompositionStorage, Header,
+    HtCodeBlockDecoder, J2kStoreComponentJob, OutputRegion, ResolutionTile, Result, Tile,
+    TileDecodeContext,
 };
-use crate::j2c::idwt::IdwtPlacement;
+use crate::j2c::build::CoefficientLayout;
+use crate::j2c::idwt::{IdwtPlacement, LastLevel};
 use crate::j2c::rect::IntRect;
 use crate::j2c::roi::{output_grid_offset, output_region_rect};
-use crate::math::round_ties_even_then_add;
+use crate::math::{round_ties_even_then_add, SIMD_WIDTH};
 
 mod upsample;
 
@@ -297,6 +299,108 @@ pub(super) fn store<'a>(
         }
     }
 
+    Ok(())
+}
+
+/// The last IDWT level a decode can leave to the RGB8 pack with its deferred
+/// MCT, or `None` to store samples. The tile must cover the whole image with
+/// three 8-bit components at full resolution that share one transform, each
+/// ending in a banded level of at least two whose sub-bands are packed as
+/// built, and each coefficient buffer must fit its plane without padding,
+/// so that [`store_last_level_bands`] can swap one for the other.
+pub(super) fn fused_last_level(
+    tile: &Tile<'_>,
+    header: &Header<'_>,
+    tile_ctx: &TileDecodeContext,
+    storage: &DecompositionStorage<'_>,
+    hooked: bool,
+) -> Option<LastLevel> {
+    #[cfg(test)]
+    if tile_ctx.staged_rgb8_pack {
+        return None;
+    }
+    if !tile_ctx.defer_mct
+        || hooked
+        || !tile.mct
+        || tile_ctx.output_region.is_some()
+        || storage.exact_integer_decode
+        || storage.roi_plan.is_some()
+        || storage.coefficient_layout != CoefficientLayout::Component
+        || header.skipped_resolution_levels != 0
+        || header.component_infos.len() != 3
+        || tile_ctx.channel_data.len() != 3
+        || !storage.coefficients.len().is_multiple_of(SIMD_WIDTH)
+    {
+        return None;
+    }
+    let (x0, y0) = output_grid_offset(&header.size_data);
+    let (width, height) = (
+        header.size_data.image_width(),
+        header.size_data.image_height(),
+    );
+    let image = IntRect::from_xywh(x0, y0, width, height);
+    let transform = header.component_infos[0].wavelet_transform();
+    let mut level = None;
+    let components = header.component_infos.iter().zip(&tile_ctx.channel_data);
+    for (idx, (info, channel)) in components.enumerate() {
+        let decompositions = storage.tile_decompositions.get(idx)?.decompositions.clone();
+        let decompositions = &storage.decompositions[decompositions];
+        let last = decompositions
+            .last()
+            .filter(|_| decompositions.len() >= 2)?;
+        let size = &info.size_info;
+        let bands = last.sub_bands.map(|band| &storage.sub_bands[band]);
+        if size.precision != 8
+            || (size.horizontal_resolution, size.vertical_resolution) != (1, 1)
+            || info.wavelet_transform() != transform
+            || tile.component_infos.get(idx)?.wavelet_transform() != transform
+            || channel.integer_container.is_some()
+            || channel.container.truncated().len() != storage.coefficients.len()
+            || last.rect != image
+            || bands.iter().any(|band| band.storage_rect != band.rect)
+        {
+            return None;
+        }
+        let bands = bands.map(|band| (band.rect, band.coefficients.clone()));
+        let candidate = LastLevel::new(last.rect, bands, transform)?;
+        if level.is_some_and(|level| level != candidate) {
+            return None;
+        }
+        level = Some(candidate);
+    }
+    level
+}
+
+/// Store a component whose last IDWT level [`fused_last_level`] left to the
+/// pack. The IDWT stopped at the level's LL band, in the component's
+/// `fused_ll_bands` buffer, and the coefficient buffer, which holds the
+/// level's other sub-bands, becomes the component's plane. The plane's
+/// allocation becomes the next component's coefficient buffer.
+pub(super) fn store_last_level_bands(
+    tile_ctx: &mut TileDecodeContext,
+    storage: &mut DecompositionStorage<'_>,
+    component_idx: usize,
+    level: &LastLevel,
+) -> Result<()> {
+    let ll_rect = level.ll_rect();
+    let ll_len = ll_rect.width() as usize * ll_rect.height() as usize;
+    if tile_ctx.idwt_output.rect != ll_rect
+        || tile_ctx.fused_ll_bands.get(component_idx).map(Vec::len) != Some(ll_len)
+    {
+        bail!(DecodingError::CodeBlockDecodeFailure);
+    }
+    let samples = storage.coefficients.len();
+    if !tile_ctx.channel_data[component_idx]
+        .container
+        .swap_samples(&mut storage.coefficients)
+    {
+        bail!(DecodingError::CodeBlockDecodeFailure);
+    }
+    storage.coefficients.truncate(samples);
+    if storage.coefficients.len() != samples {
+        bail!(DecodingError::CodeBlockDecodeFailure);
+    }
+    tile_ctx.stored_plane_samples = tile_ctx.stored_plane_samples.saturating_add(samples);
     Ok(())
 }
 
