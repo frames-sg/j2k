@@ -117,6 +117,12 @@ impl J2kDecoder<'_> {
         let selected = match request.op {
             MetalDecodeOp::Full
                 if request.backend == BackendRequest::Auto
+                    && (request.fmt != PixelFormat::Rgb8
+                        || self
+                            .inner
+                            .info()
+                            .tile_layout
+                            .is_some_and(|grid| grid.tiles_x == 1 && grid.tiles_y == 1))
                     && j2k::J2kDecoder::inspect_support(self.bytes).is_ok_and(|support| {
                         routing::auto_full_decode_uses_metal(
                             plan.output_dims(),
