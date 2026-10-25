@@ -5,6 +5,11 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CPU encodes of 8-bit RGB under the forward MCT lift the first DWT level
+  straight from the pixels in cache-sized bands, without writing and rereading
+  three transformed planes or taking a spare plane, and with three or more
+  workers run the planes' later levels side by side on the pool. Output is
+  unchanged.
 - The Metal Auto host-output encode accelerator reports
   `declines_every_stage` as `true` when every remaining stage hook would
   decline, so those encodes take the CPU's stage-free paths. Routing is

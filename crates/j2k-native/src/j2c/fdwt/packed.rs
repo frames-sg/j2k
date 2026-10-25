@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{forward_lift_53_i64_phase, lifting};
+use crate::j2c::forward_mct::{ict_pixel, rct_pixel};
 use crate::math::{dispatch, Level};
 use crate::{EncodeError, EncodeResult};
 use j2k_types::encode_geometry::encode_dwt_level_dimensions_at_origin;
@@ -262,6 +263,30 @@ pub(super) struct LevelRegion {
     pub(super) odd_y: bool,
 }
 
+/// The `width` x `height` level at `level_origin` of a plane of row stride
+/// `stride`.
+fn level_region(
+    stride: usize,
+    width: usize,
+    height: usize,
+    level_origin: (u32, u32),
+) -> EncodeResult<LevelRegion> {
+    let level = encode_dwt_level_dimensions_at_origin(
+        u32_from_usize(width, "packed forward DWT level width")?,
+        u32_from_usize(height, "packed forward DWT level height")?,
+        level_origin,
+    );
+    Ok(LevelRegion {
+        stride,
+        width,
+        height,
+        low_width: usize_from_u32(level.low_width, "packed forward DWT low width")?,
+        low_height: usize_from_u32(level.low_height, "packed forward DWT low height")?,
+        odd_x: level_origin.0 & 1 != 0,
+        odd_y: level_origin.1 & 1 != 0,
+    })
+}
+
 fn forward_dwt_packed_core<T: Copy>(
     coefficients: &mut [T],
     width: usize,
@@ -280,29 +305,11 @@ fn forward_dwt_packed_core<T: Copy>(
         if current_width < 2 && current_height < 2 {
             break;
         }
-        let level = encode_dwt_level_dimensions_at_origin(
-            u32_from_usize(current_width, "packed forward DWT level width")?,
-            u32_from_usize(current_height, "packed forward DWT level height")?,
-            level_origin,
-        );
-        let low_width = usize_from_u32(level.low_width, "packed forward DWT low width")?;
-        let low_height = usize_from_u32(level.low_height, "packed forward DWT low height")?;
-        transform_level(
-            coefficients,
-            line_scratch,
-            LevelRegion {
-                stride: width,
-                width: current_width,
-                height: current_height,
-                low_width,
-                low_height,
-                odd_x: level_origin.0 & 1 != 0,
-                odd_y: level_origin.1 & 1 != 0,
-            },
-        )?;
+        let level = level_region(width, current_width, current_height, level_origin)?;
+        transform_level(coefficients, line_scratch, level)?;
 
-        current_width = low_width;
-        current_height = low_height;
+        current_width = level.low_width;
+        current_height = level.low_height;
         level_origin = (level_origin.0.div_ceil(2), level_origin.1.div_ceil(2));
         actual_levels += 1;
     }
@@ -431,6 +438,178 @@ pub(crate) fn try_forward_dwt_packed_f32(
         spare.copy_from_slice(coefficients);
     }
     Ok(shape)
+}
+
+/// [`try_forward_dwt_packed_f32`] for the three components of 8-bit RGB
+/// `pixels` under the forward RCT (reversible) or ICT, into `outputs`. The
+/// first level of all three runs in one pass of cache-sized bands that read
+/// each pixel once, level shifted and transformed as the deinterleave and
+/// MCT stages do, so no component plane is written and read back; the other
+/// levels run in place in each output. This needs at least
+/// `packed_planes_dwt_scratch_len(width, height, 3)` scratch samples, and
+/// each further multiple of it runs one more worker.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the pixels, output planes, plane geometry and scratch are independent inputs"
+)]
+pub(crate) fn try_forward_dwt_packed_f32_from_rgb8(
+    pixels: &[u8],
+    outputs: [&mut [f32]; 3],
+    width: u32,
+    height: u32,
+    num_levels: u8,
+    reversible: bool,
+    line_scratch: &mut [f32],
+    origin: (u32, u32),
+) -> EncodeResult<PackedDwtShape> {
+    for output in &outputs {
+        validate_packed_dwt_plane(output.len(), width, height)?;
+    }
+    validate_line_scratch(line_scratch.len(), width, height)?;
+    let workers = line_scratch.len() / lifting::packed_planes_dwt_scratch_len(width, height, 3)?;
+    let pixels = pixels.as_chunks::<3>().0;
+    if workers == 0 || pixels.len() < outputs[0].len() {
+        return Err(EncodeError::InvalidInput {
+            what: "RGB forward DWT needs every pixel and strip scratch",
+        });
+    }
+    let stride = usize_from_u32(width, "packed forward DWT width")?;
+    let height = usize_from_u32(height, "packed forward DWT height")?;
+    let transform = (stride, height, num_levels, line_scratch, origin);
+    if reversible {
+        forward_rgb8(
+            &rgb8_rows(pixels, stride, rct_pixel),
+            outputs,
+            transform,
+            workers,
+            true,
+        )
+    } else {
+        forward_rgb8(
+            &rgb8_rows(pixels, stride, ict_pixel),
+            outputs,
+            transform,
+            workers,
+            false,
+        )
+    }
+}
+
+/// Rows of the three transformed components of RGB `pixels`, for
+/// `lifting::transform_planes_from`.
+fn rgb8_rows<'a>(
+    pixels: &'a [[u8; 3]],
+    stride: usize,
+    transform: impl Fn(f32, f32, f32) -> [f32; 3] + Sync + 'a,
+) -> impl Fn(usize, usize, [&mut [f32]; 3]) + Sync + 'a {
+    move |y, first, [luma, blue, red]| {
+        let samples = luma.iter_mut().zip(blue.iter_mut()).zip(red.iter_mut());
+        for (((y, cb), cr), pixel) in samples.zip(&pixels[y * stride + first..]) {
+            let [r, g, b] = pixel.map(|value| f32::from(value) - 128.0);
+            [*y, *cb, *cr] = transform(r, g, b);
+        }
+    }
+}
+
+/// A reader of the three planes' rows for `lifting::transform_planes_from`.
+type RgbRows<'a> = dyn Fn(usize, usize, [&mut [f32]; 3]) + Sync + 'a;
+
+/// The packed transform of the three planes `read_rows` yields: their first
+/// level together, out of place into `outputs`, then each one's other levels
+/// in place.
+fn forward_rgb8(
+    read_rows: &RgbRows<'_>,
+    mut outputs: [&mut [f32]; 3],
+    (width, height, num_levels, line_scratch, origin): (usize, usize, u8, &mut [f32], (u32, u32)),
+    workers: usize,
+    reversible: bool,
+) -> EncodeResult<PackedDwtShape> {
+    match first_level_region(width, height, num_levels, origin)? {
+        Some(level) => dispatch!(Level::new(), simd => lifting::transform_planes_from(
+            simd,
+            read_rows,
+            outputs.each_mut().map(|output| &mut **output),
+            line_scratch,
+            workers,
+            level,
+            reversible,
+        ))?,
+        None => {
+            for y in 0..height {
+                read_rows(
+                    y,
+                    0,
+                    outputs
+                        .each_mut()
+                        .map(|output| &mut output[y * width..][..width]),
+                );
+            }
+        }
+    }
+    // The levels after the first, for one plane on `workers` scratch parts.
+    let later_levels = |output: &mut [f32], scratch: &mut [f32], workers: usize| {
+        let mut first_level = true;
+        forward_dwt_packed_core(
+            output,
+            width,
+            height,
+            num_levels,
+            scratch,
+            origin,
+            |plane, scratch, level| {
+                if core::mem::take(&mut first_level) {
+                    return Ok(());
+                }
+                dispatch!(Level::new(), simd => {
+                    lifting::transform_level(simd, plane, scratch, workers, level, reversible)
+                })
+            },
+        )
+    };
+    let [luma, blue, red] = outputs;
+    // On the pool the three planes run side by side, each on a third of the
+    // workers, so one plane's per-level barriers and its small, poorly scaling
+    // levels overlap the others' work. Each plane sees the same operations.
+    // With no later level there is nothing to fork for.
+    #[cfg(feature = "parallel")]
+    if workers >= 3 && num_levels > 1 {
+        let part = workers / 3 * (line_scratch.len() / workers);
+        let (luma_scratch, rest) = line_scratch.split_at_mut(part);
+        let (blue_scratch, rest) = rest.split_at_mut(part);
+        let red_scratch = &mut rest[..part];
+        let per_plane = workers / 3;
+        let ((first, second), third) = rayon::join(
+            || {
+                rayon::join(
+                    || later_levels(luma, luma_scratch, per_plane),
+                    || later_levels(blue, blue_scratch, per_plane),
+                )
+            },
+            || later_levels(red, red_scratch, per_plane),
+        );
+        // The three planes share one geometry, so one shape describes them.
+        second?;
+        third?;
+        return first;
+    }
+    let first = later_levels(luma, line_scratch, workers);
+    later_levels(blue, line_scratch, workers)?;
+    later_levels(red, line_scratch, workers)?;
+    first
+}
+
+/// The first level of a `width` x `height` plane at `origin`, as
+/// `forward_dwt_packed_core` lifts it; `None` when no level is lifted.
+fn first_level_region(
+    width: usize,
+    height: usize,
+    num_levels: u8,
+    origin: (u32, u32),
+) -> EncodeResult<Option<LevelRegion>> {
+    if num_levels == 0 || (width < 2 && height < 2) {
+        return Ok(None);
+    }
+    level_region(width, width, height, origin).map(Some)
 }
 
 /// Transform one exact i64 sample plane in place with the reversible 5/3 DWT.
@@ -892,6 +1071,87 @@ mod tests {
                     let bits =
                         |plane: &[f32]| plane.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
                     assert_eq!(bits(output), bits(&expected), "{context}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rgb8_transform_matches_deinterleave_mct_and_transform_bit_for_bit() {
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let geometries = [(1, 1), (2, 9), (3, 5), (65, 70), (300, 260), (2049, 5)];
+        for ((width, height), origin, reversible, num_levels) in geometries
+            .into_iter()
+            .flat_map(|g| [(0, 0), (1, 1), (3, 6)].map(|o| (g, o)))
+            .flat_map(|(g, o)| [true, false].map(|r| (g, o, r)))
+            .flat_map(|(g, o, r)| [0, 1, 2, u8::MAX].map(|n| (g, o, r, n)))
+        {
+            let pixels = (0..width * height * 3)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    u8::try_from(state >> 56).expect("8-bit sample")
+                })
+                .collect::<Vec<_>>();
+            let mut planes = (0..3)
+                .map(|c| {
+                    let level_shift = |pixel: &[u8]| f32::from(pixel[c]) - 128.0;
+                    pixels.chunks(3).map(level_shift).collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            if reversible {
+                crate::j2c::forward_mct::forward_rct(&mut planes);
+            } else {
+                crate::j2c::forward_mct::forward_ict(&mut planes);
+            }
+            let (w, h) = (
+                u32::try_from(width).expect("width"),
+                u32::try_from(height).expect("height"),
+            );
+            let strip_scratch = packed_dwt_scratch_len(w, h).expect("strip scratch");
+            let rgb_scratch =
+                super::lifting::packed_planes_dwt_scratch_len(w, h, 3).expect("RGB strip scratch");
+            let mut expected_shape = None;
+            for plane in &mut planes {
+                let mut scratch = vec![0.0; strip_scratch];
+                expected_shape = Some(try_forward_dwt_packed_f32(
+                    plane,
+                    w,
+                    h,
+                    num_levels,
+                    reversible,
+                    &mut scratch,
+                    None,
+                    origin,
+                ));
+            }
+            // Three strip scratches run three workers on large levels.
+            for scratch_len in [rgb_scratch, 3 * rgb_scratch] {
+                let mut actual = [(); 3].map(|()| vec![0.0; width * height]);
+                let mut scratch = vec![0.0; scratch_len];
+                let shape = try_forward_dwt_packed_f32_from_rgb8(
+                    &pixels,
+                    actual.each_mut().map(Vec::as_mut_slice),
+                    w,
+                    h,
+                    num_levels,
+                    reversible,
+                    &mut scratch,
+                    origin,
+                );
+                let context = format!(
+                    "{width}x{height} origin {origin:?} levels {num_levels} \
+                     reversible {reversible} scratch {scratch_len}"
+                );
+                assert_eq!(Some(shape), expected_shape, "{context}");
+                let bits = |plane: &[f32]| plane.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+                for (component, (actual, expected)) in actual.iter().zip(&planes).enumerate() {
+                    assert_eq!(
+                        bits(actual),
+                        bits(expected),
+                        "{context} component {component}"
+                    );
                 }
             }
         }

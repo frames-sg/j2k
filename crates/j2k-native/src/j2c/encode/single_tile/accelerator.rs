@@ -11,7 +11,9 @@ use super::super::{
     NativeEncodePipelineError, NativeEncodePipelineResult, NativeEncodeSession,
     ResidentHtj2kEncodeError, Vec,
 };
-use super::coefficient_source::{validate_component_sampling_dwt_geometry, OwnedDwtComponent};
+use super::coefficient_source::{
+    validate_component_sampling_dwt_geometry, OwnedDwtComponent, PackedF32DwtComponent,
+};
 use super::ownership::{
     component_planes_retained_bytes, dwt_component_sources_retained_bytes,
     single_tile_plan_retained_bytes,
@@ -229,6 +231,9 @@ pub(super) fn prepare_accelerated_components(
     accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> NativeEncodePipelineResult<PreparedComponentTransforms> {
     let plan_bytes = single_tile_plan_retained_bytes(request.plan)?;
+    if let Some(prepared) = try_prepare_rgb8_dwt_components(request, plan_bytes, accelerator)? {
+        return Ok(prepared);
+    }
     let (mut components, component_bytes, deinterleave_us, mct_applied) =
         prepare_deinterleaved_components(request, plan_bytes, accelerator)?;
     let mct_us = if mct_applied {
@@ -249,6 +254,131 @@ pub(super) fn prepare_accelerated_components(
         mct_us,
         dwt_us,
     })
+}
+
+/// 8-bit RGB under the forward MCT with every stage on the CPU: the first DWT
+/// level of all three components reads the pixels in one pass, so no
+/// component plane is written and read back and no spare plane is needed.
+/// `None` leaves other requests to the staged deinterleave, MCT and DWT.
+fn try_prepare_rgb8_dwt_components(
+    request: &AcceleratedComponentRequest<'_, '_>,
+    plan_bytes: usize,
+    accelerator: &impl J2kEncodeStageAccelerator,
+) -> NativeEncodePipelineResult<Option<PreparedComponentTransforms>> {
+    let origin = request.plan.component_origin(0);
+    if !(request.plan.use_mct
+        && request.num_components == 3
+        && request.bit_depth == 8
+        && !request.signed
+        && accelerator.declines_every_stage()
+        && (1..3).all(|component| request.plan.component_origin(component) == origin))
+    {
+        return Ok(None);
+    }
+    let stage_start = profile::profile_now(request.profile_enabled);
+    let samples = request.plan.num_pixels;
+    let planes_bytes = checked_add_bytes(
+        checked_element_bytes::<Vec<f32>>(3, "transform component plane owners")?,
+        checked_element_bytes::<f32>(
+            samples
+                .checked_mul(3)
+                .ok_or(crate::EncodeError::ArithmeticOverflow {
+                    what: "transform component sample count",
+                })?,
+            "transform component plane samples",
+        )?,
+        "transform component planes",
+    )?;
+    let owner_bytes =
+        checked_element_bytes::<OwnedDwtComponent>(3, "transform DWT component owners")?;
+    let owner_phase_bytes = checked_add_bytes(plan_bytes, owner_bytes, "DWT owner phase")?;
+    let scratch_count = dwt_scratch_count(
+        request,
+        3,
+        checked_add_bytes(owner_phase_bytes, planes_bytes, "DWT owner phase")?,
+        accelerator.prefer_parallel_cpu_code_block_fallback(),
+    )?;
+    let scratch_bytes = checked_element_bytes::<f32>(scratch_count, "packed DWT line scratch")?;
+    request.session.checked_phase(
+        checked_add_bytes(
+            checked_add_bytes(owner_phase_bytes, scratch_bytes, "DWT input phase")?,
+            planes_bytes,
+            "DWT input phase",
+        )?,
+        "native encode packed DWT phase",
+    )?;
+    let mut decompositions = Vec::new();
+    decompositions
+        .try_reserve_exact(3)
+        .map_err(|_| host_allocation_failed("transform DWT component owners", owner_bytes))?;
+    let mut line_scratch = Vec::new();
+    line_scratch
+        .try_reserve_exact(scratch_count)
+        .map_err(|_| host_allocation_failed("packed DWT line scratch", scratch_bytes))?;
+    line_scratch.resize(scratch_count, 0.0);
+    let mut planes = try_rgb_planes(samples, planes_bytes)?;
+    let [luma, blue, red] = planes.as_mut_slice() else {
+        return Err(NativeEncodePipelineError::internal_invariant(
+            "RGB DWT needs three component planes",
+        ));
+    };
+    let shape = crate::j2c::fdwt::try_forward_dwt_packed_f32_from_rgb8(
+        request.pixels,
+        [luma, blue, red].map(Vec::as_mut_slice),
+        request.width,
+        request.height,
+        request.plan.num_levels,
+        request.options.reversible,
+        &mut line_scratch,
+        origin,
+    )?;
+    drop(line_scratch);
+    for coefficients in planes {
+        let geometry = crate::j2c::fdwt::PackedDwtGeometry::try_new(
+            request.width,
+            request.height,
+            coefficients.len(),
+            shape,
+        )?;
+        decompositions.push(OwnedDwtComponent::Packed(PackedF32DwtComponent {
+            coefficients,
+            geometry,
+        }));
+    }
+    request.session.checked_phase(
+        checked_add_bytes(
+            plan_bytes,
+            dwt_component_sources_retained_bytes(&decompositions, decompositions.capacity())?,
+            "DWT output phase",
+        )?,
+        "native encode DWT output phase",
+    )?;
+    validate_component_sampling_dwt_geometry(
+        &decompositions,
+        request.width,
+        request.height,
+        &request.plan.params.component_sampling,
+    )?;
+    Ok(Some(PreparedComponentTransforms {
+        decompositions,
+        deinterleave_us: 0,
+        mct_us: 0,
+        dwt_us: profile::elapsed_us(stage_start),
+    }))
+}
+
+/// Three zeroed planes of `samples` samples, `bytes` in all with their owners.
+fn try_rgb_planes(samples: usize, bytes: usize) -> NativeEncodePipelineResult<Vec<Vec<f32>>> {
+    let failed = || host_allocation_failed("transform component planes", bytes);
+    let mut planes = Vec::new();
+    planes.try_reserve_exact(3).map_err(|_| failed())?;
+    for _ in 0..3 {
+        let mut plane = Vec::new();
+        plane.try_reserve_exact(samples).map_err(|_| failed())?;
+        plane.resize(samples, 0.0);
+        planes.push(plane);
+    }
+    Ok(planes)
 }
 
 fn prepare_deinterleaved_components(
@@ -488,7 +618,7 @@ fn try_dwt_workspace(
         requested_owner_bytes,
         "DWT owner phase",
     )?;
-    let scratch_count = dwt_scratch_count(request, owner_phase_bytes, parallel)?;
+    let scratch_count = dwt_scratch_count(request, 1, owner_phase_bytes, parallel)?;
     let requested_scratch_bytes =
         checked_element_bytes::<f32>(scratch_count, "packed DWT line scratch")?;
     request.session.checked_phase(
@@ -543,15 +673,17 @@ fn try_dwt_workspace(
     })
 }
 
-/// One strip scratch per Rayon worker, so the CPU transform runs in parallel,
-/// when that fits the cap; otherwise one, so success never depends on the
-/// thread count.
+/// One strip scratch per Rayon worker, holding the band blocks of `planes`
+/// planes, so the CPU transform runs in parallel, when that fits the cap;
+/// otherwise one, so success never depends on the thread count.
 fn dwt_scratch_count(
     request: &AcceleratedComponentRequest<'_, '_>,
+    planes: usize,
     owner_phase_bytes: usize,
     parallel: bool,
 ) -> NativeEncodePipelineResult<usize> {
-    let serial = crate::j2c::fdwt::packed_dwt_scratch_len(request.width, request.height)?;
+    let serial =
+        crate::j2c::fdwt::packed_planes_dwt_scratch_len(request.width, request.height, planes)?;
     #[cfg(feature = "parallel")]
     if let Some(count) = serial
         .checked_mul(rayon::current_num_threads())
