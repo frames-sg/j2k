@@ -5,6 +5,10 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CPU HTJ2K cleanup decoding of non-initial quad rows reads both U-VLC values
+  of a quad pair and their length with one lookup in a 4096-entry table when the
+  codewords fit in ten bits, instead of decoding prefix and suffix in turn.
+  Output is unchanged.
 - CPU HTJ2K cleanup decoding skips the VLC decode of quad pairs whose two quads
   are zeros of the current MEL run, which code no other bits. Output is
   unchanged.
