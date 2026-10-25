@@ -463,9 +463,9 @@ fn classic_scalar_profiled_decode_matches_unprofiled_decode() {
         .expect("profiled classic decode");
 
     assert_eq!(actual, expected);
-    #[cfg(feature = "std")]
+    #[cfg(feature = "profile")]
     assert!(profile.cleanup_us > 0);
-    #[cfg(not(feature = "std"))]
+    #[cfg(not(feature = "profile"))]
     assert_eq!(profile.cleanup_us, 0);
 }
 

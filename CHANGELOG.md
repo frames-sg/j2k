@@ -5,6 +5,11 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- `j2k-native` has a `profile` feature, on by default, for its stage
+  profiling (`J2K_PROFILE_STAGES`). Without it, profiling compiles to no-ops,
+  and `std` no longer turns on `j2k-profile/std`. A single-threaded wasm32
+  decoder built with only `std` and `simd` is 16.8 KB smaller gzipped (216 KB
+  instead of 233 KB). Default builds are unchanged.
 - ARM64 CPU decodes fuse the inverse ICT, rounding and RGB8 stores in one
   vector loop for streamed 9/7 output. Output is unchanged.
 - Fused RGB8 CPU decodes reconstruct later components into the consumed
