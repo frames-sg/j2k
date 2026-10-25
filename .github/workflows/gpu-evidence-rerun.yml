@@ -1,0 +1,33 @@
+name: Retry GPU evidence
+
+on:
+  workflow_run:
+    workflows: [GPU validation]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpu-evidence-rerun-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  rerun:
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      # workflow_run uses the default branch revision, never the triggering PR code.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: scripts
+      - name: Retry the latest PR run with failed GPU evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -m scripts.rerun_gpu_evidence

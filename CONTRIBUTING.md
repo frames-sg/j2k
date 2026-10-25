@@ -47,6 +47,9 @@ fails until the required quick backend job names have succeeded:
 - `CUDA quick validation` for CUDA or shared GPU changes.
 - `Metal quick validation` for Metal or shared GPU changes.
 
+Successful GPU validation automatically retries failed jobs in the latest PR checks run for that exact head SHA if its GPU evidence job failed.
+This includes fork PRs validated through a maintainer review branch.
+
 A release candidate needs one `target=all`, `mode=full` dispatch for its exact
 commit in which `CUDA full release validation` and `Metal full release
 validation` both succeed. Performance and profiling runs go in the separate

@@ -87,7 +87,7 @@ fn every_workflow_declares_default_permissions_including_contents_read() {
 }
 
 #[test]
-fn jobs_keep_repository_permissions_read_only() {
+fn jobs_limit_write_permissions_to_guarded_exceptions() {
     let mut violations = Vec::new();
     for workflow in workflows() {
         let oidc_publisher = (workflow.file_name == "python-bindings.yml").then(|| {
@@ -106,10 +106,38 @@ fn jobs_keep_repository_permissions_read_only() {
             );
             value_mapping(publish, "PyPI publish job")
         });
+        let evidence_rerun = (workflow.file_name == "gpu-evidence-rerun.yml").then(|| {
+            let expected_trigger: Value = serde_yaml_ng::from_str(
+                "workflow_run: {workflows: [GPU validation], types: [completed]}",
+            ).expect("GPU completion trigger");
+            assert_eq!(workflow.document["on"], expected_trigger);
+            let rerun = &workflow.document["jobs"]["rerun"];
+            assert_eq!(rerun["if"].as_str(), Some(concat!(
+                "${{ github.event.workflow_run.conclusion == 'success' && ",
+                "github.event.workflow_run.event == 'workflow_dispatch' }}"
+            )));
+            let expected_permissions: Value = serde_yaml_ng::from_str(
+                "actions: write\ncontents: read",
+            ).expect("rerun permissions");
+            assert_eq!(rerun["permissions"], expected_permissions);
+            let steps = rerun["steps"].as_sequence().expect("rerun steps");
+            assert_eq!(steps.len(), 2);
+            assert!(steps[0]["uses"].as_str().expect("checkout action")
+                .starts_with("actions/checkout@"));
+            let expected_checkout: Value = serde_yaml_ng::from_str(
+                "ref: ${{ github.workflow_sha }}\npersist-credentials: false\nsparse-checkout: scripts",
+            ).expect("trusted workflow checkout");
+            assert_eq!(steps[0]["with"], expected_checkout);
+            assert_eq!(steps[1]["run"].as_str(), Some("python3 -m scripts.rerun_gpu_evidence"));
+            value_mapping(rerun, "GPU evidence rerun job")
+        });
         visit_mappings(&workflow.document, &mut |mapping| {
             let Some(permissions) = mapping_get(mapping, "permissions") else {
                 return;
             };
+            if evidence_rerun.is_some_and(|rerun| std::ptr::eq(mapping, rerun)) {
+                return;
+            }
             if oidc_publisher.is_some_and(|publish| std::ptr::eq(mapping, publish)) {
                 let scopes = value_mapping(permissions, "PyPI publisher permissions");
                 assert_eq!(scopes.len(), 1, "the publisher only needs an OIDC token");
@@ -132,7 +160,7 @@ fn jobs_keep_repository_permissions_read_only() {
     violations.dedup();
     assert!(
         violations.is_empty(),
-        "only the guarded PyPI publish job may request OIDC token creation: {violations:?}"
+        "write permissions are limited to guarded publishing and evidence reruns: {violations:?}"
     );
 }
 
