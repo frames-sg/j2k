@@ -13,11 +13,13 @@ all-features = true
 targets = []
 
 [features]
-default = ["std", "simd", "parallel"]
+default = ["std", "simd", "parallel", "profile"]
 logging = ["dep:log"]
 parallel = ["dep:rayon", "std"]
+# Stage profiling rows (`J2K_PROFILE_STAGES`). Without it, profiling compiles to no-ops.
+profile = ["std", "j2k-profile/std"]
 simd = ["fearless_simd", "std"]
-std = ["j2k-profile/std"]
+std = []
 
 [lib]
 name = "j2k_native"

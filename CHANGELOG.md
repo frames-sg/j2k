@@ -5,6 +5,11 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- `j2k-native` has a `profile` feature, on by default, for its stage
+  profiling (`J2K_PROFILE_STAGES`). Without it, profiling compiles to no-ops,
+  and `std` no longer turns on `j2k-profile/std`. A single-threaded wasm32
+  decoder built with only `std` and `simd` is 16.8 KB smaller gzipped (216 KB
+  instead of 233 KB). Default builds are unchanged.
 - Tight RGBA8 output from RGB images decodes into the caller's allocation
   and adds opaque alpha in place, avoiding a separate full RGB8 buffer.
   Pixel values and padded-output handling are unchanged.

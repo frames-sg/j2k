@@ -1,40 +1,40 @@
-#[cfg(feature = "std")]
+#[cfg(feature = "profile")]
 use core::cell::RefCell;
 
-#[cfg(feature = "std")]
+#[cfg(feature = "profile")]
 use j2k_profile::{ProfileStageMode, StageModeCache};
 
 pub(crate) use j2k_profile::{elapsed_us, profile_now, ProfileInstant};
 
-#[cfg(all(test, feature = "std"))]
+#[cfg(all(test, feature = "profile"))]
 pub(crate) use j2k_profile::ProfileSummary;
 
-#[cfg(feature = "std")]
+#[cfg(feature = "profile")]
 const PROFILE_ENV_VAR: &str = "J2K_PROFILE_STAGES";
 
-#[cfg(feature = "std")]
+#[cfg(feature = "profile")]
 #[cfg(test)]
 pub(crate) fn parse_profile_env_flag(value: Option<&str>) -> bool {
     j2k_profile::profile_stage_mode_from_value(value) != ProfileStageMode::Disabled
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "profile")]
 pub(crate) fn profile_stages_enabled() -> bool {
     profile_stage_mode() != ProfileStageMode::Disabled
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "profile")]
 fn profile_stage_mode() -> ProfileStageMode {
     static MODE: StageModeCache = StageModeCache::new();
     MODE.mode_from_env(PROFILE_ENV_VAR)
 }
 
-#[cfg(not(feature = "std"))]
+#[cfg(not(feature = "profile"))]
 pub(crate) fn profile_stages_enabled() -> bool {
     false
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "profile")]
 pub(crate) fn emit_profile_row(op: &str, path: &str, fields: &[(&str, u128)]) {
     j2k_profile::emit_profile_row_u128(
         profile_stage_mode(),
@@ -46,16 +46,16 @@ pub(crate) fn emit_profile_row(op: &str, path: &str, fields: &[(&str, u128)]) {
     );
 }
 
-#[cfg(not(feature = "std"))]
+#[cfg(not(feature = "profile"))]
 pub(crate) fn emit_profile_row(_op: &str, _path: &str, _fields: &[(&str, u128)]) {}
 
-#[cfg(feature = "std")]
+#[cfg(feature = "profile")]
 thread_local! {
     static PROFILE_SUMMARY: RefCell<j2k_profile::ProfileSummary> =
         RefCell::new(j2k_profile::ProfileSummary::default().emit_on_drop());
 }
 
-#[cfg(all(test, feature = "std"))]
+#[cfg(all(test, feature = "profile"))]
 mod tests {
     use super::*;
 

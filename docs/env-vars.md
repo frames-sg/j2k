@@ -17,7 +17,7 @@ Stability values:
 | --- | --- | --- | --- |
 | `J2K_GPU_ROUTE_PROFILE` | Emits facade/adapter GPU route decisions. Use `1` for rows or `summary` for aggregate rows. | Disabled | Experimental |
 | `J2K_JPEG_PROFILE_STAGES` | Emits JPEG CPU profiling rows. Use `1` for rows or `summary` where supported. | Disabled | Experimental |
-| `J2K_PROFILE_STAGES` | Emits native/CUDA J2K profiling rows. Use `1` for rows or `summary` where supported. CPU HTJ2K phase timings (`ht_*_us`) cover serially decoded code blocks only, such as decodes on one thread. | Disabled | Experimental |
+| `J2K_PROFILE_STAGES` | Emits native/CUDA J2K profiling rows. Use `1` for rows or `summary` where supported. Native rows need `j2k-native`'s `profile` feature, which is on by default. CPU HTJ2K phase timings (`ht_*_us`) cover serially decoded code blocks only, such as decodes on one thread. | Disabled | Experimental |
 | `J2K_CUDA_TRACE` | Writes CUDA HTJ2K profile trace JSON to this path. The file must not exist and its parent directory must. | No trace file | Experimental |
 | `J2K_CUDA_IDWT_TRACE` | Enables CUDA IDWT trace/profile output. | Disabled | Experimental |
 | `J2K_CUDA_FINAL_STORE_PROFILE` | Restricts the CUDA HTJ2K decode benchmark to the final-IDWT/store timing matrix. Requires `J2K_REQUIRE_CUDA_BENCH=1`. | Disabled | Benchmark |
