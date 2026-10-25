@@ -5,6 +5,9 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CPU encodes scan each subband's HT code-block magnitudes on the pool, and
+  copy the rows of large packed bands into their contiguous subband on the
+  pool, instead of in serial passes. Output is unchanged.
 - CPU encodes lift the forward DWT's column strips and rows on the pool when
   one strip scratch per worker fits the memory cap, and run the RGB8
   deinterleave, subband quantization and code-block copies on the pool. HT code

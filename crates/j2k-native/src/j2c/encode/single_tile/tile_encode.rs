@@ -74,6 +74,7 @@ pub(super) fn encode_tile_packets<S: DwtComponentSource>(
         component_resolution_packets.iter().flatten(),
         plan.num_levels,
         options.reversible,
+        accelerator.prefer_parallel_cpu_code_block_fallback(),
     )?;
 
     let component_resolution_packets = split_component_resolution_packets_by_precinct_for_session(

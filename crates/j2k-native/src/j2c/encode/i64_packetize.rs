@@ -48,6 +48,7 @@ pub(super) fn packetize_i64_component_resolution_packets<A: J2kEncodeStageAccele
         component_resolution_packets.iter().flatten(),
         num_levels,
         options.reversible,
+        accelerator.prefer_parallel_cpu_code_block_fallback(),
     )?;
     let component_resolution_packets = split_component_resolution_packets_by_precinct_for_session(
         component_resolution_packets,
