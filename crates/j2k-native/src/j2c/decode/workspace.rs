@@ -4,29 +4,72 @@
 
 use super::{DecompositionStorage, OutputRegion, TileDecodeContext};
 #[cfg(feature = "parallel")]
-use crate::HtCodeBlockDecodeWorkspace;
+use crate::{HtCodeBlockDecodeWorkspace, J2kCodeBlockDecodeWorkspace};
 #[cfg(feature = "parallel")]
 use alloc::vec::Vec;
 
+/// A worker's slot in a retained bank of code-block decode workspaces.
 #[cfg(feature = "parallel")]
-pub(in crate::j2c::decode) struct HtTaskWorkspace {
-    pub(in crate::j2c::decode) workspace: HtCodeBlockDecodeWorkspace,
+pub(in crate::j2c::decode) struct TaskWorkspace<W> {
+    pub(in crate::j2c::decode) workspace: W,
     // Componentwise maxima make orthogonal edge shapes reusable without growth.
     pub(in crate::j2c::decode) prepared_width: u32,
     pub(in crate::j2c::decode) prepared_height: u32,
 }
 
 #[cfg(feature = "parallel")]
-pub(in crate::j2c::decode) fn ht_task_workspace_bytes(
-    slots: &Vec<HtTaskWorkspace>,
+pub(in crate::j2c::decode) type HtTaskWorkspace = TaskWorkspace<HtCodeBlockDecodeWorkspace>;
+
+/// A code-block decode workspace that a retained bank keeps per worker.
+#[cfg(feature = "parallel")]
+pub(in crate::j2c::decode) trait TaskScratch: Default + Send {
+    /// The bytes budgeted for blocks of up to `width` x `height`.
+    fn planned_bytes(width: u32, height: u32) -> crate::Result<usize>;
+    fn prepare_for(&mut self, width: u32, height: u32) -> crate::Result<()>;
+    fn owned_bytes(&self) -> crate::Result<usize>;
+}
+
+#[cfg(feature = "parallel")]
+impl TaskScratch for HtCodeBlockDecodeWorkspace {
+    fn planned_bytes(width: u32, height: u32) -> crate::Result<usize> {
+        crate::j2c::ht_block_decode::ht_decode_workspace_bytes(width, height)
+    }
+
+    fn prepare_for(&mut self, width: u32, height: u32) -> crate::Result<()> {
+        self.reserve(width, height)
+    }
+
+    fn owned_bytes(&self) -> crate::Result<usize> {
+        self.allocated_bytes()
+    }
+}
+
+#[cfg(feature = "parallel")]
+impl TaskScratch for J2kCodeBlockDecodeWorkspace {
+    fn planned_bytes(width: u32, height: u32) -> crate::Result<usize> {
+        crate::j2c::bitplane::classic_decode_workspace_bytes(width, height)
+    }
+
+    fn prepare_for(&mut self, width: u32, height: u32) -> crate::Result<()> {
+        self.prepare(width, height)
+    }
+
+    fn owned_bytes(&self) -> crate::Result<usize> {
+        self.allocated_bytes()
+    }
+}
+
+#[cfg(feature = "parallel")]
+pub(in crate::j2c::decode) fn task_workspace_bytes<W: TaskScratch>(
+    slots: &Vec<TaskWorkspace<W>>,
 ) -> crate::Result<usize> {
     let mut bytes = slots
         .capacity()
-        .checked_mul(core::mem::size_of::<HtTaskWorkspace>())
+        .checked_mul(core::mem::size_of::<TaskWorkspace<W>>())
         .ok_or(crate::ValidationError::ImageTooLarge)?;
     for slot in slots {
         bytes = bytes
-            .checked_add(slot.workspace.allocated_bytes()?)
+            .checked_add(slot.workspace.owned_bytes()?)
             .ok_or(crate::ValidationError::ImageTooLarge)?;
     }
     Ok(bytes)

@@ -57,7 +57,7 @@ pub(crate) fn decode_component_tile_bit_planes<'a>(
     profile_enabled: bool,
 ) -> Result<()> {
     #[cfg(feature = "parallel")]
-    let cpu_decode_parallelism = match tile_parallel::plan_tile_ht_route(
+    let cpu_decode_parallelism = match tile_parallel::plan_tile_route(
         tile,
         components.clone(),
         tile_ctx,
@@ -65,10 +65,19 @@ pub(crate) fn decode_component_tile_bit_planes<'a>(
         header,
         ht_decoder,
         cpu_decode_parallelism,
-    )? {
-        tile_parallel::TileHtRoute::Decoded => return Ok(()),
-        tile_parallel::TileHtRoute::Serial => CpuDecodeParallelism::Serial,
-        tile_parallel::TileHtRoute::PerSubBand => cpu_decode_parallelism,
+    ) {
+        Ok(tile_parallel::TileRoute::Decoded) => return Ok(()),
+        Ok(tile_parallel::TileRoute::PerSubBand) => cpu_decode_parallelism,
+        Ok(tile_parallel::TileRoute::Serial) => CpuDecodeParallelism::Serial,
+        Err(_) => {
+            // Planning can fail in a later band before earlier blocks decode,
+            // and workers can fail in any order. Retry serially to preserve
+            // the serial error. Skipped blocks need zeros after partial writes.
+            // Storage holds either this component or the whole active tile.
+            storage.coefficients.fill(0.0);
+            storage.coefficients_i64.fill(0);
+            CpuDecodeParallelism::Serial
+        }
     };
 
     let component_infos = tile

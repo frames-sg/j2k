@@ -8,7 +8,7 @@ use super::{
 };
 use crate::error::{DecodingError, Result, ValidationError};
 use crate::j2c::bitplane::classic_decode_workspace_bytes;
-use crate::j2c::decode::workspace::{ht_task_workspace_bytes, HtTaskWorkspace};
+use crate::j2c::decode::workspace::{task_workspace_bytes, HtTaskWorkspace};
 use crate::j2c::ht_block_decode::ht_decode_workspace_bytes;
 use crate::scalar::decode_ht_code_block_scalar_with_workspace_midpoint;
 use crate::{
@@ -481,7 +481,7 @@ fn release_ht_task_bank(
     structural_workspace_bytes: &mut usize,
     budget: &mut DecodeAllocationBudget,
 ) -> Result<()> {
-    let released = ht_task_workspace_bytes(workspaces)?;
+    let released = task_workspace_bytes(workspaces)?;
     let structural = structural_workspace_bytes
         .checked_sub(released)
         .ok_or(ValidationError::ImageTooLarge)?;
@@ -527,7 +527,7 @@ fn try_prepare_ht_task_workspaces(
     structural_workspace_bytes: &mut usize,
     budget: &mut DecodeAllocationBudget,
 ) -> Result<usize> {
-    let old_bank_bytes = ht_task_workspace_bytes(workspaces)?;
+    let old_bank_bytes = task_workspace_bytes(workspaces)?;
     let mut trial = *budget;
     if workspaces.capacity() < plan.active_workspaces {
         let mut replacement = Vec::new();
@@ -554,7 +554,7 @@ fn try_prepare_ht_task_workspaces(
                 prepared_height: height,
             });
         }
-        let new_bank_bytes = ht_task_workspace_bytes(&replacement)?;
+        let new_bank_bytes = task_workspace_bytes(&replacement)?;
         #[cfg(test)]
         let growths = {
             let mut growths = 0usize;

@@ -21,6 +21,8 @@ use crate::{
 };
 
 mod classic;
+#[cfg(feature = "parallel")]
+pub(super) use self::classic::classic_allocation_counts;
 pub(super) use self::classic::{
     collect_classic_code_block_data, collect_referenced_classic_code_block_data,
 };
