@@ -43,23 +43,20 @@ pub(crate) fn packed_dwt_scratch_len(width: u32, height: u32) -> EncodeResult<us
         })
 }
 
-/// Scratch samples per worker that [`transform_planes_from`] needs for
-/// `planes` planes: [`packed_dwt_scratch_len`] or every plane's band block,
-/// whichever is longer.
-pub(crate) fn packed_planes_dwt_scratch_len(
-    width: u32,
-    height: u32,
-    planes: usize,
-) -> EncodeResult<usize> {
-    let single = packed_dwt_scratch_len(width, height)?;
+/// Scratch samples per worker for the RGB transform: a row or column, the
+/// three planes' band blocks that [`transform_planes_from`] lifts the first
+/// level in, and a full strip of the in-place levels after it, whose first
+/// has at most half the rows.
+pub(crate) fn packed_rgb8_dwt_scratch_len(width: u32, height: u32) -> EncodeResult<usize> {
     let width = usize_from_u32(width, "packed forward DWT scratch width")?;
     let height = usize_from_u32(height, "packed forward DWT scratch height")?;
+    let strip = width.min(strip_columns(width));
     let block_rows = height.min(2 * (BAND_ROWS + 2 * HALO_ROWS));
-    width
-        .min(strip_columns(width))
+    strip
         .checked_mul(block_rows)
-        .and_then(|block| block.checked_mul(planes))
-        .map(|blocks| blocks.max(single))
+        .and_then(|block| block.checked_mul(3))
+        .zip(strip.checked_mul(height.div_ceil(2)))
+        .map(|(blocks, later)| blocks.max(later).max(width).max(height))
         .ok_or(EncodeError::ArithmeticOverflow {
             what: "packed forward DWT band block scratch",
         })

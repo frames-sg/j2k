@@ -8,13 +8,21 @@ fn benchmark_route_uses_resident_ht_tier1_with_cpu_packetization() {
         return;
     }
 
-    assert_resident_ht_host_output_matches_cpu(
-        512,
-        512,
-        1,
-        &j2k_test_support::patterned_gray8(512, 512),
-        MetalEncodeStageAccelerator::for_host_output_benchmark(),
-    );
+    // Odd sizes put partial transform tiles and code blocks at every level.
+    for (width, height, components) in [(512, 512, 1), (65, 67, 1), (97, 64, 3), (200, 133, 3)] {
+        let pixels = if components == 1 {
+            j2k_test_support::patterned_gray8(width, height)
+        } else {
+            j2k_test_support::patterned_rgb8(width, height)
+        };
+        assert_resident_ht_host_output_matches_cpu(
+            width,
+            height,
+            components,
+            &pixels,
+            MetalEncodeStageAccelerator::for_host_output_benchmark(),
+        );
+    }
 }
 
 #[test]

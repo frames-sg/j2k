@@ -40,7 +40,7 @@ pub(crate) use self::grayscale::{
 };
 use self::ht::prepare_referenced_ht_sub_band;
 pub(in crate::engine) use self::ht::{
-    append_span_rects, prepare_ht_sub_band, prepare_ht_sub_band_groups,
+    append_span_rects, band_cells, prepare_ht_sub_band, prepare_ht_sub_band_groups, BandCells,
 };
 use self::referenced::{
     append_referenced_classic_component_steps, append_referenced_htj2k_component_steps,

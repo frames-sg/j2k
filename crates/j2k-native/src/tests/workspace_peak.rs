@@ -51,12 +51,18 @@ fn whole_decode_peak_holds_every_component_plane_and_one_component_of_coefficien
     // component plane is, until the color transform; when the pack takes the
     // last level, the last plane is the last component's coefficient buffer.
     // The IDWT holds one component's last level, or, when the pack takes the
-    // last level, every component's LL band of it.
+    // last level, one component's LL band of it at a time: each plane keeps
+    // its own LL band in front of the level's other sub-bands.
     let plane = SIDE * SIDE * size_of::<f32>();
+    let ll_band = plane / 4;
     assert_eq!(counters.stored_coefficients, SIDE * SIDE);
     assert_eq!(peak.coefficients, plane);
     assert!(peak.coefficients + peak.channels >= COMPONENTS * plane);
-    assert!(peak.idwt >= COMPONENTS * (SIDE / 2) * (SIDE / 2) * size_of::<f32>());
+    assert!(
+        peak.idwt >= ll_band && peak.idwt < 2 * ll_band,
+        "idwt {}",
+        peak.idwt
+    );
     assert!(peak.tier1 > 0);
     assert!(peak.structure > 0);
 }

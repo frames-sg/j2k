@@ -28,11 +28,12 @@ pub(crate) use self::allocation::{retained_container_metadata_bytes, DecodeOwner
 use self::native::{try_clone_color_space, NativeOutputBudget};
 
 /// What [`Image::decode_image_for_rgb8`] leaves to the RGB8 pack: the
-/// deferred MCT, each component's LL band of a last level the MCT carries,
-/// and the image.
+/// deferred MCT, the first component's LL band of a last level the MCT
+/// carries, and the image.
 type Rgb8DecodedImage<'ctx, 'boxes> = (
     Option<DeferredMct>,
-    &'ctx [Vec<f32>; 3],
+    &'ctx [f32],
+    [&'ctx mut [f32]; 2],
     DecodedImage<'ctx, 'boxes>,
 );
 
@@ -470,7 +471,7 @@ impl<'a> Image<'a> {
         (|| {
             let retained_image_bytes = self.retained_metadata_bytes()?;
             let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
-            let (mct, ll_bands, mut decoded_image) =
+            let (mct, first_ll, scratch, mut decoded_image) =
                 self.decode_image_for_rgb8(decoder_context, retained_image_bytes)?;
             let component_owner_capacity = decoded_image.decoded_components.capacity();
             let buffer_size = checked_decode_byte_len3(
@@ -496,7 +497,8 @@ impl<'a> Image<'a> {
                 &mut decoded_image,
                 &mut data,
                 mct,
-                ll_bands,
+                first_ll,
+                scratch,
                 parallel,
             )?;
             let bitmap = Bitmap {
@@ -766,10 +768,17 @@ impl<'a> Image<'a> {
     ) -> Result<()> {
         let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
         let retained = self.retained_metadata_bytes()?;
-        let (mct, ll_bands, mut decoded_image) =
+        let (mct, first_ll, scratch, mut decoded_image) =
             self.decode_image_for_rgb8(decoder_context, retained)?;
         validate_interleaved_output_buffer(&decoded_image, buf)?;
-        interleave_and_convert_after_mct(&mut decoded_image, buf, mct, ll_bands, parallel)?;
+        interleave_and_convert_after_mct(
+            &mut decoded_image,
+            buf,
+            mct,
+            first_ll,
+            scratch,
+            parallel,
+        )?;
 
         Ok(())
     }
@@ -797,8 +806,8 @@ impl<'a> Image<'a> {
 
     /// [`Self::decode_image`] for an RGB8 pack. A plain colour image (see
     /// [`Self::permits_line_region_idwt`]) leaves its inverse MCT, and
-    /// possibly its last IDWT level with each component's LL band, to the
-    /// pack, which receives them with the image.
+    /// possibly its last IDWT level, to the pack, which receives them with
+    /// the image.
     fn decode_image_for_rgb8<'ctx>(
         &self,
         decoder_context: &'ctx mut DecoderContext<'a>,
@@ -812,7 +821,15 @@ impl<'a> Image<'a> {
         let mct = tile_ctx.deferred_mct.take();
         let image =
             self.finish_decoded_image(&mut tile_ctx.channel_data, retained_baseline_bytes)?;
-        Ok((mct, &tile_ctx.fused_ll_bands, image))
+        Ok((
+            mct,
+            &tile_ctx.idwt_output.coefficients,
+            [
+                &mut tile_ctx.idwt_scratch_buffer,
+                &mut tile_ctx.idwt_band_scratch,
+            ],
+            image,
+        ))
     }
 
     fn run_decode(

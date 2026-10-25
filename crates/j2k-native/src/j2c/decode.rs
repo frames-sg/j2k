@@ -713,11 +713,8 @@ fn decode_components<'a>(
             )?;
         }
         // Next, we apply the inverse discrete wavelet transform. A last level
-        // left to the pack ends in the component's own LL band buffer.
+        // left to the pack ends at its LL band.
         let stage_start = profile::profile_now(profile_enabled);
-        if let Some(ll_band) = tile_ctx.fused_ll_bands.get_mut(idx).filter(|_| fused) {
-            core::mem::swap(&mut tile_ctx.idwt_output.coefficients, ll_band);
-        }
         let idwt_result = idwt::apply(
             storage,
             tile_ctx,
@@ -727,9 +724,6 @@ fn decode_components<'a>(
             ht_decoder,
             cpu_decode_parallelism == CpuDecodeParallelism::Auto,
         );
-        if let Some(ll_band) = tile_ctx.fused_ll_bands.get_mut(idx).filter(|_| fused) {
-            core::mem::swap(&mut tile_ctx.idwt_output.coefficients, ll_band);
-        }
         idwt_result?;
         record_workspace(tile_ctx, storage, 0)?;
         profile_timings.idwt_us += profile::elapsed_us(stage_start);
@@ -1222,8 +1216,6 @@ pub(crate) struct TileDecodeContext {
     /// deferred MCT: the IDWT stops one level short, at the level's LL band,
     /// and each plane receives the level's other sub-bands instead of samples.
     pub(crate) fused_last_level: Option<idwt::LastLevel>,
-    /// Each component's LL band of `fused_last_level`, as its IDWT output.
-    pub(crate) fused_ll_bands: [Vec<f32>; 3],
     /// Samples, over all components, that `store` must write because the
     /// planes were reused without zeroing; zero when the planes were zeroed.
     pub(crate) unzeroed_plane_samples: usize,
@@ -1346,9 +1338,6 @@ impl TileDecodeContext {
         include_capacity::<f32>(&mut bytes, self.idwt_band_scratch.capacity())?;
         include_capacity::<i64>(&mut bytes, self.idwt_scratch_buffer_i64.capacity())?;
         include_capacity::<f32>(&mut bytes, self.idwt_line_rings.capacity())?;
-        for band in &self.fused_ll_bands {
-            include_capacity::<f32>(&mut bytes, band.capacity())?;
-        }
         Ok(bytes)
     }
 
@@ -1364,7 +1353,6 @@ impl TileDecodeContext {
         self.idwt_band_scratch = Vec::new();
         self.idwt_scratch_buffer_i64 = Vec::new();
         self.idwt_line_rings = Vec::new();
-        self.fused_ll_bands = Default::default();
     }
 }
 
@@ -1636,19 +1624,23 @@ mod tests {
 
     #[cfg(feature = "parallel")]
     #[test]
-    fn auto_cpu_parallelism_enables_ht_sub_band_parallel_branch() {
+    fn auto_cpu_parallelism_enables_sub_band_parallel_branches() {
+        let branches: [fn(super::CpuDecodeParallelism, usize) -> bool; 2] = [
+            super::should_decode_ht_sub_band_in_parallel,
+            super::should_decode_classic_sub_band_in_parallel,
+        ];
         for threads in [1, 2] {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
                 .unwrap();
             pool.install(|| {
-                for blocks in [0, 3, 4, 16, usize::MAX] {
+                for (branch, blocks) in branches
+                    .iter()
+                    .flat_map(|branch| [0, 3, 4, 16, usize::MAX].map(|blocks| (branch, blocks)))
+                {
                     assert_eq!(
-                        super::should_decode_ht_sub_band_in_parallel(
-                            super::CpuDecodeParallelism::Auto,
-                            blocks
-                        ),
+                        branch(super::CpuDecodeParallelism::Auto, blocks),
                         threads > 1 && blocks >= 4
                     );
                 }

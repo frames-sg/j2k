@@ -22,12 +22,25 @@ pub(super) fn interleave_samples(
         decomposition.rect.height() as usize,
     )?;
     try_grow_level_buffer(coefficients, required_len)?;
-    let coefficients = &mut coefficients[..required_len];
+    interleave_samples_into(
+        input,
+        decomposition,
+        &mut coefficients[..required_len],
+        storage,
+    );
+    Ok(())
+}
+
+pub(super) fn interleave_samples_into(
+    input: IDWTInput<'_>,
+    decomposition: &Decomposition,
+    coefficients: &mut [f32],
+    storage: &DecompositionStorage<'_>,
+) {
     let level = Level::new();
     dispatch!(level, simd => {
         interleave_samples_inner::<_>(simd, input, decomposition, coefficients, storage);
     });
-    Ok(())
 }
 
 #[expect(

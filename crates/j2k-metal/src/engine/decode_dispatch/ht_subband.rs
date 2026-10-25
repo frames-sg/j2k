@@ -8,8 +8,9 @@ use super::{
     encode_metal_ht_batches_with_zero_layouts_in_encoder,
     encode_repeated_metal_ht_batch_in_command_buffer, Buffer, CommandBufferRef,
     ComputeCommandEncoderRef, DirectStatusCheck, Error, HtBatchInput, HtCodeBlockDecodeJob,
-    J2kHtCleanupBatchJob, MetalRuntime, PreparedHtSubBand, PreparedHtSubBandGroup,
+    HtZeroLayout, J2kHtCleanupBatchJob, MetalRuntime, PreparedHtSubBand, PreparedHtSubBandGroup,
 };
+use crate::engine::abi::J2kZeroRect;
 
 #[cfg(target_os = "macos")]
 pub(in crate::engine) fn required_ht_output_len(
@@ -105,6 +106,7 @@ pub(in crate::engine) fn encode_prepared_ht_sub_band_group_to_buffer_in_encoder(
     runtime: &MetalRuntime,
     encoder: &ComputeCommandEncoderRef,
     group: &PreparedHtSubBandGroup,
+    zero_rects: &[J2kZeroRect],
     output: &Buffer,
 ) -> Result<(Vec<Buffer>, DirectStatusCheck), Error> {
     encode_metal_ht_batches_with_zero_layouts_in_encoder(
@@ -117,7 +119,10 @@ pub(in crate::engine) fn encode_prepared_ht_sub_band_group_to_buffer_in_encoder(
             output_base: 0,
             execution_owner: &group.execution_owner,
         }],
-        Some(&[group.zero_layout()]),
+        Some(&[HtZeroLayout {
+            extent: group.total_coefficients,
+            uncovered: zero_rects,
+        }]),
         output,
         group.total_coefficients,
         default_metal_ht_chunk_limits(),

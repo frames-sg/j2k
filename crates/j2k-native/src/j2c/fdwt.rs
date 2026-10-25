@@ -18,7 +18,7 @@ use j2k_codec_math::dwt;
 
 mod lifting;
 mod packed;
-pub(crate) use lifting::{packed_dwt_scratch_len, packed_planes_dwt_scratch_len};
+pub(crate) use lifting::{packed_dwt_scratch_len, packed_rgb8_dwt_scratch_len};
 pub(crate) use packed::{
     try_forward_dwt_packed_f32, try_forward_dwt_packed_f32_from_rgb8, try_forward_dwt_packed_i64,
     PackedDwtGeometry, PackedSubbandRect, PackedSubbandView,

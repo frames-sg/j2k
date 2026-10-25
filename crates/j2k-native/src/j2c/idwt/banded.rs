@@ -282,6 +282,11 @@ pub(super) fn filter_2d_banded(
             .coefficients
             .clone()]
     };
+    let required_len = checked_decode_usize_product2(
+        decomposition.rect.width() as usize,
+        decomposition.rect.height() as usize,
+    )?;
+    try_grow_level_buffer(target, required_len)?;
     filter_2d_banded_from_bands(
         decomposition.rect,
         [input.coefficients, band(0), band(1), band(2)],
@@ -316,7 +321,7 @@ pub(super) fn packed_band_rects(rect: IntRect) -> [IntRect; 4] {
 pub(super) fn filter_2d_banded_from_bands(
     rect: IntRect,
     bands: [&[f32]; 4],
-    target: &mut Vec<f32>,
+    target: &mut [f32],
     band_scratch: &mut Vec<f32>,
     transform: WaveletTransform,
     high_pass: f32,
@@ -325,7 +330,6 @@ pub(super) fn filter_2d_banded_from_bands(
     let width = rect.width() as usize;
     let height = rect.height() as usize;
     let required_len = checked_decode_usize_product2(width, height)?;
-    try_grow_level_buffer(target, required_len)?;
     let level = Level2d::new(rect, bands, transform, high_pass);
 
     let target = &mut target[..required_len];

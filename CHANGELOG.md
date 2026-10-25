@@ -5,6 +5,75 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- Tight RGBA8 output from RGB images decodes into the caller's allocation
+  and adds opaque alpha in place, avoiding a separate full RGB8 buffer.
+  Pixel values and padded-output handling are unchanged.
+- Classic CPU sub-band decoding reuses one Tier-1 workspace per worker
+  across pending code blocks, bounding fallback scratch by active workers.
+  Decoded pixels and code-block ordering are unchanged.
+- ARM64 CPU decodes fuse the inverse ICT, rounding and RGB8 stores in one
+  vector loop for streamed 9/7 output. Output is unchanged.
+- Fused RGB8 CPU decodes reconstruct later components into the consumed
+  coarse-coefficient prefixes of earlier component planes. This removes two
+  separate LL buffers without copying their samples. Output is unchanged.
+- Fused RGB8 CPU packing on the pool gives its workers rings from the
+  completed coarse inverse transform's scratch buffers before allocating more,
+  reducing temporary heap allocations. Serial packing still allocates its own
+  small ring. Decoded pixels and retained workspace capacities are unchanged.
+- CPU encodes of 8-bit RGB give each wavelet worker scratch for the strips
+  it lifts, the first level in band blocks and the later levels from half the
+  rows, instead of strips of full height. On 18 threads a 4096 by 2048 image
+  needs 4.7 MB less scratch. Output is unchanged.
+- Single-tile CPU encodes free each component's wavelet coefficients as soon
+  as its code blocks are prepared, instead of after packetization, and charge
+  the later phases without them. Prepared code blocks own their samples, so
+  nothing reads the coefficients again. A lossless classic encode of a 4096
+  by 2048 RGB image peaks at about 135 MB of heap instead of 219 MB, and an
+  HTJ2K one at 106 to 110 MB instead of 127 MB. Rate searches keep their
+  transform for later candidates, so under a memory cap that admits an
+  ordinary encode but not that transform they now encode each candidate
+  afresh. Output is unchanged.
+- CPU classic Part 1 decodes on one thread decode each sub-band's code
+  blocks straight into its coefficients, as HTJ2K decodes on one thread
+  already do, instead of staging them in a sub-band slab with a Tier-1
+  workspace for every code block and copying them back. A one-thread decode
+  of a 4096 by 2048 RGB image needs about 25 MB less heap and 47 MB less
+  resident memory. Output is unchanged.
+- The Metal lossy encode stages, deinterleave, ICT, 9/7 DWT and sub-band
+  quantization, take their upload and result buffers from the runtime's pools
+  instead of allocating them on every call, and copy each result out once.
+  Output is unchanged.
+- Metal lossless single-tile encodes run the RCT and each 5/3 wavelet level in
+  one dispatch that lifts tiles in threadgroup memory and writes the sub-bands
+  straight into their code blocks, instead of separate deinterleave, vertical,
+  horizontal and coefficient-extract passes over full-size planes. Only two
+  quarter-size LL planes are allocated. Output is unchanged.
+- The Metal component-plane and single-plane decode executions turn a decoded
+  group's members into band slices through one helper instead of five copies of
+  the same loop. Output is unchanged.
+- Metal single-image colour decodes whose components all start with an HT
+  group decode the three components' HT code blocks into one coefficient buffer
+  with one set of dispatches, instead of one encoder per component, so each
+  dispatch holds enough blocks to keep the GPU busy. Output is unchanged.
+- Metal single-image colour decodes no longer zero the last wavelet level's
+  high-band code blocks that have no coding passes. A cell map built from the
+  decode jobs lets the fused last-level kernel read those blocks as zero, and a
+  band whose job edges do not fit the map is zeroed as before. Output is
+  unchanged.
+- Metal single-image MCT RGB8 decodes synthesize the last wavelet level of the
+  three components and pack RGB8 in one tile kernel when each component ends in
+  that level and an identity store of the whole plane, so the last-level float
+  planes are never written. The fused 5/3 tile loads all its rows before
+  lifting them. Output is unchanged.
+- Metal single-image colour decodes keep each MCT component's final
+  coefficient plane when the component ends in an identity store of the whole
+  plane, instead of copying it into a second plane, as stacked decodes already
+  did. Output is unchanged.
+- The Metal HT cleanup decode packs each quad's VLC word into the first half of
+  its row for code blocks at most 64 samples wide, so the round trip between its
+  two kernels writes and reads half the memory lines. A 4096 x 2048 RGB HTJ2K
+  decode took 7.1 ms against 8.4 ms lossless and 5.8 ms against 6.1 ms at 2 bpp.
+  Output is unchanged.
 - The `j2k-metal` `J2kDecoder` copies the codestream for a referenced HTJ2K
   plan on a pool worker while the packet headers are parsed, instead of after
   them. A 4096 x 2048 RGB HTJ2K lossless decode to an RGB8 surface took 7.56 ms

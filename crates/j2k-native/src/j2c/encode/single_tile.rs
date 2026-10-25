@@ -303,49 +303,65 @@ fn prepare_validated_single_tile(
         });
     }
 
-    let prepared = prepare_accelerated_components(
-        &AcceleratedComponentRequest {
-            pixels,
-            width,
-            height,
-            num_components,
-            bit_depth,
-            signed,
-            options,
-            plan: &plan,
-            profile_enabled,
-            session,
-        },
-        accelerator,
-    )?;
-    let encoded = encode_tile_packets(
+    let request = AcceleratedComponentRequest {
+        pixels,
         width,
         height,
         num_components,
         bit_depth,
+        signed,
         options,
-        component_sample_info,
-        &plan,
-        &prepared.decompositions,
-        prepared_transforms_retained_bytes(&prepared)?,
+        plan: &plan,
         profile_enabled,
         session,
-        accelerator,
-    )?;
-    Ok(finish_staged_preparation(encoded, plan, prepared))
+    };
+    let prepared = prepare_accelerated_components(&request, accelerator)?;
+    let (encoded, transform_timings) =
+        encode_prepared_components(&request, component_sample_info, prepared, accelerator)?;
+    Ok(finish_staged_preparation(encoded, plan, transform_timings))
 }
 
-fn finish_staged_preparation(
-    encoded: EncodedTilePackets,
-    mut plan: SingleTilePlan,
+/// Encode the prepared components, freeing each one's coefficients once its
+/// code blocks are prepared, and the vector that held them after the last.
+fn encode_prepared_components(
+    request: &AcceleratedComponentRequest<'_, '_>,
+    component_sample_info: &[EncodeComponentSampleInfo],
     prepared: PreparedComponentTransforms,
-) -> PreparedSingleTile {
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+) -> NativeEncodePipelineResult<(EncodedTilePackets, TransformStageTimings)> {
+    let source_bytes = prepared_transforms_retained_bytes(&prepared)?;
+    let source_owner_bytes = super::allocation::checked_element_bytes::<OwnedDwtComponent>(
+        prepared.decompositions.capacity(),
+        "transform DWT component owners",
+    )?;
     let transform_timings = TransformStageTimings {
         deinterleave: prepared.deinterleave_us,
         mct: prepared.mct_us,
         dwt: prepared.dwt_us,
     };
-    drop(prepared);
+    let encoded = encode_tile_packets(
+        request.width,
+        request.height,
+        request.num_components,
+        request.bit_depth,
+        request.options,
+        component_sample_info,
+        request.plan,
+        prepared.decompositions.into_iter(),
+        source_bytes,
+        source_owner_bytes,
+        request.profile_enabled,
+        request.session,
+        accelerator,
+    )?;
+    Ok((encoded, transform_timings))
+}
+
+fn finish_staged_preparation(
+    encoded: EncodedTilePackets,
+    mut plan: SingleTilePlan,
+    transform_timings: TransformStageTimings,
+) -> PreparedSingleTile {
     plan.params.required_ht_magnitude_bound = encoded.packetized_tile.required_ht_magnitude_bound;
     PreparedSingleTile::Staged {
         encoded,

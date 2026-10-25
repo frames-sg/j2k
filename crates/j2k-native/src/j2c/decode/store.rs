@@ -375,11 +375,9 @@ pub(super) fn fused_last_level(
     level
 }
 
-/// Store a component whose last IDWT level [`fused_last_level`] left to the
-/// pack. The IDWT stopped at the level's LL band, in the component's
-/// `fused_ll_bands` buffer, and the coefficient buffer, which holds the
-/// level's other sub-bands, becomes the component's plane. The plane's
-/// allocation becomes the next component's coefficient buffer.
+/// Store the finest high bands in their component plane. Component zero's
+/// LL stays in the IDWT output; each later component reconstructs its LL
+/// straight into the previous plane's consumed coarse-coefficient prefix.
 pub(super) fn store_last_level_bands(
     tile_ctx: &mut TileDecodeContext,
     storage: &mut DecompositionStorage<'_>,
@@ -388,9 +386,7 @@ pub(super) fn store_last_level_bands(
 ) -> Result<()> {
     let ll_rect = level.ll_rect();
     let ll_len = ll_rect.width() as usize * ll_rect.height() as usize;
-    if tile_ctx.idwt_output.rect != ll_rect
-        || tile_ctx.fused_ll_bands.get(component_idx).map(Vec::len) != Some(ll_len)
-    {
+    if tile_ctx.idwt_output.rect != ll_rect || tile_ctx.idwt_output.coefficients.len() != ll_len {
         bail!(DecodingError::CodeBlockDecodeFailure);
     }
     let samples = storage.coefficients.len();

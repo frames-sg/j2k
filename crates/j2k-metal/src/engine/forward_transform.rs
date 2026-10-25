@@ -14,11 +14,12 @@ use super::abi::{
     J2kLosslessDeinterleaveParams,
 };
 use super::{
-    checked_buffer_slice, commit_and_wait_metal, copied_slice_buffer, new_blit_command_encoder,
-    new_command_buffer, new_compute_command_encoder, new_shared_buffer, with_runtime, Buffer,
-    CommandBufferRef, ComputePipelineState, Error, J2kDeinterleaveMctToF32Job,
-    J2kDeinterleaveToF32Job, J2kForwardDwt53Level, J2kForwardDwt53Output, J2kForwardDwt97Level,
-    J2kForwardDwt97Output,
+    checked_buffer_slice, commit_and_wait_metal, copied_recyclable_shared_slice_buffer,
+    copied_slice_buffer, new_blit_command_encoder, new_command_buffer, new_compute_command_encoder,
+    new_shared_buffer, read_completed_buffer, recycle_shared_buffers,
+    take_recyclable_shared_buffer, with_runtime, Buffer, CommandBufferRef, ComputePipelineState,
+    Error, J2kDeinterleaveMctToF32Job, J2kDeinterleaveToF32Job, J2kForwardDwt53Level,
+    J2kForwardDwt53Output, J2kForwardDwt97Level, J2kForwardDwt97Output,
 };
 
 #[cfg(target_os = "macos")]
@@ -319,8 +320,10 @@ pub(crate) fn encode_forward_dwt97(
     }
     let bytes = size_of_val(samples);
     with_runtime(|runtime| {
-        let buffer_a = copied_slice_buffer(&runtime.device, samples)?;
-        let buffer_b = new_shared_buffer(&runtime.device, bytes)?;
+        // Pooled, so repeated stage calls reuse mapped memory.
+        let mut pooled = Vec::new();
+        let buffer_a = copied_recyclable_shared_slice_buffer(runtime, samples, &mut pooled)?;
+        let buffer_b = take_recyclable_shared_buffer(runtime, bytes, &mut pooled)?;
         let command_buffer = new_command_buffer(&runtime.queue)?;
 
         let layout = encode_forward_dwt97_commands(
@@ -338,14 +341,18 @@ pub(crate) fn encode_forward_dwt97(
         } else {
             &buffer_b
         };
-        let transformed = checked_buffer_slice::<f32>(active_buffer, samples.len(), "DWT 9/7")?;
-        extract_forward_dwt97_output(
-            &transformed,
-            width,
-            layout.ll_width,
-            layout.ll_height,
-            layout.levels,
-        )
+        let output =
+            read_completed_buffer(active_buffer, samples.len(), "DWT 9/7", |transformed| {
+                extract_forward_dwt97_output(
+                    transformed,
+                    width,
+                    layout.ll_width,
+                    layout.ll_height,
+                    layout.levels,
+                )
+            })??;
+        recycle_shared_buffers(runtime, pooled)?;
+        Ok(output)
     })
 }
 
@@ -390,15 +397,25 @@ pub(crate) fn encode_deinterleave_to_f32(
         })?;
 
     with_runtime(|runtime| {
-        let input_buffer = copied_slice_buffer(&runtime.device, job.pixels)?;
+        // Pooled, so repeated stage calls reuse mapped memory.
+        let mut pooled = Vec::new();
+        let input_buffer = copied_recyclable_shared_slice_buffer(runtime, job.pixels, &mut pooled)?;
         let mut plane_budget = crate::batch_allocation::BatchMetadataBudget::new(
             "J2K Metal encode deinterleave plane buffers",
         );
-        let mut plane_buffers =
-            plane_budget.try_vec(4, "J2K Metal deinterleave plane buffer handles")?;
-        for _ in 0..4 {
-            plane_buffers.push(new_shared_buffer(&runtime.device, plane_bytes)?);
+        let mut plane_buffers = plane_budget.try_vec(
+            usize::from(job.num_components),
+            "J2K Metal deinterleave plane buffer handles",
+        )?;
+        for _ in 0..job.num_components {
+            plane_buffers.push(take_recyclable_shared_buffer(
+                runtime,
+                plane_bytes,
+                &mut pooled,
+            )?);
         }
+        // The kernel writes only the first `num_components` planes.
+        let plane = |component: usize| plane_buffers.get(component).unwrap_or(&plane_buffers[0]);
         let params = J2kLosslessDeinterleaveParams {
             src_width: pixel_count,
             src_height: 1,
@@ -420,11 +437,11 @@ pub(crate) fn encode_deinterleave_to_f32(
         label_compute_encoder(&encoder, "J2K encode-stage deinterleave");
         encoder.setComputePipelineState(&runtime.encode()?.lossless_deinterleave_to_planes);
         encoder.set_buffer(0, Some(&input_buffer), 0);
-        encoder.set_buffer(1, Some(&plane_buffers[0]), 0);
-        encoder.set_buffer(2, Some(&plane_buffers[1]), 0);
-        encoder.set_buffer(3, Some(&plane_buffers[2]), 0);
+        encoder.set_buffer(1, Some(plane(0)), 0);
+        encoder.set_buffer(2, Some(plane(1)), 0);
+        encoder.set_buffer(3, Some(plane(2)), 0);
         encoder.set_bytes::<J2kLosslessDeinterleaveParams>(4, &params);
-        encoder.set_buffer(5, Some(&plane_buffers[3]), 0);
+        encoder.set_buffer(5, Some(plane(3)), 0);
         dispatch_2d_pipeline(
             &encoder,
             &runtime.encode()?.lossless_deinterleave_to_planes,
@@ -435,7 +452,6 @@ pub(crate) fn encode_deinterleave_to_f32(
 
         let planes = plane_buffers
             .iter()
-            .take(usize::from(job.num_components))
             .map(|buffer| {
                 checked_buffer_slice::<f32>(buffer, job.num_pixels, "deinterleaved plane")
             })
@@ -444,6 +460,7 @@ pub(crate) fn encode_deinterleave_to_f32(
             sample_count.checked_mul(bytes_per_sample),
             Some(expected_len)
         );
+        recycle_shared_buffers(runtime, pooled)?;
         Ok(Some(planes))
     })
 }

@@ -820,6 +820,110 @@ pub(in crate::engine) fn dispatch_fused_idwt_gray_store(
     );
 }
 
+#[cfg(target_os = "macos")]
+fn fused_idwt_mct_rgb8_pipeline(
+    kernels: &crate::engine::runtime::DecodeKernels,
+    transform: super::J2kWaveletTransform,
+    sparse: bool,
+) -> &ComputePipelineState {
+    match transform {
+        super::J2kWaveletTransform::Reversible53 => &kernels.idwt53_mct_rgb8[usize::from(sparse)],
+        super::J2kWaveletTransform::Irreversible97 => &kernels.idwt97_mct_rgb8[usize::from(sparse)],
+    }
+}
+
+/// Whether a `width` x `height` last level can run as one tile kernel for
+/// three components that writes MCT RGB8.
+#[cfg(target_os = "macos")]
+pub(in crate::engine) fn fused_idwt_mct_rgb8_supported(
+    kernels: &crate::engine::runtime::DecodeKernels,
+    transform: super::J2kWaveletTransform,
+    (width, height): (u32, u32),
+) -> bool {
+    supports_fused_2d_idwt(
+        kernels,
+        fused_idwt_mct_rgb8_pipeline(kernels, transform, false),
+        width,
+        height,
+    )
+}
+
+/// Encodes the last level of three components of one transform and size with
+/// every pixel written as `j2k_pack_mct_rgb8` writes the planes it replaces.
+#[cfg(target_os = "macos")]
+pub(in crate::engine) fn dispatch_fused_idwt_mct_rgb8(
+    encoder: &ComputeCommandEncoderRef,
+    kernels: &crate::engine::runtime::DecodeKernels,
+    sources: &[FusedIdwtStoreSource<'_>; 3],
+    cells: Option<(&Buffer, &[crate::engine::abi::J2kBandCells; 9])>,
+    output: &crate::metal_types::BufferRef,
+    pack: &crate::engine::abi::J2kMctRgb8PackParams,
+) {
+    let transform = sources[0].transform;
+    encoder.setComputePipelineState(fused_idwt_mct_rgb8_pipeline(
+        kernels,
+        transform,
+        cells.is_some(),
+    ));
+    if let Some((cells, band_cells)) = cells {
+        encoder.set_buffer(23, Some(cells), 0);
+        encoder.set_bytes::<[crate::engine::abi::J2kBandCells; 9]>(24, band_cells);
+    }
+    // The single-image 9/7 route's high-pass gain.
+    let high_pass = j2k_codec_math::dwt::IDWT97_OPENJPEG_TWO_INV_KAPPA_F32 * 0.5;
+    for (component, source) in (0_u64..).zip(sources) {
+        let bands = source.sub_bands;
+        for (slot, buffer, offset) in [
+            (0, bands.ll, bands.ll_offset),
+            (1, bands.hl, bands.hl_offset),
+            (2, bands.lh, bands.lh_offset),
+            (3, bands.hh, bands.hh_offset),
+        ] {
+            encoder.set_buffer(4 * component + slot, Some(buffer), offset as u64);
+        }
+        let params = source.params;
+        encoder.set_bytes::<J2kIdwtSingleDecompositionParams>(14 + component, &params);
+        if transform == super::J2kWaveletTransform::Irreversible97 {
+            #[cfg(test)]
+            {
+                crate::engine::test_counters::record_idwt97_stage_sequence();
+                crate::engine::test_counters::record_idwt97_logical_dispatch((
+                    params.width,
+                    params.height,
+                    1,
+                ));
+            }
+            for (slot, origin) in [
+                (17 + 2 * component, params.x0 + params.output_x),
+                (18 + 2 * component, params.y0 + params.output_y),
+            ] {
+                encoder.set_bytes::<super::J2kIdwt97LiftSteps>(
+                    slot,
+                    &irreversible::irreversible97_horizontal_lift_steps(origin, high_pass),
+                );
+            }
+        }
+    }
+    encoder.set_buffer(12, Some(output), 0);
+    encoder.set_bytes::<crate::engine::abi::J2kMctRgb8PackParams>(13, pack);
+    let params = sources[0].params;
+    let tile = match transform {
+        super::J2kWaveletTransform::Reversible53 => (IDWT53_2D_TILE_W, IDWT53_2D_TILE_H),
+        super::J2kWaveletTransform::Irreversible97 => (
+            irreversible::IDWT97_2D_TILE_W,
+            irreversible::IDWT97_2D_TILE_H,
+        ),
+    };
+    encoder.dispatchThreadgroups_threadsPerThreadgroup(
+        j2k_metal_support::mtl_size(
+            u64::from(params.width.div_ceil(tile.0)),
+            u64::from(params.height.div_ceil(tile.1)),
+            1,
+        ),
+        j2k_metal_support::mtl_size(IDWT53_2D_LANES, IDWT53_2D_ROWS, 1),
+    );
+}
+
 /// The batched last-level kernel writing a stacked grayscale group of `kind`,
 /// or `None` for a kind stacked groups do not produce.
 #[cfg(target_os = "macos")]

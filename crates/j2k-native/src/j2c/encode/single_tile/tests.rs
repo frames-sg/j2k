@@ -450,3 +450,142 @@ fn classic_code_block_contributions_never_end_in_ff() {
         assert_eq!(decoded.data, case.pixels, "{name} lossless round trip");
     }
 }
+
+use super::coefficient_source::{DwtBandView, DwtComponentSource, DwtLevelView, OwnedDwtComponent};
+use core::cell::Cell;
+
+/// Checks at its component's first read that every earlier one is dropped.
+struct CheckedSource<'a> {
+    component: usize,
+    source: OwnedDwtComponent,
+    dropped: &'a Cell<usize>,
+}
+
+impl DwtComponentSource for CheckedSource<'_> {
+    fn ll(&self) -> NativeEncodePipelineResult<DwtBandView<'_>> {
+        assert_eq!(
+            self.dropped.get(),
+            self.component,
+            "earlier sources still live"
+        );
+        self.source.ll()
+    }
+
+    fn level_count(&self) -> usize {
+        self.source.level_count()
+    }
+
+    fn level(&self, index: usize) -> NativeEncodePipelineResult<Option<DwtLevelView<'_>>> {
+        self.source.level(index)
+    }
+
+    fn owned_bytes(&self) -> NativeEncodePipelineResult<usize> {
+        self.source.owned_bytes()
+    }
+}
+
+impl Drop for CheckedSource<'_> {
+    fn drop(&mut self) {
+        self.dropped.set(self.dropped.get() + 1);
+    }
+}
+
+#[test]
+fn staged_encodes_drop_each_component_source_once_its_code_blocks_are_prepared() {
+    use super::accelerator::{prepare_accelerated_components, AcceleratedComponentRequest};
+    use super::ownership::prepared_transforms_retained_bytes;
+    use super::plan::{build_single_tile_plan, validate_encode_request, ValidatedEncodeRoute};
+    use super::tile_encode::encode_tile_packets;
+
+    const SIDE: u32 = 32;
+    let pixels = textured_samples(SIDE as usize * SIDE as usize * 3, 0xff)
+        .into_iter()
+        .map(|sample| u8::try_from(sample).expect("masked sample fits u8"))
+        .collect::<Vec<_>>();
+    for mode in [BlockCodingMode::Classic, BlockCodingMode::HighThroughput] {
+        let options = EncodeOptions {
+            num_decomposition_levels: 2,
+            reversible: true,
+            use_mct: true,
+            use_ht_block_coding: mode == BlockCodingMode::HighThroughput,
+            ..EncodeOptions::default()
+        };
+        let session = NativeEncodeSession::try_new(NativeEncodeRetainedInput::none())
+            .expect("encode session");
+        let ValidatedEncodeRoute::SingleTile(validated) = validate_encode_request(
+            pixels.len(),
+            SIDE,
+            SIDE,
+            3,
+            8,
+            &options,
+            mode,
+            &[],
+            &session,
+        )
+        .expect("encode request") else {
+            panic!("fixture must be single tile");
+        };
+        let plan = build_single_tile_plan(
+            validated,
+            SIDE,
+            SIDE,
+            3,
+            8,
+            false,
+            &options,
+            mode,
+            &[],
+            &[],
+            &session,
+        )
+        .expect("single-tile plan");
+        let prepared = prepare_accelerated_components(
+            &AcceleratedComponentRequest {
+                pixels: &pixels,
+                width: SIDE,
+                height: SIDE,
+                num_components: 3,
+                bit_depth: 8,
+                signed: false,
+                options: &options,
+                plan: &plan,
+                profile_enabled: false,
+                session: &session,
+            },
+            &mut crate::CpuOnlyJ2kEncodeStageAccelerator,
+        )
+        .expect("component transforms");
+        let source_bytes = prepared_transforms_retained_bytes(&prepared).expect("source bytes");
+        let dropped = Cell::new(0);
+        let sources = prepared
+            .decompositions
+            .into_iter()
+            .enumerate()
+            .map(|(component, source)| CheckedSource {
+                component,
+                source,
+                dropped: &dropped,
+            })
+            .collect::<Vec<_>>();
+
+        encode_tile_packets(
+            SIDE,
+            SIDE,
+            3,
+            8,
+            &options,
+            &[],
+            &plan,
+            sources.into_iter(),
+            source_bytes,
+            0,
+            false,
+            &session,
+            &mut crate::CpuOnlyJ2kEncodeStageAccelerator,
+        )
+        .unwrap_or_else(|error| panic!("{mode:?} encode: {error:?}"));
+
+        assert_eq!(dropped.get(), 3, "{mode:?}");
+    }
+}

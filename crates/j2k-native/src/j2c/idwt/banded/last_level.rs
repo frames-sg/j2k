@@ -25,9 +25,9 @@ use crate::error::{bail, DecodingError};
 use crate::math::{dispatch, Level, Simd};
 use crate::{try_resize_decode_elements, Result, ValidationError};
 
-/// A last level that each component keeps as its packed sub-bands: the LL
-/// band apart, and the HL, LH, and HH bands in the component's plane, where
-/// the decode built them.
+/// A last level whose high bands remain in their component plane. The
+/// first LL stays in the IDWT output; each later LL occupies the previous
+/// plane's consumed coarse-coefficient prefix.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct LastLevel {
     rect: IntRect,
@@ -38,8 +38,8 @@ pub(crate) struct LastLevel {
 
 impl LastLevel {
     /// The level `rect` whose HL, LH, and HH bands have these rectangles and
-    /// coefficient ranges. `None` unless each band is packed and the banded
-    /// path would reconstruct the level.
+    /// coefficient ranges. `None` unless each band is packed, the LL band fits
+    /// in front of them, and the banded path would reconstruct the level.
     pub(crate) fn new(
         rect: IntRect,
         bands: [(IntRect, Range<usize>); 3],
@@ -56,6 +56,9 @@ impl LastLevel {
             }
             *offset = range.start;
         }
+        if band_len(packed[0])? > *offsets.iter().min()? {
+            return None;
+        }
         Some(Self {
             rect,
             offsets,
@@ -63,7 +66,8 @@ impl LastLevel {
         })
     }
 
-    /// The LL band, which each component keeps apart from its plane.
+    /// The LL band reconstructed into the previous plane's dead prefix,
+    /// except for the first component, which keeps the IDWT output.
     pub(crate) fn ll_rect(&self) -> IntRect {
         packed_band_rects(self.rect)[0]
     }
@@ -111,19 +115,21 @@ fn worker_scratch_elements(width: usize, batch: usize) -> Result<usize> {
         .ok_or(ValidationError::ImageTooLarge.into())
 }
 
-/// Reconstruct `level` of the three components from their `planes` and
-/// `ll_bands`, and pass every row to `emit` with the three components'
-/// samples, which it may overwrite, and that row of `output`, three bytes
-/// per sample.
+/// Reconstruct `level` of the three components from their `planes` and the
+/// first component's `first_ll` band, and pass every row to `emit` with the
+/// three components' samples, which it may overwrite, and that row of
+/// `output`, three bytes per sample.
 pub(crate) fn pack_last_level(
     level: LastLevel,
     planes: [&[f32]; 3],
-    ll_bands: &[Vec<f32>; 3],
+    first_ll: &[f32],
+    scratch: [&mut [f32]; 2],
     output: &mut [u8],
     parallel: bool,
     emit: impl Fn([&mut [f32]; 3], &mut [u8]) + Sync,
 ) -> Result<()> {
-    let levels = [0, 1, 2].map(|component| level.level(planes[component], &ll_bands[component]));
+    let lls = [first_ll, planes[0], planes[1]];
+    let levels = [0, 1, 2].map(|component| level.level(planes[component], lls[component]));
     let [Some(r), Some(g), Some(b)] = levels else {
         bail!(DecodingError::CodeBlockDecodeFailure);
     };
@@ -148,14 +154,14 @@ pub(crate) fn pack_last_level(
         let workers = layout.concurrent_strips;
         let per_worker = worker_scratch_elements(width, PARALLEL_BATCH_ROWS)?;
         let complete = dispatch!(Level::new(), simd => run_strips(
-            simd, &levels, output, strip_bytes, workers, per_worker, &emit,
+            simd, &levels, output, strip_bytes, workers, per_worker, scratch, &emit,
         ));
         if !complete {
             bail!(DecodingError::HostAllocationFailed);
         }
     }
     #[cfg(not(feature = "parallel"))]
-    let _ = layout;
+    let _ = (layout, scratch);
     Ok(())
 }
 
@@ -163,6 +169,10 @@ pub(crate) fn pack_last_level(
 /// with its own scratch. Returns `false` when a worker could not allocate it.
 #[cfg(feature = "parallel")]
 #[inline(always)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the strip driver keeps geometry and reused scratch explicit"
+)]
 fn run_strips<S: Simd>(
     simd: S,
     levels: &[Level2d<'_>; 3],
@@ -170,6 +180,7 @@ fn run_strips<S: Simd>(
     strip_bytes: usize,
     workers: usize,
     per_worker: usize,
+    scratch: [&mut [f32]; 2],
     emit: &(impl Fn([&mut [f32]; 3], &mut [u8]) + Sync),
 ) -> bool {
     use core::sync::atomic::{AtomicBool, Ordering};
@@ -181,13 +192,26 @@ fn run_strips<S: Simd>(
     // finishes the last.
     let strips = Mutex::new(output.chunks_mut(strip_bytes).enumerate());
     let next = || strips.lock().ok().and_then(|mut strips| strips.next());
+    // Coarse reconstruction has finished. Its initialized scratch can
+    // serve pack workers without changing the context's retained capacity.
+    let [coarse, bands] = scratch;
+    let spare = Mutex::new(
+        coarse
+            .chunks_exact_mut(per_worker)
+            .chain(bands.chunks_exact_mut(per_worker)),
+    );
     let failed = AtomicBool::new(false);
     (0..workers).into_par_iter().with_max_len(1).for_each(|_| {
-        let mut scratch = Vec::new();
-        if try_resize_decode_elements(&mut scratch, per_worker, 0.0).is_err() {
-            failed.store(true, Ordering::Relaxed);
-            return;
-        }
+        let mut owned = Vec::new();
+        let scratch = if let Some(scratch) = spare.lock().ok().and_then(|mut spare| spare.next()) {
+            scratch
+        } else {
+            if try_resize_decode_elements(&mut owned, per_worker, 0.0).is_err() {
+                failed.store(true, Ordering::Relaxed);
+                return;
+            }
+            &mut owned
+        };
         // Re-enter the caller's target-feature scope, as `super::run_strips`.
         #[cfg(feature = "simd")]
         simd.vectorize(
@@ -201,7 +225,7 @@ fn run_strips<S: Simd>(
                         first_row,
                         PARALLEL_BATCH_ROWS,
                         output,
-                        &mut scratch,
+                        scratch,
                         emit,
                     );
                 }
@@ -216,7 +240,7 @@ fn run_strips<S: Simd>(
                 first_row,
                 PARALLEL_BATCH_ROWS,
                 output,
-                &mut scratch,
+                scratch,
                 emit,
             );
         }

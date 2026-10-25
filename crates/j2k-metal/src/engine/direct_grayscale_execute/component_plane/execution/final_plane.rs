@@ -26,6 +26,19 @@ impl FinalComponentPlane {
         Self { retained: None }
     }
 
+    pub(super) const fn is_empty(&self) -> bool {
+        self.retained.is_none()
+    }
+
+    /// Use `buffer`, which the plan's scratch list already retains, as the plane.
+    pub(super) fn adopt(&mut self, buffer: Buffer, dimensions: (u32, u32), len: usize) {
+        self.retained = Some(RetainedComponentPlane {
+            buffer,
+            dimensions,
+            len,
+        });
+    }
+
     pub(super) fn buffer_for_store(
         &mut self,
         runtime: &MetalRuntime,

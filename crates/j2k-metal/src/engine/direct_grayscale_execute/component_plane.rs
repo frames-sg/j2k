@@ -18,7 +18,11 @@ use crate::{
 
 mod execution;
 
-pub(in crate::engine) use self::execution::encode_prepared_direct_component_plane_in_encoder;
+pub(in crate::engine) use self::execution::{
+    encode_merged_final_level_ht_groups, encode_prepared_direct_component_plane_before_final_level,
+    encode_prepared_direct_component_plane_in_encoder, final_identity_stored_level,
+    FinalLevelInputs,
+};
 
 #[cfg(target_os = "macos")]
 pub(in crate::engine) fn checked_coefficient_len(

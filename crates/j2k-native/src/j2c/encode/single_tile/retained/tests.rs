@@ -396,13 +396,16 @@ fn scale_encoder_budget_matches_reference() {
             }
             encoder.transform.is_some()
         };
-        // Under- or over-charged retained bytes would move these edges.
+        // Under- or over-charged retained bytes would move these edges. An
+        // ordinary encode frees each component's coefficients once its blocks
+        // are prepared, so keeping the transform never needs less.
         let [fine, coarse] = [1.0_f32, 64.0].map(|scale| {
             let floor = minimal_cap(|cap| case.reference_with_cap(&pixels, scale, cap).is_ok());
             let first = minimal_cap(|cap| retains(cap, &[scale]));
             let later = minimal_cap(|cap| retains(cap, &[1e6, scale]));
-            assert_eq!((first, later), (floor, floor), "{} at {scale}", case.name);
-            floor
+            assert_eq!(first, later, "{} at {scale}", case.name);
+            assert!(first >= floor, "{} at {scale}", case.name);
+            first
         });
         if !fallbacks {
             continue;

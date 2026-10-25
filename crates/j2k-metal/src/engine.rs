@@ -65,7 +65,7 @@ pub(crate) use self::direct_buffers::{
 #[cfg(target_os = "macos")]
 use self::direct_buffers::{
     checked_buffer_copy_into, copied_recyclable_shared_slice_buffer, copied_slice_buffer,
-    new_private_buffer, new_shared_buffer, new_shared_buffer_with_slice,
+    new_private_buffer, new_shared_buffer, new_shared_buffer_with_slice, read_completed_buffer,
     take_classic_coefficients_scratch_buffer, take_classic_states_scratch_buffer,
     zeroed_recyclable_shared_buffer, zeroed_shared_buffer,
 };
@@ -276,6 +276,7 @@ mod direct_plane_pack;
 #[cfg(target_os = "macos")]
 use self::direct_plane_pack::{
     encode_batched_mct_rgb8_to_surfaces_in_command_buffer,
+    encode_fused_idwt_mct_rgb8_to_surface_in_command_buffer,
     encode_mct_rgb8_to_surface_in_command_buffer, encode_plane_stage_to_surface_in_command_buffer,
     encode_repeated_mct_rgb8_to_surfaces_in_command_buffer,
     repeated_shared_direct_color_plan_count, PlaneStage,
@@ -300,7 +301,7 @@ pub(crate) use self::direct_grayscale_execute::{
 #[cfg(target_os = "macos")]
 mod direct_prepare;
 #[cfg(target_os = "macos")]
-use self::direct_prepare::append_span_rects;
+use self::direct_prepare::{append_span_rects, band_cells, BandCells};
 #[cfg(target_os = "macos")]
 pub(crate) use self::direct_prepare::{
     prepare_direct_grayscale_plan, prepare_referenced_classic_color_plan,
@@ -321,7 +322,7 @@ use self::direct_stacked_batch::{
     encode_stacked_direct_component_plane_batch,
     encode_stacked_direct_component_plane_batch_with_shared_tier1,
     encode_stacked_direct_gray_batch, lookup_direct_band_slice, lookup_direct_band_slice_entry,
-    signed_sample_bias, supports_stacked_direct_component_plane_batch,
+    push_member_band_slices, signed_sample_bias, supports_stacked_direct_component_plane_batch,
     try_encode_stacked_mct_rgb8_direct_color_batch, DirectBandSlice, DirectColorPlanRequest,
     RepeatedDirectGrayscalePlanRequest, StackedDirectColorBatchRequest,
     StackedDirectComponentPlaneBatchRequest, StackedGrayBatch, StackedGrayOutput,
