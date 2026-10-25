@@ -1624,8 +1624,9 @@ fn region_decode_scratch_keeps_state_across_tile_parts() {
                     let poc = [0xff, 0x5f, 0, 9, 0, 0, 0, 2, 1, 1, order];
                     let length =
                         u32::from_be_bytes(bytes[second + 6..second + 10].try_into().unwrap());
+                    let poc_len = u32::try_from(poc.len()).expect("POC marker length");
                     bytes[second + 6..second + 10]
-                        .copy_from_slice(&(length + poc.len() as u32).to_be_bytes());
+                        .copy_from_slice(&(length + poc_len).to_be_bytes());
                     bytes.splice(second + 12..second + 12, poc);
                 }
                 let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse fixture");
