@@ -10,7 +10,7 @@ use j2k_core::accelerator::GpuAbi;
 use j2k_metal_support::{
     checked_buffer_fill_bytes, checked_buffer_read as support_checked_buffer_read,
     checked_buffer_read_vec, checked_buffer_write, checked_private_buffer, checked_shared_buffer,
-    checked_shared_buffer_with_slice, MetalSupportError,
+    checked_shared_buffer_with_slice, with_checked_buffer_slice_mut, MetalSupportError,
 };
 
 use crate::{error::metal_kernel_support_error, Error};
@@ -54,6 +54,20 @@ pub(crate) fn checked_buffer_read<T: GpuAbi>(buffer: &Buffer, context: &str) -> 
     // SAFETY: J2K readback helpers are called only for CPU-initialized buffers
     // or after the producing Metal command buffer has completed.
     unsafe { support_checked_buffer_read::<T>(buffer, 0) }
+        .map_err(|error| buffer_access_error(context, error))
+}
+
+/// Runs `read` over the first `len` values of a CPU-visible buffer whose Metal
+/// writers have completed, without first copying them out.
+pub(super) fn read_completed_buffer<T: GpuAbi, R>(
+    buffer: &Buffer,
+    len: usize,
+    context: &str,
+    read: impl FnOnce(&[T]) -> R,
+) -> Result<R, Error> {
+    // SAFETY: Callers pass buffers whose producing command buffers have
+    // completed, and nothing else accesses them during `read`.
+    unsafe { with_checked_buffer_slice_mut::<T, R>(buffer, 0, len, |values| read(values)) }
         .map_err(|error| buffer_access_error(context, error))
 }
 
