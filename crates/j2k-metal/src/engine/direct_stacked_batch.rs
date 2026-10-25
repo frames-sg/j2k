@@ -15,7 +15,8 @@ use super::decode_dispatch::{
 };
 use super::direct_commands::new_compute_command_encoder;
 use super::direct_grayscale_execute::{
-    checked_coefficient_len, encode_prepared_direct_component_plane_before_final_level,
+    checked_coefficient_len, encode_merged_final_level_ht_groups,
+    encode_prepared_direct_component_plane_before_final_level,
     encode_prepared_direct_component_plane_in_command_buffer, final_identity_stored_level,
     DirectComponentPlaneRequest, FinalLevelInputs,
 };
@@ -211,9 +212,25 @@ fn try_encode_fused_mct_rgb8_color_plan(
     {
         return Ok(None);
     }
-    let mut inputs =
-        crate::batch_allocation::BatchMetadataBudget::new("J2K MetalDirect fused colour levels")
-            .try_vec(3, "J2K MetalDirect fused colour level inputs")?;
+    let mut budget =
+        crate::batch_allocation::BatchMetadataBudget::new("J2K MetalDirect fused colour levels");
+    let mut merged = None;
+    if request.tier1_mode == DirectTier1Mode::Metal {
+        let mut components = budget.try_vec(3, "J2K MetalDirect fused colour components")?;
+        components.extend(plan.component_plans.iter().zip(finals.iter().copied()));
+        let encoder = new_compute_command_encoder(command_buffer)?;
+        let decoded = encode_merged_final_level_ht_groups(
+            runtime,
+            &encoder,
+            &components,
+            request.retained_buffers,
+            request.status_checks,
+            request.scratch_buffers,
+        );
+        encoder.endEncoding();
+        merged = decoded?.map(Vec::into_iter);
+    }
+    let mut inputs = budget.try_vec(3, "J2K MetalDirect fused colour level inputs")?;
     for (component_plan, idwt) in plan.component_plans.iter().zip(&finals) {
         let encoder = new_compute_command_encoder(command_buffer)?;
         let level = encode_prepared_direct_component_plane_before_final_level(
@@ -229,6 +246,7 @@ fn try_encode_fused_mct_rgb8_color_plan(
             },
             &encoder,
             idwt,
+            merged.as_mut().and_then(Iterator::next),
         );
         encoder.endEncoding();
         inputs.push(level?);

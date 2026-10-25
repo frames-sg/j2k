@@ -72,7 +72,8 @@ pub(crate) use self::color_destination::{
     submit_prepared_direct_color_plan_batches_into_groups, ColorGroupSubmission,
 };
 pub(in crate::engine) use self::component_plane::{
-    checked_coefficient_len, encode_prepared_direct_component_plane_before_final_level,
+    checked_coefficient_len, encode_merged_final_level_ht_groups,
+    encode_prepared_direct_component_plane_before_final_level,
     encode_prepared_direct_component_plane_in_command_buffer,
     encode_prepared_direct_component_plane_in_encoder, final_identity_stored_level,
     upload_cpu_decoded_coefficients, DirectComponentPlaneRequest, FinalLevelInputs,

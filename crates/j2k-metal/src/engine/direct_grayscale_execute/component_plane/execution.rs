@@ -13,6 +13,7 @@ use crate::engine::{
     abi::{J2kIdwtSingleDecompositionParams, J2kStoreParams, J2kZeroRect},
     band_cells,
     decode_dispatch::{
+        default_metal_ht_chunk_limits, encode_metal_ht_batches_with_zero_layouts_in_encoder,
         encode_prepared_classic_sub_band_group_to_buffer_in_encoder,
         encode_prepared_classic_sub_band_to_buffer_in_encoder,
         encode_prepared_ht_sub_band_group_to_buffer_in_encoder,
@@ -23,6 +24,7 @@ use crate::engine::{
             IdwtSubBandBuffers, SingleIdwtDispatch,
         },
         store::dispatch_store_component_buffer_in_encoder_with_offsets,
+        HtBatchInput, HtZeroLayout,
     },
     direct_cpu::{
         decode_prepared_classic_sub_band_group_on_cpu_profile,
@@ -153,7 +155,8 @@ impl ComponentPlaneExecution<'_> {
         let buffer = match self.tier1_mode {
             DirectTier1Mode::Metal => {
                 let output = take_f32_scratch_buffer(self.runtime, output_span.elements)?;
-                let sparse_zero_rects = self.sparse_zero_rects(group)?;
+                let sparse_zero_rects =
+                    sparse_zero_rects(group, &self.sparse_bands, &mut self.band_cells)?;
                 let (buffers, status_check) =
                     encode_prepared_ht_sub_band_group_to_buffer_in_encoder(
                         self.runtime,
@@ -189,50 +192,6 @@ impl ComponentPlaneExecution<'_> {
             });
         }
         Ok(())
-    }
-
-    /// The group's zero rectangles without those of its sparse sub-bands
-    /// whose cell maps it records, or `None` when it records none.
-    fn sparse_zero_rects(
-        &mut self,
-        group: &PreparedHtSubBandGroup,
-    ) -> Result<Option<Vec<J2kZeroRect>>, Error> {
-        let mut skipped = Vec::new();
-        for member in &group.members {
-            if !self.sparse_bands.contains(&Some(member.band_id)) {
-                continue;
-            }
-            let (width, height) = (member.window.width(), member.window.height());
-            let span =
-                member.offset_elements..member.offset_elements + width as usize * height as usize;
-            // A sub-band its jobs cover entirely reads densely.
-            if !group
-                .zero_rects
-                .iter()
-                .any(|rect| span.contains(&(rect.offset as usize)))
-            {
-                continue;
-            }
-            if let Some(cells) = band_cells(member.offset_elements, width, height, &group.jobs)? {
-                self.band_cells.push((member.band_id, cells));
-                skipped.push(
-                    member.offset_elements
-                        ..member.offset_elements + width as usize * height as usize,
-                );
-            }
-        }
-        if skipped.is_empty() {
-            return Ok(None);
-        }
-        let mut budget =
-            crate::batch_allocation::BatchMetadataBudget::new("HTJ2K MetalDirect zero rectangles");
-        let mut rects = budget.try_vec(group.zero_rects.len(), "HT sparse zero rectangles")?;
-        rects.extend(group.zero_rects.iter().copied().filter(|rect| {
-            !skipped
-                .iter()
-                .any(|range| range.contains(&(rect.offset as usize)))
-        }));
-        Ok(Some(rects))
     }
 
     fn encode_classic_sub_band(&mut self, sub_band: &PreparedClassicSubBand) -> Result<(), Error> {
@@ -449,9 +408,9 @@ impl ComponentPlaneExecution<'_> {
     }
 
     /// Encodes the plan's steps before `end`.
-    fn encode_steps(&mut self, end: usize) -> Result<(), Error> {
+    fn encode_steps(&mut self, start: usize, end: usize) -> Result<(), Error> {
         let plan = self.plan;
-        let mut step_idx = 0;
+        let mut step_idx = start;
         while step_idx < end {
             if let Some(group) = plan.classic_group_starting_at(step_idx) {
                 self.encode_classic_group(group)?;
@@ -480,8 +439,50 @@ pub(in crate::engine) fn encode_prepared_direct_component_plane_in_encoder(
 ) -> Result<Buffer, Error> {
     let steps = request.plan.steps.len();
     let mut execution = component_plane_execution(request, encoder)?;
-    execution.encode_steps(steps)?;
+    execution.encode_steps(0, steps)?;
     execution.finish()
+}
+
+/// The group's zero rectangles without those of its `sparse` sub-bands whose
+/// cell maps it appends to `cells`, or `None` when it appends none.
+fn sparse_zero_rects(
+    group: &PreparedHtSubBandGroup,
+    sparse: &[Option<J2kDirectBandId>; 3],
+    cells: &mut Vec<(J2kDirectBandId, BandCells)>,
+) -> Result<Option<Vec<J2kZeroRect>>, Error> {
+    let mut skipped = Vec::new();
+    for member in &group.members {
+        if !sparse.contains(&Some(member.band_id)) {
+            continue;
+        }
+        let (width, height) = (member.window.width(), member.window.height());
+        let span =
+            member.offset_elements..member.offset_elements + width as usize * height as usize;
+        // A sub-band its jobs cover entirely reads densely.
+        if !group
+            .zero_rects
+            .iter()
+            .any(|rect| span.contains(&(rect.offset as usize)))
+        {
+            continue;
+        }
+        if let Some(map) = band_cells(member.offset_elements, width, height, &group.jobs)? {
+            cells.push((member.band_id, map));
+            skipped.push(span);
+        }
+    }
+    if skipped.is_empty() {
+        return Ok(None);
+    }
+    let mut budget =
+        crate::batch_allocation::BatchMetadataBudget::new("HTJ2K MetalDirect zero rectangles");
+    let mut rects = budget.try_vec(group.zero_rects.len(), "HT sparse zero rectangles")?;
+    rects.extend(group.zero_rects.iter().copied().filter(|rect| {
+        !skipped
+            .iter()
+            .any(|range| range.contains(&(rect.offset as usize)))
+    }));
+    Ok(Some(rects))
 }
 
 /// The last wavelet level of `plan` when a complete identity store of the
@@ -529,15 +530,20 @@ pub(in crate::engine) fn encode_prepared_direct_component_plane_before_final_lev
     request: DirectComponentPlaneRequest<'_>,
     encoder: &ComputeCommandEncoderRef,
     idwt: &PreparedDirectIdwt,
+    decoded: Option<DecodedHtGroup>,
 ) -> Result<FinalLevelInputs, Error> {
     let steps = request.plan.steps.len();
     let mut execution = component_plane_execution(request, encoder)?;
-    execution.sparse_bands = [
-        Some(idwt.step.hl_band_id),
-        Some(idwt.step.lh_band_id),
-        Some(idwt.step.hh_band_id),
-    ];
-    execution.encode_steps(steps.saturating_sub(2))?;
+    execution.sparse_bands = final_level_high_bands(idwt);
+    let start = match decoded {
+        Some(decoded) => {
+            execution.bands = decoded.bands;
+            execution.band_cells = decoded.band_cells;
+            decoded.end_step
+        }
+        None => 0,
+    };
+    execution.encode_steps(start, steps.saturating_sub(2))?;
     let band = |id, rect| lookup_direct_band_slice_entry(&execution.bands, id, rect);
     let ll = band(idwt.step.ll_band_id, idwt.step.ll)?;
     let hl = band(idwt.step.hl_band_id, idwt.step.hl)?;
@@ -593,4 +599,118 @@ fn component_plane_execution<'a>(
         sparse_bands: [None; 3],
         band_cells: Vec::new(),
     })
+}
+
+fn final_level_high_bands(idwt: &PreparedDirectIdwt) -> [Option<J2kDirectBandId>; 3] {
+    [
+        Some(idwt.step.hl_band_id),
+        Some(idwt.step.lh_band_id),
+        Some(idwt.step.hh_band_id),
+    ]
+}
+
+/// A component's first HT group decoded by
+/// [`encode_merged_final_level_ht_groups`]: its sub-band slices, the cell maps
+/// of its last level's sparse high-pass sub-bands, and the step after it.
+pub(in crate::engine) struct DecodedHtGroup {
+    bands: Vec<DirectBandSlice>,
+    band_cells: Vec<(J2kDirectBandId, BandCells)>,
+    end_step: usize,
+}
+
+/// Decodes the first-step HT groups of every `(plan, last level)` into one
+/// coefficient buffer with one set of HT dispatches, so the serial MEL/VLC
+/// walks of all components share each dispatch; `None` when a plan does not
+/// start with an HT group. The last levels' high-pass sub-bands are left
+/// sparse, as [`encode_prepared_direct_component_plane_before_final_level`]
+/// leaves them.
+pub(in crate::engine) fn encode_merged_final_level_ht_groups(
+    runtime: &MetalRuntime,
+    encoder: &ComputeCommandEncoderRef,
+    components: &[(&PreparedDirectGrayscalePlan, &PreparedDirectIdwt)],
+    retained_buffers: &mut Vec<Buffer>,
+    status_checks: &mut Vec<DirectStatusCheck>,
+    scratch_buffers: &mut Vec<DirectScratchBuffer>,
+) -> Result<Option<Vec<DecodedHtGroup>>, Error> {
+    let Some(groups) = components
+        .iter()
+        .map(|(plan, _)| plan.ht_group_starting_at(0))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Ok(None);
+    };
+    let mut budget =
+        crate::batch_allocation::BatchMetadataBudget::new("HTJ2K MetalDirect merged groups");
+    let mut decoded = budget.try_vec(groups.len(), "HTJ2K MetalDirect merged group results")?;
+    let mut sparse_rects = budget.try_vec(groups.len(), "HTJ2K MetalDirect merged zero rects")?;
+    let mut total = 0usize;
+    for (group, (_, idwt)) in groups.iter().zip(components) {
+        let mut band_cells = Vec::new();
+        sparse_rects.push(sparse_zero_rects(
+            group,
+            &final_level_high_bands(idwt),
+            &mut band_cells,
+        )?);
+        decoded.push(DecodedHtGroup {
+            bands: Vec::new(),
+            band_cells,
+            end_step: group.end_step,
+        });
+        total = total
+            .checked_add(group.total_coefficients)
+            .ok_or_else(|| Error::MetalKernel {
+                message: "HTJ2K MetalDirect merged coefficient count overflow".to_string(),
+            })?;
+    }
+    let mut inputs = budget.try_vec(groups.len(), "HTJ2K MetalDirect merged batch inputs")?;
+    let mut layouts = budget.try_vec(groups.len(), "HTJ2K MetalDirect merged zero layouts")?;
+    let mut base = 0usize;
+    for (source_index, (group, rects)) in groups.iter().zip(&sparse_rects).enumerate() {
+        inputs.push(HtBatchInput {
+            source_index,
+            payload: group.payload_source.as_ht_payload_source(),
+            jobs: &group.jobs,
+            output_base: base,
+            execution_owner: &group.execution_owner,
+        });
+        layouts.push(HtZeroLayout {
+            extent: group.total_coefficients,
+            uncovered: rects.as_deref().unwrap_or(&group.zero_rects),
+        });
+        base += group.total_coefficients;
+    }
+    let output = take_f32_scratch_buffer(
+        runtime,
+        checked_f32_span(total, 1, "HTJ2K MetalDirect merged coefficients")?.elements,
+    )?;
+    let (buffers, status_check) = encode_metal_ht_batches_with_zero_layouts_in_encoder(
+        runtime,
+        encoder,
+        &inputs,
+        Some(&layouts),
+        &output.buffer,
+        total,
+        default_metal_ht_chunk_limits(),
+    )?;
+    extend_preallocated_retained_buffers(retained_buffers, buffers)?;
+    status_checks.push(status_check);
+    encoder.memory_barrier_with_resources(&[&output.buffer]);
+    for ((group, input), result) in groups.iter().zip(&inputs).zip(&mut decoded) {
+        for member in &group.members {
+            let offset_bytes = checked_f32_span(
+                input.output_base + member.offset_elements,
+                1,
+                "HTJ2K MetalDirect merged member offset",
+            )?
+            .bytes;
+            result.bands.push(DirectBandSlice {
+                band_id: member.band_id,
+                buffer: output.buffer.clone(),
+                offset_bytes,
+                window: member.window,
+            });
+        }
+    }
+    scratch_buffers.push(output);
+    Ok(Some(decoded))
 }
