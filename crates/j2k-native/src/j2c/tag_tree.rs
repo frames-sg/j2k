@@ -36,15 +36,7 @@ pub(crate) struct TagTree {
 
 impl TagTree {
     pub(crate) fn new(width: u32, height: u32, nodes: &mut Vec<TagNode>) -> Self {
-        let top_level = ceil_log2_u32(width.max(height));
-        // An empty grid keeps a lone root, which no read reaches.
-        let count = if width == 0 || height == 0 {
-            1
-        } else {
-            (0..=top_level)
-                .map(|level| level_len(width, level) * level_len(height, level))
-                .sum()
-        };
+        let count = node_count(width, height);
         #[cfg(test)]
         tests::BUILD_VISITS.with(|visits| visits.set(visits.get() + count));
         let root = nodes.len();
@@ -54,6 +46,43 @@ impl TagTree {
             width,
             height,
         }
+    }
+
+    /// A tree over a `width` x `height` grid that holds no nodes until
+    /// [`Self::place`] gives it some. Reads fail until then.
+    pub(crate) const fn unplaced(width: u32, height: u32) -> Self {
+        Self {
+            root: UNPLACED,
+            width,
+            height,
+        }
+    }
+
+    pub(crate) const fn width(&self) -> u32 {
+        self.width
+    }
+
+    pub(crate) const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// The nodes the tree takes.
+    pub(crate) fn node_count(&self) -> usize {
+        node_count(self.width, self.height)
+    }
+
+    /// Start the tree afresh on the nodes from `root`, as [`Self::new`]
+    /// would build it there. Fails if they don't fit in `nodes`.
+    pub(crate) fn place(&mut self, root: usize, nodes: &mut [TagNode]) -> Option<()> {
+        let end = root.checked_add(self.node_count())?;
+        nodes.get_mut(root..end)?.fill(TagNode::default());
+        self.root = root;
+        Some(())
+    }
+
+    /// Give up the tree's nodes, keeping its grid.
+    pub(crate) fn unplace(&mut self) {
+        self.root = UNPLACED;
     }
 
     /// Read the value of leaf (`x`, `y`), or as much of it as shows whether
@@ -74,7 +103,7 @@ impl TagTree {
         for level in (0..=top_level).rev() {
             let width = level_len(self.width, level);
             let index = (y >> level) as usize * width + (x >> level) as usize;
-            let node = nodes.get_mut(level_start + index)?;
+            let node = nodes.get_mut(level_start.checked_add(index)?)?;
 
             if !node.initialized {
                 let mut val = u32::max(parent_val, node.value);
@@ -105,6 +134,21 @@ impl TagTree {
         }
         None
     }
+}
+
+/// The root of a tree that holds no nodes: no node index reaches it.
+const UNPLACED: usize = usize::MAX;
+
+/// Nodes in a tree over a `width` x `height` grid. An empty grid keeps a lone
+/// root, which no read reaches.
+fn node_count(width: u32, height: u32) -> usize {
+    if width == 0 || height == 0 {
+        return 1;
+    }
+    let top_level = ceil_log2_u32(width.max(height));
+    (0..=top_level)
+        .map(|level| level_len(width, level) * level_len(height, level))
+        .sum()
 }
 
 /// Nodes along one axis of `len` leaves at `level`: `ceil(len / 2^level)`.

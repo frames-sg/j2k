@@ -3,7 +3,7 @@
 use super::decode::{DecompositionStorage, TileDecompositions};
 use super::rect::IntRect;
 use super::roi::RoiPlan;
-use super::tag_tree::TagTree;
+use super::tag_tree::{TagNode, TagTree};
 use super::tile::{ResolutionTile, Tile};
 use crate::error::{DecodingError, Result, ValidationError};
 use crate::try_resize_decode_elements;
@@ -74,6 +74,7 @@ fn build_decompositions(
     );
     storage.roi_plan = roi_plan;
     let coefficient_extent = built?;
+    build_scratch_precincts(storage, &plan)?;
 
     validate_built_storage(&plan, storage, coefficient_extent)?;
     storage.structural_workspace_bytes = plan.total_bytes;
@@ -103,6 +104,7 @@ fn build_components(
     // Index of the current (component, resolution) in build order, for the
     // precinct selection.
     let mut resolution_run = 0usize;
+    let parsed_in_scratch = selection.is_some_and(PrecinctSelection::parsed_in_scratch);
 
     for (component_idx, component_tile) in tile.component_tiles().enumerate() {
         if coefficient_layout == CoefficientLayout::Component {
@@ -142,6 +144,7 @@ fn build_components(
                 sub_band_rect,
                 tile,
                 keep,
+                parsed_in_scratch,
                 roi_plan,
                 storage,
             )?;
@@ -289,6 +292,7 @@ fn build_precincts(
     sub_band_rect: IntRect,
     tile: &Tile<'_>,
     keep: Option<&[PrecinctUse]>,
+    parsed_in_scratch: bool,
     roi_plan: Option<&RoiPlan>,
     storage: &mut DecompositionStorage<'_>,
 ) -> Result<Range<usize>> {
@@ -304,10 +308,22 @@ fn build_precincts(
         .enumerate()
     {
         let mut grid = code_block_grid(resolution_tile, sub_band_rect, precinct_data.rect)?;
-        if keep.is_some_and(|keep| {
-            keep.get(precinct_idx)
-                .is_some_and(|precinct_use| !precinct_use.is_built())
-        }) {
+        let precinct_use = keep.and_then(|keep| keep.get(precinct_idx).copied());
+        if precinct_use == Some(PrecinctUse::Parsed) && parsed_in_scratch {
+            // Its packets are parsed in a scratch precinct, which only needs
+            // its code-block grid.
+            let start = storage.code_blocks.len();
+            push_preallocated(
+                &mut storage.precincts,
+                Precinct {
+                    code_blocks: start..start,
+                    code_inclusion_tree: TagTree::unplaced(grid.columns, grid.rows),
+                    zero_bitplane_tree: TagTree::unplaced(grid.columns, grid.rows),
+                },
+            )?;
+            continue;
+        }
+        if precinct_use.is_some_and(|precinct_use| !precinct_use.is_built(parsed_in_scratch)) {
             // Region decode never parses this precinct's packets: build it
             // with no code-blocks and root-only tag trees.
             grid.columns = 0;
@@ -438,21 +454,7 @@ fn build_code_blocks(
 
             push_preallocated(
                 &mut storage.code_blocks,
-                CodeBlock {
-                    x_idx,
-                    y_idx,
-                    rect: area,
-                    has_been_included: false,
-                    missing_bit_planes: 0,
-                    l_block: 3,
-                    number_of_coding_passes: 0,
-                    ht_total_coding_passes: 0,
-                    ht_first_cleanup_pass: None,
-                    ht_selected_set: None,
-                    coding: None,
-                    layers: start..end,
-                    non_empty_layer_count: 0,
-                },
+                CodeBlock::new(area, x_idx, y_idx, start..end),
             )?;
 
             if x_idx + 1 < code_blocks_x {
@@ -550,6 +552,173 @@ pub(crate) struct CodeBlock {
     pub(crate) coding: Option<CodeBlockCoding>,
     pub(crate) l_block: u32,
     pub(crate) non_empty_layer_count: u8,
+}
+
+impl CodeBlock {
+    /// A code-block before any packet has included it.
+    fn new(rect: IntRect, x_idx: u32, y_idx: u32, layers: Range<usize>) -> Self {
+        Self {
+            x_idx,
+            y_idx,
+            rect,
+            has_been_included: false,
+            missing_bit_planes: 0,
+            l_block: 3,
+            number_of_coding_passes: 0,
+            ht_total_coding_passes: 0,
+            ht_first_cleanup_pass: None,
+            ht_selected_set: None,
+            coding: None,
+            layers,
+            non_empty_layer_count: 0,
+        }
+    }
+}
+
+/// Scratch precincts a region decode's parsed-only precincts borrow, one per
+/// sub-band of a packet, at the end of the code-block and tag-tree storage.
+///
+/// In progressions that read all of a precinct's layers in a row, a
+/// precinct whose code-blocks the region doesn't use is parsed only to reach
+/// later packets, and its parsing state is dead after its last packet. Such
+/// precincts are built with no code-blocks or tag-tree nodes, and while their
+/// packets are parsed, they borrow a scratch precinct, which starts afresh for
+/// each. After parsing, every precinct has given its scratch back.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ParseScratch {
+    /// The first code-block of each scratch precinct.
+    code_block_start: [usize; SCRATCH_PRECINCTS],
+    /// Code-blocks per scratch precinct.
+    code_blocks: [usize; SCRATCH_PRECINCTS],
+    /// The first tag-tree node of each scratch precinct.
+    node_start: [usize; SCRATCH_PRECINCTS],
+    /// Tag-tree nodes per scratch precinct, for both of its trees.
+    nodes: [usize; SCRATCH_PRECINCTS],
+    /// The precinct, as an index into the storage's precincts, that borrows
+    /// each scratch precinct.
+    borrowers: [Option<usize>; SCRATCH_PRECINCTS],
+}
+
+/// One scratch precinct per sub-band of a packet.
+pub(crate) const SCRATCH_PRECINCTS: usize = 3;
+
+impl ParseScratch {
+    /// Lend scratch precinct `slot` to `precinct`, unless it already has it.
+    /// The precinct that held it gives it back, and its state is gone, so
+    /// a precinct can only borrow scratch for its first packet, at `layer` 0.
+    pub(crate) fn lend(
+        &mut self,
+        slot: usize,
+        precinct: usize,
+        layer: u8,
+        precincts: &mut [Precinct],
+        code_blocks: &mut [CodeBlock],
+        tag_tree_nodes: &mut [TagNode],
+    ) -> Option<()> {
+        let borrower = self.borrowers.get_mut(slot)?;
+        if *borrower == Some(precinct) {
+            return Some(());
+        }
+        if layer != 0 {
+            return None;
+        }
+        if let Some(previous) = borrower.take() {
+            give_back(precincts.get_mut(previous)?, self.code_block_start[slot]);
+        }
+
+        let target = precincts.get_mut(precinct)?;
+        let columns = target.code_inclusion_tree.width();
+        let count = (columns as usize).checked_mul(target.code_inclusion_tree.height() as usize)?;
+        let inclusion_nodes = target.code_inclusion_tree.node_count();
+        if count > self.code_blocks[slot]
+            || inclusion_nodes.checked_add(target.zero_bitplane_tree.node_count())?
+                > self.nodes[slot]
+        {
+            return None;
+        }
+        let start = self.code_block_start[slot];
+        let blocks = code_blocks.get_mut(start..start.checked_add(count)?)?;
+        // A rectangle that meets no window: no scratch code-block is read.
+        let unread = IntRect::from_ltrb(0, 0, 0, 0);
+        for (block, index) in blocks.iter_mut().zip(0u32..) {
+            *block = CodeBlock::new(unread, index % columns, index / columns, 0..0);
+        }
+        let root = self.node_start[slot];
+        target.code_inclusion_tree.place(root, tag_tree_nodes)?;
+        target
+            .zero_bitplane_tree
+            .place(root.checked_add(inclusion_nodes)?, tag_tree_nodes)?;
+        target.code_blocks = start..start + count;
+        *borrower = Some(precinct);
+        Some(())
+    }
+
+    /// Have every borrowing precinct give its scratch back.
+    pub(crate) fn give_all_back(&mut self, precincts: &mut [Precinct]) {
+        for (slot, borrower) in self.borrowers.iter_mut().enumerate() {
+            if let Some(precinct) = borrower.take().and_then(|index| precincts.get_mut(index)) {
+                give_back(precinct, self.code_block_start[slot]);
+            }
+        }
+    }
+
+    /// The most code-blocks a borrowing precinct can have.
+    pub(crate) fn code_blocks(&self) -> usize {
+        self.code_blocks.iter().copied().max().unwrap_or(0)
+    }
+}
+
+/// Leave `precinct` with no code-blocks and unplaced tag trees, as built.
+fn give_back(precinct: &mut Precinct, code_block_start: usize) {
+    precinct.code_blocks = code_block_start..code_block_start;
+    precinct.code_inclusion_tree.unplace();
+    precinct.zero_bitplane_tree.unplace();
+}
+
+/// Append the scratch precincts the plan sized, when precincts are parsed in
+/// scratch.
+fn build_scratch_precincts(
+    storage: &mut DecompositionStorage<'_>,
+    plan: &DecompositionAllocationPlan,
+) -> Result<()> {
+    storage.parse_scratch = None;
+    if plan.scratch_tree_nodes == [0; SCRATCH_PRECINCTS] {
+        return Ok(());
+    }
+    let mut code_block_start = [0; SCRATCH_PRECINCTS];
+    let mut node_start = [0; SCRATCH_PRECINCTS];
+    let mut nodes = [0; SCRATCH_PRECINCTS];
+    let mut code_block_end = storage.code_blocks.len();
+    let mut node_end = storage.tag_tree_nodes.len();
+    for slot in 0..SCRATCH_PRECINCTS {
+        code_block_start[slot] = code_block_end;
+        node_start[slot] = node_end;
+        nodes[slot] = plan.scratch_tree_nodes[slot]
+            .checked_mul(2)
+            .ok_or(ValidationError::ImageTooLarge)?;
+        code_block_end = code_block_end
+            .checked_add(plan.scratch_code_blocks[slot])
+            .ok_or(ValidationError::ImageTooLarge)?;
+        node_end = node_end
+            .checked_add(nodes[slot])
+            .ok_or(ValidationError::ImageTooLarge)?;
+    }
+    if code_block_end > storage.code_blocks.capacity()
+        || node_end > storage.tag_tree_nodes.capacity()
+    {
+        return Err(DecodingError::HostAllocationFailed.into());
+    }
+    let unread = CodeBlock::new(IntRect::from_ltrb(0, 0, 0, 0), 0, 0, 0..0);
+    storage.code_blocks.resize(code_block_end, unread);
+    storage.tag_tree_nodes.resize(node_end, TagNode::default());
+    storage.parse_scratch = Some(ParseScratch {
+        code_block_start,
+        code_blocks: plan.scratch_code_blocks,
+        node_start,
+        nodes,
+        borrowers: [None; SCRATCH_PRECINCTS],
+    });
+    Ok(())
 }
 
 pub(crate) struct Segment<'a> {

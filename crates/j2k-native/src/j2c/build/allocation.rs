@@ -2,7 +2,7 @@
 
 //! Aggregate planning and reusable-capacity policy for decomposition storage.
 
-use super::{CodeBlock, Decomposition, Layer, Precinct, Segment, SubBand};
+use super::{CodeBlock, Decomposition, Layer, Precinct, Segment, SubBand, SCRATCH_PRECINCTS};
 use crate::error::{Result, ValidationError};
 use crate::j2c::decode::{DecompositionStorage, TileDecompositions};
 use crate::j2c::rect::IntRect;
@@ -77,6 +77,16 @@ pub(super) struct DecompositionAllocationPlan {
     /// tile exactly where building every code-block's layers would.
     pub(super) parse_only_layers: usize,
     pub(super) tag_tree_nodes: usize,
+    /// Code-blocks and tag-tree nodes of the precincts a region decode
+    /// parses in scratch. Like `parse_only_layers`, they are charged but
+    /// never built, except for the scratch moved to the built counts.
+    pub(super) parse_only_code_blocks: usize,
+    pub(super) parse_only_tag_tree_nodes: usize,
+    /// The largest precinct parsed in each scratch slot: its code-blocks,
+    /// and the nodes of one tag tree, zero when the slot is unused.
+    /// LL and HL use slot 0, LH slot 1, and HH slot 2.
+    pub(super) scratch_code_blocks: [usize; SCRATCH_PRECINCTS],
+    pub(super) scratch_tree_nodes: [usize; SCRATCH_PRECINCTS],
     exact_integer_decode: bool,
     include_roi_workspace: bool,
     /// Region decode plans coefficients and the whole-plane IDWT workspace
@@ -107,6 +117,10 @@ impl DecompositionAllocationPlan {
             layers: 0,
             parse_only_layers: 0,
             tag_tree_nodes: 0,
+            parse_only_code_blocks: 0,
+            parse_only_tag_tree_nodes: 0,
+            scratch_code_blocks: [0; SCRATCH_PRECINCTS],
+            scratch_tree_nodes: [0; SCRATCH_PRECINCTS],
             exact_integer_decode,
             include_roi_workspace,
             defer_coefficients: include_roi_workspace
@@ -158,6 +172,8 @@ impl DecompositionAllocationPlan {
         checked_include_elements::<Layer>(&mut total_bytes, self.layers)?;
         checked_include_elements::<Layer>(&mut total_bytes, self.parse_only_layers)?;
         checked_include_elements::<TagNode>(&mut total_bytes, self.tag_tree_nodes)?;
+        checked_include_elements::<CodeBlock>(&mut total_bytes, self.parse_only_code_blocks)?;
+        checked_include_elements::<TagNode>(&mut total_bytes, self.parse_only_tag_tree_nodes)?;
         checked_include_elements::<f32>(&mut total_bytes, self.coefficient_storage_len())?;
         if self.exact_integer_decode {
             checked_include_elements::<i64>(&mut total_bytes, self.coefficient_storage_len())?;
@@ -224,6 +240,8 @@ impl DecompositionAllocationPlan {
             storage.tag_tree_nodes.capacity(),
             self.tag_tree_nodes,
         )?;
+        checked_include_elements::<CodeBlock>(&mut total_bytes, self.parse_only_code_blocks)?;
+        checked_include_elements::<TagNode>(&mut total_bytes, self.parse_only_tag_tree_nodes)?;
         checked_include_reusable_elements::<f32>(
             &mut total_bytes,
             storage.coefficients.capacity(),

@@ -253,3 +253,83 @@ fn reusable_capacity_growth_rejects_a_logical_target_over_the_aggregate_cap() {
         Err(DecodeError::Validation(ValidationError::ImageTooLarge))
     );
 }
+
+#[test]
+fn region_decode_scratch_preserves_the_allocation_boundary() {
+    use crate::{
+        encode, DecodeSettings, DecoderContext, EncodeOptions, EncodeProgressionOrder, Image,
+    };
+    // Two large precincts of 4x4 blocks, with one pixel in the second.
+    // Empty packets need no segments. A retained baseline leaves only a
+    // small part of the cap available without allocating a large image.
+    let pixels = vec![128; 128 * 64];
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 0,
+        code_block_width_exp: 0,
+        code_block_height_exp: 0,
+        precinct_exponents: vec![(6, 6)],
+        progression_order: EncodeProgressionOrder::Rlcp,
+        num_layers: 3,
+        ..EncodeOptions::default()
+    };
+    let control = encode(&pixels, 128, 64, 1, 8, false, &options).expect("encode fixture");
+    let decode = |bytes: &[u8], baseline| -> crate::Result<Vec<f32>> {
+        let image = Image::new_with_retained_baseline(bytes, &DecodeSettings::default(), baseline)?;
+        let mut context = DecoderContext::default();
+        let mut prepared = image.prepare_region_decoder_with_context(&mut context)?;
+        let region = prepared.decode_region_components((64, 0, 1, 1))?;
+        Ok(region.planes()[0].samples().to_vec())
+    };
+    // RLCP keeps the parsed-only precinct, so it has the pre-scratch charge.
+    let mut accepted = 0;
+    let mut rejected = DEFAULT_MAX_DECODE_BYTES;
+    while rejected - accepted > 1 {
+        let candidate = usize::midpoint(accepted, rejected);
+        match decode(&control, candidate) {
+            Ok(pixels) => {
+                assert_eq!(pixels, [128.0]);
+                accepted = candidate;
+            }
+            Err(error) => {
+                assert!(
+                    matches!(
+                        error,
+                        DecodeError::Validation(ValidationError::ImageTooLarge)
+                            | DecodeError::AllocationTooLarge { .. }
+                    ),
+                    "{error:?}"
+                );
+                rejected = candidate;
+            }
+        }
+    }
+    let cod = control
+        .windows(2)
+        .position(|w| w == [0xff, 0x52])
+        .expect("COD");
+    for order in [2, 3, 4] {
+        let mut bytes = control.clone();
+        // Every packet is empty, so the payload is valid in all orders.
+        bytes[cod + 5] = order;
+        // Position-major orders also retain their sorted precinct positions
+        // while parsing. Give the RLCP control the same remaining budget.
+        let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse fixture");
+        let tiles = crate::j2c::tile::parse(
+            &mut crate::reader::BitReader::new(image.codestream),
+            &image.header,
+            0,
+        )
+        .expect("parse tile");
+        let iterator_bytes = crate::j2c::progression::progression_iterator(&tiles[0], 0)
+            .expect("position iterator")
+            .owned_bytes();
+        for baseline in [accepted - 1, accepted, rejected] {
+            assert_eq!(
+                decode(&bytes, baseline - iterator_bytes),
+                decode(&control, baseline),
+                "order={order}, baseline={baseline}"
+            );
+        }
+    }
+}

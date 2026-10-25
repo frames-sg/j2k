@@ -1025,6 +1025,8 @@ pub(crate) struct DecompositionStorage<'a> {
     pub(crate) deferred_idwt_workspace_elements: Option<usize>,
     /// Allocation/cap failure raised from the option-based packet parser.
     pub(crate) packet_workspace_error: Option<DecodeError>,
+    /// The scratch precincts parsed-only precincts borrow during parsing.
+    pub(crate) parse_scratch: Option<build::ParseScratch>,
 }
 
 impl DecompositionStorage<'_> {
@@ -1047,6 +1049,7 @@ impl DecompositionStorage<'_> {
         self.structural_workspace_bytes = 0;
         self.deferred_idwt_workspace_elements = None;
         self.packet_workspace_error = None;
+        self.parse_scratch = None;
     }
 
     pub(crate) fn release_all_allocations(&mut self) {

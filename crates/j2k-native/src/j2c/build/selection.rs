@@ -7,14 +7,16 @@
 //! holds a code-block the ROI plan requires, or, when the tile's packets
 //! cannot all be skipped by PLT length, when the packet precedes the last
 //! required packet in progression order. Every other precinct is built empty,
-//! which keeps precinct indices stable.
+//! which keeps precinct indices stable. In progressions that read all of a
+//! precinct's layers in a row, a precinct that is only parsed is built empty
+//! too, and borrows a shared scratch precinct while its packets are parsed.
 
 use alloc::vec::Vec;
 
 use super::allocation::{checked_include_elements, code_block_grid};
 use super::{Decomposition, Precinct, SubBand, SubBandType};
 use crate::error::{DecodingError, Result, ValidationError};
-use crate::j2c::codestream::Header;
+use crate::j2c::codestream::{Header, ProgressionOrder};
 use crate::j2c::decode::{
     DecodeAllocationBudget, DecompositionStorage, OutputRegion, TileDecompositions,
 };
@@ -33,15 +35,22 @@ pub(crate) enum PrecinctUse {
     /// Never parsed: built with no code-blocks and root-only tag trees.
     Unused,
     /// Parsed only to reach later packets; its code-blocks are not decoded.
+    /// When the selection parses these in scratch, they are built like
+    /// unused precincts and borrow a shared scratch precinct while parsed.
     Parsed,
     /// Holds a code-block the ROI plan requires.
     Required,
 }
 
 impl PrecinctUse {
-    /// Whether `build` gives the precinct its code-blocks and tag trees.
-    pub(crate) const fn is_built(self) -> bool {
-        !matches!(self, Self::Unused)
+    /// Whether `build` gives the precinct its own code-blocks and tag trees,
+    /// when parsed-only precincts are parsed in scratch or not.
+    pub(crate) const fn is_built(self, parsed_in_scratch: bool) -> bool {
+        match self {
+            Self::Unused => false,
+            Self::Parsed => !parsed_in_scratch,
+            Self::Required => true,
+        }
     }
 }
 
@@ -57,6 +66,10 @@ pub(crate) struct PrecinctSelection {
     component_runs: Vec<usize>,
     /// Whether every packet of the tile can be skipped by its PLT length.
     skip_by_length: bool,
+    /// Whether parsed-only precincts share scratch state instead of their
+    /// own: the progression reads all of a precinct's layers in a row, so
+    /// its state is dead once its last packet is parsed.
+    parsed_in_scratch: bool,
     /// Packets of required precincts, all layers.
     required_packets: usize,
     /// Live bytes of the vectors above, charged while the selection lives.
@@ -85,6 +98,12 @@ impl PrecinctSelection {
     /// false, it parses every packet header up to the last required packet.
     pub(crate) const fn skip_by_length(&self) -> bool {
         self.skip_by_length
+    }
+
+    /// Whether parsed-only precincts are built without code-blocks and
+    /// parsed in a shared scratch precinct.
+    pub(crate) const fn parsed_in_scratch(&self) -> bool {
+        self.parsed_in_scratch
     }
 
     /// Packets the parser must read before the rest of the tile can be left.
@@ -441,11 +460,13 @@ fn select(
                 .and_then(|component_bytes| bytes.checked_add(component_bytes))
         })
         .ok_or(ValidationError::ImageTooLarge)?;
+    let skip_by_length = packets_skippable_by_length(tile, counts, layers)?;
     let mut selection = PrecinctSelection {
         uses,
         runs,
         component_runs,
-        skip_by_length: packets_skippable_by_length(tile, counts, layers)?,
+        skip_by_length,
+        parsed_in_scratch: !skip_by_length && reads_precinct_layers_in_a_row(tile),
         required_packets,
         owned_bytes,
         scanned_packets: 0,
@@ -488,6 +509,20 @@ fn packets_skippable_by_length(
         .checked_mul(layers)
         .ok_or(ValidationError::ImageTooLarge)?;
     Ok(lengths == packets)
+}
+
+/// Whether the progression reads every layer of a precinct before any packet
+/// of another precinct of the same component and resolution, and never comes
+/// back to it: RPCL, PCRL and CPRL, where the layer is the innermost index.
+/// Progression changes can split a precinct's layers, so they are excluded.
+fn reads_precinct_layers_in_a_row(tile: &Tile<'_>) -> bool {
+    tile.progression_changes.is_empty()
+        && matches!(
+            tile.progression_order,
+            ProgressionOrder::ResolutionPositionComponentLayer
+                | ProgressionOrder::PositionComponentResolutionLayer
+                | ProgressionOrder::ComponentPositionResolutionLayer
+        )
 }
 
 /// Without PLT skipping, the parser reads every packet header up to the last
