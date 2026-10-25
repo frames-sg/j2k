@@ -250,6 +250,30 @@ fn add_opaque_alpha_u8(src: &[u8], out: &mut [u8], stride: usize, width: usize, 
     }
 }
 
+/// Expand a packed RGB prefix into the same tight RGBA output allocation.
+/// Copying a small chunk first permits vectorization without overlapping
+/// source and destination borrows. Reverse order preserves unread RGB.
+pub(in crate::decode) fn expand_rgb8_to_rgba8(out: &mut [u8]) {
+    const CHUNK_PIXELS: usize = 256;
+    let mut rgb = [0_u8; CHUNK_PIXELS * 3];
+    let pixels = out.len() / 4;
+    for start in (0..pixels).step_by(CHUNK_PIXELS).rev() {
+        let count = (pixels - start).min(CHUNK_PIXELS);
+        let source = &mut rgb[..count * 3];
+        source.copy_from_slice(&out[start * 3..(start + count) * 3]);
+        let target = &mut out[start * 4..(start + count) * 4];
+        for (rgb, rgba) in source
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(target.as_chunks_mut::<4>().0)
+        {
+            rgba[..3].copy_from_slice(rgb);
+            rgba[3] = u8::MAX;
+        }
+    }
+}
+
 fn drop_alpha_u8(src: &[u8], out: &mut [u8], stride: usize, width: usize, height: usize) {
     let src_row_bytes = width * 4;
     let dst_row_bytes = width * 3;
