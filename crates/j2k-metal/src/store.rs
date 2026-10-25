@@ -48,9 +48,22 @@ impl HtCodeBlockDecoder for MetalStoreDecoder {
     }
 }
 
+/// Stores that provably fill the whole output plane. A partial tile store
+/// would copy the whole plane to the GPU and back, and keep it, for every tile.
+/// The plane may end in up to 7 samples of SIMD padding. Below 8 samples wide,
+/// that tail can also contain real rows, so we require an exact length match.
+/// Wider planes leave at least 8 real samples uncovered for each missing row.
 #[cfg(target_os = "macos")]
 fn supports_metal_store(job: &J2kStoreComponentJob<'_>) -> bool {
-    job.copy_width > 0
+    let fills_output = job.output_x == 0
+        && job.output_y == 0
+        && job.copy_width == job.output_width
+        && (job.copy_width as usize)
+            .checked_mul(job.copy_height as usize)
+            .and_then(|copied| job.output.len().checked_sub(copied))
+            .is_some_and(|uncovered| uncovered == 0 || (job.output_width >= 8 && uncovered < 8));
+    fills_output
+        && job.copy_width > 0
         && job.copy_height > 0
         && job.input_width > 0
         && job.output_width > 0
@@ -80,6 +93,24 @@ mod tests {
             ..EncodeOptions::default()
         };
         encode(&pixels, 4, 4, 1, 8, false, &options).expect("encode classic gray8")
+    }
+
+    fn fixture_tiled_j2k_gray8(
+        dimensions: (u32, u32),
+        tile_size: (u32, u32),
+        levels: u8,
+    ) -> Vec<u8> {
+        let pixels: Vec<u8> = (1..=dimensions.0 * dimensions.1)
+            .map(|sample| u8::try_from(sample).expect("small fixture"))
+            .collect();
+        let options = EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: levels,
+            tile_size: Some(tile_size),
+            ..EncodeOptions::default()
+        };
+        encode(&pixels, dimensions.0, dimensions.1, 1, 8, false, &options)
+            .expect("encode tiled classic gray8")
     }
 
     #[test]
@@ -140,7 +171,8 @@ mod tests {
 
         let bytes = fixture_j2k_gray8();
         let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
-        let roi = (1, 1, 2, 2);
+        // An unpadded narrow region still proves whole-plane coverage.
+        let roi = (1, 0, 2, 4);
         let mut expected_context = DecoderContext::default();
         let expected = image
             .decode_region_components_with_ht_decoder(
@@ -215,25 +247,93 @@ mod tests {
     }
 
     #[test]
-    fn metal_store_decoder_captures_device_plane_for_full_decode() {
+    fn metal_store_decoder_captures_a_device_plane_only_for_whole_plane_stores() {
         #[cfg(target_os = "macos")]
         if !should_run_metal_runtime() {
             return;
         }
 
-        let bytes = fixture_j2k_gray8();
-        let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
-        let mut context = DecoderContext::default();
-        let mut decoder = MetalStoreDecoder::default();
-        let _decoded = image
-            .decode_components_with_ht_decoder(&mut context, &mut decoder)
-            .expect("hooked decode");
-        #[cfg(target_os = "macos")]
-        assert_eq!(
-            decoder.captured_plane_count(),
-            1,
-            "full grayscale decode should capture one Metal-backed plane"
-        );
+        // (row, dimensions, tile size, levels, captured planes)
+        let mut rows = vec![
+            ("single tile".to_owned(), (4, 4), (4, 4), 1, 1),
+            ("2 x 2 tiles".to_owned(), (8, 8), (4, 4), 1, 0),
+            ("2 full-width tiles".to_owned(), (8, 8), (8, 4), 1, 0),
+            // A partial capture used to replace the completed CPU plane here.
+            ("4 x 2 regression".to_owned(), (4, 2), (4, 1), 0, 0),
+        ];
+        for width in 1_u32..=9 {
+            let captures = usize::from(width == 4 || width >= 8);
+            rows.push((
+                format!("width {width}, single tile"),
+                (width, 2),
+                (width, 2),
+                0,
+                captures,
+            ));
+            rows.push((
+                format!("width {width}, row tiles"),
+                (width, 2),
+                (width, 1),
+                0,
+                0,
+            ));
+            if width > 1 {
+                for tile_height in [1, 2] {
+                    rows.push((
+                        format!("width {width}, column tiles of height {tile_height}"),
+                        (width, 2),
+                        (width.div_ceil(2), tile_height),
+                        0,
+                        0,
+                    ));
+                }
+            }
+        }
+        for (row, dimensions, tile_size, levels, captures) in rows {
+            let bytes = fixture_tiled_j2k_gray8(dimensions, tile_size, levels);
+            #[cfg(target_os = "macos")]
+            {
+                use j2k_core::{BackendRequest, PixelFormat};
+
+                let stride = dimensions.0 as usize;
+                let mut pixels = vec![0; stride * dimensions.1 as usize];
+                j2k::J2kDecoder::new(&bytes)
+                    .expect("CPU decoder")
+                    .decode_into(&mut pixels, stride, PixelFormat::Gray8)
+                    .expect("CPU pixels");
+                let surface = crate::J2kDecoder::new(&bytes)
+                    .expect("Metal decoder")
+                    .decode_request_to_device(crate::MetalDecodeRequest::full(
+                        PixelFormat::Gray8,
+                        BackendRequest::Metal,
+                    ))
+                    .expect("Metal surface");
+                assert_eq!(
+                    surface.as_bytes().expect("read Surface").as_ref(),
+                    pixels,
+                    "{row}"
+                );
+            }
+            let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+            let mut expected_context = DecoderContext::default();
+            let expected = image
+                .decode_components_with_context(&mut expected_context)
+                .expect("native decode");
+            let mut context = DecoderContext::default();
+            let mut decoder = MetalStoreDecoder::default();
+            let actual = image
+                .decode_components_with_ht_decoder(&mut context, &mut decoder)
+                .expect("hooked decode");
+            assert_eq!(
+                actual.planes()[0].samples(),
+                expected.planes()[0].samples(),
+                "{row}"
+            );
+            #[cfg(target_os = "macos")]
+            assert_eq!(decoder.captured_plane_count(), captures, "{row}");
+            #[cfg(not(target_os = "macos"))]
+            let _ = captures;
+        }
     }
 
     #[test]
