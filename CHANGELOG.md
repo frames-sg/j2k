@@ -159,8 +159,9 @@ and stale roadmap entries have been removed from the public documentation set.
   decoding.
 - Region decodes keep no precinct records or tag-tree roots for the precincts
   they never parse. A 1024 x 1024 region of an 18000 x 12000 RGB image with
-  PLT markers peaks at 18 to 19 MiB of heap instead of 21 to 22 MiB. Output
-  is unchanged.
+  PLT markers peaks at 18 to 19 MiB of heap instead of 21 to 22 MiB. Dense
+  selections keep direct precinct indexing and the existing memory budget.
+  Output is unchanged.
 - Region decodes of RPCL, PCRL and CPRL codestreams without PLT markers no
   longer keep code-block records or tag trees for the precincts they parse
   only to reach later packets. Those precincts take turns with up to three
