@@ -26,13 +26,12 @@ use crate::j2c::roi::RoiPlan;
 use crate::j2c::tag_tree::TagNode;
 use crate::j2c::tile::Tile;
 use crate::DEFAULT_MAX_DECODE_BYTES;
-use core::mem::size_of;
 
 /// How region decode uses one precinct of one component and resolution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub(crate) enum PrecinctUse {
-    /// Never parsed: built with no code-blocks and root-only tag trees.
+    /// Never parsed: `build` gives it no precinct record.
     Unused,
     /// Parsed only to reach later packets; its code-blocks are not decoded.
     /// When the selection parses these in scratch, they are built like
@@ -40,18 +39,6 @@ pub(crate) enum PrecinctUse {
     Parsed,
     /// Holds a code-block the ROI plan requires.
     Required,
-}
-
-impl PrecinctUse {
-    /// Whether `build` gives the precinct its own code-blocks and tag trees,
-    /// when parsed-only precincts are parsed in scratch or not.
-    pub(crate) const fn is_built(self, parsed_in_scratch: bool) -> bool {
-        match self {
-            Self::Unused => false,
-            Self::Parsed => !parsed_in_scratch,
-            Self::Required => true,
-        }
-    }
 }
 
 /// The precincts a region decode builds and parses, from selection through
@@ -64,6 +51,12 @@ pub(crate) struct PrecinctSelection {
     runs: Vec<usize>,
     /// First run of each component.
     component_runs: Vec<usize>,
+    /// Precinct numbers for runs that omit records, in increasing order.
+    /// Dense runs use direct indexing and contribute no entries.
+    records: Vec<u32>,
+    /// Start of each run in `records`, empty when all runs stay dense.
+    /// An empty range is either dense or entirely unused; `uses` distinguishes them.
+    record_runs: Vec<usize>,
     /// Whether every packet of the tile can be skipped by its PLT length.
     skip_by_length: bool,
     /// Whether parsed-only precincts share scratch state instead of their
@@ -123,6 +116,33 @@ impl PrecinctSelection {
 
     pub(crate) const fn released_storage_bytes(&self) -> usize {
         self.released_storage_bytes
+    }
+
+    /// Where the packet's precinct lies among its sub-bands' precinct
+    /// records, or `None` when it has none.
+    pub(crate) fn record_offset(&self, packet: &ProgressionData) -> Option<usize> {
+        let precinct = usize::try_from(packet.precinct).ok()?;
+        if self.record_runs.is_empty() {
+            return Some(precinct);
+        }
+        let run = self
+            .component_runs
+            .get(usize::from(packet.component))?
+            .checked_add(usize::from(packet.resolution))?;
+        let start = *self.record_runs.get(run)?;
+        let end = self
+            .record_runs
+            .get(run + 1)
+            .copied()
+            .unwrap_or(self.records.len());
+        if start == end {
+            return self
+                .packet_use(packet)
+                .filter(|usage| *usage != PrecinctUse::Unused)
+                .map(|_| precinct);
+        }
+        let number = u32::try_from(packet.precinct).ok()?;
+        self.records.get(start..end)?.binary_search(&number).ok()
     }
 
     fn index(&self, packet: &ProgressionData) -> Option<usize> {
@@ -445,37 +465,83 @@ fn select(
         }
     }
 
-    let owned_bytes = uses
-        .capacity()
-        .checked_mul(size_of::<PrecinctUse>())
-        .and_then(|bytes| {
-            runs.capacity()
-                .checked_mul(size_of::<usize>())
-                .and_then(|run_bytes| bytes.checked_add(run_bytes))
-        })
-        .and_then(|bytes| {
-            component_runs
-                .capacity()
-                .checked_mul(size_of::<usize>())
-                .and_then(|component_bytes| bytes.checked_add(component_bytes))
-        })
-        .ok_or(ValidationError::ImageTooLarge)?;
     let skip_by_length = packets_skippable_by_length(tile, counts, layers)?;
     let mut selection = PrecinctSelection {
         uses,
         runs,
         component_runs,
+        records: Vec::new(),
+        record_runs: Vec::new(),
         skip_by_length,
         parsed_in_scratch: !skip_by_length && reads_precinct_layers_in_a_row(tile),
         required_packets,
-        owned_bytes,
+        // Counted once the records are indexed.
+        owned_bytes: 0,
         scanned_packets: 0,
         released_storage_bytes,
     };
     if !selection.skip_by_length {
         mark_precincts_parsed_before_last_required(tile, &mut selection, budget.live_bytes())?;
     }
+    index_records(&mut selection, budget)?;
     Ok(selection)
+}
+
+/// List the precincts that get precinct records, every one but the unused,
+/// for the parser to find a packet's precinct among them, and count the
+/// bytes the selection owns.
+fn index_records(
+    selection: &mut PrecinctSelection,
+    budget: &mut DecodeAllocationBudget,
+) -> Result<()> {
+    let mut count = 0;
+    let mut sparse = false;
+    for run in 0..selection.runs.len() {
+        let uses = selection.run(run).ok_or(DecodingError::InvalidPrecinct)?;
+        if uses.contains(&PrecinctUse::Unused) {
+            sparse = true;
+            count += uses
+                .iter()
+                .filter(|usage| **usage != PrecinctUse::Unused)
+                .count();
+        }
+    }
+    // A dense selection owns exactly the same vectors as before compaction.
+    // In a mixed selection only runs that actually omit records get an index.
+    if sparse {
+        budget.reserve_new(&mut selection.records, count)?;
+        budget.reserve_new(&mut selection.record_runs, selection.runs.len())?;
+        for (run, &start) in selection.runs.iter().enumerate() {
+            push_within_capacity(&mut selection.record_runs, selection.records.len())?;
+            let end = selection
+                .runs
+                .get(run + 1)
+                .copied()
+                .unwrap_or(selection.uses.len());
+            let uses = selection
+                .uses
+                .get(start..end)
+                .ok_or(DecodingError::InvalidPrecinct)?;
+            if !uses.contains(&PrecinctUse::Unused) {
+                continue;
+            }
+            for (number, precinct_use) in uses.iter().enumerate() {
+                if *precinct_use != PrecinctUse::Unused {
+                    let number =
+                        u32::try_from(number).map_err(|_| ValidationError::ImageTooLarge)?;
+                    push_within_capacity(&mut selection.records, number)?;
+                }
+            }
+        }
+    }
+    let mut bytes = 0;
+    checked_include_elements::<PrecinctUse>(&mut bytes, selection.uses.capacity())?;
+    checked_include_elements::<usize>(&mut bytes, selection.runs.capacity())?;
+    checked_include_elements::<usize>(&mut bytes, selection.component_runs.capacity())?;
+    checked_include_elements::<u32>(&mut bytes, selection.records.capacity())?;
+    checked_include_elements::<usize>(&mut bytes, selection.record_runs.capacity())?;
+    selection.owned_bytes = bytes;
+    Ok(())
 }
 
 /// Whether every packet of the tile can be skipped by its PLT length: every
@@ -565,4 +631,142 @@ fn mark_precincts_parsed_before_last_required(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{encode, DecodeSettings, EncodeOptions, EncodeProgressionOrder, Image};
+
+    #[test]
+    fn mixed_runs_index_only_precincts_in_sparse_runs() {
+        use PrecinctUse::{Parsed, Required, Unused};
+        let mut selection = PrecinctSelection {
+            uses: vec![Required, Parsed, Required, Unused, Required, Unused, Unused],
+            runs: vec![0, 3, 5],
+            component_runs: vec![0, 2],
+            records: Vec::new(),
+            record_runs: Vec::new(),
+            skip_by_length: false,
+            parsed_in_scratch: false,
+            required_packets: 3,
+            owned_bytes: 0,
+            scanned_packets: 0,
+            released_storage_bytes: 0,
+        };
+        // Only the middle run needs one index entry. Dense and wholly unused
+        // runs must fit without reserving entries for their precincts.
+        let cap = core::mem::size_of::<u32>() + 3 * core::mem::size_of::<usize>();
+        let mut budget = DecodeAllocationBudget::from_live_bytes_with_cap(0, cap).unwrap();
+        index_records(&mut selection, &mut budget).expect("only the sparse run is indexed");
+        for (component, resolution, expected) in [
+            (0, 0, vec![Some(0), Some(1), Some(2)]),
+            (0, 1, vec![None, Some(0)]),
+            (1, 0, vec![None, None]),
+        ] {
+            for (precinct, offset) in expected.into_iter().enumerate() {
+                let packet = ProgressionData {
+                    component,
+                    resolution,
+                    precinct: precinct as u64,
+                    layer_num: 0,
+                };
+                assert_eq!(selection.record_offset(&packet), offset, "{packet:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn dense_region_selection_keeps_the_existing_budget_boundary() {
+        // A scaled-down 7680x4096 LRCP example with 4x4 precincts and blocks.
+        // Empty packets need no segment storage. The old selection fits exactly;
+        // a redundant record index must not turn that acceptance into rejection.
+        const WIDTH: u32 = 120;
+        const HEIGHT: u32 = 64;
+        for use_ht_block_coding in [false, true] {
+            for (order, write_plt, roi) in [
+                (EncodeProgressionOrder::Lrcp, false, (0, 0, WIDTH, HEIGHT)),
+                (EncodeProgressionOrder::Lrcp, true, (0, 0, WIDTH, HEIGHT)),
+                (
+                    EncodeProgressionOrder::Lrcp,
+                    false,
+                    (WIDTH - 1, HEIGHT - 1, 1, 1),
+                ),
+                (
+                    EncodeProgressionOrder::Rpcl,
+                    false,
+                    (WIDTH - 1, HEIGHT - 1, 1, 1),
+                ),
+            ] {
+                let options = EncodeOptions {
+                    reversible: true,
+                    num_decomposition_levels: 0,
+                    code_block_width_exp: 0,
+                    code_block_height_exp: 0,
+                    precinct_exponents: vec![(2, 2)],
+                    progression_order: order,
+                    write_plt,
+                    use_ht_block_coding,
+                    ..EncodeOptions::default()
+                };
+                let bytes = encode(
+                    &vec![128; (WIDTH * HEIGHT) as usize],
+                    WIDTH,
+                    HEIGHT,
+                    1,
+                    8,
+                    false,
+                    &options,
+                )
+                .expect("encode fixture");
+                let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse fixture");
+                let tiles = crate::j2c::tile::parse(
+                    &mut crate::reader::BitReader::new(image.codestream),
+                    &image.header,
+                    0,
+                )
+                .expect("parse tile");
+                let tile = &tiles[0];
+                let counts = count(tile).unwrap();
+                let mut storage = DecompositionStorage::default();
+                let mut budget = DecodeAllocationBudget::from_live_bytes(0).unwrap();
+                build_skeleton(tile, &counts, &mut storage, &mut budget).unwrap();
+                let plan = RoiPlan::build(
+                    tile,
+                    &image.header,
+                    &storage,
+                    OutputRegion::from_tuple(roi),
+                    &mut budget,
+                )
+                .unwrap()
+                .expect("region plan");
+                let live = budget.live_bytes();
+                let cap = live + selection_owned_bytes(&counts).unwrap();
+                let mut exact =
+                    DecodeAllocationBudget::from_live_bytes_with_cap(live, cap).unwrap();
+                let selection = select(tile, &storage, &plan, &counts, &mut exact, 0)
+                    .expect("dense selection fits the existing cap");
+                assert_eq!(exact.live_bytes(), cap);
+                assert_eq!(selection.owned_bytes(), cap - live);
+                for packet in progression_iterator(tile, 0).unwrap() {
+                    assert_eq!(
+                        selection.record_offset(&packet),
+                        usize::try_from(packet.precinct).ok()
+                    );
+                }
+                let mut short =
+                    DecodeAllocationBudget::from_live_bytes_with_cap(live, cap - 1).unwrap();
+                assert!(matches!(
+                    select(tile, &storage, &plan, &counts, &mut short, 0),
+                    Err(crate::DecodeError::Validation(
+                        ValidationError::ImageTooLarge
+                    ))
+                ));
+                assert_eq!(
+                    image.decode_native_region(roi).unwrap().data,
+                    vec![128; (roi.2 * roi.3) as usize]
+                );
+            }
+        }
+    }
 }

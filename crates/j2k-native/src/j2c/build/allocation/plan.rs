@@ -145,8 +145,9 @@ fn include_scratch_precincts(plan: &mut DecompositionAllocationPlan) -> Result<(
 
 /// Count one sub-band's precincts, code-blocks, layers and tag-tree nodes.
 /// With `keep`, precincts it excludes are counted as `build` makes them: no
-/// code-blocks and root-only tag trees. Precincts parsed in scratch get no
-/// code-blocks or tag-tree nodes either, but theirs are charged. With
+/// precinct record at all, though one with root-only tag trees is charged.
+/// Precincts parsed in scratch get no code-blocks or tag-tree nodes, but
+/// theirs are charged. With
 /// `roi_plan`, only the code-blocks it requires get layers, as `build` makes
 /// them.
 fn include_sub_band_allocations(
@@ -198,6 +199,17 @@ fn include_sub_band_allocations(
             .ok_or(ValidationError::ImageTooLarge)?;
         let precinct_use = keep.and_then(|keep| keep.get(precinct_idx).copied());
         if precinct_use == Some(PrecinctUse::Unused) {
+            // No record and no tag-tree roots: move both, counted up front,
+            // to the charge.
+            plan.precincts = plan
+                .precincts
+                .checked_sub(1)
+                .ok_or(DecodingError::InvalidPrecinct)?;
+            plan.tag_tree_nodes = plan
+                .tag_tree_nodes
+                .checked_sub(2)
+                .ok_or(DecodingError::InvalidPrecinct)?;
+            DecompositionAllocationPlan::checked_add_count(&mut plan.unbuilt_precincts, 1)?;
             continue;
         }
         let grid = code_block_grid(resolution_tile, sub_band_rect, precinct_data.rect)?;

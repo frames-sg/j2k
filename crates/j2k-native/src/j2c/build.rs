@@ -307,8 +307,13 @@ fn build_precincts(
         .ok_or(DecodingError::InvalidPrecinct)?
         .enumerate()
     {
-        let mut grid = code_block_grid(resolution_tile, sub_band_rect, precinct_data.rect)?;
         let precinct_use = keep.and_then(|keep| keep.get(precinct_idx).copied());
+        if precinct_use == Some(PrecinctUse::Unused) {
+            // Region decode never parses this precinct's packets, so it gets
+            // no record. The parser finds the others through the selection.
+            continue;
+        }
+        let grid = code_block_grid(resolution_tile, sub_band_rect, precinct_data.rect)?;
         if precinct_use == Some(PrecinctUse::Parsed) && parsed_in_scratch {
             // Its packets are parsed in a scratch precinct, which only needs
             // its code-block grid.
@@ -322,12 +327,6 @@ fn build_precincts(
                 },
             )?;
             continue;
-        }
-        if precinct_use.is_some_and(|precinct_use| !precinct_use.is_built(parsed_in_scratch)) {
-            // Region decode never parses this precinct's packets: build it
-            // with no code-blocks and root-only tag trees.
-            grid.columns = 0;
-            grid.rows = 0;
         }
 
         ltrace!(

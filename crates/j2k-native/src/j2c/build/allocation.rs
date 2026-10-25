@@ -87,6 +87,10 @@ pub(super) struct DecompositionAllocationPlan {
     /// LL and HL use slot 0, LH slot 1, and HH slot 2.
     pub(super) scratch_code_blocks: [usize; SCRATCH_PRECINCTS],
     pub(super) scratch_tree_nodes: [usize; SCRATCH_PRECINCTS],
+    /// Precincts a region decode never parses. They get no precinct record
+    /// or tag-tree roots, but both are charged, so the budget rejects a
+    /// tile where storing every precinct would.
+    pub(super) unbuilt_precincts: usize,
     exact_integer_decode: bool,
     include_roi_workspace: bool,
     /// Region decode plans coefficients and the whole-plane IDWT workspace
@@ -121,6 +125,7 @@ impl DecompositionAllocationPlan {
             parse_only_tag_tree_nodes: 0,
             scratch_code_blocks: [0; SCRATCH_PRECINCTS],
             scratch_tree_nodes: [0; SCRATCH_PRECINCTS],
+            unbuilt_precincts: 0,
             exact_integer_decode,
             include_roi_workspace,
             defer_coefficients: include_roi_workspace
@@ -161,6 +166,16 @@ impl DecompositionAllocationPlan {
         Ok(())
     }
 
+    /// Charge the unbuilt precincts' records and tag-tree roots.
+    fn include_unbuilt_precincts(&self, total_bytes: &mut usize) -> Result<()> {
+        checked_include_elements::<Precinct>(total_bytes, self.unbuilt_precincts)?;
+        let roots = self
+            .unbuilt_precincts
+            .checked_mul(2)
+            .ok_or(ValidationError::ImageTooLarge)?;
+        checked_include_elements::<TagNode>(total_bytes, roots)
+    }
+
     /// Reject a logically impossible request before walking every precinct.
     fn validate_minimum_live_workspace(&self, idwt_workspace_elements: usize) -> Result<()> {
         let mut total_bytes = self.retained_baseline_bytes;
@@ -174,6 +189,7 @@ impl DecompositionAllocationPlan {
         checked_include_elements::<TagNode>(&mut total_bytes, self.tag_tree_nodes)?;
         checked_include_elements::<CodeBlock>(&mut total_bytes, self.parse_only_code_blocks)?;
         checked_include_elements::<TagNode>(&mut total_bytes, self.parse_only_tag_tree_nodes)?;
+        self.include_unbuilt_precincts(&mut total_bytes)?;
         checked_include_elements::<f32>(&mut total_bytes, self.coefficient_storage_len())?;
         if self.exact_integer_decode {
             checked_include_elements::<i64>(&mut total_bytes, self.coefficient_storage_len())?;
@@ -242,6 +258,7 @@ impl DecompositionAllocationPlan {
         )?;
         checked_include_elements::<CodeBlock>(&mut total_bytes, self.parse_only_code_blocks)?;
         checked_include_elements::<TagNode>(&mut total_bytes, self.parse_only_tag_tree_nodes)?;
+        self.include_unbuilt_precincts(&mut total_bytes)?;
         checked_include_reusable_elements::<f32>(
             &mut total_bytes,
             storage.coefficients.capacity(),
