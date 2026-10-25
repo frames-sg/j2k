@@ -1632,19 +1632,23 @@ mod tests {
 
     #[cfg(feature = "parallel")]
     #[test]
-    fn auto_cpu_parallelism_enables_ht_sub_band_parallel_branch() {
+    fn auto_cpu_parallelism_enables_sub_band_parallel_branches() {
+        let branches: [fn(super::CpuDecodeParallelism, usize) -> bool; 2] = [
+            super::should_decode_ht_sub_band_in_parallel,
+            super::should_decode_classic_sub_band_in_parallel,
+        ];
         for threads in [1, 2] {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
                 .unwrap();
             pool.install(|| {
-                for blocks in [0, 3, 4, 16, usize::MAX] {
+                for (branch, blocks) in branches
+                    .iter()
+                    .flat_map(|branch| [0, 3, 4, 16, usize::MAX].map(|blocks| (branch, blocks)))
+                {
                     assert_eq!(
-                        super::should_decode_ht_sub_band_in_parallel(
-                            super::CpuDecodeParallelism::Auto,
-                            blocks
-                        ),
+                        branch(super::CpuDecodeParallelism::Auto, blocks),
                         threads > 1 && blocks >= 4
                     );
                 }

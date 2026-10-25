@@ -246,7 +246,9 @@ pub(crate) fn should_decode_classic_sub_band_in_parallel(
     parallelism: CpuDecodeParallelism,
     code_block_count: usize,
 ) -> bool {
-    cfg!(feature = "parallel") && parallelism == CpuDecodeParallelism::Auto && code_block_count >= 4
+    // As for HT, one worker decodes straight into the sub-band: staging would
+    // give every block its own workspace and copy the slab back.
+    should_decode_ht_sub_band_in_parallel(parallelism, code_block_count)
 }
 
 pub(crate) fn should_decode_ht_sub_band_in_parallel(
