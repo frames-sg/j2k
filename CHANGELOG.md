@@ -7,8 +7,8 @@ and stale roadmap entries have been removed from the public documentation set.
 
 - Region decodes of RPCL, PCRL and CPRL codestreams without PLT markers no
   longer keep code-block records or tag trees for the precincts they parse
-  only to reach later packets. Those precincts take turns with three scratch
-  precincts while their packets are parsed. A 1024 x 1024 region of an
+  only to reach later packets. Those precincts take turns with up to three
+  scratch precincts while their packets are parsed. A 1024 x 1024 region of an
   18000 x 12000 RGB RPCL image peaks at 20 to 21 MiB of heap wherever it
   lies, instead of 24 to 32 MiB, about the same as with PLT. Output is
   unchanged.

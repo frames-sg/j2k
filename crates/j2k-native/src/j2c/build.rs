@@ -586,14 +586,14 @@ impl CodeBlock {
 /// each. After parsing, every precinct has given its scratch back.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ParseScratch {
-    /// The first code-block of the first scratch precinct.
-    code_block_start: usize,
+    /// The first code-block of each scratch precinct.
+    code_block_start: [usize; SCRATCH_PRECINCTS],
     /// Code-blocks per scratch precinct.
-    code_blocks: usize,
-    /// The first tag-tree node of the first scratch precinct.
-    node_start: usize,
+    code_blocks: [usize; SCRATCH_PRECINCTS],
+    /// The first tag-tree node of each scratch precinct.
+    node_start: [usize; SCRATCH_PRECINCTS],
     /// Tag-tree nodes per scratch precinct, for both of its trees.
-    nodes: usize,
+    nodes: [usize; SCRATCH_PRECINCTS],
     /// The precinct, as an index into the storage's precincts, that borrows
     /// each scratch precinct.
     borrowers: [Option<usize>; SCRATCH_PRECINCTS],
@@ -623,26 +623,27 @@ impl ParseScratch {
             return None;
         }
         if let Some(previous) = borrower.take() {
-            give_back(precincts.get_mut(previous)?, self.code_block_start);
+            give_back(precincts.get_mut(previous)?, self.code_block_start[slot]);
         }
 
         let target = precincts.get_mut(precinct)?;
         let columns = target.code_inclusion_tree.width();
         let count = (columns as usize).checked_mul(target.code_inclusion_tree.height() as usize)?;
         let inclusion_nodes = target.code_inclusion_tree.node_count();
-        if count > self.code_blocks
-            || inclusion_nodes.checked_add(target.zero_bitplane_tree.node_count())? > self.nodes
+        if count > self.code_blocks[slot]
+            || inclusion_nodes.checked_add(target.zero_bitplane_tree.node_count())?
+                > self.nodes[slot]
         {
             return None;
         }
-        let start = self.code_block_start.checked_add(slot.checked_mul(self.code_blocks)?)?;
+        let start = self.code_block_start[slot];
         let blocks = code_blocks.get_mut(start..start.checked_add(count)?)?;
         // A rectangle that meets no window: no scratch code-block is read.
         let unread = IntRect::from_ltrb(0, 0, 0, 0);
         for (block, index) in blocks.iter_mut().zip(0u32..) {
             *block = CodeBlock::new(unread, index % columns, index / columns, 0..0);
         }
-        let root = self.node_start.checked_add(slot.checked_mul(self.nodes)?)?;
+        let root = self.node_start[slot];
         target.code_inclusion_tree.place(root, tag_tree_nodes)?;
         target
             .zero_bitplane_tree
@@ -654,16 +655,16 @@ impl ParseScratch {
 
     /// Have every borrowing precinct give its scratch back.
     pub(crate) fn give_all_back(&mut self, precincts: &mut [Precinct]) {
-        for borrower in &mut self.borrowers {
+        for (slot, borrower) in self.borrowers.iter_mut().enumerate() {
             if let Some(precinct) = borrower.take().and_then(|index| precincts.get_mut(index)) {
-                give_back(precinct, self.code_block_start);
+                give_back(precinct, self.code_block_start[slot]);
             }
         }
     }
 
     /// The most code-blocks a borrowing precinct can have.
-    pub(crate) const fn code_blocks(&self) -> usize {
-        self.code_blocks
+    pub(crate) fn code_blocks(&self) -> usize {
+        self.code_blocks.iter().copied().max().unwrap_or(0)
     }
 }
 
@@ -681,24 +682,27 @@ fn build_scratch_precincts(
     plan: &DecompositionAllocationPlan,
 ) -> Result<()> {
     storage.parse_scratch = None;
-    if plan.scratch_tree_nodes == 0 {
+    if plan.scratch_tree_nodes == [0; SCRATCH_PRECINCTS] {
         return Ok(());
     }
-    let code_block_start = storage.code_blocks.len();
-    let node_start = storage.tag_tree_nodes.len();
-    let nodes = plan
-        .scratch_tree_nodes
-        .checked_mul(2)
-        .ok_or(ValidationError::ImageTooLarge)?;
-    let code_block_end = plan
-        .scratch_code_blocks
-        .checked_mul(SCRATCH_PRECINCTS)
-        .and_then(|count| code_block_start.checked_add(count))
-        .ok_or(ValidationError::ImageTooLarge)?;
-    let node_end = nodes
-        .checked_mul(SCRATCH_PRECINCTS)
-        .and_then(|count| node_start.checked_add(count))
-        .ok_or(ValidationError::ImageTooLarge)?;
+    let mut code_block_start = [0; SCRATCH_PRECINCTS];
+    let mut node_start = [0; SCRATCH_PRECINCTS];
+    let mut nodes = [0; SCRATCH_PRECINCTS];
+    let mut code_block_end = storage.code_blocks.len();
+    let mut node_end = storage.tag_tree_nodes.len();
+    for slot in 0..SCRATCH_PRECINCTS {
+        code_block_start[slot] = code_block_end;
+        node_start[slot] = node_end;
+        nodes[slot] = plan.scratch_tree_nodes[slot]
+            .checked_mul(2)
+            .ok_or(ValidationError::ImageTooLarge)?;
+        code_block_end = code_block_end
+            .checked_add(plan.scratch_code_blocks[slot])
+            .ok_or(ValidationError::ImageTooLarge)?;
+        node_end = node_end
+            .checked_add(nodes[slot])
+            .ok_or(ValidationError::ImageTooLarge)?;
+    }
     if code_block_end > storage.code_blocks.capacity()
         || node_end > storage.tag_tree_nodes.capacity()
     {

@@ -2,7 +2,7 @@
 
 //! Aggregate planning and reusable-capacity policy for decomposition storage.
 
-use super::{CodeBlock, Decomposition, Layer, Precinct, Segment, SubBand};
+use super::{CodeBlock, Decomposition, Layer, Precinct, Segment, SubBand, SCRATCH_PRECINCTS};
 use crate::error::{Result, ValidationError};
 use crate::j2c::decode::{DecompositionStorage, TileDecompositions};
 use crate::j2c::rect::IntRect;
@@ -79,15 +79,14 @@ pub(super) struct DecompositionAllocationPlan {
     pub(super) tag_tree_nodes: usize,
     /// Code-blocks and tag-tree nodes of the precincts a region decode
     /// parses in scratch. Like `parse_only_layers`, they are charged but
-    /// never built.
+    /// never built, except for the scratch moved to the built counts.
     pub(super) parse_only_code_blocks: usize,
     pub(super) parse_only_tag_tree_nodes: usize,
-    /// The largest precinct parsed in scratch: its code-blocks, and the
-    /// nodes of one of its tag trees, which is zero when there is none.
-    /// `build` makes one scratch precinct of this size per sub-band of a
-    /// packet.
-    pub(super) scratch_code_blocks: usize,
-    pub(super) scratch_tree_nodes: usize,
+    /// The largest precinct parsed in each scratch slot: its code-blocks,
+    /// and the nodes of one tag tree, zero when the slot is unused.
+    /// LL and HL use slot 0, LH slot 1, and HH slot 2.
+    pub(super) scratch_code_blocks: [usize; SCRATCH_PRECINCTS],
+    pub(super) scratch_tree_nodes: [usize; SCRATCH_PRECINCTS],
     exact_integer_decode: bool,
     include_roi_workspace: bool,
     /// Region decode plans coefficients and the whole-plane IDWT workspace
@@ -120,8 +119,8 @@ impl DecompositionAllocationPlan {
             tag_tree_nodes: 0,
             parse_only_code_blocks: 0,
             parse_only_tag_tree_nodes: 0,
-            scratch_code_blocks: 0,
-            scratch_tree_nodes: 0,
+            scratch_code_blocks: [0; SCRATCH_PRECINCTS],
+            scratch_tree_nodes: [0; SCRATCH_PRECINCTS],
             exact_integer_decode,
             include_roi_workspace,
             defer_coefficients: include_roi_workspace

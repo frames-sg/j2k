@@ -3,9 +3,7 @@
 use alloc::vec::Vec;
 use core::mem::size_of;
 
-use super::build::{
-    CodeBlock, ParseScratch, Precinct, PrecinctSelection, PrecinctUse, Segment,
-};
+use super::build::{CodeBlock, ParseScratch, Precinct, PrecinctSelection, PrecinctUse, Segment};
 use super::codestream::markers::{EPH, SOP};
 use super::codestream::{ComponentInfo, Header};
 use super::decode::{DecodeAllocationBudget, DecompositionStorage};

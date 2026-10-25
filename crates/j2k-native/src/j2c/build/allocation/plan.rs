@@ -2,7 +2,7 @@
 
 //! Exact logical counts and IDWT high-water planning for one tile.
 
-use super::super::{PrecinctSelection, PrecinctUse, SCRATCH_PRECINCTS};
+use super::super::{PrecinctSelection, PrecinctUse};
 use super::{BuildWorkspace, DecompositionAllocationPlan};
 use crate::error::{DecodingError, Result, ValidationError};
 use crate::j2c::build::SubBandType;
@@ -116,22 +116,31 @@ pub(super) fn build_allocation_plan(
     Ok((plan, idwt_workspace_elements))
 }
 
-/// Count the scratch precincts `build` makes when precincts are parsed in
-/// scratch: one per sub-band of a packet, each the size of the largest.
+/// Move scratch storage from the parse-only charge to the built counts.
+/// Each slot's maxima come only from precincts using that slot, whose
+/// code-blocks and nodes are already charged but never built. Their sums
+/// cover the scratch, so the total and the rejection points stay unchanged.
 fn include_scratch_precincts(plan: &mut DecompositionAllocationPlan) -> Result<()> {
-    if plan.scratch_tree_nodes == 0 {
-        return Ok(());
-    }
-    let code_blocks = plan
+    for (code_blocks, tree_nodes) in plan
         .scratch_code_blocks
-        .checked_mul(SCRATCH_PRECINCTS)
-        .ok_or(ValidationError::ImageTooLarge)?;
-    DecompositionAllocationPlan::checked_add_count(&mut plan.code_blocks, code_blocks)?;
-    let nodes = plan
-        .scratch_tree_nodes
-        .checked_mul(2 * SCRATCH_PRECINCTS)
-        .ok_or(ValidationError::ImageTooLarge)?;
-    DecompositionAllocationPlan::checked_add_count(&mut plan.tag_tree_nodes, nodes)
+        .into_iter()
+        .zip(plan.scratch_tree_nodes)
+    {
+        let nodes = tree_nodes
+            .checked_mul(2)
+            .ok_or(ValidationError::ImageTooLarge)?;
+        plan.parse_only_code_blocks = plan
+            .parse_only_code_blocks
+            .checked_sub(code_blocks)
+            .ok_or(DecodingError::InvalidPrecinct)?;
+        plan.parse_only_tag_tree_nodes = plan
+            .parse_only_tag_tree_nodes
+            .checked_sub(nodes)
+            .ok_or(DecodingError::InvalidPrecinct)?;
+        DecompositionAllocationPlan::checked_add_count(&mut plan.code_blocks, code_blocks)?;
+        DecompositionAllocationPlan::checked_add_count(&mut plan.tag_tree_nodes, nodes)?;
+    }
+    Ok(())
 }
 
 /// Count one sub-band's precincts, code-blocks, layers and tag-tree nodes.
@@ -196,7 +205,7 @@ fn include_sub_band_allocations(
             .checked_mul(grid.rows as usize)
             .ok_or(ValidationError::ImageTooLarge)?;
         if precinct_use == Some(PrecinctUse::Parsed) && parsed_in_scratch {
-            include_scratch_parsed_precinct(plan, &grid, block_count, tile)?;
+            include_scratch_parsed_precinct(plan, &grid, block_count, tile, sub_band_type)?;
             plan.validate_minimum_live_workspace(0)?;
             continue;
         }
@@ -235,13 +244,14 @@ fn include_sub_band_allocations(
 }
 
 /// Charge a precinct parsed in scratch as if it were built with no layered
-/// code-blocks, and size the scratch precincts to hold it. Its tag-tree
-/// roots, counted up front, move to the charge.
+/// code-blocks, and size its scratch slot to hold it. Its tag-tree roots,
+/// counted up front, move to the charge.
 fn include_scratch_parsed_precinct(
     plan: &mut DecompositionAllocationPlan,
     grid: &CodeBlockGrid,
     block_count: usize,
     tile: &Tile<'_>,
+    sub_band_type: SubBandType,
 ) -> Result<()> {
     let nodes_per_tree = tag_tree_node_count(grid.columns, grid.rows)?;
     plan.tag_tree_nodes = plan
@@ -255,16 +265,18 @@ fn include_scratch_parsed_precinct(
         &mut plan.parse_only_tag_tree_nodes,
         tree_nodes,
     )?;
-    DecompositionAllocationPlan::checked_add_count(
-        &mut plan.parse_only_code_blocks,
-        block_count,
-    )?;
+    DecompositionAllocationPlan::checked_add_count(&mut plan.parse_only_code_blocks, block_count)?;
     let layers = block_count
         .checked_mul(usize::from(tile.num_layers))
         .ok_or(ValidationError::ImageTooLarge)?;
     DecompositionAllocationPlan::checked_add_count(&mut plan.parse_only_layers, layers)?;
-    plan.scratch_code_blocks = plan.scratch_code_blocks.max(block_count);
-    plan.scratch_tree_nodes = plan.scratch_tree_nodes.max(nodes_per_tree);
+    let slot = match sub_band_type {
+        SubBandType::LowLow | SubBandType::HighLow => 0,
+        SubBandType::LowHigh => 1,
+        SubBandType::HighHigh => 2,
+    };
+    plan.scratch_code_blocks[slot] = plan.scratch_code_blocks[slot].max(block_count);
+    plan.scratch_tree_nodes[slot] = plan.scratch_tree_nodes[slot].max(nodes_per_tree);
     Ok(())
 }
 
