@@ -5,6 +5,15 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- Single-tile CPU encodes free each component's wavelet coefficients as soon
+  as its code blocks are prepared, instead of after packetization, and charge
+  the later phases without them. Prepared code blocks own their samples, so
+  nothing reads the coefficients again. A lossless classic encode of a 4096
+  by 2048 RGB image peaks at about 135 MB of heap instead of 219 MB, and an
+  HTJ2K one at 106 to 110 MB instead of 127 MB. Rate searches keep their
+  transform for later candidates, so under a memory cap that admits an
+  ordinary encode but not that transform they now encode each candidate
+  afresh. Output is unchanged.
 - CPU classic Part 1 decodes on one thread decode each sub-band's code
   blocks straight into its coefficients, as HTJ2K decodes on one thread
   already do, instead of staging them in a sub-band slab with a Tier-1

@@ -4,6 +4,7 @@
 
 use alloc::vec::Vec;
 
+use super::super::ownership::dwt_component_sources_retained_bytes;
 use super::{DwtBandView, DwtComponentSource, DwtLevelView};
 use crate::j2c::encode::{DwtDecomposition, NativeEncodePipelineResult};
 use crate::j2c::fdwt::{PackedDwtGeometry, PackedSubbandView};
@@ -38,6 +39,13 @@ impl DwtComponentSource for OwnedDwtComponent {
             Self::Decomposed(decomposition) => decomposition.level(index),
             Self::Packed(packed) => packed.level(index),
         }
+    }
+
+    fn owned_bytes(&self) -> NativeEncodePipelineResult<usize> {
+        Ok(dwt_component_sources_retained_bytes(
+            core::slice::from_ref(self),
+            0,
+        )?)
     }
 }
 
