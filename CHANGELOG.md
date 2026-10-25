@@ -5,6 +5,9 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CPU HTJ2K cleanup decoding reads MEL symbols from a 64-bit reservoir through
+  a table, eight runs at a time and out of the quad-pair loop, instead of bit by
+  bit. Output is unchanged.
 - CPU HTJ2K cleanup decoding decodes each quad pair's symbols in one call with
   the MEL and VLC refills inlined and masked VLC table indexes, and its
   magnitude and sign row loops are reorganized around those pairs. Output is

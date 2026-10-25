@@ -5,11 +5,40 @@ pub(super) struct MelDecoder<'a> {
     pos: usize,
     remaining: usize,
     unstuff: bool,
-    current_byte: u8,
-    bits_left: u8,
+    /// Unread bits, the next one in bit 63.
+    reservoir: u64,
+    bits: u32,
     k: usize,
     num_runs: usize,
     runs: u64,
+}
+
+/// One MEL symbol for each state `k` (a row of 64) and the next six bits:
+/// `consumed | run << 3 | next_k << 9`, with `run` as
+/// [`MelDecoder::get_run`] returns it.
+const MEL_SYMBOLS: [u16; 16 * 64] = mel_symbols();
+
+#[expect(clippy::cast_possible_truncation, reason = "table fields below 64")]
+const fn mel_symbols() -> [u16; 16 * 64] {
+    const MEL_EXP: [u16; 13] = [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 4, 5];
+    let mut table = [0; 16 * 64];
+    let mut index = 0;
+    while index < 13 * 64 {
+        let (k, bits) = (index / 64, (index % 64) as u16);
+        let eval = MEL_EXP[k];
+        table[index] = if bits & 0x20 != 0 {
+            // A one: 2^eval zero events, and the next state up.
+            let next = if k < 12 { k + 1 } else { 12 };
+            1 | ((((1 << eval) - 1) << 1) << 3) | ((next as u16) << 9)
+        } else {
+            // A zero and `eval` bits: that many zero events, then a one.
+            let zeros = (bits >> (5 - eval)) & ((1 << eval) - 1);
+            let next = k.saturating_sub(1);
+            (1 + eval) | (((zeros << 1) | 1) << 3) | ((next as u16) << 9)
+        };
+        index += 1;
+    }
+    table
 }
 
 impl<'a> MelDecoder<'a> {
@@ -19,16 +48,19 @@ impl<'a> MelDecoder<'a> {
             pos: lcup - scup,
             remaining: scup - 1,
             unstuff: false,
-            current_byte: 0,
-            bits_left: 0,
+            reservoir: 0,
+            bits: 0,
             k: 0,
             num_runs: 0,
             runs: 0,
         }
     }
 
-    fn read_bit(&mut self) -> Option<u32> {
-        if self.bits_left == 0 {
+    /// Top the reservoir up to at least 49 bits, a byte at a time. A byte
+    /// after `0xFF` carries its low seven bits, the last byte has its low
+    /// four bits set, and `0xFF` bytes follow it.
+    fn fill(&mut self) -> Option<()> {
+        while self.bits <= 48 {
             let mut byte = if self.remaining > 0 {
                 let byte = self.data.get(self.pos).copied()?;
                 self.pos += 1;
@@ -37,51 +69,32 @@ impl<'a> MelDecoder<'a> {
             } else {
                 0xFF
             };
-
             if self.remaining == 0 {
                 byte |= 0x0F;
             }
-
-            self.current_byte = byte;
-            self.bits_left = 8 - u8::from(self.unstuff);
+            let count = 8 - u32::from(self.unstuff);
+            let value = u64::from(byte) & ((1 << count) - 1);
+            self.reservoir |= value << (64 - self.bits - count);
+            self.bits += count;
             self.unstuff = byte == 0xFF;
         }
-
-        self.bits_left -= 1;
-        Some(u32::from((self.current_byte >> self.bits_left) & 1))
+        Some(())
     }
 
-    fn read_bits(&mut self, count: usize) -> Option<u32> {
-        let mut value = 0;
-
-        for _ in 0..count {
-            value = (value << 1) | self.read_bit()?;
-        }
-
-        Some(value)
-    }
-
-    #[inline(always)]
+    /// Queue eight runs. Out of line: the pair loops only pop the queue.
+    #[inline(never)]
     fn decode_more_runs(&mut self) -> Option<()> {
-        const MEL_EXP: [usize; 13] = [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 4, 5];
-
+        // A symbol takes at most six bits, so one fill covers all eight.
+        self.fill()?;
         while self.num_runs < 8 {
-            let eval = MEL_EXP[self.k];
-            let first = self.read_bit()?;
-            let run = if first == 1 {
-                self.k = (self.k + 1).min(12);
-                ((1usize << eval) - 1) << 1
-            } else {
-                self.k = self.k.saturating_sub(1);
-                (self.read_bits(eval)? as usize) << 1 | 1
-            };
-
-            self.runs |= (run as u64) << (self.num_runs * 7);
+            let next_bits = (self.reservoir >> 58) as usize;
+            let entry = MEL_SYMBOLS[(self.k * 64 + next_bits) & 0x3FF];
+            let consumed = u32::from(entry & 7);
+            self.reservoir <<= consumed;
+            self.bits -= consumed;
+            self.runs |= u64::from((entry >> 3) & 0x3F) << (self.num_runs * 7);
+            self.k = usize::from(entry >> 9);
             self.num_runs += 1;
-
-            if eval == 5 && first == 0 && self.num_runs >= 8 {
-                break;
-            }
         }
 
         Some(())

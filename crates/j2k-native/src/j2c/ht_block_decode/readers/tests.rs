@@ -34,25 +34,39 @@ fn reader_state_and_bit_consumption_match_pre_split_goldens() {
         (-1, 0, 33, 0x0000_0001_55FE_02FF, true)
     );
 
-    let mel_data = [0x12, 0x34, 0x56, 0x78];
-    let mut mel = MelDecoder::new(&mel_data, mel_data.len(), 2);
-    let mut runs = [0i32; 8];
-    for run in &mut runs {
-        *run = mel.get_run().expect("MEL run");
-    }
-    assert_eq!(runs, [1, 0, 1, 0, 0, 0, 2, 2]);
-    assert_eq!(
+    // MEL runs (zero events << 1 | terminated) across stuffed bytes, the
+    // marked last byte, and the 0xFF bytes after it, as the bit-serial
+    // decoder read them.
+    let mel_cases: [(&[u8], usize, [i32; 24]); 4] = [
         (
-            mel.pos,
-            mel.remaining,
-            mel.bits_left,
-            mel.k,
-            mel.num_runs,
-            mel.runs,
-            mel.unstuff,
+            &[0x12, 0x34, 0x56, 0x78],
+            2,
+            [
+                1, 0, 1, 0, 0, 0, 2, 2, 2, 6, 6, 6, 14, 14, 30, 62, 62, 62, 62, 62, 62, 62, 62, 62,
+            ],
         ),
-        (3, 0, 0, 5, 0, 0, false)
-    );
+        (
+            &[0xFF, 0x80, 0xFF, 0xFF, 0x3C, 0x00, 0x00],
+            7,
+            [
+                0, 0, 0, 2, 2, 2, 6, 6, 1, 1, 7, 2, 6, 6, 6, 14, 14, 30, 62, 62, 62, 62, 62, 62,
+            ],
+        ),
+        (&[0x00; 6], 6, [1; 24]),
+        (
+            &[0xFF, 0xFF, 0xFF, 0xFF, 0x5A, 0xA5],
+            6,
+            [
+                0, 0, 0, 2, 2, 2, 6, 6, 6, 14, 14, 30, 62, 62, 62, 62, 62, 62, 62, 62, 62, 62, 62,
+                62,
+            ],
+        ),
+    ];
+    for (mel_data, scup, expected) in mel_cases {
+        let mut mel = MelDecoder::new(mel_data, mel_data.len(), scup);
+        let runs = expected.map(|_| mel.get_run().expect("MEL run"));
+        assert_eq!(runs, expected, "MEL data {mel_data:02X?}");
+    }
 
     let vlc_data = [0x12, 0x34, 0x56, 0x78, 0x9A];
     let mut vlc = ReverseBitReader::new_vlc(&vlc_data, vlc_data.len(), 3);
