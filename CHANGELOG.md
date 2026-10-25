@@ -5,6 +5,10 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- The `j2k-metal` `J2kDecoder` copies the codestream for a referenced HTJ2K
+  plan on a pool worker while the packet headers are parsed, instead of after
+  them. A 4096 x 2048 RGB HTJ2K lossless decode to an RGB8 surface took 7.56 ms
+  against 7.83 ms. Output is unchanged.
 - The CPU HTJ2K block encoder derives every quad's rho, maximum exponent, eps
   reach mask, context, CxtVLC index, u_q and MagSgn bound in the row pre-pass
   instead of in the quad walk, drains MagSgn words with one whole-word store,

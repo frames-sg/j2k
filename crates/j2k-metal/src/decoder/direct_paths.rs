@@ -588,6 +588,29 @@ pub(super) const fn referenced_payload_copy_is_bounded(input_len: usize) -> bool
     input_len <= DEFAULT_MAX_HOST_ALLOCATION_BYTES
 }
 
+/// Builds the whole image's referenced HTJ2K plan on this thread while a pool
+/// worker makes the codestream copy its payload ranges point into, so the
+/// copy no longer waits for the packet headers to be parsed. The copy is
+/// returned whether or not the plan builds.
+#[cfg(target_os = "macos")]
+fn build_referenced_plan_copying_codestream<'a>(
+    image: &NativeImage<'a>,
+    context: &mut NativeDecoderContext<'a>,
+    bytes: &'a [u8],
+) -> (
+    j2k_native::Result<j2k_native::J2kReferencedHtj2kPlan>,
+    Arc<[u8]>,
+) {
+    let region = (0, 0, image.width(), image.height());
+    let mut shared = None;
+    let plan = rayon::in_place_scope(|scope| {
+        scope.spawn(|_| shared = Some(Arc::from(bytes)));
+        image.build_referenced_htj2k_plan_region_with_context(context, region)
+    });
+    // The scope returns after its spawned copy has run.
+    (plan, shared.unwrap_or_else(|| Arc::from(bytes)))
+}
+
 /// Builds and prepares the direct grayscale plan, or `None` when the image
 /// cannot take the direct route.
 ///
@@ -608,14 +631,11 @@ fn build_prepared_direct_gray_plan<'a>(
         && image.tile_count() == 1
         && image.uses_high_throughput_block_coding()
     {
-        let region = (0, 0, image.width(), image.height());
-        match image.build_referenced_htj2k_plan_region_with_context(context, region) {
+        let (plan, shared) = build_referenced_plan_copying_codestream(image, context, bytes);
+        match plan {
             Ok(plan) => {
-                return crate::engine::prepare_referenced_htj2k_grayscale_plan(
-                    &plan,
-                    &Arc::from(bytes),
-                )
-                .map(Some);
+                return crate::engine::prepare_referenced_htj2k_grayscale_plan(&plan, &shared)
+                    .map(Some);
             }
             Err(error)
                 if matches!(
@@ -650,15 +670,11 @@ fn build_prepared_direct_color_plan<'a>(
         && image.tile_count() == 1
         && image.uses_high_throughput_block_coding()
     {
-        let region = (0, 0, image.width(), image.height());
-        match image.build_referenced_htj2k_plan_region_with_context(context, region) {
+        let (plan, shared) = build_referenced_plan_copying_codestream(image, context, bytes);
+        match plan {
             Ok(plan) => {
-                return crate::engine::prepare_referenced_htj2k_color_plan(
-                    &plan,
-                    &Arc::from(bytes),
-                    false,
-                )
-                .map(Some);
+                return crate::engine::prepare_referenced_htj2k_color_plan(&plan, &shared, false)
+                    .map(Some);
             }
             Err(error)
                 if matches!(
