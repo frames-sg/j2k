@@ -176,7 +176,7 @@ fn print_help() {
            clone-audit   stage source-aware production Rust and run pinned jscpd\n\
           panic-surface run production-library unwrap/expect and explicit panic-macro ratchets\n\
           promotion-codegen generate or check verifier-backed GPU Auto-routing tables [--check]\n\
-           no-std        check no_std-compatible codec crates\n\
+           no-std        check no_std-compatible codec crates and the serial wasm32 build\n\
            unsafe-audit  verify JPEG SIMD unsafe code stays in its boundary modules\n\
            repo-lint     run repository policy checks owned by xtask\n\
            t803          fetch, run, or verify pinned T.803 v3 conformance evidence\n\

@@ -422,6 +422,18 @@ pub(super) fn no_std() -> Result<(), String> {
         "j2k-codec-math",
         "--target",
         NO_STD_CORE_PORTABLE_TARGET,
+    ])?;
+    // Single-threaded wasm32 builds, such as browser decoders, keep std and
+    // SIMD but drop rayon.
+    run_cargo(&[
+        "check",
+        "-p",
+        "j2k-native",
+        "--no-default-features",
+        "--features",
+        "std,simd",
+        "--target",
+        NO_STD_CORE_PORTABLE_TARGET,
     ])
 }
 
