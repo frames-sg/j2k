@@ -2,7 +2,8 @@
 
 //! Shared 8-bit sample conversion and interleaved packing policy.
 
-use crate::error::bail;
+use crate::error::{bail, ColorError};
+use crate::j2c::mct::DeferredMct;
 use crate::j2c::ComponentData;
 use crate::jp2::DecodedImage;
 use crate::math;
@@ -60,7 +61,7 @@ impl SampleConversionPolicy {
     )]
     fn quantize(self, component: &ComponentData, sample: f32) -> u8 {
         if self.uses_direct_8_bit() {
-            return math::round_f32(sample) as u8;
+            return round_to_u8(sample);
         }
         let source_max = ((1_u64 << u32::from(component.bit_depth)) - 1) as f32;
         math::round_f32((sample / source_max) * f32::from(u8::MAX)) as u8
@@ -174,6 +175,43 @@ fn interleave_window(
     Ok(())
 }
 
+/// [`interleave_and_convert`] after a decode that left its inverse MCT to
+/// the pack: 8-bit RGB fuses it with the pack, other outputs apply it first.
+pub(crate) fn interleave_and_convert_after_mct(
+    image: &mut DecodedImage<'_, '_>,
+    buf: &mut [u8],
+    mct: Option<DeferredMct>,
+    parallel: bool,
+) -> Result<()> {
+    let Some(mct) = mct else {
+        return interleave_and_convert(image, buf);
+    };
+    let components = &mut *image.decoded_components;
+    let policy = SampleConversionPolicy::for_components(components)?;
+    let fused = components.len() == 3 && policy.uses_direct_8_bit();
+    let len = components[0].container.truncated().len();
+    if fused {
+        SampleWindow::full(len).validate(components, buf.len())?;
+    }
+    let [s0, s1, s2, ..] = components.as_mut_slice() else {
+        bail!(ColorError::Mct);
+    };
+    if fused {
+        let planes = [s0, s1, s2].map(|component| &mut component.container[..len]);
+        mct.pack_rgb8(planes, &mut buf[..3 * len], parallel, pack_rgb8);
+        return Ok(());
+    }
+    mct.apply(
+        (
+            &mut s0.container[..],
+            &mut s1.container[..],
+            &mut s2.container[..],
+        ),
+        parallel,
+    );
+    interleave_and_convert(image, buf)
+}
+
 pub(crate) fn interleave_and_convert(
     image: &mut DecodedImage<'_, '_>,
     buf: &mut [u8],
@@ -224,17 +262,7 @@ pub(crate) fn interleave_and_convert(
                 let c1 = &c1.container[..sample_count];
                 let c2 = &c2.container[..sample_count];
 
-                #[cfg(all(feature = "simd", target_arch = "x86_64"))]
-                {
-                    use fearless_simd::{dispatch, Level};
-                    dispatch!(Level::new(), simd => pack_rgb8(simd, [c0, c1, c2], buf));
-                }
-                #[cfg(not(all(feature = "simd", target_arch = "x86_64")))]
-                for i in 0..sample_count {
-                    *output_iter.next().unwrap() = policy.quantize(&components[0], c0[i]);
-                    *output_iter.next().unwrap() = policy.quantize(&components[1], c1[i]);
-                    *output_iter.next().unwrap() = policy.quantize(&components[2], c2[i]);
-                }
+                pack_rgb8([c0, c1, c2], buf);
             }
             // RGBA or CMYK.
             4 => {
@@ -264,9 +292,37 @@ pub(crate) fn interleave_and_convert(
     Ok(())
 }
 
+/// Pack 8-bit RGB planes as interleaved bytes, rounded and saturated.
+fn pack_rgb8(planes: [&[f32]; 3], output: &mut [u8]) {
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    {
+        use fearless_simd::{dispatch, Level};
+        dispatch!(Level::new(), simd => pack_rgb8_simd(simd, planes, output));
+    }
+    // An indexed loop over whole pixels, which LLVM vectorizes on NEON.
+    #[cfg(not(all(feature = "simd", target_arch = "x86_64")))]
+    {
+        let [r, g, b] = planes;
+        let pixels = output.as_chunks_mut::<3>().0;
+        let len = pixels.len().min(r.len()).min(g.len()).min(b.len());
+        for i in 0..len {
+            pixels[i] = [round_to_u8(r[i]), round_to_u8(g[i]), round_to_u8(b[i])];
+        }
+    }
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "8-bit samples are rounded and saturated to the stable 8-bit output format"
+)]
+fn round_to_u8(sample: f32) -> u8 {
+    math::round_f32(sample) as u8
+}
+
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
 #[inline(always)]
-fn pack_rgb8<S: fearless_simd::Simd>(simd: S, planes: [&[f32]; 3], output: &mut [u8]) {
+fn pack_rgb8_simd<S: fearless_simd::Simd>(simd: S, planes: [&[f32]; 3], output: &mut [u8]) {
     use fearless_simd::{f32x8, u32x8, u8x16, Bytes, Select, SimdBase, SimdFloat};
 
     let zero = f32x8::splat(simd, 0.0);

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use super::packing::interleave_and_convert;
 use super::*;
 use crate::error::DecodeError;
 use crate::math::{SimdBuffer, SIMD_WIDTH};

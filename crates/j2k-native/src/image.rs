@@ -3,12 +3,13 @@
 use alloc::vec::Vec;
 
 use crate::error::{err, ValidationError};
+use crate::j2c::mct::DeferredMct;
 use crate::j2c::{self, Header};
 use crate::jp2::colr::EnumeratedColorspace;
 use crate::jp2::{self, DecodedImage, ImageBoxes};
 use crate::CpuDecodeParallelism;
 use crate::{
-    checked_decode_byte_len3, convert_color_space, interleave_and_convert,
+    checked_decode_byte_len3, convert_color_space, interleave_and_convert_after_mct,
     interleave_and_convert_region, resolve_palette_indices, try_resize_decode_elements,
     validate_and_reorder_channels, validate_interleaved_output_buffer, validate_roi, Bitmap,
     ColorSpace, DecodedComponents, DecodedNativeComponents, DecoderContext, DecodingError,
@@ -459,8 +460,9 @@ impl<'a> Image<'a> {
     pub fn decode_with_context(&self, decoder_context: &mut DecoderContext<'a>) -> Result<Bitmap> {
         (|| {
             let retained_image_bytes = self.retained_metadata_bytes()?;
-            let mut decoded_image =
-                self.decode_image(decoder_context, None, None, true, retained_image_bytes)?;
+            let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
+            let (mct, mut decoded_image) =
+                self.decode_image_for_rgb8(decoder_context, retained_image_bytes)?;
             let component_owner_capacity = decoded_image.decoded_components.capacity();
             let buffer_size = checked_decode_byte_len3(
                 self.width() as usize,
@@ -481,7 +483,7 @@ impl<'a> Image<'a> {
             try_resize_decode_elements(&mut data, buffer_size, 0_u8)?;
             budget.include_capacity_overage::<u8>(buffer_size, data.capacity())?;
             validate_interleaved_output_buffer(&decoded_image, &data)?;
-            interleave_and_convert(&mut decoded_image, &mut data)?;
+            interleave_and_convert_after_mct(&mut decoded_image, &mut data, mct, parallel)?;
             let bitmap = Bitmap {
                 color_space,
                 data,
@@ -747,15 +749,11 @@ impl<'a> Image<'a> {
         buf: &mut [u8],
         decoder_context: &mut DecoderContext<'a>,
     ) -> Result<()> {
-        let mut decoded_image = self.decode_image(
-            decoder_context,
-            None,
-            None,
-            true,
-            self.retained_metadata_bytes()?,
-        )?;
+        let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
+        let retained = self.retained_metadata_bytes()?;
+        let (mct, mut decoded_image) = self.decode_image_for_rgb8(decoder_context, retained)?;
         validate_interleaved_output_buffer(&decoded_image, buf)?;
-        interleave_and_convert(&mut decoded_image, buf)?;
+        interleave_and_convert_after_mct(&mut decoded_image, buf, mct, parallel)?;
 
         Ok(())
     }
@@ -768,6 +766,41 @@ impl<'a> Image<'a> {
         round_irreversible_output: bool,
         retained_baseline_bytes: usize,
     ) -> Result<DecodedImage<'ctx, '_>> {
+        self.run_decode(
+            decoder_context,
+            output_region,
+            ht_decoder,
+            round_irreversible_output,
+            retained_baseline_bytes,
+        )?;
+        self.finish_decoded_image(decoder_context, retained_baseline_bytes)
+    }
+
+    /// [`Self::decode_image`] for an RGB8 pack. A plain colour image (see
+    /// [`Self::permits_line_region_idwt`]) leaves its inverse MCT to the
+    /// pack, which receives it with the image.
+    fn decode_image_for_rgb8<'ctx>(
+        &self,
+        decoder_context: &'ctx mut DecoderContext<'a>,
+        retained_baseline_bytes: usize,
+    ) -> Result<(Option<DeferredMct>, DecodedImage<'ctx, '_>)> {
+        decoder_context.set_defer_mct(self.permits_line_region_idwt());
+        let decoded = self.run_decode(decoder_context, None, None, true, retained_baseline_bytes);
+        decoder_context.set_defer_mct(false);
+        decoded?;
+        let mct = decoder_context.take_deferred_mct();
+        let image = self.finish_decoded_image(decoder_context, retained_baseline_bytes)?;
+        Ok((mct, image))
+    }
+
+    fn run_decode(
+        &self,
+        decoder_context: &mut DecoderContext<'a>,
+        output_region: Option<(u32, u32, u32, u32)>,
+        ht_decoder: Option<&mut dyn HtCodeBlockDecoder>,
+        round_irreversible_output: bool,
+        retained_baseline_bytes: usize,
+    ) -> Result<()> {
         let mut ht_decoder = ht_decoder;
         decoder_context.set_output_region(output_region);
         decoder_context.set_round_irreversible_output(round_irreversible_output);
@@ -782,8 +815,7 @@ impl<'a> Image<'a> {
         decoder_context.set_output_region(None);
         decoder_context.set_round_irreversible_output(false);
         decoder_context.permit_line_region_idwt(false);
-        decode_result?;
-        self.finish_decoded_image(decoder_context, retained_baseline_bytes)
+        decode_result
     }
 
     /// Whether a region decode of this image may use the row-streamed region
