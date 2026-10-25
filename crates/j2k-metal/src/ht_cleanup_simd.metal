@@ -5,8 +5,10 @@
 // 1. `..._vlc_...`: one thread per code block walks the serial MEL/VLC
 //    streams. Thirty-two blocks share a SIMD group, so this latency-bound
 //    walk uses every lane. For quad (q, r) it stores `(u_q << 16) | inf` in
-//    the block's own output word at column 2q, row 2r, which the next kernel
-//    overwrites; no scratch allocation is needed.
+//    the block's own output word at row 2r, column q for blocks at most 64
+//    samples wide and 2q otherwise, which the next kernel overwrites; no
+//    scratch allocation is needed. Packing a narrow row's words into its
+//    first half halves the lines this round trip writes and reads.
 // 2. `..._magsgn_...`: one SIMD group per code block decodes each quad row's
 //    MagSgn samples in parallel. Each lane owns one quad, derives its bit
 //    count from the stored VLC data and the previous row's exponents, and
@@ -190,6 +192,8 @@ inline uint ht_simd_ctx_inf(uint bits) {
 // a register consumed two quads per pair, and the current row is accumulated
 // from the top four bits at a time, so no loop step shifts by a variable.
 struct HtNarrowVlcContext {
+    // Output-word step between consecutive quads' VLC words.
+    static constexpr constant uint kQuadWordStep = 1u;
     ulong prev;
     ulong cur;
     uint pairs;
@@ -224,6 +228,7 @@ inline HtNarrowVlcContext ht_narrow_vlc_context() {
 // of threadgroup memory, covering J2K_HT_MAX_WIDTH / 2 quads plus the zero
 // quad read past the row end.
 struct HtWideVlcContext {
+    static constexpr constant uint kQuadWordStep = 2u;
     threadgroup uint *prev;
     threadgroup uint *cur;
     uint quad;
@@ -411,10 +416,10 @@ inline void ht_simd_vlc_initial_row(
         uvlc_entry >>= 3u;
 
         ctx.record_pair(t0, t1);
-        quad_words[quad * 2u] =
+        quad_words[quad * Context::kQuadWordStep] =
             ht_simd_quad_word(t0, 1u + (uvlc_entry & 0x7u) + (tmp & ~(0xFFu << len)));
         if (second) {
-            quad_words[quad * 2u + 2u] =
+            quad_words[(quad + 1u) * Context::kQuadWordStep] =
                 ht_simd_quad_word(t1, 1u + (uvlc_entry >> 3u) + (tmp >> len));
         }
         quad += 2u;
@@ -490,10 +495,10 @@ inline void ht_simd_vlc_non_initial_row(
         uvlc_entry >>= 3u;
 
         ctx.record_pair(t0, t1);
-        quad_words[quad * 2u] =
+        quad_words[quad * Context::kQuadWordStep] =
             ht_simd_quad_word(t0, (uvlc_entry & 0x7u) + (tmp & ~(0xFFu << len)));
         if (second) {
-            quad_words[quad * 2u + 2u] =
+            quad_words[(quad + 1u) * Context::kQuadWordStep] =
                 ht_simd_quad_word(t1, (uvlc_entry >> 3u) + (tmp >> len));
         }
         quad += 2u;
@@ -722,7 +727,9 @@ inline void decode_ht_cleanup_magsgn_impl(
             uint inf = 0u;
             uint uq = 0u;
             if (active) {
-                const uint quad_word = row_out[q * 2u];
+                // A narrow row has one chunk, and its prefix sum below orders
+                // every lane's read of these words before any lane's writes.
+                const uint quad_word = row_out[Narrow ? q : q * 2u];
                 inf = quad_word & 0xFFFFu;
                 const uint u_q = quad_word >> 16u;
                 if (row == 0u) {
