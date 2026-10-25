@@ -8,7 +8,7 @@ use super::super::decode::DecompositionStorage;
 use super::super::rect::IntRect;
 use super::banded::{filter_2d_banded, filter_2d_banded_from_bands, packed_band_rects, use_banded};
 use super::horizontal::{filter_horizontal, filter_horizontal_codestream};
-use super::interleave::interleave_samples;
+use super::interleave::{interleave_samples, interleave_samples_into};
 use super::model::{CoefficientSource, IDWTInput, IDWTTempOutput};
 use super::roi::interleave_samples_roi;
 use super::vertical::{filter_vertical, filter_vertical_codestream};
@@ -70,6 +70,45 @@ pub(super) fn apply_level(
     } else {
         filter_2d(input, target, decomposition, transform, storage)
     }
+}
+
+/// CPU reconstruction into a previous component's initialized dead prefix.
+/// Keep this separate from the ordinary vector and accelerator path.
+pub(super) fn apply_level_into(
+    input: IDWTInput<'_>,
+    target: &mut [f32],
+    band_scratch: &mut Vec<f32>,
+    decomposition: &Decomposition,
+    transform: WaveletTransform,
+    storage: &DecompositionStorage<'_>,
+    parallel: bool,
+) -> Result<IDWTTempOutput> {
+    let rect = decomposition.rect;
+    let len = checked_decode_usize_product2(rect.width() as usize, rect.height() as usize)?;
+    let target = &mut target[..len];
+    if use_banded(rect.width() as usize, rect.height() as usize) {
+        let band = |index: usize| {
+            &storage.coefficients[storage.sub_bands[decomposition.sub_bands[index]]
+                .coefficients
+                .clone()]
+        };
+        filter_2d_banded_from_bands(
+            rect,
+            [input.coefficients, band(0), band(1), band(2)],
+            target,
+            band_scratch,
+            transform,
+            super::OPENJPEG_NORMALIZED_HIGH_PASS_F32,
+            parallel,
+        )?;
+    } else {
+        interleave_samples_into(input, decomposition, target, storage);
+        if rect.width() > 0 && rect.height() > 0 {
+            filter_horizontal_codestream(target, rect, transform);
+            filter_vertical_codestream(target, rect, transform);
+        }
+    }
+    Ok(IDWTTempOutput { rect })
 }
 
 pub(crate) fn apply_single_decomposition_idwt_job(
