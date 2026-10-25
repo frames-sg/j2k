@@ -446,8 +446,8 @@ pub(crate) fn try_forward_dwt_packed_f32(
 /// each pixel once, level shifted and transformed as the deinterleave and
 /// MCT stages do, so no component plane is written and read back; the other
 /// levels run in place in each output. This needs at least
-/// `packed_planes_dwt_scratch_len(width, height, 3)` scratch samples, and
-/// each further multiple of it runs one more worker.
+/// `packed_rgb8_dwt_scratch_len(width, height)` scratch samples, and each
+/// further multiple of it runs one more worker.
 #[expect(
     clippy::too_many_arguments,
     reason = "the pixels, output planes, plane geometry and scratch are independent inputs"
@@ -466,7 +466,7 @@ pub(crate) fn try_forward_dwt_packed_f32_from_rgb8(
         validate_packed_dwt_plane(output.len(), width, height)?;
     }
     validate_line_scratch(line_scratch.len(), width, height)?;
-    let workers = line_scratch.len() / lifting::packed_planes_dwt_scratch_len(width, height, 3)?;
+    let workers = line_scratch.len() / lifting::packed_rgb8_dwt_scratch_len(width, height)?;
     let pixels = pixels.as_chunks::<3>().0;
     if workers == 0 || pixels.len() < outputs[0].len() {
         return Err(EncodeError::InvalidInput {
@@ -1111,7 +1111,7 @@ mod tests {
             );
             let strip_scratch = packed_dwt_scratch_len(w, h).expect("strip scratch");
             let rgb_scratch =
-                super::lifting::packed_planes_dwt_scratch_len(w, h, 3).expect("RGB strip scratch");
+                super::lifting::packed_rgb8_dwt_scratch_len(w, h).expect("RGB strip scratch");
             let mut expected_shape = None;
             for plane in &mut planes {
                 let mut scratch = vec![0.0; strip_scratch];
@@ -1154,6 +1154,23 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn rgb8_scratch_covers_rows_band_blocks_and_half_height_strips() {
+        for (width, height, expected) in [
+            (4096, 2048, 64 * 1024),
+            (4096, 3, 4096),
+            (10, 7, 3 * 10 * 7),
+            (100, 100, 3 * 32 * 40),
+            (100, 1000, 32 * 500),
+            (1, 1000, 1000),
+        ] {
+            assert_eq!(
+                super::super::lifting::packed_rgb8_dwt_scratch_len(width, height),
+                Ok(expected)
+            );
         }
     }
 

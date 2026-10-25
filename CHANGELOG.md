@@ -5,6 +5,10 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CPU encodes of 8-bit RGB give each wavelet worker scratch for the strips
+  it lifts, the first level in band blocks and the later levels from half the
+  rows, instead of strips of full height. On 18 threads a 4096 by 2048 image
+  needs 4.7 MB less scratch. Output is unchanged.
 - Single-tile CPU encodes free each component's wavelet coefficients as soon
   as its code blocks are prepared, instead of after packetization, and charge
   the later phases without them. Prepared code blocks own their samples, so
