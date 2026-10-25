@@ -68,9 +68,9 @@ Metal-resident `Gray8`/`Rgb8` images as baseline JPEG entirely on the GPU.
 `j2k_jpeg::encode_jpeg_lossless`. Metal predicts and categorizes every sample,
 sums code lengths, and packs the bit stream; the CPU builds the Huffman table
 from the GPU histogram and copies the packed stream out with byte stuffing.
-Output is byte-identical to CPU lossless encode. On an M4 Pro a 2048×2500
-16-bit SV1 image encodes in 6.2 ms against 39.7 ms on the CPU (the
-`jpeg_lossless_encode` group of `benches/encode_baseline.rs`).
+Output is byte-identical to CPU lossless encode. The `jpeg_lossless_encode`
+group of `benches/encode_baseline.rs` uses synthetic CT/CR-like phantoms,
+including a 2048×2500 16-bit SV1 case.
 
 ## Links
 

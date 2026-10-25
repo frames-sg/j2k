@@ -88,3 +88,6 @@ pull request, so the change is reviewed before it reaches `main`.
 
 The release process and its required checks are in
 [`xtask/RELEASING.md`](xtask/RELEASING.md).
+
+Publish `j2k-mpsgraph-support` before using it in a registry-only build of the
+JPEG XR consumer. Local Cargo source patches validate development changes only.

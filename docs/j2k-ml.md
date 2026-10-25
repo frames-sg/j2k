@@ -187,8 +187,14 @@ CUDA and Metal external destinations support both NCHW and NHWC. A resident
 image-surface view is exposed only for NHWC because `Surface` denotes
 interleaved pixels; CUDA also exposes an explicit dense resident owner for
 NCHW, while Metal NCHW callers use the dense external-destination API. Both
-prepared offset plans include every tile involved. Nonzero ROI maxshift (from
-an RGN marker) is not supported on either GPU.
+prepared offset plans include every tile involved. CUDA and Metal support ROI
+maxshift from RGN markers in their supported classic and HT plans. The coded
+bitplane count, including the ROI shift, must not exceed 31; classic blocks must
+fit within 64×64, and HT blocks must satisfy each backend's geometry and pass
+limits. CUDA tests cover reversible classic Gray8/RGB8 with shift 7 in both
+layouts for full and region-plus-reduced requests. Metal tests include full
+classic signed Gray4 with shift 7 and HT RGB8 with component shifts 3/0/0. These
+cases do not establish support for every ROI, precision, and request combination.
 
 The GPU sessions keep successful groups when another group fails. Classic and
 HT jobs keep track of their source image through batching, and HT jobs also

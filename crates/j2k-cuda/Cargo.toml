@@ -1,6 +1,6 @@
 [package]
 name = "j2k-cuda"
-description = "CUDA adapter for resident HTJ2K decode/encode and shared JPEG 2000 stages"
+description = "CUDA JPEG 2000/HTJ2K decode, HTJ2K encode, and shared encode stages"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

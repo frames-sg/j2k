@@ -57,7 +57,7 @@ Stability values:
 | Variable | Effect | Default | Stability |
 | --- | --- | --- | --- |
 | `J2K_ML_BATCH_INPUT_MODE` | Selects content-distinct generated inputs (`distinct`) or one repeated `Arc` owner (`repeated`) for the `j2k-ml` batch benchmarks. One process uses one mode. | `distinct` | Benchmark |
-| `J2K_MPSGRAPH_BENCH_ITERATIONS` | Number of repeated samples per size/batch/path cell in the direct MPSGraph benchmark. | `5` | Benchmark |
+| `J2K_MPSGRAPH_BENCH_ITERATIONS` | Repeated samples per size/batch/path cell in the direct MPSGraph benchmark. Invalid values use the build default; `0` is clamped to `1`. | `30` without debug assertions, `1` with debug assertions | Benchmark |
 | `J2K_JPEG_HARNESS_BASELINE_SHADERS` | Directory holding another copy of the JPEG Metal shader files (same names as `crates/j2k-jpeg-metal/src/shaders_*.metal`). The ignored `decode_kernel_stage_profile` test compiles it as a baseline and A/Bs it against the in-tree kernels in one process; the copy must match the current host ABI. | No baseline column | Benchmark |
 | `J2K_JPEG_TEXTURE_SMALL_BATCHES` | When set to any value, selects the small-batch and tile-size control matrix for the ignored JPEG Metal `texture_scheduling_experiment` test. | Regular 16-tile timing matrix | Benchmark |
 | `J2K_ML_BATCH_PROCESS_MODE` | Selects uninstrumented Criterion measurement (`criterion`) or the separate low-batch telemetry/profile process (`profile`) for CUDA and Metal batch benchmarks. | `criterion` | Benchmark |
@@ -66,6 +66,7 @@ Stability values:
 | `J2K_REQUIRE_OPENJPH` | Makes optional OpenJPH fixture comparator rows fail instead of skip when `ojph_expand` is unavailable. Intended only for HTJ2K/JPH-compatible CLI context rows. | Skip unavailable OpenJPH path unless explicitly included | Benchmark |
 | `J2K_REQUIRE_KAKADU` | Makes optional Kakadu fixture/encoder comparator rows fail instead of skip when `kdu_expand` or `kdu_compress` is unavailable. Intended only for proprietary CLI/file-output context rows. | Skip unavailable Kakadu path unless explicitly included | Benchmark |
 | `J2K_REQUIRE_LIBJPEG_TURBO` | Makes libjpeg-turbo comparison tests fail instead of skip when the bench feature/tooling is unavailable. | Skip unavailable comparator path | Test/CI |
+| `J2K_REQUIRE_CUDA` | Set to `1` to make `j2k-python` CUDA tests fail when the CUDA build or device is unavailable. | Skip unavailable Python CUDA tests | Test/CI |
 | `J2K_REQUIRE_CUDA_RUNTIME` | Makes CUDA tests and benchmarks require a usable CUDA runtime instead of skipping. | Skip runtime-only CUDA paths | Test/CI |
 | `J2K_CUDA_LOSSY_PARITY_PNM` | Path to an external RGB PNM fixture used by required CUDA irreversible color-transform, DWT 9/7, and lossy encode parity tests. | Optional generated fixture unless the release runner supplies a file | Test/CI |
 | `J2K_REQUIRE_CUDA_JPEG_HARDWARE_DECODE` | Requires CUDA JPEG hardware decode coverage in relevant CUDA tests/benches. | Hardware decode may skip | Test/CI |
@@ -76,6 +77,30 @@ Stability values:
 | `J2K_REQUIRE_WSI_ROOT` | Makes external JPEG WSI tests fail if `J2K_WSI_ROOT` is missing or empty. | Skip external WSI tests | Test/CI |
 | `J2K_REQUIRE_TRANSCODE_WSI_ROOT` | Makes transcode corpus validation require `J2K_TRANSCODE_WSI_ROOT`. | Skip external transcode WSI corpus | Test/CI |
 | `J2K_REQUIRE_NDPI` | Makes NDPI passthrough tests fail if `J2K_NDPI_PATH` is missing. | Skip NDPI passthrough test | Test/CI |
+
+## DICOM Decode Benchmarks And Metal Step Profiling
+
+These variables control `jp2k_dicom_bench`, the Metal `dicom_decode_bench`
+example, and the ignored `single_image_step_profile` test.
+
+| Variable | Effect | Default | Stability |
+| --- | --- | --- | --- |
+| `J2K_DICOM_BENCH_REPEATS` | Positive timed repeats per row; series rows use at most five. | `15` | Benchmark |
+| `J2K_DICOM_BENCH_RAW_DIR` | Directory of `<stem>.RAW` little-endian reference pixels for exact verification. | No external RAW comparison | Benchmark |
+| `J2K_DICOM_BENCH_THREADS` | Positive worker count for the series row. | Available parallelism, or `1` if unavailable | Benchmark |
+| `J2K_DICOM_BENCH_SERIES_REPEAT` | Positive number of copies of each input in the series row. | `8` | Benchmark |
+| `J2K_DICOM_BENCH_MODE` | Selects `serial`, `parallel`, or `series`; empty runs every mode. Other values are errors. | All modes | Benchmark |
+| `J2K_DICOM_BENCH_REUSE_DECODER` | Any value enables reuse of one prepared decoder for repeated single-image decodes. | Fresh decoder per decode | Benchmark |
+| `J2K_METAL_BENCH_ONLY` | Selects `metal-single`, `auto`, `metal-into`, or `metal-batch`; unset or unrecognized values run CPU/Metal single and batch rows. | Full comparison | Benchmark |
+| `J2K_METAL_BENCH_REPEATS` | Positive timed repeats per Metal benchmark row. | `11` | Benchmark |
+| `J2K_METAL_BENCH_BATCH` | Positive batch size for Metal benchmark batch rows. | `16` | Benchmark |
+| `J2K_METAL_BENCH_REUSE` | Any value reuses one decoder, its prepared plan, and device payloads for `metal-single` rows. | Fresh decoder per decode | Benchmark |
+| `J2K_METAL_BENCH_DISTINCT` | Any value makes `metal-batch` use distinct frames re-encoded as lossless HTJ2K. | Repeated copies of one codestream | Benchmark |
+| `J2K_METAL_BENCH_CAPTURE` | Absolute `.gputrace` output path for one warmed-up first-file `metal-into` decode. Requires `MTL_CAPTURE_ENABLED=1`. | No capture | Benchmark |
+| `J2K_STEP_PROFILE_FILES` | OS-separated path list of Gray16 codestreams to profile instead of generated images. | Generated 512×512, 1024×1024, and 3072×4096 Gray16 images | Benchmark |
+| `J2K_STEP_PROFILE_INTO` | Any value profiles decoding into one reused destination. | New surface per decode | Benchmark |
+| `J2K_STEP_PROFILE_LOSSY` | Any value selects irreversible 9/7 for generated inputs; ignored when files are supplied. | Reversible 5/3 generated inputs | Benchmark |
+| `J2K_STEP_PROFILE_COMPARE_IDWT` | Any value additionally profiles IDWT with single-pass tile kernels disabled. | No two-pass comparison | Benchmark |
 
 ## External Data And Comparator Paths
 
@@ -92,7 +117,7 @@ Stability values:
 | `J2K_ISO_CONFORMANCE_DIR` | Path to ISO J2K conformance vectors for ignored/external tests. | Not set | Test/CI |
 | `J2K_APERIO_TILE_FIXTURE` | Path to an Aperio J2K tile fixture for the ignored lossless encode test. | Not set | Test/CI |
 | `J2K_PROGRESSION_MATRIX_DIR` | Directory the ignored `write_progression_matrix_codestreams` test in `j2k-native` writes its generated progression and packet-layout codestreams to, for use with other decoders. | Not set | Test/CI |
-| `J2K_PARITY_CORPUS_MANIFEST` | Manifest path used by `scripts/parity-corpus-fetch.sh`. | `corpus/wsi-samples/manifest.json` or first script argument | Test/CI |
+| `J2K_PARITY_CORPUS_MANIFEST` | Required manifest path for `scripts/parity-corpus-fetch.sh`; overrides the first script argument. Run `scripts/parity-corpus-fetch.sh --help` for usage. | No bundled default; supply this variable or the first script argument | Test/CI |
 | `J2K_PARITY_CORPUS_DIR` | Output directory used by `scripts/parity-corpus-fetch.sh`. | `corpus/wsi-samples` or second script argument | Test/CI |
 | `J2K_PARITY_CORPUS_MAX_BYTES` | Maximum accepted byte size for each downloaded parity-corpus fixture. | `536870912` | Test/CI |
 | `J2K_OPENJPEG_BIN` | Override for OpenJPEG `opj_decompress` in J2K parity tests. | `opj_decompress` on `PATH` | Test/CI |

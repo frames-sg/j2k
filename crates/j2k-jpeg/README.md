@@ -3,6 +3,9 @@
 Pure-Rust JPEG inspect, decode, and encode crate for pathology, medical
 imaging, transcode, and general codec pipelines in the j2k workspace.
 
+Only `x86_64` and `aarch64` targets are supported; other architectures fail at
+compile time.
+
 The CPU decoder is the reference implementation. Unsupported JPEG types return
 an error. The CPU encoders are the reference for the Metal and CUDA adapter
 crates' GPU baseline and lossless encode.

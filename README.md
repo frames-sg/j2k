@@ -122,8 +122,9 @@ You choose the backend with `BackendRequest`:
 
 - **`Auto`** (the default) uses the GPU only for image types and sizes where it
   was measured to be faster than the CPU and to give identical output. Everything
-  else runs on the CPU. On the HTJ2K routing benchmark, `Auto` picks the GPU for 8
-  of 10 decode cases on CUDA and 3 of 10 on Metal
+  else runs on the CPU. On the cited HTJ2K routing benchmark, `Auto` picks the GPU
+  for all 8 decode cells on CUDA and 3 of 8 on Metal. The 2 encode cells stay on
+  the CPU for both backends
   ([results](docs/benchmark-evidence.md)).
 - **`Cuda`** or **`Metal`** forces the GPU. If the GPU path can't handle the
   image, you get an error. J2K never retries on the CPU: an explicit GPU

@@ -49,14 +49,14 @@ or item privacy over `#[doc(hidden)]` for internals.
   compatibility promise.
 - `experimental`: `j2k-native`, `j2k-cuda`, `j2k-metal`, `j2k-jpeg-cuda`,
   `j2k-jpeg-metal`, `j2k-transcode`, `j2k-transcode-cuda`,
-  `j2k-transcode-metal`, and `j2k-ml`. Patch releases keep their APIs. A pre-1.0
-  minor release may change them, with every break listed in the review file and
-  migration notes. What they support at runtime also depends on features,
-  hardware, and `docs/public-support.md`.
+  `j2k-transcode-metal`, `j2k-ml`, and `j2k-mpsgraph`. Patch releases keep their
+  APIs. A pre-1.0 minor release may change them, with every break listed in the
+  review file and migration notes. What they support at runtime also depends on
+  features, hardware, and `docs/public-support.md`.
 - `implementation`: `j2k-codec-math`, `j2k-profile`, `j2k-types`,
   `j2k-cuda-build-support`, `j2k-cuda-runtime`, `j2k-cuda-j2k-engine`,
-  `j2k-cuda-jpeg-engine`, `j2k-cuda-transcode-engine`, and
-  `j2k-metal-support`. These are published so the other J2K crates can use
+  `j2k-cuda-jpeg-engine`, `j2k-cuda-transcode-engine`, `j2k-metal-support`, and
+  `j2k-mpsgraph-support`. These are published so the other J2K crates can use
   them; they are not meant as general extension APIs. They are documented,
   snapshotted, and patch-checked like the others, and a pre-1.0 minor release
   may change them under the same review rules.

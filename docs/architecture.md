@@ -264,8 +264,12 @@ homogeneous group. Resident and external-destination routes share the codec
 pipeline; an external destination receives the final samples without a decoded
 host transfer or an intermediate final device allocation.
 
-GPU prepared decode returns an error for nonzero ROI maxshift (RGN markers)
-and for shapes a backend's plans cannot describe. Subsampled components, mixed
+CUDA and Metal prepared decode support ROI maxshift from RGN markers in
+supported classic and HT profiles. Both limit the coded bitplane count including
+the ROI shift to 31; classic blocks must fit within 64×64, and HT geometry and
+pass limits are backend-specific. Shapes a backend's plans cannot describe
+return an error. See the tested ROI profiles in
+[`j2k-ml.md`](j2k-ml.md#gpu-adapter-support). Subsampled components, mixed
 precision or signedness, arbitrary component counts, and precision above 16
 bits use the CPU component-plane APIs or return a fast-batch
 representability error. A shape stays off the GPU until it has been measured.

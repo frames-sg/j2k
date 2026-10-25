@@ -12,6 +12,3 @@ all unretained storage alive. `wait` reports an owned Foundation error. Drop wai
 for completion without interpreting codec metadata or allocating output vectors.
 The guard is neither Send nor Sync; adapters retain their codec submission and
 assemble their own results and diagnostics.
-
-This package must be published before the JPEG XR consumer can use a registry-only
-build. Local Cargo source patches validate development changes only.

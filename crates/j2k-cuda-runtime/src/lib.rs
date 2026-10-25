@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! CUDA codec engine and Driver API runtime used by J2K CUDA adapter crates.
+//! Codec-neutral CUDA Driver API runtime used by J2K CUDA engines and adapters.
+//!
+//! Provides device memory and copies, streams and events, PTX module loading,
+//! launch validation, and resource completion tracking. Codec kernels and stage
+//! dispatch belong to the engine crates, which supply [`CudaKernelSpec`] values;
+//! this crate retains the generic byte-copy kernel.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(missing_docs)]
