@@ -5,6 +5,9 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- Auto full-image RGB8 decodes keep tiled images on the CPU, avoiding
+  repeated per-stage Metal round trips. Explicit Metal requests keep resident
+  decoding.
 - Region decodes of RPCL, PCRL and CPRL codestreams without PLT markers no
   longer keep code-block records or tag trees for the precincts they parse
   only to reach later packets. Those precincts take turns with up to three
