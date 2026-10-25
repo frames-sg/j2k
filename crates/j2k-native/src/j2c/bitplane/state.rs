@@ -212,8 +212,7 @@ impl BitPlaneDecodeContext {
         // so a raw (bypass) segment sends the whole block down the
         // per-coefficient passes.
         let packed_columns = all_segments_arithmetic
-            && !code_block_style.selective_arithmetic_coding_bypass
-            && !code_block_style.termination_on_each_pass
+            && code_block_style.single_codeword_segment()
             && !code_block_style.vertically_causal_context;
         let layout = if packed_columns {
             workspace::StateLayout::PackedColumns

@@ -454,6 +454,8 @@ pub(crate) struct DecodeDebugCounters {
     #[cfg(all(test, feature = "parallel"))]
     pub(crate) ht_task_workspace_growths: usize,
     #[cfg(all(test, feature = "parallel"))]
+    pub(crate) classic_task_workspace_growths: usize,
+    #[cfg(all(test, feature = "parallel"))]
     pub(crate) parallel_coefficients: ParallelCoefficientStats,
 }
 
@@ -1114,12 +1116,19 @@ pub(crate) struct TileDecodeContext {
     pub(crate) ht_block_decode_context: HtBlockDecodeContext,
     #[cfg(feature = "parallel")]
     pub(in crate::j2c::decode) ht_task_workspaces: Vec<workspace::HtTaskWorkspace>,
+    /// One classic workspace per worker of the tile-wide route.
+    #[cfg(feature = "parallel")]
+    pub(in crate::j2c::decode) classic_task_workspaces:
+        Vec<workspace::TaskWorkspace<J2kCodeBlockDecodeWorkspace>>,
     #[cfg(feature = "parallel")]
     pub(in crate::j2c::decode) parallel_coefficients: Vec<f32>,
-    /// Test-only switch that keeps HT tiles on the per-sub-band path so its
-    /// slab and bank behavior stays covered.
+    /// Test-only switch that keeps tiles off the tile-wide route, on the
+    /// per-sub-band path, so its slab and bank behavior stays covered.
     #[cfg(all(test, feature = "parallel"))]
-    pub(crate) force_per_sub_band_ht: bool,
+    pub(crate) force_per_sub_band: bool,
+    /// One-shot fault injection after a tile route has written coefficients.
+    #[cfg(all(test, feature = "parallel"))]
+    pub(crate) tile_route_post_decode: Option<fn(&mut DecompositionStorage<'_>) -> Result<()>>,
     /// Test-only switch that stores whole code-blocks in region decode, as a
     /// hooked decode does, so clipped storage can be compared against it.
     #[cfg(test)]
@@ -1159,7 +1168,9 @@ impl TileDecodeContext {
         let round_irreversible_output = self.round_irreversible_output;
         let line_region_idwt_permitted = self.line_region_idwt_permitted;
         #[cfg(all(test, feature = "parallel"))]
-        let force_per_sub_band_ht = self.force_per_sub_band_ht;
+        let force_per_sub_band = self.force_per_sub_band;
+        #[cfg(all(test, feature = "parallel"))]
+        let tile_route_post_decode = self.tile_route_post_decode;
         #[cfg(test)]
         let store_whole_code_blocks = self.store_whole_code_blocks;
         #[cfg(test)]
@@ -1170,7 +1181,8 @@ impl TileDecodeContext {
         self.line_region_idwt_permitted = line_region_idwt_permitted;
         #[cfg(all(test, feature = "parallel"))]
         {
-            self.force_per_sub_band_ht = force_per_sub_band_ht;
+            self.force_per_sub_band = force_per_sub_band;
+            self.tile_route_post_decode = tile_route_post_decode;
         }
         #[cfg(test)]
         {
@@ -1191,6 +1203,7 @@ impl TileDecodeContext {
         #[cfg(feature = "parallel")]
         {
             self.ht_task_workspaces = Vec::new();
+            self.classic_task_workspaces = Vec::new();
             self.parallel_coefficients = Vec::new();
         }
     }
@@ -1209,10 +1222,10 @@ impl TileDecodeContext {
         let serial_bytes = self.serial_tier1_capacity_bytes()?;
         #[cfg(feature = "parallel")]
         {
+            let classic_bytes = workspace::task_workspace_bytes(&self.classic_task_workspaces)?;
             serial_bytes
-                .checked_add(workspace::ht_task_workspace_bytes(
-                    &self.ht_task_workspaces,
-                )?)
+                .checked_add(workspace::task_workspace_bytes(&self.ht_task_workspaces)?)
+                .and_then(|bytes| bytes.checked_add(classic_bytes))
                 .and_then(|bytes| {
                     self.parallel_coefficients
                         .capacity()
@@ -1234,7 +1247,7 @@ impl TileDecodeContext {
 
     #[cfg(all(test, feature = "parallel"))]
     pub(crate) fn ht_parallel_workspace_bytes(&self) -> Result<usize> {
-        workspace::ht_task_workspace_bytes(&self.ht_task_workspaces)
+        workspace::task_workspace_bytes(&self.ht_task_workspaces)
     }
 
     pub(crate) fn idwt_capacity_bytes(&self) -> Result<usize> {

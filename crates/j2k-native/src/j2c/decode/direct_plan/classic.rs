@@ -10,10 +10,17 @@ use crate::{try_reserve_decode_elements, J2kCodeBlockSegment};
 use alloc::vec::Vec;
 
 #[derive(Clone, Copy)]
-struct ClassicAllocationCounts {
-    data_bytes: usize,
+pub(crate) struct ClassicAllocationCounts {
+    pub(crate) data_bytes: usize,
     segments: usize,
-    fragments: usize,
+    /// Segments that hold data.
+    pub(crate) fragments: usize,
+    /// Coding passes over all segments.
+    #[cfg_attr(
+        not(feature = "parallel"),
+        expect(dead_code, reason = "only the tile-wide route reads the pass count")
+    )]
+    pub(crate) coding_passes: u8,
 }
 
 #[expect(
@@ -44,8 +51,7 @@ pub(crate) fn collect_classic_code_block_data(
     let mut segment_start_offset = 0usize;
     let mut segment_start_coding_pass = 0u8;
     let mut coding_passes = 0u8;
-    let is_normal_mode =
-        !style.selective_arithmetic_coding_bypass && !style.termination_on_each_pass;
+    let is_normal_mode = style.single_codeword_segment();
 
     for layer in &storage.layers[code_block.layers.start..code_block.layers.end] {
         let Some(range) = layer.segments.clone() else {
@@ -135,8 +141,7 @@ pub(crate) fn collect_referenced_classic_code_block_data(
     let mut segment_start_offset = 0usize;
     let mut segment_start_coding_pass = 0u8;
     let mut coding_passes = 0u8;
-    let is_normal_mode =
-        !style.selective_arithmetic_coding_bypass && !style.termination_on_each_pass;
+    let is_normal_mode = style.single_codeword_segment();
 
     for layer in &storage.layers[code_block.layers.start..code_block.layers.end] {
         let Some(range) = layer.segments.clone() else {
@@ -206,7 +211,9 @@ pub(crate) fn collect_referenced_classic_code_block_data(
     Ok((fragment_count, data_bytes, collected_segments))
 }
 
-fn classic_allocation_counts(
+/// Payload bytes, segments, data fragments and coding passes of a classic
+/// block, rejecting segment indices that skip one, without allocating.
+pub(crate) fn classic_allocation_counts(
     code_block: &CodeBlock,
     style: CodeBlockStyle,
     storage: &DecompositionStorage<'_>,
@@ -252,7 +259,7 @@ fn classic_allocation_counts(
             .checked_add(1)
             .ok_or(ValidationError::ImageTooLarge)?;
     }
-    if !style.selective_arithmetic_coding_bypass && !style.termination_on_each_pass {
+    if style.single_codeword_segment() {
         segment_count = 1;
     }
 
@@ -260,6 +267,7 @@ fn classic_allocation_counts(
         data_bytes,
         segments: segment_count,
         fragments: fragment_count,
+        coding_passes,
     })
 }
 

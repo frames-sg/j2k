@@ -23,6 +23,8 @@ mod placement;
 #[cfg(feature = "parallel")]
 mod tile_parallel;
 use self::classic::decode_sub_band_classic_blocks;
+#[cfg(feature = "parallel")]
+use self::classic::ClassicJobParameters;
 use self::ht::{decode_sub_band_ht_blocks, decode_sub_band_ht_blocks_i64};
 #[cfg(all(feature = "parallel", not(test)))]
 use self::parallel::{copy_decoded_classic_blocks_to_sub_band, copy_decoded_ht_blocks_to_sub_band};
@@ -33,7 +35,7 @@ pub(super) use self::parallel::{
 #[cfg(feature = "parallel")]
 use self::parallel::{
     decode_classic_sub_band_blocks_parallel, decode_ht_sub_band_blocks_parallel,
-    release_coefficient_slab, ClassicParallelParameters, HtParallelParameters,
+    release_coefficient_slab, HtParallelParameters,
 };
 use self::pending::{collect_pending_classic_blocks, collect_pending_ht_blocks};
 pub(in crate::j2c::decode) use self::pending::{count_classic_code_blocks, count_ht_code_blocks};
@@ -55,7 +57,7 @@ pub(crate) fn decode_component_tile_bit_planes<'a>(
     profile_enabled: bool,
 ) -> Result<()> {
     #[cfg(feature = "parallel")]
-    let cpu_decode_parallelism = match tile_parallel::plan_tile_ht_route(
+    let cpu_decode_parallelism = match tile_parallel::plan_tile_route(
         tile,
         components.clone(),
         tile_ctx,
@@ -63,10 +65,19 @@ pub(crate) fn decode_component_tile_bit_planes<'a>(
         header,
         ht_decoder,
         cpu_decode_parallelism,
-    )? {
-        tile_parallel::TileHtRoute::Decoded => return Ok(()),
-        tile_parallel::TileHtRoute::Serial => CpuDecodeParallelism::Serial,
-        tile_parallel::TileHtRoute::PerSubBand => cpu_decode_parallelism,
+    ) {
+        Ok(tile_parallel::TileRoute::Decoded) => return Ok(()),
+        Ok(tile_parallel::TileRoute::PerSubBand) => cpu_decode_parallelism,
+        Ok(tile_parallel::TileRoute::Serial) => CpuDecodeParallelism::Serial,
+        Err(_) => {
+            // Planning can fail in a later band before earlier blocks decode,
+            // and workers can fail in any order. Retry serially to preserve
+            // the serial error. Skipped blocks need zeros after partial writes.
+            // Storage holds either this component or the whole active tile.
+            storage.coefficients.fill(0.0);
+            storage.coefficients_i64.fill(0);
+            CpuDecodeParallelism::Serial
+        }
     };
 
     let component_infos = tile

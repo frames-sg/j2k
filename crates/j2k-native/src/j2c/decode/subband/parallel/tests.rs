@@ -114,7 +114,7 @@ fn ht_capacity_retry_uses_actual_capacity_and_an_unpoisoned_budget() {
         assert_eq!(growths, 1);
         assert_eq!(workspaces.len(), 1);
         assert_eq!(
-            super::ht_task_workspace_bytes(&workspaces).unwrap(),
+            super::task_workspace_bytes(&workspaces).unwrap(),
             structural
         );
         assert_eq!(budget.live_bytes(), structural);
@@ -196,14 +196,14 @@ fn ht_mixed_shapes_grow_componentwise_then_reuse_warm_reservations() {
             )
             .unwrap();
             assert_eq!(growths != 0, expect_growth);
-            let bytes_before_decode = super::ht_task_workspace_bytes(&workspaces).unwrap();
+            let bytes_before_decode = super::task_workspace_bytes(&workspaces).unwrap();
             for slot in &mut workspaces {
                 for &(width, height) in &dimensions {
                     slot.workspace.prepare(width, height).unwrap();
                 }
             }
             assert_eq!(
-                super::ht_task_workspace_bytes(&workspaces).unwrap(),
+                super::task_workspace_bytes(&workspaces).unwrap(),
                 bytes_before_decode
             );
         }
@@ -277,10 +277,7 @@ fn ht_failed_growth_rolls_back_then_retry_evicts_and_rebuilds_exactly() {
         assert!(workspaces
             .iter()
             .all(|slot| { (slot.prepared_width, slot.prepared_height) == (16, 64) }));
-        assert_eq!(
-            super::ht_task_workspace_bytes(&workspaces).unwrap(),
-            fresh_cap
-        );
+        assert_eq!(super::task_workspace_bytes(&workspaces).unwrap(), fresh_cap);
         assert_eq!(structural, fresh_cap);
         assert_eq!(retry_budget.live_bytes(), fresh_cap);
     });
@@ -326,7 +323,7 @@ fn ht_entropy_error_leaves_workspace_bank_reusable_for_valid_blocks() {
             malformed_result.is_err(),
             "truncated cleanup payload must fail after workspace activation"
         );
-        let retained = super::ht_task_workspace_bytes(&workspaces).unwrap();
+        let retained = super::task_workspace_bytes(&workspaces).unwrap();
         let retained_coefficients = coefficient_slab.capacity() * size_of::<f32>();
         assert_eq!(retained + retained_coefficients, structural);
         let retained_initialized_coefficients = coefficient_slab.len();
@@ -349,10 +346,7 @@ fn ht_entropy_error_leaves_workspace_bank_reusable_for_valid_blocks() {
         .expect("zero-pass blocks decode after the entropy error");
 
         assert_eq!(workspace_growths, 0);
-        assert_eq!(
-            super::ht_task_workspace_bytes(&workspaces).unwrap(),
-            retained
-        );
+        assert_eq!(super::task_workspace_bytes(&workspaces).unwrap(), retained);
         assert!(decoded
             .iter()
             .all(|block| block.coefficients.iter().all(|&value| value == 0.0)));
@@ -545,7 +539,7 @@ fn classic_workspace_cap_can_release_an_oversized_coefficient_slab() {
         })
         .collect::<Vec<_>>();
     let sub_band = test_sub_band(128, 32);
-    let parameters = super::ClassicParallelParameters {
+    let parameters = super::ClassicJobParameters {
         sub_band_type: crate::J2kSubBandType::LowLow,
         style: crate::J2kCodeBlockStyle {
             selective_arithmetic_coding_bypass: false,

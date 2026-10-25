@@ -265,6 +265,12 @@ impl CodeBlockStyle {
     pub(crate) fn allows_mixed_block_coding(self) -> bool {
         self.mixed_block_coding
     }
+
+    /// Whether a classic code block is one arithmetic codeword segment: no
+    /// selective bypass and no termination on each pass (Annex D.4).
+    pub(crate) fn single_codeword_segment(self) -> bool {
+        !self.selective_arithmetic_coding_bypass && !self.termination_on_each_pass
+    }
 }
 
 /// Quantization style (Table A.28).
