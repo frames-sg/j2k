@@ -44,7 +44,8 @@ use crate::engine::{
     },
     direct_scratch::{take_f32_scratch_buffer, DirectScratchBuffer},
     direct_stacked_batch::{
-        lookup_direct_band_slice, lookup_direct_band_slice_entry, DirectBandSlice,
+        lookup_direct_band_slice, lookup_direct_band_slice_entry, push_member_band_slices,
+        DirectBandSlice,
     },
     direct_status::DirectStatusCheck,
     direct_tier1::DirectTier1Mode,
@@ -129,21 +130,12 @@ impl ComponentPlaneExecution<'_> {
                 decode_prepared_classic_sub_band_group_on_cpu_profile(group, counters)
             })?,
         };
-        for member in &group.members {
-            let offset_bytes = checked_f32_span(
-                member.offset_elements,
-                1,
-                "classic J2K MetalDirect grouped member offset",
-            )?
-            .bytes;
-            self.bands.push(DirectBandSlice {
-                band_id: member.band_id,
-                buffer: buffer.clone(),
-                offset_bytes,
-                window: member.window,
-            });
-        }
-        Ok(())
+        let members = group.members.iter();
+        push_member_band_slices(
+            &mut self.bands,
+            &buffer,
+            members.map(|member| (member.band_id, member.offset_elements, member.window)),
+        )
     }
 
     fn encode_ht_group(&mut self, group: &PreparedHtSubBandGroup) -> Result<(), Error> {
@@ -177,21 +169,12 @@ impl ComponentPlaneExecution<'_> {
                 decode_prepared_ht_sub_band_group_on_cpu_profile(group, counters)
             })?,
         };
-        for member in &group.members {
-            let offset_bytes = checked_f32_span(
-                member.offset_elements,
-                1,
-                "HTJ2K MetalDirect grouped member offset",
-            )?
-            .bytes;
-            self.bands.push(DirectBandSlice {
-                band_id: member.band_id,
-                buffer: buffer.clone(),
-                offset_bytes,
-                window: member.window,
-            });
-        }
-        Ok(())
+        let members = group.members.iter();
+        push_member_band_slices(
+            &mut self.bands,
+            &buffer,
+            members.map(|member| (member.band_id, member.offset_elements, member.window)),
+        )
     }
 
     fn encode_classic_sub_band(&mut self, sub_band: &PreparedClassicSubBand) -> Result<(), Error> {
@@ -696,20 +679,14 @@ pub(in crate::engine) fn encode_merged_final_level_ht_groups(
     status_checks.push(status_check);
     encoder.memory_barrier_with_resources(&[&output.buffer]);
     for ((group, input), result) in groups.iter().zip(&inputs).zip(&mut decoded) {
-        for member in &group.members {
-            let offset_bytes = checked_f32_span(
-                input.output_base + member.offset_elements,
-                1,
-                "HTJ2K MetalDirect merged member offset",
-            )?
-            .bytes;
-            result.bands.push(DirectBandSlice {
-                band_id: member.band_id,
-                buffer: output.buffer.clone(),
-                offset_bytes,
-                window: member.window,
-            });
-        }
+        push_member_band_slices(
+            &mut result.bands,
+            &output.buffer,
+            group.members.iter().map(|member| {
+                let offset = input.output_base + member.offset_elements;
+                (member.band_id, offset, member.window)
+            }),
+        )?;
     }
     scratch_buffers.push(output);
     Ok(Some(decoded))

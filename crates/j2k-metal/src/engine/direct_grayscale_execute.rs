@@ -36,7 +36,7 @@ use super::{
     encode_stacked_direct_gray_batch, j2k_scalar_pack_params, lookup_direct_band_slice,
     lookup_direct_band_slice_entry, metal_profile_stages_enabled, new_command_buffer,
     new_compute_command_encoder, prepared_direct_color_plan_supports_runtime,
-    recycle_scratch_buffers, retire_direct_status_checks,
+    push_member_band_slices, recycle_scratch_buffers, retire_direct_status_checks,
     supports_stacked_direct_component_plane_batch, take_f32_scratch_buffer,
     try_encode_stacked_mct_rgb8_direct_color_batch, wait_for_completion_metal, with_runtime,
     with_runtime_for_device, Buffer, CommandBuffer, CommandBufferRef,

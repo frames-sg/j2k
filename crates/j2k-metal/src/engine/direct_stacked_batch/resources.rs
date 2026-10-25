@@ -7,7 +7,7 @@ use crate::metal_types::Buffer;
 
 use crate::engine::direct_grayscale_execute::extend_preallocated_retained_buffers;
 
-use super::super::direct_roi::BandRequiredRegion;
+use super::super::direct_roi::{checked_f32_span, BandRequiredRegion};
 use super::super::{DirectScratchBuffer, DirectStatusCheck, Error, J2kDirectBandId};
 
 #[derive(Clone)]
@@ -16,6 +16,29 @@ pub(in super::super) struct DirectBandSlice {
     pub(in super::super) buffer: Buffer,
     pub(in super::super) offset_bytes: usize,
     pub(in super::super) window: BandRequiredRegion,
+}
+
+/// Appends the slices of `buffer` that hold a group's member sub-bands, each
+/// given as its band, element offset and window.
+pub(in super::super) fn push_member_band_slices(
+    bands: &mut Vec<DirectBandSlice>,
+    buffer: &Buffer,
+    members: impl IntoIterator<Item = (J2kDirectBandId, usize, BandRequiredRegion)>,
+) -> Result<(), Error> {
+    for (band_id, offset_elements, window) in members {
+        bands.push(DirectBandSlice {
+            band_id,
+            buffer: buffer.clone(),
+            offset_bytes: checked_f32_span(
+                offset_elements,
+                1,
+                "J2K MetalDirect group member offset",
+            )?
+            .bytes,
+            window,
+        });
+    }
+    Ok(())
 }
 
 pub(super) struct StackedFinalPlane {

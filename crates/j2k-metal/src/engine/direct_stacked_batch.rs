@@ -47,7 +47,7 @@ pub(super) use self::repeated_grayscale::{
 use self::resources::prepare_stacked_component_resources;
 pub(super) use self::resources::{
     lookup_direct_band_slice, lookup_direct_band_slice_entry,
-    lookup_repeated_direct_band_layout_entry, DirectBandSlice,
+    lookup_repeated_direct_band_layout_entry, push_member_band_slices, DirectBandSlice,
 };
 pub(super) use self::validation::supports_stacked_direct_component_plane_batch;
 use self::validation::{

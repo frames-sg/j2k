@@ -5,6 +5,9 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- The Metal component-plane and single-plane decode executions turn a decoded
+  group's members into band slices through one helper instead of five copies of
+  the same loop. Output is unchanged.
 - Metal single-image colour decodes whose components all start with an HT
   group decode the three components' HT code blocks into one coefficient buffer
   with one set of dispatches, instead of one encoder per component, so each
