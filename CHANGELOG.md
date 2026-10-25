@@ -5,6 +5,11 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CUDA whole-tile HTJ2K encodes group every component's code blocks in
+  bounded dispatches. Each component is quantized into its own plane of the
+  component buffer after the transform has finished reading it, avoiding a
+  separate coefficient buffer. Output is unchanged.
+
 - CUDA HTJ2K tile encodes bound each code-block scratch request to 384 MiB,
   keeping small-block images within the scratch offset range. Blocks retain
   their submission order and encoded bytes are unchanged.

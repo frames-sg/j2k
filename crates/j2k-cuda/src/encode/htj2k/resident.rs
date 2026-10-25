@@ -5,7 +5,7 @@ use j2k_cuda_j2k_engine::{
     CudaDwt53LevelShape, CudaHtj2kEncodeResources, CudaJ2kResidentComponents,
     CudaJ2kStridedInterleavedPixels,
 };
-use j2k_cuda_runtime::{CudaBufferPool, CudaContext, CudaDeviceBuffer};
+use j2k_cuda_runtime::{CudaBufferPool, CudaContext};
 
 use crate::allocation::HostPhaseBudget;
 use crate::encode::stage_error::{
@@ -16,14 +16,17 @@ use super::super::{
     cuda_component_count_u8, cuda_encode_format, time_cuda_stage, CudaEncodeStageTimings,
     CudaLosslessEncodeTile,
 };
-use super::code_blocks::cuda_encode_tile_subband_regions;
+use super::code_blocks::{
+    cuda_encode_tile_region_jobs, cuda_encode_tile_subband_regions,
+    cuda_quantize_tile_regions_into, cuda_split_tile_subbands, CudaTileRegionJobs,
+};
 use super::host_budget::account_encoded_resolution_owners;
 use super::htj2k_allocation_error;
 use super::ordering::cuda_order_component_resolution_packets;
 use super::tile_packets::cuda_packetize_tile_body;
 use super::types::{
-    CudaEncodedHtj2kResolution, CudaEncodedHtj2kTile, CudaHtj2kEncodeRuntime,
-    CudaHtj2kTileEncodeStats, CudaTileSubbandKind, CudaTileSubbandRegion,
+    CudaEncodedHtj2kResolution, CudaEncodedHtj2kSubband, CudaEncodedHtj2kTile,
+    CudaHtj2kEncodeRuntime, CudaHtj2kTileEncodeStats, CudaTileSubbandKind, CudaTileSubbandRegion,
 };
 use super::validation::{resident_job_from_host, validate_cuda_htj2k_tile_job};
 
@@ -203,32 +206,34 @@ fn cuda_encode_htj2k_resident_components_body(
         .try_vec_with_capacity(usize::from(job.input.num_components()))
         .map_err(htj2k_allocation_error)?;
     if job.num_decomposition_levels == 0 {
+        let mut regions = component_host_budget
+            .try_vec_with_capacity(usize::from(job.input.num_components()))
+            .map_err(htj2k_allocation_error)?;
         for component in 0..job.input.num_components() {
             let y0 = u32::from(component)
                 .checked_mul(job.input.height())
                 .ok_or_else(|| arithmetic_overflow("CUDA HTJ2K tile component offset"))?;
-            let subbands = cuda_encode_tile_subband_regions(
-                runtime,
-                components.buffer(),
-                &[CudaTileSubbandRegion {
-                    x0: 0,
-                    y0,
-                    width: job.input.width(),
-                    height: job.input.height(),
-                    stride: job.input.width(),
-                    decomposition_level: 0,
-                    quantization_step: job.quantization_steps[0],
-                    kind: CudaTileSubbandKind::LowLow,
-                }],
-                job,
-                &mut stats,
-            )?;
-            let mut packets = crate::allocation::try_vec_with_capacity(
-                1,
-                "j2k CUDA HTJ2K LL resolution descriptors",
-            )
-            .map_err(htj2k_allocation_error)?;
-            packets.push(CudaEncodedHtj2kResolution { subbands });
+            regions.push(CudaTileSubbandRegion {
+                x0: 0,
+                y0,
+                width: job.input.width(),
+                height: job.input.height(),
+                stride: job.input.width(),
+                decomposition_level: 0,
+                quantization_step: job.quantization_steps[0],
+                kind: CudaTileSubbandKind::LowLow,
+            });
+        }
+        // One dispatch encodes every component's code blocks.
+        let subbands = cuda_encode_tile_subband_regions(
+            runtime,
+            components.buffer(),
+            &regions,
+            job,
+            &mut stats,
+        )?;
+        for subband in subbands {
+            let packets = cuda_component_resolutions(&mut std::iter::once(subband), 0)?;
             account_encoded_resolution_owners(
                 &mut component_host_budget,
                 &packets,
@@ -237,10 +242,18 @@ fn cuda_encode_htj2k_resident_components_body(
             component_resolution_packets.push(packets);
         }
     } else {
+        // Each component's coefficients are quantized into its own plane of
+        // the component buffer, which only that component's DWT reads, so one
+        // dispatch encodes every component's code blocks.
+        let mut jobs = CudaTileRegionJobs::new();
+        let mut regions = Vec::new();
+        let mut level_counts = component_host_budget
+            .try_vec_with_capacity(usize::from(job.input.num_components()))
+            .map_err(htj2k_allocation_error)?;
         for component in 0..job.input.num_components() {
             let component_u8 =
                 cuda_component_count_u8(component, "CUDA HTJ2K tile component index exceeds 255")?;
-            let packets = if job.reversible {
+            let (component_regions, level_count) = if job.reversible {
                 let (dwt, dwt_us) = time_cuda_stage(
                     "j2k.htj2k.encode.tile.dwt53",
                     context,
@@ -261,14 +274,17 @@ fn cuda_encode_htj2k_resident_components_body(
                     .forward_dwt53_dispatches
                     .saturating_add(dwt.execution().kernel_dispatches());
                 stats.timings.dwt_us = stats.timings.dwt_us.saturating_add(dwt_us);
-                cuda_encode_dwt_component_packets(
+                let regions = cuda_dwt_component_regions(job, dwt.levels(), dwt.ll_dimensions())?;
+                cuda_quantize_tile_regions_into(
                     runtime,
-                    job,
                     dwt.buffer(),
-                    dwt.levels(),
-                    dwt.ll_dimensions(),
+                    &regions,
+                    components.buffer(),
+                    &mut jobs,
+                    job,
                     &mut stats,
-                )?
+                )?;
+                (regions, dwt.levels().len())
             } else {
                 let (dwt, dwt_us) = time_cuda_stage(
                     "j2k.htj2k.encode.tile.dwt97",
@@ -290,15 +306,30 @@ fn cuda_encode_htj2k_resident_components_body(
                     .forward_dwt97_dispatches
                     .saturating_add(dwt.execution().kernel_dispatches());
                 stats.timings.dwt_us = stats.timings.dwt_us.saturating_add(dwt_us);
-                cuda_encode_dwt_component_packets(
+                let regions = cuda_dwt_component_regions(job, dwt.levels(), dwt.ll_dimensions())?;
+                cuda_quantize_tile_regions_into(
                     runtime,
-                    job,
                     dwt.buffer(),
-                    dwt.levels(),
-                    dwt.ll_dimensions(),
+                    &regions,
+                    components.buffer(),
+                    &mut jobs,
+                    job,
                     &mut stats,
-                )?
+                )?;
+                (regions, dwt.levels().len())
             };
+            component_host_budget
+                .try_vec_extend_from_slice(&mut regions, &component_regions)
+                .map_err(htj2k_allocation_error)?;
+            level_counts.push(level_count);
+        }
+        let encoded =
+            cuda_encode_tile_region_jobs(runtime, components.buffer(), &jobs, &mut stats)?;
+        let mut subbands =
+            cuda_split_tile_subbands(&regions, jobs.counts(), encoded, job, &mut stats)?
+                .into_iter();
+        for level_count in level_counts {
+            let packets = cuda_component_resolutions(&mut subbands, level_count)?;
             account_encoded_resolution_owners(
                 &mut component_host_budget,
                 &packets,
@@ -337,15 +368,14 @@ fn cuda_encode_htj2k_resident_components_body(
     }))
 }
 
+/// Sub-band regions of one component's DWT output: LL, then each level's HL,
+/// LH and HH from the coarsest level.
 #[cfg(feature = "cuda-runtime")]
-fn cuda_encode_dwt_component_packets(
-    runtime: CudaHtj2kEncodeRuntime<'_>,
+fn cuda_dwt_component_regions(
     job: J2kResidentHtj2kTileEncodeJob<'_>,
-    transformed: &CudaDeviceBuffer,
     levels: &[CudaDwt53LevelShape],
     ll_dimensions: (u32, u32),
-    stats: &mut CudaHtj2kTileEncodeStats,
-) -> CudaStageResult<Vec<CudaEncodedHtj2kResolution>> {
+) -> CudaStageResult<Vec<CudaTileSubbandRegion>> {
     if levels.len() != usize::from(job.num_decomposition_levels) {
         return Err(internal_invariant(
             "CUDA HTJ2K tile DWT level count mismatch",
@@ -415,16 +445,23 @@ fn cuda_encode_dwt_component_packets(
             ),
         ]);
     }
-    let subbands = cuda_encode_tile_subband_regions(runtime, transformed, &regions, job, stats)?;
+    Ok(regions)
+}
 
-    // Resolution 0 holds LL; each later resolution holds one level's HL, LH and HH.
+/// Takes one component's sub-bands from `subbands` and groups them into
+/// resolutions: resolution 0 holds LL; each later resolution holds one level's
+/// HL, LH and HH.
+#[cfg(feature = "cuda-runtime")]
+fn cuda_component_resolutions(
+    subbands: &mut impl Iterator<Item = CudaEncodedHtj2kSubband>,
+    level_count: usize,
+) -> CudaStageResult<Vec<CudaEncodedHtj2kResolution>> {
     let mut packets = crate::allocation::try_vec_with_capacity(
-        levels.len().saturating_add(1),
+        level_count.saturating_add(1),
         "j2k CUDA HTJ2K resolution descriptors",
     )
     .map_err(htj2k_allocation_error)?;
-    let mut subbands = subbands.into_iter();
-    for count in std::iter::once(1).chain(std::iter::repeat_n(3, levels.len())) {
+    for count in std::iter::once(1).chain(std::iter::repeat_n(3, level_count)) {
         let mut resolution =
             crate::allocation::try_vec_with_capacity(count, "j2k CUDA HTJ2K subband descriptors")
                 .map_err(htj2k_allocation_error)?;

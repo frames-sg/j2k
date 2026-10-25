@@ -155,7 +155,7 @@ fn cuda_encode_uses_resident_mct_dwt_tile_body_when_runtime_required() {
     assert_eq!(accelerator.quantize_subband_attempts(), 12);
     assert_eq!(accelerator.quantize_subband_dispatches(), 12);
     assert_eq!(accelerator.ht_code_block_attempts(), 12);
-    assert_eq!(accelerator.ht_code_block_dispatches(), 3);
+    assert_eq!(accelerator.ht_code_block_dispatches(), 1);
     assert_eq!(accelerator.packetization_attempts(), 1);
     assert_eq!(accelerator.packetization_dispatches(), 1);
 }

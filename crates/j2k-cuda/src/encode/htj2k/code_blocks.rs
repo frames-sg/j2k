@@ -322,8 +322,8 @@ fn cuda_ht_subband_region_jobs(
 }
 
 /// Quantizes the sub-band `regions` of one resident tile component back to back
-/// into one buffer and encodes all of their code blocks with one dispatch, so
-/// the sub-bands' blocks run concurrently instead of one sub-band at a time.
+/// into one buffer and codes their blocks in bounded dispatches. Sub-bands share
+/// dispatches when their combined jobs fit the scratch budget.
 #[cfg(feature = "cuda-runtime")]
 pub(super) fn cuda_encode_tile_subband_regions(
     runtime: CudaHtj2kEncodeRuntime<'_>,
@@ -332,10 +332,9 @@ pub(super) fn cuda_encode_tile_subband_regions(
     job: J2kResidentHtj2kTileEncodeJob<'_>,
     stats: &mut CudaHtj2kTileEncodeStats,
 ) -> CudaStageResult<Vec<CudaEncodedHtj2kSubband>> {
-    let mut host_budget = HostPhaseBudget::new("j2k CUDA HTJ2K tile region jobs");
-    let (quantize_jobs, region_jobs, job_counts) =
-        cuda_tile_subband_region_jobs(regions, job, &mut host_budget)?;
-    if region_jobs.is_empty() {
+    let mut jobs = CudaTileRegionJobs::new();
+    jobs.append(regions, job)?;
+    if jobs.code_blocks.is_empty() {
         let mut subbands = try_vec_with_capacity(regions.len(), "j2k CUDA HTJ2K empty subbands")
             .map_err(htj2k_allocation_error)?;
         subbands.extend(regions.iter().map(|_| CudaEncodedHtj2kSubband {
@@ -352,32 +351,83 @@ pub(super) fn cuda_encode_tile_subband_regions(
         stats.collect_profile,
         || {
             j2k_cuda_j2k_engine::J2kCudaEngine::new(runtime.context)
-                .j2k_quantize_subband_regions_resident(source, &quantize_jobs, runtime.pool)
+                .j2k_quantize_subband_regions_resident(source, &jobs.quantize, runtime.pool)
         },
     )
     .map_err(|error| runtime_error("quantize CUDA HTJ2K tile subband", error))?;
-    stats.quantize_jobs = stats.quantize_jobs.saturating_add(quantize_jobs.len());
+    stats.quantize_jobs = stats.quantize_jobs.saturating_add(jobs.quantize.len());
     stats.quantize_dispatches = stats
         .quantize_dispatches
         .saturating_add(quantized.execution().kernel_dispatches());
     stats.timings.quantize_us = stats.timings.quantize_us.saturating_add(quantize_us);
 
-    stats.ht_code_block_jobs = stats.ht_code_block_jobs.saturating_add(region_jobs.len());
-    let encoded = j2k_cuda_j2k_engine::J2kCudaEngine::new(runtime.context)
-        .encode_htj2k_codeblock_regions_resident_with_resources_and_pool_and_live_host_bytes(
-            quantized.buffer(),
-            quantized.coefficient_count(),
-            &region_jobs,
-            runtime.resources,
-            runtime.pool,
-            host_budget.live_bytes(),
-        )
-        .map_err(|error| runtime_error("encode CUDA HTJ2K tile code blocks", error))?;
+    let encoded = cuda_encode_tile_region_jobs(runtime, quantized.buffer(), &jobs, stats)?;
     // The encode read the coefficients synchronously, so the buffer is idle.
     runtime
         .pool
         .recycle(quantized.into_buffer())
         .map_err(|error| runtime_error("recycle CUDA HTJ2K tile subband", error))?;
+    cuda_split_tile_subbands(regions, &jobs.counts, encoded, job, stats)
+}
+
+/// Quantizes `regions` of `source` into `coefficients`, after the
+/// coefficients of the regions already in `jobs`, and appends their jobs.
+#[cfg(feature = "cuda-runtime")]
+pub(super) fn cuda_quantize_tile_regions_into(
+    runtime: CudaHtj2kEncodeRuntime<'_>,
+    source: &CudaDeviceBuffer,
+    regions: &[CudaTileSubbandRegion],
+    coefficients: &CudaDeviceBuffer,
+    jobs: &mut CudaTileRegionJobs,
+    job: J2kResidentHtj2kTileEncodeJob<'_>,
+    stats: &mut CudaHtj2kTileEncodeStats,
+) -> CudaStageResult<()> {
+    let offset = jobs.next_coefficient as usize;
+    let quantize_start = jobs.quantize.len();
+    jobs.append(regions, job)?;
+    let quantize_jobs = &jobs.quantize[quantize_start..];
+    let (dispatches, quantize_us) = time_cuda_stage(
+        "j2k.htj2k.encode.tile.quantize",
+        runtime.context,
+        stats.collect_profile,
+        || {
+            j2k_cuda_j2k_engine::J2kCudaEngine::new(runtime.context)
+                .j2k_quantize_subband_regions_resident_into(
+                    source,
+                    quantize_jobs,
+                    coefficients,
+                    offset,
+                )
+        },
+    )
+    .map_err(|error| runtime_error("quantize CUDA HTJ2K tile subband", error))?;
+    stats.quantize_jobs = stats.quantize_jobs.saturating_add(quantize_jobs.len());
+    stats.quantize_dispatches = stats.quantize_dispatches.saturating_add(dispatches);
+    stats.timings.quantize_us = stats.timings.quantize_us.saturating_add(quantize_us);
+    Ok(())
+}
+
+/// Encodes every code block in `jobs` from `coefficients` in bounded dispatches.
+#[cfg(feature = "cuda-runtime")]
+pub(super) fn cuda_encode_tile_region_jobs(
+    runtime: CudaHtj2kEncodeRuntime<'_>,
+    coefficients: &CudaDeviceBuffer,
+    jobs: &CudaTileRegionJobs,
+    stats: &mut CudaHtj2kTileEncodeStats,
+) -> CudaStageResult<j2k_cuda_j2k_engine::CudaHtj2kEncodedCodeBlocks> {
+    stats.ht_code_block_jobs = stats
+        .ht_code_block_jobs
+        .saturating_add(jobs.code_blocks.len());
+    let encoded = j2k_cuda_j2k_engine::J2kCudaEngine::new(runtime.context)
+        .encode_htj2k_codeblock_regions_resident_with_resources_and_pool_and_live_host_bytes(
+            coefficients,
+            jobs.next_coefficient as usize,
+            &jobs.code_blocks,
+            runtime.resources,
+            runtime.pool,
+            jobs.host_budget.live_bytes(),
+        )
+        .map_err(|error| runtime_error("encode CUDA HTJ2K tile code blocks", error))?;
     stats.ht_code_block_dispatches = stats
         .ht_code_block_dispatches
         .saturating_add(encoded.execution().kernel_dispatches());
@@ -385,85 +435,112 @@ pub(super) fn cuda_encode_tile_subband_regions(
         .timings
         .ht_encode_us
         .saturating_add(encoded.stage_timings().ht_encode_us);
-    cuda_split_tile_subbands(regions, &job_counts, encoded, job, stats)
+    Ok(encoded)
 }
 
-/// Quantize jobs, code-block jobs (offset into the back-to-back coefficient
-/// buffer) and per-region job counts for `regions`; empty regions get no jobs.
+/// Quantize and code-block jobs of tile sub-band regions whose coefficients
+/// are stored back to back, and each region's code-block count.
 #[cfg(feature = "cuda-runtime")]
-fn cuda_tile_subband_region_jobs(
-    regions: &[CudaTileSubbandRegion],
-    job: J2kResidentHtj2kTileEncodeJob<'_>,
-    host_budget: &mut HostPhaseBudget,
-) -> CudaStageResult<(
-    Vec<CudaJ2kQuantizeSubbandRegionJob>,
-    Vec<CudaHtj2kEncodeCodeBlockRegionJob>,
-    Vec<usize>,
-)> {
-    let mut quantize_jobs = host_budget
-        .try_vec_with_capacity(regions.len())
-        .map_err(htj2k_allocation_error)?;
-    let mut job_counts = host_budget
-        .try_vec_with_capacity(regions.len())
-        .map_err(htj2k_allocation_error)?;
-    let mut region_jobs = Vec::new();
-    let mut coefficient_offset = 0u32;
-    for region in regions {
-        if region.width == 0 || region.height == 0 {
-            job_counts.push(0);
-            continue;
+pub(super) struct CudaTileRegionJobs {
+    host_budget: HostPhaseBudget,
+    quantize: Vec<CudaJ2kQuantizeSubbandRegionJob>,
+    code_blocks: Vec<CudaHtj2kEncodeCodeBlockRegionJob>,
+    counts: Vec<usize>,
+    next_coefficient: u32,
+}
+
+#[cfg(feature = "cuda-runtime")]
+impl CudaTileRegionJobs {
+    pub(super) fn new() -> Self {
+        Self {
+            host_budget: HostPhaseBudget::new("j2k CUDA HTJ2K tile region jobs"),
+            quantize: Vec::new(),
+            code_blocks: Vec::new(),
+            counts: Vec::new(),
+            next_coefficient: 0,
         }
-        let (step_exponent, step_mantissa) = region.quantization_step;
-        let step_exponent_u8 = u8::try_from(step_exponent).map_err(|_| {
-            J2kEncodeStageError::invalid_request("CUDA HTJ2K tile quantization exponent exceeds u8")
-        })?;
-        let total_bitplanes = job
-            .guard_bits
-            .saturating_add(step_exponent_u8)
-            .saturating_sub(1);
-        quantize_jobs.push(CudaJ2kQuantizeSubbandRegionJob {
-            x0: region.x0,
-            y0: region.y0,
-            width: region.width,
-            height: region.height,
-            stride: region.stride,
-            quantization: CudaJ2kQuantizeJob {
-                step_exponent,
-                step_mantissa,
-                range_bits: cuda_tile_subband_range_bits(job.input.bit_depth(), region.kind),
-                reversible: job.reversible,
-            },
-        });
-        let mut jobs = cuda_ht_region_jobs(
-            region.width,
-            region.height,
-            job.code_block_width,
-            job.code_block_height,
-            total_bitplanes,
-        )?;
-        for code_block in &mut jobs {
-            code_block.coefficient_offset = code_block
-                .coefficient_offset
-                .checked_add(coefficient_offset)
-                .ok_or_else(|| arithmetic_overflow("CUDA HTJ2K code-block offset exceeds u32"))?;
-        }
-        coefficient_offset = region
-            .width
-            .checked_mul(region.height)
-            .and_then(|count| coefficient_offset.checked_add(count))
-            .ok_or_else(|| arithmetic_overflow("CUDA HTJ2K tile sub-band offset exceeds u32"))?;
-        job_counts.push(jobs.len());
-        host_budget
-            .try_vec_extend_from_slice(&mut region_jobs, &jobs)
-            .map_err(htj2k_allocation_error)?;
     }
-    Ok((quantize_jobs, region_jobs, job_counts))
+
+    pub(super) fn counts(&self) -> &[usize] {
+        &self.counts
+    }
+
+    /// Appends the jobs of `regions`, whose coefficients follow those of the
+    /// regions already added; empty regions get no jobs.
+    fn append(
+        &mut self,
+        regions: &[CudaTileSubbandRegion],
+        job: J2kResidentHtj2kTileEncodeJob<'_>,
+    ) -> CudaStageResult<()> {
+        self.host_budget
+            .try_vec_reserve(&mut self.quantize, regions.len())
+            .map_err(htj2k_allocation_error)?;
+        self.host_budget
+            .try_vec_reserve(&mut self.counts, regions.len())
+            .map_err(htj2k_allocation_error)?;
+        for region in regions {
+            if region.width == 0 || region.height == 0 {
+                self.counts.push(0);
+                continue;
+            }
+            let (step_exponent, step_mantissa) = region.quantization_step;
+            let step_exponent_u8 = u8::try_from(step_exponent).map_err(|_| {
+                J2kEncodeStageError::invalid_request(
+                    "CUDA HTJ2K tile quantization exponent exceeds u8",
+                )
+            })?;
+            let total_bitplanes = job
+                .guard_bits
+                .saturating_add(step_exponent_u8)
+                .saturating_sub(1);
+            self.quantize.push(CudaJ2kQuantizeSubbandRegionJob {
+                x0: region.x0,
+                y0: region.y0,
+                width: region.width,
+                height: region.height,
+                stride: region.stride,
+                quantization: CudaJ2kQuantizeJob {
+                    step_exponent,
+                    step_mantissa,
+                    range_bits: cuda_tile_subband_range_bits(job.input.bit_depth(), region.kind),
+                    reversible: job.reversible,
+                },
+            });
+            let mut jobs = cuda_ht_region_jobs(
+                region.width,
+                region.height,
+                job.code_block_width,
+                job.code_block_height,
+                total_bitplanes,
+            )?;
+            for code_block in &mut jobs {
+                code_block.coefficient_offset = code_block
+                    .coefficient_offset
+                    .checked_add(self.next_coefficient)
+                    .ok_or_else(|| {
+                        arithmetic_overflow("CUDA HTJ2K code-block offset exceeds u32")
+                    })?;
+            }
+            self.next_coefficient = region
+                .width
+                .checked_mul(region.height)
+                .and_then(|count| self.next_coefficient.checked_add(count))
+                .ok_or_else(|| {
+                    arithmetic_overflow("CUDA HTJ2K tile sub-band offset exceeds u32")
+                })?;
+            self.counts.push(jobs.len());
+            self.host_budget
+                .try_vec_extend_from_slice(&mut self.code_blocks, &jobs)
+                .map_err(htj2k_allocation_error)?;
+        }
+        Ok(())
+    }
 }
 
 /// Hands each region its `job_counts` code blocks, in order, and folds each
 /// non-empty region's magnitude bound into `stats`.
 #[cfg(feature = "cuda-runtime")]
-fn cuda_split_tile_subbands(
+pub(super) fn cuda_split_tile_subbands(
     regions: &[CudaTileSubbandRegion],
     job_counts: &[usize],
     encoded: j2k_cuda_j2k_engine::CudaHtj2kEncodedCodeBlocks,
