@@ -594,3 +594,55 @@ fn classic_workspace_cap_can_release_an_oversized_coefficient_slab() {
         .all(|block| block.coefficients.iter().all(|&v| v == 0.0)));
     assert!(budget.live_bytes() <= cap);
 }
+
+#[test]
+fn classic_mixed_blocks_fit_a_worker_sized_workspace_budget() {
+    for (threads, count) in [(1, 32), (2, 32), (6, 3), (6, 0)] {
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            let dimensions = [(64, 16), (16, 64)];
+            let pending: Vec<_> = (0..count)
+                .map(|index| {
+                    let (width, height) = dimensions[index % 2];
+                    super::PendingClassicBlock {
+                        combined_data: Vec::new(),
+                        segments: Vec::new(),
+                        placement: BlockPlacement::whole(0, 0, width, height),
+                        width,
+                        height,
+                        missing_bit_planes: 0,
+                        number_of_coding_passes: 0,
+                    }
+                })
+                .collect();
+            let mut reference = crate::J2kCodeBlockDecodeWorkspace::default();
+            reference.prepare(64, 64).unwrap();
+            let cap = count.min(threads)
+                * (reference.allocated_bytes().unwrap()
+                    + size_of::<crate::J2kCodeBlockDecodeWorkspace>());
+            let mut budget = DecodeAllocationBudget::from_live_bytes_with_cap(0, cap).unwrap();
+            let mut workspaces = super::try_preallocate_classic_workspaces(&pending, &mut budget)
+                .expect("all blocks fit using a worker-sized bank");
+            let mut actual =
+                workspaces.capacity() * size_of::<crate::J2kCodeBlockDecodeWorkspace>();
+            for (index, workspace) in workspaces.iter_mut().enumerate() {
+                let before = workspace.allocated_bytes().unwrap();
+                if count > threads {
+                    for (width, height) in dimensions {
+                        workspace.prepare(width, height).unwrap();
+                    }
+                } else {
+                    let block = &pending[index];
+                    workspace.prepare(block.width, block.height).unwrap();
+                }
+                assert_eq!(workspace.allocated_bytes().unwrap(), before);
+                actual += before;
+            }
+            assert_eq!(budget.live_bytes(), actual);
+            assert!(actual <= cap);
+        });
+    }
+}
