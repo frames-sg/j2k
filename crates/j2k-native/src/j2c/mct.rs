@@ -173,7 +173,9 @@ impl DeferredMct {
     /// workers share memory bandwidth. One thread transforms in place, which
     /// costs less than the copy. With a last level, the planes hold its
     /// high bands and the next component's LL band, with `first_ll` kept
-    /// separately. Each reconstructed row is transformed and packed.
+    /// separately. Each reconstructed row is transformed and packed. On
+    /// hosted ARM64 with SIMD, 9/7 rows take the fused ICT pack instead of
+    /// `pack`, so `pack` must be the standard RGB8 pack there.
     pub(crate) fn pack_rgb8(
         self,
         [r, g, b]: [&mut [f32]; 3],
@@ -193,8 +195,21 @@ impl DeferredMct {
                 output,
                 parallel,
                 |[r, g, b], output| {
-                    self.transform_chunk((&mut *r, &mut *g, &mut *b));
-                    pack([r, g, b], output);
+                    if cfg!(all(
+                        feature = "std",
+                        feature = "simd",
+                        target_arch = "aarch64"
+                    )) && self.transform == WaveletTransform::Irreversible97
+                    {
+                        if self.rounding.is_some() {
+                            self.pack_ict_rgb8::<true>([r, g, b], output);
+                        } else {
+                            self.pack_ict_rgb8::<false>([r, g, b], output);
+                        }
+                    } else {
+                        self.transform_chunk((&mut *r, &mut *g, &mut *b));
+                        pack([r, g, b], output);
+                    }
                 },
             );
         }
@@ -233,6 +248,40 @@ impl DeferredMct {
             pack([s0, s1, s2], output);
         }
         Ok(())
+    }
+
+    /// Retain the transform's FMA and rounding boundaries while writing RGB8
+    /// directly. A separate indexed loop lets LLVM combine the conversion and
+    /// interleaved stores without the streaming DWT's surrounding control flow.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "RGB8 samples use the same rounding and saturating cast as the standard pack"
+    )]
+    #[inline(never)]
+    fn pack_ict_rgb8<const CENTERED: bool>(self, [luma, cb, cr]: [&[f32]; 3], output: &mut [u8]) {
+        let pixels = output.as_chunks_mut::<3>().0;
+        let len = pixels.len().min(luma.len()).min(cb.len()).min(cr.len());
+        let shift = self.rounding.unwrap_or([0.0; 3]);
+        for index in 0..len {
+            let mut red = mul_add(cr[index], mct::ICT_INV_R_CR, luma[index]) + self.addends[0];
+            let mut green = mul_add(
+                cr[index],
+                mct::ICT_INV_G_CR,
+                mul_add(cb[index], mct::ICT_INV_G_CB, luma[index]),
+            ) + self.addends[1];
+            let mut blue = mul_add(cb[index], mct::ICT_INV_B_CB, luma[index]) + self.addends[2];
+            if CENTERED {
+                red = round_ties_even_then_add(red, shift[0]);
+                green = round_ties_even_then_add(green, shift[1]);
+                blue = round_ties_even_then_add(blue, shift[2]);
+            }
+            pixels[index] = [
+                crate::math::round_f32(red) as u8,
+                crate::math::round_f32(green) as u8,
+                crate::math::round_f32(blue) as u8,
+            ];
+        }
     }
 
     fn transform_chunk(self, planes: (&mut [f32], &mut [f32], &mut [f32])) {
@@ -644,6 +693,24 @@ mod tests {
                 "sample {index}"
             );
         }
+
+        // Move the FMA-sensitive values to a rounding tie. Unfused arithmetic
+        // crosses this tie in either the direct or centered conversion.
+        let deferred = DeferredMct {
+            transform: WaveletTransform::Irreversible97,
+            addends: expected.map(|sample| 0.5 - sample),
+            rounding: None,
+            last_level: None,
+        };
+        let mut packed = [0_u8; 27];
+        deferred.pack_ict_rgb8::<false>([&[y0; 9], &[y1; 9], &[y2; 9]], &mut packed);
+        assert_eq!(packed, [1; 27]);
+        let centered = DeferredMct {
+            rounding: Some([128.0; 3]),
+            ..deferred
+        };
+        centered.pack_ict_rgb8::<true>([&[y0; 9], &[y1; 9], &[y2; 9]], &mut packed);
+        assert_eq!(packed, [128; 27]);
     }
 
     #[test]
@@ -654,6 +721,19 @@ mod tests {
             samples.map(f32::to_bits),
             [119.0, 118.0, 120.0].map(f32::to_bits)
         );
+
+        let deferred = DeferredMct {
+            transform: WaveletTransform::Irreversible97,
+            addends: [0.0; 3],
+            rounding: Some([128.0; 3]),
+            last_level: None,
+        };
+        let mut packed = [0_u8; 27];
+        deferred.pack_ict_rgb8::<true>(
+            [&[f32::from_bits(0xc117_fffc); 9], &[0.0; 9], &[0.0; 9]],
+            &mut packed,
+        );
+        assert_eq!(packed, [119; 27]);
     }
 
     #[test]

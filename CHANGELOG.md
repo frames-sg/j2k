@@ -5,6 +5,8 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- ARM64 CPU decodes fuse the inverse ICT, rounding and RGB8 stores in one
+  vector loop for streamed 9/7 output. Output is unchanged.
 - Fused RGB8 CPU decodes reconstruct later components into the consumed
   coarse-coefficient prefixes of earlier component planes. This removes two
   separate LL buffers without copying their samples. Output is unchanged.
