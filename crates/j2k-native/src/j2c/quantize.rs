@@ -762,10 +762,6 @@ pub(crate) fn quantize_subband(
     clippy::trivially_copy_pass_by_ref,
     reason = "the stable codec boundary borrows shared Copy metadata used across nested calls"
 )]
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "finite wavelet coefficients are intentionally rounded at the codec quantization boundary"
-)]
 pub(crate) fn try_quantize_subband(
     coefficients: &[f32],
     step_size: &QuantStepSize,
@@ -786,22 +782,68 @@ pub(crate) fn try_quantize_subband(
             what: "quantized subband coefficients",
             bytes: requested_bytes,
         })?;
-    if reversible {
-        extend_quantized(&mut quantized, coefficients, parallel, |c| {
-            round_f32(c) as i32
-        });
-        return Ok(quantized);
+    match Quantizer::new(*step_size, range_bits, reversible) {
+        Quantizer::Round => extend_quantized(&mut quantized, coefficients, parallel, round_sample),
+        Quantizer::Zero => quantized.resize(coefficients.len(), 0),
+        Quantizer::Deadzone(delta) => {
+            extend_quantized(&mut quantized, coefficients, parallel, |c| {
+                deadzone_sample(c, delta)
+            });
+        }
     }
-    let delta = step_size.delta(range_bits);
-    if delta <= 0.0 {
-        quantized.resize(coefficients.len(), 0);
-        return Ok(quantized);
-    }
-    extend_quantized(&mut quantized, coefficients, parallel, |c| {
-        let sign = if c < 0.0 { -1 } else { 1 };
-        sign * floor_f32(c.abs() / delta) as i32
-    });
     Ok(quantized)
+}
+
+/// How a subband's coefficients quantize: rounded when reversible, otherwise
+/// a deadzone quantizer of step `delta`, or all zero without a positive step.
+#[derive(Clone, Copy)]
+pub(crate) enum Quantizer {
+    Round,
+    Zero,
+    Deadzone(f32),
+}
+
+impl Quantizer {
+    pub(crate) fn new(step_size: QuantStepSize, range_bits: u8, reversible: bool) -> Self {
+        if reversible {
+            return Self::Round;
+        }
+        let delta = step_size.delta(range_bits);
+        if delta <= 0.0 {
+            Self::Zero
+        } else {
+            Self::Deadzone(delta)
+        }
+    }
+
+    /// Append the quantized `coefficients` to `quantized`.
+    pub(crate) fn extend(self, quantized: &mut Vec<i32>, coefficients: &[f32]) {
+        match self {
+            Self::Round => quantized.extend(coefficients.iter().map(|&c| round_sample(c))),
+            Self::Zero => quantized.resize(quantized.len() + coefficients.len(), 0),
+            Self::Deadzone(delta) => {
+                quantized.extend(coefficients.iter().map(|&c| deadzone_sample(c, delta)));
+            }
+        }
+    }
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "finite wavelet coefficients are intentionally rounded at the codec quantization boundary"
+)]
+fn round_sample(coefficient: f32) -> i32 {
+    round_f32(coefficient) as i32
+}
+
+/// Deadzone quantization: `sign(c) * floor(|c| / delta)`.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "finite wavelet coefficients are intentionally rounded at the codec quantization boundary"
+)]
+fn deadzone_sample(coefficient: f32, delta: f32) -> i32 {
+    let sign = if coefficient < 0.0 { -1 } else { 1 };
+    sign * floor_f32(coefficient.abs() / delta) as i32
 }
 
 fn extend_quantized(
