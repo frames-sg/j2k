@@ -61,6 +61,7 @@ impl<'a> MelDecoder<'a> {
         Some(value)
     }
 
+    #[inline(always)]
     fn decode_more_runs(&mut self) -> Option<()> {
         const MEL_EXP: [usize; 13] = [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 4, 5];
 
@@ -87,6 +88,17 @@ impl<'a> MelDecoder<'a> {
     }
 
     pub(super) fn get_run(&mut self) -> Option<i32> {
+        self.get_run_with::<true>()
+    }
+
+    /// [`Self::get_run`]. `INLINE` inlines it, refill included, so a loop
+    /// around it makes no call and keeps the decoder in registers.
+    #[expect(clippy::inline_always, reason = "per-pair hot path")]
+    #[inline(always)]
+    pub(super) fn get_run_with<const INLINE: bool>(&mut self) -> Option<i32> {
+        if !INLINE {
+            return self.get_run();
+        }
         if self.num_runs == 0 {
             self.decode_more_runs()?;
         }
@@ -238,7 +250,7 @@ impl<'a> ReverseBitReader<'a> {
         reason = "nonnegative live cursor; per-quad refill check"
     )]
     #[inline(always)]
-    fn fill(&mut self) {
+    fn fill<const INLINE_REFILL: bool>(&mut self) {
         if self.bits > 0 && self.remaining >= 4 && self.pos >= 3 {
             let last = self.pos as usize;
             if let Some(&[b3, b2, b1, b0]) = self.data.get(last - 3..=last) {
@@ -260,14 +272,28 @@ impl<'a> ReverseBitReader<'a> {
                 }
             }
         }
-        *self = self.clone().fill_bytes();
+        *self = if INLINE_REFILL {
+            self.clone().refill_bytes()
+        } else {
+            self.clone().fill_bytes()
+        };
     }
 
     /// By value for the same reason as [`ForwardBitReader::fill_bytes`].
-    #[expect(clippy::cast_sign_loss, reason = "nonnegative live cursor")]
     #[cold]
     #[inline(never)]
-    fn fill_bytes(mut self) -> Self {
+    fn fill_bytes(self) -> Self {
+        self.refill_bytes()
+    }
+
+    /// The byte loop of [`Self::fill_bytes`], inlined by [`Self::fetch_with`].
+    #[expect(
+        clippy::cast_sign_loss,
+        clippy::inline_always,
+        reason = "nonnegative live cursor; callers choose the out-of-line form"
+    )]
+    #[inline(always)]
+    fn refill_bytes(mut self) -> Self {
         while self.bits <= 32 {
             let byte = if self.remaining > 0 {
                 let byte = self.data[self.pos as usize];
@@ -289,15 +315,23 @@ impl<'a> ReverseBitReader<'a> {
         self
     }
 
+    #[expect(clippy::inline_always, reason = "per-quad hot path")]
+    #[inline(always)]
+    pub(super) fn fetch(&mut self) -> u32 {
+        self.fetch_with::<false>()
+    }
+
+    /// [`Self::fetch`]. `INLINE_REFILL` inlines the byte refill too, so a
+    /// loop around it makes no call and keeps the reader in registers.
     #[expect(
         clippy::cast_possible_truncation,
         clippy::inline_always,
         reason = "low reservoir word; per-quad hot path"
     )]
     #[inline(always)]
-    pub(super) fn fetch(&mut self) -> u32 {
+    pub(super) fn fetch_with<const INLINE_REFILL: bool>(&mut self) -> u32 {
         if self.bits < 32 {
-            self.fill();
+            self.fill::<INLINE_REFILL>();
         }
 
         self.tmp as u32
@@ -400,8 +434,6 @@ pub(super) fn unstuff_magsgn<'a>(
 pub(super) struct FlatBitReader<'a> {
     data: &'a [u8],
     last_window: usize,
-    #[cfg(feature = "simd")]
-    last_window16: usize,
     position: usize,
 }
 
@@ -409,9 +441,6 @@ impl<'a> FlatBitReader<'a> {
     pub(super) fn new(data: &'a [u8]) -> Option<Self> {
         Some(Self {
             last_window: data.len().checked_sub(8 + FLAT_MAGSGN_PADDING)? + FLAT_MAGSGN_PADDING,
-            // At least 24 bytes are present here, so this cannot underflow.
-            #[cfg(feature = "simd")]
-            last_window16: data.len() - 16,
             data,
             position: 0,
         })
@@ -433,9 +462,9 @@ impl<'a> FlatBitReader<'a> {
     }
 
     /// The 16 bytes starting at the byte that holds bit `position`, and that
-    /// bit's offset within the byte. A window past the data is clamped to the
-    /// last 16 bytes, which are padding (all ones) like everything after the
-    /// data, so the bits read are unchanged.
+    /// bit's offset within the byte. A window running past the data reads all
+    /// ones, like the padding that ends the data and everything after it, so
+    /// the bits read are unchanged.
     #[cfg(feature = "simd")]
     #[expect(
         clippy::cast_possible_truncation,
@@ -443,9 +472,13 @@ impl<'a> FlatBitReader<'a> {
         reason = "bit offset below 8; per-quad hot path"
     )]
     #[inline(always)]
-    pub(super) fn window16(&self, position: usize) -> (&[u8], u32) {
-        let byte = (position >> 3).min(self.last_window16);
-        (&self.data[byte..byte + 16], (position & 7) as u32)
+    pub(super) fn window16(&self, position: usize) -> (&[u8; 16], u32) {
+        let window = self
+            .data
+            .get(position >> 3..)
+            .and_then(<[u8]>::first_chunk::<16>)
+            .unwrap_or(&[0xFF; 16]);
+        (window, (position & 7) as u32)
     }
 
     /// The next 32 bits, least significant first.

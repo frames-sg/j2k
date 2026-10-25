@@ -20,52 +20,55 @@ pub(super) fn cleanup_segment_suffix_length(coded_data: &[u8], lcup: usize) -> O
     Some(scup)
 }
 
-/// Decodes the initial-row quad pair whose first quad starts at column `x`,
-/// stores its symbols at `scratch[row_offset..row_offset + 4]`, and returns
-/// them as `[t0, u0, t1, u1]`. `c_q` carries the context between pairs.
+/// VLC table index for context `c_q` and the next VLC bits. `c_q` holds
+/// only bits 7-9, so the mask never changes the index; it only drops the
+/// bounds check on the 1024-entry tables.
+#[expect(clippy::inline_always, reason = "per-quad hot path")]
+#[inline(always)]
+fn vlc_index(c_q: u32, vlc_val: u32) -> usize {
+    ((c_q + (vlc_val & 0x7F)) & 0x3FF) as usize
+}
+
+/// Decodes one initial-row quad pair's symbols as `[t0, u0, t1, u1]`.
+/// `second_quad` is whether its second quad lies inside the block; `c_q`
+/// carries the context between pairs. `INLINE_REFILLS` inlines the MEL and
+/// VLC refills, so a loop around it makes no call.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::inline_always,
-    clippy::too_many_arguments,
     reason = "VLC table fields are defined as 16-bit values and this per-pair decoder is a hot path"
 )]
 #[inline(always)]
-pub(super) fn decode_cleanup_first_row_pair(
+pub(super) fn decode_initial_pair_symbols<const INLINE_REFILLS: bool>(
     mel: &mut MelDecoder,
     vlc: &mut ReverseBitReader,
     run: &mut i32,
-    scratch: &mut [u16],
-    row_offset: usize,
     c_q: &mut u32,
-    x: u32,
-    width: u32,
+    second_quad: bool,
 ) -> Option<[u32; 4]> {
-    let mut vlc_val = vlc.fetch();
-    let mut t0 = u32::from(VLC_TABLE0[(*c_q + (vlc_val & 0x7F)) as usize]);
+    let mut vlc_val = vlc.fetch_with::<INLINE_REFILLS>();
+    let mut t0 = u32::from(VLC_TABLE0[vlc_index(*c_q, vlc_val)]);
     if *c_q == 0 {
         *run -= 2;
         t0 = if *run == -1 { t0 } else { 0 };
         if *run < 0 {
-            *run = mel.get_run()?;
+            *run = mel.get_run_with::<INLINE_REFILLS>()?;
         }
     }
-    scratch[row_offset] = t0 as u16;
-    let x = x + 2;
     *c_q = ((t0 & 0x10) << 3) | ((t0 & 0xE0) << 2);
     vlc_val = vlc.advance(t0 & 0x7);
 
-    let mut t1 = u32::from(VLC_TABLE0[(*c_q + (vlc_val & 0x7F)) as usize]);
-    if *c_q == 0 && x < width {
+    let mut t1 = u32::from(VLC_TABLE0[vlc_index(*c_q, vlc_val)]);
+    if *c_q == 0 && second_quad {
         *run -= 2;
         t1 = if *run == -1 { t1 } else { 0 };
         if *run < 0 {
-            *run = mel.get_run()?;
+            *run = mel.get_run_with::<INLINE_REFILLS>()?;
         }
     }
-    if x >= width {
+    if !second_quad {
         t1 = 0;
     }
-    scratch[row_offset + 2] = t1 as u16;
     *c_q = ((t1 & 0x10) << 3) | ((t1 & 0xE0) << 2);
     vlc_val = vlc.advance(t1 & 0x7);
 
@@ -76,7 +79,7 @@ pub(super) fn decode_cleanup_first_row_pair(
             uvlc_mode += 0x40;
         }
         if *run < 0 {
-            *run = mel.get_run()?;
+            *run = mel.get_run_with::<INLINE_REFILLS>()?;
         }
     }
 
@@ -91,10 +94,47 @@ pub(super) fn decode_cleanup_first_row_pair(
     uvlc_entry >>= 3;
     let u0 = (1 + (uvlc_entry & 0x7) + (tmp & !(0xFF_u32 << len))) as u16;
     let u1 = (1 + (uvlc_entry >> 3) + (tmp >> len)) as u16;
-    scratch[row_offset + 1] = u0;
-    scratch[row_offset + 3] = u1;
 
     Some([t0, u32::from(u0), t1, u32::from(u1)])
+}
+
+/// Store one pair's `[t0, u0, t1, u1]` symbols at `scratch[row_offset..]`.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::inline_always,
+    reason = "the symbols are 16-bit table fields; per-pair hot path"
+)]
+#[inline(always)]
+fn store_pair_symbols(scratch: &mut [u16], row_offset: usize, symbols: [u32; 4]) {
+    let [t0, u0, t1, u1] = symbols;
+    scratch[row_offset] = t0 as u16;
+    scratch[row_offset + 1] = u0 as u16;
+    scratch[row_offset + 2] = t1 as u16;
+    scratch[row_offset + 3] = u1 as u16;
+}
+
+/// Decodes the initial-row quad pair whose first quad starts at column `x`,
+/// stores its symbols at `scratch[row_offset..row_offset + 4]`, and returns
+/// them as `[t0, u0, t1, u1]`. `c_q` carries the context between pairs.
+#[expect(
+    clippy::inline_always,
+    clippy::too_many_arguments,
+    reason = "this per-pair decoder is a hot path"
+)]
+#[inline(always)]
+pub(super) fn decode_cleanup_first_row_pair(
+    mel: &mut MelDecoder,
+    vlc: &mut ReverseBitReader,
+    run: &mut i32,
+    scratch: &mut [u16],
+    row_offset: usize,
+    c_q: &mut u32,
+    x: u32,
+    width: u32,
+) -> Option<[u32; 4]> {
+    let symbols = decode_initial_pair_symbols::<false>(mel, vlc, run, c_q, x + 2 < width)?;
+    store_pair_symbols(scratch, row_offset, symbols);
+    Some(symbols)
 }
 
 /// Decodes the first (initial) cleanup quad row into `scratch`, advancing the
@@ -123,15 +163,83 @@ pub(super) fn decode_cleanup_symbols_first_row(
     Some(())
 }
 
+/// As [`decode_initial_pair_symbols`] for a non-initial row. `above(k)` is
+/// the previous quad row's symbol `k` (0, 2 or 4) entries after the one
+/// above this pair's first quad.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::inline_always,
+    reason = "VLC table fields are defined as 16-bit values and this per-pair decoder is a hot path"
+)]
+#[inline(always)]
+pub(super) fn decode_pair_symbols<const INLINE_REFILLS: bool>(
+    mel: &mut MelDecoder,
+    vlc: &mut ReverseBitReader,
+    run: &mut i32,
+    c_q: &mut u32,
+    above: impl Fn(usize) -> u32,
+    second_quad: bool,
+) -> Option<[u32; 4]> {
+    *c_q |= (above(0) & 0xA0) << 2;
+    *c_q |= (above(2) & 0x20) << 4;
+
+    let mut vlc_val = vlc.fetch_with::<INLINE_REFILLS>();
+    let mut t0 = u32::from(VLC_TABLE1[vlc_index(*c_q, vlc_val)]);
+    if *c_q == 0 {
+        *run -= 2;
+        t0 = if *run == -1 { t0 } else { 0 };
+        if *run < 0 {
+            *run = mel.get_run_with::<INLINE_REFILLS>()?;
+        }
+    }
+
+    *c_q = ((t0 & 0x40) << 2) | ((t0 & 0x80) << 1);
+    *c_q |= above(0) & 0x80;
+    *c_q |= (above(2) & 0xA0) << 2;
+    *c_q |= (above(4) & 0x20) << 4;
+    vlc_val = vlc.advance(t0 & 0x7);
+
+    let mut t1 = u32::from(VLC_TABLE1[vlc_index(*c_q, vlc_val)]);
+    if *c_q == 0 && second_quad {
+        *run -= 2;
+        t1 = if *run == -1 { t1 } else { 0 };
+        if *run < 0 {
+            *run = mel.get_run_with::<INLINE_REFILLS>()?;
+        }
+    }
+    if !second_quad {
+        t1 = 0;
+    }
+
+    *c_q = ((t1 & 0x40) << 2) | ((t1 & 0x80) << 1);
+    *c_q |= above(2) & 0x80;
+    vlc_val = vlc.advance(t1 & 0x7);
+
+    // The mode is at most 0xC0, so the mask only drops the bounds check.
+    let uvlc_mode = ((t0 & 0x8) << 3) | ((t1 & 0x8) << 4);
+    let mut uvlc_entry = u32::from(UVLC_TABLE1[((uvlc_mode + (vlc_val & 0x3F)) & 0xFF) as usize]);
+    vlc_val = vlc.advance(uvlc_entry & 0x7);
+    uvlc_entry >>= 3;
+    let mut len = uvlc_entry & 0xF;
+    let tmp = vlc_val & ((1_u32 << len) - 1);
+    let _ = vlc.advance(len);
+    uvlc_entry >>= 4;
+    len = uvlc_entry & 0x7;
+    uvlc_entry >>= 3;
+    let u0 = ((uvlc_entry & 0x7) + (tmp & !(0xFF_u32 << len))) as u16;
+    let u1 = ((uvlc_entry >> 3) + (tmp >> len)) as u16;
+
+    Some([t0, u32::from(u0), t1, u32::from(u1)])
+}
+
 /// Decodes the non-initial-row quad pair whose first quad starts at column
 /// `x`, reading the previous quad row's symbols `sstr` entries back, stores
 /// its symbols at `scratch[row_offset..row_offset + 4]`, and returns them as
 /// `[t0, u0, t1, u1]`. `c_q` carries the context between pairs.
 #[expect(
-    clippy::cast_possible_truncation,
     clippy::inline_always,
     clippy::too_many_arguments,
-    reason = "VLC table fields are defined as 16-bit values and this per-pair decoder is a hot path"
+    reason = "this per-pair decoder is a hot path"
 )]
 #[inline(always)]
 pub(super) fn decode_cleanup_row_pair(
@@ -145,61 +253,12 @@ pub(super) fn decode_cleanup_row_pair(
     x: u32,
     width: u32,
 ) -> Option<[u32; 4]> {
+    // `sstr >= 8`, so the row above never overlaps this pair's symbols.
     let prev = row_offset - sstr;
-    *c_q |= (u32::from(scratch[prev]) & 0xA0) << 2;
-    *c_q |= (u32::from(scratch[prev + 2]) & 0x20) << 4;
-
-    let mut vlc_val = vlc.fetch();
-    let mut t0 = u32::from(VLC_TABLE1[(*c_q + (vlc_val & 0x7F)) as usize]);
-    if *c_q == 0 {
-        *run -= 2;
-        t0 = if *run == -1 { t0 } else { 0 };
-        if *run < 0 {
-            *run = mel.get_run()?;
-        }
-    }
-    scratch[row_offset] = t0 as u16;
-    let x = x + 2;
-
-    *c_q = ((t0 & 0x40) << 2) | ((t0 & 0x80) << 1);
-    *c_q |= u32::from(scratch[prev]) & 0x80;
-    *c_q |= (u32::from(scratch[prev + 2]) & 0xA0) << 2;
-    *c_q |= (u32::from(scratch[prev + 4]) & 0x20) << 4;
-    vlc_val = vlc.advance(t0 & 0x7);
-
-    let mut t1 = u32::from(VLC_TABLE1[(*c_q + (vlc_val & 0x7F)) as usize]);
-    if *c_q == 0 && x < width {
-        *run -= 2;
-        t1 = if *run == -1 { t1 } else { 0 };
-        if *run < 0 {
-            *run = mel.get_run()?;
-        }
-    }
-    if x >= width {
-        t1 = 0;
-    }
-    scratch[row_offset + 2] = t1 as u16;
-
-    *c_q = ((t1 & 0x40) << 2) | ((t1 & 0x80) << 1);
-    *c_q |= u32::from(scratch[prev + 2]) & 0x80;
-    vlc_val = vlc.advance(t1 & 0x7);
-
-    let uvlc_mode = ((t0 & 0x8) << 3) | ((t1 & 0x8) << 4);
-    let mut uvlc_entry = u32::from(UVLC_TABLE1[(uvlc_mode + (vlc_val & 0x3F)) as usize]);
-    vlc_val = vlc.advance(uvlc_entry & 0x7);
-    uvlc_entry >>= 3;
-    let mut len = uvlc_entry & 0xF;
-    let tmp = vlc_val & ((1_u32 << len) - 1);
-    let _ = vlc.advance(len);
-    uvlc_entry >>= 4;
-    len = uvlc_entry & 0x7;
-    uvlc_entry >>= 3;
-    let u0 = ((uvlc_entry & 0x7) + (tmp & !(0xFF_u32 << len))) as u16;
-    let u1 = ((uvlc_entry >> 3) + (tmp >> len)) as u16;
-    scratch[row_offset + 1] = u0;
-    scratch[row_offset + 3] = u1;
-
-    Some([t0, u32::from(u0), t1, u32::from(u1)])
+    let above = |k| u32::from(scratch[prev + k]);
+    let symbols = decode_pair_symbols::<false>(mel, vlc, run, c_q, above, x + 2 < width)?;
+    store_pair_symbols(scratch, row_offset, symbols);
+    Some(symbols)
 }
 
 /// Decodes one non-initial cleanup quad row (`y >= 2`, even) into `scratch`,
