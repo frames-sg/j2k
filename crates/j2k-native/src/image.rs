@@ -33,6 +33,7 @@ use self::native::{try_clone_color_space, NativeOutputBudget};
 type Rgb8DecodedImage<'ctx, 'boxes> = (
     Option<DeferredMct>,
     &'ctx [Vec<f32>; 3],
+    [&'ctx mut [f32]; 2],
     DecodedImage<'ctx, 'boxes>,
 );
 
@@ -470,7 +471,7 @@ impl<'a> Image<'a> {
         (|| {
             let retained_image_bytes = self.retained_metadata_bytes()?;
             let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
-            let (mct, ll_bands, mut decoded_image) =
+            let (mct, ll_bands, scratch, mut decoded_image) =
                 self.decode_image_for_rgb8(decoder_context, retained_image_bytes)?;
             let component_owner_capacity = decoded_image.decoded_components.capacity();
             let buffer_size = checked_decode_byte_len3(
@@ -497,6 +498,7 @@ impl<'a> Image<'a> {
                 &mut data,
                 mct,
                 ll_bands,
+                scratch,
                 parallel,
             )?;
             let bitmap = Bitmap {
@@ -766,10 +768,17 @@ impl<'a> Image<'a> {
     ) -> Result<()> {
         let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
         let retained = self.retained_metadata_bytes()?;
-        let (mct, ll_bands, mut decoded_image) =
+        let (mct, ll_bands, scratch, mut decoded_image) =
             self.decode_image_for_rgb8(decoder_context, retained)?;
         validate_interleaved_output_buffer(&decoded_image, buf)?;
-        interleave_and_convert_after_mct(&mut decoded_image, buf, mct, ll_bands, parallel)?;
+        interleave_and_convert_after_mct(
+            &mut decoded_image,
+            buf,
+            mct,
+            ll_bands,
+            scratch,
+            parallel,
+        )?;
 
         Ok(())
     }
@@ -812,7 +821,15 @@ impl<'a> Image<'a> {
         let mct = tile_ctx.deferred_mct.take();
         let image =
             self.finish_decoded_image(&mut tile_ctx.channel_data, retained_baseline_bytes)?;
-        Ok((mct, &tile_ctx.fused_ll_bands, image))
+        Ok((
+            mct,
+            &tile_ctx.fused_ll_bands,
+            [
+                &mut tile_ctx.idwt_scratch_buffer,
+                &mut tile_ctx.idwt_band_scratch,
+            ],
+            image,
+        ))
     }
 
     fn run_decode(

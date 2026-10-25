@@ -5,6 +5,10 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- Fused RGB8 CPU packing on the pool gives its workers rings from the
+  completed coarse inverse transform's scratch buffers before allocating more,
+  reducing temporary heap allocations. Serial packing still allocates its own
+  small ring. Decoded pixels and retained workspace capacities are unchanged.
 - CPU encodes of 8-bit RGB give each wavelet worker scratch for the strips
   it lifts, the first level in band blocks and the later levels from half the
   rows, instead of strips of full height. On 18 threads a 4096 by 2048 image

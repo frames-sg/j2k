@@ -45,9 +45,11 @@ const fn rgb(size: (u32, u32), levels: u8, fused: bool) -> Case {
     }
 }
 
-const CASES: [Case; 8] = [
+const CASES: [Case; 9] = [
     // Several parallel strips, odd widths and heights, and the fewest levels.
     rgb((520, 136), 5, true),
+    // Coarse scratch can supply several parallel pack rings.
+    rgb((64, 2_048), 5, true),
     rgb((97, 88), 3, true),
     rgb((96, 75), 2, true),
     // A coefficient buffer that needs padding, a single level, and tiles.
