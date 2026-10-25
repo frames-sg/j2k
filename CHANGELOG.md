@@ -5,6 +5,9 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CPU packet encoding builds each tag tree in one pass, setting the leaves
+  and then each level from the one below, instead of updating the path to
+  the root for every code block. Output is unchanged.
 - CPU encodes scan each subband's HT code-block magnitudes on the pool, and
   copy the rows of large packed bands into their contiguous subband on the
   pool, instead of in serial passes. Output is unchanged.
