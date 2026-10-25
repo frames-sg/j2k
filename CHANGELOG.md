@@ -5,6 +5,12 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CUDA HTJ2K packetization builds each packet header with the whole thread
+  block: every thread codes one code block's tag-tree, pass and length bits
+  and one thread appends them, instead of one thread coding the whole packet.
+  Packets with blocks coded in earlier layers keep the serial header. Output is
+  unchanged.
+
 - Metal device decodes follow CPU sample conversion for signed grayscale and
   colour sources, including prepared, referenced, repeated and distinct batches.
   Component plans retain source signedness at construction and reject mixed

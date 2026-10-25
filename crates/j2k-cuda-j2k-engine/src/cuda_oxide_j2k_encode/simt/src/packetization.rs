@@ -5,7 +5,10 @@ use crate::{
         J2kHtPacketBlock, J2kHtPacketJob, J2kHtPacketStatus, J2kHtPacketSubband,
         J2kHtPacketSubbandTagState, J2kHtPacketTagNodeState,
     },
-    constants::{J2K_ENCODE_STATUS_FAIL, J2K_ENCODE_STATUS_OK, J2K_ENCODE_STATUS_UNSUPPORTED},
+    constants::{
+        J2K_ENCODE_STATUS_FAIL, J2K_ENCODE_STATUS_OK, J2K_ENCODE_STATUS_UNSUPPORTED,
+        J2K_PACKET_MAX_TAG_NODES,
+    },
     helpers::{load_job, load_u8, store_u8},
     packet_writer::{
         j2k_packet_encode_ht_segment_lengths, j2k_packet_encode_num_ht_passes, j2k_packet_finish,
@@ -55,6 +58,45 @@ fn j2k_packet_header_result(
     }
 }
 
+/// The error detail the header builders report for `block`, or 0 when it can
+/// be packetized. Detail 1 is reported as unsupported, the others as failures.
+#[inline(always)]
+pub(crate) fn j2k_packet_block_error(block: J2kHtPacketBlock, payload_len: u64) -> u32 {
+    if block.num_coding_passes > 164 {
+        return 1;
+    }
+    let data_end = block.data_offset as u64 + block.data_len as u64;
+    if data_end > payload_len {
+        return 2;
+    }
+    if block.num_coding_passes == 0 {
+        if block.data_len != 0 || block.cleanup_length != 0 || block.refinement_length != 0 {
+            return 10;
+        }
+    } else if block.num_coding_passes == 1 {
+        let cleanup_length = if block.cleanup_length == 0 {
+            block.data_len
+        } else {
+            block.cleanup_length
+        };
+        if cleanup_length != block.data_len || block.refinement_length != 0 {
+            return 11;
+        }
+    } else {
+        let segment_len = block.cleanup_length as u64 + block.refinement_length as u64;
+        if block.cleanup_length == 0
+            || block.refinement_length == 0
+            || segment_len != block.data_len as u64
+            || block.cleanup_length < 2
+            || block.cleanup_length >= 65_535
+            || block.refinement_length >= 2047
+        {
+            return 12;
+        }
+    }
+    0
+}
+
 #[inline(always)]
 pub(crate) fn j2k_packet_build_header_serial(
     payload_len: u64,
@@ -66,6 +108,7 @@ pub(crate) fn j2k_packet_build_header_serial(
     tag_state_count: u64,
     tag_node_count: u64,
     packet_out: *mut u8,
+    tag_scratch: *mut u32,
 ) -> J2kPacketHeaderResult {
     let mut writer = j2k_packet_writer_init(packet_out, packet.output_capacity);
 
@@ -82,41 +125,14 @@ pub(crate) fn j2k_packet_build_header_serial(
             if block.num_coding_passes > 0 {
                 any_data = 1;
             }
-            if block.num_coding_passes > 164 {
-                return j2k_packet_header_result(J2K_ENCODE_STATUS_UNSUPPORTED, 1, 0, 0, 0);
-            }
-            let Some(data_end) = (block.data_offset as u64).checked_add(block.data_len as u64)
-            else {
-                return j2k_packet_header_result(J2K_ENCODE_STATUS_FAIL, 2, 0, 0, 0);
-            };
-            if data_end > payload_len {
-                return j2k_packet_header_result(J2K_ENCODE_STATUS_FAIL, 2, 0, 0, 0);
-            }
-            if block.num_coding_passes == 0 {
-                if block.data_len != 0 || block.cleanup_length != 0 || block.refinement_length != 0
-                {
-                    return j2k_packet_header_result(J2K_ENCODE_STATUS_FAIL, 10, 0, 0, 0);
-                }
-            } else if block.num_coding_passes == 1 {
-                let cleanup_length = if block.cleanup_length == 0 {
-                    block.data_len
+            let detail = j2k_packet_block_error(block, payload_len);
+            if detail != 0 {
+                let code = if detail == 1 {
+                    J2K_ENCODE_STATUS_UNSUPPORTED
                 } else {
-                    block.cleanup_length
+                    J2K_ENCODE_STATUS_FAIL
                 };
-                if cleanup_length != block.data_len || block.refinement_length != 0 {
-                    return j2k_packet_header_result(J2K_ENCODE_STATUS_FAIL, 11, 0, 0, 0);
-                }
-            } else {
-                let segment_len = block.cleanup_length as u64 + block.refinement_length as u64;
-                if block.cleanup_length == 0
-                    || block.refinement_length == 0
-                    || segment_len != block.data_len as u64
-                    || block.cleanup_length < 2
-                    || block.cleanup_length >= 65_535
-                    || block.refinement_length >= 2047
-                {
-                    return j2k_packet_header_result(J2K_ENCODE_STATUS_FAIL, 12, 0, 0, 0);
-                }
+                return j2k_packet_header_result(code, detail, 0, 0, 0);
             }
             idx += 1;
         }
@@ -141,8 +157,9 @@ pub(crate) fn j2k_packet_build_header_serial(
             subband_idx += 1;
             continue;
         }
-        let mut inclusion_tree = j2k_packet_tag_tree_new();
-        let mut zbp_tree = j2k_packet_tag_tree_new();
+        let mut inclusion_tree = j2k_packet_tag_tree_new(tag_scratch);
+        let mut zbp_tree =
+            j2k_packet_tag_tree_new(unsafe { tag_scratch.add(3 * J2K_PACKET_MAX_TAG_NODES) });
         j2k_packet_build_tag_trees(
             &mut inclusion_tree,
             &mut zbp_tree,

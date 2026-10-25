@@ -11,7 +11,8 @@ mod kernels {
         },
         constants::{
             J2K_ENCODE_STATUS_OK, J2K_HT_COMPACT_ASSEMBLE_FLAG, J2K_HT_COMPACT_LENGTH_MASK,
-            J2K_HT_MEL_OFFSET, J2K_HT_VLC_OFFSET, J2K_HT_VLC_SIZE,
+            J2K_HT_MEL_OFFSET, J2K_HT_VLC_OFFSET, J2K_HT_VLC_SIZE, J2K_PACKET_BLOCK_HEADER_WORDS,
+            J2K_PACKET_HEADER_THREADS, J2K_PACKET_MAX_TAG_NODES,
         },
         dwt53::j2k_fdwt53_sample,
         dwt97::j2k_fdwt97_sample,
@@ -19,9 +20,8 @@ mod kernels {
             floor_f32, forward_ict_rgb, load_f32_u64, load_job, load_u8, load_u32, sign_extend_u32,
             store_f32, store_f32_u64, store_i32, store_u8, store_u32,
         },
-        packetization::{
-            j2k_packet_build_header_serial, j2k_packet_copy_body_cooperative, j2k_packet_status,
-        },
+        packetization::j2k_packet_copy_body_cooperative,
+        parallel_header::{J2kPacketHeaderInput, J2kPacketHeaderScratch, j2k_packet_build_header},
         quantization::j2k_quantize_sample,
     };
     use cuda_device::{SharedArray, kernel, thread};
@@ -354,8 +354,40 @@ mod kernels {
         statuses: *mut J2kHtPacketStatus,
         packet_count: u64,
     ) {
-        static mut HEADER_RESULT: SharedArray<u32, 3> = SharedArray::UNINIT;
-
+        // The parallel builder and serial fallback use disjoint lifetimes in
+        // this arena. Six node arrays fit exactly in the 48 KiB block budget.
+        const _: () = {
+            assert!(J2K_PACKET_MAX_TAG_NODES % 2 == 0 && J2K_PACKET_HEADER_THREADS % 2 == 0);
+            assert!(
+                3 * J2K_PACKET_MAX_TAG_NODES
+                    + J2K_PACKET_HEADER_THREADS as usize * (2 * J2K_PACKET_BLOCK_HEADER_WORDS + 3)
+                    + 3
+                    <= 6 * J2K_PACKET_MAX_TAG_NODES
+            );
+        };
+        static mut HEADER_ARENA: SharedArray<u64, { 3 * J2K_PACKET_MAX_TAG_NODES }> =
+            SharedArray::UNINIT;
+        let scratch = unsafe {
+            let nodes = HEADER_ARENA.as_mut_ptr().cast::<u32>();
+            let bits = nodes.add(3 * J2K_PACKET_MAX_TAG_NODES).cast::<u64>();
+            let bit_lens = bits
+                .add(J2K_PACKET_HEADER_THREADS as usize * J2K_PACKET_BLOCK_HEADER_WORDS)
+                .cast::<u32>();
+            let body_lens = bit_lens
+                .add(J2K_PACKET_HEADER_THREADS as usize)
+                .cast::<u64>();
+            J2kPacketHeaderScratch {
+                inclusion: nodes,
+                zero_bitplanes: nodes.add(J2K_PACKET_MAX_TAG_NODES),
+                first_coded: nodes.add(2 * J2K_PACKET_MAX_TAG_NODES),
+                bits,
+                bit_lens,
+                body_lens,
+                flags: body_lens
+                    .add(J2K_PACKET_HEADER_THREADS as usize)
+                    .cast::<u32>(),
+            }
+        };
         let packet_idx = thread::blockIdx_x() as u64;
         if packet_idx >= packet_count {
             return;
@@ -364,10 +396,11 @@ mod kernels {
         let packet = load_job(packets, packet_idx as u32);
         let status = unsafe { statuses.add(packet_idx as usize) };
         let packet_out = unsafe { out.add(packet.output_offset as usize) };
-        let header_result = unsafe { HEADER_RESULT.as_mut_ptr() };
+        // Both builders have consumed the first tree before writing the result.
+        let header_result = scratch.inclusion;
 
-        if thread::threadIdx_x() == 0 {
-            let result = j2k_packet_build_header_serial(
+        j2k_packet_build_header(
+            J2kPacketHeaderInput {
                 payload_len,
                 packet,
                 subbands,
@@ -377,12 +410,11 @@ mod kernels {
                 tag_state_count,
                 tag_node_count,
                 packet_out,
-            );
-            store_u32(header_result, 0, result.code);
-            store_u32(header_result, 1, result.header_len);
-            store_u32(header_result, 2, result.body_len);
-            j2k_packet_status(status, result.code, result.detail, result.output_len);
-        }
+            },
+            &scratch,
+            header_result,
+            status,
+        );
         thread::sync_threads();
 
         let shared_code = load_u32(header_result.cast_const(), 0);

@@ -19,10 +19,13 @@ use crate::source_audit::{
 // The CPU transcode wave guard verifies that Rayon's indexed collection keeps
 // its preallocated capacity: each wave has at most the reserved worker count,
 // so this protects the admitted-memory invariant from an internal regression.
+// The CUDA packet-header kernel's two const assertions check at compile time
+// that its shared tag-tree arena splits evenly and holds the parallel
+// builder's scratch; they cannot fail at run time.
 const PANIC_MACRO_BASELINE: PanicMacroInventory = PanicMacroInventory {
     panic: 3,
     unreachable: 59,
-    assert: 73,
+    assert: 74,
     assert_eq: 30,
     assert_ne: 6,
     debug_assert: 148,

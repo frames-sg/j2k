@@ -23,6 +23,7 @@ const J2K_ENCODE_EXTRA_SOURCES: &[&str] = &[
     "simt/src/helpers.rs",
     "simt/src/packet_writer.rs",
     "simt/src/packetization.rs",
+    "simt/src/parallel_header.rs",
     "simt/src/quantization.rs",
     "simt/src/tag_tree.rs",
 ];
