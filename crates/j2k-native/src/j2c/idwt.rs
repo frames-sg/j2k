@@ -20,6 +20,7 @@ pub(crate) use banded::{
     banded_scratch_elements_for_execution, pack_last_level, planned_band_scratch_elements,
     LastLevel,
 };
+pub(in crate::j2c) use banded::{lift_rows, scale_samples};
 pub(crate) use direct::apply_codestream_single_decomposition_idwt_job;
 pub(crate) use direct::apply_single_decomposition_idwt_job;
 #[cfg(test)]

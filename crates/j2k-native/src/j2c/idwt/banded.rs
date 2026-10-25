@@ -759,7 +759,7 @@ fn apply_vertical_step<S: Simd>(
     reason = "specialized with the streaming kernels"
 )]
 #[inline(always)]
-fn scale_samples<S: Simd>(simd: S, samples: &mut [f32], scale: f32) {
+pub(in crate::j2c) fn scale_samples<S: Simd>(simd: S, samples: &mut [f32], scale: f32) {
     let scale_simd = f32x8::splat(simd, scale);
     let simd_len = samples.len() / SIMD_WIDTH * SIMD_WIDTH;
     for index in (0..simd_len).step_by(SIMD_WIDTH) {
@@ -777,7 +777,7 @@ fn scale_samples<S: Simd>(simd: S, samples: &mut [f32], scale: f32) {
     reason = "the lifting step is specialized with its scalar and SIMD operations"
 )]
 #[inline(always)]
-fn lift_rows<S: Simd>(
+pub(in crate::j2c) fn lift_rows<S: Simd>(
     simd: S,
     current: &mut [f32],
     above: &[f32],

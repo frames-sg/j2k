@@ -470,15 +470,7 @@ fn try_dwt_workspace(
         component_count,
         "transform DWT component owners",
     )?;
-    let scratch_count = usize::try_from(request.width)
-        .map_err(|_| crate::EncodeError::ArithmeticOverflow {
-            what: "packed DWT scratch width",
-        })?
-        .max(usize::try_from(request.height).map_err(|_| {
-            crate::EncodeError::ArithmeticOverflow {
-                what: "packed DWT scratch height",
-            }
-        })?);
+    let scratch_count = crate::j2c::fdwt::packed_dwt_scratch_len(request.width, request.height)?;
     let requested_scratch_bytes =
         checked_element_bytes::<f32>(scratch_count, "packed DWT line scratch")?;
     request.session.checked_phase(
