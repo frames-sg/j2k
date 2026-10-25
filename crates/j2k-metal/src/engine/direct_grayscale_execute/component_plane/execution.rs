@@ -310,7 +310,7 @@ impl ComponentPlaneExecution<'_> {
         Ok(())
     }
 
-    fn encode_store(&mut self, store: &J2kDirectStoreStep) -> Result<(), Error> {
+    fn encode_store(&mut self, store: &J2kDirectStoreStep, last: bool) -> Result<(), Error> {
         let (input, input_offset) =
             lookup_direct_band_slice(&self.bands, store.input_band_id, store.input_rect)?;
         let output_span = checked_f32_span(
@@ -319,6 +319,34 @@ impl ComponentPlaneExecution<'_> {
             "J2K MetalDirect stored component plane",
         )?;
         let dimensions = (store.output_width, store.output_height);
+        // A complete identity store (MCT components carry no shift or rounding)
+        // keeps the coefficient plane it would copy, as the stacked path does.
+        // Tile assembly, cropping, level shifts and rounding still use Store.
+        if last
+            && self.final_plane.is_empty()
+            && store.addend == 0.0
+            && !self.round_centered_store
+            && (
+                store.source_x,
+                store.source_y,
+                store.output_x,
+                store.output_y,
+            ) == (0, 0, 0, 0)
+            && (store.copy_width, store.copy_height) == dimensions
+            && (store.input_rect.width(), store.input_rect.height()) == dimensions
+            && input_offset == 0
+            && input.length() >= output_span.bytes
+        {
+            let window =
+                lookup_direct_band_slice_entry(&self.bands, store.input_band_id, store.input_rect)?
+                    .window;
+            if (window.width(), window.height()) == dimensions {
+                self.final_plane
+                    .adopt(input, dimensions, output_span.elements);
+                self.bands.clear();
+                return Ok(());
+            }
+        }
         let output = self.final_plane.buffer_for_store(
             self.runtime,
             dimensions,
@@ -357,14 +385,14 @@ impl ComponentPlaneExecution<'_> {
         Ok(())
     }
 
-    fn encode_step(&mut self, step: &PreparedDirectGrayscaleStep) -> Result<(), Error> {
+    fn encode_step(&mut self, step: &PreparedDirectGrayscaleStep, last: bool) -> Result<(), Error> {
         match step {
             PreparedDirectGrayscaleStep::ClassicSubBand(sub_band) => {
                 self.encode_classic_sub_band(sub_band)
             }
             PreparedDirectGrayscaleStep::HtSubBand(sub_band) => self.encode_ht_sub_band(sub_band),
             PreparedDirectGrayscaleStep::Idwt(idwt) => self.encode_idwt(idwt),
-            PreparedDirectGrayscaleStep::Store(store) => self.encode_store(store),
+            PreparedDirectGrayscaleStep::Store(store) => self.encode_store(store, last),
         }
     }
 
@@ -416,7 +444,7 @@ pub(in crate::engine) fn encode_prepared_direct_component_plane_in_encoder(
             step_idx = group.end_step;
             continue;
         }
-        execution.encode_step(&plan.steps[step_idx])?;
+        execution.encode_step(&plan.steps[step_idx], step_idx + 1 == plan.steps.len())?;
         step_idx += 1;
     }
     execution.finish()
