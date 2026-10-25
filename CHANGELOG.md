@@ -10,6 +10,12 @@ and stale roadmap entries have been removed from the public documentation set.
   and `std` no longer turns on `j2k-profile/std`. A single-threaded wasm32
   decoder built with only `std` and `simd` is 16.8 KB smaller gzipped (216 KB
   instead of 233 KB). Default builds are unchanged.
+- Tight RGBA8 output from RGB images decodes into the caller's allocation
+  and adds opaque alpha in place, avoiding a separate full RGB8 buffer.
+  Pixel values and padded-output handling are unchanged.
+- Classic CPU sub-band decoding reuses one Tier-1 workspace per worker
+  across pending code blocks, bounding fallback scratch by active workers.
+  Decoded pixels and code-block ordering are unchanged.
 - ARM64 CPU decodes fuse the inverse ICT, rounding and RGB8 stores in one
   vector loop for streamed 9/7 output. Output is unchanged.
 - Fused RGB8 CPU decodes reconstruct later components into the consumed
@@ -225,6 +231,11 @@ and stale roadmap entries have been removed from the public documentation set.
 - Auto full-image RGB8 decodes keep tiled images on the CPU, avoiding
   repeated per-stage Metal round trips. Explicit Metal requests keep resident
   decoding.
+- Region decodes keep no precinct records or tag-tree roots for the precincts
+  they never parse. A 1024 x 1024 region of an 18000 x 12000 RGB image with
+  PLT markers peaks at 18 to 19 MiB of heap instead of 21 to 22 MiB. Dense
+  selections keep direct precinct indexing and the existing memory budget.
+  Output is unchanged.
 - Region decodes of RPCL, PCRL and CPRL codestreams without PLT markers no
   longer keep code-block records or tag trees for the precincts they parse
   only to reach later packets. Those precincts take turns with up to three

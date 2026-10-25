@@ -58,7 +58,10 @@ fn decode(image: &Image<'_>, roi: (u32, u32, u32, u32), lines: bool) -> Decoded 
     context.set_line_region_idwt(lines);
     // Off the tile-wide route, whose worker workspaces would make Tier-1 the
     // peak of these small images and hide the IDWT bytes compared here.
-    context.tile_decode_context.force_per_sub_band = true;
+    #[cfg(feature = "parallel")]
+    {
+        context.tile_decode_context.force_per_sub_band = true;
+    }
     let native = image
         .decode_native_region_with_context(roi, &mut context)
         .expect("decode line IDWT native region")
@@ -284,7 +287,10 @@ fn decode_component_planes(
     context.set_line_region_idwt(lines);
     // Off the tile-wide route, whose worker workspaces would make Tier-1 the
     // peak of these small images and hide the IDWT bytes compared here.
-    context.tile_decode_context.force_per_sub_band = true;
+    #[cfg(feature = "parallel")]
+    {
+        context.tile_decode_context.force_per_sub_band = true;
+    }
     let mut planes = Vec::new();
     let mut peaks = Vec::new();
     planes.push(bits(

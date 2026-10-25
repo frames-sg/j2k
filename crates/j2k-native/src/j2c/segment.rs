@@ -251,6 +251,7 @@ impl<'s> PacketRelevance<'s> {
     fn lend_scratch(
         relevance: Option<&mut Self>,
         packet: &ProgressionData,
+        precinct_offset: usize,
         sub_bands: impl Iterator<Item = usize>,
         storage: &mut DecompositionStorage<'_>,
     ) -> PacketResult {
@@ -263,13 +264,11 @@ impl<'s> PacketRelevance<'s> {
         if relevance.selection.packet_use(packet) != Some(PrecinctUse::Parsed) {
             return Ok(());
         }
-        let precinct_index = usize::try_from(packet.precinct)
-            .map_err(|_| "packet precinct index does not fit the platform")?;
         for (slot, sub_band_idx) in sub_bands.enumerate() {
             let precinct = storage.sub_bands[sub_band_idx]
                 .precincts
                 .start
-                .checked_add(precinct_index)
+                .checked_add(precinct_offset)
                 .ok_or("packet precinct index overflows")?;
             scratch
                 .lend(
@@ -353,6 +352,17 @@ fn parse_inner<'a>(
             continue;
         }
 
+        // Where the packet's precinct lies among each of its sub-bands'
+        // precinct records. A region decode keeps none for unused
+        // precincts. A packet for a precinct without a record gets an offset
+        // past them all, so it fails below as one for a missing precinct.
+        let precinct_offset = relevance
+            .as_deref()
+            .map_or(Some(precinct_index), |relevance| {
+                relevance.selection.record_offset(&progression_data)
+            })
+            .unwrap_or(usize::MAX);
+
         let packet_start = tile_part.packet_start_offset();
         let body_reader = tile_part.body();
 
@@ -384,6 +394,7 @@ fn parse_inner<'a>(
         PacketRelevance::lend_scratch(
             relevance.as_deref_mut(),
             &progression_data,
+            precinct_offset,
             sub_band_iter.clone(),
             storage,
         )?;
@@ -392,6 +403,7 @@ fn parse_inner<'a>(
                 resolve_segments(
                     sub_band,
                     &progression_data,
+                    precinct_offset,
                     header_reader,
                     storage,
                     component_info,
@@ -419,7 +431,7 @@ fn parse_inner<'a>(
             let mut skipped = skips.entries.iter().peekable();
             for sub_band_idx in sub_band_iter {
                 let sub_band = &storage.sub_bands[sub_band_idx];
-                let precinct = &storage.precincts[sub_band.precincts.clone()][precinct_index];
+                let precinct = &storage.precincts[sub_band.precincts.clone()][precinct_offset];
 
                 for code_block_idx in precinct.code_blocks.clone() {
                     // A code-block the decode doesn't read has no layers; its
@@ -570,9 +582,14 @@ fn push_segment_or_record_error<'a>(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the packet, its precinct's offset among the records, and the parser state it fills stay explicit"
+)]
 fn resolve_segments(
     sub_band_dx: usize,
     progression_data: &ProgressionData,
+    precinct_offset: usize,
     reader: &mut BitReader<'_>,
     storage: &mut DecompositionStorage<'_>,
     component_info: &ComponentInfo,
@@ -588,6 +605,7 @@ fn resolve_segments(
         ht::resolve_segments(
             sub_band_dx,
             progression_data,
+            precinct_offset,
             reader,
             storage,
             component_info,
@@ -598,6 +616,7 @@ fn resolve_segments(
         classic::resolve_segments(
             sub_band_dx,
             progression_data,
+            precinct_offset,
             reader,
             storage,
             component_info,

@@ -1554,6 +1554,72 @@ fn region_decode_parses_skipped_precincts_in_shared_scratch() {
 }
 
 #[test]
+fn region_decode_builds_no_records_for_precincts_it_never_parses() {
+    const SIZE: u32 = 96;
+    let mut state = 0x9e37_79b9_u32;
+    let pixels: Vec<u8> = (0..SIZE * SIZE)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            (state >> 24) as u8
+        })
+        .collect();
+    for (progression_order, write_plt) in [
+        (EncodeProgressionOrder::Lrcp, true),
+        (EncodeProgressionOrder::Rpcl, true),
+        (EncodeProgressionOrder::Rpcl, false),
+    ] {
+        for use_ht_block_coding in [false, true] {
+            let case = format!("{progression_order:?}, plt={write_plt}, ht={use_ht_block_coding}");
+            let options = EncodeOptions {
+                reversible: true,
+                num_decomposition_levels: 2,
+                code_block_width_exp: 0,
+                code_block_height_exp: 0,
+                precinct_exponents: vec![(3, 3); 3],
+                progression_order,
+                num_layers: 3,
+                use_ht_block_coding,
+                write_plt,
+                ..EncodeOptions::default()
+            };
+            let bytes = encode(&pixels, SIZE, SIZE, 1, 8, false, &options).expect("encode fixture");
+            let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse fixture");
+            let mut context = DecoderContext::default();
+            let whole = image
+                .decode_native_with_context(&mut context)
+                .expect("decode whole image")
+                .data;
+            let whole_precincts = context.tile_decode_context.debug_counters.built_precincts;
+
+            // With PLT, only the precincts holding a code-block the region
+            // reads are parsed. Without it, the region's top-left corner
+            // comes early in RPCL, so the precincts after it are never parsed
+            // either. Neither gets a precinct record.
+            let roi = (4, 4, 12, 12);
+            let mut context = DecoderContext::default();
+            let region = image
+                .decode_native_region_with_context(roi, &mut context)
+                .expect("decode region");
+            let expected: Vec<u8> = whole
+                .chunks_exact(image.width() as usize)
+                .skip(roi.1 as usize)
+                .take(roi.3 as usize)
+                .flat_map(|row| &row[roi.0 as usize..(roi.0 + roi.2) as usize])
+                .copied()
+                .collect();
+            assert_eq!(region.data, expected, "{case}");
+            let built = context.tile_decode_context.debug_counters.built_precincts;
+            assert!(
+                built * 2 < whole_precincts,
+                "{case}: {built} of {whole_precincts} precinct records built"
+            );
+        }
+    }
+}
+
+#[test]
 fn region_decode_scratch_keeps_state_across_tile_parts() {
     const WIDTH: u32 = 64;
     const HEIGHT: u32 = 32;
