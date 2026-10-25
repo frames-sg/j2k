@@ -2,8 +2,6 @@
 
 // Classic EBCOT cleanup, significance-propagation, and refinement kernels.
 
-use alloc::vec::Vec;
-
 use super::super::arithmetic_encoder::{ArithmeticEncoder, ArithmeticEncoderContext};
 use super::super::build::SubBandType;
 use super::super::codestream::CodeBlockStyle;
@@ -99,20 +97,17 @@ const SIGN_CONTEXT_LOOKUP: [(u8, u8); 256] = [
     (0,0), (0,0), (0,0), (0,0), (0,0), (0,0), (0,0),
 ];
 
-pub(super) fn mark_coded_in_current_pass(
-    idx: usize,
-    states: &mut [u8],
-    coded_indices: &mut Vec<usize>,
-) {
-    if states[idx] & CODED_IN_CURRENT_PASS == 0 {
-        states[idx] |= CODED_IN_CURRENT_PASS;
-        coded_indices.push(idx);
-    }
+#[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
+#[inline(always)]
+pub(super) fn mark_coded_in_current_pass(idx: usize, states: &mut [u8]) {
+    states[idx] |= CODED_IN_CURRENT_PASS;
 }
 
-pub(super) fn clear_coded_in_current_pass(states: &mut [u8], coded_indices: &mut Vec<usize>) {
-    for idx in coded_indices.drain(..) {
-        states[idx] &= !CODED_IN_CURRENT_PASS;
+/// Clear every visit mark at the end of a bitplane. A pass over the whole
+/// padded block vectorizes and costs less than recording each visited index.
+pub(super) fn clear_coded_in_current_pass(states: &mut [u8]) {
+    for state in states {
+        *state &= !CODED_IN_CURRENT_PASS;
     }
 }
 
@@ -123,7 +118,6 @@ pub(super) fn significance_propagation_pass(
     magnitudes: &[u64],
     states: &mut [u8],
     neighbors: &mut [u8],
-    coded_indices: &mut Vec<usize>,
     encoder: &mut ArithmeticEncoder,
     contexts: &mut [ArithmeticEncoderContext; 19],
     w: usize,
@@ -138,7 +132,6 @@ pub(super) fn significance_propagation_pass(
             magnitudes,
             states,
             neighbors,
-            coded_indices,
             encoder,
             contexts,
             w,
@@ -152,7 +145,6 @@ pub(super) fn significance_propagation_pass(
             magnitudes,
             states,
             neighbors,
-            coded_indices,
             encoder,
             contexts,
             w,
@@ -169,7 +161,6 @@ fn significance_propagation_pass_impl<const VERTICAL_CAUSAL: bool>(
     magnitudes: &[u64],
     states: &mut [u8],
     neighbors: &mut [u8],
-    coded_indices: &mut Vec<usize>,
     encoder: &mut ArithmeticEncoder,
     contexts: &mut [ArithmeticEncoderContext; 19],
     w: usize,
@@ -191,7 +182,7 @@ fn significance_propagation_pass_impl<const VERTICAL_CAUSAL: bool>(
                     let ctx_label = zero_coding_ctx(neighbor_sig, sub_band_type);
                     let bit = u32::from(magnitudes[idx] & bit_mask != 0);
                     encoder.encode(bit, &mut contexts[ctx_label as usize]);
-                    mark_coded_in_current_pass(idx, states, coded_indices);
+                    mark_coded_in_current_pass(idx, states);
 
                     if bit == 1 {
                         encode_sign::<VERTICAL_CAUSAL>(
@@ -211,7 +202,6 @@ pub(super) fn significance_propagation_pass_raw(
     magnitudes: &[u64],
     states: &mut [u8],
     neighbors: &mut [u8],
-    coded_indices: &mut Vec<usize>,
     writer: &mut BitWriter,
     w: usize,
     h: usize,
@@ -221,27 +211,11 @@ pub(super) fn significance_propagation_pass_raw(
 ) {
     if style.vertically_causal_context {
         significance_propagation_pass_raw_impl::<true>(
-            magnitudes,
-            states,
-            neighbors,
-            coded_indices,
-            writer,
-            w,
-            h,
-            pw,
-            bit_mask,
+            magnitudes, states, neighbors, writer, w, h, pw, bit_mask,
         );
     } else {
         significance_propagation_pass_raw_impl::<false>(
-            magnitudes,
-            states,
-            neighbors,
-            coded_indices,
-            writer,
-            w,
-            h,
-            pw,
-            bit_mask,
+            magnitudes, states, neighbors, writer, w, h, pw, bit_mask,
         );
     }
 }
@@ -251,7 +225,6 @@ fn significance_propagation_pass_raw_impl<const VERTICAL_CAUSAL: bool>(
     magnitudes: &[u64],
     states: &mut [u8],
     neighbors: &mut [u8],
-    coded_indices: &mut Vec<usize>,
     writer: &mut BitWriter,
     w: usize,
     h: usize,
@@ -268,7 +241,7 @@ fn significance_propagation_pass_raw_impl<const VERTICAL_CAUSAL: bool>(
                 if !is_significant && neighbor_sig != 0 {
                     let bit = u32::from(magnitudes[idx] & bit_mask != 0);
                     writer.write_bit(bit);
-                    mark_coded_in_current_pass(idx, states, coded_indices);
+                    mark_coded_in_current_pass(idx, states);
                     if bit == 1 {
                         encode_sign_raw(idx, states, writer);
                         set_significant(idx, states, neighbors, pw);

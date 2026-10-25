@@ -43,7 +43,6 @@ pub(super) struct SegmentedCodeBlockEncoder<'a, T> {
     current_use_arithmetic: bool,
     arithmetic_encoder: Option<ArithmeticEncoder>,
     bypass_writer: Option<BitWriter>,
-    coded_indices: Vec<usize>,
     payload_limit: usize,
     segment_limit: usize,
 }
@@ -95,10 +94,6 @@ impl<'a, T: SignedCoefficient> SegmentedCodeBlockEncoder<'a, T> {
             current_use_arithmetic: true,
             arithmetic_encoder: None,
             bypass_writer: None,
-            coded_indices: try_untracked_vec(
-                allocation.padded_coefficients,
-                "classic Tier-1 coded-index scratch",
-            )?,
             payload_limit: allocation.payload_bytes,
             segment_limit: allocation.coding_passes,
         })
@@ -226,7 +221,7 @@ impl<'a, T: SignedCoefficient> SegmentedCodeBlockEncoder<'a, T> {
         if self.style.segmentation_symbols {
             encode_segmentation_symbols(encoder, &mut self.contexts);
         }
-        clear_coded_in_current_pass(&mut self.states, &mut self.coded_indices);
+        clear_coded_in_current_pass(&mut self.states);
     }
 
     fn encode_significance_propagation(&mut self, bit_mask: u64) {
@@ -235,7 +230,6 @@ impl<'a, T: SignedCoefficient> SegmentedCodeBlockEncoder<'a, T> {
                 &self.magnitudes,
                 &mut self.states,
                 &mut self.neighbors,
-                &mut self.coded_indices,
                 self.arithmetic_encoder
                     .as_mut()
                     .expect("arithmetic encoder exists for significance pass"),
@@ -252,7 +246,6 @@ impl<'a, T: SignedCoefficient> SegmentedCodeBlockEncoder<'a, T> {
                 &self.magnitudes,
                 &mut self.states,
                 &mut self.neighbors,
-                &mut self.coded_indices,
                 self.bypass_writer
                     .as_mut()
                     .expect("bypass writer exists for significance pass"),

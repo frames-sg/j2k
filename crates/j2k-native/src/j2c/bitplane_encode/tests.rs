@@ -267,20 +267,17 @@ fn padded_coefficient_preparation_stores_sign_in_state_flags() {
 }
 
 #[test]
-fn clear_coded_in_current_pass_touches_only_recorded_indices() {
-    let mut states = vec![0u8; 8];
-    let mut coded_indices = Vec::new();
+fn clear_coded_in_current_pass_keeps_every_other_state_flag() {
+    let mut states = vec![SIGNIFICANT, NEGATIVE, 0, SIGNIFICANT | NEGATIVE];
+    mark_coded_in_current_pass(0, &mut states);
+    mark_coded_in_current_pass(2, &mut states);
 
-    mark_coded_in_current_pass(2, &mut states, &mut coded_indices);
-    mark_coded_in_current_pass(5, &mut states, &mut coded_indices);
-    states[6] = SIGNIFICANT;
+    clear_coded_in_current_pass(&mut states);
 
-    clear_coded_in_current_pass(&mut states, &mut coded_indices);
-
-    assert_eq!(states[2] & CODED_IN_CURRENT_PASS, 0);
-    assert_eq!(states[5] & CODED_IN_CURRENT_PASS, 0);
-    assert_eq!(states[6], SIGNIFICANT);
-    assert_eq!(coded_indices, [] as [usize; 0]);
+    assert_eq!(states, [SIGNIFICANT, NEGATIVE, 0, SIGNIFICANT | NEGATIVE]);
+    assert!(states
+        .iter()
+        .all(|state| state & CODED_IN_CURRENT_PASS == 0));
 }
 
 #[test]

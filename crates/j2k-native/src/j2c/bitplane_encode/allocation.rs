@@ -118,7 +118,7 @@ pub(crate) fn classic_worker_allocation(
 
     let padded_storage_bytes = checked_mul(
         padded_coefficients,
-        size_of::<u64>() + size_of::<u8>() * 2 + size_of::<usize>(),
+        size_of::<u64>() + size_of::<u8>() * 2,
         "classic Tier-1 padded scratch",
     )?;
     let active_segment_bytes =

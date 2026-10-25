@@ -12,7 +12,7 @@ use super::arithmetic_encoder::{ArithmeticEncoder, ArithmeticEncoderContext};
 use super::build::SubBandType;
 use super::codestream::CodeBlockStyle;
 use super::coefficient_view::{CoefficientBlockView, SignedCoefficient};
-use super::encode::allocation::{try_untracked_vec, try_untracked_vec_filled};
+use super::encode::allocation::try_untracked_vec_filled;
 use crate::math::bit_width_u64;
 use crate::EncodeResult;
 
@@ -183,10 +183,6 @@ pub(crate) fn try_encode_code_block_with_style_view<T: SignedCoefficient>(
     reset_contexts(&mut contexts);
 
     let mut num_coding_passes = 0u8;
-    let mut coded_indices = try_untracked_vec(
-        allocation.padded_coefficients,
-        "classic Tier-1 coded-index scratch",
-    )?;
 
     // Process bitplanes from MSB to LSB
     for bp in (0..num_bitplanes).rev() {
@@ -221,7 +217,6 @@ pub(crate) fn try_encode_code_block_with_style_view<T: SignedCoefficient>(
                 &magnitudes,
                 &mut states,
                 &mut neighbors,
-                &mut coded_indices,
                 &mut encoder,
                 &mut contexts,
                 w,
@@ -275,7 +270,7 @@ pub(crate) fn try_encode_code_block_with_style_view<T: SignedCoefficient>(
             }
         }
 
-        clear_coded_in_current_pass(&mut states, &mut coded_indices);
+        clear_coded_in_current_pass(&mut states);
     }
 
     let data = encoder.finish_checked()?;
