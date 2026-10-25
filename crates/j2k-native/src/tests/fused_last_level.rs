@@ -71,7 +71,7 @@ const CASES: [Case; 9] = [
 
 struct Decoded {
     pixels: Vec<u8>,
-    fused: bool,
+    idwt_samples: usize,
     peak: usize,
 }
 
@@ -97,8 +97,7 @@ fn decode(bytes: &[u8], staged: bool, parallelism: CpuDecodeParallelism) -> Deco
     let tile_ctx = &context.tile_decode_context;
     Decoded {
         pixels,
-        // Only the fused pass keeps an LL band apart.
-        fused: !tile_ctx.fused_ll_bands[0].is_empty(),
+        idwt_samples: tile_ctx.debug_counters.idwt_output_samples,
         peak: tile_ctx.debug_counters.workspace_peak.bytes().total(),
     }
 }
@@ -108,8 +107,8 @@ fn assert_matches_staged(bytes: &[u8], fused: bool, label: &str) {
         let label = format!("{label} {parallelism:?}");
         let staged = decode(bytes, true, parallelism);
         let actual = decode(bytes, false, parallelism);
-        assert!(!staged.fused, "{label}");
-        assert_eq!(actual.fused, fused, "{label}");
+        // Only the fused pass leaves the last level to the pack.
+        assert_eq!(actual.idwt_samples < staged.idwt_samples, fused, "{label}");
         assert_eq!(actual.pixels, staged.pixels, "{label}");
         if fused {
             assert!(

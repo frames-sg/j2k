@@ -5,6 +5,9 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- Fused RGB8 CPU decodes reconstruct later components into the consumed
+  coarse-coefficient prefixes of earlier component planes. This removes two
+  separate LL buffers without copying their samples. Output is unchanged.
 - Fused RGB8 CPU packing on the pool gives its workers rings from the
   completed coarse inverse transform's scratch buffers before allocating more,
   reducing temporary heap allocations. Serial packing still allocates its own

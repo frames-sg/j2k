@@ -2,8 +2,6 @@
 
 //! Shared 8-bit sample conversion and interleaved packing policy.
 
-use alloc::vec::Vec;
-
 use crate::error::{bail, ColorError};
 use crate::j2c::mct::DeferredMct;
 use crate::j2c::ComponentData;
@@ -183,7 +181,7 @@ pub(crate) fn interleave_and_convert_after_mct(
     image: &mut DecodedImage<'_, '_>,
     buf: &mut [u8],
     mct: Option<DeferredMct>,
-    ll_bands: &[Vec<f32>; 3],
+    first_ll: &[f32],
     scratch: [&mut [f32]; 2],
     parallel: bool,
 ) -> Result<()> {
@@ -204,7 +202,7 @@ pub(crate) fn interleave_and_convert_after_mct(
         let planes = [s0, s1, s2].map(|component| &mut component.container[..len]);
         return mct.pack_rgb8(
             planes,
-            ll_bands,
+            first_ll,
             scratch,
             &mut buf[..3 * len],
             parallel,

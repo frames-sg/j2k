@@ -2,7 +2,7 @@
 
 use super::super::codestream::WaveletTransform;
 use super::super::decode::{DecompositionStorage, TileDecodeContext};
-use super::direct::apply_level;
+use super::direct::{apply_level, apply_level_into};
 use super::interleave_i64::apply_level_i64;
 use super::model::{
     idwt_buffer_size, IDWTInput, IDWTInputI64, IDWTTempOutput, IdwtPlacement, InputSource,
@@ -63,6 +63,17 @@ pub(crate) fn apply(
         &mut tile_ctx.idwt_band_scratch,
     );
 
+    // Earlier components have consumed every coefficient before their
+    // finest high bands. Reconstruct into that dead prefix while preserving
+    // component zero's LL in `output.coefficients` until the final pack.
+    let mut prefix = if tile_ctx.fused_last_level.is_some() && component_idx > 0 {
+        let rect = decompositions.last().unwrap().rect;
+        let len = checked_decode_usize_product2(rect.width() as usize, rect.height() as usize)?;
+        Some(&mut tile_ctx.channel_data[component_idx - 1].container[..len])
+    } else {
+        None
+    };
+
     if decompositions.is_empty() {
         // Single decomposition, just copy the coefficients from the sub-band.
         let source = &storage.coefficients[ll_sub_band.coefficients.clone()];
@@ -82,7 +93,7 @@ pub(crate) fn apply(
     // The coefficient array will always be the one that holds the coefficients
     // from the highest decomposition. Therefore, reserve as much.
     let (s_min, s_max) = idwt_buffer_size(decompositions.last().unwrap().rect)?;
-    if output.coefficients.len() < s_min {
+    if prefix.is_none() && output.coefficients.len() < s_min {
         try_reserve_decode_elements(&mut output.coefficients, s_max)?;
     }
 
@@ -120,6 +131,24 @@ pub(crate) fn apply(
                 backend,
                 parallel,
             )?,
+            (InputSource::SubBand, false) if prefix.is_some() => apply_level_into(
+                IDWTInput::from_sub_band(ll_sub_band, storage),
+                prefix.as_deref_mut().unwrap(),
+                band_scratch,
+                decomposition,
+                transform,
+                storage,
+                parallel,
+            )?,
+            (InputSource::Scratch, false) if prefix.is_some() => apply_level_into(
+                IDWTInput::from_output(&scratch_buf[..current_len], current_rect),
+                prefix.as_deref_mut().unwrap(),
+                band_scratch,
+                decomposition,
+                transform,
+                storage,
+                parallel,
+            )?,
             (InputSource::SubBand, false) => apply_level(
                 IDWTInput::from_sub_band(ll_sub_band, storage),
                 &mut output.coefficients,
@@ -141,7 +170,10 @@ pub(crate) fn apply(
                 parallel,
             )?,
             (InputSource::Output, true) => apply_level(
-                IDWTInput::from_output(&output.coefficients[..current_len], current_rect),
+                IDWTInput::from_output(
+                    &prefix.as_deref().unwrap_or(&output.coefficients)[..current_len],
+                    current_rect,
+                ),
                 scratch_buf,
                 band_scratch,
                 decomposition,
@@ -170,9 +202,11 @@ pub(crate) fn apply(
         use_scratch = !use_scratch;
     }
 
-    // The last level always writes `output`; drop samples a larger earlier
-    // component left past it so readers see exactly this rect.
-    output.coefficients.truncate(current_len);
+    // Keep the first fused LL intact when writing a prior plane. Otherwise
+    // drop samples a larger earlier component left past this output rect.
+    if prefix.is_none() {
+        output.coefficients.truncate(current_len);
+    }
     output.rect = temp_output.rect;
     Ok(())
 }

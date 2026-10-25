@@ -1,8 +1,6 @@
 //! The irreversible multi-component transformation, as specified in
 //! Annex G.2 and G.3.
 
-use alloc::vec::Vec;
-
 use super::codestream::{ComponentInfo, Header, WaveletTransform};
 use super::decode::TileDecodeContext;
 use super::idwt::{pack_last_level, LastLevel};
@@ -174,12 +172,12 @@ impl DeferredMct {
     /// transformed in scratch, so the planes are not written back: the
     /// workers share memory bandwidth. One thread transforms in place, which
     /// costs less than the copy. With a last level, the planes hold its
-    /// sub-bands but the LL bands, which are in `ll_bands`, and each
-    /// reconstructed row is transformed and packed.
+    /// high bands and the next component's LL band, with `first_ll` kept
+    /// separately. Each reconstructed row is transformed and packed.
     pub(crate) fn pack_rgb8(
         self,
         [r, g, b]: [&mut [f32]; 3],
-        ll_bands: &[Vec<f32>; 3],
+        first_ll: &[f32],
         scratch: [&mut [f32]; 2],
         output: &mut [u8],
         parallel: bool,
@@ -190,7 +188,7 @@ impl DeferredMct {
             return pack_last_level(
                 level,
                 planes,
-                ll_bands,
+                first_ll,
                 scratch,
                 output,
                 parallel,
@@ -546,7 +544,7 @@ mod tests {
                 }
                 .pack_rgb8(
                     [&mut s0, &mut s1, &mut s2],
-                    &Default::default(),
+                    &[],
                     [&mut [], &mut []],
                     &mut fused,
                     parallel,

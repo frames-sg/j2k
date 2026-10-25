@@ -25,9 +25,9 @@ use crate::error::{bail, DecodingError};
 use crate::math::{dispatch, Level, Simd};
 use crate::{try_resize_decode_elements, Result, ValidationError};
 
-/// A last level that each component keeps as its packed sub-bands: the LL
-/// band apart, and the HL, LH, and HH bands in the component's plane, where
-/// the decode built them.
+/// A last level whose high bands remain in their component plane. The
+/// first LL stays in the IDWT output; each later LL occupies the previous
+/// plane's consumed coarse-coefficient prefix.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct LastLevel {
     rect: IntRect,
@@ -38,8 +38,8 @@ pub(crate) struct LastLevel {
 
 impl LastLevel {
     /// The level `rect` whose HL, LH, and HH bands have these rectangles and
-    /// coefficient ranges. `None` unless each band is packed and the banded
-    /// path would reconstruct the level.
+    /// coefficient ranges. `None` unless each band is packed, the LL band fits
+    /// in front of them, and the banded path would reconstruct the level.
     pub(crate) fn new(
         rect: IntRect,
         bands: [(IntRect, Range<usize>); 3],
@@ -56,6 +56,9 @@ impl LastLevel {
             }
             *offset = range.start;
         }
+        if band_len(packed[0])? > *offsets.iter().min()? {
+            return None;
+        }
         Some(Self {
             rect,
             offsets,
@@ -63,7 +66,8 @@ impl LastLevel {
         })
     }
 
-    /// The LL band, which each component keeps apart from its plane.
+    /// The LL band reconstructed into the previous plane's dead prefix,
+    /// except for the first component, which keeps the IDWT output.
     pub(crate) fn ll_rect(&self) -> IntRect {
         packed_band_rects(self.rect)[0]
     }
@@ -111,20 +115,21 @@ fn worker_scratch_elements(width: usize, batch: usize) -> Result<usize> {
         .ok_or(ValidationError::ImageTooLarge.into())
 }
 
-/// Reconstruct `level` of the three components from their `planes` and
-/// `ll_bands`, and pass every row to `emit` with the three components'
-/// samples, which it may overwrite, and that row of `output`, three bytes
-/// per sample.
+/// Reconstruct `level` of the three components from their `planes` and the
+/// first component's `first_ll` band, and pass every row to `emit` with the
+/// three components' samples, which it may overwrite, and that row of
+/// `output`, three bytes per sample.
 pub(crate) fn pack_last_level(
     level: LastLevel,
     planes: [&[f32]; 3],
-    ll_bands: &[Vec<f32>; 3],
+    first_ll: &[f32],
     scratch: [&mut [f32]; 2],
     output: &mut [u8],
     parallel: bool,
     emit: impl Fn([&mut [f32]; 3], &mut [u8]) + Sync,
 ) -> Result<()> {
-    let levels = [0, 1, 2].map(|component| level.level(planes[component], &ll_bands[component]));
+    let lls = [first_ll, planes[0], planes[1]];
+    let levels = [0, 1, 2].map(|component| level.level(planes[component], lls[component]));
     let [Some(r), Some(g), Some(b)] = levels else {
         bail!(DecodingError::CodeBlockDecodeFailure);
     };
