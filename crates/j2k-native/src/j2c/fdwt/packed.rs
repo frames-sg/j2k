@@ -374,6 +374,15 @@ fn line_level<T: Copy>(
 /// vertical pass lift full-width column strips, and each further multiple of it
 /// lets one more Rayon worker lift strips and rows. The output does not depend
 /// on the scratch length.
+///
+/// With `spare`, a plane as long as `coefficients`, the first level is lifted
+/// out of place into it in cache-sized bands, reading and writing each sample
+/// about once; the transform is then left in `spare` and `coefficients` holds
+/// scratch. This needs at least `packed_dwt_scratch_len` scratch samples.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the plane geometry, scratch and spare plane are independent inputs"
+)]
 pub(crate) fn try_forward_dwt_packed_f32(
     coefficients: &mut [f32],
     width: u32,
@@ -381,12 +390,22 @@ pub(crate) fn try_forward_dwt_packed_f32(
     num_levels: u8,
     reversible: bool,
     line_scratch: &mut [f32],
+    mut spare: Option<&mut [f32]>,
     origin: (u32, u32),
 ) -> EncodeResult<PackedDwtShape> {
     validate_packed_dwt_plane(coefficients.len(), width, height)?;
     validate_line_scratch(line_scratch.len(), width, height)?;
     let workers = line_scratch.len() / lifting::packed_dwt_scratch_len(width, height)?;
-    forward_dwt_packed_core(
+    if spare
+        .as_deref()
+        .is_some_and(|spare| spare.len() != coefficients.len() || workers == 0)
+    {
+        return Err(EncodeError::InvalidInput {
+            what: "out-of-place forward DWT needs a full-length spare plane and strip scratch",
+        });
+    }
+    let mut first_level = true;
+    let shape = forward_dwt_packed_core(
         coefficients,
         usize_from_u32(width, "packed forward DWT width")?,
         usize_from_u32(height, "packed forward DWT height")?,
@@ -394,11 +413,24 @@ pub(crate) fn try_forward_dwt_packed_f32(
         line_scratch,
         origin,
         |coefficients, scratch, level| {
-            dispatch!(Level::new(), simd => {
-                lifting::transform_level(simd, coefficients, scratch, workers, level, reversible)
+            let out_of_place = core::mem::take(&mut first_level);
+            dispatch!(Level::new(), simd => match spare.as_deref_mut() {
+                Some(spare) if out_of_place => lifting::transform_level_into(
+                    simd, coefficients, spare, scratch, workers, level, reversible,
+                ),
+                Some(spare) => {
+                    lifting::transform_level(simd, spare, scratch, workers, level, reversible)
+                }
+                None => lifting::transform_level(
+                    simd, coefficients, scratch, workers, level, reversible,
+                ),
             })
         },
-    )
+    )?;
+    if let (true, Some(spare)) = (first_level, spare) {
+        spare.copy_from_slice(coefficients);
+    }
+    Ok(shape)
 }
 
 /// Transform one exact i64 sample plane in place with the reversible 5/3 DWT.
@@ -507,8 +539,9 @@ mod tests {
         let expected = forward_dwt(&original, 7, 5, 3, true);
         let mut packed = original;
         let mut scratch = vec![0.0_f32; 7];
-        let shape = try_forward_dwt_packed_f32(&mut packed, 7, 5, 3, true, &mut scratch, (0, 0))
-            .expect("valid packed reversible transform");
+        let shape =
+            try_forward_dwt_packed_f32(&mut packed, 7, 5, 3, true, &mut scratch, None, (0, 0))
+                .expect("valid packed reversible transform");
         let geometry =
             PackedDwtGeometry::try_new(7, 5, packed.len(), shape).expect("valid geometry");
 
@@ -537,8 +570,9 @@ mod tests {
         let expected = forward_dwt(&original, 8, 8, 3, false);
         let mut packed = original;
         let mut scratch = vec![0.0_f32; 8];
-        let shape = try_forward_dwt_packed_f32(&mut packed, 8, 8, 3, false, &mut scratch, (0, 0))
-            .expect("valid packed irreversible transform");
+        let shape =
+            try_forward_dwt_packed_f32(&mut packed, 8, 8, 3, false, &mut scratch, None, (0, 0))
+                .expect("valid packed irreversible transform");
         let geometry =
             PackedDwtGeometry::try_new(8, 8, packed.len(), shape).expect("valid geometry");
 
@@ -611,9 +645,17 @@ mod tests {
     fn odd_geometry_descriptors_use_original_plane_stride() {
         let mut coefficients = vec![0.0_f32; 15];
         let mut scratch = vec![0.0_f32; 5];
-        let shape =
-            try_forward_dwt_packed_f32(&mut coefficients, 5, 3, 2, true, &mut scratch, (0, 0))
-                .expect("valid odd transform");
+        let shape = try_forward_dwt_packed_f32(
+            &mut coefficients,
+            5,
+            3,
+            2,
+            true,
+            &mut scratch,
+            None,
+            (0, 0),
+        )
+        .expect("valid odd transform");
         let geometry =
             PackedDwtGeometry::try_new(5, 3, coefficients.len(), shape).expect("valid geometry");
 
@@ -658,20 +700,20 @@ mod tests {
     fn packed_transform_rejects_zero_axes_and_wrong_storage_lengths() {
         let mut empty = Vec::<f32>::new();
         assert_eq!(
-            try_forward_dwt_packed_f32(&mut empty, 0, 1, 1, true, &mut [0.0], (0, 0)),
+            try_forward_dwt_packed_f32(&mut empty, 0, 1, 1, true, &mut [0.0], None, (0, 0)),
             Err(EncodeError::InvalidInput {
                 what: "packed forward DWT dimensions must be non-zero",
             })
         );
         assert_eq!(
-            try_forward_dwt_packed_f32(&mut empty, 1, 0, 1, true, &mut [0.0], (0, 0)),
+            try_forward_dwt_packed_f32(&mut empty, 1, 0, 1, true, &mut [0.0], None, (0, 0)),
             Err(EncodeError::InvalidInput {
                 what: "packed forward DWT dimensions must be non-zero",
             })
         );
         let mut one_short = vec![0.0_f32; 14];
         assert_eq!(
-            try_forward_dwt_packed_f32(&mut one_short, 5, 3, 1, true, &mut [0.0; 5], (0, 0)),
+            try_forward_dwt_packed_f32(&mut one_short, 5, 3, 1, true, &mut [0.0; 5], None, (0, 0)),
             Err(EncodeError::InvalidInput {
                 what: "packed forward DWT coefficient length mismatch",
             })
@@ -689,9 +731,34 @@ mod tests {
     fn packed_transform_accepts_exact_scratch_and_rejects_one_short() {
         let mut coefficients = vec![0.0_f32; 15];
         assert_eq!(
-            try_forward_dwt_packed_f32(&mut coefficients, 5, 3, 1, true, &mut [0.0; 4], (0, 0)),
+            try_forward_dwt_packed_f32(
+                &mut coefficients,
+                5,
+                3,
+                1,
+                true,
+                &mut [0.0; 4],
+                None,
+                (0, 0)
+            ),
             Err(EncodeError::InvalidInput {
                 what: "packed forward DWT line scratch is too short",
+            })
+        );
+        let mut spare = [0.0_f32; 15];
+        assert_eq!(
+            try_forward_dwt_packed_f32(
+                &mut coefficients,
+                5,
+                3,
+                1,
+                true,
+                &mut [0.0; 5],
+                Some(&mut spare[..14]),
+                (0, 0),
+            ),
+            Err(EncodeError::InvalidInput {
+                what: "out-of-place forward DWT needs a full-length spare plane and strip scratch",
             })
         );
         let shape = try_forward_dwt_packed_f32(
@@ -701,6 +768,7 @@ mod tests {
             u8::MAX,
             true,
             &mut [0.0; 5],
+            None,
             (0, 0),
         )
         .expect("exact scratch length is accepted");
@@ -797,24 +865,32 @@ mod tests {
                 strip_scratch,
                 3 * strip_scratch,
             ] {
-                let mut actual = original.clone();
-                let mut scratch = vec![0.0; scratch_len];
-                let shape = try_forward_dwt_packed_f32(
-                    &mut actual,
-                    w,
-                    h,
-                    num_levels,
-                    reversible,
-                    &mut scratch,
-                    origin,
-                );
-                let context = format!(
-                    "{width}x{height} origin {origin:?} levels {num_levels} \
-                     reversible {reversible} extreme {extreme} scratch {scratch_len}"
-                );
-                assert_eq!(shape, expected_shape, "{context}");
-                let bits = |plane: &[f32]| plane.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
-                assert_eq!(bits(&actual), bits(&expected), "{context}");
+                // Full strip scratch also runs the first level out of place.
+                for out_of_place in [false, scratch_len >= strip_scratch] {
+                    let mut actual = original.clone();
+                    let mut spare = vec![0.0; original.len()];
+                    let mut scratch = vec![0.0; scratch_len];
+                    let shape = try_forward_dwt_packed_f32(
+                        &mut actual,
+                        w,
+                        h,
+                        num_levels,
+                        reversible,
+                        &mut scratch,
+                        out_of_place.then_some(spare.as_mut_slice()),
+                        origin,
+                    );
+                    let output = if out_of_place { &spare } else { &actual };
+                    let context = format!(
+                        "{width}x{height} origin {origin:?} levels {num_levels} \
+                         reversible {reversible} extreme {extreme} scratch {scratch_len} \
+                         out of place {out_of_place}"
+                    );
+                    assert_eq!(shape, expected_shape, "{context}");
+                    let bits =
+                        |plane: &[f32]| plane.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+                    assert_eq!(bits(output), bits(&expected), "{context}");
+                }
             }
         }
     }

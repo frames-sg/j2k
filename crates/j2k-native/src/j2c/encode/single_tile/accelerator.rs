@@ -430,9 +430,12 @@ fn prepare_dwt_components(
                 session: request.session,
                 retained_base_bytes: live_before_dwt,
                 line_scratch: &mut workspace.line_scratch,
+                spare: workspace.spare.as_mut(),
             },
             accelerator,
         )?);
+        workspace.scratch_bytes =
+            dwt_scratch_bytes(&workspace.line_scratch, workspace.spare.as_ref())?;
         let actual_dwt_bytes = dwt_component_sources_retained_bytes(
             &workspace.decompositions,
             workspace.decompositions.capacity(),
@@ -452,6 +455,7 @@ fn prepare_dwt_components(
     }
     drop(components);
     drop(workspace.line_scratch);
+    drop(workspace.spare);
     validate_component_sampling_dwt_geometry(
         &workspace.decompositions,
         request.width,
@@ -464,6 +468,7 @@ fn prepare_dwt_components(
 struct DwtWorkspace {
     decompositions: Vec<OwnedDwtComponent>,
     line_scratch: Vec<f32>,
+    spare: Option<Vec<f32>>,
     scratch_bytes: usize,
 }
 
@@ -505,8 +510,16 @@ fn try_dwt_workspace(
         .try_reserve_exact(scratch_count)
         .map_err(|_| host_allocation_failed("packed DWT line scratch", requested_scratch_bytes))?;
     line_scratch.resize(scratch_count, 0.0);
-    let scratch_bytes =
-        checked_element_bytes::<f32>(line_scratch.capacity(), "packed DWT line scratch")?;
+    let spare = try_dwt_spare(
+        request,
+        checked_add_bytes(
+            owner_phase_bytes,
+            requested_scratch_bytes,
+            "DWT spare phase",
+        )?,
+        parallel,
+    )?;
+    let scratch_bytes = dwt_scratch_bytes(&line_scratch, spare.as_ref())?;
     request.session.checked_phase(
         checked_add_bytes(
             checked_add_bytes(plan_bytes, component_bytes, "DWT scratch phase")?,
@@ -525,6 +538,7 @@ fn try_dwt_workspace(
     Ok(DwtWorkspace {
         decompositions,
         line_scratch,
+        spare,
         scratch_bytes,
     })
 }
@@ -560,6 +574,56 @@ fn dwt_scratch_count(
     }
     let _ = (owner_phase_bytes, parallel);
     Ok(serial)
+}
+
+/// A plane-sized spare lets the first DWT level run out of place in
+/// cache-sized bands when it fits the cap; otherwise the transform runs in
+/// place, so success never depends on the headroom. Without decomposition
+/// levels no transform runs and no spare is needed.
+fn try_dwt_spare(
+    request: &AcceleratedComponentRequest<'_, '_>,
+    live_bytes: usize,
+    parallel: bool,
+) -> NativeEncodePipelineResult<Option<Vec<f32>>> {
+    if !parallel || request.plan.num_levels == 0 {
+        return Ok(None);
+    }
+    let samples =
+        usize::try_from(u64::from(request.width) * u64::from(request.height)).map_err(|_| {
+            crate::EncodeError::ArithmeticOverflow {
+                what: "out-of-place DWT spare plane",
+            }
+        })?;
+    let bytes = checked_element_bytes::<f32>(samples, "out-of-place DWT spare plane")?;
+    match checked_add_bytes(live_bytes, bytes, "DWT spare phase").and_then(|bytes| {
+        request
+            .session
+            .checked_phase(bytes, "native encode DWT spare phase")
+    }) {
+        Ok(_) => {}
+        Err(
+            crate::EncodeError::AllocationTooLarge { .. }
+            | crate::EncodeError::ArithmeticOverflow { .. },
+        ) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    }
+    let mut spare = Vec::new();
+    spare
+        .try_reserve_exact(samples)
+        .map_err(|_| host_allocation_failed("out-of-place DWT spare plane", bytes))?;
+    spare.resize(samples, 0.0);
+    Ok(Some(spare))
+}
+
+fn dwt_scratch_bytes(
+    line_scratch: &Vec<f32>,
+    spare: Option<&Vec<f32>>,
+) -> NativeEncodePipelineResult<usize> {
+    Ok(checked_add_bytes(
+        checked_element_bytes::<f32>(line_scratch.capacity(), "packed DWT line scratch")?,
+        checked_element_bytes::<f32>(spare.map_or(0, Vec::capacity), "DWT spare plane")?,
+        "packed DWT scratch",
+    )?)
 }
 
 #[cfg(test)]
