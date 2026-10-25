@@ -12,6 +12,7 @@ use crate::profile_env::{
 };
 
 use super::abi::{J2kBatchedMctRgb8PackParams, J2kMctRgb8PackParams, J2kPackParams};
+use super::decode_dispatch::{dispatch_fused_idwt_mct_rgb8, FusedIdwtStoreSource};
 use super::direct_surface_pack::checked_metal_surface_len;
 use super::{
     commit_and_wait_metal, copy_plane_samples, j2k_pack_scale_arrays, j2k_u32_param,
@@ -211,21 +212,18 @@ pub(super) fn encode_plane_stage_to_surface_in_command_buffer(
     Surface::from_metal_buffer(out_buffer, stage.dims, fmt)
 }
 
+/// The `j2k_pack_mct_rgb8` parameters of an RGB8 surface and its byte length.
 #[cfg(target_os = "macos")]
-pub(super) fn encode_mct_rgb8_to_surface_in_command_buffer(
-    runtime: &MetalRuntime,
-    command_buffer: &CommandBufferRef,
-    planes: [&Buffer; 3],
+fn mct_rgb8_pack_params(
     dims: (u32, u32),
     bit_depths: [u8; 3],
     transform: J2kWaveletTransform,
-) -> Result<Surface, Error> {
+) -> Result<(J2kMctRgb8PackParams, usize), Error> {
     let (pitch_bytes, surface_bytes) = checked_metal_surface_len(
         dims,
         PixelFormat::Rgb8.bytes_per_pixel(),
         "J2K MetalDirect MCT RGB8 output size overflow",
     )?;
-    let out_buffer = runtime.new_output_buffer(surface_bytes)?;
     let (max_values, u8_scales, _) = j2k_pack_scale_arrays([
         u32::from(bit_depths[0]),
         u32::from(bit_depths[1]),
@@ -245,7 +243,20 @@ pub(super) fn encode_mct_rgb8_to_surface_in_command_buffer(
         max_values: [max_values[0], max_values[1], max_values[2]],
         u8_scales: [u8_scales[0], u8_scales[1], u8_scales[2]],
     };
+    Ok((params, surface_bytes))
+}
 
+#[cfg(target_os = "macos")]
+pub(super) fn encode_mct_rgb8_to_surface_in_command_buffer(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    planes: [&Buffer; 3],
+    dims: (u32, u32),
+    bit_depths: [u8; 3],
+    transform: J2kWaveletTransform,
+) -> Result<Surface, Error> {
+    let (params, surface_bytes) = mct_rgb8_pack_params(dims, bit_depths, transform)?;
+    let out_buffer = runtime.new_output_buffer(surface_bytes)?;
     let signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE);
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K decode hybrid MCT RGB8 pack");
@@ -259,6 +270,26 @@ pub(super) fn encode_mct_rgb8_to_surface_in_command_buffer(
     encoder.endEncoding();
     drop(signpost);
 
+    Surface::from_metal_buffer(out_buffer, dims, PixelFormat::Rgb8)
+}
+
+/// Like [`encode_mct_rgb8_to_surface_in_command_buffer`], but synthesizes the
+/// planes' last wavelet level in the same kernel instead of reading them.
+#[cfg(target_os = "macos")]
+pub(super) fn encode_fused_idwt_mct_rgb8_to_surface_in_command_buffer(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    sources: &[FusedIdwtStoreSource<'_>; 3],
+    dims: (u32, u32),
+    bit_depths: [u8; 3],
+    transform: J2kWaveletTransform,
+) -> Result<Surface, Error> {
+    let (params, surface_bytes) = mct_rgb8_pack_params(dims, bit_depths, transform)?;
+    let out_buffer = runtime.new_output_buffer(surface_bytes)?;
+    let encoder = new_compute_command_encoder(command_buffer)?;
+    label_compute_encoder(&encoder, "J2K decode fused last level MCT RGB8 pack");
+    dispatch_fused_idwt_mct_rgb8(&encoder, runtime.decode()?, sources, &out_buffer, &params);
+    encoder.endEncoding();
     Surface::from_metal_buffer(out_buffer, dims, PixelFormat::Rgb8)
 }
 

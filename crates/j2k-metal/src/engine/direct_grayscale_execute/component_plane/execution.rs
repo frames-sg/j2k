@@ -10,7 +10,7 @@ use j2k_native::{J2kDirectStoreStep, J2kWaveletTransform};
 
 use super::{upload_cpu_decoded_coefficients, DirectComponentPlaneRequest};
 use crate::engine::{
-    abi::J2kStoreParams,
+    abi::{J2kIdwtSingleDecompositionParams, J2kStoreParams},
     decode_dispatch::{
         encode_prepared_classic_sub_band_group_to_buffer_in_encoder,
         encode_prepared_classic_sub_band_to_buffer_in_encoder,
@@ -31,8 +31,8 @@ use crate::engine::{
     },
     direct_grayscale_execute::extend_preallocated_retained_buffers,
     direct_plan_types::{
-        PreparedClassicSubBand, PreparedClassicSubBandGroup, PreparedDirectGrayscaleStep,
-        PreparedDirectIdwt, PreparedHtSubBand, PreparedHtSubBandGroup,
+        PreparedClassicSubBand, PreparedClassicSubBandGroup, PreparedDirectGrayscalePlan,
+        PreparedDirectGrayscaleStep, PreparedDirectIdwt, PreparedHtSubBand, PreparedHtSubBandGroup,
     },
     direct_profile::{elapsed_us, CpuTier1DecodeSubstageCounters, DirectHybridStageTimings},
     direct_roi::{
@@ -56,6 +56,7 @@ use self::final_plane::FinalComponentPlane;
 struct ComponentPlaneExecution<'a> {
     runtime: &'a MetalRuntime,
     encoder: &'a ComputeCommandEncoderRef,
+    plan: &'a PreparedDirectGrayscalePlan,
     tier1_mode: DirectTier1Mode,
     profile_stages: bool,
     stage_timings: &'a mut DirectHybridStageTimings,
@@ -396,6 +397,27 @@ impl ComponentPlaneExecution<'_> {
         }
     }
 
+    /// Encodes the plan's steps before `end`.
+    fn encode_steps(&mut self, end: usize) -> Result<(), Error> {
+        let plan = self.plan;
+        let mut step_idx = 0;
+        while step_idx < end {
+            if let Some(group) = plan.classic_group_starting_at(step_idx) {
+                self.encode_classic_group(group)?;
+                step_idx = group.end_step;
+                continue;
+            }
+            if let Some(group) = plan.ht_group_starting_at(step_idx) {
+                self.encode_ht_group(group)?;
+                step_idx = group.end_step;
+                continue;
+            }
+            self.encode_step(&plan.steps[step_idx], step_idx + 1 == plan.steps.len())?;
+            step_idx += 1;
+        }
+        Ok(())
+    }
+
     fn finish(self) -> Result<Buffer, Error> {
         self.final_plane.finish()
     }
@@ -405,6 +427,64 @@ pub(in crate::engine) fn encode_prepared_direct_component_plane_in_encoder(
     request: DirectComponentPlaneRequest<'_>,
     encoder: &ComputeCommandEncoderRef,
 ) -> Result<Buffer, Error> {
+    let steps = request.plan.steps.len();
+    let mut execution = component_plane_execution(request, encoder)?;
+    execution.encode_steps(steps)?;
+    execution.finish()
+}
+
+/// The last wavelet level of `plan` when a complete identity store of the
+/// whole `dimensions` plane is its only reader, so a kernel that writes the
+/// final output can replace both.
+pub(in crate::engine) fn final_identity_stored_level(
+    plan: &PreparedDirectGrayscalePlan,
+    dimensions: (u32, u32),
+) -> Option<&PreparedDirectIdwt> {
+    let [.., PreparedDirectGrayscaleStep::Idwt(idwt), PreparedDirectGrayscaleStep::Store(store)] =
+        plan.steps.as_slice()
+    else {
+        return None;
+    };
+    let window = idwt.output_window;
+    (!plan.round_centered_store
+        && store.addend == 0.0
+        && store.input_band_id == idwt.step.output_band_id
+        && (
+            store.source_x,
+            store.source_y,
+            store.output_x,
+            store.output_y,
+        ) == (0, 0, 0, 0)
+        && (store.copy_width, store.copy_height) == dimensions
+        && (store.output_width, store.output_height) == dimensions
+        && (store.input_rect.width(), store.input_rect.height()) == dimensions
+        && (window.x0, window.y0, window.x1, window.y1) == (0, 0, dimensions.0, dimensions.1))
+        .then_some(idwt)
+}
+
+/// Encodes every step of `request.plan` before `idwt`, its
+/// [`final_identity_stored_level`], and returns that level's inputs.
+pub(in crate::engine) fn encode_prepared_direct_component_plane_before_final_level(
+    request: DirectComponentPlaneRequest<'_>,
+    encoder: &ComputeCommandEncoderRef,
+    idwt: &PreparedDirectIdwt,
+) -> Result<([DirectBandSlice; 4], J2kIdwtSingleDecompositionParams), Error> {
+    let steps = request.plan.steps.len();
+    let mut execution = component_plane_execution(request, encoder)?;
+    execution.encode_steps(steps.saturating_sub(2))?;
+    let band = |id, rect| lookup_direct_band_slice_entry(&execution.bands, id, rect);
+    let ll = band(idwt.step.ll_band_id, idwt.step.ll)?;
+    let hl = band(idwt.step.hl_band_id, idwt.step.hl)?;
+    let lh = band(idwt.step.lh_band_id, idwt.step.lh)?;
+    let hh = band(idwt.step.hh_band_id, idwt.step.hh)?;
+    let params = prepared_idwt_params(idwt, idwt_input_windows_from_slices(&ll, &hl, &lh, &hh));
+    Ok(([ll, hl, lh, hh], params))
+}
+
+fn component_plane_execution<'a>(
+    request: DirectComponentPlaneRequest<'a>,
+    encoder: &'a ComputeCommandEncoderRef,
+) -> Result<ComponentPlaneExecution<'a>, Error> {
     let DirectComponentPlaneRequest {
         runtime,
         command_buffer: _,
@@ -419,9 +499,10 @@ pub(in crate::engine) fn encode_prepared_direct_component_plane_in_encoder(
         "J2K MetalDirect component band metadata",
     );
     let bands = budget.try_vec(plan.steps.len(), "J2K MetalDirect component band metadata")?;
-    let mut execution = ComponentPlaneExecution {
+    Ok(ComponentPlaneExecution {
         runtime,
         encoder,
+        plan,
         tier1_mode,
         profile_stages: metal_profile_stages_enabled(),
         stage_timings,
@@ -431,21 +512,5 @@ pub(in crate::engine) fn encode_prepared_direct_component_plane_in_encoder(
         bands,
         final_plane: FinalComponentPlane::empty(),
         round_centered_store: plan.round_centered_store,
-    };
-    let mut step_idx = 0;
-    while step_idx < plan.steps.len() {
-        if let Some(group) = plan.classic_group_starting_at(step_idx) {
-            execution.encode_classic_group(group)?;
-            step_idx = group.end_step;
-            continue;
-        }
-        if let Some(group) = plan.ht_group_starting_at(step_idx) {
-            execution.encode_ht_group(group)?;
-            step_idx = group.end_step;
-            continue;
-        }
-        execution.encode_step(&plan.steps[step_idx], step_idx + 1 == plan.steps.len())?;
-        step_idx += 1;
-    }
-    execution.finish()
+    })
 }

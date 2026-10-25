@@ -122,22 +122,15 @@ kernel void j2k_pack_rgb8(
     out[out_idx + 2] = scale_to_u8(plane2[idx], params.max_values[2], params.u8_scales[2]);
 }
 
-kernel void j2k_pack_mct_rgb8(
-    device const float *plane0 [[buffer(0)]],
-    device const float *plane1 [[buffer(1)]],
-    device const float *plane2 [[buffer(2)]],
-    device uchar *out [[buffer(3)]],
-    constant J2kMctRgb8PackParams &params [[buffer(4)]],
-    uint2 gid [[thread_position_in_grid]]
+// One pixel of `j2k_pack_mct_rgb8`, shared with the fused last-level kernels.
+inline void j2k_store_mct_rgb8_pixel(
+    float y0,
+    float y1,
+    float y2,
+    constant J2kMctRgb8PackParams &params,
+    device uchar *out,
+    uint out_idx
 ) {
-    if (gid.x >= params.width || gid.y >= params.height) {
-        return;
-    }
-
-    const uint idx = gid.y * params.width + gid.x;
-    const float y0 = plane0[idx];
-    const float y1 = plane1[idx];
-    const float y2 = plane2[idx];
     float rgb0;
     float rgb1;
     float rgb2;
@@ -154,10 +147,27 @@ kernel void j2k_pack_mct_rgb8(
         rgb2 = j2k_shift_centered_sample(centered[2], params.addends[2], true);
     }
 
-    const uint out_idx = gid.y * params.out_stride + gid.x * 3u;
     out[out_idx] = scale_to_u8(rgb0, params.max_values[0], params.u8_scales[0]);
     out[out_idx + 1] = scale_to_u8(rgb1, params.max_values[1], params.u8_scales[1]);
     out[out_idx + 2] = scale_to_u8(rgb2, params.max_values[2], params.u8_scales[2]);
+}
+
+kernel void j2k_pack_mct_rgb8(
+    device const float *plane0 [[buffer(0)]],
+    device const float *plane1 [[buffer(1)]],
+    device const float *plane2 [[buffer(2)]],
+    device uchar *out [[buffer(3)]],
+    constant J2kMctRgb8PackParams &params [[buffer(4)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    if (gid.x >= params.width || gid.y >= params.height) {
+        return;
+    }
+
+    const uint idx = gid.y * params.width + gid.x;
+    j2k_store_mct_rgb8_pixel(
+        plane0[idx], plane1[idx], plane2[idx], params, out, gid.y * params.out_stride + gid.x * 3u
+    );
 }
 
 kernel void j2k_pack_mct_rgb8_batched(

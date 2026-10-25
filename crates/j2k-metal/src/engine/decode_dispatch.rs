@@ -80,7 +80,7 @@ pub(in crate::engine) use self::ht_subband::{
 };
 use self::idwt::dispatch_fused_idwt_gray_store;
 pub(in crate::engine) use self::idwt::{
-    dispatch_fused_idwt_stacked_gray_store,
+    dispatch_fused_idwt_mct_rgb8, dispatch_fused_idwt_stacked_gray_store,
     dispatch_irreversible97_repeated_buffers_in_command_buffer_with_offsets,
     dispatch_irreversible97_repeated_buffers_in_encoder_with_offsets,
     dispatch_irreversible97_single_decomposition_buffers_in_command_buffer_with_offsets,
@@ -89,9 +89,9 @@ pub(in crate::engine) use self::idwt::{
     dispatch_reversible53_repeated_buffers_in_encoder_with_offsets,
     dispatch_reversible53_single_decomposition_buffers_in_command_buffer_with_offsets,
     dispatch_reversible53_single_decomposition_buffers_in_encoder_with_offsets,
-    fused_idwt_gray_store_supported, fused_idwt_stacked_gray_store_pipeline,
-    supports_fused_2d_idwt, FusedIdwtStoreSource, FusedStackedGrayStore, IdwtSubBandBuffers,
-    RepeatedIdwtDispatch, SingleIdwtDispatch,
+    fused_idwt_gray_store_supported, fused_idwt_mct_rgb8_supported,
+    fused_idwt_stacked_gray_store_pipeline, supports_fused_2d_idwt, FusedIdwtStoreSource,
+    FusedStackedGrayStore, IdwtSubBandBuffers, RepeatedIdwtDispatch, SingleIdwtDispatch,
 };
 pub(in crate::engine) use self::store::{
     dispatch_store_component_buffer_in_command_buffer_with_offsets,
