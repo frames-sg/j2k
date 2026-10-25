@@ -397,7 +397,12 @@ fn scatter_strip<'a, S: Simd>(
     }
 }
 
-/// Split one row into its packed halves through `line`, then lift it.
+/// Split one row into its packed halves through `line`, then lift it. An
+/// even-origin 9/7 row lifts its first [`fused_pairs`] pairs in one
+/// register-window pass, which leaves their low samples in place and their
+/// high samples in `line`; the rest is split into `line` and lifted from
+/// [`HALO_ROWS`] pairs earlier, so its window's left edge reaches no sample it
+/// keeps.
 #[expect(
     clippy::inline_always,
     reason = "the lifting kernels are specialized inside each SIMD dispatch target"
@@ -410,13 +415,41 @@ fn lift_row<S: Simd>(
     level: LevelRegion,
     reversible: bool,
 ) {
-    line.copy_from_slice(row);
-    let (low, high) = row.split_at_mut(level.low_width);
-    let (even, odd) = if level.odd_x {
-        (&mut *high, &mut *low)
+    let fused = if reversible || level.odd_x {
+        0
     } else {
-        (&mut *low, &mut *high)
+        fused_pairs(level.width)
     };
+    if fused == 0 {
+        line.copy_from_slice(row);
+        let (low, high) = row.split_at_mut(level.low_width);
+        split_pairs(line, low, high, level.odd_x);
+        lift(simd, low, high, 1, level.width, level.odd_x, reversible);
+        return;
+    }
+    let (fused_high, rest) = line.split_at_mut(fused);
+    lift_row_97(simd, row, fused_high);
+    let start = fused - HALO_ROWS;
+    let (rest_low, rest_high) = rest.split_at_mut(level.low_width - start);
+    let rest_high = &mut rest_high[..level.width - level.low_width - start];
+    split_pairs(&row[2 * start..], rest_low, rest_high, false);
+    let samples = level.width - 2 * start;
+    lift(simd, rest_low, rest_high, 1, samples, false, false);
+    let (low, high) = row.split_at_mut(level.low_width);
+    low[fused..].copy_from_slice(&rest_low[HALO_ROWS..]);
+    high[..fused].copy_from_slice(fused_high);
+    high[fused..].copy_from_slice(&rest_high[HALO_ROWS..]);
+}
+
+/// Split the interleaved `line` into its `low` and `high` samples; with
+/// `odd_origin` its first sample is high.
+#[expect(
+    clippy::inline_always,
+    reason = "the lifting kernels are specialized inside each SIMD dispatch target"
+)]
+#[inline(always)]
+fn split_pairs(line: &[f32], low: &mut [f32], high: &mut [f32], odd_origin: bool) {
+    let (even, odd) = if odd_origin { (high, low) } else { (low, high) };
     let (pairs, tail) = line.as_chunks::<2>();
     for ((even, odd), &[first, second]) in even.iter_mut().zip(odd.iter_mut()).zip(pairs) {
         *even = first;
@@ -425,7 +458,59 @@ fn lift_row<S: Simd>(
     if let ([last], Some(even)) = (tail, even.last_mut()) {
         *even = *last;
     }
-    lift(simd, low, high, 1, level.width, level.odd_x, reversible);
+}
+
+/// Pairs that [`lift_row_97`] lifts in a row of `width` samples: whole blocks
+/// of `SIMD_WIDTH` pairs, each followed by the two blocks its window reads.
+fn fused_pairs(width: usize) -> usize {
+    width.saturating_sub(4 * SIMD_WIDTH) / (2 * SIMD_WIDTH) * SIMD_WIDTH
+}
+
+/// The 9/7 lifting steps and scaling of the first `high.len()` pairs of an
+/// even-origin interleaved `row` in one pass. Each block of pairs is split into
+/// its low and high samples once, and every step takes its neighbors across
+/// blocks with `slide`; alpha and beta run a block ahead of gamma and delta,
+/// whose predict reads the next block's beta output. Low samples are stored at
+/// the start of `row`, behind the samples still to be read, and high samples
+/// in `high`. Each sample sees the operations of [`lift`].
+#[expect(
+    clippy::inline_always,
+    reason = "the lifting kernels are specialized inside each SIMD dispatch target"
+)]
+#[inline(always)]
+fn lift_row_97<S: Simd>(simd: S, row: &mut [f32], high: &mut [f32]) {
+    let split = |row: &[f32], block: usize| {
+        let samples = &row[2 * SIMD_WIDTH * block..][..2 * SIMD_WIDTH];
+        let (first, second) = samples.split_at(SIMD_WIDTH);
+        f32x8::from_slice(simd, first).deinterleave(f32x8::from_slice(simd, second))
+    };
+    let [alpha, beta, gamma, delta] = [ALPHA, BETA, GAMMA, DELTA].map(|c| f32x8::splat(simd, c));
+    // High sample `k` lies between low samples `k` and `k + 1`.
+    let predict =
+        |low: f32x8<S>, next: f32x8<S>, high, c| (low + low.slide::<1>(next)).mul_add(c, high);
+    let update =
+        |previous: f32x8<S>, high, low, c| (previous.slide::<7>(high) + high).mul_add(c, low);
+    // T.800 F.4.7: low sample 0 mirrors onto high sample 0, which a block
+    // rotated by one lane holds in its last lane.
+    let mirror = |high: f32x8<S>| high.slide::<1>(high);
+    let (first_low, first_high) = split(row, 0);
+    let (mut low0, mut high0) = split(row, 1);
+    let mut high1 = predict(first_low, low0, first_high, alpha);
+    let mut low1 = update(mirror(high1), high1, first_low, beta);
+    // Lane 0 of the first gamma output reads only lanes 0 and 1 of `low1`.
+    let mut high2 = mirror(predict(low1, low1, high1, gamma));
+    let (low_scale, high_scale) = (f32x8::splat(simd, INV_KAPPA), f32x8::splat(simd, KAPPA));
+    for (index, high_out) in high.as_chunks_mut::<SIMD_WIDTH>().0.iter_mut().enumerate() {
+        let (next_low0, next_high0) = split(row, index + 2);
+        let next_high1 = predict(low0, next_low0, high0, alpha);
+        let next_low1 = update(high1, next_high1, low0, beta);
+        let block_high2 = predict(low1, next_low1, high1, gamma);
+        let block_low2 = update(high2, block_high2, low1, delta);
+        (block_low2 * low_scale).store(&mut row[index * SIMD_WIDTH..]);
+        (block_high2 * high_scale).store(high_out);
+        (low0, high0, high1, low1, high2) =
+            (next_low0, next_high0, next_high1, next_low1, block_high2);
+    }
 }
 
 /// Lift `columns` parallel lines held as their low-pass rows `low` and their

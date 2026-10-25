@@ -5,6 +5,10 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CPU 9/7 encodes lift each even-origin row of the forward DWT in one
+  register-window pass, splitting each block of samples into its low and high
+  samples once, running all four lifting steps and the scaling in registers,
+  and writing the low samples back in place. Output is unchanged.
 - CPU encodes lift the first forward DWT level out of place in bands of 16
   rows when a spare plane fits the memory cap, so each band's column strips and
   rows are lifted while cached instead of in two passes over the whole plane.
