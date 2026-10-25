@@ -101,9 +101,15 @@ pub(super) fn try_encode_code_block_set_view_in_workspace(
             what: "HTJ2K block output exceeded its checked bound",
         });
     }
-    let mut data = try_untracked_vec(combined_len, "HTJ2K block output")?;
-    data.extend_from_slice(&cleanup);
-    data.extend_from_slice(&refinement.data);
+    // A cleanup-only block's segment is already its exact-size payload.
+    let data = if refinement.data.is_empty() {
+        cleanup
+    } else {
+        let mut data = try_untracked_vec(combined_len, "HTJ2K block output")?;
+        data.extend_from_slice(&cleanup);
+        data.extend_from_slice(&refinement.data);
+        data
+    };
 
     Ok(EncodedCodeBlock {
         data,
