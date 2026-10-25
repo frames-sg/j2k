@@ -545,7 +545,7 @@ fn classic_workspace_cap_can_release_an_oversized_coefficient_slab() {
         })
         .collect::<Vec<_>>();
     let sub_band = test_sub_band(128, 32);
-    let parameters = super::ClassicParallelParameters {
+    let parameters = super::ClassicJobParameters {
         sub_band_type: crate::J2kSubBandType::LowLow,
         style: crate::J2kCodeBlockStyle {
             selective_arithmetic_coding_bypass: false,

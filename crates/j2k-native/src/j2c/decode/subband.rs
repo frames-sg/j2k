@@ -23,6 +23,8 @@ mod placement;
 #[cfg(feature = "parallel")]
 mod tile_parallel;
 use self::classic::decode_sub_band_classic_blocks;
+#[cfg(feature = "parallel")]
+use self::classic::ClassicJobParameters;
 use self::ht::{decode_sub_band_ht_blocks, decode_sub_band_ht_blocks_i64};
 #[cfg(all(feature = "parallel", not(test)))]
 use self::parallel::{copy_decoded_classic_blocks_to_sub_band, copy_decoded_ht_blocks_to_sub_band};
@@ -33,7 +35,7 @@ pub(super) use self::parallel::{
 #[cfg(feature = "parallel")]
 use self::parallel::{
     decode_classic_sub_band_blocks_parallel, decode_ht_sub_band_blocks_parallel,
-    release_coefficient_slab, ClassicParallelParameters, HtParallelParameters,
+    release_coefficient_slab, HtParallelParameters,
 };
 use self::pending::{collect_pending_classic_blocks, collect_pending_ht_blocks};
 pub(in crate::j2c::decode) use self::pending::{count_classic_code_blocks, count_ht_code_blocks};

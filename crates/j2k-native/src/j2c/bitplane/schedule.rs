@@ -74,8 +74,7 @@ fn decode_inner_with_observer<O: J2kDecodeObserver>(
     )?;
     push_preallocated(&mut bp_buffers.segment_coding_passes, coding_passes)?;
 
-    let is_normal_mode =
-        !ctx.style.selective_arithmetic_coding_bypass && !ctx.style.termination_on_each_pass;
+    let is_normal_mode = ctx.style.single_codeword_segment();
 
     if is_normal_mode {
         // Only one termination per code block, so we can just decode the

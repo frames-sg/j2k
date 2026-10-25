@@ -15,11 +15,75 @@ use super::{
 use crate::backend::{j2k_code_block_reconstruction, j2k_sub_band_reconstruction};
 use crate::j2c::build::CodeBlockCoding;
 
+use crate::{J2kCodeBlockSegment, J2kCodeBlockStyle, J2kSubBandType};
+
 #[cfg(feature = "parallel")]
 use super::{
     copy_decoded_classic_blocks_to_sub_band, decode_classic_sub_band_blocks_parallel,
-    release_coefficient_slab, ClassicParallelParameters,
+    release_coefficient_slab,
 };
+
+/// A sub-band's share of each classic code-block decode job.
+#[derive(Clone, Copy)]
+pub(super) struct ClassicJobParameters {
+    pub(super) sub_band_type: J2kSubBandType,
+    pub(super) style: J2kCodeBlockStyle,
+    pub(super) strict: bool,
+    pub(super) total_bitplanes: u8,
+    pub(super) roi_shift: u8,
+    pub(super) dequantization_step: f32,
+    pub(super) irreversible_midpoint: bool,
+}
+
+impl ClassicJobParameters {
+    /// The decode job for one code block of the sub-band, whose payload
+    /// `data` splits into `segments`, with rows `output_stride` samples apart.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the block's own job fields are passed explicitly, as the job names them"
+    )]
+    pub(super) fn job<'a>(
+        self,
+        data: &'a [u8],
+        segments: &'a [J2kCodeBlockSegment],
+        width: u32,
+        height: u32,
+        output_stride: usize,
+        missing_bit_planes: u8,
+        number_of_coding_passes: u8,
+    ) -> J2kCodeBlockDecodeJob<'a> {
+        J2kCodeBlockDecodeJob {
+            data,
+            segments,
+            width,
+            height,
+            output_stride,
+            missing_bit_planes,
+            number_of_coding_passes,
+            total_bitplanes: self.total_bitplanes,
+            roi_shift: self.roi_shift,
+            sub_band_type: self.sub_band_type,
+            style: self.style,
+            strict: self.strict,
+            dequantization_step: self.dequantization_step,
+        }
+    }
+
+    /// Decode `job` with the CPU decoder, reconstructing at the midpoint when
+    /// the sub-band asks for it.
+    pub(super) fn decode(
+        self,
+        job: J2kCodeBlockDecodeJob<'_>,
+        output: &mut [f32],
+        workspace: &mut J2kCodeBlockDecodeWorkspace,
+    ) -> Result<()> {
+        if self.irreversible_midpoint {
+            decode_j2k_code_block_scalar_with_workspace_midpoint(job, output, workspace)
+        } else {
+            decode_j2k_code_block_scalar_with_workspace(job, output, workspace)
+        }
+    }
+}
 
 #[expect(
     clippy::cast_precision_loss,
@@ -60,8 +124,17 @@ pub(super) fn decode_sub_band_classic_blocks(
         );
     }
 
-    let (job_sub_band_type, job_style) =
+    let (sub_band_type, style) =
         classic_decode_job_parameters(sub_band.sub_band_type, component_info);
+    let parameters = ClassicJobParameters {
+        sub_band_type,
+        style,
+        strict: header.strict,
+        total_bitplanes: num_bitplanes,
+        roi_shift: component_info.roi_shift,
+        dequantization_step,
+        irreversible_midpoint,
+    };
     if let Some(decoder) = decoder.as_deref_mut() {
         let mut budget = DecodeAllocationBudget::for_storage(storage)?;
         let pending_blocks = collect_pending_classic_blocks(
@@ -81,21 +154,15 @@ pub(super) fn decode_sub_band_classic_blocks(
             batch_jobs.push(J2kCodeBlockBatchJob {
                 output_x,
                 output_y,
-                code_block: J2kCodeBlockDecodeJob {
-                    data: &pending.combined_data,
-                    segments: &pending.segments,
-                    width: pending.width,
-                    height: pending.height,
-                    output_stride: sub_band.storage_rect.width() as usize,
-                    missing_bit_planes: pending.missing_bit_planes,
-                    number_of_coding_passes: pending.number_of_coding_passes,
-                    total_bitplanes: num_bitplanes,
-                    roi_shift: component_info.roi_shift,
-                    sub_band_type: job_sub_band_type,
-                    style: job_style,
-                    strict: header.strict,
-                    dequantization_step,
-                },
+                code_block: parameters.job(
+                    &pending.combined_data,
+                    &pending.segments,
+                    pending.width,
+                    pending.height,
+                    sub_band.storage_rect.width() as usize,
+                    pending.missing_bit_planes,
+                    pending.number_of_coding_passes,
+                ),
             });
         }
 
@@ -157,12 +224,7 @@ pub(super) fn decode_sub_band_classic_blocks(
             )? {
                 continue;
             }
-            let decode = if irreversible_midpoint {
-                decode_j2k_code_block_scalar_with_workspace_midpoint
-            } else {
-                decode_j2k_code_block_scalar_with_workspace
-            };
-            decode(job.code_block, output_slice, &mut scalar_workspace)?;
+            parameters.decode(job.code_block, output_slice, &mut scalar_workspace)?;
         }
         return Ok(());
     }
@@ -212,15 +274,7 @@ pub(super) fn decode_sub_band_classic_blocks(
             let decoded_blocks = decode_classic_sub_band_blocks_parallel(
                 &pending_blocks,
                 sub_band,
-                ClassicParallelParameters {
-                    sub_band_type: job_sub_band_type,
-                    style: job_style,
-                    strict: header.strict,
-                    total_bitplanes: num_bitplanes,
-                    roi_shift: component_info.roi_shift,
-                    dequantization_step,
-                    irreversible_midpoint,
-                },
+                parameters,
                 &mut tile_ctx.parallel_coefficients,
                 &mut storage.structural_workspace_bytes,
                 #[cfg(test)]
