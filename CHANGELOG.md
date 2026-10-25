@@ -5,6 +5,10 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- The Metal Auto host-output encode accelerator reports
+  `declines_every_stage` as `true` when every remaining stage hook would
+  decline, so those encodes take the CPU's stage-free paths. Routing is
+  unchanged. Output is unchanged.
 - `J2kEncodeStageAccelerator::declines_every_stage`, defaulting to `false`, lets
   an accelerator permit native encode to skip the remaining per-stage hooks of
   the current encode once the whole-tile hooks have declined, and the buffers
