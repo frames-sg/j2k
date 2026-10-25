@@ -5,6 +5,10 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CPU decodes store a whole-image component whose samples need no shift by
+  swapping the IDWT output's allocation with the component plane instead of
+  copying the samples. Reused decoders keep the same allocations, rotated
+  between the two. Output is unchanged.
 - CPU banded inverse wavelet transforms on the pool hand out their strips
   from a queue, so each worker takes the next strip when it finishes the last
   instead of waiting for a wave of equal strips. Each strip reconstructs its

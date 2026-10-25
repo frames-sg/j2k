@@ -174,6 +174,20 @@ pub(super) fn store<'a>(
             shift.copy(input_row, output_row);
             output_row.len()
         };
+        // An unshifted whole-plane copy is a buffer swap: the IDWT output
+        // becomes the plane, and the plane's allocation the next IDWT output.
+        if matches!(shift, SampleShift::Copy)
+            && (skip_x, skip_y, output_x, output_y) == (0, 0, 0, 0)
+            && input_width == output_width
+            && channel_data
+                .container
+                .swap_samples(&mut idwt_output.coefficients)
+        {
+            tile_ctx.stored_plane_samples = tile_ctx
+                .stored_plane_samples
+                .saturating_add(channel_data.container.truncated().len());
+            return Ok(());
+        }
 
         #[cfg(feature = "parallel")]
         if parallel && input_width * input_rows >= PARALLEL_STORE_SAMPLES {
