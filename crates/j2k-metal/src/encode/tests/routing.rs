@@ -12,8 +12,10 @@ fn hybrid_encode_upload_owns_bytes_after_caller_storage_is_reused() {
     let session = crate::MetalBackendSession::system_default().expect("Metal session");
     let expected = vec![3u8, 5, 8, 13, 21];
     let mut caller_bytes = expected.clone();
-    let buffer = super::super::copy_padded_metal_buffer_from_bytes(&session, &caller_bytes)
-        .expect("copy hybrid encode input");
+    let mut staging = Vec::new();
+    let buffer =
+        super::super::copy_padded_metal_buffer_from_bytes(&session, &caller_bytes, &mut staging)
+            .expect("copy hybrid encode input");
 
     caller_bytes.fill(0xff);
     drop(caller_bytes);

@@ -86,16 +86,17 @@ pub(super) fn host_output_encode_options(
 }
 
 #[cfg(target_os = "macos")]
+/// Copies `bytes` into a pooled shared buffer whose owner joins `staging`; the
+/// caller recycles `staging` once no GPU work reads the buffer.
 pub(super) fn copy_padded_metal_buffer_from_bytes(
     session: &crate::MetalBackendSession,
     bytes: &[u8],
+    staging: &mut Vec<crate::buffer_pool::PooledBuffer>,
 ) -> Result<Buffer, crate::Error> {
     if bytes.is_empty() {
         return Err(crate::Error::MetalKernel {
             message: "J2K Metal hybrid encode input is empty".to_string(),
         });
     }
-    j2k_metal_support::checked_shared_buffer_with_slice(session.device(), bytes).map_err(|source| {
-        crate::error::metal_kernel_support_error("J2K Metal hybrid encode input", source)
-    })
+    crate::engine::copied_session_shared_buffer(session, bytes, staging)
 }

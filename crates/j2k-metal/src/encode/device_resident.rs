@@ -146,7 +146,7 @@ fn try_encode_lossless_tile_device_resident_to_metal_buffer_with_report(
         }
         J2kBlockCodingMode::HighThroughput => {
             let resident_tier1 =
-                compute::encode_ht_prepared_device_code_blocks_resident(session, prepared)?;
+                compute::encode_ht_prepared_device_code_blocks_resident(session, prepared, false)?;
             compute::encode_lossless_codestream_buffer_from_resident_tier1(
                 session,
                 &resident_tier1,

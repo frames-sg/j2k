@@ -89,7 +89,7 @@ pub(crate) use self::types::{
     J2kLosslessCodestreamAssemblyJob, J2kLosslessCodestreamBlockCodingMode,
     J2kLosslessDeviceBatchPrepareItem, J2kLosslessDeviceCodeBlock, J2kLosslessDevicePrepareJob,
     J2kPendingResidentLosslessCodestreamBatch, J2kPreparedLosslessDeviceCodeBlocks,
-    J2kResidentLosslessHtCodeBlocks, J2kResidentLosslessTier1CodeBlocks,
+    J2kResidentHtEncodedBlock, J2kResidentLosslessHtCodeBlocks, J2kResidentLosslessTier1CodeBlocks,
     J2kResidentPacketizationEncodeJob, J2kResidentPacketizationResolution,
     J2kResidentPacketizationSubband, ResidentLosslessTier1Metal,
 };

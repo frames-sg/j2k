@@ -5,6 +5,11 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- Metal lossless HTJ2K host encodes reuse the thread's default Metal session,
+  take their buffers from its pools, stage the input in a pooled buffer and read
+  the encoded blocks in place, so repeated encodes no longer create a session or
+  copy the output. A thread that has encoded keeps those pooled buffers, within
+  the existing pool caps. Output is unchanged.
 - CPU decodes of colour images run the inverse multi-component transform and
   the rounding of 9/7 output to integers together in cache-sized chunks,
   instead of making three more passes over the planes. Planes of at least

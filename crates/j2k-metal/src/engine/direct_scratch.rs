@@ -5,7 +5,7 @@ use std::mem::size_of;
 
 use crate::metal_types::Buffer;
 
-use super::MetalRuntime;
+use super::{copied_recyclable_shared_slice_buffer, with_runtime_for_session, MetalRuntime};
 use crate::{buffer_pool::PooledBuffer, Error};
 
 pub(super) struct DirectScratchBuffer {
@@ -79,4 +79,28 @@ pub(super) fn recycle_shared_buffers(
         runtime.recycle_shared_buffer(buffer)?;
     }
     Ok(())
+}
+
+/// Copies `bytes` into a pooled shared buffer of `session`'s runtime and adds
+/// its owner to `recyclable_shared_buffers`, for
+/// [`recycle_session_shared_buffers`] once no GPU work reads it.
+#[cfg(target_os = "macos")]
+pub(crate) fn copied_session_shared_buffer(
+    session: &crate::MetalBackendSession,
+    bytes: &[u8],
+    recyclable_shared_buffers: &mut Vec<PooledBuffer>,
+) -> Result<Buffer, Error> {
+    with_runtime_for_session(session, |runtime| {
+        copied_recyclable_shared_slice_buffer(runtime, bytes, recyclable_shared_buffers)
+    })
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn recycle_session_shared_buffers(
+    session: &crate::MetalBackendSession,
+    recyclable_shared_buffers: Vec<PooledBuffer>,
+) -> Result<(), Error> {
+    with_runtime_for_session(session, |runtime| {
+        recycle_shared_buffers(runtime, recyclable_shared_buffers)
+    })
 }
