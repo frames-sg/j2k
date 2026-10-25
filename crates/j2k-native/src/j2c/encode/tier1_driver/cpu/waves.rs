@@ -149,9 +149,10 @@ pub(in crate::j2c::encode::tier1_driver) fn encode_classic_cpu_results_accounted
     encoded.resize_with(jobs.len(), || None);
 
     let parallel = cfg!(feature = "parallel");
-    let wave_size = cpu_worker_limit(jobs.len(), parallel).max(1);
+    let workers = cpu_worker_limit(jobs.len(), parallel).max(1);
     let mut retained_payload_bytes = 0usize;
-    for (job_wave, slot_wave) in jobs.chunks(wave_size).zip(encoded.chunks_mut(wave_size)) {
+    let mut start = 0;
+    while start < jobs.len() {
         let wave_fixed = [
             fixed[0],
             fixed[1],
@@ -160,7 +161,9 @@ pub(in crate::j2c::encode::tier1_driver) fn encode_classic_cpu_results_accounted
             outer_bytes,
             retained_payload_bytes,
         ];
-        check_classic_wave(job_wave, tracker, &wave_fixed, wave_size)?;
+        let end = start + longest_classic_wave(&jobs[start..], workers, tracker, &wave_fixed)?;
+        let (job_wave, slot_wave) = (&jobs[start..end], &mut encoded[start..end]);
+        start = end;
 
         #[cfg(feature = "parallel")]
         if parallel {
@@ -195,6 +198,30 @@ pub(in crate::j2c::encode::tier1_driver) fn encode_classic_cpu_results_accounted
         )?;
     }
     Ok(encoded)
+}
+
+/// The longest prefix of `jobs`, doubling from one block per worker, whose
+/// worst-case frontier fits the cap. Each wave ends at a barrier, so fewer and
+/// longer waves leave workers idle less often on unequal blocks and cores.
+fn longest_classic_wave(
+    jobs: &[J2kTier1CodeBlockEncodeJob<'_>],
+    workers: usize,
+    tracker: &mut Tier1PhaseTracker<'_, '_>,
+    fixed_and_retained_output: &[usize],
+) -> NativeEncodePipelineResult<usize> {
+    let mut len = workers.min(jobs.len());
+    check_classic_wave(&jobs[..len], tracker, fixed_and_retained_output, workers)?;
+    while len < jobs.len() {
+        let next = len.saturating_mul(2).min(jobs.len());
+        match check_classic_wave(&jobs[..next], tracker, fixed_and_retained_output, workers) {
+            Ok(_) => len = next,
+            Err(NativeEncodePipelineError::Typed(crate::EncodeError::AllocationTooLarge {
+                ..
+            })) => break,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(len)
 }
 
 fn try_fill_ht_workspaces(
@@ -363,6 +390,40 @@ mod tests {
             assert_eq!(actual.num_zero_bitplanes, expected.num_zero_bitplanes);
             assert_eq!(actual.ht_cleanup_length, expected.ht_cleanup_length);
             assert_eq!(actual.ht_refinement_length, expected.ht_refinement_length);
+        }
+    }
+
+    #[test]
+    fn classic_waves_double_while_their_frontier_fits_the_cap() {
+        let coefficients = [1_i32; 16];
+        let jobs = [J2kTier1CodeBlockEncodeJob {
+            coefficients: &coefficients,
+            width: 4,
+            height: 4,
+            sub_band_type: crate::J2kSubBandType::LowLow,
+            total_bitplanes: 1,
+            style: crate::j2c::encode::api_helpers::default_public_code_block_style(),
+        }; 5];
+        let worker =
+            bitplane_encode::classic_worker_allocation(4, 4, 1).expect("worker allocation");
+        // Rows: workers, blocks whose output and running scratch fit, expected wave.
+        for (workers, fitting, expected) in [
+            (1, 1, 1),
+            (1, 3, 2),
+            (1, 4, 4),
+            (1, 5, 5),
+            (2, 2, 2),
+            (2, 3, 2),
+            (2, 5, 5),
+            (5, 5, 5),
+        ] {
+            let cap = fitting * worker.output_bytes + workers.min(fitting) * worker.scratch_bytes;
+            let session = NativeEncodeSession::try_with_cap(NativeEncodeRetainedInput::none(), cap)
+                .expect("session");
+            let mut tracker = Tier1PhaseTracker::new(&session, 0);
+            let actual = longest_classic_wave(&jobs, workers, &mut tracker, &[])
+                .expect("one worker wave fits");
+            assert_eq!(actual, expected, "{workers} workers, {fitting} fitting");
         }
     }
 

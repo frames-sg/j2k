@@ -5,6 +5,11 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CPU classic Part 1 encodes run Tier-1 code-block coding in the longest
+  waves whose worst-case output and worker scratch fit the memory cap,
+  doubling from one block per worker, instead of always one block per worker.
+  Every wave ends at a barrier, so the short waves left workers idle at each
+  of several hundred barriers per image. Output is unchanged.
 - Metal fallback decodes of tiled images store each tile on the CPU instead of
   copying the whole output plane to the GPU and back for every tile and
   component, and keeping each copy until the decode ends. Stores that fill the

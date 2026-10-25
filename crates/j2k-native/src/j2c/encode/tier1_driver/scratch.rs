@@ -50,7 +50,6 @@ pub(super) fn check_classic_wave(
                 scratch_bytes: plan.scratch_bytes,
             })
         }),
-        jobs.len(),
         active_worker_limit,
         tracker,
         fixed_and_retained_output,
@@ -76,7 +75,6 @@ pub(super) fn check_ht_wave(
                 scratch_bytes: plan.scratch_bytes,
             })
         }),
-        jobs.len(),
         active_worker_limit,
         tracker,
         fixed_and_retained_output,
@@ -96,41 +94,38 @@ pub(super) fn cpu_worker_limit(job_count: usize, parallel: bool) -> usize {
     1
 }
 
+/// Every job's output stays live, but a job's scratch is freed when it
+/// finishes and at most `active_worker_limit` jobs run at once.
 fn check_worker_wave(
     plans: impl IntoIterator<Item = EncodeResult<WorkerAllocation>>,
-    job_count: usize,
     active_worker_limit: usize,
     tracker: &mut Tier1PhaseTracker<'_, '_>,
     fixed_and_retained_output: &[usize],
     what: &'static str,
 ) -> NativeEncodePipelineResult<WorkerFrontier> {
-    if job_count > active_worker_limit {
-        return Err(EncodeError::InternalInvariant {
-            what: "Tier-1 worker wave exceeds the active-worker limit",
-        }
-        .into());
-    }
-    let frontier = plans.into_iter().try_fold(
-        WorkerFrontier {
-            output_bytes: 0,
-            scratch_bytes: 0,
-        },
-        |frontier, plan| {
-            let plan = plan?;
-            Ok::<WorkerFrontier, EncodeError>(WorkerFrontier {
-                output_bytes: checked_add_bytes(
-                    frontier.output_bytes,
-                    plan.output_bytes,
-                    "Tier-1 worker-wave output bound",
-                )?,
-                scratch_bytes: checked_add_bytes(
-                    frontier.scratch_bytes,
-                    plan.scratch_bytes,
-                    "Tier-1 worker-wave scratch bound",
-                )?,
-            })
-        },
-    )?;
+    let (output_bytes, scratch_sum, scratch_max) =
+        plans
+            .into_iter()
+            .try_fold((0, 0, 0), |(output, scratch, largest), plan| {
+                let plan = plan?;
+                Ok::<_, EncodeError>((
+                    checked_add_bytes(
+                        output,
+                        plan.output_bytes,
+                        "Tier-1 worker-wave output bound",
+                    )?,
+                    checked_add_bytes(
+                        scratch,
+                        plan.scratch_bytes,
+                        "Tier-1 worker-wave scratch bound",
+                    )?,
+                    usize::max(largest, plan.scratch_bytes),
+                ))
+            })?;
+    let frontier = WorkerFrontier {
+        output_bytes,
+        scratch_bytes: scratch_sum.min(scratch_max.saturating_mul(active_worker_limit)),
+    };
     tracker.check(
         fixed_and_retained_output
             .iter()
