@@ -11,9 +11,10 @@ use crate::profile_env::{
 
 use super::abi::{
     J2kForwardDwt53BatchedParams, J2kForwardDwt53Params, J2kForwardIctParams, J2kForwardRctParams,
-    J2kLosslessCoefficientJob, J2kLosslessDeinterleaveParams, J2kMctStatus,
-    J2kPacketPayloadCopyParams, J2kQuantizeSubbandParams, J2K_MCT_STATUS_OK,
-    PACKET_PAYLOAD_COPY_BYTES_PER_STRIPE, PACKET_PAYLOAD_COPY_STRIPES_PER_JOB,
+    J2kFusedDwt53Band, J2kFusedDwt53LevelParams, J2kLosslessCoefficientJob,
+    J2kLosslessDeinterleaveParams, J2kMctStatus, J2kPacketPayloadCopyParams,
+    J2kQuantizeSubbandParams, J2K_MCT_STATUS_OK, PACKET_PAYLOAD_COPY_BYTES_PER_STRIPE,
+    PACKET_PAYLOAD_COPY_STRIPES_PER_JOB,
 };
 use super::forward_transform::{
     active_forward_dwt53_buffers, dispatch_forward_dwt53_batched_pass, dispatch_forward_dwt53_pass,
@@ -35,6 +36,7 @@ mod batch;
 mod batch_item;
 mod commands;
 mod forward_encode;
+mod fused;
 mod single;
 mod sizes;
 
@@ -45,11 +47,13 @@ pub(in crate::engine) use self::commands::{
     dispatch_forward_dwt53_components_split_profile, dispatch_forward_dwt53_on_buffers,
     dispatch_forward_dwt53_on_buffers_split_profile, dispatch_forward_rct_on_buffers,
     dispatch_lossless_deinterleave, dispatch_lossless_deinterleave_rct_rgb8,
-    dispatch_lossless_extract_coefficients, lossless_deinterleave_rct_rgb8_supported,
-    ForwardDwt53ComponentsDispatch, ForwardDwt53SplitProfile,
+    dispatch_lossless_extract_coefficients, lossless_deinterleave_params,
+    lossless_deinterleave_rct_rgb8_supported, ForwardDwt53ComponentsDispatch,
+    ForwardDwt53SplitProfile,
 };
 pub(crate) use self::forward_encode::{
     encode_forward_ict, encode_forward_rct, encode_quantize_subband,
 };
+use self::fused::{forward_dwt53_levels, prepare_fused_lossless_device_code_blocks};
 pub(crate) use self::single::prepare_lossless_device_code_blocks;
 pub(in crate::engine) use self::sizes::{lossless_prepare_sizes, J2kLosslessPrepareSizes};

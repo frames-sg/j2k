@@ -5,6 +5,11 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- Metal lossless single-tile encodes run the RCT and each 5/3 wavelet level in
+  one dispatch that lifts tiles in threadgroup memory and writes the sub-bands
+  straight into their code blocks, instead of separate deinterleave, vertical,
+  horizontal and coefficient-extract passes over full-size planes. Only two
+  quarter-size LL planes are allocated. Output is unchanged.
 - The Metal component-plane and single-plane decode executions turn a decoded
   group's members into band slices through one helper instead of five copies of
   the same loop. Output is unchanged.

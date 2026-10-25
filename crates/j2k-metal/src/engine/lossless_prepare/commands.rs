@@ -67,15 +67,11 @@ pub(in crate::engine) fn dispatch_batched_packet_payload_copy(
     Ok(true)
 }
 
+/// The input's byte offset and the sample layout the deinterleave kernels read.
 #[cfg(target_os = "macos")]
-pub(in crate::engine) fn dispatch_lossless_deinterleave(
-    runtime: &MetalRuntime,
-    command_buffer: &CommandBufferRef,
+pub(in crate::engine) fn lossless_deinterleave_params(
     job: J2kLosslessDevicePrepareJob<'_>,
-    plane0: &Buffer,
-    plane1: &Buffer,
-    plane2: &Buffer,
-) -> Result<(), Error> {
+) -> Result<(u64, J2kLosslessDeinterleaveParams), Error> {
     let input_byte_offset =
         u64::try_from(job.input_byte_offset).map_err(|_| Error::MetalKernel {
             message: "J2K Metal resident encode input offset exceeds u64".to_string(),
@@ -102,6 +98,19 @@ pub(in crate::engine) fn dispatch_lossless_deinterleave(
         sample_offset,
         signed_samples: 0,
     };
+    Ok((input_byte_offset, params))
+}
+
+#[cfg(target_os = "macos")]
+pub(in crate::engine) fn dispatch_lossless_deinterleave(
+    runtime: &MetalRuntime,
+    command_buffer: &CommandBufferRef,
+    job: J2kLosslessDevicePrepareJob<'_>,
+    plane0: &Buffer,
+    plane1: &Buffer,
+    plane2: &Buffer,
+) -> Result<(), Error> {
+    let (input_byte_offset, params) = lossless_deinterleave_params(job)?;
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K coefficient prep deinterleave");
     encoder.setComputePipelineState(&runtime.encode()?.lossless_deinterleave_to_planes);
@@ -130,32 +139,7 @@ pub(in crate::engine) fn dispatch_lossless_deinterleave_rct_rgb8(
     plane2: &Buffer,
     status_buffer: &Buffer,
 ) -> Result<(), Error> {
-    let input_byte_offset =
-        u64::try_from(job.input_byte_offset).map_err(|_| Error::MetalKernel {
-            message: "J2K Metal resident encode input offset exceeds u64".to_string(),
-        })?;
-    let src_stride = u32::try_from(job.input_pitch_bytes).map_err(|_| Error::MetalKernel {
-        message: "J2K Metal resident encode input pitch exceeds u32".to_string(),
-    })?;
-    let sample_offset = if job.bit_depth == 0 || job.bit_depth > 16 {
-        return Err(Error::MetalKernel {
-            message: "J2K Metal resident encode bit depth must be 1-16".to_string(),
-        });
-    } else {
-        1u32 << (u32::from(job.bit_depth) - 1)
-    };
-    let params = J2kLosslessDeinterleaveParams {
-        src_width: job.input_width,
-        src_height: job.input_height,
-        src_stride,
-        dst_width: job.output_width,
-        dst_height: job.output_height,
-        components: u32::from(job.component_count),
-        bytes_per_sample: u32::from(job.bytes_per_sample),
-        bit_depth: u32::from(job.bit_depth),
-        sample_offset,
-        signed_samples: 0,
-    };
+    let (input_byte_offset, params) = lossless_deinterleave_params(job)?;
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K coefficient prep deinterleave + RCT");
     encoder.setComputePipelineState(&runtime.encode()?.lossless_deinterleave_rct_rgb8_to_planes);
