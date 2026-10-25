@@ -190,6 +190,48 @@ fn distribution_hash(distribution: &HtCleanupEncodeDistribution) -> u64 {
     hash_u64(hash, distribution.mag_sign_encoded_samples)
 }
 
+/// Sparse blocks: long runs of zero quad pairs between isolated samples at
+/// row starts, row ends, lone end quads and under nonzero context.
+#[test]
+#[expect(clippy::cast_possible_wrap, reason = "small synthetic samples")]
+fn sparse_cleanup_bytes_are_exact() {
+    for (width, height, every, expected) in [
+        (
+            64_u32,
+            64_u32,
+            37_u32,
+            (245_usize, 6_422_859_581_638_686_301_u64),
+        ),
+        (61, 63, 53, (167, 12_432_432_980_284_615_597)),
+        (64, 8, 9, (87, 4_829_980_474_956_717_788)),
+        (5, 64, 23, (32, 15_320_953_921_182_336_430)),
+        (64, 64, 401, (31, 14_375_321_875_124_059_892)),
+    ] {
+        let coefficients = (0..width * height)
+            .map(|index| {
+                if index % every == 0 {
+                    (index % 29) as i32 - 13
+                } else {
+                    0
+                }
+            })
+            .collect::<Vec<_>>();
+        let encoded = encode_code_block_with_passes(&coefficients, width, height, 8, 1)
+            .expect("encode sparse block");
+        let hash = encoded
+            .data
+            .iter()
+            .fold(0xcbf2_9ce4_8422_2325, |hash, &byte| {
+                hash_u64(hash, u64::from(byte))
+            });
+        assert_eq!(
+            (encoded.data.len(), hash),
+            expected,
+            "{width}x{height}, one sample in {every}"
+        );
+    }
+}
+
 #[test]
 fn representative_cleanup_distribution_is_exact() {
     let coefficients: Vec<i32> = (0..8 * 6)

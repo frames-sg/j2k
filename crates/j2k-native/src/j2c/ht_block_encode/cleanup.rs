@@ -136,6 +136,17 @@ fn try_encode_cleanup_segment_from_source<S: CleanupCoefficientSource + ?Sized>(
     let mut x = 0usize;
 
     while x < width {
+        // A zero quad pair under zero context codes one MEL zero per quad: its
+        // CxtVLC codewords, UVLC and MagSgn bits are empty, and the marker
+        // rows it would write are still zero in the first row pair.
+        if c_q0 == 0 && rows.pair_is_zero(x) {
+            mel.encode(false).map_err(ht_cleanup_invariant)?;
+            if x + 2 < width {
+                mel.encode(false).map_err(ht_cleanup_invariant)?;
+            }
+            x += 4;
+            continue;
+        }
         encode_first_quad_pair(
             FirstQuadPairRequest {
                 rows: &rows,
@@ -178,6 +189,28 @@ fn try_encode_cleanup_segment_from_source<S: CleanupCoefficientSource + ?Sized>(
             .map_err(ht_cleanup_invariant)?;
         x = 0;
         while x < width {
+            // Below the first row pair the second quad's context also comes
+            // from the markers above; the marker rows advance as for any
+            // quad with rho = 0.
+            if c_q0 == 0 && rows.pair_is_zero(x) && cx_val[lcxp + 1] | cx_val[lcxp + 2] == 0 {
+                mel.encode(false).map_err(ht_cleanup_invariant)?;
+                if x + 2 < width {
+                    mel.encode(false).map_err(ht_cleanup_invariant)?;
+                    e_val[lep + 1] = 0;
+                    max_e = i32::from(e_val[lep + 2].max(e_val[lep + 3])) - 1;
+                    e_val[lep + 2] = 0;
+                    c_q0 = usize::from(cx_val[lcxp + 3]) << 2;
+                    lep += 2;
+                    lcxp += 2;
+                } else {
+                    max_e = i32::from(e_val[lep + 1].max(e_val[lep + 2])) - 1;
+                    e_val[lep + 1] = 0;
+                    lep += 1;
+                    lcxp += 1;
+                }
+                x += 4;
+                continue;
+            }
             encode_non_initial_quad_pair(
                 NonInitialQuadPairRequest {
                     rows: &rows,

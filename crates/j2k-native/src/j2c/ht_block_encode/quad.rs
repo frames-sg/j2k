@@ -46,6 +46,21 @@ impl RowPair {
     }
 }
 
+impl RowPair {
+    /// Whether every sample of the quad pair at column `x` is insignificant.
+    #[expect(
+        clippy::inline_always,
+        reason = "tested once per quad pair in the cleanup hot path"
+    )]
+    #[inline(always)]
+    pub(super) fn pair_is_zero(&self, x: usize) -> bool {
+        let word = |row: &[u8; ROW_PAIR_COLUMNS]| {
+            u32::from_ne_bytes([row[x], row[x + 1], row[x + 2], row[x + 3]])
+        };
+        word(&self.exponents[0]) | word(&self.exponents[1]) == 0
+    }
+}
+
 /// Load quad `quad` (0 or 1) of the quad pair at column `x` into slots
 /// `4 * quad..4 * quad + 4`: upper and lower sample of its left column, then
 /// of its right column. An insignificant sample has exponent 0, and its value
