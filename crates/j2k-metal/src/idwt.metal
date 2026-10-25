@@ -55,13 +55,6 @@ struct J2kRepeatedIdwtSingleDecompositionParams {
     uint batch_count;
 };
 
-struct J2kIdwt97StepParams {
-    float coefficient;
-    uint parity;
-    uint reserved0;
-    uint reserved1;
-};
-
 inline uint ceil_div2_u32(uint value) {
     return (value + 1u) >> 1u;
 }
@@ -93,31 +86,6 @@ inline float reversible53_predict(float s, float left, float right) {
 
 inline float reversible53_update(float s, float left, float right) {
     return s + floor((left + right) * 0.5f);
-}
-
-inline void irreversible97_horizontal_step(
-    device float *row_ptr,
-    uint width,
-    uint first,
-    float coefficient
-) {
-    if (first == 0u) {
-        const uint left = periodic_symmetric_extension_left_u32(0u, 1u);
-        const uint right = periodic_symmetric_extension_right_u32(0u, 1u, width);
-        row_ptr[0] = fma(row_ptr[left] + row_ptr[right], coefficient, row_ptr[0]);
-    }
-
-    const uint middle_start = first == 0u ? 2u : 1u;
-    for (uint x = middle_start; x + 1u < width; x += 2u) {
-        row_ptr[x] = fma(row_ptr[x - 1u] + row_ptr[x + 1u], coefficient, row_ptr[x]);
-    }
-
-    if (width > 1u && ((width - 1u) & 1u) == first) {
-        const uint x = width - 1u;
-        const uint left = periodic_symmetric_extension_left_u32(x, 1u);
-        const uint right = periodic_symmetric_extension_right_u32(x, 1u, width);
-        row_ptr[x] = fma(row_ptr[left] + row_ptr[right], coefficient, row_ptr[x]);
-    }
 }
 
 kernel void j2k_idwt_interleave(

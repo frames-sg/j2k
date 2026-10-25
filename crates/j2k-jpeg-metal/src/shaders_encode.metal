@@ -1367,34 +1367,6 @@ inline uchar h2v2_sample(
     return uchar((this_sum * 3u + next_sum + 7u) >> 4);
 }
 
-inline uchar h2v2_sample_thread(
-    thread const uchar *near_row,
-    thread const uchar *curr_row,
-    uint n,
-    uint x
-) {
-    if (n == 0) {
-        return 0;
-    }
-    const uint sample = min(x / 2, n - 1);
-    const uint this_sum = h2v2_weighted_sample_sum(curr_row[sample], near_row[sample]);
-    if (n == 1) {
-        return uchar((4u * this_sum + 8u) >> 4);
-    }
-    if (x == 0) {
-        return uchar((this_sum * 4u + 8u) >> 4);
-    }
-    if (x == n * 2u - 1u) {
-        return uchar((this_sum * 4u + 7u) >> 4);
-    }
-    if ((x & 1u) == 0u) {
-        const uint last_sum = h2v2_weighted_sample_sum(curr_row[sample - 1], near_row[sample - 1]);
-        return uchar((this_sum * 3u + last_sum + 8u) >> 4);
-    }
-    const uint next_sum = h2v2_weighted_sample_sum(curr_row[sample + 1], near_row[sample + 1]);
-    return uchar((this_sum * 3u + next_sum + 7u) >> 4);
-}
-
 inline uchar h2v2_sample_thread_local(
     thread const uchar *near_row,
     thread const uchar *curr_row,
@@ -1504,34 +1476,6 @@ inline uchar h2v2_corner_sample(
 
 inline uchar h2v1_sample(
     device const uchar *row,
-    uint n,
-    uint x
-) {
-    if (n == 0) {
-        return 0;
-    }
-    if (n == 1) {
-        return row[0];
-    }
-    const uint sample = min(x / 2u, n - 1u);
-    if (x == 0u) {
-        return row[0];
-    }
-    if (x == n * 2u - 1u) {
-        return row[n - 1u];
-    }
-    if ((x & 1u) == 0u) {
-        const uint prev = uint(row[sample - 1u]);
-        const uint curr = uint(row[sample]);
-        return uchar((3u * curr + prev + 1u) >> 2);
-    }
-    const uint curr = uint(row[sample]);
-    const uint next = uint(row[sample + 1u]);
-    return uchar((3u * curr + next + 2u) >> 2);
-}
-
-inline uchar h2v1_sample_thread(
-    thread const uchar *row,
     uint n,
     uint x
 ) {

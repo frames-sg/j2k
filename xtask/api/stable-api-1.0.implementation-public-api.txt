@@ -610,7 +610,6 @@ pub fn j2k_jpeg::bench_support::BenchUpsampleH2V2Scratch::new(usize) -> Self
 pub fn j2k_jpeg::bench_support::BenchUpsampleH2V2Scratch::run(&mut self)
 pub fn j2k_jpeg::bench_support::bench_idct_dc_only_block_with(i16, &mut [u8; 64])
 pub fn j2k_jpeg::bench_support::bench_idct_neon_block(&[i16; 64], &mut [u8; 64])
-pub fn j2k_jpeg::bench_support::bench_idct_neon_bottom_half_zero_block(&[i16; 64], &mut [u8; 64])
 pub fn j2k_jpeg::bench_support::bench_idct_neon_top_left_2x2_block(&[i16; 64], &mut [u8; 64])
 pub fn j2k_jpeg::bench_support::bench_idct_reduced_2x2_block_with(&[i16; 64], &mut [u8; 4])
 pub fn j2k_jpeg::bench_support::bench_idct_reference_block() -> [u8; 64]

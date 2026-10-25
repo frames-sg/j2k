@@ -115,10 +115,10 @@ reviews:
   j2k-jpeg:
     removed_fingerprint: "none"
     added_fingerprint: "fnv1a64:b13b981667fd252a"
-    hidden_count: 702
-    hidden_fingerprint: "fnv1a64:525423e3896df832"
+    hidden_count: 701
+    hidden_fingerprint: "fnv1a64:bd0cf738a0f96592"
     rationale: "Compared the ordinary API with v0.11.3; existing signatures are unchanged. Adds optimized baseline, 12-bit extended, and lossless JPEG encoders with native sample types. Exhaustive JpegEncodeError matches must handle RestartIntervalTooLarge, UnsupportedPixelFormat, UnsupportedPrecision, InvalidPredictor, InvalidPointTransform, and SampleOutOfRange. YCCK colors, lossless sample replication, and color-space inference now match the committed external references. Adds metal_hybrid_eligibility, JpegCapabilityReport::metal_hybrid, and MetalHybrid routing for explicit Metal requests. Exhaustive JpegResolvedDecodePath matches need a MetalHybrid arm; Auto routing keeps its existing choice."
-    hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points. Adds entropy-only DCT and lossless decoding into caller storage, component geometry, lossless GPU planning/Huffman/frame assembly contracts, and a reduced-IDCT benchmark helper. Existing adapter signatures are preserved; the new adapters validate dimensions, precision, ranges, and allocation bounds before execution."
+    hidden_rationale: "Compared the hidden inventory with v0.11.3; retained implementation adapters support this package's public entry points. Adds entropy-only DCT and lossless decoding into caller storage, component geometry, lossless GPU planning/Huffman/frame assembly contracts, and a reduced-IDCT benchmark helper. Existing adapter signatures are preserved; the new adapters validate dimensions, precision, ranges, and allocation bounds before execution. Removes the unreferenced bench_idct_neon_bottom_half_zero_block benchmark wrapper; the NEON bottom-half-zero IDCT stays reachable through BenchNeonIdct::run_bottom_half_zero."
   j2k-tilecodec:
     removed_fingerprint: "fnv1a64:de5a5b18d88e8fb8"
     added_fingerprint: "fnv1a64:4c036c22e22a0254"
