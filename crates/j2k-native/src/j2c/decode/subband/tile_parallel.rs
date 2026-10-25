@@ -235,17 +235,22 @@ pub(in crate::j2c::decode) fn plan_tile_route<'a>(
     }
 
     let workers = rayon::current_num_threads().min(plan.strips.len());
-    let mut tasks: Vec<(&mut [f32], &Strip)> = Vec::new();
+    // A stale buffer adds a zeroing task for each gap around the strips.
+    let task_count = if storage.stale_coefficients {
+        2 * plan.strips.len() + 1
+    } else {
+        plan.strips.len()
+    };
+    let mut tasks: Vec<StripTask<'_, '_>> = Vec::new();
     let route_budget = (|| -> Result<()> {
         // Payloads are gathered only once the tile takes the route.
         gather_payloads(&mut plan, storage, &mut budget)?;
         tasks
-            .try_reserve_exact(plan.strips.len())
+            .try_reserve_exact(task_count)
             .map_err(|_| DecodingError::HostAllocationFailed)?;
-        budget.include_capacity_overage::<(&mut [f32], &Strip)>(
-            plan.strips.len(),
-            tasks.capacity(),
-        )?;
+        // `plan_tile` charged one task per strip.
+        budget.include_elements::<StripTask<'_, '_>>(task_count - plan.strips.len())?;
+        budget.include_capacity_overage::<StripTask<'_, '_>>(task_count, tasks.capacity())?;
         // Each worker allocates its clipped-block scratch on first use.
         budget.include_elements::<f32>(
             workers
@@ -266,6 +271,7 @@ pub(in crate::j2c::decode) fn plan_tile_route<'a>(
         }
         return Err(error);
     }
+    let task_capacity = tasks.capacity();
     let Some(growths) =
         decode_with_retained_bank(&plan, workers, tasks, tile_ctx, storage, &mut budget)?
     else {
@@ -276,7 +282,7 @@ pub(in crate::j2c::decode) fn plan_tile_route<'a>(
     if let Some(post_decode) = tile_ctx.tile_route_post_decode.take() {
         post_decode(storage)?;
     }
-    record_route_peak(tile_ctx, storage, &plan, workers)?;
+    record_route_peak(tile_ctx, storage, &plan, workers, task_capacity)?;
     count_decoded_blocks(tile_ctx, &plan, workers, growths);
     Ok(TileRoute::Decoded)
 }
@@ -286,7 +292,7 @@ pub(in crate::j2c::decode) fn plan_tile_route<'a>(
 fn decode_with_retained_bank<'a>(
     plan: &TilePlan<'a>,
     workers: usize,
-    tasks: Vec<(&mut [f32], &Strip)>,
+    tasks: Vec<StripTask<'_, '_>>,
     tile_ctx: &mut TileDecodeContext,
     storage: &mut DecompositionStorage<'a>,
     budget: &mut DecodeAllocationBudget,
@@ -359,6 +365,7 @@ fn record_route_peak(
     storage: &DecompositionStorage<'_>,
     plan: &TilePlan<'_>,
     workers: usize,
+    task_capacity: usize,
 ) -> Result<()> {
     let route_bytes = [
         plan.bands.capacity() * size_of::<BandParameters>(),
@@ -366,7 +373,7 @@ fn record_route_peak(
         plan.jobs.capacity() * size_of::<BlockJob<'_>>(),
         plan.strips.capacity() * size_of::<Strip>(),
         plan.arena.capacity(),
-        plan.strips.len() * size_of::<(&mut [f32], &Strip)>(),
+        task_capacity * size_of::<StripTask<'_, '_>>(),
         workers
             .saturating_mul(plan.max_clipped_samples)
             .saturating_mul(size_of::<f32>()),
@@ -380,12 +387,12 @@ fn record_route_peak(
 
 /// Prepare one workspace per worker in the retained `bank`, then decode the
 /// plan's strips into `storage`'s coefficients in place through
-/// `decode_block`. Returns the bank's growths, or `None` when the bank does
-/// not fit the budget.
+/// `decode_block`, which leaves a stale buffer current. Returns the bank's
+/// growths, or `None` when the bank does not fit the budget.
 fn decode_with_bank<'a, W: TaskScratch>(
     plan: &TilePlan<'a>,
     workers: usize,
-    tasks: Vec<(&mut [f32], &Strip)>,
+    tasks: Vec<StripTask<'_, '_>>,
     bank: &mut Vec<TaskWorkspace<W>>,
     storage: &mut DecompositionStorage<'a>,
     budget: &mut DecodeAllocationBudget,
@@ -402,15 +409,19 @@ fn decode_with_bank<'a, W: TaskScratch>(
         return Ok(None);
     };
     let mut coefficients = core::mem::take(&mut storage.coefficients);
+    let stale = storage.stale_coefficients;
     let result = decode_strips(
         plan,
         &mut coefficients,
+        stale,
         &mut bank[..workers],
         tasks,
         |job, output, stride, slot| decode_block(job, output, stride, &mut slot.workspace),
     );
     storage.coefficients = coefficients;
-    result.map(|()| Some(growths))
+    result?;
+    storage.stale_coefficients = false;
+    Ok(Some(growths))
 }
 
 /// The block coding of every component in `components` when the route can
@@ -592,7 +603,7 @@ fn plan_tile<'a>(
         return Ok(None);
     }
     plan.arena_len = arena_len;
-    budget.include_elements::<(&mut [f32], &Strip)>(plan.strips.len())?;
+    budget.include_elements::<StripTask<'_, '_>>(plan.strips.len())?;
     Ok(Some(plan))
 }
 
@@ -980,30 +991,44 @@ fn prepare_uniform_task_workspaces<W: TaskScratch>(
     Ok(growths)
 }
 
+/// A strip's output, or with no strip, a range no strip decodes that a
+/// stale buffer must zero.
+type StripTask<'coefficients, 'plan> = (&'coefficients mut [f32], Option<&'plan Strip>);
+
 /// Decode the strips on one worker per workspace, each block through
 /// `decode_block`.
 fn decode_strips<'plan, 'coefficients, W: Send>(
     plan: &'plan TilePlan<'_>,
     coefficients: &'coefficients mut [f32],
+    stale: bool,
     workspaces: &mut [W],
-    mut tasks: Vec<(&'coefficients mut [f32], &'plan Strip)>,
+    mut tasks: Vec<StripTask<'coefficients, 'plan>>,
     decode_block: impl Fn(&BlockJob<'_>, &mut [f32], usize, &mut W) -> Result<()> + Sync,
 ) -> Result<()> {
     // Strips are sorted by start offset, so carving them front to back yields
-    // disjoint mutable outputs.
+    // disjoint mutable outputs. In a stale buffer each strip zeroes its own
+    // rows on its worker, where the decode then finds them in cache; the
+    // ranges around the strips are zeroed by tasks of their own.
     let mut rest = coefficients;
     let mut consumed = 0usize;
     for strip in &plan.strips {
         let tail = core::mem::take(&mut rest);
-        let (_, tail) = tail.split_at_mut(strip.start - consumed);
+        let (gap, tail) = tail.split_at_mut(strip.start - consumed);
         let (output, tail) = tail.split_at_mut(strip.len);
         rest = tail;
         consumed = strip.start + strip.len;
-        tasks.push((output, strip));
+        if stale && !gap.is_empty() {
+            tasks.push((gap, None));
+        }
+        tasks.push((output, Some(strip)));
+    }
+    if stale && !rest.is_empty() {
+        tasks.push((rest, None));
     }
 
-    // Largest rows first so stragglers are small.
-    tasks.sort_unstable_by_key(|(_, strip)| core::cmp::Reverse(strip.work));
+    // Largest rows first so stragglers are small; zeroing tasks last.
+    tasks
+        .sort_unstable_by_key(|(_, strip)| core::cmp::Reverse(strip.map_or(0, |strip| strip.work)));
     let queue = Mutex::new(tasks.into_iter());
     let failed = AtomicBool::new(false);
     // Each worker owns one already-budgeted workspace for the whole tile.
@@ -1021,6 +1046,12 @@ fn decode_strips<'plan, 'coefficients, W: Send>(
                     .next();
                 let Some((output, strip)) = next else {
                     break;
+                };
+                if stale {
+                    output.fill(0.0);
+                }
+                let Some(strip) = strip else {
+                    continue;
                 };
                 if let Err(error) = decode_strip(
                     plan,

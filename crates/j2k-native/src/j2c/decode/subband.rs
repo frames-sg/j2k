@@ -76,9 +76,14 @@ pub(crate) fn decode_component_tile_bit_planes<'a>(
             // Storage holds either this component or the whole active tile.
             storage.coefficients.fill(0.0);
             storage.coefficients_i64.fill(0);
+            storage.stale_coefficients = false;
             CpuDecodeParallelism::Serial
         }
     };
+    if core::mem::take(&mut storage.stale_coefficients) {
+        storage.coefficients.fill(0.0);
+        storage.coefficients_i64.fill(0);
+    }
 
     let component_infos = tile
         .component_infos

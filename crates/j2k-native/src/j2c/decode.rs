@@ -678,12 +678,9 @@ fn decode_components<'a>(
     // for each component tile so we can reuse allocations better.
     for (idx, component_info) in header.component_infos.iter().enumerate() {
         if per_component {
-            if idx > 0 {
-                // Code-blocks the decode skips leave their samples untouched,
-                // so clear the previous component's coefficients first.
-                storage.coefficients.fill(0.0);
-                storage.coefficients_i64.fill(0);
-            }
+            // Code-blocks the decode skips leave their samples untouched, so
+            // Tier-1 clears the previous component's coefficients first.
+            storage.stale_coefficients = idx > 0;
             decode_tier1_stage(
                 tile,
                 idx..idx + 1,
@@ -1029,6 +1026,10 @@ impl Iterator for SubBandIter {
 /// Within an image, reset retains capacities and the next build counts them in
 /// its live baseline. Crossing to a new image drops every retained allocation.
 #[derive(Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the integer, stale-plane, in-channel last level and row-streamed IDWT switches are independent"
+)]
 pub(crate) struct DecompositionStorage<'a> {
     pub(crate) segments: Vec<Segment<'a>>,
     pub(crate) layers: Vec<Layer>,
@@ -1044,6 +1045,9 @@ pub(crate) struct DecompositionStorage<'a> {
     pub(crate) exact_integer_decode: bool,
     /// How the built sub-bands' coefficient ranges share `coefficients`.
     pub(crate) coefficient_layout: build::CoefficientLayout,
+    /// Whether `coefficients` still holds the previous component's samples.
+    /// Tier-1 must zero what it does not decode before the IDWT reads it.
+    pub(crate) stale_coefficients: bool,
     /// Whether the region IDWT writes each component's last level into the
     /// padding of its `channel_data` plane, for `store` to compact in place.
     pub(crate) last_idwt_level_in_channels: bool,
@@ -1076,6 +1080,7 @@ impl DecompositionStorage<'_> {
         self.roi_plan = None;
         self.exact_integer_decode = false;
         self.coefficient_layout = build::CoefficientLayout::Tile;
+        self.stale_coefficients = false;
         self.last_idwt_level_in_channels = false;
         self.line_region_idwt = false;
         self.structural_workspace_bytes = 0;
