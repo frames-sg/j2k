@@ -252,3 +252,34 @@ fn short_sequences_never_end_in_ff_and_round_trip() {
         }
     }
 }
+
+#[test]
+fn encoded_bytes_match_recorded_reference_streams() {
+    // Rows: seed, ones per thousand, symbols, then the length and FNV-1a of
+    // the bytes from the bit-by-bit Annex C procedure; 19 contexts as in
+    // classic Tier-1.
+    for (seed, ones, symbols, expected) in [
+        (1, 500, 4_000, (523, 0x4140_f6e8_7ab6_78ca)),
+        (2, 50, 4_000, (158, 0x7732_5507_3388_6950)),
+        (3, 950, 4_000, (171, 0xc394_3501_d9e2_1f73)),
+        (4, 5, 20_000, (121, 0x3797_f46b_e3be_012f)),
+        (5, 1_000, 1_000, (14, 0x4eae_2264_3f55_d2e9)),
+    ] {
+        let mut state: u64 = seed;
+        let mut encoder = ArithmeticEncoder::new();
+        let mut contexts = [ArithmeticEncoderContext::default(); 19];
+        for _ in 0..symbols {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let label = usize::try_from(state >> 59).expect("five bits fit usize") % 19;
+            let bit = u32::from((state >> 33) % 1_000 < ones);
+            encoder.encode(bit, &mut contexts[label]);
+        }
+        let bytes = encoder.finish();
+        let digest = bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, &byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3)
+        });
+        assert_eq!((bytes.len(), digest), expected, "seed {seed}");
+    }
+}
