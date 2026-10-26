@@ -115,7 +115,7 @@ j2k-cuda-runtime -> j2k-core
 j2k-cuda-j2k-engine -> j2k-codec-math, j2k-core, j2k-cuda-runtime, j2k-types
 j2k-cuda-jpeg-engine -> j2k-codec-math, j2k-core, j2k-cuda-runtime
 j2k-cuda-transcode-engine -> j2k-core, j2k-cuda-runtime
-j2k-ml -> j2k, j2k-cuda, j2k-cuda-runtime, j2k-metal, j2k-metal-support
+j2k-ml -> j2k, j2k-core, j2k-cuda, j2k-cuda-runtime, j2k-jpeg, j2k-metal, j2k-metal-support
 j2k-python -> j2k, j2k-cuda, j2k-cuda-runtime, j2k-jpeg, j2k-native
 j2k-mpsgraph -> j2k, j2k-core, j2k-metal, j2k-metal-support, j2k-mpsgraph-support
 j2k-transcode-metal -> j2k-codec-math, j2k-core, j2k-metal-support, j2k-transcode, j2k-types

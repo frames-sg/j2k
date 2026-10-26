@@ -211,6 +211,102 @@ fn portable_test_backend_supports_all_fast_batch_integer_dtypes() {
     assert!(Flex::supports_dtype(&FlexDevice, DType::I16));
 }
 
+#[test]
+fn jpeg_materialization_preserves_u8_layout_hints_and_partial_results() {
+    use j2k_jpeg::{ColorTransform, JpegBatchDecodeOptions, JpegBatchDecoder, JpegBatchInput};
+    use j2k_test_support::{progressive_8x8_jpeg, JPEG_BASELINE_420_16X16};
+
+    let small = progressive_8x8_jpeg();
+    let raw_components = JpegBatchInput::new(JPEG_BASELINE_420_16X16).with_options(
+        j2k_jpeg::DecodeOptions::default().with_color_transform(ColorTransform::ForceRgb),
+    );
+    let inputs = [
+        JpegBatchInput::new(JPEG_BASELINE_420_16X16),
+        JpegBatchInput::new(&small),
+        JpegBatchInput::new(b"invalid"),
+        raw_components,
+    ];
+    for layout in [BatchLayout::Nchw, BatchLayout::Nhwc] {
+        let options = {
+            let mut options = BatchDecodeOptions::default();
+            options.layout = layout;
+            options
+        };
+        let mut decoder = CpuBurnDecoder::<Flex>::new(FlexDevice, options);
+        let empty = decoder.decode_batch(&[]).expect("empty JPEG batch");
+        assert!(empty.groups().is_empty() && empty.errors().is_empty());
+        let reference = JpegBatchDecoder::new({
+            let mut options = JpegBatchDecodeOptions::default();
+            options.layout = layout;
+            options
+        })
+        .decode(&inputs)
+        .expect("codec reference");
+        let output = decoder
+            .decode_batch(&inputs.map(j2k_ml::ImageInput::Jpeg))
+            .expect("JPEG tensors");
+        assert_eq!(
+            output.errors().iter().map(|e| e.index).collect::<Vec<_>>(),
+            [2]
+        );
+        assert_eq!(output.groups().len(), 2);
+        assert_eq!(output.groups()[0].source_indices(), [0, 3]);
+        assert_eq!(output.groups()[1].source_indices(), [1]);
+        // A subsequent decode must not overwrite an earlier Burn tensor.
+        decoder
+            .decode_batch(
+                &inputs[..1]
+                    .iter()
+                    .copied()
+                    .map(j2k_ml::ImageInput::Jpeg)
+                    .collect::<Vec<_>>(),
+            )
+            .expect("reuse JPEG session");
+        for (group, expected) in output.into_groups().into_iter().zip(reference.groups()) {
+            assert_eq!(group.dimensions(), expected.dimensions());
+            assert_eq!(group.layout(), layout);
+            assert_eq!(group.source_indices(), expected.source_indices());
+            assert_eq!(
+                group.warnings(),
+                expected
+                    .warnings()
+                    .iter()
+                    .map(|row| row
+                        .iter()
+                        .cloned()
+                        .map(j2k_ml::ImageDecodeWarning::Jpeg)
+                        .collect::<Vec<_>>())
+                    .collect::<Vec<_>>()
+            );
+            let (width, height) = group.dimensions();
+            let count = group.source_indices().len();
+            assert_eq!(
+                group.tensor().tensor().dims(),
+                if layout == BatchLayout::Nchw {
+                    [count, 3, height as usize, width as usize]
+                } else {
+                    [count, height as usize, width as usize, 3]
+                }
+            );
+            assert_eq!(group.tensor().tensor().dtype(), DType::U8);
+            let actual = group
+                .into_tensor()
+                .into_tensor()
+                .into_data()
+                .into_vec::<u8>()
+                .expect("U8 JPEG pixels");
+            assert_eq!(actual, expected.samples());
+            if count == 2 {
+                let (rgb, components) = actual.split_at(actual.len() / 2);
+                assert_ne!(
+                    rgb, components,
+                    "the per-input color hint changes decoded values"
+                );
+            }
+        }
+    }
+}
+
 fn encode_gray16(samples: &[u16], width: u32, height: u32, mode: J2kBlockCodingMode) -> Vec<u8> {
     let bytes = samples
         .iter()
@@ -226,4 +322,60 @@ fn encode_gray16(samples: &[u16], width: u32, height: u32, mode: J2kBlockCodingM
     )
     .expect("encode Gray16")
     .codestream
+}
+
+#[test]
+fn mixed_codec_batch_preserves_indices_channels_and_session_integrity() {
+    use j2k_ml::{ImageDecodeError, ImageInput};
+    let jpeg = j2k_test_support::progressive_8x8_jpeg();
+    let second_scan = jpeg
+        .windows(2)
+        .enumerate()
+        .filter(|(_, p)| *p == [0xff, 0xda])
+        .nth(1)
+        .unwrap()
+        .0;
+    let partial = &jpeg[..second_scan];
+    let encoded = EncodedImage::full(Arc::from(htj2k_gray8_fixture(8, 8)));
+    for strict in [true, false] {
+        let mut options = BatchDecodeOptions::default();
+        options.settings = if strict {
+            j2k::DecodeSettings::strict()
+        } else {
+            j2k::DecodeSettings::lenient()
+        };
+        let mut decoder = CpuBurnDecoder::<Flex>::new(FlexDevice, options);
+        let input_policy = j2k_jpeg::DecodeOptions::default().with_strict(!strict);
+        let inputs = [
+            ImageInput::Jpeg(j2k_jpeg::JpegBatchInput::new(&jpeg)),
+            ImageInput::Jpeg(j2k_jpeg::JpegBatchInput::new(partial).with_options(input_policy)),
+            ImageInput::Jpeg2000(&encoded),
+            ImageInput::Jpeg(j2k_jpeg::JpegBatchInput::new(b"bad")),
+        ];
+        let result = decoder.decode_batch(&inputs).unwrap();
+        let errors = result
+            .errors()
+            .iter()
+            .map(|error| error.index)
+            .collect::<Vec<_>>();
+        assert_eq!(errors, if strict { vec![1, 3] } else { vec![3] });
+        assert!(result
+            .errors()
+            .iter()
+            .all(|error| matches!(error.source, ImageDecodeError::Jpeg(_))));
+        assert!(result.group_errors().is_empty());
+        let mut seen = Vec::new();
+        for group in result.groups() {
+            for (row, &index) in group.source_indices().iter().enumerate() {
+                seen.push(index);
+                assert_eq!(group.recovered()[row], index == 1);
+                assert_eq!(group.color().channels(), if index == 2 { 1 } else { 3 });
+                assert_eq!(group.j2k_info().is_some(), index == 2);
+            }
+        }
+        seen.sort_unstable();
+        assert_eq!(seen, if strict { vec![0, 2] } else { vec![0, 1, 2] });
+        let source = std::error::Error::source(&result.errors().last().unwrap().source).unwrap();
+        assert!(source.downcast_ref::<j2k_jpeg::JpegError>().is_some());
+    }
 }
