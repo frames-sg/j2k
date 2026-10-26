@@ -48,12 +48,17 @@ fn outcome(result: Result<LossyAttempt, J2kError>) -> Result<(Vec<u8>, u32), Str
 fn targeted_cpu_search_matches_independent_candidates() {
     use J2kBlockCodingMode::{Classic, HighThroughput};
     let (mut searches, mut successes) = (0_usize, 0_usize);
-    for (width, height, components, bit_depth, signed) in [
-        (48, 40, 3, 8, false),
-        (1, 37, 1, 16, false),
-        (24, 20, 3, 12, true),
+    for (width, height, components, bit_depth, signed, constant) in [
+        (48, 40, 3, 8, false, false),
+        (63, 65, 3, 8, false, false),
+        (63, 65, 3, 8, false, true),
+        (1, 37, 1, 16, false, false),
+        (24, 20, 3, 12, true, false),
     ] {
-        let pixels = textured(width, height, components, bit_depth);
+        let mut pixels = textured(width, height, components, bit_depth);
+        if constant {
+            pixels.fill(0);
+        }
         let samples = J2kLossySamples::new(&pixels, width, height, components, bit_depth, signed)
             .expect("valid synthetic samples");
         let roi = [NativeEncodeRoiRegion {
@@ -71,22 +76,42 @@ fn targeted_cpu_search_matches_independent_candidates() {
             J2kRateTarget::PsnrDb(28.0),
             J2kRateTarget::PsnrDb(200.0),
         ] {
-            for (mode, budget, with_roi) in [
-                (HighThroughput, 1, false),
-                (HighThroughput, 8, true),
-                (Classic, 8, false),
-                (Classic, 1, true),
+            for (mode, budget, with_roi, layer_count) in [
+                (HighThroughput, 1, false, 0),
+                (HighThroughput, 8, true, 0),
+                (Classic, 8, false, 0),
+                (Classic, 1, true, 0),
+                (HighThroughput, 8, false, 1),
+                (Classic, 8, false, 2),
             ] {
-                let options = options(mode, budget);
+                let mut options = options(mode, budget);
+                if layer_count != 0 {
+                    if matches!(target, J2kRateTarget::PsnrDb(_)) {
+                        continue;
+                    }
+                    if layer_count == 2 {
+                        options
+                            .quality_layers
+                            .push(crate::J2kQualityLayer::new(J2kRateTarget::Bytes(1)));
+                    }
+                    options
+                        .quality_layers
+                        .push(crate::J2kQualityLayer::new(target));
+                }
+                let target = if layer_count == 0 {
+                    Some(target)
+                } else {
+                    super::super::effective_lossy_target(&options).unwrap()
+                };
                 let roi = with_roi.then_some(roi.as_slice());
-                let actual = encode_cpu_lossy_targeted(samples, &options, Some(target), roi);
+                let actual = encode_cpu_lossy_targeted(samples, &options, target, roi);
                 let independent = &mut |scale| {
                     roi.map_or_else(
                         || encode_cpu_lossy(samples, &options, scale),
                         |roi| encode_cpu_lossy_with_roi_regions(samples, &options, scale, roi),
                     )
                 };
-                let expected = encode_lossy_targeted(samples, &options, Some(target), independent);
+                let expected = encode_lossy_targeted(samples, &options, target, independent);
                 let expected = outcome(expected);
                 let what = format!("{width}x{height} {target:?} {mode:?} {budget} roi {with_roi}");
                 assert_eq!(outcome(actual), expected, "{what}");

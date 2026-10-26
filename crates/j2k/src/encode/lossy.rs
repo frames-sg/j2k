@@ -183,6 +183,12 @@ pub(super) fn encode_lossy_to_byte_target(
     let mut current_len = best_len;
     let mut best_scale = high;
     let mut best_diff = byte_target_diff(best_len, target_bytes);
+    if best_len <= maximum_bytes && candidates.reuse_terminal_byte_output() {
+        return Ok(LossyAttempt {
+            codestream: initial_codestream,
+            quantization_scale: best_scale,
+        });
+    }
     // Retain only scalar search state so the next native encode is not run
     // while an earlier output allocation escapes its phase budget.
     drop(initial_codestream);
@@ -212,7 +218,8 @@ pub(super) fn encode_lossy_to_byte_target(
         best_diff = byte_target_diff(current_len, target_bytes);
     }
 
-    for _ in 0..options.psnr_iteration_budget.max(1) {
+    let budget = options.psnr_iteration_budget.max(1);
+    for iteration in 0..budget {
         let mid = f32::midpoint(low, high);
         if mid <= low || mid >= high {
             break;
@@ -228,6 +235,16 @@ pub(super) fn encode_lossy_to_byte_target(
             low = mid;
         } else {
             high = mid;
+        }
+        let next = f32::midpoint(low, high);
+        if candidates.reuse_terminal_byte_output()
+            && best_scale.to_bits() == mid.to_bits()
+            && (iteration + 1 == budget || next <= low || next >= high)
+        {
+            return Ok(LossyAttempt {
+                codestream,
+                quantization_scale: best_scale,
+            });
         }
     }
 

@@ -18,6 +18,10 @@ use crate::J2kError;
 
 /// One encode and one quality measurement per probed quantization scale.
 pub(in crate::encode) trait LossyCandidates {
+    fn reuse_terminal_byte_output(&self) -> bool {
+        false
+    }
+
     fn encode_candidate(&mut self, quantization_scale: f32) -> Result<Vec<u8>, J2kError>;
 
     // See `validate_lossy_roundtrip` for the `Vec` ownership contract.
@@ -92,6 +96,10 @@ impl<'a> CpuCandidates<'a> {
 const RELEASE_BEFORE_DECODE_BYTES: usize = j2k_native::DEFAULT_MAX_DECODE_BYTES / 4;
 
 impl LossyCandidates for CpuCandidates<'_> {
+    fn reuse_terminal_byte_output(&self) -> bool {
+        true
+    }
+
     fn encode_candidate(&mut self, quantization_scale: f32) -> Result<Vec<u8>, J2kError> {
         let (samples, options) = (self.samples, self.options);
         if !self.reuse {
