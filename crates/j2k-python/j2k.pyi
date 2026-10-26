@@ -6,6 +6,7 @@ import torch
 
 __version__: str
 cuda_enabled: bool
+metal_enabled: bool
 Region = tuple[int, int, int, int]
 
 class Tensor:

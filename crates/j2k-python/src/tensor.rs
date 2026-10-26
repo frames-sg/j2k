@@ -25,6 +25,8 @@ pub(crate) enum Samples {
     F32(Vec<f32>),
     #[cfg(feature = "cuda")]
     Torch(Py<PyAny>),
+    #[cfg(all(feature = "metal", target_os = "macos", target_arch = "aarch64"))]
+    Metal(crate::metal::MetalSamples),
 }
 
 impl Samples {
@@ -37,6 +39,8 @@ impl Samples {
             Self::F32(v) => v.as_mut_ptr().cast(),
             #[cfg(feature = "cuda")]
             Self::Torch(_) => unreachable!("framework allocations are exported by their owner"),
+            #[cfg(all(feature = "metal", target_os = "macos", target_arch = "aarch64"))]
+            Self::Metal(buffer) => buffer.pointer(),
         }
     }
 
@@ -49,6 +53,8 @@ impl Samples {
             Self::F32(v) => v.len(),
             #[cfg(feature = "cuda")]
             Self::Torch(_) => return None,
+            #[cfg(all(feature = "metal", target_os = "macos", target_arch = "aarch64"))]
+            Self::Metal(buffer) => buffer.len(),
         })
     }
 }
@@ -179,9 +185,9 @@ impl Tensor {
                 "device conversion is not part of DLPack export",
             ));
         }
-        if self.device.0 == 1 && stream.is_some() {
+        if matches!(self.device.0, 1 | 8) && stream.is_some() {
             return Err(PyValueError::new_err(
-                "CPU DLPack export do not accept a stream",
+                "CPU and Metal DLPack export do not accept a stream",
             ));
         }
         let shape = crate::owned_items(

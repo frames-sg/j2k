@@ -16,6 +16,8 @@ use pyo3::{
 mod cuda;
 mod decode;
 mod encode;
+#[cfg(all(feature = "metal", target_os = "macos", target_arch = "aarch64"))]
+mod metal;
 mod tensor;
 mod transforms;
 mod wavelets;
@@ -89,6 +91,14 @@ fn j2k_python(module: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     module.add("cuda_enabled", cfg!(feature = "cuda"))?;
+    module.add(
+        "metal_enabled",
+        cfg!(all(
+            feature = "metal",
+            target_os = "macos",
+            target_arch = "aarch64"
+        )),
+    )?;
     module.add_class::<decode::Decoder>()?;
     module.add_class::<decode::ImageRequest>()?;
     module.add_class::<decode::PreparedBatch>()?;

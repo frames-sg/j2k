@@ -2794,7 +2794,11 @@ dependencies = [
  "j2k-cuda",
  "j2k-cuda-runtime",
  "j2k-jpeg",
+ "j2k-metal",
+ "j2k-metal-support",
  "j2k-native",
+ "objc2",
+ "objc2-metal",
  "pyo3",
  "pyo3-build-config",
 ]

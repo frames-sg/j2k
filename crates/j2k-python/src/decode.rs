@@ -243,6 +243,8 @@ pub(crate) struct Decoder {
     jpeg: Mutex<JpegBatchDecoder>,
     #[cfg(feature = "cuda")]
     cuda: Option<crate::cuda::CudaDecoder>,
+    #[cfg(all(feature = "metal", target_os = "macos", target_arch = "aarch64"))]
+    metal: Option<crate::metal::MetalDecoder>,
 }
 
 #[pymethods]
@@ -258,6 +260,7 @@ impl Decoder {
     ) -> PyResult<Self> {
         #[cfg(not(feature = "cuda"))]
         let _ = py;
+        let device = if device == "mps:0" { "mps" } else { device };
         let layout = match layout {
             "nchw" => BatchLayout::Nchw,
             "nhwc" => BatchLayout::Nhwc,
@@ -283,6 +286,17 @@ impl Decoder {
         let is_cuda = device == "cuda" || device.starts_with("cuda:");
         match device {
             "cpu" => {}
+            "mps"
+                if cfg!(all(
+                    feature = "metal",
+                    target_os = "macos",
+                    target_arch = "aarch64"
+                )) => {}
+            "mps" => {
+                return Err(PyValueError::new_err(
+                    "MPS requires the optional metal build on Apple Silicon macOS",
+                ))
+            }
             _ if is_cuda && cfg!(feature = "cuda") => {}
             _ if is_cuda => {
                 return Err(PyValueError::new_err(
@@ -299,6 +313,10 @@ impl Decoder {
         let cuda = is_cuda
             .then(|| crate::cuda::CudaDecoder::new(py, device, options))
             .transpose()?;
+        #[cfg(all(feature = "metal", target_os = "macos", target_arch = "aarch64"))]
+        let metal = (device == "mps")
+            .then(|| crate::metal::MetalDecoder::new(options))
+            .transpose()?;
         Ok(Self {
             process_id: std::process::id(),
             options,
@@ -311,6 +329,8 @@ impl Decoder {
             })),
             #[cfg(feature = "cuda")]
             cuda,
+            #[cfg(all(feature = "metal", target_os = "macos", target_arch = "aarch64"))]
+            metal,
         })
     }
 
@@ -457,6 +477,11 @@ impl Decoder {
             let prepared = self.prepare_encoded(py, inputs)?;
             return self.decode_j2k(py, &prepared.inner);
         }
+        #[cfg(all(feature = "metal", target_os = "macos", target_arch = "aarch64"))]
+        if self.metal.is_some() {
+            let prepared = self.prepare_encoded(py, inputs)?;
+            return self.decode_j2k(py, &prepared.inner);
+        }
         let decoded = py.detach(|| {
             self.cpu
                 .lock()
@@ -487,6 +512,10 @@ impl Decoder {
         if let Some(cuda) = &self.cuda {
             return cuda.decode(py, prepared);
         }
+        #[cfg(all(feature = "metal", target_os = "macos", target_arch = "aarch64"))]
+        if let Some(metal) = &self.metal {
+            return py.detach(|| metal.decode(prepared));
+        }
         let decoded = py.detach(|| {
             self.cpu
                 .lock()
@@ -498,6 +527,15 @@ impl Decoder {
     }
 
     fn decode_jpeg(&self, py: Python<'_>, inputs: &[ImageRequest]) -> PyResult<Decoded> {
+        #[cfg(all(feature = "metal", target_os = "macos", target_arch = "aarch64"))]
+        if self.metal.is_some() {
+            return Ok(Decoded {
+                errors: (0..inputs.len())
+                    .map(|index| (index, "JPEG decode on MPS is not supported yet".into()))
+                    .collect(),
+                ..Decoded::default()
+            });
+        }
         #[cfg(feature = "cuda")]
         if self.cuda.is_some() {
             // An explicit GPU request never silently decodes on the CPU.
