@@ -1,7 +1,6 @@
 # Release Policy
 
-The `j2k` 0.12.0 public crate release is published and security-supported.
-This workspace prepares the `j2k` 0.13.0 release.
+The `j2k` 0.13.0 public crate release is published and security-supported.
 Its T.803 decoder conformance results are in
 [`T.803 conformance`](../docs/t803-conformance.md). The
 default backend is `Auto`: the CPU path is always available, and a GPU path is
@@ -9,16 +8,22 @@ used only for shapes where it was tested and measured faster.
 
 ## Release status
 
-Version `0.13.0` is a release candidate, compared with `v0.12.0` in its
+Version `0.13.0` is published. Its
 [API report](release-evidence/public-api/reviewed-public-api-diff-0.13.0.md)
-and [review](release-evidence/public-api/public-api-review-0.13.0.yml).
-The 0.12.0 evidence below describes the published tag. The 0.13.0 candidate
-requires fresh hosted and full Metal validation for its exact commit. Its CUDA
-full validation and CUDA T.803 report are waived by
-[`cuda-waiver-0.13.0.md`](release-evidence/cuda-waiver-0.13.0.md), which
-records the CUDA evidence collected before the self-hosted CUDA runner went
-offline. The CUDA report will be attached to the release once that runner is
-back.
+compares with `v0.12.0`; the
+[review](release-evidence/public-api/public-api-review-0.13.0.yml) records
+the signed `J2kDirectGrayscalePlan` field, the non-exhaustive batch and Burn
+types, strict JPEG decode, and the removed `cuda-oxide-j2k-ml` feature.
+The [hosted checks](https://github.com/frames-sg/j2k/actions/runs/40364458826)
+and [full Metal validation](https://github.com/frames-sg/j2k/actions/runs/40364512496)
+passed for the tagged source. The CUDA full validation and CUDA T.803 report
+were waived by [`cuda-waiver-0.13.0.md`](release-evidence/cuda-waiver-0.13.0.md),
+which records the CUDA evidence collected before the self-hosted CUDA runner
+went offline. The release verifier checked the four CPU and Metal T.803
+reports, and the [publish workflow](https://github.com/frames-sg/j2k/actions/runs/40373919920)
+published all 25 crates. The reports are attached to the
+[GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.13.0); the CUDA report will be added
+once the runner is back.
 
 Version `0.12.0` is published. Its
 [API report](release-evidence/public-api/reviewed-public-api-diff-0.12.0.md)
@@ -57,6 +62,7 @@ published all 25 crates. The reports are attached to the
 
 | Version | Distribution | Security support |
 | --- | --- | --- |
+| `0.13.0` | [crates.io](https://crates.io/crates/j2k/0.13.0), annotated tag `v0.13.0`; CPU and Metal reports on the [GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.13.0); CUDA report pending under the [waiver](release-evidence/cuda-waiver-0.13.0.md). | Yes |
 | `0.12.0` | [crates.io](https://crates.io/crates/j2k/0.12.0), annotated tag `v0.12.0`; CPU, CUDA, and Metal reports on the [GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.12.0). | Yes |
 | `0.11.3` | [crates.io](https://crates.io/crates/j2k/0.11.3), annotated tag `v0.11.3`; CPU, CUDA, and Metal reports on the [GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.11.3). | Yes |
 | `0.11.2` | [crates.io](https://crates.io/crates/j2k/0.11.2), annotated tag `v0.11.2`; CPU, CUDA, and Metal reports on the [GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.11.2). | Yes |
@@ -448,7 +454,8 @@ Published crates must have a package README and docs.rs metadata. Tooling and
 test helpers are not published, even though they share the workspace version.
 
 `j2k-test-support` is an unpublished dev helper. The comparator crates and
-automation tools are not runtime API.
+automation tools are not runtime API. `j2k-python` builds the `j2k` Python
+wheel and is not published to crates.io.
 
 ## Public API snapshots
 
@@ -504,7 +511,7 @@ item list into the docs.
 
 | Release | Compared with | Report |
 | --- | --- | --- |
-| 0.13.0 candidate | 0.12.0 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.13.0.md), [review](release-evidence/public-api/public-api-review-0.13.0.yml) |
+| 0.13.0 | 0.12.0 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.13.0.md), [review](release-evidence/public-api/public-api-review-0.13.0.yml) |
 | 0.12.0 | 0.11.3 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.12.0.md), [review](release-evidence/public-api/public-api-review-0.12.0.yml) |
 | 0.8.0 | 0.7.5 | [API diff][v0.8.0-api-report]; review file lists every break |
 | 0.8.1 | 0.8.0 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.8.1.md), [review](release-evidence/public-api/public-api-review-0.8.1.yml); additions only |
@@ -516,6 +523,8 @@ item list into the docs.
 | 0.11.3 | 0.11.2 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.11.3.md), [review](release-evidence/public-api/public-api-review-0.11.3.yml) |
 
 Each report also records every package's hidden-item count and fingerprint.
-The CPU, CUDA, and Metal release checks passed for each published release.
+The CPU, CUDA, and Metal release checks passed for each published release,
+except that 0.13.0 waived the CUDA checks under its
+[waiver](release-evidence/cuda-waiver-0.13.0.md).
 
 [v0.8.0-api-report]: https://github.com/frames-sg/j2k/blob/v0.8.0/engineering/reviewed-public-api-diff-0.8.0.md

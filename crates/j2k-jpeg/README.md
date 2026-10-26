@@ -30,9 +30,12 @@ Use this crate directly for JPEG input; use `j2k` for JPEG 2000 / HTJ2K and
 ## Dense owned batches
 
 `JpegBatchDecoder::new(JpegBatchDecodeOptions::default())` decodes complete
-8-bit JPEG inputs into owned dense RGB8 groups. Submit borrowed
+8-bit JPEG inputs into owned dense RGB8 groups; set the options' `layout` (a
+`j2k_core::BatchLayout`) and `workers` to change the defaults. Submit borrowed
 `JpegBatchInput::new(bytes).with_options(options)` values and keep compressed
-bytes alive until decode returns. Outputs own their storage independently.
+bytes alive until decode returns. Input fields are private; read them through
+`bytes()` and `options()`. Outputs own their storage independently, and errors
+use `j2k_core::TileBatchError<JpegError>`.
 
 Group order is unspecified. NCHW produces `[N, 3, H, W]`; NHWC produces
 `[N, H, W, 3]`. Source indices, warnings and recovery flags follow successful
@@ -102,17 +105,12 @@ output point-samples the full-size image.
 Unsupported sampling layouts return `NotImplemented` rather than being
 converted.
 
-## Links
+## Strict pixel integrity
 
-- Project website: <https://frames-sg.com/rust-jpeg-codec/>
-- API docs: <https://docs.rs/j2k-jpeg>
-- Repository: <https://github.com/frames-sg/j2k>
-- Support policy: <https://github.com/frames-sg/j2k/blob/main/docs/public-support.md>
-
-## Strict pixel integrity and dense batches
-
-`DecodeOptions` defaults to strict. Use `with_strict(false)` or `set_strict(false)`
-only to permit supported recovery or unverified completion. Strict success
+`DecodeOptions` defaults to strict: input that needs recovery, or whose
+completion cannot be verified, returns `JpegError::RecoveryRequired`. Use
+`with_strict(false)` or `set_strict(false)` only to permit supported recovery or
+unverified completion. Strict success
 requires complete required image data under the requested interpretation, with
 no damage concealment or missing-data substitution. Existing fatal entropy,
 restart and marker errors remain errors under either policy. Optional metadata
@@ -128,11 +126,11 @@ them false. A recovered image is returned once, without an indexed error.
 This default tightens acceptance of damaged progressive JPEGs, including callers
 using coefficient extraction and transcode; accepted intact pixels are unchanged.
 
-Construct `JpegBatchDecoder::new(JpegBatchDecodeOptions::default())` and submit
-`JpegBatchInput::new(bytes).with_options(options)`. Input fields are private;
-read them through `bytes()` and `options()`. Errors use
-`j2k_core::TileBatchError<JpegError>`. Dense groups share the codec memory budget
-with worker storage and may split; order is unspecified and source indices are
-authoritative.
-
 JPEG tensor output remains RGB uint8 by default, with grayscale expanded to three identical channels. Grayscale JPEG 2000 and HTJ2K remain one channel. Output metadata describes the returned tensor. A later explicit `channels="native"` option may preserve grayscale JPEG as one channel without changing existing defaults. Source component counts, when exposed, are per input row and remain aligned with source_indices.
+
+## Links
+
+- Project website: <https://frames-sg.com/rust-jpeg-codec/>
+- API docs: <https://docs.rs/j2k-jpeg>
+- Repository: <https://github.com/frames-sg/j2k>
+- Support policy: <https://github.com/frames-sg/j2k/blob/main/docs/public-support.md>

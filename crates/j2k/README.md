@@ -2,9 +2,10 @@
 
 The main J2K crate: JPEG 2000 Part 1 and HTJ2K Part 15 on the CPU.
 
-It provides inspection, decode, encode, lossless J2K-to-HTJ2K recode, JP2/JPH
-container wrapping, and GPU-decode planning, all backed by the native J2K
-engine.
+It provides inspection, decode, owned batch decode, native wavelet-band
+extraction (`J2kDecoder::decode_wavelets`), encode, lossless J2K-to-HTJ2K
+recode, JP2/JPH container wrapping, and GPU-decode planning, all backed by the
+native J2K engine.
 
 The public API is safe Rust, and the CPU path is the reference implementation.
 GPU paths are optional and are used only for shapes where they were measured to
@@ -39,12 +40,19 @@ checks, and allocation limits are the same as in strict mode.
 A successful lenient decode reports `J2kDecodeWarning::LenientMetadataRecovery`
 only when one of those recoveries was actually used.
 
-## Links
+## Batch decode
 
-- API docs: <https://docs.rs/j2k>
-- [Pure-Rust JPEG 2000 codec documentation](https://frames-sg.com/j2k/rust-jpeg2000-codec/)
-- Repository: <https://github.com/frames-sg/j2k>
-- Support policy: <https://github.com/frames-sg/j2k/blob/main/docs/public-support.md>
+`prepare_batch` and `CpuBatchDecoder::new` take `BatchDecodeOptions`, which is
+`#[non_exhaustive]`. Start from `BatchDecodeOptions::default()` and assign
+`layout`, `settings`, and `workers`:
+
+```rust
+let mut options = j2k::BatchDecodeOptions::default();
+options.layout = j2k::BatchLayout::Nhwc;
+let decoder = j2k::CpuBatchDecoder::new(options);
+```
+
+`BatchLayout` is defined in `j2k-core` and re-exported here.
 
 ## Encode depth, quantization, and output samples
 
@@ -67,9 +75,9 @@ Rate search uses scales at or above one within the common admissible interval of
 all weighted steps. Byte/BPP targets accept results within the size allowance;
 PSNR specifies a minimum quality within `psnr_tolerance_db`. Search uses doubling
 and bounded bisection, evaluates an encountered admissible boundary, retains a
-feasible candidate, and validates the returned codestream. CPU byte searches
-return the last probe directly when it is the selected scale; other searches
-re-encode the selected scale. PSNR search also probes beyond an initial quality
+feasible candidate, and validates the returned codestream. CPU byte and
+bits-per-pixel searches return the last probe directly when it is the selected
+scale; other searches re-encode the selected scale. PSNR search also probes beyond an initial quality
 miss and checks the endpoint if no probe succeeds; it does not exhaustively
 enumerate potentially non-monotonic quality islands.
 
@@ -84,4 +92,13 @@ the declared precision, saturating at 65535. Synthesized alpha uses the
 output storage maximum (the native significant maximum above eight bits), while
 genuine alpha is converted as a source component. Irreversible integer output
 rounds the centered 9/7 sample ties-to-even before applying the unsigned level
-shift. Supported formats and backend routing remain API-specific.
+shift. CUDA and Metal device decodes apply the same conversion to signed
+grayscale and color sources. Supported formats and backend routing remain
+API-specific.
+
+## Links
+
+- API docs: <https://docs.rs/j2k>
+- [Pure-Rust JPEG 2000 codec documentation](https://frames-sg.com/j2k/rust-jpeg2000-codec/)
+- Repository: <https://github.com/frames-sg/j2k>
+- Support policy: <https://github.com/frames-sg/j2k/blob/main/docs/public-support.md>

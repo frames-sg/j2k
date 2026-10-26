@@ -75,7 +75,7 @@
         </article>
         <article class="card">
           <h2>JPEG input</h2>
-          <p><code>j2k-jpeg-cuda</code> provides CUDA device-output integration for supported JPEG decode surfaces.</p>
+          <p><code>j2k-jpeg-cuda</code> provides CUDA device-output integration for supported JPEG decode surfaces, plus baseline and lossless JPEG encode from CUDA buffers.</p>
           <pre class="code">cargo add j2k-jpeg-cuda --features cuda-runtime</pre>
         </article>
         <article class="card">
@@ -90,7 +90,7 @@
         <h2>Testing</h2>
         <p>CUDA performance numbers come from self-hosted NVIDIA benchmark runs; hosted CI does not measure GPU performance.</p>
         <p><code>cuda-runtime</code> exposes CUDA Driver API dispatch, but product CUDA Oxide PTX is built only on supported Linux cuda-oxide hosts. Set <code>J2K_REQUIRE_CUDA_OXIDE_BUILD=1</code> on CUDA validation and benchmark hosts so placeholder PTX fails the build; runtime errors for placeholder kernels state that CUDA Oxide PTX was not built.</p>
-        <p>The CUDA backends support the same formats as the main crate: JPEG 2000 Part 1, JP2 files, HTJ2K Part 15, and JPH files. Unsupported shapes return an error for explicit CUDA requests and stay on the CPU under <code>Auto</code>.</p>
+        <p>The CUDA backends support the same formats as the main crate: JPEG 2000 Part 1, JP2 files, HTJ2K Part 15, and JPH files. Unsupported shapes return an error for explicit CUDA requests and stay on the CPU under <code>Auto</code>. Device decodes of signed grayscale and color sources follow the CPU's sample conversion.</p>
         <p class="note">Benchmark results are in <a href="https://github.com/frames-sg/j2k/blob/main/docs/benchmark-evidence.md">docs/benchmark-evidence.md</a>. Published speed comparisons need an external benchmark bundle with <code>publication_eligible=true</code>; results on generated fixtures alone are not published.</p>
       </div>
     </section>
