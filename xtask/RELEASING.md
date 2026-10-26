@@ -13,7 +13,12 @@ Version `0.13.0` is a release candidate, compared with `v0.12.0` in its
 [API report](release-evidence/public-api/reviewed-public-api-diff-0.13.0.md)
 and [review](release-evidence/public-api/public-api-review-0.13.0.yml).
 The 0.12.0 evidence below describes the published tag. The 0.13.0 candidate
-requires fresh hosted and full CUDA/Metal validation for its exact commit.
+requires fresh hosted and full Metal validation for its exact commit. Its CUDA
+full validation and CUDA T.803 report are waived by
+[`cuda-waiver-0.13.0.md`](release-evidence/cuda-waiver-0.13.0.md), which
+records the CUDA evidence collected before the self-hosted CUDA runner went
+offline. The CUDA report will be attached to the release once that runner is
+back.
 
 Version `0.12.0` is published. Its
 [API report](release-evidence/public-api/reviewed-public-api-diff-0.12.0.md)
@@ -173,6 +178,16 @@ merge. Wait for `full-validation.yml` on that push, then dispatch one
 test "$(git rev-parse origin/main)" = "$RC_SHA"
 cargo xtask release-status --sha "$RC_SHA" --scope all
 ```
+
+A release with a reviewed waiver at
+`xtask/release-evidence/cuda-waiver-<workspace-version>.md` still dispatches
+that `target=all`, `mode=full` run. Once the Metal full job passes, cancel the
+run, so the CUDA full job never starts. `release-status --scope all` and the
+publish preflight then skip only the CUDA full validation job and the CUDA
+T.803 report. They accept the cancelled run only when the CUDA full job is
+its one cancelled job. The verifier accepts a waiver only for a version listed
+in its `CUDA_WAIVER_VERSIONS` allowlist. For a tag, the waiver must also match
+the tag.
 
 Only after this passes, create an annotated `v<workspace-version>` tag on
 `RC_SHA` and push it by name. Do not use `--follow-tags`, move an existing

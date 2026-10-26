@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 from pathlib import Path
 import tempfile
 import urllib.error
@@ -639,6 +640,223 @@ class ReleaseVerificationTests(unittest.TestCase):
         self.assertEqual(
             [(spec.run_id, spec.report_stem) for spec in specs], [(20, "cuda")]
         )
+
+    def test_cuda_waiver_must_be_allowlisted_checked_in_and_titled(self) -> None:
+        waiver_dir = Path(verifier.CUDA_WAIVER_DIR)
+        with tempfile.TemporaryDirectory() as directory:
+            previous = Path.cwd()
+            os.chdir(directory)
+            self.addCleanup(os.chdir, previous)
+            waiver_dir.mkdir(parents=True)
+            for version in ("0.13.0", "0.14.0"):
+                (waiver_dir / f"cuda-waiver-{version}.md").write_text(
+                    f"# CUDA evidence waiver for j2k {version}\n", encoding="utf-8"
+                )
+            (waiver_dir / "cuda-waiver-0.13.0-untitled.md").write_text("waiver\n")
+            Path("cuda-waiver-0.13.0.md").write_text(
+                "# CUDA evidence waiver for j2k 0.13.0\n", encoding="utf-8"
+            )
+
+            self.assertEqual(
+                verifier.cuda_waiver_version(waiver_dir / "cuda-waiver-0.13.0.md"),
+                "0.13.0",
+            )
+            for path, expected in (
+                (waiver_dir / "cuda-waiver-0.14.0.md", "no CUDA evidence waiver"),
+                (Path("cuda-waiver-0.13.0.md"), "must be xtask/release-evidence"),
+                (waiver_dir / "cuda-waiver-0.13.0-untitled.md", "must be xtask"),
+                (waiver_dir / "missing" / "cuda-waiver-0.13.0.md", "must be xtask"),
+            ):
+                with self.subTest(path=str(path)), self.assertRaisesRegex(
+                    verifier.VerificationError, expected
+                ):
+                    verifier.cuda_waiver_version(path)
+
+            (waiver_dir / "cuda-waiver-0.13.0.md").write_text("# CUDA waiver\n")
+            with self.assertRaisesRegex(verifier.VerificationError, "must start with"):
+                verifier.cuda_waiver_version(waiver_dir / "cuda-waiver-0.13.0.md")
+            (waiver_dir / "cuda-waiver-0.13.0.md").unlink()
+            (waiver_dir / "cuda-waiver-0.13.0.md").symlink_to(
+                Path.cwd() / "cuda-waiver-0.13.0.md"
+            )
+            with self.assertRaisesRegex(verifier.VerificationError, "regular file"):
+                verifier.cuda_waiver_version(waiver_dir / "cuda-waiver-0.13.0.md")
+
+    def test_cuda_waiver_drops_only_the_cuda_lane_of_the_all_scope(self) -> None:
+        specs = verifier.t803_artifact_specs(SHA, 10, 20, cuda_waived=True)
+        self.assertEqual(
+            [(spec.run_id, spec.report_stem) for spec in specs],
+            [(10, "cpu"), (10, "cpu"), (10, "cpu"), (20, "metal")],
+        )
+        for scope in ("cpu", "cuda", "metal"):
+            with self.subTest(scope=scope), self.assertRaisesRegex(
+                verifier.VerificationError, "only to the all-lane release scope"
+            ):
+                verifier.t803_artifact_specs(SHA, 10, 20, scope=scope, cuda_waived=True)
+
+    def test_cuda_waived_candidate_requires_only_the_metal_job(self) -> None:
+        api = FakeApi()
+        api.add("/private-vulnerability-reporting", {"enabled": True})
+        workflow_metadata(api, "ci.yml", 88)
+        api.add(
+            "/actions/workflows/88/runs",
+            {
+                "workflow_runs": [
+                    workflow_run(
+                        10,
+                        workflow_id=88,
+                        path=".github/workflows/ci.yml",
+                        event="push",
+                    )
+                ]
+            },
+            {"head_sha": SHA, "per_page": 100, "page": 1},
+        )
+        add_jobs(api, 10, [workflow_job(verifier.RELEASE_CANDIDATE_JOB)])
+        workflow_metadata(api, "gpu-validation.yml", 77)
+        add_runs(api, 77, [workflow_run(20)])
+        add_jobs(api, 20, [workflow_job(verifier.METAL_JOB)])
+
+        with tempfile.TemporaryDirectory() as directory:
+            previous = Path.cwd()
+            os.chdir(directory)
+            self.addCleanup(os.chdir, previous)
+            waiver = Path(verifier.CUDA_WAIVER_DIR) / "cuda-waiver-0.13.0.md"
+            waiver.parent.mkdir(parents=True)
+            waiver.write_text(
+                "# CUDA evidence waiver for j2k 0.13.0\n", encoding="utf-8"
+            )
+            arguments = dict(
+                candidate_sha=SHA,
+                ci_workflow="ci.yml",
+                aggregate_job=verifier.RELEASE_CANDIDATE_JOB,
+                gpu_workflow="gpu-validation.yml",
+                cuda_job=verifier.CUDA_JOB,
+                metal_job=verifier.METAL_JOB,
+                ci_branch="main",
+            )
+
+            with self.assertRaisesRegex(
+                verifier.VerificationError, "missing required jobs"
+            ):
+                verifier.verify_candidate_evidence(api, **arguments)  # type: ignore[arg-type]
+            self.assertEqual(
+                verifier.verify_candidate_evidence(
+                    api, cuda_waiver=waiver, **arguments  # type: ignore[arg-type]
+                ),
+                (10, 20),
+            )
+
+            mismatched = FakeApi()
+            with self.assertRaisesRegex(
+                verifier.VerificationError, "does not cover release tag v0.13.1"
+            ):
+                verifier.verify_release_evidence(
+                    mismatched,  # type: ignore[arg-type]
+                    repository="frames-sg/j2k",
+                    origin_url="https://github.com/frames-sg/j2k.git",
+                    server_url="https://github.com",
+                    tag="v0.13.1",
+                    cuda_waiver=waiver,
+                    **arguments,
+                )
+            self.assertEqual(mismatched.calls, [], "a mismatched waiver must fail first")
+
+    def test_cuda_waiver_accepts_a_gpu_run_cancelled_only_on_the_cuda_job(self) -> None:
+        request = workflow_job("GPU / Validate GPU request")
+        request_cancelled = workflow_job(
+            "GPU / Validate GPU request", conclusion="cancelled"
+        )
+        metal = workflow_job(verifier.METAL_JOB)
+        metal_cancelled = workflow_job(verifier.METAL_JOB, conclusion="cancelled")
+        cuda_cancelled = workflow_job(verifier.CUDA_JOB, conclusion="cancelled")
+        cuda_failed = workflow_job(verifier.CUDA_JOB, conclusion="failure")
+        cases = (
+            ("cuda cancelled", "cancelled", [request, metal, cuda_cancelled], None),
+            ("cuda failed", "failure", [request, metal, cuda_failed], "completed/failure"),
+            (
+                "request cancelled",
+                "cancelled",
+                [request_cancelled, metal, cuda_cancelled],
+                "beyond its waived jobs",
+            ),
+            (
+                "metal cancelled",
+                "cancelled",
+                [request, metal_cancelled],
+                "unsuccessful required jobs",
+            ),
+            ("nothing cancelled", "cancelled", [request, metal], "no waived job"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            previous = Path.cwd()
+            os.chdir(directory)
+            self.addCleanup(os.chdir, previous)
+            waiver = Path(verifier.CUDA_WAIVER_DIR) / "cuda-waiver-0.13.0.md"
+            waiver.parent.mkdir(parents=True)
+            waiver.write_text("# CUDA evidence waiver for j2k 0.13.0\n", encoding="utf-8")
+            for label, run_conclusion, jobs, expected_error in cases:
+                for cuda_waiver in (waiver, None):
+                    with self.subTest(label=label, waived=cuda_waiver is not None):
+                        api = FakeApi()
+                        api.add("/private-vulnerability-reporting", {"enabled": True})
+                        workflow_metadata(api, "ci.yml", 88)
+                        api.add(
+                            "/actions/workflows/88/runs",
+                            {
+                                "workflow_runs": [
+                                    workflow_run(
+                                        10,
+                                        workflow_id=88,
+                                        path=".github/workflows/ci.yml",
+                                        event="push",
+                                    )
+                                ]
+                            },
+                            {"head_sha": SHA, "per_page": 100, "page": 1},
+                        )
+                        add_jobs(api, 10, [workflow_job(verifier.RELEASE_CANDIDATE_JOB)])
+                        workflow_metadata(api, "gpu-validation.yml", 77)
+                        add_runs(api, 77, [workflow_run(20, conclusion=run_conclusion)])
+                        add_jobs(api, 20, jobs)
+                        arguments = dict(
+                            candidate_sha=SHA,
+                            ci_workflow="ci.yml",
+                            aggregate_job=verifier.RELEASE_CANDIDATE_JOB,
+                            gpu_workflow="gpu-validation.yml",
+                            cuda_job=verifier.CUDA_JOB,
+                            metal_job=verifier.METAL_JOB,
+                            ci_branch="main",
+                            cuda_waiver=cuda_waiver,
+                        )
+                        error = (
+                            f"completed/{run_conclusion}"
+                            if cuda_waiver is None
+                            else expected_error
+                        )
+                        if error is None:
+                            self.assertEqual(
+                                verifier.verify_candidate_evidence(api, **arguments),  # type: ignore[arg-type]
+                                (10, 20),
+                            )
+                        else:
+                            with self.assertRaisesRegex(
+                                verifier.VerificationError, error
+                            ):
+                                verifier.verify_candidate_evidence(api, **arguments)  # type: ignore[arg-type]
+
+    def test_metal_scope_without_a_waiver_rejects_a_cancelled_gpu_run(self) -> None:
+        api = FakeApi()
+        workflow_metadata(api, "gpu-validation.yml", 77)
+        add_runs(api, 77, [workflow_run(20, conclusion="cancelled")])
+        with self.assertRaisesRegex(verifier.VerificationError, "completed/cancelled"):
+            verifier.verify_workflow_run(
+                api,  # type: ignore[arg-type]
+                "gpu-validation.yml",
+                SHA,
+                [verifier.METAL_JOB],
+                required_event="workflow_dispatch",
+            )
 
     def test_post_freeze_candidate_requires_private_vulnerability_reporting(self) -> None:
         cases = (

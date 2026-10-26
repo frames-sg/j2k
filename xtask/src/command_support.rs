@@ -165,8 +165,13 @@ pub(super) fn command_output_os_detailed_with_env(
 }
 
 pub(super) fn workspace_version() -> Result<String, String> {
-    let manifest = fs::read_to_string("Cargo.toml")
-        .map_err(|err| format!("failed to read Cargo.toml: {err}"))?;
+    workspace_version_at(Path::new(""))
+}
+
+pub(super) fn workspace_version_at(root: &Path) -> Result<String, String> {
+    let manifest_path = root.join("Cargo.toml");
+    let manifest = fs::read_to_string(&manifest_path)
+        .map_err(|err| format!("failed to read {}: {err}", manifest_path.display()))?;
     manifest
         .lines()
         .find_map(|line| {

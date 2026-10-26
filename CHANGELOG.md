@@ -33,6 +33,13 @@ and stale roadmap entries have been removed from the public documentation set.
   recovery. The `cuda-oxide-j2k-ml` feature of `j2k-cuda-j2k-engine` is
   removed.
 
+- Release evidence: 0.13.0 publishes without the CUDA full release validation
+  job and the CUDA T.803 report, because the self-hosted CUDA runner is
+  offline. [`cuda-waiver-0.13.0.md`](xtask/release-evidence/cuda-waiver-0.13.0.md)
+  records the CUDA tests and byte-identity checks that passed on the same
+  crate sources. CPU and Metal evidence are required as usual. The CUDA T.803
+  report will be attached to the GitHub release once the runner is back.
+
 - CPU byte and bits-per-pixel rate searches return the last probe's
   codestream when that probe is the selected scale, instead of encoding the
   same scale again. Search decisions and output are unchanged.
