@@ -116,9 +116,10 @@ fn format_for(case: LossyCase) -> (PixelFormat, usize) {
 }
 
 fn batch_u8(bytes: &[u8], request: DecodeRequest) -> Vec<u8> {
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let result = CpuBatchDecoder::new(options)
         .decode(Vec::from([EncodedImage::new(Arc::from(bytes), request)]))

@@ -8,9 +8,10 @@ fn prepared_ht_rgb_u8_nhwc_resident_group_is_exact_and_uses_one_allocation() {
         return;
     }
 
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let roi = Rect {
         x: 2,
@@ -79,9 +80,10 @@ fn prepared_ht_rgb_u16_nhwc_resident_group_is_exact_and_uses_one_allocation() {
         return;
     }
 
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let inputs = vec![
         EncodedImage::full(Arc::from(fixture_ht_rgb_u16_sized(8, 8, 0))),
@@ -136,9 +138,10 @@ fn metal_prepared_batch_continues_after_one_group_execution_failure() {
         return;
     }
 
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nchw,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nchw;
+        options
     };
     let mut decoder =
         MetalBatchDecoder::system_default_with_options(options).expect("persistent Metal decoder");
@@ -170,9 +173,10 @@ fn prepared_ht_rgb_resident_session_reuse_soak_stabilizes_scratch_retention() {
         return;
     }
 
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let mut decoder =
         MetalBatchDecoder::system_default_with_options(options).expect("persistent Metal decoder");

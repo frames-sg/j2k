@@ -64,9 +64,10 @@ fn fixture_oracle(fixture: OpenJphBatchFixture) -> NativeOracle {
 #[test]
 fn independent_openjph_batch_matrix_preserves_native_samples_and_metadata() {
     let fixtures = openjph_batch_fixtures();
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let mut decoder = CpuBatchDecoder::new(options);
     let result = decoder

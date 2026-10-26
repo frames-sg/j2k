@@ -65,9 +65,10 @@ mod bench {
             Ok("metal-batch") => return run_metal_batch_only(&paths, repeats, batch),
             _ => {}
         }
-        let options = BatchDecodeOptions {
-            layout: BatchLayout::Nhwc,
-            ..BatchDecodeOptions::default()
+        let options = {
+            let mut options = BatchDecodeOptions::default();
+            options.layout = BatchLayout::Nhwc;
+            options
         };
         let mut metal_batch = MetalBatchDecoder::system_default_with_options(options)
             .map_err(|error| format!("Metal batch decoder: {error}"))?;
@@ -154,9 +155,10 @@ mod bench {
     }
 
     fn run_metal_batch_only(paths: &[PathBuf], repeats: usize, batch: usize) -> Result<(), String> {
-        let options = BatchDecodeOptions {
-            layout: BatchLayout::Nhwc,
-            ..BatchDecodeOptions::default()
+        let options = {
+            let mut options = BatchDecodeOptions::default();
+            options.layout = BatchLayout::Nhwc;
+            options
         };
         let mut decoder = MetalBatchDecoder::system_default_with_options(options)
             .map_err(|error| format!("Metal batch decoder: {error}"))?;

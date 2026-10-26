@@ -27,9 +27,10 @@ fn persistent_batch_decoder_accepts_an_empty_batch_without_cuda() {
 
 #[test]
 fn cuda_prepared_image_regrouping_reports_indexed_settings_mismatch_without_cuda() {
-    let lenient_options = BatchDecodeOptions {
-        settings: DecodeSettings::lenient(),
-        ..BatchDecodeOptions::default()
+    let lenient_options = {
+        let mut options = BatchDecodeOptions::default();
+        options.settings = DecodeSettings::lenient();
+        options
     };
     let prepared = prepare_batch(
         vec![EncodedImage::full(Arc::from(

@@ -25,9 +25,10 @@ type Flex = burn_ndarray::NdArray<f32, i64, i8>;
 #[test]
 fn persistent_cpu_burn_decoder_reuses_prepared_integer_batch() {
     let encoded = Arc::<[u8]>::from(htj2k_gray8_fixture(4, 3));
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nchw,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nchw;
+        options
     };
     let mut decoder = CpuBurnDecoder::<Flex>::new(FlexDevice, options);
     let prepared = decoder
@@ -68,9 +69,10 @@ fn persistent_cpu_burn_decoder_reuses_prepared_integer_batch() {
 #[test]
 fn cpu_burn_decoder_accepts_caller_supplied_prepared_images() {
     let encoded = Arc::<[u8]>::from(htj2k_gray8_fixture(4, 3));
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nchw,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nchw;
+        options
     };
     let mut decoder = CpuBurnDecoder::<Flex>::new(FlexDevice, options);
     let original = decoder

@@ -91,13 +91,11 @@ fn codec_layout_controls_nchw_and_nhwc_without_adapter_repacking() {
         (BatchLayout::Nchw, [2, 3, 2, 3]),
         (BatchLayout::Nhwc, [2, 2, 3, 3]),
     ] {
-        let mut decoder = CpuBurnDecoder::<Flex>::new(
-            FlexDevice,
-            BatchDecodeOptions {
-                layout,
-                ..BatchDecodeOptions::default()
-            },
-        );
+        let mut decoder = CpuBurnDecoder::<Flex>::new(FlexDevice, {
+            let mut options = BatchDecodeOptions::default();
+            options.layout = layout;
+            options
+        });
         let output = decoder
             .decode(vec![
                 EncodedImage::full(Arc::from(encoded.clone())),

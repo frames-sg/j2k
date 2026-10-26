@@ -28,7 +28,7 @@ It is the item-level companion to `docs/stable-api-1.0.md`: every public module,
 #[non_exhaustive] pub enum j2k::J2kSrgb8Layout
 #[non_exhaustive] pub enum j2k::NonRepresentableReason
 #[non_exhaustive] pub enum j2k::PreparationDepth
-pub struct j2k::BatchDecodeOptions
+#[non_exhaustive] pub struct j2k::BatchDecodeOptions
 #[non_exhaustive] pub struct j2k::J2kLosslessEncodeOptions
 #[non_exhaustive] pub struct j2k::J2kLossyEncodeOptions
 #[non_exhaustive] pub struct j2k::J2kToHtj2kOptions

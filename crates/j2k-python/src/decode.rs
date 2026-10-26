@@ -159,14 +159,16 @@ impl Decoder {
                     .ok_or_else(|| PyValueError::new_err("workers must be positive"))
             })
             .transpose()?;
-        let options = BatchDecodeOptions {
-            layout,
-            workers,
-            settings: if strict {
+        let options = {
+            let mut options = BatchDecodeOptions::default();
+            options.layout = layout;
+            options.workers = workers;
+            options.settings = if strict {
                 DecodeSettings::strict()
             } else {
                 DecodeSettings::lenient()
-            },
+            };
+            options
         };
         #[cfg(feature = "cuda")]
         let cuda = if device == "cpu" {

@@ -91,9 +91,10 @@ fn independent_openjph_multitile_gray12_decodes_exactly_on_metal() {
         surface.as_bytes().expect("multi-tile Gray12 surface"),
         fixture.oracle
     );
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let mut decoder =
         MetalBatchDecoder::system_default_with_options(options).expect("persistent Metal decoder");

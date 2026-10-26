@@ -100,6 +100,7 @@ impl EncodedImage {
 
 /// Options shared by preparation and CPU batch decode.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct BatchDecodeOptions {
     /// Output channel ordering.
     pub layout: BatchLayout,

@@ -39,9 +39,10 @@ fn independent_openjph_signed_rgb_is_exact_in_burn_for_all_requests_and_layouts(
     assert_eq!(fixtures.len(), 3);
 
     for layout in [BatchLayout::Nhwc, BatchLayout::Nchw] {
-        let options = BatchDecodeOptions {
-            layout,
-            ..BatchDecodeOptions::default()
+        let options = {
+            let mut options = BatchDecodeOptions::default();
+            options.layout = layout;
+            options
         };
         let mut decoder =
             MetalUploadBurnDecoder::system_default(options).expect("paired Metal session");
@@ -101,9 +102,10 @@ fn staged_metal_burn_rgba_is_exact_for_native_types_and_layouts() {
         let fixture = generated_htj2k_rgba_fixture(profile, Htj2kRgbaAlpha::Straight);
         let encoded = Arc::<[u8]>::from(wrap_rgba_jph(&fixture.encoded, fixture.alpha));
         for layout in [BatchLayout::Nhwc, BatchLayout::Nchw] {
-            let options = BatchDecodeOptions {
-                layout,
-                ..BatchDecodeOptions::default()
+            let options = {
+                let mut options = BatchDecodeOptions::default();
+                options.layout = layout;
+                options
             };
             let inputs = vec![
                 EncodedImage::full(encoded.clone()),

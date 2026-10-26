@@ -142,9 +142,10 @@ fn wrap_classic_rgba_jp2(fixture: &Htj2kRgbaFixture) -> Vec<u8> {
 
 fn assert_rgba_encoding(codec: &str, encoded: &Arc<[u8]>, requests: &[DecodeRequest]) {
     for layout in [BatchLayout::Nchw, BatchLayout::Nhwc] {
-        let options = BatchDecodeOptions {
-            layout,
-            ..BatchDecodeOptions::default()
+        let options = {
+            let mut options = BatchDecodeOptions::default();
+            options.layout = layout;
+            options
         };
         let inputs = requests
             .iter()
@@ -263,9 +264,10 @@ fn prepared_htj2k_rgba_nhwc_resident_group_is_exact_and_uses_one_allocation() {
         return;
     }
 
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let fixture =
         generated_htj2k_rgba_fixture(Htj2kRgbaSampleProfile::U8Rct, Htj2kRgbaAlpha::Straight);
@@ -324,9 +326,10 @@ fn prepared_htj2k_rgba_nchw_resident_group_is_exact_without_surface_mislabeling(
         return;
     }
 
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nchw,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nchw;
+        options
     };
     let fixture =
         generated_htj2k_rgba_fixture(Htj2kRgbaSampleProfile::U8Rct, Htj2kRgbaAlpha::Straight);

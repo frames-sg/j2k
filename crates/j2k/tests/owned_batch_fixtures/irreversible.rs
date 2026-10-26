@@ -203,9 +203,10 @@ fn irreversible_97_batches_agree_with_scalar_reconstruction_within_one_lsb() {
         (irreversible_fixture(CodingRoute::Htj2k, 1), 1),
         (irreversible_fixture(CodingRoute::Htj2k, 3), 3),
     ];
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let mut decoder = CpuBatchDecoder::new(options);
     let result = decoder

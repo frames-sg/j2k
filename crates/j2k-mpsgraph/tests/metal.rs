@@ -232,9 +232,10 @@ fn completed_rgb8_batch_becomes_mpsgraph_tensor_without_host_pixels() {
     if !metal_runtime_gate("j2k-mpsgraph completed resident batch") {
         return;
     }
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let mut decoder =
         MpsGraphBatchDecoder::system_default(options).expect("Apple Silicon MPSGraph decoder");
@@ -301,9 +302,10 @@ fn prepared_group_submits_decode_and_identity_graph_without_a_cpu_wait() {
     if !metal_runtime_gate("j2k-mpsgraph pipelined identity graph") {
         return;
     }
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let mut decoder =
         MpsGraphBatchDecoder::system_default(options).expect("Apple Silicon MPSGraph decoder");
@@ -380,9 +382,10 @@ fn identity_graph_matches_cpu_for_layouts_and_all_request_shapes() {
         },
     ];
     for layout in [BatchLayout::Nchw, BatchLayout::Nhwc] {
-        let options = BatchDecodeOptions {
-            layout,
-            ..BatchDecodeOptions::default()
+        let options = {
+            let mut options = BatchDecodeOptions::default();
+            options.layout = layout;
+            options
         };
         for request in requests {
             let inputs = vec![EncodedImage::new(encoded.clone(), request)];
@@ -412,9 +415,10 @@ fn irreversible_identity_graph_stays_within_one_integer_lsb() {
         return;
     }
     let encoded = Arc::<[u8]>::from(htj2k_rgb8_97_fixture(16, 16));
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let inputs = vec![EncodedImage::full(encoded)];
     let mut cpu = CpuBatchDecoder::new(options);
@@ -448,9 +452,10 @@ fn identity_graph_is_exact_for_every_native_color_dtype_and_layout() {
         for sample_type in [SampleType::U8, SampleType::U16, SampleType::I16] {
             let encoded = native_fixture(color, sample_type);
             for layout in [BatchLayout::Nchw, BatchLayout::Nhwc] {
-                let options = BatchDecodeOptions {
-                    layout,
-                    ..BatchDecodeOptions::default()
+                let options = {
+                    let mut options = BatchDecodeOptions::default();
+                    options.layout = layout;
+                    options
                 };
                 let inputs = vec![EncodedImage::full(encoded.clone())];
                 let mut cpu = CpuBatchDecoder::new(options);
@@ -483,9 +488,10 @@ fn completed_pipelined_and_nonblocking_paths_are_equivalent() {
     }
     let encoded = Arc::<[u8]>::from(htj2k_rgb8_fixture(16, 16));
     let inputs = vec![EncodedImage::full(encoded)];
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let mut decoder = MpsGraphBatchDecoder::system_default(options).expect("MPSGraph decoder");
     let prepared = decoder.prepare(inputs.clone()).expect("prepared input");
@@ -538,9 +544,10 @@ fn caller_built_f32_graph_matches_cpu_for_every_submission_path() {
     let inputs = (0..BATCH)
         .map(|_| EncodedImage::full(encoded.clone()))
         .collect::<Vec<_>>();
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let mut cpu = CpuBatchDecoder::new(options);
     let cpu_output = cpu.decode(inputs.clone()).expect("CPU reference pixels");

@@ -81,9 +81,10 @@ fn staged_metal_burn_rgb_u8_region_reduced_is_exact_for_nhwc_and_nchw() {
     };
 
     for layout in [BatchLayout::Nhwc, BatchLayout::Nchw] {
-        let options = BatchDecodeOptions {
-            layout,
-            ..BatchDecodeOptions::default()
+        let options = {
+            let mut options = BatchDecodeOptions::default();
+            options.layout = layout;
+            options
         };
         let inputs = vec![
             EncodedImage::new(first.clone(), request),
@@ -131,9 +132,10 @@ fn staged_metal_burn_rgb_u16_is_exact_and_drop_safe() {
         return;
     }
     let encoded = Arc::<[u8]>::from(encode_rgb_u16(8, 8, 257));
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nchw,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nchw;
+        options
     };
     let inputs = vec![EncodedImage::full(encoded.clone())];
     let mut cpu = CpuBatchDecoder::new(options);
@@ -171,9 +173,10 @@ fn staged_metal_burn_classic_rgb_u16_is_exact_for_both_layouts() {
     }
     let encoded = Arc::<[u8]>::from(encode_classic_rgb_u16(8, 8, 257));
     for layout in [BatchLayout::Nchw, BatchLayout::Nhwc] {
-        let options = BatchDecodeOptions {
-            layout,
-            ..BatchDecodeOptions::default()
+        let options = {
+            let mut options = BatchDecodeOptions::default();
+            options.layout = layout;
+            options
         };
         let inputs = vec![
             EncodedImage::full(encoded.clone()),
@@ -212,9 +215,10 @@ fn staged_metal_burn_irreversible_rgb_u8_is_within_one_lsb_of_cpu() {
         return;
     }
     let encoded = Arc::<[u8]>::from(htj2k_rgb8_97_fixture(8, 8));
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let inputs = vec![EncodedImage::full(encoded)];
     let mut cpu = CpuBatchDecoder::new(options);

@@ -104,9 +104,10 @@ fn metal_burn_regroups_prepared_images_with_submission_indices_and_settings_erro
     .groups()[0]
         .images()[0]
         .clone();
-    let lenient_options = BatchDecodeOptions {
-        settings: DecodeSettings::lenient(),
-        ..BatchDecodeOptions::default()
+    let lenient_options = {
+        let mut options = BatchDecodeOptions::default();
+        options.settings = DecodeSettings::lenient();
+        options
     };
     let lenient = prepare_batch(vec![EncodedImage::full(encoded)], lenient_options)
         .expect("lenient preparation")

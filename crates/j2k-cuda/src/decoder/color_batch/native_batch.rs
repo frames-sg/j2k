@@ -240,9 +240,10 @@ mod tests {
             .find(|fixture| fixture.name == "openjph-rgb-s12-53-single-raw")
             .expect("independent signed RGB12 single-tile fixture");
         let encoded = Arc::<[u8]>::from(fixture.encoded);
-        let options = BatchDecodeOptions {
-            layout: BatchLayout::Nhwc,
-            ..BatchDecodeOptions::default()
+        let options = {
+            let mut options = BatchDecodeOptions::default();
+            options.layout = BatchLayout::Nhwc;
+            options
         };
         let prepared = prepare_batch(vec![EncodedImage::full(Arc::clone(&encoded))], options)
             .expect("prepare independent signed RGB12 fixture");

@@ -104,9 +104,10 @@ fn assert_one_case(
     request: DecodeRequest,
     count: usize,
 ) {
-    let options = BatchDecodeOptions {
-        layout,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = layout;
+        options
     };
     let prepared = prepare_batch(
         vec![EncodedImage::new(Arc::clone(encoded), request); count],

@@ -103,12 +103,12 @@ fn decode_stage_profile() {
     }
     let _restore = FullStagesOnDrop;
     for (width, height, count) in [(1024, 1024, 16), (640, 480, 16)] {
-        let mut decoder =
-            crate::MetalBatchDecoder::system_default_with_options(BatchDecodeOptions {
-                layout: BatchLayout::Nhwc,
-                ..BatchDecodeOptions::default()
-            })
-            .expect("Metal batch decoder");
+        let mut decoder = crate::MetalBatchDecoder::system_default_with_options({
+            let mut options = BatchDecodeOptions::default();
+            options.layout = BatchLayout::Nhwc;
+            options
+        })
+        .expect("Metal batch decoder");
         let prepared = decoder
             .prepare(distinct_batch(width, height, count))
             .expect("prepare stage-profile batch");
@@ -147,12 +147,12 @@ fn batched_idwt_route_profile() {
     let _restore = FullStagesOnDrop;
     let routes = [true, false];
     for (width, height, count) in [(1024, 1024, 16), (640, 480, 16)] {
-        let mut decoder =
-            crate::MetalBatchDecoder::system_default_with_options(BatchDecodeOptions {
-                layout: BatchLayout::Nhwc,
-                ..BatchDecodeOptions::default()
-            })
-            .expect("Metal batch decoder");
+        let mut decoder = crate::MetalBatchDecoder::system_default_with_options({
+            let mut options = BatchDecodeOptions::default();
+            options.layout = BatchLayout::Nhwc;
+            options
+        })
+        .expect("Metal batch decoder");
         let prepared = decoder
             .prepare(distinct_batch(width, height, count))
             .expect("prepare IDWT probe batch");

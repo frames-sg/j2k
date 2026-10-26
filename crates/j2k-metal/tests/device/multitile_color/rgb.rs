@@ -79,9 +79,10 @@ fn independent_openjph_multitile_rgb_decodes_exactly_on_metal() {
         .iter()
         .find(|fixture| fixture.name == "openjph-rgb-u8-53-raw")
         .expect("checked-in OpenJPH RGB8 fixture");
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let mut decoder =
         MetalBatchDecoder::system_default_with_options(options).expect("persistent Metal decoder");
@@ -154,9 +155,10 @@ fn independent_openjph_multitile_rgb_batch_matches_cpu_for_all_requests() {
             scale: Downscale::Half,
         },
     ];
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let mut decoder =
         MetalBatchDecoder::system_default_with_options(options).expect("persistent Metal decoder");

@@ -287,9 +287,10 @@ fn prepared_native_samples_match_cpu_for_signed_and_unsigned_sources() {
     ];
     let mut comparisons = 0;
     for layout in [BatchLayout::Nhwc, BatchLayout::Nchw] {
-        let options = BatchDecodeOptions {
-            layout,
-            ..BatchDecodeOptions::default()
+        let options = {
+            let mut options = BatchDecodeOptions::default();
+            options.layout = layout;
+            options
         };
         let mut decoder = j2k_metal::MetalBatchDecoder::system_default_with_options(options)
             .expect("Metal session");

@@ -234,9 +234,10 @@ fn prepared_native_color_matches_cpu_and_signed_format_conversions() {
                         )
                         .into();
                         for layout in [BatchLayout::Nhwc, BatchLayout::Nchw] {
-                            let options = BatchDecodeOptions {
-                                layout,
-                                ..BatchDecodeOptions::default()
+                            let options = {
+                                let mut options = BatchDecodeOptions::default();
+                                options.layout = layout;
+                                options
                             };
                             for (request, _) in requests() {
                                 let prepared = prepare_batch(

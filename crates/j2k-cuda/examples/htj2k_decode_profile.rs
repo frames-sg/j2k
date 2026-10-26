@@ -148,9 +148,10 @@ fn owned_profile_decoder(
     match api {
         "surface" => None,
         "owned" => Some((
-            CudaBatchDecoder::with_options(BatchDecodeOptions {
-                layout,
-                ..BatchDecodeOptions::default()
+            CudaBatchDecoder::with_options({
+                let mut options = BatchDecodeOptions::default();
+                options.layout = layout;
+                options
             }),
             inputs
                 .iter()

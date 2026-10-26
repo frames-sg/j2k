@@ -35,9 +35,10 @@ fn full_classic_signed_gray4_decode_to_metal_matches_host_exactly() {
     }
 
     let (bytes, expected) = fixture_classic_signed_gray4();
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let mut decoder =
         MetalBatchDecoder::system_default_with_options(options).expect("persistent Metal decoder");
@@ -69,9 +70,10 @@ fn full_classic_signed_gray4_roi_decode_to_metal_matches_host_exactly() {
     }
 
     let (bytes, expected) = fixture_classic_signed_gray4_roi();
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let mut decoder =
         MetalBatchDecoder::system_default_with_options(options).expect("persistent Metal decoder");
@@ -163,9 +165,10 @@ fn completed_htj2k_batch_exposes_observed_metal_stages() {
         return;
     }
 
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let mut decoder =
         MetalBatchDecoder::system_default_with_options(options).expect("persistent Metal decoder");

@@ -263,9 +263,10 @@ fn staged_cuda_rgb_preserves_subnative_codes_and_burn_layout() {
     ];
 
     for layout in [BatchLayout::Nhwc, BatchLayout::Nchw] {
-        let options = BatchDecodeOptions {
-            layout,
-            ..BatchDecodeOptions::default()
+        let options = {
+            let mut options = BatchDecodeOptions::default();
+            options.layout = layout;
+            options
         };
         let mut decoder = CudaUploadBurnDecoder::new(CudaDevice::default(), options);
         let mut cpu = CpuBatchDecoder::new(options);
@@ -360,9 +361,10 @@ fn staged_cuda_signed_rgb_matches_cpu_for_geometry_and_burn_layout() {
     ];
 
     for layout in [BatchLayout::Nhwc, BatchLayout::Nchw] {
-        let options = BatchDecodeOptions {
-            layout,
-            ..BatchDecodeOptions::default()
+        let options = {
+            let mut options = BatchDecodeOptions::default();
+            options.layout = layout;
+            options
         };
         let mut decoder = CudaUploadBurnDecoder::new(CudaDevice::default(), options);
         let mut cpu = CpuBatchDecoder::new(options);

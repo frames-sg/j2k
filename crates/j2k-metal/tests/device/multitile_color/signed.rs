@@ -7,9 +7,10 @@ fn prepared_metal_color_preserves_signed_rgb_in_resident_output() {
     if !should_run_metal_runtime() {
         return;
     }
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let fixture = j2k_test_support::openjph_batch_fixtures()
         .iter()

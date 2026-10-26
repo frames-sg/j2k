@@ -71,9 +71,10 @@ fn staged_cuda_burn_rgba_matches_cpu_across_codecs_types_geometry_and_layouts() 
 }
 
 fn assert_burn_case(codec: &str, encoded: &Arc<[u8]>, layout: BatchLayout, request: DecodeRequest) {
-    let options = BatchDecodeOptions {
-        layout,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = layout;
+        options
     };
     let inputs = vec![
         EncodedImage::new(Arc::clone(encoded), request),

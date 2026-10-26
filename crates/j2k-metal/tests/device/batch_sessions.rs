@@ -65,9 +65,10 @@ fn persistent_metal_batch_decoder_accepts_and_reuses_shared_prepared_groups() {
 
     let first = Arc::<[u8]>::from(fixture_ht_gray8());
     let second = Arc::<[u8]>::from(fixture_ht_gray8_reversed());
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nchw,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nchw;
+        options
     };
     let mut decoder =
         MetalBatchDecoder::system_default_with_options(options).expect("persistent Metal decoder");
@@ -233,9 +234,10 @@ fn shared_metal_prepared_batch_decodes_classic_resident_color_without_legacy_sta
         return;
     }
 
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let mut decoder =
         MetalBatchDecoder::system_default_with_options(options).expect("persistent Metal decoder");
@@ -273,9 +275,10 @@ fn prepared_ht_rgb_nchw_resident_group_is_exact_without_interleaved_surface_view
         return;
     }
 
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nchw,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nchw;
+        options
     };
     let inputs = vec![
         EncodedImage::full(Arc::from(fixture_ht_rgb_u8_sized(8, 8, 0))),

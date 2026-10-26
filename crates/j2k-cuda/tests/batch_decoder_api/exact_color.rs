@@ -104,9 +104,10 @@ fn assert_exact_rgb_case(
     layout: BatchLayout,
     request: DecodeRequest,
 ) {
-    let options = BatchDecodeOptions {
-        layout,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = layout;
+        options
     };
     let prepared = prepare_batch(
         vec![EncodedImage::new(Arc::clone(encoded), request)],
@@ -249,9 +250,10 @@ fn irreversible_rgb8_external_and_resident_outputs_match_cpu_within_one_lsb_when
         )
         .expect("encode irreversible RGB8 HTJ2K fixture"),
     );
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let prepared = prepare_batch(vec![EncodedImage::full(encoded)], options)
         .expect("prepare irreversible RGB8 CUDA group");

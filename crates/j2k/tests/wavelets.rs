@@ -380,9 +380,10 @@ fn independent_signed_multitile_coefficients_preserve_origins_and_selection() {
 }
 
 fn decoded_unsigned_planes(bytes: &[u8]) -> Vec<f64> {
-    let mut decoder = CpuBatchDecoder::new(BatchDecodeOptions {
-        layout: BatchLayout::Nchw,
-        ..BatchDecodeOptions::default()
+    let mut decoder = CpuBatchDecoder::new({
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nchw;
+        options
     });
     let result = decoder
         .decode(vec![EncodedImage::full(Arc::from(bytes))])

@@ -65,9 +65,10 @@ fn empty_cuda_batch_uses_the_persistent_shared_codec_contract_without_initializi
 
 #[test]
 fn cuda_burn_regroups_prepared_images_and_keeps_settings_failures_indexed_without_cuda() {
-    let lenient_options = BatchDecodeOptions {
-        settings: DecodeSettings::lenient(),
-        ..BatchDecodeOptions::default()
+    let lenient_options = {
+        let mut options = BatchDecodeOptions::default();
+        options.settings = DecodeSettings::lenient();
+        options
     };
     let prepared = prepare_batch(
         vec![EncodedImage::full(Arc::from(
