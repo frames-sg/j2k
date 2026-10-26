@@ -18,7 +18,6 @@ It is the item-level companion to `docs/stable-api-1.0.md`: every public module,
 #[non_exhaustive] pub enum j2k::BatchCodecRoute
 #[non_exhaustive] pub enum j2k::BatchErrorStage
 #[non_exhaustive] pub enum j2k::BatchItemError
-#[non_exhaustive] pub enum j2k::BatchLayout
 #[non_exhaustive] pub enum j2k::BatchWaveletTransform
 #[non_exhaustive] pub enum j2k::CpuBatchSamples
 #[non_exhaustive] pub enum j2k::DecodeRequest
@@ -29,6 +28,7 @@ It is the item-level companion to `docs/stable-api-1.0.md`: every public module,
 #[non_exhaustive] pub enum j2k::J2kSrgb8Layout
 #[non_exhaustive] pub enum j2k::NonRepresentableReason
 #[non_exhaustive] pub enum j2k::PreparationDepth
+pub struct j2k::BatchDecodeOptions
 #[non_exhaustive] pub struct j2k::J2kLosslessEncodeOptions
 #[non_exhaustive] pub struct j2k::J2kLossyEncodeOptions
 #[non_exhaustive] pub struct j2k::J2kToHtj2kOptions
@@ -391,7 +391,7 @@ pub j2k::BatchAlpha::Premultiplied
 pub j2k::BatchAlpha::Straight
 pub j2k::BatchCodecRoute::Classic
 pub j2k::BatchCodecRoute::Htj2k
-pub j2k::BatchDecodeOptions::layout: j2k::BatchLayout
+pub j2k::BatchDecodeOptions::layout: j2k_core::batch::BatchLayout
 pub j2k::BatchDecodeOptions::settings: j2k::DecodeSettings
 pub j2k::BatchDecodeOptions::workers: core::option::Option<core::num::nonzero::NonZeroUsize>
 pub j2k::BatchErrorStage::Decode
@@ -400,7 +400,7 @@ pub j2k::BatchGroupInfo::alpha: j2k::BatchAlpha
 pub j2k::BatchGroupInfo::color: j2k_core::pixel::PixelLayout
 pub j2k::BatchGroupInfo::colorspace: j2k_core::types::Colorspace
 pub j2k::BatchGroupInfo::dimensions: (u32, u32)
-pub j2k::BatchGroupInfo::layout: j2k::BatchLayout
+pub j2k::BatchGroupInfo::layout: j2k_core::batch::BatchLayout
 pub j2k::BatchGroupInfo::payload_kind: j2k_core::passthrough::CompressedPayloadKind
 pub j2k::BatchGroupInfo::precision: u8
 pub j2k::BatchGroupInfo::route: j2k::BatchCodecRoute
@@ -416,8 +416,6 @@ pub j2k::BatchItemError::NonRepresentableBatchOutput::reason: j2k::NonRepresenta
 pub j2k::BatchItemError::PreparedDecodeSettingsMismatch
 pub j2k::BatchItemError::PreparedDecodeSettingsMismatch::prepared: j2k::DecodeSettings
 pub j2k::BatchItemError::PreparedDecodeSettingsMismatch::requested: j2k::DecodeSettings
-pub j2k::BatchLayout::Nchw
-pub j2k::BatchLayout::Nhwc
 pub j2k::BatchWaveletTransform::Irreversible97
 pub j2k::BatchWaveletTransform::Reversible53
 pub j2k::CpuBatchSamples::I16(alloc::vec::Vec<i16>)
@@ -719,7 +717,6 @@ pub j2k::TileDecodeOutput::out: &'o mut [u8]
 pub j2k::TileDecodeOutput::stride: usize
 pub mod j2k
 pub struct j2k::BackendError
-pub struct j2k::BatchDecodeOptions
 pub struct j2k::BatchGroupInfo
 pub struct j2k::CpuBatchDecodeResult
 pub struct j2k::CpuBatchDecoder
@@ -787,6 +784,7 @@ pub use j2k::BackendKind
 pub use j2k::BackendRequest
 pub use j2k::BatchColor
 pub use j2k::BatchInfrastructureError
+pub use j2k::BatchLayout
 pub use j2k::BufferError
 pub use j2k::ClassicCodeBlockPayload
 pub use j2k::CodecError
@@ -827,6 +825,7 @@ pub use j2k::WaveletTransform
 #[non_exhaustive] pub enum j2k_core::AdapterErrorKind
 #[non_exhaustive] pub enum j2k_core::BatchDecodeError<E>
 #[non_exhaustive] pub enum j2k_core::BatchInfrastructureError
+#[non_exhaustive] pub enum j2k_core::BatchLayout
 #[non_exhaustive] pub enum j2k_core::BufferError
 #[non_exhaustive] pub enum j2k_core::CapabilityRejectionKind
 #[non_exhaustive] pub enum j2k_core::Colorspace
@@ -1059,6 +1058,8 @@ pub j2k_core::BatchInfrastructureError::WorkerSlotMissing::available: usize
 pub j2k_core::BatchInfrastructureError::WorkerSlotMissing::worker: usize
 pub j2k_core::BatchInfrastructureError::WorkerSpawnFailed
 pub j2k_core::BatchInfrastructureError::WorkerSpawnFailed::worker: usize
+pub j2k_core::BatchLayout::Nchw
+pub j2k_core::BatchLayout::Nhwc
 pub j2k_core::BufferError::AllocationTooLarge
 pub j2k_core::BufferError::AllocationTooLarge::cap: usize
 pub j2k_core::BufferError::AllocationTooLarge::requested: usize
