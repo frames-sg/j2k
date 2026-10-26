@@ -49,6 +49,11 @@ exceptions = [
     { crate = "hexf-parse@0.2.1", allow = ["CC0-1.0"] },
     { crate = "option-ext@0.2.0", allow = ["MPL-2.0"] },
     { crate = "xxhash-rust@0.8.16", allow = ["BSL-1.0"] },
+    # Version-scoped exceptions for the 0.13.0 zstd security update. zstd-rs moved
+    # to BSD-3-Clause in zstd 0.14; j2k-tilecodec is its only user.
+    { crate = "zstd@0.14.3", allow = ["BSD-3-Clause"] },
+    { crate = "zstd-safe@8.2.0", allow = ["BSD-3-Clause"] },
+    { crate = "zstd-sys@2.1.2", allow = ["BSD-3-Clause"] },
 ]
 
 [bans]

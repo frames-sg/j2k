@@ -33,6 +33,12 @@ and stale roadmap entries have been removed from the public documentation set.
   recovery. The `cuda-oxide-j2k-ml` feature of `j2k-cuda-j2k-engine` is
   removed.
 
+- Security: `j2k-tilecodec` requires zstd 0.14.3, which fixes RUSTSEC-2026-0391,
+  RUSTSEC-2026-0398, RUSTSEC-2026-0403 and RUSTSEC-2026-0410. `ZstdCodec` only
+  uses the streaming read decoder, which the first three do not affect.
+  RUSTSEC-2026-0410 affects wasm32 builds that decode untrusted Zstandard tiles.
+  The bundled zstd library stays at 1.5.7 and decoded output is unchanged.
+
 - Release evidence: 0.13.0 publishes without the CUDA full release validation
   job and the CUDA T.803 report, because the self-hosted CUDA runner is
   offline. [`cuda-waiver-0.13.0.md`](xtask/release-evidence/cuda-waiver-0.13.0.md)

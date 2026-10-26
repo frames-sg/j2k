@@ -56,15 +56,18 @@ The candidate must keep these from `76a0fab3`. Check them before tagging with
 
 | Path | Tree or blob at `76a0fab3` |
 | --- | --- |
-| `crates` | `8457a8e44bdf8c738442b67c6171470b4f0be2b8`, apart from test-only files |
-| `Cargo.toml` | `61b5888630d5d4e0ec09012b03ff69392f08abe2` |
-| `Cargo.lock` | `28dac642957f5476aa5df76939e105acee2f520c` |
+| `crates` | `8457a8e44bdf8c738442b67c6171470b4f0be2b8`, apart from the files below |
+| `Cargo.toml` | `61b5888630d5d4e0ec09012b03ff69392f08abe2`, apart from the zstd requirement |
+| `Cargo.lock` | `28dac642957f5476aa5df76939e105acee2f520c`, apart from the zstd entries |
 
-After `76a0fab3`, the only changes under `crates` are two test files.
-`crates/j2k-ml/tests/cpu.rs` adds a CPU test for the mixed batch accessors.
-`crates/j2k-metal/tests/sample_depth_output.rs` drains an autorelease pool per
-rejected decode. No crate source, manifest, or lockfile changed.
-`git diff --stat 76a0fab3 <sha> -- crates` must list only those files.
+After `76a0fab3`, the only changes under `crates` are two test files and the
+`j2k-tilecodec` fuzz lockfile. `crates/j2k-ml/tests/cpu.rs` adds a CPU test for
+the mixed batch accessors. `crates/j2k-metal/tests/sample_depth_output.rs`
+drains an autorelease pool per rejected decode. The zstd security update moves
+the workspace zstd requirement to 0.14.3 and changes only the `zstd`,
+`zstd-safe`, and `zstd-sys` lock entries. No CUDA crate depends on zstd or on
+`j2k-tilecodec`, its only user. No crate source changed.
+`git diff --stat 76a0fab3 <sha> -- crates` must list only those three files.
 
 ## Not covered by this waiver
 
