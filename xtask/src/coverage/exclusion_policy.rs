@@ -63,11 +63,39 @@ const GENERATED_DWT_EVIDENCE: &[EvidenceTest] = &[
     ),
 ];
 
+const PYTHON_EXTENSION_EVIDENCE: &[EvidenceTest] = &[
+    python_primary_evidence(
+        "crates/j2k-python/tests/test_adapter.py",
+        "test_jpeg_and_jpeg2000_share_a_batch_with_original_indices",
+    ),
+    python_primary_evidence(
+        "crates/j2k-python/tests/test_adapter.py",
+        "test_prepared_mixed_batches_preserve_indices_and_errors",
+    ),
+    python_primary_evidence(
+        "crates/j2k-python/tests/test_adapter.py",
+        "test_dlpack_transfers_ownership_once_and_handles_unconsumed_capsule",
+    ),
+    python_primary_evidence(
+        "crates/j2k-python/tests/test_adapter.py",
+        "test_jpeg_integrity_and_recovery_metadata",
+    ),
+    python_supplemental_evidence(
+        "crates/j2k-python/tests/test_cuda.py",
+        "test_mixed_inputs_preserve_indices_and_gpu_export_after_numpy_rejection",
+    ),
+    python_supplemental_evidence(
+        "crates/j2k-python/tests/test_metal.py",
+        "test_native_types_layouts_and_requests_match_cpu",
+    ),
+];
+
 const fn primary_evidence(path: &'static str, name: &'static str) -> EvidenceTest {
     EvidenceTest {
         path,
         name,
         class: EvidenceClass::Primary,
+        language: EvidenceLanguage::Rust,
     }
 }
 
@@ -76,6 +104,25 @@ const fn supplemental_evidence(path: &'static str, name: &'static str) -> Eviden
         path,
         name,
         class: EvidenceClass::Supplemental,
+        language: EvidenceLanguage::Rust,
+    }
+}
+
+const fn python_primary_evidence(path: &'static str, name: &'static str) -> EvidenceTest {
+    EvidenceTest {
+        path,
+        name,
+        class: EvidenceClass::Primary,
+        language: EvidenceLanguage::Python,
+    }
+}
+
+const fn python_supplemental_evidence(path: &'static str, name: &'static str) -> EvidenceTest {
+    EvidenceTest {
+        path,
+        name,
+        class: EvidenceClass::Supplemental,
+        language: EvidenceLanguage::Python,
     }
 }
 
@@ -118,6 +165,14 @@ pub(super) const COVERAGE_EXCLUSIONS: &[CoverageExclusion] = &[
         },
         evidence: GENERATED_DWT_EVIDENCE,
     },
+    CoverageExclusion {
+        id: "python-extension-bindings",
+        reason: "PyO3 extension code runs only inside a Python interpreter, which the Rust host coverage lane does not load; the Python adapter suites exercise it",
+        matcher: ExclusionMatcher::PathPrefix {
+            prefix: "crates/j2k-python/src/",
+        },
+        evidence: PYTHON_EXTENSION_EVIDENCE,
+    },
 ];
 
 #[derive(Clone, Copy, Debug)]
@@ -125,12 +180,20 @@ pub(super) struct EvidenceTest {
     pub(super) path: &'static str,
     pub(super) name: &'static str,
     class: EvidenceClass,
+    language: EvidenceLanguage,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EvidenceClass {
     Primary,
     Supplemental,
+}
+
+/// Rust evidence is a `#[test]` function; Python evidence is a `unittest.TestCase` method.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EvidenceLanguage {
+    Rust,
+    Python,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -147,6 +210,10 @@ pub(super) enum ExclusionMatcher {
     CudaOxideHostScaffold,
     WholeFile {
         path: &'static str,
+    },
+    /// Every file below one crate source directory; `prefix` ends with `/src/`.
+    PathPrefix {
+        prefix: &'static str,
     },
     MarkerSpan {
         path: &'static str,
@@ -178,6 +245,7 @@ fn exclusion_matches(
         ExclusionMatcher::CudaOxideDeviceRust => Ok(is_cuda_oxide_device_rust(path)),
         ExclusionMatcher::CudaOxideHostScaffold => Ok(is_cuda_oxide_host_scaffold(path)),
         ExclusionMatcher::WholeFile { path: exact } => Ok(path == exact),
+        ExclusionMatcher::PathPrefix { prefix } => Ok(path.starts_with(prefix)),
         ExclusionMatcher::MarkerSpan {
             path: exact,
             start,
@@ -233,13 +301,23 @@ pub(super) fn validate_exclusion_policy(root: &Path) -> Result<(), String> {
         }
         require_primary_evidence(exclusion)?;
         for evidence in exclusion.evidence {
-            validate_evidence_test_path(root, evidence.path, evidence.name, evidence.class)
-                .map_err(|error| {
-                    format!(
-                        "coverage exclusion `{}` has invalid evidence test `{}::{}`: {error}",
-                        exclusion.id, evidence.path, evidence.name
-                    )
-                })?;
+            let validation = match evidence.language {
+                EvidenceLanguage::Rust => {
+                    validate_evidence_test_path(root, evidence.path, evidence.name, evidence.class)
+                }
+                EvidenceLanguage::Python => validate_python_evidence_test_path(
+                    root,
+                    evidence.path,
+                    evidence.name,
+                    evidence.class,
+                ),
+            };
+            validation.map_err(|error| {
+                format!(
+                    "coverage exclusion `{}` has invalid evidence test `{}::{}`: {error}",
+                    exclusion.id, evidence.path, evidence.name
+                )
+            })?;
         }
         validate_exclusion_matcher(root, exclusion)?;
     }
@@ -277,6 +355,98 @@ fn validate_evidence_test_path(
     let mut matches = EvidenceSymbolMatches::default();
     collect_evidence_symbols_from_file(root, Path::new(path), name, false, &mut matches)?;
     validate_evidence_symbol_matches(&matches, expected_class)
+}
+
+fn validate_python_evidence_test_path(
+    root: &Path,
+    path: &str,
+    name: &str,
+    expected_class: EvidenceClass,
+) -> Result<(), String> {
+    let source = fs::read_to_string(root.join(path))
+        .map_err(|err| format!("failed to read Python evidence source `{path}`: {err}"))?;
+    validate_python_evidence_test_source(name, expected_class, &source)
+}
+
+/// Resolves one `unittest.TestCase` method. A `skipIf`/`skipUnless` decorator on the method or
+/// its class makes the test conditional, so it can only be supplemental evidence.
+fn validate_python_evidence_test_source(
+    name: &str,
+    expected_class: EvidenceClass,
+    source: &str,
+) -> Result<(), String> {
+    if !name.starts_with("test_") {
+        return Err("Python evidence must be a unittest `test_` method".to_string());
+    }
+    let lines = source.lines().collect::<Vec<_>>();
+    let definition = format!("    def {name}(self");
+    let definitions = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| line.starts_with(&definition).then_some(index))
+        .collect::<Vec<_>>();
+    let method = match definitions.as_slice() {
+        [method] => *method,
+        [] => return Err("no matching Python unittest method exists".to_string()),
+        many => {
+            return Err(format!(
+                "{} matching Python unittest methods are ambiguous",
+                many.len()
+            ))
+        }
+    };
+    let class = lines[..method]
+        .iter()
+        .rposition(|line| line.starts_with("class "))
+        .ok_or_else(|| "matching Python method is not inside a test class".to_string())?;
+    if !lines[class].contains("(unittest.TestCase)") {
+        return Err("matching Python method is not in a unittest.TestCase class".to_string());
+    }
+    let mut conditional = false;
+    for decorator in decorators_of(&lines, class, "").chain(decorators_of(&lines, method, "    ")) {
+        if decorator.contains("unittest.skip(") || decorator.contains("expectedFailure") {
+            return Err(
+                "coverage evidence tests must not be skipped or expected to fail".to_string(),
+            );
+        }
+        conditional |= decorator.contains("skipIf") || decorator.contains("skipUnless");
+    }
+    let observed_class = if conditional {
+        EvidenceClass::Supplemental
+    } else {
+        EvidenceClass::Primary
+    };
+    if observed_class != expected_class {
+        return Err(format!(
+            "matching Python method is {} but registered as {} evidence",
+            evidence_class_description(observed_class),
+            evidence_class_description(expected_class)
+        ));
+    }
+    Ok(())
+}
+
+/// Decorator lines at `indent` between the previous definition at that indent and `index`. The
+/// first line of a multi-line decorator is included, so a wrapped skip still counts.
+fn decorators_of<'a>(
+    lines: &'a [&'a str],
+    index: usize,
+    indent: &'static str,
+) -> impl Iterator<Item = &'a str> + 'a {
+    let block_start = lines[..index]
+        .iter()
+        .rposition(|line| {
+            line.strip_prefix(indent)
+                .is_some_and(|rest| rest.starts_with("def ") || rest.starts_with("class "))
+        })
+        .map_or(0, |previous| previous + 1);
+    lines[block_start..index]
+        .iter()
+        .filter(move |line| {
+            line.strip_prefix(indent)
+                .is_some_and(|rest| rest.starts_with('@'))
+        })
+        .copied()
 }
 
 #[cfg(test)]
@@ -413,6 +583,17 @@ fn validate_exclusion_matcher(root: &Path, exclusion: &CoverageExclusion) -> Res
             if !matched {
                 return Err(format!(
                     "coverage exclusion `{}` CUDA-Oxide matcher matches no Rust file",
+                    exclusion.id
+                ));
+            }
+        }
+        ExclusionMatcher::PathPrefix { prefix } => {
+            let directory = prefix.strip_suffix('/').unwrap_or(prefix);
+            if !prefix.ends_with("/src/")
+                || collect_rust_files(&root.join(directory), root)?.is_empty()
+            {
+                return Err(format!(
+                    "coverage exclusion `{}` prefix `{prefix}` must name a crate source directory with Rust files",
                     exclusion.id
                 ));
             }

@@ -427,8 +427,12 @@ Only these are excluded because they cannot be instrumented on the host: CUDA
 SIMT device code, generated cuda-oxide host scaffolds, the shared SIMT prelude,
 CUDA/NVTX FFI declarations, the embedded MSL string, and the generated
 codec-math DWT fragment. Each is covered by a freshness, integrity, or
-runtime-parity check instead. The Metal and CUDA lanes publish separate LCOV
-and summary files and must pass before release.
+runtime-parity check instead. The PyO3 extension sources in
+`crates/j2k-python/src/` are also excluded from host coverage: they run only
+inside a Python interpreter, which the Rust coverage lane does not load. The
+named `test_adapter.py`, `test_cuda.py`, and `test_metal.py` cases in the
+Python bindings workflow cover them instead. The Metal and CUDA lanes publish
+separate LCOV and summary files and must pass before release.
 
 Each coverage lane points `CARGO_LLVM_COV_TARGET_DIR` and
 `CARGO_LLVM_COV_BUILD_DIR` at the same new empty directory and only uses
