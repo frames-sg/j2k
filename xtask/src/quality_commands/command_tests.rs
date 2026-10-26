@@ -48,6 +48,20 @@ fn quality_command_plans_are_complete_and_never_launch_real_tools() {
     assert!(log.contains("-A clippy::disallowed_methods -A clippy::disallowed_macros|"));
     assert!(log.contains("test --workspace --all-features --lib --bins --tests"));
     assert!(log.contains("--exclude j2k-alloc-probe"));
+    for invocation in log
+        .lines()
+        .filter(|line| line.starts_with("test --workspace") && line.contains("--lib"))
+    {
+        assert!(
+            invocation.contains("--exclude j2k-jpeg"),
+            "JPEG scalar-only leaked into the workspace test graph: {invocation}"
+        );
+    }
+    assert!(log.contains(
+        "test -p j2k-jpeg --features bench-internals,bench-libjpeg-turbo --lib --tests|"
+    ));
+    assert!(log.contains("test -p j2k-jpeg --features scalar-only --test decode_into --test encode_baseline --test dct_reemit_parity|"));
+
     assert!(log.contains("test -p j2k-alloc-probe|"));
     assert!(log.contains("--exclude fixture-package"));
     assert!(log.contains("doc --workspace --all-features --no-deps|RUSTDOCFLAGS=-D warnings"));

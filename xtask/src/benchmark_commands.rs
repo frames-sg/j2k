@@ -98,6 +98,22 @@ pub(super) fn j2k_bench_signoff() -> Result<(), String> {
         &[("J2K_REQUIRE_LIBJPEG_TURBO", "1")],
         1,
         "libjpeg-turbo JPEG parity",
+    )?;
+    run_cargo_test_with_pass_floor(
+        &[
+            "test",
+            "-p",
+            "j2k-jpeg",
+            "--test",
+            "scaled_matrix",
+            "scaled_region_edge_sweep_matches_libjpeg_turbo_crops",
+            "--",
+            "--exact",
+            "--ignored",
+        ],
+        &[],
+        1,
+        "exhaustive JPEG scaled-region byte parity",
     )
 }
 

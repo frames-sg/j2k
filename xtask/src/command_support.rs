@@ -34,7 +34,10 @@ pub(super) fn run_cargo_test_with_pass_floor(
     label: &str,
 ) -> Result<(), String> {
     let mut test_args = args.to_vec();
-    test_args.extend_from_slice(&["--", "--nocapture"]);
+    if !test_args.contains(&"--") {
+        test_args.push("--");
+    }
+    test_args.push("--nocapture");
     let env_display = envs
         .iter()
         .map(|(key, value)| format!("{key}={value}"))

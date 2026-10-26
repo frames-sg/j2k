@@ -10,6 +10,14 @@ The CPU decoder is the reference implementation. Unsupported JPEG types return
 an error. The CPU encoders are the reference for the Metal and CUDA adapter
 crates' GPU baseline and lossless encode.
 
+`cargo xtask test` runs JPEG with normal CPU dispatch and the internal SIMD
+parity tests enabled, then checks decode/encode byte regressions and backend
+selection separately with `scalar-only`. Avoid `--all-features` when testing
+SIMD dispatch: it enables `scalar-only` and forces the portable backend.
+The exhaustive scaled-region boundary sweep runs in `cargo xtask j2k-bench-signoff`
+(the full-validation comparator gate). Ordinary tests retain the smaller
+scaled-region matrix and exact pixel references.
+
 Pathology-oriented integrations can use `prepare_tiff_jpeg_tile` to normalize
 TIFF `JPEGTables` plus abbreviated strip/tile payloads, including zero-SOF
 dimension repair from container metadata. `extract_icc_profile`,
