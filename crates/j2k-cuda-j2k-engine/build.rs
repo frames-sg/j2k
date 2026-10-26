@@ -48,15 +48,6 @@ const PROJECTS: &[CudaOxideProject] = &[
         built_cfg: "j2k_cuda_oxide_j2k_encode_built",
     },
     CudaOxideProject {
-        feature_env: "CARGO_FEATURE_CUDA_OXIDE_J2K_ML",
-        source_dir: "src/cuda_oxide_j2k_ml",
-        output_name: "cuda_oxide_j2k_ml.ptx",
-        artifact_name: "j2k_cuda_oxide_j2k_ml.ptx",
-        display_name: "cuda-oxide j2k-ml",
-        extra_sources: &[],
-        built_cfg: "j2k_cuda_oxide_j2k_ml_built",
-    },
-    CudaOxideProject {
         feature_env: "CARGO_FEATURE_CUDA_OXIDE_J2K_CLASSIC_DECODE",
         source_dir: "src/cuda_oxide_j2k_classic_decode",
         output_name: "cuda_oxide_j2k_classic_decode.ptx",
