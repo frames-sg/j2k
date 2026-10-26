@@ -5,6 +5,8 @@
 #![cfg(feature = "python")]
 
 use pyo3::prelude::*;
+pyo3::create_exception!(j2k, RecoveredImageWarning, pyo3::exceptions::PyUserWarning);
+
 use pyo3::{
     exceptions::{PyMemoryError, PyValueError},
     types::{PyBytes, PyDict},
@@ -20,6 +22,11 @@ mod wavelets;
 
 fn value_error(error: impl std::fmt::Display) -> PyErr {
     PyValueError::new_err(error.to_string())
+}
+
+/// JPEG streams start with the SOI marker; everything else is treated as JPEG 2000.
+fn is_jpeg(bytes: &[u8]) -> bool {
+    bytes.starts_with(&[0xff, 0xd8])
 }
 
 // Codec allocations are budgeted by the engine. Adapter metadata also uses
@@ -76,6 +83,10 @@ fn inspect<'py>(py: Python<'py>, data: &Bound<'_, PyBytes>) -> PyResult<Bound<'p
 #[pymodule]
 #[pyo3(name = "j2k")]
 fn j2k_python(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add(
+        "RecoveredImageWarning",
+        module.py().get_type::<RecoveredImageWarning>(),
+    )?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     module.add("cuda_enabled", cfg!(feature = "cuda"))?;
     module.add_class::<decode::Decoder>()?;

@@ -15,7 +15,7 @@ use pyo3::{
 };
 
 use crate::{
-    decode::{shape, Batch, MaterializedGroup},
+    decode::{shape, Decoded, GroupMeta, MaterializedGroup},
     owned_items,
     tensor::{DType, Samples, Tensor},
     value_error,
@@ -28,9 +28,12 @@ pub(crate) struct CudaDecoder {
 }
 
 impl CudaDecoder {
-    pub fn new(device: &str, options: BatchDecodeOptions) -> PyResult<Self> {
+    pub fn new(py: Python<'_>, device: &str, options: BatchDecodeOptions) -> PyResult<Self> {
         let ordinal = if device == "cuda" {
-            0
+            py.import("torch")?
+                .getattr("cuda")?
+                .call_method0("current_device")?
+                .extract::<usize>()?
         } else {
             device
                 .strip_prefix("cuda:")
@@ -49,19 +52,19 @@ impl CudaDecoder {
         })
     }
 
-    pub fn decode(&self, py: Python<'_>, prepared: &PreparedBatch) -> PyResult<Batch> {
+    pub fn decode(&self, py: Python<'_>, prepared: &PreparedBatch) -> PyResult<Decoded> {
         let mut groups = Vec::new();
         let mut group_errors = Vec::new();
         for group in prepared.groups() {
             match self.decode_group(py, group) {
-                Ok(output) => groups.push(output.into_python(py)?),
+                Ok(output) => groups.push(output),
                 Err(error) => group_errors.push((
                     owned_items(group.source_indices().iter().copied())?,
                     error.to_string(),
                 )),
             }
         }
-        Ok(Batch {
+        Ok(Decoded {
             groups,
             errors: prepared
                 .errors()
@@ -201,7 +204,8 @@ impl CudaDecoder {
             dimensions.remove(0);
         }
         Ok(MaterializedGroup {
-            info: metadata.info().clone(),
+            meta: GroupMeta::of(metadata.info()),
+            recovered: owned_items((0..metadata.source_indices().len()).map(|_| false))?,
             indices: owned_items(metadata.source_indices().iter().copied())?,
             rects: owned_items(metadata.decoded_rects().iter().copied())?,
             warnings: metadata

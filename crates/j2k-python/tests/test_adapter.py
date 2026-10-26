@@ -8,6 +8,7 @@ Run after installing the wheel: python -m unittest discover -s crates/j2k-python
 import gc
 from pathlib import Path
 import random
+import re
 import struct
 import unittest
 
@@ -23,6 +24,13 @@ FIXTURES = ROOT / "crates/j2k-test-support/fixtures/htj2k/openjph_batch"
 
 def encoded(name):
     return (FIXTURES / f"{name}.j2c").read_bytes()
+
+
+def jpeg_fixture(name):
+    """Reuse the existing Rust fixture's literal stream without another copy."""
+    source = (ROOT / "crates/j2k-test-support/src/jpeg_fixtures/builders.rs").read_text()
+    body = source.split(f"pub fn {name}() -> Vec<u8> {{", 1)[1].split("\n}", 1)[0]
+    return bytes(int(value, 16) for value in re.findall(r"0x([0-9a-fA-F]{2})", body))
 
 
 def component_steps(codestream):
@@ -109,6 +117,107 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             decoder.decode(data, region=(3, 5, 11, 9))
 
+    def test_jpeg_and_jpeg2000_share_a_batch_with_original_indices(self):
+        rng = np.random.default_rng(7)
+        small, large = (rng.integers(0, 256, (h, 16, 3), dtype=np.uint8) for h in (8, 24))
+        small_jpeg = j2k.encode_rgb(small.tobytes(), 16, 8, codec="jpeg", quality=90)
+        large_jpeg = j2k.encode_rgb(large.tobytes(), 16, 24, codec="jpeg", quality=90)
+        expected = {}
+        for data in (small_jpeg, large_jpeg):
+            width, height, pixels = j2k.decode_rgb(data)
+            expected[data] = np.frombuffer(pixels, np.uint8).reshape(height, width, 3)
+        oversized = bytearray(small_jpeg)
+        sof = oversized.index(b"\xff\xc0")
+        oversized[sof + 5:sof + 9] = b"\x40\x00\x40\x00"
+        inputs = [small_jpeg, encoded("rgb_u8_53"), large_jpeg, small_jpeg[:40], j2k.ImageRequest(small_jpeg, reduction=1), small_jpeg, bytes(oversized)]
+        result = j2k.Decoder(layout="nhwc").decode_batch(inputs)
+        self.assertEqual([index for index, _ in result.errors], [3, 4, 6])
+        self.assertFalse(result.group_errors)
+        decoded = {}
+        for group in result.groups:
+            array = group.tensor.to_numpy()
+            for row, index in enumerate(group.source_indices):
+                decoded[index] = (group, array[row])
+        self.assertEqual(sorted(decoded), [0, 1, 2, 5])
+        for index in (0, 2, 5):
+            group, image = decoded[index]
+            self.assertEqual((group.precision, group.signed, group.color, group.layout), (8, False, "Rgb", "nhwc"))
+            self.assertEqual(image.dtype, np.uint8)
+            np.testing.assert_array_equal(image, expected[inputs[index]])
+        np.testing.assert_array_equal(decoded[1][1], j2k.Decoder(layout="nhwc").decode(encoded("rgb_u8_53")).to_numpy())
+        np.testing.assert_array_equal(j2k.Decoder().decode(large_jpeg).to_numpy(), expected[large_jpeg].transpose(2, 0, 1))
+        with self.assertRaises(ValueError):
+            j2k.Decoder().decode(large_jpeg, region=(0, 0, 8, 8))
+
+    def test_implausible_jpeg_headers_are_indexed_before_group_allocation(self):
+        small = (ROOT / "crates/j2k-test-support/fixtures/conformance/grayscale_8x8.jpg").read_bytes()
+        padding = 600 - len(small)
+        small = small[:2] + b"\xff\xfe" + struct.pack(">H", padding - 2) + bytes(padding - 4) + small[2:]
+        self.assertEqual(len(small), 600)
+        def dimensions(size):
+            data = bytearray(small)
+            sof = data.index(b"\xff\xc0")
+            data[sof + 5:sof + 9] = struct.pack(">HH", size, size)
+            return bytes(data)
+        huge, truncated = dimensions(30000), dimensions(8000)
+        inputs = [small, truncated, small, truncated, huge, truncated, small]
+        for layout in ("nchw", "nhwc"):
+            decoder = j2k.Decoder(layout=layout)
+            result = decoder.decode_batch(inputs)
+            self.assertEqual([index for index, _ in result.errors], [1, 3, 4, 5])
+            self.assertFalse(result.group_errors)
+            self.assertEqual(result.groups[0].source_indices, [0, 2, 6])
+            expected = decoder.decode(small).to_numpy()
+            actual = result.groups[0].tensor.to_numpy()
+            for row in actual:
+                np.testing.assert_array_equal(row, expected)
+
+    def test_jpeg_integrity_and_recovery_metadata(self):
+        complete = jpeg_fixture("progressive_8x8_jpeg")
+        scans = [match.start() for match in re.finditer(b"\xff\xda", complete)]
+        partial = complete[:scans[1]]
+        strict = j2k.Decoder()
+        lenient = j2k.Decoder(strict=False)
+        for damaged in (partial, complete[:scans[-1]]):
+            result = strict.decode_batch([complete, damaged, encoded("gray_u8_53")])
+            self.assertEqual([index for index, _ in result.errors], [1])
+            self.assertEqual(sorted(i for g in result.groups for i in g.source_indices), [0, 2])
+            with self.assertRaises(ValueError):
+                strict.decode(damaged)
+            accepted = lenient.decode_batch([complete, damaged, encoded("gray_u8_53")])
+            self.assertFalse(accepted.errors or accepted.group_errors)
+            rows = {index: (g, row) for g in accepted.groups for row, index in enumerate(g.source_indices)}
+            self.assertEqual(sorted(rows), [0, 1, 2])
+            self.assertEqual([rows[i][0].recovered[rows[i][1]] for i in range(3)], [False, True, False])
+            expected = strict.decode(damaged + b"\xff\xd9").to_numpy()
+            with self.assertWarns(j2k.RecoveredImageWarning):
+                image = lenient.decode(j2k.ImageRequest(damaged)).to_numpy()
+            np.testing.assert_array_equal(image, expected)
+        cosmetic = strict.decode_batch([complete, complete[:-2]])
+        self.assertFalse(cosmetic.errors)
+        self.assertEqual(cosmetic.groups[0].recovered, [False, False])
+        arrays = cosmetic.groups[0].tensor.to_numpy()
+        np.testing.assert_array_equal(arrays[0], arrays[1])
+        # Existing fatal entropy, restart and marker checks remain fatal in
+        # either policy; leniency does not invent a recovery implementation.
+        restart = (ROOT / "crates/j2k-test-support/fixtures/conformance/baseline_444_restart_67x45.jpg").read_bytes()
+        rst = next(i for i in range(len(restart) - 1) if restart[i] == 255 and 0xd0 <= restart[i + 1] <= 0xd7)
+        broken_restart = restart[:rst + 1] + bytes([(restart[rst + 1] - 0xd0 + 1) % 8 + 0xd0]) + restart[rst + 2:]
+        for decoder in (strict, lenient):
+            for data in (complete[:scans[0] + 14], broken_restart, complete[:2] + b"x" + complete[2:]):
+                result = decoder.decode_batch([complete, data, complete])
+                self.assertEqual([index for index, _ in result.errors], [1])
+                self.assertEqual(result.groups[0].source_indices, [0, 2])
+        ambiguous = bytearray(jpeg_fixture("rgb_app14_8x8_jpeg"))
+        ambiguous[ambiguous.index(b"Adobe") + 11] = 7
+        for decoder in (strict, lenient):
+            with self.assertRaises(ValueError):
+                decoder.decode(bytes(ambiguous))
+            result = decoder.decode_batch([j2k.ImageRequest(bytes(ambiguous), color_transform="none")])
+            self.assertFalse(result.errors)
+            self.assertEqual(result.groups[0].recovered, [False])
+            np.testing.assert_array_equal(decoder.decode(j2k.ImageRequest(bytes(ambiguous), color_transform="none")).to_numpy(), result.groups[0].tensor.to_numpy()[0])
+
     def test_abandoned_capsule_restores_the_tensor_owner(self):
         data = encoded("gray_u8_53")
         output = j2k.Decoder().decode(data)
@@ -136,6 +245,29 @@ class AdapterTests(unittest.TestCase):
         abandoned = j2k.Decoder().decode(encoded("gray_u8_53")).__dlpack__()
         del abandoned
         gc.collect()
+
+    def test_jpeg_image_requests_preserve_color_hints(self):
+        pixels = bytes((i * 37) % 256 for i in range(16 * 8 * 3))
+        jpeg = j2k.encode_rgb(pixels, 16, 8, codec="jpeg", quality=90)
+        decoder = j2k.Decoder(layout="nhwc")
+        result = decoder.decode_batch([
+            j2k.ImageRequest(jpeg, color_transform="auto"),
+            j2k.ImageRequest(jpeg, color_transform="none"),
+            j2k.ImageRequest(jpeg, color_transform="ycbcr"),
+        ])
+        self.assertFalse(result.errors or result.group_errors)
+        self.assertEqual(result.groups[0].source_indices, [0, 1, 2])
+        array = result.groups[0].tensor.to_numpy()
+        np.testing.assert_array_equal(array[0], array[2])
+        np.testing.assert_array_equal(array[0], decoder.decode(jpeg).to_numpy())
+        np.testing.assert_array_equal(array[1], decoder.decode(j2k.ImageRequest(jpeg, color_transform="none")).to_numpy())
+        with self.assertRaises(ValueError):
+            decoder.decode(j2k.ImageRequest(jpeg), reduction=1)
+        self.assertFalse(np.array_equal(array[0], array[1]))
+        with self.assertRaises(ValueError):
+            j2k.ImageRequest(jpeg, color_transform="unknown")
+        with self.assertRaisesRegex(ValueError, "JPEG"):
+            j2k.ImageRequest(encoded("rgb_u8_53"), color_transform="none")
 
     def test_wavelet_tensors_and_selection(self):
         data = encoded("gray_u12_53")

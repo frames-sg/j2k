@@ -93,7 +93,7 @@ pub(crate) fn decode_rgb<'py>(
 ) -> PyResult<(u32, u32, Bound<'py, PyBytes>)> {
     let encoded = data.as_bytes();
     let (width, height, pixels) = py.detach(|| {
-        if encoded.starts_with(&[0xff, 0xd8]) {
+        if crate::is_jpeg(encoded) {
             let decoder = j2k_jpeg::Decoder::new(encoded).map_err(value_error)?;
             if decoder.info().bit_depth != 8 {
                 return Err(value_error("decode_rgb requires 8-bit JPEG"));
