@@ -86,7 +86,7 @@
       <div class="wrap copy">
         <h2>Backend selection</h2>
         <p><code>BackendRequest::Auto</code> uses the CPU for shapes the GPU does not support or was not measured to speed up. Explicit CUDA or Metal requests return an error for unsupported shapes.</p>
-        <p>The GPU backends support the same formats as the CPU path: JPEG 2000 Part 1 codestreams, JP2 files, HTJ2K Part 15 codestreams, and JPH files. They speed up selected shapes within those formats; not every stage or shape runs on the GPU.</p>
+        <p>The GPU backends support the same formats as the CPU path: JPEG 2000 Part 1 codestreams, JP2 files, HTJ2K Part 15 codestreams, and JPH files. They speed up selected shapes within those formats; not every stage or shape runs on the GPU. CUDA and Metal decodes of signed grayscale and color sources follow the CPU's sample conversion.</p>
         <p class="note">Use <a href="https://github.com/frames-sg/j2k/blob/main/docs/public-support.md">docs/public-support.md</a> for codec support. Benchmark results are in <a href="https://github.com/frames-sg/j2k/blob/main/docs/benchmark-evidence.md">docs/benchmark-evidence.md</a>; published comparisons need an external benchmark bundle with <code>publication_eligible=true</code>.</p>
       </div>
     </section>

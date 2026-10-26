@@ -76,7 +76,7 @@
         </article>
         <article class="card">
           <h2>JPEG input</h2>
-          <p><code>j2k-jpeg-metal</code> provides Metal-backed JPEG decode surfaces and selected baseline encode paths.</p>
+          <p><code>j2k-jpeg-metal</code> decodes every JPEG the CPU decoder supports into Metal memory, and encodes baseline and lossless JPEG from Metal buffers.</p>
           <pre class="code">cargo add j2k-jpeg-metal</pre>
         </article>
         <article class="card">
@@ -90,7 +90,7 @@
       <div class="wrap copy">
         <h2>Supported shape policy</h2>
         <p>Metal covers selected shapes. Explicit Metal requests return an unsupported-request error for other shapes.</p>
-        <p>The Metal backends support the same formats as the main crate: JPEG 2000 Part 1, JP2 files, HTJ2K Part 15, and JPH files. Shapes Metal does not support, or was not measured to speed up, run on the CPU.</p>
+        <p>The Metal backends support the same formats as the main crate: JPEG 2000 Part 1, JP2 files, HTJ2K Part 15, and JPH files. Shapes Metal does not support, or was not measured to speed up, run on the CPU. Device decodes of signed grayscale and color sources follow the CPU's sample conversion.</p>
         <p class="note">Benchmark results are in <a href="https://github.com/frames-sg/j2k/blob/main/docs/benchmark-evidence.md">docs/benchmark-evidence.md</a>. Published Metal numbers list the hardware, commands, shapes, skipped rows, and <code>publication_eligible=true</code> from the benchmark tooling.</p>
       </div>
     </section>
