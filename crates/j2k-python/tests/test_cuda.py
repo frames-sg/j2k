@@ -6,6 +6,7 @@ import gc
 import os
 import unittest
 
+import numpy as np
 import torch
 import j2k
 from test_adapter import encoded
@@ -17,6 +18,16 @@ if os.environ.get("J2K_REQUIRE_CUDA") == "1" and not AVAILABLE:
 
 @unittest.skipUnless(AVAILABLE, "requires the cuda extension build and CUDA hardware")
 class CudaTests(unittest.TestCase):
+    def test_foreign_import_rejection_preserves_the_tensor(self):
+        data = encoded("gray_u8_53")
+        output = j2k.Decoder(device="cuda").decode(data)
+        for _ in range(3):
+            with self.assertRaises(BufferError):
+                np.from_dlpack(output)
+            gc.collect()
+        expected = j2k.Decoder().decode(data).to_torch()
+        self.assertTrue(torch.equal(output.to_torch().cpu(), expected))
+
     def test_nondefault_stream_direct_output_matches_cpu_and_outlives_decoder(self):
         cpu = j2k.Decoder()
         decoder = j2k.Decoder(device="cuda:0")

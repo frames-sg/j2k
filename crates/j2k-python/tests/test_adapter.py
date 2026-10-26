@@ -109,6 +109,20 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             decoder.decode(data, region=(3, 5, 11, 9))
 
+    def test_abandoned_capsule_restores_the_tensor_owner(self):
+        data = encoded("gray_u8_53")
+        output = j2k.Decoder().decode(data)
+        for _ in range(3):
+            capsule = output.__dlpack__()
+            with self.assertRaises(RuntimeError):
+                output.__dlpack__()
+            del capsule
+            gc.collect()
+        expected = j2k.Decoder().decode(data).to_torch()
+        self.assertTrue(torch.equal(output.to_torch(), expected))
+        with self.assertRaises(RuntimeError):
+            output.to_torch()
+
     def test_dlpack_transfers_ownership_once_and_handles_unconsumed_capsule(self):
         output = j2k.Decoder().decode(encoded("gray_u8_53"))
         self.assertEqual(output.__dlpack_device__(), (1, 0))

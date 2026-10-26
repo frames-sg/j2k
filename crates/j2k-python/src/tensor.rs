@@ -2,7 +2,11 @@
 
 //! Ownership transfer through the DLPack C ABI. No libtorch link dependency.
 
-use std::{ffi::c_void, ptr::NonNull, sync::Mutex};
+use std::{
+    ffi::c_void,
+    ptr::NonNull,
+    sync::{Arc, Mutex, Weak},
+};
 
 #[cfg(feature = "cuda")]
 use pyo3::types::PyDict;
@@ -94,7 +98,7 @@ pub(crate) struct Tensor {
     shape: Vec<usize>,
     dtype: DType,
     device: (i32, i32),
-    storage: Mutex<Option<Samples>>,
+    storage: Arc<Mutex<Option<Samples>>>,
 }
 
 impl Tensor {
@@ -119,7 +123,7 @@ impl Tensor {
             shape,
             dtype,
             device,
-            storage: Mutex::new(Some(samples)),
+            storage: Arc::new(Mutex::new(Some(samples))),
         })
     }
 
@@ -177,10 +181,17 @@ impl Tensor {
         }
         if self.device.0 == 1 && stream.is_some() {
             return Err(PyValueError::new_err(
-                "CPU DLPack export does not accept a stream",
+                "CPU DLPack export do not accept a stream",
             ));
         }
-        let mut samples = self
+        let shape = crate::owned_items(
+            self.shape
+                .iter()
+                .map(|&n| i64::try_from(n).expect("validated dimension")),
+        )?;
+        let ndim = i32::try_from(self.shape.len())
+            .map_err(|_| PyValueError::new_err("tensor rank overflow"))?;
+        let samples = self
             .storage
             .lock()
             .map_err(|_| PyRuntimeError::new_err("tensor owner is poisoned"))?
@@ -190,28 +201,16 @@ impl Tensor {
                     "tensor ownership was already transferred; use the returned framework tensor",
                 )
             })?;
-        #[cfg(feature = "cuda")]
-        if let Samples::Torch(tensor) = samples {
-            let kwargs = PyDict::new(py);
-            kwargs.set_item("stream", stream)?;
-            // The underlying PyTorch object owns allocation and consumer-stream
-            // lifetimes. Export it using its own protocol implementation.
-            return Ok(tensor
-                .bind(py)
-                .call_method("__dlpack__", (), Some(&kwargs))?
-                .unbind());
-        }
         let _ = max_version; // A legacy capsule is valid for every advertised maximum version.
         let mut owner = Box::new(ManagedOwner {
             managed: DLManagedTensor {
                 tensor: DLTensor {
-                    data: samples.pointer(),
+                    data: std::ptr::null_mut(),
                     device: DLDevice {
                         kind: self.device.0,
                         id: self.device.1,
                     },
-                    ndim: i32::try_from(self.shape.len())
-                        .map_err(|_| PyValueError::new_err("tensor rank overflow"))?,
+                    ndim,
                     dtype: DLDataType {
                         code: self.dtype.code,
                         bits: self.dtype.bits,
@@ -224,14 +223,14 @@ impl Tensor {
                 context: std::ptr::null_mut(),
                 deleter: Some(delete_managed),
             },
-            _samples: samples,
-            shape: self
-                .shape
-                .iter()
-                .map(|&n| i64::try_from(n).expect("validated dimension"))
-                .collect(),
+            samples: Some(samples),
+            shape,
+            return_to: Arc::downgrade(&self.storage),
+            consumed: false,
+            #[cfg(feature = "cuda")]
+            foreign: None,
         });
-        owner.managed.tensor.shape = owner.shape.as_mut_ptr();
+        owner.prepare_data(py, stream)?;
         owner.managed.context = (&raw mut *owner).cast();
         let raw = Box::into_raw(owner);
         // SAFETY: ManagedOwner is repr(C) with the DLPack managed tensor first.
@@ -249,7 +248,7 @@ impl Tensor {
             Ok(capsule) => Ok(capsule.into_any().unbind()),
             Err(error) => {
                 // SAFETY: capsule construction failed; no consumer obtained this unique owner.
-                unsafe { delete_managed(raw.cast()) };
+                unsafe { drop(Box::from_raw(raw)) };
                 Err(error)
             }
         }
@@ -266,6 +265,11 @@ impl Tensor {
 
     /// Transfer CPU storage into a NumPy array using NumPy's DLPack consumer.
     fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
+        if slf.get().device.0 != 1 {
+            return Err(PyBufferError::new_err(
+                "NumPy requires CPU storage; use to_torch().cpu().numpy() for GPU tensors",
+            ));
+        }
         Ok(slf
             .py()
             .import("numpy")?
@@ -282,17 +286,20 @@ impl Tensor {
 }
 
 // DLPack's legacy ABI is intentionally kept independent of any framework ABI.
+#[derive(Clone, Copy)]
 #[repr(C)]
 struct DLDevice {
     kind: i32,
     id: i32,
 }
+#[derive(Clone, Copy)]
 #[repr(C)]
 struct DLDataType {
     code: u8,
     bits: u8,
     lanes: u16,
 }
+#[derive(Clone, Copy)]
 #[repr(C)]
 struct DLTensor {
     data: *mut c_void,
@@ -312,25 +319,112 @@ struct DLManagedTensor {
 #[repr(C)]
 struct ManagedOwner {
     managed: DLManagedTensor,
-    _samples: Samples,
+    samples: Option<Samples>,
     shape: Vec<i64>,
+    return_to: Weak<Mutex<Option<Samples>>>,
+    consumed: bool,
+    #[cfg(feature = "cuda")]
+    foreign: Option<NonNull<DLManagedTensor>>,
+}
+
+impl ManagedOwner {
+    fn prepare_data(&mut self, py: Python<'_>, stream: Option<i64>) -> PyResult<()> {
+        #[cfg(feature = "cuda")]
+        if let Some(Samples::Torch(tensor)) = &self.samples {
+            let kwargs = PyDict::new(py);
+            kwargs.set_item("stream", stream)?;
+            // Let PyTorch establish the consumer-stream dependency first. The
+            // inner DLPack owner keeps its shape and allocation live while our
+            // outer capsule decides whether the consumer accepted the export.
+            let capsule = tensor
+                .bind(py)
+                .call_method("__dlpack__", (), Some(&kwargs))?;
+            // SAFETY: PyCapsule_GetPointer validates the legacy capsule name.
+            let pointer =
+                unsafe { ffi::PyCapsule_GetPointer(capsule.as_ptr(), c"dltensor".as_ptr()) };
+            let pointer =
+                NonNull::new(pointer.cast::<DLManagedTensor>()).ok_or_else(|| PyErr::fetch(py))?;
+            // SAFETY: the live capsule is uniquely borrowed under the GIL. After
+            // renaming it, only this owner invokes its managed-tensor deleter.
+            if unsafe { ffi::PyCapsule_SetName(capsule.as_ptr(), c"used_dltensor".as_ptr()) } != 0 {
+                return Err(PyErr::fetch(py));
+            }
+            self.foreign = Some(pointer);
+            // SAFETY: the foreign owner remains live until this owner's Drop.
+            let foreign = unsafe { &pointer.as_ref().tensor };
+            if foreign.device.kind != self.managed.tensor.device.kind
+                || foreign.device.id != self.managed.tensor.device.id
+                || foreign.dtype.code != self.managed.tensor.dtype.code
+                || foreign.dtype.bits != self.managed.tensor.dtype.bits
+                || foreign.dtype.lanes != 1
+            {
+                return Err(PyRuntimeError::new_err(
+                    "framework DLPack metadata disagrees with owned output",
+                ));
+            }
+            self.managed.tensor.data = foreign.data;
+            self.managed.tensor.byte_offset = foreign.byte_offset;
+            // CUDA output is allocated with torch.empty and is contiguous.
+            // Keep our logical shape: single ImageRequest decode removes the
+            // batch axis without changing the underlying framework allocation.
+            self.managed.tensor.shape = self.shape.as_mut_ptr();
+            return Ok(());
+        }
+        let _ = (py, stream);
+        self.managed.tensor.data = self
+            .samples
+            .as_mut()
+            .expect("live export samples")
+            .pointer();
+        self.managed.tensor.shape = self.shape.as_mut_ptr();
+        Ok(())
+    }
+}
+
+impl Drop for ManagedOwner {
+    fn drop(&mut self) {
+        #[cfg(feature = "cuda")]
+        if let Some(pointer) = self.foreign.take() {
+            // SAFETY: the inner capsule was consumed by prepare_data. Its
+            // DLPack deleter releases only its own framework allocation owner.
+            unsafe {
+                if let Some(deleter) = pointer.as_ref().deleter {
+                    deleter(pointer.as_ptr());
+                }
+            }
+        }
+        if !self.consumed {
+            if let Some(storage) = self.return_to.upgrade() {
+                let mut storage = storage.lock().unwrap_or_else(|error| error.into_inner());
+                if storage.is_none() {
+                    *storage = self.samples.take();
+                }
+            }
+        }
+    }
 }
 
 unsafe extern "C" fn delete_managed(tensor: *mut DLManagedTensor) {
     if tensor.is_null() {
         return;
     }
-    // SAFETY: this is called once by the DLPack consumer or by our unconsumed
-    // capsule destructor, with the live pointer produced above. CPU Vec owners
-    // may be freed on any thread, and no Rust access survives export.
-    unsafe { drop(Box::from_raw((*tensor).context.cast::<ManagedOwner>())) };
+    // SAFETY: a consumer calls this exactly once for the live managed tensor.
+    // CPU, retained Metal and framework DLPack owners may be released on any
+    // thread. Marking the export consumed prevents producer-side restoration.
+    let mut owner = unsafe { Box::from_raw((*tensor).context.cast::<ManagedOwner>()) };
+    owner.consumed = true;
 }
 
 unsafe extern "C" fn delete_capsule(capsule: *mut ffi::PyObject) {
-    // SAFETY: Python calls this with a live capsule. Consumers rename it to
-    // used_dltensor on taking ownership; only an unconsumed capsule frees here.
+    // SAFETY: Python calls this with a live capsule under the GIL. A consumed
+    // capsule has been renamed and belongs solely to the consumer's deleter.
     if unsafe { ffi::PyCapsule_IsValid(capsule, c"dltensor".as_ptr()) } != 0 {
-        // SAFETY: name validity was checked and the pointer is our live managed tensor.
-        unsafe { delete_managed(ffi::PyCapsule_GetPointer(capsule, c"dltensor".as_ptr()).cast()) };
+        // SAFETY: the valid unconsumed capsule still uniquely owns this pointer.
+        let tensor = unsafe {
+            ffi::PyCapsule_GetPointer(capsule, c"dltensor".as_ptr()).cast::<DLManagedTensor>()
+        };
+        // SAFETY: dropping an unconsumed owner restores storage if its producer
+        // is alive; otherwise it releases storage without retaining the producer.
+        unsafe { drop(Box::from_raw((*tensor).context.cast::<ManagedOwner>())) };
     }
 }
