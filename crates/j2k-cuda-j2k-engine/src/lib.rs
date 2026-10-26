@@ -26,7 +26,6 @@ mod j2k_decode;
 mod j2k_encode;
 mod kernels;
 mod memory;
-mod ml;
 #[cfg(test)]
 mod tests;
 
@@ -68,7 +67,6 @@ pub use j2k_encode::{
     CudaJ2kResidentComponents, CudaJ2kResidentQuantizedSubband, CudaResidentDwt53Output,
     CudaResidentDwt97Output,
 };
-pub use ml::{CudaJ2kMlKernelConfig, CudaJ2kMlLayout, CudaJ2kMlNormalization, CudaJ2kMlSample};
 
 pub(crate) use j2k_cuda_runtime::CudaContext;
 

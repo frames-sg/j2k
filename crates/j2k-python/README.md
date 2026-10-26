@@ -2,13 +2,14 @@
 
 `j2k-python` implements the `j2k` native extension entirely in Rust. It
 exposes JPEG 2000/HTJ2K inspection, CPU pixel batches, selected native wavelet
-bands, and an optional direct CUDA-to-PyTorch route. NumPy and PyTorch are
-optional consumers; neither is imported until its conversion method is used.
+bands, and optional direct CUDA and MPS output for PyTorch. NumPy and PyTorch are
+optional consumers. Bare `device="cuda"` imports PyTorch at construction to bind
+the current CUDA device for the decoder lifetime; explicit `cuda:N` remains explicit.
 
 The extension is experimental and is built as the `j2k` wheel. This does not
 mean a wheel has been published to PyPI. Ordinary Rust builds do not activate
 PyO3; the extension is enabled only by its `python`, `extension-module`, or
-`cuda` Cargo features. The Rust crate is not published separately on crates.io.
+`cuda`/`metal` Cargo features. The Rust crate is not published separately on crates.io.
 
 The distribution and Python import are both named `j2k`; the workspace crate
 remains `j2k-python`. All codec and adapter implementation is Rust. The only
@@ -37,6 +38,10 @@ On a supported Linux CUDA build host, add `--features cuda` to the Maturin
 command. Follow the existing CUDA codec build requirements. CUDA wheels require
 the driver, supported hardware, and a CUDA-enabled PyTorch installation. A CPU
 wheel rejects `device="cuda"`; an explicit GPU request never silently uses CPU.
+
+On Apple Silicon macOS, add `--features metal` for `device="mps"` or `device="mps:0"` support.
+The macOS wheel workflow enables this feature. `j2k.metal_enabled` reports
+whether the extension includes it; `j2k.cuda_enabled` reports CUDA build support.
 
 ## Pixels and native sample types
 
@@ -67,6 +72,37 @@ Inspection reports per-component precision, signedness, and sampling. The
 adapter does not apply orientation, ICC transforms, resizing, padding, alpha
 compositing, or normalization.
 
+`decode` and `decode_batch` also accept complete 8-bit JPEG files, detected by
+their SOI marker, in the same call as JPEG 2000 inputs. JPEG groups are always
+RGB `uint8` (grayscale is expanded to RGB) and are grouped by size;
+`source_indices` and errors refer to positions in the original input list.
+JPEG inputs support full-image decode only: a region or reduction is reported
+as an indexed error. `prepare` and `decode_prepared` remain JPEG 2000 only, and
+a CUDA or MPS decoder reports JPEG inputs as indexed errors rather than decoding them
+on the CPU.
+
+JPEG tensor output remains RGB uint8 by default, with grayscale expanded to three identical channels. Grayscale JPEG 2000 and HTJ2K remain one channel. Output metadata describes the returned tensor. A later explicit `channels="native"` option may preserve grayscale JPEG as one channel without changing existing defaults. Source component counts, when exposed, are per input row and remain aligned with source_indices.
+
+`Decoder(strict=True)` is the default for every supported codec. A normal success must have completely decoded the required image data without damage concealment, missing-data substitution or unverified completion, under the requested interpretation and output contract. Detected violations produce indexed batch errors and no tensor row for the affected image. Proven non-pixel-affecting irregularities may remain warnings; missing EOI is harmless only when completeness is established, and arbitrary stray-byte skipping is not automatically harmless. `strict=False` permits supported salvage with explicit per-index recovery status and warnings. It does not suppress unrecoverable errors, safety checks, precision requirements or device policy. A recovered row is not also an error entry.
+
+`BatchGroup.recovered` aligns with `source_indices` and tensor rows. Cosmetic
+warnings leave it false. Single-image lenient recovery emits
+`j2k.RecoveredImageWarning`; use `decode_batch([request])` for structured status.
+Strict progressive EOF acceptance requires every coefficient band of every
+component through final approximation. An actual EOI may terminate a legal
+partial script. The current J2K lenient path tolerates selected metadata errors
+and performs no entropy salvage. The guarantee is detection based; corruption
+that still forms a valid, indistinguishable codestream cannot always be detected.
+There is no `channels` option yet; the names `default`, `native`, and `rgb` are
+reserved for a future explicit policy.
+
+`ImageRequest(data, color_transform="auto")` accepts `auto`, `ycbcr`, or `none`
+to carry a JPEG color hint from the slide container. `ycbcr` forces conversion to RGB;
+`none` treats the components as RGB. Overrides are rejected for JPEG 2000.
+For `wsi_rs.CompressedTile` values, pass each tile's `data` and
+`color_transform` to an `ImageRequest`; this preserves the reader's effective
+photometric interpretation even when a JPEG header is ambiguous.
+
 ## Batching, labels, and reuse
 
 ```python
@@ -92,13 +128,28 @@ Different shapes produce separate groups; grouping is not training-batch
 collation. `source_indices` refers to the original submission, including when
 other inputs fail. `errors` contains `(input_index, message)` and `group_errors`
 contains `([source_indices], message)`. Successful groups remain available.
+Group order is unspecified. `source_indices` is authoritative for submission
+order and label alignment. Allocation or scheduling failures abort the entire
+call with an exception instead of returning partial results. Dense JPEG output and the session's worker storage share the 512 MiB codec
+budget. Inputs that cannot fit individually are indexed errors. Groups are
+split into bounded subgroups before allocation. Retaining returned groups
+retains their owned outputs, independently of future session calls.
+
 Each group preserves precision, signedness, color/alpha interpretation,
 warnings, and decoded rectangles. Do not discard the error lists silently.
 
-Construct a decoder inside each DataLoader worker. The decoder releases the
-interpreter while doing CPU work and locks its session only after detaching.
-Sessions inherited across `fork` are rejected. Use `spawn` for worker
-processes, and choose a per-worker thread count to avoid oversubscription.
+For CPU decoding, create one CPU decoder lazily inside each DataLoader worker,
+with a small explicit worker count, and convert outputs to ordinary CPU torch
+tensors before returning them. The decoder releases the interpreter during CPU
+work and locks its session only after detaching. Use spawn; sessions inherited
+across fork are rejected.
+
+For CUDA or MPS, reader workers return built-in Python records containing bytes,
+hints, coordinates and labels. One persistent GPU decoder in each training
+process or distributed rank constructs ImageRequest values and decodes the
+received batch there. Keep GPU decode out of multiworker collate functions.
+Use pin_memory=False for MPS. j2k Decoder, PreparedBatch, ImageRequest and Tensor
+owners have no documented multiprocessing serialization contract.
 
 ## Tensor ownership
 
@@ -112,6 +163,11 @@ For a second view, use the returned framework tensor's APIs. Re-exporting the
 original `j2k.Tensor` raises `RuntimeError`. DLPack `copy=True` and device
 conversion are rejected rather than performed implicitly. NumPy's consumer
 normally exposes a read-only array. Convert or copy explicitly if necessary.
+`to_numpy()` rejects GPU storage before transferring ownership, so a rejected
+call can still be followed by `to_torch()`. A foreign consumer that rejects an unconsumed capsule returns storage to the
+original live `j2k.Tensor`, which can then be imported successfully. If the
+producer has already been destroyed, capsule destruction frees storage. Once a
+consumer consumes the capsule, the consumer owns storage until its deleter runs.
 
 ## Wavelet coefficients
 
@@ -172,8 +228,29 @@ that cannot establish safety quarantines the unpublished allocation.
 This first interface is blocking. It does not claim host-asynchronous model
 overlap. Direct CUDA output inherits the codec's input coverage and supports
 the same layout/native integer types as the adapter. Wavelet output remains
-CPU-only. Metal/MPSGraph remains a separate Rust integration; this is not a
-direct PyTorch MPS buffer adapter.
+CPU-only.
+
+## Direct Metal-to-PyTorch MPS output
+
+```python
+decoder = j2k.Decoder(device="mps")
+image = decoder.decode(data).to_torch()
+assert image.device.type == "mps"
+```
+
+On Apple Silicon, the adapter decodes each homogeneous group into a fresh
+private Metal buffer on the system default GPU, then transfers ownership to
+PyTorch using DLPack's Metal device `(8, 0)`. It waits for GPU completion and
+codec-status validation before returning. Decoded pixels stay on the GPU;
+there is no host pixel staging or upload into a second framework allocation.
+
+The buffer is exclusively owned by the consumer after export, so in-place
+PyTorch operations are safe and tensors survive decoder reuse or destruction.
+Both layouts, native U8/U16/I16 samples, Gray/RGB/RGBA, and region/reduction
+requests use the shared batch contract. JPEG on MPS is not yet supported.
+Metal DLPack exports accept no stream argument. Allocations start at byte
+offset zero; importing external buffers or suballocations is not exposed.
+This interface is blocking and supports only Apple Silicon macOS.
 
 ## Validation and compatibility
 
@@ -191,6 +268,11 @@ exercise default/nondefault streams, native dtypes, prepared reuse, and lifetime
 Run CUDA tests with `J2K_REQUIRE_CUDA=1`; a missing CUDA build/device then fails
 instead of skipping. Local compile-only checks are not CUDA hardware validation.
 
+MPS tests cover native types, layouts, region/reduction, consumer mutation,
+prepared reuse, export-once semantics, and destruction from a worker thread.
+Run with `J2K_REQUIRE_METAL=1` to fail if the Metal build or MPS device is
+missing. The direct path is exercised with PyTorch 2.12.1 on Apple Silicon.
+
 Patch releases preserve the adapter's documented API; pre-1.0 minor changes
 require migration notes. Compatibility claims should name the consumer and
 hardware combinations actually exercised. Normalization and labels remain
@@ -199,7 +281,8 @@ application responsibilities.
 ## Publishing
 
 The `python-bindings.yml` workflow builds and tests CPU wheels for Linux and
-macOS. Linux release wheels use manylinux containers and PyPI-compatible tags.
+CPU/MPS wheels for Apple Silicon macOS. MPS tests skip on runners without GPU
+access. Linux release wheels use manylinux containers and PyPI-compatible tags.
 Publishing runs only for an explicit manual dispatch from `main` with `publish`
 enabled by the repository maintainer, after the wheel tests and any requested
 CUDA checks succeed. CUDA builds are validation-only in this workflow.

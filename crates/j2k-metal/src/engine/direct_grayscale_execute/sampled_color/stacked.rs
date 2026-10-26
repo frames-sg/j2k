@@ -97,6 +97,7 @@ pub(super) fn try_encode_stacked(
                 u32::from(plan.bit_depths[2]),
                 0,
             ],
+            signed_mask: if plan.signed { 0b111 } else { 0 },
             planes,
         };
         surfaces.push(encode_plane_stage_to_surface_in_command_buffer(

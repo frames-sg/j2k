@@ -38,6 +38,17 @@ impl TileBatchOptions {
     }
 }
 
+/// Tensor-compatible channel ordering requested from a batch decoder.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum BatchLayout {
+    /// Batch, channel, height, width.
+    #[default]
+    Nchw,
+    /// Batch, height, width, channel.
+    Nhwc,
+}
+
 /// Indexed result produced by one tile-batch worker.
 #[doc(hidden)]
 pub type IndexedBatchResult<T, E> = (usize, Result<T, E>);

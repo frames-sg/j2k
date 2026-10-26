@@ -262,6 +262,7 @@ fn write_samples<T: Copy>(
     let source_width = components.dimensions().0 as usize;
     let channels = components.component_count();
     let output_pixels = output_width * output_height;
+    let planar = info.layout == BatchLayout::Nchw;
     for y in 0..output_height {
         for x in 0..output_width {
             let output_pixel = y * output_width + x;
@@ -270,9 +271,10 @@ fn write_samples<T: Copy>(
                 let plane = components.plane(channel).ok_or_else(|| {
                     J2kError::internal_backend("prepared codec component plane is missing")
                 })?;
-                let destination = match info.layout {
-                    BatchLayout::Nchw => channel * output_pixels + output_pixel,
-                    BatchLayout::Nhwc => output_pixel * channels + channel,
+                let destination = if planar {
+                    channel * output_pixels + output_pixel
+                } else {
+                    output_pixel * channels + channel
                 };
                 out[destination] = convert(plane.samples()[source_pixel], plane.bit_depth());
             }

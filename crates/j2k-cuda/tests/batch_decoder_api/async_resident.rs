@@ -15,9 +15,10 @@ fn dropped_resident_submission_retires_work_and_preserves_session_reuse_when_run
         .iter()
         .find(|fixture| fixture.name == "openjph-rgb-s12-53-single-raw")
         .expect("independent signed RGB12 fixture");
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let prepared = prepare_batch(
         vec![EncodedImage::full(Arc::from(fixture.encoded))],
@@ -80,9 +81,10 @@ fn asynchronous_multitile_rgb_and_grayscale_groups_complete_together_when_runtim
         .expect("encode supported grayscale fixture"),
     );
     // The independent OpenJPH oracle is stored in interleaved sample order.
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let prepared = prepare_batch(
         vec![

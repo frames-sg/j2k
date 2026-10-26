@@ -16,11 +16,11 @@ use super::decode_dispatch::{dispatch_fused_idwt_mct_rgb8, FusedIdwtStoreSource}
 use super::direct_surface_pack::checked_metal_surface_len;
 use super::{
     commit_and_wait_metal, copy_plane_samples, j2k_pack_scale_arrays, j2k_u32_param,
-    metal_profile_stages_enabled, new_blit_command_encoder, new_command_buffer,
+    mct_level_shifts, metal_profile_stages_enabled, new_blit_command_encoder, new_command_buffer,
     new_compute_command_encoder, new_shared_buffer, output_shape_for,
-    record_hybrid_repeated_output_blit, signed_sample_bias, Buffer, CommandBufferRef, Device,
-    Error, J2kWaveletTransform, MetalRuntime, NativeColorSpace, NativeDecodedComponents,
-    PixelFormat, PreparedDirectColorPlan, Rect, Surface,
+    record_hybrid_repeated_output_blit, Buffer, CommandBufferRef, Device, Error,
+    J2kWaveletTransform, MetalRuntime, NativeColorSpace, NativeDecodedComponents, PixelFormat,
+    PreparedDirectColorPlan, Rect, Surface,
 };
 
 #[cfg(target_os = "macos")]
@@ -30,6 +30,8 @@ pub(super) struct PlaneStage {
     pub(super) color_space: NativeColorSpace,
     pub(super) has_alpha: bool,
     pub(super) bit_depths: [u32; 4],
+    /// Bit `c` is set when plane `c` stores signed samples.
+    pub(super) signed_mask: u32,
     pub(super) planes: [Option<Buffer>; 4],
 }
 
@@ -78,9 +80,11 @@ impl PlaneStage {
         }
 
         let mut bit_depths = [0u32; 4];
+        let mut signed_mask = 0;
         let mut planes: [Option<Buffer>; 4] = [None, None, None, None];
         for (index, plane) in decoded.planes().iter().enumerate() {
             bit_depths[index] = u32::from(plane.bit_depth());
+            signed_mask |= u32::from(plane.signed()) << index;
             let (_, len_bytes) = checked_metal_surface_len(
                 dims,
                 size_of::<f32>(),
@@ -97,6 +101,7 @@ impl PlaneStage {
             color_space,
             has_alpha: decoded.has_alpha(),
             bit_depths,
+            signed_mask,
             planes,
         })
     }
@@ -119,9 +124,11 @@ impl PlaneStage {
         }
 
         let mut bit_depths = [0u32; 4];
+        let mut signed_mask = 0;
         let mut planes: [Option<Buffer>; 4] = [None, None, None, None];
         for (index, (plane, buffer)) in decoded.planes().iter().zip(captured_planes).enumerate() {
             bit_depths[index] = u32::from(plane.bit_depth());
+            signed_mask |= u32::from(plane.signed()) << index;
             planes[index] = Some(buffer);
         }
 
@@ -131,6 +138,7 @@ impl PlaneStage {
             color_space,
             has_alpha: decoded.has_alpha(),
             bit_depths,
+            signed_mask,
             planes,
         })
     }
@@ -155,6 +163,13 @@ pub(super) fn encode_plane_stage_to_surface_in_command_buffer(
     stage: &PlaneStage,
     fmt: PixelFormat,
 ) -> Result<Surface, Error> {
+    if stage.signed_mask != 0 && stage.signed_mask != (1 << stage.plane_count) - 1 {
+        return Err(Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_operation(
+                "Metal decode needs every component to share one signedness",
+            ),
+        ));
+    }
     let (pitch_bytes, surface_bytes) = checked_metal_surface_len(
         stage.dims,
         fmt.bytes_per_pixel(),
@@ -179,6 +194,7 @@ pub(super) fn encode_plane_stage_to_surface_in_command_buffer(
         max_values,
         u8_scales,
         u16_scales,
+        signed_mask: stage.signed_mask,
     };
 
     let encoder = new_compute_command_encoder(command_buffer)?;
@@ -217,6 +233,7 @@ pub(super) fn encode_plane_stage_to_surface_in_command_buffer(
 fn mct_rgb8_pack_params(
     dims: (u32, u32),
     bit_depths: [u8; 3],
+    signed: bool,
     transform: J2kWaveletTransform,
 ) -> Result<(J2kMctRgb8PackParams, usize), Error> {
     let (pitch_bytes, surface_bytes) = checked_metal_surface_len(
@@ -235,11 +252,7 @@ fn mct_rgb8_pack_params(
         height: dims.1,
         out_stride: j2k_u32_param(pitch_bytes, "J2K Metal output stride exceeds u32")?,
         transform: mct_transform_code(transform),
-        addends: [
-            signed_sample_bias(bit_depths[0]),
-            signed_sample_bias(bit_depths[1]),
-            signed_sample_bias(bit_depths[2]),
-        ],
+        addends: mct_level_shifts(bit_depths, signed),
         max_values: [max_values[0], max_values[1], max_values[2]],
         u8_scales: [u8_scales[0], u8_scales[1], u8_scales[2]],
     };
@@ -253,9 +266,10 @@ pub(super) fn encode_mct_rgb8_to_surface_in_command_buffer(
     planes: [&Buffer; 3],
     dims: (u32, u32),
     bit_depths: [u8; 3],
+    signed: bool,
     transform: J2kWaveletTransform,
 ) -> Result<Surface, Error> {
-    let (params, surface_bytes) = mct_rgb8_pack_params(dims, bit_depths, transform)?;
+    let (params, surface_bytes) = mct_rgb8_pack_params(dims, bit_depths, signed, transform)?;
     let out_buffer = runtime.new_output_buffer(surface_bytes)?;
     let signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_MCT_PACK_COMMAND_ENCODE);
     let encoder = new_compute_command_encoder(command_buffer)?;
@@ -281,11 +295,14 @@ pub(super) fn encode_fused_idwt_mct_rgb8_to_surface_in_command_buffer(
     command_buffer: &CommandBufferRef,
     sources: &[FusedIdwtStoreSource<'_>; 3],
     cells: Option<(&Buffer, &[J2kBandCells; 9])>,
-    dims: (u32, u32),
-    bit_depths: [u8; 3],
-    transform: J2kWaveletTransform,
+    plan: &PreparedDirectColorPlan,
 ) -> Result<Surface, Error> {
-    let (params, surface_bytes) = mct_rgb8_pack_params(dims, bit_depths, transform)?;
+    let (params, surface_bytes) = mct_rgb8_pack_params(
+        plan.dimensions,
+        plan.bit_depths,
+        plan.signed,
+        plan.transform,
+    )?;
     let out_buffer = runtime.new_output_buffer(surface_bytes)?;
     let encoder = new_compute_command_encoder(command_buffer)?;
     label_compute_encoder(&encoder, "J2K decode fused last level MCT RGB8 pack");
@@ -298,7 +315,7 @@ pub(super) fn encode_fused_idwt_mct_rgb8_to_surface_in_command_buffer(
         &params,
     );
     encoder.endEncoding();
-    Surface::from_metal_buffer(out_buffer, dims, PixelFormat::Rgb8)
+    Surface::from_metal_buffer(out_buffer, plan.dimensions, PixelFormat::Rgb8)
 }
 
 #[cfg(target_os = "macos")]
@@ -306,11 +323,15 @@ pub(super) fn encode_batched_mct_rgb8_to_surfaces_in_command_buffer(
     runtime: &MetalRuntime,
     command_buffer: &CommandBufferRef,
     planes: [&Buffer; 3],
-    dims: (u32, u32),
+    plan: &PreparedDirectColorPlan,
     count: usize,
-    bit_depths: [u8; 3],
-    transform: J2kWaveletTransform,
 ) -> Result<Vec<Surface>, Error> {
+    let (dims, bit_depths, signed, transform) = (
+        plan.dimensions,
+        plan.bit_depths,
+        plan.signed,
+        plan.transform,
+    );
     let count_u32 = u32::try_from(count).map_err(|_| Error::MetalKernel {
         message: "J2K MetalDirect color batch count exceeds u32".to_string(),
     })?;
@@ -352,11 +373,7 @@ pub(super) fn encode_batched_mct_rgb8_to_surfaces_in_command_buffer(
         output_stride: u32::try_from(surface_bytes).map_err(|_| Error::MetalKernel {
             message: "J2K MetalDirect color batch surface stride exceeds u32".to_string(),
         })?,
-        addends: [
-            signed_sample_bias(bit_depths[0]),
-            signed_sample_bias(bit_depths[1]),
-            signed_sample_bias(bit_depths[2]),
-        ],
+        addends: mct_level_shifts(bit_depths, signed),
         max_values: [max_values[0], max_values[1], max_values[2]],
         u8_scales: [u8_scales[0], u8_scales[1], u8_scales[2]],
     };
@@ -398,11 +415,15 @@ pub(super) fn encode_repeated_mct_rgb8_to_surfaces_in_command_buffer(
     runtime: &MetalRuntime,
     command_buffer: &CommandBufferRef,
     planes: [&Buffer; 3],
-    dims: (u32, u32),
+    plan: &PreparedDirectColorPlan,
     count: usize,
-    bit_depths: [u8; 3],
-    transform: J2kWaveletTransform,
 ) -> Result<Vec<Surface>, Error> {
+    let (dims, bit_depths, signed, transform) = (
+        plan.dimensions,
+        plan.bit_depths,
+        plan.signed,
+        plan.transform,
+    );
     let (pitch_bytes, surface_bytes) = checked_metal_surface_len(
         dims,
         PixelFormat::Rgb8.bytes_per_pixel(),
@@ -441,11 +462,7 @@ pub(super) fn encode_repeated_mct_rgb8_to_surfaces_in_command_buffer(
         output_stride: u32::try_from(surface_bytes).map_err(|_| Error::MetalKernel {
             message: "J2K MetalDirect repeated color batch surface stride exceeds u32".to_string(),
         })?,
-        addends: [
-            signed_sample_bias(bit_depths[0]),
-            signed_sample_bias(bit_depths[1]),
-            signed_sample_bias(bit_depths[2]),
-        ],
+        addends: mct_level_shifts(bit_depths, signed),
         max_values: [max_values[0], max_values[1], max_values[2]],
         u8_scales: [u8_scales[0], u8_scales[1], u8_scales[2]],
     };

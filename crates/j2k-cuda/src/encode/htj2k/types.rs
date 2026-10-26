@@ -61,6 +61,8 @@ pub(super) struct CudaTileSubbandRegion {
     pub(super) height: u32,
     pub(super) stride: u32,
     pub(super) decomposition_level: u8,
+    pub(super) quantization_step: (u16, u16),
+    pub(super) kind: CudaTileSubbandKind,
 }
 
 #[cfg(feature = "cuda-runtime")]

@@ -19,10 +19,11 @@ fn prepared_batch_is_reusable_and_groups_heterogeneous_images_without_padding() 
         EncodedImage::full(gray_2x2),
         EncodedImage::full(gray_4x3),
     ];
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        workers: NonZeroUsize::new(2),
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options.workers = NonZeroUsize::new(2);
+        options
     };
     let prepared = prepare_batch(inputs, options).expect("prepare batch");
 
@@ -68,9 +69,10 @@ fn prepared_batch_is_reusable_and_groups_heterogeneous_images_without_padding() 
 
 #[test]
 fn caller_supplied_prepared_images_regroup_in_new_submission_order_without_reparse() {
-    let preparation_options = BatchDecodeOptions {
-        workers: NonZeroUsize::new(1),
-        ..BatchDecodeOptions::default()
+    let preparation_options = {
+        let mut options = BatchDecodeOptions::default();
+        options.workers = NonZeroUsize::new(1);
+        options
     };
     let larger_bytes = Arc::<[u8]>::from(htj2k_gray8_fixture(4, 3));
     let larger_preparation = prepare_batch(
@@ -91,10 +93,11 @@ fn caller_supplied_prepared_images_regroup_in_new_submission_order_without_repar
     .expect("prepare smaller image");
     let smaller = smaller_preparation.groups()[0].images()[0].clone();
 
-    let decode_options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        workers: NonZeroUsize::new(2),
-        ..BatchDecodeOptions::default()
+    let decode_options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options.workers = NonZeroUsize::new(2);
+        options
     };
     let mut decoder = CpuBatchDecoder::new(decode_options);
     let regrouped = decoder
@@ -138,9 +141,10 @@ fn caller_supplied_prepared_images_regroup_in_new_submission_order_without_repar
 
 #[test]
 fn regrouping_prepared_images_reports_settings_mismatches_at_submission_indices() {
-    let lenient_options = BatchDecodeOptions {
-        settings: DecodeSettings::lenient(),
-        ..BatchDecodeOptions::default()
+    let lenient_options = {
+        let mut options = BatchDecodeOptions::default();
+        options.settings = DecodeSettings::lenient();
+        options
     };
     let lenient = prepare_batch(
         vec![EncodedImage::full(Arc::from(htj2k_gray8_fixture(3, 2)))],
@@ -186,9 +190,10 @@ fn regrouping_prepared_images_reports_settings_mismatches_at_submission_indices(
 
 #[test]
 fn valid_lenient_batch_does_not_report_a_recovery_warning() {
-    let options = BatchDecodeOptions {
-        settings: DecodeSettings::lenient(),
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.settings = DecodeSettings::lenient();
+        options
     };
     let prepared = prepare_batch(
         vec![EncodedImage::full(Arc::from(htj2k_gray8_fixture(3, 2)))],
@@ -208,9 +213,10 @@ fn valid_lenient_batch_does_not_report_a_recovery_warning() {
 
 #[test]
 fn cpu_session_reuses_multitile_classic_prepared_workspace_across_decodes() {
-    let options = BatchDecodeOptions {
-        workers: NonZeroUsize::new(1),
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.workers = NonZeroUsize::new(1);
+        options
     };
     let prepared = prepare_batch(
         vec![EncodedImage::full(Arc::from(
@@ -254,9 +260,10 @@ fn cpu_session_reuses_multitile_classic_prepared_workspace_across_decodes() {
 
 #[test]
 fn cpu_session_reuses_preparation_workers_across_one_shot_batches() {
-    let options = BatchDecodeOptions {
-        workers: NonZeroUsize::new(1),
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.workers = NonZeroUsize::new(1);
+        options
     };
     let encoded = Arc::<[u8]>::from(htj2k_gray8_fixture(16, 16));
     let session = CpuBatchDecoder::new(options);

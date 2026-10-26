@@ -17,9 +17,10 @@ use super::payload_plan::native_prepared_classic_plan;
 
 #[test]
 fn cpu_fast_group_uses_one_flattened_arena_and_one_direct_output_allocation() {
-    let options = BatchDecodeOptions {
-        workers: NonZeroUsize::new(1),
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.workers = NonZeroUsize::new(1);
+        options
     };
     let encoded = Arc::<[u8]>::from(htj2k_gray8_fixture(16, 16));
     let prepared = prepare_batch(
@@ -86,9 +87,10 @@ fn cpu_fast_group_uses_one_flattened_arena_and_one_direct_output_allocation() {
 
 #[test]
 fn cpu_prepared_ht_plan_decode_avoids_native_reparse() {
-    let options = BatchDecodeOptions {
-        workers: NonZeroUsize::new(1),
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.workers = NonZeroUsize::new(1);
+        options
     };
     let prepared = prepare_batch(
         vec![EncodedImage::full(Arc::from(htj2k_gray8_fixture(16, 16)))],
@@ -125,9 +127,10 @@ fn cpu_prepared_ht_plan_decode_avoids_native_reparse() {
 
 #[test]
 fn cpu_prepared_classic_plan_decode_avoids_native_reparse() {
-    let options = BatchDecodeOptions {
-        workers: NonZeroUsize::new(1),
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.workers = NonZeroUsize::new(1);
+        options
     };
     let prepared = prepare_batch(
         vec![EncodedImage::full(Arc::from(classic_gray8_fixture(16, 16)))],
@@ -193,10 +196,11 @@ fn prepared_classic_plan_supports_duplicate_full_roi_and_reduced_requests() {
     ];
 
     for layout in [BatchLayout::Nchw, BatchLayout::Nhwc] {
-        let options = BatchDecodeOptions {
-            workers: NonZeroUsize::new(1),
-            layout,
-            ..BatchDecodeOptions::default()
+        let options = {
+            let mut options = BatchDecodeOptions::default();
+            options.workers = NonZeroUsize::new(1);
+            options.layout = layout;
+            options
         };
         let prepared = prepare_batch(
             requests
@@ -318,9 +322,10 @@ fn referenced_classic_whole_plan_executes_all_gray_and_rgb_tiles_exactly() {
 
 #[test]
 fn cpu_session_retained_workspace_stabilizes_during_thousand_batch_soak() {
-    let options = BatchDecodeOptions {
-        workers: NonZeroUsize::new(1),
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.workers = NonZeroUsize::new(1);
+        options
     };
     let prepared = prepare_batch(
         vec![EncodedImage::full(Arc::from(
@@ -421,9 +426,10 @@ fn cpu_session_decodes_tiles_into_caller_buffers_and_reuses_workspaces_across_ca
         TileBatchOptions { workers },
     )
     .expect("one-shot reference decode");
-    let mut session = CpuBatchDecoder::new(BatchDecodeOptions {
-        workers,
-        ..BatchDecodeOptions::default()
+    let mut session = CpuBatchDecoder::new({
+        let mut options = BatchDecodeOptions::default();
+        options.workers = workers;
+        options
     });
 
     for call in 0..2 {
@@ -445,9 +451,10 @@ fn cpu_session_decodes_tiles_into_caller_buffers_and_reuses_workspaces_across_ca
 
 #[test]
 fn cpu_session_decode_tiles_into_reports_tile_error_and_stays_reusable() {
-    let mut session = CpuBatchDecoder::new(BatchDecodeOptions {
-        workers: NonZeroUsize::new(1),
-        ..BatchDecodeOptions::default()
+    let mut session = CpuBatchDecoder::new({
+        let mut options = BatchDecodeOptions::default();
+        options.workers = NonZeroUsize::new(1);
+        options
     });
     let mut inputs = htj2k_rgb8_tiles(3);
     inputs[1].truncate(16);

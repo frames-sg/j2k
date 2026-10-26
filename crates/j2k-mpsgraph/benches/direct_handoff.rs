@@ -216,9 +216,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for size in [512_u32, 1024] {
             let encoded = Arc::<[u8]>::from(fixture(codec, size));
             for batch in [1_usize, 8, 32] {
-                let options = BatchDecodeOptions {
-                    layout: BatchLayout::Nhwc,
-                    ..BatchDecodeOptions::default()
+                let options = {
+                    let mut options = BatchDecodeOptions::default();
+                    options.layout = BatchLayout::Nhwc;
+                    options
                 };
                 let mut decoder = MpsGraphBatchDecoder::system_default(options)?;
                 let inputs = (0..batch)

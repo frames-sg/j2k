@@ -13,13 +13,11 @@ fn cold_input_decode(
     // Retain the initialized Metal device, queue, pipelines, and session caches.
     // A fresh decoder starts with empty prepared-image plan caches, so this row
     // measures input parsing/grouping and decoder preparation, not Metal startup.
-    let mut decoder = MetalBatchDecoder::with_backend_session_and_options(
-        backend.clone(),
-        BatchDecodeOptions {
-            layout: BatchLayout::Nhwc,
-            ..BatchDecodeOptions::default()
-        },
-    );
+    let mut decoder = MetalBatchDecoder::with_backend_session_and_options(backend.clone(), {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
+    });
     let inputs = sources
         .iter()
         .map(|bytes| EncodedImage::full(Arc::clone(bytes)))
@@ -56,9 +54,10 @@ pub(super) fn bench(criterion: &mut Criterion) {
         (1024, 1024, 16),
         (512, 512, 1),
     ] {
-        let mut decoder = MetalBatchDecoder::system_default_with_options(BatchDecodeOptions {
-            layout: BatchLayout::Nhwc,
-            ..BatchDecodeOptions::default()
+        let mut decoder = MetalBatchDecoder::system_default_with_options({
+            let mut options = BatchDecodeOptions::default();
+            options.layout = BatchLayout::Nhwc;
+            options
         })
         .expect("geometry benchmark Metal decoder");
         let options = EncodeOptions {

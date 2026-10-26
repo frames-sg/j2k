@@ -37,6 +37,7 @@ fn referenced_cuda_plan_concatenates_refinement_continuation_records() {
         }],
     };
     let plan = J2kDirectGrayscalePlan {
+        signed: false,
         dimensions: (1, 1),
         bit_depth: 1,
         steps: vec![J2kDirectGrayscaleStep::HtSubBand(HtOwnedSubBandPlan {
@@ -94,6 +95,7 @@ fn referenced_cuda_plan_concatenates_refinement_continuation_records() {
 #[test]
 fn referenced_cuda_component_count_includes_refinement_continuation_records() {
     let plan = J2kDirectGrayscalePlan {
+        signed: false,
         dimensions: (1, 1),
         bit_depth: 1,
         steps: vec![J2kDirectGrayscaleStep::HtSubBand(HtOwnedSubBandPlan {

@@ -21,9 +21,10 @@ fn reversible_batch_matrix_preserves_native_gray_and_rgb_samples() {
             }
         }
     }
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let mut decoder = CpuBatchDecoder::new(options);
     let result = decoder

@@ -55,9 +55,17 @@ use self::validation::{
     StackedColorBatchPreflight,
 };
 
+/// The level shift the inverse MCT adds back to each component: half the
+/// sample range for unsigned samples, none for signed ones, as on the CPU.
 #[cfg(target_os = "macos")]
-pub(super) fn signed_sample_bias(bit_depth: u8) -> f32 {
-    2.0_f32.powi(i32::from(bit_depth) - 1)
+pub(super) fn mct_level_shifts(bit_depths: [u8; 3], signed: bool) -> [f32; 3] {
+    bit_depths.map(|bit_depth| {
+        if signed {
+            0.0
+        } else {
+            2.0_f32.powi(i32::from(bit_depth) - 1)
+        }
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -118,6 +126,7 @@ pub(super) fn encode_prepared_direct_color_plan_in_command_buffer(
             [&planes[0], &planes[1], &planes[2]],
             plan.dimensions,
             plan.bit_depths,
+            plan.signed,
             plan.transform,
         )?;
         if let Some(started) = encode_started {
@@ -139,11 +148,7 @@ pub(super) fn encode_prepared_direct_color_plan_in_command_buffer(
             [&planes[0], &planes[1], &planes[2]],
             len,
             plan.transform,
-            [
-                signed_sample_bias(plan.bit_depths[0]),
-                signed_sample_bias(plan.bit_depths[1]),
-                signed_sample_bias(plan.bit_depths[2]),
-            ],
+            mct_level_shifts(plan.bit_depths, plan.signed),
         )?;
         if let Some(started) = encode_started {
             stage_timings.metal_mct_pack_encode += elapsed_us(started);
@@ -161,6 +166,7 @@ pub(super) fn encode_prepared_direct_color_plan_in_command_buffer(
             u32::from(plan.bit_depths[2]),
             0,
         ],
+        signed_mask: if plan.signed { 0b111 } else { 0 },
         planes: [
             Some(planes[0].clone()),
             Some(planes[1].clone()),
@@ -264,9 +270,7 @@ fn try_encode_fused_mct_rgb8_color_plan(
             fused_level_source(&inputs[2], transform),
         ],
         cells.as_ref().map(|(buffer, bands)| (buffer, bands)),
-        plan.dimensions,
-        plan.bit_depths,
-        plan.transform,
+        plan,
     )
     .map(Some)
 }
@@ -463,20 +467,16 @@ fn encode_stacked_mct_rgb8_surfaces(
             runtime,
             command_buffers.mct_pack,
             mct_plane_buffers,
-            preflight.first.dimensions,
+            preflight.first,
             count,
-            preflight.first.bit_depths,
-            preflight.first.transform,
         )?
     } else {
         encode_batched_mct_rgb8_to_surfaces_in_command_buffer(
             runtime,
             command_buffers.mct_pack,
             mct_plane_buffers,
-            preflight.first.dimensions,
+            preflight.first,
             preflight.execution_plans.len(),
-            preflight.first.bit_depths,
-            preflight.first.transform,
         )?
     };
     if let Some(started) = encode_started {

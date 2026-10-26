@@ -5,13 +5,19 @@ use j2k_native::{
     J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kRequiredBandRegion as RequiredBandRegion,
 };
 
-use super::{CudaHtj2kBandId, Error, PLAN_OUTPUT_RECT_MISMATCH, PLAN_PAYLOAD_TOO_LARGE};
+use super::{
+    shared::convert_store_step, CudaHtj2kBandId, Error, PLAN_OUTPUT_RECT_MISMATCH,
+    PLAN_PAYLOAD_TOO_LARGE,
+};
 use crate::allocation::{try_vec_reserve, HostPhaseBudget};
 
 const REQUIRED_REGIONS: &str = "CUDA direct-plan required regions";
 
 pub(super) struct RequiredBandRegions {
     entries: Vec<(CudaHtj2kBandId, RequiredBandRegion)>,
+    /// Output window, relative to the step rectangle, that each IDWT step
+    /// reconstructs: its required region widened by the transform margin.
+    idwt_windows: Vec<(CudaHtj2kBandId, RequiredBandRegion)>,
 }
 
 impl RequiredBandRegions {
@@ -21,20 +27,39 @@ impl RequiredBandRegions {
             .ok()
             .map(|index| &self.entries[index].1)
     }
+
+    pub(super) fn idwt_window(
+        &self,
+        output_band_id: CudaHtj2kBandId,
+    ) -> Option<RequiredBandRegion> {
+        self.idwt_windows
+            .iter()
+            .find(|(band_id, _)| *band_id == output_band_id)
+            .map(|(_, window)| *window)
+    }
 }
 
 pub(super) fn required_regions_for_direct_plan_with_budget(
     plan: &J2kDirectGrayscalePlan,
+    output_origin: (u32, u32),
+    output_dimensions: (u32, u32),
     host_budget: &mut HostPhaseBudget,
 ) -> Result<RequiredBandRegions, Error> {
     let capacity = required_region_capacity(plan)?;
     let entries = host_budget.try_vec_with_capacity_named(capacity, REQUIRED_REGIONS)?;
-    let mut required = RequiredBandRegions { entries };
+    let idwt_windows = host_budget.try_vec_with_capacity_named(capacity, REQUIRED_REGIONS)?;
+    let mut required = RequiredBandRegions {
+        entries,
+        idwt_windows,
+    };
 
     for step in &plan.steps {
         let J2kDirectGrayscaleStep::Store(store) = step else {
             continue;
         };
+        // A store may cover more than the output region; the plan stores only
+        // the region, so only the region is required.
+        let store = convert_store_step(*store, output_origin, output_dimensions)?;
         let source_right =
             store
                 .source_x
@@ -68,6 +93,8 @@ pub(super) fn required_regions_for_direct_plan_with_budget(
             idwt.rect.width(),
             idwt.rect.height(),
         );
+        try_vec_reserve(&mut required.idwt_windows, 1, REQUIRED_REGIONS)?;
+        required.idwt_windows.push((idwt.output_band_id, expanded));
         add_idwt_input_required_regions(&mut required, idwt, expanded)?;
     }
     Ok(required)

@@ -42,9 +42,10 @@ fn reversible_htj2k_roi_decode_uses_metal_and_matches_cpu_exactly() {
         .decode_into(&mut host, width as usize, PixelFormat::Gray8)
         .expect("host decode");
 
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let mut decoder =
         MetalBatchDecoder::system_default_with_options(options).expect("Metal decoder");

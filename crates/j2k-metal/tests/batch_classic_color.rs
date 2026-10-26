@@ -167,9 +167,10 @@ fn assert_classic_rgb_layout(
     layout: BatchLayout,
     requests: &[DecodeRequest],
 ) {
-    let options = BatchDecodeOptions {
-        layout,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = layout;
+        options
     };
     let inputs = requests
         .iter()

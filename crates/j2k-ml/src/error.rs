@@ -2,9 +2,10 @@
 
 /// Failure while decoding or staging a codec batch into Burn.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum BurnDecodeError {
     /// The codec could not allocate or schedule the requested batch.
-    #[error("JPEG 2000 batch infrastructure failed: {0}")]
+    #[error("codec batch infrastructure failed: {0}")]
     Infrastructure(#[from] j2k::BatchInfrastructureError),
     /// The selected Burn backend cannot represent the codec's exact integer type.
     #[error("Burn backend does not support exact codec dtype {dtype:?}")]

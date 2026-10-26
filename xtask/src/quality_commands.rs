@@ -213,9 +213,48 @@ fn test_workspace_without_benches(extra_args: &[&str]) -> Result<(), String> {
         "--tests",
         "--exclude",
         "j2k-alloc-probe",
+        "--exclude",
+        "j2k-jpeg",
     ];
     test_args.extend_from_slice(extra_args);
     run_cargo(&test_args)?;
+
+    // JPEG's scalar-only feature changes runtime dispatch. Keep it out of
+    // the all-feature workspace graph so normal callers and SIMD parity tests
+    // exercise the accelerated backend. Verify fallback bytes separately.
+    run_cargo(&[
+        "test",
+        "-p",
+        "j2k-jpeg",
+        "--features",
+        "bench-internals,bench-libjpeg-turbo",
+        "--lib",
+        "--tests",
+    ])?;
+    run_cargo(&[
+        "test",
+        "-p",
+        "j2k-jpeg",
+        "--features",
+        "scalar-only",
+        "--test",
+        "decode_into",
+        "--test",
+        "encode_baseline",
+        "--test",
+        "dct_reemit_parity",
+    ])?;
+    run_cargo(&[
+        "test",
+        "-p",
+        "j2k-jpeg",
+        "--features",
+        "scalar-only",
+        "--lib",
+        "backend::tests::detected_backend_respects_scalar_only_and_runtime_capabilities",
+        "--",
+        "--exact",
+    ])?;
     test_facade_cuda_stub()?;
 
     let mut doc_args = vec!["test", "--workspace", "--all-features", "--doc"];

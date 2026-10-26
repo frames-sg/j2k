@@ -95,9 +95,6 @@ impl Decoder<'_> {
             }
         }
 
-        Ok(DecodeOutcome {
-            decoded: roi,
-            warnings: try_clone_warnings(&self.warnings)?,
-        })
+        self.finish_outcome(roi, try_clone_warnings(&self.warnings)?)
     }
 }

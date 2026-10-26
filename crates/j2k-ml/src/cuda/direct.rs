@@ -123,7 +123,7 @@ impl CudaDirectBurnDecoder {
 
         Ok(BurnBatchDecode {
             groups,
-            errors: prepared.errors().to_vec(),
+            errors: crate::j2k_errors(prepared.errors().to_vec())?,
             group_errors,
         })
     }
@@ -215,10 +215,14 @@ impl CudaDirectBurnDecoder {
         };
         Ok(BurnBatchGroup {
             tensor,
-            info: metadata.info().clone(),
+            info: crate::GroupInfo::Jpeg2000(metadata.info().clone()),
+            recovered: crate::unrecovered(metadata.source_indices().len())?,
             source_indices: metadata.source_indices().to_vec(),
             decoded_rects: metadata.decoded_rects().to_vec(),
-            warnings: metadata.warnings().to_vec(),
+            warnings: crate::tagged_warnings(
+                metadata.warnings().to_vec(),
+                crate::ImageDecodeWarning::Jpeg2000,
+            )?,
         })
     }
 }

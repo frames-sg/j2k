@@ -673,7 +673,7 @@ fn build_prepared_direct_color_plan<'a>(
         let (plan, shared) = build_referenced_plan_copying_codestream(image, context, bytes);
         match plan {
             Ok(plan) => {
-                return crate::engine::prepare_referenced_htj2k_color_plan(&plan, &shared, false)
+                return crate::engine::prepare_referenced_htj2k_color_plan(&plan, &shared)
                     .map(Some);
             }
             Err(error)

@@ -13,11 +13,15 @@ use super::{
     CudaComponentDecodeWork, CudaDecodedComponent, CudaExternalDeviceBufferViewMut,
     CudaHtj2kProfileReport, CudaQueuedIdwtBatch, CudaSession, DecodeSettings, DeviceSubmitSession,
     Error, GrayscaleBatchInput, GrayscaleBatchOutput, GrayscaleHtj2kCleanup,
-    GrayscalePendingCompletion, HostPhaseBudget, PixelFormat, StoredGrayscaleBatch,
-    CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
+    GrayscalePendingCompletion, GrayscaleSampleConversion, HostPhaseBudget, PixelFormat,
+    StoredGrayscaleBatch, CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
 };
 use j2k_cuda_j2k_engine::{CudaHtj2kDecodeResources, J2kCudaEngine};
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "keep native sample policy explicit alongside execution and destination controls"
+)]
 pub(super) fn decode_grayscale_cuda_batch_with_profile(
     inputs: &[GrayscaleBatchInput<'_>],
     settings: DecodeSettings,
@@ -26,6 +30,7 @@ pub(super) fn decode_grayscale_cuda_batch_with_profile(
     collect_stage_timings: bool,
     external: Option<&mut CudaExternalDeviceBufferViewMut<'_>>,
     enqueue_external: bool,
+    conversion: GrayscaleSampleConversion,
 ) -> Result<
     (
         GrayscaleBatchOutput,
@@ -72,6 +77,7 @@ pub(super) fn decode_grayscale_cuda_batch_with_profile(
         collect_stage_timings,
         external,
         enqueue_external,
+        conversion,
     );
 
     if enqueue_external {
@@ -260,6 +266,10 @@ fn enqueue_grayscale_idwt(
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "keep native sample policy explicit alongside execution and destination controls"
+)]
 fn finish_grayscale_components_and_store(
     session: &mut CudaSession,
     prepared: &mut PreparedGrayscaleBatch,
@@ -268,6 +278,7 @@ fn finish_grayscale_components_and_store(
     collect_stage_timings: bool,
     external: Option<&mut CudaExternalDeviceBufferViewMut<'_>>,
     enqueue_external: bool,
+    conversion: GrayscaleSampleConversion,
 ) -> Result<(StoredGrayscaleBatch, Vec<CudaDecodedComponent>), Error> {
     let context = session.cuda_context()?;
     let mut decoded = Vec::new();
@@ -293,6 +304,7 @@ fn finish_grayscale_components_and_store(
             &decoded,
             external,
             enqueue_external,
+            conversion,
         )?,
         PixelFormat::Gray16 => store_gray16_batch(
             &context,
@@ -302,6 +314,7 @@ fn finish_grayscale_components_and_store(
             &decoded,
             external,
             enqueue_external,
+            conversion,
         )?,
         PixelFormat::GrayI16 => store_grayi16_batch(
             &context,

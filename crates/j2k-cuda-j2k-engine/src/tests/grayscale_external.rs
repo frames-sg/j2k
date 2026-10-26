@@ -27,8 +27,10 @@ fn external_grayscale_batch_store_rejects_bounds_and_device_identity_before_laun
         output_y: 0,
         addend: 0.0,
         bit_depth: 12,
+        signed: 0,
     };
     let target = CudaJ2kStoreGray16Target {
+        native_samples: true,
         output_index: 0,
         input: &input,
         job,
@@ -93,6 +95,7 @@ fn external_grayscale_batch_store_honors_suballocation_offsets_when_required() {
         .upload_f32(&[0.0, 1.0, 2.0, 3.0])
         .expect("grayscale source");
     let target = CudaJ2kStoreGray8Target {
+        native_samples: true,
         output_index: 0,
         input: &input,
         job: CudaJ2kStoreGray8Job {

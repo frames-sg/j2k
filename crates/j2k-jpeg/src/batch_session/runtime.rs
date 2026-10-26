@@ -18,6 +18,15 @@ use super::{
 };
 
 impl JpegBatchSession {
+    /// Evict warm codec storage if needed before the owned output is allocated.
+    pub(crate) fn prepare_owned_output(
+        &mut self,
+        bytes: usize,
+    ) -> Result<(), BatchInfrastructureError> {
+        self.prepare_retained_summary(0, bytes)?;
+        Ok(())
+    }
+
     pub(super) fn prepare_job_planning(
         &mut self,
         job_count: usize,

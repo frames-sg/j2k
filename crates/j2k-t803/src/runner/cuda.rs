@@ -52,9 +52,10 @@ impl CudaIut {
     fn new() -> Result<Self, String> {
         let context = CudaContext::system_default().map_err(|error| error.to_string())?;
         let device_ordinal = context.device_ordinal();
-        let options = BatchDecodeOptions {
-            layout: BatchLayout::Nhwc,
-            ..BatchDecodeOptions::default()
+        let options = {
+            let mut options = BatchDecodeOptions::default();
+            options.layout = BatchLayout::Nhwc;
+            options
         };
         let decoder =
             CudaBatchDecoder::with_session_and_options(CudaSession::with_context(context), options);

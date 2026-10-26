@@ -3,13 +3,131 @@
 This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
-## [Unreleased]
+## [0.13.0] - 2026-10-26
 
+- Migration from 0.12.0: exhaustive native `EncodeOptions` literals must add
+  `irreversible_quantization_profile: None` or use `Default` with struct update
+  syntax. Exhaustive `JpegEncodeError` matches must handle the six new encode
+  errors, and exhaustive `JpegResolvedDecodePath` matches must handle
+  `MetalHybrid`. The hidden `irreversible_quantization_step_for_subband` helper
+  requires the sub-band level and total decomposition depth as its final two
+  arguments. The one-level transcode path passes `1, 1`. See the
+  [0.13.0 API review](xtask/release-evidence/public-api/public-api-review-0.13.0.yml)
+  for the full compatibility and behavior review.
+- Migration from 0.12.0: `J2kDirectGrayscalePlan` adds the required `signed`
+  field. Existing struct literals must set it from the source component
+  signedness. Use `signed: false` for unsigned inputs and `signed: true` for
+  signed inputs, including component plans nested in colour and RGBA plans.
+  Update exhaustive field patterns to bind `signed` or include a rest pattern.
+  The output pixel format does not determine source signedness.
+- Migration from 0.12.0: `BatchDecodeOptions` is `#[non_exhaustive]`; build it
+  from `BatchDecodeOptions::default()` and assign `layout`, `settings` and
+  `workers`. `BatchLayout` is defined in `j2k-core` and still re-exported by
+  `j2k`. `j2k_jpeg::ColorTransform`, `BurnBatchTensor` and `BurnDecodeError`
+  are `#[non_exhaustive]`, so exhaustive matches need a wildcard arm.
+  `j2k_jpeg::DecodeOutcome` and `DecodedTile` add `recovered`; literals set it
+  to `false`. `BurnBatchDecode` and `BurnBatchGroup` fields are private; use
+  their accessors, `into_groups`, `into_tensor` and `j2k_info`. JPEG decode is
+  strict by default and returns `JpegError::RecoveryRequired` for damaged
+  input; pass `DecodeOptions::with_strict(false)` to accept supported
+  recovery. The `cuda-oxide-j2k-ml` feature of `j2k-cuda-j2k-engine` is
+  removed.
+
+- Release evidence: 0.13.0 publishes without the CUDA full release validation
+  job and the CUDA T.803 report, because the self-hosted CUDA runner is
+  offline. [`cuda-waiver-0.13.0.md`](xtask/release-evidence/cuda-waiver-0.13.0.md)
+  records the CUDA tests and byte-identity checks that passed on the same
+  crate sources. CPU and Metal evidence are required as usual. The CUDA T.803
+  report will be attached to the GitHub release once the runner is back.
+
+- CPU byte and bits-per-pixel rate searches return the last probe's
+  codestream when that probe is the selected scale, instead of encoding the
+  same scale again. Search decisions and output are unchanged.
+
+- Classic CPU Tier-1 encoding of code blocks without vertically causal
+  context scans packed column state words shared with the decoder, instead
+  of per-sample neighbor bytes. Output is unchanged.
+
+- CUDA whole-tile HTJ2K encodes group every component's code blocks in
+  bounded dispatches. Each component is quantized into its own plane of the
+  component buffer after the transform has finished reading it, avoiding a
+  separate coefficient buffer. Output is unchanged.
+
+- CUDA HTJ2K tile encodes bound each code-block scratch request to 384 MiB,
+  keeping small-block images within the scratch offset range. Blocks retain
+  their submission order and encoded bytes are unchanged.
+
+- CUDA HTJ2K tile encodes quantize every sub-band of a component into one
+  buffer and code its blocks in bounded dispatches. Sub-bands share a dispatch
+  when their combined jobs fit the scratch budget, and the encode report
+  counts the actual HT code-block dispatches. Output is unchanged.
+
+- A `CudaEncodeStageAccelerator`, and so a `CudaLosslessEncoder`, keeps one
+  best-fit device-buffer pool across its encodes, and HTJ2K tile encodes take
+  each sub-band's quantized coefficients from it, so repeated encodes no
+  longer allocate and free those buffers for every sub-band. The pool keeps
+  up to 512 MiB of idle device memory between encodes. Output is unchanged.
+
+- CUDA HTJ2K code-block encode kernels launch 32 threads per code block
+  instead of 128. Each code block is coded by one thread, so the smaller
+  thread blocks let more code blocks run at once. Output is unchanged.
+
+- CUDA sessions reuse decode device buffers best-fit, taking the smallest
+  cached buffer that is large enough, instead of first-fit, so small requests no
+  longer take large cached buffers and repeated full-image decodes stop
+  allocating and freeing device memory on every decode. Output is unchanged.
+
+- CUDA HTJ2K packetization builds each packet header with the whole thread
+  block: every thread codes one code block's tag-tree, pass and length bits
+  and one thread appends them, instead of one thread coding the whole packet.
+  Packets with blocks coded in earlier layers keep the serial header. Output is
+  unchanged.
+
+- Metal device decodes follow CPU sample conversion for signed grayscale and
+  colour sources, including prepared, referenced, repeated and distinct batches.
+  Component plans retain source signedness at construction and reject mixed
+  colour signedness. Signed MCT takes no unsigned level shift and 16-bit plane
+  packs preserve two's-complement samples.
 - `j2k-native` has a `profile` feature, on by default, for its stage
   profiling (`J2K_PROFILE_STAGES`). Without it, profiling compiles to no-ops,
   and `std` no longer turns on `j2k-profile/std`. A single-threaded wasm32
   decoder built with only `std` and `simd` is 16.8 KB smaller gzipped (216 KB
   instead of 233 KB). Default builds are unchanged.
+- CUDA device decodes follow CPU sample conversion for signed grayscale and
+  colour sources, including prepared and referenced batches. Component plans
+  retain source signedness at construction and reject mixed-signedness colour
+  stores. Signed MCT takes no unsigned level shift, native batches preserve
+  sample values, and requested 16-bit outputs keep two's-complement samples.
+  For 0.13.0, `J2kDirectGrayscalePlan` adds the public `signed: bool` field.
+  Struct literals must add `signed` from the source metadata, or use struct
+  update syntax with an existing plan that has the correct signedness.
+
+- Python `ImageRequest` accepts JPEG color-transform hints from slide readers.
+  `Tensor.to_numpy()` rejects GPU output without consuming its DLPack owner.
+- The Python adapter's optional `metal` feature supports `device="mps"` on
+  Apple Silicon. JPEG 2000 batches decode into fresh private Metal buffers
+  transferred to PyTorch through DLPack after GPU completion; consumer
+  mutation and decoder reuse do not alias codec-owned storage.
+- `CpuBurnDecoder::decode_batch` accepts mixed JPEG and JPEG 2000 inputs
+  with common private result owners, typed diagnostics and recovery metadata.
+- JPEG decode defaults to strict pixel integrity, including progressive EOF
+  verification. Explicit lenient recovery is reported per row. Python strict
+  settings and Burn session settings apply to both codec families.
+- Unconsumed DLPack capsules return storage to their live tensor owner after
+  a rejected foreign import. Python accepts `mps:0` and single ImageRequest
+  inputs; bare `cuda` binds the current PyTorch device at construction.
+- `j2k_jpeg::JpegBatchDecoder` decodes complete JPEGs on the CPU into dense
+  RGB8 groups (NCHW or NHWC), grouped by size; a failing input is reported by
+  index and the rest of its group is kept. `BatchLayout` moves to `j2k-core`
+  and `j2k::BatchLayout` re-exports it.
+- The `j2k` Python decoder's `decode` and `decode_batch` accept 8-bit JPEG
+  inputs alongside JPEG 2000 in one call, with indices and errors relative to
+  the original input list. JPEG inputs support full-image CPU decode; `prepare`
+  and `decode_prepared` stay JPEG 2000 only.
+- Removes the unused CUDA-Oxide j2k-ml conversion kernel from
+  `j2k-cuda-j2k-engine`, with its `cuda-oxide-j2k-ml` feature, the
+  rustdoc-hidden `CudaJ2kMl*` types and
+  `J2kCudaEngine::j2k_ml_convert_into_external`. No adapter called it.
 - Tight RGBA8 output from RGB images decodes into the caller's allocation
   and adds opaque alpha in place, avoiding a separate full RGB8 buffer.
   Pixel values and padded-output handling are unchanged.
@@ -243,11 +361,24 @@ and stale roadmap entries have been removed from the public documentation set.
   18000 x 12000 RGB RPCL image peaks at 20 to 21 MiB of heap wherever it
   lies, instead of 24 to 32 MiB, about the same as with PLT. Output is
   unchanged.
+- CUDA HTJ2K packetization copies each packet body one code block at a time
+  with every thread of the packet's thread block, instead of having each
+  thread search the packet's code blocks for every body byte it copies.
+  Output is unchanged.
 - Region decodes of codestreams without PLT markers keep no layer or segment
   records for the code-blocks they parse only to reach later packets. Their
   packet headers are still checked as before. A 1024 x 1024 region of an
   18000 x 12000 RGB RPCL image needs 13 to 29 MiB of packet-header state
   instead of 27 to 60 MiB, depending on where it lies. Output is unchanged.
+- CUDA region decodes lay each Tier-1 band out over the window its region
+  needs and run each IDWT level over its required output window only, instead
+  of reconstructing whole bands. The engine IDWT job band rectangles are now
+  absolute band coordinates and may cover more than the output needs. Output
+  is unchanged.
+- CUDA colour region decodes plan only the code blocks, packets and wavelet
+  levels the region needs, as grayscale region decodes already did, instead
+  of decoding every code block of the image and uploading its whole
+  codestream. Output is unchanged.
 - Region decodes reduced past every wavelet level write the LL band straight
   into the output planes instead of copying it through an IDWT buffer first,
   saving one component's region of `f32` samples (0.8 of 10.8 MiB for a 1/32

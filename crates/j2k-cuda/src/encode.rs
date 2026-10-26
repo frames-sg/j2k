@@ -487,6 +487,7 @@ impl J2kEncodeStageAccelerator for CudaDeviceBufferEncodeAccelerator<'_> {
         let Some(encoded) = cuda_encode_htj2k_device_tile_body(
             &self.context,
             &self.resources,
+            &self.context.buffer_pool(),
             self.tile,
             job,
             true,

@@ -71,9 +71,10 @@ fn staged_cuda_burn_rgba_matches_cpu_across_codecs_types_geometry_and_layouts() 
 }
 
 fn assert_burn_case(codec: &str, encoded: &Arc<[u8]>, layout: BatchLayout, request: DecodeRequest) {
-    let options = BatchDecodeOptions {
-        layout,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = layout;
+        options
     };
     let inputs = vec![
         EncodedImage::new(Arc::clone(encoded), request),
@@ -104,14 +105,18 @@ fn assert_burn_case(codec: &str, encoded: &Arc<[u8]>, layout: BatchLayout, reque
     let output = decoder
         .decode_prepared(&prepared)
         .unwrap_or_else(|error| panic!("staged {codec} RGBA Burn decode: {error}"));
-    assert!(output.errors.is_empty(), "{codec} {layout:?} {request:?}");
+    assert!(output.errors().is_empty(), "{codec} {layout:?} {request:?}");
     assert!(
-        output.group_errors.is_empty(),
+        output.group_errors().is_empty(),
         "{codec} {layout:?} {request:?}: {:?}",
-        output.group_errors
+        output.group_errors()
     );
-    let group = output.groups.into_iter().next().expect("RGBA Burn group");
-    assert_eq!(group.source_indices, [0, 1]);
+    let group = output
+        .into_groups()
+        .into_iter()
+        .next()
+        .expect("RGBA Burn group");
+    assert_eq!(group.source_indices(), [0, 1]);
     let dimensions = prepared_group.info().dimensions;
     let shape = match layout {
         BatchLayout::Nhwc => [2, dimensions.1 as usize, dimensions.0 as usize, 4],
@@ -120,7 +125,7 @@ fn assert_burn_case(codec: &str, encoded: &Arc<[u8]>, layout: BatchLayout, reque
     };
     assert_tensor_matches_cpu(
         expected.groups()[0].samples(),
-        group.tensor,
+        group.into_tensor(),
         shape,
         &format!("{codec} {layout:?} {request:?}"),
     );

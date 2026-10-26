@@ -1,7 +1,7 @@
 # Burn batch decoding with `j2k-ml`
 
 For the Rust-written PyTorch/NumPy extension, native wavelet output, and direct
-CUDA-to-PyTorch decoding, see [`j2k-python`](../crates/j2k-python/README.md).
+CUDA/MPS output for PyTorch, see [`j2k-python`](../crates/j2k-python/README.md).
 `j2k-ml` provides both staged CUDA upload and synchronous decode directly into
 Burn-owned CUDA storage.
 
@@ -61,6 +61,22 @@ into a Burn CUDA allocation and publishes it only after synchronous codec
 completion and status validation. `CudaUploadBurnDecoder` and
 `MetalUploadBurnDecoder` retain the decoded-pixel readback and upload path.
 
+## Mixed codec inputs
+
+`CpuBurnDecoder::decode_batch` accepts `&[ImageInput<'_>]` and returns the
+common `BurnBatchDecode`. Results and groups have private fields: borrow with
+`groups()`, `errors()`, `group_errors()` and group accessors, or consume with
+`into_groups()` and `into_tensor()`. `ImageDecodeError` and
+`ImageDecodeWarning` identify their codec family. Detailed J2K metadata is
+available through `j2k_info()`. Each row has source indices, warnings and a
+recovered flag. Session strictness is authoritative for both codecs.
+
+JPEG tensor output remains RGB uint8 by default, with grayscale expanded to three identical channels. Grayscale JPEG 2000 and HTJ2K remain one channel. Output metadata describes the returned tensor. A later explicit `channels="native"` option may preserve grayscale JPEG as one channel without changing existing defaults. Source component counts, when exposed, are per input row and remain aligned with source_indices.
+
+Group order is unspecified, with source_indices authoritative. A supported
+lenient recovery returns one row and no error for that input; cosmetic warnings
+leave recovery false. The J2K lenient path currently performs no entropy salvage.
+
 ## Batch behavior
 
 Inputs are owned `EncodedImage` values: an `Arc<[u8]>` containing JP2, JPH,
@@ -107,6 +123,13 @@ GPU routes copy decoded pixels through host memory; the direct CUDA route does
 not. Unsupported inputs and transfer failures return errors.
 
 ## Persistent routes
+
+For mixed inputs, call `CpuBurnDecoder::decode_batch(&[ImageInput])`. It
+retains the JPEG and JPEG 2000 CPU sessions, applies the same session strictness
+to both, and keeps JPEG color hints. Results use common metadata accessors and
+codec-tagged indexed errors. JPEG currently supports full-image CPU decode only;
+JPEG 2000 keeps the prepared, region and reduced-resolution paths. A GPU Burn
+destination receives an ordinary upload for CPU-decoded JPEG samples.
 
 `CpuBurnDecoder<B>` retains a `j2k::CpuBatchDecoder` and its codec workspaces.
 The codec decodes directly into one contiguous native Rust allocation per

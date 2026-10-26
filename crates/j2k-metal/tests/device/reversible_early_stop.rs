@@ -73,9 +73,10 @@ fn cooperative_batch_of_early_stopped_reversible_blocks_matches_on_cpu_and_gpu()
     let inputs = (0..8)
         .map(|_| EncodedImage::full(Arc::from(REVERSIBLE_EARLY_STOP_RATE_LIMITED_RGB8)))
         .collect::<Vec<_>>();
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let cpu = CpuBatchDecoder::new(options)
         .decode(inputs.clone())

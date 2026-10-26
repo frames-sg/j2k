@@ -61,7 +61,8 @@ fn benchmark_build_and_signoff_execute_the_complete_fake_cargo_plan() {
     assert!(log.contains("bench -p j2k-ml --bench batch_decode_cuda --features cpu,cuda --no-run|"));
     assert!(log.contains("test -p j2k-compare --test in_process_parity -- --nocapture|"));
     assert!(log.contains("test -p j2k-jpeg --features bench-libjpeg-turbo --test libjpeg_turbo_compare -- --nocapture|"));
-    assert_eq!(log.lines().count(), 24);
+    assert!(log.contains("test -p j2k-jpeg --test scaled_matrix scaled_region_edge_sweep_matches_libjpeg_turbo_crops -- --exact --ignored --nocapture|"));
+    assert_eq!(log.lines().count(), 25);
 }
 
 #[cfg(unix)]

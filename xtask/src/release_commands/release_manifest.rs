@@ -173,6 +173,23 @@ pub(super) fn release_dependencies_by_package(
     manifest: &ReleaseManifestContract,
     workspace_packages: &[&serde_json::Value],
 ) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
+    release_edges_by_package(manifest, workspace_packages, |kind| kind != "dev")
+}
+
+/// Release crates each package names as an exact dev-dependency. `cargo package` resolves
+/// these from the registry too, so packaging before publication must patch them.
+pub(super) fn release_dev_dependencies_by_package(
+    manifest: &ReleaseManifestContract,
+    workspace_packages: &[&serde_json::Value],
+) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
+    release_edges_by_package(manifest, workspace_packages, |kind| kind == "dev")
+}
+
+fn release_edges_by_package(
+    manifest: &ReleaseManifestContract,
+    workspace_packages: &[&serde_json::Value],
+    include_kind: impl Fn(&str) -> bool,
+) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
     let package_by_name = package_records_by_name(workspace_packages)?;
     let release_roots = release_package_roots(manifest, &package_by_name)?;
     let mut dependencies_by_package = BTreeMap::new();
@@ -191,7 +208,7 @@ pub(super) fn release_dependencies_by_package(
             BTreeSet::new(),
             |mut found, (index, dependency)| {
                 let kind = dependency_kind(package_name, index, dependency)?;
-                if kind != "dev" {
+                if include_kind(kind) {
                     if let Some(dependency_name) = workspace_release_dependency(
                         package_name,
                         index,

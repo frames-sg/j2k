@@ -11,7 +11,7 @@ use j2k::{
 #[cfg(feature = "cuda-runtime")]
 use j2k_cuda_j2k_engine::{CudaHtj2kEncodeResources, CudaJ2kQuantizeJob};
 #[cfg(feature = "cuda-runtime")]
-use j2k_cuda_runtime::{CudaContext, CudaError};
+use j2k_cuda_runtime::{CudaBufferPool, CudaContext, CudaError};
 #[cfg(feature = "cuda-runtime")]
 use std::sync::Arc;
 
@@ -92,6 +92,9 @@ pub struct CudaEncodeStageAccelerator {
     context: Option<CudaContext>,
     #[cfg(feature = "cuda-runtime")]
     encode_resources: Option<Arc<CudaHtj2kEncodeResources>>,
+    /// Device buffers reused across this accelerator's encodes.
+    #[cfg(feature = "cuda-runtime")]
+    encode_pool: Option<CudaBufferPool>,
     #[cfg(feature = "cuda-runtime")]
     device_unavailable_observed: bool,
     #[cfg_attr(
@@ -278,6 +281,13 @@ impl CudaEncodeStageAccelerator {
         self.encode_resources
             .clone()
             .ok_or_else(|| internal_invariant("CUDA HTJ2K encode resources unavailable"))
+    }
+
+    #[cfg(feature = "cuda-runtime")]
+    fn cuda_encode_pool(&mut self, context: &CudaContext) -> CudaBufferPool {
+        self.encode_pool
+            .get_or_insert_with(|| context.best_fit_buffer_pool())
+            .clone()
     }
 
     pub(super) fn encode_profile_report(
@@ -860,9 +870,11 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         #[cfg(feature = "cuda-runtime")]
         if let Some(context) = self.cuda_context()? {
             let resources = self.cuda_encode_resources(&context)?;
+            let pool = self.cuda_encode_pool(&context);
             let Some(encoded) = cuda_encode_htj2k_tile_body(
                 &context,
                 resources.as_ref(),
+                &pool,
                 job,
                 self.collect_profile,
             )?
@@ -974,8 +986,14 @@ impl J2kEncodeStageAccelerator for CudaEncodeStageAccelerator {
         #[cfg(feature = "cuda-runtime")]
         if let Some(context) = self.cuda_context()? {
             let resources = self.cuda_encode_resources(&context)?;
-            let encoded =
-                cuda_encode_ht_subband(&context, resources.as_ref(), job, self.collect_profile)?;
+            let pool = self.cuda_encode_pool(&context);
+            let encoded = cuda_encode_ht_subband(
+                &context,
+                resources.as_ref(),
+                &pool,
+                job,
+                self.collect_profile,
+            )?;
             let quantize_dispatches = encoded.quantize_dispatches;
             let encode_dispatches = encoded.encode.execution().kernel_dispatches();
             let timings = encoded.timings;

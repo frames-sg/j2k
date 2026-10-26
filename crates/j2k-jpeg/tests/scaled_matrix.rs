@@ -473,6 +473,7 @@ fn edge_sweep_rois(width: u32, height: u32) -> Vec<Rect> {
 }
 
 #[test]
+#[ignore = "exhaustive boundary matrix; run cargo xtask j2k-bench-signoff"]
 fn scaled_region_edge_sweep_matches_libjpeg_turbo_crops() {
     let mut failures = Vec::new();
     for case in scaled_matrix_cases()

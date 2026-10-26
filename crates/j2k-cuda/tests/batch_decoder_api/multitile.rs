@@ -41,9 +41,10 @@ fn independent_openjph_multitile_gray_and_rgb_are_resident_and_external_bit_exac
         .iter()
         .find(|fixture| fixture.name == "openjph-gray-u12-53-raw")
         .expect("independent multi-tile Gray12 fixture");
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let prepared = prepare_batch(
         vec![

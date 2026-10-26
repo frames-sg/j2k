@@ -48,6 +48,7 @@ pub(in crate::decoder::plan) fn flatten_direct_source_cuda_color_tile_components
     output_dimensions: (u32, u32),
     host_budget: &mut HostPhaseBudget,
 ) -> Result<Vec<CudaHtj2kDecodePlan>, Error> {
+    super::super::validate_color_signedness(component_plans)?;
     let mut components = host_budget.try_vec_with_capacity(component_plans.len())?;
     let mut ht_payload_offset = 0usize;
     for component_plan in component_plans {
@@ -92,6 +93,7 @@ pub(in crate::decoder::plan) fn flatten_referenced_cuda_color_tile_components(
     shared_payload: &mut Vec<u8>,
     host_budget: &mut HostPhaseBudget,
 ) -> Result<Vec<CudaHtj2kDecodePlan>, Error> {
+    super::super::validate_color_signedness(component_plans)?;
     let mut components = host_budget.try_vec_with_capacity(component_plans.len())?;
     let mut ht_payload_offset = 0usize;
     let mut classic_payload_offset = 0usize;
@@ -167,6 +169,7 @@ pub(in crate::decoder::plan) fn flatten_referenced_classic_cuda_color_tile_compo
     shared_payload: &mut Vec<u8>,
     host_budget: &mut HostPhaseBudget,
 ) -> Result<Vec<CudaHtj2kDecodePlan>, Error> {
+    super::super::validate_color_signedness(component_plans)?;
     let mut components = host_budget.try_vec_with_capacity(component_plans.len())?;
     let mut payload_offset = 0usize;
     for component_plan in component_plans {

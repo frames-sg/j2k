@@ -19,7 +19,7 @@ use crate::{
 };
 
 macro_rules! zero_gray_store_job {
-    ($job:ident) => {
+    ($job:ident $(, $field:ident: $value:expr)*) => {
         $job {
             input_width: 0,
             source_x: 0,
@@ -32,12 +32,13 @@ macro_rules! zero_gray_store_job {
             output_y: 0,
             addend: 0.0,
             bit_depth: 8,
+            $($field: $value,)*
         }
     };
 }
 
 macro_rules! zero_rgb_store_job {
-    ($job:ident) => {
+    ($job:ident $(, $field:ident: $value:expr)*) => {
         $job {
             input_width0: 0,
             input_width1: 0,
@@ -61,6 +62,7 @@ macro_rules! zero_rgb_store_job {
             bit_depth1: 8,
             bit_depth2: 8,
             rgba: 0,
+            $($field: $value,)*
         }
     };
 }
@@ -239,9 +241,9 @@ fn safe_store_apis_reject_foreign_context_buffers_and_keep_empty_batches_valid()
     let foreign_context = CudaContext::system_default().expect("foreign CUDA context");
     let foreign_buffer = foreign_context.allocate(0).expect("foreign empty buffer");
     let gray8_job = zero_gray_store_job!(CudaJ2kStoreGray8Job);
-    let gray16_job = zero_gray_store_job!(CudaJ2kStoreGray16Job);
+    let gray16_job = zero_gray_store_job!(CudaJ2kStoreGray16Job, signed: 0);
     let rgb8_job = zero_rgb_store_job!(CudaJ2kStoreRgb8Job);
-    let rgb16_job = zero_rgb_store_job!(CudaJ2kStoreRgb16Job);
+    let rgb16_job = zero_rgb_store_job!(CudaJ2kStoreRgb16Job, signed: 0);
     let inverse_mct_job = CudaJ2kInverseMctJob {
         len: 0,
         irreversible97: 0,
@@ -488,7 +490,7 @@ fn requested_format_precision_thresholds_preserve_native_store_contract() {
         let expected = if bits <= 8 { 65535 } else { maximum };
         assert_eq!(device_sample::opaque_alpha_u16(bits), expected);
         assert_eq!(
-            device_sample::sample_as_u16(f32::from(maximum), bits),
+            device_sample::sample_as_u16(f32::from(maximum), bits, false),
             expected,
             "{bits}-bit U16"
         );
@@ -499,6 +501,32 @@ fn requested_format_precision_thresholds_preserve_native_store_contract() {
     }
     assert_eq!(device_sample::sample_as_native_u8(127.0, 7), 127);
     assert_eq!(device_sample::sample_as_u8(256.0, 9), 128);
+}
+
+#[test]
+fn signed_requested_u16_samples_match_cpu_storage() {
+    // As the CPU decoder: two's complement above eight bits; at most eight
+    // bits, the two's-complement byte widened by the declared precision.
+    for (bits, sample, expected) in [
+        (4, -8.0, 65535),
+        (4, -1.0, 65535),
+        (4, 7.0, 30583),
+        (8, -128.0, 0x8080),
+        (8, -1.0, 65535),
+        (8, 127.0, 0x7f7f),
+        (12, -2048.0, 0xf800),
+        (12, -1.0, 0xffff),
+        (12, 2047.0, 2047),
+        (12, 4000.0, 2047),
+        (16, -32768.0, 0x8000),
+        (16, 32767.0, 32767),
+    ] {
+        assert_eq!(
+            device_sample::sample_as_u16(sample, bits, true),
+            expected,
+            "{bits}-bit signed {sample}"
+        );
+    }
 }
 
 #[test]
@@ -556,7 +584,7 @@ fn requested_gray_precision_thresholds_execute_on_cuda_when_required() {
         let mut actual = [0; 2];
         output.buffer().copy_to_host(&mut actual).unwrap();
         assert_eq!(actual, [0, 255]);
-        let mut u16_job = zero_gray_store_job!(CudaJ2kStoreGray16Job);
+        let mut u16_job = zero_gray_store_job!(CudaJ2kStoreGray16Job, signed: 0);
         u16_job.input_width = 2;
         u16_job.copy_width = 2;
         u16_job.copy_height = 1;

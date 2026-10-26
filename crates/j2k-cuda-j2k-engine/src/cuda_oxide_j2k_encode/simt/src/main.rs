@@ -23,6 +23,7 @@ mod exports;
 mod helpers;
 mod packet_writer;
 mod packetization;
+mod parallel_header;
 mod quantization;
 mod tag_tree;
 

@@ -124,9 +124,10 @@ mod batch_contract_tests {
         }
 
         let bytes = j2k_test_support::openhtj2k_refinement_fixture();
-        let options = BatchDecodeOptions {
-            settings: j2k::DecodeSettings::lenient(),
-            ..BatchDecodeOptions::default()
+        let options = {
+            let mut options = BatchDecodeOptions::default();
+            options.settings = j2k::DecodeSettings::lenient();
+            options
         };
         let mut decoder = MetalBatchDecoder::system_default_with_options(options)
             .expect("persistent Metal decoder");

@@ -67,6 +67,12 @@ METAL_QUICK_JOB = "GPU / Metal quick validation"
 CUDA_JOB = "GPU / CUDA full release validation"
 METAL_JOB = "GPU / Metal full release validation"
 RELEASE_CANDIDATE_JOB = "Release candidate aggregate"
+# A release listed here may publish without the CUDA full-validation job and CUDA
+# T.803 report when its checked-in waiver records the CUDA evidence it relies on.
+# CPU and Metal evidence stay required. Each entry is reviewed; never add a range.
+CUDA_WAIVER_VERSIONS = frozenset({"0.13.0"})
+CUDA_WAIVER_DIR = "xtask/release-evidence"
+CUDA_WAIVER_NAME = re.compile(r"cuda-waiver-([0-9]+\.[0-9]+\.[0-9]+)\.md\Z")
 
 
 class VerificationError(RuntimeError):
@@ -448,9 +454,11 @@ def t803_artifact_specs(
     gpu_run_id: int | None,
     *,
     scope: str = "all",
+    cuda_waived: bool = False,
 ) -> tuple[T803ArtifactSpec, ...]:
     sha = normalize_sha(candidate_sha, "T.803 artifact candidate SHA")
     scope = normalize_t803_scope(scope)
+    cuda_required = cuda_lane_required(scope, cuda_waived)
     if ci_run_id <= 0:
         raise VerificationError("T.803 CI artifact run ID must be positive")
     if scope in ("cuda", "metal", "all") and (
@@ -473,7 +481,7 @@ def t803_artifact_specs(
                 ),
             )
         )
-    if scope in ("cuda", "all"):
+    if cuda_required:
         assert gpu_run_id is not None
         specs.append(
             T803ArtifactSpec(
@@ -496,6 +504,34 @@ def normalize_t803_scope(scope: str) -> str:
             f"T.803 scope must be one of {', '.join(T803_SCOPES)}"
         )
     return scope
+
+
+def cuda_lane_required(scope: str, cuda_waived: bool) -> bool:
+    if cuda_waived and scope != "all":
+        raise VerificationError(
+            "a CUDA evidence waiver applies only to the all-lane release scope"
+        )
+    return scope in ("cuda", "all") and not cuda_waived
+
+
+def cuda_waiver_version(path: Path) -> str:
+    """Return the release a checked-in, allowlisted CUDA evidence waiver covers."""
+
+    match = CUDA_WAIVER_NAME.match(path.name)
+    if match is None or path.parent.as_posix() != CUDA_WAIVER_DIR:
+        raise VerificationError(
+            f"CUDA evidence waiver must be {CUDA_WAIVER_DIR}/cuda-waiver-<version>.md"
+        )
+    version = match.group(1)
+    if version not in CUDA_WAIVER_VERSIONS:
+        raise VerificationError(f"no CUDA evidence waiver is accepted for {version}")
+    if path.is_symlink() or not path.is_file():
+        raise VerificationError(f"CUDA evidence waiver {path} must be a regular file")
+    title = f"# CUDA evidence waiver for j2k {version}"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if not lines or lines[0] != title:
+        raise VerificationError(f"CUDA evidence waiver {path} must start with `{title}`")
+    return version
 
 
 def fetch_run_artifacts(api: GitHubApi, run_id: int) -> list[WorkflowArtifact]:
@@ -547,9 +583,10 @@ def download_t803_report_artifacts(
     gpu_run_id: int | None,
     output_dir: Path,
     scope: str = "all",
+    cuda_waived: bool = False,
 ) -> tuple[Path, ...]:
     specs = t803_artifact_specs(
-        candidate_sha, ci_run_id, gpu_run_id, scope=scope
+        candidate_sha, ci_run_id, gpu_run_id, scope=scope, cuda_waived=cuda_waived
     )
     if output_dir.is_symlink() or (output_dir.exists() and not output_dir.is_dir()):
         raise VerificationError("T.803 artifact output must be a real directory")
@@ -649,9 +686,17 @@ def verify_workflow_run(
     *,
     required_event: str | None = None,
     required_head_branch: str | None = None,
+    waived_jobs: Sequence[str] = (),
 ) -> int:
+    """Return the one exact-SHA run in which every required job succeeded.
+
+    A waived job may instead have been cancelled before it ran, which leaves its run
+    cancelled. Such a run is accepted only when every other job succeeded or was skipped.
+    """
     exact_sha = normalize_sha(sha, "workflow head SHA")
     names = _required_names(required_jobs)
+    waived = frozenset(waived_jobs)
+    accepted_conclusions = ("success", "cancelled") if waived else ("success",)
     identity = fetch_workflow_identity(api, workflow)
     runs = fetch_workflow_runs(api, identity, exact_sha)
     failures: list[str] = []
@@ -700,7 +745,7 @@ def verify_workflow_run(
                 f"expected {required_head_branch}"
             )
             continue
-        if status != "completed" or conclusion != "success":
+        if status != "completed" or conclusion not in accepted_conclusions:
             failures.append(
                 f"run {run_id} is {status}/{conclusion or 'no-conclusion'}"
             )
@@ -710,6 +755,7 @@ def verify_workflow_run(
         required_observations: dict[str, list[tuple[str, str | None]]] = {
             name: [] for name in names
         }
+        unsuccessful_jobs: list[tuple[str, str, str | None]] = []
         for job in jobs:
             name = _string(job.get("name"), "workflow job name")
             job_status = _string(job.get("status"), f"workflow job {name} status")
@@ -723,6 +769,11 @@ def verify_workflow_run(
             )
             if name in required_observations:
                 required_observations[name].append((job_status, job_conclusion))
+            if (job_status, job_conclusion) not in (
+                ("completed", "success"),
+                ("completed", "skipped"),
+            ):
+                unsuccessful_jobs.append((name, job_status, job_conclusion))
 
         duplicate_names = sorted(
             name for name, observations in required_observations.items() if len(observations) > 1
@@ -750,6 +801,18 @@ def verify_workflow_run(
                 f"run {run_id} has unsuccessful required jobs: {', '.join(unsuccessful)}"
             )
             continue
+        if conclusion != "success":
+            unwaived = sorted(
+                f"{name}={job_status}/{job_conclusion or 'no-conclusion'}"
+                for name, job_status, job_conclusion in unsuccessful_jobs
+                if name not in waived or (job_status, job_conclusion) != ("completed", "cancelled")
+            )
+            if unwaived or not unsuccessful_jobs:
+                failures.append(
+                    f"run {run_id} is cancelled beyond its waived jobs: "
+                    f"{', '.join(unwaived) or 'no waived job was cancelled'}"
+                )
+                continue
         return run_id
 
     if matching_run_count == 0:
@@ -898,8 +961,13 @@ def verify_release_evidence(
     metal_job: str,
     ci_branch: str,
     t803_scope: str = "all",
+    cuda_waiver: Path | None = None,
 ) -> tuple[int, int | None]:
     verify_repository_origin(origin_url, server_url, repository)
+    if cuda_waiver is not None and tag != f"v{cuda_waiver_version(cuda_waiver)}":
+        raise VerificationError(
+            f"CUDA evidence waiver {cuda_waiver} does not cover release tag {tag}"
+        )
     require_github_release_absent(api, tag)
     expected_sha = normalize_sha(candidate_sha, "candidate SHA")
     peeled_sha = peel_annotated_tag(api, tag)
@@ -917,6 +985,7 @@ def verify_release_evidence(
         metal_job=metal_job,
         ci_branch=ci_branch,
         t803_scope=t803_scope,
+        cuda_waiver=cuda_waiver,
     )
 
 
@@ -931,9 +1000,14 @@ def verify_candidate_evidence(
     metal_job: str,
     ci_branch: str,
     t803_scope: str = "all",
+    cuda_waiver: Path | None = None,
 ) -> tuple[int, int | None]:
     """Verify all post-freeze release evidence for one exact commit SHA."""
 
+    scope = normalize_t803_scope(t803_scope)
+    if cuda_waiver is not None:
+        cuda_waiver_version(cuda_waiver)
+    cuda_required = cuda_lane_required(scope, cuda_waiver is not None)
     require_private_vulnerability_reporting(api)
     expected_sha = normalize_sha(candidate_sha, "candidate SHA")
     ci_run = verify_workflow_run(
@@ -944,9 +1018,8 @@ def verify_candidate_evidence(
         required_event="push",
         required_head_branch=ci_branch,
     )
-    scope = normalize_t803_scope(t803_scope)
     required_gpu_jobs = []
-    if scope in ("cuda", "all"):
+    if cuda_required:
         required_gpu_jobs.append(cuda_job)
     if scope in ("metal", "all"):
         required_gpu_jobs.append(metal_job)
@@ -958,6 +1031,7 @@ def verify_candidate_evidence(
             expected_sha,
             required_gpu_jobs,
             required_event="workflow_dispatch",
+            waived_jobs=() if cuda_waiver is None else (cuda_job,),
         )
     return ci_run, gpu_run
 
@@ -1010,6 +1084,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--t803-scope", choices=T803_SCOPES, default="all"
     )
     release_parser.add_argument("--t803-out-dir")
+    release_parser.add_argument("--cuda-waiver", type=Path)
 
     candidate_parser = subparsers.add_parser(
         "verify-candidate",
@@ -1027,6 +1102,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--t803-scope", choices=T803_SCOPES, default="all"
     )
     candidate_parser.add_argument("--t803-out-dir")
+    candidate_parser.add_argument("--cuda-waiver", type=Path)
     return parser
 
 
@@ -1086,6 +1162,7 @@ def run_command(args: argparse.Namespace) -> None:
             metal_job=args.metal_job,
             ci_branch=args.ci_branch,
             t803_scope=args.t803_scope,
+            cuda_waiver=args.cuda_waiver,
         )
         reports: tuple[Path, ...] = ()
         if args.t803_out_dir:
@@ -1096,6 +1173,7 @@ def run_command(args: argparse.Namespace) -> None:
                 gpu_run_id=gpu_run,
                 output_dir=Path(args.t803_out_dir),
                 scope=args.t803_scope,
+                cuda_waived=args.cuda_waiver is not None,
             )
         print(
             "verified origin, private vulnerability reporting, absent GitHub Release, "
@@ -1109,6 +1187,8 @@ def run_command(args: argparse.Namespace) -> None:
         )
         for report in reports:
             print(f"downloaded T.803 report {report}")
+        if args.cuda_waiver is not None:
+            print(f"CUDA full validation and T.803 report waived by {args.cuda_waiver}")
         return
     if args.command == "verify-candidate":
         ci_run, gpu_run = verify_candidate_evidence(
@@ -1121,6 +1201,7 @@ def run_command(args: argparse.Namespace) -> None:
             metal_job=args.metal_job,
             ci_branch=args.ci_branch,
             t803_scope=args.t803_scope,
+            cuda_waiver=args.cuda_waiver,
         )
         reports = ()
         if args.t803_out_dir:
@@ -1131,6 +1212,7 @@ def run_command(args: argparse.Namespace) -> None:
                 gpu_run_id=gpu_run,
                 output_dir=Path(args.t803_out_dir),
                 scope=args.t803_scope,
+                cuda_waived=args.cuda_waiver is not None,
             )
         print(
             "verified private vulnerability reporting and exact-SHA release candidate "
@@ -1143,6 +1225,8 @@ def run_command(args: argparse.Namespace) -> None:
         )
         for report in reports:
             print(f"downloaded T.803 report {report}")
+        if args.cuda_waiver is not None:
+            print(f"CUDA full validation and T.803 report waived by {args.cuda_waiver}")
         return
     raise VerificationError(f"unsupported command {args.command}")
 

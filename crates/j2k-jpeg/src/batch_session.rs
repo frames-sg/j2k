@@ -330,6 +330,15 @@ impl JpegBatchSession {
         &mut self,
         jobs: &mut [PreparedJpegTileJob<'_, '_>],
     ) -> Result<Vec<Result<DecodedTile, JpegError>>, BatchInfrastructureError> {
+        self.decode_prepared_jpeg_tiles_rgb8_with_external_live(jobs, 0)
+    }
+
+    pub(crate) fn decode_prepared_jpeg_tiles_rgb8_with_external_live(
+        &mut self,
+        jobs: &mut [PreparedJpegTileJob<'_, '_>],
+        external_live_bytes: usize,
+    ) -> Result<Vec<Result<DecodedTile, JpegError>>, BatchInfrastructureError> {
+        let owned_output_bytes = external_live_bytes;
         if jobs.is_empty() {
             return Ok(Vec::new());
         }
@@ -347,15 +356,20 @@ impl JpegBatchSession {
                     None,
                     j2k_core::Downscale::None,
                     job.options,
-                    external_live_bytes,
+                    crate::allocation::checked_add_allocation_bytes(
+                        external_live_bytes,
+                        owned_output_bytes,
+                    )?,
                 )
             },
         )?;
-        let batch = self.prepare_batch::<DecodedTile, Result<DecodedTile, JpegError>>(
-            &plans,
-            vec_capacity_bytes(&plans)?,
-            min_output_len(jobs),
-        )?;
+        let batch = self
+            .prepare_batch_with_shared_codec_bytes::<DecodedTile, Result<DecodedTile, JpegError>>(
+                &plans,
+                vec_capacity_bytes(&plans)?,
+                min_output_len(jobs),
+                owned_output_bytes,
+            )?;
         let planned_jobs = &plans;
         let decode_chunk =
             |worker: &mut WorkerSlot,
@@ -377,7 +391,11 @@ impl JpegBatchSession {
             &results,
             decoded_tile_retained_bytes,
         )?;
-        collect_per_tile_results(job_count, results, retained)
+        collect_per_tile_results(
+            job_count,
+            results,
+            retained.with_external_codec(owned_output_bytes)?,
+        )
     }
 
     /// Decode scaled JPEG tiles into caller-owned output buffers.

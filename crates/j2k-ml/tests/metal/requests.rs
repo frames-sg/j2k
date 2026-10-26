@@ -31,7 +31,13 @@ fn staged_metal_burn_region_reduced_matches_cpu_oracle() {
     let output = decoder
         .decode(vec![EncodedImage::new(encoded, request)])
         .expect("staged Metal ROI-reduced decode");
-    let BurnBatchTensor::U8(tensor) = output.groups.into_iter().next().unwrap().tensor else {
+    let BurnBatchTensor::U8(tensor) = output
+        .into_groups()
+        .into_iter()
+        .next()
+        .unwrap()
+        .into_tensor()
+    else {
         panic!("expected native U8 Metal tensor")
     };
     let actual = tensor.into_data().into_vec::<u8>().expect("U8 data");
@@ -53,7 +59,13 @@ fn staged_metal_odd_u8_tensor_tails_are_not_zero_initialized() {
         let output = decoder
             .decode(vec![EncodedImage::full(Arc::from(encoded))])
             .expect("direct odd-size Metal decode");
-        let BurnBatchTensor::U8(tensor) = output.groups.into_iter().next().unwrap().tensor else {
+        let BurnBatchTensor::U8(tensor) = output
+            .into_groups()
+            .into_iter()
+            .next()
+            .unwrap()
+            .into_tensor()
+        else {
             panic!("expected native U8 Metal tensor")
         };
         assert_eq!(
@@ -81,9 +93,10 @@ fn staged_metal_burn_rgb_u8_region_reduced_is_exact_for_nhwc_and_nchw() {
     };
 
     for layout in [BatchLayout::Nhwc, BatchLayout::Nchw] {
-        let options = BatchDecodeOptions {
-            layout,
-            ..BatchDecodeOptions::default()
+        let options = {
+            let mut options = BatchDecodeOptions::default();
+            options.layout = layout;
+            options
         };
         let inputs = vec![
             EncodedImage::new(first.clone(), request),
@@ -105,8 +118,12 @@ fn staged_metal_burn_rgb_u8_region_reduced_is_exact_for_nhwc_and_nchw() {
             let output = decoder
                 .decode_prepared(&prepared)
                 .expect("staged exact RGB U8 Burn decode");
-            let group = output.groups.into_iter().next().expect("RGB U8 group");
-            let BurnBatchTensor::U8(tensor) = group.tensor else {
+            let group = output
+                .into_groups()
+                .into_iter()
+                .next()
+                .expect("RGB U8 group");
+            let BurnBatchTensor::U8(tensor) = group.into_tensor() else {
                 panic!("expected native RGB U8 Metal tensor")
             };
             assert_eq!(tensor.dtype(), DType::U8);
@@ -131,9 +148,10 @@ fn staged_metal_burn_rgb_u16_is_exact_and_drop_safe() {
         return;
     }
     let encoded = Arc::<[u8]>::from(encode_rgb_u16(8, 8, 257));
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nchw,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nchw;
+        options
     };
     let inputs = vec![EncodedImage::full(encoded.clone())];
     let mut cpu = CpuBatchDecoder::new(options);
@@ -155,7 +173,13 @@ fn staged_metal_burn_rgb_u16_is_exact_and_drop_safe() {
     let output = decoder
         .decode_prepared(&prepared)
         .expect("reuse RGB U16 Burn decoder after pending drop");
-    let BurnBatchTensor::U16(tensor) = output.groups.into_iter().next().unwrap().tensor else {
+    let BurnBatchTensor::U16(tensor) = output
+        .into_groups()
+        .into_iter()
+        .next()
+        .unwrap()
+        .into_tensor()
+    else {
         panic!("expected native RGB U16 Metal tensor")
     };
     assert_eq!(tensor.dtype(), DType::U16);
@@ -171,9 +195,10 @@ fn staged_metal_burn_classic_rgb_u16_is_exact_for_both_layouts() {
     }
     let encoded = Arc::<[u8]>::from(encode_classic_rgb_u16(8, 8, 257));
     for layout in [BatchLayout::Nchw, BatchLayout::Nhwc] {
-        let options = BatchDecodeOptions {
-            layout,
-            ..BatchDecodeOptions::default()
+        let options = {
+            let mut options = BatchDecodeOptions::default();
+            options.layout = layout;
+            options
         };
         let inputs = vec![
             EncodedImage::full(encoded.clone()),
@@ -193,11 +218,15 @@ fn staged_metal_burn_classic_rgb_u16_is_exact_for_both_layouts() {
         let output = decoder
             .decode_prepared(&prepared)
             .expect("staged classic RGB Burn decode");
-        assert!(output.errors.is_empty(), "{layout:?}");
-        assert!(output.group_errors.is_empty(), "{layout:?}");
-        let group = output.groups.into_iter().next().expect("classic RGB group");
-        assert_eq!(group.source_indices, [0, 1]);
-        let BurnBatchTensor::U16(tensor) = group.tensor else {
+        assert!(output.errors().is_empty(), "{layout:?}");
+        assert!(output.group_errors().is_empty(), "{layout:?}");
+        let group = output
+            .into_groups()
+            .into_iter()
+            .next()
+            .expect("classic RGB group");
+        assert_eq!(group.source_indices(), [0, 1]);
+        let BurnBatchTensor::U16(tensor) = group.into_tensor() else {
             panic!("expected native classic RGB U16 Metal tensor")
         };
         assert_eq!(tensor.dtype(), DType::U16);
@@ -212,9 +241,10 @@ fn staged_metal_burn_irreversible_rgb_u8_is_within_one_lsb_of_cpu() {
         return;
     }
     let encoded = Arc::<[u8]>::from(htj2k_rgb8_97_fixture(8, 8));
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let inputs = vec![EncodedImage::full(encoded)];
     let mut cpu = CpuBatchDecoder::new(options);
@@ -230,7 +260,13 @@ fn staged_metal_burn_irreversible_rgb_u8_is_within_one_lsb_of_cpu() {
     let output = decoder
         .decode(inputs)
         .expect("staged irreversible RGB Burn decode");
-    let BurnBatchTensor::U8(tensor) = output.groups.into_iter().next().unwrap().tensor else {
+    let BurnBatchTensor::U8(tensor) = output
+        .into_groups()
+        .into_iter()
+        .next()
+        .unwrap()
+        .into_tensor()
+    else {
         panic!("expected native irreversible RGB U8 Metal tensor")
     };
     let actual = tensor.into_data().into_vec::<u8>().expect("RGB U8 data");

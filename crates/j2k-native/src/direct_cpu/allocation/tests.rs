@@ -70,6 +70,7 @@ fn direct_plan_peak_counts_serial_and_parallel_banded_idwt_scratch() {
         },
     };
     let plan = J2kDirectGrayscalePlan {
+        signed: false,
         dimensions: (rect.width(), rect.height()),
         bit_depth: 8,
         steps: vec![
@@ -212,6 +213,7 @@ fn referenced_parallel_peak_counts_ht_dispatch_and_retained_task_owners() {
         })
         .collect();
     let component = J2kDirectGrayscalePlan {
+        signed: false,
         dimensions: (JOB_COUNT, 1),
         bit_depth: 8,
         steps: vec![
@@ -314,6 +316,7 @@ fn mixed_entropy_steps_reserve_one_shared_band_owner() {
         y1: 2,
     };
     let plan = J2kDirectGrayscalePlan {
+        signed: false,
         dimensions: (2, 2),
         bit_depth: 8,
         steps: vec![

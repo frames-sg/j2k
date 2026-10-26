@@ -23,6 +23,7 @@ default = []
 python = ["dep:pyo3", "dep:pyo3-build-config"]
 extension-module = ["python", "pyo3/extension-module"]
 cuda = ["python", "dep:j2k-cuda", "dep:j2k-cuda-runtime"]
+metal = ["python", "dep:j2k-metal", "dep:j2k-metal-support", "dep:objc2", "dep:objc2-metal"]
 
 [dependencies]
 j2k = { path = "../j2k" }
@@ -31,6 +32,12 @@ j2k-jpeg = { path = "../j2k-jpeg" }
 pyo3 = { version = "0.30.1", features = ["abi3-py310"], optional = true }
 j2k-cuda = { path = "../j2k-cuda", features = ["cuda-runtime"], optional = true }
 j2k-cuda-runtime = { path = "../j2k-cuda-runtime", optional = true }
+
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+j2k-metal = { path = "../j2k-metal", optional = true }
+j2k-metal-support = { path = "../j2k-metal-support", optional = true }
+objc2 = { workspace = true, optional = true }
+objc2-metal = { workspace = true, optional = true }
 
 [build-dependencies]
 pyo3-build-config = { version = "0.30.1", optional = true }

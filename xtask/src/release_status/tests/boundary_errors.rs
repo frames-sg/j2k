@@ -6,7 +6,7 @@ use std::{
     process::Output,
 };
 
-use super::super::release_status;
+use super::super::{cuda_waiver, release_status};
 use crate::test_command::RecordingProgram;
 
 const CASE_ENV: &str = "XTASK_TEST_RELEASE_STATUS_BOUNDARY_CASE";
@@ -67,9 +67,26 @@ fn repository_environment_empty_and_present_paths_execute_exact_contracts() {
         return;
     }
 
+    // A CUDA waiver for the workspace version splits the default all-lane T.803 check in two.
+    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask workspace root");
+    let t803_checks = if cuda_waiver(workspace, "all")
+        .expect("workspace CUDA waiver lookup")
+        .is_some()
+    {
+        2
+    } else {
+        1
+    };
     for (case, repository, expected_repository, expected_commands) in [
-        ("present", "environment/repo", "environment/repo", 2_usize),
-        ("empty", "", "remote/repo", 3),
+        (
+            "present",
+            "environment/repo",
+            "environment/repo",
+            1 + t803_checks,
+        ),
+        ("empty", "", "remote/repo", 2 + t803_checks),
     ] {
         let recording = RecordingProgram::new(
             "release-status-environment-boundary",

@@ -3,8 +3,8 @@
 use std::ffi::OsStr;
 
 use super::{
-    parse_options, repository_from_remote, resolve_repository, select_token_env,
-    validate_repository,
+    cuda_waiver, parse_options, repository_from_remote, resolve_repository, select_token_env,
+    t803_report_paths, t803_verify_scopes, validate_repository,
 };
 
 #[cfg(unix)]
@@ -164,6 +164,53 @@ fn authentication_uses_named_environment_without_reading_token_text() {
     );
     assert!(select_token_env(None, None).is_err());
     assert!(select_token_env(Some(OsStr::new("")), Some(OsStr::new(""))).is_err());
+}
+
+#[test]
+fn cuda_waiver_is_found_only_for_the_all_scope_of_the_workspace_version() {
+    let root = std::env::temp_dir().join(format!(
+        "xtask-release-status-cuda-waiver-{}",
+        std::process::id()
+    ));
+    let waivers = root.join("xtask/release-evidence");
+    std::fs::create_dir_all(&waivers).expect("create waiver directory");
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[workspace.package]\nversion = \"9.8.7\"\n",
+    )
+    .expect("write workspace manifest");
+    std::fs::write(waivers.join("cuda-waiver-9.8.6.md"), "older\n").expect("write waiver");
+
+    assert_eq!(cuda_waiver(&root, "all").unwrap(), None);
+
+    std::fs::write(waivers.join("cuda-waiver-9.8.7.md"), "current\n").expect("write waiver");
+    assert_eq!(
+        cuda_waiver(&root, "all").unwrap().as_deref(),
+        Some("xtask/release-evidence/cuda-waiver-9.8.7.md")
+    );
+    for scope in ["cpu", "cuda", "metal"] {
+        assert_eq!(cuda_waiver(&root, scope).unwrap(), None, "{scope}");
+    }
+    std::fs::remove_dir_all(&root).expect("remove waiver fixture");
+}
+
+#[test]
+fn cuda_waiver_replaces_all_lane_t803_verification_with_cpu_and_metal() {
+    assert_eq!(t803_verify_scopes("all", false), ["all"]);
+    assert_eq!(t803_verify_scopes("all", true), ["cpu", "metal"]);
+
+    let evidence = std::path::Path::new("evidence");
+    let sha = "a".repeat(40);
+    let reports = t803_verify_scopes("all", true)
+        .into_iter()
+        .flat_map(|scope| t803_report_paths(evidence, &sha, scope))
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(reports.len(), 4, "{reports:?}");
+    assert!(reports.iter().all(|report| !report.contains("cuda")));
+    assert!(reports
+        .iter()
+        .any(|report| report.contains("metal-macos-aarch64") && report.ends_with("metal.json")));
 }
 
 #[cfg(unix)]

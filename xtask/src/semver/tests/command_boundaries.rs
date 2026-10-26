@@ -76,7 +76,7 @@ fn committed_candidate_semver_inputs_match_the_pinned_workspace_contract() {
     assert!(hidden.starts_with("# J2K 1.0 Rustdoc-Hidden Public API Snapshot"));
 
     let versions = workspace_package_versions().expect("workspace package versions");
-    assert_eq!(versions.get("j2k").map(String::as_str), Some("0.12.0"));
+    assert_eq!(versions.get("j2k").map(String::as_str), Some("0.13.0"));
     assert!(versions.keys().collect::<BTreeSet<_>>().len() > 10);
 }
 
@@ -91,7 +91,7 @@ fn baseline_revision_validation_accepts_only_the_pinned_commit() {
 #[test]
 fn committed_review_config_covers_the_exact_release_scope() {
     let config = load_review_config().expect("load committed API review config");
-    assert_eq!(config.candidate_version, "0.12.0");
+    assert_eq!(config.candidate_version, "0.13.0");
     assert_eq!(
         config
             .break_ledger
@@ -99,10 +99,27 @@ fn committed_review_config_covers_the_exact_release_scope() {
             .map(|entry| entry.id.as_str())
             .collect::<BTreeSet<_>>(),
         BTreeSet::from([
-            "rustdoc-io-error-path",
-            "cuda-upload-and-cleanup-contract",
-            "cuda-pooled-surface-lifetime",
             "jpeg-huffman-const",
+            "native-encode-profile-field",
+            "native-quantization-step-levels",
+            "jpeg-exhaustive-variants",
+            "irreversible-97-default-steps",
+            "reduced-decode-rejection",
+            "sample-conversion-and-quantization-bounds",
+            "cuda-batch-chunk-completion",
+            "jpeg-reference-conversion",
+            "direct-grayscale-plan-signed",
+            "gpu-signed-sample-conversion",
+            "cuda-engine-store-and-quantize-contracts",
+            "removed-cuda-oxide-j2k-ml",
+            "shared-batch-layout",
+            "extensible-batch-options",
+            "extensible-jpeg-color-transform",
+            "jpeg-outcome-recovery-field",
+            "jpeg-strict-completion",
+            "jpeg-required-interpretation",
+            "common-burn-result",
+            "extensible-burn-contract",
         ])
     );
     let expected_packages = SEMVER_BASELINE_PACKAGES
@@ -166,7 +183,7 @@ fn semver_check_command_uses_the_computed_candidate_release_type() {
             "--package",
             "j2k-core",
             "--baseline-version",
-            "0.11.3",
+            "0.12.0",
             "--release-type",
             "major",
             "--color",

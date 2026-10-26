@@ -146,6 +146,7 @@ fn j2k_native_grayscale_batch_store_rounds_centered_samples_before_level_shift_w
         output_y: 0,
         addend: 32_768.0,
         bit_depth: 16,
+        signed: 1,
     };
     let signed_job = CudaJ2kStoreGray16Job {
         input_width: 4,
@@ -153,11 +154,13 @@ fn j2k_native_grayscale_batch_store_rounds_centered_samples_before_level_shift_w
         output_width: 4,
         addend: 0.0,
         bit_depth: 12,
+        signed: 1,
         ..unsigned_job
     };
 
     let unsigned_output = crate::J2kCudaEngine::new(&context)
         .j2k_store_gray16_batch_contiguous_device(&[CudaJ2kStoreGray16Target {
+            native_samples: true,
             output_index: 0,
             input: &unsigned_buffer,
             job: unsigned_job,

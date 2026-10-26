@@ -250,10 +250,8 @@ impl Decoder<'_> {
                 source_roi,
                 checkpoint.as_ref(),
             )?;
-            return Ok(DecodeOutcome {
-                decoded: source_roi,
-                warnings: merged_warnings(&self.warnings, scan_warnings)?,
-            });
+            return self
+                .finish_outcome(source_roi, merged_warnings(&self.warnings, scan_warnings)?);
         }
         // Scaled 4:2:0 takes the generic route: libjpeg-turbo decodes its
         // chroma with a larger reduced IDCT, so no 4:2:0 upsampling remains.

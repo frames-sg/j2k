@@ -279,12 +279,18 @@ impl CudaJ2kResidentQuantizedSubband {
         self.coefficient_count
     }
 
-    /// Copy quantized coefficients to host memory.
+    /// Copy quantized coefficients to host memory. The buffer may be a reused
+    /// pool allocation longer than the coefficients, so only they are copied.
     pub fn download_coefficients(&self) -> Result<Vec<i32>, CudaError> {
         let mut coefficients = try_vec_filled(self.coefficient_count, 0i32)?;
         self.coefficients
-            .copy_to_host(i32_slice_as_bytes_mut(&mut coefficients))?;
+            .copy_range_to_host(0, i32_slice_as_bytes_mut(&mut coefficients))?;
         Ok(coefficients)
+    }
+
+    /// Release the coefficient buffer, for example to recycle it into a pool.
+    pub fn into_buffer(self) -> CudaDeviceBuffer {
+        self.coefficients
     }
 
     /// CUDA execution counters for the quantization stage.

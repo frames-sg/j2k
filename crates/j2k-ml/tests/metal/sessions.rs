@@ -27,9 +27,9 @@ fn compatibility_metal_decoder_names_keep_debug_and_submit_contract() {
     assert_eq!(submitted.len(), 1);
 
     let output = submitted.wait().expect("finish compatibility-name batch");
-    assert_eq!(output.errors, [] as [j2k::IndexedBatchError; 0]);
-    assert!(output.group_errors.is_empty());
-    assert_eq!(output.groups.len(), 1);
+    assert!(output.errors().is_empty());
+    assert!(output.group_errors().is_empty());
+    assert_eq!(output.groups().len(), 1);
 }
 
 #[test]
@@ -68,8 +68,14 @@ fn persistent_metal_burn_decoder_uploads_independent_ht_through_staging() {
         let output = decoder
             .decode_prepared(&prepared)
             .expect("staged Metal Burn decode");
-        assert_eq!(output.errors, [] as [j2k::IndexedBatchError; 0]);
-        let BurnBatchTensor::U8(tensor) = output.groups.into_iter().next().unwrap().tensor else {
+        assert!(output.errors().is_empty());
+        let BurnBatchTensor::U8(tensor) = output
+            .into_groups()
+            .into_iter()
+            .next()
+            .unwrap()
+            .into_tensor()
+        else {
             panic!("expected native U8 Metal tensor")
         };
         assert_eq!(tensor.dims()[0], 2);
@@ -104,9 +110,10 @@ fn metal_burn_regroups_prepared_images_with_submission_indices_and_settings_erro
     .groups()[0]
         .images()[0]
         .clone();
-    let lenient_options = BatchDecodeOptions {
-        settings: DecodeSettings::lenient(),
-        ..BatchDecodeOptions::default()
+    let lenient_options = {
+        let mut options = BatchDecodeOptions::default();
+        options.settings = DecodeSettings::lenient();
+        options
     };
     let lenient = prepare_batch(vec![EncodedImage::full(encoded)], lenient_options)
         .expect("lenient preparation")
@@ -134,13 +141,13 @@ fn metal_burn_regroups_prepared_images_with_submission_indices_and_settings_erro
     let output = decoder
         .decode_prepared_images(vec![strict.clone(), strict])
         .expect("decode regrouped prepared images");
-    assert_eq!(output.errors, [] as [j2k::IndexedBatchError; 0]);
-    assert!(output.group_errors.is_empty());
-    assert_eq!(output.groups.len(), 1);
-    assert_eq!(output.groups[0].source_indices, [0, 1]);
-    assert_eq!(output.groups[0].decoded_rects.len(), 2);
-    assert_eq!(output.groups[0].warnings, [Vec::new(), Vec::new()]);
-    assert_eq!(output.groups[0].tensor.tensor().dims()[0], 2);
+    assert!(output.errors().is_empty());
+    assert!(output.group_errors().is_empty());
+    assert_eq!(output.groups().len(), 1);
+    assert_eq!(output.groups()[0].source_indices(), [0, 1]);
+    assert_eq!(output.groups()[0].decoded_rects().len(), 2);
+    assert_eq!(output.groups()[0].warnings(), [Vec::new(), Vec::new()]);
+    assert_eq!(output.groups()[0].tensor().tensor().dims()[0], 2);
 }
 
 #[test]
@@ -164,7 +171,13 @@ fn dropped_pending_metal_burn_batch_retires_storage_and_decoder_reuses() {
     let output = decoder
         .decode_prepared(&prepared)
         .expect("reuse decoder after dropped pending batch");
-    let BurnBatchTensor::U8(tensor) = output.groups.into_iter().next().unwrap().tensor else {
+    let BurnBatchTensor::U8(tensor) = output
+        .into_groups()
+        .into_iter()
+        .next()
+        .unwrap()
+        .into_tensor()
+    else {
         panic!("expected native U8 Metal tensor")
     };
     assert_eq!(
@@ -195,13 +208,13 @@ fn metal_burn_batch_continues_after_one_group_submit_failure() {
     assert_eq!(submitted.len(), 1);
     let output = submitted.wait().expect("finish supported Metal group");
 
-    assert_eq!(output.errors, [] as [j2k::IndexedBatchError; 0]);
-    assert_eq!(output.groups.len(), 1);
-    assert_eq!(output.groups[0].source_indices, [1]);
-    assert_eq!(output.group_errors.len(), 1);
-    assert_eq!(output.group_errors[0].source_indices(), &[0]);
+    assert!(output.errors().is_empty());
+    assert_eq!(output.groups().len(), 1);
+    assert_eq!(output.groups()[0].source_indices(), [1]);
+    assert_eq!(output.group_errors().len(), 1);
+    assert_eq!(output.group_errors()[0].source_indices(), &[0]);
     assert!(matches!(
-        output.group_errors[0].source(),
+        output.group_errors()[0].source(),
         BurnDecodeError::Metal(j2k_metal::Error::UnsupportedMetalRequest { .. })
     ));
 }

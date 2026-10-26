@@ -87,9 +87,10 @@ fn external_cleanup_magref_and_generated_sigprop_jobs_decode_in_batches() {
     let (cleanup, cleanup_pixels) = layered_ht_fixture(1);
     let (sigprop, sigprop_pixels) = layered_ht_fixture(2);
     let (magref, magref_pixels) = layered_ht_fixture(3);
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let prepared = prepare_batch(
         vec![

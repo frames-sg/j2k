@@ -22,6 +22,22 @@ pub(super) struct BatchRetainedLiveBytes {
     metadata: usize,
 }
 
+impl BatchRetainedLiveBytes {
+    pub(super) fn with_external_codec(
+        mut self,
+        bytes: usize,
+    ) -> Result<Self, BatchInfrastructureError> {
+        self.codec = checked_add(
+            self.codec,
+            bytes,
+            "JPEG caller-owned output",
+            super::allocation::JPEG_CODEC_HOST_CAP_BYTES,
+        )?;
+        ensure_live_domains(self.codec, self.metadata, "JPEG caller-owned collection")?;
+        Ok(self)
+    }
+}
+
 pub(super) fn collect_results(
     job_count: usize,
     results: Vec<BatchResultSlot<DecodeOutcome>>,

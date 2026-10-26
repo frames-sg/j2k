@@ -869,7 +869,7 @@ regressions.
 ## HTJ2K DICOM decode development run - 2026-10-09
 
 This run measured the CPU decode, tile-batch, owned-batch, and Metal changes
-listed under Unreleased in the changelog, against an export of `8b608120`
+listed under 0.13.0 in the changelog, against an export of `8b608120`
 (0.12.0 code; later commits changed only links) built the same way. Both used Cargo `release`, Rust 1.99.0, on an
 Apple M4 Pro (12 CPU cores, 16 GPU cores, 48 GB) running macOS 27.0. The
 candidate was an uncommitted working tree. Each cell is the minimum of three

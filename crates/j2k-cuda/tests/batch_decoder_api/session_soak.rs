@@ -27,9 +27,10 @@ fn resident_and_external_decode_pools_stabilize_for_one_thousand_batches_when_ru
         .collect::<Vec<_>>();
     let context = CudaContext::system_default().expect("CUDA context");
     let session = CudaSession::with_context(context.clone());
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let mut decoder = CudaBatchDecoder::with_session_and_options(session, options);
     let prepared = decoder

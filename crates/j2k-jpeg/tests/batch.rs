@@ -53,11 +53,13 @@ use j2k_jpeg::{
     decode_prepared_jpeg_tiles_rgb8, decode_tile_into_in_context,
     decode_tile_into_in_context_with_options, decode_tile_region_scaled_into_in_context,
     decode_tiles_into, decode_tiles_into_with_options, decode_tiles_region_scaled_into,
-    decode_tiles_scaled_into, decode_tiles_scaled_into_with_options, prepare_tiff_jpeg_tile,
-    ColorTransform, DecodeOptions, Decoder, DecoderContext, Downscale, JpegBatchSession, JpegError,
-    JpegOutputBuffer, JpegTilePrepareOptions, JpegView, PixelFormat, PreparedJpeg,
-    PreparedJpegTileJob, Rect, RowSink, ScratchPool, TileBatchOptions, TileDecodeJob,
-    TileRegionScaledDecodeJob, TileScaledDecodeJob,
+    decode_tiles_scaled_into, decode_tiles_scaled_into_with_options, encode_jpeg_baseline,
+    find_scan_ranges, prepare_tiff_jpeg_tile, BatchLayout, ColorTransform, DecodeOptions, Decoder,
+    DecoderContext, Downscale, JpegBatchDecoder, JpegBatchInput, JpegBatchSession,
+    JpegEncodeOptions, JpegError, JpegOutputBuffer, JpegSamples, JpegSubsampling,
+    JpegTilePrepareOptions, JpegView, PixelFormat, PreparedJpeg, PreparedJpegTileJob, Rect,
+    RowSink, ScratchPool, TileBatchOptions, TileDecodeJob, TileRegionScaledDecodeJob,
+    TileScaledDecodeJob,
 };
 use j2k_test_support as fixtures;
 use j2k_test_support::{
@@ -1921,5 +1923,198 @@ fn production_batch_scaled_decode_with_options_preserves_forced_color_transform(
     assert_eq!(outcomes.len(), JOBS);
     for (index, out) in outputs.iter().enumerate() {
         assert_eq!(out, &expected, "tile {index} output diverged");
+    }
+}
+
+fn planar_rgb8(interleaved: &[u8]) -> Vec<u8> {
+    (0..3)
+        .flat_map(|channel| interleaved.iter().skip(channel).step_by(3).copied())
+        .collect()
+}
+
+#[test]
+fn dense_batch_rejects_implausible_headers_between_valid_inputs() {
+    let mut small = fixtures::grayscale_8x8_jpeg();
+    let padding = 600 - small.len();
+    let mut comment = vec![0xff, 0xfe];
+    comment.extend_from_slice(&u16::try_from(padding - 2).unwrap().to_be_bytes());
+    comment.resize(padding, 0);
+    small.splice(2..2, comment);
+    assert_eq!(small.len(), 600);
+    let huge = j2k_jpeg::rewrite_sof_dimensions(&small, (30_000, 30_000)).unwrap();
+    let truncated = j2k_jpeg::rewrite_sof_dimensions(&small, (8_000, 8_000)).unwrap();
+    assert_eq!(
+        Decoder::inspect(&huge).unwrap().dimensions,
+        (30_000, 30_000)
+    );
+    assert_eq!(
+        Decoder::inspect(&truncated).unwrap().dimensions,
+        (8_000, 8_000)
+    );
+    let inputs = [
+        BASELINE_420,
+        &truncated,
+        BASELINE_420,
+        &truncated,
+        &huge,
+        &truncated,
+        BASELINE_420,
+    ];
+    for layout in [BatchLayout::Nchw, BatchLayout::Nhwc] {
+        let mut decoder = JpegBatchDecoder::new({
+            let mut options = j2k_jpeg::JpegBatchDecodeOptions::default();
+            options.layout = layout;
+            options
+        });
+        let result = decoder
+            .decode(&inputs.map(JpegBatchInput::new))
+            .expect("a bad header must not discard valid images");
+        assert_eq!(
+            result
+                .errors()
+                .iter()
+                .map(|error| error.index)
+                .collect::<Vec<_>>(),
+            [1, 3, 4, 5]
+        );
+        assert_eq!(result.groups().len(), 1);
+        assert_eq!(result.groups()[0].source_indices(), [0, 2, 6]);
+        let rgb = decode_tile_rgb8_reference(BASELINE_420).0;
+        let expected = if layout == BatchLayout::Nchw {
+            planar_rgb8(&rgb)
+        } else {
+            rgb
+        };
+        assert_eq!(result.groups()[0].samples(), expected.repeat(3));
+    }
+}
+
+#[test]
+fn dense_batch_reports_unsupported_precision_before_sizing_output() {
+    let twelve_bit = extended_12bit_rgb_8x8_jpeg();
+    for dimensions in [(8, 8), (16_384, 16_384)] {
+        let unsupported = j2k_jpeg::rewrite_sof_dimensions(&twelve_bit, dimensions)
+            .expect("rewrite header without allocating pixels");
+        assert_eq!(Decoder::inspect(&unsupported).unwrap().bit_depth, 12);
+        for layout in [BatchLayout::Nchw, BatchLayout::Nhwc] {
+            let mut decoder = JpegBatchDecoder::new({
+                let mut options = j2k_jpeg::JpegBatchDecodeOptions::default();
+                options.layout = layout;
+                options
+            });
+            let result = decoder
+                .decode(&[
+                    JpegBatchInput::new(&unsupported),
+                    JpegBatchInput::new(BASELINE_420),
+                ])
+                .expect("unsupported precision is an item error");
+            assert_eq!(result.errors().len(), 1);
+            assert!(matches!(
+                result.errors()[0],
+                j2k_core::TileBatchError {
+                    index: 0,
+                    source: JpegError::UnsupportedBitDepth { depth: 12 }
+                }
+            ));
+            assert_eq!(result.groups().len(), 1);
+            assert_eq!(result.groups()[0].source_indices(), [1]);
+        }
+    }
+}
+
+#[test]
+fn dense_batch_reports_oversized_images_without_discarding_valid_members() {
+    let oversized = j2k_jpeg::rewrite_sof_dimensions(BASELINE_420, (16_384, 16_384))
+        .expect("rewrite header without allocating pixels");
+    for layout in [BatchLayout::Nchw, BatchLayout::Nhwc] {
+        let mut decoder = JpegBatchDecoder::new({
+            let mut options = j2k_jpeg::JpegBatchDecodeOptions::default();
+            options.layout = layout;
+            options
+        });
+        let result = decoder
+            .decode(&[
+                JpegBatchInput::new(BASELINE_420),
+                JpegBatchInput::new(&oversized),
+                JpegBatchInput::new(BASELINE_420),
+            ])
+            .expect("an impossible image size is an item error");
+        assert!(matches!(
+            result.errors(),
+            [j2k_core::TileBatchError {
+                index: 1,
+                source: JpegError::MemoryCapExceeded {
+                    requested: 805_306_368,
+                    cap: 536_870_912
+                }
+            }]
+        ));
+        assert_eq!(result.groups().len(), 1);
+        assert_eq!(result.groups()[0].source_indices(), [0, 2]);
+    }
+}
+
+#[test]
+fn dense_batch_groups_by_size_and_keeps_the_rest_of_a_group_when_one_input_fails() {
+    let small = fixtures::progressive_8x8_jpeg();
+    let gray_pixels: Vec<u8> = (0..=255_u8).map(|i| i.wrapping_mul(7)).collect();
+    let gray = encode_jpeg_baseline(
+        JpegSamples::Gray8 {
+            data: &gray_pixels,
+            width: 16,
+            height: 16,
+        },
+        JpegEncodeOptions {
+            subsampling: JpegSubsampling::Gray,
+            ..JpegEncodeOptions::default()
+        },
+    )
+    .expect("grayscale JPEG")
+    .data;
+    let entropy_start = find_scan_ranges(BASELINE_420)
+        .expect("scan ranges")
+        .entropy_range
+        .start;
+    let truncated_scan = &BASELINE_420[..=entropy_start];
+    assert!(
+        Decoder::inspect(truncated_scan).is_ok(),
+        "headers parse, so this input fails inside its group's decode"
+    );
+    let inputs: [&[u8]; 5] = [BASELINE_420, &small, truncated_scan, &gray, b"not a jpeg"];
+    let rgb = decode_tile_rgb8_reference(BASELINE_420).0;
+    let small_rgb = decode_tile_rgb8_reference(&small).0;
+    let gray_rgb = decode_tile_rgb8_reference(&gray).0;
+
+    for layout in [BatchLayout::Nhwc, BatchLayout::Nchw] {
+        let arrange = |image: &[u8]| {
+            if layout == BatchLayout::Nchw {
+                planar_rgb8(image)
+            } else {
+                image.to_vec()
+            }
+        };
+        let mut decoder = JpegBatchDecoder::new({
+            let mut options = j2k_jpeg::JpegBatchDecodeOptions::default();
+            options.layout = layout;
+            options
+        });
+        let (groups, errors) = decoder
+            .decode(&inputs.map(JpegBatchInput::new))
+            .expect("batch infrastructure")
+            .into_parts();
+
+        let failed: Vec<usize> = errors.iter().map(|error| error.index).collect();
+        assert_eq!(failed, [2, 4], "{layout:?}");
+        assert_eq!(groups.len(), 2, "{layout:?}");
+        assert_eq!(groups[0].dimensions(), (16, 16));
+        assert_eq!(groups[0].source_indices(), [0, 3]);
+        assert_eq!(
+            groups[0].samples(),
+            [arrange(&rgb), arrange(&gray_rgb)].concat(),
+            "{layout:?}"
+        );
+        assert_eq!(groups[1].dimensions(), (8, 8));
+        assert_eq!(groups[1].source_indices(), [1]);
+        assert_eq!(groups[1].samples(), arrange(&small_rgb), "{layout:?}");
     }
 }

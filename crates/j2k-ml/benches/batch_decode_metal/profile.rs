@@ -30,9 +30,10 @@ fn profile_codec_resident(
     workload_specs: &[WorkloadSpec],
     input_mode: InputMode,
 ) -> Vec<MetalTelemetryRow> {
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let mut telemetry = Vec::new();
 

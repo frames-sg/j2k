@@ -13,6 +13,7 @@ fn one_block_direct_plan(
     output_stride: usize,
 ) -> J2kDirectGrayscalePlan {
     J2kDirectGrayscalePlan {
+        signed: false,
         dimensions: (1, 1),
         bit_depth: 8,
         steps: vec![
@@ -76,6 +77,7 @@ fn one_block_plan(data: Vec<u8>) -> CudaHtj2kDecodePlan {
 
 fn two_block_direct_plan() -> J2kDirectGrayscalePlan {
     J2kDirectGrayscalePlan {
+        signed: false,
         dimensions: (2, 1),
         bit_depth: 8,
         steps: vec![
@@ -206,7 +208,10 @@ fn full_frame_plan_keeps_all_blocks_while_region_plan_prunes() {
 
     assert_eq!(full.code_blocks().len(), 2);
     assert_eq!(region.code_blocks().len(), 1);
-    assert_eq!(region.code_blocks()[0].output_x, 1);
+    // The region's band window starts at the retained block.
+    assert_eq!(region.code_blocks()[0].output_x, 0);
+    assert_eq!(region.subbands[0].x0, full.subbands[0].x0 + 1);
+    assert_eq!(region.subbands[0].width, 1);
 }
 
 #[test]

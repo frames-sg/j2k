@@ -34,6 +34,14 @@ mod execution;
 mod preparation;
 mod store;
 
+/// Requested formats follow CPU display-width conversion; prepared native
+/// batches preserve the source's sample values.
+#[derive(Clone, Copy)]
+enum GrayscaleSampleConversion {
+    RequestedFormat,
+    Native,
+}
+
 use self::completion::{
     grayscale_htj2k_job_identities, GrayscaleBatchOutput, GrayscaleHtj2kCleanup,
     GrayscalePendingCompletion, StoredGrayscaleBatch,
@@ -82,6 +90,7 @@ pub(crate) fn decode_grayscale_cuda_resident_prepared_batch_surfaces_with_profil
         collect_stage_timings,
         None,
         false,
+        GrayscaleSampleConversion::RequestedFormat,
     )?;
     if pending.is_some() {
         return Err(Error::capability_rejected(
@@ -135,6 +144,7 @@ pub(crate) fn decode_grayscale_cuda_resident_prepared_batch_into_with_profile(
         collect_stage_timings,
         Some(destination),
         false,
+        GrayscaleSampleConversion::RequestedFormat,
     )?;
     if pending.is_some() {
         return Err(Error::capability_rejected(
@@ -166,6 +176,7 @@ pub(crate) fn submit_grayscale_cuda_resident_prepared_batch_into(
         false,
         Some(destination),
         true,
+        GrayscaleSampleConversion::Native,
     )?;
     let GrayscaleBatchOutput::External(ranges) = output else {
         return Err(Error::capability_rejected(
@@ -191,7 +202,14 @@ pub(crate) fn submit_grayscale_cuda_resident_prepared_batch(
     fmt: PixelFormat,
 ) -> Result<SubmittedGrayscaleResidentBatch, Error> {
     let (output, report, completion) = decode_grayscale_cuda_batch_with_profile(
-        inputs, settings, session, fmt, false, None, true,
+        inputs,
+        settings,
+        session,
+        fmt,
+        false,
+        None,
+        true,
+        GrayscaleSampleConversion::Native,
     )?;
     let GrayscaleBatchOutput::Owned(output) = output else {
         return Err(Error::capability_rejected(

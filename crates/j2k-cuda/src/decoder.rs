@@ -238,6 +238,12 @@ impl CudaHtj2kColorDecodePlans {
     const fn rgb_bit_depths(&self) -> [u8; 3] {
         [self.bit_depths[0], self.bit_depths[1], self.bit_depths[2]]
     }
+
+    fn signed(&self) -> bool {
+        self.components
+            .first()
+            .is_some_and(CudaHtj2kDecodePlan::signed)
+    }
 }
 
 #[cfg(all(test, feature = "cuda-runtime"))]
@@ -623,3 +629,6 @@ mod dispatch_tests {
         );
     }
 }
+
+#[cfg(all(test, feature = "cuda-runtime"))]
+mod sample_depth_tests;

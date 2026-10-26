@@ -1623,6 +1623,7 @@ fn cuda_gray16_and_rgb16_store_kernels_match_cpu_scaling_when_required() {
                 output_y: 0,
                 addend: 0.0,
                 bit_depth: 8,
+                signed: 0,
             },
         )
         .expect("CUDA Gray16 store");
@@ -1673,6 +1674,7 @@ fn cuda_gray16_and_rgb16_store_kernels_match_cpu_scaling_when_required() {
                 bit_depth1: 8,
                 bit_depth2: 8,
                 rgba: 1,
+                signed: 0,
             },
         )
         .expect("CUDA RGBA16 store");

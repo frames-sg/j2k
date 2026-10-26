@@ -95,9 +95,10 @@ fn owned_large_rgb_group_matches_cpu_in_order_and_reuses_bounded_scratch() {
     let inputs = alternating_inputs(&first, &second, count);
 
     for layout in [BatchLayout::Nhwc, BatchLayout::Nchw] {
-        let options = BatchDecodeOptions {
-            layout,
-            ..BatchDecodeOptions::default()
+        let options = {
+            let mut options = BatchDecodeOptions::default();
+            options.layout = layout;
+            options
         };
         let large = prepare_batch(inputs.clone(), options).expect("prepare large RGB8 batch");
         let one_chunk = prepare_batch(inputs[..COLOR_BATCH_CHUNK_IMAGES].to_vec(), options)
@@ -147,9 +148,10 @@ fn external_large_rgb_group_matches_cpu_in_one_caller_allocation() {
     let first: Arc<[u8]> = Arc::from(four_level_rgb8_fixture(17).0);
     let second: Arc<[u8]> = Arc::from(four_level_rgb8_fixture(29).0);
     let count = 2 * COLOR_BATCH_CHUNK_IMAGES + 1;
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nchw,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nchw;
+        options
     };
     let prepared = prepare_batch(alternating_inputs(&first, &second, count), options)
         .expect("prepare large external RGB8 batch");

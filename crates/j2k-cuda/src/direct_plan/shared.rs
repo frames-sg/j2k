@@ -115,6 +115,7 @@ impl CudaPlanOwners {
         Ok(CudaHtj2kDecodePlan {
             dimensions,
             bit_depth: plan.bit_depth,
+            signed: plan.signed,
             output_format,
             output_origin,
             transform: self.transform.unwrap_or(CudaHtj2kTransform::Reversible53),

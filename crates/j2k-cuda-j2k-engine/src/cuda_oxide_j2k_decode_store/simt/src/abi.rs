@@ -30,6 +30,7 @@ pub(crate) struct CudaJ2kStoreGray16Job {
     pub(crate) output_y: u32,
     pub(crate) addend: f32,
     pub(crate) bit_depth: u32,
+    pub(crate) signed: u32,
 }
 
 #[repr(C)]
@@ -38,7 +39,7 @@ pub(crate) struct CudaJ2kStoreGray8BatchJob {
     pub(crate) input_ptr: u64,
     pub(crate) output_ptr: u64,
     pub(crate) job: CudaJ2kStoreGray8Job,
-    pub(crate) reserved_tail: u32,
+    pub(crate) native_samples: u32,
 }
 
 #[repr(C)]
@@ -47,6 +48,7 @@ pub(crate) struct CudaJ2kStoreGray16BatchJob {
     pub(crate) input_ptr: u64,
     pub(crate) output_ptr: u64,
     pub(crate) job: CudaJ2kStoreGray16Job,
+    pub(crate) native_samples: u32,
     pub(crate) reserved_tail: u32,
 }
 
@@ -56,7 +58,6 @@ pub(crate) struct CudaJ2kStoreGrayI16BatchJob {
     pub(crate) input_ptr: u64,
     pub(crate) output_ptr: u64,
     pub(crate) job: CudaJ2kStoreGray16Job,
-    pub(crate) reserved_tail: u32,
 }
 
 #[repr(C)]
@@ -121,6 +122,7 @@ pub(crate) struct CudaJ2kStoreRgb16Job {
     pub(crate) bit_depth1: u32,
     pub(crate) bit_depth2: u32,
     pub(crate) rgba: u32,
+    pub(crate) signed: u32,
 }
 
 #[repr(C)]

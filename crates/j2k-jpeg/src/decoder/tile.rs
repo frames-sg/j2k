@@ -104,6 +104,7 @@ pub(crate) fn decode_prepared_jpeg_tile_rgb8_in_context(
     Decoder::with_view_in_context(view, ctx, |decoder| {
         let outcome = decoder.decode_into_with_scratch(pool, out, stride, PixelFormat::Rgb8)?;
         Ok(DecodedTile {
+            recovered: outcome.recovered,
             dimensions,
             decoded: outcome.decoded,
             warnings: outcome.warnings,
@@ -153,9 +154,10 @@ pub(crate) fn prepare_jpeg_tile_decode<'a>(
     options: DecodeOptions,
     external_live_bytes: usize,
 ) -> Result<PreparedJpegTileDecode<'a>, JpegError> {
-    let cached = if options == DecodeOptions::default() {
+    let cached = if options.color_transform() == crate::ColorTransform::Auto {
         Decoder::from_cached_sequential_template_with_external_live(
             input,
+            options,
             ctx,
             external_live_bytes,
         )?
@@ -186,7 +188,7 @@ pub(crate) fn prepare_jpeg_tile_decode<'a>(
     })
 }
 
-fn planned_jpeg_tile_decode_for_decoder(
+pub(crate) fn planned_jpeg_tile_decode_for_decoder(
     decoder: &Decoder<'_>,
     fmt: PixelFormat,
     roi: Option<Rect>,

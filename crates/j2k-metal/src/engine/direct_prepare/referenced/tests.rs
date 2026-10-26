@@ -20,6 +20,7 @@ fn referenced_htj2k_component_prepares_observed_classic_and_ht_steps() {
         y1: 1,
     };
     let geometry = NativeGrayscalePlan {
+        signed: false,
         dimensions: (1, 1),
         bit_depth: 8,
         steps: vec![

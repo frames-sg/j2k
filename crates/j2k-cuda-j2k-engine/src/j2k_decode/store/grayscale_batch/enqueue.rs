@@ -48,7 +48,7 @@ impl crate::J2kCudaEngine<'_> {
                     .checked_add(offset)
                     .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?,
                 job: target.job,
-                reserved_tail: 0,
+                native_samples: u32::from(target.native_samples),
             });
         }
         let jobs_buffer = self.upload(store_gray8_batch_jobs_as_bytes(&jobs))?;
@@ -111,6 +111,7 @@ impl crate::J2kCudaEngine<'_> {
                     .checked_add(offset)
                     .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?,
                 job: target.job,
+                native_samples: u32::from(target.native_samples),
                 reserved_tail: 0,
             });
         }
@@ -173,7 +174,6 @@ impl crate::J2kCudaEngine<'_> {
                     .checked_add(offset)
                     .ok_or(CudaError::LengthTooLarge { len: usize::MAX })?,
                 job: target.job,
-                reserved_tail: 0,
             });
         }
         let jobs_buffer = self.upload(store_grayi16_batch_jobs_as_bytes(&jobs))?;

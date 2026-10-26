@@ -20,6 +20,7 @@ fn rect() -> J2kRect {
 
 fn referenced_mixed_plan() -> J2kDirectGrayscalePlan {
     J2kDirectGrayscalePlan {
+        signed: false,
         dimensions: (1, 1),
         bit_depth: 8,
         steps: vec![

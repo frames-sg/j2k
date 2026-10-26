@@ -302,7 +302,7 @@ impl CudaSession {
             return Ok(pool.clone());
         }
         let context = self.cuda_context()?;
-        let pool = context.buffer_pool();
+        let pool = context.best_fit_buffer_pool();
         self.decode_buffer_pool = Some(pool.clone());
         Ok(pool)
     }

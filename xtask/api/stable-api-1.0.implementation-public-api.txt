@@ -3598,9 +3598,6 @@ pub const j2k_cuda_j2k_engine::CudaJ2kStoreRgb8MctJob::NAME: &'static str
 pub const j2k_cuda_j2k_engine::CudaJ2kStoreRgbNativeJob::NAME: &'static str
 pub const j2k_cuda_j2k_engine::CudaJ2kStoreRgbaNativeJob::NAME: &'static str
 pub enum j2k_cuda_j2k_engine::CudaJ2kIdwtNormalization
-pub enum j2k_cuda_j2k_engine::CudaJ2kMlLayout
-pub enum j2k_cuda_j2k_engine::CudaJ2kMlNormalization
-pub enum j2k_cuda_j2k_engine::CudaJ2kMlSample
 pub fn j2k_cuda_j2k_engine::CudaDwt53Output::execution(&self) -> j2k_cuda_runtime::execution::queued::CudaExecutionStats
 pub fn j2k_cuda_j2k_engine::CudaDwt53Output::levels(&self) -> &[j2k_cuda_j2k_engine::CudaDwt53LevelShape]
 pub fn j2k_cuda_j2k_engine::CudaDwt53Output::ll_dimensions(&self) -> (u32, u32)
@@ -3672,6 +3669,7 @@ pub fn j2k_cuda_j2k_engine::CudaJ2kResidentQuantizedSubband::buffer(&self) -> &j
 pub fn j2k_cuda_j2k_engine::CudaJ2kResidentQuantizedSubband::coefficient_count(&self) -> usize
 pub fn j2k_cuda_j2k_engine::CudaJ2kResidentQuantizedSubband::download_coefficients(&self) -> core::result::Result<alloc::vec::Vec<i32>, j2k_cuda_runtime::error::CudaError>
 pub fn j2k_cuda_j2k_engine::CudaJ2kResidentQuantizedSubband::execution(&self) -> j2k_cuda_runtime::execution::queued::CudaExecutionStats
+pub fn j2k_cuda_j2k_engine::CudaJ2kResidentQuantizedSubband::into_buffer(self) -> j2k_cuda_runtime::memory::CudaDeviceBuffer
 pub fn j2k_cuda_j2k_engine::CudaPooledHtj2kDecodeOutput::coefficients(&self) -> core::option::Option<&j2k_cuda_runtime::memory::CudaDeviceBuffer>
 pub fn j2k_cuda_j2k_engine::CudaPooledHtj2kDecodeOutput::execution(&self) -> j2k_cuda_runtime::execution::queued::CudaExecutionStats
 pub fn j2k_cuda_j2k_engine::CudaPooledHtj2kDecodeOutput::into_parts(self) -> (j2k_cuda_runtime::memory::pool::CudaPooledDeviceBuffer, j2k_cuda_runtime::execution::queued::CudaExecutionStats, alloc::vec::Vec<j2k_cuda_j2k_engine::CudaHtj2kStatus>)
@@ -3753,9 +3751,9 @@ pub fn j2k_cuda_j2k_engine::J2kCudaEngine<'_>::j2k_inverse_dwt_single_device_wit
 pub fn j2k_cuda_j2k_engine::J2kCudaEngine<'_>::j2k_inverse_dwt_single_device_with_pool_normalized(&self, [&j2k_cuda_runtime::memory::CudaDeviceBuffer; 4], j2k_cuda_j2k_engine::CudaJ2kIdwtJob, j2k_cuda_j2k_engine::CudaJ2kIdwtNormalization, &j2k_cuda_runtime::memory::pool::CudaBufferPool) -> core::result::Result<j2k_cuda_runtime::execution::queued::CudaPooledKernelOutput, j2k_cuda_runtime::error::CudaError>
 pub fn j2k_cuda_j2k_engine::J2kCudaEngine<'_>::j2k_inverse_dwt_single_output_bytes(&self, &j2k_cuda_runtime::memory::CudaDeviceBuffer, &j2k_cuda_runtime::memory::CudaDeviceBuffer, &j2k_cuda_runtime::memory::CudaDeviceBuffer, &j2k_cuda_runtime::memory::CudaDeviceBuffer, j2k_cuda_j2k_engine::CudaJ2kIdwtJob) -> core::result::Result<usize, j2k_cuda_runtime::error::CudaError>
 pub fn j2k_cuda_j2k_engine::J2kCudaEngine<'_>::j2k_inverse_mct_device(&self, &j2k_cuda_runtime::memory::CudaDeviceBuffer, &j2k_cuda_runtime::memory::CudaDeviceBuffer, &j2k_cuda_runtime::memory::CudaDeviceBuffer, j2k_cuda_j2k_engine::CudaJ2kInverseMctJob) -> core::result::Result<j2k_cuda_runtime::execution::queued::CudaExecutionStats, j2k_cuda_runtime::error::CudaError>
-pub fn j2k_cuda_j2k_engine::J2kCudaEngine<'_>::j2k_ml_convert_into_external(&self, u64, usize, &mut j2k_cuda_runtime::memory::CudaExternalDeviceBufferViewMut<'_>, j2k_cuda_j2k_engine::CudaJ2kMlKernelConfig) -> core::result::Result<(), j2k_cuda_runtime::error::CudaError>
 pub fn j2k_cuda_j2k_engine::J2kCudaEngine<'_>::j2k_quantize_subband(&self, &[f32], j2k_cuda_j2k_engine::CudaJ2kQuantizeJob) -> core::result::Result<j2k_cuda_j2k_engine::CudaJ2kQuantizedSubband, j2k_cuda_runtime::error::CudaError>
-pub fn j2k_cuda_j2k_engine::J2kCudaEngine<'_>::j2k_quantize_subband_region_resident(&self, &j2k_cuda_runtime::memory::CudaDeviceBuffer, j2k_cuda_j2k_engine::CudaJ2kQuantizeSubbandRegionJob) -> core::result::Result<j2k_cuda_j2k_engine::CudaJ2kResidentQuantizedSubband, j2k_cuda_runtime::error::CudaError>
+pub fn j2k_cuda_j2k_engine::J2kCudaEngine<'_>::j2k_quantize_subband_regions_resident(&self, &j2k_cuda_runtime::memory::CudaDeviceBuffer, &[j2k_cuda_j2k_engine::CudaJ2kQuantizeSubbandRegionJob], &j2k_cuda_runtime::memory::pool::CudaBufferPool) -> core::result::Result<j2k_cuda_j2k_engine::CudaJ2kResidentQuantizedSubband, j2k_cuda_runtime::error::CudaError>
+pub fn j2k_cuda_j2k_engine::J2kCudaEngine<'_>::j2k_quantize_subband_regions_resident_into(&self, &j2k_cuda_runtime::memory::CudaDeviceBuffer, &[j2k_cuda_j2k_engine::CudaJ2kQuantizeSubbandRegionJob], &j2k_cuda_runtime::memory::CudaDeviceBuffer, usize) -> core::result::Result<usize, j2k_cuda_runtime::error::CudaError>
 pub fn j2k_cuda_j2k_engine::J2kCudaEngine<'_>::j2k_quantize_subband_resident(&self, &j2k_cuda_runtime::memory::CudaDeviceBuffer, usize, j2k_cuda_j2k_engine::CudaJ2kQuantizeJob) -> core::result::Result<j2k_cuda_j2k_engine::CudaJ2kResidentQuantizedSubband, j2k_cuda_runtime::error::CudaError>
 pub fn j2k_cuda_j2k_engine::J2kCudaEngine<'_>::j2k_store_gray16_batch_contiguous_device(&self, &[j2k_cuda_j2k_engine::CudaJ2kStoreGray16Target<'_>]) -> core::result::Result<j2k_cuda_runtime::execution::queued::CudaKernelContiguousBatchOutput, j2k_cuda_runtime::error::CudaError>
 pub fn j2k_cuda_j2k_engine::J2kCudaEngine<'_>::j2k_store_gray16_batch_contiguous_device_enqueue(&self, &[j2k_cuda_j2k_engine::CudaJ2kStoreGray16Target<'_>]) -> core::result::Result<(j2k_cuda_runtime::memory::CudaDeviceBuffer, alloc::vec::Vec<j2k_cuda_runtime::memory::CudaDeviceBufferRange>, j2k_cuda_j2k_engine::CudaQueuedJ2kStoreBatch), j2k_cuda_runtime::error::CudaError>
@@ -3948,23 +3946,6 @@ pub j2k_cuda_j2k_engine::CudaJ2kInverseMctJob::addend1: f32
 pub j2k_cuda_j2k_engine::CudaJ2kInverseMctJob::addend2: f32
 pub j2k_cuda_j2k_engine::CudaJ2kInverseMctJob::irreversible97: u32
 pub j2k_cuda_j2k_engine::CudaJ2kInverseMctJob::len: u32
-pub j2k_cuda_j2k_engine::CudaJ2kMlKernelConfig::channels: u32
-pub j2k_cuda_j2k_engine::CudaJ2kMlKernelConfig::destination_offset_elements: usize
-pub j2k_cuda_j2k_engine::CudaJ2kMlKernelConfig::height: u32
-pub j2k_cuda_j2k_engine::CudaJ2kMlKernelConfig::layout: j2k_cuda_j2k_engine::CudaJ2kMlLayout
-pub j2k_cuda_j2k_engine::CudaJ2kMlKernelConfig::normalization: j2k_cuda_j2k_engine::CudaJ2kMlNormalization
-pub j2k_cuda_j2k_engine::CudaJ2kMlKernelConfig::sample: j2k_cuda_j2k_engine::CudaJ2kMlSample
-pub j2k_cuda_j2k_engine::CudaJ2kMlKernelConfig::width: u32
-pub j2k_cuda_j2k_engine::CudaJ2kMlLayout::ChannelsFirst
-pub j2k_cuda_j2k_engine::CudaJ2kMlLayout::ChannelsLast
-pub j2k_cuda_j2k_engine::CudaJ2kMlNormalization::Integer
-pub j2k_cuda_j2k_engine::CudaJ2kMlNormalization::MeanStd
-pub j2k_cuda_j2k_engine::CudaJ2kMlNormalization::MeanStd::mean: [f32; 4]
-pub j2k_cuda_j2k_engine::CudaJ2kMlNormalization::MeanStd::std: [f32; 4]
-pub j2k_cuda_j2k_engine::CudaJ2kMlNormalization::Raw
-pub j2k_cuda_j2k_engine::CudaJ2kMlNormalization::Unit
-pub j2k_cuda_j2k_engine::CudaJ2kMlSample::U16
-pub j2k_cuda_j2k_engine::CudaJ2kMlSample::U8
 pub j2k_cuda_j2k_engine::CudaJ2kQuantizeJob::range_bits: u8
 pub j2k_cuda_j2k_engine::CudaJ2kQuantizeJob::reversible: bool
 pub j2k_cuda_j2k_engine::CudaJ2kQuantizeJob::step_exponent: u16
@@ -3988,10 +3969,12 @@ pub j2k_cuda_j2k_engine::CudaJ2kStoreGray16Job::output_height: u32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGray16Job::output_width: u32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGray16Job::output_x: u32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGray16Job::output_y: u32
+pub j2k_cuda_j2k_engine::CudaJ2kStoreGray16Job::signed: u32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGray16Job::source_x: u32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGray16Job::source_y: u32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGray16Target::input: &'a j2k_cuda_runtime::memory::CudaDeviceBuffer
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGray16Target::job: j2k_cuda_j2k_engine::CudaJ2kStoreGray16Job
+pub j2k_cuda_j2k_engine::CudaJ2kStoreGray16Target::native_samples: bool
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGray16Target::output_index: usize
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGray8Job::addend: f32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGray8Job::bit_depth: u32
@@ -4006,6 +3989,7 @@ pub j2k_cuda_j2k_engine::CudaJ2kStoreGray8Job::source_x: u32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGray8Job::source_y: u32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGray8Target::input: &'a j2k_cuda_runtime::memory::CudaDeviceBuffer
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGray8Target::job: j2k_cuda_j2k_engine::CudaJ2kStoreGray8Job
+pub j2k_cuda_j2k_engine::CudaJ2kStoreGray8Target::native_samples: bool
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGray8Target::output_index: usize
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGrayI16Target::input: &'a j2k_cuda_runtime::memory::CudaDeviceBuffer
 pub j2k_cuda_j2k_engine::CudaJ2kStoreGrayI16Target::job: j2k_cuda_j2k_engine::CudaJ2kStoreGray16Job
@@ -4026,6 +4010,7 @@ pub j2k_cuda_j2k_engine::CudaJ2kStoreRgb16Job::output_width: u32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreRgb16Job::output_x: u32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreRgb16Job::output_y: u32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreRgb16Job::rgba: u32
+pub j2k_cuda_j2k_engine::CudaJ2kStoreRgb16Job::signed: u32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreRgb16Job::source_x0: u32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreRgb16Job::source_x1: u32
 pub j2k_cuda_j2k_engine::CudaJ2kStoreRgb16Job::source_x2: u32
@@ -4166,7 +4151,6 @@ pub struct j2k_cuda_j2k_engine::CudaHtj2kPacketizedTile
 pub struct j2k_cuda_j2k_engine::CudaJ2kDeinterleavedComponents
 pub struct j2k_cuda_j2k_engine::CudaJ2kIdwtBatchStageProfile
 pub struct j2k_cuda_j2k_engine::CudaJ2kIdwtTarget<'a>
-pub struct j2k_cuda_j2k_engine::CudaJ2kMlKernelConfig
 pub struct j2k_cuda_j2k_engine::CudaJ2kQuantizeJob
 pub struct j2k_cuda_j2k_engine::CudaJ2kQuantizeSubbandRegionJob
 pub struct j2k_cuda_j2k_engine::CudaJ2kQuantizedSubband

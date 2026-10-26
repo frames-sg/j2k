@@ -15,6 +15,7 @@ fn referenced_ownership_strips_each_coder_without_rejecting_the_other() {
         y1: 2,
     };
     let mut plan = J2kDirectGrayscalePlan {
+        signed: false,
         dimensions: (2, 2),
         bit_depth: 8,
         steps: vec![

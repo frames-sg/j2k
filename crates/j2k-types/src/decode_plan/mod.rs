@@ -80,6 +80,8 @@ pub struct J2kDirectGrayscalePlan {
     pub dimensions: (u32, u32),
     /// Final output bit depth.
     pub bit_depth: u8,
+    /// Whether this component stores signed samples.
+    pub signed: bool,
     /// Ordered execution steps.
     pub steps: Vec<J2kDirectGrayscaleStep>,
 }

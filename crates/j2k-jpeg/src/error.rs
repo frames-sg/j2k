@@ -197,6 +197,19 @@ impl core::fmt::Display for ProgressiveScanTerminationError {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum JpegError {
+    /// Pixels required recovery or their completion could not be verified.
+    #[error("image requires recovery or completion verification: {warning}")]
+    RecoveryRequired {
+        /// Specific recovery or completeness diagnostic.
+        warning: Warning,
+    },
+    /// A reserved APP14 transform leaves the requested color interpretation unresolved.
+    #[error("unresolved Adobe APP14 transform {raw_transform}; provide a color-transform hint")]
+    AmbiguousColorTransform {
+        /// Reserved APP14 transform value.
+        raw_transform: u8,
+    },
+
     #[error("JPEG truncated at offset {offset}: expected {expected} more bytes")]
     /// Input ended before the requested bytes could be read.
     Truncated {

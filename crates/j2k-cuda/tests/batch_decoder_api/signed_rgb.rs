@@ -59,9 +59,10 @@ fn signed_rgb_i16_external_and_resident_batches_match_cpu_for_geometry_and_layou
     let context = CudaContext::system_default().expect("CUDA context");
 
     for layout in [BatchLayout::Nhwc, BatchLayout::Nchw] {
-        let options = BatchDecodeOptions {
-            layout,
-            ..BatchDecodeOptions::default()
+        let options = {
+            let mut options = BatchDecodeOptions::default();
+            options.layout = layout;
+            options
         };
         let session = CudaSession::with_context(context.clone());
         let mut decoder = CudaBatchDecoder::with_session_and_options(session, options);

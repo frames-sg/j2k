@@ -241,6 +241,7 @@ fn build_referenced_color_plans_with_cap<'a>(
             ),
         ));
     }
+
     color.report.parse_us = parse_us;
     color.report.plan_us = plan_us;
     color.report.total_us = profile::elapsed_us(total_start);

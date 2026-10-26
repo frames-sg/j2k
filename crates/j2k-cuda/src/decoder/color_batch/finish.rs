@@ -65,6 +65,7 @@ pub(super) fn finish_color_cuda_resident_surface_with_component_work(
                 &prepared.components[2].store,
             ],
             bit_depths: color.rgb_bit_depths(),
+            signed: color.signed(),
         };
         let mct = run_color_mct(
             inputs,

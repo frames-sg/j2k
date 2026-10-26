@@ -19,10 +19,11 @@ use super::fixtures::{
 
 #[test]
 fn shared_batch_decoder_interface_prepares_and_decodes_owned_inputs() {
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        workers: NonZeroUsize::new(1),
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options.workers = NonZeroUsize::new(1);
+        options
     };
     let input = EncodedImage::full(Arc::from(htj2k_gray8_fixture(3, 2)));
     let mut decoder = CpuBatchDecoder::new(options);
@@ -132,9 +133,10 @@ fn cpu_batch_preserves_signed_i16_samples_in_nchw_layout() {
         EncodedImage::full(Arc::<[u8]>::from(signed_gray16_fixture(&first, 2, 2))),
         EncodedImage::full(Arc::<[u8]>::from(signed_gray16_fixture(&second, 2, 2))),
     ];
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nchw,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nchw;
+        options
     };
     let mut session = CpuBatchDecoder::new(options);
     let result = session.decode(inputs).expect("decode signed batch");

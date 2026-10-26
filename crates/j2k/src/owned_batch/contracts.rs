@@ -65,16 +65,7 @@ impl DecodeRequest {
     }
 }
 
-/// Tensor-compatible channel ordering requested from a batch decoder.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum BatchLayout {
-    /// Batch, channel, height, width.
-    #[default]
-    Nchw,
-    /// Batch, height, width, channel.
-    Nhwc,
-}
+pub use j2k_core::BatchLayout;
 
 /// One owned encoded image submitted to a batch decoder.
 #[derive(Debug, Clone)]
@@ -109,6 +100,7 @@ impl EncodedImage {
 
 /// Options shared by preparation and CPU batch decode.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct BatchDecodeOptions {
     /// Output channel ordering.
     pub layout: BatchLayout,

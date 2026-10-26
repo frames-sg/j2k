@@ -4,6 +4,9 @@ on:
   pull_request:
     paths:
       - "crates/j2k-python/**"
+      - "crates/j2k-metal/**"
+      - "crates/j2k-metal-support/**"
+      - "crates/j2k-jpeg/**"
       - "crates/j2k/**"
       - "crates/j2k-native/**"
       - "crates/j2k-types/**"
@@ -15,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: "Publish the tested CPU wheels to PyPI (main branch only)"
+        description: "Publish the tested wheels to PyPI (main branch only)"
         type: boolean
         default: false
       cuda:
@@ -32,12 +35,16 @@ concurrency:
 
 jobs:
   cpu-wheel:
-    name: CPU wheel (${{ matrix.os }})
+    name: Python wheel (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            features: ""
+          - os: macos-latest
+            features: "--features metal"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -63,7 +70,7 @@ jobs:
           maturin-version: v1.15.0
           rust-toolchain: "1.99.0"
           manylinux: "2_28"
-          args: --locked --release --manifest-path crates/j2k-python/Cargo.toml --out target/python-wheels --compatibility pypi
+          args: --locked --release --manifest-path crates/j2k-python/Cargo.toml --out target/python-wheels --compatibility pypi ${{ matrix.features }}
       - name: Test the installed wheel
         shell: bash
         run: |

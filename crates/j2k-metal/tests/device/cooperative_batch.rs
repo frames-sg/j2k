@@ -37,9 +37,10 @@ fn cooperative_classic_batch_preserves_order_layout_and_reuse() {
     }
     let inputs = distinct_classic_inputs();
     for layout in [BatchLayout::Nhwc, BatchLayout::Nchw] {
-        let options = BatchDecodeOptions {
-            layout,
-            ..BatchDecodeOptions::default()
+        let options = {
+            let mut options = BatchDecodeOptions::default();
+            options.layout = layout;
+            options
         };
         let expected = CpuBatchDecoder::new(options)
             .decode(inputs.clone())

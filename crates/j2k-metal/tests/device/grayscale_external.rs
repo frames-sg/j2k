@@ -180,9 +180,10 @@ fn independent_openht_sigprop_overlap_matches_openht_oracle_within_one_lsb() {
     }
     let encoded = Arc::<[u8]>::from(j2k_test_support::openhtj2k_sigprop_overlap_fixture());
     let expected = j2k_test_support::openhtj2k_sigprop_overlap_pixels();
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let mut decoder =
         MetalBatchDecoder::system_default_with_options(options).expect("persistent Metal decoder");

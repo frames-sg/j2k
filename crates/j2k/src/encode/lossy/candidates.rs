@@ -18,6 +18,15 @@ use crate::J2kError;
 
 /// One encode and one quality measurement per probed quantization scale.
 pub(in crate::encode) trait LossyCandidates {
+    /// Whether the byte search may return its last probe's codestream when
+    /// that probe is the selected scale, instead of encoding it again. Only
+    /// sound when `encode_candidate` is deterministic per scale. The `false`
+    /// default keeps closure sources, including accelerator encodes, on the
+    /// final re-encode.
+    fn reuse_terminal_byte_output(&self) -> bool {
+        false
+    }
+
     fn encode_candidate(&mut self, quantization_scale: f32) -> Result<Vec<u8>, J2kError>;
 
     // See `validate_lossy_roundtrip` for the `Vec` ownership contract.
@@ -92,6 +101,10 @@ impl<'a> CpuCandidates<'a> {
 const RELEASE_BEFORE_DECODE_BYTES: usize = j2k_native::DEFAULT_MAX_DECODE_BYTES / 4;
 
 impl LossyCandidates for CpuCandidates<'_> {
+    fn reuse_terminal_byte_output(&self) -> bool {
+        true
+    }
+
     fn encode_candidate(&mut self, quantization_scale: f32) -> Result<Vec<u8>, J2kError> {
         let (samples, options) = (self.samples, self.options);
         if !self.reuse {
