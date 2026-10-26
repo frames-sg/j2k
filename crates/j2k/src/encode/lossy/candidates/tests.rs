@@ -98,11 +98,7 @@ fn targeted_cpu_search_matches_independent_candidates() {
                         .quality_layers
                         .push(crate::J2kQualityLayer::new(target));
                 }
-                let target = if layer_count == 0 {
-                    Some(target)
-                } else {
-                    super::super::effective_lossy_target(&options).unwrap()
-                };
+                let target = Some(target);
                 let roi = with_roi.then_some(roi.as_slice());
                 let actual = encode_cpu_lossy_targeted(samples, &options, target, roi);
                 let independent = &mut |scale| {
@@ -113,7 +109,10 @@ fn targeted_cpu_search_matches_independent_candidates() {
                 };
                 let expected = encode_lossy_targeted(samples, &options, target, independent);
                 let expected = outcome(expected);
-                let what = format!("{width}x{height} {target:?} {mode:?} {budget} roi {with_roi}");
+                let what = format!(
+                    "{width}x{height} {target:?} {mode:?} {budget} roi {with_roi} \
+                     constant {constant} layers {layer_count}"
+                );
                 assert_eq!(outcome(actual), expected, "{what}");
                 searches += 1;
                 successes += usize::from(expected.is_ok());

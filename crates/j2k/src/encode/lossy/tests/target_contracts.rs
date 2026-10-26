@@ -275,6 +275,13 @@ fn rate_target_and_metric_helpers_cover_numeric_edges() {
 }
 
 #[test]
+fn closure_candidates_keep_the_final_byte_re_encode() {
+    use super::super::candidates::LossyCandidates;
+    let source = |_scale: f32| -> Result<Vec<u8>, J2kError> { Ok(Vec::new()) };
+    assert!(!source.reuse_terminal_byte_output());
+}
+
+#[test]
 fn terminal_byte_probe_reuse_preserves_search_decisions() {
     use super::super::{candidates::LossyCandidates, encode_lossy_to_byte_target};
     #[derive(Clone)]
@@ -298,6 +305,8 @@ fn terminal_byte_probe_reuse_preserves_search_decisions() {
             } else if middle != 0 {
                 middle
             } else {
+                // Lengths rise toward the target as scales approach 1.0, so each
+                // bisection probe wins until f32 precision ends the search.
                 900 + usize::try_from(bits.abs_diff(1.0_f32.to_bits()).leading_zeros()).unwrap()
             };
             Ok(vec![scale.to_bits().to_le_bytes()[0]; len])
@@ -311,7 +320,7 @@ fn terminal_byte_probe_reuse_preserves_search_decisions() {
         ([2000, 500, 1001], 0, true),
         ([2000, 900, 1300], 1, false),
         ([2000, 900, 1100], 1, false),
-        ([2000, 500, 1200], 1, true),
+        ([2000, 500, 990], 1, true),
         ([2000, 908, 0], 64, true),
     ] {
         options.psnr_iteration_budget = budget;

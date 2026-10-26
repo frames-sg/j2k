@@ -5,6 +5,10 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- CPU byte and bits-per-pixel rate searches return the last probe's
+  codestream when that probe is the selected scale, instead of encoding the
+  same scale again. Search decisions and output are unchanged.
+
 - CUDA whole-tile HTJ2K encodes group every component's code blocks in
   bounded dispatches. Each component is quantized into its own plane of the
   component buffer after the transform has finished reading it, avoiding a

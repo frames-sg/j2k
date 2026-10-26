@@ -18,6 +18,11 @@ use crate::J2kError;
 
 /// One encode and one quality measurement per probed quantization scale.
 pub(in crate::encode) trait LossyCandidates {
+    /// Whether the byte search may return its last probe's codestream when
+    /// that probe is the selected scale, instead of encoding it again. Only
+    /// sound when `encode_candidate` is deterministic per scale. The `false`
+    /// default keeps closure sources, including accelerator encodes, on the
+    /// final re-encode.
     fn reuse_terminal_byte_output(&self) -> bool {
         false
     }

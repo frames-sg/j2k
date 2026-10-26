@@ -183,6 +183,7 @@ pub(super) fn encode_lossy_to_byte_target(
     let mut current_len = best_len;
     let mut best_scale = high;
     let mut best_diff = byte_target_diff(best_len, target_bytes);
+    // With low == high no bisection probe can follow this one.
     if best_len <= maximum_bytes && candidates.reuse_terminal_byte_output() {
         return Ok(LossyAttempt {
             codestream: initial_codestream,
