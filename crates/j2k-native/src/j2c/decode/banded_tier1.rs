@@ -19,9 +19,10 @@ use core::ops::Range;
 use super::subband::decode_sub_band_bitplanes;
 use super::{
     decode_component_tile_bit_planes_budgeted, tier1, ComponentInfo, CpuDecodeParallelism,
-    DecodeProfileTimings, DecompositionStorage, Header, Result, Tile, TileDecodeContext,
+    DecodeAllocationBudget, DecodeProfileTimings, DecompositionStorage, Header, Result, Tile,
+    TileDecodeContext,
 };
-use crate::error::{DecodeError, DecodingError};
+use crate::error::{DecodeError, DecodingError, ValidationError};
 use crate::j2c::build;
 use crate::j2c::codestream::WaveletTransform;
 use crate::j2c::idwt::{ComponentLines, SubBandRows};
@@ -131,8 +132,9 @@ fn decode_bands<'a>(
     // Each active resolution's sub-bands, in the order the whole-window path
     // decodes them.
     let mut bands = Vec::new();
+    let band_count = 1 + 3 * active_levels;
     bands
-        .try_reserve_exact(1 + 3 * active_levels)
+        .try_reserve_exact(band_count)
         .map_err(|_| DecodingError::HostAllocationFailed)?;
     for resolution in 0..=active_levels {
         let resolution =
@@ -148,18 +150,47 @@ fn decode_bands<'a>(
             });
         }
     }
+    // The row index is only a speed optimization. If it cannot fit the
+    // current budget, use the original scans rather than reject a decode that
+    // fits without the index.
+    let mut index_budget = DecodeAllocationBudget::for_storage(storage)?;
+    let baseline_bytes = index_budget.live_bytes();
+    #[cfg(test)]
+    let precinct_rows = if tile_ctx.reject_band_index {
+        Err(ValidationError::ImageTooLarge.into())
+    } else {
+        build_precinct_rows(storage, &bands, &mut index_budget)
+    }
+    .ok();
+    #[cfg(not(test))]
+    let precinct_rows = build_precinct_rows(storage, &bands, &mut index_budget).ok();
+    let index_bytes = if precinct_rows.is_some() {
+        index_budget.live_bytes() - baseline_bytes
+    } else {
+        0
+    };
+    storage.structural_workspace_bytes = storage
+        .structural_workspace_bytes
+        .checked_add(index_bytes)
+        .ok_or(ValidationError::ImageTooLarge)?;
 
     tile_ctx.idwt_output.placement = crate::j2c::idwt::IdwtPlacement::Coefficients;
     tile_ctx.idwt_output.coefficients = Vec::new();
     tile_ctx.idwt_output.rect = IntRect::from_xywh(0, 0, 0, 0);
-    let mut lines = ComponentLines::prepare(
+    let mut lines = match ComponentLines::prepare(
         storage,
         tile_ctx,
         component_idx,
         active_levels,
         header,
         transform,
-    )?;
+    ) {
+        Ok(lines) => lines,
+        Err(error) => {
+            storage.structural_workspace_bytes -= index_bytes;
+            return Err(error);
+        }
+    };
 
     let mut rows = BandedRows {
         header,
@@ -167,13 +198,17 @@ fn decode_bands<'a>(
         tile_ctx: &mut *tile_ctx,
         storage: &mut *storage,
         bands,
+        precinct_rows,
         profile_enabled,
         tier1_us: 0,
     };
     let result = lines.as_mut().map_or(Ok(()), |lines| lines.run(&mut rows));
     let result = result.and_then(|()| rows.decode_remaining_bands());
     *tier1_us = rows.tier1_us;
-    lines.map_or(result, |lines| lines.finish(tile_ctx, result))
+    drop(rows);
+    let result = lines.map_or(result, |lines| lines.finish(tile_ctx, result));
+    storage.structural_workspace_bytes -= index_bytes;
+    result
 }
 
 /// When a banded decode fails, rerun the component's Tier-1 over whole
@@ -219,6 +254,52 @@ struct SubBandBands {
     last_band: Option<u32>,
 }
 
+struct PrecinctRow {
+    first_y: u32,
+    last_y: u32,
+    precincts: Range<usize>,
+}
+
+fn build_precinct_rows(
+    storage: &DecompositionStorage<'_>,
+    bands: &[SubBandBands],
+    budget: &mut DecodeAllocationBudget,
+) -> Result<Vec<Vec<PrecinctRow>>> {
+    let mut indexed = Vec::new();
+    budget.reserve_new(&mut indexed, bands.len())?;
+    for band in bands {
+        indexed.push(collect_precinct_rows(storage, band.sub_band, budget)?);
+    }
+    Ok(indexed)
+}
+
+fn collect_precinct_rows(
+    storage: &DecompositionStorage<'_>,
+    sub_band: usize,
+    budget: &mut DecodeAllocationBudget,
+) -> Result<Vec<PrecinctRow>> {
+    let mut rows: Vec<PrecinctRow> = Vec::new();
+    for index in storage.sub_bands[sub_band].precincts.clone() {
+        let precinct = &storage.precincts[index];
+        let blocks = &storage.code_blocks[precinct.code_blocks.clone()];
+        let Some((first, last)) = blocks.first().zip(blocks.last()) else {
+            continue;
+        };
+        if let Some(row) = rows.last_mut().filter(|row| row.first_y == first.rect.y0) {
+            row.last_y = row.last_y.max(last.rect.y0);
+            row.precincts.end = index + 1;
+        } else {
+            budget.reserve_additional(&mut rows, 1)?;
+            rows.push(PrecinctRow {
+                first_y: first.rect.y0,
+                last_y: last.rect.y0,
+                precincts: index..index + 1,
+            });
+        }
+    }
+    Ok(rows)
+}
+
 /// Decodes the bands of a component's sub-bands as the streamed IDWT asks
 /// for their rows.
 struct BandedRows<'r, 'a> {
@@ -227,6 +308,7 @@ struct BandedRows<'r, 'a> {
     tile_ctx: &'r mut TileDecodeContext,
     storage: &'r mut DecompositionStorage<'a>,
     bands: Vec<SubBandBands>,
+    precinct_rows: Option<Vec<Vec<PrecinctRow>>>,
     profile_enabled: bool,
     tier1_us: u128,
 }
@@ -239,19 +321,59 @@ impl BandedRows<'_, '_> {
             .ok_or(DecodingError::CodeBlockDecodeFailure.into())
     }
 
+    /// The precincts whose code-block rows can contain `y`. Build visits
+    /// precincts from top to bottom, then left to right within a row.
+    fn band_precincts(&self, index: usize, y: u32) -> Result<Range<usize>> {
+        let rows = self
+            .precinct_rows
+            .as_ref()
+            .and_then(|indexed| indexed.get(index))
+            .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+        let at = rows.partition_point(|row| row.last_y < y);
+        rows.get(at)
+            .filter(|row| row.first_y <= y)
+            .map(|row| row.precincts.clone())
+            .ok_or(DecodingError::CodeBlockDecodeFailure.into())
+    }
+
     /// The rows of the sub-band's first band below `last_band`, or `None`
     /// when no code-block starts below it. A code-block row of a sub-band
     /// starts and ends on the same rows for all of its code-blocks.
     fn next_band(&self, index: usize) -> Option<Range<u32>> {
         let bands = &self.bands[index];
-        let sub_band = &self.storage.sub_bands[bands.sub_band];
-        self.storage.precincts[sub_band.precincts.clone()]
-            .iter()
-            .flat_map(|precinct| &self.storage.code_blocks[precinct.code_blocks.clone()])
-            .map(|code_block| code_block.rect)
-            .filter(|rect| bands.last_band.is_none_or(|last| rect.y0 > last))
-            .min_by_key(|rect| rect.y0)
-            .map(|rect| rect.y0..rect.y1)
+        let Some(indexed) = self.precinct_rows.as_ref() else {
+            let sub_band = &self.storage.sub_bands[bands.sub_band];
+            return self.storage.precincts[sub_band.precincts.clone()]
+                .iter()
+                .flat_map(|precinct| &self.storage.code_blocks[precinct.code_blocks.clone()])
+                .map(|block| block.rect)
+                .filter(|rect| bands.last_band.is_none_or(|last| rect.y0 > last))
+                .min_by_key(|rect| rect.y0)
+                .map(|rect| rect.y0..rect.y1);
+        };
+        let rows = &indexed[index];
+        let start = bands
+            .last_band
+            .map_or(0, |last| rows.partition_point(|row| row.last_y <= last));
+        for row in &rows[start..] {
+            let mut next: Option<IntRect> = None;
+            for index in row.precincts.clone() {
+                let precinct = &self.storage.precincts[index];
+                let blocks = &self.storage.code_blocks[precinct.code_blocks.clone()];
+                let at = blocks.partition_point(|block| {
+                    bands.last_band.is_some_and(|last| block.rect.y0 <= last)
+                });
+                if let Some(block) = blocks.get(at) {
+                    if next.is_none_or(|rect| block.rect.y0 < rect.y0) {
+                        next = Some(block.rect);
+                    }
+                }
+            }
+            if let Some(rect) = next {
+                return Some(rect.y0..rect.y1);
+            }
+        }
+        None
     }
 
     /// Decode the code-blocks that start at `rows.start` into the
@@ -263,6 +385,12 @@ impl BandedRows<'_, '_> {
         let top = rows.start.clamp(stored.y0, stored.y1);
         let bottom = rows.end.clamp(top, stored.y1);
         let slot = IntRect::from_ltrb(stored.x0, top, stored.x1, bottom);
+        let original_precincts = self.storage.sub_bands[sub_band].precincts.clone();
+        let band_precincts = self
+            .precinct_rows
+            .as_ref()
+            .map(|_| self.band_precincts(index, rows.start))
+            .transpose()?;
         let coefficients = self.storage.sub_bands[sub_band].coefficients.clone();
         self.storage
             .coefficients
@@ -270,6 +398,9 @@ impl BandedRows<'_, '_> {
             .ok_or(DecodingError::CodeBlockDecodeFailure)?
             .fill(0.0);
         self.storage.sub_bands[sub_band].storage_rect = slot;
+        if let Some(precincts) = band_precincts {
+            self.storage.sub_bands[sub_band].precincts = precincts;
+        }
         self.storage.tier1_band = Some(rows.start);
         let result = decode_sub_band_bitplanes(
             sub_band,
@@ -284,6 +415,7 @@ impl BandedRows<'_, '_> {
         );
         self.storage.tier1_band = None;
         self.storage.sub_bands[sub_band].storage_rect = stored;
+        self.storage.sub_bands[sub_band].precincts = original_precincts;
         let bands = &mut self.bands[index];
         bands.slot = slot;
         bands.last_band = Some(rows.start);

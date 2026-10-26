@@ -317,3 +317,41 @@ fn banded_tier1_rejects_corrupt_code_blocks_as_whole_window_tier1_does() {
         );
     }
 }
+
+#[test]
+fn banded_tier1_keeps_decoding_when_the_row_index_does_not_fit() {
+    let case = cases()
+        .into_iter()
+        .find(|case| case.label == "gray 4x4 blocks, precincts, layers")
+        .expect("small-block case");
+    let pixels = noisy_pixels(case.components);
+    let bytes = encode(
+        &pixels,
+        WIDTH,
+        HEIGHT,
+        u16::from(case.components),
+        8,
+        false,
+        &case.options,
+    )
+    .expect("encode small-block fixture");
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse fixture");
+    let roi = (67, 52, 29, 17);
+    let indexed = decode(&image, roi, true);
+
+    let mut context = DecoderContext::default();
+    context.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
+    context.tile_decode_context.reject_band_index = true;
+    let unindexed = image
+        .decode_native_region_with_context(roi, &mut context)
+        .expect("decode without row index")
+        .data;
+    let counters = context.tile_decode_context.debug_counters;
+    assert_eq!(unindexed, indexed.native);
+    assert_eq!(counters.decoded_code_blocks, indexed.decoded_blocks);
+    assert_eq!(counters.skipped_code_blocks, indexed.skipped_blocks);
+    assert_eq!(
+        counters.workspace_peak.bytes().coefficients,
+        indexed.peak_coefficients
+    );
+}

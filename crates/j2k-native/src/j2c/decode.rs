@@ -1254,6 +1254,9 @@ pub(crate) struct TileDecodeContext {
     /// compared against it.
     #[cfg(test)]
     pub(crate) whole_window_tier1: bool,
+    /// Test-only capacity failure when building the optional band row index.
+    #[cfg(test)]
+    pub(crate) reject_band_index: bool,
     /// Test-only switch that keeps the region IDWT's last level in its own
     /// window, as a hooked decode does, so writing it into `channel_data`
     /// can be compared against it.
@@ -1314,6 +1317,8 @@ impl TileDecodeContext {
         #[cfg(test)]
         let whole_window_tier1 = self.whole_window_tier1;
         #[cfg(test)]
+        let reject_band_index = self.reject_band_index;
+        #[cfg(test)]
         let separate_last_idwt_level = self.separate_last_idwt_level;
         #[cfg(test)]
         let staged_rgb8_pack = self.staged_rgb8_pack;
@@ -1331,6 +1336,7 @@ impl TileDecodeContext {
         {
             self.store_whole_code_blocks = store_whole_code_blocks;
             self.whole_window_tier1 = whole_window_tier1;
+            self.reject_band_index = reject_band_index;
             self.separate_last_idwt_level = separate_last_idwt_level;
             self.staged_rgb8_pack = staged_rgb8_pack;
         }

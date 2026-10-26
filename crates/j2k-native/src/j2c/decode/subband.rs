@@ -231,12 +231,15 @@ fn stored_placement(code_block: &CodeBlock, sub_band: &SubBand) -> BlockPlacemen
     BlockPlacement::new(code_block.rect, sub_band.storage_rect)
 }
 
-/// Whether a banded Tier-1 leaves `code_block` to another band: a band
-/// decodes only the code-blocks whose rows start at its first row.
-fn in_other_band(storage: &DecompositionStorage<'_>, code_block: &CodeBlock) -> bool {
-    storage
-        .tier1_band
-        .is_some_and(|band_y0| code_block.rect.y0 != band_y0)
+/// Code-blocks are built in row order within each precinct. A banded Tier-1
+/// decode visits only the row it is decoding; whole-window paths visit all.
+fn tier1_code_blocks(blocks: &[CodeBlock], band_y0: Option<u32>) -> &[CodeBlock] {
+    let Some(band_y0) = band_y0 else {
+        return blocks;
+    };
+    let start = blocks.partition_point(|block| block.rect.y0 < band_y0);
+    let end = blocks.partition_point(|block| block.rect.y0 <= band_y0);
+    &blocks[start..end]
 }
 
 pub(super) fn code_block_required_by_index(
