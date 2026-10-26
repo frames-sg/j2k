@@ -58,8 +58,8 @@ fn empty_cuda_batch_uses_the_persistent_shared_codec_contract_without_initializi
     assert!(submitted.is_empty());
     let output = submitted.wait().expect("finish empty shared batch");
 
-    assert!(output.groups.is_empty());
-    assert_eq!(output.errors, [] as [j2k::IndexedBatchError; 0]);
+    assert!(output.groups().is_empty());
+    assert!(output.errors().is_empty());
     assert_eq!(decoder.codec().session().submissions(), 0);
 }
 
@@ -96,8 +96,8 @@ fn cuda_burn_regroups_prepared_images_and_keeps_settings_failures_indexed_withou
     let output = decoder
         .decode_prepared_images(vec![image])
         .expect("preflight-only batch must not initialize CUDA");
-    assert!(output.groups.is_empty());
-    assert_eq!(output.errors[0].index, 0);
+    assert!(output.groups().is_empty());
+    assert_eq!(output.errors()[0].index, 0);
     assert_eq!(decoder.codec().session().submissions(), 0);
 }
 
@@ -119,11 +119,11 @@ fn dropping_submitted_burn_batch_retires_cuda_work_and_keeps_session_reusable() 
     let output = decoder
         .decode(vec![EncodedImage::full(encoded)])
         .expect("reuse CUDA Burn decoder after dropped submission");
-    assert_eq!(output.errors, [] as [j2k::IndexedBatchError; 0]);
-    let [group] = output.groups.as_slice() else {
+    assert!(output.errors().is_empty());
+    let [group] = output.groups() else {
         panic!("expected one decoded CUDA Burn group")
     };
-    let BurnBatchTensor::U8(tensor) = &group.tensor else {
+    let BurnBatchTensor::U8(tensor) = group.tensor() else {
         panic!("expected native U8 CUDA Burn tensor")
     };
     assert_eq!(tensor.dims(), [1, 1, 8, 8]);
@@ -234,13 +234,13 @@ fn cuda_burn_batch_decodes_classic_roi_and_ht_groups_together() {
     assert_eq!(submitted.len(), 2);
     let output = submitted.wait().expect("finish mixed CUDA groups");
 
-    assert_eq!(output.errors, [] as [j2k::IndexedBatchError; 0]);
-    assert!(output.group_errors.is_empty());
-    assert_eq!(output.groups.len(), expected.groups().len());
-    for (actual, expected) in output.groups.into_iter().zip(expected.groups()) {
-        assert_eq!(actual.source_indices, expected.source_indices());
+    assert!(output.errors().is_empty());
+    assert!(output.group_errors().is_empty());
+    assert_eq!(output.groups().len(), expected.groups().len());
+    for (actual, expected) in output.into_groups().into_iter().zip(expected.groups()) {
+        assert_eq!(actual.source_indices(), expected.source_indices());
         let (BurnBatchTensor::U8(actual), CpuBatchSamples::U8(expected)) =
-            (actual.tensor, expected.samples())
+            (actual.into_tensor(), expected.samples())
         else {
             panic!("mixed classic/HT fixture must remain native U8")
         };

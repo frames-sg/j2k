@@ -15,15 +15,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut decoder =
         CudaUploadBurnDecoder::new(CudaDevice::default(), BatchDecodeOptions::default());
     let output = decoder.decode(inputs)?;
-    if !output.errors.is_empty() || !output.group_errors.is_empty() || output.groups.len() != 1 {
+    if !output.errors().is_empty()
+        || !output.group_errors().is_empty()
+        || output.groups().len() != 1
+    {
         return Err(std::io::Error::other(format!("incomplete CUDA decode: {output:?}")).into());
     }
     let tensor = output
-        .groups
+        .into_groups()
         .into_iter()
         .next()
         .ok_or_else(|| std::io::Error::other("CUDA decode returned no tensor"))?
-        .tensor
+        .into_tensor()
         .into_tensor();
     println!(
         "staged CUDA-to-Burn upload: shape={:?}, dtype={:?}",

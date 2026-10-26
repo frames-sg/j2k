@@ -75,8 +75,8 @@ fn direct_cuda_batch_is_burn_consumable_without_decoded_pixel_readback() {
         .runtime
         .expect("direct CUDA runtime remains initialized");
 
-    assert_eq!(output.errors, [] as [j2k::IndexedBatchError; 0]);
-    assert!(output.group_errors.is_empty());
+    assert!(output.errors().is_empty());
+    assert!(output.group_errors().is_empty());
     assert_eq!(
         after.device_to_host_operations - before.device_to_host_operations,
         after.status_device_to_host_operations - before.status_device_to_host_operations,
@@ -89,7 +89,13 @@ fn direct_cuda_batch_is_burn_consumable_without_decoded_pixel_readback() {
     );
     drop(decoder);
 
-    let BurnBatchTensor::U8(tensor) = output.groups.into_iter().next().unwrap().tensor else {
+    let BurnBatchTensor::U8(tensor) = output
+        .into_groups()
+        .into_iter()
+        .next()
+        .unwrap()
+        .into_tensor()
+    else {
         panic!("expected direct native U8 Burn tensor")
     };
     assert_eq!(tensor.dims(), [2, 3, height as usize, width as usize,]);
@@ -129,8 +135,13 @@ fn staged_cuda_batch_writes_exact_u8_pixels_and_reuses_the_session() {
         let burn_batch = decoder
             .decode_prepared(&prepared)
             .expect("submit prepared CUDA batch");
-        assert_eq!(burn_batch.errors, [] as [j2k::IndexedBatchError; 0]);
-        let BurnBatchTensor::U8(tensor) = burn_batch.groups.into_iter().next().unwrap().tensor
+        assert!(burn_batch.errors().is_empty());
+        let BurnBatchTensor::U8(tensor) = burn_batch
+            .into_groups()
+            .into_iter()
+            .next()
+            .unwrap()
+            .into_tensor()
         else {
             panic!("expected U8 tensor")
         };
@@ -181,11 +192,11 @@ fn staged_cuda_preserves_native_u16_and_i16_samples() {
             .decode(vec![EncodedImage::full(Arc::from(encoded))])
             .expect("decode native CUDA type");
         let tensor = burn_batch
-            .groups
+            .into_groups()
             .into_iter()
             .next()
             .unwrap()
-            .tensor
+            .into_tensor()
             .into_tensor();
         assert_eq!(tensor.dtype(), dtype);
         let data = tensor.into_data();
@@ -232,11 +243,11 @@ fn staged_cuda_supports_roi_and_reduction_with_explicit_host_staging() {
         )])
         .expect("decode CUDA ROI reduction");
     let tensor = burn_batch
-        .groups
+        .into_groups()
         .into_iter()
         .next()
         .unwrap()
-        .tensor
+        .into_tensor()
         .into_tensor();
     assert_eq!(tensor.dims(), [1, 1, 12, 16]);
 }
@@ -289,11 +300,11 @@ fn staged_cuda_rgb_preserves_subnative_codes_and_burn_layout() {
                 .decode_prepared(&prepared)
                 .expect("decode exact RGB through staged Burn upload");
             let group = burn_batch
-                .groups
+                .into_groups()
                 .into_iter()
                 .next()
                 .expect("Burn RGB group");
-            let tensor = group.tensor.into_tensor();
+            let tensor = group.into_tensor().into_tensor();
             assert_eq!(tensor.dtype(), *expected_dtype);
             assert_eq!(
                 tensor.dims(),
@@ -398,11 +409,11 @@ fn staged_cuda_signed_rgb_matches_cpu_for_geometry_and_burn_layout() {
                     .decode_prepared(&prepared)
                     .unwrap_or_else(|error| panic!("{} Burn decode: {error}", fixture.name));
                 let group = burn_batch
-                    .groups
+                    .into_groups()
                     .into_iter()
                     .next()
                     .expect("Burn signed RGB group");
-                let tensor = group.tensor.into_tensor();
+                let tensor = group.into_tensor().into_tensor();
                 assert_eq!(tensor.dtype(), DType::I16);
                 assert_eq!(
                     tensor.dims(),

@@ -5142,6 +5142,24 @@ pub type j2k_ml::cuda::CudaUploadBurnDecoder = j2k_ml::CudaBurnDecoder
 pub type j2k_ml::cuda::SubmittedCudaUploadBurnBatch = j2k_ml::SubmittedCudaBurnBatch
 pub type j2k_ml::metal::MetalUploadBurnDecoder = j2k_ml::MetalBurnDecoder
 pub type j2k_ml::metal::SubmittedMetalUploadBurnBatch = j2k_ml::SubmittedMetalBurnBatch
+impl<B: burn_backend::backend::base::Backend> j2k_ml::BurnBatchDecode<B>
+impl<B: burn_backend::backend::base::Backend> j2k_ml::BurnBatchGroup<B>
+pub const fn j2k_ml::BurnBatchGroup<B>::alpha(&self) -> j2k::owned_batch::contracts::BatchAlpha
+pub const fn j2k_ml::BurnBatchGroup<B>::color(&self) -> j2k_core::pixel::PixelLayout
+pub const fn j2k_ml::BurnBatchGroup<B>::dimensions(&self) -> (u32, u32)
+pub const fn j2k_ml::BurnBatchGroup<B>::j2k_info(&self) -> core::option::Option<&j2k::owned_batch::contracts::BatchGroupInfo>
+pub const fn j2k_ml::BurnBatchGroup<B>::layout(&self) -> j2k_core::batch::BatchLayout
+pub const fn j2k_ml::BurnBatchGroup<B>::precision(&self) -> u8
+pub const fn j2k_ml::BurnBatchGroup<B>::signed(&self) -> bool
+pub const fn j2k_ml::BurnBatchGroup<B>::tensor(&self) -> &j2k_ml::BurnBatchTensor<B>
+pub fn j2k_ml::BurnBatchDecode<B>::errors(&self) -> &[j2k::owned_batch::errors::IndexedBatchError]
+pub fn j2k_ml::BurnBatchDecode<B>::group_errors(&self) -> &[j2k_ml::BurnBatchGroupError]
+pub fn j2k_ml::BurnBatchDecode<B>::groups(&self) -> &[j2k_ml::BurnBatchGroup<B>]
+pub fn j2k_ml::BurnBatchDecode<B>::into_groups(self) -> alloc::vec::Vec<j2k_ml::BurnBatchGroup<B>>
+pub fn j2k_ml::BurnBatchGroup<B>::decoded_rects(&self) -> &[j2k_core::types::Rect]
+pub fn j2k_ml::BurnBatchGroup<B>::into_tensor(self) -> j2k_ml::BurnBatchTensor<B>
+pub fn j2k_ml::BurnBatchGroup<B>::source_indices(&self) -> &[usize]
+pub fn j2k_ml::BurnBatchGroup<B>::warnings(&self) -> &[alloc::vec::Vec<j2k::decode::J2kDecodeWarning>]
 ```
 
 ## `j2k-cuda-build-support`

@@ -141,3 +141,88 @@ pub struct BurnBatchDecode<B: Backend> {
     /// Homogeneous groups discarded after adapter submission or completion failed.
     pub group_errors: Vec<BurnBatchGroupError>,
 }
+
+impl<B: Backend> BurnBatchGroup<B> {
+    /// Borrow the exact integer tensor.
+    #[must_use]
+    pub const fn tensor(&self) -> &BurnBatchTensor<B> {
+        &self.tensor
+    }
+    /// Consume the group and return its exact integer tensor.
+    #[must_use]
+    pub fn into_tensor(self) -> BurnBatchTensor<B> {
+        self.tensor
+    }
+    /// Returned width and height.
+    #[must_use]
+    pub const fn dimensions(&self) -> (u32, u32) {
+        self.info.dimensions
+    }
+    /// Dense tensor ordering.
+    #[must_use]
+    pub const fn layout(&self) -> j2k::BatchLayout {
+        self.info.layout
+    }
+    /// Returned channel interpretation.
+    #[must_use]
+    pub const fn color(&self) -> j2k::BatchColor {
+        self.info.color
+    }
+    /// Returned alpha interpretation.
+    #[must_use]
+    pub const fn alpha(&self) -> j2k::BatchAlpha {
+        self.info.alpha
+    }
+    /// Significant sample precision.
+    #[must_use]
+    pub const fn precision(&self) -> u8 {
+        self.info.precision
+    }
+    /// Whether returned samples are signed.
+    #[must_use]
+    pub const fn signed(&self) -> bool {
+        self.info.signed
+    }
+    /// Original input indices, aligned with rows.
+    #[must_use]
+    pub fn source_indices(&self) -> &[usize] {
+        &self.source_indices
+    }
+    /// Actual decoded rectangles, aligned with rows.
+    #[must_use]
+    pub fn decoded_rects(&self) -> &[Rect] {
+        &self.decoded_rects
+    }
+    /// Per-row JPEG 2000 diagnostics.
+    #[must_use]
+    pub fn warnings(&self) -> &[Vec<J2kDecodeWarning>] {
+        &self.warnings
+    }
+    /// Detailed JPEG 2000 metadata.
+    #[must_use]
+    pub const fn j2k_info(&self) -> Option<&BatchGroupInfo> {
+        Some(&self.info)
+    }
+}
+impl<B: Backend> BurnBatchDecode<B> {
+    /// Successful groups.
+    #[must_use]
+    pub fn groups(&self) -> &[BurnBatchGroup<B>] {
+        &self.groups
+    }
+    /// Indexed per-input failures.
+    #[must_use]
+    pub fn errors(&self) -> &[IndexedBatchError] {
+        &self.errors
+    }
+    /// Discarded groups.
+    #[must_use]
+    pub fn group_errors(&self) -> &[BurnBatchGroupError] {
+        &self.group_errors
+    }
+    /// Consume the result into its successful groups.
+    #[must_use]
+    pub fn into_groups(self) -> Vec<BurnBatchGroup<B>> {
+        self.groups
+    }
+}

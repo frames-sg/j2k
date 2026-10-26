@@ -67,11 +67,16 @@ fn independent_openjph_signed_rgb_is_exact_in_burn_for_all_requests_and_layouts(
                 let output = decoder
                     .decode_prepared(&prepared)
                     .unwrap_or_else(|error| panic!("{} decode: {error}", fixture.name));
-                assert!(output.errors.is_empty(), "{}", fixture.name);
-                assert!(output.group_errors.is_empty(), "{}", fixture.name);
-                assert_eq!(output.groups.len(), 1, "{}", fixture.name);
-                assert_eq!(output.groups[0].source_indices, [0, 1]);
-                let BurnBatchTensor::I16(tensor) = output.groups.into_iter().next().unwrap().tensor
+                assert!(output.errors().is_empty(), "{}", fixture.name);
+                assert!(output.group_errors().is_empty(), "{}", fixture.name);
+                assert_eq!(output.groups().len(), 1, "{}", fixture.name);
+                assert_eq!(output.groups()[0].source_indices(), [0, 1]);
+                let BurnBatchTensor::I16(tensor) = output
+                    .into_groups()
+                    .into_iter()
+                    .next()
+                    .unwrap()
+                    .into_tensor()
                 else {
                     panic!("{} must produce an I16 Burn tensor", fixture.name)
                 };
@@ -126,11 +131,11 @@ fn staged_metal_burn_rgba_is_exact_for_native_types_and_layouts() {
             let output = decoder
                 .decode_prepared(&prepared)
                 .expect("staged RGBA Burn decode");
-            assert!(output.errors.is_empty(), "{profile:?} {layout:?}");
-            assert!(output.group_errors.is_empty(), "{profile:?} {layout:?}");
-            assert_eq!(output.groups.len(), 1, "{profile:?} {layout:?}");
-            let group = output.groups.into_iter().next().expect("RGBA group");
-            assert_eq!(group.source_indices, [0, 1]);
+            assert!(output.errors().is_empty(), "{profile:?} {layout:?}");
+            assert!(output.group_errors().is_empty(), "{profile:?} {layout:?}");
+            assert_eq!(output.groups().len(), 1, "{profile:?} {layout:?}");
+            let group = output.into_groups().into_iter().next().expect("RGBA group");
+            assert_eq!(group.source_indices(), [0, 1]);
             let shape = match layout {
                 BatchLayout::Nhwc => [
                     2,
@@ -146,7 +151,7 @@ fn staged_metal_burn_rgba_is_exact_for_native_types_and_layouts() {
                 ],
                 _ => unreachable!(),
             };
-            match (expected.groups()[0].samples(), group.tensor) {
+            match (expected.groups()[0].samples(), group.into_tensor()) {
                 (CpuBatchSamples::U8(expected), BurnBatchTensor::U8(tensor)) => {
                     assert_eq!(tensor.dtype(), DType::U8);
                     assert_eq!(tensor.dims(), shape);
@@ -201,7 +206,13 @@ fn staged_metal_batch_preserves_native_u16_samples() {
         .decode(vec![EncodedImage::full(Arc::from(encoded))])
         .expect("staged Metal U16 decode");
 
-    let BurnBatchTensor::U16(tensor) = output.groups.into_iter().next().unwrap().tensor else {
+    let BurnBatchTensor::U16(tensor) = output
+        .into_groups()
+        .into_iter()
+        .next()
+        .unwrap()
+        .into_tensor()
+    else {
         panic!("expected native U16 Metal tensor")
     };
     assert_eq!(tensor.dtype(), DType::U16);
@@ -232,7 +243,13 @@ fn staged_metal_batch_preserves_native_signed_i16_samples() {
     let output = decoder
         .decode(vec![EncodedImage::full(encoded)])
         .expect("staged Metal signed Gray12 decode");
-    let BurnBatchTensor::I16(tensor) = output.groups.into_iter().next().unwrap().tensor else {
+    let BurnBatchTensor::I16(tensor) = output
+        .into_groups()
+        .into_iter()
+        .next()
+        .unwrap()
+        .into_tensor()
+    else {
         panic!("expected native I16 Metal tensor")
     };
     assert_eq!(tensor.dtype(), DType::I16);

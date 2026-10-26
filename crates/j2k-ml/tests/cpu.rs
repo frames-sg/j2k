@@ -36,14 +36,14 @@ fn raw_j2k_jp2_raw_htj2k_and_jph_stay_exact_u8_batches() {
     let mut decoder = CpuBurnDecoder::<Flex>::new(FlexDevice, BatchDecodeOptions::default());
     let output = decoder.decode(inputs).expect("decode wrapper matrix");
 
-    assert_eq!(output.errors, [] as [j2k::IndexedBatchError; 0]);
+    assert!(output.errors().is_empty());
     assert_eq!(
-        output.groups.len(),
+        output.groups().len(),
         4,
         "transfer syntax remains grouping metadata"
     );
-    for group in output.groups {
-        let BurnBatchTensor::U8(tensor) = group.tensor else {
+    for group in output.into_groups() {
+        let BurnBatchTensor::U8(tensor) = group.into_tensor() else {
             panic!("expected U8 group")
         };
         assert_eq!(tensor.dims(), [1, 1, 3, 4]);
@@ -71,9 +71,9 @@ fn classic_and_ht_wrappers_preserve_u16_values_and_dtype() {
     let mut decoder = CpuBurnDecoder::<Flex>::new(FlexDevice, BatchDecodeOptions::default());
     let output = decoder.decode(inputs).expect("decode U16 wrapper matrix");
 
-    assert_eq!(output.errors, [] as [j2k::IndexedBatchError; 0]);
-    for group in output.groups {
-        let BurnBatchTensor::U16(tensor) = group.tensor else {
+    assert!(output.errors().is_empty());
+    for group in output.into_groups() {
+        let BurnBatchTensor::U16(tensor) = group.into_tensor() else {
             panic!("expected U16 group")
         };
         assert_eq!(tensor.dtype(), DType::U16);
@@ -102,7 +102,13 @@ fn codec_layout_controls_nchw_and_nhwc_without_adapter_repacking() {
                 EncodedImage::full(Arc::from(encoded.clone())),
             ])
             .expect("decode RGB batch");
-        let BurnBatchTensor::U8(tensor) = output.groups.into_iter().next().unwrap().tensor else {
+        let BurnBatchTensor::U8(tensor) = output
+            .into_groups()
+            .into_iter()
+            .next()
+            .unwrap()
+            .into_tensor()
+        else {
             panic!("expected RGB U8 group")
         };
         assert_eq!(tensor.dims(), expected_shape);
@@ -169,11 +175,11 @@ fn roi_reduction_and_every_supported_reduction_report_dense_shapes() {
             .decode(vec![EncodedImage::new(Arc::clone(&encoded), request)])
             .expect("decode requested geometry");
         let tensor = output
-            .groups
+            .into_groups()
             .into_iter()
             .next()
             .unwrap()
-            .tensor
+            .into_tensor()
             .into_tensor();
         assert_eq!(tensor.dims(), expected_shape, "{request:?}");
     }
@@ -183,8 +189,8 @@ fn roi_reduction_and_every_supported_reduction_report_dense_shapes() {
 fn empty_batch_is_a_success_and_corrupt_inputs_are_indexed() {
     let mut decoder = CpuBurnDecoder::<Flex>::new(FlexDevice, BatchDecodeOptions::default());
     let empty = decoder.decode(Vec::new()).expect("empty batch");
-    assert!(empty.groups.is_empty());
-    assert_eq!(empty.errors, [] as [j2k::IndexedBatchError; 0]);
+    assert!(empty.groups().is_empty());
+    assert!(empty.errors().is_empty());
 
     let valid = Arc::<[u8]>::from(classic_j2k_gray8_fixture(2, 2));
     let output = decoder
@@ -193,9 +199,9 @@ fn empty_batch_is_a_success_and_corrupt_inputs_are_indexed() {
             EncodedImage::full(Arc::from(*b"corrupt")),
         ])
         .expect("valid groups survive indexed preflight errors");
-    assert_eq!(output.groups.len(), 1);
-    assert_eq!(output.errors.len(), 1);
-    assert_eq!(output.errors[0].index, 1);
+    assert_eq!(output.groups().len(), 1);
+    assert_eq!(output.errors().len(), 1);
+    assert_eq!(output.errors()[0].index, 1);
 }
 
 #[test]

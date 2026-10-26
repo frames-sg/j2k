@@ -380,15 +380,19 @@ fn require_codec_success(decoded: CudaBatchDecodeResult) -> CudaBatchDecodeResul
 
 fn normalize_burn_batch(decoded: BurnBatchDecode<Cuda>) -> Vec<burn_core::tensor::Tensor<Cuda, 4>> {
     decoded
-        .groups
+        .into_groups()
         .into_iter()
         .map(|group| {
-            let magnitude_bits = if group.info.signed {
-                group.info.precision.saturating_sub(1)
+            let magnitude_bits = if group.j2k_info().expect("JPEG 2000 metadata").signed {
+                group
+                    .j2k_info()
+                    .expect("JPEG 2000 metadata")
+                    .precision
+                    .saturating_sub(1)
             } else {
-                group.info.precision
+                group.j2k_info().expect("JPEG 2000 metadata").precision
             };
-            let scale = if group.info.signed {
+            let scale = if group.j2k_info().expect("JPEG 2000 metadata").signed {
                 1_u32 << magnitude_bits
             } else {
                 (1_u32 << magnitude_bits) - 1
@@ -396,7 +400,11 @@ fn normalize_burn_batch(decoded: BurnBatchDecode<Cuda>) -> Vec<burn_core::tensor
             let divisor = f32::from(
                 u16::try_from(scale).expect("benchmark native sample precision fits u16"),
             );
-            group.tensor.into_tensor().float().div_scalar(divisor)
+            group
+                .into_tensor()
+                .into_tensor()
+                .float()
+                .div_scalar(divisor)
         })
         .collect()
 }

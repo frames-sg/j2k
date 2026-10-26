@@ -103,7 +103,7 @@ fn shared_burn_result_validation_accepts_a_complete_group() {
         .expect("decode benchmark input through CPU Burn adapter");
 
     let completed = decode_case::require_burn_success(completed);
-    assert_eq!(completed.groups.len(), 1);
+    assert_eq!(completed.groups().len(), 1);
 }
 
 #[test]
