@@ -32,7 +32,15 @@ and [changelog](../CHANGELOG.md) for migration instructions.
 `0.8.0` could only be compared against `v0.7.5`, and `0.9.0` only against
 `v0.8.1`. `0.10.0` was compared directly with `v0.9.0` under a one-time
 exception for the crate split, which is now disabled. The current semver
-baseline is `v0.11.3`.
+baseline is `v0.12.0`. The `0.13.0` candidate is reviewed in the
+[0.13.0 API review](../xtask/release-evidence/public-api/public-api-review-0.13.0.yml).
+The review includes source migrations for exhaustive native encode option
+literals, JPEG enum matches, and the hidden quantization helper arguments.
+`J2kDirectGrayscalePlan` adds the required `signed` field, set from the source
+component signedness. `BatchDecodeOptions`, `j2k_jpeg::ColorTransform` and the
+Burn tensor and error enums become non-exhaustive, the JPEG decode outcomes add
+`recovered`, Burn batch results move behind accessors, and JPEG decode is strict
+by default.
 
 ## Stability tiers
 

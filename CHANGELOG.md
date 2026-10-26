@@ -3,7 +3,35 @@
 This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
-## [Unreleased]
+## [0.13.0] - 2026-10-26
+
+- Migration from 0.12.0: exhaustive native `EncodeOptions` literals must add
+  `irreversible_quantization_profile: None` or use `Default` with struct update
+  syntax. Exhaustive `JpegEncodeError` matches must handle the six new encode
+  errors, and exhaustive `JpegResolvedDecodePath` matches must handle
+  `MetalHybrid`. The hidden `irreversible_quantization_step_for_subband` helper
+  requires the sub-band level and total decomposition depth as its final two
+  arguments. The one-level transcode path passes `1, 1`. See the
+  [0.13.0 API review](xtask/release-evidence/public-api/public-api-review-0.13.0.yml)
+  for the full compatibility and behavior review.
+- Migration from 0.12.0: `J2kDirectGrayscalePlan` adds the required `signed`
+  field. Existing struct literals must set it from the source component
+  signedness. Use `signed: false` for unsigned inputs and `signed: true` for
+  signed inputs, including component plans nested in colour and RGBA plans.
+  Update exhaustive field patterns to bind `signed` or include a rest pattern.
+  The output pixel format does not determine source signedness.
+- Migration from 0.12.0: `BatchDecodeOptions` is `#[non_exhaustive]`; build it
+  from `BatchDecodeOptions::default()` and assign `layout`, `settings` and
+  `workers`. `BatchLayout` is defined in `j2k-core` and still re-exported by
+  `j2k`. `j2k_jpeg::ColorTransform`, `BurnBatchTensor` and `BurnDecodeError`
+  are `#[non_exhaustive]`, so exhaustive matches need a wildcard arm.
+  `j2k_jpeg::DecodeOutcome` and `DecodedTile` add `recovered`; literals set it
+  to `false`. `BurnBatchDecode` and `BurnBatchGroup` fields are private; use
+  their accessors, `into_groups`, `into_tensor` and `j2k_info`. JPEG decode is
+  strict by default and returns `JpegError::RecoveryRequired` for damaged
+  input; pass `DecodeOptions::with_strict(false)` to accept supported
+  recovery. The `cuda-oxide-j2k-ml` feature of `j2k-cuda-j2k-engine` is
+  removed.
 
 - CPU byte and bits-per-pixel rate searches return the last probe's
   codestream when that probe is the selected scale, instead of encoding the

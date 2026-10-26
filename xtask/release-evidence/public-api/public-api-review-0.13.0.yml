@@ -1,0 +1,300 @@
+version: 3
+baseline_tag: v0.12.0
+baseline_version: 0.12.0
+candidate_version: "0.13.0"
+break_ledger:
+  - id: jpeg-huffman-const
+    kind: "source"
+    packages: ["j2k-codec-math"]
+    removed_items: [{"package": "j2k-codec-math", "item": "pub fn j2k_codec_math::jpeg::derive_canonical_huffman(&[u8; 16], usize) -> core::result::Result<j2k_codec_math::jpeg::CanonicalHuffmanDerivation, j2k_codec_math::jpeg::CanonicalHuffmanError>"}]
+    summary: "The Huffman derivation function is now const; the inventory replaces its non-const spelling with the otherwise identical const signature."
+    migration: "Existing runtime calls remain source compatible. The same function can now also be called in const contexts; no caller migration is required."
+  - id: native-encode-profile-field
+    kind: "behavior"
+    packages: ["j2k-native"]
+    removed_items: []
+    summary: "Source-breaking field addition: exhaustive native EncodeOptions literals now require irreversible_quantization_profile. The ordinary inventory records an addition and no removal."
+    migration: "Add irreversible_quantization_profile: None to existing exhaustive EncodeOptions literals, or use struct update syntax with Default. Existing facade builders retain the no-profile default."
+  - id: native-quantization-step-levels
+    kind: "behavior"
+    packages: ["j2k-native", "j2k-transcode"]
+    removed_items: []
+    summary: "Source-breaking hidden signature change: irreversible_quantization_step_for_subband now takes the sub-band level and total decomposition depth. The changed signature is in the hidden inventory."
+    migration: "Pass the sub-band level and total decomposition depth as the final two arguments. The one-level JPEG-to-HTJ2K code-block path passes 1, 1 to match its QCD."
+  - id: jpeg-exhaustive-variants
+    kind: "behavior"
+    packages: ["j2k-jpeg"]
+    removed_items: []
+    summary: "Source-breaking enum additions: JpegEncodeError gains six variants and JpegResolvedDecodePath gains MetalHybrid. The ordinary inventory records additions and no removals."
+    migration: "Handle RestartIntervalTooLarge, UnsupportedPixelFormat, UnsupportedPrecision, InvalidPredictor, InvalidPointTransform, and SampleOutOfRange in exhaustive JpegEncodeError matches. Add a MetalHybrid arm to exhaustive JpegResolvedDecodePath matches."
+  - id: irreversible-97-default-steps
+    kind: "behavior"
+    packages: ["j2k", "j2k-native", "j2k-transcode"]
+    removed_items: []
+    summary: "Default irreversible 9/7 steps are weighted by synthesis norm, so lossy codestream bytes and fixed-scale quality differ from 0.12.0. Rate-targeted encoding resolves its global scale again."
+    migration: "Revalidate stored lossy golden outputs, fixed-scale quality settings, and rate or PSNR expectations against 0.13.0. Lossless references remain unchanged. Do not assume fixed-scale lossy output identity with 0.12.0."
+  - id: reduced-decode-rejection
+    kind: "behavior"
+    packages: ["j2k", "j2k-native"]
+    removed_items: []
+    summary: "Reduced decode requests beyond the main or tile resolution ladder return an error instead of silently clamping. Owned batches reject invalid requests during preparation."
+    migration: "Select a reduction level available in every relevant tile and handle input-indexed preparation errors for owned batches."
+  - id: sample-conversion-and-quantization-bounds
+    kind: "behavior"
+    packages: ["j2k", "j2k-native", "j2k-cuda", "j2k-metal"]
+    removed_items: []
+    summary: "Quantization and output-conversion fixes resolve both weighted-step bounds, effective edge-tile depth, CUDA precision and alpha conversion, and signed narrow-source Metal Gray16 widening."
+    migration: "Use the resolved edge-tile geometry and valid quantization profile bounds. Revalidate affected CUDA requested formats and Metal signed Gray16 outputs against the CPU sample contract rather than relying on earlier incorrect conversions."
+  - id: cuda-batch-chunk-completion
+    kind: "behavior"
+    packages: ["j2k-cuda", "j2k-ml"]
+    removed_items: []
+    summary: "Large CUDA RGB and RGBA batches use groups of 32 and wait for completion before reusing scratch for every group except the last. CudaDirectBurnDecoder waits before returning its tensor."
+    migration: "Account for completion waits when integrating asynchronous batch pipelines. Keep external destination ownership valid through completion and use the documented returned tensor readiness contract."
+  - id: jpeg-reference-conversion
+    kind: "behavior"
+    packages: ["j2k-jpeg", "j2k-jpeg-metal"]
+    removed_items: []
+    summary: "JPEG YCCK colors, lossless sample replication, and color-space inference follow the committed external references. Explicit Metal requests can use the new hybrid path."
+    migration: "Revalidate affected JPEG color and native-sample expectations against the corrected reference outputs. Handle the MetalHybrid resolved path when selecting an explicit Metal backend."
+  - id: direct-grayscale-plan-signed
+    kind: "behavior"
+    packages: ["j2k-types"]
+    removed_items: []
+    summary: "Source-breaking field addition: J2kDirectGrayscalePlan now requires signed. Existing exhaustive struct literals and field patterns must account for it. The ordinary inventory records an addition and no removal."
+    migration: "Set signed from the source component signedness when constructing each plan. Use signed: false for existing unsigned inputs and signed: true for signed inputs. Update component plans nested in color and RGBA plans, and include signed or use .. in exhaustive field patterns. Do not infer signedness from the requested output pixel format."
+  - id: gpu-signed-sample-conversion
+    kind: "behavior"
+    packages: ["j2k-cuda", "j2k-metal"]
+    removed_items: []
+    summary: "CUDA and Metal device decodes of signed grayscale and colour sources follow the CPU sample conversion, including prepared, referenced, repeated and distinct batches. Signed MCT takes no unsigned level shift, native batches preserve sample values and 16-bit outputs keep two's-complement samples, so device output for signed sources changes to equal the CPU output. Mixed colour signedness is rejected."
+    migration: "Revalidate stored GPU outputs of signed sources against the CPU decode, which is unchanged. Unsigned sources decode to the same values as before."
+  - id: cuda-engine-store-and-quantize-contracts
+    kind: "behavior"
+    packages: ["j2k-cuda-j2k-engine"]
+    removed_items: []
+    summary: "Source-breaking rustdoc-hidden changes: the CUDA store jobs and targets gain signed and native_samples fields, and j2k_quantize_subband_region_resident is replaced by region-slice quantization that takes the caller's device buffer pool. The changes are recorded in the hidden inventory."
+    migration: "Set signed to zero for unsigned sources or one for signed sources in CudaJ2kStoreGray16Job and CudaJ2kStoreRgb16Job literals, and set native_samples to true for native sample preservation or false for requested-format conversion in the Gray8 and Gray16 targets, or use struct update syntax with a matching value. Replace single-region quantization calls with j2k_quantize_subband_regions_resident, passing the regions in coefficient order and the context's buffer pool, or j2k_quantize_subband_regions_resident_into with a checked coefficient offset into a destination kept alive until encoding completes."
+  - id: removed-cuda-oxide-j2k-ml
+    kind: "behavior"
+    packages: ["j2k-cuda-j2k-engine"]
+    removed_items: []
+    summary: "Removes the unused cuda-oxide-j2k-ml Cargo feature of j2k-cuda-j2k-engine with its build plumbing, the rustdoc-hidden CudaJ2kMlKernelConfig, CudaJ2kMlLayout, CudaJ2kMlNormalization and CudaJ2kMlSample types and J2kCudaEngine::j2k_ml_convert_into_external. No workspace adapter called the kernel."
+    migration: "Remove the cuda-oxide-j2k-ml feature from dependent manifests. Decode with CudaBatchDecoder or the Burn CUDA adapters, then cast, convert layout and normalize in the consuming framework. There is no drop-in low-level replacement."
+  - id: shared-batch-layout
+    kind: "source"
+    packages: ["j2k"]
+    removed_items: [{"package": "j2k", "item": "#[non_exhaustive] pub enum j2k::BatchLayout"}, {"package": "j2k", "item": "pub j2k::BatchDecodeOptions::layout: j2k::BatchLayout"}, {"package": "j2k", "item": "pub j2k::BatchGroupInfo::layout: j2k::BatchLayout"}, {"package": "j2k", "item": "pub j2k::BatchLayout::Nchw"}, {"package": "j2k", "item": "pub j2k::BatchLayout::Nhwc"}]
+    summary: "BatchLayout moves to j2k-core with Nchw, Nhwc, its derives, its default and its non_exhaustive status retained. j2k re-exports it at the root, so the inventory replaces the j2k defining path with the j2k-core one."
+    migration: "Existing j2k::BatchLayout imports and field uses continue to work through the root re-export. Code that names the type through j2k-core needs j2k-core 0.13.0 alongside j2k 0.13.0; keep the workspace crate versions aligned."
+  - id: extensible-batch-options
+    kind: "source"
+    packages: ["j2k"]
+    removed_items: [{"package": "j2k", "item": "pub struct j2k::BatchDecodeOptions"}]
+    summary: "BatchDecodeOptions becomes non_exhaustive with its layout, settings and workers fields retained, so future session options can be added without another break."
+    migration: "Replace external struct literals and functional record updates with BatchDecodeOptions::default followed by assignments to layout, settings and workers. Field reads are unchanged; exhaustive destructuring patterns must add a rest pattern."
+  - id: extensible-jpeg-color-transform
+    kind: "source"
+    packages: ["j2k-jpeg"]
+    removed_items: [{"package": "j2k-jpeg", "item": "pub enum j2k_jpeg::ColorTransform"}]
+    summary: "ColorTransform becomes non_exhaustive with Auto, ForceRgb and ForceYCbCr retained."
+    migration: "Add a wildcard arm to exhaustive matches outside j2k-jpeg and reject unsupported future interpretations explicitly rather than guessing one. Constructing the existing variants is unchanged."
+  - id: jpeg-outcome-recovery-field
+    kind: "behavior"
+    packages: ["j2k-jpeg"]
+    removed_items: []
+    summary: "Source-breaking field addition: DecodeOutcome and DecodedTile gain recovered: bool, which reports a supported lenient recovery. The ordinary inventory records additions and no removal."
+    migration: "Add recovered: false when constructing a normal complete DecodeOutcome or DecodedTile outside j2k-jpeg, or take the value from the codec outcome. Existing field readers keep their behavior."
+  - id: jpeg-strict-completion
+    kind: "behavior"
+    packages: ["j2k-jpeg", "j2k-jpeg-metal", "j2k-jpeg-cuda", "j2k-transcode", "j2k-transcode-metal", "j2k-transcode-cuda", "j2k-ml"]
+    removed_items: []
+    summary: "JPEG decode is strict by default and verifies pixel integrity before reporting success. A progressive stream ending without EOI is rejected unless every coefficient band of every component reached its final approximation; recoverable damage returns RecoveryRequired with the typed warning. Accepted intact inputs decode to the same pixels. The JPEG Metal and CUDA adapters, transcode, ML and Python paths inherit the stricter default."
+    migration: "Treat RecoveryRequired as a rejected image. To accept supported recovery, pass DecodeOptions::with_strict(false) where an API accepts DecodeOptions and inspect recovered and the warnings; never reuse caller-owned output after an error. Coefficient extraction and the transcode APIs have no lenient override and need complete inputs. Cosmetic metadata warnings such as a missing EOI after verified completion remain warnings."
+  - id: jpeg-required-interpretation
+    kind: "behavior"
+    packages: ["j2k-jpeg", "j2k-jpeg-metal", "j2k-jpeg-cuda", "j2k-transcode", "j2k-transcode-metal", "j2k-transcode-cuda", "j2k-ml"]
+    removed_items: []
+    summary: "An ambiguous Adobe APP14 colour interpretation is an AmbiguousColorTransform error in both strict and lenient modes unless an applicable explicit colour hint resolves it. Precision clamping and table-cache mismatches are rejected in both modes."
+    migration: "Supply ColorTransform::ForceRgb or ForceYCbCr for three-component frames whose interpretation the source system knows, or reject the image. Leniency does not permit precision loss or unverified table-cache output."
+  - id: common-burn-result
+    kind: "source"
+    packages: ["j2k-ml"]
+    removed_items: [{"package": "j2k-ml", "item": "pub j2k_ml::BurnBatchDecode::errors: alloc::vec::Vec<j2k::owned_batch::errors::IndexedBatchError>"}, {"package": "j2k-ml", "item": "pub j2k_ml::BurnBatchDecode::group_errors: alloc::vec::Vec<j2k_ml::BurnBatchGroupError>"}, {"package": "j2k-ml", "item": "pub j2k_ml::BurnBatchDecode::groups: alloc::vec::Vec<j2k_ml::BurnBatchGroup<B>>"}, {"package": "j2k-ml", "item": "pub j2k_ml::BurnBatchGroup::decoded_rects: alloc::vec::Vec<j2k_core::types::Rect>"}, {"package": "j2k-ml", "item": "pub j2k_ml::BurnBatchGroup::info: j2k::owned_batch::contracts::BatchGroupInfo"}, {"package": "j2k-ml", "item": "pub j2k_ml::BurnBatchGroup::source_indices: alloc::vec::Vec<usize>"}, {"package": "j2k-ml", "item": "pub j2k_ml::BurnBatchGroup::tensor: j2k_ml::BurnBatchTensor<B>"}, {"package": "j2k-ml", "item": "pub j2k_ml::BurnBatchGroup::warnings: alloc::vec::Vec<alloc::vec::Vec<j2k::decode::J2kDecodeWarning>>"}]
+    summary: "BurnBatchDecode and BurnBatchGroup keep their data behind accessors so one result model serves JPEG and JPEG 2000 rows. Errors become TileBatchError<ImageDecodeError> and warnings become codec-tagged ImageDecodeWarning values."
+    migration: "Replace field reads with the groups, errors and group_errors accessors, consume groups with into_groups and tensors with into_tensor, read dimensions, layout, color, alpha, precision, signed, source_indices, decoded_rects, warnings and recovered through accessors, and use j2k_info for the former info field."
+  - id: extensible-burn-contract
+    kind: "source"
+    packages: ["j2k-ml"]
+    removed_items: [{"package": "j2k-ml", "item": "pub enum j2k_ml::BurnBatchTensor<B: burn_backend::backend::base::Backend>"}, {"package": "j2k-ml", "item": "pub enum j2k_ml::BurnDecodeError"}]
+    summary: "BurnBatchTensor and BurnDecodeError become non_exhaustive with all current variants retained."
+    migration: "Add a wildcard arm to exhaustive matches outside j2k-ml, normally returning an unsupported-contract error."
+reviews:
+  j2k-core:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:c1c2e700dc20a131"
+    hidden_count: 226
+    hidden_fingerprint: "fnv1a64:487523cc4e7f504e"
+    rationale: "Compared the ordinary API with v0.12.0; existing signatures are unchanged. Adds the non_exhaustive BatchLayout with Nchw and Nhwc, moved from j2k so the JPEG and ML batch paths share it. Nchw stays the default, and the Debug, Clone, Copy, Default, PartialEq, Eq and Hash derives are retained. j2k keeps its root re-export."
+    hidden_rationale: "Adds host_physical_memory_bytes to the j2k-core implementation inventory to bound host allocations. It returns None when the platform cannot report physical memory. The retained allocation and planning contracts already shipped in 0.12.0."
+  j2k-profile:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 117
+    hidden_fingerprint: "fnv1a64:a1546f56ae38f2e3"
+    rationale: "Compared the ordinary API with v0.12.0; existing signatures are unchanged."
+    hidden_rationale: "Compared the hidden inventory with v0.12.0; retained implementation adapters support this package's public entry points."
+  j2k-types:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:5d2f27924d0d36ee"
+    hidden_count: 111
+    hidden_fingerprint: "fnv1a64:6eaf63f068893d17"
+    rationale: "Compared the ordinary API with v0.12.0; existing signatures are unchanged. Adds CPU wavelet selection and output types for tiles, components, resolutions, and orientations. Reversible samples are I64 and irreversible samples are dequantized F32; geometry, precision, sampling, transform, and quantization metadata travel with the bands. Adds defaulted encode_forward_dwt53_at_origin and encode_forward_dwt97_at_origin hooks. Existing job structs and zero-origin hooks are unchanged; default implementations call legacy hooks only for equivalent phases and decline other phases. Adds the defaulted declines_every_stage method: true permits native encode to skip the remaining per-stage hooks of the current encode, asked after begin_encode and after the whole-tile hooks decline, along with the inputs only those hooks read; the default false keeps existing accelerators on their current path. Adds J2kDirectGrayscalePlan::signed so retained component plans carry source signedness. This source-breaking field addition is recorded in the direct-grayscale-plan-signed ledger entry; exhaustive struct literals must set signed from the source component or use struct update syntax with an existing plan that has the correct signedness."
+    hidden_rationale: "Compared the hidden inventory with v0.12.0; retained implementation adapters support this package's public entry points. Adds subband-origin, phase-aware dimension, and zero-anchored grid helpers plus default accelerator implementations. Also records the already-merged tiled_decomposition_levels helper; it retains the smallest-edge depth policy. CpuOnlyJ2kEncodeStageAccelerator overrides declines_every_stage to return true, since all of its hooks decline."
+  j2k-codec-math:
+    removed_fingerprint: "fnv1a64:594402a62d9308ce"
+    added_fingerprint: "fnv1a64:25ef9c0177e459a5"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Adds reversible_midpoint_bit and shared JPEG lossless predictors and difference-category coding. derive_canonical_huffman becomes const without changing its arguments, result, or runtime behavior; callers need no migration. The HT scratch bounds and DWT tiling constants already shipped in 0.12.0."
+    hidden_rationale: "Compared the hidden inventory with v0.12.0; retained implementation adapters support this package's public entry points."
+  j2k-cuda-build-support:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Compared the ordinary API with v0.12.0; existing signatures are unchanged."
+    hidden_rationale: "Compared the hidden inventory with v0.12.0; retained implementation adapters support this package's public entry points."
+  j2k-cuda-runtime:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 255
+    hidden_fingerprint: "fnv1a64:57c61a4568990ce6"
+    rationale: "Compared the ordinary API with v0.12.0; existing signatures are unchanged."
+    hidden_rationale: "Adds CudaDeviceBuffer::destination_view_mut and CudaExternalDeviceBufferViewMut::sub_view_mut, which borrow an owned allocation or a sub-range of a view as an exclusive destination view. Existing upload signatures are unchanged from v0.12.0."
+  j2k-cuda-j2k-engine:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 692
+    hidden_fingerprint: "fnv1a64:684fbcddde38e1f1"
+    rationale: "Compared the ordinary API with v0.12.0; existing signatures are unchanged."
+    hidden_rationale: "Adds origin-aware 5/3 and 9/7 DWT methods to the j2k-cuda-j2k-engine implementation inventory. Existing methods still use origin zero and retain their signatures. Payload-slice uploads and cleanup retained-byte arguments already shipped in 0.12.0. Adds signed to CudaJ2kStoreGray16Job and CudaJ2kStoreRgb16Job, and native_samples to CudaJ2kStoreGray8Target and CudaJ2kStoreGray16Target, so device stores follow CPU sample conversion for signed sources. j2k_quantize_subband_region_resident is replaced by j2k_quantize_subband_regions_resident, which takes an ordered slice of sub-band regions and the caller's device buffer pool, and j2k_quantize_subband_regions_resident_into, which writes the regions into a checked coefficient prefix of an existing buffer; resident coefficient results expose into_buffer for recycling. Removes the unused CudaJ2kMl conversion types and J2kCudaEngine::j2k_ml_convert_into_external together with the cuda-oxide-j2k-ml feature. The source-breaking hidden changes are recorded in the cuda-engine-store-and-quantize-contracts and removed-cuda-oxide-j2k-ml ledger entries."
+  j2k-cuda-jpeg-engine:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:103e0c647d4cb39d"
+    hidden_count: 205
+    hidden_fingerprint: "fnv1a64:ad37da6966da1cfd"
+    rationale: "Adds the lossless category count and encode_lossless_with_external_live entry point; existing engine calls keep their signatures."
+    hidden_rationale: "Adds the C-layout lossless parameter block, borrowed input job, and packed-stream or sample-range outcome. The new path validates buffer ranges, alignment, geometry, and retained host allocation before launching CUDA-Oxide kernels. The JpegCudaEngine impl marker moves from the hidden inventory to the ordinary inventory when the lossless method becomes public; this does not remove the engine."
+  j2k-cuda-transcode-engine:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 84
+    hidden_fingerprint: "fnv1a64:b2fcaa9b0171aba7"
+    rationale: "Compared the ordinary API with v0.12.0; existing signatures are unchanged."
+    hidden_rationale: "Compared the hidden inventory with v0.12.0; retained implementation adapters support this package's public entry points."
+  j2k-metal-support:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:cb0fe39460064a9f"
+    hidden_count: 11
+    hidden_fingerprint: "fnv1a64:02139606f1202938"
+    rationale: "Compared the ordinary API with v0.12.0; existing signatures are unchanged. Also records the already-merged checked_shared_heap and checked_heap_shared_buffer allocation helpers. They preserve typed allocation failures and introduce no changes to existing signatures. Adds unsafe with_checked_buffer_slice_mut for bounded CPU writes into shared Metal storage. Its safety contract requires exclusive access with no overlapping GPU commands; the mutable view is limited to the callback."
+    hidden_rationale: "Compared the hidden inventory with v0.12.0; retained implementation adapters support this package's public entry points."
+  j2k-mpsgraph-support:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Compared the ordinary API with v0.12.0; existing signatures are unchanged."
+    hidden_rationale: "Compared the hidden inventory with v0.12.0; retained implementation adapters support this package's public entry points."
+  j2k-native:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:7debc570e375354a"
+    hidden_count: 579
+    hidden_fingerprint: "fnv1a64:6ac1e6fb537f7bc6"
+    rationale: "Compared the ordinary API with v0.12.0; existing signatures are unchanged. Adds selected wavelet extraction and shared wavelet type re-exports. It decodes the requested entropy bands without inverse DWT or color conversion and preserves exact reversible integer coefficients; existing pixel APIs retain their signatures. Also records the already-merged irreversible_quantization_profile option. Profiles supply per-component band weights; callers using Default or struct update syntax retain the previous no-profile behavior. Exhaustive native EncodeOptions literals must add irreversible_quantization_profile: None or use struct update syntax. Adds DecodingError::IncompletePlaneStore, returned when component planes reused without zeroing are not fully written; DecodingError is non_exhaustive."
+    hidden_rationale: "Adds an HT coding probe, parallel scratch toggle, and J2kClassicReconstruction hooks to the native implementation inventory. Existing classic adapters retain their defaults; supporting reversible midpoint reconstruction requires opting into the new reconstruction hooks. Also records the already-merged inverse_dwt97_reference, inverse_ict_reference, and irreversible_quantization_profile_scale_ceiling helpers. These are additive reference and profile-validation entry points. Adds irreversible_quantization_scale_bounds so facade rate search uses the same weighted-step limits as native quantization, including the HT coded-bitplane ceiling. Existing signatures and the legacy scale-ceiling helper remain compatible; no caller migration is required. irreversible_quantization_step_for_subband also takes the sub-band's decomposition level and the level count, so default 9/7 steps can be weighted by synthesis norm; callers pass both. Adds IrreversibleScaleEncoder so facade rate and PSNR search reuses one colour transform and DWT across quantization-scale candidates; each candidate equals the independent CPU encode at that scale. It is additive; no caller migration is required."
+  j2k-jpeg:
+    removed_fingerprint: "fnv1a64:c2093d3bff880a40"
+    added_fingerprint: "fnv1a64:dc6430a33ad716c8"
+    hidden_count: 701
+    hidden_fingerprint: "fnv1a64:bd0cf738a0f96592"
+    rationale: "Compared the ordinary API with v0.12.0; existing signatures are unchanged. Adds optimized baseline, 12-bit extended, and lossless JPEG encoders with native sample types. Exhaustive JpegEncodeError matches must handle RestartIntervalTooLarge, UnsupportedPixelFormat, UnsupportedPrecision, InvalidPredictor, InvalidPointTransform, and SampleOutOfRange. YCCK colors, lossless sample replication, and color-space inference now match the committed external references. Adds metal_hybrid_eligibility, JpegCapabilityReport::metal_hybrid, and MetalHybrid routing for explicit Metal requests. Exhaustive JpegResolvedDecodePath matches need a MetalHybrid arm; Auto routing keeps its existing choice. Adds JpegBatchDecoder, JpegBatchDecodeOptions, JpegBatchInput, JpegBatchGroup and JpegBatchDecodeResult for dense RGB8 CPU batches grouped by size. Inputs have private fields with new, with_options, bytes and options; item failures are TileBatchError<JpegError> by input index, and source_indices identifies each row because group order is unspecified. Adds the BatchLayout re-export. DecodeOptions adds with_strict, set_strict and is_strict, strict by default. JpegError gains RecoveryRequired and AmbiguousColorTransform. DecodeOutcome and DecodedTile gain recovered, and ColorTransform becomes non_exhaustive; the jpeg-outcome-recovery-field, extensible-jpeg-color-transform, jpeg-strict-completion and jpeg-required-interpretation ledger entries record the migrations."
+    hidden_rationale: "Compared the hidden inventory with v0.12.0; retained implementation adapters support this package's public entry points. Adds entropy-only DCT and lossless decoding into caller storage, component geometry, lossless GPU planning/Huffman/frame assembly contracts, and a reduced-IDCT benchmark helper. Existing adapter signatures are preserved; the new adapters validate dimensions, precision, ranges, and allocation bounds before execution. Removes the unreferenced bench_idct_neon_bottom_half_zero_block benchmark wrapper; the NEON bottom-half-zero IDCT stays reachable through BenchNeonIdct::run_bottom_half_zero."
+  j2k-tilecodec:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 32
+    hidden_fingerprint: "fnv1a64:eb677842559d9b0e"
+    rationale: "The ordinary j2k-tilecodec API is unchanged from v0.12.0. The standard I/O error rustdoc path adjustment already shipped in 0.12.0."
+    hidden_rationale: "Compared the hidden inventory with v0.12.0; retained implementation adapters support this package's public entry points."
+  j2k:
+    removed_fingerprint: "fnv1a64:ffea85eb442c661d"
+    added_fingerprint: "fnv1a64:6d29f512d27db446"
+    hidden_count: 108
+    hidden_fingerprint: "fnv1a64:01e74ad6c3ff416e"
+    rationale: "Compared the ordinary API with v0.12.0; existing signatures are unchanged. Adds J2kDecoder::decode_wavelets and shared wavelet type re-exports. Reduced decode requests beyond the main or tile resolution ladder now return an error rather than silently clamping; owned batches report invalid requests with their input index during preparation. Callers must choose an available reduction level. Also records the already-merged quantization_profile field and with_quantization_profile builder on the non-exhaustive lossy options type. Existing builders keep the no-profile default. Adds CpuBatchDecoder::decode_tiles_into, retained_tile_batch_workspace_bytes, release_tile_batch_workspaces, and the non_exhaustive J2kToHtj2kOptions::coefficient_only field with with_coefficient_only. BatchLayout now comes from j2k-core and stays re-exported at the j2k root, so the BatchDecodeOptions::layout and BatchGroupInfo::layout field types render through the j2k-core defining path. BatchDecodeOptions becomes non_exhaustive with layout, settings and workers retained. The shared-batch-layout and extensible-batch-options ledger entries record the migrations."
+    hidden_rationale: "Compared the hidden inventory with v0.12.0; retained implementation adapters support this package's public entry points."
+  j2k-transcode:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 458
+    hidden_fingerprint: "fnv1a64:449a76476549c1e2"
+    rationale: "Compared the ordinary API with v0.12.0; existing signatures are unchanged."
+    hidden_rationale: "Compared the hidden inventory with v0.12.0; retained implementation adapters support this package's public entry points."
+  j2k-transcode-cuda:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 20
+    hidden_fingerprint: "fnv1a64:be22ca1d5e12b043"
+    rationale: "Compared the ordinary API with v0.12.0; existing signatures are unchanged."
+    hidden_rationale: "Compared the hidden inventory with v0.12.0; retained implementation adapters support this package's public entry points."
+  j2k-jpeg-metal:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:181f7c41e644147f"
+    hidden_count: 83
+    hidden_fingerprint: "fnv1a64:79397ffc221464c3"
+    rationale: "Compared the ordinary API with v0.12.0; existing signatures are unchanged. Adds JpegLosslessMetalEncodeTile and encode_jpeg_lossless_from_metal_buffer. Raw buffer construction is unsafe with an explicit producer-completion and immutability contract; validated ResidentMetalImage input is borrowed safely. Explicit Metal decoding and resident batches now support the CPU JPEG classes through CPU entropy plus Metal reconstruction, preserving native sample output."
+    hidden_rationale: "Compared the hidden inventory with v0.12.0; retained implementation adapters support this package's public entry points."
+  j2k-metal:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:b164bc6d217b1c93"
+    hidden_count: 321
+    hidden_fingerprint: "fnv1a64:41513c1e93413909"
+    rationale: "Adds decode_into_metal and decode_into_metal_with_session for caller-owned destinations. Existing decoder entry points remain available. Shared group submission and cooperative CPU/Metal decoding already shipped in 0.12.0."
+    hidden_rationale: "The J2kDecoder impl marker moves into the ordinary inventory when its destination methods become public. Adds origin-aware 5/3 and 9/7 accelerator overrides while preserving the existing zero-origin hooks and job structs. MetalEncodeStageAccelerator overrides declines_every_stage, which is true only for the Auto host-output profile when every remaining hook declines; routing is unchanged. The cpu_tier1_images telemetry field already shipped in 0.12.0."
+  j2k-transcode-metal:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 49
+    hidden_fingerprint: "fnv1a64:b4a8b53d5e10bb00"
+    rationale: "Compared the ordinary API with v0.12.0; existing signatures are unchanged."
+    hidden_rationale: "Compared the hidden inventory with v0.12.0; retained implementation adapters support this package's public entry points."
+  j2k-jpeg-cuda:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:8dc9917dffab817e"
+    hidden_count: 133
+    hidden_fingerprint: "fnv1a64:9aa724bde7af1618"
+    rationale: "Adds JpegLosslessCudaEncodeTile and encode_jpeg_lossless_from_cuda_buffer for grayscale or RGB at 2-16 bits. It reuses CPU option validation, binds the session to the input context, and returns CudaUnavailable without the runtime feature; existing decode and baseline encode APIs are preserved."
+    hidden_rationale: "Compared the hidden inventory with v0.12.0; retained implementation adapters support this package's public entry points."
+  j2k-cuda:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 193
+    hidden_fingerprint: "fnv1a64:8a9b0ac701f08d00"
+    rationale: "Compared the ordinary API with v0.12.0; existing signatures are unchanged."
+    hidden_rationale: "Compared the hidden inventory with v0.12.0; retained implementation adapters support this package's public entry points. Adds origin-aware 5/3 and 9/7 accelerator overrides while preserving the existing zero-origin hooks and job structs."
+  j2k-ml:
+    removed_fingerprint: "fnv1a64:7fd70fdf0f1c55b3"
+    added_fingerprint: "fnv1a64:0de7c383ddd0cedb"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Compared the ordinary API with v0.12.0; existing signatures are unchanged. Adds CudaDirectBurnDecoder, which decodes into Burn-owned CUDA storage and waits for completion before returning the tensor. Adds one mixed codec CpuBurnDecoder::decode_batch over the non_exhaustive ImageInput with Jpeg and Jpeg2000 variants, codec-tagged ImageDecodeError and ImageDecodeWarning, and per-row recovery status. BurnBatchDecode and BurnBatchGroup fields become private behind accessors, into_groups, into_tensor and j2k_info for J2K-only metadata, and BurnBatchTensor and BurnDecodeError become non_exhaustive. Existing J2K decode, prepare and prepared method signatures are unchanged and the cpu feature still includes j2k-jpeg. The common-burn-result and extensible-burn-contract ledger entries record the migrations."
+    hidden_rationale: "Compared the hidden inventory with v0.12.0; retained implementation adapters support this package's public entry points."
+  j2k-mpsgraph:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Compared the ordinary API with v0.12.0; existing signatures are unchanged."
+    hidden_rationale: "Compared the hidden inventory with v0.12.0; retained implementation adapters support this package's public entry points."
