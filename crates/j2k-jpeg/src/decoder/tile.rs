@@ -188,7 +188,7 @@ pub(crate) fn prepare_jpeg_tile_decode<'a>(
     })
 }
 
-fn planned_jpeg_tile_decode_for_decoder(
+pub(crate) fn planned_jpeg_tile_decode_for_decoder(
     decoder: &Decoder<'_>,
     fmt: PixelFormat,
     roi: Option<Rect>,

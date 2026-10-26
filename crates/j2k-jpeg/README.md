@@ -19,6 +19,24 @@ and replacement; color management is left to the caller.
 Use this crate directly for JPEG input; use `j2k` for JPEG 2000 / HTJ2K and
 `j2k-transcode` for JPEG-to-HTJ2K coefficient-domain transcode paths.
 
+## Dense owned batches
+
+`JpegBatchDecoder::new(JpegBatchDecodeOptions::default())` decodes complete
+8-bit JPEG inputs into owned dense RGB8 groups. Submit borrowed
+`JpegBatchInput::new(bytes).with_options(options)` values and keep compressed
+bytes alive until decode returns. Outputs own their storage independently.
+
+Group order is unspecified. NCHW produces `[N, 3, H, W]`; NHWC produces
+`[N, H, W, 3]`. Source indices, warnings and recovery flags follow successful
+rows. Unsupported, oversized and implausible images fail by index before output
+allocation. Valid groups are split to fit the shared output and worker budget.
+Allocation or scheduling failures remain batch infrastructure errors.
+
+`JpegBatchSession` is the lower-level interface for caller-owned tile buffers.
+Its jobs use the same central DecodeOptions integrity policy. Read dimensions
+and layout before consuming a dense group with into_parts, which returns
+indices, warnings, recovery flags and samples.
+
 ## Coverage
 
 The decoder targets libjpeg-turbo's decoded output, byte for byte:
@@ -82,3 +100,31 @@ converted.
 - API docs: <https://docs.rs/j2k-jpeg>
 - Repository: <https://github.com/frames-sg/j2k>
 - Support policy: <https://github.com/frames-sg/j2k/blob/main/docs/public-support.md>
+
+## Strict pixel integrity and dense batches
+
+`DecodeOptions` defaults to strict. Use `with_strict(false)` or `set_strict(false)`
+only to permit supported recovery or unverified completion. Strict success
+requires complete required image data under the requested interpretation, with
+no damage concealment or missing-data substitution. Existing fatal entropy,
+restart and marker errors remain errors under either policy. Optional metadata
+not affecting samples remains a warning. Missing EOI is accepted only after
+completeness is verified; progressive EOF requires every coefficient band at
+final approximation for every component. An actual EOI can terminate a legal
+partial progressive script. Unresolved Adobe APP14 interpretation requires an
+explicit color hint. Leniency never authorizes precision loss.
+
+`DecodeOutcome::recovered`, `DecodedTile::recovered`, and
+`JpegBatchGroup::recovered()` identify lenient recovery. Cosmetic warnings leave
+them false. A recovered image is returned once, without an indexed error.
+This default tightens acceptance of damaged progressive JPEGs, including callers
+using coefficient extraction and transcode; accepted intact pixels are unchanged.
+
+Construct `JpegBatchDecoder::new(JpegBatchDecodeOptions::default())` and submit
+`JpegBatchInput::new(bytes).with_options(options)`. Input fields are private;
+read them through `bytes()` and `options()`. Errors use
+`j2k_core::TileBatchError<JpegError>`. Dense groups share the codec memory budget
+with worker storage and may split; order is unspecified and source indices are
+authoritative.
+
+JPEG tensor output remains RGB uint8 by default, with grayscale expanded to three identical channels. Grayscale JPEG 2000 and HTJ2K remain one channel. Output metadata describes the returned tensor. A later explicit `channels="native"` option may preserve grayscale JPEG as one channel without changing existing defaults. Source component counts, when exposed, are per input row and remain aligned with source_indices.

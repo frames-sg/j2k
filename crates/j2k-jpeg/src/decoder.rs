@@ -101,8 +101,9 @@ mod rows;
 mod sequential;
 mod tile;
 pub(crate) use self::tile::{
-    decode_prepared_jpeg_tile_rgb8_in_context, planned_jpeg_tile_decode_live_bytes,
-    prepare_jpeg_tile_decode, PlannedJpegTileDecode, PreparedJpegTileDecode,
+    decode_prepared_jpeg_tile_rgb8_in_context, planned_jpeg_tile_decode_for_decoder,
+    planned_jpeg_tile_decode_live_bytes, prepare_jpeg_tile_decode, PlannedJpegTileDecode,
+    PreparedJpegTileDecode,
 };
 pub use self::tile::{
     decode_prepared_jpeg_tiles_rgb8, decode_tile_into, decode_tile_into_in_context,

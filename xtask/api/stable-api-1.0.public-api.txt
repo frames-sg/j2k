@@ -1488,12 +1488,15 @@ pub struct j2k_codec_math::jpeg::CanonicalHuffmanDerivation
 #[non_exhaustive] pub enum j2k_jpeg::ProgressiveScanStateError
 #[non_exhaustive] pub enum j2k_jpeg::ProgressiveScanTerminationError
 #[non_exhaustive] pub enum j2k_jpeg::Warning
+#[non_exhaustive] pub struct j2k_jpeg::JpegBatchDecodeOptions
+#[non_exhaustive] pub struct j2k_jpeg::JpegBatchInput<'a>
 #[non_exhaustive] pub struct j2k_jpeg::JpegLosslessEncodeOptions
 impl core::convert::AsRef<[u8]> for j2k_jpeg::PreparedJpeg<'_>
 impl core::convert::From<j2k_core::types::Rect> for j2k_jpeg::Rect
 impl core::convert::From<j2k_jpeg::DecodeOutcome> for j2k_core::types::DecodeOutcome<j2k_jpeg::Warning>
 impl core::convert::From<j2k_jpeg::Rect> for j2k_core::types::Rect
 impl core::default::Default for j2k_jpeg::DecodeOptions
+impl core::default::Default for j2k_jpeg::JpegBatchSession
 impl core::default::Default for j2k_jpeg::JpegEncodeOptions
 impl core::default::Default for j2k_jpeg::JpegTilePrepareOptions
 impl core::fmt::Display for j2k_jpeg::ProgressiveScanStateError
@@ -1504,6 +1507,10 @@ impl j2k_jpeg::DecodeRequest
 impl j2k_jpeg::Decoder<'_>
 impl j2k_jpeg::DecoderContext
 impl j2k_jpeg::Info
+impl j2k_jpeg::JpegBatchDecodeResult
+impl j2k_jpeg::JpegBatchDecoder
+impl j2k_jpeg::JpegBatchGroup
+impl j2k_jpeg::JpegBatchSession
 impl j2k_jpeg::JpegCapabilityReport
 impl j2k_jpeg::JpegDecodeRequest
 impl j2k_jpeg::JpegError
@@ -1517,12 +1524,18 @@ impl j2k_jpeg::SamplingFactors
 impl j2k_jpeg::ScratchPool
 impl<'a> core::iter::traits::iterator::Iterator for j2k_jpeg::JpegSegmentIter<'a>
 impl<'a> j2k_jpeg::Decoder<'a>
+impl<'a> j2k_jpeg::JpegBatchInput<'a>
 impl<'a> j2k_jpeg::JpegView<'a>
 pub const fn j2k_jpeg::DecodeOptions::is_strict(&self) -> bool
 pub const fn j2k_jpeg::DecodeRequest::full(j2k_core::pixel::PixelFormat) -> Self
 pub const fn j2k_jpeg::DecodeRequest::region(j2k_core::pixel::PixelFormat, j2k_jpeg::Rect) -> Self
 pub const fn j2k_jpeg::DecodeRequest::region_scaled(j2k_core::pixel::PixelFormat, j2k_jpeg::Rect, j2k_core::scale::Downscale) -> Self
 pub const fn j2k_jpeg::DecodeRequest::scaled(j2k_core::pixel::PixelFormat, j2k_core::scale::Downscale) -> Self
+pub const fn j2k_jpeg::JpegBatchGroup::dimensions(&self) -> (u32, u32)
+pub const fn j2k_jpeg::JpegBatchGroup::layout(&self) -> j2k_core::batch::BatchLayout
+pub const fn j2k_jpeg::JpegBatchInput<'a>::bytes(&self) -> &'a [u8]
+pub const fn j2k_jpeg::JpegBatchInput<'a>::options(&self) -> j2k_jpeg::DecodeOptions
+pub const fn j2k_jpeg::JpegBatchInput<'a>::with_options(self, j2k_jpeg::DecodeOptions) -> Self
 pub const fn j2k_jpeg::JpegDecodeRequest::capability(self) -> j2k_jpeg::JpegCapabilityRequest
 pub const fn j2k_jpeg::JpegLosslessEncodeOptions::new(u8) -> Self
 pub const fn j2k_jpeg::JpegLosslessSamples<'_>::dimensions(&self) -> (u32, u32)
@@ -1576,6 +1589,29 @@ pub fn j2k_jpeg::Decoder<'a>::inspect(&'a [u8]) -> core::result::Result<j2k_jpeg
 pub fn j2k_jpeg::Decoder<'a>::new(&'a [u8]) -> core::result::Result<Self, j2k_jpeg::JpegError>
 pub fn j2k_jpeg::DecoderContext::new() -> Self
 pub fn j2k_jpeg::Info::to_core_info(&self) -> j2k_core::types::Info
+pub fn j2k_jpeg::JpegBatchDecodeResult::errors(&self) -> &[j2k_core::batch::TileBatchError<j2k_jpeg::JpegError>]
+pub fn j2k_jpeg::JpegBatchDecodeResult::groups(&self) -> &[j2k_jpeg::JpegBatchGroup]
+pub fn j2k_jpeg::JpegBatchDecodeResult::into_parts(self) -> (alloc::vec::Vec<j2k_jpeg::JpegBatchGroup>, alloc::vec::Vec<j2k_core::batch::TileBatchError<j2k_jpeg::JpegError>>)
+pub fn j2k_jpeg::JpegBatchDecoder::decode(&mut self, &[j2k_jpeg::JpegBatchInput<'_>]) -> core::result::Result<j2k_jpeg::JpegBatchDecodeResult, j2k_core::batch::BatchInfrastructureError>
+pub fn j2k_jpeg::JpegBatchDecoder::new(j2k_jpeg::JpegBatchDecodeOptions) -> Self
+pub fn j2k_jpeg::JpegBatchGroup::into_parts(self) -> (alloc::vec::Vec<usize>, alloc::vec::Vec<alloc::vec::Vec<j2k_jpeg::Warning>>, alloc::vec::Vec<bool>, alloc::vec::Vec<u8>)
+pub fn j2k_jpeg::JpegBatchGroup::recovered(&self) -> &[bool]
+pub fn j2k_jpeg::JpegBatchGroup::samples(&self) -> &[u8]
+pub fn j2k_jpeg::JpegBatchGroup::source_indices(&self) -> &[usize]
+pub fn j2k_jpeg::JpegBatchGroup::warnings(&self) -> &[alloc::vec::Vec<j2k_jpeg::Warning>]
+pub fn j2k_jpeg::JpegBatchInput<'a>::new(&'a [u8]) -> Self
+pub fn j2k_jpeg::JpegBatchSession::decode_prepared_jpeg_tiles_rgb8(&mut self, &mut [j2k_jpeg::PreparedJpegTileJob<'_, '_>]) -> core::result::Result<alloc::vec::Vec<core::result::Result<j2k_jpeg::DecodedTile, j2k_jpeg::JpegError>>, j2k_core::batch::BatchInfrastructureError>
+pub fn j2k_jpeg::JpegBatchSession::decode_tiles_into(&mut self, &mut [j2k_jpeg::TileDecodeJob<'_, '_>], j2k_core::pixel::PixelFormat) -> core::result::Result<alloc::vec::Vec<j2k_jpeg::DecodeOutcome>, j2k_jpeg::TileBatchError>
+pub fn j2k_jpeg::JpegBatchSession::decode_tiles_into_with_options(&mut self, &mut [j2k_jpeg::TileDecodeJob<'_, '_>], j2k_core::pixel::PixelFormat, j2k_jpeg::DecodeOptions) -> core::result::Result<alloc::vec::Vec<j2k_jpeg::DecodeOutcome>, j2k_jpeg::TileBatchError>
+pub fn j2k_jpeg::JpegBatchSession::decode_tiles_region_scaled_into(&mut self, &mut [j2k_jpeg::TileRegionScaledDecodeJob<'_, '_>], j2k_core::pixel::PixelFormat) -> core::result::Result<alloc::vec::Vec<j2k_jpeg::DecodeOutcome>, j2k_jpeg::TileBatchError>
+pub fn j2k_jpeg::JpegBatchSession::decode_tiles_region_scaled_into_with_options(&mut self, &mut [j2k_jpeg::TileRegionScaledDecodeJob<'_, '_>], j2k_core::pixel::PixelFormat, j2k_jpeg::DecodeOptions) -> core::result::Result<alloc::vec::Vec<j2k_jpeg::DecodeOutcome>, j2k_jpeg::TileBatchError>
+pub fn j2k_jpeg::JpegBatchSession::decode_tiles_scaled_into(&mut self, &mut [j2k_jpeg::TileScaledDecodeJob<'_, '_>], j2k_core::pixel::PixelFormat) -> core::result::Result<alloc::vec::Vec<j2k_jpeg::DecodeOutcome>, j2k_jpeg::TileBatchError>
+pub fn j2k_jpeg::JpegBatchSession::decode_tiles_scaled_into_with_options(&mut self, &mut [j2k_jpeg::TileScaledDecodeJob<'_, '_>], j2k_core::pixel::PixelFormat, j2k_jpeg::DecodeOptions) -> core::result::Result<alloc::vec::Vec<j2k_jpeg::DecodeOutcome>, j2k_jpeg::TileBatchError>
+pub fn j2k_jpeg::JpegBatchSession::default() -> Self
+pub fn j2k_jpeg::JpegBatchSession::new(j2k_core::batch::TileBatchOptions) -> Self
+pub fn j2k_jpeg::JpegBatchSession::options(&self) -> j2k_core::batch::TileBatchOptions
+pub fn j2k_jpeg::JpegBatchSession::reset(&mut self)
+pub fn j2k_jpeg::JpegBatchSession::set_options(&mut self, j2k_core::batch::TileBatchOptions)
 pub fn j2k_jpeg::JpegCapabilityReport::for_decoder(&j2k_jpeg::Decoder<'_>, j2k_jpeg::JpegCapabilityRequest) -> Self
 pub fn j2k_jpeg::JpegCapabilityReport::inspect(&[u8], j2k_jpeg::JpegCapabilityRequest) -> core::result::Result<Self, j2k_jpeg::JpegError>
 pub fn j2k_jpeg::JpegCapabilityReport::metal_hybrid(&self) -> j2k_jpeg::JpegBackendEligibility
@@ -1708,6 +1744,8 @@ pub j2k_jpeg::JpegBackend::Cuda
 pub j2k_jpeg::JpegBackend::Metal
 pub j2k_jpeg::JpegBackendEligibility::eligible: bool
 pub j2k_jpeg::JpegBackendEligibility::reason: core::option::Option<&'static str>
+pub j2k_jpeg::JpegBatchDecodeOptions::layout: j2k_core::batch::BatchLayout
+pub j2k_jpeg::JpegBatchDecodeOptions::workers: core::option::Option<core::num::nonzero::NonZeroUsize>
 pub j2k_jpeg::JpegCapabilityReport::cpu: j2k_jpeg::JpegBackendEligibility
 pub j2k_jpeg::JpegCapabilityReport::device: crate::DeviceBatchSummary
 pub j2k_jpeg::JpegCapabilityReport::info: j2k_jpeg::Info
@@ -2097,6 +2135,10 @@ pub struct j2k_jpeg::DecoderContext
 pub struct j2k_jpeg::EncodedJpeg
 pub struct j2k_jpeg::Info
 pub struct j2k_jpeg::JpegBackendEligibility
+pub struct j2k_jpeg::JpegBatchDecodeResult
+pub struct j2k_jpeg::JpegBatchDecoder
+pub struct j2k_jpeg::JpegBatchGroup
+pub struct j2k_jpeg::JpegBatchSession
 pub struct j2k_jpeg::JpegCapabilityReport
 pub struct j2k_jpeg::JpegCapabilityRequest
 pub struct j2k_jpeg::JpegCodec
@@ -2127,6 +2169,7 @@ pub type j2k_jpeg::TileRegionScaledDecodeJob<'i, 'o> = j2k_core::batch::TileRegi
 pub type j2k_jpeg::TileScaledDecodeJob<'i, 'o> = j2k_core::batch::TileScaledDecodeJob<'i, 'o>
 pub use j2k_jpeg::BatchDecodeError
 pub use j2k_jpeg::BatchInfrastructureError
+pub use j2k_jpeg::BatchLayout
 pub use j2k_jpeg::CacheStats
 pub use j2k_jpeg::CodecContext
 pub use j2k_jpeg::CompressedPayloadKind
