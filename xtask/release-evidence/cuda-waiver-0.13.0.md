@@ -60,10 +60,11 @@ The candidate must keep these from `76a0fab3`. Check them before tagging with
 | `Cargo.toml` | `61b5888630d5d4e0ec09012b03ff69392f08abe2` |
 | `Cargo.lock` | `28dac642957f5476aa5df76939e105acee2f520c` |
 
-After `76a0fab3`, the only change under `crates` is the test file
-`crates/j2k-ml/tests/cpu.rs`, which adds a CPU test for the mixed batch
-accessors. No crate source, manifest, or lockfile changed.
-`git diff --stat 76a0fab3 <sha> -- crates` must list only that file.
+After `76a0fab3`, the only changes under `crates` are two test files.
+`crates/j2k-ml/tests/cpu.rs` adds a CPU test for the mixed batch accessors.
+`crates/j2k-metal/tests/sample_depth_output.rs` drains an autorelease pool per
+rejected decode. No crate source, manifest, or lockfile changed.
+`git diff --stat 76a0fab3 <sha> -- crates` must list only those files.
 
 ## Not covered by this waiver
 
