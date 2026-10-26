@@ -26,15 +26,15 @@ use j2k_codec_math::classic::{
 };
 
 /// The coefficient's own significance within a row-aligned window.
-pub(super) const SIGMA_THIS: u32 = 1 << 4;
+pub(in crate::j2c) const SIGMA_THIS: u32 = 1 << 4;
 /// The eight neighbors within a row-aligned window.
-pub(super) const SIGMA_NEIGHBOURS: u32 = 0x1EF;
+pub(in crate::j2c) const SIGMA_NEIGHBOURS: u32 = 0x1EF;
 /// Magnitude refinement has run, row-aligned.
-pub(super) const MU_THIS: u32 = 1 << 20;
+pub(in crate::j2c) const MU_THIS: u32 = 1 << 20;
 /// Coded in this bitplane's significance propagation pass, row-aligned.
-pub(super) const PI_THIS: u32 = 1 << 21;
+pub(in crate::j2c) const PI_THIS: u32 = 1 << 21;
 /// All four rows' `PI_THIS` bits.
-pub(super) const PI_ALL: u32 = PI_THIS | PI_THIS << 3 | PI_THIS << 6 | PI_THIS << 9;
+pub(in crate::j2c) const PI_ALL: u32 = PI_THIS | PI_THIS << 3 | PI_THIS << 6 | PI_THIS << 9;
 
 /// Zero-coding context label for a row-aligned 3x3 window (bits 0-8, the
 /// centre ignored), derived from the byte-indexed Table D.1 lookups.
@@ -64,7 +64,7 @@ static ZERO_CODING_LL_LH: [u8; 512] = zero_coding_window_table(&ZERO_CTX_LL_LH_L
 static ZERO_CODING_HL: [u8; 512] = zero_coding_window_table(&ZERO_CTX_HL_LOOKUP);
 static ZERO_CODING_HH: [u8; 512] = zero_coding_window_table(&ZERO_CTX_HH_LOOKUP);
 
-pub(super) fn zero_coding_table(sub_band_type: SubBandType) -> &'static [u8; 512] {
+pub(in crate::j2c) fn zero_coding_table(sub_band_type: SubBandType) -> &'static [u8; 512] {
     match sub_band_type {
         SubBandType::LowLow | SubBandType::LowHigh => &ZERO_CODING_LL_LH,
         SubBandType::HighLow => &ZERO_CODING_HL,
@@ -78,7 +78,7 @@ pub(super) fn zero_coding_table(sub_band_type: SubBandType) -> &'static [u8; 512
     reason = "Tier-1 context lookup is a measured coefficient-loop hot path"
 )]
 #[inline(always)]
-pub(super) fn zero_coding_label(table: &[u8; 512], flags: u32, row: u32) -> u8 {
+pub(in crate::j2c) fn zero_coding_label(table: &[u8; 512], flags: u32, row: u32) -> u8 {
     table[((flags >> (3 * row)) & SIGMA_NEIGHBOURS) as usize]
 }
 
@@ -89,7 +89,7 @@ pub(super) fn zero_coding_label(table: &[u8; 512], flags: u32, row: u32) -> u8 {
     reason = "Tier-1 context lookup is a measured coefficient-loop hot path"
 )]
 #[inline(always)]
-pub(super) fn sign_coding_label(flags: u32, left: u32, right: u32, row: u32) -> (u8, u8) {
+pub(in crate::j2c) fn sign_coding_label(flags: u32, left: u32, right: u32, row: u32) -> (u8, u8) {
     let window = flags >> (3 * row);
     let significances = (((window >> 1) & 1) << 6)
         | (((window >> 3) & 1) << 4)
@@ -111,7 +111,7 @@ pub(super) fn sign_coding_label(flags: u32, left: u32, right: u32, row: u32) -> 
 /// `stride` (one padding column and one padding stripe on every side).
 #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
 #[inline(always)]
-pub(super) fn set_significant(
+pub(in crate::j2c) fn set_significant(
     flags: &mut [u32],
     own: &mut u32,
     index: usize,

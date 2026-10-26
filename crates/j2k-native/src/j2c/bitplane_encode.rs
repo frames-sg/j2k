@@ -18,12 +18,14 @@ use crate::EncodeResult;
 
 mod allocation;
 mod distortion;
+mod flag_passes;
 mod passes;
 mod preparation;
 mod segments;
 mod tokens;
 
 pub(crate) use self::allocation::classic_worker_allocation;
+use self::allocation::ClassicWorkerAllocation;
 use self::passes::{
     cleanup_pass, clear_coded_in_current_pass, magnitude_refinement_pass,
     significance_propagation_pass,
@@ -119,10 +121,6 @@ pub(crate) fn try_encode_code_block_view<T: SignedCoefficient>(
 }
 
 #[expect(
-    clippy::too_many_lines,
-    reason = "the cohesive pass-order loop is kept intact to protect Tier-1 byte ordering"
-)]
-#[expect(
     clippy::trivially_copy_pass_by_ref,
     reason = "the stable Tier-1 entrypoint borrows the caller's code-block style"
 )]
@@ -132,38 +130,144 @@ pub(crate) fn try_encode_code_block_with_style_view<T: SignedCoefficient>(
     total_bitplanes: u8,
     style: &CodeBlockStyle,
 ) -> EncodeResult<EncodedCodeBlock> {
-    let w = coefficients.width();
-    let h = coefficients.height();
-    let allocation = classic_worker_allocation(w, h, total_bitplanes)?;
+    let allocation =
+        classic_worker_allocation(coefficients.width(), coefficients.height(), total_bitplanes)?;
+    let coded = if !style.vertically_causal_context && total_bitplanes <= flag_passes::MAX_BITPLANES
+    {
+        flag_passes::try_encode_column_passes(
+            coefficients,
+            sub_band_type,
+            total_bitplanes,
+            style,
+            allocation.payload_bytes,
+        )?
+    } else {
+        try_encode_neighbor_byte_passes(
+            coefficients,
+            sub_band_type,
+            total_bitplanes,
+            style,
+            allocation,
+        )?
+    };
+    let (data, num_coding_passes, num_zero_bitplanes) = match coded {
+        Some(block) => (
+            block.data,
+            block.num_coding_passes,
+            total_bitplanes - block.num_bitplanes,
+        ),
+        None => (Vec::new(), 0, total_bitplanes),
+    };
+    Ok(EncodedCodeBlock {
+        data,
+        num_coding_passes,
+        num_zero_bitplanes,
+        ht_cleanup_length: 0,
+        ht_refinement_length: 0,
+        ht_sigprop_length: 0,
+        ht_magref_length: 0,
+        ht_distortion_deltas: [0.0; 3],
+    })
+}
 
-    // Determine maximum magnitude and number of bitplanes
-    let mut max_magnitude = 0_u64;
-    for row in coefficients.rows() {
-        for &coefficient in row {
-            max_magnitude = max_magnitude.max(coefficient.unsigned_magnitude());
-        }
+/// The MQ payload of one block's coding passes.
+struct CodedBlock {
+    data: Vec<u8>,
+    num_bitplanes: u8,
+    num_coding_passes: u8,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CodingPass {
+    SignificancePropagation,
+    MagnitudeRefinement,
+    Cleanup,
+}
+
+/// The coded bitplane count of a block whose magnitudes OR to `any`, or
+/// `None` when every coefficient is zero.
+fn coded_bitplanes(any: u64, total_bitplanes: u8) -> EncodeResult<Option<u8>> {
+    if any == 0 {
+        return Ok(None);
     }
-
-    if max_magnitude == 0 {
-        return Ok(EncodedCodeBlock {
-            data: Vec::new(),
-            num_coding_passes: 0,
-            num_zero_bitplanes: total_bitplanes,
-            ht_cleanup_length: 0,
-            ht_refinement_length: 0,
-            ht_sigprop_length: 0,
-            ht_magref_length: 0,
-            ht_distortion_deltas: [0.0; 3],
-        });
-    }
-
-    let num_bitplanes = bit_width_u64(max_magnitude);
+    let num_bitplanes = bit_width_u64(any);
     if num_bitplanes > total_bitplanes {
         return Err(crate::EncodeError::InvalidInput {
             what: "classic code-block magnitude exceeds configured bitplane count",
         });
     }
-    let num_zero_bitplanes = total_bitplanes.saturating_sub(num_bitplanes);
+    Ok(Some(num_bitplanes))
+}
+
+/// Run `code` for every coding pass of `num_bitplanes` in T.800 D.3 order,
+/// from the most significant bitplane, with the style's segmentation symbols
+/// and context resets at the pass boundaries, and finish the MQ codeword.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "both pass implementations share the caller's style borrow"
+)]
+fn code_passes(
+    num_bitplanes: u8,
+    style: &CodeBlockStyle,
+    payload_bytes: usize,
+    mut code: impl FnMut(CodingPass, u32, &mut ArithmeticEncoder, &mut [ArithmeticEncoderContext; 19]),
+) -> EncodeResult<CodedBlock> {
+    let mut encoder = ArithmeticEncoder::try_with_byte_limit(payload_bytes)?;
+    let mut contexts = [ArithmeticEncoderContext::default(); 19];
+    reset_contexts(&mut contexts);
+    let mut num_coding_passes = 0u8;
+    for bitplane in (0..u32::from(num_bitplanes)).rev() {
+        // The most significant bitplane has only a cleanup pass.
+        let passes: &[CodingPass] = if bitplane + 1 == u32::from(num_bitplanes) {
+            &[CodingPass::Cleanup]
+        } else {
+            &[
+                CodingPass::SignificancePropagation,
+                CodingPass::MagnitudeRefinement,
+                CodingPass::Cleanup,
+            ]
+        };
+        for &pass in passes {
+            code(pass, bitplane, &mut encoder, &mut contexts);
+            if matches!(pass, CodingPass::Cleanup) && style.segmentation_symbols {
+                encode_segmentation_symbols(&mut encoder, &mut contexts);
+            }
+            num_coding_passes += 1;
+            if style.reset_context_probabilities {
+                reset_contexts(&mut contexts);
+            }
+        }
+    }
+    Ok(CodedBlock {
+        data: encoder.finish_checked()?,
+        num_bitplanes,
+        num_coding_passes,
+    })
+}
+
+/// Code every pass with one state and one neighbor byte per padded sample,
+/// for vertically causal blocks and blocks with more bitplanes than the
+/// column words hold, or return `None` when every coefficient is zero.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the stable Tier-1 entrypoint borrows the caller's code-block style"
+)]
+fn try_encode_neighbor_byte_passes<T: SignedCoefficient>(
+    coefficients: CoefficientBlockView<'_, T>,
+    sub_band_type: SubBandType,
+    total_bitplanes: u8,
+    style: &CodeBlockStyle,
+    allocation: ClassicWorkerAllocation,
+) -> EncodeResult<Option<CodedBlock>> {
+    let w = coefficients.width();
+    let h = coefficients.height();
+    let any = coefficients
+        .rows()
+        .flatten()
+        .fold(0, |any, coefficient| any | coefficient.unsigned_magnitude());
+    let Some(num_bitplanes) = coded_bitplanes(any, total_bitplanes)? else {
+        return Ok(None);
+    };
 
     // Build padded coefficient magnitude and state arrays.
     let pw = w
@@ -177,114 +281,58 @@ pub(crate) fn try_encode_code_block_with_style_view<T: SignedCoefficient>(
         0_u8,
         "classic Tier-1 neighbor states",
     )?;
-
-    let mut encoder = ArithmeticEncoder::try_with_byte_limit(allocation.payload_bytes)?;
-    let mut contexts = [ArithmeticEncoderContext::default(); 19];
-    reset_contexts(&mut contexts);
-
-    let mut num_coding_passes = 0u8;
-
-    // Process bitplanes from MSB to LSB
-    for bp in (0..num_bitplanes).rev() {
-        let bit_mask = 1u64 << bp;
-        let is_first_bitplane = bp == num_bitplanes - 1;
-
-        if is_first_bitplane {
-            // First bitplane: cleanup pass only
-            cleanup_pass(
-                &magnitudes,
-                &mut states,
-                &mut neighbors,
-                &mut encoder,
-                &mut contexts,
-                w,
-                h,
-                pw,
-                bit_mask,
-                sub_band_type,
-                style,
-            );
-            if style.segmentation_symbols {
-                encode_segmentation_symbols(&mut encoder, &mut contexts);
+    code_passes(
+        num_bitplanes,
+        style,
+        allocation.payload_bytes,
+        |pass, bitplane, encoder, contexts| {
+            let bit_mask = 1u64 << bitplane;
+            match pass {
+                CodingPass::SignificancePropagation => significance_propagation_pass(
+                    &magnitudes,
+                    &mut states,
+                    &mut neighbors,
+                    encoder,
+                    contexts,
+                    w,
+                    h,
+                    pw,
+                    bit_mask,
+                    sub_band_type,
+                    style,
+                ),
+                CodingPass::MagnitudeRefinement => magnitude_refinement_pass(
+                    &magnitudes,
+                    &mut states,
+                    &mut neighbors,
+                    encoder,
+                    contexts,
+                    w,
+                    h,
+                    pw,
+                    bit_mask,
+                    style,
+                ),
+                CodingPass::Cleanup => {
+                    cleanup_pass(
+                        &magnitudes,
+                        &mut states,
+                        &mut neighbors,
+                        encoder,
+                        contexts,
+                        w,
+                        h,
+                        pw,
+                        bit_mask,
+                        sub_band_type,
+                        style,
+                    );
+                    clear_coded_in_current_pass(&mut states);
+                }
             }
-            num_coding_passes += 1;
-            if style.reset_context_probabilities {
-                reset_contexts(&mut contexts);
-            }
-        } else {
-            // Subsequent bitplanes: SPP, MRP, Cleanup
-            significance_propagation_pass(
-                &magnitudes,
-                &mut states,
-                &mut neighbors,
-                &mut encoder,
-                &mut contexts,
-                w,
-                h,
-                pw,
-                bit_mask,
-                sub_band_type,
-                style,
-            );
-            num_coding_passes += 1;
-            if style.reset_context_probabilities {
-                reset_contexts(&mut contexts);
-            }
-
-            magnitude_refinement_pass(
-                &magnitudes,
-                &mut states,
-                &mut neighbors,
-                &mut encoder,
-                &mut contexts,
-                w,
-                h,
-                pw,
-                bit_mask,
-                style,
-            );
-            num_coding_passes += 1;
-            if style.reset_context_probabilities {
-                reset_contexts(&mut contexts);
-            }
-
-            cleanup_pass(
-                &magnitudes,
-                &mut states,
-                &mut neighbors,
-                &mut encoder,
-                &mut contexts,
-                w,
-                h,
-                pw,
-                bit_mask,
-                sub_band_type,
-                style,
-            );
-            if style.segmentation_symbols {
-                encode_segmentation_symbols(&mut encoder, &mut contexts);
-            }
-            num_coding_passes += 1;
-            if style.reset_context_probabilities {
-                reset_contexts(&mut contexts);
-            }
-        }
-
-        clear_coded_in_current_pass(&mut states);
-    }
-
-    let data = encoder.finish_checked()?;
-
-    Ok(EncodedCodeBlock {
-        data,
-        num_coding_passes,
-        num_zero_bitplanes,
-        ht_cleanup_length: 0,
-        ht_refinement_length: 0,
-        ht_sigprop_length: 0,
-        ht_magref_length: 0,
-        ht_distortion_deltas: [0.0; 3],
-    })
+        },
+    )
+    .map(Some)
 }
 
 #[expect(
