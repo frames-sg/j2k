@@ -3,9 +3,11 @@
 use std::path::Path;
 
 use super::{
+    primary_evidence, python_primary_evidence, python_supplemental_evidence,
     require_primary_evidence, supplemental_evidence, validate_evidence_test_path,
-    validate_evidence_test_source, validate_python_evidence_test_source, CoverageExclusion,
-    EvidenceClass, EvidenceTest, ExclusionMatcher,
+    validate_evidence_test_source, validate_exclusion_matcher,
+    validate_python_evidence_test_source, CoverageExclusion, EvidenceClass, EvidenceLanguage,
+    EvidenceTest, ExclusionMatcher,
 };
 
 mod matchers;
@@ -210,4 +212,40 @@ fn python_extension_exclusion_covers_only_the_extension_sources() {
     ] {
         assert_eq!(rule(path), None, "{path}");
     }
+}
+
+#[test]
+fn evidence_constructors_record_class_and_language() {
+    let built = [
+        primary_evidence("tests/gpu.rs", "rust_primary"),
+        supplemental_evidence("tests/gpu.rs", "rust_supplemental"),
+        python_primary_evidence("tests/test_gpu.py", "test_primary"),
+        python_supplemental_evidence("tests/test_gpu.py", "test_supplemental"),
+    ];
+
+    assert_eq!(
+        built.map(|evidence| (evidence.class, evidence.language)),
+        [
+            (EvidenceClass::Primary, EvidenceLanguage::Rust),
+            (EvidenceClass::Supplemental, EvidenceLanguage::Rust),
+            (EvidenceClass::Primary, EvidenceLanguage::Python),
+            (EvidenceClass::Supplemental, EvidenceLanguage::Python),
+        ]
+    );
+}
+
+#[test]
+fn path_prefix_exclusions_must_name_a_crate_source_directory() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let exclusion = |prefix| CoverageExclusion {
+        id: "prefix-test",
+        reason: "test fixture",
+        matcher: ExclusionMatcher::PathPrefix { prefix },
+        evidence: &[],
+    };
+
+    validate_exclusion_matcher(&root, &exclusion("crates/j2k-python/src/")).unwrap();
+    let error = validate_exclusion_matcher(&root, &exclusion("crates/j2k-python/")).unwrap_err();
+    assert!(error.contains("crate source directory"), "{error}");
+    assert!(validate_exclusion_matcher(&root, &exclusion("crates/j2k-missing/src/")).is_err());
 }
