@@ -369,17 +369,6 @@ pub fn bench_idct_neon_block(input: &[i16; 64], output: &mut [u8; 64]) {
     crate::idct::neon::idct_islow(neon, input, output);
 }
 
-/// Run the NEON specialization for blocks whose bottom four coefficient rows
-/// are known to be zero.
-#[cfg(target_arch = "aarch64")]
-#[doc(hidden)]
-pub fn bench_idct_neon_bottom_half_zero_block(input: &[i16; 64], output: &mut [u8; 64]) {
-    let neon = fearless_simd::Level::new()
-        .as_neon()
-        .expect("AArch64 benchmark host must provide NEON");
-    crate::idct::neon::idct_islow_bottom_half_zero(neon, input, output);
-}
-
 /// Run the NEON specialization for blocks whose coefficients outside the
 /// natural-order top-left 2x2 quadrant are known to be zero.
 #[cfg(target_arch = "aarch64")]

@@ -47,11 +47,6 @@ impl ScaledMatrixCase {
         self.layout == "gray"
     }
 
-    /// Whether the case is four-component Adobe CMYK or YCCK.
-    pub fn is_four_component(&self) -> bool {
-        self.layout.starts_with("cmyk") || self.layout.starts_with("ycck")
-    }
-
     /// Interleaved samples per pixel in the references.
     pub fn channels(&self) -> usize {
         if self.is_gray() {

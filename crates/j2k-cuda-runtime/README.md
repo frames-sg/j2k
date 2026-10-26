@@ -1,10 +1,12 @@
 # j2k-cuda-runtime
 
-CUDA codec engine and Driver API runtime crate for J2K CUDA adapters.
+Codec-neutral CUDA Driver API runtime for the J2K CUDA engine and adapter crates.
 
-It owns J2K CUDA kernel modules and the host-side launch logic for CUDA
-codec stages, plus allocation, copy, stream, timing, and pooled resource
-helpers used by the adapter crates.
+It provides device memory allocation and copies, streams and events, PTX module
+loading, launch validation, and completion-aware pooled resources. Codec kernels
+and stage dispatch live in `j2k-cuda-j2k-engine`, `j2k-cuda-jpeg-engine`, and
+`j2k-cuda-transcode-engine`; those engines supply kernel specifications to this
+runtime. The runtime retains the generic byte-copy kernel.
 
 CUDA performance numbers come from self-hosted benchmark runs, not from this
 crate's tests.

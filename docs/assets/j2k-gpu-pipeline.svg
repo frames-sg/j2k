@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 492" role="img" aria-labelledby="title desc">
-  <title id="title">J2K Rust JPEG 2000 codec pipeline</title>
-  <desc id="desc">JPEG 2000 Part 1, HTJ2K Part 15, JP2/JPH, and JPEG inputs enter the public Rust j2k crate, which routes work to a CPU baseline plus optional CUDA and Metal backends.</desc>
+  <title id="title">J2K Rust codec workspace pipeline</title>
+  <desc id="desc">The J2K workspace provides j2k for JPEG 2000 and HTJ2K with JP2/JPH wrappers, j2k-jpeg for ordinary JPEG, and j2k-transcode for JPEG-to-HTJ2K transcode. These crates use a CPU baseline plus optional CUDA and Metal backends.</desc>
   <defs>
     <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
       <path d="M24 0H0V24" fill="none" stroke="#242b29" stroke-width="1"/>
@@ -46,7 +46,7 @@
     <g fill="#8f9a93" font-size="12">
       <text x="56" y="132">JP2 · J2K · J2C</text>
       <text x="296" y="132">PART 15 · JPH</text>
-      <text x="536" y="132">TRANSCODE PATHS</text>
+      <text x="536" y="132">DECODE / TRANSCODE</text>
     </g>
   </g>
 
@@ -62,8 +62,8 @@
   <rect x="207" y="207" width="354" height="88" fill="#f3f4e9" opacity=".16" filter="url(#glow)"/>
   <rect x="199" y="199" width="354" height="88" fill="#ff4d00" stroke="#f3f4e9" stroke-width="2"/>
   <g fill="#090b0b" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" text-anchor="middle">
-    <text x="376" y="220" font-size="10" font-weight="600" letter-spacing="2">SAFE PUBLIC API</text>
-    <text x="376" y="258" font-size="34" font-weight="800">j2k</text>
+    <text x="376" y="220" font-size="10" font-weight="600" letter-spacing="2">PUBLIC CRATE APIS</text>
+    <text x="376" y="258" font-size="34" font-weight="800">J2K workspace</text>
     <text x="376" y="278" font-size="11">DECODE · ENCODE · RECODE · TRANSCODE</text>
   </g>
 

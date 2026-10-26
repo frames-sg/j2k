@@ -11,6 +11,6 @@ perform validation and ordinary control flow.
 
 ## Links
 
-- API docs: <https://docs.rs/j2k-codec-math> (available after the first crates.io release)
+- API docs: <https://docs.rs/j2k-codec-math>
 - Repository: <https://github.com/frames-sg/j2k>
 - Support policy: <https://github.com/frames-sg/j2k/blob/main/docs/public-support.md>

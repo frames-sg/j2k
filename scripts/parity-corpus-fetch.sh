@@ -1,8 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-manifest="${J2K_PARITY_CORPUS_MANIFEST:-${1:-corpus/wsi-samples/manifest.json}}"
+usage() {
+    cat <<'USAGE'
+Usage: scripts/parity-corpus-fetch.sh MANIFEST [OUT_DIR]
+   or: J2K_PARITY_CORPUS_MANIFEST=MANIFEST scripts/parity-corpus-fetch.sh
+
+Supply a readable JSON manifest with a fixtures or samples list containing
+HTTPS URLs and SHA-256 values. No default manifest is bundled.
+J2K_PARITY_CORPUS_MANIFEST overrides MANIFEST; J2K_PARITY_CORPUS_DIR overrides
+OUT_DIR, which defaults to corpus/wsi-samples.
+USAGE
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    usage
+    exit 0
+fi
+
+manifest="${J2K_PARITY_CORPUS_MANIFEST:-${1:-}}"
 out_dir="${J2K_PARITY_CORPUS_DIR:-${2:-corpus/wsi-samples}}"
+if [[ -z "$manifest" || ! -f "$manifest" || ! -r "$manifest" ]]; then
+    printf 'parity-corpus-fetch: supply a readable manifest via MANIFEST or J2K_PARITY_CORPUS_MANIFEST\n' >&2
+    usage >&2
+    exit 2
+fi
 
 python3 - "$manifest" "$out_dir" <<'PY'
 import hashlib

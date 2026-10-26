@@ -3,11 +3,16 @@
 CUDA adapter for JPEG 2000 / HTJ2K decode, GPU-resident encode, and the shared
 encode stages.
 
-CPU and `Auto` surface requests may return host-memory surfaces. Explicit CUDA
-decode to GPU memory and encode from CUDA buffers use J2K's own kernels and
-currently support HTJ2K only; classic J2K code blocks are rejected on those
-paths. The shared encode-stage adapter can still accelerate individual stages
-for other inputs. Unsupported explicit CUDA requests return an error.
+CPU surface requests return host-memory surfaces. `Auto` can return CUDA-resident
+surfaces for promoted workloads when CUDA is available; other `Auto` requests
+stay on the CPU. Explicit CUDA decode supports both classic JPEG 2000 and HTJ2K in the
+adapter's supported image and code-block profiles, including reversible 5/3 and
+irreversible 9/7 transforms. Unsupported explicit CUDA requests return an error.
+
+Encode from CUDA buffers is separate: it requires HTJ2K block coding and external
+validation, and rejects classic JPEG 2000 block coding. Strict host-input encode
+also requires supported CUDA stages throughout. The shared encode-stage adapter
+can accelerate individual stages without providing a complete classic encoder.
 
 The host-memory paths and the session types build by default. Enable the
 `cuda-runtime` feature for CUDA Driver API dispatch, CUDA-resident surface and

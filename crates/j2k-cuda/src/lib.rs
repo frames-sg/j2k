@@ -3,10 +3,13 @@
 //! CUDA-facing device-output adapter for `j2k`.
 //!
 //! This crate intentionally exposes the same backend-selection surface as the
-//! Metal adapter. CPU and auto requests return host-backed surfaces. Strict
-//! CUDA requests are reserved for CUDA-resident HTJ2K codestream decode and
-//! CUDA-resident HTJ2K encode inputs; the CPU-decode-then-upload path is
-//! exposed through explicit CPU-staged APIs.
+//! Metal adapter. CPU requests return host-backed surfaces; auto requests can
+//! return CUDA-resident surfaces for promoted workloads. Explicit CUDA decode
+//! supports classic JPEG 2000 and HTJ2K within the adapter's image and code-block
+//! limits, with reversible 5/3 or irreversible 9/7 transforms. Encode from CUDA
+//! buffers requires HTJ2K block coding and external validation. Unsupported
+//! explicit CUDA requests return an error. CPU-decode-then-upload is exposed
+//! through explicit CPU-staged APIs.
 
 #![deny(missing_docs)]
 #![warn(unreachable_pub)]
