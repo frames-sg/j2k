@@ -325,6 +325,44 @@ fn encode_gray16(samples: &[u16], width: u32, height: u32, mode: J2kBlockCodingM
 }
 
 #[test]
+fn mixed_codec_groups_report_alpha_precision_signedness_and_decoded_rects() {
+    use j2k::BatchAlpha;
+    use j2k_ml::ImageInput;
+    let jpeg = j2k_test_support::progressive_8x8_jpeg();
+    let gray16 = EncodedImage::full(Arc::from(encode_gray16(
+        &[0, 1, 0x1234, u16::MAX, 4096, 32_768],
+        3,
+        2,
+        J2kBlockCodingMode::HighThroughput,
+    )));
+    let inputs = [
+        ImageInput::Jpeg(j2k_jpeg::JpegBatchInput::new(&jpeg)),
+        ImageInput::Jpeg2000(&gray16),
+    ];
+    let mut decoder = CpuBurnDecoder::<Flex>::new(FlexDevice, BatchDecodeOptions::default());
+    let result = decoder.decode_batch(&inputs).expect("decode mixed batch");
+
+    assert!(result.errors().is_empty());
+    assert_eq!(result.groups().len(), 2);
+    for group in result.groups() {
+        assert_eq!(group.alpha(), BatchAlpha::None);
+        assert!(!group.signed());
+        assert_eq!(group.decoded_rects(), [Rect::full(group.dimensions())]);
+        match group.source_indices() {
+            [0] => {
+                assert_eq!(group.dimensions(), (8, 8));
+                assert_eq!(group.precision(), 8);
+            }
+            [1] => {
+                assert_eq!(group.dimensions(), (3, 2));
+                assert_eq!(group.precision(), 16);
+            }
+            other => panic!("unexpected source rows {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn mixed_codec_batch_preserves_indices_channels_and_session_integrity() {
     use j2k_ml::{ImageDecodeError, ImageInput};
     let jpeg = j2k_test_support::progressive_8x8_jpeg();
