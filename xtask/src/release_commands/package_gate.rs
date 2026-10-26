@@ -15,7 +15,8 @@ use consumer::{
 
 use super::release_manifest::{
     registry_independent_packages, release_dependencies_by_package,
-    validate_release_manifest_contract, ReleaseManifestContract,
+    release_dev_dependencies_by_package, validate_release_manifest_contract,
+    ReleaseManifestContract,
 };
 use super::{package_name, workspace_package_records};
 
@@ -45,6 +46,7 @@ fn package_gate_plan(
         .map(|package| Ok((package_name(package)?.to_string(), package)))
         .collect::<Result<BTreeMap<_, _>, String>>()?;
     let dependencies_by_package = release_dependencies_by_package(manifest, &packages)?;
+    let dev_dependencies_by_package = release_dev_dependencies_by_package(manifest, &packages)?;
     let independent = registry_independent_packages(manifest, &packages)?;
     let mut processed = BTreeSet::new();
     let mut plan = Vec::with_capacity(manifest.ordered_crates().len());
@@ -54,6 +56,13 @@ fn package_gate_plan(
             .get(package)
             .cloned()
             .ok_or_else(|| format!("package gate dependency graph omitted `{package}`"))?;
+        // Packaging also resolves exact dev-dependencies on release crates, which must
+        // therefore be patched and published first, like ordinary dependencies.
+        let dev_dependencies = dev_dependencies_by_package
+            .get(package)
+            .cloned()
+            .unwrap_or_default();
+        pending.extend(dev_dependencies.iter().cloned());
         let mut dependency_closure = BTreeSet::new();
         while let Some(dependency_name) = pending.pop_first() {
             if !dependency_closure.insert(dependency_name.clone()) {
@@ -100,7 +109,7 @@ fn package_gate_plan(
                 .and_then(serde_json::Value::as_str)
                 .ok_or_else(|| format!("cargo metadata package `{package}` has no version"))?
                 .to_string(),
-            registry_independent: independent.contains(package),
+            registry_independent: independent.contains(package) && dev_dependencies.is_empty(),
             patches,
         });
         processed.insert(package);
