@@ -93,11 +93,12 @@ fn make_job(shape: BenchShape, transform: BenchTransform) -> CudaJ2kIdwtJob {
     let height = u32::try_from(shape.height).expect("height fits u32");
     let band_width = width / 2;
     let band_height = height / 2;
-    let band_rect = CudaJ2kRect {
-        x0: 0,
-        y0: 0,
-        x1: band_width,
-        y1: band_height,
+    // The output starts at (1, 1): low bands start at 1, high bands at 0.
+    let band_rect = |x0, y0| CudaJ2kRect {
+        x0,
+        y0,
+        x1: x0 + band_width,
+        y1: y0 + band_height,
     };
     CudaJ2kIdwtJob {
         rect: CudaJ2kRect {
@@ -106,10 +107,10 @@ fn make_job(shape: BenchShape, transform: BenchTransform) -> CudaJ2kIdwtJob {
             x1: width + 1,
             y1: height + 1,
         },
-        ll_rect: band_rect,
-        hl_rect: band_rect,
-        lh_rect: band_rect,
-        hh_rect: band_rect,
+        ll_rect: band_rect(1, 1),
+        hl_rect: band_rect(0, 1),
+        lh_rect: band_rect(1, 0),
+        hh_rect: band_rect(0, 0),
         irreversible97: transform.mode,
     }
 }

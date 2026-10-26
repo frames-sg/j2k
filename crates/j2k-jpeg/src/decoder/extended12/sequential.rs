@@ -247,9 +247,6 @@ impl Decoder<'_> {
         }
 
         let scan_warnings = finish_scan(&mut br, true)?;
-        Ok(DecodeOutcome {
-            decoded: roi,
-            warnings: merged_warnings(&self.warnings, scan_warnings)?,
-        })
+        self.finish_outcome(roi, merged_warnings(&self.warnings, scan_warnings)?)
     }
 }

@@ -230,6 +230,7 @@ pub fn decode_device_lossless_differences_into(
         }
         warnings = scan.decode_differences_into(&mut planes[..component_count], validate_eoi)?;
     }
+    decoder.validate_completed_warnings(&warnings)?;
     Ok(warnings)
 }
 

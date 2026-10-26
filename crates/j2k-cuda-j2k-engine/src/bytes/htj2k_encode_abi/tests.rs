@@ -24,9 +24,9 @@ fn explicit_tail_fields_preserve_cuda_host_abi_sizes_and_offsets() {
         156
     );
     assert_eq!(size_of::<CudaJ2kStoreGray8BatchJob>(), 64);
-    assert_eq!(offset_of!(CudaJ2kStoreGray8BatchJob, reserved_tail), 60);
-    assert_eq!(size_of::<CudaJ2kStoreGray16BatchJob>(), 64);
-    assert_eq!(offset_of!(CudaJ2kStoreGray16BatchJob, reserved_tail), 60);
+    assert_eq!(offset_of!(CudaJ2kStoreGray8BatchJob, native_samples), 60);
+    assert_eq!(size_of::<CudaJ2kStoreGray16BatchJob>(), 72);
+    assert_eq!(offset_of!(CudaJ2kStoreGray16BatchJob, native_samples), 64);
+    assert_eq!(offset_of!(CudaJ2kStoreGray16BatchJob, reserved_tail), 68);
     assert_eq!(size_of::<CudaJ2kStoreGrayI16BatchJob>(), 64);
-    assert_eq!(offset_of!(CudaJ2kStoreGrayI16BatchJob, reserved_tail), 60);
 }

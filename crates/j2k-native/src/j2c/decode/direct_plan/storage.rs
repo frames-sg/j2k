@@ -99,6 +99,7 @@ pub(super) fn build_component_plan_from_storage(
     Ok(J2kDirectGrayscalePlan {
         dimensions,
         bit_depth: component_info.size_info.precision,
+        signed: component_info.size_info.signed,
         steps,
     })
 }

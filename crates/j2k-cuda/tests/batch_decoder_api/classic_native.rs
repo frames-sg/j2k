@@ -334,9 +334,10 @@ fn assert_classic_case(
     layout: BatchLayout,
     request: DecodeRequest,
 ) -> Vec<u8> {
-    let options = BatchDecodeOptions {
-        layout,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = layout;
+        options
     };
     let prepared = prepare_batch(
         vec![EncodedImage::new(Arc::clone(encoded), request)],
@@ -406,9 +407,10 @@ fn assert_classic_irreversible_case(
     layout: BatchLayout,
     request: DecodeRequest,
 ) {
-    let options = BatchDecodeOptions {
-        layout,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = layout;
+        options
     };
     let prepared = prepare_batch(
         vec![EncodedImage::new(Arc::clone(encoded), request)],

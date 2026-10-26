@@ -23,10 +23,11 @@ pub use info::{
 mod icc;
 pub use icc::{extract_icc_profile, insert_icc_profile, set_icc_profile, IccProfileError};
 pub use j2k_core::{
-    BatchDecodeError, BatchInfrastructureError, CacheStats, CodecContext, CompressedPayloadKind,
-    CompressedTransferSyntax, DecodeRowsError, Downscale, ImageCodec, ImageDecode, ImageDecodeRows,
-    PassthroughCandidate, PassthroughDecision, PassthroughRejectReason, PassthroughRequirements,
-    PixelFormat, PixelLayout, RowSink, Sample, SampleType, TileBatchDecode, TileDecompress,
+    BatchDecodeError, BatchInfrastructureError, BatchLayout, CacheStats, CodecContext,
+    CompressedPayloadKind, CompressedTransferSyntax, DecodeRowsError, Downscale, ImageCodec,
+    ImageDecode, ImageDecodeRows, PassthroughCandidate, PassthroughDecision,
+    PassthroughRejectReason, PassthroughRequirements, PixelFormat, PixelLayout, RowSink, Sample,
+    SampleType, TileBatchDecode, TileDecompress,
 };
 
 mod context;
@@ -34,6 +35,10 @@ pub use context::DecoderContext;
 
 mod batch_session;
 pub use batch_session::JpegBatchSession;
+mod owned_batch;
+pub use owned_batch::{
+    JpegBatchDecodeOptions, JpegBatchDecodeResult, JpegBatchDecoder, JpegBatchGroup, JpegBatchInput,
+};
 
 mod capabilities;
 pub use capabilities::{

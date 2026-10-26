@@ -587,11 +587,11 @@ fi
 case "$*" in
   *'llvm-cov --no-report --all-features'*)
     scope=j2k-cuda-j2k-engine-cd0e0123456789ab
-    cfg='cargo::rustc-check-cfg=cfg(j2k_cuda_oxide_j2k_ml_built)\ncargo::rustc-cfg=j2k_cuda_oxide_j2k_ml_built\n'
+    cfg='cargo::rustc-check-cfg=cfg(j2k_cuda_oxide_j2k_idwt_built)\ncargo::rustc-cfg=j2k_cuda_oxide_j2k_idwt_built\n'
     ;;
   *'llvm-cov --no-clean --no-default-features --features cuda'*)
     scope=j2k-cuda-j2k-engine-d1aa0123456789ab
-    cfg='cargo::rustc-check-cfg=cfg(j2k_cuda_oxide_j2k_ml_built)\n'
+    cfg='cargo::rustc-check-cfg=cfg(j2k_cuda_oxide_j2k_idwt_built)\n'
     ;;
   *) exit 0 ;;
 esac
@@ -619,7 +619,7 @@ printf '%b' "$cfg" > "$directory/output"
             .current_cfg_flags(&packages, &packages)
             .expect("primary all-feature cfg provenance");
 
-        assert!(flags[&package]["j2k_cuda_oxide_j2k_ml_built"]);
+        assert!(flags[&package]["j2k_cuda_oxide_j2k_idwt_built"]);
     }
 
     #[test]

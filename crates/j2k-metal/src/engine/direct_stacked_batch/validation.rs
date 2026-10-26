@@ -159,6 +159,7 @@ pub(in super::super) fn supports_stacked_direct_component_plane_batch(
     if plans.iter().any(|plan| {
         plan.dimensions != first.dimensions
             || plan.bit_depth != first.bit_depth
+            || plan.signed != first.signed
             || plan.round_centered_store != first.round_centered_store
             || plan.steps.len() != first.steps.len()
     }) {
@@ -258,6 +259,7 @@ pub(super) fn preflight_stacked_mct_rgb8_color_batch(
             plan.mct
                 && plan.dimensions == first.dimensions
                 && plan.bit_depths == first.bit_depths
+                && plan.signed == first.signed
                 && plan.transform == first.transform
                 && plan.component_plans.len() == 3
         })

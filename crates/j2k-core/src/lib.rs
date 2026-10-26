@@ -75,11 +75,11 @@ pub use batch::{
     checked_batch_count_product, checked_batch_count_sum, tile_batch_worker_count,
     try_batch_reserve_for_push, try_batch_reserve_to, try_collect_indexed_batch_results,
     try_collect_ordered_batch_results_with_limits, BatchAllocationBudget, BatchAllocationRequest,
-    BatchDecodeError, BatchInfrastructureError, BatchResultSlot, HtGpuJobChunk, HtGpuJobChunkEntry,
-    HtGpuJobChunkLimit, HtGpuJobChunkLimits, HtGpuJobChunkPlan, HtGpuJobChunkPlanError,
-    HtGpuJobChunkRequest, HtGpuJobPassBucket, IndexedBatchResult, TileBatchError, TileBatchOptions,
-    TileDecodeJob, TileRegionDecodeJob, TileRegionScaledDecodeJob,
-    TileRegionScaledDeviceDecodeRequest, TileScaledDecodeJob,
+    BatchDecodeError, BatchInfrastructureError, BatchLayout, BatchResultSlot, HtGpuJobChunk,
+    HtGpuJobChunkEntry, HtGpuJobChunkLimit, HtGpuJobChunkLimits, HtGpuJobChunkPlan,
+    HtGpuJobChunkPlanError, HtGpuJobChunkRequest, HtGpuJobPassBucket, IndexedBatchResult,
+    TileBatchError, TileBatchOptions, TileDecodeJob, TileRegionDecodeJob,
+    TileRegionScaledDecodeJob, TileRegionScaledDeviceDecodeRequest, TileScaledDecodeJob,
 };
 #[doc(hidden)]
 pub use batch::{plan_ht_gpu_job_chunks, plan_ht_gpu_job_chunks_with_external_live_bytes};

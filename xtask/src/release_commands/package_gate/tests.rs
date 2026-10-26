@@ -253,7 +253,7 @@ fn package_gate_plan_requires_manifest_paths_for_patch_dependencies() {
 }
 
 #[test]
-fn package_gate_ignores_dev_dependencies_and_rejects_registry_sibling_edges() {
+fn package_gate_patches_release_dev_dependencies_and_rejects_registry_sibling_edges() {
     let mut metadata = workspace_metadata(&[]);
     let native = metadata["packages"]
         .as_array_mut()
@@ -278,14 +278,19 @@ fn package_gate_ignores_dev_dependencies_and_rejects_registry_sibling_edges() {
         }
     ]);
 
-    let plan = test_package_gate_plan(&metadata).expect("ignored non-release dependencies");
+    let plan = test_package_gate_plan(&metadata).expect("dev and external dependencies");
     let native = plan
         .iter()
         .find(|step| step.package == "j2k-native")
         .expect("native step");
     assert_eq!(
         native.patches,
-        [] as [(std::string::String, std::string::String); 0]
+        [("j2k-core".to_string(), "/workspace/j2k-core".to_string())],
+        "cargo package resolves exact release dev-dependencies, so they are patched"
+    );
+    assert!(
+        !native.registry_independent,
+        "a crate with an unpublished release dev-dependency cannot dry-run against the registry"
     );
 
     let native = metadata["packages"]
@@ -299,6 +304,51 @@ fn package_gate_ignores_dev_dependencies_and_rejects_registry_sibling_edges() {
         test_package_gate_plan(&metadata).expect_err("registry sibling dependency must reject");
     assert!(
         error.contains("workspace/path sourced"),
+        "unexpected: {error}"
+    );
+}
+
+#[test]
+fn package_gate_patches_dev_only_release_crates_and_orders_them_first() {
+    let dev_edge = |metadata: &mut serde_json::Value, package: &str, dependency: &str| {
+        let record = metadata["packages"]
+            .as_array_mut()
+            .expect("packages")
+            .iter_mut()
+            .find(|record| record["name"] == package)
+            .expect("package record");
+        record["dependencies"]
+            .as_array_mut()
+            .expect("dependencies")
+            .push(serde_json::json!({
+                "name": dependency,
+                "kind": "dev",
+                "path": format!("/workspace/{dependency}"),
+                "req": "=0.7.5",
+                "source": null
+            }));
+    };
+
+    let mut metadata = workspace_metadata(&[]);
+    dev_edge(&mut metadata, "j2k-transcode-metal", "j2k-metal");
+    let plan = test_package_gate_plan(&metadata).expect("dev-only release dependency plan");
+    let transcode = plan
+        .iter()
+        .find(|step| step.package == "j2k-transcode-metal")
+        .expect("Metal transcode step");
+    assert!(
+        transcode
+            .patches
+            .contains(&("j2k-metal".to_string(), "/workspace/j2k-metal".to_string())),
+        "unexpected patches: {:?}",
+        transcode.patches
+    );
+
+    let mut metadata = workspace_metadata(&[]);
+    dev_edge(&mut metadata, "j2k-metal", "j2k-transcode-metal");
+    let error = test_package_gate_plan(&metadata).expect_err("forward dev dependency");
+    assert!(
+        error.contains("before unpublished workspace dependency `j2k-transcode-metal`"),
         "unexpected: {error}"
     );
 }

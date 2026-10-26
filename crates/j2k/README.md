@@ -67,9 +67,11 @@ Rate search uses scales at or above one within the common admissible interval of
 all weighted steps. Byte/BPP targets accept results within the size allowance;
 PSNR specifies a minimum quality within `psnr_tolerance_db`. Search uses doubling
 and bounded bisection, evaluates an encountered admissible boundary, retains a
-feasible candidate, and validates the final re-encode. PSNR search also probes
-beyond an initial quality miss and checks the endpoint if no probe succeeds;
-it does not exhaustively enumerate potentially non-monotonic quality islands.
+feasible candidate, and validates the returned codestream. CPU byte searches
+return the last probe directly when it is the selected scale; other searches
+re-encode the selected scale. PSNR search also probes beyond an initial quality
+miss and checks the endpoint if no probe succeeds; it does not exhaustively
+enumerate potentially non-monotonic quality islands.
 
 Prepared native batches preserve significant sample values and signed storage.
 For the supported 1–16-bit source routes, requested `Gray8`/`Rgb8`/`Rgba8`

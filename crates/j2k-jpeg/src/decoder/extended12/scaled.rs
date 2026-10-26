@@ -200,10 +200,7 @@ impl Decoder<'_> {
             cap,
         };
         write_scaled_planes_region(out, stride, write, planes.as_slice(), color)?;
-        Ok(DecodeOutcome {
-            decoded: roi,
-            warnings,
-        })
+        self.finish_outcome(roi, warnings)
     }
 
     fn decode_extended12_scaled_planes(

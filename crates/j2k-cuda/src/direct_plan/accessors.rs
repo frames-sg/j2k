@@ -21,6 +21,12 @@ impl CudaHtj2kDecodePlan {
         self.bit_depth
     }
 
+    /// Whether the source samples are signed (no unsigned level shift).
+    #[cfg(feature = "cuda-runtime")]
+    pub(crate) fn signed(&self) -> bool {
+        self.signed
+    }
+
     #[cfg(feature = "cuda-runtime")]
     #[cfg_attr(
         not(test),

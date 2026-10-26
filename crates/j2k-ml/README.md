@@ -1,7 +1,7 @@
 # j2k-ml
 
-`j2k-ml` is an independent integration for Burn 0.21 that adapts owned JPEG
-2000 and HTJ2K batches. It is maintained by the `j2k` project and is not an official Tracel or Burn crate.
+`j2k-ml` is an independent integration for Burn 0.21 that adapts JPEG, JPEG
+2000, and HTJ2K batches. It is maintained by the `j2k` project and is not an official Tracel or Burn crate.
 
 [GPU image decoding for AI pipelines](https://frames-sg.com/gpu-image-decoding-ai/)
 provides the project-level overview of the tensor and resident-device routes.
@@ -25,6 +25,26 @@ The example keeps a `CpuBurnDecoder` behind a mutex because Burn's `Batcher`
 receives `&self`, preserves label order through each codec group's
 `source_indices`, then casts and normalizes with ordinary Burn tensor
 operations.
+
+With the `cpu` feature, `CpuBurnDecoder::decode_batch(&[ImageInput])` accepts
+JPEG and JPEG 2000 or HTJ2K together. `ImageInput::Jpeg` carries a
+`j2k_jpeg::JpegBatchInput`; `ImageInput::Jpeg2000` borrows an `EncodedImage`.
+The common `BurnBatchDecode` exposes groups, indexed codec-tagged errors and
+group failures through accessors. Group order is unspecified; `source_indices()`
+is authoritative. Each group exposes returned sample metadata, typed warnings,
+`recovered()`, and optional `j2k_info()` for JPEG 2000 details. Session strictness
+controls both codec families while retaining JPEG color hints. The existing
+J2K `decode` and prepared paths remain available. JPEG region, reduction and GPU
+codec execution remain unsupported; a GPU Burn destination uses an ordinary upload.
+
+JPEG tensor output remains RGB uint8 by default, with grayscale expanded to three identical channels. Grayscale JPEG 2000 and HTJ2K remain one channel. Output metadata describes the returned tensor. A later explicit `channels="native"` option may preserve grayscale JPEG as one channel without changing existing defaults. Source component counts, when exposed, are per input row and remain aligned with source_indices.
+
+The Rust session defaults to strict decoding with the same pixel-integrity
+contract as Python: complete required image data, no damage concealment,
+missing-data substitution or unverified completion. Leniency permits supported
+recovery, records it per row, and never also reports that row as an error.
+Cosmetic warnings do not set `recovered()`. Unknown intent at progressive EOF
+is rejected by default. No channels option is currently exposed.
 
 CUDA can decode directly into Burn-owned device storage:
 

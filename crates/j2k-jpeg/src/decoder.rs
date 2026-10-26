@@ -78,6 +78,8 @@ use self::color_convert::{
     copy_gray8_scaled_rect, copy_rgb16_to_rgba16, copy_ycbcr16_row_to_rgb16,
     copy_ycbcr8_row_to_rgb8,
 };
+mod integrity;
+use self::integrity::DecodeIntegrity;
 mod warning_ownership;
 use self::warning_ownership::{merged_warnings, try_clone_warnings};
 mod core_traits;
@@ -99,8 +101,9 @@ mod rows;
 mod sequential;
 mod tile;
 pub(crate) use self::tile::{
-    decode_prepared_jpeg_tile_rgb8_in_context, planned_jpeg_tile_decode_live_bytes,
-    prepare_jpeg_tile_decode, PlannedJpegTileDecode, PreparedJpegTileDecode,
+    decode_prepared_jpeg_tile_rgb8_in_context, planned_jpeg_tile_decode_for_decoder,
+    planned_jpeg_tile_decode_live_bytes, prepare_jpeg_tile_decode, PlannedJpegTileDecode,
+    PreparedJpegTileDecode,
 };
 pub use self::tile::{
     decode_prepared_jpeg_tiles_rgb8, decode_tile_into, decode_tile_into_in_context,
@@ -122,6 +125,8 @@ pub(crate) use self::lossless_render::DeviceLosslessScan;
 /// create a `info → error` cycle (see `info.rs` header note).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodeOutcome {
+    /// True when explicit leniency accepted recovery or unverified completion.
+    pub recovered: bool,
     /// The source-coordinate rectangle represented by the output buffer.
     /// Full-image decodes return `Rect::full(info.dimensions)` even when the
     /// requested output is downscaled; region decodes return their source ROI.
@@ -225,6 +230,8 @@ pub struct PreparedJpegTileJob<'i, 'o> {
 /// Result for one successful prepared JPEG tile decode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodedTile {
+    /// True when explicit leniency accepted recovery or unverified completion.
+    pub recovered: bool,
     /// Tile dimensions reported by the prepared JPEG header.
     pub dimensions: (u32, u32),
     /// Rectangle written into the output buffer.
@@ -295,6 +302,7 @@ pub struct Decoder<'a> {
     pub(crate) bytes: &'a [u8],
     pub(crate) info: Info,
     pub(crate) warnings: Vec<Warning>,
+    integrity: DecodeIntegrity,
     pub(crate) backend: Backend,
     pub(crate) plan: PreparedDecodePlan,
     pub(crate) progressive_plan: Option<PreparedProgressivePlan>,
@@ -303,6 +311,7 @@ pub struct Decoder<'a> {
 }
 
 struct PreparedDecoderMetadata {
+    integrity: DecodeIntegrity,
     info: Info,
     warnings: Vec<Warning>,
     plan: PreparedDecodePlan,
@@ -449,6 +458,7 @@ impl<'a> Decoder<'a> {
         } = view;
         let backend = Backend::detect();
         let PreparedDecoderMetadata {
+            integrity,
             info,
             warnings,
             plan,
@@ -466,6 +476,7 @@ impl<'a> Decoder<'a> {
             bytes,
             info,
             warnings,
+            integrity,
             backend,
             plan,
             progressive_plan,
@@ -476,6 +487,7 @@ impl<'a> Decoder<'a> {
 
     pub(super) fn from_cached_sequential_template_with_external_live(
         bytes: &'a [u8],
+        options: DecodeOptions,
         ctx: &mut DecoderContext,
         external_live_bytes: usize,
     ) -> Result<Option<Self>, JpegError> {
@@ -484,10 +496,12 @@ impl<'a> Decoder<'a> {
         else {
             return Ok(None);
         };
+        let integrity = DecodeIntegrity::sequential(options, info.sampling.len());
         Ok(Some(Self {
             bytes,
             info,
             warnings,
+            integrity,
             backend: Backend::detect(),
             plan,
             progressive_plan: None,
@@ -512,7 +526,7 @@ impl<'a> Decoder<'a> {
     ) -> Result<R, JpegError> {
         // Split (multi-scan) sequential frames plan through whole-image
         // coefficients, which the single-scan plan cache does not hold.
-        let cache_prefix = if view.options == DecodeOptions::default()
+        let cache_prefix = if view.options.color_transform() == crate::ColorTransform::Auto
             && matches!(
                 view.info.sof_kind,
                 SofKind::Baseline8 | SofKind::Extended8 | SofKind::Extended12
@@ -535,6 +549,7 @@ impl<'a> Decoder<'a> {
                 Self::from_view_in_context_with_external_live(view, ctx, external_live_bytes)?;
             return operation(&decoder);
         };
+        let integrity = DecodeIntegrity::from_header(&view.header, view.options)?;
         Self::validate_cached_plan_lease(&view.header, ctx, cached_plan, external_live_bytes)?;
         let (lease, plan) = ctx.lease_cached_decode_plan(slot)?;
         let JpegView {
@@ -549,6 +564,7 @@ impl<'a> Decoder<'a> {
             bytes,
             info,
             warnings,
+            integrity,
             backend: Backend::detect(),
             plan,
             progressive_plan: None,

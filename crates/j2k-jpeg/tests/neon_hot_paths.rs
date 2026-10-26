@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#![cfg(target_arch = "aarch64")]
+#![cfg(all(target_arch = "aarch64", not(feature = "scalar-only")))]
 
 use j2k_jpeg::bench_support::{
     bench_rgb_row_pair_from_420, bench_rgb_row_pair_from_420_reference,
@@ -127,7 +127,6 @@ fn neon_420_row_pair_matches_reference_for_odd_widths_and_tail_cases() {
 }
 
 #[test]
-#[cfg(not(feature = "scalar-only"))]
 fn neon_420_row_pair_width_255_stays_on_neon_for_tail_dispatch() {
     let width = 255usize;
     let chroma_width = width.div_ceil(2);

@@ -49,6 +49,7 @@ fn gray16_job(copy: bool) -> CudaJ2kStoreGray16Job {
         output_y: 0,
         addend: 0.0,
         bit_depth: 16,
+        signed: 0,
     }
 }
 
@@ -105,6 +106,7 @@ fn rgb16_job(copy: bool) -> CudaJ2kStoreRgb16Job {
         bit_depth1: 16,
         bit_depth2: 16,
         rgba: 0,
+        signed: 0,
     }
 }
 

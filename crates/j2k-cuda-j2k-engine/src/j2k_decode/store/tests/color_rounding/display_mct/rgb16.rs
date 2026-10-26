@@ -61,5 +61,6 @@ fn two_pixel_rgb16_job() -> CudaJ2kStoreRgb16Job {
         bit_depth1: 16,
         bit_depth2: 16,
         rgba: 0,
+        signed: 0,
     }
 }

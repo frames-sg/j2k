@@ -361,6 +361,7 @@ impl DownscaleFactor {
 
 /// Override for APP14 color-transform detection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ColorTransform {
     /// Detect the transform from APP14 metadata and component layout.
     Auto,
@@ -374,17 +375,40 @@ pub enum ColorTransform {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DecodeOptions {
     color_transform: ColorTransform,
+    strict: bool,
 }
 
 impl Default for DecodeOptions {
     fn default() -> Self {
         Self {
             color_transform: ColorTransform::Auto,
+            strict: true,
         }
     }
 }
 
 impl DecodeOptions {
+    /// Require complete, verified image data without damage recovery.
+    ///
+    /// Defaults to true. False permits supported salvage, with explicit
+    /// recovery metadata; it does not permit precision loss or invalid tables.
+    #[must_use]
+    pub fn with_strict(mut self, strict: bool) -> Self {
+        self.set_strict(strict);
+        self
+    }
+
+    /// Set the pixel-integrity policy for subsequent decoding.
+    pub fn set_strict(&mut self, strict: bool) {
+        self.strict = strict;
+    }
+
+    /// Whether damage recovery or unverified completion is rejected.
+    #[must_use]
+    pub const fn is_strict(&self) -> bool {
+        self.strict
+    }
+
     /// Override APP14 color-transform detection.
     pub fn set_color_transform(&mut self, color_transform: ColorTransform) {
         self.color_transform = color_transform;

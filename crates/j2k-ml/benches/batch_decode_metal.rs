@@ -54,9 +54,10 @@ fn bench_codec_resident(
     // Resident RGB groups expose ordinary interleaved `Surface` views, so the
     // codec-resident color matrix is explicitly NHWC. Grayscale is layout
     // equivalent and shares the same retained sessions.
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let mut group = criterion.benchmark_group(format!(
         "j2k_owned_batch_codec_resident_metal/input_{}",

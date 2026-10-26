@@ -2,7 +2,11 @@
 
 use super::super::super::{CudaHtj2kStoreStep, Error, CUDA_HTJ2K_KERNELS_NOT_READY};
 
-pub(super) fn bit_depth_addend(bit_depth: u8) -> f32 {
+/// Unsigned level shift added after inverse MCT; signed sources take none.
+pub(super) fn bit_depth_addend(bit_depth: u8, signed: bool) -> f32 {
+    if signed {
+        return 0.0;
+    }
     let shift = bit_depth.saturating_sub(1).min(15);
     f32::from(1_u16 << shift)
 }

@@ -45,6 +45,11 @@ jobs:
         run: |
           candidate_sha="$(git rev-parse HEAD)"
           origin_url="$(git remote get-url origin)"
+          waiver_args=()
+          cuda_waiver="xtask/release-evidence/cuda-waiver-${RELEASE_TAG#v}.md"
+          if [ -e "${cuda_waiver}" ]; then
+            waiver_args=(--cuda-waiver "${cuda_waiver}")
+          fi
           python3 scripts/github_actions_verify.py verify-release \
             --repository "${REPOSITORY}" \
             --origin-url "${origin_url}" \
@@ -58,11 +63,23 @@ jobs:
             --cuda-job "GPU / CUDA full release validation" \
             --metal-job "GPU / Metal full release validation" \
             --t803-scope all \
-            --t803-out-dir target/t803/release-evidence
+            --t803-out-dir target/t803/release-evidence \
+            "${waiver_args[@]}"
       - name: Verify downloaded T.803 report contents
         if: ${{ github.event_name == 'push' }}
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           candidate_sha="$(git rev-parse HEAD)"
+          if [ -e "xtask/release-evidence/cuda-waiver-${RELEASE_TAG#v}.md" ]; then
+            cargo xtask t803 verify --scope cpu --candidate-sha "${candidate_sha}" \
+              --report "target/t803/release-evidence/j2k-t803-cpu-linux-x86_64-${candidate_sha}/cpu.json" \
+              --report "target/t803/release-evidence/j2k-t803-cpu-macos-aarch64-${candidate_sha}/cpu.json" \
+              --report "target/t803/release-evidence/j2k-t803-cpu-windows-x86_64-${candidate_sha}/cpu.json"
+            cargo xtask t803 verify --scope metal --candidate-sha "${candidate_sha}" \
+              --report "target/t803/release-evidence/j2k-t803-metal-macos-aarch64-${candidate_sha}/metal.json"
+            exit 0
+          fi
           cargo xtask t803 verify --scope all --candidate-sha "${candidate_sha}" \
             --report "target/t803/release-evidence/j2k-t803-cpu-linux-x86_64-${candidate_sha}/cpu.json" \
             --report "target/t803/release-evidence/j2k-t803-cpu-macos-aarch64-${candidate_sha}/cpu.json" \

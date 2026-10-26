@@ -347,6 +347,7 @@ fn stacked_destination_target<'r>(
         max_value,
         u8_scale: 1.0,
         u16_scale: scale.u16_scale,
+        is_signed: 0,
     };
     let decode = runtime.decode()?;
     let (kind, pipeline) = match fmt {

@@ -71,9 +71,10 @@ struct MetalIut {
 #[cfg(target_os = "macos")]
 impl MetalIut {
     fn new() -> Result<Self, String> {
-        let options = BatchDecodeOptions {
-            layout: BatchLayout::Nhwc,
-            ..BatchDecodeOptions::default()
+        let options = {
+            let mut options = BatchDecodeOptions::default();
+            options.layout = BatchLayout::Nhwc;
+            options
         };
         let decoder = MetalBatchDecoder::system_default_with_options(options)
             .map_err(|error| error.to_string())?;

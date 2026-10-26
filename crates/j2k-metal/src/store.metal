@@ -49,6 +49,7 @@ struct J2kRepeatedGrayStoreParams {
     float max_value;
     float u8_scale;
     float u16_scale;
+    uint is_signed;
 };
 
 struct J2kGrayStoreParams {
@@ -136,20 +137,6 @@ struct J2kStoreWindowIndices {
     uint src_idx;
     uint dst_idx;
 };
-
-inline short j2k_pack_native_i16(float value, float positive_max) {
-    const float negative_min = -positive_max - 1.0f;
-    return short(rint(clamp(value, negative_min, positive_max)));
-}
-
-// Match native signed-byte storage followed by the requested Gray16 widening.
-// Sub-eight-bit negative bytes exceed the declared unsigned range and saturate.
-inline ushort j2k_pack_signed_narrow_u16(float value, float positive_max) {
-    const short sample = j2k_pack_native_i16(value, positive_max);
-    const uint stored = uint(uchar(char(sample)));
-    const uint maximum = uint(positive_max) * 2u + 1u;
-    return ushort(min((stored * 65535u + maximum / 2u) / maximum, 65535u));
-}
 
 inline J2kStoreWindowIndices j2k_store_window_indices(
     uint input_width,
@@ -273,7 +260,7 @@ kernel void j2k_store_component_repeated_gray_u16(
         gid.z * input_plane_len,
         gid.z * output_plane_len
     );
-    output[indices.dst_idx] = pack_to_u16(j2k_shift_centered_sample(input[indices.src_idx], params.addend, true), params.max_value, params.u16_scale);
+    output[indices.dst_idx] = pack_sample_to_u16(j2k_shift_centered_sample(input[indices.src_idx], params.addend, true), params.max_value, params.u16_scale, params.is_signed != 0u);
 }
 
 kernel void j2k_store_component_repeated_gray_i16(
@@ -332,7 +319,7 @@ kernel void j2k_store_component_repeated_gray_u16_contiguous(
         return;
     }
 
-    output[gid] = pack_to_u16(j2k_shift_centered_sample(input[gid], params.addend, true), params.max_value, params.u16_scale);
+    output[gid] = pack_sample_to_u16(j2k_shift_centered_sample(input[gid], params.addend, true), params.max_value, params.u16_scale, params.is_signed != 0u);
 }
 
 kernel void j2k_store_component_gray_u8(

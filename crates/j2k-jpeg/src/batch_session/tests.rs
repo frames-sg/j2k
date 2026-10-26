@@ -299,3 +299,26 @@ fn adjacent_inputs_with_the_same_address_but_different_lengths_are_preflighted()
     // Every job must pass preflight before any worker can write a destination.
     assert!(first.iter().chain(&second).all(|&value| value == 0x5a));
 }
+
+#[test]
+fn owned_output_is_charged_before_worker_planning() {
+    let mut output = [0x55; 16 * 16 * 3];
+    let mut jobs = [PreparedJpegTileJob {
+        input: crate::PreparedJpeg::Borrowed(JPEG_BASELINE_420_16X16),
+        out: &mut output,
+        stride: 16 * 3,
+        options: DecodeOptions::default(),
+    }];
+    let mut session = JpegBatchSession::default();
+    let results = session
+        .decode_prepared_jpeg_tiles_rgb8_with_external_live(
+            &mut jobs,
+            crate::decoder::DEFAULT_MAX_DECODE_BYTES - 1,
+        )
+        .unwrap();
+    assert!(matches!(
+        results.as_slice(),
+        [Err(JpegError::MemoryCapExceeded { .. })]
+    ));
+    assert_eq!(output, [0x55; 16 * 16 * 3]);
+}

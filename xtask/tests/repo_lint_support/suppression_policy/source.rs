@@ -86,10 +86,6 @@ const REVIEWED_ALLOWS: &[(&str, &str)] = &[
         "static_mut_refs",
     ),
     (
-        "crates/j2k-cuda-j2k-engine/src/cuda_oxide_j2k_ml/simt/src/main.rs",
-        "clippy::too_many_arguments",
-    ),
-    (
         "crates/j2k-cuda-jpeg-engine/src/cuda_oxide_jpeg_encode/simt/src/main.rs",
         "clippy::cast_possible_truncation",
     ),

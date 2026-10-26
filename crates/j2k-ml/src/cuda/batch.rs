@@ -195,7 +195,7 @@ fn materialize(
         .collect();
     Ok(BurnBatchDecode {
         groups,
-        errors,
+        errors: crate::j2k_errors(errors)?,
         group_errors,
     })
 }

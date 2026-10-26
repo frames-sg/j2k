@@ -286,8 +286,7 @@ fn component_route_builds_tier1_buffers_once_per_plan() {
         )
         .expect("referenced RGBA plan");
     let plans = [Arc::new(
-        prepare_referenced_classic_rgba_plan(&referenced, &bytes, false)
-            .expect("prepared RGBA plan"),
+        prepare_referenced_classic_rgba_plan(&referenced, &bytes).expect("prepared RGBA plan"),
     )];
     let expected = cpu_decode(&bytes, 32, PixelFormat::Rgba8);
 

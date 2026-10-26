@@ -44,9 +44,9 @@ pub(super) fn build_store_targets(
         let components =
             decoded_color_components(decoded, &mut component_offset, color.components.len())?;
         if rgba {
-            four_channel_targets.push(rgba_store_target(&color, components, fmt, layout)?);
+            four_channel_targets.push(rgba_store_target(&color, components, layout)?);
         } else {
-            three_channel_targets.push(rgb_store_target(&color, components, fmt, layout)?);
+            three_channel_targets.push(rgb_store_target(&color, components, layout)?);
         }
         update_color_report(&mut color, components);
         reports.push(color.report);
@@ -116,7 +116,6 @@ fn decoded_color_components<'a>(
 fn rgb_store_target<'a>(
     color: &CudaHtj2kColorDecodePlans,
     components: &'a [CudaDecodedComponent],
-    fmt: PixelFormat,
     layout: BatchLayout,
 ) -> Result<CudaJ2kStoreRgbNativeTarget<'a>, Error> {
     let stores = [
@@ -126,7 +125,7 @@ fn rgb_store_target<'a>(
     ];
     validate_color_stores(stores, color.dimensions)?;
     let bit_depths = color.rgb_bit_depths();
-    let addends = if color.mct && fmt != PixelFormat::RgbI16 {
+    let addends = if color.mct && !color.signed() {
         bit_depths.map(native_level_shift)
     } else {
         stores.map(|store| store.addend)
@@ -149,7 +148,6 @@ fn rgb_store_target<'a>(
 fn rgba_store_target<'a>(
     color: &CudaHtj2kColorDecodePlans,
     components: &'a [CudaDecodedComponent],
-    fmt: PixelFormat,
     layout: BatchLayout,
 ) -> Result<CudaJ2kStoreRgbaNativeTarget<'a>, Error> {
     let stores = [
@@ -159,7 +157,7 @@ fn rgba_store_target<'a>(
         &components[3].store,
     ];
     validate_color_stores(stores, color.dimensions)?;
-    let addends = if color.mct && fmt != PixelFormat::RgbaI16 {
+    let addends = if color.mct && !color.signed() {
         let mut addends = color.bit_depths.map(native_level_shift);
         addends[3] = stores[3].addend;
         addends

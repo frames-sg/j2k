@@ -3,5 +3,4 @@
 //! Portable materialization of native codec batch groups into Burn tensors.
 
 mod batch;
-
 pub use batch::CpuBurnDecoder;

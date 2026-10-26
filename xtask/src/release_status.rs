@@ -4,6 +4,7 @@ use std::env;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
+use crate::command_support::workspace_version_at;
 use crate::process::{self, CommandContext};
 
 const CI_WORKFLOW: &str = "full-validation.yml";
@@ -12,6 +13,7 @@ const RELEASE_CANDIDATE_JOB: &str = "Release candidate aggregate";
 const GPU_WORKFLOW: &str = "gpu-validation.yml";
 const CUDA_JOB: &str = "GPU / CUDA full release validation";
 const METAL_JOB: &str = "GPU / Metal full release validation";
+const CUDA_WAIVER_DIR: &str = "xtask/release-evidence";
 
 #[derive(Debug, Eq, PartialEq)]
 struct Options {
@@ -47,6 +49,8 @@ pub(crate) fn release_status(args: impl Iterator<Item = String>) -> Result<(), S
         ));
     }
 
+    let cuda_waiver = cuda_waiver(&root, &options.scope)?;
+
     let evidence_dir = root.join("target").join("t803").join(format!(
         "release-status-{}-{}",
         options.sha.clone(),
@@ -54,7 +58,7 @@ pub(crate) fn release_status(args: impl Iterator<Item = String>) -> Result<(), S
     ));
     let evidence_dir_text = evidence_dir.to_string_lossy().into_owned();
 
-    let command_args = vec![
+    let mut command_args = vec![
         "scripts/github_actions_verify.py".to_string(),
         "verify-candidate".to_string(),
         "--repository".to_string(),
@@ -80,12 +84,39 @@ pub(crate) fn release_status(args: impl Iterator<Item = String>) -> Result<(), S
         "--t803-out-dir".to_string(),
         evidence_dir_text,
     ];
+    if let Some(waiver) = &cuda_waiver {
+        eprintln!("release-status: CUDA full validation and T.803 report waived by {waiver}");
+        command_args.extend(["--cuda-waiver".to_string(), waiver.clone()]);
+    }
     process::run_command_owned(
         OsString::from("python3"),
         &command_args,
         CommandContext::new().current_dir(&root),
     )?;
-    verify_t803_reports(&root, &evidence_dir, &options.sha, &options.scope)
+    for scope in t803_verify_scopes(&options.scope, cuda_waiver.is_some()) {
+        verify_t803_reports(&root, &evidence_dir, &options.sha, scope)?;
+    }
+    Ok(())
+}
+
+/// The checked-in CUDA evidence waiver for this workspace version. Only the all-lane scope uses
+/// one; the verifier decides whether that version may be waived.
+fn cuda_waiver(root: &Path, scope: &str) -> Result<Option<String>, String> {
+    if scope != "all" {
+        return Ok(None);
+    }
+    let version = workspace_version_at(root)?;
+    let waiver = format!("{CUDA_WAIVER_DIR}/cuda-waiver-{version}.md");
+    Ok(root.join(&waiver).exists().then_some(waiver))
+}
+
+/// A CUDA waiver replaces the all-lane T.803 check with separate CPU and Metal checks.
+fn t803_verify_scopes(scope: &str, cuda_waived: bool) -> Vec<&str> {
+    if cuda_waived {
+        vec!["cpu", "metal"]
+    } else {
+        vec![scope]
+    }
 }
 
 fn verify_t803_reports(

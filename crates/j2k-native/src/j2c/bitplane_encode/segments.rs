@@ -11,13 +11,13 @@ use super::super::coefficient_view::{CoefficientBlockView, SignedCoefficient};
 use super::super::encode::allocation::{
     try_reserve_untracked, try_reserve_untracked_bounded, try_untracked_vec,
 };
-use crate::math::bit_width_u64;
 use crate::{EncodeError, EncodeResult};
 
 use super::allocation::classic_worker_allocation;
 use super::distortion::segment_distortion_delta_view;
 use super::{
-    try_encode_code_block_with_style_view, EncodedCodeBlockSegment, EncodedCodeBlockWithSegments,
+    coded_bitplanes, try_encode_code_block_with_style_view, EncodedCodeBlockSegment,
+    EncodedCodeBlockWithSegments,
 };
 
 #[expect(
@@ -38,22 +38,9 @@ pub(super) fn try_encode_segmented_code_block<T: SignedCoefficient>(
         return Ok(encoded);
     }
 
-    let max_magnitude = coefficients
-        .rows()
-        .flatten()
-        .map(|coefficient| coefficient.unsigned_magnitude())
-        .max()
-        .unwrap_or(0);
-    if max_magnitude == 0 {
+    let Some(num_bitplanes) = coded_bitplanes(coefficients, total_bitplanes)? else {
         return Ok(empty_segmented_code_block(total_bitplanes));
-    }
-
-    let num_bitplanes = bit_width_u64(max_magnitude);
-    if num_bitplanes > total_bitplanes {
-        return Err(EncodeError::InvalidInput {
-            what: "classic code-block magnitude exceeds configured bitplane count",
-        });
-    }
+    };
     let num_zero_bitplanes = total_bitplanes.saturating_sub(num_bitplanes);
     SegmentedCodeBlockEncoder::try_new(
         coefficients,

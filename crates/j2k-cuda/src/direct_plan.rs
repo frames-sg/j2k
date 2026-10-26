@@ -17,6 +17,7 @@ mod required_regions;
 mod shared;
 #[cfg(test)]
 mod tests;
+mod windows;
 
 #[cfg(feature = "cuda-runtime")]
 use self::classic::referenced::{
@@ -272,6 +273,14 @@ pub(crate) struct CudaHtj2kDecodePlan {
         not(feature = "cuda-runtime"),
         expect(
             dead_code,
+            reason = "sample metadata is consumed only by CUDA decode routes"
+        )
+    )]
+    signed: bool,
+    #[cfg_attr(
+        not(feature = "cuda-runtime"),
+        expect(
+            dead_code,
             reason = "output format is consumed only by CUDA decode routes"
         )
     )]
@@ -305,7 +314,7 @@ pub(crate) struct CudaHtj2kDecodePlan {
     )]
     classic_subbands: Vec<CudaClassicSubband>,
     #[cfg_attr(
-        not(feature = "cuda-runtime"),
+        all(not(feature = "cuda-runtime"), not(test)),
         expect(
             dead_code,
             reason = "subband metadata is consumed only by CUDA decode routes"
@@ -445,6 +454,8 @@ impl CudaHtj2kDecodePlan {
         } else {
             Some(required_regions_for_direct_plan_with_budget(
                 plan,
+                output_origin,
+                output_dimensions,
                 host_budget,
             )?)
         };
@@ -466,6 +477,9 @@ impl CudaHtj2kDecodePlan {
                     )?);
                 }
             }
+        }
+        if let Some(required) = &required_regions {
+            windows::window_region_plan(&mut owners, required, host_budget)?;
         }
 
         owners.finish(plan, output_format, output_origin, output_dimensions)

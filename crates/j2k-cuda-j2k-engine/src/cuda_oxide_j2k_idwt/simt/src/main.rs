@@ -152,14 +152,16 @@ fn div_ceil_2(value: u32) -> u32 {
     (value + 1) >> 1
 }
 
+/// Absolute band coordinate read for output coordinate `output_coord`. Band
+/// rectangles are absolute and may cover more than the output needs, so a
+/// band can be a window held in a buffer that covers only its rectangle.
 #[inline(always)]
-fn idwt_band_coord(output_origin: u32, output_coord: u32, band_origin: u32, low: bool) -> u32 {
-    let index = if low {
-        div_ceil_2(output_coord) - div_ceil_2(output_origin)
+fn idwt_band_coord(output_coord: u32, low: bool) -> u32 {
+    if low {
+        div_ceil_2(output_coord)
     } else {
-        (output_coord >> 1) - (output_origin >> 1)
-    };
-    band_origin + index
+        output_coord >> 1
+    }
 }
 
 #[inline(always)]
@@ -455,29 +457,29 @@ fn idwt_interleave_sample(
         (
             ll,
             job.ll_rect,
-            idwt_band_coord(job.rect.x0, x, job.ll_rect.x0, true),
-            idwt_band_coord(job.rect.y0, y, job.ll_rect.y0, true),
+            idwt_band_coord(x, true),
+            idwt_band_coord(y, true),
         )
     } else if !low_x && low_y {
         (
             hl,
             job.hl_rect,
-            idwt_band_coord(job.rect.x0, x, job.hl_rect.x0, false),
-            idwt_band_coord(job.rect.y0, y, job.hl_rect.y0, true),
+            idwt_band_coord(x, false),
+            idwt_band_coord(y, true),
         )
     } else if low_x && !low_y {
         (
             lh,
             job.lh_rect,
-            idwt_band_coord(job.rect.x0, x, job.lh_rect.x0, true),
-            idwt_band_coord(job.rect.y0, y, job.lh_rect.y0, false),
+            idwt_band_coord(x, true),
+            idwt_band_coord(y, false),
         )
     } else {
         (
             hh,
             job.hh_rect,
-            idwt_band_coord(job.rect.x0, x, job.hh_rect.x0, false),
-            idwt_band_coord(job.rect.y0, y, job.hh_rect.y0, false),
+            idwt_band_coord(x, false),
+            idwt_band_coord(y, false),
         )
     };
     source_get(source, source_rect, band_x, band_y)

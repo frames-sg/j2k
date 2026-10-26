@@ -187,9 +187,10 @@ fn readback_hash(result: &MetalBatchDecodeResult) -> String {
 #[cfg(target_os = "macos")]
 fn bench_decode_stages(criterion: &mut Criterion) {
     std::hint::black_box(STAGE_MARKERS);
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let mut decoder = MetalBatchDecoder::system_default_with_options(options)
         .expect("create Metal decode-stage benchmark session");
@@ -237,9 +238,10 @@ fn bench_decode_stages(criterion: &mut Criterion) {
 
 #[cfg(target_os = "macos")]
 fn bench_decode_stages_idwt97(criterion: &mut Criterion) {
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let mut decoder = MetalBatchDecoder::system_default_with_options(options)
         .expect("create irreversible Metal decode-stage benchmark session");
@@ -280,9 +282,10 @@ fn bench_decode_stages_idwt97(criterion: &mut Criterion) {
 
 #[cfg(target_os = "macos")]
 fn bench_decode_stages_classic(criterion: &mut Criterion) {
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let mut decoder = MetalBatchDecoder::system_default_with_options(options)
         .expect("create Classic Metal decode-stage benchmark session");

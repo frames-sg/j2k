@@ -42,10 +42,11 @@ fn prepared_htj2k_gray_and_rgb_support_native_types_and_requests_exactly() {
                 components, precision, signed, WIDTH, HEIGHT,
             ));
             for layout in [BatchLayout::Nchw, BatchLayout::Nhwc] {
-                let options = BatchDecodeOptions {
-                    workers: NonZeroUsize::new(1),
-                    layout,
-                    ..BatchDecodeOptions::default()
+                let options = {
+                    let mut options = BatchDecodeOptions::default();
+                    options.workers = NonZeroUsize::new(1);
+                    options.layout = layout;
+                    options
                 };
                 let mut decoder = CpuBatchDecoder::new(options);
                 let prepared = decoder

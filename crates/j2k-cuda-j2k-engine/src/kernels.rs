@@ -15,7 +15,9 @@ pub(crate) use j2k_cuda_runtime::CudaLaunchGeometry;
 
 const HTJ2K_DECODE_PACKED_BLOCK_MIN_JOBS: usize = 2_048;
 const HTJ2K_DECODE_CODEBLOCK_THREADS: u32 = 32;
-const HTJ2K_ENCODE_CODEBLOCK_THREADS: u32 = 128;
+// HT encode kernels code each block on thread 0; one warp per block lets
+// more blocks share an SM.
+const HTJ2K_ENCODE_CODEBLOCK_THREADS: u32 = 32;
 const SAMPLE_THREADS: u32 = 256;
 const J2K_THREADS_X: u32 = 16;
 const J2K_THREADS_Y: u32 = 16;

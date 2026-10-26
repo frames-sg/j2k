@@ -40,25 +40,6 @@ pub(crate) fn ensure_j2k_encode_ptx_built() -> Result<(), CudaError> {
     })
 }
 
-pub(crate) fn ensure_j2k_ml_ptx_built() -> Result<(), CudaError> {
-    #[cfg(feature = "cuda-oxide-j2k-ml")]
-    {
-        if cfg!(j2k_cuda_oxide_j2k_ml_built) {
-            Ok(())
-        } else {
-            Err(CudaError::InvalidArgument {
-                message: "cuda-oxide j2k-ml PTX was not built; set J2K_REQUIRE_CUDA_OXIDE_BUILD on a Linux cuda-oxide host to require it".to_string(),
-            })
-        }
-    }
-
-    #[cfg(not(feature = "cuda-oxide-j2k-ml"))]
-    Err(CudaError::InvalidArgument {
-        message: "CUDA Oxide PTX was not built for j2k-ml; enable j2k-cuda-j2k-engine/cuda-oxide-j2k-ml or an adapter feature that implies it"
-            .to_string(),
-    })
-}
-
 pub(crate) fn ensure_j2k_classic_decode_ptx_built() -> Result<(), CudaError> {
     #[cfg(feature = "cuda-oxide-j2k-classic-decode")]
     {

@@ -43,7 +43,10 @@ pub(super) fn validate_referenced_component_metadata(
     first: &NativeGrayscalePlan,
     component: &NativeGrayscalePlan,
 ) -> Result<(), Error> {
-    if component.dimensions != first.dimensions || component.bit_depth != first.bit_depth {
+    if component.dimensions != first.dimensions
+        || component.bit_depth != first.bit_depth
+        || component.signed != first.signed
+    {
         return Err(Error::MetalStateInvariant {
             state: "referenced multi-tile component metadata",
             reason: "tile component dimensions or bit depth changed within one image",
@@ -88,8 +91,7 @@ pub(super) fn append_referenced_classic_component_steps(
 
 #[cfg(target_os = "macos")]
 pub(super) fn finish_referenced_component_plan(
-    dimensions: (u32, u32),
-    bit_depth: u8,
+    plan: &NativeGrayscalePlan,
     steps: Vec<PreparedDirectGrayscaleStep>,
     _allocation_context: &'static str,
 ) -> Result<PreparedDirectGrayscalePlan, Error> {
@@ -97,8 +99,9 @@ pub(super) fn finish_referenced_component_plan(
     let classic_groups = prepare_classic_sub_band_groups(&steps, tier1_prepare_mode)?;
     let ht_groups = prepare_ht_sub_band_groups(&steps, tier1_prepare_mode)?;
     Ok(PreparedDirectGrayscalePlan {
-        dimensions,
-        bit_depth,
+        dimensions: plan.dimensions,
+        bit_depth: plan.bit_depth,
+        signed: plan.signed,
         round_centered_store: true,
         tier1_prepare_mode,
         steps,

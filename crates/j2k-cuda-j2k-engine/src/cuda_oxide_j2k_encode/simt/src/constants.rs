@@ -19,3 +19,8 @@ pub(crate) const J2K_ENCODE_STATUS_UNSUPPORTED: u32 = 2;
 pub(crate) const J2K_PACKET_TAG_INF: u32 = 0x7fff_ffff;
 pub(crate) const J2K_PACKET_MAX_TAG_NODES: usize = 2048;
 pub(crate) const J2K_PACKET_MAX_TAG_LEVELS: usize = 16;
+/// Most threads that build one packet header together.
+pub(crate) const J2K_PACKET_HEADER_THREADS: u32 = 256;
+/// Header bits one code block may contribute, in 64-bit words; real blocks need
+/// well under half.
+pub(crate) const J2K_PACKET_BLOCK_HEADER_WORDS: usize = 4;

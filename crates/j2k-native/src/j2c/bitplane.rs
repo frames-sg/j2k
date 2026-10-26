@@ -5,7 +5,7 @@ mod bypass;
 mod context;
 mod facade;
 mod flag_passes;
-mod flags;
+pub(super) mod flags;
 mod observer;
 mod reconstruction;
 mod scan;

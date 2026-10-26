@@ -88,8 +88,7 @@ pub(crate) fn prepare_referenced_htj2k_grayscale_plan(
         });
     }
     finish_referenced_component_plan(
-        first.dimensions,
-        first.bit_depth,
+        first,
         steps,
         "J2K MetalDirect referenced HTJ2K grayscale plan",
     )
@@ -153,8 +152,7 @@ pub(crate) fn prepare_referenced_classic_grayscale_plan(
     }
     payloads.ensure_exhausted()?;
     finish_referenced_component_plan(
-        first.dimensions,
-        first.bit_depth,
+        first,
         steps,
         "J2K MetalDirect referenced classic grayscale plan",
     )
@@ -205,6 +203,7 @@ pub(super) fn prepare_direct_grayscale_plan_with_tier1_mode(
     Ok(PreparedDirectGrayscalePlan {
         dimensions: plan.dimensions,
         bit_depth: plan.bit_depth,
+        signed: plan.signed,
         round_centered_store: true,
         tier1_prepare_mode,
         steps,

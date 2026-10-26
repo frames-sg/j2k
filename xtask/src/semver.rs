@@ -25,12 +25,12 @@ use compatibility::{semver_check_args, semver_check_release_type};
 
 const CARGO_SEMVER_CHECKS_VERSION: &str = "0.51.0";
 const SEMVER_TOOLCHAIN: &str = "1.99.0";
-const SEMVER_BASELINE_VERSION: &str = "0.11.3";
-const SEMVER_BASELINE_TAG: &str = "v0.11.3";
-const SEMVER_BASELINE_COMMIT: &str = "c708d2fda9f2672472b9e06aa2e66bf1f191dc3d";
+const SEMVER_BASELINE_VERSION: &str = "0.12.0";
+const SEMVER_BASELINE_TAG: &str = "v0.12.0";
+const SEMVER_BASELINE_COMMIT: &str = "cf55ed0a90a9a3c65e4bcf387be967d6d1a83e88";
 const API_DIFF_REPORT: &str =
-    "xtask/release-evidence/public-api/reviewed-public-api-diff-0.12.0.md";
-const API_REVIEW_CONFIG: &str = "xtask/release-evidence/public-api/public-api-review-0.12.0.yml";
+    "xtask/release-evidence/public-api/reviewed-public-api-diff-0.13.0.md";
+const API_REVIEW_CONFIG: &str = "xtask/release-evidence/public-api/public-api-review-0.13.0.yml";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct BaselineTransition<'a> {
@@ -559,8 +559,7 @@ fn common_candidate_version(
 }
 
 fn baseline_api_snapshot(cargo_public_api_version: &str) -> Result<String, String> {
-    // The baseline tag predates the move of the snapshot to xtask/api/.
-    let object = format!("{SEMVER_BASELINE_TAG}:docs/stable-api-1.0.public-api.txt");
+    let object = format!("{SEMVER_BASELINE_TAG}:xtask/api/stable-api-1.0.public-api.txt");
     let snapshot = capture_command(
         OsString::from("git"),
         &["show", object.as_str()],

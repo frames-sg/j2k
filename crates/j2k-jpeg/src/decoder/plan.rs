@@ -51,6 +51,7 @@ impl Decoder<'_> {
         ctx: &mut DecoderContext,
         external_live_bytes: usize,
     ) -> Result<PreparedDecoderMetadata, JpegError> {
+        let integrity = super::DecodeIntegrity::from_header(&header, options)?;
         let retained_parsed_bytes = header.retained_allocation_bytes()?;
         let mut construction = PreparedConstructionBudget::with_external_live(
             external_live_bytes,
@@ -78,7 +79,7 @@ impl Decoder<'_> {
             let (plan, lossless_plan) =
                 Self::build_lossless_plan(&header, &info, ctx, &mut construction)?;
             (plan, None, Some(lossless_plan))
-        } else if options == DecodeOptions::default() {
+        } else if options.color_transform() == crate::ColorTransform::Auto {
             if let Some(scan_offset) = header.sos_offset {
                 let header_prefix =
                     bytes
@@ -135,6 +136,7 @@ impl Decoder<'_> {
         construction.verify_retained(ctx.retained_allocation_bytes(), prepared_bytes)?;
         ensure_prepared_construction_fits(&header, prepared_bytes)?;
         Ok(PreparedDecoderMetadata {
+            integrity,
             info,
             warnings: header.warnings,
             plan,

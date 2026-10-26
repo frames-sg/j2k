@@ -30,9 +30,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (codestream, pixels) = htj2k_rgb8_fixture_with_pixels(64, 64);
     let encoded = Arc::<[u8]>::from(codestream);
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let mut decoder = MpsGraphBatchDecoder::system_default(options)?;
     let program = average_program(1, 64, 64)?;

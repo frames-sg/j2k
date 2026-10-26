@@ -34,7 +34,10 @@ pub(super) fn run_cargo_test_with_pass_floor(
     label: &str,
 ) -> Result<(), String> {
     let mut test_args = args.to_vec();
-    test_args.extend_from_slice(&["--", "--nocapture"]);
+    if !test_args.contains(&"--") {
+        test_args.push("--");
+    }
+    test_args.push("--nocapture");
     let env_display = envs
         .iter()
         .map(|(key, value)| format!("{key}={value}"))
@@ -162,8 +165,13 @@ pub(super) fn command_output_os_detailed_with_env(
 }
 
 pub(super) fn workspace_version() -> Result<String, String> {
-    let manifest = fs::read_to_string("Cargo.toml")
-        .map_err(|err| format!("failed to read Cargo.toml: {err}"))?;
+    workspace_version_at(Path::new(""))
+}
+
+pub(super) fn workspace_version_at(root: &Path) -> Result<String, String> {
+    let manifest_path = root.join("Cargo.toml");
+    let manifest = fs::read_to_string(&manifest_path)
+        .map_err(|err| format!("failed to read {}: {err}", manifest_path.display()))?;
     manifest
         .lines()
         .find_map(|line| {

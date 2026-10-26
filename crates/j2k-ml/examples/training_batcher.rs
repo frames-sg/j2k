@@ -106,29 +106,29 @@ impl<B: Backend> Batcher<B, TrainingItem, Result<TrainingBatch<B>, TrainingBatch
             .map_err(|error| TrainingBatchError::Decode(error.to_string()))?;
 
         let mut failures = output
-            .errors
+            .errors()
             .iter()
             .map(|error| format!("{error:?}"))
             .collect::<Vec<_>>();
         failures.extend(
             output
-                .group_errors
+                .group_errors()
                 .iter()
                 .map(std::string::ToString::to_string),
         );
         if !failures.is_empty() {
             return Err(TrainingBatchError::ItemFailures(failures));
         }
-        if output.groups.len() != 1 {
-            return Err(TrainingBatchError::GroupCount(output.groups.len()));
+        if output.groups().len() != 1 {
+            return Err(TrainingBatchError::GroupCount(output.groups().len()));
         }
         let group = output
-            .groups
+            .into_groups()
             .into_iter()
             .next()
             .ok_or(TrainingBatchError::GroupCount(0))?;
         let ordered_labels = group
-            .source_indices
+            .source_indices()
             .iter()
             .map(|index| {
                 labels
@@ -137,9 +137,9 @@ impl<B: Backend> Batcher<B, TrainingItem, Result<TrainingBatch<B>, TrainingBatch
                     .ok_or(TrainingBatchError::MissingLabel(*index))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let images = match group.tensor {
+        let images = match group.into_tensor() {
             BurnBatchTensor::U8(tensor) => tensor.float().div_scalar(255.0),
-            BurnBatchTensor::U16(_) | BurnBatchTensor::I16(_) => {
+            _ => {
                 return Err(TrainingBatchError::UnexpectedSampleType);
             }
         };

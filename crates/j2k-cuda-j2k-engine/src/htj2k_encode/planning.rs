@@ -80,7 +80,8 @@ pub(super) fn htj2k_encode_multi_input_kernel_jobs_with_live_host_bytes(
     )?;
     let mut kernel_jobs = host_budget.try_vec_with_capacity(job_count)?;
     for target in targets {
-        let available_coefficients = target.coefficients.typed_view::<i32>()?.len();
+        // Whole coefficients only: a reused pool allocation may be longer.
+        let available_coefficients = target.coefficients.byte_len() / std::mem::size_of::<i32>();
         if available_coefficients < target.coefficient_count {
             return Err(CudaError::OutputTooSmall {
                 required: target

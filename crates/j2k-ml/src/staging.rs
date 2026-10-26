@@ -75,10 +75,11 @@ pub(crate) fn materialize<B: Backend>(
     };
     Ok(BurnBatchGroup {
         tensor,
-        info,
+        info: crate::GroupInfo::Jpeg2000(info),
+        recovered: crate::unrecovered(source_indices.len())?,
         source_indices,
         decoded_rects,
-        warnings,
+        warnings: crate::tagged_warnings(warnings, crate::ImageDecodeWarning::Jpeg2000)?,
     })
 }
 

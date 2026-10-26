@@ -57,13 +57,12 @@ mod macos {
                 .map(|_| EncodedImage::full(Arc::clone(&encoded)))
                 .collect();
             let session = MetalBackendSession::system_default().expect("Metal benchmark session");
-            let mut decoder = MetalBatchDecoder::with_backend_session_and_options(
-                session.clone(),
-                BatchDecodeOptions {
-                    layout: BatchLayout::Nhwc,
-                    ..BatchDecodeOptions::default()
-                },
-            );
+            let mut decoder =
+                MetalBatchDecoder::with_backend_session_and_options(session.clone(), {
+                    let mut options = BatchDecodeOptions::default();
+                    options.layout = BatchLayout::Nhwc;
+                    options
+                });
             let prepared = decoder.prepare(inputs).expect("prepare readback fixture");
             let result = decoder
                 .decode_prepared(&prepared)

@@ -65,13 +65,14 @@ fn validate_idwt_job_layout(
         ("HH", job.hh_rect, false, false, band_bytes[3]),
     ] {
         let (band_width, band_height) = checked_rect_dimensions(name, rect)?;
-        let expected_width = idwt_band_extent(job.rect.x0, job.rect.x1, low_x);
-        let expected_height = idwt_band_extent(job.rect.y0, job.rect.y1, low_y);
-        if band_width != expected_width || band_height != expected_height {
+        let (x0, x1) = idwt_band_span(job.rect.x0, job.rect.x1, low_x);
+        let (y0, y1) = idwt_band_span(job.rect.y0, job.rect.y1, low_y);
+        if x0 < x1 && y0 < y1 && (x0 < rect.x0 || x1 > rect.x1 || y0 < rect.y0 || y1 > rect.y1) {
             return Err(CudaError::InvalidArgument {
                 message: format!(
-                    "J2K IDWT {name} geometry {band_width}x{band_height} does not match the \
-                     {width}x{height} output geometry; expected {expected_width}x{expected_height}"
+                    "J2K IDWT {name} rectangle {}..{}x{}..{} does not cover the {x0}..{x1}x{y0}..{y1} \
+                     band span of the {width}x{height} output",
+                    rect.x0, rect.x1, rect.y0, rect.y1
                 ),
             });
         }
@@ -122,7 +123,8 @@ fn checked_rect_dimensions(name: &str, rect: CudaJ2kRect) -> Result<(u32, u32), 
     Ok((width, height))
 }
 
-fn idwt_band_extent(start: u32, end: u32, low_pass: bool) -> u32 {
+/// Absolute band coordinates the output range `start..end` reads.
+fn idwt_band_span(start: u32, end: u32, low_pass: bool) -> (u32, u32) {
     let half = |value: u32| {
         if low_pass {
             value / 2 + value % 2
@@ -130,7 +132,7 @@ fn idwt_band_extent(start: u32, end: u32, low_pass: bool) -> u32 {
             value / 2
         }
     };
-    half(end) - half(start)
+    (half(start), half(end))
 }
 
 fn checked_f32_rect_layout(

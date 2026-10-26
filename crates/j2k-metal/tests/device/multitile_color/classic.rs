@@ -10,9 +10,10 @@ fn classic_multitile_rgb8_decodes_exactly_on_metal() {
     let (encoded, source_pixels) = fixture_classic_multitile_rgb8();
     let dimensions = (19_u32, 13_u32);
     let encoded = Arc::<[u8]>::from(encoded);
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let mut host_decoder = J2kDecoder::new(encoded.as_ref()).expect("classic CPU decoder");
     let mut expected = vec![0_u8; source_pixels.len()];

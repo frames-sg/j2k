@@ -78,7 +78,7 @@ fn full_validator_rejects_band_geometry_that_cannot_reconstruct_the_output() {
     job.hl_rect.x1 = 1;
     assert_invalid_argument_contains(
         validate_idwt_job_layout([16; 4], None, job),
-        "HL geometry 1x2 does not match the 4x4 output geometry; expected 2x2",
+        "HL rectangle 0..1x0..2 does not cover the 0..2x0..2 band span of the 4x4 output",
     );
 }
 
@@ -123,18 +123,18 @@ fn full_validator_accepts_valid_two_by_eight_and_eight_by_two_jobs() {
 fn full_validator_accepts_one_by_n_jobs_for_even_and_odd_origins() {
     let even_origin = CudaJ2kIdwtJob {
         rect: rect(0, 0, 1, 7),
-        ll_rect: rect(4, 2, 5, 6),
-        hl_rect: rect(9, 2, 9, 6),
-        lh_rect: rect(4, 7, 5, 10),
-        hh_rect: rect(9, 7, 9, 10),
+        ll_rect: rect(0, 0, 1, 4),
+        hl_rect: rect(0, 0, 0, 4),
+        lh_rect: rect(0, 0, 1, 3),
+        hh_rect: rect(0, 0, 0, 3),
         irreversible97: 0,
     };
     let odd_origin = CudaJ2kIdwtJob {
         rect: rect(1, 1, 2, 8),
-        ll_rect: rect(9, 4, 9, 7),
-        hl_rect: rect(4, 4, 5, 7),
-        lh_rect: rect(9, 8, 9, 12),
-        hh_rect: rect(4, 8, 5, 12),
+        ll_rect: rect(1, 1, 1, 4),
+        hl_rect: rect(0, 1, 1, 4),
+        lh_rect: rect(1, 0, 1, 4),
+        hh_rect: rect(0, 0, 1, 4),
         irreversible97: 1,
     };
 

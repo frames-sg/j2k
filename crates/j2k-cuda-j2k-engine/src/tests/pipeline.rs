@@ -102,20 +102,24 @@ fn mixed_tail_case(
 ) -> MixedTailCase {
     let low_width = (width + 1 - (x0 & 1)) / 2;
     let low_height = (height + 1 - (y0 & 1)) / 2;
+    // Absolute band rectangles: low bands start at ceil(origin / 2), high
+    // bands at floor(origin / 2).
+    let low = (x0.div_ceil(2), y0.div_ceil(2));
+    let high = (x0 / 2, y0 / 2);
     let rects = [
-        (low_width, low_height),
-        (width - low_width, low_height),
-        (low_width, height - low_height),
-        (width - low_width, height - low_height),
+        (low.0, low.1, low_width, low_height),
+        (high.0, low.1, width - low_width, low_height),
+        (low.0, high.1, low_width, height - low_height),
+        (high.0, high.1, width - low_width, height - low_height),
     ]
-    .map(|(x1, y1)| CudaJ2kRect {
-        x0: 0,
-        y0: 0,
-        x1,
-        y1,
+    .map(|(x0, y0, w, h)| CudaJ2kRect {
+        x0,
+        y0,
+        x1: x0 + w,
+        y1: y0 + h,
     });
     let bands = rects.map(|rect| {
-        let samples = (0..rect.x1 * rect.y1)
+        let samples = (0..(rect.x1 - rect.x0) * (rect.y1 - rect.y0))
             .map(|index| f32::from(i16::try_from(index % 71).unwrap() - 35) * 0.125)
             .collect::<Vec<_>>();
         context
@@ -516,21 +520,21 @@ fn j2k_inverse_dwt_batch_odd_origin_matches_single_when_runtime_required() {
             y1: 4,
         },
         ll_rect: CudaJ2kRect {
-            x0: 0,
-            y0: 0,
-            x1: 1,
-            y1: 1,
+            x0: 1,
+            y0: 1,
+            x1: 2,
+            y1: 2,
         },
         hl_rect: CudaJ2kRect {
             x0: 0,
-            y0: 0,
+            y0: 1,
             x1: 2,
-            y1: 1,
+            y1: 2,
         },
         lh_rect: CudaJ2kRect {
-            x0: 0,
+            x0: 1,
             y0: 0,
-            x1: 1,
+            x1: 2,
             y1: 2,
         },
         hh_rect: CudaJ2kRect {
@@ -901,11 +905,12 @@ fn j2k_inverse_dwt_batch_2592_wide_matches_single_for_both_transforms_when_runti
         .upload(super::super::f32_slice_as_bytes(&hh_values))
         .expect("upload wide HH");
     for irreversible97 in [0, 1] {
-        let band_rect = CudaJ2kRect {
-            x0: 0,
-            y0: 0,
-            x1: band_width_u32,
-            y1: band_height_u32,
+        // The output starts at (1, 1): low bands start at 1, high bands at 0.
+        let band_rect = |x0, y0| CudaJ2kRect {
+            x0,
+            y0,
+            x1: x0 + band_width_u32,
+            y1: y0 + band_height_u32,
         };
         let job = CudaJ2kIdwtJob {
             rect: CudaJ2kRect {
@@ -914,10 +919,10 @@ fn j2k_inverse_dwt_batch_2592_wide_matches_single_for_both_transforms_when_runti
                 x1: width_u32 + 1,
                 y1: height_u32 + 1,
             },
-            ll_rect: band_rect,
-            hl_rect: band_rect,
-            lh_rect: band_rect,
-            hh_rect: band_rect,
+            ll_rect: band_rect(1, 1),
+            hl_rect: band_rect(0, 1),
+            lh_rect: band_rect(1, 0),
+            hh_rect: band_rect(0, 0),
             irreversible97,
         };
         let single = crate::J2kCudaEngine::new(&context)
@@ -1826,6 +1831,7 @@ fn j2k_store_rgb16_mct_matches_inverse_mct_plus_store_when_runtime_required() {
         bit_depth1: 16,
         bit_depth2: 16,
         rgba: 0,
+        signed: 0,
     };
     let legacy_output = crate::J2kCudaEngine::new(&context)
         .j2k_store_rgb16_device(&legacy0, &legacy1, &legacy2, store_job)
@@ -2225,7 +2231,86 @@ fn j2k_quantize_subband_matches_cpu_when_runtime_required() {
 }
 
 #[test]
-fn j2k_quantize_strided_resident_subband_matches_contiguous_when_runtime_required() {
+fn j2k_quantized_coefficients_in_reused_pool_allocations_download_and_encode_when_runtime_required()
+{
+    if !cuda_runtime_gate() {
+        return;
+    }
+
+    let samples: Vec<f32> = (0u16..16)
+        .map(|value| f32::from(value) * 3.0 - 20.0)
+        .collect();
+    let context = CudaContext::system_default().expect("CUDA context");
+    let sample_buffer = context.upload_f32(&samples).expect("resident samples");
+    let region = CudaJ2kQuantizeSubbandRegionJob {
+        x0: 1,
+        y0: 1,
+        width: 2,
+        height: 2,
+        stride: 4,
+        quantization: CudaJ2kQuantizeJob {
+            step_exponent: 8,
+            step_mantissa: 0,
+            range_bits: 8,
+            reversible: true,
+        },
+    };
+    let vlc_table0 = [0u16; 2048];
+    let vlc_table1 = [0u16; 2048];
+    let uvlc_table = vec![0u8; HTJ2K_UVLC_ENCODE_TABLE_BYTES];
+    let jobs = [CudaHtj2kEncodeCodeBlockRegionJob {
+        coefficient_offset: 0,
+        coefficient_stride: 2,
+        width: 2,
+        height: 2,
+        total_bitplanes: 8,
+        target_coding_passes: 1,
+    }];
+    let quantize_and_encode = |pool: &j2k_cuda_runtime::CudaBufferPool| {
+        let engine = crate::J2kCudaEngine::new(&context);
+        let quantized = engine
+            .j2k_quantize_subband_regions_resident(&sample_buffer, &[region], pool)
+            .expect("quantize into a pool allocation");
+        let coefficients = quantized
+            .download_coefficients()
+            .expect("download quantized coefficients");
+        let encoded = engine
+            .encode_htj2k_codeblock_regions_resident(
+                quantized.buffer(),
+                quantized.coefficient_count(),
+                &jobs,
+                CudaHtj2kEncodeTables {
+                    vlc_table0: &vlc_table0,
+                    vlc_table1: &vlc_table1,
+                    uvlc_table: &uvlc_table,
+                },
+            )
+            .expect("encode quantized coefficients");
+        let blocks: Vec<_> = encoded
+            .into_code_blocks()
+            .into_iter()
+            .map(CudaHtj2kEncodedCodeBlock::into_exact_parts)
+            .collect();
+        (coefficients, blocks)
+    };
+
+    let exact = quantize_and_encode(&context.buffer_pool());
+    // The pool hands its one cached allocation, odd-length or oversized, to the
+    // 16-byte coefficient request.
+    for cached_len in [17, 32] {
+        let pool = context.buffer_pool();
+        pool.recycle(context.allocate(cached_len).expect("cached allocation"))
+            .expect("cache allocation");
+        assert_eq!(
+            quantize_and_encode(&pool),
+            exact,
+            "coefficients in a cached {cached_len}-byte allocation"
+        );
+    }
+}
+
+#[test]
+fn j2k_quantize_strided_resident_subbands_match_contiguous_when_runtime_required() {
     if !cuda_runtime_gate() {
         return;
     }
@@ -2239,26 +2324,37 @@ fn j2k_quantize_strided_resident_subband_matches_contiguous_when_runtime_require
         range_bits: 8,
         reversible: true,
     };
+    let region = |x0, y0, width, height| CudaJ2kQuantizeSubbandRegionJob {
+        x0,
+        y0,
+        width,
+        height,
+        stride: 4,
+        quantization,
+    };
+    // Regions are stored back to back in job order; empty regions take no space.
     let resident = crate::J2kCudaEngine::new(&context)
-        .j2k_quantize_subband_region_resident(
+        .j2k_quantize_subband_regions_resident(
             &sample_buffer,
-            CudaJ2kQuantizeSubbandRegionJob {
-                x0: 1,
-                y0: 1,
-                width: 2,
-                height: 2,
-                stride: 4,
-                quantization,
-            },
+            &[region(1, 1, 2, 2), region(3, 0, 0, 3), region(0, 0, 1, 3)],
+            &context.buffer_pool(),
         )
         .expect("resident strided quantize");
-    let contiguous = [samples[5], samples[6], samples[9], samples[10]];
+    let contiguous = [
+        samples[5],
+        samples[6],
+        samples[9],
+        samples[10],
+        samples[0],
+        samples[4],
+        samples[8],
+    ];
     let expected = crate::J2kCudaEngine::new(&context)
         .j2k_quantize_subband(&contiguous, quantization)
         .expect("contiguous quantize");
 
-    assert_eq!(resident.coefficient_count(), 4);
-    assert_eq!(resident.execution().kernel_dispatches(), 1);
+    assert_eq!(resident.coefficient_count(), 7);
+    assert_eq!(resident.execution().kernel_dispatches(), 2);
     assert_eq!(
         resident
             .download_coefficients()

@@ -160,6 +160,10 @@ pub(crate) fn classic_worker_allocation(
         "classic Tier-1 retained output",
     )?;
 
+    // A u64 magnitude and two state bytes per padded sample. The column-word
+    // path needs less: 16 bytes per column of each four-row stripe plus one
+    // u32 per padded stripe column, so per padded column at most
+    // 5 * height + 23 bytes against 10 * height + 20 here, for any height.
     let padded_storage_bytes = checked_mul(
         padded_coefficients,
         size_of::<u64>() + size_of::<u8>() * 2,

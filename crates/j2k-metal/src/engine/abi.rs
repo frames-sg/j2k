@@ -85,6 +85,8 @@ pub(crate) struct J2kPackParams {
     pub(crate) max_values: [f32; 4],
     pub(crate) u8_scales: [f32; 4],
     pub(crate) u16_scales: [f32; 4],
+    /// Bit `c` is set when channel `c` stores signed samples.
+    pub(crate) signed_mask: u32,
 }
 
 #[cfg(target_os = "macos")]
@@ -127,6 +129,7 @@ pub(crate) struct J2kRepeatedGrayPackParams {
     pub(crate) max_value: f32,
     pub(crate) u8_scale: f32,
     pub(crate) u16_scale: f32,
+    pub(crate) is_signed: u32,
 }
 #[cfg(target_os = "macos")]
 pub(crate) const J2K_CLASSIC_STATUS_OK: u32 = 0;
@@ -470,6 +473,7 @@ pub(crate) struct J2kRepeatedGrayStoreParams {
     pub(crate) max_value: f32,
     pub(crate) u8_scale: f32,
     pub(crate) u16_scale: f32,
+    pub(crate) is_signed: u32,
 }
 
 #[cfg(target_os = "macos")]

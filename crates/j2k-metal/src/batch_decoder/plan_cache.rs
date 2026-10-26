@@ -44,7 +44,6 @@ fn prepare_referenced_color_plan(
         fmt,
         PixelFormat::Rgba8 | PixelFormat::Rgba16 | PixelFormat::RgbaI16
     );
-    let signed = matches!(fmt, PixelFormat::RgbI16 | PixelFormat::RgbaI16);
     let plan = if let Some(prepared) = image.htj2k_plan() {
         if (rgba && !prepared.is_rgba()) || (!rgba && !prepared.is_color()) {
             return Ok(None);
@@ -52,13 +51,9 @@ fn prepare_referenced_color_plan(
         let referenced = prepared.geometry();
         crate::engine::with_runtime_for_session(session, |_| {
             if rgba {
-                crate::engine::prepare_referenced_htj2k_rgba_plan(referenced, image.bytes(), signed)
+                crate::engine::prepare_referenced_htj2k_rgba_plan(referenced, image.bytes())
             } else {
-                crate::engine::prepare_referenced_htj2k_color_plan(
-                    referenced,
-                    image.bytes(),
-                    signed,
-                )
+                crate::engine::prepare_referenced_htj2k_color_plan(referenced, image.bytes())
             }
         })?
     } else if let Some(prepared) = image.classic_plan() {
@@ -68,17 +63,9 @@ fn prepare_referenced_color_plan(
         let referenced = prepared.geometry();
         crate::engine::with_runtime_for_session(session, |_| {
             if rgba {
-                crate::engine::prepare_referenced_classic_rgba_plan(
-                    referenced,
-                    image.bytes(),
-                    signed,
-                )
+                crate::engine::prepare_referenced_classic_rgba_plan(referenced, image.bytes())
             } else {
-                crate::engine::prepare_referenced_classic_color_plan(
-                    referenced,
-                    image.bytes(),
-                    signed,
-                )
+                crate::engine::prepare_referenced_classic_color_plan(referenced, image.bytes())
             }
         })?
     } else {

@@ -20,6 +20,7 @@ mod allocation;
 pub(crate) struct PreparedDirectGrayscalePlan {
     pub(super) dimensions: (u32, u32),
     pub(super) bit_depth: u8,
+    pub(super) signed: bool,
     /// Whether the final store rounds centered samples ties-to-even before
     /// the level shift, as the CPU does for integer output. False only for
     /// the first three components of an MCT color plan, which the inverse
@@ -60,6 +61,25 @@ unsafe impl Send for PreparedDirectColorPlan {}
 // SAFETY: No mutable state is exposed after construction, so concurrent cache
 // readers cannot race host or GPU writes through this owner.
 unsafe impl Sync for PreparedDirectColorPlan {}
+
+/// All components of a direct color store must share source signedness.
+pub(super) fn color_signedness(
+    plans: &[j2k_native::J2kDirectGrayscalePlan],
+) -> Result<bool, crate::Error> {
+    let Some(first) = plans.first() else {
+        return Err(crate::Error::capability_rejected(
+            j2k_core::CapabilityRejection::geometry_mismatch("Metal color plan has no components"),
+        ));
+    };
+    if plans.iter().any(|plan| plan.signed != first.signed) {
+        return Err(crate::Error::capability_rejected(
+            j2k_core::CapabilityRejection::unsupported_operation(
+                "Metal decode needs every component to share one signedness",
+            ),
+        ));
+    }
+    Ok(first.signed)
+}
 
 /// Applies the CPU's color rounding split to freshly prepared component plans:
 /// with MCT, components 0-2 are rounded after the inverse transform and any

@@ -19,9 +19,10 @@ fn independent_openhtj2k_raw_and_derived_jph_outputs_are_exact_and_indexed() {
     // The codestream and oracle are independent OpenHT/OpenJPH artifacts; only
     // the JPH container around those bytes is constructed by this repository.
     let jph = wrap_j2k_codestream(raw, J2kFileWrapOptions::jph()).expect("wrap OpenHT fixture");
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let mut decoder = CpuBatchDecoder::new(options);
     let result = decoder
@@ -78,9 +79,10 @@ fn independent_odd_openhtj2k_fixture_supports_roi_and_reduction() {
         w: 9,
         h: 21,
     };
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let mut decoder = CpuBatchDecoder::new(options);
     let result = decoder

@@ -24,9 +24,10 @@ fn classic_raw_and_jp2_regression_outputs_are_bit_exact() {
     )
     .expect("encode classic raw fixture");
     let jp2 = wrap_j2k_codestream(&raw, J2kFileWrapOptions::jp2()).expect("wrap classic JP2");
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let mut decoder = CpuBatchDecoder::new(options);
     let result = decoder
@@ -189,9 +190,10 @@ fn multitile_multilevel_classic_batch_supports_full_roi_and_reduction() {
         w: 41,
         h: 29,
     };
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let mut decoder = CpuBatchDecoder::new(options);
     let result = decoder

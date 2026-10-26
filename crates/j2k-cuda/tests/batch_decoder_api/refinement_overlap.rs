@@ -12,9 +12,10 @@ fn independent_sigprop_magref_overlap_matches_openhtj2k_for_resident_and_externa
         return;
     }
     let expected = j2k_test_support::openhtj2k_sigprop_overlap_pixels();
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let prepared = prepare_batch(
         vec![EncodedImage::full(Arc::from(

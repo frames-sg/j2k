@@ -30,9 +30,10 @@ fn submitted_prepared_ht_rgb_u8_stores_exact_native_nhwc_and_nchw_for_all_reques
 
     for layout in [BatchLayout::Nhwc, BatchLayout::Nchw] {
         for request in requests {
-            let options = BatchDecodeOptions {
-                layout,
-                ..BatchDecodeOptions::default()
+            let options = {
+                let mut options = BatchDecodeOptions::default();
+                options.layout = layout;
+                options
             };
             let inputs = vec![
                 EncodedImage::new(first.clone(), request),
@@ -110,9 +111,10 @@ fn submitted_prepared_ht_rgb_u16_stores_exact_native_nhwc_and_nchw() {
     let first = Arc::<[u8]>::from(fixture_ht_rgb_u16_sized(8, 8, 0));
     let second = Arc::<[u8]>::from(fixture_ht_rgb_u16_sized(8, 8, 257));
     for layout in [BatchLayout::Nhwc, BatchLayout::Nchw] {
-        let options = BatchDecodeOptions {
-            layout,
-            ..BatchDecodeOptions::default()
+        let options = {
+            let mut options = BatchDecodeOptions::default();
+            options.layout = layout;
+            options
         };
         let inputs = vec![
             EncodedImage::full(first.clone()),
@@ -179,9 +181,10 @@ fn assert_signed_rgb_request(
     layout: BatchLayout,
     request: DecodeRequest,
 ) {
-    let options = BatchDecodeOptions {
-        layout,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = layout;
+        options
     };
     let inputs = vec![
         EncodedImage::new(encoded.clone(), request),
@@ -302,9 +305,10 @@ fn dropped_pending_prepared_ht_rgb_group_reuses_session_and_prepared_plan() {
 
     let first = Arc::<[u8]>::from(fixture_ht_rgb_u8_sized(8, 8, 0));
     let second = Arc::<[u8]>::from(fixture_ht_rgb_u8_sized(8, 8, 17));
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nchw,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nchw;
+        options
     };
     let inputs = vec![
         EncodedImage::full(first.clone()),

@@ -6,6 +6,7 @@ import torch
 
 __version__: str
 cuda_enabled: bool
+metal_enabled: bool
 Region = tuple[int, int, int, int]
 
 class Tensor:
@@ -20,8 +21,10 @@ class Tensor:
     def to_torch(self) -> torch.Tensor: ...
     def to_numpy(self) -> np.ndarray: ...
 
+class RecoveredImageWarning(UserWarning): ...
+
 class ImageRequest:
-    def __init__(self, data: bytes, *, region: Region | None = None, reduction: int = 0) -> None: ...
+    def __init__(self, data: bytes, *, region: Region | None = None, reduction: int = 0, color_transform: Literal["auto", "ycbcr", "none"] = "auto") -> None: ...
 
 class PreparedBatch:
     @property
@@ -34,10 +37,11 @@ class BatchGroup:
     source_indices: list[int]
     decoded_rects: list[Region]
     warnings: list[list[str]]
+    recovered: list[bool]
     precision: int
     signed: bool
-    color: str
-    alpha: str
+    color: Literal["Rgb", "Gray", "Rgba"]
+    alpha: Literal["None", "Straight", "Premultiplied"]
     layout: Literal["nchw", "nhwc"]
 
 class Batch:
@@ -48,7 +52,7 @@ class Batch:
 class Decoder:
     def __init__(self, *, layout: Literal["nchw", "nhwc"] = "nchw", workers: int | None = None, strict: bool = True, device: str = "cpu") -> None: ...
     def prepare(self, inputs: list[bytes | ImageRequest], *, region: Region | None = None, reduction: int = 0) -> PreparedBatch: ...
-    def decode(self, data: bytes, *, region: Region | None = None, reduction: int = 0) -> Tensor: ...
+    def decode(self, data: bytes | ImageRequest, *, region: Region | None = None, reduction: int = 0) -> Tensor: ...
     def decode_batch(self, inputs: list[bytes | ImageRequest], *, region: Region | None = None, reduction: int = 0) -> Batch: ...
     def decode_prepared(self, prepared: PreparedBatch) -> Batch: ...
 

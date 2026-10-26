@@ -4,9 +4,10 @@ use core::marker::PhantomData;
 
 use burn_core::tensor::{backend::Backend, DType, Tensor, TensorData};
 use j2k::{
-    BatchDecodeOptions, CpuBatchDecodeResult, CpuBatchSamples, EncodedImage, NativeSampleType,
-    PreparedBatch, PreparedImage,
+    BatchDecodeOptions, BatchLayout, CpuBatchDecodeResult, CpuBatchSamples, EncodedImage,
+    NativeSampleType, PreparedBatch, PreparedImage,
 };
+use j2k_jpeg::{JpegBatchDecodeOptions, JpegBatchDecoder};
 
 use crate::batch_contract::{dtype, tensor_shape};
 use crate::{BurnBatchDecode, BurnBatchGroup, BurnBatchTensor, BurnDecodeError};
@@ -15,6 +16,7 @@ use crate::{BurnBatchDecode, BurnBatchGroup, BurnBatchTensor, BurnDecodeError};
 #[derive(Debug)]
 pub struct CpuBurnDecoder<B: Backend> {
     codec: j2k::CpuBatchDecoder,
+    jpeg: JpegBatchDecoder,
     device: B::Device,
     backend: PhantomData<B>,
 }
@@ -25,6 +27,12 @@ impl<B: Backend> CpuBurnDecoder<B> {
     pub fn new(device: B::Device, options: BatchDecodeOptions) -> Self {
         Self {
             codec: j2k::CpuBatchDecoder::new(options),
+            jpeg: JpegBatchDecoder::new({
+                let mut jpeg = JpegBatchDecodeOptions::default();
+                jpeg.layout = options.layout;
+                jpeg.workers = options.workers;
+                jpeg
+            }),
             device,
             backend: PhantomData,
         }
@@ -86,6 +94,106 @@ impl<B: Backend> CpuBurnDecoder<B> {
         materialize::<B>(decoded, &self.device)
     }
 
+    /// Decode mixed JPEG, JPEG 2000 and HTJ2K inputs using one result model.
+    ///
+    /// Session strictness is authoritative for both codec families. JPEG color
+    /// hints are preserved. JPEG output is RGB8 with grayscale expanded; native
+    /// grayscale JPEG 2000 and HTJ2K output stays one channel. Group order is
+    /// unspecified; use `source_indices` to align tensor rows with inputs.
+    pub fn decode_batch(
+        &mut self,
+        inputs: &[crate::ImageInput<'_>],
+    ) -> Result<BurnBatchDecode<B>, BurnDecodeError> {
+        let mut budget = j2k_core::BatchAllocationBudget::new("Burn mixed input metadata");
+        let mut jpeg = budget.try_vec(inputs.len(), "Burn JPEG inputs")?;
+        let mut jpeg_indices = budget.try_vec(inputs.len(), "Burn JPEG indices")?;
+        let mut j2k = budget.try_vec(inputs.len(), "Burn JPEG 2000 inputs")?;
+        let mut j2k_indices = budget.try_vec(inputs.len(), "Burn JPEG 2000 indices")?;
+        for (index, input) in inputs.iter().enumerate() {
+            match input {
+                crate::ImageInput::Jpeg(input) => {
+                    jpeg.push(
+                        input.with_options(
+                            input
+                                .options()
+                                .with_strict(self.codec.options().settings.is_strict()),
+                        ),
+                    );
+                    jpeg_indices.push(index);
+                }
+                crate::ImageInput::Jpeg2000(input) => {
+                    j2k.push((*input).clone());
+                    j2k_indices.push(index);
+                }
+            }
+        }
+        let mut result = self.decode(j2k)?;
+        for group in &mut result.groups {
+            for index in &mut group.source_indices {
+                *index = j2k_indices[*index];
+            }
+        }
+        for error in &mut result.errors {
+            error.index = j2k_indices[error.index];
+        }
+        if !jpeg.is_empty() && !B::supports_dtype(&self.device, DType::U8) {
+            return Err(BurnDecodeError::UnsupportedDType { dtype: DType::U8 });
+        }
+        let (groups, errors) = self.jpeg.decode(&jpeg)?.into_parts();
+        result
+            .groups
+            .try_reserve_exact(groups.len())
+            .map_err(|_| BurnDecodeError::SizeOverflow)?;
+        result
+            .errors
+            .try_reserve_exact(errors.len())
+            .map_err(|_| BurnDecodeError::SizeOverflow)?;
+        for group in groups {
+            let (dimensions, layout) = (group.dimensions(), group.layout());
+            let (mut source_indices, warnings, recovered, samples) = group.into_parts();
+            for index in &mut source_indices {
+                *index = jpeg_indices[*index];
+            }
+            let shape = match layout {
+                BatchLayout::Nchw => [
+                    source_indices.len(),
+                    3,
+                    dimensions.1 as usize,
+                    dimensions.0 as usize,
+                ],
+                BatchLayout::Nhwc => [
+                    source_indices.len(),
+                    dimensions.1 as usize,
+                    dimensions.0 as usize,
+                    3,
+                ],
+                _ => return Err(BurnDecodeError::UnsupportedCodecContract),
+            };
+            let mut row_budget = j2k_core::BatchAllocationBudget::new("Burn JPEG result metadata");
+            let mut rects = row_budget.try_vec(source_indices.len(), "Burn JPEG rectangles")?;
+            rects.resize(source_indices.len(), j2k::Rect::full(dimensions));
+            result.groups.push(BurnBatchGroup {
+                tensor: BurnBatchTensor::U8(Tensor::from_data(
+                    TensorData::new(samples, shape),
+                    (&self.device, DType::U8),
+                )),
+                info: crate::GroupInfo::Jpeg { dimensions, layout },
+                source_indices,
+                decoded_rects: rects,
+                warnings: crate::tagged_warnings(warnings, crate::ImageDecodeWarning::Jpeg)?,
+                recovered,
+            });
+        }
+        result
+            .errors
+            .extend(errors.into_iter().map(|error| j2k_core::TileBatchError {
+                index: jpeg_indices[error.index],
+                source: crate::ImageDecodeError::Jpeg(error.source),
+            }));
+        result.errors.sort_unstable_by_key(|error| error.index);
+        Ok(result)
+    }
+
     fn ensure_prepared_dtypes(&self, prepared: &PreparedBatch) -> Result<(), BurnDecodeError> {
         for group in prepared.groups() {
             let dtype = dtype(group.info().sample_type)?;
@@ -124,16 +232,17 @@ fn materialize<B: Backend>(
         };
         groups.push(BurnBatchGroup {
             tensor,
-            info,
+            info: crate::GroupInfo::Jpeg2000(info),
+            recovered: crate::unrecovered(source_indices.len())?,
             source_indices,
             decoded_rects,
-            warnings,
+            warnings: crate::tagged_warnings(warnings, crate::ImageDecodeWarning::Jpeg2000)?,
         });
     }
 
     Ok(BurnBatchDecode {
         groups,
-        errors,
+        errors: crate::j2k_errors(errors)?,
         group_errors: Vec::new(),
     })
 }

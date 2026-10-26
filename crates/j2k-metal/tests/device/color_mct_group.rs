@@ -36,9 +36,10 @@ fn mixed_signed_rgb_mct_modes_preserve_each_images_samples() {
         return;
     }
 
-    let options = BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     };
     let inputs = vec![
         EncodedImage::full(signed_rgb_fixture(0, true)),

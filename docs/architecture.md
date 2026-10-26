@@ -51,13 +51,13 @@ requires separate subsystem work and independently derived table definitions.
 | `j2k-profile`, `j2k-metal-support` | support | Runtime/profile helpers used by adapters and codec crates. |
 | `j2k-cuda-runtime` | CUDA runtime | Codec-neutral CUDA Driver API integration, checked generic module/kernel launch, context/stream/event lifecycle, memory pools, pinned staging, diagnostics, completion, and guarded external-allocation validation shared by CUDA engines. |
 | `j2k-cuda-build-support` | build support | Internal shared CUDA-Oxide project staging, toolchain invocation, placeholder policy, and PTX packaging for codec engine build scripts. |
-| `j2k-cuda-j2k-engine` | CUDA engine | Internal J2K/HTJ2K/ML operations on a borrowed low-level CUDA context: transforms, Tier-1, dequantization, final store, encode, packetization, kernel ABI, validation, launch orchestration, and CUDA-Oxide packaging. |
+| `j2k-cuda-j2k-engine` | CUDA engine | Internal J2K/HTJ2K operations on a borrowed low-level CUDA context: transforms, Tier-1, dequantization, final store, encode, packetization, kernel ABI, validation, launch orchestration, and CUDA-Oxide packaging. |
 | `j2k-cuda-jpeg-engine` | CUDA engine | Internal JPEG operations on a borrowed low-level CUDA context: JPEG plans, validation, host allocation, kernel ABI byte views, CUDA-Oxide projects, and launch orchestration. |
 | `j2k-cuda-transcode-engine` | CUDA engine | Internal coefficient-domain transcode operations: reversible/irreversible transforms and quantization, validation, launch geometry, stage timings, and CUDA-Oxide packaging. |
 | `j2k-jpeg-cuda`, `j2k-cuda`, `j2k-transcode-cuda` | CUDA adapter | Codec-facing CUDA APIs, persistent batch sessions, route policy, resident output, and validated caller-owned destinations for supported paths. |
 | `j2k-jpeg-metal`, `j2k-metal`, `j2k-transcode-metal` | Metal adapter | macOS Metal adapters built on `j2k-metal-support`. J2K transforms, Tier-1, packetization, store, and resident encode/decode are in the private `j2k-metal::engine` module; the transcode adapter has its own coefficient-domain kernels and does not depend on `j2k-metal`. |
 | `j2k-ml` | framework integration | Thin Burn allocation and codec-interop adapter for owned integer batch output. |
-| `j2k-python` | optional framework integration | Rust PyO3 extension exposing pixels and selected wavelet bands through owned DLPack tensors; optional CUDA decode into PyTorch-owned storage; CPU RGB research encode/decode and float 9/7 transforms. No Python dependencies in default Rust builds. |
+| `j2k-python` | optional framework integration | Rust PyO3 extension exposing pixels and selected wavelet bands through owned DLPack tensors; optional CUDA decode into PyTorch-owned storage and Metal decode into fresh buffers transferred to PyTorch MPS; CPU RGB research encode/decode and float 9/7 transforms. No Python dependencies in default Rust builds. |
 | `j2k-mpsgraph-support` | support | Codec-independent graph submission, callback/error ownership, completion, and retained input lifetime shared with JPEG XR. |
 | `j2k-mpsgraph` | framework integration | Experimental Apple Silicon direct bridge from Metal-resident native integer batches to static rank-four MPSGraph programs. |
 | `j2k-transcode` | transcode | JPEG-to-HTJ2K coefficient-domain transcode algorithms and shared types. |
@@ -83,7 +83,7 @@ requires separate subsystem work and independently derived table definitions.
   `j2k-native` extracts selected bands through the existing Tier-1 decoders;
   `j2k` owns the public method. No framework code participates in extraction.
 - `j2k-python` owns interpreter conversion, DLPack lifetime transfer, and the
-  CUDA/PyTorch allocation boundary. It reuses codec preparation and external
+  CUDA/Metal PyTorch allocation boundary. It reuses codec preparation and external
   destinations. Dataset policy, normalization, and model code stay with the
   application.
 - Codec crates may depend on `j2k-core` and support crates.
@@ -115,8 +115,8 @@ j2k-cuda-runtime -> j2k-core
 j2k-cuda-j2k-engine -> j2k-codec-math, j2k-core, j2k-cuda-runtime, j2k-types
 j2k-cuda-jpeg-engine -> j2k-codec-math, j2k-core, j2k-cuda-runtime
 j2k-cuda-transcode-engine -> j2k-core, j2k-cuda-runtime
-j2k-ml -> j2k, j2k-cuda, j2k-cuda-runtime, j2k-metal, j2k-metal-support
-j2k-python -> j2k, j2k-cuda, j2k-cuda-runtime, j2k-jpeg, j2k-native
+j2k-ml -> j2k, j2k-core, j2k-cuda, j2k-cuda-runtime, j2k-jpeg, j2k-metal, j2k-metal-support
+j2k-python -> j2k, j2k-cuda, j2k-cuda-runtime, j2k-jpeg, j2k-metal, j2k-metal-support, j2k-native
 j2k-mpsgraph -> j2k, j2k-core, j2k-metal, j2k-metal-support, j2k-mpsgraph-support
 j2k-transcode-metal -> j2k-codec-math, j2k-core, j2k-metal-support, j2k-transcode, j2k-types
 j2k-transcode-cuda -> j2k-core, j2k-cuda-j2k-engine, j2k-cuda-runtime, j2k-cuda-transcode-engine, j2k-native, j2k-transcode

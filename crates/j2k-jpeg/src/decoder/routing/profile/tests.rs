@@ -32,6 +32,7 @@ fn record(
 
 fn outcome(decoded: Rect) -> DecodeOutcome {
     DecodeOutcome {
+        recovered: false,
         decoded,
         warnings: vec![Warning::MissingEoi, Warning::UnknownColorProfile],
     }

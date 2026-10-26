@@ -55,9 +55,10 @@ fn two_group_inputs() -> Vec<EncodedImage> {
 }
 
 fn options() -> BatchDecodeOptions {
-    BatchDecodeOptions {
-        layout: BatchLayout::Nhwc,
-        ..BatchDecodeOptions::default()
+    {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = BatchLayout::Nhwc;
+        options
     }
 }
 

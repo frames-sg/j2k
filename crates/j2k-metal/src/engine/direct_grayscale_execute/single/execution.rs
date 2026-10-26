@@ -34,12 +34,17 @@ use crate::engine::{
     PreparedDirectIdwt, PreparedHtSubBand, PreparedHtSubBandGroup,
 };
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "source signedness, rounding and destination state are independent properties"
+)]
 pub(super) struct SingleGrayscaleExecution<'a> {
     pub(super) runtime: &'a MetalRuntime,
     pub(super) encoder: &'a ComputeCommandEncoderRef,
     pub(super) fmt: PixelFormat,
     pub(super) dimensions: (u32, u32),
     pub(super) bit_depth: u8,
+    pub(super) signed: bool,
     pub(super) retained_buffers: &'a mut Vec<Buffer>,
     pub(super) status_checks: &'a mut Vec<DirectStatusCheck>,
     pub(super) scratch_buffers: &'a mut Vec<DirectScratchBuffer>,
@@ -291,7 +296,7 @@ impl SingleGrayscaleExecution<'_> {
         store: &J2kDirectStoreStep,
     ) -> (J2kGrayStoreParams, GraySourceSigning) {
         let scale = j2k_scalar_pack_params(u32::from(self.bit_depth));
-        let signing = GraySourceSigning::for_store(self.fmt, self.bit_depth, store.addend);
+        let signing = GraySourceSigning::for_source(self.fmt, self.bit_depth, self.signed);
         let max_value =
             if self.fmt == PixelFormat::GrayI16 || signing != GraySourceSigning::Unsigned {
                 crate::engine::decode_dispatch::store::signed_store_max_value(self.bit_depth)
@@ -398,6 +403,7 @@ impl SingleGrayscaleExecution<'_> {
             &output.buffer,
             self.dimensions,
             self.bit_depth,
+            self.signed,
             self.fmt,
         )?);
         self.scratch_buffers.push(output);

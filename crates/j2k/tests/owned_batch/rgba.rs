@@ -153,10 +153,11 @@ fn prepared_htj2k_rgba_preserves_alpha_semantics_and_avoids_reparse() {
     let fixture =
         generated_htj2k_rgba_fixture(Htj2kRgbaSampleProfile::U8Rct, Htj2kRgbaAlpha::Straight);
     let codestream = fixture.encoded;
-    let options = BatchDecodeOptions {
-        workers: NonZeroUsize::new(1),
-        layout: BatchLayout::Nchw,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.workers = NonZeroUsize::new(1);
+        options.layout = BatchLayout::Nchw;
+        options
     };
     let prepared = prepare_batch(
         vec![
@@ -271,10 +272,11 @@ fn prepared_htj2k_rgba_supports_native_types_requests_and_layouts_exactly() {
         let signed = fixture.signed;
         let encoded = Arc::<[u8]>::from(wrap_rgba_jph(&fixture.encoded, fixture.alpha));
         for layout in [BatchLayout::Nchw, BatchLayout::Nhwc] {
-            let options = BatchDecodeOptions {
-                workers: NonZeroUsize::new(1),
-                layout,
-                ..BatchDecodeOptions::default()
+            let options = {
+                let mut options = BatchDecodeOptions::default();
+                options.workers = NonZeroUsize::new(1);
+                options.layout = layout;
+                options
             };
             let prepared = prepare_batch(
                 requests

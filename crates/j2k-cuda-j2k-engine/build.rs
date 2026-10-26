@@ -23,6 +23,7 @@ const J2K_ENCODE_EXTRA_SOURCES: &[&str] = &[
     "simt/src/helpers.rs",
     "simt/src/packet_writer.rs",
     "simt/src/packetization.rs",
+    "simt/src/parallel_header.rs",
     "simt/src/quantization.rs",
     "simt/src/tag_tree.rs",
 ];
@@ -45,15 +46,6 @@ const PROJECTS: &[CudaOxideProject] = &[
         display_name: "cuda-oxide J2K encode",
         extra_sources: J2K_ENCODE_EXTRA_SOURCES,
         built_cfg: "j2k_cuda_oxide_j2k_encode_built",
-    },
-    CudaOxideProject {
-        feature_env: "CARGO_FEATURE_CUDA_OXIDE_J2K_ML",
-        source_dir: "src/cuda_oxide_j2k_ml",
-        output_name: "cuda_oxide_j2k_ml.ptx",
-        artifact_name: "j2k_cuda_oxide_j2k_ml.ptx",
-        display_name: "cuda-oxide j2k-ml",
-        extra_sources: &[],
-        built_cfg: "j2k_cuda_oxide_j2k_ml_built",
     },
     CudaOxideProject {
         feature_env: "CARGO_FEATURE_CUDA_OXIDE_J2K_CLASSIC_DECODE",

@@ -84,8 +84,11 @@ pub(crate) fn sample_as_u8(sample: f32, bit_depth: u32) -> u8 {
 }
 
 #[inline(always)]
-pub(crate) fn sample_as_u16(sample: f32, bit_depth: u32) -> u16 {
+pub(crate) fn sample_as_u16(sample: f32, bit_depth: u32, signed: bool) -> u16 {
     let rounded = round_f32(sample);
+    if signed {
+        return signed_sample_as_u16(rounded, bit_depth);
+    }
     if bit_depth > 8 {
         return sample_as_native_u16(rounded, bit_depth);
     }
@@ -93,6 +96,26 @@ pub(crate) fn sample_as_u16(sample: f32, bit_depth: u32) -> u16 {
     let max_int = max_int_for_bit_depth(bit_depth);
     let max_value = if max_int > 1 { max_int as f32 } else { 1.0 };
     round_f32((clamp_f32(rounded, 0.0, max_value) / max_value) * 65535.0) as u16
+}
+
+// As the CPU decoder: signed samples above eight bits keep their two's
+// complement 16-bit pattern; at most eight bits, the two's-complement byte is
+// widened by the declared precision, saturating at 65535.
+#[inline(always)]
+fn signed_sample_as_u16(rounded: f32, bit_depth: u32) -> u16 {
+    let precision = bit_depth.clamp(1, 16);
+    let magnitude = 1_i32 << (precision - 1);
+    let value = clamp_f32(rounded, (-magnitude) as f32, (magnitude - 1) as f32) as i32;
+    if bit_depth > 8 {
+        return value as i16 as u16;
+    }
+    let max_value = max_int_for_bit_depth(precision);
+    let widened = (u32::from(value as i8 as u8) * 65535 + max_value / 2) / max_value;
+    if widened > 65535 {
+        65535
+    } else {
+        widened as u16
+    }
 }
 
 #[inline(always)]

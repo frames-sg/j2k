@@ -58,17 +58,17 @@ pub(crate) fn require_prepared_success(prepared: &PreparedBatch) {
 
 pub(crate) fn require_burn_success<B: Backend>(decoded: BurnBatchDecode<B>) -> BurnBatchDecode<B> {
     assert!(
-        decoded.errors.is_empty(),
+        decoded.errors().is_empty(),
         "benchmark adapter returned indexed errors: {:?}",
-        decoded.errors
+        decoded.errors()
     );
     assert!(
-        decoded.group_errors.is_empty(),
+        decoded.group_errors().is_empty(),
         "benchmark adapter returned group errors: {:?}",
-        decoded.group_errors
+        decoded.group_errors()
     );
     assert_eq!(
-        decoded.groups.len(),
+        decoded.groups().len(),
         1,
         "benchmark workload must materialize exactly one Burn tensor group"
     );

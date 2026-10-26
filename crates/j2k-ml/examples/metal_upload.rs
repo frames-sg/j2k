@@ -13,15 +13,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect::<Result<Vec<_>, _>>()?;
     let mut decoder = MetalUploadBurnDecoder::system_default(BatchDecodeOptions::default())?;
     let output = decoder.decode(inputs)?;
-    if !output.errors.is_empty() || !output.group_errors.is_empty() || output.groups.len() != 1 {
+    if !output.errors().is_empty()
+        || !output.group_errors().is_empty()
+        || output.groups().len() != 1
+    {
         return Err(std::io::Error::other(format!("incomplete Metal decode: {output:?}")).into());
     }
     let tensor = output
-        .groups
+        .into_groups()
         .into_iter()
         .next()
         .ok_or_else(|| std::io::Error::other("Metal decode returned no tensor"))?
-        .tensor
+        .into_tensor()
         .into_tensor();
     println!(
         "staged Metal-to-Burn upload: shape={:?}, dtype={:?}",

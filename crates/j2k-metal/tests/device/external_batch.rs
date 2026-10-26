@@ -127,9 +127,10 @@ fn decode_external_rgb_group(
     batch_layout: BatchLayout,
     format: PixelFormat,
 ) -> (Vec<u8>, Vec<u8>) {
-    let options = BatchDecodeOptions {
-        layout: batch_layout,
-        ..BatchDecodeOptions::default()
+    let options = {
+        let mut options = BatchDecodeOptions::default();
+        options.layout = batch_layout;
+        options
     };
     let inputs = input_indices
         .iter()

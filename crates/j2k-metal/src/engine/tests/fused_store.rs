@@ -117,9 +117,10 @@ fn stacked_batches_store_their_last_level_directly_and_match_the_cpu() {
     if !should_run_metal_runtime() {
         return;
     }
-    let options = j2k::BatchDecodeOptions {
-        layout: j2k::BatchLayout::Nhwc,
-        ..j2k::BatchDecodeOptions::default()
+    let options = {
+        let mut options = j2k::BatchDecodeOptions::default();
+        options.layout = j2k::BatchLayout::Nhwc;
+        options
     };
     let mut metal = crate::MetalBatchDecoder::system_default_with_options(options)
         .expect("Metal batch decoder");
@@ -193,9 +194,10 @@ fn stacked_groups_split_into_runs_keep_every_image_in_place() {
         return;
     }
     let _restore = DefaultStackedRuns;
-    let options = j2k::BatchDecodeOptions {
-        layout: j2k::BatchLayout::Nhwc,
-        ..j2k::BatchDecodeOptions::default()
+    let options = {
+        let mut options = j2k::BatchDecodeOptions::default();
+        options.layout = j2k::BatchLayout::Nhwc;
+        options
     };
     let mut metal = crate::MetalBatchDecoder::system_default_with_options(options)
         .expect("Metal batch decoder");
