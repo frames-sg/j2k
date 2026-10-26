@@ -12,12 +12,12 @@ packaged crate outside the workspace before each release.
 
 ## What `j2k-ml` does and does not do
 
-`j2k-ml` is a thin adapter, not a second codec. Parsing, JPEG 2000 and HTJ2K
-decoding, preparation, grouping, memory reuse, and GPU execution are done by
-`j2k`, `j2k-native`, `j2k-cuda`, and `j2k-metal`. `j2k-ml` turns CPU groups
-into Burn tensors, decodes CUDA groups directly into Burn-owned allocations,
-or copies completed GPU output through host memory and uploads it as an
-ordinary Burn tensor.
+`j2k-ml` is a thin adapter, not a second codec. Parsing, JPEG, JPEG 2000 and
+HTJ2K decoding, preparation, grouping, memory reuse, and GPU execution are done
+by `j2k`, `j2k-native`, `j2k-jpeg`, `j2k-cuda`, and `j2k-metal`. `j2k-ml`
+turns CPU groups into Burn tensors, decodes CUDA groups directly into
+Burn-owned allocations, or copies completed GPU output through host memory and
+uploads it as an ordinary Burn tensor.
 
 Dataset assembly, DICOM parsing, labels, sampling, resizing, padding,
 prefetching, augmentation, float conversion, and normalization remain outside

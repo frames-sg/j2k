@@ -448,7 +448,8 @@ Published crates must have a package README and docs.rs metadata. Tooling and
 test helpers are not published, even though they share the workspace version.
 
 `j2k-test-support` is an unpublished dev helper. The comparator crates and
-automation tools are not runtime API.
+automation tools are not runtime API. `j2k-python` builds the `j2k` Python
+wheel and is not published to crates.io.
 
 ## Public API snapshots
 

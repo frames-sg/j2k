@@ -40,7 +40,8 @@ literals, JPEG enum matches, and the hidden quantization helper arguments.
 component signedness. `BatchDecodeOptions`, `j2k_jpeg::ColorTransform` and the
 Burn tensor and error enums become non-exhaustive, the JPEG decode outcomes add
 `recovered`, Burn batch results move behind accessors, and JPEG decode is strict
-by default.
+by default. `BatchLayout` moves to `j2k-core` and is still re-exported by `j2k`,
+and the `cuda-oxide-j2k-ml` feature of `j2k-cuda-j2k-engine` is removed.
 
 ## Stability tiers
 

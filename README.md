@@ -140,16 +140,19 @@ READMEs for which paths run on the GPU. Benchmark numbers are in
 ## Machine learning
 
 The optional [Rust-written PyTorch/NumPy extension](crates/j2k-python/README.md)
-exposes native pixel tensors, reusable batches, region/reduced decode, and
-selected wavelet bands. Its optional CUDA route decodes directly into
-PyTorch-owned device storage. Python is only needed by users of that extension.
+exposes native pixel tensors, batches that can mix 8-bit JPEG with JPEG 2000
+inputs, reusable prepared batches, region/reduced decode, and selected wavelet
+bands. Its optional CUDA route decodes directly into PyTorch-owned device
+storage, and its optional Metal route returns PyTorch `mps` tensors on Apple
+Silicon. Python is only needed by users of that extension.
 
 Rust callers can use `J2kDecoder::decode_wavelets` to obtain exact reversible
 5/3 coefficients or dequantized 9/7 coefficients, with tile/component metadata.
 The decoder skips entropy work for unrequested bands and omits inverse DWT.
 
-`j2k-ml` decodes batches of JPEG 2000 images into
-[Burn](https://burn.dev) tensors (`U8`, `U16`, or `I16`, NCHW or NHWC).
+`j2k-ml` decodes batches of JPEG 2000 images, or mixed JPEG and JPEG 2000
+batches on the CPU, into [Burn](https://burn.dev) tensors (`U8`, `U16`, or
+`I16`, NCHW or NHWC).
 `CudaDirectBurnDecoder` decodes directly into Burn-owned CUDA storage and
 waits for completion before returning the tensor. The staged CUDA and Metal
 adapters copy pixels through host memory before Burn uploads them.
@@ -168,6 +171,7 @@ Most code only needs `j2k`. Add a GPU crate if you want GPU decoding.
 | Decode with an NVIDIA GPU | `j2k` + `j2k-cuda` |
 | Decode with an Apple GPU | `j2k` + `j2k-metal` |
 | Read or write regular JPEG | `j2k-jpeg` |
+| Decode batches of JPEGs into dense RGB8 tensors | `j2k_jpeg::JpegBatchDecoder` |
 | Convert JPEG to HTJ2K | `j2k-transcode` (+ `j2k-transcode-cuda` or `j2k-transcode-metal`) |
 | JPEG on the GPU | `j2k-jpeg-cuda` or `j2k-jpeg-metal` |
 | Feed decoded images to Burn | `j2k-ml` |

@@ -56,7 +56,7 @@ requires separate subsystem work and independently derived table definitions.
 | `j2k-cuda-transcode-engine` | CUDA engine | Internal coefficient-domain transcode operations: reversible/irreversible transforms and quantization, validation, launch geometry, stage timings, and CUDA-Oxide packaging. |
 | `j2k-jpeg-cuda`, `j2k-cuda`, `j2k-transcode-cuda` | CUDA adapter | Codec-facing CUDA APIs, persistent batch sessions, route policy, resident output, and validated caller-owned destinations for supported paths. |
 | `j2k-jpeg-metal`, `j2k-metal`, `j2k-transcode-metal` | Metal adapter | macOS Metal adapters built on `j2k-metal-support`. J2K transforms, Tier-1, packetization, store, and resident encode/decode are in the private `j2k-metal::engine` module; the transcode adapter has its own coefficient-domain kernels and does not depend on `j2k-metal`. |
-| `j2k-ml` | framework integration | Thin Burn allocation and codec-interop adapter for owned integer batch output. |
+| `j2k-ml` | framework integration | Thin Burn allocation and codec-interop adapter for owned integer batch output, including mixed JPEG and JPEG 2000 CPU batches. |
 | `j2k-python` | optional framework integration | Rust PyO3 extension exposing pixels and selected wavelet bands through owned DLPack tensors; optional CUDA decode into PyTorch-owned storage and Metal decode into fresh buffers transferred to PyTorch MPS; CPU RGB research encode/decode and float 9/7 transforms. No Python dependencies in default Rust builds. |
 | `j2k-mpsgraph-support` | support | Codec-independent graph submission, callback/error ownership, completion, and retained input lifetime shared with JPEG XR. |
 | `j2k-mpsgraph` | framework integration | Experimental Apple Silicon direct bridge from Metal-resident native integer batches to static rank-four MPSGraph programs. |
@@ -71,8 +71,8 @@ requires separate subsystem work and independently derived table definitions.
 ## Dependency rules
 
 - The public `j2k` crate owns the JPEG 2000 / HTJ2K API surface.
-- `j2k`, `j2k-native`, `j2k-cuda`, and `j2k-metal` own codec parsing,
-  preparation, grouping, decoding, scratch reuse, and device execution.
+- `j2k`, `j2k-native`, `j2k-jpeg`, `j2k-cuda`, and `j2k-metal` own codec
+  parsing, preparation, grouping, decoding, scratch reuse, and device execution.
 - `j2k-ml` may allocate or materialize Burn tensors and establish safe
   framework/codec ordering. It must not duplicate entropy decode, transforms,
   grouping policy, normalization, or training behavior.
@@ -132,6 +132,10 @@ NCHW or NHWC order and preserves source indices. Straight and premultiplied
 alpha are distinct grouping keys. Preparation retains the caller-owned
 codestream bytes and reusable decode plans without duplicating the codestream.
 Broader component layouts remain on the component-plane APIs.
+`j2k_jpeg::JpegBatchDecoder` decodes complete 8-bit JPEGs on the CPU into dense
+RGB8 groups in the same layouts, grouped by size; a failing input is reported
+by index and the rest of its group is kept. Both batch decoders use the
+`BatchLayout` defined in `j2k-core`.
 
 ### CPU JPEG SIMD boundary
 
@@ -179,7 +183,7 @@ CUDA adapters use `j2k-cuda-runtime` for the shared CUDA Driver API runtime,
 generic module loading, checked launch geometry, memory, and completion.
 `j2k-jpeg-cuda` calls into `j2k-cuda-jpeg-engine` for JPEG plans, validation,
 CUDA-Oxide packaging, and launch orchestration. `j2k-cuda` calls into
-`j2k-cuda-j2k-engine` for J2K-ML, transforms, classic Tier-1 decode, HTJ2K
+`j2k-cuda-j2k-engine` for transforms, classic Tier-1 decode, HTJ2K
 decode, dequantization, the final store, encode, and packetization, including
 queued completion and PTX packaging. The CUDA kernels are compiled from CUDA
 Oxide projects; the Rust host code drives them through the Driver API.
@@ -263,6 +267,10 @@ job, while the final native store still writes one dense destination per
 homogeneous group. Resident and external-destination routes share the codec
 pipeline; an external destination receives the final samples without a decoded
 host transfer or an intermediate final device allocation.
+
+CUDA and Metal device decodes follow the CPU's sample conversion for signed
+grayscale and color sources. Component plans keep the source signedness from
+construction and reject color components of mixed signedness.
 
 CUDA and Metal prepared decode support ROI maxshift from RGN markers in
 supported classic and HT profiles. Both limit the coded bitplane count including
