@@ -9,6 +9,12 @@ stay on the CPU. Explicit CUDA decode supports both classic JPEG 2000 and HTJ2K 
 adapter's supported image and code-block profiles, including reversible 5/3 and
 irreversible 9/7 transforms. Unsupported explicit CUDA requests return an error.
 
+Device decodes follow the CPU's sample conversion for signed grayscale and
+color sources, including prepared and referenced batches. Grayscale and color
+region decodes plan only the code blocks, packets, and wavelet levels the region
+needs, and run each inverse DWT level over the region's window rather than whole
+bands.
+
 Encode from CUDA buffers is separate: it requires HTJ2K block coding and external
 validation, and rejects classic JPEG 2000 block coding. Strict host-input encode
 also requires supported CUDA stages throughout. The shared encode-stage adapter

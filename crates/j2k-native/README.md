@@ -10,6 +10,10 @@ It supports the same inputs as `j2k`: raw J2K/J2C codestreams, JP2 files, raw
 HTJ2K codestreams, and JPH files. JPX (JPEG 2000 Part 2) extensions are not
 supported.
 
+The default `profile` feature compiles the stage profiling enabled by
+`J2K_PROFILE_STAGES`. Without it, profiling compiles to no-ops; builds that
+disable default features and need the rows must enable `profile` explicitly.
+
 Most application code should use `j2k` instead.
 
 ## Links

@@ -11,6 +11,16 @@ Since version 0.9, the expert constructors and raw buffer handoffs take
 queues, command buffers, and buffers that J2K should own, and borrowed
 references otherwise. The older `metal-rs` types are no longer accepted.
 
+Device decodes follow the CPU's sample conversion for signed grayscale and
+color sources, including prepared, referenced, repeated, and distinct batches.
+
+`J2kDecoder::decode_into_metal` (or `decode_into_metal_with_session`) decodes
+one full image into a caller-owned `MetalImageDestination`, so a stream of
+same-sized frames can reuse one output allocation. It writes `Gray8` or
+`Gray16` for one component, `Rgb8` for 8-bit RGB, and `Rgb16` for 9- to 16-bit
+RGB, and returns after the GPU work completes. Codestreams without a direct
+Metal plan return `MetalDirectFallback`.
+
 `MetalBatchDecoder::decode_prepared_cooperative` is an explicit CPU/Metal batch
 decode mode. It queues GPU entropy work first, then uses a caller-bounded number
 of CPU workers for part of a large classic RGB8 group while Metal runs. The split

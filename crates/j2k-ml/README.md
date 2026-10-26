@@ -73,7 +73,7 @@ ordinary tensor API.
 | Responsibility | Owner |
 | --- | --- |
 | Dataset reads, labels, sampling, prefetch, resizing, augmentation, and training batches | The Burn application and its `Dataset`/`DataLoader`/`Batcher` |
-| Parsing, compatible-image grouping, preparation reuse, and JPEG 2000/HTJ2K execution | The `j2k` codec crates |
+| Parsing, compatible-image grouping, preparation reuse, and JPEG, JPEG 2000, and HTJ2K execution | The `j2k` codec crates, including `j2k-jpeg` |
 | Direct CUDA destinations, host staging, and ordinary Burn tensor materialization/upload | `j2k-ml` |
 | Float conversion and normalization | Ordinary Burn tensor operations in the application |
 

@@ -1,8 +1,9 @@
 # J2K pixels and wavelets in PyTorch
 
 `j2k-python` implements the `j2k` native extension entirely in Rust. It
-exposes JPEG 2000/HTJ2K inspection, CPU pixel batches, selected native wavelet
-bands, and optional direct CUDA and MPS output for PyTorch. NumPy and PyTorch are
+exposes JPEG 2000/HTJ2K inspection, CPU pixel batches that also accept 8-bit
+JPEG, selected native wavelet bands, CPU RGB research helpers, and optional
+direct CUDA and MPS output for PyTorch. NumPy and PyTorch are
 optional consumers. Bare `device="cuda"` imports PyTorch at construction to bind
 the current CUDA device for the decoder lifetime; explicit `cuda:N` remains explicit.
 
@@ -208,6 +209,21 @@ are errors. Selection skips unrequested Tier-1 entropy decoding and all inverse
 DWT/color/pixel-packing work. Packet headers are still parsed and coefficient
 storage is still allocated for the active tile. It does not promise proportional
 I/O or peak-memory savings, or incremental refinement across separate calls.
+
+## CPU research helpers
+
+`encode_rgb(data, width, height, codec=...)` encodes interleaved 8-bit RGB
+bytes on the CPU as baseline JPEG 4:4:4 (`codec="jpeg"`), classic JPEG 2000
+(`"j2k"`), or HTJ2K (`"htj2k"`, the default) with the ICT. `quality` is the JPEG
+quality or the HTJ2K Qfactor; the wavelet codecs also take `target_bpp`,
+`levels`, and a per-component quantization `profile`. `quality` and
+`target_bpp` are mutually exclusive. `decode_rgb(data)` returns
+`(width, height, rgb_bytes)` for an 8-bit JPEG or a three-component 8-bit
+JPEG 2000 image.
+
+`forward_rgb97` and `inverse_rgb97` run the float 9/7 wavelet transform on
+little-endian `float32` interleaved RGB samples, with or without the ICT
+(`color="ict"` or `"rgb"`), using `j2k-native`'s reference implementations.
 
 ## Direct CUDA-to-PyTorch output
 
