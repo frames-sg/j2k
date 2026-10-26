@@ -26,6 +26,7 @@ fn rect_conversions_preserve_coordinates_in_both_directions() {
 #[test]
 fn decode_outcome_conversion_preserves_rect_and_warnings() {
     let outcome = DecodeOutcome {
+        recovered: false,
         decoded: Rect {
             x: 1,
             y: 2,

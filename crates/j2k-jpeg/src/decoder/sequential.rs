@@ -162,10 +162,7 @@ impl Decoder<'_> {
                     start.elapsed(),
                 );
             }
-            return Ok(DecodeOutcome {
-                decoded,
-                warnings: merged_warnings(&self.warnings, scan_warnings)?,
-            });
+            return self.finish_outcome(decoded, merged_warnings(&self.warnings, scan_warnings)?);
         }
         let output_rect = scaled_rect_covering(decoded, downscale)?;
         let scan_bytes = &self.bytes[self.plan.scan_offset..];
@@ -188,10 +185,7 @@ impl Decoder<'_> {
                 start.elapsed(),
             );
         }
-        Ok(DecodeOutcome {
-            decoded,
-            warnings: merged_warnings(&self.warnings, scan_warnings)?,
-        })
+        self.finish_outcome(decoded, merged_warnings(&self.warnings, scan_warnings)?)
     }
 
     pub(super) fn decode_rgb_with_writer<W: OutputWriter + InterleavedRgbWriter>(
@@ -225,10 +219,7 @@ impl Decoder<'_> {
                     start.elapsed(),
                 );
             }
-            return Ok(DecodeOutcome {
-                decoded,
-                warnings: merged_warnings(&self.warnings, scan_warnings)?,
-            });
+            return self.finish_outcome(decoded, merged_warnings(&self.warnings, scan_warnings)?);
         }
         let output_rect = scaled_rect_covering(decoded, downscale)?;
         let scan_bytes = &self.bytes[self.plan.scan_offset..];
@@ -270,10 +261,7 @@ impl Decoder<'_> {
                 start.elapsed(),
             );
         }
-        Ok(DecodeOutcome {
-            decoded,
-            warnings: merged_warnings(&self.warnings, scan_warnings)?,
-        })
+        self.finish_outcome(decoded, merged_warnings(&self.warnings, scan_warnings)?)
     }
 }
 

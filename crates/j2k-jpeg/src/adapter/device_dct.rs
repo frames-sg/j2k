@@ -342,7 +342,7 @@ pub fn decode_device_dct_blocks_into(
     blocks: &mut [[i16; 64]],
 ) -> Result<Vec<Warning>, JpegError> {
     let info = decoder.info();
-    match info.sof_kind {
+    let warnings = match info.sof_kind {
         SofKind::Baseline8 | SofKind::Extended8 | SofKind::Extended12
             if decoder.progressive_plan.is_none() =>
         {
@@ -393,7 +393,9 @@ pub fn decode_device_dct_blocks_into(
             Ok(Vec::new())
         }
         SofKind::Lossless => Err(JpegError::NotImplemented { sof: info.sof_kind }),
-    }
+    }?;
+    decoder.validate_completed_warnings(&warnings)?;
+    Ok(warnings)
 }
 
 /// Quantization table permuted from zigzag to natural coefficient order.

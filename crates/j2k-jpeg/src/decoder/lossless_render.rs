@@ -172,10 +172,10 @@ impl Decoder<'_> {
 
     fn finish_lossless_scan(&self, scan: LosslessScan<'_, '_>) -> Result<DecodeOutcome, JpegError> {
         let scan_warnings = scan.finish()?;
-        Ok(DecodeOutcome {
-            decoded: Rect::full(self.info.dimensions),
-            warnings: merged_warnings(&self.warnings, scan_warnings)?,
-        })
+        self.finish_outcome(
+            Rect::full(self.info.dimensions),
+            merged_warnings(&self.warnings, scan_warnings)?,
+        )
     }
 
     fn decode_lossless_gray_into<P: LosslessSample>(

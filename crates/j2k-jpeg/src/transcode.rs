@@ -193,6 +193,7 @@ pub fn extract_dct_blocks(
         }
         other => return Err(JpegError::NotImplemented { sof: other }),
     };
+    decoder.validate_completed_warnings(&[])?;
     let component_live_bytes = dct_component_capacity_bytes(components.capacity(), &components)?;
     ensure_dct_output_phase(
         component_live_bytes,

@@ -231,10 +231,10 @@ impl Decoder<'_> {
                 (color_space, plan.bit_depth),
             );
         }
-        Ok(DecodeOutcome {
-            decoded: Rect::full(self.info.dimensions),
-            warnings: merged_warnings(&self.warnings, scan_warnings)?,
-        })
+        self.finish_outcome(
+            Rect::full(self.info.dimensions),
+            merged_warnings(&self.warnings, scan_warnings)?,
+        )
     }
 
     /// Plane-rendered color streamed through `sink`, assembling each row in
@@ -268,9 +268,9 @@ impl Decoder<'_> {
             );
             sink.write_row(y as u32, &row[..row_len])?;
         }
-        Ok(DecodeOutcome {
-            decoded: Rect::full(self.info.dimensions),
-            warnings: merged_warnings(&self.warnings, scan_warnings)?,
-        })
+        self.finish_outcome(
+            Rect::full(self.info.dimensions),
+            merged_warnings(&self.warnings, scan_warnings)?,
+        )
     }
 }

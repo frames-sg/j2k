@@ -78,10 +78,7 @@ impl Decoder<'_> {
         }
 
         let scan_warnings = finish_scan(&mut br, true)?;
-        Ok(DecodeOutcome {
-            decoded: roi,
-            warnings: merged_warnings(&self.warnings, scan_warnings)?,
-        })
+        self.finish_outcome(roi, merged_warnings(&self.warnings, scan_warnings)?)
     }
 
     pub(super) fn decode_extended12_four_component_subsampled_region_into(
@@ -124,9 +121,6 @@ impl Decoder<'_> {
             &planes,
         );
 
-        Ok(DecodeOutcome {
-            decoded: roi,
-            warnings: merged_warnings(&self.warnings, scan_warnings)?,
-        })
+        self.finish_outcome(roi, merged_warnings(&self.warnings, scan_warnings)?)
     }
 }

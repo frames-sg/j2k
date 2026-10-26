@@ -323,6 +323,7 @@ fn decoder_new_rejects_arithmetic_as_unsupported() {
 #[test]
 fn decode_outcome_carries_rect_and_warnings() {
     let outcome = DecodeOutcome {
+        recovered: false,
         decoded: Rect {
             x: 0,
             y: 0,
