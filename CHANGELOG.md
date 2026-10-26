@@ -58,6 +58,33 @@ and stale roadmap entries have been removed from the public documentation set.
   For 0.13.0, `J2kDirectGrayscalePlan` adds the public `signed: bool` field.
   Struct literals must add `signed` from the source metadata, or use struct
   update syntax with an existing plan that has the correct signedness.
+
+- Python `ImageRequest` accepts JPEG color-transform hints from slide readers.
+  `Tensor.to_numpy()` rejects GPU output without consuming its DLPack owner.
+- The Python adapter's optional `metal` feature supports `device="mps"` on
+  Apple Silicon. JPEG 2000 batches decode into fresh private Metal buffers
+  transferred to PyTorch through DLPack after GPU completion; consumer
+  mutation and decoder reuse do not alias codec-owned storage.
+- `CpuBurnDecoder::decode_batch` accepts mixed JPEG and JPEG 2000 inputs
+  with common private result owners, typed diagnostics and recovery metadata.
+- JPEG decode defaults to strict pixel integrity, including progressive EOF
+  verification. Explicit lenient recovery is reported per row. Python strict
+  settings and Burn session settings apply to both codec families.
+- Unconsumed DLPack capsules return storage to their live tensor owner after
+  a rejected foreign import. Python accepts `mps:0` and single ImageRequest
+  inputs; bare `cuda` binds the current PyTorch device at construction.
+- `j2k_jpeg::JpegBatchDecoder` decodes complete JPEGs on the CPU into dense
+  RGB8 groups (NCHW or NHWC), grouped by size; a failing input is reported by
+  index and the rest of its group is kept. `BatchLayout` moves to `j2k-core`
+  and `j2k::BatchLayout` re-exports it.
+- The `j2k` Python decoder's `decode` and `decode_batch` accept 8-bit JPEG
+  inputs alongside JPEG 2000 in one call, with indices and errors relative to
+  the original input list. JPEG inputs support full-image CPU decode; `prepare`
+  and `decode_prepared` stay JPEG 2000 only.
+- Removes the unused CUDA-Oxide j2k-ml conversion kernel from
+  `j2k-cuda-j2k-engine`, with its `cuda-oxide-j2k-ml` feature, the
+  rustdoc-hidden `CudaJ2kMl*` types and
+  `J2kCudaEngine::j2k_ml_convert_into_external`. No adapter called it.
 - Tight RGBA8 output from RGB images decodes into the caller's allocation
   and adds opaque alpha in place, avoiding a separate full RGB8 buffer.
   Pixel values and padded-output handling are unchanged.
