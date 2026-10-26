@@ -4,8 +4,8 @@ use std::path::Path;
 
 use super::{
     require_primary_evidence, supplemental_evidence, validate_evidence_test_path,
-    validate_evidence_test_source, CoverageExclusion, EvidenceClass, EvidenceTest,
-    ExclusionMatcher,
+    validate_evidence_test_source, validate_python_evidence_test_source, CoverageExclusion,
+    EvidenceClass, EvidenceTest, ExclusionMatcher,
 };
 
 mod matchers;
@@ -141,4 +141,73 @@ fn supplemental_only_exclusion_evidence_is_rejected() {
         error.contains("at least one unconditional primary"),
         "{error}"
     );
+}
+
+#[test]
+fn python_evidence_resolves_one_unittest_method_and_its_skip_conditions() {
+    let runnable = "import unittest\n\nclass AdapterTests(unittest.TestCase):\n    def test_batch(self):\n        pass\n";
+    validate_python_evidence_test_source("test_batch", EvidenceClass::Primary, runnable).unwrap();
+
+    for (source, expected) in [
+        ("class AdapterTests(unittest.TestCase):\n    def test_other(self):\n        pass\n", "no matching"),
+        (
+            "class AdapterTests(unittest.TestCase):\n    def test_batch(self):\n        pass\n    def test_batch(self):\n        pass\n",
+            "ambiguous",
+        ),
+        ("class Helper:\n    def test_batch(self):\n        pass\n", "unittest.TestCase"),
+        ("def test_batch(self):\n    pass\n", "no matching"),
+        (
+            "class AdapterTests(unittest.TestCase):\n    @unittest.skip(\"later\")\n    def test_batch(self):\n        pass\n",
+            "must not be skipped",
+        ),
+        (
+            "class AdapterTests(unittest.TestCase):\n    @unittest.expectedFailure\n    def test_batch(self):\n        pass\n",
+            "must not be skipped",
+        ),
+    ] {
+        let error = validate_python_evidence_test_source("test_batch", EvidenceClass::Primary, source)
+            .unwrap_err();
+        assert!(error.contains(expected), "{error}");
+    }
+    assert!(
+        validate_python_evidence_test_source("batch", EvidenceClass::Primary, runnable)
+            .unwrap_err()
+            .contains("`test_` method")
+    );
+
+    for conditional in [
+        "@unittest.skipUnless(AVAILABLE, \"needs hardware\")\nclass DeviceTests(unittest.TestCase):\n    def test_batch(self):\n        pass\n",
+        "@unittest.skipUnless(\n    AVAILABLE, \"needs hardware\"\n)\n\nclass DeviceTests(unittest.TestCase):\n    def test_batch(self):\n        pass\n",
+        "class DeviceTests(unittest.TestCase):\n    def test_first(self):\n        pass\n\n    @unittest.skipIf(\n        MISSING, \"needs hardware\"\n    )\n    def test_batch(self):\n        pass\n",
+    ] {
+        let error =
+            validate_python_evidence_test_source("test_batch", EvidenceClass::Primary, conditional)
+                .unwrap_err();
+        assert!(error.contains("conditionally compiled supplemental"), "{error}");
+        validate_python_evidence_test_source("test_batch", EvidenceClass::Supplemental, conditional)
+            .unwrap();
+    }
+}
+
+#[test]
+fn python_extension_exclusion_covers_only_the_extension_sources() {
+    let rule = |path| {
+        super::matching_exclusion(path, 1, &[])
+            .unwrap()
+            .map(|rule| rule.id)
+    };
+    for path in [
+        "crates/j2k-python/src/decode.rs",
+        "crates/j2k-python/src/tensor.rs",
+    ] {
+        assert_eq!(rule(path), Some("python-extension-bindings"), "{path}");
+    }
+    for path in [
+        "crates/j2k-python/build.rs",
+        "crates/j2k-python-other/src/lib.rs",
+        "crates/j2k/src/lib.rs",
+        "crates/j2k-ml/src/lib.rs",
+    ] {
+        assert_eq!(rule(path), None, "{path}");
+    }
 }

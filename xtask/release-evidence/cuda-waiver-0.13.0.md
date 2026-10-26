@@ -51,14 +51,20 @@ manifests and lockfile as the 0.13.0 candidate:
 The identity run covers part of the full matrix. It stopped when the runner
 went offline.
 
-The candidate must keep these trees from `76a0fab3`. Check them before tagging
-with `git rev-parse <sha>:<path>`:
+The candidate must keep these from `76a0fab3`. Check them before tagging with
+`git rev-parse <sha>:<path>`:
 
-| Path | Tree or blob |
+| Path | Tree or blob at `76a0fab3` |
 | --- | --- |
-| `crates` | `8457a8e44bdf8c738442b67c6171470b4f0be2b8` |
+| `crates` | `8457a8e44bdf8c738442b67c6171470b4f0be2b8`, apart from test-only files |
 | `Cargo.toml` | `61b5888630d5d4e0ec09012b03ff69392f08abe2` |
 | `Cargo.lock` | `28dac642957f5476aa5df76939e105acee2f520c` |
+
+After `76a0fab3`, the only changes under `crates` are two test files.
+`crates/j2k-ml/tests/cpu.rs` adds a CPU test for the mixed batch accessors.
+`crates/j2k-metal/tests/sample_depth_output.rs` drains an autorelease pool per
+rejected decode. No crate source, manifest, or lockfile changed.
+`git diff --stat 76a0fab3 <sha> -- crates` must list only those files.
 
 ## Not covered by this waiver
 

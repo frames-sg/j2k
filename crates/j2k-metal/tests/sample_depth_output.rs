@@ -423,21 +423,26 @@ fn mixed_signedness_is_rejected_before_metal_single_and_batch_stores() {
                             ),
                         ];
                         for request in requests {
-                            assert!(
-                                J2kDecoder::new(&bytes)
-                                    .expect("mixed decoder")
-                                    .decode_request_to_device(request)
-                                    .is_err(),
-                                "accepted mixed source {ht} {mct} {tiled} {fmt:?}"
-                            );
-                            let mut batch = MetalTileBatch::new();
-                            batch
-                                .push_shared_tile_request(Arc::from(bytes.clone()), request)
-                                .expect("queue");
-                            assert!(
-                                batch.decode_all().is_err(),
-                                "accepted mixed batch {ht} {mct} {tiled} {fmt:?}"
-                            );
+                            // Rejected decodes may leave command buffers autoreleased on this
+                            // thread. Unoptimized builds keep them until a pool drains, and a
+                            // queue blocks once 64 are outstanding, so drain per attempt.
+                            objc2::rc::autoreleasepool(|_| {
+                                assert!(
+                                    J2kDecoder::new(&bytes)
+                                        .expect("mixed decoder")
+                                        .decode_request_to_device(request)
+                                        .is_err(),
+                                    "accepted mixed source {ht} {mct} {tiled} {fmt:?}"
+                                );
+                                let mut batch = MetalTileBatch::new();
+                                batch
+                                    .push_shared_tile_request(Arc::from(bytes.clone()), request)
+                                    .expect("queue");
+                                assert!(
+                                    batch.decode_all().is_err(),
+                                    "accepted mixed batch {ht} {mct} {tiled} {fmt:?}"
+                                );
+                            });
                         }
                     }
                 }
