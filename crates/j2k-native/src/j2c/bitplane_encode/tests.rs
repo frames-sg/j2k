@@ -14,9 +14,9 @@ use super::passes::{
 };
 use super::preparation::prepare_padded_coefficients;
 use super::{
-    classic_worker_allocation, encode_code_block, encode_code_block_i64,
+    classic_worker_allocation, coded_bitplanes, encode_code_block, encode_code_block_i64,
     encode_code_block_segments_with_style, encode_code_block_segments_with_style_i64,
-    encode_code_block_view, pack_classic_selective_bypass_tier1_tokens,
+    encode_code_block_view, pack_classic_selective_bypass_tier1_tokens, try_encode_code_block,
     try_encode_neighbor_byte_passes, ClassicTier1TokenSegment, CodedBlock, EncodedCodeBlock,
 };
 
@@ -532,7 +532,7 @@ fn column_word_passes_match_neighbor_byte_passes() {
     let mut state = 0x9e37_79b9_7f4a_7c15_u64;
     for (case, &(width, height, total_bitplanes)) in shapes.iter().enumerate() {
         let full = (1_u64 << total_bitplanes) - 1;
-        // Draws: all zero, sparse, uniform over every bitplane, and mostly small.
+        // Draws: zero, sparse, uniform, mostly small, and alternating bits.
         for draw in 0..5 {
             let coefficients: Vec<i32> = (0..width * height)
                 .map(|_| {
@@ -557,6 +557,9 @@ fn column_word_passes_match_neighbor_byte_passes() {
                 .collect();
             let view = CoefficientBlockView::try_contiguous(&coefficients, width, height)
                 .expect("contiguous test block");
+            let Some(num_bitplanes) = coded_bitplanes(view, total_bitplanes).expect("fits") else {
+                continue;
+            };
             let allocation = classic_worker_allocation(width, height, total_bitplanes)
                 .expect("valid code-block plan");
             for (band, &sub_band_type) in sub_bands.iter().enumerate() {
@@ -564,7 +567,7 @@ fn column_word_passes_match_neighbor_byte_passes() {
                 let column = try_encode_column_passes(
                     view,
                     sub_band_type,
-                    total_bitplanes,
+                    num_bitplanes,
                     style,
                     allocation.payload_bytes,
                 )
@@ -572,14 +575,12 @@ fn column_word_passes_match_neighbor_byte_passes() {
                 let neighbor = try_encode_neighbor_byte_passes(
                     view,
                     sub_band_type,
-                    total_bitplanes,
+                    num_bitplanes,
                     style,
                     allocation,
                 )
                 .expect("neighbor-byte passes");
-                let summary = |block: Option<CodedBlock>| {
-                    block.map(|block| (block.data, block.num_bitplanes, block.num_coding_passes))
-                };
+                let summary = |block: CodedBlock| (block.data, block.num_coding_passes);
                 assert_eq!(
                     summary(column),
                     summary(neighbor),
@@ -587,5 +588,18 @@ fn column_word_passes_match_neighbor_byte_passes() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn classic_encode_rejects_magnitudes_above_the_bitplane_count() {
+    for (coefficient, total_bitplanes) in [(2, 1), (i32::MIN, 31)] {
+        assert_eq!(
+            try_encode_code_block(&[coefficient], 1, 1, SubBandType::LowLow, total_bitplanes)
+                .unwrap_err(),
+            crate::EncodeError::InvalidInput {
+                what: "classic code-block magnitude exceeds configured bitplane count",
+            }
+        );
     }
 }

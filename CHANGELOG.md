@@ -9,6 +9,10 @@ and stale roadmap entries have been removed from the public documentation set.
   codestream when that probe is the selected scale, instead of encoding the
   same scale again. Search decisions and output are unchanged.
 
+- Classic CPU Tier-1 encoding of code blocks without vertically causal
+  context scans packed column state words shared with the decoder, instead
+  of per-sample neighbor bytes. Output is unchanged.
+
 - CUDA whole-tile HTJ2K encodes group every component's code blocks in
   bounded dispatches. Each component is quantized into its own plane of the
   component buffer after the transform has finished reading it, avoiding a

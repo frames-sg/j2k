@@ -4,9 +4,7 @@
 //! decoder scans, described in `bitplane::flags`, for code blocks without
 //! vertically causal context. Decisions, contexts and their order match the
 //! per-coefficient passes in `passes.rs` exactly; only the bookkeeping
-//! differs. A column without a candidate row costs one word test, and a
-//! newly significant coefficient updates three words instead of eight
-//! neighbor bytes.
+//! differs.
 
 use alloc::vec::Vec;
 
@@ -19,17 +17,22 @@ use super::super::build::SubBandType;
 use super::super::codestream::CodeBlockStyle;
 use super::super::coefficient_view::{CoefficientBlockView, SignedCoefficient};
 use super::super::encode::allocation::try_untracked_vec_filled;
-use super::{code_passes, coded_bitplanes, CodedBlock, CodingPass};
+use super::{code_passes, CodedBlock, CodingPass};
 use crate::EncodeResult;
 
-const ROW_BITS: u32 = 0x249;
+/// Bit 0 of each of the stripe's four row windows.
+const ROW_BITS: u32 = 1 | 1 << 3 | 1 << 6 | 1 << 9;
 
+/// Rows neither significant nor coded in this bitplane's significance pass,
+/// as `ROW_BITS`.
 #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
 #[inline(always)]
 fn uncoded_rows(own: u32) -> u32 {
     !(own >> SIGMA_THIS.trailing_zeros() | own >> PI_THIS.trailing_zeros()) & ROW_BITS
 }
 
+/// Uncoded rows with a significant neighbour: the significance propagation
+/// candidates.
 #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
 #[inline(always)]
 fn propagation_rows(own: u32) -> u32 {
@@ -238,25 +241,16 @@ impl Scan<'_> {
     }
 }
 
-/// Code every pass of a block with at most `MAX_BITPLANES` bitplanes, or
-/// return `None` when every coefficient is zero.
+/// Code every pass of a block's `num_bitplanes`, at most `MAX_BITPLANES`.
 #[expect(clippy::trivially_copy_pass_by_ref, reason = "shared style borrow")]
 pub(super) fn try_encode_column_passes<T: SignedCoefficient>(
     coefficients: CoefficientBlockView<'_, T>,
     sub_band_type: SubBandType,
-    total_bitplanes: u8,
+    num_bitplanes: u8,
     style: &CodeBlockStyle,
     payload_bytes: usize,
-) -> EncodeResult<Option<CodedBlock>> {
-    debug_assert!(total_bitplanes <= MAX_BITPLANES);
-    // Empty blocks and invalid magnitudes need no column scratch.
-    let any = coefficients
-        .rows()
-        .flatten()
-        .fold(0, |any, coefficient| any | coefficient.unsigned_magnitude());
-    let Some(num_bitplanes) = coded_bitplanes(any, total_bitplanes)? else {
-        return Ok(None);
-    };
+) -> EncodeResult<CodedBlock> {
+    debug_assert!(num_bitplanes <= MAX_BITPLANES);
     let samples = try_column_samples(coefficients)?;
     let (width, height) = (coefficients.width(), coefficients.height());
     let stride = width + 2;
@@ -289,5 +283,4 @@ pub(super) fn try_encode_column_passes<T: SignedCoefficient>(
             }
         },
     )
-    .map(Some)
 }

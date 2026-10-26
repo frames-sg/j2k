@@ -132,32 +132,37 @@ pub(crate) fn try_encode_code_block_with_style_view<T: SignedCoefficient>(
 ) -> EncodeResult<EncodedCodeBlock> {
     let allocation =
         classic_worker_allocation(coefficients.width(), coefficients.height(), total_bitplanes)?;
-    let coded = if !style.vertically_causal_context && total_bitplanes <= flag_passes::MAX_BITPLANES
-    {
-        flag_passes::try_encode_column_passes(
-            coefficients,
-            sub_band_type,
-            total_bitplanes,
-            style,
-            allocation.payload_bytes,
-        )?
-    } else {
-        try_encode_neighbor_byte_passes(
-            coefficients,
-            sub_band_type,
-            total_bitplanes,
-            style,
-            allocation,
-        )?
-    };
-    let (data, num_coding_passes, num_zero_bitplanes) = match coded {
-        Some(block) => (
-            block.data,
-            block.num_coding_passes,
-            total_bitplanes - block.num_bitplanes,
-        ),
-        None => (Vec::new(), 0, total_bitplanes),
-    };
+    // Empty blocks and invalid magnitudes need no pass scratch.
+    let (data, num_coding_passes, num_zero_bitplanes) =
+        match coded_bitplanes(coefficients, total_bitplanes)? {
+            None => (Vec::new(), 0, total_bitplanes),
+            Some(num_bitplanes) => {
+                let block = if !style.vertically_causal_context
+                    && total_bitplanes <= flag_passes::MAX_BITPLANES
+                {
+                    flag_passes::try_encode_column_passes(
+                        coefficients,
+                        sub_band_type,
+                        num_bitplanes,
+                        style,
+                        allocation.payload_bytes,
+                    )?
+                } else {
+                    try_encode_neighbor_byte_passes(
+                        coefficients,
+                        sub_band_type,
+                        num_bitplanes,
+                        style,
+                        allocation,
+                    )?
+                };
+                (
+                    block.data,
+                    block.num_coding_passes,
+                    total_bitplanes - num_bitplanes,
+                )
+            }
+        };
     Ok(EncodedCodeBlock {
         data,
         num_coding_passes,
@@ -173,7 +178,6 @@ pub(crate) fn try_encode_code_block_with_style_view<T: SignedCoefficient>(
 /// The MQ payload of one block's coding passes.
 struct CodedBlock {
     data: Vec<u8>,
-    num_bitplanes: u8,
     num_coding_passes: u8,
 }
 
@@ -184,9 +188,16 @@ enum CodingPass {
     Cleanup,
 }
 
-/// The coded bitplane count of a block whose magnitudes OR to `any`, or
-/// `None` when every coefficient is zero.
-fn coded_bitplanes(any: u64, total_bitplanes: u8) -> EncodeResult<Option<u8>> {
+/// The coded bitplane count of a block, or `None` when every coefficient is
+/// zero.
+fn coded_bitplanes<T: SignedCoefficient>(
+    coefficients: CoefficientBlockView<'_, T>,
+    total_bitplanes: u8,
+) -> EncodeResult<Option<u8>> {
+    let any = coefficients
+        .rows()
+        .flatten()
+        .fold(0, |any, coefficient| any | coefficient.unsigned_magnitude());
     if any == 0 {
         return Ok(None);
     }
@@ -202,10 +213,7 @@ fn coded_bitplanes(any: u64, total_bitplanes: u8) -> EncodeResult<Option<u8>> {
 /// Run `code` for every coding pass of `num_bitplanes` in T.800 D.3 order,
 /// from the most significant bitplane, with the style's segmentation symbols
 /// and context resets at the pass boundaries, and finish the MQ codeword.
-#[expect(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "both pass implementations share the caller's style borrow"
-)]
+#[expect(clippy::trivially_copy_pass_by_ref, reason = "shared style borrow")]
 fn code_passes(
     num_bitplanes: u8,
     style: &CodeBlockStyle,
@@ -240,34 +248,23 @@ fn code_passes(
     }
     Ok(CodedBlock {
         data: encoder.finish_checked()?,
-        num_bitplanes,
         num_coding_passes,
     })
 }
 
-/// Code every pass with one state and one neighbor byte per padded sample,
-/// for vertically causal blocks and blocks with more bitplanes than the
-/// column words hold, or return `None` when every coefficient is zero.
-#[expect(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "the stable Tier-1 entrypoint borrows the caller's code-block style"
-)]
+/// Code every pass of a block's `num_bitplanes` with one state and one
+/// neighbor byte per padded sample, for vertically causal blocks and blocks
+/// with more bitplanes than the column words hold.
+#[expect(clippy::trivially_copy_pass_by_ref, reason = "shared style borrow")]
 fn try_encode_neighbor_byte_passes<T: SignedCoefficient>(
     coefficients: CoefficientBlockView<'_, T>,
     sub_band_type: SubBandType,
-    total_bitplanes: u8,
+    num_bitplanes: u8,
     style: &CodeBlockStyle,
     allocation: ClassicWorkerAllocation,
-) -> EncodeResult<Option<CodedBlock>> {
+) -> EncodeResult<CodedBlock> {
     let w = coefficients.width();
     let h = coefficients.height();
-    let any = coefficients
-        .rows()
-        .flatten()
-        .fold(0, |any, coefficient| any | coefficient.unsigned_magnitude());
-    let Some(num_bitplanes) = coded_bitplanes(any, total_bitplanes)? else {
-        return Ok(None);
-    };
 
     // Build padded coefficient magnitude and state arrays.
     let pw = w
@@ -332,7 +329,6 @@ fn try_encode_neighbor_byte_passes<T: SignedCoefficient>(
             }
         },
     )
-    .map(Some)
 }
 
 #[expect(
