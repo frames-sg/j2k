@@ -3,8 +3,8 @@
 use super::{
     add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_i64, code_block_required_by_index,
     collect_pending_ht_blocks, count_ht_code_blocks, ht_block_decode,
-    ht_code_block_has_decodable_passes, should_decode_ht_sub_band_in_parallel, stored_placement,
-    ComponentInfo, CpuDecodeParallelism, DecodeAllocationBudget, DecodingError,
+    ht_code_block_has_decodable_passes, in_other_band, should_decode_ht_sub_band_in_parallel,
+    stored_placement, ComponentInfo, CpuDecodeParallelism, DecodeAllocationBudget, DecodingError,
     DecompositionStorage, Header, HtCodeBlockBatchJob, HtCodeBlockDecodeJob, HtCodeBlockDecoder,
     HtSubBandDecodeJob, Result, SubBand, TileDecodeContext, Vec,
 };
@@ -295,7 +295,9 @@ pub(super) fn decode_sub_band_ht_blocks(
             .clone()
             .map(|idx| &storage.code_blocks[idx])
         {
-            if code_block.coding != Some(CodeBlockCoding::HighThroughput) {
+            if code_block.coding != Some(CodeBlockCoding::HighThroughput)
+                || in_other_band(storage, code_block)
+            {
                 continue;
             }
             if !code_block_required_by_index(storage, sub_band_idx, code_block) {

@@ -12,7 +12,8 @@ use core::{iter, ops::Range};
 mod allocation;
 mod selection;
 pub(crate) use allocation::{
-    allocate_deferred_coefficients, release_unused_roi_workspace, BuildWorkspace, CoefficientLayout,
+    allocate_deferred_coefficients, lay_out_whole_region_coefficients,
+    release_unused_roi_workspace, BuildWorkspace, CoefficientLayout,
 };
 use allocation::{
     code_block_grid, prepare_decomposition_storage, push_preallocated, tag_tree_node_count,

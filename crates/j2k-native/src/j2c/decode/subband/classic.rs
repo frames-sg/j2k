@@ -6,7 +6,7 @@ use super::{
     add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_i64, bitplane,
     classic_decode_job_parameters, code_block_required_by_index, collect_pending_classic_blocks,
     count_classic_code_blocks, decode_j2k_code_block_scalar_with_workspace,
-    decode_j2k_code_block_scalar_with_workspace_midpoint,
+    decode_j2k_code_block_scalar_with_workspace_midpoint, in_other_band,
     should_decode_classic_sub_band_in_parallel, stored_placement, ComponentInfo,
     CpuDecodeParallelism, DecodeAllocationBudget, DecodingError, DecompositionStorage, Header,
     HtCodeBlockDecoder, J2kCodeBlockBatchJob, J2kCodeBlockDecodeJob, J2kCodeBlockDecodeWorkspace,
@@ -303,7 +303,9 @@ pub(super) fn decode_sub_band_classic_blocks(
             .clone()
             .map(|idx| &storage.code_blocks[idx])
         {
-            if code_block.coding != Some(CodeBlockCoding::Classic) {
+            if code_block.coding != Some(CodeBlockCoding::Classic)
+                || in_other_band(storage, code_block)
+            {
                 continue;
             }
             if !code_block_required_by_index(storage, sub_band_idx, code_block) {
