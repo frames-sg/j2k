@@ -1,8 +1,10 @@
 # Direct MPSGraph batch integration
 
-`j2k-mpsgraph` is an experimental adapter for Apple Silicon on macOS 11 or
-newer. Unlike `j2k-ml`, the portable Burn adapter that copies Metal output
-through host memory, it hands decoded batches directly to Apple's MPSGraph.
+`j2k-mpsgraph` is an experimental JPEG 2000 and HTJ2K adapter for Apple
+Silicon on macOS 11 or newer. It hands Metal-resident decoded batches directly
+to Apple's MPSGraph without decoded-pixel host readback. Burn callers can use
+`j2k-ml`, whose Metal adapter copies decoded pixels through host memory; its
+direct CUDA adapter writes into Burn-owned device storage.
 
 ## Tensor shapes
 

@@ -150,16 +150,23 @@ Rust callers can use `J2kDecoder::decode_wavelets` to obtain exact reversible
 5/3 coefficients or dequantized 9/7 coefficients, with tile/component metadata.
 The decoder skips entropy work for unrequested bands and omits inverse DWT.
 
-`j2k-ml` decodes batches of JPEG 2000 images, or mixed JPEG and JPEG 2000
-batches on the CPU, into [Burn](https://burn.dev) tensors (`U8`, `U16`, or
-`I16`, NCHW or NHWC).
-`CudaDirectBurnDecoder` decodes directly into Burn-owned CUDA storage and
-waits for completion before returning the tensor. The staged CUDA and Metal
-adapters copy pixels through host memory before Burn uploads them.
-See [docs/j2k-ml.md](docs/j2k-ml.md).
+`j2k-ml` adapts JPEG, JPEG 2000, and HTJ2K batches to [Burn](https://burn.dev)
+tensors (`U8`, `U16`, or `I16`, NCHW or NHWC).
+`CpuBurnDecoder::decode_batch` accepts either codec family or mixed inputs and
+returns a common `BurnBatchDecode` with homogeneous tensor groups, source
+indices, and codec-tagged errors. A GPU Burn destination uploads the
+CPU-decoded pixels normally.
 
-`j2k-mpsgraph` hands decoded batches to Apple's MPSGraph without leaving the
-GPU. See [docs/j2k-mpsgraph.md](docs/j2k-mpsgraph.md).
+For JPEG 2000 and HTJ2K, `CudaDirectBurnDecoder` decodes directly into
+Burn-owned CUDA storage and waits for completion and status validation before
+returning the tensors. `CudaUploadBurnDecoder` and `MetalUploadBurnDecoder`
+decode on the GPU, copy decoded pixels to host memory, and upload them through
+Burn. See [docs/j2k-ml.md](docs/j2k-ml.md).
+
+`j2k-mpsgraph` is an experimental Apple Silicon adapter for JPEG 2000 and
+HTJ2K. It wraps completed Metal batches as `MPSGraphTensorData` or queues
+decode and graph execution on one Metal command queue, without decoded-pixel
+host readback. See [docs/j2k-mpsgraph.md](docs/j2k-mpsgraph.md).
 
 ## Which crate do I need?
 
