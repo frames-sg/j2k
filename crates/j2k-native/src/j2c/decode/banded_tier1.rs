@@ -150,9 +150,8 @@ fn decode_bands<'a>(
             });
         }
     }
-    // The row index is only a speed optimization. If it cannot fit the
-    // current budget, use the original scans rather than reject a decode that
-    // fits without the index.
+    // The row index is optional. If building it fails, use the original scans.
+    // A built index stays charged while the bands decode and allocate scratch.
     let mut index_budget = DecodeAllocationBudget::for_storage(storage)?;
     let baseline_bytes = index_budget.live_bytes();
     #[cfg(test)]
