@@ -2463,6 +2463,7 @@ pub enum j2k_native::Jp2ColorSpec
 pub enum j2k_native::Jp2ComponentMappingType
 pub enum j2k_native::Jp2FileKind
 pub fn j2k_native::ComponentPlane<'a>::into_parts(self) -> j2k_native::ComponentPlaneParts<'a>
+pub fn j2k_native::ComponentRowSink::write_rows(&mut self, u32, u32, &[j2k_native::ComponentPlane<'_>])
 pub fn j2k_native::DecodedComponents<'a>::into_parts(self) -> j2k_native::DecodedComponentsParts<'a>
 pub fn j2k_native::DecodedComponents<'a>::live_bytes(&self) -> usize
 pub fn j2k_native::DecodedNativeComponents::allocated_bytes(&self) -> core::option::Option<usize>
@@ -2502,6 +2503,7 @@ pub fn j2k_native::Image<'a>::decode_native_with_retained_capacity(&self, usize)
 pub fn j2k_native::Image<'a>::decode_region_components_for_integer_output_with_context<'ctx>(&self, (u32, u32, u32, u32), &'ctx mut j2k_native::DecoderContext<'a>) -> j2k_native::Result<j2k_native::DecodedComponents<'ctx>>
 pub fn j2k_native::Image<'a>::decode_region_components_for_integer_output_with_ht_decoder<'ctx>(&self, &'ctx mut j2k_native::DecoderContext<'a>, (u32, u32, u32, u32), &mut dyn j2k_native::HtCodeBlockDecoder) -> j2k_native::Result<j2k_native::DecodedComponents<'ctx>>
 pub fn j2k_native::Image<'a>::decode_region_components_with_ht_decoder<'ctx>(&self, &'ctx mut j2k_native::DecoderContext<'a>, (u32, u32, u32, u32), &mut dyn j2k_native::HtCodeBlockDecoder) -> j2k_native::Result<j2k_native::DecodedComponents<'ctx>>
+pub fn j2k_native::Image<'a>::decode_region_rows_for_integer_output_with_context(&self, (u32, u32, u32, u32), &mut j2k_native::DecoderContext<'a>, &mut dyn j2k_native::ComponentRowSink) -> j2k_native::Result<()>
 pub fn j2k_native::Image<'a>::decode_reversible_53_coefficients(&self) -> j2k_native::Result<j2k_native::Reversible53CoefficientImage>
 pub fn j2k_native::Image<'a>::decode_reversible_53_coefficients_with_context(&self, &mut j2k_native::DecoderContext<'a>) -> j2k_native::Result<j2k_native::Reversible53CoefficientImage>
 pub fn j2k_native::Image<'a>::new_with_reduction(&'a [u8], &j2k_native::DecodeSettings, u8) -> j2k_native::Result<Self>
@@ -2907,6 +2909,7 @@ pub struct j2k_native::Jp2PaletteColumn
 pub struct j2k_native::Jp2PaletteMetadata
 pub struct j2k_native::NativeComponentPlaneParts
 pub struct j2k_native::PreparedRegionDecoder<'image, 'context, 'a>
+pub trait j2k_native::ComponentRowSink
 pub trait j2k_native::HtCodeBlockDecoder
 pub use j2k_native::CpuOnlyJ2kEncodeStageAccelerator
 pub use j2k_native::DEFAULT_MAX_CODEC_BYTES
