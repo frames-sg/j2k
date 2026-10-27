@@ -736,129 +736,124 @@ fn cuda_htj2k_packetization_kernel_matches_native_scalar_multi_block_packet_when
         return;
     }
 
-    let payloads = vec![
-        vec![0x10, 0x11, 0x12],
-        vec![0x20, 0x21],
-        vec![0x30, 0x31, 0x32, 0x33],
-        vec![0x40],
-    ];
-    let code_blocks = payloads
-        .iter()
-        .enumerate()
-        .map(|(idx, payload)| J2kPacketizationCodeBlock {
-            data: payload.as_slice(),
-            ht_cleanup_length: 0,
-            ht_refinement_length: 0,
-            num_coding_passes: 1,
-            num_zero_bitplanes: u8::try_from(idx + 1).expect("test zbp fits in u8"),
-            previously_included: false,
-            l_block: 3,
-            block_coding_mode: J2kPacketizationBlockCodingMode::HighThroughput,
-        })
-        .collect();
-    let subband = J2kPacketizationSubband {
-        code_blocks,
-        num_cbs_x: 2,
-        num_cbs_y: 2,
-    };
-    let resolution = J2kPacketizationResolution {
-        subbands: vec![subband],
-    };
-    let descriptor = J2kPacketizationPacketDescriptor {
-        packet_index: 0,
-        state_index: 0,
-        layer: 0,
-        resolution: 0,
-        component: 0,
-        precinct: 0,
-    };
-    let expected = j2k_native::encode_j2k_packetization_scalar(J2kPacketizationEncodeJob {
-        resolution_count: 1,
-        num_layers: 1,
-        num_components: 1,
-        code_block_count: 4,
-        progression_order: J2kPacketizationProgressionOrder::Lrcp,
-        packet_descriptors: &[descriptor],
-        resolutions: &[resolution],
-    })
-    .expect("native scalar packetization");
-
-    let payload = payloads.into_iter().flatten().collect::<Vec<_>>();
-    let blocks = [
-        CudaHtj2kPacketizationBlock {
-            data_offset: 0,
-            data_len: 3,
-            cleanup_length: 0,
-            refinement_length: 0,
-            num_coding_passes: 1,
-            num_zero_bitplanes: 1,
-            l_block: 3,
-            previously_included: 0,
-            inclusion_layer: 0,
-        },
-        CudaHtj2kPacketizationBlock {
-            data_offset: 3,
-            data_len: 2,
-            cleanup_length: 0,
-            refinement_length: 0,
-            num_coding_passes: 1,
-            num_zero_bitplanes: 2,
-            l_block: 3,
-            previously_included: 0,
-            inclusion_layer: 0,
-        },
-        CudaHtj2kPacketizationBlock {
-            data_offset: 5,
-            data_len: 4,
-            cleanup_length: 0,
-            refinement_length: 0,
-            num_coding_passes: 1,
-            num_zero_bitplanes: 3,
-            l_block: 3,
-            previously_included: 0,
-            inclusion_layer: 0,
-        },
-        CudaHtj2kPacketizationBlock {
-            data_offset: 9,
-            data_len: 1,
-            cleanup_length: 0,
-            refinement_length: 0,
-            num_coding_passes: 1,
-            num_zero_bitplanes: 4,
-            l_block: 3,
-            previously_included: 0,
-            inclusion_layer: 0,
-        },
-    ];
     let runtime = CudaContext::system_default().expect("CUDA context");
     let engine = J2kCudaEngine::new(&runtime);
-    let packetized = engine
-        .packetize_htj2k_cleanup_packets_with_tag_state(
-            &payload,
-            &[CudaHtj2kPacketizationPacket {
-                block_start: 0,
-                block_count: 4,
-                subband_start: 0,
-                subband_count: 1,
-                output_capacity: 512,
-                layer: 0,
+    // Cross warp and 256-thread chunk boundaries, overflow several lanes'
+    // private headers, and make nonzero lanes require the serial fallback.
+    // Racecheck must include INFO hazards to detect identical-value writes:
+    // --racecheck-detect-level info --print-level info.
+    for (num_cbs_x, num_cbs_y, overflow, odd_l_block) in [
+        (2u32, 2u32, false, 3u32),
+        (33, 1, false, 3),
+        (257, 1, false, 3),
+        (33, 1, true, 3),
+        (257, 1, true, 3),
+        (33, 1, false, 21),
+    ] {
+        let block_count = num_cbs_x * num_cbs_y;
+        let payloads = [
+            &[0x10, 0x11, 0x12][..],
+            &[0x20, 0x21],
+            &[0x30, 0x31, 0x32, 0x33],
+            &[0x40],
+        ]
+        .into_iter()
+        .cycle()
+        .take(usize::try_from(block_count).expect("test block count fits usize"))
+        .collect::<Vec<_>>();
+        let code_blocks = payloads
+            .iter()
+            .enumerate()
+            .map(|(idx, payload)| J2kPacketizationCodeBlock {
+                data: payload,
+                ht_cleanup_length: 0,
+                ht_refinement_length: 0,
+                num_coding_passes: 1,
+                num_zero_bitplanes: if overflow && idx % 2 == 1 {
+                    u8::MAX
+                } else {
+                    u8::try_from(idx % 4 + 1).expect("test zbp fits in u8")
+                },
+                previously_included: false,
+                l_block: if idx % 2 == 1 { odd_l_block } else { 3 },
+                block_coding_mode: J2kPacketizationBlockCodingMode::HighThroughput,
+            })
+            .collect();
+        let resolution = J2kPacketizationResolution {
+            subbands: vec![J2kPacketizationSubband {
+                code_blocks,
+                num_cbs_x,
+                num_cbs_y,
             }],
-            &[CudaHtj2kPacketizationSubband {
-                block_start: 0,
-                block_count: 4,
-                num_cbs_x: 2,
-                num_cbs_y: 2,
-            }],
-            &blocks,
-            &[],
-            &[],
-        )
-        .expect("CUDA multi-block packetization");
+        };
+        let descriptor = J2kPacketizationPacketDescriptor {
+            packet_index: 0,
+            state_index: 0,
+            layer: 0,
+            resolution: 0,
+            component: 0,
+            precinct: 0,
+        };
+        let expected = j2k_native::encode_j2k_packetization_scalar(J2kPacketizationEncodeJob {
+            resolution_count: 1,
+            num_layers: 1,
+            num_components: 1,
+            code_block_count: block_count,
+            progression_order: J2kPacketizationProgressionOrder::Lrcp,
+            packet_descriptors: &[descriptor],
+            resolutions: core::slice::from_ref(&resolution),
+        })
+        .expect("native scalar packetization");
 
-    assert_eq!(packetized.execution().kernel_dispatches(), 1);
-    assert!(packetized.stage_timings().packetize_us > 0);
-    assert!(packetized.statuses().iter().all(|status| status.is_ok()));
-    assert_eq!(packetized.data(), expected);
+        let mut payload = Vec::new();
+        let mut blocks = Vec::new();
+        for block in &resolution.subbands[0].code_blocks {
+            blocks.push(CudaHtj2kPacketizationBlock {
+                data_offset: u32::try_from(payload.len()).expect("test payload offset fits u32"),
+                data_len: u32::try_from(block.data.len()).expect("test payload length fits u32"),
+                cleanup_length: 0,
+                refinement_length: 0,
+                num_coding_passes: 1,
+                num_zero_bitplanes: u32::from(block.num_zero_bitplanes),
+                l_block: block.l_block,
+                previously_included: 0,
+                inclusion_layer: 0,
+            });
+            payload.extend_from_slice(block.data);
+        }
+        let packetized = engine
+            .packetize_htj2k_cleanup_packets_with_tag_state(
+                &payload,
+                &[CudaHtj2kPacketizationPacket {
+                    block_start: 0,
+                    block_count,
+                    subband_start: 0,
+                    subband_count: 1,
+                    output_capacity: u32::try_from(expected.len() + 64)
+                        .expect("test packet capacity fits u32"),
+                    layer: 0,
+                }],
+                &[CudaHtj2kPacketizationSubband {
+                    block_start: 0,
+                    block_count,
+                    num_cbs_x,
+                    num_cbs_y,
+                }],
+                &blocks,
+                &[],
+                &[],
+            )
+            .expect("CUDA multi-block packetization");
+
+        assert_eq!(packetized.execution().kernel_dispatches(), 1);
+        assert!(packetized.stage_timings().packetize_us > 0);
+        assert!(packetized.statuses().iter().all(|status| status.is_ok()));
+        assert_eq!(
+            packetized.data(),
+            expected,
+            "grid={num_cbs_x}x{num_cbs_y}, overflow={overflow}, odd_l_block={odd_l_block}"
+        );
+    }
 }
 
 #[cfg(feature = "cuda-runtime")]

@@ -40,10 +40,11 @@ pub(crate) struct J2kPacketHeaderScratch {
     pub(crate) inclusion: *mut u32,
     pub(crate) zero_bitplanes: *mut u32,
     pub(crate) first_coded: *mut u32,
-    /// Each thread's block header bits and bit count.
+    /// Each thread's block header bits. Before header emission, `bit_lens`
+    /// holds per-thread eligibility flags instead of bit counts.
     pub(crate) bits: *mut u64,
     pub(crate) bit_lens: *mut u32,
-    /// Each thread's body bytes.
+    /// Each thread's body bytes during eligibility, then its header overflow flag.
     pub(crate) body_lens: *mut u64,
     /// Use the serial builder, any block has data, and the body length.
     pub(crate) flags: *mut u32,
@@ -52,6 +53,8 @@ pub(crate) struct J2kPacketHeaderScratch {
 const FLAG_SERIAL: u64 = 0;
 const FLAG_ANY_DATA: u64 = 1;
 const FLAG_BODY_LEN: u64 = 2;
+const THREAD_SERIAL: u32 = 1;
+const THREAD_ANY_DATA: u32 = 2;
 
 /// Packet geometry and buffers shared by both header builders.
 #[derive(Clone, Copy)]
@@ -183,25 +186,33 @@ fn j2k_packet_parallel_eligible(
         }
         subband_idx += 1;
     }
-    if serial {
-        store_u32(scratch.flags, FLAG_SERIAL, 1);
-    }
-    if any_data {
-        store_u32(scratch.flags, FLAG_ANY_DATA, 1);
-    }
+    // Each thread owns one slot; only thread 0 writes the combined flags.
+    let flags = if serial { THREAD_SERIAL } else { 0 } | if any_data { THREAD_ANY_DATA } else { 0 };
+    store_u32(scratch.bit_lens, u64::from(tid), flags);
     unsafe { *scratch.body_lens.add(tid as usize) = body_len };
     thread::sync_threads();
 
     if tid == 0 {
         let mut total = 0_u64;
+        let mut flags = 0_u32;
         let mut thread_idx = 0_u32;
         while thread_idx < threads {
             total += unsafe { *scratch.body_lens.add(thread_idx as usize) };
+            flags |= load_u32(scratch.bit_lens.cast_const(), u64::from(thread_idx));
             thread_idx += 1;
         }
+        store_u32(
+            scratch.flags,
+            FLAG_SERIAL,
+            u32::from(flags & THREAD_SERIAL != 0),
+        );
+        store_u32(
+            scratch.flags,
+            FLAG_ANY_DATA,
+            u32::from(flags & THREAD_ANY_DATA != 0),
+        );
         // An empty packet is one bit; the serial builder writes it.
-        if load_u32(scratch.flags.cast_const(), FLAG_ANY_DATA) == 0 || total > u64::from(u32::MAX)
-        {
+        if load_u32(scratch.flags.cast_const(), FLAG_ANY_DATA) == 0 || total > u64::from(u32::MAX) {
             store_u32(scratch.flags, FLAG_SERIAL, 1);
         }
         store_u32(scratch.flags, FLAG_BODY_LEN, total as u32);
@@ -333,9 +344,9 @@ fn j2k_packet_append_subband_bits(
         if idx < subband.block_count {
             let block = load_job(input.blocks, subband.block_start + idx);
             j2k_packet_block_header_bits(&mut bits, input.packet, block, idx, subband, shape, scratch);
-            if bits.overflow != 0 {
-                store_u32(scratch.flags, FLAG_SERIAL, 1);
-            }
+            // Eligibility already consumed the body lengths. Reuse those
+            // disjoint slots so overflow has one writer per thread too.
+            unsafe { *scratch.body_lens.add(tid as usize) = u64::from(bits.overflow) };
             let mut word = 0_usize;
             while word < J2K_PACKET_BLOCK_HEADER_WORDS {
                 unsafe {
@@ -352,6 +363,9 @@ fn j2k_packet_append_subband_bits(
             let count = (subband.block_count - chunk_start).min(threads);
             let mut slot = 0_u32;
             while slot < count {
+                if unsafe { *scratch.body_lens.add(slot as usize) } != 0 {
+                    store_u32(scratch.flags, FLAG_SERIAL, 1);
+                }
                 j2k_packet_append_block_bits(writer, scratch, slot);
                 slot += 1;
             }
