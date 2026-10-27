@@ -26,6 +26,7 @@ fn test_job() -> J2kHtCleanupBatchJob {
 fn test_sub_band(band_id: u32, payload_source: PreparedHtPayloadSource) -> PreparedHtSubBand {
     PreparedHtSubBand {
         band_id,
+        origin: (0, 0),
         width: 1,
         height: 1,
         payload_source,

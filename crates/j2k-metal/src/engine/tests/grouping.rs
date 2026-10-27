@@ -48,6 +48,7 @@ fn test_ht_job(output_x: u32, output_y: u32, width: u32, height: u32) -> J2kHtCl
 fn test_ht_sub_band(band_id: u32) -> PreparedHtSubBand {
     PreparedHtSubBand {
         band_id,
+        origin: (0, 0),
         width: 8,
         height: 8,
         payload_source: PreparedHtPayloadSource::Contiguous(vec![band_id as u8]),

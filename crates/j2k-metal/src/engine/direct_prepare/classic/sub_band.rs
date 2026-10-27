@@ -208,6 +208,7 @@ fn finish_classic_sub_band(
 ) -> PreparedClassicSubBand {
     PreparedClassicSubBand {
         band_id: job.band_id,
+        origin: (0, 0),
         width: job.width,
         height: job.height,
         zero_fill,

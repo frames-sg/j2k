@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use super::super::abi::J2kClassicCleanupBatchJob;
 use super::super::direct_roi::prepared_idwt_output_len;
 use super::super::{
     crop_prepared_direct_grayscale_plan_to_output_region, prepare_direct_grayscale_plan,
@@ -9,6 +10,224 @@ use super::super::{
 use super::runtime::should_run_metal_runtime;
 use crate::metal_types::prelude::*;
 use j2k_native::{encode, encode_htj2k, DecodeSettings, DecoderContext, EncodeOptions, Image};
+
+// Empty packets do not depend on the code-block grid. Enlarge a tiny neutral
+// image's SIZ geometry to reproduce the large-image allocation without storing
+// or encoding hundreds of megabytes of pixels.
+fn empty_large_rgb_codestream(ht: bool) -> Vec<u8> {
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 5,
+        ..EncodeOptions::default()
+    };
+    let encoder = if ht { encode_htj2k } else { encode };
+    let mut bytes =
+        encoder(&[128; 32 * 32 * 3], 32, 32, 3, 8, false, &options).expect("encode neutral RGB8");
+    let siz = bytes
+        .windows(2)
+        .position(|b| b == [0xff, 0x51])
+        .expect("SIZ");
+    for (offset, value) in [(6, 18_000_u32), (10, 12_000), (22, 18_000), (26, 12_000)] {
+        bytes[siz + offset..siz + offset + 4].copy_from_slice(&value.to_be_bytes());
+    }
+    bytes
+}
+
+#[test]
+fn large_region_coefficients_stay_within_the_requested_window() {
+    use super::super::{
+        crop_prepared_direct_color_plan_to_output_region, prepare_direct_color_plan,
+        prepare_direct_color_plan_for_cpu_upload,
+    };
+
+    let roi = j2k_core::Rect {
+        x: 8_501,
+        y: 5_503,
+        w: 16,
+        h: 16,
+    };
+    for ht in [false, true] {
+        let bytes = empty_large_rgb_codestream(ht);
+        let image = Image::new(&bytes, &DecodeSettings::default()).expect("large image");
+        let plan = image
+            .build_direct_color_plan_region_with_context(
+                &mut DecoderContext::default(),
+                (roi.x, roi.y, roi.w, roi.h),
+            )
+            .expect("large region plan");
+        for prepare in [
+            prepare_direct_color_plan,
+            prepare_direct_color_plan_for_cpu_upload,
+        ] {
+            let mut prepared = prepare(&plan).expect("prepare region");
+            crop_prepared_direct_color_plan_to_output_region(&mut prepared, roi)
+                .expect("crop region");
+            for component in &prepared.component_plans {
+                let coefficients: usize = component
+                    .classic_groups
+                    .iter()
+                    .map(|g| g.total_coefficients)
+                    .chain(component.ht_groups.iter().map(|g| g.total_coefficients))
+                    .sum();
+                assert!(
+                    coefficients < 1024 * 1024,
+                    "a 16x16 ROI must not retain whole-image coefficients: {coefficients}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn large_region_decode_matches_pixels_on_both_tier1_routes() {
+    use super::super::{
+        crop_prepared_direct_color_plan_to_output_region,
+        execute_hybrid_cpu_tier1_direct_color_plan, execute_prepared_direct_color_plan,
+        prepare_direct_color_plan, prepare_direct_color_plan_for_cpu_upload,
+    };
+    use j2k_core::{DeviceSurface, Downscale, PixelFormat, Rect};
+    use std::sync::Arc;
+
+    if !should_run_metal_runtime() {
+        return;
+    }
+    for ht in [false, true] {
+        let bytes = empty_large_rgb_codestream(ht);
+        for scale in [Downscale::None, Downscale::Half] {
+            let denominator = scale.denominator();
+            let image = Image::new(
+                &bytes,
+                &DecodeSettings {
+                    target_resolution: Some((18_000 / denominator, 12_000 / denominator)),
+                    ..DecodeSettings::default()
+                },
+            )
+            .expect("large scaled image");
+            for (x, y) in [(0, 0), (8_501, 5_503), (17_983, 11_983)] {
+                let roi = Rect { x, y, w: 17, h: 17 }.scaled_covering(scale);
+                let plan = image
+                    .build_direct_color_plan_region_with_context(
+                        &mut DecoderContext::default(),
+                        (roi.x, roi.y, roi.w, roi.h),
+                    )
+                    .expect("large region plan");
+                for cpu in [false, true] {
+                    let mut prepared = if cpu {
+                        prepare_direct_color_plan_for_cpu_upload(&plan)
+                    } else {
+                        prepare_direct_color_plan(&plan)
+                    }
+                    .expect("prepare region");
+                    crop_prepared_direct_color_plan_to_output_region(&mut prepared, roi)
+                        .expect("crop region");
+                    let execute = if cpu {
+                        execute_hybrid_cpu_tier1_direct_color_plan
+                    } else {
+                        execute_prepared_direct_color_plan
+                    };
+                    let surface = execute(Arc::new(prepared), PixelFormat::Rgb8)
+                        .expect("large region decode");
+                    assert_eq!(surface.dimensions(), (roi.w, roi.h));
+                    assert_eq!(
+                        surface.as_bytes().expect("pixels").as_ref(),
+                        vec![128; roi.w as usize * roi.h as usize * 3]
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn cropped_plans_without_idwt_match_host_when_reused_concurrently() {
+    use super::super::{
+        crop_prepared_direct_color_plan_to_output_region,
+        execute_hybrid_cpu_tier1_direct_color_plan, execute_prepared_direct_color_plan,
+        prepare_direct_color_plan, prepare_direct_color_plan_for_cpu_upload,
+        with_runtime_for_session,
+    };
+    use j2k_core::{PixelFormat, Rect};
+    use std::sync::Arc;
+
+    if !should_run_metal_runtime() {
+        return;
+    }
+    let device = j2k_metal_support::system_default_device().expect("Metal device");
+    let session = crate::MetalBackendSession::new(device);
+    let roi = Rect {
+        x: 67,
+        y: 35,
+        w: 17,
+        h: 13,
+    };
+    for ht in [false, true] {
+        let encoder = if ht { encode_htj2k } else { encode };
+        let bytes = encoder(
+            &j2k_test_support::patterned_rgb8(128, 96),
+            128,
+            96,
+            3,
+            8,
+            false,
+            &EncodeOptions {
+                reversible: true,
+                num_decomposition_levels: 0,
+                ..EncodeOptions::default()
+            },
+        )
+        .expect("encode without IDWT");
+        let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+        let expected = image
+            .decode_region((roi.x, roi.y, roi.w, roi.h))
+            .expect("host region")
+            .data;
+        let plan = image
+            .build_direct_color_plan_region_with_context(
+                &mut DecoderContext::default(),
+                (roi.x, roi.y, roi.w, roi.h),
+            )
+            .expect("region plan");
+        for cpu in [false, true] {
+            let prepared = if cpu {
+                prepare_direct_color_plan_for_cpu_upload(&plan)
+            } else {
+                prepare_direct_color_plan(&plan)
+            }
+            .expect("prepare region");
+            let execute = if cpu {
+                execute_hybrid_cpu_tier1_direct_color_plan
+            } else {
+                execute_prepared_direct_color_plan
+            };
+            let prepared = Arc::new(prepared);
+            // Populate the runtime's Tier-1 caches before rebasing the jobs.
+            // The crop must invalidate cached inputs even when no job is removed.
+            with_runtime_for_session(&session, |_| execute(prepared.clone(), PixelFormat::Rgb8))
+                .expect("decode before crop");
+            let mut prepared = Arc::try_unwrap(prepared).ok().expect("exclusive plan");
+            crop_prepared_direct_color_plan_to_output_region(&mut prepared, roi)
+                .expect("crop region");
+            let prepared = Arc::new(prepared);
+            std::thread::scope(|scope| {
+                for _ in 0..2 {
+                    let prepared = &prepared;
+                    let expected = &expected;
+                    let session = &session;
+                    scope.spawn(move || {
+                        with_runtime_for_session(session, |_| {
+                            for _ in 0..2 {
+                                let surface = execute(prepared.clone(), PixelFormat::Rgb8)?;
+                                assert_eq!(surface.as_bytes().expect("pixels").as_ref(), expected);
+                            }
+                            Ok(())
+                        })
+                        .expect("shared-session region decode");
+                    });
+                }
+            });
+        }
+    }
+}
 
 #[test]
 fn cropping_a_classic_plan_drops_tier1_buffers_built_from_pruned_jobs() {
@@ -30,11 +249,16 @@ fn cropping_a_classic_plan_drops_tier1_buffers_built_from_pruned_jobs() {
         .expect("direct grayscale plan");
     let mut prepared = prepare_direct_grayscale_plan(&plan).expect("prepared direct plan");
     let runtime = MetalRuntime::new().expect("Metal runtime");
-    let mut full_job_counts = Vec::new();
+    let outputs = |jobs: &[J2kClassicCleanupBatchJob]| -> Vec<(u32, u32)> {
+        jobs.iter()
+            .map(|job| (job.output_offset, job.output_stride))
+            .collect()
+    };
+    let mut full_jobs = Vec::new();
     for step in &prepared.steps {
         if let PreparedDirectGrayscaleStep::ClassicSubBand(sub_band) = step {
             sub_band.tier1_buffers(&runtime).expect("Tier-1 buffers");
-            full_job_counts.push(sub_band.jobs.len());
+            full_jobs.push(outputs(&sub_band.jobs));
         }
     }
 
@@ -54,8 +278,10 @@ fn cropping_a_classic_plan_drops_tier1_buffers_built_from_pruned_jobs() {
         _ => None,
     });
     let mut pruned = 0;
-    for (sub_band, full_jobs) in sub_bands.zip(full_job_counts) {
-        if sub_band.jobs.len() == full_jobs {
+    // A crop drops jobs and stores the rest over their bounds, which moves
+    // their outputs.
+    for (sub_band, full_jobs) in sub_bands.zip(full_jobs) {
+        if outputs(&sub_band.jobs) == full_jobs {
             assert!(sub_band.tier1_inputs.buffers.get().is_some());
             continue;
         }

@@ -105,6 +105,7 @@ pub(in crate::engine::direct_prepare) fn prepare_referenced_ht_sub_band(
 
     Ok(PreparedHtSubBand {
         band_id: job.band_id,
+        origin: (0, 0),
         width: job.width,
         height: job.height,
         payload_source: if fragmented {

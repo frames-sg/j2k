@@ -64,6 +64,7 @@ pub(in crate::engine) fn prepare_ht_sub_band(
 
     Ok(PreparedHtSubBand {
         band_id: job.band_id,
+        origin: (0, 0),
         width: job.width,
         height: job.height,
         payload_source: PreparedHtPayloadSource::Contiguous(coded_data),

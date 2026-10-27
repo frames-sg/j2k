@@ -108,6 +108,9 @@ pub(super) struct PreparedDirectIdwt {
 
 pub(super) struct PreparedClassicSubBand {
     pub(super) band_id: J2kDirectBandId,
+    /// The stored coefficients: `width` x `height` from `origin` in sub-band
+    /// coordinates, the whole sub-band unless a region crop narrowed it.
+    pub(super) origin: (u32, u32),
     pub(super) width: u32,
     pub(super) height: u32,
     pub(super) zero_fill: bool,
@@ -154,6 +157,8 @@ pub(super) struct PreparedClassicSubBandGroupMember {
 
 pub(super) struct PreparedHtSubBand {
     pub(super) band_id: J2kDirectBandId,
+    /// As [`PreparedClassicSubBand::origin`].
+    pub(super) origin: (u32, u32),
     pub(super) width: u32,
     pub(super) height: u32,
     pub(super) payload_source: PreparedHtPayloadSource,
@@ -162,6 +167,29 @@ pub(super) struct PreparedHtSubBand {
 }
 
 pub(super) struct PreparedHtExecutionOwner;
+
+impl PreparedClassicSubBand {
+    /// The stored coefficients' window in sub-band coordinates.
+    pub(super) fn window(&self) -> J2kRequiredBandRegion {
+        stored_window(self.origin, self.width, self.height)
+    }
+}
+
+impl PreparedHtSubBand {
+    /// The stored coefficients' window in sub-band coordinates.
+    pub(super) fn window(&self) -> J2kRequiredBandRegion {
+        stored_window(self.origin, self.width, self.height)
+    }
+}
+
+fn stored_window((x0, y0): (u32, u32), width: u32, height: u32) -> J2kRequiredBandRegion {
+    J2kRequiredBandRegion {
+        x0,
+        y0,
+        x1: x0 + width,
+        y1: y0 + height,
+    }
+}
 
 pub(super) enum PreparedHtPayloadSource {
     Contiguous(Vec<u8>),

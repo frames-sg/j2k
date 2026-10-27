@@ -24,7 +24,6 @@ use super::decode_dispatch::{
 };
 use super::direct_roi::{
     idwt_input_windows_from_slices, prepared_idwt_output_len, prepared_idwt_params,
-    BandRequiredRegion,
 };
 use super::{
     commit_and_wait_metal, emit_direct_hybrid_stage_timings,
