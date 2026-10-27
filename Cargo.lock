@@ -2581,7 +2581,7 @@ version = "0.13.0"
 
 [[package]]
 name = "j2k-cuda-j2k-engine"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "criterion",
  "j2k-codec-math",
