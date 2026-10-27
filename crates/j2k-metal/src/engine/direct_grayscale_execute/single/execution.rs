@@ -20,10 +20,10 @@ use super::super::{
     encode_prepared_ht_sub_band_to_buffer_in_encoder, extend_preallocated_retained_buffers,
     idwt_input_windows_from_slices, j2k_scalar_pack_params, lookup_direct_band_slice,
     lookup_direct_band_slice_entry, prepared_idwt_output_len, prepared_idwt_params,
-    push_member_band_slices, take_f32_scratch_buffer, BandRequiredRegion, Buffer, DirectBandSlice,
-    DirectScratchBuffer, DirectStatusCheck, Error, GrayStoreDestinationRequest, IdwtSubBandBuffers,
-    J2kGrayStoreParams, J2kStoreParams, J2kWaveletTransform, MetalRuntime, PixelFormat,
-    PreparedDirectGrayscaleStep, SingleIdwtDispatch, Surface,
+    push_member_band_slices, take_f32_scratch_buffer, Buffer, DirectBandSlice, DirectScratchBuffer,
+    DirectStatusCheck, Error, GrayStoreDestinationRequest, IdwtSubBandBuffers, J2kGrayStoreParams,
+    J2kStoreParams, J2kWaveletTransform, MetalRuntime, PixelFormat, PreparedDirectGrayscaleStep,
+    SingleIdwtDispatch, Surface,
 };
 use crate::engine::abi::J2kIdwtSingleDecompositionParams;
 use crate::engine::decode_dispatch::{
@@ -141,7 +141,7 @@ impl SingleGrayscaleExecution<'_> {
             band_id: sub_band.band_id,
             buffer: output.buffer.clone(),
             offset_bytes: 0,
-            window: BandRequiredRegion::full(sub_band.width, sub_band.height),
+            window: sub_band.window(),
         });
         self.scratch_buffers.push(output);
         Ok(())
@@ -168,7 +168,7 @@ impl SingleGrayscaleExecution<'_> {
             band_id: sub_band.band_id,
             buffer: output.buffer.clone(),
             offset_bytes: 0,
-            window: BandRequiredRegion::full(sub_band.width, sub_band.height),
+            window: sub_band.window(),
         });
         self.scratch_buffers.push(output);
         Ok(())

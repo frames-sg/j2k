@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use super::super::{
-    prepare_sub_band_groups, BandRequiredRegion, DirectTier1Mode, Error, J2kHtCleanupBatchJob,
+    prepare_sub_band_groups, DirectTier1Mode, Error, J2kHtCleanupBatchJob,
     PreparedDirectGrayscaleStep, PreparedHtPayloadSource, PreparedHtSubBand,
     PreparedHtSubBandGroup, PreparedHtSubBandGroupMember,
 };
@@ -54,7 +54,7 @@ pub(super) fn prepare_ht_sub_band_group(
         owners.members.push(PreparedHtSubBandGroupMember {
             band_id: sub_band.band_id,
             offset_elements: output_base,
-            window: BandRequiredRegion::full(sub_band.width, sub_band.height),
+            window: sub_band.window(),
         });
         let first_job = owners.jobs.len();
         append_grouped_ht_jobs(&mut owners.jobs, sub_band, logical_coded_base, output_base)?;

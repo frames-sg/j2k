@@ -101,8 +101,7 @@ impl RepeatedGrayscaleExecution<'_> {
         &mut self,
         output: DirectScratchBuffer,
         band_id: j2k_native::J2kDirectBandId,
-        width: u32,
-        height: u32,
+        window: BandRequiredRegion,
         span: &CheckedF32BatchSpan,
     ) -> Result<(), Error> {
         for (instance_idx, bands) in self.band_sets.iter_mut().enumerate() {
@@ -114,7 +113,7 @@ impl RepeatedGrayscaleExecution<'_> {
                     instance_idx,
                     "J2K MetalDirect repeated sub-band",
                 )?,
-                window: BandRequiredRegion::full(width, height),
+                window,
             });
         }
         self.scratch_buffers.push(output);
@@ -142,13 +141,7 @@ impl RepeatedGrayscaleExecution<'_> {
         )?;
         extend_preallocated_retained_buffers(self.retained_buffers, buffers)?;
         self.status_checks.push(status_check);
-        self.retain_sub_band(
-            output,
-            sub_band.band_id,
-            sub_band.width,
-            sub_band.height,
-            &span,
-        )
+        self.retain_sub_band(output, sub_band.band_id, sub_band.window(), &span)
     }
 
     pub(super) fn encode_ht_sub_band(&mut self, sub_band: &PreparedHtSubBand) -> Result<(), Error> {
@@ -168,12 +161,6 @@ impl RepeatedGrayscaleExecution<'_> {
         )?;
         extend_preallocated_retained_buffers(self.retained_buffers, buffers)?;
         self.status_checks.push(status_check);
-        self.retain_sub_band(
-            output,
-            sub_band.band_id,
-            sub_band.width,
-            sub_band.height,
-            &span,
-        )
+        self.retain_sub_band(output, sub_band.band_id, sub_band.window(), &span)
     }
 }

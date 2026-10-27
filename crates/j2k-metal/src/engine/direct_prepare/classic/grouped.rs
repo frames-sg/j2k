@@ -3,9 +3,9 @@
 //! Consecutive sub-band grouping and classic JPEG 2000 group preparation.
 
 use super::super::{
-    BandRequiredRegion, ClassicTier1Inputs, DirectTier1Mode, Error, J2kClassicCleanupBatchJob,
-    J2kClassicSegment, PreparedClassicSubBand, PreparedClassicSubBandGroup,
-    PreparedClassicSubBandGroupMember, PreparedDirectGrayscaleStep,
+    ClassicTier1Inputs, DirectTier1Mode, Error, J2kClassicCleanupBatchJob, J2kClassicSegment,
+    PreparedClassicSubBand, PreparedClassicSubBandGroup, PreparedClassicSubBandGroupMember,
+    PreparedDirectGrayscaleStep,
 };
 
 #[cfg(target_os = "macos")]
@@ -129,7 +129,7 @@ fn append_classic_group_sub_band(
     owners.members.push(PreparedClassicSubBandGroupMember {
         band_id: sub_band.band_id,
         offset_elements: output_base,
-        window: BandRequiredRegion::full(sub_band.width, sub_band.height),
+        window: sub_band.window(),
     });
     let coded_base = u32::try_from(owners.coded_data.len()).map_err(|_| Error::MetalKernel {
         message: "classic J2K MetalDirect grouped coded payload exceeds u32".to_string(),

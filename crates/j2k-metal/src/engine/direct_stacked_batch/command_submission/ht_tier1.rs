@@ -15,7 +15,6 @@ use crate::engine::decode_dispatch::{
     encode_distinct_ht_sub_bands_to_buffer_in_encoder,
 };
 use crate::engine::direct_grayscale_execute::upload_cpu_decoded_coefficients;
-use crate::engine::direct_roi::BandRequiredRegion;
 use crate::engine::{
     decode_ht_inputs_on_cpu_with_plan_cache, direct_preflight_invariant, elapsed_us,
     take_f32_scratch_buffer, CpuTier1DecodeSubstageCounters, DirectTier1Mode, Error,
@@ -275,7 +274,7 @@ impl SubmissionContext<'_, '_, '_> {
                     source_idx,
                     "J2K MetalDirect stacked HT sub-band",
                 )?,
-                window: BandRequiredRegion::full(source_sub_band.width, source_sub_band.height),
+                window: source_sub_band.window(),
             });
         }
         Ok(())

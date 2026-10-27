@@ -40,7 +40,7 @@ use crate::engine::{
     direct_profile::{elapsed_us, CpuTier1DecodeSubstageCounters, DirectHybridStageTimings},
     direct_roi::{
         checked_f32_span, idwt_input_windows_from_slices, prepared_idwt_output_len,
-        prepared_idwt_params, BandRequiredRegion,
+        prepared_idwt_params,
     },
     direct_scratch::{take_f32_scratch_buffer, DirectScratchBuffer},
     direct_stacked_batch::{
@@ -210,7 +210,7 @@ impl ComponentPlaneExecution<'_> {
             band_id: sub_band.band_id,
             buffer,
             offset_bytes: 0,
-            window: BandRequiredRegion::full(sub_band.width, sub_band.height),
+            window: sub_band.window(),
         });
         Ok(())
     }
@@ -246,7 +246,7 @@ impl ComponentPlaneExecution<'_> {
             band_id: sub_band.band_id,
             buffer,
             offset_bytes: 0,
-            window: BandRequiredRegion::full(sub_band.width, sub_band.height),
+            window: sub_band.window(),
         });
         Ok(())
     }
