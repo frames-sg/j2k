@@ -9,8 +9,18 @@ use j2k_native::{
 #[cfg(feature = "parallel")]
 use rayon::{prelude::*, ThreadPool, ThreadPoolBuilder};
 
+#[cfg(feature = "std")]
+#[path = "support/packet_directory.rs"]
+mod packet_directory;
 #[path = "support/scheduling_fixtures.rs"]
 mod scheduling_fixtures;
+
+fn bench_packet_directory(c: &mut Criterion) {
+    #[cfg(feature = "std")]
+    packet_directory::bench(c);
+    #[cfg(not(feature = "std"))]
+    let _ = c;
+}
 
 const TILE_SIDE: u32 = 512;
 #[cfg(feature = "parallel")]
@@ -584,6 +594,7 @@ criterion_group!(
     bench_full_decode,
     bench_generic_public_workspace,
     bench_direct_color_plan,
-    bench_direct_color_plan_97
+    bench_direct_color_plan_97,
+    bench_packet_directory
 );
 criterion_main!(benches);

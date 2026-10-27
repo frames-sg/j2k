@@ -23,6 +23,8 @@ mod contract_tests;
 mod direct_api;
 mod native;
 mod output_api;
+#[cfg(feature = "std")]
+pub(crate) mod packet_directory;
 use self::allocation::retained_metadata_bytes;
 pub(crate) use self::allocation::{retained_container_metadata_bytes, DecodeOwnerBudget};
 use self::native::{try_clone_color_space, NativeOutputBudget};
@@ -35,6 +37,7 @@ type Rgb8DecodedImage<'ctx, 'boxes> = (
     &'ctx [f32],
     [&'ctx mut [f32]; 2],
     DecodedImage<'ctx, 'boxes>,
+    usize,
 );
 
 /// Settings to apply during decoding.
@@ -141,6 +144,8 @@ pub struct Image<'a> {
     /// callers that need the baseline there pass it explicitly through the
     /// `*_with_retained_capacity` variants.
     retained_baseline_bytes: usize,
+    #[cfg(feature = "std")]
+    pub(crate) packet_cache: packet_directory::PacketDirectoryCache,
 }
 
 /// Scoped region decoder that retains one parsed tile graph across calls.
@@ -208,13 +213,18 @@ impl<'a> Image<'a> {
         &'image self,
         decoder_context: &'context mut DecoderContext<'a>,
     ) -> Result<PreparedRegionDecoder<'image, 'context, 'a>> {
-        let retained_image_bytes = self.retained_planning_bytes()?;
-        let tiles = j2c::prepare_region_tiles(
-            self.codestream,
-            &self.header,
-            retained_image_bytes,
-            decoder_context,
+        let retained_image_bytes = allocation::combine_retained_bytes(
+            self.retained_baseline_bytes,
+            self.retained_header_metadata_bytes()?,
         )?;
+        let tiles = self.with_packet_cache_retry(|| {
+            j2c::prepare_region_tiles(
+                self.codestream,
+                &self.header,
+                self.retained_planning_bytes()?,
+                decoder_context,
+            )
+        })?;
         let retained_session_bytes = retained_image_bytes
             .checked_add(tiles.metadata_owner_bytes())
             .ok_or(ValidationError::ImageTooLarge)?;
@@ -260,11 +270,20 @@ impl<'a> Image<'a> {
             has_alpha,
             color_space,
             retained_baseline_bytes,
+            #[cfg(feature = "std")]
+            packet_cache: packet_directory::PacketDirectoryCache::default(),
         })
     }
 
-    pub(crate) fn retained_metadata_bytes(&self) -> Result<usize> {
+    fn retained_header_metadata_bytes(&self) -> Result<usize> {
         retained_metadata_bytes(&self.header, &self.boxes, &self.color_space)
+    }
+
+    pub(crate) fn retained_metadata_bytes(&self) -> Result<usize> {
+        let bytes = self.retained_header_metadata_bytes()?;
+        #[cfg(feature = "std")]
+        let bytes = allocation::combine_retained_bytes(bytes, self.packet_cache.retained_bytes())?;
+        Ok(bytes)
     }
 
     pub(crate) fn retained_planning_bytes(&self) -> Result<usize> {
@@ -468,10 +487,10 @@ impl<'a> Image<'a> {
     ///
     /// Returns an error when image validation, decoding, or output allocation fails.
     pub fn decode_with_context(&self, decoder_context: &mut DecoderContext<'a>) -> Result<Bitmap> {
-        (|| {
-            let retained_image_bytes = self.retained_metadata_bytes()?;
+        self.with_packet_cache_retry(|| {
+            let retained_image_bytes = self.retained_header_metadata_bytes()?;
             let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
-            let (mct, first_ll, scratch, mut decoded_image) =
+            let (mct, first_ll, scratch, mut decoded_image, retained_image_bytes) =
                 self.decode_image_for_rgb8(decoder_context, None, retained_image_bytes)?;
             let component_owner_capacity = decoded_image.decoded_components.capacity();
             let buffer_size = checked_decode_byte_len3(
@@ -516,7 +535,7 @@ impl<'a> Image<'a> {
                 &bitmap,
             )?;
             Ok(bitmap)
-        })()
+        })
     }
 
     /// Decode the image into borrowed component planes using a caller-provided
@@ -561,8 +580,10 @@ impl<'a> Image<'a> {
         &self,
         retained_capacity: usize,
     ) -> Result<DecodedNativeComponents> {
-        let retained_baseline_bytes =
-            allocation::combine_retained_bytes(retained_capacity, self.retained_metadata_bytes()?)?;
+        let retained_baseline_bytes = allocation::combine_retained_bytes(
+            retained_capacity,
+            self.retained_header_metadata_bytes()?,
+        )?;
         let mut decoder_context = DecoderContext::default();
         self.decode_native_components_with_context_and_retained_baseline(
             &mut decoder_context,
@@ -580,7 +601,7 @@ impl<'a> Image<'a> {
         &self,
         decoder_context: &mut DecoderContext<'a>,
     ) -> Result<DecodedNativeComponents> {
-        let retained_baseline_bytes = self.retained_metadata_bytes()?;
+        let retained_baseline_bytes = self.retained_header_metadata_bytes()?;
         self.decode_native_components_with_context_and_retained_baseline(
             decoder_context,
             retained_baseline_bytes,
@@ -592,21 +613,23 @@ impl<'a> Image<'a> {
         decoder_context: &mut DecoderContext<'a>,
         retained_baseline_bytes: usize,
     ) -> Result<DecodedNativeComponents> {
-        let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
-        let decoded_image =
-            self.decode_image(decoder_context, None, None, true, retained_baseline_bytes)?;
-        let DecodedImage {
-            decoded_components,
-            boxes: _,
-        } = decoded_image;
-        let component_owner_capacity = decoded_components.capacity();
-        self.pack_native_component_planes(
-            decoded_components,
-            component_owner_capacity,
-            (self.width(), self.height()),
-            retained_baseline_bytes,
-            parallel,
-        )
+        self.with_packet_cache_retry(|| {
+            let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
+            let (decoded_image, retained_baseline_bytes) =
+                self.decode_image(decoder_context, None, None, true, retained_baseline_bytes)?;
+            let DecodedImage {
+                decoded_components,
+                boxes: _,
+            } = decoded_image;
+            let component_owner_capacity = decoded_components.capacity();
+            self.pack_native_component_planes(
+                decoded_components,
+                component_owner_capacity,
+                (self.width(), self.height()),
+                retained_baseline_bytes,
+                parallel,
+            )
+        })
     }
 
     /// Decode borrowed component planes while delegating HTJ2K code-block decode.
@@ -644,27 +667,29 @@ impl<'a> Image<'a> {
         roi: (u32, u32, u32, u32),
         decoder_context: &mut DecoderContext<'a>,
     ) -> Result<DecodedNativeComponents> {
-        validate_roi((self.width(), self.height()), roi)?;
-        if self.requires_exact_integer_decode() {
-            return self.decode_native_region_components_via_full_decode(roi, decoder_context);
-        }
-        let (_x, _y, width, height) = roi;
-        let retained_image_bytes = self.retained_metadata_bytes()?;
-        let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
-        let decoded_image =
-            self.decode_image(decoder_context, Some(roi), None, true, retained_image_bytes)?;
-        let DecodedImage {
-            decoded_components,
-            boxes: _,
-        } = decoded_image;
-        let component_owner_capacity = decoded_components.capacity();
-        self.pack_native_component_planes(
-            decoded_components,
-            component_owner_capacity,
-            (width, height),
-            retained_image_bytes,
-            parallel,
-        )
+        self.with_packet_cache_retry(|| {
+            validate_roi((self.width(), self.height()), roi)?;
+            if self.requires_exact_integer_decode() {
+                return self.decode_native_region_components_via_full_decode(roi, decoder_context);
+            }
+            let (_x, _y, width, height) = roi;
+            let retained_image_bytes = self.retained_header_metadata_bytes()?;
+            let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
+            let (decoded_image, retained_image_bytes) =
+                self.decode_image(decoder_context, Some(roi), None, true, retained_image_bytes)?;
+            let DecodedImage {
+                decoded_components,
+                boxes: _,
+            } = decoded_image;
+            let component_owner_capacity = decoded_components.capacity();
+            self.pack_native_component_planes(
+                decoded_components,
+                component_owner_capacity,
+                (width, height),
+                retained_image_bytes,
+                parallel,
+            )
+        })
     }
 
     /// Decode borrowed component planes for a requested region while
@@ -700,10 +725,10 @@ impl<'a> Image<'a> {
         decoder_context: &mut DecoderContext<'a>,
     ) -> Result<Bitmap> {
         validate_roi((self.width(), self.height()), roi)?;
-        (|| {
-            let retained_image_bytes = self.retained_metadata_bytes()?;
+        self.with_packet_cache_retry(|| {
+            let retained_image_bytes = self.retained_header_metadata_bytes()?;
             let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
-            let (mct, first_ll, scratch, mut decoded_image) =
+            let (mct, first_ll, scratch, mut decoded_image, retained_image_bytes) =
                 self.decode_image_for_rgb8(decoder_context, Some(roi), retained_image_bytes)?;
             let component_owner_capacity = decoded_image.decoded_components.capacity();
             let (_x, _y, width, height) = roi;
@@ -757,7 +782,7 @@ impl<'a> Image<'a> {
                 &bitmap,
             )?;
             Ok(bitmap)
-        })()
+        })
     }
 
     /// Decode the image into the given buffer.
@@ -778,21 +803,23 @@ impl<'a> Image<'a> {
         buf: &mut [u8],
         decoder_context: &mut DecoderContext<'a>,
     ) -> Result<()> {
-        let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
-        let retained = self.retained_metadata_bytes()?;
-        let (mct, first_ll, scratch, mut decoded_image) =
-            self.decode_image_for_rgb8(decoder_context, None, retained)?;
-        validate_interleaved_output_buffer(&decoded_image, buf)?;
-        interleave_and_convert_after_mct(
-            &mut decoded_image,
-            buf,
-            mct,
-            first_ll,
-            scratch,
-            parallel,
-        )?;
+        self.with_packet_cache_retry(|| {
+            let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
+            let retained = self.retained_header_metadata_bytes()?;
+            let (mct, first_ll, scratch, mut decoded_image, _retained_image_bytes) =
+                self.decode_image_for_rgb8(decoder_context, None, retained)?;
+            validate_interleaved_output_buffer(&decoded_image, buf)?;
+            interleave_and_convert_after_mct(
+                &mut decoded_image,
+                buf,
+                mct,
+                first_ll,
+                scratch,
+                parallel,
+            )?;
 
-        Ok(())
+            Ok(())
+        })
     }
 
     fn decode_image<'ctx>(
@@ -802,18 +829,19 @@ impl<'a> Image<'a> {
         ht_decoder: Option<&mut dyn HtCodeBlockDecoder>,
         round_irreversible_output: bool,
         retained_baseline_bytes: usize,
-    ) -> Result<DecodedImage<'ctx, '_>> {
-        self.run_decode(
+    ) -> Result<(DecodedImage<'ctx, '_>, usize)> {
+        let retained_baseline_bytes = self.run_decode(
             decoder_context,
             output_region,
             ht_decoder,
             round_irreversible_output,
             retained_baseline_bytes,
         )?;
-        self.finish_decoded_image(
+        let decoded = self.finish_decoded_image(
             &mut decoder_context.tile_decode_context.channel_data,
             retained_baseline_bytes,
-        )
+        )?;
+        Ok((decoded, retained_baseline_bytes))
     }
 
     /// [`Self::decode_image`] for an RGB8 pack. A plain colour image (see
@@ -838,7 +866,7 @@ impl<'a> Image<'a> {
             retained_baseline_bytes,
         );
         decoder_context.set_defer_mct(false);
-        decoded?;
+        let retained_baseline_bytes = decoded?;
         let tile_ctx = &mut decoder_context.tile_decode_context;
         let mct = tile_ctx.deferred_mct.take();
         let image =
@@ -851,7 +879,25 @@ impl<'a> Image<'a> {
                 &mut tile_ctx.idwt_band_scratch,
             ],
             image,
+            retained_baseline_bytes,
         ))
+    }
+
+    // Capacity failures can occur after core decoding, while packing or
+    // planning output. Drop an idle cache and retry the complete operation.
+    #[cfg_attr(not(feature = "std"), allow(clippy::unused_self))]
+    fn with_packet_cache_retry<T>(&self, mut operation: impl FnMut() -> Result<T>) -> Result<T> {
+        let result = operation();
+        #[cfg(feature = "std")]
+        if result.as_ref().is_err_and(j2c::is_capacity_error) {
+            if let Some(directory) = self.packet_cache.snapshot() {
+                if self.packet_cache.evict_if_unshared(&directory) {
+                    drop(directory);
+                    return operation();
+                }
+            }
+        }
+        result
     }
 
     fn run_decode(
@@ -861,7 +907,7 @@ impl<'a> Image<'a> {
         ht_decoder: Option<&mut dyn HtCodeBlockDecoder>,
         round_irreversible_output: bool,
         retained_baseline_bytes: usize,
-    ) -> Result<()> {
+    ) -> Result<usize> {
         self.run_decode_rows(
             decoder_context,
             output_region,
@@ -883,12 +929,43 @@ impl<'a> Image<'a> {
         round_irreversible_output: bool,
         retained_baseline_bytes: usize,
         row_sink: Option<&mut dyn crate::ComponentRowSink>,
-    ) -> Result<()> {
+    ) -> Result<usize> {
         let mut ht_decoder = ht_decoder;
         let mut row_sink = row_sink;
+        decoder_context.storage.release_all_allocations();
+        #[cfg(feature = "std")]
+        let directory = self.region_packet_directory(
+            retained_baseline_bytes,
+            decoder_context,
+            output_region.is_some() && ht_decoder.is_none() && self.permits_line_region_idwt(),
+            None,
+        );
         decoder_context.set_output_region(output_region);
         decoder_context.set_round_irreversible_output(round_irreversible_output);
         decoder_context.permit_line_region_idwt(self.permits_line_region_idwt());
+        #[cfg(feature = "std")]
+        let decode_result = allocation::combine_retained_bytes(
+            retained_baseline_bytes,
+            directory
+                .as_deref()
+                .map_or(0, packet_directory::PacketDirectoryCache::directory_bytes),
+        )
+        .and_then(|source_bytes| {
+            let index_directory = directory
+                .as_ref()
+                .filter(|_| output_region.is_some() && ht_decoder.is_none());
+            j2c::decode_rows(
+                self.codestream,
+                &self.header,
+                source_bytes,
+                decoder_context,
+                &mut ht_decoder,
+                &mut row_sink,
+                index_directory,
+            )
+            .map(|()| source_bytes)
+        });
+        #[cfg(not(feature = "std"))]
         let decode_result = j2c::decode_rows(
             self.codestream,
             &self.header,
@@ -896,11 +973,68 @@ impl<'a> Image<'a> {
             decoder_context,
             &mut ht_decoder,
             &mut row_sink,
-        );
+        )
+        .map(|()| retained_baseline_bytes);
+        // Rows already handed to the sink can't be taken back, so once any
+        // have streamed a rerun would only send them again.
+        #[cfg(feature = "std")]
+        let decode_result = if decode_result.as_ref().is_err_and(j2c::is_capacity_error)
+            && decoder_context.tile_decode_context.streamed_samples == 0
+            && directory
+                .as_ref()
+                .is_some_and(|directory| self.packet_cache.evict_if_unshared(directory))
+        {
+            drop(directory);
+            j2c::decode_rows(
+                self.codestream,
+                &self.header,
+                retained_baseline_bytes,
+                decoder_context,
+                &mut ht_decoder,
+                &mut row_sink,
+                None,
+            )
+            .map(|()| retained_baseline_bytes)
+        } else {
+            decode_result
+        };
         decoder_context.set_output_region(None);
         decoder_context.set_round_irreversible_output(false);
         decoder_context.permit_line_region_idwt(false);
         decode_result
+    }
+
+    #[cfg(feature = "std")]
+    fn region_packet_directory(
+        &self,
+        retained_baseline_bytes: usize,
+        decoder_context: &DecoderContext<'a>,
+        prepare: bool,
+        prepared_tiles: Option<&j2c::ParsedTiles<'a>>,
+    ) -> Option<alloc::sync::Arc<j2c::PacketDirectory>> {
+        if !prepare {
+            return self.packet_cache.snapshot();
+        }
+        self.packet_cache.for_region(|limit| {
+            let live = retained_baseline_bytes
+                .checked_add(decoder_context.retained_decode_bytes().ok()?)?
+                .checked_add(
+                    core::mem::size_of::<j2c::PacketDirectory>()
+                        + 2 * core::mem::size_of::<usize>(),
+                )?;
+            if let Some(tiles) = prepared_tiles {
+                return tiles.build_packet_directory(&self.header, live, limit);
+            }
+            let tiles = j2c::prepare_region_tiles(
+                self.codestream,
+                &self.header,
+                live,
+                &mut DecoderContext::default(),
+            )
+            .ok()?;
+            let retained = live.checked_add(tiles.metadata_owner_bytes())?;
+            tiles.build_packet_directory(&self.header, retained, limit)
+        })
     }
 
     /// Whether a region decode of this image may use the row-streamed region
@@ -991,38 +1125,95 @@ impl PreparedRegionDecoder<'_, '_, '_> {
         roi: (u32, u32, u32, u32),
         round_irreversible_output: bool,
     ) -> Result<DecodedComponents<'_>> {
-        validate_roi((self.image.width(), self.image.height()), roi)?;
-        self.image.validate_component_plane_precision()?;
-        self.decoder_context.set_output_region(Some(roi));
-        self.decoder_context
-            .set_round_irreversible_output(round_irreversible_output);
-        self.decoder_context
-            .permit_line_region_idwt(self.image.permits_line_region_idwt());
-        let decode_result = j2c::decode_preparsed(
-            &self.image.header,
+        self.image.decode_prepared_region_component_planes(
+            &mut self.tiles,
             self.retained_image_bytes,
-            &self.tiles,
-            self.decoder_context,
-        );
-        self.decoder_context.set_output_region(None);
-        self.decoder_context.set_round_irreversible_output(false);
-        self.decoder_context.permit_line_region_idwt(false);
-        decode_result?;
-        let (_x, _y, width, height) = roi;
-        let decoded_image = self.image.finish_decoded_image(
-            &mut self.decoder_context.tile_decode_context.channel_data,
             self.retained_session_bytes,
+            roi,
+            round_irreversible_output,
+            self.decoder_context,
+        )
+    }
+}
+
+impl<'a> Image<'a> {
+    fn decode_prepared_region_component_planes<'ctx>(
+        &self,
+        tiles: &mut j2c::ParsedTiles<'a>,
+        retained_image_bytes: usize,
+        retained_session_bytes: usize,
+        roi: (u32, u32, u32, u32),
+        round_irreversible_output: bool,
+        decoder_context: &'ctx mut DecoderContext<'a>,
+    ) -> Result<DecodedComponents<'ctx>> {
+        validate_roi((self.width(), self.height()), roi)?;
+        self.validate_component_plane_precision()?;
+        #[cfg(feature = "std")]
+        tiles.set_packet_directory(None);
+        #[cfg(feature = "std")]
+        let mut directory = self.region_packet_directory(
+            retained_session_bytes,
+            decoder_context,
+            self.permits_line_region_idwt(),
+            Some(tiles),
+        );
+        #[cfg(feature = "std")]
+        let extra_bytes = directory
+            .as_deref()
+            .map_or(0, packet_directory::PacketDirectoryCache::directory_bytes);
+        #[cfg(not(feature = "std"))]
+        let extra_bytes = 0;
+        #[cfg(feature = "std")]
+        tiles.set_packet_directory(directory.clone());
+        decoder_context.set_output_region(Some(roi));
+        decoder_context.set_round_irreversible_output(round_irreversible_output);
+        decoder_context.permit_line_region_idwt(self.permits_line_region_idwt());
+        let decode_result = allocation::combine_retained_bytes(retained_image_bytes, extra_bytes)
+            .and_then(|source_bytes| {
+                let session_bytes =
+                    allocation::combine_retained_bytes(retained_session_bytes, extra_bytes)?;
+                j2c::decode_preparsed(&self.header, source_bytes, tiles, decoder_context)
+                    .map(|()| session_bytes)
+            });
+        #[cfg(feature = "std")]
+        let decode_result = if decode_result.as_ref().is_err_and(j2c::is_capacity_error) {
+            tiles.set_packet_directory(None);
+            if directory
+                .as_ref()
+                .is_some_and(|directory| self.packet_cache.evict_if_unshared(directory))
+            {
+                drop(directory.take());
+                j2c::decode_preparsed(&self.header, retained_image_bytes, tiles, decoder_context)
+                    .map(|()| retained_session_bytes)
+            } else {
+                decode_result
+            }
+        } else {
+            decode_result
+        };
+        decoder_context.set_output_region(None);
+        decoder_context.set_round_irreversible_output(false);
+        decoder_context.permit_line_region_idwt(false);
+        #[cfg(feature = "std")]
+        {
+            tiles.set_packet_directory(None);
+            drop(directory);
+        }
+        let charged_session_bytes = decode_result?;
+        let (_x, _y, width, height) = roi;
+        let decoded_image = self.finish_decoded_image(
+            &mut decoder_context.tile_decode_context.channel_data,
+            charged_session_bytes,
         )?;
         let DecodedImage {
             decoded_components,
             boxes: _,
         } = decoded_image;
-        self.image
-            .try_borrow_component_planes_with_retained_baseline(
-                decoded_components.as_slice(),
-                decoded_components.capacity(),
-                (width, height),
-                self.retained_session_bytes,
-            )
+        self.try_borrow_component_planes_with_retained_baseline(
+            decoded_components.as_slice(),
+            decoded_components.capacity(),
+            (width, height),
+            retained_session_bytes,
+        )
     }
 }

@@ -35,17 +35,19 @@ impl<'a> Image<'a> {
         &self,
         decoder_context: &mut DecoderContext<'a>,
     ) -> Result<(J2kDirectColorPlan, [(u8, u8); 3])> {
-        if !matches!(self.color_space, ColorSpace::RGB) || self.has_alpha {
-            bail!(DecodingError::DirectPlanUnsupported(
-                DirectPlanUnsupportedReason::ColorRgbImageWithoutAlpha
-            ));
-        }
-        j2c::build_component_grid_color_plan(
-            self.codestream,
-            &self.header,
-            self.retained_planning_bytes()?,
-            decoder_context,
-        )
+        self.with_packet_cache_retry(|| {
+            if !matches!(self.color_space, ColorSpace::RGB) || self.has_alpha {
+                bail!(DecodingError::DirectPlanUnsupported(
+                    DirectPlanUnsupportedReason::ColorRgbImageWithoutAlpha
+                ));
+            }
+            j2c::build_component_grid_color_plan(
+                self.codestream,
+                &self.header,
+                self.retained_planning_bytes()?,
+                decoder_context,
+            )
+        })
     }
 
     /// Build an adapter grayscale direct device plan without materializing host component planes.
@@ -54,18 +56,20 @@ impl<'a> Image<'a> {
         &self,
         decoder_context: &mut DecoderContext<'a>,
     ) -> Result<J2kDirectGrayscalePlan> {
-        if !matches!(self.color_space, ColorSpace::Gray) || self.has_alpha {
-            bail!(DecodingError::DirectPlanUnsupported(
-                DirectPlanUnsupportedReason::GrayscaleImageWithoutAlpha
-            ));
-        }
+        self.with_packet_cache_retry(|| {
+            if !matches!(self.color_space, ColorSpace::Gray) || self.has_alpha {
+                bail!(DecodingError::DirectPlanUnsupported(
+                    DirectPlanUnsupportedReason::GrayscaleImageWithoutAlpha
+                ));
+            }
 
-        j2c::build_direct_grayscale_plan(
-            self.codestream,
-            &self.header,
-            self.retained_planning_bytes()?,
-            decoder_context,
-        )
+            j2c::build_direct_grayscale_plan(
+                self.codestream,
+                &self.header,
+                self.retained_planning_bytes()?,
+                decoder_context,
+            )
+        })
     }
 
     /// Build an adapter grayscale direct device plan for an output-space region.
@@ -75,22 +79,24 @@ impl<'a> Image<'a> {
         decoder_context: &mut DecoderContext<'a>,
         output_region: (u32, u32, u32, u32),
     ) -> Result<J2kDirectGrayscalePlan> {
-        if !matches!(self.color_space, ColorSpace::Gray) || self.has_alpha {
-            bail!(DecodingError::DirectPlanUnsupported(
-                DirectPlanUnsupportedReason::GrayscaleImageWithoutAlpha
-            ));
-        }
+        self.with_packet_cache_retry(|| {
+            if !matches!(self.color_space, ColorSpace::Gray) || self.has_alpha {
+                bail!(DecodingError::DirectPlanUnsupported(
+                    DirectPlanUnsupportedReason::GrayscaleImageWithoutAlpha
+                ));
+            }
 
-        let retained_planning_bytes = self.retained_planning_bytes()?;
-        decoder_context.set_output_region(Some(output_region));
-        let result = j2c::build_direct_grayscale_plan(
-            self.codestream,
-            &self.header,
-            retained_planning_bytes,
-            decoder_context,
-        );
-        decoder_context.set_output_region(None);
-        result
+            let retained_planning_bytes = self.retained_planning_bytes()?;
+            decoder_context.set_output_region(Some(output_region));
+            let result = j2c::build_direct_grayscale_plan(
+                self.codestream,
+                &self.header,
+                retained_planning_bytes,
+                decoder_context,
+            );
+            decoder_context.set_output_region(None);
+            result
+        })
     }
 
     /// Build an adapter RGB direct device plan without materializing host component planes.
@@ -99,18 +105,20 @@ impl<'a> Image<'a> {
         &self,
         decoder_context: &mut DecoderContext<'a>,
     ) -> Result<J2kDirectColorPlan> {
-        if !matches!(self.color_space, ColorSpace::RGB) || self.has_alpha {
-            bail!(DecodingError::DirectPlanUnsupported(
-                DirectPlanUnsupportedReason::ColorRgbImageWithoutAlpha
-            ));
-        }
+        self.with_packet_cache_retry(|| {
+            if !matches!(self.color_space, ColorSpace::RGB) || self.has_alpha {
+                bail!(DecodingError::DirectPlanUnsupported(
+                    DirectPlanUnsupportedReason::ColorRgbImageWithoutAlpha
+                ));
+            }
 
-        j2c::build_direct_color_plan(
-            self.codestream,
-            &self.header,
-            self.retained_planning_bytes()?,
-            decoder_context,
-        )
+            j2c::build_direct_color_plan(
+                self.codestream,
+                &self.header,
+                self.retained_planning_bytes()?,
+                decoder_context,
+            )
+        })
     }
 
     /// Build an adapter RGB direct device plan for an output-space region.
@@ -120,21 +128,23 @@ impl<'a> Image<'a> {
         decoder_context: &mut DecoderContext<'a>,
         output_region: (u32, u32, u32, u32),
     ) -> Result<J2kDirectColorPlan> {
-        if !matches!(self.color_space, ColorSpace::RGB) || self.has_alpha {
-            bail!(DecodingError::DirectPlanUnsupported(
-                DirectPlanUnsupportedReason::ColorRgbImageWithoutAlpha
-            ));
-        }
+        self.with_packet_cache_retry(|| {
+            if !matches!(self.color_space, ColorSpace::RGB) || self.has_alpha {
+                bail!(DecodingError::DirectPlanUnsupported(
+                    DirectPlanUnsupportedReason::ColorRgbImageWithoutAlpha
+                ));
+            }
 
-        let retained_planning_bytes = self.retained_planning_bytes()?;
-        decoder_context.set_output_region(Some(output_region));
-        let result = j2c::build_direct_color_plan(
-            self.codestream,
-            &self.header,
-            retained_planning_bytes,
-            decoder_context,
-        );
-        decoder_context.set_output_region(None);
-        result
+            let retained_planning_bytes = self.retained_planning_bytes()?;
+            decoder_context.set_output_region(Some(output_region));
+            let result = j2c::build_direct_color_plan(
+                self.codestream,
+                &self.header,
+                retained_planning_bytes,
+                decoder_context,
+            );
+            decoder_context.set_output_region(None);
+            result
+        })
     }
 }

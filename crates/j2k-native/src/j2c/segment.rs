@@ -15,7 +15,29 @@ use crate::reader::BitReader;
 use crate::{try_reserve_decode_elements, DEFAULT_MAX_DECODE_BYTES};
 
 mod classic;
+#[cfg(feature = "std")]
+pub(crate) mod directory;
 mod ht;
+
+#[derive(Default)]
+pub(crate) struct PacketParseStats {
+    #[cfg(all(test, feature = "std"))]
+    pub(crate) parsed_headers: usize,
+    #[cfg(all(test, feature = "std"))]
+    pub(crate) skipped_packets: usize,
+}
+
+#[derive(Default)]
+struct PacketWalk<'d> {
+    stats: PacketParseStats,
+    #[cfg(feature = "std")]
+    recording: Option<&'d mut Vec<u64>>,
+    #[cfg(feature = "std")]
+    indexed: Option<&'d directory::PacketDirectory>,
+    #[cfg(feature = "std")]
+    next_packet: usize,
+    marker: core::marker::PhantomData<&'d ()>,
+}
 
 pub(crate) const MAX_BITPLANE_COUNT: u8 = 63;
 type PacketResult<T = ()> = core::result::Result<T, &'static str>;
@@ -59,6 +81,8 @@ impl<'a> SegmentSink<'_, 'a> {
 pub(super) struct PacketSkips {
     /// (code-block index, body bytes) for each contribution to skip.
     entries: Vec<(usize, usize)>,
+    #[cfg(feature = "std")]
+    discard_contributions: bool,
 }
 
 impl PacketSkips {
@@ -67,7 +91,7 @@ impl PacketSkips {
     /// scratch. Code-blocks are
     /// only skipped this way when an ROI plan leaves some out.
     fn new(storage: &DecompositionStorage<'_>, live_bytes: usize) -> Result<Self> {
-        let capacity = if storage.roi_plan.is_some() {
+        let capacity = if storage.roi_plan.is_some() || storage.parse_scratch.is_some() {
             storage
                 .precincts
                 .iter()
@@ -82,7 +106,11 @@ impl PacketSkips {
         };
         let mut entries = Vec::new();
         DecodeAllocationBudget::from_live_bytes(live_bytes)?.reserve_new(&mut entries, capacity)?;
-        Ok(Self { entries })
+        Ok(Self {
+            entries,
+            #[cfg(feature = "std")]
+            discard_contributions: false,
+        })
     }
 
     fn owned_bytes(&self) -> usize {
@@ -110,7 +138,7 @@ pub(crate) fn parse<'a>(
     header: &Header<'_>,
     storage: &mut DecompositionStorage<'a>,
 ) -> Result<()> {
-    parse_selected(tile, header, storage, None)
+    parse_selected(tile, header, storage, None).map(|_| ())
 }
 
 /// Parse a tile's packets. With a region decode's `selection`, packets of
@@ -121,6 +149,22 @@ pub(crate) fn parse_selected<'a>(
     header: &Header<'_>,
     storage: &mut DecompositionStorage<'a>,
     selection: Option<&PrecinctSelection>,
+) -> Result<PacketParseStats> {
+    let mut walk = PacketWalk {
+        #[cfg(feature = "std")]
+        indexed: tile.packet_directory.as_deref(),
+        ..PacketWalk::default()
+    };
+    parse_with_walk(tile, header, storage, selection, &mut walk)?;
+    Ok(walk.stats)
+}
+
+fn parse_with_walk<'a>(
+    tile: &Tile<'a>,
+    header: &Header<'_>,
+    storage: &mut DecompositionStorage<'a>,
+    selection: Option<&PrecinctSelection>,
+    walk: &mut PacketWalk<'_>,
 ) -> Result<()> {
     if selection.is_some_and(|selection| selection.required_packets() == 0) {
         return Ok(());
@@ -133,6 +177,10 @@ pub(crate) fn parse_selected<'a>(
             .checked_add(progression_iterator.owned_bytes())
             .ok_or(ValidationError::ImageTooLarge)?,
     )?;
+    #[cfg(feature = "std")]
+    {
+        skips.discard_contributions = walk.recording.is_some();
+    }
     let parse_bytes = progression_iterator
         .owned_bytes()
         .checked_add(skips.owned_bytes())
@@ -148,7 +196,18 @@ pub(crate) fn parse_selected<'a>(
         header,
         storage,
         selection,
+        walk,
     );
+    #[cfg(feature = "std")]
+    let result = result.and_then(|()| {
+        if walk.recording.is_some() && progression_iterator.next().is_some() {
+            return Err(DecodingError::PacketParseFailure(
+                "packet directory has incomplete progression coverage",
+            )
+            .into());
+        }
+        Ok(())
+    });
     storage.structural_workspace_bytes = storage
         .structural_workspace_bytes
         .checked_sub(parse_bytes)
@@ -163,6 +222,7 @@ fn parse_selected_inner<'a>(
     header: &Header<'_>,
     storage: &mut DecompositionStorage<'a>,
     selection: Option<&PrecinctSelection>,
+    walk: &mut PacketWalk<'_>,
 ) -> Result<()> {
     let mut relevance = selection.map(|selection| PacketRelevance::new(selection, storage));
     let result = parse_tile_parts(
@@ -172,6 +232,7 @@ fn parse_selected_inner<'a>(
         header,
         storage,
         relevance.as_mut(),
+        walk,
     );
     if let Some(mut scratch) = relevance.and_then(|relevance| relevance.scratch) {
         scratch.give_all_back(&mut storage.precincts);
@@ -186,6 +247,7 @@ fn parse_tile_parts<'a>(
     header: &Header<'_>,
     storage: &mut DecompositionStorage<'a>,
     mut relevance: Option<&mut PacketRelevance<'_>>,
+    walk: &mut PacketWalk<'_>,
 ) -> Result<()> {
     for tile_part in &tile.tile_parts {
         if relevance
@@ -208,13 +270,18 @@ fn parse_tile_parts<'a>(
                     storage,
                     skips,
                     relevance.as_deref_mut(),
+                    walk,
                 )
             });
         if let Some(error) = storage.packet_workspace_error.take() {
             return Err(error);
         }
         if let Err(context) = parsed {
-            if header.strict {
+            #[cfg(feature = "std")]
+            let strict = header.strict || walk.recording.is_some();
+            #[cfg(not(feature = "std"))]
+            let strict = header.strict;
+            if strict {
                 bail!(DecodingError::PacketParseFailure(context));
             }
         }
@@ -310,6 +377,10 @@ impl<'s> PacketRelevance<'s> {
     clippy::too_many_lines,
     reason = "one ordered pass keeps packet skipping, header parsing, body reads, and length checks together"
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the packet walk shares parser state and optional boundary observation"
+)]
 fn parse_inner<'a>(
     mut tile_part: TilePartCursor<'_, 'a>,
     progression_iterator: &mut dyn Iterator<Item = ProgressionData>,
@@ -318,11 +389,38 @@ fn parse_inner<'a>(
     storage: &mut DecompositionStorage<'a>,
     skips: &mut PacketSkips,
     mut relevance: Option<&mut PacketRelevance<'_>>,
+    #[cfg_attr(not(feature = "std"), allow(unused_variables))] walk: &mut PacketWalk<'_>,
 ) -> PacketResult<bool> {
     while !tile_part.header().at_end() {
         let progression_data = progression_iterator
             .next()
             .ok_or("packet header outlives the progression iterator")?;
+        #[cfg(feature = "std")]
+        let ordinal = {
+            let ordinal = walk.next_packet;
+            walk.next_packet = ordinal.checked_add(1).ok_or("packet ordinal overflows")?;
+            if let Some(directory) = walk.indexed {
+                if relevance.as_ref().is_some_and(|relevance| {
+                    matches!(
+                        relevance.selection.packet_use(&progression_data),
+                        Some(PrecinctUse::Parsed | PrecinctUse::Unused)
+                    )
+                }) {
+                    let (start, end) = directory
+                        .range(ordinal)
+                        .ok_or("derived packet range is missing")?;
+                    tile_part
+                        .skip_derived_packet(start, end)
+                        .ok_or("derived packet range disagrees with the cursor")?;
+                    #[cfg(test)]
+                    {
+                        walk.stats.skipped_packets += 1;
+                    }
+                    continue;
+                }
+            }
+            ordinal
+        };
         let resolution = progression_data.resolution;
         let precinct_index = usize::try_from(progression_data.precinct)
             .map_err(|_| "packet precinct index does not fit the platform")?;
@@ -474,6 +572,34 @@ fn parse_inner<'a>(
         tile_part
             .validate_packet_length(packet_start)
             .ok_or("packet length marker disagrees with consumed bytes")?;
+
+        #[cfg(feature = "std")]
+        {
+            #[cfg(test)]
+            {
+                walk.stats.parsed_headers += 1;
+            }
+            if let Some(boundaries) = walk.recording.as_mut() {
+                let end = tile_part
+                    .inline_offset()
+                    .ok_or("packet headers are separated")?;
+                let end = u64::try_from(end).map_err(|_| "packet offset overflows")?;
+                if boundaries.len() == boundaries.capacity()
+                    || boundaries.last().is_none_or(|&start| start >= end)
+                {
+                    return Err("packet boundary capacity or order is invalid");
+                }
+                boundaries.push(end);
+            }
+            if let Some(directory) = walk.indexed {
+                let (_, end) = directory
+                    .range(ordinal)
+                    .ok_or("derived packet range is missing")?;
+                if tile_part.inline_offset() != Some(end) {
+                    return Err("parsed packet disagrees with its derived boundary");
+                }
+            }
+        }
 
         if PacketRelevance::record_parsed(relevance.as_deref_mut(), &progression_data) {
             return Ok(true);

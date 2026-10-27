@@ -212,10 +212,10 @@ impl<'a> J2kDecoder<'a> {
         let (Some(image), native_context) = (self.image.as_ref(), &mut self.native_context) else {
             return Err(J2kError::internal_backend("internal image cache missing"));
         };
-        let retained_image_bytes = component_handoff_image_bytes(image)?;
         let decoded = image
             .decode_components_with_context(native_context)
             .map_err(J2kError::from_native_decode_error)?;
+        let retained_image_bytes = component_handoff_image_bytes(image)?;
         J2kDecodedComponents::try_from_native(decoded, retained_image_bytes)
     }
 
@@ -233,10 +233,10 @@ impl<'a> J2kDecoder<'a> {
         let (Some(image), native_context) = (self.image.as_ref(), &mut self.native_context) else {
             return Err(J2kError::internal_backend("internal image cache missing"));
         };
-        let retained_image_bytes = component_handoff_image_bytes(image)?;
         let decoded = image
             .decode_region_components_with_context((roi.x, roi.y, roi.w, roi.h), native_context)
             .map_err(J2kError::from_native_decode_error)?;
+        let retained_image_bytes = component_handoff_image_bytes(image)?;
         J2kDecodedComponents::try_from_native(decoded, retained_image_bytes)
     }
 
@@ -252,10 +252,10 @@ impl<'a> J2kDecoder<'a> {
         let (Some(image), native_context) = (self.image.as_ref(), &mut self.native_context) else {
             return Err(J2kError::internal_backend("internal image cache missing"));
         };
-        let retained_image_bytes = component_handoff_image_bytes(image)?;
         let decoded = image
             .decode_native_components_with_context(native_context)
             .map_err(J2kError::from_native_decode_error)?;
+        let retained_image_bytes = component_handoff_image_bytes(image)?;
         J2kDecodedNativeComponents::try_from_native(decoded, retained_image_bytes)
     }
 
@@ -293,13 +293,13 @@ impl<'a> J2kDecoder<'a> {
         let (Some(image), native_context) = (self.image.as_ref(), &mut self.native_context) else {
             return Err(J2kError::internal_backend("internal image cache missing"));
         };
-        let retained_image_bytes = component_handoff_image_bytes(image)?;
         let decoded = image
             .decode_native_region_components_with_context(
                 (roi.x, roi.y, roi.w, roi.h),
                 native_context,
             )
             .map_err(J2kError::from_native_decode_error)?;
+        let retained_image_bytes = component_handoff_image_bytes(image)?;
         J2kDecodedNativeComponents::try_from_native(decoded, retained_image_bytes)
     }
 

@@ -273,6 +273,8 @@ fn decode_exact_planes(image: &Image<'_>, hook: bool) -> (Vec<Vec<i64>>, usize) 
         0,
         &mut context,
         &mut ht_decoder,
+        #[cfg(feature = "std")]
+        None,
     )
     .expect("decode high-bit layout fixture");
     let planes = context

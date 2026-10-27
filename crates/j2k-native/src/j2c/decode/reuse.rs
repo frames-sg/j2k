@@ -492,7 +492,7 @@ fn checked_combined_context_bytes(left: usize, right: usize, cap: usize) -> Resu
     Ok(requested)
 }
 
-pub(in crate::j2c::decode) fn is_capacity_error(error: &DecodeError) -> bool {
+pub(crate) fn is_capacity_error(error: &DecodeError) -> bool {
     matches!(
         error,
         DecodeError::AllocationTooLarge { .. }
