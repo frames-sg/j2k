@@ -171,3 +171,50 @@ fn fused_last_level_matches_at_an_odd_image_origin() {
         assert_matches_staged(bytes, true, name);
     }
 }
+
+#[test]
+fn fused_region_pack_matches_staged_samples() {
+    for case in &CASES {
+        for reversible in [true, false] {
+            let (width, height) = case.size;
+            let samples = noisy_samples(
+                width * height * u32::from(case.components) * u32::from(case.bit_depth.div_ceil(8)),
+            );
+            let bytes = encode(
+                &samples,
+                width,
+                height,
+                u16::from(case.components),
+                case.bit_depth,
+                false,
+                &EncodeOptions {
+                    reversible,
+                    num_decomposition_levels: case.levels,
+                    tile_size: case.tile,
+                    ..EncodeOptions::default()
+                },
+            )
+            .unwrap();
+            for reduction in [0, 1] {
+                let image =
+                    Image::new_with_reduction(&bytes, &DecodeSettings::default(), reduction)
+                        .unwrap();
+                let (w, h) = (image.width(), image.height());
+                for roi in [(1, 1, w - 1, h - 1), (w - 1, h - 1, 1, 1)] {
+                    for parallelism in [CpuDecodeParallelism::Serial, CpuDecodeParallelism::Auto] {
+                        let mut staged = DecoderContext::default();
+                        staged.set_cpu_decode_parallelism(parallelism);
+                        staged.tile_decode_context.staged_rgb8_pack = true;
+                        let expected = image.decode_region_with_context(roi, &mut staged).unwrap();
+                        let mut context = DecoderContext::default();
+                        context.set_cpu_decode_parallelism(parallelism);
+                        let actual = image.decode_region_with_context(roi, &mut context).unwrap();
+                        assert_eq!(actual.data, expected.data,
+                            "{}x{} components={} depth={} reversible={reversible} reduction={reduction} roi={roi:?} {parallelism:?}",
+                            width, height, case.components, case.bit_depth);
+                    }
+                }
+            }
+        }
+    }
+}

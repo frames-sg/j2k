@@ -472,7 +472,7 @@ impl<'a> Image<'a> {
             let retained_image_bytes = self.retained_metadata_bytes()?;
             let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
             let (mct, first_ll, scratch, mut decoded_image) =
-                self.decode_image_for_rgb8(decoder_context, retained_image_bytes)?;
+                self.decode_image_for_rgb8(decoder_context, None, retained_image_bytes)?;
             let component_owner_capacity = decoded_image.decoded_components.capacity();
             let buffer_size = checked_decode_byte_len3(
                 self.width() as usize,
@@ -702,8 +702,9 @@ impl<'a> Image<'a> {
         validate_roi((self.width(), self.height()), roi)?;
         (|| {
             let retained_image_bytes = self.retained_metadata_bytes()?;
-            let mut decoded_image =
-                self.decode_image(decoder_context, Some(roi), None, true, retained_image_bytes)?;
+            let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
+            let (mct, first_ll, scratch, mut decoded_image) =
+                self.decode_image_for_rgb8(decoder_context, Some(roi), retained_image_bytes)?;
             let component_owner_capacity = decoded_image.decoded_components.capacity();
             let (_x, _y, width, height) = roi;
             let data_len = checked_decode_byte_len3(
@@ -724,12 +725,23 @@ impl<'a> Image<'a> {
             let mut data = Vec::new();
             try_resize_decode_elements(&mut data, data_len, 0_u8)?;
             budget.include_capacity_overage::<u8>(data_len, data.capacity())?;
-            interleave_and_convert_region(
-                &mut decoded_image,
-                width as usize,
-                (0, 0, width, height),
-                &mut data,
-            )?;
+            if mct.is_some() {
+                interleave_and_convert_after_mct(
+                    &mut decoded_image,
+                    &mut data,
+                    mct,
+                    first_ll,
+                    scratch,
+                    parallel,
+                )?;
+            } else {
+                interleave_and_convert_region(
+                    &mut decoded_image,
+                    width as usize,
+                    (0, 0, width, height),
+                    &mut data,
+                )?;
+            }
             let bitmap = Bitmap {
                 color_space,
                 data,
@@ -769,7 +781,7 @@ impl<'a> Image<'a> {
         let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
         let retained = self.retained_metadata_bytes()?;
         let (mct, first_ll, scratch, mut decoded_image) =
-            self.decode_image_for_rgb8(decoder_context, retained)?;
+            self.decode_image_for_rgb8(decoder_context, None, retained)?;
         validate_interleaved_output_buffer(&decoded_image, buf)?;
         interleave_and_convert_after_mct(
             &mut decoded_image,
@@ -807,14 +819,24 @@ impl<'a> Image<'a> {
     /// [`Self::decode_image`] for an RGB8 pack. A plain colour image (see
     /// [`Self::permits_line_region_idwt`]) leaves its inverse MCT, and
     /// possibly its last IDWT level, to the pack, which receives them with
-    /// the image.
+    /// the image. Regions keep the streamed IDWT and only defer the MCT.
     fn decode_image_for_rgb8<'ctx>(
         &self,
         decoder_context: &'ctx mut DecoderContext<'a>,
+        output_region: Option<(u32, u32, u32, u32)>,
         retained_baseline_bytes: usize,
     ) -> Result<Rgb8DecodedImage<'ctx, '_>> {
-        decoder_context.set_defer_mct(self.permits_line_region_idwt());
-        let decoded = self.run_decode(decoder_context, None, None, true, retained_baseline_bytes);
+        let defer_mct = self.permits_line_region_idwt();
+        #[cfg(test)]
+        let defer_mct = defer_mct && !decoder_context.tile_decode_context.staged_rgb8_pack;
+        decoder_context.set_defer_mct(defer_mct);
+        let decoded = self.run_decode(
+            decoder_context,
+            output_region,
+            None,
+            true,
+            retained_baseline_bytes,
+        );
         decoder_context.set_defer_mct(false);
         decoded?;
         let tile_ctx = &mut decoder_context.tile_decode_context;
