@@ -7,7 +7,7 @@ use super::{
     classic_decode_job_parameters, code_block_required_by_index, collect_pending_classic_blocks,
     count_classic_code_blocks, decode_j2k_code_block_scalar_with_workspace,
     decode_j2k_code_block_scalar_with_workspace_midpoint,
-    should_decode_classic_sub_band_in_parallel, stored_placement, ComponentInfo,
+    should_decode_classic_sub_band_in_parallel, stored_placement, tier1_code_blocks, ComponentInfo,
     CpuDecodeParallelism, DecodeAllocationBudget, DecodingError, DecompositionStorage, Header,
     HtCodeBlockDecoder, J2kCodeBlockBatchJob, J2kCodeBlockDecodeJob, J2kCodeBlockDecodeWorkspace,
     J2kSubBandDecodeJob, Result, SubBand, TileDecodeContext, Vec, MAX_BITPLANE_COUNT,
@@ -229,7 +229,13 @@ pub(super) fn decode_sub_band_classic_blocks(
         return Ok(());
     }
 
-    let code_block_count = count_classic_code_blocks(sub_band_idx, sub_band, storage)?;
+    // The banded caller is serial; counting the whole sub-band for every band
+    // would repeat the scan that banding is meant to avoid.
+    let code_block_count = if storage.tier1_band.is_some() {
+        0
+    } else {
+        count_classic_code_blocks(sub_band_idx, sub_band, storage)?
+    };
     if should_decode_classic_sub_band_in_parallel(cpu_decode_parallelism, code_block_count) {
         #[cfg(feature = "parallel")]
         {
@@ -298,11 +304,10 @@ pub(super) fn decode_sub_band_classic_blocks(
         .clone()
         .map(|idx| &storage.precincts[idx])
     {
-        for code_block in precinct
-            .code_blocks
-            .clone()
-            .map(|idx| &storage.code_blocks[idx])
-        {
+        for code_block in tier1_code_blocks(
+            &storage.code_blocks[precinct.code_blocks.clone()],
+            storage.tier1_band,
+        ) {
             if code_block.coding != Some(CodeBlockCoding::Classic) {
                 continue;
             }

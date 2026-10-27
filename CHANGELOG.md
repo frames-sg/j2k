@@ -3,6 +3,17 @@
 This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
+## [Unreleased]
+
+- Serial CPU region decodes on the row-streamed IDWT decode each sub-band's
+  code-blocks one code-block row at a time, as the IDWT reaches it, and hold
+  only that row instead of the sub-band's whole window. A 1024 x 1024 region
+  of an 18000 x 12000 RGB image holds under 1 MiB of coefficients instead of
+  5 MiB, and peaks at 14 to 16 MiB of heap instead of 18 to 20 MiB. Every
+  code-block the whole-window path decodes is still decoded, and a failing
+  decode reruns Tier-1 over whole windows to report the same error. Parallel
+  decodes keep whole windows. Output is unchanged.
+
 ## [0.13.0] - 2026-10-26
 
 - Migration from 0.12.0: exhaustive native `EncodeOptions` literals must add

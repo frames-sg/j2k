@@ -8,12 +8,13 @@ use super::super::codestream::WaveletTransform;
 use super::super::decode::{DecompositionStorage, TileDecodeContext, WorkspaceBytes};
 use super::super::rect::IntRect;
 use super::horizontal::filter_horizontal_codestream;
-use super::lines::{reconstruct_rows, ring_samples};
+use super::lines::{reconstruct_rows, ring_samples, StoredRows, SubBandRows};
 use super::model::{CoefficientSource, IDWTOutput, IdwtPlacement};
 use super::vertical::filter_vertical_codestream;
 use crate::error::{DecodingError, ValidationError};
 use crate::j2c::roi::output_region_rect;
 use crate::j2c::Header;
+use crate::math::{SimdBuffer, SIMD_WIDTH};
 use crate::{checked_decode_usize_product2, try_resize_decode_elements, Result};
 
 /// The most f32 samples [`apply_roi`] holds at once for any one component.
@@ -257,73 +258,159 @@ fn apply_roi_lines(
     header: &Header<'_>,
     transform: WaveletTransform,
 ) -> Result<()> {
-    let roi_plan = storage
-        .roi_plan
-        .as_ref()
-        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-    let tile_decompositions = &storage.tile_decompositions[component_idx];
-    let mut windows = Vec::new();
-    windows
-        .try_reserve_exact(decompositions.len())
-        .map_err(|_| DecodingError::HostAllocationFailed)?;
-    for decomposition_idx in tile_decompositions
-        .decompositions
-        .clone()
-        .take(decompositions.len())
-    {
-        // Without a window the level has nothing to reconstruct, as in the
-        // whole-window path.
-        let Some(window) = roi_plan.idwt_window(decomposition_idx) else {
-            return Ok(());
-        };
-        windows.push(window);
-    }
-    let (Some(last_window), Some(final_window), Some(output_region)) = (
-        windows.last().copied(),
-        roi_plan.final_window(component_idx),
-        tile_ctx.output_region,
-    ) else {
+    let Some(mut lines) = ComponentLines::prepare(
+        storage,
+        tile_ctx,
+        component_idx,
+        decompositions.len(),
+        header,
+        transform,
+    )?
+    else {
         return Ok(());
     };
-    let copy = last_window.intersect(final_window);
-    let region = output_region_rect(&header.size_data, output_region);
+    let result = lines.run(&mut StoredRows { storage });
+    lines.finish(tile_ctx, result)
+}
 
-    let mut ring = core::mem::take(&mut tile_ctx.idwt_line_rings);
-    let ring_len = ring_samples(windows.iter().copied(), transform)?;
-    if ring.len() < ring_len {
-        try_resize_decode_elements(&mut ring, ring_len, 0.0)?;
+/// A component's streamed IDWT, ready to run: its levels' windows and
+/// sub-bands, and the rings and output plane it writes, taken from the
+/// decode context until [`Self::finish`] returns them. While it runs, the
+/// rows it reads may be decoded on demand.
+pub(crate) struct ComponentLines {
+    component_idx: usize,
+    windows: Vec<IntRect>,
+    sub_bands: Vec<[usize; 3]>,
+    ll_sub_band: usize,
+    transform: WaveletTransform,
+    last_window: IntRect,
+    /// The last level's rows the plane receives.
+    copy: IntRect,
+    /// The output region, which the plane covers.
+    region: IntRect,
+    ring: Vec<f32>,
+    ring_len: usize,
+    plane: SimdBuffer<SIMD_WIDTH>,
+    output_samples: usize,
+}
+
+impl ComponentLines {
+    /// Prepare the first `active_levels` levels of the component. Returns
+    /// `None` when a level has no window, so there is nothing to
+    /// reconstruct, as in the whole-window path.
+    pub(crate) fn prepare(
+        storage: &DecompositionStorage<'_>,
+        tile_ctx: &mut TileDecodeContext,
+        component_idx: usize,
+        active_levels: usize,
+        header: &Header<'_>,
+        transform: WaveletTransform,
+    ) -> Result<Option<Self>> {
+        let roi_plan = storage
+            .roi_plan
+            .as_ref()
+            .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+        let tile_decompositions = &storage.tile_decompositions[component_idx];
+        let mut windows = Vec::new();
+        windows
+            .try_reserve_exact(active_levels)
+            .map_err(|_| DecodingError::HostAllocationFailed)?;
+        let mut sub_bands = Vec::new();
+        sub_bands
+            .try_reserve_exact(active_levels)
+            .map_err(|_| DecodingError::HostAllocationFailed)?;
+        for decomposition_idx in tile_decompositions
+            .decompositions
+            .clone()
+            .take(active_levels)
+        {
+            // Without a window the level has nothing to reconstruct, as in the
+            // whole-window path.
+            let Some(window) = roi_plan.idwt_window(decomposition_idx) else {
+                return Ok(None);
+            };
+            windows.push(window);
+            sub_bands.push(storage.decompositions[decomposition_idx].sub_bands);
+        }
+        let (Some(last_window), Some(final_window), Some(output_region)) = (
+            windows.last().copied(),
+            roi_plan.final_window(component_idx),
+            tile_ctx.output_region,
+        ) else {
+            return Ok(None);
+        };
+        let copy = last_window.intersect(final_window);
+        let region = output_region_rect(&header.size_data, output_region);
+
+        let mut ring = core::mem::take(&mut tile_ctx.idwt_line_rings);
+        let ring_len = ring_samples(windows.iter().copied(), transform)?;
+        if ring.len() < ring_len {
+            try_resize_decode_elements(&mut ring, ring_len, 0.0)?;
+        }
+        tile_ctx.idwt_line_rings = ring;
+        record_workspace_now(tile_ctx, storage)?;
+        let ring = core::mem::take(&mut tile_ctx.idwt_line_rings);
+        let plane = core::mem::replace(
+            &mut tile_ctx.channel_data[component_idx].container,
+            SimdBuffer::empty(),
+        );
+        Ok(Some(Self {
+            component_idx,
+            windows,
+            sub_bands,
+            ll_sub_band: tile_decompositions.first_ll_sub_band,
+            transform,
+            last_window,
+            copy,
+            region,
+            ring,
+            ring_len,
+            plane,
+            output_samples: 0,
+        }))
     }
-    tile_ctx.idwt_line_rings = ring;
-    record_workspace_now(tile_ctx, storage)?;
-    let mut ring = core::mem::take(&mut tile_ctx.idwt_line_rings);
 
-    let plane = &mut tile_ctx.channel_data[component_idx].container;
-    let plane_width = region.width() as usize;
-    let mut write_row = |y: u32, samples: &[f32]| -> Result<()> {
-        let start = (y - region.y0) as usize * plane_width + (copy.x0 - region.x0) as usize;
-        plane
-            .get_mut(start..start + samples.len())
-            .ok_or(DecodingError::CodeBlockDecodeFailure)?
-            .copy_from_slice(samples);
+    /// Reconstruct the levels, reading their sub-bands through `rows`, and
+    /// write the last level's rows into the plane.
+    pub(crate) fn run(&mut self, rows: &mut dyn SubBandRows) -> Result<()> {
+        let (copy, region) = (self.copy, self.region);
+        let plane = &mut self.plane;
+        let plane_width = region.width() as usize;
+        let mut write_row = |y: u32, samples: &[f32]| -> Result<()> {
+            let start = (y - region.y0) as usize * plane_width + (copy.x0 - region.x0) as usize;
+            plane
+                .get_mut(start..start + samples.len())
+                .ok_or(DecodingError::CodeBlockDecodeFailure)?
+                .copy_from_slice(samples);
+            Ok(())
+        };
+        reconstruct_rows(
+            rows,
+            &self.sub_bands,
+            &self.windows,
+            self.ll_sub_band,
+            self.transform,
+            &mut self.ring[..self.ring_len],
+            copy,
+            &mut write_row,
+            &mut self.output_samples,
+        )
+    }
+
+    /// Return the rings and plane to the context and, when `result` is a
+    /// success, record that the plane holds the last level.
+    pub(crate) fn finish(self, tile_ctx: &mut TileDecodeContext, result: Result<()>) -> Result<()> {
+        tile_ctx.idwt_line_rings = self.ring;
+        tile_ctx.channel_data[self.component_idx].container = self.plane;
+        tile_ctx.debug_counters.idwt_output_samples = tile_ctx
+            .debug_counters
+            .idwt_output_samples
+            .saturating_add(self.output_samples);
+        result?;
+        tile_ctx.idwt_output.rect = self.last_window;
+        tile_ctx.idwt_output.placement = IdwtPlacement::ChannelPlane;
         Ok(())
-    };
-    let ll_sub_band = &storage.sub_bands[tile_decompositions.first_ll_sub_band];
-    let result = reconstruct_rows(
-        storage,
-        decompositions,
-        &windows,
-        CoefficientSource::from_sub_band(ll_sub_band, storage),
-        transform,
-        &mut ring[..ring_len],
-        copy,
-        &mut write_row,
-        &mut tile_ctx.debug_counters.idwt_output_samples,
-    );
-    tile_ctx.idwt_line_rings = ring;
-    result?;
-    tile_ctx.idwt_output.rect = last_window;
-    tile_ctx.idwt_output.placement = IdwtPlacement::ChannelPlane;
-    Ok(())
+    }
 }
 
 /// With no level left to reconstruct, the output is the LL sub-band's window.

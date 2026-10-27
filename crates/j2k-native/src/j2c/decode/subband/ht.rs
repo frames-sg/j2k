@@ -4,7 +4,7 @@ use super::{
     add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_i64, code_block_required_by_index,
     collect_pending_ht_blocks, count_ht_code_blocks, ht_block_decode,
     ht_code_block_has_decodable_passes, should_decode_ht_sub_band_in_parallel, stored_placement,
-    ComponentInfo, CpuDecodeParallelism, DecodeAllocationBudget, DecodingError,
+    tier1_code_blocks, ComponentInfo, CpuDecodeParallelism, DecodeAllocationBudget, DecodingError,
     DecompositionStorage, Header, HtCodeBlockBatchJob, HtCodeBlockDecodeJob, HtCodeBlockDecoder,
     HtSubBandDecodeJob, Result, SubBand, TileDecodeContext, Vec,
 };
@@ -201,7 +201,12 @@ pub(super) fn decode_sub_band_ht_blocks(
         return Ok(());
     }
 
-    let code_block_count = count_ht_code_blocks(sub_band_idx, sub_band, storage)?;
+    // Banded Tier-1 runs serially and only visits this code-block row.
+    let code_block_count = if storage.tier1_band.is_some() {
+        0
+    } else {
+        count_ht_code_blocks(sub_band_idx, sub_band, storage)?
+    };
     if !profile_enabled
         && should_decode_ht_sub_band_in_parallel(cpu_decode_parallelism, code_block_count)
     {
@@ -290,11 +295,10 @@ pub(super) fn decode_sub_band_ht_blocks(
         .clone()
         .map(|idx| &storage.precincts[idx])
     {
-        for code_block in precinct
-            .code_blocks
-            .clone()
-            .map(|idx| &storage.code_blocks[idx])
-        {
+        for code_block in tier1_code_blocks(
+            &storage.code_blocks[precinct.code_blocks.clone()],
+            storage.tier1_band,
+        ) {
             if code_block.coding != Some(CodeBlockCoding::HighThroughput) {
                 continue;
             }

@@ -3,7 +3,7 @@
 //! Aggregate planning and reusable-capacity policy for decomposition storage.
 
 use super::{CodeBlock, Decomposition, Layer, Precinct, Segment, SubBand, SCRATCH_PRECINCTS};
-use crate::error::{Result, ValidationError};
+use crate::error::{DecodingError, Result, ValidationError};
 use crate::j2c::decode::{DecompositionStorage, TileDecompositions};
 use crate::j2c::rect::IntRect;
 use crate::j2c::tag_tree::TagNode;
@@ -364,69 +364,115 @@ pub(crate) fn allocate_deferred_coefficients(
         return Ok(());
     };
     let mut live_bytes = storage.structural_workspace_bytes;
-    let mut coefficient_count = 0usize;
-    if storage.roi_plan.is_some() {
+    let coefficient_count = if storage.roi_plan.is_some() {
         checked_include_elements::<f32>(
             &mut live_bytes,
             crate::j2c::idwt::roi_idwt_peak_elements(storage, skipped_resolution_levels)?,
         )?;
-    }
-    if let Some(roi_plan) = storage.roi_plan.as_ref() {
-        // Build stores each component's sub-bands together, starting with its
-        // LL band, so a component starts where its LL band does.
-        let per_component = storage.coefficient_layout == CoefficientLayout::Component;
-        let mut component_starts = storage
-            .tile_decompositions
-            .iter()
-            .map(|component| component.first_ll_sub_band)
-            .peekable();
-        let mut next_offset = 0usize;
-        for (sub_band_idx, sub_band) in storage.sub_bands.iter_mut().enumerate() {
-            if component_starts.next_if_eq(&sub_band_idx).is_some() && per_component {
-                next_offset = 0;
-            }
-            let mut stored: Option<IntRect> = None;
-            for precinct in &storage.precincts[sub_band.precincts.clone()] {
-                for code_block in &storage.code_blocks[precinct.code_blocks.clone()] {
-                    if roi_plan.code_block_required(sub_band_idx, code_block.rect) {
-                        stored = Some(
-                            stored.map_or(code_block.rect, |rect| rect.union(code_block.rect)),
-                        );
-                    }
-                }
-            }
-            let stored = stored
-                .and_then(|stored| {
-                    if !clip_to_idwt_windows {
-                        return Some(stored);
-                    }
-                    roi_plan
-                        .sub_band_window(sub_band_idx)
-                        .filter(|window| window.intersects(stored))
-                        .map(|window| window.intersect(stored))
-                })
-                .unwrap_or_else(|| IntRect::from_xywh(sub_band.rect.x0, sub_band.rect.y0, 0, 0));
-            let count = (stored.width() as usize)
-                .checked_mul(stored.height() as usize)
-                .ok_or(ValidationError::ImageTooLarge)?;
-            let end = next_offset
-                .checked_add(count)
-                .ok_or(ValidationError::ImageTooLarge)?;
-            sub_band.coefficients = next_offset..end;
-            sub_band.storage_rect = stored;
-            next_offset = end;
-            coefficient_count = coefficient_count.max(end);
-        }
+        lay_out_region_coefficients(storage, clip_to_idwt_windows)?
     } else {
-        coefficient_count = storage
+        checked_include_elements::<f32>(&mut live_bytes, idwt_workspace_elements)?;
+        storage
             .sub_bands
             .iter()
             .map(|sub_band| sub_band.coefficients.end)
             .max()
-            .unwrap_or(0);
-        checked_include_elements::<f32>(&mut live_bytes, idwt_workspace_elements)?;
-    }
+            .unwrap_or(0)
+    };
     let mut budget = reuse::ReallocationBudget::from_live_bytes(live_bytes)?;
+    budget.reserve(&mut storage.coefficients, coefficient_count)?;
+    crate::try_resize_decode_elements(&mut storage.coefficients, coefficient_count, 0.0)?;
+    storage.structural_workspace_bytes = budget.live_bytes();
+    Ok(())
+}
+
+/// Give each sub-band of a region decode the coefficient range for its
+/// stored rectangle: the required code-blocks, clipped to the IDWT windows
+/// unless `clip_to_idwt_windows` is false. With banded Tier-1, a range holds
+/// one band of the rectangle's rows. Returns the coefficients the ranges
+/// need.
+fn lay_out_region_coefficients(
+    storage: &mut DecompositionStorage<'_>,
+    clip_to_idwt_windows: bool,
+) -> Result<usize> {
+    let Some(roi_plan) = storage.roi_plan.as_ref() else {
+        return Err(DecodingError::CodeBlockDecodeFailure.into());
+    };
+    let mut coefficient_count = 0usize;
+    // Build stores each component's sub-bands together, starting with its
+    // LL band, so a component starts where its LL band does.
+    let per_component = storage.coefficient_layout == CoefficientLayout::Component;
+    let mut component_starts = storage
+        .tile_decompositions
+        .iter()
+        .map(|component| component.first_ll_sub_band)
+        .peekable();
+    let mut next_offset = 0usize;
+    for (sub_band_idx, sub_band) in storage.sub_bands.iter_mut().enumerate() {
+        if component_starts.next_if_eq(&sub_band_idx).is_some() && per_component {
+            next_offset = 0;
+        }
+        let mut stored: Option<IntRect> = None;
+        for precinct in &storage.precincts[sub_band.precincts.clone()] {
+            for code_block in &storage.code_blocks[precinct.code_blocks.clone()] {
+                if roi_plan.code_block_required(sub_band_idx, code_block.rect) {
+                    stored =
+                        Some(stored.map_or(code_block.rect, |rect| rect.union(code_block.rect)));
+                }
+            }
+        }
+        let stored = stored
+            .and_then(|stored| {
+                if !clip_to_idwt_windows {
+                    return Some(stored);
+                }
+                roi_plan
+                    .sub_band_window(sub_band_idx)
+                    .filter(|window| window.intersects(stored))
+                    .map(|window| window.intersect(stored))
+            })
+            .unwrap_or_else(|| IntRect::from_xywh(sub_band.rect.x0, sub_band.rect.y0, 0, 0));
+        // Banded Tier-1 holds one band of code-block rows at a time: as
+        // many rows as any band shares with the stored rectangle.
+        let rows = if storage.banded_tier1 {
+            storage.precincts[sub_band.precincts.clone()]
+                .iter()
+                .flat_map(|precinct| &storage.code_blocks[precinct.code_blocks.clone()])
+                .map(|code_block| {
+                    code_block
+                        .rect
+                        .y1
+                        .min(stored.y1)
+                        .saturating_sub(code_block.rect.y0.max(stored.y0))
+                })
+                .max()
+                .unwrap_or(0)
+        } else {
+            stored.height()
+        };
+        let count = (stored.width() as usize)
+            .checked_mul(rows as usize)
+            .ok_or(ValidationError::ImageTooLarge)?;
+        let end = next_offset
+            .checked_add(count)
+            .ok_or(ValidationError::ImageTooLarge)?;
+        sub_band.coefficients = next_offset..end;
+        sub_band.storage_rect = stored;
+        next_offset = end;
+        coefficient_count = coefficient_count.max(end);
+    }
+    Ok(coefficient_count)
+}
+
+/// After a banded Tier-1 failed, store every sub-band's whole rectangle
+/// again, within the cap, so Tier-1 can rerun the old way.
+pub(crate) fn lay_out_whole_region_coefficients(
+    storage: &mut DecompositionStorage<'_>,
+) -> Result<()> {
+    storage.banded_tier1 = false;
+    let coefficient_count = lay_out_region_coefficients(storage, true)?;
+    let mut budget =
+        reuse::ReallocationBudget::from_live_bytes(storage.structural_workspace_bytes)?;
     budget.reserve(&mut storage.coefficients, coefficient_count)?;
     crate::try_resize_decode_elements(&mut storage.coefficients, coefficient_count, 0.0)?;
     storage.structural_workspace_bytes = budget.live_bytes();

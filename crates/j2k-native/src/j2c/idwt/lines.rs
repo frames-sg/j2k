@@ -17,7 +17,6 @@
 
 use alloc::vec::Vec;
 
-use super::super::build::Decomposition;
 use super::super::codestream::WaveletTransform;
 use super::super::decode::DecompositionStorage;
 use super::super::rect::IntRect;
@@ -51,10 +50,49 @@ pub(crate) fn ring_samples(
     })
 }
 
+/// Where the streamed IDWT reads the rows of a component's stored sub-bands.
+pub(crate) trait SubBandRows {
+    /// Make row `y` of `sub_band`, in absolute sub-band coordinates,
+    /// readable through [`Self::samples`]. Each sub-band's rows are prepared
+    /// in increasing order.
+    fn prepare_row(&mut self, sub_band: usize, y: u32) -> Result<()>;
+
+    /// The samples of `sub_band` that hold its last prepared row: row-major
+    /// samples, the rectangle they cover and their row stride. Rows outside
+    /// the rectangle read as zero.
+    fn samples(&self, sub_band: usize) -> (&[f32], IntRect, u32);
+}
+
+/// Reads rows straight from sub-bands whose stored rectangles are decoded.
+pub(crate) struct StoredRows<'s, 'a> {
+    pub(crate) storage: &'s DecompositionStorage<'a>,
+}
+
+impl SubBandRows for StoredRows<'_, '_> {
+    fn prepare_row(&mut self, _sub_band: usize, _y: u32) -> Result<()> {
+        Ok(())
+    }
+
+    fn samples(&self, sub_band: usize) -> (&[f32], IntRect, u32) {
+        let sub_band = &self.storage.sub_bands[sub_band];
+        (
+            &self.storage.coefficients[sub_band.coefficients.clone()],
+            sub_band.storage_rect,
+            sub_band.storage_rect.width(),
+        )
+    }
+}
+
+fn source(rows: &dyn SubBandRows, sub_band: usize) -> CoefficientSource<'_> {
+    let (coefficients, rect, stride) = rows.samples(sub_band);
+    CoefficientSource::new(coefficients, rect, stride)
+}
+
 /// One level of the streamed reconstruction.
 struct LevelRows<'r> {
     window: IntRect,
-    decomposition: &'r Decomposition,
+    /// The level's sub-bands, in the order of [`super::super::build::Decomposition`].
+    sub_bands: [usize; 3],
     ring: &'r mut [f32],
     /// Rows interleaved, filtered horizontally and scaled.
     fed: usize,
@@ -91,35 +129,36 @@ impl LevelRows<'_> {
 }
 
 /// What every level reads besides its own LL input.
-struct Inputs<'s, 'a> {
-    storage: &'s DecompositionStorage<'a>,
-    ll_sub_band: CoefficientSource<'s>,
+struct Inputs<'r> {
+    rows: &'r mut dyn SubBandRows,
+    ll_sub_band: usize,
     transform: WaveletTransform,
 }
 
-/// Reconstruct a component's active levels from its stored sub-bands, one
-/// row at a time, and pass each row of the last level inside `copy` to
-/// `write_row`, as its absolute row and its samples from `copy.x0` to
-/// `copy.x1`. `windows` are the levels' IDWT windows from the ROI plan, and
-/// `ring` holds at least [`ring_samples`] of them. Adds the samples it
-/// reconstructs to `output_samples`; rows below the last one any level needs
-/// are never computed.
+/// Reconstruct a component's active levels from its stored sub-bands, read
+/// through `rows`, one row at a time, and pass each row of the last level
+/// inside `copy` to `write_row`, as its absolute row and its samples from
+/// `copy.x0` to `copy.x1`. `windows` are the levels' IDWT windows from the
+/// ROI plan, `sub_bands` their decompositions' sub-bands, and `ring` holds
+/// at least [`ring_samples`] of them. Adds the samples it reconstructs to
+/// `output_samples`; rows below the last one any level needs are never
+/// computed.
 #[expect(
     clippy::too_many_arguments,
     reason = "the streamed IDWT keeps its plan, storage, scratch, and output explicit"
 )]
 pub(super) fn reconstruct_rows(
-    storage: &DecompositionStorage<'_>,
-    decompositions: &[Decomposition],
+    rows: &mut dyn SubBandRows,
+    sub_bands: &[[usize; 3]],
     windows: &[IntRect],
-    ll_sub_band: CoefficientSource<'_>,
+    ll_sub_band: usize,
     transform: WaveletTransform,
     ring: &mut [f32],
     copy: IntRect,
     write_row: &mut dyn FnMut(u32, &[f32]) -> Result<()>,
     output_samples: &mut usize,
 ) -> Result<()> {
-    if windows.is_empty() || windows.len() != decompositions.len() {
+    if windows.is_empty() || windows.len() != sub_bands.len() {
         return Err(DecodingError::CodeBlockDecodeFailure.into());
     }
     let mut levels = Vec::new();
@@ -127,7 +166,7 @@ pub(super) fn reconstruct_rows(
         .try_reserve_exact(windows.len())
         .map_err(|_| DecodingError::HostAllocationFailed)?;
     let mut rest = ring;
-    for (window, decomposition) in windows.iter().zip(decompositions) {
+    for (window, sub_bands) in windows.iter().zip(sub_bands) {
         let len = ring_samples([*window], transform)?;
         if window.is_empty() || rest.len() < len {
             return Err(DecodingError::CodeBlockDecodeFailure.into());
@@ -136,7 +175,7 @@ pub(super) fn reconstruct_rows(
         rest = tail;
         levels.push(LevelRows {
             window: *window,
-            decomposition,
+            sub_bands: *sub_bands,
             ring: level_ring,
             fed: 0,
             finished: [0; 4],
@@ -151,8 +190,8 @@ pub(super) fn reconstruct_rows(
     if copy.x0 < window.x0 || copy.x1 > window.x1 || copy.y0 < window.y0 || copy.y1 > window.y1 {
         return Err(DecodingError::CodeBlockDecodeFailure.into());
     }
-    let inputs = Inputs {
-        storage,
+    let mut inputs = Inputs {
+        rows,
         ll_sub_band,
         transform,
     };
@@ -160,7 +199,7 @@ pub(super) fn reconstruct_rows(
     let result = (|| {
         for y in copy.y0..copy.y1 {
             let row = (y - window.y0) as usize;
-            finish_row(&mut levels, last, row, &inputs)?;
+            finish_row(&mut levels, last, row, &mut inputs)?;
             write_row(y, &levels[last].row(row)[columns.clone()])?;
         }
         Ok(())
@@ -177,7 +216,7 @@ fn finish_row(
     levels: &mut [LevelRows<'_>],
     level: usize,
     row: usize,
-    inputs: &Inputs<'_, '_>,
+    inputs: &mut Inputs<'_>,
 ) -> Result<()> {
     let ring_rows = ring_rows(inputs.transform);
     while levels[level].done(inputs.transform) <= row {
@@ -201,17 +240,30 @@ fn finish_row(
 }
 
 /// Interleave, filter horizontally and scale the next row of `levels[level]`.
-fn feed_row(levels: &mut [LevelRows<'_>], level: usize, inputs: &Inputs<'_, '_>) -> Result<()> {
+fn feed_row(levels: &mut [LevelRows<'_>], level: usize, inputs: &mut Inputs<'_>) -> Result<()> {
     let (lower, upper) = levels.split_at_mut(level);
     let current = &mut upper[0];
     let local = current.fed;
     let y = current.window.y0 + u32::try_from(local).map_err(|_| ValidationError::ImageTooLarge)?;
     let band_y = y / 2;
+    let sub_bands = current.sub_bands;
 
-    // Even rows read the LL band: the stored sub-band for the first level,
-    // otherwise the level below, whose window may not reach this row.
+    // Even rows read the LL band and the first high band, odd rows the other
+    // two, each at row `band_y`.
+    if y.is_multiple_of(2) {
+        if lower.is_empty() {
+            inputs.rows.prepare_row(inputs.ll_sub_band, band_y)?;
+        }
+        inputs.rows.prepare_row(sub_bands[0], band_y)?;
+    } else {
+        inputs.rows.prepare_row(sub_bands[1], band_y)?;
+        inputs.rows.prepare_row(sub_bands[2], band_y)?;
+    }
+
+    // The LL band is the stored sub-band for the first level, otherwise the
+    // level below, whose window may not reach this row.
     let ll = match lower.len().checked_sub(1) {
-        None => inputs.ll_sub_band,
+        None => source(inputs.rows, inputs.ll_sub_band),
         Some(below) => {
             let below_window = lower[below].window;
             if y.is_multiple_of(2) && band_y >= below_window.y0 && band_y < below_window.y1 {
@@ -227,9 +279,7 @@ fn feed_row(levels: &mut [LevelRows<'_>], level: usize, inputs: &Inputs<'_, '_>)
             }
         }
     };
-    let storage = inputs.storage;
-    let band = |index: usize| CoefficientSource::from_sub_band(&storage.sub_bands[index], storage);
-    let sub_bands = current.decomposition.sub_bands;
+    let band = |index: usize| source(inputs.rows, index);
     let window = current.window;
     let height = current.height();
     let width = current.width();

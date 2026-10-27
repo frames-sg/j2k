@@ -231,6 +231,17 @@ fn stored_placement(code_block: &CodeBlock, sub_band: &SubBand) -> BlockPlacemen
     BlockPlacement::new(code_block.rect, sub_band.storage_rect)
 }
 
+/// Code-blocks are built in row order within each precinct. A banded Tier-1
+/// decode visits only the row it is decoding; whole-window paths visit all.
+fn tier1_code_blocks(blocks: &[CodeBlock], band_y0: Option<u32>) -> &[CodeBlock] {
+    let Some(band_y0) = band_y0 else {
+        return blocks;
+    };
+    let start = blocks.partition_point(|block| block.rect.y0 < band_y0);
+    let end = blocks.partition_point(|block| block.rect.y0 <= band_y0);
+    &blocks[start..end]
+}
+
 pub(super) fn code_block_required_by_index(
     storage: &DecompositionStorage<'_>,
     sub_band_idx: usize,

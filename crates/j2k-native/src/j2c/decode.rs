@@ -37,6 +37,7 @@ use core::mem::size_of;
 use core::ops::Range;
 
 mod allocation;
+mod banded_tier1;
 mod direct_plan;
 mod peak;
 mod reuse;
@@ -601,22 +602,13 @@ fn decode_tile<'a>(
         selection.as_ref(),
     )?;
     if tile_ctx.output_region.is_some() {
-        if storage.roi_plan.is_none() {
-            build::release_unused_roi_workspace(storage, tile.component_infos.len())?;
-        }
-        storage.line_region_idwt = tile_ctx.line_region_idwt && storage.roi_plan.is_some();
-        storage.last_idwt_level_in_channels =
-            !storage.line_region_idwt && idwt::last_level_fits_channels(storage, tile_ctx, header)?;
-        // Region decode sizes coefficient storage to the code-blocks the ROI
-        // plan keeps, clipped to the windows the IDWT reads unless a hook
-        // writes whole code-blocks, or to the whole tile when there is no plan.
-        let clip_to_idwt_windows = ht_decoder.is_none();
-        #[cfg(test)]
-        let clip_to_idwt_windows = clip_to_idwt_windows && !tile_ctx.store_whole_code_blocks;
-        build::allocate_deferred_coefficients(
+        prepare_region_storage(
+            tile,
+            header,
+            tile_ctx,
             storage,
-            header.skipped_resolution_levels,
-            clip_to_idwt_windows,
+            ht_decoder.is_some(),
+            cpu_decode_parallelism,
         )?;
     }
     tile_ctx.debug_counters.stored_coefficients += storage.coefficients.len();
@@ -645,6 +637,46 @@ fn decode_tile<'a>(
         profile_enabled,
         profile_timings,
         tile_rows,
+    )?;
+    Ok(())
+}
+
+/// After `build`, choose how a region decode's IDWT and Tier-1 run and size
+/// its coefficient storage to match.
+fn prepare_region_storage(
+    tile: &Tile<'_>,
+    header: &Header<'_>,
+    tile_ctx: &TileDecodeContext,
+    storage: &mut DecompositionStorage<'_>,
+    hooked: bool,
+    cpu_decode_parallelism: CpuDecodeParallelism,
+) -> Result<()> {
+    if storage.roi_plan.is_none() {
+        build::release_unused_roi_workspace(storage, tile.component_infos.len())?;
+    }
+    storage.line_region_idwt = tile_ctx.line_region_idwt && storage.roi_plan.is_some();
+    storage.last_idwt_level_in_channels =
+        !storage.line_region_idwt && idwt::last_level_fits_channels(storage, tile_ctx, header)?;
+    // Region decode sizes coefficient storage to the code-blocks the ROI
+    // plan keeps, clipped to the windows the IDWT reads unless a hook
+    // writes whole code-blocks, or to the whole tile when there is no plan.
+    let clip_to_idwt_windows = !hooked;
+    #[cfg(test)]
+    let clip_to_idwt_windows = clip_to_idwt_windows && !tile_ctx.store_whole_code_blocks;
+    storage.banded_tier1 = banded_tier1::applies(
+        storage,
+        header,
+        cpu_decode_parallelism,
+        clip_to_idwt_windows,
+    );
+    #[cfg(test)]
+    {
+        storage.banded_tier1 &= !tile_ctx.whole_window_tier1;
+    }
+    build::allocate_deferred_coefficients(
+        storage,
+        header.skipped_resolution_levels,
+        clip_to_idwt_windows,
     )?;
     Ok(())
 }
@@ -696,37 +728,52 @@ fn decode_components<'a>(
         tile_ctx.prepare_deferred_plane()?;
     }
     for (idx, component_info) in header.component_infos.iter().enumerate() {
-        if per_component {
-            // Code-blocks the decode skips leave their samples untouched, so
-            // Tier-1 clears the previous component's coefficients first.
-            storage.stale_coefficients = idx > 0;
-            decode_tier1_stage(
+        if storage.banded_tier1 {
+            // Tier-1 decodes each band as the streamed IDWT reaches it.
+            banded_tier1::decode_component(
                 tile,
-                idx..idx + 1,
+                idx,
                 header,
                 tile_ctx,
                 storage,
-                ht_decoder,
-                cpu_decode_parallelism,
+                component_info.wavelet_transform(),
                 profile_enabled,
                 profile_timings,
             )?;
+            record_workspace(tile_ctx, storage, 0)?;
+        } else {
+            if per_component {
+                // Code-blocks the decode skips leave their samples untouched, so
+                // Tier-1 clears the previous component's coefficients first.
+                storage.stale_coefficients = idx > 0;
+                decode_tier1_stage(
+                    tile,
+                    idx..idx + 1,
+                    header,
+                    tile_ctx,
+                    storage,
+                    ht_decoder,
+                    cpu_decode_parallelism,
+                    profile_enabled,
+                    profile_timings,
+                )?;
+            }
+            // Next, we apply the inverse discrete wavelet transform. A last level
+            // left to the pack ends at its LL band.
+            let stage_start = profile::profile_now(profile_enabled);
+            let idwt_result = idwt::apply(
+                storage,
+                tile_ctx,
+                idx,
+                header,
+                component_info.wavelet_transform(),
+                ht_decoder,
+                cpu_decode_parallelism == CpuDecodeParallelism::Auto,
+            );
+            idwt_result?;
+            record_workspace(tile_ctx, storage, 0)?;
+            profile_timings.idwt_us += profile::elapsed_us(stage_start);
         }
-        // Next, we apply the inverse discrete wavelet transform. A last level
-        // left to the pack ends at its LL band.
-        let stage_start = profile::profile_now(profile_enabled);
-        let idwt_result = idwt::apply(
-            storage,
-            tile_ctx,
-            idx,
-            header,
-            component_info.wavelet_transform(),
-            ht_decoder,
-            cpu_decode_parallelism == CpuDecodeParallelism::Auto,
-        );
-        idwt_result?;
-        record_workspace(tile_ctx, storage, 0)?;
-        profile_timings.idwt_us += profile::elapsed_us(stage_start);
         // Finally, we store the raw samples for the tile area in the correct
         // location. Note that in case we have MCT, we are not applying it yet.
         // It will be applied in the very end once all tiles have been processed.
@@ -1053,7 +1100,7 @@ impl Iterator for SubBandIter {
 #[derive(Default)]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "the integer, stale-plane, in-channel last level and row-streamed IDWT switches are independent"
+    reason = "the integer, stale-plane, in-channel last level, row-streamed IDWT and banded Tier-1 switches are independent"
 )]
 pub(crate) struct DecompositionStorage<'a> {
     pub(crate) segments: Vec<Segment<'a>>,
@@ -1078,6 +1125,14 @@ pub(crate) struct DecompositionStorage<'a> {
     pub(crate) last_idwt_level_in_channels: bool,
     /// Whether the region IDWT streams this tile's levels a row at a time.
     pub(crate) line_region_idwt: bool,
+    /// Whether Tier-1 decodes each component in bands of code-block rows as
+    /// the streamed IDWT reaches them. Each sub-band's `coefficients` then
+    /// hold one band of its stored rectangle's rows.
+    pub(crate) banded_tier1: bool,
+    /// While a band is decoded, the first row of its code-blocks: Tier-1
+    /// decodes only the code-blocks that start there, into the rows the
+    /// sub-band's `storage_rect` then names.
+    pub(crate) tier1_band: Option<u32>,
     /// Planned non-segment live bytes for the active tile and future decode scratch.
     pub(crate) structural_workspace_bytes: usize,
     /// Set when region decode deferred coefficient storage until the ROI
@@ -1108,6 +1163,8 @@ impl DecompositionStorage<'_> {
         self.stale_coefficients = false;
         self.last_idwt_level_in_channels = false;
         self.line_region_idwt = false;
+        self.banded_tier1 = false;
+        self.tier1_band = None;
         self.structural_workspace_bytes = 0;
         self.deferred_idwt_workspace_elements = None;
         self.packet_workspace_error = None;
@@ -1192,6 +1249,14 @@ pub(crate) struct TileDecodeContext {
     /// hooked decode does, so clipped storage can be compared against it.
     #[cfg(test)]
     pub(crate) store_whole_code_blocks: bool,
+    /// Test-only switch that decodes Tier-1 over whole windows before the
+    /// streamed IDWT, as a parallel decode does, so banded Tier-1 can be
+    /// compared against it.
+    #[cfg(test)]
+    pub(crate) whole_window_tier1: bool,
+    /// Test-only capacity failure when building the optional band row index.
+    #[cfg(test)]
+    pub(crate) reject_band_index: bool,
     /// Test-only switch that keeps the region IDWT's last level in its own
     /// window, as a hooked decode does, so writing it into `channel_data`
     /// can be compared against it.
@@ -1250,6 +1315,10 @@ impl TileDecodeContext {
         #[cfg(test)]
         let store_whole_code_blocks = self.store_whole_code_blocks;
         #[cfg(test)]
+        let whole_window_tier1 = self.whole_window_tier1;
+        #[cfg(test)]
+        let reject_band_index = self.reject_band_index;
+        #[cfg(test)]
         let separate_last_idwt_level = self.separate_last_idwt_level;
         #[cfg(test)]
         let staged_rgb8_pack = self.staged_rgb8_pack;
@@ -1266,6 +1335,8 @@ impl TileDecodeContext {
         #[cfg(test)]
         {
             self.store_whole_code_blocks = store_whole_code_blocks;
+            self.whole_window_tier1 = whole_window_tier1;
+            self.reject_band_index = reject_band_index;
             self.separate_last_idwt_level = separate_last_idwt_level;
             self.staged_rgb8_pack = staged_rgb8_pack;
         }
