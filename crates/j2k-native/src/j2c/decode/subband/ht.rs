@@ -201,12 +201,13 @@ pub(super) fn decode_sub_band_ht_blocks(
         return Ok(());
     }
 
-    // Banded Tier-1 runs serially and only visits this code-block row.
-    let code_block_count = if storage.tier1_band.is_some() {
-        0
-    } else {
-        count_ht_code_blocks(sub_band_idx, sub_band, storage)?
-    };
+    // Only unprofiled Auto can choose parallel decoding; serial decodes need no count.
+    let code_block_count =
+        if !profile_enabled && cpu_decode_parallelism == CpuDecodeParallelism::Auto {
+            count_ht_code_blocks(sub_band_idx, sub_band, storage)?
+        } else {
+            0
+        };
     if !profile_enabled
         && should_decode_ht_sub_band_in_parallel(cpu_decode_parallelism, code_block_count)
     {

@@ -229,12 +229,11 @@ pub(super) fn decode_sub_band_classic_blocks(
         return Ok(());
     }
 
-    // The banded caller is serial; counting the whole sub-band for every band
-    // would repeat the scan that banding is meant to avoid.
-    let code_block_count = if storage.tier1_band.is_some() {
-        0
-    } else {
+    // Only Auto can choose parallel decoding; serial decodes need no count.
+    let code_block_count = if cpu_decode_parallelism == CpuDecodeParallelism::Auto {
         count_classic_code_blocks(sub_band_idx, sub_band, storage)?
+    } else {
+        0
     };
     if should_decode_classic_sub_band_in_parallel(cpu_decode_parallelism, code_block_count) {
         #[cfg(feature = "parallel")]
