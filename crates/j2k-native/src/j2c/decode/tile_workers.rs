@@ -21,7 +21,7 @@ use super::store::{store_rect, TileRows};
 use super::{
     decode_tile, tile_requires_exact_integer_decode, CpuDecodeParallelism, DecodeAllocationBudget,
     DecodeDebugCounters, DecodeProfileTimings, DecompositionStorage, Header, Tile,
-    TileDecodeContext, WorkspaceBytes,
+    TileDecodeContext, TileOutput, WorkspaceBytes,
 };
 use crate::j2c::rect::IntRect;
 use crate::DEFAULT_MAX_DECODE_BYTES;
@@ -129,7 +129,7 @@ pub(super) fn decode_tiles(
                         false,
                         &mut DecodeProfileTimings::default(),
                         worker_baseline,
-                        Some(&mut job),
+                        TileOutput::Rows(&mut job),
                     )
                     .is_ok()
                 });

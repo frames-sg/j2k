@@ -174,7 +174,7 @@ pub use color::{
     NativeComponentPlane, RawBitmap,
 };
 #[doc(hidden)]
-pub use color::{ComponentPlaneParts, NativeComponentPlaneParts};
+pub use color::{ComponentPlaneParts, ComponentRowSink, NativeComponentPlaneParts};
 #[doc(hidden)]
 pub use color::{DecodedComponentsParts, DecodedNativeComponentsParts};
 #[doc(hidden)]

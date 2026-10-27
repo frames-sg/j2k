@@ -25,10 +25,10 @@ pub(crate) use direct::apply_codestream_single_decomposition_idwt_job;
 pub(crate) use direct::apply_single_decomposition_idwt_job;
 #[cfg(test)]
 pub(crate) use horizontal::test_irreversible_filter_97i;
-pub(crate) use lines::SubBandRows;
+pub(crate) use lines::{LineReconstruction, SubBandRows};
 pub(crate) use model::{idwt_buffer_size, IDWTOutput, IdwtPlacement};
 pub(crate) use orchestrate::apply;
-pub(crate) use roi::{last_level_fits_channels, roi_idwt_peak_elements, ComponentLines};
+pub(crate) use roi::{last_level_fits_channels, roi_idwt_peak_elements, ComponentLines, LinePlan};
 
 // Decoded high-pass sub-bands include JPEG 2000's orientation gain. OpenJPEG's
 // synthesis constant is therefore halved at this internal codestream boundary.

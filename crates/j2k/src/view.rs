@@ -393,6 +393,9 @@ impl<'a> J2kDecoder<'a> {
     /// # Errors
     /// Returns [`J2kError`] when the region is out of bounds, the output buffer
     /// is too small, the format is unsupported, or decode fails.
+    ///
+    /// A decode that fails partway may already have written some rows of
+    /// `out`.
     pub fn decode_region_into(
         &mut self,
         _pool: &mut J2kScratchPool,
@@ -476,6 +479,9 @@ impl<'a> J2kDecoder<'a> {
     /// pixel format is unsupported (including a scale deeper than the
     /// codestream's resolution ladder), the output buffer is too small, or
     /// decode fails.
+    ///
+    /// A decode that fails partway may already have written some rows of
+    /// `out`.
     pub fn decode_region_scaled_into(
         &mut self,
         pool: &mut J2kScratchPool,

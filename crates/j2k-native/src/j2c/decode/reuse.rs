@@ -78,7 +78,9 @@ impl DecoderContext<'_> {
         first_result: Result<T>,
         retry: impl FnOnce(&mut Self) -> Result<T>,
     ) -> Result<T> {
-        if retained_scratch_bytes == 0 {
+        // Rows a sink has already received can't be taken back, so a decode
+        // that streamed any isn't run again.
+        if retained_scratch_bytes == 0 || self.tile_decode_context.streamed_samples > 0 {
             return first_result;
         }
         match first_result {
@@ -162,7 +164,12 @@ impl TileDecodeContext {
             ),
             super::OutputRegion::dimensions,
         );
-        let sample_count = checked_decode_sample_count(output_width, output_height)?;
+        // A decode that streams its rows to a sink keeps no planes.
+        let sample_count = if self.stream_rows {
+            0
+        } else {
+            checked_decode_sample_count(output_width, output_height)?
+        };
         let capacity_samples = match last_idwt_level_padding {
             Some((width, height)) => checked_decode_sample_count(width, height)?,
             None => sample_count,
@@ -632,6 +639,31 @@ mod tests {
             0
         );
         assert_eq!(context.workspace_stats().scratch_capacity_retries(), 1);
+    }
+
+    #[test]
+    fn capacity_failure_after_streamed_rows_is_not_retried() {
+        let mut context = super::DecoderContext::default();
+        context
+            .tile_decode_context
+            .idwt_scratch_buffer
+            .try_reserve_exact(8)
+            .expect("reserve deterministic retained scratch");
+        let scratch_bytes = context
+            .tile_decode_context
+            .retained_scratch_bytes()
+            .expect("scratch capacity bytes");
+        context.tile_decode_context.streamed_samples = 1;
+        let first_result = context.prepare_reused_decode_baseline_with_cap(0, scratch_bytes - 1);
+        let result =
+            context.retry_without_retained_scratch_on_capacity(scratch_bytes, first_result, |_| {
+                panic!("a decode that reached the sink must not rerun")
+            });
+        assert!(matches!(
+            result,
+            Err(DecodeError::AllocationTooLarge { .. })
+        ));
+        assert_eq!(context.workspace_stats().scratch_capacity_retries(), 0);
     }
 
     #[test]

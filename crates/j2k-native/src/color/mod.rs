@@ -19,9 +19,9 @@ pub(crate) use cielab::cielab_to_rgb;
 pub(crate) use metadata::{resolve_alpha_and_color_space, validate_and_reorder_channels};
 pub(crate) use output_planes::native_component_plane_dimensions;
 pub use output_planes::{
-    ComponentPlane, ComponentPlaneParts, DecodedComponents, DecodedComponentsParts,
-    DecodedNativeComponents, DecodedNativeComponentsParts, NativeComponentPlane,
-    NativeComponentPlaneParts,
+    ComponentPlane, ComponentPlaneParts, ComponentRowSink, DecodedComponents,
+    DecodedComponentsParts, DecodedNativeComponents, DecodedNativeComponentsParts,
+    NativeComponentPlane, NativeComponentPlaneParts,
 };
 pub(crate) use packing::{
     interleave_and_convert_after_mct, interleave_and_convert_region,

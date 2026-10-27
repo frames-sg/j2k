@@ -16,7 +16,7 @@ mod settings;
 mod srgb8;
 use output::{
     can_decode_u8_directly, expand_rgb8_to_rgba8, write_components_u16_output,
-    write_components_u8_output, write_u16_output, write_u8_output,
+    write_components_u8_output, write_u16_output, write_u8_output, U8RowSink,
 };
 pub use settings::DecodeSettings;
 pub(crate) use srgb8::decode_image_srgb8;
@@ -140,13 +140,18 @@ pub(crate) fn decode_image_region_into_with_native_context<'a>(
 ) -> Result<(), J2kError> {
     match fmt {
         PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Gray8 => {
-            let components = image
-                .decode_region_components_for_integer_output_with_context(
+            // A serial decode writes rows as they are finished instead of
+            // holding the region's component planes. A decode that fails
+            // may have written some of them.
+            let mut sink = U8RowSink::new(image.color_space(), image.has_alpha(), out, stride, fmt);
+            image
+                .decode_region_rows_for_integer_output_with_context(
                     (roi.x, roi.y, roi.w, roi.h),
                     native_context,
+                    &mut sink,
                 )
                 .map_err(J2kError::from_native_decode_error)?;
-            write_components_u8_output(&components, out, stride, fmt)
+            sink.finish()
         }
         PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16 => {
             let raw = image

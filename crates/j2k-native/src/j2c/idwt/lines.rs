@@ -158,56 +158,111 @@ pub(super) fn reconstruct_rows(
     write_row: &mut dyn FnMut(u32, &[f32]) -> Result<()>,
     output_samples: &mut usize,
 ) -> Result<()> {
-    if windows.is_empty() || windows.len() != sub_bands.len() {
-        return Err(DecodingError::CodeBlockDecodeFailure.into());
-    }
-    let mut levels = Vec::new();
-    levels
-        .try_reserve_exact(windows.len())
-        .map_err(|_| DecodingError::HostAllocationFailed)?;
-    let mut rest = ring;
-    for (window, sub_bands) in windows.iter().zip(sub_bands) {
-        let len = ring_samples([*window], transform)?;
-        if window.is_empty() || rest.len() < len {
-            return Err(DecodingError::CodeBlockDecodeFailure.into());
-        }
-        let (level_ring, tail) = core::mem::take(&mut rest).split_at_mut(len);
-        rest = tail;
-        levels.push(LevelRows {
-            window: *window,
-            sub_bands: *sub_bands,
-            ring: level_ring,
-            fed: 0,
-            finished: [0; 4],
-        });
-    }
-
-    let last = levels.len() - 1;
-    let window = levels[last].window;
-    if copy.is_empty() {
-        return Ok(());
-    }
-    if copy.x0 < window.x0 || copy.x1 > window.x1 || copy.y0 < window.y0 || copy.y1 > window.y1 {
-        return Err(DecodingError::CodeBlockDecodeFailure.into());
-    }
-    let mut inputs = Inputs {
-        rows,
-        ll_sub_band,
-        transform,
-    };
-    let columns = (copy.x0 - window.x0) as usize..(copy.x1 - window.x0) as usize;
+    let mut lines =
+        LineReconstruction::new(sub_bands, windows, ll_sub_band, transform, ring, copy)?;
     let result = (|| {
-        for y in copy.y0..copy.y1 {
-            let row = (y - window.y0) as usize;
-            finish_row(&mut levels, last, row, &mut inputs)?;
-            write_row(y, &levels[last].row(row)[columns.clone()])?;
+        while let Some((y, row)) = lines.next_row(rows)? {
+            write_row(y, row)?;
         }
         Ok(())
     })();
-    for level in &levels {
-        *output_samples = output_samples.saturating_add(level.fed.saturating_mul(level.width()));
-    }
+    *output_samples = output_samples.saturating_add(lines.output_samples());
     result
+}
+
+/// [`reconstruct_rows`] one row at a time, so that several components can
+/// advance together.
+pub(crate) struct LineReconstruction<'r> {
+    levels: Vec<LevelRows<'r>>,
+    ll_sub_band: usize,
+    transform: WaveletTransform,
+    /// The rows of the last level still to return.
+    rows: core::ops::Range<u32>,
+    columns: core::ops::Range<usize>,
+}
+
+impl<'r> LineReconstruction<'r> {
+    /// Plan the reconstruction that [`reconstruct_rows`] describes.
+    pub(crate) fn new(
+        sub_bands: &[[usize; 3]],
+        windows: &[IntRect],
+        ll_sub_band: usize,
+        transform: WaveletTransform,
+        ring: &'r mut [f32],
+        copy: IntRect,
+    ) -> Result<Self> {
+        if windows.is_empty() || windows.len() != sub_bands.len() {
+            return Err(DecodingError::CodeBlockDecodeFailure.into());
+        }
+        let mut levels = Vec::new();
+        levels
+            .try_reserve_exact(windows.len())
+            .map_err(|_| DecodingError::HostAllocationFailed)?;
+        let mut rest = ring;
+        for (window, sub_bands) in windows.iter().zip(sub_bands) {
+            let len = ring_samples([*window], transform)?;
+            if window.is_empty() || rest.len() < len {
+                return Err(DecodingError::CodeBlockDecodeFailure.into());
+            }
+            let (level_ring, tail) = core::mem::take(&mut rest).split_at_mut(len);
+            rest = tail;
+            levels.push(LevelRows {
+                window: *window,
+                sub_bands: *sub_bands,
+                ring: level_ring,
+                fed: 0,
+                finished: [0; 4],
+            });
+        }
+
+        let window = levels[levels.len() - 1].window;
+        let (rows, columns) = if copy.is_empty() {
+            (0..0, 0..0)
+        } else if copy.x0 < window.x0
+            || copy.x1 > window.x1
+            || copy.y0 < window.y0
+            || copy.y1 > window.y1
+        {
+            return Err(DecodingError::CodeBlockDecodeFailure.into());
+        } else {
+            (
+                copy.y0..copy.y1,
+                (copy.x0 - window.x0) as usize..(copy.x1 - window.x0) as usize,
+            )
+        };
+        Ok(Self {
+            levels,
+            ll_sub_band,
+            transform,
+            rows,
+            columns,
+        })
+    }
+
+    /// The next row of the last level inside the copy rectangle, as its
+    /// absolute row and its samples, or `None` after the last one. The
+    /// samples stay valid until the next call.
+    pub(crate) fn next_row(&mut self, rows: &mut dyn SubBandRows) -> Result<Option<(u32, &[f32])>> {
+        let Some(y) = self.rows.next() else {
+            return Ok(None);
+        };
+        let last = self.levels.len() - 1;
+        let row = (y - self.levels[last].window.y0) as usize;
+        let mut inputs = Inputs {
+            rows,
+            ll_sub_band: self.ll_sub_band,
+            transform: self.transform,
+        };
+        finish_row(&mut self.levels, last, row, &mut inputs)?;
+        Ok(Some((y, &self.levels[last].row(row)[self.columns.clone()])))
+    }
+
+    /// The samples reconstructed so far, over every level.
+    pub(crate) fn output_samples(&self) -> usize {
+        self.levels.iter().fold(0usize, |total, level| {
+            total.saturating_add(level.fed.saturating_mul(level.width()))
+        })
+    }
 }
 
 /// Advance `levels[level]` until `row` of its window is final. Rows must be

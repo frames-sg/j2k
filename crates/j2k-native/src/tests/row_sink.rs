@@ -1,0 +1,358 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! A serial region decode on the streamed IDWT hands its rows to a row sink
+//! as they are finished, with every component decoded together and no
+//! component planes. Its samples must match the planes bit for bit, every
+//! sample must arrive once, and it must hold less.
+
+use alloc::vec::Vec;
+
+use super::banded_tier1::{cases, noisy_pixels, Case, HEIGHT, TILE, WIDTH};
+use crate::{
+    encode, ComponentPlane, ComponentRowSink, CpuDecodeParallelism, DecodeSettings, DecoderContext,
+    EncodeOptions, Image,
+};
+
+/// Collects what a sink receives into region-sized planes of sample bits,
+/// counting how often each sample arrives.
+struct CollectingSink {
+    width: usize,
+    planes: Vec<Vec<u32>>,
+    arrivals: Vec<u8>,
+    depths: Vec<(u8, bool)>,
+}
+
+impl CollectingSink {
+    fn new(width: u32, height: u32) -> Self {
+        let samples = (width * height) as usize;
+        Self {
+            width: width as usize,
+            planes: Vec::new(),
+            arrivals: alloc::vec![0; samples],
+            depths: Vec::new(),
+        }
+    }
+}
+
+impl ComponentRowSink for CollectingSink {
+    fn write_rows(&mut self, x: u32, y: u32, planes: &[ComponentPlane<'_>]) {
+        let samples = self.arrivals.len();
+        if self.planes.is_empty() {
+            self.planes = alloc::vec![alloc::vec![0; samples]; planes.len()];
+            self.depths = planes
+                .iter()
+                .map(|plane| (plane.bit_depth(), plane.signed()))
+                .collect();
+        }
+        assert_eq!(planes.len(), self.planes.len());
+        let (width, height) = planes[0].dimensions();
+        for (component, plane) in planes.iter().enumerate() {
+            assert_eq!(plane.dimensions(), (width, height));
+            assert_eq!((plane.bit_depth(), plane.signed()), self.depths[component]);
+            for row in 0..height as usize {
+                for column in 0..width as usize {
+                    let at = (y as usize + row) * self.width + x as usize + column;
+                    self.planes[component][at] =
+                        plane.samples()[row * width as usize + column].to_bits();
+                    if component == 0 {
+                        self.arrivals[at] += 1;
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct Decoded {
+    planes: Vec<Vec<u32>>,
+    depths: Vec<(u8, bool)>,
+    streamed: bool,
+    channel_bytes: usize,
+    peak_bytes: usize,
+}
+
+fn decode_planes(image: &Image<'_>, roi: (u32, u32, u32, u32)) -> Decoded {
+    let mut context = DecoderContext::default();
+    context.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
+    let components = image
+        .decode_region_components_for_integer_output_with_context(roi, &mut context)
+        .expect("decode region planes");
+    let planes = components
+        .planes()
+        .iter()
+        .map(|plane| {
+            plane.samples()[..(roi.2 * roi.3) as usize]
+                .iter()
+                .map(|sample| sample.to_bits())
+                .collect()
+        })
+        .collect();
+    let depths = components
+        .planes()
+        .iter()
+        .map(|plane| (plane.bit_depth(), plane.signed()))
+        .collect();
+    drop(components);
+    let peak = context
+        .tile_decode_context
+        .debug_counters
+        .workspace_peak
+        .bytes();
+    if std::env::var_os("ROW_SINK_DEBUG").is_some() {
+        std::eprintln!("planes {roi:?} {peak:?}");
+    }
+    Decoded {
+        planes,
+        depths,
+        streamed: false,
+        channel_bytes: peak.channels,
+        peak_bytes: peak.total(),
+    }
+}
+
+fn decode_rows(
+    image: &Image<'_>,
+    roi: (u32, u32, u32, u32),
+    parallelism: CpuDecodeParallelism,
+) -> Decoded {
+    let mut context = DecoderContext::default();
+    context.set_cpu_decode_parallelism(parallelism);
+    let mut sink = CollectingSink::new(roi.2, roi.3);
+    image
+        .decode_region_rows_for_integer_output_with_context(roi, &mut context, &mut sink)
+        .expect("decode region rows");
+    assert!(
+        sink.arrivals.iter().all(|&count| count == 1),
+        "every sample arrives once"
+    );
+    let peak = context
+        .tile_decode_context
+        .debug_counters
+        .workspace_peak
+        .bytes();
+    if std::env::var_os("ROW_SINK_DEBUG").is_some() {
+        std::eprintln!("rows {roi:?} {peak:?}");
+    }
+    Decoded {
+        planes: sink.planes,
+        depths: sink.depths,
+        streamed: context.tile_decode_context.stream_rows,
+        channel_bytes: peak.channels,
+        peak_bytes: peak.total(),
+    }
+}
+
+fn row_sink_cases() -> Vec<Case> {
+    let mut cases = cases();
+    let base = EncodeOptions {
+        num_decomposition_levels: 4,
+        ..EncodeOptions::default()
+    };
+    cases.push(Case {
+        label: "rgba 9/7",
+        components: 4,
+        options: EncodeOptions {
+            reversible: false,
+            ..base.clone()
+        },
+    });
+    cases.push(Case {
+        label: "rgb 5/3 without MCT, tiled",
+        components: 3,
+        options: EncodeOptions {
+            reversible: true,
+            use_mct: false,
+            tile_size: Some((TILE, TILE)),
+            ..base.clone()
+        },
+    });
+    cases.push(Case {
+        label: "gray 9/7, 2 layers",
+        components: 1,
+        options: EncodeOptions {
+            reversible: false,
+            num_layers: 2,
+            ..base
+        },
+    });
+    cases
+}
+
+#[test]
+fn row_sink_matches_component_planes_bit_for_bit() {
+    for case in row_sink_cases() {
+        let pixels = noisy_pixels(case.components);
+        let bytes = encode(
+            &pixels,
+            WIDTH,
+            HEIGHT,
+            u16::from(case.components),
+            8,
+            false,
+            &case.options,
+        )
+        .expect("encode row sink fixture");
+        for reduction in [0_u8, 1, 2] {
+            let image = Image::new_with_reduction(&bytes, &DecodeSettings::default(), reduction)
+                .expect("parse row sink fixture");
+            let (width, height) = (image.width(), image.height());
+            let tile = TILE >> reduction;
+            let large = (
+                width / 20,
+                height / 20,
+                width - width / 10,
+                height - height / 10,
+            );
+            for roi in [
+                (0, 0, width, height),
+                large,
+                (width / 3, height / 3, width / 7, height / 9),
+                (tile + 1, tile + 2, tile - 3, tile - 4),
+                (tile - 5, tile - 3, 11, 7),
+                (0, 0, width, 9),
+                (0, height - 9, width, 9),
+                (width - 1, height - 1, 1, 1),
+            ] {
+                let label = format!("{} reduction={reduction} roi={roi:?}", case.label);
+                let planes = decode_planes(&image, roi);
+                let rows = decode_rows(&image, roi, CpuDecodeParallelism::Serial);
+                assert!(rows.streamed, "{label}: streamed");
+                assert_eq!(rows.depths, planes.depths, "{label}");
+                assert_eq!(rows.planes.len(), planes.planes.len(), "{label}");
+                for (component, (rows, planes)) in
+                    rows.planes.iter().zip(&planes.planes).enumerate()
+                {
+                    let first = rows.iter().zip(planes).position(|(a, b)| a != b);
+                    assert_eq!(first, None, "{label}: component {component}");
+                }
+                // Only the component records, with no samples.
+                assert!(rows.channel_bytes <= 256, "{label}: no planes");
+                // Every component's bands are live together, which costs more
+                // than small planes save; on a large region the planes win.
+                assert!(
+                    roi != large || reduction != 0 || rows.peak_bytes < planes.peak_bytes,
+                    "{label}: peak {} vs {}",
+                    rows.peak_bytes,
+                    planes.peak_bytes
+                );
+                // A parallel decode keeps its planes and hands them over at
+                // the end.
+                let parallel = decode_rows(&image, roi, CpuDecodeParallelism::Auto);
+                #[cfg(feature = "parallel")]
+                if rayon::current_num_threads() > 1 {
+                    assert!(!parallel.streamed, "{label}: parallel planes");
+                }
+                assert_eq!(parallel.planes, planes.planes, "{label}: parallel");
+            }
+        }
+    }
+}
+
+/// Outcome of a serial region decode, through the planes or the row sink:
+/// a hash of the samples, or the error.
+fn outcome(bytes: &[u8], strict: bool, roi: (u32, u32, u32, u32), rows: bool) -> String {
+    let settings = DecodeSettings {
+        strict,
+        ..DecodeSettings::default()
+    };
+    let image = match Image::new(bytes, &settings) {
+        Ok(image) => image,
+        Err(error) => return format!("parse {error:?}"),
+    };
+    let mut context = DecoderContext::default();
+    context.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
+    let hash = |planes: &[Vec<u32>]| {
+        planes
+            .iter()
+            .flatten()
+            .fold(0xcbf2_9ce4_8422_2325_u64, |hash, &bits| {
+                (hash ^ u64::from(bits)).wrapping_mul(0x0100_0000_01b3)
+            })
+    };
+    if rows {
+        let mut sink = CollectingSink::new(roi.2, roi.3);
+        match image.decode_region_rows_for_integer_output_with_context(roi, &mut context, &mut sink)
+        {
+            Ok(()) => format!("ok {:016x}", hash(&sink.planes)),
+            Err(error) => format!("decode {error:?}"),
+        }
+    } else {
+        match image.decode_region_components_for_integer_output_with_context(roi, &mut context) {
+            Ok(components) => {
+                let planes: Vec<Vec<u32>> = components
+                    .planes()
+                    .iter()
+                    .map(|plane| {
+                        plane.samples()[..(roi.2 * roi.3) as usize]
+                            .iter()
+                            .map(|sample| sample.to_bits())
+                            .collect()
+                    })
+                    .collect();
+                format!("ok {:016x}", hash(&planes))
+            }
+            Err(error) => format!("decode {error:?}"),
+        }
+    }
+}
+
+#[test]
+fn row_sink_rejects_corrupt_code_blocks_as_component_planes_do() {
+    // Small code-blocks give each component many bands, and the components
+    // decode together, so two corrupt blocks often fail in a different order
+    // than the planes path decodes them.
+    const SIZE: u32 = 48;
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let pixels: Vec<u8> = (0..SIZE * SIZE * 3).map(|_| (next() >> 56) as u8).collect();
+    for use_ht_block_coding in [false, true] {
+        let bytes = encode(
+            &pixels,
+            SIZE,
+            SIZE,
+            3,
+            8,
+            false,
+            &EncodeOptions {
+                reversible: true,
+                num_decomposition_levels: 2,
+                code_block_width_exp: 0,
+                code_block_height_exp: 0,
+                num_layers: 2,
+                use_ht_block_coding,
+                ..EncodeOptions::default()
+            },
+        )
+        .expect("encode corrupt-block fixture");
+        let mut failures = 0;
+        for iteration in 0..300 {
+            let mut mutant = bytes.clone();
+            for _ in 0..=next() % 4 {
+                let span = u64::try_from(mutant.len() - 120).expect("fixture length");
+                let at = 120 + usize::try_from(next() % span).expect("offset in the fixture");
+                mutant[at] ^= 1 << (next() % 8);
+            }
+            for strict in [false, true] {
+                let roi = [(0, 0, SIZE, SIZE), (30, 30, 18, 18), (5, 9, 13, 7)]
+                    [usize::try_from(next() % 3).expect("region index")];
+                let planes = outcome(&mutant, strict, roi, false);
+                let rows = outcome(&mutant, strict, roi, true);
+                assert_eq!(
+                    rows, planes,
+                    "ht={use_ht_block_coding} iteration={iteration} strict={strict} roi={roi:?}"
+                );
+                failures += usize::from(planes.starts_with("decode"));
+            }
+        }
+        // The mutants must reach Tier-1 failures for the check to mean much.
+        assert!(
+            failures > 20,
+            "ht={use_ht_block_coding}: {failures} failures"
+        );
+    }
+}

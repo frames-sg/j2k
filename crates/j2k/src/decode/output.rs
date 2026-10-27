@@ -8,4 +8,5 @@ mod u8;
 pub(super) use u16::{write_components_u16_output, write_u16_output};
 pub(super) use u8::{
     can_decode_u8_directly, expand_rgb8_to_rgba8, write_components_u8_output, write_u8_output,
+    U8RowSink,
 };

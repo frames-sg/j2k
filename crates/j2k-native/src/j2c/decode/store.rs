@@ -133,6 +133,46 @@ pub(super) fn apply_inverse_mct_per_tile(
     Ok(())
 }
 
+/// Transform one row of each component of `tile` as a region decode's
+/// planes are transformed after the streamed IDWT writes them, with the
+/// tile's own components: the level shift and rounding `store` applies, and
+/// with an inverse MCT, the transform of the first three components and the
+/// shift after it, as in [`apply_inverse_mct_per_tile`].
+pub(super) fn transform_streamed_rows(
+    tile: &Tile<'_>,
+    round_irreversible_output: bool,
+    rows: &mut [&mut [f32]],
+) -> Result<()> {
+    if !tile.mct {
+        for (row, component_info) in rows.iter_mut().zip(&tile.component_infos) {
+            SampleShift::new(
+                component_unsigned_level_shift(component_info),
+                component_info.wavelet_transform(),
+                round_irreversible_output,
+            )
+            .apply(row);
+        }
+        return Ok(());
+    }
+    let [r, g, b, extra @ ..] = rows else {
+        bail!(DecodingError::CodeBlockDecodeFailure);
+    };
+    super::mct::apply_inverse_rows(
+        &tile.component_infos,
+        round_irreversible_output,
+        (&mut **r, &mut **g, &mut **b),
+    );
+    for (row, component_info) in extra.iter_mut().zip(&tile.component_infos[3..]) {
+        apply_float_sign_shift(
+            row,
+            component_unsigned_level_shift(component_info),
+            component_info.wavelet_transform(),
+            round_irreversible_output,
+        );
+    }
+    Ok(())
+}
+
 fn plane_row<'p>(plane: &'p mut ComponentData, row: &Range<usize>) -> Result<&'p mut [f32]> {
     Ok(plane
         .container
@@ -532,6 +572,7 @@ pub(super) struct TileRows<'p> {
 /// The plane rectangle the 1x1 fast path of [`store`] writes for one
 /// component of `tile`, or `None` when the decode skips more resolution
 /// levels than the component has.
+#[cfg(feature = "parallel")]
 pub(super) fn store_rect(
     tile: &Tile<'_>,
     component_info: &ComponentInfo,
@@ -557,6 +598,7 @@ pub(super) fn store_rect(
 /// Store one component of `tile` into `rows` as the 1x1 fast path of
 /// [`store`] would. Fails before writing unless the IDWT output covers
 /// exactly the planned rectangle.
+#[cfg(feature = "parallel")]
 pub(super) fn store_rows(
     rows: &mut TileRows<'_>,
     tile: &Tile<'_>,

@@ -22,12 +22,14 @@ use super::{
     DecodeAllocationBudget, DecodeProfileTimings, DecompositionStorage, Header, Result, Tile,
     TileDecodeContext,
 };
+use super::{record_workspace, store};
 use crate::error::{DecodeError, DecodingError, ValidationError};
 use crate::j2c::build;
 use crate::j2c::codestream::WaveletTransform;
-use crate::j2c::idwt::{ComponentLines, SubBandRows};
+use crate::j2c::idwt::{ComponentLines, LinePlan, LineReconstruction, SubBandRows};
 use crate::j2c::rect::IntRect;
 use crate::profile;
+use crate::{try_resize_decode_elements, ComponentPlane, ComponentRowSink};
 
 /// Whether a tile's Tier-1 decodes in bands: it feeds the streamed IDWT, in
 /// stored windows clipped to it, on the calling thread alone, so banding
@@ -46,7 +48,7 @@ pub(super) fn applies(
         })
 }
 
-fn tier1_runs_serially(parallelism: CpuDecodeParallelism) -> bool {
+pub(super) fn tier1_runs_serially(parallelism: CpuDecodeParallelism) -> bool {
     #[cfg(feature = "parallel")]
     {
         parallelism != CpuDecodeParallelism::Auto || rayon::current_num_threads() < 2
@@ -103,6 +105,294 @@ pub(super) fn decode_component<'a>(
     })
 }
 
+/// Decode every component of a banded tile together and hand the region's
+/// rows to `sink` as they are finished: each output row of every component,
+/// transformed as [`store::transform_streamed_rows`] transforms the planes,
+/// then the bands the IDWT never reached.
+pub(super) fn decode_tile_rows<'a>(
+    tile: &Tile<'a>,
+    header: &Header<'_>,
+    tile_ctx: &mut TileDecodeContext,
+    storage: &mut DecompositionStorage<'a>,
+    sink: &mut dyn ComponentRowSink,
+    profile_enabled: bool,
+    profile_timings: &mut DecodeProfileTimings,
+) -> Result<()> {
+    // `streams_rows` chose this decode for tiles that band.
+    if !storage.banded_tier1 {
+        return Err(DecodingError::CodeBlockDecodeFailure.into());
+    }
+    let stage_start = profile::profile_now(profile_enabled);
+    let components = tile.component_infos.len();
+    let workspace = tier1::prepare_tier1_workspace(tile, 0..components, header, tile_ctx, storage)?;
+    let mut tier1_us = 0;
+    let result = stream_rows(
+        tile,
+        header,
+        tile_ctx,
+        storage,
+        sink,
+        profile_enabled,
+        &mut tier1_us,
+    );
+    tier1::release_tier1_workspace(tile_ctx, storage, &workspace)?;
+    let elapsed = profile::elapsed_us(stage_start);
+    profile_timings.codeblock_us += tier1_us;
+    profile_timings.idwt_us += elapsed.saturating_sub(tier1_us);
+    result.map_err(|banded_error| {
+        whole_window_tile_error(tile, header, tile_ctx, storage, banded_error)
+    })?;
+    record_workspace(tile_ctx, storage, 0)
+}
+
+fn stream_rows<'a>(
+    tile: &Tile<'a>,
+    header: &Header<'_>,
+    tile_ctx: &mut TileDecodeContext,
+    storage: &mut DecompositionStorage<'a>,
+    sink: &mut dyn ComponentRowSink,
+    profile_enabled: bool,
+    tier1_us: &mut u128,
+) -> Result<()> {
+    let components = tile.component_infos.len();
+    let mut bands = Vec::new();
+    let line_plans = plan_tile_lines(tile, header, tile_ctx, storage, &mut bands)?;
+    let empty = IntRect::from_xywh(0, 0, 0, 0);
+    let (copy, region) = line_plans
+        .first()
+        .map_or((empty, empty), |plan| (plan.copy, plan.region));
+    let scratch_len = (copy.width() as usize)
+        .checked_mul(components)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    let (mut buffer, ring_lens) = take_line_buffer(tile_ctx, storage, &line_plans, scratch_len)?;
+    let mut output = RowOutput {
+        tile,
+        sink,
+        round_irreversible_output: tile_ctx.round_irreversible_output,
+        depths: core::array::from_fn(|index| {
+            tile_ctx
+                .channel_data
+                .get(index)
+                .map_or((0, false), |component| {
+                    (component.bit_depth, component.signed)
+                })
+        }),
+        copy,
+        region,
+        streamed: 0,
+    };
+    let (precinct_rows, index_bytes) = index_bands(storage, tile_ctx, &bands)?;
+    let mut output_samples = 0usize;
+    let result = (|| {
+        let rings_len = buffer.len() - scratch_len;
+        let (mut rings, scratch) = buffer.split_at_mut(rings_len);
+        let mut lines = Vec::new();
+        lines
+            .try_reserve_exact(line_plans.len())
+            .map_err(|_| DecodingError::HostAllocationFailed)?;
+        for (plan, len) in line_plans.iter().zip(&ring_lens) {
+            let (ring, tail) = core::mem::take(&mut rings).split_at_mut(*len);
+            rings = tail;
+            lines.push(plan.reconstruction(ring)?);
+        }
+        let mut rows = BandedRows {
+            header,
+            component_infos: &tile.component_infos,
+            tile_ctx: &mut *tile_ctx,
+            storage: &mut *storage,
+            bands,
+            precinct_rows,
+            profile_enabled,
+            tier1_us: 0,
+        };
+        let result = output
+            .write(&mut lines, &mut rows, scratch)
+            .and_then(|()| rows.decode_remaining_bands());
+        *tier1_us = rows.tier1_us;
+        output_samples = lines.iter().map(LineReconstruction::output_samples).sum();
+        result
+    })();
+    storage.structural_workspace_bytes -= index_bytes;
+    tile_ctx.idwt_line_rings = buffer;
+    tile_ctx.streamed_samples = tile_ctx.streamed_samples.saturating_add(output.streamed);
+    tile_ctx.debug_counters.idwt_output_samples = tile_ctx
+        .debug_counters
+        .idwt_output_samples
+        .saturating_add(output_samples);
+    result
+}
+
+/// Add every component's bands to `bands` and plan its reconstruction.
+/// Returns no plans when no component has rows to reconstruct.
+fn plan_tile_lines(
+    tile: &Tile<'_>,
+    header: &Header<'_>,
+    tile_ctx: &TileDecodeContext,
+    storage: &DecompositionStorage<'_>,
+    bands: &mut Vec<SubBandBands>,
+) -> Result<Vec<LinePlan>> {
+    let mut line_plans = Vec::new();
+    line_plans
+        .try_reserve_exact(tile.component_infos.len())
+        .map_err(|_| DecodingError::HostAllocationFailed)?;
+    let mut missing = 0;
+    for (component_idx, component_info) in tile.component_infos.iter().enumerate() {
+        let active_levels = push_component_bands(storage, header, component_idx, bands)?;
+        match LinePlan::new(
+            storage,
+            tile_ctx,
+            component_idx,
+            active_levels,
+            header,
+            component_info.wavelet_transform(),
+        )? {
+            Some(plan) => line_plans.push(plan),
+            None => missing += 1,
+        }
+    }
+    if missing == tile.component_infos.len() {
+        line_plans.clear();
+        return Ok(line_plans);
+    }
+    // Every component of a 1x1-sampled tile reconstructs the same rows.
+    if missing > 0
+        || line_plans
+            .iter()
+            .any(|plan| plan.copy != line_plans[0].copy || plan.region != line_plans[0].region)
+    {
+        return Err(DecodingError::CodeBlockDecodeFailure.into());
+    }
+    Ok(line_plans)
+}
+
+/// Take the context's ring buffer, grown to hold every plan's rings and
+/// `scratch_len` more samples, and return it with each plan's ring length.
+fn take_line_buffer(
+    tile_ctx: &mut TileDecodeContext,
+    storage: &DecompositionStorage<'_>,
+    line_plans: &[LinePlan],
+    scratch_len: usize,
+) -> Result<(Vec<f32>, Vec<usize>)> {
+    let mut ring_lens = Vec::new();
+    ring_lens
+        .try_reserve_exact(line_plans.len())
+        .map_err(|_| DecodingError::HostAllocationFailed)?;
+    for plan in line_plans {
+        ring_lens.push(plan.ring_len()?);
+    }
+    let total = ring_lens
+        .iter()
+        .try_fold(scratch_len, |total, len| total.checked_add(*len))
+        .ok_or(ValidationError::ImageTooLarge)?;
+    let mut buffer = core::mem::take(&mut tile_ctx.idwt_line_rings);
+    if buffer.len() < total {
+        try_resize_decode_elements(&mut buffer, total, 0.0)?;
+    }
+    tile_ctx.idwt_line_rings = buffer;
+    record_workspace(tile_ctx, storage, 0)?;
+    let mut buffer = core::mem::take(&mut tile_ctx.idwt_line_rings);
+    buffer.truncate(total);
+    Ok((buffer, ring_lens))
+}
+
+/// Where a tile's reconstructed rows go: transformed, then to the sink.
+struct RowOutput<'o, 't> {
+    tile: &'o Tile<'t>,
+    sink: &'o mut dyn ComponentRowSink,
+    round_irreversible_output: bool,
+    /// Each component's bit depth and signedness.
+    depths: [(u8, bool); 4],
+    /// The rows, in the coordinates of `region`, that the tile reconstructs.
+    copy: IntRect,
+    region: IntRect,
+    /// Samples handed to the sink.
+    streamed: usize,
+}
+
+impl RowOutput<'_, '_> {
+    /// Advance every component's reconstruction a row at a time, copying
+    /// each row into `scratch`, one row per component, and hand them over.
+    fn write(
+        &mut self,
+        lines: &mut [LineReconstruction<'_>],
+        rows: &mut BandedRows<'_, '_>,
+        scratch: &mut [f32],
+    ) -> Result<()> {
+        let (copy, components) = (self.copy, lines.len());
+        let width = copy.width() as usize;
+        if lines.is_empty() || width == 0 {
+            return Ok(());
+        }
+        for y in copy.y0..copy.y1 {
+            let mut outputs: [&mut [f32]; 4] = Default::default();
+            for ((line, output), chunk) in lines
+                .iter_mut()
+                .zip(outputs.iter_mut())
+                .zip(scratch.chunks_exact_mut(width))
+            {
+                let (row_y, row) = line
+                    .next_row(rows)?
+                    .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+                if row_y != y || row.len() != width {
+                    return Err(DecodingError::CodeBlockDecodeFailure.into());
+                }
+                chunk.copy_from_slice(row);
+                *output = chunk;
+            }
+            let outputs = &mut outputs[..components];
+            store::transform_streamed_rows(self.tile, self.round_irreversible_output, outputs)?;
+            let component_rows: [ComponentPlane<'_>; 4] =
+                core::array::from_fn(|index| ComponentPlane {
+                    samples: outputs.get(index).map_or(&[][..], |row| &**row),
+                    dimensions: (copy.width(), 1),
+                    bit_depth: self.depths[index].0,
+                    signed: self.depths[index].1,
+                    sampling: (1, 1),
+                });
+            self.sink.write_rows(
+                copy.x0 - self.region.x0,
+                y - self.region.y0,
+                &component_rows[..components],
+            );
+            self.streamed = self.streamed.saturating_add(width * components);
+        }
+        Ok(())
+    }
+}
+
+/// When a lockstep decode fails, rerun Tier-1 over whole windows one
+/// component at a time, in the order the planes path decodes them, and
+/// return the first error. If the whole windows don't fit the cap, or the
+/// rerun succeeds, keep the banded error.
+fn whole_window_tile_error<'a>(
+    tile: &Tile<'a>,
+    header: &Header<'_>,
+    tile_ctx: &mut TileDecodeContext,
+    storage: &mut DecompositionStorage<'a>,
+    banded_error: DecodeError,
+) -> DecodeError {
+    storage.coefficient_layout = build::CoefficientLayout::Component;
+    if build::lay_out_whole_region_coefficients(storage).is_err() {
+        return banded_error;
+    }
+    for component_idx in 0..tile.component_infos.len() {
+        storage.stale_coefficients = true;
+        if let Err(error) = decode_component_tile_bit_planes_budgeted(
+            tile,
+            component_idx..component_idx + 1,
+            tile_ctx,
+            storage,
+            header,
+            &mut None,
+            CpuDecodeParallelism::Serial,
+            false,
+        ) {
+            return error;
+        }
+    }
+    banded_error
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "the banded stage shares decode_tile's state and profiling explicitly"
@@ -117,61 +407,9 @@ fn decode_bands<'a>(
     profile_enabled: bool,
     tier1_us: &mut u128,
 ) -> Result<()> {
-    let component_info = tile
-        .component_infos
-        .get(component_idx)
-        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-    let tile_decompositions = &storage.tile_decompositions[component_idx];
-    let active_levels = tile_decompositions
-        .decompositions
-        .len()
-        .checked_sub(usize::from(header.skipped_resolution_levels))
-        .filter(|levels| *levels > 0)
-        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-
-    // Each active resolution's sub-bands, in the order the whole-window path
-    // decodes them.
     let mut bands = Vec::new();
-    let band_count = 1 + 3 * active_levels;
-    bands
-        .try_reserve_exact(band_count)
-        .map_err(|_| DecodingError::HostAllocationFailed)?;
-    for resolution in 0..=active_levels {
-        let resolution =
-            u8::try_from(resolution).map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
-        for sub_band in tile_decompositions.sub_band_iter(resolution, &storage.decompositions) {
-            let stored = storage.sub_bands[sub_band].storage_rect;
-            bands.push(SubBandBands {
-                sub_band,
-                resolution,
-                stored,
-                slot: IntRect::from_ltrb(stored.x0, stored.y0, stored.x1, stored.y0),
-                last_band: None,
-            });
-        }
-    }
-    // The row index is optional. If building it fails, use the original scans.
-    // A built index stays charged while the bands decode and allocate scratch.
-    let mut index_budget = DecodeAllocationBudget::for_storage(storage)?;
-    let baseline_bytes = index_budget.live_bytes();
-    #[cfg(test)]
-    let precinct_rows = if tile_ctx.reject_band_index {
-        Err(ValidationError::ImageTooLarge.into())
-    } else {
-        build_precinct_rows(storage, &bands, &mut index_budget)
-    }
-    .ok();
-    #[cfg(not(test))]
-    let precinct_rows = build_precinct_rows(storage, &bands, &mut index_budget).ok();
-    let index_bytes = if precinct_rows.is_some() {
-        index_budget.live_bytes() - baseline_bytes
-    } else {
-        0
-    };
-    storage.structural_workspace_bytes = storage
-        .structural_workspace_bytes
-        .checked_add(index_bytes)
-        .ok_or(ValidationError::ImageTooLarge)?;
+    let active_levels = push_component_bands(storage, header, component_idx, &mut bands)?;
+    let (precinct_rows, index_bytes) = index_bands(storage, tile_ctx, &bands)?;
 
     tile_ctx.idwt_output.placement = crate::j2c::idwt::IdwtPlacement::Coefficients;
     tile_ctx.idwt_output.coefficients = Vec::new();
@@ -193,7 +431,7 @@ fn decode_bands<'a>(
 
     let mut rows = BandedRows {
         header,
-        component_info,
+        component_infos: &tile.component_infos,
         tile_ctx: &mut *tile_ctx,
         storage: &mut *storage,
         bands,
@@ -208,6 +446,78 @@ fn decode_bands<'a>(
     let result = lines.map_or(result, |lines| lines.finish(tile_ctx, result));
     storage.structural_workspace_bytes -= index_bytes;
     result
+}
+
+/// Add the bands of each active resolution's sub-bands of `component_idx`,
+/// in the order the whole-window path decodes them, and return how many
+/// levels the component reconstructs.
+fn push_component_bands(
+    storage: &DecompositionStorage<'_>,
+    header: &Header<'_>,
+    component_idx: usize,
+    bands: &mut Vec<SubBandBands>,
+) -> Result<usize> {
+    let tile_decompositions = &storage.tile_decompositions[component_idx];
+    let active_levels = tile_decompositions
+        .decompositions
+        .len()
+        .checked_sub(usize::from(header.skipped_resolution_levels))
+        .filter(|levels| *levels > 0)
+        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+    bands
+        .try_reserve(1 + 3 * active_levels)
+        .map_err(|_| DecodingError::HostAllocationFailed)?;
+    for resolution in 0..=active_levels {
+        let resolution =
+            u8::try_from(resolution).map_err(|_| DecodingError::CodeBlockDecodeFailure)?;
+        for sub_band in tile_decompositions.sub_band_iter(resolution, &storage.decompositions) {
+            let stored = storage.sub_bands[sub_band].storage_rect;
+            bands.push(SubBandBands {
+                sub_band,
+                component: component_idx,
+                resolution,
+                stored,
+                slot: IntRect::from_ltrb(stored.x0, stored.y0, stored.x1, stored.y0),
+                last_band: None,
+            });
+        }
+    }
+    Ok(active_levels)
+}
+
+/// Build the row index of `bands` and charge it to the structural
+/// workspace, returning it with its bytes, which the caller releases.
+fn index_bands(
+    storage: &mut DecompositionStorage<'_>,
+    tile_ctx: &TileDecodeContext,
+    bands: &[SubBandBands],
+) -> Result<(Option<Vec<Vec<PrecinctRow>>>, usize)> {
+    // The row index is optional. If building it fails, use the original scans.
+    // A built index stays charged while the bands decode and allocate scratch.
+    let mut index_budget = DecodeAllocationBudget::for_storage(storage)?;
+    let baseline_bytes = index_budget.live_bytes();
+    #[cfg(test)]
+    let precinct_rows = if tile_ctx.reject_band_index {
+        Err(ValidationError::ImageTooLarge.into())
+    } else {
+        build_precinct_rows(storage, bands, &mut index_budget)
+    }
+    .ok();
+    #[cfg(not(test))]
+    let precinct_rows = {
+        let _ = tile_ctx;
+        build_precinct_rows(storage, bands, &mut index_budget).ok()
+    };
+    let index_bytes = if precinct_rows.is_some() {
+        index_budget.live_bytes() - baseline_bytes
+    } else {
+        0
+    };
+    storage.structural_workspace_bytes = storage
+        .structural_workspace_bytes
+        .checked_add(index_bytes)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    Ok((precinct_rows, index_bytes))
 }
 
 /// When a banded decode fails, rerun the component's Tier-1 over whole
@@ -244,6 +554,7 @@ fn whole_window_error<'a>(
 /// The bands of one sub-band.
 struct SubBandBands {
     sub_band: usize,
+    component: usize,
     resolution: u8,
     /// The sub-band's stored rectangle.
     stored: IntRect,
@@ -303,7 +614,7 @@ fn collect_precinct_rows(
 /// for their rows.
 struct BandedRows<'r, 'a> {
     header: &'r Header<'r>,
-    component_info: &'r ComponentInfo,
+    component_infos: &'r [ComponentInfo],
     tile_ctx: &'r mut TileDecodeContext,
     storage: &'r mut DecompositionStorage<'a>,
     bands: Vec<SubBandBands>,
@@ -381,6 +692,10 @@ impl BandedRows<'_, '_> {
         let start = profile::profile_now(self.profile_enabled);
         let bands = &self.bands[index];
         let (sub_band, resolution, stored) = (bands.sub_band, bands.resolution, bands.stored);
+        let component_info = self
+            .component_infos
+            .get(bands.component)
+            .ok_or(DecodingError::CodeBlockDecodeFailure)?;
         let top = rows.start.clamp(stored.y0, stored.y1);
         let bottom = rows.end.clamp(top, stored.y1);
         let slot = IntRect::from_ltrb(stored.x0, top, stored.x1, bottom);
@@ -404,7 +719,7 @@ impl BandedRows<'_, '_> {
         let result = decode_sub_band_bitplanes(
             sub_band,
             resolution,
-            self.component_info,
+            component_info,
             self.tile_ctx,
             self.storage,
             self.header,
