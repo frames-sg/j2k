@@ -58,8 +58,8 @@ pub(crate) use self::direct_plan::{
 };
 pub(crate) use self::peak::{record_workspace, WorkspaceBytes, WorkspacePeak};
 use self::store::{
-    apply_sign_shift_after_mct, component_unsigned_level_shift, fused_last_level, store,
-    store_last_level_bands, store_rows, TileRows,
+    apply_inverse_mct_per_tile, apply_sign_shift_after_mct, component_unsigned_level_shift,
+    fused_last_level, store, store_last_level_bands, store_rows, TileRows,
 };
 use self::subband::{
     code_block_required_by_index, count_classic_code_blocks, count_ht_code_blocks,
@@ -252,6 +252,7 @@ fn decode_parsed_tiles<'a>(
     if tiles.is_empty() {
         bail!(TileError::Invalid);
     }
+    ensure_tiles_share_sample_type(tiles)?;
     let line_region_idwt = ctx.line_region_idwt
         && ctx.tile_decode_context.line_region_idwt_permitted
         && region_decode_without_hook_or_special_samples(
@@ -330,21 +331,11 @@ fn decode_parsed_tiles<'a>(
 
     tile_ctx.ensure_unzeroed_planes_overwritten()?;
 
-    // Note that this assumes that either all tiles have MCT or none of them.
-    // In theory, only some could have it... But hopefully no such cursed
-    // images exist!
     tile_ctx.deferred_mct = None;
-    if tiles[0].mct {
+    if tiles.iter().any(|tile| tile.mct) {
         let stage_start = profile::profile_now(profile_enabled);
         let parallel = cpu_decode_parallelism == CpuDecodeParallelism::Auto;
-        mct::apply_inverse(
-            tile_ctx,
-            &tiles[0].component_infos,
-            header,
-            ht_decoder,
-            parallel,
-        )?;
-        apply_sign_shift_after_mct(tile_ctx, &header.component_infos);
+        apply_inverse_mct(tile_ctx, header, tiles, ht_decoder, parallel)?;
         profile_timings.mct_us += profile::elapsed_us(stage_start);
     }
     // Planes holding a last level's sub-bands need the deferred MCT's pack.
@@ -362,6 +353,59 @@ fn decode_parsed_tiles<'a>(
     storage.release_all_allocations();
 
     Ok(())
+}
+
+/// The planes hold integers or floats for the whole image, as the first tile
+/// needs, so every tile must need the same.
+fn ensure_tiles_share_sample_type(tiles: &[Tile<'_>]) -> Result<()> {
+    let exact_integer_decode = tile_requires_exact_integer_decode(&tiles[0]);
+    if tiles
+        .iter()
+        .any(|tile| tile_requires_exact_integer_decode(tile) != exact_integer_decode)
+    {
+        bail!(DecodingError::UnsupportedFeature(
+            "tiles that differ in needing exact integer decode"
+        ));
+    }
+    Ok(())
+}
+
+/// The inverse MCT of the decoded tiles. One transform of the whole planes
+/// serves when every tile has the first tile's MCT and wavelets. Tile-part
+/// COD and COC can set them per tile, and then each tile with an MCT
+/// transforms its own samples.
+fn apply_inverse_mct(
+    tile_ctx: &mut TileDecodeContext,
+    header: &Header<'_>,
+    tiles: &[Tile<'_>],
+    ht_decoder: &mut Option<&mut dyn HtCodeBlockDecoder>,
+    parallel: bool,
+) -> Result<()> {
+    if !mct_matches_first_tile(tiles) {
+        return apply_inverse_mct_per_tile(tile_ctx, header, tiles);
+    }
+    mct::apply_inverse(
+        tile_ctx,
+        &tiles[0].component_infos,
+        header,
+        ht_decoder,
+        parallel,
+    )?;
+    apply_sign_shift_after_mct(tile_ctx, &tiles[0].component_infos);
+    Ok(())
+}
+
+/// Whether every tile has the first tile's MCT and, with an MCT, its
+/// wavelets, which also round the components after the first three.
+fn mct_matches_first_tile(tiles: &[Tile<'_>]) -> bool {
+    let first = &tiles[0];
+    tiles.iter().all(|tile| {
+        tile.mct == first.mct
+            && (!tile.mct
+                || tile.component_infos.iter().zip(&first.component_infos).all(
+                    |(component, first)| component.wavelet_transform() == first.wavelet_transform(),
+                ))
+    })
 }
 
 /// The padded size each component plane reserves so that a region decode can
@@ -383,11 +427,10 @@ fn last_idwt_level_padding(
         return None;
     }
     let output_region = output_region?;
-    let components = &tiles.first()?.component_infos;
     let mut covering = tiles
         .iter()
         .filter(|tile| tile_intersects_output_region(tile.rect, &header.size_data, output_region));
-    covering.next()?;
+    let components = &covering.next()?.component_infos;
     if covering.next().is_some() {
         return None;
     }
@@ -727,7 +770,8 @@ fn decode_components<'a>(
     if !fused {
         tile_ctx.prepare_deferred_plane()?;
     }
-    for (idx, component_info) in header.component_infos.iter().enumerate() {
+    // A tile-part COD or COC can give the tile its own coding style.
+    for (idx, component_info) in tile.component_infos.iter().enumerate() {
         if storage.banded_tier1 {
             // Tier-1 decodes each band as the streamed IDWT reaches it.
             banded_tier1::decode_component(

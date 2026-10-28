@@ -5,6 +5,19 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- Fixed CPU decodes of codestreams whose tile-part headers set their own
+  coding style ([#295](https://github.com/frames-sg/j2k/issues/295)). The
+  inverse DWT and the rounding of integer output used the main header's
+  wavelet, so a tile-part COD or COC that changed the wavelet gave the wrong
+  samples in full, region, row and reduced decodes. Each tile now uses its
+  own coding style. Images whose tiles differ in their multi-component
+  transform, or in its wavelet, apply it per tile instead of applying the
+  first tile's to every tile. A tile-part COC or QCC now takes precedence over
+  the tile-part COD or QCD whichever comes first in the header, as T.800
+  specifies. Tiles of 25 to 38-bit images that differ in needing exact
+  integer decode are rejected with `UnsupportedFeature` rather than decoded
+  wrong. Output of codestreams without tile-part coding overrides is
+  unchanged.
 - Serial CPU region decodes on the row-streamed IDWT decode each sub-band's
   code-blocks one code-block row at a time, as the IDWT reaches it, and hold
   only that row instead of the sub-band's whole window. A 1024 x 1024 region

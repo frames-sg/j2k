@@ -213,3 +213,90 @@ fn irreversible_region_row_and_batch_outputs_match_the_full_decode() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// `bytes`, a single-tile 9/7 codestream, with its main-header COD naming the
+/// 5/3 wavelet and a copy of the original COD in the tile-part header. The
+/// tile-part COD governs the only tile, so the image is unchanged.
+fn with_tile_part_cod(bytes: &[u8]) -> Vec<u8> {
+    let segment_end =
+        |at: usize| at + 2 + usize::from(u16::from_be_bytes([bytes[at + 2], bytes[at + 3]]));
+    let (mut sot, mut cod) = (2, None);
+    while bytes[sot + 1] != 0x90 {
+        if bytes[sot + 1] == 0x52 {
+            cod = Some(sot..segment_end(sot));
+        }
+        sot = segment_end(sot);
+    }
+    let cod = cod.expect("main-header COD");
+    let mut patched = bytes.to_vec();
+    patched.splice(sot + 12..sot + 12, bytes[cod.clone()].iter().copied());
+    let psot = u32::from_be_bytes(patched[sot + 6..sot + 10].try_into().expect("Psot"));
+    assert_ne!(psot, 0, "fixture tile-part carries its length");
+    let grown = psot + u32::try_from(cod.len()).expect("COD length");
+    patched[sot + 6..sot + 10].copy_from_slice(&grown.to_be_bytes());
+    assert_eq!(patched[cod.start + 13], 0, "9/7 fixture");
+    patched[cod.start + 13] = 1;
+    patched
+}
+
+/// The tile's coding style, not the main header's, decides the wavelet and
+/// the rounding of every integer output.
+#[test]
+fn irreversible_outputs_follow_a_tile_part_cod_over_the_main_header() {
+    let roi = Rect {
+        x: 3,
+        y: 5,
+        w: SIZE - 40,
+        h: SIZE / 2,
+    };
+    let outputs = |bytes: &[u8], case: LossyCase| {
+        let (fmt, channels) = format_for(case);
+        let width = SIZE as usize;
+        let mut decoder = J2kDecoder::new(bytes).expect("decoder");
+        let mut full: Vec<u8> = std::iter::repeat_n(0, width * width * channels).collect();
+        decoder
+            .decode_into(&mut full, width * channels, fmt)
+            .expect("full decode");
+        let mut region: Vec<u8> =
+            std::iter::repeat_n(0, roi.w as usize * roi.h as usize * channels).collect();
+        decoder
+            .decode_region_into(
+                &mut J2kScratchPool::new(),
+                &mut region,
+                roi.w as usize * channels,
+                fmt,
+                roi,
+            )
+            .expect("region decode");
+        let mut rows = CollectRows::default();
+        <J2kDecoder<'_> as ImageDecodeRows<'_, u8>>::decode_rows(&mut decoder, &mut rows)
+            .expect("row decode");
+        [
+            ("full", full),
+            ("region", region),
+            ("rows", rows.0),
+            ("batch full", batch_u8(bytes, DecodeRequest::Full)),
+            (
+                "batch region",
+                batch_u8(bytes, DecodeRequest::Region { roi }),
+            ),
+        ]
+    };
+    let mut failures = Vec::new();
+    for case in CASES {
+        let bytes = lossy_fixture(case);
+        let patched = with_tile_part_cod(&bytes);
+        for ((label, expected), (_, actual)) in outputs(&bytes, case)
+            .into_iter()
+            .zip(outputs(&patched, case))
+        {
+            let mismatches = expected.iter().zip(&actual).filter(|(a, b)| a != b).count();
+            if expected.len() != actual.len() || mismatches > 0 {
+                failures.push(format!(
+                    "{case:?} {label}: {mismatches} bytes differ from the original's"
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

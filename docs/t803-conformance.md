@@ -222,3 +222,14 @@ fell back to the CPU.
 
 T.803 does not test robustness, security, or performance; those are covered by
 fuzzing, security review, and benchmarks.
+
+T.803 also does not test coding styles set in tile-part headers. Eighteen of
+its 94 codestreams change a component's wavelet with a main-header COC, but
+none has a tile-part COD or COC, so a decoder can pass every selected case
+while ignoring tile-part overrides, as `j2k` did until
+[#295](https://github.com/frames-sg/j2k/issues/295).
+`crates/j2k-native/tests/tile_header_markers.rs` covers tile-part COD, COC,
+QCD and QCC overrides, their precedence, and tiles that differ in wavelet,
+decomposition levels and multi-component transform, against the decodes of
+the codestreams they were made from. Two-tile codestreams built the same way
+from OpenJPEG encodes decode identically in `j2k` and OpenJPEG 2.5.4.
