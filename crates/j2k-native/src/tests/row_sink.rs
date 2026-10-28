@@ -356,3 +356,73 @@ fn row_sink_rejects_corrupt_code_blocks_as_component_planes_do() {
         );
     }
 }
+
+/// The rows of a streamed decode on `context`, and its starting budget.
+fn streamed_rows<'a>(
+    image: &Image<'a>,
+    roi: (u32, u32, u32, u32),
+    context: &mut DecoderContext<'a>,
+) -> (Vec<Vec<u32>>, usize) {
+    let mut sink = CollectingSink::new(roi.2, roi.3);
+    image
+        .decode_region_rows_for_integer_output_with_context(roi, context, &mut sink)
+        .expect("decode region rows");
+    assert!(context.tile_decode_context.stream_rows);
+    assert!(sink.arrivals.iter().all(|&count| count == 1));
+    (
+        sink.planes,
+        context
+            .tile_decode_context
+            .debug_counters
+            .decode_baseline_bytes,
+    )
+}
+
+/// A decode that streams rows can't be rerun once rows reach the sink, so a
+/// reused context must start it from a fresh context's budget: no retained
+/// scratch or component planes charged, and the same rows.
+#[test]
+fn reused_context_streams_rows_from_a_fresh_budget() {
+    let pixels = noisy_pixels(3);
+    let bytes = encode(
+        &pixels,
+        WIDTH,
+        HEIGHT,
+        3,
+        8,
+        false,
+        &EncodeOptions {
+            num_decomposition_levels: 4,
+            tile_size: Some((TILE, TILE)),
+            ..EncodeOptions::default()
+        },
+    )
+    .expect("encode reuse fixture");
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse reuse fixture");
+    let roi = (37, 21, 130, 101);
+
+    let mut fresh = DecoderContext::default();
+    fresh.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
+    let (fresh_planes, fresh_baseline) = streamed_rows(&image, roi, &mut fresh);
+
+    let mut reused = DecoderContext::default();
+    reused.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
+    drop(
+        image
+            .decode_region_components_for_integer_output_with_context(
+                (0, 0, WIDTH, HEIGHT),
+                &mut reused,
+            )
+            .expect("decode full planes"),
+    );
+    assert!(reused.tile_decode_context.retained_channel_bytes().unwrap() > 0);
+    assert!(reused.tile_decode_context.retained_scratch_bytes().unwrap() > 0);
+    let (reused_planes, reused_baseline) = streamed_rows(&image, roi, &mut reused);
+
+    assert_eq!(reused_planes, fresh_planes);
+    assert_eq!(reused_baseline, fresh_baseline);
+    assert_eq!(
+        reused.tile_decode_context.retained_channel_bytes().unwrap(),
+        fresh.tile_decode_context.retained_channel_bytes().unwrap()
+    );
+}

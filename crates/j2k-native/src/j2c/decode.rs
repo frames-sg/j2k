@@ -289,15 +289,15 @@ fn decode_parsed_tiles<'a>(
         bail!(TileError::Invalid);
     }
     ensure_tiles_share_sample_type(tiles)?;
-    let line_region_idwt = ctx.line_region_idwt
-        && ctx.tile_decode_context.line_region_idwt_permitted
-        && region_decode_without_hook_or_special_samples(
-            tiles,
-            ctx.tile_decode_context.output_region,
-            ht_decoder.is_some(),
-        );
-    ctx.tile_decode_context.line_region_idwt = line_region_idwt;
-    let stream_rows = choose_stream_rows(header, tiles, ctx, row_sink.is_some());
+    let (structural_workspace_bytes, reused_baseline) = choose_region_idwt(
+        header,
+        tiles,
+        ctx,
+        (ht_decoder.is_some(), row_sink.is_some()),
+        structural_workspace_bytes,
+        reused_baseline,
+    )?;
+    let stream_rows = ctx.tile_decode_context.stream_rows;
     // The row-streamed IDWT writes rows straight into the planes, so they
     // need no padding.
     let last_idwt_level_padding = last_idwt_level_padding(
@@ -306,7 +306,7 @@ fn decode_parsed_tiles<'a>(
         ctx.tile_decode_context.output_region,
         ht_decoder.is_some(),
     )
-    .filter(|_| !line_region_idwt);
+    .filter(|_| !ctx.tile_decode_context.line_region_idwt);
     #[cfg(test)]
     let last_idwt_level_padding =
         last_idwt_level_padding.filter(|_| !ctx.tile_decode_context.separate_last_idwt_level);
@@ -540,22 +540,29 @@ fn region_decode_without_hook_or_special_samples(
         })
 }
 
-/// Whether a region decode on the row-streamed IDWT can hand its samples to
-/// a row sink instead of component planes: every tile decodes its Tier-1 in
-/// bands (see [`banded_tier1::applies`]), so all components can advance
-/// together, and the tiles, at the decoded resolution, cover the region
-/// exactly. One to four components, and an inverse MCT, if any, that
-/// [`mct::apply_inverse`] would apply to the first three.
-/// Record in `ctx` whether a decode that `wants_rows` streams them; see
-/// [`streams_rows`].
-fn choose_stream_rows(
+/// Record in `ctx` whether a region decode runs the row-streamed IDWT and,
+/// if it `wants_rows`, whether it streams them (see [`streams_rows`]). A
+/// decode that streams gives up the context's retained capacity first (see
+/// `release_retained_before_streaming`), and the decode goes on with the
+/// returned structural bytes and baseline.
+fn choose_region_idwt(
     header: &Header<'_>,
     tiles: &ParsedTiles<'_>,
     ctx: &mut DecoderContext<'_>,
-    wants_rows: bool,
-) -> bool {
+    (hooked, wants_rows): (bool, bool),
+    structural_workspace_bytes: usize,
+    reused_baseline: reuse::ReusedDecodeBaseline,
+) -> Result<(usize, reuse::ReusedDecodeBaseline)> {
+    let line_region_idwt = ctx.line_region_idwt
+        && ctx.tile_decode_context.line_region_idwt_permitted
+        && region_decode_without_hook_or_special_samples(
+            tiles,
+            ctx.tile_decode_context.output_region,
+            hooked,
+        );
+    ctx.tile_decode_context.line_region_idwt = line_region_idwt;
     let stream_rows = wants_rows
-        && ctx.tile_decode_context.line_region_idwt
+        && line_region_idwt
         && streams_rows(
             header,
             tiles,
@@ -564,9 +571,21 @@ fn choose_stream_rows(
         );
     ctx.tile_decode_context.stream_rows = stream_rows;
     ctx.tile_decode_context.streamed_samples = 0;
-    stream_rows
+    if stream_rows {
+        ctx.release_retained_before_streaming(structural_workspace_bytes, reused_baseline)
+    } else {
+        Ok((structural_workspace_bytes, reused_baseline))
+    }
 }
 
+/// Whether a region decode on the row-streamed IDWT can hand its samples to
+/// a row sink instead of component planes: every tile decodes its Tier-1 in
+/// bands (see [`banded_tier1::applies`]), so all components can advance
+/// together; the image and tiles have no offsets; there are one to four
+/// components; and every tile has the same inverse MCT, if any, that
+/// [`mct::apply_inverse`] would apply to the first three.
+/// `ensure_every_sample_streamed` checks afterwards that the rows covered
+/// the region.
 fn streams_rows(
     header: &Header<'_>,
     tiles: &ParsedTiles<'_>,
@@ -647,6 +666,9 @@ pub(crate) struct DecodeDebugCounters {
     pub(crate) selection_scanned_packets: usize,
     /// Empty decomposition capacity discarded before region selection.
     pub(crate) selection_released_storage_bytes: usize,
+    /// The bytes the decode's budget starts from after `reset`, retained
+    /// capacity included.
+    pub(crate) decode_baseline_bytes: usize,
     /// The largest decode workspace sampled at stage boundaries, by owner.
     pub(crate) workspace_peak: WorkspacePeak,
     pub(crate) ht_phase_stats: ht_block_decode::HtBlockDecodeStats,

@@ -78,8 +78,10 @@ impl DecoderContext<'_> {
         first_result: Result<T>,
         retry: impl FnOnce(&mut Self) -> Result<T>,
     ) -> Result<T> {
-        // Rows a sink has already received can't be taken back, so a decode
-        // that streamed any isn't run again.
+        // A decode that streams rows gave up its retained scratch before the
+        // first row (`release_retained_before_streaming`), so once rows have
+        // reached the sink a fresh context fails the same way, and a rerun
+        // would only send them again.
         if retained_scratch_bytes == 0 || self.tile_decode_context.streamed_samples > 0 {
             return first_result;
         }
@@ -94,6 +96,37 @@ impl DecoderContext<'_> {
             }
             result => result,
         }
+    }
+
+    /// A decode that streams rows can't be rerun once a row has reached the
+    /// sink, so before the first row it gives up the retained scratch, and the
+    /// retained component planes it never uses. From then on its budget is a
+    /// fresh context's, and a capacity failure is one a fresh context hits
+    /// too. Returns the structural bytes and baseline without them.
+    pub(super) fn release_retained_before_streaming(
+        &mut self,
+        structural_workspace_bytes: usize,
+        baseline: ReusedDecodeBaseline,
+    ) -> Result<(usize, ReusedDecodeBaseline)> {
+        let retained = baseline
+            .channel_capacity
+            .checked_add(baseline.scratch_capacity)
+            .ok_or(ValidationError::ImageTooLarge)?;
+        self.tile_decode_context.release_channel_allocations();
+        self.tile_decode_context.release_tile_scratch_allocations();
+        let without = |bytes: usize| {
+            bytes
+                .checked_sub(retained)
+                .ok_or(DecodeError::from(ValidationError::ImageTooLarge))
+        };
+        Ok((
+            without(structural_workspace_bytes)?,
+            ReusedDecodeBaseline {
+                parser_live: without(baseline.parser_live)?,
+                channel_capacity: 0,
+                scratch_capacity: 0,
+            },
+        ))
     }
 
     pub(super) fn discard_reused_channels(&mut self) {
@@ -118,12 +151,15 @@ impl DecoderContext<'_> {
             last_idwt_level_padding,
         )?;
         self.storage.reset_for_next_tile();
+        self.tile_decode_context
+            .debug_counters
+            .decode_baseline_bytes = retained_decode_baseline;
         Ok(retained_decode_baseline)
     }
 }
 
 impl TileDecodeContext {
-    pub(super) fn retained_channel_bytes(&self) -> Result<usize> {
+    pub(crate) fn retained_channel_bytes(&self) -> Result<usize> {
         retained_channel_bytes_with_cap(&self.channel_data, DEFAULT_MAX_DECODE_BYTES)
     }
 
