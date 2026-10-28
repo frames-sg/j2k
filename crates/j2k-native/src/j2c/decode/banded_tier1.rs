@@ -298,6 +298,11 @@ fn take_line_buffer(
         .iter()
         .try_fold(scratch_len, |total, len| total.checked_add(*len))
         .ok_or(ValidationError::ImageTooLarge)?;
+    debug_assert!(
+        total <= storage.roi_idwt_charge_elements,
+        "the ROI plan charged {} IDWT samples for {total}",
+        storage.roi_idwt_charge_elements
+    );
     let mut buffer = core::mem::take(&mut tile_ctx.idwt_line_rings);
     let resized = if buffer.len() < total {
         try_resize_decode_elements(&mut buffer, total, 0.0)

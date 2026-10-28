@@ -580,10 +580,10 @@ fn choose_region_idwt(
 
 /// Whether a region decode on the row-streamed IDWT can hand its samples to
 /// a row sink instead of component planes: every tile decodes its Tier-1 in
-/// bands (see [`tile_bands`]), so all components can advance
-/// together; the image and tiles have no offsets; there are one to four
-/// components; and every tile has the same inverse MCT, if any, that
-/// [`mct::apply_inverse`] would apply to the first three.
+/// bands (see [`tile_bands`]), so all components can advance together; the
+/// image and tiles have no offsets; there are one to four components; and
+/// each tile with an inverse MCT has three components or more, the first
+/// three with one wavelet, as `apply_inverse_mct_per_tile` requires.
 /// `ensure_every_sample_streamed` checks afterwards that the rows covered
 /// the region.
 fn streams_rows(
@@ -594,28 +594,27 @@ fn streams_rows(
 ) -> bool {
     let size = &header.size_data;
     let components = header.component_infos.len();
-    let mct = tiles.first().is_some_and(|tile| tile.mct);
     size.image_area_x_offset == 0
         && size.image_area_y_offset == 0
         && size.tile_x_offset == 0
         && size.tile_y_offset == 0
         && (1..=4).contains(&components)
-        && (!mct || components >= 3)
         && tiles.iter().all(|tile| {
-            tile.mct == mct
-                && tile.component_infos.len() == components
+            let infos = &tile.component_infos;
+            infos.len() == components
                 // The row-streamed IDWT already excludes hooks.
                 && tile_bands(header, tile, tile_ctx, false, parallelism)
-                && tile
-                    .component_infos
+                && infos
                     .iter()
                     .all(|component| !component.requires_exact_integer_decode())
-                // The planes take the first tile's transform for every tile.
-                && (!mct
-                    || tile.component_infos[..3].iter().all(|component| {
-                        component.wavelet_transform()
-                            == tiles[0].component_infos[0].wavelet_transform()
-                    }))
+                // Each tile's rows take its own MCT, as the planes do. A tile
+                // whose MCT the planes reject decodes into them instead, so
+                // the decode reports their error.
+                && (!tile.mct
+                    || (components >= 3
+                        && infos[1..3].iter().all(|component| {
+                            component.wavelet_transform() == infos[0].wavelet_transform()
+                        })))
         })
 }
 
@@ -1368,6 +1367,8 @@ pub(crate) struct DecompositionStorage<'a> {
     /// Whether every component's IDWT rings, and a scratch row each, are
     /// live at once, because the tile streams its rows to a sink.
     pub(crate) lockstep_lines: bool,
+    /// The f32 samples of IDWT workspace the ROI plan charged for this tile.
+    pub(crate) roi_idwt_charge_elements: usize,
     /// While a band is decoded, the first row of its code-blocks: Tier-1
     /// decodes only the code-blocks that start there, into the rows the
     /// sub-band's `storage_rect` then names.
@@ -1404,6 +1405,7 @@ impl DecompositionStorage<'_> {
         self.line_region_idwt = false;
         self.banded_tier1 = false;
         self.lockstep_lines = false;
+        self.roi_idwt_charge_elements = 0;
         self.tier1_band = None;
         self.structural_workspace_bytes = 0;
         self.deferred_idwt_workspace_elements = None;

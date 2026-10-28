@@ -3,8 +3,8 @@
 use std::path::Path;
 
 use j2k_native::{
-    encode, encode_with_roi_regions, CpuDecodeParallelism, DecodeSettings, DecoderContext,
-    EncodeError, EncodeOptions, EncodeRoiRegion, Image, RawBitmap,
+    encode, encode_with_roi_regions, ComponentPlane, ComponentRowSink, CpuDecodeParallelism,
+    DecodeSettings, DecoderContext, EncodeError, EncodeOptions, EncodeRoiRegion, Image, RawBitmap,
 };
 
 fn marker_offset(codestream: &[u8], marker: u8) -> usize {
@@ -639,7 +639,88 @@ fn decode_with_mode(codestream: &[u8], mode: DecodeMode) -> RawBitmap {
     .unwrap_or_else(|error| panic!("decode {mode:?}: {error}"))
 }
 
+/// Gathers the rectangles a row sink receives into region-sized planes of
+/// sample bits.
+struct SinkPlanes {
+    width: usize,
+    samples: usize,
+    planes: Vec<Vec<u32>>,
+}
+
+impl ComponentRowSink for SinkPlanes {
+    fn write_rows(&mut self, x: u32, y: u32, planes: &[ComponentPlane<'_>]) {
+        if self.planes.is_empty() {
+            self.planes = vec![vec![u32::MAX; self.samples]; planes.len()];
+        }
+        for (target, plane) in self.planes.iter_mut().zip(planes) {
+            let (width, height) = plane.dimensions();
+            for row in 0..height as usize {
+                let start = (y as usize + row) * self.width + x as usize;
+                let samples = &plane.samples()[row * width as usize..][..width as usize];
+                for (sample, value) in target[start..start + width as usize]
+                    .iter_mut()
+                    .zip(samples)
+                {
+                    *sample = value.to_bits();
+                }
+            }
+        }
+    }
+}
+
+/// Each serial region decode of `codestream` hands a row sink the samples
+/// its component planes hold. Those are the decodes that can stream.
+fn assert_rows_match_planes(codestream: &[u8], case: &str) {
+    let full = Image::new(codestream, &DecodeSettings::default()).expect("parse codestream");
+    for mode in decode_modes(full.width(), full.height()) {
+        let (CpuDecodeParallelism::Serial, Some(region), false) =
+            (mode.parallelism, mode.region, mode.jp2)
+        else {
+            continue;
+        };
+        let settings = DecodeSettings {
+            target_resolution: mode
+                .half_resolution
+                .then(|| (full.width().div_ceil(2), full.height().div_ceil(2))),
+            ..DecodeSettings::default()
+        };
+        let image = Image::new(codestream, &settings).expect("parse codestream");
+        let samples = (region.2 * region.3) as usize;
+        let mut context = DecoderContext::default();
+        context.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
+        let components = image
+            .decode_region_components_for_integer_output_with_context(region, &mut context)
+            .unwrap_or_else(|error| panic!("{case} {mode:?} planes: {error}"));
+        let planes: Vec<Vec<u32>> = components
+            .planes()
+            .iter()
+            .map(|plane| {
+                plane.samples()[..samples]
+                    .iter()
+                    .map(|v| v.to_bits())
+                    .collect()
+            })
+            .collect();
+        drop(components);
+        let mut sink = SinkPlanes {
+            width: region.2 as usize,
+            samples,
+            planes: Vec::new(),
+        };
+        let mut context = DecoderContext::default();
+        context.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
+        image
+            .decode_region_rows_for_integer_output_with_context(region, &mut context, &mut sink)
+            .unwrap_or_else(|error| panic!("{case} {mode:?} rows: {error}"));
+        assert!(
+            sink.planes == planes,
+            "{case} {mode:?}: rows differ from planes"
+        );
+    }
+}
+
 fn assert_decodes_match(patched: &[u8], original: &[u8], case: &str) {
+    assert_rows_match_planes(patched, case);
     let image = Image::new(original, &DecodeSettings::default()).expect("parse original");
     for mode in decode_modes(image.width(), image.height()) {
         let expected = decode_with_mode(original, mode);
@@ -806,6 +887,7 @@ fn tiles_with_different_coding_styles_decode_as_their_own_encodes() {
         let left = encode_fixture(TWO_TILES, components, left_style, Some(TILE));
         let right = encode_fixture(TWO_TILES, components, right_style, Some(TILE));
         let spliced = splice_second_tile(&left, &right);
+        assert_rows_match_planes(&spliced, &case);
         let (width, height) = TWO_TILES;
         for mode in decode_modes(width, height) {
             let (left_image, right_image) = (
