@@ -87,15 +87,15 @@ impl PacketDirectoryCache {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let State::Ready(retained) = &*state {
-            if Arc::ptr_eq(retained, directory) && Arc::strong_count(directory) == 2 {
-                // Only this request and the Image own it. Drop both before
-                // retrying, so fallback really recovers the original headroom.
-                *state = State::Disabled;
-                return true;
-            }
+        // Only this request and the Image own it. Drop both before
+        // retrying, so fallback really recovers the original headroom.
+        let evict = matches!(&*state, State::Ready(retained)
+            if Arc::ptr_eq(retained, directory) && Arc::strong_count(directory) == 2);
+        if evict {
+            *state = State::Disabled;
         }
-        false
+        drop(state);
+        evict
     }
 
     #[cfg(test)]

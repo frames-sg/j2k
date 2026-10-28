@@ -389,7 +389,14 @@ fn parse_inner<'a>(
     storage: &mut DecompositionStorage<'a>,
     skips: &mut PacketSkips,
     mut relevance: Option<&mut PacketRelevance<'_>>,
-    #[cfg_attr(not(feature = "std"), allow(unused_variables))] walk: &mut PacketWalk<'_>,
+    #[cfg_attr(
+        not(feature = "std"),
+        expect(
+            unused_variables,
+            reason = "without std there is no packet directory for the walk to record"
+        )
+    )]
+    walk: &mut PacketWalk<'_>,
 ) -> PacketResult<bool> {
     while !tile_part.header().at_end() {
         let progression_data = progression_iterator

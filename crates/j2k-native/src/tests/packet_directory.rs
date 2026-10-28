@@ -38,7 +38,7 @@ fn options(reversible: bool, block: (u8, u8), markers: bool) -> EncodeOptions {
 }
 
 fn fixture(options: &EncodeOptions) -> Vec<u8> {
-    let pixels: Vec<u8> = (0..257 * 193 * 3)
+    let pixels: Vec<u8> = (0_u32..257 * 193 * 3)
         .map(|i| ((i * 71 + i / 37) & 255) as u8)
         .collect();
     encode(&pixels, 257, 193, 3, 8, false, options).unwrap()
@@ -151,7 +151,7 @@ fn packet_directory_shares_existing_image_across_concurrent_contexts() {
         assert_eq!(ac.packet_headers + ac.directory_skips, bc.packet_headers);
     };
     std::thread::scope(|scope| {
-        let tasks: Vec<_> = (0..4).map(|_| scope.spawn(&check)).collect();
+        let tasks: Vec<_> = (0..4).map(|_| scope.spawn(check)).collect();
         for task in tasks {
             task.join().unwrap();
         }
@@ -277,7 +277,9 @@ fn packet_directory_matches_independent_openjpeg_at_a_nonzero_origin() {
 
 #[test]
 fn packet_directory_preserves_truncated_body_and_tile_errors() {
-    let pixels: Vec<_> = (0..1024).map(|i| ((i * 31 + i / 7) & 255) as u8).collect();
+    let pixels: Vec<_> = (0_u32..1024)
+        .map(|i| ((i * 31 + i / 7) & 255) as u8)
+        .collect();
     let mut bytes = encode(
         &pixels,
         32,

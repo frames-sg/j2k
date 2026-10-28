@@ -885,7 +885,13 @@ impl<'a> Image<'a> {
 
     // Capacity failures can occur after core decoding, while packing or
     // planning output. Drop an idle cache and retry the complete operation.
-    #[cfg_attr(not(feature = "std"), allow(clippy::unused_self))]
+    #[cfg_attr(
+        not(feature = "std"),
+        expect(
+            clippy::unused_self,
+            reason = "without std there is no packet cache, so only the std retry reads self"
+        )
+    )]
     fn with_packet_cache_retry<T>(&self, mut operation: impl FnMut() -> Result<T>) -> Result<T> {
         let result = operation();
         #[cfg(feature = "std")]
