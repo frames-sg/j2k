@@ -72,6 +72,30 @@ impl<'data> TilePart<'data> {
 }
 
 impl<'data> TilePartCursor<'_, 'data> {
+    #[cfg(feature = "std")]
+    pub(crate) fn inline_offset(&self) -> Option<usize> {
+        match self {
+            Self::Merged { data, .. } => Some(data.offset()),
+            Self::Separated { .. } => None,
+        }
+    }
+
+    /// Advance a validated derived range, without touching PLT expectations.
+    #[cfg(feature = "std")]
+    pub(crate) fn skip_derived_packet(&mut self, start: usize, end: usize) -> Option<()> {
+        let Self::Merged {
+            data,
+            packet_lengths,
+        } = self
+        else {
+            return None;
+        };
+        if packet_lengths.present || data.offset() != start || end <= start {
+            return None;
+        }
+        data.skip_bytes(end.checked_sub(start)?)
+    }
+
     pub(crate) fn header(&mut self) -> &mut BitReader<'data> {
         match self {
             Self::Merged { data, .. } => data,

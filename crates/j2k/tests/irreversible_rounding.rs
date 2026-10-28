@@ -72,6 +72,9 @@ fn lossy_fixture(case: LossyCase) -> Vec<u8> {
     let options = EncodeOptions {
         reversible: false,
         use_mct: case.use_mct,
+        progression_order: j2k_native::EncodeProgressionOrder::Rpcl,
+        precinct_exponents: vec![(7, 7); 6],
+        num_layers: 3,
         irreversible_quantization_scale: 4.0,
         ..EncodeOptions::default()
     };
@@ -179,15 +182,20 @@ fn irreversible_region_row_and_batch_outputs_match_the_full_decode() {
         );
 
         let mut region: Vec<u8> = std::iter::repeat_n(0, expected_region.len()).collect();
-        decoder
-            .decode_region_into(
-                &mut J2kScratchPool::new(),
-                &mut region,
-                roi.w as usize * channels,
-                fmt,
-                roi,
-            )
-            .expect("region decode");
+        // Exercise the unchanged facade through cold, preparation, and warm
+        // region calls, retaining its Image while request scratch is released.
+        for _ in 0..3 {
+            decoder
+                .decode_region_into(
+                    &mut J2kScratchPool::new(),
+                    &mut region,
+                    roi.w as usize * channels,
+                    fmt,
+                    roi,
+                )
+                .expect("region decode");
+            assert_eq!(region, expected_region);
+        }
 
         let mut rows = CollectRows::default();
         <J2kDecoder<'_> as ImageDecodeRows<'_, u8>>::decode_rows(&mut decoder, &mut rows)

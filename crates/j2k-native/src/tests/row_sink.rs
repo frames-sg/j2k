@@ -453,3 +453,80 @@ fn streamed_rows_charge_every_components_rings() {
         }
     }
 }
+
+/// A streamed decode that holds the image's packet directory and runs out of
+/// budget gives the directory up and reruns only while no row has reached the
+/// sink, since a rerun after that would send those rows again. This decode
+/// peaks before its first row, so it reruns, and every sample still arrives
+/// once.
+#[cfg(feature = "std")]
+#[test]
+fn streamed_rows_evict_the_packet_directory_before_the_first_row() {
+    let pixels = noisy_pixels(3);
+    let bytes = encode(
+        &pixels,
+        WIDTH,
+        HEIGHT,
+        3,
+        8,
+        false,
+        &EncodeOptions {
+            num_decomposition_levels: 4,
+            // A packet directory needs one RPCL tile.
+            progression_order: crate::EncodeProgressionOrder::Rpcl,
+            ..EncodeOptions::default()
+        },
+    )
+    .expect("encode directory fixture");
+    let roi = (37, 21, 130, 101);
+    let decode = |image: &Image<'_>, baseline: usize| {
+        let mut context = DecoderContext::default();
+        context.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
+        let mut sink = CollectingSink::new(roi.2, roi.3);
+        let result = image.run_decode_rows(
+            &mut context,
+            Some(roi),
+            None,
+            true,
+            baseline,
+            Some(&mut sink),
+        );
+        (result, sink, context.tile_decode_context.stream_rows)
+    };
+    // The largest baseline a decode without a directory fits in.
+    let (mut fits, mut fails) = (0, crate::DEFAULT_MAX_DECODE_BYTES);
+    while fails - fits > 1 {
+        let candidate = fits + (fails - fits) / 2;
+        let fresh = Image::new(&bytes, &DecodeSettings::default()).expect("parse fixture");
+        match decode(&fresh, candidate).0 {
+            Ok(_) => fits = candidate,
+            Err(error) => {
+                assert!(crate::j2c::is_capacity_error(&error), "{error:?}");
+                fails = candidate;
+            }
+        }
+    }
+    let fresh = Image::new(&bytes, &DecodeSettings::default()).expect("parse fixture");
+    let (result, expected, streamed) = decode(&fresh, fits);
+    result.expect("a fresh image fits");
+    assert!(streamed);
+
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse fixture");
+    let metadata = image.retained_allocation_bytes().expect("metadata bytes");
+    for _ in 0..2 {
+        decode(&image, metadata).0.expect("decode region rows");
+    }
+    assert!(
+        image.retained_allocation_bytes().expect("retained bytes") > metadata,
+        "a repeated region builds a directory"
+    );
+    let (result, sink, streamed) = decode(&image, fits);
+    result.expect("evicting the directory restores a fitting request");
+    assert!(streamed);
+    assert!(sink.arrivals.iter().all(|&count| count == 1));
+    assert_eq!(sink.planes, expected.planes);
+    assert_eq!(
+        image.retained_allocation_bytes().expect("retained bytes"),
+        metadata
+    );
+}

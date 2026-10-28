@@ -10,6 +10,8 @@ mod ht_refinement;
 mod idwt_into_channels;
 mod idwt_window_storage;
 mod line_region_idwt;
+#[cfg(feature = "std")]
+mod packet_directory;
 mod progression_matrix;
 mod row_sink;
 mod workspace_peak;
@@ -1022,6 +1024,8 @@ fn tile_parse_rejects_component_tile_structural_bomb_before_allocation() {
         retained_header_bytes,
         &mut context,
         &mut ht_decoder,
+        #[cfg(feature = "std")]
+        None,
     )
     .expect_err("tile structural budget must reject before tile allocation");
 

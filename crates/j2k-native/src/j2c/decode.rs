@@ -57,6 +57,8 @@ pub(crate) use self::direct_plan::{
     build_referenced_htj2k_grayscale_plan, build_referenced_htj2k_rgba_plan,
 };
 pub(crate) use self::peak::{record_workspace, WorkspaceBytes, WorkspacePeak};
+#[cfg(feature = "std")]
+pub(crate) use self::reuse::is_capacity_error;
 use self::store::{
     apply_inverse_mct_per_tile, apply_sign_shift_after_mct, component_unsigned_level_shift,
     fused_last_level, store, store_last_level_bands,
@@ -83,12 +85,16 @@ pub use self::workspace::{
     CpuDecodeParallelism, DecoderContext, DecoderWorkspace, DecoderWorkspaceStats,
 };
 
+#[cfg(test)]
 pub(crate) fn decode_with_capacity_retry<'a>(
     data: &'a [u8],
     header: &Header<'a>,
     retained_image_bytes: usize,
     ctx: &mut DecoderContext<'a>,
     ht_decoder: &mut Option<&mut dyn HtCodeBlockDecoder>,
+    #[cfg(feature = "std")] directory: Option<
+        &alloc::sync::Arc<super::segment::directory::PacketDirectory>,
+    >,
 ) -> Result<()> {
     decode_rows_with_capacity_retry(
         data,
@@ -97,6 +103,8 @@ pub(crate) fn decode_with_capacity_retry<'a>(
         ctx,
         ht_decoder,
         &mut None,
+        #[cfg(feature = "std")]
+        directory,
     )
 }
 
@@ -111,6 +119,9 @@ pub(crate) fn decode_rows_with_capacity_retry<'a>(
     ctx: &mut DecoderContext<'a>,
     ht_decoder: &mut Option<&mut dyn HtCodeBlockDecoder>,
     row_sink: &mut Option<&mut dyn ComponentRowSink>,
+    #[cfg(feature = "std")] directory: Option<
+        &alloc::sync::Arc<super::segment::directory::PacketDirectory>,
+    >,
 ) -> Result<()> {
     run_decode_with_capacity_retry(ctx, |ctx| {
         decode(
@@ -120,6 +131,8 @@ pub(crate) fn decode_rows_with_capacity_retry<'a>(
             ctx,
             ht_decoder,
             row_sink,
+            #[cfg(feature = "std")]
+            directory,
         )
     })
 }
@@ -226,6 +239,9 @@ fn decode<'a>(
     ctx: &mut DecoderContext<'a>,
     ht_decoder: &mut Option<&mut dyn HtCodeBlockDecoder>,
     row_sink: &mut Option<&mut dyn ComponentRowSink>,
+    #[cfg(feature = "std")] directory: Option<
+        &alloc::sync::Arc<super::segment::directory::PacketDirectory>,
+    >,
 ) -> Result<()> {
     let mut reused_baseline = ctx.prepare_reused_decode_baseline(retained_image_bytes)?;
     let profile_enabled = profile::profile_stages_enabled();
@@ -253,6 +269,12 @@ fn decode<'a>(
         parsed_tiles = tile::parse(&mut reader, header, reused_baseline.parser_live);
     }
     let tiles = parsed_tiles?;
+    #[cfg(feature = "std")]
+    let tiles = {
+        let mut tiles = tiles;
+        tiles.set_packet_directory(directory.cloned());
+        tiles
+    };
     profile_timings.parse_tiles_us += profile::elapsed_us(stage_start);
 
     decode_parsed_tiles(
@@ -644,6 +666,10 @@ impl OutputRegion {
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DecodeDebugCounters {
+    #[cfg(all(test, feature = "std"))]
+    pub(crate) packet_headers: usize,
+    #[cfg(all(test, feature = "std"))]
+    pub(crate) directory_skips: usize,
     pub(crate) decoded_code_blocks: usize,
     pub(crate) skipped_code_blocks: usize,
     pub(crate) idwt_output_samples: usize,
@@ -805,7 +831,14 @@ fn decode_tile<'a>(
     profile_timings.build_us += profile::elapsed_us(stage_start);
     // Next, we parse the layers/segments for each code block.
     let stage_start = profile::profile_now(profile_enabled);
-    segment::parse_selected(tile, header, storage, selection.as_ref())?;
+    let packet_stats = segment::parse_selected(tile, header, storage, selection.as_ref())?;
+    #[cfg(not(all(test, feature = "std")))]
+    let _ = packet_stats;
+    #[cfg(all(test, feature = "std"))]
+    {
+        tile_ctx.debug_counters.packet_headers += packet_stats.parsed_headers;
+        tile_ctx.debug_counters.directory_skips += packet_stats.skipped_packets;
+    }
     record_workspace(tile_ctx, storage, selection_bytes)?;
     drop(selection);
     storage.structural_workspace_bytes = storage

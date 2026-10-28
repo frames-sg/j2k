@@ -751,6 +751,8 @@ mod tests {
         progression_changes: Vec<ProgressionChange>,
     ) -> Tile<'static> {
         Tile {
+            #[cfg(feature = "std")]
+            packet_directory: None,
             idx: 0,
             tile_parts: vec![],
             component_infos: vec![ComponentInfo {
@@ -906,6 +908,8 @@ mod tests {
     #[test]
     fn empty_component_set_is_an_invalid_progression_iterator() {
         let tile = Tile {
+            #[cfg(feature = "std")]
+            packet_directory: None,
             idx: 0,
             tile_parts: vec![],
             component_infos: vec![],
@@ -962,6 +966,8 @@ mod tests {
         progression_changes: Vec<ProgressionChange>,
     ) -> Vec<(u8, u16)> {
         let tile = Tile {
+            #[cfg(feature = "std")]
+            packet_directory: None,
             idx: 0,
             tile_parts: vec![],
             component_infos: levels.iter().map(|&l| component_with_levels(l)).collect(),

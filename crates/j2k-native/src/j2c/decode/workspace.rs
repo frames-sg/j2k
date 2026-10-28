@@ -277,6 +277,17 @@ impl DecoderContext<'_> {
         self.workspace_stats.retained_idwt_bytes = retained_idwt_bytes;
     }
 
+    #[cfg(feature = "std")]
+    pub(crate) fn retained_decode_bytes(&self) -> crate::Result<usize> {
+        let channels = self.tile_decode_context.retained_channel_bytes()?;
+        let scratch = self.tile_decode_context.retained_scratch_bytes()?;
+        self.storage
+            .retained_capacity_bytes()?
+            .checked_add(channels)
+            .and_then(|bytes| bytes.checked_add(scratch))
+            .ok_or(crate::ValidationError::ImageTooLarge.into())
+    }
+
     pub(crate) fn release_reusable_allocations(&mut self) {
         self.tile_decode_context.release_all_allocations();
         self.storage.release_all_allocations();

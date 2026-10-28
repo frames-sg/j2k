@@ -54,6 +54,8 @@ pub(super) fn resolve_segments(
         // Only code-blocks the decode reads have layer records; the others'
         // contributions are checked the same way and then skipped.
         let read = code_block_is_read(storage, sub_band_idx, &storage.code_blocks[code_block_idx]);
+        #[cfg(feature = "std")]
+        let read = read && !skips.discard_contributions;
         let layer_num = usize::from(progression_data.layer_num);
         let code_block = &mut storage.code_blocks[code_block_idx];
         let layer = if read {

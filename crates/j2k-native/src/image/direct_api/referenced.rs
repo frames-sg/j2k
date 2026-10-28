@@ -20,36 +20,38 @@ impl<'a> Image<'a> {
         decoder_context: &mut DecoderContext<'a>,
         output_region: (u32, u32, u32, u32),
     ) -> Result<J2kReferencedClassicPlan> {
-        validate_referenced_color_shape(&self.color_space, self.has_alpha)?;
-        let retained_planning_bytes = self.retained_planning_bytes()?;
-        decoder_context.set_output_region(Some(output_region));
-        let result = if matches!(self.color_space, ColorSpace::Gray) {
-            j2c::build_referenced_classic_grayscale_plan(
-                self.codestream,
-                self.encoded_input,
-                &self.header,
-                retained_planning_bytes,
-                decoder_context,
-            )
-        } else if self.has_alpha {
-            j2c::build_referenced_classic_rgba_plan(
-                self.codestream,
-                self.encoded_input,
-                &self.header,
-                retained_planning_bytes,
-                decoder_context,
-            )
-        } else {
-            j2c::build_referenced_classic_color_plan(
-                self.codestream,
-                self.encoded_input,
-                &self.header,
-                retained_planning_bytes,
-                decoder_context,
-            )
-        };
-        decoder_context.set_output_region(None);
-        result
+        self.with_packet_cache_retry(|| {
+            validate_referenced_color_shape(&self.color_space, self.has_alpha)?;
+            let retained_planning_bytes = self.retained_planning_bytes()?;
+            decoder_context.set_output_region(Some(output_region));
+            let result = if matches!(self.color_space, ColorSpace::Gray) {
+                j2c::build_referenced_classic_grayscale_plan(
+                    self.codestream,
+                    self.encoded_input,
+                    &self.header,
+                    retained_planning_bytes,
+                    decoder_context,
+                )
+            } else if self.has_alpha {
+                j2c::build_referenced_classic_rgba_plan(
+                    self.codestream,
+                    self.encoded_input,
+                    &self.header,
+                    retained_planning_bytes,
+                    decoder_context,
+                )
+            } else {
+                j2c::build_referenced_classic_color_plan(
+                    self.codestream,
+                    self.encoded_input,
+                    &self.header,
+                    retained_planning_bytes,
+                    decoder_context,
+                )
+            };
+            decoder_context.set_output_region(None);
+            result
+        })
     }
 
     /// Build owned execution geometry whose HT compressed payloads are ranges
@@ -60,36 +62,38 @@ impl<'a> Image<'a> {
         decoder_context: &mut DecoderContext<'a>,
         output_region: (u32, u32, u32, u32),
     ) -> Result<J2kReferencedHtj2kPlan> {
-        validate_referenced_color_shape(&self.color_space, self.has_alpha)?;
-        let retained_planning_bytes = self.retained_planning_bytes()?;
-        decoder_context.set_output_region(Some(output_region));
-        let result = if matches!(self.color_space, ColorSpace::Gray) {
-            j2c::build_referenced_htj2k_grayscale_plan(
-                self.codestream,
-                self.encoded_input,
-                &self.header,
-                retained_planning_bytes,
-                decoder_context,
-            )
-        } else if self.has_alpha {
-            j2c::build_referenced_htj2k_rgba_plan(
-                self.codestream,
-                self.encoded_input,
-                &self.header,
-                retained_planning_bytes,
-                decoder_context,
-            )
-        } else {
-            j2c::build_referenced_htj2k_color_plan(
-                self.codestream,
-                self.encoded_input,
-                &self.header,
-                retained_planning_bytes,
-                decoder_context,
-            )
-        };
-        decoder_context.set_output_region(None);
-        result
+        self.with_packet_cache_retry(|| {
+            validate_referenced_color_shape(&self.color_space, self.has_alpha)?;
+            let retained_planning_bytes = self.retained_planning_bytes()?;
+            decoder_context.set_output_region(Some(output_region));
+            let result = if matches!(self.color_space, ColorSpace::Gray) {
+                j2c::build_referenced_htj2k_grayscale_plan(
+                    self.codestream,
+                    self.encoded_input,
+                    &self.header,
+                    retained_planning_bytes,
+                    decoder_context,
+                )
+            } else if self.has_alpha {
+                j2c::build_referenced_htj2k_rgba_plan(
+                    self.codestream,
+                    self.encoded_input,
+                    &self.header,
+                    retained_planning_bytes,
+                    decoder_context,
+                )
+            } else {
+                j2c::build_referenced_htj2k_color_plan(
+                    self.codestream,
+                    self.encoded_input,
+                    &self.header,
+                    retained_planning_bytes,
+                    decoder_context,
+                )
+            };
+            decoder_context.set_output_region(None);
+            result
+        })
     }
 }
 

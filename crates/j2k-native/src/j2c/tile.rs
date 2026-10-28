@@ -78,6 +78,9 @@ pub(crate) struct Tile<'a> {
     pub(crate) progression_changes: Vec<ProgressionChange>,
     pub(crate) num_layers: u8,
     pub(crate) mct: bool,
+    #[cfg(feature = "std")]
+    pub(crate) packet_directory:
+        Option<alloc::sync::Arc<super::segment::directory::PacketDirectory>>,
 }
 
 /// A tile part where packet headers and packet data are interleaved.
@@ -122,6 +125,17 @@ impl PacketLengthMetadata {
 }
 
 impl TilePart<'_> {
+    #[cfg(feature = "std")]
+    pub(crate) fn unindexed_inline_bounds(&self) -> Option<(usize, usize)> {
+        match self {
+            Self::Merged(part) if !part.packet_lengths.present => Some((
+                part.data.offset(),
+                part.data.offset().checked_add(part.data.tail()?.len())?,
+            )),
+            Self::Merged(_) | Self::Separated(_) => None,
+        }
+    }
+
     /// The number of PLT packet lengths when this tile-part's packets can be
     /// skipped whole by length: headers in-band and lengths signalled.
     pub(crate) fn skippable_packet_count(&self) -> Option<usize> {
@@ -189,6 +203,8 @@ impl Tile<'_> {
         };
 
         Tile {
+            #[cfg(feature = "std")]
+            packet_directory: None,
             idx,
             // Will be filled once we start parsing.
             tile_parts: Vec::new(),
@@ -739,6 +755,8 @@ mod tests {
                 roi_shift: 0,
             };
             let tile = Tile {
+                #[cfg(feature = "std")]
+                packet_directory: None,
                 idx: 0,
                 tile_parts: vec![],
                 rect: IntRect::from_ltrb(0, 0, u32::MAX, u32::MAX),
@@ -787,6 +805,8 @@ mod tests {
             roi_shift: 0,
         };
         let tile = Tile {
+            #[cfg(feature = "std")]
+            packet_directory: None,
             idx: 0,
             tile_parts: vec![],
             rect: IntRect::from_ltrb(4, 0, 12, 12),

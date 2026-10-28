@@ -74,6 +74,47 @@ pub(crate) struct PrecinctSelection {
 }
 
 impl PrecinctSelection {
+    /// Full RPCL header scan, using the same bounded scratch precincts as
+    /// parsed-only ROI packets. No block gets a layer/segment graph.
+    #[cfg(feature = "std")]
+    pub(crate) fn for_packet_scan(tile: &Tile<'_>, live_bytes: usize) -> Result<Self> {
+        let counts = count(tile)?;
+        let mut budget = DecodeAllocationBudget::from_live_bytes(live_bytes)?;
+        let mut uses = Vec::new();
+        let mut runs = Vec::new();
+        let mut component_runs = Vec::new();
+        budget.resize_new(&mut uses, counts.run_precincts, PrecinctUse::Parsed)?;
+        budget.reserve_new(&mut runs, counts.runs)?;
+        budget.reserve_new(&mut component_runs, counts.components)?;
+        let mut precincts = 0;
+        for component in tile.component_tiles() {
+            component_runs.push(runs.len());
+            for resolution in component.resolution_tiles() {
+                runs.push(precincts);
+                precincts += usize::try_from(resolution.num_precincts())
+                    .map_err(|_| ValidationError::ImageTooLarge)?;
+            }
+        }
+        let mut selection = Self {
+            uses,
+            runs,
+            component_runs,
+            records: Vec::new(),
+            record_runs: Vec::new(),
+            skip_by_length: false,
+            parsed_in_scratch: true,
+            required_packets: counts
+                .run_precincts
+                .checked_mul(usize::from(tile.num_layers))
+                .ok_or(ValidationError::ImageTooLarge)?,
+            owned_bytes: 0,
+            scanned_packets: 0,
+            released_storage_bytes: 0,
+        };
+        index_records(&mut selection, &mut budget)?;
+        Ok(selection)
+    }
+
     /// The precinct uses for the `run`-th resolution in build order.
     pub(crate) fn run(&self, run: usize) -> Option<&[PrecinctUse]> {
         let start = *self.runs.get(run)?;

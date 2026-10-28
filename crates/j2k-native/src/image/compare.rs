@@ -52,10 +52,7 @@ impl Image<'_> {
     }
 
     fn packed_samples_equal(&self, other: &Image<'_>, external_bytes: usize) -> Result<bool> {
-        let source_metadata =
-            combine_retained_bytes(external_bytes, self.retained_metadata_bytes()?)?;
-        let paired_metadata =
-            combine_retained_bytes(source_metadata, other.retained_metadata_bytes()?)?;
+        let paired_metadata = self.paired_decode_baseline(other, external_bytes)?;
         let source = {
             let mut context = DecoderContext::default();
             self.decode_native_with_context_and_retained_baseline(&mut context, paired_metadata)?
@@ -63,7 +60,10 @@ impl Image<'_> {
         let source_bytes = source
             .allocated_bytes()
             .ok_or(ValidationError::ImageTooLarge)?;
-        let encoded_baseline = combine_retained_bytes(paired_metadata, source_bytes)?;
+        let encoded_baseline = combine_retained_bytes(
+            other.paired_decode_baseline(self, external_bytes)?,
+            source_bytes,
+        )?;
         let encoded = {
             let mut context = DecoderContext::default();
             other
@@ -73,10 +73,7 @@ impl Image<'_> {
     }
 
     fn component_samples_equal(&self, other: &Image<'_>, external_bytes: usize) -> Result<bool> {
-        let source_metadata =
-            combine_retained_bytes(external_bytes, self.retained_metadata_bytes()?)?;
-        let paired_metadata =
-            combine_retained_bytes(source_metadata, other.retained_metadata_bytes()?)?;
+        let paired_metadata = self.paired_decode_baseline(other, external_bytes)?;
         let source = {
             let mut context = DecoderContext::default();
             self.decode_native_components_with_context_and_retained_baseline(
@@ -87,7 +84,10 @@ impl Image<'_> {
         let source_bytes = source
             .allocated_bytes()
             .ok_or(ValidationError::ImageTooLarge)?;
-        let encoded_baseline = combine_retained_bytes(paired_metadata, source_bytes)?;
+        let encoded_baseline = combine_retained_bytes(
+            other.paired_decode_baseline(self, external_bytes)?,
+            source_bytes,
+        )?;
         let encoded = {
             let mut context = DecoderContext::default();
             other.decode_native_components_with_context_and_retained_baseline(
@@ -96,6 +96,12 @@ impl Image<'_> {
             )?
         };
         Ok(native_components_equal(&source, &encoded))
+    }
+
+    fn paired_decode_baseline(&self, other: &Image<'_>, external_bytes: usize) -> Result<usize> {
+        let source =
+            combine_retained_bytes(external_bytes, self.retained_header_metadata_bytes()?)?;
+        combine_retained_bytes(source, other.retained_metadata_bytes()?)
     }
 
     fn has_uniform_component_precision(&self) -> bool {
