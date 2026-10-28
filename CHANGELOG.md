@@ -5,6 +5,14 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- `j2k-tilecodec` LZW decode no longer reports valid TIFF strips and tiles
+  as truncated. weezl reads input ahead of decoding, so the call that
+  consumes the last byte can still hold codes up to the end code, often in
+  short streams; decoding stopped there with a truncation error. It now
+  finishes the buffered codes, and reports truncation only when no input is
+  left and decoding makes no progress. Every strict prefix of a stream still
+  fails as truncated. An empty or nearly empty stream is reported as
+  truncated rather than malformed.
 - Fixed CPU decodes of codestreams whose tile-part headers set their own
   coding style ([#295](https://github.com/frames-sg/j2k/issues/295)). The
   inverse DWT and the rounding of integer output used the main header's
