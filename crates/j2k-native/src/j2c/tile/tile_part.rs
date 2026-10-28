@@ -54,6 +54,7 @@ pub(super) fn parse_tile_part<'a>(
     let mut packet_lengths_present = false;
     let mut ppt_headers = Vec::new();
 
+    apply_tile_part_defaults(reader.clone(), tile, &mut allocations)?;
     loop {
         let Some(marker) = reader.peek_marker() else {
             return if main_header.strict {
@@ -70,41 +71,10 @@ pub(super) fn parse_tile_part<'a>(
             }
             // COD, COC, QCD and QCC should only be used in the _first_
             // tile-part header, if they appear at all.
-            markers::COD => {
+            markers::COD | markers::QCD => {
+                // `apply_tile_part_defaults` applied them already.
                 reader.read_marker()?;
-                let cod = codestream::cod_marker(reader)?;
-                allocations
-                    .track_temporary_vec(&cod.component_parameters.parameters.precinct_exponents)?;
-
-                tile.mct = cod.mct;
-                tile.num_layers = cod.num_layers;
-                tile.progression_order = cod.progression_order;
-
-                let component_count = tile.component_infos.len();
-                if component_count == 0 {
-                    return Err(ValidationError::InvalidComponentMetadata.into());
-                }
-                let flags = cod.component_parameters.flags;
-                let mut source = Some(cod.component_parameters.parameters);
-                for (component_idx, component) in tile.component_infos.iter_mut().enumerate() {
-                    let replacement = if component_idx + 1 == component_count {
-                        source
-                            .take()
-                            .ok_or(ValidationError::InvalidComponentMetadata)?
-                    } else {
-                        try_clone_coding_parameters(
-                            source
-                                .as_ref()
-                                .ok_or(ValidationError::InvalidComponentMetadata)?,
-                            &mut allocations,
-                        )?
-                    };
-                    allocations.replace_coding_parameters(
-                        &mut component.coding_style.parameters,
-                        replacement,
-                    )?;
-                    component.coding_style.flags.raw |= flags.raw;
-                }
+                skip_marker_segment(reader).ok_or(MarkerError::ParseFailure("COD/QCD"))?;
             }
             markers::COC => {
                 reader.read_marker()?;
@@ -122,33 +92,6 @@ pub(super) fn parse_tile_part<'a>(
                     coc.parameters,
                 )?;
                 component.coding_style.flags.raw |= coc.flags.raw;
-            }
-            markers::QCD => {
-                reader.read_marker()?;
-                let qcd = codestream::qcd_marker(reader)?;
-                allocations.track_temporary_vec(&qcd.step_sizes)?;
-
-                let component_count = tile.component_infos.len();
-                if component_count == 0 {
-                    return Err(ValidationError::InvalidComponentMetadata.into());
-                }
-                let mut source = Some(qcd);
-                for (component_idx, component) in tile.component_infos.iter_mut().enumerate() {
-                    let replacement = if component_idx + 1 == component_count {
-                        source
-                            .take()
-                            .ok_or(ValidationError::InvalidComponentMetadata)?
-                    } else {
-                        try_clone_quantization_info(
-                            source
-                                .as_ref()
-                                .ok_or(ValidationError::InvalidComponentMetadata)?,
-                            &mut allocations,
-                        )?
-                    };
-                    allocations
-                        .replace_quantization(&mut component.quantization_info, replacement)?;
-                }
             }
             markers::QCC => {
                 reader.read_marker()?;
@@ -341,6 +284,110 @@ pub(super) fn parse_tile_part<'a>(
     retain_tile_part_metadata(&mut allocations, &tile_part)?;
     tile.tile_parts.push(tile_part);
 
+    Ok(())
+}
+
+/// Apply the COD and QCD of the tile-part header `reader` starts in to every
+/// component of `tile`. The header loop then applies its COC and QCC, which
+/// take precedence over them for their components wherever they appear in
+/// the header (T.800 Annex A). Stops at a segment it cannot skip, for the
+/// loop to reject.
+fn apply_tile_part_defaults(
+    mut reader: BitReader<'_>,
+    tile: &mut Tile<'_>,
+    allocations: &mut TileMetadataTransaction<'_>,
+) -> Result<()> {
+    loop {
+        match reader.peek_marker() {
+            Some(markers::COD) => {
+                reader.read_marker()?;
+                apply_tile_cod(&mut reader, tile, allocations)?;
+            }
+            Some(markers::QCD) => {
+                reader.read_marker()?;
+                apply_tile_qcd(&mut reader, tile, allocations)?;
+            }
+            Some(markers::SOD | markers::EOC) | None => return Ok(()),
+            // Reserved marker codes without marker segment parameters.
+            Some(0x30..=0x3F) => {
+                reader.read_marker()?;
+            }
+            Some(_) => {
+                reader.read_marker()?;
+                if skip_marker_segment(&mut reader).is_none() {
+                    return Ok(());
+                }
+            }
+        }
+    }
+}
+
+fn apply_tile_cod(
+    reader: &mut BitReader<'_>,
+    tile: &mut Tile<'_>,
+    allocations: &mut TileMetadataTransaction<'_>,
+) -> Result<()> {
+    let cod = codestream::cod_marker(reader)?;
+    allocations.track_temporary_vec(&cod.component_parameters.parameters.precinct_exponents)?;
+
+    tile.mct = cod.mct;
+    tile.num_layers = cod.num_layers;
+    tile.progression_order = cod.progression_order;
+
+    let component_count = tile.component_infos.len();
+    if component_count == 0 {
+        return Err(ValidationError::InvalidComponentMetadata.into());
+    }
+    let flags = cod.component_parameters.flags;
+    let mut source = Some(cod.component_parameters.parameters);
+    for (component_idx, component) in tile.component_infos.iter_mut().enumerate() {
+        let replacement = if component_idx + 1 == component_count {
+            source
+                .take()
+                .ok_or(ValidationError::InvalidComponentMetadata)?
+        } else {
+            try_clone_coding_parameters(
+                source
+                    .as_ref()
+                    .ok_or(ValidationError::InvalidComponentMetadata)?,
+                allocations,
+            )?
+        };
+        allocations
+            .replace_coding_parameters(&mut component.coding_style.parameters, replacement)?;
+        component.coding_style.flags.raw |= flags.raw;
+    }
+    Ok(())
+}
+
+fn apply_tile_qcd(
+    reader: &mut BitReader<'_>,
+    tile: &mut Tile<'_>,
+    allocations: &mut TileMetadataTransaction<'_>,
+) -> Result<()> {
+    let qcd = codestream::qcd_marker(reader)?;
+    allocations.track_temporary_vec(&qcd.step_sizes)?;
+
+    let component_count = tile.component_infos.len();
+    if component_count == 0 {
+        return Err(ValidationError::InvalidComponentMetadata.into());
+    }
+    let mut source = Some(qcd);
+    for (component_idx, component) in tile.component_infos.iter_mut().enumerate() {
+        let replacement = if component_idx + 1 == component_count {
+            source
+                .take()
+                .ok_or(ValidationError::InvalidComponentMetadata)?
+        } else {
+            try_clone_quantization_info(
+                source
+                    .as_ref()
+                    .ok_or(ValidationError::InvalidComponentMetadata)?,
+                allocations,
+            )?
+        };
+        allocations.replace_quantization(&mut component.quantization_info, replacement)?;
+    }
     Ok(())
 }
 

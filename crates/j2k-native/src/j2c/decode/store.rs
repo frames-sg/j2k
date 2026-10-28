@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use alloc::vec::Vec;
+use core::ops::Range;
 
 use super::super::codestream::WaveletTransform;
 use super::{
-    bail, ComponentInfo, ComponentTile, DecodingError, DecompositionStorage, Header,
-    HtCodeBlockDecoder, J2kStoreComponentJob, OutputRegion, ResolutionTile, Result, Tile,
-    TileDecodeContext,
+    bail, mct, ColorError, ComponentData, ComponentInfo, ComponentTile, DecodingError,
+    DecompositionStorage, Header, HtCodeBlockDecoder, J2kStoreComponentJob, OutputRegion,
+    ResolutionTile, Result, Tile, TileDecodeContext,
 };
 use crate::j2c::build::CoefficientLayout;
 use crate::j2c::idwt::{IdwtPlacement, LastLevel};
@@ -42,6 +43,101 @@ pub(super) fn apply_sign_shift_after_mct(
             );
         }
     }
+}
+
+/// The inverse MCT, and the shift of the components after the first three,
+/// of each tile with an MCT, over the plane samples the tile stored, each
+/// with the tile's own components. For images whose tiles differ in the MCT
+/// or in their wavelets, which one transform of the whole planes would get
+/// wrong.
+pub(super) fn apply_inverse_mct_per_tile(
+    tile_ctx: &mut TileDecodeContext,
+    header: &Header<'_>,
+    tiles: &[Tile<'_>],
+) -> Result<()> {
+    if tile_ctx
+        .channel_data
+        .iter()
+        .any(|plane| plane.integer_container.is_some())
+        || header.component_infos.iter().any(|info| {
+            (
+                info.size_info.horizontal_resolution,
+                info.size_info.vertical_resolution,
+            ) != (1, 1)
+        })
+    {
+        bail!(DecodingError::UnsupportedFeature(
+            "tiles that differ in their multi-component transform need 1x1 sampled float components"
+        ));
+    }
+    let (plane_rect, stride) = tile_ctx.output_region.map_or_else(
+        || {
+            let (x, y) = output_grid_offset(&header.size_data);
+            let (width, height) = (
+                header.size_data.image_width(),
+                header.size_data.image_height(),
+            );
+            (IntRect::from_xywh(x, y, width, height), width as usize)
+        },
+        |region| {
+            (
+                output_region_rect(&header.size_data, region),
+                region.width as usize,
+            )
+        },
+    );
+    let round_irreversible_output = tile_ctx.round_irreversible_output;
+    let [first, second, third, extra @ ..] = &mut tile_ctx.channel_data[..] else {
+        // As `mct::apply_inverse` treats an MCT of fewer than three planes.
+        if header.strict {
+            bail!(ColorError::Mct);
+        }
+        return Ok(());
+    };
+    for tile in tiles.iter().filter(|tile| tile.mct) {
+        let infos = &tile.component_infos;
+        let transform = infos[0].wavelet_transform();
+        if infos[1].wavelet_transform() != transform || infos[2].wavelet_transform() != transform {
+            bail!(ColorError::Mct);
+        }
+        let resolution = infos[0]
+            .num_resolution_levels()
+            .checked_sub(1)
+            .and_then(|levels| levels.checked_sub(header.skipped_resolution_levels))
+            .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+        let rect = ResolutionTile::new(ComponentTile::new(tile, &infos[0]), resolution)
+            .rect
+            .intersect(plane_rect);
+        if rect.is_empty() {
+            continue;
+        }
+        for y in rect.y0..rect.y1 {
+            let start = (y - plane_rect.y0) as usize * stride + (rect.x0 - plane_rect.x0) as usize;
+            let row = start..start + rect.width() as usize;
+            let rows = (
+                plane_row(first, &row)?,
+                plane_row(second, &row)?,
+                plane_row(third, &row)?,
+            );
+            mct::apply_inverse_rows(infos, round_irreversible_output, rows);
+            for (plane, info) in extra.iter_mut().zip(&infos[3..]) {
+                apply_float_sign_shift(
+                    plane_row(plane, &row)?,
+                    component_unsigned_level_shift(info),
+                    info.wavelet_transform(),
+                    round_irreversible_output,
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn plane_row<'p>(plane: &'p mut ComponentData, row: &Range<usize>) -> Result<&'p mut [f32]> {
+    Ok(plane
+        .container
+        .get_mut(row.clone())
+        .ok_or(DecodingError::CodeBlockDecodeFailure)?)
 }
 
 #[expect(

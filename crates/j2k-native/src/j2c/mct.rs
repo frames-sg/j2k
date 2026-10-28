@@ -114,6 +114,26 @@ pub(crate) fn apply_inverse(
     Ok(())
 }
 
+/// The CPU transform [`apply_inverse`] applies to the first three planes,
+/// on one row of each: `component_infos` are those it receives.
+pub(crate) fn apply_inverse_rows(
+    component_infos: &[ComponentInfo],
+    round_irreversible_output: bool,
+    rows: (&mut [f32], &mut [f32], &mut [f32]),
+) {
+    let transform = component_infos[0].wavelet_transform();
+    let addends = [
+        unsigned_level_shift(&component_infos[0]),
+        unsigned_level_shift(&component_infos[1]),
+        unsigned_level_shift(&component_infos[2]),
+    ];
+    let centered_output =
+        round_irreversible_output && transform == WaveletTransform::Irreversible97;
+    let transform_addends = if centered_output { [0.0; 3] } else { addends };
+    let rounding = centered_output.then_some(addends);
+    transform_planes(transform, rows, transform_addends, rounding, false);
+}
+
 /// Samples per plane in one chunk: three planes' worth stays in cache
 /// between the transform and the rounding.
 const MCT_CHUNK: usize = 1 << 14;
