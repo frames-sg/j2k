@@ -11,6 +11,7 @@ mod idwt_into_channels;
 mod idwt_window_storage;
 mod line_region_idwt;
 mod progression_matrix;
+mod row_sink;
 mod workspace_peak;
 mod workspace_reuse;
 

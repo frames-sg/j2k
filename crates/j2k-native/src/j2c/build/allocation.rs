@@ -365,10 +365,10 @@ pub(crate) fn allocate_deferred_coefficients(
     };
     let mut live_bytes = storage.structural_workspace_bytes;
     let coefficient_count = if storage.roi_plan.is_some() {
-        checked_include_elements::<f32>(
-            &mut live_bytes,
-            crate::j2c::idwt::roi_idwt_peak_elements(storage, skipped_resolution_levels)?,
-        )?;
+        let idwt_elements =
+            crate::j2c::idwt::roi_idwt_peak_elements(storage, skipped_resolution_levels)?;
+        storage.roi_idwt_charge_elements = idwt_elements;
+        checked_include_elements::<f32>(&mut live_bytes, idwt_elements)?;
         lay_out_region_coefficients(storage, clip_to_idwt_windows)?
     } else {
         checked_include_elements::<f32>(&mut live_bytes, idwt_workspace_elements)?;

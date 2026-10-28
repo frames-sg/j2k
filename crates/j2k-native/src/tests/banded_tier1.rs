@@ -12,12 +12,12 @@ use crate::{
     EncodeProgressionOrder, Image,
 };
 
-const WIDTH: u32 = 203;
-const HEIGHT: u32 = 157;
-const TILE: u32 = 64;
+pub(super) const WIDTH: u32 = 203;
+pub(super) const HEIGHT: u32 = 157;
+pub(super) const TILE: u32 = 64;
 
 /// Deterministic noise, so every sub-band carries significant coefficients.
-fn noisy_pixels(components: u8) -> Vec<u8> {
+pub(super) fn noisy_pixels(components: u8) -> Vec<u8> {
     let mut state = 0x2545_f491_u32;
     (0..WIDTH * HEIGHT * u32::from(components))
         .map(|_| {
@@ -55,13 +55,13 @@ fn decode(image: &Image<'_>, roi: (u32, u32, u32, u32), banded: bool) -> RegionD
     }
 }
 
-struct Case {
-    label: &'static str,
-    components: u8,
-    options: EncodeOptions,
+pub(super) struct Case {
+    pub(super) label: &'static str,
+    pub(super) components: u8,
+    pub(super) options: EncodeOptions,
 }
 
-fn cases() -> Vec<Case> {
+pub(super) fn cases() -> Vec<Case> {
     let base = EncodeOptions {
         num_decomposition_levels: 4,
         ..EncodeOptions::default()

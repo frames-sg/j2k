@@ -78,7 +78,11 @@ impl DecoderContext<'_> {
         first_result: Result<T>,
         retry: impl FnOnce(&mut Self) -> Result<T>,
     ) -> Result<T> {
-        if retained_scratch_bytes == 0 {
+        // A decode that streams rows gave up its retained scratch before the
+        // first row (`release_retained_before_streaming`), so once rows have
+        // reached the sink a fresh context fails the same way, and a rerun
+        // would only send them again.
+        if retained_scratch_bytes == 0 || self.tile_decode_context.streamed_samples > 0 {
             return first_result;
         }
         match first_result {
@@ -92,6 +96,37 @@ impl DecoderContext<'_> {
             }
             result => result,
         }
+    }
+
+    /// A decode that streams rows can't be rerun once a row has reached the
+    /// sink, so before the first row it gives up the retained scratch, and the
+    /// retained component planes it never uses. From then on its budget is a
+    /// fresh context's, and a capacity failure is one a fresh context hits
+    /// too. Returns the structural bytes and baseline without them.
+    pub(super) fn release_retained_before_streaming(
+        &mut self,
+        structural_workspace_bytes: usize,
+        baseline: ReusedDecodeBaseline,
+    ) -> Result<(usize, ReusedDecodeBaseline)> {
+        let retained = baseline
+            .channel_capacity
+            .checked_add(baseline.scratch_capacity)
+            .ok_or(ValidationError::ImageTooLarge)?;
+        self.tile_decode_context.release_channel_allocations();
+        self.tile_decode_context.release_tile_scratch_allocations();
+        let without = |bytes: usize| {
+            bytes
+                .checked_sub(retained)
+                .ok_or(DecodeError::from(ValidationError::ImageTooLarge))
+        };
+        Ok((
+            without(structural_workspace_bytes)?,
+            ReusedDecodeBaseline {
+                parser_live: without(baseline.parser_live)?,
+                channel_capacity: 0,
+                scratch_capacity: 0,
+            },
+        ))
     }
 
     pub(super) fn discard_reused_channels(&mut self) {
@@ -116,12 +151,15 @@ impl DecoderContext<'_> {
             last_idwt_level_padding,
         )?;
         self.storage.reset_for_next_tile();
+        self.tile_decode_context
+            .debug_counters
+            .decode_baseline_bytes = retained_decode_baseline;
         Ok(retained_decode_baseline)
     }
 }
 
 impl TileDecodeContext {
-    pub(super) fn retained_channel_bytes(&self) -> Result<usize> {
+    pub(crate) fn retained_channel_bytes(&self) -> Result<usize> {
         retained_channel_bytes_with_cap(&self.channel_data, DEFAULT_MAX_DECODE_BYTES)
     }
 
@@ -162,7 +200,12 @@ impl TileDecodeContext {
             ),
             super::OutputRegion::dimensions,
         );
-        let sample_count = checked_decode_sample_count(output_width, output_height)?;
+        // A decode that streams its rows to a sink keeps no planes.
+        let sample_count = if self.stream_rows {
+            0
+        } else {
+            checked_decode_sample_count(output_width, output_height)?
+        };
         let capacity_samples = match last_idwt_level_padding {
             Some((width, height)) => checked_decode_sample_count(width, height)?,
             None => sample_count,
@@ -632,6 +675,31 @@ mod tests {
             0
         );
         assert_eq!(context.workspace_stats().scratch_capacity_retries(), 1);
+    }
+
+    #[test]
+    fn capacity_failure_after_streamed_rows_is_not_retried() {
+        let mut context = super::DecoderContext::default();
+        context
+            .tile_decode_context
+            .idwt_scratch_buffer
+            .try_reserve_exact(8)
+            .expect("reserve deterministic retained scratch");
+        let scratch_bytes = context
+            .tile_decode_context
+            .retained_scratch_bytes()
+            .expect("scratch capacity bytes");
+        context.tile_decode_context.streamed_samples = 1;
+        let first_result = context.prepare_reused_decode_baseline_with_cap(0, scratch_bytes - 1);
+        let result =
+            context.retry_without_retained_scratch_on_capacity(scratch_bytes, first_result, |_| {
+                panic!("a decode that reached the sink must not rerun")
+            });
+        assert!(matches!(
+            result,
+            Err(DecodeError::AllocationTooLarge { .. })
+        ));
+        assert_eq!(context.workspace_stats().scratch_capacity_retries(), 0);
     }
 
     #[test]

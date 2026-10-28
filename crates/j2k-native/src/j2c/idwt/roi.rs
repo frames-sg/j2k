@@ -8,7 +8,7 @@ use super::super::codestream::WaveletTransform;
 use super::super::decode::{DecompositionStorage, TileDecodeContext, WorkspaceBytes};
 use super::super::rect::IntRect;
 use super::horizontal::filter_horizontal_codestream;
-use super::lines::{reconstruct_rows, ring_samples, StoredRows, SubBandRows};
+use super::lines::{reconstruct_rows, ring_samples, LineReconstruction, StoredRows, SubBandRows};
 use super::model::{CoefficientSource, IDWTOutput, IdwtPlacement};
 use super::vertical::filter_vertical_codestream;
 use crate::error::{DecodingError, ValidationError};
@@ -28,7 +28,9 @@ use crate::{checked_decode_usize_product2, try_resize_decode_elements, Result};
 /// row-streamed IDWT instead holds every level's ring of rows at once, charged
 /// at the 9/7 ring depth whatever the component's transform. With no active
 /// level it holds nothing, since it copies the LL window straight into the
-/// plane.
+/// plane. When the tile streams its rows to a sink, every component's rings
+/// are live at once, with a scratch row each as wide as its final window, so
+/// the peak is their sum.
 pub(crate) fn roi_idwt_peak_elements(
     storage: &DecompositionStorage<'_>,
     skipped_resolution_levels: u8,
@@ -37,6 +39,7 @@ pub(crate) fn roi_idwt_peak_elements(
         return Ok(0);
     };
     let mut peak = 0usize;
+    let mut lockstep = 0usize;
     for (component_idx, tile_decompositions) in storage.tile_decompositions.iter().enumerate() {
         let active_len = tile_decompositions
             .decompositions
@@ -60,7 +63,18 @@ pub(crate) fn roi_idwt_peak_elements(
                 .clone()
                 .take(active_len)
                 .map_while(|decomposition_idx| roi_plan.idwt_window(decomposition_idx));
-            peak = peak.max(ring_samples(windows, WaveletTransform::Irreversible97)?);
+            let rings = ring_samples(windows, WaveletTransform::Irreversible97)?;
+            if storage.lockstep_lines {
+                let scratch_row = roi_plan
+                    .final_window(component_idx)
+                    .map_or(0, |window| window.width() as usize);
+                lockstep = lockstep
+                    .checked_add(rings)
+                    .and_then(|total| total.checked_add(scratch_row))
+                    .ok_or(ValidationError::ImageTooLarge)?;
+            } else {
+                peak = peak.max(rings);
+            }
             continue;
         }
         let mut previous = 0usize;
@@ -86,7 +100,7 @@ pub(crate) fn roi_idwt_peak_elements(
             previous = current;
         }
     }
-    Ok(peak)
+    Ok(peak.max(lockstep))
 }
 
 /// Whether every component of the tile can write its last IDWT level into
@@ -279,28 +293,33 @@ fn apply_roi_lines(
 /// rows it reads may be decoded on demand.
 pub(crate) struct ComponentLines {
     component_idx: usize,
-    windows: Vec<IntRect>,
-    sub_bands: Vec<[usize; 3]>,
-    ll_sub_band: usize,
-    transform: WaveletTransform,
-    last_window: IntRect,
-    /// The last level's rows the plane receives.
-    copy: IntRect,
-    /// The output region, which the plane covers.
-    region: IntRect,
+    plan: LinePlan,
     ring: Vec<f32>,
     ring_len: usize,
     plane: SimdBuffer<SIMD_WIDTH>,
     output_samples: usize,
 }
 
-impl ComponentLines {
-    /// Prepare the first `active_levels` levels of the component. Returns
+/// The geometry of one component's streamed reconstruction.
+pub(crate) struct LinePlan {
+    windows: Vec<IntRect>,
+    sub_bands: Vec<[usize; 3]>,
+    ll_sub_band: usize,
+    transform: WaveletTransform,
+    last_window: IntRect,
+    /// The last level's rows the output receives.
+    pub(crate) copy: IntRect,
+    /// The output region, in the same coordinates as `copy`.
+    pub(crate) region: IntRect,
+}
+
+impl LinePlan {
+    /// Plan the first `active_levels` levels of the component. Returns
     /// `None` when a level has no window, so there is nothing to
     /// reconstruct, as in the whole-window path.
-    pub(crate) fn prepare(
+    pub(crate) fn new(
         storage: &DecompositionStorage<'_>,
-        tile_ctx: &mut TileDecodeContext,
+        tile_ctx: &TileDecodeContext,
         component_idx: usize,
         active_levels: usize,
         header: &Header<'_>,
@@ -339,11 +358,60 @@ impl ComponentLines {
         ) else {
             return Ok(None);
         };
-        let copy = last_window.intersect(final_window);
-        let region = output_region_rect(&header.size_data, output_region);
+        Ok(Some(Self {
+            windows,
+            sub_bands,
+            ll_sub_band: tile_decompositions.first_ll_sub_band,
+            transform,
+            last_window,
+            copy: last_window.intersect(final_window),
+            region: output_region_rect(&header.size_data, output_region),
+        }))
+    }
 
+    /// Samples the levels' rings hold together.
+    pub(crate) fn ring_len(&self) -> Result<usize> {
+        ring_samples(self.windows.iter().copied(), self.transform)
+    }
+
+    /// Start the reconstruction, with `ring` holding at least
+    /// [`Self::ring_len`] samples.
+    pub(crate) fn reconstruction<'r>(&self, ring: &'r mut [f32]) -> Result<LineReconstruction<'r>> {
+        LineReconstruction::new(
+            &self.sub_bands,
+            &self.windows,
+            self.ll_sub_band,
+            self.transform,
+            ring,
+            self.copy,
+        )
+    }
+}
+
+impl ComponentLines {
+    /// Prepare the first `active_levels` levels of the component, as
+    /// [`LinePlan::new`] plans them, with the plane that receives them.
+    pub(crate) fn prepare(
+        storage: &DecompositionStorage<'_>,
+        tile_ctx: &mut TileDecodeContext,
+        component_idx: usize,
+        active_levels: usize,
+        header: &Header<'_>,
+        transform: WaveletTransform,
+    ) -> Result<Option<Self>> {
+        let Some(plan) = LinePlan::new(
+            storage,
+            tile_ctx,
+            component_idx,
+            active_levels,
+            header,
+            transform,
+        )?
+        else {
+            return Ok(None);
+        };
         let mut ring = core::mem::take(&mut tile_ctx.idwt_line_rings);
-        let ring_len = ring_samples(windows.iter().copied(), transform)?;
+        let ring_len = plan.ring_len()?;
         if ring.len() < ring_len {
             try_resize_decode_elements(&mut ring, ring_len, 0.0)?;
         }
@@ -356,13 +424,7 @@ impl ComponentLines {
         );
         Ok(Some(Self {
             component_idx,
-            windows,
-            sub_bands,
-            ll_sub_band: tile_decompositions.first_ll_sub_band,
-            transform,
-            last_window,
-            copy,
-            region,
+            plan,
             ring,
             ring_len,
             plane,
@@ -373,7 +435,8 @@ impl ComponentLines {
     /// Reconstruct the levels, reading their sub-bands through `rows`, and
     /// write the last level's rows into the plane.
     pub(crate) fn run(&mut self, rows: &mut dyn SubBandRows) -> Result<()> {
-        let (copy, region) = (self.copy, self.region);
+        let plan = &self.plan;
+        let (copy, region) = (plan.copy, plan.region);
         let plane = &mut self.plane;
         let plane_width = region.width() as usize;
         let mut write_row = |y: u32, samples: &[f32]| -> Result<()> {
@@ -386,10 +449,10 @@ impl ComponentLines {
         };
         reconstruct_rows(
             rows,
-            &self.sub_bands,
-            &self.windows,
-            self.ll_sub_band,
-            self.transform,
+            &plan.sub_bands,
+            &plan.windows,
+            plan.ll_sub_band,
+            plan.transform,
             &mut self.ring[..self.ring_len],
             copy,
             &mut write_row,
@@ -407,7 +470,7 @@ impl ComponentLines {
             .idwt_output_samples
             .saturating_add(self.output_samples);
         result?;
-        tile_ctx.idwt_output.rect = self.last_window;
+        tile_ctx.idwt_output.rect = self.plan.last_window;
         tile_ctx.idwt_output.placement = IdwtPlacement::ChannelPlane;
         Ok(())
     }

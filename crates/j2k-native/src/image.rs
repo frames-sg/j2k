@@ -862,16 +862,40 @@ impl<'a> Image<'a> {
         round_irreversible_output: bool,
         retained_baseline_bytes: usize,
     ) -> Result<()> {
+        self.run_decode_rows(
+            decoder_context,
+            output_region,
+            ht_decoder,
+            round_irreversible_output,
+            retained_baseline_bytes,
+            None,
+        )
+    }
+
+    /// [`Self::run_decode`] that hands a region's samples to `row_sink` as
+    /// they are finished when the decode can stream them, in which case it
+    /// leaves no component planes (see `TileDecodeContext::stream_rows`).
+    pub(super) fn run_decode_rows(
+        &self,
+        decoder_context: &mut DecoderContext<'a>,
+        output_region: Option<(u32, u32, u32, u32)>,
+        ht_decoder: Option<&mut dyn HtCodeBlockDecoder>,
+        round_irreversible_output: bool,
+        retained_baseline_bytes: usize,
+        row_sink: Option<&mut dyn crate::ComponentRowSink>,
+    ) -> Result<()> {
         let mut ht_decoder = ht_decoder;
+        let mut row_sink = row_sink;
         decoder_context.set_output_region(output_region);
         decoder_context.set_round_irreversible_output(round_irreversible_output);
         decoder_context.permit_line_region_idwt(self.permits_line_region_idwt());
-        let decode_result = j2c::decode(
+        let decode_result = j2c::decode_rows(
             self.codestream,
             &self.header,
             retained_baseline_bytes,
             decoder_context,
             &mut ht_decoder,
+            &mut row_sink,
         );
         decoder_context.set_output_region(None);
         decoder_context.set_round_irreversible_output(false);

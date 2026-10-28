@@ -28,17 +28,31 @@ pub(in crate::decode) fn write_components_u8_output(
     stride: usize,
     fmt: PixelFormat,
 ) -> Result<(), J2kError> {
-    let dims = components.dimensions();
+    write_planes_u8(
+        components.color_space(),
+        components.has_alpha(),
+        components.planes(),
+        components.dimensions(),
+        out,
+        stride,
+        fmt,
+    )
+}
+
+/// Write `planes`, each `dims` in size, to `out` from its first byte.
+fn write_planes_u8(
+    color_space: &ColorSpace,
+    has_alpha: bool,
+    planes: &[j2k_native::ComponentPlane<'_>],
+    dims: (u32, u32),
+    out: &mut [u8],
+    stride: usize,
+    fmt: PixelFormat,
+) -> Result<(), J2kError> {
     let expected_samples = component_sample_count(dims)?;
     let width = dims.0 as usize;
     let height = dims.1 as usize;
-    let planes = components.planes();
-    match (
-        components.color_space(),
-        components.has_alpha(),
-        planes.len(),
-        fmt,
-    ) {
+    match (color_space, has_alpha, planes.len(), fmt) {
         (ColorSpace::Gray, false, 1, PixelFormat::Gray8) => {
             validate_component_planes(&planes[..1], expected_samples)?;
             write_component_rows_u8(&planes[0], out, stride, width, height);
@@ -64,6 +78,72 @@ pub(in crate::decode) fn write_components_u8_output(
             what: "backend color space cannot be mapped to requested 8-bit pixel format",
         }
         .into()),
+    }
+}
+
+/// Writes a region decode's rectangles of component rows to an 8-bit
+/// output as [`write_components_u8_output`] writes whole planes. The first
+/// error stops every later write and is returned by [`Self::finish`].
+pub(in crate::decode) struct U8RowSink<'o> {
+    color_space: &'o ColorSpace,
+    has_alpha: bool,
+    out: &'o mut [u8],
+    stride: usize,
+    fmt: PixelFormat,
+    error: Option<J2kError>,
+}
+
+impl<'o> U8RowSink<'o> {
+    /// `out` must already hold the region at `stride` in `fmt`.
+    pub(in crate::decode) fn new(
+        color_space: &'o ColorSpace,
+        has_alpha: bool,
+        out: &'o mut [u8],
+        stride: usize,
+        fmt: PixelFormat,
+    ) -> Self {
+        Self {
+            color_space,
+            has_alpha,
+            out,
+            stride,
+            fmt,
+            error: None,
+        }
+    }
+
+    pub(in crate::decode) fn finish(self) -> Result<(), J2kError> {
+        self.error.map_or(Ok(()), Err)
+    }
+}
+
+impl j2k_native::ComponentRowSink for U8RowSink<'_> {
+    fn write_rows(&mut self, x: u32, y: u32, planes: &[j2k_native::ComponentPlane<'_>]) {
+        if self.error.is_some() {
+            return;
+        }
+        let dims = planes
+            .first()
+            .map_or((0, 0), j2k_native::ComponentPlane::dimensions);
+        let offset = (y as usize)
+            .checked_mul(self.stride)
+            .and_then(|row| row.checked_add((x as usize).checked_mul(self.fmt.bytes_per_pixel())?));
+        let result = match offset.and_then(|offset| self.out.get_mut(offset..)) {
+            Some(out) => write_planes_u8(
+                self.color_space,
+                self.has_alpha,
+                planes,
+                dims,
+                out,
+                self.stride,
+                self.fmt,
+            ),
+            None => Err(J2kError::DimensionOverflow {
+                width: x,
+                height: y,
+            }),
+        };
+        self.error = result.err();
     }
 }
 

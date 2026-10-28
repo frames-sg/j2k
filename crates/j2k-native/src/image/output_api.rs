@@ -4,7 +4,9 @@
 
 use alloc::vec::Vec;
 
-use crate::color::{ComponentPlane, DecodedComponents, DecodedNativeComponents, RawBitmap};
+use crate::color::{
+    ComponentPlane, ComponentRowSink, DecodedComponents, DecodedNativeComponents, RawBitmap,
+};
 use crate::error::{bail, DecodingError, Result, ValidationError};
 use crate::j2c::{self, ComponentData, DecoderContext, Reversible53CoefficientImage};
 use crate::jp2::DecodedImage;
@@ -489,6 +491,54 @@ impl<'a> Image<'a> {
         decoder_context: &'ctx mut DecoderContext<'a>,
     ) -> Result<DecodedComponents<'ctx>> {
         self.decode_borrowed_component_planes(decoder_context, Some(roi), None, true)
+    }
+
+    /// [`Self::decode_region_components_for_integer_output_with_context`]
+    /// that hands the region's samples to `sink` instead of returning
+    /// component planes. A plain region decode on one thread streams them as
+    /// they are finished and never holds the whole planes; any other decode
+    /// hands over its planes as one rectangle at the end.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the region is invalid, precision is unsupported,
+    /// or decoding fails. A decode that fails may have handed `sink` some of
+    /// the region already.
+    #[doc(hidden)]
+    pub fn decode_region_rows_for_integer_output_with_context(
+        &self,
+        roi: (u32, u32, u32, u32),
+        decoder_context: &mut DecoderContext<'a>,
+        sink: &mut dyn ComponentRowSink,
+    ) -> Result<()> {
+        validate_roi((self.width(), self.height()), roi)?;
+        self.validate_component_plane_precision()?;
+        let retained_baseline_bytes = self.retained_metadata_bytes()?;
+        self.run_decode_rows(
+            decoder_context,
+            Some(roi),
+            None,
+            true,
+            retained_baseline_bytes,
+            Some(&mut *sink),
+        )?;
+        if decoder_context.tile_decode_context.stream_rows {
+            return Ok(());
+        }
+        let DecodedImage {
+            decoded_components,
+            boxes: _,
+        } = self.finish_decoded_image(
+            &mut decoder_context.tile_decode_context.channel_data,
+            retained_baseline_bytes,
+        )?;
+        let components = self.try_borrow_component_planes(
+            decoded_components.as_slice(),
+            decoded_components.capacity(),
+            (roi.2, roi.3),
+        )?;
+        sink.write_rows(0, 0, &components.planes);
+        Ok(())
     }
 
     /// Rounded-for-integer-output counterpart of

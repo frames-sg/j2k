@@ -92,6 +92,9 @@ impl J2kDecoder<'_> {
     /// any component's available resolution ladder, is not honored exactly by
     /// the native backend, or when region, buffer, format, or decode validation
     /// fails.
+    ///
+    /// A decode that fails partway may already have written some rows of
+    /// `out`.
     pub fn decode_region_scaled_pow2_into(
         &mut self,
         pool: &mut J2kScratchPool,
