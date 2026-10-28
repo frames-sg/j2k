@@ -28,7 +28,9 @@ use crate::{checked_decode_usize_product2, try_resize_decode_elements, Result};
 /// row-streamed IDWT instead holds every level's ring of rows at once, charged
 /// at the 9/7 ring depth whatever the component's transform. With no active
 /// level it holds nothing, since it copies the LL window straight into the
-/// plane.
+/// plane. When the tile streams its rows to a sink, every component's rings
+/// are live at once, with a scratch row each as wide as its final window, so
+/// the peak is their sum.
 pub(crate) fn roi_idwt_peak_elements(
     storage: &DecompositionStorage<'_>,
     skipped_resolution_levels: u8,
@@ -37,6 +39,7 @@ pub(crate) fn roi_idwt_peak_elements(
         return Ok(0);
     };
     let mut peak = 0usize;
+    let mut lockstep = 0usize;
     for (component_idx, tile_decompositions) in storage.tile_decompositions.iter().enumerate() {
         let active_len = tile_decompositions
             .decompositions
@@ -60,7 +63,18 @@ pub(crate) fn roi_idwt_peak_elements(
                 .clone()
                 .take(active_len)
                 .map_while(|decomposition_idx| roi_plan.idwt_window(decomposition_idx));
-            peak = peak.max(ring_samples(windows, WaveletTransform::Irreversible97)?);
+            let rings = ring_samples(windows, WaveletTransform::Irreversible97)?;
+            if storage.lockstep_lines {
+                let scratch_row = roi_plan
+                    .final_window(component_idx)
+                    .map_or(0, |window| window.width() as usize);
+                lockstep = lockstep
+                    .checked_add(rings)
+                    .and_then(|total| total.checked_add(scratch_row))
+                    .ok_or(ValidationError::ImageTooLarge)?;
+            } else {
+                peak = peak.max(rings);
+            }
             continue;
         }
         let mut previous = 0usize;
@@ -86,7 +100,7 @@ pub(crate) fn roi_idwt_peak_elements(
             previous = current;
         }
     }
-    Ok(peak)
+    Ok(peak.max(lockstep))
 }
 
 /// Whether every component of the tile can write its last IDWT level into

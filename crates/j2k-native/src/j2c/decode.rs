@@ -580,7 +580,7 @@ fn choose_region_idwt(
 
 /// Whether a region decode on the row-streamed IDWT can hand its samples to
 /// a row sink instead of component planes: every tile decodes its Tier-1 in
-/// bands (see [`banded_tier1::applies`]), so all components can advance
+/// bands (see [`tile_bands`]), so all components can advance
 /// together; the image and tiles have no offsets; there are one to four
 /// components; and every tile has the same inverse MCT, if any, that
 /// [`mct::apply_inverse`] would apply to the first three.
@@ -592,16 +592,10 @@ fn streams_rows(
     tile_ctx: &TileDecodeContext,
     parallelism: CpuDecodeParallelism,
 ) -> bool {
-    #[cfg(test)]
-    if tile_ctx.whole_window_tier1 || tile_ctx.store_whole_code_blocks {
-        return false;
-    }
-    let _ = tile_ctx;
     let size = &header.size_data;
     let components = header.component_infos.len();
     let mct = tiles.first().is_some_and(|tile| tile.mct);
-    banded_tier1::tier1_runs_serially(parallelism)
-        && size.image_area_x_offset == 0
+    size.image_area_x_offset == 0
         && size.image_area_y_offset == 0
         && size.tile_x_offset == 0
         && size.tile_y_offset == 0
@@ -610,10 +604,12 @@ fn streams_rows(
         && tiles.iter().all(|tile| {
             tile.mct == mct
                 && tile.component_infos.len() == components
-                && tile.component_infos.iter().all(|component| {
-                    !component.requires_exact_integer_decode()
-                        && component.num_decomposition_levels() > header.skipped_resolution_levels
-                })
+                // The row-streamed IDWT already excludes hooks.
+                && tile_bands(header, tile, tile_ctx, false, parallelism)
+                && tile
+                    .component_infos
+                    .iter()
+                    .all(|component| !component.requires_exact_integer_decode())
                 // The planes take the first tile's transform for every tile.
                 && (!mct
                     || tile.component_infos[..3].iter().all(|component| {
@@ -851,25 +847,50 @@ fn prepare_region_storage(
     // Region decode sizes coefficient storage to the code-blocks the ROI
     // plan keeps, clipped to the windows the IDWT reads unless a hook
     // writes whole code-blocks, or to the whole tile when there is no plan.
-    let clip_to_idwt_windows = !hooked;
-    #[cfg(test)]
-    let clip_to_idwt_windows = clip_to_idwt_windows && !tile_ctx.store_whole_code_blocks;
-    storage.banded_tier1 = banded_tier1::applies(
-        storage,
-        header,
-        cpu_decode_parallelism,
-        clip_to_idwt_windows,
-    );
-    #[cfg(test)]
-    {
-        storage.banded_tier1 &= !tile_ctx.whole_window_tier1;
-    }
+    let clip_to_idwt_windows = clips_to_idwt_windows(tile_ctx, hooked);
+    storage.banded_tier1 = storage.line_region_idwt
+        && tile_bands(header, tile, tile_ctx, hooked, cpu_decode_parallelism);
+    storage.lockstep_lines = storage.banded_tier1 && tile_ctx.stream_rows;
     build::allocate_deferred_coefficients(
         storage,
         header.skipped_resolution_levels,
         clip_to_idwt_windows,
     )?;
     Ok(())
+}
+
+/// Whether a tile clips its stored windows to the ones the IDWT reads: a hook
+/// writes whole code-blocks instead.
+fn clips_to_idwt_windows(tile_ctx: &TileDecodeContext, hooked: bool) -> bool {
+    #[cfg(test)]
+    return !hooked && !tile_ctx.store_whole_code_blocks;
+    #[cfg(not(test))]
+    {
+        let _ = tile_ctx;
+        !hooked
+    }
+}
+
+/// Whether `tile` decodes its Tier-1 in bands on this decode's row-streamed
+/// IDWT (see [`banded_tier1::applies`]). The tile's layout and
+/// [`streams_rows`], which needs every tile to band, share this check.
+fn tile_bands(
+    header: &Header<'_>,
+    tile: &Tile<'_>,
+    tile_ctx: &TileDecodeContext,
+    hooked: bool,
+    parallelism: CpuDecodeParallelism,
+) -> bool {
+    let bands = tile_ctx.line_region_idwt
+        && banded_tier1::applies(
+            header,
+            tile,
+            parallelism,
+            clips_to_idwt_windows(tile_ctx, hooked),
+        );
+    #[cfg(test)]
+    let bands = bands && !tile_ctx.whole_window_tier1;
+    bands
 }
 
 /// Where a decoded tile's samples go.
@@ -1344,6 +1365,9 @@ pub(crate) struct DecompositionStorage<'a> {
     /// the streamed IDWT reaches them. Each sub-band's `coefficients` then
     /// hold one band of its stored rectangle's rows.
     pub(crate) banded_tier1: bool,
+    /// Whether every component's IDWT rings, and a scratch row each, are
+    /// live at once, because the tile streams its rows to a sink.
+    pub(crate) lockstep_lines: bool,
     /// While a band is decoded, the first row of its code-blocks: Tier-1
     /// decodes only the code-blocks that start there, into the rows the
     /// sub-band's `storage_rect` then names.
@@ -1379,6 +1403,7 @@ impl DecompositionStorage<'_> {
         self.last_idwt_level_in_channels = false;
         self.line_region_idwt = false;
         self.banded_tier1 = false;
+        self.lockstep_lines = false;
         self.tier1_band = None;
         self.structural_workspace_bytes = 0;
         self.deferred_idwt_workspace_elements = None;

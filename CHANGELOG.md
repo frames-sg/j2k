@@ -27,18 +27,18 @@ and stale roadmap entries have been removed from the public documentation set.
   decode reruns Tier-1 over whole windows to report the same error. Parallel
   decodes keep whole windows. Output is unchanged.
 
-- Serial 8-bit region decodes (`decode_region_into` and
-  `decode_region_scaled_pow2_into` with `Rgb8`, `Rgba8` or `Gray8`) decode
-  all components together and write each row into the caller's buffer as the
-  streamed IDWT finishes it, instead of filling whole component planes first.
-  A 1024 x 1024 RGB region of an 18000 x 12000 image peaks at about 3.5 to
-  6 MiB of heap instead of 14 to 16 MiB, not counting the caller's buffer.
-  Output is unchanged. A decode that fails may leave part of the region
-  written. A decode that streams gives up the decoder context's retained
-  scratch and component planes before the first row, so a reused context fits
-  exactly what a fresh one does without retrying and writing rows twice.
-  Parallel decodes, and images with a palette, channel definitions,
-  sYCC or CIELab, still fill planes first. The native
+- Serial 8-bit region decodes (`decode_region_into`,
+  `decode_region_scaled_into` and `decode_region_scaled_pow2_into` with
+  `Rgb8`, `Rgba8` or `Gray8`) decode all components together and write each
+  row into the caller's buffer as the streamed IDWT finishes it, instead of
+  filling whole component planes first. A 1024 x 1024 RGB region of an
+  18000 x 12000 image peaks at about 3.5 to 6 MiB of heap instead of 14 to
+  16 MiB, not counting the caller's buffer. Output is unchanged. A decode that
+  fails may leave part of the region written. A decode that streams gives up
+  the decoder context's retained scratch and component planes before the first
+  row, so a reused context fits exactly what a fresh one does without retrying
+  and writing rows twice. Parallel decodes, and images with a palette, channel
+  definitions, sYCC or CIELab, still fill planes first. The native
   `Image::decode_region_rows_for_integer_output_with_context` and
   `ComponentRowSink` expose this for other callers.
 

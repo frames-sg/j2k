@@ -31,20 +31,21 @@ use crate::j2c::rect::IntRect;
 use crate::profile;
 use crate::{try_resize_decode_elements, ComponentPlane, ComponentRowSink};
 
-/// Whether a tile's Tier-1 decodes in bands: it feeds the streamed IDWT, in
-/// stored windows clipped to it, on the calling thread alone, so banding
-/// costs it no parallelism, and every component has a level to reconstruct.
+/// Whether a tile's Tier-1 decodes in bands, given that it feeds the
+/// streamed IDWT: in stored windows clipped to it, on the calling thread
+/// alone, so banding costs it no parallelism, and every component has a level
+/// to reconstruct. Everything here is known before the tile is laid out, so
+/// `streams_rows` can require it of every tile up front.
 pub(super) fn applies(
-    storage: &DecompositionStorage<'_>,
     header: &Header<'_>,
+    tile: &Tile<'_>,
     parallelism: CpuDecodeParallelism,
     clip_to_idwt_windows: bool,
 ) -> bool {
-    storage.line_region_idwt
-        && clip_to_idwt_windows
+    clip_to_idwt_windows
         && tier1_runs_serially(parallelism)
-        && storage.tile_decompositions.iter().all(|component| {
-            component.decompositions.len() > usize::from(header.skipped_resolution_levels)
+        && tile.component_infos.iter().all(|component| {
+            component.num_decomposition_levels() > header.skipped_resolution_levels
         })
 }
 
@@ -118,9 +119,13 @@ pub(super) fn decode_tile_rows<'a>(
     profile_enabled: bool,
     profile_timings: &mut DecodeProfileTimings,
 ) -> Result<()> {
-    // `streams_rows` chose this decode for tiles that band.
+    // `streams_rows` required every tile to band, by the same `tile_bands`
+    // check that laid this one out.
+    debug_assert!(storage.banded_tier1, "a streamed tile must band");
     if !storage.banded_tier1 {
-        return Err(DecodingError::CodeBlockDecodeFailure.into());
+        return Err(
+            DecodingError::UnsupportedFeature("row streaming for a tile without bands").into(),
+        );
     }
     let stage_start = profile::profile_now(profile_enabled);
     let components = tile.component_infos.len();
@@ -164,7 +169,17 @@ fn stream_rows<'a>(
     let scratch_len = (copy.width() as usize)
         .checked_mul(components)
         .ok_or(ValidationError::ImageTooLarge)?;
-    let (mut buffer, ring_lens) = take_line_buffer(tile_ctx, storage, &line_plans, scratch_len)?;
+    // The index first: once the ring buffer is out of `tile_ctx`, every
+    // error path below must put it back.
+    let (precinct_rows, index_bytes) = index_bands(storage, tile_ctx, &bands)?;
+    let (mut buffer, ring_lens) =
+        match take_line_buffer(tile_ctx, storage, &line_plans, scratch_len) {
+            Ok(taken) => taken,
+            Err(error) => {
+                storage.structural_workspace_bytes -= index_bytes;
+                return Err(error);
+            }
+        };
     let mut output = RowOutput {
         tile,
         sink,
@@ -181,7 +196,6 @@ fn stream_rows<'a>(
         region,
         streamed: 0,
     };
-    let (precinct_rows, index_bytes) = index_bands(storage, tile_ctx, &bands)?;
     let mut output_samples = 0usize;
     let result = (|| {
         let rings_len = buffer.len() - scratch_len;
@@ -285,10 +299,13 @@ fn take_line_buffer(
         .try_fold(scratch_len, |total, len| total.checked_add(*len))
         .ok_or(ValidationError::ImageTooLarge)?;
     let mut buffer = core::mem::take(&mut tile_ctx.idwt_line_rings);
-    if buffer.len() < total {
-        try_resize_decode_elements(&mut buffer, total, 0.0)?;
-    }
+    let resized = if buffer.len() < total {
+        try_resize_decode_elements(&mut buffer, total, 0.0)
+    } else {
+        Ok(())
+    };
     tile_ctx.idwt_line_rings = buffer;
+    resized?;
     record_workspace(tile_ctx, storage, 0)?;
     let mut buffer = core::mem::take(&mut tile_ctx.idwt_line_rings);
     buffer.truncate(total);

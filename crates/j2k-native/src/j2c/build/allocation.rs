@@ -11,6 +11,18 @@ use crate::j2c::tile::Tile;
 use crate::DEFAULT_MAX_DECODE_BYTES;
 use core::mem::size_of;
 
+#[cfg(test)]
+std::thread_local! {
+    static ROI_IDWT_CHARGE: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
+/// The largest windowed IDWT charge, in f32 samples, since the last call,
+/// which resets it.
+#[cfg(test)]
+pub(crate) fn take_roi_idwt_charge() -> usize {
+    ROI_IDWT_CHARGE.replace(0)
+}
+
 mod plan;
 mod reuse;
 
@@ -365,10 +377,11 @@ pub(crate) fn allocate_deferred_coefficients(
     };
     let mut live_bytes = storage.structural_workspace_bytes;
     let coefficient_count = if storage.roi_plan.is_some() {
-        checked_include_elements::<f32>(
-            &mut live_bytes,
-            crate::j2c::idwt::roi_idwt_peak_elements(storage, skipped_resolution_levels)?,
-        )?;
+        let idwt_elements =
+            crate::j2c::idwt::roi_idwt_peak_elements(storage, skipped_resolution_levels)?;
+        #[cfg(test)]
+        ROI_IDWT_CHARGE.set(ROI_IDWT_CHARGE.get().max(idwt_elements));
+        checked_include_elements::<f32>(&mut live_bytes, idwt_elements)?;
         lay_out_region_coefficients(storage, clip_to_idwt_windows)?
     } else {
         checked_include_elements::<f32>(&mut live_bytes, idwt_workspace_elements)?;

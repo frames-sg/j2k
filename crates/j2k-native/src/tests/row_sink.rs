@@ -426,3 +426,36 @@ fn reused_context_streams_rows_from_a_fresh_budget() {
         fresh.tile_decode_context.retained_channel_bytes().unwrap()
     );
 }
+
+/// The ROI plan's IDWT charge must cover the ring buffer a streamed tile
+/// takes: every component's rings, and a scratch row each.
+#[test]
+fn streamed_rows_charge_every_components_rings() {
+    for case in row_sink_cases() {
+        let pixels = noisy_pixels(case.components);
+        let bytes = encode(
+            &pixels,
+            WIDTH,
+            HEIGHT,
+            u16::from(case.components),
+            8,
+            false,
+            &case.options,
+        )
+        .expect("encode ring charge fixture");
+        let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse ring fixture");
+        for roi in [(0, 0, WIDTH, HEIGHT), (37, 21, 130, 101), (63, 60, 9, 70)] {
+            let mut context = DecoderContext::default();
+            context.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
+            crate::j2c::build::take_roi_idwt_charge();
+            streamed_rows(&image, roi, &mut context);
+            let charged = crate::j2c::build::take_roi_idwt_charge();
+            let rings = context.tile_decode_context.idwt_line_rings.capacity();
+            assert!(
+                charged >= rings,
+                "{} {roi:?}: charged {charged} samples for {rings}",
+                case.label
+            );
+        }
+    }
+}

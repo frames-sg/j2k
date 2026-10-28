@@ -11,6 +11,8 @@ use core::{iter, ops::Range};
 
 mod allocation;
 mod selection;
+#[cfg(test)]
+pub(crate) use allocation::take_roi_idwt_charge;
 pub(crate) use allocation::{
     allocate_deferred_coefficients, lay_out_whole_region_coefficients,
     release_unused_roi_workspace, BuildWorkspace, CoefficientLayout,
