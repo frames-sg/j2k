@@ -11,7 +11,7 @@ mod hybrid_support;
 mod output_heap;
 mod referenced_plan;
 mod reuse;
-mod roi;
+pub(crate) mod roi;
 mod runtime;
 mod shared_tier1;
 mod single_image_step_profile;

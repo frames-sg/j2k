@@ -51,10 +51,14 @@ pub(super) fn validate_color_group(
             || plan.signed != first.signed
             || plan.component_plans.len() != expected_components
             || plan.alpha_bit_depth.is_some() != expects_alpha
+            || plan.color_sampling != first.color_sampling
+            // MCT combines components sample by sample, so it needs one grid.
+            || (plan.mct && plan.has_sampled_components())
             || plan
                 .component_plans
                 .iter()
-                .any(|component| component.dimensions != first.dimensions)
+                .enumerate()
+                .any(|(index, component)| component.dimensions != plan.component_dimensions(index))
     }) {
         return Err(Error::capability_rejected(
             j2k_core::CapabilityRejection::contract_violation(

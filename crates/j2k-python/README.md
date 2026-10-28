@@ -66,9 +66,11 @@ combined with reduction. NHWC single-image output is `[H,W,C]`. Actual batch
 rectangles are returned with each group.
 
 Pixel decoding uses the existing homogeneous batch contract: uniform Gray,
-RGB, or RGBA with U8, U16, or I16 output. ICC-tagged, palette-mapped,
-component-subsampled, mixed-precision/signedness, and above-16-bit pixel-batch
-inputs are rejected. The general Rust decoder supports additional cases.
+RGB, or RGBA with U8, U16, or I16 output. When components use different
+sampling factors, the subsampled ones are replicated onto the image grid.
+ICC-tagged, palette-mapped, uniformly subsampled, mixed-precision/signedness,
+and above-16-bit pixel-batch inputs are rejected.
+The general Rust decoder supports additional cases.
 Inspection reports per-component precision, signedness, and sampling. The
 adapter does not apply orientation, ICC transforms, resizing, padding, alpha
 compositing, or normalization.

@@ -37,7 +37,11 @@ mod external;
 mod plan_cache;
 #[cfg(all(test, target_os = "macos"))]
 mod queue_ordering_tests;
+#[cfg(all(test, target_os = "macos"))]
+mod region_group_tests;
 mod resident;
+#[cfg(all(test, target_os = "macos"))]
+mod sampled_group_tests;
 #[cfg(all(test, target_os = "macos"))]
 mod shared_tier1_tests;
 #[cfg(target_os = "macos")]

@@ -3,9 +3,9 @@
 //! Batch independent entropy and reconstruction graphs at each component size.
 
 use super::{
-    encode_plane_stage_to_surface_in_command_buffer, expand_plane, Buffer, CommandBufferRef,
+    encode_plane_stage_to_surface_in_command_buffer, expand_plane, Arc, Buffer, CommandBufferRef,
     DirectExecutionMetadata, DirectHybridStageTimings, DirectTier1Mode, Error, MetalRuntime,
-    PixelFormat, PlaneStage, SampledPlan, Surface,
+    PixelFormat, PlaneStage, PreparedDirectColorPlan, Surface,
 };
 use crate::engine::{
     direct_roi::checked_f32_span,
@@ -19,7 +19,7 @@ use crate::engine::{
 pub(super) fn try_encode_stacked(
     runtime: &MetalRuntime,
     command: &CommandBufferRef,
-    sampled: &[SampledPlan],
+    sampled: &[Arc<PreparedDirectColorPlan>],
     fmt: PixelFormat,
     metadata: &mut DirectExecutionMetadata,
     timings: &mut DirectHybridStageTimings,
@@ -28,7 +28,7 @@ pub(super) fn try_encode_stacked(
     if sampled.len() < 2
         || !sampled
             .iter()
-            .all(|p| p.plan.dimensions == first.plan.dimensions && p.sampling == first.sampling)
+            .all(|p| p.dimensions == first.dimensions && p.color_sampling == first.color_sampling)
     {
         return Ok(None);
     }
@@ -36,7 +36,7 @@ pub(super) fn try_encode_stacked(
     let mut refs = budget.try_vec(3, "sampled component references")?;
     for component in 0..3 {
         let mut plans = budget.try_vec(sampled.len(), "sampled component batch references")?;
-        plans.extend(sampled.iter().map(|p| &p.plan.component_plans[component]));
+        plans.extend(sampled.iter().map(|p| &p.component_plans[component]));
         if !supports_stacked_direct_component_plane_batch(&plans) {
             return Ok(None);
         }
@@ -61,8 +61,7 @@ pub(super) fn try_encode_stacked(
         )?);
     }
     let mut surfaces = budget.try_vec(sampled.len(), "sampled stacked outputs")?;
-    for (index, sampled) in sampled.iter().enumerate() {
-        let plan = &sampled.plan;
+    for (index, plan) in sampled.iter().enumerate() {
         let mut planes: [Option<Buffer>; 4] = [None, None, None, None];
         for (component, plane) in stacked.iter().enumerate() {
             let span = checked_f32_span(
@@ -83,7 +82,7 @@ pub(super) fn try_encode_stacked(
                 &plane.buffer,
                 offset,
                 plan.dimensions,
-                sampled.sampling[component],
+                plan.component_sampling(component),
             )?);
         }
         let stage = PlaneStage {

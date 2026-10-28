@@ -52,7 +52,88 @@ pub(crate) struct PreparedDirectColorPlan {
     pub(super) signed: bool,
     pub(super) mct: bool,
     pub(super) transform: J2kWaveletTransform,
+    /// SIZ sampling factors of the three color components. A component plan
+    /// with factors other than `(1, 1)` decodes on its own grid and is
+    /// replicated onto `dimensions` before the final store. Alpha is always
+    /// unit-sampled.
+    pub(super) color_sampling: [(u8, u8); 3],
     pub(super) component_plans: Vec<PreparedDirectGrayscalePlan>,
+}
+
+pub(super) const UNIT_COLOR_SAMPLING: [(u8, u8); 3] = [(1, 1); 3];
+
+impl PreparedDirectColorPlan {
+    /// Sampling factors of component `index`.
+    pub(super) fn component_sampling(&self, index: usize) -> (u8, u8) {
+        self.color_sampling.get(index).copied().unwrap_or((1, 1))
+    }
+
+    /// Dimensions component `index` decodes at before any replication.
+    pub(super) fn component_dimensions(&self, index: usize) -> (u32, u32) {
+        sampled_dimensions(self.dimensions, self.component_sampling(index))
+    }
+
+    /// Whether any component decodes on a smaller grid than the image.
+    pub(super) fn has_sampled_components(&self) -> bool {
+        (0..self.component_plans.len())
+            .any(|index| self.component_dimensions(index) != self.dimensions)
+    }
+}
+
+#[cfg(test)]
+impl PreparedDirectColorPlan {
+    /// Output dimensions and the coefficients each component's Tier-1 groups
+    /// store.
+    pub(crate) fn geometry_for_test(&self) -> ((u32, u32), Vec<usize>) {
+        let coefficients = self
+            .component_plans
+            .iter()
+            .map(|component| {
+                component
+                    .classic_groups
+                    .iter()
+                    .map(|group| group.total_coefficients)
+                    .chain(
+                        component
+                            .ht_groups
+                            .iter()
+                            .map(|group| group.total_coefficients),
+                    )
+                    .sum()
+            })
+            .collect();
+        (self.dimensions, coefficients)
+    }
+
+    /// Tier-1 jobs and owned coded bytes across all components.
+    pub(crate) fn jobs_for_test(&self) -> (usize, usize) {
+        let mut jobs = 0;
+        let mut coded = 0;
+        for component in &self.component_plans {
+            for step in &component.steps {
+                match step {
+                    PreparedDirectGrayscaleStep::ClassicSubBand(band) => {
+                        jobs += band.jobs.len();
+                        coded += band.coded_data.len();
+                    }
+                    PreparedDirectGrayscaleStep::HtSubBand(band) => {
+                        jobs += band.jobs.len();
+                        coded += band.payload_source.owned_payload_capacity();
+                    }
+                    _ => {}
+                }
+            }
+        }
+        (jobs, coded)
+    }
+}
+
+/// Component-grid dimensions of an origin-zero image. Zero factors are
+/// rejected by codestream parsing; they map to the image grid here so the
+/// caller's dimension check fails instead of dividing by zero.
+pub(super) fn sampled_dimensions(dimensions: (u32, u32), sampling: (u8, u8)) -> (u32, u32) {
+    let (sx, sy) = (u32::from(sampling.0.max(1)), u32::from(sampling.1.max(1)));
+    (dimensions.0.div_ceil(sx), dimensions.1.div_ceil(sy))
 }
 
 // SAFETY: The color plan contains only immutable metadata and prepared
@@ -209,13 +290,6 @@ impl PreparedHtPayloadSource {
     }
 
     pub(super) fn contiguous(&self) -> Option<&[u8]> {
-        match self {
-            Self::Contiguous(data) => Some(data),
-            Self::Referenced { .. } => None,
-        }
-    }
-
-    pub(super) fn contiguous_mut(&mut self) -> Option<&mut Vec<u8>> {
         match self {
             Self::Contiguous(data) => Some(data),
             Self::Referenced { .. } => None,

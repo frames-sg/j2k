@@ -277,10 +277,14 @@ supported classic and HT profiles. Both limit the coded bitplane count including
 the ROI shift to 31; classic blocks must fit within 64×64, and HT geometry and
 pass limits are backend-specific. Shapes a backend's plans cannot describe
 return an error. See the tested ROI profiles in
-[`j2k-ml.md`](j2k-ml.md#gpu-adapter-support). Subsampled components, mixed
-precision or signedness, arbitrary component counts, and precision above 16
-bits use the CPU component-plane APIs or return a fast-batch
-representability error. A shape stays off the GPU until it has been measured.
+[`j2k-ml.md`](j2k-ml.md#gpu-adapter-support). Mixed precision or
+signedness, arbitrary component counts, and precision above 16 bits use the
+CPU component-plane APIs or return a fast-batch representability error.
+Images whose components use different sampling batch on the CPU for every
+request kind; Metal batches them for full-image RGB (see below), and other
+such shapes return a capability error from the GPU backends. Uniformly
+subsampled images remain a representability error. A shape stays off the GPU until it has
+been measured.
 Machines, dates, and measurements are in
 [`docs/benchmark-evidence.md`](benchmark-evidence.md).
 
@@ -326,13 +330,18 @@ plan is unchanged. Multi-tile, offset,
 signed, alpha, MCT, and reduced/region geometry retain their existing routes.
 
 The legacy Metal full-image and tile-batch APIs prepare these plans before
-submission. Matching component graphs are stacked across images, including
-classic entropy jobs, IDWT, and component stores. Geometry that cannot be stacked
-uses independent resident graphs in the same command buffer. A small GPU pass
-replicates samples onto the image grid, including incomplete blocks at odd image
-edges, before the existing RGB/RGBA packer. It performs no ICC or YCbCr transform;
-those remain the caller's job. The owned dense batch API still rejects
-subsampling.
+submission. The owned batch decoder prepares them for full-image subsampled
+RGB inputs, which have no offset plan, and decodes them through the same
+resident group encoder as other RGB groups. Matching component graphs are
+stacked across images, including classic entropy jobs, IDWT, and component
+stores. Geometry that cannot be stacked uses independent resident graphs in
+the same command buffer. A small GPU pass replicates samples onto the image
+grid, including incomplete blocks at odd image edges, before the existing
+RGB/RGBA packer. In the owned batch decoder one replication dispatch covers
+each stacked component of a group. It performs no ICC or YCbCr transform;
+those remain the caller's job. Region and reduced requests for subsampled
+inputs still return a capability error from the Metal batch decoder, which
+callers can route to a single-image decode.
 
 One command buffer retains all intermediate resources until completion. Existing
 checked allocation and status-retirement paths own scratch buffers and propagate

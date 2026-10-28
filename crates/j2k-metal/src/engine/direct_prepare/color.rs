@@ -9,7 +9,7 @@ use super::{
     J2kReferencedHtj2kPlan, NativeGrayscalePlan, PreparedDirectColorPlan,
     PreparedDirectGrayscalePlan, PreparedDirectGrayscaleStep, ReferencedClassicPayloadCursor,
 };
-use crate::engine::direct_plan_types::with_color_store_rounding;
+use crate::engine::direct_plan_types::{with_color_store_rounding, UNIT_COLOR_SAMPLING};
 use std::sync::Arc;
 
 #[cfg(target_os = "macos")]
@@ -34,6 +34,7 @@ pub(crate) fn prepare_referenced_classic_color_plan(
         signed: prepared.signed,
         mct: prepared.mct,
         transform: prepared.transform,
+        color_sampling: UNIT_COLOR_SAMPLING,
         component_plans: with_color_store_rounding(prepared.component_plans, prepared.mct),
     })
 }
@@ -60,6 +61,7 @@ pub(crate) fn prepare_referenced_classic_rgba_plan(
         signed: prepared.signed,
         mct: prepared.mct,
         transform: prepared.transform,
+        color_sampling: UNIT_COLOR_SAMPLING,
         component_plans: with_color_store_rounding(prepared.component_plans, prepared.mct),
     })
 }
@@ -247,6 +249,7 @@ pub(crate) fn prepare_referenced_htj2k_color_plan(
         signed: prepared.signed,
         mct: prepared.mct,
         transform: prepared.transform,
+        color_sampling: UNIT_COLOR_SAMPLING,
         component_plans: with_color_store_rounding(prepared.component_plans, prepared.mct),
     })
 }
@@ -273,6 +276,7 @@ pub(crate) fn prepare_referenced_htj2k_rgba_plan(
         signed: prepared.signed,
         mct: prepared.mct,
         transform: prepared.transform,
+        color_sampling: UNIT_COLOR_SAMPLING,
         component_plans: with_color_store_rounding(prepared.component_plans, prepared.mct),
     })
 }

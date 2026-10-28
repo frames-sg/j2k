@@ -333,7 +333,7 @@ fn tile_ladder_overrides_fail_at_prepare_for_classic_and_htj2k() {
 }
 
 #[test]
-fn prepare_reports_nonrepresentable_subsampled_mixed_and_high_precision_inputs() {
+fn prepare_accepts_subsampled_and_reports_mixed_and_high_precision_inputs() {
     let mut subsampled = rgb8_fixture();
     let siz_marker = subsampled
         .windows(2)
@@ -358,22 +358,22 @@ fn prepare_reports_nonrepresentable_subsampled_mixed_and_high_precision_inputs()
     )
     .expect("prepare rejected profiles");
 
-    assert!(prepared.groups().is_empty());
-    assert_eq!(prepared.errors().len(), 3);
+    assert_eq!(prepared.groups().len(), 1);
+    assert_eq!(prepared.groups()[0].source_indices(), [0]);
+    assert_eq!(prepared.groups()[0].info().dimensions, (4, 4));
     let reasons = prepared
         .errors()
         .iter()
         .map(|error| match error.source {
-            BatchItemError::NonRepresentableBatchOutput { reason } => reason,
+            BatchItemError::NonRepresentableBatchOutput { reason } => (error.index, reason),
             _ => panic!("expected representability error"),
         })
         .collect::<Vec<_>>();
     assert_eq!(
         reasons,
         [
-            NonRepresentableReason::ComponentSubsampling,
-            NonRepresentableReason::MixedPrecision,
-            NonRepresentableReason::PrecisionAboveSixteen,
+            (1, NonRepresentableReason::MixedPrecision),
+            (2, NonRepresentableReason::PrecisionAboveSixteen),
         ]
     );
 }

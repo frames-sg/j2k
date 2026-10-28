@@ -55,7 +55,9 @@ mod destination_index_validation;
 mod grayscale_batch;
 mod sampled_color;
 mod single;
-pub(crate) use sampled_color::decode_component_grid_color_batch;
+pub(crate) use sampled_color::{
+    decode_component_grid_color_batch, prepare_component_grid_color_plan,
+};
 
 pub(in crate::engine) use self::allocation::extend_preallocated_retained_buffers;
 use self::allocation::{
