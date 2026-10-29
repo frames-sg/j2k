@@ -1,12 +1,19 @@
 # Release Policy
 
 The `j2k` 0.13.0 public crate release is published and security-supported.
+This workspace prepares the `j2k` 0.13.1 release.
 Its T.803 decoder conformance results are in
 [`T.803 conformance`](../docs/t803-conformance.md). The
 default backend is `Auto`: the CPU path is always available, and a GPU path is
 used only for shapes where it was tested and measured faster.
 
 ## Release status
+
+Version `0.13.1` is a release candidate, compared with `v0.13.0` in its
+[API report](release-evidence/public-api/reviewed-public-api-diff-0.13.1.md)
+and [review](release-evidence/public-api/public-api-review-0.13.1.yml).
+The 0.13.0 evidence below describes the published tag. The 0.13.1 candidate
+requires fresh hosted and full CUDA/Metal validation for its exact commit.
 
 Version `0.13.0` is published. Its
 [API report](release-evidence/public-api/reviewed-public-api-diff-0.13.0.md)
@@ -489,7 +496,7 @@ other item.
 Every `cargo xtask semver` run generates both passes, compares them with the
 committed files, and checks the added/removed fingerprints and the hidden-item
 count against
-`xtask/release-evidence/public-api/public-api-review-0.13.0.yml`. A package with
+`xtask/release-evidence/public-api/public-api-review-0.13.1.yml`. A package with
 hidden items must give a reason for them in that file.
 
 Any removed item must be listed in the review file with its package, a summary,
@@ -511,6 +518,7 @@ item list into the docs.
 
 | Release | Compared with | Report |
 | --- | --- | --- |
+| 0.13.1 candidate | 0.13.0 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.13.1.md), [review](release-evidence/public-api/public-api-review-0.13.1.yml) |
 | 0.13.0 | 0.12.0 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.13.0.md), [review](release-evidence/public-api/public-api-review-0.13.0.yml) |
 | 0.12.0 | 0.11.3 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.12.0.md), [review](release-evidence/public-api/public-api-review-0.12.0.yml) |
 | 0.8.0 | 0.7.5 | [API diff][v0.8.0-api-report]; review file lists every break |

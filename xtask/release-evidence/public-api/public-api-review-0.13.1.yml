@@ -1,0 +1,174 @@
+version: 3
+baseline_tag: v0.13.0
+baseline_version: 0.13.0
+candidate_version: "0.13.1"
+break_ledger: []
+reviews:
+  j2k-core:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 226
+    hidden_fingerprint: "fnv1a64:487523cc4e7f504e"
+    rationale: "Compared the complete ordinary API inventory against v0.13.0; no signatures were added, removed, or changed."
+    hidden_rationale: "Compared the complete hidden API inventory against v0.13.0; it is unchanged."
+  j2k-profile:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 117
+    hidden_fingerprint: "fnv1a64:a1546f56ae38f2e3"
+    rationale: "Compared the complete ordinary API inventory against v0.13.0; no signatures were added, removed, or changed."
+    hidden_rationale: "Compared the complete hidden API inventory against v0.13.0; it is unchanged."
+  j2k-types:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 111
+    hidden_fingerprint: "fnv1a64:6eaf63f068893d17"
+    rationale: "Compared the complete ordinary API inventory against v0.13.0; no signatures were added, removed, or changed."
+    hidden_rationale: "Compared the complete hidden API inventory against v0.13.0; it is unchanged."
+  j2k-codec-math:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Compared the complete ordinary API inventory against v0.13.0; no signatures were added, removed, or changed."
+    hidden_rationale: "Compared the complete hidden API inventory against v0.13.0; it is unchanged."
+  j2k-cuda-build-support:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Compared the complete ordinary API inventory against v0.13.0; no signatures were added, removed, or changed."
+    hidden_rationale: "Compared the complete hidden API inventory against v0.13.0; it is unchanged."
+  j2k-cuda-runtime:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 255
+    hidden_fingerprint: "fnv1a64:57c61a4568990ce6"
+    rationale: "Compared the complete ordinary API inventory against v0.13.0; no signatures were added, removed, or changed."
+    hidden_rationale: "Compared the complete hidden API inventory against v0.13.0; it is unchanged."
+  j2k-cuda-j2k-engine:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 692
+    hidden_fingerprint: "fnv1a64:684fbcddde38e1f1"
+    rationale: "Compared the complete ordinary API inventory against v0.13.0; no signatures were added, removed, or changed."
+    hidden_rationale: "Compared the complete hidden API inventory against v0.13.0; it is unchanged."
+  j2k-cuda-jpeg-engine:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 205
+    hidden_fingerprint: "fnv1a64:ad37da6966da1cfd"
+    rationale: "Compared the complete ordinary API inventory against v0.13.0; no signatures were added, removed, or changed."
+    hidden_rationale: "Compared the complete hidden API inventory against v0.13.0; it is unchanged."
+  j2k-cuda-transcode-engine:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 84
+    hidden_fingerprint: "fnv1a64:b2fcaa9b0171aba7"
+    rationale: "Compared the complete ordinary API inventory against v0.13.0; no signatures were added, removed, or changed."
+    hidden_rationale: "Compared the complete hidden API inventory against v0.13.0; it is unchanged."
+  j2k-metal-support:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 11
+    hidden_fingerprint: "fnv1a64:02139606f1202938"
+    rationale: "Compared the complete ordinary API inventory against v0.13.0; no signatures were added, removed, or changed."
+    hidden_rationale: "Compared the complete hidden API inventory against v0.13.0; it is unchanged."
+  j2k-mpsgraph-support:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Compared the complete ordinary API inventory against v0.13.0; no signatures were added, removed, or changed."
+    hidden_rationale: "Compared the complete hidden API inventory against v0.13.0; it is unchanged."
+  j2k-native:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 584
+    hidden_fingerprint: "fnv1a64:0fb38a581f613d0f"
+    rationale: "Compared the complete ordinary API inventory against v0.13.0; no signatures were added, removed, or changed."
+    hidden_rationale: "Adds the ComponentRowSink trait and Image::decode_region_rows_for_integer_output_with_context, which hand a serial region decode's finished integer-output rows to a sink as disjoint rectangles instead of filling component planes; decodes that cannot stream hand their planes over as one rectangle. Adds window_referenced_classic_plan_to_stores and window_referenced_htj2k_plan_to_stores, which return a copy of a referenced region plan whose sub-bands and IDWT levels hold only what its stores read, or None when that would not pay off; the facade's CPU batch executes the copy while GPU backends keep the shared whole-level plan. All five items are additions; no other hidden item changed and no caller migration is required."
+  j2k-jpeg:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 701
+    hidden_fingerprint: "fnv1a64:bd0cf738a0f96592"
+    rationale: "Compared the complete ordinary API inventory against v0.13.0; no signatures were added, removed, or changed."
+    hidden_rationale: "Compared the complete hidden API inventory against v0.13.0; it is unchanged."
+  j2k-tilecodec:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 32
+    hidden_fingerprint: "fnv1a64:eb677842559d9b0e"
+    rationale: "Compared the complete ordinary API inventory against v0.13.0; no signatures were added, removed, or changed."
+    hidden_rationale: "Compared the complete hidden API inventory against v0.13.0; it is unchanged."
+  j2k:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 108
+    hidden_fingerprint: "fnv1a64:01e74ad6c3ff416e"
+    rationale: "Compared the complete ordinary API inventory against v0.13.0; no signatures were added, removed, or changed."
+    hidden_rationale: "Compared the complete hidden API inventory against v0.13.0; it is unchanged."
+  j2k-transcode:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 458
+    hidden_fingerprint: "fnv1a64:449a76476549c1e2"
+    rationale: "Compared the complete ordinary API inventory against v0.13.0; no signatures were added, removed, or changed."
+    hidden_rationale: "Compared the complete hidden API inventory against v0.13.0; it is unchanged."
+  j2k-transcode-cuda:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 20
+    hidden_fingerprint: "fnv1a64:be22ca1d5e12b043"
+    rationale: "Compared the complete ordinary API inventory against v0.13.0; no signatures were added, removed, or changed."
+    hidden_rationale: "Compared the complete hidden API inventory against v0.13.0; it is unchanged."
+  j2k-jpeg-metal:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 83
+    hidden_fingerprint: "fnv1a64:79397ffc221464c3"
+    rationale: "Compared the complete ordinary API inventory against v0.13.0; no signatures were added, removed, or changed."
+    hidden_rationale: "Compared the complete hidden API inventory against v0.13.0; it is unchanged."
+  j2k-metal:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 321
+    hidden_fingerprint: "fnv1a64:41513c1e93413909"
+    rationale: "Compared the complete ordinary API inventory against v0.13.0; no signatures were added, removed, or changed."
+    hidden_rationale: "Compared the complete hidden API inventory against v0.13.0; it is unchanged."
+  j2k-transcode-metal:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 49
+    hidden_fingerprint: "fnv1a64:b4a8b53d5e10bb00"
+    rationale: "Compared the complete ordinary API inventory against v0.13.0; no signatures were added, removed, or changed."
+    hidden_rationale: "Compared the complete hidden API inventory against v0.13.0; it is unchanged."
+  j2k-jpeg-cuda:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 133
+    hidden_fingerprint: "fnv1a64:9aa724bde7af1618"
+    rationale: "Compared the complete ordinary API inventory against v0.13.0; no signatures were added, removed, or changed."
+    hidden_rationale: "Compared the complete hidden API inventory against v0.13.0; it is unchanged."
+  j2k-cuda:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 193
+    hidden_fingerprint: "fnv1a64:8a9b0ac701f08d00"
+    rationale: "Compared the complete ordinary API inventory against v0.13.0; no signatures were added, removed, or changed."
+    hidden_rationale: "Compared the complete hidden API inventory against v0.13.0; it is unchanged."
+  j2k-ml:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Compared the complete ordinary API inventory against v0.13.0; no signatures were added, removed, or changed."
+    hidden_rationale: "Compared the complete hidden API inventory against v0.13.0; it is unchanged."
+  j2k-mpsgraph:
+    removed_fingerprint: "none"
+    added_fingerprint: "none"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Compared the complete ordinary API inventory against v0.13.0; no signatures were added, removed, or changed."
+    hidden_rationale: "Compared the complete hidden API inventory against v0.13.0; it is unchanged."

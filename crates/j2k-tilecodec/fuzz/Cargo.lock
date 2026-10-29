@@ -72,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-core"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "libc",
  "thiserror",
@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-tilecodec"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "flate2",
  "j2k-core",

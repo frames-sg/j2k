@@ -3,7 +3,7 @@
 This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
-## [Unreleased]
+## [0.13.1] - 2026-10-29
 
 - `CpuBatchDecoder` region and region-plus-reduced requests no longer
   allocate coefficient and IDWT buffers for whole resolution levels
