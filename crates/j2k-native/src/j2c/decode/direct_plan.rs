@@ -384,10 +384,13 @@ fn append_classic_payload_records(
     append_decode_elements(ranges, tile_ranges)
 }
 
+/// A tile's decoded and destination rectangles, or `None` when it stores
+/// nothing: tile selection rounds tile bounds outward onto the reduced grid,
+/// so it can keep a boundary tile that contributes no samples.
 fn grayscale_plan_rects(
     geometry: &J2kDirectGrayscalePlan,
     output_rect: J2kRect,
-) -> Result<(J2kRect, J2kRect)> {
+) -> Result<Option<(J2kRect, J2kRect)>> {
     let mut stores = geometry.steps.iter().filter_map(|step| match step {
         J2kDirectGrayscaleStep::Store(store) => Some(store),
         J2kDirectGrayscaleStep::ClassicSubBand(_)
@@ -395,8 +398,11 @@ fn grayscale_plan_rects(
         | J2kDirectGrayscaleStep::Idwt(_) => None,
     });
     let store = stores.next().ok_or(DecodingError::CodeBlockDecodeFailure)?;
-    if stores.next().is_some() || store.copy_width == 0 || store.copy_height == 0 {
+    if stores.next().is_some() {
         bail!(DecodingError::CodeBlockDecodeFailure);
+    }
+    if store.copy_width == 0 || store.copy_height == 0 {
+        return Ok(None);
     }
     let destination_rect = J2kRect {
         x0: store.output_x,
@@ -410,13 +416,15 @@ fn grayscale_plan_rects(
         x1: output_rect.x0.saturating_add(destination_rect.x1),
         y1: output_rect.y0.saturating_add(destination_rect.y1),
     };
-    Ok((decoded_rect, destination_rect))
+    Ok(Some((decoded_rect, destination_rect)))
 }
 
+/// The rectangles every component of a tile shares, or `None` when none of
+/// them stores anything.
 fn color_plan_rects<const COMPONENT_COUNT: usize>(
     component_plans: &[J2kDirectGrayscalePlan],
     output_rect: J2kRect,
-) -> Result<(J2kRect, J2kRect)> {
+) -> Result<Option<(J2kRect, J2kRect)>> {
     if component_plans.len() != COMPONENT_COUNT {
         bail!(DecodingError::CodeBlockDecodeFailure);
     }

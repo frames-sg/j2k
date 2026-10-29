@@ -20,6 +20,14 @@ and stale roadmap entries have been removed from the public documentation set.
   IDWT is slower per sample than the banded whole-level one; full and reduced
   requests, and regions covering most of a small image, are unchanged. See
   `docs/benchmark-evidence.md`.
+- Owned-batch preparation no longer fails with "failed to decode code-block"
+  on reduced-resolution regions that end where a tile begins on the reduced
+  grid ([#298](https://github.com/frames-sg/j2k/issues/298)). Tile selection
+  rounds tile bounds outward, so it can keep a boundary tile that contributes
+  no samples; the referenced plan builders rejected such a tile and now leave
+  it out. This affected the CPU and Metal batches alike. On the 19 x 13
+  OpenJPH fixture in 11 x 7 tiles, 4,598 of the 17,290 half-scale regions
+  failed to prepare; all now match single-image decode.
 - `j2k-tilecodec` LZW decode no longer reports valid TIFF strips and tiles
   as truncated. weezl reads input ahead of decoding, so the call that
   consumes the last byte can still hold codes up to the end code, often in

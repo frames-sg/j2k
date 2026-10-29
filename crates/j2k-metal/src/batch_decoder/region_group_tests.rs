@@ -332,3 +332,46 @@ fn local_large_region_batch_characterization() {
         }
     }
 }
+
+#[test]
+fn reduced_regions_ending_at_rounded_tile_edges_match_the_cpu() {
+    // 19 x 13 OpenJPH images in 11 x 7 tiles: these regions end where a tile
+    // begins on the reduced grid, so tile selection keeps a tile that
+    // contributes no samples.
+    if !j2k_test_support::metal_runtime_gate(module_path!()) {
+        return;
+    }
+    let regions = [
+        (0, 0, 11, 1),
+        (0, 0, 11, 7),
+        (0, 0, 19, 7),
+        (10, 6, 2, 2),
+        (11, 7, 8, 6),
+    ];
+    for fixture in j2k_test_support::openjph_batch_fixtures()
+        .iter()
+        .filter(|fixture| fixture.precision == 8 && !fixture.signed)
+    {
+        let bytes = Arc::<[u8]>::from(fixture.encoded);
+        let inputs: Vec<_> = [Downscale::Half, Downscale::Quarter]
+            .into_iter()
+            .flat_map(|scale| {
+                regions
+                    .iter()
+                    .map(move |&(x, y, w, h)| (Rect { x, y, w, h }, scale))
+            })
+            .map(|(roi, scale)| EncodedImage::new(bytes.clone(), request(roi, scale)))
+            .collect();
+        let mut decoder =
+            MetalBatchDecoder::system_default_with_options(options()).expect("decoder");
+        let expected = cpu_images(&inputs);
+        let actual = metal_images(&mut decoder, &inputs);
+        for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+            assert!(
+                actual == expected,
+                "{} request {index} differs from CPU",
+                fixture.name
+            );
+        }
+    }
+}
