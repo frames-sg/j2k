@@ -2644,6 +2644,8 @@ pub fn j2k_native::prepare_referenced_htj2k_tile_staged(&j2k_types::decode_plan:
 pub fn j2k_native::quantize_reversible_reference(&[f32], u16, u16, u8, bool) -> alloc::vec::Vec<i32>
 pub fn j2k_native::quantize_subband_reference(&[f32], u16, u16, u8, bool) -> alloc::vec::Vec<i32>
 pub fn j2k_native::try_deinterleave_reference(&[u8], usize, u16, u8, bool) -> j2k_native::Result<alloc::vec::Vec<alloc::vec::Vec<f32>>>
+pub fn j2k_native::window_referenced_classic_plan_to_stores(&j2k_types::decode_plan::referenced::J2kReferencedClassicPlan) -> j2k_native::Result<core::option::Option<j2k_types::decode_plan::referenced::J2kReferencedClassicPlan>>
+pub fn j2k_native::window_referenced_htj2k_plan_to_stores(&j2k_types::decode_plan::referenced::J2kReferencedHtj2kPlan) -> j2k_native::Result<core::option::Option<j2k_types::decode_plan::referenced::J2kReferencedHtj2kPlan>>
 pub fn j2k_types::decode_plan::J2kRect::from(j2k_native::J2kRequiredBandRegion) -> Self
 pub j2k_native::ComponentPlaneParts::bit_depth: u8
 pub j2k_native::ComponentPlaneParts::dimensions: (u32, u32)
