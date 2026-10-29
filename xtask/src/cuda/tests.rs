@@ -33,11 +33,11 @@ fn exact_cuda_inventories_are_unique_and_have_audited_sizes() {
         .iter()
         .copied()
         .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(ht.len(), 7);
+    assert_eq!(ht.len(), 8);
     assert_eq!(ht.len(), HTJ2K_ENCODE_PARITY_TESTS.len());
     assert_eq!(transcode.len(), 8);
     assert_eq!(transcode.len(), TRANSCODE_PARITY_TESTS.len());
-    assert_eq!(ml.len(), 12);
+    assert_eq!(ml.len(), 13);
     assert_eq!(ml.len(), ML_CUDA_TESTS.len());
     assert!(ml.contains("cuda_burn_decoder_construction_is_infallible_and_lazy"));
 }
@@ -197,6 +197,8 @@ fn shell_lines(lines: &[&str], prefix: &str, suffix: &str) -> String {
 #[cfg(unix)]
 fn recording_cuda_cargo() -> RecordingProgram {
     let ml_count = ML_CUDA_TESTS.len();
+    let ht_count = HTJ2K_ENCODE_PARITY_TESTS.len();
+    let transcode_count = TRANSCODE_PARITY_TESTS.len();
     let ml_listed = shell_lines(ML_CUDA_TESTS, "", ": test");
     let ht_listed = shell_lines(HTJ2K_ENCODE_PARITY_TESTS, "", ": test");
     let transcode_listed = shell_lines(TRANSCODE_PARITY_TESTS, "", ": test");
@@ -221,11 +223,11 @@ fn recording_cuda_cargo() -> RecordingProgram {
     ;;
   *" -p j2k-cuda "*)
     {ht_passed}
-    printf '%s\n' 'test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
+    printf '%s\n' 'test result: ok. {ht_count} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
     ;;
   *" -p j2k-transcode-cuda "*)
     {transcode_passed}
-    printf '%s\n' 'test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
+    printf '%s\n' 'test result: ok. {transcode_count} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'
     ;;
   esac
   exit 0
