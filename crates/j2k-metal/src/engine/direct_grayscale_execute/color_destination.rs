@@ -155,10 +155,14 @@ fn shared_tier1_component_plans(
         .iter()
         .enumerate()
         .all(|(index, plan)| !plans[..index].iter().any(|seen| Arc::ptr_eq(seen, plan)));
+    // Shared Tier-1 output feeds only the stacked RGB route, which needs every
+    // component on the image grid.
     if plans.len() < 2
         || !distinct
         || fmt.channels() != 3
-        || plans.iter().any(|plan| plan.component_plans.len() != 3)
+        || plans
+            .iter()
+            .any(|plan| plan.component_plans.len() != 3 || plan.has_sampled_components())
     {
         return Ok(None);
     }

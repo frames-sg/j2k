@@ -19,6 +19,73 @@ cargo run -p xtask --features adoption -- adoption-report --run-dir target/j2k-a
 Speed comparisons must use the manifest-backed external rows, not the
 generated in-repo fixtures.
 
+## Metal owned batches of large-image regions - 2026-10-28
+
+Same machine as the next section, load average 5 to 11. Inputs are the
+18000 x 12000 RGB codestreams used for the region work: `large-ht.j2c`
+(HTJ2K), `large.jp2` and `large-plt.jp2` (classic). Each sample decodes one
+round of four 1024 px output tiles at one reduction, the requests a raw
+`.j2k` viewer level read makes. "Metal batch" is `MetalBatchDecoder::prepare`
+plus `decode_prepared`, output left resident; "CPU tiles" is one serial
+`decode_region_scaled_pow2_into` per tile, the four in parallel. Seven
+samples, median ms.
+
+```bash
+J2K_REQUIRE_METAL_RUNTIME=1 J2K_LARGE_REGION_INPUT=<codestream> \
+  cargo test --release -p j2k-metal --lib \
+  local_large_region_batch_characterization -- --ignored --nocapture
+```
+
+| Input | Level | Metal batch | CPU tiles |
+| --- | ---: | ---: | ---: |
+| large-ht.j2c | 0 | 18 | 26 |
+| large-ht.j2c | 1 | 10 | 25 |
+| large-ht.j2c | 2 | 9 | 22 |
+| large.jp2 | 0 | 136 | 148 |
+| large.jp2 | 1 | 130 | 228 |
+| large.jp2 | 2 | 151 | 311 |
+| large-plt.jp2 | 0 | 113 | 139 |
+| large-plt.jp2 | 1 | 116 | 327 |
+| large-plt.jp2 | 2 | 143 | 440 |
+
+Before the change, levels 0 and 1 failed on Metal: their plans requested
+2,592,000,000 and 648,000,000 byte coefficient buffers, above the 512 MiB
+cap. With window narrowing disabled, level 2 measured 36 ms (HTJ2K) and 165
+to 166 ms (classic). A separate check found the Metal batch and the CPU tile
+output byte-identical at every level of all three inputs.
+
+## Metal owned batches of subsampled WSI tiles - 2026-10-28
+
+Apple M4 Pro (12 CPU cores, 16-core GPU), macOS 27.0.1, load average 31 to
+58 from other work. Inputs are 32 interior tiles per pyramid level extracted
+from the openslide test slides `JP2K-33003-1.svs` and `JP2K-33003-2.svs`:
+raw 256 x 256 classic codestreams, YCbCr with Cb and Cr at half width
+(sampling (1,1), (2,1), (2,1)) and no MCT. Each sample decodes all 32 tiles to
+resident `Rgb8` with no host readback. "Owned batch" is
+`MetalBatchDecoder::prepare` plus `submit_prepared` and `wait`; "per image" is
+one `J2kDecoder::decode_request_to_device_with_session` per tile, the path
+callers used while preparation rejected subsampling. Eight samples, ms.
+
+```bash
+J2K_REQUIRE_METAL_RUNTIME=1 J2K_SAMPLED_CORPUS=<level{L}-tile{i}.j2k dir> \
+  J2K_SAMPLED_COUNT=32 cargo test --release -p j2k-metal --lib \
+  local_sampled_color_batch_characterization -- --ignored --nocapture
+```
+
+| Slide | Level | Owned batch min | Owned batch median | Per image min | Per image median |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| JP2K-33003-1 | 0 | 11.4 | 12.9 | 152.0 | 173.7 |
+| JP2K-33003-1 | 1 | 15.0 | 19.2 | 155.6 | 288.3 |
+| JP2K-33003-1 | 2 | 16.7 | 29.5 | 166.5 | 391.6 |
+| JP2K-33003-2 | 0 | 7.4 | 12.1 | 92.8 | 142.6 |
+| JP2K-33003-2 | 1 | 10.2 | 14.5 | 77.6 | 132.7 |
+| JP2K-33003-2 | 2 | 12.6 | 22.9 | 123.1 | 187.3 |
+
+Every owned batch used one command buffer and returned no indexed or group
+errors. The per-image path waits for the GPU after each tile. A separate
+check on the same tiles found the owned batch, per-image Metal and CPU batch
+outputs byte-identical.
+
 ## HTJ2K CPU comparator and WSI development run - 2026-10-20
 
 This run checks the in-process OpenJPH and Grok integrations on pathology

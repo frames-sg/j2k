@@ -119,8 +119,59 @@ fn sampled_color_batch_keeps_one_resident_submission() {
     }
 }
 
+/// Prepares, submits, and completes `inputs` through the owned
+/// `MetalBatchDecoder`, keeping output resident; returns elapsed ms.
+#[cfg(not(debug_assertions))]
+fn time_owned_batch(inputs: &[Arc<[u8]>], session: &crate::MetalBackendSession) -> f64 {
+    let mut decoder = crate::MetalBatchDecoder::with_backend_session_and_options(
+        session.clone(),
+        j2k::BatchDecodeOptions::default(),
+    );
+    let started = std::time::Instant::now();
+    let prepared = decoder
+        .prepare(
+            inputs
+                .iter()
+                .cloned()
+                .map(j2k::EncodedImage::full)
+                .collect(),
+        )
+        .unwrap();
+    let (_, errors, group_errors) = decoder
+        .submit_prepared(&prepared)
+        .unwrap()
+        .wait()
+        .unwrap()
+        .into_parts();
+    let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+    assert!(
+        errors.is_empty() && group_errors.is_empty(),
+        "{errors:?} {group_errors:?}"
+    );
+    elapsed_ms
+}
+
+/// Decodes `inputs` one at a time to resident surfaces, waiting for each;
+/// returns elapsed ms.
+#[cfg(not(debug_assertions))]
+fn time_per_image(inputs: &[Arc<[u8]>], session: &crate::MetalBackendSession) -> f64 {
+    let started = std::time::Instant::now();
+    for input in inputs {
+        J2kDecoder::new(input)
+            .unwrap()
+            .decode_request_to_device_with_session(
+                MetalDecodeRequest::full(PixelFormat::Rgb8, BackendRequest::Metal),
+                session,
+            )
+            .unwrap();
+    }
+    started.elapsed().as_secs_f64() * 1000.0
+}
+
 // This local timing harness requires a release build and an external corpus.
-// The generated-fixture test above exercises the same assertions in CI coverage.
+// The generated-fixture tests above and the owned-batch sampled group tests
+// exercise the same assertions in CI coverage. `J2K_SAMPLED_COUNT` sets the
+// tiles per level (default 8).
 #[cfg(not(debug_assertions))]
 #[test]
 #[ignore = "release sampled DICOM decode characterization; requires J2K_SAMPLED_CORPUS"]
@@ -130,8 +181,12 @@ fn local_sampled_color_batch_characterization() -> Result<(), &'static str> {
     }
     assert!(j2k_test_support::metal_runtime_gate(module_path!()));
     let directory = std::env::var_os("J2K_SAMPLED_CORPUS").expect("trusted extracted DICOM tiles");
+    let count = std::env::var("J2K_SAMPLED_COUNT")
+        .ok()
+        .map_or(8, |count| count.parse::<usize>().unwrap());
+    let session = crate::MetalBackendSession::system_default().unwrap();
     for level in 0..3 {
-        let inputs: Vec<Arc<[u8]>> = (0..8)
+        let inputs: Vec<Arc<[u8]>> = (0..count)
             .map(|index| {
                 std::fs::read(
                     std::path::Path::new(&directory).join(format!("level{level}-tile{index}.j2k")),
@@ -142,7 +197,11 @@ fn local_sampled_color_batch_characterization() -> Result<(), &'static str> {
             .collect();
         for sample in 0..8 {
             let ms = compare_batch(&inputs, 2, PixelFormat::Rgb8);
-            eprintln!("sampled_native level={level} sample={sample} count=8 commands=1 ms={ms:.3}");
+            let owned_ms = time_owned_batch(&inputs, &session);
+            let single_ms = time_per_image(&inputs, &session);
+            eprintln!(
+                "sampled_native level={level} sample={sample} count={count} commands=1 ms={ms:.3} owned_batch_ms={owned_ms:.3} per_image_ms={single_ms:.3}"
+            );
         }
     }
     Ok(())

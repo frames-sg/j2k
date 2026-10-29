@@ -12,10 +12,13 @@ use super::direct_plan_types::PreparedDirectGrayscaleStep;
 use super::{
     direct_plan_types::{
         with_color_store_rounding, PreparedClassicSubBandGroup, PreparedDirectColorPlan,
-        PreparedDirectGrayscalePlan, PreparedHtSubBandGroup,
+        PreparedDirectGrayscalePlan, PreparedHtSubBandGroup, UNIT_COLOR_SAMPLING,
     },
     direct_prepare::{prepare_direct_grayscale_plan, prepare_direct_grayscale_plan_for_cpu_upload},
-    direct_roi::crop_prepared_direct_grayscale_plan_to_output_region,
+    direct_roi::{
+        crop_prepared_direct_grayscale_plan_to_output_region,
+        prune_prepared_direct_grayscale_plan_to_stores,
+    },
     direct_tier1::DirectTier1Mode,
 };
 
@@ -64,6 +67,7 @@ fn prepare_direct_color_plan_with_tier1_mode(
         signed,
         mct: plan.mct,
         transform: plan.transform,
+        color_sampling: UNIT_COLOR_SAMPLING,
         component_plans: with_color_store_rounding(component_plans, plan.mct),
     })
 }
@@ -93,6 +97,16 @@ pub(crate) fn crop_prepared_direct_color_plan_to_output_region(
     }
 
     plan.dimensions = (region.w, region.h);
+    Ok(())
+}
+
+/// [`prune_prepared_direct_grayscale_plan_to_stores`] for every component.
+pub(crate) fn prune_prepared_direct_color_plan_to_stores(
+    plan: &mut PreparedDirectColorPlan,
+) -> Result<(), Error> {
+    for component_plan in &mut plan.component_plans {
+        prune_prepared_direct_grayscale_plan_to_stores(component_plan)?;
+    }
     Ok(())
 }
 

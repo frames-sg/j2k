@@ -7,31 +7,45 @@ use super::{
     PreparedBatchGroup, PreparedImage,
 };
 
+/// Whether `request` stores only part of the decoded level. Referenced plans
+/// for such requests already store just their output region, but keep
+/// whole-level coefficient and IDWT windows unless pruned to their stores;
+/// at full resolution on large images those exceed Metal's buffer cap.
+fn stores_a_region(request: DecodeRequest) -> bool {
+    matches!(
+        request,
+        DecodeRequest::Region { .. } | DecodeRequest::RegionReduced { .. }
+    )
+}
+
 fn prepare_referenced_gray_plan(
     session: &MetalBackendSession,
     image: &PreparedImage,
 ) -> Result<Option<crate::engine::PreparedDirectGrayscalePlan>, Error> {
-    if let Some(prepared) = image.htj2k_plan() {
+    let mut plan = if let Some(prepared) = image.htj2k_plan() {
         if !prepared.is_grayscale() {
             return Ok(None);
         }
         let referenced = prepared.geometry();
-        return crate::engine::with_runtime_for_session(session, |_| {
+        crate::engine::with_runtime_for_session(session, |_| {
             crate::engine::prepare_referenced_htj2k_grayscale_plan(referenced, image.bytes())
-                .map(Some)
-        });
-    }
-    let Some(prepared) = image.classic_plan() else {
-        return Ok(None);
+        })?
+    } else {
+        let Some(prepared) = image.classic_plan() else {
+            return Ok(None);
+        };
+        if !prepared.is_grayscale() {
+            return Ok(None);
+        }
+        let referenced = prepared.geometry();
+        crate::engine::with_runtime_for_session(session, |_| {
+            crate::engine::prepare_referenced_classic_grayscale_plan(referenced, image.bytes())
+        })?
     };
-    if !prepared.is_grayscale() {
-        return Ok(None);
+    if stores_a_region(image.request()) {
+        crate::engine::prune_prepared_direct_grayscale_plan_to_stores(&mut plan)?;
     }
-    let referenced = prepared.geometry();
-    crate::engine::with_runtime_for_session(session, |_| {
-        crate::engine::prepare_referenced_classic_grayscale_plan(referenced, image.bytes())
-            .map(Some)
-    })
+    Ok(Some(plan))
 }
 
 #[cfg(target_os = "macos")]
@@ -44,7 +58,7 @@ fn prepare_referenced_color_plan(
         fmt,
         PixelFormat::Rgba8 | PixelFormat::Rgba16 | PixelFormat::RgbaI16
     );
-    let plan = if let Some(prepared) = image.htj2k_plan() {
+    let mut plan = if let Some(prepared) = image.htj2k_plan() {
         if (rgba && !prepared.is_rgba()) || (!rgba && !prepared.is_color()) {
             return Ok(None);
         }
@@ -68,9 +82,26 @@ fn prepare_referenced_color_plan(
                 crate::engine::prepare_referenced_classic_color_plan(referenced, image.bytes())
             }
         })?
+    } else if !rgba
+        && image.request() == DecodeRequest::Full
+        && image.support().has_component_subsampling()
+    {
+        // Offset plans require unit-sampled components. Full subsampled RGB
+        // decodes each component on its own grid and replicates it in the
+        // group's command buffer; other geometry keeps the capability error.
+        let settings = j2k_native::DecodeSettings {
+            strict: image.decode_settings().is_strict(),
+            ..j2k_native::DecodeSettings::strict()
+        };
+        return crate::engine::with_runtime_for_session(session, |_| {
+            crate::engine::prepare_component_grid_color_plan(image.bytes(), &settings)
+        });
     } else {
         return Ok(None);
     };
+    if stores_a_region(image.request()) {
+        crate::engine::prune_prepared_direct_color_plan_to_stores(&mut plan)?;
+    }
     Ok(Some(plan))
 }
 

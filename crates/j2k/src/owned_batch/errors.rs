@@ -34,7 +34,11 @@ pub enum NonRepresentableReason {
     MixedPrecision,
     /// Components mix signed and unsigned sample domains.
     MixedSignedness,
-    /// At least one component is subsampled.
+    /// Every component shares one sampling other than `(1, 1)`, so decode
+    /// produces the smaller component grid instead of the image grid.
+    ///
+    /// Components with different sampling are representable: decode
+    /// replicates the subsampled ones onto the image grid.
     ComponentSubsampling,
     /// At least one component uses more than sixteen significant bits.
     PrecisionAboveSixteen,

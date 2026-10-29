@@ -273,8 +273,8 @@ impl ColorGroupEncoder<'_> {
             planes.extend(self.encode_stacked_rgb_planes(&plan, &component_plans)?);
             return Ok(true);
         }
-        for component in &self.plans[0].component_plans {
-            planes.push(encode_prepared_direct_component_plane_in_encoder(
+        for (index, component) in plan.component_plans.iter().enumerate() {
+            let plane = encode_prepared_direct_component_plane_in_encoder(
                 DirectComponentPlaneRequest {
                     runtime: self.runtime,
                     command_buffer: self.command_buffer,
@@ -286,7 +286,8 @@ impl ColorGroupEncoder<'_> {
                     scratch_buffers: &mut self.metadata.scratch_buffers,
                 },
                 self.compute_encoder,
-            )?);
+            )?;
+            planes.push(self.expand_sampled_component(&plan, index, plane, 1)?);
         }
         Ok(false)
     }
@@ -340,15 +341,47 @@ impl ColorGroupEncoder<'_> {
                     scratch_buffers: &mut self.metadata.scratch_buffers,
                 },
             )?;
-            if stacked.dimensions != self.plans[0].dimensions || stacked.count != expected_count {
+            let plan = self.plans[0].clone();
+            if stacked.dimensions != plan.component_dimensions(component_index)
+                || stacked.count != expected_count
+            {
                 return Err(Error::MetalStateInvariant {
                     state: "J2K Metal stacked exact color destination",
                     reason: "stacked component output does not match prepared group",
                 });
             }
-            planes.push(stacked.buffer);
+            planes.push(self.expand_sampled_component(
+                &plan,
+                component_index,
+                stacked.buffer,
+                expected_count,
+            )?);
         }
         Ok(false)
+    }
+
+    /// Replicates `count` stacked planes of component `index` onto the image
+    /// grid when that component is subsampled. Unit-sampled planes pass
+    /// through unchanged.
+    fn expand_sampled_component(
+        &self,
+        plan: &PreparedDirectColorPlan,
+        index: usize,
+        planes: Buffer,
+        count: usize,
+    ) -> Result<Buffer, Error> {
+        if plan.component_dimensions(index) == plan.dimensions {
+            return Ok(planes);
+        }
+        super::super::sampled_color::encode_expand_sampled_planes(
+            self.runtime,
+            self.compute_encoder,
+            &planes,
+            0,
+            plan.dimensions,
+            plan.component_sampling(index),
+            count,
+        )
     }
 
     fn remap_coalesced_status(
@@ -407,8 +440,8 @@ impl ColorGroupEncoder<'_> {
                 plan.component_plans.len(),
                 "J2K Metal exact color component plane handles",
             )?;
-            for component in &plan.component_plans {
-                planes.push(encode_prepared_direct_component_plane_in_encoder(
+            for (index, component) in plan.component_plans.iter().enumerate() {
+                let plane = encode_prepared_direct_component_plane_in_encoder(
                     DirectComponentPlaneRequest {
                         runtime: self.runtime,
                         command_buffer: self.command_buffer,
@@ -420,7 +453,8 @@ impl ColorGroupEncoder<'_> {
                         scratch_buffers: &mut self.metadata.scratch_buffers,
                     },
                     self.compute_encoder,
-                )?);
+                )?;
+                planes.push(self.expand_sampled_component(&plan, index, plane, 1)?);
             }
             encode_exact_native_color_batch_store_in_encoder(
                 self.runtime,

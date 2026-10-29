@@ -5,6 +5,15 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- `j2k-tilecodec` LZW decode no longer reports valid TIFF strips and tiles
+  as truncated. weezl reads input ahead of decoding, so the call that
+  consumes the last byte can still hold codes up to the end code, often in
+  short streams; decoding stopped there with a truncation error. It now
+  finishes the buffered codes, and reports truncation only when no input is
+  left and decoding makes no progress. As in libtiff, a stream with no end
+  code decodes when it fills the output and is reported as truncated when it
+  stops short; a cut that loses data is always truncated. An empty or nearly
+  empty stream is reported as truncated rather than malformed.
 - Fixed CPU decodes of codestreams whose tile-part headers set their own
   coding style ([#295](https://github.com/frames-sg/j2k/issues/295)). The
   inverse DWT and the rounding of integer output used the main header's
@@ -18,6 +27,39 @@ and stale roadmap entries have been removed from the public documentation set.
   integer decode are rejected with `UnsupportedFeature` rather than decoded
   wrong. Output of codestreams without tile-part coding overrides is
   unchanged.
+- `MetalBatchDecoder` region and region-plus-reduced requests no longer
+  allocate coefficient and IDWT buffers for the whole decoded level. Their
+  prepared plans already store only the region; preparation now narrows each
+  sub-band and IDWT window to what that store reads, as the single-image Metal
+  region route does. On an 18000 x 12000 RGB image, a batch of 1024 px tiles
+  at full or half resolution requested a 2.6 GB or 648 MB buffer, failed the
+  512 MiB cap, and fell back to the CPU; those tiles now decode on Metal with
+  output identical to the CPU. Quarter resolution, which already fit, takes
+  9 ms instead of 36 ms for four HTJ2K tiles and 137 to 146 ms instead of
+  about 165 ms for classic. Cropping a prepared HTJ2K plan whose payloads stay
+  in the input no longer fails when it drops code-blocks. See
+  [`docs/benchmark-evidence.md`](docs/benchmark-evidence.md).
+- Owned batch preparation accepts images whose components use different
+  sampling factors, such as YCbCr 4:2:2, instead of reporting
+  `NonRepresentableReason::ComponentSubsampling`. Decode replicates the
+  subsampled components onto the image grid, as single-image decode does; the
+  CPU batch decoder matches it for full, region, reduced, and
+  region-plus-reduced requests. These images retain metadata only, so they
+  never share an execution group with unit-sampled images. Images whose
+  components all share one non-unit sampling still report
+  `ComponentSubsampling`, because native decode then produces the smaller
+  component grid.
+  `MetalBatchDecoder` decodes full-image subsampled RGB without MCT, such as
+  Aperio 33003 YCbCr 4:2:2 tiles, in the group's one command buffer and
+  replicates chroma on the GPU before the final store. 32 tiles of
+  `JP2K-33003-1.svs` take 11 to 30 ms instead of 150 to 390 ms through one
+  Metal decode per tile; see
+  [`docs/benchmark-evidence.md`](docs/benchmark-evidence.md). Region and
+  reduced subsampled requests on Metal, and subsampled groups on CUDA, now
+  fail as a group with a capability error (`UnsupportedMetalRequest` or
+  `UnsupportedCudaRequest`) instead of an indexed preparation error; callers
+  that fell back to single-image decode on `NonRepresentableBatchOutput`
+  should do the same for these group errors.
 - Serial CPU region decodes on the row-streamed IDWT decode each sub-band's
   code-blocks one code-block row at a time, as the IDWT reaches it, and hold
   only that row instead of the sub-band's whole window. A 1024 x 1024 region

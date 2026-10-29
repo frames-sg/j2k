@@ -321,6 +321,7 @@ fn flattened_cpu_tier1_default_gate_targets_large_distinct_batches_only() {
             signed: false,
             mct: true,
             transform: J2kWaveletTransform::Reversible53,
+            color_sampling: [(1, 1); 3],
             component_plans: Vec::new(),
         })
     }

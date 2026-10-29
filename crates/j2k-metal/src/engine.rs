@@ -292,8 +292,8 @@ pub(crate) use self::direct_grayscale_execute::{
     execute_prepared_direct_grayscale_plan, execute_prepared_direct_grayscale_plan_batch,
     execute_prepared_direct_grayscale_plan_into,
     execute_prepared_direct_grayscale_plan_with_device,
-    execute_repeated_prepared_direct_grayscale_plan, submit_cooperative_cpu_color_group,
-    submit_prepared_direct_color_plan_batch_into_group,
+    execute_repeated_prepared_direct_grayscale_plan, prepare_component_grid_color_plan,
+    submit_cooperative_cpu_color_group, submit_prepared_direct_color_plan_batch_into_group,
     submit_prepared_direct_color_plan_batches_into_groups,
     submit_prepared_direct_grayscale_plan_batch_into_group, ColorGroupSubmission,
     DirectDestinationConsumerOrdering, SubmittedDirectDestination,
@@ -312,7 +312,10 @@ pub(crate) use self::direct_prepare::{
 #[cfg(target_os = "macos")]
 mod direct_roi;
 #[cfg(target_os = "macos")]
-pub(crate) use self::direct_roi::crop_prepared_direct_grayscale_plan_to_output_region;
+pub(crate) use self::direct_roi::{
+    crop_prepared_direct_grayscale_plan_to_output_region,
+    prune_prepared_direct_grayscale_plan_to_stores,
+};
 #[cfg(target_os = "macos")]
 mod direct_stacked_batch;
 #[cfg(target_os = "macos")]
@@ -344,7 +347,7 @@ mod direct_execute;
 #[cfg(target_os = "macos")]
 pub(crate) use self::direct_execute::{
     crop_prepared_direct_color_plan_to_output_region, prepare_direct_color_plan,
-    prepare_direct_color_plan_for_cpu_upload,
+    prepare_direct_color_plan_for_cpu_upload, prune_prepared_direct_color_plan_to_stores,
 };
 #[cfg(all(target_os = "macos", test))]
 use self::direct_execute::{
@@ -468,7 +471,7 @@ fn classic_style_flags(style: j2k_native::J2kCodeBlockStyle) -> u32 {
 #[cfg(target_os = "macos")]
 mod surface_decode;
 #[cfg(all(test, target_os = "macos"))]
-mod tests;
+pub(crate) mod tests;
 #[cfg(target_os = "macos")]
 pub(crate) use self::surface_decode::{
     decode_image_to_surface, decode_image_to_surface_with_device, decode_region_scaled_to_surface,

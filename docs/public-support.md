@@ -42,9 +42,12 @@ policy for decomposition depth. Header inspection accepts dimensions beyond
 
 The owned-batch decoder accepts full, region, reduced, and region-plus-reduced
 requests and groups Gray, RGB, or RGBA output by shape without padding. Output
-is `U8`, `U16`, or `I16` samples in NCHW or NHWC layout. Other component
-counts, mixed component metadata, subsampled planes, and precision above 16
-bits use the component-plane APIs. Explicit GPU requests return an error for
+is `U8`, `U16`, or `I16` samples in NCHW or NHWC layout. When components
+use different sampling factors, the subsampled ones are replicated onto the
+image grid, as the single-image decoders do. Images whose components all
+share one subsampling decode to that smaller grid and are not batched. Other
+component counts, mixed component metadata, and precision above 16 bits use
+the component-plane APIs. Explicit GPU requests return an error for
 inputs their plans cannot describe; they do not fall back to the CPU.
 Preparation failures are reported per input. A GPU decode error tied to a
 specific job names that job's source; a command-buffer failure fails the whole

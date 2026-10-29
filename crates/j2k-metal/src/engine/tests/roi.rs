@@ -14,7 +14,7 @@ use j2k_native::{encode, encode_htj2k, DecodeSettings, DecoderContext, EncodeOpt
 // Empty packets do not depend on the code-block grid. Enlarge a tiny neutral
 // image's SIZ geometry to reproduce the large-image allocation without storing
 // or encoding hundreds of megabytes of pixels.
-fn empty_large_rgb_codestream(ht: bool) -> Vec<u8> {
+pub(crate) fn empty_large_rgb_codestream(ht: bool) -> Vec<u8> {
     let options = EncodeOptions {
         reversible: true,
         num_decomposition_levels: 5,

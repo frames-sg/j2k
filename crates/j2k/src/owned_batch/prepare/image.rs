@@ -184,7 +184,13 @@ pub(super) fn batch_group_info(
     {
         return Err(nonrepresentable(NonRepresentableReason::MixedSignedness));
     }
-    if support.has_component_subsampling() {
+    // When components use different sampling, decode replicates the
+    // subsampled ones onto the reference grid, as single-image decode does.
+    // Offset plans reject them, so they retain metadata only and never share
+    // an execution group with unit-sampled images. When every component
+    // shares one non-unit sampling, native decode instead produces the smaller
+    // component grid, which the reference-grid geometry here cannot describe.
+    if has_uniform_component_subsampling(support) {
         return Err(nonrepresentable(
             NonRepresentableReason::ComponentSubsampling,
         ));
@@ -337,6 +343,18 @@ fn identity_rgba_alpha(definitions: &[crate::J2kChannelDefinition]) -> Option<Ba
         && alpha.channel_index == 3
         && alpha.association == crate::J2kChannelAssociation::WholeImage)
         .then_some(alpha_interpretation)
+}
+
+fn has_uniform_component_subsampling(support: &J2kSupportInfo) -> bool {
+    let Some(first) = support.components.first() else {
+        return false;
+    };
+    let sampling = (first.x_rsiz, first.y_rsiz);
+    sampling != (1, 1)
+        && support
+            .components
+            .iter()
+            .all(|component| (component.x_rsiz, component.y_rsiz) == sampling)
 }
 
 fn nonrepresentable(reason: NonRepresentableReason) -> BatchItemError {

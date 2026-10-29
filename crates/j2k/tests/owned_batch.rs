@@ -21,3 +21,5 @@ mod payload_ranges;
 mod reuse;
 #[path = "owned_batch/rgba.rs"]
 mod rgba;
+#[path = "owned_batch/subsampled.rs"]
+mod subsampled;

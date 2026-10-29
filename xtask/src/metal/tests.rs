@@ -180,7 +180,7 @@ fn ignored_inventory_is_unique_and_has_expected_size() {
         .copied()
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(required.len(), 21);
-    assert_eq!(optional.len(), 10);
+    assert_eq!(optional.len(), 11);
     assert!(optional.contains("idwt::tests::metal_host_slice_idwt_decode_perf"));
     assert!(optional
         .contains("engine::direct_buffers::performance::metal_checked_buffer_copy_into_perf"));
@@ -189,6 +189,8 @@ fn ignored_inventory_is_unique_and_has_expected_size() {
     assert!(
         optional.contains("decoder::tests::sampled::local_sampled_color_batch_characterization")
     );
+    assert!(optional
+        .contains("batch_decoder::region_group_tests::local_large_region_batch_characterization"));
     assert!(optional.contains(
         "engine::runtime::resource_profile_tests::benchmark_cold_and_repeated_session_kernel_initialization"
     ));
