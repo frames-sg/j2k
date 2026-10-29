@@ -5,6 +5,21 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- `CpuBatchDecoder` region and region-plus-reduced requests no longer
+  allocate coefficient and IDWT buffers for whole resolution levels
+  ([#299](https://github.com/frames-sg/j2k/issues/299)). Preparation keeps
+  the shared whole-level plan that Metal and CUDA execute, and adds a CPU copy
+  whose sub-bands and IDWT levels hold only what the region's stores read,
+  with the windows native region decode uses. On an 18000 x 12000 RGB image,
+  1024 px tiles at full and half resolution failed with `ImageTooLarge`; they
+  now decode with output identical to single-image region decode. Quarter
+  resolution, which already fit, takes 24 ms instead of 48 ms for four HTJ2K
+  tiles and 310 to 317 ms instead of 343 to 346 ms for classic. The CPU uses
+  the copy only when it at least halves the plan's coefficients or the
+  whole-level plan holds 16 Mi coefficients or more, because the windowed
+  IDWT is slower per sample than the banded whole-level one; full and reduced
+  requests, and regions covering most of a small image, are unchanged. See
+  `docs/benchmark-evidence.md`.
 - `j2k-tilecodec` LZW decode no longer reports valid TIFF strips and tiles
   as truncated. weezl reads input ahead of decoding, so the call that
   consumes the last byte can still hold codes up to the end code, often in

@@ -28,7 +28,7 @@ pub(super) fn classic_group_requirements(
             .classic_plan()
             .ok_or(BatchInfrastructureError::MissingResult { index: image_slot })?;
         payload_count = checked_add(payload_count, plan.payload_count(), "payload jobs")?;
-        for payload in plan.native_plan().payloads() {
+        for payload in plan.cpu_plan().payloads() {
             payload_bytes = checked_add(
                 payload_bytes,
                 payload.combined_length,

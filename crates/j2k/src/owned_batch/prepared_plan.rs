@@ -22,17 +22,22 @@ pub type PreparedImageGeometry<'a> = j2k_types::J2kReferencedImageGeometry<'a>;
 #[derive(Debug, Clone)]
 pub struct PreparedClassicPlan {
     plan: Arc<ClassicPreparedGeometry>,
+    /// The geometry the CPU executors run: for a region, a copy whose bands
+    /// hold only what the region reads instead of whole levels; otherwise
+    /// the shared plan.
+    cpu: Arc<ClassicPreparedGeometry>,
 }
 
 impl PreparedClassicPlan {
-    pub(super) fn from_native(plan: ClassicPreparedGeometry) -> Self {
-        Self {
-            plan: Arc::new(plan),
-        }
+    pub(super) fn from_native(plan: ClassicPreparedGeometry) -> j2k_native::Result<Self> {
+        let cpu = j2k_native::window_referenced_classic_plan_to_stores(&plan)?;
+        let plan = Arc::new(plan);
+        let cpu = cpu.map_or_else(|| Arc::clone(&plan), Arc::new);
+        Ok(Self { plan, cpu })
     }
 
-    pub(crate) fn native_plan(&self) -> &ClassicPreparedGeometry {
-        &self.plan
+    pub(crate) fn cpu_plan(&self) -> &ClassicPreparedGeometry {
+        &self.cpu
     }
 
     /// Borrow the immutable execution geometry shared by all decode backends.
@@ -114,17 +119,22 @@ impl PreparedClassicPlan {
 #[derive(Debug, Clone)]
 pub struct PreparedHtj2kPlan {
     plan: Arc<Htj2kPreparedGeometry>,
+    /// The geometry the CPU executors run: for a region, a copy whose bands
+    /// hold only what the region reads instead of whole levels; otherwise
+    /// the shared plan.
+    cpu: Arc<Htj2kPreparedGeometry>,
 }
 
 impl PreparedHtj2kPlan {
-    pub(super) fn from_native(plan: Htj2kPreparedGeometry) -> Self {
-        Self {
-            plan: Arc::new(plan),
-        }
+    pub(super) fn from_native(plan: Htj2kPreparedGeometry) -> j2k_native::Result<Self> {
+        let cpu = j2k_native::window_referenced_htj2k_plan_to_stores(&plan)?;
+        let plan = Arc::new(plan);
+        let cpu = cpu.map_or_else(|| Arc::clone(&plan), Arc::new);
+        Ok(Self { plan, cpu })
     }
 
-    pub(crate) fn native_plan(&self) -> &Htj2kPreparedGeometry {
-        &self.plan
+    pub(crate) fn cpu_plan(&self) -> &Htj2kPreparedGeometry {
+        &self.cpu
     }
 
     /// Borrow the immutable execution geometry shared by all decode backends.

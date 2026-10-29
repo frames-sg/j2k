@@ -51,7 +51,7 @@ impl CpuGroupFastWorkspace {
             let plan = image
                 .htj2k_plan()
                 .ok_or(BatchInfrastructureError::MissingResult { index: 0 })?;
-            visit_ht_jobs(plan.native_plan(), |_, _, _, _| {})
+            visit_ht_jobs(plan.cpu_plan(), |_, _, _, _| {})
         })
     }
 
@@ -72,7 +72,7 @@ impl CpuGroupFastWorkspace {
                 let span = self.image_spans[image_slot];
                 let mut bucket_ordinals = [0_usize; 3];
                 visit_ht_jobs(
-                    plan.native_plan(),
+                    plan.cpu_plan(),
                     |job_index, payload_records, block_index, coding_passes| {
                         if ht_bucket(coding_passes) == bucket {
                             let bucket_index = ht_bucket_index(bucket);
@@ -130,7 +130,7 @@ impl CpuGroupFastWorkspace {
             let payloads = image
                 .htj2k_plan()
                 .and_then(|plan| {
-                    plan.native_plan()
+                    plan.cpu_plan()
                         .payloads()
                         .get(job.payload_index..payload_end)
                 })

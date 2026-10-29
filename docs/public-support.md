@@ -44,7 +44,11 @@ The owned-batch decoder accepts full, region, reduced, and region-plus-reduced
 requests and groups Gray, RGB, or RGBA output by shape without padding. Output
 is `U8`, `U16`, or `I16` samples in NCHW or NHWC layout. When components
 use different sampling factors, the subsampled ones are replicated onto the
-image grid, as the single-image decoders do. Images whose components all
+image grid, as the single-image decoders do. On the CPU, a region request runs a
+copy of the prepared plan sized to the region when that copy holds at most
+half the coefficients, or when the whole-level plan holds 16 Mi or more;
+otherwise it keeps whole levels. The prepared geometry GPU backends read
+always keeps whole levels. Images whose components all
 share one subsampling decode to that smaller grid and are not batched. Other
 component counts, mixed component metadata, and precision above 16 bits use
 the component-plane APIs. Explicit GPU requests return an error for

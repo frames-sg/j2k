@@ -19,6 +19,40 @@ cargo run -p xtask --features adoption -- adoption-report --run-dir target/j2k-a
 Speed comparisons must use the manifest-backed external rows, not the
 generated in-repo fixtures.
 
+## CPU owned batches of large-image regions - 2026-10-29
+
+Same machine and inputs as the next section, load average 4 to 7. Each sample
+decodes one round of four 1024 px output tiles at one reduction through
+`CpuBatchDecoder::prepare` plus `decode_prepared` with default options;
+"CPU tiles" is one serial `decode_region_scaled_pow2_into` per tile, the four
+in parallel. The first sample checks that both produce the same bytes. Seven
+samples, median ms. "Before" is `main` at 6ca1bdbf with the same test file.
+
+```bash
+J2K_LARGE_REGION_INPUT=<codestream> cargo test --release -p j2k \
+  --test owned_batch local_large_region_cpu_batch_characterization \
+  -- --ignored --nocapture
+```
+
+| Input | Level | CPU batch before | CPU batch now | CPU tiles |
+| --- | ---: | ---: | ---: | ---: |
+| large-ht.j2c | 0 | `ImageTooLarge` | 28 | 26 |
+| large-ht.j2c | 1 | `ImageTooLarge` | 27 | 26 |
+| large-ht.j2c | 2 | 48 | 24 | 22 |
+| large.jp2 | 0 | `ImageTooLarge` | 152 | 149 |
+| large.jp2 | 1 | `ImageTooLarge` | 244 | 229 |
+| large.jp2 | 2 | 346 | 317 | 312 |
+| large-plt.jp2 | 0 | `ImageTooLarge` | 136 | 133 |
+| large-plt.jp2 | 1 | `ImageTooLarge` | 224 | 220 |
+| large-plt.jp2 | 2 | 343 | 310 | 306 |
+
+Small slide tiles, where the rule keeps the whole-level plan: 32 level-0
+`CMU-1-JP2K-33005` tiles (240 x 240), batched with one worker per core, took
+9.8 to 10.0 ms before and after for full requests and 8.8 to 9.0 ms before
+against 9.1 to 9.2 ms after for a centred half-size region. Preparation, which
+now weighs the windowed copy, accounts for 0.1 ms of that. Windowing those
+regions without the rule measured 9.5 to 9.7 ms.
+
 ## Metal owned batches of large-image regions - 2026-10-28
 
 Same machine as the next section, load average 5 to 11. Inputs are the

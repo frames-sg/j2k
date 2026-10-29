@@ -114,7 +114,12 @@ fn prepare_classic_offset_plan(
     }
     let output = plan.output_rect();
     match worker.build_prepared_classic_plan(image, (output.x, output.y, output.w, output.h)) {
-        Ok(plan) => Ok(Some(PreparedClassicPlan::from_native(plan))),
+        Ok(plan) => PreparedClassicPlan::from_native(plan)
+            .map(Some)
+            .map_err(|source| BatchItemError::Codec {
+                stage: BatchErrorStage::Prepare,
+                source: Arc::new(J2kError::from_native_decode_error(source)),
+            }),
         Err(
             source @ j2k_native::DecodeError::Decoding(
                 j2k_native::DecodingError::DirectPlanUnsupported(_)
@@ -144,7 +149,12 @@ fn prepare_htj2k_offset_plan(
     }
     let output = plan.output_rect();
     match worker.build_prepared_htj2k_plan(image, (output.x, output.y, output.w, output.h)) {
-        Ok(plan) => Ok(Some(PreparedHtj2kPlan::from_native(plan))),
+        Ok(plan) => PreparedHtj2kPlan::from_native(plan)
+            .map(Some)
+            .map_err(|source| BatchItemError::Codec {
+                stage: BatchErrorStage::Prepare,
+                source: Arc::new(J2kError::from_native_decode_error(source)),
+            }),
         Err(source)
             if matches!(
                 source.classify(),

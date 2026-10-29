@@ -17,6 +17,8 @@ mod grouping;
 mod native_types_and_requests;
 #[path = "owned_batch/payload_ranges.rs"]
 mod payload_ranges;
+#[path = "owned_batch/region_windows.rs"]
+mod region_windows;
 #[path = "owned_batch/reuse.rs"]
 mod reuse;
 #[path = "owned_batch/rgba.rs"]
