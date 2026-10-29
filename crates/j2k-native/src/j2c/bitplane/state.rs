@@ -127,8 +127,9 @@ pub(crate) struct BitPlaneDecodeContext {
     pub(super) max_coding_passes: u8,
     /// The type of sub-band the current code block belongs to.
     pub(super) sub_band_type: SubBandType,
-    /// The arithmetic decoder contexts for each context label.
-    pub(super) contexts: [ArithmeticDecoderContext; 19],
+    /// The arithmetic decoder contexts for each context label (0-18). Any
+    /// `u8` label indexes the array, so lookups need no bounds check.
+    pub(super) contexts: [ArithmeticDecoderContext; 256],
     /// The bit position for the current bitplane.
     pub(super) current_bit_position: u8,
 }
@@ -165,7 +166,7 @@ impl BitPlaneDecodeContext {
             max_coding_passes: 0,
             strict: false,
             sub_band_type: SubBandType::LowLow,
-            contexts: [ArithmeticDecoderContext::empty(); 19],
+            contexts: [ArithmeticDecoderContext::empty(); 256],
             current_bit_position: 0,
         }
     }

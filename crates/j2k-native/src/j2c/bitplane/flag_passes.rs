@@ -42,7 +42,7 @@ fn propagation_rows(own: u32) -> u32 {
 /// slice pointers round-trip through memory that the pass's stores alias.
 struct Scan<'c, 'd> {
     decoder: ArithmeticDecoder<'d>,
-    contexts: &'c mut [ArithmeticDecoderContext; 19],
+    contexts: &'c mut [ArithmeticDecoderContext; 256],
     flags: &'c mut [u32],
     coefficients: &'c mut [Coefficient],
     zero_coding: &'static [u8; 512],
@@ -86,7 +86,8 @@ impl<'c, 'd> Scan<'c, 'd> {
     #[expect(clippy::inline_always, reason = "per-symbol MQ decode")]
     #[inline(always)]
     fn read(&mut self, label: u8) -> u32 {
-        self.decoder.read_bit(&mut self.contexts[label as usize])
+        self.decoder
+            .read_bit(&mut self.contexts[usize::from(label)])
     }
 
     /// The coefficient in the row at window shift `shift` just decoded a one

@@ -32,6 +32,10 @@ and stale roadmap entries have been removed from the public documentation set.
   in the zero-bitplane tag tree, as the CPU encoder does, so their packet headers
   match the CPU's byte for byte. Earlier codestreams were valid but could differ
   from the CPU's by a few header bytes.
+- CPU classic (Part 1) code-block decoding passes each row's window shift
+  instead of its row to the context helpers, picks the next MQ probability
+  state with one shift, and indexes its contexts by label without a bounds
+  check. Output is unchanged.
 - CPU classic (Part 1) code-block decoding reads several MQ code bytes ahead per
   refill instead of one per renormalization, and visits each column's candidate
   rows in the significance propagation, refinement and cleanup passes as a bit
