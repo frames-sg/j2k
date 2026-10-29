@@ -72,40 +72,42 @@ pub(in crate::j2c) fn zero_coding_table(sub_band_type: SubBandType) -> &'static 
     }
 }
 
-/// Zero-coding context label for row `row` of the column word `flags`.
+/// Zero-coding context label for the row of the column word `flags` whose
+/// window starts at bit `shift` (three times the row).
 #[expect(
     clippy::inline_always,
     reason = "Tier-1 context lookup is a measured coefficient-loop hot path"
 )]
 #[inline(always)]
-pub(in crate::j2c) fn zero_coding_label(table: &[u8; 512], flags: u32, row: u32) -> u8 {
-    table[((flags >> (3 * row)) & SIGMA_NEIGHBOURS) as usize]
+pub(in crate::j2c) fn zero_coding_label(table: &[u8; 512], flags: u32, shift: u32) -> u8 {
+    table[((flags >> shift) & SIGMA_NEIGHBOURS) as usize]
 }
 
-/// Sign-coding context label and XOR bit (Table D.3) for row `row`, from the
-/// column word and its left and right neighbors.
+/// Sign-coding context label and XOR bit (Table D.3) for the row whose window
+/// starts at bit `shift`, from the column word and its left and right neighbors.
 #[expect(
     clippy::inline_always,
     reason = "Tier-1 context lookup is a measured coefficient-loop hot path"
 )]
 #[inline(always)]
-pub(in crate::j2c) fn sign_coding_label(flags: u32, left: u32, right: u32, row: u32) -> (u8, u8) {
-    let window = flags >> (3 * row);
+pub(in crate::j2c) fn sign_coding_label(flags: u32, left: u32, right: u32, shift: u32) -> (u8, u8) {
+    let window = flags >> shift;
     let significances = (((window >> 1) & 1) << 6)
         | (((window >> 3) & 1) << 4)
         | (((window >> 5) & 1) << 2)
         | ((window >> 7) & 1);
     // The sign of row - 1 is bit 18 for row 0 and 19 + 3 * (row - 1) after.
-    let north_sign_bit = if row == 0 { 18 } else { 16 + 3 * row };
+    let north_sign_bit = if shift == 0 { 18 } else { 16 + shift };
     let signs = (((flags >> north_sign_bit) & 1) << 6)
-        | (((left >> (19 + 3 * row)) & 1) << 4)
-        | (((right >> (19 + 3 * row)) & 1) << 2)
-        | ((flags >> (22 + 3 * row)) & 1);
+        | (((left >> (19 + shift)) & 1) << 4)
+        | (((right >> (19 + shift)) & 1) << 2)
+        | ((flags >> (22 + shift)) & 1);
     let merged = ((significances & signs) << 1) | (significances & !signs);
     SIGN_CONTEXT_LOOKUP[merged as usize]
 }
 
-/// Record that row `row` of the column word at `index` became significant
+/// Record that the row at window shift `shift` (three times the row) of the
+/// column word at `index` became significant
 /// with sign `sign`. The column's own word is the caller's register copy
 /// `own`; neighbor words are updated in `flags`, whose row stride is
 /// `stride` (one padding column and one padding stripe on every side).
@@ -116,20 +118,19 @@ pub(in crate::j2c) fn set_significant(
     own: &mut u32,
     index: usize,
     stride: usize,
-    row: u32,
+    shift: u32,
     sign: u32,
 ) {
-    let shift = 3 * row;
     *own |= (SIGMA_THIS | sign << 19) << shift;
     flags[index - 1] |= (1 << 5) << shift;
     flags[index + 1] |= (1 << 3) << shift;
-    if row == 0 {
+    if shift == 0 {
         // Row 4 of the stripe above: significance bits 15-17, sign bit 31.
         let north = index - stride;
         flags[north - 1] |= 1 << 17;
         flags[north] |= 1 << 16 | sign << 31;
         flags[north + 1] |= 1 << 15;
-    } else if row == 3 {
+    } else if shift == 9 {
         // Row -1 of the stripe below: significance bits 0-2, sign bit 18.
         let south = index + stride;
         flags[south - 1] |= 1 << 2;

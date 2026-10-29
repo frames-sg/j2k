@@ -89,32 +89,33 @@ impl<'c, 'd> Scan<'c, 'd> {
         self.decoder.read_bit(&mut self.contexts[label as usize])
     }
 
-    /// The coefficient at `row` just decoded a one while insignificant: record
-    /// the bit, decode its sign, and mark it significant.
+    /// The coefficient in the row at window shift `shift` just decoded a one
+    /// while insignificant: record the bit, decode its sign, and mark it
+    /// significant.
     #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
     #[inline(always)]
-    fn become_significant(&mut self, own: &mut u32, flag_index: usize, top: usize, row: u32) {
-        let coefficient = &mut self.coefficients[top + row as usize * self.stride];
-        coefficient.push_bit_at(1, self.bit_position);
+    fn become_significant(&mut self, own: &mut u32, flag_index: usize, top: usize, shift: u32) {
+        let index = top + (shift / 3) as usize * self.stride;
+        self.coefficients[index].push_bit_at(1, self.bit_position);
         let (label, xor) = sign_coding_label(
             *own,
             self.flags[flag_index - 1],
             self.flags[flag_index + 1],
-            row,
+            shift,
         );
         let sign = self.read(label) ^ u32::from(xor);
-        self.coefficients[top + row as usize * self.stride].set_sign(u8::from(sign != 0));
-        set_significant(self.flags, own, flag_index, self.stride, row, sign);
+        self.coefficients[index].set_sign(u8::from(sign != 0));
+        set_significant(self.flags, own, flag_index, self.stride, shift, sign);
     }
 
-    /// Zero-code the insignificant coefficient at `row`; returns whether it
-    /// became significant.
+    /// Zero-code the insignificant coefficient in the row at window shift
+    /// `shift`; returns whether it became significant.
     #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
     #[inline(always)]
-    fn zero_code(&mut self, own: &mut u32, flag_index: usize, top: usize, row: u32) -> bool {
-        let significant = self.read(zero_coding_label(self.zero_coding, *own, row)) != 0;
+    fn zero_code(&mut self, own: &mut u32, flag_index: usize, top: usize, shift: u32) -> bool {
+        let significant = self.read(zero_coding_label(self.zero_coding, *own, shift)) != 0;
         if significant {
-            self.become_significant(own, flag_index, top, row);
+            self.become_significant(own, flag_index, top, shift);
         }
         significant
     }
@@ -137,7 +138,7 @@ pub(super) fn significance_propagation_pass_flags(
             while candidates != 0 {
                 let shift = candidates.trailing_zeros();
                 own |= PI_THIS << shift;
-                if scan.zero_code(&mut own, flag_index, top_row + x, shift / 3) {
+                if scan.zero_code(&mut own, flag_index, top_row + x, shift) {
                     // The new significant row neighbors the rows below it.
                     candidates = propagation_rows(own) & rows & (u32::MAX << (shift + 1));
                 } else {
@@ -212,14 +213,14 @@ pub(super) fn cleanup_pass_flags(
                 }
                 let first = (scan.decoder.read_bit(&mut uniform) << 1)
                     | scan.decoder.read_bit(&mut uniform);
-                scan.become_significant(&mut own, flag_index, top, first);
+                scan.become_significant(&mut own, flag_index, top, 3 * first);
                 for row in first + 1..4 {
-                    scan.zero_code(&mut own, flag_index, top, row);
+                    scan.zero_code(&mut own, flag_index, top, 3 * row);
                 }
             } else {
                 let mut candidates = uncoded_rows(own) & rows;
                 while candidates != 0 {
-                    scan.zero_code(&mut own, flag_index, top, candidates.trailing_zeros() / 3);
+                    scan.zero_code(&mut own, flag_index, top, candidates.trailing_zeros());
                     candidates &= candidates - 1;
                 }
             }

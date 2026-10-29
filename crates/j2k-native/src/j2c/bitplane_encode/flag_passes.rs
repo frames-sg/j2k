@@ -122,10 +122,10 @@ impl Scan<'_> {
             *own,
             self.flags[flag_index - 1],
             self.flags[flag_index + 1],
-            shift / 3,
+            shift,
         );
         self.code(sign ^ u32::from(xor), label);
-        set_significant(self.flags, own, flag_index, self.stride, shift / 3, sign);
+        set_significant(self.flags, own, flag_index, self.stride, shift, sign);
     }
 
     /// Zero-code the insignificant coefficient in the row at window shift
@@ -135,7 +135,7 @@ impl Scan<'_> {
     fn zero_code(&mut self, own: &mut u32, flag_index: usize, column: usize, shift: u32) -> bool {
         let sample = self.sample(column, shift);
         let bit = (sample >> self.bitplane) & 1;
-        self.code(bit, zero_coding_label(self.zero_coding, *own, shift / 3));
+        self.code(bit, zero_coding_label(self.zero_coding, *own, shift));
         if bit != 0 {
             self.become_significant(own, flag_index, sample, shift);
         }
