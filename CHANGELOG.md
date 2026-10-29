@@ -122,6 +122,12 @@ and stale roadmap entries have been removed from the public documentation set.
   `Image::decode_region_rows_for_integer_output_with_context` and
   `ComponentRowSink` expose this for other callers.
 
+- Security: the lockfiles move to libz-sys 1.1.31, which fixes
+  RUSTSEC-2026-0418. Its build script printed the build environment into
+  `target/` when built with cc 1.6 or later on Unix. J2K's locked builds use
+  cc 1.2 and were not affected. `cargo install --locked j2k-cli` now builds
+  the fixed version.
+
 ## [0.13.0] - 2026-10-26
 
 - Migration from 0.12.0: exhaustive native `EncodeOptions` literals must add
