@@ -139,8 +139,7 @@ impl<'a> ArithmeticDecoder<'a> {
     #[expect(
         clippy::cast_possible_truncation,
         clippy::inline_always,
-        clippy::similar_names,
-        reason = "packed MQ fields are explicitly bounded and MPS/LPS are paired domain terms on a measured per-symbol hot path"
+        reason = "packed MQ fields are explicitly bounded on a measured per-symbol hot path"
     )]
     #[inline(always)]
     pub(crate) fn decode(&mut self, context: &mut ArithmeticDecoderContext) -> u32 {
@@ -176,12 +175,9 @@ impl<'a> ArithmeticDecoder<'a> {
         let pick_nlps = cond ^ is_lps;
         let d = mps ^ pick_nlps;
 
-        let pick_mask = u8::from(pick_nlps != 0).wrapping_neg();
-        let next_mps = (state >> 24) as u8;
-        let next_lps = (state >> 32) as u8;
-        let next = next_mps ^ ((next_mps ^ next_lps) & pick_mask);
-        let keep_mask = u8::from(transition == 0).wrapping_neg();
-        context.0 = next ^ ((next ^ context.0) & keep_mask);
+        // The next MPS state is byte 3 of `state` and the next LPS state byte 4.
+        let next = (state >> (24 + 8 * pick_nlps)) as u8;
+        context.0 = if transition == 0 { context.0 } else { next };
 
         // Shift A back to at least 0x8000 in one step when the buffered bits
         // suffice (zero shift in the fast case); otherwise take the byte-in
