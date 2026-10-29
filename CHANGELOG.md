@@ -32,6 +32,10 @@ and stale roadmap entries have been removed from the public documentation set.
   in the zero-bitplane tag tree, as the CPU encoder does, so their packet headers
   match the CPU's byte for byte. Earlier codestreams were valid but could differ
   from the CPU's by a few header bytes.
+- CPU classic (Part 1) code-block decoding reads several MQ code bytes ahead per
+  refill instead of one per renormalization, and visits each column's candidate
+  rows in the significance propagation, refinement and cleanup passes as a bit
+  set instead of testing every row. Output is unchanged.
 - `j2k-tilecodec` LZW decode no longer reports valid TIFF strips and tiles
   as truncated. weezl reads input ahead of decoding, so the call that
   consumes the last byte can still hold codes up to the end code, often in
