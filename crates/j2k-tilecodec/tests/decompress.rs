@@ -138,21 +138,98 @@ fn lzw_codec_finishes_streams_whose_last_codes_are_buffered() {
 }
 
 #[test]
-fn lzw_codec_rejects_every_strict_prefix_as_truncated() {
+fn lzw_codec_rejects_every_prefix_that_loses_data_as_truncated() {
     // Finishing buffered codes after the input ends must not accept a stream
-    // cut short: the last byte always holds bits of the end code.
+    // cut short. A cut that only loses end-code bits still fills the output,
+    // which libtiff reads, so it must decode exactly.
+    let mut complete_without_end_code = 0;
     for (length, seed, source, encoded) in short_lzw_streams() {
         for cut in 0..encoded.len() {
             let mut pool = LzwPool::new();
             let mut out = vec![0_u8; source.len()];
-            let err = LzwCodec::decompress_into(&mut pool, &encoded[..cut], &mut out)
-                .expect_err("a strict prefix must not decode");
-            assert!(
-                CodecError::is_truncated(&err),
-                "length {length} seed {seed} cut {cut}/{}: {err:?}",
-                encoded.len()
-            );
+            let context = format!("length {length} seed {seed} cut {cut}/{}", encoded.len());
+            match LzwCodec::decompress_into(&mut pool, &encoded[..cut], &mut out) {
+                Ok(written) => {
+                    assert_eq!(written, source.len(), "{context}");
+                    assert_eq!(out, source, "{context}");
+                    complete_without_end_code += 1;
+                }
+                Err(err) => assert!(CodecError::is_truncated(&err), "{context}: {err:?}"),
+            }
         }
+    }
+    assert!(complete_without_end_code > 0, "no cut kept every data code");
+}
+
+/// MSB-first TIFF LZW codes that spell `source` one literal at a time,
+/// widening codes as a TIFF decoder grows its table, optionally ending with
+/// the end-of-information code.
+fn literal_lzw_stream(source: &[u8], end_code: bool) -> Vec<u8> {
+    const CLEAR: u32 = 256;
+    const END: u32 = 257;
+    let (mut bits, mut bit_count, mut out) = (0_u64, 0_u32, Vec::new());
+    let mut push = |code: u32, width: u32| {
+        bits = (bits << width) | u64::from(code);
+        bit_count += width;
+        while bit_count >= 8 {
+            bit_count -= 8;
+            out.push(u8::try_from((bits >> bit_count) & 0xff).expect("masked"));
+        }
+        bits &= (1 << bit_count) - 1;
+    };
+    let (mut width, mut next_code) = (9_u32, 258_u32);
+    push(CLEAR, width);
+    for (index, &byte) in source.iter().enumerate() {
+        push(u32::from(byte), width);
+        // Every code after the first after a clear adds one table entry; TIFF
+        // widens one entry early.
+        if index > 0 {
+            next_code += 1;
+            if next_code > (1 << width) - 2 && width < 12 {
+                width += 1;
+            }
+        }
+    }
+    if end_code {
+        push(END, width);
+    }
+    if bit_count > 0 {
+        out.push(u8::try_from((bits << (8 - bit_count)) & 0xff).expect("masked"));
+    }
+    out
+}
+
+#[test]
+fn lzw_codec_reads_streams_without_an_end_code_that_fill_the_output() {
+    // libtiff reads a strip whose codes stop without an end code as long as
+    // they produce the whole strip, and reports one that stops short.
+    for length in [1_usize, 2, 7, 253, 254, 255, 600, 1500] {
+        let source = (0..length)
+            .map(|index| u8::try_from(index.wrapping_mul(37) % 251).expect("below 251"))
+            .collect::<Vec<_>>();
+        let with_end_code = literal_lzw_stream(&source, true);
+        let mut reference = vec![0_u8; length];
+        assert_eq!(
+            LzwCodec::decompress_into(&mut LzwPool::new(), &with_end_code, &mut reference)
+                .expect("literal stream with an end code"),
+            length
+        );
+        assert_eq!(
+            reference, source,
+            "length {length}: literal stream encoding"
+        );
+
+        let without_end_code = literal_lzw_stream(&source, false);
+        let mut out = vec![0_u8; length];
+        let written = LzwCodec::decompress_into(&mut LzwPool::new(), &without_end_code, &mut out)
+            .unwrap_or_else(|error| panic!("length {length}: {error}"));
+        assert_eq!(written, length, "length {length}");
+        assert_eq!(out, source, "length {length}");
+
+        let mut larger = vec![0_u8; length + 1];
+        let err = LzwCodec::decompress_into(&mut LzwPool::new(), &without_end_code, &mut larger)
+            .expect_err("a stream that stops short of the output must not decode");
+        assert!(CodecError::is_truncated(&err), "length {length}: {err:?}");
     }
 }
 
@@ -203,7 +280,8 @@ fn truncated_payloads_are_input_errors_for_codec_error_classifier() {
     let source = sample_bytes();
     let mut lzw_encoder = Encoder::with_tiff_size_switch(BitOrder::Msb, 8);
     let mut lzw = lzw_encoder.encode(&source).expect("lzw encode");
-    lzw.pop();
+    // Losing only the end code still fills the output, so cut into the data.
+    lzw.truncate(lzw.len() / 2);
 
     let mut lzw_pool = LzwPool::new();
     let mut out = vec![0_u8; source.len()];
@@ -366,8 +444,9 @@ fn pools_can_be_reused_across_calls() {
 }
 
 #[test]
-fn lzw_codec_rejects_codes_without_an_end_code_as_truncated() {
-    // Zero bytes decode as literal codes but never reach the end code.
+fn lzw_codec_rejects_short_codes_without_an_end_code_as_truncated() {
+    // Zero bytes decode as three literal codes, far short of the output, and
+    // never reach the end code.
     let mut pool = LzwPool::new();
     let mut out = vec![0_u8; 64];
     let err = LzwCodec::decompress_into(&mut pool, &[0; 4], &mut out)

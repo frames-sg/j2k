@@ -10,9 +10,10 @@ and stale roadmap entries have been removed from the public documentation set.
   consumes the last byte can still hold codes up to the end code, often in
   short streams; decoding stopped there with a truncation error. It now
   finishes the buffered codes, and reports truncation only when no input is
-  left and decoding makes no progress. Every strict prefix of a stream still
-  fails as truncated. An empty or nearly empty stream is reported as
-  truncated rather than malformed.
+  left and decoding makes no progress. As in libtiff, a stream with no end
+  code decodes when it fills the output and is reported as truncated when it
+  stops short; a cut that loses data is always truncated. An empty or nearly
+  empty stream is reported as truncated rather than malformed.
 - Fixed CPU decodes of codestreams whose tile-part headers set their own
   coding style ([#295](https://github.com/frames-sg/j2k/issues/295)). The
   inverse DWT and the rounding of integer output used the main header's

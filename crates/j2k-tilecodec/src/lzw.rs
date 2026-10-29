@@ -58,7 +58,7 @@ impl TileDecompress for LzwCodec {
             // call can consume the last byte while codes up to and including
             // the end code are still buffered. Keep calling with no input
             // until it finishes; only a call that then makes no progress
-            // means the stream ended early.
+            // means the stream ended.
             let exhausted = input_offset == input.len();
             let progressed = result.consumed_in != 0 || result.consumed_out != 0;
             match result.status {
@@ -67,13 +67,18 @@ impl TileDecompress for LzwCodec {
                     let written = copy_scratch_to_output(&pool.scratch, out);
                     return Ok(written);
                 }
-                Ok(weezl::LzwStatus::Ok) if exhausted && !progressed => {
-                    return Err(crate::error::truncated_input("lzw decode"));
+                Ok(weezl::LzwStatus::Ok | weezl::LzwStatus::NoProgress)
+                    if exhausted && !progressed =>
+                {
+                    // Like libtiff, accept a stream without an end code once
+                    // it has filled the output; short of that it was cut off.
+                    if output_offset != out.len() {
+                        return Err(crate::error::truncated_input("lzw decode"));
+                    }
+                    pool.scratch.truncate(output_offset);
+                    return Ok(copy_scratch_to_output(&pool.scratch, out));
                 }
                 Ok(weezl::LzwStatus::Ok) => {}
-                Ok(weezl::LzwStatus::NoProgress) if exhausted => {
-                    return Err(crate::error::truncated_input("lzw decode"));
-                }
                 Ok(weezl::LzwStatus::NoProgress) => {
                     return Err(crate::error::malformed_input("lzw decode", "no progress"));
                 }
