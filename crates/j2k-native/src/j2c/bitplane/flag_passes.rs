@@ -14,15 +14,35 @@ use super::flags::{
 };
 use super::state::{BitPlaneDecodeContext, Coefficient};
 
-/// Significance bits of the column's own four rows.
-const SIGMA_ROWS: u32 = SIGMA_THIS | SIGMA_THIS << 3 | SIGMA_THIS << 6 | SIGMA_THIS << 9;
+/// Bit `3 * row` for each of a column's four rows, the shift that aligns the
+/// row's window with bit 0. Passes visit a column's rows as a set of these
+/// bits, lowest first, instead of branching on each row.
+const ROW_BITS: u32 = 0x249;
+
+/// Rows neither significant nor coded in this bitplane's significance
+/// propagation pass, as `ROW_BITS`.
+#[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
+#[inline(always)]
+fn uncoded_rows(own: u32) -> u32 {
+    !(own >> SIGMA_THIS.trailing_zeros() | own >> PI_THIS.trailing_zeros()) & ROW_BITS
+}
+
+/// Uncoded rows with a significant neighbor, as `ROW_BITS`.
+#[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
+#[inline(always)]
+fn propagation_rows(own: u32) -> u32 {
+    // Bit 3k: any significance in window row k (row k - 1 of the stripe).
+    let any_in_row = own | own >> 1 | own >> 2;
+    let neighbors = any_in_row | any_in_row >> 6 | own >> 3 | own >> 5;
+    neighbors & uncoded_rows(own)
+}
 
 /// Register copies of everything a pass touches. The MQ decoder is a local
 /// copy and the arrays are plain slices, so neither the MQ registers nor the
 /// slice pointers round-trip through memory that the pass's stores alias.
 struct Scan<'c, 'd> {
     decoder: ArithmeticDecoder<'d>,
-    contexts: &'c mut [ArithmeticDecoderContext; 19],
+    contexts: &'c mut [ArithmeticDecoderContext; 256],
     flags: &'c mut [u32],
     coefficients: &'c mut [Coefficient],
     zero_coding: &'static [u8; 512],
@@ -53,50 +73,52 @@ impl<'c, 'd> Scan<'c, 'd> {
     }
 
     /// Flag and top-row coefficient indices of column 0 in `stripe`, and the
-    /// number of rows the stripe holds.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "a stripe holds at most four rows"
-    )]
+    /// `ROW_BITS` of the rows the stripe holds.
     fn stripe_start(&self, stripe: usize) -> (usize, usize, u32) {
+        let rows = (self.height - 4 * stripe).min(4);
         (
             (stripe + 1) * self.stride + 1,
             (4 * stripe + 1) * self.stride + 1,
-            (self.height - 4 * stripe).min(4) as u32,
+            ROW_BITS & ((1 << (3 * rows)) - 1),
         )
     }
 
     #[expect(clippy::inline_always, reason = "per-symbol MQ decode")]
     #[inline(always)]
     fn read(&mut self, label: u8) -> u32 {
-        self.decoder.read_bit(&mut self.contexts[label as usize])
+        self.decoder
+            .read_bit(&mut self.contexts[usize::from(label)])
     }
 
-    /// The coefficient at `row` just decoded a one while insignificant: record
-    /// the bit, decode its sign, and mark it significant.
+    /// The coefficient in the row at window shift `shift` just decoded a one
+    /// while insignificant: record the bit, decode its sign, and mark it
+    /// significant.
     #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
     #[inline(always)]
-    fn become_significant(&mut self, own: &mut u32, flag_index: usize, top: usize, row: u32) {
-        let coefficient = &mut self.coefficients[top + row as usize * self.stride];
-        coefficient.push_bit_at(1, self.bit_position);
+    fn become_significant(&mut self, own: &mut u32, flag_index: usize, top: usize, shift: u32) {
+        let index = top + (shift / 3) as usize * self.stride;
+        self.coefficients[index].push_bit_at(1, self.bit_position);
         let (label, xor) = sign_coding_label(
             *own,
             self.flags[flag_index - 1],
             self.flags[flag_index + 1],
-            row,
+            shift,
         );
         let sign = self.read(label) ^ u32::from(xor);
-        self.coefficients[top + row as usize * self.stride].set_sign(u8::from(sign != 0));
-        set_significant(self.flags, own, flag_index, self.stride, row, sign);
+        self.coefficients[index].set_sign(u8::from(sign != 0));
+        set_significant(self.flags, own, flag_index, self.stride, shift, sign);
     }
 
-    /// Zero-code the insignificant coefficient at `row`.
+    /// Zero-code the insignificant coefficient in the row at window shift
+    /// `shift`; returns whether it became significant.
     #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
     #[inline(always)]
-    fn zero_code(&mut self, own: &mut u32, flag_index: usize, top: usize, row: u32) {
-        if self.read(zero_coding_label(self.zero_coding, *own, row)) != 0 {
-            self.become_significant(own, flag_index, top, row);
+    fn zero_code(&mut self, own: &mut u32, flag_index: usize, top: usize, shift: u32) -> bool {
+        let significant = self.read(zero_coding_label(self.zero_coding, *own, shift)) != 0;
+        if significant {
+            self.become_significant(own, flag_index, top, shift);
         }
+        significant
     }
 }
 
@@ -110,15 +132,18 @@ pub(super) fn significance_propagation_pass_flags(
         for x in 0..scan.width {
             let flag_index = flag_row + x;
             let mut own = scan.flags[flag_index];
-            // Nothing significant in or around the column: no candidates.
-            if own == 0 {
+            let mut candidates = propagation_rows(own) & rows;
+            if candidates == 0 {
                 continue;
             }
-            for row in 0..rows {
-                let window = own >> (3 * row);
-                if window & (SIGMA_THIS | PI_THIS) == 0 && window & SIGMA_NEIGHBOURS != 0 {
-                    own |= PI_THIS << (3 * row);
-                    scan.zero_code(&mut own, flag_index, top_row + x, row);
+            while candidates != 0 {
+                let shift = candidates.trailing_zeros();
+                own |= PI_THIS << shift;
+                if scan.zero_code(&mut own, flag_index, top_row + x, shift) {
+                    // The new significant row neighbors the rows below it.
+                    candidates = propagation_rows(own) & rows & (u32::MAX << (shift + 1));
+                } else {
+                    candidates &= candidates - 1;
                 }
             }
             scan.flags[flag_index] = own;
@@ -137,15 +162,15 @@ pub(super) fn magnitude_refinement_pass_flags(
         for x in 0..scan.width {
             let flag_index = flag_row + x;
             let mut own = scan.flags[flag_index];
-            if own & SIGMA_ROWS == 0 {
+            // Significant before this bitplane's significance pass.
+            let mut candidates =
+                (own >> SIGMA_THIS.trailing_zeros()) & !(own >> PI_THIS.trailing_zeros()) & rows;
+            if candidates == 0 {
                 continue;
             }
-            for row in 0..rows {
-                let window = own >> (3 * row);
-                // Significant before this bitplane's significance pass.
-                if window & (SIGMA_THIS | PI_THIS) != SIGMA_THIS {
-                    continue;
-                }
+            while candidates != 0 {
+                let shift = candidates.trailing_zeros();
+                let window = own >> shift;
                 let label = if window & MU_THIS != 0 {
                     16
                 } else if window & SIGMA_NEIGHBOURS != 0 {
@@ -154,9 +179,10 @@ pub(super) fn magnitude_refinement_pass_flags(
                     14
                 };
                 let bit = scan.read(label);
-                scan.coefficients[top_row + x + row as usize * scan.stride]
+                scan.coefficients[top_row + x + (shift / 3) as usize * scan.stride]
                     .push_bit_at(bit, scan.bit_position);
-                own |= MU_THIS << (3 * row);
+                own |= MU_THIS << shift;
+                candidates &= candidates - 1;
             }
             scan.flags[flag_index] = own;
         }
@@ -182,21 +208,21 @@ pub(super) fn cleanup_pass_flags(
             let mut own = scan.flags[flag_index];
             // A zero word is a full column of insignificant, unvisited
             // coefficients with zero contexts: Annex D's run-length case.
-            if rows == 4 && own == 0 {
+            if rows == ROW_BITS && own == 0 {
                 if scan.decoder.read_bit(&mut run_length) == 0 {
                     continue;
                 }
                 let first = (scan.decoder.read_bit(&mut uniform) << 1)
                     | scan.decoder.read_bit(&mut uniform);
-                scan.become_significant(&mut own, flag_index, top, first);
+                scan.become_significant(&mut own, flag_index, top, 3 * first);
                 for row in first + 1..4 {
-                    scan.zero_code(&mut own, flag_index, top, row);
+                    scan.zero_code(&mut own, flag_index, top, 3 * row);
                 }
             } else {
-                for row in 0..rows {
-                    if (own >> (3 * row)) & (SIGMA_THIS | PI_THIS) == 0 {
-                        scan.zero_code(&mut own, flag_index, top, row);
-                    }
+                let mut candidates = uncoded_rows(own) & rows;
+                while candidates != 0 {
+                    scan.zero_code(&mut own, flag_index, top, candidates.trailing_zeros());
+                    candidates &= candidates - 1;
                 }
             }
             // Visit marks last one bitplane.

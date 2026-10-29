@@ -173,6 +173,15 @@ fn rgba_channel_definitions(alpha_type: J2kChannelType) -> [J2kChannelDefinition
 }
 
 pub(super) fn wrap_rgba_jph(codestream: &[u8], alpha: Htj2kRgbaAlpha) -> Vec<u8> {
+    wrap_rgba(codestream, alpha, J2kFileWrapOptions::jph())
+}
+
+/// Wrap a classic four-component codestream as JP2 with explicit alpha.
+pub(super) fn wrap_rgba_jp2(codestream: &[u8], alpha: Htj2kRgbaAlpha) -> Vec<u8> {
+    wrap_rgba(codestream, alpha, J2kFileWrapOptions::jp2())
+}
+
+fn wrap_rgba(codestream: &[u8], alpha: Htj2kRgbaAlpha, options: J2kFileWrapOptions) -> Vec<u8> {
     let alpha_type = match alpha {
         Htj2kRgbaAlpha::Straight => J2kChannelType::Opacity,
         Htj2kRgbaAlpha::Premultiplied => J2kChannelType::PremultipliedOpacity,
@@ -180,7 +189,7 @@ pub(super) fn wrap_rgba_jph(codestream: &[u8], alpha: Htj2kRgbaAlpha) -> Vec<u8>
     let channel_definitions = rgba_channel_definitions(alpha_type);
     wrap_j2k_codestream(
         codestream,
-        J2kFileWrapOptions::jph()
+        options
             .with_color(J2kFileColorSpec::Enumerated(Colorspace::SRgb))
             .with_metadata(J2kFileBoxMetadata {
                 palette: None,
@@ -188,7 +197,7 @@ pub(super) fn wrap_rgba_jph(codestream: &[u8], alpha: Htj2kRgbaAlpha) -> Vec<u8>
                 channel_definitions: &channel_definitions,
             }),
     )
-    .expect("wrap explicit HTJ2K RGBA image")
+    .expect("wrap explicit RGBA image")
 }
 
 pub(super) fn signed_gray16_fixture(samples: &[i16], width: u32, height: u32) -> Vec<u8> {

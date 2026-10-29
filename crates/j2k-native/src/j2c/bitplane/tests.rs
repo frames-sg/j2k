@@ -569,7 +569,7 @@ fn packed_column_contexts_match_per_coefficient_contexts() {
                     let index = flag_index(x, y);
                     let mut own = flags[index];
                     let row = u32::try_from(y % 4).expect("row below four");
-                    set_significant(&mut flags, &mut own, index, stride, row, sign);
+                    set_significant(&mut flags, &mut own, index, stride, 3 * row, sign);
                     flags[index] = own;
                 }
             }
@@ -589,13 +589,13 @@ fn packed_column_contexts_match_per_coefficient_contexts() {
                         SubBandType::HighHigh,
                     ] {
                         assert_eq!(
-                            zero_coding_label(zero_coding_table(sub_band_type), word, row),
+                            zero_coding_label(zero_coding_table(sub_band_type), word, 3 * row),
                             context_label_zero_coding_from_neighbors(neighbors, sub_band_type),
                             "{width}x{height} ({x}, {y})"
                         );
                     }
                     assert_eq!(
-                        sign_coding_label(word, flags[index - 1], flags[index + 1], row),
+                        sign_coding_label(word, flags[index - 1], flags[index + 1], 3 * row),
                         context_label_sign_coding_index(idx, y, &ctx),
                         "{width}x{height} ({x}, {y})"
                     );

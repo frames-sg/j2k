@@ -30,17 +30,22 @@ pub(super) fn native_request_oracle(
     let pixel_count = output.w as usize * output.h as usize;
     let channels = raw.num_components as usize;
     if raw.signed {
-        CpuBatchSamples::I16(apply_batch_layout(
+        // Native output keeps one byte per signed sample up to 8 bits; the
+        // batch widens every signed sample to i16.
+        let samples = if raw.bit_depth <= 8 {
+            raw.data
+                .iter()
+                .map(|&sample| i16::from(i8::from_ne_bytes([sample])))
+                .collect()
+        } else {
             raw.data
                 .as_chunks::<2>()
                 .0
                 .iter()
                 .map(|sample| i16::from_le_bytes(*sample))
-                .collect(),
-            pixel_count,
-            channels,
-            layout,
-        ))
+                .collect()
+        };
+        CpuBatchSamples::I16(apply_batch_layout(samples, pixel_count, channels, layout))
     } else if raw.bit_depth <= 8 {
         CpuBatchSamples::U8(apply_batch_layout(raw.data, pixel_count, channels, layout))
     } else {

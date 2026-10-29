@@ -5,6 +5,44 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- `CpuBatchDecoder` region and region-plus-reduced requests no longer
+  allocate coefficient and IDWT buffers for whole resolution levels
+  ([#299](https://github.com/frames-sg/j2k/issues/299)). Preparation keeps
+  the shared whole-level plan that Metal and CUDA execute, and adds a CPU copy
+  whose sub-bands and IDWT levels hold only what the region's stores read,
+  with the windows native region decode uses. On an 18000 x 12000 RGB image,
+  1024 px tiles at full and half resolution failed with `ImageTooLarge`; they
+  now decode with output identical to single-image region decode. Quarter
+  resolution, which already fit, takes 24 ms instead of 48 ms for four HTJ2K
+  tiles and 310 to 317 ms instead of 343 to 346 ms for classic. The CPU uses
+  the copy only when it at least halves the plan's coefficients or the
+  whole-level plan holds 16 Mi coefficients or more, because the windowed
+  IDWT is slower per sample than the banded whole-level one; full and reduced
+  requests, and regions covering most of a small image, are unchanged. See
+  `docs/benchmark-evidence.md`.
+- Owned-batch preparation no longer fails with "failed to decode code-block"
+  on reduced-resolution regions that end where a tile begins on the reduced
+  grid ([#298](https://github.com/frames-sg/j2k/issues/298)). Tile selection
+  rounds tile bounds outward, so it can keep a boundary tile that contributes
+  no samples; the referenced plan builders rejected such a tile and now leave
+  it out. This affected the CPU and Metal batches alike. On the 19 x 13
+  OpenJPH fixture in 11 x 7 tiles, 4,598 of the 17,290 half-scale regions
+  failed to prepare; all now match single-image decode.
+- All-stage Metal lossy encodes seed code-blocks without coding passes with zero
+  in the zero-bitplane tag tree, as the CPU encoder does, so their packet headers
+  match the CPU's byte for byte. Earlier codestreams were valid but could differ
+  from the CPU's by a few header bytes.
+- CPU classic (Part 1) code-block decoding reads several MQ code bytes ahead
+  per refill instead of one per renormalization, visits each column's
+  candidate rows in the significance propagation, refinement and cleanup
+  passes as a bit set instead of testing every row, passes each row's window
+  shift instead of its row to the context helpers (the classic encoder shares
+  them), picks the next MQ probability state with one shift, and indexes its
+  contexts by label without a bounds check. On a 4096 x 2048 RGB image,
+  one-thread decodes are 11% faster lossless and 9% faster at 2 bpp, and
+  12-thread lossless decodes 11% faster; eight concurrent 1024 x 1024 region
+  decodes of an 18000 x 12000 image are 9% faster. Decoded samples and
+  encoded codestreams are unchanged. See `docs/benchmark-evidence.md`.
 - `j2k-tilecodec` LZW decode no longer reports valid TIFF strips and tiles
   as truncated. weezl reads input ahead of decoding, so the call that
   consumes the last byte can still hold codes up to the end code, often in

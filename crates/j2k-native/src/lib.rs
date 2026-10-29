@@ -203,6 +203,7 @@ pub use direct_plan::{
 #[doc(hidden)]
 pub use direct_roi::{
     idwt_required_input_window_for_rects, idwt_required_input_windows, idwt_required_output_margin,
+    window_referenced_classic_plan_to_stores, window_referenced_htj2k_plan_to_stores,
     J2kIdwtRequiredInputWindows, J2kRequiredBandRegion,
 };
 pub use inspect::{

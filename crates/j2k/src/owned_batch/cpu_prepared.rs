@@ -17,10 +17,10 @@ pub(super) fn decode_prepared_plan_samples<T: Copy>(
 ) -> Result<bool, J2kError> {
     let components = match image.codec_plan() {
         PreparedCodecPlan::Htj2k(prepared_plan) => worker
-            .execute_prepared_htj2k_plan(prepared_plan.native_plan(), image.bytes(), info.signed)
+            .execute_prepared_htj2k_plan(prepared_plan.cpu_plan(), image.bytes(), info.signed)
             .map_err(J2kError::from_native_decode_error)?,
         PreparedCodecPlan::Classic(prepared_plan) => worker
-            .execute_prepared_classic_plan(prepared_plan.native_plan(), image.bytes(), info.signed)
+            .execute_prepared_classic_plan(prepared_plan.cpu_plan(), image.bytes(), info.signed)
             .map_err(J2kError::from_native_decode_error)?,
         PreparedCodecPlan::MetadataOnly => return Ok(false),
     };
@@ -38,10 +38,10 @@ pub(super) fn prepare_staged_image(
 ) -> Result<(), J2kError> {
     match (route, image.codec_plan()) {
         (BatchCodecRoute::Htj2k, PreparedCodecPlan::Htj2k(plan)) => worker
-            .prepare_staged_htj2k_plan(plan.native_plan(), scratch)
+            .prepare_staged_htj2k_plan(plan.cpu_plan(), scratch)
             .map_err(J2kError::from_native_decode_error),
         (BatchCodecRoute::Classic, PreparedCodecPlan::Classic(plan)) => worker
-            .prepare_staged_classic_plan(plan.native_plan(), scratch)
+            .prepare_staged_classic_plan(plan.cpu_plan(), scratch)
             .map_err(J2kError::from_native_decode_error),
         _ => Err(J2kError::internal_backend(
             "staged CPU route does not match its prepared codec plan",
@@ -63,7 +63,7 @@ pub(super) fn execute_staged_entropy_job(
             })?;
             worker
                 .execute_staged_htj2k_job(
-                    plan.native_plan(),
+                    plan.cpu_plan(),
                     job.block_index,
                     flattened.arena(),
                     payload,
@@ -77,7 +77,7 @@ pub(super) fn execute_staged_entropy_job(
             })?;
             worker
                 .execute_staged_classic_job(
-                    plan.native_plan(),
+                    plan.cpu_plan(),
                     job.block_index,
                     flattened.arena(),
                     payload,
@@ -98,10 +98,10 @@ pub(super) fn prepare_staged_entropy_worker(
 ) -> Result<(), J2kError> {
     match (route, image.codec_plan()) {
         (BatchCodecRoute::Htj2k, PreparedCodecPlan::Htj2k(plan)) => worker
-            .prepare_staged_htj2k_entropy_workspace(plan.native_plan())
+            .prepare_staged_htj2k_entropy_workspace(plan.cpu_plan())
             .map_err(J2kError::from_native_decode_error),
         (BatchCodecRoute::Classic, PreparedCodecPlan::Classic(plan)) => worker
-            .prepare_staged_classic_entropy_workspace(plan.native_plan())
+            .prepare_staged_classic_entropy_workspace(plan.cpu_plan())
             .map_err(J2kError::from_native_decode_error),
         _ => Err(J2kError::internal_backend(
             "staged CPU worker route does not match its prepared codec plan",
@@ -115,10 +115,10 @@ pub(super) fn staged_tile_count(
 ) -> Result<usize, J2kError> {
     match (route, image.codec_plan()) {
         (BatchCodecRoute::Htj2k, PreparedCodecPlan::Htj2k(plan)) => {
-            Ok(plan.native_plan().tiles().len())
+            Ok(plan.cpu_plan().tiles().len())
         }
         (BatchCodecRoute::Classic, PreparedCodecPlan::Classic(plan)) => {
-            Ok(plan.native_plan().tiles().len())
+            Ok(plan.cpu_plan().tiles().len())
         }
         _ => Err(J2kError::internal_backend(
             "staged CPU route does not match its prepared codec plan",
@@ -134,20 +134,12 @@ pub(super) fn prepare_staged_tile(
 ) -> Result<(), J2kError> {
     match (route, image.codec_plan()) {
         (BatchCodecRoute::Htj2k, PreparedCodecPlan::Htj2k(plan)) => {
-            j2k_native::prepare_referenced_htj2k_tile_staged(
-                plan.native_plan(),
-                tile_index,
-                scratch,
-            )
-            .map_err(J2kError::from_native_decode_error)
+            j2k_native::prepare_referenced_htj2k_tile_staged(plan.cpu_plan(), tile_index, scratch)
+                .map_err(J2kError::from_native_decode_error)
         }
         (BatchCodecRoute::Classic, PreparedCodecPlan::Classic(plan)) => {
-            j2k_native::prepare_referenced_classic_tile_staged(
-                plan.native_plan(),
-                tile_index,
-                scratch,
-            )
-            .map_err(J2kError::from_native_decode_error)
+            j2k_native::prepare_referenced_classic_tile_staged(plan.cpu_plan(), tile_index, scratch)
+                .map_err(J2kError::from_native_decode_error)
         }
         _ => Err(J2kError::internal_backend(
             "staged CPU route does not match its prepared codec plan",
@@ -165,7 +157,7 @@ pub(super) fn finish_staged_tile(
     match (route, image.codec_plan()) {
         (BatchCodecRoute::Htj2k, PreparedCodecPlan::Htj2k(plan)) => {
             j2k_native::finish_referenced_htj2k_tile_staged(
-                plan.native_plan(),
+                plan.cpu_plan(),
                 tile_index,
                 signed,
                 scratch,
@@ -174,7 +166,7 @@ pub(super) fn finish_staged_tile(
         }
         (BatchCodecRoute::Classic, PreparedCodecPlan::Classic(plan)) => {
             j2k_native::finish_referenced_classic_tile_staged(
-                plan.native_plan(),
+                plan.cpu_plan(),
                 tile_index,
                 signed,
                 scratch,
@@ -196,11 +188,11 @@ pub(super) fn finish_staged_plan_samples<T: Copy>(
 ) -> Result<(), J2kError> {
     let components = match image.codec_plan() {
         PreparedCodecPlan::Htj2k(plan) => {
-            j2k_native::finish_referenced_htj2k_staged(plan.native_plan(), info.signed, scratch)
+            j2k_native::finish_referenced_htj2k_staged(plan.cpu_plan(), info.signed, scratch)
                 .map_err(J2kError::from_native_decode_error)?
         }
         PreparedCodecPlan::Classic(plan) => {
-            j2k_native::finish_referenced_classic_staged(plan.native_plan(), info.signed, scratch)
+            j2k_native::finish_referenced_classic_staged(plan.cpu_plan(), info.signed, scratch)
                 .map_err(J2kError::from_native_decode_error)?
         }
         PreparedCodecPlan::MetadataOnly => {

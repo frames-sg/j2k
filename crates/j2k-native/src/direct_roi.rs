@@ -105,6 +105,11 @@ impl From<J2kRequiredBandRegion> for J2kRect {
 #[cfg(test)]
 mod region_tests;
 
+mod plan_windows;
+pub use plan_windows::{
+    window_referenced_classic_plan_to_stores, window_referenced_htj2k_plan_to_stores,
+};
+
 /// Required input windows for one direct-plan IDWT step.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct J2kIdwtRequiredInputWindows {

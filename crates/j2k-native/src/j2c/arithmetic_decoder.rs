@@ -13,13 +13,15 @@ use super::mq::PACKED_DECODER_STATES;
 pub(crate) struct ArithmeticDecoder<'a> {
     /// The underlying encoded data.
     data: &'a [u8],
-    /// The C-register (see Table C.1).
-    c: u32,
+    /// The C-register (see Table C.1) in bits 32-63: its upper half, which
+    /// DECODE compares with A, in bits 48-63, followed by `shift_count` bits
+    /// of code bytes read ahead.
+    c: u64,
     /// The A-register (see Table C.1).
     a: u32,
     /// The pointer to the current byte.
     base_pointer: u32,
-    /// The bit shift counter.
+    /// The number of read-ahead bits below the upper half of C.
     shift_count: u32,
 }
 
@@ -52,43 +54,48 @@ impl<'a> ArithmeticDecoder<'a> {
     ///
     /// We use the version from Annex G in <https://www.itu.int/rec/T-REC-T.88-201808-I>.
     pub(crate) fn initialize(&mut self) {
-        self.c = (u32::from(self.current_byte()) ^ 0xff) << 16;
-        self.read_byte();
+        self.c = u64::from(self.current_byte() ^ 0xff) << 48;
+        self.read_bytes();
 
         self.c <<= 7;
         self.shift_count -= 7;
         self.a = 0x8000;
     }
 
-    /// The BYTEIN procedure from C.3.4.
+    /// The BYTEIN procedure from C.3.4, repeated while another byte fits
+    /// below the upper half of C.
     ///
     /// We use the version from Annex G from <https://www.itu.int/rec/T-REC-T.88-201808-I>.
+    /// A byte after 0xFF may carry into the bits above it, so it is only read
+    /// once no read-ahead bits remain, as in the procedure; any other byte
+    /// lands on zero bits, so reading it early changes nothing DECODE sees.
     #[expect(
         clippy::inline_always,
         reason = "MQ state transitions are measured per-symbol hot paths"
     )]
     #[inline(always)]
-    fn read_byte(&mut self) {
-        if self.current_byte() == 0xff {
-            let b1 = self.next_byte();
+    fn read_bytes(&mut self) {
+        while self.shift_count <= 40 {
+            if self.current_byte() == 0xff {
+                let b1 = self.next_byte();
 
-            if b1 > 0x8f {
-                self.shift_count = 8;
+                if b1 > 0x8f {
+                    self.shift_count += 8;
+                } else if self.shift_count == 0 {
+                    self.base_pointer += 1;
+                    self.c = self
+                        .c
+                        .wrapping_add(0x7f << 41)
+                        .wrapping_sub(u64::from(b1) << 41);
+                    self.shift_count = 7;
+                } else {
+                    break;
+                }
             } else {
                 self.base_pointer += 1;
-                self.c = self
-                    .c
-                    .wrapping_add(0xfe00)
-                    .wrapping_sub(u32::from(self.current_byte()) << 9);
-                self.shift_count = 7;
+                self.c += u64::from(self.current_byte() ^ 0xff) << (40 - self.shift_count);
+                self.shift_count += 8;
             }
-        } else {
-            self.base_pointer += 1;
-            self.c = self
-                .c
-                .wrapping_add(0xff00)
-                .wrapping_sub(u32::from(self.current_byte()) << 8);
-            self.shift_count = 8;
         }
     }
 
@@ -102,7 +109,7 @@ impl<'a> ArithmeticDecoder<'a> {
         // Original code:
         // loop {
         //     if self.shift_count == 0 {
-        //         self.read_byte();
+        //         BYTEIN
         //     }
         //
         //     self.a <<= 1;
@@ -114,11 +121,9 @@ impl<'a> ArithmeticDecoder<'a> {
         //     }
         // }
 
-        // Optimization: Batch shifts.
+        // Optimization: Batch shifts over several bytes read ahead.
         while self.a & 0x8000 == 0 {
-            if self.shift_count == 0 {
-                self.read_byte();
-            }
+            self.read_bytes();
 
             let shifts_needed = self.a.leading_zeros() - 16;
             let batch = shifts_needed.min(self.shift_count);
@@ -134,8 +139,7 @@ impl<'a> ArithmeticDecoder<'a> {
     #[expect(
         clippy::cast_possible_truncation,
         clippy::inline_always,
-        clippy::similar_names,
-        reason = "packed MQ fields are explicitly bounded and MPS/LPS are paired domain terms on a measured per-symbol hot path"
+        reason = "packed MQ fields are explicitly bounded on a measured per-symbol hot path"
     )]
     #[inline(always)]
     pub(crate) fn decode(&mut self, context: &mut ArithmeticDecoderContext) -> u32 {
@@ -155,14 +159,14 @@ impl<'a> ArithmeticDecoder<'a> {
         //   exchange_mps: d = mps ^ cond,       flip when cond,      index = cond*nlps + inv*nmps
         //   exchange_lps: d = mps ^ inv_cond,   flip when inv_cond,  index = cond*nmps + inv*nlps
         // so both are handled by XOR-ing cond with is_lps.
-        let is_lps = u32::from((self.c >> 16) >= a);
+        let is_lps = u32::from((self.c >> 48) as u32 >= a);
         // A probability-state transition happens exactly when A renormalizes:
         // on every LPS, and on an MPS that leaves A below 0x8000.
         let transition = is_lps | u32::from(a < 0x8000);
 
         // LPS: C -= A << 16 and A = Qe; MPS: A stays A - Qe.
         let lps_mask = is_lps.wrapping_neg();
-        self.c -= (a << 16) & lps_mask;
+        self.c -= (u64::from(a) << 48) & u64::from(is_lps).wrapping_neg();
         self.a = (a & !lps_mask) | (qe & lps_mask);
 
         // Same condition as in exchange_mps / exchange_lps. Without a
@@ -171,12 +175,9 @@ impl<'a> ArithmeticDecoder<'a> {
         let pick_nlps = cond ^ is_lps;
         let d = mps ^ pick_nlps;
 
-        let pick_mask = u8::from(pick_nlps != 0).wrapping_neg();
-        let next_mps = (state >> 24) as u8;
-        let next_lps = (state >> 32) as u8;
-        let next = next_mps ^ ((next_mps ^ next_lps) & pick_mask);
-        let keep_mask = u8::from(transition == 0).wrapping_neg();
-        context.0 = next ^ ((next ^ context.0) & keep_mask);
+        // The next MPS state is byte 3 of `state` and the next LPS state byte 4.
+        let next = (state >> (24 + 8 * pick_nlps)) as u8;
+        context.0 = if transition == 0 { context.0 } else { next };
 
         // Shift A back to at least 0x8000 in one step when the buffered bits
         // suffice (zero shift in the fast case); otherwise take the byte-in

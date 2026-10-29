@@ -121,11 +121,14 @@ fn build_referenced_htj2k_color_components_plan<'a, const COMPONENT_COUNT: usize
                 &mut plans.component_plans,
                 tile_classic_payloads.len(),
             )?;
+            let Some((decoded_rect, destination_rect)) =
+                color_plan_rects::<COMPONENT_COUNT>(&plans.component_plans, output_rect)?
+            else {
+                continue;
+            };
             let record_count = tile_payloads.len();
             append_retained_records(&mut retained, &mut payloads, &mut tile_payloads)?;
             let payload_records = payload_record_span(first_record, record_count)?;
-            let (decoded_rect, destination_rect) =
-                color_plan_rects::<COMPONENT_COUNT>(&plans.component_plans, output_rect)?;
             let geometry = into_geometry(plans);
             tile_plans.push(J2kReferencedTilePlan::new(
                 usize::try_from(tile.idx).map_err(|_| ValidationError::ImageTooLarge)?,
@@ -259,6 +262,11 @@ fn build_referenced_classic_color_components_plan<'a, const COMPONENT_COUNT: usi
                 &mut plans.component_plans,
                 tile_payloads.len(),
             )?;
+            let Some((decoded_rect, destination_rect)) =
+                color_plan_rects::<COMPONENT_COUNT>(&plans.component_plans, output_rect)?
+            else {
+                continue;
+            };
             let record_count = tile_payloads.len();
             append_classic_payload_records(
                 &mut payloads,
@@ -267,8 +275,6 @@ fn build_referenced_classic_color_components_plan<'a, const COMPONENT_COUNT: usi
                 &mut tile_ranges,
             )?;
             let payload_records = payload_record_span(first_record, record_count)?;
-            let (decoded_rect, destination_rect) =
-                color_plan_rects::<COMPONENT_COUNT>(&plans.component_plans, output_rect)?;
             tile_plans.push(J2kReferencedTilePlan::new(
                 usize::try_from(tile.idx).map_err(|_| ValidationError::ImageTooLarge)?,
                 decoded_rect,

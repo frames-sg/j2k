@@ -24,9 +24,9 @@ pub(in crate::owned_batch::cpu_fast) fn ht_group_requirements(
         let plan = image
             .htj2k_plan()
             .ok_or(BatchInfrastructureError::MissingResult { index: image_slot })?;
-        let job_count = visit_ht_jobs(plan.native_plan(), |_, _, _, _| {})?;
+        let job_count = visit_ht_jobs(plan.cpu_plan(), |_, _, _, _| {})?;
         payload_count = checked_add(payload_count, job_count, "payload jobs")?;
-        for payload in plan.native_plan().payloads() {
+        for payload in plan.cpu_plan().payloads() {
             payload_bytes = checked_add(
                 payload_bytes,
                 payload.cleanup.length,
