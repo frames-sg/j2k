@@ -19,6 +19,46 @@ cargo run -p xtask --features adoption -- adoption-report --run-dir target/j2k-a
 Speed comparisons must use the manifest-backed external rows, not the
 generated in-repo fixtures.
 
+## CPU classic Tier-1 decoding - 2026-10-29
+
+Apple M4 Pro (12 CPU cores: 8 performance, 4 efficiency; 48 GB), macOS
+27.0.1, Rust 1.99.0 release builds. "Before" is the parent of the classic
+Tier-1 commits; "after" adds the MQ read-ahead, bit-set candidate rows, window
+shifts, one-shift state selection and 256-slot contexts. A second build of
+"before" from its own source copy is the A/A control. One harness was built
+against each tree; every round runs each build once in a shuffled order, and
+each cell reports the per-round median change against "before" in the same
+round, with its range.
+
+Inputs: a 4096 x 2048 RGB8 region of the 18000 x 12000 classic `large.jp2`
+(real tissue), encoded once by "before" as classic lossless (5/3, 10.6 MB)
+and at 2 bpp (9/7, 2.09 MB); the 18000 x 12000 classic 9/7 `large-plt.jp2`
+and `large.jp2` themselves. Full decodes are `J2kDecoder::decode_into` to
+RGB8 inside a Rayon pool of 1 or 12 threads. "Region" is one serial 1024 x
+1024 `decode_region_into` from the middle of `large-plt.jp2`; "8 concurrent"
+is eight threads each decoding a different 1024 x 1024 region of `large.jp2`
+serially, timed together. Every build produced byte-identical output in every
+cell, encodes included.
+
+| Cell | Before (ms) | A/A | After |
+| --- | ---: | ---: | ---: |
+| Lossless decode, 1 thread | 1026 | -0.4% [-1.4, +2.3] | -11.2% |
+| 2 bpp decode, 1 thread | 260 | +0.8% [-1.8, +2.2] | -8.6% |
+| Region, 1 thread | 117 | -1.8% [-2.3, +3.5] | -12.0% |
+| Lossless decode, 12 threads | 122 | +0.3% [-7.1, +8.5] | -11.3% [-25.7, -5.9] |
+| 2 bpp decode, 12 threads | 37.1 | -2.8% [-17.5, +16.3] | -4.4% [-31.3, +4.8] |
+| 8 concurrent regions | 185 | -0.6% [-6.1, +1.1] | -9.2% [-20.3, -2.0] |
+| Lossless encode, 12 threads | 353 | +0.3% [-4.0, +4.1] | -3.0% [-14.4, +10.6] |
+
+The single-thread rows are seven rounds at load average 9 to 33, so their
+"after" ranges are left out: one round of each was an outlier (+13% to +61%),
+and the other six were -6.1% to -14.1%. The multi-thread, concurrent and
+encode rows are a second run of nine rounds at load average 8 to 13. Without
+the 256-slot contexts, single-thread decodes are 0.7 to 1.8 points less fast. `ArithmeticDecoderContext` is one byte, so those contexts add 237
+bytes per decoding context; peak heap of the serial region decode was
+unchanged, and multi-thread peaks differed by no more than the A/A builds'
+own few kilobytes.
+
 ## CPU owned batches of large-image regions - 2026-10-29
 
 Same machine and inputs as the next section, load average 4 to 7. Each sample

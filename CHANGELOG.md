@@ -32,14 +32,17 @@ and stale roadmap entries have been removed from the public documentation set.
   in the zero-bitplane tag tree, as the CPU encoder does, so their packet headers
   match the CPU's byte for byte. Earlier codestreams were valid but could differ
   from the CPU's by a few header bytes.
-- CPU classic (Part 1) code-block decoding passes each row's window shift
-  instead of its row to the context helpers, picks the next MQ probability
-  state with one shift, and indexes its contexts by label without a bounds
-  check. Output is unchanged.
-- CPU classic (Part 1) code-block decoding reads several MQ code bytes ahead per
-  refill instead of one per renormalization, and visits each column's candidate
-  rows in the significance propagation, refinement and cleanup passes as a bit
-  set instead of testing every row. Output is unchanged.
+- CPU classic (Part 1) code-block decoding reads several MQ code bytes ahead
+  per refill instead of one per renormalization, visits each column's
+  candidate rows in the significance propagation, refinement and cleanup
+  passes as a bit set instead of testing every row, passes each row's window
+  shift instead of its row to the context helpers (the classic encoder shares
+  them), picks the next MQ probability state with one shift, and indexes its
+  contexts by label without a bounds check. On a 4096 x 2048 RGB image,
+  one-thread decodes are 11% faster lossless and 9% faster at 2 bpp, and
+  12-thread lossless decodes 11% faster; eight concurrent 1024 x 1024 region
+  decodes of an 18000 x 12000 image are 9% faster. Decoded samples and
+  encoded codestreams are unchanged. See `docs/benchmark-evidence.md`.
 - `j2k-tilecodec` LZW decode no longer reports valid TIFF strips and tiles
   as truncated. weezl reads input ahead of decoding, so the call that
   consumes the last byte can still hold codes up to the end code, often in
