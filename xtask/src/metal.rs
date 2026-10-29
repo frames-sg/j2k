@@ -51,10 +51,12 @@ const METAL_REQUIRED_IGNORED_TESTS: &[&str] = &[
 ];
 
 // Capture needs an explicit output path; timing diagnostics are manual benchmarks.
-// Sampled characterization additionally needs the caller-provided corpus.
-// Correctness, sampled pixel parity, and kernel reuse have non-ignored tests.
+// Sampled and large-region characterization additionally need caller-provided
+// inputs. Correctness, sampled pixel parity, region pixel parity, and kernel
+// reuse have non-ignored tests.
 // Inventory every diagnostic so ignored tests cannot silently escape review.
 const METAL_OPTIONAL_IGNORED_TESTS: &[&str] = &[
+    "batch_decoder::region_group_tests::local_large_region_batch_characterization",
     "decoder::tests::sampled::local_sampled_color_batch_characterization",
     "idwt::tests::metal_irreversible_idwt_gpu_capture",
     "engine::runtime::resource_profile_tests::benchmark_cold_and_repeated_session_kernel_initialization",
