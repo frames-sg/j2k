@@ -425,7 +425,7 @@ fn transform_planes(
     }
 }
 
-fn round_centered_and_shift(samples: &mut [f32], addend: f32) {
+pub(crate) fn round_centered_and_shift(samples: &mut [f32], addend: f32) {
     // Outside a dispatch an x86-64 build rounds each sample with a library
     // call; the SIMD level rounds eight at a time with the same result.
     #[cfg(all(feature = "simd", target_arch = "x86_64"))]
