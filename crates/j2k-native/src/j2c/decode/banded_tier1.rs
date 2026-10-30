@@ -429,35 +429,37 @@ impl RowOutput<'_, '_> {
                 return Err(DecodingError::CodeBlockDecodeFailure.into());
             }
             reconstruct_batch(lines, readers, parts, y, width)?;
-            for row in 0..rows {
-                let mut outputs: [&mut [f32]; 4] = Default::default();
-                for (output, part) in outputs.iter_mut().zip(parts.iter_mut()) {
-                    *output = &mut part[row * width..][..width];
-                }
-                store::transform_streamed_rows(
-                    self.tile,
-                    self.round_irreversible_output,
-                    &mut outputs[..components],
-                )?;
-            }
             let (x, row_in_region) = (copy.x0 - region.x0, y - region.y0);
             let destination = rgb8
                 .then(|| self.sink.rgb8_region(region.width(), region.height()))
                 .flatten();
-            if let Some(out) = destination {
-                let stride = region.width() as usize * 3;
-                for row in 0..rows {
-                    let start = (row_in_region as usize + row) * stride + x as usize * 3;
-                    let pixels = out
-                        .get_mut(start..start + width * 3)
+            let rgb8_rows = match destination {
+                Some(out) => {
+                    let stride = region.width() as usize * 3;
+                    let start = row_in_region as usize * stride;
+                    let out = out
+                        .get_mut(start..start + rows * stride)
                         .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-                    let at = row * width..(row + 1) * width;
-                    crate::color::pack_rgb8(
-                        [&parts[0][at.clone()], &parts[1][at.clone()], &parts[2][at]],
-                        pixels,
-                    );
+                    Some(Rgb8Rows {
+                        out,
+                        stride,
+                        x: x as usize * 3,
+                    })
                 }
-            } else {
+                None => None,
+            };
+            let packed = rgb8_rows.is_some();
+            // With a reader per component the rows' transform and pack split
+            // across as many tasks, which the readers' threads are free for.
+            let tasks = if readers.len() > 1 { readers.len() } else { 1 };
+            finish_rows(
+                (self.tile, self.round_irreversible_output),
+                parts,
+                width,
+                rgb8_rows,
+                tasks,
+            )?;
+            if !packed {
                 let component_rows: [ComponentPlane<'_>; 4] =
                     core::array::from_fn(|index| ComponentPlane {
                         samples: parts.get(index).map_or(&[][..], |part| &**part),
@@ -547,6 +549,141 @@ fn reconstruct_rows_into(
         chunk.copy_from_slice(row);
     }
     Ok(())
+}
+
+/// Output rows that take three 8-bit components packed as RGB8.
+struct Rgb8Rows<'o> {
+    /// Whole output rows, `stride` bytes each, one per reconstructed row.
+    out: &'o mut [u8],
+    stride: usize,
+    /// Where the reconstructed samples start in each output row, in bytes.
+    x: usize,
+}
+
+/// One range of a batch's rows: each component's rows and their output.
+struct BatchRows<'p, 'o> {
+    parts: [&'p mut [f32]; 4],
+    rgb8: Option<Rgb8Rows<'o>>,
+}
+
+impl BatchRows<'_, '_> {
+    /// Transform the rows one at a time, as [`RowOutput::write`] does, then
+    /// pack them into the RGB8 rows if there are any.
+    fn finish(
+        mut self,
+        (tile, round_irreversible_output): (&Tile<'_>, bool),
+        components: usize,
+        width: usize,
+    ) -> Result<()> {
+        let rows = self.parts[0].len().checked_div(width).unwrap_or(0);
+        for row in 0..rows {
+            let mut outputs: [&mut [f32]; 4] = Default::default();
+            for (output, part) in outputs.iter_mut().zip(self.parts.iter_mut()) {
+                *output = part
+                    .get_mut(row * width..(row + 1) * width)
+                    .unwrap_or_default();
+            }
+            store::transform_streamed_rows(
+                tile,
+                round_irreversible_output,
+                &mut outputs[..components],
+            )?;
+        }
+        let Some(rgb8) = self.rgb8 else {
+            return Ok(());
+        };
+        let [red, green, blue, _] = &self.parts;
+        let samples = red
+            .chunks_exact(width)
+            .zip(green.chunks_exact(width))
+            .zip(blue.chunks_exact(width));
+        for (line, ((red, green), blue)) in rgb8.out.chunks_exact_mut(rgb8.stride).zip(samples) {
+            let pixels = line
+                .get_mut(rgb8.x..rgb8.x + width * 3)
+                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+            crate::color::pack_rgb8([red, green, blue], pixels);
+        }
+        Ok(())
+    }
+}
+
+/// Transform each component's rows in `parts`, `width` samples each, and
+/// pack them into `rgb8` when given, in up to `tasks` ranges of rows, all but
+/// the first spawned on the pool.
+fn finish_rows(
+    transform: (&Tile<'_>, bool),
+    parts: &mut [&mut [f32]],
+    width: usize,
+    mut rgb8: Option<Rgb8Rows<'_>>,
+    tasks: usize,
+) -> Result<()> {
+    let components = parts.len();
+    let rows = parts
+        .first()
+        .map_or(0, |part| part.len().checked_div(width).unwrap_or(0));
+    if components == 0 || components > 4 || rows == 0 {
+        return Ok(());
+    }
+    let range_rows = rows.div_ceil(tasks.clamp(1, 4));
+    let mut rest: [&mut [f32]; 4] = Default::default();
+    for (rest, part) in rest.iter_mut().zip(parts.iter_mut()) {
+        *rest = &mut **part;
+    }
+    let mut ranges: [Option<BatchRows<'_, '_>>; 4] = Default::default();
+    for range in &mut ranges {
+        let take = range_rows.min(rest[0].len() / width);
+        if take == 0 {
+            break;
+        }
+        let mut range_parts: [&mut [f32]; 4] = Default::default();
+        for (part, rest) in range_parts.iter_mut().zip(rest.iter_mut()) {
+            let samples = core::mem::take(rest);
+            let (head, tail) = samples.split_at_mut((take * width).min(samples.len()));
+            *part = head;
+            *rest = tail;
+        }
+        let range_rgb8 = match rgb8.take() {
+            Some(Rgb8Rows { out, stride, x }) => {
+                let (head, tail) = out.split_at_mut((take * stride).min(out.len()));
+                rgb8 = Some(Rgb8Rows {
+                    out: tail,
+                    stride,
+                    x,
+                });
+                Some(Rgb8Rows {
+                    out: head,
+                    stride,
+                    x,
+                })
+            }
+            None => None,
+        };
+        *range = Some(BatchRows {
+            parts: range_parts,
+            rgb8: range_rgb8,
+        });
+    }
+    let mut results: [Result<()>; 4] = core::array::from_fn(|_| Ok(()));
+    #[cfg(feature = "parallel")]
+    rayon::in_place_scope(|scope| {
+        let mut jobs = ranges.into_iter().zip(results.iter_mut());
+        let first = jobs.next();
+        for (range, result) in jobs {
+            if let Some(range) = range {
+                scope.spawn(move |_| *result = range.finish(transform, components, width));
+            }
+        }
+        if let Some((Some(range), result)) = first {
+            *result = range.finish(transform, components, width);
+        }
+    });
+    #[cfg(not(feature = "parallel"))]
+    for (range, result) in ranges.into_iter().zip(results.iter_mut()) {
+        if let Some(range) = range {
+            *result = range.finish(transform, components, width);
+        }
+    }
+    results.into_iter().collect()
 }
 
 /// When a lockstep decode fails, rerun Tier-1 over whole windows one
