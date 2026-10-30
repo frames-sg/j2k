@@ -348,12 +348,12 @@ mod tests {
             for &symbol in &symbols {
                 encoder.encode(symbol, &mut encoder_context);
             }
-            let encoded = encoder.finish();
+            let bytes = encoder.finish();
 
-            let mut each = ArithmeticDecoder::new(&encoded);
+            let mut each = ArithmeticDecoder::new(&bytes);
             let mut each_context = ArithmeticDecoderContext::empty();
             each_context.reset_with_index(start_index);
-            let mut runs = ArithmeticDecoder::new(&encoded);
+            let mut runs = ArithmeticDecoder::new(&bytes);
             let mut runs_context = each_context;
             let mut skipped = 0usize;
             let mut position = 0;

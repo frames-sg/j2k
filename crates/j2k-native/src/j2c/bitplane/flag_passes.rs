@@ -111,13 +111,29 @@ impl<'c, 'd> Scan<'c, 'd> {
     }
 
     /// Zero-code the insignificant coefficient in the row at window shift
-    /// `shift`; returns whether it became significant.
+    /// `shift`; returns whether it became significant. Its sign context is
+    /// formed and loaded before the significance decision, so after a
+    /// mispredicted significance the sign decode does not wait for them. Sign
+    /// labels (9-13) never equal zero-coding labels (0-8), so the decision
+    /// does not change the context loaded early.
     #[expect(clippy::inline_always, reason = "Tier-1 coefficient-loop hot path")]
     #[inline(always)]
     fn zero_code(&mut self, own: &mut u32, flag_index: usize, top: usize, shift: u32) -> bool {
+        let (label, xor) = sign_coding_label(
+            *own,
+            self.flags[flag_index - 1],
+            self.flags[flag_index + 1],
+            shift,
+        );
+        let mut sign_context = self.contexts[usize::from(label)];
         let significant = self.read(zero_coding_label(self.zero_coding, *own, shift)) != 0;
         if significant {
-            self.become_significant(own, flag_index, top, shift);
+            let index = top + (shift / 3) as usize * self.stride;
+            self.coefficients[index].push_bit_at(1, self.bit_position);
+            let sign = self.decoder.read_bit(&mut sign_context) ^ u32::from(xor);
+            self.contexts[usize::from(label)] = sign_context;
+            self.coefficients[index].set_sign(u8::from(sign != 0));
+            set_significant(self.flags, own, flag_index, self.stride, shift, sign);
         }
         significant
     }
