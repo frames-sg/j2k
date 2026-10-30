@@ -180,22 +180,7 @@ fn stream_rows<'a>(
                 return Err(error);
             }
         };
-    let mut output = RowOutput {
-        tile,
-        sink,
-        round_irreversible_output: tile_ctx.round_irreversible_output,
-        depths: core::array::from_fn(|index| {
-            tile_ctx
-                .channel_data
-                .get(index)
-                .map_or((0, false), |component| {
-                    (component.bit_depth, component.signed)
-                })
-        }),
-        copy,
-        region,
-        streamed: 0,
-    };
+    let mut output = RowOutput::new(tile, sink, tile_ctx, copy, region);
     let mut output_samples = 0usize;
     let result = (|| {
         let rings_len = buffer.len() - scratch_len;
@@ -281,7 +266,7 @@ fn plan_tile_lines(
 
 /// Take the context's ring buffer, grown to hold every plan's rings and
 /// `scratch_len` more samples, and return it with each plan's ring length.
-fn take_line_buffer(
+pub(super) fn take_line_buffer(
     tile_ctx: &mut TileDecodeContext,
     storage: &DecompositionStorage<'_>,
     line_plans: &[LinePlan],
@@ -318,7 +303,7 @@ fn take_line_buffer(
 }
 
 /// Where a tile's reconstructed rows go: transformed, then to the sink.
-struct RowOutput<'o, 't> {
+pub(super) struct RowOutput<'o, 't> {
     tile: &'o Tile<'t>,
     sink: &'o mut dyn ComponentRowSink,
     round_irreversible_output: bool,
@@ -328,16 +313,43 @@ struct RowOutput<'o, 't> {
     copy: IntRect,
     region: IntRect,
     /// Samples handed to the sink.
-    streamed: usize,
+    pub(super) streamed: usize,
 }
 
-impl RowOutput<'_, '_> {
+impl<'o, 't> RowOutput<'o, 't> {
+    /// The output of `tile`'s rows `copy`, in the coordinates of `region`,
+    /// to `sink`.
+    pub(super) fn new(
+        tile: &'o Tile<'t>,
+        sink: &'o mut dyn ComponentRowSink,
+        tile_ctx: &TileDecodeContext,
+        copy: IntRect,
+        region: IntRect,
+    ) -> Self {
+        Self {
+            tile,
+            sink,
+            round_irreversible_output: tile_ctx.round_irreversible_output,
+            depths: core::array::from_fn(|index| {
+                tile_ctx
+                    .channel_data
+                    .get(index)
+                    .map_or((0, false), |component| {
+                        (component.bit_depth, component.signed)
+                    })
+            }),
+            copy,
+            region,
+            streamed: 0,
+        }
+    }
+
     /// Advance every component's reconstruction a row at a time, copying
     /// each row into `scratch`, one row per component, and hand them over.
-    fn write(
+    pub(super) fn write(
         &mut self,
         lines: &mut [LineReconstruction<'_>],
-        rows: &mut BandedRows<'_, '_>,
+        rows: &mut dyn SubBandRows,
         scratch: &mut [f32],
     ) -> Result<()> {
         let (copy, components) = (self.copy, lines.len());
@@ -386,7 +398,7 @@ impl RowOutput<'_, '_> {
 /// component at a time, in the order the planes path decodes them, and
 /// return the first error. If the whole windows don't fit the cap, or the
 /// rerun succeeds, keep the banded error.
-fn whole_window_tile_error<'a>(
+pub(super) fn whole_window_tile_error<'a>(
     tile: &Tile<'a>,
     header: &Header<'_>,
     tile_ctx: &mut TileDecodeContext,

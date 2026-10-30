@@ -605,7 +605,8 @@ fn choose_region_idwt(
 
 /// Whether a region decode on the row-streamed IDWT can hand its samples to
 /// a row sink instead of component planes: every tile decodes its Tier-1 in
-/// bands (see [`tile_bands`]), so all components can advance together; the
+/// bands, serially (see [`tile_bands`]) or on the pool (see [`pool_bands`]),
+/// so all components can advance together; the
 /// image and tiles have no offsets; there are one to four components; and
 /// each tile with an inverse MCT has three components or more, the first
 /// three with one wavelet, as `apply_inverse_mct_per_tile` requires.
@@ -628,7 +629,8 @@ fn streams_rows(
             let infos = &tile.component_infos;
             infos.len() == components
                 // The row-streamed IDWT already excludes hooks.
-                && tile_bands(header, tile, tile_ctx, false, parallelism)
+                && (tile_bands(header, tile, tile_ctx, false, parallelism)
+                    || pool_bands(header, tile, tile_ctx, false, parallelism))
                 && infos
                     .iter()
                     .all(|component| !component.requires_exact_integer_decode())
@@ -891,13 +893,14 @@ fn prepare_region_storage(
     let clip_to_idwt_windows = clips_to_idwt_windows(tile_ctx, hooked);
     storage.banded_tier1 = storage.line_region_idwt
         && tile_bands(header, tile, tile_ctx, hooked, cpu_decode_parallelism);
-    storage.lockstep_lines = storage.banded_tier1 && tile_ctx.stream_rows;
     #[cfg(feature = "parallel")]
     {
         storage.parallel_bands = storage.line_region_idwt
             && !storage.banded_tier1
             && parallel_bands::applies(header, tile, tile_ctx, hooked, cpu_decode_parallelism);
     }
+    storage.lockstep_lines =
+        (storage.banded_tier1 || storage.parallel_bands) && tile_ctx.stream_rows;
     build::allocate_deferred_coefficients(
         storage,
         header.skipped_resolution_levels,
@@ -940,6 +943,26 @@ fn tile_bands(
     bands
 }
 
+/// Whether `tile` decodes its bands on the worker pool ahead of this
+/// decode's row-streamed IDWT (see [`parallel_bands::applies`]) and can
+/// stream its rows from them (see [`parallel_bands::streams_rows`]).
+fn pool_bands(
+    header: &Header<'_>,
+    tile: &Tile<'_>,
+    tile_ctx: &TileDecodeContext,
+    hooked: bool,
+    parallelism: CpuDecodeParallelism,
+) -> bool {
+    #[cfg(feature = "parallel")]
+    return parallel_bands::applies(header, tile, tile_ctx, hooked, parallelism)
+        && parallel_bands::streams_rows(tile);
+    #[cfg(not(feature = "parallel"))]
+    {
+        let _ = (header, tile, tile_ctx, hooked, parallelism);
+        false
+    }
+}
+
 /// Where a decoded tile's samples go.
 enum TileOutput<'o, 'p> {
     /// The decode's component planes.
@@ -974,6 +997,24 @@ fn decode_components<'a>(
     mut output: TileOutput<'_, '_>,
 ) -> Result<()> {
     if let TileOutput::Sink(sink) = output {
+        #[cfg(feature = "parallel")]
+        if storage.parallel_bands {
+            if parallel_bands::decode_tile_rows(
+                tile,
+                header,
+                tile_ctx,
+                storage,
+                sink,
+                profile_enabled,
+                profile_timings,
+            )? {
+                return Ok(());
+            }
+            // The route declined the bands: decode them serially, which the
+            // pool's band slots also hold.
+            storage.parallel_bands = false;
+            storage.banded_tier1 = true;
+        }
         return banded_tier1::decode_tile_rows(
             tile,
             header,

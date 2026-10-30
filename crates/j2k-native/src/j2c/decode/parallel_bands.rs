@@ -23,6 +23,12 @@
 //! does. Workers fail in any order, so a failure reruns whole-window Tier-1
 //! serially for the error the whole-window path reports.
 //!
+//! A region decode that streams its rows to a sink runs every component's
+//! bands on one executor instead, while the IDWT advances the components
+//! together, a row of each at a time, as the serial bands of
+//! `banded_tier1::decode_tile_rows` do. The pool then holds every
+//! component's next bands at once, and the region needs no planes.
+//!
 //! A running band always belongs to a worker that is still active. A wait
 //! that finds a running band with no worker active would otherwise last
 //! forever, so it gives up the pool instead, and the component decodes over
@@ -35,19 +41,22 @@ use core::mem::size_of;
 use core::ops::Range;
 use std::sync::{Condvar, Mutex, MutexGuard};
 
-use super::banded_tier1;
-use super::subband::{plan_band_route, routes_tile, BandRoute, BandRouting};
+use super::banded_tier1::{self, RowOutput};
+use super::subband::{
+    plan_band_route, plan_band_route_beside, routes_tile, BandRoute, BandRouting,
+};
 use super::workspace::{TaskScratch, TaskWorkspace};
 use super::{
-    clips_to_idwt_windows, CpuDecodeParallelism, DecodeProfileTimings, DecompositionStorage,
-    Header, Result, Tile, TileDecodeContext,
+    clips_to_idwt_windows, record_workspace, CpuDecodeParallelism, DecodeAllocationBudget,
+    DecodeProfileTimings, DecompositionStorage, Header, Result, Tile, TileDecodeContext,
 };
 use crate::error::{DecodeError, DecodingError, ValidationError};
 use crate::j2c::build::{self, CodeBlockCoding};
 use crate::j2c::codestream::WaveletTransform;
-use crate::j2c::idwt::{ComponentLines, SubBandRows};
+use crate::j2c::idwt::{ComponentLines, LinePlan, LineReconstruction, SubBandRows};
 use crate::j2c::rect::IntRect;
 use crate::profile;
+use crate::ComponentRowSink;
 
 /// Sub-band rows of support on each side of the rows a level's lifting
 /// reads, in rows of that level, for ordering bands: a 9/7 lift reads two
@@ -57,6 +66,22 @@ const SUPPORT_ROWS: i64 = 4;
 /// How often a wait for a running band checks that a worker is still active
 /// to finish it.
 const STRANDED_CHECK: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Whether a tile whose bands decode on the pool (see [`applies`]) streams
+/// its rows to a row sink, every component advancing together: when its
+/// code-blocks are classic. One component's bands at a time then leave the
+/// pool idle at reduced resolutions, where each sub-band holds few bands.
+/// HTJ2K bands decode fast enough that its component planes, whose inverse
+/// transform runs on the pool, cost less.
+pub(super) fn streams_rows(tile: &Tile<'_>) -> bool {
+    tile.component_infos.iter().all(|component| {
+        !component
+            .coding_style
+            .parameters
+            .code_block_style
+            .uses_high_throughput_block_coding()
+    })
+}
 
 /// Whether a tile's components decode their bands on the worker pool: it
 /// feeds the streamed IDWT, in stored windows clipped to it, under `Auto`
@@ -229,7 +254,7 @@ fn decode_route(
         };
         match route.coding() {
             CodeBlockCoding::Classic => run_bands(
-                route,
+                route.workers(),
                 &rings,
                 &bands,
                 slots,
@@ -243,7 +268,7 @@ fn decode_route(
                 strand_once,
             ),
             CodeBlockCoding::HighThroughput => run_bands(
-                route,
+                route.workers(),
                 &rings,
                 &bands,
                 slots,
@@ -275,6 +300,291 @@ fn decode_route(
         }
         Err(error) => lines.finish(tile_ctx, Err(error)).map(|()| true),
     }
+}
+
+/// Decode every component of a tile whose rows stream to a sink: the bands
+/// of all its components on the pool at once, while the streamed IDWT
+/// advances the components together on this thread and hands their rows
+/// over, as `banded_tier1::decode_tile_rows` does with serial bands.
+/// Returns `false`, before anything is decoded or streamed, when the route
+/// declines a component, or when a band was stranded before any row was
+/// streamed; the tile's bands then decode serially.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the streamed tile keeps its plans, executor, rings, and failure handling together"
+)]
+pub(super) fn decode_tile_rows<'a>(
+    tile: &Tile<'a>,
+    header: &Header<'_>,
+    tile_ctx: &mut TileDecodeContext,
+    storage: &mut DecompositionStorage<'a>,
+    sink: &mut dyn ComponentRowSink,
+    profile_enabled: bool,
+    profile_timings: &mut DecodeProfileTimings,
+) -> Result<bool> {
+    let stage_start = profile::profile_now(profile_enabled);
+    let components = tile.component_infos.len();
+    let mut routes = Vec::new();
+    routes
+        .try_reserve_exact(components)
+        .map_err(|_| DecodingError::HostAllocationFailed)?;
+    // Every component's route stays live beside the others' while the
+    // executor runs them all, so each is planned in the budget the last one
+    // left, as one budget.
+    let mut live = None;
+    for component_idx in 0..components {
+        match plan_band_route_beside(tile, component_idx, tile_ctx, storage, header, live) {
+            Ok(BandRouting::Route(route)) => {
+                live = Some(route.budget());
+                routes.push(route);
+            }
+            Ok(BandRouting::Serial | BandRouting::WholeWindows) => return Ok(false),
+            // Planning can fail in a later band before earlier blocks decode.
+            Err(error) => {
+                // The whole-window rerun's budget leaves the plans out.
+                drop(routes);
+                return Err(banded_tier1::whole_window_tile_error(
+                    tile, header, tile_ctx, storage, error,
+                ));
+            }
+        }
+    }
+    let (rings, bands, strip_starts, active_levels) = plan_tile_rings(&routes, storage, header)?;
+    let line_plans = plan_tile_lines(tile, header, tile_ctx, storage, &active_levels)?;
+    // The executor's records live beside every route's plan and scratch
+    // while the bands decode.
+    let mut live = match live {
+        Some(live) => live,
+        None => DecodeAllocationBudget::for_storage(storage)?,
+    };
+    live.include_bytes(executor_bytes(&rings, &bands)?)?;
+    let empty = IntRect::from_xywh(0, 0, 0, 0);
+    let (copy, region) = line_plans
+        .first()
+        .map_or((empty, empty), |plan| (plan.copy, plan.region));
+    let scratch_len = (copy.width() as usize)
+        .checked_mul(components)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    let (mut buffer, ring_lens) =
+        banded_tier1::take_line_buffer(tile_ctx, storage, &line_plans, scratch_len)?;
+    let mut output = RowOutput::new(tile, sink, tile_ctx, copy, region);
+    let workers = routes
+        .iter()
+        .map(|route| route.workers())
+        .max()
+        .unwrap_or(0);
+    // Every route plans the tile's one block coding (see `routes_tile`).
+    let coding = routes
+        .first()
+        .map_or(CodeBlockCoding::Classic, |route| route.coding());
+    #[cfg(test)]
+    let strand_once = tile_ctx.strand_pool_band;
+    #[cfg(not(test))]
+    let strand_once = false;
+    let mut tier1_us = 0;
+    let mut output_samples = 0usize;
+    let mut coefficients = core::mem::take(&mut storage.coefficients);
+    let slots = split_slots(&rings, &bands, storage, &mut coefficients);
+    let result = slots.and_then(|slots| {
+        let rings_len = buffer.len() - scratch_len;
+        let (mut line_rings, scratch) = buffer.split_at_mut(rings_len);
+        let mut lines = Vec::new();
+        lines
+            .try_reserve_exact(line_plans.len())
+            .map_err(|_| DecodingError::HostAllocationFailed)?;
+        for (plan, len) in line_plans.iter().zip(&ring_lens) {
+            let (ring, tail) = core::mem::take(&mut line_rings).split_at_mut(*len);
+            line_rings = tail;
+            lines.push(plan.reconstruction(ring)?);
+        }
+        let run = |rows: &mut dyn SubBandRows| -> Result<()> {
+            let written = output.write(&mut lines, rows, scratch);
+            output_samples = lines.iter().map(LineReconstruction::output_samples).sum();
+            written
+        };
+        match coding {
+            CodeBlockCoding::Classic => run_bands(
+                workers,
+                &rings,
+                &bands,
+                slots,
+                &mut tile_ctx.classic_task_workspaces,
+                |strip, output, workspace, scratch| {
+                    let (route, strip) = route_strip(&routes, &strip_starts, strip)?;
+                    route.decode_classic(strip, output, workspace, scratch)
+                },
+                run,
+                profile_enabled,
+                &mut tier1_us,
+                strand_once,
+            ),
+            CodeBlockCoding::HighThroughput => run_bands(
+                workers,
+                &rings,
+                &bands,
+                slots,
+                &mut tile_ctx.ht_task_workspaces,
+                |strip, output, workspace, scratch| {
+                    let (route, strip) = route_strip(&routes, &strip_starts, strip)?;
+                    route.decode_ht(strip, output, workspace, scratch)
+                },
+                run,
+                profile_enabled,
+                &mut tier1_us,
+                strand_once,
+            ),
+        }
+    });
+    storage.coefficients = coefficients;
+    // Each band zeroes its slot before it decodes, and the last bands leave
+    // theirs written.
+    storage.stale_coefficients = true;
+    tile_ctx.idwt_line_rings = buffer;
+    let streamed = output.streamed;
+    tile_ctx.streamed_samples = tile_ctx.streamed_samples.saturating_add(streamed);
+    tile_ctx.debug_counters.idwt_output_samples = tile_ctx
+        .debug_counters
+        .idwt_output_samples
+        .saturating_add(output_samples);
+    let elapsed = profile::elapsed_us(stage_start);
+    profile_timings.codeblock_us += tier1_us;
+    profile_timings.idwt_us += elapsed.saturating_sub(tier1_us);
+    if matches!(result, Ok(true)) {
+        for route in &routes {
+            route.record(tile_ctx, storage)?;
+        }
+    }
+    // Neither the serial bands' nor the whole-window rerun's budget includes
+    // the plans' live allocations.
+    drop(routes);
+    match result {
+        Ok(true) => {
+            tile_ctx.debug_counters.pool_band_components += components;
+            record_workspace(tile_ctx, storage, 0)?;
+            Ok(true)
+        }
+        Ok(false) => {
+            // A band was left running with no worker to finish it.
+            #[cfg(test)]
+            let simulated = tile_ctx.strand_pool_band;
+            #[cfg(not(test))]
+            let simulated = false;
+            debug_assert!(simulated, "a running band had no active worker");
+            tile_ctx.debug_counters.pool_band_fallbacks += 1;
+            // Rows the sink holds can't be taken back.
+            if streamed > 0 {
+                return Err(DecodingError::CodeBlockDecodeFailure.into());
+            }
+            Ok(false)
+        }
+        Err(error) => Err(banded_tier1::whole_window_tile_error(
+            tile, header, tile_ctx, storage, error,
+        )),
+    }
+}
+
+/// The route of a band's `strip`, counted over every component's route from
+/// `strip_starts`, and the strip in that route.
+fn route_strip<'r, 'a>(
+    routes: &'r [Box<BandRoute<'a>>],
+    strip_starts: &[usize],
+    strip: usize,
+) -> Result<(&'r BandRoute<'a>, usize)> {
+    let component = strip_starts
+        .partition_point(|start| *start <= strip)
+        .checked_sub(1)
+        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+    let route = routes
+        .get(component)
+        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+    Ok((route, strip - strip_starts[component]))
+}
+
+/// Every component's rings and bands, in component order, as one executor
+/// takes them, with the first strip of each component's route among the
+/// strips of all routes, and the levels each component reconstructs.
+type TileRings = (Vec<Ring>, Vec<Band>, Vec<usize>, Vec<usize>);
+
+fn plan_tile_rings(
+    routes: &[Box<BandRoute<'_>>],
+    storage: &DecompositionStorage<'_>,
+    header: &Header<'_>,
+) -> Result<TileRings> {
+    let (mut rings, mut bands) = (Vec::new(), Vec::new());
+    let mut strip_starts = Vec::new();
+    strip_starts
+        .try_reserve_exact(routes.len())
+        .map_err(|_| DecodingError::HostAllocationFailed)?;
+    let mut active_levels = Vec::new();
+    active_levels
+        .try_reserve_exact(routes.len())
+        .map_err(|_| DecodingError::HostAllocationFailed)?;
+    let mut strips = 0usize;
+    for (component_idx, route) in routes.iter().enumerate() {
+        let (component_rings, component_bands, levels) =
+            plan_rings(route, storage, header, component_idx)?;
+        let (ring_offset, band_offset) = (rings.len(), bands.len());
+        rings
+            .try_reserve(component_rings.len())
+            .map_err(|_| DecodingError::HostAllocationFailed)?;
+        bands
+            .try_reserve(component_bands.len())
+            .map_err(|_| DecodingError::HostAllocationFailed)?;
+        rings.extend(component_rings.into_iter().map(|ring| Ring {
+            bands: ring.bands.start + band_offset..ring.bands.end + band_offset,
+            ..ring
+        }));
+        bands.extend(component_bands.into_iter().map(|band| Band {
+            strip: band.strip + strips,
+            ring: band.ring + ring_offset,
+            ..band
+        }));
+        strip_starts.push(strips);
+        strips += route.strips().count();
+        active_levels.push(levels);
+    }
+    Ok((rings, bands, strip_starts, active_levels))
+}
+
+/// Plan every component's streamed reconstruction of its `active_levels`.
+/// No plans when no component has rows to reconstruct; every component of
+/// a 1x1-sampled tile reconstructs the same rows.
+fn plan_tile_lines(
+    tile: &Tile<'_>,
+    header: &Header<'_>,
+    tile_ctx: &TileDecodeContext,
+    storage: &DecompositionStorage<'_>,
+    active_levels: &[usize],
+) -> Result<Vec<LinePlan>> {
+    let mut line_plans = Vec::new();
+    line_plans
+        .try_reserve_exact(active_levels.len())
+        .map_err(|_| DecodingError::HostAllocationFailed)?;
+    for (component_idx, (component_info, levels)) in
+        tile.component_infos.iter().zip(active_levels).enumerate()
+    {
+        if let Some(plan) = LinePlan::new(
+            storage,
+            tile_ctx,
+            component_idx,
+            *levels,
+            header,
+            component_info.wavelet_transform(),
+        )? {
+            line_plans.push(plan);
+        }
+    }
+    if line_plans.is_empty() {
+        return Ok(line_plans);
+    }
+    if line_plans.len() != tile.component_infos.len()
+        || line_plans
+            .iter()
+            .any(|plan| plan.copy != line_plans[0].copy || plan.region != line_plans[0].region)
+    {
+        return Err(DecodingError::CodeBlockDecodeFailure.into());
+    }
+    Ok(line_plans)
 }
 
 /// The bytes the executor holds for `rings` and `bands`, besides the slots:
@@ -641,15 +951,15 @@ impl<'c, 'w, W> Shared<'_, 'c, 'w, W> {
     }
 }
 
-/// Decode `bands` into `slots` on up to `route.workers()` pool threads
-/// while `run` drives the IDWT through them on this thread, then decode the
-/// bands it didn't read. Returns `false` when a band was stranded.
+/// Decode `bands` into `slots` on up to `workers` pool threads while `run`
+/// drives the IDWT through them on this thread, then decode the bands it
+/// didn't read. Returns `false` when a band was stranded.
 #[expect(
     clippy::too_many_arguments,
     reason = "the executor takes the plan, its storage and its two drivers explicitly"
 )]
 fn run_bands<W: TaskScratch>(
-    route: &BandRoute<'_>,
+    workers: usize,
     rings: &[Ring],
     bands: &[Band],
     slots: Slots<'_>,
@@ -662,7 +972,7 @@ fn run_bands<W: TaskScratch>(
 ) -> Result<bool> {
     #[cfg(not(test))]
     let _ = strand_once;
-    let workspaces_needed = route.workers() + 1;
+    let workspaces_needed = workers + 1;
     let mut workspaces: Vec<&mut W> = Vec::new();
     workspaces
         .try_reserve_exact(workspaces_needed)
@@ -705,7 +1015,7 @@ fn run_bands<W: TaskScratch>(
     let shared = Shared {
         rings,
         bands,
-        max_workers: route.workers(),
+        max_workers: workers,
         #[cfg(test)]
         strand_once: core::sync::atomic::AtomicBool::new(strand_once),
         state: Mutex::new(state),

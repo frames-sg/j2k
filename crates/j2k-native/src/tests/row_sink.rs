@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! A serial region decode on the streamed IDWT hands its rows to a row sink
-//! as they are finished, with every component decoded together and no
-//! component planes. Its samples must match the planes bit for bit, every
-//! sample must arrive once, and it must hold less.
+//! A region decode on the streamed IDWT hands its rows to a row sink as they
+//! are finished, with every component decoded together and no component
+//! planes, its bands decoded serially or on the worker pool. Its samples must
+//! match the planes bit for bit, every sample must arrive once, and it must
+//! hold less.
 
 use alloc::vec::Vec;
 
@@ -69,6 +70,9 @@ struct Decoded {
     streamed: bool,
     channel_bytes: usize,
     peak_bytes: usize,
+    pool_components: usize,
+    decoded_blocks: usize,
+    skipped_blocks: usize,
 }
 
 fn decode_planes(image: &Image<'_>, roi: (u32, u32, u32, u32)) -> Decoded {
@@ -101,12 +105,16 @@ fn decode_planes(image: &Image<'_>, roi: (u32, u32, u32, u32)) -> Decoded {
     if std::env::var_os("ROW_SINK_DEBUG").is_some() {
         std::eprintln!("planes {roi:?} {peak:?}");
     }
+    let counters = context.tile_decode_context.debug_counters;
     Decoded {
         planes,
         depths,
         streamed: false,
         channel_bytes: peak.channels,
         peak_bytes: peak.total(),
+        pool_components: counters.pool_band_components,
+        decoded_blocks: counters.decoded_code_blocks,
+        skipped_blocks: counters.skipped_code_blocks,
     }
 }
 
@@ -133,12 +141,16 @@ fn decode_rows(
     if std::env::var_os("ROW_SINK_DEBUG").is_some() {
         std::eprintln!("rows {roi:?} {peak:?}");
     }
+    let counters = context.tile_decode_context.debug_counters;
     Decoded {
         planes: sink.planes,
         depths: sink.depths,
         streamed: context.tile_decode_context.stream_rows,
         channel_bytes: peak.channels,
         peak_bytes: peak.total(),
+        pool_components: counters.pool_band_components,
+        decoded_blocks: counters.decoded_code_blocks,
+        skipped_blocks: counters.skipped_code_blocks,
     }
 }
 
@@ -235,22 +247,102 @@ fn row_sink_matches_component_planes_bit_for_bit() {
                     rows.peak_bytes,
                     planes.peak_bytes
                 );
-                // A parallel decode keeps its planes and hands them over at
-                // the end.
+                // A parallel decode streams its rows when its bands can
+                // decode on the pool, and otherwise hands over its planes at
+                // the end (see `pool_band_rows_match_component_planes_bit_for_bit`).
                 let parallel = decode_rows(&image, roi, CpuDecodeParallelism::Auto);
-                #[cfg(feature = "parallel")]
-                if rayon::current_num_threads() > 1 {
-                    assert!(!parallel.streamed, "{label}: parallel planes");
-                }
                 assert_eq!(parallel.planes, planes.planes, "{label}: parallel");
             }
         }
     }
 }
 
-/// Outcome of a serial region decode, through the planes or the row sink:
-/// a hash of the samples, or the error.
-fn outcome(bytes: &[u8], strict: bool, roi: (u32, u32, u32, u32), rows: bool) -> String {
+/// With two threads or more, a region decode whose bands the route can
+/// decode streams its rows too, with every component's bands on the pool at
+/// once. Its rows must match the serial planes bit for bit, decode and skip
+/// the same code-blocks, and hold no planes.
+#[cfg(feature = "parallel")]
+#[test]
+fn pool_band_rows_match_component_planes_bit_for_bit() {
+    for threads in [2, 4, 12] {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("build pool");
+        for case in row_sink_cases() {
+            let pixels = noisy_pixels(case.components);
+            let bytes = encode(
+                &pixels,
+                WIDTH,
+                HEIGHT,
+                u16::from(case.components),
+                8,
+                false,
+                &case.options,
+            )
+            .expect("encode pool row fixture");
+            let mut pool_components = 0;
+            for reduction in [0_u8, 1, 2] {
+                let image =
+                    Image::new_with_reduction(&bytes, &DecodeSettings::default(), reduction)
+                        .expect("parse pool row fixture");
+                let (width, height) = (image.width(), image.height());
+                let tile = TILE >> reduction;
+                for roi in [
+                    (0, 0, width, height),
+                    (
+                        width / 20,
+                        height / 20,
+                        width - width / 10,
+                        height - height / 10,
+                    ),
+                    (width / 3, height / 3, width / 7, height / 9),
+                    (tile - 5, tile - 3, 11, 7),
+                    (0, height - 9, width, 9),
+                    (width - 1, height - 1, 1, 1),
+                ] {
+                    let label = format!(
+                        "{} threads={threads} reduction={reduction} roi={roi:?}",
+                        case.label
+                    );
+                    let planes = decode_planes(&image, roi);
+                    let rows =
+                        pool.install(|| decode_rows(&image, roi, CpuDecodeParallelism::Auto));
+                    assert_eq!(rows.planes, planes.planes, "{label}");
+                    assert_eq!(rows.depths, planes.depths, "{label}");
+                    // HT tiles decode their bands on the pool into component
+                    // planes (see `parallel_bands::streams_rows`).
+                    if rows.pool_components > 0 && !case.options.use_ht_block_coding {
+                        assert!(rows.streamed, "{label}: streamed");
+                        assert!(rows.channel_bytes <= 256, "{label}: no planes");
+                        assert_eq!(rows.decoded_blocks, planes.decoded_blocks, "{label}");
+                        assert_eq!(rows.skipped_blocks, planes.skipped_blocks, "{label}");
+                    }
+                    pool_components += rows.pool_components;
+                }
+            }
+            // As in `pool_bands_match_whole_window_tier1_bit_for_bit`: the
+            // route takes HT blocks and classic blocks of one arithmetic
+            // segment, and two threads reach every such case.
+            let routed = case.options.use_ht_block_coding || case.options.num_layers <= 1;
+            if !routed {
+                assert_eq!(pool_components, 0, "{}", case.label);
+            } else if threads == 2 {
+                assert!(pool_components > 0, "{} never used the pool", case.label);
+            }
+        }
+    }
+}
+
+/// Outcome of a region decode, through the planes or the row sink: a hash
+/// of the samples, or the error.
+fn outcome(
+    bytes: &[u8],
+    strict: bool,
+    roi: (u32, u32, u32, u32),
+    rows: bool,
+    parallelism: CpuDecodeParallelism,
+) -> String {
     let settings = DecodeSettings {
         strict,
         ..DecodeSettings::default()
@@ -260,7 +352,7 @@ fn outcome(bytes: &[u8], strict: bool, roi: (u32, u32, u32, u32), rows: bool) ->
         Err(error) => return format!("parse {error:?}"),
     };
     let mut context = DecoderContext::default();
-    context.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
+    context.set_cpu_decode_parallelism(parallelism);
     let hash = |planes: &[Vec<u32>]| {
         planes
             .iter()
@@ -300,8 +392,14 @@ fn outcome(bytes: &[u8], strict: bool, roi: (u32, u32, u32, u32), rows: bool) ->
 fn row_sink_rejects_corrupt_code_blocks_as_component_planes_do() {
     // Small code-blocks give each component many bands, and the components
     // decode together, so two corrupt blocks often fail in a different order
-    // than the planes path decodes them.
+    // than the planes path decodes them. On the pool they also fail in any
+    // order across components.
     const SIZE: u32 = 48;
+    #[cfg(feature = "parallel")]
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .expect("build pool");
     let mut state = 0x9e37_79b9_7f4a_7c15_u64;
     let mut next = move || {
         state ^= state << 13;
@@ -340,12 +438,19 @@ fn row_sink_rejects_corrupt_code_blocks_as_component_planes_do() {
             for strict in [false, true] {
                 let roi = [(0, 0, SIZE, SIZE), (30, 30, 18, 18), (5, 9, 13, 7)]
                     [usize::try_from(next() % 3).expect("region index")];
-                let planes = outcome(&mutant, strict, roi, false);
-                let rows = outcome(&mutant, strict, roi, true);
-                assert_eq!(
-                    rows, planes,
+                let label = format!(
                     "ht={use_ht_block_coding} iteration={iteration} strict={strict} roi={roi:?}"
                 );
+                let serial = CpuDecodeParallelism::Serial;
+                let planes = outcome(&mutant, strict, roi, false, serial);
+                let rows = outcome(&mutant, strict, roi, true, serial);
+                assert_eq!(rows, planes, "{label}");
+                #[cfg(feature = "parallel")]
+                {
+                    let auto = CpuDecodeParallelism::Auto;
+                    let pool_rows = pool.install(|| outcome(&mutant, strict, roi, true, auto));
+                    assert_eq!(pool_rows, planes, "pool {label}");
+                }
                 failures += usize::from(planes.starts_with("decode"));
             }
         }

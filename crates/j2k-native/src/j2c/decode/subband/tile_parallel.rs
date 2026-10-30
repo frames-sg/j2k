@@ -1513,6 +1513,21 @@ pub(in crate::j2c::decode) fn plan_band_route<'a>(
     storage: &mut DecompositionStorage<'a>,
     header: &Header<'_>,
 ) -> Result<BandRouting<'a>> {
+    plan_band_route_beside(tile, component_idx, tile_ctx, storage, header, None)
+}
+
+/// [`plan_band_route`], charging the route to `live` when other routes stay
+/// live beside it: the budget of the route planned last for the same
+/// executor, which holds every earlier route's charges. Without it, the
+/// route is charged to the decode's storage budget.
+pub(in crate::j2c::decode) fn plan_band_route_beside<'a>(
+    tile: &Tile<'a>,
+    component_idx: usize,
+    tile_ctx: &mut TileDecodeContext,
+    storage: &mut DecompositionStorage<'a>,
+    header: &Header<'_>,
+    live: Option<DecodeAllocationBudget>,
+) -> Result<BandRouting<'a>> {
     let components = component_idx..component_idx + 1;
     let Some(coding) = tile_route_coding(tile, components.clone()) else {
         return Ok(BandRouting::WholeWindows);
@@ -1533,7 +1548,10 @@ pub(in crate::j2c::decode) fn plan_band_route<'a>(
     ) {
         return Ok(declined(route));
     }
-    let mut budget = DecodeAllocationBudget::for_storage(storage)?;
+    let mut budget = match live {
+        Some(live) => live,
+        None => DecodeAllocationBudget::for_storage(storage)?,
+    };
     let mut plan = match plan_tile(
         tile,
         components,

@@ -476,9 +476,10 @@ impl<'a> Image<'a> {
 
     /// [`Self::decode_region_components_for_integer_output_with_context`]
     /// that hands the region's samples to `sink` instead of returning
-    /// component planes. A plain region decode on one thread streams them as
-    /// they are finished and never holds the whole planes; any other decode
-    /// hands over its planes as one rectangle at the end.
+    /// component planes. A plain region decode streams them as they are
+    /// finished and never holds the whole planes, its Tier-1 bands decoded
+    /// serially or on the worker pool; any other decode hands over its planes
+    /// as one rectangle at the end.
     ///
     /// # Errors
     ///
