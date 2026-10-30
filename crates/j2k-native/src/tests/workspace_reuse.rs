@@ -287,6 +287,38 @@ fn parallel_workspace_measurements(context: &DecoderContext<'_>) -> (usize, usiz
     )
 }
 
+/// A parallel `decode_into` from outside the pool runs on it with the same
+/// bytes; a serial one and one from a pool thread stay where they are.
+#[cfg(feature = "parallel")]
+#[test]
+fn decode_into_enters_the_pool_with_the_same_bytes() {
+    let bytes = parallel_gray_fixture(1024, 1024, true, false);
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+    let len = usize::try_from(image.width() * image.height()).expect("pixels");
+    let mut expected = alloc::vec![0_u8; len];
+    let mut here = DecoderContext::default();
+    image
+        .decode_into(&mut expected, &mut here)
+        .expect("decode here");
+    assert!(!image.enters_pool(&here));
+    let mut pooled = DecoderContext::default();
+    pooled.tile_decode_context.enter_pool = true;
+    let threads = rayon::current_num_threads();
+    let (serial_ns, fork_ns) = image.full_decode_cost_ns(threads);
+    assert_eq!(
+        image.enters_pool(&pooled),
+        !crate::profile::profile_stages_enabled() && threads >= 2 && serial_ns * 4 >= fork_ns * 5
+    );
+    let mut actual = alloc::vec![0_u8; len];
+    image
+        .decode_into(&mut actual, &mut pooled)
+        .expect("decode on the pool");
+    assert_eq!(actual, expected);
+    rayon::scope(|_| assert!(!image.enters_pool(&pooled)));
+    pooled.set_cpu_decode_parallelism(crate::CpuDecodeParallelism::Serial);
+    assert!(!image.enters_pool(&pooled));
+}
+
 /// An `Auto` decode of an image too small to repay forking runs serially,
 /// with the same bytes, and leaves the context's policy as it was.
 #[cfg(feature = "parallel")]

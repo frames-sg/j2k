@@ -280,6 +280,11 @@ pub(crate) struct TileDecodeContext {
     /// small fixtures still exercise the parallel routes.
     #[cfg(test)]
     pub(crate) serial_small_decodes: bool,
+    /// Test-only switch that lets a parallel `decode_into` called from outside
+    /// the pool move onto it, as every other build does. Tests leave it off so
+    /// their per-thread counters see the decode.
+    #[cfg(test)]
+    pub(crate) enter_pool: bool,
     /// The raw, decoded samples for each channel.
     pub(crate) channel_data: Vec<ComponentData>,
     /// Optional output window for region-local decode storage.
@@ -343,6 +348,8 @@ impl TileDecodeContext {
         let staged_rgb8_pack = self.staged_rgb8_pack;
         #[cfg(test)]
         let serial_small_decodes = self.serial_small_decodes;
+        #[cfg(test)]
+        let enter_pool = self.enter_pool;
         *self = Self::default();
         self.output_region = output_region;
         self.round_irreversible_output = round_irreversible_output;
@@ -361,6 +368,7 @@ impl TileDecodeContext {
             self.separate_last_idwt_level = separate_last_idwt_level;
             self.staged_rgb8_pack = staged_rgb8_pack;
             self.serial_small_decodes = serial_small_decodes;
+            self.enter_pool = enter_pool;
         }
     }
 
