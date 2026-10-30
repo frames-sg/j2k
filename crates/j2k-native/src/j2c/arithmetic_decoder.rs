@@ -194,6 +194,36 @@ impl<'a> ArithmeticDecoder<'a> {
         d
     }
 
+    /// How many decisions in `context`, from the current registers, take the
+    /// MPS path of C.3.2 without renormalizing: each leaves C and the
+    /// context's state as they are and lowers A by Qe, which holds while
+    /// A - k * Qe stays at least 0x8000 and above the upper half of C.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::inline_always,
+        reason = "the upper half of C is 16 bits; checked on a measured per-column hot path"
+    )]
+    #[inline(always)]
+    pub(crate) fn mps_run(&self, context: ArithmeticDecoderContext) -> u32 {
+        let qe = PACKED_DECODER_STATES[context.0 as usize] as u32 & 0xffff;
+        let floor = ((self.c >> 48) as u32 + 1).max(0x8000);
+        self.a.saturating_sub(floor) / qe
+    }
+
+    /// Decode `count` decisions in `context` that [`Self::mps_run`] covers:
+    /// all of them yield the MPS and only A changes.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::inline_always,
+        reason = "Qe is the low 16 bits of the packed state; per-column hot path"
+    )]
+    #[inline(always)]
+    pub(crate) fn skip_mps_run(&mut self, context: ArithmeticDecoderContext, count: u32) {
+        debug_assert!(count <= self.mps_run(context));
+        let qe = PACKED_DECODER_STATES[context.0 as usize] as u32 & 0xffff;
+        self.a -= count * qe;
+    }
+
     #[expect(
         clippy::inline_always,
         reason = "MQ state transitions are measured per-symbol hot paths"
@@ -251,7 +281,6 @@ impl ArithmeticDecoderContext {
         clippy::inline_always,
         reason = "MQ state transitions are measured per-symbol hot paths"
     )]
-    #[cfg(test)]
     #[inline(always)]
     pub(crate) fn mps(self) -> u32 {
         u32::from(self.0 >> 7)
@@ -273,5 +302,90 @@ impl ArithmeticDecoderContext {
     #[inline(always)]
     pub(crate) fn reset_with_index(&mut self, index: u8) {
         self.0 = index;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ArithmeticDecoder, ArithmeticDecoderContext};
+    use crate::j2c::arithmetic_encoder::{ArithmeticEncoder, ArithmeticEncoderContext};
+    use alloc::vec::Vec;
+
+    /// Symbols of one context that are 1 about once in `one_in`.
+    fn sparse_symbols(count: usize, one_in: u32, seed: u32) -> Vec<u32> {
+        let mut state = seed;
+        (0..count)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                u32::from((state >> 8).is_multiple_of(one_in))
+            })
+            .collect()
+    }
+
+    fn registers(decoder: &ArithmeticDecoder<'_>) -> (u64, u32, u32, u32) {
+        (
+            decoder.c,
+            decoder.a,
+            decoder.base_pointer,
+            decoder.shift_count,
+        )
+    }
+
+    #[test]
+    fn skipping_mps_runs_matches_decoding_each_decision() {
+        for (one_in, start_index, seed) in [
+            (40, 3, 1),
+            (300, 3, 2),
+            (7, 0, 3),
+            (2000, 0, 4),
+            (3, 3, 5),
+            (5, 46, 6),
+        ] {
+            let symbols = sparse_symbols(20_000, one_in, seed);
+            let mut encoder = ArithmeticEncoder::new();
+            let mut encoder_context = ArithmeticEncoderContext::default();
+            encoder_context.reset_with_index(start_index);
+            for &symbol in &symbols {
+                encoder.encode(symbol, &mut encoder_context);
+            }
+            let encoded = encoder.finish();
+
+            let mut each = ArithmeticDecoder::new(&encoded);
+            let mut each_context = ArithmeticDecoderContext::empty();
+            each_context.reset_with_index(start_index);
+            let mut runs = ArithmeticDecoder::new(&encoded);
+            let mut runs_context = each_context;
+            let mut skipped = 0usize;
+            let mut position = 0;
+            while position < symbols.len() {
+                let run = if runs_context.mps() == 0 {
+                    runs.mps_run(runs_context)
+                } else {
+                    0
+                };
+                if run == 0 {
+                    assert_eq!(runs.read_bit(&mut runs_context), symbols[position]);
+                    assert_eq!(each.read_bit(&mut each_context), symbols[position]);
+                    position += 1;
+                } else {
+                    let count = run.min(u32::try_from(symbols.len() - position).expect("fits"));
+                    for _ in 0..count {
+                        let before = each_context.0;
+                        assert_eq!(each.read_bit(&mut each_context), 0);
+                        assert_eq!(each_context.0, before, "a skipped decision changed state");
+                        assert_eq!(symbols[position], 0);
+                        position += 1;
+                    }
+                    runs.skip_mps_run(runs_context, count);
+                    skipped += count as usize;
+                }
+                assert_eq!(registers(&runs), registers(&each));
+                assert_eq!(runs_context.0, each_context.0);
+            }
+            // State 46 (the uniform context) never adapts, so its runs are short.
+            if one_in >= 40 {
+                assert!(skipped > 0, "no run skipped for one_in {one_in}");
+            }
+        }
     }
 }

@@ -203,13 +203,34 @@ pub(super) fn cleanup_pass_flags(
     let mut uniform = scan.contexts[18];
     for stripe in 0..scan.height.div_ceil(4) {
         let (flag_row, top_row, rows) = scan.stripe_start(stripe);
-        for x in 0..scan.width {
+        let mut x = 0;
+        while x < scan.width {
             let flag_index = flag_row + x;
             let top = top_row + x;
             let mut own = scan.flags[flag_index];
             // A zero word is a full column of insignificant, unvisited
             // coefficients with zero contexts: Annex D's run-length case.
             if rows == ROW_BITS && own == 0 {
+                // While the run-length context's MPS is a zero and it decodes
+                // without renormalizing, each zero word from here on decodes
+                // that zero and changes nothing but A, so the run of such
+                // words is decoded at once.
+                let run = if run_length.mps() == 0 {
+                    scan.decoder.mps_run(run_length)
+                } else {
+                    0
+                };
+                if run != 0 {
+                    let limit = run.min(u32::try_from(scan.width - x).unwrap_or(u32::MAX));
+                    let mut columns = 1;
+                    while columns < limit && scan.flags[flag_index + columns as usize] == 0 {
+                        columns += 1;
+                    }
+                    scan.decoder.skip_mps_run(run_length, columns);
+                    x += columns as usize;
+                    continue;
+                }
+                x += 1;
                 if scan.decoder.read_bit(&mut run_length) == 0 {
                     continue;
                 }
@@ -220,6 +241,7 @@ pub(super) fn cleanup_pass_flags(
                     scan.zero_code(&mut own, flag_index, top, 3 * row);
                 }
             } else {
+                x += 1;
                 let mut candidates = uncoded_rows(own) & rows;
                 while candidates != 0 {
                     scan.zero_code(&mut own, flag_index, top, candidates.trailing_zeros());
