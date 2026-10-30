@@ -23,6 +23,8 @@ pub use output_planes::{
     DecodedComponentsParts, DecodedNativeComponents, DecodedNativeComponentsParts,
     NativeComponentPlane, NativeComponentPlaneParts,
 };
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+pub(crate) use packing::store_rgb8_x8;
 pub(crate) use packing::{
     interleave_and_convert_after_mct, interleave_and_convert_region,
     validate_interleaved_output_buffer,
