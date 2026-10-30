@@ -58,7 +58,7 @@ const RING_ROWS: usize = MAX_HALO_ROWS + 2;
 const MIN_STRIP_ROWS: usize = 64;
 
 /// Scratch elements for the two horizontally lifted bands of one row.
-fn horizontal_scratch_elements(width: usize) -> Result<usize> {
+pub(super) fn horizontal_scratch_elements(width: usize) -> Result<usize> {
     if width < MIN_SIMD_ROW_WIDTH {
         return Ok(0);
     }
@@ -305,6 +305,15 @@ impl<'a> Level2d<'a> {
         }
     }
 
+    fn row_geometry(&self) -> RowGeometry {
+        RowGeometry {
+            width: self.width,
+            x0: self.x0,
+            transform: self.transform,
+            high_pass: self.high_pass,
+        }
+    }
+
     /// This level with its LL band rows `first_row..` taken from `rows`.
     #[cfg(feature = "parallel")]
     fn with_ll_rows(mut self, rows: &'a [f32], first_row: usize) -> Self {
@@ -317,6 +326,17 @@ impl<'a> Level2d<'a> {
         }
         self
     }
+}
+
+/// What the horizontal synthesis of one row needs from its level: the row's
+/// width, its first column, whose parity says whether it starts low-pass, the
+/// transform, and the 9-7I high-pass scale.
+#[derive(Clone, Copy)]
+pub(super) struct RowGeometry {
+    pub(super) width: usize,
+    pub(super) x0: usize,
+    pub(super) transform: WaveletTransform,
+    pub(super) high_pass: f32,
 }
 
 pub(super) fn filter_2d_banded(
@@ -752,7 +772,16 @@ fn synthesize_level_row<S: Simd>(
     };
     match source {
         Some((first, second)) => {
-            synthesize_row(simd, level, first, second, row, low, high, row_scale);
+            synthesize_row(
+                simd,
+                level.row_geometry(),
+                first,
+                second,
+                row,
+                low,
+                high,
+                row_scale,
+            );
         }
         // Lifting maps an all-zero row to zeros.
         None => row.fill(0.0),
@@ -1498,7 +1527,39 @@ pub(in crate::j2c) fn lift_rows<S: Simd>(
 }
 
 /// Rows narrower than this use the scalar interleaved `1D_SR`.
-const MIN_SIMD_ROW_WIDTH: usize = 2 * SIMD_WIDTH;
+pub(super) const MIN_SIMD_ROW_WIDTH: usize = 2 * SIMD_WIDTH;
+
+/// [`synthesize_row`] at the CPU's SIMD level, for callers outside a
+/// dispatch: the horizontal synthesis of one row of `geometry` from its two
+/// band rows, `first` holding the samples of column `x0`'s parity, written
+/// interleaved into `row` and, for 9-7I, scaled by `row_scale`. `scratch`
+/// holds at least [`horizontal_scratch_elements`] samples.
+pub(super) fn synthesize_band_row(
+    geometry: RowGeometry,
+    first: &[f32],
+    second: &[f32],
+    row: &mut [f32],
+    scratch: &mut [f32],
+    row_scale: f32,
+) {
+    let (low_len, high_len) = if geometry.x0.is_multiple_of(2) {
+        (first.len(), second.len())
+    } else {
+        (second.len(), first.len())
+    };
+    let (low, rest) = scratch.split_at_mut(low_len + 2);
+    let high = &mut rest[..high_len + 2];
+    dispatch!(Level::new(), simd => synthesize_row(
+        simd,
+        geometry,
+        first,
+        second,
+        row,
+        low,
+        high,
+        row_scale,
+    ));
+}
 
 /// Horizontal `1D_SR` (F.3.6) of one row from its two band rows, written
 /// interleaved into `row`.
@@ -1518,7 +1579,7 @@ const MIN_SIMD_ROW_WIDTH: usize = 2 * SIMD_WIDTH;
 #[inline(always)]
 fn synthesize_row<S: Simd>(
     simd: S,
-    level: Level2d<'_>,
+    level: RowGeometry,
     first: &[f32],
     second: &[f32],
     row: &mut [f32],

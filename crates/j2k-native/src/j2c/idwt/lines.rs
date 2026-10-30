@@ -20,6 +20,9 @@ use alloc::vec::Vec;
 use super::super::codestream::WaveletTransform;
 use super::super::decode::DecompositionStorage;
 use super::super::rect::IntRect;
+use super::banded::{
+    horizontal_scratch_elements, synthesize_band_row, RowGeometry, MIN_SIMD_ROW_WIDTH,
+};
 use super::filter_common::periodic_symmetric_extension_left;
 use super::horizontal::filter_row;
 use super::model::CoefficientSource;
@@ -37,17 +40,36 @@ pub(crate) const fn ring_rows(transform: WaveletTransform) -> usize {
     vertical_step_count(transform) + 2
 }
 
-/// Samples the rings of one component's levels hold together.
+/// Samples the rings of one component's levels hold together, with the
+/// scratch their rows' horizontal synthesis shares.
 pub(crate) fn ring_samples(
     windows: impl IntoIterator<Item = IntRect>,
     transform: WaveletTransform,
 ) -> Result<usize> {
-    windows.into_iter().try_fold(0usize, |total, window| {
-        (window.width() as usize)
-            .checked_mul(ring_rows(transform))
-            .and_then(|samples| total.checked_add(samples))
-            .ok_or(ValidationError::ImageTooLarge.into())
-    })
+    let mut widest = 0;
+    let rings = windows.into_iter().try_fold(0usize, |total, window| {
+        widest = widest.max(window.width() as usize);
+        level_ring_samples(window, transform).and_then(|samples| {
+            total
+                .checked_add(samples)
+                .ok_or(ValidationError::ImageTooLarge.into())
+        })
+    })?;
+    rings
+        .checked_add(synthesis_scratch_samples(widest)?)
+        .ok_or(ValidationError::ImageTooLarge.into())
+}
+
+/// Samples the ring of a level with this window holds.
+fn level_ring_samples(window: IntRect, transform: WaveletTransform) -> Result<usize> {
+    (window.width() as usize)
+        .checked_mul(ring_rows(transform))
+        .ok_or(ValidationError::ImageTooLarge.into())
+}
+
+/// Scratch for the horizontal synthesis of a row of the widest level.
+fn synthesis_scratch_samples(widest: usize) -> Result<usize> {
+    horizontal_scratch_elements(widest)
 }
 
 /// Where the streamed IDWT reads the rows of a component's stored sub-bands.
@@ -128,11 +150,13 @@ impl LevelRows<'_> {
     }
 }
 
-/// What every level reads besides its own LL input.
+/// What every level reads besides its own LL input, and the scratch its
+/// rows' horizontal synthesis shares.
 struct Inputs<'r> {
     rows: &'r mut dyn SubBandRows,
     ll_sub_band: usize,
     transform: WaveletTransform,
+    scratch: &'r mut [f32],
 }
 
 /// Reconstruct a component's active levels from its stored sub-bands, read
@@ -174,6 +198,8 @@ pub(super) fn reconstruct_rows(
 /// advance together.
 pub(crate) struct LineReconstruction<'r> {
     levels: Vec<LevelRows<'r>>,
+    /// Scratch for the horizontal synthesis of one row at a time.
+    scratch: &'r mut [f32],
     ll_sub_band: usize,
     transform: WaveletTransform,
     /// The rows of the last level still to return.
@@ -200,7 +226,7 @@ impl<'r> LineReconstruction<'r> {
             .map_err(|_| DecodingError::HostAllocationFailed)?;
         let mut rest = ring;
         for (window, sub_bands) in windows.iter().zip(sub_bands) {
-            let len = ring_samples([*window], transform)?;
+            let len = level_ring_samples(*window, transform)?;
             if window.is_empty() || rest.len() < len {
                 return Err(DecodingError::CodeBlockDecodeFailure.into());
             }
@@ -214,6 +240,12 @@ impl<'r> LineReconstruction<'r> {
                 finished: [0; 4],
             });
         }
+        let widest = levels.iter().map(LevelRows::width).max().unwrap_or(0);
+        let scratch_len = synthesis_scratch_samples(widest)?;
+        if rest.len() < scratch_len {
+            return Err(DecodingError::CodeBlockDecodeFailure.into());
+        }
+        let (scratch, _) = core::mem::take(&mut rest).split_at_mut(scratch_len);
 
         let window = levels[levels.len() - 1].window;
         let (rows, columns) = if copy.is_empty() {
@@ -232,6 +264,7 @@ impl<'r> LineReconstruction<'r> {
         };
         Ok(Self {
             levels,
+            scratch,
             ll_sub_band,
             transform,
             rows,
@@ -252,6 +285,7 @@ impl<'r> LineReconstruction<'r> {
             rows,
             ll_sub_band: self.ll_sub_band,
             transform: self.transform,
+            scratch: &mut *self.scratch,
         };
         finish_row(&mut self.levels, last, row, &mut inputs)?;
         Ok(Some((y, &self.levels[last].row(row)[self.columns.clone()])))
@@ -340,6 +374,54 @@ fn feed_row(levels: &mut [LevelRows<'_>], level: usize, inputs: &mut Inputs<'_>)
     let width = current.width();
     let slot = current.slot(local);
     let target = &mut current.ring[slot * width..][..width];
+    // The low band holds the even columns, the high band the odd ones.
+    let (low, high) = if y.is_multiple_of(2) {
+        (ll, band(sub_bands[0]))
+    } else {
+        (band(sub_bands[1]), band(sub_bands[2]))
+    };
+    let low_len = (window.x1.div_ceil(2) - window.x0.div_ceil(2)) as usize;
+    // Rows of one sample keep their own scaling, and narrow rows and band
+    // rows their rectangles don't hold whole take the windowed path below.
+    let band_rows = (height > 1 && width >= MIN_SIMD_ROW_WIDTH)
+        .then(|| {
+            Some((
+                stored_row(low, window.x0.div_ceil(2), low_len, band_y)?,
+                stored_row(high, window.x0 / 2, width - low_len, band_y)?,
+            ))
+        })
+        .flatten();
+    if let Some((low_row, high_row)) = band_rows {
+        let (first, second) = if window.x0.is_multiple_of(2) {
+            (low_row, high_row)
+        } else {
+            (high_row, low_row)
+        };
+        let row_scale = if inputs.transform == WaveletTransform::Irreversible97 {
+            irreversible_row_scale(
+                window.y0,
+                local.is_multiple_of(2),
+                super::OPENJPEG_NORMALIZED_HIGH_PASS_F32,
+            )
+        } else {
+            1.0
+        };
+        synthesize_band_row(
+            RowGeometry {
+                width,
+                x0: window.x0 as usize,
+                transform: inputs.transform,
+                high_pass: super::OPENJPEG_NORMALIZED_HIGH_PASS_F32,
+            },
+            first,
+            second,
+            target,
+            inputs.scratch,
+            row_scale,
+        );
+        current.fed += 1;
+        return Ok(());
+    }
     interleave_samples_roi(
         ll,
         band(sub_bands[0]),
@@ -371,6 +453,33 @@ fn feed_row(levels: &mut [LevelRows<'_>], level: usize, inputs: &mut Inputs<'_>)
     }
     current.fed += 1;
     Ok(())
+}
+
+/// Zero samples for band rows that lie wholly outside their stored
+/// rectangles, as sub-bands without code-blocks in a row do.
+static ZERO_ROW: [f32; 4096] = [0.0; 4096];
+
+/// The `len` samples of row `band_y` of `source` from band column `band_x0`,
+/// which read zero outside its rectangle as [`CoefficientSource::get`] does:
+/// read in place when the rectangle holds them all, or zeros when it holds
+/// none. `None` when it holds only some.
+fn stored_row(
+    source: CoefficientSource<'_>,
+    band_x0: u32,
+    len: usize,
+    band_y: u32,
+) -> Option<&[f32]> {
+    let rect = source.rect;
+    let band_x1 = u64::from(band_x0) + len as u64;
+    if band_y < rect.y0 || band_y >= rect.y1 || band_x1 <= u64::from(rect.x0) || band_x0 >= rect.x1
+    {
+        return ZERO_ROW.get(..len);
+    }
+    if band_x0 < rect.x0 || band_x1 > u64::from(rect.x1) {
+        return None;
+    }
+    let start = (band_y - rect.y0) as usize * source.stride as usize + (band_x0 - rect.x0) as usize;
+    source.coefficients.get(start..start.checked_add(len)?)
 }
 
 /// Let every vertical step finish as many rows as the rows fed so far allow.

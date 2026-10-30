@@ -627,3 +627,217 @@ fn banded_2d_matches_plain_2d_bit_for_bit() {
         }
     }
 }
+
+/// Sub-bands for the streamed IDWT, each stored in its own rectangle.
+struct StoredBands {
+    bands: Vec<(Vec<f32>, IntRect)>,
+}
+
+impl super::lines::SubBandRows for StoredBands {
+    fn prepare_row(&mut self, _sub_band: usize, _y: u32) -> Result<()> {
+        Ok(())
+    }
+
+    fn samples(&self, sub_band: usize) -> (&[f32], IntRect, u32) {
+        let (samples, rect) = &self.bands[sub_band];
+        (samples, *rect, rect.width())
+    }
+}
+
+/// `rect` grown by `[left, top, right, bottom]` samples; negative values
+/// shrink it.
+#[expect(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    reason = "the fixture rectangles stay at small non-negative coordinates"
+)]
+fn adjusted(rect: IntRect, [left, top, right, bottom]: [i64; 4]) -> IntRect {
+    let at = |value: u32, delta: i64| (i64::from(value) + delta).max(0) as u32;
+    IntRect::from_ltrb(
+        at(rect.x0, -left),
+        at(rect.y0, -top),
+        at(rect.x1, right).max(at(rect.x0, -left)),
+        at(rect.y1, bottom).max(at(rect.y0, -top)),
+    )
+}
+
+/// The whole-window region IDWT of one level, as `roi::fill_level_roi` runs it.
+fn whole_window_level(
+    sources: [CoefficientSource<'_>; 4],
+    window: IntRect,
+    transform: WaveletTransform,
+) -> Vec<f32> {
+    let mut output = vec![0.0; (window.width() * window.height()) as usize];
+    interleave_samples_roi(
+        sources[0],
+        sources[1],
+        sources[2],
+        sources[3],
+        &mut output,
+        window,
+    );
+    super::horizontal::filter_horizontal_codestream(&mut output, window, transform);
+    super::vertical::filter_vertical_codestream(&mut output, window, transform);
+    output
+}
+
+/// The streamed IDWT synthesizes a row from its two band rows in place with
+/// the banded SIMD kernel when their stored rectangles hold them whole, and
+/// otherwise through the windowed interleave. Every row must match the
+/// whole-window region IDWT, which reads every sample through
+/// `CoefficientSource::get` and filters with the scalar `filter_row`, bit for
+/// bit: both transforms, both column and row parities, stored rectangles
+/// wider than the window's bands and clipped on either side, sub-bands with
+/// nothing stored, and a second level reading the first one's rows.
+#[test]
+#[expect(clippy::too_many_lines, reason = "one table-driven equivalence sweep")]
+fn streamed_rows_match_the_whole_window_levels_bit_for_bit() {
+    use super::banded::packed_band_rects;
+    use super::lines::{reconstruct_rows, ring_samples};
+
+    let mut seed = 7_u64;
+    for transform in [
+        WaveletTransform::Reversible53,
+        WaveletTransform::Irreversible97,
+    ] {
+        let integral = transform == WaveletTransform::Reversible53;
+        for (x0, y0) in [(0, 0), (1, 0), (0, 1), (1, 1), (5, 2), (8, 3)] {
+            for (width, height) in [(16, 9), (17, 20), (31, 2), (40, 33), (64, 12), (161, 40)] {
+                for clip in [
+                    [0, 0, 0, 0],
+                    [2, 1, 3, 2],
+                    [-2, 0, 0, 0],
+                    [0, 0, -3, 0],
+                    [-1, -1, -2, -1],
+                    [3, 0, -1, 1],
+                    [1, 0, 1, 0],
+                ] {
+                    let label = format!(
+                        "{transform:?} origin=({x0},{y0}) size={width}x{height} clip={clip:?}"
+                    );
+                    let window = IntRect::from_xywh(x0, y0, width, height);
+                    // A sub-band without code-blocks stores nothing and
+                    // reads as zero: here HH, or LH with a clipped HL.
+                    let empty = match clip {
+                        [1, 0, 1, 0] => Some(3),
+                        [-2, 0, 0, 0] => Some(2),
+                        _ => None,
+                    };
+                    let mut bands = Vec::new();
+                    for (index, rect) in packed_band_rects(window).into_iter().enumerate() {
+                        let stored = if empty == Some(index) {
+                            IntRect::from_xywh(0, 0, 0, 0)
+                        } else {
+                            adjusted(rect, clip)
+                        };
+                        seed += 1;
+                        let samples = pseudo_random_coefficients(
+                            (stored.width() * stored.height()) as usize,
+                            seed,
+                            integral,
+                        );
+                        bands.push((samples, stored));
+                    }
+                    let sources: [CoefficientSource<'_>; 4] = core::array::from_fn(|index| {
+                        let (samples, rect) = &bands[index];
+                        CoefficientSource::new(samples, *rect, rect.width())
+                    });
+                    let expected = whole_window_level(sources, window, transform);
+
+                    let mut rows = StoredBands {
+                        bands: bands.clone(),
+                    };
+                    let mut ring = vec![f32::NAN; ring_samples([window], transform).expect("ring")];
+                    let mut streamed = vec![f32::NAN; expected.len()];
+                    let mut output_samples = 0;
+                    reconstruct_rows(
+                        &mut rows,
+                        &[[1, 2, 3]],
+                        &[window],
+                        0,
+                        transform,
+                        &mut ring,
+                        window,
+                        &mut |y, samples| {
+                            let start = ((y - window.y0) * width) as usize;
+                            streamed[start..][..samples.len()].copy_from_slice(samples);
+                            Ok(())
+                        },
+                        &mut output_samples,
+                    )
+                    .expect("streamed level");
+                    assert_eq!(bits(&streamed), bits(&expected), "one level {label}");
+
+                    // A second level whose LL is the first level's window,
+                    // clipped or grown the same way.
+                    let next = IntRect::from_xywh(2 * x0 + 1, 2 * y0, 2 * width - 3, 2 * height);
+                    let next_bands = packed_band_rects(next);
+                    let first = adjusted(next_bands[0], clip);
+                    if first.width() < 2 || first.height() < 2 {
+                        continue;
+                    }
+                    let stored = packed_band_rects(first)
+                        .into_iter()
+                        .chain(next_bands[1..].iter().map(|rect| adjusted(*rect, clip)));
+                    let levels: Vec<(Vec<f32>, IntRect)> = stored
+                        .map(|rect| {
+                            seed += 1;
+                            let len = (rect.width() * rect.height()) as usize;
+                            (pseudo_random_coefficients(len, seed, integral), rect)
+                        })
+                        .collect();
+                    let source = |index: usize| {
+                        let (samples, rect) = &levels[index];
+                        CoefficientSource::new(samples, *rect, rect.width())
+                    };
+                    let coarse = whole_window_level(
+                        [source(0), source(1), source(2), source(3)],
+                        first,
+                        transform,
+                    );
+                    let expected = whole_window_level(
+                        [
+                            CoefficientSource::new(&coarse, first, first.width()),
+                            source(4),
+                            source(5),
+                            source(6),
+                        ],
+                        next,
+                        transform,
+                    );
+                    let mut rows = StoredBands { bands: levels };
+                    let windows = [first, next];
+                    let mut ring =
+                        vec![f32::NAN; ring_samples(windows, transform).expect("two-level ring")];
+                    let copy = adjusted(next, [-1, -2, -2, -1]);
+                    let mut streamed = vec![f32::NAN; expected.len()];
+                    reconstruct_rows(
+                        &mut rows,
+                        &[[1, 2, 3], [4, 5, 6]],
+                        &windows,
+                        0,
+                        transform,
+                        &mut ring,
+                        copy,
+                        &mut |y, samples| {
+                            let start = ((y - next.y0) * next.width() + copy.x0 - next.x0) as usize;
+                            streamed[start..][..samples.len()].copy_from_slice(samples);
+                            Ok(())
+                        },
+                        &mut output_samples,
+                    )
+                    .expect("streamed levels");
+                    for y in copy.y0..copy.y1 {
+                        let start = ((y - next.y0) * next.width() + copy.x0 - next.x0) as usize;
+                        let range = start..start + copy.width() as usize;
+                        assert_eq!(
+                            bits(&streamed[range.clone()]),
+                            bits(&expected[range]),
+                            "two levels {label} row {y}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
