@@ -26,6 +26,17 @@ and stale roadmap entries have been removed from the public documentation set.
   18000 x 12000 RGB image decodes 3 to 11% faster at 12 threads and 9 to 18%
   faster at 4, with about 3 MiB less peak heap. Output is unchanged, and a
   failure reruns whole-window Tier-1 serially for the same error.
+- Classic (EBCOT) code-block decoding is faster on the CPU. The cleanup pass
+  decodes a run of all-zero run-length columns in one step while the MQ
+  decoder needs no renormalization, the significance propagation and cleanup
+  passes form a coefficient's sign context before its significance decision,
+  and reversible code-blocks decoded down to bit-plane 0 convert to samples
+  in a vectorized loop. On the tile-wide route, long classic code-block rows
+  split into parts of about equal work, so a decode no longer ends on one
+  long row. A 4096 x 2048 RGB image decodes 10% faster at 2 bpp and 14%
+  faster lossless at 1 and 6 threads (5% and 13% at 18), and 1024 x 1024
+  regions and reduced-resolution decodes of an 18000 x 12000 image 2 to 10%
+  faster. Output and peak heap are unchanged.
 
 ## [0.13.1] - 2026-10-29
 
