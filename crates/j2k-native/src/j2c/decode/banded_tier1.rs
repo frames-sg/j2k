@@ -546,7 +546,7 @@ fn index_bands(
 /// windows, the old way, and return its error, which is the one the
 /// whole-window path reports. If the whole windows don't fit the cap, or the
 /// rerun succeeds, keep the banded error.
-fn whole_window_error<'a>(
+pub(super) fn whole_window_error<'a>(
     tile: &Tile<'a>,
     component_idx: usize,
     header: &Header<'_>,

@@ -12,6 +12,7 @@
 //! segments are gathered. Classic blocks take this route when each decodes as
 //! one arithmetic segment: no selective bypass or per-pass termination.
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::ops::Range;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -148,6 +149,8 @@ struct TilePlan<'a> {
     /// Samples in the largest block its sub-band stores only part of. Each
     /// worker decodes such blocks into scratch of this size.
     max_clipped_samples: usize,
+    /// The sub-band of each band, in the order of `bands` or `classic_bands`.
+    band_sub_bands: Vec<usize>,
 }
 
 /// How [`plan_tile_route`] wants the tile's code blocks decoded.
@@ -214,6 +217,7 @@ pub(in crate::j2c::decode) fn plan_tile_route<'a>(
         &mut budget,
         coding,
         required,
+        false,
     ) {
         Ok(Some(plan)) => plan,
         Ok(None) => return Ok(TileRoute::PerSubBand),
@@ -372,6 +376,7 @@ fn record_route_peak(
         plan.classic_bands.capacity() * size_of::<ClassicJobParameters>(),
         plan.jobs.capacity() * size_of::<BlockJob<'_>>(),
         plan.strips.capacity() * size_of::<Strip>(),
+        plan.band_sub_bands.capacity() * size_of::<usize>(),
         plan.arena.capacity(),
         task_capacity * size_of::<StripTask<'_, '_>>(),
         workers
@@ -424,6 +429,12 @@ fn decode_with_bank<'a, W: TaskScratch>(
     Ok(Some(growths))
 }
 
+/// Whether the route can decode the code-blocks of every component of
+/// `tile`.
+pub(in crate::j2c::decode) fn routes_tile(tile: &Tile<'_>) -> bool {
+    tile_route_coding(tile, 0..tile.component_infos.len()).is_some()
+}
+
 /// The block coding of every component in `components` when the route can
 /// decode it: HT only, or classic with one arithmetic segment per block.
 fn tile_route_coding(tile: &Tile<'_>, components: Range<usize>) -> Option<CodeBlockCoding> {
@@ -448,6 +459,7 @@ fn tile_route_coding(tile: &Tile<'_>, components: Range<usize>) -> Option<CodeBl
 
 #[expect(
     clippy::too_many_lines,
+    clippy::too_many_arguments,
     reason = "planning walks components, resolutions, sub-bands, and code blocks in one ordered pass"
 )]
 fn plan_tile<'a>(
@@ -458,6 +470,7 @@ fn plan_tile<'a>(
     budget: &mut DecodeAllocationBudget,
     coding: CodeBlockCoding,
     required: usize,
+    banded: bool,
 ) -> Result<Option<TilePlan<'a>>> {
     let mut plan = TilePlan {
         coding,
@@ -473,10 +486,12 @@ fn plan_tile<'a>(
         max_width: 0,
         max_height: 0,
         max_clipped_samples: 0,
+        band_sub_bands: Vec::new(),
     };
     // A region decode may need only a few of the tile's code blocks.
     budget.reserve_new(&mut plan.jobs, required)?;
     budget.reserve_new(&mut plan.strips, required)?;
+    budget.reserve_new(&mut plan.band_sub_bands, storage.sub_bands.len())?;
     // Classic job metadata must not enlarge the HT plan's band entries.
     if coding == CodeBlockCoding::Classic {
         budget.reserve_new(&mut plan.classic_bands, storage.sub_bands.len())?;
@@ -537,6 +552,7 @@ fn plan_tile<'a>(
                     band
                 };
 
+                plan.band_sub_bands.push(sub_band_idx);
                 let first_job = plan.jobs.len();
                 for precinct in sub_band
                     .precincts
@@ -586,20 +602,27 @@ fn plan_tile<'a>(
                         plan.jobs.push(job);
                     }
                 }
-                if !plan_band_strips(
-                    &mut plan,
-                    first_job,
-                    sub_band.coefficients.clone(),
+                let (width, height) = (
                     sub_band.storage_rect.width(),
                     sub_band.storage_rect.height(),
-                )? {
+                );
+                // Banded strips address rows of the sub-band's stored
+                // rectangle; the executor gives each band its own slot.
+                let coefficients = if banded {
+                    0..(width as usize)
+                        .checked_mul(height as usize)
+                        .ok_or(ValidationError::ImageTooLarge)?
+                } else {
+                    sub_band.coefficients.clone()
+                };
+                if !plan_band_strips(&mut plan, first_job, coefficients, width, height)? {
                     return Ok(None);
                 }
             }
         }
     }
 
-    if !strips_are_disjoint(&mut plan.strips, storage.coefficients.len()) {
+    if !banded && !strips_are_disjoint(&mut plan.strips, storage.coefficients.len()) {
         return Ok(None);
     }
     plan.arena_len = arena_len;
@@ -1181,6 +1204,219 @@ fn job_payload<'p>(plan: &'p TilePlan<'_>, job: &BlockJob<'p>) -> Result<&'p [u8
             .arena
             .get(start..start + job.payload_length as usize)
             .ok_or_else(|| DecodingError::CodeBlockDecodeFailure.into()),
+    }
+}
+
+/// One code-block row of a sub-band, as [`plan_band_route`] plans it: the
+/// band's rows, counted from the top of the sub-band's stored rectangle.
+#[derive(Clone, Copy)]
+pub(in crate::j2c::decode) struct BandStrip {
+    pub(in crate::j2c::decode) sub_band: usize,
+    pub(in crate::j2c::decode) first_row: usize,
+    pub(in crate::j2c::decode) rows: usize,
+    /// The strip's estimated decode cost, as the route weighs it.
+    pub(in crate::j2c::decode) work: usize,
+}
+
+/// A component's code-block rows planned for decoding band by band on the
+/// worker pool, each into a slot of its own, with a workspace per worker in
+/// the retained bank of the plan's block coding.
+pub(in crate::j2c::decode) struct BandRoute<'a> {
+    plan: TilePlan<'a>,
+    workers: usize,
+    growths: usize,
+}
+
+/// How [`plan_band_route`] wants a component's bands decoded.
+pub(in crate::j2c::decode) enum BandRouting<'a> {
+    /// On the worker pool, band by band.
+    Route(Box<BandRoute<'a>>),
+    /// Too little work to fork: decode the bands serially.
+    Serial,
+    /// Bands the route can't decode, or too few rows for the workers:
+    /// decode the whole windows the old way.
+    WholeWindows,
+}
+
+/// Plan component `component_idx` of a tile whose sub-bands hold rings of
+/// bands, with the route's checks and cutoffs: its block coding, its coded
+/// bytes and its rows of code-blocks. With a plan, the coding's retained bank
+/// holds a workspace for each of `workers` pool threads and one more for the
+/// calling thread, charged to the structural workspace.
+pub(in crate::j2c::decode) fn plan_band_route<'a>(
+    tile: &Tile<'a>,
+    component_idx: usize,
+    tile_ctx: &mut TileDecodeContext,
+    storage: &mut DecompositionStorage<'a>,
+    header: &Header<'_>,
+) -> Result<BandRouting<'a>> {
+    let components = component_idx..component_idx + 1;
+    let Some(coding) = tile_route_coding(tile, components.clone()) else {
+        return Ok(BandRouting::WholeWindows);
+    };
+    let threads = rayon::current_num_threads();
+    let declined = |route| match route {
+        TileRoute::Serial => BandRouting::Serial,
+        _ => BandRouting::WholeWindows,
+    };
+    let (required, segment_bytes, rows) =
+        required_code_blocks(tile, components.clone(), storage, header, coding)?;
+    if let Some(route) = route_fallback(
+        coding,
+        rows,
+        segment_bytes,
+        threads,
+        MIN_PARALLEL_CODED_BYTES,
+    ) {
+        return Ok(declined(route));
+    }
+    let mut budget = DecodeAllocationBudget::for_storage(storage)?;
+    let mut plan = match plan_tile(
+        tile,
+        components,
+        storage,
+        header,
+        &mut budget,
+        coding,
+        required,
+        true,
+    ) {
+        Ok(Some(plan)) => plan,
+        Ok(None) => return Ok(BandRouting::WholeWindows),
+        // The serial bands need less and report their own limits.
+        Err(error) if crate::j2c::decode::reuse::is_capacity_error(&error) => {
+            return Ok(BandRouting::Serial);
+        }
+        Err(error) => return Err(error),
+    };
+    if let Some(route) = route_fallback(
+        coding,
+        plan.strips.len(),
+        plan.coded_bytes,
+        threads,
+        MIN_PARALLEL_CODED_BYTES,
+    ) {
+        return Ok(declined(route));
+    }
+    let workers = threads.min(plan.strips.len());
+    let prepared = (|| -> Result<usize> {
+        gather_payloads(&mut plan, storage, &mut budget)?;
+        // Each thread allocates its clipped-block scratch on first use.
+        budget.include_elements::<f32>(
+            (workers + 1)
+                .checked_mul(plan.max_clipped_samples)
+                .ok_or(ValidationError::ImageTooLarge)?,
+        )?;
+        let (width, height) = (plan.max_width, plan.max_height);
+        let structural = &mut storage.structural_workspace_bytes;
+        match coding {
+            CodeBlockCoding::Classic => prepare_uniform_task_workspaces(
+                &mut tile_ctx.classic_task_workspaces,
+                workers + 1,
+                width,
+                height,
+                structural,
+                &mut budget,
+            ),
+            CodeBlockCoding::HighThroughput => prepare_uniform_task_workspaces(
+                &mut tile_ctx.ht_task_workspaces,
+                workers + 1,
+                width,
+                height,
+                structural,
+                &mut budget,
+            ),
+        }
+    })();
+    match prepared {
+        Ok(growths) => Ok(BandRouting::Route(Box::new(BandRoute {
+            plan,
+            workers,
+            growths,
+        }))),
+        Err(error) if crate::j2c::decode::reuse::is_capacity_error(&error) => {
+            Ok(BandRouting::Serial)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+impl BandRoute<'_> {
+    pub(in crate::j2c::decode) fn coding(&self) -> CodeBlockCoding {
+        self.plan.coding
+    }
+
+    /// Pool threads to decode on, besides the calling thread.
+    pub(in crate::j2c::decode) fn workers(&self) -> usize {
+        self.workers
+    }
+
+    pub(in crate::j2c::decode) fn strips(&self) -> impl Iterator<Item = BandStrip> + '_ {
+        self.plan.strips.iter().map(|strip| {
+            let band = self.plan.jobs[strip.jobs.start].band;
+            BandStrip {
+                sub_band: self.plan.band_sub_bands[band],
+                first_row: strip.start / strip.stride,
+                rows: strip.len / strip.stride,
+                work: strip.work,
+            }
+        })
+    }
+
+    /// Decode strip `index` of a classic plan into `output`, which holds the
+    /// band's rows from its first.
+    pub(in crate::j2c::decode) fn decode_classic(
+        &self,
+        index: usize,
+        output: &mut [f32],
+        workspace: &mut J2kCodeBlockDecodeWorkspace,
+        clipped_scratch: &mut Vec<f32>,
+    ) -> Result<()> {
+        let plan = &self.plan;
+        decode_strip(
+            plan,
+            &plan.strips[index],
+            output,
+            workspace,
+            clipped_scratch,
+            &|job, output, stride, workspace| {
+                decode_classic_strip_block(plan, job, output, stride, workspace)
+            },
+        )
+    }
+
+    /// Decode strip `index` of an HT plan into `output`, which holds the
+    /// band's rows from its first.
+    pub(in crate::j2c::decode) fn decode_ht(
+        &self,
+        index: usize,
+        output: &mut [f32],
+        workspace: &mut HtCodeBlockDecodeWorkspace,
+        clipped_scratch: &mut Vec<f32>,
+    ) -> Result<()> {
+        let plan = &self.plan;
+        decode_strip(
+            plan,
+            &plan.strips[index],
+            output,
+            workspace,
+            clipped_scratch,
+            &|job, output, stride, workspace| {
+                decode_strip_block(plan, job, output, stride, workspace)
+            },
+        )
+    }
+
+    /// Count the plan's blocks and record the decode's peak with the plan
+    /// and every thread's clipped-block scratch live.
+    pub(in crate::j2c::decode) fn record(
+        &self,
+        tile_ctx: &mut TileDecodeContext,
+        storage: &DecompositionStorage<'_>,
+    ) -> Result<()> {
+        record_route_peak(tile_ctx, storage, &self.plan, self.workers + 1, 0)?;
+        count_decoded_blocks(tile_ctx, &self.plan, self.workers + 1, self.growths);
+        Ok(())
     }
 }
 

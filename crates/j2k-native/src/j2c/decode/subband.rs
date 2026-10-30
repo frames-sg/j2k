@@ -40,6 +40,10 @@ use self::parallel::{
 use self::pending::{collect_pending_classic_blocks, collect_pending_ht_blocks};
 pub(in crate::j2c::decode) use self::pending::{count_classic_code_blocks, count_ht_code_blocks};
 pub(crate) use self::placement::BlockPlacement;
+#[cfg(feature = "parallel")]
+pub(in crate::j2c::decode) use self::tile_parallel::{
+    plan_band_route, routes_tile, BandRoute, BandRouting,
+};
 
 /// Decode the code-blocks of the tile's `components` into their sub-bands.
 #[expect(

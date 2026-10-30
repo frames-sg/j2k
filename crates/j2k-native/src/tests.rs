@@ -12,6 +12,8 @@ mod idwt_window_storage;
 mod line_region_idwt;
 #[cfg(feature = "std")]
 mod packet_directory;
+#[cfg(feature = "parallel")]
+mod parallel_bands;
 mod progression_matrix;
 mod row_sink;
 mod workspace_peak;
@@ -1122,14 +1124,28 @@ fn decode_region_budgets_coefficients_for_the_requested_region() {
         "tiny ROI must get past the coefficient budget: {tiny:?}"
     );
 
-    // A region whose coefficients and output together exceed the cap is
-    // still rejected before any Tier-1 work. Its 324 MB output alone fits.
-    let Err(large) = image.decode_region((0, 0, 9_000, 9_000)) else {
+    // A region whose whole-window coefficients and output together exceed
+    // the cap is still rejected before any Tier-1 work. Its 324 MB output
+    // alone fits.
+    let large = (0, 0, 9_000, 9_000);
+    let mut context = DecoderContext::default();
+    context.tile_decode_context.whole_window_tier1 = true;
+    let Err(whole) = image.decode_region_with_context(large, &mut context) else {
         panic!("a 9000x9000 region must exceed the coefficient budget");
     };
     assert_eq!(
-        large,
+        whole,
         DecodeError::Validation(ValidationError::ImageTooLarge)
+    );
+
+    // Banded Tier-1, serial or on the pool, holds a few bands of each
+    // sub-band instead, so the same region gets as far as the packets.
+    let Err(banded) = image.decode_region(large) else {
+        panic!("rewritten fixture has no packet data for a 65537x65537 tile");
+    };
+    assert!(
+        matches!(banded, DecodeError::Decoding(_)),
+        "banded coefficients must fit the budget: {banded:?}"
     );
 }
 

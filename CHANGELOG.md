@@ -3,6 +3,19 @@
 This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
+## [Unreleased]
+
+- Parallel CPU region decodes on the row-streamed IDWT decode Tier-1 band by
+  band on the worker pool while the IDWT reads the bands, instead of decoding
+  every code-block of a component first. Each sub-band holds three bands at
+  the finest level and two at the others, or its whole window when that is
+  smaller, and the IDWT decodes a band itself when no worker has started it.
+  This applies to tiles the tile-wide route decodes: HTJ2K, and classic
+  code-blocks of one arithmetic segment. A 1024 x 1024 region of an
+  18000 x 12000 RGB image decodes 3 to 11% faster at 12 threads and 9 to 18%
+  faster at 4, with about 3 MiB less peak heap. Output is unchanged, and a
+  failure reruns whole-window Tier-1 serially for the same error.
+
 ## [0.13.1] - 2026-10-29
 
 - `CpuBatchDecoder` region and region-plus-reduced requests no longer
