@@ -28,6 +28,8 @@ use super::horizontal::filter_row;
 use super::interleave::interleave_row;
 use super::model::{IDWTInput, IDWTTempOutput};
 use super::try_grow_level_buffer;
+#[cfg(feature = "parallel")]
+use crate::error::{bail, DecodingError};
 use crate::math::{self, dispatch, f32x8, Level, Simd, SIMD_WIDTH};
 use crate::{checked_decode_usize_product2, Result, ValidationError};
 use j2k_codec_math::dwt;
@@ -179,6 +181,9 @@ struct RowSource<'a> {
     second: &'a [f32],
     first_width: usize,
     second_width: usize,
+    /// Band rows missing from the front of `first` and `second`.
+    first_skip: usize,
+    second_skip: usize,
     start_row: usize,
     rows: usize,
 }
@@ -193,13 +198,12 @@ impl<'a> RowSource<'a> {
         if index >= self.rows {
             return None;
         }
+        let band_row = |band: &'a [f32], width: usize, skip: usize| {
+            band.get(index.checked_sub(skip)? * width..)?.get(..width)
+        };
         Some((
-            self.first
-                .get(index * self.first_width..)?
-                .get(..self.first_width)?,
-            self.second
-                .get(index * self.second_width..)?
-                .get(..self.second_width)?,
+            band_row(self.first, self.first_width, self.first_skip)?,
+            band_row(self.second, self.second_width, self.second_skip)?,
         ))
     }
 }
@@ -248,6 +252,8 @@ impl<'a> Level2d<'a> {
                 second: second_even,
                 first_width,
                 second_width,
+                first_skip: 0,
+                second_skip: 0,
                 start_row: usize::from(v0 % 2 != 0),
                 rows: num_v_low,
             },
@@ -256,6 +262,8 @@ impl<'a> Level2d<'a> {
                 second: second_odd,
                 first_width,
                 second_width,
+                first_skip: 0,
+                second_skip: 0,
                 start_row: usize::from(v0 % 2 == 0),
                 rows: num_v_high,
             },
@@ -266,6 +274,19 @@ impl<'a> Level2d<'a> {
             transform,
             high_pass,
         }
+    }
+
+    /// This level with its LL band rows `first_row..` taken from `rows`.
+    #[cfg(feature = "parallel")]
+    fn with_ll_rows(mut self, rows: &'a [f32], first_row: usize) -> Self {
+        if self.x0.is_multiple_of(2) {
+            self.even.first = rows;
+            self.even.first_skip = first_row;
+        } else {
+            self.even.second = rows;
+            self.even.second_skip = first_row;
+        }
+        self
     }
 }
 
@@ -407,6 +428,181 @@ fn run_strips<S: Simd>(
                 stream_strip(simd, level, first_row, output, worker_scratch);
             }
         });
+}
+
+/// Whether [`filter_2d_banded_pair`] can reconstruct `outer`, whose LL band
+/// `inner` reconstructs, together with `inner` on the pool.
+#[cfg(feature = "parallel")]
+pub(super) fn pair_runs_on_pool(inner: IntRect, outer: IntRect, parallel: bool) -> bool {
+    let size = |rect: IntRect| (rect.width() as usize, rect.height() as usize);
+    let ((inner_width, inner_height), (width, height)) = (size(inner), size(outer));
+    size(packed_band_rects(outer)[0]) == (inner_width, inner_height)
+        && use_banded(inner_width, inner_height)
+        && use_banded(width, height)
+        && matches!(parallel_strip_layout(width, height, parallel), Ok(Some(_)))
+}
+
+/// Reconstruct `inner` and then `outer`, whose LL band `inner` reconstructs,
+/// into `target` in one pass on the pool, without waiting for all of
+/// `inner` before `outer` starts: each strip of `outer` first streams the
+/// rows of `inner` it reads into its worker's scratch, as a strip of
+/// [`stream_strip`] with its own halo, and then streams its own rows. Those
+/// `inner` rows go through the same expressions as in a pass over the whole
+/// level, so the output is bit-identical to two level passes.
+#[cfg(feature = "parallel")]
+pub(super) fn filter_2d_banded_pair(
+    input: IDWTInput<'_>,
+    [inner, outer]: [&Decomposition; 2],
+    target: &mut [f32],
+    band_scratch: &mut Vec<f32>,
+    transform: WaveletTransform,
+    storage: &DecompositionStorage<'_>,
+) -> Result<IDWTTempOutput> {
+    let band = |decomposition: &Decomposition, index: usize| {
+        &storage.coefficients[storage.sub_bands[decomposition.sub_bands[index]]
+            .coefficients
+            .clone()]
+    };
+    let high_pass = super::OPENJPEG_NORMALIZED_HIGH_PASS_F32;
+    let inner_level = Level2d::new(
+        inner.rect,
+        [
+            input.coefficients,
+            band(inner, 0),
+            band(inner, 1),
+            band(inner, 2),
+        ],
+        transform,
+        high_pass,
+    );
+    let outer_level = Level2d::new(
+        outer.rect,
+        [&[], band(outer, 0), band(outer, 1), band(outer, 2)],
+        transform,
+        high_pass,
+    );
+    filter_levels_pair([inner_level, outer_level], target, band_scratch)?;
+    Ok(IDWTTempOutput { rect: outer.rect })
+}
+
+/// [`filter_2d_banded_pair`] of `outer`, whose LL band `inner` reconstructs.
+#[cfg(feature = "parallel")]
+fn filter_levels_pair(
+    [inner_level, outer_level]: [Level2d<'_>; 2],
+    target: &mut [f32],
+    band_scratch: &mut Vec<f32>,
+) -> Result<()> {
+    let (width, height) = (outer_level.width, outer_level.height);
+    let required_len = checked_decode_usize_product2(width, height)?;
+    let target = target
+        .get_mut(..required_len)
+        .ok_or(DecodingError::OutputBufferTooSmall)?;
+    let Some(layout) = parallel_strip_layout(width, height, true)? else {
+        bail!(DecodingError::CodeBlockDecodeFailure);
+    };
+    let rows_len = pair_ll_rows(layout.strip_len / width, vertical_steps(outer_level).1)
+        .checked_mul(inner_level.width)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    let per_worker = worker_scratch_elements(width)?
+        .max(worker_scratch_elements(inner_level.width)?)
+        .checked_add(rows_len)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    let scratch_len = per_worker
+        .checked_mul(layout.concurrent_strips)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    try_grow_level_buffer(band_scratch, scratch_len)?;
+    dispatch!(Level::new(), simd => run_pair_strips(
+        simd,
+        [inner_level, outer_level],
+        target,
+        layout.strip_len,
+        &mut band_scratch[..scratch_len],
+        [per_worker, rows_len],
+    ));
+    Ok(())
+}
+
+/// Rows of the LL band a strip of `strip_rows` rows reads, at most: its
+/// arrivals start and end `count` rows beyond it, two output rows per band
+/// row, and one band row of slack at each end.
+#[cfg(feature = "parallel")]
+const fn pair_ll_rows(strip_rows: usize, count: usize) -> usize {
+    strip_rows.div_ceil(2) + count + 3
+}
+
+#[cfg(feature = "parallel")]
+#[inline(always)]
+fn run_pair_strips<S: Simd>(
+    simd: S,
+    levels: [Level2d<'_>; 2],
+    target: &mut [f32],
+    strip_len: usize,
+    scratch: &mut [f32],
+    [per_worker, rows_len]: [usize; 2],
+) {
+    use rayon::prelude::*;
+    use std::sync::Mutex;
+
+    let strips = Mutex::new(target.chunks_mut(strip_len).enumerate());
+    let next = || strips.lock().ok().and_then(|mut strips| strips.next());
+    let width = levels[1].width;
+    scratch
+        .par_chunks_mut(per_worker)
+        .with_max_len(1)
+        .for_each(|worker_scratch| {
+            // As in `run_strips`.
+            #[cfg(feature = "simd")]
+            simd.vectorize(
+                #[inline(always)]
+                || {
+                    while let Some((strip, output)) = next() {
+                        let first_row = strip * strip_len / width;
+                        pair_strip(simd, levels, first_row, output, worker_scratch, rows_len);
+                    }
+                },
+            );
+            #[cfg(not(feature = "simd"))]
+            while let Some((strip, output)) = next() {
+                let first_row = strip * strip_len / width;
+                pair_strip(simd, levels, first_row, output, worker_scratch, rows_len);
+            }
+        });
+}
+
+/// Reconstruct rows `first_row..` of `outer` into `output`, after the rows
+/// of `inner` they read.
+#[cfg(feature = "parallel")]
+#[expect(
+    clippy::inline_always,
+    reason = "the strip kernel is specialized at the architecture dispatch boundary"
+)]
+#[inline(always)]
+fn pair_strip<S: Simd>(
+    simd: S,
+    [inner, outer]: [Level2d<'_>; 2],
+    first_row: usize,
+    output: &mut [f32],
+    worker_scratch: &mut [f32],
+    rows_len: usize,
+) {
+    let (_, count) = vertical_steps(outer);
+    let end = first_row + output.len() / outer.width;
+    // The arrivals of `stream_strip` and the LL band rows they read.
+    let lo = first_row.saturating_sub(count);
+    let hi = (end + count).min(outer.height);
+    let first_ll = (lo / 2).saturating_sub(1);
+    let end_ll = (hi.div_ceil(2) + 1).min(inner.height);
+    // `pair_ll_rows` bounds `end_ll - first_ll` for every strip.
+    let (rows, strip_scratch) = worker_scratch.split_at_mut(rows_len);
+    let rows = &mut rows[..(end_ll - first_ll) * inner.width];
+    stream_strip(simd, inner, first_ll, rows, strip_scratch);
+    stream_strip(
+        simd,
+        outer.with_ll_rows(rows, first_ll),
+        first_row,
+        output,
+        strip_scratch,
+    );
 }
 
 /// One vertical lifting step: the rows it updates have parity `parity`.
@@ -2082,6 +2278,86 @@ mod tests {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /// Two levels in one pool pass give the bits of the inner level's pass
+    /// and then the outer level's, whatever the transform, origin parity
+    /// and size.
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn level_pair_matches_two_level_passes() {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .expect("pool");
+        let mut seed = 11_u64;
+        for transform in [
+            WaveletTransform::Reversible53,
+            WaveletTransform::Irreversible97,
+        ] {
+            let integral = transform == WaveletTransform::Reversible53;
+            for (x0, y0, width, height) in [(0, 0, 256, 300), (3, 5, 301, 263), (2, 1, 290, 517)] {
+                let outer_rect = IntRect::from_xywh(x0, y0, width, height);
+                let inner_rect = packed_band_rects(outer_rect)[0];
+                let mut bands = |rect: IntRect| {
+                    packed_band_rects(rect).map(|band| {
+                        seed += 1;
+                        samples((band.width() * band.height()) as usize, seed, integral)
+                    })
+                };
+                let [ll, hl, lh, hh] = bands(inner_rect);
+                let [_, outer_hl, outer_lh, outer_hh] = bands(outer_rect);
+                let size = |rect: IntRect| (rect.width() * rect.height()) as usize;
+                let mut scratch = Vec::new();
+                let mut inner = alloc::vec![0.0; size(inner_rect)];
+                filter_2d_banded_from_bands(
+                    inner_rect,
+                    [&ll, &hl, &lh, &hh],
+                    &mut inner,
+                    &mut scratch,
+                    transform,
+                    1.25,
+                    false,
+                )
+                .expect("inner level");
+                let mut expected = alloc::vec![0.0; size(outer_rect)];
+                filter_2d_banded_from_bands(
+                    outer_rect,
+                    [&inner, &outer_hl, &outer_lh, &outer_hh],
+                    &mut expected,
+                    &mut scratch,
+                    transform,
+                    1.25,
+                    false,
+                )
+                .expect("outer level");
+                let levels = [
+                    Level2d::new(inner_rect, [&ll, &hl, &lh, &hh], transform, 1.25),
+                    Level2d::new(
+                        outer_rect,
+                        [&[], &outer_hl, &outer_lh, &outer_hh],
+                        transform,
+                        1.25,
+                    ),
+                ];
+                assert!(pool.install(|| pair_runs_on_pool(inner_rect, outer_rect, true)));
+                let mut actual = alloc::vec![f32::NAN; size(outer_rect)];
+                let mut scratch = Vec::new();
+                pool.install(|| filter_levels_pair(levels, &mut actual, &mut scratch))
+                    .expect("level pair");
+                assert_eq!(
+                    actual
+                        .iter()
+                        .map(|value| value.to_bits())
+                        .collect::<Vec<_>>(),
+                    expected
+                        .iter()
+                        .map(|value| value.to_bits())
+                        .collect::<Vec<_>>(),
+                    "{transform:?} {outer_rect:?}"
+                );
             }
         }
     }
