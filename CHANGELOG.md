@@ -94,6 +94,45 @@ Staged workspace version: `0.13.2`.
   faster lossless at 1 and 6 threads (5% and 13% at 18), and 1024 x 1024
   regions and reduced-resolution decodes of an 18000 x 12000 image 2 to 10%
   faster. Output and peak heap are unchanged.
+- Parallel CPU region decodes of classic tiles whose rows stream to a row
+  sink run every component's bands on the pool at once, and the IDWT
+  advances the components together and hands the rows to the sink, instead
+  of decoding one component's bands, then its planes, at a time. At reduced
+  resolutions, where each sub-band holds few bands, one component's bands
+  left most of the pool idle. On an 18000 x 12000 RGB image, overviews at
+  1/16 and 1/8 scale decode 53% and 47% faster at 18 threads and 1024 x 1024
+  regions up to 5% faster, with 29 to 59% less peak heap. HTJ2K tiles are
+  unchanged.
+- The row-streamed region IDWT synthesizes rows with the banded IDWT's SIMD
+  horizontal kernel, reading the stored band rows in place, instead of
+  interleaving each row and lifting it with the scalar filter. Output is
+  bit-identical. On an 18000 x 12000 RGB image, HTJ2K regions decode 27 to
+  52% faster and classic 1024 x 1024 regions 16 to 36% faster at 6 and 18
+  threads, and 3 to 35% faster at one thread.
+- Parallel CPU region decodes streaming rows from pool bands reconstruct
+  their components in batches of rows, each component on its own pool task
+  for HTJ2K tiles and for classic tiles with 12 threads or more, and pack
+  three 8-bit components straight into interleaved RGB8 output. HTJ2K tiles
+  now stream rows from pool bands too. `ComponentRowSink` gains a
+  rustdoc-hidden `rgb8_region` method, `None` by default, through which a
+  sink offers such a destination. On an 18000 x 12000 RGB image the HTJ2K
+  overview at 1/4 scale decodes 32 to 35% faster, HTJ2K 1024 x 1024 regions
+  16 to 20%, and classic 1024 x 1024 regions at 18 threads 9 to 18%.
+- Parallel CPU region decodes with a reader per component transform and pack
+  each batch of rows on every reader's thread instead of the calling thread
+  alone. The HTJ2K overview at 1/4 scale of an 18000 x 12000 RGB image
+  decodes 10 to 15% faster.
+- Parallel CPU region decodes with a reader per component transform and pack
+  one batch of rows on the pool while the next reconstructs, in batches of
+  up to 2 Mi samples per component and a quarter of the tile's rows; a
+  single reader takes a row of each component at a time. On an 18000 x 12000
+  RGB image the HTJ2K overviews at 1/4 and 1/8 scale decode 6 to 29% faster,
+  and the classic overview at 1/16 scale 12% faster at 6 threads.
+- Parallel CPU region decodes of classic tiles that reconstruct each
+  component on its own reader hold one band more in every ring and one
+  batch of rows instead of two. On an 18000 x 12000 RGB image, 1024 x 1024
+  regions and overviews at 1/8 and 1/16 scale decode 4 to 6% faster at 18
+  threads, with less peak heap.
 
 ## [0.13.1] - 2026-10-29
 
