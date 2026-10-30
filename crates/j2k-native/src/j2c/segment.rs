@@ -81,6 +81,8 @@ impl<'a> SegmentSink<'_, 'a> {
 pub(super) struct PacketSkips {
     /// (code-block index, body bytes) for each contribution to skip.
     entries: Vec<(usize, usize)>,
+    /// The entries' bytes added up, saturating: more than any body holds.
+    bytes: usize,
     #[cfg(feature = "std")]
     discard_contributions: bool,
 }
@@ -108,6 +110,7 @@ impl PacketSkips {
         DecodeAllocationBudget::from_live_bytes(live_bytes)?.reserve_new(&mut entries, capacity)?;
         Ok(Self {
             entries,
+            bytes: 0,
             #[cfg(feature = "std")]
             discard_contributions: false,
         })
@@ -119,6 +122,7 @@ impl PacketSkips {
 
     fn clear(&mut self) {
         self.entries.clear();
+        self.bytes = 0;
     }
 
     pub(super) fn push(&mut self, code_block: usize, bytes: usize) -> PacketResult {
@@ -129,6 +133,7 @@ impl PacketSkips {
             return Err("packet has more skipped contributions than code-blocks");
         }
         self.entries.push((code_block, bytes));
+        self.bytes = self.bytes.saturating_add(bytes);
         Ok(())
     }
 }
@@ -314,22 +319,24 @@ impl<'s> PacketRelevance<'s> {
     }
 
     /// Lend a parsed-only packet's precincts their scratch precincts, one per
-    /// sub-band, before its header is parsed.
+    /// sub-band, before its header is parsed. Returns whether it did: the
+    /// packet's code-blocks then have no layer records, so the header skips
+    /// every contribution.
     fn lend_scratch(
         relevance: Option<&mut Self>,
         packet: &ProgressionData,
         precinct_offset: usize,
         sub_bands: impl Iterator<Item = usize>,
         storage: &mut DecompositionStorage<'_>,
-    ) -> PacketResult {
+    ) -> PacketResult<bool> {
         let Some(relevance) = relevance else {
-            return Ok(());
+            return Ok(false);
         };
         let Some(scratch) = relevance.scratch.as_mut() else {
-            return Ok(());
+            return Ok(false);
         };
         if relevance.selection.packet_use(packet) != Some(PrecinctUse::Parsed) {
-            return Ok(());
+            return Ok(false);
         }
         for (slot, sub_band_idx) in sub_bands.enumerate() {
             let precinct = storage.sub_bands[sub_band_idx]
@@ -348,7 +355,7 @@ impl<'s> PacketRelevance<'s> {
                 )
                 .ok_or("parsed-only precinct cannot borrow its scratch precinct")?;
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Whether a packet must be parsed: always without a selection. A packet
@@ -523,7 +530,7 @@ fn parse_inner<'a>(
         skips.clear();
         // Even an empty packet starts its precinct: a precinct's first packet
         // is the one that borrows its scratch.
-        PacketRelevance::lend_scratch(
+        let in_scratch = PacketRelevance::lend_scratch(
             relevance.as_deref_mut(),
             &progression_data,
             precinct_offset,
@@ -559,7 +566,12 @@ fn parse_inner<'a>(
         // Now read the packet body.
         let body_reader = tile_part.body();
 
-        if !zero_length {
+        if !zero_length && in_scratch {
+            // Every contribution was skipped: the body is just their bytes.
+            body_reader
+                .skip_bytes(skips.bytes)
+                .ok_or("skipped packet body is shorter than its segment lengths")?;
+        } else if !zero_length {
             let mut skipped = skips.entries.iter().peekable();
             for sub_band_idx in sub_band_iter {
                 let sub_band = &storage.sub_bands[sub_band_idx];
