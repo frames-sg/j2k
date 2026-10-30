@@ -3,9 +3,9 @@
 use alloc::vec::Vec;
 
 use super::cleanup::{decode_cleanup_symbols_first_row, decode_cleanup_symbols_row};
-#[cfg(feature = "simd")]
-use super::readers::unstuff_vlc;
 use super::readers::{unstuff_magsgn, FlatBitReader, MelDecoder, ReverseBitReader};
+#[cfg(feature = "simd")]
+use super::readers::{unstuff_vlc, FlatVlcReader};
 use super::stats::HtDecodeObserver;
 #[cfg(feature = "simd")]
 use crate::math::{dispatch, Level};
@@ -351,6 +351,7 @@ pub(super) fn decode_cleanup_and_magnitude_sign_phase(
     scratch: &mut [u16],
     v_n_scratch: &mut [u32],
     magsgn_buffer: &mut Vec<u8>,
+    vlc_buffer: &mut Vec<u8>,
     observer: &mut impl HtDecodeObserver,
 ) -> Option<()> {
     let quad_rows = height.div_ceil(2) as usize;
@@ -364,7 +365,6 @@ pub(super) fn decode_cleanup_and_magnitude_sign_phase(
     v_n_scratch[..v_n_width].fill(0);
 
     let mut mel = MelDecoder::new(coded_data, lcup, scup);
-    let mut vlc = ReverseBitReader::new_vlc(coded_data, lcup, scup);
     let consumable = (width as usize)
         .checked_mul(height as usize)?
         .checked_mul(4)?;
@@ -374,6 +374,9 @@ pub(super) fn decode_cleanup_and_magnitude_sign_phase(
 
     #[cfg(feature = "simd")]
     if uses_simd_rows(missing_msbs) {
+        // As the direct-output rows: the VLC bits unstuffed once per block.
+        let flat_vlc = unstuff_vlc(coded_data, lcup, scup, vlc_buffer)?;
+        let mut vlc = FlatVlcReader::new(flat_vlc)?;
         return dispatch!(Level::new(), simd => simd::decode_cleanup_and_magnitude_sign_rows(
             simd,
             &mut mel,
@@ -392,6 +395,9 @@ pub(super) fn decode_cleanup_and_magnitude_sign_phase(
         ));
     }
 
+    #[cfg(not(feature = "simd"))]
+    let _ = vlc_buffer;
+    let mut vlc = ReverseBitReader::new_vlc(coded_data, lcup, scup);
     let phase_start = observer.phase_start();
     decode_cleanup_symbols_first_row(&mut mel, &mut vlc, &mut run, scratch, width)?;
     observer.add_cleanup_us(phase_start);

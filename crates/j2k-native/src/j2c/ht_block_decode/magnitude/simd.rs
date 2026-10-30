@@ -16,7 +16,7 @@ use super::super::cleanup::{
     decode_cleanup_first_row_pair, decode_cleanup_row_pair, decode_cleanup_symbols_first_row,
     decode_cleanup_symbols_row, decode_initial_pair_symbols, decode_pair_symbols,
 };
-use super::super::readers::{FlatBitReader, FlatVlcReader, MelDecoder, ReverseBitReader};
+use super::super::readers::{FlatBitReader, FlatVlcReader, MelDecoder, VlcBits};
 use super::super::stats::HtDecodeObserver;
 use super::decode_magnitude_sign_pair_from_cleanup;
 
@@ -470,10 +470,10 @@ pub(super) fn decode_magnitude_sign_rows<S: Simd>(
     reason = "fused row walker inlined into the dispatched SIMD level"
 )]
 #[inline(always)]
-fn decode_fused_row<S: Simd>(
+fn decode_fused_row<S: Simd, V: VlcBits>(
     lanes: &Lanes<S>,
     mel: &mut MelDecoder<'_>,
-    vlc: &mut ReverseBitReader<'_>,
+    vlc: &mut V,
     run: &mut i32,
     magsgn: &mut FlatBitReader<'_>,
     scratch: &mut [u16],
@@ -498,12 +498,12 @@ fn decode_fused_row<S: Simd>(
     let mut x = 0u32;
     while x < width {
         let quads = if y == 0 {
-            let [t0, u0, t1, u1] = decode_cleanup_first_row_pair(
+            let [t0, u0, t1, u1] = decode_cleanup_first_row_pair::<true, _>(
                 mel, vlc, run, scratch, row_offset, &mut c_q, x, width,
             )?;
             [(t0, u0), (t1, u1)]
         } else {
-            let symbols = decode_cleanup_row_pair(
+            let symbols = decode_cleanup_row_pair::<true, _>(
                 mel, vlc, run, scratch, row_offset, sstr, &mut c_q, x, width,
             )?;
             with_kappa(symbols, v_n_scratch, cursor.vp)
@@ -538,10 +538,10 @@ fn decode_fused_row<S: Simd>(
     reason = "inlined into the dispatched SIMD level"
 )]
 #[inline(always)]
-pub(super) fn decode_cleanup_and_magnitude_sign_rows<S: Simd>(
+pub(super) fn decode_cleanup_and_magnitude_sign_rows<S: Simd, V: VlcBits>(
     simd: S,
     mel: &mut MelDecoder<'_>,
-    vlc: &mut ReverseBitReader<'_>,
+    vlc: &mut V,
     run: &mut i32,
     magsgn: &mut FlatBitReader<'_>,
     scratch: &mut [u16],

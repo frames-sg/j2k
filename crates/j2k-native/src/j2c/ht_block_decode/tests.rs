@@ -11,8 +11,8 @@ use super::readers::{ForwardBitReader, ReverseBitReader};
 use super::refinement::apply_magnitude_refinement_phase;
 use super::segments::{CombinedCodeBlockData, HtCodeBlockSegments};
 use super::significance::{
-    apply_significance_propagation_phase, build_sigma_from_cleanup_phase, sigma_stride,
-    SIGPROP_SPREAD_MASKS,
+    apply_significance_propagation_phase, build_sigma_from_cleanup_phase,
+    decode_group_significance, sigma_stride, SIGPROP_SPREAD_MASKS,
 };
 use super::state::{zeroed_u16_scratch, zeroed_u32_scratch, HtBlockDecodeScratch};
 use super::stats::{HtBlockDecodeStats, NoHtDecodeStats};
@@ -385,6 +385,55 @@ fn sigprop_spread_masks_follow_column_major_scan_order() {
         let expected = row_patterns[bit & 3] << (bit & !3);
         assert_eq!(SIGPROP_SPREAD_MASKS[bit], expected, "bit={bit}");
         assert_eq!(SIGPROP_SPREAD_MASKS[bit] & ((1u32 << bit) - 1), 0);
+    }
+}
+
+/// One SigProp group decoded a candidate at a time, in scan order: the
+/// reference for the column-table decode.
+fn group_significance_by_candidate(candidates: u32, insignificant: u32, cwd: u32) -> (u32, u32) {
+    let (mut candidates, mut cwd) = (candidates, cwd);
+    let (mut significant, mut processed, mut used) = (0u32, 0u32, 0u32);
+    while candidates != 0 {
+        let bit = candidates.trailing_zeros();
+        let sample = 1u32 << bit;
+        candidates &= !sample;
+        processed |= sample;
+        if cwd & 1 != 0 {
+            significant |= sample;
+            candidates |= SIGPROP_SPREAD_MASKS[bit as usize] & insignificant & !processed;
+        }
+        cwd >>= 1;
+        used += 1;
+    }
+    (significant, used)
+}
+
+#[test]
+fn sigprop_group_columns_match_candidate_scan() {
+    let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+    let mut next = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    for case in 0..200_000 {
+        let word = next();
+        let insignificant = (word & 0xFFFF) as u32;
+        // Sparse and dense candidate sets, always among the insignificant
+        // samples, as the decoder builds them.
+        let dense = if case % 2 == 0 {
+            0
+        } else {
+            (word >> 48) as u32
+        };
+        let candidates = (((word >> 16) as u32 & (word >> 32) as u32) | dense) & insignificant;
+        let cwd = next() as u32;
+        assert_eq!(
+            decode_group_significance(candidates, insignificant, cwd),
+            group_significance_by_candidate(candidates, insignificant, cwd),
+            "candidates={candidates:#06x} insignificant={insignificant:#06x} cwd={cwd:#010x}"
+        );
     }
 }
 

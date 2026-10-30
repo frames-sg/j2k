@@ -90,6 +90,7 @@ pub(super) fn decode_impl<const PHASE_LIMIT: u8, O: HtDecodeObserver>(
         scratch,
         v_n_scratch,
         &mut scratch_buffers.magsgn,
+        &mut scratch_buffers.vlc,
         observer,
     )?;
 

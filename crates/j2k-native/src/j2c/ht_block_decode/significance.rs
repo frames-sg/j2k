@@ -2,10 +2,88 @@
 
 use super::readers::{read_u32_pair, ForwardBitReader};
 
+/// The samples each newly significant sample of a 4x4 group makes a SigProp
+/// candidate, as bits `4 * column + row`: itself, the sample below it, and
+/// the three nearest of the next column. The reference for
+/// [`SIGPROP_COLUMN`], and the order the encoder visits.
+#[cfg(test)]
 pub(super) const SIGPROP_SPREAD_MASKS: [u32; 16] = [
     0x33, 0x76, 0xEC, 0xC8, 0x330, 0x760, 0xEC0, 0xC80, 0x3300, 0x7600, 0xEC00, 0xC800, 0x33000,
     0x76000, 0xEC000, 0xC8000,
 ];
+
+/// SigProp decoding of one four-sample column of a stripe, indexed by
+/// `candidates | insignificant << 4 | bits << 8`: the column's candidates,
+/// its samples not yet significant, and the next four refinement bits. A
+/// candidate takes one bit, top to bottom; a one makes it significant and
+/// the insignificant sample below it a candidate. Each entry is
+/// `significant | bits_used << 4`.
+const SIGPROP_COLUMN: [u8; 4096] = sigprop_column_table();
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "entries hold four significance bits and a bit count up to four"
+)]
+const fn sigprop_column_table() -> [u8; 4096] {
+    let mut table = [0; 4096];
+    let mut index = 0;
+    while index < 4096 {
+        let mut candidates = index & 0xF;
+        let insignificant = (index >> 4) & 0xF;
+        let bits = index >> 8;
+        let mut used = 0;
+        let mut significant = 0;
+        let mut row = 0;
+        while row < 4 {
+            if candidates & (1 << row) != 0 {
+                if (bits >> used) & 1 != 0 {
+                    significant |= 1 << row;
+                    candidates |= (1 << (row + 1)) & insignificant;
+                }
+                used += 1;
+            }
+            row += 1;
+        }
+        table[index] = (significant | (used << 4)) as u8;
+        index += 1;
+    }
+    table
+}
+
+/// The significance bits of one 4x4 SigProp group: `candidates` are the
+/// samples next to a sample significant before this pass, `insignificant`
+/// the samples that can still become significant (bits `4 * column + row`),
+/// and `cwd` the group's refinement bits. Newly significant samples make
+/// their later neighbors candidates; the scan is column by column, top to
+/// bottom. Returns the newly significant samples and the bits used.
+#[expect(clippy::inline_always, reason = "per-group hot path")]
+#[inline(always)]
+pub(super) fn decode_group_significance(
+    candidates: u32,
+    insignificant: u32,
+    cwd: u32,
+) -> (u32, u32) {
+    let mut bits = cwd;
+    let mut used = 0;
+    let mut significant = 0;
+    // Candidates the previous column's new samples add to this one: the
+    // samples beside them and diagonally next to them.
+    let mut spread = 0;
+    for column in 0..4 {
+        let shift = 4 * column;
+        let column_insignificant = (insignificant >> shift) & 0xF;
+        let column_candidates = ((candidates >> shift) & 0xF) | (spread & column_insignificant);
+        let index = column_candidates | (column_insignificant << 4) | ((bits & 0xF) << 8);
+        let entry = u32::from(SIGPROP_COLUMN[index as usize]);
+        let column_significant = entry & 0xF;
+        let column_used = entry >> 4;
+        bits >>= column_used;
+        used += column_used;
+        significant |= column_significant << shift;
+        spread = column_significant | (column_significant << 1) | (column_significant >> 1);
+    }
+    (significant, used)
+}
 
 pub(crate) fn sigma_stride(width: u32) -> usize {
     ((width.div_ceil(4) + 2 + 7) & !7) as usize
@@ -138,24 +216,9 @@ pub(super) fn apply_significance_propagation_phase(
             let mut new_sig = 0u32;
             if mbr != 0 {
                 let mut cwd = sigprop.fetch();
-                let mut cnt = 0u32;
-                let inv_sig = !cs & col_pattern;
-                let mut candidates = mbr;
-                let mut processed = 0u32;
-
-                while candidates != 0 {
-                    let bit = candidates.trailing_zeros();
-                    let sample_mask = 1u32 << bit;
-                    candidates &= !sample_mask;
-                    processed |= sample_mask;
-
-                    if (cwd & 1) != 0 {
-                        new_sig |= sample_mask;
-                        candidates |= SIGPROP_SPREAD_MASKS[bit as usize] & inv_sig & !processed;
-                    }
-                    cwd >>= 1;
-                    cnt += 1;
-                }
+                let (significant, mut cnt) = decode_group_significance(mbr, !cs & col_pattern, cwd);
+                new_sig = significant;
+                cwd >>= cnt;
 
                 if new_sig != 0 {
                     let value = 3u32 << (p - 2);

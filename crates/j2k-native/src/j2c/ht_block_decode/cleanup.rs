@@ -201,9 +201,9 @@ fn store_pair_symbols(scratch: &mut [u16], row_offset: usize, symbols: [u32; 4])
     reason = "this per-pair decoder is a hot path"
 )]
 #[inline(always)]
-pub(super) fn decode_cleanup_first_row_pair(
+pub(super) fn decode_cleanup_first_row_pair<const INLINE_REFILLS: bool, V: VlcBits>(
     mel: &mut MelDecoder,
-    vlc: &mut ReverseBitReader,
+    vlc: &mut V,
     run: &mut i32,
     scratch: &mut [u16],
     row_offset: usize,
@@ -211,7 +211,8 @@ pub(super) fn decode_cleanup_first_row_pair(
     x: u32,
     width: u32,
 ) -> Option<[u32; 4]> {
-    let symbols = decode_initial_pair_symbols::<false, _>(mel, vlc, run, c_q, x + 2 < width)?;
+    let symbols =
+        decode_initial_pair_symbols::<INLINE_REFILLS, _>(mel, vlc, run, c_q, x + 2 < width)?;
     store_pair_symbols(scratch, row_offset, symbols);
     Some(symbols)
 }
@@ -220,9 +221,9 @@ pub(super) fn decode_cleanup_first_row_pair(
 /// shared MEL/VLC state; the trailing sentinel pair is written after the row.
 #[expect(clippy::inline_always, reason = "this per-row decoder is a hot path")]
 #[inline(always)]
-pub(super) fn decode_cleanup_symbols_first_row(
+pub(super) fn decode_cleanup_symbols_first_row<V: VlcBits>(
     mel: &mut MelDecoder,
-    vlc: &mut ReverseBitReader,
+    vlc: &mut V,
     run: &mut i32,
     scratch: &mut [u16],
     width: u32,
@@ -232,7 +233,9 @@ pub(super) fn decode_cleanup_symbols_first_row(
     let mut x = 0u32;
 
     while x < width {
-        decode_cleanup_first_row_pair(mel, vlc, run, scratch, row_offset, &mut c_q, x, width)?;
+        decode_cleanup_first_row_pair::<false, _>(
+            mel, vlc, run, scratch, row_offset, &mut c_q, x, width,
+        )?;
         x += 4;
         row_offset += 4;
     }
@@ -327,9 +330,9 @@ pub(super) fn decode_pair_symbols<const INLINE_REFILLS: bool, V: VlcBits>(
     reason = "this per-pair decoder is a hot path"
 )]
 #[inline(always)]
-pub(super) fn decode_cleanup_row_pair(
+pub(super) fn decode_cleanup_row_pair<const INLINE_REFILLS: bool, V: VlcBits>(
     mel: &mut MelDecoder,
-    vlc: &mut ReverseBitReader,
+    vlc: &mut V,
     run: &mut i32,
     scratch: &mut [u16],
     row_offset: usize,
@@ -341,7 +344,8 @@ pub(super) fn decode_cleanup_row_pair(
     // `sstr >= 8`, so the row above never overlaps this pair's symbols.
     let prev = row_offset - sstr;
     let above = |k| u32::from(scratch[prev + k]);
-    let symbols = decode_pair_symbols::<false, _>(mel, vlc, run, c_q, above, x + 2 < width)?;
+    let symbols =
+        decode_pair_symbols::<INLINE_REFILLS, _>(mel, vlc, run, c_q, above, x + 2 < width)?;
     store_pair_symbols(scratch, row_offset, symbols);
     Some(symbols)
 }
@@ -351,9 +355,9 @@ pub(super) fn decode_cleanup_row_pair(
 /// state; the trailing sentinel pair is written after the row.
 #[expect(clippy::inline_always, reason = "this per-row decoder is a hot path")]
 #[inline(always)]
-pub(super) fn decode_cleanup_symbols_row(
+pub(super) fn decode_cleanup_symbols_row<V: VlcBits>(
     mel: &mut MelDecoder,
-    vlc: &mut ReverseBitReader,
+    vlc: &mut V,
     run: &mut i32,
     scratch: &mut [u16],
     width: u32,
@@ -365,7 +369,9 @@ pub(super) fn decode_cleanup_symbols_row(
     let mut row_offset = (y >> 1) as usize * sstr;
 
     while x < width {
-        decode_cleanup_row_pair(mel, vlc, run, scratch, row_offset, sstr, &mut c_q, x, width)?;
+        decode_cleanup_row_pair::<false, _>(
+            mel, vlc, run, scratch, row_offset, sstr, &mut c_q, x, width,
+        )?;
         x += 4;
         row_offset += 4;
     }
