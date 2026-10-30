@@ -7,7 +7,7 @@ use super::readers::{read_u32_pair, ForwardBitReader};
 #[cfg(feature = "simd")]
 use crate::math::{dispatch, Level};
 
-/// The samples each newly significant sample of a 4x4 group makes a SigProp
+/// The samples each newly significant sample of a 4x4 group makes a `SigProp`
 /// candidate, as bits `4 * column + row`: itself, the sample below it, and
 /// the three nearest of the next column. The reference for
 /// [`SIGPROP_COLUMN`], and the order the encoder visits.
@@ -17,27 +17,28 @@ pub(super) const SIGPROP_SPREAD_MASKS: [u32; 16] = [
     0x76000, 0xEC000, 0xC8000,
 ];
 
-/// SigProp decoding of one four-sample column of a stripe, indexed by
-/// `candidates | insignificant << 4 | bits << 8`: the column's candidates,
-/// its samples not yet significant, and the next four refinement bits. A
+/// `SigProp` decoding of one four-sample column of a stripe, indexed by
+/// `bits | insignificant << 4 | candidates << 8`: the next four refinement
+/// bits, the column's samples not yet significant, and its candidates. A
 /// candidate takes one bit, top to bottom; a one makes it significant and
 /// the insignificant sample below it a candidate. Each entry is
-/// `significant | bits_used << 4`.
-const SIGPROP_COLUMN: [u8; 4096] = sigprop_column_table();
+/// `used | ones << 5 | spread << 8 | significant << 12`: the bits used (bits
+/// 3-4 stay clear, so the entry is also the shift past them), the new
+/// samples' count, the candidates they add to the next column (beside and
+/// diagonally next to them), and the new samples. `spread` sits where the
+/// next column's index takes its candidates, so one lookup feeds the next
+/// through a mask.
+const SIGPROP_COLUMN: [u16; 4096] = sigprop_column_table();
 
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "entries hold four significance bits and a bit count up to four"
-)]
-const fn sigprop_column_table() -> [u8; 4096] {
+const fn sigprop_column_table() -> [u16; 4096] {
     let mut table = [0; 4096];
     let mut index = 0;
     while index < 4096 {
-        let mut candidates = index & 0xF;
+        let bits = index & 0xF;
         let insignificant = (index >> 4) & 0xF;
-        let bits = index >> 8;
-        let mut used = 0;
-        let mut significant = 0;
+        let mut candidates = index >> 8;
+        let mut used = 0_u16;
+        let mut significant = 0_u16;
         let mut row = 0;
         while row < 4 {
             if candidates & (1 << row) != 0 {
@@ -49,45 +50,53 @@ const fn sigprop_column_table() -> [u8; 4096] {
             }
             row += 1;
         }
-        table[index] = (significant | (used << 4)) as u8;
+        let spread = (significant | (significant << 1) | (significant >> 1)) & 0xF;
+        let ones = (significant & 1)
+            + ((significant >> 1) & 1)
+            + ((significant >> 2) & 1)
+            + (significant >> 3);
+        table[index] = used | (ones << 5) | (spread << 8) | (significant << 12);
         index += 1;
     }
     table
 }
 
-/// The significance bits of one 4x4 SigProp group: `candidates` are the
+/// The significance bits of one 4x4 `SigProp` group: `candidates` are the
 /// samples next to a sample significant before this pass, `insignificant`
 /// the samples that can still become significant (bits `4 * column + row`),
 /// and `cwd` the group's refinement bits. Newly significant samples make
 /// their later neighbors candidates; the scan is column by column, top to
-/// bottom. Returns the newly significant samples and the bits used.
+/// bottom. Returns the newly significant samples, the significance bits
+/// used, and the count of new samples (one sign bit each).
 #[expect(clippy::inline_always, reason = "per-group hot path")]
 #[inline(always)]
 pub(super) fn decode_group_significance(
     candidates: u32,
     insignificant: u32,
     cwd: u32,
-) -> (u32, u32) {
+) -> (u32, u32, u32) {
     let mut bits = cwd;
-    let mut used = 0;
     let mut significant = 0;
-    // Candidates the previous column's new samples add to this one: the
-    // samples beside them and diagonally next to them.
-    let mut spread = 0;
+    // Bits used in bits 0-4 and new samples from bit 5: each column adds at
+    // most four of either.
+    let mut sums = 0;
+    // The previous column's entry; its `spread` field is in index position.
+    let mut previous = 0;
     for column in 0..4 {
         let shift = 4 * column;
         let column_insignificant = (insignificant >> shift) & 0xF;
-        let column_candidates = ((candidates >> shift) & 0xF) | (spread & column_insignificant);
-        let index = column_candidates | (column_insignificant << 4) | ((bits & 0xF) << 8);
+        let column_candidates = (candidates >> shift) & 0xF;
+        let index = (previous & (column_insignificant << 8))
+            | (column_candidates << 8)
+            | (column_insignificant << 4)
+            | (bits & 0xF);
         let entry = u32::from(SIGPROP_COLUMN[index as usize]);
-        let column_significant = entry & 0xF;
-        let column_used = entry >> 4;
-        bits >>= column_used;
-        used += column_used;
-        significant |= column_significant << shift;
-        spread = column_significant | (column_significant << 1) | (column_significant >> 1);
+        bits = bits.wrapping_shr(entry);
+        sums += entry & 0xE7;
+        significant |= (entry >> 12) << shift;
+        previous = entry;
     }
-    (significant, used)
+    (significant, sums & 0x1F, sums >> 5)
 }
 
 pub(crate) fn sigma_stride(width: u32) -> usize {
@@ -198,7 +207,7 @@ pub(super) fn apply_significance_propagation_phase(
     }
 }
 
-/// The new samples of a SigProp group with their sign bits, in bit order
+/// The new samples of a `SigProp` group with their sign bits, in bit order
 /// (`4 * column + row`), one sample at a time.
 #[expect(clippy::inline_always, reason = "per-group hot path")]
 #[inline(always)]
@@ -259,7 +268,7 @@ fn write_group_signs<S: Simd>(
     Some(())
 }
 
-/// The SigProp scan over 4x4 groups: `whole_group_signs` writes the new
+/// The `SigProp` scan over 4x4 groups: `whole_group_signs` writes the new
 /// samples of a group that lies entirely inside the block, given the group's
 /// new samples, the bits after its significance bits, and the sample value.
 #[expect(
@@ -335,9 +344,10 @@ fn propagate_stripes(
             let mut new_sig = 0u32;
             if mbr != 0 {
                 let mut cwd = sigprop.fetch();
-                let (significant, mut cnt) = decode_group_significance(mbr, !cs & col_pattern, cwd);
+                let (significant, used, ones) =
+                    decode_group_significance(mbr, !cs & col_pattern, cwd);
                 new_sig = significant;
-                cwd >>= cnt;
+                cwd >>= used;
 
                 if new_sig != 0 {
                     let value = 3u32 << (p - 2);
@@ -354,10 +364,9 @@ fn propagate_stripes(
                             value,
                         );
                     }
-                    cnt += new_sig.count_ones();
                 }
 
-                sigprop.advance(cnt);
+                sigprop.advance(used + ones);
             }
 
             let combined_sig = new_sig | (cs & 0xFFFF);
@@ -381,7 +390,7 @@ mod tests {
     use super::{apply_significance_propagation_phase, sigma_stride};
     use crate::j2c::ht_block_decode::readers::{read_u32_pair, ForwardBitReader};
 
-    /// The SigProp phase as first written (candidate scan and per-sample
+    /// The `SigProp` phase as first written (candidate scan and per-sample
     /// sign loop), the reference for the column table and vector signs.
     #[expect(
         clippy::cast_possible_truncation,
@@ -511,6 +520,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the test draws its random fields from the low bits of 64-bit generator words"
+    )]
     fn significance_propagation_matches_the_candidate_scan() {
         let mut state = 0x9E37_79B9_7F4A_7C15_u64;
         let mut next = move || {
@@ -527,7 +540,7 @@ mod tests {
             (4, 4, 4),
             (5, 9, 5),
         ] {
-            for case in 0..60 {
+            for case in 0..60_u32 {
                 let mstr = sigma_stride(width);
                 let sigma_rows = height.div_ceil(4) as usize + 1;
                 let density = case % 4;
@@ -554,7 +567,7 @@ mod tests {
                 let refinement: Vec<u8> = (0..4096).map(|_| next() as u8).collect();
                 let len = ((height - 1) * stride + width) as usize;
                 let original: Vec<u32> = (0..len).map(|_| (next() as u32) & 0x7FFF_FFF0).collect();
-                let p = 5 + (case % 20) as u32;
+                let p = 5 + case % 20;
                 let stripe_causal = case % 3 == 0;
                 let mut expected = original.clone();
                 let mut prev = vec![0u16; groups + 8];

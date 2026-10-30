@@ -55,7 +55,7 @@ pub(super) fn apply_magnitude_refinement_phase(
     }
 }
 
-/// The MagRef scan over 8x4 groups of the block: `whole_group` refines a
+/// The `MagRef` scan over 8x4 groups of the block: `whole_group` refines a
 /// group that lies entirely inside the block, the rest go sample by sample.
 #[expect(
     clippy::inline_always,
@@ -184,7 +184,7 @@ mod tests {
     use super::apply_magnitude_refinement_phase;
     use crate::j2c::ht_block_decode::significance::sigma_stride;
 
-    /// The MagRef scan as first written: eight columns by four rows of
+    /// The `MagRef` scan as first written: eight columns by four rows of
     /// branches per group.
     fn reference(
         refinement: &[u8],
@@ -224,6 +224,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the test draws its random fields from the low bits of 64-bit generator words"
+    )]
     fn magnitude_refinement_matches_the_per_sample_scan() {
         let mut state = 0x2545_F491_4F6C_DD1D_u64;
         let mut next = move || {
@@ -240,7 +244,7 @@ mod tests {
             (8, 4, 8),
             (5, 9, 5),
         ] {
-            for case in 0..40 {
+            for case in 0..40_u32 {
                 let mstr = sigma_stride(width);
                 let sigma_rows = height.div_ceil(4) as usize + 1;
                 let density = case % 4;
@@ -257,7 +261,7 @@ mod tests {
                 let refinement: Vec<u8> = (0..4096).map(|_| next() as u8).collect();
                 let len = ((height - 1) * stride + width) as usize;
                 let original: Vec<u32> = (0..len).map(|_| (next() as u32) & 0x7FFF_FFF0).collect();
-                let p = 5 + (case % 20) as u32;
+                let p = 5 + case % 20;
                 let mut expected = original.clone();
                 reference(
                     &refinement,

@@ -388,7 +388,7 @@ fn sigprop_spread_masks_follow_column_major_scan_order() {
     }
 }
 
-/// One SigProp group decoded a candidate at a time, in scan order: the
+/// One `SigProp` group decoded a candidate at a time, in scan order: the
 /// reference for the column-table decode.
 fn group_significance_by_candidate(candidates: u32, insignificant: u32, cwd: u32) -> (u32, u32) {
     let (mut candidates, mut cwd) = (candidates, cwd);
@@ -409,6 +409,10 @@ fn group_significance_by_candidate(candidates: u32, insignificant: u32, cwd: u32
 }
 
 #[test]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the test draws its random fields from the low bits of 64-bit generator words"
+)]
 fn sigprop_group_columns_match_candidate_scan() {
     let mut state = 0x9E37_79B9_7F4A_7C15_u64;
     let mut next = || {
@@ -429,9 +433,10 @@ fn sigprop_group_columns_match_candidate_scan() {
         };
         let candidates = (((word >> 16) as u32 & (word >> 32) as u32) | dense) & insignificant;
         let cwd = next() as u32;
+        let (significant, used) = group_significance_by_candidate(candidates, insignificant, cwd);
         assert_eq!(
             decode_group_significance(candidates, insignificant, cwd),
-            group_significance_by_candidate(candidates, insignificant, cwd),
+            (significant, used, significant.count_ones()),
             "candidates={candidates:#06x} insignificant={insignificant:#06x} cwd={cwd:#010x}"
         );
     }
