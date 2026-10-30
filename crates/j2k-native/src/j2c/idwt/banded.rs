@@ -491,6 +491,53 @@ fn synthesize_level_row<S: Simd>(
     }
 }
 
+/// [`synthesize_level_row`] restricted to `columns`, one of the level's
+/// [`column_strips`], into `out`.
+#[expect(
+    clippy::inline_always,
+    reason = "specialized with the streaming kernels"
+)]
+#[inline(always)]
+fn synthesize_level_columns<S: Simd>(
+    simd: S,
+    level: Level2d<'_>,
+    index: usize,
+    out: &mut [f32],
+    columns: Range<usize>,
+    low: &mut [f32],
+    high: &mut [f32],
+) {
+    if columns.len() == level.width {
+        synthesize_level_row(simd, level, index, out, low, high);
+        return;
+    }
+    // Strips are only made of even-origin 9-7I levels (`column_strips`).
+    let row_scale = if index % 2 == level.y0 % 2 {
+        dwt::DWT97_KAPPA_F32
+    } else {
+        level.high_pass
+    };
+    let source = if index % 2 == level.even.start_row % 2 {
+        level.even.row(index)
+    } else {
+        level.odd.row(index)
+    };
+    match source {
+        Some((low_source, high_source)) => synthesize_row_columns(
+            simd,
+            level,
+            low_source,
+            high_source,
+            out,
+            columns,
+            low,
+            high,
+            row_scale,
+        ),
+        None => out.fill(0.0),
+    }
+}
+
 /// Reconstruct the whole level top to bottom in `target` on one thread.
 ///
 /// When row `n` arrives it is synthesized horizontally (and scaled, for 9-7I),
@@ -1194,9 +1241,9 @@ const MIN_SIMD_ROW_WIDTH: usize = 2 * SIMD_WIDTH;
 /// that mirrors its edge sample: that is the symmetric extension (F.3.7) of
 /// the interleaved row seen from the other parity.
 #[expect(
+    clippy::inline_always,
     clippy::too_many_arguments,
-    clippy::too_many_lines,
-    reason = "the row synthesis keeps its geometry, two sources, output, and exact scratch explicit, and its window and step passes together"
+    reason = "the row synthesis is specialized inside each SIMD dispatch target and keeps its geometry, two sources, output, and exact scratch explicit"
 )]
 #[inline(always)]
 fn synthesize_row<S: Simd>(
@@ -1209,11 +1256,6 @@ fn synthesize_row<S: Simd>(
     high: &mut [f32],
     row_scale: f32,
 ) {
-    const NEG_ALPHA: f32 = dwt::IDWT97_NEG_ALPHA_F32;
-    const NEG_BETA: f32 = dwt::IDWT97_NEG_BETA_F32;
-    const NEG_GAMMA: f32 = dwt::IDWT97_NEG_GAMMA_F32;
-    const NEG_DELTA: f32 = dwt::IDWT97_NEG_DELTA_F32;
-    const KAPPA: f32 = dwt::DWT97_KAPPA_F32;
     let width = level.width;
     if width < MIN_SIMD_ROW_WIDTH {
         interleave_row(simd, first, second, row);
@@ -1282,51 +1324,16 @@ fn synthesize_row<S: Simd>(
                 0
             };
             let start = window.saturating_sub(WINDOW_HALO_PAIRS);
-            let low = &mut low[..low_source.len() - start + 2];
-            let high = &mut high[..high_source.len() - start + 2];
-            load_ghosted(low, &low_source[start..]);
-            load_ghosted(high, &high_source[start..]);
-            let tail = &mut row[2 * start..];
-            // Steps 1 and 2.
-            scale_row(simd, low, KAPPA);
-            scale_row(simd, high, level.high_pass);
-            // Steps 3 to 5.
-            for (update_low, coefficient) in
-                [(true, NEG_DELTA), (false, NEG_GAMMA), (true, NEG_BETA)]
-            {
-                let coefficient_simd = f32x8::splat(simd, coefficient);
-                let (target, source, reads) = if update_low {
-                    (&mut *low, &mut *high, low_reads)
-                } else {
-                    (&mut *high, &mut *low, high_reads)
-                };
-                lift_row(
-                    simd,
-                    target,
-                    source,
-                    reads,
-                    #[inline(always)]
-                    |s, a, b| (a + b).mul_add(coefficient_simd, s),
-                    #[inline(always)]
-                    |s, a, b| math::mul_add(a + b, coefficient, s),
-                );
-            }
-            // Step 6, the interleave, and the vertical scale share their
-            // final loads and store. The multiply still follows the final
-            // lifting expression for every sample.
-            let coefficient_simd = f32x8::splat(simd, NEG_ALPHA);
-            lift_high_to_row::<S, true>(
+            synthesize_97_tail(
                 simd,
-                high,
-                low,
-                high_reads,
+                [low_source, high_source],
+                [low, high],
+                [low_reads, high_reads],
                 low_first,
-                tail,
+                &mut row[2 * start..],
+                start,
+                level.high_pass,
                 row_scale,
-                #[inline(always)]
-                |s, a, b| (a + b).mul_add(coefficient_simd, s),
-                #[inline(always)]
-                |s, a, b| math::mul_add(a + b, NEG_ALPHA, s),
             );
             if window > 0 {
                 let row = &mut row[..2 * window];
@@ -1335,11 +1342,190 @@ fn synthesize_row<S: Simd>(
                     low_source,
                     high_source,
                     row,
+                    0,
                     level.high_pass,
                     row_scale,
                 );
             }
         }
+    }
+}
+
+/// The multi-pass 9-7I synthesis of a row's pairs from `start` on into
+/// `tail`, through ghosted copies of the band rows' remaining samples.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the tail keeps its two sources, two scratch bands, reads and scales explicit"
+)]
+#[inline(always)]
+fn synthesize_97_tail<S: Simd>(
+    simd: S,
+    [low_source, high_source]: [&[f32]; 2],
+    [low, high]: [&mut [f32]; 2],
+    [low_reads, high_reads]: [(usize, usize); 2],
+    low_first: bool,
+    tail: &mut [f32],
+    start: usize,
+    high_pass: f32,
+    row_scale: f32,
+) {
+    const NEG_ALPHA: f32 = dwt::IDWT97_NEG_ALPHA_F32;
+    const NEG_BETA: f32 = dwt::IDWT97_NEG_BETA_F32;
+    const NEG_GAMMA: f32 = dwt::IDWT97_NEG_GAMMA_F32;
+    const NEG_DELTA: f32 = dwt::IDWT97_NEG_DELTA_F32;
+    const KAPPA: f32 = dwt::DWT97_KAPPA_F32;
+    let low = &mut low[..low_source.len() - start + 2];
+    let high = &mut high[..high_source.len() - start + 2];
+    load_ghosted(low, &low_source[start..]);
+    load_ghosted(high, &high_source[start..]);
+    // Steps 1 and 2.
+    scale_row(simd, low, KAPPA);
+    scale_row(simd, high, high_pass);
+    // Steps 3 to 5.
+    for (update_low, coefficient) in [(true, NEG_DELTA), (false, NEG_GAMMA), (true, NEG_BETA)] {
+        let coefficient_simd = f32x8::splat(simd, coefficient);
+        let (target, source, reads) = if update_low {
+            (&mut *low, &mut *high, low_reads)
+        } else {
+            (&mut *high, &mut *low, high_reads)
+        };
+        lift_row(
+            simd,
+            target,
+            source,
+            reads,
+            #[inline(always)]
+            |s, a, b| (a + b).mul_add(coefficient_simd, s),
+            #[inline(always)]
+            |s, a, b| math::mul_add(a + b, coefficient, s),
+        );
+    }
+    // Step 6, the interleave, and the vertical scale share their final loads
+    // and store. The multiply still follows the final lifting expression for
+    // every sample.
+    let coefficient_simd = f32x8::splat(simd, NEG_ALPHA);
+    lift_high_to_row::<S, true>(
+        simd,
+        high,
+        low,
+        high_reads,
+        low_first,
+        tail,
+        row_scale,
+        #[inline(always)]
+        |s, a, b| (a + b).mul_add(coefficient_simd, s),
+        #[inline(always)]
+        |s, a, b| math::mul_add(a + b, NEG_ALPHA, s),
+    );
+}
+
+/// Columns `columns` of [`synthesize_row`] of an even-origin 9-7I row that
+/// [`column_strips`] split, into `out`: the window blocks the columns cover
+/// and, for the row's last strip, its multi-pass tail.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the strip synthesis keeps its geometry, two sources, output, and exact scratch explicit"
+)]
+#[expect(
+    clippy::inline_always,
+    reason = "the lifting kernels are specialized inside each SIMD dispatch target"
+)]
+#[inline(always)]
+fn synthesize_row_columns<S: Simd>(
+    simd: S,
+    level: Level2d<'_>,
+    low_source: &[f32],
+    high_source: &[f32],
+    out: &mut [f32],
+    columns: Range<usize>,
+    low: &mut [f32],
+    high: &mut [f32],
+    row_scale: f32,
+) {
+    let first_block = columns.start / (2 * SIMD_WIDTH);
+    if columns.end < level.width {
+        lift_row_97_window(
+            simd,
+            low_source,
+            high_source,
+            out,
+            first_block,
+            level.high_pass,
+            row_scale,
+        );
+        return;
+    }
+    let window = window_pairs_97(high_source.len());
+    let start = window - WINDOW_HALO_PAIRS;
+    // As in `synthesize_row`, the tail first, then the window over its left
+    // edge.
+    synthesize_97_tail(
+        simd,
+        [low_source, high_source],
+        [low, high],
+        [(0, 1), (1, 2)],
+        true,
+        &mut out[2 * start - columns.start..],
+        start,
+        level.high_pass,
+        row_scale,
+    );
+    lift_row_97_window(
+        simd,
+        low_source,
+        high_source,
+        &mut out[..2 * window - columns.start],
+        first_block,
+        level.high_pass,
+        row_scale,
+    );
+}
+
+/// Columns of each strip the last level reconstructs on its own when it
+/// streams on one thread ([`last_level`]), so that the strip's rows of all
+/// three components stay in the core's L1 cache. Tests use narrow strips so
+/// that small images have several.
+const STRIP_COLUMNS: usize = if cfg!(test) { 64 } else { 1024 };
+
+/// The column ranges a level's rows are synthesized and lifted in: strips
+/// of [`STRIP_COLUMNS`] for wide even-origin 9-7I levels, whose last strip
+/// takes the remaining columns and the row's multi-pass tail, or else the
+/// whole row.
+fn column_strips(level: Level2d<'_>) -> (usize, usize) {
+    let width = level.width;
+    let strips = width / STRIP_COLUMNS;
+    let low_first = level.x0.is_multiple_of(2);
+    let high_len = if low_first {
+        width / 2
+    } else {
+        width.div_ceil(2)
+    };
+    // The last strip starts before its window ends and before the tail does.
+    let last_start = strips.saturating_sub(1) * STRIP_COLUMNS;
+    let window = window_pairs_97(high_len);
+    if level.transform != WaveletTransform::Irreversible97
+        || !low_first
+        || strips < 2
+        || width < MIN_SIMD_ROW_WIDTH
+        || last_start + 2 * SIMD_WIDTH > 2 * window.saturating_sub(WINDOW_HALO_PAIRS)
+    {
+        return (width, 1);
+    }
+    (STRIP_COLUMNS, strips)
+}
+
+/// Strip `index` of `strips` strips of `strip_columns` columns each, the
+/// last taking every remaining column of a row of `width`.
+fn strip_range(
+    index: usize,
+    (strip_columns, strips): (usize, usize),
+    width: usize,
+) -> Range<usize> {
+    let start = index * strip_columns;
+    start..if index + 1 == strips {
+        width
+    } else {
+        start + strip_columns
     }
 }
 
@@ -1354,13 +1540,16 @@ fn window_pairs_97(high_len: usize) -> usize {
     high_len.saturating_sub(2 * SIMD_WIDTH) / SIMD_WIDTH * SIMD_WIDTH
 }
 
-/// The horizontal 9-7I synthesis of the first `row.len() / 2` pairs of an
-/// even-origin row from its `low` and `high` band rows, in one pass of
-/// `SIMD_WIDTH`-pair blocks: both bands are scaled as they are loaded, the
-/// delta, gamma, beta and alpha steps run a block apart with their neighbors
-/// taken across blocks by `slide`, and each block is interleaved, scaled by
-/// `row_scale` and stored. Each sample sees the operations of the multi-pass
-/// steps in [`synthesize_row`].
+/// The horizontal 9-7I synthesis of pairs `SIMD_WIDTH * first_block` on, as
+/// many as `row` has room for (`row.len() / 2`), of an even-origin row from
+/// its `low` and `high` band rows, in one pass of `SIMD_WIDTH`-pair blocks:
+/// both bands are scaled as they are loaded, the delta, gamma, beta and alpha
+/// steps run a block apart with their neighbors taken across blocks by
+/// `slide`, and each block is interleaved, scaled by `row_scale` and stored.
+/// A pass from block zero mirrors the row's left edge; one from a later block
+/// (at least two) first lifts the two blocks before it as far as their
+/// outputs need. Each sample sees the operations of the multi-pass steps in
+/// [`synthesize_row`].
 #[expect(
     clippy::inline_always,
     reason = "the lifting kernels are specialized inside each SIMD dispatch target"
@@ -1371,6 +1560,7 @@ fn lift_row_97_window<S: Simd>(
     low: &[f32],
     high: &[f32],
     row: &mut [f32],
+    first_block: usize,
     high_pass: f32,
     row_scale: f32,
 ) {
@@ -1383,33 +1573,48 @@ fn lift_row_97_window<S: Simd>(
         dwt::IDWT97_NEG_ALPHA_F32,
     ]
     .map(|value| f32x8::splat(simd, value));
-    let load = |block: usize| {
-        let samples =
-            |band: &[f32]| f32x8::from_slice(simd, &band[block * SIMD_WIDTH..][..SIMD_WIDTH]);
-        (samples(low) * kappa, samples(high) * high_pass)
-    };
+    let bands = (low, high);
+    let scales = (kappa, high_pass);
     // Low sample `k` lies between high samples `k - 1` and `k`; high sample
     // `k` between low samples `k` and `k + 1`.
     let update =
         |previous: f32x8<S>, high, low, c| (previous.slide::<7>(high) + high).mul_add(c, low);
     let predict =
         |low: f32x8<S>, next: f32x8<S>, high, c| (low + low.slide::<1>(next)).mul_add(c, high);
-    // T.800 F.3.7: high sample -1 mirrors high sample 0, which a block
-    // rotated by one lane holds in its last lane.
-    let mirror = |high: f32x8<S>| high.slide::<1>(high);
-    let (low0, high0) = load(0);
-    let (next_low0, mut next_high0) = load(1);
-    let low1 = update(mirror(high0), high0, low0, delta);
-    let mut next_low1 = update(high0, next_high0, next_low0, delta);
-    let mut high1 = predict(low1, next_low1, high0, gamma);
-    let mut low2 = update(mirror(high1), high1, low1, beta);
-    for (block, out) in row
+    // The pipeline before the first output block: its doubly lifted low
+    // samples, its once lifted high samples, the next block's once lifted
+    // low samples and the next block's scaled high samples.
+    let (mut low2, mut high1, mut next_low1, mut next_high0) = if first_block == 0 {
+        // T.800 F.3.7: high sample -1 mirrors high sample 0, which a block
+        // rotated by one lane holds in its last lane.
+        let mirror = |high: f32x8<S>| high.slide::<1>(high);
+        let (low0, high0) = scaled_blocks(simd, bands, scales, 0);
+        let (next_low0, next_high0) = scaled_blocks(simd, bands, scales, 1);
+        let low1 = update(mirror(high0), high0, low0, delta);
+        let next_low1 = update(high0, next_high0, next_low0, delta);
+        let high1 = predict(low1, next_low1, high0, gamma);
+        let low2 = update(mirror(high1), high1, low1, beta);
+        (low2, high1, next_low1, next_high0)
+    } else {
+        let (_, before_high0) = scaled_blocks(simd, bands, scales, first_block - 2);
+        let (previous_low0, previous_high0) = scaled_blocks(simd, bands, scales, first_block - 1);
+        let (low0, high0) = scaled_blocks(simd, bands, scales, first_block);
+        let (next_low0, next_high0) = scaled_blocks(simd, bands, scales, first_block + 1);
+        let previous_low1 = update(before_high0, previous_high0, previous_low0, delta);
+        let low1 = update(previous_high0, high0, low0, delta);
+        let next_low1 = update(high0, next_high0, next_low0, delta);
+        let previous_high1 = predict(previous_low1, low1, previous_high0, gamma);
+        let high1 = predict(low1, next_low1, high0, gamma);
+        let low2 = update(previous_high1, high1, low1, beta);
+        (low2, high1, next_low1, next_high0)
+    };
+    for (index, out) in row
         .as_chunks_mut::<{ 2 * SIMD_WIDTH }>()
         .0
         .iter_mut()
         .enumerate()
     {
-        let (block_low0, block_high0) = load(block + 2);
+        let (block_low0, block_high0) = scaled_blocks(simd, bands, scales, first_block + index + 2);
         let block_low1 = update(next_high0, block_high0, block_low0, delta);
         let next_high1 = predict(next_low1, block_low1, next_high0, gamma);
         let next_low2 = update(high1, next_high1, next_low1, beta);
@@ -1419,6 +1624,28 @@ fn lift_row_97_window<S: Simd>(
         (low2.zip_high(high2) * row_scale).store(second);
         (next_high0, next_low1, high1, low2) = (block_high0, block_low1, next_high1, next_low2);
     }
+}
+
+/// Block `block` of the low and high bands, each times its scale. A
+/// function rather than a closure in [`lift_row_97_window`]: called several
+/// times, a closure is outlined, and an outlined closure does not inherit the
+/// dispatch's target features.
+#[expect(
+    clippy::inline_always,
+    reason = "the block load is specialized inside each SIMD dispatch target"
+)]
+#[inline(always)]
+fn scaled_blocks<S: Simd>(
+    simd: S,
+    (low, high): (&[f32], &[f32]),
+    (low_scale, high_scale): (f32x8<S>, f32x8<S>),
+    block: usize,
+) -> (f32x8<S>, f32x8<S>) {
+    let start = block * SIMD_WIDTH;
+    (
+        f32x8::from_slice(simd, &low[start..][..SIMD_WIDTH]) * low_scale,
+        f32x8::from_slice(simd, &high[start..][..SIMD_WIDTH]) * high_scale,
+    )
 }
 
 /// Copy `source` into `buffer[1..]`, leaving room for a ghost at each end.
