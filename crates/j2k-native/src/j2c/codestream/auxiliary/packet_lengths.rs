@@ -32,7 +32,7 @@ pub(crate) fn plm_marker(
     let mut packet_count = 0_usize;
     visit_plm_chunks(payload, |chunk| {
         packet_count = packet_count
-            .checked_add(visit_packet_lengths(chunk, "PLM", |_| {})?)
+            .checked_add(count_packet_lengths(chunk, "PLM")?)
             .ok_or(ValidationError::ImageTooLarge)?;
         Ok(())
     })?;
@@ -83,7 +83,7 @@ fn decode_packet_lengths_with_limit(
     max_owned_bytes: usize,
     marker: &'static str,
 ) -> Result<Vec<u32>> {
-    let packet_count = visit_packet_lengths(data, marker, |_| {})?;
+    let packet_count = count_packet_lengths(data, marker)?;
     validate_output_bytes(packet_count, max_owned_bytes)?;
 
     let mut packet_lengths = Vec::new();
@@ -112,6 +112,17 @@ fn visit_plm_chunks(payload: &[u8], mut visit: impl FnMut(&[u8]) -> Result<()>) 
         visit(length_data)?;
     }
     Ok(())
+}
+
+/// The lengths in `data`, as [`visit_packet_lengths`] counts them: each ends
+/// at a byte with a clear high bit, and the last byte must end one. Its
+/// value arithmetic cannot fail (a 7-bit shift, then an add into the cleared
+/// low bits), so counting the ending bytes is enough.
+fn count_packet_lengths(data: &[u8], marker: &'static str) -> Result<usize> {
+    if data.last().is_some_and(|byte| byte & 0x80 != 0) {
+        return Err(MarkerError::ParseFailure(marker).into());
+    }
+    Ok(data.iter().filter(|&&byte| byte & 0x80 == 0).count())
 }
 
 fn visit_packet_lengths(
@@ -150,6 +161,32 @@ fn visit_packet_lengths(
 mod tests {
     use super::*;
     use crate::error::DecodeError;
+
+    #[test]
+    fn packet_length_counts_match_the_decoding_walk() {
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..2000 {
+            let len = usize::try_from(next() % 16).expect("small length");
+            let data: Vec<u8> = (0..len)
+                .map(|_| match next() % 3 {
+                    0 => 0x80 | u8::try_from(next() >> 57).expect("seven bits"),
+                    _ => u8::try_from(next() >> 56).expect("top byte"),
+                })
+                .collect();
+            let walked = visit_packet_lengths(&data, "PLT", |_| {});
+            let counted = count_packet_lengths(&data, "PLT");
+            assert_eq!(walked.is_ok(), counted.is_ok(), "{data:02x?}");
+            if let (Ok(walked), Ok(counted)) = (walked, counted) {
+                assert_eq!(walked, counted, "{data:02x?}");
+            }
+        }
+    }
 
     #[test]
     fn plt_output_limit_is_checked_before_reservation() {
