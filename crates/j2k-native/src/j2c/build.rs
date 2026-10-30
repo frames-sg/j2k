@@ -636,9 +636,9 @@ impl ParseScratch {
         let columns = target.code_inclusion_tree.width();
         let count = (columns as usize).checked_mul(target.code_inclusion_tree.height() as usize)?;
         let inclusion_nodes = target.code_inclusion_tree.node_count();
+        let zero_bitplane_nodes = target.zero_bitplane_tree.node_count();
         if count > self.code_blocks[slot]
-            || inclusion_nodes.checked_add(target.zero_bitplane_tree.node_count())?
-                > self.nodes[slot]
+            || inclusion_nodes.checked_add(zero_bitplane_nodes)? > self.nodes[slot]
         {
             return None;
         }
@@ -646,14 +646,24 @@ impl ParseScratch {
         let blocks = code_blocks.get_mut(start..start.checked_add(count)?)?;
         // A rectangle that meets no window: no scratch code-block is read.
         let unread = IntRect::from_ltrb(0, 0, 0, 0);
-        for (block, index) in blocks.iter_mut().zip(0u32..) {
-            *block = CodeBlock::new(unread, index % columns, index / columns, 0..0);
+        // Row-major over the grid: code-block `index` sits at
+        // (`index % columns`, `index / columns`).
+        if columns != 0 {
+            for (row, y_idx) in blocks.chunks_exact_mut(columns as usize).zip(0u32..) {
+                for (block, x_idx) in row.iter_mut().zip(0u32..) {
+                    *block = CodeBlock::new(unread, x_idx, y_idx, 0..0);
+                }
+            }
         }
         let root = self.node_start[slot];
-        target.code_inclusion_tree.place(root, tag_tree_nodes)?;
         target
-            .zero_bitplane_tree
-            .place(root.checked_add(inclusion_nodes)?, tag_tree_nodes)?;
+            .code_inclusion_tree
+            .place(root, inclusion_nodes, tag_tree_nodes)?;
+        target.zero_bitplane_tree.place(
+            root.checked_add(inclusion_nodes)?,
+            zero_bitplane_nodes,
+            tag_tree_nodes,
+        )?;
         target.code_blocks = start..start + count;
         *borrower = Some(precinct);
         Some(())
