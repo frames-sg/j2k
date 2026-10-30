@@ -1,8 +1,8 @@
 # ISO/IEC 15444-4 / ITU-T T.803 Conformance
 
-Status: **Part 1 and selected Part 15 conformance published for 0.13.0**
+Status: **Part 1 and selected Part 15 conformance published for 0.13.1**
 
-Conformance stated for release `0.13.0`:
+Conformance stated for release `0.13.1`:
 
 - `j2k` CPU decoder:
   - JPEG 2000 Part 1: **Profile-1 Cclass-1, Profile-1 Cclass-1HF, and the
@@ -10,19 +10,15 @@ Conformance stated for release `0.13.0`:
   - HTJ2K Part 15: **DS1-HM Cclass-1h, MMAGB 15** (including the DS1-HT,
     DS0-HM, and DS0-HT subsets), **Cclass-1HFh, MMAGB 20**, and the **Annex G
     JPH reader at MMAGB 15**.
-- `j2k-metal`: a separate result for the same Part 1 and Part 15 points. Each
-  case records which stages ran on the CPU and which on the GPU. No case runs
-  entirely on the GPU.
-- `j2k-cuda`: the 0.13.0 report is pending under the
-  [CUDA waiver](../xtask/release-evidence/cuda-waiver-0.13.0.md) and will be
-  attached to the release once the self-hosted CUDA runner is back. The
-  0.12.0 CUDA result below covers the same points.
+- `j2k-cuda` and `j2k-metal`: separate results for the same Part 1 and Part 15
+  points. Each case records which stages ran on the CPU and which on the GPU.
+  No case runs entirely on the GPU.
 
 The test harness implements ISO/IEC 15444-4:2024 / ITU-T T.803 v3. Part 4
 defines how to test JPEG 2000 conformance against reference outputs; it is not
 a codestream format or a performance benchmark. The statements above are based
-on the four CPU and Metal reports attached to the
-[v0.13.0 release](https://github.com/frames-sg/j2k/releases/tag/v0.13.0), all
+on the five reports attached to the
+[v0.13.1 release](https://github.com/frames-sg/j2k/releases/tag/v0.13.1), all
 generated from the same release commit with no development-only features.
 
 ## Scope
@@ -43,6 +39,20 @@ Cclass-2h-scale resource and boundary tests are not a substitute.
 The project does not describe J2K as "fully Part 1 compliant" or "fully
 Part 15 compliant". Every Profile/Cclass/MMAGB statement refers to published
 reports for one release commit.
+
+## 0.13.1 results
+
+All five reports on the [0.13.1 release](https://github.com/frames-sg/j2k/releases/tag/v0.13.1)
+pass all 160 selected decoder cases (90 Part 1, 70 Part 15) with no skips,
+and their encoder checks pass. The CPU reports are from Linux x86-64,
+macOS arm64, and Windows x86-64. CUDA ran on an NVIDIA GeForce RTX 4070 SUPER
+and Metal on an Apple M4 Pro.
+
+Both GPU reports have 81 hybrid cases and 79 CPU-only cases out of 160;
+none runs entirely on the GPU. The release verifier checked the reports
+for the tagged source after [hosted validation](https://github.com/frames-sg/j2k/actions/runs/40942188426)
+and [hardware validation](https://github.com/frames-sg/j2k/actions/runs/40942189496)
+passed.
 
 ## 0.13.0 results
 

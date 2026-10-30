@@ -1,7 +1,6 @@
 # Release Policy
 
-The `j2k` 0.13.0 public crate release is published and security-supported.
-This workspace prepares the `j2k` 0.13.1 release.
+The `j2k` 0.13.1 public crate release is published and security-supported.
 Its T.803 decoder conformance results are in
 [`T.803 conformance`](../docs/t803-conformance.md). The
 default backend is `Auto`: the CPU path is always available, and a GPU path is
@@ -9,11 +8,17 @@ used only for shapes where it was tested and measured faster.
 
 ## Release status
 
-Version `0.13.1` is a release candidate, compared with `v0.13.0` in its
+Version `0.13.1` is published. Its
 [API report](release-evidence/public-api/reviewed-public-api-diff-0.13.1.md)
-and [review](release-evidence/public-api/public-api-review-0.13.1.yml).
-The 0.13.0 evidence below describes the published tag. The 0.13.1 candidate
-requires fresh hosted and full CUDA/Metal validation for its exact commit.
+compares with `v0.13.0`; the
+[review](release-evidence/public-api/public-api-review-0.13.1.yml) records
+no ordinary API change and five rustdoc-hidden `j2k-native` additions.
+The [hosted checks](https://github.com/frames-sg/j2k/actions/runs/40942188426)
+and [full CUDA/Metal validation](https://github.com/frames-sg/j2k/actions/runs/40942189496)
+passed for the tagged source. The release verifier checked all five T.803
+reports, and the [publish workflow](https://github.com/frames-sg/j2k/actions/runs/40974021228)
+published all 25 crates. The reports are attached to the
+[GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.13.1).
 
 Version `0.13.0` is published. Its
 [API report](release-evidence/public-api/reviewed-public-api-diff-0.13.0.md)
@@ -69,6 +74,7 @@ published all 25 crates. The reports are attached to the
 
 | Version | Distribution | Security support |
 | --- | --- | --- |
+| `0.13.1` | [crates.io](https://crates.io/crates/j2k/0.13.1), annotated tag `v0.13.1`; CPU, CUDA, and Metal reports on the [GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.13.1). | Yes |
 | `0.13.0` | [crates.io](https://crates.io/crates/j2k/0.13.0), annotated tag `v0.13.0`; CPU and Metal reports on the [GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.13.0); CUDA report pending under the [waiver](release-evidence/cuda-waiver-0.13.0.md). | Yes |
 | `0.12.0` | [crates.io](https://crates.io/crates/j2k/0.12.0), annotated tag `v0.12.0`; CPU, CUDA, and Metal reports on the [GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.12.0). | Yes |
 | `0.11.3` | [crates.io](https://crates.io/crates/j2k/0.11.3), annotated tag `v0.11.3`; CPU, CUDA, and Metal reports on the [GitHub release](https://github.com/frames-sg/j2k/releases/tag/v0.11.3). | Yes |
@@ -518,7 +524,7 @@ item list into the docs.
 
 | Release | Compared with | Report |
 | --- | --- | --- |
-| 0.13.1 candidate | 0.13.0 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.13.1.md), [review](release-evidence/public-api/public-api-review-0.13.1.yml) |
+| 0.13.1 | 0.13.0 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.13.1.md), [review](release-evidence/public-api/public-api-review-0.13.1.yml) |
 | 0.13.0 | 0.12.0 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.13.0.md), [review](release-evidence/public-api/public-api-review-0.13.0.yml) |
 | 0.12.0 | 0.11.3 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.12.0.md), [review](release-evidence/public-api/public-api-review-0.12.0.yml) |
 | 0.8.0 | 0.7.5 | [API diff][v0.8.0-api-report]; review file lists every break |

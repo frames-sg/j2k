@@ -35,7 +35,7 @@ consumers to retain pooled surfaces until their GPU work completes.
 `0.8.0` could only be compared against `v0.7.5`, and `0.9.0` only against
 `v0.8.1`. `0.10.0` was compared directly with `v0.9.0` under a one-time
 exception for the crate split, which is now disabled. The current semver
-baseline is `v0.13.0`. The `0.13.1` candidate is reviewed in the
+baseline is `v0.13.0`. The `0.13.1` release is reviewed in the
 [0.13.1 API review](../xtask/release-evidence/public-api/public-api-review-0.13.1.yml);
 it changes no ordinary API item and only adds rustdoc-hidden `j2k-native`
 items. The `0.13.0` release was compared with `v0.12.0` in the
