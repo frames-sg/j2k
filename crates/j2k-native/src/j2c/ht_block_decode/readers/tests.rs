@@ -199,3 +199,52 @@ fn flat_magsgn_unstuffing_requires_reserved_capacity() {
         "long segments must not allocate"
     );
 }
+
+/// The branch-free top-up reads the same bits as the reservoir reader's
+/// refills, stuffing and the zeros past the segment included, for every
+/// pair-sized step pattern.
+#[test]
+fn vlc_top_ups_match_reservoir_refills() {
+    let mut seed = 0x9E37_79B9_u32;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed
+    };
+    // Bytes around the stuffing thresholds are over-represented.
+    let special = [0xFF_u8, 0x7F, 0x8F, 0x90, 0x00, 0xFE, 0xF7, 0x0F];
+    for lcup in 2..=48_usize {
+        for _ in 0..40 {
+            let data = (0..lcup)
+                .map(|_| {
+                    let draw = next();
+                    if draw % 3 == 0 {
+                        special[(draw >> 8) as usize % special.len()]
+                    } else {
+                        (draw >> 16).to_le_bytes()[0]
+                    }
+                })
+                .collect::<Vec<_>>();
+            let scup = 2 + next() as usize % (lcup - 1);
+            let mut reference = ReverseBitReader::new_vlc(&data, lcup, scup);
+            let mut topped_up = reference.clone();
+            // Pairs consume at most 30 bits between top-ups.
+            for _ in 0..40 {
+                let first = reference.fetch();
+                assert_eq!(topped_up.fetch_topped_up::<true>(), first, "{data:02X?}");
+                let mut budget = 30;
+                while budget > 0 {
+                    let count = (next() % 9).min(budget);
+                    budget -= count;
+                    let consumed = 30 - budget;
+                    let expected = reference.advance(count);
+                    // Only the 32 - `consumed` bits the reference still
+                    // guarantees are compared; the top-up may hold more.
+                    let mask = u32::try_from((1_u64 << (32 - consumed)) - 1).expect("mask");
+                    assert_eq!(topped_up.advance(count) & mask, expected & mask);
+                }
+            }
+        }
+    }
+}

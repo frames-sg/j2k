@@ -123,6 +123,10 @@ impl<'a> MelDecoder<'a> {
     }
 }
 
+/// Bit 7 of every byte of a word, where the SWAR stuffing checks keep
+/// their per-byte flags.
+const BYTE_HIGH_BITS: u64 = 0x8080_8080_8080_8080;
+
 /// `Clone` (not `Copy`) keeps the by-value refill hand-offs explicit.
 #[derive(Clone)]
 pub(super) struct ForwardBitReader<'a, const PAD: u8> {
@@ -334,6 +338,48 @@ impl<'a> ReverseBitReader<'a> {
         self.fetch_with::<false>()
     }
 
+    /// [`Self::fetch_with`] for the per-pair loops, without its data-dependent
+    /// refill branch: unless a byte below the cursor is stuffed or fewer than
+    /// eight remain, OR the eight bytes below the cursor in above the
+    /// reservoir's bits and consume the whole bytes that fit, leaving 56 to 63
+    /// bits. Bits above the count then hold the next byte's leading bits, the
+    /// same bits the next top-up ORs in again.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        clippy::inline_always,
+        reason = "low reservoir word; nonnegative live cursor; per-pair hot path"
+    )]
+    #[inline(always)]
+    pub(super) fn fetch_topped_up<const INLINE_REFILL: bool>(&mut self) -> u32 {
+        if self.remaining >= 8 && self.pos >= 7 {
+            let last = self.pos as usize;
+            if let Some(&bytes) = self.data.get(last - 7..=last).and_then(<[u8]>::first_chunk) {
+                // `data[last]` is consumed first, so it lands in the low byte.
+                // The per-byte flags are as in `fill`.
+                let word = u64::from_be_bytes(bytes);
+                let above_8f = word
+                    & BYTE_HIGH_BITS
+                    & ((word & 0x7070_7070_7070_7070) + 0x7070_7070_7070_7070);
+                let low_ones =
+                    ((word & 0x7F7F_7F7F_7F7F_7F7F) + 0x0101_0101_0101_0101) & BYTE_HIGH_BITS;
+                let after_above_8f = (above_8f << 8) | (u64::from(self.unstuff) << 7);
+                if after_above_8f & low_ones == 0 {
+                    let bytes = (63 - self.bits) >> 3;
+                    self.tmp |= word << self.bits;
+                    self.bits += 8 * bytes;
+                    self.pos -= bytes as isize;
+                    self.remaining -= bytes as usize;
+                    // Whether the last byte consumed is above 0x8F.
+                    self.unstuff = (after_above_8f >> (8 * bytes + 7)) & 1 != 0;
+                    return self.tmp as u32;
+                }
+            }
+        }
+        self.fetch_with::<INLINE_REFILL>()
+    }
+
     /// [`Self::fetch`]. `INLINE_REFILL` inlines the byte refill too, so a
     /// loop around it makes no call and keeps the reader in registers.
     #[expect(
@@ -360,6 +406,22 @@ impl<'a> ReverseBitReader<'a> {
         debug_assert!(count <= self.bits);
         self.tmp >>= count;
         self.bits -= count;
+        self.tmp as u32
+    }
+
+    /// [`Self::advance`] past a VLC codeword whose decode-table `entry` holds
+    /// its length in bits 0-2 and zeros in bits 3-5, so the reservoir shift
+    /// takes the entry's low six bits directly.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::inline_always,
+        reason = "low reservoir word; per-quad hot path"
+    )]
+    #[inline(always)]
+    pub(super) fn advance_entry(&mut self, entry: u32) -> u32 {
+        debug_assert!(entry & 0x38 == 0 && entry & 0x7 <= self.bits);
+        self.tmp >>= entry & 0x3F;
+        self.bits -= entry & 0x7;
         self.tmp as u32
     }
 }
