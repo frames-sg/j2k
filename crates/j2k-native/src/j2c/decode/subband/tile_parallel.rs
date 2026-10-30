@@ -248,26 +248,17 @@ pub(in crate::j2c::decode) fn plan_tile_route<'a>(
     }
 
     let workers = rayon::current_num_threads().min(plan.strips.len());
-    // A stale buffer adds a zeroing task for each gap around the strips.
-    let task_count = if storage.stale_coefficients {
-        2 * plan.strips.len() + 1
-    } else {
-        plan.strips.len()
-    };
-    let mut tasks: Vec<StripTask<'_, '_>> = Vec::new();
+    let counts = TaskCounts::new(&plan, workers, storage.stale_coefficients)?;
     let route_budget = (|| -> Result<()> {
         // Payloads are gathered only once the tile takes the route.
         gather_payloads(&mut plan, storage, &mut budget)?;
-        tasks
-            .try_reserve_exact(task_count)
-            .map_err(|_| DecodingError::HostAllocationFailed)?;
         // `plan_tile` charged one task per strip.
-        budget.include_elements::<StripTask<'_, '_>>(task_count - plan.strips.len())?;
-        budget.include_capacity_overage::<StripTask<'_, '_>>(task_count, tasks.capacity())?;
-        // Each worker allocates its clipped-block scratch on first use.
+        budget.include_elements::<StripTask<'_, '_, '_>>(counts.tasks - plan.strips.len())?;
+        budget.include_elements::<Mutex<&mut [f32]>>(counts.shared)?;
+        // Each worker allocates its block scratch on first use.
         budget.include_elements::<f32>(
             workers
-                .checked_mul(plan.max_clipped_samples)
+                .checked_mul(counts.scratch_samples)
                 .ok_or(ValidationError::ImageTooLarge)?,
         )?;
         if has_later_components {
@@ -284,9 +275,8 @@ pub(in crate::j2c::decode) fn plan_tile_route<'a>(
         }
         return Err(error);
     }
-    let task_capacity = tasks.capacity();
     let Some(growths) =
-        decode_with_retained_bank(&plan, workers, tasks, tile_ctx, storage, &mut budget)?
+        decode_with_retained_bank(&plan, workers, counts, tile_ctx, storage, &mut budget)?
     else {
         // The per-sub-band path has its own smaller-footprint fallbacks.
         return Ok(TileRoute::PerSubBand);
@@ -295,7 +285,7 @@ pub(in crate::j2c::decode) fn plan_tile_route<'a>(
     if let Some(post_decode) = tile_ctx.tile_route_post_decode.take() {
         post_decode(storage)?;
     }
-    record_route_peak(tile_ctx, storage, &plan, workers, task_capacity)?;
+    record_route_peak(tile_ctx, storage, &plan, workers, counts)?;
     count_decoded_blocks(tile_ctx, &plan, workers, growths);
     Ok(TileRoute::Decoded)
 }
@@ -305,7 +295,7 @@ pub(in crate::j2c::decode) fn plan_tile_route<'a>(
 fn decode_with_retained_bank<'a>(
     plan: &TilePlan<'a>,
     workers: usize,
-    tasks: Vec<StripTask<'_, '_>>,
+    counts: TaskCounts,
     tile_ctx: &mut TileDecodeContext,
     storage: &mut DecompositionStorage<'a>,
     budget: &mut DecodeAllocationBudget,
@@ -314,7 +304,7 @@ fn decode_with_retained_bank<'a>(
         CodeBlockCoding::Classic => decode_with_bank(
             plan,
             workers,
-            tasks,
+            counts,
             &mut tile_ctx.classic_task_workspaces,
             storage,
             budget,
@@ -325,7 +315,7 @@ fn decode_with_retained_bank<'a>(
         CodeBlockCoding::HighThroughput => decode_with_bank(
             plan,
             workers,
-            tasks,
+            counts,
             &mut tile_ctx.ht_task_workspaces,
             storage,
             budget,
@@ -378,7 +368,7 @@ fn record_route_peak(
     storage: &DecompositionStorage<'_>,
     plan: &TilePlan<'_>,
     workers: usize,
-    task_capacity: usize,
+    counts: TaskCounts,
 ) -> Result<()> {
     let route_bytes = [
         plan.bands.capacity() * size_of::<BandParameters>(),
@@ -387,9 +377,10 @@ fn record_route_peak(
         plan.strips.capacity() * size_of::<Strip>(),
         plan.band_sub_bands.capacity() * size_of::<usize>(),
         plan.arena.capacity(),
-        task_capacity * size_of::<StripTask<'_, '_>>(),
+        counts.tasks * size_of::<StripTask<'_, '_, '_>>(),
+        counts.shared * size_of::<Mutex<&mut [f32]>>(),
         workers
-            .saturating_mul(plan.max_clipped_samples)
+            .saturating_mul(counts.scratch_samples)
             .saturating_mul(size_of::<f32>()),
     ]
     .into_iter()
@@ -406,7 +397,7 @@ fn record_route_peak(
 fn decode_with_bank<'a, W: TaskScratch>(
     plan: &TilePlan<'a>,
     workers: usize,
-    tasks: Vec<StripTask<'_, '_>>,
+    counts: TaskCounts,
     bank: &mut Vec<TaskWorkspace<W>>,
     storage: &mut DecompositionStorage<'a>,
     budget: &mut DecodeAllocationBudget,
@@ -429,7 +420,7 @@ fn decode_with_bank<'a, W: TaskScratch>(
         &mut coefficients,
         stale,
         &mut bank[..workers],
-        tasks,
+        counts,
         |job, output, stride, slot| decode_block(job, output, stride, &mut slot.workspace),
     );
     storage.coefficients = coefficients;
@@ -635,7 +626,7 @@ fn plan_tile<'a>(
         return Ok(None);
     }
     plan.arena_len = arena_len;
-    budget.include_elements::<StripTask<'_, '_>>(plan.strips.len())?;
+    budget.include_elements::<StripTask<'_, '_, '_>>(plan.strips.len())?;
     Ok(Some(plan))
 }
 
@@ -849,9 +840,7 @@ fn plan_band_strips(
                 return Ok(false);
             }
             next_x = placement.target_x + placement.width;
-            work = work
-                .saturating_add(job.payload_length as usize)
-                .saturating_add((job.width as usize * job.height as usize) / 8);
+            work = work.saturating_add(job_work(job));
             end += 1;
         }
         if y_offset
@@ -886,6 +875,11 @@ fn plan_band_strips(
         index = end;
     }
     Ok(true)
+}
+
+/// A block's estimated decode cost, as the route weighs strips and parts.
+fn job_work(job: &BlockJob<'_>) -> usize {
+    (job.payload_length as usize).saturating_add((job.width as usize * job.height as usize) / 8)
 }
 
 fn strips_are_disjoint(strips: &mut [Strip], coefficient_len: usize) -> bool {
@@ -1023,9 +1017,151 @@ fn prepare_uniform_task_workspaces<W: TaskScratch>(
     Ok(growths)
 }
 
-/// A strip's output, or with no strip, a range no strip decodes that a
-/// stale buffer must zero.
-type StripTask<'coefficients, 'plan> = (&'coefficients mut [f32], Option<&'plan Strip>);
+/// Parts per worker that a classic tile's code-block rows are split into,
+/// so that the queue ends in short tasks: a worker that finds it empty waits
+/// for the others' last tasks only, and a strip of a whole row can take a
+/// couple of milliseconds.
+const CLASSIC_PARTS_PER_WORKER: usize = 8;
+
+/// One entry of the route's queue.
+enum StripTask<'coefficients, 'plan, 'shared> {
+    /// A range no strip decodes, which a stale buffer must zero.
+    Zero(&'coefficients mut [f32]),
+    /// A whole strip, decoded in place into its output.
+    Strip(&'coefficients mut [f32], &'plan Strip),
+    /// Jobs of a strip whose output its parts share, with their work.
+    Part(
+        &'shared Mutex<&'coefficients mut [f32]>,
+        &'plan Strip,
+        Range<usize>,
+        usize,
+    ),
+}
+
+impl StripTask<'_, '_, '_> {
+    fn work(&self) -> usize {
+        match self {
+            Self::Zero(_) => 0,
+            Self::Strip(_, strip) => strip.work,
+            Self::Part(_, _, _, work) => *work,
+        }
+    }
+}
+
+/// The sizes of the route's queue, as budgeted before the decode.
+#[derive(Clone, Copy)]
+struct TaskCounts {
+    /// Queue entries, at most.
+    tasks: usize,
+    /// Strips split into parts, which share their output.
+    shared: usize,
+    /// Samples of each worker's block scratch.
+    scratch_samples: usize,
+    /// The work a part of a split strip aims at; `None` keeps whole strips.
+    part_work: Option<usize>,
+}
+
+impl TaskCounts {
+    fn new(plan: &TilePlan<'_>, workers: usize, stale: bool) -> Result<Self> {
+        // HT rows decode quickly enough whole.
+        let part_work = (plan.coding == CodeBlockCoding::Classic).then(|| {
+            let total = plan
+                .strips
+                .iter()
+                .fold(0usize, |total, strip| total.saturating_add(strip.work));
+            (total / workers.saturating_mul(CLASSIC_PARTS_PER_WORKER).max(1)).max(1)
+        });
+        let mut counts = Self {
+            tasks: 0,
+            shared: 0,
+            scratch_samples: plan.max_clipped_samples,
+            part_work,
+        };
+        for strip in &plan.strips {
+            let parts = counts.parts(strip);
+            counts.tasks = counts.tasks.saturating_add(parts);
+            counts.shared += usize::from(parts > 1);
+        }
+        if stale {
+            // A zeroing task for each gap around the strips.
+            counts.tasks = counts.tasks.saturating_add(plan.strips.len() + 1);
+        }
+        if counts.shared > 0 {
+            let block = (plan.max_width as usize)
+                .checked_mul(plan.max_height as usize)
+                .ok_or(ValidationError::ImageTooLarge)?;
+            counts.scratch_samples = counts.scratch_samples.max(block);
+        }
+        Ok(counts)
+    }
+
+    /// How many parts `strip` is split into.
+    fn parts(&self, strip: &Strip) -> usize {
+        self.part_work.map_or(1, |part| {
+            strip.work.div_ceil(part).clamp(1, strip.jobs.len().max(1))
+        })
+    }
+}
+
+/// Split `strip` into `parts` runs of consecutive jobs of about equal work,
+/// each passed to `emit` with its work.
+fn split_strip(
+    plan: &TilePlan<'_>,
+    strip: &Strip,
+    parts: usize,
+    emit: impl FnMut(Range<usize>, usize) -> Result<()>,
+) -> Result<()> {
+    let works = strip.jobs.clone().map(|index| {
+        plan.jobs
+            .get(index)
+            .map(job_work)
+            .ok_or_else(|| DecodingError::CodeBlockDecodeFailure.into())
+    });
+    split_runs(strip.jobs.start, works, strip.work, parts, emit)
+}
+
+/// Split consecutive jobs, numbered from `first` and with `works` summing to
+/// `total`, into at most `parts` runs of about equal work: a run ends at the
+/// first job that takes the work done to its share of `total`. Each run is
+/// passed to `emit` with its work.
+fn split_runs(
+    first: usize,
+    works: impl Iterator<Item = Result<usize>>,
+    total: usize,
+    parts: usize,
+    mut emit: impl FnMut(Range<usize>, usize) -> Result<()>,
+) -> Result<()> {
+    let mut works = works.peekable();
+    let mut start = first;
+    let mut end = first;
+    let mut done = 0usize;
+    let mut part_work = 0usize;
+    let mut cuts = 1usize;
+    while let Some(work) = works.next() {
+        let work = work?;
+        end += 1;
+        done = done.saturating_add(work);
+        part_work = part_work.saturating_add(work);
+        let last = works.peek().is_none();
+        if last || (cuts < parts && done.saturating_mul(parts) >= cuts.saturating_mul(total)) {
+            emit(start..end, part_work)?;
+            start = end;
+            part_work = 0;
+            cuts += 1;
+        }
+    }
+    Ok(())
+}
+
+/// Queue `task`. The budget covers [`TaskCounts`], so the queue never grows
+/// past the capacity reserved from it.
+fn push_task<T>(tasks: &mut Vec<T>, task: T) -> Result<()> {
+    if tasks.len() == tasks.capacity() {
+        return Err(DecodingError::CodeBlockDecodeFailure.into());
+    }
+    tasks.push(task);
+    Ok(())
+}
 
 /// Decode the strips on one worker per workspace, each block through
 /// `decode_block`.
@@ -1034,9 +1170,17 @@ fn decode_strips<'plan, 'coefficients, W: Send>(
     coefficients: &'coefficients mut [f32],
     stale: bool,
     workspaces: &mut [W],
-    mut tasks: Vec<StripTask<'coefficients, 'plan>>,
+    counts: TaskCounts,
     decode_block: impl Fn(&BlockJob<'_>, &mut [f32], usize, &mut W) -> Result<()> + Sync,
 ) -> Result<()> {
+    let mut shared: Vec<Mutex<&'coefficients mut [f32]>> = Vec::new();
+    shared
+        .try_reserve_exact(counts.shared)
+        .map_err(|_| DecodingError::HostAllocationFailed)?;
+    let mut tasks: Vec<StripTask<'coefficients, 'plan, '_>> = Vec::new();
+    tasks
+        .try_reserve_exact(counts.tasks)
+        .map_err(|_| DecodingError::HostAllocationFailed)?;
     // Strips are sorted by start offset, so carving them front to back yields
     // disjoint mutable outputs. In a stale buffer each strip zeroes its own
     // rows on its worker, where the decode then finds them in cache; the
@@ -1050,55 +1194,152 @@ fn decode_strips<'plan, 'coefficients, W: Send>(
         rest = tail;
         consumed = strip.start + strip.len;
         if stale && !gap.is_empty() {
-            tasks.push((gap, None));
+            push_task(&mut tasks, StripTask::Zero(gap))?;
         }
-        tasks.push((output, Some(strip)));
+        if counts.parts(strip) > 1 {
+            if shared.len() == shared.capacity() {
+                return Err(DecodingError::CodeBlockDecodeFailure.into());
+            }
+            shared.push(Mutex::new(output));
+        } else {
+            push_task(&mut tasks, StripTask::Strip(output, strip))?;
+        }
     }
     if stale && !rest.is_empty() {
-        tasks.push((rest, None));
+        push_task(&mut tasks, StripTask::Zero(rest))?;
+    }
+    let mut outputs = shared.iter();
+    for strip in &plan.strips {
+        let parts = counts.parts(strip);
+        if parts > 1 {
+            let output = outputs
+                .next()
+                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+            split_strip(plan, strip, parts, |jobs, work| {
+                push_task(&mut tasks, StripTask::Part(output, strip, jobs, work))
+            })?;
+        }
     }
 
-    // Largest rows first so stragglers are small; zeroing tasks last.
-    tasks
-        .sort_unstable_by_key(|(_, strip)| core::cmp::Reverse(strip.map_or(0, |strip| strip.work)));
+    // Largest tasks first so stragglers are small; zeroing tasks last.
+    tasks.sort_unstable_by_key(|task| core::cmp::Reverse(task.work()));
     let queue = Mutex::new(tasks.into_iter());
     let failed = AtomicBool::new(false);
     // Each worker owns one already-budgeted workspace for the whole tile.
-    // A single queue pop per strip keeps work balanced across unequal cores
+    // A single queue pop per task keeps work balanced across unequal cores
     // without forking a Rayon job and borrowing/returning scratch for each row.
     workspaces
         .par_iter_mut()
         .with_max_len(1)
         .try_for_each(|workspace| -> Result<()> {
-            let mut clipped_scratch = Vec::new();
+            let mut scratch = Vec::new();
             while !failed.load(Ordering::Relaxed) {
                 let next = queue
                     .lock()
                     .map_err(|_| DecodingError::CodeBlockDecodeFailure)?
                     .next();
-                let Some((output, strip)) = next else {
+                let Some(task) = next else {
                     break;
                 };
-                if stale {
-                    output.fill(0.0);
-                }
-                let Some(strip) = strip else {
-                    continue;
+                let decoded = match task {
+                    StripTask::Zero(output) => {
+                        output.fill(0.0);
+                        Ok(())
+                    }
+                    StripTask::Strip(output, strip) => {
+                        if stale {
+                            output.fill(0.0);
+                        }
+                        decode_strip(plan, strip, output, workspace, &mut scratch, &decode_block)
+                    }
+                    StripTask::Part(output, strip, jobs, _) => decode_part(
+                        plan,
+                        strip,
+                        jobs,
+                        output,
+                        stale,
+                        counts.scratch_samples,
+                        workspace,
+                        &mut scratch,
+                        &decode_block,
+                    ),
                 };
-                if let Err(error) = decode_strip(
-                    plan,
-                    strip,
-                    output,
-                    workspace,
-                    &mut clipped_scratch,
-                    &decode_block,
-                ) {
+                if let Err(error) = decoded {
                     failed.store(true, Ordering::Relaxed);
                     return Err(error);
                 }
             }
             Ok(())
         })
+}
+
+/// Decode jobs `jobs` of `strip`, whose output its parts share: each block
+/// into scratch, then into the output under its lock. In a stale buffer the
+/// part first zeroes its columns, from its first block to the next part's.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a part carries its strip's shared output and the worker's scratch explicitly"
+)]
+fn decode_part<W>(
+    plan: &TilePlan<'_>,
+    strip: &Strip,
+    jobs: Range<usize>,
+    output: &Mutex<&mut [f32]>,
+    stale: bool,
+    scratch_samples: usize,
+    workspace: &mut W,
+    scratch: &mut Vec<f32>,
+    decode_block: &impl Fn(&BlockJob<'_>, &mut [f32], usize, &mut W) -> Result<()>,
+) -> Result<()> {
+    let lock = || {
+        output
+            .lock()
+            .map_err(|_| DecodingError::CodeBlockDecodeFailure)
+    };
+    if stale {
+        let column = |index: usize| {
+            if index == strip.jobs.start {
+                Some(0)
+            } else if index == strip.jobs.end {
+                Some(strip.stride)
+            } else {
+                plan.jobs
+                    .get(index)
+                    .map(|job| job.placement.target_x as usize)
+            }
+        };
+        let (Some(start), Some(end)) = (column(jobs.start), column(jobs.end)) else {
+            return Err(DecodingError::CodeBlockDecodeFailure.into());
+        };
+        for row in lock()?.chunks_mut(strip.stride) {
+            row.get_mut(start..end)
+                .ok_or(DecodingError::CodeBlockDecodeFailure)?
+                .fill(0.0);
+        }
+    }
+    if scratch.len() < scratch_samples {
+        try_resize_decode_elements(scratch, scratch_samples, 0.0)?;
+    }
+    for job in plan
+        .jobs
+        .get(jobs)
+        .ok_or(DecodingError::CodeBlockDecodeFailure)?
+    {
+        // The strip starts at the block row's first stored row.
+        let placement = BlockPlacement {
+            target_y: 0,
+            ..job.placement
+        };
+        let block = scratch
+            .get_mut(..job.width as usize * job.height as usize)
+            .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+        if !placement.is_whole(job.width, job.height) {
+            block.fill(0.0);
+        }
+        decode_block(job, block, job.width as usize, workspace)?;
+        placement.copy_from_block(block, job.width, &mut lock()?, strip.stride)?;
+    }
+    Ok(())
 }
 
 fn decode_strip<W>(
@@ -1447,7 +1688,14 @@ impl BandRoute<'_> {
         tile_ctx: &mut TileDecodeContext,
         storage: &DecompositionStorage<'_>,
     ) -> Result<()> {
-        record_route_peak(tile_ctx, storage, &self.plan, self.workers + 1, 0)?;
+        // Band slots, not route tasks, hold this plan's outputs.
+        let counts = TaskCounts {
+            tasks: 0,
+            shared: 0,
+            scratch_samples: self.plan.max_clipped_samples,
+            part_work: None,
+        };
+        record_route_peak(tile_ctx, storage, &self.plan, self.workers + 1, counts)?;
         count_decoded_blocks(tile_ctx, &self.plan, self.workers + 1, self.growths);
         Ok(())
     }
@@ -1455,7 +1703,96 @@ impl BandRoute<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{route_fallback, CodeBlockCoding, TileRoute};
+    use alloc::vec::Vec;
+
+    use super::{route_fallback, split_runs, CodeBlockCoding, Strip, TaskCounts, TileRoute};
+
+    #[test]
+    fn split_runs_cover_the_strip_in_balanced_parts() {
+        let ramp: Vec<usize> = (1..=40).collect();
+        for (works, parts) in [
+            (&[5_usize; 32][..], 8),
+            (&[1, 1, 1, 100, 1, 1, 1][..], 3),
+            (&[10, 20, 30, 40][..], 8),
+            (&[7][..], 4),
+            (&[3, 0, 0, 3][..], 2),
+            (&[0, 0, 0][..], 2),
+            (&ramp[..], 5),
+        ] {
+            let total: usize = works.iter().sum();
+            let largest = works.iter().copied().max().unwrap_or(0);
+            let mut runs = Vec::new();
+            split_runs(
+                10,
+                works.iter().map(|&work| Ok(work)),
+                total,
+                parts,
+                |jobs, work| {
+                    runs.push((jobs, work));
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert!(runs.len() <= parts, "{works:?} into {parts}: {runs:?}");
+            let mut next = 10;
+            for (jobs, work) in &runs {
+                assert_eq!(jobs.start, next, "{works:?} into {parts}: {runs:?}");
+                assert!(jobs.end > jobs.start, "{works:?} into {parts}: {runs:?}");
+                assert_eq!(
+                    *work,
+                    works[jobs.start - 10..jobs.end - 10].iter().sum::<usize>()
+                );
+                // A run passes its share by less than its last job.
+                assert!(
+                    *work <= total.div_ceil(parts) + largest,
+                    "{works:?}: {runs:?}"
+                );
+                next = jobs.end;
+            }
+            assert_eq!(next, 10 + works.len(), "{works:?} into {parts}: {runs:?}");
+        }
+
+        // Equal jobs split into equal runs.
+        let mut runs = Vec::new();
+        split_runs(
+            0,
+            [5_usize; 32].into_iter().map(Ok),
+            160,
+            8,
+            |jobs, work| {
+                runs.push((jobs, work));
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(runs.len(), 8);
+        assert!(runs
+            .iter()
+            .all(|(jobs, work)| jobs.len() == 4 && *work == 20));
+    }
+
+    #[test]
+    fn strips_split_into_at_most_one_part_per_job() {
+        let strip = |jobs, work| Strip {
+            start: 0,
+            len: 0,
+            stride: 0,
+            jobs,
+            work,
+        };
+        let counts = |part_work| TaskCounts {
+            tasks: 0,
+            shared: 0,
+            scratch_samples: 0,
+            part_work,
+        };
+        assert_eq!(counts(None).parts(&strip(0..32, 1_000_000)), 1);
+        assert_eq!(counts(Some(100)).parts(&strip(0..32, 1000)), 10);
+        assert_eq!(counts(Some(100)).parts(&strip(0..32, 1001)), 11);
+        assert_eq!(counts(Some(10)).parts(&strip(0..3, 1000)), 3);
+        assert_eq!(counts(Some(100)).parts(&strip(0..32, 0)), 1);
+        assert_eq!(counts(Some(100)).parts(&strip(5..5, 1000)), 1);
+    }
 
     #[test]
     fn tile_route() {
