@@ -70,8 +70,20 @@ struct Decoded {
     streamed: bool,
     channel_bytes: usize,
     peak_bytes: usize,
+    #[cfg_attr(
+        not(feature = "parallel"),
+        expect(dead_code, reason = "only the pool band tests compare the counters")
+    )]
     pool_components: usize,
+    #[cfg_attr(
+        not(feature = "parallel"),
+        expect(dead_code, reason = "only the pool band tests compare the counters")
+    )]
     decoded_blocks: usize,
+    #[cfg_attr(
+        not(feature = "parallel"),
+        expect(dead_code, reason = "only the pool band tests compare the counters")
+    )]
     skipped_blocks: usize,
 }
 
@@ -391,6 +403,13 @@ fn pool_band_rows_fit_every_components_clipped_blocks() {
 /// A sink with an RGB8 destination, which [`ComponentRowSink::write_rows`]
 /// fills the way the destination's contract says: each 8-bit sample rounded
 /// and saturated.
+#[cfg_attr(
+    not(feature = "parallel"),
+    expect(
+        dead_code,
+        reason = "only the parallel band reader offers an RGB8 destination"
+    )
+)]
 struct Rgb8Sink {
     width: usize,
     rgb: Vec<u8>,

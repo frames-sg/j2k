@@ -394,13 +394,19 @@ impl<'o, 't> RowOutput<'o, 't> {
     }
 }
 
+#[cfg_attr(
+    not(feature = "parallel"),
+    expect(dead_code, reason = "only the parallel band reader writes batches")
+)]
 impl RowOutput<'_, '_> {
     /// [`Self::write`] through one reader per component, which may run on
     /// different threads, `batch` rows at a time. Each component's
     /// reconstruction advances `batch` rows into its own rows of `scratch`,
     /// on the pool when there is a reader per component, then the rows are
     /// transformed and handed over, packed straight into the sink's RGB8
-    /// destination when it has one for three 8-bit components.
+    /// destination when it has one for three 8-bit components. With a
+    /// reader per component, a batch is transformed and packed on the pool
+    /// while the next one reconstructs, so `scratch` holds two batches.
     pub(super) fn write_batches(
         &mut self,
         lines: &mut [LineReconstruction<'_>],
@@ -408,7 +414,7 @@ impl RowOutput<'_, '_> {
         scratch: &mut [f32],
         batch: usize,
     ) -> Result<()> {
-        let (copy, region, components) = (self.copy, self.region, lines.len());
+        let (copy, components) = (self.copy, lines.len());
         let width = copy.width() as usize;
         if lines.is_empty() || width == 0 || batch == 0 {
             return Ok(());
@@ -416,71 +422,219 @@ impl RowOutput<'_, '_> {
         let batch_len = width
             .checked_mul(batch)
             .ok_or(ValidationError::ImageTooLarge)?;
-        let rgb8 = components == 3 && self.depths[..3].iter().all(|(depth, _)| *depth == 8);
+        let half = batch_len
+            .checked_mul(components)
+            .ok_or(ValidationError::ImageTooLarge)?;
+        let transform = (self.tile, self.round_irreversible_output);
+        let tasks = if readers.len() > 1 { readers.len() } else { 1 };
+        let (now, rest) = scratch.split_at_mut(half.min(scratch.len()));
+        // With a reader per component and room for two batches, a batch is
+        // transformed and handed over on the pool while the next one
+        // reconstructs in the other half of `scratch`.
+        let pipelined = readers.len() > 1 && rest.len() >= half;
+        let mut halves = [now, rest];
+        // The rows, from a row, of the batch in `halves[1]` left to finish.
+        let mut pending = None;
         let mut y = copy.y0;
-        while y < copy.y1 {
-            let rows = ((copy.y1 - y) as usize).min(batch);
-            let mut parts: [&mut [f32]; 4] = Default::default();
-            for (part, chunk) in parts.iter_mut().zip(scratch.chunks_exact_mut(batch_len)) {
-                *part = &mut chunk[..rows * width];
-            }
-            let parts = &mut parts[..components];
-            if parts.iter().any(|part| part.len() != rows * width) {
-                return Err(DecodingError::CodeBlockDecodeFailure.into());
-            }
-            reconstruct_batch(lines, readers, parts, y, width)?;
-            let (x, row_in_region) = (copy.x0 - region.x0, y - region.y0);
-            let destination = rgb8
-                .then(|| self.sink.rgb8_region(region.width(), region.height()))
-                .flatten();
-            let rgb8_rows = match destination {
-                Some(out) => {
-                    let stride = region.width() as usize * 3;
-                    let start = row_in_region as usize * stride;
-                    let out = out
-                        .get_mut(start..start + rows * stride)
-                        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-                    Some(Rgb8Rows {
-                        out,
-                        stride,
-                        x: x as usize * 3,
-                    })
+        loop {
+            let rows = (copy.y1.saturating_sub(y) as usize).min(batch);
+            let [now, before] = &mut halves;
+            let done = pending.take();
+            if rows == 0 {
+                if let Some(done) = done {
+                    self.finish_batch(
+                        transform,
+                        before,
+                        done,
+                        (batch_len, components, tasks),
+                        None,
+                    )?;
                 }
-                None => None,
-            };
-            let packed = rgb8_rows.is_some();
-            // With a reader per component the rows' transform and pack split
-            // across as many tasks, which the readers' threads are free for.
-            let tasks = if readers.len() > 1 { readers.len() } else { 1 };
-            finish_rows(
-                (self.tile, self.round_irreversible_output),
-                parts,
-                width,
-                rgb8_rows,
-                tasks,
-            )?;
-            if !packed {
-                let component_rows: [ComponentPlane<'_>; 4] =
-                    core::array::from_fn(|index| ComponentPlane {
-                        samples: parts.get(index).map_or(&[][..], |part| &**part),
-                        dimensions: (copy.width(), rows as u32),
-                        bit_depth: self.depths[index].0,
-                        signed: self.depths[index].1,
-                        sampling: (1, 1),
-                    });
-                self.sink
-                    .write_rows(x, row_in_region, &component_rows[..components]);
+                return Ok(());
             }
-            self.streamed = self.streamed.saturating_add(rows * width * components);
+            let mut parts = batch_parts(now, batch_len, rows * width, components)?;
+            let mut reconstruct =
+                || reconstruct_batch(lines, readers, &mut parts[..components], y, width);
+            match done {
+                Some(done) => self.finish_batch(
+                    transform,
+                    before,
+                    done,
+                    (batch_len, components, tasks),
+                    Some(&mut reconstruct),
+                )?,
+                None => reconstruct()?,
+            }
+            if pipelined {
+                pending = Some((y, rows));
+                halves.swap(0, 1);
+            } else {
+                let [now, _] = &mut halves;
+                self.finish_batch(
+                    transform,
+                    now,
+                    (y, rows),
+                    (batch_len, components, tasks),
+                    None,
+                )?;
+            }
             y += rows as u32;
         }
+    }
+
+    /// Transform the `rows` rows of each component in `buffer`, `batch_len`
+    /// samples apart, from row `y`, in up to `tasks` ranges, and hand them
+    /// over: packed into the sink's RGB8 rows when it has them, else through
+    /// `write_rows`. With `alongside`, the rows finish on the pool while
+    /// `alongside` runs here.
+    fn finish_batch(
+        &mut self,
+        transform: (&Tile<'_>, bool),
+        buffer: &mut [f32],
+        (y, rows): (u32, usize),
+        (batch_len, components, tasks): (usize, usize, usize),
+        alongside: Option<&mut dyn FnMut() -> Result<()>>,
+    ) -> Result<()> {
+        let width = self.copy.width() as usize;
+        let mut parts = batch_parts(buffer, batch_len, rows * width, components)?;
+        let destination = self.rgb8_rows(y, rows)?;
+        let packed = destination.is_some();
+        match alongside {
+            Some(alongside) => {
+                let mut finished = Ok(());
+                let mut alongside_result = Ok(());
+                overlap(
+                    || {
+                        finished = finish_rows(
+                            transform,
+                            &mut parts[..components],
+                            width,
+                            destination,
+                            tasks,
+                        );
+                    },
+                    || alongside_result = alongside(),
+                );
+                alongside_result?;
+                finished?;
+            }
+            None => finish_rows(
+                transform,
+                &mut parts[..components],
+                width,
+                destination,
+                tasks,
+            )?,
+        }
+        if !packed {
+            self.write_component_rows(&parts[..components], y, rows);
+        }
+        self.streamed = self.streamed.saturating_add(rows * width * components);
         Ok(())
+    }
+
+    /// The sink's RGB8 rows for `rows` rows of the tile from row `y`, when
+    /// it has a destination for three 8-bit components.
+    fn rgb8_rows(&mut self, y: u32, rows: usize) -> Result<Option<Rgb8Rows<'_>>> {
+        let (copy, region) = (self.copy, self.region);
+        let rgb8 = self.depths.len() >= 3
+            && self.tile.component_infos.len() == 3
+            && self.depths[..3].iter().all(|(depth, _)| *depth == 8);
+        if !rgb8 {
+            return Ok(None);
+        }
+        let Some(out) = self.sink.rgb8_region(region.width(), region.height()) else {
+            return Ok(None);
+        };
+        let stride = region.width() as usize * 3;
+        let start = (y - region.y0) as usize * stride;
+        let out = out
+            .get_mut(start..start + rows * stride)
+            .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+        Ok(Some(Rgb8Rows {
+            out,
+            stride,
+            x: (copy.x0 - region.x0) as usize * 3,
+        }))
+    }
+
+    /// Hand `rows` rows of each component in `parts`, from row `y`, to the
+    /// sink.
+    fn write_component_rows(&mut self, parts: &[&mut [f32]], y: u32, rows: usize) {
+        let (copy, region) = (self.copy, self.region);
+        let component_rows: [ComponentPlane<'_>; 4] =
+            core::array::from_fn(|index| ComponentPlane {
+                samples: parts.get(index).map_or(&[][..], |part| &**part),
+                dimensions: (copy.width(), rows as u32),
+                bit_depth: self.depths[index].0,
+                signed: self.depths[index].1,
+                sampling: (1, 1),
+            });
+        self.sink.write_rows(
+            copy.x0 - region.x0,
+            y - region.y0,
+            &component_rows[..parts.len()],
+        );
+    }
+}
+
+/// Each component's first `len` samples of its `batch_len` in `buffer`.
+#[cfg_attr(
+    not(feature = "parallel"),
+    expect(dead_code, reason = "only the parallel band reader writes batches")
+)]
+fn batch_parts(
+    buffer: &mut [f32],
+    batch_len: usize,
+    len: usize,
+    components: usize,
+) -> Result<[&mut [f32]; 4]> {
+    let mut parts: [&mut [f32]; 4] = Default::default();
+    for (part, chunk) in parts
+        .iter_mut()
+        .zip(buffer.chunks_exact_mut(batch_len))
+        .take(components)
+    {
+        *part = chunk
+            .get_mut(..len)
+            .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+    }
+    if parts[..components.min(4)]
+        .iter()
+        .any(|part| part.len() != len)
+    {
+        return Err(DecodingError::CodeBlockDecodeFailure.into());
+    }
+    Ok(parts)
+}
+
+/// Run `spawned` on the pool while `inline` runs here, and return once both
+/// have.
+#[cfg_attr(
+    not(feature = "parallel"),
+    expect(dead_code, reason = "only the parallel band reader writes batches")
+)]
+fn overlap(spawned: impl FnOnce() + Send, inline: impl FnOnce()) {
+    #[cfg(feature = "parallel")]
+    rayon::in_place_scope(|scope| {
+        scope.spawn(move |_| spawned());
+        inline();
+    });
+    #[cfg(not(feature = "parallel"))]
+    {
+        spawned();
+        inline();
     }
 }
 
 /// Reconstruct the next `parts[c].len() / width` rows of each component `c`,
 /// from row `first_y`, into `parts[c]`: on the pool, one component per task,
-/// when there is a reader per component, otherwise all through the first.
+/// when there is a reader per component, otherwise all through the first,
+/// a row of each component at a time.
+#[cfg_attr(
+    not(feature = "parallel"),
+    expect(dead_code, reason = "only the parallel band reader writes batches")
+)]
 fn reconstruct_batch(
     lines: &mut [LineReconstruction<'_>],
     readers: &mut [&mut (dyn SubBandRows + Send)],
@@ -492,8 +646,21 @@ fn reconstruct_batch(
         let reader = readers
             .first_mut()
             .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-        for (line, part) in lines.iter_mut().zip(parts.iter_mut()) {
-            reconstruct_rows_into(line, &mut **reader, part, first_y, width)?;
+        // A row of each component at a time, as `RowOutput::write` reads
+        // them, so the bands of every component are taken in turn and the
+        // pool keeps decoding all of them.
+        let rows = parts.first().map_or(0, |part| part.len() / width);
+        for row in 0..rows {
+            let y = u32::try_from(row)
+                .ok()
+                .and_then(|row| first_y.checked_add(row))
+                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+            for (line, part) in lines.iter_mut().zip(parts.iter_mut()) {
+                let out = part
+                    .get_mut(row * width..(row + 1) * width)
+                    .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+                reconstruct_rows_into(line, &mut **reader, out, y, width)?;
+            }
         }
         return Ok(());
     }
@@ -529,6 +696,10 @@ fn reconstruct_batch(
 
 /// The next rows of `line`, from row `first_y`, through `rows`, into `out`,
 /// `width` samples each.
+#[cfg_attr(
+    not(feature = "parallel"),
+    expect(dead_code, reason = "only the parallel band reader writes batches")
+)]
 fn reconstruct_rows_into(
     line: &mut LineReconstruction<'_>,
     rows: &mut dyn SubBandRows,
@@ -552,6 +723,10 @@ fn reconstruct_rows_into(
 }
 
 /// Output rows that take three 8-bit components packed as RGB8.
+#[cfg_attr(
+    not(feature = "parallel"),
+    expect(dead_code, reason = "only the parallel band reader writes batches")
+)]
 struct Rgb8Rows<'o> {
     /// Whole output rows, `stride` bytes each, one per reconstructed row.
     out: &'o mut [u8],
@@ -561,11 +736,19 @@ struct Rgb8Rows<'o> {
 }
 
 /// One range of a batch's rows: each component's rows and their output.
+#[cfg_attr(
+    not(feature = "parallel"),
+    expect(dead_code, reason = "only the parallel band reader writes batches")
+)]
 struct BatchRows<'p, 'o> {
     parts: [&'p mut [f32]; 4],
     rgb8: Option<Rgb8Rows<'o>>,
 }
 
+#[cfg_attr(
+    not(feature = "parallel"),
+    expect(dead_code, reason = "only the parallel band reader writes batches")
+)]
 impl BatchRows<'_, '_> {
     /// Transform the rows one at a time, as [`RowOutput::write`] does, then
     /// pack them into the RGB8 rows if there are any.
@@ -610,6 +793,10 @@ impl BatchRows<'_, '_> {
 /// Transform each component's rows in `parts`, `width` samples each, and
 /// pack them into `rgb8` when given, in up to `tasks` ranges of rows, all but
 /// the first spawned on the pool.
+#[cfg_attr(
+    not(feature = "parallel"),
+    expect(dead_code, reason = "only the parallel band reader writes batches")
+)]
 fn finish_rows(
     transform: (&Tile<'_>, bool),
     parts: &mut [&mut [f32]],

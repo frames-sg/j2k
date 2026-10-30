@@ -18,13 +18,20 @@ use crate::math::{SimdBuffer, SIMD_WIDTH};
 use crate::{checked_decode_usize_product2, try_resize_decode_elements, Result};
 
 /// Samples of each component's rows a tile streaming from pool bands
-/// reconstructs at once, before they are transformed and handed over.
-const STREAMED_BATCH_SAMPLES: usize = 256 * 1024;
+/// reconstructs at most at once, before they are transformed and handed over.
+const STREAMED_BATCH_SAMPLES: usize = 2 * 1024 * 1024;
+
+/// Batches a tile streaming from pool bands splits its rows into at least,
+/// so the two batches it holds at once stay at most half of the rows'
+/// samples.
+const STREAMED_MIN_BATCHES: usize = 4;
 
 /// Rows of each component a tile streaming from pool bands reconstructs at
-/// once, for rows of `width` samples.
-pub(crate) fn streamed_batch_rows(width: usize) -> usize {
-    (STREAMED_BATCH_SAMPLES / width.max(1)).clamp(1, 256)
+/// once, for `height` rows of `width` samples.
+pub(crate) fn streamed_batch_rows(width: usize, height: usize) -> usize {
+    (STREAMED_BATCH_SAMPLES / width.max(1))
+        .min(height / STREAMED_MIN_BATCHES)
+        .clamp(1, 512)
 }
 
 /// The most f32 samples [`apply_roi`] holds at once for any one component.
@@ -40,8 +47,8 @@ pub(crate) fn streamed_batch_rows(width: usize) -> usize {
 /// level it holds nothing, since it copies the LL window straight into the
 /// plane. When the tile streams its rows to a sink, every component's rings
 /// are live at once, with a scratch row each as wide as its final window, or
-/// a batch of such rows from pool bands (see [`streamed_batch_rows`]), so the
-/// peak is their sum.
+/// two batches of such rows from pool bands (see [`streamed_batch_rows`]), so
+/// the peak is their sum.
 pub(crate) fn roi_idwt_peak_elements(
     storage: &DecompositionStorage<'_>,
     skipped_resolution_levels: u8,
@@ -77,9 +84,13 @@ pub(crate) fn roi_idwt_peak_elements(
             let rings = ring_samples(windows, WaveletTransform::Irreversible97)?;
             if storage.lockstep_lines {
                 let scratch_row = roi_plan.final_window(component_idx).map_or(0, |window| {
-                    let width = window.width() as usize;
+                    let (width, height) = (window.width() as usize, window.height() as usize);
                     if storage.parallel_bands {
-                        width.saturating_mul(streamed_batch_rows(width))
+                        // Two batches, when each component reconstructs
+                        // on its own reader.
+                        width
+                            .saturating_mul(streamed_batch_rows(width, height))
+                            .saturating_mul(2)
                     } else {
                         width
                     }

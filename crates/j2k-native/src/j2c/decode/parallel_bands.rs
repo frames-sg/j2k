@@ -351,16 +351,6 @@ pub(super) fn decode_tile_rows<'a>(
     let (copy, region) = line_plans
         .first()
         .map_or((empty, empty), |plan| (plan.copy, plan.region));
-    // Rows reconstruct in batches, charged by the region's width (see
-    // `roi_idwt_peak_elements`).
-    let batch = streamed_batch_rows(region.width() as usize);
-    let scratch_len = (copy.width() as usize)
-        .checked_mul(components)
-        .and_then(|samples| samples.checked_mul(batch))
-        .ok_or(ValidationError::ImageTooLarge)?;
-    let (mut buffer, ring_lens) =
-        banded_tier1::take_line_buffer(tile_ctx, storage, &line_plans, scratch_len)?;
-    let mut output = RowOutput::new(tile, sink, tile_ctx, copy, region);
     // Every route plans the tile's one block coding (see `routes_tile`).
     let coding = routes
         .first()
@@ -382,6 +372,18 @@ pub(super) fn decode_tile_rows<'a>(
     } else {
         1
     };
+    // Rows reconstruct in batches, charged by the region's width (see
+    // `roi_idwt_peak_elements`): two of them with a reader per component, so
+    // one finishes while the next reconstructs.
+    let batch = streamed_batch_rows(region.width() as usize, copy.height() as usize);
+    let scratch_len = (copy.width() as usize)
+        .checked_mul(components)
+        .and_then(|samples| samples.checked_mul(batch))
+        .and_then(|samples| samples.checked_mul(if readers > 1 { 2 } else { 1 }))
+        .ok_or(ValidationError::ImageTooLarge)?;
+    let (mut buffer, ring_lens) =
+        banded_tier1::take_line_buffer(tile_ctx, storage, &line_plans, scratch_len)?;
+    let mut output = RowOutput::new(tile, sink, tile_ctx, copy, region);
     let workers = route_workers.min(bank.saturating_sub(readers));
     // One reader for every component of a classic tile leaves the pool's
     // threads to Tier-1, and decodes bands itself while it waits.
