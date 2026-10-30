@@ -7,7 +7,7 @@ use super::build::{CodeBlock, ParseScratch, Precinct, PrecinctSelection, Precinc
 use super::codestream::markers::{EPH, SOP};
 use super::codestream::{ComponentInfo, Header};
 use super::decode::{DecodeAllocationBudget, DecompositionStorage};
-use super::progression::{progression_iterator, ProgressionData};
+use super::progression::{progression_iterator, ProgressionData, ProgressionIterator};
 use super::tag_tree::TagNode;
 use super::tile::{Tile, TilePartCursor};
 use crate::error::{bail, DecodeError, DecodingError, Result, ValidationError};
@@ -217,7 +217,7 @@ fn parse_with_walk<'a>(
 
 fn parse_selected_inner<'a>(
     tile: &Tile<'a>,
-    progression_iterator: &mut dyn Iterator<Item = ProgressionData>,
+    progression_iterator: &mut ProgressionIterator<'_>,
     skips: &mut PacketSkips,
     header: &Header<'_>,
     storage: &mut DecompositionStorage<'a>,
@@ -242,7 +242,7 @@ fn parse_selected_inner<'a>(
 
 fn parse_tile_parts<'a>(
     tile: &Tile<'a>,
-    progression_iterator: &mut dyn Iterator<Item = ProgressionData>,
+    progression_iterator: &mut ProgressionIterator<'_>,
     skips: &mut PacketSkips,
     header: &Header<'_>,
     storage: &mut DecompositionStorage<'a>,
@@ -383,7 +383,7 @@ impl<'s> PacketRelevance<'s> {
 )]
 fn parse_inner<'a>(
     mut tile_part: TilePartCursor<'_, 'a>,
-    progression_iterator: &mut dyn Iterator<Item = ProgressionData>,
+    progression_iterator: &mut ProgressionIterator<'_>,
     component_infos: &[ComponentInfo],
     num_layers: u8,
     storage: &mut DecompositionStorage<'a>,
@@ -451,7 +451,34 @@ fn parse_inner<'a>(
                 .as_ref()
                 .is_some_and(|relevance| relevance.selection.skip_by_length())
         {
-            if !tile_part.skip_packet() {
+            // Need is decided per precinct, so the precinct's remaining
+            // layers, which a position-major progression reads next, are
+            // skipped with this one, up to the end of the tile-part.
+            #[cfg(feature = "std")]
+            let layers = if walk.recording.is_none() {
+                progression_iterator.remaining_precinct_layers()
+            } else {
+                0
+            };
+            #[cfg(not(feature = "std"))]
+            let layers = progression_iterator.remaining_precinct_layers();
+            let (skipped, complete) = tile_part.skip_packets(1 + layers);
+            // The packets a one-by-one walk would have taken from the
+            // progression after this one: each skipped, plus a failing one.
+            let further = if complete {
+                skipped.saturating_sub(1)
+            } else {
+                skipped
+            };
+            progression_iterator.skip_precinct_layers(further);
+            #[cfg(feature = "std")]
+            {
+                walk.next_packet = walk
+                    .next_packet
+                    .checked_add(further)
+                    .ok_or("packet ordinal overflows")?;
+            }
+            if !complete {
                 return Err("PLT packet length runs past the tile-part");
             }
             continue;

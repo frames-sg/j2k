@@ -152,31 +152,38 @@ impl<'data> TilePartCursor<'_, 'data> {
         (actual == expected as usize).then_some(())
     }
 
-    /// Skip one whole packet, header and body, by its PLT length.
-    ///
-    /// Only in-band packet headers can be skipped this way. Returns `false`
-    /// without consuming anything when the length is not signalled, the
-    /// headers live in PPM/PPT, or the length runs past the tile-part, so the
-    /// caller parses the packet instead.
-    pub(crate) fn skip_packet(&mut self) -> bool {
+    /// Skip up to `count` whole packets, header and body, by their PLT
+    /// lengths, stopping after a packet that ends the tile-part's data. Only
+    /// in-band packet headers can be skipped this way. Returns how many were
+    /// skipped and whether the next skip would have succeeded: `false` when
+    /// the length is not signalled, the headers live in PPM/PPT, or the length
+    /// runs past the tile-part, which consumes nothing of that packet.
+    pub(crate) fn skip_packets(&mut self, count: usize) -> (usize, bool) {
         let Self::Merged {
             data,
             packet_lengths,
         } = self
         else {
-            return false;
+            return (0, false);
         };
         if !packet_lengths.present {
-            return false;
+            return (0, false);
         }
-        let Some(&length) = packet_lengths.lengths.get(packet_lengths.next) else {
-            return false;
-        };
-        if data.skip_bytes(length as usize).is_none() {
-            return false;
+        let mut skipped = 0;
+        while skipped < count {
+            if skipped > 0 && data.at_end() {
+                break;
+            }
+            let Some(&length) = packet_lengths.lengths.get(packet_lengths.next) else {
+                return (skipped, false);
+            };
+            if data.skip_bytes(length as usize).is_none() {
+                return (skipped, false);
+            }
+            packet_lengths.next += 1;
+            skipped += 1;
         }
-        packet_lengths.next += 1;
-        true
+        (skipped, true)
     }
 
     pub(crate) fn validate_all_packet_lengths_consumed(&self) -> Option<()> {

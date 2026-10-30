@@ -209,6 +209,42 @@ impl ProgressionIterator<'_> {
     pub(crate) const fn owned_bytes(&self) -> usize {
         self.owned_bytes
     }
+
+    /// Packets of the precinct the last packet belongs to that come right
+    /// after it: its remaining layers, in a position-major progression
+    /// without progression changes, whose layer is the innermost index.
+    /// Zero for every other progression.
+    pub(crate) fn remaining_precinct_layers(&self) -> usize {
+        match &self.inner {
+            ProgressionInner::Single(ProgressionOrderIterator::Position(iterator))
+                if iterator.current.is_some() =>
+            {
+                usize::from(iterator.max_layer.saturating_sub(iterator.next_layer))
+            }
+            _ => 0,
+        }
+    }
+
+    /// Pass over `count` of [`Self::remaining_precinct_layers`], as `count`
+    /// calls to `next` would.
+    pub(crate) fn skip_precinct_layers(&mut self, count: usize) {
+        if count == 0 {
+            return;
+        }
+        if let ProgressionInner::Single(ProgressionOrderIterator::Position(iterator)) =
+            &mut self.inner
+        {
+            let remaining = usize::from(iterator.max_layer.saturating_sub(iterator.next_layer));
+            if count <= remaining {
+                // `count` fits in the u8 layer range below `max_layer`.
+                iterator.next_layer += u8::try_from(count).unwrap_or(0);
+                return;
+            }
+        }
+        for _ in 0..count {
+            self.next();
+        }
+    }
 }
 
 impl Iterator for ProgressionIterator<'_> {
