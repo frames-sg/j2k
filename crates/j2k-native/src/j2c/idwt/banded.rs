@@ -511,8 +511,10 @@ fn synthesize_level_columns<S: Simd>(
         synthesize_level_row(simd, level, index, out, low, high);
         return;
     }
-    // Strips are only made of even-origin 9-7I levels (`column_strips`).
-    let row_scale = if index % 2 == level.y0 % 2 {
+    // Strips are only made of even-origin levels (`column_strips`).
+    let row_scale = if level.transform == WaveletTransform::Reversible53 {
+        1.0
+    } else if index % 2 == level.y0 % 2 {
         dwt::DWT97_KAPPA_F32
     } else {
         level.high_pass
@@ -1284,34 +1286,26 @@ fn synthesize_row<S: Simd>(
 
     match level.transform {
         WaveletTransform::Reversible53 => {
-            load_ghosted(low, low_source);
-            load_ghosted(high, high_source);
-            // Equation (F-5), then (F-6).
-            let quarter = f32x8::splat(simd, 0.25);
-            let half = f32x8::splat(simd, 0.5);
-            lift_row(
+            // As for 9-7I below, with `lift_row_53_window`.
+            let window = if low_first {
+                window_pairs_97(high_source.len())
+            } else {
+                0
+            };
+            let start = window.saturating_sub(WINDOW_HALO_PAIRS);
+            synthesize_53_tail(
                 simd,
-                low,
-                high,
-                low_reads,
-                #[inline(always)]
-                |s, a, b| s - (a + b).mul_add(quarter, half).floor(),
-                #[inline(always)]
-                |s, a, b| s - math::floor_f32(math::mul_add(a + b, 0.25, 0.5)),
-            );
-            lift_high_to_row::<S, false>(
-                simd,
-                high,
-                low,
-                high_reads,
+                [low_source, high_source],
+                [low, high],
+                [low_reads, high_reads],
                 low_first,
-                row,
-                1.0,
-                #[inline(always)]
-                |s, a, b| s + ((a + b) * 0.5).floor(),
-                #[inline(always)]
-                |s, a, b| s + math::floor_half_sum_f32(a, b),
+                &mut row[2 * start..],
+                start,
             );
+            if window > 0 {
+                let row = &mut row[..2 * window];
+                lift_row_53_window(simd, low_source, high_source, row, 0);
+            }
         }
         WaveletTransform::Irreversible97 => {
             // An even-origin row lifts its first `window` pairs in one pass
@@ -1349,6 +1343,138 @@ fn synthesize_row<S: Simd>(
             }
         }
     }
+}
+
+/// The multi-pass 5-3R synthesis of a row's pairs from `start` on into
+/// `tail`, through ghosted copies of the band rows' remaining samples.
+#[inline(always)]
+fn synthesize_53_tail<S: Simd>(
+    simd: S,
+    [low_source, high_source]: [&[f32]; 2],
+    [low, high]: [&mut [f32]; 2],
+    [low_reads, high_reads]: [(usize, usize); 2],
+    low_first: bool,
+    tail: &mut [f32],
+    start: usize,
+) {
+    let low = &mut low[..low_source.len() - start + 2];
+    let high = &mut high[..high_source.len() - start + 2];
+    load_ghosted(low, &low_source[start..]);
+    load_ghosted(high, &high_source[start..]);
+    // Equation (F-5), then (F-6).
+    let quarter = f32x8::splat(simd, 0.25);
+    let half = f32x8::splat(simd, 0.5);
+    lift_row(
+        simd,
+        low,
+        high,
+        low_reads,
+        #[inline(always)]
+        |s, a, b| s - (a + b).mul_add(quarter, half).floor(),
+        #[inline(always)]
+        |s, a, b| s - math::floor_f32(math::mul_add(a + b, 0.25, 0.5)),
+    );
+    lift_high_to_row::<S, false>(
+        simd,
+        high,
+        low,
+        high_reads,
+        low_first,
+        tail,
+        1.0,
+        #[inline(always)]
+        |s, a, b| s + ((a + b) * 0.5).floor(),
+        #[inline(always)]
+        |s, a, b| s + math::floor_half_sum_f32(a, b),
+    );
+}
+
+/// The horizontal 5-3R synthesis of pairs `SIMD_WIDTH * first_block` on, as
+/// many as `row` has room for, of an even-origin row from its `low` and
+/// `high` band rows, in one pass of `SIMD_WIDTH`-pair blocks: equation (F-5)
+/// a block ahead of (F-6), neighbors taken across blocks by `slide`, each
+/// block interleaved and stored. A pass from block zero mirrors the row's
+/// left edge; one from a later block first lifts that block's low samples
+/// from the block before it. Each sample sees the operations of the
+/// multi-pass steps in [`synthesize_53_tail`].
+#[expect(
+    clippy::inline_always,
+    reason = "the lifting kernels are specialized inside each SIMD dispatch target"
+)]
+#[inline(always)]
+fn lift_row_53_window<S: Simd>(
+    simd: S,
+    low: &[f32],
+    high: &[f32],
+    row: &mut [f32],
+    first_block: usize,
+) {
+    let steps = [f32x8::splat(simd, 0.25), f32x8::splat(simd, 0.5)];
+    let mut high0 = band_block(simd, high, first_block);
+    let mut low1 = if first_block == 0 {
+        // T.800 F.3.7: high sample -1 mirrors high sample 0.
+        let low0 = band_block(simd, low, 0);
+        update_53(high0.slide::<1>(high0), high0, low0, steps)
+    } else {
+        let previous = band_block(simd, high, first_block - 1);
+        update_53(previous, high0, band_block(simd, low, first_block), steps)
+    };
+    for (index, out) in row
+        .as_chunks_mut::<{ 2 * SIMD_WIDTH }>()
+        .0
+        .iter_mut()
+        .enumerate()
+    {
+        let block = first_block + index + 1;
+        let next_high0 = band_block(simd, high, block);
+        let next_low1 = update_53(high0, next_high0, band_block(simd, low, block), steps);
+        let high1 = predict_53(low1, next_low1, high0);
+        let (first, second) = out.split_at_mut(SIMD_WIDTH);
+        low1.zip_low(high1).store(first);
+        low1.zip_high(high1).store(second);
+        (high0, low1) = (next_high0, next_low1);
+    }
+}
+
+/// Equation (F-5) on a block of low samples from the high block before them
+/// (`previous`) and their own: low sample `k` lies between high samples
+/// `k - 1` and `k`. `[quarter, half]` are splats of 0.25 and 0.5.
+#[expect(
+    clippy::inline_always,
+    reason = "the lifting kernels are specialized inside each SIMD dispatch target"
+)]
+#[inline(always)]
+fn update_53<S: Simd>(
+    previous: f32x8<S>,
+    high: f32x8<S>,
+    low: f32x8<S>,
+    [quarter, half]: [f32x8<S>; 2],
+) -> f32x8<S> {
+    low - (previous.slide::<7>(high) + high)
+        .mul_add(quarter, half)
+        .floor()
+}
+
+/// Equation (F-6) on a block of high samples from the lifted low block with
+/// them and the next: high sample `k` lies between low samples `k` and
+/// `k + 1`.
+#[expect(
+    clippy::inline_always,
+    reason = "the lifting kernels are specialized inside each SIMD dispatch target"
+)]
+#[inline(always)]
+fn predict_53<S: Simd>(low: f32x8<S>, next: f32x8<S>, high: f32x8<S>) -> f32x8<S> {
+    high + ((low + low.slide::<1>(next)) * 0.5).floor()
+}
+
+/// Block `block` of `SIMD_WIDTH` samples of `band`.
+#[expect(
+    clippy::inline_always,
+    reason = "the block load is specialized inside each SIMD dispatch target"
+)]
+#[inline(always)]
+fn band_block<S: Simd>(simd: S, band: &[f32], block: usize) -> f32x8<S> {
+    f32x8::from_slice(simd, &band[block * SIMD_WIDTH..][..SIMD_WIDTH])
 }
 
 /// The multi-pass 9-7I synthesis of a row's pairs from `start` on into
@@ -1419,7 +1545,7 @@ fn synthesize_97_tail<S: Simd>(
     );
 }
 
-/// Columns `columns` of [`synthesize_row`] of an even-origin 9-7I row that
+/// Columns `columns` of [`synthesize_row`] of an even-origin row that
 /// [`column_strips`] split, into `out`: the window blocks the columns cover
 /// and, for the row's last strip, its multi-pass tail.
 #[expect(
@@ -1443,7 +1569,74 @@ fn synthesize_row_columns<S: Simd>(
     row_scale: f32,
 ) {
     let first_block = columns.start / (2 * SIMD_WIDTH);
+    let window = window_pairs_97(high_source.len());
+    let reversible = level.transform == WaveletTransform::Reversible53;
     if columns.end < level.width {
+        lift_row_window(
+            simd,
+            level,
+            [low_source, high_source],
+            out,
+            first_block,
+            row_scale,
+        );
+        return;
+    }
+    let start = window - WINDOW_HALO_PAIRS;
+    // As in `synthesize_row`, the tail first, then the window over its left
+    // edge.
+    let tail = &mut out[2 * start - columns.start..];
+    if reversible {
+        synthesize_53_tail(
+            simd,
+            [low_source, high_source],
+            [low, high],
+            [(0, 1), (1, 2)],
+            true,
+            tail,
+            start,
+        );
+    } else {
+        synthesize_97_tail(
+            simd,
+            [low_source, high_source],
+            [low, high],
+            [(0, 1), (1, 2)],
+            true,
+            tail,
+            start,
+            level.high_pass,
+            row_scale,
+        );
+    }
+    lift_row_window(
+        simd,
+        level,
+        [low_source, high_source],
+        &mut out[..2 * window - columns.start],
+        first_block,
+        row_scale,
+    );
+}
+
+/// The register-window pass of `level`'s transform over `out` from
+/// `first_block` ([`lift_row_53_window`], [`lift_row_97_window`]).
+#[expect(
+    clippy::inline_always,
+    reason = "the lifting kernels are specialized inside each SIMD dispatch target"
+)]
+#[inline(always)]
+fn lift_row_window<S: Simd>(
+    simd: S,
+    level: Level2d<'_>,
+    [low_source, high_source]: [&[f32]; 2],
+    out: &mut [f32],
+    first_block: usize,
+    row_scale: f32,
+) {
+    if level.transform == WaveletTransform::Reversible53 {
+        lift_row_53_window(simd, low_source, high_source, out, first_block);
+    } else {
         lift_row_97_window(
             simd,
             low_source,
@@ -1453,32 +1646,7 @@ fn synthesize_row_columns<S: Simd>(
             level.high_pass,
             row_scale,
         );
-        return;
     }
-    let window = window_pairs_97(high_source.len());
-    let start = window - WINDOW_HALO_PAIRS;
-    // As in `synthesize_row`, the tail first, then the window over its left
-    // edge.
-    synthesize_97_tail(
-        simd,
-        [low_source, high_source],
-        [low, high],
-        [(0, 1), (1, 2)],
-        true,
-        &mut out[2 * start - columns.start..],
-        start,
-        level.high_pass,
-        row_scale,
-    );
-    lift_row_97_window(
-        simd,
-        low_source,
-        high_source,
-        &mut out[..2 * window - columns.start],
-        first_block,
-        level.high_pass,
-        row_scale,
-    );
 }
 
 /// Columns of each strip the last level reconstructs on its own when it
@@ -1488,7 +1656,7 @@ fn synthesize_row_columns<S: Simd>(
 const STRIP_COLUMNS: usize = if cfg!(test) { 64 } else { 1024 };
 
 /// The column ranges a level's rows are synthesized and lifted in: strips
-/// of [`STRIP_COLUMNS`] for wide even-origin 9-7I levels, whose last strip
+/// of [`STRIP_COLUMNS`] for wide even-origin levels, whose last strip
 /// takes the remaining columns and the row's multi-pass tail, or else the
 /// whole row.
 fn column_strips(level: Level2d<'_>) -> (usize, usize) {
@@ -1503,8 +1671,7 @@ fn column_strips(level: Level2d<'_>) -> (usize, usize) {
     // The last strip starts before its window ends and before the tail does.
     let last_start = strips.saturating_sub(1) * STRIP_COLUMNS;
     let window = window_pairs_97(high_len);
-    if level.transform != WaveletTransform::Irreversible97
-        || !low_first
+    if !low_first
         || strips < 2
         || width < MIN_SIMD_ROW_WIDTH
         || last_start + 2 * SIMD_WIDTH > 2 * window.saturating_sub(WINDOW_HALO_PAIRS)
