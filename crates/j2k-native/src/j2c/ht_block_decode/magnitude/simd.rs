@@ -14,7 +14,7 @@ use super::super::cleanup::{
     decode_cleanup_first_row_pair, decode_cleanup_row_pair, decode_cleanup_symbols_first_row,
     decode_cleanup_symbols_row, decode_initial_pair_symbols, decode_pair_symbols,
 };
-use super::super::readers::{FlatBitReader, MelDecoder, ReverseBitReader};
+use super::super::readers::{FlatBitReader, FlatVlcReader, MelDecoder, ReverseBitReader};
 use super::super::stats::HtDecodeObserver;
 use super::decode_magnitude_sign_pair_from_cleanup;
 
@@ -657,7 +657,7 @@ fn decode_pair_to_f32<const IRREVERSIBLE_MIDPOINT: bool, S: Simd>(
 fn decode_first_row_to_f32<const IRREVERSIBLE_MIDPOINT: bool, S: Simd>(
     lanes: &Lanes<S>,
     mel: &mut MelDecoder<'_>,
-    vlc: &mut ReverseBitReader<'_>,
+    vlc: &mut FlatVlcReader<'_>,
     run: &mut i32,
     magsgn: &mut FlatBitReader<'_>,
     row: &mut RowOutput<'_>,
@@ -674,7 +674,7 @@ fn decode_first_row_to_f32<const IRREVERSIBLE_MIDPOINT: bool, S: Simd>(
             *run -= 4;
             [0, 1, 0, 1]
         } else {
-            decode_initial_pair_symbols::<true>(mel, vlc, run, &mut c_q, true)?
+            decode_initial_pair_symbols::<true, _>(mel, vlc, run, &mut c_q, true)?
         };
         *row.symbols.get_mut(index)? = symbols.map(|symbol| symbol as u16);
         let [t0, u0, t1, u1] = symbols;
@@ -706,7 +706,7 @@ fn decode_first_row_to_f32<const IRREVERSIBLE_MIDPOINT: bool, S: Simd>(
 fn decode_row_to_f32<const IRREVERSIBLE_MIDPOINT: bool, S: Simd>(
     lanes: &Lanes<S>,
     mel: &mut MelDecoder<'_>,
-    vlc: &mut ReverseBitReader<'_>,
+    vlc: &mut FlatVlcReader<'_>,
     run: &mut i32,
     magsgn: &mut FlatBitReader<'_>,
     above: &[[u16; 4]],
@@ -729,7 +729,7 @@ fn decode_row_to_f32<const IRREVERSIBLE_MIDPOINT: bool, S: Simd>(
             *run -= 4;
             [0; 4]
         } else {
-            decode_pair_symbols::<true>(mel, vlc, run, &mut c_q, above, true)?
+            decode_pair_symbols::<true, _>(mel, vlc, run, &mut c_q, above, true)?
         };
         *row.symbols.get_mut(index)? = symbols.map(|symbol| symbol as u16);
         // As `with_kappa`: the row above's `v_n`, read before this pair's.
@@ -772,6 +772,7 @@ pub(super) fn decode_cleanup_and_magnitude_sign_to_f32_rows<
     lcup: usize,
     scup: usize,
     flat: &[u8],
+    flat_vlc: &[u8],
     scratch: &mut [u16],
     decoded_data: &mut [f32],
     v_n_scratch: &mut [u32],
@@ -783,7 +784,7 @@ pub(super) fn decode_cleanup_and_magnitude_sign_to_f32_rows<
     output: FinalOutput,
 ) -> Option<()> {
     let mut mel = MelDecoder::new(coded_data, lcup, scup);
-    let mut vlc = ReverseBitReader::new_vlc(coded_data, lcup, scup);
+    let mut vlc = FlatVlcReader::new(flat_vlc)?;
     let mut magsgn = FlatBitReader::new(flat)?;
     let mut run = mel.get_run_with::<true>()?;
     let lanes = Lanes::new(simd);
@@ -859,7 +860,8 @@ mod tests {
         cleanup_segment_suffix_length, cleanup_symbol_stride, decode_cleanup_symbols,
     };
     use super::super::super::readers::{
-        flat_magsgn_capacity, unstuff_magsgn, FlatBitReader, MelDecoder, ReverseBitReader,
+        flat_magsgn_capacity, flat_vlc_capacity, unstuff_magsgn, unstuff_vlc, FlatBitReader,
+        MelDecoder, ReverseBitReader,
     };
     use super::super::super::stats::NoHtDecodeStats;
     use super::super::super::store_coefficient_row;
@@ -1036,6 +1038,8 @@ mod tests {
         let mut buffer =
             Vec::with_capacity(flat_magsgn_capacity(samples).expect("MagSgn capacity"));
         let flat = unstuff_magsgn(&coded[..lcup - scup], &mut buffer, samples * 4)?;
+        let mut vlc_buffer = Vec::with_capacity(flat_vlc_capacity(width, height));
+        let flat_vlc = unstuff_vlc(coded, lcup, scup, &mut vlc_buffer)?;
         let mut scratch = vec![0xA5A5; sstr * (height.div_ceil(2) as usize + 1)];
         let mut v_n = vec![0xDEAD_BEEF; width.div_ceil(2) as usize + 2];
         let mut output = guarded_output(width, height, stride);
@@ -1048,12 +1052,12 @@ mod tests {
         };
         if irreversible {
             dispatch!(level, simd => decode_cleanup_and_magnitude_sign_to_f32_rows::<true, _>(
-                simd, coded, lcup, scup, flat, &mut scratch, rows, &mut v_n, missing_msbs, width,
+                simd, coded, lcup, scup, flat, flat_vlc, &mut scratch, rows, &mut v_n, missing_msbs, width,
                 height, stride, sstr, conversion,
             ))?;
         } else {
             dispatch!(level, simd => decode_cleanup_and_magnitude_sign_to_f32_rows::<false, _>(
-                simd, coded, lcup, scup, flat, &mut scratch, rows, &mut v_n, missing_msbs, width,
+                simd, coded, lcup, scup, flat, flat_vlc, &mut scratch, rows, &mut v_n, missing_msbs, width,
                 height, stride, sstr, conversion,
             ))?;
         }

@@ -212,5 +212,6 @@ pub(super) fn decode_cleanup_to_f32_impl<const IRREVERSIBLE_MIDPOINT: bool>(
         scratch,
         v_n_scratch,
         &mut scratch_buffers.magsgn,
+        &mut scratch_buffers.vlc,
     )
 }

@@ -183,6 +183,8 @@ pub(crate) struct HtBlockDecodeScratch {
     pub(super) prev_row_sig: Vec<u16>,
     /// The `MagSgn` segment unstuffed into a flat, padded bit buffer.
     pub(super) magsgn: Vec<u8>,
+    /// The VLC bits of the cleanup segment unstuffed into a flat buffer.
+    pub(super) vlc: Vec<u8>,
 }
 
 impl HtBlockDecodeScratch {
@@ -193,6 +195,7 @@ impl HtBlockDecodeScratch {
             sigma: Vec::new(),
             prev_row_sig: Vec::new(),
             magsgn: Vec::new(),
+            vlc: Vec::new(),
         }
     }
 
@@ -207,6 +210,7 @@ impl HtBlockDecodeScratch {
         include_capacity::<u16>(&mut bytes, self.sigma.capacity())?;
         include_capacity::<u16>(&mut bytes, self.prev_row_sig.capacity())?;
         include_capacity::<u8>(&mut bytes, self.magsgn.capacity())?;
+        include_capacity::<u8>(&mut bytes, self.vlc.capacity())?;
         Ok(bytes)
     }
 }
@@ -229,6 +233,7 @@ pub(super) struct HtBlockDecodeScratchCapacities {
     pub(super) sigma: usize,
     pub(super) prev_row_sig: usize,
     pub(super) magsgn: usize,
+    pub(super) vlc: usize,
 }
 
 #[cfg(test)]
@@ -240,6 +245,7 @@ impl HtBlockDecodeScratch {
             sigma: self.sigma.capacity(),
             prev_row_sig: self.prev_row_sig.capacity(),
             magsgn: self.magsgn.capacity(),
+            vlc: self.vlc.capacity(),
         }
     }
 
@@ -249,5 +255,6 @@ impl HtBlockDecodeScratch {
         self.sigma.fill(u16::MAX);
         self.prev_row_sig.fill(u16::MAX);
         self.magsgn.fill(u8::MAX);
+        self.vlc.fill(u8::MAX);
     }
 }

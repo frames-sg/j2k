@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::super::ht_tables::{UVLC_TABLE0, UVLC_TABLE1, VLC_TABLE0, VLC_TABLE1};
-use super::readers::{MelDecoder, ReverseBitReader};
+use super::readers::{MelDecoder, ReverseBitReader, VlcBits};
 
 pub(super) fn cleanup_symbol_stride(width: u32) -> usize {
     ((width + 2 + 7) & !7) as usize
@@ -117,14 +117,14 @@ fn pair_uvlc_mode(entry0: u32, entry1: u32) -> u32 {
     reason = "VLC table fields are defined as 16-bit values and this per-pair decoder is a hot path"
 )]
 #[inline(always)]
-pub(super) fn decode_initial_pair_symbols<const INLINE_REFILLS: bool>(
+pub(super) fn decode_initial_pair_symbols<const INLINE_REFILLS: bool, V: VlcBits>(
     mel: &mut MelDecoder,
-    vlc: &mut ReverseBitReader,
+    vlc: &mut V,
     run: &mut i32,
     c_q: &mut u32,
     second_quad: bool,
 ) -> Option<[u32; 4]> {
-    let mut vlc_val = vlc.fetch_topped_up::<INLINE_REFILLS>();
+    let mut vlc_val = vlc.top_up::<INLINE_REFILLS>();
     let mut e0 = vlc_entry(&VLC_DECODE0, *c_q, vlc_val);
     if *c_q == 0 {
         *run -= 2;
@@ -211,7 +211,7 @@ pub(super) fn decode_cleanup_first_row_pair(
     x: u32,
     width: u32,
 ) -> Option<[u32; 4]> {
-    let symbols = decode_initial_pair_symbols::<false>(mel, vlc, run, c_q, x + 2 < width)?;
+    let symbols = decode_initial_pair_symbols::<false, _>(mel, vlc, run, c_q, x + 2 < width)?;
     store_pair_symbols(scratch, row_offset, symbols);
     Some(symbols)
 }
@@ -251,9 +251,9 @@ pub(super) fn decode_cleanup_symbols_first_row(
     reason = "VLC table fields are defined as 16-bit values and this per-pair decoder is a hot path"
 )]
 #[inline(always)]
-pub(super) fn decode_pair_symbols<const INLINE_REFILLS: bool>(
+pub(super) fn decode_pair_symbols<const INLINE_REFILLS: bool, V: VlcBits>(
     mel: &mut MelDecoder,
-    vlc: &mut ReverseBitReader,
+    vlc: &mut V,
     run: &mut i32,
     c_q: &mut u32,
     above: impl Fn(usize) -> u32,
@@ -265,7 +265,7 @@ pub(super) fn decode_pair_symbols<const INLINE_REFILLS: bool>(
     let above_next = above(2) & 0x80;
     *c_q |= above_first;
 
-    let mut vlc_val = vlc.fetch_topped_up::<INLINE_REFILLS>();
+    let mut vlc_val = vlc.top_up::<INLINE_REFILLS>();
     let mut e0 = vlc_entry(&VLC_DECODE1, *c_q, vlc_val);
     if *c_q == 0 {
         *run -= 2;
@@ -341,7 +341,7 @@ pub(super) fn decode_cleanup_row_pair(
     // `sstr >= 8`, so the row above never overlaps this pair's symbols.
     let prev = row_offset - sstr;
     let above = |k| u32::from(scratch[prev + k]);
-    let symbols = decode_pair_symbols::<false>(mel, vlc, run, c_q, above, x + 2 < width)?;
+    let symbols = decode_pair_symbols::<false, _>(mel, vlc, run, c_q, above, x + 2 < width)?;
     store_pair_symbols(scratch, row_offset, symbols);
     Some(symbols)
 }

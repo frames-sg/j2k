@@ -3,6 +3,8 @@
 use alloc::vec::Vec;
 
 use super::cleanup::{decode_cleanup_symbols_first_row, decode_cleanup_symbols_row};
+#[cfg(feature = "simd")]
+use super::readers::unstuff_vlc;
 use super::readers::{unstuff_magsgn, FlatBitReader, MelDecoder, ReverseBitReader};
 use super::stats::HtDecodeObserver;
 #[cfg(feature = "simd")]
@@ -449,6 +451,7 @@ pub(super) fn decode_cleanup_and_magnitude_sign_to_f32<const IRREVERSIBLE_MIDPOI
     scratch: &mut [u16],
     v_n_scratch: &mut [u32],
     magsgn_buffer: &mut Vec<u8>,
+    vlc_buffer: &mut Vec<u8>,
 ) -> Option<()> {
     if !supports_cleanup_to_f32(missing_msbs, width) {
         return None;
@@ -467,6 +470,7 @@ pub(super) fn decode_cleanup_and_magnitude_sign_to_f32<const IRREVERSIBLE_MIDPOI
         .checked_mul(height as usize)?
         .checked_mul(4)?;
     let flat = unstuff_magsgn(&coded_data[..lcup - scup], magsgn_buffer, consumable)?;
+    let flat_vlc = unstuff_vlc(coded_data, lcup, scup, vlc_buffer)?;
     let output = simd::FinalOutput {
         coefficient_shift: 31 - u32::from(coded_bitplanes),
         midpoint_scale: crate::math::pow2i(-(31_i32 - i32::from(coded_bitplanes))),
@@ -479,6 +483,7 @@ pub(super) fn decode_cleanup_and_magnitude_sign_to_f32<const IRREVERSIBLE_MIDPOI
         lcup,
         scup,
         flat,
+        flat_vlc,
         scratch,
         decoded_data,
         v_n_scratch,
