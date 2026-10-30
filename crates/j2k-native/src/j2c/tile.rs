@@ -504,15 +504,18 @@ impl<'a> ResolutionTile<'a> {
 
     /// Return an iterator over the data of the precincts in this resolution
     /// tile.
+    pub(crate) fn precincts(&self) -> Option<impl Iterator<Item = PrecinctData>> {
+        self.precinct_grid().map(PrecinctGrid::iter)
+    }
+
+    /// The validated precinct grid of this resolution tile, whose precincts
+    /// [`Self::precincts`] lists in order and [`PrecinctGrid::rect_at`] finds
+    /// by index.
     #[expect(
         clippy::similar_names,
         reason = "paired axis, subband, and marker names follow JPEG 2000 specification notation"
     )]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "precinct iteration validates both coordinate grids before constructing the iterator"
-    )]
-    pub(crate) fn precincts(&self) -> Option<impl Iterator<Item = PrecinctData>> {
+    pub(crate) fn precinct_grid(&self) -> Option<PrecinctGrid> {
         let num_precincts_y = self.num_precincts_y();
         let num_precincts_x = self.num_precincts_x();
 
@@ -620,51 +623,18 @@ impl<'a> ResolutionTile<'a> {
             self.component_tile.tile.rect.y1,
         )?;
 
-        let iter = (0..num_precincts_y).flat_map(move |y| {
-            let y0 = y * ppy_pow2 + y_start;
-            let mut r_x = r_x;
-
-            let res = (0..num_precincts_x).map(move |x| {
-                let x0 = x * ppx_pow2 + x_start;
-
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "positions_fit checked every emitted coordinate against the u32 tile endpoint"
-                )]
-                let data = PrecinctData {
-                    r_x: r_x as u32,
-                    r_y: r_y as u32,
-                    // A grid cell may end at 2^32. Image/subband endpoints
-                    // are at most u32::MAX, so clipping here preserves every
-                    // possible coefficient without overflowing the cell edge.
-                    rect: IntRect::from_ltrb(
-                        x0,
-                        y0,
-                        x0.saturating_add(ppx_pow2),
-                        y0.saturating_add(ppy_pow2),
-                    ),
-                    idx: u64::from(num_precincts_x) * u64::from(y) + u64::from(x),
-                };
-
-                // If r_x is already aligned, we simply step by `precinct_x_step`.
-                // Otherwise (can only be the case for precincts in the first
-                // row or column), align to the next multiple.
-                if x + 1 < num_precincts_x {
-                    r_x = (r_x + 1).next_multiple_of(precinct_x_step);
-                }
-
-                data
-            });
-
-            // Same as for r_x.
-            if y + 1 < num_precincts_y {
-                r_y = (r_y + 1).next_multiple_of(precinct_y_step);
-            }
-
-            res
-        });
-
-        Some(iter)
+        Some(PrecinctGrid {
+            num_x: num_precincts_x,
+            num_y: num_precincts_y,
+            ppx_pow2,
+            ppy_pow2,
+            x_start,
+            y_start,
+            first_r_x: r_x,
+            first_r_y: r_y,
+            x_step: precinct_x_step,
+            y_step: precinct_y_step,
+        })
     }
 
     pub(crate) fn code_block_width(&self) -> u32 {
@@ -701,6 +671,88 @@ impl<'a> ResolutionTile<'a> {
         };
 
         2_u32.pow(u32::from(ycb))
+    }
+}
+
+/// The precincts of one resolution tile: a grid of `num_x` by `num_y` cells
+/// of `ppx_pow2` by `ppy_pow2` sub-band samples from `(x_start, y_start)`.
+/// Each precinct's reference-grid position starts at the tile origin, aligned
+/// past it when the grid is, and steps by whole precinct strides.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PrecinctGrid {
+    num_x: u32,
+    num_y: u32,
+    ppx_pow2: u32,
+    ppy_pow2: u32,
+    x_start: u32,
+    y_start: u32,
+    first_r_x: u64,
+    first_r_y: u64,
+    x_step: u64,
+    y_step: u64,
+}
+
+impl PrecinctGrid {
+    /// Every precinct, row by row.
+    pub(crate) fn iter(self) -> impl Iterator<Item = PrecinctData> {
+        (0..self.num_y).flat_map(move |y| (0..self.num_x).map(move |x| self.cell(x, y)))
+    }
+
+    /// Precinct `idx`, numbered row by row as [`Self::iter`] lists them, or
+    /// `None` past the last.
+    #[cfg(test)]
+    pub(crate) fn at(self, idx: u64) -> Option<PrecinctData> {
+        let x = u32::try_from(idx % u64::from(self.num_x.max(1))).ok()?;
+        let y = u32::try_from(idx / u64::from(self.num_x.max(1))).ok()?;
+        (x < self.num_x && y < self.num_y).then(|| self.cell(x, y))
+    }
+
+    /// The first position, or the first aligned stride past it and whole
+    /// strides from there: [`ResolutionTile::precinct_grid`] checked that
+    /// every emitted position fits the tile.
+    fn position(first: u64, step: u64, index: u32) -> u64 {
+        if index == 0 {
+            first
+        } else {
+            (first + 1).next_multiple_of(step) + u64::from(index - 1) * step
+        }
+    }
+
+    /// The rectangle of precinct `idx` alone, numbered row by row as
+    /// [`Self::iter`] lists them, or `None` past the last.
+    pub(crate) fn rect_at(self, idx: usize) -> Option<IntRect> {
+        let columns = usize::try_from(self.num_x).ok()?;
+        let x = u32::try_from(idx.checked_rem(columns)?).ok()?;
+        let y = u32::try_from(idx / columns).ok()?;
+        (y < self.num_y).then(|| self.cell_rect(x, y))
+    }
+
+    fn cell_rect(self, x: u32, y: u32) -> IntRect {
+        let x0 = x * self.ppx_pow2 + self.x_start;
+        let y0 = y * self.ppy_pow2 + self.y_start;
+        // A grid cell may end at 2^32. Image/subband endpoints are at most
+        // u32::MAX, so clipping here preserves every possible coefficient
+        // without overflowing the cell edge.
+        IntRect::from_ltrb(
+            x0,
+            y0,
+            x0.saturating_add(self.ppx_pow2),
+            y0.saturating_add(self.ppy_pow2),
+        )
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "precinct_grid checked every emitted coordinate against the u32 tile endpoint"
+    )]
+    fn cell(self, x: u32, y: u32) -> PrecinctData {
+        PrecinctData {
+            r_x: Self::position(self.first_r_x, self.x_step, x) as u32,
+            r_y: Self::position(self.first_r_y, self.y_step, y) as u32,
+            #[cfg(test)]
+            rect: self.cell_rect(x, y),
+            idx: u64::from(self.num_x) * u64::from(y) + u64::from(x),
+        }
     }
 }
 
@@ -824,6 +876,81 @@ mod tests {
 
         assert_eq!(precincts[0].r_x, 8);
         assert_eq!(precincts[0].r_y, 0);
+    }
+
+    /// Precincts found by index are the ones the grid lists in order, and the
+    /// positions step by whole strides after the first.
+    #[test]
+    fn indexed_precincts_match_the_listed_order() {
+        for (sampling, exponents, rect) in [
+            ((1, 1), (3, 4), IntRect::from_ltrb(0, 0, 203, 157)),
+            ((2, 1), (2, 3), IntRect::from_ltrb(37, 21, 290, 199)),
+            ((3, 2), (4, 2), IntRect::from_ltrb(5, 9, 77, 301)),
+        ] {
+            let component_info = ComponentInfo {
+                size_info: ComponentSizeInfo {
+                    precision: 8,
+                    signed: false,
+                    horizontal_resolution: sampling.0,
+                    vertical_resolution: sampling.1,
+                },
+                coding_style: CodingStyleComponent {
+                    flags: CodingStyleFlags::default(),
+                    parameters: CodingStyleParameters {
+                        num_decomposition_levels: 3,
+                        num_resolution_levels: 4,
+                        code_block_width: 2,
+                        code_block_height: 2,
+                        code_block_style: CodeBlockStyle::default(),
+                        transformation: WaveletTransform::Reversible53,
+                        precinct_exponents: vec![
+                            exponents,
+                            (exponents.0 + 1, exponents.1 + 1),
+                            (exponents.0 + 1, exponents.1 + 2),
+                            (exponents.0 + 2, exponents.1 + 1),
+                        ],
+                    },
+                },
+                quantization_info: QuantizationInfo {
+                    quantization_style: QuantizationStyle::NoQuantization,
+                    guard_bits: 2,
+                    step_sizes: vec![],
+                },
+                roi_shift: 0,
+            };
+            let tile = Tile {
+                #[cfg(feature = "std")]
+                packet_directory: None,
+                idx: 0,
+                tile_parts: vec![],
+                rect,
+                component_infos: vec![component_info],
+                progression_order: ProgressionOrder::ResolutionPositionComponentLayer,
+                progression_changes: vec![],
+                mct: false,
+                num_layers: 1,
+            };
+            let component = ComponentTile::new(&tile, &tile.component_infos[0]);
+            for resolution in 0..4 {
+                let resolution_tile = ResolutionTile::new(component, resolution);
+                let grid = resolution_tile
+                    .precinct_grid()
+                    .expect("valid precinct grid");
+                let listed: Vec<_> = grid.iter().collect();
+                assert_eq!(listed.len() as u64, resolution_tile.num_precincts());
+                assert!(listed.len() > 1);
+                for (index, precinct) in listed.iter().enumerate() {
+                    let found = grid.at(index as u64).expect("indexed precinct");
+                    assert_eq!(
+                        (found.r_x, found.r_y, found.rect, found.idx),
+                        (precinct.r_x, precinct.r_y, precinct.rect, precinct.idx)
+                    );
+                    assert_eq!(grid.rect_at(index), Some(precinct.rect));
+                }
+                assert!(grid.at(listed.len() as u64).is_none());
+                assert!(grid.rect_at(listed.len()).is_none());
+            }
+        }
     }
 
     /// Test case for the example in B.4.

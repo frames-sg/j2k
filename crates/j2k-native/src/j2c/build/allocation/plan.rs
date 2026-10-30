@@ -189,11 +189,10 @@ fn include_sub_band_allocations(
 
     let mut observed_precincts = 0usize;
     let mut observed_code_blocks = 0usize;
-    for (precinct_idx, precinct_data) in resolution_tile
-        .precincts()
-        .ok_or(DecodingError::InvalidPrecinct)?
-        .enumerate()
-    {
+    let precincts = resolution_tile
+        .precinct_grid()
+        .ok_or(DecodingError::InvalidPrecinct)?;
+    for precinct_idx in 0..precinct_count {
         observed_precincts = observed_precincts
             .checked_add(1)
             .ok_or(ValidationError::ImageTooLarge)?;
@@ -212,7 +211,10 @@ fn include_sub_band_allocations(
             DecompositionAllocationPlan::checked_add_count(&mut plan.unbuilt_precincts, 1)?;
             continue;
         }
-        let grid = code_block_grid(resolution_tile, sub_band_rect, precinct_data.rect)?;
+        let precinct_rect = precincts
+            .rect_at(precinct_idx)
+            .ok_or(DecodingError::InvalidPrecinct)?;
+        let grid = code_block_grid(resolution_tile, sub_band_rect, precinct_rect)?;
         let block_count = (grid.columns as usize)
             .checked_mul(grid.rows as usize)
             .ok_or(ValidationError::ImageTooLarge)?;

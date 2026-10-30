@@ -303,18 +303,22 @@ fn build_precincts(
     let required =
         |rect: IntRect| roi_plan.is_none_or(|plan| plan.code_block_required(sub_band_idx, rect));
 
-    for (precinct_idx, precinct_data) in resolution_tile
-        .precincts()
-        .ok_or(DecodingError::InvalidPrecinct)?
-        .enumerate()
-    {
+    let precincts = resolution_tile
+        .precinct_grid()
+        .ok_or(DecodingError::InvalidPrecinct)?;
+    let precinct_count = usize::try_from(resolution_tile.num_precincts())
+        .map_err(|_| ValidationError::ImageTooLarge)?;
+    for precinct_idx in 0..precinct_count {
         let precinct_use = keep.and_then(|keep| keep.get(precinct_idx).copied());
         if precinct_use == Some(PrecinctUse::Unused) {
             // Region decode never parses this precinct's packets, so it gets
             // no record. The parser finds the others through the selection.
             continue;
         }
-        let grid = code_block_grid(resolution_tile, sub_band_rect, precinct_data.rect)?;
+        let precinct_rect = precincts
+            .rect_at(precinct_idx)
+            .ok_or(DecodingError::InvalidPrecinct)?;
+        let grid = code_block_grid(resolution_tile, sub_band_rect, precinct_rect)?;
         if precinct_use == Some(PrecinctUse::Parsed) && parsed_in_scratch {
             // Its packets are parsed in a scratch precinct, which only needs
             // its code-block grid.
@@ -332,10 +336,10 @@ fn build_precincts(
 
         ltrace!(
             "Precinct rect: [{},{} {}x{}], num_code_blocks_wide: {}, num_code_blocks_high: {}",
-            precinct_data.rect.x0,
-            precinct_data.rect.y0,
-            precinct_data.rect.width(),
-            precinct_data.rect.height(),
+            precinct_rect.x0,
+            precinct_rect.y0,
+            precinct_rect.width(),
+            precinct_rect.height(),
             grid.columns,
             grid.rows
         );
@@ -521,7 +525,9 @@ pub(crate) struct PrecinctData {
     /// The y coordinate mapped back to the reference grid.
     pub(crate) r_y: u32,
     /// The actual rectangle of the precinct (in the sub-band coordinate
-    /// system).
+    /// system). Decodes ask `PrecinctGrid::rect_at` for the rectangles they
+    /// need; tests check the two agree.
+    #[cfg(test)]
     pub(crate) rect: IntRect,
     /// The index of the precinct in the sub-band.
     pub(crate) idx: u64,
