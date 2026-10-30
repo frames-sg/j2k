@@ -16,10 +16,9 @@ use core::ops::Range;
 use super::super::super::codestream::WaveletTransform;
 use super::super::super::rect::IntRect;
 use super::{
-    apply_vertical_step, horizontal_scratch_elements, packed_band_rects, parallel_strip_layout,
-    periodic_symmetric_extension_left, periodic_symmetric_extension_right,
-    split_horizontal_scratch, synthesize_level_row, three_rows, use_banded, vertical_steps,
-    Level2d, RING_ROWS,
+    horizontal_scratch_elements, lift_arrivals, packed_band_rects, parallel_strip_layout,
+    split_horizontal_scratch, synthesize_level_row, use_banded, vertical_steps, Level2d, RingRows,
+    RING_ROWS, WAVEFRONT_ARRIVALS,
 };
 use crate::error::{bail, DecodingError};
 use crate::math::{dispatch, Level, Simd};
@@ -276,7 +275,7 @@ fn stream_rows<S: Simd>(
     let height = levels[0].height;
     let row_bytes = 3 * width;
     let end = first_row + output.len() / row_bytes;
-    let (steps, count) = vertical_steps(levels[0]);
+    let (_, count) = vertical_steps(levels[0]);
     let lo = first_row.saturating_sub(count);
     let hi = (end + count).min(height);
     let stride = width + RING_ROW_PAD;
@@ -303,29 +302,20 @@ fn stream_rows<S: Simd>(
     for first in (lo..hi + count).step_by(batch) {
         let arrivals = first..(first + batch).min(hi + count);
         for (level, ring) in levels.iter().zip(rings.iter_mut()) {
-            for arrival in arrivals.clone() {
-                if arrival < hi {
-                    let row = &mut ring[slot(arrival) * stride..][..width];
-                    synthesize_level_row(simd, *level, arrival, row, low, high);
+            let mut rows = RingRows {
+                rows: &mut ring[..],
+                width,
+                stride,
+                slots: ring_rows,
+            };
+            // The ring holds every row the batch's steps read besides the
+            // batch itself, so arrivals can be synthesized ahead.
+            for first in arrivals.clone().step_by(WAVEFRONT_ARRIVALS) {
+                let ahead = first..(first + WAVEFRONT_ARRIVALS).min(arrivals.end);
+                for arrival in ahead.start..ahead.end.min(hi) {
+                    synthesize_level_row(simd, *level, arrival, rows.row_mut(arrival), low, high);
                 }
-                for (index, &(parity, step)) in steps[..count].iter().enumerate() {
-                    let Some(row) = arrival.checked_sub(index + 1) else {
-                        break;
-                    };
-                    if row < lo || row >= hi || row % 2 != parity {
-                        continue;
-                    }
-                    let above = periodic_symmetric_extension_left(row, 1);
-                    let below = periodic_symmetric_extension_right(row, 1, height);
-                    if above < lo || below >= hi {
-                        continue;
-                    }
-                    let (current, above, below) =
-                        three_rows(ring, stride, slot(row), slot(above), slot(below));
-                    let (current, above, below) =
-                        (&mut current[..width], &above[..width], &below[..width]);
-                    apply_vertical_step(simd, step, current, above, below);
-                }
+                lift_arrivals(simd, *level, ahead, lo..hi, &mut rows);
             }
         }
         // The batch's last arrival read its rows `count + 1` above it.

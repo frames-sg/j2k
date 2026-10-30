@@ -17,6 +17,7 @@
 //! bit-identical.
 
 use alloc::vec::Vec;
+use core::ops::Range;
 
 use super::super::build::Decomposition;
 use super::super::codestream::WaveletTransform;
@@ -514,25 +515,20 @@ fn stream_level<S: Simd>(
 ) {
     let width = level.width;
     let height = level.height;
-    let (steps, count) = vertical_steps(level);
+    let (_, count) = vertical_steps(level);
     let (low, high) = split_horizontal_scratch(level, horizontal_scratch);
-    for arrival in 0..height + count {
-        if arrival < height {
-            let row = &mut target[arrival * width..][..width];
-            synthesize_level_row(simd, level, arrival, row, low, high);
+    let mut rows = RingRows {
+        rows: target,
+        width,
+        stride: width,
+        slots: height,
+    };
+    for first in (0..height + count).step_by(WAVEFRONT_ARRIVALS) {
+        let arrivals = first..(first + WAVEFRONT_ARRIVALS).min(height + count);
+        for arrival in arrivals.start..arrivals.end.min(height) {
+            synthesize_level_row(simd, level, arrival, rows.row_mut(arrival), low, high);
         }
-        for (index, &(parity, step)) in steps[..count].iter().enumerate() {
-            let Some(row) = arrival.checked_sub(index + 1) else {
-                break;
-            };
-            if row >= height || row % 2 != parity {
-                continue;
-            }
-            let above = periodic_symmetric_extension_left(row, 1);
-            let below = periodic_symmetric_extension_right(row, 1, height);
-            let (current, above, below) = three_rows(target, width, row, above, below);
-            apply_vertical_step(simd, step, current, above, below);
-        }
+        lift_arrivals(simd, level, arrivals, 0..height, &mut rows);
     }
 }
 
@@ -557,7 +553,7 @@ fn stream_strip<S: Simd>(
 ) {
     let width = level.width;
     let height = level.height;
-    let (steps, count) = vertical_steps(level);
+    let (_, count) = vertical_steps(level);
     let end = first_row + output.len() / width;
     let lo = first_row.saturating_sub(count);
     let hi = (end + count).min(height);
@@ -571,34 +567,21 @@ fn stream_strip<S: Simd>(
         lo,
         width,
     };
-    for arrival in lo..hi + count {
-        if arrival < hi {
-            let row = rows.row_mut(arrival);
-            synthesize_level_row(simd, level, arrival, row, low, high);
+    for first in (lo..hi + count).step_by(WAVEFRONT_ARRIVALS) {
+        let arrivals = first..(first + WAVEFRONT_ARRIVALS).min(hi + count);
+        for arrival in arrivals.start..arrivals.end.min(hi) {
+            synthesize_level_row(simd, level, arrival, rows.row_mut(arrival), low, high);
         }
-        for (index, &(parity, step)) in steps[..count].iter().enumerate() {
-            let Some(row) = arrival.checked_sub(index + 1) else {
-                break;
-            };
-            if row < lo || row >= hi || row % 2 != parity {
-                continue;
-            }
-            let above = periodic_symmetric_extension_left(row, 1);
-            let below = periodic_symmetric_extension_right(row, 1, height);
-            if above < lo || below >= hi {
-                continue;
-            }
-            let (current, above, below) = rows.three(row, above, below);
-            apply_vertical_step(simd, step, current, above, below);
-        }
+        lift_arrivals(simd, level, arrivals, lo..hi, &mut rows);
     }
 }
 
 /// Rows `lo..` of one parallel strip: its own rows `first_row..end` in
 /// `output`, and its halo rows in `halo`. The rows above and below the strip
 /// share halo slots: every strip with rows below it spans at least
-/// [`MIN_STRIP_ROWS`] rows, so the rows above have taken their last step
-/// before the first row below arrives.
+/// [`MIN_STRIP_ROWS`] rows, more than [`WAVEFRONT_ARRIVALS`] plus the halo,
+/// so the rows above have taken their last step before the batch that
+/// synthesizes the first row below.
 #[cfg(feature = "parallel")]
 struct StripRows<'a> {
     output: &'a mut [f32],
@@ -631,8 +614,10 @@ impl StripRows<'_> {
         };
         &mut rows[index * self.width..][..self.width]
     }
+}
 
-    /// Row `current` mutably, with rows `above` and `below` shared.
+#[cfg(feature = "parallel")]
+impl LevelRows for StripRows<'_> {
     fn three(
         &mut self,
         current: usize,
@@ -661,6 +646,348 @@ impl StripRows<'_> {
             }
         };
         (current_row, neighbor(above), neighbor(below))
+    }
+
+    fn window<const ROWS: usize>(&mut self, first: usize) -> Option<[&mut [f32]; ROWS]> {
+        let width = self.width;
+        let rows = first..first + ROWS;
+        // The halo rows above the strip, its own rows, and the halo rows
+        // below it. The two halo runs share slots, so at most one of them
+        // may take part.
+        let above = rows.start..rows.end.clamp(rows.start, self.first_row.max(rows.start));
+        let own = rows.start.max(self.first_row)..rows.end.min(self.end);
+        let below = rows.start.max(self.end)..rows.end.max(self.end);
+        let (above, below): (&mut [f32], &mut [f32]) = match (above.is_empty(), below.is_empty()) {
+            (true, true) => (&mut [], &mut []),
+            (false, true) => (
+                self.halo
+                    .get_mut((above.start - self.lo) * width..(above.end - self.lo) * width)?,
+                &mut [],
+            ),
+            (true, false) => (
+                &mut [],
+                self.halo
+                    .get_mut((below.start - self.end) * width..(below.end - self.end) * width)?,
+            ),
+            (false, false) => return None,
+        };
+        let own: &mut [f32] = if own.is_empty() {
+            &mut []
+        } else {
+            self.output
+                .get_mut((own.start - self.first_row) * width..(own.end - self.first_row) * width)?
+        };
+        filled_window(
+            above
+                .chunks_exact_mut(width)
+                .chain(own.chunks_exact_mut(width))
+                .chain(below.chunks_exact_mut(width)),
+        )
+    }
+}
+
+/// Rows of `width` samples, `stride` apart, where level row `n` occupies
+/// slot `n % slots`: a whole level in place when `slots` is its height, or
+/// the ring of the last level's rows.
+struct RingRows<'a> {
+    rows: &'a mut [f32],
+    width: usize,
+    stride: usize,
+    slots: usize,
+}
+
+impl RingRows<'_> {
+    fn row_mut(&mut self, row: usize) -> &mut [f32] {
+        &mut self.rows[row % self.slots * self.stride..][..self.width]
+    }
+}
+
+impl LevelRows for RingRows<'_> {
+    fn three(
+        &mut self,
+        current: usize,
+        above: usize,
+        below: usize,
+    ) -> (&mut [f32], &[f32], &[f32]) {
+        let width = self.width;
+        let slot = |row: usize| row % self.slots;
+        let (current, above, below) = three_rows(
+            self.rows,
+            self.stride,
+            slot(current),
+            slot(above),
+            slot(below),
+        );
+        (&mut current[..width], &above[..width], &below[..width])
+    }
+
+    fn window<const ROWS: usize>(&mut self, first: usize) -> Option<[&mut [f32]; ROWS]> {
+        if ROWS > self.slots {
+            return None;
+        }
+        let (width, stride) = (self.width, self.stride);
+        // The rows from the first one's slot to the end, then from slot zero.
+        let (wrapped, from_first) = self.rows.split_at_mut(first % self.slots * stride);
+        filled_window(
+            from_first
+                .chunks_mut(stride)
+                .chain(wrapped.chunks_mut(stride))
+                .filter_map(|row| row.get_mut(..width)),
+        )
+    }
+}
+
+/// The first `ROWS` rows of `rows`, if it has as many.
+fn filled_window<'rows, const ROWS: usize>(
+    mut rows: impl Iterator<Item = &'rows mut [f32]>,
+) -> Option<[&'rows mut [f32]; ROWS]> {
+    let mut filled = 0;
+    let window = core::array::from_fn(|_| match rows.next() {
+        Some(row) => {
+            filled += 1;
+            row
+        }
+        None => &mut [],
+    });
+    (filled == ROWS).then_some(window)
+}
+
+/// Rows of a level under reconstruction, by level row index.
+trait LevelRows {
+    /// Row `current` mutably, with rows `above` and `below`, both different
+    /// from `current`, shared.
+    fn three(&mut self, current: usize, above: usize, below: usize)
+        -> (&mut [f32], &[f32], &[f32]);
+
+    /// The `ROWS` consecutive level rows from `first`, mutably, or `None`
+    /// when they cannot all be borrowed at once.
+    fn window<const ROWS: usize>(&mut self, first: usize) -> Option<[&mut [f32]; ROWS]>;
+}
+
+/// Arrivals [`stream_level`] and [`stream_strip`] synthesize before they run
+/// those arrivals' vertical steps, so one sweep of the columns runs the
+/// steps of several wavefronts.
+const WAVEFRONT_ARRIVALS: usize = 16;
+
+/// Wavefronts one sweep of the columns runs, sharing their rows in
+/// registers.
+const SWEEP_WAVEFRONTS: usize = 2;
+
+/// Run the vertical lifting steps of `arrivals`, in order, on `rows`, of
+/// which only `live` take part (see [`stream_strip`]). Every arrival must
+/// already be synthesized.
+///
+/// An arrival whose row above has the first step's parity runs every step,
+/// one row further up each (a wavefront); the others run none. Away from
+/// the edges of `live`, those steps read only unmirrored rows inside it, so
+/// consecutive wavefronts run together in [`lift_wavefronts`], which gives
+/// every sample the same operations in the same order. Arrivals near the
+/// edges run their steps one row at a time, as before.
+#[expect(
+    clippy::inline_always,
+    reason = "the vertical schedule is specialized with the streaming kernels"
+)]
+#[inline(always)]
+fn lift_arrivals<S: Simd>(
+    simd: S,
+    level: Level2d<'_>,
+    arrivals: Range<usize>,
+    live: Range<usize>,
+    rows: &mut impl LevelRows,
+) {
+    let (steps, count) = vertical_steps(level);
+    let steps = &steps[..count];
+    // From `lo + count + 1` the deepest step's upper neighbor lies in
+    // `live`; before `hi` the first step's lower neighbor does.
+    let start = (live.start + count + 1).clamp(arrivals.start, arrivals.end);
+    let end = live.end.clamp(start, arrivals.end);
+    for arrival in arrivals.start..start {
+        lift_arrival(simd, steps, arrival, level.height, &live, rows);
+    }
+    // `start` is at least one; its row above has its parity.
+    let mut wavefront = start + usize::from((start + 1) % 2 != steps[0].0);
+    while wavefront < end {
+        let wavefronts = if (end - wavefront).div_ceil(2) >= SWEEP_WAVEFRONTS {
+            SWEEP_WAVEFRONTS
+        } else {
+            1
+        };
+        let first = wavefront - count - 1;
+        let lifted = match (level.transform, wavefronts) {
+            (WaveletTransform::Reversible53, 1) => lift_wavefronts::<S, 2, 4>(simd, rows, first),
+            (WaveletTransform::Reversible53, _) => {
+                lift_wavefronts::<S, 2, { 2 * SWEEP_WAVEFRONTS + 2 }>(simd, rows, first)
+            }
+            (WaveletTransform::Irreversible97, 1) => lift_wavefronts::<S, 4, 6>(simd, rows, first),
+            (WaveletTransform::Irreversible97, _) => {
+                lift_wavefronts::<S, 4, { 2 * SWEEP_WAVEFRONTS + 4 }>(simd, rows, first)
+            }
+        };
+        if !lifted {
+            for arrival in (wavefront..wavefront + 2 * wavefronts).step_by(2) {
+                lift_arrival(simd, steps, arrival, level.height, &live, rows);
+            }
+        }
+        wavefront += 2 * wavefronts;
+    }
+    for arrival in end..arrivals.end {
+        lift_arrival(simd, steps, arrival, level.height, &live, rows);
+    }
+}
+
+/// Run the vertical lifting steps of one arrival a row at a time: step `k`
+/// (1-based) on row `arrival - k` when that row has the step's parity and it
+/// and both its neighbors (mirrored at the level's edges) lie in `live`.
+#[expect(
+    clippy::inline_always,
+    reason = "the vertical schedule is specialized with the streaming kernels"
+)]
+#[inline(always)]
+fn lift_arrival<S: Simd>(
+    simd: S,
+    steps: &[(usize, VerticalStep)],
+    arrival: usize,
+    height: usize,
+    live: &Range<usize>,
+    rows: &mut impl LevelRows,
+) {
+    for (index, &(parity, step)) in steps.iter().enumerate() {
+        let Some(row) = arrival.checked_sub(index + 1) else {
+            break;
+        };
+        if !live.contains(&row) || row % 2 != parity {
+            continue;
+        }
+        let above = periodic_symmetric_extension_left(row, 1);
+        let below = periodic_symmetric_extension_right(row, 1, height);
+        if above < live.start || below >= live.end {
+            continue;
+        }
+        let (current, above, below) = rows.three(row, above, below);
+        apply_vertical_step(simd, step, current, above, below);
+    }
+}
+
+/// Run `(ROWS - STEPS) / 2` consecutive wavefronts of a transform with
+/// `STEPS` vertical steps on the `ROWS` level rows from `first`, all in the
+/// level's interior: wavefront `j` runs step `k` (0-based) on row
+/// `first + STEPS + 2 * j - k` from that row's two neighbors. Each column
+/// runs the wavefronts in order with their rows in registers, so every
+/// sample sees the operations of [`apply_vertical_step`] in the same order
+/// while each row is loaded and stored once. Returns `false`, having changed
+/// nothing, when the rows cannot be borrowed together.
+#[expect(
+    clippy::inline_always,
+    reason = "the lifting kernel is specialized inside each SIMD dispatch target"
+)]
+#[inline(always)]
+fn lift_wavefronts<S: Simd, const STEPS: usize, const ROWS: usize>(
+    simd: S,
+    rows: &mut impl LevelRows,
+    first: usize,
+) -> bool {
+    let Some(mut window) = rows.window::<ROWS>(first) else {
+        return false;
+    };
+    if STEPS == HALO_ROWS_53 {
+        lift_window::<S, STEPS, ROWS>(
+            simd,
+            &mut window,
+            #[inline(always)]
+            |step, current, above, below| {
+                if step == 0 {
+                    lift_53_low_simd(current, above, below)
+                } else {
+                    lift_53_high_simd(current, above, below)
+                }
+            },
+            #[inline(always)]
+            |step, current, above, below| {
+                if step == 0 {
+                    lift_53_low(current, above, below)
+                } else {
+                    lift_53_high(current, above, below)
+                }
+            },
+        );
+    } else {
+        let coefficients = [
+            dwt::IDWT97_NEG_DELTA_F32,
+            dwt::IDWT97_NEG_GAMMA_F32,
+            dwt::IDWT97_NEG_BETA_F32,
+            dwt::IDWT97_NEG_ALPHA_F32,
+        ];
+        let coefficients_simd = coefficients.map(|value| f32x8::splat(simd, value));
+        lift_window::<S, STEPS, ROWS>(
+            simd,
+            &mut window,
+            #[inline(always)]
+            |step, current, above, below| {
+                lift_97_simd(current, above, below, coefficients_simd[step])
+            },
+            #[inline(always)]
+            |step, current, above, below| lift_97(current, above, below, coefficients[step]),
+        );
+    }
+    true
+}
+
+/// [`lift_wavefronts`] on rows of equal width, `step(k, current, above,
+/// below)` being step `k`. Every loop over rows has a constant trip count,
+/// so the window and the row pointers stay in registers.
+#[expect(
+    clippy::inline_always,
+    reason = "the lifting kernel is specialized inside each SIMD dispatch target"
+)]
+#[expect(
+    clippy::needless_range_loop,
+    reason = "constant-index loops over the window unroll into registers; iterator adaptors keep it in memory"
+)]
+#[inline(always)]
+fn lift_window<S: Simd, const STEPS: usize, const ROWS: usize>(
+    simd: S,
+    rows: &mut [&mut [f32]; ROWS],
+    step_simd: impl Fn(usize, f32x8<S>, f32x8<S>, f32x8<S>) -> f32x8<S>,
+    step_scalar: impl Fn(usize, f32, f32, f32) -> f32,
+) {
+    let wavefronts = (ROWS - STEPS) / 2;
+    let width = rows[0].len();
+    let blocks = width / SIMD_WIDTH;
+    // The scalar tail columns first: columns are independent.
+    for column in blocks * SIMD_WIDTH..width {
+        let mut window = [0.0; ROWS];
+        for row in 0..ROWS {
+            window[row] = rows[row][column];
+        }
+        for wavefront in 0..wavefronts {
+            for step in 0..STEPS {
+                let row = 2 * wavefront + STEPS - step;
+                window[row] = step_scalar(step, window[row], window[row - 1], window[row + 1]);
+            }
+        }
+        // The first and last rows are only read.
+        for row in 1..ROWS - 1 {
+            rows[row][column] = window[row];
+        }
+    }
+    // Every row as exactly `blocks` SIMD blocks, so no access needs a check.
+    let blocks_of = rows
+        .each_mut()
+        .map(|row| &mut row.as_chunks_mut::<SIMD_WIDTH>().0[..blocks]);
+    for block in 0..blocks {
+        let mut window = [f32x8::splat(simd, 0.0); ROWS];
+        for row in 0..ROWS {
+            window[row] = f32x8::from_slice(simd, &blocks_of[row][block]);
+        }
+        for wavefront in 0..wavefronts {
+            for step in 0..STEPS {
+                let row = 2 * wavefront + STEPS - step;
+                window[row] = step_simd(step, window[row], window[row - 1], window[row + 1]);
+            }
+        }
+        for row in 1..ROWS - 1 {
+            window[row].store(&mut blocks_of[row][block]);
+        }
     }
 }
 
@@ -721,26 +1048,12 @@ fn apply_vertical_step<S: Simd>(
     below: &[f32],
 ) {
     match step {
-        VerticalStep::Reversible53Low => lift_rows(
-            simd,
-            current,
-            above,
-            below,
-            #[inline(always)]
-            |s1, s2, s3| s1 - ((s2 + s3 + 2.0) * 0.25).floor(),
-            #[inline(always)]
-            |s1, s2, s3| s1 - math::floor_f32(math::mul_add(s2 + s3, 0.25, 0.5)),
-        ),
-        VerticalStep::Reversible53High => lift_rows(
-            simd,
-            current,
-            above,
-            below,
-            #[inline(always)]
-            |s1, s2, s3| s1 + ((s2 + s3) * 0.5).floor(),
-            #[inline(always)]
-            |s1, s2, s3| s1 + math::floor_half_sum_f32(s2, s3),
-        ),
+        VerticalStep::Reversible53Low => {
+            lift_rows(simd, current, above, below, lift_53_low_simd, lift_53_low);
+        }
+        VerticalStep::Reversible53High => {
+            lift_rows(simd, current, above, below, lift_53_high_simd, lift_53_high);
+        }
         VerticalStep::Irreversible97(coefficient) => {
             let coefficient_simd = f32x8::splat(simd, coefficient);
             lift_rows(
@@ -749,12 +1062,77 @@ fn apply_vertical_step<S: Simd>(
                 above,
                 below,
                 #[inline(always)]
-                |s1, s2, s3| (s2 + s3).mul_add(coefficient_simd, s1),
+                |s1, s2, s3| lift_97_simd(s1, s2, s3, coefficient_simd),
                 #[inline(always)]
-                |s1, s2, s3| math::mul_add(s2 + s3, coefficient, s1),
+                |s1, s2, s3| lift_97(s1, s2, s3, coefficient),
             );
         }
     }
+}
+
+/// Equation (F-5) on one sample from its two neighbors: the SIMD form.
+#[expect(
+    clippy::inline_always,
+    reason = "the lifting step is specialized with its scalar and SIMD operations"
+)]
+#[inline(always)]
+fn lift_53_low_simd<S: Simd>(s1: f32x8<S>, s2: f32x8<S>, s3: f32x8<S>) -> f32x8<S> {
+    s1 - ((s2 + s3 + 2.0) * 0.25).floor()
+}
+
+/// Equation (F-5): the scalar form of [`lift_53_low_simd`].
+#[expect(
+    clippy::inline_always,
+    reason = "the lifting step is specialized with its scalar and SIMD operations"
+)]
+#[inline(always)]
+fn lift_53_low(s1: f32, s2: f32, s3: f32) -> f32 {
+    s1 - math::floor_f32(math::mul_add(s2 + s3, 0.25, 0.5))
+}
+
+/// Equation (F-6) on one sample from its two neighbors: the SIMD form.
+#[expect(
+    clippy::inline_always,
+    reason = "the lifting step is specialized with its scalar and SIMD operations"
+)]
+#[inline(always)]
+fn lift_53_high_simd<S: Simd>(s1: f32x8<S>, s2: f32x8<S>, s3: f32x8<S>) -> f32x8<S> {
+    s1 + ((s2 + s3) * 0.5).floor()
+}
+
+/// Equation (F-6): the scalar form of [`lift_53_high_simd`].
+#[expect(
+    clippy::inline_always,
+    reason = "the lifting step is specialized with its scalar and SIMD operations"
+)]
+#[inline(always)]
+fn lift_53_high(s1: f32, s2: f32, s3: f32) -> f32 {
+    s1 + math::floor_half_sum_f32(s2, s3)
+}
+
+/// One 9-7I lifting step on one sample from its two neighbors: the SIMD form.
+#[expect(
+    clippy::inline_always,
+    reason = "the lifting step is specialized with its scalar and SIMD operations"
+)]
+#[inline(always)]
+fn lift_97_simd<S: Simd>(
+    s1: f32x8<S>,
+    s2: f32x8<S>,
+    s3: f32x8<S>,
+    coefficient: f32x8<S>,
+) -> f32x8<S> {
+    (s2 + s3).mul_add(coefficient, s1)
+}
+
+/// One 9-7I lifting step: the scalar form of [`lift_97_simd`].
+#[expect(
+    clippy::inline_always,
+    reason = "the lifting step is specialized with its scalar and SIMD operations"
+)]
+#[inline(always)]
+fn lift_97(s1: f32, s2: f32, s3: f32, coefficient: f32) -> f32 {
+    math::mul_add(s2 + s3, coefficient, s1)
 }
 
 /// Multiply every sample of `samples` by `scale`.
@@ -1213,5 +1591,104 @@ fn scale_row<S: Simd>(simd: S, buffer: &mut [f32], scale: f32) {
     }
     for value in &mut samples[simd_len..] {
         *value *= scale;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+
+    use super::*;
+
+    /// Deterministic xorshift samples: small integers for 5/3, fractions for 9/7.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "the drawn value is below 20001 and exact in f32"
+    )]
+    fn samples(count: usize, seed: u64, integral: bool) -> Vec<f32> {
+        let mut state = seed | 1;
+        (0..count)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                let value = (state % 20_001) as f32 - 10_000.0;
+                if integral {
+                    value
+                } else {
+                    value / 7.0
+                }
+            })
+            .collect()
+    }
+
+    /// The vertical steps of `arrivals` in batches of `batch` through
+    /// [`lift_arrivals`] give every sample the bits of one arrival at a
+    /// time through [`lift_arrival`], whatever the width, height, origin
+    /// parity, live rows or batch.
+    #[test]
+    fn wavefront_batches_match_one_arrival_at_a_time() {
+        let mut seed = 7_u64;
+        for transform in [
+            WaveletTransform::Reversible53,
+            WaveletTransform::Irreversible97,
+        ] {
+            let integral = transform == WaveletTransform::Reversible53;
+            for y0 in [0_u32, 1, 6] {
+                for (width, height) in [(1, 9), (7, 12), (8, 13), (9, 40), (17, 31), (33, 70)] {
+                    let rect = IntRect::from_xywh(3, y0, width, height);
+                    let level = Level2d::new(rect, [&[]; 4], transform, 1.25);
+                    let (steps, count) = vertical_steps(level);
+                    let height = height as usize;
+                    let width = width as usize;
+                    // The whole level, and strip-like windows with halos.
+                    for live in [0..height, 0..height.min(11), 2..height, 3..height - 2] {
+                        for batch in [1, 2, 3, 5, 16, 37] {
+                            seed += 1;
+                            let source = samples(width * height, seed, integral);
+                            let mut expected = source.clone();
+                            let mut rows = RingRows {
+                                rows: &mut expected,
+                                width,
+                                stride: width,
+                                slots: height,
+                            };
+                            for arrival in live.start..live.end + count {
+                                dispatch!(Level::new(), simd => lift_arrival(
+                                    simd,
+                                    &steps[..count],
+                                    arrival,
+                                    height,
+                                    &live,
+                                    &mut rows,
+                                ));
+                            }
+                            let mut actual = source;
+                            let mut rows = RingRows {
+                                rows: &mut actual,
+                                width,
+                                stride: width,
+                                slots: height,
+                            };
+                            for first in (live.start..live.end + count).step_by(batch) {
+                                let arrivals = first..(first + batch).min(live.end + count);
+                                dispatch!(Level::new(), simd => lift_arrivals(
+                                    simd,
+                                    level,
+                                    arrivals.clone(),
+                                    live.clone(),
+                                    &mut rows,
+                                ));
+                            }
+                            assert_eq!(
+                                actual.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+                                expected.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+                                "{transform:?} y0={y0} {width}x{height} live={live:?} batch={batch}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }
