@@ -287,6 +287,53 @@ fn parallel_workspace_measurements(context: &DecoderContext<'_>) -> (usize, usiz
     )
 }
 
+/// An `Auto` decode of an image too small to repay forking runs serially,
+/// with the same bytes, and leaves the context's policy as it was.
+#[cfg(feature = "parallel")]
+#[test]
+fn small_auto_decodes_run_serially_with_the_same_bytes() {
+    let bytes = parallel_gray_fixture(257, 263, true, false);
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("small image");
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(8)
+        .build()
+        .expect("test pool");
+    pool.install(|| {
+        let mut parallel = DecoderContext::default();
+        let expected = image
+            .decode_with_context(&mut parallel)
+            .expect("parallel decode");
+        assert!(
+            parallel
+                .tile_decode_context
+                .debug_counters
+                .ht_parallel_tasks
+                > 0
+        );
+        let mut small = DecoderContext::default();
+        small.tile_decode_context.serial_small_decodes = true;
+        let actual = image.decode_with_context(&mut small).expect("small decode");
+        assert_eq!(
+            small.tile_decode_context.debug_counters.ht_parallel_tasks,
+            0
+        );
+        assert_eq!(
+            small.cpu_decode_parallelism(),
+            crate::CpuDecodeParallelism::Auto
+        );
+        assert_eq!(actual.data, expected.data);
+        // A larger image still forks.
+        let large = parallel_gray_fixture(1024, 1024, true, false);
+        let large = Image::new(&large, &DecodeSettings::default()).expect("large image");
+        let mut context = DecoderContext::default();
+        context.tile_decode_context.serial_small_decodes = true;
+        large
+            .decode_with_context(&mut context)
+            .expect("large decode");
+        assert!(context.tile_decode_context.debug_counters.ht_parallel_tasks > 0);
+    });
+}
+
 #[cfg(feature = "parallel")]
 #[test]
 fn ht_task_workspaces_match_serial_and_reuse_capacity() {

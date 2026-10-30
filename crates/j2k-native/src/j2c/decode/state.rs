@@ -275,6 +275,11 @@ pub(crate) struct TileDecodeContext {
     /// pack apart, so the fused pass can be compared against them.
     #[cfg(test)]
     pub(crate) staged_rgb8_pack: bool,
+    /// Test-only switch that lets an `Auto` decode of a small image run
+    /// serially, as every other build does. Tests leave it off so their
+    /// small fixtures still exercise the parallel routes.
+    #[cfg(test)]
+    pub(crate) serial_small_decodes: bool,
     /// The raw, decoded samples for each channel.
     pub(crate) channel_data: Vec<ComponentData>,
     /// Optional output window for region-local decode storage.
@@ -336,6 +341,8 @@ impl TileDecodeContext {
         let separate_last_idwt_level = self.separate_last_idwt_level;
         #[cfg(test)]
         let staged_rgb8_pack = self.staged_rgb8_pack;
+        #[cfg(test)]
+        let serial_small_decodes = self.serial_small_decodes;
         *self = Self::default();
         self.output_region = output_region;
         self.round_irreversible_output = round_irreversible_output;
@@ -353,6 +360,7 @@ impl TileDecodeContext {
             self.reject_band_index = reject_band_index;
             self.separate_last_idwt_level = separate_last_idwt_level;
             self.staged_rgb8_pack = staged_rgb8_pack;
+            self.serial_small_decodes = serial_small_decodes;
         }
     }
 
