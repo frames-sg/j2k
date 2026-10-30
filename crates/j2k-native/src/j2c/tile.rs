@@ -718,6 +718,12 @@ impl PrecinctGrid {
         }
     }
 
+    /// How many indices [`Self::rect_at`] accepts: it answers exactly the
+    /// indices below this.
+    pub(crate) fn rect_count(self) -> usize {
+        usize::try_from(u64::from(self.num_x) * u64::from(self.num_y)).unwrap_or(usize::MAX)
+    }
+
     /// The rectangle of precinct `idx` alone, numbered row by row as
     /// [`Self::iter`] lists them, or `None` past the last.
     pub(crate) fn rect_at(self, idx: usize) -> Option<IntRect> {
@@ -949,6 +955,7 @@ mod tests {
                 }
                 assert!(grid.at(listed.len() as u64).is_none());
                 assert!(grid.rect_at(listed.len()).is_none());
+                assert_eq!(grid.rect_count(), listed.len());
             }
         }
     }
