@@ -209,6 +209,29 @@ fn write_rgb_component_rows_u8(
     width: usize,
     height: usize,
 ) {
+    if planes[..3].iter().all(|plane| plane.bit_depth() == 8) {
+        // One indexed loop over whole pixels per row, which LLVM vectorizes.
+        for y in 0..height {
+            let row = y * width..(y + 1) * width;
+            let (red, green, blue) = (
+                &planes[0].samples()[row.clone()],
+                &planes[1].samples()[row.clone()],
+                &planes[2].samples()[row],
+            );
+            let pixels = out[y * stride..y * stride + width * 3]
+                .as_chunks_mut::<3>()
+                .0;
+            let len = pixels.len().min(red.len()).min(green.len()).min(blue.len());
+            for x in 0..len {
+                pixels[x] = [
+                    sample_as_u8_depth8(red[x]),
+                    sample_as_u8_depth8(green[x]),
+                    sample_as_u8_depth8(blue[x]),
+                ];
+            }
+        }
+        return;
+    }
     for y in 0..height {
         let row = y * width;
         let dst = &mut out[y * stride..y * stride + width * 3];
@@ -258,6 +281,16 @@ fn write_samples_as_u8(src: &[f32], bit_depth: u8, dst: &mut [u8]) {
     }
 }
 
+/// [`sample_as_u8`] for an 8-bit sample.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "samples are rounded and clamped to the unsigned 8-bit output domain before conversion"
+)]
+fn sample_as_u8_depth8(sample: f32) -> u8 {
+    sample.round().clamp(0.0, f32::from(u8::MAX)) as u8
+}
+
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -266,7 +299,7 @@ fn write_samples_as_u8(src: &[f32], bit_depth: u8, dst: &mut [u8]) {
 fn sample_as_u8(sample: f32, bit_depth: u8) -> u8 {
     let rounded = sample.round();
     if bit_depth == 8 {
-        return rounded.clamp(0.0, f32::from(u8::MAX)) as u8;
+        return sample_as_u8_depth8(sample);
     }
     let max_value = if bit_depth >= 16 {
         f32::from(u16::MAX)
