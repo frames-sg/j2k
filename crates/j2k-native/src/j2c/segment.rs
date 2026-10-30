@@ -879,30 +879,53 @@ fn resolve_code_block_inclusion(
 }
 
 fn decode_num_coding_passes(reader: &mut BitReader<'_>) -> Option<u8> {
-    if reader.peak_bits_with_stuffing(9) == Some(0x1ff) {
+    // The longest codeword prefix has nine bits. Peek once at as many of them
+    // as the header holds: each shorter peek sees the first bits of it.
+    let (prefix, available) = peek_up_to_nine_bits(reader);
+    let peek = |bits: u8| (available >= bits).then(|| prefix >> (available - bits));
+    if peek(9) == Some(0x1ff) {
         reader.read_bits_with_stuffing(9)?;
         u8::try_from(reader.read_bits_with_stuffing(7)? + 37).ok()
-    } else if reader.peak_bits_with_stuffing(4) == Some(0x0f) {
+    } else if peek(4) == Some(0x0f) {
         reader.read_bits_with_stuffing(4)?;
         u8::try_from(reader.read_bits_with_stuffing(5)? + 6).ok()
-    } else if reader.peak_bits_with_stuffing(4) == Some(0b1110) {
+    } else if peek(4) == Some(0b1110) {
         reader.read_bits_with_stuffing(4)?;
         Some(5)
-    } else if reader.peak_bits_with_stuffing(4) == Some(0b1101) {
+    } else if peek(4) == Some(0b1101) {
         reader.read_bits_with_stuffing(4)?;
         Some(4)
-    } else if reader.peak_bits_with_stuffing(4) == Some(0b1100) {
+    } else if peek(4) == Some(0b1100) {
         reader.read_bits_with_stuffing(4)?;
         Some(3)
-    } else if reader.peak_bits_with_stuffing(2) == Some(0b10) {
+    } else if peek(2) == Some(0b10) {
         reader.read_bits_with_stuffing(2)?;
         Some(2)
-    } else if reader.peak_bits_with_stuffing(1) == Some(0) {
+    } else if peek(1) == Some(0) {
         reader.read_bits_with_stuffing(1)?;
         Some(1)
     } else {
         None
     }
+}
+
+/// The next bits, up to nine, and how many the header holds: a peek of `n`
+/// bits succeeds exactly when `n` single-bit reads would.
+fn peek_up_to_nine_bits(reader: &BitReader<'_>) -> (u32, u8) {
+    if let Some(bits) = reader.clone().read_bits_with_stuffing(9) {
+        return (bits, 9);
+    }
+    let mut probe = reader.clone();
+    let mut bits = 0_u32;
+    let mut available = 0_u8;
+    while available < 9 {
+        let Some(bit) = probe.read_bits_with_stuffing(1) else {
+            break;
+        };
+        bits = (bits << 1) | bit;
+        available += 1;
+    }
+    (bits, available)
 }
 
 fn read_lblock_increment(reader: &mut BitReader<'_>) -> Option<u32> {
@@ -933,6 +956,76 @@ fn read_segment_length(
 mod tests {
     use super::*;
     use alloc::vec::Vec;
+
+    /// The original chain of separate peeks, as the reference for
+    /// `decode_num_coding_passes`.
+    fn coding_passes_by_peeks(reader: &mut BitReader<'_>) -> Option<u8> {
+        if reader.peak_bits_with_stuffing(9) == Some(0x1ff) {
+            reader.read_bits_with_stuffing(9)?;
+            u8::try_from(reader.read_bits_with_stuffing(7)? + 37).ok()
+        } else if reader.peak_bits_with_stuffing(4) == Some(0x0f) {
+            reader.read_bits_with_stuffing(4)?;
+            u8::try_from(reader.read_bits_with_stuffing(5)? + 6).ok()
+        } else if reader.peak_bits_with_stuffing(4) == Some(0b1110) {
+            reader.read_bits_with_stuffing(4)?;
+            Some(5)
+        } else if reader.peak_bits_with_stuffing(4) == Some(0b1101) {
+            reader.read_bits_with_stuffing(4)?;
+            Some(4)
+        } else if reader.peak_bits_with_stuffing(4) == Some(0b1100) {
+            reader.read_bits_with_stuffing(4)?;
+            Some(3)
+        } else if reader.peak_bits_with_stuffing(2) == Some(0b10) {
+            reader.read_bits_with_stuffing(2)?;
+            Some(2)
+        } else if reader.peak_bits_with_stuffing(1) == Some(0) {
+            reader.read_bits_with_stuffing(1)?;
+            Some(1)
+        } else {
+            None
+        }
+    }
+
+    #[test]
+    fn coding_pass_counts_match_separate_prefix_peeks() {
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..3000 {
+            let len = usize::try_from(next() % 6).expect("small length");
+            let data: Vec<u8> = (0..len)
+                .map(|_| match next() % 3 {
+                    0 => 0xff,
+                    _ => u8::try_from(next() >> 56).expect("top byte"),
+                })
+                .collect();
+            let skip = u8::try_from(next() % 8).expect("bit offset");
+            let mut fast = BitReader::new(&data);
+            if fast.read_bits_with_stuffing(skip).is_none() {
+                continue;
+            }
+            let mut reference = fast.clone();
+            loop {
+                let (a, b) = (
+                    decode_num_coding_passes(&mut fast),
+                    coding_passes_by_peeks(&mut reference),
+                );
+                assert_eq!(a, b, "{data:02x?} skip {skip}");
+                if a.is_none() {
+                    break;
+                }
+                assert_eq!(fast.offset(), reference.offset());
+                assert_eq!(
+                    fast.clone().read_bits_with_stuffing(1),
+                    reference.clone().read_bits_with_stuffing(1)
+                );
+            }
+        }
+    }
 
     #[test]
     fn packet_segment_growth_respects_remaining_workspace_budget() {

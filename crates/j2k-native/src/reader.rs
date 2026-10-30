@@ -127,21 +127,31 @@ impl<'a> BitReader<'a> {
     /// in addition.
     #[inline]
     pub(crate) fn read_bits_with_stuffing(&mut self, bit_size: u8) -> Option<u32> {
-        let mut bit = 0;
-
-        for _ in 0..bit_size {
-            let needs_stuff_bit = self.needs_to_read_stuff_bit();
-
-            bit = (bit << 1) | self.read_bit()?;
-
-            if needs_stuff_bit {
+        // Whole runs of a byte's remaining bits at once. Reading the last bit
+        // of a 0xFF byte also reads the stuff bit that starts the next byte,
+        // which must be zero, as bit by bit reads do (B.10.1). Values keep
+        // their low 32 bits, as shifting one bit at a time keeps them.
+        let mut value = 0_u32;
+        let mut remaining = usize::from(bit_size);
+        while remaining > 0 {
+            let byte = *self.data.get(self.byte_pos())?;
+            let available = 8 - self.bit_pos();
+            let take = available.min(remaining);
+            let bits = (u32::from(byte) >> (available - take)) & ((1_u32 << take) - 1);
+            value = (value << take) | bits;
+            self.cur_pos += take;
+            remaining -= take;
+            if take == available && byte == 0xff {
                 self.read_stuff_bit()?;
             }
         }
 
-        Some(bit)
+        Some(value)
     }
 
+    /// Whether the next bit read ends a 0xFF byte, so a stuff bit follows:
+    /// the one-bit-at-a-time rule `read_bits_with_stuffing` applies to runs.
+    #[cfg(test)]
     pub(crate) fn needs_to_read_stuff_bit(&mut self) -> bool {
         // B.10.1: "If the value of the byte is 0xFF, the next byte includes an extra zero bit
         // stuffed into the MSB."
@@ -159,7 +169,7 @@ impl<'a> BitReader<'a> {
         Some(())
     }
 
-    #[inline]
+    #[cfg(test)]
     pub(crate) fn peak_bits_with_stuffing(&mut self, bit_size: u8) -> Option<u32> {
         self.clone().read_bits_with_stuffing(bit_size)
     }
@@ -193,6 +203,54 @@ mod tests {
         };
 
         assert_eq!(reader.read_bits_with_stuffing(1), None);
+    }
+
+    /// The one-bit-at-a-time reference for `read_bits_with_stuffing`.
+    fn read_bits_one_at_a_time(reader: &mut BitReader<'_>, bit_size: u8) -> Option<u32> {
+        let mut bit = 0_u32;
+        for _ in 0..bit_size {
+            let needs_stuff_bit = reader.needs_to_read_stuff_bit();
+            bit = (bit << 1) | reader.read_bit()?;
+            if needs_stuff_bit {
+                reader.read_stuff_bit()?;
+            }
+        }
+        Some(bit)
+    }
+
+    #[test]
+    fn stuffed_reads_match_one_bit_at_a_time_reads() {
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..2000 {
+            let len = usize::try_from(next() % 24).expect("small length");
+            let data: alloc::vec::Vec<u8> = (0..len)
+                .map(|_| match next() % 4 {
+                    0 => 0xff,
+                    1 => 0x7f,
+                    _ => u8::try_from(next() >> 56).expect("top byte"),
+                })
+                .collect();
+            let mut fast = BitReader::new(&data);
+            let mut reference = BitReader::new(&data);
+            loop {
+                let bits = u8::try_from(next() % 40).expect("small width");
+                let (a, b) = (
+                    fast.read_bits_with_stuffing(bits),
+                    read_bits_one_at_a_time(&mut reference, bits),
+                );
+                assert_eq!(a, b, "{data:02x?} width {bits}");
+                if a.is_none() {
+                    break;
+                }
+                assert_eq!(fast.cur_pos, reference.cur_pos);
+            }
+        }
     }
 
     #[test]
