@@ -901,6 +901,11 @@ fn prepare_region_storage(
     }
     storage.lockstep_lines =
         (storage.banded_tier1 || storage.parallel_bands) && tile_ctx.stream_rows;
+    #[cfg(feature = "parallel")]
+    {
+        storage.deep_band_rings =
+            storage.parallel_bands && storage.lockstep_lines && parallel_bands::deep_rings(tile);
+    }
     build::allocate_deferred_coefficients(
         storage,
         header.skipped_resolution_levels,

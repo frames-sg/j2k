@@ -121,6 +121,10 @@ pub(crate) struct DecompositionStorage<'a> {
     /// IDWT on the worker pool (see [`parallel_bands`]). Each sub-band's
     /// `coefficients` then hold a ring of bands.
     pub(crate) parallel_bands: bool,
+    /// Whether the band rings of `parallel_bands` hold one band more at
+    /// every level, for a classic tile that streams its rows from a reader
+    /// per component (see [`parallel_bands::deep_rings`]).
+    pub(crate) deep_band_rings: bool,
     /// Whether every component's IDWT rings, and a scratch row each, are
     /// live at once, because the tile streams its rows to a sink.
     pub(crate) lockstep_lines: bool,
@@ -162,6 +166,7 @@ impl DecompositionStorage<'_> {
         self.line_region_idwt = false;
         self.banded_tier1 = false;
         self.parallel_bands = false;
+        self.deep_band_rings = false;
         self.lockstep_lines = false;
         self.roi_idwt_charge_elements = 0;
         self.tier1_band = None;

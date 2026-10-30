@@ -87,10 +87,12 @@ pub(crate) fn roi_idwt_peak_elements(
                     let (width, height) = (window.width() as usize, window.height() as usize);
                     if storage.parallel_bands {
                         // Two batches, when each component reconstructs
-                        // on its own reader.
+                        // on its own reader, unless the band rings hold
+                        // more bands instead.
+                        let batches = if storage.deep_band_rings { 1 } else { 2 };
                         width
                             .saturating_mul(streamed_batch_rows(width, height))
-                            .saturating_mul(2)
+                            .saturating_mul(batches)
                     } else {
                         width
                     }

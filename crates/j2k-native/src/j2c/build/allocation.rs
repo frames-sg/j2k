@@ -393,6 +393,11 @@ pub(crate) fn allocate_deferred_coefficients(
 pub(crate) const FINEST_LEVEL_BAND_SLOTS: u32 = 3;
 pub(crate) const OTHER_LEVEL_BAND_SLOTS: u32 = 2;
 
+/// Band slots of each level with `deep_band_rings`: one more band of
+/// lookahead for the pool's workers, held in place of a second batch of
+/// reconstructed rows.
+const DEEP_RING_EXTRA_SLOTS: u32 = 1;
+
 /// Give each sub-band of a region decode the coefficient range for its
 /// stored rectangle: the required code-blocks, clipped to the IDWT windows
 /// unless `clip_to_idwt_windows` is false. With banded Tier-1, a range holds
@@ -454,10 +459,15 @@ fn lay_out_region_coefficients(
                         .sub_bands
                         .contains(&sub_band_idx)
             });
-            if finest {
+            let slots = if finest {
                 FINEST_LEVEL_BAND_SLOTS
             } else {
                 OTHER_LEVEL_BAND_SLOTS
+            };
+            if storage.deep_band_rings {
+                slots + DEEP_RING_EXTRA_SLOTS
+            } else {
+                slots
             }
         } else {
             1
@@ -505,6 +515,7 @@ pub(crate) fn lay_out_whole_region_coefficients(
 ) -> Result<()> {
     storage.banded_tier1 = false;
     storage.parallel_bands = false;
+    storage.deep_band_rings = false;
     let coefficient_count = lay_out_region_coefficients(storage, true, 0)?;
     let mut budget =
         reuse::ReallocationBudget::from_live_bytes(storage.structural_workspace_bytes)?;

@@ -374,12 +374,19 @@ pub(super) fn decode_tile_rows<'a>(
     };
     // Rows reconstruct in batches, charged by the region's width (see
     // `roi_idwt_peak_elements`): two of them with a reader per component, so
-    // one finishes while the next reconstructs.
+    // one finishes while the next reconstructs, unless the band rings are
+    // deep instead.
     let batch = streamed_batch_rows(region.width() as usize, copy.height() as usize);
     let scratch_len = (copy.width() as usize)
         .checked_mul(components)
         .and_then(|samples| samples.checked_mul(batch))
-        .and_then(|samples| samples.checked_mul(if readers > 1 { 2 } else { 1 }))
+        .and_then(|samples| {
+            samples.checked_mul(if readers > 1 && !storage.deep_band_rings {
+                2
+            } else {
+                1
+            })
+        })
         .ok_or(ValidationError::ImageTooLarge)?;
     let (mut buffer, ring_lens) =
         banded_tier1::take_line_buffer(tile_ctx, storage, &line_plans, scratch_len)?;
@@ -492,6 +499,25 @@ pub(super) fn decode_tile_rows<'a>(
             tile, header, tile_ctx, storage, error,
         )),
     }
+}
+
+/// Whether a tile streaming its rows from pool bands holds deeper band rings
+/// (see `DecompositionStorage::deep_band_rings`): a classic tile of several
+/// components with the pool threads to reconstruct each on its own reader
+/// (see [`parallel_synthesis`]). Its readers wait on classic Tier-1, which
+/// more bands in flight keep busier; the memory comes from holding one batch
+/// of rows instead of two. HTJ2K bands keep up with the shallower rings,
+/// and its readers gain more from the second batch.
+pub(super) fn deep_rings(tile: &Tile<'_>) -> bool {
+    tile.component_infos.len() > 1
+        && rayon::current_num_threads() >= MIN_CLASSIC_SYNTHESIS_THREADS
+        && tile.component_infos.iter().all(|component| {
+            !component
+                .coding_style
+                .parameters
+                .code_block_style
+                .uses_high_throughput_block_coding()
+        })
 }
 
 /// Pool threads a classic tile needs before its components reconstruct on
