@@ -64,6 +64,10 @@ impl ComponentRowSink for CollectingSink {
     }
 }
 
+#[expect(
+    clippy::struct_field_names,
+    reason = "decoded_blocks and skipped_blocks mirror the decoder's decoded and skipped code-block counters"
+)]
 struct Decoded {
     planes: Vec<Vec<u32>>,
     depths: Vec<(u8, bool)>,

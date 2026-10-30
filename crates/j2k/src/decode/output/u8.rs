@@ -225,25 +225,14 @@ fn write_rgb_component_rows_u8(
     height: usize,
 ) {
     if planes[..3].iter().all(|plane| plane.bit_depth() == 8) {
-        // One indexed loop over whole pixels per row, which LLVM vectorizes.
+        // `sample_as_u8` at 8 bits is the RGB8 pack's rounding and saturation,
+        // which j2k-native runs at the CPU's SIMD level.
         for y in 0..height {
             let row = y * width..(y + 1) * width;
-            let (red, green, blue) = (
-                &planes[0].samples()[row.clone()],
-                &planes[1].samples()[row.clone()],
-                &planes[2].samples()[row],
+            j2k_native::pack_rgb8(
+                [0, 1, 2].map(|channel| &planes[channel].samples()[row.clone()]),
+                &mut out[y * stride..y * stride + width * 3],
             );
-            let pixels = out[y * stride..y * stride + width * 3]
-                .as_chunks_mut::<3>()
-                .0;
-            let len = pixels.len().min(red.len()).min(green.len()).min(blue.len());
-            for x in 0..len {
-                pixels[x] = [
-                    sample_as_u8_depth8(red[x]),
-                    sample_as_u8_depth8(green[x]),
-                    sample_as_u8_depth8(blue[x]),
-                ];
-            }
         }
         return;
     }

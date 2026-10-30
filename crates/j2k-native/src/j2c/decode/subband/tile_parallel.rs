@@ -1522,6 +1522,10 @@ pub(in crate::j2c::decode) fn plan_band_route<'a>(
 /// live beside it: the budget of the route planned last for the same
 /// executor, which holds every earlier route's charges. Without it, the
 /// route is charged to the decode's storage budget.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the route's coding, tile route, plan and cutoffs decide one band routing in order"
+)]
 pub(in crate::j2c::decode) fn plan_band_route_beside<'a>(
     tile: &Tile<'a>,
     component_idx: usize,

@@ -478,7 +478,12 @@ impl RowOutput<'_, '_> {
                     None,
                 )?;
             }
-            y += rows as u32;
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "a batch holds at most the `copy.y1 - y` rows left, a u32"
+            )]
+            let rows = rows as u32;
+            y += rows;
         }
     }
 
@@ -562,6 +567,10 @@ impl RowOutput<'_, '_> {
     /// sink.
     fn write_component_rows(&mut self, parts: &[&mut [f32]], y: u32, rows: usize) {
         let (copy, region) = (self.copy, self.region);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "`rows` is one batch of the copy rectangle's rows, at most its u32 height"
+        )]
         let component_rows: [ComponentPlane<'_>; 4] =
             core::array::from_fn(|index| ComponentPlane {
                 samples: parts.get(index).map_or(&[][..], |part| &**part),

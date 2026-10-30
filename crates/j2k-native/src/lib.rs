@@ -164,6 +164,8 @@ pub(crate) mod writer;
 use crate::math::{dispatch, Level};
 #[cfg(test)]
 use color::cielab_to_rgb;
+#[doc(hidden)]
+pub use color::pack_rgb8;
 pub(crate) use color::{
     convert_color_space, interleave_and_convert_after_mct, interleave_and_convert_region,
     resolve_alpha_and_color_space, resolve_palette_indices, validate_and_reorder_channels,

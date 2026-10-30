@@ -329,6 +329,10 @@ fn finish_row(
 }
 
 /// Interleave, filter horizontally and scale the next row of `levels[level]`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one row's band reads, interleave, horizontal filter and scaling stay together for its whole-row and windowed paths"
+)]
 fn feed_row(levels: &mut [LevelRows<'_>], level: usize, inputs: &mut Inputs<'_>) -> Result<()> {
     let (lower, upper) = levels.split_at_mut(level);
     let current = &mut upper[0];

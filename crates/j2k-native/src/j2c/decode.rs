@@ -986,7 +986,8 @@ enum TileOutput<'o, 'p> {
 /// planes, and with [`TileOutput::Sink`], the tile's rows go to the sink.
 #[expect(
     clippy::too_many_arguments,
-    reason = "the per-component stages share decode_tile's state, adapter, and profiling explicitly"
+    clippy::too_many_lines,
+    reason = "the per-component stages share decode_tile's state, adapter, and profiling explicitly, and the sink routes and the Tier-1, IDWT and store order stay in one place"
 )]
 fn decode_components<'a>(
     tile: &Tile<'a>,

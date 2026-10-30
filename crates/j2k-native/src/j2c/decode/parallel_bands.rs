@@ -1018,7 +1018,8 @@ impl<'c, 'w, W> Shared<'_, 'c, 'w, W> {
 /// `false` when a band was stranded.
 #[expect(
     clippy::too_many_arguments,
-    reason = "the executor takes the plan, its storage and its two drivers explicitly"
+    clippy::too_many_lines,
+    reason = "the executor takes the plan, its storage and its two drivers explicitly, and sets up its shared state and runs its views in one scope"
 )]
 fn run_bands<W: TaskScratch>(
     (workers, readers, helps): (usize, usize, bool),
