@@ -62,11 +62,11 @@ const MIN_PARALLEL_CODED_BYTES: usize = 0;
 /// average 2,000 to 15,000.
 pub(crate) const MIN_BAND_WORK: usize = 1024;
 
-/// Where a tile of `coding` blocks with `strips` rows of code blocks and
-/// `coded_bytes` of payload decodes on `threads` workers: on the route
-/// (`None`), serially, or per sub-band. A classic tile with fewer rows than
-/// workers leaves some idle, while the per-sub-band path splits each row's
-/// blocks among them.
+/// Where a component of `coding` blocks with `strips` rows of code blocks
+/// and `coded_bytes` of payload decodes on the band route with `threads`
+/// workers: on the route (`None`), serially, or per sub-band. A classic
+/// component with fewer rows than workers leaves some idle there, while the
+/// per-sub-band path splits each row's blocks among them.
 fn route_fallback(
     coding: CodeBlockCoding,
     strips: usize,
@@ -84,6 +84,21 @@ fn route_fallback(
     } else {
         None
     }
+}
+
+/// Where a tile of `coding` blocks with `strips` rows of code blocks and
+/// `coded_bytes` of payload decodes: on the tile route (`None`) or serially.
+/// Unlike the band route, a classic tile with fewer rows than workers stays on
+/// the tile route, which splits its long rows into parts of about equal work;
+/// the per-sub-band path would decode its sub-bands one after another.
+fn tile_route_fallback(
+    coding: CodeBlockCoding,
+    strips: usize,
+    coded_bytes: usize,
+    min_coded_bytes: usize,
+) -> Option<TileRoute> {
+    (too_few_coded_bytes(coding, coded_bytes, min_coded_bytes) || strips < 2)
+        .then_some(TileRoute::Serial)
 }
 
 /// Whether `coded_bytes` of `coding` blocks are too few to fork for.
@@ -208,13 +223,8 @@ pub(in crate::j2c::decode) fn plan_tile_route<'a>(
     // serially before anything is planned.
     let (required, segment_bytes, rows) =
         required_code_blocks(tile, components.clone(), storage, header, coding)?;
-    if let Some(route) = route_fallback(
-        coding,
-        rows,
-        segment_bytes,
-        rayon::current_num_threads(),
-        MIN_PARALLEL_CODED_BYTES,
-    ) {
+    if let Some(route) = tile_route_fallback(coding, rows, segment_bytes, MIN_PARALLEL_CODED_BYTES)
+    {
         return Ok(route);
     }
     let mut budget = DecodeAllocationBudget::for_storage(storage)?;
@@ -237,11 +247,10 @@ pub(in crate::j2c::decode) fn plan_tile_route<'a>(
         }
         Err(error) => return Err(error),
     };
-    if let Some(route) = route_fallback(
+    if let Some(route) = tile_route_fallback(
         coding,
         plan.strips.len(),
         plan.coded_bytes,
-        rayon::current_num_threads(),
         MIN_PARALLEL_CODED_BYTES,
     ) {
         return Ok(route);
@@ -1705,7 +1714,10 @@ impl BandRoute<'_> {
 mod tests {
     use alloc::vec::Vec;
 
-    use super::{route_fallback, split_runs, CodeBlockCoding, Strip, TaskCounts, TileRoute};
+    use super::{
+        route_fallback, split_runs, tile_route_fallback, CodeBlockCoding, Strip, TaskCounts,
+        TileRoute,
+    };
 
     #[test]
     fn split_runs_cover_the_strip_in_balanced_parts() {
@@ -1796,6 +1808,28 @@ mod tests {
 
     #[test]
     fn tile_route() {
+        let (ht, classic) = (CodeBlockCoding::HighThroughput, CodeBlockCoding::Classic);
+        // (coding, strips, coded bytes, expected fallback) with an 8 KiB cutoff:
+        // a classic tile with fewer rows than workers stays on the route.
+        for (coding, strips, coded_bytes, expected) in [
+            (ht, 1, usize::MAX, Some(TileRoute::Serial)),
+            (ht, 16, 8191, Some(TileRoute::Serial)),
+            (ht, 2, 8192, None),
+            (classic, 16, 1023, Some(TileRoute::Serial)),
+            (classic, 16, 1024, None),
+            (classic, 3, 1024, None),
+            (classic, 1, usize::MAX, Some(TileRoute::Serial)),
+        ] {
+            assert_eq!(
+                tile_route_fallback(coding, strips, coded_bytes, 8192),
+                expected,
+                "{coding:?} {strips} strips, {coded_bytes} bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn band_route() {
         let (ht, classic) = (CodeBlockCoding::HighThroughput, CodeBlockCoding::Classic);
         // (coding, strips, coded bytes, threads, expected fallback) with an 8 KiB cutoff.
         for (coding, strips, coded_bytes, threads, expected) in [
