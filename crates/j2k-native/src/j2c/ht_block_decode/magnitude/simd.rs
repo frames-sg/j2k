@@ -8,7 +8,9 @@
 //! instead of one after another. Each lane computes exactly what
 //! [`super::decode_mag_sgn_sample_with_vn`] computes for that sample.
 
-use fearless_simd::{f32x4, f32x8, i32x8, u32x4, u32x8, u8x16, u8x32, Bytes, Simd, SimdBase};
+use fearless_simd::{
+    f32x4, f32x8, i32x8, u32x4, u32x8, u64x2, u8x16, u8x32, Bytes, Simd, SimdBase,
+};
 
 use super::super::cleanup::{
     decode_cleanup_first_row_pair, decode_cleanup_row_pair, decode_cleanup_symbols_first_row,
@@ -207,7 +209,7 @@ fn decode_two_quads_to_f32<const IRREVERSIBLE_MIDPOINT: bool, S: Simd>(
     quads: [(u32, u32); 2],
     missing_msbs: u32,
     output: FinalOutput,
-) -> Option<(f32x4<S>, f32x4<S>, [u32; 4])> {
+) -> Option<(f32x4<S>, f32x4<S>, u32x4<S>)> {
     let [(inf0, uq0), (inf1, uq1)] = quads;
     if uq0 > missing_msbs + 2 || uq1 > missing_msbs + 2 {
         return None;
@@ -217,7 +219,7 @@ fn decode_two_quads_to_f32<const IRREVERSIBLE_MIDPOINT: bool, S: Simd>(
     if (inf0 | inf1) & 0xF0 == 0 {
         let zero = final_samples::<IRREVERSIBLE_MIDPOINT, _>(lanes, u32x8::splat(simd, 0), output);
         let (zero, _) = simd.split_f32x8(zero);
-        return Some((zero, zero, [0; 4]));
+        return Some((zero, zero, u32x4::splat(simd, 0)));
     }
 
     let (samples, v_n) = decode_quad_pair(lanes, magsgn, quads, 29 - missing_msbs);
@@ -227,7 +229,7 @@ fn decode_two_quads_to_f32<const IRREVERSIBLE_MIDPOINT: bool, S: Simd>(
     Some((
         samples0.unzip_low(samples1),
         samples0.unzip_high(samples1),
-        v_n0.unzip_high(v_n1).to_array(),
+        v_n0.unzip_high(v_n1),
     ))
 }
 
@@ -613,10 +615,13 @@ struct RowOutput<'o> {
 
 /// Decode a pair's two quads straight to final samples, store both rows,
 /// and fold its bottom-row `v_n` into `row.v_n` as the stored-row walkers do.
+/// `carry` holds the previous pair's bottom row; its last lane is the `v_n`
+/// carried into this pair's first column pair.
 #[expect(
+    clippy::cast_possible_truncation,
     clippy::inline_always,
     clippy::too_many_arguments,
-    reason = "per-pair direct-output hot step"
+    reason = "the two 32-bit halves of the folded word; per-pair direct-output hot step"
 )]
 #[inline(always)]
 fn decode_pair_to_f32<const IRREVERSIBLE_MIDPOINT: bool, S: Simd>(
@@ -627,9 +632,9 @@ fn decode_pair_to_f32<const IRREVERSIBLE_MIDPOINT: bool, S: Simd>(
     quads: [(u32, u32); 2],
     missing_msbs: u32,
     output: FinalOutput,
-    carry: &mut u32,
+    carry: &mut u32x4<S>,
 ) -> Option<()> {
-    let (samples0, samples1, [c0, c1, c2, c3]) = decode_two_quads_to_f32::<IRREVERSIBLE_MIDPOINT, S>(
+    let (samples0, samples1, bottom) = decode_two_quads_to_f32::<IRREVERSIBLE_MIDPOINT, S>(
         lanes,
         magsgn,
         quads,
@@ -640,8 +645,12 @@ fn decode_pair_to_f32<const IRREVERSIBLE_MIDPOINT: bool, S: Simd>(
     if let Some(second) = row.second.get_mut(index) {
         samples1.store_array(second);
     }
-    *row.v_n.get_mut(index)? = [*carry | c0, c1 | c2];
-    *carry = c3;
+    // `[carry, c0, c1, c2] | [c0, c1, c2, c3]`: lanes 0 and 2 are the pair's
+    // `[carry | c0, c1 | c2]`, extracted as one 64-bit word.
+    let folded = carry.slide_within_blocks::<3>(bottom) | bottom;
+    let [v_n, _] = folded.unzip_low(folded).bitcast::<u64x2<S>>().to_array();
+    *row.v_n.get_mut(index)? = [v_n as u32, (v_n >> 32) as u32];
+    *carry = bottom;
     Some(())
 }
 
@@ -665,7 +674,7 @@ fn decode_first_row_to_f32<const IRREVERSIBLE_MIDPOINT: bool, S: Simd>(
     output: FinalOutput,
 ) -> Option<u32> {
     let mut c_q = 0;
-    let mut carry = 0;
+    let mut carry = u32x4::splat(lanes.simd, 0);
     for index in 0..row.first.len() {
         // Two quads in zero context inside one MEL run of zeros code no VLC,
         // U-VLC or MagSgn bits: skip to the symbols they decode to (the
@@ -690,7 +699,7 @@ fn decode_first_row_to_f32<const IRREVERSIBLE_MIDPOINT: bool, S: Simd>(
             &mut carry,
         )?;
     }
-    Some(carry)
+    Some(carry.to_array()[3])
 }
 
 /// Decode a non-initial quad row straight to final samples and return its
@@ -715,7 +724,7 @@ fn decode_row_to_f32<const IRREVERSIBLE_MIDPOINT: bool, S: Simd>(
     output: FinalOutput,
 ) -> Option<u32> {
     let mut c_q = 0;
-    let mut carry = 0;
+    let mut carry = u32x4::splat(lanes.simd, 0);
     for index in 0..row.first.len() {
         let [above0, above1] = above.get(index..)?.first_chunk::<2>()?;
         let above = |k: usize| u32::from(if k < 4 { above0[k] } else { above1[0] });
@@ -751,7 +760,7 @@ fn decode_row_to_f32<const IRREVERSIBLE_MIDPOINT: bool, S: Simd>(
             &mut carry,
         )?;
     }
-    Some(carry)
+    Some(carry.to_array()[3])
 }
 
 /// Cleanup-only SIMD rows that publish final dequantized coefficients
