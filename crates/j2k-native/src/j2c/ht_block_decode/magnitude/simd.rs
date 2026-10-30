@@ -258,7 +258,10 @@ fn final_samples<const IRREVERSIBLE_MIDPOINT: bool, S: Simd>(
 ) -> f32x8<S> {
     let magnitude = samples & 0x7FFF_FFFF;
     let values = if IRREVERSIBLE_MIDPOINT {
-        let magnitude = lanes.simd.cvt_f32_u32x8(magnitude) * output.midpoint_scale;
+        // The magnitude is masked to 31 bits, so the signed conversion is exact and gives the
+        // same value; it is one instruction on x86-64, where the unsigned one is emulated.
+        let magnitude =
+            lanes.simd.cvt_f32_i32x8(magnitude.bitcast::<i32x8<S>>()) * output.midpoint_scale;
         let signed = magnitude.bitcast::<u32x8<S>>() | (samples & 0x8000_0000);
         signed.bitcast::<f32x8<S>>()
     } else {
