@@ -195,6 +195,57 @@ fn irreversible_midpoint_reconstruction_tracks_the_last_decoded_pass() {
 }
 
 #[test]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the reference converts the reconstructed integer as the scalar output does"
+)]
+fn exact_reversible_rows_match_per_coefficient_reconstruction() {
+    for decoded_bitplanes in [1_u8, 2, 8, 17, 31, 32] {
+        let top = (1_u64 << decoded_bitplanes) - 1;
+        let mut magnitudes = vec![0, 1, 2, 3, top, top >> 1, top & 0x5555_5555];
+        magnitudes.extend((0..decoded_bitplanes).map(|bit| 1_u64 << bit));
+        let coefficients = magnitudes
+            .iter()
+            .flat_map(|&magnitude| {
+                [0_u8, 1].map(|sign| {
+                    let mut coefficient = Coefficient::default();
+                    for bit in 0..63 {
+                        coefficient.push_bit_at(u32::from(magnitude >> bit & 1 == 1), bit);
+                    }
+                    coefficient.set_sign(u8::from(magnitude != 0) & sign);
+                    coefficient
+                })
+            })
+            .collect::<Vec<_>>();
+        let max_passes = 1 + 3 * (decoded_bitplanes - 1);
+        let mut exact_blocks = 0;
+        for number_of_coding_passes in 0..=max_passes {
+            let block = MidpointReconstructor::new(decoded_bitplanes, number_of_coding_passes, 0);
+            if !block.reversible_is_exact() {
+                continue;
+            }
+            exact_blocks += 1;
+            for step in [1.0_f32, 0.5, 3.0, 0.1] {
+                let mut row = vec![f32::NAN; coefficients.len()];
+                MidpointReconstructor::scale_exact_reversible_row(&coefficients, &mut row, step);
+                for (value, &coefficient) in row.iter().zip(&coefficients) {
+                    assert_eq!(
+                        value.to_bits(),
+                        (block.reconstruct_reversible(coefficient) as f32 * step).to_bits(),
+                        "bitplanes {decoded_bitplanes} passes {number_of_coding_passes} \
+                         step {step} coefficient {:#x}",
+                        coefficient.to_bits()
+                    );
+                }
+            }
+        }
+        // Blocks through the last plane's refinement, and blocks without
+        // passes, add no midpoint; 32 coded planes take the general path.
+        assert_eq!(exact_blocks == 0, decoded_bitplanes > 31);
+    }
+}
+
+#[test]
 fn reversible_reconstruction_is_exact_when_complete_and_centered_when_stopped_early() {
     let coefficient = |magnitude: u64, sign: u8| {
         let mut coefficient = Coefficient::default();

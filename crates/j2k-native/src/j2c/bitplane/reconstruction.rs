@@ -122,6 +122,41 @@ impl MidpointReconstructor {
         }
     }
 
+    /// Whether [`Self::reconstruct_reversible`] returns every coefficient as
+    /// decoded, without a midpoint offset, and at most 31 bit-planes are
+    /// coded, so magnitudes are below 2^31.
+    pub(crate) fn reversible_is_exact(self) -> bool {
+        self.decoded_bitplanes <= 31
+            && self
+                .fast
+                .is_none_or(|(lowest, final_sigprop)| lowest == 0 && !final_sigprop)
+    }
+
+    /// `output[i] = reconstruct_reversible(c[i]) as f32 * step` for as many
+    /// elements as both slices hold, for a block whose reconstruction
+    /// [`Self::reversible_is_exact`]. A magnitude below 2^31 converts exactly
+    /// through `u32`, and negation commutes with the rounding of both the
+    /// conversion and the product, so the sign is a bit flip and the row
+    /// vectorizes.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        reason = "magnitudes are below 2^31 when the reconstruction is exact"
+    )]
+    pub(crate) fn scale_exact_reversible_row(
+        coefficients: &[Coefficient],
+        output: &mut [f32],
+        step: f32,
+    ) {
+        for (sample, &coefficient) in output.iter_mut().zip(coefficients) {
+            let bits = coefficient.to_bits();
+            let magnitude = bits as u32;
+            let negative = (bits >> 63) as u32;
+            let value = f32::from_bits((magnitude as f32 * step).to_bits() ^ (negative << 31));
+            *sample = if magnitude == 0 { 0.0 } else { value };
+        }
+    }
+
     /// Reversible (5/3) reconstruction: the per-block form of
     /// [`reversible_midpoint_bit`](j2k_codec_math::classic::reversible_midpoint_bit),
     /// which the CUDA and Metal classic decoders apply too. A fully decoded

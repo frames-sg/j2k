@@ -332,6 +332,9 @@ pub(super) fn decode_sub_band_classic_blocks(
                 code_block.number_of_coding_passes,
                 component_info.roi_shift,
             );
+            let exact = !irreversible_midpoint
+                && component_info.roi_shift == 0
+                && midpoint.reversible_is_exact();
             placement.store_rows(
                 tile_ctx.bit_plane_decode_context.coefficient_rows(),
                 base_store,
@@ -339,6 +342,12 @@ pub(super) fn decode_sub_band_classic_blocks(
                 |coefficients, out_row| {
                     if irreversible_midpoint {
                         midpoint.dequantize_row(coefficients, out_row, dequantization_step);
+                    } else if exact {
+                        bitplane::MidpointReconstructor::scale_exact_reversible_row(
+                            coefficients,
+                            out_row,
+                            dequantization_step,
+                        );
                     } else {
                         for (output, coefficient) in out_row.iter_mut().zip(coefficients) {
                             *output = apply_roi_maxshift_inverse_i64(
