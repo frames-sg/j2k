@@ -53,7 +53,9 @@ use super::{
 use crate::error::{DecodeError, DecodingError, ValidationError};
 use crate::j2c::build::{self, CodeBlockCoding};
 use crate::j2c::codestream::WaveletTransform;
-use crate::j2c::idwt::{ComponentLines, LinePlan, LineReconstruction, SubBandRows};
+use crate::j2c::idwt::{
+    streamed_batch_rows, ComponentLines, LinePlan, LineReconstruction, SubBandRows,
+};
 use crate::j2c::rect::IntRect;
 use crate::profile;
 use crate::ComponentRowSink;
@@ -66,22 +68,6 @@ const SUPPORT_ROWS: i64 = 4;
 /// How often a wait for a running band checks that a worker is still active
 /// to finish it.
 const STRANDED_CHECK: std::time::Duration = std::time::Duration::from_millis(50);
-
-/// Whether a tile whose bands decode on the pool (see [`applies`]) streams
-/// its rows to a row sink, every component advancing together: when its
-/// code-blocks are classic. One component's bands at a time then leave the
-/// pool idle at reduced resolutions, where each sub-band holds few bands.
-/// HTJ2K bands decode fast enough that its component planes, whose inverse
-/// transform runs on the pool, cost less.
-pub(super) fn streams_rows(tile: &Tile<'_>) -> bool {
-    tile.component_infos.iter().all(|component| {
-        !component
-            .coding_style
-            .parameters
-            .code_block_style
-            .uses_high_throughput_block_coding()
-    })
-}
 
 /// Whether a tile's components decode their bands on the worker pool: it
 /// feeds the streamed IDWT, in stored windows clipped to it, under `Auto`
@@ -249,12 +235,15 @@ fn decode_route(
     let mut coefficients = core::mem::take(&mut storage.coefficients);
     let slots = split_slots(&rings, &bands, storage, &mut coefficients);
     let result = slots.and_then(|slots| {
-        let run = |rows: &mut dyn SubBandRows| -> Result<()> {
-            lines.as_mut().map_or(Ok(()), |lines| lines.run(rows))
+        let run = |rows: &mut [&mut (dyn SubBandRows + Send)]| -> Result<()> {
+            match (lines.as_mut(), rows.first_mut()) {
+                (Some(lines), Some(rows)) => lines.run(&mut **rows),
+                _ => Ok(()),
+            }
         };
         match route.coding() {
             CodeBlockCoding::Classic => run_bands(
-                route.workers(),
+                (route.workers(), 1, false),
                 &rings,
                 &bands,
                 slots,
@@ -268,7 +257,7 @@ fn decode_route(
                 strand_once,
             ),
             CodeBlockCoding::HighThroughput => run_bands(
-                route.workers(),
+                (route.workers(), 1, false),
                 &rings,
                 &bands,
                 slots,
@@ -362,21 +351,41 @@ pub(super) fn decode_tile_rows<'a>(
     let (copy, region) = line_plans
         .first()
         .map_or((empty, empty), |plan| (plan.copy, plan.region));
+    // Rows reconstruct in batches, charged by the region's width (see
+    // `roi_idwt_peak_elements`).
+    let batch = streamed_batch_rows(region.width() as usize);
     let scratch_len = (copy.width() as usize)
         .checked_mul(components)
+        .and_then(|samples| samples.checked_mul(batch))
         .ok_or(ValidationError::ImageTooLarge)?;
     let (mut buffer, ring_lens) =
         banded_tier1::take_line_buffer(tile_ctx, storage, &line_plans, scratch_len)?;
     let mut output = RowOutput::new(tile, sink, tile_ctx, copy, region);
-    let workers = routes
-        .iter()
-        .map(|route| route.workers())
-        .max()
-        .unwrap_or(0);
     // Every route plans the tile's one block coding (see `routes_tile`).
     let coding = routes
         .first()
         .map_or(CodeBlockCoding::Classic, |route| route.coding());
+    // Each component's reconstruction reads through its own view of the
+    // bands, with a workspace of its own from the bank the routes prepared
+    // for their workers and the calling thread.
+    let bank = match coding {
+        CodeBlockCoding::Classic => tile_ctx.classic_task_workspaces.len(),
+        CodeBlockCoding::HighThroughput => tile_ctx.ht_task_workspaces.len(),
+    };
+    let route_workers = routes
+        .iter()
+        .map(|route| route.workers())
+        .max()
+        .unwrap_or(0);
+    let readers = if parallel_synthesis(components, coding, bank, route_workers) {
+        components
+    } else {
+        1
+    };
+    let workers = route_workers.min(bank.saturating_sub(readers));
+    // One reader for every component of a classic tile leaves the pool's
+    // threads to Tier-1, and decodes bands itself while it waits.
+    let helps = readers == 1 && coding == CodeBlockCoding::Classic;
     #[cfg(test)]
     let strand_once = tile_ctx.strand_pool_band;
     #[cfg(not(test))]
@@ -397,14 +406,14 @@ pub(super) fn decode_tile_rows<'a>(
             line_rings = tail;
             lines.push(plan.reconstruction(ring)?);
         }
-        let run = |rows: &mut dyn SubBandRows| -> Result<()> {
-            let written = output.write(&mut lines, rows, scratch);
+        let run = |readers: &mut [&mut (dyn SubBandRows + Send)]| -> Result<()> {
+            let written = output.write_batches(&mut lines, readers, scratch, batch);
             output_samples = lines.iter().map(LineReconstruction::output_samples).sum();
             written
         };
         match coding {
             CodeBlockCoding::Classic => run_bands(
-                workers,
+                (workers, readers, helps),
                 &rings,
                 &bands,
                 slots,
@@ -419,7 +428,7 @@ pub(super) fn decode_tile_rows<'a>(
                 strand_once,
             ),
             CodeBlockCoding::HighThroughput => run_bands(
-                workers,
+                (workers, readers, helps),
                 &rings,
                 &bands,
                 slots,
@@ -481,6 +490,28 @@ pub(super) fn decode_tile_rows<'a>(
             tile, header, tile_ctx, storage, error,
         )),
     }
+}
+
+/// Pool threads a classic tile needs before its components reconstruct on
+/// the pool. A reader waiting for a band holds its thread, and classic
+/// Tier-1 keeps readers waiting, so a smaller pool does better with every
+/// thread decoding bands.
+const MIN_CLASSIC_SYNTHESIS_THREADS: usize = 12;
+
+/// Whether a streamed tile's `components` reconstruct on the pool, one per
+/// task, given its block coding, a workspace bank of `bank` and routes
+/// planned for `route_workers` pool threads.
+fn parallel_synthesis(
+    components: usize,
+    coding: CodeBlockCoding,
+    bank: usize,
+    route_workers: usize,
+) -> bool {
+    components > 1
+        && route_workers >= 2
+        && bank > components
+        && (coding == CodeBlockCoding::HighThroughput
+            || rayon::current_num_threads() >= MIN_CLASSIC_SYNTHESIS_THREADS)
 }
 
 /// The route of a band's `strip`, counted over every component's route from
@@ -952,27 +983,30 @@ impl<'c, 'w, W> Shared<'_, 'c, 'w, W> {
 }
 
 /// Decode `bands` into `slots` on up to `workers` pool threads while `run`
-/// drives the IDWT through them on this thread, then decode the bands it
-/// didn't read. Returns `false` when a band was stranded.
+/// drives the IDWT through `readers` views of them, then decode the bands it
+/// didn't read. Each view reads its own sub-bands and decodes a band nobody
+/// has started with a workspace of its own, so views may run on different
+/// threads. Views that `help` decode other bands while they wait. Returns
+/// `false` when a band was stranded.
 #[expect(
     clippy::too_many_arguments,
     reason = "the executor takes the plan, its storage and its two drivers explicitly"
 )]
 fn run_bands<W: TaskScratch>(
-    workers: usize,
+    (workers, readers, helps): (usize, usize, bool),
     rings: &[Ring],
     bands: &[Band],
     slots: Slots<'_>,
     bank: &mut [TaskWorkspace<W>],
     decode: impl Fn(usize, &mut [f32], &mut W, &mut Vec<f32>) -> Result<()> + Sync,
-    run: impl FnOnce(&mut dyn SubBandRows) -> Result<()>,
+    run: impl FnOnce(&mut [&mut (dyn SubBandRows + Send)]) -> Result<()>,
     profile_enabled: bool,
     tier1_us: &mut u128,
     strand_once: bool,
 ) -> Result<bool> {
     #[cfg(not(test))]
     let _ = strand_once;
-    let workspaces_needed = workers + 1;
+    let workspaces_needed = workers + readers.max(1);
     let mut workspaces: Vec<&mut W> = Vec::new();
     workspaces
         .try_reserve_exact(workspaces_needed)
@@ -985,9 +1019,7 @@ fn run_bands<W: TaskScratch>(
     if workspaces.len() != workspaces_needed {
         return Err(DecodingError::CodeBlockDecodeFailure.into());
     }
-    let own_workspace = workspaces
-        .pop()
-        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+    let reader_workspaces = workspaces.split_off(workers);
     let mut state = State {
         status: try_filled(bands.len(), Status::Waiting)?,
         held: try_filled_with(bands.len(), || None)?,
@@ -1030,20 +1062,45 @@ fn run_bands<W: TaskScratch>(
     let decode = &decode;
     let shared = &shared;
     let scoped = rayon::in_place_scope(|scope| -> Result<()> {
-        let mut rows = PoolRows {
-            shared,
-            scope,
-            decode,
-            workspace: own_workspace,
-            clipped_scratch: Vec::new(),
-            current: try_filled_with(rings.len(), || None)?,
-            next: try_collect(rings.iter().map(|ring| ring.bands.start), rings.len())?,
-            profile_enabled,
-            tier1_us: 0,
-        };
-        rows.send_workers()?;
-        let result = run(&mut rows).and_then(|()| rows.drain());
-        *tier1_us = rows.tier1_us;
+        let mut views = Vec::new();
+        views
+            .try_reserve_exact(reader_workspaces.len())
+            .map_err(|_| DecodingError::HostAllocationFailed)?;
+        for workspace in reader_workspaces {
+            views.push(PoolRows {
+                shared,
+                scope,
+                decode,
+                workspace,
+                clipped_scratch: Vec::new(),
+                current: try_filled_with(rings.len(), || None)?,
+                next: try_collect(rings.iter().map(|ring| ring.bands.start), rings.len())?,
+                helps,
+                profile_enabled,
+                tier1_us: 0,
+            });
+        }
+        views
+            .first()
+            .ok_or(DecodingError::CodeBlockDecodeFailure)?
+            .send_workers()?;
+        let mut readers: Vec<&mut (dyn SubBandRows + Send)> = Vec::new();
+        readers
+            .try_reserve_exact(views.len())
+            .map_err(|_| DecodingError::HostAllocationFailed)?;
+        readers.extend(
+            views
+                .iter_mut()
+                .map(|view| view as &mut (dyn SubBandRows + Send)),
+        );
+        let result = run(&mut readers).and_then(|()| {
+            // Every view hands its bands back before the first drains.
+            for view in &mut views[1..] {
+                view.release_all()?;
+            }
+            views[0].drain()
+        });
+        *tier1_us = views.iter().map(|view| view.tier1_us).sum();
         if result.is_err() {
             // Let the workers stop at their next band.
             if let Ok(mut state) = shared.lock() {
@@ -1161,6 +1218,9 @@ struct PoolRows<'s, 'p, 'c, 'w, W, D> {
     current: Vec<Option<(usize, &'c mut [f32])>>,
     /// Each ring's next band to read.
     next: Vec<usize>,
+    /// Whether a wait for a running band first decodes the next band
+    /// nobody has started.
+    helps: bool,
     profile_enabled: bool,
     tier1_us: u128,
 }
@@ -1211,7 +1271,9 @@ where
     fn acquire(&mut self, index: usize) -> Result<&'c mut [f32]> {
         let mut state = self.shared.lock()?;
         loop {
-            if let Some(error) = state.error.take() {
+            // The error stays for the other readers, whose bands it may
+            // have left running.
+            if let Some(error) = state.error {
                 return Err(error);
             }
             match state.status[index] {
@@ -1221,6 +1283,22 @@ where
                         .ok_or(DecodingError::CodeBlockDecodeFailure.into());
                 }
                 Status::Running => {
+                    // A reader that helps decodes the next band nobody has
+                    // started while this one runs.
+                    if self.helps {
+                        if let Some((other, slot)) = self.shared.start_next(&mut state)? {
+                            // A reader decoding a band counts as an active
+                            // worker for anyone waiting on it.
+                            state.active += 1;
+                            drop(state);
+                            self.send_workers()?;
+                            let decoded = self.decode_for_pool(other, slot);
+                            state = self.shared.lock()?;
+                            state.active -= 1;
+                            decoded?;
+                            continue;
+                        }
+                    }
                     state = self
                         .shared
                         .decoded
@@ -1247,6 +1325,21 @@ where
         }
     }
 
+    /// Decode band `index`, which another reader or the drain will take,
+    /// and hand it over as a worker does.
+    fn decode_for_pool(&mut self, index: usize, slot: &'c mut [f32]) -> Result<()> {
+        let start = profile::profile_now(self.profile_enabled);
+        slot.fill(0.0);
+        let result = (self.decode)(
+            self.shared.bands[index].strip,
+            slot,
+            self.workspace,
+            &mut self.clipped_scratch,
+        );
+        self.tier1_us += profile::elapsed_us(start);
+        self.shared.finish(index, slot, result)
+    }
+
     fn decode_here(&mut self, index: usize, slot: &mut [f32]) -> Result<()> {
         let start = profile::profile_now(self.profile_enabled);
         slot.fill(0.0);
@@ -1264,15 +1357,23 @@ where
         Ok(())
     }
 
-    /// After the IDWT, free its bands and decode every band it didn't read,
-    /// here and on the pool.
-    fn drain(&mut self) -> Result<()> {
+    /// Hand back every band this view is reading.
+    fn release_all(&mut self) -> Result<()> {
         for ring in 0..self.current.len() {
             self.release(ring)?;
         }
+        Ok(())
+    }
+
+    /// After the IDWT, free its bands and decode every band it didn't read,
+    /// here and on the pool.
+    fn drain(&mut self) -> Result<()> {
+        self.release_all()?;
         loop {
             let mut state = self.shared.lock()?;
-            if let Some(error) = state.error.take() {
+            // The error stays for the other readers, whose bands it may
+            // have left running.
+            if let Some(error) = state.error {
                 return Err(error);
             }
             // Free every decoded band, which lets its ring's next band start.

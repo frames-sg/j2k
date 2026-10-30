@@ -310,9 +310,7 @@ fn pool_band_rows_match_component_planes_bit_for_bit() {
                         pool.install(|| decode_rows(&image, roi, CpuDecodeParallelism::Auto));
                     assert_eq!(rows.planes, planes.planes, "{label}");
                     assert_eq!(rows.depths, planes.depths, "{label}");
-                    // HT tiles decode their bands on the pool into component
-                    // planes (see `parallel_bands::streams_rows`).
-                    if rows.pool_components > 0 && !case.options.use_ht_block_coding {
+                    if rows.pool_components > 0 {
                         assert!(rows.streamed, "{label}: streamed");
                         assert!(rows.channel_bytes <= 256, "{label}: no planes");
                         assert_eq!(rows.decoded_blocks, planes.decoded_blocks, "{label}");
@@ -331,6 +329,173 @@ fn pool_band_rows_match_component_planes_bit_for_bit() {
                 assert!(pool_components > 0, "{} never used the pool", case.label);
             }
         }
+    }
+}
+
+/// Each component's route plans its own clipped code-blocks, while a pool
+/// worker or reader decodes the strips of every component with one scratch.
+/// Components with detail only along the right edge code only the narrow
+/// last blocks of each band, and a noisy one full-size blocks, so a worker
+/// that served an edge component first must still fit the noisy component's
+/// clipped blocks.
+#[cfg(feature = "parallel")]
+#[test]
+fn pool_band_rows_fit_every_components_clipped_blocks() {
+    let noise = noisy_pixels(1);
+    let mut pixels = Vec::with_capacity(noise.len() * 3);
+    for (at, &sample) in noise.iter().enumerate() {
+        let edge = at % WIDTH as usize >= WIDTH as usize - 6;
+        let detail = if edge { sample } else { 128 };
+        pixels.extend_from_slice(&[sample, detail, detail ^ 0x55]);
+    }
+    for (label, use_ht_block_coding) in [("classic", false), ("ht", true)] {
+        let bytes = encode(
+            &pixels,
+            WIDTH,
+            HEIGHT,
+            3,
+            8,
+            false,
+            &EncodeOptions {
+                num_decomposition_levels: 4,
+                code_block_width_exp: 4,
+                code_block_height_exp: 0,
+                use_ht_block_coding,
+                use_mct: false,
+                ..EncodeOptions::default()
+            },
+        )
+        .expect("encode clipped block fixture");
+        let image = Image::new_with_reduction(&bytes, &DecodeSettings::default(), 0)
+            .expect("parse clipped block fixture");
+        for threads in [2, 3, 6, 12] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("build pool");
+            for roi in [(100, 17, 103, 120), (37, 3, 166, 9), (60, 41, 143, 101)] {
+                let planes = decode_planes(&image, roi);
+                for attempt in 0..4 {
+                    let rows =
+                        pool.install(|| decode_rows(&image, roi, CpuDecodeParallelism::Auto));
+                    assert_eq!(
+                        rows.planes, planes.planes,
+                        "{label} threads={threads} roi={roi:?} attempt={attempt}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// A sink with an RGB8 destination, which [`ComponentRowSink::write_rows`]
+/// fills the way the destination's contract says: each 8-bit sample rounded
+/// and saturated.
+struct Rgb8Sink {
+    width: usize,
+    rgb: Vec<u8>,
+    offers_destination: bool,
+    rectangles: usize,
+}
+
+impl ComponentRowSink for Rgb8Sink {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "samples are rounded and saturated to 8 bits, as the destination contract says"
+    )]
+    fn write_rows(&mut self, x: u32, y: u32, planes: &[ComponentPlane<'_>]) {
+        self.rectangles += 1;
+        let (width, height) = planes[0].dimensions();
+        for row in 0..height as usize {
+            for column in 0..width as usize {
+                let pixel = (y as usize + row) * self.width + x as usize + column;
+                for (channel, plane) in planes.iter().enumerate() {
+                    let sample = plane.samples()[row * width as usize + column];
+                    self.rgb[pixel * 3 + channel] = sample.round().clamp(0.0, 255.0) as u8;
+                }
+            }
+        }
+    }
+
+    fn rgb8_region(&mut self, width: u32, height: u32) -> Option<&mut [u8]> {
+        let len = (width as usize * 3).checked_mul(height as usize)?;
+        self.offers_destination.then(|| &mut self.rgb[..len])
+    }
+}
+
+/// A streamed decode may pack three 8-bit components straight into a sink's
+/// RGB8 destination. The bytes must be those the sink packs from the rows,
+/// on one thread and on the pool, where each component's reconstruction runs
+/// as its own task when the pool is large enough.
+#[cfg(feature = "parallel")]
+#[test]
+fn rgb8_destination_matches_the_sink_pack_byte_for_byte() {
+    let pools: Vec<rayon::ThreadPool> = [2, 4, 12]
+        .into_iter()
+        .map(|threads| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("build pool")
+        })
+        .collect();
+    for case in row_sink_cases()
+        .into_iter()
+        .filter(|case| case.components == 3)
+    {
+        let pixels = noisy_pixels(case.components);
+        let bytes = encode(&pixels, WIDTH, HEIGHT, 3, 8, false, &case.options)
+            .expect("encode RGB8 destination fixture");
+        let mut packed_into_destination = 0;
+        for reduction in [0_u8, 1] {
+            let image = Image::new_with_reduction(&bytes, &DecodeSettings::default(), reduction)
+                .expect("parse RGB8 destination fixture");
+            let (width, height) = (image.width(), image.height());
+            for roi in [
+                (0, 0, width, height),
+                (
+                    width / 20,
+                    height / 20,
+                    width - width / 10,
+                    height - height / 10,
+                ),
+                (width / 3, height / 3, width / 7, height / 9),
+            ] {
+                let decode = |parallelism, offers_destination| {
+                    let mut context = DecoderContext::default();
+                    context.set_cpu_decode_parallelism(parallelism);
+                    let mut sink = Rgb8Sink {
+                        width: roi.2 as usize,
+                        rgb: alloc::vec![0; (roi.2 * roi.3 * 3) as usize],
+                        offers_destination,
+                        rectangles: 0,
+                    };
+                    image
+                        .decode_region_rows_for_integer_output_with_context(
+                            roi,
+                            &mut context,
+                            &mut sink,
+                        )
+                        .expect("decode RGB8 destination rows");
+                    sink
+                };
+                let label = format!("{} reduction={reduction} roi={roi:?}", case.label);
+                let expected = decode(CpuDecodeParallelism::Serial, false);
+                for (pool, threads) in pools.iter().zip([2, 4, 12]) {
+                    let packed = pool.install(|| decode(CpuDecodeParallelism::Auto, true));
+                    assert_eq!(packed.rgb, expected.rgb, "{label} threads={threads}");
+                    packed_into_destination += usize::from(packed.rectangles == 0);
+                    let rows = pool.install(|| decode(CpuDecodeParallelism::Auto, false));
+                    assert_eq!(rows.rgb, expected.rgb, "{label} threads={threads} rows");
+                }
+            }
+        }
+        assert!(
+            packed_into_destination > 0,
+            "{}: never packed into the destination",
+            case.label
+        );
     }
 }
 

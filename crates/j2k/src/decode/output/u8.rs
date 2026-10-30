@@ -145,6 +145,21 @@ impl j2k_native::ComponentRowSink for U8RowSink<'_> {
         };
         self.error = result.err();
     }
+
+    fn rgb8_region(&mut self, width: u32, height: u32) -> Option<&mut [u8]> {
+        // `write_rows` packs three 8-bit planes as `write_rgb_component_rows_u8`
+        // does, so a tight RGB8 buffer can take them packed by the decoder.
+        let row_bytes = (width as usize).checked_mul(3)?;
+        let tight_rgb8 = self.error.is_none()
+            && matches!(self.color_space, ColorSpace::RGB)
+            && !self.has_alpha
+            && self.fmt == PixelFormat::Rgb8
+            && self.stride == row_bytes;
+        if !tight_rgb8 {
+            return None;
+        }
+        self.out.get_mut(..row_bytes.checked_mul(height as usize)?)
+    }
 }
 
 pub(super) fn component_sample_count(dims: (u32, u32)) -> Result<usize, J2kError> {

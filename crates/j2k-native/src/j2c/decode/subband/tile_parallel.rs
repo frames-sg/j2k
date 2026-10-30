@@ -1371,7 +1371,9 @@ fn decode_strip<W>(
         let (block_output, output_stride) = if whole {
             (&mut output[placement.target_x as usize..], strip.stride)
         } else {
-            if clipped_scratch.is_empty() {
+            // One worker's scratch serves the strips of every component's
+            // plan, so it grows to the largest clipped block of each.
+            if clipped_scratch.len() < plan.max_clipped_samples {
                 try_resize_decode_elements(clipped_scratch, plan.max_clipped_samples, 0.0)?;
             }
             let block = clipped_scratch

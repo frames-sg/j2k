@@ -394,6 +394,161 @@ impl<'o, 't> RowOutput<'o, 't> {
     }
 }
 
+impl RowOutput<'_, '_> {
+    /// [`Self::write`] through one reader per component, which may run on
+    /// different threads, `batch` rows at a time. Each component's
+    /// reconstruction advances `batch` rows into its own rows of `scratch`,
+    /// on the pool when there is a reader per component, then the rows are
+    /// transformed and handed over, packed straight into the sink's RGB8
+    /// destination when it has one for three 8-bit components.
+    pub(super) fn write_batches(
+        &mut self,
+        lines: &mut [LineReconstruction<'_>],
+        readers: &mut [&mut (dyn SubBandRows + Send)],
+        scratch: &mut [f32],
+        batch: usize,
+    ) -> Result<()> {
+        let (copy, region, components) = (self.copy, self.region, lines.len());
+        let width = copy.width() as usize;
+        if lines.is_empty() || width == 0 || batch == 0 {
+            return Ok(());
+        }
+        let batch_len = width
+            .checked_mul(batch)
+            .ok_or(ValidationError::ImageTooLarge)?;
+        let rgb8 = components == 3 && self.depths[..3].iter().all(|(depth, _)| *depth == 8);
+        let mut y = copy.y0;
+        while y < copy.y1 {
+            let rows = ((copy.y1 - y) as usize).min(batch);
+            let mut parts: [&mut [f32]; 4] = Default::default();
+            for (part, chunk) in parts.iter_mut().zip(scratch.chunks_exact_mut(batch_len)) {
+                *part = &mut chunk[..rows * width];
+            }
+            let parts = &mut parts[..components];
+            if parts.iter().any(|part| part.len() != rows * width) {
+                return Err(DecodingError::CodeBlockDecodeFailure.into());
+            }
+            reconstruct_batch(lines, readers, parts, y, width)?;
+            for row in 0..rows {
+                let mut outputs: [&mut [f32]; 4] = Default::default();
+                for (output, part) in outputs.iter_mut().zip(parts.iter_mut()) {
+                    *output = &mut part[row * width..][..width];
+                }
+                store::transform_streamed_rows(
+                    self.tile,
+                    self.round_irreversible_output,
+                    &mut outputs[..components],
+                )?;
+            }
+            let (x, row_in_region) = (copy.x0 - region.x0, y - region.y0);
+            let destination = rgb8
+                .then(|| self.sink.rgb8_region(region.width(), region.height()))
+                .flatten();
+            if let Some(out) = destination {
+                let stride = region.width() as usize * 3;
+                for row in 0..rows {
+                    let start = (row_in_region as usize + row) * stride + x as usize * 3;
+                    let pixels = out
+                        .get_mut(start..start + width * 3)
+                        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+                    let at = row * width..(row + 1) * width;
+                    crate::color::pack_rgb8(
+                        [&parts[0][at.clone()], &parts[1][at.clone()], &parts[2][at]],
+                        pixels,
+                    );
+                }
+            } else {
+                let component_rows: [ComponentPlane<'_>; 4] =
+                    core::array::from_fn(|index| ComponentPlane {
+                        samples: parts.get(index).map_or(&[][..], |part| &**part),
+                        dimensions: (copy.width(), rows as u32),
+                        bit_depth: self.depths[index].0,
+                        signed: self.depths[index].1,
+                        sampling: (1, 1),
+                    });
+                self.sink
+                    .write_rows(x, row_in_region, &component_rows[..components]);
+            }
+            self.streamed = self.streamed.saturating_add(rows * width * components);
+            y += rows as u32;
+        }
+        Ok(())
+    }
+}
+
+/// Reconstruct the next `parts[c].len() / width` rows of each component `c`,
+/// from row `first_y`, into `parts[c]`: on the pool, one component per task,
+/// when there is a reader per component, otherwise all through the first.
+fn reconstruct_batch(
+    lines: &mut [LineReconstruction<'_>],
+    readers: &mut [&mut (dyn SubBandRows + Send)],
+    parts: &mut [&mut [f32]],
+    first_y: u32,
+    width: usize,
+) -> Result<()> {
+    if readers.len() < lines.len() || lines.len() < 2 {
+        let reader = readers
+            .first_mut()
+            .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+        for (line, part) in lines.iter_mut().zip(parts.iter_mut()) {
+            reconstruct_rows_into(line, &mut **reader, part, first_y, width)?;
+        }
+        return Ok(());
+    }
+    let mut results: [Result<()>; 4] = core::array::from_fn(|_| Ok(()));
+    #[cfg(feature = "parallel")]
+    rayon::in_place_scope(|scope| {
+        let mut tasks = lines
+            .iter_mut()
+            .zip(readers.iter_mut())
+            .zip(parts.iter_mut())
+            .zip(results.iter_mut());
+        let first = tasks.next();
+        for (((line, reader), part), result) in tasks {
+            scope.spawn(move |_| {
+                *result = reconstruct_rows_into(line, &mut **reader, part, first_y, width);
+            });
+        }
+        if let Some((((line, reader), part), result)) = first {
+            *result = reconstruct_rows_into(line, &mut **reader, part, first_y, width);
+        }
+    });
+    #[cfg(not(feature = "parallel"))]
+    for (((line, reader), part), result) in lines
+        .iter_mut()
+        .zip(readers.iter_mut())
+        .zip(parts.iter_mut())
+        .zip(results.iter_mut())
+    {
+        *result = reconstruct_rows_into(line, &mut **reader, part, first_y, width);
+    }
+    results.into_iter().collect()
+}
+
+/// The next rows of `line`, from row `first_y`, through `rows`, into `out`,
+/// `width` samples each.
+fn reconstruct_rows_into(
+    line: &mut LineReconstruction<'_>,
+    rows: &mut dyn SubBandRows,
+    out: &mut [f32],
+    first_y: u32,
+    width: usize,
+) -> Result<()> {
+    for (index, chunk) in out.chunks_exact_mut(width).enumerate() {
+        let (row_y, row) = line
+            .next_row(rows)?
+            .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+        let expected = u32::try_from(index)
+            .ok()
+            .and_then(|index| first_y.checked_add(index));
+        if Some(row_y) != expected || row.len() != width {
+            return Err(DecodingError::CodeBlockDecodeFailure.into());
+        }
+        chunk.copy_from_slice(row);
+    }
+    Ok(())
+}
+
 /// When a lockstep decode fails, rerun Tier-1 over whole windows one
 /// component at a time, in the order the planes path decodes them, and
 /// return the first error. If the whole windows don't fit the cap, or the

@@ -2463,6 +2463,7 @@ pub enum j2k_native::Jp2ColorSpec
 pub enum j2k_native::Jp2ComponentMappingType
 pub enum j2k_native::Jp2FileKind
 pub fn j2k_native::ComponentPlane<'a>::into_parts(self) -> j2k_native::ComponentPlaneParts<'a>
+pub fn j2k_native::ComponentRowSink::rgb8_region(&mut self, u32, u32) -> core::option::Option<&mut [u8]>
 pub fn j2k_native::ComponentRowSink::write_rows(&mut self, u32, u32, &[j2k_native::ComponentPlane<'_>])
 pub fn j2k_native::DecodedComponents<'a>::into_parts(self) -> j2k_native::DecodedComponentsParts<'a>
 pub fn j2k_native::DecodedComponents<'a>::live_bytes(&self) -> usize

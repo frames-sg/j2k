@@ -944,8 +944,7 @@ fn tile_bands(
 }
 
 /// Whether `tile` decodes its bands on the worker pool ahead of this
-/// decode's row-streamed IDWT (see [`parallel_bands::applies`]) and can
-/// stream its rows from them (see [`parallel_bands::streams_rows`]).
+/// decode's row-streamed IDWT (see [`parallel_bands::applies`]).
 fn pool_bands(
     header: &Header<'_>,
     tile: &Tile<'_>,
@@ -954,8 +953,7 @@ fn pool_bands(
     parallelism: CpuDecodeParallelism,
 ) -> bool {
     #[cfg(feature = "parallel")]
-    return parallel_bands::applies(header, tile, tile_ctx, hooked, parallelism)
-        && parallel_bands::streams_rows(tile);
+    return parallel_bands::applies(header, tile, tile_ctx, hooked, parallelism);
     #[cfg(not(feature = "parallel"))]
     {
         let _ = (header, tile, tile_ctx, hooked, parallelism);

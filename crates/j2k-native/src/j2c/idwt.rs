@@ -27,7 +27,9 @@ pub(crate) use lines::{LineReconstruction, SubBandRows};
 pub(crate) use model::idwt_buffer_size;
 pub(crate) use model::{IDWTOutput, IdwtPlacement};
 pub(crate) use orchestrate::{apply, planned_workspace_elements};
-pub(crate) use roi::{last_level_fits_channels, roi_idwt_peak_elements, ComponentLines, LinePlan};
+pub(crate) use roi::{
+    last_level_fits_channels, roi_idwt_peak_elements, streamed_batch_rows, ComponentLines, LinePlan,
+};
 
 // Decoded high-pass sub-bands include JPEG 2000's orientation gain. OpenJPEG's
 // synthesis constant is therefore halved at this internal codestream boundary.

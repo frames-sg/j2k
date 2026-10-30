@@ -17,6 +17,16 @@ use crate::j2c::Header;
 use crate::math::{SimdBuffer, SIMD_WIDTH};
 use crate::{checked_decode_usize_product2, try_resize_decode_elements, Result};
 
+/// Samples of each component's rows a tile streaming from pool bands
+/// reconstructs at once, before they are transformed and handed over.
+const STREAMED_BATCH_SAMPLES: usize = 256 * 1024;
+
+/// Rows of each component a tile streaming from pool bands reconstructs at
+/// once, for rows of `width` samples.
+pub(crate) fn streamed_batch_rows(width: usize) -> usize {
+    (STREAMED_BATCH_SAMPLES / width.max(1)).clamp(1, 256)
+}
+
 /// The most f32 samples [`apply_roi`] holds at once for any one component.
 ///
 /// Each level reads the previous level's window and writes a new one, so both
@@ -29,8 +39,9 @@ use crate::{checked_decode_usize_product2, try_resize_decode_elements, Result};
 /// at the 9/7 ring depth whatever the component's transform. With no active
 /// level it holds nothing, since it copies the LL window straight into the
 /// plane. When the tile streams its rows to a sink, every component's rings
-/// are live at once, with a scratch row each as wide as its final window, so
-/// the peak is their sum.
+/// are live at once, with a scratch row each as wide as its final window, or
+/// a batch of such rows from pool bands (see [`streamed_batch_rows`]), so the
+/// peak is their sum.
 pub(crate) fn roi_idwt_peak_elements(
     storage: &DecompositionStorage<'_>,
     skipped_resolution_levels: u8,
@@ -65,9 +76,14 @@ pub(crate) fn roi_idwt_peak_elements(
                 .map_while(|decomposition_idx| roi_plan.idwt_window(decomposition_idx));
             let rings = ring_samples(windows, WaveletTransform::Irreversible97)?;
             if storage.lockstep_lines {
-                let scratch_row = roi_plan
-                    .final_window(component_idx)
-                    .map_or(0, |window| window.width() as usize);
+                let scratch_row = roi_plan.final_window(component_idx).map_or(0, |window| {
+                    let width = window.width() as usize;
+                    if storage.parallel_bands {
+                        width.saturating_mul(streamed_batch_rows(width))
+                    } else {
+                        width
+                    }
+                });
                 lockstep = lockstep
                     .checked_add(rings)
                     .and_then(|total| total.checked_add(scratch_row))
