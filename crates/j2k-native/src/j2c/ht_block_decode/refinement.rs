@@ -41,31 +41,20 @@ pub(super) fn apply_magnitude_refinement_phase(
             // the cleanup pass, nothing is written for them.
             let in_block =
                 (0x1111_1111u32 * rows_in_block) & (u32::MAX >> (32 - 4 * (width - i).min(8)));
-            let mut col_mask = 0xFu32;
+            // Significant samples take refinement bits in bit order: column
+            // by column, top to bottom (bit `4 * column + row`).
+            let base = dpp + i as usize;
+            let mut pending = sig;
             let mut cwd_mut = cwd;
-
-            if sig != 0 {
-                for j in 0..8 {
-                    if (sig & col_mask) != 0 {
-                        let mut dp = dpp + i as usize + j;
-                        let mut sample_mask = 0x1111_1111u32 & col_mask;
-
-                        for _ in 0..4 {
-                            if (sig & sample_mask) != 0 {
-                                let mut sym = cwd_mut & 1;
-                                sym = (1 - sym) << (p - 1);
-                                sym |= half;
-                                if (in_block & sample_mask) != 0 {
-                                    decoded_data[dp] ^= sym;
-                                }
-                                cwd_mut >>= 1;
-                            }
-                            sample_mask <<= 1;
-                            dp += stride as usize;
-                        }
-                    }
-                    col_mask <<= 4;
+            while pending != 0 {
+                let bit = pending.trailing_zeros();
+                pending &= pending - 1;
+                if in_block & (1 << bit) != 0 {
+                    let sym = ((1 - (cwd_mut & 1)) << (p - 1)) | half;
+                    decoded_data
+                        [base + (bit >> 2) as usize + (bit & 3) as usize * stride as usize] ^= sym;
                 }
+                cwd_mut >>= 1;
             }
 
             magref.advance(sig.count_ones());

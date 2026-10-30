@@ -61,6 +61,9 @@ fn decode_mag_sgn_sample_with_vn(
     (((ms_val << 31) | magnitude) & significant, v_n)
 }
 
+/// The `MagSgn` pass alone, from already decoded cleanup symbols: the
+/// reference the fused cleanup/`MagSgn` rows are tested against.
+#[cfg(test)]
 #[inline(never)]
 #[expect(
     clippy::too_many_arguments,

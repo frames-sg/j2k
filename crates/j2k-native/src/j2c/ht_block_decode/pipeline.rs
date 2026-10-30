@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::cleanup::{
-    cleanup_segment_suffix_length, cleanup_symbol_stride, decode_cleanup_symbols,
-};
+use super::cleanup::{cleanup_segment_suffix_length, cleanup_symbol_stride};
+use super::magnitude::decode_cleanup_and_magnitude_sign_phase;
 #[cfg(feature = "simd")]
 use super::magnitude::decode_cleanup_and_magnitude_sign_to_f32;
-use super::magnitude::{decode_cleanup_and_magnitude_sign_phase, decode_magnitude_sign_phase};
 use super::refinement::apply_magnitude_refinement_phase;
 use super::significance::{
     apply_significance_propagation_phase, build_sigma_from_cleanup_phase, sigma_stride,
@@ -26,7 +24,6 @@ pub(crate) const PHASE_LIMIT_MAGREF: u8 = 2;
 #[expect(
     clippy::inline_always,
     clippy::too_many_arguments,
-    clippy::too_many_lines,
     reason = "the monomorphized HT phase pipeline has a stable hot signature and preserves normative pass order"
 )]
 #[inline(always)]
@@ -77,44 +74,24 @@ pub(super) fn decode_impl<const PHASE_LIMIT: u8, O: HtDecodeObserver>(
         zeroed_u16_scratch(&mut scratch_buffers.cleanup, sstr * (quad_rows + 1))?
     };
 
-    if cleanup_only {
-        decode_cleanup_and_magnitude_sign_phase(
-            cleanup_data,
-            lcup,
-            scup,
-            decoded_data,
-            missing_msbs,
-            width,
-            height,
-            stride,
-            sstr,
-            scratch,
-            v_n_scratch,
-            &mut scratch_buffers.magsgn,
-            observer,
-        )?;
-    } else {
-        let phase_start = observer.phase_start();
-        decode_cleanup_symbols(cleanup_data, lcup, scup, width, height, sstr, scratch)?;
-        observer.add_cleanup_us(phase_start);
-
-        let phase_start = observer.phase_start();
-        decode_magnitude_sign_phase(
-            cleanup_data,
-            lcup,
-            scup,
-            scratch,
-            decoded_data,
-            missing_msbs,
-            width,
-            height,
-            stride,
-            sstr,
-            v_n_scratch,
-            &mut scratch_buffers.magsgn,
-        )?;
-        observer.add_mag_sgn_us(phase_start);
-    }
+    // Refinement-bearing blocks decode their cleanup pass the same way; they
+    // only keep a zeroed symbol scratch, whose rows past the block the sigma
+    // build reads.
+    decode_cleanup_and_magnitude_sign_phase(
+        cleanup_data,
+        lcup,
+        scup,
+        decoded_data,
+        missing_msbs,
+        width,
+        height,
+        stride,
+        sstr,
+        scratch,
+        v_n_scratch,
+        &mut scratch_buffers.magsgn,
+        observer,
+    )?;
 
     if PHASE_LIMIT == PHASE_LIMIT_CLEANUP {
         return Some(());

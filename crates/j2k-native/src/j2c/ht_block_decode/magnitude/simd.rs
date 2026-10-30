@@ -422,6 +422,7 @@ fn decode_stored_row<S: Simd>(
 }
 
 /// SIMD twin of the `MagSgn` row loop in [`super::decode_magnitude_sign_phase`].
+#[cfg(test)]
 #[expect(
     clippy::inline_always,
     clippy::too_many_arguments,
