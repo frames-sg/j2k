@@ -405,6 +405,10 @@ fn parse_inner<'a>(
     )]
     walk: &mut PacketWalk<'_>,
 ) -> PacketResult<bool> {
+    // The last precinct's place among its sub-bands' records, by (component,
+    // resolution, precinct): position-major progressions read all of a
+    // precinct's layers in a row, so it is looked up once for them.
+    let mut last_record: Option<((u16, u8, u64), usize)> = None;
     while !tile_part.header().at_end() {
         let progression_data = progression_iterator
             .next()
@@ -495,12 +499,24 @@ fn parse_inner<'a>(
         // precinct records. A region decode keeps none for unused
         // precincts. A packet for a precinct without a record gets an offset
         // past them all, so it fails below as one for a missing precinct.
-        let precinct_offset = relevance
-            .as_deref()
-            .map_or(Some(precinct_index), |relevance| {
-                relevance.selection.record_offset(&progression_data)
-            })
-            .unwrap_or(usize::MAX);
+        let key = (
+            progression_data.component,
+            progression_data.resolution,
+            progression_data.precinct,
+        );
+        let precinct_offset = match last_record {
+            Some((last, offset)) if last == key => offset,
+            _ => {
+                let offset = relevance
+                    .as_deref()
+                    .map_or(Some(precinct_index), |relevance| {
+                        relevance.selection.record_offset(&progression_data)
+                    })
+                    .unwrap_or(usize::MAX);
+                last_record = Some((key, offset));
+                offset
+            }
+        };
 
         let packet_start = tile_part.packet_start_offset();
         let body_reader = tile_part.body();
