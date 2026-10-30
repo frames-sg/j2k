@@ -3,7 +3,10 @@
 use super::cleanup::{cleanup_segment_suffix_length, cleanup_symbol_stride};
 use super::magnitude::decode_cleanup_and_magnitude_sign_phase;
 #[cfg(feature = "simd")]
-use super::magnitude::decode_cleanup_and_magnitude_sign_to_f32;
+use super::magnitude::{
+    decode_cleanup_and_magnitude_sign_direct, decode_cleanup_and_magnitude_sign_to_f32,
+    supports_cleanup_to_f32,
+};
 use super::refinement::apply_magnitude_refinement_phase;
 use super::significance::{
     apply_significance_propagation_phase, build_sigma_from_cleanup_phase, sigma_stride,
@@ -76,23 +79,47 @@ pub(super) fn decode_impl<const PHASE_LIMIT: u8, O: HtDecodeObserver>(
 
     // Refinement-bearing blocks decode their cleanup pass the same way; they
     // only keep a zeroed symbol scratch, whose rows past the block the sigma
-    // build reads.
-    decode_cleanup_and_magnitude_sign_phase(
-        cleanup_data,
-        lcup,
-        scup,
-        decoded_data,
-        missing_msbs,
-        width,
-        height,
-        stride,
-        sstr,
-        scratch,
-        v_n_scratch,
-        &mut scratch_buffers.magsgn,
-        &mut scratch_buffers.vlc,
-        observer,
-    )?;
+    // build reads. Blocks the direct rows take (unless the phases are timed
+    // apart) use them, publishing sign-magnitude words.
+    #[cfg(feature = "simd")]
+    let direct = !observer.times_phases() && supports_cleanup_to_f32(missing_msbs, width);
+    #[cfg(not(feature = "simd"))]
+    let direct = false;
+    if direct {
+        #[cfg(feature = "simd")]
+        decode_cleanup_and_magnitude_sign_direct(
+            cleanup_data,
+            lcup,
+            scup,
+            decoded_data,
+            missing_msbs,
+            width,
+            height,
+            stride,
+            sstr,
+            scratch,
+            v_n_scratch,
+            &mut scratch_buffers.magsgn,
+            &mut scratch_buffers.vlc,
+        )?;
+    } else {
+        decode_cleanup_and_magnitude_sign_phase(
+            cleanup_data,
+            lcup,
+            scup,
+            decoded_data,
+            missing_msbs,
+            width,
+            height,
+            stride,
+            sstr,
+            scratch,
+            v_n_scratch,
+            &mut scratch_buffers.magsgn,
+            &mut scratch_buffers.vlc,
+            observer,
+        )?;
+    }
 
     if PHASE_LIMIT == PHASE_LIMIT_CLEANUP {
         return Some(());

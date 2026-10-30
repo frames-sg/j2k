@@ -480,13 +480,13 @@ pub(super) fn decode_cleanup_and_magnitude_sign_to_f32<const IRREVERSIBLE_MIDPOI
         .checked_mul(4)?;
     let flat = unstuff_magsgn(&coded_data[..lcup - scup], magsgn_buffer, consumable)?;
     let flat_vlc = unstuff_vlc(coded_data, lcup, scup, vlc_buffer)?;
-    let output = simd::FinalOutput {
+    let output = simd::FinalOutput::<IRREVERSIBLE_MIDPOINT> {
         coefficient_shift: 31 - u32::from(coded_bitplanes),
         midpoint_scale: crate::math::pow2i(-(31_i32 - i32::from(coded_bitplanes))),
         dequantization_step,
     };
 
-    dispatch!(Level::new(), simd => simd::decode_cleanup_and_magnitude_sign_to_f32_rows::<IRREVERSIBLE_MIDPOINT, _>(
+    dispatch!(Level::new(), simd => simd::decode_cleanup_and_magnitude_sign_direct_rows(
         simd,
         coded_data,
         lcup,
@@ -502,5 +502,67 @@ pub(super) fn decode_cleanup_and_magnitude_sign_to_f32<const IRREVERSIBLE_MIDPOI
         stride,
         sstr,
         output,
+    ))
+}
+
+/// [`decode_cleanup_and_magnitude_sign_to_f32`] for a block whose refinement
+/// passes follow: the same direct rows, publishing the sign-magnitude words
+/// those passes refine. Its prologue mirrors the `f32` entry's.
+#[cfg(feature = "simd")]
+#[inline(never)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the direct cleanup entry keeps bitstream, geometry and scratch explicit"
+)]
+pub(super) fn decode_cleanup_and_magnitude_sign_direct(
+    coded_data: &[u8],
+    lcup: usize,
+    scup: usize,
+    decoded_data: &mut [u32],
+    missing_msbs: u32,
+    width: u32,
+    height: u32,
+    stride: u32,
+    sstr: usize,
+    scratch: &mut [u16],
+    v_n_scratch: &mut [u32],
+    magsgn_buffer: &mut Vec<u8>,
+    vlc_buffer: &mut Vec<u8>,
+) -> Option<()> {
+    if !supports_cleanup_to_f32(missing_msbs, width) {
+        return None;
+    }
+    let quad_rows = height.div_ceil(2) as usize;
+    if scratch.len() < sstr * (quad_rows + 1) {
+        return None;
+    }
+    let v_n_width = width.div_ceil(2) as usize + 2;
+    if v_n_scratch.len() < v_n_width {
+        return None;
+    }
+    v_n_scratch[..v_n_width].fill(0);
+
+    let consumable = (width as usize)
+        .checked_mul(height as usize)?
+        .checked_mul(4)?;
+    let flat = unstuff_magsgn(&coded_data[..lcup - scup], magsgn_buffer, consumable)?;
+    let flat_vlc = unstuff_vlc(coded_data, lcup, scup, vlc_buffer)?;
+
+    dispatch!(Level::new(), simd => simd::decode_cleanup_and_magnitude_sign_direct_rows(
+        simd,
+        coded_data,
+        lcup,
+        scup,
+        flat,
+        flat_vlc,
+        scratch,
+        decoded_data,
+        v_n_scratch,
+        missing_msbs,
+        width,
+        height,
+        stride,
+        sstr,
+        simd::SignMagnitude,
     ))
 }
