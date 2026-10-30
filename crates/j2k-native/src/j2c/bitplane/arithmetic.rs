@@ -32,6 +32,14 @@ fn decode_sign_bit_arithmetic(
     ctx.set_sign_index(idx, u8::from(sign_bit != 0));
 }
 
+#[cfg_attr(
+    target_arch = "x86_64",
+    expect(
+        clippy::inline_always,
+        reason = "inlines into the x86-64 Tier-1 dispatch in schedule.rs"
+    ),
+    inline(always)
+)]
 pub(super) fn cleanup_pass_arithmetic(
     ctx: &mut BitPlaneDecodeContext,
     shared_decoder: &mut ArithmeticDecoder<'_>,
@@ -102,6 +110,14 @@ pub(super) fn cleanup_pass_arithmetic(
     *shared_decoder = local_decoder;
 }
 
+#[cfg_attr(
+    target_arch = "x86_64",
+    expect(
+        clippy::inline_always,
+        reason = "inlines into the x86-64 Tier-1 dispatch in schedule.rs"
+    ),
+    inline(always)
+)]
 pub(super) fn significance_propagation_pass_arithmetic(
     ctx: &mut BitPlaneDecodeContext,
     shared_decoder: &mut ArithmeticDecoder<'_>,
@@ -151,6 +167,14 @@ pub(super) fn significance_propagation_pass_arithmetic(
     *shared_decoder = local_decoder;
 }
 
+#[cfg_attr(
+    target_arch = "x86_64",
+    expect(
+        clippy::inline_always,
+        reason = "inlines into the x86-64 Tier-1 dispatch in schedule.rs"
+    ),
+    inline(always)
+)]
 pub(super) fn magnitude_refinement_pass_arithmetic(
     ctx: &mut BitPlaneDecodeContext,
     shared_decoder: &mut ArithmeticDecoder<'_>,

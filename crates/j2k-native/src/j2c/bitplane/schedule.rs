@@ -161,6 +161,24 @@ fn decode_inner_with_observer<O: J2kDecodeObserver>(
     Some(())
 }
 
+/// The per-coefficient passes (bypass, restart, causal and termination
+/// code-block styles) run inside the x86-64 dispatch for the same reason as
+/// [`handle_packed_arithmetic_coding_passes`].
+#[cfg(target_arch = "x86_64")]
+pub(super) fn handle_arithmetic_coding_passes(
+    start: u8,
+    end: u8,
+    ctx: &mut BitPlaneDecodeContext,
+    decoder: &mut ArithmeticDecoder<'_>,
+    observer: &mut impl J2kDecodeObserver,
+) -> Option<()> {
+    dispatch!(Level::new(), simd => {
+        let _ = simd;
+        run_arithmetic_coding_passes::<false>(start, end, ctx, decoder, observer)
+    })
+}
+
+#[cfg(not(target_arch = "x86_64"))]
 pub(super) fn handle_arithmetic_coding_passes(
     start: u8,
     end: u8,
