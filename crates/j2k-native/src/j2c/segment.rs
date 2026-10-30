@@ -907,53 +907,24 @@ fn resolve_code_block_inclusion(
 }
 
 fn decode_num_coding_passes(reader: &mut BitReader<'_>) -> Option<u8> {
-    // The longest codeword prefix has nine bits. Peek once at as many of them
-    // as the header holds: each shorter peek sees the first bits of it.
-    let (prefix, available) = peek_up_to_nine_bits(reader);
-    let peek = |bits: u8| (available >= bits).then(|| prefix >> (available - bits));
-    if peek(9) == Some(0x1ff) {
-        reader.read_bits_with_stuffing(9)?;
-        u8::try_from(reader.read_bits_with_stuffing(7)? + 37).ok()
-    } else if peek(4) == Some(0x0f) {
-        reader.read_bits_with_stuffing(4)?;
-        u8::try_from(reader.read_bits_with_stuffing(5)? + 6).ok()
-    } else if peek(4) == Some(0b1110) {
-        reader.read_bits_with_stuffing(4)?;
-        Some(5)
-    } else if peek(4) == Some(0b1101) {
-        reader.read_bits_with_stuffing(4)?;
-        Some(4)
-    } else if peek(4) == Some(0b1100) {
-        reader.read_bits_with_stuffing(4)?;
-        Some(3)
-    } else if peek(2) == Some(0b10) {
-        reader.read_bits_with_stuffing(2)?;
-        Some(2)
-    } else if peek(1) == Some(0) {
-        reader.read_bits_with_stuffing(1)?;
-        Some(1)
-    } else {
-        None
+    // Table B.4, read a prefix at a time: 0 -> 1, 10 -> 2, 11xx -> 3 + xx
+    // (xx < 3), 1111 xxxxx -> 6 + xxxxx (xxxxx < 31) and 1111 11111 xxxxxxx
+    // -> 37 + xxxxxxx. Each codeword's bits are read once, in order.
+    if reader.read_bits_with_stuffing(1)? == 0 {
+        return Some(1);
     }
-}
-
-/// The next bits, up to nine, and how many the header holds: a peek of `n`
-/// bits succeeds exactly when `n` single-bit reads would.
-fn peek_up_to_nine_bits(reader: &BitReader<'_>) -> (u32, u8) {
-    if let Some(bits) = reader.clone().read_bits_with_stuffing(9) {
-        return (bits, 9);
+    if reader.read_bits_with_stuffing(1)? == 0 {
+        return Some(2);
     }
-    let mut probe = reader.clone();
-    let mut bits = 0_u32;
-    let mut available = 0_u8;
-    while available < 9 {
-        let Some(bit) = probe.read_bits_with_stuffing(1) else {
-            break;
-        };
-        bits = (bits << 1) | bit;
-        available += 1;
+    let two = reader.read_bits_with_stuffing(2)?;
+    if two != 0b11 {
+        return u8::try_from(two + 3).ok();
     }
-    (bits, available)
+    let five = reader.read_bits_with_stuffing(5)?;
+    if five != 0b1_1111 {
+        return u8::try_from(five + 6).ok();
+    }
+    u8::try_from(reader.read_bits_with_stuffing(7)? + 37).ok()
 }
 
 fn read_lblock_increment(reader: &mut BitReader<'_>) -> Option<u32> {
