@@ -17,6 +17,8 @@ use super::observer::{J2kDecodeObserver, NoJ2kDecodeStats};
 use super::state::{
     extend_preallocated, push_preallocated, BitPlaneDecodeBuffers, BitPlaneDecodeContext,
 };
+#[cfg(target_arch = "x86_64")]
+use crate::math::{dispatch, Level};
 use crate::J2kCodeBlockSegment;
 
 pub(super) fn decode_inner(
@@ -169,6 +171,26 @@ pub(super) fn handle_arithmetic_coding_passes(
     run_arithmetic_coding_passes::<false>(start, end, ctx, decoder, observer)
 }
 
+/// On x86-64 the passes run inside the runtime dispatch, so the MQ decode
+/// compiles with LZCNT and BMI2 where present: on baseline x86-64 every
+/// decision's `leading_zeros` is a BSR plus a zero fixup on the per-symbol
+/// dependency chain, and the renormalizing shifts go through CL. ARM64 has
+/// CLZ in its baseline.
+#[cfg(target_arch = "x86_64")]
+pub(super) fn handle_packed_arithmetic_coding_passes(
+    start: u8,
+    end: u8,
+    ctx: &mut BitPlaneDecodeContext,
+    decoder: &mut ArithmeticDecoder<'_>,
+    observer: &mut impl J2kDecodeObserver,
+) -> Option<()> {
+    dispatch!(Level::new(), simd => {
+        let _ = simd;
+        run_arithmetic_coding_passes::<true>(start, end, ctx, decoder, observer)
+    })
+}
+
+#[cfg(not(target_arch = "x86_64"))]
 pub(super) fn handle_packed_arithmetic_coding_passes(
     start: u8,
     end: u8,
@@ -181,6 +203,14 @@ pub(super) fn handle_packed_arithmetic_coding_passes(
 
 /// Arithmetic passes over the packed column words (`PACKED_COLUMNS`) or the
 /// per-coefficient arrays; decisions and contexts are identical.
+#[cfg_attr(
+    target_arch = "x86_64",
+    expect(
+        clippy::inline_always,
+        reason = "the passes must inline into the caller's x86-64 dispatch target"
+    ),
+    inline(always)
+)]
 fn run_arithmetic_coding_passes<const PACKED_COLUMNS: bool>(
     start: u8,
     end: u8,

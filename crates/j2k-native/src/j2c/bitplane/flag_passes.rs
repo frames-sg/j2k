@@ -139,6 +139,14 @@ impl<'c, 'd> Scan<'c, 'd> {
     }
 }
 
+#[cfg_attr(
+    target_arch = "x86_64",
+    expect(
+        clippy::inline_always,
+        reason = "inlines into the x86-64 Tier-1 dispatch in schedule.rs"
+    ),
+    inline(always)
+)]
 pub(super) fn significance_propagation_pass_flags(
     ctx: &mut BitPlaneDecodeContext,
     decoder: &mut ArithmeticDecoder<'_>,
@@ -169,6 +177,14 @@ pub(super) fn significance_propagation_pass_flags(
     scan.finish(decoder);
 }
 
+#[cfg_attr(
+    target_arch = "x86_64",
+    expect(
+        clippy::inline_always,
+        reason = "inlines into the x86-64 Tier-1 dispatch in schedule.rs"
+    ),
+    inline(always)
+)]
 pub(super) fn magnitude_refinement_pass_flags(
     ctx: &mut BitPlaneDecodeContext,
     decoder: &mut ArithmeticDecoder<'_>,
@@ -207,6 +223,14 @@ pub(super) fn magnitude_refinement_pass_flags(
     scan.finish(decoder);
 }
 
+#[cfg_attr(
+    target_arch = "x86_64",
+    expect(
+        clippy::inline_always,
+        reason = "inlines into the x86-64 Tier-1 dispatch in schedule.rs"
+    ),
+    inline(always)
+)]
 pub(super) fn cleanup_pass_flags(
     ctx: &mut BitPlaneDecodeContext,
     decoder: &mut ArithmeticDecoder<'_>,
