@@ -319,3 +319,79 @@ fn a_stranded_band_falls_back_to_whole_windows() {
     assert_eq!(counters.pool_band_fallbacks, 1);
     assert_eq!(counters.pool_band_components, 0);
 }
+
+/// Generate tall, narrow HT images to expose per-band scheduling costs.
+/// Compare seven interleaved timings after warming both routes, with the
+/// same four-thread pool and a fresh decoder context for every decode.
+/// There is no timing assertion: the report is for optimized, quiet runs.
+#[test]
+#[ignore = "timing probe; run optimized with --ignored --nocapture --test-threads=1"]
+fn pool_bands_tall_region_timing_report() {
+    let pool = pool(4);
+    for height in [8_192_u32, 32_768, 65_536] {
+        let width = 32;
+        let mut state = 0x2545_f491_u32;
+        let pixels: Vec<u8> = (0..width * height)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state.to_le_bytes()[3]
+            })
+            .collect();
+        let bytes = encode(
+            &pixels,
+            width,
+            height,
+            1,
+            8,
+            false,
+            &EncodeOptions {
+                reversible: true,
+                use_ht_block_coding: true,
+                num_decomposition_levels: 1,
+                code_block_width_exp: 2,
+                code_block_height_exp: 0,
+                ..EncodeOptions::default()
+            },
+        )
+        .expect("encode 16x4-block timing fixture");
+        let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse timing fixture");
+        let roi = (0, 0, width, height);
+        let mut timings = [Vec::new(), Vec::new()];
+        let mut pool_components = 0;
+        for round in 0..8 {
+            let order = if round % 2 == 0 {
+                [true, false]
+            } else {
+                [false, true]
+            };
+            for whole_windows in order {
+                let start = std::time::Instant::now();
+                let decoded = pool.install(|| decode(&image, roi, whole_windows));
+                let elapsed = start.elapsed();
+                assert_eq!(
+                    decoded.native, pixels,
+                    "{width}x{height}, whole={whole_windows}"
+                );
+                if !whole_windows {
+                    pool_components = decoded.pool_components;
+                }
+                if round > 0 {
+                    timings[usize::from(!whole_windows)].push(elapsed);
+                }
+            }
+        }
+        for samples in &mut timings {
+            samples.sort_unstable();
+        }
+        let whole_ms = timings[0][3].as_secs_f64() * 1_000.0;
+        let bands_ms = timings[1][3].as_secs_f64() * 1_000.0;
+        println!(
+            "{width}x{height}, HT 16x4, 4 threads, median of 7: \
+             whole={whole_ms:.3} ms, auto={bands_ms:.3} ms, \
+             pool_components={pool_components}, ratio={:.2}",
+            bands_ms / whole_ms,
+        );
+    }
+}
