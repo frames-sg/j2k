@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::state::Coefficient;
+#[cfg(target_arch = "x86_64")]
+use crate::math::{dispatch, Level};
 use j2k_codec_math::classic::irreversible_midpoint_bit;
 
 /// Reconstruct an irreversible coefficient at the centre of its final
@@ -89,17 +91,35 @@ impl MidpointReconstructor {
     /// midpoints fit in `u32`, and the per-coefficient branches become selects
     /// that vectorize. Halving is exact, so `fixed * (step / 2)` rounds like
     /// `(fixed / 2) * step`, and negation is a sign-bit flip.
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_precision_loss,
-        reason = "magnitudes are below 2^31 on the u32 path, which enters the f32 domain"
-    )]
+    ///
+    /// On x86-64 the row runs inside the runtime SIMD dispatch: baseline
+    /// x86-64 has no per-lane variable shift and no unsigned conversion, so
+    /// the loop would stay scalar there; with AVX2 it vectorizes as it does
+    /// on ARM64.
     pub(crate) fn dequantize_row(
         self,
         coefficients: &[Coefficient],
         output: &mut [f32],
         step: f32,
     ) {
+        #[cfg(target_arch = "x86_64")]
+        dispatch!(Level::new(), simd => {
+            let _ = simd;
+            self.dequantize_row_inlined(coefficients, output, step);
+        });
+        #[cfg(not(target_arch = "x86_64"))]
+        self.dequantize_row_inlined(coefficients, output, step);
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::inline_always,
+        reason = "magnitudes are below 2^31 on the u32 path, which enters the f32 domain; \
+                  inlined into the x86-64 dispatch target"
+    )]
+    #[inline(always)]
+    fn dequantize_row_inlined(self, coefficients: &[Coefficient], output: &mut [f32], step: f32) {
         let Some((lowest, final_sigprop)) = self
             .fast
             .filter(|_| self.roi_shift == 0 && self.decoded_bitplanes <= 31)
