@@ -156,6 +156,17 @@ pub(super) fn parse_contribution_lengths(
         .ok_or("classic segment metadata allocation failed")
     };
 
+    if !style.termination_on_each_pass && !style.selective_arithmetic_coding_bypass {
+        // Every pass of the contribution goes to the layer's one segment.
+        if added_coding_passes != 0 {
+            push_segment(code_block.non_empty_layer_count, added_coding_passes)?;
+        }
+        if first_length.is_some() {
+            return Err("classic contribution did not consume its prefetched length");
+        }
+        code_block.number_of_coding_passes = cumulative_passes;
+        return Ok(());
+    }
     let mut last_segment = segment_idx(previous_passes);
     let mut passes_in_segment = 0;
     for coding_pass in previous_passes..cumulative_passes {
