@@ -23,7 +23,19 @@ struct RegionDecode {
 /// Decode `roi` with Auto parallelism on the current pool, in bands on the
 /// pool unless `whole_windows`.
 fn decode(image: &Image<'_>, roi: (u32, u32, u32, u32), whole_windows: bool) -> RegionDecode {
+    decode_with_cutoff(image, roi, whole_windows, 0)
+}
+
+/// [`decode`] with bands averaging less than `band_work_cutoff` decoding over
+/// whole windows instead of on the pool.
+fn decode_with_cutoff(
+    image: &Image<'_>,
+    roi: (u32, u32, u32, u32),
+    whole_windows: bool,
+    band_work_cutoff: usize,
+) -> RegionDecode {
     let mut context = DecoderContext::default();
+    context.tile_decode_context.band_work_cutoff = band_work_cutoff;
     context.set_cpu_decode_parallelism(CpuDecodeParallelism::Auto);
     context.tile_decode_context.whole_window_tier1 = whole_windows;
     let native = image
@@ -368,7 +380,9 @@ fn pool_bands_tall_region_timing_report() {
             };
             for whole_windows in order {
                 let start = std::time::Instant::now();
-                let decoded = pool.install(|| decode(&image, roi, whole_windows));
+                let decoded = pool.install(|| {
+                    decode_with_cutoff(&image, roi, whole_windows, crate::j2c::MIN_BAND_WORK)
+                });
                 let elapsed = start.elapsed();
                 assert_eq!(
                     decoded.native, pixels,
@@ -394,4 +408,47 @@ fn pool_bands_tall_region_timing_report() {
             bands_ms / whole_ms,
         );
     }
+}
+
+/// Bands too cheap to schedule one by one, such as rows of 16x4 HT blocks,
+/// decode over whole windows on the route instead, with the same output.
+#[test]
+fn cheap_bands_decode_over_whole_windows() {
+    let (width, height) = (32, 4096);
+    let pixels = noisy_pixels(1);
+    let pixels: Vec<u8> = pixels
+        .iter()
+        .copied()
+        .cycle()
+        .take((width * height) as usize)
+        .collect();
+    let bytes = encode(
+        &pixels,
+        width,
+        height,
+        1,
+        8,
+        false,
+        &EncodeOptions {
+            reversible: true,
+            use_ht_block_coding: true,
+            num_decomposition_levels: 1,
+            code_block_width_exp: 2,
+            code_block_height_exp: 0,
+            ..EncodeOptions::default()
+        },
+    )
+    .expect("encode 16x4-block fixture");
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse 16x4-block fixture");
+    let roi = (0, 0, width, height);
+    let pool = pool(4);
+    let unlimited = pool.install(|| decode(&image, roi, false));
+    assert!(
+        unlimited.pool_components > 0,
+        "without the cutoff the bands take the pool"
+    );
+    let cheap = pool.install(|| decode_with_cutoff(&image, roi, false, crate::j2c::MIN_BAND_WORK));
+    assert_eq!(cheap.pool_components, 0);
+    assert_eq!(cheap.native, pixels);
+    assert_eq!(cheap.native, unlimited.native);
 }

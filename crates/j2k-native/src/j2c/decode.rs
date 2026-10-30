@@ -45,6 +45,8 @@ mod peak;
 mod reuse;
 mod store;
 mod subband;
+#[cfg(all(test, feature = "parallel"))]
+pub(crate) use self::subband::MIN_BAND_WORK;
 mod subband_params;
 mod tier1;
 #[cfg(feature = "parallel")]
@@ -1597,6 +1599,11 @@ pub(crate) struct TileDecodeContext {
     /// band is left running with no worker to finish it.
     #[cfg(all(test, feature = "parallel"))]
     pub(crate) strand_pool_band: bool,
+    /// Test-only: the average work per band below which a component's
+    /// bands decode over whole windows instead of on the pool; zero, so
+    /// unit tests' tiny fixtures take the pool, unless a test sets it.
+    #[cfg(all(test, feature = "parallel"))]
+    pub(crate) band_work_cutoff: usize,
     /// Test-only capacity failure when building the optional band row index.
     #[cfg(test)]
     pub(crate) reject_band_index: bool,

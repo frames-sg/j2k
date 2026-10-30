@@ -39,8 +39,8 @@ use super::banded_tier1;
 use super::subband::{plan_band_route, routes_tile, BandRoute, BandRouting};
 use super::workspace::{TaskScratch, TaskWorkspace};
 use super::{
-    clips_to_idwt_windows, CpuDecodeParallelism, DecodeAllocationBudget, DecodeProfileTimings,
-    DecompositionStorage, Header, Result, Tile, TileDecodeContext,
+    clips_to_idwt_windows, CpuDecodeParallelism, DecodeProfileTimings, DecompositionStorage,
+    Header, Result, Tile, TileDecodeContext,
 };
 use crate::error::{DecodeError, DecodingError, ValidationError};
 use crate::j2c::build::{self, CodeBlockCoding};
@@ -199,8 +199,11 @@ fn decode_route(
     tier1_us: &mut u128,
 ) -> Result<bool> {
     let (rings, bands, active_levels) = plan_rings(route, storage, header, component_idx)?;
-    // The executor's records live while the bands decode.
-    DecodeAllocationBudget::for_storage(storage)?.include_bytes(executor_bytes(&rings, &bands)?)?;
+    // The executor's records live beside the route's plan and scratch while
+    // the bands decode.
+    route
+        .budget()
+        .include_bytes(executor_bytes(&rings, &bands)?)?;
     tile_ctx.idwt_output.placement = crate::j2c::idwt::IdwtPlacement::Coefficients;
     tile_ctx.idwt_output.coefficients = Vec::new();
     tile_ctx.idwt_output.rect = IntRect::from_xywh(0, 0, 0, 0);
@@ -273,15 +276,16 @@ fn decode_route(
 }
 
 /// The bytes the executor holds for `rings` and `bands`, besides the slots:
-/// the records, each band's status, slot and queue entry, and each ring's
-/// cursors and slot list.
+/// the records, each band's status, slot, queue entry and decoded-list entry,
+/// and each ring's cursors and slot list.
 fn executor_bytes(rings: &[Ring], bands: &[Band]) -> Result<usize> {
     let per_band = size_of::<Band>()
         + size_of::<Status>()
+        + size_of::<usize>()
         + 2 * size_of::<Option<&mut [f32]>>()
         + size_of::<Reverse<(i64, Reverse<usize>, usize)>>();
     let per_ring = size_of::<Ring>()
-        + 2 * size_of::<usize>()
+        + 3 * size_of::<usize>()
         + size_of::<Vec<&mut [f32]>>()
         + size_of::<Option<(usize, &mut [f32])>>();
     let slots: usize = rings.iter().map(|ring| ring.slots).sum();
@@ -519,6 +523,13 @@ struct State<'c, 'w, W> {
     ready: BinaryHeap<Reverse<(i64, Reverse<usize>, usize)>>,
     /// Each ring's next band to make ready.
     next_ready: Vec<usize>,
+    /// How many of each ring's bands, from its first, have been freed.
+    freed_prefix: Vec<usize>,
+    /// Bands that finished decoding, for the drain to free; bands the IDWT
+    /// has since read are skipped.
+    decoded: Vec<usize>,
+    running: usize,
+    freed: usize,
     workspaces: Vec<&'w mut W>,
     /// Workers on the pool.
     active: usize,
@@ -551,7 +562,7 @@ impl<'c, 'w, W> Shared<'_, 'c, 'w, W> {
         let ring_bands = &self.rings[ring].bands;
         while state.next_ready[ring] < ring_bands.end
             && state.next_ready[ring] - ring_bands.start
-                < self.freed_before(state, ring) + self.rings[ring].slots
+                < state.freed_prefix[ring] + self.rings[ring].slots
         {
             let index = state.next_ready[ring];
             let band = &self.bands[index];
@@ -560,15 +571,6 @@ impl<'c, 'w, W> Shared<'_, 'c, 'w, W> {
                 .push(Reverse((band.order, Reverse(band.work), index)));
             state.next_ready[ring] += 1;
         }
-    }
-
-    /// How many of ring `ring`'s bands, from its first, have been freed.
-    fn freed_before(&self, state: &State<'c, 'w, W>, ring: usize) -> usize {
-        let ring_bands = self.rings[ring].bands.clone();
-        state.status[ring_bands]
-            .iter()
-            .take_while(|status| **status == Status::Freed)
-            .count()
     }
 
     /// Take the next ready band, marked running, with a slot to decode into.
@@ -589,7 +591,15 @@ impl<'c, 'w, W> Shared<'_, 'c, 'w, W> {
                 .ok_or(DecodingError::CodeBlockDecodeFailure)?,
         };
         state.status[index] = Status::Running;
+        state.running += 1;
         Ok((index, slot))
+    }
+
+    /// Band `index`, running, has decoded.
+    fn decoded(state: &mut State<'c, 'w, W>, index: usize) {
+        state.status[index] = Status::Done;
+        state.running -= 1;
+        state.decoded.push(index);
     }
 
     /// Record band `index`'s decode, which its decoder ran outside the lock.
@@ -598,7 +608,7 @@ impl<'c, 'w, W> Shared<'_, 'c, 'w, W> {
         match result {
             Ok(()) => {
                 state.held[index] = Some(slot);
-                state.status[index] = Status::Done;
+                Self::decoded(&mut state, index);
             }
             Err(error) => {
                 state.error.get_or_insert(error);
@@ -618,6 +628,13 @@ impl<'c, 'w, W> Shared<'_, 'c, 'w, W> {
             state.free_slots[ring].push(slot);
         }
         state.status[index] = Status::Freed;
+        state.freed += 1;
+        let ring_bands = &self.rings[ring].bands;
+        while ring_bands.start + state.freed_prefix[ring] < ring_bands.end
+            && state.status[ring_bands.start + state.freed_prefix[ring]] == Status::Freed
+        {
+            state.freed_prefix[ring] += 1;
+        }
         self.refill(state, ring);
     }
 }
@@ -666,6 +683,10 @@ fn run_bands<W: TaskScratch>(
         owned: slots.1,
         ready: BinaryHeap::new(),
         next_ready: try_collect(rings.iter().map(|ring| ring.bands.start), rings.len())?,
+        freed_prefix: try_filled(rings.len(), 0)?,
+        decoded: Vec::new(),
+        running: 0,
+        freed: 0,
         workspaces,
         active: 0,
         error: None,
@@ -674,6 +695,10 @@ fn run_bands<W: TaskScratch>(
     state
         .ready
         .try_reserve(bands.len())
+        .map_err(|_| DecodingError::HostAllocationFailed)?;
+    state
+        .decoded
+        .try_reserve_exact(bands.len())
         .map_err(|_| DecodingError::HostAllocationFailed)?;
     let shared = Shared {
         rings,
@@ -921,7 +946,9 @@ where
         );
         self.tier1_us += profile::elapsed_us(start);
         result?;
-        self.shared.lock()?.status[index] = Status::Done;
+        let mut state = self.shared.lock()?;
+        Shared::decoded(&mut state, index);
+        drop(state);
         Ok(())
     }
 
@@ -937,7 +964,7 @@ where
                 return Err(error);
             }
             // Free every decoded band, which lets its ring's next band start.
-            for index in 0..self.shared.bands.len() {
+            while let Some(index) = state.decoded.pop() {
                 if state.status[index] == Status::Done {
                     let slot = state.held[index]
                         .take()
@@ -945,11 +972,11 @@ where
                     self.shared.free(&mut state, index, slot);
                 }
             }
-            if state.status.iter().all(|status| *status == Status::Freed) {
+            if state.freed == self.shared.bands.len() {
                 return Ok(());
             }
             let next = self.shared.start_next(&mut state)?;
-            let running = state.status.contains(&Status::Running);
+            let running = state.running > 0;
             match next {
                 Some((index, slot)) => {
                     drop(state);
@@ -964,9 +991,7 @@ where
                         .wait_timeout(state, STRANDED_CHECK)
                         .map_err(|_| DecodingError::CodeBlockDecodeFailure)?
                         .0;
-                    let stranded = state.error.is_none()
-                        && state.active == 0
-                        && state.status.contains(&Status::Running);
+                    let stranded = state.error.is_none() && state.active == 0 && state.running > 0;
                     state.stranded |= stranded;
                     drop(state);
                     if stranded {
@@ -1043,7 +1068,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::j2c::decode::{DecoderContext, WorkspacePeak};
+    use crate::j2c::decode::{DecodeAllocationBudget, DecoderContext, WorkspacePeak};
     use crate::j2c::tile;
     use crate::reader::BitReader;
     use crate::{encode, DecodeSettings, EncodeOptions, Image, DEFAULT_MAX_DECODE_BYTES};

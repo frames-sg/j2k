@@ -53,6 +53,15 @@ const MIN_PARALLEL_CODED_BYTES: usize = 8 * 1024;
 #[cfg(test)]
 const MIN_PARALLEL_CODED_BYTES: usize = 0;
 
+/// Below this average work per band, as the route weighs strips (payload
+/// bytes plus an eighth of the samples), scheduling each band on the pool
+/// costs more than overlapping Tier-1 with the IDWT saves, and a component's
+/// bands decode over whole windows on the route instead. A tall region of
+/// 16x4 HT blocks, at 88 per band, decoded 3.6 times slower in bands than
+/// over whole windows at 4 threads; 1024 px regions of the benchmark images
+/// average 2,000 to 15,000.
+pub(crate) const MIN_BAND_WORK: usize = 1024;
+
 /// Where a tile of `coding` blocks with `strips` rows of code blocks and
 /// `coded_bytes` of payload decodes on `threads` workers: on the route
 /// (`None`), serially, or per sub-band. A classic tile with fewer rows than
@@ -1225,6 +1234,10 @@ pub(in crate::j2c::decode) struct BandRoute<'a> {
     plan: TilePlan<'a>,
     workers: usize,
     growths: usize,
+    /// The decode's budget with the plan, the payload arena and every
+    /// thread's clipped-block scratch charged, which stay live while the
+    /// bands decode.
+    budget: DecodeAllocationBudget,
 }
 
 /// How [`plan_band_route`] wants a component's bands decoded.
@@ -1298,6 +1311,19 @@ pub(in crate::j2c::decode) fn plan_band_route<'a>(
     ) {
         return Ok(declined(route));
     }
+    let work = plan
+        .strips
+        .iter()
+        .fold(0usize, |work, strip| work.saturating_add(strip.work));
+    // Unit tests use tiny fixtures and take the pool unless a test sets the
+    // cutoff on the decode's context.
+    #[cfg(test)]
+    let min_band_work = tile_ctx.band_work_cutoff;
+    #[cfg(not(test))]
+    let min_band_work = MIN_BAND_WORK;
+    if work / plan.strips.len().max(1) < min_band_work {
+        return Ok(BandRouting::WholeWindows);
+    }
     let workers = threads.min(plan.strips.len());
     let prepared = (|| -> Result<usize> {
         gather_payloads(&mut plan, storage, &mut budget)?;
@@ -1333,6 +1359,7 @@ pub(in crate::j2c::decode) fn plan_band_route<'a>(
             plan,
             workers,
             growths,
+            budget,
         }))),
         Err(error) if crate::j2c::decode::reuse::is_capacity_error(&error) => {
             Ok(BandRouting::Serial)
@@ -1344,6 +1371,12 @@ pub(in crate::j2c::decode) fn plan_band_route<'a>(
 impl BandRoute<'_> {
     pub(in crate::j2c::decode) fn coding(&self) -> CodeBlockCoding {
         self.plan.coding
+    }
+
+    /// The decode's budget with the route's own allocations charged; the
+    /// executor charges what it adds to a copy.
+    pub(in crate::j2c::decode) fn budget(&self) -> DecodeAllocationBudget {
+        self.budget
     }
 
     /// Pool threads to decode on, besides the calling thread.
