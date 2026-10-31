@@ -562,6 +562,10 @@ pub j2k::J2kError::NotImplemented(j2k_core::error::NotImplemented)
 pub j2k::J2kError::RateTargetUnreachable
 pub j2k::J2kError::RateTargetUnreachable::best: alloc::string::String
 pub j2k::J2kError::RateTargetUnreachable::target: alloc::string::String
+pub j2k::J2kError::ResourceLimit
+pub j2k::J2kError::ResourceLimit::cap: core::option::Option<usize>
+pub j2k::J2kError::ResourceLimit::requested: core::option::Option<usize>
+pub j2k::J2kError::ResourceLimit::source: j2k::NativeBackendError
 pub j2k::J2kError::Unsupported(j2k_core::error::Unsupported)
 pub j2k::J2kFileBoxMetadata::channel_definitions: &'a [j2k::J2kChannelDefinition]
 pub j2k::J2kFileBoxMetadata::component_mappings: &'a [j2k::J2kComponentMapping]
@@ -4023,6 +4027,9 @@ pub j2k_native::DecodeErrorClass::InputTooShort::need: usize
 pub j2k_native::DecodeErrorClass::InputTruncatedAt
 pub j2k_native::DecodeErrorClass::InputTruncatedAt::offset: usize
 pub j2k_native::DecodeErrorClass::InputTruncatedAt::segment: &'static str
+pub j2k_native::DecodeErrorClass::ResourceLimit
+pub j2k_native::DecodeErrorClass::ResourceLimit::cap: core::option::Option<usize>
+pub j2k_native::DecodeErrorClass::ResourceLimit::requested: core::option::Option<usize>
 pub j2k_native::DecodeErrorClass::Unsupported
 pub j2k_native::DecodeErrorClass::Unsupported::what: &'static str
 pub j2k_native::DecodeSettings::resolve_palette_indices: bool
