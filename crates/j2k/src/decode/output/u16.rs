@@ -6,7 +6,7 @@ use crate::backend::{ColorSpace, DecodedComponents as NativeDecodedComponents, R
 use crate::J2kError;
 use j2k_core::{PixelFormat, Unsupported};
 
-use super::u8::{component_sample_count, validate_component_planes};
+use super::u8::{component_sample_count, output_rows, validate_component_planes};
 
 pub(in crate::decode) fn write_components_u16_output(
     components: &NativeDecodedComponents<'_>,
@@ -281,12 +281,8 @@ fn write_u16_channel_rows(job: U16ChannelRows<'_, '_>) {
     let dst_row_bytes = width * dst_channels * 2;
     let alpha = opaque_alpha_u16(bytes_per_sample, bit_depth);
 
-    for (src_row, dst_row) in src
-        .chunks_exact(src_row_bytes)
-        .zip(out.chunks_exact_mut(stride))
-        .take(height)
-    {
-        let dst_row = &mut dst_row[..dst_row_bytes];
+    let dst_rows = output_rows(out, stride, dst_row_bytes, height);
+    for (src_row, dst_row) in src.chunks_exact(src_row_bytes).zip(dst_rows) {
         for x in 0..width {
             let src_pixel = &src_row[x * source_channels * bytes_per_sample..];
             let dst_pixel = &mut dst_row[x * dst_channels * 2..(x + 1) * dst_channels * 2];
@@ -347,12 +343,8 @@ fn convert_or_copy_u16(
     let (width, height) = dims;
     let dst_row_bytes = width * channels * 2;
     let src_row_bytes = width * channels * usize::from(bytes_per_sample);
-    for (src_row, dst_row) in src
-        .chunks_exact(src_row_bytes)
-        .zip(out.chunks_exact_mut(stride))
-        .take(height)
-    {
-        let dst_row = &mut dst_row[..dst_row_bytes];
+    let dst_rows = output_rows(out, stride, dst_row_bytes, height);
+    for (src_row, dst_row) in src.chunks_exact(src_row_bytes).zip(dst_rows) {
         if bytes_per_sample == 2 {
             dst_row.copy_from_slice(src_row);
             continue;
