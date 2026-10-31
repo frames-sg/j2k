@@ -342,7 +342,10 @@ impl<'a> J2kDecoder<'a> {
     /// A decode whose component planes would pass the native decode budget
     /// runs as a region decode of the whole image, which writes rows as they
     /// are finished instead of holding the planes: at 8 bits, and at 16 bits
-    /// for images whose components share one precision of at most 16 bits.
+    /// for images whose components share one precision of at most 24 bits.
+    /// A 16-bit output holds each sample's value clamped to the 16-bit range
+    /// (two's complement when signed); samples of at most 8 bits are widened
+    /// across it.
     ///
     /// # Errors
     /// Returns [`J2kError`] when the format is unsupported, the output buffer

@@ -510,18 +510,20 @@ fn deep_and_signed_images_stream_past_the_budget() {
         (1, 12, false, true),
         (1, 16, true, false),
         (1, 4, false, true),
+        (1, 20, false, true),
+        (3, 24, true, false),
     ] {
-        let samples: Vec<u8> = (0..width * height * u32::from(components) * 2)
+        let bytes_per_sample = u32::from(bit_depth).div_ceil(8);
+        let samples: Vec<u8> = (0..width * height * u32::from(components) * bytes_per_sample)
             .map(|index| (index.wrapping_mul(2_654_435_761) >> 24) as u8)
             .collect();
-        let samples = &samples[..samples.len() / if bit_depth > 8 { 1 } else { 2 }];
         let options = EncodeOptions {
             num_decomposition_levels: 3,
             reversible,
             ..EncodeOptions::default()
         };
         let bytes = encode(
-            samples, width, height, components, bit_depth, signed, &options,
+            &samples, width, height, components, bit_depth, signed, &options,
         )
         .expect("encode fixture");
         let image =
@@ -534,7 +536,7 @@ fn deep_and_signed_images_stream_past_the_budget() {
         };
         let label = format!("{components} x {bit_depth} bits, signed {signed}");
         assert_eq!(
-            full_image_route(&image, fmt, 0),
+            full_image_route(&image, request(fmt, 0, CpuDecodeParallelism::Serial)),
             FullImageRoute::StreamedRegion,
             "{label}"
         );
@@ -545,7 +547,7 @@ fn deep_and_signed_images_stream_past_the_budget() {
         );
         let budget = j2k_native::DEFAULT_MAX_DECODE_BYTES;
         assert_eq!(
-            full_image_route(&image, fmt, budget),
+            full_image_route(&image, request(fmt, budget, CpuDecodeParallelism::Serial)),
             FullImageRoute::Planes
         );
         assert_eq!(native_components_route(&image, budget), NativeRoute::Planes);

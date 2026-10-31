@@ -27,8 +27,9 @@ const RGB_FORMATS: &[PixelFormat] = &[
 const GRAY_FORMATS: &[PixelFormat] = &[PixelFormat::Gray16, PixelFormat::Rgb16, PixelFormat::Gray8];
 const RGBA_FORMATS: &[PixelFormat] = &[PixelFormat::Rgba16, PixelFormat::Rgb16, PixelFormat::Rgba8];
 
-/// Noise samples of `bit_depth` bits, one or two little-endian bytes each,
-/// which the encoder masks to the precision (and sign-extends when signed).
+/// Noise samples of `bit_depth` bits, one to three little-endian bytes
+/// each, which the encoder masks to the precision (and sign-extends when
+/// signed).
 fn noisy_samples(components: u16, bit_depth: u8) -> Vec<u8> {
     let bytes = usize::from(bit_depth).div_ceil(8);
     let mut state = 0x2545_f491_u32 ^ u32::from(bit_depth);
@@ -50,10 +51,10 @@ fn codestream(components: u16, bit_depth: u8, signed: bool, options: &EncodeOpti
     .expect("encode fixture")
 }
 
-/// Images of 4, 8, 12 and 16 bits, signed and unsigned, reversible and
-/// irreversible, tiled and untiled, classic and HT, with the output formats
-/// each is decoded to (8-bit ones included: they stream past the decode
-/// budget too).
+/// Images of 4, 8, 12, 16, 20 and 24 bits, signed and unsigned, reversible
+/// and irreversible, tiled and untiled, classic and HT, with the output
+/// formats each is decoded to (8-bit ones included: they stream past the
+/// decode budget too).
 fn fixtures() -> Vec<(&'static str, Vec<u8>, &'static [PixelFormat])> {
     let levels = EncodeOptions {
         num_decomposition_levels: 4,
@@ -119,6 +120,16 @@ fn fixtures() -> Vec<(&'static str, Vec<u8>, &'static [PixelFormat])> {
             "gray 16-bit signed 9/7",
             codestream(1, 16, true, &irreversible),
             GRAY_FORMATS,
+        ),
+        (
+            "gray 20-bit 5/3",
+            codestream(1, 20, false, &reversible),
+            GRAY_FORMATS,
+        ),
+        (
+            "rgb 24-bit signed 9/7",
+            codestream(3, 24, true, &irreversible),
+            RGB_FORMATS,
         ),
         (
             "gray 8-bit signed 5/3",
@@ -319,6 +330,120 @@ fn sixteen_bit_regions_match_the_full_image() {
                         );
                         assert_eq!(line[roi.w as usize * pixel..], [PADDING; 2]);
                     }
+                }
+            }
+        }
+    }
+}
+
+/// Samples of `bit_depth` bits, at least a quarter of them within 16 bits
+/// (signed: within `i16`).
+fn deep_samples(components: u16, bit_depth: u8, signed: bool) -> Vec<i64> {
+    let span = 1_i64 << 18;
+    let offset = if signed { span / 2 } else { 0 };
+    let (min, max) = if signed {
+        (-(1 << (bit_depth - 1)), (1 << (bit_depth - 1)) - 1)
+    } else {
+        (0, (1 << bit_depth) - 1)
+    };
+    let count = WIDTH as usize * HEIGHT as usize * usize::from(components);
+    (0_i64..)
+        .take(count)
+        .map(|index| ((index * 7919 + index / 3) % span - offset).clamp(min, max))
+        .collect()
+}
+
+/// A 16-bit output of an image deeper than 16 bits holds each sample's
+/// value clamped to the 16-bit range (two's complement when signed), as a
+/// scaled decode always wrote it, on the planes route, on the streamed
+/// route and in region decodes; an 8-bit output of an unsigned one holds
+/// the sample over the component's range, on either route.
+#[test]
+fn deep_samples_decode_to_their_values_clamped_to_sixteen_bits() {
+    let reversible = EncodeOptions {
+        num_decomposition_levels: 3,
+        reversible: true,
+        ..EncodeOptions::default()
+    };
+    let pool = &mut J2kScratchPool::new();
+    for (components, bit_depth, signed, fmt) in [
+        (1_u16, 20_u8, false, PixelFormat::Gray16),
+        (1, 24, true, PixelFormat::Gray16),
+        (3, 20, true, PixelFormat::Rgb16),
+        (3, 17, false, PixelFormat::Rgb16),
+    ] {
+        let label = format!("{components} x {bit_depth} bits, signed {signed}");
+        let values = deep_samples(components, bit_depth, signed);
+        let samples: Vec<u8> = values
+            .iter()
+            .flat_map(|value| {
+                let bytes = value.to_le_bytes();
+                [bytes[0], bytes[1], bytes[2]]
+            })
+            .collect();
+        let bytes = encode(
+            &samples,
+            WIDTH,
+            HEIGHT,
+            components,
+            bit_depth,
+            signed,
+            &reversible,
+        )
+        .expect("encode deep fixture");
+        let expected: Vec<u8> = values
+            .iter()
+            .flat_map(|&value| {
+                let clamped = if signed {
+                    let value = i16::try_from(value.clamp(-32_768, 32_767)).expect("i16");
+                    u16::from_le_bytes(value.to_le_bytes())
+                } else {
+                    u16::try_from(value.clamp(0, 65_535)).expect("u16")
+                };
+                clamped.to_le_bytes()
+            })
+            .collect();
+        for parallelism in [CpuDecodeParallelism::Serial, CpuDecodeParallelism::Auto] {
+            for budget in [None, Some(0)] {
+                let decoded = decode(&bytes, budget, parallelism, fmt, Downscale::None, 0)
+                    .unwrap_or_else(|| panic!("{label} {budget:?}: decode failed"));
+                assert!(
+                    decoded == expected,
+                    "{label} {parallelism:?} planes budget {budget:?}"
+                );
+            }
+            if !signed {
+                let fmt = if components == 1 {
+                    PixelFormat::Gray8
+                } else {
+                    PixelFormat::Rgb8
+                };
+                let max = ((1_u64 << bit_depth) - 1) as f32;
+                let expected: Vec<u8> = values
+                    .iter()
+                    .map(|&value| ((value as f32 / max) * 255.0).round() as u8)
+                    .collect();
+                for budget in [None, Some(0)] {
+                    let decoded = decode(&bytes, budget, parallelism, fmt, Downscale::None, 0);
+                    assert!(
+                        decoded.as_ref() == Some(&expected),
+                        "{label} {fmt:?} {parallelism:?} planes budget {budget:?}"
+                    );
+                }
+            }
+            let pixel = fmt.bytes_per_pixel();
+            for roi in regions() {
+                let stride = roi.w as usize * pixel;
+                let mut out = vec![PADDING; stride * roi.h as usize];
+                decoder(&bytes, None, parallelism)
+                    .decode_region_into(pool, &mut out, stride, fmt, roi)
+                    .unwrap_or_else(|error| panic!("{label} {roi:?}: {error:?}"));
+                for (row, line) in out.chunks(stride).enumerate() {
+                    let start = ((roi.y as usize + row) * WIDTH as usize + roi.x as usize) * pixel;
+                    assert!(
+                        line == &expected[start..start + stride],
+                        "{label} {parallelism:?} {roi:?} row {row}"
+                    );
                 }
             }
         }

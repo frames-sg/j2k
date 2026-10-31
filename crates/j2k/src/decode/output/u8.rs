@@ -298,12 +298,19 @@ fn sample_as_u8_depth8(sample: f32) -> u8 {
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
     reason = "samples are rounded and clamped to the unsigned 8-bit output domain before conversion"
 )]
 fn sample_as_u8(sample: f32, bit_depth: u8) -> u8 {
     let rounded = sample.round();
     if bit_depth == 8 {
         return sample_as_u8_depth8(sample);
+    }
+    if bit_depth > 16 {
+        // The sample over the component's range, as the 8-bit planes of a
+        // full-image decode quantize it.
+        let source_max = ((1_u64 << bit_depth.min(63)) - 1) as f32;
+        return ((sample / source_max) * f32::from(u8::MAX)).round() as u8;
     }
     let max_value = if bit_depth >= 16 {
         f32::from(u16::MAX)

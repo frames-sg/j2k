@@ -27,15 +27,13 @@ pub(in crate::decode) fn write_components_u16_output(
 
 /// Whether a region decode of `image` to `fmt` may stream its rows through
 /// [`U16RowSink`]: they carry the samples `decode_native_region` packs (see
-/// `Image::streamed_rows_native_precision`), every component has one
-/// precision of at most 16 bits, which `U16Conversion` converts to the
+/// `Image::streamed_rows_native_precision`: every component has one
+/// precision of at most 24 bits), which `U16Conversion` converts to the
 /// bytes [`write_u16_output`] writes from those packed samples, and
 /// `fmt` is a layout the image's color space maps to. Images that fail any
 /// of these keep the native-bit-depth planes, with their output or error.
 pub(in crate::decode) fn rows_match_native_u16(image: &Image<'_>, fmt: PixelFormat) -> bool {
-    image
-        .streamed_rows_native_precision()
-        .is_some_and(|precision| precision <= 16)
+    image.streamed_rows_native_precision().is_some()
         && matches!(
             (image.color_space(), image.has_alpha(), fmt),
             (ColorSpace::Gray, false, PixelFormat::Gray16)
@@ -282,17 +280,18 @@ enum U16Kind {
     ByteTable,
     /// Signed, at most 8 bits: the two's-complement byte's widened value.
     SignedByteTable,
-    /// Unsigned, 9 to 16 bits: the sample itself.
+    /// Unsigned, 9 bits or more: the sample clamped to 16 bits.
     Unsigned,
-    /// Signed, 9 to 16 bits: the sample's two's complement.
+    /// Signed, 9 bits or more: the two's complement of the sample clamped
+    /// to 16 bits.
     Signed,
 }
 
 /// Converts the decoded samples of one component of `bit_depth` bits to
 /// 16-bit output: rounded, clamped to the component's signed or unsigned
-/// range (at most 16 bits) and, for at most 8 bits, clamped to a byte and
-/// widened across the 16-bit range as [`write_u16_output`] widens native
-/// 8-bit samples. The choices are made once per plane.
+/// range, and to 16 bits past 16, and, for at most 8 bits, clamped to a
+/// byte and widened across the 16-bit range as [`write_u16_output`] widens
+/// native 8-bit samples. The choices are made once per plane.
 #[derive(Debug, PartialEq)]
 struct U16Conversion {
     kind: U16Kind,
@@ -458,13 +457,14 @@ pub(in crate::decode) fn write_u16_output(
 ) -> Result<(), J2kError> {
     let width = raw.width as usize;
     let height = raw.height as usize;
+    let signed = channel_signedness(raw);
     match (color_space, has_alpha, raw.num_components, fmt) {
         (ColorSpace::RGB, false, 3, PixelFormat::Rgb16) => {
             convert_or_copy_u16(
                 &raw.data,
                 raw.bytes_per_sample,
                 raw.bit_depth,
-                3,
+                &signed[..3],
                 out,
                 stride,
                 (width, height),
@@ -476,6 +476,7 @@ pub(in crate::decode) fn write_u16_output(
                 src: &raw.data,
                 bytes_per_sample: raw.bytes_per_sample,
                 bit_depth: raw.bit_depth,
+                signed,
                 source_channels: 4,
                 layout: U16ChannelLayout::Drop,
                 out,
@@ -489,6 +490,7 @@ pub(in crate::decode) fn write_u16_output(
                 src: &raw.data,
                 bytes_per_sample: raw.bytes_per_sample,
                 bit_depth: raw.bit_depth,
+                signed,
                 source_channels: 3,
                 layout: U16ChannelLayout::Synthesize,
                 out,
@@ -502,6 +504,7 @@ pub(in crate::decode) fn write_u16_output(
                 src: &raw.data,
                 bytes_per_sample: raw.bytes_per_sample,
                 bit_depth: raw.bit_depth,
+                signed,
                 source_channels: 4,
                 layout: U16ChannelLayout::Preserve,
                 out,
@@ -515,7 +518,7 @@ pub(in crate::decode) fn write_u16_output(
                 &raw.data,
                 raw.bytes_per_sample,
                 raw.bit_depth,
-                1,
+                &signed[..1],
                 out,
                 stride,
                 (width, height),
@@ -540,6 +543,8 @@ struct U16ChannelRows<'src, 'out> {
     src: &'src [u8],
     bytes_per_sample: u8,
     bit_depth: u8,
+    /// Whether each source channel is signed.
+    signed: [bool; 4],
     source_channels: usize,
     layout: U16ChannelLayout,
     out: &'out mut [u8],
@@ -552,6 +557,7 @@ fn write_u16_channel_rows(job: U16ChannelRows<'_, '_>) {
         src,
         bytes_per_sample,
         bit_depth,
+        signed,
         source_channels,
         layout,
         out,
@@ -575,7 +581,13 @@ fn write_u16_channel_rows(job: U16ChannelRows<'_, '_>) {
             let src_pixel = &src_row[x * source_channels * bytes_per_sample..];
             let dst_pixel = &mut dst_row[x * dst_channels * 2..(x + 1) * dst_channels * 2];
             for channel in 0..3 {
-                let sample = output_u16_sample(src_pixel, channel, bytes_per_sample, &widened);
+                let sample = output_u16_sample(
+                    src_pixel,
+                    channel,
+                    bytes_per_sample,
+                    signed[channel],
+                    &widened,
+                );
                 dst_pixel[channel * 2..channel * 2 + 2].copy_from_slice(&sample.to_le_bytes());
             }
             match layout {
@@ -584,7 +596,8 @@ fn write_u16_channel_rows(job: U16ChannelRows<'_, '_>) {
                     dst_pixel[6..8].copy_from_slice(&alpha.to_le_bytes());
                 }
                 U16ChannelLayout::Preserve => {
-                    let sample = output_u16_sample(src_pixel, 3, bytes_per_sample, &widened);
+                    let sample =
+                        output_u16_sample(src_pixel, 3, bytes_per_sample, signed[3], &widened);
                     dst_pixel[6..8].copy_from_slice(&sample.to_le_bytes());
                 }
             }
@@ -600,18 +613,49 @@ fn opaque_alpha_u16(bytes_per_sample: usize, bit_depth: u8) -> u16 {
     }
 }
 
+/// Whether each channel of `raw`'s pixels is signed (the first four).
+fn channel_signedness(raw: &RawBitmap) -> [bool; 4] {
+    core::array::from_fn(|channel| {
+        raw.component_signed
+            .get(channel)
+            .copied()
+            .unwrap_or(raw.signed)
+    })
+}
+
 /// `widened` is [`widened_u8_samples`] of the samples' bit depth.
 fn output_u16_sample(
     src_pixel: &[u8],
     channel: usize,
     bytes_per_sample: usize,
+    signed: bool,
     widened: &[u16; 256],
 ) -> u16 {
     let offset = channel * bytes_per_sample;
-    if bytes_per_sample == 2 {
-        return u16::from_le_bytes([src_pixel[offset], src_pixel[offset + 1]]);
+    match bytes_per_sample {
+        1 => widened[usize::from(src_pixel[offset])],
+        2 => u16::from_le_bytes([src_pixel[offset], src_pixel[offset + 1]]),
+        _ => clamped_wide_sample(&src_pixel[offset..offset + bytes_per_sample], signed),
     }
-    widened[usize::from(src_pixel[offset])]
+}
+
+/// The 16-bit output of a native sample of more than two little-endian
+/// bytes, from an image deeper than 16 bits: its value clamped to the
+/// 16-bit range, as two's complement when `signed`. This is what
+/// [`U16Conversion`] writes for the sample's decoded value, and what scaled
+/// decodes, which convert component planes, always wrote.
+fn clamped_wide_sample(bytes: &[u8], signed: bool) -> u16 {
+    let len = bytes.len().min(8);
+    let mut le = [0_u8; 8];
+    le[..len].copy_from_slice(&bytes[..len]);
+    if signed {
+        // Sign-extend from the sample's top byte.
+        let unused = 64 - 8 * len;
+        let value = (i64::from_le_bytes(le) << unused) >> unused;
+        let clamped = value.clamp(i64::from(i16::MIN), i64::from(i16::MAX));
+        return u16::from_le_bytes(i16::try_from(clamped).unwrap_or(i16::MAX).to_le_bytes());
+    }
+    u16::try_from(u64::from_le_bytes(le)).unwrap_or(u16::MAX)
 }
 
 fn widen_u8_sample_to_u16(sample: u8, bit_depth: u8) -> u16 {
@@ -628,16 +672,18 @@ fn widened_u8_samples(bit_depth: u8) -> [u16; 256] {
     })
 }
 
+/// `signed` holds whether each of the pixels' channels is signed.
 fn convert_or_copy_u16(
     src: &[u8],
     bytes_per_sample: u8,
     bit_depth: u8,
-    channels: usize,
+    signed: &[bool],
     out: &mut [u8],
     stride: usize,
     dims: (usize, usize),
 ) {
     let (width, height) = dims;
+    let channels = signed.len();
     let dst_row_bytes = width * channels * 2;
     let src_row_bytes = width * channels * usize::from(bytes_per_sample);
     let widened = widened_u8_samples(bit_depth);
@@ -645,6 +691,15 @@ fn convert_or_copy_u16(
     for (src_row, dst_row) in src.chunks_exact(src_row_bytes).zip(dst_rows) {
         if bytes_per_sample == 2 {
             dst_row.copy_from_slice(src_row);
+            continue;
+        }
+        if bytes_per_sample > 2 {
+            let samples = src_row.chunks_exact(usize::from(bytes_per_sample));
+            for (index, (sample, dst_sample)) in
+                samples.zip(dst_row.as_chunks_mut::<2>().0).enumerate()
+            {
+                *dst_sample = clamped_wide_sample(sample, signed[index % channels]).to_le_bytes();
+            }
             continue;
         }
         for (sample, dst_sample) in src_row.iter().zip(dst_row.as_chunks_mut::<2>().0) {
@@ -656,7 +711,8 @@ fn convert_or_copy_u16(
 #[cfg(test)]
 mod tests {
     use super::{
-        opaque_alpha_u16, widen_u8_sample_to_u16, ChannelWriter, PixelWriter, U16Conversion,
+        clamped_wide_sample, convert_or_copy_u16, opaque_alpha_u16, widen_u8_sample_to_u16,
+        ChannelWriter, PixelWriter, U16Conversion,
     };
 
     /// The per-sample conversion the component-plane writers used before
@@ -742,6 +798,86 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::cast_precision_loss, reason = "test values fit f32 exactly")]
+    fn deep_native_samples_convert_as_their_decoded_values_do() {
+        for bit_depth in 17..=24_u8 {
+            for signed in [false, true] {
+                let (min, max) = if signed {
+                    (-(1_i64 << (bit_depth - 1)), (1_i64 << (bit_depth - 1)) - 1)
+                } else {
+                    (0, (1_i64 << bit_depth) - 1)
+                };
+                let edges = [-32_769, -32_768, -1, 0, 1, 32_767, 32_768, 65_535, 65_536];
+                let values: Vec<i64> = (min..=max)
+                    .step_by(997)
+                    .chain([min, max])
+                    .chain(
+                        edges
+                            .into_iter()
+                            .filter(|value| (min..=max).contains(value)),
+                    )
+                    .collect();
+                let samples: Vec<f32> = values.iter().map(|value| *value as f32).collect();
+                let mut expected = vec![0; samples.len() * 2];
+                U16Conversion::new(bit_depth, signed).visit(ChannelWriter {
+                    src: &samples,
+                    dst: &mut expected,
+                    channels: 1,
+                    channel: 0,
+                });
+                // Native samples as `decode_native` packs them: three
+                // little-endian bytes, two's complement when signed.
+                let native: Vec<u8> = values
+                    .iter()
+                    .flat_map(|value| {
+                        let bytes = value.to_le_bytes();
+                        [bytes[0], bytes[1], bytes[2]]
+                    })
+                    .collect();
+                let stride = samples.len() * 2;
+                let mut out = vec![0; stride];
+                convert_or_copy_u16(
+                    &native,
+                    3,
+                    bit_depth,
+                    &[signed],
+                    &mut out,
+                    stride,
+                    (samples.len(), 1),
+                );
+                assert_eq!(out, expected, "{bit_depth} bits, signed {signed}");
+                for (sample, bytes) in samples.iter().zip(out.as_chunks::<2>().0) {
+                    assert_eq!(
+                        u16::from_le_bytes(*bytes),
+                        component_sample_as_u16(*sample, bit_depth, signed),
+                        "{sample} at {bit_depth} bits, signed {signed}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn samples_wider_than_three_bytes_clamp_to_sixteen_bits() {
+        assert_eq!(clamped_wide_sample(&(-5_i32).to_le_bytes(), true), 0xfffb);
+        assert_eq!(
+            clamped_wide_sample(&(-70_000_i32).to_le_bytes(), true),
+            0x8000
+        );
+        assert_eq!(clamped_wide_sample(&70_000_i32.to_le_bytes(), true), 0x7fff);
+        assert_eq!(clamped_wide_sample(&1234_u32.to_le_bytes(), false), 1234);
+        assert_eq!(
+            clamped_wide_sample(&(1_u64 << 36).to_le_bytes()[..5], false),
+            u16::MAX
+        );
+        assert_eq!(clamped_wide_sample(&i64::MIN.to_le_bytes(), true), 0x8000);
+        assert_eq!(
+            clamped_wide_sample(&u64::MAX.to_le_bytes(), false),
+            u16::MAX
+        );
+    }
+
+    #[test]
     fn eight_bit_samples_widen_across_the_complete_u16_domain() {
         assert_eq!(widen_u8_sample_to_u16(0, 8), 0);
         assert_eq!(widen_u8_sample_to_u16(u8::MAX, 8), u16::MAX);
@@ -752,5 +888,6 @@ mod tests {
         assert_eq!(opaque_alpha_u16(1, 8), u16::MAX);
         assert_eq!(opaque_alpha_u16(2, 12), 0x0fff);
         assert_eq!(opaque_alpha_u16(2, 16), u16::MAX);
+        assert_eq!(opaque_alpha_u16(3, 20), u16::MAX);
     }
 }
