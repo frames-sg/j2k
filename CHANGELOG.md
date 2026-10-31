@@ -41,6 +41,16 @@ Staged workspace version: `0.13.2`.
   term the charge grows to match; elsewhere it is unchanged and the IDWT
   holds less within it (a 1024 x 768 gray image on 4 threads: 3.9 MB in
   place of 4.5 MB, against a 4.1 MB charge). Output is unchanged.
+- On a pool of up to 10 threads, decodes take fresh component planes,
+  coefficient storage and IDWT buffers zeroed from the allocator instead of
+  zeroing them on the calling thread, so the page faults of a process's first
+  decode are spread over the threads that fill those buffers instead of
+  running one after another while the pool waits. In a fresh process,
+  4096-wide RGB images that decode to planes, HTJ2K and classic, and a
+  1/4-scale HTJ2K decode take 5 to 24% less time at 4 to 10 threads. Warm
+  decodes, output and peak heap are unchanged, and so are decodes on larger
+  pools, where the faults would contend in the kernel. New dependency:
+  `bytemuck`.
 - Decodes that would exceed a resource limit now fail with
   `J2kError::ResourceLimit { requested, cap, source }` instead of the generic
   `J2kError::NativeDecode`, on every decode route: `J2kDecoder`, the tile
