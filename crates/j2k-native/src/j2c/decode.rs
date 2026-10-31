@@ -608,10 +608,11 @@ fn choose_region_idwt(
 /// Whether a region decode on the row-streamed IDWT can hand its samples to
 /// a row sink instead of component planes: every tile decodes its Tier-1 in
 /// bands, serially (see [`tile_bands`]) or on the pool (see [`pool_bands`]),
-/// so all components can advance together; the
-/// image and tiles have no offsets; there are one to four components; and
-/// each tile with an inverse MCT has three components or more, the first
-/// three with one wavelet, as `apply_inverse_mct_per_tile` requires.
+/// so all components can advance together; the image and tiles have no
+/// offsets and there are one to four components (see
+/// [`image_streams_rows`]); and each tile with an inverse MCT has three
+/// components or more, the first three with one wavelet, as
+/// `apply_inverse_mct_per_tile` requires.
 /// `ensure_every_sample_streamed` checks afterwards that the rows covered
 /// the region.
 fn streams_rows(
@@ -620,13 +621,8 @@ fn streams_rows(
     tile_ctx: &TileDecodeContext,
     parallelism: CpuDecodeParallelism,
 ) -> bool {
-    let size = &header.size_data;
     let components = header.component_infos.len();
-    size.image_area_x_offset == 0
-        && size.image_area_y_offset == 0
-        && size.tile_x_offset == 0
-        && size.tile_y_offset == 0
-        && (1..=4).contains(&components)
+    image_streams_rows(header)
         && tiles.iter().all(|tile| {
             let infos = &tile.component_infos;
             infos.len() == components
@@ -645,6 +641,19 @@ fn streams_rows(
                             component.wavelet_transform() == infos[0].wavelet_transform()
                         })))
         })
+}
+
+/// The conditions of [`streams_rows`] that the main header settles: the
+/// image and its tiles have no offsets, and there are one to four
+/// components. The plans that choose a streamed route before decoding
+/// check them here too (see `Image::region_decode_streams_rows`).
+pub(crate) fn image_streams_rows(header: &Header<'_>) -> bool {
+    let size = &header.size_data;
+    size.image_area_x_offset == 0
+        && size.image_area_y_offset == 0
+        && size.tile_x_offset == 0
+        && size.tile_y_offset == 0
+        && (1..=4).contains(&header.component_infos.len())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

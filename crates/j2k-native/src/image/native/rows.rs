@@ -48,7 +48,12 @@ impl<'a> Image<'a> {
     /// [`Self::decode_region_rows_for_integer_output_with_context`]), which
     /// packs them into the returned planes as they are finished: the decode
     /// holds no region-sized `f32` planes. The planes hold the same bytes.
-    /// Only for an image with a [`Self::streamed_rows_native_precision`].
+    /// Only for an image with a [`Self::streamed_rows_native_precision`]
+    /// whose region decodes stream their rows (see
+    /// [`Self::region_decode_streams_rows`]): the planes are allocated
+    /// before the decode, so a region decode that fell back to component
+    /// planes would hold both, and meet the decode budget only after
+    /// allocating them.
     /// The region of the whole image gives
     /// [`Self::decode_native_components_with_context`]'s planes.
     ///
@@ -59,8 +64,8 @@ impl<'a> Image<'a> {
     /// # Errors
     ///
     /// Returns an error when the region is invalid, the image has no
-    /// streamed rows precision, a plane cannot be allocated, or decoding
-    /// fails.
+    /// streamed rows precision or does not stream its rows, a plane cannot
+    /// be allocated, or decoding fails.
     #[doc(hidden)]
     pub fn decode_native_region_components_rows_with_context(
         &self,
@@ -68,9 +73,9 @@ impl<'a> Image<'a> {
         decoder_context: &mut DecoderContext<'a>,
     ) -> Result<DecodedNativeComponents> {
         validate_roi((self.width(), self.height()), roi)?;
-        if self.streamed_rows_native_precision().is_none() {
+        if self.streamed_rows_native_precision().is_none() || !self.region_decode_streams_rows() {
             bail!(DecodingError::UnsupportedFeature(
-                "streamed native component planes need unsubsampled components of one precision up to 24 bits without palette, channel definition, sYCC or CIELab"
+                "streamed native component planes need one to four unsubsampled components of one precision up to 24 bits, no image or tile offsets, and no palette, channel definition, sYCC or CIELab"
             ));
         }
         let dimensions = (roi.2, roi.3);

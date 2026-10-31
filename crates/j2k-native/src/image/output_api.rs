@@ -523,6 +523,29 @@ impl<'a> Image<'a> {
         Ok(())
     }
 
+    /// Whether [`Self::decode_region_rows_for_integer_output_with_context`]
+    /// can stream this image's rows, as far as its main header and boxes
+    /// say: the image has no palette, channel definition, sYCC or `CIELab`
+    /// (see `permits_line_region_idwt`), its components are at full sampling
+    /// with at most 24 bits, and the image and its tiles have no offsets and
+    /// one to four components (see `j2c::image_streams_rows`, which the
+    /// decode checks before it streams). Any other region decode falls back
+    /// to component planes of the region and hands them over at the end.
+    /// A tile's own coding can still keep it there (see
+    /// [`Self::full_decode_planes_floor`], which plans the full image only
+    /// when this holds).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn region_decode_streams_rows(&self) -> bool {
+        self.permits_line_region_idwt()
+            && self.header.component_infos.iter().all(|component| {
+                component.size_info.precision <= 24
+                    && component.size_info.horizontal_resolution == 1
+                    && component.size_info.vertical_resolution == 1
+            })
+            && j2c::image_streams_rows(&self.header)
+    }
+
     /// The bytes a full-image decode into component planes charges the
     /// decode budget at least, planned from the codestream's tiles without
     /// decoding, when [`Self::decode_region_rows_for_integer_output_with_context`]
@@ -532,11 +555,11 @@ impl<'a> Image<'a> {
     /// refused, and an image it can finish never has a floor past the
     /// budget.
     ///
-    /// `None` when the region decode could not stream (a palette, channel
-    /// definition, sYCC or CIELab image, components of more than 24 bits,
-    /// subsampling, offsets, or a tile whose coarse resolutions are empty
-    /// while finer ones are not), or when the header alone puts the planes
-    /// and one tile's coefficients and IDWT buffers within half of `budget`.
+    /// `None` when the region decode could not stream (see
+    /// [`Self::region_decode_streams_rows`], or a tile whose coarse
+    /// resolutions are empty while finer ones are not), or when the header
+    /// alone puts the planes and one tile's coefficients and IDWT buffers
+    /// within half of `budget`.
     ///
     /// # Errors
     ///
@@ -544,13 +567,7 @@ impl<'a> Image<'a> {
     /// meets as well.
     #[doc(hidden)]
     pub fn full_decode_planes_floor(&self, budget: usize) -> Result<Option<usize>> {
-        if !self.permits_line_region_idwt()
-            || self
-                .header
-                .component_infos
-                .iter()
-                .any(|component| component.size_info.precision > 24)
-        {
+        if !self.region_decode_streams_rows() {
             return Ok(None);
         }
         j2c::full_decode_planes_floor(

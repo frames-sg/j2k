@@ -31,14 +31,15 @@ use crate::reader::BitReader;
 
 /// The bytes a full-image decode of `data` into component planes charges at
 /// least, when its full-image region decode could stream its rows instead:
-/// the image and its tiles have no offsets, one to four components at full
-/// sampling, an inverse MCT only over three or more components whose first
-/// three share a wavelet (as `streams_rows` requires), and no tile-component
-/// whose coarse resolutions are empty while finer ones are not, which the
-/// region IDWTs do not reconstruct. `None` when it could not, or when the
-/// header alone puts the planes, one tile's coefficients and its IDWT
-/// buffers within half of `budget`, which leaves the planes decode far from
-/// it unless its metadata is unusually large.
+/// the image streams as far as its main header says (the caller checks
+/// `Image::region_decode_streams_rows`), and every tile has its components
+/// at full sampling, an inverse MCT only over three or more components whose
+/// first three share a wavelet (as `streams_rows` requires), and no
+/// tile-component whose coarse resolutions are empty while finer ones are
+/// not, which the region IDWTs do not reconstruct. `None` when it could not,
+/// or when the header alone puts the planes, one tile's coefficients and its
+/// IDWT buffers within half of `budget`, which leaves the planes decode far
+/// from it unless its metadata is unusually large.
 ///
 /// `retained_image_bytes` is what the image holds while it decodes, the
 /// tile parse's baseline. Errors are the tile parse's, which the planes
@@ -50,7 +51,7 @@ pub(crate) fn full_decode_planes_floor(
     budget: usize,
 ) -> Result<Option<usize>> {
     let planes = planes_bytes(header)?;
-    if header_estimate(header, planes).saturating_mul(2) <= budget || !image_streams_rows(header) {
+    if header_estimate(header, planes).saturating_mul(2) <= budget {
         return Ok(None);
     }
     let mut reader = BitReader::new(data);
@@ -118,17 +119,6 @@ fn header_estimate(header: &Header<'_>, planes: usize) -> usize {
             .saturating_add(output_samples.saturating_mul(2))
             .saturating_mul(size_of::<f32>()),
     )
-}
-
-/// The image-level conditions of `streams_rows`: no offsets and one to four
-/// components.
-fn image_streams_rows(header: &Header<'_>) -> bool {
-    let size = &header.size_data;
-    size.image_area_x_offset == 0
-        && size.image_area_y_offset == 0
-        && size.tile_x_offset == 0
-        && size.tile_y_offset == 0
-        && (1..=4).contains(&header.component_infos.len())
 }
 
 /// The tile-level conditions of `streams_rows` and the region IDWTs that

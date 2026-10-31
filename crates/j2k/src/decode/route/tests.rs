@@ -2,11 +2,11 @@
 
 use super::{full_image_route, FullImageRoute, PlanesBudget, RouteRequest};
 use crate::backend::image_at_scale;
-use crate::decode::{native_components_route, NativeRoute};
+use crate::decode::{native_components_route, native_region_components_route, NativeRoute};
 use crate::DecodeSettings;
 use j2k_core::{Downscale, PixelFormat, Rect};
-use j2k_native::DecoderContext;
 use j2k_native::{encode, CpuDecodeParallelism, EncodeOptions};
+use j2k_native::{DecodeError, DecoderContext, DecodingError};
 
 fn codestream(components: u16, options: &EncodeOptions) -> Vec<u8> {
     let (width, height) = (96_u32, 80_u32);
@@ -551,5 +551,87 @@ fn deep_and_signed_images_stream_past_the_budget() {
             FullImageRoute::Planes
         );
         assert_eq!(native_components_route(&image, budget), NativeRoute::Planes);
+    }
+}
+
+/// `bytes` with the SIZ fields at `fields` (byte offsets from the marker)
+/// rewritten by `rewrite`.
+fn rewrite_siz(bytes: &[u8], fields: &[usize], rewrite: impl Fn(u32) -> u32) -> Vec<u8> {
+    let mut bytes = bytes.to_vec();
+    let siz = bytes
+        .windows(2)
+        .position(|marker| marker == [0xff, 0x51])
+        .expect("SIZ marker");
+    for &field in fields {
+        let field = &mut bytes[siz + field..siz + field + 4];
+        let value = u32::from_be_bytes(field.try_into().expect("four-byte SIZ field"));
+        field.copy_from_slice(&rewrite(value).to_be_bytes());
+    }
+    bytes
+}
+
+/// A region decode into native component planes packs its rows into planes
+/// it allocates before decoding only when the region decode streams them,
+/// by the check the full-image floor makes: an image of more than four
+/// components, or with image and tile offsets, keeps the planes route
+/// however large it is, whose decode meets the budget before it allocates
+/// image-sized buffers, and the rows decode refuses it.
+#[test]
+fn native_region_rows_only_for_images_whose_region_decodes_stream() {
+    let options = EncodeOptions {
+        num_decomposition_levels: 2,
+        ..EncodeOptions::default()
+    };
+    let rgb = codestream(3, &options);
+    // The whole image and its tile one tile further on.
+    let translated = rewrite_siz(&rgb, &[6, 10, 14, 18, 30, 34], |value| value + 128);
+    // One 8192 x 8192 tile, whose native planes alone pass the budget: an
+    // image of these components prefers its streamed rows. Headers only;
+    // nothing here decodes its packets.
+    let claimed = |components| {
+        let bytes = codestream(components, &options);
+        rewrite_siz(&bytes, &[6, 10, 22, 26], |_| 8192)
+    };
+    for (label, bytes, streams) in [
+        ("rgb", rgb.clone(), true),
+        ("rgb with offsets", translated, false),
+        ("four components", claimed(4), true),
+        ("five components", claimed(5), false),
+    ] {
+        let image =
+            image_at_scale(&bytes, DecodeSettings::default(), Downscale::None).expect("image");
+        let (width, height) = (image.width(), image.height());
+        assert_eq!(image.streamed_rows_native_precision(), Some(8), "{label}");
+        assert_eq!(image.region_decode_streams_rows(), streams, "{label}");
+        assert_eq!(
+            image.full_decode_planes_floor(0).expect("plan").is_some(),
+            streams,
+            "{label}"
+        );
+        let expected = if streams {
+            NativeRoute::Rows
+        } else {
+            NativeRoute::Planes
+        };
+        assert_eq!(
+            native_region_components_route(&image, Rect::full((width, height))),
+            expected,
+            "{label}"
+        );
+        if !streams {
+            let Err(error) = image.decode_native_region_components_rows_with_context(
+                (0, 0, width, height),
+                &mut DecoderContext::default(),
+            ) else {
+                panic!("{label}: the rows decode allocated its planes and decoded");
+            };
+            assert!(
+                matches!(
+                    error,
+                    DecodeError::Decoding(DecodingError::UnsupportedFeature(_))
+                ),
+                "{label}: {error:?}"
+            );
+        }
     }
 }

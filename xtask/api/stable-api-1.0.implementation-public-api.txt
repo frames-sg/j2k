@@ -2515,6 +2515,7 @@ pub fn j2k_native::Image<'a>::new_with_retained_baseline(&'a [u8], &j2k_native::
 pub fn j2k_native::Image<'a>::output_tile_rects(&self) -> j2k_native::Result<alloc::vec::Vec<(u32, u32, u32, u32)>>
 pub fn j2k_native::Image<'a>::prepare_region_decoder_with_context<'image, 'context>(&'image self, &'context mut j2k_native::DecoderContext<'a>) -> j2k_native::Result<j2k_native::PreparedRegionDecoder<'image, 'context, 'a>>
 pub fn j2k_native::Image<'a>::primary_icc_profile(&self) -> core::option::Option<&[u8]>
+pub fn j2k_native::Image<'a>::region_decode_streams_rows(&self) -> bool
 pub fn j2k_native::Image<'a>::retained_allocation_bytes(&self) -> j2k_native::Result<usize>
 pub fn j2k_native::Image<'a>::streamed_rows_native_precision(&self) -> core::option::Option<u8>
 pub fn j2k_native::Image<'a>::supports_direct_device_plane_reuse(&self) -> bool

@@ -81,11 +81,17 @@ pub(in crate::decode) fn region_rows_preferred(
 /// How a region decode of `roi` of `image` into owned native component
 /// planes runs: as one that packs its rows into the planes as they are
 /// finished, so that it holds no region-sized `f32` planes, when its rows
-/// carry the native samples and [`region_rows_preferred`].
+/// carry the native samples, the region decode streams them (see
+/// `Image::region_decode_streams_rows`, which the full-image floor checks
+/// too) and [`region_rows_preferred`]. The rows route allocates the planes
+/// before it decodes, so an image whose region decode would fall back to
+/// component planes keeps the planes route, which meets the decode budget
+/// before allocating them.
 pub(crate) fn native_region_components_route(image: &Image<'_>, roi: Rect) -> NativeRoute {
     match image.streamed_rows_native_precision() {
         Some(precision)
-            if region_rows_preferred(image, roi, usize::from(precision).div_ceil(8)) =>
+            if image.region_decode_streams_rows()
+                && region_rows_preferred(image, roi, usize::from(precision).div_ceil(8)) =>
         {
             NativeRoute::Rows
         }
