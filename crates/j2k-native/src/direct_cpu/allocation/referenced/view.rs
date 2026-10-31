@@ -221,7 +221,10 @@ fn referenced_parallel_classic_dispatch_bytes(
     parallel: bool,
 ) -> Result<usize> {
     let worker_count = rayon::current_num_threads();
-    if !parallel || worker_count <= 1 || !matches!(plan, ReferencedPlanView::Classic(_)) {
+    let ReferencedPlanView::Classic(classic) = plan else {
+        return Ok(0);
+    };
+    if !parallel || worker_count <= 1 || classic_plan_has_fragmented_payloads(classic) {
         return Ok(0);
     }
     let mut maximum_jobs = 0usize;
@@ -328,6 +331,15 @@ pub(in super::super::super) fn max_referenced_classic_dimensions(
     plan: &J2kReferencedClassicPlan,
 ) -> Option<(u32, u32)> {
     max_referenced_dimensions(ReferencedPlanView::Classic(plan), false)
+}
+
+/// Whether some classic payload is split over several input fragments (a
+/// multi-layer codestream). Parallel classic dispatch borrows each payload
+/// as one input slice, so such plans decode their blocks serially.
+pub(super) fn classic_plan_has_fragmented_payloads(plan: &J2kReferencedClassicPlan) -> bool {
+    plan.payloads()
+        .iter()
+        .any(|payload| payload.range_count > 1)
 }
 
 /// Most runs of code-block rows (consecutive jobs sharing `output_y`) in any

@@ -175,7 +175,8 @@ type CpuDecodeFn<T> = for<'image> fn(
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "the retained-worker boundary keeps output ownership, decode policy, and indexed error collection explicit"
+    clippy::too_many_lines,
+    reason = "the retained-worker boundary keeps output ownership, decode policy, and indexed error collection explicit, with the job slots, the worker loop, and the result collection in one place"
 )]
 fn run_typed_group<T: Copy + Send>(
     workers: &mut [BatchWorker],

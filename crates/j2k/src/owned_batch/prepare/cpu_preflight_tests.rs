@@ -112,11 +112,11 @@ fn cpu_prepare_rejects_plans_over_the_decode_bound_before_decoding() {
         BatchErrorStage::Prepare
     ));
     assert_eq!(planned_bytes(&rejected).len(), 1);
-    let decoded = decoder
+    let output = decoder
         .decode_prepared(&rejected)
         .expect("decode the admitted image");
     assert_eq!(
-        u8_samples(decoded.groups(), 0),
+        u8_samples(output.groups(), 0),
         u8_samples(reference.groups(), 0)
     );
 
@@ -128,17 +128,17 @@ fn cpu_prepare_rejects_plans_over_the_decode_bound_before_decoding() {
         planned_bytes(&shared)[1],
         (1, CpuExecution::ExceedsDecodeBound)
     );
-    let decoded = decoder
+    let output = decoder
         .decode_prepared(&shared)
         .expect("decode the shared batch");
-    assert_eq!(decoded.errors().len(), 1);
+    assert_eq!(output.errors().len(), 1);
     assert!(is_decode_bound_error(
-        &decoded.errors()[0],
+        &output.errors()[0],
         1,
         BatchErrorStage::Decode
     ));
     assert_eq!(
-        u8_samples(decoded.groups(), 0),
+        u8_samples(output.groups(), 0),
         u8_samples(reference.groups(), 0)
     );
 }
