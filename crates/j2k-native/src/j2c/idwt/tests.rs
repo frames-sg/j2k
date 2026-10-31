@@ -842,6 +842,70 @@ fn streamed_rows_match_the_whole_window_levels_bit_for_bit() {
     }
 }
 
+/// Band rows wider than 4096 samples that hold no code-block, as in the
+/// chroma of an 18000-wide image, read as zero rows through the banded SIMD
+/// kernel like narrower ones; every row still matches the whole-window region
+/// IDWT bit for bit, with either high band empty.
+#[test]
+fn wide_empty_band_rows_match_the_whole_window_level_bit_for_bit() {
+    use super::lines::{reconstruct_rows, ring_samples};
+
+    for transform in [
+        WaveletTransform::Reversible53,
+        WaveletTransform::Irreversible97,
+    ] {
+        let integral = transform == WaveletTransform::Reversible53;
+        for (x0, empty) in [(0, 3), (1, 2), (1, 3)] {
+            let window = IntRect::from_xywh(x0, 2, 16_400, 6);
+            let mut seed = 31_u64;
+            let bands: Vec<(Vec<f32>, IntRect)> = super::banded::packed_band_rects(window)
+                .into_iter()
+                .enumerate()
+                .map(|(index, rect)| {
+                    let stored = if index == empty {
+                        IntRect::from_xywh(0, 0, 0, 0)
+                    } else {
+                        rect
+                    };
+                    seed += 1;
+                    let len = (stored.width() * stored.height()) as usize;
+                    (pseudo_random_coefficients(len, seed, integral), stored)
+                })
+                .collect();
+            let sources: [CoefficientSource<'_>; 4] = core::array::from_fn(|index| {
+                let (samples, rect) = &bands[index];
+                CoefficientSource::new(samples, *rect, rect.width())
+            });
+            let expected = whole_window_level(sources, window, transform);
+            let mut rows = StoredBands { bands };
+            let mut ring = vec![f32::NAN; ring_samples([window], transform).expect("ring")];
+            let mut streamed = vec![f32::NAN; expected.len()];
+            let mut output_samples = 0;
+            reconstruct_rows(
+                &mut rows,
+                &[[1, 2, 3]],
+                &[window],
+                0,
+                transform,
+                &mut ring,
+                window,
+                &mut |y, samples| {
+                    let start = ((y - window.y0) * window.width()) as usize;
+                    streamed[start..][..samples.len()].copy_from_slice(samples);
+                    Ok(())
+                },
+                &mut output_samples,
+            )
+            .expect("streamed level");
+            assert_eq!(
+                bits(&streamed),
+                bits(&expected),
+                "{transform:?} origin x {x0}, empty band {empty}"
+            );
+        }
+    }
+}
+
 /// A tile streaming from pool bands with deep band rings holds one batch of
 /// rows instead of two, so its batch takes half the rows unless that leaves
 /// fewer than 128; tiles too short for full batches still split their rows

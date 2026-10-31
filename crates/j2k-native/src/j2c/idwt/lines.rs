@@ -460,8 +460,11 @@ fn feed_row(levels: &mut [LevelRows<'_>], level: usize, inputs: &mut Inputs<'_>)
 }
 
 /// Zero samples for band rows that lie wholly outside their stored
-/// rectangles, as sub-bands without code-blocks in a row do.
-static ZERO_ROW: [f32; 4096] = [0.0; 4096];
+/// rectangles, as sub-bands without code-blocks in a row do: as wide as the
+/// band rows of a 32768-wide level. A wider zero row takes the scalar path,
+/// which made the empty 9000-wide band rows of an 18000-wide image's chroma
+/// 1.6 times slower to reconstruct than its luma.
+static ZERO_ROW: [f32; 16384] = [0.0; 16384];
 
 /// The `len` samples of row `band_y` of `source` from band column `band_x0`,
 /// which read zero outside its rectangle as [`CoefficientSource::get`] does:
