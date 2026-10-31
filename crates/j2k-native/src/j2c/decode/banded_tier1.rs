@@ -163,6 +163,7 @@ fn stream_rows<'a>(
     let components = tile.component_infos.len();
     let mut bands = Vec::new();
     let line_plans = plan_tile_lines(tile, header, tile_ctx, storage, &mut bands)?;
+    let band_of = band_lookup(&bands)?;
     let empty = IntRect::from_xywh(0, 0, 0, 0);
     let (copy, region) = line_plans
         .first()
@@ -201,6 +202,7 @@ fn stream_rows<'a>(
             tile_ctx: &mut *tile_ctx,
             storage: &mut *storage,
             bands,
+            band_of,
             precinct_rows,
             profile_enabled,
             tier1_us: 0,
@@ -1002,6 +1004,7 @@ fn decode_bands<'a>(
 ) -> Result<()> {
     let mut bands = Vec::new();
     let active_levels = push_component_bands(storage, header, component_idx, &mut bands)?;
+    let band_of = band_lookup(&bands)?;
     let (precinct_rows, index_bytes) = index_bands(storage, tile_ctx, &bands)?;
 
     tile_ctx.idwt_output.placement = crate::j2c::idwt::IdwtPlacement::Coefficients;
@@ -1028,6 +1031,7 @@ fn decode_bands<'a>(
         tile_ctx: &mut *tile_ctx,
         storage: &mut *storage,
         bands,
+        band_of,
         precinct_rows,
         profile_enabled,
         tier1_us: 0,
@@ -1157,6 +1161,30 @@ struct SubBandBands {
     last_band: Option<u32>,
 }
 
+/// The [`band_lookup`] entry of a sub-band id without bands.
+const NO_BAND: usize = usize::MAX;
+
+/// For every sub-band id up to the largest in `bands`, the index of its
+/// first entry there, or [`NO_BAND`]: the IDWT looks its sub-bands up
+/// several times a row.
+fn band_lookup(bands: &[SubBandBands]) -> Result<Vec<usize>> {
+    let len = bands
+        .iter()
+        .map(|bands| bands.sub_band + 1)
+        .max()
+        .unwrap_or(0);
+    let mut band_of = Vec::new();
+    band_of
+        .try_reserve_exact(len)
+        .map_err(|_| DecodingError::HostAllocationFailed)?;
+    band_of.resize(len, NO_BAND);
+    // From the last, so that the first entry of a sub-band wins.
+    for (index, bands) in bands.iter().enumerate().rev() {
+        band_of[bands.sub_band] = index;
+    }
+    Ok(band_of)
+}
+
 struct PrecinctRow {
     first_y: u32,
     last_y: u32,
@@ -1211,6 +1239,8 @@ struct BandedRows<'r, 'a> {
     tile_ctx: &'r mut TileDecodeContext,
     storage: &'r mut DecompositionStorage<'a>,
     bands: Vec<SubBandBands>,
+    /// [`band_lookup`] of `bands`.
+    band_of: Vec<usize>,
     precinct_rows: Option<Vec<Vec<PrecinctRow>>>,
     profile_enabled: bool,
     tier1_us: u128,
@@ -1218,9 +1248,10 @@ struct BandedRows<'r, 'a> {
 
 impl BandedRows<'_, '_> {
     fn position(&self, sub_band: usize) -> Result<usize> {
-        self.bands
-            .iter()
-            .position(|bands| bands.sub_band == sub_band)
+        self.band_of
+            .get(sub_band)
+            .copied()
+            .filter(|&index| index != NO_BAND)
             .ok_or(DecodingError::CodeBlockDecodeFailure.into())
     }
 
