@@ -274,13 +274,18 @@ fn the_default_streams_where_streaming_measured_faster() {
                 FullImageRoute::Planes
             );
         }
-        // 96 x 80 samples are far below a megapixel, tiled or not.
+        // 96 x 80 samples are far below a megapixel, tiled or not, and below
+        // the smallest gray image that streams.
         for bytes in [classic.as_slice(), ht.as_slice(), tiled.as_slice()] {
             assert_eq!(
                 default(bytes, Downscale::None, PixelFormat::Rgb8, 3, parallelism),
                 FullImageRoute::Planes
             );
         }
+        assert_eq!(
+            default(&gray, Downscale::None, PixelFormat::Gray8, 1, parallelism),
+            FullImageRoute::Planes
+        );
         assert_eq!(
             default(
                 &classic,
@@ -384,8 +389,8 @@ fn tiles_at_once_report_the_first_failing_tile() {
 }
 
 /// Full-resolution classic images stream from 4 coded bits per pixel on 2
-/// to 11 pool threads from 512 x 512 samples, and on larger pools too below
-/// 2^19 samples.
+/// to 11 pool threads from 512 x 512 samples, on larger pools too below 2^19
+/// samples, and on one thread from a megapixel.
 #[test]
 fn full_resolution_images_stream_when_tier1_bound() {
     use super::full_resolution_streams;
@@ -393,12 +398,15 @@ fn full_resolution_images_stream_when_tier1_bound() {
     // 11 MB lossless and 2.2 MB at 2 bits per pixel.
     assert!(full_resolution_streams(mosaic, 11_104_128, 6));
     assert!(!full_resolution_streams(mosaic, 2_246_803, 6));
-    for threads in [1, 12, 18] {
+    for threads in [12, 18] {
         assert!(
             !full_resolution_streams(mosaic, 11_104_128, threads),
             "{threads}"
         );
     }
+    // One thread: from a megapixel.
+    assert!(full_resolution_streams(mosaic, 11_104_128, 1));
+    assert!(!full_resolution_streams(mosaic, 2_246_803, 1));
     assert!(full_resolution_streams(mosaic, 11_104_128, 2));
     assert!(full_resolution_streams(mosaic, 11_104_128, 11));
     // 768 x 512 at 9.6 and 512 x 512 at 6.6 bits per pixel stream on any
@@ -443,4 +451,19 @@ fn reduced_decodes_stream_when_large_or_on_a_mid_sized_pool() {
     // 256 x 256 streams on 6 threads, 192 x 128 keeps the planes.
     assert!(reduced_streams(256 * 256, false, 6));
     assert!(!reduced_streams(192 * 128, false, 6));
+}
+
+/// Gray images stream from 2896 x 2896 below 12 pool threads, and on larger
+/// pools from 5792 x 5792.
+#[test]
+fn large_gray_images_stream() {
+    use super::gray_streams;
+    for threads in [1, 6, 11] {
+        assert!(gray_streams(2896 * 2896, threads), "{threads}");
+        assert!(!gray_streams(2048 * 2048, threads), "{threads}");
+    }
+    for threads in [12, 18] {
+        assert!(gray_streams(5792 * 5792, threads), "{threads}");
+        assert!(!gray_streams(4096 * 4096, threads), "{threads}");
+    }
 }
