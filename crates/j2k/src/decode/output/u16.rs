@@ -303,9 +303,7 @@ impl U16Conversion {
             return Self {
                 kind,
                 bounds,
-                widened: core::array::from_fn(|byte| {
-                    widen_u8_sample_to_u16(u8::try_from(byte).unwrap_or(u8::MAX), bit_depth)
-                }),
+                widened: widened_u8_samples(bit_depth),
             };
         }
         let (kind, bounds) = if signed {
@@ -553,6 +551,7 @@ fn write_u16_channel_rows(job: U16ChannelRows<'_, '_>) {
     let src_row_bytes = width * source_channels * bytes_per_sample;
     let dst_row_bytes = width * dst_channels * 2;
     let alpha = opaque_alpha_u16(bytes_per_sample, bit_depth);
+    let widened = widened_u8_samples(bit_depth);
 
     let dst_rows = output_rows(out, stride, dst_row_bytes, height);
     for (src_row, dst_row) in src.chunks_exact(src_row_bytes).zip(dst_rows) {
@@ -560,7 +559,7 @@ fn write_u16_channel_rows(job: U16ChannelRows<'_, '_>) {
             let src_pixel = &src_row[x * source_channels * bytes_per_sample..];
             let dst_pixel = &mut dst_row[x * dst_channels * 2..(x + 1) * dst_channels * 2];
             for channel in 0..3 {
-                let sample = output_u16_sample(src_pixel, channel, bytes_per_sample, bit_depth);
+                let sample = output_u16_sample(src_pixel, channel, bytes_per_sample, &widened);
                 dst_pixel[channel * 2..channel * 2 + 2].copy_from_slice(&sample.to_le_bytes());
             }
             match layout {
@@ -569,7 +568,7 @@ fn write_u16_channel_rows(job: U16ChannelRows<'_, '_>) {
                     dst_pixel[6..8].copy_from_slice(&alpha.to_le_bytes());
                 }
                 U16ChannelLayout::Preserve => {
-                    let sample = output_u16_sample(src_pixel, 3, bytes_per_sample, bit_depth);
+                    let sample = output_u16_sample(src_pixel, 3, bytes_per_sample, &widened);
                     dst_pixel[6..8].copy_from_slice(&sample.to_le_bytes());
                 }
             }
@@ -585,23 +584,32 @@ fn opaque_alpha_u16(bytes_per_sample: usize, bit_depth: u8) -> u16 {
     }
 }
 
+/// `widened` is [`widened_u8_samples`] of the samples' bit depth.
 fn output_u16_sample(
     src_pixel: &[u8],
     channel: usize,
     bytes_per_sample: usize,
-    bit_depth: u8,
+    widened: &[u16; 256],
 ) -> u16 {
     let offset = channel * bytes_per_sample;
     if bytes_per_sample == 2 {
         return u16::from_le_bytes([src_pixel[offset], src_pixel[offset + 1]]);
     }
-    widen_u8_sample_to_u16(src_pixel[offset], bit_depth)
+    widened[usize::from(src_pixel[offset])]
 }
 
 fn widen_u8_sample_to_u16(sample: u8, bit_depth: u8) -> u16 {
     let max_value = ((1_u32 << bit_depth.min(16)) - 1).max(1);
     u16::try_from((u32::from(sample) * u32::from(u16::MAX) + (max_value / 2)) / max_value)
         .unwrap_or(u16::MAX)
+}
+
+/// [`widen_u8_sample_to_u16`] of every byte at `bit_depth`, so that a
+/// conversion looks each sample up instead of dividing.
+fn widened_u8_samples(bit_depth: u8) -> [u16; 256] {
+    core::array::from_fn(|byte| {
+        widen_u8_sample_to_u16(u8::try_from(byte).unwrap_or(u8::MAX), bit_depth)
+    })
 }
 
 fn convert_or_copy_u16(
@@ -616,6 +624,7 @@ fn convert_or_copy_u16(
     let (width, height) = dims;
     let dst_row_bytes = width * channels * 2;
     let src_row_bytes = width * channels * usize::from(bytes_per_sample);
+    let widened = widened_u8_samples(bit_depth);
     let dst_rows = output_rows(out, stride, dst_row_bytes, height);
     for (src_row, dst_row) in src.chunks_exact(src_row_bytes).zip(dst_rows) {
         if bytes_per_sample == 2 {
@@ -623,7 +632,7 @@ fn convert_or_copy_u16(
             continue;
         }
         for (sample, dst_sample) in src_row.iter().zip(dst_row.as_chunks_mut::<2>().0) {
-            *dst_sample = widen_u8_sample_to_u16(*sample, bit_depth).to_le_bytes();
+            *dst_sample = widened[usize::from(*sample)].to_le_bytes();
         }
     }
 }
