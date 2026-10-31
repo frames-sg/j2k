@@ -37,6 +37,58 @@ pub(in super::super) fn prepare_referenced_direct_scratch(
     )
 }
 
+/// Planned peak bytes of one referenced HTJ2K execution into empty scratch,
+/// from the accounting execution enforces, without allocating.
+pub(in super::super) fn planned_referenced_htj2k_execution_bytes(
+    plan: &J2kReferencedHtj2kPlan,
+    parallel: bool,
+) -> Result<usize> {
+    let view = ReferencedPlanView::Htj2k(plan);
+    let mut scratch = J2kDirectCpuScratch::new();
+    scratch.parallel = parallel;
+    validate_referenced_aggregate_plan(
+        view,
+        parallel,
+        plan.retained_allocation_bytes()?,
+        max_referenced_payload_bytes(plan)?,
+        max_referenced_dimensions(view, false),
+        max_referenced_dimensions(view, true),
+        None,
+        &scratch,
+    )
+    .map(DirectWorkspaceBudget::peak_bytes)
+}
+
+/// Planned peak bytes of one referenced classic execution into empty
+/// scratch, from the accounting execution enforces, without allocating.
+pub(in super::super) fn planned_referenced_classic_execution_bytes(
+    plan: &J2kReferencedClassicPlan,
+    parallel: bool,
+) -> Result<usize> {
+    let mut scratch = J2kDirectCpuScratch::new();
+    scratch.parallel = parallel;
+    let classic_dimensions = max_referenced_classic_dimensions(plan);
+    validate_referenced_aggregate_plan(
+        ReferencedPlanView::Classic(plan),
+        parallel,
+        plan.retained_allocation_bytes()?,
+        max_referenced_classic_payload_bytes(plan),
+        classic_dimensions,
+        None,
+        classic_task_shape(plan),
+        &scratch,
+    )
+    .map(DirectWorkspaceBudget::peak_bytes)
+}
+
+/// Shape of the extra classic workspaces parallel execution of `plan` uses.
+fn classic_task_shape(plan: &J2kReferencedClassicPlan) -> Option<ClassicTaskShape> {
+    Some(ClassicTaskShape {
+        dimensions: max_referenced_classic_dimensions(plan)?,
+        rows: max_referenced_classic_rows(plan),
+    })
+}
+
 pub(in super::super) fn prepare_referenced_classic_scratch(
     plan: &J2kReferencedClassicPlan,
     scratch: &mut J2kDirectCpuScratch,
@@ -44,10 +96,7 @@ pub(in super::super) fn prepare_referenced_classic_scratch(
     let view = ReferencedPlanView::Classic(plan);
     let parallel = scratch.parallel;
     let classic_dimensions = max_referenced_classic_dimensions(plan);
-    let classic_tasks = classic_dimensions.map(|dimensions| ClassicTaskShape {
-        dimensions,
-        rows: max_referenced_classic_rows(plan),
-    });
+    let classic_tasks = classic_task_shape(plan);
     prepare_referenced_component_scratch(
         view,
         parallel,

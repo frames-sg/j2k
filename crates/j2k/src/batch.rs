@@ -10,7 +10,7 @@ use j2k_core::{BatchResultSlot, DecodeOutcome, PixelFormat, Rect, TileBatchDecod
 
 use crate::{J2kCodec, J2kContext, J2kDecodeWarning, J2kError, J2kScratchPool};
 
-mod admission;
+pub(crate) mod admission;
 pub(crate) mod allocation;
 mod direct;
 mod host_memory;

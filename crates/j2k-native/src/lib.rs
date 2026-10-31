@@ -187,9 +187,10 @@ pub use direct_cpu::{
     finish_referenced_htj2k_staged, finish_referenced_htj2k_tile_staged,
     prepare_referenced_classic_entropy_workspace, prepare_referenced_classic_staged,
     prepare_referenced_classic_tile_staged, prepare_referenced_htj2k_entropy_workspace,
-    prepare_referenced_htj2k_staged, prepare_referenced_htj2k_tile_staged, J2kDirectCodeBlockIndex,
-    J2kDirectCpuEntropyWorkspace, J2kDirectCpuScratch, J2kDirectDecodedComponents,
-    J2kDirectDecodedPlane,
+    prepare_referenced_htj2k_staged, prepare_referenced_htj2k_tile_staged,
+    referenced_classic_plan_execution_bytes, referenced_htj2k_plan_execution_bytes,
+    J2kDirectCodeBlockIndex, J2kDirectCpuEntropyWorkspace, J2kDirectCpuScratch,
+    J2kDirectDecodedComponents, J2kDirectDecodedPlane,
 };
 #[doc(hidden)]
 pub use direct_plan::{

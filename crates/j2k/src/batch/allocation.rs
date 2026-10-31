@@ -25,7 +25,7 @@ const HOST_MEMORY_SHARE_DIVISOR: u64 = 2;
 pub(crate) const J2K_BATCH_METADATA_ALLOWANCE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Authoritative worst-case claim for one generic native decoder worker.
-pub(super) const GENERIC_WORKER_CLAIM_BYTES: usize = j2k_native::DEFAULT_MAX_DECODE_BYTES;
+pub(crate) const GENERIC_WORKER_CLAIM_BYTES: usize = j2k_native::DEFAULT_MAX_DECODE_BYTES;
 
 /// Largest claim count whose execution cap plus metadata still fits `usize`.
 const MAX_SCALED_GENERIC_BATCH_WORKERS: usize =

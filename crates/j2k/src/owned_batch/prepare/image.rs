@@ -6,9 +6,9 @@ use super::super::{
     extract_j2k_codestream_payload, parse_image_info, Arc, BatchAlpha, BatchCodecRoute, BatchColor,
     BatchDecodeOptions, BatchErrorStage, BatchExecutionShape, BatchGroupInfo, BatchItemError,
     BatchLayout, BatchWaveletTransform, BatchWorker, Colorspace, CompressedTransferSyntax,
-    DeviceDecodePlan, EncodedImage, J2kCodestreamRange, J2kError, J2kSupportInfo, NativeSampleType,
-    NonRepresentableReason, PreparationDepth, PrepareImageResult, PreparedClassicPlan,
-    PreparedCodecPlan, PreparedHtj2kPlan, PreparedImage, PreparedImageInner,
+    CpuExecution, DeviceDecodePlan, EncodedImage, J2kCodestreamRange, J2kError, J2kSupportInfo,
+    NativeSampleType, NonRepresentableReason, PreparationDepth, PrepareImageResult,
+    PreparedClassicPlan, PreparedCodecPlan, PreparedHtj2kPlan, PreparedImage, PreparedImageInner,
 };
 
 pub(super) fn prepare_image(
@@ -54,6 +54,7 @@ pub(super) fn prepare_image(
             .map_or(PreparedCodecPlan::MetadataOnly, PreparedCodecPlan::Htj2k),
     };
     reconcile_codec_plan_metadata(&mut info, &codec_plan)?;
+    let cpu_execution = choose_cpu_execution(&codec_plan);
     let preparation_depth = codec_plan.preparation_depth();
     let execution_shape = batch_execution_shape(&support, plan, preparation_depth);
     let image = PreparedImage {
@@ -67,9 +68,60 @@ pub(super) fn prepare_image(
             plan,
             codestream_range,
             codec_plan,
+            cpu_execution,
         }),
     };
     Ok((image, info, execution_shape))
+}
+
+/// Choose the CPU execution from the planned working memory, before any
+/// decode work, with the same accounting the offset plan's execution
+/// enforces. Only an image whose serial execution already exceeds the
+/// per-decode bound is [`CpuExecution::ExceedsDecodeBound`], so the choice
+/// rejects nothing execution could decode; the claim is the parallel peak.
+pub(super) fn choose_cpu_execution(codec_plan: &PreparedCodecPlan) -> CpuExecution {
+    let planned = |parallel| match codec_plan {
+        PreparedCodecPlan::Classic(plan) => {
+            j2k_native::referenced_classic_plan_execution_bytes(plan.cpu_plan(), parallel)
+        }
+        PreparedCodecPlan::Htj2k(plan) => {
+            j2k_native::referenced_htj2k_plan_execution_bytes(plan.cpu_plan(), parallel)
+        }
+        PreparedCodecPlan::MetadataOnly => Ok(0),
+    };
+    if matches!(codec_plan, PreparedCodecPlan::MetadataOnly) {
+        return CpuExecution::ComponentPlanes;
+    }
+    match (planned(false), planned(true)) {
+        (
+            Err(j2k_native::DecodeError::Validation(j2k_native::ValidationError::ImageTooLarge)),
+            _,
+        ) => CpuExecution::ExceedsDecodeBound,
+        (Ok(serial), _) if serial > planned_decode_bound() => CpuExecution::ExceedsDecodeBound,
+        (Ok(_), Ok(bytes)) => CpuExecution::OffsetPlan { bytes },
+        // A plan that fits only serially, or a malformed plan, keeps the
+        // worst-case claim and reports any error from execution, as before.
+        _ => CpuExecution::OffsetPlan {
+            bytes: crate::batch::allocation::GENERIC_WORKER_CLAIM_BYTES,
+        },
+    }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    /// Test-only lower bound for [`choose_cpu_execution`] on this thread.
+    pub(super) static PLANNED_DECODE_BOUND: core::cell::Cell<Option<usize>> =
+        const { core::cell::Cell::new(None) };
+}
+
+/// The per-decode bound planned executions are held to. Native planning
+/// already fails above the default, so this only lowers it in tests.
+fn planned_decode_bound() -> usize {
+    #[cfg(test)]
+    if let Some(bound) = PLANNED_DECODE_BOUND.with(core::cell::Cell::get) {
+        return bound;
+    }
+    j2k_native::DEFAULT_MAX_DECODE_BYTES
 }
 
 pub(super) fn batch_execution_shape(

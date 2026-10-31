@@ -19,6 +19,7 @@ use core::mem::size_of;
 mod referenced;
 pub(super) use self::referenced::{
     max_referenced_classic_dimensions, max_referenced_ht_dimensions,
+    planned_referenced_classic_execution_bytes, planned_referenced_htj2k_execution_bytes,
     prepare_referenced_classic_scratch, prepare_referenced_classic_staged_scratch,
     prepare_referenced_direct_scratch, prepare_referenced_htj2k_staged_scratch,
 };

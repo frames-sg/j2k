@@ -34,6 +34,36 @@ impl PreparedCodecPlan {
     }
 }
 
+/// CPU execution chosen during preparation from the planned working memory.
+/// Device decoders ignore it: the retained codec plan is unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CpuExecution {
+    /// Execute the retained offset plan; `bytes` is its planned peak.
+    OffsetPlan { bytes: usize },
+    /// Reparse and decode whole component planes; no offset plan exists.
+    ComponentPlanes,
+    /// The planned offset-plan execution exceeds the per-decode memory
+    /// bound, so the CPU decoder rejects the image before any decode work.
+    ExceedsDecodeBound,
+}
+
+impl CpuExecution {
+    /// Admission claim for one execution: the planned peak of an offset
+    /// plan, or one worst-case native decode.
+    pub(super) const fn claim_bytes(self) -> usize {
+        match self {
+            Self::OffsetPlan { bytes } => bytes,
+            Self::ComponentPlanes => crate::batch::allocation::GENERIC_WORKER_CLAIM_BYTES,
+            Self::ExceedsDecodeBound => 0,
+        }
+    }
+
+    /// The error the offset-plan execution would report, raised up front.
+    pub(super) fn decode_bound_error() -> crate::J2kError {
+        crate::J2kError::from_native_decode_error(j2k_native::ValidationError::ImageTooLarge.into())
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct PreparedImageInner {
     pub(super) bytes: Arc<[u8]>,
@@ -45,6 +75,7 @@ pub(super) struct PreparedImageInner {
     pub(super) plan: DeviceDecodePlan,
     pub(super) codestream_range: J2kCodestreamRange,
     pub(super) codec_plan: PreparedCodecPlan,
+    pub(super) cpu_execution: CpuExecution,
 }
 
 impl PreparedImage {
@@ -127,6 +158,10 @@ impl PreparedImage {
 
     pub(super) fn codec_plan(&self) -> &PreparedCodecPlan {
         &self.inner.codec_plan
+    }
+
+    pub(super) fn cpu_execution(&self) -> CpuExecution {
+        self.inner.cpu_execution
     }
 }
 
