@@ -30,7 +30,7 @@ use crate::j2c::idwt::{ComponentLines, LinePlan, LineReconstruction, SubBandRows
 use crate::j2c::mct::DeferredMct;
 use crate::j2c::rect::IntRect;
 use crate::profile;
-use crate::{try_resize_decode_elements, ComponentPlane, ComponentRowSink};
+use crate::{try_zero_fill_decode_elements, ComponentPlane, ComponentRowSink};
 
 /// Whether a tile's Tier-1 decodes in bands, given that it feeds the
 /// streamed IDWT: in stored windows clipped to it, on the calling thread
@@ -293,7 +293,7 @@ pub(super) fn take_line_buffer(
     );
     let mut buffer = core::mem::take(&mut tile_ctx.idwt_line_rings);
     let resized = if buffer.len() < total {
-        try_resize_decode_elements(&mut buffer, total, 0.0)
+        try_zero_fill_decode_elements(&mut buffer, total)
     } else {
         Ok(())
     };

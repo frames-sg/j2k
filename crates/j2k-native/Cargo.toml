@@ -26,6 +26,7 @@ name = "j2k_native"
 path = "src/lib.rs"
 
 [dependencies]
+bytemuck = { workspace = true, features = ["extern_crate_alloc"] }
 fearless_simd = { workspace = true, optional = true }
 libm = { workspace = true }
 log = { workspace = true, optional = true }

@@ -15,7 +15,10 @@ use crate::error::{DecodingError, ValidationError};
 use crate::j2c::roi::output_region_rect;
 use crate::j2c::Header;
 use crate::math::{SimdBuffer, SIMD_WIDTH};
-use crate::{checked_decode_usize_product2, try_resize_decode_elements, Result};
+use crate::{
+    checked_decode_usize_product2, try_resize_decode_elements, try_zero_fill_decode_elements,
+    Result,
+};
 
 /// Samples of each component's rows a tile streaming from pool bands
 /// reconstructs at most at once, before they are transformed and handed over.
@@ -490,7 +493,7 @@ impl ComponentLines {
         let mut ring = core::mem::take(&mut tile_ctx.idwt_line_rings);
         let ring_len = plan.ring_len()?;
         if ring.len() < ring_len {
-            try_resize_decode_elements(&mut ring, ring_len, 0.0)?;
+            try_zero_fill_decode_elements(&mut ring, ring_len)?;
         }
         tile_ctx.idwt_line_rings = ring;
         record_workspace_now(tile_ctx, storage)?;

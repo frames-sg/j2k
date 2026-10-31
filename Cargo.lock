@@ -2772,6 +2772,7 @@ dependencies = [
 name = "j2k-native"
 version = "0.13.2"
 dependencies = [
+ "bytemuck",
  "criterion",
  "fearless_simd",
  "j2k-codec-math",

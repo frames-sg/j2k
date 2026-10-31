@@ -6,7 +6,7 @@ use super::roi::RoiPlan;
 use super::tag_tree::{TagNode, TagTree};
 use super::tile::{ResolutionTile, Tile};
 use crate::error::{DecodingError, Result, ValidationError};
-use crate::try_resize_decode_elements;
+use crate::{try_resize_decode_elements, try_zero_fill_decode_elements};
 use core::{iter, ops::Range};
 
 mod allocation;
@@ -222,11 +222,7 @@ fn resize_planned_coefficients(
     storage: &mut DecompositionStorage<'_>,
     plan: &DecompositionAllocationPlan,
 ) -> Result<()> {
-    try_resize_decode_elements(
-        &mut storage.coefficients,
-        plan.coefficient_storage_len(),
-        0.0,
-    )?;
+    try_zero_fill_decode_elements(&mut storage.coefficients, plan.coefficient_storage_len())?;
     if storage.exact_integer_decode {
         try_resize_decode_elements(
             &mut storage.coefficients_i64,

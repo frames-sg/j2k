@@ -380,8 +380,8 @@ pub(crate) fn allocate_deferred_coefficients(
             .unwrap_or(0)
     };
     let mut budget = reuse::ReallocationBudget::from_live_bytes(live_bytes)?;
-    budget.reserve(&mut storage.coefficients, coefficient_count)?;
-    crate::try_resize_decode_elements(&mut storage.coefficients, coefficient_count, 0.0)?;
+    budget.reserve_zeroed(&mut storage.coefficients, coefficient_count)?;
+    crate::try_zero_fill_decode_elements(&mut storage.coefficients, coefficient_count)?;
     storage.structural_workspace_bytes = budget.live_bytes();
     Ok(())
 }
@@ -519,8 +519,8 @@ pub(crate) fn lay_out_whole_region_coefficients(
     let coefficient_count = lay_out_region_coefficients(storage, true, 0)?;
     let mut budget =
         reuse::ReallocationBudget::from_live_bytes(storage.structural_workspace_bytes)?;
-    budget.reserve(&mut storage.coefficients, coefficient_count)?;
-    crate::try_resize_decode_elements(&mut storage.coefficients, coefficient_count, 0.0)?;
+    budget.reserve_zeroed(&mut storage.coefficients, coefficient_count)?;
+    crate::try_zero_fill_decode_elements(&mut storage.coefficients, coefficient_count)?;
     storage.structural_workspace_bytes = budget.live_bytes();
     Ok(())
 }

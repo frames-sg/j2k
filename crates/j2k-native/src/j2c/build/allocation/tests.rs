@@ -442,6 +442,66 @@ fn reusable_capacity_growth_rejects_a_logical_target_over_the_aggregate_cap() {
 }
 
 #[test]
+fn zeroed_growth_releases_the_old_buffer_before_taking_the_new_one() {
+    let mut storage = DecompositionStorage::default();
+    storage.coefficients.push(9.0);
+    let old_bytes = storage.coefficients.capacity() * size_of::<f32>();
+    let target = storage.coefficients.capacity() + 1;
+    // Room for the new buffer only once the old one is gone.
+    let baseline = DEFAULT_MAX_DECODE_BYTES - target * size_of::<f32>();
+    let mut reallocation =
+        ReallocationBudget::for_storage(&storage, baseline).expect("live baseline");
+    assert_eq!(reallocation.live_bytes(), baseline + old_bytes);
+
+    reallocation
+        .reserve_zeroed(&mut storage.coefficients, target)
+        .expect("the old buffer is released first");
+    assert_eq!(storage.coefficients, vec![0.0; target]);
+    assert_eq!(
+        reallocation.live_bytes(),
+        baseline + storage.coefficients.capacity() * size_of::<f32>()
+    );
+}
+
+#[test]
+fn zeroed_reuse_keeps_the_allocation_and_none_of_its_samples() {
+    let mut storage = DecompositionStorage::default();
+    storage.coefficients.extend([5.0_f32; 8]);
+    let capacity = storage.coefficients.capacity();
+    let baseline = DEFAULT_MAX_DECODE_BYTES - capacity * size_of::<f32>();
+    let mut reallocation =
+        ReallocationBudget::for_storage(&storage, baseline).expect("live baseline");
+
+    reallocation
+        .reserve_zeroed(&mut storage.coefficients, 6)
+        .expect("the retained allocation has room");
+    crate::try_zero_fill_decode_elements(&mut storage.coefficients, 6).expect("zero fill");
+    assert_eq!(storage.coefficients.capacity(), capacity);
+    assert_eq!(storage.coefficients, vec![0.0; 6]);
+    assert_eq!(reallocation.live_bytes(), DEFAULT_MAX_DECODE_BYTES);
+}
+
+#[test]
+fn zeroed_growth_rejects_a_target_over_the_aggregate_cap() {
+    let mut storage = DecompositionStorage::default();
+    storage
+        .coefficients
+        .try_reserve_exact(1)
+        .expect("small test capacity");
+    let coefficient_bytes = storage.coefficients.capacity() * size_of::<f32>();
+    let baseline = DEFAULT_MAX_DECODE_BYTES - coefficient_bytes;
+    let mut reallocation =
+        ReallocationBudget::for_storage(&storage, baseline).expect("live baseline");
+    let target = storage.coefficients.capacity() + 1;
+
+    assert_eq!(
+        reallocation.reserve_zeroed(&mut storage.coefficients, target),
+        Err(DecodeError::Validation(ValidationError::ImageTooLarge))
+    );
+    assert_eq!(storage.coefficients.capacity(), 0);
+}
+
+#[test]
 fn region_decode_scratch_preserves_the_allocation_boundary() {
     use crate::{
         encode, DecodeSettings, DecoderContext, EncodeOptions, EncodeProgressionOrder, Image,

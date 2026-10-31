@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use crate::{try_resize_decode_elements, Result};
+use crate::{try_zero_fill_decode_elements, Result};
 
 mod banded;
 mod direct;
@@ -65,7 +65,12 @@ fn try_grow_level_buffer(buffer: &mut Vec<f32>, len: usize) -> Result<()> {
     }
     #[cfg(test)]
     ZERO_INITIALIZED_SAMPLES.set(ZERO_INITIALIZED_SAMPLES.get() + len - buffer.len());
-    try_resize_decode_elements(buffer, len, 0.0)
+    if buffer.capacity() < len {
+        // Nothing left behind is read, so a buffer that must grow is replaced
+        // by a zeroed one rather than copied into a larger allocation.
+        buffer.clear();
+    }
+    try_zero_fill_decode_elements(buffer, len)
 }
 
 #[cfg(test)]
