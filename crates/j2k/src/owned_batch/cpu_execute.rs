@@ -26,6 +26,7 @@ pub(super) fn decode_cpu_group(
     workers: &mut [BatchWorker],
     fast_workspace: &mut CpuGroupFastWorkspace,
     staged_workspace: &mut CpuStagedWorkspace,
+    stream_pool: &mut CpuStreamPool,
     group: &PreparedBatchGroup,
     options: BatchDecodeOptions,
     workers_option: Option<NonZeroUsize>,
@@ -47,6 +48,16 @@ pub(super) fn decode_cpu_group(
         && fast_workspace.prepare_group(group)?
         && retained_inner_parallelism(group.images.len(), tile_options)?
             == CpuDecodeParallelism::Serial;
+    // With an explicit worker count, the images of such a group decode in a
+    // pool of that many threads (see `CpuStreamPool`).
+    let stream_pool = if streams_rows
+        && group.images.len() > 1
+        && workers_option.is_some_and(|count| count.get() > 1)
+    {
+        Some(stream_pool.get(workers.len())?)
+    } else {
+        None
+    };
     let samples_per_image =
         group
             .info
@@ -77,6 +88,7 @@ pub(super) fn decode_cpu_group(
                 &mut values,
                 has_flattened_payloads.then_some(&mut *fast_workspace),
                 staged_workspace,
+                stream_pool,
                 admission,
                 // The only image of a Gray8 group is the whole in-flight set.
                 if group.images.len() == 1 && group.info.color == BatchColor::Gray {
@@ -104,6 +116,7 @@ pub(super) fn decode_cpu_group(
                 &mut values,
                 has_flattened_payloads.then_some(&mut *fast_workspace),
                 staged_workspace,
+                stream_pool,
                 admission,
                 decode_image_u16,
                 convert_u16,
@@ -126,6 +139,7 @@ pub(super) fn decode_cpu_group(
                 &mut values,
                 has_flattened_payloads.then_some(&mut *fast_workspace),
                 staged_workspace,
+                stream_pool,
                 admission,
                 decode_image_i16,
                 round_signed,
@@ -169,6 +183,44 @@ pub(super) fn decode_cpu_group(
     )))
 }
 
+/// The threads a group's streamed images decode on when the caller set the
+/// worker count, created on first use and kept by the session.
+///
+/// A streamed image hands its Tier-1 bands to the rayon pool it decodes in.
+/// An explicit worker count used to keep each image serial on its worker
+/// thread instead, so `M` images on `N` workers kept
+/// `ceil(M / ceil(M / N))` threads busy (8 images on 6 workers: 4) and the
+/// last images alone at the end. In a pool of exactly `N` threads idle
+/// threads take bands of the images still in flight, so the group keeps all
+/// `N` busy and never runs more: the worker threads only wait for their
+/// images, and the images in flight stay one per worker.
+#[derive(Default)]
+pub(super) struct CpuStreamPool {
+    pool: Option<rayon::ThreadPool>,
+}
+
+impl CpuStreamPool {
+    fn get(&mut self, threads: usize) -> Result<&rayon::ThreadPool, BatchInfrastructureError> {
+        let pool = match self.pool.take() {
+            Some(pool) if pool.current_num_threads() == threads => pool,
+            _ => rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .thread_name(|index| format!("j2k-batch-stream-{index}"))
+                .build()
+                .map_err(|_| BatchInfrastructureError::WorkerSpawnFailed { worker: 0 })?,
+        };
+        Ok(self.pool.insert(pool))
+    }
+
+    /// Threads of the pool, once a group has used it.
+    #[cfg(test)]
+    pub(super) fn threads(&self) -> Option<usize> {
+        self.pool
+            .as_ref()
+            .map(rayon::ThreadPool::current_num_threads)
+    }
+}
+
 pub(super) struct CpuTypedDecodeJob<'image, 'output, T> {
     pub(super) slot: usize,
     pub(super) image: &'image PreparedImage,
@@ -199,6 +251,7 @@ fn run_typed_group<T: Copy + Send>(
     output: &mut Vec<T>,
     flattened_payloads: Option<&mut CpuGroupFastWorkspace>,
     staged_workspace: &mut CpuStagedWorkspace,
+    stream_pool: Option<&rayon::ThreadPool>,
     admission: &Arc<BatchAllocationBudget>,
     decode: CpuDecodeFn<T>,
     convert: fn(f32, u8) -> T,
@@ -248,15 +301,30 @@ fn run_typed_group<T: Copy + Send>(
                         &mut claim,
                         job.image.cpu_execution().claim_bytes(),
                     )?;
-                    *slot = Some(decode(
-                        job.image,
-                        options,
-                        &group.info,
-                        parallelism,
-                        &mut context,
-                        worker,
-                        job.output,
-                    ));
+                    *slot = Some(match stream_pool {
+                        // This thread waits while a pool thread decodes the
+                        // image and idle ones take its bands.
+                        Some(pool) => pool.install(|| {
+                            decode(
+                                job.image,
+                                options,
+                                &group.info,
+                                CpuDecodeParallelism::Auto,
+                                &mut context,
+                                worker,
+                                job.output,
+                            )
+                        }),
+                        None => decode(
+                            job.image,
+                            options,
+                            &group.info,
+                            parallelism,
+                            &mut context,
+                            worker,
+                            job.output,
+                        ),
+                    });
                 }
                 worker.restore_native_workspace(context.into_workspace());
                 Ok(())

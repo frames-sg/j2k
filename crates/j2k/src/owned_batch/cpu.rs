@@ -6,8 +6,9 @@ use super::{
     decode_cpu_group, fmt, generic_batch_worker_limit, prepare_batch_from_images_for,
     prepare_batch_with_workers, BatchDecodeOptions, BatchDecoder, BatchGroupInfo,
     BatchInfrastructureError, BatchWorker, CpuBatchWorkspaceStats, CpuGroupFastWorkspace,
-    CpuStagedWorkspace, EncodedImage, IndexedBatchError, J2kDecodeWarning, Mutex, NativeSampleType,
-    NonZeroUsize, PrepareFor, PreparedBatch, PreparedBatchGroup, PreparedImage, Rect, Vec,
+    CpuStagedWorkspace, CpuStreamPool, EncodedImage, IndexedBatchError, J2kDecodeWarning, Mutex,
+    NativeSampleType, NonZeroUsize, PrepareFor, PreparedBatch, PreparedBatchGroup, PreparedImage,
+    Rect, Vec,
 };
 use crate::batch::admission::BatchAllocationBudget;
 use crate::batch::allocation::try_vec_with_capacity;
@@ -174,6 +175,7 @@ pub struct CpuBatchDecoder {
     workers: Mutex<Vec<BatchWorker>>,
     fast_workspace: CpuGroupFastWorkspace,
     staged_workspace: CpuStagedWorkspace,
+    stream_pool: Mutex<CpuStreamPool>,
 }
 
 impl fmt::Debug for CpuBatchDecoder {
@@ -202,6 +204,7 @@ impl CpuBatchDecoder {
             workers: Mutex::new(workers),
             fast_workspace: CpuGroupFastWorkspace::default(),
             staged_workspace: CpuStagedWorkspace::default(),
+            stream_pool: Mutex::default(),
         }
     }
 
@@ -209,6 +212,15 @@ impl CpuBatchDecoder {
     #[must_use]
     pub const fn options(&self) -> BatchDecodeOptions {
         self.options
+    }
+
+    /// Threads of the session's streamed-group pool, once a group used it.
+    #[cfg(test)]
+    pub(super) fn stream_pool_threads(&mut self) -> Option<usize> {
+        self.stream_pool
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .threads()
     }
 
     /// Number of reusable worker context/scratch owners retained by this session.
@@ -373,6 +385,10 @@ impl CpuBatchDecoder {
             .workers
             .get_mut()
             .map_err(|_| BatchInfrastructureError::SchedulerPoisoned)?;
+        let stream_pool = self
+            .stream_pool
+            .get_mut()
+            .map_err(|_| BatchInfrastructureError::SchedulerPoisoned)?;
         let input_count = prepared
             .groups()
             .iter()
@@ -398,6 +414,7 @@ impl CpuBatchDecoder {
                     workers,
                     &mut self.fast_workspace,
                     &mut self.staged_workspace,
+                    stream_pool,
                     group,
                     prepared.options,
                     self.options.workers,
@@ -435,6 +452,7 @@ impl CpuBatchDecoder {
                     workers,
                     &mut self.fast_workspace,
                     &mut self.staged_workspace,
+                    stream_pool,
                     &part,
                     prepared.options,
                     self.options.workers,

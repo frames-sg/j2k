@@ -364,3 +364,46 @@ fn a_lone_gray8_image_decodes_its_plan_and_gray8_images_in_flight_stream() {
     assert_eq!(decode(2, &gray), 0, "Gray8 images in flight stream");
     assert_eq!(decode(1, &rgb), 0, "a lone RGB8 image streams");
 }
+
+#[test]
+fn explicit_workers_decode_streamed_images_on_a_pool_of_that_many_threads() {
+    let rgb = classic_rgb8(96, 64);
+    let gray = classic_fixture(80, 72, 1, 8);
+    for image in [&rgb, &gray] {
+        let inputs = |copies: usize| vec![EncodedImage::full(Arc::clone(image)); copies];
+        // Prepared on this thread, where the threshold override applies.
+        let mut preparer = CpuBatchDecoder::new(single_worker_options());
+        // (workers, images, pool threads): a multi-image group with an
+        // explicit count of two or more workers decodes on a pool of that
+        // many threads; one worker, the codec's own count, and a lone image
+        // keep their threads.
+        for (workers, copies, pool) in [
+            (Some(1), 4, None),
+            (Some(2), 3, Some(2)),
+            (Some(3), 4, Some(3)),
+            (Some(3), 1, None),
+            (None, 4, None),
+        ] {
+            let reference = preparer
+                .decode_prepared(&preparer.prepare(inputs(copies)).expect("prepare plans"))
+                .expect("decode plans");
+            let _threshold = StreamAbove::hold(0);
+            let prepared = preparer.prepare(inputs(copies)).expect("prepare");
+            assert!(planned_bytes(&prepared)
+                .iter()
+                .all(|(_, execution)| matches!(
+                    execution,
+                    CpuExecution::StreamedRowsOrPlan { .. }
+                )));
+            let mut decoder = CpuBatchDecoder::new(BatchDecodeOptions {
+                workers: workers.and_then(NonZeroUsize::new),
+                ..BatchDecodeOptions::default()
+            });
+            let decoded = decoder.decode_prepared(&prepared).expect("decode");
+            let label = format!("{workers:?} workers, {copies} images");
+            assert_eq!(decoded.errors(), &[] as &[IndexedBatchError], "{label}");
+            assert_eq!(decoded.groups(), reference.groups(), "{label}");
+            assert_eq!(decoder.stream_pool_threads(), pool, "{label}");
+        }
+    }
+}

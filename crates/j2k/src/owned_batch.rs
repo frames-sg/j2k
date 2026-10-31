@@ -55,7 +55,7 @@ use self::cpu_fast::CpuGroupFastWorkspace;
 mod cpu_staged;
 use self::cpu_staged::{CpuEntropyOutcome, CpuStagedWorkspace, CPU_ENTROPY_IMAGES_PER_WINDOW};
 mod cpu_execute;
-use self::cpu_execute::decode_cpu_group;
+use self::cpu_execute::{decode_cpu_group, CpuStreamPool};
 mod cpu;
 mod cpu_materialize;
 mod cpu_staged_execute;
