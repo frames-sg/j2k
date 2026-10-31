@@ -4,7 +4,7 @@ use std::hint::black_box;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{mpsc, OnceLock};
 
-use j2k_alloc_probe::{assert_allocations, measure, Budget};
+use j2k_alloc_probe::{assert_allocations, live_bytes, measure, peak_bytes, reset_peak, Budget};
 use j2k_native::{
     decode_ht_code_block_scalar_with_workspace, encode,
     encode_ht_code_block_scalar_with_passes_and_workspace,
@@ -32,6 +32,10 @@ fn main() {
             harness_counts_allocation_and_deallocation,
         ),
         ("harness_counts_reallocation", harness_counts_reallocation),
+        (
+            "harness_tracks_live_bytes_and_their_peak",
+            harness_tracks_live_bytes_and_their_peak,
+        ),
         (
             "preexisting_deallocation_cannot_credit_budget",
             preexisting_deallocation_cannot_credit_budget,
@@ -129,6 +133,44 @@ fn harness_counts_reallocation() {
     assert!(stats.reallocations >= 1);
     assert!(stats.deallocations >= 1);
     assert!(stats.requested_bytes >= 4096);
+}
+
+fn harness_tracks_live_bytes_and_their_peak() {
+    const BLOCK: usize = 64 * 1024;
+    let base = reset_peak();
+    assert_eq!(peak_bytes(), base, "a new window starts at the live bytes");
+
+    let first = black_box(Box::<[u8]>::new_uninit_slice(BLOCK));
+    let second = black_box(Box::<[u8]>::new_uninit_slice(BLOCK / 2));
+    assert_eq!(live_bytes(), base + BLOCK + BLOCK / 2);
+    drop(first);
+    assert_eq!(
+        live_bytes(),
+        base + BLOCK / 2,
+        "a free lowers the live bytes"
+    );
+    assert_eq!(
+        peak_bytes(),
+        base + BLOCK + BLOCK / 2,
+        "a free never lowers the peak"
+    );
+
+    let mut grown: Vec<u8> = Vec::new();
+    grown
+        .try_reserve_exact(BLOCK / 4)
+        .expect("small allocation must succeed");
+    grown
+        .try_reserve_exact(2 * BLOCK)
+        .expect("growth allocation must succeed");
+    assert_eq!(live_bytes(), base + BLOCK / 2 + grown.capacity());
+    assert_eq!(peak_bytes(), base + BLOCK / 2 + grown.capacity());
+    // Nothing was pushed: shrinking the empty vector frees its buffer.
+    grown.shrink_to_fit();
+    drop(second);
+    assert_eq!(live_bytes(), base, "every byte allocated here was freed");
+
+    assert_eq!(reset_peak(), base);
+    assert_eq!(peak_bytes(), base, "a reset forgets the earlier peak");
 }
 
 fn preexisting_deallocation_cannot_credit_budget() {
