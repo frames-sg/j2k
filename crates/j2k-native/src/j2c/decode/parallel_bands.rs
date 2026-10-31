@@ -153,6 +153,8 @@ pub(super) fn decode_component<'a>(
         }
         Ok(completed)
     });
+    // Neither fallback's budget includes this plan's live allocations.
+    drop(route);
     let elapsed = profile::elapsed_us(stage_start);
     profile_timings.codeblock_us += tier1_us;
     profile_timings.idwt_us += elapsed.saturating_sub(tier1_us);
