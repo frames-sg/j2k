@@ -24,6 +24,19 @@ and stale roadmap entries have been removed from the public documentation set.
   term the charge grows to match; elsewhere it is unchanged and the IDWT
   holds less within it (a 1024 x 768 gray image on 4 threads: 3.9 MB in
   place of 4.5 MB, against a 4.1 MB charge). Output is unchanged.
+- x86-64 RGB8 decodes of 9/7 images round and pack the inverse ICT output with
+  the runtime SIMD level (AVX2 where present) instead of a scalar library
+  call per sample: the centered rounding of the inverse MCT runs eight
+  samples at a time, and the last-level RGB8 pack fuses the ICT, rounding
+  and interleave as ARM64 already does. Output is unchanged.
+- x86-64 decodes keep more of their hot loops at the runtime SIMD level
+  instead of baseline x86-64 code: the banded 9/7 IDWT's block load no
+  longer falls back to out-of-line SIMD kernels, 8-bit RGB region rows
+  use the SIMD RGB8 pack, non-MCT 9/7 rounding and the HT 9/7 magnitude
+  conversion use native instructions, the fused RGB8 pack skips a second
+  rounding, and classic Tier-1 (MQ decoding) and dequantization run inside
+  the dispatch so they use LZCNT, BMI2 and AVX2 where present. ARM64 code
+  is unchanged and output is unchanged.
 - Parallel CPU region decodes on the row-streamed IDWT decode Tier-1 band by
   band on the worker pool while the IDWT reads the bands, instead of decoding
   every code-block of a component first. Each sub-band holds three bands at
