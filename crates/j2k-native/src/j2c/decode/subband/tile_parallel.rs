@@ -8,9 +8,11 @@
 //! blocks owns a contiguous range of its sub-band's coefficients, so tasks
 //! write their output in place through disjoint slices and Rayon balances
 //! them with work stealing. HT cleanup-only and single-segment classic
-//! payloads are borrowed from the codestream; only payloads that span several
-//! segments are gathered. Classic blocks take this route when each decodes as
-//! one arithmetic segment: no selective bypass or per-pass termination.
+//! payloads are borrowed from the codestream; a payload that spans several
+//! segments is gathered from the block's segment records into its worker's
+//! scratch just before the block decodes. Classic blocks take this route when
+//! each decodes as one arithmetic segment: no selective bypass or per-pass
+//! termination.
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -28,7 +30,7 @@ use super::{
     J2kCodeBlockDecodeWorkspace, Result, Tile, TileDecodeContext, MAX_BITPLANE_COUNT,
 };
 use crate::error::{DecodingError, ValidationError};
-use crate::j2c::build::{CodeBlock, CodeBlockCoding};
+use crate::j2c::build::{CodeBlock, CodeBlockCoding, Layer, Segment};
 use crate::j2c::codestream::CodeBlockStyle;
 use crate::j2c::decode::direct_plan::classic_allocation_counts;
 use crate::j2c::decode::peak::WorkspaceBytes;
@@ -126,8 +128,36 @@ struct BandParameters {
 enum Payload<'a> {
     /// A single segment borrowed from the codestream.
     Borrowed(&'a [u8]),
-    /// Gathered segments starting at this offset of the payload arena.
-    Gathered(usize),
+    /// Segments gathered from the block's records into the decoding
+    /// worker's scratch.
+    Gathered,
+}
+
+/// The records a gathered payload is read from while blocks decode: every
+/// code-block, layer and segment of the tile, borrowed from its storage.
+#[derive(Clone, Copy)]
+pub(in crate::j2c::decode) struct PayloadSource<'s, 'a> {
+    code_blocks: &'s [CodeBlock],
+    layers: &'s [Layer],
+    segments: &'s [Segment<'a>],
+}
+
+impl<'s, 'a> PayloadSource<'s, 'a> {
+    pub(in crate::j2c::decode) fn new(storage: &'s DecompositionStorage<'a>) -> Self {
+        Self {
+            code_blocks: &storage.code_blocks,
+            layers: &storage.layers,
+            segments: &storage.segments,
+        }
+    }
+}
+
+/// A worker's scratch for the blocks it decodes: a block its sub-band stores
+/// only part of, and a payload gathered from several segments.
+#[derive(Default)]
+pub(in crate::j2c::decode) struct BlockScratch {
+    clipped: Vec<f32>,
+    payload: Vec<u8>,
 }
 
 struct BlockJob<'a> {
@@ -163,9 +193,9 @@ struct TilePlan<'a> {
     strict: bool,
     jobs: Vec<BlockJob<'a>>,
     strips: Vec<Strip>,
-    arena: Vec<u8>,
-    /// Bytes of the payloads to gather into `arena` once the route is taken.
-    arena_len: usize,
+    /// Bytes of the largest payload gathered from several segments. Each
+    /// worker gathers such payloads into scratch of this size.
+    max_gathered_len: usize,
     skipped: usize,
     coded_bytes: usize,
     max_width: u32,
@@ -228,7 +258,7 @@ pub(in crate::j2c::decode) fn plan_tile_route<'a>(
         return Ok(route);
     }
     let mut budget = DecodeAllocationBudget::for_storage(storage)?;
-    let mut plan = match plan_tile(
+    let plan = match plan_tile(
         tile,
         components,
         storage,
@@ -259,8 +289,8 @@ pub(in crate::j2c::decode) fn plan_tile_route<'a>(
     let workers = rayon::current_num_threads().min(plan.strips.len());
     let counts = TaskCounts::new(&plan, workers, storage.stale_coefficients)?;
     let route_budget = (|| -> Result<()> {
-        // Payloads are gathered only once the tile takes the route.
-        gather_payloads(&mut plan, storage, &mut budget)?;
+        // Each worker gathers payloads into scratch of its own as it decodes.
+        include_payload_scratch(&mut budget, &plan, workers)?;
         // `plan_tile` charged one task per strip.
         budget.include_elements::<StripTask<'_, '_, '_>>(counts.tasks - plan.strips.len())?;
         budget.include_elements::<Mutex<&mut [f32]>>(counts.shared)?;
@@ -317,8 +347,8 @@ fn decode_with_retained_bank<'a>(
             &mut tile_ctx.classic_task_workspaces,
             storage,
             budget,
-            |job, output, stride, workspace| {
-                decode_classic_strip_block(plan, job, output, stride, workspace)
+            |job, payload, output, stride, workspace| {
+                decode_classic_strip_block(plan, job, payload, output, stride, workspace)
             },
         ),
         CodeBlockCoding::HighThroughput => decode_with_bank(
@@ -328,8 +358,8 @@ fn decode_with_retained_bank<'a>(
             &mut tile_ctx.ht_task_workspaces,
             storage,
             budget,
-            |job, output, stride, workspace| {
-                decode_strip_block(plan, job, output, stride, workspace)
+            |job, payload, output, stride, workspace| {
+                decode_strip_block(plan, job, payload, output, stride, workspace)
             },
         ),
     }
@@ -385,7 +415,7 @@ fn record_route_peak(
         plan.jobs.capacity() * size_of::<BlockJob<'_>>(),
         plan.strips.capacity() * size_of::<Strip>(),
         plan.band_sub_bands.capacity() * size_of::<usize>(),
-        plan.arena.capacity(),
+        workers.saturating_mul(plan.max_gathered_len),
         counts.tasks * size_of::<StripTask<'_, '_, '_>>(),
         counts.shared * size_of::<Mutex<&mut [f32]>>(),
         workers
@@ -410,7 +440,7 @@ fn decode_with_bank<'a, W: TaskScratch>(
     bank: &mut Vec<TaskWorkspace<W>>,
     storage: &mut DecompositionStorage<'a>,
     budget: &mut DecodeAllocationBudget,
-    decode_block: impl Fn(&BlockJob<'_>, &mut [f32], usize, &mut W) -> Result<()> + Sync,
+    decode_block: impl Fn(&BlockJob<'_>, &[u8], &mut [f32], usize, &mut W) -> Result<()> + Sync,
 ) -> Result<Option<usize>> {
     let Ok(growths) = prepare_uniform_task_workspaces(
         bank,
@@ -430,7 +460,10 @@ fn decode_with_bank<'a, W: TaskScratch>(
         stale,
         &mut bank[..workers],
         counts,
-        |job, output, stride, slot| decode_block(job, output, stride, &mut slot.workspace),
+        PayloadSource::new(storage),
+        |job, payload, output, stride, slot| {
+            decode_block(job, payload, output, stride, &mut slot.workspace)
+        },
     );
     storage.coefficients = coefficients;
     result?;
@@ -488,8 +521,7 @@ fn plan_tile<'a>(
         strict: header.strict,
         jobs: Vec::new(),
         strips: Vec::new(),
-        arena: Vec::new(),
-        arena_len: 0,
+        max_gathered_len: 0,
         skipped: 0,
         coded_bytes: 0,
         max_width: 0,
@@ -507,8 +539,6 @@ fn plan_tile<'a>(
     } else {
         budget.reserve_new(&mut plan.bands, storage.sub_bands.len())?;
     }
-    let mut arena_len = 0usize;
-
     let component_infos = tile
         .component_infos
         .get(components.clone())
@@ -592,9 +622,12 @@ fn plan_tile<'a>(
                             stored_placement(code_block, sub_band),
                             band,
                             storage,
-                            &mut arena_len,
                             classic_style,
                         )?;
+                        if matches!(job.payload, Payload::Gathered) {
+                            plan.max_gathered_len =
+                                plan.max_gathered_len.max(job.payload_length as usize);
+                        }
                         if !job.placement.is_whole(job.width, job.height) {
                             let samples = (job.width as usize)
                                 .checked_mul(job.height as usize)
@@ -634,7 +667,6 @@ fn plan_tile<'a>(
     if !banded && !strips_are_disjoint(&mut plan.strips, storage.coefficients.len()) {
         return Ok(None);
     }
-    plan.arena_len = arena_len;
     budget.include_elements::<StripTask<'_, '_, '_>>(plan.strips.len())?;
     Ok(Some(plan))
 }
@@ -709,29 +741,20 @@ fn required_code_blocks(
 }
 
 /// A block's job. A payload in one codestream segment is borrowed; others
-/// get room in the arena.
+/// are gathered when the block decodes.
 fn plan_block<'a>(
     code_block: &CodeBlock,
     code_block_idx: usize,
     placement: BlockPlacement,
     band: usize,
     storage: &DecompositionStorage<'a>,
-    arena_len: &mut usize,
     classic_style: Option<CodeBlockStyle>,
 ) -> Result<BlockJob<'a>> {
     let (payload_length, refinement_length, single) = match classic_style {
         Some(style) => classic_payload(code_block, style, storage)?,
         None => ht_payload(code_block, storage)?,
     };
-    let payload = if let Some(data) = single {
-        Payload::Borrowed(data)
-    } else {
-        let start = *arena_len;
-        *arena_len = start
-            .checked_add(payload_length)
-            .ok_or(ValidationError::ImageTooLarge)?;
-        Payload::Gathered(start)
-    };
+    let payload = single.map_or(Payload::Gathered, Payload::Borrowed);
     Ok(BlockJob {
         payload,
         code_block: code_block_idx,
@@ -903,56 +926,75 @@ fn strips_are_disjoint(strips: &mut [Strip], coefficient_len: usize) -> bool {
     previous_end <= coefficient_len
 }
 
-fn gather_payloads<'a>(
-    plan: &mut TilePlan<'a>,
-    storage: &DecompositionStorage<'a>,
+/// Charge the payload scratch each of `threads` threads grows to as it
+/// gathers the plan's payloads.
+fn include_payload_scratch(
     budget: &mut DecodeAllocationBudget,
+    plan: &TilePlan<'_>,
+    threads: usize,
 ) -> Result<()> {
-    if plan.arena_len == 0 {
-        return Ok(());
-    }
-    budget.reserve_new(&mut plan.arena, plan.arena_len)?;
-    for job in &mut plan.jobs {
-        let Payload::Gathered(_) = job.payload else {
+    budget.include_bytes(
+        threads
+            .checked_mul(plan.max_gathered_len)
+            .ok_or(ValidationError::ImageTooLarge)?,
+    )
+}
+
+/// Gather the payload of `job`, a block whose payload spans several
+/// segments, into `scratch`: for a classic block every segment, for an HT
+/// block the selected set's cleanup and refinement segments.
+fn gather_payload<'s>(
+    coding: CodeBlockCoding,
+    job: &BlockJob<'_>,
+    source: PayloadSource<'_, '_>,
+    scratch: &'s mut Vec<u8>,
+) -> Result<&'s [u8]> {
+    let expected = job.payload_length as usize;
+    scratch.clear();
+    scratch
+        .try_reserve(expected)
+        .map_err(|_| DecodingError::HostAllocationFailed)?;
+    let code_block = source
+        .code_blocks
+        .get(job.code_block)
+        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+    let cleanup_index = if coding == CodeBlockCoding::Classic {
+        None
+    } else {
+        let selected_set = code_block
+            .ht_selected_set
+            .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+        Some(
+            selected_set
+                .checked_mul(2)
+                .ok_or(DecodingError::CodeBlockDecodeFailure)?,
+        )
+    };
+    let layers = source
+        .layers
+        .get(code_block.layers.clone())
+        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+    for layer in layers {
+        let Some(range) = layer.segments.clone() else {
             continue;
         };
-        // Row sorting can change precinct traversal order. Assign the offset
-        // when the payload is appended in its final execution order.
-        let start = plan.arena.len();
-        job.payload = Payload::Gathered(start);
-        let code_block = &storage.code_blocks[job.code_block];
-        // A classic payload is every segment; an HT payload the selected
-        // set's cleanup and refinement segments.
-        let cleanup_index = if plan.coding == CodeBlockCoding::Classic {
-            None
-        } else {
-            let selected_set = code_block
-                .ht_selected_set
-                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-            Some(
-                selected_set
-                    .checked_mul(2)
-                    .ok_or(DecodingError::CodeBlockDecodeFailure)?,
-            )
-        };
-        for layer in &storage.layers[code_block.layers.clone()] {
-            let Some(range) = layer.segments.clone() else {
-                continue;
-            };
-            for segment in &storage.segments[range] {
-                if cleanup_index
-                    .is_none_or(|index| segment.idx == index || segment.idx == index + 1)
-                {
-                    plan.arena.extend_from_slice(segment.data);
+        let segments = source
+            .segments
+            .get(range)
+            .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+        for segment in segments {
+            if cleanup_index.is_none_or(|index| segment.idx == index || segment.idx == index + 1) {
+                if scratch.len() + segment.data.len() > expected {
+                    return Err(DecodingError::CodeBlockDecodeFailure.into());
                 }
+                scratch.extend_from_slice(segment.data);
             }
         }
-        let expected = job.payload_length as usize;
-        if plan.arena.len() - start != expected {
-            return Err(DecodingError::CodeBlockDecodeFailure.into());
-        }
     }
-    Ok(())
+    if scratch.len() != expected {
+        return Err(DecodingError::CodeBlockDecodeFailure.into());
+    }
+    Ok(scratch)
 }
 
 fn charge_actual_workspace(
@@ -1180,7 +1222,8 @@ fn decode_strips<'plan, 'coefficients, W: Send>(
     stale: bool,
     workspaces: &mut [W],
     counts: TaskCounts,
-    decode_block: impl Fn(&BlockJob<'_>, &mut [f32], usize, &mut W) -> Result<()> + Sync,
+    source: PayloadSource<'_, '_>,
+    decode_block: impl Fn(&BlockJob<'_>, &[u8], &mut [f32], usize, &mut W) -> Result<()> + Sync,
 ) -> Result<()> {
     let mut shared: Vec<Mutex<&'coefficients mut [f32]>> = Vec::new();
     shared
@@ -1241,7 +1284,7 @@ fn decode_strips<'plan, 'coefficients, W: Send>(
         .par_iter_mut()
         .with_max_len(1)
         .try_for_each(|workspace| -> Result<()> {
-            let mut scratch = Vec::new();
+            let mut scratch = BlockScratch::default();
             while !failed.load(Ordering::Relaxed) {
                 let next = queue
                     .lock()
@@ -1259,7 +1302,14 @@ fn decode_strips<'plan, 'coefficients, W: Send>(
                         if stale {
                             output.fill(0.0);
                         }
-                        decode_strip(plan, strip, output, workspace, &mut scratch, &decode_block)
+                        decode_strip(
+                            plan,
+                            strip,
+                            output,
+                            workspace,
+                            (&mut scratch, source),
+                            &decode_block,
+                        )
                     }
                     StripTask::Part(output, strip, jobs, _) => decode_part(
                         plan,
@@ -1269,7 +1319,7 @@ fn decode_strips<'plan, 'coefficients, W: Send>(
                         stale,
                         counts.scratch_samples,
                         workspace,
-                        &mut scratch,
+                        (&mut scratch, source),
                         &decode_block,
                     ),
                 };
@@ -1297,9 +1347,13 @@ fn decode_part<W>(
     stale: bool,
     scratch_samples: usize,
     workspace: &mut W,
-    scratch: &mut Vec<f32>,
-    decode_block: &impl Fn(&BlockJob<'_>, &mut [f32], usize, &mut W) -> Result<()>,
+    (scratch, source): (&mut BlockScratch, PayloadSource<'_, '_>),
+    decode_block: &impl Fn(&BlockJob<'_>, &[u8], &mut [f32], usize, &mut W) -> Result<()>,
 ) -> Result<()> {
+    let BlockScratch {
+        clipped: scratch,
+        payload: payload_scratch,
+    } = scratch;
     let lock = || {
         output
             .lock()
@@ -1345,7 +1399,8 @@ fn decode_part<W>(
         if !placement.is_whole(job.width, job.height) {
             block.fill(0.0);
         }
-        decode_block(job, block, job.width as usize, workspace)?;
+        let payload = job_payload(plan, job, source, payload_scratch)?;
+        decode_block(job, payload, block, job.width as usize, workspace)?;
         placement.copy_from_block(block, job.width, &mut lock()?, strip.stride)?;
     }
     Ok(())
@@ -1356,9 +1411,13 @@ fn decode_strip<W>(
     strip: &Strip,
     output: &mut [f32],
     workspace: &mut W,
-    clipped_scratch: &mut Vec<f32>,
-    decode_block: &impl Fn(&BlockJob<'_>, &mut [f32], usize, &mut W) -> Result<()>,
+    (scratch, source): (&mut BlockScratch, PayloadSource<'_, '_>),
+    decode_block: &impl Fn(&BlockJob<'_>, &[u8], &mut [f32], usize, &mut W) -> Result<()>,
 ) -> Result<()> {
+    let BlockScratch {
+        clipped: clipped_scratch,
+        payload: payload_scratch,
+    } = scratch;
     for job in &plan.jobs[strip.jobs.clone()] {
         // The strip starts at the block row's first stored row.
         let placement = BlockPlacement {
@@ -1382,7 +1441,8 @@ fn decode_strip<W>(
             block.fill(0.0);
             (block, job.width as usize)
         };
-        decode_block(job, block_output, output_stride, workspace)?;
+        let payload = job_payload(plan, job, source, payload_scratch)?;
+        decode_block(job, payload, block_output, output_stride, workspace)?;
         if !whole {
             placement.copy_from_block(clipped_scratch, job.width, output, strip.stride)?;
         }
@@ -1393,13 +1453,14 @@ fn decode_strip<W>(
 fn decode_strip_block(
     plan: &TilePlan<'_>,
     job: &BlockJob<'_>,
+    payload: &[u8],
     output: &mut [f32],
     output_stride: usize,
     workspace: &mut HtCodeBlockDecodeWorkspace,
 ) -> Result<()> {
     let band = plan.bands[job.band];
     let decode_job = HtCodeBlockDecodeJob {
-        data: job_payload(plan, job)?,
+        data: payload,
         cleanup_length: job.payload_length - job.refinement_length,
         refinement_length: job.refinement_length,
         width: job.width,
@@ -1433,6 +1494,7 @@ fn decode_strip_block(
 fn decode_classic_strip_block(
     plan: &TilePlan<'_>,
     job: &BlockJob<'_>,
+    payload: &[u8],
     output: &mut [f32],
     output_stride: usize,
     workspace: &mut J2kCodeBlockDecodeWorkspace,
@@ -1446,7 +1508,7 @@ fn decode_classic_strip_block(
         use_arithmetic: true,
     }];
     let decode_job = band.job(
-        job_payload(plan, job)?,
+        payload,
         &segments,
         job.width,
         job.height,
@@ -1457,14 +1519,17 @@ fn decode_classic_strip_block(
     band.decode(decode_job, output, workspace)
 }
 
-/// The job's payload, borrowed from the codestream or from the arena.
-fn job_payload<'p>(plan: &'p TilePlan<'_>, job: &BlockJob<'p>) -> Result<&'p [u8]> {
+/// The job's payload, borrowed from the codestream or gathered into
+/// `scratch`.
+fn job_payload<'p>(
+    plan: &TilePlan<'_>,
+    job: &BlockJob<'p>,
+    source: PayloadSource<'_, '_>,
+    scratch: &'p mut Vec<u8>,
+) -> Result<&'p [u8]> {
     match job.payload {
         Payload::Borrowed(data) => Ok(data),
-        Payload::Gathered(start) => plan
-            .arena
-            .get(start..start + job.payload_length as usize)
-            .ok_or_else(|| DecodingError::CodeBlockDecodeFailure.into()),
+        Payload::Gathered => gather_payload(plan.coding, job, source, scratch),
     }
 }
 
@@ -1558,7 +1623,7 @@ pub(in crate::j2c::decode) fn plan_band_route_beside<'a>(
         Some(live) => live,
         None => DecodeAllocationBudget::for_storage(storage)?,
     };
-    let mut plan = match plan_tile(
+    let plan = match plan_tile(
         tile,
         components,
         storage,
@@ -1600,8 +1665,9 @@ pub(in crate::j2c::decode) fn plan_band_route_beside<'a>(
     }
     let workers = threads.min(plan.strips.len());
     let prepared = (|| -> Result<usize> {
-        gather_payloads(&mut plan, storage, &mut budget)?;
-        // Each thread allocates its clipped-block scratch on first use.
+        // Each thread gathers payloads into scratch of its own as it
+        // decodes, and allocates its clipped-block scratch on first use.
+        include_payload_scratch(&mut budget, &plan, workers + 1)?;
         budget.include_elements::<f32>(
             (workers + 1)
                 .checked_mul(plan.max_clipped_samples)
@@ -1677,7 +1743,7 @@ impl BandRoute<'_> {
         index: usize,
         output: &mut [f32],
         workspace: &mut J2kCodeBlockDecodeWorkspace,
-        clipped_scratch: &mut Vec<f32>,
+        scratch: (&mut BlockScratch, PayloadSource<'_, '_>),
     ) -> Result<()> {
         let plan = &self.plan;
         decode_strip(
@@ -1685,9 +1751,9 @@ impl BandRoute<'_> {
             &plan.strips[index],
             output,
             workspace,
-            clipped_scratch,
-            &|job, output, stride, workspace| {
-                decode_classic_strip_block(plan, job, output, stride, workspace)
+            scratch,
+            &|job, payload, output, stride, workspace| {
+                decode_classic_strip_block(plan, job, payload, output, stride, workspace)
             },
         )
     }
@@ -1699,7 +1765,7 @@ impl BandRoute<'_> {
         index: usize,
         output: &mut [f32],
         workspace: &mut HtCodeBlockDecodeWorkspace,
-        clipped_scratch: &mut Vec<f32>,
+        scratch: (&mut BlockScratch, PayloadSource<'_, '_>),
     ) -> Result<()> {
         let plan = &self.plan;
         decode_strip(
@@ -1707,9 +1773,9 @@ impl BandRoute<'_> {
             &plan.strips[index],
             output,
             workspace,
-            clipped_scratch,
-            &|job, output, stride, workspace| {
-                decode_strip_block(plan, job, output, stride, workspace)
+            scratch,
+            &|job, payload, output, stride, workspace| {
+                decode_strip_block(plan, job, payload, output, stride, workspace)
             },
         )
     }

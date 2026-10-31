@@ -43,7 +43,8 @@ use std::sync::{Condvar, Mutex, MutexGuard};
 
 use super::banded_tier1::{self, RowOutput};
 use super::subband::{
-    plan_band_route, plan_band_route_beside, routes_tile, BandRoute, BandRouting,
+    plan_band_route, plan_band_route_beside, routes_tile, BandRoute, BandRouting, BlockScratch,
+    PayloadSource,
 };
 use super::workspace::{TaskScratch, TaskWorkspace};
 use super::{
@@ -234,6 +235,7 @@ fn decode_route(
     let strand_once = false;
     let mut coefficients = core::mem::take(&mut storage.coefficients);
     let slots = split_slots(&rings, &bands, storage, &mut coefficients);
+    let source = PayloadSource::new(storage);
     let result = slots.and_then(|slots| {
         let run = |rows: &mut [&mut (dyn SubBandRows + Send)]| -> Result<()> {
             match (lines.as_mut(), rows.first_mut()) {
@@ -249,7 +251,7 @@ fn decode_route(
                 slots,
                 &mut tile_ctx.classic_task_workspaces,
                 |index, output, workspace, scratch| {
-                    route.decode_classic(index, output, workspace, scratch)
+                    route.decode_classic(index, output, workspace, (scratch, source))
                 },
                 run,
                 profile_enabled,
@@ -263,7 +265,7 @@ fn decode_route(
                 slots,
                 &mut tile_ctx.ht_task_workspaces,
                 |index, output, workspace, scratch| {
-                    route.decode_ht(index, output, workspace, scratch)
+                    route.decode_ht(index, output, workspace, (scratch, source))
                 },
                 run,
                 profile_enabled,
@@ -403,6 +405,7 @@ pub(super) fn decode_tile_rows<'a>(
     let mut output_samples = 0usize;
     let mut coefficients = core::mem::take(&mut storage.coefficients);
     let slots = split_slots(&rings, &bands, storage, &mut coefficients);
+    let source = PayloadSource::new(storage);
     let result = slots.and_then(|slots| {
         let rings_len = buffer.len() - scratch_len;
         let (mut line_rings, scratch) = buffer.split_at_mut(rings_len);
@@ -429,7 +432,7 @@ pub(super) fn decode_tile_rows<'a>(
                 &mut tile_ctx.classic_task_workspaces,
                 |strip, output, workspace, scratch| {
                     let (route, strip) = route_strip(&routes, &strip_starts, strip)?;
-                    route.decode_classic(strip, output, workspace, scratch)
+                    route.decode_classic(strip, output, workspace, (scratch, source))
                 },
                 run,
                 profile_enabled,
@@ -444,7 +447,7 @@ pub(super) fn decode_tile_rows<'a>(
                 &mut tile_ctx.ht_task_workspaces,
                 |strip, output, workspace, scratch| {
                     let (route, strip) = route_strip(&routes, &strip_starts, strip)?;
-                    route.decode_ht(strip, output, workspace, scratch)
+                    route.decode_ht(strip, output, workspace, (scratch, source))
                 },
                 run,
                 profile_enabled,
@@ -1027,7 +1030,7 @@ fn run_bands<W: TaskScratch>(
     bands: &[Band],
     slots: Slots<'_>,
     bank: &mut [TaskWorkspace<W>],
-    decode: impl Fn(usize, &mut [f32], &mut W, &mut Vec<f32>) -> Result<()> + Sync,
+    decode: impl Fn(usize, &mut [f32], &mut W, &mut BlockScratch) -> Result<()> + Sync,
     run: impl FnOnce(&mut [&mut (dyn SubBandRows + Send)]) -> Result<()>,
     profile_enabled: bool,
     tier1_us: &mut u128,
@@ -1101,7 +1104,7 @@ fn run_bands<W: TaskScratch>(
                 scope,
                 decode,
                 workspace,
-                clipped_scratch: Vec::new(),
+                scratch: BlockScratch::default(),
                 current: try_filled_with(rings.len(), || None)?,
                 next: try_collect(rings.iter().map(|ring| ring.bands.start), rings.len())?,
                 helps,
@@ -1178,7 +1181,7 @@ fn try_filled_with<T>(len: usize, value: impl FnMut() -> T) -> Result<Vec<T>> {
 /// A pool worker: decode ready bands until none is left to start.
 fn work<W: TaskScratch>(
     shared: &Shared<'_, '_, '_, W>,
-    decode: &(impl Fn(usize, &mut [f32], &mut W, &mut Vec<f32>) -> Result<()> + Sync),
+    decode: &(impl Fn(usize, &mut [f32], &mut W, &mut BlockScratch) -> Result<()> + Sync),
 ) {
     let Ok(mut state) = shared.lock() else {
         return;
@@ -1187,7 +1190,7 @@ fn work<W: TaskScratch>(
         state.active -= 1;
         return;
     };
-    let mut clipped_scratch = Vec::new();
+    let mut scratch = BlockScratch::default();
     loop {
         let next = if state.error.is_some() {
             Ok(None)
@@ -1215,12 +1218,7 @@ fn work<W: TaskScratch>(
             return;
         }
         slot.fill(0.0);
-        let result = decode(
-            shared.bands[index].strip,
-            slot,
-            workspace,
-            &mut clipped_scratch,
-        );
+        let result = decode(shared.bands[index].strip, slot, workspace, &mut scratch);
         if shared.finish(index, slot, result).is_err() {
             return;
         }
@@ -1242,7 +1240,7 @@ struct PoolRows<'s, 'p, 'c, 'w, W, D> {
     scope: &'s rayon::Scope<'p>,
     decode: &'p D,
     workspace: &'w mut W,
-    clipped_scratch: Vec<f32>,
+    scratch: BlockScratch,
     /// Each ring's band being read, with its slot.
     current: Vec<Option<(usize, &'c mut [f32])>>,
     /// Each ring's next band to read.
@@ -1257,7 +1255,7 @@ struct PoolRows<'s, 'p, 'c, 'w, W, D> {
 impl<'p, 'c, W, D> PoolRows<'_, 'p, 'c, '_, W, D>
 where
     W: TaskScratch + 'p,
-    D: Fn(usize, &mut [f32], &mut W, &mut Vec<f32>) -> Result<()> + Sync,
+    D: Fn(usize, &mut [f32], &mut W, &mut BlockScratch) -> Result<()> + Sync,
     'c: 'p,
 {
     /// Send pool workers, up to the plan's count, while bands are ready.
@@ -1363,7 +1361,7 @@ where
             self.shared.bands[index].strip,
             slot,
             self.workspace,
-            &mut self.clipped_scratch,
+            &mut self.scratch,
         );
         self.tier1_us += profile::elapsed_us(start);
         self.shared.finish(index, slot, result)
@@ -1376,7 +1374,7 @@ where
             self.shared.bands[index].strip,
             slot,
             self.workspace,
-            &mut self.clipped_scratch,
+            &mut self.scratch,
         );
         self.tier1_us += profile::elapsed_us(start);
         result?;
@@ -1453,7 +1451,7 @@ where
 impl<'p, 'c, W, D> SubBandRows for PoolRows<'_, 'p, 'c, '_, W, D>
 where
     W: TaskScratch + 'p,
-    D: Fn(usize, &mut [f32], &mut W, &mut Vec<f32>) -> Result<()> + Sync,
+    D: Fn(usize, &mut [f32], &mut W, &mut BlockScratch) -> Result<()> + Sync,
     'c: 'p,
 {
     fn prepare_row(&mut self, sub_band: usize, y: u32) -> Result<()> {
