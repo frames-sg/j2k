@@ -96,7 +96,7 @@ pub(crate) fn full_image_route(image: &Image<'_>, request: RouteRequest) -> Full
         )
     };
     if streams {
-        streamed_route(image, request.fmt, request.parallelism)
+        streamed_route(image, request)
     } else {
         FullImageRoute::Planes
     }
@@ -119,46 +119,51 @@ const MIN_STREAMED_SAMPLES: u64 = 1 << 20;
 /// pixel images are 10% faster).
 const MIN_STREAMED_CODED_BITS_PER_SAMPLE: u64 = 4;
 
-/// Whether an image the planes route can decode streams anyway, because
-/// streaming was measured at least as fast for its kind:
-/// - an RGB image of several tiles, when it has a tile for every thread
-///   that decodes tiles at once (see [`tile_workers`]);
-/// - an untiled three-component image when it is reduced: classic at any
-///   thread count, HTJ2K on two threads or more (one thread decodes a half
-///   resolution HTJ2K image 2-9% faster on the planes);
-/// - an untiled three-component classic image of a megapixel or more and at
-///   least 4 coded bits per pixel on 2 to 11 pool threads.
+/// Whether a three-component image the planes route can decode streams
+/// anyway, because streaming was measured at least as fast for its kind:
+/// - a full-resolution tiled image whose tiles decode at once (see
+///   [`tile_workers`]);
+/// - an untiled reduced image: classic at any thread count, HTJ2K on two
+///   threads or more (one thread decodes a half resolution HTJ2K image 2-9%
+///   faster on the planes);
+/// - a full-resolution classic image of a megapixel or more and at least 4
+///   coded bits per pixel on 2 to 11 pool threads; a tiled one whose tiles
+///   do not decode at once streams them one after another, so each of its
+///   tiles must meet that as an image of its own (4096 x 4096 RGB in 16
+///   tiles of 1024 x 1024: 116.9 vs 124.9 ms on the planes with 6 threads).
 ///
-/// Untiled gray images (whose streamed bands wait on a single component),
+/// Gray images (whose streamed bands wait on a single component),
 /// full-resolution HTJ2K images (whose streamed IDWT and pack cost more per
-/// sample than the planes' fused last level) and small images keep the
-/// planes.
+/// sample than the planes' fused last level), small images and reduced
+/// tiled images (one tile after another was 1-13% slower on 6 threads,
+/// 1.5-10 times on 18) keep the planes.
 fn streams_by_default(image: &Image<'_>, request: RouteRequest) -> bool {
-    let threads = pool_threads(request.parallelism);
-    if image.tile_count() > 1 {
-        return request.components == 3
-            && image
-                .output_tile_rects()
-                .is_ok_and(|rects| tile_workers(&rects, threads).is_some());
-    }
     if request.components != 3 {
         return false;
     }
+    let threads = pool_threads(request.parallelism);
     let htj2k = image.uses_high_throughput_block_coding();
+    let tiled = image.tile_count() > 1;
     if request.reduced {
-        return !htj2k || threads >= 2;
+        return !tiled && (!htj2k || threads >= 2);
     }
-    if htj2k {
-        return false;
+    let mut samples = u64::from(image.width()) * u64::from(image.height());
+    let mut coded_bytes = request.coded_bytes;
+    if tiled {
+        let Ok(rects) = image.output_tile_rects() else {
+            return false;
+        };
+        if tile_workers(&rects, threads).is_some() {
+            return true;
+        }
+        let tiles = rects.len().max(1);
+        samples /= u64::try_from(tiles).unwrap_or(u64::MAX);
+        coded_bytes /= tiles;
     }
-    full_resolution_streams(
-        u64::from(image.width()) * u64::from(image.height()),
-        request.coded_bytes,
-        threads,
-    )
+    !htj2k && full_resolution_streams(samples, coded_bytes, threads)
 }
 
-/// Whether a full-resolution untiled three-component classic image of
+/// Whether a full-resolution three-component classic image (or tile) of
 /// `samples` pixels coded in `coded_bytes` streams on `threads` pool threads.
 fn full_resolution_streams(samples: u64, coded_bytes: usize, threads: usize) -> bool {
     let coded_bits = u64::try_from(coded_bytes)
@@ -216,15 +221,11 @@ const EST_STREAMED_BYTES_PER_TILE_SAMPLE: usize = 16;
 /// The streamed route for `image`: its tiles at once when it has a tile for
 /// every worker and the workers' tiles fit in the native decode budget, else
 /// one region decode of the whole image.
-fn streamed_route(
-    image: &Image<'_>,
-    fmt: PixelFormat,
-    parallelism: CpuDecodeParallelism,
-) -> FullImageRoute {
+fn streamed_route(image: &Image<'_>, request: RouteRequest) -> FullImageRoute {
     let Ok(rects) = image.output_tile_rects() else {
         return FullImageRoute::StreamedRegion;
     };
-    let Some(workers) = tile_workers(&rects, pool_threads(parallelism)) else {
+    let Some(workers) = tile_workers(&rects, pool_threads(request.parallelism)) else {
         return FullImageRoute::StreamedRegion;
     };
     let largest = rects
@@ -233,7 +234,7 @@ fn streamed_route(
         .max()
         .unwrap_or(0);
     let per_worker = largest
-        .saturating_mul(EST_STREAMED_BYTES_PER_TILE_SAMPLE + fmt.bytes_per_pixel())
+        .saturating_mul(EST_STREAMED_BYTES_PER_TILE_SAMPLE + request.fmt.bytes_per_pixel())
         .max(1);
     let workers = workers.min(j2k_native::DEFAULT_MAX_DECODE_BYTES / per_worker);
     if workers < 2 {

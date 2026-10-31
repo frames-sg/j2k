@@ -216,9 +216,9 @@ fn tiles_at_once_need_a_busy_tile_for_every_worker() {
     assert_eq!(workers(2048, 6), None);
 }
 
-/// Without a fixed budget, reduced three-component images stream (HTJ2K
-/// ones on a pool), while gray and small full-resolution images keep the
-/// planes.
+/// Without a fixed budget, reduced untiled three-component images stream
+/// (HTJ2K ones on a pool), while gray, reduced tiled and small
+/// full-resolution images keep the planes.
 #[test]
 fn the_default_streams_where_streaming_measured_faster() {
     let options = |use_ht_block_coding| EncodeOptions {
@@ -230,6 +230,13 @@ fn the_default_streams_where_streaming_measured_faster() {
     let classic = codestream(3, &options(false));
     let ht = codestream(3, &options(true));
     let gray = codestream(1, &options(false));
+    let tiled = codestream(
+        3,
+        &EncodeOptions {
+            tile_size: Some((48, 40)),
+            ..options(false)
+        },
+    );
     let default = |bytes: &[u8], scale, fmt, components, parallelism| {
         let image = image_at_scale(bytes, DecodeSettings::default(), scale).expect("image");
         full_image_route(
@@ -263,9 +270,13 @@ fn the_default_streams_where_streaming_measured_faster() {
                 default(&gray, scale, PixelFormat::Gray8, 1, parallelism),
                 FullImageRoute::Planes
             );
+            assert_eq!(
+                default(&tiled, scale, PixelFormat::Rgb8, 3, parallelism),
+                FullImageRoute::Planes
+            );
         }
-        // 96 x 80 samples are far below a megapixel.
-        for bytes in [classic.as_slice(), ht.as_slice()] {
+        // 96 x 80 samples are far below a megapixel, tiled or not.
+        for bytes in [classic.as_slice(), ht.as_slice(), tiled.as_slice()] {
             assert_eq!(
                 default(bytes, Downscale::None, PixelFormat::Rgb8, 3, parallelism),
                 FullImageRoute::Planes
