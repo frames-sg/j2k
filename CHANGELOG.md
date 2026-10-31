@@ -66,6 +66,49 @@ Staged workspace version: `0.13.2`.
   full-image decodes do. Before, 8-bit region decodes of such tiles failed
   with `IncompletePlaneStore` or `CodeBlockDecodeFailure`, and 16-bit and
   component-plane region decodes returned mid-gray samples for them.
+- An 8-bit full-image decode (`J2kDecoder::decode_into`, `decode_scaled_into`
+  and the decoders behind `decode_tiles_into`) whose component planes and
+  largest tile's workspace would pass the native decode budget now runs as a
+  region decode of the whole image, which writes rows as the streamed IDWT
+  finishes them, instead of failing with a resource-limit error. The native
+  decoder plans the planes route's charge from the codestream's tiles before
+  decoding (no planes or coefficients are allocated for it), so an image the
+  planes route decodes keeps that route, its output and its speed. A
+  5661 x 8287 RGB image now decodes at full resolution with about 100 MiB
+  peak heap on the default thread pool (26 MiB on one thread), where the
+  planes route with its budget raised to fit needs about 980 MiB. Untiled RGB
+  images decode within 8% of that route's time, 1024 x 1024-tiled RGB takes
+  up to 45% longer and grayscale up to 2.8 times as long. 16-bit outputs, and
+  images whose tiles have empty coarse resolutions, keep the planes route
+  and its error.
+- Full-image 8-bit decodes also stream when streaming was measured to be the
+  faster route for the image, chosen before decoding from the codestream's
+  header and tiles: reduced-resolution decodes (`decode_scaled_into`) of
+  untiled three-component images with an output of 1024 x 512 or more, classic
+  at any thread count and HTJ2K on two threads or more (a 5661 x 8287 RGB
+  image at 1/2 to 1/8 takes 5-47% less time on 6 threads or more, the same on
+  one, in 4 to 13 times less memory; HTJ2K images at 1/2 and 1/4 9-53% less),
+  smaller classic outputs from 256 x 256 on 2 to 11 pool threads;
+  full-resolution classic images coded at 4 bits per pixel or more from
+  512 x 512 on 2 to 11 pool threads (5-17% faster on 6 threads) and, below
+  2^19 samples, on larger pools too; and full-resolution images with a tile
+  for every thread. Those now decode their tiles at once on the calling thread
+  and the pool's threads, each tile on one thread, instead of one tile after
+  another: a 4096 x 8192 RGB image of 1024 x 1024 tiles decodes 8% faster than
+  on the planes with 6 threads and 23% faster with 18, in less than half the
+  memory. Tiled classic images with fewer tiles stream them one after another
+  on 2 to 11 pool threads when each tile is a megapixel or more. Tiled images
+  past the decode budget decode their tiles at once too (an 8192 x 8192 RGB
+  image of 1024 x 1024 tiles 22% faster with 18 threads, a 16384 x 16384 gray
+  one 2.9 times as fast). Untiled gray classic images stream at full
+  resolution from 2896 x 2896 below 12 pool threads and from 5792 x 5792 on
+  larger pools (12-15% faster on 6 threads, as fast elsewhere, in a fifth to a
+  seventh of the memory), and on one thread tiled RGB images stream their
+  tiles one after another and untiled classic RGB images of a megapixel or
+  more at 4 bits per pixel or more stream too (as fast, in a quarter to a
+  third of the memory). Reduced and tiled gray images, full-resolution HTJ2K
+  images, reduced tiled images, small images and images with few tiles on a
+  large pool keep the planes route. Output is unchanged.
 - x86-64 RGB8 decodes of 9/7 images round and pack the inverse ICT output with
   the runtime SIMD level (AVX2 where present) instead of a scalar library
   call per sample: the centered rounding of the inverse MCT runs eight
