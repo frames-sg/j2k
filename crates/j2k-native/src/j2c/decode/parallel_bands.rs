@@ -383,30 +383,30 @@ pub(super) fn decode_tile_rows<'a>(
         .map(|route| route.workers())
         .max()
         .unwrap_or(0);
-    let readers = if parallel_synthesis(components, coding, bank, route_workers) {
+    let samples = (copy.width() as usize).saturating_mul(copy.height() as usize);
+    let readers = if parallel_synthesis(components, coding, bank, route_workers, samples) {
         components
     } else {
         1
     };
     // Rows reconstruct in batches, charged by the region's width (see
-    // `roi_idwt_peak_elements`): two of them with a reader per component, so
-    // one finishes while the next reconstructs, unless the band rings are
-    // deep instead: then one batch of half the rows.
+    // `roi_idwt_peak_elements`): two of them with a reader per component of
+    // an HTJ2K tile, so one finishes while the next reconstructs. A classic
+    // tile holds one batch, of half the rows when its band rings are deep.
     let batch = streamed_batch_rows(
         region.width() as usize,
         copy.height() as usize,
         storage.deep_band_rings,
     );
+    let batches = if readers > 1 && coding == CodeBlockCoding::HighThroughput {
+        2
+    } else {
+        1
+    };
     let scratch_len = (copy.width() as usize)
         .checked_mul(components)
         .and_then(|samples| samples.checked_mul(batch))
-        .and_then(|samples| {
-            samples.checked_mul(if readers > 1 && !storage.deep_band_rings {
-                2
-            } else {
-                1
-            })
-        })
+        .and_then(|samples| samples.checked_mul(batches))
         .ok_or(ValidationError::ImageTooLarge)?;
     let (mut buffer, ring_lens) =
         banded_tier1::take_line_buffer(tile_ctx, storage, &line_plans, scratch_len)?;
@@ -536,11 +536,12 @@ pub(super) fn decode_tile_rows<'a>(
 
 /// Whether a tile streaming its rows from pool bands holds deeper band rings
 /// (see `DecompositionStorage::deep_band_rings`): a classic tile of several
-/// components with the pool threads to reconstruct each on its own reader
-/// (see [`parallel_synthesis`]). Its readers wait on classic Tier-1, which
-/// more bands in flight keep busier; the memory comes from holding one batch
-/// of rows instead of two. HTJ2K bands keep up with the shallower rings,
-/// and its readers gain more from the second batch.
+/// components on a pool of [`MIN_CLASSIC_SYNTHESIS_THREADS`] threads or
+/// more, which reconstructs each on its own reader (see
+/// [`parallel_synthesis`]). Its readers wait on classic Tier-1, which more
+/// bands in flight keep busier; the memory comes from holding a batch of
+/// half the rows. HTJ2K bands keep up with the shallower rings, and its
+/// readers gain more from the second batch.
 pub(super) fn deep_rings(tile: &Tile<'_>) -> bool {
     tile.component_infos.len() > 1
         && rayon::current_num_threads() >= MIN_CLASSIC_SYNTHESIS_THREADS
@@ -553,26 +554,46 @@ pub(super) fn deep_rings(tile: &Tile<'_>) -> bool {
         })
 }
 
-/// Pool threads a classic tile needs before its components reconstruct on
-/// the pool. A reader waiting for a band holds its thread, and classic
-/// Tier-1 keeps readers waiting, so a smaller pool does better with every
-/// thread decoding bands.
+/// Pool threads from which a classic tile reconstructs each component on its
+/// own reader whatever its size, and its band rings are deep.
 const MIN_CLASSIC_SYNTHESIS_THREADS: usize = 12;
 
+/// Pool threads from which a classic tile of [`MIN_CLASSIC_READER_SAMPLES`]
+/// or more reconstructs each component on its own reader below
+/// [`MIN_CLASSIC_SYNTHESIS_THREADS`]. A reader waiting for a band holds its
+/// thread, and classic Tier-1 keeps readers waiting, so a smaller pool does
+/// better with one reader that decodes bands while it waits (4-7% on 8
+/// threads). From 10 threads that one reader, which reconstructs every
+/// component and packs every row alone, bounds a large tile: a reader per
+/// component decodes 18000 x 12000 RGB 11-19% and 5661 x 8287 RGB 8-13%
+/// faster on 10 and 11 threads.
+const MIN_CLASSIC_READER_THREADS: usize = 10;
+
+/// Samples of each component from which a classic tile takes a reader per
+/// component on [`MIN_CLASSIC_READER_THREADS`] threads. Smaller tiles spend
+/// more of their time in Tier-1, from which the readers take two pool
+/// threads: on 10 threads a 4096 x 2048 lossless RGB image and the 2830 x
+/// 4143 to 708 x 1036 reduced decodes of a 5661 x 8287 one were 1-11% slower
+/// with them.
+const MIN_CLASSIC_READER_SAMPLES: usize = 1 << 24;
+
 /// Whether a streamed tile's `components` reconstruct on the pool, one per
-/// task, given its block coding, a workspace bank of `bank` and routes
-/// planned for `route_workers` pool threads.
+/// task, given its block coding, a workspace bank of `bank`, routes planned
+/// for `route_workers` pool threads and `samples` reconstructed per component.
 fn parallel_synthesis(
     components: usize,
     coding: CodeBlockCoding,
     bank: usize,
     route_workers: usize,
+    samples: usize,
 ) -> bool {
+    let threads = rayon::current_num_threads();
     components > 1
         && route_workers >= 2
         && bank > components
         && (coding == CodeBlockCoding::HighThroughput
-            || rayon::current_num_threads() >= MIN_CLASSIC_SYNTHESIS_THREADS)
+            || threads >= MIN_CLASSIC_SYNTHESIS_THREADS
+            || (threads >= MIN_CLASSIC_READER_THREADS && samples >= MIN_CLASSIC_READER_SAMPLES))
 }
 
 /// The route of a band's `strip`, counted over every component's route from
