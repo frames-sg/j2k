@@ -59,7 +59,7 @@ pub(crate) use decode::{
     build_referenced_classic_rgba_plan, build_referenced_htj2k_color_plan,
     build_referenced_htj2k_grayscale_plan, build_referenced_htj2k_rgba_plan,
     decode_preparsed_with_capacity_retry as decode_preparsed,
-    decode_rows_with_capacity_retry as decode_rows, prepare_region_tiles,
+    decode_rows_with_capacity_retry as decode_rows, full_decode_planes_floor, prepare_region_tiles,
 };
 pub use decode::{CpuDecodeParallelism, DecoderContext, DecoderWorkspace, DecoderWorkspaceStats};
 pub use recode::Reversible53CoefficientImage;

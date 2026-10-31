@@ -12,12 +12,14 @@ pub use component_handoff::{
     J2kNativeComponentPlane,
 };
 mod output;
+mod route;
 mod settings;
 mod srgb8;
 use output::{
     can_decode_u8_directly, expand_rgb8_to_rgba8, write_components_u16_output,
     write_components_u8_output, write_u16_output, write_u8_output, U8RowSink,
 };
+pub(crate) use route::{full_image_route, FullImageRoute};
 pub use settings::DecodeSettings;
 pub(crate) use srgb8::decode_image_srgb8;
 pub use srgb8::{J2kSrgb8Image, J2kSrgb8Layout};
@@ -60,6 +62,31 @@ pub(crate) fn decode_warnings_for_recovery(
 
 pub(crate) fn decode_warnings_for_image(image: &Image<'_>) -> Vec<J2kDecodeWarning> {
     decode_warnings_for_recovery(image.used_lenient_metadata_recovery())
+}
+
+/// Decode the full `image` into `out` on `route`, which
+/// [`full_image_route`] chose for it.
+pub(crate) fn decode_full_image_into_with_native_context<'a>(
+    image: &Image<'a>,
+    native_context: &mut j2k_native::DecoderContext<'a>,
+    out: &mut [u8],
+    stride: usize,
+    fmt: PixelFormat,
+    route: FullImageRoute,
+) -> Result<(), J2kError> {
+    match route {
+        FullImageRoute::Planes => {
+            decode_image_into_with_native_context(image, native_context, out, stride, fmt)
+        }
+        FullImageRoute::StreamedRegion => decode_image_region_into_with_native_context(
+            image,
+            native_context,
+            out,
+            stride,
+            fmt,
+            Rect::full((image.width(), image.height())),
+        ),
+    }
 }
 
 pub(crate) fn decode_image_into_with_native_context<'a>(

@@ -1,0 +1,315 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! What a full-image decode into component planes charges the decode budget
+//! at least, planned from the codestream before anything is decoded.
+//!
+//! The planes decode charges, in order: the parsed tiles' structural bytes
+//! and every component's image-sized plane (`TileDecodeContext::reset`), then
+//! for each tile its code-block records, the coefficients of its largest
+//! component and that component's IDWT workspace (`build`'s allocation plan,
+//! with the component coefficient layout). Each charge here is the same or
+//! smaller, so a decode whose floor passes the budget is refused on the
+//! planes, serially or on tile workers, and a decode the planes can finish
+//! never has a floor past the budget. The floor leaves out what `build`
+//! counts by walking precincts (most tag-tree nodes) and every later stage.
+
+use core::mem::size_of;
+
+use super::TileDecompositions;
+use crate::checked_decode_sample_count;
+use crate::error::{Result, ValidationError};
+use crate::j2c::build::{CodeBlock, Decomposition, Layer, Precinct, SubBand, SubBandType};
+use crate::j2c::codestream::Header;
+use crate::j2c::codestream::WaveletTransform;
+use crate::j2c::idwt::planned_workspace_elements;
+use crate::j2c::rect::IntRect;
+use crate::j2c::tag_tree::TagNode;
+use crate::j2c::tile::{self, ComponentTile, ResolutionTile, Tile};
+use crate::j2c::ComponentData;
+use crate::math::{SimdBuffer, SIMD_WIDTH};
+use crate::reader::BitReader;
+
+/// The bytes a full-image decode of `data` into component planes charges at
+/// least, when its full-image region decode could stream its rows instead:
+/// the image and its tiles have no offsets, one to four components at full
+/// sampling, an inverse MCT only over three or more components whose first
+/// three share a wavelet (as `streams_rows` requires), and no tile-component
+/// whose coarse resolutions are empty while finer ones are not, which the
+/// region IDWTs do not reconstruct. `None` when it could not, or when the
+/// header alone puts the planes, one tile's coefficients and its IDWT
+/// buffers within half of `budget`, which leaves the planes decode far from
+/// it unless its metadata is unusually large.
+///
+/// `retained_image_bytes` is what the image holds while it decodes, the
+/// tile parse's baseline. Errors are the tile parse's, which the planes
+/// decode reports too.
+pub(crate) fn full_decode_planes_floor(
+    data: &[u8],
+    header: &Header<'_>,
+    retained_image_bytes: usize,
+    budget: usize,
+) -> Result<Option<usize>> {
+    let planes = planes_bytes(header)?;
+    if header_estimate(header, planes).saturating_mul(2) <= budget || !image_streams_rows(header) {
+        return Ok(None);
+    }
+    let mut reader = BitReader::new(data);
+    let tiles = tile::parse(&mut reader, header, retained_image_bytes)?;
+    if tiles.is_empty() {
+        return Ok(None);
+    }
+    let skipped = header.skipped_resolution_levels;
+    let mut tile_floor = 0_usize;
+    for tile in tiles.iter() {
+        if !tile_streams_rows(tile, header.component_infos.len(), skipped) {
+            return Ok(None);
+        }
+        tile_floor = tile_floor.max(tile_workspace_floor(tile, skipped));
+    }
+    Ok(Some(
+        tiles
+            .structural_workspace_bytes()
+            .saturating_add(planes)
+            .saturating_add(tile_floor),
+    ))
+}
+
+/// What `reset` charges for every component's plane of the output image.
+fn planes_bytes(header: &Header<'_>) -> Result<usize> {
+    let samples = checked_decode_sample_count(
+        header.size_data.image_width(),
+        header.size_data.image_height(),
+    )?;
+    let padded =
+        SimdBuffer::<SIMD_WIDTH>::padded_len(samples).ok_or(ValidationError::ImageTooLarge)?;
+    let components = header.component_infos.len();
+    Ok(padded
+        .saturating_mul(size_of::<f32>())
+        .saturating_mul(components)
+        .saturating_add(components.saturating_mul(size_of::<ComponentData>())))
+}
+
+/// The planes, plus the coefficients and twice the output-resolution
+/// samples of one SIZ tile in `f32`: about what the planes decode charges
+/// for its largest tile, the IDWT's output, next-level scratch and band
+/// scratch included, without records or metadata.
+fn header_estimate(header: &Header<'_>, planes: usize) -> usize {
+    let size = &header.size_data;
+    let full = |tile: u32, extent: u32, offset: u32| tile.min(extent.saturating_sub(offset));
+    let width = full(
+        size.tile_width,
+        size.reference_grid_width,
+        size.tile_x_offset,
+    );
+    let height = full(
+        size.tile_height,
+        size.reference_grid_height,
+        size.tile_y_offset,
+    );
+    let reduced = |length: u32| {
+        u32::try_from(u64::from(length) >> header.skipped_resolution_levels)
+            .unwrap_or(u32::MAX)
+            .saturating_add(2)
+    };
+    let full_samples = (width as usize).saturating_mul(height as usize);
+    let output_samples = (reduced(width) as usize).saturating_mul(reduced(height) as usize);
+    planes.saturating_add(
+        full_samples
+            .saturating_add(output_samples.saturating_mul(2))
+            .saturating_mul(size_of::<f32>()),
+    )
+}
+
+/// The image-level conditions of `streams_rows`: no offsets and one to four
+/// components.
+fn image_streams_rows(header: &Header<'_>) -> bool {
+    let size = &header.size_data;
+    size.image_area_x_offset == 0
+        && size.image_area_y_offset == 0
+        && size.tile_x_offset == 0
+        && size.tile_y_offset == 0
+        && (1..=4).contains(&header.component_infos.len())
+}
+
+/// The tile-level conditions of `streams_rows` and the region IDWTs that
+/// `tile`'s header settles.
+fn tile_streams_rows(tile: &Tile<'_>, components: usize, skipped: u8) -> bool {
+    let infos = &tile.component_infos;
+    infos.len() == components
+        && infos.iter().all(|component| {
+            component.size_info.horizontal_resolution == 1
+                && component.size_info.vertical_resolution == 1
+                && !component.requires_exact_integer_decode()
+        })
+        && (!tile.mct
+            || (components >= 3
+                && infos[1..3].iter().all(|component| {
+                    component.wavelet_transform() == infos[0].wavelet_transform()
+                })))
+        && !tile
+            .component_tiles()
+            .any(|component_tile| has_empty_coarse_resolution(&component_tile, skipped))
+}
+
+/// Whether a resolution the decode reconstructs, up to its output, is empty
+/// while the component tile is not: a one-sample tile row or column at an
+/// odd position, say, has no samples at its coarsest levels.
+fn has_empty_coarse_resolution(component_tile: &ComponentTile<'_>, skipped: u8) -> bool {
+    if component_tile.rect.is_empty() {
+        return false;
+    }
+    let output_resolution = component_tile
+        .component_info
+        .num_decomposition_levels()
+        .saturating_sub(skipped);
+    component_tile
+        .resolution_tiles()
+        .take(usize::from(output_resolution) + 1)
+        .any(|resolution_tile| resolution_tile.rect.is_empty())
+}
+
+/// What `build` charges for `tile` at least beside the planes: its records,
+/// its largest component's `f32` coefficients at full resolution, and the
+/// largest component IDWT workspace at the output resolution.
+fn tile_workspace_floor(tile: &Tile<'_>, skipped: u8) -> usize {
+    let mut records = Records::default();
+    let mut coefficients = 0_usize;
+    let mut idwt = 0_usize;
+    for component_tile in tile.component_tiles() {
+        coefficients = coefficients.max(rect_samples(component_tile.rect));
+        records.tile_decompositions = records.tile_decompositions.saturating_add(1);
+        let active = component_tile
+            .component_info
+            .num_decomposition_levels()
+            .saturating_sub(skipped);
+        let mut highest = None;
+        let mut second_highest = None;
+        let mut third_highest = None;
+        let mut ll_rect = IntRect::from_xywh(0, 0, 0, 0);
+        for resolution_tile in component_tile.resolution_tiles() {
+            if resolution_tile.resolution == 0 {
+                ll_rect = resolution_tile.sub_band_rect(SubBandType::LowLow);
+                records.add_sub_band(&resolution_tile, SubBandType::LowLow, tile.num_layers);
+                continue;
+            }
+            records.decompositions = records.decompositions.saturating_add(1);
+            if resolution_tile.resolution <= active {
+                third_highest = second_highest;
+                second_highest = highest;
+                highest = Some(resolution_tile.rect);
+            }
+            for sub_band_type in [
+                SubBandType::HighLow,
+                SubBandType::LowHigh,
+                SubBandType::HighHigh,
+            ] {
+                records.add_sub_band(&resolution_tile, sub_band_type, tile.num_layers);
+            }
+        }
+        let transform = component_tile.component_info.wavelet_transform();
+        idwt = idwt.max(idwt_workspace(
+            highest,
+            [second_highest, third_highest],
+            ll_rect,
+            transform,
+        ));
+    }
+    records.bytes().saturating_add(
+        coefficients
+            .saturating_add(idwt)
+            .saturating_mul(size_of::<f32>()),
+    )
+}
+
+/// `IdwtWorkspaceTracker::finish`: the IDWT workspace of the highest active
+/// level and the two below it (see `idwt::planned_workspace_elements`), or
+/// the LL band when no level is active. A size `build` cannot represent is
+/// refused there, so it counts as more than any budget.
+fn idwt_workspace(
+    highest: Option<IntRect>,
+    below: [Option<IntRect>; 2],
+    ll_rect: IntRect,
+    transform: WaveletTransform,
+) -> usize {
+    let Some(highest) = highest else {
+        return rect_samples(ll_rect);
+    };
+    planned_workspace_elements(highest, below, transform).unwrap_or(usize::MAX)
+}
+
+fn rect_samples(rect: IntRect) -> usize {
+    (rect.width() as usize).saturating_mul(rect.height() as usize)
+}
+
+/// Record counts `build` plans for a tile, tag-tree nodes only as the two
+/// trees of each precinct need at least: a root, and a leaf per code-block.
+#[derive(Default)]
+struct Records {
+    tile_decompositions: usize,
+    decompositions: usize,
+    sub_bands: usize,
+    precincts: usize,
+    code_blocks: usize,
+    layers: usize,
+    tag_tree_nodes: usize,
+}
+
+impl Records {
+    fn add_sub_band(
+        &mut self,
+        resolution_tile: &ResolutionTile<'_>,
+        sub_band_type: SubBandType,
+        layers: u8,
+    ) {
+        let precincts = usize::try_from(resolution_tile.num_precincts()).unwrap_or(usize::MAX);
+        let code_blocks = code_block_count(
+            resolution_tile,
+            resolution_tile.sub_band_rect(sub_band_type),
+        );
+        self.sub_bands = self.sub_bands.saturating_add(1);
+        self.precincts = self.precincts.saturating_add(precincts);
+        self.code_blocks = self.code_blocks.saturating_add(code_blocks);
+        self.layers = self
+            .layers
+            .saturating_add(code_blocks.saturating_mul(usize::from(layers)));
+        self.tag_tree_nodes = self
+            .tag_tree_nodes
+            .saturating_add(precincts.max(code_blocks).saturating_mul(2));
+    }
+
+    fn bytes(&self) -> usize {
+        [
+            self.tile_decompositions
+                .saturating_mul(size_of::<TileDecompositions>()),
+            self.decompositions
+                .saturating_mul(size_of::<Decomposition>()),
+            self.sub_bands.saturating_mul(size_of::<SubBand>()),
+            self.precincts.saturating_mul(size_of::<Precinct>()),
+            self.code_blocks.saturating_mul(size_of::<CodeBlock>()),
+            self.layers.saturating_mul(size_of::<Layer>()),
+            self.tag_tree_nodes.saturating_mul(size_of::<TagNode>()),
+        ]
+        .into_iter()
+        .fold(0, usize::saturating_add)
+    }
+}
+
+/// The code-blocks of a sub-band, as `build` counts them before walking
+/// precincts.
+fn code_block_count(resolution_tile: &ResolutionTile<'_>, sub_band_rect: IntRect) -> usize {
+    if sub_band_rect.is_empty() {
+        return 0;
+    }
+    let cells = |start: u32, end: u32, size: u32| end.div_ceil(size).saturating_sub(start / size);
+    let columns = cells(
+        sub_band_rect.x0,
+        sub_band_rect.x1,
+        resolution_tile.code_block_width(),
+    );
+    let rows = cells(
+        sub_band_rect.y0,
+        sub_band_rect.y1,
+        resolution_tile.code_block_height(),
+    );
+    (columns as usize).saturating_mul(rows as usize)
+}

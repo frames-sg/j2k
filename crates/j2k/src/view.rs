@@ -7,9 +7,9 @@ use crate::{
         inspect_info_from_image, Image,
     },
     decode::{
-        decode_image_into_with_native_context, decode_image_region_into_with_native_context,
-        decode_warnings_for_image, validate_buffer, validate_region, J2kDecodeOutcome,
-        J2kDecodedComponents, J2kDecodedNativeComponents,
+        decode_full_image_into_with_native_context, decode_image_region_into_with_native_context,
+        decode_warnings_for_image, full_image_route, validate_buffer, validate_region,
+        FullImageRoute, J2kDecodeOutcome, J2kDecodedComponents, J2kDecodedNativeComponents,
     },
     parse::{parse_image_info, parse_info},
     scratch::J2kScratchPool,
@@ -123,6 +123,9 @@ pub struct J2kDecoder<'a> {
     image: Option<Image<'a>>,
     settings: DecodeSettings,
     native_context: j2k_native::DecoderContext<'a>,
+    /// Set by [`Self::set_full_decode_planes_budget`]; see
+    /// [`Self::full_decode_planes_budget`].
+    full_decode_planes_budget: Option<usize>,
 }
 
 /// Options for bounded J2K row decoding.
@@ -190,6 +193,7 @@ impl<'a> J2kDecoder<'a> {
             image: view.image,
             settings: view.settings,
             native_context: j2k_native::DecoderContext::default(),
+            full_decode_planes_budget: None,
         })
     }
 
@@ -316,9 +320,15 @@ impl<'a> J2kDecoder<'a> {
 
     /// Decode the full image into `out` using `stride` bytes per output row.
     ///
+    /// An 8-bit decode whose component planes would pass the native decode
+    /// budget runs as a region decode of the whole image, which writes rows
+    /// as they are finished instead of holding the planes.
+    ///
     /// # Errors
     /// Returns [`J2kError`] when the format is unsupported, the output buffer
-    /// is too small, or the codestream fails during decode.
+    /// is too small, or the codestream fails during decode. A decode that
+    /// runs as a region decode and fails partway may already have written
+    /// some rows of `out`.
     pub fn decode_into(
         &mut self,
         out: &mut [u8],
@@ -374,13 +384,29 @@ impl<'a> J2kDecoder<'a> {
     ) -> Result<J2kDecodeOutcome, J2kError> {
         validate_buffer(self.info.dimensions, out.len(), stride, fmt)?;
         self.ensure_image()?;
+        let planes_budget = self.full_decode_planes_budget();
         let (Some(image), native_context) = (self.image.as_ref(), &mut self.native_context) else {
             return Err(J2kError::internal_backend("internal image cache missing"));
         };
-        decode_image_into_with_native_context(image, native_context, out, stride, fmt)?;
+        let route = full_image_route(image, fmt, planes_budget);
+        let decoded = decode_full_image_into_with_native_context(
+            image,
+            native_context,
+            out,
+            stride,
+            fmt,
+            route,
+        );
+        let warnings = decode_warnings_for_image(image);
+        if route == FullImageRoute::StreamedRegion {
+            // As after a region decode, release the decode buffers rather
+            // than hold them while the decoder is idle.
+            self.native_context = self.fresh_native_context();
+        }
+        decoded?;
         Ok(j2k_core::DecodeOutcome::new(
             Rect::full(self.info.dimensions),
-            decode_warnings_for_image(image),
+            warnings,
         ))
     }
 
@@ -440,12 +466,16 @@ impl<'a> J2kDecoder<'a> {
     /// Decode the full image at a reduced resolution.
     ///
     /// `scale` uses the shared [`Downscale`] contract; `Downscale::None`
-    /// delegates to full-resolution decode.
+    /// delegates to full-resolution decode. As with [`Self::decode_into`],
+    /// an 8-bit decode whose component planes would pass the native decode
+    /// budget runs as a region decode of the whole reduced image.
     ///
     /// # Errors
     /// Returns [`J2kError`] when the format or scale request is unsupported,
     /// including a scale deeper than the codestream's resolution ladder, the
-    /// output buffer is too small, or decode fails.
+    /// output buffer is too small, or decode fails. A decode that runs as a
+    /// region decode and fails partway may already have written some rows of
+    /// `out`.
     pub fn decode_scaled_into(
         &mut self,
         pool: &mut J2kScratchPool,
@@ -462,7 +492,15 @@ impl<'a> J2kDecoder<'a> {
         let image_dims = (image.width(), image.height());
         validate_buffer(image_dims, out.len(), stride, fmt)?;
         let mut native_context = self.fresh_native_context();
-        decode_image_into_with_native_context(&image, &mut native_context, out, stride, fmt)?;
+        let route = full_image_route(&image, fmt, self.full_decode_planes_budget());
+        decode_full_image_into_with_native_context(
+            &image,
+            &mut native_context,
+            out,
+            stride,
+            fmt,
+            route,
+        )?;
         Ok(j2k_core::DecodeOutcome::new(
             Rect::full(image_dims),
             warnings,
@@ -527,6 +565,24 @@ impl<'a> J2kDecoder<'a> {
         self.image
             .as_ref()
             .ok_or_else(|| J2kError::internal_backend("internal image cache missing"))
+    }
+
+    /// The bytes a full-image 8-bit decode's component planes may charge
+    /// before it runs as a streamed region decode of the whole image
+    /// instead: the native decode budget, past which the planes decode is
+    /// refused.
+    fn full_decode_planes_budget(&self) -> usize {
+        self.full_decode_planes_budget
+            .unwrap_or(j2k_native::DEFAULT_MAX_DECODE_BYTES)
+    }
+
+    /// Test hook: hold full-image 8-bit decodes' component planes to
+    /// `bytes`, so that a small image takes the streamed region route that
+    /// only images past the native decode budget take otherwise. The
+    /// native decode budget itself is unchanged.
+    #[doc(hidden)]
+    pub fn set_full_decode_planes_budget(&mut self, bytes: usize) {
+        self.full_decode_planes_budget = Some(bytes);
     }
 
     fn fresh_native_context(&self) -> j2k_native::DecoderContext<'a> {

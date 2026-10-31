@@ -523,6 +523,44 @@ impl<'a> Image<'a> {
         Ok(())
     }
 
+    /// The bytes a full-image decode into component planes charges the
+    /// decode budget at least, planned from the codestream's tiles without
+    /// decoding, when [`Self::decode_region_rows_for_integer_output_with_context`]
+    /// over the whole image could stream its rows instead and so need no
+    /// planes. A caller holding the planes to `budget` bytes runs that
+    /// region decode when the floor passes it: the planes decode would be
+    /// refused, and an image it can finish never has a floor past the
+    /// budget.
+    ///
+    /// `None` when the region decode could not stream (a palette, channel
+    /// definition, sYCC or CIELab image, components of more than 24 bits,
+    /// subsampling, offsets, or a tile whose coarse resolutions are empty
+    /// while finer ones are not), or when the header alone puts the planes
+    /// and one tile's coefficients and IDWT buffers within half of `budget`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error parsing the tiles meets, which the planes decode
+    /// meets as well.
+    #[doc(hidden)]
+    pub fn full_decode_planes_floor(&self, budget: usize) -> Result<Option<usize>> {
+        if !self.permits_line_region_idwt()
+            || self
+                .header
+                .component_infos
+                .iter()
+                .any(|component| component.size_info.precision > 24)
+        {
+            return Ok(None);
+        }
+        j2c::full_decode_planes_floor(
+            self.codestream,
+            &self.header,
+            self.retained_header_metadata_bytes()?,
+            budget,
+        )
+    }
+
     /// Rounded-for-integer-output counterpart of
     /// [`Self::decode_components_with_ht_decoder`].
     ///

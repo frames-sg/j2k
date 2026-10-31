@@ -39,6 +39,7 @@ mod direct_plan;
 #[cfg(feature = "parallel")]
 mod parallel_bands;
 mod peak;
+mod planes_floor;
 mod reuse;
 mod state;
 mod store;
@@ -59,6 +60,7 @@ pub(crate) use self::direct_plan::{
     build_referenced_htj2k_grayscale_plan, build_referenced_htj2k_rgba_plan,
 };
 pub(crate) use self::peak::{record_workspace, WorkspaceBytes, WorkspacePeak};
+pub(crate) use self::planes_floor::full_decode_planes_floor;
 #[cfg(feature = "std")]
 pub(crate) use self::reuse::is_capacity_error;
 pub(crate) use self::state::{DecompositionStorage, TileDecodeContext, TileDecompositions};
