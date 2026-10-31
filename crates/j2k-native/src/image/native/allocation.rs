@@ -64,14 +64,18 @@ impl NativeOutputBudget {
         Ok(budget)
     }
 
-    pub(super) fn validate_component_pack(
-        retained_image_bytes: usize,
-        components: &[ComponentData],
-        component_owner_capacity: usize,
-        packed: &DecodedNativeComponents,
-    ) -> Result<()> {
-        let mut budget =
-            Self::for_decoded_channels(retained_image_bytes, components, component_owner_capacity)?;
+    /// The allowance of a decode's returned native component planes. They
+    /// are its output, like a caller's buffer, so the decode budget, which
+    /// holds the working memory they are packed from, does not charge them;
+    /// they are held to this allowance of their own before they are
+    /// allocated, and each allocation to the per-allocation cap. The planes
+    /// route and the rows route share it.
+    pub(super) fn for_output() -> Self {
+        Self::default()
+    }
+
+    pub(super) fn validate_component_pack(packed: &DecodedNativeComponents) -> Result<()> {
+        let mut budget = Self::for_output();
         budget.include_elements::<NativeComponentPlane>(packed.planes.capacity())?;
         for plane in &packed.planes {
             budget.include_elements::<u8>(plane.data.capacity())?;

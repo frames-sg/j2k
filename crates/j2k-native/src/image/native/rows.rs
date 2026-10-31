@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 
 use super::{
     round_clamped_native, signed_native_bounds, try_clone_color_space, unsigned_native_max,
+    NativeOutputBudget,
 };
 use crate::color::{
     ComponentPlane, ComponentRowSink, DecodedNativeComponents, NativeComponentPlane,
@@ -57,8 +58,10 @@ impl<'a> Image<'a> {
     /// The region of the whole image gives
     /// [`Self::decode_native_components_with_context`]'s planes.
     ///
-    /// The returned planes are the decode's output: like a caller's buffer
-    /// they are not charged to the decode budget, and each is held to the
+    /// The returned planes are the decode's output: like a caller's buffer,
+    /// and like the planes the planes route packs, they are not charged to
+    /// the decode budget but to an allowance of their own (see
+    /// `NativeOutputBudget::for_output`), and each is held to the
     /// per-allocation cap.
     ///
     /// # Errors
@@ -80,17 +83,28 @@ impl<'a> Image<'a> {
         }
         let dimensions = (roi.2, roi.3);
         let samples = checked_decode_sample_count(dimensions.0, dimensions.1)?;
+        let components = &self.header.component_infos;
+        let mut allowance = NativeOutputBudget::for_output();
+        allowance.include_elements::<NativeComponentPlane>(components.len())?;
+        for component in components {
+            let bytes_per_sample = native_bytes_per_sample(component.size_info.precision)?;
+            let bytes = checked_decode_byte_len2(samples, bytes_per_sample)?;
+            allowance.include_elements::<u8>(bytes)?;
+        }
+        allowance.include_color_space_clone(&self.color_space)?;
         let mut planes = Vec::new();
-        try_reserve_decode_elements(&mut planes, self.header.component_infos.len())?;
-        for component in &self.header.component_infos {
+        try_reserve_decode_elements(&mut planes, components.len())?;
+        allowance.include_capacity_overage::<NativeComponentPlane>(
+            components.len(),
+            planes.capacity(),
+        )?;
+        for component in components {
             let bit_depth = component.size_info.precision;
             let bytes_per_sample = native_bytes_per_sample(bit_depth)?;
+            let bytes = checked_decode_byte_len2(samples, bytes_per_sample)?;
             let mut data = Vec::new();
-            try_resize_decode_elements(
-                &mut data,
-                checked_decode_byte_len2(samples, bytes_per_sample)?,
-                0,
-            )?;
+            try_resize_decode_elements(&mut data, bytes, 0)?;
+            allowance.include_capacity_overage::<u8>(bytes, data.capacity())?;
             planes.push(NativeComponentPlane {
                 data,
                 dimensions,

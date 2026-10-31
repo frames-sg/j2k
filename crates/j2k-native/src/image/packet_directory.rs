@@ -118,21 +118,46 @@ impl PacketDirectoryCache {
 #[cfg(test)]
 mod tests {
     use crate::{
-        ColorSpace, CpuDecodeParallelism, DecodeSettings, DecoderContext, Image,
-        DEFAULT_MAX_DECODE_BYTES,
+        CpuDecodeParallelism, DecodeSettings, DecoderContext, Image, DEFAULT_MAX_DECODE_BYTES,
     };
 
+    /// An owned native component decode beside the packet cache: one with
+    /// room for its working memory and the cache keeps the cache, and one
+    /// whose working memory fits only without it evicts the cache and
+    /// retries. (Its planes are output, which the decode budget does not
+    /// charge, so the cache competes with the working memory only.)
     #[test]
     fn packet_directory_output_allocation_retries_successfully() {
         let bytes =
             include_bytes!("../../fixtures/packet_directory/openjpeg_rgb_origin5x3_rpcl.j2k");
-        let mut image = Image::new(bytes, &DecodeSettings::default()).unwrap();
-        // A retained profile is cloned only during output packing. Its size
-        // makes that phase, rather than coefficient decoding, the peak owner.
-        image.color_space = ColorSpace::Icc {
-            profile: vec![0; 1 << 20],
-            num_channels: 3,
+        let decode = |image: &Image<'_>, baseline| {
+            let mut ctx = DecoderContext::default();
+            ctx.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
+            image
+                .decode_native_components_with_context_and_retained_baseline(&mut ctx, baseline)
+                .map(|decoded| {
+                    decoded
+                        .planes()
+                        .iter()
+                        .map(|plane| plane.data().to_vec())
+                        .collect::<Vec<_>>()
+                })
         };
+        let mut control = Image::new(bytes, &DecodeSettings::default()).unwrap();
+        control.packet_cache = super::PacketDirectoryCache::disabled();
+        let (mut fits, mut fails) = (0, DEFAULT_MAX_DECODE_BYTES);
+        while fails - fits > 1 {
+            let candidate = fits + (fails - fits) / 2;
+            match decode(&control, candidate) {
+                Ok(_) => fits = candidate,
+                Err(error) => {
+                    assert!(crate::j2c::is_capacity_error(&error), "{error:?}");
+                    fails = candidate;
+                }
+            }
+        }
+        let expected = decode(&control, fits).unwrap();
+        let image = Image::new(bytes, &DecodeSettings::default()).unwrap();
         let metadata = image.retained_allocation_bytes().unwrap();
         let mut ctx = DecoderContext::default();
         ctx.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
@@ -141,31 +166,19 @@ mod tests {
                 .decode_region_components_with_context((60, 40, 16, 16), &mut ctx)
                 .unwrap();
         }
-        let expected = image
-            .decode_native_components_with_context(&mut ctx)
-            .unwrap();
-        let channels = &ctx.tile_decode_context.channel_data;
-        let channel_bytes = crate::image::allocation::DecodeOwnerBudget::for_components(
-            0,
-            channels,
-            channels.capacity(),
-        )
-        .unwrap()
-        .bytes();
-        let baseline =
-            DEFAULT_MAX_DECODE_BYTES - channel_bytes - expected.allocated_bytes().unwrap();
-        // Isolate the late failure: the core already fits with the cache live.
-        image
-            .run_decode(&mut ctx, None, None, true, baseline)
-            .expect("core fits with cache");
-        assert!(image.retained_allocation_bytes().unwrap() > metadata);
-        let actual = image
-            .decode_native_components_with_context_and_retained_baseline(&mut ctx, baseline)
-            .expect("owned output must evict and retry");
+        let cache = image.retained_allocation_bytes().unwrap() - metadata;
+        assert!(cache > 0);
+        // Room for the working memory beside the cache.
+        assert_eq!(
+            decode(&image, fits - cache).expect("the cache can stay"),
+            expected
+        );
+        assert_eq!(image.retained_allocation_bytes().unwrap(), metadata + cache);
+        assert_eq!(
+            decode(&image, fits).expect("eviction must restore a fitting request"),
+            expected
+        );
         assert_eq!(image.retained_allocation_bytes().unwrap(), metadata);
-        for (actual, expected) in actual.planes().iter().zip(expected.planes()) {
-            assert_eq!(actual.data(), expected.data());
-        }
     }
 
     #[test]

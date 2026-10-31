@@ -17,12 +17,14 @@ pub(crate) enum NativeRoute {
     Rows,
 }
 
-/// The bytes the planes route charges at least when it packs `image`'s
-/// output from its component planes at `bytes_per_sample` native bytes per
-/// sample: every `f32` plane and the packed samples. It holds both at once,
-/// after the decode's other buffers are released, and refuses a pack past
-/// the decode budget. Counts the components of `image`'s color space and
-/// alpha only, so it is at most the real charge.
+/// The bytes the planes route holds at least when it packs `image`'s output
+/// from its component planes at `bytes_per_sample` native bytes per sample:
+/// every `f32` plane and the packed samples, both at once, after the
+/// decode's other buffers are released. A 16-bit decode's packed samples
+/// are working memory, which the decode budget charges and refuses past it;
+/// native component planes are the decode's output, which it does not
+/// charge. Counts the components of `image`'s color space and alpha only,
+/// so it is at most the real amount.
 pub(in crate::decode) fn planes_pack_floor(image: &Image<'_>, bytes_per_sample: usize) -> usize {
     region_pack_floor(
         image,
@@ -46,8 +48,9 @@ fn region_pack_floor(image: &Image<'_>, roi: Rect, bytes_per_sample: usize) -> u
 /// of the whole image that packs its rows into the planes as they are
 /// finished, when its rows carry the native samples (see
 /// `Image::streamed_rows_native_precision`) and the planes route would be
-/// refused, by its decode (see `Image::full_decode_planes_floor`) or by its
-/// pack (see [`planes_pack_floor`]).
+/// refused by its decode (see `Image::full_decode_planes_floor`) or would
+/// hold more than the budget at once with its packed output (see
+/// [`planes_pack_floor`]), which the rows route never holds.
 ///
 /// A planning error keeps the planes route, which meets the same error and
 /// reports it.
