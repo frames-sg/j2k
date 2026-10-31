@@ -918,6 +918,8 @@ fn prepare_region_storage(
     {
         storage.deep_band_rings =
             storage.parallel_bands && storage.lockstep_lines && parallel_bands::deep_rings(tile);
+        storage.one_synthesis_reader =
+            storage.parallel_bands && storage.lockstep_lines && parallel_bands::one_reader(tile);
     }
     build::allocate_deferred_coefficients(
         storage,

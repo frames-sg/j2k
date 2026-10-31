@@ -393,10 +393,13 @@ pub(super) fn decode_tile_rows<'a>(
     // `roi_idwt_peak_elements`): two of them with a reader per component of
     // an HTJ2K tile, so one finishes while the next reconstructs. A classic
     // tile holds one batch, of half the rows when its band rings are deep.
+    // One reader holds one short batch, which it finishes before it
+    // reconstructs the next.
     let batch = streamed_batch_rows(
         region.width() as usize,
         copy.height() as usize,
         storage.deep_band_rings,
+        readers == 1,
     );
     let batches = if readers > 1 && coding == CodeBlockCoding::HighThroughput {
         2
@@ -552,6 +555,22 @@ pub(super) fn deep_rings(tile: &Tile<'_>) -> bool {
                 .code_block_style
                 .uses_high_throughput_block_coding()
         })
+}
+
+/// Whether a tile streaming its rows from pool bands reconstructs them
+/// through one reader whatever workers its routes plan (see
+/// [`parallel_synthesis`]): it has one component, or classic code-blocks on
+/// fewer pool threads than their components need to reconstruct on the pool.
+pub(super) fn one_reader(tile: &Tile<'_>) -> bool {
+    tile.component_infos.len() < 2
+        || (rayon::current_num_threads() < MIN_CLASSIC_SYNTHESIS_THREADS
+            && tile.component_infos.iter().all(|component| {
+                !component
+                    .coding_style
+                    .parameters
+                    .code_block_style
+                    .uses_high_throughput_block_coding()
+            }))
 }
 
 /// Pool threads from which a classic tile reconstructs each component on its

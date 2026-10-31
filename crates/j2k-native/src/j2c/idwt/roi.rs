@@ -30,14 +30,27 @@ const STREAMED_MIN_BATCHES: usize = 4;
 /// halved: halving the 116-row batches of an 18000-wide tile cost 2 to 5%.
 const STREAMED_DEEP_MIN_ROWS: usize = 128;
 
+/// Rows of each component a tile reconstructing through one reader holds
+/// at most in its batch. The reader transforms and hands over each batch
+/// before it reconstructs the next, so longer batches overlap nothing.
+const STREAMED_ONE_READER_ROWS: usize = 32;
+
 /// Rows of each component a tile streaming from pool bands reconstructs at
 /// once, for `height` rows of `width` samples. A tile whose band rings are
 /// deep holds one batch, which is transformed before the next one
 /// reconstructs, so its batches take half the rows while that leaves at
-/// least `STREAMED_DEEP_MIN_ROWS`: as fast, with half the rows held.
-pub(crate) fn streamed_batch_rows(width: usize, height: usize, deep_band_rings: bool) -> usize {
+/// least `STREAMED_DEEP_MIN_ROWS`: as fast, with half the rows held. A tile
+/// with `one_reader` holds one batch of at most `STREAMED_ONE_READER_ROWS`.
+pub(crate) fn streamed_batch_rows(
+    width: usize,
+    height: usize,
+    deep_band_rings: bool,
+    one_reader: bool,
+) -> usize {
     let rows = STREAMED_BATCH_SAMPLES / width.max(1);
-    let rows = if deep_band_rings && rows / 2 >= STREAMED_DEEP_MIN_ROWS {
+    let rows = if one_reader {
+        rows.min(STREAMED_ONE_READER_ROWS)
+    } else if deep_band_rings && rows / 2 >= STREAMED_DEEP_MIN_ROWS {
         rows / 2
     } else {
         rows
@@ -58,8 +71,8 @@ pub(crate) fn streamed_batch_rows(width: usize, height: usize, deep_band_rings: 
 /// level it holds nothing, since it copies the LL window straight into the
 /// plane. When the tile streams its rows to a sink, every component's rings
 /// are live at once, with a scratch row each as wide as its final window, or
-/// two batches of such rows from pool bands (see [`streamed_batch_rows`]), so
-/// the peak is their sum.
+/// one or two batches of such rows from pool bands (see
+/// [`streamed_batch_rows`]), so the peak is their sum.
 pub(crate) fn roi_idwt_peak_elements(
     storage: &DecompositionStorage<'_>,
     skipped_resolution_levels: u8,
@@ -103,13 +116,20 @@ pub(crate) fn roi_idwt_peak_elements(
                     if storage.parallel_bands {
                         // Two batches, when each component reconstructs
                         // on its own reader, unless the band rings hold
-                        // more bands instead.
-                        let batches = if storage.deep_band_rings { 1 } else { 2 };
+                        // more bands instead; one when the tile has one
+                        // reader.
+                        let one_reader = storage.one_synthesis_reader;
+                        let batches = if storage.deep_band_rings || one_reader {
+                            1
+                        } else {
+                            2
+                        };
                         width
                             .saturating_mul(streamed_batch_rows(
                                 width,
                                 height,
                                 storage.deep_band_rings,
+                                one_reader,
                             ))
                             .saturating_mul(batches)
                     } else {

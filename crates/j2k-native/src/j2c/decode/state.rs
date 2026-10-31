@@ -125,6 +125,10 @@ pub(crate) struct DecompositionStorage<'a> {
     /// every level, for a classic tile that streams its rows from a reader
     /// per component (see [`parallel_bands::deep_rings`]).
     pub(crate) deep_band_rings: bool,
+    /// Whether a tile streaming its rows from `parallel_bands` reconstructs
+    /// them through one reader whatever its pool's workers (see
+    /// [`parallel_bands::one_reader`]), which holds one short batch of rows.
+    pub(crate) one_synthesis_reader: bool,
     /// Whether every component's IDWT rings, and a scratch row each, are
     /// live at once, because the tile streams its rows to a sink.
     pub(crate) lockstep_lines: bool,
@@ -167,6 +171,7 @@ impl DecompositionStorage<'_> {
         self.banded_tier1 = false;
         self.parallel_bands = false;
         self.deep_band_rings = false;
+        self.one_synthesis_reader = false;
         self.lockstep_lines = false;
         self.roi_idwt_charge_elements = 0;
         self.tier1_band = None;
