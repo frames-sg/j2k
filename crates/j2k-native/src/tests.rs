@@ -1407,9 +1407,9 @@ fn decode_region_rejects_code_block_layer_metadata_amplification() {
     };
     let mut bytes =
         encode(&pixels, 8, 8, 1, 8, false, &options).expect("encode many-layer classic fixture");
-    // About a million 4x4 code-blocks with 32 layers each: their layer
+    // About four million 4x4 code-blocks with 32 layers each: their layer
     // records alone would exceed the decode budget.
-    rewrite_siz_to_single_large_tile(&mut bytes, 4_096);
+    rewrite_siz_to_single_large_tile(&mut bytes, 8_192);
     let image = Image::new(&bytes, &DecodeSettings::default()).expect("large SIZ parses");
 
     // A tiny region builds layer records only for the code-blocks it reads,

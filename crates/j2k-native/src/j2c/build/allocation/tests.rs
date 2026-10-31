@@ -520,3 +520,27 @@ fn region_decode_scratch_preserves_the_allocation_boundary() {
         }
     }
 }
+
+/// A layer record keeps its segment range in 8 bytes, tells a layer whose
+/// packet is unread from one that contributed no segments, and refuses a
+/// range it can't hold rather than truncating it.
+#[test]
+fn layer_records_keep_their_segment_ranges() {
+    use crate::j2c::build::Layer;
+
+    assert_eq!(size_of::<Layer>(), 8);
+    assert_eq!(Layer::UNREAD.segments(), None);
+    for range in [0..0, 0..3, 7..7, 41..48] {
+        let layer = Layer::with_segments(range.clone()).expect("range fits");
+        assert_eq!(layer.segments(), Some(range));
+    }
+    let last = u32::MAX as usize;
+    assert_eq!(
+        Layer::with_segments(last - 2..last - 1).and_then(|layer| layer.segments()),
+        Some(last - 2..last - 1)
+    );
+    assert!(Layer::with_segments(last..last + 1).is_none());
+    assert!(Layer::with_segments(0..last).is_none());
+    let start = core::hint::black_box(5);
+    assert!(Layer::with_segments(start..start - 2).is_none());
+}

@@ -1491,9 +1491,9 @@ mod tests {
     #[test]
     fn collect_classic_code_block_data_preserves_zero_length_segments() {
         let mut storage = DecompositionStorage::default();
-        storage.layers.push(Layer {
-            segments: Some(0..3),
-        });
+        storage
+            .layers
+            .push(Layer::with_segments(0..3).expect("test segment range"));
         storage.segments.push(Segment {
             idx: 0,
             coding_pases: 1,
@@ -1541,9 +1541,9 @@ mod tests {
     #[test]
     fn collect_classic_code_block_data_rejects_non_contiguous_segment_indices() {
         let mut storage = DecompositionStorage::default();
-        storage.layers.push(Layer {
-            segments: Some(0..2),
-        });
+        storage
+            .layers
+            .push(Layer::with_segments(0..2).expect("test segment range"));
         storage.segments.push(Segment {
             idx: 0,
             coding_pases: 1,

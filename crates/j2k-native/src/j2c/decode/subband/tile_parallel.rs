@@ -667,6 +667,14 @@ fn plan_tile<'a>(
     if !banded && !strips_are_disjoint(&mut plan.strips, storage.coefficients.len()) {
         return Ok(None);
     }
+    // Strips were reserved one per block; keep room for the rows planned.
+    let reserved = plan.strips.capacity();
+    plan.strips.shrink_to_fit();
+    budget.release_bytes(
+        reserved
+            .saturating_sub(plan.strips.capacity())
+            .saturating_mul(size_of::<Strip>()),
+    )?;
     budget.include_elements::<StripTask<'_, '_, '_>>(plan.strips.len())?;
     Ok(Some(plan))
 }
@@ -727,7 +735,7 @@ fn required_code_blocks(
                         count += 1;
                         segment_bytes = storage.layers[code_block.layers.clone()]
                             .iter()
-                            .filter_map(|layer| layer.segments.clone())
+                            .filter_map(|layer| layer.segments())
                             .flat_map(|range| &storage.segments[range])
                             .fold(segment_bytes, |bytes, segment| {
                                 bytes.saturating_add(segment.data.len())
@@ -801,7 +809,7 @@ fn classic_payload<'a>(
     let single = (counts.fragments <= 1).then(|| {
         storage.layers[code_block.layers.clone()]
             .iter()
-            .filter_map(|layer| layer.segments.clone())
+            .filter_map(|layer| layer.segments())
             .flat_map(|range| &storage.segments[range])
             .map(|segment| segment.data)
             .find(|data| !data.is_empty())
@@ -823,7 +831,7 @@ fn single_cleanup_segment<'a>(
         .ok_or(DecodingError::CodeBlockDecodeFailure)?;
     let mut cleanup = None;
     for layer in &storage.layers[code_block.layers.clone()] {
-        let Some(range) = layer.segments.clone() else {
+        let Some(range) = layer.segments() else {
             continue;
         };
         for segment in &storage.segments[range] {
@@ -975,7 +983,7 @@ fn gather_payload<'s>(
         .get(code_block.layers.clone())
         .ok_or(DecodingError::CodeBlockDecodeFailure)?;
     for layer in layers {
-        let Some(range) = layer.segments.clone() else {
+        let Some(range) = layer.segments() else {
             continue;
         };
         let segments = source

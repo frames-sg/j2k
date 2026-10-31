@@ -612,7 +612,7 @@ fn parse_inner<'a>(
                     let layer = &mut storage.layers[code_block.layers.clone()]
                         [progression_data.layer_num as usize];
 
-                    if let Some(segments) = layer.segments.clone() {
+                    if let Some(segments) = layer.segments() {
                         let segments = &mut storage.segments[segments.clone()];
 
                         for segment in segments {

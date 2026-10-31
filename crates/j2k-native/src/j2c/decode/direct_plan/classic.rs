@@ -54,7 +54,7 @@ pub(crate) fn collect_classic_code_block_data(
     let is_normal_mode = style.single_codeword_segment();
 
     for layer in &storage.layers[code_block.layers.start..code_block.layers.end] {
-        let Some(range) = layer.segments.clone() else {
+        let Some(range) = layer.segments() else {
             continue;
         };
 
@@ -144,7 +144,7 @@ pub(crate) fn collect_referenced_classic_code_block_data(
     let is_normal_mode = style.single_codeword_segment();
 
     for layer in &storage.layers[code_block.layers.start..code_block.layers.end] {
-        let Some(range) = layer.segments.clone() else {
+        let Some(range) = layer.segments() else {
             continue;
         };
 
@@ -227,7 +227,7 @@ pub(crate) fn classic_allocation_counts(
     let mut fragment_count = 0_usize;
 
     for layer in &storage.layers[code_block.layers.start..code_block.layers.end] {
-        let Some(range) = layer.segments.clone() else {
+        let Some(range) = layer.segments() else {
             continue;
         };
         for segment in &storage.segments[range] {

@@ -17,7 +17,7 @@ pub(crate) fn selected_code_block_segment_lengths(
     let mut refinement_length = 0usize;
 
     for layer in &storage.layers[code_block.layers.clone()] {
-        let Some(range) = layer.segments.clone() else {
+        let Some(range) = layer.segments() else {
             continue;
         };
 
@@ -64,7 +64,7 @@ pub(crate) fn collect_code_block_data_into(
 
     data.clear();
     for layer in &storage.layers[code_block.layers.clone()] {
-        let Some(range) = layer.segments.clone() else {
+        let Some(range) = layer.segments() else {
             continue;
         };
         for segment in &storage.segments[range] {

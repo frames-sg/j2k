@@ -48,7 +48,7 @@ impl Tier1Requirements {
             .get(code_block.layers.clone())
             .ok_or(DecodingError::CodeBlockDecodeFailure)?;
         for layer in layers {
-            let Some(segment_range) = layer.segments.clone() else {
+            let Some(segment_range) = layer.segments() else {
                 continue;
             };
             let segments = storage

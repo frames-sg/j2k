@@ -444,14 +444,10 @@ fn build_code_blocks(
             if end > storage.layers.capacity() {
                 return Err(DecodingError::HostAllocationFailed.into());
             }
-            storage.layers.extend(iter::repeat_n(
-                Layer {
-                    // This will be updated once we actually read the
-                    // layer segments.
-                    segments: None,
-                },
-                layer_count,
-            ));
+            // Each layer is updated once its packet's segments are read.
+            storage
+                .layers
+                .extend(iter::repeat_n(Layer::UNREAD, layer_count));
             if storage.layers.len() != end {
                 return Err(DecodingError::InvalidPrecinct.into());
             }
@@ -744,7 +740,42 @@ pub(crate) struct Segment<'a> {
     pub(crate) data: &'a [u8],
 }
 
-#[derive(Clone)]
+/// The segments one layer of a code-block contributed: a range of the
+/// tile's segment records, once the layer's packet has been read. A tile
+/// holds one per layer of every code-block, so it is kept to 8 bytes.
+#[derive(Clone, Copy)]
 pub(crate) struct Layer {
-    pub(crate) segments: Option<Range<usize>>,
+    start: u32,
+    /// The range's length, or [`Layer::UNREAD_LEN`] before the packet is
+    /// read.
+    len: u32,
+}
+
+impl Layer {
+    const UNREAD_LEN: u32 = u32::MAX;
+
+    /// A layer whose packet has not been read.
+    pub(crate) const UNREAD: Self = Self {
+        start: 0,
+        len: Self::UNREAD_LEN,
+    };
+
+    /// A layer that contributed the segments `range`, or `None` when the
+    /// range does not fit the record.
+    pub(crate) fn with_segments(range: Range<usize>) -> Option<Self> {
+        let start = u32::try_from(range.start).ok()?;
+        let len = u32::try_from(range.end.checked_sub(range.start)?)
+            .ok()
+            .filter(|len| *len != Self::UNREAD_LEN)?;
+        start.checked_add(len)?;
+        Some(Self { start, len })
+    }
+
+    /// The segments the layer contributed, once its packet has been read.
+    pub(crate) fn segments(&self) -> Option<Range<usize>> {
+        (self.len != Self::UNREAD_LEN).then(|| {
+            let start = self.start as usize;
+            start..start + self.len as usize
+        })
+    }
 }
