@@ -17,6 +17,10 @@
 //! - The IDWT waits only for a band a worker is decoding. A band nobody has
 //!   started it decodes itself, so it never depends on a pool thread being
 //!   free, even when the pool is busy with other work.
+//! - When the finest level's slots ahead of the IDWT hold fewer bands than
+//!   the pool has threads, as with one component, a classic band splits into
+//!   parts, runs of its blocks that threads decode at once into the band's
+//!   slot, so every thread has work without holding more bands.
 //!
 //! Every band is decoded once, including bands the IDWT never reads, so a
 //! decode visits, decodes and rejects the code-blocks the whole-window route
@@ -43,8 +47,8 @@ use std::sync::{Condvar, Mutex, MutexGuard};
 
 use super::banded_tier1::{self, RowOutput};
 use super::subband::{
-    plan_band_route, plan_band_route_beside, routes_tile, BandRoute, BandRouting, BlockScratch,
-    PayloadSource,
+    plan_band_route, plan_band_route_beside, routes_tile, BandOutput, BandRoute, BandRouting,
+    BlockScratch, PayloadSource,
 };
 use super::workspace::{TaskScratch, TaskWorkspace};
 use super::{
@@ -212,7 +216,16 @@ fn decode_route(
     profile_enabled: bool,
     tier1_us: &mut u128,
 ) -> Result<bool> {
-    let (rings, bands, active_levels) = plan_rings(route, storage, header, component_idx)?;
+    let (rings, mut bands, active_levels) = plan_rings(route, storage, header, component_idx)?;
+    if route.coding() == CodeBlockCoding::Classic {
+        split_bands(
+            tile_ctx,
+            &rings,
+            &mut bands,
+            route.workers() + 1,
+            |band, parts| route.strip_parts(band.strip, parts),
+        )?;
+    }
     // The executor's records live beside the route's plan and scratch while
     // the bands decode.
     route
@@ -340,7 +353,8 @@ pub(super) fn decode_tile_rows<'a>(
             }
         }
     }
-    let (rings, bands, strip_starts, active_levels) = plan_tile_rings(&routes, storage, header)?;
+    let (rings, mut bands, strip_starts, active_levels) =
+        plan_tile_rings(&routes, storage, header)?;
     let line_plans = plan_tile_lines(tile, header, tile_ctx, storage, &active_levels)?;
     // The executor's records live beside every route's plan and scratch
     // while the bands decode.
@@ -397,6 +411,18 @@ pub(super) fn decode_tile_rows<'a>(
     // One reader for every component of a classic tile leaves the pool's
     // threads to Tier-1, and decodes bands itself while it waits.
     let helps = readers == 1 && coding == CodeBlockCoding::Classic;
+    if coding == CodeBlockCoding::Classic {
+        split_bands(
+            tile_ctx,
+            &rings,
+            &mut bands,
+            workers + readers,
+            |band, parts| {
+                let (route, strip) = route_strip(&routes, &strip_starts, band.strip)?;
+                route.strip_parts(strip, parts)
+            },
+        )?;
+    }
     #[cfg(test)]
     let strand_once = tile_ctx.strand_pool_band;
     #[cfg(not(test))]
@@ -657,7 +683,9 @@ fn executor_bytes(rings: &[Ring], bands: &[Band]) -> Result<usize> {
         + size_of::<Status>()
         + size_of::<usize>()
         + 2 * size_of::<Option<&mut [f32]>>()
-        + size_of::<Reverse<(i64, Reverse<usize>, usize)>>();
+        + size_of::<Reverse<(i64, Reverse<usize>, usize)>>()
+        + 2 * size_of::<usize>()
+        + size_of::<Mutex<&mut [f32]>>();
     let per_ring = size_of::<Ring>()
         + 3 * size_of::<usize>()
         + size_of::<Vec<&mut [f32]>>()
@@ -677,6 +705,8 @@ struct Ring {
     sub_band: usize,
     stored: IntRect,
     slots: usize,
+    /// Whether the sub-band belongs to the finest level the IDWT reads.
+    finest: bool,
     /// Whether the ring holds the sub-band's whole window, because its bands
     /// fit in fewer rows than its slots would: each band then decodes into
     /// its own rows of the window, and all of them can be in flight at once.
@@ -694,6 +724,10 @@ struct Band {
     /// component, approximately: bands it reads sooner start sooner.
     order: i64,
     work: usize,
+    /// Runs of its blocks the band decodes in, on as many threads at once.
+    parts: usize,
+    /// The count its blocks were split for, which gives those `parts` runs.
+    split: usize,
 }
 
 /// The component's rings, its bands grouped by ring in row order, and the
@@ -744,6 +778,7 @@ fn plan_rings(
                 sub_band,
                 stored,
                 slots,
+                finest: resolution == active_levels,
                 whole_window,
                 bands: 0..0,
             });
@@ -775,6 +810,8 @@ fn plan_rings(
                 rows: first..last,
                 order: (i64::from(first) - SUPPORT_ROWS) * scales[index],
                 work: strip.work,
+                parts: 1,
+                split: 1,
             });
         }
         bands[start..].sort_unstable_by_key(|band| band.rows.start);
@@ -791,6 +828,84 @@ fn plan_rings(
         return Err(DecodingError::CodeBlockDecodeFailure.into());
     }
     Ok((rings, bands, active_levels))
+}
+
+/// Most parts a band splits into.
+const MAX_BAND_PARTS: usize = 8;
+
+/// Parts of finest-level bands that a split aims at per thread: with two, a
+/// thread that finishes a part finds another while the band's last parts
+/// finish. One part per thread left 5792 x 5792 gray 14% slower (80 against
+/// 70 ms on 18 threads).
+const BAND_PARTS_PER_THREAD: usize = 2;
+
+/// Split a classic tile's bands into parts for `threads` threads (see
+/// [`plan_parts`]), and count the bands that split.
+fn split_bands(
+    tile_ctx: &mut TileDecodeContext,
+    rings: &[Ring],
+    bands: &mut [Band],
+    threads: usize,
+    split: impl Fn(&Band, usize) -> Result<usize>,
+) -> Result<()> {
+    #[cfg(test)]
+    let forced = tile_ctx.band_parts;
+    #[cfg(not(test))]
+    let forced = None;
+    plan_parts(rings, bands, threads, forced, split)?;
+    tile_ctx.debug_counters.pool_band_parts += bands.iter().filter(|band| band.parts > 1).count();
+    Ok(())
+}
+
+/// Split `bands` into parts, through `split` (which returns the runs a band
+/// splits into for a wanted count), when the finest level's slots ahead of
+/// the bands being read hold fewer bands than `threads`: each finest band
+/// into as many parts as give [`BAND_PARTS_PER_THREAD`] parts per thread, and
+/// every other band into parts of about the same work. A tile whose rings
+/// hold bands enough keeps them whole. `forced` splits every band into that
+/// many parts instead.
+fn plan_parts(
+    rings: &[Ring],
+    bands: &mut [Band],
+    threads: usize,
+    forced: Option<usize>,
+    split: impl Fn(&Band, usize) -> Result<usize>,
+) -> Result<()> {
+    if let Some(parts) = forced {
+        for band in bands {
+            band.split = parts.max(1);
+            band.parts = split(band, band.split)?;
+        }
+        return Ok(());
+    }
+    let ahead: usize = rings
+        .iter()
+        .filter(|ring| ring.finest && !ring.whole_window)
+        .map(|ring| ring.slots.saturating_sub(1))
+        .sum();
+    if ahead == 0 || ahead >= threads {
+        return Ok(());
+    }
+    let parts = threads
+        .saturating_mul(BAND_PARTS_PER_THREAD)
+        .div_ceil(ahead)
+        .min(MAX_BAND_PARTS);
+    let (finest_work, finest_bands) = rings
+        .iter()
+        .filter(|ring| ring.finest)
+        .flat_map(|ring| &bands[ring.bands.clone()])
+        .fold((0usize, 0usize), |(work, count), band| {
+            (work.saturating_add(band.work), count + 1)
+        });
+    let part_work = (finest_work / finest_bands.max(1) / parts).max(1);
+    for band in bands {
+        let wanted = band.work.div_ceil(part_work).clamp(1, parts);
+        if wanted > 1 {
+            band.split = wanted;
+            band.parts = split(band, wanted)?;
+        }
+    }
+    Ok(())
 }
 
 /// Each ring's free slots and the slot each band of a whole-window ring
@@ -855,9 +970,15 @@ fn split_slots<'c>(
                     offset = start + len;
                 }
             } else {
+                // Each slot holds whole rows of the sub-band, as many as the
+                // ring's share of them: at least its longest band's, which
+                // can be fewer than the rows the ring was laid out for.
+                let width = ring.stored.width() as usize;
                 let slot_len = range
                     .len()
                     .checked_div(ring.slots)
+                    .and_then(|len| len.checked_div(width))
+                    .and_then(|rows| rows.checked_mul(width))
                     .ok_or(DecodingError::CodeBlockDecodeFailure)?;
                 for _ in 0..ring.slots {
                     let (slot, tail) = core::mem::take(&mut ring_samples).split_at_mut(slot_len);
@@ -892,11 +1013,16 @@ struct State<'c, 'w, W> {
     /// The rows of the window each band of a whole-window ring decodes into,
     /// until it starts.
     owned: Vec<Option<&'c mut [f32]>>,
-    /// Bands that can start, soonest read first, then largest first.
-    /// Entries for bands since started are skipped.
+    /// Bands that can start, or hand out another part, soonest read first,
+    /// then largest first. Entries for bands with nothing left to hand out
+    /// are skipped.
     ready: BinaryHeap<Reverse<(i64, Reverse<usize>, usize)>>,
     /// Each ring's next band to make ready.
     next_ready: Vec<usize>,
+    /// Parts of each band handed out, and parts still decoding or to hand
+    /// out.
+    next_part: Vec<usize>,
+    parts_left: Vec<usize>,
     /// How many of each ring's bands, from its first, have been freed.
     freed_prefix: Vec<usize>,
     /// Bands that finished decoding, for the drain to free; bands the IDWT
@@ -915,6 +1041,8 @@ struct State<'c, 'w, W> {
 struct Shared<'p, 'c, 'w, W> {
     rings: &'p [Ring],
     bands: &'p [Band],
+    /// The slot of each band decoding in parts, which its parts share.
+    outputs: Vec<Mutex<&'c mut [f32]>>,
     max_workers: usize,
     /// Test-only: the first worker to start a band abandons it.
     #[cfg(test)]
@@ -947,17 +1075,22 @@ impl<'c, 'w, W> Shared<'_, 'c, 'w, W> {
         }
     }
 
-    /// Take the next ready band, marked running, with a slot to decode into.
-    fn start_next(&self, state: &mut State<'c, 'w, W>) -> Result<Option<(usize, &'c mut [f32])>> {
+    /// Take the next ready band, marked running, with a slot to decode
+    /// into, or the next part of a running band.
+    fn start_next(&self, state: &mut State<'c, 'w, W>) -> Result<Option<Task<'c>>> {
         while let Some(Reverse((_, _, index))) = state.ready.pop() {
-            if state.status[index] == Status::Waiting {
-                return self.start(state, index).map(Some);
+            match state.status[index] {
+                Status::Waiting => return self.start(state, index).map(Some),
+                Status::Running if self.has_part(state, index) => {
+                    return Ok(Some(self.next_part(state, index)));
+                }
+                _ => {}
             }
         }
         Ok(None)
     }
 
-    fn start(&self, state: &mut State<'c, 'w, W>, index: usize) -> Result<(usize, &'c mut [f32])> {
+    fn start(&self, state: &mut State<'c, 'w, W>, index: usize) -> Result<Task<'c>> {
         let slot = match state.owned[index].take() {
             Some(slot) => slot,
             None => state.free_slots[self.bands[index].ring]
@@ -966,7 +1099,62 @@ impl<'c, 'w, W> Shared<'_, 'c, 'w, W> {
         };
         state.status[index] = Status::Running;
         state.running += 1;
-        Ok((index, slot))
+        let parts = self.bands[index].parts;
+        if parts <= 1 {
+            return Ok(Task::Whole(index, slot));
+        }
+        *self.output(index)? = slot;
+        state.parts_left[index] = parts;
+        Ok(self.next_part(state, index))
+    }
+
+    /// Whether running band `index` decodes in parts and has parts left to
+    /// hand out.
+    fn has_part(&self, state: &State<'c, 'w, W>, index: usize) -> bool {
+        let parts = self.bands[index].parts;
+        parts > 1 && state.next_part[index] < parts
+    }
+
+    /// Hand out the next part of running band `index`, leaving the band
+    /// ready while it has more.
+    fn next_part(&self, state: &mut State<'c, 'w, W>, index: usize) -> Task<'c> {
+        let part = state.next_part[index];
+        state.next_part[index] += 1;
+        if self.has_part(state, index) {
+            let band = &self.bands[index];
+            state
+                .ready
+                .push(Reverse((band.order, Reverse(band.work), index)));
+        }
+        Task::Part(index, part)
+    }
+
+    fn output(&self, index: usize) -> Result<MutexGuard<'_, &'c mut [f32]>> {
+        self.outputs[index]
+            .lock()
+            .map_err(|_| DecodingError::CodeBlockDecodeFailure.into())
+    }
+
+    /// Record a part of band `index`, decoded outside the lock; the last
+    /// part to finish leaves the band decoded.
+    fn finish_part(&self, index: usize, result: Result<()>) -> Result<()> {
+        let mut state = self.lock()?;
+        match result {
+            Ok(()) => {
+                state.parts_left[index] -= 1;
+                if state.parts_left[index] == 0 {
+                    let slot = core::mem::take(&mut *self.output(index)?);
+                    state.held[index] = Some(slot);
+                    Self::decoded(&mut state, index);
+                }
+            }
+            Err(error) => {
+                state.error.get_or_insert(error);
+            }
+        }
+        drop(state);
+        self.decoded.notify_all();
+        Ok(())
     }
 
     /// Band `index`, running, has decoded.
@@ -1013,6 +1201,13 @@ impl<'c, 'w, W> Shared<'_, 'c, 'w, W> {
     }
 }
 
+/// A thread's next decode: a band of one part, straight into its slot, or
+/// part `.1` of band `.0`, into the slot its parts share.
+enum Task<'c> {
+    Whole(usize, &'c mut [f32]),
+    Part(usize, usize),
+}
+
 /// Decode `bands` into `slots` on up to `workers` pool threads while `run`
 /// drives the IDWT through `readers` views of them, then decode the bands it
 /// didn't read. Each view reads its own sub-bands and decodes a band nobody
@@ -1030,7 +1225,7 @@ fn run_bands<W: TaskScratch>(
     bands: &[Band],
     slots: Slots<'_>,
     bank: &mut [TaskWorkspace<W>],
-    decode: impl Fn(usize, &mut [f32], &mut W, &mut BlockScratch) -> Result<()> + Sync,
+    decode: impl Fn(usize, BandOutput<'_, '_>, &mut W, &mut BlockScratch) -> Result<()> + Sync,
     run: impl FnOnce(&mut [&mut (dyn SubBandRows + Send)]) -> Result<()>,
     profile_enabled: bool,
     tier1_us: &mut u128,
@@ -1059,6 +1254,8 @@ fn run_bands<W: TaskScratch>(
         owned: slots.1,
         ready: BinaryHeap::new(),
         next_ready: try_collect(rings.iter().map(|ring| ring.bands.start), rings.len())?,
+        next_part: try_filled(bands.len(), 0)?,
+        parts_left: try_filled(bands.len(), 0)?,
         freed_prefix: try_filled(rings.len(), 0)?,
         decoded: Vec::new(),
         running: 0,
@@ -1079,6 +1276,7 @@ fn run_bands<W: TaskScratch>(
     let shared = Shared {
         rings,
         bands,
+        outputs: try_filled_with(bands.len(), || Mutex::new(<&mut [f32]>::default()))?,
         max_workers: workers,
         #[cfg(test)]
         strand_once: core::sync::atomic::AtomicBool::new(strand_once),
@@ -1178,10 +1376,38 @@ fn try_filled_with<T>(len: usize, value: impl FnMut() -> T) -> Result<Vec<T>> {
     Ok(values)
 }
 
+/// Run `task` with `workspace` and `scratch`, and record it.
+fn run_task<'c, W>(
+    shared: &Shared<'_, 'c, '_, W>,
+    decode: &(impl Fn(usize, BandOutput<'_, '_>, &mut W, &mut BlockScratch) -> Result<()> + Sync),
+    task: Task<'c>,
+    workspace: &mut W,
+    scratch: &mut BlockScratch,
+) -> Result<()> {
+    match task {
+        Task::Whole(index, slot) => {
+            slot.fill(0.0);
+            let strip = shared.bands[index].strip;
+            let result = decode(strip, BandOutput::Whole(&mut *slot), workspace, scratch);
+            shared.finish(index, slot, result)
+        }
+        Task::Part(index, part) => {
+            let band = &shared.bands[index];
+            let output = BandOutput::Part {
+                part,
+                parts: band.split,
+                slot: &shared.outputs[index],
+            };
+            let result = decode(band.strip, output, workspace, scratch);
+            shared.finish_part(index, result)
+        }
+    }
+}
+
 /// A pool worker: decode ready bands until none is left to start.
 fn work<W: TaskScratch>(
     shared: &Shared<'_, '_, '_, W>,
-    decode: &(impl Fn(usize, &mut [f32], &mut W, &mut BlockScratch) -> Result<()> + Sync),
+    decode: &(impl Fn(usize, BandOutput<'_, '_>, &mut W, &mut BlockScratch) -> Result<()> + Sync),
 ) {
     let Ok(mut state) = shared.lock() else {
         return;
@@ -1197,8 +1423,8 @@ fn work<W: TaskScratch>(
         } else {
             shared.start_next(&mut state)
         };
-        let (index, slot) = match next {
-            Ok(Some(started)) => started,
+        let task = match next {
+            Ok(Some(task)) => task,
             Ok(None) => break,
             Err(error) => {
                 state.error.get_or_insert(error);
@@ -1217,9 +1443,7 @@ fn work<W: TaskScratch>(
             }
             return;
         }
-        slot.fill(0.0);
-        let result = decode(shared.bands[index].strip, slot, workspace, &mut scratch);
-        if shared.finish(index, slot, result).is_err() {
+        if run_task(shared, decode, task, workspace, &mut scratch).is_err() {
             return;
         }
         state = match shared.lock() {
@@ -1255,7 +1479,7 @@ struct PoolRows<'s, 'p, 'c, 'w, W, D> {
 impl<'p, 'c, W, D> PoolRows<'_, 'p, 'c, '_, W, D>
 where
     W: TaskScratch + 'p,
-    D: Fn(usize, &mut [f32], &mut W, &mut BlockScratch) -> Result<()> + Sync,
+    D: Fn(usize, BandOutput<'_, '_>, &mut W, &mut BlockScratch) -> Result<()> + Sync,
     'c: 'p,
 {
     /// Send pool workers, up to the plan's count, while bands are ready.
@@ -1303,68 +1527,66 @@ where
             if let Some(error) = state.error {
                 return Err(error);
             }
-            match state.status[index] {
+            let task = match state.status[index] {
                 Status::Done => {
                     return state.held[index]
                         .take()
                         .ok_or(DecodingError::CodeBlockDecodeFailure.into());
                 }
-                Status::Running => {
-                    // A reader that helps decodes the next band nobody has
-                    // started while this one runs.
-                    if self.helps {
-                        if let Some((other, slot)) = self.shared.start_next(&mut state)? {
-                            // A reader decoding a band counts as an active
-                            // worker for anyone waiting on it.
-                            state.active += 1;
-                            drop(state);
-                            self.send_workers()?;
-                            let decoded = self.decode_for_pool(other, slot);
-                            state = self.shared.lock()?;
-                            state.active -= 1;
-                            decoded?;
-                            continue;
-                        }
-                    }
-                    state = self
-                        .shared
-                        .decoded
-                        .wait_timeout(state, STRANDED_CHECK)
-                        .map_err(|_| DecodingError::CodeBlockDecodeFailure)?
-                        .0;
-                    // A failed band stays running; its error ends the wait.
-                    if state.error.is_none()
-                        && state.status[index] == Status::Running
-                        && state.active == 0
-                    {
-                        state.stranded = true;
-                        return Err(DecodingError::CodeBlockDecodeFailure.into());
-                    }
-                }
-                Status::Waiting => {
-                    let (index, slot) = self.shared.start(&mut state, index)?;
-                    drop(state);
-                    self.decode_here(index, slot)?;
-                    return Ok(slot);
-                }
                 Status::Freed => return Err(DecodingError::CodeBlockDecodeFailure.into()),
+                // A band nobody has started, or its first part, decodes
+                // here; its other parts go to the pool.
+                Status::Waiting => Some(self.shared.start(&mut state, index)?),
+                // A reader decodes a part of this band nobody has started,
+                // and one that helps the next band or part nobody has
+                // started, while this one runs.
+                Status::Running if self.shared.has_part(&state, index) => {
+                    Some(self.shared.next_part(&mut state, index))
+                }
+                Status::Running if self.helps => self.shared.start_next(&mut state)?,
+                Status::Running => None,
+            };
+            if let Some(task) = task {
+                // A reader decoding a band counts as an active worker for
+                // anyone waiting on it.
+                state.active += 1;
+                drop(state);
+                self.send_workers()?;
+                let decoded = self.decode_for_pool(task);
+                state = self.shared.lock()?;
+                state.active -= 1;
+                decoded?;
+                continue;
+            }
+            state = self
+                .shared
+                .decoded
+                .wait_timeout(state, STRANDED_CHECK)
+                .map_err(|_| DecodingError::CodeBlockDecodeFailure)?
+                .0;
+            // A failed band stays running; its error ends the wait.
+            if state.error.is_none() && state.status[index] == Status::Running && state.active == 0
+            {
+                state.stranded = true;
+                drop(state);
+                return Err(DecodingError::CodeBlockDecodeFailure.into());
             }
         }
     }
 
-    /// Decode band `index`, which another reader or the drain will take,
-    /// and hand it over as a worker does.
-    fn decode_for_pool(&mut self, index: usize, slot: &'c mut [f32]) -> Result<()> {
+    /// Decode `task`, a band or part this reader, another one or the drain
+    /// will take, and hand it over as a worker does.
+    fn decode_for_pool(&mut self, task: Task<'c>) -> Result<()> {
         let start = profile::profile_now(self.profile_enabled);
-        slot.fill(0.0);
-        let result = (self.decode)(
-            self.shared.bands[index].strip,
-            slot,
+        let result = run_task(
+            self.shared,
+            self.decode,
+            task,
             self.workspace,
             &mut self.scratch,
         );
         self.tier1_us += profile::elapsed_us(start);
-        self.shared.finish(index, slot, result)
+        result
     }
 
     fn decode_here(&mut self, index: usize, slot: &mut [f32]) -> Result<()> {
@@ -1372,7 +1594,7 @@ where
         slot.fill(0.0);
         let result = (self.decode)(
             self.shared.bands[index].strip,
-            slot,
+            BandOutput::Whole(slot),
             self.workspace,
             &mut self.scratch,
         );
@@ -1418,11 +1640,16 @@ where
             let next = self.shared.start_next(&mut state)?;
             let running = state.running > 0;
             match next {
-                Some((index, slot)) => {
+                Some(Task::Whole(index, slot)) => {
                     drop(state);
                     self.send_workers()?;
                     self.decode_here(index, slot)?;
                     self.shared.lock()?.held[index] = Some(slot);
+                }
+                Some(part @ Task::Part(..)) => {
+                    drop(state);
+                    self.send_workers()?;
+                    self.decode_for_pool(part)?;
                 }
                 None if running => {
                     let mut state = self
@@ -1451,7 +1678,7 @@ where
 impl<'p, 'c, W, D> SubBandRows for PoolRows<'_, 'p, 'c, '_, W, D>
 where
     W: TaskScratch + 'p,
-    D: Fn(usize, &mut [f32], &mut W, &mut BlockScratch) -> Result<()> + Sync,
+    D: Fn(usize, BandOutput<'_, '_>, &mut W, &mut BlockScratch) -> Result<()> + Sync,
     'c: 'p,
 {
     fn prepare_row(&mut self, sub_band: usize, y: u32) -> Result<()> {

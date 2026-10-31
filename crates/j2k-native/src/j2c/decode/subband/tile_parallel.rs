@@ -1533,6 +1533,19 @@ fn job_payload<'p>(
     }
 }
 
+/// Where a band decodes: into its slot, or as run `part` of its blocks split
+/// for `parts` parts (see [`BandRoute::strip_parts`]), into the slot its
+/// parts share. A part zeroes its own columns of the slot, from its first
+/// block to the next part's, and copies each block in under the lock.
+pub(in crate::j2c::decode) enum BandOutput<'o, 'c> {
+    Whole(&'o mut [f32]),
+    Part {
+        part: usize,
+        parts: usize,
+        slot: &'o Mutex<&'c mut [f32]>,
+    },
+}
+
 /// One code-block row of a sub-band, as [`plan_band_route`] plans it: the
 /// band's rows, counted from the top of the sub-band's stored rectangle.
 #[derive(Clone, Copy)]
@@ -1551,9 +1564,10 @@ pub(in crate::j2c::decode) struct BandRoute<'a> {
     plan: TilePlan<'a>,
     workers: usize,
     growths: usize,
-    /// The decode's budget with the plan, the payload arena and every
-    /// thread's clipped-block scratch charged, which stay live while the
-    /// bands decode.
+    /// The decode's budget with the plan, every thread's payload and block
+    /// scratch and the bank's growth charged, which stay live while the
+    /// bands decode, beside whatever the budget the route was planned in
+    /// held already.
     budget: DecodeAllocationBudget,
 }
 
@@ -1666,11 +1680,12 @@ pub(in crate::j2c::decode) fn plan_band_route_beside<'a>(
     let workers = threads.min(plan.strips.len());
     let prepared = (|| -> Result<usize> {
         // Each thread gathers payloads into scratch of its own as it
-        // decodes, and allocates its clipped-block scratch on first use.
+        // decodes, and allocates its block scratch on first use: a clipped
+        // block, or any block of a band it decodes a part of.
         include_payload_scratch(&mut budget, &plan, workers + 1)?;
         budget.include_elements::<f32>(
             (workers + 1)
-                .checked_mul(plan.max_clipped_samples)
+                .checked_mul(band_scratch_samples(&plan)?)
                 .ok_or(ValidationError::ImageTooLarge)?,
         )?;
         let (width, height) = (plan.max_width, plan.max_height);
@@ -1708,6 +1723,15 @@ pub(in crate::j2c::decode) fn plan_band_route_beside<'a>(
     }
 }
 
+/// The block scratch each thread of a band route holds: as large as any
+/// block, since a part decodes every block of its run through it.
+fn band_scratch_samples(plan: &TilePlan<'_>) -> Result<usize> {
+    let block = (plan.max_width as usize)
+        .checked_mul(plan.max_height as usize)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    Ok(block.max(plan.max_clipped_samples))
+}
+
 impl BandRoute<'_> {
     pub(in crate::j2c::decode) fn coding(&self) -> CodeBlockCoding {
         self.plan.coding
@@ -1736,19 +1760,35 @@ impl BandRoute<'_> {
         })
     }
 
-    /// Decode strip `index` of a classic plan into `output`, which holds the
-    /// band's rows from its first.
+    /// The runs of blocks strip `index` splits into when it aims at
+    /// `parts` parts of about equal work: `parts` at most, fewer when a few
+    /// blocks hold most of its work.
+    pub(in crate::j2c::decode) fn strip_parts(&self, index: usize, parts: usize) -> Result<usize> {
+        let strip = self
+            .plan
+            .strips
+            .get(index)
+            .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+        let mut runs = 0usize;
+        split_strip(&self.plan, strip, parts, |_, _| {
+            runs += 1;
+            Ok(())
+        })?;
+        Ok(runs.max(1))
+    }
+
+    /// Decode strip `index` of a classic plan into `output`, whose slot
+    /// holds the band's rows from its first.
     pub(in crate::j2c::decode) fn decode_classic(
         &self,
         index: usize,
-        output: &mut [f32],
+        output: BandOutput<'_, '_>,
         workspace: &mut J2kCodeBlockDecodeWorkspace,
         scratch: (&mut BlockScratch, PayloadSource<'_, '_>),
     ) -> Result<()> {
         let plan = &self.plan;
-        decode_strip(
-            plan,
-            &plan.strips[index],
+        self.decode_band(
+            index,
             output,
             workspace,
             scratch,
@@ -1758,19 +1798,18 @@ impl BandRoute<'_> {
         )
     }
 
-    /// Decode strip `index` of an HT plan into `output`, which holds the
-    /// band's rows from its first.
+    /// Decode strip `index` of an HT plan into `output`, whose slot holds
+    /// the band's rows from its first.
     pub(in crate::j2c::decode) fn decode_ht(
         &self,
         index: usize,
-        output: &mut [f32],
+        output: BandOutput<'_, '_>,
         workspace: &mut HtCodeBlockDecodeWorkspace,
         scratch: (&mut BlockScratch, PayloadSource<'_, '_>),
     ) -> Result<()> {
         let plan = &self.plan;
-        decode_strip(
-            plan,
-            &plan.strips[index],
+        self.decode_band(
+            index,
             output,
             workspace,
             scratch,
@@ -1778,6 +1817,49 @@ impl BandRoute<'_> {
                 decode_strip_block(plan, job, payload, output, stride, workspace)
             },
         )
+    }
+
+    fn decode_band<W>(
+        &self,
+        index: usize,
+        output: BandOutput<'_, '_>,
+        workspace: &mut W,
+        scratch: (&mut BlockScratch, PayloadSource<'_, '_>),
+        decode_block: &impl Fn(&BlockJob<'_>, &[u8], &mut [f32], usize, &mut W) -> Result<()>,
+    ) -> Result<()> {
+        let plan = &self.plan;
+        let strip = plan
+            .strips
+            .get(index)
+            .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+        match output {
+            BandOutput::Whole(slot) => {
+                decode_strip(plan, strip, slot, workspace, scratch, decode_block)
+            }
+            BandOutput::Part { part, parts, slot } => {
+                let mut jobs = None;
+                let mut run = 0usize;
+                split_strip(plan, strip, parts, |range, _| {
+                    if run == part {
+                        jobs = Some(range);
+                    }
+                    run += 1;
+                    Ok(())
+                })?;
+                let jobs = jobs.ok_or(DecodingError::CodeBlockDecodeFailure)?;
+                decode_part(
+                    plan,
+                    strip,
+                    jobs,
+                    slot,
+                    true,
+                    band_scratch_samples(plan)?,
+                    workspace,
+                    scratch,
+                    decode_block,
+                )
+            }
+        }
     }
 
     /// Count the plan's blocks and record the decode's peak with the plan
@@ -1791,7 +1873,7 @@ impl BandRoute<'_> {
         let counts = TaskCounts {
             tasks: 0,
             shared: 0,
-            scratch_samples: self.plan.max_clipped_samples,
+            scratch_samples: band_scratch_samples(&self.plan)?,
             part_work: None,
         };
         record_route_peak(tile_ctx, storage, &self.plan, self.workers + 1, counts)?;

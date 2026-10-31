@@ -698,6 +698,8 @@ pub(crate) struct DecodeDebugCounters {
     /// Components that gave up the pool for whole windows because a band
     /// was left running with no worker to finish it.
     pub(crate) pool_band_fallbacks: usize,
+    /// Pool bands planned in parts, summed over decoded tiles.
+    pub(crate) pool_band_parts: usize,
     /// The bytes the decode's budget starts from after `reset`, retained
     /// capacity included.
     pub(crate) decode_baseline_bytes: usize,

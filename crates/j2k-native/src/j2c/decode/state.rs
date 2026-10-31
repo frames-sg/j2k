@@ -263,6 +263,10 @@ pub(crate) struct TileDecodeContext {
     /// band is left running with no worker to finish it.
     #[cfg(all(test, feature = "parallel"))]
     pub(crate) strand_pool_band: bool,
+    /// Test-only: each pool band splits into this many parts, as far as its
+    /// blocks allow, whatever the pool's size.
+    #[cfg(all(test, feature = "parallel"))]
+    pub(crate) band_parts: Option<usize>,
     /// Test-only: the average work per band below which a component's
     /// bands decode over whole windows instead of on the pool; zero, so
     /// unit tests' tiny fixtures take the pool, unless a test sets it.

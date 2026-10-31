@@ -89,6 +89,11 @@ struct Decoded {
         expect(dead_code, reason = "only the pool band tests compare the counters")
     )]
     skipped_blocks: usize,
+    #[cfg_attr(
+        not(feature = "parallel"),
+        expect(dead_code, reason = "only the pool band tests compare the counters")
+    )]
+    parted_bands: usize,
 }
 
 fn decode_planes(image: &Image<'_>, roi: (u32, u32, u32, u32)) -> Decoded {
@@ -131,6 +136,7 @@ fn decode_planes(image: &Image<'_>, roi: (u32, u32, u32, u32)) -> Decoded {
         pool_components: counters.pool_band_components,
         decoded_blocks: counters.decoded_code_blocks,
         skipped_blocks: counters.skipped_code_blocks,
+        parted_bands: counters.pool_band_parts,
     }
 }
 
@@ -139,8 +145,18 @@ fn decode_rows(
     roi: (u32, u32, u32, u32),
     parallelism: CpuDecodeParallelism,
 ) -> Decoded {
+    decode_rows_with(image, roi, parallelism, |_| {})
+}
+
+fn decode_rows_with(
+    image: &Image<'_>,
+    roi: (u32, u32, u32, u32),
+    parallelism: CpuDecodeParallelism,
+    configure: impl FnOnce(&mut DecoderContext),
+) -> Decoded {
     let mut context = DecoderContext::default();
     context.set_cpu_decode_parallelism(parallelism);
+    configure(&mut context);
     let mut sink = CollectingSink::new(roi.2, roi.3);
     image
         .decode_region_rows_for_integer_output_with_context(roi, &mut context, &mut sink)
@@ -167,6 +183,7 @@ fn decode_rows(
         pool_components: counters.pool_band_components,
         decoded_blocks: counters.decoded_code_blocks,
         skipped_blocks: counters.skipped_code_blocks,
+        parted_bands: counters.pool_band_parts,
     }
 }
 
@@ -346,6 +363,67 @@ fn pool_band_rows_match_component_planes_bit_for_bit() {
             }
         }
     }
+}
+
+/// A streamed decode whose classic bands split into parts, which threads
+/// decode at once into each band's slot, must give the serial planes' rows
+/// bit for bit, decode and skip the same code-blocks, and hold no planes.
+#[cfg(feature = "parallel")]
+#[test]
+fn pool_band_part_rows_match_component_planes_bit_for_bit() {
+    let mut parted = 0;
+    for threads in [2, 13] {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("build pool");
+        for case in row_sink_cases()
+            .into_iter()
+            .filter(|case| !case.options.use_ht_block_coding && case.options.num_layers <= 1)
+        {
+            let pixels = noisy_pixels(case.components);
+            let bytes = encode(
+                &pixels,
+                WIDTH,
+                HEIGHT,
+                u16::from(case.components),
+                8,
+                false,
+                &case.options,
+            )
+            .expect("encode band part row fixture");
+            let image = Image::new_with_reduction(&bytes, &DecodeSettings::default(), 0)
+                .expect("parse band part row fixture");
+            let (width, height) = (image.width(), image.height());
+            for roi in [
+                (0, 0, width, height),
+                (width / 3, height / 3, width / 7, height / 9),
+                (0, height - 9, width, 9),
+            ] {
+                let planes = decode_planes(&image, roi);
+                for parts in [None, Some(2), Some(5)] {
+                    let label = format!(
+                        "{} threads={threads} roi={roi:?} parts={parts:?}",
+                        case.label
+                    );
+                    let rows = pool.install(|| {
+                        decode_rows_with(&image, roi, CpuDecodeParallelism::Auto, |context| {
+                            context.tile_decode_context.band_parts = parts;
+                        })
+                    });
+                    assert_eq!(rows.planes, planes.planes, "{label}");
+                    if rows.pool_components > 0 {
+                        assert!(rows.streamed, "{label}: streamed");
+                        assert!(rows.channel_bytes <= 256, "{label}: no planes");
+                        assert_eq!(rows.decoded_blocks, planes.decoded_blocks, "{label}");
+                        assert_eq!(rows.skipped_blocks, planes.skipped_blocks, "{label}");
+                    }
+                    parted += rows.parted_bands;
+                }
+            }
+        }
+    }
+    assert!(parted > 0, "no band decoded in parts");
 }
 
 /// Each component's route plans its own clipped code-blocks, while a pool
