@@ -119,8 +119,7 @@ impl BatchWorker {
         signed: bool,
     ) -> j2k_native::Result<j2k_native::J2kDirectDecodedComponents<'scratch>> {
         self.prepared_plan_decode_calls = self.prepared_plan_decode_calls.saturating_add(1);
-        self.prepared_plan_scratch
-            .set_parallel_decode(self.owned_inner_parallelism == CpuDecodeParallelism::Auto);
+        self.prepare_plan_parallelism();
         j2k_native::execute_referenced_htj2k_plan(
             plan,
             encoded_input,
@@ -136,14 +135,30 @@ impl BatchWorker {
         signed: bool,
     ) -> j2k_native::Result<j2k_native::J2kDirectDecodedComponents<'scratch>> {
         self.prepared_plan_decode_calls = self.prepared_plan_decode_calls.saturating_add(1);
-        self.prepared_plan_scratch
-            .set_parallel_decode(self.owned_inner_parallelism == CpuDecodeParallelism::Auto);
+        self.prepare_plan_parallelism();
         j2k_native::execute_referenced_classic_plan(
             plan,
             encoded_input,
             signed,
             &mut self.prepared_plan_scratch,
         )
+    }
+
+    /// Nested parallelism of the next offset-plan execution: only where the
+    /// owned scheduler allowed it for this worker's decodes.
+    fn prepare_plan_parallelism(&mut self) {
+        let parallel = self.owned_inner_parallelism == CpuDecodeParallelism::Auto;
+        #[cfg(test)]
+        {
+            self.parallel_plan_decode_calls += u64::from(parallel);
+        }
+        self.prepared_plan_scratch.set_parallel_decode(parallel);
+    }
+
+    /// Offset-plan executions with nested parallelism so far.
+    #[cfg(test)]
+    pub(crate) const fn parallel_plan_decode_calls(&self) -> u64 {
+        self.parallel_plan_decode_calls
     }
 
     pub(crate) const fn prepared_plan_decode_calls(&self) -> u64 {

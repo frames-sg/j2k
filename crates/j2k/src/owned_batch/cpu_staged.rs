@@ -130,6 +130,12 @@ impl CpuStagedWorkspace {
     }
 }
 
+/// Whether a staged window of `image_count` images and `entropy_count`
+/// entropy jobs in one tile fits the staged metadata cap.
+pub(super) fn staged_window_fits(image_count: usize, entropy_count: usize) -> bool {
+    ensure_metadata_capacity(image_count, entropy_count).is_ok()
+}
+
 fn ensure_metadata_capacity(
     image_count: usize,
     entropy_count: usize,

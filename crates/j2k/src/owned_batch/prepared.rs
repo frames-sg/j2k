@@ -85,9 +85,8 @@ impl CpuExecution {
         }
     }
 
-    /// Whether the CPU decoder may stream this image's rows; groups holding
-    /// such an image take the staged route only to keep their plans (see
-    /// `keeps_staged_plans`).
+    /// Whether the CPU decoder may stream this image's rows; a group holding
+    /// such an image never takes the staged route.
     pub(super) const fn streams(self) -> bool {
         matches!(self, Self::StreamedRows | Self::StreamedRowsOrPlan { .. })
     }

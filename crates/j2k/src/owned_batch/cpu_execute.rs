@@ -2,6 +2,7 @@
 
 //! CPU homogeneous-group execution and final materialization.
 
+use super::cpu_fast::classic_staging_fits;
 use super::cpu_materialize::{
     convert_u16, convert_u8, decode_image_i16, decode_image_u16, decode_image_u8,
     decode_lone_gray_u8, ensure_batch_output_within_cap, round_signed, try_zeroed_vec,
@@ -15,7 +16,7 @@ use super::{
     NativeSampleType, NonZeroUsize, PreparedBatchGroup, PreparedImage, TileBatchOptions, Vec,
 };
 use crate::batch::admission::{hold_at_least, BatchAllocationBudget};
-use crate::batch::allocation::{batch_execution_cap_bytes, try_vec_with_capacity};
+use crate::batch::allocation::try_vec_with_capacity;
 
 #[expect(
     clippy::too_many_lines,
@@ -37,26 +38,26 @@ pub(super) fn decode_cpu_group(
     // The staged route flattens entropy work across images for a few serial
     // workers. When workers may parallelize inside one image, each prepared
     // plan decodes faster on its own: its code-block rows and wavelet bands
-    // spread over every core, still without reparsing.
-    // Streamed images never hold whole-image scratch, so a group with one
-    // enters the staged route only to keep its plans.
-    let streams_rows = !keeps_staged_plans(group, workers_option)
-        && group
-            .images
-            .iter()
-            .any(|image| image.cpu_execution().streams());
-    // Payloads are flattened only for the staged route, so a group whose
-    // images decode with inner parallelism skips that work.
-    let has_flattened_payloads = !streams_rows
+    // spread over every core, still without reparsing. A group with an image
+    // whose rows stream never stages: streamed images hold a band of rows
+    // instead of whole-image scratch, at every worker count.
+    let streams_rows = group
+        .images
+        .iter()
+        .any(|image| image.cpu_execution().streams());
+    // Payloads are flattened only for the staged route, and only within the
+    // flattening and staged-window caps (see `classic_staging_fits`): a
+    // classic group beyond them decodes its plans one image at a time
+    // instead of failing.
+    let staged = !streams_rows
         && retained_inner_parallelism(group.images.len(), tile_options)?
             == CpuDecodeParallelism::Serial
+        && (group.info.route != BatchCodecRoute::Classic
+            || classic_staging_fits(group.images.iter())?)
         && fast_workspace.prepare_group(group)?;
-    // With an explicit worker count, the images of such a group decode in a
-    // pool of that many threads (see `CpuStreamPool`).
-    let stream_pool = if streams_rows
-        && group.images.len() > 1
-        && workers_option.is_some_and(|count| count.get() > 1)
-    {
+    let (pooled, image_parallelism) =
+        image_policy(group.images.len(), streams_rows, workers_option);
+    let stream_pool = if pooled {
         Some(stream_pool.get(workers.len())?)
     } else {
         None
@@ -89,9 +90,10 @@ pub(super) fn decode_cpu_group(
                 tile_options,
                 samples_per_image,
                 &mut values,
-                has_flattened_payloads.then_some(&mut *fast_workspace),
+                staged.then_some(&mut *fast_workspace),
                 staged_workspace,
                 stream_pool,
+                image_parallelism,
                 admission,
                 // The only image of a Gray8 group is the whole in-flight set.
                 if group.images.len() == 1 && group.info.color == BatchColor::Gray {
@@ -117,9 +119,10 @@ pub(super) fn decode_cpu_group(
                 tile_options,
                 samples_per_image,
                 &mut values,
-                has_flattened_payloads.then_some(&mut *fast_workspace),
+                staged.then_some(&mut *fast_workspace),
                 staged_workspace,
                 stream_pool,
+                image_parallelism,
                 admission,
                 decode_image_u16,
                 convert_u16,
@@ -140,9 +143,10 @@ pub(super) fn decode_cpu_group(
                 tile_options,
                 samples_per_image,
                 &mut values,
-                has_flattened_payloads.then_some(&mut *fast_workspace),
+                staged.then_some(&mut *fast_workspace),
                 staged_workspace,
                 stream_pool,
+                image_parallelism,
                 admission,
                 decode_image_i16,
                 round_signed,
@@ -186,59 +190,23 @@ pub(super) fn decode_cpu_group(
     )))
 }
 
-/// Most explicit workers for which a group whose images may stream keeps
-/// their plans on the staged route (see [`keeps_staged_plans`]): one, or
-/// four for Gray8, whose staged route keeps up to four workers busy.
-const fn staged_plans_max_workers(color: BatchColor) -> usize {
-    match color {
-        BatchColor::Gray => 4,
-        _ => 1,
-    }
-}
-
-#[cfg(test)]
-std::thread_local! {
-    /// Test-only planned bytes above which a group streams instead of
-    /// keeping its plans on the staged route, on this thread.
-    pub(super) static STAGED_PLANS_CAP_OVERRIDE: core::cell::Cell<Option<usize>> =
-        const { core::cell::Cell::new(None) };
-}
-
-/// Whether a group of images that may stream decodes their plans on the
-/// staged route instead: the caller set one worker (up to four for Gray8),
-/// the group holds several classic images, and each has a plan within the
-/// per-decode bound, all together within the batch execution cap. Larger
-/// groups stream.
-///
-/// The staged route decodes each code-block of a window's images back to
-/// back, which speeds up classic Tier-1 when the images repeat, and while it
-/// keeps its workers busy the stream pool has no idle thread to gain from:
-/// 8 copies of one image stream in 1.13-1.32 times the staged time at one
-/// worker, and 8 Gray8 copies in 1.12-1.24 times at two to four workers.
-/// Distinct images stream as fast or faster, RGB8 streams faster from two
-/// workers on and Gray8 from six, and HTJ2K images always stream faster.
-/// The window keeps each image's plan scratch, as these settings did before
-/// images streamed.
-fn keeps_staged_plans(group: &PreparedBatchGroup, workers: Option<NonZeroUsize>) -> bool {
-    group.info.route == BatchCodecRoute::Classic
-        && group.images.len() > 1
-        && workers
-            .is_some_and(|workers| workers.get() <= staged_plans_max_workers(group.info.color))
-        && group
-            .images
-            .iter()
-            .try_fold(0usize, |total, image| {
-                total.checked_add(image.cpu_execution().plan_bytes()?)
-            })
-            .is_some_and(|total| total <= staged_plans_cap())
-}
-
-fn staged_plans_cap() -> usize {
-    #[cfg(test)]
-    if let Some(cap) = STAGED_PLANS_CAP_OVERRIDE.with(core::cell::Cell::get) {
-        return cap;
-    }
-    batch_execution_cap_bytes()
+/// How the images of a group that decode one at a time run: in the stream
+/// pool, and with which inner parallelism otherwise (`None`: the
+/// scheduler's own). With an explicit worker count and several images,
+/// streamed images decode in the pool of that many threads (two or more) and
+/// plans serially, also on the worker itself, where offset-plan executions
+/// read it; a single worker decodes serially.
+pub(super) fn image_policy(
+    image_count: usize,
+    streamed: bool,
+    workers: Option<NonZeroUsize>,
+) -> (bool, Option<CpuDecodeParallelism>) {
+    let explicit_group = image_count > 1 && workers.is_some();
+    let pooled = explicit_group && streamed && workers.is_some_and(|count| count.get() > 1);
+    (
+        pooled,
+        explicit_group.then_some(CpuDecodeParallelism::Serial),
+    )
 }
 
 /// The threads a group's streamed images decode on when the caller set the
@@ -310,6 +278,7 @@ fn run_typed_group<T: Copy + Send>(
     flattened_payloads: Option<&mut CpuGroupFastWorkspace>,
     staged_workspace: &mut CpuStagedWorkspace,
     stream_pool: Option<&rayon::ThreadPool>,
+    image_parallelism: Option<CpuDecodeParallelism>,
     admission: &Arc<BatchAllocationBudget>,
     decode: CpuDecodeFn<T>,
     convert: fn(f32, u8) -> T,
@@ -349,6 +318,10 @@ fn run_typed_group<T: Copy + Send>(
             &mut results,
             tile_options,
             |worker, jobs, results| {
+                // On the worker itself, where offset-plan executions read it.
+                if let Some(parallelism) = image_parallelism {
+                    worker.set_owned_inner_parallelism(parallelism);
+                }
                 let parallelism = worker.prepare_owned_decode();
                 let workspace = worker.take_native_workspace();
                 let mut context = j2k_native::DecoderContext::from_workspace(workspace);

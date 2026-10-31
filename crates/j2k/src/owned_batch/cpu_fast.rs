@@ -10,13 +10,88 @@ use j2k_native::{
     J2kDirectCodeBlockIndex,
 };
 
+use super::cpu_staged::{staged_window_fits, CPU_ENTROPY_IMAGES_PER_WINDOW};
 use super::{BatchCodecRoute, PreparedBatchGroup, PreparedImage};
-use crate::batch::allocation::J2K_BATCH_METADATA_ALLOWANCE_BYTES;
+use crate::batch::allocation::{try_vec_with_capacity, J2K_BATCH_METADATA_ALLOWANCE_BYTES};
 
 mod classic;
 mod ht;
 mod plan;
 use self::plan::{checked_metadata_bytes, reserve_reused};
+
+#[cfg(test)]
+std::thread_local! {
+    /// Test-only cap on a group's flattened metadata, on this thread.
+    pub(super) static FLATTENED_METADATA_CAP_OVERRIDE: core::cell::Cell<Option<usize>> =
+        const { core::cell::Cell::new(None) };
+}
+
+fn flattened_metadata_cap() -> usize {
+    #[cfg(test)]
+    if let Some(cap) = FLATTENED_METADATA_CAP_OVERRIDE.with(core::cell::Cell::get) {
+        return cap;
+    }
+    J2K_BATCH_METADATA_ALLOWANCE_BYTES
+}
+
+/// The flattened metadata bytes of a classic group of `image_count` images
+/// and `payload_count` payloads, as `prepare_group` charges them.
+#[cfg(test)]
+pub(super) fn classic_flattened_metadata_bytes(image_count: usize, payload_count: usize) -> usize {
+    checked_metadata_bytes::<(J2kClassicCodeBlockPayload, J2kCodestreamRange)>(
+        image_count,
+        payload_count,
+    )
+    .unwrap_or(usize::MAX)
+}
+
+/// Whether flattening `images`, a classic group for the staged route in its
+/// order, stays within the caps `CpuGroupFastWorkspace::prepare_group` and
+/// the staged windows enforce: the flattened metadata and compressed arena
+/// of the whole group, and the entropy jobs of its widest window, counted as
+/// if a window's code-blocks shared one tile. A group that does not fit
+/// decodes its plans one image at a time instead, which needs none of them.
+///
+/// # Errors
+/// Only when the per-image counts cannot be allocated.
+pub(super) fn classic_staging_fits<'a>(
+    images: impl ExactSizeIterator<Item = &'a PreparedImage>,
+) -> Result<bool, BatchInfrastructureError> {
+    let image_count = images.len();
+    let mut counts = try_vec_with_capacity(image_count, "J2K CPU staged payload counts")?;
+    let mut payload_bytes = 0usize;
+    for image in images {
+        let Some(plan) = image.classic_plan() else {
+            return Ok(false);
+        };
+        counts.push(plan.payload_count());
+        for payload in plan.cpu_plan().payloads() {
+            payload_bytes = payload_bytes.saturating_add(payload.combined_length);
+        }
+    }
+    let payload_count = counts
+        .iter()
+        .fold(0usize, |total, &count| total.saturating_add(count));
+    let window = CPU_ENTROPY_IMAGES_PER_WINDOW.min(image_count);
+    let widest_window = counts
+        .windows(window.max(1))
+        .map(|counts| {
+            counts
+                .iter()
+                .fold(0usize, |total, &count| total.saturating_add(count))
+        })
+        .max()
+        .unwrap_or(0);
+    Ok(
+        checked_metadata_bytes::<(J2kClassicCodeBlockPayload, J2kCodestreamRange)>(
+            image_count,
+            payload_count,
+        )
+        .is_ok_and(|bytes| bytes <= flattened_metadata_cap())
+            && payload_bytes <= DEFAULT_MAX_HOST_ALLOCATION_BYTES
+            && staged_window_fits(window, widest_window),
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CpuPayloadBucket {
@@ -183,11 +258,11 @@ impl CpuGroupFastWorkspace {
         payload_bytes: usize,
     ) -> Result<(), BatchInfrastructureError> {
         let metadata_bytes = checked_metadata_bytes::<T>(image_count, payload_count)?;
-        if metadata_bytes > J2K_BATCH_METADATA_ALLOWANCE_BYTES {
+        if metadata_bytes > flattened_metadata_cap() {
             return Err(BatchInfrastructureError::AllocationTooLarge {
                 what: "J2K CPU flattened group metadata",
                 requested: metadata_bytes,
-                cap: J2K_BATCH_METADATA_ALLOWANCE_BYTES,
+                cap: flattened_metadata_cap(),
             });
         }
         if payload_bytes > DEFAULT_MAX_HOST_ALLOCATION_BYTES {

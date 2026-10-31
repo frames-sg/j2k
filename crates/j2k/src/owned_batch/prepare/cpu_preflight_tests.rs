@@ -3,11 +3,10 @@
 use alloc::{sync::Arc, vec, vec::Vec};
 use core::num::NonZeroUsize;
 
-use super::super::cpu_execute::STAGED_PLANS_CAP_OVERRIDE;
 use super::super::{
     prepare_batch, BatchDecodeOptions, BatchErrorStage, BatchItemError, BatchLayout,
-    CpuBatchDecoder, CpuBatchSamples, CpuExecution, DecodeRequest, EncodedImage, IndexedBatchError,
-    PreparedBatch,
+    CpuBatchDecoder, CpuBatchSamples, CpuDecodeParallelism, CpuExecution, DecodeRequest,
+    EncodedImage, IndexedBatchError, PreparedBatch,
 };
 use super::image::{PLANNED_DECODE_BOUND, STREAM_ABOVE_OVERRIDE, STREAM_ABOVE_PLANNED_BYTES};
 use j2k_core::Downscale;
@@ -17,10 +16,26 @@ fn classic_fixture(width: u32, height: u32, components: u16, precision: u8) -> A
 }
 
 fn fixture(width: u32, height: u32, components: u16, precision: u8, ht: bool) -> Arc<[u8]> {
+    seeded_fixture(width, height, components, precision, ht, 0)
+}
+
+/// A fixture whose samples differ for every `seed`: the same size, other
+/// coded bytes.
+fn seeded_fixture(
+    width: u32,
+    height: u32,
+    components: u16,
+    precision: u8,
+    ht: bool,
+    seed: u32,
+) -> Arc<[u8]> {
     let count = width * height * u32::from(components);
     let samples = if precision <= 8 {
         (0..count)
-            .map(|index| u8::try_from((index * 7 + index / 97) & 0xff).expect("masked sample"))
+            .map(|index| {
+                u8::try_from((index * 7 + index / 97 + seed * index / 13) & 0xff)
+                    .expect("masked sample")
+            })
             .collect::<Vec<_>>()
     } else {
         (0..count)
@@ -85,21 +100,6 @@ impl StreamAbove {
 impl Drop for StreamAbove {
     fn drop(&mut self) {
         STREAM_ABOVE_OVERRIDE.with(|threshold| threshold.set(None));
-    }
-}
-
-struct StagedPlansCap;
-
-impl StagedPlansCap {
-    fn hold(bytes: Option<usize>) -> Self {
-        STAGED_PLANS_CAP_OVERRIDE.with(|cap| cap.set(bytes));
-        Self
-    }
-}
-
-impl Drop for StagedPlansCap {
-    fn drop(&mut self) {
-        STAGED_PLANS_CAP_OVERRIDE.with(|cap| cap.set(None));
     }
 }
 
@@ -255,13 +255,12 @@ fn cpu_prepare_rejects_plans_over_the_bound_without_a_streamed_route() {
     ));
 }
 
-/// `codestream` as JP2, with `channel_definitions` in a cdef box.
-fn wrap_jp2(codestream: &[u8], channel_definitions: &[crate::J2kChannelDefinition]) -> Arc<[u8]> {
-    let color = if channel_definitions.is_empty() {
-        j2k_core::Colorspace::SGray
-    } else {
-        j2k_core::Colorspace::SRgb
-    };
+/// `codestream` as JP2 in `color`, with `channel_definitions` in a cdef box.
+fn wrap_jp2(
+    codestream: &[u8],
+    color: j2k_core::Colorspace,
+    channel_definitions: &[crate::J2kChannelDefinition],
+) -> Arc<[u8]> {
     Arc::from(
         crate::wrap_j2k_codestream(
             codestream,
@@ -307,11 +306,19 @@ fn with_siz_origin(codestream: &[u8], origin: u32) -> Arc<[u8]> {
 fn gray8_and_rgb8_images_whose_region_decode_cannot_stream_keep_the_plan_route() {
     let rgb = classic_rgb8(96, 64);
     let gray = classic_fixture(80, 72, 1, 8);
-    let streams = [Arc::clone(&rgb), Arc::clone(&gray), wrap_jp2(&gray, &[])];
+    let streams = [
+        Arc::clone(&rgb),
+        Arc::clone(&gray),
+        wrap_jp2(&gray, j2k_core::Colorspace::SGray, &[]),
+    ];
     // A channel definition, or offsets, keep the region decode on whole
     // component planes, which it hands over at the end.
     let planes = [
-        wrap_jp2(&rgb, &identity_rgb_channel_definitions()),
+        wrap_jp2(
+            &rgb,
+            j2k_core::Colorspace::SRgb,
+            &identity_rgb_channel_definitions(),
+        ),
         with_siz_origin(&rgb, 4096),
         with_siz_origin(&gray, 4096),
     ];
@@ -362,8 +369,8 @@ fn gray8_and_rgb8_images_whose_region_decode_cannot_stream_keep_the_plan_route()
                 "input {index}: {execution:?}"
             );
         }
-        let decoded = all_u8_samples(&decoder.decode_prepared(&prepared).expect("decode"));
-        assert_eq!(decoded, reference);
+        let streamed = all_u8_samples(&decoder.decode_prepared(&prepared).expect("decode"));
+        assert_eq!(streamed, reference);
     }
 
     // Over the bound, only the images that stream their rows are admitted.
@@ -504,9 +511,6 @@ fn a_lone_gray8_image_decodes_its_plan_and_gray8_images_in_flight_stream() {
         assert!(planned_bytes(&prepared)
             .iter()
             .all(|(_, execution)| matches!(execution, CpuExecution::StreamedRowsOrPlan { .. })));
-        // One worker keeps several images' plans within the cap (see
-        // `explicit_workers_choose_the_staged_plans_or_the_stream_pool`).
-        let _cap = StagedPlansCap::hold(Some(0));
         let output = decoder.decode_prepared(&prepared).expect("decode");
         assert_eq!(output.groups(), reference.groups(), "{copies} copies");
         decoder.workspace_stats().prepared_plan_decode_calls() - plan_calls
@@ -516,37 +520,83 @@ fn a_lone_gray8_image_decodes_its_plan_and_gray8_images_in_flight_stream() {
     assert_eq!(decode(1, &rgb), 0, "a lone RGB8 image streams");
 }
 
+#[derive(Debug, Clone, Copy)]
+enum Pattern {
+    /// Copies of one image.
+    Copies(usize),
+    /// Four different images.
+    Distinct,
+    /// One image twice and two others: `[a, b, a, c]`.
+    Mixed,
+    /// One image twice around another: `[a, b, a]`.
+    AroundOne,
+}
+
 #[test]
-fn explicit_workers_choose_the_staged_plans_or_the_stream_pool() {
-    let rgb = classic_rgb8(96, 64);
-    let gray = classic_fixture(80, 72, 1, 8);
-    for (image, is_gray) in [(&rgb, false), (&gray, true)] {
-        let inputs = |copies: usize| vec![EncodedImage::full(Arc::clone(image)); copies];
+fn groups_whose_images_stream_never_stage_and_others_stage_at_one_worker() {
+    let limit = crate::batch::allocation::generic_batch_worker_limit();
+    for is_gray in [false, true] {
+        let (width, height, components) = if is_gray { (80, 72, 1) } else { (96, 64, 3) };
+        let images = (0..4)
+            .map(|seed| seeded_fixture(width, height, components, 8, false, seed))
+            .collect::<Vec<_>>();
+        let inputs = |pattern: Pattern| -> Vec<EncodedImage> {
+            let picks: Vec<usize> = match pattern {
+                Pattern::Copies(copies) => vec![0; copies],
+                Pattern::Distinct => vec![0, 1, 2, 3],
+                Pattern::Mixed => vec![0, 1, 0, 2],
+                Pattern::AroundOne => vec![0, 1, 0],
+            };
+            picks
+                .into_iter()
+                .map(|pick| EncodedImage::full(Arc::clone(&images[pick])))
+                .collect()
+        };
         // Prepared on this thread, where the threshold override applies.
-        let mut preparer = CpuBatchDecoder::new(single_worker_options());
-        // (workers, images, cap on the group's plans, staged windows, pool
-        // threads): one worker (up to four for Gray8) keeps a multi-image
-        // group's plans on the staged route while they fit the cap and
-        // streams them otherwise; more workers stream the images on a pool of
-        // that many threads; the codec's own count and a lone image keep
-        // their threads.
-        let streams = |workers: usize| (!is_gray).then_some(workers);
-        let five_workers = 5.min(crate::batch::allocation::generic_batch_worker_limit());
-        for (workers, copies, cap, staged, pool) in [
-            (Some(1), 4, None, true, None),
-            (Some(2), 3, None, is_gray, streams(2)),
-            (Some(3), 4, None, is_gray, streams(3)),
-            (Some(1), 4, Some(1), false, None),
-            (Some(2), 3, Some(1), false, Some(2)),
-            (Some(5), 6, None, false, Some(five_workers)),
-            (Some(3), 1, None, false, None),
-            (None, 4, None, false, None),
+        let batch_preparer = CpuBatchDecoder::new(single_worker_options());
+        // Copies, distinct and mixed images stream at every worker count, on
+        // a pool of that many threads when there are several; the codec's
+        // own count and a lone image keep their threads.
+        for (workers, pattern, pool) in [
+            (Some(1), Pattern::Copies(4), None),
+            (Some(1), Pattern::Distinct, None),
+            (Some(1), Pattern::Mixed, None),
+            (Some(1), Pattern::AroundOne, None),
+            (Some(2), Pattern::Copies(3), Some(2)),
+            (Some(2), Pattern::Mixed, Some(2)),
+            (Some(2), Pattern::AroundOne, Some(2)),
+            (Some(3), Pattern::Distinct, Some(3)),
+            (Some(4), Pattern::Mixed, Some(4)),
+            (Some(6), Pattern::Copies(3), Some(6)),
+            (Some(8), Pattern::Mixed, Some(8)),
+            (Some(3), Pattern::Copies(1), None),
+            (None, Pattern::Copies(4), None),
         ] {
-            let reference = preparer
-                .decode_prepared(&preparer.prepare(inputs(copies)).expect("prepare plans"))
+            let label = format!("gray {is_gray}, {workers:?} workers, {pattern:?}");
+            // Plans that do not stream stage at one worker, as before.
+            let mut plan_decoder = CpuBatchDecoder::new(single_worker_options());
+            let planned = batch_preparer
+                .prepare(inputs(pattern))
+                .expect("prepare plans");
+            assert!(planned_bytes(&planned)
+                .iter()
+                .all(|(_, execution)| matches!(execution, CpuExecution::OffsetPlan { .. })));
+            let reference = plan_decoder
+                .decode_prepared(&planned)
                 .expect("decode plans");
+            let payloads = planned.groups()[0]
+                .images()
+                .iter()
+                .map(|image| image.classic_plan().expect("classic plan").payload_count() as u64)
+                .sum::<u64>();
+            let staged = planned.groups()[0].images().len() > 1;
+            assert_eq!(
+                plan_decoder.workspace_stats().flattened_payload_jobs(),
+                if staged { payloads } else { 0 },
+                "{label}"
+            );
             let _threshold = StreamAbove::hold(0);
-            let prepared = preparer.prepare(inputs(copies)).expect("prepare");
+            let prepared = batch_preparer.prepare(inputs(pattern)).expect("prepare");
             assert!(planned_bytes(&prepared)
                 .iter()
                 .all(|(_, execution)| matches!(
@@ -557,18 +607,17 @@ fn explicit_workers_choose_the_staged_plans_or_the_stream_pool() {
                 workers: workers.and_then(NonZeroUsize::new),
                 ..BatchDecodeOptions::default()
             });
-            let _cap = StagedPlansCap::hold(cap);
-            let decoded = decoder.decode_prepared(&prepared).expect("decode");
-            let label =
-                format!("gray {is_gray}, {workers:?} workers, {copies} images, cap {cap:?}");
-            assert_eq!(decoded.errors(), &[] as &[IndexedBatchError], "{label}");
-            assert_eq!(decoded.groups(), reference.groups(), "{label}");
+            let output = decoder.decode_prepared(&prepared).expect("decode");
+            assert_eq!(output.errors(), &[] as &[IndexedBatchError], "{label}");
+            assert_eq!(output.groups(), reference.groups(), "{label}");
+            let stats = decoder.workspace_stats();
+            assert_eq!(stats.flattened_payload_jobs(), 0, "{label}");
+            assert_eq!(stats.cross_image_entropy_windows(), 0, "{label}");
             assert_eq!(
-                decoder.workspace_stats().cross_image_entropy_windows() > 0,
-                staged,
+                decoder.stream_pool_threads(),
+                pool.map(|threads: usize| threads.min(limit)),
                 "{label}"
             );
-            assert_eq!(decoder.stream_pool_threads(), pool, "{label}");
         }
     }
 }
@@ -577,12 +626,12 @@ fn explicit_workers_choose_the_staged_plans_or_the_stream_pool() {
 fn htj2k_groups_stream_with_one_or_two_workers() {
     let ht = fixture(96, 64, 3, 8, true);
     let inputs = || vec![EncodedImage::full(Arc::clone(&ht)); 3];
-    let mut preparer = CpuBatchDecoder::new(single_worker_options());
-    let reference = preparer
-        .decode_prepared(&preparer.prepare(inputs()).expect("prepare plans"))
+    let mut batch_preparer = CpuBatchDecoder::new(single_worker_options());
+    let reference = batch_preparer
+        .decode_prepared(&batch_preparer.prepare(inputs()).expect("prepare plans"))
         .expect("decode plans");
     let _threshold = StreamAbove::hold(0);
-    let prepared = preparer.prepare(inputs()).expect("prepare");
+    let prepared = batch_preparer.prepare(inputs()).expect("prepare");
     assert!(planned_bytes(&prepared)
         .iter()
         .all(|(_, execution)| matches!(execution, CpuExecution::StreamedRowsOrPlan { .. })));
@@ -592,14 +641,151 @@ fn htj2k_groups_stream_with_one_or_two_workers() {
             workers: NonZeroUsize::new(workers),
             ..BatchDecodeOptions::default()
         });
-        let decoded = decoder.decode_prepared(&prepared).expect("decode");
-        assert_eq!(decoded.errors(), &[] as &[IndexedBatchError], "{workers}");
-        assert_eq!(decoded.groups(), reference.groups(), "{workers}");
+        let output = decoder.decode_prepared(&prepared).expect("decode");
+        assert_eq!(output.errors(), &[] as &[IndexedBatchError], "{workers}");
+        assert_eq!(output.groups(), reference.groups(), "{workers}");
         assert_eq!(
             decoder.workspace_stats().cross_image_entropy_windows(),
             0,
             "{workers}"
         );
         assert_eq!(decoder.stream_pool_threads(), pool, "{workers}");
+    }
+}
+
+#[test]
+fn explicit_worker_counts_set_the_policy_of_images_decoded_one_at_a_time() {
+    use super::super::cpu_execute::image_policy;
+    let workers = NonZeroUsize::new;
+    let serial = Some(CpuDecodeParallelism::Serial);
+    // Several images: streamed ones in the pool of two or more threads, and
+    // plans serial; one worker decodes serially.
+    assert_eq!(image_policy(3, true, workers(1)), (false, serial));
+    assert_eq!(image_policy(3, true, workers(2)), (true, serial));
+    assert_eq!(image_policy(3, false, workers(2)), (false, serial));
+    // A lone image and automatic workers keep the scheduler's choice.
+    assert_eq!(image_policy(1, true, workers(2)), (false, None));
+    assert_eq!(image_policy(3, true, None), (false, None));
+}
+
+#[test]
+fn plans_beyond_the_flattening_cap_decode_one_image_at_a_time() {
+    use super::super::cpu_fast::{
+        classic_flattened_metadata_bytes, FLATTENED_METADATA_CAP_OVERRIDE,
+    };
+    struct FlattenedCap;
+    impl FlattenedCap {
+        fn hold(bytes: usize) -> Self {
+            FLATTENED_METADATA_CAP_OVERRIDE.with(|cap| cap.set(Some(bytes)));
+            Self
+        }
+    }
+    impl Drop for FlattenedCap {
+        fn drop(&mut self) {
+            FLATTENED_METADATA_CAP_OVERRIDE.with(|cap| cap.set(None));
+        }
+    }
+    let images = (0..3)
+        .map(|seed| seeded_fixture(96, 64, 3, 8, false, seed))
+        .collect::<Vec<_>>();
+    let inputs = || {
+        images
+            .iter()
+            .map(|bytes| EncodedImage::full(Arc::clone(bytes)))
+            .collect::<Vec<_>>()
+    };
+    // Small plans that do not stream: one worker stages them.
+    let decoder = CpuBatchDecoder::new(single_worker_options());
+    let prepared = decoder.prepare(inputs()).expect("prepare plans");
+    assert!(planned_bytes(&prepared)
+        .iter()
+        .all(|(_, execution)| matches!(execution, CpuExecution::OffsetPlan { .. })));
+    let payloads = prepared.groups()[0]
+        .images()
+        .iter()
+        .map(|image| image.classic_plan().expect("classic plan").payload_count())
+        .sum::<usize>();
+    let needed = classic_flattened_metadata_bytes(3, payloads);
+    let mut reference = None;
+    // At the cap the plans stage; one byte below it each decodes on its
+    // own, where flattening them would have failed the batch.
+    for (cap, staged) in [(needed, true), (needed - 1, false), (0, false)] {
+        let _cap = FlattenedCap::hold(cap);
+        let mut decoder = CpuBatchDecoder::new(single_worker_options());
+        let (groups, errors) = decoder
+            .decode_prepared(&prepared)
+            .expect("decode")
+            .into_parts();
+        assert_eq!(errors, [], "cap {cap}");
+        match &reference {
+            Some(reference) => assert_eq!(&groups, reference, "cap {cap}"),
+            None => reference = Some(groups),
+        }
+        assert_eq!(
+            decoder.workspace_stats().flattened_payload_jobs(),
+            if staged { payloads as u64 } else { 0 },
+            "cap {cap}"
+        );
+        assert_eq!(decoder.parallel_plan_decodes(), 0, "cap {cap}");
+    }
+}
+
+#[test]
+fn planned_images_among_streamed_ones_keep_the_group_worker_policy() {
+    let limit = crate::batch::allocation::generic_batch_worker_limit();
+    let rgb = classic_rgb8(96, 64);
+    let gray = classic_fixture(80, 72, 1, 8);
+    // Copies `a` stream; `b` keeps its offset plan: for RGB8 the same JP2
+    // with identity channel definitions, for Gray8 offsets.
+    let srgb = j2k_core::Colorspace::SRgb;
+    let cases = [
+        (
+            wrap_jp2(&rgb, srgb, &[]),
+            wrap_jp2(&rgb, srgb, &identity_rgb_channel_definitions()),
+            false,
+        ),
+        (Arc::clone(&gray), with_siz_origin(&gray, 4096), true),
+    ];
+    for (copy, planned, is_gray) in cases {
+        let inputs = || {
+            [&copy, &planned, &copy]
+                .map(|bytes| EncodedImage::full(Arc::clone(bytes)))
+                .to_vec()
+        };
+        let mut batch_preparer = CpuBatchDecoder::new(single_worker_options());
+        let reference = batch_preparer
+            .decode_prepared(&batch_preparer.prepare(inputs()).expect("prepare plans"))
+            .expect("decode plans");
+        let _threshold = StreamAbove::hold(0);
+        let prepared = batch_preparer.prepare(inputs()).expect("prepare");
+        assert_eq!(prepared.groups().len(), 1, "gray {is_gray}");
+        let streams = planned_bytes(&prepared)
+            .iter()
+            .map(|(_, execution)| execution.streams())
+            .collect::<Vec<_>>();
+        assert_eq!(streams, [true, false, true], "gray {is_gray}");
+        // `[a, b, a]`: `b` decodes its plan without nested parallelism, as
+        // the group's other plans would, and in the pool of two threads.
+        for workers in [1, 2] {
+            let label = format!("gray {is_gray}, {workers} workers");
+            let mut decoder = CpuBatchDecoder::new(BatchDecodeOptions {
+                workers: NonZeroUsize::new(workers),
+                ..BatchDecodeOptions::default()
+            });
+            let output = decoder.decode_prepared(&prepared).expect("decode");
+            assert_eq!(output.errors(), &[] as &[IndexedBatchError], "{label}");
+            assert_eq!(output.groups(), reference.groups(), "{label}");
+            assert_eq!(
+                decoder.workspace_stats().flattened_payload_jobs(),
+                0,
+                "{label}"
+            );
+            assert_eq!(decoder.parallel_plan_decodes(), 0, "{label}");
+            assert_eq!(
+                decoder.stream_pool_threads(),
+                (workers > 1).then_some(workers.min(limit)),
+                "{label}"
+            );
+        }
     }
 }

@@ -223,6 +223,18 @@ impl CpuBatchDecoder {
             .threads()
     }
 
+    /// Offset-plan executions of this session's workers with nested
+    /// parallelism.
+    #[cfg(test)]
+    pub(super) fn parallel_plan_decodes(&mut self) -> u64 {
+        self.workers
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(BatchWorker::parallel_plan_decode_calls)
+            .sum()
+    }
+
     /// Number of reusable worker context/scratch owners retained by this session.
     #[must_use]
     pub fn retained_worker_count(&self) -> usize {
