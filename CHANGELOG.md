@@ -60,6 +60,43 @@ Staged workspace version: `0.13.2`.
   Staged windows are admitted by planned execution memory, and an admission
   claim that cannot fit beside the shared plan fails instead of waiting
   indefinitely. Successful output is unchanged.
+- 16-bit full-image decodes (`J2kDecoder::decode_into`, `decode_scaled_into`
+  and the decoders behind `decode_tiles_into` at `Rgb16`, `Rgba16` and
+  `Gray16`) and `J2kDecoder::decode_native_components` whose component
+  planes, or the planes together with their packed native samples, would
+  pass the native decode budget now run as a region decode of the whole
+  image that streams its rows, as 8-bit decodes do, instead of failing with
+  a resource-limit error. `decode_native_components` packs the rows into its
+  native planes as they are finished. This covers images without palette,
+  channel definitions, sYCC or CIELab whose unsubsampled components share one
+  precision of up to 24 bits, signed or unsigned; other images keep the
+  planes route and its error. Output is unchanged apart from the fix to
+  images deeper than 16 bits below. A 5661 x 8287 RGB image decodes to `Rgb16` in about 130 ms with
+  103 MiB peak heap on an 18-thread pool (1.39 s and 26 MiB on one thread),
+  where the planes route with its budget raised to fit takes about 196 ms
+  and 984 MiB (1.49 s and 952 MiB); its native components take about 122 ms
+  and 96 MiB besides the 141 MB of planes returned.
+- 16-bit region decodes (`decode_region_into`, `decode_region_scaled_into`
+  and their power-of-two forms) and `decode_native_region_components` of RGB
+  images without palette, channel definitions, sYCC or CIELab stream their
+  rows instead of holding the region's `f32` planes and native samples, and
+  so do those of other such images whose planes would pass the native decode
+  budget. Output is unchanged.
+- 16-bit outputs of images deeper than 16 bits hold each sample's value
+  clamped to the 16-bit range (two's complement when signed), as scaled
+  decodes already wrote them. Full-image and region decodes (and row decodes
+  of images deeper than 24 bits) wrote each byte of the wider native samples
+  as a sample of its own. 8-bit outputs of such images on the streamed
+  route, in scaled decodes and in `decode_rows_u8_bounded` quantize each
+  sample over its component's range, as full-image decodes on the planes
+  route do, instead of over 16 bits, which saturated most samples. Images
+  of at most 16 bits are unaffected.
+- 16-bit output and `decode_native` on the planes route are faster: two to
+  four components pack into native samples a block of pixels at a time on
+  the thread pool instead of one sample at a time, and 8-bit native samples
+  widen to 16 bits from a table instead of a division per sample. `Rgb16`
+  `decode_into` of a 4096 x 4096 RGB image takes about 40% of the time it
+  did on an 18-thread pool. Output is unchanged.
 - Region decodes of a tile whose coarse resolutions are empty while finer
   ones are not (a one-sample tile row or column at an odd position with two
   or more levels) reconstruct it from the first level that has samples, as
