@@ -4,6 +4,8 @@
 
 mod component;
 #[cfg(feature = "parallel")]
+pub(super) mod rows;
+#[cfg(feature = "parallel")]
 pub(super) use component::parallel_ht_decode_transient_bytes;
 mod output;
 mod payload;
@@ -92,6 +94,7 @@ fn execute_referenced_htj2k_plan_with_payloads<'scratch>(
             classic_workspace,
             ht_workspace,
             ht_task_workspaces,
+            classic_task_workspaces: _,
             parallel,
             staged_state: _,
         } = scratch;

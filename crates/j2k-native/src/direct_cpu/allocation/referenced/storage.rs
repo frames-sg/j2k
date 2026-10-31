@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::super::{
-    fill_without_allocation, normalize_outer_owner, try_reserve_decode_elements,
+    fill_without_allocation, normalize_outer_owner, try_reserve_decode_elements, ClassicTaskShape,
     DirectComponentBandScratch, DirectComponentPlane, DirectCpuBand, J2kDirectCpuScratch, Result,
     Vec,
 };
@@ -15,6 +15,7 @@ pub(super) fn normalize_referenced_scratch(
     compressed_payload_bytes: usize,
     retain_classic_workspace: bool,
     retain_ht_workspace: bool,
+    retain_classic_task_workspaces: bool,
     scratch: &mut J2kDirectCpuScratch,
 ) -> Result<()> {
     validate_referenced_shape(plan)?;
@@ -68,6 +69,9 @@ pub(super) fn normalize_referenced_scratch(
         scratch.ht_workspace = crate::HtCodeBlockDecodeWorkspace::default();
         scratch.ht_task_workspaces = Vec::new();
     }
+    if !retain_classic_task_workspaces {
+        scratch.classic_task_workspaces = Vec::new();
+    }
     scratch.staged_state = None;
     Ok(())
 }
@@ -77,6 +81,7 @@ pub(super) fn reserve_referenced_scratch(
     compressed_payload_bytes: usize,
     retained_classic_workspace_dimensions: Option<(u32, u32)>,
     retained_ht_workspace_dimensions: Option<(u32, u32)>,
+    classic_tasks: Option<ClassicTaskShape>,
     scratch: &mut J2kDirectCpuScratch,
 ) -> Result<()> {
     let component_count = plan.component_count();
@@ -117,5 +122,6 @@ pub(super) fn reserve_referenced_scratch(
     if let Some((width, height)) = retained_ht_workspace_dimensions {
         scratch.ht_workspace.prepare(width, height)?;
     }
-    super::super::reserve_ht_task_workspaces(retained_ht_workspace_dimensions, scratch)
+    super::super::reserve_ht_task_workspaces(retained_ht_workspace_dimensions, scratch)?;
+    super::super::reserve_classic_task_workspaces(classic_tasks, scratch)
 }

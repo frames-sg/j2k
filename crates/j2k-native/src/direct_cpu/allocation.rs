@@ -186,6 +186,8 @@ fn normalize_retained_scratch(
         scratch.ht_workspace = crate::HtCodeBlockDecodeWorkspace::default();
         scratch.ht_task_workspaces = Vec::new();
     }
+    // Only referenced classic execution decodes classic blocks in parallel.
+    scratch.classic_task_workspaces = Vec::new();
     Ok(())
 }
 
@@ -446,6 +448,87 @@ fn parallel_ht_task_workspace_count(
     }
     let _ = (parallel, ht_workspace_dimensions);
     0
+}
+
+/// Largest code block and most code-block rows of any sub-band a parallel
+/// referenced classic execution decodes. One dispatch decodes at most one
+/// row per Rayon worker, so it never needs more workspaces than rows.
+#[derive(Debug, Clone, Copy)]
+struct ClassicTaskShape {
+    dimensions: (u32, u32),
+    #[cfg_attr(
+        not(feature = "parallel"),
+        expect(dead_code, reason = "rows bound parallel dispatch only")
+    )]
+    rows: usize,
+}
+
+/// Extra classic workspaces beside the main one: one per additional Rayon
+/// worker that a dispatch can occupy, or none when serial.
+fn classic_task_workspace_count(parallel: bool, classic_tasks: Option<ClassicTaskShape>) -> usize {
+    #[cfg(feature = "parallel")]
+    if let (true, Some(shape)) = (parallel, classic_tasks) {
+        return rayon::current_num_threads()
+            .min(shape.rows)
+            .saturating_sub(1);
+    }
+    let _ = (parallel, classic_tasks);
+    0
+}
+
+/// Charge the extra classic workspaces of parallel referenced classic
+/// execution. `classic_tasks` is `None` for every other route.
+fn include_classic_task_workspaces(
+    budget: &mut DirectAllocationBudget,
+    classic_tasks: Option<ClassicTaskShape>,
+    scratch: &J2kDirectCpuScratch,
+) -> Result<()> {
+    let target_count = classic_task_workspace_count(scratch.parallel, classic_tasks);
+    budget.include_capacity::<crate::J2kCodeBlockDecodeWorkspace>(
+        scratch.classic_task_workspaces.capacity().max(target_count),
+    )?;
+    let target_bytes = classic_tasks.map_or(Ok(0), |shape| {
+        bitplane::classic_decode_workspace_bytes(shape.dimensions.0, shape.dimensions.1)
+    })?;
+    for index in 0..scratch.classic_task_workspaces.len().max(target_count) {
+        let retained = scratch
+            .classic_task_workspaces
+            .get(index)
+            .map_or(Ok(0), crate::J2kCodeBlockDecodeWorkspace::allocated_bytes)?;
+        let target = if index < target_count {
+            target_bytes
+        } else {
+            0
+        };
+        budget.include_bytes(retained.max(target))?;
+    }
+    Ok(())
+}
+
+/// Keep exactly the extra classic workspaces parallel referenced classic
+/// execution uses, each prepared for the plan's largest code block.
+fn reserve_classic_task_workspaces(
+    classic_tasks: Option<ClassicTaskShape>,
+    scratch: &mut J2kDirectCpuScratch,
+) -> Result<()> {
+    let count = classic_task_workspace_count(scratch.parallel, classic_tasks);
+    scratch.classic_task_workspaces.truncate(count);
+    try_reserve_decode_elements(&mut scratch.classic_task_workspaces, count)?;
+    while scratch.classic_task_workspaces.len() < count {
+        scratch
+            .classic_task_workspaces
+            .push(crate::J2kCodeBlockDecodeWorkspace::default());
+    }
+    if let Some(ClassicTaskShape {
+        dimensions: (width, height),
+        ..
+    }) = classic_tasks
+    {
+        for workspace in &mut scratch.classic_task_workspaces {
+            workspace.prepare(width, height)?;
+        }
+    }
+    Ok(())
 }
 
 fn reserve_scratch(

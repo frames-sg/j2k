@@ -57,6 +57,9 @@ pub struct J2kDirectCpuScratch {
     /// Extra HT workspaces for parallel referenced execution, one per
     /// additional Rayon worker.
     ht_task_workspaces: Vec<HtCodeBlockDecodeWorkspace>,
+    /// Extra classic workspaces for parallel referenced classic execution,
+    /// one per additional Rayon worker.
+    classic_task_workspaces: Vec<J2kCodeBlockDecodeWorkspace>,
     /// Whether referenced execution may spread work over the Rayon pool.
     parallel: bool,
     staged_state: Option<StagedDirectState>,
@@ -87,6 +90,7 @@ impl J2kDirectCpuScratch {
             classic_workspace: J2kCodeBlockDecodeWorkspace::empty(),
             ht_workspace: HtCodeBlockDecodeWorkspace::empty(),
             ht_task_workspaces: Vec::new(),
+            classic_task_workspaces: Vec::new(),
             parallel: false,
             staged_state: None,
         }
@@ -126,8 +130,13 @@ impl J2kDirectCpuScratch {
     #[doc(hidden)]
     #[must_use]
     pub fn retained_classic_workspace_bytes(&self) -> usize {
-        self.classic_workspace
-            .allocated_bytes()
+        self.classic_task_workspaces
+            .iter()
+            .try_fold(
+                self.classic_workspace.allocated_bytes().ok(),
+                |bytes, workspace| Some(bytes?.checked_add(workspace.allocated_bytes().ok()?)),
+            )
+            .flatten()
             .unwrap_or(usize::MAX)
     }
 
