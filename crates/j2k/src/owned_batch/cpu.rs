@@ -7,7 +7,7 @@ use super::{
     prepare_batch_with_workers, BatchDecodeOptions, BatchDecoder, BatchGroupInfo,
     BatchInfrastructureError, BatchWorker, CpuBatchWorkspaceStats, CpuGroupFastWorkspace,
     CpuStagedWorkspace, EncodedImage, IndexedBatchError, J2kDecodeWarning, Mutex, NativeSampleType,
-    NonZeroUsize, PrepareFor, PreparedBatch, PreparedImage, Rect, Vec,
+    NonZeroUsize, PrepareFor, PreparedBatch, PreparedBatchGroup, PreparedImage, Rect, Vec,
 };
 use crate::batch::admission::BatchAllocationBudget;
 use crate::batch::allocation::try_vec_with_capacity;
@@ -392,22 +392,100 @@ impl CpuBatchDecoder {
         // plan, under the same aggregate cap as the tile-batch facade.
         let admission = BatchAllocationBudget::with_baseline(0)?;
         for group in prepared.groups() {
-            if let Some(decoded) = decode_cpu_group(
-                workers,
-                &mut self.fast_workspace,
-                &mut self.staged_workspace,
-                group,
-                prepared.options,
-                self.options.workers,
-                &admission,
-                &mut errors,
-            )? {
-                groups.push(decoded);
+            let images_per_group = output_images_per_group(group);
+            if images_per_group >= group.images.len() {
+                if let Some(decoded) = decode_cpu_group(
+                    workers,
+                    &mut self.fast_workspace,
+                    &mut self.staged_workspace,
+                    group,
+                    prepared.options,
+                    self.options.workers,
+                    &admission,
+                    &mut errors,
+                )? {
+                    push_group(&mut groups, decoded)?;
+                }
+                continue;
+            }
+            // One dense buffer for the whole group would exceed the
+            // per-allocation cap: decode consecutive images as several
+            // groups with the same info, each buffer within the cap.
+            for (images, source_indices) in group
+                .images
+                .chunks(images_per_group)
+                .zip(group.source_indices.chunks(images_per_group))
+            {
+                let mut part_images =
+                    try_vec_with_capacity(images.len(), "J2K owned batch output group images")?;
+                part_images.extend(images.iter().cloned());
+                let mut part_indices = try_vec_with_capacity(
+                    source_indices.len(),
+                    "J2K owned batch output group source indices",
+                )?;
+                part_indices.extend_from_slice(source_indices);
+                let part = PreparedBatchGroup {
+                    info: group.info.clone(),
+                    options: group.options,
+                    execution_shape: group.execution_shape,
+                    images: part_images,
+                    source_indices: part_indices,
+                };
+                if let Some(decoded) = decode_cpu_group(
+                    workers,
+                    &mut self.fast_workspace,
+                    &mut self.staged_workspace,
+                    &part,
+                    prepared.options,
+                    self.options.workers,
+                    &admission,
+                    &mut errors,
+                )? {
+                    push_group(&mut groups, decoded)?;
+                }
             }
         }
         errors.sort_by_key(|error| error.index);
         Ok(CpuBatchDecodeResult { groups, errors })
     }
+}
+
+/// Images whose dense outputs fit one per-allocation-capped buffer together
+/// (at least one). An image whose own output exceeds the cap still fails in
+/// its own group, as before.
+fn output_images_per_group(group: &PreparedBatchGroup) -> usize {
+    let sample_bytes = match group.info.sample_type {
+        NativeSampleType::U8 => 1,
+        NativeSampleType::U16 | NativeSampleType::I16 => 2,
+        _ => return group.images.len(),
+    };
+    group
+        .info
+        .samples_per_image()
+        .and_then(|samples| samples.checked_mul(sample_bytes))
+        .map_or(group.images.len(), |image_bytes| {
+            images_within_cap(image_bytes, j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES)
+        })
+}
+
+/// How many images of `image_bytes` one buffer of at most `cap` bytes holds,
+/// never fewer than one.
+fn images_within_cap(image_bytes: usize, cap: usize) -> usize {
+    cap.checked_div(image_bytes).unwrap_or(usize::MAX).max(1)
+}
+
+fn push_group(
+    groups: &mut Vec<CpuBatchGroup>,
+    group: CpuBatchGroup,
+) -> Result<(), BatchInfrastructureError> {
+    groups
+        .try_reserve(1)
+        .map_err(|_| BatchInfrastructureError::HostAllocationFailed {
+            what: "J2K owned batch result groups",
+            bytes: core::mem::size_of::<CpuBatchGroup>(),
+        })?;
+    groups.push(group);
+    Ok(())
 }
 
 impl BatchDecoder for CpuBatchDecoder {
@@ -431,5 +509,22 @@ impl BatchDecoder for CpuBatchDecoder {
 
     fn decode_prepared(&mut self, prepared: &PreparedBatch) -> Result<Self::Output, Self::Error> {
         Self::decode_prepared(self, prepared)
+    }
+}
+
+#[cfg(test)]
+mod output_group_tests {
+    use super::images_within_cap;
+
+    #[test]
+    fn groups_above_the_cap_split_into_buffers_within_it() {
+        const MIB: usize = 1024 * 1024;
+        // Eight 5792² RGB8 images (96 MiB each) under a 512 MiB cap.
+        assert_eq!(images_within_cap(96 * MIB, 512 * MIB), 5);
+        assert_eq!(images_within_cap(512 * MIB, 512 * MIB), 1);
+        // An image above the cap keeps a group of its own.
+        assert_eq!(images_within_cap(768 * MIB, 512 * MIB), 1);
+        assert_eq!(images_within_cap(3 * MIB, 512 * MIB), 170);
+        assert_eq!(images_within_cap(0, 512 * MIB), usize::MAX);
     }
 }
