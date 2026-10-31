@@ -507,14 +507,28 @@ fn tiles_at_once_report_the_first_failing_tile() {
 
 /// Full-resolution classic images stream from 4 coded bits per pixel on 2
 /// to 11 pool threads from 512 x 512 samples, on larger pools too below 2^19
-/// samples, and on one thread from a megapixel.
+/// samples, and on one thread from a megapixel; at fewer bits per pixel from
+/// 4096 x 2048 samples on pools of 2 to 6 threads and of 12 or more.
 #[test]
 fn full_resolution_images_stream_when_tier1_bound() {
     use super::full_resolution_streams;
     let mosaic = 4096 * 2048;
     // 11 MB lossless and 2.2 MB at 2 bits per pixel.
     assert!(full_resolution_streams(mosaic, 11_104_128, 6));
-    assert!(!full_resolution_streams(mosaic, 2_246_803, 6));
+    // At 2 bits per pixel on small and large pools, but not on one thread or
+    // on the 7 to 11 threads where one pool reader holds the decode back.
+    for threads in [2, 6, 12, 18] {
+        assert!(
+            full_resolution_streams(mosaic, 2_246_803, threads),
+            "{threads}"
+        );
+    }
+    for threads in [7, 10, 11] {
+        assert!(
+            !full_resolution_streams(mosaic, 2_246_803, threads),
+            "{threads}"
+        );
+    }
     for threads in [12, 18] {
         assert!(
             !full_resolution_streams(mosaic, 11_104_128, threads),
