@@ -70,7 +70,7 @@ pub(super) fn admitted_batch_worker_limit() -> usize {
 ///
 /// A claim is conservative accounting for native ownership that cannot be
 /// estimated soundly before packet parsing.
-pub(super) fn batch_execution_cap_bytes() -> usize {
+pub(crate) fn batch_execution_cap_bytes() -> usize {
     // Cannot saturate: the worker limit is at most MAX_SCALED_GENERIC_BATCH_WORKERS.
     generic_batch_worker_limit().saturating_mul(GENERIC_WORKER_CLAIM_BYTES)
 }

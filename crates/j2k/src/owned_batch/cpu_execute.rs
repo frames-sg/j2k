@@ -215,6 +215,7 @@ fn run_typed_group<T: Copy + Send>(
             &mut results,
             flattened,
             staged_workspace,
+            admission,
             convert,
         )?;
     } else {
