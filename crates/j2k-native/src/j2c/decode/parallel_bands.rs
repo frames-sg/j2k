@@ -118,7 +118,7 @@ pub(super) fn decode_component<'a>(
     profile_timings: &mut DecodeProfileTimings,
 ) -> Result<bool> {
     let stage_start = profile::profile_now(profile_enabled);
-    let routing = plan_band_route(tile, component_idx, tile_ctx, storage, header);
+    let routing = plan_band_route(tile, component_idx, tile_ctx, storage, header, false);
     let route = match routing {
         // Planning can fail in a later band before earlier blocks decode.
         Err(error) => {
@@ -337,7 +337,7 @@ pub(super) fn decode_tile_rows<'a>(
     // left, as one budget.
     let mut live = None;
     for component_idx in 0..components {
-        match plan_band_route_beside(tile, component_idx, tile_ctx, storage, header, live) {
+        match plan_band_route_beside(tile, component_idx, tile_ctx, storage, header, live, true) {
             Ok(BandRouting::Route(route)) => {
                 live = Some(route.budget());
                 routes.push(route);
@@ -1920,7 +1920,7 @@ mod tests {
                 assert_eq!(tile_ctx.debug_counters.pool_band_components, 1);
                 let (route_bytes, executor) = {
                     let BandRouting::Route(route) =
-                        plan_band_route(&tiles[0], 0, tile_ctx, storage, &image.header)
+                        plan_band_route(&tiles[0], 0, tile_ctx, storage, &image.header, false)
                             .expect("plan control route")
                     else {
                         panic!("control fixture must take the pool route");
@@ -1948,12 +1948,13 @@ mod tests {
                     .live_bytes();
                 storage.structural_workspace_bytes +=
                     DEFAULT_MAX_DECODE_BYTES - baseline - headroom;
-                let route = match plan_band_route(&tiles[0], 0, tile_ctx, storage, &image.header) {
-                    Ok(BandRouting::Route(route)) => route,
-                    Ok(BandRouting::Serial | BandRouting::WholeWindows) => return,
-                    Err(error) if super::super::reuse::is_capacity_error(&error) => return,
-                    Err(error) => panic!("unexpected planning error: {error:?}"),
-                };
+                let route =
+                    match plan_band_route(&tiles[0], 0, tile_ctx, storage, &image.header, false) {
+                        Ok(BandRouting::Route(route)) => route,
+                        Ok(BandRouting::Serial | BandRouting::WholeWindows) => return,
+                        Err(error) if super::super::reuse::is_capacity_error(&error) => return,
+                        Err(error) => panic!("unexpected planning error: {error:?}"),
+                    };
                 let result = decode_route(
                     &route,
                     0,

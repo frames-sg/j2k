@@ -600,6 +600,34 @@ fn rgb8_destination_matches_the_sink_pack_byte_for_byte() {
     }
 }
 
+/// A streamed decode has no per-sub-band path, so a classic component with
+/// fewer rows of code-blocks than the pool has threads must still decode its
+/// bands on the pool, in parts, rather than serially, with the planes' rows
+/// bit for bit.
+#[cfg(feature = "parallel")]
+#[test]
+fn pool_band_rows_use_a_pool_larger_than_the_code_block_rows() {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(48)
+        .build()
+        .expect("build pool");
+    for case in row_sink_cases().into_iter().filter(|case| {
+        case.components == 3 && !case.options.use_ht_block_coding && case.options.num_layers <= 1
+    }) {
+        let pixels = noisy_pixels(case.components);
+        let bytes = encode(&pixels, WIDTH, HEIGHT, 3, 8, false, &case.options)
+            .expect("encode large pool fixture");
+        let image = Image::new_with_reduction(&bytes, &DecodeSettings::default(), 0)
+            .expect("parse large pool fixture");
+        let roi = (0, 0, image.width(), image.height());
+        let planes = decode_planes(&image, roi);
+        let rows = pool.install(|| decode_rows(&image, roi, CpuDecodeParallelism::Auto));
+        assert_eq!(rows.planes, planes.planes, "{}", case.label);
+        assert!(rows.streamed, "{}: streamed", case.label);
+        assert!(rows.pool_components > 0, "{}: decoded serially", case.label);
+    }
+}
+
 /// Outcome of a region decode, through the planes or the row sink: a hash
 /// of the samples, or the error.
 fn outcome(
@@ -970,4 +998,53 @@ fn streamed_rows_evict_the_packet_directory_before_the_first_row() {
         image.retained_allocation_bytes().expect("retained bytes"),
         metadata
     );
+}
+
+/// Stitched windows of a reduced resolution, as a tiled viewer or an IIIF
+/// server requests them, hold few rows of code-blocks per component: fewer
+/// than a pool of 18 threads has workers. Such a window's streamed rows must
+/// still decode its classic bands on the pool, in parts, and not fall back to
+/// one serial thread for the whole tile, with the planes' rows bit for bit.
+#[cfg(feature = "parallel")]
+#[test]
+fn reduced_windows_stream_on_a_pool_with_more_threads_than_their_rows() {
+    for threads in [18, 48] {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("build pool");
+        for case in row_sink_cases().into_iter().filter(|case| {
+            case.components == 3
+                && !case.options.use_ht_block_coding
+                && case.options.num_layers <= 1
+                && case.options.tile_size.is_none()
+        }) {
+            let pixels = noisy_pixels(case.components);
+            let bytes = encode(&pixels, WIDTH, HEIGHT, 3, 8, false, &case.options)
+                .expect("encode reduced window fixture");
+            for reduction in [1_u8, 2] {
+                let image =
+                    Image::new_with_reduction(&bytes, &DecodeSettings::default(), reduction)
+                        .expect("parse reduced window fixture");
+                let (width, height) = (image.width(), image.height());
+                let (half_width, half_height) = (width.div_ceil(2), height.div_ceil(2));
+                for roi in [
+                    (0, 0, half_width, half_height),
+                    (half_width, 0, width - half_width, half_height),
+                    (0, height - 3, half_width, 3),
+                ] {
+                    let label = format!(
+                        "{} threads={threads} reduction={reduction} roi={roi:?}",
+                        case.label
+                    );
+                    let planes = decode_planes(&image, roi);
+                    let rows =
+                        pool.install(|| decode_rows(&image, roi, CpuDecodeParallelism::Auto));
+                    assert_eq!(rows.planes, planes.planes, "{label}");
+                    assert!(rows.streamed, "{label}: streamed");
+                    assert_eq!(rows.pool_components, 3, "{label}: decoded serially");
+                }
+            }
+        }
+    }
 }

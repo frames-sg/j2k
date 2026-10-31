@@ -1595,24 +1595,35 @@ pub(in crate::j2c::decode) enum BandRouting<'a> {
 /// bytes and its rows of code-blocks. With a plan, the coding's retained bank
 /// holds a workspace for each of `workers` pool threads and one more for the
 /// calling thread, charged to the structural workspace.
+///
+/// A `lockstep` decode, whose rows stream to a sink, has no per-sub-band
+/// path: a classic component with fewer rows of code-blocks than threads
+/// stays on the route, whose bands split into parts for the idle threads,
+/// rather than decode its bands serially. A 512 x 512 RGB image at 6.6 bits
+/// per pixel decoded 4.5 times as long on 18 threads as on 12 that way.
 pub(in crate::j2c::decode) fn plan_band_route<'a>(
     tile: &Tile<'a>,
     component_idx: usize,
     tile_ctx: &mut TileDecodeContext,
     storage: &mut DecompositionStorage<'a>,
     header: &Header<'_>,
+    lockstep: bool,
 ) -> Result<BandRouting<'a>> {
-    plan_band_route_beside(tile, component_idx, tile_ctx, storage, header, None)
+    plan_band_route_beside(
+        tile,
+        component_idx,
+        tile_ctx,
+        storage,
+        header,
+        None,
+        lockstep,
+    )
 }
 
 /// [`plan_band_route`], charging the route to `live` when other routes stay
 /// live beside it: the budget of the route planned last for the same
 /// executor, which holds every earlier route's charges. Without it, the
 /// route is charged to the decode's storage budget.
-#[expect(
-    clippy::too_many_lines,
-    reason = "the route's coding, tile route, plan and cutoffs decide one band routing in order"
-)]
 pub(in crate::j2c::decode) fn plan_band_route_beside<'a>(
     tile: &Tile<'a>,
     component_idx: usize,
@@ -1620,6 +1631,7 @@ pub(in crate::j2c::decode) fn plan_band_route_beside<'a>(
     storage: &mut DecompositionStorage<'a>,
     header: &Header<'_>,
     live: Option<DecodeAllocationBudget>,
+    lockstep: bool,
 ) -> Result<BandRouting<'a>> {
     let components = component_idx..component_idx + 1;
     let Some(coding) = tile_route_coding(tile, components.clone()) else {
@@ -1632,13 +1644,17 @@ pub(in crate::j2c::decode) fn plan_band_route_beside<'a>(
     };
     let (required, segment_bytes, rows) =
         required_code_blocks(tile, components.clone(), storage, header, coding)?;
-    if let Some(route) = route_fallback(
-        coding,
-        rows,
-        segment_bytes,
-        threads,
-        MIN_PARALLEL_CODED_BYTES,
-    ) {
+    let fallback = |strips, coded_bytes| {
+        route_fallback(
+            coding,
+            strips,
+            coded_bytes,
+            threads,
+            MIN_PARALLEL_CODED_BYTES,
+        )
+        .filter(|route| !(lockstep && matches!(route, TileRoute::PerSubBand)))
+    };
+    if let Some(route) = fallback(rows, segment_bytes) {
         return Ok(declined(route));
     }
     let mut budget = match live {
@@ -1663,13 +1679,7 @@ pub(in crate::j2c::decode) fn plan_band_route_beside<'a>(
         }
         Err(error) => return Err(error),
     };
-    if let Some(route) = route_fallback(
-        coding,
-        plan.strips.len(),
-        plan.coded_bytes,
-        threads,
-        MIN_PARALLEL_CODED_BYTES,
-    ) {
+    if let Some(route) = fallback(plan.strips.len(), plan.coded_bytes) {
         return Ok(declined(route));
     }
     let work = plan
