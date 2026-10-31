@@ -206,7 +206,7 @@ fn execute_ht_sub_band_referenced(
 }
 
 #[cfg(feature = "parallel")]
-type RowJob<'p, 'i> = super::rows::RowJob<'p, 'i, crate::HtOwnedCodeBlockBatchJob>;
+type RowJob<'p, 'i> = super::rows::RowJob<'p, crate::HtOwnedCodeBlockBatchJob, &'i [u8]>;
 
 /// Bytes owned together while a referenced HT sub-band is dispatched in
 /// parallel. Planning and execution share this helper so the private dispatch
@@ -219,7 +219,8 @@ pub(in crate::direct_cpu) fn parallel_ht_decode_transient_bytes(
 ) -> Result<usize> {
     super::rows::row_dispatch_transient_bytes::<
         crate::HtOwnedCodeBlockBatchJob,
-        HtCodeBlockDecodeWorkspace,
+        &[u8],
+        &mut HtCodeBlockDecodeWorkspace,
     >(entry_capacity, row_capacity, workspace_capacity)
 }
 
@@ -244,7 +245,7 @@ fn decode_ht_sub_band_rows_parallel(
     };
     entries.sort_unstable_by_key(|entry| (entry.job.output_y, entry.job.output_x));
     let entry_capacity = entries.capacity();
-    let Some(rows) = super::rows::carve_rows::<_, HtCodeBlockDecodeWorkspace>(
+    let Some(rows) = super::rows::carve_rows::<_, _, &mut HtCodeBlockDecodeWorkspace>(
         &entries,
         output,
         sub_band_width,
@@ -260,7 +261,7 @@ fn decode_ht_sub_band_rows_parallel(
         rows,
         entry_capacity,
         &mut *ht.main,
-        ht.tasks,
+        ht.tasks.iter_mut(),
         ht.budget,
         |entry, output, workspace| {
             let job = entry.job;

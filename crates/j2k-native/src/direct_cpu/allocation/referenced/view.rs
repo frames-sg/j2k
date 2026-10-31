@@ -221,10 +221,7 @@ fn referenced_parallel_classic_dispatch_bytes(
     parallel: bool,
 ) -> Result<usize> {
     let worker_count = rayon::current_num_threads();
-    let ReferencedPlanView::Classic(classic) = plan else {
-        return Ok(0);
-    };
-    if !parallel || worker_count <= 1 || classic_plan_has_fragmented_payloads(classic) {
+    if !matches!(plan, ReferencedPlanView::Classic(_)) || !parallel || worker_count <= 1 {
         return Ok(0);
     }
     let mut maximum_jobs = 0usize;
@@ -240,10 +237,11 @@ fn referenced_parallel_classic_dispatch_bytes(
     if maximum_jobs == 0 {
         return Ok(0);
     }
-    super::super::super::referenced::rows::row_dispatch_transient_bytes::<
-        crate::J2kOwnedCodeBlockBatchJob,
-        crate::J2kCodeBlockDecodeWorkspace,
-    >(maximum_jobs, maximum_jobs, worker_count)
+    super::super::super::referenced_classic::parallel_classic_decode_transient_bytes(
+        maximum_jobs,
+        maximum_jobs,
+        worker_count,
+    )
 }
 
 #[cfg(not(feature = "parallel"))]
@@ -333,13 +331,18 @@ pub(in super::super::super) fn max_referenced_classic_dimensions(
     max_referenced_dimensions(ReferencedPlanView::Classic(plan), false)
 }
 
-/// Whether some classic payload is split over several input fragments (a
-/// multi-layer codestream). Parallel classic dispatch borrows each payload
-/// as one input slice, so such plans decode their blocks serially.
-pub(super) fn classic_plan_has_fragmented_payloads(plan: &J2kReferencedClassicPlan) -> bool {
+/// Largest classic payload split over several input fragments (a
+/// multi-layer codestream), which a parallel task joins into its own buffer;
+/// zero when every payload is one input slice.
+pub(super) fn max_referenced_classic_fragmented_payload_bytes(
+    plan: &J2kReferencedClassicPlan,
+) -> usize {
     plan.payloads()
         .iter()
-        .any(|payload| payload.range_count > 1)
+        .filter(|payload| payload.range_count > 1)
+        .map(|payload| payload.combined_length)
+        .max()
+        .unwrap_or(0)
 }
 
 /// Most runs of code-block rows (consecutive jobs sharing `output_y`) in any

@@ -15,7 +15,7 @@ use super::{
 use budget::validate_referenced_aggregate_plan;
 use storage::{normalize_referenced_scratch, reserve_referenced_scratch};
 use view::{
-    classic_plan_has_fragmented_payloads, max_referenced_classic_payload_bytes,
+    max_referenced_classic_fragmented_payload_bytes, max_referenced_classic_payload_bytes,
     max_referenced_classic_rows, max_referenced_dimensions, max_referenced_payload_bytes,
     ReferencedPlanView,
 };
@@ -82,16 +82,12 @@ pub(in super::super) fn planned_referenced_classic_execution_bytes(
     .map(DirectWorkspaceBudget::peak_bytes)
 }
 
-/// Shape of the extra classic workspaces parallel execution of `plan` uses:
-/// none for plans whose payloads are split over fragments, which parallel
-/// dispatch cannot borrow as one slice.
+/// Shape of the extra classic workspaces parallel execution of `plan` uses.
 fn classic_task_shape(plan: &J2kReferencedClassicPlan) -> Option<ClassicTaskShape> {
-    if classic_plan_has_fragmented_payloads(plan) {
-        return None;
-    }
     Some(ClassicTaskShape {
         dimensions: max_referenced_classic_dimensions(plan)?,
         rows: max_referenced_classic_rows(plan),
+        fragmented_payload_bytes: max_referenced_classic_fragmented_payload_bytes(plan),
     })
 }
 
