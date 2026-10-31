@@ -76,8 +76,18 @@ impl CpuExecution {
         }
     }
 
+    /// The planned peak of the offset plan this image may decode, if any:
+    /// what the staged route, which decodes plans only, claims for it.
+    pub(super) const fn plan_bytes(self) -> Option<usize> {
+        match self {
+            Self::OffsetPlan { bytes } | Self::StreamedRowsOrPlan { bytes } => Some(bytes),
+            Self::ComponentPlanes | Self::ExceedsDecodeBound | Self::StreamedRows => None,
+        }
+    }
+
     /// Whether the CPU decoder may stream this image's rows; groups holding
-    /// such an image never take the staged route.
+    /// such an image take the staged route only to keep their plans (see
+    /// `keeps_staged_plans`).
     pub(super) const fn streams(self) -> bool {
         matches!(self, Self::StreamedRows | Self::StreamedRowsOrPlan { .. })
     }

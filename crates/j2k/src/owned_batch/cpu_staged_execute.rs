@@ -47,9 +47,12 @@ pub(super) fn run_staged_typed_group<T: Copy + Send>(
     let mut window_start = 0;
     while window_start < image_jobs.len() {
         let (window_end, window_bytes) = staged_window_len(
-            image_jobs[window_start..]
-                .iter()
-                .map(|job| job.image.cpu_execution().claim_bytes()),
+            image_jobs[window_start..].iter().map(|job| {
+                let execution = job.image.cpu_execution();
+                execution
+                    .plan_bytes()
+                    .unwrap_or_else(|| execution.claim_bytes())
+            }),
             window_budget,
         );
         let window_end = window_start + window_end;

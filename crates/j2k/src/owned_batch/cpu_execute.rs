@@ -8,14 +8,14 @@ use super::cpu_materialize::{
 };
 use super::cpu_staged_execute::run_staged_typed_group;
 use super::{
-    decode_warnings_for_recovery, retained_inner_parallelism, run_retained_chunks, Arc, BatchColor,
-    BatchDecodeOptions, BatchErrorStage, BatchGroupInfo, BatchInfrastructureError, BatchItemError,
-    BatchWorker, CpuBatchGroup, CpuBatchSamples, CpuDecodeParallelism, CpuGroupFastWorkspace,
-    CpuStagedWorkspace, IndexedBatchError, J2kError, NativeSampleType, NonZeroUsize,
-    PreparedBatchGroup, PreparedImage, TileBatchOptions, Vec,
+    decode_warnings_for_recovery, retained_inner_parallelism, run_retained_chunks, Arc,
+    BatchCodecRoute, BatchColor, BatchDecodeOptions, BatchErrorStage, BatchGroupInfo,
+    BatchInfrastructureError, BatchItemError, BatchWorker, CpuBatchGroup, CpuBatchSamples,
+    CpuDecodeParallelism, CpuGroupFastWorkspace, CpuStagedWorkspace, IndexedBatchError, J2kError,
+    NativeSampleType, NonZeroUsize, PreparedBatchGroup, PreparedImage, TileBatchOptions, Vec,
 };
 use crate::batch::admission::{hold_at_least, BatchAllocationBudget};
-use crate::batch::allocation::try_vec_with_capacity;
+use crate::batch::allocation::{batch_execution_cap_bytes, try_vec_with_capacity};
 
 #[expect(
     clippy::too_many_lines,
@@ -39,11 +39,12 @@ pub(super) fn decode_cpu_group(
     // plan decodes faster on its own: its code-block rows and wavelet bands
     // spread over every core, still without reparsing.
     // Streamed images never hold whole-image scratch, so a group with one
-    // never enters the staged route.
-    let streams_rows = group
-        .images
-        .iter()
-        .any(|image| image.cpu_execution().streams());
+    // enters the staged route only to keep its plans.
+    let streams_rows = !keeps_staged_plans(group, workers_option)
+        && group
+            .images
+            .iter()
+            .any(|image| image.cpu_execution().streams());
     let has_flattened_payloads = !streams_rows
         && fast_workspace.prepare_group(group)?
         && retained_inner_parallelism(group.images.len(), tile_options)?
@@ -181,6 +182,61 @@ pub(super) fn decode_cpu_group(
         warnings,
         samples,
     )))
+}
+
+/// Most explicit workers for which a group whose images may stream keeps
+/// their plans on the staged route (see [`keeps_staged_plans`]): one, or
+/// four for Gray8, whose staged route keeps up to four workers busy.
+const fn staged_plans_max_workers(color: BatchColor) -> usize {
+    match color {
+        BatchColor::Gray => 4,
+        _ => 1,
+    }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    /// Test-only planned bytes above which a group streams instead of
+    /// keeping its plans on the staged route, on this thread.
+    pub(super) static STAGED_PLANS_CAP_OVERRIDE: core::cell::Cell<Option<usize>> =
+        const { core::cell::Cell::new(None) };
+}
+
+/// Whether a group of images that may stream decodes their plans on the
+/// staged route instead: the caller set one worker (up to four for Gray8),
+/// the group holds several classic images, and each has a plan within the
+/// per-decode bound, all together within the batch execution cap. Larger
+/// groups stream.
+///
+/// The staged route decodes each code-block of a window's images back to
+/// back, which speeds up classic Tier-1 when the images repeat, and while it
+/// keeps its workers busy the stream pool has no idle thread to gain from:
+/// 8 copies of one image stream in 1.13-1.32 times the staged time at one
+/// worker, and 8 Gray8 copies in 1.12-1.24 times at two to four workers.
+/// Distinct images stream as fast or faster, RGB8 streams faster from two
+/// workers on and Gray8 from six, and HTJ2K images always stream faster.
+/// The window keeps each image's plan scratch, as these settings did before
+/// images streamed.
+fn keeps_staged_plans(group: &PreparedBatchGroup, workers: Option<NonZeroUsize>) -> bool {
+    group.info.route == BatchCodecRoute::Classic
+        && group.images.len() > 1
+        && workers
+            .is_some_and(|workers| workers.get() <= staged_plans_max_workers(group.info.color))
+        && group
+            .images
+            .iter()
+            .try_fold(0usize, |total, image| {
+                total.checked_add(image.cpu_execution().plan_bytes()?)
+            })
+            .is_some_and(|total| total <= staged_plans_cap())
+}
+
+fn staged_plans_cap() -> usize {
+    #[cfg(test)]
+    if let Some(cap) = STAGED_PLANS_CAP_OVERRIDE.with(core::cell::Cell::get) {
+        return cap;
+    }
+    batch_execution_cap_bytes()
 }
 
 /// The threads a group's streamed images decode on when the caller set the
