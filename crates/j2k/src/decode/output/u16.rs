@@ -380,9 +380,24 @@ impl U16Writer for ChannelWriter<'_, '_> {
             channels,
             channel,
         } = self;
-        for (pixel, &sample) in dst.chunks_exact_mut(channels * 2).zip(src) {
-            pixel[channel * 2..channel * 2 + 2].copy_from_slice(&convert(sample).to_le_bytes());
+        // Whole pixels of a constant size, which the compiler vectorizes.
+        match channels {
+            1 => write_channel::<2>(src, dst, channel, convert),
+            3 => write_channel::<6>(src, dst, channel, convert),
+            _ => write_channel::<8>(src, dst, channel, convert),
         }
+    }
+}
+
+#[inline(always)]
+fn write_channel<const PIXEL: usize>(
+    src: &[f32],
+    dst: &mut [u8],
+    channel: usize,
+    convert: impl Fn(f32) -> u16,
+) {
+    for (pixel, &sample) in dst.as_chunks_mut::<PIXEL>().0.iter_mut().zip(src) {
+        pixel[channel * 2..channel * 2 + 2].copy_from_slice(&convert(sample).to_le_bytes());
     }
 }
 
@@ -397,17 +412,25 @@ struct PixelWriter<'s, 'd> {
 impl U16Writer for PixelWriter<'_, '_> {
     #[inline(always)]
     fn write(self, convert: impl Fn(f32) -> u16) {
-        let Self {
-            src: [red, green, blue],
-            dst,
-            channels,
-        } = self;
-        let samples = red.iter().zip(green).zip(blue);
-        for (pixel, ((&red, &green), &blue)) in dst.chunks_exact_mut(channels * 2).zip(samples) {
-            pixel[..2].copy_from_slice(&convert(red).to_le_bytes());
-            pixel[2..4].copy_from_slice(&convert(green).to_le_bytes());
-            pixel[4..6].copy_from_slice(&convert(blue).to_le_bytes());
+        let Self { src, dst, channels } = self;
+        match channels {
+            3 => write_pixels::<6>(src, dst, convert),
+            _ => write_pixels::<8>(src, dst, convert),
         }
+    }
+}
+
+#[inline(always)]
+fn write_pixels<const PIXEL: usize>(
+    [red, green, blue]: [&[f32]; 3],
+    dst: &mut [u8],
+    convert: impl Fn(f32) -> u16,
+) {
+    let samples = red.iter().zip(green).zip(blue);
+    for (pixel, ((&red, &green), &blue)) in dst.as_chunks_mut::<PIXEL>().0.iter_mut().zip(samples) {
+        pixel[..2].copy_from_slice(&convert(red).to_le_bytes());
+        pixel[2..4].copy_from_slice(&convert(green).to_le_bytes());
+        pixel[4..6].copy_from_slice(&convert(blue).to_le_bytes());
     }
 }
 
