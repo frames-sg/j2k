@@ -8,9 +8,10 @@ use crate::{
     },
     decode::{
         decode_full_image_into_with_native_context, decode_image_region_into_with_native_context,
-        decode_warnings_for_image, full_image_route, validate_buffer, validate_region,
-        J2kDecodeOutcome, J2kDecodedComponents, J2kDecodedNativeComponents, PlanesBudget,
-        RouteRequest,
+        decode_native_components_with_native_context, decode_warnings_for_image, full_image_route,
+        native_components_route, native_region_components_route, validate_buffer, validate_region,
+        FullImageRoute, J2kDecodeOutcome, J2kDecodedComponents, J2kDecodedNativeComponents,
+        PlanesBudget, RouteRequest,
     },
     parse::{parse_image_info, parse_info},
     scratch::J2kScratchPool,
@@ -249,19 +250,30 @@ impl<'a> J2kDecoder<'a> {
     ///
     /// This preserves per-component bit depth, signedness, sampling, and byte
     /// width for callers that cannot use a single interleaved packed bitmap.
+    /// A decode whose `f32` component planes would pass the native decode
+    /// budget runs as a region decode of the whole image, which packs rows
+    /// into the returned planes as they are finished.
     ///
     /// # Errors
     /// Returns [`J2kError`] when the codestream cannot be decoded.
     pub fn decode_native_components(&mut self) -> Result<J2kDecodedNativeComponents, J2kError> {
         self.ensure_image()?;
+        let planes_budget = self.full_decode_planes_budget();
         let (Some(image), native_context) = (self.image.as_ref(), &mut self.native_context) else {
             return Err(J2kError::internal_backend("internal image cache missing"));
         };
-        let decoded = image
-            .decode_native_components_with_context(native_context)
-            .map_err(J2kError::from_native_decode_error)?;
-        let retained_image_bytes = component_handoff_image_bytes(image)?;
-        J2kDecodedNativeComponents::try_from_native(decoded, retained_image_bytes)
+        let planes_budget = match planes_budget {
+            PlanesBudget::Default => j2k_native::DEFAULT_MAX_DECODE_BYTES,
+            PlanesBudget::Fixed(bytes) => bytes,
+        };
+        let route = native_components_route(image, planes_budget);
+        let decoded =
+            decode_native_components_with_native_context(image, native_context, None, route);
+        let retained_image_bytes = component_handoff_image_bytes(image);
+        if route == FullImageRoute::StreamedRegion {
+            self.native_context = self.fresh_native_context();
+        }
+        J2kDecodedNativeComponents::try_from_native(decoded?, retained_image_bytes?)
     }
 
     /// Extract selected codestream wavelet bands on the CPU, without inverse
@@ -286,6 +298,10 @@ impl<'a> J2kDecoder<'a> {
     /// Decode a source-coordinate region into owned native-bit-depth component
     /// planes.
     ///
+    /// Like 8- and 16-bit region decodes, it packs rows into the returned
+    /// planes as they are finished when the image has no palette, channel
+    /// definition, sYCC or CIELab and its components share one precision.
+    ///
     /// # Errors
     /// Returns [`J2kError`] when the region is invalid or the codestream cannot
     /// be decoded.
@@ -298,14 +314,14 @@ impl<'a> J2kDecoder<'a> {
         let (Some(image), native_context) = (self.image.as_ref(), &mut self.native_context) else {
             return Err(J2kError::internal_backend("internal image cache missing"));
         };
-        let decoded = image
-            .decode_native_region_components_with_context(
-                (roi.x, roi.y, roi.w, roi.h),
-                native_context,
-            )
-            .map_err(J2kError::from_native_decode_error)?;
-        let retained_image_bytes = component_handoff_image_bytes(image)?;
-        J2kDecodedNativeComponents::try_from_native(decoded, retained_image_bytes)
+        let route = native_region_components_route(image);
+        let decoded =
+            decode_native_components_with_native_context(image, native_context, Some(roi), route);
+        let retained_image_bytes = component_handoff_image_bytes(image);
+        if route == FullImageRoute::StreamedRegion {
+            self.native_context = self.fresh_native_context();
+        }
+        J2kDecodedNativeComponents::try_from_native(decoded?, retained_image_bytes?)
     }
 
     /// Return the CPU decode parallelism policy for this decoder.
@@ -597,11 +613,11 @@ impl<'a> J2kDecoder<'a> {
             .map_or(PlanesBudget::Default, PlanesBudget::Fixed)
     }
 
-    /// Test hook: hold full-image 8-bit decodes' component planes to
-    /// `bytes` and drop the preference for streaming, so that a decode
-    /// takes the streamed region route exactly when its planes would pass
-    /// `bytes`: 0 streams every decode that can stream, `usize::MAX` keeps
-    /// every decode the planes can finish on the planes. The native decode
+    /// Test hook: hold full-image decodes' component planes to `bytes` and
+    /// drop the preference for streaming, so that a decode takes the
+    /// streamed region route exactly when its planes would pass `bytes`: 0
+    /// streams every decode that can stream, `usize::MAX` keeps every decode
+    /// the planes can finish on the planes. The native decode
     /// budget itself is unchanged.
     #[doc(hidden)]
     pub fn set_full_decode_planes_budget(&mut self, bytes: usize) {

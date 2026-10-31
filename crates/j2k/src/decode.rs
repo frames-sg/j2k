@@ -12,12 +12,17 @@ pub use component_handoff::{
     J2kNativeComponentPlane,
 };
 mod output;
+pub(crate) use output::{
+    decode_native_components_with_native_context, native_components_route,
+    native_region_components_route,
+};
 mod route;
 mod settings;
 mod srgb8;
 use output::{
-    can_decode_u8_directly, expand_rgb8_to_rgba8, write_components_u16_output,
-    write_components_u8_output, write_u16_output, write_u8_output, U8RowSink,
+    can_decode_u8_directly, expand_rgb8_to_rgba8, rows_match_native_u16,
+    write_components_u16_output, write_components_u8_output, write_u16_output, write_u8_output,
+    U16RowSink, U8RowSink,
 };
 pub(crate) use route::{full_image_route, FullImageRoute, PlanesBudget, RouteRequest};
 pub use settings::DecodeSettings;
@@ -174,6 +179,23 @@ pub(crate) fn decode_image_region_into_with_native_context<'a>(
             // holding the region's component planes. A decode that fails
             // may have written some of them.
             let mut sink = U8RowSink::new(image.color_space(), image.has_alpha(), out, stride, fmt);
+            image
+                .decode_region_rows_for_integer_output_with_context(
+                    (roi.x, roi.y, roi.w, roi.h),
+                    native_context,
+                    &mut sink,
+                )
+                .map_err(J2kError::from_native_decode_error)?;
+            sink.finish()
+        }
+        PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16
+            if rows_match_native_u16(image, fmt) =>
+        {
+            // As at 8 bits, the rows go to `out` as they are finished; the
+            // sink converts them as `write_u16_output` converts the native
+            // samples of the same region.
+            let mut sink =
+                U16RowSink::new(image.color_space(), image.has_alpha(), out, stride, fmt);
             image
                 .decode_region_rows_for_integer_output_with_context(
                     (roi.x, roi.y, roi.w, roi.h),
