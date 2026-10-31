@@ -396,6 +396,7 @@ impl<'a> J2kDecoder<'a> {
                 budget,
                 parallelism: native_context.cpu_decode_parallelism(),
                 components: self.info.components,
+                coded_bytes: self.bytes.len(),
                 reduced: false,
             },
         );
@@ -509,6 +510,7 @@ impl<'a> J2kDecoder<'a> {
                 budget: self.full_decode_planes_budget(),
                 parallelism: native_context.cpu_decode_parallelism(),
                 components: self.info.components,
+                coded_bytes: self.bytes.len(),
                 reduced: true,
             },
         );

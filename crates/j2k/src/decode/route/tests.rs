@@ -26,6 +26,7 @@ fn request(fmt: PixelFormat, budget: usize, parallelism: CpuDecodeParallelism) -
         budget: PlanesBudget::Fixed(budget),
         parallelism,
         components: 3,
+        coded_bytes: 0,
         reduced: false,
     }
 }
@@ -215,8 +216,9 @@ fn tiles_at_once_need_a_busy_tile_for_every_worker() {
     assert_eq!(workers(2048, 6), None);
 }
 
-/// Without a fixed budget, reduced three-component classic images stream,
-/// while HTJ2K, gray and small full-resolution images keep the planes.
+/// Without a fixed budget, reduced three-component images stream (HTJ2K
+/// ones on a pool), while gray and small full-resolution images keep the
+/// planes.
 #[test]
 fn the_default_streams_where_streaming_measured_faster() {
     let options = |use_ht_block_coding| EncodeOptions {
@@ -237,6 +239,7 @@ fn the_default_streams_where_streaming_measured_faster() {
                 budget: PlanesBudget::Default,
                 parallelism,
                 components,
+                coded_bytes: bytes.len(),
                 reduced: scale != Downscale::None,
             },
         )
@@ -248,9 +251,12 @@ fn the_default_streams_where_streaming_measured_faster() {
                     default(&classic, scale, fmt, 3, parallelism).streams(),
                     "{scale:?} {fmt:?} {parallelism:?}"
                 );
+                let pool = parallelism == CpuDecodeParallelism::Auto
+                    && j2k_native::cpu_decode_pool_threads() >= 2;
                 assert_eq!(
-                    default(&ht, scale, fmt, 3, parallelism),
-                    FullImageRoute::Planes
+                    default(&ht, scale, fmt, 3, parallelism).streams(),
+                    pool,
+                    "{scale:?} {fmt:?} {parallelism:?}"
                 );
             }
             assert_eq!(
@@ -259,10 +265,12 @@ fn the_default_streams_where_streaming_measured_faster() {
             );
         }
         // 96 x 80 samples are far below a megapixel.
-        assert_eq!(
-            default(&classic, Downscale::None, PixelFormat::Rgb8, 3, parallelism),
-            FullImageRoute::Planes
-        );
+        for bytes in [classic.as_slice(), ht.as_slice()] {
+            assert_eq!(
+                default(bytes, Downscale::None, PixelFormat::Rgb8, 3, parallelism),
+                FullImageRoute::Planes
+            );
+        }
         assert_eq!(
             default(
                 &classic,
@@ -363,4 +371,25 @@ fn tiles_at_once_report_the_first_failing_tile() {
         .map_err(|error| error.to_string());
         assert_eq!(one, many, "{workers}");
     }
+}
+
+/// Full-resolution untiled classic images stream from a megapixel and 4 coded
+/// bits per pixel, on 2 to 11 pool threads.
+#[test]
+fn full_resolution_images_stream_when_tier1_bound_on_a_mid_sized_pool() {
+    use super::full_resolution_streams;
+    let mosaic = 4096 * 2048;
+    // 11 MB lossless and 2.2 MB at 2 bits per pixel.
+    assert!(full_resolution_streams(mosaic, 11_104_128, 6));
+    assert!(!full_resolution_streams(mosaic, 2_246_803, 6));
+    for threads in [1, 12, 18] {
+        assert!(
+            !full_resolution_streams(mosaic, 11_104_128, threads),
+            "{threads}"
+        );
+    }
+    assert!(full_resolution_streams(mosaic, 11_104_128, 2));
+    assert!(full_resolution_streams(mosaic, 11_104_128, 11));
+    // Below a megapixel.
+    assert!(!full_resolution_streams(1000 * 1000, 2_000_000, 6));
 }

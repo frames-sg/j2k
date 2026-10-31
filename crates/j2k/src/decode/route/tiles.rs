@@ -74,7 +74,14 @@ pub(crate) fn decode_tiles_into(
     };
     std::thread::scope(|scope| {
         for _ in 1..workers {
-            scope.spawn(work);
+            // A thread the system refuses only leaves fewer workers: the
+            // calling thread claims every tile the others do not.
+            if std::thread::Builder::new()
+                .spawn_scoped(scope, work)
+                .is_err()
+            {
+                break;
+            }
         }
         work();
     });

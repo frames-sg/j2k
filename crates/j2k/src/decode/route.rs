@@ -60,6 +60,8 @@ pub(crate) struct RouteRequest {
     pub(crate) parallelism: CpuDecodeParallelism,
     /// The image's components.
     pub(crate) components: u16,
+    /// The bytes of the coded image, its codestream and container.
+    pub(crate) coded_bytes: usize,
     /// Whether the image is decoded below full resolution.
     pub(crate) reduced: bool,
 }
@@ -110,16 +112,27 @@ const CLASSIC_SYNTHESIS_THREADS: usize = 12;
 /// smaller images spend more of their time setting up the pool bands.
 const MIN_STREAMED_SAMPLES: u64 = 1 << 20;
 
+/// Coded bits per sample from which a full-resolution untiled classic image
+/// streams: below it Tier-1 is light, the decode is bound by the inverse
+/// transforms and the pack, and the planes' fused last level does those
+/// faster (a 2 bits-per-pixel image is 0-3% slower streamed, 5-11 bits per
+/// pixel images are 10% faster).
+const MIN_STREAMED_CODED_BITS_PER_SAMPLE: u64 = 4;
+
 /// Whether an image the planes route can decode streams anyway, because
 /// streaming was measured at least as fast for its kind:
 /// - an RGB image of several tiles, when it has a tile for every thread
 ///   that decodes tiles at once (see [`tile_workers`]);
-/// - an untiled three-component classic image when it is reduced, at any
-///   thread count, or of a megapixel or more on 2 to 11 pool threads.
+/// - an untiled three-component image when it is reduced: classic at any
+///   thread count, HTJ2K on two threads or more (one thread decodes a half
+///   resolution HTJ2K image 2-9% faster on the planes);
+/// - an untiled three-component classic image of a megapixel or more and at
+///   least 4 coded bits per pixel on 2 to 11 pool threads.
 ///
 /// Untiled gray images (whose streamed bands wait on a single component),
-/// HTJ2K images (whose streamed IDWT and pack cost more per sample than the
-/// planes' fused last level) and small images keep the planes.
+/// full-resolution HTJ2K images (whose streamed IDWT and pack cost more per
+/// sample than the planes' fused last level) and small images keep the
+/// planes.
 fn streams_by_default(image: &Image<'_>, request: RouteRequest) -> bool {
     let threads = pool_threads(request.parallelism);
     if image.tile_count() > 1 {
@@ -128,14 +141,32 @@ fn streams_by_default(image: &Image<'_>, request: RouteRequest) -> bool {
                 .output_tile_rects()
                 .is_ok_and(|rects| tile_workers(&rects, threads).is_some());
     }
-    if request.components != 3 || image.uses_high_throughput_block_coding() {
+    if request.components != 3 {
         return false;
     }
+    let htj2k = image.uses_high_throughput_block_coding();
     if request.reduced {
-        return true;
+        return !htj2k || threads >= 2;
     }
-    let samples = u64::from(image.width()) * u64::from(image.height());
-    samples >= MIN_STREAMED_SAMPLES && (2..CLASSIC_SYNTHESIS_THREADS).contains(&threads)
+    if htj2k {
+        return false;
+    }
+    full_resolution_streams(
+        u64::from(image.width()) * u64::from(image.height()),
+        request.coded_bytes,
+        threads,
+    )
+}
+
+/// Whether a full-resolution untiled three-component classic image of
+/// `samples` pixels coded in `coded_bytes` streams on `threads` pool threads.
+fn full_resolution_streams(samples: u64, coded_bytes: usize, threads: usize) -> bool {
+    let coded_bits = u64::try_from(coded_bytes)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(8);
+    samples >= MIN_STREAMED_SAMPLES
+        && coded_bits >= samples.saturating_mul(MIN_STREAMED_CODED_BITS_PER_SAMPLE)
+        && (2..CLASSIC_SYNTHESIS_THREADS).contains(&threads)
 }
 
 /// The threads a decode with `parallelism` runs on.
