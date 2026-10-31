@@ -16,6 +16,14 @@ and stale roadmap entries have been removed from the public documentation set.
   regions included, left it unwritten and still returned `Ok`. 8-bit region
   decodes, and buffers with any bytes after the last row, were not affected.
   The other rows are unchanged.
+- Decodes on the worker pool that reconstruct the two finest wavelet levels
+  of a component in one pass now charge the decode budget for what that pass
+  holds: each worker's rows of the coarser level, which were not charged,
+  and no intermediate buffer for the coarser level, which the pass never
+  writes and which is no longer reserved. Where those rows are the larger
+  term the charge grows to match; elsewhere it is unchanged and the IDWT
+  holds less within it (a 1024 x 768 gray image on 4 threads: 3.9 MB in
+  place of 4.5 MB, against a 4.1 MB charge). Output is unchanged.
 - Parallel CPU region decodes on the row-streamed IDWT decode Tier-1 band by
   band on the worker pool while the IDWT reads the bands, instead of decoding
   every code-block of a component first. Each sub-band holds three bands at
