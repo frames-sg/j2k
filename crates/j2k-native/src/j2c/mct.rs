@@ -121,17 +121,7 @@ pub(crate) fn apply_inverse_rows(
     round_irreversible_output: bool,
     rows: (&mut [f32], &mut [f32], &mut [f32]),
 ) {
-    let transform = component_infos[0].wavelet_transform();
-    let addends = [
-        unsigned_level_shift(&component_infos[0]),
-        unsigned_level_shift(&component_infos[1]),
-        unsigned_level_shift(&component_infos[2]),
-    ];
-    let centered_output =
-        round_irreversible_output && transform == WaveletTransform::Irreversible97;
-    let transform_addends = if centered_output { [0.0; 3] } else { addends };
-    let rounding = centered_output.then_some(addends);
-    transform_planes(transform, rows, transform_addends, rounding, false);
+    DeferredMct::for_rows(component_infos, round_irreversible_output).transform_chunk(rows);
 }
 
 /// Samples per plane in one chunk: three planes' worth stays in cache
@@ -166,6 +156,64 @@ const PACK_CHUNK: usize = 1 << 10;
 const PACK_TASK_CHUNKS: usize = 64;
 
 impl DeferredMct {
+    /// The transform [`apply_inverse_rows`] applies to rows of
+    /// `component_infos`, for a streamed decode to pack its rows with.
+    pub(crate) fn for_rows(
+        component_infos: &[ComponentInfo],
+        round_irreversible_output: bool,
+    ) -> Self {
+        let transform = component_infos[0].wavelet_transform();
+        let addends = [
+            unsigned_level_shift(&component_infos[0]),
+            unsigned_level_shift(&component_infos[1]),
+            unsigned_level_shift(&component_infos[2]),
+        ];
+        let centered_output =
+            round_irreversible_output && transform == WaveletTransform::Irreversible97;
+        Self {
+            transform,
+            addends: if centered_output { [0.0; 3] } else { addends },
+            rounding: centered_output.then_some(addends),
+            last_level: None,
+        }
+    }
+
+    /// Whether [`Self::pack_ict_rgb8_rows`] packs rows: this build fuses the
+    /// transform into the RGB8 pack for 9/7 samples (see [`Self::pack_rgb8`]).
+    pub(crate) fn fuses_rgb8_pack(self) -> bool {
+        self.transform == WaveletTransform::Irreversible97
+            && cfg!(all(
+                feature = "simd",
+                any(
+                    target_arch = "x86_64",
+                    all(feature = "std", target_arch = "aarch64")
+                )
+            ))
+    }
+
+    /// Transform `rows` and pack them as RGB8 into `output` in one pass,
+    /// reading the rows only, as the fused pack of [`Self::pack_rgb8`]
+    /// does; with the same expressions as [`Self::transform_chunk`] and the
+    /// standard RGB8 pack, so the bytes are theirs. Only where
+    /// [`Self::fuses_rgb8_pack`]; otherwise nothing is written.
+    pub(crate) fn pack_ict_rgb8_rows(self, rows: [&[f32]; 3], output: &mut [u8]) {
+        if !self.fuses_rgb8_pack() {
+            return;
+        }
+        #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+        {
+            self.pack_ict_rgb8_x86(rows, output);
+        }
+        #[cfg(not(all(feature = "simd", target_arch = "x86_64")))]
+        {
+            if self.rounding.is_some() {
+                self.pack_ict_rgb8::<true>(rows, output);
+            } else {
+                self.pack_ict_rgb8::<false>(rows, output);
+            }
+        }
+    }
+
     /// Transform the planes in place, as [`apply_inverse`] would have. Planes
     /// that hold a last level's sub-bands are left to [`Self::pack_rgb8`].
     pub(crate) fn apply(
@@ -215,22 +263,8 @@ impl DeferredMct {
                 output,
                 parallel,
                 |[r, g, b], output| {
-                    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
-                    if self.transform == WaveletTransform::Irreversible97 {
-                        self.pack_ict_rgb8_x86([r, g, b], output);
-                        return;
-                    }
-                    if cfg!(all(
-                        feature = "std",
-                        feature = "simd",
-                        target_arch = "aarch64"
-                    )) && self.transform == WaveletTransform::Irreversible97
-                    {
-                        if self.rounding.is_some() {
-                            self.pack_ict_rgb8::<true>([r, g, b], output);
-                        } else {
-                            self.pack_ict_rgb8::<false>([r, g, b], output);
-                        }
+                    if self.fuses_rgb8_pack() {
+                        self.pack_ict_rgb8_rows([r, g, b], output);
                     } else {
                         self.transform_chunk((&mut *r, &mut *g, &mut *b));
                         pack([r, g, b], output);
@@ -387,7 +421,7 @@ impl DeferredMct {
         );
     }
 
-    fn transform_chunk(self, planes: (&mut [f32], &mut [f32], &mut [f32])) {
+    pub(crate) fn transform_chunk(self, planes: (&mut [f32], &mut [f32], &mut [f32])) {
         transform_planes(self.transform, planes, self.addends, self.rounding, false);
     }
 }

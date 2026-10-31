@@ -485,13 +485,6 @@ fn pool_band_rows_fit_every_components_clipped_blocks() {
 /// A sink with an RGB8 destination, which [`ComponentRowSink::write_rows`]
 /// fills the way the destination's contract says: each 8-bit sample rounded
 /// and saturated.
-#[cfg_attr(
-    not(feature = "parallel"),
-    expect(
-        dead_code,
-        reason = "only the parallel band reader offers an RGB8 destination"
-    )
-)]
 struct Rgb8Sink {
     width: usize,
     rgb: Vec<u8>,
@@ -590,6 +583,62 @@ fn rgb8_destination_matches_the_sink_pack_byte_for_byte() {
                     let rows = pool.install(|| decode(CpuDecodeParallelism::Auto, false));
                     assert_eq!(rows.rgb, expected.rgb, "{label} threads={threads} rows");
                 }
+            }
+        }
+        assert!(
+            packed_into_destination > 0,
+            "{}: never packed into the destination",
+            case.label
+        );
+    }
+}
+
+/// The serial bands pack three 8-bit components into a sink's RGB8
+/// destination too: a 9/7 image with the MCT straight from the IDWT's rows
+/// through the fused pack, others after transforming a copy of the rows. The
+/// bytes must be those the sink packs from the rows.
+#[test]
+fn serial_rgb8_destination_matches_the_sink_pack_byte_for_byte() {
+    for case in row_sink_cases()
+        .into_iter()
+        .filter(|case| case.components == 3)
+    {
+        let pixels = noisy_pixels(case.components);
+        let bytes = encode(&pixels, WIDTH, HEIGHT, 3, 8, false, &case.options)
+            .expect("encode serial RGB8 destination fixture");
+        let mut packed_into_destination = 0;
+        for reduction in [0_u8, 1] {
+            let image = Image::new_with_reduction(&bytes, &DecodeSettings::default(), reduction)
+                .expect("parse serial RGB8 destination fixture");
+            let (width, height) = (image.width(), image.height());
+            for roi in [
+                (0, 0, width, height),
+                (width / 3, height / 3, width / 7, height / 9),
+                (0, height - 9, width, 9),
+            ] {
+                let decode = |offers_destination| {
+                    let mut context = DecoderContext::default();
+                    context.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
+                    let mut sink = Rgb8Sink {
+                        width: roi.2 as usize,
+                        rgb: alloc::vec![0; (roi.2 * roi.3 * 3) as usize],
+                        offers_destination,
+                        rectangles: 0,
+                    };
+                    image
+                        .decode_region_rows_for_integer_output_with_context(
+                            roi,
+                            &mut context,
+                            &mut sink,
+                        )
+                        .expect("decode serial RGB8 destination rows");
+                    sink
+                };
+                let label = format!("{} reduction={reduction} roi={roi:?}", case.label);
+                let expected = decode(false);
+                let packed = decode(true);
+                assert_eq!(packed.rgb, expected.rgb, "{label}");
+                packed_into_destination += usize::from(packed.rectangles == 0);
             }
         }
         assert!(
