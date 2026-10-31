@@ -19,7 +19,7 @@ use output::{
     can_decode_u8_directly, expand_rgb8_to_rgba8, write_components_u16_output,
     write_components_u8_output, write_u16_output, write_u8_output, U8RowSink,
 };
-pub(crate) use route::{full_image_route, FullImageRoute};
+pub(crate) use route::{full_image_route, FullImageRoute, PlanesBudget, RouteRequest};
 pub use settings::DecodeSettings;
 pub(crate) use srgb8::decode_image_srgb8;
 pub use srgb8::{J2kSrgb8Image, J2kSrgb8Layout};
@@ -72,7 +72,7 @@ pub(crate) fn decode_full_image_into_with_native_context<'a>(
     out: &mut [u8],
     stride: usize,
     fmt: PixelFormat,
-    route: FullImageRoute,
+    route: &FullImageRoute,
 ) -> Result<(), J2kError> {
     match route {
         FullImageRoute::Planes => {
@@ -86,6 +86,9 @@ pub(crate) fn decode_full_image_into_with_native_context<'a>(
             fmt,
             Rect::full((image.width(), image.height())),
         ),
+        FullImageRoute::StreamedTiles { tiles, workers } => {
+            route::tiles::decode_tiles_into(image, tiles, *workers, (out, stride, fmt))
+        }
     }
 }
 

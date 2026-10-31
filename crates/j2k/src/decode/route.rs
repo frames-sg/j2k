@@ -5,47 +5,215 @@
 //! The planes route decodes every component into an image-sized plane of
 //! `f32` samples and packs the output from them. Its working memory grows
 //! with the image, and the native decoder refuses a decode whose planes and
-//! largest tile's workspace pass its budget. Such an image instead runs as a
-//! region decode of the whole image, which hands finished rows to the output
-//! and keeps no planes (see
-//! `Image::decode_region_rows_for_integer_output_with_context`). The native
-//! decoder plans the planes route's charge from the codestream before
-//! anything is decoded (see `Image::full_decode_planes_floor`), so a decode
-//! never reruns after a failure, and an image the planes route can decode
-//! keeps it, with its output and speed.
+//! largest tile's workspace pass its budget. The streamed route runs the
+//! decode as a region decode of the whole image, which hands finished rows
+//! to the output and keeps no planes (see
+//! `Image::decode_region_rows_for_integer_output_with_context`); an image of
+//! several tiles runs it on several tiles at once (see [`tiles`]). The
+//! native decoder plans the planes route's charge and whether the region
+//! decode streams from the codestream before anything is decoded (see
+//! `Image::full_decode_planes_floor`), so the choice is made once, before
+//! the decode, and a decode never reruns after a failure.
+
+use j2k_core::{PixelFormat, Rect};
+use j2k_native::CpuDecodeParallelism;
 
 use crate::backend::Image;
-use j2k_core::PixelFormat;
+
+pub(crate) mod tiles;
 
 /// How a full-image decode runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FullImageRoute {
     /// Component planes for the whole image.
     Planes,
     /// A region decode of the whole image that streams its rows.
     StreamedRegion,
+    /// Streamed region decodes of one tile each, `workers` at once, each on
+    /// its worker's thread alone.
+    StreamedTiles { tiles: Vec<Rect>, workers: usize },
 }
 
-/// How a full-image decode of `image` to `fmt` runs when its planes may
-/// charge `planes_budget` bytes: as a streamed region when the output has
-/// 8 bits per sample and the planes would pass the budget.
+impl FullImageRoute {
+    /// Whether the decode streams, holding no component planes.
+    pub(crate) fn streams(&self) -> bool {
+        !matches!(self, Self::Planes)
+    }
+}
+
+/// What a full-image decode's component planes may charge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlanesBudget {
+    /// The native decode budget; an image within it still streams where
+    /// streaming is the faster route (see [`streams_by_default`]).
+    Default,
+    /// These bytes and no preference: the planes route unless the planes
+    /// would pass them. A test hook that forces either route.
+    Fixed(usize),
+}
+
+/// The facts of a decode request the route depends on besides the image.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RouteRequest {
+    pub(crate) fmt: PixelFormat,
+    pub(crate) budget: PlanesBudget,
+    pub(crate) parallelism: CpuDecodeParallelism,
+    /// The image's components.
+    pub(crate) components: u16,
+    /// Whether the image is decoded below full resolution.
+    pub(crate) reduced: bool,
+}
+
+/// How a full-image decode of `image` runs for `request`: streamed when the
+/// output has 8 bits per sample, the region decode streams, and either the
+/// planes would pass the budget or the streamed route is the faster one
+/// for this image.
 ///
 /// A planning error keeps the planes route, which meets the same error and
 /// reports it.
-pub(crate) fn full_image_route(
-    image: &Image<'_>,
-    fmt: PixelFormat,
-    planes_budget: usize,
-) -> FullImageRoute {
+pub(crate) fn full_image_route(image: &Image<'_>, request: RouteRequest) -> FullImageRoute {
     if !matches!(
-        fmt,
+        request.fmt,
         PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Gray8
     ) {
         return FullImageRoute::Planes;
     }
-    match image.full_decode_planes_floor(planes_budget) {
-        Ok(Some(floor)) if floor > planes_budget => FullImageRoute::StreamedRegion,
-        _ => FullImageRoute::Planes,
+    let planes_budget = match request.budget {
+        PlanesBudget::Default => j2k_native::DEFAULT_MAX_DECODE_BYTES,
+        PlanesBudget::Fixed(bytes) => bytes,
+    };
+    // A budget of zero skips the planner's header-only shortcut, so the
+    // floor is known whenever the region decode would stream; the shortcut
+    // saves the tile parse when only the budget can choose streaming.
+    let streams = if request.budget == PlanesBudget::Default && streams_by_default(image, request) {
+        matches!(image.full_decode_planes_floor(0), Ok(Some(_)))
+    } else {
+        matches!(
+            image.full_decode_planes_floor(planes_budget),
+            Ok(Some(floor)) if floor > planes_budget
+        )
+    };
+    if streams {
+        streamed_route(image, request.fmt, request.parallelism)
+    } else {
+        FullImageRoute::Planes
+    }
+}
+
+/// Pool threads from which a classic tile of several components
+/// reconstructs each component on its own pool reader (`parallel_synthesis`
+/// in the native decoder's pool bands). From there, a full-resolution
+/// untiled image decodes 3-6% faster on the planes.
+const CLASSIC_SYNTHESIS_THREADS: usize = 12;
+
+/// Whole-image samples from which a full-resolution untiled image streams:
+/// smaller images spend more of their time setting up the pool bands.
+const MIN_STREAMED_SAMPLES: u64 = 1 << 20;
+
+/// Whether an image the planes route can decode streams anyway, because
+/// streaming was measured at least as fast for its kind:
+/// - an RGB image of several tiles, when it has a tile for every thread
+///   that decodes tiles at once (see [`tile_workers`]);
+/// - an untiled three-component classic image when it is reduced, at any
+///   thread count, or of a megapixel or more on 2 to 11 pool threads.
+///
+/// Untiled gray images (whose streamed bands wait on a single component),
+/// HTJ2K images (whose streamed IDWT and pack cost more per sample than the
+/// planes' fused last level) and small images keep the planes.
+fn streams_by_default(image: &Image<'_>, request: RouteRequest) -> bool {
+    let threads = pool_threads(request.parallelism);
+    if image.tile_count() > 1 {
+        return request.components == 3
+            && image
+                .output_tile_rects()
+                .is_ok_and(|rects| tile_workers(&rects, threads).is_some());
+    }
+    if request.components != 3 || image.uses_high_throughput_block_coding() {
+        return false;
+    }
+    if request.reduced {
+        return true;
+    }
+    let samples = u64::from(image.width()) * u64::from(image.height());
+    samples >= MIN_STREAMED_SAMPLES && (2..CLASSIC_SYNTHESIS_THREADS).contains(&threads)
+}
+
+/// The threads a decode with `parallelism` runs on.
+fn pool_threads(parallelism: CpuDecodeParallelism) -> usize {
+    match parallelism {
+        CpuDecodeParallelism::Auto => j2k_native::cpu_decode_pool_threads(),
+        CpuDecodeParallelism::Serial => 1,
+    }
+}
+
+/// Tiles from which an image decodes one tile after another rather than at
+/// once: each tile's region decode parses the tile-part headers of the whole
+/// image again, a cost that grows with the square of the tiles.
+const MAX_TILES_AT_ONCE: usize = 1024;
+
+/// Output samples a tile needs on average for its own region decode to pay
+/// for setting it up.
+const MIN_SAMPLES_PER_TILE: usize = 256 * 256;
+
+/// Workers that decode the tiles at `rects` at once on `threads` pool
+/// threads: the calling thread and one per pool thread, the threads a
+/// streamed region decode runs on. Each worker decodes its tile alone, so
+/// the image needs a tile for every worker, and its tiles must keep at least
+/// 80% of the workers busy over the rounds they take: 16 tiles on 7 workers
+/// take three rounds with a third of them idle, and decode no faster than
+/// the planes. Other images decode one tile after another with the pool
+/// behind each.
+fn tile_workers(rects: &[(u32, u32, u32, u32)], threads: usize) -> Option<usize> {
+    let tiles = rects.len();
+    let samples: usize = rects
+        .iter()
+        .map(|&(_, _, w, h)| w as usize * h as usize)
+        .sum();
+    let workers = threads.checked_add(1)?;
+    let rounds = tiles.div_ceil(workers);
+    (threads >= 2
+        && (workers..=MAX_TILES_AT_ONCE).contains(&tiles)
+        && samples >= tiles.saturating_mul(MIN_SAMPLES_PER_TILE)
+        && tiles.saturating_mul(5) >= rounds.saturating_mul(workers).saturating_mul(4))
+    .then_some(workers)
+}
+
+/// Bytes a tile worker needs per sample of its tile beside the tile's
+/// output rows: a streamed decode of one tile on one thread.
+const EST_STREAMED_BYTES_PER_TILE_SAMPLE: usize = 16;
+
+/// The streamed route for `image`: its tiles at once when it has a tile for
+/// every worker and the workers' tiles fit in the native decode budget, else
+/// one region decode of the whole image.
+fn streamed_route(
+    image: &Image<'_>,
+    fmt: PixelFormat,
+    parallelism: CpuDecodeParallelism,
+) -> FullImageRoute {
+    let Ok(rects) = image.output_tile_rects() else {
+        return FullImageRoute::StreamedRegion;
+    };
+    let Some(workers) = tile_workers(&rects, pool_threads(parallelism)) else {
+        return FullImageRoute::StreamedRegion;
+    };
+    let largest = rects
+        .iter()
+        .map(|&(_, _, w, h)| w as usize * h as usize)
+        .max()
+        .unwrap_or(0);
+    let per_worker = largest
+        .saturating_mul(EST_STREAMED_BYTES_PER_TILE_SAMPLE + fmt.bytes_per_pixel())
+        .max(1);
+    let workers = workers.min(j2k_native::DEFAULT_MAX_DECODE_BYTES / per_worker);
+    if workers < 2 {
+        return FullImageRoute::StreamedRegion;
+    }
+    FullImageRoute::StreamedTiles {
+        tiles: rects
+            .into_iter()
+            .map(|(x, y, w, h)| Rect { x, y, w, h })
+            .collect(),
+        workers,
     }
 }
 

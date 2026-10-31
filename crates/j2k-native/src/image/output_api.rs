@@ -561,6 +561,70 @@ impl<'a> Image<'a> {
         )
     }
 
+    /// The output rectangles `(x, y, width, height)` of the image's tiles at
+    /// this image's resolution, in raster order, leaving out tiles with no
+    /// output samples. A region decode of each rectangle decodes that tile
+    /// alone, and together they cover the image once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the header's sampling factors are invalid.
+    #[doc(hidden)]
+    pub fn output_tile_rects(&self) -> Result<Vec<(u32, u32, u32, u32)>> {
+        let size = &self.header.size_data;
+        let (x_shrink, y_shrink) = (
+            size.checked_x_shrink_factor()?,
+            size.checked_y_shrink_factor()?,
+        );
+        let (x_origin, y_origin) = (
+            size.image_area_x_offset.div_ceil(x_shrink),
+            size.image_area_y_offset.div_ceil(y_shrink),
+        );
+        // One axis of tile `index` on the shrunk grid, relative to the image.
+        let span = |index: u32,
+                    offset: u32,
+                    tile: u32,
+                    area: u32,
+                    extent: u32,
+                    shrink: u32,
+                    origin: u32| {
+            let start = offset.saturating_add(index.saturating_mul(tile)).max(area);
+            let end = offset
+                .saturating_add(index.saturating_add(1).saturating_mul(tile))
+                .min(extent);
+            let start = start.div_ceil(shrink).saturating_sub(origin);
+            let end = end.div_ceil(shrink).saturating_sub(origin);
+            (start, end.saturating_sub(start))
+        };
+        let mut rects = Vec::new();
+        for ty in 0..size.num_y_tiles() {
+            let (y, height) = span(
+                ty,
+                size.tile_y_offset,
+                size.tile_height,
+                size.image_area_y_offset,
+                size.reference_grid_height,
+                y_shrink,
+                y_origin,
+            );
+            for tx in 0..size.num_x_tiles() {
+                let (x, width) = span(
+                    tx,
+                    size.tile_x_offset,
+                    size.tile_width,
+                    size.image_area_x_offset,
+                    size.reference_grid_width,
+                    x_shrink,
+                    x_origin,
+                );
+                if width > 0 && height > 0 {
+                    rects.push((x, y, width, height));
+                }
+            }
+        }
+        Ok(rects)
+    }
+
     /// Rounded-for-integer-output counterpart of
     /// [`Self::decode_components_with_ht_decoder`].
     ///

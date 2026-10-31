@@ -309,6 +309,17 @@ pub(crate) const MAX_J2K_TILE_COUNT: u64 = u16::MAX as u64 + 1;
 #[doc(hidden)]
 pub use j2k_types::{DEFAULT_MAX_CODEC_BYTES, DEFAULT_MAX_DECODE_BYTES};
 
+/// The threads a [`CpuDecodeParallelism::Auto`] decode runs on: the global
+/// worker pool's size with the `parallel` feature, else one.
+#[doc(hidden)]
+#[must_use]
+pub fn cpu_decode_pool_threads() -> usize {
+    #[cfg(feature = "parallel")]
+    return rayon::current_num_threads();
+    #[cfg(not(feature = "parallel"))]
+    1
+}
+
 #[inline]
 pub(crate) fn checked_decode_usize_product2(left: usize, right: usize) -> Result<usize> {
     left.checked_mul(right)

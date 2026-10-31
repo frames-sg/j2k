@@ -2511,6 +2511,7 @@ pub fn j2k_native::Image<'a>::decode_reversible_53_coefficients_with_context(&se
 pub fn j2k_native::Image<'a>::full_decode_planes_floor(&self, usize) -> j2k_native::Result<core::option::Option<usize>>
 pub fn j2k_native::Image<'a>::new_with_reduction(&'a [u8], &j2k_native::DecodeSettings, u8) -> j2k_native::Result<Self>
 pub fn j2k_native::Image<'a>::new_with_retained_baseline(&'a [u8], &j2k_native::DecodeSettings, usize) -> j2k_native::Result<Self>
+pub fn j2k_native::Image<'a>::output_tile_rects(&self) -> j2k_native::Result<alloc::vec::Vec<(u32, u32, u32, u32)>>
 pub fn j2k_native::Image<'a>::prepare_region_decoder_with_context<'image, 'context>(&'image self, &'context mut j2k_native::DecoderContext<'a>) -> j2k_native::Result<j2k_native::PreparedRegionDecoder<'image, 'context, 'a>>
 pub fn j2k_native::Image<'a>::primary_icc_profile(&self) -> core::option::Option<&[u8]>
 pub fn j2k_native::Image<'a>::retained_allocation_bytes(&self) -> j2k_native::Result<usize>
@@ -2546,6 +2547,7 @@ pub fn j2k_native::ResidentHtj2kEncodeError::fmt(&self, &mut core::fmt::Formatte
 pub fn j2k_native::ResidentHtj2kEncodeError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn j2k_native::Reversible53CoefficientImage::encode_htj2k(&self, &j2k_native::EncodeOptions) -> j2k_native::EncodeResult<alloc::vec::Vec<u8>>
 pub fn j2k_native::collect_ht_cleanup_encode_distribution(&[i32], u32, u32, u8) -> j2k_native::EncodeResult<j2k_native::HtCleanupEncodeDistribution>
+pub fn j2k_native::cpu_decode_pool_threads() -> usize
 pub fn j2k_native::decode_ht_code_block_scalar(j2k_native::HtCodeBlockDecodeJob<'_>, &mut [f32]) -> j2k_native::Result<()>
 pub fn j2k_native::decode_ht_code_block_scalar_until_phase(j2k_native::HtCodeBlockDecodeJob<'_>, &mut [f32], j2k_native::HtCodeBlockDecodePhaseLimit) -> j2k_native::Result<()>
 pub fn j2k_native::decode_ht_code_block_scalar_with_workspace(j2k_native::HtCodeBlockDecodeJob<'_>, &mut [f32], &mut j2k_native::HtCodeBlockDecodeWorkspace) -> j2k_native::Result<()>

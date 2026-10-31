@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! An 8-bit full-image decode whose component planes would pass the decode
-//! budget runs as a region decode of the whole image that streams its rows.
-//! A decoder whose planes budget is lowered takes that route for small
-//! images, and must write the bytes the planes route writes, at every scale,
-//! stride and parallelism, and fail where it fails.
+//! budget, or for which streaming is the faster route, runs as a region
+//! decode of the whole image that streams its rows (several tiles at once
+//! when it has them and the pool to run them). A decoder whose planes budget
+//! is fixed takes either route on demand, and the streamed route must write
+//! the bytes the planes route writes, at every scale, stride and
+//! parallelism, and fail where it fails.
 
 use j2k::{CpuDecodeParallelism, J2kDecoder, J2kScratchPool};
 use j2k_core::{Downscale, PixelFormat};
@@ -91,6 +93,15 @@ fn streamed_full_image_matches_planes() {
             ..base.clone()
         },
     );
+    // Enough tiles for every worker of a large pool: decoded tiles at once.
+    let rgb_many_tiles = codestream(
+        3,
+        &EncodeOptions {
+            reversible: false,
+            tile_size: Some((16, 16)),
+            ..base.clone()
+        },
+    );
     let gray = codestream(
         1,
         &EncodeOptions {
@@ -125,6 +136,7 @@ fn streamed_full_image_matches_planes() {
     let fixtures = [
         ("rgb", rgb, rgb_formats),
         ("rgb tiled HT", rgb_tiled_ht, rgb_formats),
+        ("rgb many tiles", rgb_many_tiles, rgb_formats),
         ("gray", gray, gray_formats),
         ("gray tiled", gray_tiled, gray_formats),
         ("rgba", rgba, rgb_formats),
@@ -137,13 +149,15 @@ fn streamed_full_image_matches_planes() {
                     (CpuDecodeParallelism::Serial, 5),
                     (CpuDecodeParallelism::Auto, 0),
                 ] {
-                    let planes = decode(bytes, None, parallelism, fmt, scale, padding);
+                    let planes = decode(bytes, Some(usize::MAX), parallelism, fmt, scale, padding);
                     let streamed = decode(bytes, Some(0), parallelism, fmt, scale, padding);
+                    let default = decode(bytes, None, parallelism, fmt, scale, padding);
                     assert!(
-                        planes == streamed,
-                        "{label} {fmt:?} {scale:?} {parallelism:?}: planes {} streamed {}",
+                        planes == streamed && planes == default,
+                        "{label} {fmt:?} {scale:?} {parallelism:?}: planes {} streamed {} default {}",
                         planes.is_some(),
-                        streamed.is_some()
+                        streamed.is_some(),
+                        default.is_some()
                     );
                     decoded += usize::from(planes.is_some());
                 }
@@ -151,7 +165,7 @@ fn streamed_full_image_matches_planes() {
         }
     }
     // Gray to RGB and RGB to gray are rejected; the rest must decode.
-    assert!(decoded >= 7 * 3 * 2, "{decoded} decodes succeeded");
+    assert!(decoded >= 9 * 3 * 2, "{decoded} decodes succeeded");
 }
 
 /// Tiles whose coarse resolutions are empty while finer ones are not (a
@@ -171,10 +185,12 @@ fn tiles_with_empty_coarse_levels_keep_the_planes() {
     ] {
         for parallelism in [CpuDecodeParallelism::Serial, CpuDecodeParallelism::Auto] {
             for scale in [Downscale::None, Downscale::Half] {
-                let planes = decode(bytes, None, parallelism, fmt, scale, 0);
+                let planes = decode(bytes, Some(usize::MAX), parallelism, fmt, scale, 0);
                 let lowered = decode(bytes, Some(0), parallelism, fmt, scale, 0);
+                let default = decode(bytes, None, parallelism, fmt, scale, 0);
                 assert!(planes.is_some(), "{label} {parallelism:?} {scale:?}");
                 assert_eq!(planes, lowered, "{label} {parallelism:?} {scale:?}");
+                assert_eq!(planes, default, "{label} {parallelism:?} {scale:?}");
             }
         }
     }

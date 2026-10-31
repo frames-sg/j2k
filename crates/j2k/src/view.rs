@@ -9,7 +9,8 @@ use crate::{
     decode::{
         decode_full_image_into_with_native_context, decode_image_region_into_with_native_context,
         decode_warnings_for_image, full_image_route, validate_buffer, validate_region,
-        FullImageRoute, J2kDecodeOutcome, J2kDecodedComponents, J2kDecodedNativeComponents,
+        J2kDecodeOutcome, J2kDecodedComponents, J2kDecodedNativeComponents, PlanesBudget,
+        RouteRequest,
     },
     parse::{parse_image_info, parse_info},
     scratch::J2kScratchPool,
@@ -384,21 +385,30 @@ impl<'a> J2kDecoder<'a> {
     ) -> Result<J2kDecodeOutcome, J2kError> {
         validate_buffer(self.info.dimensions, out.len(), stride, fmt)?;
         self.ensure_image()?;
-        let planes_budget = self.full_decode_planes_budget();
+        let budget = self.full_decode_planes_budget();
         let (Some(image), native_context) = (self.image.as_ref(), &mut self.native_context) else {
             return Err(J2kError::internal_backend("internal image cache missing"));
         };
-        let route = full_image_route(image, fmt, planes_budget);
+        let route = full_image_route(
+            image,
+            RouteRequest {
+                fmt,
+                budget,
+                parallelism: native_context.cpu_decode_parallelism(),
+                components: self.info.components,
+                reduced: false,
+            },
+        );
         let decoded = decode_full_image_into_with_native_context(
             image,
             native_context,
             out,
             stride,
             fmt,
-            route,
+            &route,
         );
         let warnings = decode_warnings_for_image(image);
-        if route == FullImageRoute::StreamedRegion {
+        if route.streams() {
             // As after a region decode, release the decode buffers rather
             // than hold them while the decoder is idle.
             self.native_context = self.fresh_native_context();
@@ -492,14 +502,23 @@ impl<'a> J2kDecoder<'a> {
         let image_dims = (image.width(), image.height());
         validate_buffer(image_dims, out.len(), stride, fmt)?;
         let mut native_context = self.fresh_native_context();
-        let route = full_image_route(&image, fmt, self.full_decode_planes_budget());
+        let route = full_image_route(
+            &image,
+            RouteRequest {
+                fmt,
+                budget: self.full_decode_planes_budget(),
+                parallelism: native_context.cpu_decode_parallelism(),
+                components: self.info.components,
+                reduced: true,
+            },
+        );
         decode_full_image_into_with_native_context(
             &image,
             &mut native_context,
             out,
             stride,
             fmt,
-            route,
+            &route,
         )?;
         Ok(j2k_core::DecodeOutcome::new(
             Rect::full(image_dims),
@@ -567,19 +586,21 @@ impl<'a> J2kDecoder<'a> {
             .ok_or_else(|| J2kError::internal_backend("internal image cache missing"))
     }
 
-    /// The bytes a full-image 8-bit decode's component planes may charge
-    /// before it runs as a streamed region decode of the whole image
-    /// instead: the native decode budget, past which the planes decode is
-    /// refused.
-    fn full_decode_planes_budget(&self) -> usize {
+    /// What a full-image 8-bit decode's component planes may charge: the
+    /// native decode budget, past which the planes decode is refused, with
+    /// streaming wherever it is the faster route, unless a test set a fixed
+    /// budget.
+    fn full_decode_planes_budget(&self) -> PlanesBudget {
         self.full_decode_planes_budget
-            .unwrap_or(j2k_native::DEFAULT_MAX_DECODE_BYTES)
+            .map_or(PlanesBudget::Default, PlanesBudget::Fixed)
     }
 
     /// Test hook: hold full-image 8-bit decodes' component planes to
-    /// `bytes`, so that a small image takes the streamed region route that
-    /// only images past the native decode budget take otherwise. The
-    /// native decode budget itself is unchanged.
+    /// `bytes` and drop the preference for streaming, so that a decode
+    /// takes the streamed region route exactly when its planes would pass
+    /// `bytes`: 0 streams every decode that can stream, `usize::MAX` keeps
+    /// every decode the planes can finish on the planes. The native decode
+    /// budget itself is unchanged.
     #[doc(hidden)]
     pub fn set_full_decode_planes_budget(&mut self, bytes: usize) {
         self.full_decode_planes_budget = Some(bytes);
