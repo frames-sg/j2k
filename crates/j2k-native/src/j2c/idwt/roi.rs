@@ -80,6 +80,10 @@ pub(crate) fn roi_idwt_peak_elements(
                 .decompositions
                 .clone()
                 .take(active_len)
+                .skip_while(|decomposition_idx| {
+                    roi_plan.idwt_window(*decomposition_idx).is_none()
+                        && storage.decompositions[*decomposition_idx].rect.is_empty()
+                })
                 .map_while(|decomposition_idx| roi_plan.idwt_window(decomposition_idx));
             let rings = ring_samples(windows, WaveletTransform::Irreversible97)?;
             if storage.lockstep_lines {
@@ -228,6 +232,10 @@ pub(super) fn apply_roi(
     for (local_idx, decomposition) in decompositions.iter().take(active_len).enumerate() {
         let decomposition_idx = tile_decompositions.decompositions.start + local_idx;
         let Some(output_window) = roi_plan.idwt_window(decomposition_idx) else {
+            if !have_current && decomposition.rect.is_empty() {
+                // A coarse level with no samples: the next level's LL input is empty.
+                continue;
+            }
             output.coefficients.clear();
             output.rect = IntRect::from_xywh(0, 0, 0, 0);
             return Ok(());
@@ -375,6 +383,10 @@ impl LinePlan {
             // Without a window the level has nothing to reconstruct, as in the
             // whole-window path.
             let Some(window) = roi_plan.idwt_window(decomposition_idx) else {
+                if windows.is_empty() && storage.decompositions[decomposition_idx].rect.is_empty() {
+                    // A coarse level with no samples: the next level's LL input is empty.
+                    continue;
+                }
                 return Ok(None);
             };
             windows.push(window);
