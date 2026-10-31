@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Plan-time choice of how a full-image 8-bit decode runs.
+//! Plan-time choice of how a full-image 8- or 16-bit decode runs.
 //!
 //! The planes route decodes every component into an image-sized plane of
 //! `f32` samples and packs the output from them. Its working memory grows
@@ -18,6 +18,7 @@
 use j2k_core::{PixelFormat, Rect};
 use j2k_native::CpuDecodeParallelism;
 
+use super::output::u16_rows_pack_floor;
 use crate::backend::Image;
 
 pub(crate) mod tiles;
@@ -67,19 +68,24 @@ pub(crate) struct RouteRequest {
 }
 
 /// How a full-image decode of `image` runs for `request`: streamed when the
-/// output has 8 bits per sample, the region decode streams, and either the
-/// planes would pass the budget or the streamed route is the faster one
-/// for this image.
+/// output has 8 bits per sample, or 16 bits whose rows carry the native
+/// samples the planes route packs (see `u16_rows_pack_floor`), the region
+/// decode streams, and either the planes (or their 16-bit pack) would pass
+/// the budget or the streamed route is the faster one for this image.
 ///
 /// A planning error keeps the planes route, which meets the same error and
 /// reports it.
 pub(crate) fn full_image_route(image: &Image<'_>, request: RouteRequest) -> FullImageRoute {
-    if !matches!(
-        request.fmt,
-        PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Gray8
-    ) {
-        return FullImageRoute::Planes;
-    }
+    let pack_floor = match request.fmt {
+        PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Gray8 => 0,
+        PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16 => {
+            match u16_rows_pack_floor(image, request.fmt) {
+                Some(floor) => floor,
+                None => return FullImageRoute::Planes,
+            }
+        }
+        _ => return FullImageRoute::Planes,
+    };
     let planes_budget = match request.budget {
         PlanesBudget::Default => j2k_native::DEFAULT_MAX_DECODE_BYTES,
         PlanesBudget::Fixed(bytes) => bytes,
@@ -92,7 +98,7 @@ pub(crate) fn full_image_route(image: &Image<'_>, request: RouteRequest) -> Full
     } else {
         matches!(
             image.full_decode_planes_floor(planes_budget),
-            Ok(Some(floor)) if floor > planes_budget
+            Ok(Some(floor)) if floor.max(pack_floor) > planes_budget
         )
     };
     if streams {

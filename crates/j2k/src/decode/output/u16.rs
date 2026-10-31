@@ -43,6 +43,16 @@ pub(in crate::decode) fn rows_match_native_u16(image: &Image<'_>, fmt: PixelForm
         )
 }
 
+/// The bytes the planes route charges at least when it packs `image`'s
+/// native samples for a 16-bit `fmt` (see [`super::planes_pack_floor`]),
+/// when a region decode of `image` may stream its rows to `fmt` instead
+/// (see [`rows_match_native_u16`]).
+pub(in crate::decode) fn u16_rows_pack_floor(image: &Image<'_>, fmt: PixelFormat) -> Option<usize> {
+    let precision = image.streamed_rows_native_precision()?;
+    rows_match_native_u16(image, fmt)
+        .then(|| super::planes_pack_floor(image, usize::from(precision).div_ceil(8)))
+}
+
 /// Write `planes`, each `dims` in size, to `out` from its first byte.
 fn write_planes_u16(
     color_space: &ColorSpace,

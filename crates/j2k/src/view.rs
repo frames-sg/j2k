@@ -337,9 +337,10 @@ impl<'a> J2kDecoder<'a> {
 
     /// Decode the full image into `out` using `stride` bytes per output row.
     ///
-    /// An 8-bit decode whose component planes would pass the native decode
-    /// budget runs as a region decode of the whole image, which writes rows
-    /// as they are finished instead of holding the planes.
+    /// A decode whose component planes would pass the native decode budget
+    /// runs as a region decode of the whole image, which writes rows as they
+    /// are finished instead of holding the planes: at 8 bits, and at 16 bits
+    /// for images whose components share one precision of at most 16 bits.
     ///
     /// # Errors
     /// Returns [`J2kError`] when the format is unsupported, the output buffer
@@ -494,8 +495,8 @@ impl<'a> J2kDecoder<'a> {
     ///
     /// `scale` uses the shared [`Downscale`] contract; `Downscale::None`
     /// delegates to full-resolution decode. As with [`Self::decode_into`],
-    /// an 8-bit decode whose component planes would pass the native decode
-    /// budget runs as a region decode of the whole reduced image.
+    /// a decode whose component planes would pass the native decode budget
+    /// runs as a region decode of the whole reduced image.
     ///
     /// # Errors
     /// Returns [`J2kError`] when the format or scale request is unsupported,

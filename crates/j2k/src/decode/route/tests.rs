@@ -2,6 +2,7 @@
 
 use super::{full_image_route, FullImageRoute, PlanesBudget, RouteRequest};
 use crate::backend::image_at_scale;
+use crate::decode::native_components_route;
 use crate::DecodeSettings;
 use j2k_core::{Downscale, PixelFormat, Rect};
 use j2k_native::DecoderContext;
@@ -97,15 +98,45 @@ fn reduced_decodes_plan_full_resolution_coefficients() {
     assert!(half > 96 * 80 * 4, "{half}");
 }
 
+/// A 16-bit decode streams when the planes decode or the pack of its native
+/// samples, which holds every `f32` plane besides them, would pass the
+/// budget. With small tiles and 16-bit samples the pack charges more than
+/// the decode.
 #[test]
-fn sixteen_bit_output_keeps_the_planes() {
-    let bytes = codestream(3, &EncodeOptions::default());
-    for fmt in [PixelFormat::Rgb16, PixelFormat::Rgba16, PixelFormat::Gray16] {
+fn sixteen_bit_output_streams_when_its_planes_or_their_pack_pass_the_budget() {
+    let (width, height) = (96_u32, 80_u32);
+    let samples: Vec<u8> = (0..width * height * 3 * 2)
+        .map(|index| (index.wrapping_mul(2_654_435_761) >> 24) as u8)
+        .collect();
+    let options = EncodeOptions {
+        num_decomposition_levels: 2,
+        tile_size: Some((16, 16)),
+        ..EncodeOptions::default()
+    };
+    let bytes = encode(&samples, width, height, 3, 16, false, &options).expect("encode fixture");
+    let floor = floor(&bytes, Downscale::None);
+    let pack = 96 * 80 * 3 * (4 + 2);
+    assert!(pack > floor, "{pack} > {floor}");
+    for fmt in [PixelFormat::Rgb16, PixelFormat::Rgba16] {
         assert_eq!(
-            route(&bytes, Downscale::None, fmt, 0),
+            route(&bytes, Downscale::None, fmt, pack - 1),
+            FullImageRoute::StreamedRegion
+        );
+        assert_eq!(
+            route(&bytes, Downscale::None, fmt, pack),
             FullImageRoute::Planes
         );
     }
+    // The 8-bit planes write the output directly, without a pack.
+    assert_eq!(
+        route(&bytes, Downscale::None, PixelFormat::Rgb8, pack - 1),
+        FullImageRoute::Planes
+    );
+    // An RGB image has no 16-bit gray layout; the planes report that.
+    assert_eq!(
+        route(&bytes, Downscale::None, PixelFormat::Gray16, 0),
+        FullImageRoute::Planes
+    );
 }
 
 /// A tile whose coarse resolutions are empty while finer ones are not keeps
@@ -465,5 +496,61 @@ fn large_gray_images_stream() {
     for threads in [12, 18] {
         assert!(gray_streams(5792 * 5792, threads), "{threads}");
         assert!(!gray_streams(4096 * 4096, threads), "{threads}");
+    }
+}
+
+/// Images of more than 8 bits and signed images stream at 16 bits and into
+/// native component planes once their planes pass the budget.
+#[test]
+fn deep_and_signed_images_stream_past_the_budget() {
+    let (width, height) = (64_u32, 48_u32);
+    for (components, bit_depth, signed, reversible) in [
+        (3, 12, true, false),
+        (3, 16, false, true),
+        (1, 12, false, true),
+        (1, 16, true, false),
+        (1, 4, false, true),
+    ] {
+        let samples: Vec<u8> = (0..width * height * u32::from(components) * 2)
+            .map(|index| (index.wrapping_mul(2_654_435_761) >> 24) as u8)
+            .collect();
+        let samples = &samples[..samples.len() / if bit_depth > 8 { 1 } else { 2 }];
+        let options = EncodeOptions {
+            num_decomposition_levels: 3,
+            reversible,
+            ..EncodeOptions::default()
+        };
+        let bytes = encode(
+            samples, width, height, components, bit_depth, signed, &options,
+        )
+        .expect("encode fixture");
+        let image =
+            image_at_scale(&bytes, DecodeSettings::default(), Downscale::None).expect("image");
+        assert_eq!(image.streamed_rows_native_precision(), Some(bit_depth));
+        let fmt = if components == 1 {
+            PixelFormat::Gray16
+        } else {
+            PixelFormat::Rgb16
+        };
+        let label = format!("{components} x {bit_depth} bits, signed {signed}");
+        assert_eq!(
+            full_image_route(&image, fmt, 0),
+            FullImageRoute::StreamedRegion,
+            "{label}"
+        );
+        assert_eq!(
+            native_components_route(&image, 0),
+            FullImageRoute::StreamedRegion,
+            "{label}"
+        );
+        let budget = j2k_native::DEFAULT_MAX_DECODE_BYTES;
+        assert_eq!(
+            full_image_route(&image, fmt, budget),
+            FullImageRoute::Planes
+        );
+        assert_eq!(
+            native_components_route(&image, budget),
+            FullImageRoute::Planes
+        );
     }
 }
