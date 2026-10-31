@@ -3,7 +3,7 @@
 //! Plan-time choice of how a full-image decode into owned native-bit-depth
 //! component planes runs, and the planes route's charge for packing them.
 
-use crate::backend::Image;
+use crate::backend::{ColorSpace, Image};
 use crate::decode::FullImageRoute;
 use crate::J2kError;
 use j2k_core::Rect;
@@ -15,10 +15,19 @@ use j2k_core::Rect;
 /// the decode budget. Counts the components of `image`'s color space and
 /// alpha only, so it is at most the real charge.
 pub(in crate::decode) fn planes_pack_floor(image: &Image<'_>, bytes_per_sample: usize) -> usize {
+    region_pack_floor(
+        image,
+        Rect::full((image.width(), image.height())),
+        bytes_per_sample,
+    )
+}
+
+/// [`planes_pack_floor`] for the planes of `roi` of `image`.
+fn region_pack_floor(image: &Image<'_>, roi: Rect, bytes_per_sample: usize) -> usize {
     let components = usize::from(image.color_space().num_channels())
         .saturating_add(usize::from(image.has_alpha()));
-    (image.width() as usize)
-        .saturating_mul(image.height() as usize)
+    (roi.w as usize)
+        .saturating_mul(roi.h as usize)
         .saturating_mul(components)
         .saturating_mul(bytes_per_sample.saturating_add(size_of::<f32>()))
 }
@@ -44,15 +53,34 @@ pub(crate) fn native_components_route(image: &Image<'_>, planes_budget: usize) -
     }
 }
 
-/// How a region decode of `image` into owned native component planes runs:
-/// as one that packs its rows into the planes as they are finished whenever
-/// its rows carry the native samples, as 8- and 16-bit region decodes
-/// stream theirs, so that it holds no region-sized `f32` planes.
-pub(crate) fn native_region_components_route(image: &Image<'_>) -> FullImageRoute {
-    if image.streamed_rows_native_precision().is_some() {
-        FullImageRoute::StreamedRegion
-    } else {
-        FullImageRoute::Planes
+/// Whether a region decode of `roi` of `image`, whose rows carry its native
+/// samples of `bytes_per_sample` bytes, streams them rather than packing
+/// region-sized planes: always for an RGB image, whose streamed rows finish
+/// first; for others when the planes and their packed samples (see
+/// [`planes_pack_floor`]) would pass the native decode budget. One component
+/// gives the streamed rows' Tier-1 too little work per row on a large pool,
+/// so a gray region within the budget keeps the planes.
+pub(in crate::decode) fn region_rows_preferred(
+    image: &Image<'_>,
+    roi: Rect,
+    bytes_per_sample: usize,
+) -> bool {
+    matches!(image.color_space(), ColorSpace::RGB)
+        || region_pack_floor(image, roi, bytes_per_sample) > j2k_native::DEFAULT_MAX_DECODE_BYTES
+}
+
+/// How a region decode of `roi` of `image` into owned native component
+/// planes runs: as one that packs its rows into the planes as they are
+/// finished, so that it holds no region-sized `f32` planes, when its rows
+/// carry the native samples and [`region_rows_preferred`].
+pub(crate) fn native_region_components_route(image: &Image<'_>, roi: Rect) -> FullImageRoute {
+    match image.streamed_rows_native_precision() {
+        Some(precision)
+            if region_rows_preferred(image, roi, usize::from(precision).div_ceil(8)) =>
+        {
+            FullImageRoute::StreamedRegion
+        }
+        _ => FullImageRoute::Planes,
     }
 }
 

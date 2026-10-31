@@ -298,9 +298,11 @@ impl<'a> J2kDecoder<'a> {
     /// Decode a source-coordinate region into owned native-bit-depth component
     /// planes.
     ///
-    /// Like 8- and 16-bit region decodes, it packs rows into the returned
-    /// planes as they are finished when the image has no palette, channel
-    /// definition, sYCC or CIELab and its components share one precision.
+    /// Like 16-bit region decodes, it packs rows into the returned planes as
+    /// they are finished, without region-sized `f32` planes, for RGB images
+    /// without palette, channel definition, sYCC or CIELab whose components
+    /// share one precision, and for other such images when the planes would
+    /// pass the native decode budget.
     ///
     /// # Errors
     /// Returns [`J2kError`] when the region is invalid or the codestream cannot
@@ -314,7 +316,7 @@ impl<'a> J2kDecoder<'a> {
         let (Some(image), native_context) = (self.image.as_ref(), &mut self.native_context) else {
             return Err(J2kError::internal_backend("internal image cache missing"));
         };
-        let route = native_region_components_route(image);
+        let route = native_region_components_route(image, roi);
         let decoded =
             decode_native_components_with_native_context(image, native_context, Some(roi), route);
         let retained_image_bytes = component_handoff_image_bytes(image);

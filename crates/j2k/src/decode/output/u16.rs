@@ -53,6 +53,22 @@ pub(in crate::decode) fn u16_rows_pack_floor(image: &Image<'_>, fmt: PixelFormat
         .then(|| super::planes_pack_floor(image, usize::from(precision).div_ceil(8)))
 }
 
+/// Whether a 16-bit region decode of `roi` of `image` to `fmt` streams its
+/// rows (see [`rows_match_native_u16`] and [`super::region_rows_preferred`])
+/// rather than packing the region's native samples.
+pub(in crate::decode) fn region_rows_preferred_u16(
+    image: &Image<'_>,
+    fmt: PixelFormat,
+    roi: j2k_core::Rect,
+) -> bool {
+    image
+        .streamed_rows_native_precision()
+        .is_some_and(|precision| {
+            rows_match_native_u16(image, fmt)
+                && super::region_rows_preferred(image, roi, usize::from(precision).div_ceil(8))
+        })
+}
+
 /// Write `planes`, each `dims` in size, to `out` from its first byte.
 fn write_planes_u16(
     color_space: &ColorSpace,
