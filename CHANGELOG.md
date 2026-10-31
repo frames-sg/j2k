@@ -81,7 +81,24 @@ Staged workspace version: `0.13.2`.
   images without palette, channel definitions, sYCC or CIELab stream their
   rows instead of holding the region's `f32` planes and native samples, and
   so do those of other such images whose planes would pass the native decode
-  budget. Output is unchanged.
+  budget. `decode_native_region_components` takes this route only for images
+  of one to four components without image or tile offsets, whose region
+  decodes stream; others keep the planes route, which meets the decode budget
+  before it allocates the returned planes. Output is unchanged.
+- Native component planes (`decode_native_components`,
+  `decode_native_region_components` and the native decoder's component-plane
+  decodes) are the decode's output on both routes: the decode budget holds
+  the `f32` planes they are packed from, and the returned planes have an
+  allowance of their own, each held to the per-allocation cap, as a
+  caller's buffer is. Before, the planes route charged them beside the
+  `f32` planes, so an image whose `f32` planes fit the budget but not
+  together with their output (one that cannot stream its rows, such as one
+  of five components or with image offsets) failed with a resource-limit
+  error; it now decodes. The streamed rows route allocates its planes when
+  the first rows arrive, once per decode, so a region decode that falls back
+  to component planes (a component without decomposition levels, or classic
+  code-blocks of several segments on the pool) meets the decode budget before
+  any output exists. Output is unchanged.
 - 16-bit outputs of images deeper than 16 bits hold each sample's value
   clamped to the 16-bit range (two's complement when signed), as scaled
   decodes already wrote them. Full-image and region decodes (and row decodes
@@ -115,9 +132,11 @@ Staged workspace version: `0.13.2`.
   peak heap on the default thread pool (26 MiB on one thread), where the
   planes route with its budget raised to fit needs about 980 MiB. Untiled RGB
   images decode within 8% of that route's time, 1024 x 1024-tiled RGB takes
-  up to 45% longer and grayscale up to 2.8 times as long. 16-bit outputs, and
-  images whose tiles have empty coarse resolutions, keep the planes route
-  and its error.
+  up to 45% longer and grayscale up to 2.8 times as long. Images whose tiles
+  have empty coarse resolutions (a one-sample tile row or column at an odd
+  position) stream too, at 8 and 16 bits and into native component planes,
+  since region decodes reconstruct such tiles: a 20000 x 7000 gray image of
+  2857 x 2333 tiles no longer fails at the decode budget.
 - Full-image 8-bit decodes also stream when streaming was measured to be the
   faster route for the image, chosen before decoding from the codestream's
   header and tiles: reduced-resolution decodes (`decode_scaled_into`) of
