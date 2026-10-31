@@ -348,7 +348,8 @@ impl U16Conversion {
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        reason = "decoded samples are rounded and clamped to the component's declared integer representation"
+        clippy::inline_always,
+        reason = "decoded samples are rounded and clamped to the component's declared integer representation; the chosen conversion is inlined into the writer so each kind compiles to its own fixed-size pixel loop"
     )]
     #[inline(always)]
     fn visit(&self, writer: impl U16Writer) {
@@ -385,6 +386,10 @@ struct ChannelWriter<'s, 'd> {
 }
 
 impl U16Writer for ChannelWriter<'_, '_> {
+    #[expect(
+        clippy::inline_always,
+        reason = "the conversion closure is inlined into the fixed-size pixel loop it runs in"
+    )]
     #[inline(always)]
     fn write(self, convert: impl Fn(f32) -> u16) {
         let Self {
@@ -402,6 +407,10 @@ impl U16Writer for ChannelWriter<'_, '_> {
     }
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "the conversion closure is inlined into the fixed-size pixel loop it runs in"
+)]
 #[inline(always)]
 fn write_channel<const PIXEL: usize>(
     src: &[f32],
@@ -423,6 +432,10 @@ struct PixelWriter<'s, 'd> {
 }
 
 impl U16Writer for PixelWriter<'_, '_> {
+    #[expect(
+        clippy::inline_always,
+        reason = "the conversion closure is inlined into the fixed-size pixel loop it runs in"
+    )]
     #[inline(always)]
     fn write(self, convert: impl Fn(f32) -> u16) {
         let Self { src, dst, channels } = self;
@@ -433,6 +446,10 @@ impl U16Writer for PixelWriter<'_, '_> {
     }
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "the conversion closure is inlined into the fixed-size pixel loop it runs in"
+)]
 #[inline(always)]
 fn write_pixels<const PIXEL: usize>(
     [red, green, blue]: [&[f32]; 3],

@@ -418,7 +418,17 @@ fn deep_samples_decode_to_their_values_clamped_to_sixteen_bits() {
                 } else {
                     PixelFormat::Rgb8
                 };
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "the unsigned fixtures are at most 20 bits deep, exact in f32"
+                )]
                 let max = ((1_u64 << bit_depth) - 1) as f32;
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_precision_loss,
+                    clippy::cast_sign_loss,
+                    reason = "unsigned samples below 2^20 are exact in f32 and scale into 0..=255"
+                )]
                 let expected: Vec<u8> = values
                     .iter()
                     .map(|&value| ((value as f32 / max) * 255.0).round() as u8)

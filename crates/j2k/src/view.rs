@@ -300,7 +300,7 @@ impl<'a> J2kDecoder<'a> {
     ///
     /// Like 16-bit region decodes, it packs rows into the returned planes as
     /// they are finished, without region-sized `f32` planes, for RGB images
-    /// without palette, channel definition, sYCC or CIELab whose components
+    /// without palette, channel definition, sYCC or `CIELab` whose components
     /// share one precision, and for other such images when the planes would
     /// pass the native decode budget.
     ///
