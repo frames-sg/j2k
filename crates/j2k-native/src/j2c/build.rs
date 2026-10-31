@@ -772,7 +772,7 @@ impl Layer {
     }
 
     /// The segments the layer contributed, once its packet has been read.
-    pub(crate) fn segments(&self) -> Option<Range<usize>> {
+    pub(crate) fn segments(self) -> Option<Range<usize>> {
         (self.len != Self::UNREAD_LEN).then(|| {
             let start = self.start as usize;
             start..start + self.len as usize

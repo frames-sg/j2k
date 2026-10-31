@@ -26,12 +26,23 @@ const STREAMED_BATCH_SAMPLES: usize = 2 * 1024 * 1024;
 /// samples.
 const STREAMED_MIN_BATCHES: usize = 4;
 
+/// Rows a batch of a tile with deep band rings keeps at least when it is
+/// halved: halving the 116-row batches of an 18000-wide tile cost 2 to 5%.
+const STREAMED_DEEP_MIN_ROWS: usize = 128;
+
 /// Rows of each component a tile streaming from pool bands reconstructs at
-/// once, for `height` rows of `width` samples.
-pub(crate) fn streamed_batch_rows(width: usize, height: usize) -> usize {
-    (STREAMED_BATCH_SAMPLES / width.max(1))
-        .min(height / STREAMED_MIN_BATCHES)
-        .clamp(1, 512)
+/// once, for `height` rows of `width` samples. A tile whose band rings are
+/// deep holds one batch, which is transformed before the next one
+/// reconstructs, so its batches take half the rows while that leaves at
+/// least `STREAMED_DEEP_MIN_ROWS`: as fast, with half the rows held.
+pub(crate) fn streamed_batch_rows(width: usize, height: usize, deep_band_rings: bool) -> usize {
+    let rows = STREAMED_BATCH_SAMPLES / width.max(1);
+    let rows = if deep_band_rings && rows / 2 >= STREAMED_DEEP_MIN_ROWS {
+        rows / 2
+    } else {
+        rows
+    };
+    rows.min(height / STREAMED_MIN_BATCHES).clamp(1, 512)
 }
 
 /// The most f32 samples [`apply_roi`] holds at once for any one component.
@@ -95,7 +106,11 @@ pub(crate) fn roi_idwt_peak_elements(
                         // more bands instead.
                         let batches = if storage.deep_band_rings { 1 } else { 2 };
                         width
-                            .saturating_mul(streamed_batch_rows(width, height))
+                            .saturating_mul(streamed_batch_rows(
+                                width,
+                                height,
+                                storage.deep_band_rings,
+                            ))
                             .saturating_mul(batches)
                     } else {
                         width

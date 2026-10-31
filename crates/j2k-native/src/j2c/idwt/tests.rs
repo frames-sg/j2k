@@ -841,3 +841,31 @@ fn streamed_rows_match_the_whole_window_levels_bit_for_bit() {
         }
     }
 }
+
+/// A tile streaming from pool bands with deep band rings holds one batch of
+/// rows instead of two, so its batch takes half the rows unless that leaves
+/// fewer than 128; tiles too short for full batches still split their rows
+/// into at least four batches, and a row wider than a batch is a batch of
+/// its own.
+#[test]
+fn deep_band_rings_halve_the_streamed_row_batch() {
+    use super::roi::streamed_batch_rows;
+
+    // 5661 x 8287 (one tile): 370 rows of each component in each of two
+    // pipelined batches, 185 rows in the one batch of deep rings.
+    assert_eq!(streamed_batch_rows(5661, 8287, false), 370);
+    assert_eq!(streamed_batch_rows(5661, 8287, true), 185);
+    // 4096 wide: 512 rows, or 256 with deep rings.
+    assert_eq!(streamed_batch_rows(4096, 4096, false), 512);
+    assert_eq!(streamed_batch_rows(4096, 4096, true), 256);
+    for deep_band_rings in [false, true] {
+        // 18000 wide: 116 rows, too few to halve.
+        assert_eq!(streamed_batch_rows(18000, 12000, deep_band_rings), 116);
+        // 8200 wide: 255 rows, too few to halve.
+        assert_eq!(streamed_batch_rows(8200, 12000, deep_band_rings), 255);
+        assert_eq!(streamed_batch_rows(256, 200, deep_band_rings), 50);
+        assert_eq!(streamed_batch_rows(256, 3, deep_band_rings), 1);
+        assert_eq!(streamed_batch_rows(3 << 20, 4096, deep_band_rings), 1);
+        assert_eq!(streamed_batch_rows(1024, 1 << 16, deep_band_rings), 512);
+    }
+}

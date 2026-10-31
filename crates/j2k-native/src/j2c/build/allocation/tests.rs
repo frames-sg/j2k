@@ -536,7 +536,7 @@ fn layer_records_keep_their_segment_ranges() {
     }
     let last = u32::MAX as usize;
     assert_eq!(
-        Layer::with_segments(last - 2..last - 1).and_then(|layer| layer.segments()),
+        Layer::with_segments(last - 2..last - 1).and_then(Layer::segments),
         Some(last - 2..last - 1)
     );
     assert!(Layer::with_segments(last..last + 1).is_none());

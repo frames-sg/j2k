@@ -391,8 +391,12 @@ pub(super) fn decode_tile_rows<'a>(
     // Rows reconstruct in batches, charged by the region's width (see
     // `roi_idwt_peak_elements`): two of them with a reader per component, so
     // one finishes while the next reconstructs, unless the band rings are
-    // deep instead.
-    let batch = streamed_batch_rows(region.width() as usize, copy.height() as usize);
+    // deep instead: then one batch of half the rows.
+    let batch = streamed_batch_rows(
+        region.width() as usize,
+        copy.height() as usize,
+        storage.deep_band_rings,
+    );
     let scratch_len = (copy.width() as usize)
         .checked_mul(components)
         .and_then(|samples| samples.checked_mul(batch))
