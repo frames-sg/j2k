@@ -8,6 +8,8 @@ pub(crate) mod codestream;
 pub(crate) mod codestream_write;
 pub(crate) mod coefficient_view;
 mod decode;
+#[cfg(all(test, feature = "parallel"))]
+pub(crate) use decode::MIN_BAND_WORK;
 pub(crate) mod encode;
 pub(crate) mod fdwt;
 pub(crate) mod forward_mct;

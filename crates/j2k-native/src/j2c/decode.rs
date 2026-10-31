@@ -39,10 +39,14 @@ use core::ops::Range;
 mod allocation;
 mod banded_tier1;
 mod direct_plan;
+#[cfg(feature = "parallel")]
+mod parallel_bands;
 mod peak;
 mod reuse;
 mod store;
 mod subband;
+#[cfg(all(test, feature = "parallel"))]
+pub(crate) use self::subband::MIN_BAND_WORK;
 mod subband_params;
 mod tier1;
 #[cfg(feature = "parallel")]
@@ -687,6 +691,12 @@ pub(crate) struct DecodeDebugCounters {
     pub(crate) selection_scanned_packets: usize,
     /// Empty decomposition capacity discarded before region selection.
     pub(crate) selection_released_storage_bytes: usize,
+    /// Components whose bands decoded on the worker pool ahead of the
+    /// streamed IDWT, summed over decoded tiles.
+    pub(crate) pool_band_components: usize,
+    /// Components that gave up the pool for whole windows because a band
+    /// was left running with no worker to finish it.
+    pub(crate) pool_band_fallbacks: usize,
     /// The bytes the decode's budget starts from after `reset`, retained
     /// capacity included.
     pub(crate) decode_baseline_bytes: usize,
@@ -883,6 +893,12 @@ fn prepare_region_storage(
     storage.banded_tier1 = storage.line_region_idwt
         && tile_bands(header, tile, tile_ctx, hooked, cpu_decode_parallelism);
     storage.lockstep_lines = storage.banded_tier1 && tile_ctx.stream_rows;
+    #[cfg(feature = "parallel")]
+    {
+        storage.parallel_bands = storage.line_region_idwt
+            && !storage.banded_tier1
+            && parallel_bands::applies(header, tile, tile_ctx, hooked, cpu_decode_parallelism);
+    }
     build::allocate_deferred_coefficients(
         storage,
         header.skipped_resolution_levels,
@@ -995,18 +1011,16 @@ fn decode_components<'a>(
     }
     // A tile-part COD or COC can give the tile its own coding style.
     for (idx, component_info) in tile.component_infos.iter().enumerate() {
-        if storage.banded_tier1 {
-            // Tier-1 decodes each band as the streamed IDWT reaches it.
-            banded_tier1::decode_component(
-                tile,
-                idx,
-                header,
-                tile_ctx,
-                storage,
-                component_info.wavelet_transform(),
-                profile_enabled,
-                profile_timings,
-            )?;
+        if decode_component_bands(
+            tile,
+            idx,
+            header,
+            tile_ctx,
+            storage,
+            component_info.wavelet_transform(),
+            profile_enabled,
+            profile_timings,
+        )? {
             record_workspace(tile_ctx, storage, 0)?;
         } else {
             if per_component {
@@ -1077,6 +1091,53 @@ fn decode_components<'a>(
     }
 
     Ok(())
+}
+
+/// Decode component `component_idx` of a tile that decodes in bands as the
+/// streamed IDWT reads them, on the pool or serially. Returns `false` when it
+/// takes the whole-window path instead.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the banded stage shares decode_tile's state and profiling explicitly"
+)]
+fn decode_component_bands<'a>(
+    tile: &Tile<'a>,
+    component_idx: usize,
+    header: &Header<'_>,
+    tile_ctx: &mut TileDecodeContext,
+    storage: &mut DecompositionStorage<'a>,
+    transform: WaveletTransform,
+    profile_enabled: bool,
+    profile_timings: &mut DecodeProfileTimings,
+) -> Result<bool> {
+    // Unless the route declines and the sub-bands hold whole windows again.
+    #[cfg(feature = "parallel")]
+    if storage.parallel_bands {
+        return parallel_bands::decode_component(
+            tile,
+            component_idx,
+            header,
+            tile_ctx,
+            storage,
+            transform,
+            profile_enabled,
+            profile_timings,
+        );
+    }
+    if !storage.banded_tier1 {
+        return Ok(false);
+    }
+    banded_tier1::decode_component(
+        tile,
+        component_idx,
+        header,
+        tile_ctx,
+        storage,
+        transform,
+        profile_enabled,
+        profile_timings,
+    )?;
+    Ok(true)
 }
 
 /// Decode the code-blocks of `components` and sample the workspace after.
@@ -1397,6 +1458,10 @@ pub(crate) struct DecompositionStorage<'a> {
     /// the streamed IDWT reaches them. Each sub-band's `coefficients` then
     /// hold one band of its stored rectangle's rows.
     pub(crate) banded_tier1: bool,
+    /// Whether Tier-1 decodes each component's bands ahead of the streamed
+    /// IDWT on the worker pool (see [`parallel_bands`]). Each sub-band's
+    /// `coefficients` then hold a ring of bands.
+    pub(crate) parallel_bands: bool,
     /// Whether every component's IDWT rings, and a scratch row each, are
     /// live at once, because the tile streams its rows to a sink.
     pub(crate) lockstep_lines: bool,
@@ -1437,6 +1502,7 @@ impl DecompositionStorage<'_> {
         self.last_idwt_level_in_channels = false;
         self.line_region_idwt = false;
         self.banded_tier1 = false;
+        self.parallel_bands = false;
         self.lockstep_lines = false;
         self.roi_idwt_charge_elements = 0;
         self.tier1_band = None;
@@ -1529,6 +1595,15 @@ pub(crate) struct TileDecodeContext {
     /// compared against it.
     #[cfg(test)]
     pub(crate) whole_window_tier1: bool,
+    /// Test-only: the first pool worker to start a band abandons it, so the
+    /// band is left running with no worker to finish it.
+    #[cfg(all(test, feature = "parallel"))]
+    pub(crate) strand_pool_band: bool,
+    /// Test-only: the average work per band below which a component's
+    /// bands decode over whole windows instead of on the pool; zero, so
+    /// unit tests' tiny fixtures take the pool, unless a test sets it.
+    #[cfg(all(test, feature = "parallel"))]
+    pub(crate) band_work_cutoff: usize,
     /// Test-only capacity failure when building the optional band row index.
     #[cfg(test)]
     pub(crate) reject_band_index: bool,

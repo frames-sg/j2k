@@ -369,7 +369,7 @@ pub(crate) fn allocate_deferred_coefficients(
             crate::j2c::idwt::roi_idwt_peak_elements(storage, skipped_resolution_levels)?;
         storage.roi_idwt_charge_elements = idwt_elements;
         checked_include_elements::<f32>(&mut live_bytes, idwt_elements)?;
-        lay_out_region_coefficients(storage, clip_to_idwt_windows)?
+        lay_out_region_coefficients(storage, clip_to_idwt_windows, skipped_resolution_levels)?
     } else {
         checked_include_elements::<f32>(&mut live_bytes, idwt_workspace_elements)?;
         storage
@@ -386,14 +386,22 @@ pub(crate) fn allocate_deferred_coefficients(
     Ok(())
 }
 
+/// Band slots each sub-band of the finest active level holds when Tier-1
+/// decodes bands ahead of the streamed IDWT on the worker pool, and each
+/// sub-band of the other levels. The finest level's bands are the most work
+/// and are each read for the shortest time, so they need the deepest ring.
+pub(crate) const FINEST_LEVEL_BAND_SLOTS: u32 = 3;
+pub(crate) const OTHER_LEVEL_BAND_SLOTS: u32 = 2;
+
 /// Give each sub-band of a region decode the coefficient range for its
 /// stored rectangle: the required code-blocks, clipped to the IDWT windows
 /// unless `clip_to_idwt_windows` is false. With banded Tier-1, a range holds
-/// one band of the rectangle's rows. Returns the coefficients the ranges
-/// need.
+/// one band of the rectangle's rows, and with parallel bands as many bands as
+/// the sub-band has slots. Returns the coefficients the ranges need.
 fn lay_out_region_coefficients(
     storage: &mut DecompositionStorage<'_>,
     clip_to_idwt_windows: bool,
+    skipped_resolution_levels: u8,
 ) -> Result<usize> {
     let Some(roi_plan) = storage.roi_plan.as_ref() else {
         return Err(DecodingError::CodeBlockDecodeFailure.into());
@@ -433,9 +441,29 @@ fn lay_out_region_coefficients(
             })
             .unwrap_or_else(|| IntRect::from_xywh(sub_band.rect.x0, sub_band.rect.y0, 0, 0));
         // Banded Tier-1 holds one band of code-block rows at a time: as
-        // many rows as any band shares with the stored rectangle.
-        let rows = if storage.banded_tier1 {
-            storage.precincts[sub_band.precincts.clone()]
+        // many rows as any band shares with the stored rectangle. Parallel
+        // bands hold a ring of such bands.
+        let slots = if storage.parallel_bands {
+            let finest = storage.tile_decompositions.iter().any(|component| {
+                let active = component
+                    .decompositions
+                    .len()
+                    .saturating_sub(usize::from(skipped_resolution_levels));
+                active > 0
+                    && storage.decompositions[component.decompositions.start + active - 1]
+                        .sub_bands
+                        .contains(&sub_band_idx)
+            });
+            if finest {
+                FINEST_LEVEL_BAND_SLOTS
+            } else {
+                OTHER_LEVEL_BAND_SLOTS
+            }
+        } else {
+            1
+        };
+        let rows = if storage.banded_tier1 || storage.parallel_bands {
+            let band_rows = storage.precincts[sub_band.precincts.clone()]
                 .iter()
                 .flat_map(|precinct| &storage.code_blocks[precinct.code_blocks.clone()])
                 .map(|code_block| {
@@ -446,7 +474,12 @@ fn lay_out_region_coefficients(
                         .saturating_sub(code_block.rect.y0.max(stored.y0))
                 })
                 .max()
-                .unwrap_or(0)
+                .unwrap_or(0);
+            // A ring never holds more rows than the whole window.
+            band_rows
+                .checked_mul(slots)
+                .ok_or(ValidationError::ImageTooLarge)?
+                .min(stored.height().max(band_rows))
         } else {
             stored.height()
         };
@@ -464,13 +497,15 @@ fn lay_out_region_coefficients(
     Ok(coefficient_count)
 }
 
-/// After a banded Tier-1 failed, store every sub-band's whole rectangle
-/// again, within the cap, so Tier-1 can rerun the old way.
+/// After a banded Tier-1 failed, or parallel bands declined, store every
+/// sub-band's whole rectangle again, within the cap, so Tier-1 can run the
+/// old way.
 pub(crate) fn lay_out_whole_region_coefficients(
     storage: &mut DecompositionStorage<'_>,
 ) -> Result<()> {
     storage.banded_tier1 = false;
-    let coefficient_count = lay_out_region_coefficients(storage, true)?;
+    storage.parallel_bands = false;
+    let coefficient_count = lay_out_region_coefficients(storage, true, 0)?;
     let mut budget =
         reuse::ReallocationBudget::from_live_bytes(storage.structural_workspace_bytes)?;
     budget.reserve(&mut storage.coefficients, coefficient_count)?;
