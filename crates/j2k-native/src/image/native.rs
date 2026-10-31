@@ -15,6 +15,7 @@ use crate::{
 use super::Image;
 
 mod allocation;
+mod interleave;
 mod rows;
 pub(super) use allocation::{try_clone_color_space, NativeOutputBudget};
 

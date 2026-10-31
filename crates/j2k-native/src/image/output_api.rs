@@ -198,13 +198,13 @@ impl<'a> Image<'a> {
                     parallel,
                 );
             } else {
-                for index in 0..pixel_count {
-                    for component in components {
-                        Self::push_component_native_sample_bytes(
-                            &mut data, component, index, bit_depth,
-                        );
-                    }
-                }
+                Self::extend_interleaved_native_sample_bytes(
+                    &mut data,
+                    components,
+                    pixel_count,
+                    bit_depth,
+                    parallel,
+                );
             }
             if data.len() != capacity {
                 bail!(DecodingError::CodeBlockDecodeFailure);
@@ -288,13 +288,13 @@ impl<'a> Image<'a> {
                     parallel,
                 );
             } else {
-                for index in 0..pixel_count {
-                    for component in components {
-                        Self::push_component_native_sample_bytes(
-                            &mut data, component, index, bit_depth,
-                        );
-                    }
-                }
+                Self::extend_interleaved_native_sample_bytes(
+                    &mut data,
+                    components,
+                    pixel_count,
+                    bit_depth,
+                    parallel,
+                );
             }
             if data.len() != capacity {
                 bail!(DecodingError::CodeBlockDecodeFailure);
