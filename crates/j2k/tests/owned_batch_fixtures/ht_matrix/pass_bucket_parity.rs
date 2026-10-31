@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::{collections::BTreeSet, sync::Arc};
+use std::{collections::BTreeSet, num::NonZeroUsize, sync::Arc};
 
 use j2k::{
     prepare_batch, BatchDecodeOptions, BatchLayout, CpuBatchDecoder, CpuBatchSamples, EncodedImage,
@@ -87,9 +87,12 @@ fn external_cleanup_magref_and_generated_sigprop_jobs_decode_in_batches() {
     let (cleanup, cleanup_pixels) = layered_ht_fixture(1);
     let (sigprop, sigprop_pixels) = layered_ht_fixture(2);
     let (magref, magref_pixels) = layered_ht_fixture(3);
+    // One worker decodes a group's images serially, on the staged route that
+    // flattens their payloads into pass-bucket jobs.
     let options = {
         let mut options = BatchDecodeOptions::default();
         options.layout = BatchLayout::Nhwc;
+        options.workers = NonZeroUsize::new(1);
         options
     };
     let prepared = prepare_batch(

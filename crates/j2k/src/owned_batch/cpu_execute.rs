@@ -45,10 +45,12 @@ pub(super) fn decode_cpu_group(
             .images
             .iter()
             .any(|image| image.cpu_execution().streams());
+    // Payloads are flattened only for the staged route, so a group whose
+    // images decode with inner parallelism skips that work.
     let has_flattened_payloads = !streams_rows
-        && fast_workspace.prepare_group(group)?
         && retained_inner_parallelism(group.images.len(), tile_options)?
-            == CpuDecodeParallelism::Serial;
+            == CpuDecodeParallelism::Serial
+        && fast_workspace.prepare_group(group)?;
     // With an explicit worker count, the images of such a group decode in a
     // pool of that many threads (see `CpuStreamPool`).
     let stream_pool = if streams_rows
