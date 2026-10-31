@@ -10,6 +10,10 @@ use super::allocation::batch_execution_cap_bytes;
 
 pub(super) struct BatchAllocationBudget {
     cap: usize,
+    /// Bytes charged for the budget's whole lifetime (a shared plan). No
+    /// claim ever releases them, so a claim above `cap - baseline` can never
+    /// be admitted.
+    baseline: usize,
     state: Mutex<AdmissionState>,
     changed: Condvar,
     #[cfg(test)]
@@ -33,6 +37,7 @@ impl BatchAllocationBudget {
         }
         Ok(Arc::new(Self {
             cap,
+            baseline,
             state: Mutex::new(AdmissionState {
                 live: baseline,
                 waiters: 0,
@@ -52,6 +57,17 @@ impl BatchAllocationBudget {
                 what: "one J2K batch execution claim",
                 requested: bytes,
                 cap: self.cap,
+            });
+        }
+        // Waiting only helps while other claims hold the missing bytes; the
+        // permanent baseline never leaves, so such a claim fails now instead
+        // of waiting forever.
+        let admissible = self.cap - self.baseline;
+        if bytes > admissible {
+            return Err(BatchInfrastructureError::AllocationTooLarge {
+                what: "one J2K batch execution claim beside the shared plan",
+                requested: bytes,
+                cap: admissible,
             });
         }
         let mut state = self
