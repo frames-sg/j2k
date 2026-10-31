@@ -10,9 +10,10 @@ use super::{
     NativeOutputBudget,
 };
 use crate::color::{
-    ComponentPlane, ComponentRowSink, DecodedNativeComponents, NativeComponentPlane,
+    ColorSpace, ComponentPlane, ComponentRowSink, DecodedNativeComponents, NativeComponentPlane,
 };
-use crate::error::{bail, DecodingError, Result, ValidationError};
+use crate::error::{bail, DecodeError, DecodingError, Result, ValidationError};
+use crate::j2c::codestream::ComponentInfo;
 use crate::j2c::DecoderContext;
 use crate::roi::validate_roi;
 use crate::{
@@ -51,18 +52,17 @@ impl<'a> Image<'a> {
     /// holds no region-sized `f32` planes. The planes hold the same bytes.
     /// Only for an image with a [`Self::streamed_rows_native_precision`]
     /// whose region decodes stream their rows (see
-    /// [`Self::region_decode_streams_rows`]): the planes are allocated
-    /// before the decode, so a region decode that fell back to component
-    /// planes would hold both, and meet the decode budget only after
-    /// allocating them.
+    /// [`Self::region_decode_streams_rows`]).
     /// The region of the whole image gives
     /// [`Self::decode_native_components_with_context`]'s planes.
     ///
     /// The returned planes are the decode's output: like a caller's buffer,
     /// and like the planes the planes route packs, they are not charged to
     /// the decode budget but to an allowance of their own (see
-    /// `NativeOutputBudget::for_output`), and each is held to the
-    /// per-allocation cap.
+    /// `NativeOutputBudget::for_output`), checked before the decode, and
+    /// each is held to the per-allocation cap. They are allocated when the
+    /// first rows arrive, so a region decode that falls back to component
+    /// planes meets the decode budget before they exist.
     ///
     /// # Errors
     ///
@@ -75,30 +75,126 @@ impl<'a> Image<'a> {
         roi: (u32, u32, u32, u32),
         decoder_context: &mut DecoderContext<'a>,
     ) -> Result<DecodedNativeComponents> {
+        let dimensions = (roi.2, roi.3);
+        let mut sink = NativePlanesSink::new(self, dimensions);
+        self.decode_native_rows(roi, decoder_context, &mut sink)?;
+        let planes = sink.finish()?;
+        let color_space = try_clone_color_space(&self.color_space)?;
+        Ok(DecodedNativeComponents {
+            dimensions,
+            color_space,
+            has_alpha: self.has_alpha,
+            planes,
+        })
+    }
+
+    /// The region decode of [`Self::decode_native_region_components_rows_with_context`]
+    /// into `sink`.
+    fn decode_native_rows(
+        &self,
+        roi: (u32, u32, u32, u32),
+        decoder_context: &mut DecoderContext<'a>,
+        sink: &mut NativePlanesSink<'_>,
+    ) -> Result<()> {
         validate_roi((self.width(), self.height()), roi)?;
         if self.streamed_rows_native_precision().is_none() || !self.region_decode_streams_rows() {
             bail!(DecodingError::UnsupportedFeature(
                 "streamed native component planes need one to four unsubsampled components of one precision up to 24 bits, no image or tile offsets, and no palette, channel definition, sYCC or CIELab"
             ));
         }
-        let dimensions = (roi.2, roi.3);
-        let samples = checked_decode_sample_count(dimensions.0, dimensions.1)?;
-        let components = &self.header.component_infos;
+        // The planes are allocated when the first rows arrive, but their
+        // allowance is known now: an output that cannot exist fails before
+        // the decode.
+        sink.output_allowance()?;
+        self.decode_region_rows_for_integer_output_with_context(roi, decoder_context, sink)
+    }
+}
+
+/// Packs each rectangle of a region decode into the native planes it
+/// covers. The planes are allocated when the first rectangle arrives, once
+/// per decode. The first error, an allocation or a rectangle that does not
+/// fit the planes, stops every later write and fails the decode.
+struct NativePlanesSink<'i> {
+    components: &'i [ComponentInfo],
+    color_space: &'i ColorSpace,
+    dimensions: (u32, u32),
+    planes: Vec<NativeComponentPlane>,
+    /// One row of samples wider than 16 bits, packed before it is copied.
+    scratch: Vec<u8>,
+    error: Option<DecodeError>,
+    /// Times the planes were allocated.
+    #[cfg(test)]
+    allocations: usize,
+    /// Rectangles handed to the sink.
+    #[cfg(test)]
+    writes: usize,
+}
+
+impl ComponentRowSink for NativePlanesSink<'_> {
+    fn write_rows(&mut self, x: u32, y: u32, planes: &[ComponentPlane<'_>]) {
+        #[cfg(test)]
+        {
+            self.writes += 1;
+        }
+        if self.error.is_some() {
+            return;
+        }
+        if self.planes.is_empty() {
+            if let Err(error) = self.allocate() {
+                self.error = Some(error);
+                return;
+            }
+        }
+        if self.try_write_rows(x, y, planes).is_none() {
+            self.error = Some(DecodingError::CodeBlockDecodeFailure.into());
+        }
+    }
+}
+
+impl<'i> NativePlanesSink<'i> {
+    /// A sink for the `dimensions` of a region of `image`, with no planes
+    /// yet.
+    fn new(image: &'i Image<'_>, dimensions: (u32, u32)) -> Self {
+        Self {
+            components: &image.header.component_infos,
+            color_space: &image.color_space,
+            dimensions,
+            planes: Vec::new(),
+            scratch: Vec::new(),
+            error: None,
+            #[cfg(test)]
+            allocations: 0,
+            #[cfg(test)]
+            writes: 0,
+        }
+    }
+
+    /// The planes held, as the planes route holds its packed planes, to the
+    /// output allowance, and each to the per-allocation cap.
+    fn output_allowance(&self) -> Result<NativeOutputBudget> {
+        let samples = checked_decode_sample_count(self.dimensions.0, self.dimensions.1)?;
         let mut allowance = NativeOutputBudget::for_output();
-        allowance.include_elements::<NativeComponentPlane>(components.len())?;
-        for component in components {
+        allowance.include_elements::<NativeComponentPlane>(self.components.len())?;
+        for component in self.components {
             let bytes_per_sample = native_bytes_per_sample(component.size_info.precision)?;
             let bytes = checked_decode_byte_len2(samples, bytes_per_sample)?;
             allowance.include_elements::<u8>(bytes)?;
         }
-        allowance.include_color_space_clone(&self.color_space)?;
+        allowance.include_color_space_clone(self.color_space)?;
+        Ok(allowance)
+    }
+
+    /// Allocate every component's plane within the output allowance.
+    fn allocate(&mut self) -> Result<()> {
+        let samples = checked_decode_sample_count(self.dimensions.0, self.dimensions.1)?;
+        let mut allowance = self.output_allowance()?;
         let mut planes = Vec::new();
-        try_reserve_decode_elements(&mut planes, components.len())?;
+        try_reserve_decode_elements(&mut planes, self.components.len())?;
         allowance.include_capacity_overage::<NativeComponentPlane>(
-            components.len(),
+            self.components.len(),
             planes.capacity(),
         )?;
-        for component in components {
+        for component in self.components {
             let bit_depth = component.size_info.precision;
             let bytes_per_sample = native_bytes_per_sample(bit_depth)?;
             let bytes = checked_decode_byte_len2(samples, bytes_per_sample)?;
@@ -107,7 +203,7 @@ impl<'a> Image<'a> {
             allowance.include_capacity_overage::<u8>(bytes, data.capacity())?;
             planes.push(NativeComponentPlane {
                 data,
-                dimensions,
+                dimensions: self.dimensions,
                 bit_depth,
                 signed: component.size_info.signed,
                 sampling: (1, 1),
@@ -115,43 +211,26 @@ impl<'a> Image<'a> {
                     .map_err(|_| ValidationError::ImageTooLarge)?,
             });
         }
-        let color_space = try_clone_color_space(&self.color_space)?;
-        let mut sink = NativePlanesSink {
-            planes: &mut planes,
-            scratch: Vec::new(),
-            failed: false,
-        };
-        self.decode_region_rows_for_integer_output_with_context(roi, decoder_context, &mut sink)?;
-        if sink.failed {
+        self.planes = planes;
+        #[cfg(test)]
+        {
+            self.allocations += 1;
+        }
+        Ok(())
+    }
+
+    /// The packed planes, or the first error a rectangle met. A decode that
+    /// handed over no rows has no planes.
+    fn finish(self) -> Result<Vec<NativeComponentPlane>> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        if self.planes.is_empty() {
             bail!(DecodingError::CodeBlockDecodeFailure);
         }
-        Ok(DecodedNativeComponents {
-            dimensions,
-            color_space,
-            has_alpha: self.has_alpha,
-            planes,
-        })
+        Ok(self.planes)
     }
-}
 
-/// Packs each rectangle of a region decode into the native planes it
-/// covers. A rectangle that does not fit them fails the decode.
-struct NativePlanesSink<'p> {
-    planes: &'p mut [NativeComponentPlane],
-    /// One row of samples wider than 16 bits, packed before it is copied.
-    scratch: Vec<u8>,
-    failed: bool,
-}
-
-impl ComponentRowSink for NativePlanesSink<'_> {
-    fn write_rows(&mut self, x: u32, y: u32, planes: &[ComponentPlane<'_>]) {
-        if !self.failed && self.try_write_rows(x, y, planes).is_none() {
-            self.failed = true;
-        }
-    }
-}
-
-impl NativePlanesSink<'_> {
     fn try_write_rows(&mut self, x: u32, y: u32, sources: &[ComponentPlane<'_>]) -> Option<()> {
         if sources.len() != self.planes.len() {
             return None;
@@ -253,9 +332,13 @@ pub(super) fn pack_native_samples(
 mod tests {
     use alloc::vec::Vec;
 
-    use super::pack_native_samples;
+    use super::{pack_native_samples, NativePlanesSink};
     use crate::image::Image;
-    use crate::native_bytes_per_sample;
+    use crate::j2c::DecoderContext;
+    use crate::{
+        encode, native_bytes_per_sample, CpuDecodeParallelism, DecodeErrorClass, DecodeSettings,
+        EncodeOptions,
+    };
 
     /// Samples around every bound and rounding tie of each precision, plus
     /// values far outside it and NaN.
@@ -292,6 +375,85 @@ mod tests {
                 pack_native_samples(&mut packed, &samples, bit_depth, signed, &mut scratch)
                     .expect("pack");
                 assert_eq!(packed, expected, "{bit_depth} bits, signed {signed}");
+            }
+        }
+    }
+
+    fn context<'a>(parallelism: CpuDecodeParallelism) -> DecoderContext<'a> {
+        let mut context = DecoderContext::default();
+        context.set_cpu_decode_parallelism(parallelism);
+        context
+    }
+
+    /// The rows route allocates its planes when the first rows arrive, once
+    /// per decode. A region decode that falls back to component planes (here
+    /// an RGB image without decomposition levels, which has no Tier-1 bands
+    /// to stream) meets the decode budget before any plane exists: past it,
+    /// the decode fails with a resource limit and the sink allocated
+    /// nothing. Headers only: its SIZ claims 12000 x 12000 samples, whose
+    /// `f32` planes pass the budget before any packet is read.
+    #[test]
+    fn native_rows_allocate_the_planes_when_the_first_rows_arrive() {
+        let options = EncodeOptions {
+            num_decomposition_levels: 0,
+            ..EncodeOptions::default()
+        };
+        let mut bytes = encode(&[0; 16 * 16 * 3], 16, 16, 3, 8, false, &options).expect("encode");
+        let siz = bytes
+            .windows(2)
+            .position(|marker| marker == [0xff, 0x51])
+            .expect("SIZ marker");
+        for field in [6, 10, 22, 26] {
+            bytes[siz + field..siz + field + 4].copy_from_slice(&12_000_u32.to_be_bytes());
+        }
+        let image = Image::new(&bytes, &DecodeSettings::default()).expect("headers parse");
+        assert!(image.region_decode_streams_rows());
+        for parallelism in [CpuDecodeParallelism::Serial, CpuDecodeParallelism::Auto] {
+            let mut sink = NativePlanesSink::new(&image, (12_000, 12_000));
+            let error = image
+                .decode_native_rows((0, 0, 12_000, 12_000), &mut context(parallelism), &mut sink)
+                .expect_err("the planes pass the budget");
+            assert!(
+                matches!(error.classify(), DecodeErrorClass::ResourceLimit { .. }),
+                "{parallelism:?}: {error:?}"
+            );
+            assert_eq!((sink.allocations, sink.writes), (0, 0), "{parallelism:?}");
+            assert!(sink.planes.is_empty(), "{parallelism:?}");
+        }
+    }
+
+    /// A streamed region decode hands its rows over in many rectangles, one
+    /// or more per tile, and the sink allocates its planes for the first of
+    /// them only. The planes hold the planes route's bytes.
+    #[test]
+    fn streamed_native_rows_allocate_the_planes_once() {
+        let (width, height) = (96_u32, 80_u32);
+        let samples: Vec<u8> = (0..width * height * 3)
+            .map(|index| (index.wrapping_mul(2_654_435_761) >> 24) as u8)
+            .collect();
+        let options = EncodeOptions {
+            num_decomposition_levels: 2,
+            tile_size: Some((32, 32)),
+            ..EncodeOptions::default()
+        };
+        let bytes = encode(&samples, width, height, 3, 8, false, &options).expect("encode");
+        let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+        let roi = (0, 0, width, height);
+        for parallelism in [CpuDecodeParallelism::Serial, CpuDecodeParallelism::Auto] {
+            let mut sink = NativePlanesSink::new(&image, (width, height));
+            image
+                .decode_native_rows(roi, &mut context(parallelism), &mut sink)
+                .expect("streamed decode");
+            assert_eq!(sink.allocations, 1, "{parallelism:?}");
+            let writes = sink.writes;
+            assert!(writes >= 9, "{parallelism:?}: {writes} rectangles");
+            let streamed = sink.finish().expect("planes");
+            let expected = image
+                .decode_native_region_components_with_context(roi, &mut context(parallelism))
+                .expect("planes route");
+            assert_eq!(streamed.len(), expected.planes.len(), "{parallelism:?}");
+            for (streamed, expected) in streamed.iter().zip(&expected.planes) {
+                assert!(streamed.data == expected.data, "{parallelism:?}");
             }
         }
     }
