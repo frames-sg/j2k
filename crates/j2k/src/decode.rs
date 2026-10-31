@@ -14,7 +14,7 @@ pub use component_handoff::{
 mod output;
 pub(crate) use output::{
     decode_native_components_with_native_context, native_components_route,
-    native_region_components_route,
+    native_region_components_route, NativeRoute,
 };
 mod route;
 mod settings;

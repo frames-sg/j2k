@@ -8,7 +8,7 @@ mod u8;
 
 pub(crate) use native::{
     decode_native_components_with_native_context, native_components_route,
-    native_region_components_route,
+    native_region_components_route, NativeRoute,
 };
 use native::{planes_pack_floor, region_rows_preferred};
 

@@ -10,7 +10,7 @@ use crate::{
         decode_full_image_into_with_native_context, decode_image_region_into_with_native_context,
         decode_native_components_with_native_context, decode_warnings_for_image, full_image_route,
         native_components_route, native_region_components_route, validate_buffer, validate_region,
-        FullImageRoute, J2kDecodeOutcome, J2kDecodedComponents, J2kDecodedNativeComponents,
+        J2kDecodeOutcome, J2kDecodedComponents, J2kDecodedNativeComponents, NativeRoute,
         PlanesBudget, RouteRequest,
     },
     parse::{parse_image_info, parse_info},
@@ -270,7 +270,7 @@ impl<'a> J2kDecoder<'a> {
         let decoded =
             decode_native_components_with_native_context(image, native_context, None, route);
         let retained_image_bytes = component_handoff_image_bytes(image);
-        if route == FullImageRoute::StreamedRegion {
+        if route == NativeRoute::Rows {
             self.native_context = self.fresh_native_context();
         }
         J2kDecodedNativeComponents::try_from_native(decoded?, retained_image_bytes?)
@@ -320,7 +320,7 @@ impl<'a> J2kDecoder<'a> {
         let decoded =
             decode_native_components_with_native_context(image, native_context, Some(roi), route);
         let retained_image_bytes = component_handoff_image_bytes(image);
-        if route == FullImageRoute::StreamedRegion {
+        if route == NativeRoute::Rows {
             self.native_context = self.fresh_native_context();
         }
         J2kDecodedNativeComponents::try_from_native(decoded?, retained_image_bytes?)
@@ -607,8 +607,8 @@ impl<'a> J2kDecoder<'a> {
             .ok_or_else(|| J2kError::internal_backend("internal image cache missing"))
     }
 
-    /// What a full-image 8-bit decode's component planes may charge: the
-    /// native decode budget, past which the planes decode is refused, with
+    /// What a full-image decode's component planes may charge: the native
+    /// decode budget, past which the planes decode is refused, with
     /// streaming wherever it is the faster route, unless a test set a fixed
     /// budget.
     fn full_decode_planes_budget(&self) -> PlanesBudget {

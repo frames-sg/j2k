@@ -2,7 +2,7 @@
 
 use super::{full_image_route, FullImageRoute, PlanesBudget, RouteRequest};
 use crate::backend::image_at_scale;
-use crate::decode::native_components_route;
+use crate::decode::{native_components_route, NativeRoute};
 use crate::DecodeSettings;
 use j2k_core::{Downscale, PixelFormat, Rect};
 use j2k_native::DecoderContext;
@@ -540,7 +540,7 @@ fn deep_and_signed_images_stream_past_the_budget() {
         );
         assert_eq!(
             native_components_route(&image, 0),
-            FullImageRoute::StreamedRegion,
+            NativeRoute::Rows,
             "{label}"
         );
         let budget = j2k_native::DEFAULT_MAX_DECODE_BYTES;
@@ -548,9 +548,6 @@ fn deep_and_signed_images_stream_past_the_budget() {
             full_image_route(&image, fmt, budget),
             FullImageRoute::Planes
         );
-        assert_eq!(
-            native_components_route(&image, budget),
-            FullImageRoute::Planes
-        );
+        assert_eq!(native_components_route(&image, budget), NativeRoute::Planes);
     }
 }

@@ -4,9 +4,18 @@
 //! component planes runs, and the planes route's charge for packing them.
 
 use crate::backend::{ColorSpace, Image};
-use crate::decode::FullImageRoute;
 use crate::J2kError;
 use j2k_core::Rect;
+
+/// How a decode into owned native component planes runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeRoute {
+    /// Component planes of the image or region, packed once decoded.
+    Planes,
+    /// A region decode that packs its rows into the planes as they are
+    /// finished and holds no component planes.
+    Rows,
+}
 
 /// The bytes the planes route charges at least when it packs `image`'s
 /// output from its component planes at `bytes_per_sample` native bytes per
@@ -42,14 +51,14 @@ fn region_pack_floor(image: &Image<'_>, roi: Rect, bytes_per_sample: usize) -> u
 ///
 /// A planning error keeps the planes route, which meets the same error and
 /// reports it.
-pub(crate) fn native_components_route(image: &Image<'_>, planes_budget: usize) -> FullImageRoute {
+pub(crate) fn native_components_route(image: &Image<'_>, planes_budget: usize) -> NativeRoute {
     let Some(precision) = image.streamed_rows_native_precision() else {
-        return FullImageRoute::Planes;
+        return NativeRoute::Planes;
     };
     let pack_floor = planes_pack_floor(image, usize::from(precision).div_ceil(8));
     match image.full_decode_planes_floor(planes_budget) {
-        Ok(Some(floor)) if floor.max(pack_floor) > planes_budget => FullImageRoute::StreamedRegion,
-        _ => FullImageRoute::Planes,
+        Ok(Some(floor)) if floor.max(pack_floor) > planes_budget => NativeRoute::Rows,
+        _ => NativeRoute::Planes,
     }
 }
 
@@ -73,14 +82,14 @@ pub(in crate::decode) fn region_rows_preferred(
 /// planes runs: as one that packs its rows into the planes as they are
 /// finished, so that it holds no region-sized `f32` planes, when its rows
 /// carry the native samples and [`region_rows_preferred`].
-pub(crate) fn native_region_components_route(image: &Image<'_>, roi: Rect) -> FullImageRoute {
+pub(crate) fn native_region_components_route(image: &Image<'_>, roi: Rect) -> NativeRoute {
     match image.streamed_rows_native_precision() {
         Some(precision)
             if region_rows_preferred(image, roi, usize::from(precision).div_ceil(8)) =>
         {
-            FullImageRoute::StreamedRegion
+            NativeRoute::Rows
         }
-        _ => FullImageRoute::Planes,
+        _ => NativeRoute::Planes,
     }
 }
 
@@ -91,17 +100,15 @@ pub(crate) fn decode_native_components_with_native_context<'a>(
     image: &Image<'a>,
     native_context: &mut j2k_native::DecoderContext<'a>,
     roi: Option<Rect>,
-    route: FullImageRoute,
+    route: NativeRoute,
 ) -> Result<j2k_native::DecodedNativeComponents, J2kError> {
     match (roi, route) {
-        (None, FullImageRoute::Planes) => {
-            image.decode_native_components_with_context(native_context)
-        }
-        (Some(roi), FullImageRoute::Planes) => image.decode_native_region_components_with_context(
+        (None, NativeRoute::Planes) => image.decode_native_components_with_context(native_context),
+        (Some(roi), NativeRoute::Planes) => image.decode_native_region_components_with_context(
             (roi.x, roi.y, roi.w, roi.h),
             native_context,
         ),
-        (roi, FullImageRoute::StreamedRegion) => {
+        (roi, NativeRoute::Rows) => {
             let roi = roi.unwrap_or_else(|| Rect::full((image.width(), image.height())));
             image.decode_native_region_components_rows_with_context(
                 (roi.x, roi.y, roi.w, roi.h),
