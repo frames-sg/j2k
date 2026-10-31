@@ -92,20 +92,47 @@ pub(super) fn decode_image_u8<'image>(
     out: &mut [u8],
 ) -> Result<(), J2kError> {
     match image.cpu_execution() {
-        CpuExecution::ExceedsDecodeBound => return Err(CpuExecution::decode_bound_error()),
-        CpuExecution::StreamedRows => {
-            return decode_streamed_samples(
-                image,
-                options,
-                info,
-                parallelism,
-                context,
-                out,
-                convert_u8,
-            );
+        CpuExecution::ExceedsDecodeBound => Err(CpuExecution::decode_bound_error()),
+        CpuExecution::StreamedRows | CpuExecution::StreamedRowsOrPlan { .. } => {
+            decode_streamed_samples(image, options, info, parallelism, context, out, convert_u8)
         }
-        CpuExecution::OffsetPlan { .. } | CpuExecution::ComponentPlanes => {}
+        CpuExecution::OffsetPlan { .. } | CpuExecution::ComponentPlanes => {
+            decode_planned_u8(image, options, info, parallelism, context, worker, out)
+        }
     }
+}
+
+/// [`decode_image_u8`] for the only image of a Gray8 group: an image that may
+/// stream or decode its plan decodes its plan, which spreads one component's
+/// code-block rows over every core while nothing else is in flight.
+pub(super) fn decode_lone_gray_u8<'image>(
+    image: &'image PreparedImage,
+    options: BatchDecodeOptions,
+    info: &BatchGroupInfo,
+    parallelism: CpuDecodeParallelism,
+    context: &mut j2k_native::DecoderContext<'image>,
+    worker: &mut BatchWorker,
+    out: &mut [u8],
+) -> Result<(), J2kError> {
+    if matches!(
+        image.cpu_execution(),
+        CpuExecution::StreamedRowsOrPlan { .. }
+    ) {
+        decode_planned_u8(image, options, info, parallelism, context, worker, out)
+    } else {
+        decode_image_u8(image, options, info, parallelism, context, worker, out)
+    }
+}
+
+fn decode_planned_u8<'image>(
+    image: &'image PreparedImage,
+    options: BatchDecodeOptions,
+    info: &BatchGroupInfo,
+    parallelism: CpuDecodeParallelism,
+    context: &mut j2k_native::DecoderContext<'image>,
+    worker: &mut BatchWorker,
+    out: &mut [u8],
+) -> Result<(), J2kError> {
     if decode_prepared_plan_samples(image, info, worker, out, |sample, precision| {
         u8::try_from(round_unsigned(sample, precision)).unwrap_or(u8::MAX)
     })? {
@@ -245,23 +272,23 @@ impl<'out, 'info, T: Copy> SampleRowSink<'out, 'info, T> {
     fn write_rectangle(&mut self, x: u32, y: u32, planes: &[j2k_native::ComponentPlane<'_>]) {
         let channels = self.info.color.channels();
         let width = self.info.dimensions.0 as usize;
-        let Some((rect_width, rect_height)) = planes.first().map(|plane| plane.dimensions()) else {
+        let Some(rect_dimensions) = planes.first().map(j2k_native::ComponentPlane::dimensions)
+        else {
             self.malformed = true;
             return;
         };
         let (x, y, rect_width, rect_height) = (
             x as usize,
             y as usize,
-            rect_width as usize,
-            rect_height as usize,
+            rect_dimensions.0 as usize,
+            rect_dimensions.1 as usize,
         );
         let rect_pixels = rect_width * rect_height;
         if planes.len() != channels
             || x + rect_width > width
             || y + rect_height > self.info.dimensions.1 as usize
             || planes.iter().any(|plane| {
-                plane.dimensions() != (rect_width as u32, rect_height as u32)
-                    || plane.samples().len() < rect_pixels
+                plane.dimensions() != rect_dimensions || plane.samples().len() < rect_pixels
             })
         {
             self.malformed = true;

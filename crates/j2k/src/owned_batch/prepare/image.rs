@@ -76,10 +76,17 @@ pub(super) fn prepare_image(
 
 /// Choose the CPU execution from the planned working memory, before any
 /// decode work, with the same accounting the offset plan's execution
-/// enforces. Only an image whose serial execution already exceeds the
-/// per-decode bound leaves its offset plan, so every image the plan can
-/// execute keeps it; such an image streams its rows when its output has a
-/// streamed route and is rejected otherwise. The claim is the parallel peak.
+/// enforces.
+///
+/// A Gray8 or RGB8 image whose planned execution exceeds
+/// [`STREAM_ABOVE_PLANNED_BYTES`] streams its rows: the offset plan holds
+/// whole-image f32 planes and coefficients (about 14 times the 8-bit
+/// output), which every image in flight kept until its decode ended, while
+/// the streamed route holds a band of rows. While its plan fits the
+/// per-decode bound, the image keeps it for decoding alone in a Gray8 group
+/// ([`CpuExecution::StreamedRowsOrPlan`]). Other outputs keep their offset
+/// plan unless its serial execution exceeds the per-decode bound, which
+/// rejects them. The claim of an offset plan is its parallel peak.
 pub(super) fn choose_cpu_execution(
     codec_plan: &PreparedCodecPlan,
     info: &BatchGroupInfo,
@@ -107,9 +114,14 @@ pub(super) fn choose_cpu_execution(
             _,
         ) => exceeds_bound,
         (Ok(serial), _) if serial > planned_decode_bound() => exceeds_bound,
-        (Ok(_), Ok(bytes)) => CpuExecution::OffsetPlan { bytes },
-        // A plan that fits only serially, or a malformed plan, keeps the
-        // worst-case claim and reports any error from execution, as before.
+        (Ok(_), Ok(bytes)) if !streams_rows(info) || bytes <= stream_above_planned_bytes() => {
+            CpuExecution::OffsetPlan { bytes }
+        }
+        (Ok(_), Ok(bytes)) => CpuExecution::StreamedRowsOrPlan { bytes },
+        // An 8-bit plan that fits only serially streams.
+        (Ok(_), _) if streams_rows(info) => CpuExecution::StreamedRows,
+        // Any other plan that fits only serially, or a malformed plan, keeps
+        // the worst-case claim and reports any error from execution.
         _ => CpuExecution::OffsetPlan {
             bytes: crate::batch::allocation::GENERIC_WORKER_CLAIM_BYTES,
         },
@@ -123,11 +135,28 @@ fn streams_rows(info: &BatchGroupInfo) -> bool {
         && matches!(info.color, BatchColor::Gray | BatchColor::Rgb)
 }
 
+/// Planned offset-plan execution above which Gray8/RGB8 images stream
+/// their rows (see [`choose_cpu_execution`]). Smaller images keep their
+/// parse-free plan, whose working memory is negligible at that size.
+pub(super) const STREAM_ABOVE_PLANNED_BYTES: usize = 4 << 20;
+
 #[cfg(test)]
 std::thread_local! {
     /// Test-only lower bound for [`choose_cpu_execution`] on this thread.
     pub(super) static PLANNED_DECODE_BOUND: core::cell::Cell<Option<usize>> =
         const { core::cell::Cell::new(None) };
+    /// Test-only streaming threshold for [`choose_cpu_execution`] on this
+    /// thread.
+    pub(super) static STREAM_ABOVE_OVERRIDE: core::cell::Cell<Option<usize>> =
+        const { core::cell::Cell::new(None) };
+}
+
+fn stream_above_planned_bytes() -> usize {
+    #[cfg(test)]
+    if let Some(bytes) = STREAM_ABOVE_OVERRIDE.with(core::cell::Cell::get) {
+        return bytes;
+    }
+    STREAM_ABOVE_PLANNED_BYTES
 }
 
 /// The per-decode bound planned executions are held to. Native planning

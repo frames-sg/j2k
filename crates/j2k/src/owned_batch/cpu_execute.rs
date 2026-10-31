@@ -4,15 +4,15 @@
 
 use super::cpu_materialize::{
     convert_u16, convert_u8, decode_image_i16, decode_image_u16, decode_image_u8,
-    ensure_batch_output_within_cap, round_signed, try_zeroed_vec,
+    decode_lone_gray_u8, ensure_batch_output_within_cap, round_signed, try_zeroed_vec,
 };
 use super::cpu_staged_execute::run_staged_typed_group;
 use super::{
-    decode_warnings_for_recovery, retained_inner_parallelism, run_retained_chunks, Arc,
+    decode_warnings_for_recovery, retained_inner_parallelism, run_retained_chunks, Arc, BatchColor,
     BatchDecodeOptions, BatchErrorStage, BatchGroupInfo, BatchInfrastructureError, BatchItemError,
-    BatchWorker, CpuBatchGroup, CpuBatchSamples, CpuDecodeParallelism, CpuExecution,
-    CpuGroupFastWorkspace, CpuStagedWorkspace, IndexedBatchError, J2kError, NativeSampleType,
-    NonZeroUsize, PreparedBatchGroup, PreparedImage, TileBatchOptions, Vec,
+    BatchWorker, CpuBatchGroup, CpuBatchSamples, CpuDecodeParallelism, CpuGroupFastWorkspace,
+    CpuStagedWorkspace, IndexedBatchError, J2kError, NativeSampleType, NonZeroUsize,
+    PreparedBatchGroup, PreparedImage, TileBatchOptions, Vec,
 };
 use crate::batch::admission::{hold_at_least, BatchAllocationBudget};
 use crate::batch::allocation::try_vec_with_capacity;
@@ -42,7 +42,7 @@ pub(super) fn decode_cpu_group(
     let streams_rows = group
         .images
         .iter()
-        .any(|image| image.cpu_execution() == CpuExecution::StreamedRows);
+        .any(|image| image.cpu_execution().streams());
     let has_flattened_payloads = !streams_rows
         && fast_workspace.prepare_group(group)?
         && retained_inner_parallelism(group.images.len(), tile_options)?
@@ -78,7 +78,12 @@ pub(super) fn decode_cpu_group(
                 has_flattened_payloads.then_some(&mut *fast_workspace),
                 staged_workspace,
                 admission,
-                decode_image_u8,
+                // The only image of a Gray8 group is the whole in-flight set.
+                if group.images.len() == 1 && group.info.color == BatchColor::Gray {
+                    decode_lone_gray_u8
+                } else {
+                    decode_image_u8
+                },
                 convert_u8,
                 errors,
             )?;

@@ -8,7 +8,7 @@ use super::super::{
     CpuBatchDecoder, CpuBatchSamples, CpuExecution, DecodeRequest, EncodedImage, IndexedBatchError,
     PreparedBatch,
 };
-use super::image::PLANNED_DECODE_BOUND;
+use super::image::{PLANNED_DECODE_BOUND, STREAM_ABOVE_OVERRIDE, STREAM_ABOVE_PLANNED_BYTES};
 use j2k_core::Downscale;
 
 fn classic_fixture(width: u32, height: u32, components: u16, precision: u8) -> Arc<[u8]> {
@@ -64,6 +64,21 @@ impl PlannedBound {
 impl Drop for PlannedBound {
     fn drop(&mut self) {
         PLANNED_DECODE_BOUND.with(|bound| bound.set(None));
+    }
+}
+
+struct StreamAbove;
+
+impl StreamAbove {
+    fn hold(bytes: usize) -> Self {
+        STREAM_ABOVE_OVERRIDE.with(|threshold| threshold.set(Some(bytes)));
+        Self
+    }
+}
+
+impl Drop for StreamAbove {
+    fn drop(&mut self) {
+        STREAM_ABOVE_OVERRIDE.with(|threshold| threshold.set(None));
     }
 }
 
@@ -217,4 +232,135 @@ fn cpu_prepare_rejects_plans_over_the_bound_without_a_streamed_route() {
         1,
         BatchErrorStage::Decode
     ));
+}
+
+#[test]
+fn cpu_batch_streams_large_rgb8_and_gray8_plans_below_the_decode_bound() {
+    let small = classic_rgb8(16, 16);
+    let large = classic_rgb8(96, 64);
+    let gray = classic_fixture(80, 72, 1, 8);
+    let gray12 = classic_fixture(96, 64, 1, 12);
+    let inputs = || {
+        vec![
+            EncodedImage::full(Arc::clone(&small)),
+            EncodedImage::full(Arc::clone(&large)),
+            EncodedImage::full(Arc::clone(&gray)),
+            EncodedImage::new(
+                Arc::clone(&large),
+                DecodeRequest::Region {
+                    roi: j2k_core::Rect {
+                        x: 13,
+                        y: 7,
+                        w: 61,
+                        h: 50,
+                    },
+                },
+            ),
+            // Two Gray8 images in flight stream; a lone one decodes its plan.
+            EncodedImage::full(Arc::clone(&gray)),
+            EncodedImage::full(Arc::clone(&gray12)),
+        ]
+    };
+    for layout in [BatchLayout::Nchw, BatchLayout::Nhwc] {
+        let mut decoder = CpuBatchDecoder::new(single_worker_options_with(layout));
+        let planned_route = decoder.prepare(inputs()).expect("prepare small plans");
+        let planned = planned_bytes(&planned_route);
+        assert!(
+            planned
+                .iter()
+                .all(|(_, execution)| matches!(execution, CpuExecution::OffsetPlan { .. })),
+            "fixtures this small keep their plans: {planned:?}"
+        );
+        let CpuExecution::OffsetPlan { bytes: small_bytes } = planned[0].1 else {
+            unreachable!("checked above");
+        };
+        let reference = decoder
+            .decode_prepared(&planned_route)
+            .expect("decode the plans");
+
+        let _threshold = StreamAbove::hold(small_bytes);
+        let streamed_route = decoder
+            .prepare(inputs())
+            .expect("prepare under the threshold");
+        assert_eq!(streamed_route.errors(), &[] as &[IndexedBatchError]);
+        let streamed = planned_bytes(&streamed_route);
+        assert!(matches!(streamed[0].1, CpuExecution::OffsetPlan { .. }));
+        for (index, execution) in &streamed[1..5] {
+            assert!(
+                matches!(execution, CpuExecution::StreamedRowsOrPlan { .. }),
+                "input {index}: {execution:?}"
+            );
+        }
+        // 12-bit output has no streamed route and stays within the bound.
+        assert_eq!(streamed[5], planned[5], "{layout:?}");
+        let output = decoder
+            .decode_prepared(&streamed_route)
+            .expect("decode streamed items");
+        assert_eq!(output.errors(), &[] as &[IndexedBatchError]);
+        assert_eq!(output.groups(), reference.groups(), "{layout:?}");
+    }
+}
+
+#[test]
+fn cpu_batch_streams_rgb8_images_whose_plans_pass_the_default_threshold() {
+    // About 14 bytes of plan per 8-bit sample: 1.4 MiB of RGB8 output
+    // plans several MiB, over the default threshold.
+    let rgb = classic_rgb8(704, 704);
+    let rgb12 = classic_fixture(704, 704, 3, 12);
+    let inputs = || {
+        vec![
+            EncodedImage::full(Arc::clone(&rgb)),
+            EncodedImage::full(Arc::clone(&rgb12)),
+        ]
+    };
+    let mut decoder = CpuBatchDecoder::new(single_worker_options());
+    let prepared = decoder.prepare(inputs()).expect("prepare");
+    let planned = planned_bytes(&prepared);
+    assert!(
+        matches!(planned[0].1, CpuExecution::StreamedRowsOrPlan { .. }),
+        "{planned:?}"
+    );
+    let CpuExecution::OffsetPlan { bytes } = planned[1].1 else {
+        panic!("12-bit output keeps its plan: {planned:?}");
+    };
+    assert!(bytes > STREAM_ABOVE_PLANNED_BYTES, "{bytes}");
+    let output = decoder.decode_prepared(&prepared).expect("decode");
+    assert_eq!(output.errors(), &[] as &[IndexedBatchError]);
+
+    // The streamed samples equal the plan route's.
+    let _threshold = StreamAbove::hold(usize::MAX);
+    let planned_route = decoder.prepare(inputs()).expect("prepare plans");
+    assert!(matches!(
+        planned_bytes(&planned_route)[0].1,
+        CpuExecution::OffsetPlan { .. }
+    ));
+    let reference = decoder
+        .decode_prepared(&planned_route)
+        .expect("decode plans");
+    assert_eq!(output.groups(), reference.groups());
+}
+
+#[test]
+fn a_lone_gray8_image_decodes_its_plan_and_gray8_images_in_flight_stream() {
+    let gray = classic_fixture(80, 72, 1, 8);
+    let rgb = classic_rgb8(80, 72);
+    let decode = |copies: usize, image: &Arc<[u8]>| {
+        let inputs = vec![EncodedImage::full(Arc::clone(image)); copies];
+        let mut decoder = CpuBatchDecoder::new(single_worker_options());
+        let reference = decoder
+            .decode_prepared(&decoder.prepare(inputs.clone()).expect("prepare plans"))
+            .expect("decode plans");
+        let plan_calls = decoder.workspace_stats().prepared_plan_decode_calls();
+        let _threshold = StreamAbove::hold(0);
+        let prepared = decoder.prepare(inputs).expect("prepare");
+        assert!(planned_bytes(&prepared)
+            .iter()
+            .all(|(_, execution)| matches!(execution, CpuExecution::StreamedRowsOrPlan { .. })));
+        let output = decoder.decode_prepared(&prepared).expect("decode");
+        assert_eq!(output.groups(), reference.groups(), "{copies} copies");
+        decoder.workspace_stats().prepared_plan_decode_calls() - plan_calls
+    };
+    assert_eq!(decode(1, &gray), 1, "a lone Gray8 image decodes its plan");
+    assert_eq!(decode(2, &gray), 0, "Gray8 images in flight stream");
+    assert_eq!(decode(1, &rgb), 0, "a lone RGB8 image streams");
 }

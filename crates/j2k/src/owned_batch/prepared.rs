@@ -46,10 +46,16 @@ pub(super) enum CpuExecution {
     /// bound and the output has no streamed route (not Gray8 or RGB8), so the
     /// CPU decoder rejects the image before any decode work.
     ExceedsDecodeBound,
-    /// The planned offset-plan execution exceeds the per-decode memory
-    /// bound, so the image streams rows from the full-output region decode,
-    /// whose working memory does not grow with the image.
+    /// A Gray8/RGB8 image whose offset plan exceeds the per-decode bound
+    /// streams rows from the full-output region decode, whose working memory
+    /// does not grow with the image.
     StreamedRows,
+    /// A Gray8/RGB8 image whose offset plan fits the bound (`bytes` is its
+    /// parallel peak) but exceeds the streaming threshold. It streams rows
+    /// like [`Self::StreamedRows`], except as the only image of a Gray8
+    /// group: alone in flight, its plan spreads one component's code-block
+    /// rows over every core, which the streamed route does not match.
+    StreamedRowsOrPlan { bytes: usize },
 }
 
 impl CpuExecution {
@@ -61,11 +67,19 @@ impl CpuExecution {
             // The streamed route has no planned peak yet; it is claimed as one
             // worst-case native decode (measured: 95 MiB for a 5661 x 8287
             // RGB8 scan at default threads).
-            Self::ComponentPlanes | Self::StreamedRows => {
+            // An optional plan fits the bound, so its peak is within this
+            // claim too.
+            Self::ComponentPlanes | Self::StreamedRows | Self::StreamedRowsOrPlan { .. } => {
                 crate::batch::allocation::GENERIC_WORKER_CLAIM_BYTES
             }
             Self::ExceedsDecodeBound => 0,
         }
+    }
+
+    /// Whether the CPU decoder may stream this image's rows; groups holding
+    /// such an image never take the staged route.
+    pub(super) const fn streams(self) -> bool {
+        matches!(self, Self::StreamedRows | Self::StreamedRowsOrPlan { .. })
     }
 
     /// The error the offset-plan execution would report, raised up front.
