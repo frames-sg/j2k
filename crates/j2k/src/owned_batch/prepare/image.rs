@@ -54,7 +54,11 @@ pub(super) fn prepare_image(
             .map_or(PreparedCodecPlan::MetadataOnly, PreparedCodecPlan::Htj2k),
     };
     reconcile_codec_plan_metadata(&mut info, &codec_plan)?;
-    let cpu_execution = choose_cpu_execution(&codec_plan, &info);
+    let cpu_execution = choose_cpu_execution(
+        &codec_plan,
+        &info,
+        native_image.region_decode_streams_rows(),
+    );
     let preparation_depth = codec_plan.preparation_depth();
     let execution_shape = batch_execution_shape(&support, plan, preparation_depth);
     let image = PreparedImage {
@@ -79,17 +83,21 @@ pub(super) fn prepare_image(
 /// enforces.
 ///
 /// A Gray8 or RGB8 image whose planned execution exceeds
-/// [`STREAM_ABOVE_PLANNED_BYTES`] streams its rows: the offset plan holds
+/// [`STREAM_ABOVE_PLANNED_BYTES`] streams its rows when the region decode
+/// can stream them (`region_streams_rows`): the offset plan holds
 /// whole-image f32 planes and coefficients (about 14 times the 8-bit
 /// output), which every image in flight kept until its decode ended, while
 /// the streamed route holds a band of rows. While its plan fits the
 /// per-decode bound, the image keeps it for decoding alone in a Gray8 group
 /// ([`CpuExecution::StreamedRowsOrPlan`]). Other outputs keep their offset
 /// plan unless its serial execution exceeds the per-decode bound, which
-/// rejects them. The claim of an offset plan is its parallel peak.
+/// rejects them, as it does images whose region decode would hand over
+/// whole component planes instead of rows. The claim of an offset plan is
+/// its parallel peak.
 pub(super) fn choose_cpu_execution(
     codec_plan: &PreparedCodecPlan,
     info: &BatchGroupInfo,
+    region_streams_rows: bool,
 ) -> CpuExecution {
     let planned = |parallel| match codec_plan {
         PreparedCodecPlan::Classic(plan) => {
@@ -103,7 +111,8 @@ pub(super) fn choose_cpu_execution(
     if matches!(codec_plan, PreparedCodecPlan::MetadataOnly) {
         return CpuExecution::ComponentPlanes;
     }
-    let exceeds_bound = if streams_rows(info) {
+    let streams_rows = region_streams_rows && has_streamed_output(info);
+    let exceeds_bound = if streams_rows {
         CpuExecution::StreamedRows
     } else {
         CpuExecution::ExceedsDecodeBound
@@ -114,12 +123,12 @@ pub(super) fn choose_cpu_execution(
             _,
         ) => exceeds_bound,
         (Ok(serial), _) if serial > planned_decode_bound() => exceeds_bound,
-        (Ok(_), Ok(bytes)) if !streams_rows(info) || bytes <= stream_above_planned_bytes() => {
+        (Ok(_), Ok(bytes)) if !streams_rows || bytes <= stream_above_planned_bytes() => {
             CpuExecution::OffsetPlan { bytes }
         }
         (Ok(_), Ok(bytes)) => CpuExecution::StreamedRowsOrPlan { bytes },
         // An 8-bit plan that fits only serially streams.
-        (Ok(_), _) if streams_rows(info) => CpuExecution::StreamedRows,
+        (Ok(_), _) if streams_rows => CpuExecution::StreamedRows,
         // Any other plan that fits only serially, or a malformed plan, keeps
         // the worst-case claim and reports any error from execution.
         _ => CpuExecution::OffsetPlan {
@@ -129,8 +138,10 @@ pub(super) fn choose_cpu_execution(
 }
 
 /// Gray8 and RGB8 outputs have a streamed route: the region decode hands
-/// over finished rows of 8-bit components. Other outputs keep the bound.
-fn streams_rows(info: &BatchGroupInfo) -> bool {
+/// over finished rows of 8-bit components where the image lets it (see
+/// `j2k_native::Image::region_decode_streams_rows`). Other outputs keep the
+/// bound.
+fn has_streamed_output(info: &BatchGroupInfo) -> bool {
     info.sample_type == NativeSampleType::U8
         && matches!(info.color, BatchColor::Gray | BatchColor::Rgb)
 }

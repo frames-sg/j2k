@@ -255,6 +255,133 @@ fn cpu_prepare_rejects_plans_over_the_bound_without_a_streamed_route() {
     ));
 }
 
+/// `codestream` as JP2, with `channel_definitions` in a cdef box.
+fn wrap_jp2(codestream: &[u8], channel_definitions: &[crate::J2kChannelDefinition]) -> Arc<[u8]> {
+    let color = if channel_definitions.is_empty() {
+        j2k_core::Colorspace::SGray
+    } else {
+        j2k_core::Colorspace::SRgb
+    };
+    Arc::from(
+        crate::wrap_j2k_codestream(
+            codestream,
+            crate::J2kFileWrapOptions::jp2()
+                .with_color(crate::J2kFileColorSpec::Enumerated(color))
+                .with_metadata(crate::J2kFileBoxMetadata {
+                    palette: None,
+                    component_mappings: &[],
+                    channel_definitions,
+                }),
+        )
+        .expect("wrap JP2"),
+    )
+}
+
+fn identity_rgb_channel_definitions() -> [crate::J2kChannelDefinition; 3] {
+    [1, 2, 3].map(|color| crate::J2kChannelDefinition {
+        channel_index: color - 1,
+        channel_type: crate::J2kChannelType::Color,
+        association: crate::J2kChannelAssociation::Color { index: color },
+    })
+}
+
+/// `codestream` with the image area and tile grid moved to `origin` on
+/// both axes. A multiple of every code-block and DWT alignment keeps the
+/// same coded samples.
+fn with_siz_origin(codestream: &[u8], origin: u32) -> Arc<[u8]> {
+    let mut bytes = codestream.to_vec();
+    assert_eq!(&bytes[..4], &[0xff, 0x4f, 0xff, 0x51], "SOC then SIZ");
+    let mut add = |offset: usize| {
+        let field = <[u8; 4]>::try_from(&bytes[offset..offset + 4]).expect("SIZ field");
+        let value = u32::from_be_bytes(field) + origin;
+        bytes[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
+    };
+    // Xsiz, Ysiz, XOsiz, YOsiz, then XTOsiz, YTOsiz.
+    for offset in [8, 12, 16, 20, 32, 36] {
+        add(offset);
+    }
+    Arc::from(bytes)
+}
+
+#[test]
+fn gray8_and_rgb8_images_whose_region_decode_cannot_stream_keep_the_plan_route() {
+    let rgb = classic_rgb8(96, 64);
+    let gray = classic_fixture(80, 72, 1, 8);
+    let streams = [Arc::clone(&rgb), Arc::clone(&gray), wrap_jp2(&gray, &[])];
+    // A channel definition, or offsets, keep the region decode on whole
+    // component planes, which it hands over at the end.
+    let planes = [
+        wrap_jp2(&rgb, &identity_rgb_channel_definitions()),
+        with_siz_origin(&rgb, 4096),
+        with_siz_origin(&gray, 4096),
+    ];
+    let inputs = || {
+        streams
+            .iter()
+            .chain(&planes)
+            .map(|image| EncodedImage::full(Arc::clone(image)))
+            .collect::<Vec<_>>()
+    };
+    let mut decoder = CpuBatchDecoder::new(single_worker_options());
+    let reference = all_u8_samples(
+        &decoder
+            .decode_prepared(&decoder.prepare(inputs()).expect("prepare plans"))
+            .expect("decode plans"),
+    );
+    // Moved, wrapped and plain images decode the same samples.
+    let samples = |index: usize| {
+        reference
+            .iter()
+            .find(|(indices, _)| indices.contains(&index))
+            .map(|(indices, samples)| {
+                let per_image = samples.len() / indices.len();
+                let slot = indices.iter().position(|&i| i == index).expect("slot");
+                samples[slot * per_image..(slot + 1) * per_image].to_vec()
+            })
+            .expect("decoded image")
+    };
+    for (index, plain) in [(2, 1), (3, 0), (4, 0), (5, 1)] {
+        assert_eq!(samples(index), samples(plain), "input {index}");
+    }
+
+    {
+        let _threshold = StreamAbove::hold(0);
+        let prepared = decoder
+            .prepare(inputs())
+            .expect("prepare over the threshold");
+        let planned = planned_bytes(&prepared);
+        for (index, execution) in &planned {
+            assert_eq!(
+                matches!(execution, CpuExecution::StreamedRowsOrPlan { .. }),
+                *index < streams.len(),
+                "input {index}: {execution:?}"
+            );
+            assert_eq!(
+                matches!(execution, CpuExecution::OffsetPlan { .. }),
+                *index >= streams.len(),
+                "input {index}: {execution:?}"
+            );
+        }
+        let decoded = all_u8_samples(&decoder.decode_prepared(&prepared).expect("decode"));
+        assert_eq!(decoded, reference);
+    }
+
+    // Over the bound, only the images that stream their rows are admitted.
+    let _bound = PlannedBound::hold(0);
+    let bounded = decoder.prepare(inputs()).expect("prepare under the bound");
+    assert!(planned_bytes(&bounded)
+        .iter()
+        .all(|(_, execution)| *execution == CpuExecution::StreamedRows));
+    let rejected = bounded.errors();
+    assert_eq!(rejected.len(), planes.len(), "{rejected:?}");
+    for (error, index) in rejected.iter().zip(streams.len()..) {
+        assert!(
+            is_decode_bound_error(error, index, BatchErrorStage::Prepare),
+            "{error:?}"
+        );
+    }
+}
+
 #[test]
 fn cpu_batch_streams_large_rgb8_and_gray8_plans_below_the_decode_bound() {
     let small = classic_rgb8(16, 16);
