@@ -4,13 +4,15 @@ use super::super::codestream::WaveletTransform;
 use super::super::decode::{DecompositionStorage, TileDecodeContext};
 #[cfg(feature = "parallel")]
 use super::banded::{filter_2d_banded_pair, pair_runs_on_pool};
+use super::banded::{planned_band_scratch_elements, planned_pair_band_scratch_elements};
 use super::direct::{apply_level, apply_level_into};
 use super::interleave_i64::apply_level_i64;
 use super::model::{
     idwt_buffer_size, IDWTInput, IDWTInputI64, IDWTTempOutput, IdwtPlacement, InputSource,
 };
 use super::roi::apply_roi;
-use crate::error::{bail, DecodingError};
+use crate::error::{bail, DecodingError, ValidationError};
+use crate::j2c::rect::IntRect;
 use crate::j2c::Header;
 use crate::{
     checked_decode_usize_product2, try_reserve_decode_elements, HtCodeBlockDecoder, Result,
@@ -92,23 +94,6 @@ pub(crate) fn apply(
         return Ok(());
     }
 
-    // The coefficient array will always be the one that holds the coefficients
-    // from the highest decomposition. Therefore, reserve as much.
-    let (s_min, s_max) = idwt_buffer_size(decompositions.last().unwrap().rect)?;
-    if prefix.is_none() && output.coefficients.len() < s_min {
-        try_reserve_decode_elements(&mut output.coefficients, s_max)?;
-    }
-
-    if decompositions.len() > 1 {
-        // Due to the above, the intermediate buffer will never need more than
-        // the second-highest decomposition.
-        let (s_min, s_max) = idwt_buffer_size(decompositions[decompositions.len() - 2].rect)?;
-
-        if scratch_buf.len() < s_min {
-            try_reserve_decode_elements(scratch_buf, s_max)?;
-        }
-    }
-
     // The two finest levels may run as one pass on the pool, which writes
     // only the finer level.
     #[cfg(feature = "parallel")]
@@ -123,6 +108,24 @@ pub(crate) fn apply(
     #[cfg(not(feature = "parallel"))]
     let pair = false;
     let writes = decompositions.len() - usize::from(pair);
+
+    // The coefficient array will always be the one that holds the coefficients
+    // from the highest decomposition. Therefore, reserve as much.
+    let (s_min, s_max) = idwt_buffer_size(decompositions.last().unwrap().rect)?;
+    if prefix.is_none() && output.coefficients.len() < s_min {
+        try_reserve_decode_elements(&mut output.coefficients, s_max)?;
+    }
+
+    if writes > 1 {
+        // Due to the above, the intermediate buffer will never need more than
+        // the level written before the last: the second-highest
+        // decomposition, or the third-highest below a paired pass.
+        let (s_min, s_max) = idwt_buffer_size(decompositions[writes - 2].rect)?;
+
+        if scratch_buf.len() < s_min {
+            try_reserve_decode_elements(scratch_buf, s_max)?;
+        }
+    }
 
     // Determine which buffer we should use first, such that the `coefficients`
     // array will always hold the final values.
@@ -268,6 +271,48 @@ pub(crate) fn apply(
     }
     output.rect = temp_output.rect;
     Ok(())
+}
+
+/// The `f32` IDWT workspace [`apply`] holds at most for a component whose
+/// finest active level is `highest`, above `second` and `third` when it has
+/// them, planned for the pool: the finest level's output, the band scratch,
+/// and the intermediate buffer of the level written before the last. Level
+/// by level, that is `second` with the finest level's band scratch. When
+/// the two finest levels pair (see [`planned_pair_band_scratch_elements`]),
+/// their one pass writes only the finest level, so the buffer holds `third`
+/// and the band scratch is the pair's. A serial decode or a code-block
+/// decoder hook keeps the level passes, so a component whose levels pair is
+/// planned for the larger of both.
+pub(crate) fn planned_workspace_elements(
+    highest: IntRect,
+    [second, third]: [Option<IntRect>; 2],
+    transform: WaveletTransform,
+) -> Result<usize> {
+    let padded = |rect: Option<IntRect>| {
+        rect.map_or(Ok(0), |rect| {
+            idwt_buffer_size(rect).map(|(_, maximum)| maximum)
+        })
+    };
+    let total = |elements: [usize; 3]| {
+        elements
+            .into_iter()
+            .try_fold(0_usize, usize::checked_add)
+            .ok_or(ValidationError::ImageTooLarge)
+    };
+    let output = padded(Some(highest))?;
+    let band_scratch =
+        planned_band_scratch_elements(highest.width() as usize, highest.height() as usize)?;
+    let levels = total([output, padded(second)?, band_scratch])?;
+    let pair_band_scratch = match second {
+        Some(inner) => planned_pair_band_scratch_elements(inner, highest, transform)?,
+        None => None,
+    };
+    match pair_band_scratch {
+        Some(pair_band_scratch) => {
+            Ok(levels.max(total([output, padded(third)?, pair_band_scratch])?))
+        }
+        None => Ok(levels),
+    }
 }
 
 fn apply_i64(

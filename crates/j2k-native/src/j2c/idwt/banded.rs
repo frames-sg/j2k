@@ -103,6 +103,35 @@ pub(crate) fn planned_band_scratch_elements(width: usize, height: usize) -> Resu
     banded_scratch_elements_for_execution(width, height, true)
 }
 
+/// Band scratch the build plan reserves for a component whose two finest
+/// active levels `inner` and `outer`, whose LL band `inner` reconstructs,
+/// `idwt::apply` runs as one pass on the pool: what [`filter_levels_pair`]
+/// grows its scratch to. `None` when the levels do not pair. Planned for
+/// parallel execution, as [`planned_band_scratch_elements`] is.
+pub(crate) fn planned_pair_band_scratch_elements(
+    inner: IntRect,
+    outer: IntRect,
+    transform: WaveletTransform,
+) -> Result<Option<usize>> {
+    #[cfg(feature = "parallel")]
+    {
+        if !pair_runs_on_pool(inner, outer, true) {
+            return Ok(None);
+        }
+        let (width, height) = (outer.width() as usize, outer.height() as usize);
+        let Some(layout) = parallel_strip_layout(width, height, true)? else {
+            return Ok(None);
+        };
+        let steps = lifting_steps(transform);
+        PairScratch::new(inner.width() as usize, width, layout, steps).map(|pair| Some(pair.len))
+    }
+    #[cfg(not(feature = "parallel"))]
+    {
+        let _ = (inner, outer, transform);
+        Ok(None)
+    }
+}
+
 /// Workers that may each hold ring scratch at once.
 #[cfg(feature = "parallel")]
 fn band_workers() -> usize {
@@ -500,26 +529,59 @@ fn filter_levels_pair(
     let Some(layout) = parallel_strip_layout(width, height, true)? else {
         bail!(DecodingError::CodeBlockDecodeFailure);
     };
-    let rows_len = pair_ll_rows(layout.strip_len / width, vertical_steps(outer_level).1)
-        .checked_mul(inner_level.width)
-        .ok_or(ValidationError::ImageTooLarge)?;
-    let per_worker = worker_scratch_elements(width)?
-        .max(worker_scratch_elements(inner_level.width)?)
-        .checked_add(rows_len)
-        .ok_or(ValidationError::ImageTooLarge)?;
-    let scratch_len = per_worker
-        .checked_mul(layout.concurrent_strips)
-        .ok_or(ValidationError::ImageTooLarge)?;
-    try_grow_level_buffer(band_scratch, scratch_len)?;
+    let steps = lifting_steps(outer_level.transform);
+    let scratch = PairScratch::new(inner_level.width, width, layout, steps)?;
+    try_grow_level_buffer(band_scratch, scratch.len)?;
     dispatch!(Level::new(), simd => run_pair_strips(
         simd,
         [inner_level, outer_level],
         target,
         layout.strip_len,
-        &mut band_scratch[..scratch_len],
-        [per_worker, rows_len],
+        &mut band_scratch[..scratch.len],
+        [scratch.per_worker, scratch.rows_len],
     ));
     Ok(())
+}
+
+/// The band scratch of [`filter_levels_pair`] for an outer level `width`
+/// wide on `layout`, whose LL band is a level `inner_width` wide, with
+/// `steps` vertical lifting steps: every concurrent strip's worker holds the
+/// LL rows its strip reads and the wider level's worker scratch.
+#[cfg(feature = "parallel")]
+#[derive(Clone, Copy)]
+struct PairScratch {
+    /// One worker's elements.
+    per_worker: usize,
+    /// The LL rows at the front of each worker's elements.
+    rows_len: usize,
+    /// Every concurrent worker's elements.
+    len: usize,
+}
+
+#[cfg(feature = "parallel")]
+impl PairScratch {
+    fn new(
+        inner_width: usize,
+        width: usize,
+        layout: ParallelStripLayout,
+        steps: usize,
+    ) -> Result<Self> {
+        let rows_len = pair_ll_rows(layout.strip_len / width, steps)
+            .checked_mul(inner_width)
+            .ok_or(ValidationError::ImageTooLarge)?;
+        let per_worker = worker_scratch_elements(width)?
+            .max(worker_scratch_elements(inner_width)?)
+            .checked_add(rows_len)
+            .ok_or(ValidationError::ImageTooLarge)?;
+        let len = per_worker
+            .checked_mul(layout.concurrent_strips)
+            .ok_or(ValidationError::ImageTooLarge)?;
+        Ok(Self {
+            per_worker,
+            rows_len,
+            len,
+        })
+    }
 }
 
 /// Rows of the LL band a strip of `strip_rows` rows reads, at most: its
@@ -646,6 +708,16 @@ fn vertical_steps(level: Level2d<'_>) -> ([(usize, VerticalStep); MAX_HALO_ROWS]
             ],
             HALO_ROWS_97,
         ),
+    }
+}
+
+/// How many vertical lifting steps [`vertical_steps`] gives a level of
+/// `transform`.
+#[cfg(feature = "parallel")]
+const fn lifting_steps(transform: WaveletTransform) -> usize {
+    match transform {
+        WaveletTransform::Reversible53 => HALO_ROWS_53,
+        WaveletTransform::Irreversible97 => HALO_ROWS_97,
     }
 }
 
@@ -1543,6 +1615,10 @@ fn synthesize_row<S: Simd>(
 
 /// The multi-pass 5-3R synthesis of a row's pairs from `start` on into
 /// `tail`, through ghosted copies of the band rows' remaining samples.
+#[expect(
+    clippy::inline_always,
+    reason = "the 5/3 tail is specialized with the row synthesis inside each SIMD dispatch target"
+)]
 #[inline(always)]
 fn synthesize_53_tail<S: Simd>(
     simd: S,
@@ -2287,6 +2363,10 @@ mod tests {
     /// and size.
     #[cfg(feature = "parallel")]
     #[test]
+    #[expect(
+        clippy::similar_names,
+        reason = "paired LL, HL, LH, and HH band names follow JPEG 2000 specification notation"
+    )]
     fn level_pair_matches_two_level_passes() {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(4)
@@ -2358,6 +2438,64 @@ mod tests {
                         .collect::<Vec<_>>(),
                     "{transform:?} {outer_rect:?}"
                 );
+            }
+        }
+    }
+
+    /// The band scratch the build plan charges for two paired levels is the
+    /// scratch their pass grows to, whatever the pool, transform and size.
+    #[cfg(feature = "parallel")]
+    #[test]
+    #[expect(
+        clippy::similar_names,
+        reason = "paired LL, HL, LH, and HH band names follow JPEG 2000 specification notation"
+    )]
+    fn level_pair_band_scratch_is_what_the_plan_charges() {
+        for threads in [2, 3, 4, 8, 18] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("pool");
+            for transform in [
+                WaveletTransform::Reversible53,
+                WaveletTransform::Irreversible97,
+            ] {
+                for (x0, y0, width, height) in [
+                    (0, 0, 256, 300),
+                    (3, 5, 301, 263),
+                    (2, 1, 290, 517),
+                    (0, 0, 640, 1300),
+                    (1, 0, 1031, 777),
+                ] {
+                    let outer_rect = IntRect::from_xywh(x0, y0, width, height);
+                    let inner_rect = packed_band_rects(outer_rect)[0];
+                    let zeros = |rect: IntRect| {
+                        packed_band_rects(rect)
+                            .map(|band| alloc::vec![0.0; (band.width() * band.height()) as usize])
+                    };
+                    let [ll, hl, lh, hh] = zeros(inner_rect);
+                    let [_, outer_hl, outer_lh, outer_hh] = zeros(outer_rect);
+                    let levels = [
+                        Level2d::new(inner_rect, [&ll, &hl, &lh, &hh], transform, 1.25),
+                        Level2d::new(
+                            outer_rect,
+                            [&[], &outer_hl, &outer_lh, &outer_hh],
+                            transform,
+                            1.25,
+                        ),
+                    ];
+                    let label = format!("{threads} threads, {transform:?} {outer_rect:?}");
+                    let mut target =
+                        alloc::vec![0.0; (outer_rect.width() * outer_rect.height()) as usize];
+                    let mut scratch = Vec::new();
+                    let charged = pool.install(|| {
+                        assert!(pair_runs_on_pool(inner_rect, outer_rect, true), "{label}");
+                        filter_levels_pair(levels, &mut target, &mut scratch).expect("level pair");
+                        planned_pair_band_scratch_elements(inner_rect, outer_rect, transform)
+                            .expect("planned scratch")
+                    });
+                    assert_eq!(Some(scratch.len()), charged, "{label}");
+                }
             }
         }
     }
