@@ -69,6 +69,22 @@ Staged workspace version: `0.13.2`.
   decodes, output and peak heap are unchanged, and so are decodes on larger
   pools, where the faults would contend in the kernel. New dependency:
   `bytemuck`.
+- `CpuBatchDecoder` streams a Gray8/RGB8 image's rows only when its region
+  decode can stream them. An image with a channel definition box, or with
+  image or tile offsets, keeps its offset plan, and is rejected up front when
+  that plan exceeds the per-decode bound, as other outputs are; before, it was
+  admitted as streamed but decoded whole component planes. A group whose
+  images decode with inner parallelism no longer flattens their code-block
+  payloads first.
+- `CpuBatchDecoder` with an explicit worker count of two or more decodes a
+  group's streamed Gray8/RGB8 images on a pool of exactly that many threads,
+  so threads that finish their images help the images still running instead
+  of idling: eight 2048 x 2048 RGB images on six workers kept four threads
+  busy before. Every image whose rows stream does so at every worker count,
+  repeated or not. A group of plans that do not stream still decodes on the
+  staged route at one worker, but one image at a time when its flattened
+  code-block payloads would exceed the staging caps, instead of failing the
+  batch. Output is unchanged.
 - Decodes that would exceed a resource limit now fail with
   `J2kError::ResourceLimit { requested, cap, source }` instead of the generic
   `J2kError::NativeDecode`, on every decode route: `J2kDecoder`, the tile
