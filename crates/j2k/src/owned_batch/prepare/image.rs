@@ -54,7 +54,7 @@ pub(super) fn prepare_image(
             .map_or(PreparedCodecPlan::MetadataOnly, PreparedCodecPlan::Htj2k),
     };
     reconcile_codec_plan_metadata(&mut info, &codec_plan)?;
-    let cpu_execution = choose_cpu_execution(&codec_plan);
+    let cpu_execution = choose_cpu_execution(&codec_plan, &info);
     let preparation_depth = codec_plan.preparation_depth();
     let execution_shape = batch_execution_shape(&support, plan, preparation_depth);
     let image = PreparedImage {
@@ -77,9 +77,13 @@ pub(super) fn prepare_image(
 /// Choose the CPU execution from the planned working memory, before any
 /// decode work, with the same accounting the offset plan's execution
 /// enforces. Only an image whose serial execution already exceeds the
-/// per-decode bound is [`CpuExecution::ExceedsDecodeBound`], so the choice
-/// rejects nothing execution could decode; the claim is the parallel peak.
-pub(super) fn choose_cpu_execution(codec_plan: &PreparedCodecPlan) -> CpuExecution {
+/// per-decode bound leaves its offset plan, so every image the plan can
+/// execute keeps it; such an image streams its rows when its output has a
+/// streamed route and is rejected otherwise. The claim is the parallel peak.
+pub(super) fn choose_cpu_execution(
+    codec_plan: &PreparedCodecPlan,
+    info: &BatchGroupInfo,
+) -> CpuExecution {
     let planned = |parallel| match codec_plan {
         PreparedCodecPlan::Classic(plan) => {
             j2k_native::referenced_classic_plan_execution_bytes(plan.cpu_plan(), parallel)
@@ -92,12 +96,17 @@ pub(super) fn choose_cpu_execution(codec_plan: &PreparedCodecPlan) -> CpuExecuti
     if matches!(codec_plan, PreparedCodecPlan::MetadataOnly) {
         return CpuExecution::ComponentPlanes;
     }
+    let exceeds_bound = if streams_rows(info) {
+        CpuExecution::StreamedRows
+    } else {
+        CpuExecution::ExceedsDecodeBound
+    };
     match (planned(false), planned(true)) {
         (
             Err(j2k_native::DecodeError::Validation(j2k_native::ValidationError::ImageTooLarge)),
             _,
-        ) => CpuExecution::ExceedsDecodeBound,
-        (Ok(serial), _) if serial > planned_decode_bound() => CpuExecution::ExceedsDecodeBound,
+        ) => exceeds_bound,
+        (Ok(serial), _) if serial > planned_decode_bound() => exceeds_bound,
         (Ok(_), Ok(bytes)) => CpuExecution::OffsetPlan { bytes },
         // A plan that fits only serially, or a malformed plan, keeps the
         // worst-case claim and reports any error from execution, as before.
@@ -105,6 +114,13 @@ pub(super) fn choose_cpu_execution(codec_plan: &PreparedCodecPlan) -> CpuExecuti
             bytes: crate::batch::allocation::GENERIC_WORKER_CLAIM_BYTES,
         },
     }
+}
+
+/// Gray8 and RGB8 outputs have a streamed route: the region decode hands
+/// over finished rows of 8-bit components. Other outputs keep the bound.
+fn streams_rows(info: &BatchGroupInfo) -> bool {
+    info.sample_type == NativeSampleType::U8
+        && matches!(info.color, BatchColor::Gray | BatchColor::Rgb)
 }
 
 #[cfg(test)]

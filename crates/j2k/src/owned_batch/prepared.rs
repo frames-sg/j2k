@@ -43,8 +43,13 @@ pub(super) enum CpuExecution {
     /// Reparse and decode whole component planes; no offset plan exists.
     ComponentPlanes,
     /// The planned offset-plan execution exceeds the per-decode memory
-    /// bound, so the CPU decoder rejects the image before any decode work.
+    /// bound and the output has no streamed route (not Gray8 or RGB8), so the
+    /// CPU decoder rejects the image before any decode work.
     ExceedsDecodeBound,
+    /// The planned offset-plan execution exceeds the per-decode memory
+    /// bound, so the image streams rows from the full-output region decode,
+    /// whose working memory does not grow with the image.
+    StreamedRows,
 }
 
 impl CpuExecution {
@@ -53,7 +58,12 @@ impl CpuExecution {
     pub(super) const fn claim_bytes(self) -> usize {
         match self {
             Self::OffsetPlan { bytes } => bytes,
-            Self::ComponentPlanes => crate::batch::allocation::GENERIC_WORKER_CLAIM_BYTES,
+            // The streamed route has no planned peak yet; it is claimed as one
+            // worst-case native decode (measured: 95 MiB for a 5661 x 8287
+            // RGB8 scan at default threads).
+            Self::ComponentPlanes | Self::StreamedRows => {
+                crate::batch::allocation::GENERIC_WORKER_CLAIM_BYTES
+            }
             Self::ExceedsDecodeBound => 0,
         }
     }

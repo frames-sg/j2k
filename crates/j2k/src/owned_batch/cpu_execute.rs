@@ -10,9 +10,9 @@ use super::cpu_staged_execute::run_staged_typed_group;
 use super::{
     decode_warnings_for_recovery, retained_inner_parallelism, run_retained_chunks, Arc,
     BatchDecodeOptions, BatchErrorStage, BatchGroupInfo, BatchInfrastructureError, BatchItemError,
-    BatchWorker, CpuBatchGroup, CpuBatchSamples, CpuDecodeParallelism, CpuGroupFastWorkspace,
-    CpuStagedWorkspace, IndexedBatchError, J2kError, NativeSampleType, NonZeroUsize,
-    PreparedBatchGroup, PreparedImage, TileBatchOptions, Vec,
+    BatchWorker, CpuBatchGroup, CpuBatchSamples, CpuDecodeParallelism, CpuExecution,
+    CpuGroupFastWorkspace, CpuStagedWorkspace, IndexedBatchError, J2kError, NativeSampleType,
+    NonZeroUsize, PreparedBatchGroup, PreparedImage, TileBatchOptions, Vec,
 };
 use crate::batch::admission::{hold_at_least, BatchAllocationBudget};
 use crate::batch::allocation::try_vec_with_capacity;
@@ -37,7 +37,14 @@ pub(super) fn decode_cpu_group(
     // workers. When workers may parallelize inside one image, each prepared
     // plan decodes faster on its own: its code-block rows and wavelet bands
     // spread over every core, still without reparsing.
-    let has_flattened_payloads = fast_workspace.prepare_group(group)?
+    // Streamed images never hold whole-image scratch, so a group with one
+    // never enters the staged route.
+    let streams_rows = group
+        .images
+        .iter()
+        .any(|image| image.cpu_execution() == CpuExecution::StreamedRows);
+    let has_flattened_payloads = !streams_rows
+        && fast_workspace.prepare_group(group)?
         && retained_inner_parallelism(group.images.len(), tile_options)?
             == CpuDecodeParallelism::Serial;
     let samples_per_image =
