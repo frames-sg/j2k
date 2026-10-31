@@ -391,25 +391,21 @@ pub(super) fn decode_tile_rows<'a>(
     };
     // Rows reconstruct in batches, charged by the region's width (see
     // `roi_idwt_peak_elements`): two of them with a reader per component of
-    // an HTJ2K tile, so one finishes while the next reconstructs. A classic
-    // tile holds one batch, of half the rows when its band rings are deep.
-    // One reader holds one short batch, which it finishes before it
-    // reconstructs the next.
+    // an HTJ2K tile, so one finishes while the next reconstructs; a classic
+    // tile's readers wait on Tier-1 instead, and hold one batch of half the
+    // rows, with deep band rings when they read whole rows. One reader holds
+    // one short batch, which it finishes before it reconstructs the next.
+    let pipelined = readers > 1 && coding == CodeBlockCoding::HighThroughput;
     let batch = streamed_batch_rows(
         region.width() as usize,
         copy.height() as usize,
-        storage.deep_band_rings,
+        readers > 1 && !pipelined,
         readers == 1,
     );
-    let batches = if readers > 1 && coding == CodeBlockCoding::HighThroughput {
-        2
-    } else {
-        1
-    };
     let scratch_len = (copy.width() as usize)
         .checked_mul(components)
         .and_then(|samples| samples.checked_mul(batch))
-        .and_then(|samples| samples.checked_mul(batches))
+        .and_then(|samples| samples.checked_mul(if pipelined { 2 } else { 1 }))
         .ok_or(ValidationError::ImageTooLarge)?;
     let (mut buffer, ring_lens) =
         banded_tier1::take_line_buffer(tile_ctx, storage, &line_plans, scratch_len)?;
@@ -537,14 +533,15 @@ pub(super) fn decode_tile_rows<'a>(
     }
 }
 
-/// Whether a tile streaming its rows from pool bands holds deeper band rings
-/// (see `DecompositionStorage::deep_band_rings`): a classic tile of several
-/// components on a pool of [`MIN_CLASSIC_SYNTHESIS_THREADS`] threads or
-/// more, which reconstructs each on its own reader (see
+/// Whether a tile streaming its rows from pool bands may hold deeper band
+/// rings (see `DecompositionStorage::deep_band_rings`): a classic tile of
+/// several components on a pool of [`MIN_CLASSIC_SYNTHESIS_THREADS`] threads
+/// or more, which reconstructs each on its own reader (see
 /// [`parallel_synthesis`]). Its readers wait on classic Tier-1, which more
-/// bands in flight keep busier; the memory comes from holding a batch of
-/// half the rows. HTJ2K bands keep up with the shallower rings, and its
-/// readers gain more from the second batch.
+/// bands in flight keep busier when it reads whole rows (see
+/// [`reads_whole_rows`]); it holds one batch of rows instead of two. HTJ2K
+/// bands keep up with the shallower rings, and its readers gain more from
+/// the second batch.
 pub(super) fn deep_rings(tile: &Tile<'_>) -> bool {
     tile.component_infos.len() > 1
         && rayon::current_num_threads() >= MIN_CLASSIC_SYNTHESIS_THREADS
@@ -554,6 +551,24 @@ pub(super) fn deep_rings(tile: &Tile<'_>) -> bool {
                 .parameters
                 .code_block_style
                 .uses_high_throughput_block_coding()
+        })
+}
+
+/// Whether a tile reads whole rows at full resolution: no resolution level
+/// skipped, and every sub-band window the IDWT reads spans its sub-band. Only
+/// such tiles hold deep band rings: a reduced or narrower read decodes as
+/// fast without the extra band in every ring.
+pub(super) fn reads_whole_rows(header: &Header<'_>, storage: &DecompositionStorage<'_>) -> bool {
+    header.skipped_resolution_levels == 0
+        && storage.roi_plan.as_ref().is_some_and(|plan| {
+            storage
+                .sub_bands
+                .iter()
+                .enumerate()
+                .all(|(index, sub_band)| {
+                    plan.sub_band_window(index)
+                        .is_none_or(|window| window.width() == sub_band.rect.width())
+                })
         })
 }
 

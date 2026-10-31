@@ -122,8 +122,9 @@ pub(crate) struct DecompositionStorage<'a> {
     /// `coefficients` then hold a ring of bands.
     pub(crate) parallel_bands: bool,
     /// Whether the band rings of `parallel_bands` hold one band more at
-    /// every level, for a classic tile that streams its rows from a reader
-    /// per component (see [`parallel_bands::deep_rings`]).
+    /// every level, for a classic tile that streams whole rows at full
+    /// resolution from a reader per component (see
+    /// [`parallel_bands::deep_rings`] and [`parallel_bands::reads_whole_rows`]).
     pub(crate) deep_band_rings: bool,
     /// Whether a tile streaming its rows from `parallel_bands` reconstructs
     /// them through one reader whatever its pool's workers (see

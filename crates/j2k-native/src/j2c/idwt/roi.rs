@@ -26,7 +26,7 @@ const STREAMED_BATCH_SAMPLES: usize = 2 * 1024 * 1024;
 /// samples.
 const STREAMED_MIN_BATCHES: usize = 4;
 
-/// Rows a batch of a tile with deep band rings keeps at least when it is
+/// Rows a batch of a tile holding one batch keeps at least when it is
 /// halved: halving the 116-row batches of an 18000-wide tile cost 2 to 5%.
 const STREAMED_DEEP_MIN_ROWS: usize = 128;
 
@@ -36,21 +36,22 @@ const STREAMED_DEEP_MIN_ROWS: usize = 128;
 const STREAMED_ONE_READER_ROWS: usize = 32;
 
 /// Rows of each component a tile streaming from pool bands reconstructs at
-/// once, for `height` rows of `width` samples. A tile whose band rings are
-/// deep holds one batch, which is transformed before the next one
-/// reconstructs, so its batches take half the rows while that leaves at
-/// least `STREAMED_DEEP_MIN_ROWS`: as fast, with half the rows held. A tile
-/// with `one_reader` holds one batch of at most `STREAMED_ONE_READER_ROWS`.
+/// once, for `height` rows of `width` samples. A tile with a reader per
+/// component that holds `one_batch` (a classic tile; HTJ2K tiles pipeline
+/// two) transforms it before the next one reconstructs, so its batches take
+/// half the rows while that leaves at least `STREAMED_DEEP_MIN_ROWS`: as
+/// fast, with half the rows held. A tile with `one_reader` holds one batch
+/// of at most `STREAMED_ONE_READER_ROWS`.
 pub(crate) fn streamed_batch_rows(
     width: usize,
     height: usize,
-    deep_band_rings: bool,
+    one_batch: bool,
     one_reader: bool,
 ) -> usize {
     let rows = STREAMED_BATCH_SAMPLES / width.max(1);
     let rows = if one_reader {
         rows.min(STREAMED_ONE_READER_ROWS)
-    } else if deep_band_rings && rows / 2 >= STREAMED_DEEP_MIN_ROWS {
+    } else if one_batch && rows / 2 >= STREAMED_DEEP_MIN_ROWS {
         rows / 2
     } else {
         rows

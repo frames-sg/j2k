@@ -916,8 +916,10 @@ fn prepare_region_storage(
         (storage.banded_tier1 || storage.parallel_bands) && tile_ctx.stream_rows;
     #[cfg(feature = "parallel")]
     {
-        storage.deep_band_rings =
-            storage.parallel_bands && storage.lockstep_lines && parallel_bands::deep_rings(tile);
+        storage.deep_band_rings = storage.parallel_bands
+            && storage.lockstep_lines
+            && parallel_bands::deep_rings(tile)
+            && parallel_bands::reads_whole_rows(header, storage);
         storage.one_synthesis_reader =
             storage.parallel_bands && storage.lockstep_lines && parallel_bands::one_reader(tile);
     }
