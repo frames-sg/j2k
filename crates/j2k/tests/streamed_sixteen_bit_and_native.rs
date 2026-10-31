@@ -460,10 +460,11 @@ fn deep_samples_decode_to_their_values_clamped_to_sixteen_bits() {
     }
 }
 
-/// Tiles whose coarse resolutions are empty while finer ones are not keep
-/// the planes for 16-bit and native component output too.
+/// Tiles whose coarse resolutions are empty while finer ones are not stream
+/// past a lowered budget for 16-bit and native component output too, with
+/// the planes route's bytes.
 #[test]
-fn tiles_with_empty_coarse_levels_keep_the_planes() {
+fn tiles_with_empty_coarse_levels_stream_as_the_planes_decode() {
     let gray: &[u8] = include_bytes!(
         "../../j2k-test-support/fixtures/empty_coarse_levels/openjpeg_gray_8x6_tile8x5_53.j2k"
     );

@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{full_image_route, FullImageRoute, PlanesBudget, RouteRequest};
-use crate::backend::image_at_scale;
-use crate::decode::{native_components_route, native_region_components_route, NativeRoute};
+use crate::backend::{image_at_scale, Image};
+use crate::decode::{
+    decode_full_image_into_with_native_context, decode_native_components_with_native_context,
+    native_components_route, native_region_components_route, NativeRoute,
+};
 use crate::DecodeSettings;
 use j2k_core::{Downscale, PixelFormat, Rect};
 use j2k_native::{encode, CpuDecodeParallelism, EncodeOptions};
@@ -139,25 +142,108 @@ fn sixteen_bit_output_streams_when_its_planes_or_their_pack_pass_the_budget() {
     );
 }
 
-/// A tile whose coarse resolutions are empty while finer ones are not keeps
-/// the planes, which reconstruct it, whatever the budget.
+/// A native decoder context for `parallelism`.
+fn context<'a>(parallelism: CpuDecodeParallelism) -> DecoderContext<'a> {
+    let mut context = DecoderContext::default();
+    context.set_cpu_decode_parallelism(parallelism);
+    context
+}
+
+/// `image` decoded on `route` into a tight `fmt` buffer.
+fn decode_on(
+    image: &Image<'_>,
+    parallelism: CpuDecodeParallelism,
+    fmt: PixelFormat,
+    route: &FullImageRoute,
+) -> Vec<u8> {
+    let stride = image.width() as usize * fmt.bytes_per_pixel();
+    let mut out = vec![0; stride * image.height() as usize];
+    decode_full_image_into_with_native_context(
+        image,
+        &mut context(parallelism),
+        &mut out,
+        stride,
+        fmt,
+        route,
+    )
+    .unwrap_or_else(|error| panic!("{fmt:?} {parallelism:?} {route:?}: {error:?}"));
+    out
+}
+
+/// A tile whose coarse resolutions are empty while finer ones are not (a
+/// one-sample tile row or column at an odd position, with two levels)
+/// streams like any other, as the region IDWTs reconstruct it from its first
+/// level with samples: the planes floor plans it, a budget of zero puts
+/// every output on the streamed route, and that route writes what the planes
+/// route writes under a raised budget. (These images are too small for any
+/// budget but zero to stream them: their header estimate stays far below.)
 #[test]
-fn tiles_with_empty_coarse_levels_keep_the_planes() {
+fn tiles_with_empty_coarse_levels_stream_past_the_budget() {
     let gray: &[u8] = include_bytes!(
         "../../../../j2k-test-support/fixtures/empty_coarse_levels/openjpeg_gray_8x6_tile8x5_53.j2k"
     );
     let rgb: &[u8] = include_bytes!(
         "../../../../j2k-test-support/fixtures/empty_coarse_levels/openjpeg_rgb_6x6_tile5x5_97.j2k"
     );
-    for (bytes, fmt) in [(gray, PixelFormat::Gray8), (rgb, PixelFormat::Rgb8)] {
-        let image =
-            image_at_scale(bytes, DecodeSettings::default(), Downscale::None).expect("image");
-        assert_eq!(image.full_decode_planes_floor(0).expect("plan"), None);
-        for parallelism in [CpuDecodeParallelism::Serial, CpuDecodeParallelism::Auto] {
-            assert_eq!(
-                full_image_route(&image, request(fmt, 0, parallelism)),
-                FullImageRoute::Planes
-            );
+    for (bytes, formats) in [
+        (gray, [PixelFormat::Gray8, PixelFormat::Gray16]),
+        (rgb, [PixelFormat::Rgb8, PixelFormat::Rgb16]),
+    ] {
+        for scale in [Downscale::None, Downscale::Half] {
+            let image = image_at_scale(bytes, DecodeSettings::default(), scale).expect("image");
+            assert!(floor(bytes, scale) > 0, "{scale:?}");
+            for parallelism in [CpuDecodeParallelism::Serial, CpuDecodeParallelism::Auto] {
+                let label = format!("{:?} {scale:?} {parallelism:?}", image.color_space());
+                for fmt in formats {
+                    let streamed = full_image_route(&image, request(fmt, 0, parallelism));
+                    assert_eq!(streamed, FullImageRoute::StreamedRegion, "{label} {fmt:?}");
+                    let planes = full_image_route(&image, request(fmt, usize::MAX, parallelism));
+                    assert_eq!(planes, FullImageRoute::Planes, "{label} {fmt:?}");
+                    assert_eq!(
+                        decode_on(&image, parallelism, fmt, &streamed),
+                        decode_on(&image, parallelism, fmt, &planes),
+                        "{label} {fmt:?}"
+                    );
+                }
+                let native = |route| {
+                    let decoded = decode_native_components_with_native_context(
+                        &image,
+                        &mut context(parallelism),
+                        None,
+                        route,
+                    )
+                    .unwrap_or_else(|error| panic!("{label} {route:?}: {error:?}"));
+                    let planes = decoded.into_parts().planes;
+                    planes
+                        .into_iter()
+                        .map(|plane| {
+                            let plane = plane.into_parts();
+                            (
+                                plane.data,
+                                plane.dimensions,
+                                plane.bit_depth,
+                                plane.signed,
+                                plane.bytes_per_sample,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(
+                    native_components_route(&image, 0),
+                    NativeRoute::Rows,
+                    "{label}"
+                );
+                assert_eq!(
+                    native_components_route(&image, usize::MAX),
+                    NativeRoute::Planes,
+                    "{label}"
+                );
+                assert_eq!(
+                    native(NativeRoute::Rows),
+                    native(NativeRoute::Planes),
+                    "{label}"
+                );
+            }
         }
     }
 }

@@ -556,10 +556,10 @@ impl<'a> Image<'a> {
     /// budget.
     ///
     /// `None` when the region decode could not stream (see
-    /// [`Self::region_decode_streams_rows`], or a tile whose coarse
-    /// resolutions are empty while finer ones are not), or when the header
-    /// alone puts the planes and one tile's coefficients and IDWT buffers
-    /// within half of `budget`.
+    /// [`Self::region_decode_streams_rows`], or a tile with an inverse MCT
+    /// over fewer than three components or over wavelets that differ), or
+    /// when the header alone puts the planes and one tile's coefficients and
+    /// IDWT buffers within half of `budget`.
     ///
     /// # Errors
     ///

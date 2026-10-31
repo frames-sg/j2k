@@ -169,10 +169,11 @@ fn streamed_full_image_matches_planes() {
 }
 
 /// Tiles whose coarse resolutions are empty while finer ones are not (a
-/// one-sample tile row or column at an odd position, with two levels) keep
-/// the planes route, which reconstructs them, however low the budget.
+/// one-sample tile row or column at an odd position, with two levels)
+/// stream past a lowered budget like any other, and the streamed route
+/// writes what the planes route writes.
 #[test]
-fn tiles_with_empty_coarse_levels_keep_the_planes() {
+fn tiles_with_empty_coarse_levels_stream_as_the_planes_decode() {
     let gray: &[u8] = include_bytes!(
         "../../j2k-test-support/fixtures/empty_coarse_levels/openjpeg_gray_8x6_tile8x5_53.j2k"
     );

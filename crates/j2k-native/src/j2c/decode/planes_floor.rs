@@ -24,7 +24,7 @@ use crate::j2c::codestream::WaveletTransform;
 use crate::j2c::idwt::planned_workspace_elements;
 use crate::j2c::rect::IntRect;
 use crate::j2c::tag_tree::TagNode;
-use crate::j2c::tile::{self, ComponentTile, ResolutionTile, Tile};
+use crate::j2c::tile::{self, ResolutionTile, Tile};
 use crate::j2c::ComponentData;
 use crate::math::{SimdBuffer, SIMD_WIDTH};
 use crate::reader::BitReader;
@@ -33,13 +33,11 @@ use crate::reader::BitReader;
 /// least, when its full-image region decode could stream its rows instead:
 /// the image streams as far as its main header says (the caller checks
 /// `Image::region_decode_streams_rows`), and every tile has its components
-/// at full sampling, an inverse MCT only over three or more components whose
-/// first three share a wavelet (as `streams_rows` requires), and no
-/// tile-component whose coarse resolutions are empty while finer ones are
-/// not, which the region IDWTs do not reconstruct. `None` when it could not,
-/// or when the header alone puts the planes, one tile's coefficients and its
-/// IDWT buffers within half of `budget`, which leaves the planes decode far
-/// from it unless its metadata is unusually large.
+/// at full sampling and an inverse MCT only over three or more components
+/// whose first three share a wavelet (as `streams_rows` requires). `None`
+/// when it could not, or when the header alone puts the planes, one tile's
+/// coefficients and its IDWT buffers within half of `budget`, which leaves
+/// the planes decode far from it unless its metadata is unusually large.
 ///
 /// `retained_image_bytes` is what the image holds while it decodes, the
 /// tile parse's baseline. Errors are the tile parse's, which the planes
@@ -62,7 +60,7 @@ pub(crate) fn full_decode_planes_floor(
     let skipped = header.skipped_resolution_levels;
     let mut tile_floor = 0_usize;
     for tile in tiles.iter() {
-        if !tile_streams_rows(tile, header.component_infos.len(), skipped) {
+        if !tile_streams_rows(tile, header.component_infos.len()) {
             return Ok(None);
         }
         tile_floor = tile_floor.max(tile_workspace_floor(tile, skipped));
@@ -121,9 +119,9 @@ fn header_estimate(header: &Header<'_>, planes: usize) -> usize {
     )
 }
 
-/// The tile-level conditions of `streams_rows` and the region IDWTs that
-/// `tile`'s header settles.
-fn tile_streams_rows(tile: &Tile<'_>, components: usize, skipped: u8) -> bool {
+/// The tile-level conditions of `streams_rows` that `tile`'s header
+/// settles.
+fn tile_streams_rows(tile: &Tile<'_>, components: usize) -> bool {
     let infos = &tile.component_infos;
     infos.len() == components
         && infos.iter().all(|component| {
@@ -136,26 +134,6 @@ fn tile_streams_rows(tile: &Tile<'_>, components: usize, skipped: u8) -> bool {
                 && infos[1..3].iter().all(|component| {
                     component.wavelet_transform() == infos[0].wavelet_transform()
                 })))
-        && !tile
-            .component_tiles()
-            .any(|component_tile| has_empty_coarse_resolution(&component_tile, skipped))
-}
-
-/// Whether a resolution the decode reconstructs, up to its output, is empty
-/// while the component tile is not: a one-sample tile row or column at an
-/// odd position, say, has no samples at its coarsest levels.
-fn has_empty_coarse_resolution(component_tile: &ComponentTile<'_>, skipped: u8) -> bool {
-    if component_tile.rect.is_empty() {
-        return false;
-    }
-    let output_resolution = component_tile
-        .component_info
-        .num_decomposition_levels()
-        .saturating_sub(skipped);
-    component_tile
-        .resolution_tiles()
-        .take(usize::from(output_resolution) + 1)
-        .any(|resolution_tile| resolution_tile.rect.is_empty())
 }
 
 /// What `build` charges for `tile` at least beside the planes: its records,
