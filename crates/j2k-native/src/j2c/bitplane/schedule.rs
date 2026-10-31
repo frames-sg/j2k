@@ -219,6 +219,12 @@ pub(super) fn handle_packed_arithmetic_coding_passes(
     run_arithmetic_coding_passes::<true>(start, end, ctx, decoder, observer)
 }
 
+/// A local that makes its function realign the stack pointer to 4 KiB; see
+/// [`run_arithmetic_coding_passes`].
+#[cfg(all(target_arch = "aarch64", feature = "std"))]
+#[repr(align(4096))]
+struct PageAlignedFrame(u8);
+
 /// Arithmetic passes over the packed column words (`PACKED_COLUMNS`) or the
 /// per-coefficient arrays; decisions and contexts are identical.
 #[cfg_attr(
@@ -236,6 +242,21 @@ fn run_arithmetic_coding_passes<const PACKED_COLUMNS: bool>(
     decoder: &mut ArithmeticDecoder<'_>,
     observer: &mut impl J2kDecodeObserver,
 ) -> Option<()> {
+    // On AArch64 the pass loops reload spilled registers in pairs (`ldp`, 16
+    // bytes, 8-byte aligned), some once per symbol. Wherever the stack put
+    // such a pair across a page boundary (16 KiB pages on Apple silicon),
+    // every reload was a page-split load and the passes ran ~45% slower, at
+    // stack depths set by the caller or, on pool threads, by the build. A
+    // 4 KiB-aligned local realigns this frame to 4 KiB, which fixes where
+    // the spills sit within a page instead of leaving it to the caller's
+    // stack depth; they sit below the anchor, inside one 4 KiB block. The
+    // frame grows by up to 12 KiB of stack, so bare-metal builds keep the
+    // old frame. x86-64 spills single aligned registers, which cannot split.
+    #[cfg(all(target_arch = "aarch64", feature = "std"))]
+    let frame_anchor = PageAlignedFrame(0);
+    #[cfg(all(target_arch = "aarch64", feature = "std"))]
+    core::hint::black_box(&frame_anchor.0);
+
     for coding_pass in start..end {
         let current_bitplane = coding_pass.div_ceil(3);
         ctx.current_bit_position = ctx.bitplanes - 1 - current_bitplane;
