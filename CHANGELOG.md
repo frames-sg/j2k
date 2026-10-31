@@ -24,6 +24,18 @@ and stale roadmap entries have been removed from the public documentation set.
   term the charge grows to match; elsewhere it is unchanged and the IDWT
   holds less within it (a 1024 x 768 gray image on 4 threads: 3.9 MB in
   place of 4.5 MB, against a 4.1 MB charge). Output is unchanged.
+- Decodes that would exceed a resource limit now fail with
+  `J2kError::ResourceLimit { requested, cap, source }` instead of the generic
+  `J2kError::NativeDecode`, on every decode route: `J2kDecoder`, the tile
+  batch functions (inside `TileBatchError::Tile`) and the owned batch API
+  (inside `BatchItemError::Codec`). `requested` and `cap` are the live bytes
+  and the cap when the native decoder knows them (`AllocationTooLarge`), and
+  `None` for `ImageTooLarge`. Callers can tell these apart from invalid input
+  and unsupported features, and retry with a smaller request such as a region
+  or a reduced resolution. The display text and the source chain keep the
+  native error. `j2k_native::DecodeError::classify` reports the same class as
+  `DecodeErrorClass::ResourceLimit`. Both enums are `#[non_exhaustive]`;
+  host allocator failures keep their previous classification.
 - x86-64 RGB8 decodes of 9/7 images round and pack the inverse ICT output with
   the runtime SIMD level (AVX2 where present) instead of a scalar library
   call per sample: the centered rounding of the inverse MCT runs eight
