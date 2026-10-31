@@ -60,6 +60,12 @@ Staged workspace version: `0.13.2`.
   Staged windows are admitted by planned execution memory, and an admission
   claim that cannot fit beside the shared plan fails instead of waiting
   indefinitely. Successful output is unchanged.
+- Region decodes of a tile whose coarse resolutions are empty while finer
+  ones are not (a one-sample tile row or column at an odd position with two
+  or more levels) reconstruct it from the first level that has samples, as
+  full-image decodes do. Before, 8-bit region decodes of such tiles failed
+  with `IncompletePlaneStore` or `CodeBlockDecodeFailure`, and 16-bit and
+  component-plane region decodes returned mid-gray samples for them.
 - x86-64 RGB8 decodes of 9/7 images round and pack the inverse ICT output with
   the runtime SIMD level (AVX2 where present) instead of a scalar library
   call per sample: the centered rounding of the inverse MCT runs eight
@@ -133,6 +139,10 @@ Staged workspace version: `0.13.2`.
   batch of rows instead of two. On an 18000 x 12000 RGB image, 1024 x 1024
   regions and overviews at 1/8 and 1/16 scale decode 4 to 6% faster at 18
   threads, with less peak heap.
+- Those tiles reconstruct half as many rows at a time, while that leaves
+  at least 128 rows, since they hold only one batch. A full-image region
+  decode of a 5661 x 8287 RGB image to RGB8 peaks 12 MiB (12%) lower at 18
+  threads, at the same speed.
 
 ## [0.13.1] - 2026-10-29
 
