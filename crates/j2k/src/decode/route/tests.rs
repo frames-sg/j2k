@@ -216,9 +216,8 @@ fn tiles_at_once_need_a_busy_tile_for_every_worker() {
     assert_eq!(workers(2048, 6), None);
 }
 
-/// Without a fixed budget, reduced untiled three-component images stream
-/// (HTJ2K ones on a pool), while gray, reduced tiled and small
-/// full-resolution images keep the planes.
+/// Without a fixed budget, tiny reduced images, gray, reduced tiled and
+/// small full-resolution images keep the planes.
 #[test]
 fn the_default_streams_where_streaming_measured_faster() {
     let options = |use_ht_block_coding| EncodeOptions {
@@ -254,15 +253,15 @@ fn the_default_streams_where_streaming_measured_faster() {
     for parallelism in [CpuDecodeParallelism::Serial, CpuDecodeParallelism::Auto] {
         for scale in [Downscale::Half, Downscale::Quarter] {
             for fmt in [PixelFormat::Rgb8, PixelFormat::Rgba8, PixelFormat::Gray8] {
-                assert!(
-                    default(&classic, scale, fmt, 3, parallelism).streams(),
+                // 48 x 40 and 24 x 20 outputs are below 256 x 256.
+                assert_eq!(
+                    default(&classic, scale, fmt, 3, parallelism),
+                    FullImageRoute::Planes,
                     "{scale:?} {fmt:?} {parallelism:?}"
                 );
-                let pool = parallelism == CpuDecodeParallelism::Auto
-                    && j2k_native::cpu_decode_pool_threads() >= 2;
                 assert_eq!(
-                    default(&ht, scale, fmt, 3, parallelism).streams(),
-                    pool,
+                    default(&ht, scale, fmt, 3, parallelism),
+                    FullImageRoute::Planes,
                     "{scale:?} {fmt:?} {parallelism:?}"
                 );
             }
@@ -384,10 +383,11 @@ fn tiles_at_once_report_the_first_failing_tile() {
     }
 }
 
-/// Full-resolution untiled classic images stream from a megapixel and 4 coded
-/// bits per pixel, on 2 to 11 pool threads.
+/// Full-resolution classic images stream from 4 coded bits per pixel on 2
+/// to 11 pool threads from 512 x 512 samples, and on larger pools too below
+/// 2^19 samples.
 #[test]
-fn full_resolution_images_stream_when_tier1_bound_on_a_mid_sized_pool() {
+fn full_resolution_images_stream_when_tier1_bound() {
     use super::full_resolution_streams;
     let mosaic = 4096 * 2048;
     // 11 MB lossless and 2.2 MB at 2 bits per pixel.
@@ -401,6 +401,46 @@ fn full_resolution_images_stream_when_tier1_bound_on_a_mid_sized_pool() {
     }
     assert!(full_resolution_streams(mosaic, 11_104_128, 2));
     assert!(full_resolution_streams(mosaic, 11_104_128, 11));
-    // Below a megapixel.
-    assert!(!full_resolution_streams(1000 * 1000, 2_000_000, 6));
+    // 768 x 512 at 9.6 and 512 x 512 at 6.6 bits per pixel stream on any
+    // pool, 4096 x 1024 at 5.9 only below 12 threads.
+    for threads in [2, 6, 12, 18] {
+        assert!(
+            full_resolution_streams(768 * 512, 472_804, threads),
+            "{threads}"
+        );
+        assert!(
+            full_resolution_streams(512 * 512, 217_619, threads),
+            "{threads}"
+        );
+    }
+    assert!(full_resolution_streams(4096 * 1024, 3_114_650, 6));
+    assert!(!full_resolution_streams(4096 * 1024, 3_114_650, 12));
+    assert!(!full_resolution_streams(768 * 512, 472_804, 1));
+    // Below 512 x 512, and 512 x 512 tiles at 2 bits per pixel.
+    assert!(!full_resolution_streams(500 * 500, 250_000, 6));
+    assert!(!full_resolution_streams(512 * 512, 64_947, 6));
+}
+
+/// Reduced decodes stream from a 1024 x 512 output on any pool (HTJ2K on
+/// two threads or more); smaller classic outputs from 256 x 256 on 2 to 11
+/// pool threads.
+#[test]
+fn reduced_decodes_stream_when_large_or_on_a_mid_sized_pool() {
+    use super::reduced_streams;
+    let (large, small) = (1024 * 512, 384 * 256);
+    for threads in [1, 6, 18] {
+        assert!(reduced_streams(large, false, threads), "{threads}");
+        assert!(!reduced_streams(small, true, threads), "{threads}");
+    }
+    assert!(!reduced_streams(large, true, 1));
+    for threads in [2, 6, 11] {
+        assert!(reduced_streams(large, true, threads), "{threads}");
+        assert!(reduced_streams(small, false, threads), "{threads}");
+    }
+    for threads in [1, 12, 18] {
+        assert!(!reduced_streams(small, false, threads), "{threads}");
+    }
+    // 256 x 256 streams on 6 threads, 192 x 128 keeps the planes.
+    assert!(reduced_streams(256 * 256, false, 6));
+    assert!(!reduced_streams(192 * 128, false, 6));
 }
