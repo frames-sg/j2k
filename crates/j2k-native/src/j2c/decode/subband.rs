@@ -234,7 +234,7 @@ pub(super) fn decode_sub_band_bitplanes(
 }
 
 /// Where `code_block` lands in `sub_band`'s stored rectangle.
-fn stored_placement(code_block: &CodeBlock, sub_band: &SubBand) -> BlockPlacement {
+pub(super) fn stored_placement(code_block: &CodeBlock, sub_band: &SubBand) -> BlockPlacement {
     BlockPlacement::new(code_block.rect, sub_band.storage_rect)
 }
 

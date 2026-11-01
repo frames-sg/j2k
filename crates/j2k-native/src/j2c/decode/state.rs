@@ -253,6 +253,10 @@ pub(crate) struct TileDecodeContext {
     pub(crate) bit_plane_decode_buffers: BitPlaneDecodeBuffers,
     /// A reusable context for decoding HTJ2K code blocks.
     pub(crate) ht_block_decode_context: HtBlockDecodeContext,
+    /// Scratch an HTJ2K code-block that the sub-band stores only part of
+    /// decodes into before its stored part is copied out, sized with the
+    /// serial Tier-1 workspace.
+    pub(crate) ht_clipped_block_scratch: Vec<f32>,
     #[cfg(feature = "parallel")]
     pub(in crate::j2c::decode) ht_task_workspaces: Vec<workspace::HtTaskWorkspace>,
     /// One classic workspace per worker of the tile-wide route.
@@ -420,6 +424,7 @@ impl TileDecodeContext {
         self.bit_plane_decode_context = BitPlaneDecodeContext::default();
         self.bit_plane_decode_buffers = BitPlaneDecodeBuffers::default();
         self.ht_block_decode_context = HtBlockDecodeContext::default();
+        self.ht_clipped_block_scratch = Vec::new();
         #[cfg(feature = "parallel")]
         {
             self.ht_task_workspaces = Vec::new();
@@ -432,9 +437,15 @@ impl TileDecodeContext {
         let classic_bytes = self.bit_plane_decode_context.allocated_bytes()?;
         let buffer_bytes = self.bit_plane_decode_buffers.allocated_bytes()?;
         let ht_bytes = self.ht_block_decode_context.allocated_bytes()?;
+        let clipped_bytes = self
+            .ht_clipped_block_scratch
+            .capacity()
+            .checked_mul(size_of::<f32>())
+            .ok_or(ValidationError::ImageTooLarge)?;
         classic_bytes
             .checked_add(buffer_bytes)
             .and_then(|bytes| bytes.checked_add(ht_bytes))
+            .and_then(|bytes| bytes.checked_add(clipped_bytes))
             .ok_or(ValidationError::ImageTooLarge.into())
     }
 

@@ -2,15 +2,16 @@
 
 //! One active-tile budget for serial Tier-1 contexts and copied segment scratch.
 
-use super::subband::code_block_required_by_index;
+use super::subband::{code_block_required_by_index, stored_placement};
 use super::{
-    CodeBlock, DecodeAllocationBudget, DecompositionStorage, Header, Result, Tile,
+    CodeBlock, DecodeAllocationBudget, DecompositionStorage, Header, Result, SubBand, Tile,
     TileDecodeContext,
 };
 use crate::error::{DecodingError, ValidationError};
 use crate::j2c::bitplane::classic_decode_workspace_bytes;
 use crate::j2c::build::CodeBlockCoding;
 use crate::j2c::ht_block_decode::ht_decode_workspace_bytes;
+use crate::try_resize_decode_elements;
 use core::mem::size_of;
 use core::ops::Range;
 
@@ -27,6 +28,7 @@ struct Tier1Requirements {
     ht_width: u32,
     ht_height: u32,
     ht_data_bytes: usize,
+    ht_clipped_samples: usize,
     has_classic: bool,
     has_ht: bool,
 }
@@ -75,11 +77,24 @@ impl Tier1Requirements {
     fn observe_ht(
         &mut self,
         code_block: &CodeBlock,
+        sub_band: &SubBand,
         storage: &DecompositionStorage<'_>,
     ) -> Result<()> {
         self.has_ht = true;
-        self.ht_width = self.ht_width.max(code_block.rect.width());
-        self.ht_height = self.ht_height.max(code_block.rect.height());
+        let (width, height) = (code_block.rect.width(), code_block.rect.height());
+        self.ht_width = self.ht_width.max(width);
+        self.ht_height = self.ht_height.max(height);
+        // A block decoding straight to samples writes all of them, so one
+        // the sub-band stores only part of needs scratch.
+        if cfg!(feature = "simd")
+            && code_block.number_of_coding_passes != 0
+            && !stored_placement(code_block, sub_band).is_whole(width, height)
+        {
+            let samples = (width as usize)
+                .checked_mul(height as usize)
+                .ok_or(ValidationError::ImageTooLarge)?;
+            self.ht_clipped_samples = self.ht_clipped_samples.max(samples);
+        }
         if code_block.number_of_coding_passes != 0 {
             let (cleanup_bytes, refinement_bytes) =
                 crate::j2c::ht_block_decode::selected_code_block_segment_lengths(
@@ -112,6 +127,7 @@ impl Tier1Requirements {
                 .checked_add(ht_decode_workspace_bytes(self.ht_width, self.ht_height)?)
                 .ok_or(ValidationError::ImageTooLarge)?;
             include_elements::<u8>(&mut bytes, self.ht_data_bytes)?;
+            include_elements::<f32>(&mut bytes, self.ht_clipped_samples)?;
         }
         Ok(bytes)
     }
@@ -146,6 +162,13 @@ pub(super) fn prepare_tier1_workspace(
                 requirements.ht_height,
                 requirements.ht_data_bytes,
             )?;
+            // Sized now, so a band decoding after rows went out never grows
+            // it past the budget.
+            let clipped = &mut tile_ctx.ht_clipped_block_scratch;
+            if clipped.len() < requirements.ht_clipped_samples {
+                clipped.clear();
+                try_resize_decode_elements(clipped, requirements.ht_clipped_samples, 0.0)?;
+            }
         }
 
         let actual_bytes = tile_ctx.serial_tier1_capacity_bytes()?;
@@ -243,7 +266,7 @@ fn observe_sub_band(
                     requirements.observe_classic(code_block, storage)?;
                 }
                 Some(CodeBlockCoding::HighThroughput) => {
-                    requirements.observe_ht(code_block, storage)?;
+                    requirements.observe_ht(code_block, sub_band, storage)?;
                 }
                 None if code_block.number_of_coding_passes == 0 => {}
                 None => return Err(DecodingError::CodeBlockDecodeFailure.into()),

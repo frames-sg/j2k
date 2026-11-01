@@ -1288,6 +1288,102 @@ fn reader_batches_of_tiles_narrower_than_the_image_stay_within_their_charge() {
     );
 }
 
+/// A serial region decode that runs out of budget must do so before its
+/// first row, whatever the budget, so that the retries without retained
+/// scratch or the packet directory can still rerun it. A region that clips
+/// the code-blocks of its last rows decodes them only after its first rows
+/// went out, so the scratch an HTJ2K block clipped this way decodes into must
+/// be held, and charged, from the start. Budgets just past the largest one
+/// that fits can fit again where they leave out the optional row index, so
+/// each one either decodes every sample once or fails before any.
+#[test]
+fn streamed_rows_run_out_of_budget_before_their_first_row() {
+    for use_ht_block_coding in [false, true] {
+        let pixels = noisy_pixels(3);
+        let bytes = encode(
+            &pixels,
+            WIDTH,
+            HEIGHT,
+            3,
+            8,
+            false,
+            &EncodeOptions {
+                use_ht_block_coding,
+                num_decomposition_levels: 3,
+                code_block_height_exp: 1,
+                ..EncodeOptions::default()
+            },
+        )
+        .expect("encode budget fixture");
+        let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse fixture");
+        for roi in [
+            (37, 21, 130, 101),
+            (0, 0, WIDTH, 61),
+            (0, 0, WIDTH, HEIGHT - 11),
+        ] {
+            let label = format!("ht={use_ht_block_coding} {roi:?}");
+            let decode = |baseline: usize| {
+                let mut context = DecoderContext::default();
+                context.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
+                let mut sink = CollectingSink::new(roi.2, roi.3);
+                let result = image.run_decode_rows(
+                    &mut context,
+                    Some(roi),
+                    None,
+                    true,
+                    baseline,
+                    Some(&mut sink),
+                );
+                (result, sink)
+            };
+            let (mut fits, mut fails) = (0, crate::DEFAULT_MAX_DECODE_BYTES);
+            while fails - fits > 1 {
+                let candidate = fits + (fails - fits) / 2;
+                match decode(candidate).0 {
+                    Ok(_) => fits = candidate,
+                    Err(_) => fails = candidate,
+                }
+            }
+            let mut failures = 0;
+            for over in [
+                0,
+                1,
+                2,
+                3,
+                5,
+                9,
+                17,
+                65,
+                257,
+                1 << 10,
+                1 << 12,
+                1 << 14,
+                1 << 16,
+            ] {
+                let (result, sink) = decode(fits + over);
+                match result {
+                    Ok(_) => assert!(
+                        sink.arrivals.iter().all(|&count| count == 1),
+                        "{label} +{over}: every sample once"
+                    ),
+                    Err(error) => {
+                        assert!(
+                            crate::j2c::is_capacity_error(&error),
+                            "{label} +{over}: {error:?}"
+                        );
+                        assert!(
+                            sink.arrivals.iter().all(|&count| count == 0),
+                            "{label} +{over}: rows before the failure"
+                        );
+                        failures += 1;
+                    }
+                }
+            }
+            assert!(failures > 0, "{label}: some budget fails");
+        }
+    }
+}
+
 /// Stitched windows of a reduced resolution, as a tiled viewer or an IIIF
 /// server requests them, hold few rows of code-blocks per component: fewer
 /// than a pool of 18 threads has workers. Such a window's streamed rows must
