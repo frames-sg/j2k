@@ -5,6 +5,17 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- Classic code-blocks with BYPASS, per-pass termination, context resets or
+  segmentation symbols use the packed-column passes, including raw segments.
+  Vertically causal blocks retain the per-coefficient passes. Clean and corrupt
+  code-blocks preserve the same samples and errors in strict and lenient modes.
+- Decodes into a caller buffer whose stride is wider than a row and which
+  ends right after the last row's pixels, the length `strided_output_len`
+  reports and buffer validation accepts, now write that last row. Full-image
+  and scaled 8-bit decodes at such a stride and every 16-bit decode at one,
+  regions included, left it unwritten and still returned `Ok`. 8-bit region
+  decodes, and buffers with any bytes after the last row, were not affected.
+  The other rows are unchanged.
 - Parallel CPU region decodes on the row-streamed IDWT decode Tier-1 band by
   band on the worker pool while the IDWT reads the bands, instead of decoding
   every code-block of a component first. Each sub-band holds three bands at
@@ -15,13 +26,6 @@ and stale roadmap entries have been removed from the public documentation set.
   18000 x 12000 RGB image decodes 3 to 11% faster at 12 threads and 9 to 18%
   faster at 4, with about 3 MiB less peak heap. Output is unchanged, and a
   failure reruns whole-window Tier-1 serially for the same error.
-- Decodes into a caller buffer whose stride is wider than a row and which
-  ends right after the last row's pixels, the length `strided_output_len`
-  reports and buffer validation accepts, now write that last row. Full-image
-  and scaled 8-bit decodes at such a stride and every 16-bit decode at one,
-  regions included, left it unwritten and still returned `Ok`. 8-bit region
-  decodes, and buffers with any bytes after the last row, were not affected.
-  The other rows are unchanged.
 
 ## [0.13.1] - 2026-10-29
 
