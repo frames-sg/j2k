@@ -1080,6 +1080,183 @@ fn plt_lengths_shorter_than_an_eph_packet_fail_on_every_route() {
     }
 }
 
+/// Every forced route and pool size gives `expected` for `bytes` at `scale`:
+/// the bytes it holds, or one failure for all.
+fn assert_same_on_every_route(
+    bytes: &[u8],
+    fmt: PixelFormat,
+    scale: Downscale,
+    expected: Option<&[u8]>,
+    case: &str,
+) {
+    let mut failure = OneFailure::default();
+    for threads in [1, 4] {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("pool");
+        for budget in [Some(usize::MAX), Some(0), None] {
+            let decoded =
+                pool.install(|| decode(bytes, budget, CpuDecodeParallelism::Auto, fmt, scale, 0));
+            let label = format!("{case}, {scale:?}, {threads} threads, planes budget {budget:?}");
+            match expected {
+                Some(expected) => assert!(decoded.as_deref() == Ok(expected), "{label}"),
+                None => failure.check(&decoded, &label),
+            }
+        }
+    }
+}
+
+/// With packet headers packed in PPM or PPT, PLT lengths hold only packet
+/// bodies, so a reduced decode parses every header up to the last packet it
+/// needs: in a flat image, whose packets after the first hold one-byte empty
+/// headers, damage to the header of a finest packet that precedes a needed
+/// one fails every route at half resolution; damage to the last packet's
+/// header, after every packet a half-resolution decode needs, decodes as the
+/// undamaged codestream there; both fail at full resolution.
+#[test]
+fn damaged_packed_headers_fail_reduced_decodes_that_must_parse_them() {
+    let flat = vec![90; (WIDTH * HEIGHT) as usize];
+    for (label, write_ppm, write_ppt) in [("PPM", true, false), ("PPT", false, true)] {
+        let options = EncodeOptions {
+            num_decomposition_levels: 2,
+            num_layers: 2,
+            // Every coding pass in the first layer.
+            quality_layer_byte_targets: vec![1, u64::MAX],
+            progression_order: EncodeProgressionOrder::Lrcp,
+            write_plt: true,
+            write_ppm,
+            write_ppt,
+            ..EncodeOptions::default()
+        };
+        let clean = encode(&flat, WIDTH, HEIGHT, 1, 8, false, &options).expect("encode fixture");
+        // LRCP, one component, one precinct per resolution: the first layer's
+        // coarsest header holds the image, then five empty ones, the first
+        // layer's two finer packets' and the second layer's three.
+        let headers = j2k_test_support::packed_packet_headers(&clean);
+        assert_eq!(
+            clean[headers.end - 5..headers.end],
+            [0; 5],
+            "{label}: empty headers"
+        );
+        let damaged_at = |from_end: usize| {
+            let mut damaged = clean.clone();
+            damaged[headers.end - from_end] = 0xff;
+            damaged
+        };
+        let fmt = PixelFormat::Gray8;
+        let expected = decode(
+            &clean,
+            None,
+            CpuDecodeParallelism::Serial,
+            fmt,
+            Downscale::Half,
+            0,
+        )
+        .expect("clean half-resolution decode");
+        // The first layer's finest header, before the second layer's packets.
+        let navigation = damaged_at(4);
+        assert_same_on_every_route(&navigation, fmt, Downscale::Half, None, label);
+        assert_same_on_every_route(&navigation, fmt, Downscale::None, None, label);
+        // The second layer's finest header, the last.
+        let last = damaged_at(1);
+        assert_same_on_every_route(&last, fmt, Downscale::Half, Some(&expected), label);
+        assert_same_on_every_route(&last, fmt, Downscale::None, None, label);
+    }
+}
+
+/// Tile-parts of several tiles may take turns in the codestream. Completion
+/// is per tile, across its tile-parts: with one RPCL packet per tile-part,
+/// damage to every tile's finest packet, in the last round of tile-parts,
+/// decodes at half resolution as the undamaged interleaved codestream does,
+/// and damage to every tile's coarsest packet, in the first round, fails;
+/// both fail at full resolution. Twelve 64 x 64 tiles stream as one region;
+/// eight 512 x 512 ones, at half resolution on four threads, tile by tile at
+/// once.
+#[test]
+fn interleaved_tile_parts_spare_reduced_decodes_per_tile() {
+    let options = |tile: u32| EncodeOptions {
+        num_decomposition_levels: 2,
+        progression_order: EncodeProgressionOrder::Rpcl,
+        tile_size: Some((tile, tile)),
+        tile_part_packet_limit: Some(1),
+        write_plt: true,
+        ..EncodeOptions::default()
+    };
+    let small_tiles = codestream(1, &options(64));
+    let large_tiles = {
+        let (width, height) = (2048, 1024);
+        let mut state = 0x9e37_79b9_u32;
+        let pixels: Vec<u8> = (0..width * height)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state.to_be_bytes()[0]
+            })
+            .collect();
+        encode(&pixels, width, height, 1, 8, false, &options(512)).expect("encode fixture")
+    };
+    for (label, clean, tiles) in [
+        ("64 x 64 tiles", small_tiles, 12),
+        ("512 x 512 tiles", large_tiles, 8),
+    ] {
+        let ranges = j2k_test_support::packet_ranges(&clean);
+        assert_eq!(ranges.len(), tiles * 3, "{label}: three packets a tile");
+        let resolution = |level: usize| -> Vec<std::ops::Range<usize>> {
+            ranges.iter().skip(level).step_by(3).cloned().collect()
+        };
+        let fmt = PixelFormat::Gray8;
+        let interleaved = j2k_test_support::with_tile_parts_interleaved(&clean);
+        assert_ne!(interleaved, clean, "{label}: tile-parts change places");
+        let expected = decode(
+            &interleaved,
+            None,
+            CpuDecodeParallelism::Serial,
+            fmt,
+            Downscale::Half,
+            0,
+        )
+        .expect("clean half-resolution decode");
+        assert_eq!(
+            decode(
+                &clean,
+                None,
+                CpuDecodeParallelism::Serial,
+                fmt,
+                Downscale::Half,
+                0
+            ),
+            Ok(expected.clone()),
+            "{label}: interleaving keeps the image"
+        );
+        let case = |damage: &str| format!("{label}, {damage}");
+        assert_same_on_every_route(
+            &interleaved,
+            fmt,
+            Downscale::Half,
+            Some(&expected),
+            &case("clean"),
+        );
+        let finest = j2k_test_support::with_tile_parts_interleaved(
+            &j2k_test_support::with_packets_filled(&clean, &resolution(2), 0xff),
+        );
+        assert_same_on_every_route(
+            &finest,
+            fmt,
+            Downscale::Half,
+            Some(&expected),
+            &case("finest"),
+        );
+        assert_same_on_every_route(&finest, fmt, Downscale::None, None, &case("finest"));
+        let coarsest = j2k_test_support::with_tile_parts_interleaved(
+            &j2k_test_support::with_packets_filled(&clean, &resolution(0), 0xff),
+        );
+        assert_same_on_every_route(&coarsest, fmt, Downscale::Half, None, &case("coarsest"));
+        assert_same_on_every_route(&coarsest, fmt, Downscale::None, None, &case("coarsest"));
+    }
+}
+
 /// A tile-part cut inside its tile's last packet, a finest-resolution one,
 /// fails at full resolution and decodes at half resolution as the uncut
 /// codestream does, on every route, wherever the cut falls in that packet
