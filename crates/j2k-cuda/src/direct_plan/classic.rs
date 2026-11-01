@@ -12,6 +12,7 @@ use super::{
 use crate::error::NativeBackendError;
 
 const CLASSIC_PLAN_INVALID: &str = "strict CUDA classic Tier-1 plan is invalid";
+const NATIVE_CLASSIC_BITPLANE_LIMIT: u8 = 63;
 const STYLE_RESET_CONTEXT_PROBABILITIES: u32 = 1 << 0;
 const STYLE_TERMINATION_ON_EACH_PASS: u32 = 1 << 1;
 const STYLE_VERTICALLY_CAUSAL_CONTEXT: u32 = 1 << 2;
@@ -103,9 +104,15 @@ fn append_classic_job_metadata(
 
 fn validate_classic_job(job: &J2kOwnedCodeBlockBatchJob, payload_len: usize) -> Result<(), Error> {
     let Some(coded_bitplanes) = job.total_bitplanes.checked_add(job.roi_shift) else {
+        if job.strict {
+            return rejected_code_block(DecodingError::TooManyBitplanes);
+        }
         return invalid_classic_plan();
     };
     if job.strict {
+        if coded_bitplanes > NATIVE_CLASSIC_BITPLANE_LIMIT {
+            return rejected_code_block(DecodingError::TooManyBitplanes);
+        }
         check_strict_code_block(job, coded_bitplanes)?;
     }
     if !(1..=64).contains(&job.width)

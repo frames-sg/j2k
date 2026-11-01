@@ -7,6 +7,11 @@ and stale roadmap entries have been removed from the public documentation set.
 
 Staged workspace version: `0.13.2`.
 
+- A strict CUDA decode of a classic code-block whose ROI maxshift raises its
+  coded bit-plane count beyond the native decoder's limit fails with the
+  native `TooManyBitplanes` error, as a CPU decode does, instead of reporting
+  an unsupported CUDA request. Counts within the native limit but beyond the
+  device's limit remain unsupported.
 - A tile-part COD replaces all of the main-header COD style flags instead
   of retaining its SOP and EPH flags. Valid codestreams that disable packet
   markers for a tile now decode on the CPU, Metal and CUDA, at full and
