@@ -323,6 +323,11 @@ impl Drop for BlockScratch {
     }
 }
 
+/// Bytes a lock or a condition variable may allocate when first used: none
+/// where the platform's locks are futexes, a boxed `pthread` mutex of 64
+/// bytes or condition variable of 48 where they are not.
+pub(in crate::j2c::decode) const LOCK_BYTES: usize = 64;
+
 /// The first `samples` of a thread's block scratch, within the capacity
 /// [`BlockScratch::for_threads`] reserved: it never grows.
 fn block_scratch(scratch: &mut Vec<f32>, samples: usize) -> Result<&mut [f32]> {
@@ -487,6 +492,13 @@ pub(in crate::j2c::decode) fn plan_tile_route<'a>(
         // `plan_tile` charged one task per strip.
         budget.include_elements::<StripTask<'_, '_, '_>>(counts.tasks - plan.strips.len())?;
         budget.include_elements::<Mutex<&mut [f32]>>(counts.shared)?;
+        // The shared outputs' locks and the queue's, where locking first
+        // allocates.
+        budget.include_bytes(
+            (counts.shared + 1)
+                .checked_mul(LOCK_BYTES)
+                .ok_or(ValidationError::ImageTooLarge)?,
+        )?;
         if has_later_components {
             // Component-at-a-time decoding retains this serial context while
             // preparing the next component. Do not commit a parallel bank
@@ -601,6 +613,7 @@ fn record_route_peak(
         workers.saturating_mul(plan.scratch_sizes(counts.scratch_samples).thread_bytes()),
         counts.tasks * size_of::<StripTask<'_, '_, '_>>(),
         counts.shared * size_of::<Mutex<&mut [f32]>>(),
+        (counts.shared + 1) * LOCK_BYTES,
     ]
     .into_iter()
     .fold(0, usize::saturating_add);
@@ -1481,6 +1494,11 @@ fn decode_strips<'plan, 'coefficients, W: Send>(
     // Largest tasks first so stragglers are small; zeroing tasks last.
     tasks.sort_unstable_by_key(|task| core::cmp::Reverse(task.work()));
     let queue = Mutex::new(tasks.into_iter());
+    // Lock each lock once here, where no worker races to allocate it.
+    for lock in &shared {
+        drop(lock.lock());
+    }
+    drop(queue.lock());
     let failed = AtomicBool::new(false);
     // Each worker owns one already-budgeted workspace for the whole tile.
     // A single queue pop per task keeps work balanced across unequal cores
@@ -1944,6 +1962,8 @@ pub(in crate::j2c::decode) fn plan_band_route_beside<'a>(
     }
     let workers = threads.min(plan.strips.len());
     let prepared = (|| -> Result<usize> {
+        // The route itself, boxed beside the others of its tile.
+        budget.include_bytes(size_of::<BandRoute<'_>>())?;
         // Each thread holds scratch of its own, reserved before it starts.
         if !lockstep {
             band_scratch_sizes(&plan)?.include(&mut budget, workers + 1)?;

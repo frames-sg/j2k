@@ -45,7 +45,7 @@ pub(crate) use self::tile_parallel::MIN_BAND_WORK;
 #[cfg(feature = "parallel")]
 pub(in crate::j2c::decode) use self::tile_parallel::{
     plan_band_route, plan_band_route_beside, routes_tile, BandOutput, BandRoute, BandRouting,
-    BlockScratch, PayloadSource,
+    BlockScratch, PayloadSource, LOCK_BYTES,
 };
 
 /// Decode the code-blocks of the tile's `components` into their sub-bands.

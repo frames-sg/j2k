@@ -48,7 +48,7 @@ use std::sync::{Condvar, Mutex, MutexGuard};
 use super::banded_tier1::{self, RowOutput};
 use super::subband::{
     plan_band_route, plan_band_route_beside, routes_tile, BandOutput, BandRoute, BandRouting,
-    BlockScratch, PayloadSource,
+    BlockScratch, PayloadSource, LOCK_BYTES,
 };
 use super::workspace::{TaskScratch, TaskWorkspace};
 use super::{
@@ -383,6 +383,16 @@ pub(super) fn decode_tile_rows<'a>(
     }
     let (rings, mut bands, strip_starts, active_levels) =
         plan_tile_rings(&routes, storage, header)?;
+    // So do the streamed IDWT's plans, its rings' lengths and its
+    // reconstructions, one of each per component.
+    let line_lists = components
+        .checked_mul(
+            size_of::<LinePlan>() + size_of::<usize>() + size_of::<LineReconstruction<'_>>(),
+        )
+        .ok_or(ValidationError::ImageTooLarge)?;
+    if declines(live.include_bytes(line_lists))? {
+        return Ok(false);
+    }
     let line_plans = plan_tile_lines(tile, header, tile_ctx, storage, &active_levels)?;
     let empty = IntRect::from_xywh(0, 0, 0, 0);
     let (copy, region) = line_plans
@@ -867,9 +877,10 @@ fn plan_tile_lines(
 /// its parts put in it; each ring's cursors, slot list and slots; each
 /// reader's view, with its band being read and next band in every ring, and
 /// its entry in the readers' list; each thread's workspace and scratch
-/// pair; the pool's job for each worker it sends; and what the shared
-/// output of each band decoding in parts, the shared state's lock and its
-/// condition variable allocate when first used.
+/// pair; the pool's job for each worker running or queued, and for each
+/// pool thread whose worker finished before the pool freed its job; and
+/// what the shared output of each band decoding in parts, the shared
+/// state's lock and its condition variable allocate when first used.
 fn executor_bytes(
     rings: &[Ring],
     bands: &[Band],
@@ -899,7 +910,16 @@ fn executor_bytes(
         workers
             .checked_add(readers)
             .and_then(|threads| threads.checked_mul(per_thread)),
-        workers.checked_mul(SENT_WORKER_BYTES),
+        workers
+            .checked_add(rayon::current_num_threads())
+            .and_then(|jobs| jobs.checked_mul(SENT_WORKER_BYTES)),
+        // Called from outside the pool, its workers queue on the pool's
+        // shared queue, which may take a new block for them.
+        Some(if rayon::current_thread_index().is_none() {
+            INJECTED_BLOCK_BYTES
+        } else {
+            0
+        }),
         bands
             .iter()
             .filter(|band| band.parts > 1)
@@ -931,10 +951,9 @@ fn queue_entries(bands: &[Band]) -> usize {
 /// job's context.
 const SENT_WORKER_BYTES: usize = 4 * size_of::<usize>();
 
-/// Bytes a lock or a condition variable may allocate when first used: none
-/// where the platform's locks are futexes, a boxed `pthread` mutex of 64
-/// bytes or condition variable of 48 where they are not.
-const LOCK_BYTES: usize = 64;
+/// Bytes of a block of the pool's shared queue: 63 jobs of two words, each
+/// with its state, and a link.
+const INJECTED_BLOCK_BYTES: usize = 64 * 3 * size_of::<usize>();
 
 /// The bytes the rings and bands of the component of `route` hold once
 /// planned, and the rows' scales planning them holds beside them.
@@ -1593,6 +1612,10 @@ fn run_bands<W: TaskScratch>(
         state: Mutex::new(state),
         decoded: Condvar::new(),
     };
+    // Where locks allocate when first used, the state's is first locked
+    // below, and the condition variable is first used here, before any
+    // worker races to allocate it.
+    shared.decoded.notify_all();
     {
         let mut state = shared.lock()?;
         for ring in 0..rings.len() {
@@ -2302,6 +2325,9 @@ mod tests {
         plans: usize,
         rings: usize,
         planning: usize,
+        /// The streamed IDWT's plan, ring length and reconstruction of each
+        /// component.
+        lines: usize,
         executor: usize,
         scratch: usize,
         /// The tile's readers, beside its workers.
@@ -2425,6 +2451,10 @@ mod tests {
             plans,
             rings: ring_bytes,
             planning,
+            lines: components
+                * (size_of::<LinePlan>()
+                    + size_of::<usize>()
+                    + size_of::<LineReconstruction<'_>>()),
             executor: executor_records(&rings, &bands, workers, readers),
             scratch: tile_ctx.debug_counters.thread_scratch_held,
             readers,
@@ -2501,6 +2531,7 @@ mod tests {
             plans,
             rings,
             planning,
+            lines,
             executor,
             scratch,
             readers,
@@ -2512,7 +2543,7 @@ mod tests {
         );
         // Planning the rings holds more beside them only until the executor
         // and the scratch take its place.
-        let all = routes + plans + rings + planning.max(executor + scratch);
+        let all = routes + plans + rings + planning.max(lines + executor + scratch);
         let (_, warm, exact) = decode_streamed(image, all);
         assert!(exact.pooled, "pool bands within {all} bytes: {steps:?}");
         let rows = exact.rows.expect("pool bands decode");
@@ -2523,7 +2554,8 @@ mod tests {
             routes - 1,
             routes + plans - 1,
             routes + plans + rings - 1,
-            routes + plans + rings + executor - 1,
+            routes + plans + rings + lines - 1,
+            routes + plans + rings + lines + executor - 1,
             all - 1,
         ] {
             let (_, _, short) = decode_streamed(image, headroom);
@@ -2562,9 +2594,11 @@ mod tests {
     /// and shared output; a queue entry per part; per ring its readiness and
     /// freed counters, slot list and slots, and each reader's band being read
     /// and next band; per thread its workspace pair; per reader its view and
-    /// its entry in the readers' list; and the pool's job per worker and
-    /// what the locks of bands in parts and of the shared state allocate,
-    /// which `band_executor_allocates_within_its_charge` measures.
+    /// its entry in the readers' list; and the pool's job per worker and per
+    /// pool thread that may retire one, and what the locks of bands in parts
+    /// and of the shared state allocate, which
+    /// `band_executor_allocates_within_its_charge` measures. It decodes in a
+    /// pool, so its workers take no block of the pool's shared queue.
     fn executor_records(rings: &[Ring], bands: &[Band], workers: usize, readers: usize) -> usize {
         let per_band = size_of::<Status>()
             + 2 * size_of::<Option<&mut [f32]>>()
@@ -2585,7 +2619,7 @@ mod tests {
             + slots * size_of::<&mut [f32]>()
             + (workers + readers) * per_thread
             + readers * per_reader
-            + workers * SENT_WORKER_BYTES
+            + (workers + rayon::current_num_threads()) * SENT_WORKER_BYTES
             + locks * LOCK_BYTES
     }
 
@@ -2593,6 +2627,10 @@ mod tests {
     /// counting allocator, beside what the decode charges for it.
     #[derive(Debug)]
     struct Measured {
+        /// The most planning the routes held at once, and what they kept,
+        /// against what their budgets charged.
+        routing: (usize, usize),
+        routing_charge: usize,
         /// The most planning the rings and bands held at once, and what it
         /// kept, against the bytes charged for them and for the most beside
         /// them.
@@ -2608,11 +2646,48 @@ mod tests {
         deep: bool,
     }
 
+    /// Read every row of the rings that `ring_readers` gives to `readers`,
+    /// the first of which is reader `first`: each reader on a thread of its
+    /// own in a pool, and one after another outside one, where handing them
+    /// to the pool would allocate.
+    fn read_rings(
+        rings: &[Ring],
+        ring_readers: &[usize],
+        readers: &mut [&mut (dyn SubBandRows + Send)],
+        first: usize,
+    ) -> Result<()> {
+        let Some((reader, rest)) = readers.split_first_mut() else {
+            return Ok(());
+        };
+        let mut read = || -> Result<()> {
+            for (ring, _) in rings
+                .iter()
+                .zip(ring_readers)
+                .filter(|(_, reader)| **reader == first)
+            {
+                for y in ring.stored.y0..ring.stored.y1 {
+                    reader.prepare_row(ring.sub_band, y)?;
+                }
+            }
+            Ok(())
+        };
+        if rest.is_empty() {
+            return read();
+        }
+        let mut next = || read_rings(rings, ring_readers, rest, first + 1);
+        if rayon::current_thread_index().is_none() {
+            return read().and_then(|()| next());
+        }
+        let (mine, theirs) = rayon::join(read, next);
+        mine.and(theirs)
+    }
+
     /// Decode the tile of `bytes`, or its `roi`, streaming its rows on the
     /// current pool, with its classic bands in `parts` parts when given:
-    /// once to warm the bank, then on the band executor as the streamed
-    /// tile drives it, under the counting allocator, reading every row of
-    /// every ring through one reader.
+    /// once to warm the bank, then, under the counting allocator, planning
+    /// its routes, rings and bands and running the band executor as the
+    /// streamed tile drives it, reading every row of every ring, each
+    /// component's through its own reader when it has one.
     fn measure_executor(
         bytes: &[u8],
         roi: Option<(u32, u32, u32, u32)>,
@@ -2653,8 +2728,11 @@ mod tests {
         .expect("decode with room to spare");
         let components = tiles[0].component_infos.len();
         assert_eq!(tile_ctx.debug_counters.pool_band_components, components);
-        let mut routes = Vec::new();
-        let mut live = None;
+        let mut routes = Vec::with_capacity(components);
+        let mut live = DecodeAllocationBudget::for_storage(storage).expect("baseline");
+        let start = live.live_bytes();
+        let base = j2k_alloc_probe::live_bytes();
+        j2k_alloc_probe::reset_peak();
         for component in 0..components {
             let BandRouting::Route(route) = plan_band_route_beside(
                 &tiles[0],
@@ -2662,15 +2740,20 @@ mod tests {
                 tile_ctx,
                 storage,
                 &image.header,
-                live,
+                Some(live),
                 true,
             )
             .expect("plan route") else {
                 panic!("the tile takes the pool's bands");
             };
-            live = Some(route.budget());
+            live = route.budget();
             routes.push(route);
         }
+        let routing = (
+            j2k_alloc_probe::peak_bytes() - base,
+            j2k_alloc_probe::live_bytes() - base,
+        );
+        let routing_charge = live.live_bytes() - start;
         let planning_charge =
             tile_ring_plan_bytes(&routes, storage, &image.header).expect("planning bytes");
         let base = j2k_alloc_probe::live_bytes();
@@ -2727,18 +2810,26 @@ mod tests {
         .expect("thread scratch");
         let helps = readers == 1 && coding == CodeBlockCoding::Classic;
         let mut coefficients = core::mem::take(&mut storage.coefficients);
+        // Each component's rings read through its own reader, when it has
+        // one.
+        let mut ring_readers = Vec::new();
+        for (component_idx, route) in routes.iter().enumerate() {
+            let (component_rings, _) =
+                ring_counts(route, storage, &image.header, component_idx).expect("rings");
+            let reader = if readers == components {
+                component_idx
+            } else {
+                0
+            };
+            ring_readers.extend(core::iter::repeat_n(reader, component_rings));
+        }
+        let read = |readers: &mut [&mut (dyn SubBandRows + Send)]| -> Result<()> {
+            read_rings(&rings, &ring_readers, readers, 0)
+        };
         let base = j2k_alloc_probe::live_bytes();
         j2k_alloc_probe::reset_peak();
         let slots = split_slots(&rings, &bands, storage, &mut coefficients).expect("slots");
         let source = PayloadSource::new(storage);
-        let read = |readers: &mut [&mut (dyn SubBandRows + Send)]| -> Result<()> {
-            for ring in &rings {
-                for y in ring.stored.y0..ring.stored.y1 {
-                    readers[0].prepare_row(ring.sub_band, y)?;
-                }
-            }
-            Ok(())
-        };
         let decoded = match coding {
             CodeBlockCoding::Classic => run_bands(
                 (workers, readers, helps),
@@ -2775,6 +2866,8 @@ mod tests {
         assert_eq!(decoded.ok(), Some(true), "the executor decodes every band");
         storage.coefficients = coefficients;
         Measured {
+            routing,
+            routing_charge,
             planning,
             planning_charge,
             running,
@@ -2786,11 +2879,24 @@ mod tests {
         }
     }
 
+    /// Wait until the process has held the same bytes for a while: until
+    /// idle threads have finished starting.
+    fn settle() {
+        let (mut last, mut still) = (j2k_alloc_probe::live_bytes(), 0);
+        while still < 20 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            let now = j2k_alloc_probe::live_bytes();
+            still = if now == last { still + 1 } else { 0 };
+            last = now;
+        }
+    }
+
     /// Under the counting allocator, the band executor holds at most what
-    /// the decode charges for it, planning its rings and bands and while
-    /// they decode: for classic and HTJ2K tiles, whole and in a region,
-    /// with bands in parts, on pools of 2, 4 and 12 threads, with one reader
-    /// and with one per component, with shallow rings and deep ones.
+    /// the decode charges for it, planning its routes, rings and bands and
+    /// while they decode: for classic and HTJ2K tiles, whole and in a
+    /// region, with bands in parts, on pools of 2, 4 and 12 threads and
+    /// from outside a pool, with one reader and with one per component,
+    /// with shallow rings and deep ones.
     #[test]
     fn band_executor_allocates_within_its_charge() {
         const PROBE: &str = "J2K_NATIVE_BAND_EXECUTOR_PROBE";
@@ -2823,40 +2929,67 @@ mod tests {
         let classic = include_bytes!("../../../fixtures/multi_segment/bypass_termall_rgb_53.j2k");
         let ht = ht_fixture();
         let (mut readers, mut parted, mut clipped, mut deep) = (Vec::new(), 0, false, false);
-        for threads in [2, 4, 12] {
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(threads)
-                .build()
-                .expect("build pool")
-                .install(|| {
-                    for (label, bytes, splits) in [
-                        ("classic", &classic[..], &[None, Some(4)][..]),
-                        ("HTJ2K", &ht[..], &[None][..]),
-                    ] {
-                        let whole = measure_executor(bytes, None, None);
-                        for &roi in &[None, Some((48, 48, 16, 16))] {
-                            for &parts in splits {
-                                let measured = measure_executor(bytes, roi, parts);
-                                let case = format!("{label} {roi:?} parts {parts:?} on {threads}");
-                                let (peak, kept) = measured.planning;
-                                let (planned, beside) = measured.planning_charge;
-                                assert!(
-                                    kept <= planned && peak <= planned + beside,
-                                    "{case}: {measured:?}"
-                                );
-                                assert!(
-                                    measured.running <= measured.running_charge,
-                                    "{case}: {measured:?}"
-                                );
-                                readers.push(measured.readers);
-                                parted += measured.parted;
-                                clipped |= measured.bands < whole.bands;
-                                deep |= measured.deep;
-                            }
+        let mut check = |case: &str, measured: Measured, whole: &Measured| {
+            assert!(
+                measured.routing.0 <= measured.routing_charge,
+                "{case}: {measured:?}"
+            );
+            let (peak, kept) = measured.planning;
+            let (planned, beside) = measured.planning_charge;
+            assert!(
+                kept <= planned && peak <= planned + beside,
+                "{case}: {measured:?}"
+            );
+            assert!(
+                measured.running <= measured.running_charge,
+                "{case}: {measured:?}"
+            );
+            readers.push(measured.readers);
+            parted += measured.parted;
+            clipped |= measured.bands < whole.bands;
+            deep |= measured.deep;
+        };
+        // The pools, and the global one, stay up until every measurement
+        // ends, so no pool's teardown frees bytes inside another's window,
+        // and every measurement waits until their threads have started,
+        // which allocates their queues' state and their locks.
+        let pools: Vec<_> = [2, 4, 12]
+            .into_iter()
+            .map(|threads| {
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .expect("build pool")
+            })
+            .collect();
+        assert!(rayon::current_num_threads() > 0);
+        settle();
+        for pool in &pools {
+            let threads = pool.current_num_threads();
+            pool.install(|| {
+                for (label, bytes, splits) in [
+                    ("classic", &classic[..], &[None, Some(4)][..]),
+                    ("HTJ2K", &ht[..], &[None][..]),
+                ] {
+                    let whole = measure_executor(bytes, None, None);
+                    for &roi in &[None, Some((48, 48, 16, 16))] {
+                        for &parts in splits {
+                            let case = format!("{label} {roi:?} parts {parts:?} on {threads}");
+                            check(&case, measure_executor(bytes, roi, parts), &whole);
                         }
                     }
-                });
+                }
+            });
         }
+        // Called from outside a pool, the executor sends its workers through
+        // the global pool's shared queue.
+        let whole = measure_executor(classic, None, None);
+        check(
+            "classic outside the pool",
+            measure_executor(classic, None, Some(4)),
+            &whole,
+        );
+        drop(pools);
         assert!(readers.contains(&1) && readers.contains(&3), "{readers:?}");
         assert!(
             parted > 0 && clipped && deep,
