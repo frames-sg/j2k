@@ -232,7 +232,7 @@ fn decode_route(
     let mut budget = route.budget();
     budget.include_bytes(executor_bytes(&rings, &bands)?)?;
     let mut scratches =
-        BlockScratch::for_threads(route.workers() + 1, route.payload_scratch(), &mut budget)?;
+        BlockScratch::for_threads(route.workers() + 1, route.scratch_sizes()?, &mut budget)?;
     tile_ctx.idwt_output.placement = crate::j2c::idwt::IdwtPlacement::Coefficients;
     tile_ctx.idwt_output.coefficients = Vec::new();
     tile_ctx.idwt_output.rect = IntRect::from_xywh(0, 0, 0, 0);
@@ -333,9 +333,23 @@ pub(super) fn decode_tile_rows<'a>(
     // Every component's route stays live beside the others' while the
     // executor runs them all, so each is planned in the budget the last one
     // left, as one budget, which starts with the list of routes.
+    // A budget too small for the pool leaves the tile to serial bands.
+    let declines = |result: Result<()>| match result {
+        Err(error) if super::reuse::is_capacity_error(&error) => Ok(true),
+        result => result.map(|()| false),
+    };
     let mut live = DecodeAllocationBudget::for_storage(storage)?;
+    #[cfg(test)]
+    if let Some(cap) = tile_ctx.pool_band_cap {
+        match DecodeAllocationBudget::from_live_bytes_with_cap(live.live_bytes(), cap) {
+            Ok(capped) => live = capped,
+            Err(_) => return Ok(false),
+        }
+    }
     let mut routes = Vec::new();
-    live.reserve_new(&mut routes, components)?;
+    if declines(live.reserve_new(&mut routes, components))? {
+        return Ok(false);
+    }
     for component_idx in 0..components {
         match plan_band_route_beside(
             tile,
@@ -366,7 +380,9 @@ pub(super) fn decode_tile_rows<'a>(
     let line_plans = plan_tile_lines(tile, header, tile_ctx, storage, &active_levels)?;
     // The executor's records live beside every route's plan and scratch
     // while the bands decode.
-    live.include_bytes(executor_bytes(&rings, &bands)?)?;
+    if declines(live.include_bytes(executor_bytes(&rings, &bands)?))? {
+        return Ok(false);
+    }
     let empty = IntRect::from_xywh(0, 0, 0, 0);
     let (copy, region) = line_plans
         .first()
@@ -394,18 +410,25 @@ pub(super) fn decode_tile_rows<'a>(
         1
     };
     let workers = route_workers.min(bank.saturating_sub(readers));
-    // Each thread's scratch serves every component's bands, so it is
-    // charged once, for the largest of the routes'; the serial bands need
-    // none.
-    let (thread_scratch, payload_scratch) =
-        BandRoute::shared_scratch(routes.iter().map(|route| &**route))?;
+    // Each thread's scratch serves every component's bands, so it holds,
+    // and is charged once for, the largest of the routes'; the serial bands
+    // need none.
     let threads = workers + readers;
-    let scratch_bytes = threads
-        .checked_mul(thread_scratch)
-        .ok_or(ValidationError::ImageTooLarge)?;
-    match live.include_bytes(scratch_bytes) {
-        Err(error) if super::reuse::is_capacity_error(&error) => return Ok(false),
-        result => result?,
+    #[cfg(test)]
+    let unscratched = live.live_bytes();
+    let Some(mut scratches) = BlockScratch::charged_for_threads(
+        threads,
+        BandRoute::shared_scratch(routes.iter().map(|route| &**route))?,
+        &mut live,
+    )?
+    else {
+        return Ok(false);
+    };
+    #[cfg(test)]
+    {
+        let counters = &mut tile_ctx.debug_counters;
+        counters.pool_band_live_bytes = counters.pool_band_live_bytes.max(live.live_bytes());
+        counters.thread_scratch_charged += live.live_bytes() - unscratched;
     }
     // Rows reconstruct in batches, charged by the region's width (see
     // `roi_idwt_peak_elements`): two of them with a reader per component of
@@ -439,7 +462,6 @@ pub(super) fn decode_tile_rows<'a>(
             .max(held.saturating_sub(storage.roi_idwt_charge_elements));
     }
     let mut output = RowOutput::new(tile, sink, tile_ctx, copy, region);
-    let mut scratches = BlockScratch::for_threads(threads, payload_scratch, &mut live)?;
     // One reader for every component of a classic tile leaves the pool's
     // threads to Tier-1, and decodes bands itself while it waits.
     let helps = readers == 1 && coding == CodeBlockCoding::Classic;
@@ -519,6 +541,10 @@ pub(super) fn decode_tile_rows<'a>(
     // theirs written.
     storage.stale_coefficients = true;
     tile_ctx.idwt_line_rings = buffer;
+    #[cfg(test)]
+    {
+        tile_ctx.debug_counters.thread_scratch_held += BlockScratch::held_bytes(&scratches);
+    }
     let streamed = output.streamed;
     tile_ctx.streamed_samples = tile_ctx.streamed_samples.saturating_add(streamed);
     tile_ctx.debug_counters.idwt_output_samples = tile_ctx
@@ -540,7 +566,8 @@ pub(super) fn decode_tile_rows<'a>(
         Ok(completed)
     });
     // Neither the serial bands' nor the whole-window rerun's budget includes
-    // the plans or the executor's records, so they go first.
+    // the plans, the executor's records or the threads' scratch, so they go
+    // first.
     drop((
         routes,
         rings,
@@ -549,6 +576,7 @@ pub(super) fn decode_tile_rows<'a>(
         active_levels,
         line_plans,
         ring_lens,
+        scratches,
     ));
     match result {
         Ok(true) => {

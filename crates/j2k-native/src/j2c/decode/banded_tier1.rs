@@ -966,6 +966,12 @@ pub(super) fn whole_window_tile_error<'a>(
     storage: &mut DecompositionStorage<'a>,
     banded_error: DecodeError,
 ) -> DecodeError {
+    #[cfg(all(test, feature = "parallel"))]
+    {
+        let counters = &mut tile_ctx.debug_counters;
+        counters.whole_window_reruns += 1;
+        counters.scratches_live_in_reruns += super::subband::BlockScratch::live();
+    }
     storage.coefficient_layout = build::CoefficientLayout::Component;
     if build::lay_out_whole_region_coefficients(storage).is_err() {
         return banded_error;

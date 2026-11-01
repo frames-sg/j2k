@@ -775,6 +775,22 @@ pub(crate) struct DecodeDebugCounters {
     /// over components and tiles.
     #[cfg(all(test, feature = "parallel"))]
     pub(crate) pool_band_plan_bytes: usize,
+    /// The most bytes the budget of a tile streaming its rows from pool
+    /// bands held, every route, record and thread's scratch charged.
+    #[cfg(all(test, feature = "parallel"))]
+    pub(crate) pool_band_live_bytes: usize,
+    /// Bytes that budget charged for its threads' scratch, and the bytes
+    /// that scratch held once the bands decoded, summed over tiles.
+    #[cfg(all(test, feature = "parallel"))]
+    pub(crate) thread_scratch_charged: usize,
+    #[cfg(all(test, feature = "parallel"))]
+    pub(crate) thread_scratch_held: usize,
+    /// Tiles whose failed bands decoded again over whole windows, and the
+    /// pool threads' scratches still held when they did, summed.
+    #[cfg(all(test, feature = "parallel"))]
+    pub(crate) whole_window_reruns: usize,
+    #[cfg(all(test, feature = "parallel"))]
+    pub(crate) scratches_live_in_reruns: usize,
     #[cfg(all(test, feature = "parallel"))]
     pub(crate) parallel_coefficients: ParallelCoefficientStats,
 }

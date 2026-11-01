@@ -69,6 +69,7 @@
 //! termination and 32 for segmentation symbols. The samples contain no
 //! externally sourced image content.
 
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::Cell;
 
@@ -162,6 +163,11 @@ struct Decoded {
     channel_bytes: usize,
     /// The bytes the decode's budget held after `reset`.
     baseline_bytes: usize,
+    /// The most bytes the budget of a tile streaming from pool bands held.
+    pool_band_bytes: usize,
+    /// The bytes that budget charged for its threads' scratch, and the
+    /// bytes the scratch held once the bands decoded.
+    thread_scratch: (usize, usize),
 }
 
 fn context(parallelism: CpuDecodeParallelism) -> DecoderContext<'static> {
@@ -204,6 +210,11 @@ fn rows_with(
         uncharged_line_samples: counters.uncharged_line_samples,
         channel_bytes: counters.workspace_peak.bytes().channels,
         baseline_bytes: counters.decode_baseline_bytes,
+        pool_band_bytes: counters.pool_band_live_bytes,
+        thread_scratch: (
+            counters.thread_scratch_charged,
+            counters.thread_scratch_held,
+        ),
     }
 }
 
@@ -509,4 +520,178 @@ fn fixtures_hold_every_kind_of_codeword_segment() {
         empty += found.empty;
     }
     assert!(empty > 0, "some segments hold coding passes and no bytes");
+}
+
+/// How a decode of an image ended.
+struct Outcome {
+    /// The hash of the planes' and of the streamed rows' samples, or each
+    /// one's error.
+    text: String,
+    failed: bool,
+    /// Tiles whose failed pool bands decoded again over whole windows, and
+    /// the pool threads' scratches still held when they did.
+    reruns: usize,
+    live_scratches: usize,
+}
+
+fn hash(samples: impl Iterator<Item = u32>) -> u64 {
+    samples.fold(0xcbf2_9ce4_8422_2325_u64, |hash, sample| {
+        (hash ^ u64::from(sample)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+/// A strict or lenient Auto decode of `bytes` on the current pool, of the
+/// planes and of the rows streamed from the whole image.
+fn outcome(bytes: &[u8], strict: bool) -> Outcome {
+    let settings = DecodeSettings {
+        strict,
+        ..DecodeSettings::default()
+    };
+    let image = match Image::new(bytes, &settings) {
+        Ok(image) => image,
+        Err(error) => {
+            return Outcome {
+                text: format!("parse {error:?}"),
+                failed: true,
+                reruns: 0,
+                live_scratches: 0,
+            }
+        }
+    };
+    let planes = image.decode_native_with_context(&mut context(CpuDecodeParallelism::Auto));
+    let roi = (0, 0, image.width(), image.height());
+    let mut context = context(CpuDecodeParallelism::Auto);
+    let mut sink = Rows {
+        width: roi.2 as usize,
+        planes: Vec::new(),
+        arrivals: alloc::vec![0; (roi.2 * roi.3) as usize],
+    };
+    let rows =
+        image.decode_region_rows_for_integer_output_with_context(roi, &mut context, &mut sink);
+    let counters = context.tile_decode_context.debug_counters;
+    let planes = match planes {
+        Ok(decoded) => format!(
+            "planes {:016x}",
+            hash(decoded.data.iter().map(|&b| b.into()))
+        ),
+        Err(error) => format!("planes {error:?}"),
+    };
+    let failed = rows.is_err();
+    let rows = match rows {
+        Ok(()) => format!("rows {:016x}", hash(sink.planes.iter().flatten().copied())),
+        Err(error) => format!("rows {error:?}"),
+    };
+    Outcome {
+        text: format!("{planes}, {rows}"),
+        failed,
+        reruns: counters.whole_window_reruns,
+        live_scratches: counters.scratches_live_in_reruns,
+    }
+}
+
+/// Corrupt packets of these blocks decode on a pool as on one thread, to
+/// the same samples or the same error, strict or lenient, as planes and as
+/// streamed rows. A tile whose pool bands fail decodes them again over
+/// whole windows to find the error, without the pool threads' scratch.
+#[test]
+fn corrupt_multi_segment_blocks_decode_on_a_pool_as_on_one_thread() {
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let (one, four) = (pool(1), pool(4));
+    let (mut failures, mut reruns, mut live_scratches) = (0, 0, 0);
+    for (label, bytes) in FIXTURES {
+        // Corrupt only the tile's packets, after its start of data.
+        let data = bytes
+            .windows(2)
+            .position(|pair| pair == [0xff, 0x93])
+            .expect("start of data")
+            + 2;
+        for iteration in 0..16 {
+            let mut mutant = Vec::new();
+            mutant.extend_from_slice(bytes);
+            for _ in 0..=next() % 3 {
+                let span = u64::try_from(mutant.len() - data).expect("fixture length");
+                let at = data + usize::try_from(next() % span).expect("offset in the fixture");
+                mutant[at] ^= 1 << (next() % 8);
+            }
+            for strict in [false, true] {
+                let expected = one.install(|| outcome(&mutant, strict));
+                let pooled = four.install(|| outcome(&mutant, strict));
+                assert_eq!(
+                    pooled.text, expected.text,
+                    "{label} iteration {iteration} strict {strict}"
+                );
+                failures += usize::from(expected.failed);
+                reruns += pooled.reruns;
+                live_scratches += pooled.live_scratches;
+            }
+        }
+    }
+    assert!(
+        failures > 20 && reruns > 0,
+        "{failures} failures, {reruns} whole-window reruns"
+    );
+    assert_eq!(
+        live_scratches, 0,
+        "pool threads' scratches held while failed bands decoded again"
+    );
+}
+
+/// A tile streaming its rows from pool bands holds the scratch of every
+/// thread, its workers' and its readers', as charged before they start,
+/// though its components' blocks may differ in size. Under the tightest
+/// budget its pool bands decode in, they do; a byte short of it, and under
+/// each smaller budget tried on the way, its bands decode serially
+/// instead, to the same rows, rather than fail.
+#[test]
+fn streamed_pool_band_threads_hold_the_scratch_charged_for_them() {
+    for threads in [4, 12] {
+        pool(threads).install(|| {
+            for (label, bytes) in FIXTURES {
+                let image = Image::new(bytes, &DecodeSettings::default()).expect("parse fixture");
+                let roi = (0, 0, image.width(), image.height());
+                let case = format!("{label} on {threads} threads");
+                let decoded = rows(&image, roi);
+                let components = decoded.samples.len();
+                let (charged, held) = decoded.thread_scratch;
+                assert!(
+                    held > 0 && charged == held,
+                    "{case}: scratch charged {charged}, held {held}"
+                );
+                // The pool bands' budget held `pool_band_bytes` once it
+                // charged the threads' scratch, last; on the way, planning
+                // may need more, as for the workspaces it grows from one
+                // component's blocks to the next's larger ones.
+                let pooled = |cap| {
+                    let capped = rows_with(&image, roi, |context| {
+                        context.tile_decode_context.pool_band_cap = Some(cap);
+                    });
+                    assert_eq!(capped.samples, decoded.samples, "{case} within {cap} bytes");
+                    assert!(capped.streamed, "{case} within {cap} bytes");
+                    capped.pool_components == components
+                };
+                let (mut short, mut fits) = (0, decoded.pool_band_bytes);
+                assert!(!pooled(short), "{case}");
+                while !pooled(fits) {
+                    short = fits;
+                    fits += 1024;
+                    assert!(fits < 2 * decoded.pool_band_bytes, "{case}: fits {fits}");
+                }
+                while short + 1 < fits {
+                    let cap = short + (fits - short) / 2;
+                    if pooled(cap) {
+                        fits = cap;
+                    } else {
+                        short = cap;
+                    }
+                }
+                assert!(fits >= decoded.pool_band_bytes, "{case}: fits {fits}");
+            }
+        });
+    }
 }

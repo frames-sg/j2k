@@ -45,7 +45,7 @@ use crate::scalar::{
 };
 use crate::{
     decode_ht_code_block_scalar_with_workspace, try_reserve_decode_elements,
-    try_resize_decode_elements, HtCodeBlockDecodeWorkspace, J2kCodeBlockSegment,
+    HtCodeBlockDecodeWorkspace, J2kCodeBlockSegment,
 };
 
 /// Below this many coded bytes per tile (about 45 us of serial entropy decode
@@ -161,42 +161,170 @@ impl<'s, 'a> PayloadSource<'s, 'a> {
 /// several, which other blocks leave empty.
 type BlockPayload<'p> = (&'p [u8], &'p [J2kCodeBlockSegment]);
 
-/// A worker's scratch for the blocks it decodes: a block its sub-band stores
-/// only part of, a payload gathered from several segments, and the codeword
-/// segments of a classic block of several.
-#[derive(Default)]
+/// A worker's scratch for the blocks it decodes: a block it decodes apart
+/// from its sub-band, a payload gathered from several segments, and the
+/// codeword segments of a classic block of several.
 pub(in crate::j2c::decode) struct BlockScratch {
     clipped: Vec<f32>,
     payload: Vec<u8>,
     segments: Vec<J2kCodeBlockSegment>,
 }
 
+/// What each thread's [`BlockScratch`] holds: the bytes of the largest
+/// payload it gathers, the codeword segments of the classic block of the
+/// most, and the samples of the largest block it decodes apart from its
+/// sub-band.
+#[derive(Clone, Copy)]
+pub(in crate::j2c::decode) struct ScratchSizes {
+    payload_len: usize,
+    segments: usize,
+    samples: usize,
+}
+
+impl ScratchSizes {
+    /// Bytes of a thread's scratch of these sizes, besides its entry in the
+    /// threads' list.
+    fn bytes(self) -> usize {
+        [
+            self.payload_len,
+            self.segments
+                .saturating_mul(size_of::<J2kCodeBlockSegment>()),
+            self.samples.saturating_mul(size_of::<f32>()),
+        ]
+        .into_iter()
+        .fold(0, usize::saturating_add)
+    }
+
+    /// Bytes of a thread's scratch of these sizes with its entry in the
+    /// threads' list, as the workspace peak records it.
+    fn thread_bytes(self) -> usize {
+        self.bytes().saturating_add(size_of::<BlockScratch>())
+    }
+
+    /// The larger of each size of `self` and `other`.
+    fn max(self, other: Self) -> Self {
+        Self {
+            payload_len: self.payload_len.max(other.payload_len),
+            segments: self.segments.max(other.segments),
+            samples: self.samples.max(other.samples),
+        }
+    }
+
+    /// Charge `budget` for the scratch of `threads` threads, besides their
+    /// list, which [`BlockScratch::for_threads`] charges.
+    fn include(self, budget: &mut DecodeAllocationBudget, threads: usize) -> Result<()> {
+        budget.include_bytes(
+            threads
+                .checked_mul(self.bytes())
+                .ok_or(ValidationError::ImageTooLarge)?,
+        )
+    }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    /// Test-only: the pool threads' scratches this thread holds.
+    static LIVE_SCRATCHES: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
 impl BlockScratch {
+    fn new() -> Self {
+        #[cfg(test)]
+        LIVE_SCRATCHES.with(|live| live.set(live.get() + 1));
+        Self {
+            clipped: Vec::new(),
+            payload: Vec::new(),
+            segments: Vec::new(),
+        }
+    }
+
     /// Scratch for each of `count` threads, reserved before they start for
-    /// the largest payload any of them gathers, `payload_len` bytes, and the
-    /// most codeword segments of a block, `segments`, which the route
-    /// charged per thread: decoding never grows it. Charges `budget` for the
-    /// list, and for capacity the allocator gave beyond those.
+    /// `sizes`, which the route charged per thread: decoding never grows
+    /// it. Charges `budget` for the list, and for capacity the allocator
+    /// gave beyond `sizes`.
     pub(in crate::j2c::decode) fn for_threads(
         count: usize,
-        (payload_len, segments): (usize, usize),
+        sizes: ScratchSizes,
         budget: &mut DecodeAllocationBudget,
     ) -> Result<Vec<Self>> {
         let mut scratches = Vec::new();
         budget.reserve_new(&mut scratches, count)?;
         for _ in 0..count {
-            let mut scratch = Self::default();
-            try_reserve_decode_elements(&mut scratch.payload, payload_len)?;
-            try_reserve_decode_elements(&mut scratch.segments, segments)?;
-            budget.include_capacity_overage::<u8>(payload_len, scratch.payload.capacity())?;
+            let mut scratch = Self::new();
+            try_reserve_decode_elements(&mut scratch.clipped, sizes.samples)?;
+            try_reserve_decode_elements(&mut scratch.payload, sizes.payload_len)?;
+            try_reserve_decode_elements(&mut scratch.segments, sizes.segments)?;
+            budget.include_capacity_overage::<f32>(sizes.samples, scratch.clipped.capacity())?;
+            budget.include_capacity_overage::<u8>(sizes.payload_len, scratch.payload.capacity())?;
             budget.include_capacity_overage::<J2kCodeBlockSegment>(
-                segments,
+                sizes.segments,
                 scratch.segments.capacity(),
             )?;
             scratches.push(scratch);
         }
         Ok(scratches)
     }
+
+    /// Scratch for each of `count` threads, as [`Self::for_threads`]
+    /// reserves it, when nothing charged it yet: charges `budget` for all of
+    /// it. Returns `None` when it does not fit.
+    pub(in crate::j2c::decode) fn charged_for_threads(
+        count: usize,
+        sizes: ScratchSizes,
+        budget: &mut DecodeAllocationBudget,
+    ) -> Result<Option<Vec<Self>>> {
+        match sizes
+            .include(budget, count)
+            .and_then(|()| Self::for_threads(count, sizes, budget))
+        {
+            Ok(scratches) => Ok(Some(scratches)),
+            Err(error) if crate::j2c::decode::reuse::is_capacity_error(&error) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Test-only: how many pool threads' scratches this thread holds.
+    #[cfg(test)]
+    pub(in crate::j2c::decode) fn live() -> usize {
+        LIVE_SCRATCHES.with(core::cell::Cell::get)
+    }
+
+    /// Test-only: the bytes `scratches` hold, their list included.
+    #[cfg(test)]
+    pub(in crate::j2c::decode) fn held_bytes(scratches: &[Self]) -> usize {
+        scratches
+            .iter()
+            .fold(size_of_val(scratches), |bytes, scratch| {
+                [
+                    scratch.clipped.capacity() * size_of::<f32>(),
+                    scratch.payload.capacity(),
+                    scratch.segments.capacity() * size_of::<J2kCodeBlockSegment>(),
+                ]
+                .into_iter()
+                .fold(bytes, usize::saturating_add)
+            })
+    }
+}
+
+#[cfg(test)]
+impl Drop for BlockScratch {
+    fn drop(&mut self) {
+        LIVE_SCRATCHES.with(|live| live.set(live.get() - 1));
+    }
+}
+
+/// The first `samples` of a thread's block scratch, within the capacity
+/// [`BlockScratch::for_threads`] reserved: it never grows.
+fn block_scratch(scratch: &mut Vec<f32>, samples: usize) -> Result<&mut [f32]> {
+    if samples > scratch.capacity() {
+        return Err(DecodingError::CodeBlockDecodeFailure.into());
+    }
+    if scratch.len() < samples {
+        scratch.resize(samples, 0.0);
+    }
+    scratch
+        .get_mut(..samples)
+        .ok_or_else(|| DecodingError::CodeBlockDecodeFailure.into())
 }
 
 struct BlockJob<'a> {
@@ -250,10 +378,14 @@ struct TilePlan<'a> {
 }
 
 impl TilePlan<'_> {
-    /// What each thread's payload scratch holds for the plan: the largest
-    /// gathered payload's bytes and the most codeword segments of a block.
-    fn payload_scratch(&self) -> (usize, usize) {
-        (self.max_gathered_len, self.max_segments)
+    /// What each thread's scratch holds for the plan, with block scratch of
+    /// `samples`.
+    fn scratch_sizes(&self, samples: usize) -> ScratchSizes {
+        ScratchSizes {
+            payload_len: self.max_gathered_len,
+            segments: self.max_segments,
+            samples,
+        }
     }
 }
 
@@ -339,17 +471,12 @@ pub(in crate::j2c::decode) fn plan_tile_route<'a>(
     let workers = rayon::current_num_threads().min(plan.strips.len());
     let counts = TaskCounts::new(&plan, workers, storage.stale_coefficients)?;
     let route_budget = (|| -> Result<()> {
-        // Each worker gathers payloads into scratch of its own as it decodes.
-        include_payload_scratch(&mut budget, &plan, workers)?;
+        // Each worker holds scratch of its own, reserved before it starts.
+        plan.scratch_sizes(counts.scratch_samples)
+            .include(&mut budget, workers)?;
         // `plan_tile` charged one task per strip.
         budget.include_elements::<StripTask<'_, '_, '_>>(counts.tasks - plan.strips.len())?;
         budget.include_elements::<Mutex<&mut [f32]>>(counts.shared)?;
-        // Each worker allocates its block scratch on first use.
-        budget.include_elements::<f32>(
-            workers
-                .checked_mul(counts.scratch_samples)
-                .ok_or(ValidationError::ImageTooLarge)?,
-        )?;
         if has_later_components {
             // Component-at-a-time decoding retains this serial context while
             // preparing the next component. Do not commit a parallel bank
@@ -461,7 +588,7 @@ fn record_route_peak(
 ) -> Result<()> {
     let route_bytes = [
         plan_bytes(plan),
-        workers.saturating_mul(thread_scratch_bytes(plan, counts.scratch_samples)),
+        workers.saturating_mul(plan.scratch_sizes(counts.scratch_samples).thread_bytes()),
         counts.tasks * size_of::<StripTask<'_, '_, '_>>(),
         counts.shared * size_of::<Mutex<&mut [f32]>>(),
     ]
@@ -483,16 +610,6 @@ fn plan_bytes(plan: &TilePlan<'_>) -> usize {
     ]
     .into_iter()
     .fold(0, usize::saturating_add)
-}
-
-/// Bytes a thread's scratch holds at most for `plan`, as budgeted: the
-/// largest payload it gathers and the segments of its classic block of the
-/// most, block scratch of `scratch_samples`, and its entry in the threads'
-/// list.
-fn thread_scratch_bytes(plan: &TilePlan<'_>, scratch_samples: usize) -> usize {
-    payload_scratch_bytes(plan)
-        .saturating_add(scratch_samples.saturating_mul(size_of::<f32>()))
-        .saturating_add(size_of::<BlockScratch>())
 }
 
 /// Prepare one workspace per worker in the retained `bank`, then decode the
@@ -519,8 +636,8 @@ fn decode_with_bank<'a, W: TaskScratch>(
     ) else {
         return Ok(None);
     };
-    let Ok(mut scratches) = BlockScratch::for_threads(workers, plan.payload_scratch(), budget)
-    else {
+    let sizes = plan.scratch_sizes(counts.scratch_samples);
+    let Ok(mut scratches) = BlockScratch::for_threads(workers, sizes, budget) else {
         return Ok(None);
     };
     let mut coefficients = core::mem::take(&mut storage.coefficients);
@@ -1016,28 +1133,6 @@ fn strips_are_disjoint(strips: &mut [Strip], coefficient_len: usize) -> bool {
     previous_end <= coefficient_len
 }
 
-/// Charge the payload scratch each of `threads` threads holds to gather the
-/// plan's payloads and collect their codeword segments.
-fn include_payload_scratch(
-    budget: &mut DecodeAllocationBudget,
-    plan: &TilePlan<'_>,
-    threads: usize,
-) -> Result<()> {
-    budget.include_bytes(
-        threads
-            .checked_mul(payload_scratch_bytes(plan))
-            .ok_or(ValidationError::ImageTooLarge)?,
-    )
-}
-
-/// Bytes of a thread's scratch for the plan's largest gathered payload and
-/// its classic block of the most codeword segments.
-fn payload_scratch_bytes(plan: &TilePlan<'_>) -> usize {
-    plan.max_segments
-        .saturating_mul(size_of::<J2kCodeBlockSegment>())
-        .saturating_add(plan.max_gathered_len)
-}
-
 /// Gather the payload of `job`, a block whose payload spans several
 /// segments, into `scratch`: for a classic block every segment, for an HT
 /// block the selected set's cleanup and refinement segments.
@@ -1417,7 +1512,6 @@ fn decode_strips<'plan, 'coefficients, W: Send>(
                         jobs,
                         output,
                         stale,
-                        counts.scratch_samples,
                         workspace,
                         (&mut *scratch, source),
                         &decode_block,
@@ -1445,7 +1539,6 @@ fn decode_part<W>(
     jobs: Range<usize>,
     output: &Mutex<&mut [f32]>,
     stale: bool,
-    scratch_samples: usize,
     workspace: &mut W,
     (scratch, source): (&mut BlockScratch, PayloadSource<'_, '_>),
     decode_block: &impl Fn(&BlockJob<'_>, BlockPayload<'_>, &mut [f32], usize, &mut W) -> Result<()>,
@@ -1481,9 +1574,6 @@ fn decode_part<W>(
                 .fill(0.0);
         }
     }
-    if scratch.len() < scratch_samples {
-        try_resize_decode_elements(scratch, scratch_samples, 0.0)?;
-    }
     for job in plan
         .jobs
         .get(jobs)
@@ -1494,9 +1584,7 @@ fn decode_part<W>(
             target_y: 0,
             ..job.placement
         };
-        let block = scratch
-            .get_mut(..job.width as usize * job.height as usize)
-            .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+        let block = block_scratch(scratch, job.width as usize * job.height as usize)?;
         if !placement.is_whole(job.width, job.height) {
             block.fill(0.0);
         }
@@ -1532,14 +1620,7 @@ fn decode_strip<W>(
         let (block_output, output_stride) = if whole {
             (&mut output[placement.target_x as usize..], strip.stride)
         } else {
-            // One worker's scratch serves the strips of every component's
-            // plan, so it grows to the largest clipped block of each.
-            if clipped_scratch.len() < plan.max_clipped_samples {
-                try_resize_decode_elements(clipped_scratch, plan.max_clipped_samples, 0.0)?;
-            }
-            let block = clipped_scratch
-                .get_mut(..job.width as usize * job.height as usize)
-                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+            let block = block_scratch(clipped_scratch, job.width as usize * job.height as usize)?;
             block.fill(0.0);
             (block, job.width as usize)
         };
@@ -1853,16 +1934,9 @@ pub(in crate::j2c::decode) fn plan_band_route_beside<'a>(
     }
     let workers = threads.min(plan.strips.len());
     let prepared = (|| -> Result<usize> {
-        // Each thread gathers payloads into scratch of its own as it
-        // decodes, and allocates its block scratch on first use: a clipped
-        // block, or any block of a band it decodes a part of.
+        // Each thread holds scratch of its own, reserved before it starts.
         if !lockstep {
-            include_payload_scratch(&mut budget, &plan, workers + 1)?;
-            budget.include_elements::<f32>(
-                (workers + 1)
-                    .checked_mul(band_scratch_samples(&plan)?)
-                    .ok_or(ValidationError::ImageTooLarge)?,
-            )?;
+            band_scratch_sizes(&plan)?.include(&mut budget, workers + 1)?;
         }
         let (width, height) = (plan.max_width, plan.max_height);
         let structural = &mut storage.structural_workspace_bytes;
@@ -1899,13 +1973,14 @@ pub(in crate::j2c::decode) fn plan_band_route_beside<'a>(
     }
 }
 
-/// The block scratch each thread of a band route holds: as large as any
-/// block, since a part decodes every block of its run through it.
-fn band_scratch_samples(plan: &TilePlan<'_>) -> Result<usize> {
+/// What each thread of a band route holds for `plan`: block scratch as
+/// large as any block, since a part decodes every block of its run through
+/// it.
+fn band_scratch_sizes(plan: &TilePlan<'_>) -> Result<ScratchSizes> {
     let block = (plan.max_width as usize)
         .checked_mul(plan.max_height as usize)
         .ok_or(ValidationError::ImageTooLarge)?;
-    Ok(block.max(plan.max_clipped_samples))
+    Ok(plan.scratch_sizes(block.max(plan.max_clipped_samples)))
 }
 
 impl BandRoute<'_> {
@@ -1924,36 +1999,28 @@ impl BandRoute<'_> {
         self.workers
     }
 
-    /// What each thread's payload scratch holds for this plan: the largest
-    /// gathered payload's bytes and the most codeword segments of a block.
-    pub(in crate::j2c::decode) fn payload_scratch(&self) -> (usize, usize) {
-        self.plan.payload_scratch()
+    /// What each thread's scratch holds for this route, as its planning
+    /// charged it.
+    pub(in crate::j2c::decode) fn scratch_sizes(&self) -> Result<ScratchSizes> {
+        band_scratch_sizes(&self.plan)
     }
 
-    /// What each thread's scratch holds to serve all of `routes` at once,
-    /// the largest of each part over them: its bytes, as budgeted, and the
-    /// payload scratch to reserve (see [`BlockScratch::for_threads`]).
+    /// What each thread's scratch holds to serve all of `routes` at once:
+    /// the largest of each size over them.
     pub(in crate::j2c::decode) fn shared_scratch<'r>(
-        routes: impl Iterator<Item = &'r Self>,
-    ) -> Result<(usize, (usize, usize))>
+        mut routes: impl Iterator<Item = &'r Self>,
+    ) -> Result<ScratchSizes>
     where
         Self: 'r,
     {
-        let (mut payload_len, mut segments, mut samples) = (0, 0, 0);
-        for route in routes {
-            payload_len = payload_len.max(route.plan.max_gathered_len);
-            segments = segments.max(route.plan.max_segments);
-            samples = samples.max(band_scratch_samples(&route.plan)?);
-        }
-        let bytes = [
-            payload_len,
-            segments.saturating_mul(size_of::<J2kCodeBlockSegment>()),
-            samples.saturating_mul(size_of::<f32>()),
-            size_of::<BlockScratch>(),
-        ]
-        .into_iter()
-        .fold(0, usize::saturating_add);
-        Ok((bytes, (payload_len, segments)))
+        routes.try_fold(
+            ScratchSizes {
+                payload_len: 0,
+                segments: 0,
+                samples: 0,
+            },
+            |sizes, route| Ok(sizes.max(band_scratch_sizes(&route.plan)?)),
+        )
     }
 
     pub(in crate::j2c::decode) fn strips(&self) -> impl Iterator<Item = BandStrip> + '_ {
@@ -2061,7 +2128,6 @@ impl BandRoute<'_> {
                     jobs,
                     slot,
                     true,
-                    band_scratch_samples(plan)?,
                     workspace,
                     scratch,
                     decode_block,
@@ -2095,7 +2161,7 @@ impl BandRoute<'_> {
         let plans = routes.clone().fold(0usize, |plans, route| {
             plans.saturating_add(plan_bytes(&route.plan))
         });
-        let (scratch, _) = Self::shared_scratch(routes.clone())?;
+        let scratch = Self::shared_scratch(routes.clone())?.thread_bytes();
         let bytes = plans.saturating_add(threads.saturating_mul(scratch));
         let sample = WorkspaceBytes::sample(tile_ctx, storage)?.with_tier1(bytes);
         tile_ctx.debug_counters.workspace_peak.record(sample);
@@ -2118,7 +2184,7 @@ mod tests {
         collect_segments, gather_payload, plan_block, route_fallback, split_runs,
         tile_route_fallback, BlockJob, BlockPlacement, BlockScratch, CodeBlock, CodeBlockCoding,
         CodeBlockStyle, DecodeAllocationBudget, DecompositionStorage, Layer, Payload,
-        PayloadSource, Segment, Strip, TaskCounts, TileRoute,
+        PayloadSource, ScratchSizes, Segment, Strip, TaskCounts, TileRoute,
     };
     use crate::j2c::rect::IntRect;
     use crate::J2kCodeBlockSegment;
@@ -2174,8 +2240,10 @@ mod tests {
             band: 0,
         };
         let mut budget = DecodeAllocationBudget::from_live_bytes(0).unwrap();
-        let mut scratches = BlockScratch::for_threads(1, (1500, 0), &mut budget).unwrap();
-        let charged = budget.live_bytes() - size_of::<BlockScratch>();
+        let mut scratches = BlockScratch::charged_for_threads(1, sizes(1500, 0, 0), &mut budget)
+            .unwrap()
+            .expect("scratch within the budget");
+        assert_eq!(budget.live_bytes(), 1500 + size_of::<BlockScratch>());
         let scratch = &mut scratches[0].payload;
         for (code_block, len) in [(0, 1000), (1, 1500)] {
             let gathered = gather_payload(
@@ -2189,9 +2257,8 @@ mod tests {
             assert_eq!(gathered, len as usize);
             assert_eq!(scratch.capacity(), 1500);
         }
-        assert_eq!(charged, 0, "the route charged the 1500 bytes; no overage");
         // A payload past the reserved scratch is a planning error, not growth.
-        let mut short = BlockScratch::for_threads(1, (1000, 0), &mut budget).unwrap();
+        let mut short = BlockScratch::for_threads(1, sizes(1000, 0, 0), &mut budget).unwrap();
         assert!(gather_payload(
             CodeBlockCoding::Classic,
             &job(1, 1500),
@@ -2199,6 +2266,37 @@ mod tests {
             &mut short[0].payload
         )
         .is_err());
+    }
+
+    fn sizes(payload_len: usize, segments: usize, samples: usize) -> ScratchSizes {
+        ScratchSizes {
+            payload_len,
+            segments,
+            samples,
+        }
+    }
+
+    /// Scratch for three threads, each with a 1500-byte payload, seven
+    /// segment descriptors and a 64 x 64 block, fits a budget of exactly its
+    /// bytes and their list, which it then holds, and not one byte less.
+    #[test]
+    fn thread_scratch_fits_exactly_the_bytes_it_holds() {
+        let held = 3
+            * (1500
+                + 7 * size_of::<J2kCodeBlockSegment>()
+                + 64 * 64 * size_of::<f32>()
+                + size_of::<BlockScratch>());
+        let at = |cap: usize| {
+            let mut budget = DecodeAllocationBudget::from_live_bytes_with_cap(100, cap).unwrap();
+            let scratches =
+                BlockScratch::charged_for_threads(3, sizes(1500, 7, 64 * 64), &mut budget).unwrap();
+            (scratches, budget.live_bytes())
+        };
+        let (scratches, live) = at(100 + held);
+        let scratches = scratches.expect("scratch within its exact budget");
+        assert_eq!(live, 100 + held);
+        assert_eq!(BlockScratch::held_bytes(&scratches), held);
+        assert!(at(100 + held - 1).0.is_none(), "one byte short");
     }
 
     /// A classic block of several codeword segments whose bytes are one
@@ -2259,7 +2357,7 @@ mod tests {
         assert!(matches!(job.payload, Payload::Borrowed(payload) if core::ptr::eq(payload, &data)));
         assert_eq!(segments, 2);
         let mut budget = DecodeAllocationBudget::from_live_bytes(0).unwrap();
-        let mut scratches = BlockScratch::for_threads(1, (0, 2), &mut budget).unwrap();
+        let mut scratches = BlockScratch::for_threads(1, sizes(0, 2, 0), &mut budget).unwrap();
         let BlockScratch {
             payload,
             segments: descriptors,
