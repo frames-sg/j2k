@@ -15,6 +15,11 @@ Staged workspace version: `0.13.2`.
   status, detail and batch source index. CUDA keeps its typed source and job
   attribution. Unsupported statuses, raw runtime failures and combined
   cleanup or release failures keep their existing classes.
+- Grayscale direct and referenced plans, which GPU decodes and decode
+  batches execute, reject a one-component codestream whose COD asks for a
+  multiple component transform, as decodes of it already did. A 39 x 7
+  one-bit gray image in five tiles with that flag failed every decode and
+  decoded in decode batches on the CPU and on CUDA.
 - A PLT length shorter than any packet, zero or, where EPH markers are
   required, below three bytes, for a packet that a region or
   reduced-resolution decode skips by its length is a packet error. Skipping
