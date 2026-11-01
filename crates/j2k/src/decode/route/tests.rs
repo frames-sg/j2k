@@ -3,10 +3,11 @@
 use super::{full_image_route, FullImageRoute, PlanesBudget, RouteRequest};
 use crate::backend::{image_at_scale, Image};
 use crate::decode::{
-    decode_full_image_into_with_native_context, decode_native_components_with_native_context,
-    native_components_route, native_region_components_route, NativeRoute,
+    decode_full_image_into_with_native_context, decode_full_image_on_route,
+    decode_native_components_with_native_context, native_components_route,
+    native_region_components_route, NativeRoute,
 };
-use crate::DecodeSettings;
+use crate::{DecodeSettings, J2kDecoder, J2kError, J2kScratchPool};
 use j2k_core::{Downscale, PixelFormat, Rect};
 use j2k_native::{encode, CpuDecodeParallelism, EncodeOptions};
 use j2k_native::{DecodeError, DecoderContext, DecodingError};
@@ -31,7 +32,7 @@ fn request(fmt: PixelFormat, budget: usize, parallelism: CpuDecodeParallelism) -
         parallelism,
         components: 3,
         coded_bytes: 0,
-        reduced: false,
+        scale: Downscale::None,
     }
 }
 
@@ -333,8 +334,8 @@ fn tiles_at_once_need_a_busy_tile_for_every_worker() {
     assert_eq!(workers(2048, 6), None);
 }
 
-/// Without a fixed budget, tiny reduced images, gray, reduced tiled and
-/// small full-resolution images keep the planes.
+/// Without a fixed budget, tiny reduced, gray and tiled images and small
+/// full-resolution images keep the planes.
 #[test]
 fn the_default_streams_where_streaming_measured_faster() {
     let options = |use_ht_block_coding| EncodeOptions {
@@ -363,7 +364,7 @@ fn the_default_streams_where_streaming_measured_faster() {
                 parallelism,
                 components,
                 coded_bytes: bytes.len(),
-                reduced: scale != Downscale::None,
+                scale,
             },
         )
     };
@@ -505,19 +506,19 @@ fn tiles_at_once_report_the_first_failing_tile() {
     }
 }
 
-/// Full-resolution classic images stream from 4 coded bits per pixel on 2
-/// to 11 pool threads from 512 x 512 samples, on larger pools too below 2^19
-/// samples, and on one thread from a megapixel; at fewer bits per pixel from
-/// 4096 x 2048 samples on pools of 2 to 6 threads and of 12 or more.
+/// Full-resolution classic images stream from 4 coded bits per pixel on 1
+/// to 11 pool threads from 512 x 512 samples and on larger pools too below
+/// 2^19 samples; at fewer bits per pixel from 4096 x 2048 samples on pools
+/// of up to 6 threads and of 12 or more.
 #[test]
 fn full_resolution_images_stream_when_tier1_bound() {
     use super::full_resolution_streams;
     let mosaic = 4096 * 2048;
     // 11 MB lossless and 2.2 MB at 2 bits per pixel.
     assert!(full_resolution_streams(mosaic, 11_104_128, 6));
-    // At 2 bits per pixel on small and large pools, but not on one thread or
-    // on the 7 to 11 threads where one pool reader holds the decode back.
-    for threads in [2, 6, 12, 18] {
+    // At 2 bits per pixel on one thread and on small and large pools, but
+    // not on the 7 to 11 threads where one pool reader holds the decode back.
+    for threads in [1, 2, 6, 12, 18] {
         assert!(
             full_resolution_streams(mosaic, 2_246_803, threads),
             "{threads}"
@@ -535,14 +536,24 @@ fn full_resolution_images_stream_when_tier1_bound() {
             "{threads}"
         );
     }
-    // One thread: from a megapixel.
-    assert!(full_resolution_streams(mosaic, 11_104_128, 1));
-    assert!(!full_resolution_streams(mosaic, 2_246_803, 1));
-    assert!(full_resolution_streams(mosaic, 11_104_128, 2));
-    assert!(full_resolution_streams(mosaic, 11_104_128, 11));
+    // 5428 x 4460 at 1.5 bits per pixel streams on one thread, 2896 x 2896
+    // at 1.5 keeps the planes on any pool.
+    assert!(full_resolution_streams(5428 * 4460, 4_553_929, 1));
+    for threads in [1, 6, 18] {
+        assert!(
+            !full_resolution_streams(2896 * 2896, 1_579_087, threads),
+            "{threads}"
+        );
+    }
+    for threads in [1, 2, 11] {
+        assert!(
+            full_resolution_streams(mosaic, 11_104_128, threads),
+            "{threads}"
+        );
+    }
     // 768 x 512 at 9.6 and 512 x 512 at 6.6 bits per pixel stream on any
     // pool, 4096 x 1024 at 5.9 only below 12 threads.
-    for threads in [2, 6, 12, 18] {
+    for threads in [1, 2, 6, 12, 18] {
         assert!(
             full_resolution_streams(768 * 512, 472_804, threads),
             "{threads}"
@@ -552,51 +563,314 @@ fn full_resolution_images_stream_when_tier1_bound() {
             "{threads}"
         );
     }
+    assert!(full_resolution_streams(4096 * 1024, 3_114_650, 1));
     assert!(full_resolution_streams(4096 * 1024, 3_114_650, 6));
     assert!(!full_resolution_streams(4096 * 1024, 3_114_650, 12));
-    assert!(!full_resolution_streams(768 * 512, 472_804, 1));
+    // No pool threads at all decide as before: from a megapixel at 4 bits per
+    // pixel or more, never at fewer.
+    assert!(full_resolution_streams(mosaic, 11_104_128, 0));
+    assert!(!full_resolution_streams(768 * 512, 472_804, 0));
+    assert!(!full_resolution_streams(5428 * 4460, 4_553_929, 0));
     // Below 512 x 512, and 512 x 512 tiles at 2 bits per pixel.
-    assert!(!full_resolution_streams(500 * 500, 250_000, 6));
-    assert!(!full_resolution_streams(512 * 512, 64_947, 6));
+    for threads in [1, 6] {
+        assert!(!full_resolution_streams(500 * 500, 250_000, threads));
+        assert!(!full_resolution_streams(512 * 384, 118_125, threads));
+        assert!(!full_resolution_streams(512 * 512, 64_947, threads));
+    }
 }
 
-/// Reduced decodes stream from a 1024 x 512 output on any pool (HTJ2K on
-/// two threads or more); smaller classic outputs from 256 x 256 on 2 to 11
-/// pool threads.
+/// Reduced decodes stream from a 1024 x 512 output on any pool, HTJ2K on two
+/// threads or more and on one from 1/4; smaller classic outputs from
+/// 256 x 256 on 2 to 11 pool threads and from 512 x 256 on one.
 #[test]
 fn reduced_decodes_stream_when_large_or_on_a_mid_sized_pool() {
     use super::reduced_streams;
     let (large, small) = (1024 * 512, 384 * 256);
+    let (half, quarter) = (Downscale::Half, Downscale::Quarter);
     for threads in [1, 6, 18] {
-        assert!(reduced_streams(large, false, threads), "{threads}");
-        assert!(!reduced_streams(small, true, threads), "{threads}");
+        for scale in [half, quarter, Downscale::Eighth] {
+            assert!(reduced_streams(large, scale, false, threads), "{threads}");
+            assert!(!reduced_streams(small, scale, true, threads), "{threads}");
+        }
     }
-    assert!(!reduced_streams(large, true, 1));
+    // On one thread HTJ2K streams at 1/4 and 1/8, not at 1/2.
+    assert!(!reduced_streams(4 * large, half, true, 1));
+    assert!(reduced_streams(large, quarter, true, 1));
+    assert!(reduced_streams(large, Downscale::Eighth, true, 1));
     for threads in [2, 6, 11] {
-        assert!(reduced_streams(large, true, threads), "{threads}");
-        assert!(reduced_streams(small, false, threads), "{threads}");
+        assert!(reduced_streams(4 * large, half, true, threads), "{threads}");
+        assert!(reduced_streams(small, half, false, threads), "{threads}");
     }
-    for threads in [1, 12, 18] {
-        assert!(!reduced_streams(small, false, threads), "{threads}");
+    for threads in [12, 18] {
+        assert!(!reduced_streams(small, half, false, threads), "{threads}");
     }
-    // 256 x 256 streams on 6 threads, 192 x 128 keeps the planes.
-    assert!(reduced_streams(256 * 256, false, 6));
-    assert!(!reduced_streams(192 * 128, false, 6));
+    // 256 x 256 streams on 6 threads, 192 x 128 keeps the planes; on one
+    // thread from 512 x 256.
+    assert!(reduced_streams(256 * 256, half, false, 6));
+    assert!(!reduced_streams(192 * 128, half, false, 6));
+    assert!(reduced_streams(512 * 256, Downscale::Eighth, false, 1));
+    assert!(!reduced_streams(small, half, false, 1));
+    assert!(!reduced_streams(256 * 256, half, false, 1));
+    // No pool threads at all decide as before.
+    assert!(reduced_streams(large, half, false, 0));
+    assert!(!reduced_streams(large, quarter, true, 0));
+    assert!(!reduced_streams(512 * 256, Downscale::Eighth, false, 0));
 }
 
-/// Gray images stream from 2896 x 2896 below 12 pool threads, and on larger
-/// pools from 5792 x 5792.
+/// Gray images stream at full resolution from 2896 x 2896 on 2 to 11 pool
+/// threads and on larger pools from 5792 x 5792, untiled at full resolution
+/// only; on one thread untiled from 1024 x 1024 and reduced from 512 x 256,
+/// tiled or not.
 #[test]
 fn large_gray_images_stream() {
     use super::gray_streams;
-    for threads in [1, 6, 11] {
-        assert!(gray_streams(2896 * 2896, threads), "{threads}");
-        assert!(!gray_streams(2048 * 2048, threads), "{threads}");
+    for threads in [0, 1, 6, 11] {
+        assert!(
+            gray_streams(2896 * 2896, false, false, threads),
+            "{threads}"
+        );
+    }
+    for threads in [0, 6, 11] {
+        assert!(
+            !gray_streams(2048 * 2048, false, false, threads),
+            "{threads}"
+        );
+        assert!(
+            !gray_streams(2896 * 2896, true, false, threads),
+            "{threads}"
+        );
+        assert!(
+            !gray_streams(5792 * 5792, false, true, threads),
+            "{threads}"
+        );
     }
     for threads in [12, 18] {
-        assert!(gray_streams(5792 * 5792, threads), "{threads}");
-        assert!(!gray_streams(4096 * 4096, threads), "{threads}");
+        assert!(
+            gray_streams(5792 * 5792, false, false, threads),
+            "{threads}"
+        );
+        assert!(
+            !gray_streams(4096 * 4096, false, false, threads),
+            "{threads}"
+        );
     }
+    // One thread: 1024 x 1024 and larger, and reduced outputs from 512 x 256.
+    assert!(gray_streams(1024 * 1024, false, false, 1));
+    assert!(!gray_streams(1024 * 512, false, false, 1));
+    for tiled in [false, true] {
+        assert!(gray_streams(1275 * 1650, true, tiled, 1));
+        assert!(gray_streams(512 * 256, true, tiled, 1));
+        assert!(!gray_streams(256 * 256, true, tiled, 1));
+    }
+}
+
+/// `bytes`, a one-tile codestream, claiming a `width` x `height` image and
+/// tile. Headers only: the route reads them and plans the planes from them.
+fn claiming(bytes: &[u8], (width, height): (u32, u32)) -> Vec<u8> {
+    let bytes = rewrite_siz(bytes, &[6, 22], |_| width);
+    rewrite_siz(&bytes, &[10, 26], |_| height)
+}
+
+/// The default route of `bytes`, an image of `components`, at `scale` into
+/// RGB8 or Gray8 on one thread, as if the codestream were `coded_bytes` long.
+fn one_thread_route(
+    bytes: &[u8],
+    components: u16,
+    scale: Downscale,
+    coded_bytes: usize,
+) -> FullImageRoute {
+    let fmt = if components == 1 {
+        PixelFormat::Gray8
+    } else {
+        PixelFormat::Rgb8
+    };
+    one_thread_route_to(bytes, components, scale, coded_bytes, fmt)
+}
+
+/// [`one_thread_route`] into `fmt`: the same with
+/// `CpuDecodeParallelism::Serial` and on a pool of one thread.
+fn one_thread_route_to(
+    bytes: &[u8],
+    components: u16,
+    scale: Downscale,
+    coded_bytes: usize,
+    fmt: PixelFormat,
+) -> FullImageRoute {
+    let image = image_at_scale(bytes, DecodeSettings::default(), scale).expect("image");
+    let route = |parallelism| {
+        full_image_route(
+            &image,
+            RouteRequest {
+                fmt,
+                budget: PlanesBudget::Default,
+                parallelism,
+                components,
+                coded_bytes,
+                scale,
+            },
+        )
+    };
+    let serial = route(CpuDecodeParallelism::Serial);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .expect("one-thread pool");
+    let one_thread_pool = pool.install(|| route(CpuDecodeParallelism::Auto));
+    assert_eq!(serial, one_thread_pool, "{fmt:?} {scale:?}");
+    serial
+}
+
+/// On one thread the default streams large low-rate and mid-sized classic
+/// RGB images, gray images from a megapixel, reduced and tiled images and
+/// HTJ2K images from 1/4, and keeps HTJ2K images at full resolution and 1/2,
+/// HTJ2K gray images and small images on the planes.
+#[test]
+fn one_thread_streams_wherever_streaming_is_nearly_as_fast() {
+    use FullImageRoute::{Planes, StreamedRegion};
+    let options = |use_ht_block_coding| EncodeOptions {
+        num_decomposition_levels: 3,
+        reversible: false,
+        use_ht_block_coding,
+        ..EncodeOptions::default()
+    };
+    let (classic, ht) = (
+        codestream(3, &options(false)),
+        codestream(3, &options(true)),
+    );
+    let (gray, gray_ht) = (
+        codestream(1, &options(false)),
+        codestream(1, &options(true)),
+    );
+    let full = Downscale::None;
+    // RGB at 2 and 1.5 bits per pixel, and at 6.
+    let mosaic = claiming(&classic, (4096, 2048));
+    assert_eq!(
+        one_thread_route_to(&mosaic, 3, full, 2_246_803, PixelFormat::Rgba8),
+        StreamedRegion
+    );
+    assert_eq!(
+        one_thread_route(&mosaic, 3, full, 2_246_803),
+        StreamedRegion
+    );
+    let square = claiming(&classic, (2896, 2896));
+    assert_eq!(one_thread_route(&square, 3, full, 1_579_087), Planes);
+    let mid = claiming(&classic, (1024, 768));
+    assert_eq!(one_thread_route(&mid, 3, full, 589_824), StreamedRegion);
+    let small = claiming(&classic, (512, 384));
+    assert_eq!(one_thread_route(&small, 3, full, 147_456), Planes);
+    // HTJ2K keeps the planes at full resolution and at 1/2, and streams
+    // from 1/4.
+    let ht_mosaic = claiming(&ht, (4096, 2048));
+    assert_eq!(one_thread_route(&ht_mosaic, 3, full, 12_236_468), Planes);
+    assert_eq!(
+        one_thread_route(&ht_mosaic, 3, Downscale::Half, 12_236_468),
+        Planes
+    );
+    assert_eq!(
+        one_thread_route(&ht_mosaic, 3, Downscale::Quarter, 2_249_731),
+        StreamedRegion
+    );
+    // Reduced classic outputs from 512 x 256.
+    for scale in [Downscale::Quarter, Downscale::Eighth] {
+        assert_eq!(
+            one_thread_route(&mosaic, 3, scale, 2_246_803),
+            StreamedRegion,
+            "{scale:?}"
+        );
+    }
+    assert_eq!(
+        one_thread_route(&mid, 3, Downscale::Eighth, 589_824),
+        Planes
+    );
+    // Gray: classic from a megapixel and reduced, HTJ2K never.
+    let gray_square = claiming(&gray, (1024, 1024));
+    assert_eq!(
+        one_thread_route(&gray_square, 1, full, 196_608),
+        StreamedRegion
+    );
+    let gray_page = claiming(&gray, (5100, 6600));
+    assert_eq!(
+        one_thread_route(&gray_page, 1, Downscale::Quarter, 6_319_456),
+        StreamedRegion
+    );
+    let gray_strip = claiming(&gray, (1024, 512));
+    assert_eq!(one_thread_route(&gray_strip, 1, full, 98_304), Planes);
+    let gray_ht_square = claiming(&gray_ht, (2048, 2048));
+    assert_eq!(
+        one_thread_route(&gray_ht_square, 1, full, 1_114_149),
+        Planes
+    );
+}
+
+/// On one thread a tiled classic image streams its tiles one after another
+/// at full resolution from 256 x 256 tiles, gray or RGB, and an HTJ2K one
+/// from 512 x 512 tiles, or from 256 x 256 into 16 bits. A reduced classic
+/// decode streams by its output's size whatever the tiles.
+#[test]
+fn one_thread_streams_tiles_from_256_x_256() {
+    let encoded = |components: u16, (width, height): (u32, u32), tile: u32, ht: bool| {
+        let pixels = vec![0x80_u8; (width * height) as usize * usize::from(components)];
+        let options = EncodeOptions {
+            num_decomposition_levels: 3,
+            tile_size: Some((tile, tile)),
+            use_ht_block_coding: ht,
+            ..EncodeOptions::default()
+        };
+        encode(&pixels, width, height, components, 8, false, &options).expect("encode fixture")
+    };
+    let flat = |components, size, tile| encoded(components, size, tile, false);
+    for components in [3, 1] {
+        let bytes = flat(components, (1024, 512), 256);
+        let coded = bytes.len();
+        for scale in [Downscale::None, Downscale::Half] {
+            assert_eq!(
+                one_thread_route(&bytes, components, scale, coded),
+                FullImageRoute::StreamedRegion,
+                "{components} {scale:?}"
+            );
+        }
+        let bytes = flat(components, (512, 256), 128);
+        assert_eq!(
+            one_thread_route(&bytes, components, Downscale::None, bytes.len()),
+            FullImageRoute::Planes,
+            "{components}"
+        );
+    }
+    let ht = encoded(3, (1024, 512), 256, true);
+    assert_eq!(
+        one_thread_route(&ht, 3, Downscale::None, ht.len()),
+        FullImageRoute::Planes
+    );
+    let ht = encoded(3, (1024, 512), 512, true);
+    assert_eq!(
+        one_thread_route(&ht, 3, Downscale::None, ht.len()),
+        FullImageRoute::StreamedRegion
+    );
+    // 16-bit outputs: HTJ2K tiles from 256 x 256.
+    let ht = encoded(3, (1024, 512), 256, true);
+    for fmt in [PixelFormat::Rgb16, PixelFormat::Rgba16] {
+        assert_eq!(
+            one_thread_route_to(&ht, 3, Downscale::None, ht.len(), fmt),
+            FullImageRoute::StreamedRegion,
+            "{fmt:?}"
+        );
+    }
+    let ht = encoded(3, (1024, 512), 128, true);
+    assert_eq!(
+        one_thread_route_to(&ht, 3, Downscale::None, ht.len(), PixelFormat::Rgb16),
+        FullImageRoute::Planes
+    );
+    // A 512 x 256 output of 128 x 128 tiles streams, a full-resolution
+    // decode of them keeps the planes.
+    let bytes = flat(3, (1024, 512), 128);
+    assert_eq!(
+        one_thread_route(&bytes, 3, Downscale::Half, bytes.len()),
+        FullImageRoute::StreamedRegion
+    );
+    assert_eq!(
+        one_thread_route(&bytes, 3, Downscale::None, bytes.len()),
+        FullImageRoute::Planes
+    );
 }
 
 /// Images of more than 8 bits and signed images stream at 16 bits and into
@@ -733,5 +1007,299 @@ fn native_region_rows_only_for_images_whose_region_decodes_stream() {
                 "{label}: {error:?}"
             );
         }
+    }
+}
+
+/// On one thread a 16-bit output streams from 512 x 512 samples whatever the
+/// coding, untiled or in tiles of 256 x 256 or more, where an 8-bit one of
+/// a full-resolution HTJ2K image keeps the planes.
+#[test]
+fn one_thread_streams_sixteen_bit_outputs_from_512_x_512() {
+    use FullImageRoute::{Planes, StreamedRegion};
+    let options = |use_ht_block_coding| EncodeOptions {
+        num_decomposition_levels: 3,
+        reversible: false,
+        use_ht_block_coding,
+        ..EncodeOptions::default()
+    };
+    let (classic, ht) = (
+        codestream(3, &options(false)),
+        codestream(3, &options(true)),
+    );
+    let gray_ht = codestream(1, &options(true));
+    let full = Downscale::None;
+    let ht_mosaic = claiming(&ht, (4096, 2048));
+    for fmt in [PixelFormat::Rgb16, PixelFormat::Rgba16] {
+        assert_eq!(
+            one_thread_route_to(&ht_mosaic, 3, full, 2_249_731, fmt),
+            StreamedRegion,
+            "{fmt:?}"
+        );
+    }
+    assert_eq!(one_thread_route(&ht_mosaic, 3, full, 2_249_731), Planes);
+    // 1.5 bits per pixel below 4096 x 2048, and 512 x 512 at 6.
+    let square = claiming(&classic, (2896, 2896));
+    assert_eq!(
+        one_thread_route_to(&square, 3, full, 1_579_087, PixelFormat::Rgb16),
+        StreamedRegion
+    );
+    let tile = claiming(&classic, (512, 512));
+    assert_eq!(
+        one_thread_route_to(&tile, 3, full, 196_608, PixelFormat::Rgb16),
+        StreamedRegion
+    );
+    let small = claiming(&classic, (512, 384));
+    assert_eq!(
+        one_thread_route_to(&small, 3, full, 147_456, PixelFormat::Rgb16),
+        Planes
+    );
+    let gray_ht_square = claiming(&gray_ht, (2048, 2048));
+    assert_eq!(
+        one_thread_route_to(&gray_ht_square, 1, full, 1_114_149, PixelFormat::Gray16),
+        StreamedRegion
+    );
+    // The reduced output counts: 1/2 of 1024 x 512 is below 512 x 512.
+    let strip = claiming(&ht, (1024, 512));
+    assert_eq!(
+        one_thread_route_to(&strip, 3, Downscale::Half, 1_000_000, PixelFormat::Rgb16),
+        Planes
+    );
+}
+
+/// `bytes`, a one-tile codestream of one coding style with the largest
+/// precincts, as a `width` x `height` image whose packets are all empty: its
+/// main header with the image and tile resized, then one tile-part of a zero
+/// byte per packet. It decodes to mid-level samples whatever its size,
+/// without a code-block to decode.
+fn with_empty_packets(bytes: &[u8], (width, height): (u32, u32)) -> Vec<u8> {
+    let (mut end, mut levels, mut components) = (2, None, None);
+    while bytes[end..end + 2] != [0xff, 0x90] {
+        let length = usize::from(u16::from_be_bytes([bytes[end + 2], bytes[end + 3]]));
+        match bytes[end + 1] {
+            0x51 => components = Some(u16::from_be_bytes([bytes[end + 38], bytes[end + 39]])),
+            0x52 => {
+                assert_eq!(bytes[end + 4] & 1, 0, "the largest precincts");
+                levels = Some(u32::from(bytes[end + 9]));
+            }
+            0x53 => panic!("one coding style"),
+            _ => {}
+        }
+        end += 2 + length;
+    }
+    let (levels, components) = (levels.expect("COD"), components.expect("SIZ"));
+    let precincts = |extent: u32| u64::from(extent.div_ceil(1 << 15));
+    let per_component: u64 = (0..=levels)
+        .map(|shift| precincts(width.div_ceil(1 << shift)) * precincts(height.div_ceil(1 << shift)))
+        .sum();
+    let packets = usize::try_from(per_component * u64::from(components)).expect("packets");
+    let mut out = claiming(&bytes[..end], (width, height));
+    let tile_part = u32::try_from(14 + packets).expect("tile-part length");
+    out.extend_from_slice(&[0xff, 0x90, 0, 10, 0, 0]);
+    out.extend_from_slice(&tile_part.to_be_bytes());
+    out.extend_from_slice(&[0, 1, 0xff, 0x93]);
+    out.resize(out.len() + packets, 0);
+    out.extend_from_slice(&[0xff, 0xd9]);
+    out
+}
+
+/// The default request for a full-resolution decode of `bytes`, an image of
+/// `components`, into `fmt` with `parallelism`.
+fn default_request(
+    bytes: &[u8],
+    components: u16,
+    fmt: PixelFormat,
+    parallelism: CpuDecodeParallelism,
+) -> RouteRequest {
+    RouteRequest {
+        fmt,
+        budget: PlanesBudget::Default,
+        parallelism,
+        components,
+        coded_bytes: bytes.len(),
+        scale: Downscale::None,
+    }
+}
+
+/// A wide, shallow RGB image of one 5/3 level in 1024 x 4 code-blocks
+/// without a multiple-component transform, of `width` x `height`.
+fn wide_and_shallow(width: u32, height: u32) -> Vec<u8> {
+    let options = EncodeOptions {
+        num_decomposition_levels: 1,
+        code_block_width_exp: 8,
+        code_block_height_exp: 0,
+        use_mct: false,
+        ..EncodeOptions::default()
+    };
+    with_empty_packets(&codestream(3, &options), (width, height))
+}
+
+/// A wide, shallow image whose planes fit the decode budget while its
+/// streamed rows' line buffers do not (8,388,608 x 1 RGB) is preferred for
+/// streaming on one thread and on a pool of six threads. Its stream is
+/// refused by the budget before it decodes, and the decode then runs on the
+/// planes and writes their bytes.
+#[test]
+fn a_preferred_stream_past_the_budget_decodes_on_the_planes() {
+    use CpuDecodeParallelism::{Auto, Serial};
+    let width = 1_u32 << 23;
+    let bytes = wide_and_shallow(width, 1);
+    let image = image_at_scale(&bytes, DecodeSettings::default(), Downscale::None).expect("image");
+    let planes_floor = image.full_decode_planes_floor(0).expect("plan");
+    assert!(
+        planes_floor.is_some_and(|floor| floor <= j2k_native::DEFAULT_MAX_DECODE_BYTES),
+        "{planes_floor:?}"
+    );
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(6)
+        .build()
+        .expect("pool");
+    for fmt in [PixelFormat::Rgb8, PixelFormat::Rgb16] {
+        let request = default_request(&bytes, 3, fmt, Serial);
+        let route = full_image_route(&image, request);
+        assert_eq!(route, FullImageRoute::StreamedRegion, "{fmt:?}");
+        let on_the_pool =
+            pool.install(|| full_image_route(&image, default_request(&bytes, 3, fmt, Auto)));
+        assert_eq!(on_the_pool, FullImageRoute::StreamedRegion, "{fmt:?}");
+        let stride = width as usize * fmt.bytes_per_pixel();
+        let mut out = vec![0; stride];
+        let refused = decode_full_image_into_with_native_context(
+            &image,
+            &mut context(Serial),
+            &mut out,
+            stride,
+            fmt,
+            &route,
+        );
+        assert!(
+            matches!(refused, Err(J2kError::ResourceLimit { .. })),
+            "{fmt:?}: {refused:?}"
+        );
+        let planes = decode_on(&image, Serial, fmt, &FullImageRoute::Planes);
+        decode_full_image_on_route(
+            &image,
+            &mut context(Serial),
+            &mut out,
+            stride,
+            request,
+            &route,
+        )
+        .unwrap_or_else(|error| panic!("{fmt:?}: {error:?}"));
+        assert!(out == planes, "{fmt:?}");
+        // The decoder's own full-image decode, on one thread and on the pool.
+        for parallelism in [Some(crate::CpuDecodeParallelism::Serial), None] {
+            let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
+            if let Some(parallelism) = parallelism {
+                decoder.set_cpu_decode_parallelism(parallelism);
+            }
+            let mut out = vec![0; stride];
+            pool.install(|| decoder.decode_into(&mut out, stride, fmt))
+                .unwrap_or_else(|error| panic!("{fmt:?} {parallelism:?}: {error:?}"));
+            assert!(out == planes, "{fmt:?} {parallelism:?}");
+        }
+    }
+}
+
+/// A wide, shallow image whose streamed rows fit the budget keeps its
+/// preferred stream on one thread, and the stream writes the planes' bytes:
+/// 65,536 x 4 RGB into 16 bits, and 1,048,576 x 8 RGB at a low rate.
+#[test]
+fn a_wide_image_whose_stream_fits_streams() {
+    use CpuDecodeParallelism::Serial;
+    for ((width, height), fmt) in [
+        ((1 << 16, 4), PixelFormat::Rgb16),
+        ((1 << 20, 8), PixelFormat::Rgb8),
+    ] {
+        let bytes = wide_and_shallow(width, height);
+        let image =
+            image_at_scale(&bytes, DecodeSettings::default(), Downscale::None).expect("image");
+        let route = full_image_route(&image, default_request(&bytes, 3, fmt, Serial));
+        assert_eq!(route, FullImageRoute::StreamedRegion, "{width} {fmt:?}");
+        let streamed = decode_on(&image, Serial, fmt, &route);
+        let planes = decode_on(&image, Serial, fmt, &FullImageRoute::Planes);
+        assert!(streamed == planes, "{width} {fmt:?}");
+    }
+}
+
+/// Rows of `components` 8-bit samples of a `width` x `height` image with
+/// edges and texture.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "each sample keeps the low byte of its pattern on purpose"
+)]
+fn textured(components: u16, (width, height): (u32, u32)) -> Vec<u8> {
+    let components = u32::from(components);
+    (0..width * height * components)
+        .map(|index| {
+            let (pixel, component) = (index / components, index % components);
+            let (x, y) = (pixel % width, pixel / width);
+            ((x * 3 + y * 5) ^ ((x * y) >> 6)).wrapping_add(component * 85) as u8
+        })
+        .collect()
+}
+
+/// On one thread the decoder's default full-image and reduced decodes of
+/// each kind of image that streams there write the planes' bytes: mid-sized
+/// RGB, gray from a megapixel, RGB and gray in tiles of 256 x 256, reduced
+/// RGB untiled and in tiles, reduced gray, HTJ2K RGB at 1/4, and HTJ2K RGB
+/// into 16 bits untiled and in tiles of 256 x 256 (large low-rate RGB in
+/// `a_wide_image_whose_stream_fits_streams`).
+#[test]
+fn one_thread_default_streams_write_the_planes_bytes() {
+    let encoded = |components: u16, size: (u32, u32), tile: Option<u32>, ht: bool| {
+        let options = EncodeOptions {
+            num_decomposition_levels: 3,
+            reversible: false,
+            tile_size: tile.map(|tile| (tile, tile)),
+            use_ht_block_coding: ht,
+            ..EncodeOptions::default()
+        };
+        let pixels = textured(components, size);
+        encode(&pixels, size.0, size.1, components, 8, false, &options).expect("encode fixture")
+    };
+    let rgb = |size, tile, ht| (encoded(3, size, tile, ht), 3);
+    let gray = |size, tile| (encoded(1, size, tile, false), 1);
+    let ht_mosaic = with_empty_packets(&encoded(3, (96, 80), None, true), (4096, 2048));
+    let (full, half, quarter) = (Downscale::None, Downscale::Half, Downscale::Quarter);
+    let (rgb8, rgb16, gray8) = (PixelFormat::Rgb8, PixelFormat::Rgb16, PixelFormat::Gray8);
+    let cases = [
+        ("RGB", rgb((512, 512), None, false), full, rgb8),
+        ("gray", gray((1024, 1024), None), full, gray8),
+        ("RGB tiles", rgb((512, 512), Some(256), false), full, rgb8),
+        ("gray tiles", gray((512, 512), Some(256)), full, gray8),
+        ("reduced RGB", rgb((1024, 512), None, false), half, rgb8),
+        ("1/2 tiles", rgb((1024, 512), Some(128), false), half, rgb8),
+        ("reduced gray", gray((1024, 512), None), half, gray8),
+        ("HTJ2K at 1/4", (ht_mosaic, 3), quarter, rgb8),
+        ("HTJ2K 16-bit", rgb((512, 512), None, true), full, rgb16),
+        (
+            "16-bit tiles",
+            rgb((1024, 512), Some(256), true),
+            full,
+            rgb16,
+        ),
+    ];
+    for (label, (bytes, components), scale, fmt) in cases {
+        assert_eq!(
+            one_thread_route_to(&bytes, components, scale, bytes.len(), fmt),
+            FullImageRoute::StreamedRegion,
+            "{label}"
+        );
+        let decode = |planes_budget: Option<usize>| {
+            let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
+            decoder.set_cpu_decode_parallelism(crate::CpuDecodeParallelism::Serial);
+            if let Some(bytes) = planes_budget {
+                decoder.set_full_decode_planes_budget(bytes);
+            }
+            let (width, height) = decoder.info().dimensions;
+            let denominator = scale.denominator();
+            let (width, height) = (width.div_ceil(denominator), height.div_ceil(denominator));
+            let stride = width as usize * fmt.bytes_per_pixel();
+            let mut out = vec![0; stride * height as usize];
+            decoder
+                .decode_scaled_into(&mut J2kScratchPool::new(), &mut out, stride, fmt, scale)
+                .unwrap_or_else(|error| panic!("{label}: {error:?}"));
+            out
+        };
+        assert!(decode(None) == decode(Some(usize::MAX)), "{label}");
     }
 }

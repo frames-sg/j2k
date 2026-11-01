@@ -97,6 +97,42 @@ pub(crate) fn decode_full_image_into_with_native_context<'a>(
     }
 }
 
+/// Decode the full `image` into `out` on `route`, which [`full_image_route`]
+/// chose for `request`. A stream the budget refuses runs on the planes
+/// instead, from a fresh context, when they fit the budget (see
+/// `route::planes_fit`); the planes write every row, including rows the
+/// stream wrote before it was refused.
+pub(crate) fn decode_full_image_on_route<'a>(
+    image: &Image<'a>,
+    native_context: &mut j2k_native::DecoderContext<'a>,
+    out: &mut [u8],
+    stride: usize,
+    request: RouteRequest,
+    route: &FullImageRoute,
+) -> Result<(), J2kError> {
+    let fmt = request.fmt;
+    match decode_full_image_into_with_native_context(image, native_context, out, stride, fmt, route)
+    {
+        Err(J2kError::ResourceLimit { .. })
+            if route.streams() && route::planes_fit(image, request) =>
+        {
+            let parallelism = native_context.cpu_decode_parallelism();
+            *native_context = j2k_native::DecoderContext::default();
+            native_context.set_cpu_decode_parallelism(parallelism);
+            let planes = FullImageRoute::Planes;
+            decode_full_image_into_with_native_context(
+                image,
+                native_context,
+                out,
+                stride,
+                fmt,
+                &planes,
+            )
+        }
+        decoded => decoded,
+    }
+}
+
 pub(crate) fn decode_image_into_with_native_context<'a>(
     image: &Image<'a>,
     native_context: &mut j2k_native::DecoderContext<'a>,

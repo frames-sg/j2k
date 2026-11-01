@@ -13,9 +13,12 @@
 //! native decoder plans the planes route's charge and whether the region
 //! decode streams from the codestream before anything is decoded (see
 //! `Image::full_decode_planes_floor`), so the choice is made once, before
-//! the decode, and a decode never reruns after a failure.
+//! the decode. Only a stream chosen by preference whose own working memory
+//! the budget refuses runs again, on the planes, and only when they fit (see
+//! `planes_fit`): streaming by preference never fails a decode the planes
+//! finish.
 
-use j2k_core::{PixelFormat, Rect};
+use j2k_core::{Downscale, PixelFormat, Rect};
 use j2k_native::CpuDecodeParallelism;
 
 use super::output::u16_rows_pack_floor;
@@ -46,7 +49,7 @@ impl FullImageRoute {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PlanesBudget {
     /// The native decode budget; an image within it still streams where
-    /// streaming is the faster route (see [`streams_by_default`]).
+    /// streaming is the better route (see [`streams_by_default`]).
     Default,
     /// These bytes and no preference: the planes route unless the planes
     /// would pass them. A test hook that forces either route.
@@ -63,28 +66,21 @@ pub(crate) struct RouteRequest {
     pub(crate) components: u16,
     /// The bytes of the coded image, its codestream and container.
     pub(crate) coded_bytes: usize,
-    /// Whether the image is decoded below full resolution.
-    pub(crate) reduced: bool,
+    /// The resolution the image is decoded at.
+    pub(crate) scale: Downscale,
 }
 
 /// How a full-image decode of `image` runs for `request`: streamed when the
 /// output has 8 bits per sample, or 16 bits whose rows carry the native
 /// samples the planes route packs (see `u16_rows_pack_floor`), the region
 /// decode streams, and either the planes (or their 16-bit pack) would pass
-/// the budget or the streamed route is the faster one for this image.
+/// the budget or the streamed route is the better one for this image.
 ///
 /// A planning error keeps the planes route, which meets the same error and
 /// reports it.
 pub(crate) fn full_image_route(image: &Image<'_>, request: RouteRequest) -> FullImageRoute {
-    let pack_floor = match request.fmt {
-        PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Gray8 => 0,
-        PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16 => {
-            match u16_rows_pack_floor(image, request.fmt) {
-                Some(floor) => floor,
-                None => return FullImageRoute::Planes,
-            }
-        }
-        _ => return FullImageRoute::Planes,
+    let Some(pack_floor) = pack_floor(image, request.fmt) else {
+        return FullImageRoute::Planes;
     };
     let planes_budget = match request.budget {
         PlanesBudget::Default => j2k_native::DEFAULT_MAX_DECODE_BYTES,
@@ -108,16 +104,48 @@ pub(crate) fn full_image_route(image: &Image<'_>, request: RouteRequest) -> Full
     }
 }
 
+/// What the 16-bit pack of `image` into `fmt` holds besides the planes (see
+/// `u16_rows_pack_floor`), nothing for an 8-bit output, or `None` when the
+/// streamed rows cannot write `fmt`.
+fn pack_floor(image: &Image<'_>, fmt: PixelFormat) -> Option<usize> {
+    match fmt {
+        PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Gray8 => Some(0),
+        PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16 => {
+            u16_rows_pack_floor(image, fmt)
+        }
+        _ => None,
+    }
+}
+
+/// Whether a full-image decode of `image` for `request` that streams by
+/// preference may run on the planes instead when the budget refuses its
+/// stream: at the default budget, when the planes and their 16-bit pack fit
+/// it. The planes grow with an image's area and the streamed rows' line
+/// buffers with its width, so a wide and shallow image can fit the one and
+/// not the other: an RGB image 8,388,608 samples wide and a row or two deep
+/// fits its planes, but not its reconstruction rows.
+pub(super) fn planes_fit(image: &Image<'_>, request: RouteRequest) -> bool {
+    let budget = j2k_native::DEFAULT_MAX_DECODE_BYTES;
+    request.budget == PlanesBudget::Default
+        && pack_floor(image, request.fmt).is_some_and(|pack_floor| {
+            !matches!(
+                image.full_decode_planes_floor(budget),
+                Ok(Some(floor)) if floor.max(pack_floor) > budget
+            )
+        })
+}
+
 /// Pool threads from which a classic tile of several components
 /// reconstructs each component on its own pool reader (`parallel_synthesis`
 /// in the native decoder's pool bands). From there, a full-resolution
 /// untiled image decodes 3-6% faster on the planes.
 const CLASSIC_SYNTHESIS_THREADS: usize = 12;
 
-/// Samples from which a full-resolution classic image streams on 2 to 11
+/// Samples from which a full-resolution classic image streams on 1 to 11
 /// pool threads (a 512 x 512 image at 6.6 coded bits per pixel and 768 x 512
-/// ones at 9.6 decode 5-10% faster streamed on 6 threads); smaller images
-/// spend more of their time setting up the pool bands.
+/// ones at 9.6 decode 5-10% faster streamed on 6 threads, 1% slower on one,
+/// in a third of the memory); smaller images spend more of their time
+/// setting up the pool bands, and on one thread the line IDWT's rows.
 const MIN_STREAMED_SAMPLES: u64 = 1 << 18;
 
 /// Samples below which a full-resolution classic image also streams from
@@ -127,14 +155,19 @@ const MIN_STREAMED_SAMPLES: u64 = 1 << 18;
 const MAX_STREAMED_SAMPLES_ON_A_LARGE_POOL: u64 = 1 << 19;
 
 /// Samples a tile needs to stream one after another with the pool behind
-/// it (measured on 1024 x 1024 tiles only), and an untiled classic image to
-/// stream on one thread: 2048 x 2048 to 4096 x 4096 RGB images at 5-11
-/// coded bits per pixel decode as fast streamed on one thread (0.99-1.01),
-/// in a third of the memory.
+/// it (measured on 1024 x 1024 tiles only).
 const MIN_STREAMED_TILE_SAMPLES: u64 = 1 << 20;
 
-/// Output samples from which a reduced-resolution decode streams on any
-/// pool (a 1024 x 512 output and larger: 6-53% faster on 18 threads). On 12
+/// Samples a classic tile needs to stream one after another on one thread:
+/// 4096 x 4096 and 2048 x 2048 RGB images in 256 x 256 tiles decode 1%
+/// slower streamed, in a fiftieth to a two-hundredth of the memory. An HTJ2K
+/// tile needs [`MIN_STREAMED_SAMPLES`] (512 x 512 tiles 0.93-0.99 of the
+/// planes), the streamed IDWT's rows costing more on narrower tiles.
+const MIN_STREAMED_TILE_SAMPLES_ON_ONE_THREAD: u64 = 1 << 16;
+
+/// Output samples from which a reduced-resolution classic decode streams on
+/// any pool (a 1024 x 512 output and larger: 6-53% faster on 18 threads),
+/// and an HTJ2K one on two threads or more or on one at 1/4 and below. On 12
 /// pool threads or more a smaller classic output gains nothing from
 /// streaming (a 384 x 256 output of a 768 x 512 image 2-3% slower on 12
 /// threads, 2% faster on 18), and smaller HTJ2K outputs are up to 59% slower
@@ -146,13 +179,26 @@ const MIN_REDUCED_STREAMED_SAMPLES: u64 = 1 << 19;
 /// streamed on 6 threads, a 192 x 128 one 1-3% slower.
 const MIN_SMALL_REDUCED_STREAMED_SAMPLES: u64 = 1 << 16;
 
+/// Output samples from which a smaller reduced classic decode streams on one
+/// thread: 512 x 256 to 758 x 532 outputs of 4096 x 2048 to 6061 x 4252
+/// images decode 3-11% faster streamed, in a thirtieth to a sixtieth of the
+/// memory (the planes route holds the full-resolution coefficients), while
+/// 256 x 256 and 384 x 256 outputs of small images are 0-6% slower.
+const MIN_SMALL_REDUCED_STREAMED_SAMPLES_ON_ONE_THREAD: u64 = 1 << 17;
+
 /// Samples from which an untiled one-component classic image streams at
-/// full resolution below [`CLASSIC_SYNTHESIS_THREADS`] pool threads: the
-/// smallest gray image measured. With the pool bands decoding a band in
-/// parts when the rings hold too few bands, 2896 x 2896 to 5792 x 5792 gray
-/// images decode 12-15% faster streamed on 6 threads and as fast on one, in
-/// a fifth to a seventh of the memory (5792 x 5792: 459 vs 68 MB).
+/// full resolution on 2 to 11 pool threads: the smallest gray image
+/// measured. With the pool bands decoding a band in parts when the rings
+/// hold too few bands, 2896 x 2896 to 5792 x 5792 gray images decode 12-15%
+/// faster streamed on 6 threads, in a fifth to a seventh of the memory
+/// (5792 x 5792: 459 vs 68 MB).
 const MIN_STREAMED_GRAY_SAMPLES: u64 = 2896 * 2896;
+
+/// Samples from which a one-component classic image streams at full
+/// resolution on one thread: 1024 x 1024 to 4096 x 1024 gray images at 1.5
+/// bits per pixel to lossless decode 0-3% slower streamed, in a fifteenth to
+/// a thirtieth of the memory.
+const MIN_STREAMED_GRAY_SAMPLES_ON_ONE_THREAD: u64 = 1 << 20;
 
 /// Samples from which a gray image streams on larger pools too: 5792 x 5792
 /// decodes as fast streamed on 18 threads (0.96-1.02), 2896 x 2896 and
@@ -162,7 +208,7 @@ const MIN_STREAMED_GRAY_SAMPLES_ON_A_LARGE_POOL: u64 = 5792 * 5792;
 /// Coded bits per sample from which a full-resolution untiled classic image
 /// streams as [`full_resolution_streams`] says: below it Tier-1 is light, the
 /// decode is bound by the inverse transforms and the pack, and the planes'
-/// fused last level does those faster on one thread and on small images.
+/// fused last level does those faster on small images.
 const MIN_STREAMED_CODED_BITS_PER_SAMPLE: u64 = 4;
 
 /// Samples from which a full-resolution classic image below
@@ -171,8 +217,11 @@ const MIN_STREAMED_CODED_BITS_PER_SAMPLE: u64 = 4;
 /// [`CLASSIC_SYNTHESIS_THREADS`] or more: with its rows packed through the
 /// fused RGB8 pack, a 4096 x 2048 image at 2 bits per pixel decodes 4-7%
 /// faster streamed on 4 to 6 threads and 5% faster on 18, in less than half
-/// the memory, and 1% slower on one; 512 x 512 ones at 2 bits per pixel are
-/// 22% slower on 6 threads.
+/// the memory; on one thread 4096 x 2048 to 5428 x 4460 images at 1.5 to 2
+/// bits per pixel decode 2-3% slower streamed, in a tenth to a twentieth of
+/// the memory (5428 x 4460: 309 vs 16 MiB), and 2048 x 2048 to 2896 x 2896
+/// ones 4% slower; 512 x 512 ones at 2 bits per pixel are 22% slower on 6
+/// threads.
 const MIN_STREAMED_LOW_RATE_SAMPLES: u64 = 1 << 23;
 
 /// Pool threads up to which a large image below
@@ -183,44 +232,69 @@ const MIN_STREAMED_LOW_RATE_SAMPLES: u64 = 1 << 23;
 const MAX_LOW_RATE_SHARED_READER_THREADS: usize = 6;
 
 /// Whether an image the planes route can decode streams anyway, because
-/// streaming was measured at least as fast for its kind; for three
-/// components:
+/// streaming was measured at least as fast for its kind, or on one thread
+/// nearly as fast in much less memory; for three components:
 /// - a full-resolution tiled image whose tiles decode at once (see
 ///   [`tile_workers`]);
 /// - an untiled reduced image of [`MIN_REDUCED_STREAMED_SAMPLES`] output
 ///   samples or more: classic at any thread count, HTJ2K on two threads or
-///   more (one thread decodes a half resolution HTJ2K image 2-9% faster on
-///   the planes); a smaller classic one of
-///   [`MIN_SMALL_REDUCED_STREAMED_SAMPLES`] or more on 2 to 11 pool threads;
+///   more and on one from 1/4 (1/4 outputs of 2896 x 2896 to 4096 x 4096
+///   images at 1 to 12 bits per pixel 6-13% faster streamed, in a fifteenth
+///   of the memory; 1/2 outputs 1-9% slower); a smaller classic one of
+///   [`MIN_SMALL_REDUCED_STREAMED_SAMPLES`] or more on 2 to 11 pool threads
+///   and of [`MIN_SMALL_REDUCED_STREAMED_SAMPLES_ON_ONE_THREAD`] or more on
+///   one; on one thread a tiled one too (4096 x 4096 RGB in 1024 x 1024
+///   tiles at 1/2 and 1/4 1-4% faster, in a fiftieth of the memory);
 /// - a full-resolution classic image of at least 4 coded bits per pixel, or a
-///   large one at fewer on most pools (see [`full_resolution_streams`]); a tiled
-///   one whose tiles do not decode at
+///   large one at fewer on most pools and on one thread (see
+///   [`full_resolution_streams`]); a tiled one whose tiles do not decode at
 ///   once streams them one after another, so each of its tiles must meet
 ///   that as an image of its own, of [`MIN_STREAMED_TILE_SAMPLES`] or more
 ///   (4096 x 4096 RGB in 16 tiles of 1024 x 1024: 116.9 vs 124.9 ms on the
-///   planes with 6 threads).
+///   planes with 6 threads); on one thread any classic tile of
+///   [`MIN_STREAMED_TILE_SAMPLES_ON_ONE_THREAD`] or more streams, and any
+///   HTJ2K tile of [`MIN_STREAMED_SAMPLES`] or more.
 ///
-/// An untiled one-component classic image streams at full resolution as
-/// [`gray_streams`] says; a tiled three-component one on one thread streams
-/// its tiles one after another from 512 x 512 tiles (as fast as the planes:
-/// 0.93-1.00, in a quarter of the memory). Reduced and tiled gray images,
-/// full-resolution HTJ2K images (whose streamed IDWT and pack cost more per
-/// sample than the planes' fused last level), small images and reduced
-/// tiled images (one tile after another was 1-13% slower on 6 threads,
-/// 1.5-10 times on 18) keep the planes.
+/// A one-component classic image streams as [`gray_streams`] says, or on
+/// one thread at full resolution in tiles of
+/// [`MIN_STREAMED_TILE_SAMPLES_ON_ONE_THREAD`] or more, and a 16-bit output
+/// on one thread as [`sixteen_bit_streams_on_one_thread`] says. Otherwise
+/// untiled HTJ2K images at full resolution (whose streamed IDWT and pack
+/// cost more per sample than the planes' fused last level: 5-28% slower on
+/// one thread), HTJ2K gray images, small images and, on pools, reduced tiled
+/// images (one tile after another was 1-13% slower on 6 threads, 1.5-10
+/// times on 18) keep the planes.
 fn streams_by_default(image: &Image<'_>, request: RouteRequest) -> bool {
     let threads = pool_threads(request.parallelism);
     let htj2k = image.uses_high_throughput_block_coding();
     let tiled = image.tile_count() > 1;
     let mut samples = u64::from(image.width()) * u64::from(image.height());
+    if threads == 1
+        && matches!(request.components, 1 | 3)
+        && matches!(
+            request.fmt,
+            PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16
+        )
+        && sixteen_bit_streams_on_one_thread(image, samples)
+    {
+        return true;
+    }
     if request.components == 1 {
-        return !request.reduced && !tiled && !htj2k && gray_streams(samples, threads);
+        let reduced = request.scale != Downscale::None;
+        if htj2k {
+            return false;
+        }
+        if tiled && !reduced && threads == 1 {
+            return average_tile_samples(image, samples)
+                .is_some_and(|tile| tile >= MIN_STREAMED_TILE_SAMPLES_ON_ONE_THREAD);
+        }
+        return gray_streams(samples, reduced, tiled, threads);
     }
     if request.components != 3 {
         return false;
     }
-    if request.reduced {
-        return !tiled && reduced_streams(samples, htj2k, threads);
+    if request.scale != Downscale::None {
+        return (!tiled || threads == 1) && reduced_streams(samples, request.scale, htj2k, threads);
     }
     let mut coded_bytes = request.coded_bytes;
     if tiled {
@@ -234,7 +308,12 @@ fn streams_by_default(image: &Image<'_>, request: RouteRequest) -> bool {
         samples /= u64::try_from(tile_count).unwrap_or(u64::MAX);
         coded_bytes /= tile_count;
         if threads == 1 {
-            return samples >= MIN_STREAMED_SAMPLES;
+            return samples
+                >= if htj2k {
+                    MIN_STREAMED_SAMPLES
+                } else {
+                    MIN_STREAMED_TILE_SAMPLES_ON_ONE_THREAD
+                };
         }
         if samples < MIN_STREAMED_TILE_SAMPLES {
             return false;
@@ -243,19 +322,62 @@ fn streams_by_default(image: &Image<'_>, request: RouteRequest) -> bool {
     !htj2k && full_resolution_streams(samples, coded_bytes, threads)
 }
 
-/// Whether an untiled one-component classic image of `samples` streams at
-/// full resolution on `threads` pool threads.
-fn gray_streams(samples: u64, threads: usize) -> bool {
-    samples >= MIN_STREAMED_GRAY_SAMPLES
+/// Whether a 16-bit decode of `image`, of `samples` output samples, streams
+/// on one thread whatever its coding: from [`MIN_STREAMED_SAMPLES`], untiled
+/// or in tiles of [`MIN_STREAMED_TILE_SAMPLES_ON_ONE_THREAD`] or more. The
+/// planes route packs such outputs from planes of native samples it fills
+/// first, which the streamed rows skip: 4096 x 2048 HTJ2K images decode
+/// 21-25% faster streamed, 2896 x 2896 to 5428 x 4460 classic images at 1.5
+/// bits per pixel 6-9% faster and 512 x 512 to 768 x 768 ones 1% faster,
+/// while smaller images and tiles are 4-5% slower.
+fn sixteen_bit_streams_on_one_thread(image: &Image<'_>, samples: u64) -> bool {
+    samples >= MIN_STREAMED_SAMPLES
+        && (image.tile_count() <= 1
+            || average_tile_samples(image, samples)
+                .is_some_and(|tile| tile >= MIN_STREAMED_TILE_SAMPLES_ON_ONE_THREAD))
+}
+
+/// The output samples of an average tile of `image`, of `samples` output
+/// samples in all, or `None` when its tiles cannot be listed.
+fn average_tile_samples(image: &Image<'_>, samples: u64) -> Option<u64> {
+    let tiles = image.output_tile_rects().ok()?.len().max(1);
+    Some(samples / u64::try_from(tiles).unwrap_or(u64::MAX))
+}
+
+/// Whether a one-component classic image of `samples` output samples,
+/// `tiled` or not, streams on `threads` pool threads: on one thread reduced
+/// to [`MIN_SMALL_REDUCED_STREAMED_SAMPLES_ON_ONE_THREAD`] or more, tiled or
+/// not (5100 x 6600 and 5792 x 5792 images at 1/2 to 1/8 0-3% faster, in a
+/// fiftieth to a hundredth of the memory), or untiled at full resolution
+/// from [`MIN_STREAMED_GRAY_SAMPLES_ON_ONE_THREAD`]; on more threads untiled
+/// at full resolution from [`MIN_STREAMED_GRAY_SAMPLES`], and from 12 threads
+/// only from [`MIN_STREAMED_GRAY_SAMPLES_ON_A_LARGE_POOL`]. A tiled gray image
+/// at full resolution streams on one thread in tiles of
+/// [`MIN_STREAMED_TILE_SAMPLES_ON_ONE_THREAD`] or more (2048 x 2048 in
+/// 512 x 512 tiles to 5100 x 6600 in 1024 x 1024 ones 1-3% slower, in a
+/// fortieth to a hundredth of the memory).
+fn gray_streams(samples: u64, reduced: bool, tiled: bool, threads: usize) -> bool {
+    if threads == 1 {
+        return if reduced {
+            samples >= MIN_SMALL_REDUCED_STREAMED_SAMPLES_ON_ONE_THREAD
+        } else {
+            !tiled && samples >= MIN_STREAMED_GRAY_SAMPLES_ON_ONE_THREAD
+        };
+    }
+    !reduced
+        && !tiled
+        && samples >= MIN_STREAMED_GRAY_SAMPLES
         && (threads < CLASSIC_SYNTHESIS_THREADS
             || samples >= MIN_STREAMED_GRAY_SAMPLES_ON_A_LARGE_POOL)
 }
 
-/// Whether a reduced-resolution decode of an untiled three-component image
-/// to `samples` output samples streams on `threads` pool threads.
-fn reduced_streams(samples: u64, htj2k: bool, threads: usize) -> bool {
+/// Whether a reduced-resolution decode of a three-component image at
+/// `scale` to `samples` output samples streams on `threads` pool threads.
+fn reduced_streams(samples: u64, scale: Downscale, htj2k: bool, threads: usize) -> bool {
     if samples >= MIN_REDUCED_STREAMED_SAMPLES {
-        !htj2k || threads >= 2
+        !htj2k || threads >= 2 || (threads == 1 && scale.denominator() >= 4)
+    } else if threads == 1 {
+        !htj2k && samples >= MIN_SMALL_REDUCED_STREAMED_SAMPLES_ON_ONE_THREAD
     } else {
         !htj2k
             && samples >= MIN_SMALL_REDUCED_STREAMED_SAMPLES
@@ -265,11 +387,10 @@ fn reduced_streams(samples: u64, htj2k: bool, threads: usize) -> bool {
 
 /// Whether a full-resolution three-component classic image (or tile) of
 /// `samples` pixels coded in `coded_bytes` streams on `threads` pool threads:
-/// from [`MIN_STREAMED_SAMPLES`] and [`MIN_STREAMED_CODED_BITS_PER_SAMPLE`],
-/// on 2 to 11 pool threads, on more when it is below
-/// [`MAX_STREAMED_SAMPLES_ON_A_LARGE_POOL`], and on one from
-/// [`MIN_STREAMED_TILE_SAMPLES`]; at fewer coded bits, from
-/// [`MIN_STREAMED_LOW_RATE_SAMPLES`] on 2 to
+/// from [`MIN_STREAMED_SAMPLES`] and [`MIN_STREAMED_CODED_BITS_PER_SAMPLE`]
+/// below [`CLASSIC_SYNTHESIS_THREADS`] pool threads, and on more when it is
+/// below [`MAX_STREAMED_SAMPLES_ON_A_LARGE_POOL`]; at fewer coded bits, from
+/// [`MIN_STREAMED_LOW_RATE_SAMPLES`] on up to
 /// [`MAX_LOW_RATE_SHARED_READER_THREADS`] pool threads and from
 /// [`CLASSIC_SYNTHESIS_THREADS`].
 fn full_resolution_streams(samples: u64, coded_bytes: usize, threads: usize) -> bool {
@@ -278,13 +399,13 @@ fn full_resolution_streams(samples: u64, coded_bytes: usize, threads: usize) -> 
         .saturating_mul(8);
     if coded_bits < samples.saturating_mul(MIN_STREAMED_CODED_BITS_PER_SAMPLE) {
         return samples >= MIN_STREAMED_LOW_RATE_SAMPLES
-            && (matches!(threads, 2..=MAX_LOW_RATE_SHARED_READER_THREADS)
+            && (matches!(threads, 1..=MAX_LOW_RATE_SHARED_READER_THREADS)
                 || threads >= CLASSIC_SYNTHESIS_THREADS);
     }
     samples >= MIN_STREAMED_SAMPLES
         && match threads {
-            0 | 1 => samples >= MIN_STREAMED_TILE_SAMPLES,
-            2..CLASSIC_SYNTHESIS_THREADS => true,
+            0 => samples >= MIN_STREAMED_TILE_SAMPLES,
+            1..CLASSIC_SYNTHESIS_THREADS => true,
             _ => samples < MAX_STREAMED_SAMPLES_ON_A_LARGE_POOL,
         }
 }
@@ -297,7 +418,7 @@ fn pool_threads(parallelism: CpuDecodeParallelism) -> usize {
     }
 }
 
-/// Tiles from which an image decodes one tile after another rather than at
+/// Tiles above which an image decodes one tile after another rather than at
 /// once: each tile's region decode parses the tile-part headers of the whole
 /// image again, a cost that grows with the square of the tiles.
 const MAX_TILES_AT_ONCE: usize = 1024;
@@ -311,8 +432,8 @@ const MIN_SAMPLES_PER_TILE: usize = 256 * 256;
 /// streamed region decode runs on. Each worker decodes its tile alone, so
 /// the image needs a tile for every worker, and its tiles must keep at least
 /// 80% of the workers busy over the rounds they take: 16 tiles on 7 workers
-/// take three rounds with a third of them idle, and decode no faster than
-/// the planes. Other images decode one tile after another with the pool
+/// take three rounds with about a quarter of them idle, and decode no faster
+/// than the planes. Other images decode one tile after another with the pool
 /// behind each.
 fn tile_workers(rects: &[(u32, u32, u32, u32)], threads: usize) -> Option<usize> {
     let tiles = rects.len();

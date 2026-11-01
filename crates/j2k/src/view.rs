@@ -7,7 +7,7 @@ use crate::{
         inspect_info_from_image, Image,
     },
     decode::{
-        decode_full_image_into_with_native_context, decode_image_region_into_with_native_context,
+        decode_full_image_on_route, decode_image_region_into_with_native_context,
         decode_native_components_with_native_context, decode_warnings_for_image, full_image_route,
         native_components_route, native_region_components_route, validate_buffer, validate_region,
         J2kDecodeOutcome, J2kDecodedComponents, J2kDecodedNativeComponents, NativeRoute,
@@ -412,25 +412,17 @@ impl<'a> J2kDecoder<'a> {
         let (Some(image), native_context) = (self.image.as_ref(), &mut self.native_context) else {
             return Err(J2kError::internal_backend("internal image cache missing"));
         };
-        let route = full_image_route(
-            image,
-            RouteRequest {
-                fmt,
-                budget,
-                parallelism: native_context.cpu_decode_parallelism(),
-                components: self.info.components,
-                coded_bytes: self.bytes.len(),
-                reduced: false,
-            },
-        );
-        let decoded = decode_full_image_into_with_native_context(
-            image,
-            native_context,
-            out,
-            stride,
+        let request = RouteRequest {
             fmt,
-            &route,
-        );
+            budget,
+            parallelism: native_context.cpu_decode_parallelism(),
+            components: self.info.components,
+            coded_bytes: self.bytes.len(),
+            scale: Downscale::None,
+        };
+        let route = full_image_route(image, request);
+        let decoded =
+            decode_full_image_on_route(image, native_context, out, stride, request, &route);
         let warnings = decode_warnings_for_image(image);
         if route.streams() {
             // As after a region decode, release the decode buffers rather
@@ -526,25 +518,16 @@ impl<'a> J2kDecoder<'a> {
         let image_dims = (image.width(), image.height());
         validate_buffer(image_dims, out.len(), stride, fmt)?;
         let mut native_context = self.fresh_native_context();
-        let route = full_image_route(
-            &image,
-            RouteRequest {
-                fmt,
-                budget: self.full_decode_planes_budget(),
-                parallelism: native_context.cpu_decode_parallelism(),
-                components: self.info.components,
-                coded_bytes: self.bytes.len(),
-                reduced: true,
-            },
-        );
-        decode_full_image_into_with_native_context(
-            &image,
-            &mut native_context,
-            out,
-            stride,
+        let request = RouteRequest {
             fmt,
-            &route,
-        )?;
+            budget: self.full_decode_planes_budget(),
+            parallelism: native_context.cpu_decode_parallelism(),
+            components: self.info.components,
+            coded_bytes: self.bytes.len(),
+            scale,
+        };
+        let route = full_image_route(&image, request);
+        decode_full_image_on_route(&image, &mut native_context, out, stride, request, &route)?;
         Ok(j2k_core::DecodeOutcome::new(
             Rect::full(image_dims),
             warnings,
@@ -613,8 +596,8 @@ impl<'a> J2kDecoder<'a> {
 
     /// What a full-image decode's component planes may charge: the native
     /// decode budget, past which the planes decode is refused, with
-    /// streaming wherever it is the faster route, unless a test set a fixed
-    /// budget.
+    /// streaming wherever it was measured faster, or on one thread nearly as
+    /// fast in far less memory, unless a test set a fixed budget.
     fn full_decode_planes_budget(&self) -> PlanesBudget {
         self.full_decode_planes_budget
             .map_or(PlanesBudget::Default, PlanesBudget::Fixed)
