@@ -163,8 +163,6 @@ struct Decoded {
     channel_bytes: usize,
     /// The bytes the decode's budget held after `reset`.
     baseline_bytes: usize,
-    /// The most bytes the budget of a tile streaming from pool bands held.
-    pool_band_bytes: usize,
     /// The bytes that budget charged for its threads' scratch, and the
     /// bytes the scratch held once the bands decoded.
     thread_scratch: (usize, usize),
@@ -210,7 +208,6 @@ fn rows_with(
         uncharged_line_samples: counters.uncharged_line_samples,
         channel_bytes: counters.workspace_peak.bytes().channels,
         baseline_bytes: counters.decode_baseline_bytes,
-        pool_band_bytes: counters.pool_band_live_bytes,
         thread_scratch: (
             counters.thread_scratch_charged,
             counters.thread_scratch_held,
@@ -522,27 +519,21 @@ fn fixtures_hold_every_kind_of_codeword_segment() {
     assert!(empty > 0, "some segments hold coding passes and no bytes");
 }
 
-/// How a decode of an image ended.
+/// How a decode of an image ended: the planes' samples and the streamed
+/// rows' samples, by component, or each one's error.
 struct Outcome {
-    /// The hash of the planes' and of the streamed rows' samples, or each
-    /// one's error.
-    text: String,
-    failed: bool,
+    planes: Result<Vec<u8>, String>,
+    rows: Result<Vec<Vec<u32>>, String>,
     /// Tiles whose failed pool bands decoded again over whole windows, and
     /// the pool threads' scratches still held when they did.
     reruns: usize,
     live_scratches: usize,
 }
 
-fn hash(samples: impl Iterator<Item = u32>) -> u64 {
-    samples.fold(0xcbf2_9ce4_8422_2325_u64, |hash, sample| {
-        (hash ^ u64::from(sample)).wrapping_mul(0x0100_0000_01b3)
-    })
-}
-
 /// A strict or lenient Auto decode of `bytes` on the current pool, of the
-/// planes and of the rows streamed from the whole image.
-fn outcome(bytes: &[u8], strict: bool) -> Outcome {
+/// planes and of the rows streamed from the whole image; rows that stream
+/// must reach the sink once each.
+fn outcome(bytes: &[u8], strict: bool, case: &str) -> Outcome {
     let settings = DecodeSettings {
         strict,
         ..DecodeSettings::default()
@@ -551,14 +542,17 @@ fn outcome(bytes: &[u8], strict: bool) -> Outcome {
         Ok(image) => image,
         Err(error) => {
             return Outcome {
-                text: format!("parse {error:?}"),
-                failed: true,
+                planes: Err(format!("parse {error:?}")),
+                rows: Err(format!("parse {error:?}")),
                 reruns: 0,
                 live_scratches: 0,
             }
         }
     };
-    let planes = image.decode_native_with_context(&mut context(CpuDecodeParallelism::Auto));
+    let planes = image
+        .decode_native_with_context(&mut context(CpuDecodeParallelism::Auto))
+        .map(|decoded| decoded.data)
+        .map_err(|error| format!("{error:?}"));
     let roi = (0, 0, image.width(), image.height());
     let mut context = context(CpuDecodeParallelism::Auto);
     let mut sink = Rows {
@@ -566,24 +560,20 @@ fn outcome(bytes: &[u8], strict: bool) -> Outcome {
         planes: Vec::new(),
         arrivals: alloc::vec![0; (roi.2 * roi.3) as usize],
     };
-    let rows =
-        image.decode_region_rows_for_integer_output_with_context(roi, &mut context, &mut sink);
+    let rows = image
+        .decode_region_rows_for_integer_output_with_context(roi, &mut context, &mut sink)
+        .map(|()| {
+            assert!(
+                sink.arrivals.iter().all(|&count| count == 1),
+                "{case}: every sample arrives once"
+            );
+            sink.planes
+        })
+        .map_err(|error| format!("{error:?}"));
     let counters = context.tile_decode_context.debug_counters;
-    let planes = match planes {
-        Ok(decoded) => format!(
-            "planes {:016x}",
-            hash(decoded.data.iter().map(|&b| b.into()))
-        ),
-        Err(error) => format!("planes {error:?}"),
-    };
-    let failed = rows.is_err();
-    let rows = match rows {
-        Ok(()) => format!("rows {:016x}", hash(sink.planes.iter().flatten().copied())),
-        Err(error) => format!("rows {error:?}"),
-    };
     Outcome {
-        text: format!("{planes}, {rows}"),
-        failed,
+        planes,
+        rows,
         reruns: counters.whole_window_reruns,
         live_scratches: counters.scratches_live_in_reruns,
     }
@@ -620,13 +610,23 @@ fn corrupt_multi_segment_blocks_decode_on_a_pool_as_on_one_thread() {
                 mutant[at] ^= 1 << (next() % 8);
             }
             for strict in [false, true] {
-                let expected = one.install(|| outcome(&mutant, strict));
-                let pooled = four.install(|| outcome(&mutant, strict));
-                assert_eq!(
-                    pooled.text, expected.text,
-                    "{label} iteration {iteration} strict {strict}"
+                let case = format!("{label} iteration {iteration} strict {strict}");
+                let expected = one.install(|| outcome(&mutant, strict, &case));
+                let pooled = four.install(|| outcome(&mutant, strict, &case));
+                // Whole sample vectors, compared without printing them.
+                assert!(
+                    pooled.planes == expected.planes,
+                    "{case}: planes {:?}, on one thread {:?}",
+                    pooled.planes.as_ref().err(),
+                    expected.planes.as_ref().err()
                 );
-                failures += usize::from(expected.failed);
+                assert!(
+                    pooled.rows == expected.rows,
+                    "{case}: rows {:?}, on one thread {:?}",
+                    pooled.rows.as_ref().err(),
+                    expected.rows.as_ref().err()
+                );
+                failures += usize::from(expected.rows.is_err());
                 reruns += pooled.reruns;
                 live_scratches += pooled.live_scratches;
             }
@@ -644,53 +644,19 @@ fn corrupt_multi_segment_blocks_decode_on_a_pool_as_on_one_thread() {
 
 /// A tile streaming its rows from pool bands holds the scratch of every
 /// thread, its workers' and its readers', as charged before they start,
-/// though its components' blocks may differ in size. Under the tightest
-/// budget its pool bands decode in, they do; a byte short of it, and under
-/// each smaller budget tried on the way, its bands decode serially
-/// instead, to the same rows, rather than fail.
+/// though its components' blocks may differ in size.
 #[test]
 fn streamed_pool_band_threads_hold_the_scratch_charged_for_them() {
     for threads in [4, 12] {
         pool(threads).install(|| {
             for (label, bytes) in FIXTURES {
                 let image = Image::new(bytes, &DecodeSettings::default()).expect("parse fixture");
-                let roi = (0, 0, image.width(), image.height());
-                let case = format!("{label} on {threads} threads");
-                let decoded = rows(&image, roi);
-                let components = decoded.samples.len();
+                let decoded = rows(&image, (0, 0, image.width(), image.height()));
                 let (charged, held) = decoded.thread_scratch;
                 assert!(
-                    held > 0 && charged == held,
-                    "{case}: scratch charged {charged}, held {held}"
+                    decoded.pool_components == decoded.samples.len() && held > 0 && charged == held,
+                    "{label} on {threads} threads: scratch charged {charged}, held {held}"
                 );
-                // The pool bands' budget held `pool_band_bytes` once it
-                // charged the threads' scratch, last; on the way, planning
-                // may need more, as for the workspaces it grows from one
-                // component's blocks to the next's larger ones.
-                let pooled = |cap| {
-                    let capped = rows_with(&image, roi, |context| {
-                        context.tile_decode_context.pool_band_cap = Some(cap);
-                    });
-                    assert_eq!(capped.samples, decoded.samples, "{case} within {cap} bytes");
-                    assert!(capped.streamed, "{case} within {cap} bytes");
-                    capped.pool_components == components
-                };
-                let (mut short, mut fits) = (0, decoded.pool_band_bytes);
-                assert!(!pooled(short), "{case}");
-                while !pooled(fits) {
-                    short = fits;
-                    fits += 1024;
-                    assert!(fits < 2 * decoded.pool_band_bytes, "{case}: fits {fits}");
-                }
-                while short + 1 < fits {
-                    let cap = short + (fits - short) / 2;
-                    if pooled(cap) {
-                        fits = cap;
-                    } else {
-                        short = cap;
-                    }
-                }
-                assert!(fits >= decoded.pool_band_bytes, "{case}: fits {fits}");
             }
         });
     }

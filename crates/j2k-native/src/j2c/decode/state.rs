@@ -278,10 +278,6 @@ pub(crate) struct TileDecodeContext {
     /// unit tests' tiny fixtures take the pool, unless a test sets it.
     #[cfg(all(test, feature = "parallel"))]
     pub(crate) band_work_cutoff: usize,
-    /// Test-only decode budget for a tile streaming its rows from pool
-    /// bands, in place of the default.
-    #[cfg(all(test, feature = "parallel"))]
-    pub(crate) pool_band_cap: Option<usize>,
     /// Test-only capacity failure when building the optional band row index.
     #[cfg(test)]
     pub(crate) reject_band_index: bool,
@@ -361,8 +357,6 @@ impl TileDecodeContext {
         let force_per_sub_band = self.force_per_sub_band;
         #[cfg(all(test, feature = "parallel"))]
         let tile_route_post_decode = self.tile_route_post_decode;
-        #[cfg(all(test, feature = "parallel"))]
-        let pool_band_cap = self.pool_band_cap;
         #[cfg(test)]
         let store_whole_code_blocks = self.store_whole_code_blocks;
         #[cfg(test)]
@@ -388,7 +382,6 @@ impl TileDecodeContext {
         {
             self.force_per_sub_band = force_per_sub_band;
             self.tile_route_post_decode = tile_route_post_decode;
-            self.pool_band_cap = pool_band_cap;
         }
         #[cfg(test)]
         {

@@ -339,13 +339,6 @@ pub(super) fn decode_tile_rows<'a>(
         result => result.map(|()| false),
     };
     let mut live = DecodeAllocationBudget::for_storage(storage)?;
-    #[cfg(test)]
-    if let Some(cap) = tile_ctx.pool_band_cap {
-        match DecodeAllocationBudget::from_live_bytes_with_cap(live.live_bytes(), cap) {
-            Ok(capped) => live = capped,
-            Err(_) => return Ok(false),
-        }
-    }
     let mut routes = Vec::new();
     if declines(live.reserve_new(&mut routes, components))? {
         return Ok(false);
@@ -426,9 +419,7 @@ pub(super) fn decode_tile_rows<'a>(
     };
     #[cfg(test)]
     {
-        let counters = &mut tile_ctx.debug_counters;
-        counters.pool_band_live_bytes = counters.pool_band_live_bytes.max(live.live_bytes());
-        counters.thread_scratch_charged += live.live_bytes() - unscratched;
+        tile_ctx.debug_counters.thread_scratch_charged += live.live_bytes() - unscratched;
     }
     // Rows reconstruct in batches, charged by the region's width (see
     // `roi_idwt_peak_elements`): two of them with a reader per component of
@@ -2105,5 +2096,261 @@ mod tests {
                     );
                 });
         }
+    }
+
+    /// Collects the sample bits a sink receives, by component, and how often
+    /// each sample arrives.
+    struct Collected {
+        width: usize,
+        planes: Vec<Vec<u32>>,
+        arrivals: Vec<u8>,
+    }
+
+    impl Collected {
+        fn new(width: u32, height: u32) -> Self {
+            Self {
+                width: width as usize,
+                planes: Vec::new(),
+                arrivals: alloc::vec![0; width as usize * height as usize],
+            }
+        }
+    }
+
+    impl ComponentRowSink for Collected {
+        fn write_rows(&mut self, x: u32, y: u32, planes: &[crate::ComponentPlane<'_>]) {
+            if self.planes.is_empty() {
+                self.planes = alloc::vec![alloc::vec![0; self.arrivals.len()]; planes.len()];
+            }
+            let (width, height) = planes[0].dimensions();
+            for (component, plane) in planes.iter().enumerate() {
+                for row in 0..height as usize {
+                    for column in 0..width as usize {
+                        let at = (y as usize + row) * self.width + x as usize + column;
+                        self.planes[component][at] =
+                            plane.samples()[row * width as usize + column].to_bits();
+                        if component == 0 {
+                            self.arrivals[at] += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The bytes a streamed tile's pool bands charge beyond the decode's
+    /// baseline, in the order they charge them: the list of routes, every
+    /// route's plan, the executor's records and the threads' scratch.
+    #[derive(Clone, Copy, Debug)]
+    struct Steps {
+        routes: usize,
+        plans: usize,
+        executor: usize,
+        scratch: usize,
+    }
+
+    /// How a streamed tile decoded: on the pool's bands or, declined there,
+    /// on serial bands, and to what rows or capacity error.
+    struct Streamed {
+        pooled: bool,
+        rows: Result<Collected>,
+    }
+
+    /// Decode the one tile of `image` on a fresh context, streaming its rows
+    /// to a sink: first with room to spare, which warms the workspace bank
+    /// and gives the rows and the [`Steps`], measured from what the routes,
+    /// records and scratch hold; then again as `decode_tile` does, on the
+    /// pool's bands or, when they decline the tile, on serial bands, with all
+    /// but `headroom` bytes beyond the baseline taken as if retained, which
+    /// every budget of the decode sees.
+    fn decode_streamed(image: &Image<'_>, headroom: usize) -> (Steps, Collected, Streamed) {
+        let (width, height) = (image.width(), image.height());
+        let mut context = DecoderContext::default();
+        context.set_output_region(Some((0, 0, width, height)));
+        context.tile_decode_context.line_region_idwt = true;
+        context.tile_decode_context.stream_rows = true;
+        let tiles = tile::parse(&mut BitReader::new(image.codestream), &image.header, 0)
+            .expect("parse tile");
+        let baseline = context
+            .reset(
+                &image.header,
+                &tiles[0],
+                tiles.structural_workspace_bytes(),
+                0,
+                false,
+                None,
+            )
+            .expect("prepare output planes");
+        let (tile_ctx, storage) = (&mut context.tile_decode_context, &mut context.storage);
+        let mut warm = Collected::new(width, height);
+        super::super::decode_tile(
+            &tiles[0],
+            &image.header,
+            tile_ctx,
+            storage,
+            &mut None,
+            CpuDecodeParallelism::Auto,
+            false,
+            &mut DecodeProfileTimings::default(),
+            baseline,
+            super::super::TileOutput::Sink(&mut warm),
+        )
+        .expect("decode with room to spare");
+        let components = tiles[0].component_infos.len();
+        assert_eq!(tile_ctx.debug_counters.pool_band_components, components);
+        assert!(warm.arrivals.iter().all(|&count| count == 1));
+        let start = DecodeAllocationBudget::for_storage(storage)
+            .expect("baseline")
+            .live_bytes();
+        let routes_bytes = components * size_of::<Box<BandRoute<'_>>>();
+        let mut live = DecodeAllocationBudget::for_storage(storage).expect("baseline");
+        live.include_bytes(routes_bytes).expect("routes list");
+        let mut routes = Vec::new();
+        for component in 0..components {
+            let BandRouting::Route(route) = plan_band_route_beside(
+                &tiles[0],
+                component,
+                tile_ctx,
+                storage,
+                &image.header,
+                Some(live),
+                true,
+            )
+            .expect("plan route") else {
+                panic!("the tile takes the pool's bands");
+            };
+            live = route.budget();
+            routes.push(route);
+        }
+        let plans = live.live_bytes() - start - routes_bytes;
+        // With the bank warm, planning charges no workspace; it charges the
+        // plans' tables, and a task per strip.
+        let recorded = tile_ctx.debug_counters.pool_band_plan_bytes;
+        BandRoute::record_live(routes.iter().map(|route| &**route), 0, tile_ctx, storage)
+            .expect("record plans");
+        let tables = tile_ctx.debug_counters.pool_band_plan_bytes - recorded;
+        assert!(
+            plans >= tables,
+            "planning charged {plans} for {tables} of tables"
+        );
+        let (rings, bands, _, _) =
+            plan_tile_rings(&routes, storage, &image.header).expect("plan rings");
+        let steps = Steps {
+            routes: routes_bytes,
+            plans,
+            executor: executor_bytes(&rings, &bands).expect("executor bytes"),
+            scratch: tile_ctx.debug_counters.thread_scratch_held,
+        };
+        drop((routes, rings, bands));
+        storage.structural_workspace_bytes += DEFAULT_MAX_DECODE_BYTES - start - headroom;
+        let mut sink = Collected::new(width, height);
+        let pooled = decode_tile_rows(
+            &tiles[0],
+            &image.header,
+            tile_ctx,
+            storage,
+            &mut sink,
+            false,
+            &mut DecodeProfileTimings::default(),
+        )
+        .unwrap_or_else(|error| panic!("the pool's bands decline instead: {error:?}"));
+        if pooled {
+            return (
+                steps,
+                warm,
+                Streamed {
+                    pooled,
+                    rows: Ok(sink),
+                },
+            );
+        }
+        assert!(
+            sink.arrivals.iter().all(|&count| count == 0),
+            "no row before the pool declines"
+        );
+        storage.parallel_bands = false;
+        storage.banded_tier1 = true;
+        let rows = banded_tier1::decode_tile_rows(
+            &tiles[0],
+            &image.header,
+            tile_ctx,
+            storage,
+            &mut sink,
+            false,
+            &mut DecodeProfileTimings::default(),
+        )
+        .map(|()| sink);
+        (steps, warm, Streamed { pooled, rows })
+    }
+
+    /// A tile of blocks of several codeword segments streams its rows from
+    /// pool bands under exactly the bytes they charge, the list of routes,
+    /// the plans, the executor's records and the threads' scratch, as their
+    /// sizes give them. A byte short of the list, of the plans, of the
+    /// records or of the scratch, the pool declines the tile, before any row
+    /// reaches the sink, and under the same retained bytes serial bands
+    /// stream the same rows when they fit and fail with a capacity error
+    /// when they don't.
+    #[test]
+    fn streamed_pool_bands_take_a_segmented_tile_at_exactly_their_bytes() {
+        let bytes = include_bytes!("../../../fixtures/multi_segment/bypass_termall_rgb_53.j2k");
+        let image = Image::new(bytes, &DecodeSettings::default()).expect("parse fixture");
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .expect("build pool")
+            .install(|| {
+                let (steps, _, _) = decode_streamed(&image, DEFAULT_MAX_DECODE_BYTES / 2);
+                let Steps {
+                    routes,
+                    plans,
+                    executor,
+                    scratch,
+                } = steps;
+                assert!(
+                    routes > 0 && plans > 0 && executor > 0 && scratch > 0,
+                    "{steps:?}"
+                );
+                let all = routes + plans + executor + scratch;
+                let (_, warm, exact) = decode_streamed(&image, all);
+                assert!(exact.pooled, "pool bands within {all} bytes: {steps:?}");
+                let rows = exact.rows.expect("pool bands decode");
+                assert!(rows.arrivals.iter().all(|&count| count == 1));
+                assert!(rows.planes == warm.planes, "pool bands' rows");
+                let mut serial = Vec::new();
+                for headroom in [
+                    routes - 1,
+                    routes + plans - 1,
+                    routes + plans + executor - 1,
+                    all - 1,
+                ] {
+                    let (_, _, short) = decode_streamed(&image, headroom);
+                    assert!(
+                        !short.pooled,
+                        "pool bands within {headroom} bytes: {steps:?}"
+                    );
+                    match short.rows {
+                        Ok(rows) => {
+                            assert!(rows.arrivals.iter().all(|&count| count == 1));
+                            assert!(rows.planes == warm.planes, "serial rows at {headroom}");
+                            serial.push(true);
+                        }
+                        Err(error) => {
+                            assert!(
+                                super::super::reuse::is_capacity_error(&error),
+                                "serial bands at {headroom}: {error:?}"
+                            );
+                            serial.push(false);
+                        }
+                    }
+                }
+                // Serial bands need less than the pool's bands, and more than
+                // their list of routes.
+                assert_eq!(serial.first(), Some(&false), "{steps:?}");
+                assert_eq!(serial.last(), Some(&true), "{steps:?}");
+                assert!(
+                    serial.windows(2).all(|pair| pair[0] <= pair[1]),
+                    "serial bands fit more as the headroom grows: {serial:?}"
+                );
+            });
     }
 }

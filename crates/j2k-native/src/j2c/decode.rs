@@ -775,10 +775,6 @@ pub(crate) struct DecodeDebugCounters {
     /// over components and tiles.
     #[cfg(all(test, feature = "parallel"))]
     pub(crate) pool_band_plan_bytes: usize,
-    /// The most bytes the budget of a tile streaming its rows from pool
-    /// bands held, every route, record and thread's scratch charged.
-    #[cfg(all(test, feature = "parallel"))]
-    pub(crate) pool_band_live_bytes: usize,
     /// Bytes that budget charged for its threads' scratch, and the bytes
     /// that scratch held once the bands decoded, summed over tiles.
     #[cfg(all(test, feature = "parallel"))]
