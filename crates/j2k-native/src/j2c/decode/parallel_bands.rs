@@ -495,19 +495,23 @@ pub(super) fn decode_tile_rows<'a>(
     {
         tile_ctx.debug_counters.thread_scratch_charged += live.live_bytes() - unscratched;
     }
-    // Rows reconstruct in batches, charged by the region's width (see
+    // Rows reconstruct in batches as many as fit rows of the region's width,
+    // but never more than the tile's width is charged for (see
     // `roi_idwt_peak_elements`): two of them with a reader per component of
     // an HTJ2K tile, so one finishes while the next reconstructs; a classic
     // tile's readers wait on Tier-1 instead, and hold one batch of half the
     // rows, with deep band rings when they read whole rows. One reader holds
     // one short batch, which it finishes before it reconstructs the next.
     let pipelined = readers > 1 && coding == CodeBlockCoding::HighThroughput;
-    let batch = streamed_batch_rows(
-        region.width() as usize,
-        copy.height() as usize,
-        readers > 1 && !pipelined,
-        readers == 1,
-    );
+    let batch_rows = |width: u32| {
+        streamed_batch_rows(
+            width as usize,
+            copy.height() as usize,
+            readers > 1 && !pipelined,
+            readers == 1,
+        )
+    };
+    let batch = batch_rows(region.width()).min(batch_rows(copy.width()));
     let scratch_len = (copy.width() as usize)
         .checked_mul(components)
         .and_then(|samples| samples.checked_mul(batch))
@@ -522,6 +526,7 @@ pub(super) fn decode_tile_rows<'a>(
             .fold(scratch_len, |held, len| held.saturating_add(*len));
         let counters = &mut tile_ctx.debug_counters;
         counters.pool_band_readers = counters.pool_band_readers.max(readers);
+        counters.line_batch_samples = counters.line_batch_samples.max(scratch_len);
         counters.uncharged_line_samples = counters
             .uncharged_line_samples
             .max(held.saturating_sub(storage.roi_idwt_charge_elements));

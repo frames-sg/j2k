@@ -777,6 +777,10 @@ pub(crate) struct DecodeDebugCounters {
     /// bands held beyond the IDWT samples its ROI plan charged.
     #[cfg(all(test, feature = "parallel"))]
     pub(crate) uncharged_line_samples: usize,
+    /// The most samples of row batches a tile streaming from pool bands held
+    /// beside its IDWT rings.
+    #[cfg(all(test, feature = "parallel"))]
+    pub(crate) line_batch_samples: usize,
     /// Bytes of the pool band plans recorded in the workspace peak, summed
     /// over components and tiles.
     #[cfg(all(test, feature = "parallel"))]

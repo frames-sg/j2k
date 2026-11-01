@@ -1220,6 +1220,74 @@ fn streamed_rows_evict_the_packet_directory_before_the_first_row() {
     );
 }
 
+/// A classic tile whose components reconstruct on readers of their own
+/// holds one batch of rows, which the ROI plan charges by the tile's width.
+/// In an 8,200-wide image of 8,192-wide tiles, a batch sized by the image's
+/// width keeps its 255 rows whole (half would be under 128), where the
+/// tile's 8,192-wide rows are charged 128 (half of 256): the batch must keep
+/// to the tile's charge, or the first tile holds twice it.
+#[cfg(feature = "parallel")]
+#[test]
+fn reader_batches_of_tiles_narrower_than_the_image_stay_within_their_charge() {
+    let (width, height) = (8200_u32, 1024_u32);
+    // Smooth content keeps the large fixture's Tier-1 cheap.
+    let pixels: Vec<u8> = (0..height)
+        .flat_map(|y| {
+            (0..width).flat_map(move |x| {
+                [
+                    x.to_le_bytes()[0],
+                    y.to_le_bytes()[0],
+                    (x + y).to_le_bytes()[0],
+                ]
+            })
+        })
+        .collect();
+    let bytes = encode(
+        &pixels,
+        width,
+        height,
+        3,
+        8,
+        false,
+        &EncodeOptions {
+            num_decomposition_levels: 2,
+            // 16-row blocks give each component more rows of blocks than
+            // the pool threads, so its bands decode on the pool.
+            code_block_height_exp: 2,
+            tile_size: Some((8192, height)),
+            ..EncodeOptions::default()
+        },
+    )
+    .expect("encode wide tile fixture");
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse wide tile fixture");
+    let roi = (0, 0, width, height);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(12)
+        .build()
+        .expect("build pool");
+    let counters = pool.install(|| {
+        let mut context = DecoderContext::default();
+        context.set_cpu_decode_parallelism(CpuDecodeParallelism::Auto);
+        let mut sink = CollectingSink::new(roi.2, roi.3);
+        image
+            .decode_region_rows_for_integer_output_with_context(roi, &mut context, &mut sink)
+            .expect("decode region rows");
+        assert!(context.tile_decode_context.stream_rows);
+        assert!(sink.arrivals.iter().all(|&count| count == 1));
+        context.tile_decode_context.debug_counters
+    });
+    assert_eq!(counters.pool_band_readers, 3, "a reader per component");
+    assert_eq!(
+        counters.line_batch_samples,
+        3 * 8192 * 128,
+        "one batch of 128 rows of each component of the wide tile"
+    );
+    assert_eq!(
+        counters.uncharged_line_samples, 0,
+        "line buffer beyond the charge"
+    );
+}
+
 /// Stitched windows of a reduced resolution, as a tiled viewer or an IIIF
 /// server requests them, hold few rows of code-blocks per component: fewer
 /// than a pool of 18 threads has workers. Such a window's streamed rows must
