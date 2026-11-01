@@ -28,7 +28,8 @@ use j2k_native::{
 use j2k_test_support::{
     add_packet_length, cuda_runtime_and_strict_oxide_gate, edit_tile_parts, packed_packet_headers,
     packet_ranges, with_byte_after_last_packets, with_packet_lengths_edited, with_packets_filled,
-    with_surplus_packet_lengths, with_tile_cod_disabling_sop_eph, with_tile_parts_interleaved,
+    with_sop_marker_fields, with_surplus_packet_lengths, with_tile_cod_disabling_sop_eph,
+    with_tile_parts_interleaved,
 };
 
 const WIDTH: u32 = 70;
@@ -419,6 +420,53 @@ fn cuda_decodes_honor_a_tile_cod_that_disables_sop_and_eph() {
         (kind, case)
     });
     assert_parity(Tiles::One, cases);
+}
+
+#[test]
+fn cuda_decodes_validate_sop_fields_only_in_packets_the_cpu_parses() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
+        return;
+    }
+    check_all(|kind| {
+        let clean = kind.encode(&EncodeOptions {
+            progression_order: EncodeProgressionOrder::Lrcp,
+            write_plt: true,
+            write_sop: true,
+            tile_part_packet_limit: Some(1),
+            ..fixture_options()
+        });
+        let discarded_finest = usize::from(LEVELS) * kind.channels();
+        vec![
+            Case {
+                label: "invalid Lsop in the first packet",
+                edited: with_sop_marker_fields(&clean, 0, 3, 0),
+                clean: clean.clone(),
+                full: Expect::Fails,
+                half: Expect::Fails,
+            },
+            Case {
+                label: "invalid first Nsop",
+                edited: with_sop_marker_fields(&clean, 0, 4, 1),
+                clean: clean.clone(),
+                full: Expect::Fails,
+                half: Expect::Fails,
+            },
+            Case {
+                label: "Nsop restarts in the second tile-part",
+                edited: with_sop_marker_fields(&clean, 1, 4, 0),
+                clean: clean.clone(),
+                full: Expect::Fails,
+                half: Expect::Fails,
+            },
+            Case {
+                label: "invalid Nsop in a discarded finest packet",
+                edited: with_sop_marker_fields(&clean, discarded_finest, 4, u16::MAX),
+                clean,
+                full: Expect::Fails,
+                half: Expect::Decodes,
+            },
+        ]
+    });
 }
 
 /// The position of the first `SOD` marker of a one-tile-part codestream.

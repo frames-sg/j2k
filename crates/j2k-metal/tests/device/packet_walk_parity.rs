@@ -11,7 +11,8 @@ use j2k_native::{DecodeErrorClass, EncodeProgressionOrder};
 use j2k_test_support::{
     add_packet_length, edit_tile_parts, packed_packet_headers, packet_ranges,
     with_byte_after_last_packets, with_packet_lengths_edited, with_packets_filled,
-    with_surplus_packet_lengths, with_tile_cod_disabling_sop_eph, with_tile_parts_interleaved,
+    with_sop_marker_fields, with_surplus_packet_lengths, with_tile_cod_disabling_sop_eph,
+    with_tile_parts_interleaved,
 };
 
 const WIDTH: u32 = 96;
@@ -417,6 +418,78 @@ fn tile_cod_can_disable_sop_and_eph_on_metal_as_on_the_cpu() {
                     &session,
                     &mut failures,
                 );
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn sop_fields_are_validated_on_metal_only_in_packets_the_cpu_parses() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let session = MetalBackendSession::system_default().expect("Metal session");
+    let mut failures = Vec::new();
+    for fixture in FIXTURES.into_iter().filter(|fixture| !fixture.tiled) {
+        let options = EncodeOptions {
+            write_sop: true,
+            tile_part_packet_limit: Some(1),
+            ..fixture.options()
+        };
+        let clean = fixture.codestream(&options);
+        let companion = fixture.companion(&options);
+        let discarded_finest = usize::from(LEVELS) * usize::from(fixture.components);
+        let cases = [
+            (
+                "invalid Lsop in the first packet",
+                with_sop_marker_fields(&clean, 0, 3, 0),
+                false,
+            ),
+            (
+                "invalid first Nsop",
+                with_sop_marker_fields(&clean, 0, 4, 1),
+                false,
+            ),
+            (
+                "Nsop restarts in the second tile-part",
+                with_sop_marker_fields(&clean, 1, 4, 0),
+                false,
+            ),
+            (
+                "invalid Nsop in a discarded finest packet",
+                with_sop_marker_fields(&clean, discarded_finest, 4, u16::MAX),
+                true,
+            ),
+        ];
+        for &fmt in fixture.formats() {
+            for (label, edited, half_decodes) in &cases {
+                for scale in [Downscale::None, Downscale::Half] {
+                    if *half_decodes && scale == Downscale::Half {
+                        let expected =
+                            cpu_decode(&clean, fmt, scale).expect("clean CPU half decode");
+                        check(
+                            &format!("{fixture:?} {label}"),
+                            (edited, &companion),
+                            fmt,
+                            scale,
+                            &Expected::Decodes(&expected),
+                            &session,
+                            &mut failures,
+                        );
+                    } else {
+                        check(
+                            &format!("{fixture:?} {label}"),
+                            (edited, &companion),
+                            fmt,
+                            scale,
+                            &Expected::Fails,
+                            &session,
+                            &mut failures,
+                        );
+                    }
+                }
             }
         }
     }

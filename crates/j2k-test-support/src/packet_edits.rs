@@ -9,6 +9,7 @@
 use std::ops::Range;
 
 const SOT: [u8; 2] = [0xff, 0x90];
+const SOP: [u8; 2] = [0xff, 0x91];
 const SOD: [u8; 2] = [0xff, 0x93];
 const COD: [u8; 2] = [0xff, 0x52];
 const PLT: [u8; 2] = [0xff, 0x58];
@@ -109,6 +110,34 @@ pub fn with_tile_cod_disabling_sop_eph(codestream: &[u8]) -> Vec<u8> {
     );
     let grown = psot + u32::try_from(cod.len()).expect("COD length fits Psot");
     edited[sot + 6..sot + 10].copy_from_slice(&grown.to_be_bytes());
+    edited
+}
+
+/// `codestream` with the SOP marker segment of packet `packet` changed to
+/// `length` and `sequence` without moving packet bytes.
+///
+/// # Panics
+///
+/// When the packet does not exist or does not start with a complete SOP
+/// marker segment.
+#[must_use]
+pub fn with_sop_marker_fields(
+    codestream: &[u8],
+    packet: usize,
+    length: u16,
+    sequence: u16,
+) -> Vec<u8> {
+    let range = packet_ranges(codestream)
+        .into_iter()
+        .nth(packet)
+        .unwrap_or_else(|| panic!("fixture has no packet {packet}"));
+    let at = range.start;
+    assert!(range.end >= at + 6, "packet holds a complete SOP marker");
+    assert_eq!(codestream[at..at + 2], SOP, "packet starts with SOP");
+
+    let mut edited = codestream.to_vec();
+    edited[at + 2..at + 4].copy_from_slice(&length.to_be_bytes());
+    edited[at + 4..at + 6].copy_from_slice(&sequence.to_be_bytes());
     edited
 }
 
@@ -375,6 +404,21 @@ mod tests {
         part.extend_from_slice(&SOD);
         part.extend_from_slice(data);
         part
+    }
+
+    #[test]
+    fn sop_field_edits_leave_the_packet_in_place() {
+        let main = [0xff, 0x4f, 0xff, 0x51, 0, 3, 0];
+        let plt = [0xff, 0x58, 0, 4, 0, 7];
+        let packet = [0xff, 0x91, 0, 4, 0, 0, 0];
+        let mut bytes = main.to_vec();
+        bytes.extend_from_slice(&tile_part(0, &plt, &packet));
+        bytes.extend_from_slice(&EOC);
+
+        let edited = with_sop_marker_fields(&bytes, 0, 3, 42);
+        let range = packet_ranges(&edited).pop().expect("one packet");
+        assert_eq!(&edited[range], &[0xff, 0x91, 0, 3, 0, 42, 0]);
+        assert_eq!(edited.len(), bytes.len());
     }
 
     #[test]

@@ -34,7 +34,6 @@ struct PacketWalk<'d> {
     recording: Option<&'d mut Vec<u64>>,
     #[cfg(feature = "std")]
     indexed: Option<&'d directory::PacketDirectory>,
-    #[cfg(feature = "std")]
     next_packet: usize,
     marker: core::marker::PhantomData<&'d ()>,
 }
@@ -398,13 +397,6 @@ fn parse_inner<'a>(
     storage: &mut DecompositionStorage<'a>,
     skips: &mut PacketSkips,
     mut relevance: Option<&mut PacketRelevance<'_>>,
-    #[cfg_attr(
-        not(feature = "std"),
-        expect(
-            unused_variables,
-            reason = "without std there is no packet directory for the walk to record"
-        )
-    )]
     walk: &mut PacketWalk<'_>,
     strict: bool,
 ) -> PacketResult<bool> {
@@ -420,10 +412,10 @@ fn parse_inner<'a>(
             lwarn!("tile-part data continues after the tile's last packet");
             return Ok(false);
         };
+        let ordinal = walk.next_packet;
+        walk.next_packet = ordinal.checked_add(1).ok_or("packet ordinal overflows")?;
         #[cfg(feature = "std")]
-        let ordinal = {
-            let ordinal = walk.next_packet;
-            walk.next_packet = ordinal.checked_add(1).ok_or("packet ordinal overflows")?;
+        {
             if let Some(directory) = walk.indexed {
                 if relevance.as_ref().is_some_and(|relevance| {
                     matches!(
@@ -444,8 +436,7 @@ fn parse_inner<'a>(
                     continue;
                 }
             }
-            ordinal
-        };
+        }
         let resolution = progression_data.resolution;
         let precinct_index = usize::try_from(progression_data.precinct)
             .map_err(|_| "packet precinct index does not fit the platform")?;
@@ -496,13 +487,10 @@ fn parse_inner<'a>(
                 skipped
             };
             progression_iterator.skip_precinct_layers(further);
-            #[cfg(feature = "std")]
-            {
-                walk.next_packet = walk
-                    .next_packet
-                    .checked_add(further)
-                    .ok_or("packet ordinal overflows")?;
-            }
+            walk.next_packet = walk
+                .next_packet
+                .checked_add(further)
+                .ok_or("packet ordinal overflows")?;
             if !complete {
                 return Err("PLT packet length runs past the tile-part");
             }
@@ -538,12 +526,7 @@ fn parse_inner<'a>(
         if component_info.coding_style.flags.may_use_sop_markers()
             && body_reader.peek_marker() == Some(SOP)
         {
-            body_reader
-                .read_marker()
-                .map_err(|_| "SOP marker is truncated")?;
-            body_reader
-                .skip_bytes(4)
-                .ok_or("SOP marker segment is truncated")?;
+            parse_sop_marker(body_reader, ordinal)?;
         }
 
         let header_reader = tile_part.header();
@@ -692,6 +675,32 @@ fn parse_inner<'a>(
     }
 
     Ok(false)
+}
+
+fn parse_sop_marker(body_reader: &mut BitReader<'_>, packet_ordinal: usize) -> PacketResult {
+    if body_reader
+        .read_marker()
+        .map_err(|_| "SOP marker is truncated")?
+        != SOP
+    {
+        return Err("packet does not start with an SOP marker");
+    }
+    let length = body_reader
+        .read_u16()
+        .ok_or("SOP marker segment is truncated")?;
+    if length != 4 {
+        return Err("SOP marker segment length is not 4");
+    }
+    let sequence = body_reader
+        .read_u16()
+        .ok_or("SOP marker segment is truncated")?;
+    let modulus = usize::from(u16::MAX) + 1;
+    let expected = u16::try_from(packet_ordinal % modulus)
+        .map_err(|_| "SOP packet sequence does not fit u16")?;
+    if sequence != expected {
+        return Err("SOP marker sequence number disagrees with the packet ordinal");
+    }
+    Ok(())
 }
 
 fn try_push_segment_with_budget<'a>(
@@ -974,6 +983,22 @@ fn read_segment_length(
 mod tests {
     use super::*;
     use alloc::vec::Vec;
+
+    #[test]
+    fn sop_sequence_number_wraps_after_u16_max() {
+        for (ordinal, sequence) in [
+            (0, 0_u16),
+            (usize::from(u16::MAX), u16::MAX),
+            (usize::from(u16::MAX) + 1, 0),
+            (usize::from(u16::MAX) + 2, 1),
+        ] {
+            let sequence = sequence.to_be_bytes();
+            let bytes = [0xff, SOP, 0, 4, sequence[0], sequence[1]];
+            let mut reader = BitReader::new(&bytes);
+            assert_eq!(parse_sop_marker(&mut reader, ordinal), Ok(()));
+            assert!(reader.at_end());
+        }
+    }
 
     /// The original chain of separate peeks, as the reference for
     /// `decode_num_coding_passes`.

@@ -7,6 +7,10 @@ and stale roadmap entries have been removed from the public documentation set.
 
 Staged workspace version: `0.13.2`.
 
+- SOP marker segments a decode parses require `Lsop` 4 and an `Nsop` equal to
+  the tile-wide packet ordinal modulo 65536. The ordinal continues across
+  tile-parts and counts packets skipped without parsing; an invalid SOP in a
+  discarded packet remains unread by a selective decode.
 - A strict CUDA decode of a classic code-block whose ROI maxshift raises its
   coded bit-plane count beyond the native decoder's limit fails with the
   native `TooManyBitplanes` error, as a CPU decode does, instead of reporting
