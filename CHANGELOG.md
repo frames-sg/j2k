@@ -15,19 +15,41 @@ Staged workspace version: `0.13.2`.
   status, detail and batch source index. CUDA keeps its typed source and job
   attribution. Unsupported statuses, raw runtime failures and combined
   cleanup or release failures keep their existing classes.
-- Streamed decodes keep to the memory they charge. A tile whose components
-  reconstruct on readers of their own sized its batch of rows by the
-  region's width while the decode charged the tile's width, so a tile just
-  narrower than its region could hold twice its charge (an 8,192-wide tile
-  of an 8,200-wide image: 6.4 M against 3.4 M samples); its batch now keeps
-  to the charge, and such an image decodes in 0.98 of the time on 12 and 18
-  threads, with 60.7 MiB in place of 72.6 MiB on 12. A serial HTJ2K region
-  decode allocated the scratch for code-blocks its region clips when it met
-  the first one, so a decode short of budget could fail after its first rows
-  reached the sink, where the retries without retained scratch or without
-  the packet directory no longer run; the scratch is now sized with the rest
-  of the Tier-1 workspace before the first row. Output of decodes that
-  succeed is unchanged.
+- Row-streamed decodes on serial bands finish directly from the inverse
+  transform's own rows. The streamed inverse transform lifts every level
+  with the banded transform's kernels, one arrival at a time on each level's
+  ring of rows; on serial bands, a row is finished directly from the ring
+  (inverse colour transform, level shift, rounding and packing) once no
+  lifting step reads it, in place of a copy into scratch rows, and the 8-bit
+  RGB finish is shared with the component planes' fused last level. A tile
+  on the worker pool with one reader finishes its rows the same way instead
+  of copying them into batches of up to 32 rows, and an HTJ2K tile whose
+  components reconstruct on readers of their own keeps each of its two
+  pipelined row batches to at most 256 rows. On an 18-core ARM64 machine a
+  5428 x 4460 RGB image at 1.5 bits per pixel streams in 0.92 of its
+  previous time on 6 threads, a 4096 x 2048 HTJ2K image in 0.90 to 0.95 on 1
+  to 18 threads and with 48 MiB in place of 72 MiB on a pool, an 18000 x
+  12000 HTJ2K image in 0.88 on 18 threads and 1024 x 1024 HTJ2K regions in
+  0.90 to 0.94. Output is unchanged; a decode that fails partway can leave a
+  different number of rows written, each of them a row the successful decode
+  writes.
+- Streamed decodes keep to the memory they charge and hand each row over
+  once. A tile whose components reconstruct on readers of their own sized
+  its batch of rows by the region's width while the decode charged the
+  tile's width, so a tile just narrower than its region could hold twice its
+  charge (an 8,192-wide tile of an 8,200-wide image: 6.4 M against 3.4 M
+  samples); its batch now keeps to the charge, and such an image decodes in
+  0.98 of the time on 12 and 18 threads, with 60.7 MiB in place of 72.6 MiB
+  on 12. A serial HTJ2K region decode allocated the scratch for code-blocks
+  its region clips when it met the first one, so a decode short of budget
+  could fail after its first rows reached the sink, where the retries
+  without retained scratch or without the packet directory no longer run;
+  the scratch is now sized with the rest of the Tier-1 workspace before the
+  first row. A tile packing two batches of rows into an RGB8 destination
+  counted a packed batch only once the next batch had reconstructed, so a
+  scheduler fault there could decode the tile again and write those rows
+  twice; the packed rows now count at once. Output of decodes that succeed
+  is unchanged.
 - Images that a batch with an explicit worker count decodes together on
   its stream pool, when it plans as many images at once as the pool has
   threads and the pool has fewer than 12, hold two bands in every ring of
@@ -170,9 +192,9 @@ Staged workspace version: `0.13.2`.
   and exclude those items from the prepared groups. Backend-neutral
   `prepare_batch` and `prepare_batch_from_images` keep their existing
   behavior: decoding them on the CPU can still fail the whole call when one
-  image's output exceeds the allocation cap. On either preparation path, a
-  group whose combined output exceeds that cap still fails the whole decode
-  call.
+  image's output exceeds the allocation cap. On either preparation path,
+  a group whose combined output exceeds that cap is decoded as several
+  result groups, each with an output buffer within the cap.
   Staged windows are admitted by planned execution memory, and an admission
   claim that cannot fit beside the shared plan fails instead of waiting
   indefinitely. Successful output is unchanged.

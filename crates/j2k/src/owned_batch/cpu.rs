@@ -347,8 +347,8 @@ impl CpuBatchDecoder {
     ///
     /// Inputs whose output allocation or planned execution exceeds a memory
     /// limit are recorded as indexed preparation errors in the returned batch.
-    /// Preparation checks individual images; a group's combined output
-    /// allocation is checked during decoding.
+    /// Preparation checks individual images. During decoding, a group too
+    /// large for one output allocation is split into smaller result groups.
     pub fn prepare(
         &self,
         inputs: Vec<EncodedImage>,
