@@ -7,6 +7,11 @@ and stale roadmap entries have been removed from the public documentation set.
 
 Staged workspace version: `0.13.2`.
 
+- A tile-part COD replaces all of the main-header COD style flags instead
+  of retaining its SOP and EPH flags. Valid codestreams that disable packet
+  markers for a tile now decode on the CPU, Metal and CUDA, at full and
+  reduced resolution, instead of requiring markers that the packets do not
+  contain.
 - `AdapterErrorKind::Decode`, `BackendErrorKind::Decode` and
   `BackendError::decode` classify GPU Tier-1 device decode failures. Metal FAIL
   statuses now use the existing `Error::Decode` and `J2kError::Backend`

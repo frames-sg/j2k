@@ -28,7 +28,7 @@ use j2k_native::{
 use j2k_test_support::{
     add_packet_length, cuda_runtime_and_strict_oxide_gate, edit_tile_parts, packed_packet_headers,
     packet_ranges, with_byte_after_last_packets, with_packet_lengths_edited, with_packets_filled,
-    with_surplus_packet_lengths, with_tile_parts_interleaved,
+    with_surplus_packet_lengths, with_tile_cod_disabling_sop_eph, with_tile_parts_interleaved,
 };
 
 const WIDTH: u32 = 70;
@@ -400,6 +400,25 @@ fn check_all(cases: impl Fn(Kind) -> Vec<Case>) {
             .into_iter()
             .flat_map(|kind| cases(kind).into_iter().map(move |case| (kind, case))),
     );
+}
+
+#[test]
+fn cuda_decodes_honor_a_tile_cod_that_disables_sop_and_eph() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
+        return;
+    }
+    let cases = KINDS.into_iter().map(|kind| {
+        let clean = kind.codestream(EncodeProgressionOrder::Lrcp, true);
+        let case = Case {
+            label: "tile COD disables main-header SOP and EPH",
+            edited: with_tile_cod_disabling_sop_eph(&clean),
+            clean,
+            full: Expect::Decodes,
+            half: Expect::Decodes,
+        };
+        (kind, case)
+    });
+    assert_parity(Tiles::One, cases);
 }
 
 /// The position of the first `SOD` marker of a one-tile-part codestream.

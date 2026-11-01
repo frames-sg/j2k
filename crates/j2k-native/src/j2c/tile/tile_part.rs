@@ -355,7 +355,7 @@ fn apply_tile_cod(
         };
         allocations
             .replace_coding_parameters(&mut component.coding_style.parameters, replacement)?;
-        component.coding_style.flags.raw |= flags.raw;
+        component.coding_style.flags = flags;
     }
     Ok(())
 }

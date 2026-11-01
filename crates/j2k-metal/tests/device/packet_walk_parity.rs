@@ -11,7 +11,7 @@ use j2k_native::{DecodeErrorClass, EncodeProgressionOrder};
 use j2k_test_support::{
     add_packet_length, edit_tile_parts, packed_packet_headers, packet_ranges,
     with_byte_after_last_packets, with_packet_lengths_edited, with_packets_filled,
-    with_surplus_packet_lengths, with_tile_parts_interleaved,
+    with_surplus_packet_lengths, with_tile_cod_disabling_sop_eph, with_tile_parts_interleaved,
 };
 
 const WIDTH: u32 = 96;
@@ -391,6 +391,36 @@ fn check(
             )),
         }
     }
+}
+
+#[test]
+fn tile_cod_can_disable_sop_and_eph_on_metal_as_on_the_cpu() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let session = MetalBackendSession::system_default().expect("Metal session");
+    let mut failures = Vec::new();
+    for fixture in FIXTURES.into_iter().filter(|fixture| !fixture.tiled) {
+        let clean = fixture.codestream(&fixture.options());
+        let edited = with_tile_cod_disabling_sop_eph(&clean);
+        let companion = fixture.companion(&fixture.options());
+        for &fmt in fixture.formats() {
+            for scale in [Downscale::None, Downscale::Half] {
+                let expected = cpu_decode(&clean, fmt, scale).expect("clean CPU decode");
+                check(
+                    &format!("{fixture:?} tile COD disables main-header SOP and EPH"),
+                    (&edited, &companion),
+                    fmt,
+                    scale,
+                    &Expected::Decodes(&expected),
+                    &session,
+                    &mut failures,
+                );
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 /// Data after the tile's last packet in each tile-part, bytes or PLT

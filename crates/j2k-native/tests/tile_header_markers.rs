@@ -750,6 +750,24 @@ fn assert_decode_differs(patched: &[u8], original: &[u8], case: &str) {
 const SINGLE_TILE: (u32, u32) = (96, 64);
 
 #[test]
+fn tile_part_cod_can_disable_sop_and_eph() {
+    let original = encode_fixture(SINGLE_TILE, 3, REVERSIBLE, None);
+    let cod = main_header_segment(&original, COD);
+    assert_eq!(cod[4] & 0x06, 0, "fixture COD has no packet markers");
+
+    let mut patched = original.clone();
+    let main_cod = main_header_segment_offset(&patched, COD);
+    patched[main_cod + 4] |= 0x06;
+    insert_tile_part_segments(&mut patched, 0, &cod);
+
+    assert_decodes_match(
+        &patched,
+        &original,
+        "tile-part COD disables main-header SOP and EPH",
+    );
+}
+
+#[test]
 fn tile_part_cod_overrides_the_main_header_wavelet() {
     for components in [1, 3] {
         for style in [REVERSIBLE, IRREVERSIBLE] {

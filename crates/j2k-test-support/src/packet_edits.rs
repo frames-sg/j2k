@@ -10,6 +10,7 @@ use std::ops::Range;
 
 const SOT: [u8; 2] = [0xff, 0x90];
 const SOD: [u8; 2] = [0xff, 0x93];
+const COD: [u8; 2] = [0xff, 0x52];
 const PLT: [u8; 2] = [0xff, 0x58];
 const PPM: [u8; 2] = [0xff, 0x60];
 const PPT: [u8; 2] = [0xff, 0x61];
@@ -70,6 +71,44 @@ pub fn edit_tile_parts(codestream: &[u8], mut edit: impl FnMut(&mut Vec<u8>)) ->
         edited.extend_from_slice(&bytes);
     }
     edited.extend_from_slice(&EOC);
+    edited
+}
+
+/// A one-tile-part `codestream` whose main-header COD signals SOP and EPH,
+/// while a tile-part COD disables both. Packet bytes stay unchanged, so they
+/// contain neither marker.
+///
+/// # Panics
+///
+/// When `codestream` is not as the module describes, has more than one
+/// tile-part, has no main-header COD, or already signals SOP or EPH.
+#[must_use]
+pub fn with_tile_cod_disabling_sop_eph(codestream: &[u8]) -> Vec<u8> {
+    let sot = first_tile_part(codestream);
+    assert_eq!(
+        tile_part_end(codestream, sot),
+        codestream.len() - EOC.len(),
+        "fixture has one tile-part"
+    );
+    let mut cod_at = 2;
+    while codestream[cod_at..cod_at + 2] != COD {
+        assert!(cod_at < sot, "main header has a COD marker");
+        cod_at = marker_segment_end(codestream, cod_at);
+    }
+    let cod_end = marker_segment_end(codestream, cod_at);
+    let cod = codestream[cod_at..cod_end].to_vec();
+    assert_eq!(cod[4] & 0x06, 0, "fixture COD has no packet markers");
+
+    let mut edited = codestream.to_vec();
+    edited[cod_at + 4] |= 0x06;
+    edited.splice(sot + 12..sot + 12, cod.iter().copied());
+    let psot = u32::from_be_bytes(
+        edited[sot + 6..sot + 10]
+            .try_into()
+            .expect("Psot is four bytes"),
+    );
+    let grown = psot + u32::try_from(cod.len()).expect("COD length fits Psot");
+    edited[sot + 6..sot + 10].copy_from_slice(&grown.to_be_bytes());
     edited
 }
 
