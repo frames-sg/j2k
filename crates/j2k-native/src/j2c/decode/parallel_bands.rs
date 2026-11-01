@@ -227,10 +227,12 @@ fn decode_route(
         )?;
     }
     // The executor's records live beside the route's plan and scratch while
-    // the bands decode.
-    route
-        .budget()
-        .include_bytes(executor_bytes(&rings, &bands)?)?;
+    // the bands decode, and so does each thread's scratch, the route's
+    // workers' and this thread's.
+    let mut budget = route.budget();
+    budget.include_bytes(executor_bytes(&rings, &bands)?)?;
+    let mut scratches =
+        BlockScratch::for_threads(route.workers() + 1, route.gathered_len(), &mut budget)?;
     tile_ctx.idwt_output.placement = crate::j2c::idwt::IdwtPlacement::Coefficients;
     tile_ctx.idwt_output.coefficients = Vec::new();
     tile_ctx.idwt_output.rect = IntRect::from_xywh(0, 0, 0, 0);
@@ -262,7 +264,7 @@ fn decode_route(
                 &rings,
                 &bands,
                 slots,
-                &mut tile_ctx.classic_task_workspaces,
+                (&mut tile_ctx.classic_task_workspaces, &mut scratches),
                 |index, output, workspace, scratch| {
                     route.decode_classic(index, output, workspace, (scratch, source))
                 },
@@ -276,7 +278,7 @@ fn decode_route(
                 &rings,
                 &bands,
                 slots,
-                &mut tile_ctx.ht_task_workspaces,
+                (&mut tile_ctx.ht_task_workspaces, &mut scratches),
                 |index, output, workspace, scratch| {
                     route.decode_ht(index, output, workspace, (scratch, source))
                 },
@@ -424,6 +426,13 @@ pub(super) fn decode_tile_rows<'a>(
     }
     let mut output = RowOutput::new(tile, sink, tile_ctx, copy, region);
     let workers = route_workers.min(bank.saturating_sub(readers));
+    // Each thread's scratch serves every component's bands.
+    let gathered_len = routes
+        .iter()
+        .map(|route| route.gathered_len())
+        .max()
+        .unwrap_or(0);
+    let mut scratches = BlockScratch::for_threads(workers + readers, gathered_len, &mut live)?;
     // One reader for every component of a classic tile leaves the pool's
     // threads to Tier-1, and decodes bands itself while it waits.
     let helps = readers == 1 && coding == CodeBlockCoding::Classic;
@@ -471,7 +480,7 @@ pub(super) fn decode_tile_rows<'a>(
                 &rings,
                 &bands,
                 slots,
-                &mut tile_ctx.classic_task_workspaces,
+                (&mut tile_ctx.classic_task_workspaces, &mut scratches),
                 |strip, output, workspace, scratch| {
                     let (route, strip) = route_strip(&routes, &strip_starts, strip)?;
                     route.decode_classic(strip, output, workspace, (scratch, source))
@@ -486,7 +495,7 @@ pub(super) fn decode_tile_rows<'a>(
                 &rings,
                 &bands,
                 slots,
-                &mut tile_ctx.ht_task_workspaces,
+                (&mut tile_ctx.ht_task_workspaces, &mut scratches),
                 |strip, output, workspace, scratch| {
                     let (route, strip) = route_strip(&routes, &strip_starts, strip)?;
                     route.decode_ht(strip, output, workspace, (scratch, source))
@@ -1147,7 +1156,7 @@ struct State<'c, 'w, W> {
     decoded: Vec<usize>,
     running: usize,
     freed: usize,
-    workspaces: Vec<&'w mut W>,
+    workspaces: Vec<(&'w mut W, &'w mut BlockScratch)>,
     /// Workers on the pool.
     active: usize,
     error: Option<DecodeError>,
@@ -1328,9 +1337,9 @@ enum Task<'c> {
 /// Decode `bands` into `slots` on up to `workers` pool threads while `run`
 /// drives the IDWT through `readers` views of them, then decode the bands it
 /// didn't read. Each view reads its own sub-bands and decodes a band nobody
-/// has started with a workspace of its own, so views may run on different
-/// threads. Views that `help` decode other bands while they wait. Returns
-/// `false` when a band was stranded.
+/// has started with a workspace and scratch of its own, so views may run on
+/// different threads. Views that `help` decode other bands while they wait.
+/// Returns `false` when a band was stranded.
 #[expect(
     clippy::too_many_arguments,
     clippy::too_many_lines,
@@ -1341,7 +1350,7 @@ fn run_bands<W: TaskScratch>(
     rings: &[Ring],
     bands: &[Band],
     slots: Slots<'_>,
-    bank: &mut [TaskWorkspace<W>],
+    (bank, scratches): (&mut [TaskWorkspace<W>], &mut [BlockScratch]),
     decode: impl Fn(usize, BandOutput<'_, '_>, &mut W, &mut BlockScratch) -> Result<()> + Sync,
     run: impl FnOnce(&mut [&mut (dyn SubBandRows + Send)]) -> Result<()>,
     profile_enabled: bool,
@@ -1351,14 +1360,15 @@ fn run_bands<W: TaskScratch>(
     #[cfg(not(test))]
     let _ = strand_once;
     let workspaces_needed = workers + readers.max(1);
-    let mut workspaces: Vec<&mut W> = Vec::new();
+    let mut workspaces: Vec<(&mut W, &mut BlockScratch)> = Vec::new();
     workspaces
         .try_reserve_exact(workspaces_needed)
         .map_err(|_| DecodingError::HostAllocationFailed)?;
     workspaces.extend(
         bank.iter_mut()
-            .take(workspaces_needed)
-            .map(|slot| &mut slot.workspace),
+            .map(|slot| &mut slot.workspace)
+            .zip(scratches.iter_mut())
+            .take(workspaces_needed),
     );
     if workspaces.len() != workspaces_needed {
         return Err(DecodingError::CodeBlockDecodeFailure.into());
@@ -1413,13 +1423,13 @@ fn run_bands<W: TaskScratch>(
         views
             .try_reserve_exact(reader_workspaces.len())
             .map_err(|_| DecodingError::HostAllocationFailed)?;
-        for workspace in reader_workspaces {
+        for (workspace, scratch) in reader_workspaces {
             views.push(PoolRows {
                 shared,
                 scope,
                 decode,
                 workspace,
-                scratch: BlockScratch::default(),
+                scratch,
                 current: try_filled_with(rings.len(), || None)?,
                 next: try_collect(rings.iter().map(|ring| ring.bands.start), rings.len())?,
                 helps,
@@ -1529,11 +1539,10 @@ fn work<W: TaskScratch>(
     let Ok(mut state) = shared.lock() else {
         return;
     };
-    let Some(workspace) = state.workspaces.pop() else {
+    let Some((workspace, scratch)) = state.workspaces.pop() else {
         state.active -= 1;
         return;
     };
-    let mut scratch = BlockScratch::default();
     loop {
         let next = if state.error.is_some() {
             Ok(None)
@@ -1560,7 +1569,7 @@ fn work<W: TaskScratch>(
             }
             return;
         }
-        if run_task(shared, decode, task, workspace, &mut scratch).is_err() {
+        if run_task(shared, decode, task, workspace, scratch).is_err() {
             return;
         }
         state = match shared.lock() {
@@ -1568,7 +1577,7 @@ fn work<W: TaskScratch>(
             Err(_) => return,
         };
     }
-    state.workspaces.push(workspace);
+    state.workspaces.push((workspace, scratch));
     state.active -= 1;
     drop(state);
     shared.decoded.notify_all();
@@ -1581,7 +1590,7 @@ struct PoolRows<'s, 'p, 'c, 'w, W, D> {
     scope: &'s rayon::Scope<'p>,
     decode: &'p D,
     workspace: &'w mut W,
-    scratch: BlockScratch,
+    scratch: &'w mut BlockScratch,
     /// Each ring's band being read, with its slot.
     current: Vec<Option<(usize, &'c mut [f32])>>,
     /// Each ring's next band to read.
@@ -1695,13 +1704,7 @@ where
     /// will take, and hand it over as a worker does.
     fn decode_for_pool(&mut self, task: Task<'c>) -> Result<()> {
         let start = profile::profile_now(self.profile_enabled);
-        let result = run_task(
-            self.shared,
-            self.decode,
-            task,
-            self.workspace,
-            &mut self.scratch,
-        );
+        let result = run_task(self.shared, self.decode, task, self.workspace, self.scratch);
         self.tier1_us += profile::elapsed_us(start);
         result
     }
@@ -1713,7 +1716,7 @@ where
             self.shared.bands[index].strip,
             BandOutput::Whole(slot),
             self.workspace,
-            &mut self.scratch,
+            self.scratch,
         );
         self.tier1_us += profile::elapsed_us(start);
         result?;
