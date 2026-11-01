@@ -2526,6 +2526,107 @@ fn color_direct_region_does_not_parse_an_unneeded_trailing_packet() {
         .expect("the region plan stops before the unneeded trailing packet");
 }
 
+/// `codestream` with `edit` applied to its one tile-part, from its SOT marker
+/// to its end, and `Psot` set to the edited length.
+fn edit_only_tile_part(codestream: &[u8], edit: impl FnOnce(&mut Vec<u8>)) -> Vec<u8> {
+    let sot = codestream
+        .windows(2)
+        .position(|window| window == [0xff, 0x90])
+        .expect("SOT marker");
+    let psot = u32::from_be_bytes(codestream[sot + 6..sot + 10].try_into().expect("Psot"));
+    let end = sot + usize::try_from(psot).expect("Psot fits");
+    assert_eq!(codestream[end..], [0xff, 0xd9], "one tile-part");
+    let mut part = codestream[sot..end].to_vec();
+    edit(&mut part);
+    let psot = u32::try_from(part.len()).expect("edited Psot fits");
+    part[6..10].copy_from_slice(&psot.to_be_bytes());
+    [&codestream[..sot], &part, &codestream[end..]].concat()
+}
+
+/// Direct plans read packets with the walk the decodes use: a byte after the
+/// tile's last packet, or a PLT length past it, is left out of the plan as the
+/// decodes leave it, so the plan, run on the CPU, writes the decoded image of
+/// the codestream without it.
+#[test]
+fn direct_color_plans_ignore_data_after_the_last_packet_as_decodes_do() {
+    let pixels = gradient_pixels(16, 16, 3);
+    let options = EncodeOptions {
+        num_decomposition_levels: 2,
+        num_layers: 2,
+        code_block_width_exp: 1,
+        code_block_height_exp: 1,
+        write_plt: true,
+        ..EncodeOptions::default()
+    };
+    for (name, bytes) in [
+        (
+            "classic",
+            encode(&pixels, 16, 16, 3, 8, false, &options).expect("encode classic rgb8"),
+        ),
+        (
+            "htj2k",
+            encode_htj2k(&pixels, 16, 16, 3, 8, false, &options).expect("encode ht rgb8"),
+        ),
+    ] {
+        let clean = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+        let expected = clean
+            .decode_with_context(&mut DecoderContext::default())
+            .expect("decode")
+            .data;
+        let clean_plan = clean
+            .build_direct_color_plan_with_context(&mut DecoderContext::default())
+            .expect("direct plan");
+        let byte_after = edit_only_tile_part(&bytes, |part| part.push(0));
+        let surplus_length = edit_only_tile_part(&bytes, |part| {
+            let plt = part
+                .windows(2)
+                .position(|window| window == [0xff, 0x58])
+                .expect("PLT marker");
+            let length = u16::from_be_bytes([part[plt + 2], part[plt + 3]]);
+            part.insert(plt + 2 + usize::from(length), 5);
+            part[plt + 2..plt + 4].copy_from_slice(&(length + 1).to_be_bytes());
+        });
+        for (variant, edited) in [
+            ("byte after", byte_after),
+            ("surplus PLT length", surplus_length),
+        ] {
+            let image = Image::new(&edited, &DecodeSettings::default()).expect("image");
+            let decoded = image
+                .decode_with_context(&mut DecoderContext::default())
+                .unwrap_or_else(|error| panic!("{name} {variant}: decode: {error:?}"))
+                .data;
+            assert_eq!(decoded, expected, "{name} {variant}: decode");
+            let plan = image
+                .build_direct_color_plan_with_context(&mut DecoderContext::default())
+                .unwrap_or_else(|error| panic!("{name} {variant}: direct plan: {error:?}"));
+            if variant == "byte after" {
+                // Every payload keeps its offset: the plan is the clean one.
+                assert_eq!(
+                    format!("{plan:?}"),
+                    format!("{clean_plan:?}"),
+                    "{name} {variant}"
+                );
+            }
+            let region = J2kRect {
+                x0: 0,
+                y0: 0,
+                x1: 16,
+                y1: 16,
+            };
+            let mut direct = vec![0_u8; 16 * 16 * 3];
+            execute_direct_color_plan_rgb8_into(
+                &plan,
+                region,
+                &mut J2kDirectCpuScratch::new(),
+                &mut direct,
+                16 * 3,
+            )
+            .unwrap_or_else(|error| panic!("{name} {variant}: execute: {error:?}"));
+            assert_eq!(direct, expected, "{name} {variant}: direct plan on the CPU");
+        }
+    }
+}
+
 #[test]
 fn color_direct_plan_honors_target_resolution() {
     for (name, bytes) in [
