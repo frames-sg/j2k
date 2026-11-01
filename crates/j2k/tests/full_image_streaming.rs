@@ -935,6 +935,151 @@ fn misplaced_plt_length_before_a_needed_packet_fails_on_every_route() {
     }
 }
 
+/// A direct plan of `bytes`, RGB, at `scale`: `Ok` when it builds.
+fn direct_plan(bytes: &[u8], scale: Downscale) -> Result<(), Failure> {
+    let image = j2k_native::Image::new(bytes, &j2k_native::DecodeSettings::default())
+        .expect("parse header");
+    let (width, height) = (image.width(), image.height());
+    let divisor = scale.denominator();
+    let settings = j2k_native::DecodeSettings {
+        target_resolution: Some((width.div_ceil(divisor), height.div_ceil(divisor))),
+        ..j2k_native::DecodeSettings::default()
+    };
+    let image = j2k_native::Image::new(bytes, &settings).expect("parse header");
+    image
+        .build_direct_color_plan_with_context(&mut j2k_native::DecoderContext::default())
+        .map(drop)
+        .map_err(|error| Failure::Native(error.classify()))
+}
+
+/// Every packet holds at least the first byte of its header, so a zero PLT
+/// length is no packet's. Skipping an unneeded packet by such a length would
+/// read the next needed packet from the skipped one's bytes: here, in a flat
+/// image whose finest packets are empty, the second component's finest packet
+/// as the third component's coarsest, whose data a half-resolution decode
+/// needs and would never read. Every route, pool size and direct plan
+/// rejects it, at both resolutions.
+#[test]
+fn zero_plt_length_before_a_needed_packet_fails_on_every_route() {
+    let flat: Vec<u8> = (0..WIDTH * HEIGHT).flat_map(|_| [200, 50, 120]).collect();
+    let options = EncodeOptions {
+        num_decomposition_levels: 1,
+        progression_order: EncodeProgressionOrder::Cprl,
+        write_plt: true,
+        ..EncodeOptions::default()
+    };
+    let clean = encode(&flat, WIDTH, HEIGHT, 3, 8, false, &options).expect("encode fixture");
+    // CPRL, one layer, one precinct per resolution: each component's
+    // coarsest packet, then its finest, which the flat image leaves empty.
+    let lengths: Vec<usize> = j2k_test_support::packet_ranges(&clean)
+        .iter()
+        .map(std::ops::Range::len)
+        .collect();
+    assert_eq!(lengths.len(), 6, "six packets");
+    assert_eq!(
+        [lengths[1], lengths[3], lengths[5]],
+        [1, 1, 1],
+        "empty finest packets"
+    );
+    assert!(
+        lengths[4] > 1,
+        "the third component's coarsest packet has data"
+    );
+    let zero = j2k_test_support::with_packet_lengths_edited(&clean, |lengths| {
+        let total: usize = lengths.iter().sum();
+        lengths[3] = 0;
+        lengths[4] = 1;
+        lengths[5] = total - lengths[..5].iter().sum::<usize>();
+    });
+    let fmt = PixelFormat::Rgb8;
+    let pools = [1, 4].map(|threads| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("pool")
+    });
+    for scale in [Downscale::None, Downscale::Half] {
+        assert!(decode(&clean, None, CpuDecodeParallelism::Serial, fmt, scale, 0).is_ok());
+        assert!(direct_plan(&clean, scale).is_ok());
+        let mut failure = OneFailure::default();
+        for (pool, threads) in pools.iter().zip([1, 4]) {
+            for budget in [Some(usize::MAX), Some(0), None] {
+                let decoded = pool
+                    .install(|| decode(&zero, budget, CpuDecodeParallelism::Auto, fmt, scale, 0));
+                failure.check(
+                    &decoded,
+                    &format!("{scale:?} {threads} threads, planes budget {budget:?}"),
+                );
+            }
+        }
+        let planned = direct_plan(&zero, scale).map(|()| Vec::new());
+        failure.check(&planned, &format!("{scale:?} direct plan"));
+    }
+}
+
+/// With EPH markers every packet holds at least three bytes, its header's
+/// first byte and the marker, so PLT lengths of one and two are no packet's.
+/// Skipping by them would misplace the next needed packet as a zero length
+/// does: in a flat CPRL image with three resolutions, lengths of one and two
+/// for the second component's finer packets make a quarter-resolution decode
+/// read the second one as the third component's coarsest, needed, packet.
+/// Every route, pool size and direct plan rejects it, at every resolution.
+#[test]
+fn plt_lengths_shorter_than_an_eph_packet_fail_on_every_route() {
+    let flat: Vec<u8> = (0..WIDTH * HEIGHT).flat_map(|_| [200, 50, 120]).collect();
+    let options = EncodeOptions {
+        num_decomposition_levels: 2,
+        progression_order: EncodeProgressionOrder::Cprl,
+        write_plt: true,
+        write_eph: true,
+        ..EncodeOptions::default()
+    };
+    let clean = encode(&flat, WIDTH, HEIGHT, 3, 8, false, &options).expect("encode fixture");
+    // CPRL, one layer, one precinct per resolution: each component's three
+    // packets, coarsest first; the finer ones are empty, a byte and EPH.
+    let lengths: Vec<usize> = j2k_test_support::packet_ranges(&clean)
+        .iter()
+        .map(std::ops::Range::len)
+        .collect();
+    assert_eq!(lengths.len(), 9, "nine packets");
+    for finer in [1, 2, 4, 5, 7, 8] {
+        assert_eq!(lengths[finer], 3, "empty packet {finer}");
+    }
+    assert!(
+        lengths[6] > 3,
+        "the third component's coarsest packet has data"
+    );
+    let short = j2k_test_support::with_packet_lengths_edited(&clean, |lengths| {
+        let total: usize = lengths.iter().sum();
+        lengths[4] = 1;
+        lengths[5] = 2;
+        lengths[6] = 3;
+        lengths[8] = total - lengths[..8].iter().sum::<usize>();
+    });
+    let fmt = PixelFormat::Rgb8;
+    for scale in [Downscale::None, Downscale::Half, Downscale::Quarter] {
+        assert!(decode(&clean, None, CpuDecodeParallelism::Serial, fmt, scale, 0).is_ok());
+        assert!(direct_plan(&clean, scale).is_ok());
+        let mut failure = OneFailure::default();
+        for threads in [1, 4] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("pool");
+            for budget in [Some(usize::MAX), Some(0), None] {
+                let decoded = pool
+                    .install(|| decode(&short, budget, CpuDecodeParallelism::Auto, fmt, scale, 0));
+                failure.check(
+                    &decoded,
+                    &format!("{scale:?} {threads} threads, planes budget {budget:?}"),
+                );
+            }
+        }
+        let planned = direct_plan(&short, scale).map(|()| Vec::new());
+        failure.check(&planned, &format!("{scale:?} direct plan"));
+    }
+}
+
 /// A tile-part cut inside its tile's last packet, a finest-resolution one,
 /// fails at full resolution and decodes at half resolution as the uncut
 /// codestream does, on every route, wherever the cut falls in that packet

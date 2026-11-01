@@ -480,7 +480,14 @@ fn parse_inner<'a>(
             };
             #[cfg(not(feature = "std"))]
             let layers = progression_iterator.remaining_precinct_layers();
-            let (skipped, complete) = tile_part.skip_packets(1 + layers);
+            // A packet header takes a byte at least, and its EPH marker two
+            // more where the coding style requires one.
+            let min_length = if component_info.coding_style.flags.uses_eph_marker() {
+                3
+            } else {
+                1
+            };
+            let (skipped, complete) = tile_part.skip_packets(1 + layers, min_length)?;
             // The packets a one-by-one walk would have taken from the
             // progression after this one: each skipped, plus a failing one.
             let further = if complete {
