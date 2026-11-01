@@ -173,6 +173,21 @@ pub(super) fn validate_component_planes(
     Ok(())
 }
 
+/// The first `row_bytes` of each of the first `height` rows of `out` at
+/// `stride`. A validated buffer may end right after the last row's pixels
+/// (see `j2k_core::strided_output_len`), so the last row may be shorter
+/// than `stride`.
+pub(super) fn output_rows(
+    out: &mut [u8],
+    stride: usize,
+    row_bytes: usize,
+    height: usize,
+) -> impl Iterator<Item = &mut [u8]> {
+    out.chunks_mut(stride)
+        .take(height)
+        .map(move |row| &mut row[..row_bytes])
+}
+
 fn write_component_rows_u8(
     plane: &j2k_native::ComponentPlane<'_>,
     out: &mut [u8],
@@ -303,26 +318,22 @@ pub(in crate::decode) fn write_u8_output(
 fn copy_rows_exact(src: &[u8], out: &mut [u8], stride: usize, row_bytes: usize, height: usize) {
     for (src_row, dst_row) in src
         .chunks_exact(row_bytes)
-        .zip(out.chunks_exact_mut(stride))
-        .take(height)
+        .zip(output_rows(out, stride, row_bytes, height))
     {
-        dst_row[..row_bytes].copy_from_slice(src_row);
+        dst_row.copy_from_slice(src_row);
     }
 }
 
 fn add_opaque_alpha_u8(src: &[u8], out: &mut [u8], stride: usize, width: usize, height: usize) {
     let src_row_bytes = width * 3;
     let dst_row_bytes = width * 4;
-    for (src_row, dst_row) in src
-        .chunks_exact(src_row_bytes)
-        .zip(out.chunks_exact_mut(stride))
-        .take(height)
-    {
+    let dst_rows = output_rows(out, stride, dst_row_bytes, height);
+    for (src_row, dst_row) in src.chunks_exact(src_row_bytes).zip(dst_rows) {
         for (rgb, rgba) in src_row
             .as_chunks::<3>()
             .0
             .iter()
-            .zip(dst_row[..dst_row_bytes].as_chunks_mut::<4>().0)
+            .zip(dst_row.as_chunks_mut::<4>().0)
         {
             rgba[..3].copy_from_slice(rgb);
             rgba[3] = u8::MAX;
@@ -355,16 +366,13 @@ pub(in crate::decode) fn expand_rgb8_to_rgba8(out: &mut [u8]) {
 fn drop_alpha_u8(src: &[u8], out: &mut [u8], stride: usize, width: usize, height: usize) {
     let src_row_bytes = width * 4;
     let dst_row_bytes = width * 3;
-    for (src_row, dst_row) in src
-        .chunks_exact(src_row_bytes)
-        .zip(out.chunks_exact_mut(stride))
-        .take(height)
-    {
+    let dst_rows = output_rows(out, stride, dst_row_bytes, height);
+    for (src_row, dst_row) in src.chunks_exact(src_row_bytes).zip(dst_rows) {
         for (rgba, rgb) in src_row
             .as_chunks::<4>()
             .0
             .iter()
-            .zip(dst_row[..dst_row_bytes].as_chunks_mut::<3>().0)
+            .zip(dst_row.as_chunks_mut::<3>().0)
         {
             rgb.copy_from_slice(&rgba[..3]);
         }
