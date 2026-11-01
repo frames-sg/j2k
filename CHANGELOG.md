@@ -15,6 +15,24 @@ Staged workspace version: `0.13.2`.
   status, detail and batch source index. CUDA keeps its typed source and job
   attribution. Unsupported statuses, raw runtime failures and combined
   cleanup or release failures keep their existing classes.
+- Classic code-blocks of several codeword segments, with selective bypass
+  or per-pass termination (as archival images and multi-layer encodes of
+  this crate often have), decode on the worker pool's tile route and pool
+  bands like single-segment ones: each worker collects a block's segment
+  descriptors into its own scratch, reserved before it starts, from the
+  segment records it already reads, with no per-block allocation or plan
+  growth. Region decodes and full-image decodes that stream their rows now
+  stream such images on the pool without component planes, and full-image
+  decodes into planes decode their blocks in place instead of on the
+  per-sub-band path. Output is unchanged.
+- A region decode on the worker pool that streams its rows to a sink, such
+  as an 8-bit full-image decode whose component planes would pass the
+  decode budget, now streams them from serial bands when the pool's bands
+  cannot decode a tile but serial bands can, and the region's planes would
+  pass the budget. Such decodes of classic images with BYPASS or per-pass
+  termination failed with a resource limit on pools of two or more threads,
+  and decode as on one thread now. Decodes whose planes fit keep their
+  route.
 - Parallel band decoding charges each component's plan and the band
   executor's records to one decode budget, across all components when a
   tile's rows stream together, and releases the plans and the records before
