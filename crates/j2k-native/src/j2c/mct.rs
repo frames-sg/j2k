@@ -214,6 +214,32 @@ impl DeferredMct {
         }
     }
 
+    /// Transform one row of each of the three components and pack it as
+    /// RGB8 into `output`: through the fused ICT pack where this build has
+    /// one (see [`Self::fuses_rgb8_pack`]), which only reads the rows,
+    /// otherwise transformed in place and packed by `pack`, which must be
+    /// the standard RGB8 pack where the fused one exists. Both routes finish
+    /// their rows here: the planes' last level as it reconstructs them (see
+    /// [`Self::pack_rgb8`]) and the streamed IDWT's rows.
+    #[expect(
+        clippy::inline_always,
+        reason = "the row finish inlines into the planes' dispatched row streamer"
+    )]
+    #[inline(always)]
+    pub(crate) fn pack_rgb8_row(
+        self,
+        [r, g, b]: [&mut [f32]; 3],
+        output: &mut [u8],
+        pack: impl Fn([&[f32]; 3], &mut [u8]),
+    ) {
+        if self.fuses_rgb8_pack() {
+            self.pack_ict_rgb8_rows([r, g, b], output);
+        } else {
+            self.transform_chunk((&mut *r, &mut *g, &mut *b));
+            pack([r, g, b], output);
+        }
+    }
+
     /// Transform the planes in place, as [`apply_inverse`] would have. Planes
     /// that hold a last level's sub-bands are left to [`Self::pack_rgb8`].
     pub(crate) fn apply(
@@ -262,14 +288,7 @@ impl DeferredMct {
                 scratch,
                 output,
                 parallel,
-                |[r, g, b], output| {
-                    if self.fuses_rgb8_pack() {
-                        self.pack_ict_rgb8_rows([r, g, b], output);
-                    } else {
-                        self.transform_chunk((&mut *r, &mut *g, &mut *b));
-                        pack([r, g, b], output);
-                    }
-                },
+                |rows, output| self.pack_rgb8_row(rows, output, &pack),
             );
         }
         #[cfg(feature = "parallel")]

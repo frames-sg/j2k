@@ -160,7 +160,6 @@ fn stream_rows<'a>(
     profile_enabled: bool,
     tier1_us: &mut u128,
 ) -> Result<()> {
-    let components = tile.component_infos.len();
     let mut bands = Vec::new();
     let line_plans = plan_tile_lines(tile, header, tile_ctx, storage, &mut bands)?;
     let band_of = band_lookup(&bands)?;
@@ -168,25 +167,20 @@ fn stream_rows<'a>(
     let (copy, region) = line_plans
         .first()
         .map_or((empty, empty), |plan| (plan.copy, plan.region));
-    let scratch_len = (copy.width() as usize)
-        .checked_mul(components)
-        .ok_or(ValidationError::ImageTooLarge)?;
     // The index first: once the ring buffer is out of `tile_ctx`, every
     // error path below must put it back.
     let (precinct_rows, index_bytes) = index_bands(storage, tile_ctx, &bands)?;
-    let (mut buffer, ring_lens) =
-        match take_line_buffer(tile_ctx, storage, &line_plans, scratch_len) {
-            Ok(taken) => taken,
-            Err(error) => {
-                storage.structural_workspace_bytes -= index_bytes;
-                return Err(error);
-            }
-        };
+    let (mut buffer, ring_lens) = match take_line_buffer(tile_ctx, storage, &line_plans, 0) {
+        Ok(taken) => taken,
+        Err(error) => {
+            storage.structural_workspace_bytes -= index_bytes;
+            return Err(error);
+        }
+    };
     let mut output = RowOutput::new(tile, sink, tile_ctx, copy, region);
     let mut output_samples = 0usize;
     let result = (|| {
-        let rings_len = buffer.len() - scratch_len;
-        let (mut rings, scratch) = buffer.split_at_mut(rings_len);
+        let mut rings = &mut buffer[..];
         let mut lines = Vec::new();
         lines
             .try_reserve_exact(line_plans.len())
@@ -208,7 +202,7 @@ fn stream_rows<'a>(
             tier1_us: 0,
         };
         let result = output
-            .write(&mut lines, &mut rows, scratch)
+            .write(&mut lines, &mut rows)
             .and_then(|()| rows.decode_remaining_bands());
         *tier1_us = rows.tier1_us;
         output_samples = lines.iter().map(LineReconstruction::output_samples).sum();
@@ -315,8 +309,8 @@ pub(super) struct RowOutput<'o, 't> {
     /// The rows, in the coordinates of `region`, that the tile reconstructs.
     copy: IntRect,
     region: IntRect,
-    /// The inverse MCT of three 8-bit components, which the RGB8 pack can
-    /// take over (see [`Self::fused_rgb8_pack`]).
+    /// The inverse MCT of three 8-bit components, which finishes their rows
+    /// for an RGB8 destination (see [`DeferredMct::pack_rgb8_row`]).
     mct: Option<DeferredMct>,
     /// Samples handed to the sink.
     pub(super) streamed: usize,
@@ -356,13 +350,6 @@ impl<'o, 't> RowOutput<'o, 't> {
         }
     }
 
-    /// The inverse MCT when the RGB8 pack fuses it (see
-    /// [`DeferredMct::fuses_rgb8_pack`]): rows then go to the pack as the
-    /// IDWT left them, never transformed in place.
-    fn fused_rgb8_pack(&self) -> Option<DeferredMct> {
-        self.mct.filter(|mct| mct.fuses_rgb8_pack())
-    }
-
     /// The sink's RGB8 rows for `rows` rows of the tile from row `y`, when
     /// it has a destination for three 8-bit components.
     fn rgb8_rows(&mut self, y: u32, rows: usize) -> Result<Option<Rgb8Rows<'_>>> {
@@ -388,77 +375,62 @@ impl<'o, 't> RowOutput<'o, 't> {
         }))
     }
 
-    /// Advance every component's reconstruction a row at a time, copying
-    /// each row into `scratch`, one row per component, and hand them over:
-    /// packed into the sink's RGB8 rows when it has them, through
-    /// [`DeferredMct::pack_ict_rgb8_rows`] straight from the IDWT's rows
-    /// where that pack transforms them, else through `write_rows`.
+    /// Advance every component's reconstruction a row at a time and finish
+    /// each row in the IDWT's ring once no lifting step reads it: transformed
+    /// in place and packed into the sink's RGB8 rows when it has them, the
+    /// inverse MCT fused into the pack where [`DeferredMct::pack_rgb8_row`]
+    /// fuses it, else handed to `write_rows`.
     pub(super) fn write(
         &mut self,
         lines: &mut [LineReconstruction<'_>],
         rows: &mut dyn SubBandRows,
-        scratch: &mut [f32],
     ) -> Result<()> {
         let (copy, components) = (self.copy, lines.len());
         let width = copy.width() as usize;
         if lines.is_empty() || width == 0 {
             return Ok(());
         }
-        // With an RGB8 destination, rows go from the IDWT's rings straight
-        // to the pack, which transforms them on the way.
-        let fused = self
-            .fused_rgb8_pack()
-            .filter(|_| matches!(self.rgb8_rows(copy.y0, 0), Ok(Some(_))));
+        let (tile, round_irreversible_output, mct) =
+            (self.tile, self.round_irreversible_output, self.mct);
         for y in copy.y0..copy.y1 {
-            if let Some(mct) = fused {
-                let mut samples: [&[f32]; 3] = [&[]; 3];
-                for (line, row) in lines.iter_mut().zip(samples.iter_mut()) {
-                    let (row_y, line_row) = line
-                        .next_row(rows)?
-                        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-                    if row_y != y || line_row.len() != width {
-                        return Err(DecodingError::CodeBlockDecodeFailure.into());
-                    }
-                    *row = line_row;
-                }
-                let rgb8 = self
-                    .rgb8_rows(y, 1)?
-                    .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-                let pixels = rgb8
-                    .out
-                    .get_mut(rgb8.x..rgb8.x + width * 3)
-                    .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-                mct.pack_ict_rgb8_rows(samples, pixels);
-                self.streamed = self.streamed.saturating_add(width * components);
-                continue;
+            // Every component's row final before any takes the arrival that
+            // frees it, so the bands decode in the order rows handed over
+            // final read them, and a failing tile meets the same band first.
+            for line in lines.iter_mut() {
+                line.finish_next_row(rows)?;
             }
             let mut outputs: [&mut [f32]; 4] = Default::default();
-            for ((line, output), chunk) in lines
-                .iter_mut()
-                .zip(outputs.iter_mut())
-                .zip(scratch.chunks_exact_mut(width))
-            {
+            for (line, output) in lines.iter_mut().zip(outputs.iter_mut()) {
                 let (row_y, row) = line
-                    .next_row(rows)?
+                    .next_row_mut(rows)?
                     .ok_or(DecodingError::CodeBlockDecodeFailure)?;
                 if row_y != y || row.len() != width {
                     return Err(DecodingError::CodeBlockDecodeFailure.into());
                 }
-                chunk.copy_from_slice(row);
-                *output = chunk;
+                *output = row;
             }
             let outputs = &mut outputs[..components];
-            store::transform_streamed_rows(self.tile, self.round_irreversible_output, outputs)?;
             if let Some(rgb8) = self.rgb8_rows(y, 1)? {
                 let pixels = rgb8
                     .out
                     .get_mut(rgb8.x..rgb8.x + width * 3)
                     .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-                let [red, green, blue] = [&*outputs[0], &*outputs[1], &*outputs[2]];
-                crate::color::pack_rgb8([red, green, blue], pixels);
+                match (mct, outputs) {
+                    (Some(mct), [red, green, blue]) => {
+                        mct.pack_rgb8_row([red, green, blue], pixels, crate::color::pack_rgb8);
+                    }
+                    (_, outputs) => {
+                        store::transform_streamed_rows(tile, round_irreversible_output, outputs)?;
+                        let [red, green, blue, ..] = outputs else {
+                            return Err(DecodingError::CodeBlockDecodeFailure.into());
+                        };
+                        crate::color::pack_rgb8([red, green, blue], pixels);
+                    }
+                }
                 self.streamed = self.streamed.saturating_add(width * components);
                 continue;
             }
+            store::transform_streamed_rows(tile, round_irreversible_output, outputs)?;
             let component_rows: [ComponentPlane<'_>; 4] =
                 core::array::from_fn(|index| ComponentPlane {
                     samples: outputs.get(index).map_or(&[][..], |row| &**row),
@@ -586,10 +558,10 @@ impl RowOutput<'_, '_> {
     ) -> Result<()> {
         let width = self.copy.width() as usize;
         let mut parts = batch_parts(buffer, batch_len, rows * width, components)?;
-        let fused = self.fused_rgb8_pack();
+        let mct = self.mct;
         let destination = self.rgb8_rows(y, rows)?;
         let packed = destination.is_some();
-        let fused = fused.filter(|_| packed);
+        let mct = mct.filter(|_| packed);
         match alongside {
             Some(alongside) => {
                 let mut finished = Ok(());
@@ -597,7 +569,7 @@ impl RowOutput<'_, '_> {
                 overlap(
                     || {
                         finished = finish_rows(
-                            (transform, fused),
+                            (transform, mct),
                             &mut parts[..components],
                             width,
                             destination,
@@ -610,7 +582,7 @@ impl RowOutput<'_, '_> {
                 finished?;
             }
             None => finish_rows(
-                (transform, fused),
+                (transform, mct),
                 &mut parts[..components],
                 width,
                 destination,
@@ -817,27 +789,28 @@ struct BatchRows<'p, 'o> {
 )]
 impl BatchRows<'_, '_> {
     /// Transform the rows one at a time, as [`RowOutput::write`] does, then
-    /// pack them into the RGB8 rows if there are any; with a `fused` MCT,
-    /// the pack transforms each row as it reads it instead.
+    /// pack them into the RGB8 rows if there are any; with the `mct` of
+    /// three components and RGB8 rows, each row finishes through
+    /// [`DeferredMct::pack_rgb8_row`] instead.
     fn finish(
         mut self,
-        ((tile, round_irreversible_output), fused): ((&Tile<'_>, bool), Option<DeferredMct>),
+        ((tile, round_irreversible_output), mct): ((&Tile<'_>, bool), Option<DeferredMct>),
         components: usize,
         width: usize,
     ) -> Result<()> {
         let rows = self.parts[0].len().checked_div(width).unwrap_or(0);
-        if let (Some(mct), Some(rgb8)) = (fused, self.rgb8.as_mut()) {
-            let [red, green, blue, _] = &self.parts;
+        if let (Some(mct), Some(rgb8)) = (mct, self.rgb8.as_mut()) {
+            let [red, green, blue, _] = &mut self.parts;
             let samples = red
-                .chunks_exact(width)
-                .zip(green.chunks_exact(width))
-                .zip(blue.chunks_exact(width));
+                .chunks_exact_mut(width)
+                .zip(green.chunks_exact_mut(width))
+                .zip(blue.chunks_exact_mut(width));
             for (line, ((red, green), blue)) in rgb8.out.chunks_exact_mut(rgb8.stride).zip(samples)
             {
                 let pixels = line
                     .get_mut(rgb8.x..rgb8.x + width * 3)
                     .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-                mct.pack_ict_rgb8_rows([red, green, blue], pixels);
+                mct.pack_rgb8_row([red, green, blue], pixels, crate::color::pack_rgb8);
             }
             return Ok(());
         }

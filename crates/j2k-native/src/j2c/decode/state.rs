@@ -140,8 +140,8 @@ pub(crate) struct DecompositionStorage<'a> {
     /// them through one reader whatever its pool's workers (see
     /// [`parallel_bands::one_reader`]), which holds one short batch of rows.
     pub(crate) one_synthesis_reader: bool,
-    /// Whether every component's IDWT rings, and a scratch row each, are
-    /// live at once, because the tile streams its rows to a sink.
+    /// Whether every component's IDWT rings are live at once, because the
+    /// tile streams its rows to a sink, finishing them in the rings.
     pub(crate) lockstep_lines: bool,
     /// The f32 samples of IDWT workspace the ROI plan charged for this tile.
     pub(crate) roi_idwt_charge_elements: usize,

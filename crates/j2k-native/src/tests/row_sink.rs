@@ -496,11 +496,11 @@ fn pool_band_rows_fit_every_components_clipped_blocks() {
 /// A sink with an RGB8 destination, which [`ComponentRowSink::write_rows`]
 /// fills the way the destination's contract says: each 8-bit sample rounded
 /// and saturated.
-struct Rgb8Sink {
-    width: usize,
-    rgb: Vec<u8>,
-    offers_destination: bool,
-    rectangles: usize,
+pub(super) struct Rgb8Sink {
+    pub(super) width: usize,
+    pub(super) rgb: Vec<u8>,
+    pub(super) offers_destination: bool,
+    pub(super) rectangles: usize,
 }
 
 impl ComponentRowSink for Rgb8Sink {

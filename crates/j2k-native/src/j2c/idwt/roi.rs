@@ -74,8 +74,8 @@ pub(crate) fn streamed_batch_rows(
 /// at the 9/7 ring depth whatever the component's transform. With no active
 /// level it holds nothing, since it copies the LL window straight into the
 /// plane. When the tile streams its rows to a sink, every component's rings
-/// are live at once, with a scratch row each as wide as its final window, or
-/// one or two batches of such rows from pool bands (see
+/// are live at once, the rows finishing in place in them, with one or two
+/// batches of rows as wide as each final window from pool bands (see
 /// [`streamed_batch_rows`]), so the peak is their sum.
 pub(crate) fn roi_idwt_peak_elements(
     storage: &DecompositionStorage<'_>,
@@ -115,7 +115,7 @@ pub(crate) fn roi_idwt_peak_elements(
                 .map_while(|decomposition_idx| roi_plan.idwt_window(decomposition_idx));
             let rings = ring_samples(windows, WaveletTransform::Irreversible97)?;
             if storage.lockstep_lines {
-                let scratch_row = roi_plan.final_window(component_idx).map_or(0, |window| {
+                let batch_rows = roi_plan.final_window(component_idx).map_or(0, |window| {
                     let (width, height) = (window.width() as usize, window.height() as usize);
                     if storage.parallel_bands {
                         // Two batches, when each component reconstructs
@@ -137,12 +137,12 @@ pub(crate) fn roi_idwt_peak_elements(
                             ))
                             .saturating_mul(batches)
                     } else {
-                        width
+                        0
                     }
                 });
                 lockstep = lockstep
                     .checked_add(rings)
-                    .and_then(|total| total.checked_add(scratch_row))
+                    .and_then(|total| total.checked_add(batch_rows))
                     .ok_or(ValidationError::ImageTooLarge)?;
             } else {
                 peak = peak.max(rings);

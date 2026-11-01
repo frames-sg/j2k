@@ -220,3 +220,133 @@ fn fused_region_pack_matches_staged_samples() {
         }
     }
 }
+
+/// The rows `roi` of an RGB8 image of `width` samples per row.
+fn crop(rgb: &[u8], width: u32, (x, y, w, h): (u32, u32, u32, u32)) -> Vec<u8> {
+    (y..y + h)
+        .flat_map(|row| {
+            let start = ((row * width + x) * 3) as usize;
+            rgb[start..start + (w * 3) as usize].iter().copied()
+        })
+        .collect()
+}
+
+/// The streamed rows of `bytes`, packed into an RGB8 destination or handed
+/// over as rows, must be the staged decode's bytes, on one thread and on
+/// pools whose components reconstruct through one reader or a reader each,
+/// for the whole image, a reduced one, and regions.
+fn assert_streamed_rows_match_staged(bytes: &[u8], label: &str) {
+    #[cfg(feature = "parallel")]
+    let pools: Vec<(usize, rayon::ThreadPool)> = [1, 2, 4, 12]
+        .into_iter()
+        .map(|threads| {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("build pool");
+            (threads, pool)
+        })
+        .collect();
+    for reduction in [0, 1] {
+        let image = Image::new_with_reduction(bytes, &DecodeSettings::default(), reduction)
+            .expect("parse streamed fixture");
+        let (w, h) = (image.width(), image.height());
+        let mut staged = DecoderContext::default();
+        staged.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
+        staged.tile_decode_context.staged_rgb8_pack = true;
+        let expected = image
+            .decode_with_context(&mut staged)
+            .expect("staged decode")
+            .data;
+        for roi in [
+            (0, 0, w, h),
+            (1, 1, w - 1, h - 1),
+            (w / 3, h / 3, w / 3, h / 4),
+        ] {
+            let expected = crop(&expected, w, roi);
+            let rows = |parallelism, offers_destination| {
+                let mut context = DecoderContext::default();
+                context.set_cpu_decode_parallelism(parallelism);
+                let mut sink = super::row_sink::Rgb8Sink {
+                    width: roi.2 as usize,
+                    rgb: vec![0; (roi.2 * roi.3 * 3) as usize],
+                    offers_destination,
+                    rectangles: 0,
+                };
+                image
+                    .decode_region_rows_for_integer_output_with_context(
+                        roi,
+                        &mut context,
+                        &mut sink,
+                    )
+                    .expect("decode streamed rows");
+                sink.rgb
+            };
+            let label = format!("{label} reduction={reduction} roi={roi:?}");
+            for offers_destination in [true, false] {
+                assert_eq!(
+                    rows(CpuDecodeParallelism::Serial, offers_destination),
+                    expected,
+                    "{label} serial destination={offers_destination}"
+                );
+                #[cfg(feature = "parallel")]
+                for (threads, pool) in &pools {
+                    assert_eq!(
+                        pool.install(|| rows(CpuDecodeParallelism::Auto, offers_destination)),
+                        expected,
+                        "{label} threads={threads} destination={offers_destination}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The streamed route finishes each row of the last level in the IDWT's
+/// ring, as the planes' fused last level finishes its rows in its own: at
+/// the fused level's sizes and origins, and at the staged ones.
+#[test]
+fn streamed_rows_match_the_fused_last_level() {
+    for case in CASES
+        .iter()
+        .filter(|case| case.components == 3 && case.bit_depth == 8)
+    {
+        let (width, height) = case.size;
+        for reversible in [true, false] {
+            let samples = noisy_samples(width * height * 3);
+            let bytes = encode(
+                &samples,
+                width,
+                height,
+                3,
+                8,
+                false,
+                &EncodeOptions {
+                    reversible,
+                    num_decomposition_levels: case.levels,
+                    tile_size: case.tile,
+                    ..EncodeOptions::default()
+                },
+            )
+            .expect("encode streamed fixture");
+            let label = format!(
+                "{width}x{height} levels={} tile={:?} reversible={reversible}",
+                case.levels, case.tile
+            );
+            assert_streamed_rows_match_staged(&bytes, &label);
+        }
+    }
+    let fixtures: [(&str, &[u8]); 2] = [
+        (
+            "5/3 75x56 at (5, 3)",
+            include_bytes!("../../fixtures/image_origin/openjpeg_rgb_75x56_origin5x3_53.j2k"),
+        ),
+        (
+            "9/7 72x59 at (7, 1)",
+            include_bytes!("../../fixtures/image_origin/openjpeg_rgb_72x59_origin7x1_97.j2k"),
+        ),
+    ];
+    for (name, bytes) in fixtures {
+        assert_streamed_rows_match_staged(bytes, name);
+    }
+}

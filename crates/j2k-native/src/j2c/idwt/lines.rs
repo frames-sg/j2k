@@ -139,6 +139,12 @@ impl LevelRows<'_> {
         &self.ring[self.slot(row) * width..][..width]
     }
 
+    fn row_mut(&mut self, row: usize) -> &mut [f32] {
+        let width = self.width();
+        let slot = self.slot(row);
+        &mut self.ring[slot * width..][..width]
+    }
+
     /// Rows that are final. Row `r` takes its last step at arrival `r + k`,
     /// where `k` is that step: the last of the transform's steps for the rows
     /// that step updates, the one before it for the others.
@@ -167,6 +173,19 @@ impl LevelRows<'_> {
             done += 1;
         }
         done
+    }
+
+    /// Rows that no vertical step reads any more: row `r` is last read by
+    /// the last step of row `r + 1` (row `r - 1`'s comes earlier), so it is
+    /// unread once the row below it is final, and the last row once every
+    /// row is.
+    fn unread(&self, transform: WaveletTransform) -> usize {
+        let done = self.done(transform);
+        if done == self.height() {
+            done
+        } else {
+            done.saturating_sub(1)
+        }
     }
 
     /// The vertical steps of this level's next arrival, which must not have
@@ -312,6 +331,49 @@ impl<'r> LineReconstruction<'r> {
         let Some(y) = self.rows.next() else {
             return Ok(None);
         };
+        let row = self.advance(rows, y, Ready::Final)?;
+        let last = self.levels.len() - 1;
+        Ok(Some((y, &self.levels[last].row(row)[self.columns.clone()])))
+    }
+
+    /// [`Self::next_row`], handed over once no vertical step reads the row
+    /// any more, so that the caller may transform it in place. That takes
+    /// the arrival of one more row than [`Self::next_row`] waits for, which
+    /// the ring holds; the last row needs none, since nothing reconstructs
+    /// after it, so the bands a decode reads stay those final rows read.
+    pub(crate) fn next_row_mut(
+        &mut self,
+        rows: &mut dyn SubBandRows,
+    ) -> Result<Option<(u32, &mut [f32])>> {
+        let Some(y) = self.rows.next() else {
+            return Ok(None);
+        };
+        let ready = if self.rows.is_empty() {
+            Ready::Final
+        } else {
+            Ready::Unread
+        };
+        let row = self.advance(rows, y, ready)?;
+        let last = self.levels.len() - 1;
+        let columns = self.columns.clone();
+        Ok(Some((y, &mut self.levels[last].row_mut(row)[columns])))
+    }
+
+    /// Advance the last level until its next row is final, as
+    /// [`Self::next_row`] does, without handing the row over. A caller that
+    /// takes a row of several reconstructions with [`Self::next_row_mut`]
+    /// takes them all here first: their bands then decode in the order that
+    /// handing the rows over final reads them.
+    pub(crate) fn finish_next_row(&mut self, rows: &mut dyn SubBandRows) -> Result<()> {
+        self.rows
+            .clone()
+            .next()
+            .map_or(Ok(()), |y| self.advance(rows, y, Ready::Final).map(drop))
+    }
+
+    /// Advance the last level until its absolute row `y` is `ready`,
+    /// returning its row in the level's window.
+    fn advance(&mut self, rows: &mut dyn SubBandRows, y: u32, ready: Ready) -> Result<usize> {
         let last = self.levels.len() - 1;
         let row = (y - self.levels[last].window.y0) as usize;
         let mut inputs = Inputs {
@@ -320,8 +382,8 @@ impl<'r> LineReconstruction<'r> {
             transform: self.transform,
             scratch: &mut *self.scratch,
         };
-        finish_row(&mut self.levels, last, row, &mut inputs)?;
-        Ok(Some((y, &self.levels[last].row(row)[self.columns.clone()])))
+        advance_until(&mut self.levels, last, row, &mut inputs, ready)?;
+        Ok(row)
     }
 
     /// The samples reconstructed so far, over every level.
@@ -332,6 +394,15 @@ impl<'r> LineReconstruction<'r> {
     }
 }
 
+/// How far a level's row must be along before it is handed over.
+#[derive(Clone, Copy)]
+enum Ready {
+    /// Its last vertical step has run (see [`LevelRows::done`]).
+    Final,
+    /// No vertical step reads it any more (see [`LevelRows::unread`]).
+    Unread,
+}
+
 /// Advance `levels[level]` until `row` of its window is final. Rows must be
 /// requested in increasing order.
 fn finish_row(
@@ -340,9 +411,26 @@ fn finish_row(
     row: usize,
     inputs: &mut Inputs<'_>,
 ) -> Result<()> {
+    advance_until(levels, level, row, inputs, Ready::Final)
+}
+
+/// Advance `levels[level]` until `row` of its window is `ready`. Rows must
+/// be requested in increasing order.
+fn advance_until(
+    levels: &mut [LevelRows<'_>],
+    level: usize,
+    row: usize,
+    inputs: &mut Inputs<'_>,
+    ready: Ready,
+) -> Result<()> {
     let ring_rows = ring_rows(inputs.transform);
     let steps = vertical_step_count(inputs.transform);
-    while levels[level].done(inputs.transform) <= row {
+    let transform = inputs.transform;
+    let ready_rows = |level: &LevelRows<'_>| match ready {
+        Ready::Final => level.done(transform),
+        Ready::Unread => level.unread(transform),
+    };
+    while ready_rows(&levels[level]) <= row {
         let current = &levels[level];
         let height = current.height();
         if current.fed < height {
@@ -572,6 +660,98 @@ mod tests {
             }
         }
         finished[steps - 1]
+    }
+
+    /// The arrivals after which row `row` of a level is final, and after
+    /// which no vertical step reads it: the arrival of the last step that
+    /// updates it, and of the last step that updates a row whose mirrored
+    /// neighbours include it.
+    fn last_update_and_read(
+        transform: WaveletTransform,
+        y0: u32,
+        height: usize,
+        row: usize,
+    ) -> (usize, usize) {
+        let steps = vertical_step_count(transform);
+        let (mut update, mut read) = (0, 0);
+        for (index, &(_, even_offsets)) in vertical_steps(transform, y0)[..steps].iter().enumerate()
+        {
+            let arrival = |target: usize| target + index + 1;
+            for target in 0..height {
+                if target.is_multiple_of(2) != even_offsets {
+                    continue;
+                }
+                let above = periodic_symmetric_extension_left(target, 1);
+                let below = if target + 1 < height {
+                    target + 1
+                } else {
+                    height - 2
+                };
+                if target == row {
+                    update = update.max(arrival(target));
+                }
+                if above == row || below == row {
+                    read = read.max(arrival(target));
+                }
+            }
+        }
+        (update, read.max(update))
+    }
+
+    /// After every arrival, a level's final rows are the rows whose last
+    /// update has run, and its unread rows those no step will read again,
+    /// each counted from the first row while every row so far qualifies.
+    #[test]
+    fn final_and_unread_rows_follow_the_arrivals() {
+        for transform in [
+            WaveletTransform::Reversible53,
+            WaveletTransform::Irreversible97,
+        ] {
+            let steps = vertical_step_count(transform);
+            for y0 in [0, 1, 4, 9] {
+                for height in 2..=20 {
+                    let rows: Vec<(usize, usize)> = (0..height)
+                        .map(|row| last_update_and_read(transform, y0, height, row))
+                        .collect();
+                    let mut ring = [];
+                    let mut level = LevelRows {
+                        window: IntRect::from_xywh(
+                            0,
+                            y0,
+                            1,
+                            u32::try_from(height).expect("height"),
+                        ),
+                        sub_bands: [0; 3],
+                        ring: &mut ring,
+                        fed: 0,
+                        arrived: 0,
+                    };
+                    let mut handed_over = 0;
+                    for arrived in 0..=height + steps {
+                        level.fed = arrived.min(height);
+                        level.arrived = arrived;
+                        let prefix = |past: fn(&(usize, usize)) -> usize| {
+                            rows.iter().take_while(|row| past(row) < arrived).count()
+                        };
+                        let label =
+                            format!("{transform:?} y0={y0} height={height} arrived={arrived}");
+                        assert_eq!(level.done(transform), prefix(|row| row.0), "final {label}");
+                        assert_eq!(
+                            level.unread(transform),
+                            prefix(|row| row.1),
+                            "unread {label}"
+                        );
+                        // Every row this arrival makes unread is still in
+                        // the ring, which holds the last `ring_rows` fed.
+                        assert!(
+                            handed_over + ring_rows(transform) >= level.fed,
+                            "ring {label}"
+                        );
+                        handed_over = level.unread(transform);
+                    }
+                }
+            }
+        }
     }
 
     /// A level hands each row over after exactly the rows the earliest
