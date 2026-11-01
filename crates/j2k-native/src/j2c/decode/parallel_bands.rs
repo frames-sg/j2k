@@ -328,18 +328,24 @@ pub(super) fn decode_tile_rows<'a>(
 ) -> Result<bool> {
     let stage_start = profile::profile_now(profile_enabled);
     let components = tile.component_infos.len();
-    let mut routes = Vec::new();
-    routes
-        .try_reserve_exact(components)
-        .map_err(|_| DecodingError::HostAllocationFailed)?;
     // Every component's route stays live beside the others' while the
     // executor runs them all, so each is planned in the budget the last one
-    // left, as one budget.
-    let mut live = None;
+    // left, as one budget, which starts with the list of routes.
+    let mut live = DecodeAllocationBudget::for_storage(storage)?;
+    let mut routes = Vec::new();
+    live.reserve_new(&mut routes, components)?;
     for component_idx in 0..components {
-        match plan_band_route_beside(tile, component_idx, tile_ctx, storage, header, live, true) {
+        match plan_band_route_beside(
+            tile,
+            component_idx,
+            tile_ctx,
+            storage,
+            header,
+            Some(live),
+            true,
+        ) {
             Ok(BandRouting::Route(route)) => {
-                live = Some(route.budget());
+                live = route.budget();
                 routes.push(route);
             }
             Ok(BandRouting::Serial | BandRouting::WholeWindows) => return Ok(false),
@@ -358,10 +364,6 @@ pub(super) fn decode_tile_rows<'a>(
     let line_plans = plan_tile_lines(tile, header, tile_ctx, storage, &active_levels)?;
     // The executor's records live beside every route's plan and scratch
     // while the bands decode.
-    let mut live = match live {
-        Some(live) => live,
-        None => DecodeAllocationBudget::for_storage(storage)?,
-    };
     live.include_bytes(executor_bytes(&rings, &bands)?)?;
     let empty = IntRect::from_xywh(0, 0, 0, 0);
     let (copy, region) = line_plans
@@ -510,14 +512,25 @@ pub(super) fn decode_tile_rows<'a>(
     let elapsed = profile::elapsed_us(stage_start);
     profile_timings.codeblock_us += tier1_us;
     profile_timings.idwt_us += elapsed.saturating_sub(tier1_us);
-    if matches!(result, Ok(true)) {
-        for route in &routes {
-            route.record(tile_ctx, storage)?;
+    let result = result.and_then(|completed| {
+        if completed {
+            for route in &routes {
+                route.record(tile_ctx, storage)?;
+            }
         }
-    }
+        Ok(completed)
+    });
     // Neither the serial bands' nor the whole-window rerun's budget includes
-    // the plans' live allocations.
-    drop(routes);
+    // the plans or the executor's records, so they go first.
+    drop((
+        routes,
+        rings,
+        bands,
+        strip_starts,
+        active_levels,
+        line_plans,
+        ring_lens,
+    ));
     match result {
         Ok(true) => {
             tile_ctx.debug_counters.pool_band_components += components;
@@ -1844,9 +1857,9 @@ mod tests {
     use crate::reader::BitReader;
     use crate::{encode, DecodeSettings, EncodeOptions, Image, DEFAULT_MAX_DECODE_BYTES};
 
-    fn budget_fixture(width: u32, height: u32) -> Vec<u8> {
+    fn budget_fixture(width: u32, height: u32, components: u16) -> Vec<u8> {
         let mut state = 0x2545_f491_u32;
-        let pixels: Vec<u8> = (0..width * height)
+        let pixels: Vec<u8> = (0..width * height * u32::from(components))
             .map(|_| {
                 state ^= state << 13;
                 state ^= state >> 17;
@@ -1858,7 +1871,7 @@ mod tests {
             &pixels,
             width,
             height,
-            1,
+            components,
             8,
             false,
             &EncodeOptions {
@@ -1872,109 +1885,175 @@ mod tests {
         .expect("encode budget fixture")
     }
 
-    /// The route's plan and clipped scratch stay live beside the executor.
-    /// Leave enough simulated headroom for either alone, but not both. No
-    /// large retained allocation is needed to exercise the cap boundary.
+    struct CountingSink(usize);
+
+    impl ComponentRowSink for CountingSink {
+        fn write_rows(&mut self, _x: u32, _y: u32, planes: &[crate::ComponentPlane<'_>]) {
+            self.0 += planes
+                .iter()
+                .map(|plane| plane.samples().len())
+                .sum::<usize>();
+        }
+    }
+
+    /// Every live component plan and its clipped scratch must fit beside
+    /// the executor, including the shared executor that streams RGB rows.
+    /// Simulated retained memory leaves room for either owner, but not both.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one budget matrix checks the plans, the executor and the shared RGB executor together"
+    )]
     fn pool_bands_respect_the_combined_plan_and_executor_budget() {
         let (width, height) = (203, 157);
-        let bytes = budget_fixture(width, height);
-        let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse budget fixture");
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(2)
-            .build()
-            .expect("build budget test pool")
-            .install(|| {
-                let mut context = DecoderContext::default();
-                context.set_output_region(Some((0, 0, width, height)));
-                context.tile_decode_context.line_region_idwt = true;
-                let tiles = tile::parse(&mut BitReader::new(image.codestream), &image.header, 0)
-                    .expect("parse tile");
-                let baseline = context
-                    .reset(
-                        &image.header,
+        for components in [1_u16, 3] {
+            let bytes = budget_fixture(width, height, components);
+            let image =
+                Image::new(&bytes, &DecodeSettings::default()).expect("parse budget fixture");
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(2)
+                .build()
+                .expect("build budget test pool")
+                .install(|| {
+                    let mut context = DecoderContext::default();
+                    context.set_output_region(Some((0, 0, width, height)));
+                    context.tile_decode_context.line_region_idwt = true;
+                    context.tile_decode_context.stream_rows = components > 1;
+                    let tiles =
+                        tile::parse(&mut BitReader::new(image.codestream), &image.header, 0)
+                            .expect("parse tile");
+                    let baseline = context
+                        .reset(
+                            &image.header,
+                            &tiles[0],
+                            tiles.structural_workspace_bytes(),
+                            0,
+                            false,
+                            None,
+                        )
+                        .expect("prepare output planes");
+                    let (tile_ctx, storage) =
+                        (&mut context.tile_decode_context, &mut context.storage);
+                    let mut sink = CountingSink(0);
+                    // Warm the retained bank and leave parsed block storage
+                    // available at the tile boundary, before applying the cap.
+                    let output = if components == 1 {
+                        super::super::TileOutput::Planes
+                    } else {
+                        super::super::TileOutput::Sink(&mut sink)
+                    };
+                    super::super::decode_tile(
                         &tiles[0],
-                        tiles.structural_workspace_bytes(),
-                        0,
+                        &image.header,
+                        tile_ctx,
+                        storage,
+                        &mut None,
+                        CpuDecodeParallelism::Auto,
                         false,
-                        None,
+                        &mut DecodeProfileTimings::default(),
+                        baseline,
+                        output,
                     )
-                    .expect("prepare output planes");
-                let (tile_ctx, storage) = (&mut context.tile_decode_context, &mut context.storage);
-                // Stop at the tile boundary so its parsed block storage stays
-                // available. This also prepares the retained worker bank, so
-                // the admission check below needs no replacement bank.
-                super::super::decode_tile(
-                    &tiles[0],
-                    &image.header,
-                    tile_ctx,
-                    storage,
-                    &mut None,
-                    CpuDecodeParallelism::Auto,
-                    false,
-                    &mut DecodeProfileTimings::default(),
-                    baseline,
-                    super::super::TileOutput::Planes,
-                )
-                .expect("decode with ample headroom");
-                assert_eq!(tile_ctx.debug_counters.pool_band_components, 1);
-                let (route_bytes, executor) = {
-                    let BandRouting::Route(route) =
-                        plan_band_route(&tiles[0], 0, tile_ctx, storage, &image.header, false)
-                            .expect("plan control route")
-                    else {
-                        panic!("control fixture must take the pool route");
+                    .expect("decode with ample headroom");
+                    assert_eq!(
+                        tile_ctx.debug_counters.pool_band_components,
+                        usize::from(components)
+                    );
+                    let (route_bytes, executor) = {
+                        let mut routes = Vec::new();
+                        let mut route_bytes = 0;
+                        let mut live = None;
+                        for component in 0..usize::from(components) {
+                            let BandRouting::Route(route) = plan_band_route_beside(
+                                &tiles[0],
+                                component,
+                                tile_ctx,
+                                storage,
+                                &image.header,
+                                live,
+                                components > 1,
+                            )
+                            .expect("plan control route") else {
+                                panic!("control fixture must take the pool route");
+                            };
+                            live = Some(route.budget());
+                            // Reuse the existing peak accounting for the
+                            // route's owned tables and clipped scratch,
+                            // excluding the retained bank.
+                            let retained = tile_ctx.tier1_capacity_bytes().expect("bank bytes");
+                            tile_ctx.debug_counters.workspace_peak = WorkspacePeak::default();
+                            route
+                                .record(tile_ctx, storage)
+                                .expect("record route owners");
+                            route_bytes +=
+                                tile_ctx.debug_counters.workspace_peak.bytes().tier1 - retained;
+                            routes.push(route);
+                        }
+                        let (rings, bands, _, _) = plan_tile_rings(&routes, storage, &image.header)
+                            .expect("plan control rings");
+                        (
+                            route_bytes,
+                            executor_bytes(&rings, &bands).expect("executor bytes"),
+                        )
                     };
-                    // Reuse the existing peak accounting for the route's owned
-                    // tables and clipped scratch, excluding the retained bank.
-                    let retained_tier1 = tile_ctx.tier1_capacity_bytes().expect("bank bytes");
-                    tile_ctx.debug_counters.workspace_peak = WorkspacePeak::default();
-                    route
-                        .record(tile_ctx, storage)
-                        .expect("record route owners");
-                    let route_bytes =
-                        tile_ctx.debug_counters.workspace_peak.bytes().tier1 - retained_tier1;
-                    let (rings, bands, _) =
-                        plan_rings(&route, storage, &image.header, 0).expect("plan control rings");
-                    (
-                        route_bytes,
-                        executor_bytes(&rings, &bands).expect("executor bytes"),
-                    )
-                };
-                let headroom = route_bytes + executor / 2;
-                assert!(headroom >= executor, "each owner must fit separately");
-                let baseline = DecodeAllocationBudget::for_storage(storage)
-                    .expect("control budget")
-                    .live_bytes();
-                storage.structural_workspace_bytes +=
-                    DEFAULT_MAX_DECODE_BYTES - baseline - headroom;
-                let route =
-                    match plan_band_route(&tiles[0], 0, tile_ctx, storage, &image.header, false) {
-                        Ok(BandRouting::Route(route)) => route,
-                        Ok(BandRouting::Serial | BandRouting::WholeWindows) => return,
-                        Err(error) if super::super::reuse::is_capacity_error(&error) => return,
-                        Err(error) => panic!("unexpected planning error: {error:?}"),
+                    let headroom = route_bytes + executor / 2;
+                    assert!(headroom >= executor, "each owner must fit separately");
+                    let baseline = DecodeAllocationBudget::for_storage(storage)
+                        .expect("control budget")
+                        .live_bytes();
+                    storage.structural_workspace_bytes +=
+                        DEFAULT_MAX_DECODE_BYTES - baseline - headroom;
+                    sink.0 = 0;
+                    let result = if components == 1 {
+                        let route = match plan_band_route(
+                            &tiles[0],
+                            0,
+                            tile_ctx,
+                            storage,
+                            &image.header,
+                            false,
+                        ) {
+                            Ok(BandRouting::Route(route)) => route,
+                            Ok(BandRouting::Serial | BandRouting::WholeWindows) => return,
+                            Err(error) if super::super::reuse::is_capacity_error(&error) => return,
+                            Err(error) => panic!("unexpected planning error: {error:?}"),
+                        };
+                        decode_route(
+                            &route,
+                            0,
+                            &image.header,
+                            tile_ctx,
+                            storage,
+                            tiles[0].component_infos[0].wavelet_transform(),
+                            false,
+                            &mut 0,
+                        )
+                    } else {
+                        decode_tile_rows(
+                            &tiles[0],
+                            &image.header,
+                            tile_ctx,
+                            storage,
+                            &mut sink,
+                            false,
+                            &mut DecodeProfileTimings::default(),
+                        )
                     };
-                let result = decode_route(
-                    &route,
-                    0,
-                    &image.header,
-                    tile_ctx,
-                    storage,
-                    tiles[0].component_infos[0].wavelet_transform(),
-                    false,
-                    &mut 0,
-                );
-                match result {
-                    Err(error) if super::super::reuse::is_capacity_error(&error) => {}
-                    Ok(false) => {}
-                    other => panic!(
-                        "pool route must decline or reject combined live owners: \
-                         headroom={headroom}, route={route_bytes}, executor={executor}, \
-                         excess={}, result={other:?}",
-                        route_bytes + executor - headroom,
-                    ),
-                }
-            });
+                    match result {
+                        Err(error) if super::super::reuse::is_capacity_error(&error) => {}
+                        Ok(false) => {}
+                        other => panic!(
+                            "pool route must decline or reject combined live owners: \
+                             components={components}, headroom={headroom}, route={route_bytes}, \
+                             executor={executor}, excess={}, result={other:?}",
+                            route_bytes + executor - headroom,
+                        ),
+                    }
+                    assert_eq!(
+                        sink.0, 0,
+                        "budget rejection must precede streaming any rows"
+                    );
+                });
+        }
     }
 }
