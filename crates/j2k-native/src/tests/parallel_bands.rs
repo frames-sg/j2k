@@ -243,6 +243,56 @@ fn rgb_fixture() -> Vec<u8> {
     .expect("encode rgb fixture")
 }
 
+/// Discards the rows a decode streams.
+struct DiscardRows;
+
+impl crate::ComponentRowSink for DiscardRows {
+    fn write_rows(&mut self, _x: u32, _y: u32, _planes: &[crate::ComponentPlane<'_>]) {}
+}
+
+/// A tile whose rows stream from pool bands holds every component's plan at
+/// once, beside the scratch of the threads that serve them all, and its
+/// workspace peak counts them together: the three plans add up to the ones
+/// a region decode into planes holds one after another, and the peak holds
+/// all of them.
+#[test]
+fn streamed_pool_bands_record_every_live_plan() {
+    let bytes = rgb_fixture();
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse rgb fixture");
+    let roi = (0, 0, WIDTH, HEIGHT);
+    pool(4).install(|| {
+        let mut context = DecoderContext::default();
+        context.set_cpu_decode_parallelism(CpuDecodeParallelism::Auto);
+        image
+            .decode_native_region_with_context(roi, &mut context)
+            .expect("decode region planes");
+        let one_at_a_time = context.tile_decode_context.debug_counters;
+        let mut context = DecoderContext::default();
+        context.set_cpu_decode_parallelism(CpuDecodeParallelism::Auto);
+        image
+            .decode_region_rows_for_integer_output_with_context(roi, &mut context, &mut DiscardRows)
+            .expect("decode region rows");
+        assert!(context.tile_decode_context.stream_rows);
+        let together = context.tile_decode_context.debug_counters;
+        assert_eq!(one_at_a_time.pool_band_components, 3);
+        assert_eq!(together.pool_band_components, 3);
+        assert_eq!(
+            together.pool_band_plan_bytes,
+            one_at_a_time.pool_band_plan_bytes
+        );
+        let bank = context
+            .tile_decode_context
+            .tier1_capacity_bytes()
+            .expect("bank bytes");
+        let tier1 = together.workspace_peak.bytes().tier1;
+        assert!(
+            tier1 >= bank + together.pool_band_plan_bytes,
+            "peak Tier-1 bytes {tier1}: the bank's {bank} and the plans' {}",
+            together.pool_band_plan_bytes
+        );
+    });
+}
+
 /// With the pool's other thread held by unrelated work, workers can't run
 /// until the decode is over, so the IDWT must decode every band itself.
 #[test]

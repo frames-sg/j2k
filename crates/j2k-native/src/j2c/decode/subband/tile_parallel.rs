@@ -426,8 +426,8 @@ fn count_decoded_blocks(
 }
 
 /// Record the decode's workspace peak while the plan, its tasks and each
-/// worker's clipped-block scratch, as budgeted, are live next to the retained
-/// workspace bank.
+/// worker's scratch, as budgeted, are live next to the retained workspace
+/// bank.
 fn record_route_peak(
     tile_ctx: &mut TileDecodeContext,
     storage: &DecompositionStorage<'_>,
@@ -436,26 +436,38 @@ fn record_route_peak(
     counts: TaskCounts,
 ) -> Result<()> {
     let route_bytes = [
-        plan.bands.capacity() * size_of::<BandParameters>(),
-        plan.classic_bands.capacity() * size_of::<ClassicJobParameters>(),
-        plan.jobs.capacity() * size_of::<BlockJob<'_>>(),
-        plan.strips.capacity() * size_of::<Strip>(),
-        plan.band_sub_bands.capacity() * size_of::<usize>(),
-        workers.saturating_mul(
-            plan.max_gathered_len
-                .saturating_add(size_of::<BlockScratch>()),
-        ),
+        plan_bytes(plan),
+        workers.saturating_mul(thread_scratch_bytes(plan, counts.scratch_samples)),
         counts.tasks * size_of::<StripTask<'_, '_, '_>>(),
         counts.shared * size_of::<Mutex<&mut [f32]>>(),
-        workers
-            .saturating_mul(counts.scratch_samples)
-            .saturating_mul(size_of::<f32>()),
     ]
     .into_iter()
     .fold(0, usize::saturating_add);
     let sample = WorkspaceBytes::sample(tile_ctx, storage)?.with_tier1(route_bytes);
     tile_ctx.debug_counters.workspace_peak.record(sample);
     Ok(())
+}
+
+/// Bytes the plan's own tables hold.
+fn plan_bytes(plan: &TilePlan<'_>) -> usize {
+    [
+        plan.bands.capacity() * size_of::<BandParameters>(),
+        plan.classic_bands.capacity() * size_of::<ClassicJobParameters>(),
+        plan.jobs.capacity() * size_of::<BlockJob<'_>>(),
+        plan.strips.capacity() * size_of::<Strip>(),
+        plan.band_sub_bands.capacity() * size_of::<usize>(),
+    ]
+    .into_iter()
+    .fold(0, usize::saturating_add)
+}
+
+/// Bytes a thread's scratch holds at most for `plan`, as budgeted: the
+/// largest payload it gathers, block scratch of `scratch_samples`, and its
+/// entry in the threads' list.
+fn thread_scratch_bytes(plan: &TilePlan<'_>, scratch_samples: usize) -> usize {
+    plan.max_gathered_len
+        .saturating_add(scratch_samples.saturating_mul(size_of::<f32>()))
+        .saturating_add(size_of::<BlockScratch>())
 }
 
 /// Prepare one workspace per worker in the retained `bank`, then decode the
@@ -1634,7 +1646,11 @@ pub(in crate::j2c::decode) enum BandRouting<'a> {
 /// path: a classic component with fewer rows of code-blocks than threads
 /// stays on the route, whose bands split into parts for the idle threads,
 /// rather than decode its bands serially. A 512 x 512 RGB image at 6.6 bits
-/// per pixel decoded 4.5 times as long on 18 threads as on 12 that way.
+/// per pixel decoded 4.5 times as long on 18 threads as on 12 that way. Its
+/// executor runs every component's routes on the same threads, and charges
+/// their scratch once for all of them (see
+/// [`BandRoute::thread_scratch_bytes`]); a route charges its threads'
+/// scratch otherwise.
 pub(in crate::j2c::decode) fn plan_band_route<'a>(
     tile: &Tile<'a>,
     component_idx: usize,
@@ -1734,12 +1750,14 @@ pub(in crate::j2c::decode) fn plan_band_route_beside<'a>(
         // Each thread gathers payloads into scratch of its own as it
         // decodes, and allocates its block scratch on first use: a clipped
         // block, or any block of a band it decodes a part of.
-        include_payload_scratch(&mut budget, &plan, workers + 1)?;
-        budget.include_elements::<f32>(
-            (workers + 1)
-                .checked_mul(band_scratch_samples(&plan)?)
-                .ok_or(ValidationError::ImageTooLarge)?,
-        )?;
+        if !lockstep {
+            include_payload_scratch(&mut budget, &plan, workers + 1)?;
+            budget.include_elements::<f32>(
+                (workers + 1)
+                    .checked_mul(band_scratch_samples(&plan)?)
+                    .ok_or(ValidationError::ImageTooLarge)?,
+            )?;
+        }
         let (width, height) = (plan.max_width, plan.max_height);
         let structural = &mut storage.structural_workspace_bytes;
         match coding {
@@ -1803,6 +1821,15 @@ impl BandRoute<'_> {
     /// Bytes of the largest payload a thread gathers for this plan.
     pub(in crate::j2c::decode) fn gathered_len(&self) -> usize {
         self.plan.max_gathered_len
+    }
+
+    /// Bytes a thread's scratch holds at most for this plan, as a route
+    /// that is not `lockstep` charges it for each of its threads.
+    pub(in crate::j2c::decode) fn thread_scratch_bytes(&self) -> Result<usize> {
+        Ok(thread_scratch_bytes(
+            &self.plan,
+            band_scratch_samples(&self.plan)?,
+        ))
     }
 
     pub(in crate::j2c::decode) fn strips(&self) -> impl Iterator<Item = BandStrip> + '_ {
@@ -1920,21 +1947,43 @@ impl BandRoute<'_> {
     }
 
     /// Count the plan's blocks and record the decode's peak with the plan
-    /// and every thread's clipped-block scratch live.
+    /// and every thread's scratch live.
     pub(in crate::j2c::decode) fn record(
         &self,
         tile_ctx: &mut TileDecodeContext,
         storage: &DecompositionStorage<'_>,
     ) -> Result<()> {
-        // Band slots, not route tasks, hold this plan's outputs.
-        let counts = TaskCounts {
-            tasks: 0,
-            shared: 0,
-            scratch_samples: band_scratch_samples(&self.plan)?,
-            part_work: None,
-        };
-        record_route_peak(tile_ctx, storage, &self.plan, self.workers + 1, counts)?;
-        count_decoded_blocks(tile_ctx, &self.plan, self.workers + 1, self.growths);
+        Self::record_live(core::iter::once(self), self.workers + 1, tile_ctx, storage)
+    }
+
+    /// Count every route's blocks and record the decode's peak with all
+    /// their plans live, beside the scratch of the `threads` threads that
+    /// serve them all.
+    pub(in crate::j2c::decode) fn record_live<'r>(
+        routes: impl Iterator<Item = &'r Self> + Clone,
+        threads: usize,
+        tile_ctx: &mut TileDecodeContext,
+        storage: &DecompositionStorage<'_>,
+    ) -> Result<()>
+    where
+        Self: 'r,
+    {
+        let mut plans = 0usize;
+        let mut scratch = 0usize;
+        for route in routes.clone() {
+            plans = plans.saturating_add(plan_bytes(&route.plan));
+            scratch = scratch.max(route.thread_scratch_bytes()?);
+        }
+        let bytes = plans.saturating_add(threads.saturating_mul(scratch));
+        let sample = WorkspaceBytes::sample(tile_ctx, storage)?.with_tier1(bytes);
+        tile_ctx.debug_counters.workspace_peak.record(sample);
+        #[cfg(test)]
+        {
+            tile_ctx.debug_counters.pool_band_plan_bytes += plans;
+        }
+        for route in routes {
+            count_decoded_blocks(tile_ctx, &route.plan, route.workers + 1, route.growths);
+        }
         Ok(())
     }
 }

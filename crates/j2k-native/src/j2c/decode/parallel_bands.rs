@@ -393,6 +393,23 @@ pub(super) fn decode_tile_rows<'a>(
     } else {
         1
     };
+    let workers = route_workers.min(bank.saturating_sub(readers));
+    // Each thread's scratch serves every component's bands, so it is
+    // charged once, as large as any route's; the serial bands need none.
+    let mut thread_scratch = 0usize;
+    let mut gathered_len = 0usize;
+    for route in &routes {
+        thread_scratch = thread_scratch.max(route.thread_scratch_bytes()?);
+        gathered_len = gathered_len.max(route.gathered_len());
+    }
+    let threads = workers + readers;
+    let scratch_bytes = threads
+        .checked_mul(thread_scratch)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    match live.include_bytes(scratch_bytes) {
+        Err(error) if super::reuse::is_capacity_error(&error) => return Ok(false),
+        result => result?,
+    }
     // Rows reconstruct in batches, charged by the region's width (see
     // `roi_idwt_peak_elements`): two of them with a reader per component of
     // an HTJ2K tile, so one finishes while the next reconstructs; a classic
@@ -425,14 +442,7 @@ pub(super) fn decode_tile_rows<'a>(
             .max(held.saturating_sub(storage.roi_idwt_charge_elements));
     }
     let mut output = RowOutput::new(tile, sink, tile_ctx, copy, region);
-    let workers = route_workers.min(bank.saturating_sub(readers));
-    // Each thread's scratch serves every component's bands.
-    let gathered_len = routes
-        .iter()
-        .map(|route| route.gathered_len())
-        .max()
-        .unwrap_or(0);
-    let mut scratches = BlockScratch::for_threads(workers + readers, gathered_len, &mut live)?;
+    let mut scratches = BlockScratch::for_threads(threads, gathered_len, &mut live)?;
     // One reader for every component of a classic tile leaves the pool's
     // threads to Tier-1, and decodes bands itself while it waits.
     let helps = readers == 1 && coding == CodeBlockCoding::Classic;
@@ -523,9 +533,12 @@ pub(super) fn decode_tile_rows<'a>(
     profile_timings.idwt_us += elapsed.saturating_sub(tier1_us);
     let result = result.and_then(|completed| {
         if completed {
-            for route in &routes {
-                route.record(tile_ctx, storage)?;
-            }
+            BandRoute::record_live(
+                routes.iter().map(|route| &**route),
+                threads,
+                tile_ctx,
+                storage,
+            )?;
         }
         Ok(completed)
     });
@@ -1899,9 +1912,10 @@ mod tests {
         }
     }
 
-    /// Every live component plan and its clipped scratch must fit beside
-    /// the executor, including the shared executor that streams RGB rows.
-    /// Simulated retained memory leaves room for either owner, but not both.
+    /// Every live component plan and the scratch of the threads that serve
+    /// them must fit beside the executor, including the shared executor that
+    /// streams RGB rows. Simulated retained memory leaves room for either
+    /// owner, but not both.
     #[test]
     #[expect(
         clippy::too_many_lines,
@@ -1964,7 +1978,6 @@ mod tests {
                     );
                     let (route_bytes, executor) = {
                         let mut routes = Vec::new();
-                        let mut route_bytes = 0;
                         let mut live = None;
                         for component in 0..usize::from(components) {
                             let BandRouting::Route(route) = plan_band_route_beside(
@@ -1980,18 +1993,27 @@ mod tests {
                                 panic!("control fixture must take the pool route");
                             };
                             live = Some(route.budget());
-                            // Reuse the existing peak accounting for the
-                            // route's owned tables and clipped scratch,
-                            // excluding the retained bank.
-                            let retained = tile_ctx.tier1_capacity_bytes().expect("bank bytes");
-                            tile_ctx.debug_counters.workspace_peak = WorkspacePeak::default();
-                            route
-                                .record(tile_ctx, storage)
-                                .expect("record route owners");
-                            route_bytes +=
-                                tile_ctx.debug_counters.workspace_peak.bytes().tier1 - retained;
                             routes.push(route);
                         }
+                        // Reuse the existing peak accounting for the routes'
+                        // owned tables and their threads' scratch, excluding
+                        // the retained bank: the workers and one reader.
+                        let threads = routes
+                            .iter()
+                            .map(|route| route.workers() + 1)
+                            .max()
+                            .unwrap_or(0);
+                        let retained = tile_ctx.tier1_capacity_bytes().expect("bank bytes");
+                        tile_ctx.debug_counters.workspace_peak = WorkspacePeak::default();
+                        BandRoute::record_live(
+                            routes.iter().map(|route| &**route),
+                            threads,
+                            tile_ctx,
+                            storage,
+                        )
+                        .expect("record route owners");
+                        let route_bytes =
+                            tile_ctx.debug_counters.workspace_peak.bytes().tier1 - retained;
                         let (rings, bands, _, _) = plan_tile_rings(&routes, storage, &image.header)
                             .expect("plan control rings");
                         (
