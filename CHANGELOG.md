@@ -5,17 +5,19 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+Staged workspace version: `0.13.2`.
+
 - Classic code-blocks with BYPASS, per-pass termination, context resets or
   segmentation symbols use the packed-column passes, including raw segments.
   Vertically causal blocks retain the per-coefficient passes. Clean and corrupt
   code-blocks preserve the same samples and errors in strict and lenient modes.
-- Decodes into a caller buffer whose stride is wider than a row and which
-  ends right after the last row's pixels, the length `strided_output_len`
-  reports and buffer validation accepts, now write that last row. Full-image
+- Decodes into a validated caller buffer whose stride is wider than a row
+  and which ends before a full stride after the last row now write that
+  last row, including buffers of exactly `strided_output_len` bytes. Full-image
   and scaled 8-bit decodes at such a stride and every 16-bit decode at one,
   regions included, left it unwritten and still returned `Ok`. 8-bit region
-  decodes, and buffers with any bytes after the last row, were not affected.
-  The other rows are unchanged.
+  decodes, and buffers padded to a full stride after the last row, were not
+  affected. The other rows are unchanged.
 - Decodes on the worker pool that reconstruct the two finest wavelet levels
   of a component in one pass now charge the decode budget for what that pass
   holds: each worker's rows of the coarser level, which were not charged,
@@ -28,14 +30,28 @@ and stale roadmap entries have been removed from the public documentation set.
   `J2kError::ResourceLimit { requested, cap, source }` instead of the generic
   `J2kError::NativeDecode`, on every decode route: `J2kDecoder`, the tile
   batch functions (inside `TileBatchError::Tile`) and the owned batch API
-  (inside `BatchItemError::Codec`). `requested` and `cap` are the live bytes
-  and the cap when the native decoder knows them (`AllocationTooLarge`), and
+  (inside `BatchItemError::Codec`), and JP2/JPH metadata inspection.
+  `requested` and `cap` are the live bytes and the cap when the native decoder
+  knows them (`AllocationTooLarge`), and
   `None` for `ImageTooLarge`. Callers can tell these apart from invalid input
   and unsupported features, and retry with a smaller request such as a region
-  or a reduced resolution. The display text and the source chain keep the
-  native error. `j2k_native::DecodeError::classify` reports the same class as
+  or a reduced resolution. The display prefix becomes `decode resource limit
+  exceeded:`; the display text and source chain keep the native error.
+  `j2k_native::DecodeError::classify` reports the same class as
   `DecodeErrorClass::ResourceLimit`. Both enums are `#[non_exhaustive]`;
   host allocator failures keep their previous classification.
+- Prepared classic CPU batch plans decode in parallel. Batches prepared by
+  `CpuBatchDecoder` reject individual outputs or planned executions that
+  exceed their memory limits during preparation, with the input's index,
+  and exclude those items from the prepared groups. Backend-neutral
+  `prepare_batch` and `prepare_batch_from_images` keep their existing
+  behavior: decoding them on the CPU can still fail the whole call when one
+  image's output exceeds the allocation cap. On either preparation path, a
+  group whose combined output exceeds that cap still fails the whole decode
+  call.
+  Staged windows are admitted by planned execution memory, and an admission
+  claim that cannot fit beside the shared plan fails instead of waiting
+  indefinitely. Successful output is unchanged.
 - x86-64 RGB8 decodes of 9/7 images round and pack the inverse ICT output with
   the runtime SIMD level (AVX2 where present) instead of a scalar library
   call per sample: the centered rounding of the inverse MCT runs eight

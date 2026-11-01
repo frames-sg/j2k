@@ -320,6 +320,11 @@ impl CpuBatchDecoder {
     }
 
     /// Inspect and group owned encoded inputs for repeated decode.
+    ///
+    /// Inputs whose output allocation or planned execution exceeds a memory
+    /// limit are recorded as indexed preparation errors in the returned batch.
+    /// Preparation checks individual images; a group's combined output
+    /// allocation is checked during decoding.
     pub fn prepare(
         &self,
         inputs: Vec<EncodedImage>,
@@ -332,6 +337,8 @@ impl CpuBatchDecoder {
     }
 
     /// Regroup caller-supplied prepared images under this session's output policy.
+    ///
+    /// This applies the same per-image memory checks as [`Self::prepare`].
     pub fn prepare_prepared_images(
         &self,
         images: Vec<PreparedImage>,

@@ -64,6 +64,8 @@ pub enum DecodeErrorClass {
         /// Stable user-facing feature label.
         what: &'static str,
     },
+    /// All other native decoder failures.
+    Backend,
     /// The decode would exceed a resource limit: its live working memory
     /// would pass the decode cap, or the image is too large to size.
     ///
@@ -75,8 +77,6 @@ pub enum DecodeErrorClass {
         /// The cap the request exceeded, when known.
         cap: Option<usize>,
     },
-    /// All other native decoder failures.
-    Backend,
 }
 
 /// Error returned by native JPEG 2000 and HTJ2K encode operations.

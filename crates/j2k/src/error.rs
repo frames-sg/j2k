@@ -125,22 +125,6 @@ pub enum J2kError {
         source: NativeBackendError,
     },
 
-    /// Native decode would exceed a resource limit: its live working memory
-    /// would pass the decode cap, or the image is too large to size.
-    ///
-    /// Unlike invalid or unsupported input, the same codestream may decode
-    /// through a smaller request, such as a region or a reduced resolution.
-    #[error("decode resource limit exceeded: {source}")]
-    ResourceLimit {
-        /// Requested live bytes at the rejected boundary, when known.
-        requested: Option<usize>,
-        /// The cap the request exceeded, when known.
-        cap: Option<usize>,
-        /// Structured native decoder failure.
-        #[source]
-        source: NativeBackendError,
-    },
-
     /// Native decoder failure while validating generated encoder output.
     ///
     /// The structured source is retained for diagnostics, but this phase is
@@ -299,6 +283,22 @@ pub enum J2kError {
         width: u32,
         /// Image height.
         height: u32,
+    },
+
+    /// Native decode would exceed a resource limit: its live working memory
+    /// would pass the decode cap, or the image is too large to size.
+    ///
+    /// Unlike invalid or unsupported input, the same codestream may decode
+    /// through a smaller request, such as a region or a reduced resolution.
+    #[error("decode resource limit exceeded: {source}")]
+    ResourceLimit {
+        /// Requested live bytes at the rejected boundary, when known.
+        requested: Option<usize>,
+        /// The cap the request exceeded, when known.
+        cap: Option<usize>,
+        /// Structured native decoder failure.
+        #[source]
+        source: NativeBackendError,
     },
 }
 
