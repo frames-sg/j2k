@@ -1,0 +1,309 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! Classic code-blocks of several codeword segments (selective bypass,
+//! termination on each pass, or both) and the other code-block styles
+//! (context reset, segmentation symbols, vertically causal context,
+//! predictable termination) decode on the worker pool as on one thread: in
+//! place on the tile route, and band by band ahead of the streamed IDWT,
+//! whose rows then need no component planes.
+//!
+//! The fixtures in `fixtures/multi_segment/` were encoded with `OpenJPEG`
+//! 2.5.4's `opj_compress` from two synthetic images, 128 x 128 and 256 x 256.
+//! The unsigned 8-bit red, green and blue samples at `(x, y)` are
+//!
+//! ```text
+//! r = (7x² + 13y² + 5xy + 31x) mod 256
+//! g = (3x² + 11y² + 9xy + 29y + 64) mod 256
+//! b = (13x² + 5y² + 3xy + 7(x xor y)) mod 256
+//! ```
+//!
+//! and the gray sample is `(r + 2g + b) / 4`, rounded down. Written as a
+//! binary PPM (`P6`) and PGM (`P5`) of maximum 255, `rgb128.ppm`,
+//! `gray128.pgm` and `rgb256.ppm`, they encode with three resolution levels
+//! below the full one, 16 x 16 code-blocks, RPCL order and three or four
+//! quality layers:
+//!
+//! ```sh
+//! c="-n 3 -b 16,16 -p RPCL"
+//! opj_compress -i gray128.pgm -o bypass_gray_53.j2k $c -M 1 -r 16,8,4,2
+//! opj_compress -i rgb128.ppm -o bypass_rgb_97.j2k $c -I -M 1 -r 32,16,8
+//! opj_compress -i gray128.pgm -o termall_gray_97.j2k $c -I -M 4 -r 16,8,3
+//! opj_compress -i rgb128.ppm -o termall_rgb_53.j2k $c -M 4 -r 32,16,8
+//! opj_compress -i rgb128.ppm -o reset_rgb_97.j2k $c -I -M 2 -r 32,16,8
+//! opj_compress -i gray128.pgm -o segmark_gray_53.j2k $c -M 32 -r 16,8,3
+//! opj_compress -i gray128.pgm -o bypass_termall_gray_97.j2k $c -I -M 5 -r 16,8,3
+//! opj_compress -i rgb128.ppm -o bypass_termall_rgb_53.j2k $c -M 5 -r 40,20,10,6
+//! opj_compress -i gray128.pgm -o all_modes_gray_97.j2k $c -I -M 63 -r 16,8,3
+//! ```
+//!
+//! and, as archival images are often coded, with selective bypass, five
+//! decomposition levels, 64 x 64 code-blocks, precincts, packet lengths and
+//! seven layers:
+//!
+//! ```sh
+//! opj_compress -i rgb256.ppm -o bypass_rgb_97_64x64.j2k -n 6 -b 64,64 -p RPCL -PLT -I -M 1 \
+//!     -c "[256,256],[256,256],[128,128]" -r 160,120,90,70,55,45,36
+//! ```
+//!
+//! `-M` adds 1 for selective bypass, 2 for context reset, 4 for termination
+//! on each pass, 8 for the vertically causal context, 16 for predictable
+//! termination and 32 for segmentation symbols. The samples contain no
+//! externally sourced image content.
+
+use alloc::vec::Vec;
+
+use crate::{
+    ComponentPlane, ComponentRowSink, CpuDecodeParallelism, DecodeSettings, DecoderContext, Image,
+};
+
+const FIXTURES: [(&str, &[u8]); 10] = [
+    (
+        "bypass gray 5/3",
+        include_bytes!("../../fixtures/multi_segment/bypass_gray_53.j2k"),
+    ),
+    (
+        "bypass rgb 9/7",
+        include_bytes!("../../fixtures/multi_segment/bypass_rgb_97.j2k"),
+    ),
+    (
+        "termall gray 9/7",
+        include_bytes!("../../fixtures/multi_segment/termall_gray_97.j2k"),
+    ),
+    (
+        "termall rgb 5/3",
+        include_bytes!("../../fixtures/multi_segment/termall_rgb_53.j2k"),
+    ),
+    (
+        "reset rgb 9/7",
+        include_bytes!("../../fixtures/multi_segment/reset_rgb_97.j2k"),
+    ),
+    (
+        "segmark gray 5/3",
+        include_bytes!("../../fixtures/multi_segment/segmark_gray_53.j2k"),
+    ),
+    (
+        "bypass and termall gray 9/7",
+        include_bytes!("../../fixtures/multi_segment/bypass_termall_gray_97.j2k"),
+    ),
+    (
+        "bypass and termall rgb 5/3",
+        include_bytes!("../../fixtures/multi_segment/bypass_termall_rgb_53.j2k"),
+    ),
+    (
+        "all modes gray 9/7",
+        include_bytes!("../../fixtures/multi_segment/all_modes_gray_97.j2k"),
+    ),
+    (
+        "bypass rgb 9/7, 64 x 64 blocks",
+        include_bytes!("../../fixtures/multi_segment/bypass_rgb_97_64x64.j2k"),
+    ),
+];
+
+/// Collects the sample bits a sink receives into region-sized planes, and
+/// checks that each sample arrives once.
+struct Rows {
+    width: usize,
+    planes: Vec<Vec<u32>>,
+    arrivals: Vec<u8>,
+}
+
+impl ComponentRowSink for Rows {
+    fn write_rows(&mut self, x: u32, y: u32, planes: &[ComponentPlane<'_>]) {
+        if self.planes.is_empty() {
+            self.planes = alloc::vec![alloc::vec![0; self.arrivals.len()]; planes.len()];
+        }
+        let (width, height) = planes[0].dimensions();
+        for (component, plane) in planes.iter().enumerate() {
+            for row in 0..height as usize {
+                for column in 0..width as usize {
+                    let at = (y as usize + row) * self.width + x as usize + column;
+                    self.planes[component][at] =
+                        plane.samples()[row * width as usize + column].to_bits();
+                    if component == 0 {
+                        self.arrivals[at] += 1;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// What a decode wrote, and where it ran.
+struct Decoded {
+    samples: Vec<Vec<u32>>,
+    streamed: bool,
+    pool_components: usize,
+    channel_bytes: usize,
+    /// The bytes the decode's budget held after `reset`.
+    baseline_bytes: usize,
+}
+
+fn context(parallelism: CpuDecodeParallelism) -> DecoderContext<'static> {
+    let mut context = DecoderContext::default();
+    context.set_cpu_decode_parallelism(parallelism);
+    context
+}
+
+/// The region's rows, streamed to a sink where the decode can.
+fn rows(image: &Image<'_>, roi: (u32, u32, u32, u32)) -> Decoded {
+    rows_with(image, roi, |_| {})
+}
+
+/// [`rows`] from a context `configure` sets up.
+fn rows_with(
+    image: &Image<'_>,
+    roi: (u32, u32, u32, u32),
+    configure: impl FnOnce(&mut DecoderContext<'_>),
+) -> Decoded {
+    let mut context = context(CpuDecodeParallelism::Auto);
+    configure(&mut context);
+    let mut sink = Rows {
+        width: roi.2 as usize,
+        planes: Vec::new(),
+        arrivals: alloc::vec![0; (roi.2 * roi.3) as usize],
+    };
+    image
+        .decode_region_rows_for_integer_output_with_context(roi, &mut context, &mut sink)
+        .expect("decode region rows");
+    assert!(
+        sink.arrivals.iter().all(|&count| count == 1),
+        "every sample arrives once"
+    );
+    let counters = context.tile_decode_context.debug_counters;
+    Decoded {
+        samples: sink.planes,
+        streamed: context.tile_decode_context.stream_rows,
+        pool_components: counters.pool_band_components,
+        channel_bytes: counters.workspace_peak.bytes().channels,
+        baseline_bytes: counters.decode_baseline_bytes,
+    }
+}
+
+/// The region's component planes from a serial decode.
+fn planes(image: &Image<'_>, roi: (u32, u32, u32, u32)) -> Vec<Vec<u32>> {
+    let mut context = context(CpuDecodeParallelism::Serial);
+    let components = image
+        .decode_region_components_for_integer_output_with_context(roi, &mut context)
+        .expect("decode region planes");
+    components
+        .planes()
+        .iter()
+        .map(|plane| {
+            plane.samples()[..(roi.2 * roi.3) as usize]
+                .iter()
+                .map(|sample| sample.to_bits())
+                .collect()
+        })
+        .collect()
+}
+
+/// The image's native samples, whole or of `roi`, with Auto parallelism.
+fn native(image: &Image<'_>, roi: Option<(u32, u32, u32, u32)>) -> Vec<u8> {
+    let mut context = context(CpuDecodeParallelism::Auto);
+    match roi {
+        Some(roi) => image.decode_native_region_with_context(roi, &mut context),
+        None => image.decode_native_with_context(&mut context),
+    }
+    .expect("decode native samples")
+    .data
+}
+
+fn pool(threads: usize) -> rayon::ThreadPool {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .expect("build pool")
+}
+
+fn regions(image: &Image<'_>) -> [(u32, u32, u32, u32); 3] {
+    let (width, height) = (image.width(), image.height());
+    [
+        (0, 0, width, height),
+        (width / 5, height / 7, width / 2, height / 3),
+        (width / 3, 1, width / 4, height - 2),
+    ]
+}
+
+#[test]
+fn multi_segment_blocks_decode_on_a_pool_as_on_one_thread() {
+    let one = pool(1);
+    for (label, bytes) in FIXTURES {
+        for reduction in [0_u8, 1] {
+            let image = Image::new_with_reduction(bytes, &DecodeSettings::default(), reduction)
+                .expect("parse fixture");
+            let regions = regions(&image);
+            let expected_full = one.install(|| native(&image, None));
+            let expected: Vec<_> = regions
+                .iter()
+                .map(|&roi| one.install(|| (native(&image, Some(roi)), rows(&image, roi))))
+                .collect();
+            for (&roi, (_, rows)) in regions.iter().zip(&expected) {
+                assert_eq!(
+                    rows.samples,
+                    planes(&image, roi),
+                    "{label} 1/{} {roi:?}: rows on one thread against the planes",
+                    1 << reduction
+                );
+            }
+            for threads in [2, 4, 12] {
+                pool(threads).install(|| {
+                    assert!(
+                        native(&image, None) == expected_full,
+                        "{label} 1/{} on {threads} threads: full image",
+                        1 << reduction
+                    );
+                    for (&roi, (expected_native, expected_rows)) in regions.iter().zip(&expected) {
+                        let context = format!("{label} 1/{} {roi:?}", 1 << reduction);
+                        assert!(
+                            native(&image, Some(roi)) == *expected_native,
+                            "{context} on {threads} threads: region"
+                        );
+                        assert_eq!(
+                            rows(&image, roi).samples,
+                            expected_rows.samples,
+                            "{context} on {threads} threads: rows"
+                        );
+                    }
+                });
+            }
+        }
+    }
+}
+
+/// A full-image rows decode on a pool whose tiles only serial bands can
+/// stream (here the pool's routes are switched off, as for a tile they
+/// can't decode) streams from serial bands when its planes would pass the
+/// decode budget, rather than fail on them, and keeps the planes within it.
+#[test]
+fn rows_stream_from_serial_bands_when_the_planes_pass_the_budget() {
+    for (label, bytes) in FIXTURES {
+        let image = Image::new(bytes, &DecodeSettings::default()).expect("parse fixture");
+        let roi = (0, 0, image.width(), image.height());
+        let expected = pool(1).install(|| rows(&image, roi));
+        pool(4).install(|| {
+            let planes = rows_with(&image, roi, |context| {
+                context.tile_decode_context.force_per_sub_band = true;
+            });
+            assert!(!planes.streamed, "{label}: planes within the budget");
+            assert_eq!(planes.samples, expected.samples, "{label}: planes");
+            // `reset` charged the structural bytes and the planes: the
+            // planes pass this budget, which leaves room for a packet cache
+            // of up to half their size, which a decode past the budget
+            // drops to try again.
+            let budget = planes.baseline_bytes - planes.channel_bytes / 2;
+            let streamed = rows_with(&image, roi, |context| {
+                context.tile_decode_context.force_per_sub_band = true;
+                context.tile_decode_context.planes_budget = Some(budget);
+            });
+            assert!(
+                streamed.streamed && streamed.pool_components == 0 && streamed.channel_bytes <= 256,
+                "{label}: serial bands past the budget: streamed {}, pool components {}, plane \
+                 bytes {}",
+                streamed.streamed,
+                streamed.pool_components,
+                streamed.channel_bytes,
+            );
+            assert_eq!(streamed.samples, expected.samples, "{label}: serial bands");
+        });
+    }
+}

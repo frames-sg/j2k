@@ -300,6 +300,12 @@ pub(crate) struct TileDecodeContext {
     /// their per-thread counters see the decode.
     #[cfg(test)]
     pub(crate) enter_pool: bool,
+    /// Test-only decode budget for the component planes, in place of the
+    /// default: `reset` charges them against it, and a region decode
+    /// compares them with it when it chooses whether its rows stream from
+    /// serial bands (see `choose_region_idwt`).
+    #[cfg(test)]
+    pub(crate) planes_budget: Option<usize>,
     /// The raw, decoded samples for each channel.
     pub(crate) channel_data: Vec<ComponentData>,
     /// Optional output window for region-local decode storage.
@@ -365,6 +371,8 @@ impl TileDecodeContext {
         let serial_small_decodes = self.serial_small_decodes;
         #[cfg(test)]
         let enter_pool = self.enter_pool;
+        #[cfg(test)]
+        let planes_budget = self.planes_budget;
         *self = Self::default();
         self.output_region = output_region;
         self.round_irreversible_output = round_irreversible_output;
@@ -384,6 +392,7 @@ impl TileDecodeContext {
             self.staged_rgb8_pack = staged_rgb8_pack;
             self.serial_small_decodes = serial_small_decodes;
             self.enter_pool = enter_pool;
+            self.planes_budget = planes_budget;
         }
     }
 

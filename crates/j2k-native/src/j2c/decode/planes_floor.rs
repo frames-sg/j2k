@@ -75,10 +75,17 @@ pub(crate) fn full_decode_planes_floor(
 
 /// What `reset` charges for every component's plane of the output image.
 fn planes_bytes(header: &Header<'_>) -> Result<usize> {
-    let samples = checked_decode_sample_count(
+    region_planes_bytes(
+        header,
         header.size_data.image_width(),
         header.size_data.image_height(),
-    )?;
+    )
+}
+
+/// What `reset` charges for every component's plane of a `width` x
+/// `height` output.
+pub(super) fn region_planes_bytes(header: &Header<'_>, width: u32, height: u32) -> Result<usize> {
+    let samples = checked_decode_sample_count(width, height)?;
     let padded =
         SimdBuffer::<SIMD_WIDTH>::padded_len(samples).ok_or(ValidationError::ImageTooLarge)?;
     let components = header.component_infos.len();

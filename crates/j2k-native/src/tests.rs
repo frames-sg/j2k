@@ -11,6 +11,8 @@ mod ht_refinement;
 mod idwt_into_channels;
 mod idwt_window_storage;
 mod line_region_idwt;
+#[cfg(feature = "parallel")]
+mod multi_segment;
 #[cfg(feature = "std")]
 mod packet_directory;
 #[cfg(feature = "parallel")]

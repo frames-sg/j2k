@@ -316,7 +316,7 @@ fn decode_parsed_tiles<'a>(
         bail!(TileError::Invalid);
     }
     ensure_tiles_share_sample_type(tiles)?;
-    let (structural_workspace_bytes, reused_baseline) = choose_region_idwt(
+    let (structural_workspace_bytes, reused_baseline, cpu_decode_parallelism) = choose_region_idwt(
         header,
         tiles,
         ctx,
@@ -348,7 +348,6 @@ fn decode_parsed_tiles<'a>(
     let retained_decode_base_without_scratch = retained_decode_baseline
         .checked_sub(reused_baseline.scratch_capacity)
         .ok_or(ValidationError::ImageTooLarge)?;
-    let cpu_decode_parallelism = ctx.cpu_decode_parallelism;
     let (tile_ctx, storage) = (&mut ctx.tile_decode_context, &mut ctx.storage);
 
     // Under Auto, the tiles may decode at once on worker contexts. On any
@@ -571,7 +570,12 @@ fn region_decode_without_hook_or_special_samples(
 /// if it `wants_rows`, whether it streams them (see [`streams_rows`]). A
 /// decode that streams gives up the context's retained capacity first (see
 /// `release_retained_before_streaming`), and the decode goes on with the
-/// returned structural bytes and baseline.
+/// returned structural bytes, baseline and parallelism.
+///
+/// Rows that stream only from serial bands, under `Auto` because the pool's
+/// bands can't take a tile, stream serially when the region's planes would
+/// pass the decode budget even in a fresh context: the planes decode would
+/// be refused, so this costs no decode that succeeds today its parallelism.
 fn choose_region_idwt(
     header: &Header<'_>,
     tiles: &ParsedTiles<'_>,
@@ -579,7 +583,7 @@ fn choose_region_idwt(
     (hooked, wants_rows): (bool, bool),
     structural_workspace_bytes: usize,
     reused_baseline: reuse::ReusedDecodeBaseline,
-) -> Result<(usize, reuse::ReusedDecodeBaseline)> {
+) -> Result<(usize, reuse::ReusedDecodeBaseline, CpuDecodeParallelism)> {
     let line_region_idwt = ctx.line_region_idwt
         && ctx.tile_decode_context.line_region_idwt_permitted
         && region_decode_without_hook_or_special_samples(
@@ -588,21 +592,57 @@ fn choose_region_idwt(
             hooked,
         );
     ctx.tile_decode_context.line_region_idwt = line_region_idwt;
-    let stream_rows = wants_rows
-        && line_region_idwt
-        && streams_rows(
+    let streams = |tile_ctx: &TileDecodeContext, parallelism| {
+        wants_rows && line_region_idwt && streams_rows(header, tiles, tile_ctx, parallelism)
+    };
+    let mut parallelism = ctx.cpu_decode_parallelism;
+    let mut stream_rows = streams(&ctx.tile_decode_context, parallelism);
+    if !stream_rows
+        && parallelism == CpuDecodeParallelism::Auto
+        && streams(&ctx.tile_decode_context, CpuDecodeParallelism::Serial)
+        && planes_pass_budget(
             header,
-            tiles,
             &ctx.tile_decode_context,
-            ctx.cpu_decode_parallelism,
-        );
+            structural_workspace_bytes,
+            reused_baseline,
+        )
+    {
+        parallelism = CpuDecodeParallelism::Serial;
+        stream_rows = true;
+    }
     ctx.tile_decode_context.stream_rows = stream_rows;
     ctx.tile_decode_context.streamed_samples = 0;
-    if stream_rows {
-        ctx.release_retained_before_streaming(structural_workspace_bytes, reused_baseline)
+    let (structural_workspace_bytes, reused_baseline) = if stream_rows {
+        ctx.release_retained_before_streaming(structural_workspace_bytes, reused_baseline)?
     } else {
-        Ok((structural_workspace_bytes, reused_baseline))
-    }
+        (structural_workspace_bytes, reused_baseline)
+    };
+    Ok((structural_workspace_bytes, reused_baseline, parallelism))
+}
+
+/// Whether the output region's component planes would pass the decode
+/// budget beside `structural_workspace_bytes` without the context's
+/// retained capacity, as `reset` charges them; planes too large to count
+/// pass it too.
+fn planes_pass_budget(
+    header: &Header<'_>,
+    tile_ctx: &TileDecodeContext,
+    structural_workspace_bytes: usize,
+    reused_baseline: reuse::ReusedDecodeBaseline,
+) -> bool {
+    let (width, height) = tile_ctx.output_region.map_or(
+        (
+            header.size_data.image_width(),
+            header.size_data.image_height(),
+        ),
+        OutputRegion::dimensions,
+    );
+    let fresh = structural_workspace_bytes
+        .saturating_sub(reused_baseline.channel_capacity)
+        .saturating_sub(reused_baseline.scratch_capacity);
+    planes_floor::region_planes_bytes(header, width, height).map_or(true, |planes| {
+        planes.saturating_add(fresh) > tile_ctx.planes_budget()
+    })
 }
 
 /// Whether a region decode on the row-streamed IDWT can hand its samples to
