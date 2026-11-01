@@ -723,6 +723,14 @@ pub(crate) struct DecodeDebugCounters {
     pub(crate) ht_task_workspace_growths: usize,
     #[cfg(all(test, feature = "parallel"))]
     pub(crate) classic_task_workspace_growths: usize,
+    /// The most readers a tile streaming its rows from pool bands
+    /// reconstructed them on.
+    #[cfg(all(test, feature = "parallel"))]
+    pub(crate) pool_band_readers: usize,
+    /// The most line-buffer samples a tile streaming its rows from pool
+    /// bands held beyond the IDWT samples its ROI plan charged.
+    #[cfg(all(test, feature = "parallel"))]
+    pub(crate) uncharged_line_samples: usize,
     #[cfg(all(test, feature = "parallel"))]
     pub(crate) parallel_coefficients: ParallelCoefficientStats,
 }
@@ -920,8 +928,9 @@ fn prepare_region_storage(
             && storage.lockstep_lines
             && parallel_bands::deep_rings(tile)
             && parallel_bands::reads_whole_rows(header, storage);
-        storage.one_synthesis_reader =
-            storage.parallel_bands && storage.lockstep_lines && parallel_bands::one_reader(tile);
+        storage.one_synthesis_reader = storage.parallel_bands
+            && storage.lockstep_lines
+            && parallel_bands::one_reader(tile, storage);
     }
     build::allocate_deferred_coefficients(
         storage,

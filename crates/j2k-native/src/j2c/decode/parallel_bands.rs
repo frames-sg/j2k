@@ -409,6 +409,17 @@ pub(super) fn decode_tile_rows<'a>(
         .ok_or(ValidationError::ImageTooLarge)?;
     let (mut buffer, ring_lens) =
         banded_tier1::take_line_buffer(tile_ctx, storage, &line_plans, scratch_len)?;
+    #[cfg(test)]
+    {
+        let held = ring_lens
+            .iter()
+            .fold(scratch_len, |held, len| held.saturating_add(*len));
+        let counters = &mut tile_ctx.debug_counters;
+        counters.pool_band_readers = counters.pool_band_readers.max(readers);
+        counters.uncharged_line_samples = counters
+            .uncharged_line_samples
+            .max(held.saturating_sub(storage.roi_idwt_charge_elements));
+    }
     let mut output = RowOutput::new(tile, sink, tile_ctx, copy, region);
     let workers = route_workers.min(bank.saturating_sub(readers));
     // One reader for every component of a classic tile leaves the pool's
@@ -575,17 +586,31 @@ pub(super) fn reads_whole_rows(header: &Header<'_>, storage: &DecompositionStora
 /// Whether a tile streaming its rows from pool bands reconstructs them
 /// through one reader whatever workers its routes plan (see
 /// [`parallel_synthesis`]): it has one component, or classic code-blocks on
-/// fewer pool threads than their components need to reconstruct on the pool.
-pub(super) fn one_reader(tile: &Tile<'_>) -> bool {
-    tile.component_infos.len() < 2
-        || (rayon::current_num_threads() < MIN_CLASSIC_SYNTHESIS_THREADS
-            && tile.component_infos.iter().all(|component| {
-                !component
-                    .coding_style
-                    .parameters
-                    .code_block_style
-                    .uses_high_throughput_block_coding()
-            }))
+/// too few pool threads for its size to reconstruct each component on its
+/// own (see [`reader_per_component`]). The size is the largest final window
+/// of a component, which holds the rows [`parallel_synthesis`] counts.
+pub(super) fn one_reader(tile: &Tile<'_>, storage: &DecompositionStorage<'_>) -> bool {
+    let components = tile.component_infos.len();
+    let classic = tile.component_infos.iter().all(|component| {
+        !component
+            .coding_style
+            .parameters
+            .code_block_style
+            .uses_high_throughput_block_coding()
+    });
+    let coding = if classic {
+        CodeBlockCoding::Classic
+    } else {
+        CodeBlockCoding::HighThroughput
+    };
+    let samples = storage.roi_plan.as_ref().map_or(usize::MAX, |plan| {
+        (0..components)
+            .filter_map(|component_idx| plan.final_window(component_idx))
+            .map(|window| (window.width() as usize).saturating_mul(window.height() as usize))
+            .max()
+            .unwrap_or(0)
+    });
+    !reader_per_component(components, coding, rayon::current_num_threads(), samples)
 }
 
 /// Pool threads from which a classic tile reconstructs each component on its
@@ -609,7 +634,12 @@ const MIN_CLASSIC_READER_THREADS: usize = 10;
 /// threads: on 10 threads a 4096 x 2048 lossless RGB image and the 2830 x
 /// 4143 to 708 x 1036 reduced decodes of a 5661 x 8287 one were 1-11% slower
 /// with them.
+#[cfg(not(test))]
 const MIN_CLASSIC_READER_SAMPLES: usize = 1 << 24;
+/// The unit tests' fixtures are far below the size, so their gate lies
+/// between a 203 x 157 component and its 102 x 79 half.
+#[cfg(test)]
+const MIN_CLASSIC_READER_SAMPLES: usize = 1 << 14;
 
 /// Whether a streamed tile's `components` reconstruct on the pool, one per
 /// task, given its block coding, a workspace bank of `bank`, routes planned
@@ -621,10 +651,25 @@ fn parallel_synthesis(
     route_workers: usize,
     samples: usize,
 ) -> bool {
-    let threads = rayon::current_num_threads();
-    components > 1
-        && route_workers >= 2
+    route_workers >= 2
         && bank > components
+        && reader_per_component(components, coding, rayon::current_num_threads(), samples)
+}
+
+/// Whether a streamed tile of `components` of `coding` blocks may reconstruct
+/// each component on its own reader on a pool of `threads`, with `samples`
+/// reconstructed per component: HTJ2K tiles on any pool, classic ones from
+/// [`MIN_CLASSIC_SYNTHESIS_THREADS`], or from [`MIN_CLASSIC_READER_THREADS`]
+/// at [`MIN_CLASSIC_READER_SAMPLES`] or more. [`parallel_synthesis`] decides
+/// by it and [`one_reader`] charges by it, so a tile charged for one reader
+/// never runs several.
+fn reader_per_component(
+    components: usize,
+    coding: CodeBlockCoding,
+    threads: usize,
+    samples: usize,
+) -> bool {
+    components > 1
         && (coding == CodeBlockCoding::HighThroughput
             || threads >= MIN_CLASSIC_SYNTHESIS_THREADS
             || (threads >= MIN_CLASSIC_READER_THREADS && samples >= MIN_CLASSIC_READER_SAMPLES))

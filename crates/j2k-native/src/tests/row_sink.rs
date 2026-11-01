@@ -825,6 +825,76 @@ fn streamed_rows_charge_every_components_rings() {
     }
 }
 
+/// A classic tile of several components reconstructs each on a reader of
+/// its own from 12 pool threads, and on 10 and 11 only from a size; the
+/// readers then hold a batch of rows each where one reader would hold a
+/// short one. The ROI plan must charge that batch on every such pool: the
+/// line buffer each streamed tile takes stays within the IDWT charge, and
+/// the rows match the serial planes. The unit tests' size gate lies between
+/// this full image and its half, so both sides of it run on 10 and 11
+/// threads.
+#[cfg(feature = "parallel")]
+#[test]
+fn classic_streamed_rows_charge_the_batches_of_their_readers() {
+    let pixels = noisy_pixels(3);
+    let bytes = encode(
+        &pixels,
+        WIDTH,
+        HEIGHT,
+        3,
+        8,
+        false,
+        &EncodeOptions {
+            num_decomposition_levels: 4,
+            // 16-row blocks give every component more rows of blocks than
+            // the pool threads, so its bands decode on the pool.
+            code_block_height_exp: 2,
+            ..EncodeOptions::default()
+        },
+    )
+    .expect("encode reader charge fixture");
+    for threads in [9, 10, 11, 12] {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("build pool");
+        for reduction in [0_u8, 1] {
+            let image = Image::new_with_reduction(&bytes, &DecodeSettings::default(), reduction)
+                .expect("parse reader charge fixture");
+            let roi = (0, 0, image.width(), image.height());
+            let label = format!("threads={threads} reduction={reduction}");
+            let planes = decode_planes(&image, roi);
+            let (rows, counters) = pool.install(|| {
+                let mut context = DecoderContext::default();
+                context.set_cpu_decode_parallelism(CpuDecodeParallelism::Auto);
+                let mut sink = CollectingSink::new(roi.2, roi.3);
+                image
+                    .decode_region_rows_for_integer_output_with_context(
+                        roi,
+                        &mut context,
+                        &mut sink,
+                    )
+                    .expect("decode region rows");
+                assert!(context.tile_decode_context.stream_rows, "{label}");
+                assert!(sink.arrivals.iter().all(|&count| count == 1), "{label}");
+                (sink.planes, context.tile_decode_context.debug_counters)
+            });
+            assert_eq!(rows, planes.planes, "{label}");
+            assert_eq!(counters.pool_band_components, 3, "{label}: pool bands");
+            let readers = if threads >= 12 || (threads >= 10 && reduction == 0) {
+                3
+            } else {
+                1
+            };
+            assert_eq!(counters.pool_band_readers, readers, "{label}: readers");
+            assert_eq!(
+                counters.uncharged_line_samples, 0,
+                "{label}: line buffer beyond the charge"
+            );
+        }
+    }
+}
+
 /// A streamed decode that holds the image's packet directory and runs out of
 /// budget gives the directory up and reruns only while no row has reached the
 /// sink, since a rerun after that would send those rows again. This decode
