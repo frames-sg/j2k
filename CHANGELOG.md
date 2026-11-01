@@ -15,6 +15,14 @@ Staged workspace version: `0.13.2`.
   status, detail and batch source index. CUDA keeps its typed source and job
   attribution. Unsupported statuses, raw runtime failures and combined
   cleanup or release failures keep their existing classes.
+- A tile-part that holds data after its tile's last packet, bytes or PLT
+  packet lengths past it, decodes on every route. Decodes on the component
+  planes failed with a packet parse error where decodes that stream their
+  rows succeeded, so the same codestream decoded or failed depending on the
+  route, which can follow the pool's size (a half-resolution decode of a
+  512 x 512 RGB image failed on one thread and decoded on four). The output
+  is that of the codestream without the extra data. PLT lengths left over
+  while the tile's packets continue in a later tile-part remain an error.
 - Row-streamed decodes on serial bands finish directly from the inverse
   transform's own rows. The streamed inverse transform lifts every level
   with the banded transform's kernels, one arrival at a time on each level's
