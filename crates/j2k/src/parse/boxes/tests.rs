@@ -264,6 +264,17 @@ fn native_container_errors_keep_specific_facade_categories() {
             requested: 9,
             cap: 8
         }),
+        J2kError::ResourceLimit {
+            requested: Some(9),
+            cap: Some(8),
+            ..
+        }
+    ));
+    assert!(matches!(
+        map_native_jp2_error(NativeDecodeError::HostAllocationFailed {
+            what: "metadata",
+            bytes: 9,
+        }),
         J2kError::NativeDecode { .. }
     ));
 }

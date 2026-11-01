@@ -6,7 +6,8 @@ use super::super::{PrecinctSelection, PrecinctUse};
 use super::{BuildWorkspace, DecompositionAllocationPlan};
 use crate::error::{DecodingError, Result, ValidationError};
 use crate::j2c::build::SubBandType;
-use crate::j2c::idwt::idwt_buffer_size;
+use crate::j2c::codestream::WaveletTransform;
+use crate::j2c::idwt::planned_workspace_elements;
 use crate::j2c::rect::IntRect;
 use crate::j2c::roi::RoiPlan;
 use crate::j2c::tile::{ResolutionTile, Tile};
@@ -74,6 +75,7 @@ pub(super) fn build_allocation_plan(
         );
         let mut idwt_tracker = IdwtWorkspaceTracker::new(
             workspace.active_decomposition_count(total_decomposition_count),
+            component_tile.component_info.wavelet_transform(),
         );
         let mut observed_decomposition_count = 0usize;
         for resolution_tile in resolution_tiles {
@@ -189,11 +191,10 @@ fn include_sub_band_allocations(
 
     let mut observed_precincts = 0usize;
     let mut observed_code_blocks = 0usize;
-    for (precinct_idx, precinct_data) in resolution_tile
-        .precincts()
-        .ok_or(DecodingError::InvalidPrecinct)?
-        .enumerate()
-    {
+    let precincts = resolution_tile
+        .precinct_grid()
+        .ok_or(DecodingError::InvalidPrecinct)?;
+    for precinct_idx in 0..precinct_count {
         observed_precincts = observed_precincts
             .checked_add(1)
             .ok_or(ValidationError::ImageTooLarge)?;
@@ -212,7 +213,10 @@ fn include_sub_band_allocations(
             DecompositionAllocationPlan::checked_add_count(&mut plan.unbuilt_precincts, 1)?;
             continue;
         }
-        let grid = code_block_grid(resolution_tile, sub_band_rect, precinct_data.rect)?;
+        let precinct_rect = precincts
+            .rect_at(precinct_idx)
+            .ok_or(DecodingError::InvalidPrecinct)?;
+        let grid = code_block_grid(resolution_tile, sub_band_rect, precinct_rect)?;
         let block_count = (grid.columns as usize)
             .checked_mul(grid.rows as usize)
             .ok_or(ValidationError::ImageTooLarge)?;
@@ -451,16 +455,23 @@ fn checked_rect_elements(rect: IntRect) -> Result<usize> {
 #[derive(Clone, Copy)]
 pub(super) struct IdwtWorkspaceTracker {
     active_decomposition_count: Option<usize>,
+    transform: WaveletTransform,
     observed_count: usize,
+    third_highest_active_rect: Option<IntRect>,
     second_highest_active_rect: Option<IntRect>,
     highest_active_rect: Option<IntRect>,
 }
 
 impl IdwtWorkspaceTracker {
-    pub(super) fn new(active_decomposition_count: Option<usize>) -> Self {
+    pub(super) fn new(
+        active_decomposition_count: Option<usize>,
+        transform: WaveletTransform,
+    ) -> Self {
         Self {
             active_decomposition_count,
+            transform,
             observed_count: 0,
+            third_highest_active_rect: None,
             second_highest_active_rect: None,
             highest_active_rect: None,
         }
@@ -471,6 +482,7 @@ impl IdwtWorkspaceTracker {
             .active_decomposition_count
             .is_some_and(|count| self.observed_count < count)
         {
+            self.third_highest_active_rect = self.second_highest_active_rect;
             self.second_highest_active_rect = self.highest_active_rect;
             self.highest_active_rect = Some(rect);
         }
@@ -482,22 +494,14 @@ impl IdwtWorkspaceTracker {
             return Ok(None);
         }
         let workspace = match self.highest_active_rect {
-            Some(highest_rect) => {
-                let output = idwt_buffer_size(highest_rect)?.1;
-                let scratch = self
-                    .second_highest_active_rect
-                    .map(|rect| idwt_buffer_size(rect).map(|(_, maximum)| maximum))
-                    .transpose()?
-                    .unwrap_or(0);
-                let band_scratch = crate::j2c::idwt::planned_band_scratch_elements(
-                    highest_rect.width() as usize,
-                    highest_rect.height() as usize,
-                )?;
-                output
-                    .checked_add(scratch)
-                    .and_then(|elements| elements.checked_add(band_scratch))
-                    .ok_or(ValidationError::ImageTooLarge)?
-            }
+            Some(highest_rect) => planned_workspace_elements(
+                highest_rect,
+                [
+                    self.second_highest_active_rect,
+                    self.third_highest_active_rect,
+                ],
+                self.transform,
+            )?,
             None => checked_rect_elements(ll_rect)?,
         };
         Ok(Some(workspace))

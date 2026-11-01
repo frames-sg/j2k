@@ -5,6 +5,66 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+Staged workspace version: `0.13.2`.
+
+- Classic code-blocks with BYPASS, per-pass termination, context resets or
+  segmentation symbols use the packed-column passes, including raw segments.
+  Vertically causal blocks retain the per-coefficient passes. Clean and corrupt
+  code-blocks preserve the same samples and errors in strict and lenient modes.
+- Decodes into a validated caller buffer whose stride is wider than a row
+  and which ends before a full stride after the last row now write that
+  last row, including buffers of exactly `strided_output_len` bytes. Full-image
+  and scaled 8-bit decodes at such a stride and every 16-bit decode at one,
+  regions included, left it unwritten and still returned `Ok`. 8-bit region
+  decodes, and buffers padded to a full stride after the last row, were not
+  affected. The other rows are unchanged.
+- Decodes on the worker pool that reconstruct the two finest wavelet levels
+  of a component in one pass now charge the decode budget for what that pass
+  holds: each worker's rows of the coarser level, which were not charged,
+  and no intermediate buffer for the coarser level, which the pass never
+  writes and which is no longer reserved. Where those rows are the larger
+  term the charge grows to match; elsewhere it is unchanged and the IDWT
+  holds less within it (a 1024 x 768 gray image on 4 threads: 3.9 MB in
+  place of 4.5 MB, against a 4.1 MB charge). Output is unchanged.
+- Decodes that would exceed a resource limit now fail with
+  `J2kError::ResourceLimit { requested, cap, source }` instead of the generic
+  `J2kError::NativeDecode`, on every decode route: `J2kDecoder`, the tile
+  batch functions (inside `TileBatchError::Tile`) and the owned batch API
+  (inside `BatchItemError::Codec`), and JP2/JPH metadata inspection.
+  `requested` and `cap` are the live bytes and the cap when the native decoder
+  knows them (`AllocationTooLarge`), and
+  `None` for `ImageTooLarge`. Callers can tell these apart from invalid input
+  and unsupported features, and retry with a smaller request such as a region
+  or a reduced resolution. The display prefix becomes `decode resource limit
+  exceeded:`; the display text and source chain keep the native error.
+  `j2k_native::DecodeError::classify` reports the same class as
+  `DecodeErrorClass::ResourceLimit`. Both enums are `#[non_exhaustive]`;
+  host allocator failures keep their previous classification.
+- Prepared classic CPU batch plans decode in parallel. Batches prepared by
+  `CpuBatchDecoder` reject individual outputs or planned executions that
+  exceed their memory limits during preparation, with the input's index,
+  and exclude those items from the prepared groups. Backend-neutral
+  `prepare_batch` and `prepare_batch_from_images` keep their existing
+  behavior: decoding them on the CPU can still fail the whole call when one
+  image's output exceeds the allocation cap. On either preparation path, a
+  group whose combined output exceeds that cap still fails the whole decode
+  call.
+  Staged windows are admitted by planned execution memory, and an admission
+  claim that cannot fit beside the shared plan fails instead of waiting
+  indefinitely. Successful output is unchanged.
+- x86-64 RGB8 decodes of 9/7 images round and pack the inverse ICT output with
+  the runtime SIMD level (AVX2 where present) instead of a scalar library
+  call per sample: the centered rounding of the inverse MCT runs eight
+  samples at a time, and the last-level RGB8 pack fuses the ICT, rounding
+  and interleave as ARM64 already does. Output is unchanged.
+- x86-64 decodes keep more of their hot loops at the runtime SIMD level
+  instead of baseline x86-64 code: the banded 9/7 IDWT's block load no
+  longer falls back to out-of-line SIMD kernels, 8-bit RGB region rows
+  use the SIMD RGB8 pack, non-MCT 9/7 rounding and the HT 9/7 magnitude
+  conversion use native instructions, the fused RGB8 pack skips a second
+  rounding, and classic Tier-1 (MQ decoding) and dequantization run inside
+  the dispatch so they use LZCNT, BMI2 and AVX2 where present. ARM64 code
+  is unchanged and output is unchanged.
 - Parallel CPU region decodes on the row-streamed IDWT decode Tier-1 band by
   band on the worker pool while the IDWT reads the bands, instead of decoding
   every code-block of a component first. Each sub-band holds three bands at
@@ -15,13 +75,17 @@ and stale roadmap entries have been removed from the public documentation set.
   18000 x 12000 RGB image decodes 3 to 11% faster at 12 threads and 9 to 18%
   faster at 4, with about 3 MiB less peak heap. Output is unchanged, and a
   failure reruns whole-window Tier-1 serially for the same error.
-- Decodes into a caller buffer whose stride is wider than a row and which
-  ends right after the last row's pixels, the length `strided_output_len`
-  reports and buffer validation accepts, now write that last row. Full-image
-  and scaled 8-bit decodes at such a stride and every 16-bit decode at one,
-  regions included, left it unwritten and still returned `Ok`. 8-bit region
-  decodes, and buffers with any bytes after the last row, were not affected.
-  The other rows are unchanged.
+- Classic (EBCOT) code-block decoding is faster on the CPU. The cleanup pass
+  decodes a run of all-zero run-length columns in one step while the MQ
+  decoder needs no renormalization, the significance propagation and cleanup
+  passes form a coefficient's sign context before its significance decision,
+  and reversible code-blocks decoded down to bit-plane 0 convert to samples
+  in a vectorized loop. On the tile-wide route, long classic code-block rows
+  split into parts of about equal work, so a decode no longer ends on one
+  long row. A 4096 x 2048 RGB image decodes 10% faster at 2 bpp and 14%
+  faster lossless at 1 and 6 threads (5% and 13% at 18), and 1024 x 1024
+  regions and reduced-resolution decodes of an 18000 x 12000 image 2 to 10%
+  faster. Output and peak heap are unchanged.
 
 ## [0.13.1] - 2026-10-29
 

@@ -14,11 +14,13 @@ use super::{
     CpuStagedWorkspace, IndexedBatchError, J2kError, NativeSampleType, NonZeroUsize,
     PreparedBatchGroup, PreparedImage, TileBatchOptions, Vec,
 };
+use crate::batch::admission::{hold_at_least, BatchAllocationBudget};
 use crate::batch::allocation::try_vec_with_capacity;
 
 #[expect(
     clippy::too_many_lines,
-    reason = "the typed output allocation and one shared decode/compaction boundary remain together so every native sample type follows the same group-level ownership rules"
+    clippy::too_many_arguments,
+    reason = "the typed output allocation and one shared decode/compaction boundary remain together so every native sample type follows the same group-level ownership rules; retained workspaces and admission stay explicit"
 )]
 pub(super) fn decode_cpu_group(
     workers: &mut [BatchWorker],
@@ -27,6 +29,7 @@ pub(super) fn decode_cpu_group(
     group: &PreparedBatchGroup,
     options: BatchDecodeOptions,
     workers_option: Option<NonZeroUsize>,
+    admission: &Arc<BatchAllocationBudget>,
     errors: &mut Vec<IndexedBatchError>,
 ) -> Result<Option<CpuBatchGroup>, BatchInfrastructureError> {
     let tile_options = TileBatchOptions::new(workers_option);
@@ -67,6 +70,7 @@ pub(super) fn decode_cpu_group(
                 &mut values,
                 has_flattened_payloads.then_some(&mut *fast_workspace),
                 staged_workspace,
+                admission,
                 decode_image_u8,
                 convert_u8,
                 errors,
@@ -88,6 +92,7 @@ pub(super) fn decode_cpu_group(
                 &mut values,
                 has_flattened_payloads.then_some(&mut *fast_workspace),
                 staged_workspace,
+                admission,
                 decode_image_u16,
                 convert_u16,
                 errors,
@@ -109,6 +114,7 @@ pub(super) fn decode_cpu_group(
                 &mut values,
                 has_flattened_payloads.then_some(&mut *fast_workspace),
                 staged_workspace,
+                admission,
                 decode_image_i16,
                 round_signed,
                 errors,
@@ -169,7 +175,8 @@ type CpuDecodeFn<T> = for<'image> fn(
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "the retained-worker boundary keeps output ownership, decode policy, and indexed error collection explicit"
+    clippy::too_many_lines,
+    reason = "the retained-worker boundary keeps output ownership, decode policy, and indexed error collection explicit, with the job slots, the worker loop, and the result collection in one place"
 )]
 fn run_typed_group<T: Copy + Send>(
     workers: &mut [BatchWorker],
@@ -180,6 +187,7 @@ fn run_typed_group<T: Copy + Send>(
     output: &mut Vec<T>,
     flattened_payloads: Option<&mut CpuGroupFastWorkspace>,
     staged_workspace: &mut CpuStagedWorkspace,
+    admission: &Arc<BatchAllocationBudget>,
     decode: CpuDecodeFn<T>,
     convert: fn(f32, u8) -> T,
     errors: &mut Vec<IndexedBatchError>,
@@ -208,6 +216,7 @@ fn run_typed_group<T: Copy + Send>(
             &mut results,
             flattened,
             staged_workspace,
+            admission,
             convert,
         )?;
     } else {
@@ -220,7 +229,13 @@ fn run_typed_group<T: Copy + Send>(
                 let parallelism = worker.prepare_owned_decode();
                 let workspace = worker.take_native_workspace();
                 let mut context = j2k_native::DecoderContext::from_workspace(workspace);
+                let mut claim = None;
                 for (job, slot) in jobs.iter_mut().zip(results) {
+                    hold_at_least(
+                        admission,
+                        &mut claim,
+                        job.image.cpu_execution().claim_bytes(),
+                    )?;
                     *slot = Some(decode(
                         job.image,
                         options,

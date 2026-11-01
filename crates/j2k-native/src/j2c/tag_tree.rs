@@ -72,9 +72,15 @@ impl TagTree {
     }
 
     /// Start the tree afresh on the nodes from `root`, as [`Self::new`]
-    /// would build it there. Fails if they don't fit in `nodes`.
-    pub(crate) fn place(&mut self, root: usize, nodes: &mut [TagNode]) -> Option<()> {
-        let end = root.checked_add(self.node_count())?;
+    /// would build it there. `node_count` is [`Self::node_count`], which the
+    /// caller has at hand. Fails if they don't fit in `nodes`.
+    pub(crate) fn place(
+        &mut self,
+        root: usize,
+        node_count: usize,
+        nodes: &mut [TagNode],
+    ) -> Option<()> {
+        let end = root.checked_add(node_count)?;
         nodes.get_mut(root..end)?.fill(TagNode::default());
         self.root = root;
         Some(())

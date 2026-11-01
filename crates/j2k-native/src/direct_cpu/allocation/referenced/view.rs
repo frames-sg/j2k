@@ -205,7 +205,57 @@ pub(super) fn referenced_temporary_workspace_bytes(
         }
     }
     let ht_dispatch = referenced_parallel_ht_dispatch_bytes(plan, parallel)?;
-    Ok(classic.max(ht).max(idwt).max(ht_dispatch))
+    let classic_dispatch = referenced_parallel_classic_dispatch_bytes(plan, parallel)?;
+    Ok(classic
+        .max(ht)
+        .max(idwt)
+        .max(ht_dispatch)
+        .max(classic_dispatch))
+}
+
+/// Row-dispatch bytes of parallel referenced classic execution. Classic
+/// blocks inside HTJ2K plans always decode serially.
+#[cfg(feature = "parallel")]
+fn referenced_parallel_classic_dispatch_bytes(
+    plan: ReferencedPlanView<'_>,
+    parallel: bool,
+) -> Result<usize> {
+    let worker_count = rayon::current_num_threads();
+    let ReferencedPlanView::Classic(classic) = plan else {
+        return Ok(0);
+    };
+    if !parallel || worker_count <= 1 || classic_plan_has_fragmented_payloads(classic) {
+        return Ok(0);
+    }
+    let mut maximum_jobs = 0usize;
+    for tile_index in 0..plan.tile_count() {
+        for component_index in 0..plan.component_count() {
+            for step in &plan.component_plan(tile_index, component_index)?.steps {
+                if let J2kDirectGrayscaleStep::ClassicSubBand(sub_band) = step {
+                    maximum_jobs = maximum_jobs.max(sub_band.jobs.len());
+                }
+            }
+        }
+    }
+    if maximum_jobs == 0 {
+        return Ok(0);
+    }
+    super::super::super::referenced::rows::row_dispatch_transient_bytes::<
+        crate::J2kOwnedCodeBlockBatchJob,
+        crate::J2kCodeBlockDecodeWorkspace,
+    >(maximum_jobs, maximum_jobs, worker_count)
+}
+
+#[cfg(not(feature = "parallel"))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the no-parallel stub preserves the fallible parallel planning signature"
+)]
+fn referenced_parallel_classic_dispatch_bytes(
+    _plan: ReferencedPlanView<'_>,
+    _parallel: bool,
+) -> Result<usize> {
+    Ok(0)
 }
 
 #[cfg(feature = "parallel")]
@@ -281,6 +331,46 @@ pub(in super::super::super) fn max_referenced_classic_dimensions(
     plan: &J2kReferencedClassicPlan,
 ) -> Option<(u32, u32)> {
     max_referenced_dimensions(ReferencedPlanView::Classic(plan), false)
+}
+
+/// Whether some classic payload is split over several input fragments (a
+/// multi-layer codestream). Parallel classic dispatch borrows each payload
+/// as one input slice, so such plans decode their blocks serially.
+pub(super) fn classic_plan_has_fragmented_payloads(plan: &J2kReferencedClassicPlan) -> bool {
+    plan.payloads()
+        .iter()
+        .any(|payload| payload.range_count > 1)
+}
+
+/// Most runs of code-block rows (consecutive jobs sharing `output_y`) in any
+/// classic sub-band. Runs are never fewer than the distinct rows one
+/// parallel dispatch decodes at once; an unreadable plan is unbounded.
+pub(super) fn max_referenced_classic_rows(plan: &J2kReferencedClassicPlan) -> usize {
+    let view = ReferencedPlanView::Classic(plan);
+    let mut maximum = 0usize;
+    for tile_index in 0..view.tile_count() {
+        for component_index in 0..view.component_count() {
+            let Ok(component) = view.component_plan(tile_index, component_index) else {
+                return usize::MAX;
+            };
+            for step in &component.steps {
+                if let J2kDirectGrayscaleStep::ClassicSubBand(sub_band) = step {
+                    let breaks = sub_band
+                        .jobs
+                        .windows(2)
+                        .filter(|pair| pair[0].output_y != pair[1].output_y)
+                        .count();
+                    let rows = if sub_band.jobs.is_empty() {
+                        0
+                    } else {
+                        breaks + 1
+                    };
+                    maximum = maximum.max(rows);
+                }
+            }
+        }
+    }
+    maximum
 }
 
 pub(in super::super::super) fn max_referenced_ht_dimensions(

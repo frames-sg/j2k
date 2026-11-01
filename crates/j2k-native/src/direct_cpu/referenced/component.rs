@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#[cfg(feature = "parallel")]
-use crate::error::ValidationError;
 use crate::error::{bail, DecodingError, Result};
 use crate::{
     decode_ht_code_block_scalar_with_workspace,
@@ -207,15 +205,8 @@ fn execute_ht_sub_band_referenced(
     Ok(())
 }
 
-/// One code block of a parallel sub-band decode with its borrowed payload and
-/// output range in the sub-band.
 #[cfg(feature = "parallel")]
-struct RowJob<'p, 'i> {
-    job: &'p crate::HtOwnedCodeBlockBatchJob,
-    data: &'i [u8],
-    start: usize,
-    end: usize,
-}
+type RowJob<'p, 'i> = super::rows::RowJob<'p, 'i, crate::HtOwnedCodeBlockBatchJob>;
 
 /// Bytes owned together while a referenced HT sub-band is dispatched in
 /// parallel. Planning and execution share this helper so the private dispatch
@@ -226,21 +217,10 @@ pub(in crate::direct_cpu) fn parallel_ht_decode_transient_bytes(
     row_capacity: usize,
     workspace_capacity: usize,
 ) -> Result<usize> {
-    entry_capacity
-        .checked_mul(core::mem::size_of::<RowJob<'static, 'static>>())
-        .and_then(|bytes| {
-            row_capacity
-                .checked_mul(core::mem::size_of::<
-                    CodeBlockRow<'static, 'static, 'static, 'static>,
-                >())
-                .and_then(|rows| bytes.checked_add(rows))
-        })
-        .and_then(|bytes| {
-            workspace_capacity
-                .checked_mul(core::mem::size_of::<&mut HtCodeBlockDecodeWorkspace>())
-                .and_then(|workspaces| bytes.checked_add(workspaces))
-        })
-        .ok_or_else(|| ValidationError::ImageTooLarge.into())
+    super::rows::row_dispatch_transient_bytes::<
+        crate::HtOwnedCodeBlockBatchJob,
+        HtCodeBlockDecodeWorkspace,
+    >(entry_capacity, row_capacity, workspace_capacity)
 }
 
 /// Decode a sub-band's rows of code blocks in parallel, each writing its own
@@ -264,12 +244,48 @@ fn decode_ht_sub_band_rows_parallel(
     };
     entries.sort_unstable_by_key(|entry| (entry.job.output_y, entry.job.output_x));
     let entry_capacity = entries.capacity();
-    let Some(rows) = carve_rows(&entries, output, sub_band_width, entry_capacity, ht.budget)?
+    let Some(rows) = super::rows::carve_rows::<_, HtCodeBlockDecodeWorkspace>(
+        &entries,
+        output,
+        sub_band_width,
+        entry_capacity,
+        ht.budget,
+    )?
     else {
         payloads.rewind(checkpoint);
         return Ok(false);
     };
-    decode_rows(rows, entry_capacity, plan.irreversible_midpoint, ht)?;
+    let irreversible_midpoint = plan.irreversible_midpoint;
+    super::rows::decode_rows(
+        rows,
+        entry_capacity,
+        &mut *ht.main,
+        ht.tasks,
+        ht.budget,
+        |entry, output, workspace| {
+            let job = entry.job;
+            let code_block = HtCodeBlockDecodeJob {
+                data: entry.data,
+                cleanup_length: job.cleanup_length,
+                refinement_length: job.refinement_length,
+                width: job.width,
+                height: job.height,
+                output_stride: job.output_stride,
+                missing_bit_planes: job.missing_bit_planes,
+                number_of_coding_passes: job.number_of_coding_passes,
+                num_bitplanes: job.num_bitplanes,
+                roi_shift: job.roi_shift,
+                stripe_causal: job.stripe_causal,
+                strict: job.strict,
+                dequantization_step: job.dequantization_step,
+            };
+            if irreversible_midpoint {
+                decode_ht_code_block_scalar_with_workspace_midpoint(code_block, output, workspace)
+            } else {
+                decode_ht_code_block_scalar_with_workspace(code_block, output, workspace)
+            }
+        },
+    )?;
     Ok(true)
 }
 
@@ -317,131 +333,4 @@ fn collect_row_jobs<'p, 'i>(
         });
     }
     Ok(Some(entries))
-}
-
-/// A row of code blocks: its output rows, its jobs, and its first sample.
-#[cfg(feature = "parallel")]
-type CodeBlockRow<'o, 'j, 'p, 'i> = (&'o mut [f32], &'j [RowJob<'p, 'i>], usize);
-
-/// Split `output` into one slice per row of code blocks, or `None` when the
-/// sorted jobs do not form disjoint rows of equal-height blocks.
-#[cfg(feature = "parallel")]
-fn carve_rows<'o, 'j, 'p, 'i>(
-    entries: &'j [RowJob<'p, 'i>],
-    output: &'o mut [f32],
-    sub_band_width: usize,
-    entry_capacity: usize,
-    budget: DirectWorkspaceBudget,
-) -> Result<Option<alloc::vec::Vec<CodeBlockRow<'o, 'j, 'p, 'i>>>> {
-    let mut rows = alloc::vec::Vec::new();
-    crate::try_reserve_decode_elements(&mut rows, entries.len())?;
-    budget.validate_workspace(parallel_ht_decode_transient_bytes(
-        entry_capacity,
-        rows.capacity(),
-        0,
-    )?)?;
-    let mut rest = output;
-    let mut consumed = 0usize;
-    let mut index = 0usize;
-    while index < entries.len() {
-        let first = &entries[index];
-        let (y, height) = (first.job.output_y as usize, first.job.height as usize);
-        let mut end = index;
-        let mut next_x = 0u32;
-        while end < entries.len() && entries[end].job.output_y as usize == y {
-            let job = entries[end].job;
-            if job.height as usize != height || job.output_x < next_x {
-                return Ok(None);
-            }
-            next_x = job.output_x + job.width;
-            end += 1;
-        }
-        let row_start = y * sub_band_width;
-        let row_end = (y + height) * sub_band_width;
-        if row_start < consumed || row_end > consumed + rest.len() {
-            return Ok(None);
-        }
-        let tail = core::mem::take(&mut rest);
-        let (_, tail) = tail.split_at_mut(row_start - consumed);
-        let (row, tail) = tail.split_at_mut(row_end - row_start);
-        rest = tail;
-        consumed = row_end;
-        rows.push((row, &entries[index..end], row_start));
-        index = end;
-    }
-    Ok(Some(rows))
-}
-
-/// Decode rows of code blocks on the Rayon pool, each with a pooled workspace.
-#[cfg(feature = "parallel")]
-fn decode_rows(
-    rows: alloc::vec::Vec<CodeBlockRow<'_, '_, '_, '_>>,
-    entry_capacity: usize,
-    irreversible_midpoint: bool,
-    ht: &mut HtWorkspaces<'_>,
-) -> Result<()> {
-    use rayon::prelude::*;
-    use std::sync::Mutex;
-
-    let budget = ht.budget;
-    let row_capacity = rows.capacity();
-    let workspace_count = ht
-        .tasks
-        .len()
-        .checked_add(1)
-        .ok_or(ValidationError::ImageTooLarge)?;
-    let mut workspaces = alloc::vec::Vec::new();
-    crate::try_reserve_decode_elements(&mut workspaces, workspace_count)?;
-    workspaces.push(&mut *ht.main);
-    workspaces.extend(ht.tasks.iter_mut());
-    budget.validate_workspace(parallel_ht_decode_transient_bytes(
-        entry_capacity,
-        row_capacity,
-        workspaces.capacity(),
-    )?)?;
-    let pool = Mutex::new(workspaces);
-    rows.into_par_iter()
-        .with_max_len(1)
-        .try_for_each(|(row, jobs, row_start)| -> Result<()> {
-            // Bind the popped workspace first so the guard drops before the
-            // workspace is returned.
-            let pooled = pool
-                .lock()
-                .map_err(|_| DecodingError::CodeBlockDecodeFailure)?
-                .pop();
-            let mut decode_row = |workspace: &mut HtCodeBlockDecodeWorkspace| -> Result<()> {
-                jobs.iter().try_for_each(|entry| {
-                    let job = entry.job;
-                    let code_block = HtCodeBlockDecodeJob {
-                        data: entry.data,
-                        cleanup_length: job.cleanup_length,
-                        refinement_length: job.refinement_length,
-                        width: job.width,
-                        height: job.height,
-                        output_stride: job.output_stride,
-                        missing_bit_planes: job.missing_bit_planes,
-                        number_of_coding_passes: job.number_of_coding_passes,
-                        num_bitplanes: job.num_bitplanes,
-                        roi_shift: job.roi_shift,
-                        stripe_causal: job.stripe_causal,
-                        strict: job.strict,
-                        dequantization_step: job.dequantization_step,
-                    };
-                    let output = &mut row[entry.start - row_start..entry.end - row_start];
-                    if irreversible_midpoint {
-                        decode_ht_code_block_scalar_with_workspace_midpoint(
-                            code_block, output, workspace,
-                        )
-                    } else {
-                        decode_ht_code_block_scalar_with_workspace(code_block, output, workspace)
-                    }
-                })
-            };
-            let workspace = pooled.ok_or(DecodingError::CodeBlockDecodeFailure)?;
-            let result = decode_row(workspace);
-            pool.lock()
-                .map_err(|_| DecodingError::CodeBlockDecodeFailure)?
-                .push(workspace);
-            result
-        })
 }

@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::cleanup::{
-    cleanup_segment_suffix_length, cleanup_symbol_stride, decode_cleanup_symbols,
-};
+use super::cleanup::{cleanup_segment_suffix_length, cleanup_symbol_stride};
+use super::magnitude::decode_cleanup_and_magnitude_sign_phase;
 #[cfg(feature = "simd")]
-use super::magnitude::decode_cleanup_and_magnitude_sign_to_f32;
-use super::magnitude::{decode_cleanup_and_magnitude_sign_phase, decode_magnitude_sign_phase};
+use super::magnitude::{
+    decode_cleanup_and_magnitude_sign_direct, decode_cleanup_and_magnitude_sign_to_f32,
+    supports_cleanup_to_f32,
+};
 use super::refinement::apply_magnitude_refinement_phase;
 use super::significance::{
     apply_significance_propagation_phase, build_sigma_from_cleanup_phase, sigma_stride,
@@ -77,7 +78,32 @@ pub(super) fn decode_impl<const PHASE_LIMIT: u8, O: HtDecodeObserver>(
         zeroed_u16_scratch(&mut scratch_buffers.cleanup, sstr * (quad_rows + 1))?
     };
 
-    if cleanup_only {
+    // Refinement-bearing blocks decode their cleanup pass the same way; they
+    // only keep a zeroed symbol scratch, whose rows past the block the sigma
+    // build reads. Blocks the direct rows take (unless the phases are timed
+    // apart) use them, publishing sign-magnitude words.
+    #[cfg(feature = "simd")]
+    let direct = !observer.times_phases() && supports_cleanup_to_f32(missing_msbs, width);
+    #[cfg(not(feature = "simd"))]
+    let direct = false;
+    if direct {
+        #[cfg(feature = "simd")]
+        decode_cleanup_and_magnitude_sign_direct(
+            cleanup_data,
+            lcup,
+            scup,
+            decoded_data,
+            missing_msbs,
+            width,
+            height,
+            stride,
+            sstr,
+            scratch,
+            v_n_scratch,
+            &mut scratch_buffers.magsgn,
+            &mut scratch_buffers.vlc,
+        )?;
+    } else {
         decode_cleanup_and_magnitude_sign_phase(
             cleanup_data,
             lcup,
@@ -91,29 +117,9 @@ pub(super) fn decode_impl<const PHASE_LIMIT: u8, O: HtDecodeObserver>(
             scratch,
             v_n_scratch,
             &mut scratch_buffers.magsgn,
+            &mut scratch_buffers.vlc,
             observer,
         )?;
-    } else {
-        let phase_start = observer.phase_start();
-        decode_cleanup_symbols(cleanup_data, lcup, scup, width, height, sstr, scratch)?;
-        observer.add_cleanup_us(phase_start);
-
-        let phase_start = observer.phase_start();
-        decode_magnitude_sign_phase(
-            cleanup_data,
-            lcup,
-            scup,
-            scratch,
-            decoded_data,
-            missing_msbs,
-            width,
-            height,
-            stride,
-            sstr,
-            v_n_scratch,
-            &mut scratch_buffers.magsgn,
-        )?;
-        observer.add_mag_sgn_us(phase_start);
     }
 
     if PHASE_LIMIT == PHASE_LIMIT_CLEANUP {
@@ -212,5 +218,6 @@ pub(super) fn decode_cleanup_to_f32_impl<const IRREVERSIBLE_MIDPOINT: bool>(
         scratch,
         v_n_scratch,
         &mut scratch_buffers.magsgn,
+        &mut scratch_buffers.vlc,
     )
 }

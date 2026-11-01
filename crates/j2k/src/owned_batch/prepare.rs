@@ -4,15 +4,27 @@
 
 use super::{
     generic_batch_worker_limit, run_retained_chunks, size_of, Arc, BatchDecodeOptions,
-    BatchInfrastructureError, BatchItemError, BatchWorker, EncodedImage, IndexedBatchError,
-    NonZeroUsize, PrepareImageResult, PrepareJob, PreparedBatch, PreparedBatchGroup, PreparedImage,
+    BatchErrorStage, BatchGroupInfo, BatchInfrastructureError, BatchItemError, BatchWorker,
+    CpuExecution, EncodedImage, IndexedBatchError, J2kError, NativeSampleType, NonZeroUsize,
+    PrepareImageResult, PrepareJob, PreparedBatch, PreparedBatchGroup, PreparedImage,
     TileBatchOptions, Vec, J2K_BATCH_METADATA_ALLOWANCE_BYTES,
 };
 
+#[cfg(test)]
+mod cpu_preflight_tests;
 mod image;
 use self::image::{
     batch_execution_shape, batch_group_info, prepare_image, reconcile_codec_plan_metadata,
 };
+
+/// Which decoder a preparation serves. Shared preparation keeps every image
+/// a device decoder may execute; the CPU decoder also rejects, per image and
+/// before any decode work, what its own execution cannot hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PrepareFor {
+    AnyDecoder,
+    CpuDecoder,
+}
 
 /// Inspect, validate, and group owned encoded images without decoding pixels.
 ///
@@ -33,13 +45,14 @@ pub fn prepare_batch(
     for _ in 0..worker_count {
         workers.push(BatchWorker::new_owned(input_count.max(2)));
     }
-    prepare_batch_with_workers(inputs, options, &mut workers)
+    prepare_batch_with_workers(inputs, options, &mut workers, PrepareFor::AnyDecoder)
 }
 
 pub(super) fn prepare_batch_with_workers(
     inputs: Vec<EncodedImage>,
     options: BatchDecodeOptions,
     workers: &mut [BatchWorker],
+    prepare_for: PrepareFor,
 ) -> Result<PreparedBatch, BatchInfrastructureError> {
     prepare_staging_bytes(inputs.len())?;
     let mut groups: Vec<PreparedBatchGroup> = Vec::new();
@@ -81,7 +94,14 @@ pub(super) fn prepare_batch_with_workers(
                 index: source_index,
             });
         };
-        push_prepared_result(&mut groups, &mut errors, source_index, result, options)?;
+        push_prepared_result(
+            &mut groups,
+            &mut errors,
+            source_index,
+            result,
+            options,
+            prepare_for,
+        )?;
     }
 
     Ok(PreparedBatch {
@@ -104,12 +124,27 @@ pub fn prepare_batch_from_images(
     images: Vec<PreparedImage>,
     options: BatchDecodeOptions,
 ) -> Result<PreparedBatch, BatchInfrastructureError> {
+    prepare_batch_from_images_for(images, options, PrepareFor::AnyDecoder)
+}
+
+pub(super) fn prepare_batch_from_images_for(
+    images: Vec<PreparedImage>,
+    options: BatchDecodeOptions,
+    prepare_for: PrepareFor,
+) -> Result<PreparedBatch, BatchInfrastructureError> {
     prepare_staging_bytes(images.len())?;
     let mut groups = Vec::new();
     let mut errors = Vec::new();
     for (source_index, image) in images.into_iter().enumerate() {
         let result = regroup_prepared_image(image, options);
-        push_prepared_result(&mut groups, &mut errors, source_index, result, options)?;
+        push_prepared_result(
+            &mut groups,
+            &mut errors,
+            source_index,
+            result,
+            options,
+            prepare_for,
+        )?;
     }
     Ok(PreparedBatch {
         groups: Arc::from(groups),
@@ -138,7 +173,15 @@ fn push_prepared_result(
     source_index: usize,
     result: PrepareImageResult,
     options: BatchDecodeOptions,
+    prepare_for: PrepareFor,
 ) -> Result<(), BatchInfrastructureError> {
+    let result = match (prepare_for, result) {
+        (PrepareFor::CpuDecoder, Ok((image, info, execution_shape))) => {
+            cpu_preflight_error(&image, &info)
+                .map_or_else(|| Ok((image, info, execution_shape)), Err)
+        }
+        (_, result) => result,
+    };
     match result {
         Ok((image, info, execution_shape)) => {
             if let Some(group) = groups
@@ -176,6 +219,39 @@ fn push_prepared_result(
         }
     }
     Ok(())
+}
+
+/// The CPU decoder's per-image checks, from planned bytes only: an offset
+/// plan whose execution exceeds the per-decode bound, or one image whose own
+/// output exceeds the per-allocation output cap, can never decode, so each
+/// fails here as an indexed error instead of at decode time.
+fn cpu_preflight_error(image: &PreparedImage, info: &BatchGroupInfo) -> Option<BatchItemError> {
+    let source = if image.cpu_execution() == CpuExecution::ExceedsDecodeBound {
+        CpuExecution::decode_bound_error()
+    } else {
+        let sample_bytes = match info.sample_type {
+            NativeSampleType::U8 => 1,
+            NativeSampleType::U16 | NativeSampleType::I16 => 2,
+            // Decode reports an unsupported sample width itself.
+            _ => return None,
+        };
+        let output_bytes = info
+            .samples_per_image()
+            .and_then(|samples| samples.checked_mul(sample_bytes))
+            .unwrap_or(usize::MAX);
+        if output_bytes <= j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES {
+            return None;
+        }
+        J2kError::from_native_decode_error(j2k_native::DecodeError::AllocationTooLarge {
+            what: "J2K owned batch output of one image",
+            requested: output_bytes,
+            cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+        })
+    };
+    Some(BatchItemError::Codec {
+        stage: BatchErrorStage::Prepare,
+        source: Arc::new(source),
+    })
 }
 
 pub(super) fn prepare_staging_bytes(input_count: usize) -> Result<usize, BatchInfrastructureError> {

@@ -7,7 +7,7 @@ use super::build::{CodeBlock, ParseScratch, Precinct, PrecinctSelection, Precinc
 use super::codestream::markers::{EPH, SOP};
 use super::codestream::{ComponentInfo, Header};
 use super::decode::{DecodeAllocationBudget, DecompositionStorage};
-use super::progression::{progression_iterator, ProgressionData};
+use super::progression::{progression_iterator, ProgressionData, ProgressionIterator};
 use super::tag_tree::TagNode;
 use super::tile::{Tile, TilePartCursor};
 use crate::error::{bail, DecodeError, DecodingError, Result, ValidationError};
@@ -81,6 +81,8 @@ impl<'a> SegmentSink<'_, 'a> {
 pub(super) struct PacketSkips {
     /// (code-block index, body bytes) for each contribution to skip.
     entries: Vec<(usize, usize)>,
+    /// The entries' bytes added up, saturating: more than any body holds.
+    bytes: usize,
     #[cfg(feature = "std")]
     discard_contributions: bool,
 }
@@ -108,6 +110,7 @@ impl PacketSkips {
         DecodeAllocationBudget::from_live_bytes(live_bytes)?.reserve_new(&mut entries, capacity)?;
         Ok(Self {
             entries,
+            bytes: 0,
             #[cfg(feature = "std")]
             discard_contributions: false,
         })
@@ -119,6 +122,7 @@ impl PacketSkips {
 
     fn clear(&mut self) {
         self.entries.clear();
+        self.bytes = 0;
     }
 
     pub(super) fn push(&mut self, code_block: usize, bytes: usize) -> PacketResult {
@@ -129,6 +133,7 @@ impl PacketSkips {
             return Err("packet has more skipped contributions than code-blocks");
         }
         self.entries.push((code_block, bytes));
+        self.bytes = self.bytes.saturating_add(bytes);
         Ok(())
     }
 }
@@ -217,7 +222,7 @@ fn parse_with_walk<'a>(
 
 fn parse_selected_inner<'a>(
     tile: &Tile<'a>,
-    progression_iterator: &mut dyn Iterator<Item = ProgressionData>,
+    progression_iterator: &mut ProgressionIterator<'_>,
     skips: &mut PacketSkips,
     header: &Header<'_>,
     storage: &mut DecompositionStorage<'a>,
@@ -242,7 +247,7 @@ fn parse_selected_inner<'a>(
 
 fn parse_tile_parts<'a>(
     tile: &Tile<'a>,
-    progression_iterator: &mut dyn Iterator<Item = ProgressionData>,
+    progression_iterator: &mut ProgressionIterator<'_>,
     skips: &mut PacketSkips,
     header: &Header<'_>,
     storage: &mut DecompositionStorage<'a>,
@@ -314,22 +319,24 @@ impl<'s> PacketRelevance<'s> {
     }
 
     /// Lend a parsed-only packet's precincts their scratch precincts, one per
-    /// sub-band, before its header is parsed.
+    /// sub-band, before its header is parsed. Returns whether it did: the
+    /// packet's code-blocks then have no layer records, so the header skips
+    /// every contribution.
     fn lend_scratch(
         relevance: Option<&mut Self>,
         packet: &ProgressionData,
         precinct_offset: usize,
         sub_bands: impl Iterator<Item = usize>,
         storage: &mut DecompositionStorage<'_>,
-    ) -> PacketResult {
+    ) -> PacketResult<bool> {
         let Some(relevance) = relevance else {
-            return Ok(());
+            return Ok(false);
         };
         let Some(scratch) = relevance.scratch.as_mut() else {
-            return Ok(());
+            return Ok(false);
         };
         if relevance.selection.packet_use(packet) != Some(PrecinctUse::Parsed) {
-            return Ok(());
+            return Ok(false);
         }
         for (slot, sub_band_idx) in sub_bands.enumerate() {
             let precinct = storage.sub_bands[sub_band_idx]
@@ -348,7 +355,7 @@ impl<'s> PacketRelevance<'s> {
                 )
                 .ok_or("parsed-only precinct cannot borrow its scratch precinct")?;
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Whether a packet must be parsed: always without a selection. A packet
@@ -383,7 +390,7 @@ impl<'s> PacketRelevance<'s> {
 )]
 fn parse_inner<'a>(
     mut tile_part: TilePartCursor<'_, 'a>,
-    progression_iterator: &mut dyn Iterator<Item = ProgressionData>,
+    progression_iterator: &mut ProgressionIterator<'_>,
     component_infos: &[ComponentInfo],
     num_layers: u8,
     storage: &mut DecompositionStorage<'a>,
@@ -398,6 +405,10 @@ fn parse_inner<'a>(
     )]
     walk: &mut PacketWalk<'_>,
 ) -> PacketResult<bool> {
+    // The last precinct's place among its sub-bands' records, by (component,
+    // resolution, precinct): position-major progressions read all of a
+    // precinct's layers in a row, so it is looked up once for them.
+    let mut last_record: Option<((u16, u8, u64), usize)> = None;
     while !tile_part.header().at_end() {
         let progression_data = progression_iterator
             .next()
@@ -451,7 +462,34 @@ fn parse_inner<'a>(
                 .as_ref()
                 .is_some_and(|relevance| relevance.selection.skip_by_length())
         {
-            if !tile_part.skip_packet() {
+            // Need is decided per precinct, so the precinct's remaining
+            // layers, which a position-major progression reads next, are
+            // skipped with this one, up to the end of the tile-part.
+            #[cfg(feature = "std")]
+            let layers = if walk.recording.is_none() {
+                progression_iterator.remaining_precinct_layers()
+            } else {
+                0
+            };
+            #[cfg(not(feature = "std"))]
+            let layers = progression_iterator.remaining_precinct_layers();
+            let (skipped, complete) = tile_part.skip_packets(1 + layers);
+            // The packets a one-by-one walk would have taken from the
+            // progression after this one: each skipped, plus a failing one.
+            let further = if complete {
+                skipped.saturating_sub(1)
+            } else {
+                skipped
+            };
+            progression_iterator.skip_precinct_layers(further);
+            #[cfg(feature = "std")]
+            {
+                walk.next_packet = walk
+                    .next_packet
+                    .checked_add(further)
+                    .ok_or("packet ordinal overflows")?;
+            }
+            if !complete {
                 return Err("PLT packet length runs past the tile-part");
             }
             continue;
@@ -461,12 +499,24 @@ fn parse_inner<'a>(
         // precinct records. A region decode keeps none for unused
         // precincts. A packet for a precinct without a record gets an offset
         // past them all, so it fails below as one for a missing precinct.
-        let precinct_offset = relevance
-            .as_deref()
-            .map_or(Some(precinct_index), |relevance| {
-                relevance.selection.record_offset(&progression_data)
-            })
-            .unwrap_or(usize::MAX);
+        let key = (
+            progression_data.component,
+            progression_data.resolution,
+            progression_data.precinct,
+        );
+        let precinct_offset = match last_record {
+            Some((last, offset)) if last == key => offset,
+            _ => {
+                let offset = relevance
+                    .as_deref()
+                    .map_or(Some(precinct_index), |relevance| {
+                        relevance.selection.record_offset(&progression_data)
+                    })
+                    .unwrap_or(usize::MAX);
+                last_record = Some((key, offset));
+                offset
+            }
+        };
 
         let packet_start = tile_part.packet_start_offset();
         let body_reader = tile_part.body();
@@ -496,7 +546,7 @@ fn parse_inner<'a>(
         skips.clear();
         // Even an empty packet starts its precinct: a precinct's first packet
         // is the one that borrows its scratch.
-        PacketRelevance::lend_scratch(
+        let in_scratch = PacketRelevance::lend_scratch(
             relevance.as_deref_mut(),
             &progression_data,
             precinct_offset,
@@ -532,7 +582,12 @@ fn parse_inner<'a>(
         // Now read the packet body.
         let body_reader = tile_part.body();
 
-        if !zero_length {
+        if !zero_length && in_scratch {
+            // Every contribution was skipped: the body is just their bytes.
+            body_reader
+                .skip_bytes(skips.bytes)
+                .ok_or("skipped packet body is shorter than its segment lengths")?;
+        } else if !zero_length {
             let mut skipped = skips.entries.iter().peekable();
             for sub_band_idx in sub_band_iter {
                 let sub_band = &storage.sub_bands[sub_band_idx];
@@ -852,30 +907,24 @@ fn resolve_code_block_inclusion(
 }
 
 fn decode_num_coding_passes(reader: &mut BitReader<'_>) -> Option<u8> {
-    if reader.peak_bits_with_stuffing(9) == Some(0x1ff) {
-        reader.read_bits_with_stuffing(9)?;
-        u8::try_from(reader.read_bits_with_stuffing(7)? + 37).ok()
-    } else if reader.peak_bits_with_stuffing(4) == Some(0x0f) {
-        reader.read_bits_with_stuffing(4)?;
-        u8::try_from(reader.read_bits_with_stuffing(5)? + 6).ok()
-    } else if reader.peak_bits_with_stuffing(4) == Some(0b1110) {
-        reader.read_bits_with_stuffing(4)?;
-        Some(5)
-    } else if reader.peak_bits_with_stuffing(4) == Some(0b1101) {
-        reader.read_bits_with_stuffing(4)?;
-        Some(4)
-    } else if reader.peak_bits_with_stuffing(4) == Some(0b1100) {
-        reader.read_bits_with_stuffing(4)?;
-        Some(3)
-    } else if reader.peak_bits_with_stuffing(2) == Some(0b10) {
-        reader.read_bits_with_stuffing(2)?;
-        Some(2)
-    } else if reader.peak_bits_with_stuffing(1) == Some(0) {
-        reader.read_bits_with_stuffing(1)?;
-        Some(1)
-    } else {
-        None
+    // Table B.4, read a prefix at a time: 0 -> 1, 10 -> 2, 11xx -> 3 + xx
+    // (xx < 3), 1111 xxxxx -> 6 + xxxxx (xxxxx < 31) and 1111 11111 xxxxxxx
+    // -> 37 + xxxxxxx. Each codeword's bits are read once, in order.
+    if reader.read_bits_with_stuffing(1)? == 0 {
+        return Some(1);
     }
+    if reader.read_bits_with_stuffing(1)? == 0 {
+        return Some(2);
+    }
+    let two = reader.read_bits_with_stuffing(2)?;
+    if two != 0b11 {
+        return u8::try_from(two + 3).ok();
+    }
+    let five = reader.read_bits_with_stuffing(5)?;
+    if five != 0b1_1111 {
+        return u8::try_from(five + 6).ok();
+    }
+    u8::try_from(reader.read_bits_with_stuffing(7)? + 37).ok()
 }
 
 fn read_lblock_increment(reader: &mut BitReader<'_>) -> Option<u32> {
@@ -906,6 +955,76 @@ fn read_segment_length(
 mod tests {
     use super::*;
     use alloc::vec::Vec;
+
+    /// The original chain of separate peeks, as the reference for
+    /// `decode_num_coding_passes`.
+    fn coding_passes_by_peeks(reader: &mut BitReader<'_>) -> Option<u8> {
+        if reader.peak_bits_with_stuffing(9) == Some(0x1ff) {
+            reader.read_bits_with_stuffing(9)?;
+            u8::try_from(reader.read_bits_with_stuffing(7)? + 37).ok()
+        } else if reader.peak_bits_with_stuffing(4) == Some(0x0f) {
+            reader.read_bits_with_stuffing(4)?;
+            u8::try_from(reader.read_bits_with_stuffing(5)? + 6).ok()
+        } else if reader.peak_bits_with_stuffing(4) == Some(0b1110) {
+            reader.read_bits_with_stuffing(4)?;
+            Some(5)
+        } else if reader.peak_bits_with_stuffing(4) == Some(0b1101) {
+            reader.read_bits_with_stuffing(4)?;
+            Some(4)
+        } else if reader.peak_bits_with_stuffing(4) == Some(0b1100) {
+            reader.read_bits_with_stuffing(4)?;
+            Some(3)
+        } else if reader.peak_bits_with_stuffing(2) == Some(0b10) {
+            reader.read_bits_with_stuffing(2)?;
+            Some(2)
+        } else if reader.peak_bits_with_stuffing(1) == Some(0) {
+            reader.read_bits_with_stuffing(1)?;
+            Some(1)
+        } else {
+            None
+        }
+    }
+
+    #[test]
+    fn coding_pass_counts_match_separate_prefix_peeks() {
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..3000 {
+            let len = usize::try_from(next() % 6).expect("small length");
+            let data: Vec<u8> = (0..len)
+                .map(|_| match next() % 3 {
+                    0 => 0xff,
+                    _ => u8::try_from(next() >> 56).expect("top byte"),
+                })
+                .collect();
+            let skip = u8::try_from(next() % 8).expect("bit offset");
+            let mut fast = BitReader::new(&data);
+            if fast.read_bits_with_stuffing(skip).is_none() {
+                continue;
+            }
+            let mut reference = fast.clone();
+            loop {
+                let (a, b) = (
+                    decode_num_coding_passes(&mut fast),
+                    coding_passes_by_peeks(&mut reference),
+                );
+                assert_eq!(a, b, "{data:02x?} skip {skip}");
+                if a.is_none() {
+                    break;
+                }
+                assert_eq!(fast.offset(), reference.offset());
+                assert_eq!(
+                    fast.clone().read_bits_with_stuffing(1),
+                    reference.clone().read_bits_with_stuffing(1)
+                );
+            }
+        }
+    }
 
     #[test]
     fn packet_segment_growth_respects_remaining_workspace_budget() {

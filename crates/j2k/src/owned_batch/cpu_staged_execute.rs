@@ -10,6 +10,9 @@ use super::{
     CpuGroupFastWorkspace, CpuStagedWorkspace, J2kError, Ordering, PreparedBatchGroup, Range,
     TileBatchOptions, CPU_ENTROPY_IMAGES_PER_WINDOW,
 };
+use crate::batch::admission::BatchAllocationBudget;
+use crate::batch::allocation::batch_execution_cap_bytes;
+use alloc::sync::Arc;
 
 struct StagedWindowContext<'a> {
     group: &'a PreparedBatchGroup,
@@ -30,15 +33,27 @@ pub(super) fn run_staged_typed_group<T: Copy + Send>(
     image_results: &mut [Option<Result<(), J2kError>>],
     flattened: &mut CpuGroupFastWorkspace,
     staged: &mut CpuStagedWorkspace,
+    admission: &Arc<BatchAllocationBudget>,
     convert: fn(f32, u8) -> T,
 ) -> Result<(), BatchInfrastructureError> {
     let route = flattened
         .route()
         .ok_or(BatchInfrastructureError::MissingResult { index: 0 })?;
-    for window_start in (0..image_jobs.len()).step_by(CPU_ENTROPY_IMAGES_PER_WINDOW) {
-        let window_end = window_start
-            .saturating_add(CPU_ENTROPY_IMAGES_PER_WINDOW)
-            .min(image_jobs.len());
+    // Every image of a window keeps its own whole-image scratch until the
+    // window is materialized, so the window claims the sum of its images'
+    // planned executions. Windows stay as wide as the admission cap allows:
+    // narrower windows cut throughput even with one worker.
+    let window_budget = batch_execution_cap_bytes();
+    let mut window_start = 0;
+    while window_start < image_jobs.len() {
+        let (window_end, window_bytes) = staged_window_len(
+            image_jobs[window_start..]
+                .iter()
+                .map(|job| job.image.cpu_execution().claim_bytes()),
+            window_budget,
+        );
+        let window_end = window_start + window_end;
+        let _window_claim = admission.claim(window_bytes)?;
         let window = StagedWindowContext {
             group,
             route,
@@ -66,8 +81,27 @@ pub(super) fn run_staged_typed_group<T: Copy + Send>(
             image_results,
         )?;
         materialize_staged_window(workers, staged, &window, image_jobs, image_results, convert)?;
+        window_start = window_end;
     }
     Ok(())
+}
+
+/// Images in the next staged window (at least one, at most
+/// [`CPU_ENTROPY_IMAGES_PER_WINDOW`]) whose planned execution claims together
+/// fit `budget`, and their summed claim, never above `budget`: one image's
+/// claim is at most one worst-case decode, which the cap always admits.
+fn staged_window_len(claims: impl IntoIterator<Item = usize>, budget: usize) -> (usize, usize) {
+    let mut count = 0;
+    let mut bytes = 0usize;
+    for claim in claims.into_iter().take(CPU_ENTROPY_IMAGES_PER_WINDOW) {
+        let next = bytes.saturating_add(claim);
+        if count > 0 && next > budget {
+            break;
+        }
+        count += 1;
+        bytes = next;
+    }
+    (count, bytes.min(budget))
 }
 
 fn prepare_staged_window<T: Copy + Send>(
@@ -470,4 +504,32 @@ fn finish_staged_tile_window<T: Copy + Send>(
             Ok(())
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{staged_window_len, CPU_ENTROPY_IMAGES_PER_WINDOW};
+
+    #[test]
+    fn staged_windows_fit_their_summed_plans_in_the_cap() {
+        const MIB: usize = 1024 * 1024;
+        // The smallest cap (four worst-case decodes) holds six images
+        // planned at 330 MiB.
+        assert_eq!(
+            staged_window_len([330 * MIB; 8], 4 * 512 * MIB),
+            (6, 6 * 330 * MIB)
+        );
+        // A larger cap keeps full windows.
+        assert_eq!(
+            staged_window_len([330 * MIB; 8], 32 * 512 * MIB),
+            (CPU_ENTROPY_IMAGES_PER_WINDOW, 8 * 330 * MIB)
+        );
+        assert_eq!(
+            staged_window_len([3 * MIB; 64], 4 * 512 * MIB),
+            (CPU_ENTROPY_IMAGES_PER_WINDOW, 8 * 3 * MIB)
+        );
+        // A window always makes progress, and its claim stays in budget.
+        assert_eq!(staged_window_len([600 * MIB], 512 * MIB), (1, 512 * MIB));
+        assert_eq!(staged_window_len([], 512 * MIB), (0, 0));
+    }
 }

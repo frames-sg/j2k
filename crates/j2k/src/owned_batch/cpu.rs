@@ -3,12 +3,13 @@
 //! Persistent CPU batch session and public native output owners.
 
 use super::{
-    decode_cpu_group, fmt, generic_batch_worker_limit, prepare_batch_from_images,
+    decode_cpu_group, fmt, generic_batch_worker_limit, prepare_batch_from_images_for,
     prepare_batch_with_workers, BatchDecodeOptions, BatchDecoder, BatchGroupInfo,
     BatchInfrastructureError, BatchWorker, CpuBatchWorkspaceStats, CpuGroupFastWorkspace,
     CpuStagedWorkspace, EncodedImage, IndexedBatchError, J2kDecodeWarning, Mutex, NativeSampleType,
-    NonZeroUsize, PreparedBatch, PreparedImage, Rect, Vec,
+    NonZeroUsize, PrepareFor, PreparedBatch, PreparedImage, Rect, Vec,
 };
+use crate::batch::admission::BatchAllocationBudget;
 use crate::batch::allocation::try_vec_with_capacity;
 use crate::batch::scheduler::decode_retained_tiles;
 use crate::{DecodeOutcome, PixelFormat, TileBatchError, TileBatchOptions, TileDecodeJob};
@@ -319,6 +320,11 @@ impl CpuBatchDecoder {
     }
 
     /// Inspect and group owned encoded inputs for repeated decode.
+    ///
+    /// Inputs whose output allocation or planned execution exceeds a memory
+    /// limit are recorded as indexed preparation errors in the returned batch.
+    /// Preparation checks individual images; a group's combined output
+    /// allocation is checked during decoding.
     pub fn prepare(
         &self,
         inputs: Vec<EncodedImage>,
@@ -327,15 +333,17 @@ impl CpuBatchDecoder {
             .workers
             .lock()
             .map_err(|_| BatchInfrastructureError::SchedulerPoisoned)?;
-        prepare_batch_with_workers(inputs, self.options, &mut workers)
+        prepare_batch_with_workers(inputs, self.options, &mut workers, PrepareFor::CpuDecoder)
     }
 
     /// Regroup caller-supplied prepared images under this session's output policy.
+    ///
+    /// This applies the same per-image memory checks as [`Self::prepare`].
     pub fn prepare_prepared_images(
         &self,
         images: Vec<PreparedImage>,
     ) -> Result<PreparedBatch, BatchInfrastructureError> {
-        prepare_batch_from_images(images, self.options)
+        prepare_batch_from_images_for(images, self.options, PrepareFor::CpuDecoder)
     }
 
     /// Prepare and decode one batch.
@@ -380,6 +388,9 @@ impl CpuBatchDecoder {
             try_vec_with_capacity(prepared.groups().len(), "J2K owned batch result groups")?;
         let mut errors = try_vec_with_capacity(input_count, "J2K owned batch indexed errors")?;
         errors.extend_from_slice(prepared.errors());
+        // Every execution in flight holds a claim sized from its prepared
+        // plan, under the same aggregate cap as the tile-batch facade.
+        let admission = BatchAllocationBudget::with_baseline(0)?;
         for group in prepared.groups() {
             if let Some(decoded) = decode_cpu_group(
                 workers,
@@ -388,6 +399,7 @@ impl CpuBatchDecoder {
                 group,
                 prepared.options,
                 self.options.workers,
+                &admission,
                 &mut errors,
             )? {
                 groups.push(decoded);

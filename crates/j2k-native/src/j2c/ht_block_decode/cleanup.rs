@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::super::ht_tables::{UVLC_TABLE0, UVLC_TABLE1, VLC_TABLE0, VLC_TABLE1};
-use super::readers::{MelDecoder, ReverseBitReader};
+use super::readers::{MelDecoder, ReverseBitReader, VlcBits};
 
 pub(super) fn cleanup_symbol_stride(width: u32) -> usize {
     ((width + 2 + 7) & !7) as usize
@@ -52,13 +52,59 @@ const fn uvlc_wide1() -> [u32; 4096] {
     table
 }
 
-/// VLC table index for context `c_q` and the next VLC bits. `c_q` holds
-/// only bits 7-9, so the mask never changes the index; it only drops the
-/// bounds check on the 1024-entry tables.
+/// VLC decoding of the initial quad row ([`VLC_TABLE0`]) and of later rows
+/// ([`VLC_TABLE1`]), laid out for the serial decode chain. Each entry is
+/// `length | context << 7 | u_offset << 10 | symbol << 16`: the codeword
+/// length alone in the low six bits, so a 64-bit shift by the entry consumes
+/// the codeword; the bits 7-9 the symbol contributes to the context of the
+/// quad after it; the U-VLC offset flag; and the original table symbol.
+const VLC_DECODE0: [u32; 1024] = vlc_decode_table(&VLC_TABLE0, true);
+const VLC_DECODE1: [u32; 1024] = vlc_decode_table(&VLC_TABLE1, false);
+
+const fn vlc_decode_table(table: &[u16; 1024], initial_row: bool) -> [u32; 1024] {
+    let mut decode = [0; 1024];
+    let mut index = 0;
+    while index < 1024 {
+        let symbol = table[index] as u32;
+        let context = if initial_row {
+            ((symbol & 0x10) << 3) | ((symbol & 0xE0) << 2)
+        } else {
+            ((symbol & 0x40) << 2) | ((symbol & 0x80) << 1)
+        };
+        decode[index] = (symbol & 0x7) | context | ((symbol & 0x8) << 7) | (symbol << 16);
+        index += 1;
+    }
+    decode
+}
+
+/// The [`VLC_DECODE0`]/[`VLC_DECODE1`] entry for context `c_q` and the next
+/// VLC bits. `c_q` holds only bits 7-9, so the mask never changes the index;
+/// it only drops the bounds check on the 1024-entry tables.
 #[expect(clippy::inline_always, reason = "per-quad hot path")]
 #[inline(always)]
-fn vlc_index(c_q: u32, vlc_val: u32) -> usize {
-    ((c_q + (vlc_val & 0x7F)) & 0x3FF) as usize
+fn vlc_entry(table: &[u32; 1024], c_q: u32, vlc_val: u32) -> u32 {
+    table[((c_q | (vlc_val & 0x7F)) & 0x3FF) as usize]
+}
+
+/// The context bits a decoded VLC entry passes to the next quad.
+#[expect(clippy::inline_always, reason = "per-quad hot path")]
+#[inline(always)]
+fn entry_context(entry: u32) -> u32 {
+    entry & 0x380
+}
+
+/// The original VLC table symbol of a decoded entry.
+#[expect(clippy::inline_always, reason = "per-quad hot path")]
+#[inline(always)]
+fn entry_symbol(entry: u32) -> u32 {
+    entry >> 16
+}
+
+/// The U-VLC mode (`u_offset` flags in bits 6 and 7) of a quad pair.
+#[expect(clippy::inline_always, reason = "per-pair hot path")]
+#[inline(always)]
+fn pair_uvlc_mode(entry0: u32, entry1: u32) -> u32 {
+    ((entry0 >> 4) & 0x40) | ((entry1 >> 3) & 0x80)
 }
 
 /// Decodes one initial-row quad pair's symbols as `[t0, u0, t1, u1]`.
@@ -71,40 +117,41 @@ fn vlc_index(c_q: u32, vlc_val: u32) -> usize {
     reason = "VLC table fields are defined as 16-bit values and this per-pair decoder is a hot path"
 )]
 #[inline(always)]
-pub(super) fn decode_initial_pair_symbols<const INLINE_REFILLS: bool>(
+pub(super) fn decode_initial_pair_symbols<const INLINE_REFILLS: bool, V: VlcBits>(
     mel: &mut MelDecoder,
-    vlc: &mut ReverseBitReader,
+    vlc: &mut V,
     run: &mut i32,
     c_q: &mut u32,
     second_quad: bool,
 ) -> Option<[u32; 4]> {
-    let mut vlc_val = vlc.fetch_with::<INLINE_REFILLS>();
-    let mut t0 = u32::from(VLC_TABLE0[vlc_index(*c_q, vlc_val)]);
+    let mut vlc_val = vlc.top_up::<INLINE_REFILLS>();
+    let mut e0 = vlc_entry(&VLC_DECODE0, *c_q, vlc_val);
     if *c_q == 0 {
         *run -= 2;
-        t0 = if *run == -1 { t0 } else { 0 };
+        e0 = if *run == -1 { e0 } else { 0 };
         if *run < 0 {
             *run = mel.get_run_with::<INLINE_REFILLS>()?;
         }
     }
-    *c_q = ((t0 & 0x10) << 3) | ((t0 & 0xE0) << 2);
-    vlc_val = vlc.advance(t0 & 0x7);
+    *c_q = entry_context(e0);
+    vlc_val = vlc.advance_entry(e0);
 
-    let mut t1 = u32::from(VLC_TABLE0[vlc_index(*c_q, vlc_val)]);
+    let mut e1 = vlc_entry(&VLC_DECODE0, *c_q, vlc_val);
     if *c_q == 0 && second_quad {
         *run -= 2;
-        t1 = if *run == -1 { t1 } else { 0 };
+        e1 = if *run == -1 { e1 } else { 0 };
         if *run < 0 {
             *run = mel.get_run_with::<INLINE_REFILLS>()?;
         }
     }
     if !second_quad {
-        t1 = 0;
+        e1 = 0;
     }
-    *c_q = ((t1 & 0x10) << 3) | ((t1 & 0xE0) << 2);
-    vlc_val = vlc.advance(t1 & 0x7);
+    *c_q = entry_context(e1);
+    vlc_val = vlc.advance_entry(e1);
+    let (t0, t1) = (entry_symbol(e0), entry_symbol(e1));
 
-    let mut uvlc_mode = ((t0 & 0x8) << 3) | ((t1 & 0x8) << 4);
+    let mut uvlc_mode = pair_uvlc_mode(e0, e1);
     if uvlc_mode == 0xC0 {
         *run -= 2;
         if *run == -1 {
@@ -154,9 +201,9 @@ fn store_pair_symbols(scratch: &mut [u16], row_offset: usize, symbols: [u32; 4])
     reason = "this per-pair decoder is a hot path"
 )]
 #[inline(always)]
-pub(super) fn decode_cleanup_first_row_pair(
+pub(super) fn decode_cleanup_first_row_pair<const INLINE_REFILLS: bool, V: VlcBits>(
     mel: &mut MelDecoder,
-    vlc: &mut ReverseBitReader,
+    vlc: &mut V,
     run: &mut i32,
     scratch: &mut [u16],
     row_offset: usize,
@@ -164,7 +211,8 @@ pub(super) fn decode_cleanup_first_row_pair(
     x: u32,
     width: u32,
 ) -> Option<[u32; 4]> {
-    let symbols = decode_initial_pair_symbols::<false>(mel, vlc, run, c_q, x + 2 < width)?;
+    let symbols =
+        decode_initial_pair_symbols::<INLINE_REFILLS, _>(mel, vlc, run, c_q, x + 2 < width)?;
     store_pair_symbols(scratch, row_offset, symbols);
     Some(symbols)
 }
@@ -173,9 +221,9 @@ pub(super) fn decode_cleanup_first_row_pair(
 /// shared MEL/VLC state; the trailing sentinel pair is written after the row.
 #[expect(clippy::inline_always, reason = "this per-row decoder is a hot path")]
 #[inline(always)]
-pub(super) fn decode_cleanup_symbols_first_row(
+pub(super) fn decode_cleanup_symbols_first_row<V: VlcBits>(
     mel: &mut MelDecoder,
-    vlc: &mut ReverseBitReader,
+    vlc: &mut V,
     run: &mut i32,
     scratch: &mut [u16],
     width: u32,
@@ -185,7 +233,9 @@ pub(super) fn decode_cleanup_symbols_first_row(
     let mut x = 0u32;
 
     while x < width {
-        decode_cleanup_first_row_pair(mel, vlc, run, scratch, row_offset, &mut c_q, x, width)?;
+        decode_cleanup_first_row_pair::<false, _>(
+            mel, vlc, run, scratch, row_offset, &mut c_q, x, width,
+        )?;
         x += 4;
         row_offset += 4;
     }
@@ -204,56 +254,57 @@ pub(super) fn decode_cleanup_symbols_first_row(
     reason = "VLC table fields are defined as 16-bit values and this per-pair decoder is a hot path"
 )]
 #[inline(always)]
-pub(super) fn decode_pair_symbols<const INLINE_REFILLS: bool>(
+pub(super) fn decode_pair_symbols<const INLINE_REFILLS: bool, V: VlcBits>(
     mel: &mut MelDecoder,
-    vlc: &mut ReverseBitReader,
+    vlc: &mut V,
     run: &mut i32,
     c_q: &mut u32,
     above: impl Fn(usize) -> u32,
     second_quad: bool,
 ) -> Option<[u32; 4]> {
-    *c_q |= (above(0) & 0xA0) << 2;
-    *c_q |= (above(2) & 0x20) << 4;
+    // The row above's part of each quad's context, off the decode chain.
+    let above_first = ((above(0) & 0xA0) << 2) | ((above(2) & 0x20) << 4);
+    let above_second = (above(0) & 0x80) | ((above(2) & 0xA0) << 2) | ((above(4) & 0x20) << 4);
+    let above_next = above(2) & 0x80;
+    *c_q |= above_first;
 
-    let mut vlc_val = vlc.fetch_with::<INLINE_REFILLS>();
-    let mut t0 = u32::from(VLC_TABLE1[vlc_index(*c_q, vlc_val)]);
+    let mut vlc_val = vlc.top_up::<INLINE_REFILLS>();
+    let mut e0 = vlc_entry(&VLC_DECODE1, *c_q, vlc_val);
     if *c_q == 0 {
         *run -= 2;
-        t0 = if *run == -1 { t0 } else { 0 };
+        e0 = if *run == -1 { e0 } else { 0 };
         if *run < 0 {
             *run = mel.get_run_with::<INLINE_REFILLS>()?;
         }
     }
 
-    *c_q = ((t0 & 0x40) << 2) | ((t0 & 0x80) << 1);
-    *c_q |= above(0) & 0x80;
-    *c_q |= (above(2) & 0xA0) << 2;
-    *c_q |= (above(4) & 0x20) << 4;
-    vlc_val = vlc.advance(t0 & 0x7);
+    *c_q = entry_context(e0) | above_second;
+    vlc_val = vlc.advance_entry(e0);
 
-    let mut t1 = u32::from(VLC_TABLE1[vlc_index(*c_q, vlc_val)]);
+    let mut e1 = vlc_entry(&VLC_DECODE1, *c_q, vlc_val);
     if *c_q == 0 && second_quad {
         *run -= 2;
-        t1 = if *run == -1 { t1 } else { 0 };
+        e1 = if *run == -1 { e1 } else { 0 };
         if *run < 0 {
             *run = mel.get_run_with::<INLINE_REFILLS>()?;
         }
     }
     if !second_quad {
-        t1 = 0;
+        e1 = 0;
     }
 
-    *c_q = ((t1 & 0x40) << 2) | ((t1 & 0x80) << 1);
-    *c_q |= above(2) & 0x80;
-    vlc_val = vlc.advance(t1 & 0x7);
+    *c_q = entry_context(e1) | above_next;
+    vlc_val = vlc.advance_entry(e1);
+    let (t0, t1) = (entry_symbol(e0), entry_symbol(e1));
 
-    // The mode is at most 0xC0, so the mask only drops the bounds check.
-    let uvlc_mode = ((t0 & 0x8) << 3) | ((t1 & 0x8) << 4);
-    let wide = UVLC_WIDE1[(((uvlc_mode << 4) | (vlc_val & 0x3FF)) & 0xFFF) as usize];
+    // The `u_offset` flags land in index bits 10 and 11, so the index is
+    // below 4096 and needs no bounds check.
+    let wide = UVLC_WIDE1[((e0 & 0x400) | ((e1 & 0x400) << 1) | (vlc_val & 0x3FF)) as usize];
     if wide & WIDE_UVLC_FALLBACK == 0 {
         let _ = vlc.advance(wide & 0xF);
         return Some([t0, (wide >> 8) & 0xFFF, t1, wide >> 20]);
     }
+    let uvlc_mode = pair_uvlc_mode(e0, e1);
     let mut uvlc_entry = u32::from(UVLC_TABLE1[((uvlc_mode + (vlc_val & 0x3F)) & 0xFF) as usize]);
     vlc_val = vlc.advance(uvlc_entry & 0x7);
     uvlc_entry >>= 3;
@@ -279,9 +330,9 @@ pub(super) fn decode_pair_symbols<const INLINE_REFILLS: bool>(
     reason = "this per-pair decoder is a hot path"
 )]
 #[inline(always)]
-pub(super) fn decode_cleanup_row_pair(
+pub(super) fn decode_cleanup_row_pair<const INLINE_REFILLS: bool, V: VlcBits>(
     mel: &mut MelDecoder,
-    vlc: &mut ReverseBitReader,
+    vlc: &mut V,
     run: &mut i32,
     scratch: &mut [u16],
     row_offset: usize,
@@ -293,7 +344,8 @@ pub(super) fn decode_cleanup_row_pair(
     // `sstr >= 8`, so the row above never overlaps this pair's symbols.
     let prev = row_offset - sstr;
     let above = |k| u32::from(scratch[prev + k]);
-    let symbols = decode_pair_symbols::<false>(mel, vlc, run, c_q, above, x + 2 < width)?;
+    let symbols =
+        decode_pair_symbols::<INLINE_REFILLS, _>(mel, vlc, run, c_q, above, x + 2 < width)?;
     store_pair_symbols(scratch, row_offset, symbols);
     Some(symbols)
 }
@@ -303,9 +355,9 @@ pub(super) fn decode_cleanup_row_pair(
 /// state; the trailing sentinel pair is written after the row.
 #[expect(clippy::inline_always, reason = "this per-row decoder is a hot path")]
 #[inline(always)]
-pub(super) fn decode_cleanup_symbols_row(
+pub(super) fn decode_cleanup_symbols_row<V: VlcBits>(
     mel: &mut MelDecoder,
-    vlc: &mut ReverseBitReader,
+    vlc: &mut V,
     run: &mut i32,
     scratch: &mut [u16],
     width: u32,
@@ -317,7 +369,9 @@ pub(super) fn decode_cleanup_symbols_row(
     let mut row_offset = (y >> 1) as usize * sstr;
 
     while x < width {
-        decode_cleanup_row_pair(mel, vlc, run, scratch, row_offset, sstr, &mut c_q, x, width)?;
+        decode_cleanup_row_pair::<false, _>(
+            mel, vlc, run, scratch, row_offset, sstr, &mut c_q, x, width,
+        )?;
         x += 4;
         row_offset += 4;
     }

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    flat_magsgn_capacity, unstuff_magsgn, FlatBitReader, ForwardBitReader, MelDecoder,
-    ReverseBitReader,
+    flat_magsgn_capacity, flat_vlc_capacity, unstuff_magsgn, unstuff_vlc, FlatBitReader,
+    FlatVlcReader, ForwardBitReader, MelDecoder, ReverseBitReader, VlcBits, MAX_CLEANUP_SUFFIX,
 };
 
 #[test]
@@ -198,4 +198,131 @@ fn flat_magsgn_unstuffing_requires_reserved_capacity() {
         reserved,
         "long segments must not allocate"
     );
+}
+
+/// The flat VLC buffer and its reader read the same bits as the reservoir
+/// reader's refills, stuffing and the zeros past the segment included, for
+/// every pair-sized step pattern, as long as no more than the consumable
+/// bytes are read.
+#[test]
+fn flat_vlc_matches_reservoir_refills() {
+    let mut seed = 0x9E37_79B9_u32;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed
+    };
+    // Bytes around the stuffing thresholds are over-represented.
+    let special = [0xFF_u8, 0x7F, 0x8F, 0x90, 0x00, 0xFE, 0xF7, 0x0F];
+    // 40 pairs of at most 30 bits: 150 bytes.
+    let (width, height) = (16, 20);
+    let mut buffer = Vec::with_capacity(flat_vlc_capacity(width, height));
+    for lcup in 2..=48_usize {
+        for _ in 0..40 {
+            let data = (0..lcup)
+                .map(|_| {
+                    let draw = next();
+                    if draw % 3 == 0 {
+                        special[(draw >> 8) as usize % special.len()]
+                    } else {
+                        (draw >> 16).to_le_bytes()[0]
+                    }
+                })
+                .collect::<Vec<_>>();
+            let scup = 2 + next() as usize % (lcup - 1);
+            let mut reference = ReverseBitReader::new_vlc(&data, lcup, scup);
+            let flat = unstuff_vlc(&data, lcup, scup, &mut buffer).expect("flat VLC");
+            let mut flat = FlatVlcReader::new(flat).expect("flat VLC reader");
+            for _ in 0..40 {
+                let first = reference.fetch();
+                let peek = flat.top_up::<true>();
+                assert_eq!(
+                    peek & 0x7F,
+                    first & 0x7F,
+                    "lcup {lcup} scup {scup} {data:02X?}"
+                );
+                let mut budget = 30;
+                while budget > 0 {
+                    let count = (next() % 9).min(budget);
+                    budget -= count;
+                    let consumed = 30 - budget;
+                    let expected = reference.advance(count);
+                    // Only the bits both readers guarantee are compared: the
+                    // reference keeps at least 32 after a fetch, the flat
+                    // reader 26 after a pair.
+                    let valid = 26_u32.saturating_sub(consumed).max(2);
+                    let mask = u32::try_from((1_u64 << valid) - 1).expect("mask");
+                    let word = VlcBits::advance(&mut flat, count);
+                    assert_eq!(word & mask, expected & mask, "lcup {lcup} scup {scup}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn flat_vlc_unstuffing_keeps_what_the_buffer_holds_and_needs_a_valid_suffix() {
+    let data = [0x12, 0x34, 0x56, 0x78, 0x9A];
+    let mut short = Vec::with_capacity(15);
+    assert!(unstuff_vlc(&data, data.len(), 3, &mut short).is_none());
+    let mut buffer = Vec::with_capacity(flat_vlc_capacity(4, 4));
+    assert!(unstuff_vlc(&data, data.len(), data.len() + 1, &mut buffer).is_none());
+    let flat = unstuff_vlc(&data, data.len(), 3, &mut buffer).expect("flat VLC");
+    assert_eq!(flat.len(), 2 + 16);
+    // A segment longer than the buffer keeps only the bytes a block can read.
+    let mut tight = Vec::with_capacity(17);
+    let flat = unstuff_vlc(&data, data.len(), 3, &mut tight).expect("flat VLC");
+    assert_eq!(flat.len(), 1 + 16);
+    assert_eq!(super::flat_vlc_consumable(64, 64), 1921);
+    assert_eq!(super::flat_vlc_consumable(4096, 4096), MAX_CLEANUP_SUFFIX);
+}
+
+/// The branch-free top-up reads the same bits as the reservoir reader's
+/// refills, stuffing and the zeros past the segment included, for every
+/// pair-sized step pattern.
+#[test]
+fn vlc_top_ups_match_reservoir_refills() {
+    let mut seed = 0x9E37_79B9_u32;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed
+    };
+    // Bytes around the stuffing thresholds are over-represented.
+    let special = [0xFF_u8, 0x7F, 0x8F, 0x90, 0x00, 0xFE, 0xF7, 0x0F];
+    for lcup in 2..=48_usize {
+        for _ in 0..40 {
+            let data = (0..lcup)
+                .map(|_| {
+                    let draw = next();
+                    if draw % 3 == 0 {
+                        special[(draw >> 8) as usize % special.len()]
+                    } else {
+                        (draw >> 16).to_le_bytes()[0]
+                    }
+                })
+                .collect::<Vec<_>>();
+            let scup = 2 + next() as usize % (lcup - 1);
+            let mut reference = ReverseBitReader::new_vlc(&data, lcup, scup);
+            let mut topped_up = reference.clone();
+            // Pairs consume at most 30 bits between top-ups.
+            for _ in 0..40 {
+                let first = reference.fetch();
+                assert_eq!(topped_up.fetch_topped_up::<true>(), first, "{data:02X?}");
+                let mut budget = 30;
+                while budget > 0 {
+                    let count = (next() % 9).min(budget);
+                    budget -= count;
+                    let consumed = 30 - budget;
+                    let expected = reference.advance(count);
+                    // Only the 32 - `consumed` bits the reference still
+                    // guarantees are compared; the top-up may hold more.
+                    let mask = u32::try_from((1_u64 << (32 - consumed)) - 1).expect("mask");
+                    assert_eq!(topped_up.advance(count) & mask, expected & mask);
+                }
+            }
+        }
+    }
 }

@@ -195,6 +195,57 @@ fn irreversible_midpoint_reconstruction_tracks_the_last_decoded_pass() {
 }
 
 #[test]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the reference converts the reconstructed integer as the scalar output does"
+)]
+fn exact_reversible_rows_match_per_coefficient_reconstruction() {
+    for decoded_bitplanes in [1_u8, 2, 8, 17, 31, 32] {
+        let top = (1_u64 << decoded_bitplanes) - 1;
+        let mut magnitudes = vec![0, 1, 2, 3, top, top >> 1, top & 0x5555_5555];
+        magnitudes.extend((0..decoded_bitplanes).map(|bit| 1_u64 << bit));
+        let coefficients = magnitudes
+            .iter()
+            .flat_map(|&magnitude| {
+                [0_u8, 1].map(|sign| {
+                    let mut coefficient = Coefficient::default();
+                    for bit in 0..63 {
+                        coefficient.push_bit_at(u32::from(magnitude >> bit & 1 == 1), bit);
+                    }
+                    coefficient.set_sign(u8::from(magnitude != 0) & sign);
+                    coefficient
+                })
+            })
+            .collect::<Vec<_>>();
+        let max_passes = 1 + 3 * (decoded_bitplanes - 1);
+        let mut exact_blocks = 0;
+        for number_of_coding_passes in 0..=max_passes {
+            let block = MidpointReconstructor::new(decoded_bitplanes, number_of_coding_passes, 0);
+            if !block.reversible_is_exact() {
+                continue;
+            }
+            exact_blocks += 1;
+            for step in [1.0_f32, 0.5, 3.0, 0.1] {
+                let mut row = vec![f32::NAN; coefficients.len()];
+                MidpointReconstructor::scale_exact_reversible_row(&coefficients, &mut row, step);
+                for (value, &coefficient) in row.iter().zip(&coefficients) {
+                    assert_eq!(
+                        value.to_bits(),
+                        (block.reconstruct_reversible(coefficient) as f32 * step).to_bits(),
+                        "bitplanes {decoded_bitplanes} passes {number_of_coding_passes} \
+                         step {step} coefficient {:#x}",
+                        coefficient.to_bits()
+                    );
+                }
+            }
+        }
+        // Blocks through the last plane's refinement, and blocks without
+        // passes, add no midpoint; 32 coded planes take the general path.
+        assert_eq!(exact_blocks == 0, decoded_bitplanes > 31);
+    }
+}
+
+#[test]
 fn reversible_reconstruction_is_exact_when_complete_and_centered_when_stopped_early() {
     let coefficient = |magnitude: u64, sign: u8| {
         let mut coefficient = Coefficient::default();
@@ -537,22 +588,13 @@ fn packed_column_contexts_match_per_coefficient_contexts() {
         seed ^= seed << 5;
         seed
     };
+    let _per_coefficient = PerCoefficient::force();
     for (width, height) in [(1, 1), (3, 5), (7, 10), (9, 12), (16, 3)] {
         for density in [3_u32, 8, 14] {
             let mut ctx = BitPlaneDecodeContext::default();
             let style = CodeBlockStyle::default();
-            ctx.reset_for_job(
-                width,
-                height,
-                0,
-                1,
-                SubBandType::LowLow,
-                &style,
-                8,
-                true,
-                false,
-            )
-            .expect("per-coefficient context");
+            ctx.reset_for_job(width, height, 0, 1, SubBandType::LowLow, &style, 8, true)
+                .expect("per-coefficient context");
             let stride = ctx.padded_width as usize;
             let mut flags = vec![0_u32; (height.div_ceil(4) as usize + 2) * stride];
             let flag_index = |x: usize, y: usize| (y / 4 + 1) * stride + x + 1;
@@ -668,6 +710,7 @@ fn decode_through_both_pass_families(
     .expect("packed decode");
     assert!(packed.uses_packed_columns());
 
+    let _per_coefficient = PerCoefficient::force();
     let mut per_coefficient = BitPlaneDecodeContext::default();
     per_coefficient
         .reset_for_job(
@@ -679,7 +722,6 @@ fn decode_through_both_pass_families(
             &style,
             10,
             true,
-            false,
         )
         .expect("per-coefficient context");
     decode_code_block_segments_inner(
@@ -772,9 +814,10 @@ fn first_magnitude_context_uses_neighbor_presence() {
 
 #[test]
 fn scan_unit_masks_track_significance_and_current_bitplane_zero_coding() {
+    let _per_coefficient = PerCoefficient::force();
     let mut ctx = BitPlaneDecodeContext::default();
     let style = CodeBlockStyle::default();
-    ctx.reset_for_job(5, 6, 0, 4, SubBandType::LowLow, &style, 8, true, false)
+    ctx.reset_for_job(5, 6, 0, 4, SubBandType::LowLow, &style, 8, true)
         .expect("reset context");
 
     let padded_width = ctx.padded_width as usize;
@@ -805,18 +848,8 @@ fn scan_unit_masks_track_significance_and_current_bitplane_zero_coding() {
         selective_arithmetic_coding_bypass: true,
         ..CodeBlockStyle::default()
     };
-    ctx.reset_for_job(
-        5,
-        6,
-        0,
-        4,
-        SubBandType::LowLow,
-        &bypass_style,
-        8,
-        true,
-        false,
-    )
-    .expect("reset bypass context");
+    ctx.reset_for_job(5, 6, 0, 4, SubBandType::LowLow, &bypass_style, 8, true)
+        .expect("reset bypass context");
     ctx.set_zero_coding_index(idx, y, padded_width);
     ctx.reset_for_next_bitplane();
     assert_eq!(ctx.coefficient_states[idx].0 & HAS_ZERO_CODING_MASK, 0);
@@ -883,9 +916,10 @@ fn classic_selective_bypass_round_trips_padded_rgb8_cb_block() {
 
 #[test]
 fn cleanup_candidate_mask_excludes_significant_and_zero_coded_coefficients() {
+    let _per_coefficient = PerCoefficient::force();
     let mut ctx = BitPlaneDecodeContext::default();
     let style = CodeBlockStyle::default();
-    ctx.reset_for_job(5, 6, 0, 4, SubBandType::LowLow, &style, 8, true, false)
+    ctx.reset_for_job(5, 6, 0, 4, SubBandType::LowLow, &style, 8, true)
         .expect("reset context");
 
     let padded_width = ctx.padded_width as usize;
@@ -904,9 +938,10 @@ fn cleanup_candidate_mask_excludes_significant_and_zero_coded_coefficients() {
 
 #[test]
 fn cleanup_run_length_rejects_a_zero_coded_coefficient_without_significant_neighbors() {
+    let _per_coefficient = PerCoefficient::force();
     let mut ctx = BitPlaneDecodeContext::default();
     let style = CodeBlockStyle::default();
-    ctx.reset_for_job(1, 4, 0, 4, SubBandType::LowLow, &style, 8, true, false)
+    ctx.reset_for_job(1, 4, 0, 4, SubBandType::LowLow, &style, 8, true)
         .expect("reset context");
 
     let padded_width = ctx.padded_width as usize;
@@ -962,5 +997,21 @@ fn classic_bitplane_round_trips_subband_and_style_matrix() {
                     + u32::try_from(subband_idx).expect("subband index fits u32"),
             );
         }
+    }
+}
+
+/// Decodes on this thread use the per-coefficient passes while it lives.
+struct PerCoefficient;
+
+impl PerCoefficient {
+    fn force() -> Self {
+        super::state::FORCE_PER_COEFFICIENT.set(true);
+        Self
+    }
+}
+
+impl Drop for PerCoefficient {
+    fn drop(&mut self) {
+        super::state::FORCE_PER_COEFFICIENT.set(false);
     }
 }

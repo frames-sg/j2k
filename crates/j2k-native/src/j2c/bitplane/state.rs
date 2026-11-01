@@ -92,6 +92,14 @@ fn include_capacity<T>(bytes: &mut usize, capacity: usize) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+std::thread_local! {
+    /// Test-only: decode every block with the per-coefficient passes, to
+    /// compare the packed passes against them.
+    pub(crate) static FORCE_PER_COEFFICIENT: core::cell::Cell<bool> =
+        const { core::cell::Cell::new(false) };
+}
+
 pub(crate) struct BitPlaneDecodeContext {
     /// A vector of bit-packed fields for each coefficient in the code-block.
     pub(super) coefficient_states: Vec<super::CoefficientState>,
@@ -207,14 +215,12 @@ impl BitPlaneDecodeContext {
         code_block_style: &CodeBlockStyle,
         total_bitplanes: u8,
         strict: bool,
-        all_segments_arithmetic: bool,
     ) -> Result<()> {
-        // Packed and per-coefficient bookkeeping cannot be mixed in a block,
-        // so a raw (bypass) segment sends the whole block down the
-        // per-coefficient passes.
-        let packed_columns = all_segments_arithmetic
-            && code_block_style.single_codeword_segment()
-            && !code_block_style.vertically_causal_context;
+        // Raw (bypass) and terminated segments have packed passes too; only
+        // vertically causal contexts need the per-coefficient passes.
+        let packed_columns = !code_block_style.vertically_causal_context;
+        #[cfg(test)]
+        let packed_columns = packed_columns && !FORCE_PER_COEFFICIENT.get();
         let layout = if packed_columns {
             workspace::StateLayout::PackedColumns
         } else {
@@ -290,9 +296,6 @@ impl BitPlaneDecodeContext {
             code_block_style,
             total_bitplanes,
             strict,
-            // Codestream blocks take raw segments only under selective
-            // bypass, which already selects the per-coefficient passes.
-            true,
         )
     }
 
@@ -342,7 +345,7 @@ impl BitPlaneDecodeContext {
         // `zero_coding_scan_masks`, which is reset below. Raw bypass cleanup
         // also reads the per-coefficient marker and therefore still needs it
         // cleared explicitly.
-        if self.style.selective_arithmetic_coding_bypass {
+        if self.style.selective_arithmetic_coding_bypass && !self.packed_columns {
             let padded_width = self.padded_width as usize;
             let width = self.width as usize;
             let row_start = COEFFICIENTS_PADDING as usize;

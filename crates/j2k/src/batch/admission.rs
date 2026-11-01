@@ -8,8 +8,12 @@ use j2k_core::BatchInfrastructureError;
 
 use super::allocation::batch_execution_cap_bytes;
 
-pub(super) struct BatchAllocationBudget {
+pub(crate) struct BatchAllocationBudget {
     cap: usize,
+    /// Bytes charged for the budget's whole lifetime (a shared plan). No
+    /// claim ever releases them, so a claim above `cap - baseline` can never
+    /// be admitted.
+    baseline: usize,
     state: Mutex<AdmissionState>,
     changed: Condvar,
     #[cfg(test)]
@@ -22,7 +26,7 @@ struct AdmissionState {
 }
 
 impl BatchAllocationBudget {
-    pub(super) fn with_baseline(baseline: usize) -> Result<Arc<Self>, BatchInfrastructureError> {
+    pub(crate) fn with_baseline(baseline: usize) -> Result<Arc<Self>, BatchInfrastructureError> {
         let cap = batch_execution_cap_bytes();
         if baseline > cap {
             return Err(BatchInfrastructureError::AllocationTooLarge {
@@ -33,6 +37,7 @@ impl BatchAllocationBudget {
         }
         Ok(Arc::new(Self {
             cap,
+            baseline,
             state: Mutex::new(AdmissionState {
                 live: baseline,
                 waiters: 0,
@@ -43,7 +48,7 @@ impl BatchAllocationBudget {
         }))
     }
 
-    pub(super) fn claim(
+    pub(crate) fn claim(
         self: &Arc<Self>,
         bytes: usize,
     ) -> Result<BatchAllocationClaim, BatchInfrastructureError> {
@@ -52,6 +57,17 @@ impl BatchAllocationBudget {
                 what: "one J2K batch execution claim",
                 requested: bytes,
                 cap: self.cap,
+            });
+        }
+        // Waiting only helps while other claims hold the missing bytes; the
+        // permanent baseline never leaves, so such a claim fails now instead
+        // of waiting forever.
+        let admissible = self.cap - self.baseline;
+        if bytes > admissible {
+            return Err(BatchInfrastructureError::AllocationTooLarge {
+                what: "one J2K batch execution claim beside the shared plan",
+                requested: bytes,
+                cap: admissible,
             });
         }
         let mut state = self
@@ -109,7 +125,7 @@ impl BatchAllocationBudget {
     }
 }
 
-pub(super) struct BatchAllocationClaim {
+pub(crate) struct BatchAllocationClaim {
     budget: Arc<BatchAllocationBudget>,
     bytes: usize,
 }
@@ -140,6 +156,23 @@ impl BatchAllocationClaim {
         }
         Ok(())
     }
+}
+
+/// Keep `held` at least `bytes`: one owner's claim at the largest planned
+/// execution it has run, because its retained scratch keeps that peak while
+/// later executions reuse it. A smaller claim is released before waiting for
+/// the larger one, so an owner never holds two.
+pub(crate) fn hold_at_least(
+    budget: &Arc<BatchAllocationBudget>,
+    held: &mut Option<BatchAllocationClaim>,
+    bytes: usize,
+) -> Result<(), BatchInfrastructureError> {
+    if held.as_ref().is_some_and(|claim| claim.bytes >= bytes) {
+        return Ok(());
+    }
+    *held = None;
+    *held = Some(budget.claim(bytes)?);
+    Ok(())
 }
 
 impl Drop for BatchAllocationClaim {

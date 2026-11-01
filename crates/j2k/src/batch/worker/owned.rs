@@ -136,6 +136,8 @@ impl BatchWorker {
         signed: bool,
     ) -> j2k_native::Result<j2k_native::J2kDirectDecodedComponents<'scratch>> {
         self.prepared_plan_decode_calls = self.prepared_plan_decode_calls.saturating_add(1);
+        self.prepared_plan_scratch
+            .set_parallel_decode(self.owned_inner_parallelism == CpuDecodeParallelism::Auto);
         j2k_native::execute_referenced_classic_plan(
             plan,
             encoded_input,

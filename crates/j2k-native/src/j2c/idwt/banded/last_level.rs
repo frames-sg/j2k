@@ -16,10 +16,9 @@ use core::ops::Range;
 use super::super::super::codestream::WaveletTransform;
 use super::super::super::rect::IntRect;
 use super::{
-    apply_vertical_step, horizontal_scratch_elements, packed_band_rects, parallel_strip_layout,
-    periodic_symmetric_extension_left, periodic_symmetric_extension_right,
-    split_horizontal_scratch, synthesize_level_row, three_rows, use_banded, vertical_steps,
-    Level2d, RING_ROWS,
+    column_strips, horizontal_scratch_elements, lift_arrivals, packed_band_rects,
+    parallel_strip_layout, split_horizontal_scratch, strip_range, synthesize_level_columns,
+    use_banded, vertical_steps, Level2d, RingRows, RING_ROWS, STRIP_COLUMNS, WAVEFRONT_ARRIVALS,
 };
 use crate::error::{bail, DecodingError};
 use crate::math::{dispatch, Level, Simd};
@@ -107,12 +106,37 @@ const fn ring_rows(batch: usize) -> usize {
     batch + RING_ROWS - 1
 }
 
-/// Scratch one worker needs: three rings and the horizontal bands.
-fn worker_scratch_elements(width: usize, batch: usize) -> Result<usize> {
-    (width + RING_ROW_PAD)
-        .checked_mul(3 * ring_rows(batch))
+/// Scratch one worker needs: three rings for each column strip a level of
+/// this width can have when `split`, and the horizontal bands.
+fn worker_scratch_elements(width: usize, batch: usize, split: bool) -> Result<usize> {
+    let strips = if split {
+        (width / STRIP_COLUMNS).max(1)
+    } else {
+        1
+    };
+    strips
+        .checked_mul(RING_ROW_PAD)
+        .and_then(|pads| pads.checked_add(width))
+        .and_then(|row| row.checked_mul(3 * ring_rows(batch)))
         .and_then(|rings| rings.checked_add(horizontal_scratch_elements(width).ok()?))
         .ok_or(ValidationError::ImageTooLarge.into())
+}
+
+/// The three components' rings of column strip `index` in `rings`, each of
+/// `ring_rows` rows `stride` apart: every strip before it is `strips.0`
+/// columns wide.
+fn strip_rings(
+    rings: &mut [f32],
+    index: usize,
+    strips: (usize, usize),
+    stride: usize,
+    ring_rows: usize,
+) -> [&mut [f32]; 3] {
+    let ring_len = ring_rows * stride;
+    let start = index * 3 * ring_rows * (strips.0 + RING_ROW_PAD);
+    let (r, rest) = rings[start..].split_at_mut(ring_len);
+    let (g, rest) = rest.split_at_mut(ring_len);
+    [r, g, &mut rest[..ring_len]]
 }
 
 /// Reconstruct `level` of the three components from their `planes` and the
@@ -142,9 +166,13 @@ pub(crate) fn pack_last_level(
     let Some(layout) = parallel_strip_layout(width, height, parallel)? else {
         let batch = SERIAL_BATCH_ROWS;
         let mut scratch = Vec::new();
-        try_resize_decode_elements(&mut scratch, worker_scratch_elements(width, batch)?, 0.0)?;
+        try_resize_decode_elements(
+            &mut scratch,
+            worker_scratch_elements(width, batch, true)?,
+            0.0,
+        )?;
         dispatch!(Level::new(), simd => stream_rows(
-            simd, &levels, 0, batch, output, &mut scratch, &emit,
+            simd, &levels, 0, batch, true, output, &mut scratch, &emit,
         ));
         return Ok(());
     };
@@ -152,7 +180,7 @@ pub(crate) fn pack_last_level(
     {
         let strip_bytes = layout.strip_len / width * row_bytes;
         let workers = layout.concurrent_strips;
-        let per_worker = worker_scratch_elements(width, PARALLEL_BATCH_ROWS)?;
+        let per_worker = worker_scratch_elements(width, PARALLEL_BATCH_ROWS, false)?;
         let complete = dispatch!(Level::new(), simd => run_strips(
             simd, &levels, output, strip_bytes, workers, per_worker, scratch, &emit,
         ));
@@ -224,6 +252,7 @@ fn run_strips<S: Simd>(
                         levels,
                         first_row,
                         PARALLEL_BATCH_ROWS,
+                        false,
                         output,
                         scratch,
                         emit,
@@ -239,6 +268,7 @@ fn run_strips<S: Simd>(
                 levels,
                 first_row,
                 PARALLEL_BATCH_ROWS,
+                false,
                 output,
                 scratch,
                 emit,
@@ -252,8 +282,11 @@ fn run_strips<S: Simd>(
 /// three components, with the schedule and halo rows of
 /// [`super::stream_strip`], and emit each row.
 ///
-/// Each component takes `batch` arrivals in turn, so the few rows
-/// its lifting steps share stay in cache. At an arrival, lifting step `k`
+/// Each component takes `batch` arrivals in turn, one column strip
+/// ([`column_strips`]) at a time, so the few rows its lifting steps share
+/// stay in cache: lifting is per column, so the strips are independent but
+/// for their horizontal synthesis, which reads past their edges. At an
+/// arrival, lifting step `k`
 /// (1-based) updates the row `k` above it, reading that row's two
 /// neighbors, so after a batch no row more than `count + 1` above its last
 /// arrival is read again: those rows are emitted, and the ring refills
@@ -262,12 +295,17 @@ fn run_strips<S: Simd>(
     clippy::inline_always,
     reason = "the strip kernel is specialized at the architecture dispatch boundary"
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the row stream keeps its geometry, batch, strip choice, and reused scratch explicit"
+)]
 #[inline(always)]
 fn stream_rows<S: Simd>(
     simd: S,
     levels: &[Level2d<'_>; 3],
     first_row: usize,
     batch: usize,
+    split: bool,
     output: &mut [u8],
     scratch: &mut [f32],
     emit: &impl Fn([&mut [f32]; 3], &mut [u8]),
@@ -276,61 +314,78 @@ fn stream_rows<S: Simd>(
     let height = levels[0].height;
     let row_bytes = 3 * width;
     let end = first_row + output.len() / row_bytes;
-    let (steps, count) = vertical_steps(levels[0]);
+    let (_, count) = vertical_steps(levels[0]);
     let lo = first_row.saturating_sub(count);
     let hi = (end + count).min(height);
-    let stride = width + RING_ROW_PAD;
     let ring_rows = ring_rows(batch);
-    let ring_len = ring_rows * stride;
-    let (rings, horizontal_scratch) = scratch.split_at_mut(3 * ring_len);
-    let (low, high) = split_horizontal_scratch(levels[0], horizontal_scratch);
-    let (r, rest) = rings.split_at_mut(ring_len);
-    let (g, b) = rest.split_at_mut(ring_len);
-    let mut rings = [r, g, b];
-    let slot = |row: usize| row % ring_rows;
-    let mut emitted = first_row;
-    let mut emit_rows = |rings: &mut [&mut [f32]; 3], rows_end: usize| {
-        for row in emitted..rows_end {
-            let start = slot(row) * stride;
-            let samples = rings.each_mut().map(|ring| &mut ring[start..][..width]);
-            emit(
-                samples,
-                &mut output[(row - first_row) * row_bytes..][..row_bytes],
-            );
-        }
-        emitted = emitted.max(rows_end);
+    // Column strips pay on one thread. On the pool, where several cores
+    // stream band rows from memory at once, their shorter row segments cost
+    // more than the strips save.
+    let strips = if split {
+        column_strips(levels[0])
+    } else {
+        (width, 1)
     };
+    let rings_len = (0..strips.1)
+        .map(|index| 3 * ring_rows * (strip_range(index, strips, width).len() + RING_ROW_PAD))
+        .sum();
+    let (rings, horizontal_scratch) = scratch.split_at_mut(rings_len);
+    let (low, high) = split_horizontal_scratch(levels[0], horizontal_scratch);
+    let mut emit_rows = |rings: &mut [f32], index: usize, rows: Range<usize>| {
+        let columns = strip_range(index, strips, width);
+        let stride = columns.len() + RING_ROW_PAD;
+        let mut rings = strip_rings(rings, index, strips, stride, ring_rows);
+        for row in rows {
+            let start = row % ring_rows * stride;
+            let samples = rings
+                .each_mut()
+                .map(|ring| &mut ring[start..][..columns.len()]);
+            let output = &mut output[(row - first_row) * row_bytes..][..row_bytes];
+            emit(samples, &mut output[3 * columns.start..3 * columns.end]);
+        }
+    };
+    let mut emitted = first_row;
     for first in (lo..hi + count).step_by(batch) {
         let arrivals = first..(first + batch).min(hi + count);
-        for (level, ring) in levels.iter().zip(rings.iter_mut()) {
-            for arrival in arrivals.clone() {
-                if arrival < hi {
-                    let row = &mut ring[slot(arrival) * stride..][..width];
-                    synthesize_level_row(simd, *level, arrival, row, low, high);
-                }
-                for (index, &(parity, step)) in steps[..count].iter().enumerate() {
-                    let Some(row) = arrival.checked_sub(index + 1) else {
-                        break;
-                    };
-                    if row < lo || row >= hi || row % 2 != parity {
-                        continue;
+        // The batch's last arrival read its rows `count + 1` above it.
+        let unread = (arrivals.end - 1).saturating_sub(count).min(end);
+        // Each column strip runs the batch of all three components and
+        // emits its part of the finished rows, while its rings are in cache.
+        for index in 0..strips.1 {
+            let columns = strip_range(index, strips, width);
+            let stride = columns.len() + RING_ROW_PAD;
+            let component_rings = strip_rings(rings, index, strips, stride, ring_rows);
+            for (level, ring) in levels.iter().zip(component_rings) {
+                let mut rows = RingRows {
+                    rows: ring,
+                    width: columns.len(),
+                    stride,
+                    slots: ring_rows,
+                };
+                // The ring holds every row the batch's steps read besides
+                // the batch itself, so arrivals can be synthesized ahead.
+                for first in arrivals.clone().step_by(WAVEFRONT_ARRIVALS) {
+                    let ahead = first..(first + WAVEFRONT_ARRIVALS).min(arrivals.end);
+                    for arrival in ahead.start..ahead.end.min(hi) {
+                        let row = rows.row_mut(arrival);
+                        synthesize_level_columns(
+                            simd,
+                            *level,
+                            arrival,
+                            row,
+                            columns.clone(),
+                            low,
+                            high,
+                        );
                     }
-                    let above = periodic_symmetric_extension_left(row, 1);
-                    let below = periodic_symmetric_extension_right(row, 1, height);
-                    if above < lo || below >= hi {
-                        continue;
-                    }
-                    let (current, above, below) =
-                        three_rows(ring, stride, slot(row), slot(above), slot(below));
-                    let (current, above, below) =
-                        (&mut current[..width], &above[..width], &below[..width]);
-                    apply_vertical_step(simd, step, current, above, below);
+                    lift_arrivals(simd, *level, ahead, lo..hi, &mut rows);
                 }
             }
+            emit_rows(rings, index, emitted..unread.max(emitted));
         }
-        // The batch's last arrival read its rows `count + 1` above it.
-        let unread = (arrivals.end - 1).saturating_sub(count);
-        emit_rows(&mut rings, unread.min(end));
+        emitted = emitted.max(unread);
     }
-    emit_rows(&mut rings, end);
+    for index in 0..strips.1 {
+        emit_rows(rings, index, emitted..end);
+    }
 }

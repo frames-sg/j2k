@@ -194,8 +194,8 @@ impl DeferredMct {
     /// costs less than the copy. With a last level, the planes hold its
     /// high bands and the next component's LL band, with `first_ll` kept
     /// separately. Each reconstructed row is transformed and packed. On
-    /// hosted ARM64 with SIMD, 9/7 rows take the fused ICT pack instead of
-    /// `pack`, so `pack` must be the standard RGB8 pack there.
+    /// hosted ARM64 and x86-64 with SIMD, 9/7 rows take the fused ICT pack
+    /// instead of `pack`, so `pack` must be the standard RGB8 pack there.
     pub(crate) fn pack_rgb8(
         self,
         [r, g, b]: [&mut [f32]; 3],
@@ -215,6 +215,11 @@ impl DeferredMct {
                 output,
                 parallel,
                 |[r, g, b], output| {
+                    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+                    if self.transform == WaveletTransform::Irreversible97 {
+                        self.pack_ict_rgb8_x86([r, g, b], output);
+                        return;
+                    }
                     if cfg!(all(
                         feature = "std",
                         feature = "simd",
@@ -304,9 +309,134 @@ impl DeferredMct {
         }
     }
 
+    /// [`Self::pack_ict_rgb8`] at the CPU's SIMD level. Outside a dispatch,
+    /// an x86-64 build has no FMA or rounding instructions, so the scalar
+    /// loop would call a library routine for every sample. Kept out of line
+    /// so the per-row closure of [`Self::pack_rgb8`] stays small enough to
+    /// inline into the dispatched row streamer; an outlined closure loses
+    /// the dispatch's target features.
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    #[inline(never)]
+    fn pack_ict_rgb8_x86(self, planes: [&[f32]; 3], output: &mut [u8]) {
+        if self.rounding.is_some() {
+            dispatch!(Level::new(), simd => self.pack_ict_rgb8_simd::<true, _>(simd, planes, output));
+        } else {
+            dispatch!(Level::new(), simd => self.pack_ict_rgb8_simd::<false, _>(simd, planes, output));
+        }
+    }
+
+    /// Eight pixels at a time, the expressions of [`apply_inner_impl`] and
+    /// [`round_centered_and_shift`], then the RGB8 pack; the scalar
+    /// [`Self::pack_ict_rgb8`] takes the remainder.
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    #[inline(always)]
+    fn pack_ict_rgb8_simd<const CENTERED: bool, S: Simd>(
+        self,
+        simd: S,
+        [luma, cb, cr]: [&[f32]; 3],
+        output: &mut [u8],
+    ) {
+        use fearless_simd::{f32x8, SimdBase, SimdFloat};
+
+        let len = (output.len() / 3)
+            .min(luma.len())
+            .min(cb.len())
+            .min(cr.len());
+        let vector_len = len / 8 * 8;
+        let red_from_chroma = f32x8::splat(simd, mct::ICT_INV_R_CR);
+        let green_from_red_chroma = f32x8::splat(simd, mct::ICT_INV_G_CR);
+        let green_from_blue_chroma = f32x8::splat(simd, mct::ICT_INV_G_CB);
+        let blue_from_chroma = f32x8::splat(simd, mct::ICT_INV_B_CB);
+        let red_level = f32x8::splat(simd, self.addends[0]);
+        let green_level = f32x8::splat(simd, self.addends[1]);
+        let blue_level = f32x8::splat(simd, self.addends[2]);
+        let shift = self.rounding.unwrap_or([0.0; 3]);
+        let red_shift = f32x8::splat(simd, shift[0]);
+        let green_shift = f32x8::splat(simd, shift[1]);
+        let blue_shift = f32x8::splat(simd, shift[2]);
+        for start in (0..vector_len).step_by(8) {
+            let y_0 = f32x8::from_slice(simd, &luma[start..start + 8]);
+            let y_1 = f32x8::from_slice(simd, &cb[start..start + 8]);
+            let y_2 = f32x8::from_slice(simd, &cr[start..start + 8]);
+            let mut red = y_2.mul_add_precise(red_from_chroma, y_0) + red_level;
+            let mut green = y_2.mul_add_precise(
+                green_from_red_chroma,
+                y_1.mul_add_precise(green_from_blue_chroma, y_0),
+            ) + green_level;
+            let mut blue = y_1.mul_add_precise(blue_from_chroma, y_0) + blue_level;
+            if CENTERED {
+                red = red.round_ties_even() + red_shift;
+                green = green.round_ties_even() + green_shift;
+                blue = blue.round_ties_even() + blue_shift;
+                store_whole_rgb8_x8(simd, [red, green, blue], &mut output[3 * start..3 * len]);
+            } else {
+                crate::color::store_rgb8_x8(
+                    simd,
+                    [red, green, blue],
+                    &mut output[3 * start..3 * start + 24],
+                );
+            }
+        }
+        self.pack_ict_rgb8::<CENTERED>(
+            [
+                &luma[vector_len..len],
+                &cb[vector_len..len],
+                &cr[vector_len..len],
+            ],
+            &mut output[3 * vector_len..3 * len],
+        );
+    }
+
     fn transform_chunk(self, planes: (&mut [f32], &mut [f32], &mut [f32])) {
         transform_planes(self.transform, planes, self.addends, self.rounding, false);
     }
+}
+
+/// The RGB8 pack of eight pixels whose samples are whole numbers (the
+/// centered rounding already ran), into the first 24 bytes of `output`.
+/// Matches the saturating `as u8` cast (NaN to zero) like
+/// [`crate::color::store_rgb8_x8`], but skips its rounding and uses the
+/// signed conversion, which is exact on `0..=255` and native on x86-64 where
+/// the unsigned one is emulated. With four spare bytes after the pixels, each
+/// half is stored with one overlapping 16-byte store; the next pixels (or the
+/// scalar remainder) overwrite the spare bytes.
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[inline(always)]
+fn store_whole_rgb8_x8<S: Simd>(
+    simd: S,
+    [red, green, blue]: [fearless_simd::f32x8<S>; 3],
+    output: &mut [u8],
+) {
+    use fearless_simd::{u8x16, Bytes, SimdBase};
+
+    let packed =
+        whole_u8_x8(simd, red) | (whole_u8_x8(simd, green) << 8) | (whole_u8_x8(simd, blue) << 16);
+    let indices = u8x16::from_slice(simd, &[0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 0, 0, 0, 0]);
+    let (first, second) = simd.split_u32x8(packed);
+    let first = first.bitcast::<u8x16<S>>().swizzle_dyn(indices);
+    let second = second.bitcast::<u8x16<S>>().swizzle_dyn(indices);
+    if output.len() >= 28 {
+        first.store_slice(&mut output[..16]);
+        second.store_slice(&mut output[12..28]);
+    } else {
+        output[..12].copy_from_slice(&first.to_array()[..12]);
+        output[12..24].copy_from_slice(&second.to_array()[..12]);
+    }
+}
+
+/// One byte value per lane of eight whole-number samples: the saturating
+/// `as u8` cast (NaN to zero) through the native signed conversion.
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[inline(always)]
+fn whole_u8_x8<S: Simd>(simd: S, value: fearless_simd::f32x8<S>) -> fearless_simd::u32x8<S> {
+    use fearless_simd::{f32x8, Bytes, Select, SimdBase};
+
+    let zero = f32x8::splat(simd, 0.0);
+    let clamped = value
+        .simd_ge(zero)
+        .select(value, zero)
+        .min(f32x8::splat(simd, 255.0));
+    simd.cvt_i32_f32x8(clamped).bitcast()
 }
 
 /// The CPU inverse transform, then (for centered 9/7 output) the rounding
@@ -344,8 +474,28 @@ fn transform_planes(
     }
 }
 
-fn round_centered_and_shift(samples: &mut [f32], addend: f32) {
+pub(crate) fn round_centered_and_shift(samples: &mut [f32], addend: f32) {
+    // Outside a dispatch an x86-64 build rounds each sample with a library
+    // call; the SIMD level rounds eight at a time with the same result.
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    dispatch!(Level::new(), simd => round_centered_and_shift_simd(simd, samples, addend));
+    #[cfg(not(all(feature = "simd", target_arch = "x86_64")))]
     for sample in samples {
+        *sample = round_ties_even_then_add(*sample, addend);
+    }
+}
+
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[inline(always)]
+fn round_centered_and_shift_simd<S: Simd>(simd: S, samples: &mut [f32], addend: f32) {
+    use fearless_simd::{f32x8, SimdBase, SimdFloat};
+
+    let shift = f32x8::splat(simd, addend);
+    let (chunks, rest) = samples.as_chunks_mut::<8>();
+    for chunk in chunks {
+        (f32x8::from_slice(simd, chunk).round_ties_even() + shift).store_slice(chunk);
+    }
+    for sample in rest {
         *sample = round_ties_even_then_add(*sample, addend);
     }
 }
@@ -731,6 +881,86 @@ mod tests {
         };
         centered.pack_ict_rgb8::<true>([&[y0; 9], &[y1; 9], &[y2; 9]], &mut packed);
         assert_eq!(packed, [128; 27]);
+
+        // Nine pixels: one SIMD block and a scalar remainder.
+        #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+        {
+            deferred.pack_ict_rgb8_x86([&[y0; 9], &[y1; 9], &[y2; 9]], &mut packed);
+            assert_eq!(packed, [1; 27]);
+            centered.pack_ict_rgb8_x86([&[y0; 9], &[y1; 9], &[y2; 9]], &mut packed);
+            assert_eq!(packed, [128; 27]);
+        }
+    }
+
+    #[test]
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "the reference pack rounds and saturates to 8 bits like the RGB8 output"
+    )]
+    fn x86_fused_ict_pack_matches_transform_then_pack() {
+        // Ties, saturation on both sides, NaN and infinities, in SIMD blocks
+        // and a ragged remainder.
+        let mut values = vec![
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            -0.0,
+            0.5,
+            -0.5,
+            1.5,
+            2.5,
+            254.5,
+            255.5,
+            -127.5,
+            127.5,
+            f32::from_bits(0x3eff_ffff),
+            f32::from_bits(0xc117_fffc),
+        ];
+        let mut state = 0x2545_f491_u32;
+        while values.len() < 3 * 61 {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            values.push((state >> 8) as f32 / 16_384.0 - 512.0);
+        }
+        let (luma, chroma) = values.split_at(61);
+        let (cb, cr) = chroma.split_at(61);
+        for (addends, rounding) in [
+            ([0.0; 3], Some([128.0; 3])),
+            ([128.0; 3], None),
+            ([0.25, -3.0, 127.5], None),
+        ] {
+            let deferred = DeferredMct {
+                transform: WaveletTransform::Irreversible97,
+                addends,
+                rounding,
+                last_level: None,
+            };
+            let mut planes = [luma.to_vec(), cb.to_vec(), cr.to_vec()];
+            let [r, g, b] = &mut planes;
+            deferred.transform_chunk((r.as_mut_slice(), g.as_mut_slice(), b.as_mut_slice()));
+            let expected: Vec<u8> = (0..luma.len())
+                .flat_map(|index| {
+                    planes
+                        .each_ref()
+                        .map(|plane| crate::math::round_f32(plane[index]) as u8)
+                })
+                .collect();
+            for len in [0, 7, 8, 9, 16, 61] {
+                let mut packed = vec![0xa5_u8; 3 * len];
+                deferred.pack_ict_rgb8_x86([&luma[..len], &cb[..len], &cr[..len]], &mut packed);
+                assert_eq!(packed, expected[..3 * len], "{rounding:?} {len}");
+                // Output room past the planes' pixels stays untouched.
+                let mut packed = vec![0xa5_u8; 3 * len + 5];
+                deferred.pack_ict_rgb8_x86([&luma[..len], &cb[..len], &cr[..len]], &mut packed);
+                assert_eq!(packed[..3 * len], expected[..3 * len], "{rounding:?} {len}");
+                assert!(
+                    packed[3 * len..].iter().all(|&byte| byte == 0xa5),
+                    "{rounding:?} {len}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -740,6 +970,26 @@ mod tests {
         assert_eq!(
             samples.map(f32::to_bits),
             [119.0, 118.0, 120.0].map(f32::to_bits)
+        );
+        // A full SIMD block and a remainder round the same way.
+        let mut samples = [
+            f32::from_bits(0xc117_fffc),
+            -9.5,
+            -8.5,
+            0.5,
+            1.5,
+            2.5,
+            -0.5,
+            -1.5,
+            254.5,
+            -128.5,
+            f32::from_bits(0x3eff_ffff),
+        ];
+        round_centered_and_shift(&mut samples, 128.0);
+        assert_eq!(
+            samples.map(f32::to_bits),
+            [119.0, 118.0, 120.0, 128.0, 130.0, 130.0, 128.0, 126.0, 382.0, 0.0, 128.0]
+                .map(f32::to_bits)
         );
 
         let deferred = DeferredMct {

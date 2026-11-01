@@ -284,6 +284,22 @@ pub enum J2kError {
         /// Image height.
         height: u32,
     },
+
+    /// Native decode would exceed a resource limit: its live working memory
+    /// would pass the decode cap, or the image is too large to size.
+    ///
+    /// Unlike invalid or unsupported input, the same codestream may decode
+    /// through a smaller request, such as a region or a reduced resolution.
+    #[error("decode resource limit exceeded: {source}")]
+    ResourceLimit {
+        /// Requested live bytes at the rejected boundary, when known.
+        requested: Option<usize>,
+        /// The cap the request exceeded, when known.
+        cap: Option<usize>,
+        /// Structured native decoder failure.
+        #[source]
+        source: NativeBackendError,
+    },
 }
 
 impl J2kError {
@@ -296,10 +312,14 @@ impl J2kError {
     ///
     /// This hidden SPI exists for sibling accelerator adapters. Applications
     /// should receive [`J2kError`] through the public codec APIs instead.
+    #[cold]
+    #[inline(never)]
     pub(crate) fn from_native_decode_error(error: NativeDecodeError) -> Self {
         Self::from_native_decode_error_with_context(error, "native JPEG 2000 backend failed")
     }
 
+    #[cold]
+    #[inline(never)]
     pub(crate) fn from_native_decode_error_with_context(
         error: NativeDecodeError,
         context: &'static str,
@@ -312,6 +332,11 @@ impl J2kError {
                 Self::Input(InputError::TruncatedAt { offset, segment })
             }
             NativeDecodeErrorClass::Unsupported { what } => Self::Unsupported(Unsupported { what }),
+            NativeDecodeErrorClass::ResourceLimit { requested, cap } => Self::ResourceLimit {
+                requested,
+                cap,
+                source: NativeBackendError::decode(error),
+            },
             _ => Self::NativeDecode {
                 context,
                 source: NativeBackendError::decode(error),
@@ -518,17 +543,10 @@ mod tests {
 
     #[test]
     fn native_decode_resource_errors_preserve_context_and_source() {
-        let sources = [
-            NativeDecodeError::AllocationTooLarge {
-                what: "validation fixture",
-                requested: 9,
-                cap: 8,
-            },
-            NativeDecodeError::HostAllocationFailed {
-                what: "validation fixture",
-                bytes: 7,
-            },
-        ];
+        let sources = [NativeDecodeError::HostAllocationFailed {
+            what: "validation fixture",
+            bytes: 7,
+        }];
 
         for source in sources {
             let error = J2kError::from_native_decode_error_with_context(
@@ -542,6 +560,51 @@ mod tests {
                     source: stored,
                 } if stored == &NativeBackendError::decode(source)
             ));
+            assert!(error.is_heap_free_batch_decode_error());
+            assert_native_source_chain(&error, &source);
+        }
+    }
+
+    #[test]
+    fn native_resource_limits_are_their_own_class_with_known_bytes() {
+        let cases = [
+            (
+                NativeDecodeError::AllocationTooLarge {
+                    what: "cap fixture",
+                    requested: 9,
+                    cap: 8,
+                },
+                Some(9),
+                Some(8),
+            ),
+            (
+                NativeDecodeError::Validation(j2k_native::ValidationError::ImageTooLarge),
+                None,
+                None,
+            ),
+        ];
+
+        for (source, expected_requested, expected_cap) in cases {
+            let error =
+                J2kError::from_native_decode_error_with_context(source, "decode fixture failed");
+            let J2kError::ResourceLimit {
+                requested,
+                cap,
+                source: stored,
+            } = &error
+            else {
+                panic!("expected a resource limit, got {error:?}");
+            };
+            assert_eq!((*requested, *cap), (expected_requested, expected_cap));
+            assert_eq!(stored, &NativeBackendError::decode(source));
+            assert_eq!(
+                error.to_string(),
+                format!("decode resource limit exceeded: {source}")
+            );
+            assert!(!error.is_truncated());
+            assert!(!error.is_unsupported());
+            assert!(!error.is_not_implemented());
+            assert!(!error.is_buffer_error());
             assert!(error.is_heap_free_batch_decode_error());
             assert_native_source_chain(&error, &source);
         }

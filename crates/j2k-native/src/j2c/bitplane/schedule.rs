@@ -7,14 +7,18 @@ use super::arithmetic::{
     cleanup_pass_arithmetic, magnitude_refinement_pass_arithmetic,
     significance_propagation_pass_arithmetic,
 };
-use super::bypass::{BitDecoder, BypassDecoder, SafeScalarTier1};
+use super::bypass::{BitDecoder, BypassDecoder, RawBits, SafeScalarTier1};
 use super::flag_passes::{
-    cleanup_pass_flags, magnitude_refinement_pass_flags, significance_propagation_pass_flags,
+    cleanup_pass_flags, cleanup_pass_raw, magnitude_refinement_pass_flags,
+    magnitude_refinement_pass_raw, significance_propagation_pass_flags,
+    significance_propagation_pass_raw,
 };
 use super::observer::{J2kDecodeObserver, NoJ2kDecodeStats};
 use super::state::{
     extend_preallocated, push_preallocated, BitPlaneDecodeBuffers, BitPlaneDecodeContext,
 };
+#[cfg(target_arch = "x86_64")]
+use crate::math::{dispatch, Level};
 use crate::J2kCodeBlockSegment;
 
 pub(super) fn decode_inner(
@@ -115,11 +119,30 @@ fn decode_inner_with_observer<O: J2kDecodeObserver>(
 
             if use_arithmetic {
                 let mut decoder = ArithmeticDecoder::new(data);
-                handle_arithmetic_coding_passes(
+                if ctx.uses_packed_columns() {
+                    handle_packed_arithmetic_coding_passes(
+                        start_coding_pass,
+                        end_coding_pass,
+                        ctx,
+                        &mut decoder,
+                        observer,
+                    )?;
+                } else {
+                    handle_arithmetic_coding_passes(
+                        start_coding_pass,
+                        end_coding_pass,
+                        ctx,
+                        &mut decoder,
+                        observer,
+                    )?;
+                }
+            } else if ctx.uses_packed_columns() {
+                let mut bits = RawBits::new(data, ctx.strict);
+                handle_packed_raw_coding_passes(
                     start_coding_pass,
                     end_coding_pass,
                     ctx,
-                    &mut decoder,
+                    &mut bits,
                     observer,
                 )?;
             } else {
@@ -138,6 +161,24 @@ fn decode_inner_with_observer<O: J2kDecodeObserver>(
     Some(())
 }
 
+/// The per-coefficient passes (bypass, restart, causal and termination
+/// code-block styles) run inside the x86-64 dispatch for the same reason as
+/// [`handle_packed_arithmetic_coding_passes`].
+#[cfg(target_arch = "x86_64")]
+pub(super) fn handle_arithmetic_coding_passes(
+    start: u8,
+    end: u8,
+    ctx: &mut BitPlaneDecodeContext,
+    decoder: &mut ArithmeticDecoder<'_>,
+    observer: &mut impl J2kDecodeObserver,
+) -> Option<()> {
+    dispatch!(Level::new(), simd => {
+        let _ = simd;
+        run_arithmetic_coding_passes::<false>(start, end, ctx, decoder, observer)
+    })
+}
+
+#[cfg(not(target_arch = "x86_64"))]
 pub(super) fn handle_arithmetic_coding_passes(
     start: u8,
     end: u8,
@@ -148,6 +189,26 @@ pub(super) fn handle_arithmetic_coding_passes(
     run_arithmetic_coding_passes::<false>(start, end, ctx, decoder, observer)
 }
 
+/// On x86-64 the passes run inside the runtime dispatch, so the MQ decode
+/// compiles with LZCNT and BMI2 where present: on baseline x86-64 every
+/// decision's `leading_zeros` is a BSR plus a zero fixup on the per-symbol
+/// dependency chain, and the renormalizing shifts go through CL. ARM64 has
+/// CLZ in its baseline.
+#[cfg(target_arch = "x86_64")]
+pub(super) fn handle_packed_arithmetic_coding_passes(
+    start: u8,
+    end: u8,
+    ctx: &mut BitPlaneDecodeContext,
+    decoder: &mut ArithmeticDecoder<'_>,
+    observer: &mut impl J2kDecodeObserver,
+) -> Option<()> {
+    dispatch!(Level::new(), simd => {
+        let _ = simd;
+        run_arithmetic_coding_passes::<true>(start, end, ctx, decoder, observer)
+    })
+}
+
+#[cfg(not(target_arch = "x86_64"))]
 pub(super) fn handle_packed_arithmetic_coding_passes(
     start: u8,
     end: u8,
@@ -158,8 +219,22 @@ pub(super) fn handle_packed_arithmetic_coding_passes(
     run_arithmetic_coding_passes::<true>(start, end, ctx, decoder, observer)
 }
 
+/// A local that makes its function realign the stack pointer to 4 KiB; see
+/// [`run_arithmetic_coding_passes`].
+#[cfg(all(target_arch = "aarch64", feature = "std"))]
+#[repr(align(4096))]
+struct PageAlignedFrame(u8);
+
 /// Arithmetic passes over the packed column words (`PACKED_COLUMNS`) or the
 /// per-coefficient arrays; decisions and contexts are identical.
+#[cfg_attr(
+    target_arch = "x86_64",
+    expect(
+        clippy::inline_always,
+        reason = "the passes must inline into the caller's x86-64 dispatch target"
+    ),
+    inline(always)
+)]
 fn run_arithmetic_coding_passes<const PACKED_COLUMNS: bool>(
     start: u8,
     end: u8,
@@ -167,6 +242,21 @@ fn run_arithmetic_coding_passes<const PACKED_COLUMNS: bool>(
     decoder: &mut ArithmeticDecoder<'_>,
     observer: &mut impl J2kDecodeObserver,
 ) -> Option<()> {
+    // On AArch64 the pass loops reload spilled registers in pairs (`ldp`, 16
+    // bytes, 8-byte aligned), some once per symbol. Wherever the stack put
+    // such a pair across a page boundary (16 KiB pages on Apple silicon),
+    // every reload was a page-split load and the passes ran ~45% slower, at
+    // stack depths set by the caller or, on pool threads, by the build. A
+    // 4 KiB-aligned local realigns this frame to 4 KiB, which fixes where
+    // the spills sit within a page instead of leaving it to the caller's
+    // stack depth; they sit below the anchor, inside one 4 KiB block. The
+    // frame grows by up to 12 KiB of stack, so bare-metal builds keep the
+    // old frame. x86-64 spills single aligned registers, which cannot split.
+    #[cfg(all(target_arch = "aarch64", feature = "std"))]
+    let frame_anchor = PageAlignedFrame(0);
+    #[cfg(all(target_arch = "aarch64", feature = "std"))]
+    core::hint::black_box(&frame_anchor.0);
+
     for coding_pass in start..end {
         let current_bitplane = coding_pass.div_ceil(3);
         ctx.current_bit_position = ctx.bitplanes - 1 - current_bitplane;
@@ -272,6 +362,47 @@ fn handle_bypass_coding_passes(
     Some(())
 }
 
+/// The passes of a raw (bypass) segment on the packed columns, with the
+/// decisions of [`handle_bypass_coding_passes`].
+fn handle_packed_raw_coding_passes(
+    start: u8,
+    end: u8,
+    ctx: &mut BitPlaneDecodeContext,
+    bits: &mut RawBits<'_>,
+    observer: &mut impl J2kDecodeObserver,
+) -> Option<()> {
+    for coding_pass in start..end {
+        let phase_start = observer.phase_start();
+        let current_bitplane = coding_pass.div_ceil(3);
+        ctx.current_bit_position = ctx.bitplanes - 1 - current_bitplane;
+
+        match coding_pass % 3 {
+            0 => {
+                cleanup_pass_raw(ctx, bits)?;
+
+                if ctx.style.segmentation_symbols {
+                    let symbol = [bits.read()?, bits.read()?, bits.read()?, bits.read()?];
+                    if symbol != [1, 0, 1, 0] && ctx.strict {
+                        return None;
+                    }
+                }
+
+                ctx.reset_for_next_bitplane();
+            }
+            1 => significance_propagation_pass_raw(ctx, bits)?,
+            2 => magnitude_refinement_pass_raw(ctx, bits)?,
+            _ => unreachable!(),
+        }
+
+        if ctx.style.reset_context_probabilities {
+            ctx.reset_contexts();
+        }
+        observer.add_bypass_us(phase_start);
+    }
+
+    Some(())
+}
+
 pub(super) fn decode_code_block_segments_inner(
     data: &[u8],
     segments: &[J2kCodeBlockSegment],
@@ -315,6 +446,15 @@ pub(super) fn decode_code_block_segments_inner(
                     observer,
                 )?;
             }
+        } else if ctx.uses_packed_columns() {
+            let mut bits = RawBits::new(segment_data, ctx.strict);
+            handle_packed_raw_coding_passes(
+                start_coding_pass,
+                end_coding_pass,
+                ctx,
+                &mut bits,
+                observer,
+            )?;
         } else {
             let mut decoder = BypassDecoder::new(segment_data, ctx.strict);
             handle_bypass_coding_passes(

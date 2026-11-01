@@ -485,8 +485,14 @@ fn map_native_jp2_error(error: NativeDecodeError) -> J2kError {
             offset: 0,
             what: "unsupported JP2/JPH box metadata",
         },
-        source @ (NativeDecodeError::AllocationTooLarge { .. }
-        | NativeDecodeError::HostAllocationFailed { .. }) => J2kError::NativeDecode {
+        // A cap failure classifies as a resource limit.
+        source @ NativeDecodeError::AllocationTooLarge { .. } => {
+            J2kError::from_native_decode_error_with_context(
+                source,
+                "JP2/JPH metadata inspection failed",
+            )
+        }
+        source @ NativeDecodeError::HostAllocationFailed { .. } => J2kError::NativeDecode {
             context: "JP2/JPH metadata inspection failed",
             source: crate::NativeBackendError::decode(source),
         },

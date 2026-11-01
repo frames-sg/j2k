@@ -16,18 +16,17 @@ mod orchestrate;
 mod roi;
 mod vertical;
 
-pub(crate) use banded::{
-    banded_scratch_elements_for_execution, pack_last_level, planned_band_scratch_elements,
-    LastLevel,
-};
+pub(crate) use banded::{banded_scratch_elements_for_execution, pack_last_level, LastLevel};
 pub(in crate::j2c) use banded::{lift_rows, scale_samples};
 pub(crate) use direct::apply_codestream_single_decomposition_idwt_job;
 pub(crate) use direct::apply_single_decomposition_idwt_job;
 #[cfg(test)]
 pub(crate) use horizontal::test_irreversible_filter_97i;
 pub(crate) use lines::{LineReconstruction, SubBandRows};
-pub(crate) use model::{idwt_buffer_size, IDWTOutput, IdwtPlacement};
-pub(crate) use orchestrate::apply;
+#[cfg(all(test, feature = "parallel"))]
+pub(crate) use model::idwt_buffer_size;
+pub(crate) use model::{IDWTOutput, IdwtPlacement};
+pub(crate) use orchestrate::{apply, planned_workspace_elements};
 pub(crate) use roi::{last_level_fits_channels, roi_idwt_peak_elements, ComponentLines, LinePlan};
 
 // Decoded high-pass sub-bands include JPEG 2000's orientation gain. OpenJPEG's

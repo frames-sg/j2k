@@ -66,6 +66,17 @@ pub enum DecodeErrorClass {
     },
     /// All other native decoder failures.
     Backend,
+    /// The decode would exceed a resource limit: its live working memory
+    /// would pass the decode cap, or the image is too large to size.
+    ///
+    /// The input may be valid; a smaller request (region, reduced
+    /// resolution) or a larger limit can succeed where this one failed.
+    ResourceLimit {
+        /// Requested live bytes at the rejected boundary, when known.
+        requested: Option<usize>,
+        /// The cap the request exceeded, when known.
+        cap: Option<usize>,
+    },
 }
 
 /// Error returned by native JPEG 2000 and HTJ2K encode operations.
@@ -155,6 +166,14 @@ impl DecodeError {
             Self::Decoding(DecodingError::UnexpectedEof) => DecodeErrorClass::InputTruncatedAt {
                 offset: 0,
                 segment: "JPEG 2000 entropy data",
+            },
+            Self::AllocationTooLarge { requested, cap, .. } => DecodeErrorClass::ResourceLimit {
+                requested: Some(requested),
+                cap: Some(cap),
+            },
+            Self::Validation(ValidationError::ImageTooLarge) => DecodeErrorClass::ResourceLimit {
+                requested: None,
+                cap: None,
             },
             _ => DecodeErrorClass::Backend,
         }
@@ -701,6 +720,51 @@ mod classification_tests {
                     offset: 0,
                     segment: "JPEG 2000 entropy data",
                 },
+            ),
+            (
+                DecodeError::Validation(ValidationError::InvalidDimensions),
+                DecodeErrorClass::Backend,
+            ),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(error.classify(), expected, "{error}");
+        }
+    }
+
+    #[test]
+    fn resource_limits_classify_apart_from_invalid_input_and_allocator_failures() {
+        let cases = [
+            (
+                DecodeError::AllocationTooLarge {
+                    what: "native decoder context retained components",
+                    requested: 513,
+                    cap: 512,
+                },
+                DecodeErrorClass::ResourceLimit {
+                    requested: Some(513),
+                    cap: Some(512),
+                },
+            ),
+            (
+                DecodeError::Validation(ValidationError::ImageTooLarge),
+                DecodeErrorClass::ResourceLimit {
+                    requested: None,
+                    cap: None,
+                },
+            ),
+            // The allocator failing a cap-valid request is not a limit the
+            // caller can plan around, and malformed geometry is invalid input.
+            (
+                DecodeError::HostAllocationFailed {
+                    what: "decode coefficients",
+                    bytes: 511,
+                },
+                DecodeErrorClass::Backend,
+            ),
+            (
+                DecodeError::Validation(ValidationError::TooManyTiles),
+                DecodeErrorClass::Backend,
             ),
             (
                 DecodeError::Validation(ValidationError::InvalidDimensions),

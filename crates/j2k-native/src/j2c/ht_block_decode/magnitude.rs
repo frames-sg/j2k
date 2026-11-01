@@ -4,6 +4,8 @@ use alloc::vec::Vec;
 
 use super::cleanup::{decode_cleanup_symbols_first_row, decode_cleanup_symbols_row};
 use super::readers::{unstuff_magsgn, FlatBitReader, MelDecoder, ReverseBitReader};
+#[cfg(feature = "simd")]
+use super::readers::{unstuff_vlc, FlatVlcReader};
 use super::stats::HtDecodeObserver;
 #[cfg(feature = "simd")]
 use crate::math::{dispatch, Level};
@@ -59,6 +61,9 @@ fn decode_mag_sgn_sample_with_vn(
     (((ms_val << 31) | magnitude) & significant, v_n)
 }
 
+/// The `MagSgn` pass alone, from already decoded cleanup symbols: the
+/// reference the fused cleanup/`MagSgn` rows are tested against.
+#[cfg(test)]
 #[inline(never)]
 #[expect(
     clippy::too_many_arguments,
@@ -346,6 +351,7 @@ pub(super) fn decode_cleanup_and_magnitude_sign_phase(
     scratch: &mut [u16],
     v_n_scratch: &mut [u32],
     magsgn_buffer: &mut Vec<u8>,
+    vlc_buffer: &mut Vec<u8>,
     observer: &mut impl HtDecodeObserver,
 ) -> Option<()> {
     let quad_rows = height.div_ceil(2) as usize;
@@ -359,7 +365,6 @@ pub(super) fn decode_cleanup_and_magnitude_sign_phase(
     v_n_scratch[..v_n_width].fill(0);
 
     let mut mel = MelDecoder::new(coded_data, lcup, scup);
-    let mut vlc = ReverseBitReader::new_vlc(coded_data, lcup, scup);
     let consumable = (width as usize)
         .checked_mul(height as usize)?
         .checked_mul(4)?;
@@ -369,6 +374,9 @@ pub(super) fn decode_cleanup_and_magnitude_sign_phase(
 
     #[cfg(feature = "simd")]
     if uses_simd_rows(missing_msbs) {
+        // As the direct-output rows: the VLC bits unstuffed once per block.
+        let flat_vlc = unstuff_vlc(coded_data, lcup, scup, vlc_buffer)?;
+        let mut vlc = FlatVlcReader::new(flat_vlc)?;
         return dispatch!(Level::new(), simd => simd::decode_cleanup_and_magnitude_sign_rows(
             simd,
             &mut mel,
@@ -387,6 +395,9 @@ pub(super) fn decode_cleanup_and_magnitude_sign_phase(
         ));
     }
 
+    #[cfg(not(feature = "simd"))]
+    let _ = vlc_buffer;
+    let mut vlc = ReverseBitReader::new_vlc(coded_data, lcup, scup);
     let phase_start = observer.phase_start();
     decode_cleanup_symbols_first_row(&mut mel, &mut vlc, &mut run, scratch, width)?;
     observer.add_cleanup_us(phase_start);
@@ -449,6 +460,7 @@ pub(super) fn decode_cleanup_and_magnitude_sign_to_f32<const IRREVERSIBLE_MIDPOI
     scratch: &mut [u16],
     v_n_scratch: &mut [u32],
     magsgn_buffer: &mut Vec<u8>,
+    vlc_buffer: &mut Vec<u8>,
 ) -> Option<()> {
     if !supports_cleanup_to_f32(missing_msbs, width) {
         return None;
@@ -467,18 +479,20 @@ pub(super) fn decode_cleanup_and_magnitude_sign_to_f32<const IRREVERSIBLE_MIDPOI
         .checked_mul(height as usize)?
         .checked_mul(4)?;
     let flat = unstuff_magsgn(&coded_data[..lcup - scup], magsgn_buffer, consumable)?;
-    let output = simd::FinalOutput {
+    let flat_vlc = unstuff_vlc(coded_data, lcup, scup, vlc_buffer)?;
+    let output = simd::FinalOutput::<IRREVERSIBLE_MIDPOINT> {
         coefficient_shift: 31 - u32::from(coded_bitplanes),
         midpoint_scale: crate::math::pow2i(-(31_i32 - i32::from(coded_bitplanes))),
         dequantization_step,
     };
 
-    dispatch!(Level::new(), simd => simd::decode_cleanup_and_magnitude_sign_to_f32_rows::<IRREVERSIBLE_MIDPOINT, _>(
+    dispatch!(Level::new(), simd => simd::decode_cleanup_and_magnitude_sign_direct_rows(
         simd,
         coded_data,
         lcup,
         scup,
         flat,
+        flat_vlc,
         scratch,
         decoded_data,
         v_n_scratch,
@@ -488,5 +502,67 @@ pub(super) fn decode_cleanup_and_magnitude_sign_to_f32<const IRREVERSIBLE_MIDPOI
         stride,
         sstr,
         output,
+    ))
+}
+
+/// [`decode_cleanup_and_magnitude_sign_to_f32`] for a block whose refinement
+/// passes follow: the same direct rows, publishing the sign-magnitude words
+/// those passes refine. Its prologue mirrors the `f32` entry's.
+#[cfg(feature = "simd")]
+#[inline(never)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the direct cleanup entry keeps bitstream, geometry and scratch explicit"
+)]
+pub(super) fn decode_cleanup_and_magnitude_sign_direct(
+    coded_data: &[u8],
+    lcup: usize,
+    scup: usize,
+    decoded_data: &mut [u32],
+    missing_msbs: u32,
+    width: u32,
+    height: u32,
+    stride: u32,
+    sstr: usize,
+    scratch: &mut [u16],
+    v_n_scratch: &mut [u32],
+    magsgn_buffer: &mut Vec<u8>,
+    vlc_buffer: &mut Vec<u8>,
+) -> Option<()> {
+    if !supports_cleanup_to_f32(missing_msbs, width) {
+        return None;
+    }
+    let quad_rows = height.div_ceil(2) as usize;
+    if scratch.len() < sstr * (quad_rows + 1) {
+        return None;
+    }
+    let v_n_width = width.div_ceil(2) as usize + 2;
+    if v_n_scratch.len() < v_n_width {
+        return None;
+    }
+    v_n_scratch[..v_n_width].fill(0);
+
+    let consumable = (width as usize)
+        .checked_mul(height as usize)?
+        .checked_mul(4)?;
+    let flat = unstuff_magsgn(&coded_data[..lcup - scup], magsgn_buffer, consumable)?;
+    let flat_vlc = unstuff_vlc(coded_data, lcup, scup, vlc_buffer)?;
+
+    dispatch!(Level::new(), simd => simd::decode_cleanup_and_magnitude_sign_direct_rows(
+        simd,
+        coded_data,
+        lcup,
+        scup,
+        flat,
+        flat_vlc,
+        scratch,
+        decoded_data,
+        v_n_scratch,
+        missing_msbs,
+        width,
+        height,
+        stride,
+        sstr,
+        simd::SignMagnitude,
     ))
 }

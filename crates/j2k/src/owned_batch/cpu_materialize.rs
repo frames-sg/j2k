@@ -4,8 +4,8 @@
 
 use super::{
     backend, decode_prepared_plan_samples, size_of, BatchDecodeOptions, BatchGroupInfo,
-    BatchInfrastructureError, BatchLayout, BatchWorker, CpuDecodeParallelism, J2kError,
-    NativeSampleType, PreparedImage, Rect, Vec,
+    BatchInfrastructureError, BatchLayout, BatchWorker, CpuDecodeParallelism, CpuExecution,
+    J2kError, NativeSampleType, PreparedImage, Rect, Vec,
 };
 
 pub(super) fn ensure_batch_output_within_cap(
@@ -91,6 +91,9 @@ pub(super) fn decode_image_u8<'image>(
     worker: &mut BatchWorker,
     out: &mut [u8],
 ) -> Result<(), J2kError> {
+    if image.cpu_execution() == CpuExecution::ExceedsDecodeBound {
+        return Err(CpuExecution::decode_bound_error());
+    }
     if decode_prepared_plan_samples(image, info, worker, out, |sample, precision| {
         u8::try_from(round_unsigned(sample, precision)).unwrap_or(u8::MAX)
     })? {
@@ -113,6 +116,9 @@ pub(super) fn decode_image_u16<'image>(
     worker: &mut BatchWorker,
     out: &mut [u16],
 ) -> Result<(), J2kError> {
+    if image.cpu_execution() == CpuExecution::ExceedsDecodeBound {
+        return Err(CpuExecution::decode_bound_error());
+    }
     if decode_prepared_plan_samples(image, info, worker, out, |sample, precision| {
         u16::try_from(round_unsigned(sample, precision)).unwrap_or(u16::MAX)
     })? {
@@ -135,6 +141,9 @@ pub(super) fn decode_image_i16<'image>(
     worker: &mut BatchWorker,
     out: &mut [i16],
 ) -> Result<(), J2kError> {
+    if image.cpu_execution() == CpuExecution::ExceedsDecodeBound {
+        return Err(CpuExecution::decode_bound_error());
+    }
     if decode_prepared_plan_samples(image, info, worker, out, round_signed)? {
         return Ok(());
     }

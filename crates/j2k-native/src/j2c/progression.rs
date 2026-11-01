@@ -12,6 +12,7 @@ use crate::error::{DecodingError, Result};
 use crate::j2c::decode::DecodeAllocationBudget;
 use crate::ValidationError;
 use core::cmp::Ordering;
+use core::ops::Range;
 
 const PACKETS_PER_INCLUSION_WORD: usize = u64::BITS as usize;
 
@@ -207,6 +208,42 @@ enum ProgressionInner<'a> {
 impl ProgressionIterator<'_> {
     pub(crate) const fn owned_bytes(&self) -> usize {
         self.owned_bytes
+    }
+
+    /// Packets of the precinct the last packet belongs to that come right
+    /// after it: its remaining layers, in a position-major progression
+    /// without progression changes, whose layer is the innermost index.
+    /// Zero for every other progression.
+    pub(crate) fn remaining_precinct_layers(&self) -> usize {
+        match &self.inner {
+            ProgressionInner::Single(ProgressionOrderIterator::Position(iterator))
+                if iterator.current.is_some() =>
+            {
+                usize::from(iterator.max_layer.saturating_sub(iterator.next_layer))
+            }
+            _ => 0,
+        }
+    }
+
+    /// Pass over `count` of [`Self::remaining_precinct_layers`], as `count`
+    /// calls to `next` would.
+    pub(crate) fn skip_precinct_layers(&mut self, count: usize) {
+        if count == 0 {
+            return;
+        }
+        if let ProgressionInner::Single(ProgressionOrderIterator::Position(iterator)) =
+            &mut self.inner
+        {
+            let remaining = usize::from(iterator.max_layer.saturating_sub(iterator.next_layer));
+            if count <= remaining {
+                // `count` fits in the u8 layer range below `max_layer`.
+                iterator.next_layer += u8::try_from(count).unwrap_or(0);
+                return;
+            }
+        }
+        for _ in 0..count {
+            self.next();
+        }
     }
 }
 
@@ -572,6 +609,7 @@ fn first_resolution_tile<'a>(input: &IteratorInput<'a>) -> Option<ResolutionTile
 // exactly the same, except that the sort order precedence of the fields change.
 
 // Note that the order of fields here is important!
+#[derive(Clone, Copy)]
 struct PrecinctStore {
     resolution: u8,
     precinct_y: u32,
@@ -580,12 +618,62 @@ struct PrecinctStore {
     precinct_idx: u64,
 }
 
+/// A position-major progression's order of precincts.
+type PrecinctOrder = fn(&PrecinctStore, &PrecinctStore) -> Ordering;
+
+/// How a position-major progression's precincts are grouped by its leading
+/// key, when that key is the resolution or the component: every precinct of
+/// one group precedes every precinct of the next, so the progression is each
+/// group's runs merged in turn.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LeadingKey {
+    Resolution,
+    Component,
+    Position,
+}
+
+/// A position-major progression, read as a merge of runs: the precincts of
+/// one component and resolution, which come in raster order, are already in
+/// progression order among themselves whenever their reference-grid
+/// positions increase, so the progression only has to interleave them. A
+/// tile whose runs are not in order is sorted whole and read as one run.
 struct PositionProgression {
-    elements: alloc::vec::IntoIter<PrecinctStore>,
+    elements: Vec<PrecinctStore>,
+    /// Unread part of each run, ordered by group.
+    runs: Vec<Range<usize>>,
+    /// Each group's runs in `runs`, in progression order.
+    groups: Vec<Range<usize>>,
+    group: usize,
+    order: PrecinctOrder,
     current: Option<PrecinctStore>,
     min_layer: u8,
     max_layer: u8,
     next_layer: u8,
+}
+
+impl PositionProgression {
+    /// The next precinct in progression order: the least unread head among
+    /// the current group's runs.
+    fn next_precinct(&mut self) -> Option<PrecinctStore> {
+        while let Some(group) = self.groups.get(self.group) {
+            let runs = self.runs.get_mut(group.clone())?;
+            let mut least: Option<(usize, &PrecinctStore)> = None;
+            for (slot, run) in runs.iter().enumerate() {
+                let Some(head) = self.elements.get(run.start).filter(|_| !run.is_empty()) else {
+                    continue;
+                };
+                if least.is_none_or(|(_, best)| (self.order)(head, best) == Ordering::Less) {
+                    least = Some((slot, head));
+                }
+            }
+            if let Some((slot, &head)) = least {
+                runs[slot].start += 1;
+                return Some(head);
+            }
+            self.group += 1;
+        }
+        None
+    }
 }
 
 impl Iterator for PositionProgression {
@@ -605,7 +693,7 @@ impl Iterator for PositionProgression {
                     return Some(packet);
                 }
             }
-            self.current = self.elements.next();
+            self.current = self.next_precinct();
             self.next_layer = self.min_layer;
             self.current.as_ref()?;
         }
@@ -615,36 +703,44 @@ impl Iterator for PositionProgression {
 fn position_progression_common(
     input: &IteratorInput<'_>,
     budget: &mut DecodeAllocationBudget,
-    sort: impl FnMut(&PrecinctStore, &PrecinctStore) -> Ordering,
+    leading: LeadingKey,
+    order: PrecinctOrder,
 ) -> Result<PositionProgression> {
+    let components = input.max_comp() as usize - input.min_comp() as usize;
+    let resolutions = input.total_max_resolution() as usize - input.min_resolution() as usize;
     let mut element_count = 0usize;
+    let mut run_count = 0usize;
     for component in input
         .tile
         .component_tiles()
         .skip(input.min_comp() as usize)
-        .take(input.max_comp() as usize - input.min_comp() as usize)
+        .take(components)
     {
         for resolution_tile in component
             .resolution_tiles()
             .skip(input.min_resolution() as usize)
-            .take(input.total_max_resolution() as usize - input.min_resolution() as usize)
+            .take(resolutions)
         {
             let precincts = usize::try_from(resolution_tile.num_precincts())
                 .map_err(|_| ValidationError::ImageTooLarge)?;
             element_count = element_count
                 .checked_add(precincts)
                 .ok_or(ValidationError::ImageTooLarge)?;
+            run_count += 1;
         }
     }
     let mut elements = Vec::new();
     budget.reserve_new(&mut elements, element_count)?;
+    // Runs in push order: each component's resolutions in turn.
+    let mut pushed_runs = Vec::new();
+    budget.reserve_new(&mut pushed_runs, run_count)?;
 
     for (component_idx, component) in input
         .tile
         .component_tiles()
         .enumerate()
         .skip(input.min_comp() as usize)
-        .take(input.max_comp() as usize - input.min_comp() as usize)
+        .take(components)
     {
         let component_idx =
             u16::try_from(component_idx).map_err(|_| ValidationError::ImageTooLarge)?;
@@ -652,10 +748,11 @@ fn position_progression_common(
             .resolution_tiles()
             .enumerate()
             .skip(input.min_resolution() as usize)
-            .take(input.total_max_resolution() as usize - input.min_resolution() as usize)
+            .take(resolutions)
         {
             let resolution =
                 u8::try_from(resolution).map_err(|_| ValidationError::ImageTooLarge)?;
+            let run_start = elements.len();
             for precinct in resolution_tile
                 .precincts()
                 .ok_or(DecodingError::InvalidProgressionIterator)?
@@ -671,6 +768,10 @@ fn position_progression_common(
                     precinct_idx: precinct.idx,
                 });
             }
+            if pushed_runs.len() == pushed_runs.capacity() {
+                return Err(DecodingError::HostAllocationFailed.into());
+            }
+            pushed_runs.push(run_start..elements.len());
         }
     }
 
@@ -678,10 +779,14 @@ fn position_progression_common(
         return Err(DecodingError::InvalidProgressionIterator.into());
     }
 
-    elements.sort_unstable_by(sort);
+    let (runs, groups) = group_runs(&mut elements, pushed_runs, leading, order, budget)?;
 
     Ok(PositionProgression {
-        elements: elements.into_iter(),
+        elements,
+        runs,
+        groups,
+        group: 0,
+        order,
         current: None,
         min_layer: input.min_layer(),
         max_layer: input.max_layer(),
@@ -689,19 +794,94 @@ fn position_progression_common(
     })
 }
 
+type RunGroups = (Vec<Range<usize>>, Vec<Range<usize>>);
+
+/// Group the runs by the progression's leading key, in progression order,
+/// when every run is strictly in progression order. The order is total, so
+/// merging each group's runs yields exactly the sorted sequence. Otherwise,
+/// and for position-led orders, sort `elements` and read them as one run.
+fn group_runs(
+    elements: &mut [PrecinctStore],
+    mut runs: Vec<Range<usize>>,
+    leading: LeadingKey,
+    order: PrecinctOrder,
+    budget: &mut DecodeAllocationBudget,
+) -> Result<RunGroups> {
+    let key = |elements: &[PrecinctStore], run: &Range<usize>| {
+        let first = elements.get(run.start)?;
+        match leading {
+            LeadingKey::Resolution => Some(usize::from(first.resolution)),
+            LeadingKey::Component => Some(usize::from(first.component_idx)),
+            LeadingKey::Position => None,
+        }
+    };
+    let merge = leading != LeadingKey::Position
+        && runs.iter().all(|run| {
+            elements.get(run.clone()).is_some_and(|run| {
+                run.windows(2)
+                    .all(|pair| order(&pair[0], &pair[1]) == Ordering::Less)
+            })
+        });
+    if merge {
+        runs.retain(|run| !run.is_empty());
+        // A group's runs may come in any order: each step takes the least head.
+        runs.sort_unstable_by_key(|run| key(elements, run));
+    } else {
+        elements.sort_unstable_by(order);
+        runs.clear();
+        if !elements.is_empty() {
+            if runs.capacity() == 0 {
+                return Err(DecodingError::InvalidProgressionIterator.into());
+            }
+            runs.push(0..elements.len());
+        }
+    }
+    let mut groups: Vec<Range<usize>> = Vec::new();
+    budget.reserve_new(&mut groups, runs.len())?;
+    for (index, run) in runs.iter().enumerate() {
+        match groups.last_mut() {
+            Some(group) if merge && key(elements, &runs[group.start]) == key(elements, run) => {
+                group.end = index + 1;
+            }
+            _ => groups.push(index..index + 1),
+        }
+    }
+    Ok((runs, groups))
+}
+
+fn rpcl_order(p: &PrecinctStore, s: &PrecinctStore) -> Ordering {
+    p.resolution
+        .cmp(&s.resolution)
+        .then_with(|| p.precinct_y.cmp(&s.precinct_y))
+        .then_with(|| p.precinct_x.cmp(&s.precinct_x))
+        .then_with(|| p.component_idx.cmp(&s.component_idx))
+        .then_with(|| p.precinct_idx.cmp(&s.precinct_idx))
+}
+
+fn pcrl_order(p: &PrecinctStore, s: &PrecinctStore) -> Ordering {
+    p.precinct_y
+        .cmp(&s.precinct_y)
+        .then_with(|| p.precinct_x.cmp(&s.precinct_x))
+        .then_with(|| p.component_idx.cmp(&s.component_idx))
+        .then_with(|| p.resolution.cmp(&s.resolution))
+        .then_with(|| p.precinct_idx.cmp(&s.precinct_idx))
+}
+
+fn cprl_order(p: &PrecinctStore, s: &PrecinctStore) -> Ordering {
+    p.component_idx
+        .cmp(&s.component_idx)
+        .then_with(|| p.precinct_y.cmp(&s.precinct_y))
+        .then_with(|| p.precinct_x.cmp(&s.precinct_x))
+        .then_with(|| p.resolution.cmp(&s.resolution))
+        .then_with(|| p.precinct_idx.cmp(&s.precinct_idx))
+}
+
 /// B.12.1.3 Resolution level-position-component-layer progression.
 fn resolution_position_component_layer_progression(
     input: &IteratorInput<'_>,
     budget: &mut DecodeAllocationBudget,
 ) -> Result<PositionProgression> {
-    position_progression_common(input, budget, |p, s| {
-        p.resolution
-            .cmp(&s.resolution)
-            .then_with(|| p.precinct_y.cmp(&s.precinct_y))
-            .then_with(|| p.precinct_x.cmp(&s.precinct_x))
-            .then_with(|| p.component_idx.cmp(&s.component_idx))
-            .then_with(|| p.precinct_idx.cmp(&s.precinct_idx))
-    })
+    position_progression_common(input, budget, LeadingKey::Resolution, rpcl_order)
 }
 
 /// B.12.1.4 Position-component-resolution level-layer progression.
@@ -709,14 +889,7 @@ fn position_component_resolution_layer_progression(
     input: &IteratorInput<'_>,
     budget: &mut DecodeAllocationBudget,
 ) -> Result<PositionProgression> {
-    position_progression_common(input, budget, |p, s| {
-        p.precinct_y
-            .cmp(&s.precinct_y)
-            .then_with(|| p.precinct_x.cmp(&s.precinct_x))
-            .then_with(|| p.component_idx.cmp(&s.component_idx))
-            .then_with(|| p.resolution.cmp(&s.resolution))
-            .then_with(|| p.precinct_idx.cmp(&s.precinct_idx))
-    })
+    position_progression_common(input, budget, LeadingKey::Position, pcrl_order)
 }
 
 /// B.12.1.5 Component-position-resolution level-layer progression.
@@ -724,14 +897,7 @@ fn component_position_resolution_layer_progression(
     input: &IteratorInput<'_>,
     budget: &mut DecodeAllocationBudget,
 ) -> Result<PositionProgression> {
-    position_progression_common(input, budget, |p, s| {
-        p.component_idx
-            .cmp(&s.component_idx)
-            .then_with(|| p.precinct_y.cmp(&s.precinct_y))
-            .then_with(|| p.precinct_x.cmp(&s.precinct_x))
-            .then_with(|| p.resolution.cmp(&s.resolution))
-            .then_with(|| p.precinct_idx.cmp(&s.precinct_idx))
-    })
+    position_progression_common(input, budget, LeadingKey::Component, cprl_order)
 }
 
 #[cfg(test)]
@@ -956,6 +1122,78 @@ mod tests {
                 step_sizes: vec![],
             },
             roi_shift: 0,
+        }
+    }
+
+    fn component_with_precincts(levels: u8, exponent: u8, sampling: (u8, u8)) -> ComponentInfo {
+        let mut component = component_with_levels(levels);
+        component.size_info.horizontal_resolution = sampling.0;
+        component.size_info.vertical_resolution = sampling.1;
+        component.coding_style.parameters.code_block_width = 2;
+        component.coding_style.parameters.code_block_height = 2;
+        component.coding_style.parameters.precinct_exponents = (0..=levels)
+            .map(|resolution| {
+                let exponent = exponent + u8::from(resolution > 0);
+                (exponent, exponent + u8::from(resolution % 2 == 1))
+            })
+            .collect();
+        component
+    }
+
+    /// Merging each component's and resolution's precincts gives the order
+    /// sorting all of them gives, packet for packet.
+    #[test]
+    fn merged_position_progressions_match_the_sorted_order() {
+        let orders: [(LeadingKey, PrecinctOrder); 2] = [
+            (LeadingKey::Resolution, rpcl_order),
+            (LeadingKey::Component, cprl_order),
+        ];
+        for (components, rect) in [
+            (
+                vec![
+                    component_with_precincts(3, 3, (1, 1)),
+                    component_with_precincts(3, 3, (1, 1)),
+                    component_with_precincts(3, 3, (1, 1)),
+                ],
+                IntRect::from_ltrb(0, 0, 203, 157),
+            ),
+            (
+                vec![
+                    component_with_precincts(4, 2, (1, 1)),
+                    component_with_precincts(2, 3, (2, 1)),
+                    component_with_precincts(3, 2, (2, 2)),
+                    component_with_precincts(1, 4, (1, 3)),
+                ],
+                IntRect::from_ltrb(37, 21, 290, 199),
+            ),
+        ] {
+            let tile = Tile {
+                #[cfg(feature = "std")]
+                packet_directory: None,
+                idx: 0,
+                tile_parts: vec![],
+                component_infos: components,
+                rect,
+                progression_order: ProgressionOrder::ResolutionPositionComponentLayer,
+                progression_changes: vec![],
+                num_layers: 2,
+                mct: false,
+            };
+            for (leading, order) in orders {
+                let input = IteratorInput::new(&tile).expect("progression input");
+                let mut budget = DecodeAllocationBudget::from_live_bytes(0).expect("budget");
+                let merged = position_progression_common(&input, &mut budget, leading, order)
+                    .expect("merged progression");
+                assert!(merged.groups.len() > 1, "the precincts merge in groups");
+                let sorted =
+                    position_progression_common(&input, &mut budget, LeadingKey::Position, order)
+                        .expect("sorted progression");
+                assert_eq!(sorted.groups.len(), 1);
+                let merged: Vec<_> = merged.collect();
+                let sorted: Vec<_> = sorted.collect();
+                assert!(merged.len() > 100);
+                assert_eq!(merged, sorted);
+            }
         }
     }
 

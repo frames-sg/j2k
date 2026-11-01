@@ -427,6 +427,10 @@ fn push_within_capacity<T>(values: &mut Vec<T>, value: T) -> Result<()> {
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one pass marks every component's and resolution's precincts in the order the use table indexes them"
+)]
 fn select(
     tile: &Tile<'_>,
     storage: &DecompositionStorage<'_>,
@@ -470,17 +474,37 @@ fn select(
                         decomposition.sub_bands,
                     )
                 };
-            for precinct in resolution_tile
-                .precincts()
-                .ok_or(DecodingError::InvalidPrecinct)?
-            {
+            // Each sub-band the ROI plan reads, in order, with its window.
+            let windows: [Option<(IntRect, IntRect)>; 3] = core::array::from_fn(|slot| {
+                let sub_band_type = sub_band_types.get(slot)?;
+                let window = plan.sub_band_window(sub_band_indices[slot])?;
+                Some((window, resolution_tile.sub_band_rect(*sub_band_type)))
+            });
+            let precincts = resolution_tile
+                .precinct_grid()
+                .ok_or(DecodingError::InvalidPrecinct)?;
+            let precinct_count = usize::try_from(resolution_tile.num_precincts())
+                .map_err(|_| ValidationError::ImageTooLarge)?;
+            if windows.iter().all(Option::is_none) {
+                // The plan reads none of this resolution's sub-bands (a
+                // reduced decode's finer levels): every precinct is unused,
+                // and only the index check of its rectangle remains.
+                let rects = precincts.rect_count();
+                for precinct_idx in 0..precinct_count {
+                    if precinct_idx >= rects {
+                        return Err(DecodingError::InvalidPrecinct.into());
+                    }
+                    push_within_capacity(&mut uses, PrecinctUse::Unused)?;
+                }
+                continue;
+            }
+            for precinct_idx in 0..precinct_count {
+                let precinct_rect = precincts
+                    .rect_at(precinct_idx)
+                    .ok_or(DecodingError::InvalidPrecinct)?;
                 let mut required = false;
-                for (sub_band_type, sub_band_idx) in sub_band_types.iter().zip(sub_band_indices) {
-                    let Some(window) = plan.sub_band_window(sub_band_idx) else {
-                        continue;
-                    };
-                    let rect = resolution_tile.sub_band_rect(*sub_band_type);
-                    let grid = code_block_grid(&resolution_tile, rect, precinct.rect)?;
+                for (window, rect) in windows.iter().flatten().copied() {
+                    let grid = code_block_grid(&resolution_tile, rect, precinct_rect)?;
                     if grid.columns > 0
                         && grid.rows > 0
                         && window.intersects(grid.area.intersect(rect))

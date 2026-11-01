@@ -16,7 +16,10 @@ use crate::{
 };
 
 mod allocation;
-use allocation::{prepare_direct_scratch, DirectWorkspaceBudget};
+use allocation::{
+    planned_referenced_classic_execution_bytes, planned_referenced_htj2k_execution_bytes,
+    prepare_direct_scratch, DirectWorkspaceBudget,
+};
 mod color;
 use color::apply_inverse_mct_region;
 pub use color::{execute_direct_color_plan_rgb8_into, execute_direct_color_plan_rgba8_into};
@@ -46,6 +49,39 @@ pub use referenced_classic::{
     execute_referenced_classic_plan, execute_referenced_classic_plan_from_payloads,
 };
 
+/// Planned peak bytes one execution of `plan` allocates into empty
+/// [`J2kDirectCpuScratch`], including the retained plan, computed without
+/// allocating. `parallel` selects the extra owners of parallel execution
+/// ([`J2kDirectCpuScratch::set_parallel_decode`]).
+///
+/// # Errors
+///
+/// Returns [`ValidationError::ImageTooLarge`](crate::ValidationError) when
+/// the execution exceeds the per-decode memory bound execution enforces, or
+/// another error when the plan is malformed.
+#[doc(hidden)]
+pub fn referenced_htj2k_plan_execution_bytes(
+    plan: &crate::J2kReferencedHtj2kPlan,
+    parallel: bool,
+) -> Result<usize> {
+    planned_referenced_htj2k_execution_bytes(plan, parallel)
+}
+
+/// Classic counterpart of [`referenced_htj2k_plan_execution_bytes`].
+///
+/// # Errors
+///
+/// Returns [`ValidationError::ImageTooLarge`](crate::ValidationError) when
+/// the execution exceeds the per-decode memory bound execution enforces, or
+/// another error when the plan is malformed.
+#[doc(hidden)]
+pub fn referenced_classic_plan_execution_bytes(
+    plan: &crate::J2kReferencedClassicPlan,
+    parallel: bool,
+) -> Result<usize> {
+    planned_referenced_classic_execution_bytes(plan, parallel)
+}
+
 /// Adapter reusable scratch for executing direct J2K RGB plans on the CPU.
 #[derive(Debug, Default)]
 pub struct J2kDirectCpuScratch {
@@ -57,6 +93,9 @@ pub struct J2kDirectCpuScratch {
     /// Extra HT workspaces for parallel referenced execution, one per
     /// additional Rayon worker.
     ht_task_workspaces: Vec<HtCodeBlockDecodeWorkspace>,
+    /// Extra classic workspaces for parallel referenced classic execution,
+    /// one per additional Rayon worker.
+    classic_task_workspaces: Vec<J2kCodeBlockDecodeWorkspace>,
     /// Whether referenced execution may spread work over the Rayon pool.
     parallel: bool,
     staged_state: Option<StagedDirectState>,
@@ -87,6 +126,7 @@ impl J2kDirectCpuScratch {
             classic_workspace: J2kCodeBlockDecodeWorkspace::empty(),
             ht_workspace: HtCodeBlockDecodeWorkspace::empty(),
             ht_task_workspaces: Vec::new(),
+            classic_task_workspaces: Vec::new(),
             parallel: false,
             staged_state: None,
         }
@@ -126,8 +166,13 @@ impl J2kDirectCpuScratch {
     #[doc(hidden)]
     #[must_use]
     pub fn retained_classic_workspace_bytes(&self) -> usize {
-        self.classic_workspace
-            .allocated_bytes()
+        self.classic_task_workspaces
+            .iter()
+            .try_fold(
+                self.classic_workspace.allocated_bytes().ok(),
+                |bytes, workspace| Some(bytes?.checked_add(workspace.allocated_bytes().ok()?)),
+            )
+            .flatten()
             .unwrap_or(usize::MAX)
     }
 

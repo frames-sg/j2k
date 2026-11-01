@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::state::Coefficient;
+#[cfg(target_arch = "x86_64")]
+use crate::math::{dispatch, Level};
 use j2k_codec_math::classic::irreversible_midpoint_bit;
 
 /// Reconstruct an irreversible coefficient at the centre of its final
@@ -89,17 +91,35 @@ impl MidpointReconstructor {
     /// midpoints fit in `u32`, and the per-coefficient branches become selects
     /// that vectorize. Halving is exact, so `fixed * (step / 2)` rounds like
     /// `(fixed / 2) * step`, and negation is a sign-bit flip.
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_precision_loss,
-        reason = "magnitudes are below 2^31 on the u32 path, which enters the f32 domain"
-    )]
+    ///
+    /// On x86-64 the row runs inside the runtime SIMD dispatch: baseline
+    /// x86-64 has no per-lane variable shift and no unsigned conversion, so
+    /// the loop would stay scalar there; with AVX2 it vectorizes as it does
+    /// on ARM64.
     pub(crate) fn dequantize_row(
         self,
         coefficients: &[Coefficient],
         output: &mut [f32],
         step: f32,
     ) {
+        #[cfg(target_arch = "x86_64")]
+        dispatch!(Level::new(), simd => {
+            let _ = simd;
+            self.dequantize_row_inlined(coefficients, output, step);
+        });
+        #[cfg(not(target_arch = "x86_64"))]
+        self.dequantize_row_inlined(coefficients, output, step);
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::inline_always,
+        reason = "magnitudes are below 2^31 on the u32 path, which enters the f32 domain; \
+                  inlined into the x86-64 dispatch target"
+    )]
+    #[inline(always)]
+    fn dequantize_row_inlined(self, coefficients: &[Coefficient], output: &mut [f32], step: f32) {
         let Some((lowest, final_sigprop)) = self
             .fast
             .filter(|_| self.roi_shift == 0 && self.decoded_bitplanes <= 31)
@@ -118,6 +138,41 @@ impl MidpointReconstructor {
             let bit = lowest + (refine & !(magnitude >> lowest) & 1);
             let value = ((magnitude << 1) | (1 << bit)) as f32 * half_step;
             let value = f32::from_bits(value.to_bits() ^ (negative << 31));
+            *sample = if magnitude == 0 { 0.0 } else { value };
+        }
+    }
+
+    /// Whether [`Self::reconstruct_reversible`] returns every coefficient as
+    /// decoded, without a midpoint offset, and at most 31 bit-planes are
+    /// coded, so magnitudes are below 2^31.
+    pub(crate) fn reversible_is_exact(self) -> bool {
+        self.decoded_bitplanes <= 31
+            && self
+                .fast
+                .is_none_or(|(lowest, final_sigprop)| lowest == 0 && !final_sigprop)
+    }
+
+    /// `output[i] = reconstruct_reversible(c[i]) as f32 * step` for as many
+    /// elements as both slices hold, for a block whose reconstruction
+    /// [`Self::reversible_is_exact`]. A magnitude below 2^31 converts exactly
+    /// through `u32`, and negation commutes with the rounding of both the
+    /// conversion and the product, so the sign is a bit flip and the row
+    /// vectorizes.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        reason = "magnitudes are below 2^31 when the reconstruction is exact"
+    )]
+    pub(crate) fn scale_exact_reversible_row(
+        coefficients: &[Coefficient],
+        output: &mut [f32],
+        step: f32,
+    ) {
+        for (sample, &coefficient) in output.iter_mut().zip(coefficients) {
+            let bits = coefficient.to_bits();
+            let magnitude = bits as u32;
+            let negative = (bits >> 63) as u32;
+            let value = f32::from_bits((magnitude as f32 * step).to_bits() ^ (negative << 31));
             *sample = if magnitude == 0 { 0.0 } else { value };
         }
     }

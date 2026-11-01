@@ -13,7 +13,7 @@ use crate::j2c::build::CoefficientLayout;
 use crate::j2c::idwt::{IdwtPlacement, LastLevel};
 use crate::j2c::rect::IntRect;
 use crate::j2c::roi::{output_grid_offset, output_region_rect};
-use crate::math::{round_ties_even_then_add, SIMD_WIDTH};
+use crate::math::SIMD_WIDTH;
 
 mod upsample;
 
@@ -698,11 +698,7 @@ impl SampleShift {
                     *sample += addend;
                 }
             }
-            Self::RoundThenAdd(addend) => {
-                for sample in samples {
-                    *sample = round_ties_even_then_add(*sample, addend);
-                }
-            }
+            Self::RoundThenAdd(addend) => mct::round_centered_and_shift(samples, addend),
         }
     }
 
@@ -714,9 +710,18 @@ impl SampleShift {
                     *output = input + addend;
                 }
             }
+            // On x86-64 a scalar rounding loop calls a library routine per
+            // sample: copy, then round at the SIMD level.
+            #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+            Self::RoundThenAdd(addend) => {
+                let len = output.len().min(input.len());
+                output[..len].copy_from_slice(&input[..len]);
+                mct::round_centered_and_shift(&mut output[..len], addend);
+            }
+            #[cfg(not(all(feature = "simd", target_arch = "x86_64")))]
             Self::RoundThenAdd(addend) => {
                 for (output, &input) in output.iter_mut().zip(input) {
-                    *output = round_ties_even_then_add(input, addend);
+                    *output = crate::math::round_ties_even_then_add(input, addend);
                 }
             }
         }
@@ -730,9 +735,7 @@ fn apply_float_sign_shift(
     round_irreversible_output: bool,
 ) {
     if round_irreversible_output && transform == WaveletTransform::Irreversible97 {
-        for sample in samples {
-            *sample = round_ties_even_then_add(*sample, sign_shift);
-        }
+        mct::round_centered_and_shift(samples, sign_shift);
     } else if sign_shift != 0.0 {
         for sample in samples {
             *sample += sign_shift;

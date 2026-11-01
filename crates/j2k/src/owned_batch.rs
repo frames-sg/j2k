@@ -37,7 +37,7 @@ pub use self::errors::{
 
 mod prepared;
 pub use self::prepared::{BatchDecoder, PreparedBatch, PreparedBatchGroup, PreparedImage};
-use self::prepared::{BatchExecutionShape, PreparedCodecPlan, PreparedImageInner};
+use self::prepared::{BatchExecutionShape, CpuExecution, PreparedCodecPlan, PreparedImageInner};
 
 mod prepared_plan;
 pub use self::prepared_plan::{
@@ -63,10 +63,10 @@ pub use self::cpu::{CpuBatchDecodeResult, CpuBatchDecoder, CpuBatchGroup, CpuBat
 mod cpu_diagnostics;
 pub use self::cpu_diagnostics::CpuBatchWorkspaceStats;
 mod prepare;
-use self::prepare::prepare_batch_with_workers;
 #[cfg(test)]
 use self::prepare::prepare_staging_bytes;
 pub use self::prepare::{prepare_batch, prepare_batch_from_images};
+use self::prepare::{prepare_batch_from_images_for, prepare_batch_with_workers, PrepareFor};
 
 #[cfg(test)]
 mod tests {

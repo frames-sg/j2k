@@ -35,6 +35,38 @@ fn shared_baseline_is_subtracted_from_each_initial_worker_claim() {
 }
 
 #[test]
+fn claim_that_cannot_fit_beside_the_baseline_fails_without_waiting() {
+    let baseline = super::super::allocation::GENERIC_WORKER_CLAIM_BYTES / 8;
+    let budget = BatchAllocationBudget::with_baseline(baseline).expect("shared-plan budget");
+    let admissible = batch_execution_cap_bytes() - baseline;
+    let claiming = Arc::clone(&budget);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let claimant = std::thread::spawn(move || {
+        // Fits the cap, but never beside the permanent baseline.
+        let result = claiming.claim(admissible + 1).map(drop);
+        sender.send(result).expect("report the claim result");
+    });
+    let result = receiver
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .unwrap_or_else(|_| {
+            panic!(
+                "claim blocked; registered waiters: {}",
+                budget.lock_state().waiters
+            )
+        });
+    claimant.join().expect("claimant joined");
+    assert!(matches!(
+        result,
+        Err(BatchInfrastructureError::AllocationTooLarge { requested, cap, .. })
+            if requested == admissible + 1 && cap == admissible
+    ));
+    assert_eq!(budget.lock_state().waiters, 0, "the claim never waited");
+    let largest = budget.claim(admissible).expect("largest admissible claim");
+    drop(largest);
+    assert_eq!(budget.lock_state().live, baseline);
+}
+
+#[test]
 fn waiting_claim_resumes_after_an_owner_reconciles() {
     let budget = BatchAllocationBudget::with_baseline(0).expect("budget");
     let mut owners = (0..super::super::allocation::generic_batch_worker_limit())
@@ -110,4 +142,18 @@ fn poisoned_admission_state_is_a_typed_infrastructure_error() {
         budget.claim(1),
         Err(BatchInfrastructureError::SchedulerPoisoned)
     ));
+}
+
+#[test]
+fn held_claim_grows_to_the_largest_execution_and_never_doubles() {
+    let budget = BatchAllocationBudget::with_baseline(0).expect("budget");
+    let mut held = None;
+    hold_at_least(&budget, &mut held, 100).expect("first claim");
+    assert_eq!(budget.lock_state().live, 100);
+    hold_at_least(&budget, &mut held, 40).expect("smaller execution reuses the claim");
+    assert_eq!(budget.lock_state().live, 100);
+    hold_at_least(&budget, &mut held, 300).expect("larger execution grows the claim");
+    assert_eq!(budget.lock_state().live, 300);
+    drop(held);
+    assert_eq!(budget.lock_state().live, 0);
 }

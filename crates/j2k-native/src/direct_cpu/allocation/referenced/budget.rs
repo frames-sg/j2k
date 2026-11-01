@@ -1,14 +1,19 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::super::{
-    bitplane, ht_block_decode, DirectAllocationBudget, DirectComponentBandScratch,
-    DirectComponentPlane, DirectCpuBand, DirectWorkspaceBudget, J2kDirectCpuScratch, Result,
+    bitplane, ht_block_decode, ClassicTaskShape, DirectAllocationBudget,
+    DirectComponentBandScratch, DirectComponentPlane, DirectCpuBand, DirectWorkspaceBudget,
+    J2kDirectCpuScratch, Result,
 };
 use super::view::{
     referenced_band_target, referenced_component_band_count, referenced_component_plane_len,
     referenced_temporary_workspace_bytes, validate_referenced_shape, ReferencedPlanView,
 };
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "referenced accounting keeps every retained owner shape explicit, as reservation does"
+)]
 pub(super) fn validate_referenced_aggregate_plan(
     plan: ReferencedPlanView<'_>,
     parallel: bool,
@@ -16,6 +21,7 @@ pub(super) fn validate_referenced_aggregate_plan(
     compressed_payload_bytes: usize,
     retained_classic_workspace_dimensions: Option<(u32, u32)>,
     retained_ht_workspace_dimensions: Option<(u32, u32)>,
+    classic_tasks: Option<ClassicTaskShape>,
     scratch: &J2kDirectCpuScratch,
 ) -> Result<DirectWorkspaceBudget> {
     validate_referenced_shape(plan)?;
@@ -28,6 +34,7 @@ pub(super) fn validate_referenced_aggregate_plan(
         compressed_payload_bytes,
         retained_classic_workspace_dimensions,
         retained_ht_workspace_dimensions,
+        classic_tasks,
         scratch,
     )?;
     let base_bytes = budget.bytes;
@@ -44,6 +51,7 @@ fn include_referenced_scratch_allocations(
     compressed_payload_bytes: usize,
     retained_classic_workspace_dimensions: Option<(u32, u32)>,
     retained_ht_workspace_dimensions: Option<(u32, u32)>,
+    classic_tasks: Option<ClassicTaskShape>,
     scratch: &J2kDirectCpuScratch,
 ) -> Result<()> {
     let component_count = plan.component_count();
@@ -93,5 +101,6 @@ fn include_referenced_scratch_allocations(
             ht_block_decode::ht_decode_workspace_bytes(width, height)
         })?;
     budget.include_bytes(retained_ht_workspace_bytes.max(target_ht_workspace_bytes))?;
-    super::super::include_ht_task_workspaces(budget, retained_ht_workspace_dimensions, scratch)
+    super::super::include_ht_task_workspaces(budget, retained_ht_workspace_dimensions, scratch)?;
+    super::super::include_classic_task_workspaces(budget, classic_tasks, scratch)
 }

@@ -45,9 +45,11 @@ const fn rgb(size: (u32, u32), levels: u8, fused: bool) -> Case {
     }
 }
 
-const CASES: [Case; 9] = [
+const CASES: [Case; 10] = [
     // Several parallel strips, odd widths and heights, and the fewest levels.
     rgb((520, 136), 5, true),
+    // Column strips whose last one takes an odd remainder and the row tail.
+    rgb((330, 72), 3, true),
     // Coarse scratch can supply several parallel pack rings.
     rgb((64, 2_048), 5, true),
     rgb((97, 88), 3, true),

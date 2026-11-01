@@ -489,7 +489,8 @@ impl<'a> Image<'a> {
     pub fn decode_with_context(&self, decoder_context: &mut DecoderContext<'a>) -> Result<Bitmap> {
         self.with_packet_cache_retry(|| {
             let retained_image_bytes = self.retained_header_metadata_bytes()?;
-            let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
+            let parallel =
+                self.decode_parallelism(decoder_context, None) == CpuDecodeParallelism::Auto;
             let (mct, first_ll, scratch, mut decoded_image, retained_image_bytes) =
                 self.decode_image_for_rgb8(decoder_context, None, retained_image_bytes)?;
             let component_owner_capacity = decoded_image.decoded_components.capacity();
@@ -803,8 +804,49 @@ impl<'a> Image<'a> {
         buf: &mut [u8],
         decoder_context: &mut DecoderContext<'a>,
     ) -> Result<()> {
+        #[cfg(feature = "parallel")]
+        if self.enters_pool(decoder_context) {
+            // One entry into the pool for the whole decode: its parallel
+            // stages then start from a pool thread instead of each waking one
+            // from the caller's thread and waiting for it there.
+            return rayon::scope(|_| self.decode_into_here(buf, decoder_context));
+        }
+        self.decode_into_here(buf, decoder_context)
+    }
+
+    /// Whether [`Self::decode_into`] moves onto the pool: an `Auto` decode
+    /// called from outside a pool of two or more threads whose estimated
+    /// serial time is at least 1.25 times the fork cost, unless stage
+    /// profiling is on (a pool thread would keep its rows). With one thread
+    /// the move only adds a hop between threads, and a decode only just worth
+    /// forking spends much of its time in serial parts, which then run on a
+    /// pool thread.
+    #[cfg(feature = "parallel")]
+    pub(crate) fn enters_pool(&self, decoder_context: &DecoderContext<'_>) -> bool {
+        #[cfg(test)]
+        if !decoder_context.tile_decode_context.enter_pool {
+            return false;
+        }
+        // Explicit parallelism is checked first so that it never starts the pool.
+        if decoder_context.cpu_decode_parallelism() != CpuDecodeParallelism::Auto
+            || rayon::current_thread_index().is_some()
+            || crate::profile::profile_stages_enabled()
+        {
+            return false;
+        }
+        let threads = rayon::current_num_threads();
+        let (serial_ns, fork_ns) = self.full_decode_cost_ns(threads);
+        threads >= 2 && serial_ns.saturating_mul(4) >= fork_ns.saturating_mul(5)
+    }
+
+    fn decode_into_here(
+        &self,
+        buf: &mut [u8],
+        decoder_context: &mut DecoderContext<'a>,
+    ) -> Result<()> {
         self.with_packet_cache_retry(|| {
-            let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
+            let parallel =
+                self.decode_parallelism(decoder_context, None) == CpuDecodeParallelism::Auto;
             let retained = self.retained_header_metadata_bytes()?;
             let (mct, first_ll, scratch, mut decoded_image, _retained_image_bytes) =
                 self.decode_image_for_rgb8(decoder_context, None, retained)?;
@@ -928,6 +970,99 @@ impl<'a> Image<'a> {
     /// they are finished when the decode can stream them, in which case it
     /// leaves no component planes (see `TileDecodeContext::stream_rows`).
     pub(super) fn run_decode_rows(
+        &self,
+        decoder_context: &mut DecoderContext<'a>,
+        output_region: Option<(u32, u32, u32, u32)>,
+        ht_decoder: Option<&mut dyn HtCodeBlockDecoder>,
+        round_irreversible_output: bool,
+        retained_baseline_bytes: usize,
+        row_sink: Option<&mut dyn crate::ComponentRowSink>,
+    ) -> Result<usize> {
+        let requested = decoder_context.cpu_decode_parallelism();
+        let parallelism = self.decode_parallelism(decoder_context, output_region);
+        decoder_context.set_cpu_decode_parallelism(parallelism);
+        let decoded = self.run_decode_rows_with_parallelism(
+            decoder_context,
+            output_region,
+            ht_decoder,
+            round_irreversible_output,
+            retained_baseline_bytes,
+            row_sink,
+        );
+        decoder_context.set_cpu_decode_parallelism(requested);
+        decoded
+    }
+
+    /// The parallelism a decode with `decoder_context` runs with: an `Auto`
+    /// full-image decode whose estimated serial time is shorter than waking
+    /// the pool's threads costs runs serially.
+    pub(crate) fn decode_parallelism(
+        &self,
+        decoder_context: &DecoderContext<'_>,
+        output_region: Option<(u32, u32, u32, u32)>,
+    ) -> CpuDecodeParallelism {
+        let requested = decoder_context.cpu_decode_parallelism();
+        if requested != CpuDecodeParallelism::Auto || output_region.is_some() {
+            return requested;
+        }
+        // Only an `Auto` decode asks for the pool, which starts it.
+        #[cfg(feature = "parallel")]
+        let threads = rayon::current_num_threads();
+        #[cfg(not(feature = "parallel"))]
+        let threads = 1_usize;
+        #[cfg(test)]
+        let threads = if decoder_context.tile_decode_context.serial_small_decodes {
+            threads
+        } else {
+            1
+        };
+        if threads < 2 {
+            return requested;
+        }
+        let (serial_ns, fork_ns) = self.full_decode_cost_ns(threads);
+        if serial_ns < fork_ns {
+            CpuDecodeParallelism::Serial
+        } else {
+            requested
+        }
+    }
+
+    /// A full-image decode's estimated serial nanoseconds, and what waking
+    /// `threads` pool threads costs it. The estimate counts the samples and
+    /// the coded bytes, which classic code-blocks take far longer to decode
+    /// than HT ones.
+    pub(crate) fn full_decode_cost_ns(&self, threads: usize) -> (u64, u64) {
+        /// Estimated serial nanoseconds per component sample and per coded
+        /// byte of HT and of classic code-blocks, and the fork cost per pool
+        /// thread that a decode must repay.
+        const SAMPLE_NS: u64 = 1;
+        const HT_BYTE_NS: u64 = 1;
+        const CLASSIC_BYTE_NS: u64 = 72;
+        const FORK_NS_PER_THREAD: u64 = 25_000;
+        let samples = u64::from(self.width())
+            .saturating_mul(u64::from(self.height()))
+            .saturating_mul(u64::try_from(self.header.component_infos.len()).unwrap_or(u64::MAX));
+        let byte_ns = if self.header.component_infos.iter().all(|component| {
+            component
+                .coding_style
+                .parameters
+                .code_block_style
+                .uses_high_throughput_block_coding()
+        }) {
+            HT_BYTE_NS
+        } else {
+            CLASSIC_BYTE_NS
+        };
+        let serial_ns = samples.saturating_mul(SAMPLE_NS).saturating_add(
+            u64::try_from(self.codestream.len())
+                .unwrap_or(u64::MAX)
+                .saturating_mul(byte_ns),
+        );
+        let fork_ns = FORK_NS_PER_THREAD.saturating_mul(u64::try_from(threads).unwrap_or(u64::MAX));
+        (serial_ns, fork_ns)
+    }
+
+    fn run_decode_rows_with_parallelism(
         &self,
         decoder_context: &mut DecoderContext<'a>,
         output_region: Option<(u32, u32, u32, u32)>,
