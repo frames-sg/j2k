@@ -213,12 +213,27 @@ Staged workspace version: `0.13.2`.
   one 2.9 times as fast). Untiled gray classic images stream at full
   resolution from 2896 x 2896 below 12 pool threads and from 5792 x 5792 on
   larger pools (12-15% faster on 6 threads, as fast elsewhere, in a fifth to a
-  seventh of the memory), and on one thread tiled RGB images stream their
-  tiles one after another and untiled classic RGB images of a megapixel or
-  more at 4 bits per pixel or more stream too (as fast, in a quarter to a
-  third of the memory). Reduced and tiled gray images, full-resolution HTJ2K
-  images, reduced tiled images, small images and images with few tiles on a
-  large pool keep the planes route. Output is unchanged.
+  seventh of the memory). On one thread (`CpuDecodeParallelism::Serial` or a
+  one-thread pool) decodes stream wherever streaming was measured as fast or
+  nearly so in much less memory: classic RGB images of 512 x 512 or more at
+  4 bits per pixel or more and of 4096 x 2048 or more at fewer (a
+  5428 x 4460 RGB image at 1.5 bits per pixel 2% slower, in 16 instead of
+  309 MiB); classic images in tiles of 256 x 256 or more, one tile after
+  another; reduced classic outputs of 512 x 256 or more, tiled or not;
+  reduced HTJ2K outputs of 1024 x 512 or more at 1/4 and below; gray classic
+  images from 1024 x 1024 or in tiles of 256 x 256 or more, and reduced gray
+  outputs from 512 x 256; and 16-bit outputs of 512 x 512 samples or more of
+  any coding, untiled or in tiles of 256 x 256 or more, which the planes
+  route packs from a second set of planes (HTJ2K images 21-25% faster
+  streamed). On one thread 8-bit decodes of untiled HTJ2K images at full
+  resolution, of HTJ2K images at 1/2 and of HTJ2K gray images keep the
+  planes route, as do small images; on two threads or more reduced and
+  tiled gray images, untiled full-resolution HTJ2K images, reduced tiled
+  images, small images and images with few tiles on a large pool do. A
+  stream chosen this way whose own buffers pass the decode budget, as a very
+  wide and shallow image's line buffers can while its planes fit, now
+  decodes on the planes route instead of failing, on any thread count.
+  Output is unchanged.
 - Row-streamed decodes of three 8-bit components into RGB8 output write the
   reconstructed rows straight into the output: 9/7 images with the
   multiple-component transform pack each row through the planes route's
