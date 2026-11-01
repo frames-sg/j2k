@@ -7,6 +7,14 @@ and stale roadmap entries have been removed from the public documentation set.
 
 Staged workspace version: `0.13.2`.
 
+- `AdapterErrorKind::Decode`, `BackendErrorKind::Decode` and
+  `BackendError::decode` classify GPU Tier-1 device decode failures. Metal FAIL
+  statuses now use the existing `Error::Decode` and `J2kError::Backend`
+  wrappers instead of `Error::MetalKernel`, so their display starts with
+  `backend failed (decode):`; the diagnostic keeps the classic or HT path,
+  status, detail and batch source index. CUDA keeps its typed source and job
+  attribution. Unsupported statuses, raw runtime failures and combined
+  cleanup or release failures keep their existing classes.
 - Classic code-blocks with BYPASS, per-pass termination, context resets or
   segmentation symbols use the packed-column passes, including raw segments.
   Vertically causal blocks retain the per-coefficient passes. Clean and corrupt
