@@ -15,6 +15,16 @@ Staged workspace version: `0.13.2`.
   status, detail and batch source index. CUDA keeps its typed source and job
   attribution. Unsupported statuses, raw runtime failures and combined
   cleanup or release failures keep their existing classes.
+- The CPU batch decoder converts the rows a streamed image hands over a
+  row at a time instead of a sample at a time, with the same rounding and
+  saturation, so the same bytes. The decode hands its rows over on the
+  thread that reads them, between the batches it reconstructs, while the
+  pool's band workers decode only as far ahead as their band rings hold,
+  so the conversion held the whole decode back. On an 18-core ARM64
+  machine a 5661 x 8287 RGB image as a one-image batch decodes in 127 ms
+  instead of 196 ms, at half resolution in 65 ms instead of 79 ms, and
+  four and eight copies with automatic workers in 447 and 876 ms instead
+  of 592 and 1065 ms.
 - A strict CUDA decode of a classic code-block whose packet headers claim
   more missing bit-planes than its sub-band codes, or more coding passes
   than its bit-planes hold, fails with a native decode error,
