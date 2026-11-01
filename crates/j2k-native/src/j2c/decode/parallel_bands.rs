@@ -230,7 +230,7 @@ fn decode_route(
     // the bands decode, and so does each thread's scratch, the route's
     // workers' and this thread's.
     let mut budget = route.budget();
-    budget.include_bytes(executor_bytes(&rings, &bands)?)?;
+    budget.include_bytes(executor_bytes(&rings, &bands, (route.workers(), 1))?)?;
     let mut scratches =
         BlockScratch::for_threads(route.workers() + 1, route.scratch_sizes()?, &mut budget)?;
     tile_ctx.idwt_output.placement = crate::j2c::idwt::IdwtPlacement::Coefficients;
@@ -371,11 +371,6 @@ pub(super) fn decode_tile_rows<'a>(
     let (rings, mut bands, strip_starts, active_levels) =
         plan_tile_rings(&routes, storage, header)?;
     let line_plans = plan_tile_lines(tile, header, tile_ctx, storage, &active_levels)?;
-    // The executor's records live beside every route's plan and scratch
-    // while the bands decode.
-    if declines(live.include_bytes(executor_bytes(&rings, &bands)?))? {
-        return Ok(false);
-    }
     let empty = IntRect::from_xywh(0, 0, 0, 0);
     let (copy, region) = line_plans
         .first()
@@ -403,6 +398,11 @@ pub(super) fn decode_tile_rows<'a>(
         1
     };
     let workers = route_workers.min(bank.saturating_sub(readers));
+    // The executor's records live beside every route's plan and scratch
+    // while the bands decode.
+    if declines(live.include_bytes(executor_bytes(&rings, &bands, (workers, readers))?))? {
+        return Ok(false);
+    }
     // Each thread's scratch serves every component's bands, so it holds,
     // and is charged once for, the largest of the routes'; the serial bands
     // need none.
@@ -834,29 +834,47 @@ fn plan_tile_lines(
     Ok(line_plans)
 }
 
-/// The bytes the executor holds for `rings` and `bands`, besides the slots:
-/// the records, each band's status, slot, queue entry and decoded-list entry,
-/// and each ring's cursors and slot list.
-fn executor_bytes(rings: &[Ring], bands: &[Band]) -> Result<usize> {
+/// The bytes the executor holds for `rings` and `bands` while `workers`
+/// pool threads and `readers` readers decode them, besides the slots'
+/// samples: each band's record, status, held and owned slot, queue entry,
+/// part counters, decoded-list entry and shared output; each ring's record,
+/// cursors, slot list and slots; each reader's view, with its band being
+/// read and next band in every ring, and its entry in the readers' list;
+/// and each thread's workspace and scratch pair.
+fn executor_bytes(
+    rings: &[Ring],
+    bands: &[Band],
+    (workers, readers): (usize, usize),
+) -> Result<usize> {
     let per_band = size_of::<Band>()
         + size_of::<Status>()
-        + size_of::<usize>()
+        + 3 * size_of::<usize>()
         + 2 * size_of::<Option<&mut [f32]>>()
         + size_of::<Reverse<(i64, Reverse<usize>, usize)>>()
-        + 2 * size_of::<usize>()
         + size_of::<Mutex<&mut [f32]>>();
-    let per_ring = size_of::<Ring>()
-        + 3 * size_of::<usize>()
-        + size_of::<Vec<&mut [f32]>>()
-        + size_of::<Option<(usize, &mut [f32])>>();
-    let slots: usize = rings.iter().map(|ring| ring.slots).sum();
-    bands
+    let per_ring = size_of::<Ring>() + 2 * size_of::<usize>() + size_of::<Vec<&mut [f32]>>();
+    // A view holds references to its workspace, scratch and decode,
+    // whatever their types.
+    let per_reader = rings
         .len()
-        .checked_mul(per_band)
-        .zip(rings.len().checked_mul(per_ring))
-        .and_then(|(bands, rings)| bands.checked_add(rings))
-        .and_then(|bytes| bytes.checked_add(slots.checked_mul(size_of::<&mut [f32]>())?))
-        .ok_or(ValidationError::ImageTooLarge.into())
+        .checked_mul(size_of::<usize>() + size_of::<Option<(usize, &mut [f32])>>())
+        .ok_or(ValidationError::ImageTooLarge)?
+        + size_of::<PoolRows<'_, '_, '_, '_, (), ()>>()
+        + size_of::<&mut (dyn SubBandRows + Send)>();
+    let per_thread = size_of::<(&mut (), &mut BlockScratch)>();
+    let slots: usize = rings.iter().map(|ring| ring.slots).sum();
+    [
+        bands.len().checked_mul(per_band),
+        rings.len().checked_mul(per_ring),
+        slots.checked_mul(size_of::<&mut [f32]>()),
+        readers.checked_mul(per_reader),
+        workers
+            .checked_add(readers)
+            .and_then(|threads| threads.checked_mul(per_thread)),
+    ]
+    .into_iter()
+    .try_fold(0usize, |bytes, part| bytes.checked_add(part?))
+    .ok_or(ValidationError::ImageTooLarge.into())
 }
 
 /// A sub-band's ring of band slots and its bands, in row order.
@@ -2038,7 +2056,8 @@ mod tests {
                             .expect("plan control rings");
                         (
                             route_bytes,
-                            executor_bytes(&rings, &bands).expect("executor bytes"),
+                            executor_bytes(&rings, &bands, (threads - 1, 1))
+                                .expect("executor bytes"),
                         )
                     };
                     let headroom = route_bytes + executor / 2;
@@ -2150,6 +2169,8 @@ mod tests {
         plans: usize,
         executor: usize,
         scratch: usize,
+        /// The tile's readers, beside its workers.
+        readers: usize,
     }
 
     /// How a streamed tile decoded: on the pool's bands or, declined there,
@@ -2238,11 +2259,21 @@ mod tests {
         );
         let (rings, bands, _, _) =
             plan_tile_rings(&routes, storage, &image.header).expect("plan rings");
+        // The threads the tile streamed on: the most workers its routes
+        // planned that the bank holds beside its readers.
+        let readers = tile_ctx.debug_counters.pool_band_readers;
+        let route_workers = routes
+            .iter()
+            .map(|route| route.workers())
+            .max()
+            .unwrap_or(0);
+        let workers = route_workers.min(tile_ctx.classic_task_workspaces.len() - readers);
         let steps = Steps {
             routes: routes_bytes,
             plans,
-            executor: executor_bytes(&rings, &bands).expect("executor bytes"),
+            executor: executor_records(&rings, &bands, workers, readers),
             scratch: tile_ctx.debug_counters.thread_scratch_held,
+            readers,
         };
         drop((routes, rings, bands));
         storage.structural_workspace_bytes += DEFAULT_MAX_DECODE_BYTES - start - headroom;
@@ -2287,74 +2318,111 @@ mod tests {
     }
 
     /// A tile of blocks of several codeword segments streams its rows from
-    /// pool bands under exactly the bytes they charge, the list of routes,
-    /// the plans, the executor's records and the threads' scratch, as their
-    /// sizes give them. A byte short of the list, of the plans, of the
-    /// records or of the scratch, the pool declines the tile, before any row
-    /// reaches the sink, and under the same retained bytes serial bands
-    /// stream the same rows when they fit and fail with a capacity error
-    /// when they don't.
+    /// pool bands, with one reader or one per component, under exactly the
+    /// bytes they charge: the list of routes, the plans, the executor's
+    /// records and the threads' scratch, as their sizes give them, the
+    /// records' from their types and counts. A byte short of the list, of the
+    /// plans, of the records or of the scratch, the pool declines the tile,
+    /// before any row reaches the sink, and under the same retained bytes
+    /// serial bands stream the same rows when they fit and fail with a
+    /// capacity error when they don't.
     #[test]
     fn streamed_pool_bands_take_a_segmented_tile_at_exactly_their_bytes() {
         let bytes = include_bytes!("../../../fixtures/multi_segment/bypass_termall_rgb_53.j2k");
         let image = Image::new(bytes, &DecodeSettings::default()).expect("parse fixture");
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(4)
-            .build()
-            .expect("build pool")
-            .install(|| {
-                let (steps, _, _) = decode_streamed(&image, DEFAULT_MAX_DECODE_BYTES / 2);
-                let Steps {
-                    routes,
-                    plans,
-                    executor,
-                    scratch,
-                } = steps;
-                assert!(
-                    routes > 0 && plans > 0 && executor > 0 && scratch > 0,
-                    "{steps:?}"
-                );
-                let all = routes + plans + executor + scratch;
-                let (_, warm, exact) = decode_streamed(&image, all);
-                assert!(exact.pooled, "pool bands within {all} bytes: {steps:?}");
-                let rows = exact.rows.expect("pool bands decode");
-                assert!(rows.arrivals.iter().all(|&count| count == 1));
-                assert!(rows.planes == warm.planes, "pool bands' rows");
-                let mut serial = Vec::new();
-                for headroom in [
-                    routes - 1,
-                    routes + plans - 1,
-                    routes + plans + executor - 1,
-                    all - 1,
-                ] {
-                    let (_, _, short) = decode_streamed(&image, headroom);
-                    assert!(
-                        !short.pooled,
-                        "pool bands within {headroom} bytes: {steps:?}"
-                    );
-                    match short.rows {
-                        Ok(rows) => {
-                            assert!(rows.arrivals.iter().all(|&count| count == 1));
-                            assert!(rows.planes == warm.planes, "serial rows at {headroom}");
-                            serial.push(true);
-                        }
-                        Err(error) => {
-                            assert!(
-                                super::super::reuse::is_capacity_error(&error),
-                                "serial bands at {headroom}: {error:?}"
-                            );
-                            serial.push(false);
-                        }
-                    }
+        // One reader for the tile on 4 threads, one per component on 12.
+        for (threads, expected_readers) in [(4, 1), (12, 3)] {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("build pool")
+                .install(|| take_at_exactly_their_bytes(&image, expected_readers));
+        }
+    }
+
+    fn take_at_exactly_their_bytes(image: &Image<'_>, expected_readers: usize) {
+        let (steps, _, _) = decode_streamed(image, DEFAULT_MAX_DECODE_BYTES / 2);
+        let Steps {
+            routes,
+            plans,
+            executor,
+            scratch,
+            readers,
+        } = steps;
+        assert_eq!(readers, expected_readers, "{steps:?}");
+        assert!(
+            routes > 0 && plans > 0 && executor > 0 && scratch > 0,
+            "{steps:?}"
+        );
+        let all = routes + plans + executor + scratch;
+        let (_, warm, exact) = decode_streamed(image, all);
+        assert!(exact.pooled, "pool bands within {all} bytes: {steps:?}");
+        let rows = exact.rows.expect("pool bands decode");
+        assert!(rows.arrivals.iter().all(|&count| count == 1));
+        assert!(rows.planes == warm.planes, "pool bands' rows");
+        let mut serial = Vec::new();
+        for headroom in [
+            routes - 1,
+            routes + plans - 1,
+            routes + plans + executor - 1,
+            all - 1,
+        ] {
+            let (_, _, short) = decode_streamed(image, headroom);
+            assert!(
+                !short.pooled,
+                "pool bands within {headroom} bytes: {steps:?}"
+            );
+            match short.rows {
+                Ok(rows) => {
+                    assert!(rows.arrivals.iter().all(|&count| count == 1));
+                    assert!(rows.planes == warm.planes, "serial rows at {headroom}");
+                    serial.push(true);
                 }
-                // Serial bands need less than the pool's bands, and more than
-                // their list of routes.
-                assert_eq!(serial.first(), Some(&false), "{steps:?}");
-                assert_eq!(serial.last(), Some(&true), "{steps:?}");
-                assert!(
-                    serial.windows(2).all(|pair| pair[0] <= pair[1]),
-                    "serial bands fit more as the headroom grows: {serial:?}"
-                );
-            });
+                Err(error) => {
+                    assert!(
+                        super::super::reuse::is_capacity_error(&error),
+                        "serial bands at {headroom}: {error:?}"
+                    );
+                    serial.push(false);
+                }
+            }
+        }
+        // Serial bands need less than the pool's bands, and more than
+        // their list of routes.
+        assert_eq!(serial.first(), Some(&false), "{steps:?}");
+        assert_eq!(serial.last(), Some(&true), "{steps:?}");
+        assert!(
+            serial.windows(2).all(|pair| pair[0] <= pair[1]),
+            "serial bands fit more as the headroom grows: {serial:?}"
+        );
+    }
+
+    /// The bytes of the records the band executor allocates while `workers`
+    /// and `readers` threads decode `bands` of `rings`, from their types: per
+    /// band its record, status, held and owned slot, readiness entry, part
+    /// counters, decoded entry and shared output; per ring its record,
+    /// readiness and freed counters, slot list and slots, and each reader's
+    /// band being read and next band; per thread its workspace pair; per
+    /// reader its view and its entry in the readers' list.
+    fn executor_records(rings: &[Ring], bands: &[Band], workers: usize, readers: usize) -> usize {
+        let per_band = size_of::<Band>()
+            + size_of::<Status>()
+            + 2 * size_of::<Option<&mut [f32]>>()
+            + size_of::<Reverse<(i64, Reverse<usize>, usize)>>()
+            + 3 * size_of::<usize>()
+            + size_of::<Mutex<&mut [f32]>>();
+        let per_ring = size_of::<Ring>()
+            + 2 * size_of::<usize>()
+            + size_of::<Vec<&mut [f32]>>()
+            + readers * (size_of::<Option<(usize, &mut [f32])>>() + size_of::<usize>());
+        let slots: usize = rings.iter().map(|ring| ring.slots).sum();
+        let per_thread = size_of::<(&mut (), &mut BlockScratch)>();
+        let per_reader = size_of::<PoolRows<'_, '_, '_, '_, (), ()>>()
+            + size_of::<&mut (dyn crate::j2c::idwt::SubBandRows + Send)>();
+        bands.len() * per_band
+            + rings.len() * per_ring
+            + slots * size_of::<&mut [f32]>()
+            + (workers + readers) * per_thread
+            + readers * per_reader
     }
 }
