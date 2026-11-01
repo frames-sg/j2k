@@ -252,6 +252,7 @@ fn decode_route(
     if route.coding() == CodeBlockCoding::Classic {
         split_bands(
             tile_ctx,
+            storage.shared_pool_band_rings,
             &rings,
             &mut bands,
             route.workers() + 1,
@@ -461,6 +462,7 @@ pub(super) fn decode_tile_rows<'a>(
     if coding == CodeBlockCoding::Classic {
         split_bands(
             tile_ctx,
+            storage.shared_pool_band_rings,
             &rings,
             &mut bands,
             workers + readers,
@@ -729,6 +731,21 @@ pub(super) fn shallow_rings(tile: &Tile<'_>, storage: &DecompositionStorage<'_>)
                 .uses_high_throughput_block_coding()
         })
         && reads_full_width(storage)
+}
+
+/// Whether a tile streaming its rows from pool bands holds the shared rings
+/// (see `DecompositionStorage::shared_pool_band_rings`): its decode shares
+/// the pool with other images (see `TileDecodeContext::shared_pool`), on
+/// fewer than [`MIN_CLASSIC_SYNTHESIS_THREADS`] threads. From there a lone
+/// classic tile holds deep rings, and two bands a ring left a batch filling
+/// an 18-thread pool 1-2% slower.
+pub(super) fn shared_rings(
+    tile_ctx: &TileDecodeContext,
+    storage: &DecompositionStorage<'_>,
+) -> bool {
+    storage.parallel_bands
+        && tile_ctx.shared_pool
+        && rayon::current_num_threads() < MIN_CLASSIC_SYNTHESIS_THREADS
 }
 
 /// Whether a tile streaming its rows from pool bands reconstructs them
@@ -1246,9 +1263,13 @@ const MAX_BAND_PARTS: usize = 8;
 const BAND_PARTS_PER_THREAD: usize = 2;
 
 /// Split a classic tile's bands into parts for `threads` threads (see
-/// [`plan_parts`]), and count the bands that split.
+/// [`plan_parts`]), and count the bands that split. A tile on the shared
+/// rings (see `DecompositionStorage::shared_pool_band_rings`) keeps its bands
+/// whole: the other images' bands keep the pool's threads busy, and the parts
+/// left a batch filling a 10-thread pool 1% slower.
 fn split_bands(
     tile_ctx: &mut TileDecodeContext,
+    shared: bool,
     rings: &[Ring],
     bands: &mut [Band],
     threads: usize,
@@ -1258,6 +1279,9 @@ fn split_bands(
     let forced = tile_ctx.band_parts;
     #[cfg(not(test))]
     let forced = None;
+    if shared && forced.is_none() {
+        return Ok(());
+    }
     plan_parts(rings, bands, threads, forced, split)?;
     tile_ctx.debug_counters.pool_band_parts += bands.iter().filter(|band| band.parts > 1).count();
     Ok(())
@@ -2580,6 +2604,7 @@ mod tests {
         let workers = route_workers.min(tile_ctx.classic_task_workspaces.len() - readers);
         split_bands(
             tile_ctx,
+            storage.shared_pool_band_rings,
             &rings,
             &mut bands,
             workers + readers,
@@ -2788,6 +2813,7 @@ mod tests {
         bands: usize,
         deep: bool,
         shallow: bool,
+        shared: bool,
         /// The deepest finest-level and coarser-level rings that hold no
         /// whole window.
         slots: (usize, usize),
@@ -2843,10 +2869,12 @@ mod tests {
         bytes: &[u8],
         roi: Option<(u32, u32, u32, u32)>,
         parts: Option<usize>,
+        shared: bool,
     ) -> Measured {
         let image = Image::new(bytes, &DecodeSettings::default()).expect("parse fixture");
         let roi = roi.unwrap_or((0, 0, image.width(), image.height()));
         let mut context = DecoderContext::default();
+        context.set_shared_pool(shared);
         context.set_output_region(Some(roi));
         context.tile_decode_context.line_region_idwt = true;
         context.tile_decode_context.stream_rows = true;
@@ -2942,6 +2970,7 @@ mod tests {
         if coding == CodeBlockCoding::Classic {
             split_bands(
                 tile_ctx,
+                storage.shared_pool_band_rings,
                 &rings,
                 &mut bands,
                 workers + readers,
@@ -3029,6 +3058,7 @@ mod tests {
             bands: bands.len(),
             deep: storage.deep_band_rings,
             shallow: storage.shallow_band_rings,
+            shared: storage.shared_pool_band_rings,
             slots: deepest_rings(&rings),
         }
     }
@@ -3202,7 +3232,8 @@ mod tests {
     /// while they decode: for classic and HTJ2K tiles, whole and in a
     /// region, with bands in parts, on pools of 2, 4, 10, 11 and 12 threads
     /// and from outside a pool, with one reader and with one per component,
-    /// with shallow rings and deep ones.
+    /// with shallow rings and deep ones, with the shared-pool mark and
+    /// without.
     #[test]
     fn band_executor_allocates_within_its_charge() {
         if !measures_alone("band_executor_allocates_within_its_charge") {
@@ -3218,7 +3249,7 @@ mod tests {
         let ht = ht_fixture();
         let wide = shallow_fixture();
         let (mut readers, mut parted, mut clipped, mut deep) = (Vec::new(), 0, false, false);
-        let mut shallow = Vec::new();
+        let (mut shallow, mut shared) = (Vec::new(), Vec::new());
         let mut check = |case: &str, measured: Measured, whole: &Measured| {
             assert!(
                 measured.routing.0 <= measured.routing_charge,
@@ -3234,7 +3265,13 @@ mod tests {
                 measured.running <= measured.running_charge,
                 "{case}: {measured:?}"
             );
-            if measured.shallow {
+            if measured.shared {
+                assert!(
+                    measured.slots.0 <= 2 && measured.slots.1 <= 2,
+                    "{case}: shared rings"
+                );
+                shared.push((case.to_owned(), measured.slots, measured.deep));
+            } else if measured.shallow {
                 assert_eq!(measured.slots.0, 2, "{case}: shallow finest rings");
                 shallow.push((case.to_owned(), measured.slots, measured.parted));
             }
@@ -3257,11 +3294,15 @@ mod tests {
                     ("HTJ2K", &ht[..], &[None][..]),
                     ("wide classic", &wide[..], &[None, Some(4)][..]),
                 ] {
-                    let whole = measure_executor(bytes, None, None);
+                    let whole = measure_executor(bytes, None, None, false);
                     for &roi in &[None, Some((48, 48, 16, 16))] {
                         for &parts in splits {
-                            let case = format!("{label} {roi:?} parts {parts:?} on {threads}");
-                            check(&case, measure_executor(bytes, roi, parts), &whole);
+                            for shared in [false, true] {
+                                let case = format!(
+                                    "{label} {roi:?} parts {parts:?} shared {shared} on {threads}"
+                                );
+                                check(&case, measure_executor(bytes, roi, parts, shared), &whole);
+                            }
                         }
                     }
                 }
@@ -3269,10 +3310,10 @@ mod tests {
         }
         // Called from outside a pool, the executor sends its workers through
         // the global pool's shared queue.
-        let whole = measure_executor(classic, None, None);
+        let whole = measure_executor(classic, None, None, false);
         check(
             "classic outside the pool",
-            measure_executor(classic, None, Some(4)),
+            measure_executor(classic, None, Some(4), false),
             &whole,
         );
         drop(pools);
@@ -3290,6 +3331,13 @@ mod tests {
                     && slots.1 == 2
                     && *parted > 0),
             "{shallow:?}"
+        );
+        // Marked decodes hold two bands in every ring below 12 threads, and
+        // never with the deep rings, which hold from 12.
+        assert!(
+            shared.iter().any(|(_, slots, _)| *slots == (2, 2))
+                && shared.iter().all(|(_, _, deep_rings)| !deep_rings),
+            "{shared:?}"
         );
     }
 

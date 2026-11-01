@@ -25,7 +25,7 @@ use crate::CpuDecodeParallelism;
 mod retained;
 
 pub(crate) use self::retained::{
-    decode_retained_tiles, retained_inner_parallelism, run_retained_chunks,
+    decode_retained_tiles, retained_inner_parallelism, retained_worker_count, run_retained_chunks,
 };
 
 pub(super) type ScopedWorkerHandle<'scope> = (

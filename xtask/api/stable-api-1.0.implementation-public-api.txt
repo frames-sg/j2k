@@ -2470,6 +2470,7 @@ pub fn j2k_native::DecodedComponents<'a>::into_parts(self) -> j2k_native::Decode
 pub fn j2k_native::DecodedComponents<'a>::live_bytes(&self) -> usize
 pub fn j2k_native::DecodedNativeComponents::allocated_bytes(&self) -> core::option::Option<usize>
 pub fn j2k_native::DecodedNativeComponents::into_parts(self) -> j2k_native::DecodedNativeComponentsParts
+pub fn j2k_native::DecoderContext<'_>::set_shared_pool(&mut self, bool)
 pub fn j2k_native::HtCodeBlockDecodeProfile::new() -> Self
 pub fn j2k_native::HtCodeBlockDecodeWorkspace::coefficient_capacity(&self) -> usize
 pub fn j2k_native::HtCodeBlockDecoder::decode_code_block(&mut self, j2k_native::HtCodeBlockDecodeJob<'_>, &mut [f32]) -> j2k_native::Result<()>

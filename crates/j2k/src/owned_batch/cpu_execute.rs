@@ -9,11 +9,12 @@ use super::cpu_materialize::{
 };
 use super::cpu_staged_execute::run_staged_typed_group;
 use super::{
-    decode_warnings_for_recovery, retained_inner_parallelism, run_retained_chunks, Arc,
-    BatchCodecRoute, BatchColor, BatchDecodeOptions, BatchErrorStage, BatchGroupInfo,
-    BatchInfrastructureError, BatchItemError, BatchWorker, CpuBatchGroup, CpuBatchSamples,
-    CpuDecodeParallelism, CpuGroupFastWorkspace, CpuStagedWorkspace, IndexedBatchError, J2kError,
-    NativeSampleType, NonZeroUsize, PreparedBatchGroup, PreparedImage, TileBatchOptions, Vec,
+    decode_warnings_for_recovery, retained_inner_parallelism, retained_worker_count,
+    run_retained_chunks, Arc, BatchCodecRoute, BatchColor, BatchDecodeOptions, BatchErrorStage,
+    BatchGroupInfo, BatchInfrastructureError, BatchItemError, BatchWorker, CpuBatchGroup,
+    CpuBatchSamples, CpuDecodeParallelism, CpuGroupFastWorkspace, CpuStagedWorkspace,
+    IndexedBatchError, J2kError, NativeSampleType, NonZeroUsize, PreparedBatchGroup, PreparedImage,
+    TileBatchOptions, Vec,
 };
 use crate::batch::admission::{hold_at_least, BatchAllocationBudget};
 use crate::batch::allocation::try_vec_with_capacity;
@@ -209,6 +210,32 @@ pub(super) fn image_policy(
     )
 }
 
+/// Whether the images of a group of `job_count` that decode on a stream pool
+/// of `pool_threads` share it (see `DecoderContext::set_shared_pool`): the
+/// batch plans at least as many workers at once as the pool has threads, so
+/// each thread starts with an image of its own and an idle one takes the
+/// bands of other images still in flight. The images that finish last keep
+/// those rings with fewer images beside them. With fewer workers planned
+/// than threads, each image holds the rings of a decode alone on the pool.
+pub(super) fn shares_stream_pool(
+    job_count: usize,
+    tile_options: TileBatchOptions,
+    pool_threads: usize,
+) -> Result<bool, BatchInfrastructureError> {
+    Ok(retained_worker_count(job_count, tile_options)? >= pool_threads)
+}
+
+/// The encoded bytes up to which an image of a group that shares its stream
+/// pool holds the shared rings, from the encoded lengths of the group's
+/// images: one and a half times their mean. Tier-1 work follows the coded
+/// bytes, so a larger image is the likeliest to decode last with few other
+/// images beside it, and keeps the rings of a decode alone on the pool.
+pub(super) fn shared_ring_bytes(lengths: impl ExactSizeIterator<Item = usize>) -> usize {
+    let count = lengths.len().max(1);
+    let mean = lengths.fold(0_usize, usize::saturating_add) / count;
+    mean.saturating_add(mean / 2)
+}
+
 /// The threads a group's streamed images decode on when the caller set the
 /// worker count, created on first use and kept by the session.
 ///
@@ -312,6 +339,11 @@ fn run_typed_group<T: Copy + Send>(
             convert,
         )?;
     } else {
+        let shared_pool = match stream_pool {
+            Some(pool) => shares_stream_pool(jobs.len(), tile_options, pool.current_num_threads())?,
+            None => false,
+        };
+        let shared_bytes = shared_ring_bytes(group.images.iter().map(|image| image.bytes().len()));
         run_retained_chunks(
             workers,
             &mut jobs,
@@ -327,6 +359,7 @@ fn run_typed_group<T: Copy + Send>(
                 let mut context = j2k_native::DecoderContext::from_workspace(workspace);
                 let mut claim = None;
                 for (job, slot) in jobs.iter_mut().zip(results) {
+                    context.set_shared_pool(shared_pool && job.image.bytes().len() <= shared_bytes);
                     hold_at_least(
                         admission,
                         &mut claim,

@@ -131,6 +131,11 @@ pub(crate) struct DecompositionStorage<'a> {
     /// reader per component without deep rings (see
     /// [`parallel_bands::shallow_rings`]).
     pub(crate) shallow_band_rings: bool,
+    /// Whether the band rings of `parallel_bands` hold two bands at every
+    /// level and their bands stay whole, for a decode whose pool other images
+    /// share, on a pool too small for deep rings (see
+    /// [`parallel_bands::shared_rings`]).
+    pub(crate) shared_pool_band_rings: bool,
     /// Whether a tile streaming its rows from `parallel_bands` reconstructs
     /// them through one reader whatever its pool's workers (see
     /// [`parallel_bands::one_reader`]), which holds one short batch of rows.
@@ -178,6 +183,7 @@ impl DecompositionStorage<'_> {
         self.parallel_bands = false;
         self.deep_band_rings = false;
         self.shallow_band_rings = false;
+        self.shared_pool_band_rings = false;
         self.one_synthesis_reader = false;
         self.lockstep_lines = false;
         self.roi_idwt_charge_elements = 0;
@@ -321,6 +327,9 @@ pub(crate) struct TileDecodeContext {
     /// Whether the inverse MCT is left to the caller's RGB8 pack, set
     /// around a decode like `round_irreversible_output`.
     pub(crate) defer_mct: bool,
+    /// Whether this context's decodes share their pool with other images
+    /// decoding at the same time (see `DecoderContext::set_shared_pool`).
+    pub(crate) shared_pool: bool,
     /// The inverse MCT this decode left to the caller.
     pub(crate) deferred_mct: Option<mct::DeferredMct>,
     /// The last IDWT level this decode leaves to the RGB8 pack with the

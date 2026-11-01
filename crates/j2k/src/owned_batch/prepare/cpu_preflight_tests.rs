@@ -669,6 +669,54 @@ fn explicit_worker_counts_set_the_policy_of_images_decoded_one_at_a_time() {
 }
 
 #[test]
+fn batch_images_share_the_stream_pool_only_when_they_fill_it() {
+    use super::super::cpu_execute::shares_stream_pool;
+    let limit = crate::batch::allocation::generic_batch_worker_limit();
+    // The session's workers, and so its stream pool, stop at the limit.
+    let cases = [
+        // Eight images on 2, 3, 4 or 8 workers, and three on 2, keep an image
+        // in flight for every thread of the pool.
+        (8, 2, true),
+        (8, 3, true),
+        (8, 4, true),
+        (8, 8, true),
+        (3, 2, true),
+        // Eight on 6 run four at a time, five on 4 three, two on 18 two:
+        // fewer images in flight than threads.
+        (8, 6, false),
+        (5, 4, false),
+        (2, 18, false),
+    ];
+    for (images, workers, shared) in cases.into_iter().filter(|case| case.1 <= limit) {
+        let options = crate::TileBatchOptions::new(NonZeroUsize::new(workers));
+        assert_eq!(
+            shares_stream_pool(images, options, workers).expect("plan"),
+            shared,
+            "{images} on {workers}"
+        );
+    }
+}
+
+#[test]
+fn images_far_above_their_group_mean_keep_the_lone_rings() {
+    use super::super::cpu_execute::shared_ring_bytes;
+    // Seven crops of about the same coded size share the rings; one noise
+    // image of the same shape with 3.7 times their bytes keeps its own.
+    let crops = [
+        3_585_095, 3_622_220, 3_720_453, 3_745_469, 3_787_355, 3_807_463, 3_648_167,
+    ];
+    let mut group = crops.to_vec();
+    group.push(13_840_854);
+    let limit = shared_ring_bytes(group.into_iter());
+    assert!(crops.iter().all(|&bytes| bytes <= limit), "{limit}");
+    assert!(13_840_854 > limit, "{limit}");
+    // A uniform group shares them all, half again above the mean at most.
+    assert_eq!(shared_ring_bytes([100, 100, 100].into_iter()), 150);
+    assert_eq!(shared_ring_bytes([90, 100, 110, 160].into_iter()), 172);
+    assert_eq!(shared_ring_bytes(core::iter::empty()), 0);
+}
+
+#[test]
 fn plans_beyond_the_flattening_cap_decode_one_image_at_a_time() {
     use super::super::cpu_fast::{
         classic_flattened_metadata_bytes, FLATTENED_METADATA_CAP_OVERRIDE,

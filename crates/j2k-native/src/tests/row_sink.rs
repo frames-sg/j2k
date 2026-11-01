@@ -1066,6 +1066,83 @@ fn shallow_finest_rings_split_their_bands_into_parts() {
     }
 }
 
+/// A decode that shares its pool with other images in flight, as the images
+/// of an explicit-worker batch that fill its pool do, holds two bands in
+/// every ring below 12 threads, in place of three at the finest level, and
+/// keeps its bands whole, where on 10 threads a lone decode's two-band rings
+/// split them; with fewer bands per ring it peaks lower than a lone decode.
+/// From 12 threads it holds the lone decode's deep rings. Its rows match the serial planes. A context
+/// recovered from the workspace of a marked decode decodes as a fresh one
+/// does.
+#[cfg(feature = "parallel")]
+#[test]
+fn shared_pool_rows_hold_two_bands_per_ring() {
+    // Two fixture heights give the coarser levels rings that hold no whole
+    // window, deep ones too.
+    let bytes = pool_band_fixture(3, 1, 2);
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse shared pool fixture");
+    let roi = (0, 0, image.width(), image.height());
+    let planes = decode_planes(&image, roi);
+    for (threads, lone_slots, shared_slots) in [
+        (4, (3, 2), (2, 2)),
+        (10, (2, 2), (2, 2)),
+        (12, (4, 3), (4, 3)),
+    ] {
+        let label = format!("threads={threads}");
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("build pool");
+        let (lone, shared, recovered) = pool.install(|| {
+            let lone = decode_rows(&image, roi, CpuDecodeParallelism::Auto);
+            let shared = decode_rows_with(&image, roi, CpuDecodeParallelism::Auto, |context| {
+                context.set_shared_pool(true);
+            });
+            let mut marked = DecoderContext::default();
+            marked.set_shared_pool(true);
+            let mut sink = CollectingSink::new(roi.2, roi.3);
+            image
+                .decode_region_rows_for_integer_output_with_context(roi, &mut marked, &mut sink)
+                .expect("decode marked rows");
+            let workspace = marked.into_workspace();
+            let recovered = decode_rows_with(&image, roi, CpuDecodeParallelism::Auto, |context| {
+                *context = DecoderContext::from_workspace(workspace);
+            });
+            (lone, shared, recovered)
+        });
+        for (decoded, name) in [
+            (&lone, "lone"),
+            (&shared, "shared"),
+            (&recovered, "recovered"),
+        ] {
+            assert_eq!(decoded.planes, planes.planes, "{label} {name}");
+            assert_eq!(decoded.pool_components, 3, "{label} {name}: pool bands");
+        }
+        assert_eq!(lone.ring_slots, lone_slots, "{label}: lone ring slots");
+        assert_eq!(
+            shared.ring_slots, shared_slots,
+            "{label}: shared ring slots"
+        );
+        assert_eq!(
+            recovered.ring_slots, lone_slots,
+            "{label}: recovered ring slots"
+        );
+        assert_eq!(
+            (lone.parted_bands > 0, shared.parted_bands),
+            (threads == 10, 0),
+            "{label}: bands in parts"
+        );
+        if shared_slots != lone_slots {
+            assert!(
+                shared.peak_bytes < lone.peak_bytes,
+                "{label}: shared {} lone {}",
+                shared.peak_bytes,
+                lone.peak_bytes
+            );
+        }
+    }
+}
+
 /// A streamed decode that holds the image's packet directory and runs out of
 /// budget gives the directory up and reruns only while no row has reached the
 /// sink, since a rerun after that would send those rows again. This decode

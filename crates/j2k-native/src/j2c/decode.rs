@@ -997,6 +997,7 @@ fn prepare_region_storage(
             && storage.lockstep_lines
             && parallel_bands::one_reader(tile, storage);
         storage.shallow_band_rings = parallel_bands::shallow_rings(tile, storage);
+        storage.shared_pool_band_rings = parallel_bands::shared_rings(tile_ctx, storage);
     }
     build::allocate_deferred_coefficients(
         storage,

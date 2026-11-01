@@ -26,6 +26,15 @@ pub(crate) fn retained_inner_parallelism(
     Ok(plan_batch(job_count, options)?.inner_parallelism)
 }
 
+/// Workers that [`run_retained_chunks`] runs at once for a batch of
+/// `job_count` jobs.
+pub(crate) fn retained_worker_count(
+    job_count: usize,
+    options: TileBatchOptions,
+) -> Result<usize, BatchInfrastructureError> {
+    Ok(plan_batch(job_count, options)?.worker_count)
+}
+
 /// Run disjoint jobs without destroying worker-owned scratch after each call.
 pub(crate) fn run_retained_chunks<J, R, F>(
     workers: &mut [BatchWorker],
