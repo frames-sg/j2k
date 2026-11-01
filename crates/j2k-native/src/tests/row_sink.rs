@@ -353,12 +353,9 @@ fn pool_band_rows_match_component_planes_bit_for_bit() {
                 }
             }
             // As in `pool_bands_match_whole_window_tier1_bit_for_bit`: the
-            // route takes HT blocks and classic blocks of one arithmetic
-            // segment, and two threads reach every such case.
-            let routed = case.options.use_ht_block_coding || case.options.num_layers <= 1;
-            if !routed {
-                assert_eq!(pool_components, 0, "{}", case.label);
-            } else if threads == 2 {
+            // route takes HT and classic blocks, and two threads reach every
+            // case.
+            if threads == 2 {
                 assert!(pool_components > 0, "{} never used the pool", case.label);
             }
         }

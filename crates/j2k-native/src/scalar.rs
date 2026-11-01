@@ -55,7 +55,9 @@ fn internal_j2k_sub_band_type(sub_band_type: J2kSubBandType) -> j2c::build::SubB
     }
 }
 
-fn internal_j2k_code_block_style(style: J2kCodeBlockStyle) -> j2c::codestream::CodeBlockStyle {
+pub(crate) fn internal_j2k_code_block_style(
+    style: J2kCodeBlockStyle,
+) -> j2c::codestream::CodeBlockStyle {
     j2c::codestream::CodeBlockStyle {
         selective_arithmetic_coding_bypass: style.selective_arithmetic_coding_bypass,
         reset_context_probabilities: style.reset_context_probabilities,

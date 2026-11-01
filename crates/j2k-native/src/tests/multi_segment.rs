@@ -133,6 +133,8 @@ struct Decoded {
     samples: Vec<Vec<u32>>,
     streamed: bool,
     pool_components: usize,
+    parted_bands: usize,
+    uncharged_line_samples: usize,
     channel_bytes: usize,
     /// The bytes the decode's budget held after `reset`.
     baseline_bytes: usize,
@@ -174,6 +176,8 @@ fn rows_with(
         samples: sink.planes,
         streamed: context.tile_decode_context.stream_rows,
         pool_components: counters.pool_band_components,
+        parted_bands: counters.pool_band_parts,
+        uncharged_line_samples: counters.uncharged_line_samples,
         channel_bytes: counters.workspace_peak.bytes().channels,
         baseline_bytes: counters.decode_baseline_bytes,
     }
@@ -270,10 +274,56 @@ fn multi_segment_blocks_decode_on_a_pool_as_on_one_thread() {
     }
 }
 
+/// On a pool, these tiles decode on the pool's own routes: the tile route
+/// for the planes, and pool bands for streamed rows, which then hold no
+/// planes and leave no line-buffer samples uncharged.
+#[test]
+fn multi_segment_tiles_take_the_pool_routes() {
+    let mut parted = 0;
+    for threads in [4, 12] {
+        pool(threads).install(|| {
+            for (label, bytes) in FIXTURES {
+                let image = Image::new(bytes, &DecodeSettings::default()).expect("parse fixture");
+                let mut context = context(CpuDecodeParallelism::Auto);
+                image
+                    .decode_native_with_context(&mut context)
+                    .expect("decode fixture");
+                assert!(
+                    context
+                        .tile_decode_context
+                        .debug_counters
+                        .classic_task_workspace_growths
+                        > 0,
+                    "{label} on {threads} threads: the planes decode on the tile route"
+                );
+                for roi in regions(&image) {
+                    let decoded = rows(&image, roi);
+                    let components = decoded.samples.len();
+                    assert!(
+                        decoded.streamed
+                            && decoded.pool_components == components
+                            && decoded.channel_bytes <= 256,
+                        "{label} {roi:?} on {threads} threads: rows from pool bands, no \
+                         planes: streamed {}, pool components {} of {components}, plane bytes {}",
+                        decoded.streamed,
+                        decoded.pool_components,
+                        decoded.channel_bytes,
+                    );
+                    assert_eq!(decoded.uncharged_line_samples, 0, "{label} {roi:?}");
+                    parted += decoded.parted_bands;
+                }
+            }
+        });
+    }
+    assert!(parted > 0, "some pool bands decode in parts");
+}
+
 /// A full-image rows decode on a pool whose tiles only serial bands can
 /// stream (here the pool's routes are switched off, as for a tile they
 /// can't decode) streams from serial bands when its planes would pass the
 /// decode budget, rather than fail on them, and keeps the planes within it.
+/// With the pool's routes on, its bands stream these tiles within the
+/// budget.
 #[test]
 fn rows_stream_from_serial_bands_when_the_planes_pass_the_budget() {
     for (label, bytes) in FIXTURES {
@@ -304,6 +354,16 @@ fn rows_stream_from_serial_bands_when_the_planes_pass_the_budget() {
                 streamed.channel_bytes,
             );
             assert_eq!(streamed.samples, expected.samples, "{label}: serial bands");
+            // The pool's bands take these tiles, within the budget too.
+            let pooled = rows_with(&image, roi, |context| {
+                context.tile_decode_context.planes_budget = Some(budget);
+            });
+            let components = pooled.samples.len();
+            assert!(
+                pooled.streamed && pooled.pool_components == components,
+                "{label}: pool bands within the budget"
+            );
+            assert_eq!(pooled.samples, expected.samples, "{label}: pool bands");
         });
     }
 }

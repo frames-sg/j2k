@@ -232,7 +232,7 @@ fn decode_route(
     let mut budget = route.budget();
     budget.include_bytes(executor_bytes(&rings, &bands)?)?;
     let mut scratches =
-        BlockScratch::for_threads(route.workers() + 1, route.gathered_len(), &mut budget)?;
+        BlockScratch::for_threads(route.workers() + 1, route.payload_scratch(), &mut budget)?;
     tile_ctx.idwt_output.placement = crate::j2c::idwt::IdwtPlacement::Coefficients;
     tile_ctx.idwt_output.coefficients = Vec::new();
     tile_ctx.idwt_output.rect = IntRect::from_xywh(0, 0, 0, 0);
@@ -395,13 +395,10 @@ pub(super) fn decode_tile_rows<'a>(
     };
     let workers = route_workers.min(bank.saturating_sub(readers));
     // Each thread's scratch serves every component's bands, so it is
-    // charged once, as large as any route's; the serial bands need none.
-    let mut thread_scratch = 0usize;
-    let mut gathered_len = 0usize;
-    for route in &routes {
-        thread_scratch = thread_scratch.max(route.thread_scratch_bytes()?);
-        gathered_len = gathered_len.max(route.gathered_len());
-    }
+    // charged once, for the largest of the routes'; the serial bands need
+    // none.
+    let (thread_scratch, payload_scratch) =
+        BandRoute::shared_scratch(routes.iter().map(|route| &**route))?;
     let threads = workers + readers;
     let scratch_bytes = threads
         .checked_mul(thread_scratch)
@@ -442,7 +439,7 @@ pub(super) fn decode_tile_rows<'a>(
             .max(held.saturating_sub(storage.roi_idwt_charge_elements));
     }
     let mut output = RowOutput::new(tile, sink, tile_ctx, copy, region);
-    let mut scratches = BlockScratch::for_threads(threads, gathered_len, &mut live)?;
+    let mut scratches = BlockScratch::for_threads(threads, payload_scratch, &mut live)?;
     // One reader for every component of a classic tile leaves the pool's
     // threads to Tier-1, and decodes bands itself while it waits.
     let helps = readers == 1 && coding == CodeBlockCoding::Classic;

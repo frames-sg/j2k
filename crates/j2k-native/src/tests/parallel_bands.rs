@@ -152,15 +152,12 @@ fn pool_bands_match_whole_window_tier1_bit_for_bit() {
                     }
                 }
             }
-            // The route decodes HT blocks and classic blocks of one
-            // arithmetic segment. The encoder terminates every pass when it
-            // writes several layers, so those classic blocks keep whole
-            // windows. Classic tiles with fewer rows of code-blocks than
-            // threads do too, so only two threads reach every other case.
-            let routed = case.options.use_ht_block_coding || case.options.num_layers <= 1;
-            if !routed {
-                assert_eq!(pool_components, 0, "{}", case.label);
-            } else if threads == 2 {
+            // The route decodes HT and classic blocks, those the encoder
+            // terminates at every pass when it writes several layers
+            // included. Classic tiles with fewer rows of code-blocks than
+            // threads keep whole windows, so only two threads reach every
+            // case.
+            if threads == 2 {
                 assert!(pool_components > 0, "{} never used the pool", case.label);
             }
         }
