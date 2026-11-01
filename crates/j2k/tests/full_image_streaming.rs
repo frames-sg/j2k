@@ -10,7 +10,7 @@
 
 use j2k::{CpuDecodeParallelism, J2kDecoder, J2kScratchPool};
 use j2k_core::{Downscale, PixelFormat};
-use j2k_native::{encode, EncodeOptions, EncodeProgressionOrder};
+use j2k_native::{encode, DecodeErrorClass, EncodeOptions, EncodeProgressionOrder};
 use j2k_test_support::{
     add_packet_length, edit_tile_parts, with_byte_after_last_packets, with_surplus_packet_lengths,
     wrap_jp2_rgba_codestream,
@@ -37,9 +37,49 @@ fn codestream(components: u16, options: &EncodeOptions) -> Vec<u8> {
     encode(&pixels, WIDTH, HEIGHT, components, 8, false, options).expect("encode fixture")
 }
 
-/// The image at `scale` in a buffer padded past each row, or `None` when the
-/// decode fails, from a decoder whose planes budget is `planes_budget` when
-/// one is given.
+/// Why a decode failed: the class of the native decode error behind it, or
+/// the facade's own error where there is none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Failure {
+    Native(DecodeErrorClass),
+    Facade(String),
+}
+
+impl Failure {
+    fn of(error: &j2k::J2kError) -> Self {
+        let mut next: Option<&(dyn std::error::Error + 'static)> = Some(error);
+        while let Some(current) = next {
+            if let Some(native) = current.downcast_ref::<j2k_native::DecodeError>() {
+                return Self::Native(native.classify());
+            }
+            next = current.source();
+        }
+        Self::Facade(error.to_string())
+    }
+}
+
+/// Decodes of one codestream and request that must all fail, and for one
+/// reason.
+#[derive(Default)]
+struct OneFailure(Option<Failure>);
+
+impl OneFailure {
+    fn check(&mut self, decoded: &Result<Vec<u8>, Failure>, case: &str) {
+        let Err(failure) = decoded else {
+            panic!("{case} decoded");
+        };
+        let first = self.0.get_or_insert_with(|| failure.clone());
+        assert!(
+            matches!(failure, Failure::Native(_)),
+            "{case}: {failure:?} has no native cause"
+        );
+        assert_eq!(failure, first, "{case}: error class");
+    }
+}
+
+/// The image at `scale` in a buffer padded past each row, or the native error
+/// class of the failure, from a decoder whose planes budget is
+/// `planes_budget` when one is given.
 fn decode(
     bytes: &[u8],
     planes_budget: Option<usize>,
@@ -47,7 +87,7 @@ fn decode(
     fmt: PixelFormat,
     scale: Downscale,
     padding: usize,
-) -> Option<Vec<u8>> {
+) -> Result<Vec<u8>, Failure> {
     let mut decoder = J2kDecoder::new(bytes).expect("decoder");
     decoder.set_cpu_decode_parallelism(parallelism);
     if let Some(bytes) = planes_budget {
@@ -64,14 +104,14 @@ fn decode(
         Downscale::None => decoder.decode_into(&mut out, stride, fmt),
         _ => decoder.decode_scaled_into(pool, &mut out, stride, fmt, scale),
     };
-    result.ok()?;
+    result.map_err(|error| Failure::of(&error))?;
     for line in out.chunks(stride) {
         assert!(
             line[row..].iter().all(|&byte| byte == PADDING),
             "stride padding untouched"
         );
     }
-    Some(out)
+    Ok(out)
 }
 
 #[test]
@@ -158,11 +198,11 @@ fn streamed_full_image_matches_planes() {
                     assert!(
                         planes == streamed && planes == default,
                         "{label} {fmt:?} {scale:?} {parallelism:?}: planes {} streamed {} default {}",
-                        planes.is_some(),
-                        streamed.is_some(),
-                        default.is_some()
+                        planes.is_ok(),
+                        streamed.is_ok(),
+                        default.is_ok()
                     );
-                    decoded += usize::from(planes.is_some());
+                    decoded += usize::from(planes.is_ok());
                 }
             }
         }
@@ -192,7 +232,7 @@ fn tiles_with_empty_coarse_levels_stream_as_the_planes_decode() {
                 let planes = decode(bytes, Some(usize::MAX), parallelism, fmt, scale, 0);
                 let lowered = decode(bytes, Some(0), parallelism, fmt, scale, 0);
                 let default = decode(bytes, None, parallelism, fmt, scale, 0);
-                assert!(planes.is_some(), "{label} {parallelism:?} {scale:?}");
+                assert!(planes.is_ok(), "{label} {parallelism:?} {scale:?}");
                 assert_eq!(planes, lowered, "{label} {parallelism:?} {scale:?}");
                 assert_eq!(planes, default, "{label} {parallelism:?} {scale:?}");
             }
@@ -329,9 +369,9 @@ fn data_after_a_tiles_last_packet_decodes_as_without_it_on_every_route() {
                             decode(edited, budget, CpuDecodeParallelism::Auto, fmt, scale, 0)
                         });
                         assert!(
-                            decoded.as_ref() == Some(&expected),
+                            decoded.as_ref() == Ok(&expected),
                             "{label} {fmt:?} {scale:?} {threads} threads, planes budget {budget:?}: {}",
-                            if decoded.is_some() { "other bytes" } else { "failed" }
+                            if decoded.is_ok() { "other bytes" } else { "failed" }
                         );
                     }
                 }
@@ -368,14 +408,15 @@ fn surplus_packet_length_before_a_later_tile_part_fails_on_every_route() {
     });
     for scale in [Downscale::None, Downscale::Half] {
         let fmt = PixelFormat::Gray8;
-        assert!(decode(&split, None, CpuDecodeParallelism::Serial, fmt, scale, 0).is_some());
+        assert!(decode(&split, None, CpuDecodeParallelism::Serial, fmt, scale, 0).is_ok());
+        let mut failure = OneFailure::default();
         for (pool, threads) in pools.iter().zip([1, 4]) {
             for budget in [Some(usize::MAX), Some(0), None] {
                 let decoded = pool
                     .install(|| decode(&edited, budget, CpuDecodeParallelism::Auto, fmt, scale, 0));
-                assert!(
-                    decoded.is_none(),
-                    "{scale:?} {threads} threads, planes budget {budget:?} decoded"
+                failure.check(
+                    &decoded,
+                    &format!("{scale:?} {threads} threads, planes budget {budget:?}"),
                 );
             }
         }
@@ -413,7 +454,8 @@ fn last_packet_shorter_than_its_plt_length_fails_on_every_route() {
         Downscale::None,
         0,
     );
-    assert!(clean.is_some());
+    assert!(clean.is_ok());
+    let mut failure = OneFailure::default();
     for threads in [1, 4] {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
@@ -430,9 +472,9 @@ fn last_packet_shorter_than_its_plt_length_fails_on_every_route() {
                     0,
                 )
             });
-            assert!(
-                decoded.is_none(),
-                "{threads} threads, planes budget {budget:?} decoded"
+            failure.check(
+                &decoded,
+                &format!("{threads} threads, planes budget {budget:?}"),
             );
         }
     }
@@ -791,6 +833,7 @@ fn reduced_decodes_read_the_same_packets_on_every_route() {
             0,
         )
         .expect("clean half-resolution decode");
+        let (mut half_failure, mut full_failure) = (OneFailure::default(), OneFailure::default());
         for (pool, threads) in pools.iter().zip([1, 4]) {
             for budget in [Some(usize::MAX), Some(0), None] {
                 let label = format!(
@@ -808,9 +851,9 @@ fn reduced_decodes_read_the_same_packets_on_every_route() {
                     )
                 });
                 if damage.half_succeeds {
-                    assert!(half.as_ref() == Some(&expected), "{label}: half resolution");
+                    assert!(half.as_ref() == Ok(&expected), "{label}: half resolution");
                 } else {
-                    assert!(half.is_none(), "{label}: half resolution decoded");
+                    half_failure.check(&half, &format!("{label}: half resolution"));
                 }
                 let full = pool.install(|| {
                     decode(
@@ -822,7 +865,7 @@ fn reduced_decodes_read_the_same_packets_on_every_route() {
                         0,
                     )
                 });
-                assert!(full.is_none(), "{label}: full resolution decoded");
+                full_failure.check(&full, &format!("{label}: full resolution"));
             }
         }
     }
@@ -861,11 +904,12 @@ fn misplaced_plt_length_before_a_needed_packet_fails_on_every_route() {
         Downscale::Half,
         0
     )
-    .is_some());
+    .is_ok());
     for (label, edited) in [
         ("one byte early", one_byte_early),
         ("past the tile-part", past_the_tile_part),
     ] {
+        let mut failure = OneFailure::default();
         for threads in [1, 4] {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
@@ -882,9 +926,9 @@ fn misplaced_plt_length_before_a_needed_packet_fails_on_every_route() {
                         0,
                     )
                 });
-                assert!(
-                    half.is_none(),
-                    "{label}, {threads} threads, planes budget {budget:?} decoded"
+                failure.check(
+                    &half,
+                    &format!("{label}, {threads} threads, planes budget {budget:?}"),
                 );
             }
         }
@@ -929,13 +973,14 @@ fn truncated_last_packet_spares_reduced_decodes_on_every_route() {
         .expect("clean half-resolution decode");
         for cut in (1..last).step_by((last / 8).max(1)) {
             let edited = edit_tile_parts(&clean, |part| part.truncate(part.len() - cut));
+            let mut failure = OneFailure::default();
             for parallelism in [CpuDecodeParallelism::Serial, CpuDecodeParallelism::Auto] {
                 for budget in [Some(usize::MAX), Some(0), None] {
                     let label = format!("EPH {write_eph}, cut {cut} of {last}, {parallelism:?}, planes budget {budget:?}");
                     let half = decode(&edited, budget, parallelism, fmt, Downscale::Half, 0);
-                    assert!(half.as_ref() == Some(&expected), "{label}: half resolution");
+                    assert!(half.as_ref() == Ok(&expected), "{label}: half resolution");
                     let full = decode(&edited, budget, parallelism, fmt, Downscale::None, 0);
-                    assert!(full.is_none(), "{label}: full resolution decoded");
+                    failure.check(&full, &format!("{label}: full resolution"));
                 }
             }
         }
