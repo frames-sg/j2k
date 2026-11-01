@@ -15,6 +15,19 @@ Staged workspace version: `0.13.2`.
   status, detail and batch source index. CUDA keeps its typed source and job
   attribution. Unsupported statuses, raw runtime failures and combined
   cleanup or release failures keep their existing classes.
+- Images that a batch with an explicit worker count decodes together on
+  its stream pool, when it plans as many images at once as the pool has
+  threads and the pool has fewer than 12, hold two bands in every ring of
+  the pool's bands in place of three at the finest level, and keep their
+  bands whole: a pool thread with no band of one image to decode takes
+  another image's bands. Eight 2048 x 2048 RGB images peak at 116.9, 138.3
+  and 182.6 MiB in place of 121.4, 147.3 and 200.6 MiB on 2, 4 and 8
+  workers, and ten on 10 workers at 229.5 in place of 252.0 MiB, in the
+  same batch time. From 12 threads, where a lone tile holds deeper rings,
+  the images keep the usual rings, as do an image encoded in more than one
+  and a half times its group's mean bytes, the likeliest to decode last
+  with the pool to itself, groups planned with fewer images at once than
+  pool threads, and single-image decodes. Output is unchanged.
 - Classic tiles of several components that stream their rows from the
   worker pool's bands with a reader per component and full-width reads,
   but without the deeper band rings of 12 threads and more, as on 10 and
