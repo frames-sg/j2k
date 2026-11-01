@@ -15,6 +15,17 @@ Staged workspace version: `0.13.2`.
   status, detail and batch source index. CUDA keeps its typed source and job
   attribution. Unsupported statuses, raw runtime failures and combined
   cleanup or release failures keep their existing classes.
+- Classic tiles of several components that stream their rows from the
+  worker pool's bands with a reader per component and full-width reads,
+  but without the deeper band rings of 12 threads and more, as on 10 and
+  11 threads or at a reduced resolution, hold two bands in each
+  finest-level ring in place of three when the pool has more threads than
+  three per component. The bands ahead of the readers are then fewer than
+  the pool's threads, so they split into parts that every thread takes. A
+  5661 x 8287 RGB image on 10 threads peaks at 49.2 MiB in place of 55.3
+  MiB and an 18000 x 12000 one at 148 MiB in place of 168 MiB, and the
+  latter at half resolution on 12 threads at 79 MiB in place of 89 MiB,
+  with the same or slightly shorter decode times. Output is unchanged.
 - `decode_rows_u8_bounded` and `decode_rows_u16_bounded` decode an image
   whose tiles span its width, and whose headers let its region decode stream
   its rows, once, as a region decode of the whole image that streams its
