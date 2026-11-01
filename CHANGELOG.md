@@ -15,6 +15,24 @@ Staged workspace version: `0.13.2`.
   status, detail and batch source index. CUDA keeps its typed source and job
   attribution. Unsupported statuses, raw runtime failures and combined
   cleanup or release failures keep their existing classes.
+- A PLT length shorter than any packet, zero or, where EPH markers are
+  required, below three bytes, for a packet that a region or
+  reduced-resolution decode skips by its length is a packet error. Skipping
+  by such a length made the decode read the next packet it needs from the
+  skipped packet's bytes: in a flat three-component image whose last needed
+  packet was found that way, reduced decodes wrote other colours and
+  reported success. Full decodes already rejected these lengths.
+- Decodes below full resolution read the packets the reduced output needs on
+  every route: the packets of the resolutions they keep, the others only
+  where they must be parsed to find a later needed one and their PLT
+  lengths cannot skip them, and none after the last needed one, as region
+  decodes already did. Decodes on the component planes and the direct plans
+  that GPU decodes and the staged batch run read every packet, so a
+  codestream damaged only in packets of the discarded resolutions decoded or
+  failed depending on the route and the pool's size; it now decodes
+  everywhere, as the undamaged codestream does at that resolution. Damage in
+  a packet the output needs, or in one parsed to find a later needed one,
+  remains an error, and full-resolution decodes are unchanged.
 - A tile-part that holds data after its tile's last packet, bytes or PLT
   packet lengths past it, decodes on every route. Decodes on the component
   planes failed with a packet parse error where decodes that stream their
