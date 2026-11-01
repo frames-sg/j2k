@@ -19,6 +19,7 @@ pub(crate) use output::{
 mod route;
 mod settings;
 mod srgb8;
+mod stripes;
 use output::{
     can_decode_u8_directly, expand_rgb8_to_rgba8, region_rows_preferred_u16, rows_match_native_u16,
     write_components_u16_output, write_components_u8_output, write_u16_output, write_u8_output,
@@ -28,6 +29,11 @@ pub(crate) use route::{full_image_route, FullImageRoute, PlanesBudget, RouteRequ
 pub use settings::DecodeSettings;
 pub(crate) use srgb8::decode_image_srgb8;
 pub use srgb8::{J2kSrgb8Image, J2kSrgb8Layout};
+pub(crate) use stripes::{
+    decode_image_rows_in_stripes, rows_stream_whole, DeliverRow, StreamedRowsError,
+};
+#[cfg(test)]
+pub(crate) use stripes::{InjectedFailure, INJECTED_FAILURE, STREAMED_ROW_DECODES};
 
 /// Non-fatal JPEG 2000 decode warning surfaced through decode outcomes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

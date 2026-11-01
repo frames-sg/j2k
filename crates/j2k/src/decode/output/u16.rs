@@ -4,6 +4,7 @@
 
 use crate::backend::{ColorSpace, DecodedComponents as NativeDecodedComponents, Image, RawBitmap};
 use crate::J2kError;
+use core::ops::Range;
 use j2k_core::{PixelFormat, Unsupported};
 
 use super::u8::{component_sample_count, output_rows, validate_component_planes};
@@ -77,29 +78,53 @@ fn write_planes_u16(
     stride: usize,
     fmt: PixelFormat,
 ) -> Result<(), J2kError> {
+    let rows = 0..dims.1 as usize;
+    write_plane_rows_u16(color_space, has_alpha, planes, dims, rows, out, stride, fmt)
+}
+
+/// Write rows `rows` of `planes`, each `dims` in size, to `out` from its
+/// first byte, as [`write_planes_u16`] writes those rows of whole planes.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the row-range writer keeps the planes' layout, the rows and the output layout explicit"
+)]
+pub(in crate::decode) fn write_plane_rows_u16(
+    color_space: &ColorSpace,
+    has_alpha: bool,
+    planes: &[j2k_native::ComponentPlane<'_>],
+    dims: (u32, u32),
+    rows: Range<usize>,
+    out: &mut [u8],
+    stride: usize,
+    fmt: PixelFormat,
+) -> Result<(), J2kError> {
     let expected_samples = component_sample_count(dims)?;
     let width = dims.0 as usize;
-    let height = dims.1 as usize;
+    if rows.start > rows.end || rows.end > dims.1 as usize {
+        return Err(J2kError::internal_backend(
+            "component rows outside their planes",
+        ));
+    }
     match (color_space, has_alpha, planes.len(), fmt) {
         (ColorSpace::Gray, false, 1, PixelFormat::Gray16) => {
             validate_component_planes(&planes[..1], expected_samples)?;
-            write_component_rows_u16(&planes[0], out, stride, width, height);
+            write_component_rows_u16(&planes[0], out, stride, width, rows);
             Ok(())
         }
         (ColorSpace::RGB, false, 3, PixelFormat::Rgb16)
         | (ColorSpace::RGB, true, 4, PixelFormat::Rgb16) => {
             validate_component_planes(&planes[..3], expected_samples)?;
-            write_rgb_component_rows_u16(planes, out, stride, width, height);
+            write_rgb_component_rows_u16(planes, out, stride, width, rows);
             Ok(())
         }
         (ColorSpace::RGB, false, 3, PixelFormat::Rgba16) => {
             validate_component_planes(&planes[..3], expected_samples)?;
-            write_rgba_component_rows_u16(planes, out, stride, width, height, true);
+            write_rgba_component_rows_u16(planes, out, stride, width, rows, true);
             Ok(())
         }
         (ColorSpace::RGB, true, 4, PixelFormat::Rgba16) => {
             validate_component_planes(&planes[..4], expected_samples)?;
-            write_rgba_component_rows_u16(planes, out, stride, width, height, false);
+            write_rgba_component_rows_u16(planes, out, stride, width, rows, false);
             Ok(())
         }
         _ => Err(Unsupported {
@@ -177,18 +202,20 @@ impl j2k_native::ComponentRowSink for U16RowSink<'_> {
     }
 }
 
+/// Rows `rows` of `plane`, `width` samples each, written from the first row
+/// of `out` on.
 fn write_component_rows_u16(
     plane: &j2k_native::ComponentPlane<'_>,
     out: &mut [u8],
     stride: usize,
     width: usize,
-    height: usize,
+    rows: Range<usize>,
 ) {
     let conversion = U16Conversion::new(plane.bit_depth(), plane.signed());
-    for y in 0..height {
+    for (index, y) in rows.enumerate() {
         conversion.visit(ChannelWriter {
             src: &plane.samples()[y * width..(y + 1) * width],
-            dst: &mut out[y * stride..y * stride + width * 2],
+            dst: &mut out[index * stride..index * stride + width * 2],
             channels: 1,
             channel: 0,
         });
@@ -200,9 +227,9 @@ fn write_rgb_component_rows_u16(
     out: &mut [u8],
     stride: usize,
     width: usize,
-    height: usize,
+    rows: Range<usize>,
 ) {
-    write_color_component_rows_u16(planes, out, stride, width, height, 3, false);
+    write_color_component_rows_u16(planes, out, stride, width, rows, 3, false);
 }
 
 fn write_rgba_component_rows_u16(
@@ -210,10 +237,10 @@ fn write_rgba_component_rows_u16(
     out: &mut [u8],
     stride: usize,
     width: usize,
-    height: usize,
+    rows: Range<usize>,
     synthesize_alpha: bool,
 ) {
-    write_color_component_rows_u16(planes, out, stride, width, height, 4, synthesize_alpha);
+    write_color_component_rows_u16(planes, out, stride, width, rows, 4, synthesize_alpha);
 }
 
 fn write_color_component_rows_u16(
@@ -221,7 +248,7 @@ fn write_color_component_rows_u16(
     out: &mut [u8],
     stride: usize,
     width: usize,
-    height: usize,
+    rows: Range<usize>,
     output_channels: usize,
     synthesize_alpha: bool,
 ) {
@@ -235,9 +262,9 @@ fn write_color_component_rows_u16(
         planes[0].bit_depth(),
     )
     .to_le_bytes();
-    for y in 0..height {
+    for (index, y) in rows.enumerate() {
         let row = y * width..(y + 1) * width;
-        let destination = &mut out[y * stride..y * stride + width * output_channels * 2];
+        let destination = &mut out[index * stride..index * stride + width * output_channels * 2];
         if fused {
             color[0].visit(PixelWriter {
                 src: [0, 1, 2].map(|channel| &planes[channel].samples()[row.clone()]),

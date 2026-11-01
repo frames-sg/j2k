@@ -4,6 +4,7 @@
 
 use crate::backend::{ColorSpace, DecodedComponents as NativeDecodedComponents};
 use crate::J2kError;
+use core::ops::Range;
 use j2k_core::{PixelFormat, Unsupported};
 
 pub(in crate::decode) fn can_decode_u8_directly(
@@ -49,29 +50,53 @@ fn write_planes_u8(
     stride: usize,
     fmt: PixelFormat,
 ) -> Result<(), J2kError> {
+    let rows = 0..dims.1 as usize;
+    write_plane_rows_u8(color_space, has_alpha, planes, dims, rows, out, stride, fmt)
+}
+
+/// Write rows `rows` of `planes`, each `dims` in size, to `out` from its
+/// first byte, as [`write_planes_u8`] writes those rows of whole planes.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the row-range writer keeps the planes' layout, the rows and the output layout explicit"
+)]
+pub(in crate::decode) fn write_plane_rows_u8(
+    color_space: &ColorSpace,
+    has_alpha: bool,
+    planes: &[j2k_native::ComponentPlane<'_>],
+    dims: (u32, u32),
+    rows: Range<usize>,
+    out: &mut [u8],
+    stride: usize,
+    fmt: PixelFormat,
+) -> Result<(), J2kError> {
     let expected_samples = component_sample_count(dims)?;
     let width = dims.0 as usize;
-    let height = dims.1 as usize;
+    if rows.start > rows.end || rows.end > dims.1 as usize {
+        return Err(J2kError::internal_backend(
+            "component rows outside their planes",
+        ));
+    }
     match (color_space, has_alpha, planes.len(), fmt) {
         (ColorSpace::Gray, false, 1, PixelFormat::Gray8) => {
             validate_component_planes(&planes[..1], expected_samples)?;
-            write_component_rows_u8(&planes[0], out, stride, width, height);
+            write_component_rows_u8(&planes[0], out, stride, width, rows);
             Ok(())
         }
         (ColorSpace::RGB, false, 3, PixelFormat::Rgb8)
         | (ColorSpace::RGB, true, 4, PixelFormat::Rgb8) => {
             validate_component_planes(&planes[..3], expected_samples)?;
-            write_rgb_component_rows_u8(planes, out, stride, width, height);
+            write_rgb_component_rows_u8(planes, out, stride, width, rows);
             Ok(())
         }
         (ColorSpace::RGB, false, 3, PixelFormat::Rgba8) => {
             validate_component_planes(&planes[..3], expected_samples)?;
-            write_rgba_component_rows_u8(planes, out, stride, width, height, true);
+            write_rgba_component_rows_u8(planes, out, stride, width, rows, true);
             Ok(())
         }
         (ColorSpace::RGB, true, 4, PixelFormat::Rgba8) => {
             validate_component_planes(&planes[..4], expected_samples)?;
-            write_rgba_component_rows_u8(planes, out, stride, width, height, false);
+            write_rgba_component_rows_u8(planes, out, stride, width, rows, false);
             Ok(())
         }
         _ => Err(Unsupported {
@@ -203,16 +228,18 @@ pub(super) fn output_rows(
         .map(move |row| &mut row[..row_bytes])
 }
 
+/// Rows `rows` of `plane`, `width` samples each, written from the first row
+/// of `out` on.
 fn write_component_rows_u8(
     plane: &j2k_native::ComponentPlane<'_>,
     out: &mut [u8],
     stride: usize,
     width: usize,
-    height: usize,
+    rows: Range<usize>,
 ) {
-    for y in 0..height {
+    for (index, y) in rows.enumerate() {
         let src = &plane.samples()[y * width..(y + 1) * width];
-        let dst = &mut out[y * stride..y * stride + width];
+        let dst = &mut out[index * stride..index * stride + width];
         write_samples_as_u8(src, plane.bit_depth(), dst);
     }
 }
@@ -222,23 +249,23 @@ fn write_rgb_component_rows_u8(
     out: &mut [u8],
     stride: usize,
     width: usize,
-    height: usize,
+    rows: Range<usize>,
 ) {
     if planes[..3].iter().all(|plane| plane.bit_depth() == 8) {
         // `sample_as_u8` at 8 bits is the RGB8 pack's rounding and saturation,
         // which j2k-native runs at the CPU's SIMD level.
-        for y in 0..height {
+        for (index, y) in rows.enumerate() {
             let row = y * width..(y + 1) * width;
             j2k_native::pack_rgb8(
                 [0, 1, 2].map(|channel| &planes[channel].samples()[row.clone()]),
-                &mut out[y * stride..y * stride + width * 3],
+                &mut out[index * stride..index * stride + width * 3],
             );
         }
         return;
     }
-    for y in 0..height {
+    for (index, y) in rows.enumerate() {
         let row = y * width;
-        let dst = &mut out[y * stride..y * stride + width * 3];
+        let dst = &mut out[index * stride..index * stride + width * 3];
         for x in 0..width {
             let dst = &mut dst[x * 3..x * 3 + 3];
             for channel in 0..3 {
@@ -256,12 +283,12 @@ fn write_rgba_component_rows_u8(
     out: &mut [u8],
     stride: usize,
     width: usize,
-    height: usize,
+    rows: Range<usize>,
     synthesize_alpha: bool,
 ) {
-    for y in 0..height {
+    for (index, y) in rows.enumerate() {
         let row = y * width;
-        let dst = &mut out[y * stride..y * stride + width * 4];
+        let dst = &mut out[index * stride..index * stride + width * 4];
         for x in 0..width {
             let dst = &mut dst[x * 4..x * 4 + 4];
             for channel in 0..3 {

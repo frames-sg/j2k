@@ -14,9 +14,9 @@ use native::{planes_pack_floor, region_rows_preferred};
 
 pub(super) use u16::{
     region_rows_preferred_u16, rows_match_native_u16, u16_rows_pack_floor,
-    write_components_u16_output, write_u16_output, U16RowSink,
+    write_components_u16_output, write_plane_rows_u16, write_u16_output, U16RowSink,
 };
 pub(super) use u8::{
-    can_decode_u8_directly, expand_rgb8_to_rgba8, write_components_u8_output, write_u8_output,
-    U8RowSink,
+    can_decode_u8_directly, expand_rgb8_to_rgba8, write_components_u8_output, write_plane_rows_u8,
+    write_u8_output, U8RowSink,
 };
