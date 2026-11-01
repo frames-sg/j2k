@@ -32,7 +32,9 @@ Staged workspace version: `0.13.2`.
   failed depending on the route and the pool's size; it now decodes
   everywhere, as the undamaged codestream does at that resolution. Damage in
   a packet the output needs, or in one parsed to find a later needed one,
-  remains an error, and full-resolution decodes are unchanged.
+  remains an error. Full-resolution decodes are unchanged, except that the
+  packets of precincts holding no code-block, as at a one-sample tile
+  corner, are read on every route as region decodes read them.
 - A tile-part that holds data after its tile's last packet, bytes or PLT
   packet lengths past it, decodes on every route. Decodes on the component
   planes failed with a packet parse error where decodes that stream their
