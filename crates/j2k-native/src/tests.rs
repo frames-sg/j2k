@@ -4,6 +4,7 @@ use super::*;
 use crate::j2c::ComponentData;
 
 mod banded_tier1;
+mod classic_passes;
 mod component_layout;
 mod fused_last_level;
 mod ht_refinement;

@@ -46,6 +46,91 @@ impl BitDecoder for BypassDecoder<'_> {
     }
 }
 
+/// Raw (bypass) bits for the packed-column passes: the bits of a raw
+/// segment as [`BypassDecoder`] reads them, buffered up to 64 at a time.
+///
+/// After a 0xFF byte, the next byte's top bit is a stuffed zero and is
+/// skipped. Once the data is exhausted every bit reads as one. Strict
+/// decoding fails when a stuffed bit is one or the data ends right after a
+/// 0xFF byte; buffering stops before such a 0xFF byte, and the rest of the
+/// segment is read by a [`BypassDecoder`], so those cases behave exactly as
+/// it does.
+pub(super) struct RawBits<'a> {
+    data: &'a [u8],
+    /// Next byte to buffer.
+    position: usize,
+    /// Buffered bits, most significant first.
+    buffer: u64,
+    available: u32,
+    /// Whether the byte at `position` follows a 0xFF byte.
+    stuffed: bool,
+    /// Bits from `position` on, once buffering has stopped before a 0xFF
+    /// byte whose stuffing [`BypassDecoder`] must check.
+    tail: Option<BypassDecoder<'a>>,
+    strict: bool,
+}
+
+impl<'a> RawBits<'a> {
+    pub(super) fn new(data: &'a [u8], strict: bool) -> Self {
+        Self {
+            data,
+            position: 0,
+            buffer: 0,
+            available: 0,
+            stuffed: false,
+            tail: None,
+            strict,
+        }
+    }
+
+    fn refill(&mut self) {
+        while self.available <= 56 && self.tail.is_none() {
+            let Some(&byte) = self.data.get(self.position) else {
+                return;
+            };
+            let (bits, width) = if self.stuffed {
+                // The top bit was checked when the 0xFF byte was buffered.
+                (u64::from(byte & 0x7F), 7)
+            } else {
+                (u64::from(byte), 8)
+            };
+            if byte == 0xFF {
+                let next = self.data.get(self.position + 1);
+                if next.is_none_or(|next| next & 0x80 != 0) {
+                    let mut tail = BypassDecoder::new(&self.data[self.position..], self.strict);
+                    if self.stuffed {
+                        tail.0.read_bit();
+                    }
+                    self.tail = Some(tail);
+                    return;
+                }
+            }
+            self.buffer |= bits << (64 - width - self.available);
+            self.available += width;
+            self.stuffed = byte == 0xFF;
+            self.position += 1;
+        }
+    }
+
+    #[expect(clippy::inline_always, reason = "per-bit raw decode in Tier-1 passes")]
+    #[inline(always)]
+    pub(super) fn read(&mut self) -> Option<u32> {
+        if self.available == 0 {
+            self.refill();
+            if self.available == 0 {
+                // Past the end, bits read as one, as in `BypassDecoder`.
+                return self.tail.as_mut().map_or(Some(1), |tail| {
+                    tail.read_bit(&mut ArithmeticDecoderContext::default())
+                });
+            }
+        }
+        let bit = (self.buffer >> 63) as u32;
+        self.buffer <<= 1;
+        self.available -= 1;
+        Some(bit)
+    }
+}
+
 pub(super) struct SafeScalarTier1;
 
 impl SafeScalarTier1 {
