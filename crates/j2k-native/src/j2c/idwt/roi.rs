@@ -33,16 +33,26 @@ const STREAMED_MIN_BATCHES: usize = 4;
 /// halved: halving the 116-row batches of an 18000-wide tile cost 2 to 5%.
 const STREAMED_DEEP_MIN_ROWS: usize = 128;
 
+/// Rows a batch of a tile holding two batches keeps at most. HTJ2K tiles
+/// pipeline two: on 10 to 18 threads, 256-row batches of a 4096-wide tile
+/// decode as fast as 512-row ones (0.99-1.01 of their time) and hold two
+/// thirds of the memory (48 vs 72 MiB); 128-row ones hold half (36 MiB) but
+/// take 3-10% longer, and 1024 x 1024 regions 6-15% longer.
+const STREAMED_PIPELINED_MAX_ROWS: usize = 256;
+
 /// Rows of each component a tile streaming from pool bands through a reader
 /// per component reconstructs at once, for `height` rows of `width` samples.
 /// A tile that holds `one_batch` (a classic tile; HTJ2K tiles pipeline two)
 /// transforms it before the next one reconstructs, so its batches take half
 /// the rows while that leaves at least `STREAMED_DEEP_MIN_ROWS`: as fast,
-/// with half the rows held. A tile with one reader holds no batch: it
-/// finishes each row in the IDWT's ring.
+/// with half the rows held. Two batches keep to
+/// `STREAMED_PIPELINED_MAX_ROWS` each. A tile with one reader holds no
+/// batch: it finishes each row in the IDWT's ring.
 pub(crate) fn streamed_batch_rows(width: usize, height: usize, one_batch: bool) -> usize {
     let rows = STREAMED_BATCH_SAMPLES / width.max(1);
-    let rows = if one_batch && rows / 2 >= STREAMED_DEEP_MIN_ROWS {
+    let rows = if !one_batch {
+        rows.min(STREAMED_PIPELINED_MAX_ROWS)
+    } else if rows / 2 >= STREAMED_DEEP_MIN_ROWS {
         rows / 2
     } else {
         rows
