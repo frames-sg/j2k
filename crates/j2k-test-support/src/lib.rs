@@ -82,7 +82,7 @@ pub use manifest::{
 pub use metal::{metal_device_unavailable_is_skip, metal_runtime_gate, metal_runtime_required};
 pub use packet_edits::{
     add_packet_length, edit_tile_parts, packet_ranges, with_byte_after_last_packets,
-    with_packets_filled, with_surplus_packet_lengths,
+    with_packet_lengths_edited, with_packets_filled, with_surplus_packet_lengths,
 };
 pub use pixels::{
     crop_interleaved_bytes, crop_interleaved_u16, project_scaled_interleaved_u16,

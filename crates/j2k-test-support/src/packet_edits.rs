@@ -152,6 +152,59 @@ pub fn with_packets_filled(codestream: &[u8], ranges: &[Range<usize>], byte: u8)
     edited
 }
 
+/// `codestream` with each tile-part's PLT lengths passed through `edit` and
+/// written back as one PLT marker, packets unchanged.
+///
+/// # Panics
+///
+/// When a tile-part has no PLT marker or its new lengths do not fit one.
+#[must_use]
+pub fn with_packet_lengths_edited(
+    codestream: &[u8],
+    mut edit: impl FnMut(&mut Vec<usize>),
+) -> Vec<u8> {
+    edit_tile_parts(codestream, |part| {
+        let mut header = part[..12].to_vec();
+        let mut lengths = Vec::new();
+        let mut at = 12;
+        while part[at..at + 2] != SOD {
+            let end = marker_segment_end(part, at);
+            if part[at..at + 2] == PLT {
+                let mut length = 0_usize;
+                for &byte in &part[at + 5..end] {
+                    length = (length << 7) | usize::from(byte & 0x7f);
+                    if byte & 0x80 == 0 {
+                        lengths.push(length);
+                        length = 0;
+                    }
+                }
+            } else {
+                header.extend_from_slice(&part[at..end]);
+            }
+            at = end;
+        }
+        assert!(!lengths.is_empty(), "tile-part has PLT lengths");
+        edit(&mut lengths);
+        let mut entries = Vec::new();
+        for &length in &lengths {
+            let mut groups = vec![u8::try_from(length & 0x7f).expect("seven bits")];
+            let mut rest = length >> 7;
+            while rest != 0 {
+                groups.push(u8::try_from(rest & 0x7f).expect("seven bits") | 0x80);
+                rest >>= 7;
+            }
+            entries.extend(groups.iter().rev());
+        }
+        let marker_length = u16::try_from(entries.len() + 3).expect("lengths fit one PLT marker");
+        header.extend_from_slice(&PLT);
+        header.extend_from_slice(&marker_length.to_be_bytes());
+        header.push(0);
+        header.extend_from_slice(&entries);
+        header.extend_from_slice(&part[at..]);
+        *part = header;
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,5 +247,13 @@ mod tests {
         );
         let filled = with_packets_filled(&bytes, &packet_ranges(&bytes)[1..], 0xff);
         assert_eq!(filled[filled.len() - 5..filled.len() - 2], [0xff; 3]);
+        assert_eq!(with_packet_lengths_edited(&bytes, |_| {}), bytes);
+        let moved = with_packet_lengths_edited(&bytes, |lengths| {
+            lengths[0] += 1;
+            lengths[1] -= 1;
+        });
+        let ranges = packet_ranges(&moved);
+        assert_eq!(moved[ranges[0].clone()], [1, 2, 3]);
+        assert_eq!(moved[ranges[1].clone()], [4, 5]);
     }
 }

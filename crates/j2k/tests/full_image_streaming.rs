@@ -437,3 +437,507 @@ fn last_packet_shorter_than_its_plt_length_fails_on_every_route() {
         }
     }
 }
+
+/// The packets of a one-precinct-per-resolution tile in progression order,
+/// as (resolution, layer) per packet, with `components` components.
+fn packet_order(
+    order: EncodeProgressionOrder,
+    resolutions: usize,
+    layers: usize,
+    components: usize,
+) -> Vec<(usize, usize)> {
+    let mut packets = Vec::new();
+    match order {
+        EncodeProgressionOrder::Lrcp => {
+            for layer in 0..layers {
+                for resolution in 0..resolutions {
+                    packets.extend((0..components).map(|_| (resolution, layer)));
+                }
+            }
+        }
+        EncodeProgressionOrder::Rlcp | EncodeProgressionOrder::Rpcl => {
+            for resolution in 0..resolutions {
+                for layer in 0..layers {
+                    packets.extend((0..components).map(|_| (resolution, layer)));
+                }
+            }
+        }
+        EncodeProgressionOrder::Pcrl | EncodeProgressionOrder::Cprl => {
+            for _ in 0..components {
+                for resolution in 0..resolutions {
+                    packets.extend((0..layers).map(|layer| (resolution, layer)));
+                }
+            }
+        }
+    }
+    packets
+}
+
+/// One damage case: a codestream whose packets selected by `damaged` (from
+/// (resolution, layer)) are overwritten with 0xff in every tile-part, coded
+/// with `options` at three resolutions and two layers.
+struct Damage {
+    label: &'static str,
+    components: u16,
+    options: EncodeOptions,
+    damaged: fn(usize, usize) -> bool,
+    /// An edit of the damaged codestream's markers, packets unchanged.
+    markers: fn(&[u8]) -> Vec<u8>,
+    /// Whether a half-resolution decode reads none of the damaged packets.
+    half_succeeds: bool,
+}
+
+fn same(codestream: &[u8]) -> Vec<u8> {
+    codestream.to_vec()
+}
+
+/// `codestream` with a progression order change in its main header that
+/// repeats its LRCP progression over every packet of three components.
+fn with_lrcp_poc(codestream: &[u8]) -> Vec<u8> {
+    let sot = codestream
+        .windows(2)
+        .position(|window| window == [0xff, 0x90])
+        .expect("SOT marker");
+    let poc = [0xff, 0x5f, 0, 9, 0, 0, 0, 2, 3, 3, 0];
+    [&codestream[..sot], &poc[..], &codestream[sot..]].concat()
+}
+
+/// `codestream` without the PLT marker of its second tile-part.
+fn without_second_plt(codestream: &[u8]) -> Vec<u8> {
+    let mut part_index = 0;
+    edit_tile_parts(codestream, |part| {
+        part_index += 1;
+        if part_index != 2 {
+            return;
+        }
+        let plt = part
+            .windows(2)
+            .position(|window| window == [0xff, 0x58])
+            .expect("PLT marker");
+        let end = plt + 2 + usize::from(u16::from_be_bytes([part[plt + 2], part[plt + 3]]));
+        part.drain(plt..end);
+    })
+}
+
+fn damaged_codestream(damage: &Damage) -> (Vec<u8>, Vec<u8>) {
+    let with_plt = EncodeOptions {
+        write_plt: true,
+        ..damage.options.clone()
+    };
+    let clean_plt = codestream(damage.components, &with_plt);
+    let clean = codestream(damage.components, &damage.options);
+    let packets = packet_order(
+        damage.options.progression_order,
+        3,
+        2,
+        usize::from(damage.components),
+    );
+    let ranges = j2k_test_support::packet_ranges(&clean_plt);
+    assert_eq!(
+        ranges.len() % packets.len(),
+        0,
+        "{}: whole tiles",
+        damage.label
+    );
+    let selected: Vec<_> = ranges
+        .iter()
+        .enumerate()
+        .filter(|&(index, _)| {
+            let (resolution, layer) = packets[index % packets.len()];
+            (damage.damaged)(resolution, layer)
+        })
+        .map(|(_, range)| range.clone())
+        .collect();
+    if damage.options.write_plt {
+        let edited = j2k_test_support::with_packets_filled(&clean_plt, &selected, 0xff);
+        return ((damage.markers)(&clean_plt), (damage.markers)(&edited));
+    }
+    // The same packets without PLT: the tile-part headers are shorter by the
+    // PLT marker, the packet bytes are the same.
+    assert_eq!(
+        damage.options.tile_size, None,
+        "{}: one tile-part",
+        damage.label
+    );
+    let sod = |bytes: &[u8]| {
+        bytes
+            .windows(2)
+            .position(|window| window == [0xff, 0x93])
+            .expect("SOD marker")
+    };
+    let shift = sod(&clean_plt) - sod(&clean);
+    assert_eq!(clean_plt[sod(&clean_plt)..], clean[sod(&clean)..]);
+    let shifted: Vec<_> = selected
+        .iter()
+        .map(|range| range.start - shift..range.end - shift)
+        .collect();
+    let edited = j2k_test_support::with_packets_filled(&clean, &shifted, 0xff);
+    ((damage.markers)(&clean), (damage.markers)(&edited))
+}
+
+/// Damage to the finest or the first layer's finest packets, in the
+/// progressions and layouts a half-resolution decode skips them in.
+fn finest_damage_cases() -> [Damage; 6] {
+    let base = EncodeOptions {
+        num_decomposition_levels: 2,
+        num_layers: 2,
+        ..EncodeOptions::default()
+    };
+    [
+        Damage {
+            label: "RPCL, PLT, finest packets",
+            components: 3,
+            options: EncodeOptions {
+                progression_order: EncodeProgressionOrder::Rpcl,
+                write_plt: true,
+                ..base.clone()
+            },
+            damaged: finest,
+            markers: same,
+            half_succeeds: true,
+        },
+        Damage {
+            label: "RPCL, finest packets",
+            components: 1,
+            options: EncodeOptions {
+                progression_order: EncodeProgressionOrder::Rpcl,
+                ..base.clone()
+            },
+            damaged: finest,
+            markers: same,
+            half_succeeds: true,
+        },
+        Damage {
+            label: "RLCP, HTJ2K, finest packets",
+            components: 3,
+            options: EncodeOptions {
+                progression_order: EncodeProgressionOrder::Rlcp,
+                use_ht_block_coding: true,
+                ..base.clone()
+            },
+            damaged: finest,
+            markers: same,
+            half_succeeds: true,
+        },
+        Damage {
+            label: "RPCL, PLT, tiles, finest packets",
+            components: 3,
+            options: EncodeOptions {
+                progression_order: EncodeProgressionOrder::Rpcl,
+                tile_size: Some((64, 64)),
+                write_plt: true,
+                ..base.clone()
+            },
+            damaged: finest,
+            markers: same,
+            half_succeeds: true,
+        },
+        Damage {
+            label: "LRCP, PLT, first layer's finest packets",
+            components: 3,
+            options: EncodeOptions {
+                progression_order: EncodeProgressionOrder::Lrcp,
+                write_plt: true,
+                ..base.clone()
+            },
+            damaged: first_finest,
+            markers: same,
+            half_succeeds: true,
+        },
+        Damage {
+            label: "CPRL, PLT, finest packets",
+            components: 3,
+            options: EncodeOptions {
+                progression_order: EncodeProgressionOrder::Cprl,
+                write_plt: true,
+                ..base.clone()
+            },
+            damaged: finest,
+            markers: same,
+            half_succeeds: true,
+        },
+    ]
+}
+
+/// The other damage cases of
+/// [`reduced_decodes_read_the_same_packets_on_every_route`]: packets a
+/// half-resolution decode must parse or read, and more finest packets it
+/// skips, with PCRL or several tile-parts per tile.
+fn other_damage_cases() -> [Damage; 6] {
+    let base = EncodeOptions {
+        num_decomposition_levels: 2,
+        num_layers: 2,
+        ..EncodeOptions::default()
+    };
+    [
+        Damage {
+            label: "LRCP, first layer's finest packets, parsed to reach the second layer",
+            components: 1,
+            options: EncodeOptions {
+                progression_order: EncodeProgressionOrder::Lrcp,
+                ..base.clone()
+            },
+            damaged: first_finest,
+            markers: same,
+            half_succeeds: false,
+        },
+        Damage {
+            label: "RPCL, PLT, coarsest packets",
+            components: 3,
+            options: EncodeOptions {
+                progression_order: EncodeProgressionOrder::Rpcl,
+                write_plt: true,
+                ..base.clone()
+            },
+            damaged: coarsest,
+            markers: same,
+            half_succeeds: false,
+        },
+        Damage {
+            label: "PCRL, PLT, finest packets",
+            components: 3,
+            options: EncodeOptions {
+                progression_order: EncodeProgressionOrder::Pcrl,
+                write_plt: true,
+                ..base.clone()
+            },
+            damaged: finest,
+            markers: same,
+            half_succeeds: true,
+        },
+        Damage {
+            label: "RPCL, PLT, two packets per tile-part, finest packets",
+            components: 3,
+            options: EncodeOptions {
+                progression_order: EncodeProgressionOrder::Rpcl,
+                tile_part_packet_limit: Some(2),
+                write_plt: true,
+                ..base.clone()
+            },
+            damaged: finest,
+            markers: same,
+            half_succeeds: true,
+        },
+        Damage {
+            label: "LRCP, PLT, POC, first layer's finest packets, parsed to reach the second layer",
+            components: 3,
+            options: EncodeOptions {
+                progression_order: EncodeProgressionOrder::Lrcp,
+                write_plt: true,
+                ..base.clone()
+            },
+            damaged: first_finest,
+            markers: with_lrcp_poc,
+            half_succeeds: false,
+        },
+        Damage {
+            label: "LRCP, PLT in all but one tile-part, first layer's finest packets, parsed",
+            components: 3,
+            options: EncodeOptions {
+                progression_order: EncodeProgressionOrder::Lrcp,
+                tile_part_packet_limit: Some(3),
+                write_plt: true,
+                ..base.clone()
+            },
+            damaged: first_finest,
+            markers: without_second_plt,
+            half_succeeds: false,
+        },
+    ]
+}
+
+fn finest(resolution: usize, _layer: usize) -> bool {
+    resolution == 2
+}
+
+fn first_finest(resolution: usize, layer: usize) -> bool {
+    resolution == 2 && layer == 0
+}
+
+fn coarsest(resolution: usize, _layer: usize) -> bool {
+    resolution == 0
+}
+
+/// A decode below full resolution reads the packets of the resolutions it
+/// keeps, and of the finer ones only those it has to parse to find a later
+/// packet it needs. Damage confined to the others leaves its output that of
+/// the undamaged codestream on every route and pool size; damage in a
+/// packet it needs or has to parse fails on every route, as the
+/// full-resolution decode of every damaged codestream does.
+#[test]
+fn reduced_decodes_read_the_same_packets_on_every_route() {
+    let cases = finest_damage_cases()
+        .into_iter()
+        .chain(other_damage_cases());
+    let pools = [1, 4].map(|threads| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("pool")
+    });
+    for damage in cases {
+        let (clean, edited) = damaged_codestream(&damage);
+        let fmt = if damage.components == 1 {
+            PixelFormat::Gray8
+        } else {
+            PixelFormat::Rgb8
+        };
+        let expected = decode(
+            &clean,
+            None,
+            CpuDecodeParallelism::Serial,
+            fmt,
+            Downscale::Half,
+            0,
+        )
+        .expect("clean half-resolution decode");
+        for (pool, threads) in pools.iter().zip([1, 4]) {
+            for budget in [Some(usize::MAX), Some(0), None] {
+                let label = format!(
+                    "{}, {threads} threads, planes budget {budget:?}",
+                    damage.label
+                );
+                let half = pool.install(|| {
+                    decode(
+                        &edited,
+                        budget,
+                        CpuDecodeParallelism::Auto,
+                        fmt,
+                        Downscale::Half,
+                        0,
+                    )
+                });
+                if damage.half_succeeds {
+                    assert!(half.as_ref() == Some(&expected), "{label}: half resolution");
+                } else {
+                    assert!(half.is_none(), "{label}: half resolution decoded");
+                }
+                let full = pool.install(|| {
+                    decode(
+                        &edited,
+                        budget,
+                        CpuDecodeParallelism::Auto,
+                        fmt,
+                        Downscale::None,
+                        0,
+                    )
+                });
+                assert!(full.is_none(), "{label}: full resolution decoded");
+            }
+        }
+    }
+}
+
+/// A PLT length that ends a skipped packet inside the next packet the reduced
+/// decode needs, or past the tile-part, disagrees with the packets: every
+/// route fails rather than read a needed packet from the wrong byte.
+#[test]
+fn misplaced_plt_length_before_a_needed_packet_fails_on_every_route() {
+    let clean = codestream(
+        3,
+        &EncodeOptions {
+            num_decomposition_levels: 2,
+            num_layers: 2,
+            progression_order: EncodeProgressionOrder::Lrcp,
+            write_plt: true,
+            ..EncodeOptions::default()
+        },
+    );
+    // LRCP, three components: packets 6..9 are the first layer's finest,
+    // packet 9 the second layer's first, which a half-resolution decode reads.
+    let one_byte_early = j2k_test_support::with_packet_lengths_edited(&clean, |lengths| {
+        assert!(lengths[8] > 1, "a finest packet with a body");
+        lengths[8] -= 1;
+        lengths[9] += 1;
+    });
+    let past_the_tile_part =
+        j2k_test_support::with_packet_lengths_edited(&clean, |lengths| lengths[8] += 1 << 20);
+    let fmt = PixelFormat::Rgb8;
+    assert!(decode(
+        &clean,
+        None,
+        CpuDecodeParallelism::Serial,
+        fmt,
+        Downscale::Half,
+        0
+    )
+    .is_some());
+    for (label, edited) in [
+        ("one byte early", one_byte_early),
+        ("past the tile-part", past_the_tile_part),
+    ] {
+        for threads in [1, 4] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("pool");
+            for budget in [Some(usize::MAX), Some(0), None] {
+                let half = pool.install(|| {
+                    decode(
+                        &edited,
+                        budget,
+                        CpuDecodeParallelism::Auto,
+                        fmt,
+                        Downscale::Half,
+                        0,
+                    )
+                });
+                assert!(
+                    half.is_none(),
+                    "{label}, {threads} threads, planes budget {budget:?} decoded"
+                );
+            }
+        }
+    }
+}
+
+/// A tile-part cut inside its tile's last packet, a finest-resolution one,
+/// fails at full resolution and decodes at half resolution as the uncut
+/// codestream does, on every route, wherever the cut falls in that packet
+/// (with EPH markers after the packet headers too).
+#[test]
+fn truncated_last_packet_spares_reduced_decodes_on_every_route() {
+    for write_eph in [false, true] {
+        let options = EncodeOptions {
+            num_decomposition_levels: 2,
+            progression_order: EncodeProgressionOrder::Rpcl,
+            write_eph,
+            write_plt: true,
+            ..EncodeOptions::default()
+        };
+        let with_plt = codestream(1, &options);
+        let last = j2k_test_support::packet_ranges(&with_plt)
+            .pop()
+            .expect("packets")
+            .len();
+        let clean = codestream(
+            1,
+            &EncodeOptions {
+                write_plt: false,
+                ..options
+            },
+        );
+        let fmt = PixelFormat::Gray8;
+        let expected = decode(
+            &clean,
+            None,
+            CpuDecodeParallelism::Serial,
+            fmt,
+            Downscale::Half,
+            0,
+        )
+        .expect("clean half-resolution decode");
+        for cut in (1..last).step_by((last / 8).max(1)) {
+            let edited = edit_tile_parts(&clean, |part| part.truncate(part.len() - cut));
+            for parallelism in [CpuDecodeParallelism::Serial, CpuDecodeParallelism::Auto] {
+                for budget in [Some(usize::MAX), Some(0), None] {
+                    let label = format!("EPH {write_eph}, cut {cut} of {last}, {parallelism:?}, planes budget {budget:?}");
+                    let half = decode(&edited, budget, parallelism, fmt, Downscale::Half, 0);
+                    assert!(half.as_ref() == Some(&expected), "{label}: half resolution");
+                    let full = decode(&edited, budget, parallelism, fmt, Downscale::None, 0);
+                    assert!(full.is_none(), "{label}: full resolution decoded");
+                }
+            }
+        }
+    }
+}

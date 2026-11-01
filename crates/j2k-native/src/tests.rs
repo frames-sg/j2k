@@ -2627,6 +2627,254 @@ fn direct_color_plans_ignore_data_after_the_last_packet_as_decodes_do() {
     }
 }
 
+/// Where the last packet of a one-tile-part codestream with one PLT marker
+/// starts.
+fn last_plt_packet_start(codestream: &[u8]) -> usize {
+    let plt = codestream
+        .windows(2)
+        .position(|window| window == [0xff, 0x58])
+        .expect("PLT marker");
+    let end = plt
+        + 2
+        + usize::from(u16::from_be_bytes([
+            codestream[plt + 2],
+            codestream[plt + 3],
+        ]));
+    let mut lengths = Vec::new();
+    let mut length = 0_usize;
+    for &byte in &codestream[plt + 5..end] {
+        length = (length << 7) | usize::from(byte & 0x7f);
+        if byte & 0x80 == 0 {
+            lengths.push(length);
+            length = 0;
+        }
+    }
+    codestream.len() - 2 - lengths.last().expect("PLT lengths")
+}
+
+/// A half-resolution decode needs none of an RPCL tile's finest-resolution
+/// packets, its last ones. Cut or damaged anywhere in the tile's last packet,
+/// the codestream fails at full resolution, with each of the packet errors
+/// listed below among the cases, while at half resolution the planes decode,
+/// the region decode of the whole image and the direct plan run on the CPU
+/// all write the undamaged codestream's image.
+#[test]
+fn reduced_decodes_skip_damage_to_packets_they_do_not_need() {
+    let pixels: Vec<u8> = {
+        let mut state = 0x2545_f491_u32;
+        (0..64 * 64 * 3)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state.to_be_bytes()[0]
+            })
+            .collect()
+    };
+    let half = DecodeSettings {
+        target_resolution: Some((32, 32)),
+        ..DecodeSettings::default()
+    };
+    let mut full_errors = alloc::collections::BTreeSet::new();
+    for write_eph in [false, true] {
+        let options = EncodeOptions {
+            num_decomposition_levels: 2,
+            num_layers: 2,
+            code_block_width_exp: 2,
+            code_block_height_exp: 2,
+            progression_order: EncodeProgressionOrder::Rpcl,
+            write_eph,
+            write_plt: true,
+            ..EncodeOptions::default()
+        };
+        let clean = encode(&pixels, 64, 64, 3, 8, false, &options).expect("encode");
+        let clean_half = Image::new(&clean, &half).expect("half image");
+        let native = clean_half.decode_native().expect("decode").data;
+        let rgb = clean_half
+            .decode_with_context(&mut DecoderContext::default())
+            .expect("decode")
+            .data;
+        let start = last_plt_packet_start(&clean);
+        let last = clean.len() - 2 - start;
+        let mut cases: Vec<Vec<u8>> = (0..last.min(160))
+            .map(|kept| edit_only_tile_part(&clean, |part| part.truncate(part.len() - last + kept)))
+            .collect();
+        for byte in [0x00, 0xff] {
+            let mut damaged = clean.clone();
+            damaged[start] = byte;
+            cases.push(damaged);
+        }
+        for (case, edited) in cases.iter().enumerate() {
+            let label = format!("EPH {write_eph}, case {case}");
+            match Image::new(edited, &DecodeSettings::default())
+                .expect("image")
+                .decode_native()
+            {
+                Err(DecodeError::Decoding(DecodingError::PacketParseFailure(context))) => {
+                    full_errors.insert(context);
+                }
+                other => panic!("{label}: full resolution gave {:?}", other.map(|_| ())),
+            }
+            let image = Image::new(edited, &half).expect("half image");
+            let planes = image
+                .decode_native()
+                .unwrap_or_else(|error| panic!("{label}: planes: {error:?}"));
+            assert_eq!(planes.data, native, "{label}: planes");
+            let region = image
+                .decode_native_region_with_context((0, 0, 32, 32), &mut DecoderContext::default())
+                .unwrap_or_else(|error| panic!("{label}: region: {error:?}"));
+            assert_eq!(region.data, native, "{label}: region");
+            let plan = image
+                .build_direct_color_plan_with_context(&mut DecoderContext::default())
+                .unwrap_or_else(|error| panic!("{label}: direct plan: {error:?}"));
+            let mut direct = vec![0_u8; 32 * 32 * 3];
+            execute_direct_color_plan_rgb8_into(
+                &plan,
+                J2kRect {
+                    x0: 0,
+                    y0: 0,
+                    x1: 32,
+                    y1: 32,
+                },
+                &mut J2kDirectCpuScratch::new(),
+                &mut direct,
+                32 * 3,
+            )
+            .unwrap_or_else(|error| panic!("{label}: execute: {error:?}"));
+            assert_eq!(direct, rgb, "{label}: direct plan on the CPU");
+        }
+    }
+    for context in [
+        "packet length marker disagrees with consumed bytes",
+        "packet body is shorter than its segment lengths",
+        "classic coding-pass count is truncated or invalid",
+        "classic code-block inclusion or zero-bitplane tree is truncated",
+        "code-block segment length is truncated",
+        "EPH marker is truncated",
+    ] {
+        assert!(
+            full_errors.contains(context),
+            "no case fails with {context:?}: {full_errors:?}"
+        );
+    }
+}
+
+/// A planes decode below full resolution parses exactly the packet headers the
+/// region decode of the whole reduced image parses, tile by tile, on tiles
+/// with empty coarse resolutions, position- and component-major
+/// progressions with and without PLT, and writes the same samples.
+#[test]
+fn reduced_planes_decode_parses_the_packets_the_region_decode_parses() {
+    let fixtures: [(&str, &[u8]); 6] = [
+        (
+            "gray 8x6, 8x5 tiles",
+            include_bytes!(
+                "../../j2k-test-support/fixtures/empty_coarse_levels/openjpeg_gray_8x6_tile8x5_53.j2k"
+            ),
+        ),
+        (
+            "rgb 6x6, 5x5 tiles",
+            include_bytes!(
+                "../../j2k-test-support/fixtures/empty_coarse_levels/openjpeg_rgb_6x6_tile5x5_97.j2k"
+            ),
+        ),
+        (
+            "PCRL",
+            include_bytes!("../../j2k-test-support/fixtures/openjpeg_progression/pcrl_97x61.j2k"),
+        ),
+        (
+            "CPRL",
+            include_bytes!("../../j2k-test-support/fixtures/openjpeg_progression/cprl_97x61.j2k"),
+        ),
+        (
+            "PCRL, tiles, PLT",
+            include_bytes!(
+                "../../j2k-test-support/fixtures/openjpeg_progression/pcrl_97x61_tiles_plt.j2k"
+            ),
+        ),
+        (
+            "CPRL, tiles, PLT",
+            include_bytes!(
+                "../../j2k-test-support/fixtures/openjpeg_progression/cprl_97x61_tiles_plt.j2k"
+            ),
+        ),
+    ];
+    for (name, bytes) in fixtures {
+        let full = Image::new(bytes, &DecodeSettings::default()).expect("image");
+        let half = Image::new(
+            bytes,
+            &DecodeSettings {
+                target_resolution: Some((full.width().div_ceil(2), full.height().div_ceil(2))),
+                ..DecodeSettings::default()
+            },
+        )
+        .expect("half image");
+        let mut full_context = DecoderContext::default();
+        full.decode_native_with_context(&mut full_context)
+            .unwrap_or_else(|error| panic!("{name}: full: {error:?}"));
+        let mut planes_context = DecoderContext::default();
+        let planes = half
+            .decode_native_with_context(&mut planes_context)
+            .unwrap_or_else(|error| panic!("{name}: planes: {error:?}"));
+        let mut region_context = DecoderContext::default();
+        let region = half
+            .decode_native_region_with_context(
+                (0, 0, half.width(), half.height()),
+                &mut region_context,
+            )
+            .unwrap_or_else(|error| panic!("{name}: region: {error:?}"));
+        assert_eq!(planes.data, region.data, "{name}: samples");
+        let headers = |context: &DecoderContext<'_>| {
+            context.tile_decode_context.debug_counters.packet_headers
+        };
+        assert_eq!(
+            headers(&planes_context),
+            headers(&region_context),
+            "{name}: packet headers parsed"
+        );
+        assert!(
+            headers(&planes_context) < headers(&full_context),
+            "{name}: the half-resolution decode parses fewer packets than the full one"
+        );
+    }
+}
+
+/// Damage to a packet a reduced decode needs fails it as it fails the full
+/// decode, on the planes, the region decode and the direct plan.
+#[test]
+fn reduced_decodes_fail_on_damage_to_packets_they_need() {
+    let pixels = gradient_pixels(64, 64, 3);
+    let options = EncodeOptions {
+        num_decomposition_levels: 2,
+        progression_order: EncodeProgressionOrder::Rpcl,
+        write_plt: true,
+        ..EncodeOptions::default()
+    };
+    let mut damaged = encode(&pixels, 64, 64, 3, 8, false, &options).expect("encode");
+    // RPCL: the first packet is the coarsest resolution's, which every
+    // reduced decode reads.
+    let sod = damaged
+        .windows(2)
+        .position(|window| window == [0xff, 0x93])
+        .expect("SOD marker");
+    damaged[sod + 2] = 0x00;
+    let half = DecodeSettings {
+        target_resolution: Some((32, 32)),
+        ..DecodeSettings::default()
+    };
+    let image = Image::new(&damaged, &half).expect("half image");
+    assert!(image.decode_native().is_err(), "planes");
+    assert!(
+        image
+            .decode_native_region_with_context((0, 0, 32, 32), &mut DecoderContext::default())
+            .is_err(),
+        "region"
+    );
+    image
+        .build_direct_color_plan_with_context(&mut DecoderContext::default())
+        .expect_err("direct plan");
+}
+
 #[test]
 fn color_direct_plan_honors_target_resolution() {
     for (name, bytes) in [
