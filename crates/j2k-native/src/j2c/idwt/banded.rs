@@ -305,6 +305,14 @@ impl<'a> Level2d<'a> {
         }
     }
 
+    fn lifting(&self) -> Lifting {
+        Lifting {
+            transform: self.transform,
+            y0: self.y0,
+            height: self.height,
+        }
+    }
+
     fn row_geometry(&self) -> RowGeometry {
         RowGeometry {
             width: self.width,
@@ -326,6 +334,15 @@ impl<'a> Level2d<'a> {
         }
         self
     }
+}
+
+/// What the vertical lifting of a level needs from it: its transform, its
+/// first row, whose parity says which rows each step updates, and its height.
+#[derive(Clone, Copy)]
+pub(super) struct Lifting {
+    pub(super) transform: WaveletTransform,
+    pub(super) y0: usize,
+    pub(super) height: usize,
 }
 
 /// What the horizontal synthesis of one row needs from its level: the row's
@@ -667,7 +684,7 @@ fn pair_strip<S: Simd>(
     worker_scratch: &mut [f32],
     rows_len: usize,
 ) {
-    let (_, count) = vertical_steps(outer);
+    let (_, count) = vertical_steps(outer.lifting());
     let end = first_row + output.len() / outer.width;
     // The arrivals of `stream_strip` and the LL band rows they read.
     let lo = first_row.saturating_sub(count);
@@ -700,7 +717,7 @@ enum VerticalStep {
 
 /// The vertical lifting steps of a level in order, each with the parity of
 /// the rows it updates, and how many there are.
-fn vertical_steps(level: Level2d<'_>) -> ([(usize, VerticalStep); MAX_HALO_ROWS], usize) {
+fn vertical_steps(level: Lifting) -> ([(usize, VerticalStep); MAX_HALO_ROWS], usize) {
     let low = level.y0 % 2;
     let high = 1 - low;
     match level.transform {
@@ -861,7 +878,7 @@ fn stream_level<S: Simd>(
 ) {
     let width = level.width;
     let height = level.height;
-    let (_, count) = vertical_steps(level);
+    let (_, count) = vertical_steps(level.lifting());
     let (low, high) = split_horizontal_scratch(level, horizontal_scratch);
     let mut rows = RingRows {
         rows: target,
@@ -874,7 +891,7 @@ fn stream_level<S: Simd>(
         for arrival in arrivals.start..arrivals.end.min(height) {
             synthesize_level_row(simd, level, arrival, rows.row_mut(arrival), low, high);
         }
-        lift_arrivals(simd, level, arrivals, 0..height, &mut rows);
+        lift_arrivals(simd, level.lifting(), arrivals, 0..height, &mut rows);
     }
 }
 
@@ -899,7 +916,7 @@ fn stream_strip<S: Simd>(
 ) {
     let width = level.width;
     let height = level.height;
-    let (_, count) = vertical_steps(level);
+    let (_, count) = vertical_steps(level.lifting());
     let end = first_row + output.len() / width;
     let lo = first_row.saturating_sub(count);
     let hi = (end + count).min(height);
@@ -918,7 +935,7 @@ fn stream_strip<S: Simd>(
         for arrival in arrivals.start..arrivals.end.min(hi) {
             synthesize_level_row(simd, level, arrival, rows.row_mut(arrival), low, high);
         }
-        lift_arrivals(simd, level, arrivals, lo..hi, &mut rows);
+        lift_arrivals(simd, level.lifting(), arrivals, lo..hi, &mut rows);
     }
 }
 
@@ -1110,6 +1127,33 @@ trait LevelRows {
     fn window<const ROWS: usize>(&mut self, first: usize) -> Option<[&mut [f32]; ROWS]>;
 }
 
+/// Run the vertical lifting steps of `arrivals` (see [`lift_arrivals`]) on
+/// every row of a level `width` samples wide whose rows live in `ring`, row
+/// `n` in slot `n % (ring.len() / width)`, at the CPU's SIMD level, for
+/// callers outside a dispatch. The ring must hold every row the arrivals'
+/// steps read (see [`lift_arrivals`]).
+pub(super) fn lift_ring_arrivals(
+    level: Lifting,
+    width: usize,
+    ring: &mut [f32],
+    arrivals: Range<usize>,
+) {
+    let slots = ring.len().checked_div(width).unwrap_or(0);
+    let mut rows = RingRows {
+        rows: ring,
+        width,
+        stride: width,
+        slots,
+    };
+    dispatch!(Level::new(), simd => lift_arrivals(
+        simd,
+        level,
+        arrivals,
+        0..level.height,
+        &mut rows,
+    ));
+}
+
 /// Arrivals [`stream_level`] and [`stream_strip`] synthesize before they run
 /// those arrivals' vertical steps, so one sweep of the columns runs the
 /// steps of several wavefronts.
@@ -1136,7 +1180,7 @@ const SWEEP_WAVEFRONTS: usize = 2;
 #[inline(always)]
 fn lift_arrivals<S: Simd>(
     simd: S,
-    level: Level2d<'_>,
+    level: Lifting,
     arrivals: Range<usize>,
     live: Range<usize>,
     rows: &mut impl LevelRows,
@@ -2365,7 +2409,7 @@ mod tests {
                 for (width, height) in [(1, 9), (7, 12), (8, 13), (9, 40), (17, 31), (33, 70)] {
                     let rect = IntRect::from_xywh(3, y0, width, height);
                     let level = Level2d::new(rect, [&[]; 4], transform, 1.25);
-                    let (steps, count) = vertical_steps(level);
+                    let (steps, count) = vertical_steps(level.lifting());
                     let height = height as usize;
                     let width = width as usize;
                     // The whole level, and strip-like windows with halos.
@@ -2401,7 +2445,7 @@ mod tests {
                                 let arrivals = first..(first + batch).min(live.end + count);
                                 dispatch!(Level::new(), simd => lift_arrivals(
                                     simd,
-                                    level,
+                                    level.lifting(),
                                     arrivals.clone(),
                                     live.clone(),
                                     &mut rows,

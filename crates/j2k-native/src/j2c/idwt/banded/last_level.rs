@@ -314,7 +314,7 @@ fn stream_rows<S: Simd>(
     let height = levels[0].height;
     let row_bytes = 3 * width;
     let end = first_row + output.len() / row_bytes;
-    let (_, count) = vertical_steps(levels[0]);
+    let (_, count) = vertical_steps(levels[0].lifting());
     let lo = first_row.saturating_sub(count);
     let hi = (end + count).min(height);
     let ring_rows = ring_rows(batch);
@@ -378,7 +378,7 @@ fn stream_rows<S: Simd>(
                             high,
                         );
                     }
-                    lift_arrivals(simd, *level, ahead, lo..hi, &mut rows);
+                    lift_arrivals(simd, level.lifting(), ahead, lo..hi, &mut rows);
                 }
             }
             emit_rows(rings, index, emitted..unread.max(emitted));

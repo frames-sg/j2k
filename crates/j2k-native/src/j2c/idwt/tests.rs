@@ -686,9 +686,10 @@ fn whole_window_level(
 /// otherwise through the windowed interleave. Every row must match the
 /// whole-window region IDWT, which reads every sample through
 /// `CoefficientSource::get` and filters with the scalar `filter_row`, bit for
-/// bit: both transforms, both column and row parities, stored rectangles
-/// wider than the window's bands and clipped on either side, sub-bands with
-/// nothing stored, and a second level reading the first one's rows.
+/// bit: both transforms, both column and row parities, every height up to a
+/// few wraps of the level's ring, stored rectangles wider than the window's
+/// bands and clipped on either side, sub-bands with nothing stored, and a
+/// second level reading the first one's rows.
 #[test]
 #[expect(clippy::too_many_lines, reason = "one table-driven equivalence sweep")]
 fn streamed_rows_match_the_whole_window_levels_bit_for_bit() {
@@ -702,7 +703,24 @@ fn streamed_rows_match_the_whole_window_levels_bit_for_bit() {
     ] {
         let integral = transform == WaveletTransform::Reversible53;
         for (x0, y0) in [(0, 0), (1, 0), (0, 1), (1, 1), (5, 2), (8, 3)] {
-            for (width, height) in [(16, 9), (17, 20), (31, 2), (40, 33), (64, 12), (161, 40)] {
+            for (width, height) in [
+                (16, 9),
+                (17, 20),
+                (31, 2),
+                (40, 33),
+                (64, 12),
+                (161, 40),
+                // Every height up to a few ring wraps, around the SIMD width.
+                (15, 1),
+                (16, 3),
+                (17, 4),
+                (24, 5),
+                (32, 6),
+                (33, 7),
+                (8, 8),
+                (47, 10),
+                (49, 11),
+            ] {
                 for clip in [
                     [0, 0, 0, 0],
                     [2, 1, 3, 2],

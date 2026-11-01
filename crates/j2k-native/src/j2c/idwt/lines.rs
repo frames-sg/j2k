@@ -8,12 +8,12 @@
 //! window's rows top to bottom, pulling the LL rows it needs from the level
 //! below, and the caller receives the last level's rows one at a time.
 //!
-//! Vertical lifting is streamed by keeping, for each step, how many rows the
-//! step has finished. A step updates the rows of one parity from the rows
-//! above and below them as the previous step left them. It can finish a row
-//! once the previous step has finished every row it reads, and the next step
-//! reaches a row only after this one has finished both of its neighbours, so
-//! every read sees the value the whole-window filter would see.
+//! Vertical lifting is streamed with the schedule of the banded IDWT (see
+//! `banded::lift_arrivals`): when a level's row `n` arrives, step `k`
+//! (1-based) runs on row `n - k` if that row has the step's parity. Each
+//! step then reads its row's neighbours exactly as the previous step left
+//! them, so every read sees the value the whole-window filter would see, and
+//! a row is final as soon as the inputs its last step needs have arrived.
 
 use alloc::vec::Vec;
 
@@ -21,21 +21,19 @@ use super::super::codestream::WaveletTransform;
 use super::super::decode::DecompositionStorage;
 use super::super::rect::IntRect;
 use super::banded::{
-    horizontal_scratch_elements, synthesize_band_row, RowGeometry, MIN_SIMD_ROW_WIDTH,
+    horizontal_scratch_elements, lift_ring_arrivals, synthesize_band_row, Lifting, RowGeometry,
+    MIN_SIMD_ROW_WIDTH,
 };
-use super::filter_common::periodic_symmetric_extension_left;
 use super::horizontal::filter_row;
 use super::model::CoefficientSource;
 use super::roi::interleave_samples_roi;
-use super::vertical::{
-    irreversible_row_scale, lift_one_row, scale_one_row, split_rows, vertical_step_count,
-    vertical_steps, VerticalStep,
-};
+use super::vertical::{irreversible_row_scale, scale_one_row, vertical_step_count, vertical_steps};
 use crate::error::{DecodingError, ValidationError};
 use crate::Result;
 
-/// Rows each level keeps: one per lifting step, the row above the oldest
-/// unfinished one, and the newest row.
+/// Rows each level keeps: the rows an arrival's steps read, one per lifting
+/// step above the arrival, its own row and the row above the deepest step's
+/// (see `banded::lift_arrivals`).
 pub(crate) const fn ring_rows(transform: WaveletTransform) -> usize {
     vertical_step_count(transform) + 2
 }
@@ -118,8 +116,9 @@ struct LevelRows<'r> {
     ring: &'r mut [f32],
     /// Rows interleaved, filtered horizontally and scaled.
     fed: usize,
-    /// Rows each vertical step has finished.
-    finished: [usize; 4],
+    /// Arrivals whose vertical steps have run: one per fed row, then the
+    /// arrivals past the last row that finish the rows above it.
+    arrived: usize,
 }
 
 impl LevelRows<'_> {
@@ -140,13 +139,47 @@ impl LevelRows<'_> {
         &self.ring[self.slot(row) * width..][..width]
     }
 
-    /// Rows that are final.
+    /// Rows that are final. Row `r` takes its last step at arrival `r + k`,
+    /// where `k` is that step: the last of the transform's steps for the rows
+    /// that step updates, the one before it for the others.
     fn done(&self, transform: WaveletTransform) -> usize {
-        if self.height() == 1 {
-            self.fed
-        } else {
-            self.finished[vertical_step_count(transform) - 1]
+        let height = self.height();
+        if height == 1 {
+            return self.fed;
         }
+        let Some(last_arrival) = self.arrived.checked_sub(1) else {
+            return 0;
+        };
+        let steps = vertical_step_count(transform);
+        let (_, last_step_even) = vertical_steps(transform, self.window.y0)[steps - 1];
+        let final_row = |row: usize| {
+            let last_step = if row.is_multiple_of(2) == last_step_even {
+                steps
+            } else {
+                steps - 1
+            };
+            row + last_step <= last_arrival
+        };
+        // Every row up to `steps` above the last arrival is final, and the
+        // next one when its last step is the one before the transform's last.
+        let mut done = (last_arrival + 1).saturating_sub(steps).min(height);
+        while done < height && final_row(done) {
+            done += 1;
+        }
+        done
+    }
+
+    /// The vertical steps of this level's next arrival, which must not have
+    /// to wait for a row: every row is fed, or the arrival's row is.
+    fn lift_next_arrival(&mut self, transform: WaveletTransform) {
+        let (width, arrival) = (self.width(), self.arrived);
+        let level = Lifting {
+            transform,
+            y0: self.window.y0 as usize,
+            height: self.height(),
+        };
+        lift_ring_arrivals(level, width, self.ring, arrival..arrival + 1);
+        self.arrived += 1;
     }
 }
 
@@ -237,7 +270,7 @@ impl<'r> LineReconstruction<'r> {
                 sub_bands: *sub_bands,
                 ring: level_ring,
                 fed: 0,
-                finished: [0; 4],
+                arrived: 0,
             });
         }
         let widest = levels.iter().map(LevelRows::width).max().unwrap_or(0);
@@ -308,18 +341,25 @@ fn finish_row(
     inputs: &mut Inputs<'_>,
 ) -> Result<()> {
     let ring_rows = ring_rows(inputs.transform);
+    let steps = vertical_step_count(inputs.transform);
     while levels[level].done(inputs.transform) <= row {
         let current = &levels[level];
-        // Refilling a slot drops the row `ring_rows` above the new one,
-        // which no unfinished step may still read.
-        let oldest_read = current.done(inputs.transform).saturating_sub(1);
-        if current.fed >= current.height()
-            || (current.fed >= ring_rows && current.fed - ring_rows >= oldest_read)
-        {
+        let height = current.height();
+        if current.fed < height {
+            // Refilling a slot drops the row `ring_rows` above the new one,
+            // which the previous arrival's deepest step read last: the ring
+            // holds a row per step and two more.
+            if current.arrived != current.fed {
+                return Err(DecodingError::CodeBlockDecodeFailure.into());
+            }
+            feed_row(levels, level, inputs)?;
+            if height == 1 {
+                continue;
+            }
+        } else if height == 1 || current.arrived >= height + steps {
             return Err(DecodingError::CodeBlockDecodeFailure.into());
         }
-        feed_row(levels, level, inputs)?;
-        advance_steps(&mut levels[level], inputs.transform);
+        levels[level].lift_next_arrival(inputs.transform);
     }
     if levels[level].fed > row + ring_rows {
         // The requested row has already left the ring.
@@ -489,53 +529,91 @@ fn stored_row(
     source.coefficients.get(start..start.checked_add(len)?)
 }
 
-/// Let every vertical step finish as many rows as the rows fed so far allow.
-fn advance_steps(level: &mut LevelRows<'_>, transform: WaveletTransform) {
-    let height = level.height();
-    if height == 1 {
-        return;
-    }
-    let steps = vertical_steps(transform, level.window.y0);
-    for (index, &(step, even_offsets)) in steps
-        .iter()
-        .take(vertical_step_count(transform))
-        .enumerate()
-    {
-        let available = if index == 0 {
-            level.fed
-        } else {
-            level.finished[index - 1]
-        };
-        while level.finished[index] < height {
-            let row = level.finished[index];
-            if row.is_multiple_of(2) == even_offsets {
-                let above = periodic_symmetric_extension_left(row, 1);
-                let below = if row + 1 < height {
-                    row + 1
+#[cfg(test)]
+mod tests {
+    use super::super::filter_common::periodic_symmetric_extension_left;
+    use super::*;
+
+    /// The rows final once `fed` rows of a level have arrived when every
+    /// step finishes, in order, each row whose inputs the previous step has
+    /// finished: the earliest a row can be final, which the arrival schedule
+    /// must match so that no row reaches the output later than that.
+    fn earliest_final_rows(
+        transform: WaveletTransform,
+        y0: u32,
+        height: usize,
+        fed: usize,
+    ) -> usize {
+        if height == 1 {
+            return fed;
+        }
+        let steps = vertical_step_count(transform);
+        let mut finished = [0; 4];
+        for (index, &(_, even_offsets)) in vertical_steps(transform, y0)[..steps].iter().enumerate()
+        {
+            let available = if index == 0 { fed } else { finished[index - 1] };
+            while finished[index] < height {
+                let row = finished[index];
+                let ready = if row.is_multiple_of(2) == even_offsets {
+                    let above = periodic_symmetric_extension_left(row, 1);
+                    let below = if row + 1 < height {
+                        row + 1
+                    } else {
+                        height - 2
+                    };
+                    row.max(above).max(below) < available
                 } else {
-                    height - 2
+                    row < available
                 };
-                if row.max(above).max(below) >= available {
+                if !ready {
                     break;
                 }
-                lift_level_row(level, step, row, above, below);
-            } else if row >= available {
-                break;
+                finished[index] += 1;
             }
-            level.finished[index] += 1;
+        }
+        finished[steps - 1]
+    }
+
+    /// A level hands each row over after exactly the rows the earliest
+    /// schedule needs: after `fed` rows, or once every row has arrived and
+    /// the arrivals past the last one ran, its final rows are those.
+    #[test]
+    fn rows_are_final_after_the_rows_their_steps_need() {
+        for transform in [
+            WaveletTransform::Reversible53,
+            WaveletTransform::Irreversible97,
+        ] {
+            let steps = vertical_step_count(transform);
+            for y0 in [0, 1, 2, 7] {
+                for height in 1..=24 {
+                    let mut ring = [];
+                    let mut level = LevelRows {
+                        window: IntRect::from_xywh(
+                            0,
+                            y0,
+                            1,
+                            u32::try_from(height).expect("height"),
+                        ),
+                        sub_bands: [0; 3],
+                        ring: &mut ring,
+                        fed: 0,
+                        arrived: 0,
+                    };
+                    for fed in 0..=height {
+                        level.fed = fed;
+                        level.arrived = if fed == height && height > 1 {
+                            height + steps
+                        } else {
+                            fed
+                        };
+                        assert_eq!(
+                            level.done(transform),
+                            earliest_final_rows(transform, y0, height, fed),
+                            "{transform:?} y0={y0} height={height} fed={fed}"
+                        );
+                    }
+                }
+            }
         }
     }
-}
-
-fn lift_level_row(
-    level: &mut LevelRows<'_>,
-    step: VerticalStep,
-    row: usize,
-    above: usize,
-    below: usize,
-) {
-    let width = level.width();
-    let (target, above, below) = (level.slot(row), level.slot(above), level.slot(below));
-    let (row_samples, above, below) = split_rows(level.ring, width, target, above, below);
-    lift_one_row(step, row_samples, above, below);
 }
