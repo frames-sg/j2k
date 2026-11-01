@@ -10,7 +10,7 @@
 
 use j2k::{CpuDecodeParallelism, J2kDecoder, J2kScratchPool};
 use j2k_core::{Downscale, PixelFormat};
-use j2k_native::{encode, EncodeOptions};
+use j2k_native::{encode, EncodeOptions, EncodeProgressionOrder};
 use j2k_test_support::wrap_jp2_rgba_codestream;
 
 const WIDTH: u32 = 203;
@@ -228,5 +228,161 @@ fn routes_alternate_on_one_decoder() {
             .decode_into(&mut out, stride, fmt)
             .unwrap_or_else(|error| panic!("budget {budget}: {error:?}"));
         assert!(out == expected, "budget {budget}");
+    }
+}
+
+/// `codestream` with `edit` applied to each tile-part, from its SOT marker
+/// to its end, and each `Psot` set to the edited length.
+fn edit_tile_parts(codestream: &[u8], mut edit: impl FnMut(&mut Vec<u8>)) -> Vec<u8> {
+    let marker_end = |at: usize| {
+        at + 2 + usize::from(u16::from_be_bytes([codestream[at + 2], codestream[at + 3]]))
+    };
+    let mut at = 2;
+    while codestream[at..at + 2] != [0xff, 0x90] {
+        at = marker_end(at);
+    }
+    let mut edited = codestream[..at].to_vec();
+    while codestream[at..at + 2] == [0xff, 0x90] {
+        let psot = u32::from_be_bytes(codestream[at + 6..at + 10].try_into().expect("Psot"));
+        let end = at + usize::try_from(psot).expect("Psot fits");
+        let mut part = codestream[at..end].to_vec();
+        edit(&mut part);
+        let psot = u32::try_from(part.len()).expect("edited Psot fits");
+        part[6..10].copy_from_slice(&psot.to_be_bytes());
+        edited.extend_from_slice(&part);
+        at = end;
+    }
+    assert_eq!(
+        codestream[at..],
+        [0xff, 0xd9],
+        "EOC follows the last tile-part"
+    );
+    edited.extend_from_slice(&codestream[at..]);
+    edited
+}
+
+/// `codestream` with a zero byte after the last packet of each tile-part.
+fn with_byte_after_last_packets(codestream: &[u8]) -> Vec<u8> {
+    edit_tile_parts(codestream, |part| part.push(0))
+}
+
+/// `codestream` with one more packet length in each tile-part's PLT marker
+/// than the tile-part has packets.
+fn with_surplus_packet_lengths(codestream: &[u8]) -> Vec<u8> {
+    edit_tile_parts(codestream, |part| {
+        let mut at = 12;
+        while part[at..at + 2] != [0xff, 0x58] {
+            assert_ne!(part[at..at + 2], [0xff, 0x93], "tile-part has a PLT marker");
+            at += 2 + usize::from(u16::from_be_bytes([part[at + 2], part[at + 3]]));
+        }
+        let length = u16::from_be_bytes([part[at + 2], part[at + 3]]);
+        part.insert(at + 2 + usize::from(length), 5);
+        part[at + 2..at + 4].copy_from_slice(&(length + 1).to_be_bytes());
+    })
+}
+
+/// Data a tile-part holds after its tile's last packet is no packet's: bytes
+/// after it, or PLT lengths past it, change no sample. Every route decodes
+/// such a codestream as it decodes the codestream without them, on a pool of
+/// one thread and of four (a half-resolution decode of the 512 x 512 RGB image
+/// streams on 2 to 11 pool threads and keeps the planes on one).
+#[test]
+fn data_after_a_tiles_last_packet_decodes_as_without_it_on_every_route() {
+    const SIDE: u32 = 512;
+    let rgb_pixels: Vec<u8> = (0..SIDE * SIDE * 3)
+        .map(|index| {
+            let (pixel, component) = (index / 3, index % 3);
+            ((pixel % SIDE) * (component + 1) + (pixel / SIDE) * 3).to_le_bytes()[0]
+        })
+        .collect();
+    let rgb = encode(
+        &rgb_pixels,
+        SIDE,
+        SIDE,
+        3,
+        8,
+        false,
+        &EncodeOptions {
+            num_decomposition_levels: 3,
+            reversible: false,
+            ..EncodeOptions::default()
+        },
+    )
+    .expect("encode 512 x 512 fixture");
+    let tiled = EncodeOptions {
+        num_decomposition_levels: 2,
+        num_layers: 2,
+        progression_order: EncodeProgressionOrder::Rpcl,
+        tile_size: Some((64, 64)),
+        write_plt: true,
+        ..EncodeOptions::default()
+    };
+    let gray = codestream(1, &tiled);
+    let rgb_ht = codestream(
+        3,
+        &EncodeOptions {
+            use_ht_block_coding: true,
+            ..tiled
+        },
+    );
+    let rgb_formats = &[PixelFormat::Rgb8, PixelFormat::Rgb16][..];
+    let cases = [
+        (
+            "rgb, byte after",
+            &rgb,
+            with_byte_after_last_packets(&rgb),
+            rgb_formats,
+        ),
+        (
+            "gray tiled PLT, byte after",
+            &gray,
+            with_byte_after_last_packets(&gray),
+            &[PixelFormat::Gray8][..],
+        ),
+        (
+            "gray tiled PLT, surplus lengths",
+            &gray,
+            with_surplus_packet_lengths(&gray),
+            &[PixelFormat::Gray8][..],
+        ),
+        (
+            "rgb tiled HT PLT, both",
+            &rgb_ht,
+            with_byte_after_last_packets(&with_surplus_packet_lengths(&rgb_ht)),
+            rgb_formats,
+        ),
+    ];
+    let pools = [1, 4].map(|threads| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("pool")
+    });
+    for (label, clean, edited, formats) in &cases {
+        for &fmt in *formats {
+            for scale in [Downscale::None, Downscale::Half] {
+                let expected = decode(
+                    clean,
+                    Some(usize::MAX),
+                    CpuDecodeParallelism::Serial,
+                    fmt,
+                    scale,
+                    0,
+                )
+                .expect("clean fixture decodes");
+                for (pool, threads) in pools.iter().zip([1, 4]) {
+                    for budget in [Some(usize::MAX), Some(0), None] {
+                        let decoded = pool.install(|| {
+                            decode(edited, budget, CpuDecodeParallelism::Auto, fmt, scale, 0)
+                        });
+                        assert!(
+                            decoded.as_ref() == Some(&expected),
+                            "{label} {fmt:?} {scale:?} {threads} threads, planes budget {budget:?}: {}",
+                            if decoded.is_some() { "other bytes" } else { "failed" }
+                        );
+                    }
+                }
+            }
+        }
     }
 }

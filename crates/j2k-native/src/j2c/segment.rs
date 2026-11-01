@@ -378,8 +378,9 @@ impl<'s> PacketRelevance<'s> {
     }
 }
 
-/// Parse packets until the tile-part ends, or until `relevance` has seen
-/// every packet the ROI plan needs, which returns `Ok(true)`.
+/// Parse packets until the tile-part or the tile's progression ends, or
+/// until `relevance` has seen every packet the ROI plan needs, which returns
+/// `Ok(true)`.
 #[expect(
     clippy::too_many_lines,
     reason = "one ordered pass keeps packet skipping, header parsing, body reads, and length checks together"
@@ -410,9 +411,13 @@ fn parse_inner<'a>(
     // precinct's layers in a row, so it is looked up once for them.
     let mut last_record: Option<((u16, u8, u64), usize)> = None;
     while !tile_part.header().at_end() {
-        let progression_data = progression_iterator
-            .next()
-            .ok_or("packet header outlives the progression iterator")?;
+        let Some(progression_data) = progression_iterator.next() else {
+            // Every packet of the tile has been read. Bytes the tile-part
+            // holds after them belong to no packet and are left unread, as
+            // a region decode leaves the packets after its last required one.
+            lwarn!("tile-part data continues after the tile's last packet");
+            return Ok(false);
+        };
         #[cfg(feature = "std")]
         let ordinal = {
             let ordinal = walk.next_packet;
@@ -668,9 +673,13 @@ fn parse_inner<'a>(
         }
     }
 
-    tile_part
-        .validate_all_packet_lengths_consumed()
-        .ok_or("packet length markers contain unused entries")?;
+    // PLT entries left once the tile's last packet has been read describe no
+    // packet, like bytes after it.
+    if tile_part.validate_all_packet_lengths_consumed().is_none()
+        && progression_iterator.next().is_some()
+    {
+        return Err("packet length markers contain unused entries");
+    }
 
     Ok(false)
 }
