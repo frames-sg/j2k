@@ -26,13 +26,17 @@ const UNWRITTEN: u8 = 0xa5;
 
 /// The rows a sink received, as sample bits per component, with the number
 /// of times each pixel arrived; or, with a destination, the RGB8 bytes the
-/// decoder packed into it.
+/// decoder packed into it. Each time the decoder asks for the destination,
+/// the rows written since the last time are counted, moved out and the
+/// destination blanked again, so a row written twice counts twice even with
+/// the same bytes.
 struct Published {
     width: usize,
     height: usize,
     planes: Vec<Vec<u32>>,
     arrivals: Vec<u8>,
     rgb: Option<Vec<u8>>,
+    received: Vec<u8>,
 }
 
 impl Published {
@@ -44,6 +48,31 @@ impl Published {
             planes: vec![vec![0; samples]; 3],
             arrivals: vec![0; samples],
             rgb: destination.then(|| vec![UNWRITTEN; samples * 3]),
+            received: vec![UNWRITTEN; if destination { samples * 3 } else { 0 }],
+        }
+    }
+
+    /// Count and move out the destination's pixels written since the last
+    /// call: of every row whose first or last pixel was written (the
+    /// decoder writes whole rows of a tile this wide), or with `all`, of
+    /// every row.
+    fn collect(&mut self, all: bool) {
+        let Some(rgb) = self.rgb.as_mut() else {
+            return;
+        };
+        let blank = |pixel: &[u8]| pixel.iter().all(|&byte| byte == UNWRITTEN);
+        for (y, row) in rgb.chunks_exact_mut(self.width * 3).enumerate() {
+            if !all && blank(&row[..3]) && blank(&row[row.len() - 3..]) {
+                continue;
+            }
+            for (x, pixel) in row.as_chunks_mut::<3>().0.iter_mut().enumerate() {
+                if !blank(pixel) {
+                    let at = y * self.width + x;
+                    self.arrivals[at] += 1;
+                    self.received[at * 3..][..3].copy_from_slice(pixel);
+                    pixel.fill(UNWRITTEN);
+                }
+            }
         }
     }
 
@@ -53,11 +82,7 @@ impl Published {
         let mut published = 0;
         for y in 0..self.height {
             let label = format!("{label}: row {y}");
-            let written = self.rgb.as_ref().map_or_else(
-                || self.sink_row_written(clean, y, &label),
-                |rgb| self.rgb_row_written(rgb, clean, y, &label),
-            );
-            if written {
+            if self.row_written(clean, y, &label) {
                 assert_eq!(published, y, "{label} after a missing row");
                 published += 1;
             }
@@ -65,23 +90,9 @@ impl Published {
         published
     }
 
-    /// Whether row `y` of the destination holds the clean row; any other
-    /// content than the clean row must be bytes nothing wrote.
-    fn rgb_row_written(&self, rgb: &[u8], clean: &Self, y: usize, label: &str) -> bool {
-        let bytes = y * self.width * 3..(y + 1) * self.width * 3;
-        let clean = &clean.rgb.as_ref().expect("clean destination")[bytes.clone()];
-        let bytes = &rgb[bytes];
-        let written = bytes == clean;
-        assert!(
-            written || bytes.iter().all(|&byte| byte == UNWRITTEN),
-            "{label} written but not the clean row"
-        );
-        written
-    }
-
-    /// Whether row `y` reached the sink, checking that all of it arrived at
-    /// most once and that, if it arrived, it holds the clean row's samples.
-    fn sink_row_written(&self, clean: &Self, y: usize, label: &str) -> bool {
+    /// Whether row `y` arrived, checking that all of it arrived at most once
+    /// and that, if it arrived, it holds the clean row's samples or bytes.
+    fn row_written(&self, clean: &Self, y: usize, label: &str) -> bool {
         let row = y * self.width..(y + 1) * self.width;
         let arrivals = &self.arrivals[row.clone()];
         assert!(
@@ -89,7 +100,14 @@ impl Published {
             "{label} arrived {arrivals:?}"
         );
         let written = arrivals[0] == 1;
-        if written {
+        if written && self.rgb.is_some() {
+            let bytes = row.start * 3..row.end * 3;
+            assert_eq!(
+                self.received[bytes.clone()],
+                clean.received[bytes],
+                "{label}"
+            );
+        } else if written {
             for (plane, clean) in self.planes.iter().zip(&clean.planes) {
                 assert_eq!(plane[row.clone()], clean[row.clone()], "{label}");
             }
@@ -99,10 +117,6 @@ impl Published {
 
     fn untouched(&self) -> bool {
         self.arrivals.iter().all(|&count| count == 0)
-            && self
-                .rgb
-                .as_ref()
-                .is_none_or(|rgb| rgb.iter().all(|&byte| byte == UNWRITTEN))
     }
 }
 
@@ -122,6 +136,7 @@ impl ComponentRowSink for Published {
     }
 
     fn rgb8_region(&mut self, width: u32, height: u32) -> Option<&mut [u8]> {
+        self.collect(false);
         let len = (width as usize * 3).checked_mul(height as usize)?;
         self.rgb.as_mut().map(|rgb| &mut rgb[..len])
     }
@@ -223,6 +238,7 @@ fn stream_region<'a>(
                 Some(&mut sink),
             )
             .map(drop);
+        sink.collect(true);
         let tile_ctx = &context.tile_decode_context;
         // A decode past its budget may fail before it plans its rows.
         assert!(

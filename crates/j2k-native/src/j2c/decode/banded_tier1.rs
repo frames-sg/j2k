@@ -561,7 +561,7 @@ impl RowOutput<'_, '_> {
         let destination = self.rgb8_rows(y, rows)?;
         let packed = destination.is_some();
         let mct = mct.filter(|_| packed);
-        match alongside {
+        let finished = match alongside {
             Some(alongside) => {
                 let mut finished = Ok(());
                 let mut alongside_result = Ok(());
@@ -577,8 +577,7 @@ impl RowOutput<'_, '_> {
                     },
                     || alongside_result = alongside(),
                 );
-                alongside_result?;
-                finished?;
+                alongside_result.and(finished)
             }
             None => finish_rows(
                 (transform, mct),
@@ -586,12 +585,19 @@ impl RowOutput<'_, '_> {
                 width,
                 destination,
                 tasks,
-            )?,
+            ),
+        };
+        let samples = rows * width * components;
+        if packed {
+            // The rows are in the destination once they are packed, whatever
+            // failed alongside, so they count as handed over: a tile that
+            // then fails must not decode them again.
+            self.streamed = self.streamed.saturating_add(samples);
+            return finished;
         }
-        if !packed {
-            self.write_component_rows(&parts[..components], y, rows);
-        }
-        self.streamed = self.streamed.saturating_add(rows * width * components);
+        finished?;
+        self.write_component_rows(&parts[..components], y, rows);
+        self.streamed = self.streamed.saturating_add(samples);
         Ok(())
     }
 
