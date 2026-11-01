@@ -24,7 +24,7 @@ use crate::j2c::progression::{progression_iterator, ProgressionData};
 use crate::j2c::rect::IntRect;
 use crate::j2c::roi::RoiPlan;
 use crate::j2c::tag_tree::TagNode;
-use crate::j2c::tile::Tile;
+use crate::j2c::tile::{ResolutionTile, Tile};
 use crate::DEFAULT_MAX_DECODE_BYTES;
 
 /// How region decode uses one precinct of one component and resolution.
@@ -273,17 +273,17 @@ pub(crate) fn select_region_precincts(
 }
 
 /// The selection a decode that builds every precinct of the tile parses it
-/// with: below full resolution, the one a region decode of the whole image
-/// parses it with, so both read the same packets; otherwise `None`, every
-/// packet being read. `live_bytes` are live beside `storage`, whose retained
-/// capacity the build reuses.
+/// with: below full resolution, or where a precinct holds no code-block, the
+/// one a region decode of the whole image parses it with, so both read the
+/// same packets; otherwise `None`, every packet being read. `live_bytes` are
+/// live beside `storage`, whose retained capacity the build reuses.
 pub(crate) fn select_whole_image_precincts(
     tile: &Tile<'_>,
     header: &Header<'_>,
     storage: &DecompositionStorage<'_>,
     live_bytes: usize,
 ) -> Result<Option<PrecinctSelection>> {
-    if header.skipped_resolution_levels == 0 {
+    if header.skipped_resolution_levels == 0 && !has_precincts_without_code_blocks(tile) {
         return Ok(None);
     }
     // The build stores a record and two tag-tree roots for every precinct
@@ -328,6 +328,57 @@ fn whole_image_selection(
     RoiPlan::build(tile, header, &skeleton, whole_image, &mut budget)?
         .map(|plan| select(tile, &skeleton, &plan, counts, &mut budget, 0)?.with_every_record())
         .transpose()
+}
+
+/// Whether a precinct of the tile holds no code-block in any of its
+/// sub-bands, as at a one-sample tile corner whose detail sub-bands are empty.
+/// A region decode of the whole image leaves such a precinct's packets
+/// unread where it can, so a full-resolution decode that builds every
+/// precinct parses with its selection only for these tiles.
+///
+/// Every precinct of resolution 0 overlaps the LL sub-band. Above it,
+/// precincts are at least two samples wide and high and start at even
+/// coordinates, so one that misses all three detail sub-bands overlaps its
+/// resolution in a single sample at even coordinates, which only the last
+/// precinct, at the resolution's bottom-right corner, can: one precinct per
+/// resolution is checked, whatever the tile declares. A precinct grid the
+/// build rejects counts as holding code-blocks, so the build reports it.
+fn has_precincts_without_code_blocks(tile: &Tile<'_>) -> bool {
+    tile.component_tiles().any(|component_tile| {
+        component_tile.resolution_tiles().any(|resolution_tile| {
+            resolution_tile.resolution > 0
+                && resolution_tile
+                    .num_precincts()
+                    .checked_sub(1)
+                    .and_then(|last| usize::try_from(last).ok())
+                    .is_some_and(|last| {
+                        precinct_holds_code_blocks(&resolution_tile, last) == Some(false)
+                    })
+        })
+    })
+}
+
+/// Whether precinct `index` of `resolution_tile` holds a code-block of one of
+/// its sub-bands, or `None` where its grid is invalid.
+fn precinct_holds_code_blocks(resolution_tile: &ResolutionTile<'_>, index: usize) -> Option<bool> {
+    let precinct_rect = resolution_tile.precinct_grid()?.rect_at(index)?;
+    let sub_band_types: &[SubBandType] = if resolution_tile.resolution == 0 {
+        &[SubBandType::LowLow]
+    } else {
+        &[
+            SubBandType::HighLow,
+            SubBandType::LowHigh,
+            SubBandType::HighHigh,
+        ]
+    };
+    for &sub_band_type in sub_band_types {
+        let rect = resolution_tile.sub_band_rect(sub_band_type);
+        let grid = code_block_grid(resolution_tile, rect, precinct_rect).ok()?;
+        if grid.columns > 0 && grid.rows > 0 && rect.intersects(grid.area.intersect(rect)) {
+            return Some(true);
+        }
+    }
+    Some(false)
 }
 
 fn count(tile: &Tile<'_>) -> Result<SelectionCounts> {
@@ -922,6 +973,12 @@ mod tests {
         bytes
     }
 
+    fn with_tile<R>(codestream: &[u8], check: impl FnOnce(&Tile<'_>) -> R) -> R {
+        with_tile_and_header(codestream, &DecodeSettings::default(), |tile, _| {
+            check(tile)
+        })
+    }
+
     fn with_tile_and_header<R>(
         codestream: &[u8],
         settings: &DecodeSettings,
@@ -935,6 +992,81 @@ mod tests {
         )
         .expect("parse tile");
         check(&tiles[0], &image.header)
+    }
+
+    /// Every precinct of every resolution of `tile`, checked one by one.
+    fn every_precinct_holds_code_blocks(tile: &Tile<'_>) -> bool {
+        tile.component_tiles().all(|component_tile| {
+            component_tile.resolution_tiles().all(|resolution_tile| {
+                let count = usize::try_from(resolution_tile.num_precincts()).unwrap();
+                (0..count).all(|index| {
+                    precinct_holds_code_blocks(&resolution_tile, index).expect("valid precinct")
+                })
+            })
+        })
+    }
+
+    /// Checking the last precinct of each resolution above 0 finds a precinct
+    /// without code-blocks exactly where checking every precinct does, over
+    /// tile origins of either parity, small sizes, one to three decomposition
+    /// levels and precincts from the smallest to the largest.
+    #[test]
+    fn last_precincts_find_every_precinct_without_code_blocks() {
+        let (mut with_empty, mut without_empty) = (0, 0);
+        for origin in [(0, 0), (1, 0), (2, 1), (3, 3)] {
+            for width in 1..=10 {
+                for height in 1..=10 {
+                    for levels in 1..=3 {
+                        for (coarsest, finer) in [(0x00, 0x11), (0x11, 0x22), (0x00, 0xff)] {
+                            let mut precincts = vec![finer; levels + 1];
+                            precincts[0] = coarsest;
+                            let codestream =
+                                tile_geometry_codestream(origin, (width, height), &precincts);
+                            let (fast, every) = with_tile(&codestream, |tile| {
+                                (
+                                    has_precincts_without_code_blocks(tile),
+                                    !every_precinct_holds_code_blocks(tile),
+                                )
+                            });
+                            assert_eq!(
+                                fast, every,
+                                "origin {origin:?}, {width} x {height}, precincts {precincts:x?}"
+                            );
+                            if every {
+                                with_empty += 1;
+                            } else {
+                                without_empty += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            with_empty > 0 && without_empty > 0,
+            "{with_empty} / {without_empty}"
+        );
+    }
+
+    /// The check reads one precinct per resolution: a tile that declares
+    /// 2^30 precincts in each of its two resolutions, one-sample precincts in
+    /// the LL sub-band and an empty last one above it, is answered at once.
+    #[test]
+    fn precincts_without_code_blocks_are_found_without_walking_every_precinct() {
+        let codestream = tile_geometry_codestream((0, 0), (65_535, 65_535), &[0x00, 0x11]);
+        with_tile(&codestream, |tile| {
+            let precinct_counts: Vec<_> = tile
+                .component_tiles()
+                .flat_map(|component_tile| {
+                    component_tile
+                        .resolution_tiles()
+                        .map(|resolution_tile| resolution_tile.num_precincts())
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            assert_eq!(precinct_counts, [1 << 30, 1 << 30]);
+            assert!(has_precincts_without_code_blocks(tile));
+        });
     }
 
     /// A tile whose build could not hold one record and two tag-tree roots per

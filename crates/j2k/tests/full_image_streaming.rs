@@ -1131,3 +1131,52 @@ fn truncated_last_packet_spares_reduced_decodes_on_every_route() {
         }
     }
 }
+
+/// A tile of one sample at an image corner has empty detail sub-bands, so its
+/// full-resolution precinct holds no code-block and its packet nothing a
+/// decode uses. Every route leaves that packet unread: with its EPH marker
+/// damaged, every route and pool size writes the undamaged image, at full
+/// and half resolution.
+#[test]
+fn packets_of_precincts_without_code_blocks_are_left_unread_on_every_route() {
+    let clean: &[u8] = include_bytes!(
+        "../../j2k-test-support/fixtures/empty_coarse_levels/openjpeg_gray_3x3_tile2x2_53_eph.j2k"
+    );
+    let mut damaged = clean.to_vec();
+    let eph = damaged.len() - 4;
+    assert_eq!(
+        damaged[eph..],
+        [0xff, 0x92, 0xff, 0xd9],
+        "the last packet ends in EPH"
+    );
+    damaged[eph + 1] = 0;
+    let fmt = PixelFormat::Gray8;
+    let pools = [1, 4].map(|threads| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("pool")
+    });
+    for scale in [Downscale::None, Downscale::Half] {
+        let expected = decode(
+            clean,
+            Some(usize::MAX),
+            CpuDecodeParallelism::Serial,
+            fmt,
+            scale,
+            0,
+        )
+        .expect("clean decode");
+        for (pool, threads) in pools.iter().zip([1, 4]) {
+            for budget in [Some(usize::MAX), Some(0), None] {
+                let decoded = pool.install(|| {
+                    decode(&damaged, budget, CpuDecodeParallelism::Auto, fmt, scale, 0)
+                });
+                assert!(
+                    decoded.as_ref() == Ok(&expected),
+                    "{scale:?} {threads} threads, planes budget {budget:?}"
+                );
+            }
+        }
+    }
+}
