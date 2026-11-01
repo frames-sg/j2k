@@ -15,6 +15,19 @@ Staged workspace version: `0.13.2`.
   status, detail and batch source index. CUDA keeps its typed source and job
   attribution. Unsupported statuses, raw runtime failures and combined
   cleanup or release failures keep their existing classes.
+- Streamed decodes keep to the memory they charge. A tile whose components
+  reconstruct on readers of their own sized its batch of rows by the
+  region's width while the decode charged the tile's width, so a tile just
+  narrower than its region could hold twice its charge (an 8,192-wide tile
+  of an 8,200-wide image: 6.4 M against 3.4 M samples); its batch now keeps
+  to the charge, and such an image decodes in 0.98 of the time on 12 and 18
+  threads, with 60.7 MiB in place of 72.6 MiB on 12. A serial HTJ2K region
+  decode allocated the scratch for code-blocks its region clips when it met
+  the first one, so a decode short of budget could fail after its first rows
+  reached the sink, where the retries without retained scratch or without
+  the packet directory no longer run; the scratch is now sized with the rest
+  of the Tier-1 workspace before the first row. Output of decodes that
+  succeed is unchanged.
 - Images that a batch with an explicit worker count decodes together on
   its stream pool, when it plans as many images at once as the pool has
   threads and the pool has fewer than 12, hold two bands in every ring of
