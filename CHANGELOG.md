@@ -15,6 +15,13 @@ Staged workspace version: `0.13.2`.
   status, detail and batch source index. CUDA keeps its typed source and job
   attribution. Unsupported statuses, raw runtime failures and combined
   cleanup or release failures keep their existing classes.
+- Parallel band decoding charges each component's plan and the band
+  executor's records to one decode budget, across all components when a
+  tile's rows stream together, and releases the plans and the records before
+  whole-window error recovery or the serial fallback. Band bookkeeping no
+  longer rescans completed bands, and components whose bands average too
+  little work for the pool decode over whole windows instead, or on serial
+  bands when their rows stream.
 - Classic code-blocks with BYPASS, per-pass termination, context resets or
   segmentation symbols use the packed-column passes, including raw segments.
   Vertically causal blocks retain the per-coefficient passes. Clean and corrupt
@@ -147,7 +154,10 @@ Staged workspace version: `0.13.2`.
   smaller classic outputs from 256 x 256 on 2 to 11 pool threads;
   full-resolution classic images coded at 4 bits per pixel or more from
   512 x 512 on 2 to 11 pool threads (5-17% faster on 6 threads) and, below
-  2^19 samples, on larger pools too; and full-resolution images with a tile
+  2^19 samples, on larger pools too; full-resolution classic images coded at
+  fewer bits per pixel from 4096 x 2048 on 2 to 6 pool threads and from 12
+  (a 4096 x 2048 RGB image at 2 bpp 1% faster on 6 threads and 4-5% on
+  18, in about half the memory); and full-resolution images with a tile
   for every thread. Those now decode their tiles at once on the calling thread
   and the pool's threads, each tile on one thread, instead of one tile after
   another: a 4096 x 8192 RGB image of 1024 x 1024 tiles decodes 8% faster than
@@ -165,6 +175,21 @@ Staged workspace version: `0.13.2`.
   third of the memory). Reduced and tiled gray images, full-resolution HTJ2K
   images, reduced tiled images, small images and images with few tiles on a
   large pool keep the planes route. Output is unchanged.
+- Row-streamed decodes of three 8-bit components into RGB8 output write the
+  reconstructed rows straight into the output: 9/7 images with the
+  multiple-component transform pack each row through the planes route's
+  fused inverse-ICT pack instead of copying it out of the inverse wavelet
+  transform, transforming it in place and packing it through the row sink,
+  and other images pack into the output after the in-place transform.
+  Parallel row-streamed decodes keep a classic component's bands on the
+  worker pool when the component has fewer rows of code-blocks than the pool
+  has threads, where they decoded on one thread (a whole-image region of a
+  512 x 512 RGB image at 2 bpp decodes 4.9 times as fast on 18 threads),
+  and serial ones look each sub-band up directly instead of searching the
+  tile's sub-bands several times a row (whole-image regions of 256 x 256
+  and 512 x 512 tiles 4-9% faster on one thread). An 18000 x 12000 RGB
+  image decodes 1-2% faster on one thread and 3-5% faster on 18. Output is
+  unchanged.
 - x86-64 RGB8 decodes of 9/7 images round and pack the inverse ICT output with
   the runtime SIMD level (AVX2 where present) instead of a scalar library
   call per sample: the centered rounding of the inverse MCT runs eight
@@ -242,6 +267,35 @@ Staged workspace version: `0.13.2`.
   at least 128 rows, since they hold only one batch. A full-image region
   decode of a 5661 x 8287 RGB image to RGB8 peaks 12 MiB (12%) lower at 18
   threads, at the same speed.
+- The row-streamed IDWT reads band rows of up to 16384 samples that hold no
+  code-block as zeros through its SIMD kernel; such rows wider than 4096
+  samples took the scalar path. An 18000 x 12000 RGB image, whose chroma
+  sub-bands have many such rows, decodes 11 to 12% faster at 18 threads
+  (441 to 391 ms) and 5% faster at 10. Output is bit-identical.
+- Parallel CPU region decodes of classic tiles of several components and
+  at least 4096 x 4096 samples per component reconstruct each component on
+  its own pool reader from 10 pool threads, instead of 12, holding one
+  batch of rows as before. With one reader that reconstructs every
+  component and packs every row, such tiles were bound by that reader on
+  10 and 11 threads: on a 10-thread pool an 18000 x 12000 RGB image now
+  decodes 11% faster (980 to 868 ms), 5661 x 8287 RGB 8%, 16384 x 16384
+  RGB 7% and 8192 x 8192 RGB 5%, at the same peak heap. Smaller tiles, which
+  spend more of their time in Tier-1, keep one reader. Output is
+  bit-identical.
+- Parallel CPU region decodes that reconstruct every component through one
+  reader (gray images, and classic tiles on fewer than 12 pool threads that
+  keep one reader) hold at most 32 rows of each component at a time instead
+  of up to 512, since that reader transforms and hands over each batch
+  before it reconstructs the next. A full-image decode of a 5661 x 8287 RGB
+  image to RGB8 on 6 threads peaks 22 MiB (33%) lower, at the same speed,
+  and 8 to 16 MiB lower at 1/4 and 1/2 scale; 4096 x 2048, 16384 x 16384 and
+  18000 x 12000 RGB images drop 17 to 23 MiB, gray images 7 MiB at any pool
+  size.
+- Classic tiles with a reader per component hold the extra band in every
+  ring only when they read whole rows at full resolution; overviews and
+  narrower regions keep one batch of rows without it. A 5661 x 8287 RGB
+  image's overviews at 1/2, 1/4 and 1/8 scale peak about 5.5, 2.5 and 1 MiB
+  lower at 12 threads or more, and 1024 x 1024 regions about 2.3 MiB lower.
 
 ## [0.13.1] - 2026-10-29
 
