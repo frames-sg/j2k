@@ -37,6 +37,8 @@ j2k-types = { path = "../j2k-types", version = "=0.13.2" }
 
 [dev-dependencies]
 criterion = { workspace = true }
+# Counts the bytes the band executor allocates, against what it charges.
+j2k-alloc-probe = { path = "../j2k-alloc-probe" }
 # Lets SIMD kernel tests also run on the portable fallback level.
 fearless_simd = { workspace = true, features = ["force_support_fallback"] }
 

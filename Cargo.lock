@@ -2775,6 +2775,7 @@ dependencies = [
  "bytemuck",
  "criterion",
  "fearless_simd",
+ "j2k-alloc-probe",
  "j2k-codec-math",
  "j2k-profile",
  "j2k-types",

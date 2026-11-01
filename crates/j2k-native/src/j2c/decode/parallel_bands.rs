@@ -216,6 +216,13 @@ fn decode_route(
     profile_enabled: bool,
     tier1_us: &mut u128,
 ) -> Result<bool> {
+    // The rings and bands live beside the route's plan and scratch while
+    // the bands decode; planning them holds their row scales beside them.
+    let mut budget = route.budget();
+    let (planned, scales) = ring_plan_bytes(route, storage, header, component_idx)?;
+    let mut planning = budget;
+    planning.include_bytes(planned + scales)?;
+    budget.include_bytes(planned)?;
     let (rings, mut bands, active_levels) = plan_rings(route, storage, header, component_idx)?;
     if route.coding() == CodeBlockCoding::Classic {
         split_bands(
@@ -226,10 +233,8 @@ fn decode_route(
             |band, parts| route.strip_parts(band.strip, parts),
         )?;
     }
-    // The executor's records live beside the route's plan and scratch while
-    // the bands decode, and so does each thread's scratch, the route's
+    // So do the executor's records and each thread's scratch, the route's
     // workers' and this thread's.
-    let mut budget = route.budget();
     budget.include_bytes(executor_bytes(&rings, &bands, (route.workers(), 1))?)?;
     let mut scratches =
         BlockScratch::for_threads(route.workers() + 1, route.scratch_sizes()?, &mut budget)?;
@@ -368,6 +373,14 @@ pub(super) fn decode_tile_rows<'a>(
             }
         }
     }
+    // Every component's rings and bands live beside the plans while the
+    // bands decode; planning each holds its own rings, bands and row scales
+    // beside them.
+    let (planned, planning) = tile_ring_plan_bytes(&routes, storage, header)?;
+    let mut peak = live;
+    if declines(peak.include_bytes(planned + planning))? || declines(live.include_bytes(planned))? {
+        return Ok(false);
+    }
     let (rings, mut bands, strip_starts, active_levels) =
         plan_tile_rings(&routes, storage, header)?;
     let line_plans = plan_tile_lines(tile, header, tile_ctx, storage, &active_levels)?;
@@ -398,6 +411,18 @@ pub(super) fn decode_tile_rows<'a>(
         1
     };
     let workers = route_workers.min(bank.saturating_sub(readers));
+    if coding == CodeBlockCoding::Classic {
+        split_bands(
+            tile_ctx,
+            &rings,
+            &mut bands,
+            workers + readers,
+            |band, parts| {
+                let (route, strip) = route_strip(&routes, &strip_starts, band.strip)?;
+                route.strip_parts(strip, parts)
+            },
+        )?;
+    }
     // The executor's records live beside every route's plan and scratch
     // while the bands decode.
     if declines(live.include_bytes(executor_bytes(&rings, &bands, (workers, readers))?))? {
@@ -456,18 +481,6 @@ pub(super) fn decode_tile_rows<'a>(
     // One reader for every component of a classic tile leaves the pool's
     // threads to Tier-1, and decodes bands itself while it waits.
     let helps = readers == 1 && coding == CodeBlockCoding::Classic;
-    if coding == CodeBlockCoding::Classic {
-        split_bands(
-            tile_ctx,
-            &rings,
-            &mut bands,
-            workers + readers,
-            |band, parts| {
-                let (route, strip) = route_strip(&routes, &strip_starts, band.strip)?;
-                route.strip_parts(strip, parts)
-            },
-        )?;
-    }
     #[cfg(test)]
     let strand_once = tile_ctx.strand_pool_band;
     #[cfg(not(test))]
@@ -758,6 +771,19 @@ fn plan_tile_rings(
     header: &Header<'_>,
 ) -> Result<TileRings> {
     let (mut rings, mut bands) = (Vec::new(), Vec::new());
+    let (mut ring_count, mut band_count) = (0usize, 0usize);
+    for (component_idx, route) in routes.iter().enumerate() {
+        let (component_rings, component_bands) =
+            ring_counts(route, storage, header, component_idx)?;
+        ring_count = ring_count.saturating_add(component_rings);
+        band_count = band_count.saturating_add(component_bands);
+    }
+    rings
+        .try_reserve_exact(ring_count)
+        .map_err(|_| DecodingError::HostAllocationFailed)?;
+    bands
+        .try_reserve_exact(band_count)
+        .map_err(|_| DecodingError::HostAllocationFailed)?;
     let mut strip_starts = Vec::new();
     strip_starts
         .try_reserve_exact(routes.len())
@@ -771,12 +797,11 @@ fn plan_tile_rings(
         let (component_rings, component_bands, levels) =
             plan_rings(route, storage, header, component_idx)?;
         let (ring_offset, band_offset) = (rings.len(), bands.len());
-        rings
-            .try_reserve(component_rings.len())
-            .map_err(|_| DecodingError::HostAllocationFailed)?;
-        bands
-            .try_reserve(component_bands.len())
-            .map_err(|_| DecodingError::HostAllocationFailed)?;
+        if component_rings.len() > rings.capacity() - ring_offset
+            || component_bands.len() > bands.capacity() - band_offset
+        {
+            return Err(DecodingError::CodeBlockDecodeFailure.into());
+        }
         rings.extend(component_rings.into_iter().map(|ring| Ring {
             bands: ring.bands.start + band_offset..ring.bands.end + band_offset,
             ..ring
@@ -835,24 +860,26 @@ fn plan_tile_lines(
 }
 
 /// The bytes the executor holds for `rings` and `bands` while `workers`
-/// pool threads and `readers` readers decode them, besides the slots'
-/// samples: each band's record, status, held and owned slot, queue entry,
-/// part counters, decoded-list entry and shared output; each ring's record,
-/// cursors, slot list and slots; each reader's view, with its band being
-/// read and next band in every ring, and its entry in the readers' list;
-/// and each thread's workspace and scratch pair.
+/// pool threads and `readers` readers decode them, besides the rings and
+/// bands themselves (see [`ring_plan_bytes`]) and the slots' samples: each
+/// band's status, held and owned slot, part counters, decoded-list entry
+/// and shared output; a queue entry for each part of each band, as many as
+/// its parts put in it; each ring's cursors, slot list and slots; each
+/// reader's view, with its band being read and next band in every ring, and
+/// its entry in the readers' list; each thread's workspace and scratch
+/// pair; the pool's job for each worker it sends; and what the shared
+/// output of each band decoding in parts, the shared state's lock and its
+/// condition variable allocate when first used.
 fn executor_bytes(
     rings: &[Ring],
     bands: &[Band],
     (workers, readers): (usize, usize),
 ) -> Result<usize> {
-    let per_band = size_of::<Band>()
-        + size_of::<Status>()
+    let per_band = size_of::<Status>()
         + 3 * size_of::<usize>()
         + 2 * size_of::<Option<&mut [f32]>>()
-        + size_of::<Reverse<(i64, Reverse<usize>, usize)>>()
         + size_of::<Mutex<&mut [f32]>>();
-    let per_ring = size_of::<Ring>() + 2 * size_of::<usize>() + size_of::<Vec<&mut [f32]>>();
+    let per_ring = 2 * size_of::<usize>() + size_of::<Vec<&mut [f32]>>();
     // A view holds references to its workspace, scratch and decode,
     // whatever their types.
     let per_reader = rings
@@ -865,16 +892,126 @@ fn executor_bytes(
     let slots: usize = rings.iter().map(|ring| ring.slots).sum();
     [
         bands.len().checked_mul(per_band),
+        queue_entries(bands).checked_mul(size_of::<QueueEntry>()),
         rings.len().checked_mul(per_ring),
         slots.checked_mul(size_of::<&mut [f32]>()),
         readers.checked_mul(per_reader),
         workers
             .checked_add(readers)
             .and_then(|threads| threads.checked_mul(per_thread)),
+        workers.checked_mul(SENT_WORKER_BYTES),
+        bands
+            .iter()
+            .filter(|band| band.parts > 1)
+            .count()
+            .checked_add(2)
+            .and_then(|locks| locks.checked_mul(LOCK_BYTES)),
     ]
     .into_iter()
     .try_fold(0usize, |bytes, part| bytes.checked_add(part?))
     .ok_or(ValidationError::ImageTooLarge.into())
+}
+
+/// An entry of the executor's queue of bands that can start or hand out a
+/// part: soonest read first, then largest first, and the band.
+type QueueEntry = Reverse<(i64, Reverse<usize>, usize)>;
+
+/// The most entries the executor's queue holds for `bands`: a band enters
+/// it once when its ring has a slot for it and again for each part after
+/// one it hands out, and a reader may start a band without taking its
+/// entry, so a band puts as many entries in it as it has parts.
+fn queue_entries(bands: &[Band]) -> usize {
+    bands
+        .iter()
+        .fold(0usize, |entries, band| entries.saturating_add(band.parts))
+}
+
+/// Bytes of the job the pool boxes for each worker the executor sends: the
+/// worker's closure, its two references, with the scope it runs in and the
+/// job's context.
+const SENT_WORKER_BYTES: usize = 4 * size_of::<usize>();
+
+/// Bytes a lock or a condition variable may allocate when first used: none
+/// where the platform's locks are futexes, a boxed `pthread` mutex of 64
+/// bytes or condition variable of 48 where they are not.
+const LOCK_BYTES: usize = 64;
+
+/// The bytes the rings and bands of the component of `route` hold once
+/// planned, and the rows' scales planning them holds beside them.
+fn ring_plan_bytes(
+    route: &BandRoute<'_>,
+    storage: &DecompositionStorage<'_>,
+    header: &Header<'_>,
+    component_idx: usize,
+) -> Result<(usize, usize)> {
+    let (rings, bands) = ring_counts(route, storage, header, component_idx)?;
+    let planned = rings
+        .checked_mul(size_of::<Ring>())
+        .zip(bands.checked_mul(size_of::<Band>()))
+        .and_then(|(rings, bands)| rings.checked_add(bands))
+        .ok_or(ValidationError::ImageTooLarge)?;
+    let scales = rings
+        .checked_mul(size_of::<i64>())
+        .ok_or(ValidationError::ImageTooLarge)?;
+    Ok((planned, scales))
+}
+
+/// The bytes every route's rings and bands hold once [`plan_tile_rings`]
+/// planned them, with each component's first strip and levels, and the
+/// most it holds beside them while it plans one component: that one's own
+/// rings, bands and row scales.
+fn tile_ring_plan_bytes(
+    routes: &[Box<BandRoute<'_>>],
+    storage: &DecompositionStorage<'_>,
+    header: &Header<'_>,
+) -> Result<(usize, usize)> {
+    let mut planned = routes
+        .len()
+        .checked_mul(2 * size_of::<usize>())
+        .ok_or(ValidationError::ImageTooLarge)?;
+    let mut planning = 0usize;
+    for (component_idx, route) in routes.iter().enumerate() {
+        let (own, scales) = ring_plan_bytes(route, storage, header, component_idx)?;
+        planned = planned
+            .checked_add(own)
+            .ok_or(ValidationError::ImageTooLarge)?;
+        planning = planning.max(own.saturating_add(scales));
+    }
+    Ok((planned, planning))
+}
+
+/// The rings and bands [`plan_rings`] plans for the component of `route`:
+/// one ring for each sub-band it reconstructs, one band for each strip.
+fn ring_counts(
+    route: &BandRoute<'_>,
+    storage: &DecompositionStorage<'_>,
+    header: &Header<'_>,
+    component_idx: usize,
+) -> Result<(usize, usize)> {
+    let levels = active_levels(storage, header, component_idx)?;
+    let rings = levels
+        .checked_mul(3)
+        .and_then(|rings| rings.checked_add(1))
+        .ok_or(ValidationError::ImageTooLarge)?;
+    Ok((rings, route.strips().count()))
+}
+
+/// The levels the component reconstructs: its decompositions, but the
+/// resolution levels the decode skips.
+fn active_levels(
+    storage: &DecompositionStorage<'_>,
+    header: &Header<'_>,
+    component_idx: usize,
+) -> Result<usize> {
+    storage
+        .tile_decompositions
+        .get(component_idx)
+        .ok_or(DecodingError::CodeBlockDecodeFailure)?
+        .decompositions
+        .len()
+        .checked_sub(usize::from(header.skipped_resolution_levels))
+        .filter(|levels| *levels > 0)
+        .ok_or_else(|| DecodingError::CodeBlockDecodeFailure.into())
 }
 
 /// A sub-band's ring of band slots and its bands, in row order.
@@ -916,12 +1053,7 @@ fn plan_rings(
     component_idx: usize,
 ) -> Result<(Vec<Ring>, Vec<Band>, usize)> {
     let tile_decompositions = &storage.tile_decompositions[component_idx];
-    let active_levels = tile_decompositions
-        .decompositions
-        .len()
-        .checked_sub(usize::from(header.skipped_resolution_levels))
-        .filter(|levels| *levels > 0)
-        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+    let active_levels = active_levels(storage, header, component_idx)?;
     let mut rings = Vec::new();
     rings
         .try_reserve_exact(1 + 3 * active_levels)
@@ -1193,7 +1325,7 @@ struct State<'c, 'w, W> {
     /// Bands that can start, or hand out another part, soonest read first,
     /// then largest first. Entries for bands with nothing left to hand out
     /// are skipped.
-    ready: BinaryHeap<Reverse<(i64, Reverse<usize>, usize)>>,
+    ready: BinaryHeap<QueueEntry>,
     /// Each ring's next band to make ready.
     next_ready: Vec<usize>,
     /// Parts of each band handed out, and parts still decoding or to hand
@@ -1445,7 +1577,7 @@ fn run_bands<W: TaskScratch>(
     };
     state
         .ready
-        .try_reserve(bands.len())
+        .try_reserve_exact(queue_entries(bands))
         .map_err(|_| DecodingError::HostAllocationFailed)?;
     state
         .decoded
@@ -2162,11 +2294,14 @@ mod tests {
 
     /// The bytes a streamed tile's pool bands charge beyond the decode's
     /// baseline, in the order they charge them: the list of routes, every
-    /// route's plan, the executor's records and the threads' scratch.
+    /// route's plan, the rings and bands, with the most planning them holds
+    /// beside them, the executor's records and the threads' scratch.
     #[derive(Clone, Copy, Debug)]
     struct Steps {
         routes: usize,
         plans: usize,
+        rings: usize,
+        planning: usize,
         executor: usize,
         scratch: usize,
         /// The tile's readers, beside its workers.
@@ -2257,10 +2392,16 @@ mod tests {
             plans >= tables,
             "planning charged {plans} for {tables} of tables"
         );
-        let (rings, bands, _, _) =
+        let (_, planning) =
+            tile_ring_plan_bytes(&routes, storage, &image.header).expect("planning bytes");
+        let (rings, mut bands, strip_starts, active_levels) =
             plan_tile_rings(&routes, storage, &image.header).expect("plan rings");
+        let ring_bytes = rings.capacity() * size_of::<Ring>()
+            + bands.capacity() * size_of::<Band>()
+            + (strip_starts.capacity() + active_levels.capacity()) * size_of::<usize>();
         // The threads the tile streamed on: the most workers its routes
-        // planned that the bank holds beside its readers.
+        // planned that the bank holds beside its readers, which split its
+        // bands.
         let readers = tile_ctx.debug_counters.pool_band_readers;
         let route_workers = routes
             .iter()
@@ -2268,14 +2409,27 @@ mod tests {
             .max()
             .unwrap_or(0);
         let workers = route_workers.min(tile_ctx.classic_task_workspaces.len() - readers);
+        split_bands(
+            tile_ctx,
+            &rings,
+            &mut bands,
+            workers + readers,
+            |band, parts| {
+                let (route, strip) = route_strip(&routes, &strip_starts, band.strip)?;
+                route.strip_parts(strip, parts)
+            },
+        )
+        .expect("split bands");
         let steps = Steps {
             routes: routes_bytes,
             plans,
+            rings: ring_bytes,
+            planning,
             executor: executor_records(&rings, &bands, workers, readers),
             scratch: tile_ctx.debug_counters.thread_scratch_held,
             readers,
         };
-        drop((routes, rings, bands));
+        drop((routes, rings, bands, strip_starts, active_levels));
         storage.structural_workspace_bytes += DEFAULT_MAX_DECODE_BYTES - start - headroom;
         let mut sink = Collected::new(width, height);
         let pooled = decode_tile_rows(
@@ -2345,16 +2499,20 @@ mod tests {
         let Steps {
             routes,
             plans,
+            rings,
+            planning,
             executor,
             scratch,
             readers,
         } = steps;
         assert_eq!(readers, expected_readers, "{steps:?}");
         assert!(
-            routes > 0 && plans > 0 && executor > 0 && scratch > 0,
+            routes > 0 && plans > 0 && rings > 0 && executor > 0 && scratch > 0,
             "{steps:?}"
         );
-        let all = routes + plans + executor + scratch;
+        // Planning the rings holds more beside them only until the executor
+        // and the scratch take its place.
+        let all = routes + plans + rings + planning.max(executor + scratch);
         let (_, warm, exact) = decode_streamed(image, all);
         assert!(exact.pooled, "pool bands within {all} bytes: {steps:?}");
         let rows = exact.rows.expect("pool bands decode");
@@ -2364,7 +2522,8 @@ mod tests {
         for headroom in [
             routes - 1,
             routes + plans - 1,
-            routes + plans + executor - 1,
+            routes + plans + rings - 1,
+            routes + plans + rings + executor - 1,
             all - 1,
         ] {
             let (_, _, short) = decode_streamed(image, headroom);
@@ -2399,30 +2558,339 @@ mod tests {
 
     /// The bytes of the records the band executor allocates while `workers`
     /// and `readers` threads decode `bands` of `rings`, from their types: per
-    /// band its record, status, held and owned slot, readiness entry, part
-    /// counters, decoded entry and shared output; per ring its record,
-    /// readiness and freed counters, slot list and slots, and each reader's
-    /// band being read and next band; per thread its workspace pair; per
-    /// reader its view and its entry in the readers' list.
+    /// band its status, held and owned slot, part counters, decoded entry
+    /// and shared output; a queue entry per part; per ring its readiness and
+    /// freed counters, slot list and slots, and each reader's band being read
+    /// and next band; per thread its workspace pair; per reader its view and
+    /// its entry in the readers' list; and the pool's job per worker and
+    /// what the locks of bands in parts and of the shared state allocate,
+    /// which `band_executor_allocates_within_its_charge` measures.
     fn executor_records(rings: &[Ring], bands: &[Band], workers: usize, readers: usize) -> usize {
-        let per_band = size_of::<Band>()
-            + size_of::<Status>()
+        let per_band = size_of::<Status>()
             + 2 * size_of::<Option<&mut [f32]>>()
-            + size_of::<Reverse<(i64, Reverse<usize>, usize)>>()
             + 3 * size_of::<usize>()
             + size_of::<Mutex<&mut [f32]>>();
-        let per_ring = size_of::<Ring>()
-            + 2 * size_of::<usize>()
+        let entries: usize = bands.iter().map(|band| band.parts).sum();
+        let per_ring = 2 * size_of::<usize>()
             + size_of::<Vec<&mut [f32]>>()
             + readers * (size_of::<Option<(usize, &mut [f32])>>() + size_of::<usize>());
         let slots: usize = rings.iter().map(|ring| ring.slots).sum();
         let per_thread = size_of::<(&mut (), &mut BlockScratch)>();
         let per_reader = size_of::<PoolRows<'_, '_, '_, '_, (), ()>>()
             + size_of::<&mut (dyn crate::j2c::idwt::SubBandRows + Send)>();
+        let locks = bands.iter().filter(|band| band.parts > 1).count() + 2;
         bands.len() * per_band
+            + entries * size_of::<Reverse<(i64, Reverse<usize>, usize)>>()
             + rings.len() * per_ring
             + slots * size_of::<&mut [f32]>()
             + (workers + readers) * per_thread
             + readers * per_reader
+            + workers * SENT_WORKER_BYTES
+            + locks * LOCK_BYTES
+    }
+
+    /// What the band executor allocated for a tile, measured under the
+    /// counting allocator, beside what the decode charges for it.
+    #[derive(Debug)]
+    struct Measured {
+        /// The most planning the rings and bands held at once, and what it
+        /// kept, against the bytes charged for them and for the most beside
+        /// them.
+        planning: (usize, usize),
+        planning_charge: (usize, usize),
+        /// The most the executor held at once while the bands decoded,
+        /// against its charge.
+        running: usize,
+        running_charge: usize,
+        readers: usize,
+        parted: usize,
+        bands: usize,
+        deep: bool,
+    }
+
+    /// Decode the tile of `bytes`, or its `roi`, streaming its rows on the
+    /// current pool, with its classic bands in `parts` parts when given:
+    /// once to warm the bank, then on the band executor as the streamed
+    /// tile drives it, under the counting allocator, reading every row of
+    /// every ring through one reader.
+    fn measure_executor(
+        bytes: &[u8],
+        roi: Option<(u32, u32, u32, u32)>,
+        parts: Option<usize>,
+    ) -> Measured {
+        let image = Image::new(bytes, &DecodeSettings::default()).expect("parse fixture");
+        let roi = roi.unwrap_or((0, 0, image.width(), image.height()));
+        let mut context = DecoderContext::default();
+        context.set_output_region(Some(roi));
+        context.tile_decode_context.line_region_idwt = true;
+        context.tile_decode_context.stream_rows = true;
+        context.tile_decode_context.band_parts = parts;
+        let tiles = tile::parse(&mut BitReader::new(image.codestream), &image.header, 0)
+            .expect("parse tile");
+        let baseline = context
+            .reset(
+                &image.header,
+                &tiles[0],
+                tiles.structural_workspace_bytes(),
+                0,
+                false,
+                None,
+            )
+            .expect("prepare output planes");
+        let (tile_ctx, storage) = (&mut context.tile_decode_context, &mut context.storage);
+        super::super::decode_tile(
+            &tiles[0],
+            &image.header,
+            tile_ctx,
+            storage,
+            &mut None,
+            CpuDecodeParallelism::Auto,
+            false,
+            &mut DecodeProfileTimings::default(),
+            baseline,
+            super::super::TileOutput::Sink(&mut CountingSink(0)),
+        )
+        .expect("decode with room to spare");
+        let components = tiles[0].component_infos.len();
+        assert_eq!(tile_ctx.debug_counters.pool_band_components, components);
+        let mut routes = Vec::new();
+        let mut live = None;
+        for component in 0..components {
+            let BandRouting::Route(route) = plan_band_route_beside(
+                &tiles[0],
+                component,
+                tile_ctx,
+                storage,
+                &image.header,
+                live,
+                true,
+            )
+            .expect("plan route") else {
+                panic!("the tile takes the pool's bands");
+            };
+            live = Some(route.budget());
+            routes.push(route);
+        }
+        let planning_charge =
+            tile_ring_plan_bytes(&routes, storage, &image.header).expect("planning bytes");
+        let base = j2k_alloc_probe::live_bytes();
+        j2k_alloc_probe::reset_peak();
+        let (rings, mut bands, strip_starts, active_levels) =
+            plan_tile_rings(&routes, storage, &image.header).expect("plan rings");
+        let planning = (
+            j2k_alloc_probe::peak_bytes() - base,
+            j2k_alloc_probe::live_bytes() - base,
+        );
+        let line_plans =
+            plan_tile_lines(&tiles[0], &image.header, tile_ctx, storage, &active_levels)
+                .expect("plan lines");
+        let copy = line_plans
+            .first()
+            .map_or(IntRect::from_xywh(0, 0, 0, 0), |plan| plan.copy);
+        let coding = routes[0].coding();
+        let bank = match coding {
+            CodeBlockCoding::Classic => tile_ctx.classic_task_workspaces.len(),
+            CodeBlockCoding::HighThroughput => tile_ctx.ht_task_workspaces.len(),
+        };
+        let route_workers = routes
+            .iter()
+            .map(|route| route.workers())
+            .max()
+            .unwrap_or(0);
+        let samples = copy.width() as usize * copy.height() as usize;
+        let readers = if parallel_synthesis(components, coding, bank, route_workers, samples) {
+            components
+        } else {
+            1
+        };
+        let workers = route_workers.min(bank - readers);
+        if coding == CodeBlockCoding::Classic {
+            split_bands(
+                tile_ctx,
+                &rings,
+                &mut bands,
+                workers + readers,
+                |band, parts| {
+                    let (route, strip) = route_strip(&routes, &strip_starts, band.strip)?;
+                    route.strip_parts(strip, parts)
+                },
+            )
+            .expect("split bands");
+        }
+        let running_charge =
+            executor_bytes(&rings, &bands, (workers, readers)).expect("executor bytes");
+        let mut scratches = BlockScratch::for_threads(
+            workers + readers,
+            BandRoute::shared_scratch(routes.iter().map(|route| &**route)).expect("sizes"),
+            &mut DecodeAllocationBudget::for_storage(storage).expect("budget"),
+        )
+        .expect("thread scratch");
+        let helps = readers == 1 && coding == CodeBlockCoding::Classic;
+        let mut coefficients = core::mem::take(&mut storage.coefficients);
+        let base = j2k_alloc_probe::live_bytes();
+        j2k_alloc_probe::reset_peak();
+        let slots = split_slots(&rings, &bands, storage, &mut coefficients).expect("slots");
+        let source = PayloadSource::new(storage);
+        let read = |readers: &mut [&mut (dyn SubBandRows + Send)]| -> Result<()> {
+            for ring in &rings {
+                for y in ring.stored.y0..ring.stored.y1 {
+                    readers[0].prepare_row(ring.sub_band, y)?;
+                }
+            }
+            Ok(())
+        };
+        let decoded = match coding {
+            CodeBlockCoding::Classic => run_bands(
+                (workers, readers, helps),
+                &rings,
+                &bands,
+                slots,
+                (&mut tile_ctx.classic_task_workspaces, &mut scratches),
+                |strip, output, workspace, scratch| {
+                    let (route, strip) = route_strip(&routes, &strip_starts, strip)?;
+                    route.decode_classic(strip, output, workspace, (scratch, source))
+                },
+                read,
+                false,
+                &mut 0,
+                false,
+            ),
+            CodeBlockCoding::HighThroughput => run_bands(
+                (workers, readers, helps),
+                &rings,
+                &bands,
+                slots,
+                (&mut tile_ctx.ht_task_workspaces, &mut scratches),
+                |strip, output, workspace, scratch| {
+                    let (route, strip) = route_strip(&routes, &strip_starts, strip)?;
+                    route.decode_ht(strip, output, workspace, (scratch, source))
+                },
+                read,
+                false,
+                &mut 0,
+                false,
+            ),
+        };
+        let running = j2k_alloc_probe::peak_bytes() - base;
+        assert_eq!(decoded.ok(), Some(true), "the executor decodes every band");
+        storage.coefficients = coefficients;
+        Measured {
+            planning,
+            planning_charge,
+            running,
+            running_charge,
+            readers,
+            parted: bands.iter().filter(|band| band.parts > 1).count(),
+            bands: bands.len(),
+            deep: storage.deep_band_rings,
+        }
+    }
+
+    /// Under the counting allocator, the band executor holds at most what
+    /// the decode charges for it, planning its rings and bands and while
+    /// they decode: for classic and HTJ2K tiles, whole and in a region,
+    /// with bands in parts, on pools of 2, 4 and 12 threads, with one reader
+    /// and with one per component, with shallow rings and deep ones.
+    #[test]
+    fn band_executor_allocates_within_its_charge() {
+        const PROBE: &str = "J2K_NATIVE_BAND_EXECUTOR_PROBE";
+        if std::env::var_os(PROBE).is_none() {
+            // The allocator's high-water mark is the process's: measure in a
+            // process that runs this test alone.
+            let name = module_path!()
+                .split_once("::")
+                .map(|(_, path)| path)
+                .expect("module path");
+            let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+                .args([
+                    &format!("{name}::band_executor_allocates_within_its_charge"),
+                    "--exact",
+                    "--test-threads=1",
+                    "--nocapture",
+                ])
+                .env(PROBE, "1")
+                .output()
+                .expect("run the measuring process");
+            let report = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(output.status.success(), "{report}");
+            assert!(report.contains("1 passed"), "{report}");
+            return;
+        }
+        let classic = include_bytes!("../../../fixtures/multi_segment/bypass_termall_rgb_53.j2k");
+        let ht = ht_fixture();
+        let (mut readers, mut parted, mut clipped, mut deep) = (Vec::new(), 0, false, false);
+        for threads in [2, 4, 12] {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("build pool")
+                .install(|| {
+                    for (label, bytes, splits) in [
+                        ("classic", &classic[..], &[None, Some(4)][..]),
+                        ("HTJ2K", &ht[..], &[None][..]),
+                    ] {
+                        let whole = measure_executor(bytes, None, None);
+                        for &roi in &[None, Some((48, 48, 16, 16))] {
+                            for &parts in splits {
+                                let measured = measure_executor(bytes, roi, parts);
+                                let case = format!("{label} {roi:?} parts {parts:?} on {threads}");
+                                let (peak, kept) = measured.planning;
+                                let (planned, beside) = measured.planning_charge;
+                                assert!(
+                                    kept <= planned && peak <= planned + beside,
+                                    "{case}: {measured:?}"
+                                );
+                                assert!(
+                                    measured.running <= measured.running_charge,
+                                    "{case}: {measured:?}"
+                                );
+                                readers.push(measured.readers);
+                                parted += measured.parted;
+                                clipped |= measured.bands < whole.bands;
+                                deep |= measured.deep;
+                            }
+                        }
+                    }
+                });
+        }
+        assert!(readers.contains(&1) && readers.contains(&3), "{readers:?}");
+        assert!(
+            parted > 0 && clipped && deep,
+            "parts {parted}, region {clipped}, deep {deep}"
+        );
+    }
+
+    /// A three-component 64 x 64 HTJ2K image in 16 x 16 code-blocks.
+    fn ht_fixture() -> Vec<u8> {
+        let mut state = 0x2545_f491_u32;
+        let pixels: Vec<u8> = (0..64 * 64 * 3)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state.to_le_bytes()[3]
+            })
+            .collect();
+        encode(
+            &pixels,
+            64,
+            64,
+            3,
+            8,
+            false,
+            &EncodeOptions {
+                reversible: true,
+                num_decomposition_levels: 2,
+                code_block_width_exp: 2,
+                code_block_height_exp: 2,
+                use_ht_block_coding: true,
+                ..EncodeOptions::default()
+            },
+        )
+        .expect("encode HTJ2K fixture")
     }
 }
