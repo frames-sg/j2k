@@ -254,6 +254,10 @@ fn parse_tile_parts<'a>(
     mut relevance: Option<&mut PacketRelevance<'_>>,
     walk: &mut PacketWalk<'_>,
 ) -> Result<()> {
+    #[cfg(feature = "std")]
+    let strict = header.strict || walk.recording.is_some();
+    #[cfg(not(feature = "std"))]
+    let strict = header.strict;
     for tile_part in &tile.tile_parts {
         if relevance
             .as_ref()
@@ -276,16 +280,13 @@ fn parse_tile_parts<'a>(
                     skips,
                     relevance.as_deref_mut(),
                     walk,
+                    strict,
                 )
             });
         if let Some(error) = storage.packet_workspace_error.take() {
             return Err(error);
         }
         if let Err(context) = parsed {
-            #[cfg(feature = "std")]
-            let strict = header.strict || walk.recording.is_some();
-            #[cfg(not(feature = "std"))]
-            let strict = header.strict;
             if strict {
                 bail!(DecodingError::PacketParseFailure(context));
             }
@@ -405,6 +406,7 @@ fn parse_inner<'a>(
         )
     )]
     walk: &mut PacketWalk<'_>,
+    strict: bool,
 ) -> PacketResult<bool> {
     // The last precinct's place among its sub-bands' records, by (component,
     // resolution, precinct): position-major progressions read all of a
@@ -674,9 +676,10 @@ fn parse_inner<'a>(
     }
 
     // PLT entries left once the tile's last packet has been read describe no
-    // packet, like bytes after it.
+    // packet, like bytes after it. Only a walk that stops at an error looks
+    // ahead: one that goes on needs the next packet for the next tile-part.
     if tile_part.validate_all_packet_lengths_consumed().is_none()
-        && progression_iterator.next().is_some()
+        && (!strict || progression_iterator.next().is_some())
     {
         return Err("packet length markers contain unused entries");
     }
@@ -1033,6 +1036,78 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The segments a non-strict walk records for `codestream`'s tile.
+    fn non_strict_segments(codestream: &[u8]) -> Vec<(u8, u8, u32)> {
+        use crate::j2c::{build, tile};
+
+        let mut parsed = crate::j2c::parse_raw(codestream, &crate::DecodeSettings::default())
+            .expect("parse codestream");
+        parsed.header.strict = false;
+        let tiles =
+            tile::parse(&mut BitReader::new(parsed.data), &parsed.header, 0).expect("parse tiles");
+        let tile = tiles.iter().next().expect("one tile");
+        let mut storage = DecompositionStorage::default();
+        build::build(
+            tile,
+            &mut storage,
+            tiles.structural_workspace_bytes(),
+            false,
+            build::BuildWorkspace::MetadataOnly,
+            None,
+        )
+        .expect("plan code-blocks");
+        parse(tile, &parsed.header, &mut storage).expect("non-strict walk");
+        storage
+            .segments
+            .iter()
+            .map(|segment| (segment.idx, segment.coding_pases, segment.data_length))
+            .collect()
+    }
+
+    /// A walk that goes on past a tile-part's error, as a non-strict one
+    /// does, parses the next tile-parts from where the progression stands: a
+    /// PLT length left after the first tile-part's packet takes no packet
+    /// from it.
+    #[test]
+    fn non_strict_walk_keeps_the_progression_past_surplus_packet_lengths() {
+        let mut state = 0x2545_f491_u32;
+        let pixels: Vec<u8> = (0..16 * 16)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state.to_be_bytes()[0]
+            })
+            .collect();
+        let options = crate::EncodeOptions {
+            num_decomposition_levels: 1,
+            num_layers: 2,
+            tile_part_packet_limit: Some(1),
+            write_plt: true,
+            ..crate::EncodeOptions::default()
+        };
+        let clean = crate::encode(&pixels, 16, 16, 1, 8, false, &options).expect("encode");
+        let sot = clean
+            .windows(2)
+            .position(|window| window == [0xff, 0x90])
+            .expect("SOT marker");
+        let plt = sot
+            + clean[sot..]
+                .windows(2)
+                .position(|window| window == [0xff, 0x58])
+                .expect("PLT marker");
+        let mut edited = clean.clone();
+        let plt_length = u16::from_be_bytes([edited[plt + 2], edited[plt + 3]]);
+        edited.insert(plt + 2 + usize::from(plt_length), 5);
+        edited[plt + 2..plt + 4].copy_from_slice(&(plt_length + 1).to_be_bytes());
+        let psot = u32::from_be_bytes(edited[sot + 6..sot + 10].try_into().expect("Psot"));
+        edited[sot + 6..sot + 10].copy_from_slice(&(psot + 1).to_be_bytes());
+
+        let segments = non_strict_segments(&clean);
+        assert!(segments.len() > 1, "packets after the first tile-part");
+        assert_eq!(non_strict_segments(&edited), segments);
     }
 
     #[test]

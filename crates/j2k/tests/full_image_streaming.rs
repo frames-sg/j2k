@@ -266,19 +266,22 @@ fn with_byte_after_last_packets(codestream: &[u8]) -> Vec<u8> {
     edit_tile_parts(codestream, |part| part.push(0))
 }
 
+/// Add one packet length to a tile-part's PLT marker.
+fn add_packet_length(part: &mut Vec<u8>) {
+    let mut at = 12;
+    while part[at..at + 2] != [0xff, 0x58] {
+        assert_ne!(part[at..at + 2], [0xff, 0x93], "tile-part has a PLT marker");
+        at += 2 + usize::from(u16::from_be_bytes([part[at + 2], part[at + 3]]));
+    }
+    let length = u16::from_be_bytes([part[at + 2], part[at + 3]]);
+    part.insert(at + 2 + usize::from(length), 5);
+    part[at + 2..at + 4].copy_from_slice(&(length + 1).to_be_bytes());
+}
+
 /// `codestream` with one more packet length in each tile-part's PLT marker
 /// than the tile-part has packets.
 fn with_surplus_packet_lengths(codestream: &[u8]) -> Vec<u8> {
-    edit_tile_parts(codestream, |part| {
-        let mut at = 12;
-        while part[at..at + 2] != [0xff, 0x58] {
-            assert_ne!(part[at..at + 2], [0xff, 0x93], "tile-part has a PLT marker");
-            at += 2 + usize::from(u16::from_be_bytes([part[at + 2], part[at + 3]]));
-        }
-        let length = u16::from_be_bytes([part[at + 2], part[at + 3]]);
-        part.insert(at + 2 + usize::from(length), 5);
-        part[at + 2..at + 4].copy_from_slice(&(length + 1).to_be_bytes());
-    })
+    edit_tile_parts(codestream, add_packet_length)
 }
 
 /// Data a tile-part holds after its tile's last packet is no packet's: bytes
@@ -383,6 +386,104 @@ fn data_after_a_tiles_last_packet_decodes_as_without_it_on_every_route() {
                     }
                 }
             }
+        }
+    }
+}
+
+/// A PLT length past the last packet of a tile-part while the tile's packets
+/// go on in the next one disagrees with the packets: every route fails.
+#[test]
+fn surplus_packet_length_before_a_later_tile_part_fails_on_every_route() {
+    let split = codestream(
+        1,
+        &EncodeOptions {
+            num_decomposition_levels: 2,
+            num_layers: 2,
+            tile_part_packet_limit: Some(1),
+            write_plt: true,
+            ..EncodeOptions::default()
+        },
+    );
+    let mut first = true;
+    let edited = edit_tile_parts(&split, |part| {
+        if std::mem::take(&mut first) {
+            add_packet_length(part);
+        }
+    });
+    let pools = [1, 4].map(|threads| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("pool")
+    });
+    for scale in [Downscale::None, Downscale::Half] {
+        let fmt = PixelFormat::Gray8;
+        assert!(decode(&split, None, CpuDecodeParallelism::Serial, fmt, scale, 0).is_some());
+        for (pool, threads) in pools.iter().zip([1, 4]) {
+            for budget in [Some(usize::MAX), Some(0), None] {
+                let decoded = pool
+                    .install(|| decode(&edited, budget, CpuDecodeParallelism::Auto, fmt, scale, 0));
+                assert!(
+                    decoded.is_none(),
+                    "{scale:?} {threads} threads, planes budget {budget:?} decoded"
+                );
+            }
+        }
+    }
+}
+
+/// PLT lengths still bound a tile's last packet: with its non-empty bit
+/// cleared, the packet's header ends after one byte, short of its signalled
+/// length, and every route fails. Without PLT lengths nothing tells the
+/// packet's unread bytes from data after the last packet.
+#[test]
+fn last_packet_shorter_than_its_plt_length_fails_on_every_route() {
+    let one_packet = codestream(
+        1,
+        &EncodeOptions {
+            num_decomposition_levels: 0,
+            write_plt: true,
+            ..EncodeOptions::default()
+        },
+    );
+    let edited = edit_tile_parts(&one_packet, |part| {
+        let sod = part
+            .windows(2)
+            .position(|window| window == [0xff, 0x93])
+            .expect("SOD marker");
+        assert_ne!(part[sod + 2] & 0x80, 0, "the packet is not empty");
+        part[sod + 2] &= 0x7f;
+    });
+    let fmt = PixelFormat::Gray8;
+    let clean = decode(
+        &one_packet,
+        None,
+        CpuDecodeParallelism::Serial,
+        fmt,
+        Downscale::None,
+        0,
+    );
+    assert!(clean.is_some());
+    for threads in [1, 4] {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("pool");
+        for budget in [Some(usize::MAX), Some(0), None] {
+            let decoded = pool.install(|| {
+                decode(
+                    &edited,
+                    budget,
+                    CpuDecodeParallelism::Auto,
+                    fmt,
+                    Downscale::None,
+                    0,
+                )
+            });
+            assert!(
+                decoded.is_none(),
+                "{threads} threads, planes budget {budget:?} decoded"
+            );
         }
     }
 }
