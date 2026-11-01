@@ -507,6 +507,8 @@ mod irreversible_output_rounding;
 mod legacy_batch;
 #[path = "device/multitile_color.rs"]
 mod multitile_color;
+#[path = "device/packet_walk_parity.rs"]
+mod packet_walk_parity;
 #[path = "device/resident_batch.rs"]
 mod resident_batch;
 #[path = "device/reversible_early_stop.rs"]
