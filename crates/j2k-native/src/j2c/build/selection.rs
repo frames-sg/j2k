@@ -286,10 +286,15 @@ pub(crate) fn select_whole_image_precincts(
     if header.skipped_resolution_levels == 0 {
         return Ok(None);
     }
+    // The build stores a record and two tag-tree roots for every precinct
+    // beside the selection, in whatever capacity it reuses: a tile for which
+    // that alone passes the cap fails here, before its precincts are walked.
+    let counts = count(tile)?;
+    preflight_structure(&counts, live_bytes, selection_owned_bytes(&counts)?, false)?;
     let retained_baseline_bytes = live_bytes
         .checked_add(storage.retained_capacity_bytes()?)
         .ok_or(ValidationError::ImageTooLarge)?;
-    whole_image_selection(tile, header, retained_baseline_bytes)
+    whole_image_selection(tile, header, &counts, retained_baseline_bytes)
 }
 
 /// The selection a region decode of the whole image parses a tile with, for a
@@ -308,6 +313,7 @@ pub(crate) fn select_whole_image_precincts(
 fn whole_image_selection(
     tile: &Tile<'_>,
     header: &Header<'_>,
+    counts: &SelectionCounts,
     retained_baseline_bytes: usize,
 ) -> Result<Option<PrecinctSelection>> {
     let whole_image = OutputRegion {
@@ -316,12 +322,11 @@ fn whole_image_selection(
         width: header.size_data.image_width(),
         height: header.size_data.image_height(),
     };
-    let counts = count(tile)?;
     let mut budget = DecodeAllocationBudget::from_live_bytes(retained_baseline_bytes)?;
     let mut skeleton = DecompositionStorage::default();
-    build_skeleton(tile, &counts, &mut skeleton, &mut budget)?;
+    build_skeleton(tile, counts, &mut skeleton, &mut budget)?;
     RoiPlan::build(tile, header, &skeleton, whole_image, &mut budget)?
-        .map(|plan| select(tile, &skeleton, &plan, &counts, &mut budget, 0)?.with_every_record())
+        .map(|plan| select(tile, &skeleton, &plan, counts, &mut budget, 0)?.with_every_record())
         .transpose()
 }
 
@@ -385,6 +390,19 @@ fn preflight_unavoidable_minimum(
     retained_baseline_bytes: usize,
     owned_bytes: usize,
 ) -> Result<()> {
+    preflight_structure(counts, retained_baseline_bytes, owned_bytes, true)
+}
+
+/// Reject a tile whose selection (`owned_bytes`) and build structure do not
+/// fit the cap beside `retained_baseline_bytes`: the skeleton, every sub-band
+/// precinct with two root tag-tree nodes, and, with `roi_windows`, the ROI
+/// windows a region build adds.
+fn preflight_structure(
+    counts: &SelectionCounts,
+    retained_baseline_bytes: usize,
+    owned_bytes: usize,
+    roi_windows: bool,
+) -> Result<()> {
     if retained_baseline_bytes > DEFAULT_MAX_DECODE_BYTES {
         return Err(ValidationError::ImageTooLarge.into());
     }
@@ -401,14 +419,16 @@ fn preflight_unavoidable_minimum(
     checked_include_elements::<TileDecompositions>(&mut structure, counts.components)?;
     checked_include_elements::<Decomposition>(&mut structure, counts.decompositions)?;
     checked_include_elements::<SubBand>(&mut structure, counts.sub_bands)?;
-    checked_include_elements::<Option<IntRect>>(
-        &mut structure,
-        counts
-            .sub_bands
-            .checked_add(counts.decompositions)
-            .and_then(|count| count.checked_add(counts.components))
-            .ok_or(ValidationError::ImageTooLarge)?,
-    )?;
+    if roi_windows {
+        checked_include_elements::<Option<IntRect>>(
+            &mut structure,
+            counts
+                .sub_bands
+                .checked_add(counts.decompositions)
+                .and_then(|count| count.checked_add(counts.components))
+                .ok_or(ValidationError::ImageTooLarge)?,
+        )?;
+    }
     checked_include_elements::<Precinct>(&mut structure, counts.sub_band_precincts)?;
     checked_include_elements::<TagNode>(
         &mut structure,
@@ -864,11 +884,82 @@ mod tests {
             rejected,
         )
         .is_err());
-        let selection = whole_image_selection(tile, &image.header, rejected)
+        let selection = whole_image_selection(tile, &image.header, &counts, rejected)
             .expect("the whole-image selection fits beside the retained storage")
             .expect("a selection");
         // Every 4 x 4 precinct of the 120 x 64 tile, one layer.
         assert_eq!(selection.required_packets(), 30 * 16);
+    }
+
+    /// A one-tile gray codestream header covering `[x0, x0 + width) x
+    /// [y0, y0 + height)` with `precincts.len() - 1` decomposition levels and
+    /// `precincts` as its COD precinct bytes, followed by an empty tile-part.
+    fn tile_geometry_codestream(
+        (x0, y0): (u32, u32),
+        (width, height): (u32, u32),
+        precincts: &[u8],
+    ) -> Vec<u8> {
+        let mut bytes = vec![0xff, 0x4f, 0xff, 0x51, 0, 41, 0, 0];
+        for value in [x0 + width, y0 + height, x0, y0, width, height, x0, y0] {
+            bytes.extend_from_slice(&value.to_be_bytes());
+        }
+        bytes.extend_from_slice(&[0, 1, 7, 1, 1]);
+        let levels = u8::try_from(precincts.len() - 1).unwrap();
+        // COD: precincts given; LRCP, one layer; 4 x 4 blocks, 5/3.
+        let mut cod = vec![1, 0, 0, 1, 0, levels, 0, 0, 0, 1];
+        cod.extend_from_slice(precincts);
+        bytes.extend_from_slice(&[0xff, 0x52]);
+        bytes.extend_from_slice(&u16::try_from(cod.len() + 2).unwrap().to_be_bytes());
+        bytes.extend_from_slice(&cod);
+        // QCD: reversible, two guard bits.
+        let sub_bands = 3 * usize::from(levels) + 1;
+        bytes.extend_from_slice(&[0xff, 0x5c]);
+        bytes.extend_from_slice(&u16::try_from(sub_bands + 3).unwrap().to_be_bytes());
+        bytes.push(0x40);
+        bytes.extend(core::iter::repeat_n(0x48, sub_bands));
+        bytes.extend_from_slice(&[0xff, 0x90, 0, 10, 0, 0, 0, 0, 0, 15, 0, 1]);
+        bytes.extend_from_slice(&[0xff, 0x93, 0, 0xff, 0xd9]);
+        bytes
+    }
+
+    fn with_tile_and_header<R>(
+        codestream: &[u8],
+        settings: &DecodeSettings,
+        check: impl FnOnce(&Tile<'_>, &Header<'_>) -> R,
+    ) -> R {
+        let image = Image::new(codestream, settings).expect("parse header");
+        let tiles = crate::j2c::tile::parse(
+            &mut crate::reader::BitReader::new(image.codestream),
+            &image.header,
+            0,
+        )
+        .expect("parse tile");
+        check(&tiles[0], &image.header)
+    }
+
+    /// A tile whose build could not hold one record and two tag-tree roots per
+    /// precinct within the cap is rejected before its whole-image selection
+    /// is made: 16,383 x 16,383 samples, one decomposition level, one-sample
+    /// precincts in the LL sub-band and two-sample ones above, 2^28 sub-band
+    /// precincts, at half resolution, with nothing else live.
+    #[test]
+    fn whole_image_selection_rejects_a_tile_its_build_cannot_hold_first() {
+        let codestream = tile_geometry_codestream((0, 0), (16_383, 16_383), &[0x00, 0x11]);
+        let half = DecodeSettings {
+            target_resolution: Some((8_192, 8_192)),
+            ..DecodeSettings::default()
+        };
+        with_tile_and_header(&codestream, &half, |tile, header| {
+            assert_eq!(header.skipped_resolution_levels, 1);
+            assert_eq!(count(tile).unwrap().sub_band_precincts, 4 << 26);
+            assert!(select_whole_image_precincts(
+                tile,
+                header,
+                &DecompositionStorage::default(),
+                0,
+            )
+            .is_err());
+        });
     }
 
     #[test]
