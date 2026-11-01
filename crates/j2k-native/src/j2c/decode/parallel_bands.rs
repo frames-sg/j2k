@@ -164,7 +164,7 @@ pub(super) fn decode_component<'a>(
         &mut tier1_us,
     )
     .and_then(|completed| {
-        if completed {
+        if completed == Some(true) {
             route.record(tile_ctx, storage)?;
         }
         Ok(completed)
@@ -175,11 +175,26 @@ pub(super) fn decode_component<'a>(
     profile_timings.codeblock_us += tier1_us;
     profile_timings.idwt_us += elapsed.saturating_sub(tier1_us);
     match result {
-        Ok(true) => {
+        Ok(Some(true)) => {
             tile_ctx.debug_counters.pool_band_components += 1;
             Ok(true)
         }
-        Ok(false) => {
+        Ok(None) => {
+            // The executor did not fit beside the plan, before anything
+            // decoded; the serial bands need neither.
+            banded_tier1::decode_component(
+                tile,
+                component_idx,
+                header,
+                tile_ctx,
+                storage,
+                transform,
+                profile_enabled,
+                profile_timings,
+            )?;
+            Ok(true)
+        }
+        Ok(Some(false)) => {
             // A band was left running with no worker to finish it.
             #[cfg(test)]
             let simulated = tile_ctx.strand_pool_band;
@@ -202,6 +217,11 @@ pub(super) fn decode_component<'a>(
     }
 }
 
+/// Decode the bands of `route`'s component on the pool while the streamed
+/// IDWT reads them. Returns `None`, before anything decodes, when the
+/// rings and bands, the executor's records or its threads' scratch do not
+/// fit beside the route's plan, and `Some(false)` when a band was left
+/// running with no worker to finish it.
 #[expect(
     clippy::too_many_arguments,
     reason = "the banded stage shares decode_tile's state and profiling explicitly"
@@ -215,14 +235,17 @@ fn decode_route(
     transform: WaveletTransform,
     profile_enabled: bool,
     tier1_us: &mut u128,
-) -> Result<bool> {
+) -> Result<Option<bool>> {
     // The rings and bands live beside the route's plan and scratch while
     // the bands decode; planning them holds their row scales beside them.
     let mut budget = route.budget();
     let (planned, scales) = ring_plan_bytes(route, storage, header, component_idx)?;
     let mut planning = budget;
-    planning.include_bytes(planned + scales)?;
-    budget.include_bytes(planned)?;
+    if declines(planning.include_bytes(planned + scales))?
+        || declines(budget.include_bytes(planned))?
+    {
+        return Ok(None);
+    }
     let (rings, mut bands, active_levels) = plan_rings(route, storage, header, component_idx)?;
     if route.coding() == CodeBlockCoding::Classic {
         split_bands(
@@ -235,9 +258,14 @@ fn decode_route(
     }
     // So do the executor's records and each thread's scratch, the route's
     // workers' and this thread's.
-    budget.include_bytes(executor_bytes(&rings, &bands, (route.workers(), 1))?)?;
+    if declines(budget.include_bytes(executor_bytes(&rings, &bands, (route.workers(), 1))?))? {
+        return Ok(None);
+    }
     let mut scratches =
-        BlockScratch::for_threads(route.workers() + 1, route.scratch_sizes()?, &mut budget)?;
+        match BlockScratch::for_threads(route.workers() + 1, route.scratch_sizes()?, &mut budget) {
+            Err(error) if super::reuse::is_capacity_error(&error) => return Ok(None),
+            scratches => scratches?,
+        };
     tile_ctx.idwt_output.placement = crate::j2c::idwt::IdwtPlacement::Coefficients;
     tile_ctx.idwt_output.coefficients = Vec::new();
     tile_ctx.idwt_output.rect = IntRect::from_xywh(0, 0, 0, 0);
@@ -299,17 +327,26 @@ fn decode_route(
     // theirs written.
     storage.stale_coefficients = true;
     let Some(lines) = lines else {
-        return result;
+        return result.map(Some);
     };
     match result {
-        Ok(true) => lines.finish(tile_ctx, Ok(())).map(|()| true),
+        Ok(true) => lines.finish(tile_ctx, Ok(())).map(|()| Some(true)),
         Ok(false) => {
             // Return the rings and plane; the whole-window path refills them.
             match lines.finish(tile_ctx, Err(DecodingError::CodeBlockDecodeFailure.into())) {
-                Ok(()) | Err(_) => Ok(false),
+                Ok(()) | Err(_) => Ok(Some(false)),
             }
         }
-        Err(error) => lines.finish(tile_ctx, Err(error)).map(|()| true),
+        Err(error) => lines.finish(tile_ctx, Err(error)).map(|()| Some(true)),
+    }
+}
+
+/// Whether `result` failed for want of budget, which declines the pool's
+/// bands; other errors pass on.
+fn declines(result: Result<()>) -> Result<bool> {
+    match result {
+        Err(error) if super::reuse::is_capacity_error(&error) => Ok(true),
+        result => result.map(|()| false),
     }
 }
 
@@ -339,10 +376,6 @@ pub(super) fn decode_tile_rows<'a>(
     // executor runs them all, so each is planned in the budget the last one
     // left, as one budget, which starts with the list of routes.
     // A budget too small for the pool leaves the tile to serial bands.
-    let declines = |result: Result<()>| match result {
-        Err(error) if super::reuse::is_capacity_error(&error) => Ok(true),
-        result => result.map(|()| false),
-    };
     let mut live = DecodeAllocationBudget::for_storage(storage)?;
     let mut routes = Vec::new();
     if declines(live.reserve_new(&mut routes, components))? {
@@ -2059,7 +2092,7 @@ mod tests {
     use crate::reader::BitReader;
     use crate::{encode, DecodeSettings, EncodeOptions, Image, DEFAULT_MAX_DECODE_BYTES};
 
-    fn budget_fixture(width: u32, height: u32, components: u16) -> Vec<u8> {
+    fn budget_fixture(width: u32, height: u32, components: u16, block_exp: u8) -> Vec<u8> {
         let mut state = 0x2545_f491_u32;
         let pixels: Vec<u8> = (0..width * height * u32::from(components))
             .map(|_| {
@@ -2079,8 +2112,8 @@ mod tests {
             &EncodeOptions {
                 reversible: true,
                 num_decomposition_levels: 4,
-                code_block_width_exp: 0,
-                code_block_height_exp: 0,
+                code_block_width_exp: block_exp,
+                code_block_height_exp: block_exp,
                 ..EncodeOptions::default()
             },
         )
@@ -2109,8 +2142,10 @@ mod tests {
     )]
     fn pool_bands_respect_the_combined_plan_and_executor_budget() {
         let (width, height) = (203, 157);
-        for components in [1_u16, 3] {
-            let bytes = budget_fixture(width, height, components);
+        // A component in 16 x 16 blocks plans its route in less room than
+        // its executor then needs beside it; 4 x 4 blocks plan in more.
+        for (components, block_exp) in [(1_u16, 2), (3, 0)] {
+            let bytes = budget_fixture(width, height, components, block_exp);
             let image =
                 Image::new(&bytes, &DecodeSettings::default()).expect("parse budget fixture");
             rayon::ThreadPoolBuilder::new()
@@ -2213,24 +2248,41 @@ mod tests {
                     let baseline = DecodeAllocationBudget::for_storage(storage)
                         .expect("control budget")
                         .live_bytes();
+                    let structural = storage.structural_workspace_bytes;
                     storage.structural_workspace_bytes +=
                         DEFAULT_MAX_DECODE_BYTES - baseline - headroom;
                     sink.0 = 0;
                     let result = if components == 1 {
-                        let route = match plan_band_route(
-                            &tiles[0],
-                            0,
-                            tile_ctx,
-                            storage,
-                            &image.header,
-                            false,
-                        ) {
-                            Ok(BandRouting::Route(route)) => route,
-                            Ok(BandRouting::Serial | BandRouting::WholeWindows) => return,
-                            Err(error) if super::super::reuse::is_capacity_error(&error) => return,
-                            Err(error) => panic!("unexpected planning error: {error:?}"),
+                        // The least room the component's route plans in,
+                        // which leaves none for its executor.
+                        let (mut short, mut room) = (route_bytes, 4 * headroom);
+                        let mut plans = |headroom: usize| {
+                            storage.structural_workspace_bytes =
+                                structural + DEFAULT_MAX_DECODE_BYTES - baseline - headroom;
+                            match plan_band_route(
+                                &tiles[0],
+                                0,
+                                tile_ctx,
+                                storage,
+                                &image.header,
+                                false,
+                            ) {
+                                Ok(BandRouting::Route(route)) => Some(route),
+                                Ok(BandRouting::Serial | BandRouting::WholeWindows) => None,
+                                Err(error) => panic!("planning within {headroom}: {error:?}"),
+                            }
                         };
-                        decode_route(
+                        assert!(plans(short).is_none() && plans(room).is_some());
+                        while room - short > 1 {
+                            let middle = short + (room - short) / 2;
+                            if plans(middle).is_some() {
+                                room = middle;
+                            } else {
+                                short = middle;
+                            }
+                        }
+                        let route = plans(room).expect("the route plans");
+                        let declined = decode_route(
                             &route,
                             0,
                             &image.header,
@@ -2239,7 +2291,49 @@ mod tests {
                             tiles[0].component_infos[0].wavelet_transform(),
                             false,
                             &mut 0,
-                        )
+                        );
+                        assert!(
+                            matches!(declined, Ok(None)),
+                            "the executor must decline before decoding: {declined:?}"
+                        );
+                        drop(route);
+                        // Where the executor does not fit, the serial bands
+                        // decode the component as the pool does with room.
+                        let mut decode = |headroom: usize| {
+                            storage.structural_workspace_bytes =
+                                structural + DEFAULT_MAX_DECODE_BYTES - baseline - headroom;
+                            tile_ctx.channel_data[0].container.fill(f32::NAN);
+                            let pooled = tile_ctx.debug_counters.pool_band_components;
+                            let decoded = decode_component(
+                                &tiles[0],
+                                0,
+                                &image.header,
+                                tile_ctx,
+                                storage,
+                                tiles[0].component_infos[0].wavelet_transform(),
+                                false,
+                                &mut DecodeProfileTimings::default(),
+                            );
+                            assert!(
+                                matches!(decoded, Ok(true)),
+                                "the component decodes within {headroom}: {decoded:?}"
+                            );
+                            let bits: Vec<u32> = tile_ctx.channel_data[0]
+                                .container
+                                .iter()
+                                .map(|sample| sample.to_bits())
+                                .collect();
+                            (tile_ctx.debug_counters.pool_band_components - pooled, bits)
+                        };
+                        let (pooled, with_room) = decode(4 * headroom);
+                        assert_eq!(pooled, 1, "the pool decodes the component with room");
+                        let (pooled, serial) = decode(room);
+                        assert_eq!(pooled, 0, "the serial bands decode it within {room}");
+                        assert!(
+                            serial == with_room,
+                            "the serial bands decode it bit for bit"
+                        );
+                        return;
                     } else {
                         decode_tile_rows(
                             &tiles[0],
@@ -2341,6 +2435,10 @@ mod tests {
     /// pool's bands or, when they decline the tile, on serial bands, with all
     /// but `headroom` bytes beyond the baseline taken as if retained, which
     /// every budget of the decode sees.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the warm pass measures the steps the budgeted pass is then checked against, on one context"
+    )]
     fn decode_streamed(image: &Image<'_>, headroom: usize) -> (Steps, Collected, Streamed) {
         let (width, height) = (image.width(), image.height());
         let mut context = DecoderContext::default();
@@ -2681,6 +2779,10 @@ mod tests {
     /// its routes, rings and bands and running the band executor as the
     /// streamed tile drives it, reading every row of every ring, each
     /// component's through its own reader when it has one.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the planning and executor phases are measured in order under the counting allocator, on one warm bank"
+    )]
     fn measure_executor(
         bytes: &[u8],
         roi: Option<(u32, u32, u32, u32)>,
@@ -2873,6 +2975,122 @@ mod tests {
         }
     }
 
+    /// Whether this process is the one that measures the test `name`: the
+    /// allocator's high-water mark is the process's, so when it is not,
+    /// this runs the test alone in a process of its own and checks that it
+    /// passed there.
+    fn measures_alone(name: &str) -> bool {
+        const PROBE: &str = "J2K_NATIVE_BAND_EXECUTOR_PROBE";
+        if std::env::var_os(PROBE).is_some() {
+            return true;
+        }
+        let module = module_path!()
+            .split_once("::")
+            .map(|(_, path)| path)
+            .expect("module path");
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                &format!("{module}::{name}"),
+                "--exact",
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .env(PROBE, "1")
+            .output()
+            .expect("run the measuring process");
+        let report = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.status.success(), "{report}");
+        assert!(report.contains("1 passed"), "{report}");
+        false
+    }
+
+    /// Under the counting allocator, the whole-window tile route, entered
+    /// from a thread outside the pool that never entered it before, holds
+    /// at most what it charges for its plan, tasks and threads' scratch,
+    /// the locks it shares and what the pool takes for it.
+    #[test]
+    fn tile_route_allocates_within_its_charge() {
+        use core::sync::atomic::{AtomicBool, Ordering};
+
+        static ROUTED: AtomicBool = AtomicBool::new(false);
+        if !measures_alone("tile_route_allocates_within_its_charge") {
+            return;
+        }
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build_global()
+            .expect("the measuring process's first use of the global pool");
+        rayon::broadcast(|_| ());
+        let bytes = budget_fixture(203, 157, 1, 2);
+        let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse fixture");
+        let mut context = DecoderContext::default();
+        let tiles = tile::parse(&mut BitReader::new(image.codestream), &image.header, 0)
+            .expect("parse tile");
+        let baseline = context
+            .reset(
+                &image.header,
+                &tiles[0],
+                tiles.structural_workspace_bytes(),
+                0,
+                false,
+                None,
+            )
+            .expect("prepare output planes");
+        let (tile_ctx, storage) = (&mut context.tile_decode_context, &mut context.storage);
+        // Warm the bank on this thread, so the route reuses it.
+        super::super::decode_tile(
+            &tiles[0],
+            &image.header,
+            tile_ctx,
+            storage,
+            &mut None,
+            CpuDecodeParallelism::Auto,
+            false,
+            &mut DecodeProfileTimings::default(),
+            baseline,
+            super::super::TileOutput::Planes,
+        )
+        .expect("decode with room to spare");
+        tile_ctx.tile_route_post_decode = Some(|_| {
+            ROUTED.store(true, Ordering::Relaxed);
+            Ok(())
+        });
+        let retained = tile_ctx.tier1_capacity_bytes().expect("bank bytes");
+        tile_ctx.debug_counters.workspace_peak = WorkspacePeak::default();
+        let held = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    settle();
+                    let base = j2k_alloc_probe::live_bytes();
+                    j2k_alloc_probe::reset_peak();
+                    super::super::subband::decode_component_tile_bit_planes(
+                        &tiles[0],
+                        0..1,
+                        tile_ctx,
+                        storage,
+                        &image.header,
+                        &mut None,
+                        CpuDecodeParallelism::Auto,
+                        false,
+                    )
+                    .expect("decode the tile");
+                    j2k_alloc_probe::peak_bytes() - base
+                })
+                .join()
+                .expect("the measuring thread")
+        });
+        assert!(ROUTED.load(Ordering::Relaxed), "the tile route decodes it");
+        let charged = tile_ctx.debug_counters.workspace_peak.bytes().tier1 - retained;
+        assert!(
+            held <= charged,
+            "the tile route held {held} of {charged} bytes"
+        );
+    }
+
     /// Wait until the process has held the same bytes for 100 ms, so the
     /// pools' threads have gone idle: a thread allocates its queue's state
     /// and the locks it sleeps on when it first idles.
@@ -2899,31 +3117,7 @@ mod tests {
     /// with shallow rings and deep ones.
     #[test]
     fn band_executor_allocates_within_its_charge() {
-        const PROBE: &str = "J2K_NATIVE_BAND_EXECUTOR_PROBE";
-        if std::env::var_os(PROBE).is_none() {
-            // The allocator's high-water mark is the process's: measure in a
-            // process that runs this test alone.
-            let name = module_path!()
-                .split_once("::")
-                .map(|(_, path)| path)
-                .expect("module path");
-            let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
-                .args([
-                    &format!("{name}::band_executor_allocates_within_its_charge"),
-                    "--exact",
-                    "--test-threads=1",
-                    "--nocapture",
-                ])
-                .env(PROBE, "1")
-                .output()
-                .expect("run the measuring process");
-            let report = format!(
-                "{}{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-            assert!(output.status.success(), "{report}");
-            assert!(report.contains("1 passed"), "{report}");
+        if !measures_alone("band_executor_allocates_within_its_charge") {
             return;
         }
         // The decode from outside a pool streams on the global pool, of

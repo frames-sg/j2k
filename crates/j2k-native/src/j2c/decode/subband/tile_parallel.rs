@@ -2249,7 +2249,7 @@ mod tests {
         let segment = |len: usize| Segment {
             idx: 0,
             coding_pases: 1,
-            data_length: len as u32,
+            data_length: u32::try_from(len).expect("test segment lengths fit u32"),
             data: &data[..len],
         };
         let segments = [segment(500), segment(500), segment(1000), segment(500)];
