@@ -126,6 +126,11 @@ pub(crate) struct DecompositionStorage<'a> {
     /// resolution from a reader per component (see
     /// [`parallel_bands::deep_rings`] and [`parallel_bands::reads_whole_rows`]).
     pub(crate) deep_band_rings: bool,
+    /// Whether the finest level's band rings of `parallel_bands` hold one
+    /// band fewer, for a classic tile that streams full-width rows from a
+    /// reader per component without deep rings (see
+    /// [`parallel_bands::shallow_rings`]).
+    pub(crate) shallow_band_rings: bool,
     /// Whether a tile streaming its rows from `parallel_bands` reconstructs
     /// them through one reader whatever its pool's workers (see
     /// [`parallel_bands::one_reader`]), which holds one short batch of rows.
@@ -172,6 +177,7 @@ impl DecompositionStorage<'_> {
         self.banded_tier1 = false;
         self.parallel_bands = false;
         self.deep_band_rings = false;
+        self.shallow_band_rings = false;
         self.one_synthesis_reader = false;
         self.lockstep_lines = false;
         self.roi_idwt_charge_elements = 0;

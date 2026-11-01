@@ -247,6 +247,8 @@ fn decode_route(
         return Ok(None);
     }
     let (rings, mut bands, active_levels) = plan_rings(route, storage, header, component_idx)?;
+    #[cfg(test)]
+    count_ring_slots(tile_ctx, &rings);
     if route.coding() == CodeBlockCoding::Classic {
         split_bands(
             tile_ctx,
@@ -454,6 +456,8 @@ pub(super) fn decode_tile_rows<'a>(
         1
     };
     let workers = route_workers.min(bank.saturating_sub(readers));
+    #[cfg(test)]
+    count_ring_slots(tile_ctx, &rings);
     if coding == CodeBlockCoding::Classic {
         split_bands(
             tile_ctx,
@@ -677,21 +681,54 @@ pub(super) fn deep_rings(tile: &Tile<'_>) -> bool {
 }
 
 /// Whether a tile reads whole rows at full resolution: no resolution level
-/// skipped, and every sub-band window the IDWT reads spans its sub-band. Only
-/// such tiles hold deep band rings: a reduced or narrower read decodes as
-/// fast without the extra band in every ring.
+/// skipped, and full-width windows (see [`reads_full_width`]). Only such
+/// tiles hold deep band rings: a reduced or narrower read decodes as fast
+/// without the extra band in every ring.
 pub(super) fn reads_whole_rows(header: &Header<'_>, storage: &DecompositionStorage<'_>) -> bool {
-    header.skipped_resolution_levels == 0
-        && storage.roi_plan.as_ref().is_some_and(|plan| {
-            storage
-                .sub_bands
-                .iter()
-                .enumerate()
-                .all(|(index, sub_band)| {
-                    plan.sub_band_window(index)
-                        .is_none_or(|window| window.width() == sub_band.rect.width())
-                })
+    header.skipped_resolution_levels == 0 && reads_full_width(storage)
+}
+
+/// Whether every sub-band window a tile's IDWT reads spans its sub-band.
+fn reads_full_width(storage: &DecompositionStorage<'_>) -> bool {
+    storage.roi_plan.as_ref().is_some_and(|plan| {
+        storage
+            .sub_bands
+            .iter()
+            .enumerate()
+            .all(|(index, sub_band)| {
+                plan.sub_band_window(index)
+                    .is_none_or(|window| window.width() == sub_band.rect.width())
+            })
+    })
+}
+
+/// Whether a tile streaming its rows from pool bands holds one band fewer in
+/// each ring of its finest level (see
+/// `DecompositionStorage::shallow_band_rings`): a classic tile of several
+/// components that reconstructs each on its own reader without deep band
+/// rings, as on 10 and 11 threads or at a reduced resolution, reading
+/// full-width windows, on a pool with more threads than the tile has
+/// finest-level sub-bands. Its readers wait on classic Tier-1. With two slots
+/// the bands ahead of them are then fewer than the pool's threads, so the
+/// bands split into parts (see [`plan_parts`]) that every thread takes, which
+/// keeps the pool as busy as a band more in every ring did. Narrower regions
+/// keep their rings.
+pub(super) fn shallow_rings(tile: &Tile<'_>, storage: &DecompositionStorage<'_>) -> bool {
+    let components = tile.component_infos.len();
+    storage.parallel_bands
+        && storage.lockstep_lines
+        && !storage.deep_band_rings
+        && !storage.one_synthesis_reader
+        && components > 1
+        && 3 * components < rayon::current_num_threads()
+        && tile.component_infos.iter().all(|component| {
+            !component
+                .coding_style
+                .parameters
+                .code_block_style
+                .uses_high_throughput_block_coding()
         })
+        && reads_full_width(storage)
 }
 
 /// Whether a tile streaming its rows from pool bands reconstructs them
@@ -1182,6 +1219,21 @@ fn plan_rings(
         return Err(DecodingError::CodeBlockDecodeFailure.into());
     }
     Ok((rings, bands, active_levels))
+}
+
+/// Count the deepest of `rings` that hold no whole window, at the finest
+/// level and at the others, in the decode's debug counters.
+#[cfg(test)]
+fn count_ring_slots(tile_ctx: &mut TileDecodeContext, rings: &[Ring]) {
+    let counters = &mut tile_ctx.debug_counters;
+    for ring in rings.iter().filter(|ring| !ring.whole_window) {
+        let deepest = if ring.finest {
+            &mut counters.pool_band_finest_slots
+        } else {
+            &mut counters.pool_band_other_slots
+        };
+        *deepest = (*deepest).max(ring.slots);
+    }
 }
 
 /// Most parts a band splits into.
@@ -2735,6 +2787,10 @@ mod tests {
         parted: usize,
         bands: usize,
         deep: bool,
+        shallow: bool,
+        /// The deepest finest-level and coarser-level rings that hold no
+        /// whole window.
+        slots: (usize, usize),
     }
 
     /// Read every row of the rings that `ring_readers` gives to `readers`,
@@ -2972,7 +3028,23 @@ mod tests {
             parted: bands.iter().filter(|band| band.parts > 1).count(),
             bands: bands.len(),
             deep: storage.deep_band_rings,
+            shallow: storage.shallow_band_rings,
+            slots: deepest_rings(&rings),
         }
+    }
+
+    /// The most slots of a finest-level ring, and of a coarser-level one,
+    /// that holds no whole window.
+    fn deepest_rings(rings: &[Ring]) -> (usize, usize) {
+        let deepest = |finest: bool| {
+            rings
+                .iter()
+                .filter(|ring| ring.finest == finest && !ring.whole_window)
+                .map(|ring| ring.slots)
+                .max()
+                .unwrap_or(0)
+        };
+        (deepest(true), deepest(false))
     }
 
     /// Whether this process is the one that measures the test `name`: the
@@ -3109,11 +3181,27 @@ mod tests {
         }
     }
 
+    /// Pools of `threads` threads each, every thread of which has run a
+    /// job, so none allocates its first job's state inside a measurement.
+    fn warmed_pools(threads: &[usize]) -> Vec<rayon::ThreadPool> {
+        threads
+            .iter()
+            .map(|&threads| {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .expect("build pool");
+                pool.broadcast(|_| ());
+                pool
+            })
+            .collect()
+    }
+
     /// Under the counting allocator, the band executor holds at most what
     /// the decode charges for it, planning its routes, rings and bands and
     /// while they decode: for classic and HTJ2K tiles, whole and in a
-    /// region, with bands in parts, on pools of 2, 4 and 12 threads and
-    /// from outside a pool, with one reader and with one per component,
+    /// region, with bands in parts, on pools of 2, 4, 10, 11 and 12 threads
+    /// and from outside a pool, with one reader and with one per component,
     /// with shallow rings and deep ones.
     #[test]
     fn band_executor_allocates_within_its_charge() {
@@ -3128,7 +3216,9 @@ mod tests {
             .expect("the measuring process's first use of the global pool");
         let classic = include_bytes!("../../../fixtures/multi_segment/bypass_termall_rgb_53.j2k");
         let ht = ht_fixture();
+        let wide = shallow_fixture();
         let (mut readers, mut parted, mut clipped, mut deep) = (Vec::new(), 0, false, false);
+        let mut shallow = Vec::new();
         let mut check = |case: &str, measured: Measured, whole: &Measured| {
             assert!(
                 measured.routing.0 <= measured.routing_charge,
@@ -3144,6 +3234,10 @@ mod tests {
                 measured.running <= measured.running_charge,
                 "{case}: {measured:?}"
             );
+            if measured.shallow {
+                assert_eq!(measured.slots.0, 2, "{case}: shallow finest rings");
+                shallow.push((case.to_owned(), measured.slots, measured.parted));
+            }
             readers.push(measured.readers);
             parted += measured.parted;
             clipped |= measured.bands < whole.bands;
@@ -3153,17 +3247,7 @@ mod tests {
         // ends, so no pool's teardown frees bytes inside another's window.
         // Every thread of each runs a job before any measurement, and every
         // measurement waits until they idle (see `settle`).
-        let pools: Vec<_> = [2, 4, 12]
-            .into_iter()
-            .map(|threads| {
-                let pool = rayon::ThreadPoolBuilder::new()
-                    .num_threads(threads)
-                    .build()
-                    .expect("build pool");
-                pool.broadcast(|_| ());
-                pool
-            })
-            .collect();
+        let pools = warmed_pools(&[2, 4, 10, 11, 12]);
         rayon::broadcast(|_| ());
         for pool in &pools {
             let threads = pool.current_num_threads();
@@ -3171,6 +3255,7 @@ mod tests {
                 for (label, bytes, splits) in [
                     ("classic", &classic[..], &[None, Some(4)][..]),
                     ("HTJ2K", &ht[..], &[None][..]),
+                    ("wide classic", &wide[..], &[None, Some(4)][..]),
                 ] {
                     let whole = measure_executor(bytes, None, None);
                     for &roi in &[None, Some((48, 48, 16, 16))] {
@@ -3196,6 +3281,46 @@ mod tests {
             parted > 0 && clipped && deep,
             "parts {parted}, region {clipped}, deep {deep}"
         );
+        // The wide tile at full resolution on 10 and 11 threads holds the
+        // shallow finest rings, and its bands split into parts by themselves.
+        assert!(
+            shallow
+                .iter()
+                .any(|(case, slots, parted)| case.contains("parts None")
+                    && slots.1 == 2
+                    && *parted > 0),
+            "{shallow:?}"
+        );
+    }
+
+    /// A classic RGB tile of noise wide and tall enough for the shallow
+    /// finest rings: a reader per component on 10 threads (the unit tests'
+    /// sample gate), finest-level bands of several blocks, and coarser
+    /// levels with more bands than slots.
+    fn shallow_fixture() -> Vec<u8> {
+        let mut state = 0x9e37_79b9_u32;
+        let pixels: Vec<u8> = (0..384 * 192 * 3)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state.to_le_bytes()[3]
+            })
+            .collect();
+        encode(
+            &pixels,
+            384,
+            192,
+            3,
+            8,
+            false,
+            &EncodeOptions {
+                num_decomposition_levels: 4,
+                code_block_height_exp: 2,
+                ..EncodeOptions::default()
+            },
+        )
+        .expect("encode shallow ring fixture")
     }
 
     /// A three-component 64 x 64 HTJ2K image in 16 x 16 code-blocks.

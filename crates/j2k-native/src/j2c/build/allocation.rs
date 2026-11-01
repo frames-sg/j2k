@@ -398,6 +398,11 @@ pub(crate) const OTHER_LEVEL_BAND_SLOTS: u32 = 2;
 /// reconstructed rows.
 const DEEP_RING_EXTRA_SLOTS: u32 = 1;
 
+/// Band slots each sub-band of the finest active level holds with
+/// `shallow_band_rings`: one fewer, as the pool's threads split their bands
+/// into parts instead of waiting for whole bands further ahead.
+const SHALLOW_FINEST_LEVEL_BAND_SLOTS: u32 = 2;
+
 /// Give each sub-band of a region decode the coefficient range for its
 /// stored rectangle: the required code-blocks, clipped to the IDWT windows
 /// unless `clip_to_idwt_windows` is false. With banded Tier-1, a range holds
@@ -459,7 +464,9 @@ fn lay_out_region_coefficients(
                         .sub_bands
                         .contains(&sub_band_idx)
             });
-            let slots = if finest {
+            let slots = if finest && storage.shallow_band_rings {
+                SHALLOW_FINEST_LEVEL_BAND_SLOTS
+            } else if finest {
                 FINEST_LEVEL_BAND_SLOTS
             } else {
                 OTHER_LEVEL_BAND_SLOTS
@@ -516,6 +523,7 @@ pub(crate) fn lay_out_whole_region_coefficients(
     storage.banded_tier1 = false;
     storage.parallel_bands = false;
     storage.deep_band_rings = false;
+    storage.shallow_band_rings = false;
     let coefficient_count = lay_out_region_coefficients(storage, true, 0)?;
     let mut budget =
         reuse::ReallocationBudget::from_live_bytes(storage.structural_workspace_bytes)?;

@@ -94,6 +94,10 @@ struct Decoded {
         expect(dead_code, reason = "only the pool band tests compare the counters")
     )]
     parted_bands: usize,
+    /// The deepest finest-level and coarser-level rings of the pool bands
+    /// that held no whole window.
+    #[cfg(feature = "parallel")]
+    ring_slots: (usize, usize),
 }
 
 fn decode_planes(image: &Image<'_>, roi: (u32, u32, u32, u32)) -> Decoded {
@@ -137,6 +141,11 @@ fn decode_planes(image: &Image<'_>, roi: (u32, u32, u32, u32)) -> Decoded {
         decoded_blocks: counters.decoded_code_blocks,
         skipped_blocks: counters.skipped_code_blocks,
         parted_bands: counters.pool_band_parts,
+        #[cfg(feature = "parallel")]
+        ring_slots: (
+            counters.pool_band_finest_slots,
+            counters.pool_band_other_slots,
+        ),
     }
 }
 
@@ -184,6 +193,11 @@ fn decode_rows_with(
         decoded_blocks: counters.decoded_code_blocks,
         skipped_blocks: counters.skipped_code_blocks,
         parted_bands: counters.pool_band_parts,
+        #[cfg(feature = "parallel")]
+        ring_slots: (
+            counters.pool_band_finest_slots,
+            counters.pool_band_other_slots,
+        ),
     }
 }
 
@@ -965,6 +979,89 @@ fn classic_streamed_rows_charge_the_batches_of_their_readers() {
                 counters.uncharged_line_samples, 0,
                 "{label}: line buffer beyond the charge"
             );
+        }
+    }
+}
+
+/// The fixture's noise repeated `across` times side by side and `down`
+/// times one under the other, with `components` components, encoded with
+/// four levels and 16-row code-blocks: every component has more rows of
+/// blocks than the pool threads, so its bands decode on the pool.
+#[cfg(feature = "parallel")]
+fn pool_band_fixture(components: u8, across: usize, down: usize) -> Vec<u8> {
+    let row = usize::from(components) * WIDTH as usize;
+    let rows: Vec<u8> = noisy_pixels(components)
+        .chunks_exact(row)
+        .flat_map(|samples| core::iter::repeat_n(samples, across).flatten())
+        .copied()
+        .collect();
+    let width = WIDTH * u32::try_from(across).expect("fixture width");
+    let height = HEIGHT * u32::try_from(down).expect("fixture height");
+    encode(
+        &rows.repeat(down),
+        width,
+        height,
+        u16::from(components),
+        8,
+        false,
+        &EncodeOptions {
+            num_decomposition_levels: 4,
+            code_block_height_exp: 2,
+            ..EncodeOptions::default()
+        },
+    )
+    .expect("encode pool band fixture")
+}
+
+/// A classic tile that reconstructs each component on its own reader without
+/// deep band rings holds two bands in each finest ring when its pool has
+/// more threads than the tile has finest rings, and its bands then split
+/// into parts so every thread has one: three components on 10 and 11
+/// threads and at half resolution from 12, four components at half
+/// resolution on 13 threads but not on 12. One reader keeps three bands,
+/// and the deep rings of full resolution from 12 threads four, both in
+/// whole bands; the coarser levels keep theirs. The rows match the serial
+/// planes on every pool.
+#[cfg(feature = "parallel")]
+#[test]
+fn shallow_finest_rings_split_their_bands_into_parts() {
+    // Three fixture widths side by side give finest-level bands of several
+    // code-blocks at both resolutions, each above the unit tests' reader
+    // size gate, and two heights give the coarser levels rings that hold no
+    // whole window.
+    for (components, threads) in [(3_u8, &[9_usize, 10, 11, 12][..]), (4, &[12, 13][..])] {
+        let bytes = pool_band_fixture(components, 3, 2);
+        for reduction in [0_u8, 1] {
+            let image = Image::new_with_reduction(&bytes, &DecodeSettings::default(), reduction)
+                .expect("parse shallow ring fixture");
+            let roi = (0, 0, image.width(), image.height());
+            let planes = decode_planes(&image, roi);
+            for &threads in threads {
+                let label =
+                    format!("components={components} threads={threads} reduction={reduction}");
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .expect("build pool");
+                let rows = pool.install(|| decode_rows(&image, roi, CpuDecodeParallelism::Auto));
+                assert_eq!(rows.planes, planes.planes, "{label}");
+                assert_eq!(
+                    rows.pool_components,
+                    usize::from(components),
+                    "{label}: pool bands"
+                );
+                let deep = threads >= 12 && reduction == 0;
+                let shallow = threads >= 10 && !deep && 3 * usize::from(components) < threads;
+                let slots = if deep {
+                    (4, 3)
+                } else if shallow {
+                    (2, 2)
+                } else {
+                    (3, 2)
+                };
+                assert_eq!(rows.ring_slots, slots, "{label}: ring slots");
+                assert_eq!(rows.parted_bands > 0, shallow, "{label}: parted bands");
+            }
         }
     }
 }

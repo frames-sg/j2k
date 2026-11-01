@@ -767,6 +767,12 @@ pub(crate) struct DecodeDebugCounters {
     /// reconstructed them on.
     #[cfg(all(test, feature = "parallel"))]
     pub(crate) pool_band_readers: usize,
+    /// The most band slots a ring of pool bands held that did not hold its
+    /// whole window, at the finest active level and at the others.
+    #[cfg(all(test, feature = "parallel"))]
+    pub(crate) pool_band_finest_slots: usize,
+    #[cfg(all(test, feature = "parallel"))]
+    pub(crate) pool_band_other_slots: usize,
     /// The most line-buffer samples a tile streaming its rows from pool
     /// bands held beyond the IDWT samples its ROI plan charged.
     #[cfg(all(test, feature = "parallel"))]
@@ -990,6 +996,7 @@ fn prepare_region_storage(
         storage.one_synthesis_reader = storage.parallel_bands
             && storage.lockstep_lines
             && parallel_bands::one_reader(tile, storage);
+        storage.shallow_band_rings = parallel_bands::shallow_rings(tile, storage);
     }
     build::allocate_deferred_coefficients(
         storage,
