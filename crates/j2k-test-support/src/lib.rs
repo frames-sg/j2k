@@ -18,6 +18,7 @@ mod jpeg_fixtures;
 mod lossless_matrix;
 mod manifest;
 mod metal;
+mod packet_edits;
 mod pixels;
 mod scaled_matrix;
 
@@ -79,6 +80,10 @@ pub use manifest::{
     optional_manifest_column,
 };
 pub use metal::{metal_device_unavailable_is_skip, metal_runtime_gate, metal_runtime_required};
+pub use packet_edits::{
+    add_packet_length, edit_tile_parts, packet_ranges, with_byte_after_last_packets,
+    with_packets_filled, with_surplus_packet_lengths,
+};
 pub use pixels::{
     crop_interleaved_bytes, crop_interleaved_u16, project_scaled_interleaved_u16,
     project_scaled_interleaved_u8, rgb16le_to_rgba16le, rgb16ne_to_opaque_rgba16ne, rgb8_to_rgba8,

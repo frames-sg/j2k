@@ -11,7 +11,10 @@
 use j2k::{CpuDecodeParallelism, J2kDecoder, J2kScratchPool};
 use j2k_core::{Downscale, PixelFormat};
 use j2k_native::{encode, EncodeOptions, EncodeProgressionOrder};
-use j2k_test_support::wrap_jp2_rgba_codestream;
+use j2k_test_support::{
+    add_packet_length, edit_tile_parts, with_byte_after_last_packets, with_surplus_packet_lengths,
+    wrap_jp2_rgba_codestream,
+};
 
 const WIDTH: u32 = 203;
 const HEIGHT: u32 = 157;
@@ -229,59 +232,6 @@ fn routes_alternate_on_one_decoder() {
             .unwrap_or_else(|error| panic!("budget {budget}: {error:?}"));
         assert!(out == expected, "budget {budget}");
     }
-}
-
-/// `codestream` with `edit` applied to each tile-part, from its SOT marker
-/// to its end, and each `Psot` set to the edited length.
-fn edit_tile_parts(codestream: &[u8], mut edit: impl FnMut(&mut Vec<u8>)) -> Vec<u8> {
-    let marker_end = |at: usize| {
-        at + 2 + usize::from(u16::from_be_bytes([codestream[at + 2], codestream[at + 3]]))
-    };
-    let mut at = 2;
-    while codestream[at..at + 2] != [0xff, 0x90] {
-        at = marker_end(at);
-    }
-    let mut edited = codestream[..at].to_vec();
-    while codestream[at..at + 2] == [0xff, 0x90] {
-        let psot = u32::from_be_bytes(codestream[at + 6..at + 10].try_into().expect("Psot"));
-        let end = at + usize::try_from(psot).expect("Psot fits");
-        let mut part = codestream[at..end].to_vec();
-        edit(&mut part);
-        let psot = u32::try_from(part.len()).expect("edited Psot fits");
-        part[6..10].copy_from_slice(&psot.to_be_bytes());
-        edited.extend_from_slice(&part);
-        at = end;
-    }
-    assert_eq!(
-        codestream[at..],
-        [0xff, 0xd9],
-        "EOC follows the last tile-part"
-    );
-    edited.extend_from_slice(&codestream[at..]);
-    edited
-}
-
-/// `codestream` with a zero byte after the last packet of each tile-part.
-fn with_byte_after_last_packets(codestream: &[u8]) -> Vec<u8> {
-    edit_tile_parts(codestream, |part| part.push(0))
-}
-
-/// Add one packet length to a tile-part's PLT marker.
-fn add_packet_length(part: &mut Vec<u8>) {
-    let mut at = 12;
-    while part[at..at + 2] != [0xff, 0x58] {
-        assert_ne!(part[at..at + 2], [0xff, 0x93], "tile-part has a PLT marker");
-        at += 2 + usize::from(u16::from_be_bytes([part[at + 2], part[at + 3]]));
-    }
-    let length = u16::from_be_bytes([part[at + 2], part[at + 3]]);
-    part.insert(at + 2 + usize::from(length), 5);
-    part[at + 2..at + 4].copy_from_slice(&(length + 1).to_be_bytes());
-}
-
-/// `codestream` with one more packet length in each tile-part's PLT marker
-/// than the tile-part has packets.
-fn with_surplus_packet_lengths(codestream: &[u8]) -> Vec<u8> {
-    edit_tile_parts(codestream, add_packet_length)
 }
 
 /// Data a tile-part holds after its tile's last packet is no packet's: bytes
