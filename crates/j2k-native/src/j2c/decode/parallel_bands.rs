@@ -280,10 +280,7 @@ fn decode_route(
         header,
         transform,
     )?;
-    #[cfg(test)]
-    let strand_once = tile_ctx.strand_pool_band;
-    #[cfg(not(test))]
-    let strand_once = false;
+    let strand = test_strand(tile_ctx);
     let mut coefficients = core::mem::take(&mut storage.coefficients);
     let slots = split_slots(&rings, &bands, storage, &mut coefficients);
     let source = PayloadSource::new(storage);
@@ -307,7 +304,7 @@ fn decode_route(
                 run,
                 profile_enabled,
                 tier1_us,
-                strand_once,
+                strand,
             ),
             CodeBlockCoding::HighThroughput => run_bands(
                 (route.workers(), 1, false),
@@ -321,7 +318,7 @@ fn decode_route(
                 run,
                 profile_enabled,
                 tier1_us,
-                strand_once,
+                strand,
             ),
         }
     });
@@ -495,23 +492,21 @@ pub(super) fn decode_tile_rows<'a>(
     {
         tile_ctx.debug_counters.thread_scratch_charged += live.live_bytes() - unscratched;
     }
-    // Rows reconstruct in batches as many as fit rows of the region's width,
-    // but never more than the tile's width is charged for (see
-    // `roi_idwt_peak_elements`): two of them with a reader per component of
-    // an HTJ2K tile, so one finishes while the next reconstructs; a classic
+    // A reader per component reconstructs its rows in batches, as many as
+    // fit rows of the region's width but never more than the tile's width is
+    // charged for (see `roi_idwt_peak_elements`): two of them for an HTJ2K
+    // tile, so one finishes while the next reconstructs; a classic
     // tile's readers wait on Tier-1 instead, and hold one batch of half the
-    // rows, with deep band rings when they read whole rows. One reader holds
-    // one short batch, which it finishes before it reconstructs the next.
+    // rows, with deep band rings when they read whole rows. One reader
+    // finishes each row in the IDWT's ring, as serial bands do.
     let pipelined = readers > 1 && coding == CodeBlockCoding::HighThroughput;
-    let batch_rows = |width: u32| {
-        streamed_batch_rows(
-            width as usize,
-            copy.height() as usize,
-            readers > 1 && !pipelined,
-            readers == 1,
-        )
+    let batch_rows =
+        |width: u32| streamed_batch_rows(width as usize, copy.height() as usize, !pipelined);
+    let batch = if readers > 1 {
+        batch_rows(region.width()).min(batch_rows(copy.width()))
+    } else {
+        0
     };
-    let batch = batch_rows(region.width()).min(batch_rows(copy.width()));
     let scratch_len = (copy.width() as usize)
         .checked_mul(components)
         .and_then(|samples| samples.checked_mul(batch))
@@ -535,10 +530,13 @@ pub(super) fn decode_tile_rows<'a>(
     // One reader for every component of a classic tile leaves the pool's
     // threads to Tier-1, and decodes bands itself while it waits.
     let helps = readers == 1 && coding == CodeBlockCoding::Classic;
+    let strand = test_strand(tile_ctx);
     #[cfg(test)]
-    let strand_once = tile_ctx.strand_pool_band;
+    let fail_after = test_countdown(tile_ctx.fail_band_after);
+    #[cfg(test)]
+    let failed_band = || test_countdown_ends(&fail_after);
     #[cfg(not(test))]
-    let strand_once = false;
+    let failed_band = || false;
     let mut tier1_us = 0;
     let mut output_samples = 0usize;
     let mut coefficients = core::mem::take(&mut storage.coefficients);
@@ -557,7 +555,10 @@ pub(super) fn decode_tile_rows<'a>(
             lines.push(plan.reconstruction(ring)?);
         }
         let run = |readers: &mut [&mut (dyn SubBandRows + Send)]| -> Result<()> {
-            let written = output.write_batches(&mut lines, readers, scratch, batch);
+            let written = match readers {
+                [reader] => output.write(&mut lines, &mut **reader),
+                readers => output.write_batches(&mut lines, readers, scratch, batch),
+            };
             output_samples = lines.iter().map(LineReconstruction::output_samples).sum();
             written
         };
@@ -569,13 +570,16 @@ pub(super) fn decode_tile_rows<'a>(
                 slots,
                 (&mut tile_ctx.classic_task_workspaces, &mut scratches),
                 |strip, output, workspace, scratch| {
+                    if failed_band() {
+                        return Err(DecodingError::CodeBlockDecodeFailure.into());
+                    }
                     let (route, strip) = route_strip(&routes, &strip_starts, strip)?;
                     route.decode_classic(strip, output, workspace, (scratch, source))
                 },
                 run,
                 profile_enabled,
                 &mut tier1_us,
-                strand_once,
+                strand,
             ),
             CodeBlockCoding::HighThroughput => run_bands(
                 (workers, readers, helps),
@@ -584,13 +588,16 @@ pub(super) fn decode_tile_rows<'a>(
                 slots,
                 (&mut tile_ctx.ht_task_workspaces, &mut scratches),
                 |strip, output, workspace, scratch| {
+                    if failed_band() {
+                        return Err(DecodingError::CodeBlockDecodeFailure.into());
+                    }
                     let (route, strip) = route_strip(&routes, &strip_starts, strip)?;
                     route.decode_ht(strip, output, workspace, (scratch, source))
                 },
                 run,
                 profile_enabled,
                 &mut tier1_us,
-                strand_once,
+                strand,
             ),
         }
     });
@@ -601,6 +608,7 @@ pub(super) fn decode_tile_rows<'a>(
     tile_ctx.idwt_line_rings = buffer;
     #[cfg(test)]
     {
+        tile_ctx.fail_band_after = usize::try_from(fail_after.into_inner()).ok();
         let counters = &mut tile_ctx.debug_counters;
         counters.thread_scratch_held += BlockScratch::held_bytes(&scratches);
         counters.thread_block_samples = counters
@@ -1479,9 +1487,10 @@ struct Shared<'p, 'c, 'w, W> {
     /// The slot of each band decoding in parts, which its parts share.
     outputs: Vec<Mutex<&'c mut [f32]>>,
     max_workers: usize,
-    /// Test-only: the first worker to start a band abandons it.
+    /// Test-only: the worker that starts the band task after this many
+    /// abandons it (a negative count: none does).
     #[cfg(test)]
-    strand_once: core::sync::atomic::AtomicBool,
+    strand_after: core::sync::atomic::AtomicIsize,
     state: Mutex<State<'c, 'w, W>>,
     /// Signalled when a band is decoded or a decode fails.
     decoded: Condvar,
@@ -1664,10 +1673,10 @@ fn run_bands<W: TaskScratch>(
     run: impl FnOnce(&mut [&mut (dyn SubBandRows + Send)]) -> Result<()>,
     profile_enabled: bool,
     tier1_us: &mut u128,
-    strand_once: bool,
+    strand: Option<usize>,
 ) -> Result<bool> {
     #[cfg(not(test))]
-    let _ = strand_once;
+    let _ = strand;
     let workspaces_needed = workers + readers.max(1);
     let mut workspaces: Vec<(&mut W, &mut BlockScratch)> = Vec::new();
     workspaces
@@ -1715,7 +1724,7 @@ fn run_bands<W: TaskScratch>(
         outputs: try_filled_with(bands.len(), || Mutex::new(<&mut [f32]>::default()))?,
         max_workers: workers,
         #[cfg(test)]
-        strand_once: core::sync::atomic::AtomicBool::new(strand_once),
+        strand_after: test_countdown(strand),
         state: Mutex::new(state),
         decoded: Condvar::new(),
     };
@@ -1787,6 +1796,35 @@ fn run_bands<W: TaskScratch>(
     drop(state);
     scoped?;
     error.map_or(Ok(true), Err)
+}
+
+/// The band task a test strands (see `TileDecodeContext::strand_pool_band`).
+#[cfg(test)]
+fn test_strand(tile_ctx: &TileDecodeContext) -> Option<usize> {
+    tile_ctx
+        .strand_pool_band
+        .then_some(tile_ctx.strand_pool_band_after)
+}
+
+/// No band task is stranded outside tests.
+#[cfg(not(test))]
+const fn test_strand(_: &TileDecodeContext) -> Option<usize> {
+    None
+}
+
+/// Test-only: count one more event down on `left`, and whether it was the
+/// one the count waited for (a negative count waits for none).
+#[cfg(test)]
+fn test_countdown_ends(left: &core::sync::atomic::AtomicIsize) -> bool {
+    left.fetch_sub(1, core::sync::atomic::Ordering::Relaxed) == 0
+}
+
+/// Test-only: a countdown of `events` for [`test_countdown_ends`].
+#[cfg(test)]
+fn test_countdown(events: Option<usize>) -> core::sync::atomic::AtomicIsize {
+    core::sync::atomic::AtomicIsize::new(
+        events.map_or(-1, |events| isize::try_from(events).unwrap_or(isize::MAX)),
+    )
 }
 
 fn try_filled<T: Clone>(len: usize, value: T) -> Result<Vec<T>> {
@@ -1872,10 +1910,7 @@ fn work<W: TaskScratch>(
         };
         drop(state);
         #[cfg(test)]
-        if shared
-            .strand_once
-            .swap(false, core::sync::atomic::Ordering::Relaxed)
-        {
+        if test_countdown_ends(&shared.strand_after) {
             // Leave the band running, as the stranding bug would.
             if let Ok(mut state) = shared.lock() {
                 state.active -= 1;
@@ -3030,7 +3065,7 @@ mod tests {
                 read,
                 false,
                 &mut 0,
-                false,
+                None,
             ),
             CodeBlockCoding::HighThroughput => run_bands(
                 (workers, readers, helps),
@@ -3045,7 +3080,7 @@ mod tests {
                 read,
                 false,
                 &mut 0,
-                false,
+                None,
             ),
         };
         let running = j2k_alloc_probe::peak_bytes() - base;

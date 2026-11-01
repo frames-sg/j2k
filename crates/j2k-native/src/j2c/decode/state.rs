@@ -138,7 +138,8 @@ pub(crate) struct DecompositionStorage<'a> {
     pub(crate) shared_pool_band_rings: bool,
     /// Whether a tile streaming its rows from `parallel_bands` reconstructs
     /// them through one reader whatever its pool's workers (see
-    /// [`parallel_bands::one_reader`]), which holds one short batch of rows.
+    /// [`parallel_bands::one_reader`]), which finishes each row in the IDWT's
+    /// rings and holds no batch of rows.
     pub(crate) one_synthesis_reader: bool,
     /// Whether every component's IDWT rings are live at once, because the
     /// tile streams its rows to a sink, finishing them in the rings.
@@ -285,6 +286,14 @@ pub(crate) struct TileDecodeContext {
     /// band is left running with no worker to finish it.
     #[cfg(all(test, feature = "parallel"))]
     pub(crate) strand_pool_band: bool,
+    /// Test-only: with `strand_pool_band`, the band task started after this
+    /// many others is the one abandoned.
+    #[cfg(all(test, feature = "parallel"))]
+    pub(crate) strand_pool_band_after: usize,
+    /// Test-only: a streamed tile's band decode after this many fails as a
+    /// corrupt code-block's would, on serial and pool bands.
+    #[cfg(test)]
+    pub(crate) fail_band_after: Option<usize>,
     /// Test-only: each pool band splits into this many parts, as far as its
     /// blocks allow, whatever the pool's size.
     #[cfg(all(test, feature = "parallel"))]

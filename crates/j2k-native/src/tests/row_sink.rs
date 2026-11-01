@@ -915,8 +915,9 @@ fn streamed_rows_charge_every_components_rings() {
 
 /// A classic tile of several components reconstructs each on a reader of
 /// its own from 12 pool threads, and on 10 and 11 only from a size; the
-/// readers then hold a batch of rows each where one reader would hold a
-/// short one. The ROI plan must charge that batch on every such pool: the
+/// readers then hold a batch of rows each, where one reader finishes its
+/// rows in the IDWT's rings. The ROI plan must charge that batch on every
+/// such pool: the
 /// line buffer each streamed tile takes stays within the IDWT charge, and
 /// the rows match the serial planes. The unit tests' size gate lies between
 /// this full image and its half, so both sides of it run on 10 and 11
@@ -978,6 +979,14 @@ fn classic_streamed_rows_charge_the_batches_of_their_readers() {
             assert_eq!(
                 counters.uncharged_line_samples, 0,
                 "{label}: line buffer beyond the charge"
+            );
+            // One reader finishes its rows in the IDWT's rings; a reader per
+            // component holds a batch of them.
+            assert_eq!(
+                counters.line_batch_samples == 0,
+                readers == 1,
+                "{label}: row batch {}",
+                counters.line_batch_samples
             );
         }
     }

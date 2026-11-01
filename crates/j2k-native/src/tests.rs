@@ -19,6 +19,7 @@ mod packet_directory;
 mod parallel_bands;
 mod progression_matrix;
 mod row_sink;
+mod streamed_publication;
 mod workspace_peak;
 mod workspace_reuse;
 

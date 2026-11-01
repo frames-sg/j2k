@@ -1104,49 +1104,19 @@ fn deep_band_rings_halve_the_streamed_row_batch() {
 
     // 5661 x 8287 (one tile): 370 rows of each component in each of two
     // pipelined batches, 185 rows in the one batch of deep rings.
-    assert_eq!(streamed_batch_rows(5661, 8287, false, false), 370);
-    assert_eq!(streamed_batch_rows(5661, 8287, true, false), 185);
+    assert_eq!(streamed_batch_rows(5661, 8287, false), 370);
+    assert_eq!(streamed_batch_rows(5661, 8287, true), 185);
     // 4096 wide: 512 rows, or 256 with deep rings.
-    assert_eq!(streamed_batch_rows(4096, 4096, false, false), 512);
-    assert_eq!(streamed_batch_rows(4096, 4096, true, false), 256);
+    assert_eq!(streamed_batch_rows(4096, 4096, false), 512);
+    assert_eq!(streamed_batch_rows(4096, 4096, true), 256);
     for deep_band_rings in [false, true] {
         // 18000 wide: 116 rows, too few to halve.
-        assert_eq!(
-            streamed_batch_rows(18000, 12000, deep_band_rings, false),
-            116
-        );
+        assert_eq!(streamed_batch_rows(18000, 12000, deep_band_rings), 116);
         // 8200 wide: 255 rows, too few to halve.
-        assert_eq!(
-            streamed_batch_rows(8200, 12000, deep_band_rings, false),
-            255
-        );
-        assert_eq!(streamed_batch_rows(256, 200, deep_band_rings, false), 50);
-        assert_eq!(streamed_batch_rows(256, 3, deep_band_rings, false), 1);
-        assert_eq!(
-            streamed_batch_rows(3 << 20, 4096, deep_band_rings, false),
-            1
-        );
-        assert_eq!(
-            streamed_batch_rows(1024, 1 << 16, deep_band_rings, false),
-            512
-        );
+        assert_eq!(streamed_batch_rows(8200, 12000, deep_band_rings), 255);
+        assert_eq!(streamed_batch_rows(256, 200, deep_band_rings), 50);
+        assert_eq!(streamed_batch_rows(256, 3, deep_band_rings), 1);
+        assert_eq!(streamed_batch_rows(3 << 20, 4096, deep_band_rings), 1);
+        assert_eq!(streamed_batch_rows(1024, 1 << 16, deep_band_rings), 512);
     }
-}
-
-/// A tile reconstructing through one reader finishes each batch before the
-/// next, so its batch holds at most 32 rows of each component, within the
-/// limits every streamed batch keeps.
-#[test]
-fn one_reader_holds_a_short_streamed_row_batch() {
-    use super::roi::streamed_batch_rows;
-
-    // 5661 x 8287 at six threads: 32 rows instead of 370.
-    assert_eq!(streamed_batch_rows(5661, 8287, false, true), 32);
-    assert_eq!(streamed_batch_rows(18000, 12000, false, true), 32);
-    // 100000 wide: 20 rows fit the batch's samples.
-    assert_eq!(streamed_batch_rows(100_000, 12000, false, true), 20);
-    // 100 rows: at least four batches.
-    assert_eq!(streamed_batch_rows(256, 100, false, true), 25);
-    assert_eq!(streamed_batch_rows(256, 3, false, true), 1);
-    assert_eq!(streamed_batch_rows(3 << 20, 4096, false, true), 1);
 }

@@ -33,28 +33,16 @@ const STREAMED_MIN_BATCHES: usize = 4;
 /// halved: halving the 116-row batches of an 18000-wide tile cost 2 to 5%.
 const STREAMED_DEEP_MIN_ROWS: usize = 128;
 
-/// Rows of each component a tile reconstructing through one reader holds
-/// at most in its batch. The reader transforms and hands over each batch
-/// before it reconstructs the next, so longer batches overlap nothing.
-const STREAMED_ONE_READER_ROWS: usize = 32;
-
-/// Rows of each component a tile streaming from pool bands reconstructs at
-/// once, for `height` rows of `width` samples. A tile with a reader per
-/// component that holds `one_batch` (a classic tile; HTJ2K tiles pipeline
-/// two) transforms it before the next one reconstructs, so its batches take
-/// half the rows while that leaves at least `STREAMED_DEEP_MIN_ROWS`: as
-/// fast, with half the rows held. A tile with `one_reader` holds one batch
-/// of at most `STREAMED_ONE_READER_ROWS`.
-pub(crate) fn streamed_batch_rows(
-    width: usize,
-    height: usize,
-    one_batch: bool,
-    one_reader: bool,
-) -> usize {
+/// Rows of each component a tile streaming from pool bands through a reader
+/// per component reconstructs at once, for `height` rows of `width` samples.
+/// A tile that holds `one_batch` (a classic tile; HTJ2K tiles pipeline two)
+/// transforms it before the next one reconstructs, so its batches take half
+/// the rows while that leaves at least `STREAMED_DEEP_MIN_ROWS`: as fast,
+/// with half the rows held. A tile with one reader holds no batch: it
+/// finishes each row in the IDWT's ring.
+pub(crate) fn streamed_batch_rows(width: usize, height: usize, one_batch: bool) -> usize {
     let rows = STREAMED_BATCH_SAMPLES / width.max(1);
-    let rows = if one_reader {
-        rows.min(STREAMED_ONE_READER_ROWS)
-    } else if one_batch && rows / 2 >= STREAMED_DEEP_MIN_ROWS {
+    let rows = if one_batch && rows / 2 >= STREAMED_DEEP_MIN_ROWS {
         rows / 2
     } else {
         rows
@@ -117,23 +105,16 @@ pub(crate) fn roi_idwt_peak_elements(
             if storage.lockstep_lines {
                 let batch_rows = roi_plan.final_window(component_idx).map_or(0, |window| {
                     let (width, height) = (window.width() as usize, window.height() as usize);
-                    if storage.parallel_bands {
+                    if storage.parallel_bands && !storage.one_synthesis_reader {
                         // Two batches, when each component reconstructs
                         // on its own reader, unless the band rings hold
-                        // more bands instead; one when the tile has one
-                        // reader.
-                        let one_reader = storage.one_synthesis_reader;
-                        let batches = if storage.deep_band_rings || one_reader {
-                            1
-                        } else {
-                            2
-                        };
+                        // more bands instead; one reader holds none.
+                        let batches = if storage.deep_band_rings { 1 } else { 2 };
                         width
                             .saturating_mul(streamed_batch_rows(
                                 width,
                                 height,
                                 storage.deep_band_rings,
-                                one_reader,
                             ))
                             .saturating_mul(batches)
                     } else {

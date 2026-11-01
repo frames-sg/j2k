@@ -455,14 +455,13 @@ impl<'o, 't> RowOutput<'o, 't> {
     expect(dead_code, reason = "only the parallel band reader writes batches")
 )]
 impl RowOutput<'_, '_> {
-    /// [`Self::write`] through one reader per component, which may run on
-    /// different threads, `batch` rows at a time. Each component's
-    /// reconstruction advances `batch` rows into its own rows of `scratch`,
-    /// on the pool when there is a reader per component, then the rows are
-    /// transformed and handed over, packed straight into the sink's RGB8
-    /// destination when it has one for three 8-bit components. With a
-    /// reader per component, a batch is transformed and packed on the pool
-    /// while the next one reconstructs, so `scratch` holds two batches.
+    /// [`Self::write`] through one reader per component, each on its own
+    /// pool task, `batch` rows at a time. Each component's reconstruction
+    /// advances `batch` rows into its own rows of `scratch`, then the rows
+    /// are transformed and handed over, packed straight into the sink's RGB8
+    /// destination when it has one for three 8-bit components. With room for
+    /// two batches in `scratch`, a batch is transformed and packed on the
+    /// pool while the next one reconstructs.
     pub(super) fn write_batches(
         &mut self,
         lines: &mut [LineReconstruction<'_>],
@@ -482,12 +481,12 @@ impl RowOutput<'_, '_> {
             .checked_mul(components)
             .ok_or(ValidationError::ImageTooLarge)?;
         let transform = (self.tile, self.round_irreversible_output);
-        let tasks = if readers.len() > 1 { readers.len() } else { 1 };
+        let tasks = readers.len();
         let (now, rest) = scratch.split_at_mut(half.min(scratch.len()));
-        // With a reader per component and room for two batches, a batch is
-        // transformed and handed over on the pool while the next one
-        // reconstructs in the other half of `scratch`.
-        let pipelined = readers.len() > 1 && rest.len() >= half;
+        // With room for two batches, a batch is transformed and handed over
+        // on the pool while the next one reconstructs in the other half of
+        // `scratch`.
+        let pipelined = rest.len() >= half;
         let mut halves = [now, rest];
         // The rows, from a row, of the batch in `halves[1]` left to finish.
         let mut pending = None;
@@ -670,9 +669,8 @@ fn overlap(spawned: impl FnOnce() + Send, inline: impl FnOnce()) {
 }
 
 /// Reconstruct the next `parts[c].len() / width` rows of each component `c`,
-/// from row `first_y`, into `parts[c]`: on the pool, one component per task,
-/// when there is a reader per component, otherwise all through the first,
-/// a row of each component at a time.
+/// from row `first_y`, into `parts[c]`, through its own reader: on the pool,
+/// one component per task.
 #[cfg_attr(
     not(feature = "parallel"),
     expect(dead_code, reason = "only the parallel band reader writes batches")
@@ -684,27 +682,8 @@ fn reconstruct_batch(
     first_y: u32,
     width: usize,
 ) -> Result<()> {
-    if readers.len() < lines.len() || lines.len() < 2 {
-        let reader = readers
-            .first_mut()
-            .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-        // A row of each component at a time, as `RowOutput::write` reads
-        // them, so the bands of every component are taken in turn and the
-        // pool keeps decoding all of them.
-        let rows = parts.first().map_or(0, |part| part.len() / width);
-        for row in 0..rows {
-            let y = u32::try_from(row)
-                .ok()
-                .and_then(|row| first_y.checked_add(row))
-                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-            for (line, part) in lines.iter_mut().zip(parts.iter_mut()) {
-                let out = part
-                    .get_mut(row * width..(row + 1) * width)
-                    .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-                reconstruct_rows_into(line, &mut **reader, out, y, width)?;
-            }
-        }
-        return Ok(());
+    if readers.len() < lines.len() {
+        return Err(DecodingError::CodeBlockDecodeFailure.into());
     }
     let mut results: [Result<()>; 4] = core::array::from_fn(|_| Ok(()));
     #[cfg(feature = "parallel")]
@@ -1292,6 +1271,13 @@ impl BandedRows<'_, '_> {
     /// Decode the code-blocks that start at `rows.start` into the
     /// sub-band's coefficients, which then hold the band's stored rows.
     fn decode_band(&mut self, index: usize, rows: Range<u32>) -> Result<()> {
+        #[cfg(test)]
+        if let Some(left) = self.tile_ctx.fail_band_after {
+            self.tile_ctx.fail_band_after = left.checked_sub(1);
+            if left == 0 {
+                return Err(DecodingError::CodeBlockDecodeFailure.into());
+            }
+        }
         let start = profile::profile_now(self.profile_enabled);
         let bands = &self.bands[index];
         let (sub_band, resolution, stored) = (bands.sub_band, bands.resolution, bands.stored);
