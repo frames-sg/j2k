@@ -15,6 +15,13 @@ Staged workspace version: `0.13.2`.
   status, detail and batch source index. CUDA keeps its typed source and job
   attribution. Unsupported statuses, raw runtime failures and combined
   cleanup or release failures keep their existing classes.
+- A strict CUDA decode of a classic code-block whose packet headers claim
+  more missing bit-planes than its sub-band codes, or more coding passes
+  than its bit-planes hold, fails with a native decode error,
+  `InvalidBitplaneCount` or `TooManyCodingPasses`, of the class the CPU
+  decode reports for the same codestream, on the single-image decode, the
+  batch of images and the prepared batch. It was rejected as an unsupported
+  CUDA request, a different error class.
 - Grayscale direct and referenced plans, which GPU decodes and decode
   batches execute, reject a one-component codestream whose COD asks for a
   multiple component transform, as decodes of it already did. A 39 x 7
