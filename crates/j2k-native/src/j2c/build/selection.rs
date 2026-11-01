@@ -115,6 +115,21 @@ impl PrecinctSelection {
         Ok(selection)
     }
 
+    /// This selection for storage that keeps every precinct's record: a
+    /// packet's precinct is found at its own index, and a parsed-only
+    /// precinct is parsed in its own record.
+    fn with_every_record(mut self) -> Result<Self> {
+        self.records = Vec::new();
+        self.record_runs = Vec::new();
+        self.parsed_in_scratch = false;
+        let mut bytes = 0;
+        checked_include_elements::<PrecinctUse>(&mut bytes, self.uses.capacity())?;
+        checked_include_elements::<usize>(&mut bytes, self.runs.capacity())?;
+        checked_include_elements::<usize>(&mut bytes, self.component_runs.capacity())?;
+        self.owned_bytes = bytes;
+        Ok(self)
+    }
+
     /// The precinct uses for the `run`-th resolution in build order.
     pub(crate) fn run(&self, run: usize) -> Option<&[PrecinctUse]> {
         let start = *self.runs.get(run)?;
@@ -255,6 +270,59 @@ pub(crate) fn select_region_precincts(
     storage.decompositions.clear();
     storage.tile_decompositions.clear();
     Ok(selection)
+}
+
+/// The selection a decode that builds every precinct of the tile parses it
+/// with: below full resolution, the one a region decode of the whole image
+/// parses it with, so both read the same packets; otherwise `None`, every
+/// packet being read. `live_bytes` are live beside `storage`, whose retained
+/// capacity the build reuses.
+pub(crate) fn select_whole_image_precincts(
+    tile: &Tile<'_>,
+    header: &Header<'_>,
+    storage: &DecompositionStorage<'_>,
+    live_bytes: usize,
+) -> Result<Option<PrecinctSelection>> {
+    if header.skipped_resolution_levels == 0 {
+        return Ok(None);
+    }
+    let retained_baseline_bytes = live_bytes
+        .checked_add(storage.retained_capacity_bytes()?)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    whole_image_selection(tile, header, retained_baseline_bytes)
+}
+
+/// The selection a region decode of the whole image parses a tile with, for a
+/// decode that builds every precinct of the tile: the same packets are read,
+/// skipped by their PLT lengths, or left after the last one the output needs,
+/// so both decodes accept and reject the same codestreams. The region
+/// decode's skeleton and ROI plan live only while the selection is made, in
+/// their own storage beside the `retained_baseline_bytes` (the tile storage's
+/// retained capacity included), which the later build reuses; every
+/// precinct keeps its record.
+///
+/// Unlike [`select_region_precincts`], this does not reserve room for the
+/// build's precinct records and tag-tree roots up front: the build makes
+/// them later, in the retained capacity, after its own preflight. Only what
+/// is allocated here is charged.
+fn whole_image_selection(
+    tile: &Tile<'_>,
+    header: &Header<'_>,
+    retained_baseline_bytes: usize,
+) -> Result<Option<PrecinctSelection>> {
+    let whole_image = OutputRegion {
+        x: 0,
+        y: 0,
+        width: header.size_data.image_width(),
+        height: header.size_data.image_height(),
+    };
+    let counts = count(tile)?;
+    let mut budget = DecodeAllocationBudget::from_live_bytes(retained_baseline_bytes)?;
+    let mut skeleton = DecompositionStorage::default();
+    build_skeleton(tile, &counts, &mut skeleton, &mut budget)?;
+    RoiPlan::build(tile, header, &skeleton, whole_image, &mut budget)?
+        .map(|plan| select(tile, &skeleton, &plan, &counts, &mut budget, 0)?.with_every_record())
+        .transpose()
 }
 
 fn count(tile: &Tile<'_>) -> Result<SelectionCounts> {
@@ -739,6 +807,68 @@ mod tests {
                 assert_eq!(selection.record_offset(&packet), offset, "{packet:?}");
             }
         }
+    }
+
+    /// A whole-image selection made beside a tile storage that keeps its
+    /// capacity charges what it allocates, not the precinct records and tag
+    /// trees the later build reuses from that capacity: it fits a baseline at
+    /// which a region decode's selection, which reserves room for them,
+    /// rejects the tile.
+    #[test]
+    fn whole_image_selection_charges_only_its_own_allocations() {
+        const WIDTH: u32 = 120;
+        const HEIGHT: u32 = 64;
+        let options = EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 0,
+            code_block_width_exp: 0,
+            code_block_height_exp: 0,
+            precinct_exponents: vec![(2, 2)],
+            ..EncodeOptions::default()
+        };
+        let bytes = encode(
+            &vec![128; (WIDTH * HEIGHT) as usize],
+            WIDTH,
+            HEIGHT,
+            1,
+            8,
+            false,
+            &options,
+        )
+        .expect("encode fixture");
+        let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse fixture");
+        let tiles = crate::j2c::tile::parse(
+            &mut crate::reader::BitReader::new(image.codestream),
+            &image.header,
+            0,
+        )
+        .expect("parse tile");
+        let tile = &tiles[0];
+        let counts = count(tile).unwrap();
+        let owned = selection_owned_bytes(&counts).unwrap();
+        let (mut accepted, mut rejected) = (0, DEFAULT_MAX_DECODE_BYTES);
+        while rejected - accepted > 1 {
+            let baseline = accepted + (rejected - accepted) / 2;
+            if preflight_unavoidable_minimum(&counts, baseline, owned).is_ok() {
+                accepted = baseline;
+            } else {
+                rejected = baseline;
+            }
+        }
+        let whole_image = OutputRegion::from_tuple((0, 0, WIDTH, HEIGHT));
+        assert!(select_region_precincts(
+            tile,
+            &image.header,
+            &mut DecompositionStorage::default(),
+            whole_image,
+            rejected,
+        )
+        .is_err());
+        let selection = whole_image_selection(tile, &image.header, rejected)
+            .expect("the whole-image selection fits beside the retained storage")
+            .expect("a selection");
+        // Every 4 x 4 precinct of the 120 x 64 tile, one layer.
+        assert_eq!(selection.required_packets(), 30 * 16);
     }
 
     #[test]
