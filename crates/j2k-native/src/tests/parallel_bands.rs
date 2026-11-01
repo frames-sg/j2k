@@ -221,6 +221,11 @@ fn pool_band_parts_match_whole_window_tier1_bit_for_bit() {
 }
 
 fn rgb_fixture() -> Vec<u8> {
+    rgb_fixture_coded(false)
+}
+
+/// The noisy RGB image in 16 x 16 code-blocks, HTJ2K ones when `ht`.
+fn rgb_fixture_coded(use_ht_block_coding: bool) -> Vec<u8> {
     let pixels = noisy_pixels(3);
     encode(
         &pixels,
@@ -234,6 +239,7 @@ fn rgb_fixture() -> Vec<u8> {
             num_decomposition_levels: 4,
             code_block_width_exp: 2,
             code_block_height_exp: 2,
+            use_ht_block_coding,
             ..EncodeOptions::default()
         },
     )
@@ -287,6 +293,48 @@ fn streamed_pool_bands_record_every_live_plan() {
             "peak Tier-1 bytes {tier1}: the bank's {bank} and the plans' {}",
             together.pool_band_plan_bytes
         );
+    });
+}
+
+/// A tile streaming its rows from pool bands reserves each thread block
+/// scratch only for the blocks it decodes apart from their band's slot: an
+/// HTJ2K tile, whose bands never split into parts, at most for the blocks a
+/// region clips, and none for the whole image; a classic tile, whose bands
+/// may decode in parts, for a whole 16 x 16 block.
+#[test]
+fn streamed_pool_band_threads_reserve_block_scratch_as_their_bands_need_it() {
+    const BLOCK: usize = 16 * 16;
+    pool(4).install(|| {
+        for ht in [true, false] {
+            let bytes = rgb_fixture_coded(ht);
+            let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse rgb fixture");
+            let held = |roi| {
+                let mut context = DecoderContext::default();
+                context.set_cpu_decode_parallelism(CpuDecodeParallelism::Auto);
+                image
+                    .decode_region_rows_for_integer_output_with_context(
+                        roi,
+                        &mut context,
+                        &mut DiscardRows,
+                    )
+                    .expect("decode region rows");
+                let counters = context.tile_decode_context.debug_counters;
+                assert_eq!(counters.pool_band_components, 3, "ht={ht} {roi:?}");
+                assert_eq!(
+                    counters.thread_scratch_held, counters.thread_scratch_charged,
+                    "ht={ht} {roi:?}"
+                );
+                counters.thread_block_samples
+            };
+            let whole = held((0, 0, WIDTH, HEIGHT));
+            let clipped = held((10, 12, 170, 130));
+            if ht {
+                assert_eq!(whole, 0, "HTJ2K, whole image");
+                assert!(clipped <= BLOCK, "HTJ2K region: {clipped}");
+            } else {
+                assert_eq!((whole, clipped), (BLOCK, BLOCK), "classic");
+            }
+        }
     });
 }
 

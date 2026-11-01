@@ -534,7 +534,11 @@ pub(super) fn decode_tile_rows<'a>(
     tile_ctx.idwt_line_rings = buffer;
     #[cfg(test)]
     {
-        tile_ctx.debug_counters.thread_scratch_held += BlockScratch::held_bytes(&scratches);
+        let counters = &mut tile_ctx.debug_counters;
+        counters.thread_scratch_held += BlockScratch::held_bytes(&scratches);
+        counters.thread_block_samples = counters
+            .thread_block_samples
+            .max(BlockScratch::block_samples(&scratches));
     }
     let streamed = output.streamed;
     tile_ctx.streamed_samples = tile_ctx.streamed_samples.saturating_add(streamed);

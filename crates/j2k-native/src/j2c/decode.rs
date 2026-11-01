@@ -781,6 +781,9 @@ pub(crate) struct DecodeDebugCounters {
     pub(crate) thread_scratch_charged: usize,
     #[cfg(all(test, feature = "parallel"))]
     pub(crate) thread_scratch_held: usize,
+    /// The most block-scratch samples a thread of such a tile held.
+    #[cfg(all(test, feature = "parallel"))]
+    pub(crate) thread_block_samples: usize,
     /// Tiles whose failed bands decoded again over whole windows, and the
     /// pool threads' scratches still held when they did, summed.
     #[cfg(all(test, feature = "parallel"))]

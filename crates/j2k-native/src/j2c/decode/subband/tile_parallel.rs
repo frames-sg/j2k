@@ -289,6 +289,16 @@ impl BlockScratch {
         LIVE_SCRATCHES.with(core::cell::Cell::get)
     }
 
+    /// Test-only: the most block-scratch samples one of `scratches` holds.
+    #[cfg(test)]
+    pub(in crate::j2c::decode) fn block_samples(scratches: &[Self]) -> usize {
+        scratches
+            .iter()
+            .map(|scratch| scratch.clipped.capacity())
+            .max()
+            .unwrap_or(0)
+    }
+
     /// Test-only: the bytes `scratches` hold, their list included.
     #[cfg(test)]
     pub(in crate::j2c::decode) fn held_bytes(scratches: &[Self]) -> usize {
@@ -1973,14 +1983,20 @@ pub(in crate::j2c::decode) fn plan_band_route_beside<'a>(
     }
 }
 
-/// What each thread of a band route holds for `plan`: block scratch as
-/// large as any block, since a part decodes every block of its run through
-/// it.
+/// What each thread of a band route holds for `plan`: block scratch for
+/// the largest block its sub-band stores only part of and, in a classic
+/// plan, whose bands may decode in parts that copy every block of their run
+/// in through it, for the largest block. HTJ2K bands decode whole, their
+/// whole blocks straight into their slots.
 fn band_scratch_sizes(plan: &TilePlan<'_>) -> Result<ScratchSizes> {
-    let block = (plan.max_width as usize)
-        .checked_mul(plan.max_height as usize)
-        .ok_or(ValidationError::ImageTooLarge)?;
-    Ok(plan.scratch_sizes(block.max(plan.max_clipped_samples)))
+    let samples = match plan.coding {
+        CodeBlockCoding::Classic => (plan.max_width as usize)
+            .checked_mul(plan.max_height as usize)
+            .ok_or(ValidationError::ImageTooLarge)?
+            .max(plan.max_clipped_samples),
+        CodeBlockCoding::HighThroughput => plan.max_clipped_samples,
+    };
+    Ok(plan.scratch_sizes(samples))
 }
 
 impl BandRoute<'_> {
