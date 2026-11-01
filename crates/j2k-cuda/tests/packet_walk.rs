@@ -981,3 +981,51 @@ fn cuda_decodes_reject_plt_lengths_shorter_than_an_eph_packet_as_cpu_decodes_do(
     }
     assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
 }
+
+/// `codestream` with one guard bit fewer in each QCD and QCC marker of its
+/// main header: every sub-band then codes one bit-plane fewer.
+fn with_guard_bits_lowered(codestream: &[u8]) -> Vec<u8> {
+    let mut edited = codestream.to_vec();
+    let mut lowered = 0;
+    let mut at = 2;
+    while codestream[at..at + 2] != [0xff, 0x90] {
+        // Sqcd follows Lqcd; Sqcc follows Lqcc and a one-byte Cqcc.
+        let style = match codestream[at + 1] {
+            0x5c => Some(at + 4),
+            0x5d => Some(at + 5),
+            _ => None,
+        };
+        if let Some(style) = style {
+            assert_ne!(codestream[style] >> 5, 0, "a guard bit to remove");
+            edited[style] -= 1 << 5;
+            lowered += 1;
+        }
+        at += 2 + usize::from(u16::from_be_bytes([codestream[at + 2], codestream[at + 3]]));
+    }
+    assert_ne!(lowered, 0, "a QCD marker");
+    edited
+}
+
+/// A strict decode rejects a code-block whose packet headers claim more
+/// coding passes than its bit-planes allow. With the guard bits lowered by
+/// one, every coded block of a lossless codestream has one bit-plane's
+/// passes too many, a codestream error: the CUDA decodes of classic
+/// code-blocks fail with the CPU decode's native error, at both resolutions.
+#[test]
+fn cuda_classic_decodes_reject_more_coding_passes_than_bit_planes_as_cpu_decodes_do() {
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
+        return;
+    }
+    let cases = KINDS.into_iter().filter(|kind| !kind.ht).map(|kind| {
+        let clean = kind.codestream(EncodeProgressionOrder::Lrcp, false);
+        let case = Case {
+            label: "QCD guard bits lowered",
+            edited: with_guard_bits_lowered(&clean),
+            clean,
+            full: Expect::Fails,
+            half: Expect::Fails,
+        };
+        (kind, case)
+    });
+    assert_parity(Tiles::One, cases);
+}
