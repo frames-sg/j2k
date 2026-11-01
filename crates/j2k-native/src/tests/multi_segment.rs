@@ -8,8 +8,8 @@
 //! whose rows then need no component planes.
 //!
 //! The fixtures in `fixtures/multi_segment/` were encoded with `OpenJPEG`
-//! 2.5.4's `opj_compress` from two synthetic images, 128 x 128 and 256 x 256.
-//! The unsigned 8-bit red, green and blue samples at `(x, y)` are
+//! 2.5.4's `opj_compress` from synthetic images of 64 x 64 and 128 x 128
+//! samples. The unsigned 8-bit red, green and blue samples at `(x, y)` are
 //!
 //! ```text
 //! r = (7x² + 13y² + 5xy + 31x) mod 256
@@ -18,32 +18,51 @@
 //! ```
 //!
 //! and the gray sample is `(r + 2g + b) / 4`, rounded down. Written as a
-//! binary PPM (`P6`) and PGM (`P5`) of maximum 255, `rgb128.ppm`,
-//! `gray128.pgm` and `rgb256.ppm`, they encode with three resolution levels
-//! below the full one, 16 x 16 code-blocks, RPCL order and three or four
-//! quality layers:
+//! binary PPM (`P6`) and PGM (`P5`) of maximum 255, `rgb64.ppm`,
+//! `rgb128.ppm`, `gray64.pgm` and `gray128.pgm`, they encode with two
+//! decomposition levels, 16 x 16 code-blocks, RPCL order and three or four
+//! quality layers, the last of most at a low compression ratio, so that
+//! blocks code bit-planes far below their first four:
 //!
 //! ```sh
 //! c="-n 3 -b 16,16 -p RPCL"
-//! opj_compress -i gray128.pgm -o bypass_gray_53.j2k $c -M 1 -r 16,8,4,2
-//! opj_compress -i rgb128.ppm -o bypass_rgb_97.j2k $c -I -M 1 -r 32,16,8
+//! opj_compress -i gray128.pgm -o bypass_gray_53.j2k $c -M 1 -r 4,2,1
+//! opj_compress -i rgb64.ppm -o bypass_rgb_97.j2k $c -I -M 1 -r 8,4,2,1
 //! opj_compress -i gray128.pgm -o termall_gray_97.j2k $c -I -M 4 -r 16,8,3
 //! opj_compress -i rgb128.ppm -o termall_rgb_53.j2k $c -M 4 -r 32,16,8
 //! opj_compress -i rgb128.ppm -o reset_rgb_97.j2k $c -I -M 2 -r 32,16,8
 //! opj_compress -i gray128.pgm -o segmark_gray_53.j2k $c -M 32 -r 16,8,3
-//! opj_compress -i gray128.pgm -o bypass_termall_gray_97.j2k $c -I -M 5 -r 16,8,3
-//! opj_compress -i rgb128.ppm -o bypass_termall_rgb_53.j2k $c -M 5 -r 40,20,10,6
-//! opj_compress -i gray128.pgm -o all_modes_gray_97.j2k $c -I -M 63 -r 16,8,3
+//! opj_compress -i gray64.pgm -o bypass_termall_gray_97.j2k $c -I -M 5 -r 4,2,1
+//! opj_compress -i rgb64.ppm -o bypass_termall_rgb_53.j2k $c -M 5 -r 8,4,1
+//! opj_compress -i gray64.pgm -o all_modes_gray_97.j2k $c -I -M 63 -r 4,2,1
 //! ```
 //!
-//! and, as archival images are often coded, with selective bypass, five
+//! As archival images are often coded, one has selective bypass, four
 //! decomposition levels, 64 x 64 code-blocks, precincts, packet lengths and
 //! seven layers:
 //!
 //! ```sh
-//! opj_compress -i rgb256.ppm -o bypass_rgb_97_64x64.j2k -n 6 -b 64,64 -p RPCL -PLT -I -M 1 \
-//!     -c "[256,256],[256,256],[128,128]" -r 160,120,90,70,55,45,36
+//! opj_compress -i rgb128.ppm -o bypass_rgb_97_64x64.j2k -n 5 -b 64,64 -p RPCL -PLT -I -M 1 \
+//!     -c "[128,128],[128,128],[64,64]" -r 24,16,10,6,3,2,1.5
 //! ```
+//!
+//! And one codes its first component in 32 x 64 code-blocks and the others
+//! in 64 x 64 ones. Two encodes differ only in their code-block size:
+//!
+//! ```sh
+//! c="-n 2 -p RPCL -PLT -mct 0 -M 1 -r 6,3,1.6"
+//! opj_compress -i rgb128.ppm -o first.j2k $c -b 32,64
+//! opj_compress -i rgb128.ppm -o rest.j2k $c -b 64,64
+//! ```
+//!
+//! `bypass_rgb_53_blocks_per_component.j2k` is the main header of
+//! `rest.j2k`, without its comment and with a COC marker after its COD that
+//! gives component 0 the first encode's code-block size (`Scoc` 0, then
+//! `SPcoc` as in its COD); then one tile-part without packet lengths, whose
+//! packets, in their RPCL order, are the first encode's for component 0
+//! and the second's for the others, as their packet lengths split them.
+//! `opj_decompress` decodes its first component as the first encode's and
+//! the others as the second's.
 //!
 //! `-M` adds 1 for selective bypass, 2 for context reset, 4 for termination
 //! on each pass, 8 for the vertically causal context, 16 for predictable
@@ -51,12 +70,13 @@
 //! externally sourced image content.
 
 use alloc::vec::Vec;
+use core::cell::Cell;
 
 use crate::{
     ComponentPlane, ComponentRowSink, CpuDecodeParallelism, DecodeSettings, DecoderContext, Image,
 };
 
-const FIXTURES: [(&str, &[u8]); 10] = [
+const FIXTURES: [(&str, &[u8]); 11] = [
     (
         "bypass gray 5/3",
         include_bytes!("../../fixtures/multi_segment/bypass_gray_53.j2k"),
@@ -96,6 +116,10 @@ const FIXTURES: [(&str, &[u8]); 10] = [
     (
         "bypass rgb 9/7, 64 x 64 blocks",
         include_bytes!("../../fixtures/multi_segment/bypass_rgb_97_64x64.j2k"),
+    ),
+    (
+        "bypass rgb 5/3, code-block size per component",
+        include_bytes!("../../fixtures/multi_segment/bypass_rgb_53_blocks_per_component.j2k"),
     ),
 ];
 
@@ -366,4 +390,123 @@ fn rows_stream_from_serial_bands_when_the_planes_pass_the_budget() {
             assert_eq!(pooled.samples, expected.samples, "{label}: pool bands");
         });
     }
+}
+
+/// What the codeword segments of an image's classic code-blocks hold, as
+/// its packets give them.
+#[derive(Clone, Copy, Debug, Default)]
+struct Segments {
+    /// Blocks of several segments.
+    segmented: usize,
+    /// Raw segments, and raw segments an arithmetic one follows.
+    raw: usize,
+    raw_then_arithmetic: usize,
+    /// Segments that hold coding passes and no bytes.
+    empty: usize,
+}
+
+std::thread_local! {
+    /// Whether the image [`segments`] reads codes with selective bypass, and
+    /// in one codeword segment per block, and what it found in its tile.
+    static STYLE: Cell<(bool, bool)> = const { Cell::new((false, true)) };
+    static FOUND: Cell<Option<Segments>> = const { Cell::new(None) };
+}
+
+/// The codeword segments of `image`'s classic code-blocks, read from its
+/// tile's records once the tile route on a pool has decoded them.
+fn segments(image: &Image<'_>) -> Segments {
+    let style = image
+        .header
+        .global_coding_style
+        .component_parameters
+        .parameters
+        .code_block_style;
+    pool(4).install(|| {
+        STYLE.with(|cell| {
+            cell.set((
+                style.selective_arithmetic_coding_bypass,
+                style.single_codeword_segment(),
+            ));
+        });
+        let mut context = context(CpuDecodeParallelism::Auto);
+        context.tile_decode_context.tile_route_post_decode = Some(|storage| {
+            // Past the first ten passes, the passes but the cleanup ones
+            // are raw. A block of one segment numbers its layers'
+            // contributions instead.
+            let (bypass, single) = STYLE.with(Cell::get);
+            let raw = |pass: u8| bypass && pass >= 10 && !pass.is_multiple_of(3);
+            let mut found = Segments::default();
+            for block in &storage.code_blocks {
+                // Each segment's first pass, passes and bytes.
+                let mut segments: Vec<(u8, u8, usize)> = Vec::new();
+                let (mut index, mut passes) = (None, 0_u8);
+                for layer in &storage.layers[block.layers.clone()] {
+                    let Some(range) = layer.segments() else {
+                        continue;
+                    };
+                    for record in &storage.segments[range] {
+                        if index != Some(record.idx) && !(single && index.is_some()) {
+                            index = Some(record.idx);
+                            segments.push((passes, 0, 0));
+                        }
+                        if let Some(segment) = segments.last_mut() {
+                            segment.1 += record.coding_pases;
+                            segment.2 += record.data.len();
+                        }
+                        passes += record.coding_pases;
+                    }
+                }
+                found.segmented += usize::from(segments.len() > 1);
+                for (at, &(first, passes, bytes)) in segments.iter().enumerate() {
+                    if raw(first) {
+                        found.raw += 1;
+                        found.raw_then_arithmetic += usize::from(
+                            segments.get(at + 1).is_some_and(|&(next, _, _)| !raw(next)),
+                        );
+                    }
+                    found.empty += usize::from(passes > 0 && bytes == 0);
+                }
+            }
+            FOUND.with(|cell| cell.set(Some(found)));
+            Ok(())
+        });
+        image
+            .decode_native_with_context(&mut context)
+            .expect("decode fixture");
+        FOUND
+            .with(Cell::take)
+            .expect("the tile route decoded the tile")
+    })
+}
+
+/// The fixtures' blocks hold every kind of codeword segment: blocks of
+/// several in every fixture whose style makes them, raw segments and an
+/// arithmetic segment after them in every one with selective bypass, and
+/// some segments with coding passes and no bytes.
+#[test]
+fn fixtures_hold_every_kind_of_codeword_segment() {
+    let mut empty = 0;
+    for (label, bytes) in FIXTURES {
+        let image = Image::new(bytes, &DecodeSettings::default()).expect("parse fixture");
+        let style = image
+            .header
+            .global_coding_style
+            .component_parameters
+            .parameters
+            .code_block_style;
+        let found = segments(&image);
+        assert_eq!(
+            found.segmented > 0,
+            !style.single_codeword_segment(),
+            "{label}: {found:?}"
+        );
+        if style.selective_arithmetic_coding_bypass {
+            assert!(
+                found.raw > 0 && found.raw_then_arithmetic > 0,
+                "{label}: {found:?}"
+            );
+        }
+        empty += found.empty;
+    }
+    assert!(empty > 0, "some segments hold coding passes and no bytes");
 }

@@ -1636,10 +1636,11 @@ fn job_payload<'p>(
     source: PayloadSource<'_, '_>,
     (payload, segments): (&'p mut Vec<u8>, &'p mut Vec<J2kCodeBlockSegment>),
 ) -> Result<BlockPayload<'p>> {
-    if plan.coding == CodeBlockCoding::Classic
-        && !band_style(plan, job.band).single_codeword_segment()
-    {
-        return collect_segments(plan, job, source, (payload, segments));
+    if plan.coding == CodeBlockCoding::Classic {
+        let style = band_style(plan, job.band);
+        if !style.single_codeword_segment() {
+            return collect_segments(style, job, source, (payload, segments));
+        }
     }
     let data = match job.payload {
         Payload::Borrowed(data) => data,
@@ -1653,7 +1654,7 @@ fn job_payload<'p>(
 /// `segments` and, when its payload spans several fragments, gathers them
 /// into `payload`. The thread's scratch holds both for the plan's largest.
 fn collect_segments<'p>(
-    plan: &TilePlan<'_>,
+    style: CodeBlockStyle,
     job: &BlockJob<'p>,
     source: PayloadSource<'_, '_>,
     (payload, segments): (&'p mut Vec<u8>, &'p mut Vec<J2kCodeBlockSegment>),
@@ -1667,7 +1668,7 @@ fn collect_segments<'p>(
     segments.clear();
     let (data_bytes, _, coding_passes) = walk_classic_segments(
         code_block,
-        band_style(plan, job.band),
+        style,
         (source.layers, source.segments),
         |fragment| {
             if gathered {
@@ -2114,11 +2115,13 @@ mod tests {
     use alloc::vec::Vec;
 
     use super::{
-        gather_payload, route_fallback, split_runs, tile_route_fallback, BlockJob, BlockPlacement,
-        BlockScratch, CodeBlock, CodeBlockCoding, DecodeAllocationBudget, Layer, Payload,
+        collect_segments, gather_payload, plan_block, route_fallback, split_runs,
+        tile_route_fallback, BlockJob, BlockPlacement, BlockScratch, CodeBlock, CodeBlockCoding,
+        CodeBlockStyle, DecodeAllocationBudget, DecompositionStorage, Layer, Payload,
         PayloadSource, Segment, Strip, TaskCounts, TileRoute,
     };
     use crate::j2c::rect::IntRect;
+    use crate::J2kCodeBlockSegment;
 
     /// A thread gathers payloads into scratch reserved for the plan's
     /// largest before it starts, as charged, and gathering a payload larger
@@ -2196,6 +2199,92 @@ mod tests {
             &mut short[0].payload
         )
         .is_err());
+    }
+
+    /// A classic block of several codeword segments whose bytes are one
+    /// piece of the codestream, the rest of its segments empty, borrows its
+    /// payload and collects every segment's descriptor: ten arithmetic
+    /// passes, then a raw segment of two passes and no bytes.
+    #[test]
+    fn a_segmented_block_in_one_piece_borrows_its_payload() {
+        let data = [7_u8; 100];
+        let mut storage = DecompositionStorage::default();
+        storage.segments.extend([
+            Segment {
+                idx: 0,
+                coding_pases: 10,
+                data_length: 100,
+                data: &data,
+            },
+            Segment {
+                idx: 1,
+                coding_pases: 2,
+                data_length: 0,
+                data: &[],
+            },
+        ]);
+        storage
+            .layers
+            .extend([0..1, 1..2].map(|range| Layer::with_segments(range).unwrap()));
+        let rect = IntRect::from_xywh(0, 0, 4, 4);
+        storage.code_blocks.push(CodeBlock {
+            rect,
+            x_idx: 0,
+            y_idx: 0,
+            layers: 0..2,
+            has_been_included: true,
+            missing_bit_planes: 0,
+            number_of_coding_passes: 12,
+            ht_total_coding_passes: 0,
+            ht_first_cleanup_pass: None,
+            ht_selected_set: None,
+            coding: Some(CodeBlockCoding::Classic),
+            l_block: 3,
+            non_empty_layer_count: 1,
+        });
+        let style = CodeBlockStyle {
+            selective_arithmetic_coding_bypass: true,
+            ..CodeBlockStyle::default()
+        };
+        let placement = BlockPlacement::new(rect, rect);
+        let (job, segments) = plan_block(
+            &storage.code_blocks[0],
+            0,
+            placement,
+            0,
+            &storage,
+            Some(style),
+        )
+        .unwrap();
+        assert!(matches!(job.payload, Payload::Borrowed(payload) if core::ptr::eq(payload, &data)));
+        assert_eq!(segments, 2);
+        let mut budget = DecodeAllocationBudget::from_live_bytes(0).unwrap();
+        let mut scratches = BlockScratch::for_threads(1, (0, 2), &mut budget).unwrap();
+        let BlockScratch {
+            payload,
+            segments: descriptors,
+            ..
+        } = &mut scratches[0];
+        let (payload, descriptors) = collect_segments(
+            style,
+            &job,
+            PayloadSource::new(&storage),
+            (payload, descriptors),
+        )
+        .unwrap();
+        assert!(core::ptr::eq(payload, &data));
+        let segment =
+            |data_offset, data_length, start_coding_pass, end_coding_pass| J2kCodeBlockSegment {
+                data_offset,
+                data_length,
+                start_coding_pass,
+                end_coding_pass,
+                use_arithmetic: start_coding_pass == 0,
+            };
+        assert_eq!(
+            descriptors,
+            [segment(0, 100, 0, 10), segment(100, 0, 10, 12)]
+        );
     }
 
     #[test]
