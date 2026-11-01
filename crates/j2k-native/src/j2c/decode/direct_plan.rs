@@ -97,7 +97,10 @@ fn build_and_parse_direct_tile_metadata<'a>(
             output_region,
             structural_workspace_bytes,
         )?,
-        None => None,
+        // A plan reads the packets the decodes read.
+        None => {
+            build::select_whole_image_precincts(tile, header, storage, structural_workspace_bytes)?
+        }
     };
     let selection_bytes = selection
         .as_ref()
@@ -110,7 +113,7 @@ fn build_and_parse_direct_tile_metadata<'a>(
             .ok_or(ValidationError::ImageTooLarge)?,
         decode_region.is_some(),
         build::BuildWorkspace::MetadataOnly,
-        selection.as_ref(),
+        decode_region.and(selection.as_ref()),
     )?;
     if decode_region.is_some() && storage.roi_plan.is_none() {
         build::release_unused_roi_workspace(storage, tile.component_infos.len())?;
