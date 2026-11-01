@@ -9,8 +9,9 @@ use std::ops::Range;
 use super::*;
 use j2k_native::{DecodeErrorClass, EncodeProgressionOrder};
 use j2k_test_support::{
-    add_packet_length, edit_tile_parts, packet_ranges, with_byte_after_last_packets,
-    with_packets_filled, with_surplus_packet_lengths,
+    add_packet_length, edit_tile_parts, packed_packet_headers, packet_ranges,
+    with_byte_after_last_packets, with_packet_lengths_edited, with_packets_filled,
+    with_surplus_packet_lengths, with_tile_parts_interleaved,
 };
 
 const WIDTH: u32 = 96;
@@ -652,6 +653,385 @@ fn packets_of_precincts_without_code_blocks_are_left_unread_on_metal_as_on_the_c
                 &session,
                 &mut failures,
             );
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// A flat image of `WIDTH` x `HEIGHT` samples, each pixel `pixel`.
+fn flat_codestream(pixel: &[u8], ht: bool, options: &EncodeOptions) -> Vec<u8> {
+    let pixels = pixel.repeat((WIDTH * HEIGHT) as usize);
+    let components = u16::try_from(pixel.len()).expect("component count");
+    let options = EncodeOptions {
+        use_ht_block_coding: ht,
+        ..options.clone()
+    };
+    encode(&pixels, WIDTH, HEIGHT, components, 8, false, &options).expect("encode fixture")
+}
+
+/// Every packet holds at least the first byte of its header, so a zero PLT
+/// length is no packet's. Skipping an unneeded packet by such a length would
+/// read the next needed packet from the skipped one's bytes: here, in a flat
+/// image whose finest packets are empty, the second component's finest packet
+/// as the third component's coarsest, whose data a half-resolution decode
+/// needs. Every Metal entry point fails on it, at full and half resolution,
+/// with the error class the CPU decode reports, and decodes the codestream
+/// with its true lengths as the CPU does.
+#[test]
+fn zero_plt_length_before_a_needed_packet_fails_on_metal_as_on_the_cpu() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let options = EncodeOptions {
+        num_decomposition_levels: 1,
+        progression_order: EncodeProgressionOrder::Cprl,
+        write_plt: true,
+        ..EncodeOptions::default()
+    };
+    let session = MetalBackendSession::system_default().expect("Metal session");
+    let mut failures = Vec::new();
+    for ht in [false, true] {
+        let clean = flat_codestream(&[200, 50, 120], ht, &options);
+        let companion = flat_codestream(&[30, 160, 90], ht, &options);
+        // CPRL, one layer, one precinct per resolution: each component's
+        // coarsest packet, then its finest, which the flat image leaves empty.
+        let lengths: Vec<usize> = packet_ranges(&clean).iter().map(Range::len).collect();
+        assert_eq!(lengths.len(), 6, "HT {ht}: six packets");
+        assert_eq!(
+            [lengths[1], lengths[3], lengths[5]],
+            [1, 1, 1],
+            "HT {ht}: empty finest packets"
+        );
+        assert!(
+            lengths[4] > 1,
+            "HT {ht}: the third component's coarsest packet has data"
+        );
+        let zero = with_packet_lengths_edited(&clean, |lengths| {
+            let total: usize = lengths.iter().sum();
+            lengths[3] = 0;
+            lengths[4] = 1;
+            lengths[5] = total - lengths[..5].iter().sum::<usize>();
+        });
+        for fmt in [PixelFormat::Rgb8, PixelFormat::Rgb16] {
+            for scale in [Downscale::None, Downscale::Half] {
+                let expected = cpu_decode(&clean, fmt, scale).expect("clean CPU decode");
+                let case = format!("flat CPRL HT {ht}");
+                for (edit, edited, other, expected) in [
+                    ("clean", &clean, &companion, Expected::Decodes(&expected)),
+                    ("zero length", &zero, &clean, Expected::Fails),
+                ] {
+                    check(
+                        &format!("{case} {edit}"),
+                        (edited, other),
+                        fmt,
+                        scale,
+                        &expected,
+                        &session,
+                        &mut failures,
+                    );
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// With EPH markers every packet holds at least three bytes, its header's
+/// first byte and the marker, so PLT lengths of one and two are no packet's.
+/// Skipping by them would misplace the next needed packet as a zero length
+/// does: in a flat CPRL image with three resolutions, lengths of one and two
+/// for the second component's finer packets make a quarter-resolution decode
+/// read the second one as the third component's coarsest, needed, packet.
+/// Every Metal entry point fails on it, at every resolution, with the error
+/// class the CPU decode reports, and decodes the codestream with its true
+/// lengths as the CPU does.
+#[test]
+fn plt_lengths_shorter_than_an_eph_packet_fail_on_metal_as_on_the_cpu() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let options = EncodeOptions {
+        num_decomposition_levels: 2,
+        progression_order: EncodeProgressionOrder::Cprl,
+        write_plt: true,
+        write_eph: true,
+        ..EncodeOptions::default()
+    };
+    let session = MetalBackendSession::system_default().expect("Metal session");
+    let mut failures = Vec::new();
+    for ht in [false, true] {
+        let clean = flat_codestream(&[200, 50, 120], ht, &options);
+        let companion = flat_codestream(&[30, 160, 90], ht, &options);
+        // CPRL, one layer, one precinct per resolution: each component's
+        // three packets, coarsest first; the finer ones are empty, a byte and
+        // EPH.
+        let lengths: Vec<usize> = packet_ranges(&clean).iter().map(Range::len).collect();
+        assert_eq!(lengths.len(), 9, "HT {ht}: nine packets");
+        for finer in [1, 2, 4, 5, 7, 8] {
+            assert_eq!(lengths[finer], 3, "HT {ht}: empty packet {finer}");
+        }
+        assert!(
+            lengths[6] > 3,
+            "HT {ht}: the third component's coarsest packet has data"
+        );
+        let short = with_packet_lengths_edited(&clean, |lengths| {
+            let total: usize = lengths.iter().sum();
+            lengths[4] = 1;
+            lengths[5] = 2;
+            lengths[6] = 3;
+            lengths[8] = total - lengths[..8].iter().sum::<usize>();
+        });
+        for fmt in [PixelFormat::Rgb8, PixelFormat::Rgb16] {
+            for scale in [Downscale::None, Downscale::Half, Downscale::Quarter] {
+                let expected = cpu_decode(&clean, fmt, scale).expect("clean CPU decode");
+                let case = format!("flat CPRL EPH HT {ht}");
+                for (edit, edited, other, expected) in [
+                    ("clean", &clean, &companion, Expected::Decodes(&expected)),
+                    ("short lengths", &short, &clean, Expected::Fails),
+                ] {
+                    check(
+                        &format!("{case} {edit}"),
+                        (edited, other),
+                        fmt,
+                        scale,
+                        &expected,
+                        &session,
+                        &mut failures,
+                    );
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// With packet headers packed in PPM or PPT, PLT lengths hold only packet
+/// bodies, so a reduced decode parses every header up to the last packet it
+/// needs. In a flat image, whose packets after the first hold one-byte empty
+/// headers, damage to the header of a finest packet that precedes a needed
+/// one fails every Metal entry point at half resolution, and damage to the
+/// last packet's header, after every packet a half-resolution decode needs,
+/// decodes there to the CPU decode of the undamaged codestream; both fail at
+/// full resolution, with the error class the CPU decode reports.
+#[test]
+fn damaged_packed_headers_fail_reduced_decodes_on_metal_as_on_the_cpu() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let session = MetalBackendSession::system_default().expect("Metal session");
+    let mut failures = Vec::new();
+    for (label, write_ppm, write_ppt) in [("PPM", true, false), ("PPT", false, true)] {
+        for ht in [false, true] {
+            let options = EncodeOptions {
+                num_decomposition_levels: LEVELS,
+                num_layers: LAYERS,
+                // Every coding pass in the first layer, where HT code-blocks
+                // put them without targets.
+                quality_layer_byte_targets: if ht { Vec::new() } else { vec![1, u64::MAX] },
+                progression_order: EncodeProgressionOrder::Lrcp,
+                write_plt: true,
+                write_ppm,
+                write_ppt,
+                ..EncodeOptions::default()
+            };
+            let clean = flat_codestream(&[90], ht, &options);
+            let companion = flat_codestream(&[170], ht, &options);
+            // LRCP, one component, one precinct per resolution: the first
+            // layer's coarsest header holds the image, then five empty ones,
+            // the first layer's two finer packets' and the second layer's
+            // three.
+            let headers = packed_packet_headers(&clean);
+            assert_eq!(
+                clean[headers.end - 5..headers.end],
+                [0; 5],
+                "{label} HT {ht}: empty headers"
+            );
+            let damaged_at = |from_end: usize| {
+                let mut damaged = clean.clone();
+                damaged[headers.end - from_end] = 0xff;
+                damaged
+            };
+            // The first layer's finest header, before the second layer's
+            // packets, and the second layer's finest header, the last.
+            let (navigation, last) = (damaged_at(4), damaged_at(1));
+            for fmt in [PixelFormat::Gray8, PixelFormat::Gray16] {
+                let half = cpu_decode(&clean, fmt, Downscale::Half)
+                    .expect("clean half-resolution CPU decode");
+                let full = cpu_decode(&clean, fmt, Downscale::None).expect("clean CPU decode");
+                for (edit, edited, other, scale, expected) in [
+                    (
+                        "clean",
+                        &clean,
+                        &companion,
+                        Downscale::Half,
+                        Expected::Decodes(&half),
+                    ),
+                    (
+                        "clean",
+                        &clean,
+                        &companion,
+                        Downscale::None,
+                        Expected::Decodes(&full),
+                    ),
+                    (
+                        "finest header before a needed packet damaged",
+                        &navigation,
+                        &clean,
+                        Downscale::Half,
+                        Expected::Fails,
+                    ),
+                    (
+                        "finest header before a needed packet damaged",
+                        &navigation,
+                        &clean,
+                        Downscale::None,
+                        Expected::Fails,
+                    ),
+                    (
+                        "last header damaged",
+                        &last,
+                        &clean,
+                        Downscale::Half,
+                        Expected::Decodes(&half),
+                    ),
+                    (
+                        "last header damaged",
+                        &last,
+                        &clean,
+                        Downscale::None,
+                        Expected::Fails,
+                    ),
+                ] {
+                    check(
+                        &format!("flat {label} HT {ht} {edit}"),
+                        (edited, other),
+                        fmt,
+                        scale,
+                        &expected,
+                        &session,
+                        &mut failures,
+                    );
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Tile-parts of several tiles may take turns in the codestream, and a
+/// tile's packets are complete across its tile-parts. With one RPCL packet
+/// per tile-part, every Metal entry point decodes the interleaved codestream
+/// to the CPU decode of the tile-major one; damage to every tile's finest
+/// packets, in the last rounds of tile-parts, decodes at half resolution as
+/// the undamaged codestream does, and damage to every tile's coarsest
+/// packets, in the first rounds, fails; both fail at full resolution, with
+/// the error class the CPU decode reports. The images are the tiled
+/// fixtures, four tiles of at most 64 x 64, and a gray one of eight
+/// 512 x 512 tiles.
+#[test]
+fn interleaved_tile_parts_spare_reduced_decodes_per_tile_on_metal_as_on_the_cpu() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let session = MetalBackendSession::system_default().expect("Metal session");
+    let finest = usize::from(LEVELS);
+    // (image, codestream, formats, tiles, packets per tile, the packets of
+    // each tile's finest and coarsest resolution)
+    let mut images = Vec::new();
+    for fixture in FIXTURES.into_iter().filter(|fixture| fixture.tiled) {
+        let options = EncodeOptions {
+            tile_part_packet_limit: Some(1),
+            ..fixture.options()
+        };
+        images.push((
+            format!("{fixture:?}"),
+            fixture.codestream(&options),
+            fixture.formats(),
+            4,
+            (usize::from(LEVELS) + 1) * usize::from(fixture.components) * usize::from(LAYERS),
+            fixture.packets_of(EncodeProgressionOrder::Rpcl, finest, None),
+            fixture.packets_of(EncodeProgressionOrder::Rpcl, 0, None),
+        ));
+    }
+    let (width, height) = (2048, 1024);
+    let mut state = 0x9e37_79b9_u32;
+    let pixels: Vec<u8> = (0..width * height)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state.to_be_bytes()[0]
+        })
+        .collect();
+    let options = EncodeOptions {
+        num_decomposition_levels: LEVELS,
+        progression_order: EncodeProgressionOrder::Rpcl,
+        tile_size: Some((512, 512)),
+        tile_part_packet_limit: Some(1),
+        write_plt: true,
+        ..EncodeOptions::default()
+    };
+    images.push((
+        "2048 x 1024 gray, 512 x 512 tiles".to_string(),
+        encode(&pixels, width, height, 1, 8, false, &options).expect("encode fixture"),
+        &[PixelFormat::Gray8, PixelFormat::Gray16][..],
+        8,
+        usize::from(LEVELS) + 1,
+        vec![finest],
+        vec![0],
+    ));
+    let mut failures = Vec::new();
+    for (image, clean, formats, tiles, packets_per_tile, finest_packets, coarsest_packets) in
+        &images
+    {
+        let ranges = packet_ranges(clean);
+        assert_eq!(
+            ranges.len(),
+            tiles * packets_per_tile,
+            "{image}: {tiles} tiles"
+        );
+        let damaged = |indices: &[usize]| {
+            let packets: Vec<Range<usize>> = ranges
+                .chunks(*packets_per_tile)
+                .flat_map(|tile| indices.iter().map(|&index| tile[index].clone()))
+                .collect();
+            with_tile_parts_interleaved(&with_packets_filled(clean, &packets, 0xff))
+        };
+        let interleaved = with_tile_parts_interleaved(clean);
+        assert_ne!(&interleaved, clean, "{image}: tile-parts change places");
+        let (finest_damaged, coarsest_damaged) =
+            (damaged(finest_packets), damaged(coarsest_packets));
+        for &fmt in *formats {
+            for scale in [Downscale::None, Downscale::Half] {
+                let expected = cpu_decode(clean, fmt, scale).expect("clean CPU decode");
+                assert!(
+                    cpu_decode(&interleaved, fmt, scale).is_ok_and(|decoded| decoded == expected),
+                    "{image} {fmt:?} {scale:?}: interleaving keeps the image"
+                );
+                let finest_expected = match scale {
+                    Downscale::None => Expected::Fails,
+                    _ => Expected::Decodes(&expected),
+                };
+                for (edit, edited, expected) in [
+                    ("clean", &interleaved, Expected::Decodes(&expected)),
+                    ("finest damaged", &finest_damaged, finest_expected),
+                    ("coarsest damaged", &coarsest_damaged, Expected::Fails),
+                ] {
+                    check(
+                        &format!("{image} interleaved {edit}"),
+                        (edited, clean),
+                        fmt,
+                        scale,
+                        &expected,
+                        &session,
+                        &mut failures,
+                    );
+                }
+            }
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
