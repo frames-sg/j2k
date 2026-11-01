@@ -94,7 +94,15 @@ pub(super) fn decode_image_u8<'image>(
     match image.cpu_execution() {
         CpuExecution::ExceedsDecodeBound => Err(CpuExecution::decode_bound_error()),
         CpuExecution::StreamedRows | CpuExecution::StreamedRowsOrPlan { .. } => {
-            decode_streamed_samples(image, options, info, parallelism, context, out, convert_u8)
+            decode_streamed_samples(
+                image,
+                options,
+                info,
+                parallelism,
+                context,
+                out,
+                convert_u8_row,
+            )
         }
         CpuExecution::OffsetPlan { .. } | CpuExecution::ComponentPlanes => {
             decode_planned_u8(image, options, info, parallelism, context, worker, out)
@@ -194,8 +202,9 @@ pub(super) fn decode_image_i16<'image>(
 
 /// Decode `image` through the bounded region decode, which hands over its
 /// rows as they are finished, writing each sample exactly as
-/// [`write_samples`] writes whole planes. Working memory stays bounded by the
-/// streamed decode instead of growing with the image.
+/// [`write_samples`] writes whole planes, a row at a time through
+/// `convert_row` (see [`convert_u8_row`]). Working memory stays bounded by
+/// the streamed decode instead of growing with the image.
 fn decode_streamed_samples<'image, T: Copy>(
     image: &'image PreparedImage,
     options: BatchDecodeOptions,
@@ -203,7 +212,7 @@ fn decode_streamed_samples<'image, T: Copy>(
     parallelism: CpuDecodeParallelism,
     context: &mut j2k_native::DecoderContext<'image>,
     out: &mut [T],
-    convert: fn(f32, u8) -> T,
+    convert_row: ConvertRow<T>,
 ) -> Result<(), J2kError> {
     context.set_cpu_decode_parallelism(parallelism.to_native());
     let plan = image.plan();
@@ -214,7 +223,7 @@ fn decode_streamed_samples<'image, T: Copy>(
             "prepared batch output metadata changed during decode",
         ));
     }
-    let mut sink = SampleRowSink::new(info, out, convert)?;
+    let mut sink = SampleRowSink::new(info, out, convert_row)?;
     decoded
         .decode_region_rows_for_integer_output_with_context(
             (output_rect.x, output_rect.y, output_rect.w, output_rect.h),
@@ -225,11 +234,18 @@ fn decode_streamed_samples<'image, T: Copy>(
     sink.finish()
 }
 
+/// Converts a row of decoded samples of the given precision into
+/// `destination`, one sample every `stride` elements from its start.
+type ConvertRow<T> = fn(&mut [T], usize, &[f32], u8);
+
 /// Writes streamed region rectangles into one image's dense batch samples.
+/// The decode hands each batch of rows over on its reading thread, between
+/// the batches it reconstructs, while the pool's band workers decode only as
+/// far ahead as their rings hold, so the rows convert a row at a time.
 struct SampleRowSink<'out, 'info, T> {
     info: &'info BatchGroupInfo,
     out: &'out mut [T],
-    convert: fn(f32, u8) -> T,
+    convert_row: ConvertRow<T>,
     pixels: usize,
     written_pixels: usize,
     malformed: bool,
@@ -239,7 +255,7 @@ impl<'out, 'info, T: Copy> SampleRowSink<'out, 'info, T> {
     fn new(
         info: &'info BatchGroupInfo,
         out: &'out mut [T],
-        convert: fn(f32, u8) -> T,
+        convert_row: ConvertRow<T>,
     ) -> Result<Self, J2kError> {
         let pixels = (info.dimensions.0 as usize)
             .checked_mul(info.dimensions.1 as usize)
@@ -252,7 +268,7 @@ impl<'out, 'info, T: Copy> SampleRowSink<'out, 'info, T> {
         Ok(Self {
             info,
             out,
-            convert,
+            convert_row,
             pixels,
             written_pixels: 0,
             malformed: false,
@@ -304,14 +320,10 @@ impl<'out, 'info, T: Copy> SampleRowSink<'out, 'info, T> {
                 let pixel = (y + row) * width + x;
                 if planar {
                     let destination = &mut self.out[channel * self.pixels + pixel..][..rect_width];
-                    for (destination, &sample) in destination.iter_mut().zip(samples) {
-                        *destination = (self.convert)(sample, precision);
-                    }
+                    (self.convert_row)(destination, 1, samples, precision);
                 } else {
                     let destination = &mut self.out[pixel * channels..][..rect_width * channels];
-                    for (pixel, &sample) in destination.chunks_exact_mut(channels).zip(samples) {
-                        pixel[channel] = (self.convert)(sample, precision);
-                    }
+                    (self.convert_row)(&mut destination[channel..], channels, samples, precision);
                 }
             }
         }
@@ -398,6 +410,43 @@ pub(super) fn convert_u8(sample: f32, precision: u8) -> u8 {
     u8::try_from(round_unsigned(sample, precision)).unwrap_or(u8::MAX)
 }
 
+/// [`convert_u8`] for a row of `samples`, written `stride` apart from the
+/// start of `destination`. It rounds and saturates in `f32`, which gives the
+/// same bytes: `f32::round` is exact and, above zero, equals the `f64`
+/// floor of the sample plus one half, and any value past the precision's
+/// maximum saturates. Per sample, `convert_u8` costs a call and `f64` math;
+/// over a row, the compiler can vectorize the contiguous rows of planar
+/// output, and interleaved rows convert in a tight loop.
+fn convert_u8_row(destination: &mut [u8], stride: usize, samples: &[f32], precision: u8) {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a u8 output's maximum is far below f32's exact integer range"
+    )]
+    let ceiling = ((1_u32 << u32::from(precision)) - 1) as f32;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the sample is positive and rounded below the ceiling before the cast, which saturates"
+    )]
+    let round = |sample: f32| -> u8 {
+        let rounded = if sample > 0.0 {
+            sample.min(ceiling).round() as u32
+        } else {
+            0
+        };
+        u8::try_from(rounded).unwrap_or(u8::MAX)
+    };
+    if stride == 1 {
+        for (destination, &sample) in destination.iter_mut().zip(samples) {
+            *destination = round(sample);
+        }
+    } else {
+        for (destination, &sample) in destination.iter_mut().step_by(stride).zip(samples) {
+            *destination = round(sample);
+        }
+    }
+}
+
 pub(super) fn convert_u16(sample: f32, precision: u8) -> u16 {
     u16::try_from(round_unsigned(sample, precision)).unwrap_or(u16::MAX)
 }
@@ -427,4 +476,76 @@ pub(super) fn round_signed(sample: f32, precision: u8) -> i16 {
     } else {
         i16::MAX
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{convert_u8, convert_u8_row};
+    use alloc::vec::Vec;
+
+    /// Samples around every rounding and saturation boundary of 8-bit and
+    /// narrower outputs, and the values no decode should produce.
+    fn edge_samples() -> Vec<f32> {
+        let mut samples = vec![
+            0.0,
+            -0.0,
+            f32::from_bits(1),
+            f32::MIN_POSITIVE,
+            -f32::MIN_POSITIVE,
+            -1.0e-30,
+            f32::NAN,
+            -f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::MAX,
+            -f32::MAX,
+            1.0e9,
+            65_535.5,
+            16_777_216.0,
+            16_777_218.0,
+        ];
+        for whole in -2_i16..=300 {
+            let whole = f32::from(whole);
+            for offset in [-0.5_f32, -0.25, -1.0e-3, 0.0, 1.0e-3, 0.25, 0.5] {
+                let sample = whole + offset;
+                samples.push(sample);
+                for ulps in 1..=2 {
+                    samples.push(f32::from_bits(sample.to_bits().wrapping_add(ulps)));
+                    samples.push(f32::from_bits(sample.to_bits().wrapping_sub(ulps)));
+                }
+            }
+        }
+        samples
+    }
+
+    #[test]
+    fn rows_convert_as_each_sample_does() {
+        let samples = edge_samples();
+        for precision in 1..=16 {
+            let expected: Vec<u8> = samples
+                .iter()
+                .map(|&sample| convert_u8(sample, precision))
+                .collect();
+            let mut planar = vec![0x5a; samples.len()];
+            convert_u8_row(&mut planar, 1, &samples, precision);
+            assert_eq!(planar, expected, "planar, precision {precision}");
+            // Interleaved: every third byte, from the second, and none other.
+            let mut interleaved = vec![0x5a; samples.len() * 3 - 1];
+            convert_u8_row(&mut interleaved[1..], 3, &samples, precision);
+            for (index, &byte) in interleaved.iter().enumerate() {
+                if index % 3 == 1 {
+                    assert_eq!(
+                        byte,
+                        expected[index / 3],
+                        "sample {index}, precision {precision}"
+                    );
+                } else {
+                    assert_eq!(
+                        byte, 0x5a,
+                        "byte {index} between samples, precision {precision}"
+                    );
+                }
+            }
+        }
+    }
 }
