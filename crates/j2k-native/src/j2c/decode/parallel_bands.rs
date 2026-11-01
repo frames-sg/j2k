@@ -47,8 +47,8 @@ use std::sync::{Condvar, Mutex, MutexGuard};
 
 use super::banded_tier1::{self, RowOutput};
 use super::subband::{
-    plan_band_route, plan_band_route_beside, routes_tile, BandOutput, BandRoute, BandRouting,
-    BlockScratch, PayloadSource, LOCK_BYTES,
+    plan_band_route, plan_band_route_beside, pool_entry_bytes, routes_tile, BandOutput, BandRoute,
+    BandRouting, BlockScratch, PayloadSource, LOCK_BYTES,
 };
 use super::workspace::{TaskScratch, TaskWorkspace};
 use super::{
@@ -878,9 +878,10 @@ fn plan_tile_lines(
 /// reader's view, with its band being read and next band in every ring, and
 /// its entry in the readers' list; each thread's workspace and scratch
 /// pair; the pool's job for each worker running or queued, and for each
-/// pool thread whose worker finished before the pool freed its job; and
-/// what the shared output of each band decoding in parts, the shared
-/// state's lock and its condition variable allocate when first used.
+/// pool thread whose worker finished before the pool freed its job; what
+/// the shared output of each band decoding in parts, the shared state's
+/// lock and its condition variable allocate when first used; and what the
+/// pool takes when entered from outside it.
 fn executor_bytes(
     rings: &[Ring],
     bands: &[Band],
@@ -914,12 +915,8 @@ fn executor_bytes(
             .checked_add(rayon::current_num_threads())
             .and_then(|jobs| jobs.checked_mul(SENT_WORKER_BYTES)),
         // Called from outside the pool, its workers queue on the pool's
-        // shared queue, which may take a new block for them.
-        Some(if rayon::current_thread_index().is_none() {
-            INJECTED_BLOCK_BYTES
-        } else {
-            0
-        }),
+        // shared queue, and this thread waits for them to finish.
+        Some(pool_entry_bytes()),
         bands
             .iter()
             .filter(|band| band.parts > 1)
@@ -950,10 +947,6 @@ fn queue_entries(bands: &[Band]) -> usize {
 /// worker's closure, its two references, with the scope it runs in and the
 /// job's context.
 const SENT_WORKER_BYTES: usize = 4 * size_of::<usize>();
-
-/// Bytes of a block of the pool's shared queue: 63 jobs of two words, each
-/// with its state, and a link.
-const INJECTED_BLOCK_BYTES: usize = 64 * 3 * size_of::<usize>();
 
 /// The bytes the rings and bands of the component of `route` hold once
 /// planned, and the rows' scales planning them holds beside them.
@@ -2731,6 +2724,7 @@ mod tests {
         let mut routes = Vec::with_capacity(components);
         let mut live = DecodeAllocationBudget::for_storage(storage).expect("baseline");
         let start = live.live_bytes();
+        settle();
         let base = j2k_alloc_probe::live_bytes();
         j2k_alloc_probe::reset_peak();
         for component in 0..components {
@@ -2879,11 +2873,17 @@ mod tests {
         }
     }
 
-    /// Wait until the process has held the same bytes for a while: until
-    /// idle threads have finished starting.
+    /// Wait until the process has held the same bytes for 100 ms, so the
+    /// pools' threads have gone idle: a thread allocates its queue's state
+    /// and the locks it sleeps on when it first idles.
     fn settle() {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         let (mut last, mut still) = (j2k_alloc_probe::live_bytes(), 0);
         while still < 20 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the process's allocations never settled"
+            );
             std::thread::sleep(std::time::Duration::from_millis(5));
             let now = j2k_alloc_probe::live_bytes();
             still = if now == last { still + 1 } else { 0 };
@@ -2926,6 +2926,12 @@ mod tests {
             assert!(report.contains("1 passed"), "{report}");
             return;
         }
+        // The decode from outside a pool streams on the global pool, of
+        // enough threads whatever the machine.
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(12)
+            .build_global()
+            .expect("the measuring process's first use of the global pool");
         let classic = include_bytes!("../../../fixtures/multi_segment/bypass_termall_rgb_53.j2k");
         let ht = ht_fixture();
         let (mut readers, mut parted, mut clipped, mut deep) = (Vec::new(), 0, false, false);
@@ -2950,20 +2956,21 @@ mod tests {
             deep |= measured.deep;
         };
         // The pools, and the global one, stay up until every measurement
-        // ends, so no pool's teardown frees bytes inside another's window,
-        // and every measurement waits until their threads have started,
-        // which allocates their queues' state and their locks.
+        // ends, so no pool's teardown frees bytes inside another's window.
+        // Every thread of each runs a job before any measurement, and every
+        // measurement waits until they idle (see `settle`).
         let pools: Vec<_> = [2, 4, 12]
             .into_iter()
             .map(|threads| {
-                rayon::ThreadPoolBuilder::new()
+                let pool = rayon::ThreadPoolBuilder::new()
                     .num_threads(threads)
                     .build()
-                    .expect("build pool")
+                    .expect("build pool");
+                pool.broadcast(|_| ());
+                pool
             })
             .collect();
-        assert!(rayon::current_num_threads() > 0);
-        settle();
+        rayon::broadcast(|_| ());
         for pool in &pools {
             let threads = pool.current_num_threads();
             pool.install(|| {

@@ -328,6 +328,19 @@ impl Drop for BlockScratch {
 /// bytes or condition variable of 48 where they are not.
 pub(in crate::j2c::decode) const LOCK_BYTES: usize = 64;
 
+/// Bytes the pool may take for a parallel decode entered from outside it:
+/// a block of its shared queue for the jobs the decode hands it, 63 of two
+/// words with their states and a link, and the lock and condition variable
+/// the calling thread waits on, whose lock the waiter and the worker that
+/// wakes it may each allocate when they first use it at once.
+pub(in crate::j2c::decode) fn pool_entry_bytes() -> usize {
+    if rayon::current_thread_index().is_some() {
+        0
+    } else {
+        64 * 3 * size_of::<usize>() + 3 * LOCK_BYTES
+    }
+}
+
 /// The first `samples` of a thread's block scratch, within the capacity
 /// [`BlockScratch::for_threads`] reserved: it never grows.
 fn block_scratch(scratch: &mut Vec<f32>, samples: usize) -> Result<&mut [f32]> {
@@ -493,10 +506,11 @@ pub(in crate::j2c::decode) fn plan_tile_route<'a>(
         budget.include_elements::<StripTask<'_, '_, '_>>(counts.tasks - plan.strips.len())?;
         budget.include_elements::<Mutex<&mut [f32]>>(counts.shared)?;
         // The shared outputs' locks and the queue's, where locking first
-        // allocates.
+        // allocates, and what the pool takes when entered from outside it.
         budget.include_bytes(
             (counts.shared + 1)
                 .checked_mul(LOCK_BYTES)
+                .and_then(|locks| locks.checked_add(pool_entry_bytes()))
                 .ok_or(ValidationError::ImageTooLarge)?,
         )?;
         if has_later_components {
@@ -614,6 +628,7 @@ fn record_route_peak(
         counts.tasks * size_of::<StripTask<'_, '_, '_>>(),
         counts.shared * size_of::<Mutex<&mut [f32]>>(),
         (counts.shared + 1) * LOCK_BYTES,
+        pool_entry_bytes(),
     ]
     .into_iter()
     .fold(0, usize::saturating_add);
