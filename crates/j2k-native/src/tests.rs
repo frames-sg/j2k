@@ -2839,6 +2839,95 @@ fn reduced_planes_decode_parses_the_packets_the_region_decode_parses() {
     }
 }
 
+/// A multiple component transform needs three components, so a decode of a
+/// one-component codestream whose COD asks for one fails; the grayscale
+/// plans GPU decodes and batches execute, single-tile and referenced over
+/// several tiles, fail with it once their tiles are planned, so a failure a
+/// decode meets first, such as a precinct grid past the cap, still comes
+/// first.
+#[test]
+fn grayscale_plans_reject_a_multiple_component_transform_as_decodes_do() {
+    // One 16,383 x 16,383 tile, one level, one-sample LL precincts: 2^28
+    // sub-band precinct records, past the cap at half resolution.
+    let mut grid = vec![0xff, 0x4f, 0xff, 0x51, 0, 41, 0, 0];
+    for value in [16_383_u32, 16_383, 0, 0, 16_383, 16_383, 0, 0] {
+        grid.extend_from_slice(&value.to_be_bytes());
+    }
+    grid.extend_from_slice(&[0, 1, 7, 1, 1]);
+    grid.extend_from_slice(&[0xff, 0x52, 0, 14, 1, 0, 0, 1, 1, 1, 0, 0, 0, 1, 0x00, 0x11]);
+    grid.extend_from_slice(&[0xff, 0x5c, 0, 7, 0x40, 0x48, 0x48, 0x48, 0x48]);
+    grid.extend_from_slice(&[0xff, 0x90, 0, 10, 0, 0, 0, 0, 0, 15, 0, 1, 0xff, 0x93, 0]);
+    grid.extend_from_slice(&[0xff, 0xd9]);
+    let half = DecodeSettings {
+        target_resolution: Some((8_192, 8_192)),
+        ..DecodeSettings::default()
+    };
+    let image = Image::new(&grid, &half).expect("grid image");
+    let mut output = vec![0_u8; 8_192 * 8_192];
+    let decoded = image
+        .decode_into(&mut output, &mut DecoderContext::default())
+        .expect_err("grid decode");
+    let Err(planned) =
+        image.build_direct_grayscale_plan_with_context(&mut DecoderContext::default())
+    else {
+        panic!("grid: the direct plan built");
+    };
+    assert!(matches!(
+        decoded.classify(),
+        DecodeErrorClass::ResourceLimit { .. }
+    ));
+    assert_eq!(planned.classify(), decoded.classify(), "grid: direct plan");
+
+    let pixels = gradient_pixels(64, 64, 1);
+    for tile_size in [None, Some((32, 32))] {
+        let options = EncodeOptions {
+            num_decomposition_levels: 2,
+            tile_size,
+            ..EncodeOptions::default()
+        };
+        let mut bytes = encode(&pixels, 64, 64, 1, 8, false, &options).expect("encode");
+        let cod = bytes
+            .windows(2)
+            .position(|window| window == [0xff, 0x52])
+            .expect("COD marker");
+        // Lcod, Scod, progression order, layers, then the MCT byte.
+        assert_eq!(bytes[cod + 8], 0, "no transform");
+        bytes[cod + 8] = 1;
+        let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+        let Err(decoded) = image.decode_native() else {
+            panic!("tiles {tile_size:?}: decoded");
+        };
+        let label = format!("tiles {tile_size:?}");
+        if tile_size.is_none() {
+            let Err(planned) =
+                image.build_direct_grayscale_plan_with_context(&mut DecoderContext::default())
+            else {
+                panic!("{label}: the direct plan built");
+            };
+            assert_eq!(
+                planned.classify(),
+                decoded.classify(),
+                "{label}: direct plan"
+            );
+        }
+        let Err(referenced) = image.build_referenced_classic_plan_region_with_context(
+            &mut DecoderContext::default(),
+            (0, 0, 64, 64),
+        ) else {
+            panic!("{label}: the referenced plan built");
+        };
+        assert_eq!(
+            referenced.classify(),
+            decoded.classify(),
+            "{label}: referenced plan"
+        );
+        assert!(
+            matches!(referenced, DecodeError::Color(ColorError::Mct)),
+            "{label}: {referenced:?}"
+        );
+    }
+}
+
 /// Damage to a packet a reduced decode needs fails it as it fails the full
 /// decode, on the planes, the region decode and the direct plan.
 #[test]

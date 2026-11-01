@@ -5,11 +5,11 @@
 use super::{
     append_classic_payload_records, append_retained_records, bail,
     build_direct_grayscale_tile_plan, grayscale_plan_rects, output_region_rect,
-    payload_record_span, referenced_output_region, strip_classic_payload_owners, tile,
-    tile_intersects_output, validate_grayscale_tile, validate_ht_payload_records, BitReader,
-    ClassicPayloadCollector, DecodeAllocationBudget, DecoderContext, DecodingError, Header,
-    J2kReferencedClassicPlan, J2kReferencedHtj2kPlan, J2kReferencedTileGeometry,
-    J2kReferencedTilePlan, Result, ValidationError, Vec,
+    payload_record_span, referenced_output_region, reject_grayscale_mct,
+    strip_classic_payload_owners, tile, tile_intersects_output, validate_grayscale_tile,
+    validate_ht_payload_records, BitReader, ClassicPayloadCollector, DecodeAllocationBudget,
+    DecoderContext, DecodingError, Header, J2kReferencedClassicPlan, J2kReferencedHtj2kPlan,
+    J2kReferencedTileGeometry, J2kReferencedTilePlan, Result, ValidationError, Vec,
 };
 
 pub(crate) fn build_referenced_htj2k_grayscale_plan<'a>(
@@ -84,6 +84,7 @@ pub(crate) fn build_referenced_htj2k_grayscale_plan<'a>(
                 J2kReferencedTileGeometry::Grayscale(geometry),
             ));
         }
+        reject_grayscale_mct(&parsed_tiles, header)?;
 
         Ok(J2kReferencedHtj2kPlan::grayscale(
             tile_plans,
@@ -170,6 +171,7 @@ pub(crate) fn build_referenced_classic_grayscale_plan<'a>(
                 J2kReferencedTileGeometry::Grayscale(geometry),
             ));
         }
+        reject_grayscale_mct(&parsed_tiles, header)?;
 
         Ok(J2kReferencedClassicPlan::grayscale(
             tile_plans,

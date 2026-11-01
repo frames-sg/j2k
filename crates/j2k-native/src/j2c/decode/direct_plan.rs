@@ -168,7 +168,7 @@ fn build_direct_grayscale_plan_inner<'a>(
 
     let mut next_band_id = 0;
     let output_region = ctx.tile_decode_context.output_region;
-    build_direct_grayscale_tile_plan(
+    let plan = build_direct_grayscale_tile_plan(
         data,
         payload_range_owner,
         &tiles[0],
@@ -180,7 +180,9 @@ fn build_direct_grayscale_plan_inner<'a>(
         None,
         ht_payloads,
         classic_payloads,
-    )
+    )?;
+    reject_grayscale_mct(&tiles, header)?;
+    Ok(plan)
 }
 
 #[expect(
@@ -275,6 +277,17 @@ fn validate_grayscale_tile(tile: &Tile<'_>) -> Result<()> {
         ));
     }
     validate_unit_sampled_component(&tile.component_infos[0])
+}
+
+/// A multiple component transform needs three components: a decode of a
+/// one-component image one of whose tiles asks for one fails, as
+/// `mct::apply_inverse` does, after every tile's packets are parsed, and so
+/// does its plan, once every tile it covers is planned.
+fn reject_grayscale_mct(tiles: &[Tile<'_>], header: &Header<'_>) -> Result<()> {
+    if header.strict && tiles.iter().any(|tile| tile.mct) {
+        bail!(ColorError::Mct);
+    }
+    Ok(())
 }
 
 fn validate_color_tile<const COMPONENT_COUNT: usize>(
