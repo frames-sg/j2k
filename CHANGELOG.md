@@ -290,7 +290,7 @@ Staged workspace version: `0.13.2`.
   (a 4096 x 2048 RGB image at 2 bpp 1% faster on 6 threads and 4-5% on
   18, in about half the memory); and full-resolution images with a tile
   for every thread. Those now decode their tiles at once on the calling thread
-  and the pool's threads, each tile on one thread, instead of one tile after
+  and scoped worker threads, each tile on one thread, instead of one tile after
   another: a 4096 x 8192 RGB image of 1024 x 1024 tiles decodes 8% faster than
   on the planes with 6 threads and 23% faster with 18, in less than half the
   memory. Tiled classic images with fewer tiles stream them one after another

@@ -3,7 +3,9 @@
 use alloc::vec::Vec;
 
 use super::build::{PrecinctData, SubBandType};
-use super::codestream::{markers, ComponentInfo, Header, ProgressionChange, ProgressionOrder};
+use super::codestream::{
+    markers, ComponentInfo, Header, ProgressionChange, ProgressionOrder, SizeData,
+};
 use super::rect::IntRect;
 use crate::error::{bail, MarkerError, Result, TileError, ValidationError};
 use crate::reader::BitReader;
@@ -159,48 +161,51 @@ impl TilePart<'_> {
     }
 }
 
+/// Reference-grid bounds of a tile, clipped to the image area.
+pub(crate) fn tile_rect(size_data: &SizeData, x_coord: u32, y_coord: u32) -> IntRect {
+    // See B-7, B-8, B-9 and B-10. Saturating arithmetic: the results
+    // are clamped against the reference grid anyway, and a saturated
+    // intermediate already exceeds every in-grid bound, so the clamp
+    // still produces the mathematically correct edge for crafted
+    // headers whose products overflow u32.
+    let x0 = u32::max(
+        size_data
+            .tile_x_offset
+            .saturating_add(x_coord.saturating_mul(size_data.tile_width)),
+        size_data.image_area_x_offset,
+    );
+    let y0 = u32::max(
+        size_data
+            .tile_y_offset
+            .saturating_add(y_coord.saturating_mul(size_data.tile_height)),
+        size_data.image_area_y_offset,
+    );
+
+    // Note that `x1` and `y1` are exclusive.
+    let x1 = u32::min(
+        size_data.tile_x_offset.saturating_add(
+            x_coord
+                .saturating_add(1)
+                .saturating_mul(size_data.tile_width),
+        ),
+        size_data.reference_grid_width,
+    );
+    let y1 = u32::min(
+        size_data.tile_y_offset.saturating_add(
+            y_coord
+                .saturating_add(1)
+                .saturating_mul(size_data.tile_height),
+        ),
+        size_data.reference_grid_height,
+    );
+
+    IntRect::from_ltrb(x0, y0, x1, y1)
+}
+
 impl Tile<'_> {
     fn new(idx: u32, header: &Header<'_>) -> Self {
-        let rect = {
-            let size_data = &header.size_data;
-
-            let x_coord = size_data.tile_x_coord(idx);
-            let y_coord = size_data.tile_y_coord(idx);
-
-            // See B-7, B-8, B-9 and B-10. Saturating arithmetic: the results
-            // are clamped against the reference grid anyway, and a saturated
-            // intermediate already exceeds every in-grid bound, so the clamp
-            // still produces the mathematically correct edge for crafted
-            // headers whose products overflow u32.
-            let x0 = u32::max(
-                size_data
-                    .tile_x_offset
-                    .saturating_add(x_coord.saturating_mul(size_data.tile_width)),
-                size_data.image_area_x_offset,
-            );
-            let y0 = u32::max(
-                size_data
-                    .tile_y_offset
-                    .saturating_add(y_coord.saturating_mul(size_data.tile_height)),
-                size_data.image_area_y_offset,
-            );
-
-            // Note that `x1` and `y1` are exclusive.
-            let x1 = u32::min(
-                size_data
-                    .tile_x_offset
-                    .saturating_add((x_coord + 1).saturating_mul(size_data.tile_width)),
-                size_data.reference_grid_width,
-            );
-            let y1 = u32::min(
-                size_data
-                    .tile_y_offset
-                    .saturating_add((y_coord + 1).saturating_mul(size_data.tile_height)),
-                size_data.reference_grid_height,
-            );
-
-            IntRect::from_ltrb(x0, y0, x1, y1)
-        };
+        let size = &header.size_data;
+        let rect = tile_rect(size, size.tile_x_coord(idx), size.tile_y_coord(idx));
 
         Tile {
             #[cfg(feature = "std")]

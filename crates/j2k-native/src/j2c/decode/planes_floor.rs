@@ -15,15 +15,11 @@
 
 use core::mem::size_of;
 
-use super::TileDecompositions;
 use crate::checked_decode_sample_count;
 use crate::error::{Result, ValidationError};
-use crate::j2c::build::{CodeBlock, Decomposition, Layer, Precinct, SubBand, SubBandType};
+use crate::j2c::build::{global_code_block_count, IdwtWorkspaceTracker, RecordCounts, SubBandType};
 use crate::j2c::codestream::Header;
-use crate::j2c::codestream::WaveletTransform;
-use crate::j2c::idwt::planned_workspace_elements;
 use crate::j2c::rect::IntRect;
-use crate::j2c::tag_tree::TagNode;
 use crate::j2c::tile::{self, ResolutionTile, Tile};
 use crate::j2c::ComponentData;
 use crate::math::{SimdBuffer, SIMD_WIDTH};
@@ -147,144 +143,91 @@ fn tile_streams_rows(tile: &Tile<'_>, components: usize) -> bool {
 /// its largest component's `f32` coefficients at full resolution, and the
 /// largest component IDWT workspace at the output resolution.
 fn tile_workspace_floor(tile: &Tile<'_>, skipped: u8) -> usize {
-    let mut records = Records::default();
+    let mut records = RecordCounts::default();
     let mut coefficients = 0_usize;
     let mut idwt = 0_usize;
     for component_tile in tile.component_tiles() {
         coefficients = coefficients.max(rect_samples(component_tile.rect));
         records.tile_decompositions = records.tile_decompositions.saturating_add(1);
-        let active = component_tile
-            .component_info
-            .num_decomposition_levels()
-            .saturating_sub(skipped);
-        let mut highest = None;
-        let mut second_highest = None;
-        let mut third_highest = None;
+        let active = usize::from(
+            component_tile
+                .component_info
+                .num_decomposition_levels()
+                .saturating_sub(skipped),
+        );
+        let mut idwt_tracker = IdwtWorkspaceTracker::new(
+            Some(active),
+            component_tile.component_info.wavelet_transform(),
+        );
         let mut ll_rect = IntRect::from_xywh(0, 0, 0, 0);
         for resolution_tile in component_tile.resolution_tiles() {
             if resolution_tile.resolution == 0 {
                 ll_rect = resolution_tile.sub_band_rect(SubBandType::LowLow);
-                records.add_sub_band(&resolution_tile, SubBandType::LowLow, tile.num_layers);
+                add_sub_band_records(
+                    &mut records,
+                    &resolution_tile,
+                    SubBandType::LowLow,
+                    tile.num_layers,
+                );
                 continue;
             }
             records.decompositions = records.decompositions.saturating_add(1);
-            if resolution_tile.resolution <= active {
-                third_highest = second_highest;
-                second_highest = highest;
-                highest = Some(resolution_tile.rect);
-            }
+            idwt_tracker.observe(resolution_tile.rect);
             for sub_band_type in [
                 SubBandType::HighLow,
                 SubBandType::LowHigh,
                 SubBandType::HighHigh,
             ] {
-                records.add_sub_band(&resolution_tile, sub_band_type, tile.num_layers);
+                add_sub_band_records(
+                    &mut records,
+                    &resolution_tile,
+                    sub_band_type,
+                    tile.num_layers,
+                );
             }
         }
-        let transform = component_tile.component_info.wavelet_transform();
-        idwt = idwt.max(idwt_workspace(
-            highest,
-            [second_highest, third_highest],
-            ll_rect,
-            transform,
-        ));
+        idwt = idwt.max(
+            idwt_tracker
+                .finish(ll_rect)
+                .ok()
+                .flatten()
+                .unwrap_or(usize::MAX),
+        );
     }
-    records.bytes().saturating_add(
+    let records_bytes = records.checked_bytes().unwrap_or(usize::MAX);
+    records_bytes.saturating_add(
         coefficients
             .saturating_add(idwt)
             .saturating_mul(size_of::<f32>()),
     )
 }
 
-/// `IdwtWorkspaceTracker::finish`: the IDWT workspace of the highest active
-/// level and the two below it (see `idwt::planned_workspace_elements`), or
-/// the LL band when no level is active. A size `build` cannot represent is
-/// refused there, so it counts as more than any budget.
-fn idwt_workspace(
-    highest: Option<IntRect>,
-    below: [Option<IntRect>; 2],
-    ll_rect: IntRect,
-    transform: WaveletTransform,
-) -> usize {
-    let Some(highest) = highest else {
-        return rect_samples(ll_rect);
-    };
-    planned_workspace_elements(highest, below, transform).unwrap_or(usize::MAX)
-}
-
 fn rect_samples(rect: IntRect) -> usize {
     (rect.width() as usize).saturating_mul(rect.height() as usize)
 }
 
-/// Record counts `build` plans for a tile, tag-tree nodes only as the two
-/// trees of each precinct need at least: a root, and a leaf per code-block.
-#[derive(Default)]
-struct Records {
-    tile_decompositions: usize,
-    decompositions: usize,
-    sub_bands: usize,
-    precincts: usize,
-    code_blocks: usize,
-    layers: usize,
-    tag_tree_nodes: usize,
-}
-
-impl Records {
-    fn add_sub_band(
-        &mut self,
-        resolution_tile: &ResolutionTile<'_>,
-        sub_band_type: SubBandType,
-        layers: u8,
-    ) {
-        let precincts = usize::try_from(resolution_tile.num_precincts()).unwrap_or(usize::MAX);
-        let code_blocks = code_block_count(
-            resolution_tile,
-            resolution_tile.sub_band_rect(sub_band_type),
-        );
-        self.sub_bands = self.sub_bands.saturating_add(1);
-        self.precincts = self.precincts.saturating_add(precincts);
-        self.code_blocks = self.code_blocks.saturating_add(code_blocks);
-        self.layers = self
-            .layers
-            .saturating_add(code_blocks.saturating_mul(usize::from(layers)));
-        self.tag_tree_nodes = self
-            .tag_tree_nodes
-            .saturating_add(precincts.max(code_blocks).saturating_mul(2));
-    }
-
-    fn bytes(&self) -> usize {
-        [
-            self.tile_decompositions
-                .saturating_mul(size_of::<TileDecompositions>()),
-            self.decompositions
-                .saturating_mul(size_of::<Decomposition>()),
-            self.sub_bands.saturating_mul(size_of::<SubBand>()),
-            self.precincts.saturating_mul(size_of::<Precinct>()),
-            self.code_blocks.saturating_mul(size_of::<CodeBlock>()),
-            self.layers.saturating_mul(size_of::<Layer>()),
-            self.tag_tree_nodes.saturating_mul(size_of::<TagNode>()),
-        ]
-        .into_iter()
-        .fold(0, usize::saturating_add)
-    }
-}
-
-/// The code-blocks of a sub-band, as `build` counts them before walking
-/// precincts.
-fn code_block_count(resolution_tile: &ResolutionTile<'_>, sub_band_rect: IntRect) -> usize {
-    if sub_band_rect.is_empty() {
-        return 0;
-    }
-    let cells = |start: u32, end: u32, size: u32| end.div_ceil(size).saturating_sub(start / size);
-    let columns = cells(
-        sub_band_rect.x0,
-        sub_band_rect.x1,
-        resolution_tile.code_block_width(),
-    );
-    let rows = cells(
-        sub_band_rect.y0,
-        sub_band_rect.y1,
-        resolution_tile.code_block_height(),
-    );
-    (columns as usize).saturating_mul(rows as usize)
+/// Add one sub-band's records to the floor, counting tag-tree nodes only as
+/// the two trees of each precinct need at least: a root and one leaf per
+/// code-block.
+fn add_sub_band_records(
+    records: &mut RecordCounts,
+    resolution_tile: &ResolutionTile<'_>,
+    sub_band_type: SubBandType,
+    layers: u8,
+) {
+    let precincts = usize::try_from(resolution_tile.num_precincts()).unwrap_or(usize::MAX);
+    let code_blocks = global_code_block_count(
+        resolution_tile,
+        resolution_tile.sub_band_rect(sub_band_type),
+    )
+    .unwrap_or(usize::MAX);
+    records.sub_bands = records.sub_bands.saturating_add(1);
+    records.precincts = records.precincts.saturating_add(precincts);
+    records.code_blocks = records.code_blocks.saturating_add(code_blocks);
+    records.layers = records
+        .layers
+        .saturating_add(code_blocks.saturating_mul(usize::from(layers)));
+    records.tag_tree_nodes = records
+        .tag_tree_nodes
+        .saturating_add(precincts.max(code_blocks).saturating_mul(2));
 }

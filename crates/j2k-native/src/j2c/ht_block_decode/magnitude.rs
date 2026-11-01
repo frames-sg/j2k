@@ -24,6 +24,26 @@ pub(super) fn supports_cleanup_to_f32(missing_msbs: u32, width: u32) -> bool {
     width != 0 && width.is_multiple_of(4) && uses_simd_rows(missing_msbs)
 }
 
+/// Validate cleanup scratch and clear the preceding quad row's magnitudes.
+fn prepare_cleanup_scratch(
+    width: u32,
+    height: u32,
+    sstr: usize,
+    scratch: &[u16],
+    v_n_scratch: &mut [u32],
+) -> Option<()> {
+    let quad_rows = height.div_ceil(2) as usize;
+    if scratch.len() < sstr * (quad_rows + 1) {
+        return None;
+    }
+    let v_n_width = width.div_ceil(2) as usize + 2;
+    if v_n_scratch.len() < v_n_width {
+        return None;
+    }
+    v_n_scratch[..v_n_width].fill(0);
+    Some(())
+}
+
 fn sample_mask(bit: u32) -> u32 {
     1 << (4 + bit)
 }
@@ -354,15 +374,7 @@ pub(super) fn decode_cleanup_and_magnitude_sign_phase(
     vlc_buffer: &mut Vec<u8>,
     observer: &mut impl HtDecodeObserver,
 ) -> Option<()> {
-    let quad_rows = height.div_ceil(2) as usize;
-    if scratch.len() < sstr * (quad_rows + 1) {
-        return None;
-    }
-    let v_n_width = width.div_ceil(2) as usize + 2;
-    if v_n_scratch.len() < v_n_width {
-        return None;
-    }
-    v_n_scratch[..v_n_width].fill(0);
+    prepare_cleanup_scratch(width, height, sstr, scratch, v_n_scratch)?;
 
     let mut mel = MelDecoder::new(coded_data, lcup, scup);
     let consumable = (width as usize)
@@ -465,15 +477,7 @@ pub(super) fn decode_cleanup_and_magnitude_sign_to_f32<const IRREVERSIBLE_MIDPOI
     if !supports_cleanup_to_f32(missing_msbs, width) {
         return None;
     }
-    let quad_rows = height.div_ceil(2) as usize;
-    if scratch.len() < sstr * (quad_rows + 1) {
-        return None;
-    }
-    let v_n_width = width.div_ceil(2) as usize + 2;
-    if v_n_scratch.len() < v_n_width {
-        return None;
-    }
-    v_n_scratch[..v_n_width].fill(0);
+    prepare_cleanup_scratch(width, height, sstr, scratch, v_n_scratch)?;
 
     let consumable = (width as usize)
         .checked_mul(height as usize)?
@@ -507,7 +511,7 @@ pub(super) fn decode_cleanup_and_magnitude_sign_to_f32<const IRREVERSIBLE_MIDPOI
 
 /// [`decode_cleanup_and_magnitude_sign_to_f32`] for a block whose refinement
 /// passes follow: the same direct rows, publishing the sign-magnitude words
-/// those passes refine. Its prologue mirrors the `f32` entry's.
+/// those passes refine. Its prologue matches the `f32` entry's.
 #[cfg(feature = "simd")]
 #[inline(never)]
 #[expect(
@@ -532,15 +536,7 @@ pub(super) fn decode_cleanup_and_magnitude_sign_direct(
     if !supports_cleanup_to_f32(missing_msbs, width) {
         return None;
     }
-    let quad_rows = height.div_ceil(2) as usize;
-    if scratch.len() < sstr * (quad_rows + 1) {
-        return None;
-    }
-    let v_n_width = width.div_ceil(2) as usize + 2;
-    if v_n_scratch.len() < v_n_width {
-        return None;
-    }
-    v_n_scratch[..v_n_width].fill(0);
+    prepare_cleanup_scratch(width, height, sstr, scratch, v_n_scratch)?;
 
     let consumable = (width as usize)
         .checked_mul(height as usize)?

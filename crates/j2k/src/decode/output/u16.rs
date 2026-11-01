@@ -27,7 +27,7 @@ pub(in crate::decode) fn write_components_u16_output(
 }
 
 /// Whether a region decode of `image` to `fmt` may stream its rows through
-/// [`U16RowSink`]: they carry the samples `decode_native_region` packs (see
+/// [`super::U16RowSink`]: they carry the samples `decode_native_region` packs (see
 /// `Image::streamed_rows_native_precision`: every component has one
 /// precision of at most 24 bits), which `U16Conversion` converts to the
 /// bytes [`write_u16_output`] writes from those packed samples, and
@@ -69,7 +69,7 @@ pub(in crate::decode) fn region_rows_preferred_u16(
 }
 
 /// Write `planes`, each `dims` in size, to `out` from its first byte.
-fn write_planes_u16(
+pub(super) fn write_planes_u16(
     color_space: &ColorSpace,
     has_alpha: bool,
     planes: &[j2k_native::ComponentPlane<'_>],
@@ -131,74 +131,6 @@ pub(in crate::decode) fn write_plane_rows_u16(
             what: "backend color space cannot be mapped to requested 16-bit pixel format",
         }
         .into()),
-    }
-}
-
-/// Writes a region decode's rectangles of component rows to a 16-bit
-/// output as [`write_components_u16_output`] writes whole planes, which for
-/// an image that [`rows_match_native_u16`] accepts is what
-/// [`write_u16_output`] writes from its native samples. The first error
-/// stops every later write and is returned by [`Self::finish`].
-pub(in crate::decode) struct U16RowSink<'o> {
-    color_space: &'o ColorSpace,
-    has_alpha: bool,
-    out: &'o mut [u8],
-    stride: usize,
-    fmt: PixelFormat,
-    error: Option<J2kError>,
-}
-
-impl<'o> U16RowSink<'o> {
-    /// `out` must already hold the region at `stride` in `fmt`.
-    pub(in crate::decode) fn new(
-        color_space: &'o ColorSpace,
-        has_alpha: bool,
-        out: &'o mut [u8],
-        stride: usize,
-        fmt: PixelFormat,
-    ) -> Self {
-        Self {
-            color_space,
-            has_alpha,
-            out,
-            stride,
-            fmt,
-            error: None,
-        }
-    }
-
-    pub(in crate::decode) fn finish(self) -> Result<(), J2kError> {
-        self.error.map_or(Ok(()), Err)
-    }
-}
-
-impl j2k_native::ComponentRowSink for U16RowSink<'_> {
-    fn write_rows(&mut self, x: u32, y: u32, planes: &[j2k_native::ComponentPlane<'_>]) {
-        if self.error.is_some() {
-            return;
-        }
-        let dims = planes
-            .first()
-            .map_or((0, 0), j2k_native::ComponentPlane::dimensions);
-        let offset = (y as usize)
-            .checked_mul(self.stride)
-            .and_then(|row| row.checked_add((x as usize).checked_mul(self.fmt.bytes_per_pixel())?));
-        let result = match offset.and_then(|offset| self.out.get_mut(offset..)) {
-            Some(out) => write_planes_u16(
-                self.color_space,
-                self.has_alpha,
-                planes,
-                dims,
-                out,
-                self.stride,
-                self.fmt,
-            ),
-            None => Err(J2kError::DimensionOverflow {
-                width: x,
-                height: y,
-            }),
-        };
-        self.error = result.err();
     }
 }
 

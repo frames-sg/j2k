@@ -161,7 +161,9 @@ fn stream_rows<'a>(
     tier1_us: &mut u128,
 ) -> Result<()> {
     let mut bands = Vec::new();
-    let line_plans = plan_tile_lines(tile, header, tile_ctx, storage, &mut bands)?;
+    let active_levels = (0..tile.component_infos.len())
+        .map(|component| push_component_bands(storage, header, component, &mut bands));
+    let line_plans = plan_tile_lines(tile, header, tile_ctx, storage, active_levels)?;
     let band_of = band_lookup(&bands)?;
     let empty = IntRect::from_xywh(0, 0, 0, 0);
     let (copy, region) = line_plans
@@ -180,16 +182,7 @@ fn stream_rows<'a>(
     let mut output = RowOutput::new(tile, sink, tile_ctx, copy, region);
     let mut output_samples = 0usize;
     let result = (|| {
-        let mut rings = &mut buffer[..];
-        let mut lines = Vec::new();
-        lines
-            .try_reserve_exact(line_plans.len())
-            .map_err(|_| DecodingError::HostAllocationFailed)?;
-        for (plan, len) in line_plans.iter().zip(&ring_lens) {
-            let (ring, tail) = core::mem::take(&mut rings).split_at_mut(*len);
-            rings = tail;
-            lines.push(plan.reconstruction(ring)?);
-        }
+        let mut lines = line_reconstructions(&line_plans, &ring_lens, &mut buffer)?;
         let mut rows = BandedRows {
             header,
             component_infos: &tile.component_infos,
@@ -218,40 +211,40 @@ fn stream_rows<'a>(
     result
 }
 
-/// Add every component's bands to `bands` and plan its reconstruction.
-/// Returns no plans when no component has rows to reconstruct.
-fn plan_tile_lines(
+/// Plan every component's streamed reconstruction of its active levels.
+/// No plans when no component has rows to reconstruct; every component of
+/// a 1x1-sampled tile reconstructs the same rows.
+/// Pull each component's active levels before constructing its line plan,
+/// preserving the serial caller's band-push and error order.
+pub(super) fn plan_tile_lines(
     tile: &Tile<'_>,
     header: &Header<'_>,
     tile_ctx: &TileDecodeContext,
     storage: &DecompositionStorage<'_>,
-    bands: &mut Vec<SubBandBands>,
+    active_levels: impl ExactSizeIterator<Item = Result<usize>>,
 ) -> Result<Vec<LinePlan>> {
     let mut line_plans = Vec::new();
     line_plans
-        .try_reserve_exact(tile.component_infos.len())
+        .try_reserve_exact(active_levels.len())
         .map_err(|_| DecodingError::HostAllocationFailed)?;
-    let mut missing = 0;
-    for (component_idx, component_info) in tile.component_infos.iter().enumerate() {
-        let active_levels = push_component_bands(storage, header, component_idx, bands)?;
-        match LinePlan::new(
+    for (component_idx, (component_info, levels)) in
+        tile.component_infos.iter().zip(active_levels).enumerate()
+    {
+        if let Some(plan) = LinePlan::new(
             storage,
             tile_ctx,
             component_idx,
-            active_levels,
+            levels?,
             header,
             component_info.wavelet_transform(),
         )? {
-            Some(plan) => line_plans.push(plan),
-            None => missing += 1,
+            line_plans.push(plan);
         }
     }
-    if missing == tile.component_infos.len() {
-        line_plans.clear();
+    if line_plans.is_empty() {
         return Ok(line_plans);
     }
-    // Every component of a 1x1-sampled tile reconstructs the same rows.
-    if missing > 0
+    if line_plans.len() != tile.component_infos.len()
         || line_plans
             .iter()
             .any(|plan| plan.copy != line_plans[0].copy || plan.region != line_plans[0].region)
@@ -259,6 +252,24 @@ fn plan_tile_lines(
         return Err(DecodingError::CodeBlockDecodeFailure.into());
     }
     Ok(line_plans)
+}
+
+/// Build every component's reconstruction in its own slice of the ring buffer.
+pub(super) fn line_reconstructions<'a>(
+    plans: &[LinePlan],
+    ring_lens: &[usize],
+    mut rings: &'a mut [f32],
+) -> Result<Vec<LineReconstruction<'a>>> {
+    let mut lines = Vec::new();
+    lines
+        .try_reserve_exact(plans.len())
+        .map_err(|_| DecodingError::HostAllocationFailed)?;
+    for (plan, len) in plans.iter().zip(ring_lens) {
+        let (ring, tail) = core::mem::take(&mut rings).split_at_mut(*len);
+        rings = tail;
+        lines.push(plan.reconstruction(ring)?);
+    }
+    Ok(lines)
 }
 
 /// Take the context's ring buffer, grown to hold every plan's rings and
@@ -370,6 +381,7 @@ impl<'o, 't> RowOutput<'o, 't> {
             .ok_or(DecodingError::CodeBlockDecodeFailure)?;
         Ok(Some(Rgb8Rows {
             out,
+            #[cfg(feature = "parallel")]
             stride,
             x: (copy.x0 - region.x0) as usize * 3,
         }))
@@ -450,10 +462,7 @@ impl<'o, 't> RowOutput<'o, 't> {
     }
 }
 
-#[cfg_attr(
-    not(feature = "parallel"),
-    expect(dead_code, reason = "only the parallel band reader writes batches")
-)]
+#[cfg(feature = "parallel")]
 impl RowOutput<'_, '_> {
     /// [`Self::write`] through one reader per component, each on its own
     /// pool task, `batch` rows at a time. Each component's reconstruction
@@ -626,10 +635,7 @@ impl RowOutput<'_, '_> {
 }
 
 /// Each component's first `len` samples of its `batch_len` in `buffer`.
-#[cfg_attr(
-    not(feature = "parallel"),
-    expect(dead_code, reason = "only the parallel band reader writes batches")
-)]
+#[cfg(feature = "parallel")]
 fn batch_parts(
     buffer: &mut [f32],
     batch_len: usize,
@@ -657,30 +663,18 @@ fn batch_parts(
 
 /// Run `spawned` on the pool while `inline` runs here, and return once both
 /// have.
-#[cfg_attr(
-    not(feature = "parallel"),
-    expect(dead_code, reason = "only the parallel band reader writes batches")
-)]
+#[cfg(feature = "parallel")]
 fn overlap(spawned: impl FnOnce() + Send, inline: impl FnOnce()) {
-    #[cfg(feature = "parallel")]
     rayon::in_place_scope(|scope| {
         scope.spawn(move |_| spawned());
         inline();
     });
-    #[cfg(not(feature = "parallel"))]
-    {
-        spawned();
-        inline();
-    }
 }
 
 /// Reconstruct the next `parts[c].len() / width` rows of each component `c`,
 /// from row `first_y`, into `parts[c]`, through its own reader: on the pool,
 /// one component per task.
-#[cfg_attr(
-    not(feature = "parallel"),
-    expect(dead_code, reason = "only the parallel band reader writes batches")
-)]
+#[cfg(feature = "parallel")]
 fn reconstruct_batch(
     lines: &mut [LineReconstruction<'_>],
     readers: &mut [&mut (dyn SubBandRows + Send)],
@@ -692,7 +686,6 @@ fn reconstruct_batch(
         return Err(DecodingError::CodeBlockDecodeFailure.into());
     }
     let mut results: [Result<()>; 4] = core::array::from_fn(|_| Ok(()));
-    #[cfg(feature = "parallel")]
     rayon::in_place_scope(|scope| {
         let mut tasks = lines
             .iter_mut()
@@ -709,24 +702,12 @@ fn reconstruct_batch(
             *result = reconstruct_rows_into(line, &mut **reader, part, first_y, width);
         }
     });
-    #[cfg(not(feature = "parallel"))]
-    for (((line, reader), part), result) in lines
-        .iter_mut()
-        .zip(readers.iter_mut())
-        .zip(parts.iter_mut())
-        .zip(results.iter_mut())
-    {
-        *result = reconstruct_rows_into(line, &mut **reader, part, first_y, width);
-    }
     results.into_iter().collect()
 }
 
 /// The next rows of `line`, from row `first_y`, through `rows`, into `out`,
 /// `width` samples each.
-#[cfg_attr(
-    not(feature = "parallel"),
-    expect(dead_code, reason = "only the parallel band reader writes batches")
-)]
+#[cfg(feature = "parallel")]
 fn reconstruct_rows_into(
     line: &mut LineReconstruction<'_>,
     rows: &mut dyn SubBandRows,
@@ -753,25 +734,20 @@ fn reconstruct_rows_into(
 struct Rgb8Rows<'o> {
     /// Whole output rows, `stride` bytes each, one per reconstructed row.
     out: &'o mut [u8],
+    #[cfg(feature = "parallel")]
     stride: usize,
     /// Where the reconstructed samples start in each output row, in bytes.
     x: usize,
 }
 
 /// One range of a batch's rows: each component's rows and their output.
-#[cfg_attr(
-    not(feature = "parallel"),
-    expect(dead_code, reason = "only the parallel band reader writes batches")
-)]
+#[cfg(feature = "parallel")]
 struct BatchRows<'p, 'o> {
     parts: [&'p mut [f32]; 4],
     rgb8: Option<Rgb8Rows<'o>>,
 }
 
-#[cfg_attr(
-    not(feature = "parallel"),
-    expect(dead_code, reason = "only the parallel band reader writes batches")
-)]
+#[cfg(feature = "parallel")]
 impl BatchRows<'_, '_> {
     /// Transform the rows one at a time, as [`RowOutput::write`] does, then
     /// pack them into the RGB8 rows if there are any; with the `mct` of
@@ -833,10 +809,7 @@ impl BatchRows<'_, '_> {
 /// Transform each component's rows in `parts`, `width` samples each, and
 /// pack them into `rgb8` when given, in up to `tasks` ranges of rows, all but
 /// the first spawned on the pool.
-#[cfg_attr(
-    not(feature = "parallel"),
-    expect(dead_code, reason = "only the parallel band reader writes batches")
-)]
+#[cfg(feature = "parallel")]
 fn finish_rows(
     transform: ((&Tile<'_>, bool), Option<DeferredMct>),
     parts: &mut [&mut [f32]],
@@ -891,7 +864,6 @@ fn finish_rows(
         });
     }
     let mut results: [Result<()>; 4] = core::array::from_fn(|_| Ok(()));
-    #[cfg(feature = "parallel")]
     rayon::in_place_scope(|scope| {
         let mut jobs = ranges.into_iter().zip(results.iter_mut());
         let first = jobs.next();
@@ -904,12 +876,6 @@ fn finish_rows(
             *result = range.finish(transform, components, width);
         }
     });
-    #[cfg(not(feature = "parallel"))]
-    for (range, result) in ranges.into_iter().zip(results.iter_mut()) {
-        if let Some(range) = range {
-            *result = range.finish(transform, components, width);
-        }
-    }
     results.into_iter().collect()
 }
 

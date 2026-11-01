@@ -426,7 +426,13 @@ pub(super) fn decode_tile_rows<'a>(
     if declines(live.include_bytes(line_lists))? {
         return Ok(false);
     }
-    let line_plans = plan_tile_lines(tile, header, tile_ctx, storage, &active_levels)?;
+    let line_plans = banded_tier1::plan_tile_lines(
+        tile,
+        header,
+        tile_ctx,
+        storage,
+        active_levels.iter().copied().map(Ok),
+    )?;
     let empty = IntRect::from_xywh(0, 0, 0, 0);
     let (copy, region) = line_plans
         .first()
@@ -544,16 +550,8 @@ pub(super) fn decode_tile_rows<'a>(
     let source = PayloadSource::new(storage);
     let result = slots.and_then(|slots| {
         let rings_len = buffer.len() - scratch_len;
-        let (mut line_rings, scratch) = buffer.split_at_mut(rings_len);
-        let mut lines = Vec::new();
-        lines
-            .try_reserve_exact(line_plans.len())
-            .map_err(|_| DecodingError::HostAllocationFailed)?;
-        for (plan, len) in line_plans.iter().zip(&ring_lens) {
-            let (ring, tail) = core::mem::take(&mut line_rings).split_at_mut(*len);
-            line_rings = tail;
-            lines.push(plan.reconstruction(ring)?);
-        }
+        let (line_rings, scratch) = buffer.split_at_mut(rings_len);
+        let mut lines = banded_tier1::line_reconstructions(&line_plans, &ring_lens, line_rings)?;
         let run = |readers: &mut [&mut (dyn SubBandRows + Send)]| -> Result<()> {
             let written = match readers {
                 [reader] => output.write(&mut lines, &mut **reader),
@@ -926,47 +924,6 @@ fn plan_tile_rings(
         active_levels.push(levels);
     }
     Ok((rings, bands, strip_starts, active_levels))
-}
-
-/// Plan every component's streamed reconstruction of its `active_levels`.
-/// No plans when no component has rows to reconstruct; every component of
-/// a 1x1-sampled tile reconstructs the same rows.
-fn plan_tile_lines(
-    tile: &Tile<'_>,
-    header: &Header<'_>,
-    tile_ctx: &TileDecodeContext,
-    storage: &DecompositionStorage<'_>,
-    active_levels: &[usize],
-) -> Result<Vec<LinePlan>> {
-    let mut line_plans = Vec::new();
-    line_plans
-        .try_reserve_exact(active_levels.len())
-        .map_err(|_| DecodingError::HostAllocationFailed)?;
-    for (component_idx, (component_info, levels)) in
-        tile.component_infos.iter().zip(active_levels).enumerate()
-    {
-        if let Some(plan) = LinePlan::new(
-            storage,
-            tile_ctx,
-            component_idx,
-            *levels,
-            header,
-            component_info.wavelet_transform(),
-        )? {
-            line_plans.push(plan);
-        }
-    }
-    if line_plans.is_empty() {
-        return Ok(line_plans);
-    }
-    if line_plans.len() != tile.component_infos.len()
-        || line_plans
-            .iter()
-            .any(|plan| plan.copy != line_plans[0].copy || plan.region != line_plans[0].region)
-    {
-        return Err(DecodingError::CodeBlockDecodeFailure.into());
-    }
-    Ok(line_plans)
 }
 
 /// The bytes the executor holds for `rings` and `bands` while `workers`
@@ -2984,9 +2941,14 @@ mod tests {
             j2k_alloc_probe::peak_bytes() - base,
             j2k_alloc_probe::live_bytes() - base,
         );
-        let line_plans =
-            plan_tile_lines(&tiles[0], &image.header, tile_ctx, storage, &active_levels)
-                .expect("plan lines");
+        let line_plans = banded_tier1::plan_tile_lines(
+            &tiles[0],
+            &image.header,
+            tile_ctx,
+            storage,
+            active_levels.iter().copied().map(Ok),
+        )
+        .expect("plan lines");
         let copy = line_plans
             .first()
             .map_or(IntRect::from_xywh(0, 0, 0, 0), |plan| plan.copy);

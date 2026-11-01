@@ -4,7 +4,7 @@ use super::plan::{tag_tree_node_count, IdwtWorkspaceTracker};
 use super::reuse::{discard_stale_capacity, ReallocationBudget};
 use super::{
     release_unused_roi_workspace, roi_workspace_bytes, BuildWorkspace, DecompositionAllocationPlan,
-    Segment, DEFAULT_MAX_DECODE_BYTES,
+    RecordCounts, Segment, DEFAULT_MAX_DECODE_BYTES,
 };
 use crate::error::{DecodeError, ValidationError};
 use crate::j2c::build::{Decomposition, SubBand, SubBandType};
@@ -22,6 +22,19 @@ fn coefficient_plan(baseline: usize, coefficients: usize) -> DecompositionAlloca
     plan.add_component_coefficients(coefficients)
         .expect("target count");
     plan
+}
+
+#[test]
+fn logical_record_bytes_are_independent_of_the_decode_cap() {
+    let count = DEFAULT_MAX_DECODE_BYTES / size_of::<SubBand>() + 1;
+    let bytes = RecordCounts {
+        sub_bands: count,
+        ..RecordCounts::default()
+    }
+    .checked_bytes()
+    .expect("record byte count fits usize");
+    assert_eq!(bytes, count * size_of::<SubBand>());
+    assert!(bytes > DEFAULT_MAX_DECODE_BYTES);
 }
 
 #[test]

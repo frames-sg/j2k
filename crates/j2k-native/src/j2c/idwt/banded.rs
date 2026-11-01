@@ -28,6 +28,7 @@ use super::horizontal::filter_row;
 use super::interleave::interleave_row;
 use super::model::{IDWTInput, IDWTTempOutput};
 use super::try_grow_level_buffer;
+use super::vertical::irreversible_row_scale;
 #[cfg(feature = "parallel")]
 use crate::error::{bail, DecodingError};
 use crate::math::{self, dispatch, f32x8, Level, Simd, SIMD_WIDTH};
@@ -444,11 +445,15 @@ pub(super) fn filter_2d_banded_from_bands(
         try_grow_level_buffer(band_scratch, scratch_len)?;
         dispatch!(Level::new(), simd => run_strips(
             simd,
-            level,
+            level.width,
             target,
             parallel_layout.strip_len,
             &mut band_scratch[..scratch_len],
             per_worker,
+            #[inline(always)]
+            |simd, first_row, output, worker_scratch| {
+                stream_strip(simd, level, first_row, output, worker_scratch);
+            },
         ));
     }
     Ok(())
@@ -458,11 +463,12 @@ pub(super) fn filter_2d_banded_from_bands(
 #[inline(always)]
 fn run_strips<S: Simd>(
     simd: S,
-    level: Level2d<'_>,
+    width: usize,
     target: &mut [f32],
     strip_len: usize,
     scratch: &mut [f32],
     per_worker: usize,
+    strip_kernel: impl Fn(S, usize, &mut [f32], &mut [f32]) + Sync,
 ) {
     use rayon::prelude::*;
     use std::sync::Mutex;
@@ -483,15 +489,15 @@ fn run_strips<S: Simd>(
                 #[inline(always)]
                 || {
                     while let Some((strip, output)) = next() {
-                        let first_row = strip * strip_len / level.width;
-                        stream_strip(simd, level, first_row, output, worker_scratch);
+                        let first_row = strip * strip_len / width;
+                        strip_kernel(simd, first_row, output, worker_scratch);
                     }
                 },
             );
             #[cfg(not(feature = "simd"))]
             while let Some((strip, output)) = next() {
-                let first_row = strip * strip_len / level.width;
-                stream_strip(simd, level, first_row, output, worker_scratch);
+                let first_row = strip * strip_len / width;
+                strip_kernel(simd, first_row, output, worker_scratch);
             }
         });
 }
@@ -569,13 +575,24 @@ fn filter_levels_pair(
     let steps = lifting_steps(outer_level.transform);
     let scratch = PairScratch::new(inner_level.width, width, layout, steps)?;
     try_grow_level_buffer(band_scratch, scratch.len)?;
-    dispatch!(Level::new(), simd => run_pair_strips(
+    dispatch!(Level::new(), simd => run_strips(
         simd,
-        [inner_level, outer_level],
+        outer_level.width,
         target,
         layout.strip_len,
         &mut band_scratch[..scratch.len],
-        [scratch.per_worker, scratch.rows_len],
+        scratch.per_worker,
+        #[inline(always)]
+        |simd, first_row, output, worker_scratch| {
+            pair_strip(
+                simd,
+                [inner_level, outer_level],
+                first_row,
+                output,
+                worker_scratch,
+                scratch.rows_len,
+            );
+        },
     ));
     Ok(())
 }
@@ -627,45 +644,6 @@ impl PairScratch {
 #[cfg(feature = "parallel")]
 const fn pair_ll_rows(strip_rows: usize, count: usize) -> usize {
     strip_rows.div_ceil(2) + count + 3
-}
-
-#[cfg(feature = "parallel")]
-#[inline(always)]
-fn run_pair_strips<S: Simd>(
-    simd: S,
-    levels: [Level2d<'_>; 2],
-    target: &mut [f32],
-    strip_len: usize,
-    scratch: &mut [f32],
-    [per_worker, rows_len]: [usize; 2],
-) {
-    use rayon::prelude::*;
-    use std::sync::Mutex;
-
-    let strips = Mutex::new(target.chunks_mut(strip_len).enumerate());
-    let next = || strips.lock().ok().and_then(|mut strips| strips.next());
-    let width = levels[1].width;
-    scratch
-        .par_chunks_mut(per_worker)
-        .with_max_len(1)
-        .for_each(|worker_scratch| {
-            // As in `run_strips`.
-            #[cfg(feature = "simd")]
-            simd.vectorize(
-                #[inline(always)]
-                || {
-                    while let Some((strip, output)) = next() {
-                        let first_row = strip * strip_len / width;
-                        pair_strip(simd, levels, first_row, output, worker_scratch, rows_len);
-                    }
-                },
-            );
-            #[cfg(not(feature = "simd"))]
-            while let Some((strip, output)) = next() {
-                let first_row = strip * strip_len / width;
-                pair_strip(simd, levels, first_row, output, worker_scratch, rows_len);
-            }
-        });
 }
 
 /// Reconstruct rows `first_row..` of `outer` into `output`, after the rows
@@ -773,40 +751,11 @@ fn synthesize_level_row<S: Simd>(
     low: &mut [f32],
     high: &mut [f32],
 ) {
-    let row_scale = if level.transform == WaveletTransform::Irreversible97 {
-        if index % 2 == level.y0 % 2 {
-            dwt::DWT97_KAPPA_F32
-        } else {
-            level.high_pass
-        }
-    } else {
-        1.0
-    };
-    let source = if index % 2 == level.even.start_row % 2 {
-        level.even.row(index)
-    } else {
-        level.odd.row(index)
-    };
-    match source {
-        Some((first, second)) => {
-            synthesize_row(
-                simd,
-                level.row_geometry(),
-                first,
-                second,
-                row,
-                low,
-                high,
-                row_scale,
-            );
-        }
-        // Lifting maps an all-zero row to zeros.
-        None => row.fill(0.0),
-    }
+    synthesize_level_columns(simd, level, index, row, 0..level.width, low, high);
 }
 
-/// [`synthesize_level_row`] restricted to `columns`, one of the level's
-/// [`column_strips`], into `out`.
+/// Synthesize level row `index` over `columns` (the whole row, or one of the
+/// level's [`column_strips`]) into `out`, with 9-7I row scaling.
 #[expect(
     clippy::inline_always,
     reason = "specialized with the streaming kernels"
@@ -821,17 +770,11 @@ fn synthesize_level_columns<S: Simd>(
     low: &mut [f32],
     high: &mut [f32],
 ) {
-    if columns.len() == level.width {
-        synthesize_level_row(simd, level, index, out, low, high);
-        return;
-    }
-    // Strips are only made of even-origin levels (`column_strips`).
     let row_scale = if level.transform == WaveletTransform::Reversible53 {
         1.0
-    } else if index % 2 == level.y0 % 2 {
-        dwt::DWT97_KAPPA_F32
     } else {
-        level.high_pass
+        let y0_parity = u32::from(!level.y0.is_multiple_of(2));
+        irreversible_row_scale(y0_parity, index.is_multiple_of(2), level.high_pass)
     };
     let source = if index % 2 == level.even.start_row % 2 {
         level.even.row(index)
@@ -839,17 +782,34 @@ fn synthesize_level_columns<S: Simd>(
         level.odd.row(index)
     };
     match source {
-        Some((low_source, high_source)) => synthesize_row_columns(
-            simd,
-            level,
-            low_source,
-            high_source,
-            out,
-            columns,
-            low,
-            high,
-            row_scale,
-        ),
+        Some((low_source, high_source)) => {
+            if columns.len() == level.width {
+                synthesize_row(
+                    simd,
+                    level.row_geometry(),
+                    low_source,
+                    high_source,
+                    out,
+                    low,
+                    high,
+                    row_scale,
+                );
+            } else {
+                // Strips are only made of even-origin levels (`column_strips`).
+                synthesize_row_columns(
+                    simd,
+                    level,
+                    low_source,
+                    high_source,
+                    out,
+                    columns,
+                    low,
+                    high,
+                    row_scale,
+                );
+            }
+        }
+        // Lifting maps an all-zero row to zeros.
         None => out.fill(0.0),
     }
 }

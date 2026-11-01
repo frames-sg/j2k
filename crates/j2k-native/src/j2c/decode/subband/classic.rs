@@ -86,10 +86,6 @@ impl ClassicJobParameters {
 }
 
 #[expect(
-    clippy::cast_precision_loss,
-    reason = "the codec float domain intentionally receives bounded integer samples at this rounding boundary"
-)]
-#[expect(
     clippy::too_many_arguments,
     reason = "the Tier-1 boundary keeps geometry, state buffers, and validated options explicit"
 )]
@@ -332,31 +328,17 @@ pub(super) fn decode_sub_band_classic_blocks(
                 code_block.number_of_coding_passes,
                 component_info.roi_shift,
             );
-            let exact = !irreversible_midpoint
-                && component_info.roi_shift == 0
-                && midpoint.reversible_is_exact();
             placement.store_rows(
                 tile_ctx.bit_plane_decode_context.coefficient_rows(),
                 base_store,
                 output_stride,
                 |coefficients, out_row| {
-                    if irreversible_midpoint {
-                        midpoint.dequantize_row(coefficients, out_row, dequantization_step);
-                    } else if exact {
-                        bitplane::MidpointReconstructor::scale_exact_reversible_row(
-                            coefficients,
-                            out_row,
-                            dequantization_step,
-                        );
-                    } else {
-                        for (output, coefficient) in out_row.iter_mut().zip(coefficients) {
-                            *output = apply_roi_maxshift_inverse_i64(
-                                midpoint.reconstruct_reversible(*coefficient),
-                                component_info.roi_shift,
-                            ) as f32
-                                * dequantization_step;
-                        }
-                    }
+                    midpoint.reconstruct_row(
+                        coefficients,
+                        out_row,
+                        dequantization_step,
+                        irreversible_midpoint,
+                    );
                 },
             )?;
         }

@@ -15,6 +15,7 @@ mod plan;
 mod reuse;
 
 pub(super) use plan::{code_block_grid, tag_tree_node_count};
+pub(in crate::j2c) use plan::{global_code_block_count, IdwtWorkspaceTracker};
 pub(super) use reuse::push_preallocated;
 
 /// How sub-band coefficient ranges share [`DecompositionStorage::coefficients`].
@@ -59,6 +60,40 @@ impl BuildWorkspace {
             } => coefficient_layout,
             Self::CoefficientsOnly | Self::MetadataOnly => CoefficientLayout::Tile,
         }
+    }
+}
+
+/// Logical counts of the records every built tile owns.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(in crate::j2c) struct RecordCounts {
+    pub(in crate::j2c) tile_decompositions: usize,
+    pub(in crate::j2c) decompositions: usize,
+    pub(in crate::j2c) sub_bands: usize,
+    pub(in crate::j2c) precincts: usize,
+    pub(in crate::j2c) code_blocks: usize,
+    pub(in crate::j2c) layers: usize,
+    pub(in crate::j2c) tag_tree_nodes: usize,
+}
+
+impl RecordCounts {
+    /// These records' exact bytes, independent of the decode allocation cap.
+    pub(in crate::j2c) fn checked_bytes(self) -> Result<usize> {
+        let mut total = 0usize;
+        let mut include = |size: usize, count: usize| -> Result<()> {
+            total = size
+                .checked_mul(count)
+                .and_then(|bytes| total.checked_add(bytes))
+                .ok_or(ValidationError::ImageTooLarge)?;
+            Ok(())
+        };
+        include(size_of::<TileDecompositions>(), self.tile_decompositions)?;
+        include(size_of::<Decomposition>(), self.decompositions)?;
+        include(size_of::<SubBand>(), self.sub_bands)?;
+        include(size_of::<Precinct>(), self.precincts)?;
+        include(size_of::<CodeBlock>(), self.code_blocks)?;
+        include(size_of::<Layer>(), self.layers)?;
+        include(size_of::<TagNode>(), self.tag_tree_nodes)?;
+        Ok(total)
     }
 }
 
@@ -166,6 +201,18 @@ impl DecompositionAllocationPlan {
         Ok(())
     }
 
+    fn record_counts(&self) -> RecordCounts {
+        RecordCounts {
+            tile_decompositions: self.tile_decompositions,
+            decompositions: self.decompositions,
+            sub_bands: self.sub_bands,
+            precincts: self.precincts,
+            code_blocks: self.code_blocks,
+            layers: self.layers,
+            tag_tree_nodes: self.tag_tree_nodes,
+        }
+    }
+
     /// Charge the unbuilt precincts' records and tag-tree roots.
     fn include_unbuilt_precincts(&self, total_bytes: &mut usize) -> Result<()> {
         checked_include_elements::<Precinct>(total_bytes, self.unbuilt_precincts)?;
@@ -179,14 +226,8 @@ impl DecompositionAllocationPlan {
     /// Reject a logically impossible request before walking every precinct.
     fn validate_minimum_live_workspace(&self, idwt_workspace_elements: usize) -> Result<()> {
         let mut total_bytes = self.retained_baseline_bytes;
-        checked_include_elements::<TileDecompositions>(&mut total_bytes, self.tile_decompositions)?;
-        checked_include_elements::<Decomposition>(&mut total_bytes, self.decompositions)?;
-        checked_include_elements::<SubBand>(&mut total_bytes, self.sub_bands)?;
-        checked_include_elements::<Precinct>(&mut total_bytes, self.precincts)?;
-        checked_include_elements::<CodeBlock>(&mut total_bytes, self.code_blocks)?;
-        checked_include_elements::<Layer>(&mut total_bytes, self.layers)?;
+        checked_include_elements::<u8>(&mut total_bytes, self.record_counts().checked_bytes()?)?;
         checked_include_elements::<Layer>(&mut total_bytes, self.parse_only_layers)?;
-        checked_include_elements::<TagNode>(&mut total_bytes, self.tag_tree_nodes)?;
         checked_include_elements::<CodeBlock>(&mut total_bytes, self.parse_only_code_blocks)?;
         checked_include_elements::<TagNode>(&mut total_bytes, self.parse_only_tag_tree_nodes)?;
         self.include_unbuilt_precincts(&mut total_bytes)?;

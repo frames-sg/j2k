@@ -593,47 +593,17 @@ impl<'a> Image<'a> {
             size.checked_x_shrink_factor()?,
             size.checked_y_shrink_factor()?,
         );
-        let (x_origin, y_origin) = (
-            size.image_area_x_offset.div_ceil(x_shrink),
-            size.image_area_y_offset.div_ceil(y_shrink),
-        );
-        // One axis of tile `index` on the shrunk grid, relative to the image.
-        let span = |index: u32,
-                    offset: u32,
-                    tile: u32,
-                    area: u32,
-                    extent: u32,
-                    shrink: u32,
-                    origin: u32| {
-            let start = offset.saturating_add(index.saturating_mul(tile)).max(area);
-            let end = offset
-                .saturating_add(index.saturating_add(1).saturating_mul(tile))
-                .min(extent);
-            let start = start.div_ceil(shrink).saturating_sub(origin);
-            let end = end.div_ceil(shrink).saturating_sub(origin);
-            (start, end.saturating_sub(start))
-        };
+        let (x_origin, y_origin) = j2c::output_grid_offset(size);
         let mut rects = Vec::new();
         for ty in 0..size.num_y_tiles() {
-            let (y, height) = span(
-                ty,
-                size.tile_y_offset,
-                size.tile_height,
-                size.image_area_y_offset,
-                size.reference_grid_height,
-                y_shrink,
-                y_origin,
-            );
             for tx in 0..size.num_x_tiles() {
-                let (x, width) = span(
-                    tx,
-                    size.tile_x_offset,
-                    size.tile_width,
-                    size.image_area_x_offset,
-                    size.reference_grid_width,
-                    x_shrink,
-                    x_origin,
-                );
+                let rect = j2c::tile_rect(size, tx, ty);
+                let x = rect.x0.div_ceil(x_shrink).saturating_sub(x_origin);
+                let y = rect.y0.div_ceil(y_shrink).saturating_sub(y_origin);
+                let x1 = rect.x1.div_ceil(x_shrink).saturating_sub(x_origin);
+                let y1 = rect.y1.div_ceil(y_shrink).saturating_sub(y_origin);
+                let width = x1.saturating_sub(x);
+                let height = y1.saturating_sub(y);
                 if width > 0 && height > 0 {
                     rects.push((x, y, width, height));
                 }

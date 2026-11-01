@@ -318,7 +318,7 @@ fn include_code_blocks(
     DecompositionAllocationPlan::checked_add_count(&mut plan.layers, layer_count)
 }
 
-fn global_code_block_count(
+pub(in crate::j2c) fn global_code_block_count(
     resolution_tile: &ResolutionTile<'_>,
     sub_band_rect: IntRect,
 ) -> Result<usize> {
@@ -453,7 +453,7 @@ fn checked_rect_elements(rect: IntRect) -> Result<usize> {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct IdwtWorkspaceTracker {
+pub(in crate::j2c) struct IdwtWorkspaceTracker {
     active_decomposition_count: Option<usize>,
     transform: WaveletTransform,
     observed_count: usize,
@@ -463,7 +463,7 @@ pub(super) struct IdwtWorkspaceTracker {
 }
 
 impl IdwtWorkspaceTracker {
-    pub(super) fn new(
+    pub(in crate::j2c) fn new(
         active_decomposition_count: Option<usize>,
         transform: WaveletTransform,
     ) -> Self {
@@ -477,7 +477,7 @@ impl IdwtWorkspaceTracker {
         }
     }
 
-    pub(super) fn observe(&mut self, rect: IntRect) {
+    pub(in crate::j2c) fn observe(&mut self, rect: IntRect) {
         if self
             .active_decomposition_count
             .is_some_and(|count| self.observed_count < count)
@@ -489,7 +489,7 @@ impl IdwtWorkspaceTracker {
         self.observed_count = self.observed_count.saturating_add(1);
     }
 
-    pub(super) fn finish(self, ll_rect: IntRect) -> Result<Option<usize>> {
+    pub(in crate::j2c) fn finish(self, ll_rect: IntRect) -> Result<Option<usize>> {
         if self.active_decomposition_count.is_none() {
             return Ok(None);
         }

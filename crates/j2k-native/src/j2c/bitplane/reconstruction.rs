@@ -84,6 +84,34 @@ impl MidpointReconstructor {
         }
     }
 
+    /// Convert a decoded row with the block's midpoint, ROI and scaling policy.
+    #[inline]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "reconstructed integer coefficients enter the codec f32 domain"
+    )]
+    pub(crate) fn reconstruct_row(
+        self,
+        coefficients: &[Coefficient],
+        output: &mut [f32],
+        step: f32,
+        irreversible_midpoint: bool,
+    ) {
+        if irreversible_midpoint {
+            self.dequantize_row(coefficients, output, step);
+        } else if self.roi_shift == 0 && self.reversible_is_exact() {
+            Self::scale_exact_reversible_row(coefficients, output, step);
+        } else {
+            for (sample, &coefficient) in output.iter_mut().zip(coefficients) {
+                *sample = crate::apply_roi_maxshift_inverse_i64(
+                    self.reconstruct_reversible(coefficient),
+                    self.roi_shift,
+                ) as f32
+                    * step;
+            }
+        }
+    }
+
     /// Reconstruct and dequantize a row: `output[i] = reconstruct(c[i]) * step`
     /// for as many elements as both slices hold.
     ///

@@ -16,7 +16,6 @@ pub(crate) use facade::{
     decode, decode_code_block_segments_validated, decode_code_block_segments_validated_profiled,
 };
 pub(crate) use observer::J2kBlockDecodeStats;
-pub(crate) use reconstruction::MidpointReconstructor;
 #[cfg(test)]
 pub(crate) use state::FORCE_PER_COEFFICIENT;
 pub(crate) use state::{

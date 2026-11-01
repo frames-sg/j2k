@@ -64,10 +64,11 @@ pub(crate) use decode::{
 };
 pub use decode::{CpuDecodeParallelism, DecoderContext, DecoderWorkspace, DecoderWorkspaceStats};
 pub use recode::Reversible53CoefficientImage;
+pub(crate) use roi::output_grid_offset;
 #[cfg(feature = "std")]
 pub(crate) use segment::directory::PacketDirectory;
 pub(crate) use segment::MAX_BITPLANE_COUNT;
-pub(crate) use tile::ParsedTiles;
+pub(crate) use tile::{tile_rect, ParsedTiles};
 
 pub(crate) struct ParsedCodestream<'a> {
     pub(crate) header: Header<'a>,

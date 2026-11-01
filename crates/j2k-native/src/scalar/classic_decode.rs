@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_i64, bail,
-    internal_j2k_code_block_style, internal_j2k_sub_band_type, j2c, profile, DecodingError,
-    J2kCodeBlockDecodeJob, J2kSubBandDecodeJob, Result, MAX_CLASSIC_DECODE_BITPLANES,
+    add_roi_shift_to_bitplanes, bail, internal_j2k_code_block_style, internal_j2k_sub_band_type,
+    j2c, profile, DecodingError, J2kCodeBlockDecodeJob, J2kSubBandDecodeJob, Result,
+    MAX_CLASSIC_DECODE_BITPLANES,
 };
 
 /// Adapter scalar classic J2K decoder helper for backend experimentation.
@@ -135,10 +135,6 @@ pub(super) fn checked_code_block_output_layout(
     Ok(CodeBlockOutputLayout { stride })
 }
 
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "the public scalar adapter intentionally emits f32 coefficients"
-)]
 fn write_j2k_code_block_output(
     decode_context: &j2c::bitplane::BitPlaneDecodeContext,
     job: J2kCodeBlockDecodeJob<'_>,
@@ -148,7 +144,6 @@ fn write_j2k_code_block_output(
 ) {
     let midpoint =
         decode_context.midpoint_reconstructor(job.number_of_coding_passes, job.roi_shift);
-    let exact = !irreversible_midpoint && job.roi_shift == 0 && midpoint.reversible_is_exact();
     for (row_idx, coeff_row) in decode_context
         .coefficient_rows()
         .enumerate()
@@ -156,25 +151,12 @@ fn write_j2k_code_block_output(
     {
         let row_start = row_idx * job.output_stride;
         let output_row = &mut output[row_start..row_start + layout.stride];
-        if irreversible_midpoint {
-            midpoint.dequantize_row(coeff_row, output_row, job.dequantization_step);
-            continue;
-        }
-        if exact {
-            j2c::bitplane::MidpointReconstructor::scale_exact_reversible_row(
-                coeff_row,
-                output_row,
-                job.dequantization_step,
-            );
-            continue;
-        }
-        for (coefficient, sample) in coeff_row.iter().zip(output_row.iter_mut()) {
-            *sample = apply_roi_maxshift_inverse_i64(
-                midpoint.reconstruct_reversible(*coefficient),
-                job.roi_shift,
-            ) as f32
-                * job.dequantization_step;
-        }
+        midpoint.reconstruct_row(
+            coeff_row,
+            output_row,
+            job.dequantization_step,
+            irreversible_midpoint,
+        );
     }
 }
 
