@@ -15,6 +15,34 @@ Staged workspace version: `0.13.2`.
   status, detail and batch source index. CUDA keeps its typed source and job
   attribution. Unsupported statuses, raw runtime failures and combined
   cleanup or release failures keep their existing classes.
+- `decode_rows_u8_bounded` and `decode_rows_u16_bounded` decode an image
+  whose tiles span its width, and whose headers let its region decode stream
+  its rows, once, as a region decode of the whole image that streams its
+  rows into a buffer of at most the requested stripe rows and hands them
+  over a stripe at a time. They decoded every stripe as a region decode of
+  its own, which decoded each code-block again for every stripe its wavelet
+  support reaches: at the default 64-row stripes 6.0 to 7.4 times the
+  code-block samples of one full decode on 2048- to 8287-row images. On an
+  18-core ARM64 machine the default stripes of a 5661 x 8287 RGB image take
+  1.34 s instead of 12.9 s on one thread and 0.11 s instead of 1.52 s on 18.
+  The decode's peak heap is then that of the streamed full-image decode
+  (22.5 MiB instead of 10.3 on one thread, 69 instead of 12.8 on 18); the
+  process's peak resident memory beside its input and output falls on such
+  classic images (25.6 MiB instead of 31.8, 72.8 instead of 77.4) and rises
+  on HTJ2K images on a pool (a 4096 x 2048 image on 18 threads: 76.9 MiB
+  instead of 42.6). Rows, bytes, the stripe bound and errors are unchanged:
+  a decode that fails before its first row reaches the sink decodes a stripe
+  at a time instead, and a sink that refuses a row still stops the rows
+  there, though a one-pass decode now goes on until it completes or fails.
+  Whether an image decodes once is planned from its main and tile headers:
+  images whose tiles sit side by side, whose headers keep region decodes on
+  component planes, or whose main header codes no decomposition level, and
+  16-bit rows of images deeper than 24 bits, still decode a stripe at a
+  time, and an image whose tiles turn out not to stream (a tile-level coding
+  style without decomposition levels, or HTJ2K code-blocks mixed with
+  classic ones) decodes into component planes of the whole image and hands
+  their rows over a stripe at a time. The stripe bound covers the packed
+  output stripe, not the decoder's working memory.
 - Classic code-blocks of several codeword segments, with selective bypass
   or per-pass termination (as archival images and multi-layer encodes of
   this crate often have), decode on the worker pool's tile route and pool
