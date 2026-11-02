@@ -60,6 +60,34 @@ struct RunOptions {
     /// External decoders left out entirely, for example `OpenJPH` on Part 1
     /// codestreams it cannot decode.
     excluded: Vec<ExternalDecoder>,
+    /// A failure is a result: j2k failing ends the cell with its status, and
+    /// an external decoder that errors or returns different pixels is
+    /// reported as failed and left out of the timing.
+    keep_going: bool,
+    /// The largest byte difference from j2k's output an external decoder may
+    /// show.
+    max_abs_diff: u8,
+}
+
+/// What the startup parity check found for one external decoder.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum Parity {
+    Excluded,
+    Unavailable,
+    /// The maximum absolute byte difference from j2k's output.
+    Matched(u8),
+    Failed(String),
+}
+
+impl std::fmt::Display for Parity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Excluded => f.write_str("excluded"),
+            Self::Unavailable => f.write_str("unavailable"),
+            Self::Matched(difference) => write!(f, "{difference}"),
+            Self::Failed(err) => write!(f, "failed: {err}"),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -232,23 +260,19 @@ fn run() -> Result<(), String> {
     if !tiles.iter().all(|tile| tile.format == format) {
         return Err("selected tiles do not share one output pixel format".to_string());
     }
-    // With J2K_BATCH_COMPARE_KEEP_GOING, a failure is a result: j2k failing ends
-    // the cell with its status, and an external decoder that errors or returns
-    // different pixels is reported as failed and left out of the timing.
-    let keep_going = std::env::var_os("J2K_BATCH_COMPARE_KEEP_GOING").is_some();
     let native = match decode_j2k_outputs(&tiles, format, NonZeroUsize::new(1)) {
         Ok(native) => native,
-        Err(err) if keep_going => {
+        Err(err) if options.keep_going => {
             println!("j2k_status\tfailed: {err}");
             return Ok(());
         }
         Err(err) => return Err(err),
     };
     println!("j2k_status\tok");
-    let parity = reference_parity(&tiles, &native, &options.excluded, keep_going)?;
+    let parity = reference_parity(&tiles, &native, &options)?;
     let mut options = options;
     for (decoder, status) in &parity {
-        if status.starts_with("failed") && !options.excluded.contains(decoder) {
+        if matches!(status, Parity::Failed(_)) {
             options.excluded.push(*decoder);
         }
     }
@@ -302,6 +326,15 @@ fn parse_run_options() -> Result<RunOptions, String> {
         // would not be the same task, so viewport runs leave it out.
         excluded.push(ExternalDecoder::OpenJph);
     }
+    let max_abs_diff = std::env::var("J2K_BATCH_COMPARE_MAX_ABS_DIFF")
+        .ok()
+        .map(|value| {
+            value.parse::<u8>().map_err(|error| {
+                format!("invalid J2K_BATCH_COMPARE_MAX_ABS_DIFF {value:?}: {error}")
+            })
+        })
+        .transpose()?
+        .unwrap_or(1);
     let measured_decoder = std::env::var("J2K_BATCH_COMPARE_DECODER").ok();
     if let Some(label) = measured_decoder.as_deref() {
         if label != "j2k" {
@@ -325,6 +358,8 @@ fn parse_run_options() -> Result<RunOptions, String> {
         excluded,
         j2k_cold: std::env::var_os("J2K_BATCH_COMPARE_J2K_COLD").is_some(),
         viewport,
+        keep_going: std::env::var_os("J2K_BATCH_COMPARE_KEEP_GOING").is_some(),
+        max_abs_diff,
     })
 }
 
@@ -333,27 +368,17 @@ fn parse_run_options() -> Result<RunOptions, String> {
 fn reference_parity(
     tiles: &[TileInput],
     native: &[Vec<u8>],
-    excluded: &[ExternalDecoder],
-    keep_going: bool,
-) -> Result<Vec<(ExternalDecoder, String)>, String> {
-    let allowed_reference_difference = std::env::var("J2K_BATCH_COMPARE_MAX_ABS_DIFF")
-        .ok()
-        .map(|value| {
-            value.parse::<u8>().map_err(|error| {
-                format!("invalid J2K_BATCH_COMPARE_MAX_ABS_DIFF {value:?}: {error}")
-            })
-        })
-        .transpose()?
-        .unwrap_or(1);
+    options: &RunOptions,
+) -> Result<Vec<(ExternalDecoder, Parity)>, String> {
     ExternalDecoder::ALL
         .into_iter()
         .map(|decoder| {
-            if excluded.contains(&decoder) {
-                return Ok((decoder, "excluded".to_string()));
+            if options.excluded.contains(&decoder) {
+                return Ok((decoder, Parity::Excluded));
             }
-            match reference_parity_result(tiles, native, decoder, allowed_reference_difference) {
-                Ok(difference) => Ok((decoder, difference)),
-                Err(err) if keep_going => Ok((decoder, format!("failed: {err}"))),
+            match reference_parity_result(tiles, native, decoder, options.max_abs_diff) {
+                Ok(parity) => Ok((decoder, parity)),
+                Err(err) if options.keep_going => Ok((decoder, Parity::Failed(err))),
                 Err(err) => Err(err),
             }
         })
@@ -365,7 +390,7 @@ fn emit_configuration(
     tiles: &[TileInput],
     skipped: usize,
     format: PixelFormat,
-    parity: &[(ExternalDecoder, String)],
+    parity: &[(ExternalDecoder, Parity)],
     pool_threads: usize,
 ) {
     println!(
@@ -705,9 +730,9 @@ fn reference_parity_result(
     native: &[Vec<u8>],
     decoder: ExternalDecoder,
     allowed_difference: u8,
-) -> Result<String, String> {
+) -> Result<Parity, String> {
     if !decoder.is_available() {
-        return Ok("unavailable".to_string());
+        return Ok(Parity::Unavailable);
     }
     let observed = validate_reference_parity(tiles, native, decoder)?;
     if observed > allowed_difference {
@@ -716,7 +741,7 @@ fn reference_parity_result(
             decoder.display_name()
         ));
     }
-    Ok(observed.to_string())
+    Ok(Parity::Matched(observed))
 }
 
 fn validate_reference_parity(
