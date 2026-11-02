@@ -340,8 +340,7 @@ impl DeferredMct {
     }
 
     /// The loop of [`Self::pack_ict_rgb8`], inlined so the x86-64 SIMD pack
-    /// runs its remainder at the dispatched level, where the fused
-    /// multiply-adds and rounding are instructions rather than library calls.
+    /// runs its remainder at the dispatched level (see `math`).
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,

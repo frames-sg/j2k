@@ -233,6 +233,22 @@ impl<'i> NativePlanesSink<'i> {
     }
 
     fn try_write_rows(&mut self, x: u32, y: u32, sources: &[ComponentPlane<'_>]) -> Option<()> {
+        dispatch!(Level::new(), simd => self.try_write_rows_at(simd, x, y, sources))
+    }
+
+    /// [`Self::try_write_rows`] at the dispatched SIMD level (see `math`).
+    #[expect(
+        clippy::inline_always,
+        reason = "inlined into each SIMD dispatch target"
+    )]
+    #[inline(always)]
+    fn try_write_rows_at<S: Simd>(
+        &mut self,
+        simd: S,
+        x: u32,
+        y: u32,
+        sources: &[ComponentPlane<'_>],
+    ) -> Option<()> {
         if sources.len() != self.planes.len() {
             return None;
         }
@@ -255,7 +271,8 @@ impl<'i> NativePlanesSink<'i> {
             for samples in rows.chunks_exact(width) {
                 let end = start.checked_add(row_bytes)?;
                 let destination = target.data.get_mut(start..end)?;
-                pack_native_samples(
+                pack_native_samples_at(
+                    simd,
                     destination,
                     samples,
                     target.bit_depth,
@@ -274,6 +291,7 @@ impl<'i> NativePlanesSink<'i> {
 /// samples `Image::extend_component_native_sample_bytes` appends for an
 /// `f32` component of `bit_depth`. Samples wider than 16 bits are packed
 /// in `scratch` first.
+#[cfg(test)]
 pub(super) fn pack_native_samples(
     destination: &mut [u8],
     samples: &[f32],
@@ -291,9 +309,7 @@ pub(super) fn pack_native_samples(
     ))
 }
 
-/// [`pack_native_samples`] inlined into a caller at `_simd`'s level, where
-/// the rounding in `round_clamped_native` is an instruction rather than a
-/// per-sample library call on baseline x86-64.
+/// [`pack_native_samples`] at the dispatched SIMD level (see `math`).
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,

@@ -256,12 +256,11 @@ pub(super) fn store_component(
     ))
 }
 
-/// The copy loop of [`store_component`], inlined into a caller at `_simd`'s
-/// level. `round_ties_even` is an instruction there; outside a dispatch,
-/// baseline x86-64 calls a library routine per sample.
+/// The copy loop of [`store_component`], at the dispatched SIMD level (see
+/// `math`).
 #[expect(
     clippy::inline_always,
-    reason = "the store loop must be inlined into each SIMD dispatch target to use its instructions"
+    reason = "inlined into each SIMD dispatch target"
 )]
 #[inline(always)]
 fn store_rows_at<S: Simd>(

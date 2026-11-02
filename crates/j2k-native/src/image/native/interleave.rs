@@ -154,12 +154,10 @@ fn interleave_converted<const N: usize>(
 }
 
 /// Write `convert(sample)` of every plane's samples from `first` on to
-/// `destination`, pixel by pixel, inlined into a caller at `_simd`'s level.
-/// The rounding in `convert` is an instruction there; outside a dispatch,
-/// baseline x86-64 calls a library routine per sample.
+/// `destination`, pixel by pixel, at the dispatched SIMD level (see `math`).
 #[expect(
     clippy::inline_always,
-    reason = "the interleaving loop must be inlined into each SIMD dispatch target to use its instructions"
+    reason = "inlined into each SIMD dispatch target"
 )]
 #[inline(always)]
 fn interleave_block<S: Simd, const N: usize>(

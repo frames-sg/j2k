@@ -58,7 +58,7 @@ impl SampleConversionPolicy {
         clippy::cast_sign_loss,
         clippy::cast_precision_loss,
         clippy::inline_always,
-        reason = "pixel samples are rounded and intentionally quantized to the stable 8-bit output format; inlined into the dispatched packing loops"
+        reason = "pixel samples are rounded and intentionally quantized to the stable 8-bit output format; inlined into the dispatched packing loops (see `math`)"
     )]
     #[inline(always)]
     fn quantize(self, component: &ComponentData, sample: f32) -> u8 {
@@ -153,12 +153,10 @@ fn interleave_window(
     dispatch!(Level::new(), simd => interleave_window_at(simd, components, policy, window, buf))
 }
 
-/// [`interleave_window`] inlined into a caller at `_simd`'s level, where the
-/// rounding in [`SampleConversionPolicy::quantize`] is an instruction rather
-/// than a per-sample library call on baseline x86-64.
+/// [`interleave_window`] at the dispatched SIMD level (see `math`).
 #[expect(
     clippy::inline_always,
-    reason = "the packing loop must be inlined into each SIMD dispatch target to use its instructions"
+    reason = "inlined into each SIMD dispatch target"
 )]
 #[inline(always)]
 fn interleave_window_at<S: Simd>(
@@ -251,7 +249,10 @@ pub(crate) fn interleave_and_convert(
     let window = SampleWindow::full(sample_count);
     window.validate(components, buf.len())?;
 
-    if policy.uses_direct_8_bit() && num_components <= 4 {
+    if policy.uses_direct_8_bit() && num_components == 3 {
+        let [c0, c1, c2] = [0, 1, 2].map(|index| &components[index].container[..sample_count]);
+        pack_rgb8([c0, c1, c2], buf);
+    } else if policy.uses_direct_8_bit() && num_components <= 4 {
         dispatch!(Level::new(), simd => pack_direct_8_bit_at(
             simd,
             components,
@@ -266,13 +267,12 @@ pub(crate) fn interleave_and_convert(
     Ok(())
 }
 
-/// The 8-bit fast path of [`interleave_and_convert`] for one to four
-/// components, inlined into a caller at `_simd`'s level, where the rounding
-/// in [`SampleConversionPolicy::quantize`] is an instruction rather than a
-/// per-sample library call on baseline x86-64.
+/// The 8-bit fast path of [`interleave_and_convert`] for one, two or four
+/// components, at the dispatched SIMD level (see `math`). RGB packs through
+/// [`pack_rgb8`].
 #[expect(
     clippy::inline_always,
-    reason = "the packing loops must be inlined into each SIMD dispatch target to use their instructions"
+    reason = "inlined into each SIMD dispatch target"
 )]
 #[inline(always)]
 fn pack_direct_8_bit_at<S: Simd>(
@@ -308,18 +308,6 @@ fn pack_direct_8_bit_at<S: Simd>(
                 *output_iter.next().unwrap() = policy.quantize(&components[0], c0[i]);
                 *output_iter.next().unwrap() = policy.quantize(&components[1], c1[i]);
             }
-        }
-        // RGB
-        3 => {
-            let c0 = &components[0];
-            let c1 = &components[1];
-            let c2 = &components[2];
-
-            let c0 = &c0.container[..sample_count];
-            let c1 = &c1.container[..sample_count];
-            let c2 = &c2.container[..sample_count];
-
-            pack_rgb8([c0, c1, c2], buf);
         }
         // RGBA or CMYK.
         4 => {

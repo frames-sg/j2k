@@ -74,13 +74,11 @@ pub(super) fn filter_row(
     ));
 }
 
-/// The `1D_SR` procedure from F.3.6, inlined into a caller at `_simd`'s
-/// level. Its 9-7I fused multiply-adds are instructions there; outside a
-/// dispatch, baseline x86-64 has none and calls a library routine per
-/// sample.
+/// The `1D_SR` procedure from F.3.6, at the dispatched SIMD level (see
+/// `math`), where its 9-7I fused multiply-adds are instructions.
 #[expect(
     clippy::inline_always,
-    reason = "the scalar row filter must be inlined into each SIMD dispatch target to use its instructions"
+    reason = "inlined into each SIMD dispatch target"
 )]
 #[inline(always)]
 pub(super) fn filter_row_at<S: Simd>(
