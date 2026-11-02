@@ -681,34 +681,154 @@ pub(crate) fn mul_add(a: f32, b: f32, c: f32) -> f32 {
     result
 }
 
+// Floor and round as one instruction where the target has one: aarch64, and
+// x86 with SSE4.1. Elsewhere, notably baseline x86-64, the standard methods
+// are a library call per sample, so the helpers use [`soft_rounding`].
+#[cfg(all(
+    feature = "std",
+    any(
+        target_arch = "aarch64",
+        all(
+            any(target_arch = "x86", target_arch = "x86_64"),
+            target_feature = "sse4.1"
+        )
+    )
+))]
+mod rounding {
+    #[expect(
+        clippy::inline_always,
+        reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+    )]
+    #[inline(always)]
+    pub(super) fn floor(x: f32) -> f32 {
+        x.floor()
+    }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+    )]
+    #[inline(always)]
+    pub(super) fn round(x: f32) -> f32 {
+        x.round()
+    }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+    )]
+    #[inline(always)]
+    pub(super) fn round_ties_even(x: f32) -> f32 {
+        x.round_ties_even()
+    }
+}
+
+#[cfg(not(all(
+    feature = "std",
+    any(
+        target_arch = "aarch64",
+        all(
+            any(target_arch = "x86", target_arch = "x86_64"),
+            target_feature = "sse4.1"
+        )
+    )
+)))]
+use soft_rounding as rounding;
+
+/// Floor and rounding in plain `f32` arithmetic, exact for every input
+/// including signed zeros, infinities and NaN, and free of library calls.
+///
+/// A magnitude below 2^23 plus 2^23 lies in `[2^23, 2^24)`, where the `f32`
+/// spacing is one, so the addition rounds it to an integer in the default
+/// round-to-nearest-even mode and subtracting 2^23 back is exact. Magnitudes
+/// at or above 2^23 are already integers, and NaN fails the range check, so
+/// both are returned unchanged.
+#[cfg_attr(
+    all(
+        feature = "std",
+        any(
+            target_arch = "aarch64",
+            all(
+                any(target_arch = "x86", target_arch = "x86_64"),
+                target_feature = "sse4.1"
+            )
+        )
+    ),
+    cfg(test)
+)]
+mod soft_rounding {
+    /// The smallest magnitude from which every `f32` is an integer.
+    const INTEGRAL_MAGNITUDE: f32 = 8_388_608.0;
+
+    /// The integer nearest to `magnitude`, ties to even, for magnitudes
+    /// below [`INTEGRAL_MAGNITUDE`].
+    #[expect(
+        clippy::inline_always,
+        reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+    )]
+    #[inline(always)]
+    fn nearest_even_magnitude(magnitude: f32) -> f32 {
+        (magnitude + INTEGRAL_MAGNITUDE) - INTEGRAL_MAGNITUDE
+    }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+    )]
+    #[inline(always)]
+    pub(super) fn round_ties_even(x: f32) -> f32 {
+        let magnitude = x.abs();
+        if magnitude < INTEGRAL_MAGNITUDE {
+            nearest_even_magnitude(magnitude).copysign(x)
+        } else {
+            x
+        }
+    }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+    )]
+    #[inline(always)]
+    pub(super) fn floor(x: f32) -> f32 {
+        let nearest = round_ties_even(x);
+        if nearest > x {
+            nearest - 1.0
+        } else {
+            nearest
+        }
+    }
+
+    /// Rounds half away from zero, as [`f32::round`].
+    #[expect(
+        clippy::inline_always,
+        reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+    )]
+    #[inline(always)]
+    pub(super) fn round(x: f32) -> f32 {
+        let magnitude = x.abs();
+        if magnitude < INTEGRAL_MAGNITUDE {
+            let nearest = nearest_even_magnitude(magnitude);
+            // `magnitude - nearest` is exact: `nearest` is within one half.
+            let away = if magnitude - nearest == 0.5 {
+                nearest + 1.0
+            } else {
+                nearest
+            };
+            away.copysign(x)
+        } else {
+            x
+        }
+    }
+}
+
 #[expect(
     clippy::inline_always,
     reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
 )]
-#[cfg_attr(
-    not(feature = "std"),
-    expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_precision_loss,
-        reason = "the no-std floor polyfill converts through the truncated integer part"
-    )
-)]
 #[inline(always)]
 pub(crate) fn floor_f32(x: f32) -> f32 {
-    #[cfg(feature = "std")]
-    {
-        x.floor()
-    }
-    #[cfg(not(feature = "std"))]
-    {
-        let xi = x as i32;
-        let xf = xi as f32;
-        if x < xf {
-            xf - 1.0
-        } else {
-            xf
-        }
-    }
+    rounding::floor(x)
 }
 
 /// `floor((a + b) / 2)` with the sum rounded in `f32`, as 5/3 lifting needs.
@@ -725,24 +845,23 @@ pub(crate) fn floor_half_sum_f32(a: f32, b: f32) -> f32 {
     floor_f32((a + b) * 0.5)
 }
 
+/// Rounds half away from zero, as [`f32::round`].
 #[expect(
     clippy::inline_always,
     reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
 )]
 #[inline(always)]
 pub(crate) fn round_f32(x: f32) -> f32 {
-    #[cfg(feature = "std")]
-    {
-        x.round()
-    }
-    #[cfg(not(feature = "std"))]
-    {
-        if x >= 0.0 {
-            floor_f32(x + 0.5)
-        } else {
-            -floor_f32(-x + 0.5)
-        }
-    }
+    rounding::round(x)
+}
+
+#[expect(
+    clippy::inline_always,
+    reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+)]
+#[inline(always)]
+pub(crate) fn round_ties_even_f32(x: f32) -> f32 {
+    rounding::round_ties_even(x)
 }
 
 #[expect(
@@ -751,11 +870,7 @@ pub(crate) fn round_f32(x: f32) -> f32 {
 )]
 #[inline(always)]
 pub(crate) fn round_ties_even_then_add(sample: f32, addend: f32) -> f32 {
-    #[cfg(feature = "std")]
-    let rounded = sample.round_ties_even();
-    #[cfg(not(feature = "std"))]
-    let rounded = libm::roundevenf(sample);
-    rounded + addend
+    round_ties_even_f32(sample) + addend
 }
 
 #[expect(
@@ -837,13 +952,18 @@ pub(crate) fn max_f32(a: f32, b: f32) -> f32 {
     }
 }
 
-// Scalar loops that floor, round or fuse a multiply-add run inside a
-// `dispatch!`: baseline x86-64 has no instruction for these, so outside one
-// each is a library call per sample (aarch64 has them all). The convention is
+// Scalar floor and rounding never call the C library (see `rounding`), but a
+// fused multiply-add does on baseline x86-64, which has no instruction for
+// it (aarch64 does). Loops that fuse multiply-adds, and hot loops that should
+// use the CPU's widest vectors, run inside a `dispatch!`:
 // `dispatch!(Level::new(), simd => foo_at(simd, ...))` around an
 // `#[inline(always)] fn foo_at<S: Simd>(_simd: S, ...)`. Target features reach
 // only code inlined into the dispatched closure, so the loop and every helper
-// it calls must be `#[inline(always)]`.
+// it calls must be `#[inline(always)]`. Generic code receives helpers as
+// `#[inline(always)]` closures, not function items, whose `Fn` shims are not
+// inlined, and a helper called several times is a nested `#[inline(always)]`
+// function rather than a closure, which may be outlined. `cargo xtask
+// x86-codegen-audit` checks baseline x86-64 code for both.
 #[cfg(not(feature = "simd"))]
 pub(crate) use inner::{dispatch, f32x8, Level, ScalarSimd, Simd};
 #[cfg(feature = "simd")]
@@ -1179,6 +1299,79 @@ mod simd_operator_tests {
         });
 
         assert!(output.iter().all(|value| value.to_bits() == 0xc483_47a5));
+    }
+}
+
+#[cfg(all(test, feature = "std"))]
+mod soft_rounding_tests {
+    use super::soft_rounding;
+
+    /// Each soft rounding helper returns the standard method's bits, or NaN
+    /// for NaN.
+    fn assert_matches_std(x: f32) {
+        for (name, soft, std) in [
+            ("floor", soft_rounding::floor(x), x.floor()),
+            ("round", soft_rounding::round(x), x.round()),
+            (
+                "round_ties_even",
+                soft_rounding::round_ties_even(x),
+                x.round_ties_even(),
+            ),
+        ] {
+            assert!(
+                soft.to_bits() == std.to_bits() || (soft.is_nan() && std.is_nan()),
+                "{name}({x:e} = {:#010x}) = {soft:e}, expected {std:e}",
+                x.to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn soft_rounding_matches_std_at_every_boundary() {
+        let mut values = Vec::from([
+            0.0,
+            f32::from_bits(0x0000_0001),
+            f32::MIN_POSITIVE,
+            0.25,
+            0.499_999_97,
+            0.5,
+            0.500_000_06,
+            0.75,
+            0.999_999_94,
+            1.0,
+            8_388_607.5,
+            8_388_608.0,
+            8_388_609.0,
+            16_777_216.0,
+            f32::MAX,
+            f32::INFINITY,
+            f32::NAN,
+        ]);
+        // Every half-integer up to 64 and its neighbours, for both parities.
+        for half_steps in 0_u16..128 {
+            let value = f32::from(half_steps) * 0.5;
+            values.extend([value.next_down(), value, value.next_up()]);
+        }
+        for value in values {
+            assert_matches_std(value);
+            assert_matches_std(-value);
+        }
+    }
+
+    #[test]
+    fn soft_rounding_matches_std_across_the_bit_patterns() {
+        // A stride coprime to 2^32 reaches every exponent and sign.
+        for index in 0..(1_u32 << 22) {
+            assert_matches_std(f32::from_bits(index.wrapping_mul(0x9e37_79b1)));
+        }
+    }
+
+    #[test]
+    #[ignore = "exhaustive over all 2^32 inputs; run with --release --ignored"]
+    fn soft_rounding_matches_std_for_every_f32() {
+        for bits in 0..=u32::MAX {
+            assert_matches_std(f32::from_bits(bits));
+        }
     }
 }
 

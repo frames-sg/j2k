@@ -11,6 +11,7 @@ use super::{
 };
 use crate::j2c::build::CoefficientLayout;
 use crate::j2c::idwt::{IdwtPlacement, LastLevel};
+use crate::j2c::mct::SampleShift;
 use crate::j2c::rect::IntRect;
 use crate::j2c::roi::{output_grid_offset, output_region_rect};
 use crate::math::SIMD_WIDTH;
@@ -35,12 +36,12 @@ pub(super) fn apply_sign_shift_after_mct(
             }
         } else {
             let addend = component_unsigned_level_shift(component_info);
-            apply_float_sign_shift(
-                &mut channel_data.container,
+            SampleShift::for_transform(
                 addend,
                 component_info.wavelet_transform(),
                 round_irreversible_output,
-            );
+            )
+            .apply(&mut channel_data.container);
         }
     }
 }
@@ -121,12 +122,12 @@ pub(super) fn apply_inverse_mct_per_tile(
             );
             mct::apply_inverse_rows(infos, round_irreversible_output, rows);
             for (plane, info) in extra.iter_mut().zip(&infos[3..]) {
-                apply_float_sign_shift(
-                    plane_row(plane, &row)?,
+                SampleShift::for_transform(
                     component_unsigned_level_shift(info),
                     info.wavelet_transform(),
                     round_irreversible_output,
-                );
+                )
+                .apply(plane_row(plane, &row)?);
             }
         }
     }
@@ -145,7 +146,7 @@ pub(super) fn transform_streamed_rows(
 ) -> Result<()> {
     if !tile.mct {
         for (row, component_info) in rows.iter_mut().zip(&tile.component_infos) {
-            SampleShift::new(
+            SampleShift::for_transform(
                 component_unsigned_level_shift(component_info),
                 component_info.wavelet_transform(),
                 round_irreversible_output,
@@ -163,12 +164,12 @@ pub(super) fn transform_streamed_rows(
         (&mut **r, &mut **g, &mut **b),
     );
     for (row, component_info) in extra.iter_mut().zip(&tile.component_infos[3..]) {
-        apply_float_sign_shift(
-            row,
+        SampleShift::for_transform(
             component_unsigned_level_shift(component_info),
             component_info.wavelet_transform(),
             round_irreversible_output,
-        );
+        )
+        .apply(row);
     }
     Ok(())
 }
@@ -302,7 +303,7 @@ pub(super) fn store<'a>(
         let output_width = header.size_data.image_width() as usize;
         // The level shift is applied while copying: one pass instead of a
         // shift over the whole IDWT output followed by a copy.
-        let shift = SampleShift::new(
+        let shift = SampleShift::for_transform(
             sign_shift,
             component_info.wavelet_transform(),
             round_irreversible_output,
@@ -368,12 +369,12 @@ pub(super) fn store<'a>(
             .sum::<usize>();
         tile_ctx.stored_plane_samples = tile_ctx.stored_plane_samples.saturating_add(stored);
     } else {
-        apply_float_sign_shift(
-            &mut idwt_output.coefficients,
+        SampleShift::for_transform(
             sign_shift,
             component_info.wavelet_transform(),
             round_irreversible_output,
-        );
+        )
+        .apply(&mut idwt_output.coefficients);
         let image_width = header.size_data.image_width();
         let image_height = header.size_data.image_height();
 
@@ -642,7 +643,7 @@ pub(super) fn store_rows(
     } else {
         component_unsigned_level_shift(component_info)
     };
-    let shift = SampleShift::new(
+    let shift = SampleShift::for_transform(
         sign_shift,
         component_info.wavelet_transform(),
         *round_irreversible_output && !tile.mct,
@@ -668,79 +669,6 @@ pub(super) fn store_rows(
         .zip(input.chunks_exact(input_width).skip(skip_y))
         .for_each(|(output_row, input_row)| copy_row(output_row, input_row));
     Ok(())
-}
-
-/// The per-sample output transform of [`apply_float_sign_shift`].
-#[derive(Clone, Copy)]
-enum SampleShift {
-    Copy,
-    Add(f32),
-    RoundThenAdd(f32),
-}
-
-impl SampleShift {
-    fn new(sign_shift: f32, transform: WaveletTransform, round_irreversible_output: bool) -> Self {
-        if round_irreversible_output && transform == WaveletTransform::Irreversible97 {
-            Self::RoundThenAdd(sign_shift)
-        } else if sign_shift != 0.0 {
-            Self::Add(sign_shift)
-        } else {
-            Self::Copy
-        }
-    }
-
-    /// Transform `samples` in place, as [`Self::copy`] would.
-    fn apply(self, samples: &mut [f32]) {
-        match self {
-            Self::Copy => {}
-            Self::Add(addend) => {
-                for sample in samples {
-                    *sample += addend;
-                }
-            }
-            Self::RoundThenAdd(addend) => mct::round_centered_and_shift(samples, addend),
-        }
-    }
-
-    fn copy(self, input: &[f32], output: &mut [f32]) {
-        match self {
-            Self::Copy => output.copy_from_slice(input),
-            Self::Add(addend) => {
-                for (output, &input) in output.iter_mut().zip(input) {
-                    *output = input + addend;
-                }
-            }
-            // On x86-64 a scalar rounding loop calls a library routine per
-            // sample: copy, then round at the SIMD level.
-            #[cfg(all(feature = "simd", target_arch = "x86_64"))]
-            Self::RoundThenAdd(addend) => {
-                let len = output.len().min(input.len());
-                output[..len].copy_from_slice(&input[..len]);
-                mct::round_centered_and_shift(&mut output[..len], addend);
-            }
-            #[cfg(not(all(feature = "simd", target_arch = "x86_64")))]
-            Self::RoundThenAdd(addend) => {
-                for (output, &input) in output.iter_mut().zip(input) {
-                    *output = crate::math::round_ties_even_then_add(input, addend);
-                }
-            }
-        }
-    }
-}
-
-fn apply_float_sign_shift(
-    samples: &mut [f32],
-    sign_shift: f32,
-    transform: WaveletTransform,
-    round_irreversible_output: bool,
-) {
-    if round_irreversible_output && transform == WaveletTransform::Irreversible97 {
-        mct::round_centered_and_shift(samples, sign_shift);
-    } else if sign_shift != 0.0 {
-        for sample in samples {
-            *sample += sign_shift;
-        }
-    }
 }
 
 fn store_i64<'a>(
@@ -939,7 +867,7 @@ fn store_region<'a>(
                 .checked_sub(window)
                 .ok_or(DecodingError::CodeBlockDecodeFailure)
         };
-        let shift = SampleShift::new(
+        let shift = SampleShift::for_transform(
             sign_shift,
             component_info.wavelet_transform(),
             round_irreversible_output,
@@ -989,7 +917,7 @@ fn store_region<'a>(
 
         if idwt_output.placement == IdwtPlacement::ChannelPlane {
             // The row-streamed IDWT already wrote this overlap into the plane.
-            let shift = SampleShift::new(
+            let shift = SampleShift::for_transform(
                 sign_shift,
                 component_info.wavelet_transform(),
                 round_irreversible_output,
@@ -1036,12 +964,12 @@ fn store_region<'a>(
             return Ok(());
         }
 
-        apply_float_sign_shift(
-            &mut idwt_output.coefficients,
+        SampleShift::for_transform(
             sign_shift,
             component_info.wavelet_transform(),
             round_irreversible_output,
-        );
+        )
+        .apply(&mut idwt_output.coefficients);
 
         if copy_x0 < copy_x1 && copy_y0 < copy_y1 {
             let input_width = idwt_output.rect.width() as usize;
@@ -1059,12 +987,12 @@ fn store_region<'a>(
         return Ok(());
     }
 
-    apply_float_sign_shift(
-        &mut idwt_output.coefficients,
+    SampleShift::for_transform(
         sign_shift,
         component_info.wavelet_transform(),
         round_irreversible_output,
-    );
+    )
+    .apply(&mut idwt_output.coefficients);
 
     let sample_rect = resolution_tile.rect.intersect(idwt_output.rect);
     for y in sample_rect.y0..sample_rect.y1 {
@@ -1113,24 +1041,21 @@ fn store_region<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_float_sign_shift, WaveletTransform};
+    use super::{SampleShift, WaveletTransform};
 
     #[test]
     fn irreversible_level_shift_rounds_in_the_centered_domain() {
         let mut samples = [f32::from_bits(0xc117_fffc), -9.5, -8.5];
-        apply_float_sign_shift(&mut samples, 128.0, WaveletTransform::Irreversible97, true);
+        SampleShift::for_transform(128.0, WaveletTransform::Irreversible97, true)
+            .apply(&mut samples);
         assert_eq!(
             samples.map(f32::to_bits),
             [119.0, 118.0, 120.0].map(f32::to_bits)
         );
 
         let mut signed_samples = [-9.5, -8.5];
-        apply_float_sign_shift(
-            &mut signed_samples,
-            0.0,
-            WaveletTransform::Irreversible97,
-            true,
-        );
+        SampleShift::for_transform(0.0, WaveletTransform::Irreversible97, true)
+            .apply(&mut signed_samples);
         assert_eq!(
             signed_samples.map(f32::to_bits),
             [-10.0, -8.0].map(f32::to_bits)
@@ -1140,7 +1065,8 @@ mod tests {
     #[test]
     fn component_output_preserves_irreversible_fractional_samples() {
         let mut samples = [f32::from_bits(0xc117_fffc), -9.5, -8.5];
-        apply_float_sign_shift(&mut samples, 128.0, WaveletTransform::Irreversible97, false);
+        SampleShift::for_transform(128.0, WaveletTransform::Irreversible97, false)
+            .apply(&mut samples);
         assert_eq!(
             samples.map(f32::to_bits),
             [118.5, 118.5, 119.5].map(f32::to_bits)
@@ -1150,7 +1076,7 @@ mod tests {
     #[test]
     fn reversible_level_shift_preserves_fractional_samples() {
         let mut samples = [-9.5, -8.5];
-        apply_float_sign_shift(&mut samples, 128.0, WaveletTransform::Reversible53, true);
+        SampleShift::for_transform(128.0, WaveletTransform::Reversible53, true).apply(&mut samples);
         assert_eq!(samples.map(f32::to_bits), [118.5, 119.5].map(f32::to_bits));
     }
 }

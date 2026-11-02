@@ -2,14 +2,14 @@ use super::{
     bail, decode_ht_code_block_scalar_with_workspace,
     decode_ht_code_block_scalar_with_workspace_midpoint,
     decode_j2k_code_block_scalar_with_workspace,
-    decode_j2k_code_block_scalar_with_workspace_midpoint, dispatch, idwt, round_ties_even_then_add,
-    try_resize_decode_elements, DecodingError, DirectComponentBandScratch, DirectComponentPlane,
-    DirectCpuBand, DirectWorkspaceBudget, HtCodeBlockDecodeJob, HtCodeBlockDecodeWorkspace,
-    HtOwnedSubBandPlan, J2kCodeBlockDecodeJob, J2kCodeBlockDecodeWorkspace, J2kDirectBandId,
-    J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep,
-    J2kIdwtBand, J2kOwnedSubBandPlan, J2kRect, J2kSingleDecompositionIdwtJob, Level, Range, Result,
-    Simd, Vec,
+    decode_j2k_code_block_scalar_with_workspace_midpoint, idwt, try_resize_decode_elements,
+    DecodingError, DirectComponentBandScratch, DirectComponentPlane, DirectCpuBand,
+    DirectWorkspaceBudget, HtCodeBlockDecodeJob, HtCodeBlockDecodeWorkspace, HtOwnedSubBandPlan,
+    J2kCodeBlockDecodeJob, J2kCodeBlockDecodeWorkspace, J2kDirectBandId, J2kDirectGrayscalePlan,
+    J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep, J2kIdwtBand,
+    J2kOwnedSubBandPlan, J2kRect, J2kSingleDecompositionIdwtJob, Range, Result, Vec,
 };
+use crate::j2c::mct::SampleShift;
 
 pub(super) fn execute_component_plan(
     plan: &J2kDirectGrayscalePlan,
@@ -247,29 +247,7 @@ pub(super) fn store_component(
     }
 
     validate_store_bounds(store, input, plane)?;
-    dispatch!(Level::new(), simd => store_rows_at(
-        simd,
-        store,
-        input,
-        plane,
-        round_irreversible_output,
-    ))
-}
-
-/// The copy loop of [`store_component`], at the dispatched SIMD level (see
-/// `math`).
-#[expect(
-    clippy::inline_always,
-    reason = "inlined into each SIMD dispatch target"
-)]
-#[inline(always)]
-fn store_rows_at<S: Simd>(
-    _simd: S,
-    store: &J2kDirectStoreStep,
-    input: &DirectCpuBand,
-    plane: &mut DirectComponentPlane,
-    round_irreversible_output: bool,
-) -> Result<()> {
+    let shift = SampleShift::new(store.addend, round_irreversible_output);
     let input_width = input.rect.width() as usize;
     let output_width = plane.width as usize;
     let copy_width = store.copy_width as usize;
@@ -282,15 +260,10 @@ fn store_rows_at<S: Simd>(
             .checked_mul(output_width)
             .and_then(|base| base.checked_add(store.output_x as usize))
             .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-        let src = &input.coefficients[src_start..src_start + copy_width];
-        let dst = &mut plane.samples[dst_start..dst_start + copy_width];
-        for (src, dst) in src.iter().zip(dst.iter_mut()) {
-            *dst = if round_irreversible_output {
-                round_ties_even_then_add(*src, store.addend)
-            } else {
-                *src + store.addend
-            };
-        }
+        shift.copy(
+            &input.coefficients[src_start..src_start + copy_width],
+            &mut plane.samples[dst_start..dst_start + copy_width],
+        );
     }
     Ok(())
 }

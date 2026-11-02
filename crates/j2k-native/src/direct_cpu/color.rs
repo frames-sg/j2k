@@ -1,9 +1,9 @@
 use super::{
-    bail, dispatch, execute_component_plan, floor_f32, mul_add, prepare_direct_scratch, round_f32,
-    round_ties_even_then_add, DecodingError, DirectComponentPlane, J2kDirectColorPlan,
-    J2kDirectCpuScratch, J2kRect, J2kWaveletTransform, Level, Result, Simd,
+    bail, dispatch, execute_component_plan, prepare_direct_scratch, round_f32, DecodingError,
+    DirectComponentPlane, J2kDirectColorPlan, J2kDirectCpuScratch, J2kRect, J2kWaveletTransform,
+    Level, Result,
 };
-use j2k_codec_math::mct;
+use crate::j2c::mct::DeferredMct;
 
 /// Execute a adapter direct RGB plan on the CPU and write an RGB8 output region.
 ///
@@ -164,86 +164,22 @@ pub(super) fn apply_inverse_mct_region(
         bail!(DecodingError::CodeBlockDecodeFailure);
     }
 
-    let addend0 = if signed {
-        0.0
-    } else {
-        sign_addend(bit_depths[0])
-    };
-    let addend1 = if signed {
-        0.0
-    } else {
-        sign_addend(bit_depths[1])
-    };
-    let addend2 = if signed {
-        0.0
-    } else {
-        sign_addend(bit_depths[2])
-    };
+    let level_shifts =
+        bit_depths.map(|bit_depth| if signed { 0.0 } else { sign_addend(bit_depth) });
+    let inverse_mct = DeferredMct::new(transform.into(), level_shifts, round_irreversible_output);
     let plane_width = plane0.width as usize;
-    dispatch!(Level::new(), simd => inverse_mct_rows_at(
-        simd,
-        transform,
-        round_irreversible_output,
-        region,
-        plane_width,
-        [plane0, plane1, plane2],
-        [addend0, addend1, addend2],
-    ))
-}
-
-/// The per-sample loop of [`apply_inverse_mct_region`], at the dispatched
-/// SIMD level (see `math`).
-#[expect(
-    clippy::inline_always,
-    reason = "inlined into each SIMD dispatch target"
-)]
-#[inline(always)]
-fn inverse_mct_rows_at<S: Simd>(
-    _simd: S,
-    transform: J2kWaveletTransform,
-    round_irreversible_output: bool,
-    region: J2kRect,
-    plane_width: usize,
-    [plane0, plane1, plane2]: [&mut DirectComponentPlane; 3],
-    [addend0, addend1, addend2]: [f32; 3],
-) -> Result<()> {
+    let row_width = region.width() as usize;
     for y in region.y0 as usize..region.y1 as usize {
         let row_start = y
             .checked_mul(plane_width)
             .and_then(|start| start.checked_add(region.x0 as usize))
             .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-        let row_end = row_start
-            .checked_add(region.width() as usize)
-            .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-        for index in row_start..row_end {
-            let src0 = plane0.samples[index];
-            let src1 = plane1.samples[index];
-            let src2 = plane2.samples[index];
-            let (out0, out1, out2) = match transform {
-                J2kWaveletTransform::Irreversible97 => (
-                    mul_add(src2, mct::ICT_INV_R_CR, src0),
-                    mul_add(
-                        src2,
-                        mct::ICT_INV_G_CR,
-                        mul_add(src1, mct::ICT_INV_G_CB, src0),
-                    ),
-                    mul_add(src1, mct::ICT_INV_B_CB, src0),
-                ),
-                J2kWaveletTransform::Reversible53 => {
-                    let i1 = src0 - floor_f32((src2 + src1) * 0.25);
-                    (src2 + i1, i1, src1 + i1)
-                }
-            };
-            if round_irreversible_output && transform == J2kWaveletTransform::Irreversible97 {
-                plane0.samples[index] = round_ties_even_then_add(out0, addend0);
-                plane1.samples[index] = round_ties_even_then_add(out1, addend1);
-                plane2.samples[index] = round_ties_even_then_add(out2, addend2);
-            } else {
-                plane0.samples[index] = out0 + addend0;
-                plane1.samples[index] = out1 + addend1;
-                plane2.samples[index] = out2 + addend2;
-            }
-        }
+        let row = row_start..row_start + row_width;
+        inverse_mct.transform_chunk((
+            &mut plane0.samples[row.clone()],
+            &mut plane1.samples[row.clone()],
+            &mut plane2.samples[row],
+        ));
     }
     Ok(())
 }

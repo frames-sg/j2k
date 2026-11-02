@@ -143,7 +143,7 @@ fn apply_single_decomposition_idwt_job_with_normalization(
         checked_decode_usize_product2(rect.width() as usize, rect.height() as usize)?;
     try_resize_decode_elements(target, required_len, 0.0)?;
 
-    let transform = wavelet_transform_from_public(job.transform);
+    let transform = WaveletTransform::from(job.transform);
     if use_banded(rect.width() as usize, rect.height() as usize) {
         let bands = [job.ll, job.hl, job.lh, job.hh];
         let packed = packed_band_rects(rect);
@@ -212,13 +212,6 @@ fn direct_coefficient_source(band: J2kIdwtBand<'_>) -> CoefficientSource<'_> {
 
 fn int_rect_from_public(rect: J2kRect) -> IntRect {
     IntRect::from_ltrb(rect.x0, rect.y0, rect.x1, rect.y1)
-}
-
-fn wavelet_transform_from_public(transform: J2kWaveletTransform) -> WaveletTransform {
-    match transform {
-        J2kWaveletTransform::Reversible53 => WaveletTransform::Reversible53,
-        J2kWaveletTransform::Irreversible97 => WaveletTransform::Irreversible97,
-    }
 }
 
 fn single_decomposition_job<'a>(

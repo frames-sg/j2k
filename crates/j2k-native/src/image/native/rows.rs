@@ -5,10 +5,7 @@
 
 use alloc::vec::Vec;
 
-use super::{
-    round_clamped_native, signed_native_bounds, try_clone_color_space, unsigned_native_max,
-    NativeOutputBudget,
-};
+use super::{convert_samples, try_clone_color_space, NativeOutputBudget};
 use crate::color::{
     ColorSpace, ComponentPlane, ComponentRowSink, DecodedNativeComponents, NativeComponentPlane,
 };
@@ -318,41 +315,17 @@ pub(super) fn pack_native_samples(
 )]
 #[inline(always)]
 fn pack_native_samples_at<S: Simd>(
-    _simd: S,
+    simd: S,
     destination: &mut [u8],
     samples: &[f32],
     bit_depth: u8,
     signed: bool,
     scratch: &mut Vec<u8>,
 ) -> Result<()> {
-    match (bit_depth, signed) {
-        (1..=8, true) => {
-            let (min, max) = signed_native_bounds(bit_depth);
-            for (destination, &sample) in destination.iter_mut().zip(samples) {
-                *destination = (round_clamped_native(sample, min, max) as i8) as u8;
-            }
-        }
-        (1..=8, false) => {
-            let max = unsigned_native_max(bit_depth);
-            for (destination, &sample) in destination.iter_mut().zip(samples) {
-                *destination = round_clamped_native(sample, 0.0, max) as u8;
-            }
-        }
-        (9..=16, true) => {
-            let (min, max) = signed_native_bounds(bit_depth);
-            for (destination, &sample) in destination.as_chunks_mut::<2>().0.iter_mut().zip(samples)
-            {
-                *destination =
-                    ((round_clamped_native(sample, min, max) as i16) as u16).to_le_bytes();
-            }
-        }
-        (9..=16, false) => {
-            let max = unsigned_native_max(bit_depth);
-            for (destination, &sample) in destination.as_chunks_mut::<2>().0.iter_mut().zip(samples)
-            {
-                *destination = (round_clamped_native(sample, 0.0, max) as u16).to_le_bytes();
-            }
-        }
+    with_native_converter!(
+        bit_depth,
+        signed,
+        convert_samples(simd, destination.as_chunks_mut().0, samples),
         _ => {
             scratch.clear();
             try_reserve_decode_elements(scratch, destination.len())?;
@@ -363,8 +336,8 @@ fn pack_native_samples_at<S: Simd>(
                 .get(..destination.len())
                 .ok_or(DecodingError::CodeBlockDecodeFailure)?;
             destination.copy_from_slice(packed);
-        }
-    }
+        },
+    );
     Ok(())
 }
 

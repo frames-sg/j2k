@@ -7,13 +7,23 @@ and stale roadmap entries have been removed from the public documentation set.
 
 Staged workspace version: `0.13.2`.
 
-- CPU decoding on default (baseline x86-64) builds no longer calls a library
-  routine per sample for floor, rounding or fused multiply-add. The scalar
-  inverse wavelet rows and the native, packed, direct-route and deferred-ICT
-  output loops run at the runtime-dispatched SIMD level, where these are
-  instructions, and the scalar reversible 5-3 lifting uses integer
-  arithmetic. Decoded output is unchanged; aarch64 code was already
+- CPU decoding and encoding on default (baseline x86-64) builds no longer
+  call a library routine per sample for floor, rounding or fused
+  multiply-add. Scalar floor and rounding are computed exactly in plain
+  `f32` arithmetic where the target has no instruction for them; the loops
+  that fuse multiply-adds (the 9-7 wavelet and the colour transforms) run at
+  the runtime-dispatched SIMD level, and the scalar reversible 5-3 lifting
+  uses integer arithmetic. Output is unchanged; aarch64 code was already
   library-call free.
+- On x86-64, the vertical reversible 5-3 lifting of the banded inverse
+  wavelet and several encoder lifting helpers ran out of line from the
+  dispatched AVX2 code, without its target features, calling out for every
+  vector operation; they are now inlined. The x86-64-only output kernels
+  (RGB8 packing, the fused 9-7 colour pack and the centred rounding) are
+  replaced by the loops every target uses, and the direct decode route's
+  colour transform and store share the planes route's code. `cargo xtask
+  x86-codegen-audit` (run by the PR checks) disassembles baseline x86-64
+  `j2k-native` and fails on either regression.
 - SOP marker segments a decode parses require `Lsop` 4 and an `Nsop` equal to
   the tile-wide packet ordinal modulo 65536. The ordinal continues across
   tile-parts and counts packets skipped without parsing; an invalid SOP in a

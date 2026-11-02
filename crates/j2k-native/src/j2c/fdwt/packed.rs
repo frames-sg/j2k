@@ -450,7 +450,8 @@ pub(crate) fn try_forward_dwt_packed_f32(
 /// further multiple of it runs one more worker.
 #[expect(
     clippy::too_many_arguments,
-    reason = "the pixels, output planes, plane geometry and scratch are independent inputs"
+    clippy::redundant_closure,
+    reason = "the pixels, output planes, plane geometry and scratch are independent inputs; the pixel transforms are closures to carry #[inline(always)], which a function item's Fn shim lacks"
 )]
 pub(crate) fn try_forward_dwt_packed_f32_from_rgb8(
     pixels: &[u8],
@@ -478,7 +479,12 @@ pub(crate) fn try_forward_dwt_packed_f32_from_rgb8(
     let transform = (stride, height, num_levels, line_scratch, origin);
     if reversible {
         forward_rgb8(
-            &rgb8_rows(pixels, stride, rct_pixel),
+            &rgb8_rows(
+                pixels,
+                stride,
+                #[inline(always)]
+                |r, g, b| rct_pixel(r, g, b),
+            ),
             outputs,
             transform,
             workers,
@@ -486,7 +492,12 @@ pub(crate) fn try_forward_dwt_packed_f32_from_rgb8(
         )
     } else {
         forward_rgb8(
-            &rgb8_rows(pixels, stride, ict_pixel),
+            &rgb8_rows(
+                pixels,
+                stride,
+                #[inline(always)]
+                |r, g, b| ict_pixel(r, g, b),
+            ),
             outputs,
             transform,
             workers,
@@ -502,12 +513,16 @@ fn rgb8_rows<'a>(
     stride: usize,
     transform: impl Fn(f32, f32, f32) -> [f32; 3] + Sync + 'a,
 ) -> impl Fn(usize, usize, [&mut [f32]; 3]) + Sync + 'a {
+    // The rows are read through a trait object, outside the transform's
+    // dispatch, so each row dispatches again (see `math`).
     move |y, first, [luma, blue, red]| {
-        let samples = luma.iter_mut().zip(blue.iter_mut()).zip(red.iter_mut());
-        for (((y, cb), cr), pixel) in samples.zip(&pixels[y * stride + first..]) {
-            let [r, g, b] = pixel.map(|value| f32::from(value) - 128.0);
-            [*y, *cb, *cr] = transform(r, g, b);
-        }
+        dispatch!(Level::new(), _simd => {
+            let samples = luma.iter_mut().zip(blue.iter_mut()).zip(red.iter_mut());
+            for (((y, cb), cr), pixel) in samples.zip(&pixels[y * stride + first..]) {
+                let [r, g, b] = pixel.map(|value| f32::from(value) - 128.0);
+                [*y, *cb, *cr] = transform(r, g, b);
+            }
+        });
     }
 }
 
