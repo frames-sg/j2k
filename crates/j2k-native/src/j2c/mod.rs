@@ -49,7 +49,7 @@ use crate::math::{SimdBuffer, SIMD_WIDTH};
 pub(crate) use codestream::Header;
 #[cfg(test)]
 pub(crate) use decode::decode_with_capacity_retry as decode;
-#[cfg(feature = "std")]
+#[cfg(any(test, feature = "std"))]
 pub(crate) use decode::is_capacity_error;
 #[cfg(test)]
 pub(crate) use decode::should_decode_classic_sub_band_in_parallel;
