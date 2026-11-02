@@ -681,19 +681,14 @@ pub(crate) fn mul_add(a: f32, b: f32, c: f32) -> f32 {
     result
 }
 
-// Floor and round as one instruction where the target has one: aarch64, and
-// x86 with SSE4.1. Elsewhere, notably baseline x86-64, the standard methods
-// are a library call per sample, so the helpers use [`soft_rounding`].
-#[cfg(all(
-    feature = "std",
-    any(
-        target_arch = "aarch64",
-        all(
-            any(target_arch = "x86", target_arch = "x86_64"),
-            target_feature = "sse4.1"
-        )
-    )
-))]
+// Hosted builds floor and round with the standard methods: one instruction
+// on aarch64 and inside an x86 SIMD dispatch, where SSE4.1 or AVX2 is
+// enabled. On baseline x86-64 outside a dispatch each is a library call per
+// sample, so loops that round run inside a `dispatch!` (see below and `cargo
+// xtask x86-codegen-audit`). [`soft_rounding`] is exact without the
+// instructions, but it made AVX2 output loops about 5% slower on a Ryzen
+// 7 5800X3D, so only no-std builds use it.
+#[cfg(feature = "std")]
 mod rounding {
     #[expect(
         clippy::inline_always,
@@ -723,16 +718,7 @@ mod rounding {
     }
 }
 
-#[cfg(not(all(
-    feature = "std",
-    any(
-        target_arch = "aarch64",
-        all(
-            any(target_arch = "x86", target_arch = "x86_64"),
-            target_feature = "sse4.1"
-        )
-    )
-)))]
+#[cfg(not(feature = "std"))]
 use soft_rounding as rounding;
 
 /// Floor and rounding in plain `f32` arithmetic, exact for every input
@@ -743,19 +729,7 @@ use soft_rounding as rounding;
 /// round-to-nearest-even mode and subtracting 2^23 back is exact. Magnitudes
 /// at or above 2^23 are already integers, and NaN fails the range check, so
 /// both are returned unchanged.
-#[cfg_attr(
-    all(
-        feature = "std",
-        any(
-            target_arch = "aarch64",
-            all(
-                any(target_arch = "x86", target_arch = "x86_64"),
-                target_feature = "sse4.1"
-            )
-        )
-    ),
-    cfg(test)
-)]
+#[cfg(any(test, not(feature = "std")))]
 mod soft_rounding {
     /// The smallest magnitude from which every `f32` is an integer.
     const INTEGRAL_MAGNITUDE: f32 = 8_388_608.0;
@@ -952,10 +926,10 @@ pub(crate) fn max_f32(a: f32, b: f32) -> f32 {
     }
 }
 
-// Scalar floor and rounding never call the C library (see `rounding`), but a
-// fused multiply-add does on baseline x86-64, which has no instruction for
-// it (aarch64 does). Loops that fuse multiply-adds, and hot loops that should
-// use the CPU's widest vectors, run inside a `dispatch!`:
+// Baseline x86-64 has no floor, round or fused multiply-add instruction, so
+// outside a dispatch each is a library call per sample (aarch64 has them
+// all). Loops that floor, round or fuse a multiply-add, and hot loops that
+// should use the CPU's widest vectors, run inside a `dispatch!`:
 // `dispatch!(Level::new(), simd => foo_at(simd, ...))` around an
 // `#[inline(always)] fn foo_at<S: Simd>(_simd: S, ...)`. Target features reach
 // only code inlined into the dispatched closure, so the loop and every helper

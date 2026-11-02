@@ -355,14 +355,23 @@ impl DeferredMct {
     #[inline(always)]
     fn pack_ict_rgb8_at<const CENTERED: bool, S: Simd>(
         self,
-        _simd: S,
+        simd: S,
         [luma, cb, cr]: [&[f32]; 3],
         output: &mut [u8],
     ) {
+        let len = (output.len() / 3).min(luma.len()).min(cb.len()).min(cr.len());
+        // On x86-64 whole blocks of eight pixels are packed by hand first,
+        // which measured faster there than LLVM's vectorization of the loop.
+        #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+        let start = self.pack_ict_rgb8_blocks::<CENTERED, S>(simd, [luma, cb, cr], output, len);
+        #[cfg(not(all(feature = "simd", target_arch = "x86_64")))]
+        let start = {
+            let _ = simd;
+            0
+        };
         let pixels = output.as_chunks_mut::<3>().0;
-        let len = pixels.len().min(luma.len()).min(cb.len()).min(cr.len());
         let shift = self.rounding.unwrap_or([0.0; 3]);
-        for index in 0..len {
+        for index in start..len {
             let mut red = mul_add(cr[index], mct::ICT_INV_R_CR, luma[index]) + self.addends[0];
             let mut green = mul_add(
                 cr[index],
@@ -383,9 +392,109 @@ impl DeferredMct {
         }
     }
 
+    /// The whole blocks of eight among the first `len` pixels of
+    /// [`Self::pack_ict_rgb8_at`], eight at a time: the expressions of
+    /// [`apply_inner_impl`] and [`round_centered_and_shift`], then the RGB8
+    /// pack. Returns how many pixels it packed.
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    #[inline(always)]
+    fn pack_ict_rgb8_blocks<const CENTERED: bool, S: Simd>(
+        self,
+        simd: S,
+        [luma, cb, cr]: [&[f32]; 3],
+        output: &mut [u8],
+        len: usize,
+    ) -> usize {
+        use fearless_simd::{f32x8, SimdBase, SimdFloat};
+
+        let vector_len = len / 8 * 8;
+        let red_from_chroma = f32x8::splat(simd, mct::ICT_INV_R_CR);
+        let green_from_red_chroma = f32x8::splat(simd, mct::ICT_INV_G_CR);
+        let green_from_blue_chroma = f32x8::splat(simd, mct::ICT_INV_G_CB);
+        let blue_from_chroma = f32x8::splat(simd, mct::ICT_INV_B_CB);
+        let red_level = f32x8::splat(simd, self.addends[0]);
+        let green_level = f32x8::splat(simd, self.addends[1]);
+        let blue_level = f32x8::splat(simd, self.addends[2]);
+        let shift = self.rounding.unwrap_or([0.0; 3]);
+        let red_shift = f32x8::splat(simd, shift[0]);
+        let green_shift = f32x8::splat(simd, shift[1]);
+        let blue_shift = f32x8::splat(simd, shift[2]);
+        for start in (0..vector_len).step_by(8) {
+            let y_0 = f32x8::from_slice(simd, &luma[start..start + 8]);
+            let y_1 = f32x8::from_slice(simd, &cb[start..start + 8]);
+            let y_2 = f32x8::from_slice(simd, &cr[start..start + 8]);
+            let mut red = y_2.mul_add_precise(red_from_chroma, y_0) + red_level;
+            let mut green = y_2.mul_add_precise(
+                green_from_red_chroma,
+                y_1.mul_add_precise(green_from_blue_chroma, y_0),
+            ) + green_level;
+            let mut blue = y_1.mul_add_precise(blue_from_chroma, y_0) + blue_level;
+            if CENTERED {
+                red = red.round_ties_even() + red_shift;
+                green = green.round_ties_even() + green_shift;
+                blue = blue.round_ties_even() + blue_shift;
+                store_whole_rgb8_x8(simd, [red, green, blue], &mut output[3 * start..3 * len]);
+            } else {
+                crate::color::store_rgb8_x8(
+                    simd,
+                    [red, green, blue],
+                    &mut output[3 * start..3 * start + 24],
+                );
+            }
+        }
+        vector_len
+    }
+
     pub(crate) fn transform_chunk(self, planes: (&mut [f32], &mut [f32], &mut [f32])) {
         transform_planes(self.transform, planes, self.addends, self.rounding, false);
     }
+}
+
+/// The RGB8 pack of eight pixels whose samples are whole numbers (the
+/// centered rounding already ran), into the first 24 bytes of `output`.
+/// Matches the saturating `as u8` cast (NaN to zero) like
+/// [`crate::color::store_rgb8_x8`], but skips its rounding and uses the
+/// signed conversion, which is exact on `0..=255` and native on x86-64 where
+/// the unsigned one is emulated. With four spare bytes after the pixels, each
+/// half is stored with one overlapping 16-byte store; the next pixels (or the
+/// scalar remainder) overwrite the spare bytes.
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[inline(always)]
+fn store_whole_rgb8_x8<S: Simd>(
+    simd: S,
+    [red, green, blue]: [fearless_simd::f32x8<S>; 3],
+    output: &mut [u8],
+) {
+    use fearless_simd::{u8x16, Bytes, SimdBase};
+
+    let packed =
+        whole_u8_x8(simd, red) | (whole_u8_x8(simd, green) << 8) | (whole_u8_x8(simd, blue) << 16);
+    let indices = u8x16::from_slice(simd, &[0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 0, 0, 0, 0]);
+    let (first, second) = simd.split_u32x8(packed);
+    let first = first.bitcast::<u8x16<S>>().swizzle_dyn(indices);
+    let second = second.bitcast::<u8x16<S>>().swizzle_dyn(indices);
+    if output.len() >= 28 {
+        first.store_slice(&mut output[..16]);
+        second.store_slice(&mut output[12..28]);
+    } else {
+        output[..12].copy_from_slice(&first.to_array()[..12]);
+        output[12..24].copy_from_slice(&second.to_array()[..12]);
+    }
+}
+
+/// One byte value per lane of eight whole-number samples: the saturating
+/// `as u8` cast (NaN to zero) through the native signed conversion.
+#[cfg(all(feature = "simd", target_arch = "x86_64"))]
+#[inline(always)]
+fn whole_u8_x8<S: Simd>(simd: S, value: fearless_simd::f32x8<S>) -> fearless_simd::u32x8<S> {
+    use fearless_simd::{f32x8, Bytes, Select, SimdBase};
+
+    let zero = f32x8::splat(simd, 0.0);
+    let clamped = value
+        .simd_ge(zero)
+        .select(value, zero)
+        .min(f32x8::splat(simd, 255.0));
+    simd.cvt_i32_f32x8(clamped).bitcast()
 }
 
 /// The CPU inverse transform, then (for centered 9/7 output) the rounding
@@ -491,11 +600,34 @@ impl SampleShift {
 /// Round every sample to the nearest integer, ties to even, then add
 /// `addend`: the centered output step of 9/7 samples.
 pub(crate) fn round_centered_and_shift(samples: &mut [f32], addend: f32) {
-    dispatch!(Level::new(), _simd => {
-        for sample in samples {
-            *sample = round_ties_even_then_add(*sample, addend);
+    dispatch!(Level::new(), simd => round_centered_and_shift_at(simd, samples, addend));
+}
+
+/// [`round_centered_and_shift`] at the dispatched SIMD level (see `math`).
+/// On x86-64 whole blocks of eight are rounded by hand first, which measured
+/// faster there than LLVM's vectorization of the loop.
+#[expect(
+    clippy::inline_always,
+    reason = "inlined into each SIMD dispatch target"
+)]
+#[inline(always)]
+fn round_centered_and_shift_at<S: Simd>(simd: S, samples: &mut [f32], addend: f32) {
+    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+    let samples = {
+        use fearless_simd::{f32x8, SimdBase, SimdFloat};
+
+        let shift = f32x8::splat(simd, addend);
+        let (chunks, rest) = samples.as_chunks_mut::<8>();
+        for chunk in chunks {
+            (f32x8::from_slice(simd, chunk).round_ties_even() + shift).store_slice(chunk);
         }
-    });
+        rest
+    };
+    #[cfg(not(all(feature = "simd", target_arch = "x86_64")))]
+    let _ = simd;
+    for sample in samples {
+        *sample = round_ties_even_then_add(*sample, addend);
+    }
 }
 
 fn apply_inverse_i64(
