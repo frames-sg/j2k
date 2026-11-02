@@ -21,9 +21,9 @@ mod ht;
 
 #[derive(Default)]
 pub(crate) struct PacketParseStats {
-    #[cfg(all(test, feature = "std"))]
+    #[cfg(test)]
     pub(crate) parsed_headers: usize,
-    #[cfg(all(test, feature = "std"))]
+    #[cfg(test)]
     pub(crate) skipped_packets: usize,
 }
 
@@ -632,12 +632,12 @@ fn parse_inner<'a>(
             .validate_packet_length(packet_start)
             .ok_or("packet length marker disagrees with consumed bytes")?;
 
+        #[cfg(test)]
+        {
+            walk.stats.parsed_headers += 1;
+        }
         #[cfg(feature = "std")]
         {
-            #[cfg(test)]
-            {
-                walk.stats.parsed_headers += 1;
-            }
             if let Some(boundaries) = walk.recording.as_mut() {
                 let end = tile_part
                     .inline_offset()

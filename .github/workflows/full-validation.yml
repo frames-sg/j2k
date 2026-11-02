@@ -254,6 +254,9 @@ jobs:
       - uses: crate-ci/typos@bee27e3a4fd1ea2111cf90ab89cd076c870fce14
 
   test:
+    env:
+      # Bound full-workspace build artifacts on hosted runners without changing test coverage.
+      CARGO_PROFILE_TEST_DEBUG: "0"
     strategy:
       fail-fast: false
       matrix:
@@ -273,7 +276,7 @@ jobs:
           toolchain: ${{ matrix.rust }}
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
-          shared-key: full-host-${{ runner.os }}-${{ runner.arch }}-${{ matrix.rust }}-test
+          shared-key: full-host-${{ runner.os }}-${{ runner.arch }}-${{ matrix.rust }}-test-no-debuginfo
           cache-bin: false
           save-if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' }}
       - run: cargo xtask test

@@ -61,7 +61,7 @@ pub(crate) use self::direct_plan::{
 };
 pub(crate) use self::peak::{record_workspace, WorkspaceBytes, WorkspacePeak};
 pub(crate) use self::planes_floor::full_decode_planes_floor;
-#[cfg(feature = "std")]
+#[cfg(any(test, feature = "std"))]
 pub(crate) use self::reuse::is_capacity_error;
 pub(crate) use self::state::{DecompositionStorage, TileDecodeContext, TileDecompositions};
 use self::store::{
@@ -722,9 +722,9 @@ impl OutputRegion {
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DecodeDebugCounters {
-    #[cfg(all(test, feature = "std"))]
+    #[cfg(test)]
     pub(crate) packet_headers: usize,
-    #[cfg(all(test, feature = "std"))]
+    #[cfg(test)]
     pub(crate) directory_skips: usize,
     pub(crate) decoded_code_blocks: usize,
     pub(crate) skipped_code_blocks: usize,
@@ -938,9 +938,9 @@ fn decode_tile<'a>(
     // Next, we parse the layers/segments for each code block.
     let stage_start = profile::profile_now(profile_enabled);
     let packet_stats = segment::parse_selected(tile, header, storage, selection.as_ref())?;
-    #[cfg(not(all(test, feature = "std")))]
+    #[cfg(not(test))]
     let _ = packet_stats;
-    #[cfg(all(test, feature = "std"))]
+    #[cfg(test)]
     {
         tile_ctx.debug_counters.packet_headers += packet_stats.parsed_headers;
         tile_ctx.debug_counters.directory_skips += packet_stats.skipped_packets;
