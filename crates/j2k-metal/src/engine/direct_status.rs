@@ -2,6 +2,7 @@
 
 use crate::metal_types::Buffer;
 
+use crate::error::adapter_decode_error;
 use crate::{buffer_pool::PooledBuffer, Error, MetalDirectFallbackReason};
 
 use super::abi::{
@@ -227,13 +228,15 @@ fn decode_classic_status_error_for_source(
             reason: MetalDirectFallbackReason::UnsupportedRuntimeInput,
         };
     }
-    let kind = match status.code {
-        J2K_CLASSIC_STATUS_FAIL => "decode failure",
-        _ => "unexpected classic kernel status",
-    };
+    if status.code == J2K_CLASSIC_STATUS_FAIL {
+        return Error::Decode(adapter_decode_error(format!(
+            "classic J2K Metal kernel decode failure{source} (code={}, detail={})",
+            status.code, status.detail
+        )));
+    }
     Error::MetalKernel {
         message: format!(
-            "classic J2K Metal kernel {kind}{source} (detail={})",
+            "classic J2K Metal kernel unexpected classic kernel status{source} (detail={})",
             status.detail
         ),
     }
@@ -267,38 +270,109 @@ fn decode_ht_status_error_for_source(status: J2kHtStatus, source_index: Option<u
             reason: MetalDirectFallbackReason::UnsupportedRuntimeInput,
         };
     }
-    let kind = match status.code {
-        J2K_HT_STATUS_FAIL => "decode failure",
-        _ => "unexpected HT kernel status",
-    };
+    if status.code == J2K_HT_STATUS_FAIL {
+        return Error::Decode(adapter_decode_error(format!(
+            "HTJ2K Metal kernel decode failure{source} (code={}, detail={})",
+            status.code, status.detail
+        )));
+    }
     Error::MetalKernel {
         message: format!(
-            "HTJ2K Metal kernel {kind}{source} (detail={})",
+            "HTJ2K Metal kernel unexpected HT kernel status{source} (detail={})",
             status.detail
         ),
     }
 }
 
 #[cfg(test)]
-mod ht_source_tests {
-    use super::{decode_ht_status_error_for_source, Error, J2kHtStatus, J2K_HT_STATUS_FAIL};
+mod tier1_decode_status_tests {
+    use j2k::{BackendErrorKind, J2kError};
+    use j2k_core::{AdapterErrorKind, AdapterErrorParts};
+
+    use super::{
+        decode_classic_status_error_for_source, decode_ht_status_error_for_source, Error,
+        J2kClassicStatus, J2kHtStatus, J2K_CLASSIC_STATUS_FAIL, J2K_CLASSIC_STATUS_UNSUPPORTED,
+        J2K_HT_STATUS_FAIL,
+    };
+
+    fn assert_decode_failure(error: Error, coding: &str, detail: u32, source_index: usize) {
+        assert_eq!(error.adapter_error_kind(), AdapterErrorKind::Decode);
+        let Error::Decode(J2kError::Backend(backend)) = error else {
+            panic!("Tier-1 status failure must keep the existing facade decode wrapper");
+        };
+        assert_eq!(backend.kind(), BackendErrorKind::Decode);
+        assert!(backend.message().contains(coding));
+        assert!(backend
+            .message()
+            .contains(&format!("source {source_index}")));
+        assert!(backend.message().contains("code=1"));
+        assert!(backend.message().contains(&format!("detail={detail}")));
+    }
 
     #[test]
-    fn ht_status_failure_names_the_responsible_batch_source() {
-        let error = decode_ht_status_error_for_source(
+    fn classic_status_failure_keeps_decode_class_and_source_attribution() {
+        assert_decode_failure(
+            decode_classic_status_error_for_source(
+                J2kClassicStatus {
+                    code: J2K_CLASSIC_STATUS_FAIL,
+                    detail: 10,
+                    ..J2kClassicStatus::default()
+                },
+                Some(7),
+            ),
+            "classic",
+            10,
+            7,
+        );
+    }
+
+    #[test]
+    fn ht_status_failure_keeps_decode_class_and_source_attribution() {
+        assert_decode_failure(
+            decode_ht_status_error_for_source(
+                J2kHtStatus {
+                    code: J2K_HT_STATUS_FAIL,
+                    detail: 5,
+                    ..J2kHtStatus::default()
+                },
+                Some(9),
+            ),
+            "HTJ2K",
+            5,
+            9,
+        );
+    }
+
+    #[test]
+    fn unsupported_and_unknown_statuses_keep_their_existing_classes() {
+        let unsupported = decode_classic_status_error_for_source(
+            J2kClassicStatus {
+                code: J2K_CLASSIC_STATUS_UNSUPPORTED,
+                detail: 3,
+                ..J2kClassicStatus::default()
+            },
+            Some(4),
+        );
+        assert!(matches!(unsupported, Error::MetalDirectFallback { .. }));
+        assert_eq!(
+            unsupported.adapter_error_kind(),
+            AdapterErrorKind::Unsupported
+        );
+
+        let unknown = decode_ht_status_error_for_source(
             J2kHtStatus {
-                code: J2K_HT_STATUS_FAIL,
+                code: u32::MAX,
                 detail: 17,
                 ..J2kHtStatus::default()
             },
             Some(9),
         );
-
         assert!(matches!(
-            error,
-            Error::MetalKernel { message }
+            unknown,
+            Error::MetalKernel { ref message }
                 if message.contains("source 9") && message.contains("detail=17")
         ));
+        assert_eq!(unknown.adapter_error_kind(), AdapterErrorKind::Other);
     }
 }
 
@@ -336,6 +410,7 @@ mod mct_status_tests {
 #[cfg(test)]
 mod retirement_tests {
     use core::mem::size_of;
+    use j2k::{BackendErrorKind, J2kError};
 
     use super::{
         retire_direct_status_checks, DirectStatusCheck, DirectStatusRetirementMode, Error,
@@ -392,7 +467,9 @@ mod retirement_tests {
         .expect_err("first status must fail validation");
         assert!(matches!(
             error,
-            Error::MetalKernel { message } if message.contains("detail=41")
+            Error::Decode(J2kError::Backend(backend))
+                if backend.kind() == BackendErrorKind::Decode
+                    && backend.message().contains("detail=41")
         ));
         assert_eq!(
             runtime

@@ -6,10 +6,10 @@ break_ledger: []
 reviews:
   j2k-core:
     removed_fingerprint: "none"
-    added_fingerprint: "none"
+    added_fingerprint: "fnv1a64:1783cd7e6f188540"
     hidden_count: 226
     hidden_fingerprint: "fnv1a64:487523cc4e7f504e"
-    rationale: "Compared the complete ordinary API inventory against v0.13.1; no signatures were added, removed, or changed."
+    rationale: "Adds AdapterErrorKind::Decode to an existing non-exhaustive enum for backend decode-execution failures. The variant is appended, preserving existing discriminants. AdapterErrorParts method signatures and the existing codec-error boolean helpers are unchanged; existing wildcard matches remain valid."
     hidden_rationale: "Compared the complete hidden API inventory against v0.13.1; it is unchanged."
   j2k-profile:
     removed_fingerprint: "none"
@@ -104,10 +104,10 @@ reviews:
     hidden_rationale: "Compared the complete hidden API inventory against v0.13.1; it is unchanged."
   j2k:
     removed_fingerprint: "none"
-    added_fingerprint: "fnv1a64:363048555efa46de"
+    added_fingerprint: "fnv1a64:78b9622111db3437"
     hidden_count: 108
     hidden_fingerprint: "fnv1a64:01e74ad6c3ff416e"
-    rationale: "Compared the complete ordinary API inventory against v0.13.1. Adds J2kError::ResourceLimit { requested, cap, source } to an already non-exhaustive enum; no existing item changes and existing variant discriminants are preserved. Budget and image-size failures now use this variant instead of NativeDecode, retaining the structured native cause. Callers specifically handling budget failures through NativeDecode should also handle ResourceLimit. Batches prepared by CpuBatchDecoder report items whose output allocation or planned execution cannot fit as indexed preparation errors and exclude those items from the prepared groups. Backend-neutral prepare_batch and prepare_batch_from_images retain whole-call output-cap failures for a single oversized image when subsequently decoded on the CPU. On either preparation path, a group whose combined output exceeds the allocation cap still fails the whole decode call. These correct admission timing within the CPU-owned preparation paths and preserve the existing per-item failure model; successful decode output and signatures are unchanged. The public error documentation and changelog describe the refinements."
+    rationale: "Compared the complete ordinary API inventory against v0.13.1. Adds J2kError::ResourceLimit { requested, cap, source } to an already non-exhaustive enum; no existing item changes and existing variant discriminants are preserved. Budget and image-size failures now use this variant instead of NativeDecode, retaining the structured native cause. Callers specifically handling budget failures through NativeDecode should also handle ResourceLimit. Batches prepared by CpuBatchDecoder report items whose output allocation or planned execution cannot fit as indexed preparation errors and exclude those items from the prepared groups. Backend-neutral prepare_batch and prepare_batch_from_images retain whole-call output-cap failures for a single oversized image when subsequently decoded on the CPU. On either preparation path, a group whose combined output exceeds the allocation cap still fails the whole decode call. These correct admission timing within the CPU-owned preparation paths and preserve the existing per-item failure model; successful decode output and signatures are unchanged. Adds BackendErrorKind::Decode at the end of its existing non-exhaustive enum and BackendError::decode for failures during backend decode execution. Existing discriminants and constructors are preserved. The public error documentation and changelog describe the refinements."
     hidden_rationale: "Compared the complete hidden API inventory against v0.13.1; it is unchanged."
   j2k-transcode:
     removed_fingerprint: "none"
@@ -135,7 +135,7 @@ reviews:
     added_fingerprint: "none"
     hidden_count: 321
     hidden_fingerprint: "fnv1a64:41513c1e93413909"
-    rationale: "Compared the complete ordinary API inventory against v0.13.1; no signatures were added, removed, or changed."
+    rationale: "No ordinary signatures or error variants were added, removed, or changed. Classic and HT Tier-1 FAIL statuses now use the existing Error::Decode(J2kError::Backend) wrapper with BackendErrorKind::Decode instead of Error::MetalKernel. Their display prefix becomes backend failed (decode):; the diagnostic retains the coding path, status code, detail and batch source index. Unsupported and unknown statuses, runtime failures, cleanup failures, session retirement and fallback classification keep their existing behavior. This is a documented refinement of failure classification, not a new Metal error variant."
     hidden_rationale: "Compared the complete hidden API inventory against v0.13.1; it is unchanged."
   j2k-transcode-metal:
     removed_fingerprint: "none"
@@ -156,7 +156,7 @@ reviews:
     added_fingerprint: "none"
     hidden_count: 193
     hidden_fingerprint: "fnv1a64:8a9b0ac701f08d00"
-    rationale: "Compared the complete ordinary API inventory against v0.13.1; no signatures were added, removed, or changed."
+    rationale: "No ordinary signatures or error variants were added, removed, or changed. AdapterErrorParts reports Decode only for a CudaTier1JobFailed with a direct bare KernelJobStatus source whose code is the classic/HT FAIL value 1. The typed CUDA source and job attribution remain available. Unsupported or unknown statuses, raw runtime errors and nested completion, release or adapter-cleanup failures retain their existing classes and fallback behavior."
     hidden_rationale: "Compared the complete hidden API inventory against v0.13.1; it is unchanged."
   j2k-ml:
     removed_fingerprint: "none"

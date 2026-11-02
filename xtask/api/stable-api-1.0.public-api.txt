@@ -176,6 +176,7 @@ pub enum j2k::J2kRateTarget
 pub enum j2k::J2kToHtj2kMode
 pub enum j2k::ReversibleTransform
 pub fn j2k::BackendError::buffer(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn j2k::BackendError::decode(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn j2k::BackendError::message(&self) -> &str
 pub fn j2k::BackendError::new(j2k::BackendErrorKind, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn j2k::BackendError::not_implemented(impl core::convert::Into<alloc::string::String>) -> Self
@@ -380,6 +381,7 @@ pub fn j2k::release_tile_batch_workspaces()
 pub fn j2k::retained_tile_batch_workspace_bytes() -> usize
 pub fn j2k::wrap_j2k_codestream(&[u8], j2k::J2kFileWrapOptions<'_>) -> core::result::Result<alloc::vec::Vec<u8>, j2k::J2kError>
 pub j2k::BackendErrorKind::Buffer
+pub j2k::BackendErrorKind::Decode
 pub j2k::BackendErrorKind::InternalInvariant
 pub j2k::BackendErrorKind::NotImplemented
 pub j2k::BackendErrorKind::Other
@@ -1020,6 +1022,7 @@ pub fn j2k_core::accelerator::GpuAbi::as_bytes(&Self) -> &[u8]
 pub fn j2k_core::accelerator::GpuAbi::slice_as_bytes(&[Self]) -> &[u8]
 pub fn j2k_core::accelerator::GpuAbi::slice_as_bytes_mut(&mut [Self]) -> &mut [u8]
 pub j2k_core::AdapterErrorKind::Buffer
+pub j2k_core::AdapterErrorKind::Decode
 pub j2k_core::AdapterErrorKind::Other
 pub j2k_core::AdapterErrorKind::Unsupported
 pub j2k_core::BackendCapabilities::cpu: j2k_core::CpuFeatures

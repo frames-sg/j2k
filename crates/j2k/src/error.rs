@@ -27,6 +27,8 @@ pub enum BackendErrorKind {
     Validation,
     /// Failure indicates an internal facade/cache invariant violation.
     InternalInvariant,
+    /// Backend execution failed while decoding accepted input.
+    Decode,
 }
 
 impl core::fmt::Display for BackendErrorKind {
@@ -39,6 +41,7 @@ impl core::fmt::Display for BackendErrorKind {
             Self::Buffer => f.write_str("buffer"),
             Self::Validation => f.write_str("validation"),
             Self::InternalInvariant => f.write_str("internal-invariant"),
+            Self::Decode => f.write_str("decode"),
         }
     }
 }
@@ -78,6 +81,11 @@ impl BackendError {
     /// Construct a backend buffer/layout failure.
     pub fn buffer(message: impl Into<String>) -> Self {
         Self::new(BackendErrorKind::Buffer, message)
+    }
+
+    /// Construct a backend decode-execution failure.
+    pub fn decode(message: impl Into<String>) -> Self {
+        Self::new(BackendErrorKind::Decode, message)
     }
 
     /// Return the machine-readable failure class.
@@ -681,6 +689,7 @@ mod tests {
         let truncated = J2kError::Backend(BackendError::truncated("entropy data"));
         let not_implemented = J2kError::Backend(BackendError::not_implemented("JPX path"));
         let buffer = J2kError::Backend(BackendError::buffer("output pitch"));
+        let decode = J2kError::Backend(BackendError::decode("Tier-1 status 1"));
         let other = J2kError::Backend(BackendError::new(
             BackendErrorKind::Other,
             "kernel launch failed",
@@ -690,6 +699,11 @@ mod tests {
         assert!(truncated.is_truncated());
         assert!(not_implemented.is_not_implemented());
         assert!(buffer.is_buffer_error());
+        let J2kError::Backend(decode) = decode else {
+            panic!("decode constructor returns a backend error");
+        };
+        assert_eq!(decode.kind(), BackendErrorKind::Decode);
+        assert_eq!(decode.message(), "Tier-1 status 1");
         assert!(!other.is_unsupported());
         assert!(!other.is_truncated());
         assert!(!other.is_not_implemented());

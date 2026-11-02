@@ -2,9 +2,9 @@
 
 mod native_source;
 
-use j2k::J2kError;
 #[cfg(target_os = "macos")]
-use j2k::{BackendError, BackendErrorKind};
+use j2k::BackendError;
+use j2k::{BackendErrorKind, J2kError};
 use j2k_core::{
     adapter_error_is_buffer_error, adapter_error_is_not_implemented, adapter_error_is_truncated,
     adapter_error_is_unsupported, AdapterErrorKind, AdapterErrorParts, BackendRequest,
@@ -19,7 +19,7 @@ pub use native_source::NativeBackendError;
 #[derive(Debug, thiserror::Error)]
 /// Errors returned by the Metal J2K backend.
 pub enum Error {
-    /// Error returned by the CPU or native J2K decoder.
+    /// Error returned while decoding through the shared facade contract.
     #[error(transparent)]
     Decode(#[from] J2kError),
     /// Native decoder failure produced while preparing Metal-resident work.
@@ -221,6 +221,9 @@ impl AdapterErrorParts for Error {
     fn adapter_error_kind(&self) -> AdapterErrorKind {
         match self {
             Self::Buffer(_) => AdapterErrorKind::Buffer,
+            Self::Decode(J2kError::Backend(error)) if error.kind() == BackendErrorKind::Decode => {
+                AdapterErrorKind::Decode
+            }
             Self::UnsupportedBackend { .. }
             | Self::UnsupportedMetalRequest { .. }
             | Self::MetalUnavailable
@@ -313,9 +316,15 @@ pub(crate) fn adapter_backend_error(message: impl Into<String>) -> J2kError {
     J2kError::Backend(BackendError::new(BackendErrorKind::Other, message))
 }
 
+#[cfg(target_os = "macos")]
+pub(crate) fn adapter_decode_error(message: impl Into<String>) -> J2kError {
+    J2kError::Backend(BackendError::decode(message))
+}
+
 #[cfg(test)]
 mod tests {
-    use j2k_core::CodecError;
+    use j2k::{BackendError, BackendErrorKind, J2kError};
+    use j2k_core::{AdapterErrorKind, AdapterErrorParts, CodecError};
     use j2k_metal_support::MetalSupportError;
     use j2k_native::{
         DecodeError as NativeDecodeError, DecodingError as NativeDecodingError,
@@ -456,6 +465,18 @@ mod tests {
 
         assert!(matches!(error, Error::MetalUnavailable));
         assert!(error.is_unsupported());
+    }
+
+    #[test]
+    fn facade_decode_class_is_selective_for_backend_decode_failures() {
+        let decode = Error::Decode(J2kError::Backend(BackendError::decode("Tier-1 failed")));
+        assert_eq!(decode.adapter_error_kind(), AdapterErrorKind::Decode);
+
+        let other = Error::Decode(J2kError::Backend(BackendError::new(
+            BackendErrorKind::Other,
+            "device setup failed",
+        )));
+        assert_eq!(other.adapter_error_kind(), AdapterErrorKind::Other);
     }
 
     #[test]

@@ -12,6 +12,10 @@ use j2k_native::DecodeError as NativeDecodeError;
 
 pub use native_source::NativeBackendError;
 
+#[cfg(feature = "cuda-runtime")]
+// Mirrors STATUS_FAILED in classic decode and HT_STATUS_FAIL in HT decode.
+const TIER1_STATUS_FAIL: u32 = 1;
+
 /// Error returned by the CUDA JPEG 2000 adapter.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -205,6 +209,15 @@ impl AdapterErrorParts for Error {
             | Self::HostAllocationTooLarge { .. }
             | Self::HtJobChunkPlan(_) => AdapterErrorKind::Other,
             #[cfg(feature = "cuda-runtime")]
+            Self::CudaTier1JobFailed {
+                source:
+                    j2k_cuda_runtime::CudaError::KernelJobStatus {
+                        code: TIER1_STATUS_FAIL,
+                        ..
+                    },
+                ..
+            } => AdapterErrorKind::Decode,
+            #[cfg(feature = "cuda-runtime")]
             Self::CudaRuntime { .. }
             | Self::CudaTier1JobFailed { .. }
             | Self::CudaCleanupFailed { .. } => AdapterErrorKind::Other,
@@ -254,6 +267,8 @@ pub(crate) fn native_decode_error(error: NativeDecodeError) -> Error {
 #[cfg(test)]
 mod tests {
     use j2k_core::CodecError;
+    #[cfg(feature = "cuda-runtime")]
+    use j2k_core::{AdapterErrorKind, AdapterErrorParts};
     use j2k_native::{
         DecodeError as NativeDecodeError, DecodingError as NativeDecodingError,
         DirectPlanUnsupportedReason as NativeDirectPlanUnsupportedReason,
@@ -394,5 +409,78 @@ mod tests {
         assert!(rendered.contains("invalid prepared store"));
         assert!(rendered.contains("synchronization failure"));
         assert!(!combined.is_unsupported());
+    }
+
+    #[cfg(feature = "cuda-runtime")]
+    #[test]
+    fn tier1_job_failure_has_decode_class_without_reclassifying_runtime_or_cleanup() {
+        let source = CudaError::KernelJobStatus {
+            kernel: "test_tier1",
+            job_index: 3,
+            code: 1,
+            detail: 5,
+        };
+        let error = Error::CudaTier1JobFailed {
+            source_index: 7,
+            original_job_index: 3,
+            source,
+        };
+        assert_eq!(error.adapter_error_kind(), AdapterErrorKind::Decode);
+        assert!(matches!(
+            &error,
+            Error::CudaTier1JobFailed {
+                source_index: 7,
+                original_job_index: 3,
+                source: CudaError::KernelJobStatus {
+                    code: 1,
+                    detail: 5,
+                    ..
+                }
+            }
+        ));
+
+        let raw_runtime = Error::CudaRuntime {
+            source: CudaError::KernelJobStatus {
+                kernel: "test_tier1",
+                job_index: 3,
+                code: 1,
+                detail: 5,
+            },
+        };
+        assert_eq!(raw_runtime.adapter_error_kind(), AdapterErrorKind::Other);
+        let cleanup = combine_cuda_cleanup_errors(error, runtime_error("cleanup failed"));
+        assert_eq!(cleanup.adapter_error_kind(), AdapterErrorKind::Other);
+
+        let unsupported = Error::CudaTier1JobFailed {
+            source_index: 7,
+            original_job_index: 3,
+            source: CudaError::KernelJobStatus {
+                kernel: "test_tier1",
+                job_index: 3,
+                code: 2,
+                detail: 9,
+            },
+        };
+        assert_eq!(unsupported.adapter_error_kind(), AdapterErrorKind::Other);
+
+        let release_failure = Error::CudaTier1JobFailed {
+            source_index: 7,
+            original_job_index: 3,
+            source: CudaError::ResourceReleaseFailed {
+                primary: Box::new(CudaError::KernelJobStatus {
+                    kernel: "test_tier1",
+                    job_index: 3,
+                    code: 1,
+                    detail: 5,
+                }),
+                release: Box::new(CudaError::StatePoisoned {
+                    message: "release failed".to_string(),
+                }),
+            },
+        };
+        assert_eq!(
+            release_failure.adapter_error_kind(),
+            AdapterErrorKind::Other
+        );
     }
 }

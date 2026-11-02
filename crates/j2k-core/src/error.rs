@@ -131,6 +131,8 @@ pub enum AdapterErrorKind {
     Buffer,
     /// Error is an unsupported backend, request, input, or host capability.
     Unsupported,
+    /// Backend execution failed while decoding accepted input.
+    Decode,
 }
 
 /// Variant mapping supplied by GPU adapter error enums.
@@ -138,7 +140,8 @@ pub trait AdapterErrorParts {
     /// Return the wrapped codec/fallback error, when this adapter error has one.
     fn source_codec_error(&self) -> Option<&dyn CodecError>;
 
-    /// Return the adapter-local classification for non-codec variants.
+    /// Return the adapter-local classification, including backend decode
+    /// execution failures.
     fn adapter_error_kind(&self) -> AdapterErrorKind;
 }
 
