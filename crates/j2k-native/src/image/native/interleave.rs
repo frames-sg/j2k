@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 
 use super::{round_clamped_native, signed_native_bounds, unsigned_native_max};
 use crate::j2c::ComponentData;
+use crate::math::{dispatch, Level, Simd};
 
 use super::Image;
 
@@ -51,27 +52,45 @@ impl Image<'_> {
         match (bit_depth, components[0].signed) {
             (1..=8, true) => {
                 let (min, max) = signed_native_bounds(bit_depth);
-                interleave_converted(destination, planes, parallel, move |sample| {
-                    [(round_clamped_native(sample, min, max) as i8) as u8]
-                });
+                interleave_converted(
+                    destination,
+                    planes,
+                    parallel,
+                    #[inline(always)]
+                    move |sample| [(round_clamped_native(sample, min, max) as i8) as u8],
+                );
             }
             (1..=8, false) => {
                 let max = unsigned_native_max(bit_depth);
-                interleave_converted(destination, planes, parallel, move |sample| {
-                    [round_clamped_native(sample, 0.0, max) as u8]
-                });
+                interleave_converted(
+                    destination,
+                    planes,
+                    parallel,
+                    #[inline(always)]
+                    move |sample| [round_clamped_native(sample, 0.0, max) as u8],
+                );
             }
             (_, true) => {
                 let (min, max) = signed_native_bounds(bit_depth);
-                interleave_converted(destination, planes, parallel, move |sample| {
-                    ((round_clamped_native(sample, min, max) as i16) as u16).to_le_bytes()
-                });
+                interleave_converted(
+                    destination,
+                    planes,
+                    parallel,
+                    #[inline(always)]
+                    move |sample| {
+                        ((round_clamped_native(sample, min, max) as i16) as u16).to_le_bytes()
+                    },
+                );
             }
             (_, false) => {
                 let max = unsigned_native_max(bit_depth);
-                interleave_converted(destination, planes, parallel, move |sample| {
-                    (round_clamped_native(sample, 0.0, max) as u16).to_le_bytes()
-                });
+                interleave_converted(
+                    destination,
+                    planes,
+                    parallel,
+                    #[inline(always)]
+                    move |sample| (round_clamped_native(sample, 0.0, max) as u16).to_le_bytes(),
+                );
             }
         }
     }
@@ -108,29 +127,54 @@ fn interleave_converted<const N: usize>(
     convert: impl Fn(f32) -> [u8; N] + Send + Sync,
 ) {
     let pixel_bytes = planes.len() * N;
-    let block = |(index, destination): (usize, &mut [u8])| {
-        let first = index * BLOCK_PIXELS;
-        for (offset, pixel) in destination.chunks_exact_mut(pixel_bytes).enumerate() {
-            for (samples, bytes) in planes.iter().zip(pixel.as_chunks_mut::<N>().0) {
-                *bytes = convert(samples[first + offset]);
-            }
-        }
-    };
     #[cfg(feature = "parallel")]
     if parallel && planes[0].len() >= super::PARALLEL_PACK_SAMPLES {
         use rayon::prelude::*;
         destination
             .par_chunks_mut(pixel_bytes * BLOCK_PIXELS)
             .enumerate()
-            .for_each(block);
+            .for_each(|(index, destination)| {
+                dispatch!(Level::new(), simd => interleave_block(
+                    simd,
+                    destination,
+                    planes,
+                    index * BLOCK_PIXELS,
+                    &convert,
+                ));
+            });
         return;
     }
     #[cfg(not(feature = "parallel"))]
     let _ = parallel;
-    destination
-        .chunks_mut(pixel_bytes * BLOCK_PIXELS)
-        .enumerate()
-        .for_each(block);
+    dispatch!(Level::new(), simd => {
+        for (index, destination) in destination.chunks_mut(pixel_bytes * BLOCK_PIXELS).enumerate() {
+            interleave_block(simd, destination, planes, index * BLOCK_PIXELS, &convert);
+        }
+    });
+}
+
+/// Write `convert(sample)` of every plane's samples from `first` on to
+/// `destination`, pixel by pixel, inlined into a caller at `_simd`'s level.
+/// The rounding in `convert` is an instruction there; outside a dispatch,
+/// baseline x86-64 calls a library routine per sample.
+#[expect(
+    clippy::inline_always,
+    reason = "the interleaving loop must be inlined into each SIMD dispatch target to use its instructions"
+)]
+#[inline(always)]
+fn interleave_block<S: Simd, const N: usize>(
+    _simd: S,
+    destination: &mut [u8],
+    planes: &[&[f32]],
+    first: usize,
+    convert: &impl Fn(f32) -> [u8; N],
+) {
+    let pixel_bytes = planes.len() * N;
+    for (offset, pixel) in destination.chunks_exact_mut(pixel_bytes).enumerate() {
+        for (samples, bytes) in planes.iter().zip(pixel.as_chunks_mut::<N>().0) {
+            *bytes = convert(samples[first + offset]);
+        }
+    }
 }
 
 #[cfg(test)]

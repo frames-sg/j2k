@@ -7,6 +7,7 @@ use crate::color::{
 };
 use crate::error::{DecodingError, Result, ValidationError};
 use crate::j2c::{ComponentData, DecoderContext};
+use crate::math::{dispatch, Level, Simd};
 use crate::{
     checked_decode_byte_len2, checked_decode_byte_len3, native_bytes_per_sample,
     try_reserve_decode_elements,
@@ -282,27 +283,45 @@ impl<'a> Image<'a> {
         match (bit_depth, component.signed) {
             (1..=8, true) => {
                 let (min, max) = signed_native_bounds(bit_depth);
-                extend_converted(out, samples, parallel, move |sample| {
-                    [(round_clamped_native(sample, min, max) as i8) as u8]
-                });
+                extend_converted(
+                    out,
+                    samples,
+                    parallel,
+                    #[inline(always)]
+                    move |sample| [(round_clamped_native(sample, min, max) as i8) as u8],
+                );
             }
             (1..=8, false) => {
                 let max = unsigned_native_max(bit_depth);
-                extend_converted(out, samples, parallel, move |sample| {
-                    [round_clamped_native(sample, 0.0, max) as u8]
-                });
+                extend_converted(
+                    out,
+                    samples,
+                    parallel,
+                    #[inline(always)]
+                    move |sample| [round_clamped_native(sample, 0.0, max) as u8],
+                );
             }
             (9..=16, true) => {
                 let (min, max) = signed_native_bounds(bit_depth);
-                extend_converted(out, samples, parallel, move |sample| {
-                    ((round_clamped_native(sample, min, max) as i16) as u16).to_le_bytes()
-                });
+                extend_converted(
+                    out,
+                    samples,
+                    parallel,
+                    #[inline(always)]
+                    move |sample| {
+                        ((round_clamped_native(sample, min, max) as i16) as u16).to_le_bytes()
+                    },
+                );
             }
             (9..=16, false) => {
                 let max = unsigned_native_max(bit_depth);
-                extend_converted(out, samples, parallel, move |sample| {
-                    (round_clamped_native(sample, 0.0, max) as u16).to_le_bytes()
-                });
+                extend_converted(
+                    out,
+                    samples,
+                    parallel,
+                    #[inline(always)]
+                    move |sample| (round_clamped_native(sample, 0.0, max) as u16).to_le_bytes(),
+                );
             }
             _ => {
                 for &sample in samples {
@@ -493,23 +512,41 @@ fn extend_converted<const N: usize>(
             .0
             .par_chunks_mut(16 * 1024)
             .zip(samples.par_chunks(16 * 1024))
-            .for_each(move |(destination, source)| {
-                for (destination, &sample) in destination.iter_mut().zip(source) {
-                    *destination = convert(sample);
-                }
+            .for_each(|(destination, source)| {
+                dispatch!(Level::new(), simd => convert_samples(simd, destination, source, &convert));
             });
         return;
     }
     #[cfg(not(feature = "parallel"))]
     let _ = parallel;
 
-    let mut staged = [[0_u8; N]; CHUNK];
-    for chunk in samples.chunks(CHUNK) {
-        let staged = &mut staged[..chunk.len()];
-        for (destination, &sample) in staged.iter_mut().zip(chunk) {
-            *destination = convert(sample);
+    dispatch!(Level::new(), simd => {
+        let mut staged = [[0_u8; N]; CHUNK];
+        for chunk in samples.chunks(CHUNK) {
+            let staged = &mut staged[..chunk.len()];
+            convert_samples(simd, staged, chunk, &convert);
+            out.extend_from_slice(staged.as_flattened());
         }
-        out.extend_from_slice(staged.as_flattened());
+    });
+}
+
+/// Write `convert(sample)` of every `source` sample to `destination`,
+/// inlined into a caller at `_simd`'s level. The rounding in `convert` is an
+/// instruction there; outside a dispatch, baseline x86-64 calls a library
+/// routine per sample, which also keeps the loop from vectorizing.
+#[expect(
+    clippy::inline_always,
+    reason = "the conversion loop must be inlined into each SIMD dispatch target to use its instructions"
+)]
+#[inline(always)]
+fn convert_samples<S: Simd, const N: usize>(
+    _simd: S,
+    destination: &mut [[u8; N]],
+    source: &[f32],
+    convert: &impl Fn(f32) -> [u8; N],
+) {
+    for (destination, &sample) in destination.iter_mut().zip(source) {
+        *destination = convert(sample);
     }
 }
 

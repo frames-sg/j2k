@@ -34,6 +34,38 @@ pub(super) fn periodic_symmetric_extension_right(
     }
 }
 
+/// Equation (F-5) of the reversible 5-3 synthesis on integer-valued samples:
+/// `s - floor((left + right + 2) / 4)`, computed in integer arithmetic.
+///
+/// The `f32` decode path holds integer-valued 5-3 coefficients, so integer
+/// operations give the exact result without floor or fused multiply-add
+/// instructions. Baseline x86-64 has neither, and each is a library call
+/// there.
+#[expect(
+    clippy::inline_always,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "inlined into the scalar 5-3 lifting loops; integer-valued f32 samples convert to i64 exactly, and the lifted sample is integer-valued in the same f32 range"
+)]
+#[inline(always)]
+pub(super) fn reversible_53_predict(s: f32, left: f32, right: f32) -> f32 {
+    s - ((left as i64 + right as i64 + 2) >> 2) as f32
+}
+
+/// Equation (F-6) of the reversible 5-3 synthesis on integer-valued samples:
+/// `s + floor((left + right) / 2)`, computed in integer arithmetic as
+/// [`reversible_53_predict`] is.
+#[expect(
+    clippy::inline_always,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "inlined into the scalar 5-3 lifting loops; integer-valued f32 samples convert to i64 exactly, and the lifted sample is integer-valued in the same f32 range"
+)]
+#[inline(always)]
+pub(super) fn reversible_53_update(s: f32, left: f32, right: f32) -> f32 {
+    s + ((left as i64 + right as i64) >> 1) as f32
+}
+
 #[expect(
     clippy::inline_always,
     reason = "the reversible lifting division primitive is intentionally inlined into IDWT hot loops"

@@ -4,6 +4,7 @@ use super::super::codestream::WaveletTransform;
 use super::super::rect::IntRect;
 use super::filter_common::{
     floor_div_i64, periodic_symmetric_extension_left, periodic_symmetric_extension_right,
+    reversible_53_predict, reversible_53_update,
 };
 use crate::math::{self, dispatch, f32x8, Level, Simd, SIMD_WIDTH};
 use j2k_codec_math::dwt;
@@ -92,8 +93,7 @@ fn lift_row<S: Simd>(simd: S, step: VerticalStep, row: &mut [f32], above: &[f32]
             below,
             #[inline(always)]
             |s1, s2, s3| s1 - ((s2 + s3 + 2.0) * 0.25).floor(),
-            #[inline(always)]
-            |s1, s2, s3| s1 - math::floor_f32(math::mul_add(s2 + s3, 0.25, 0.5)),
+            reversible_53_predict,
         ),
         VerticalStep::Reversible53Update => lift_row_with(
             simd,
@@ -102,8 +102,7 @@ fn lift_row<S: Simd>(simd: S, step: VerticalStep, row: &mut [f32], above: &[f32]
             below,
             #[inline(always)]
             |s1, s2, s3| s1 + ((s2 + s3) * 0.5).floor(),
-            #[inline(always)]
-            |s1, s2, s3| s1 + math::floor_half_sum_f32(s2, s3),
+            reversible_53_update,
         ),
         VerticalStep::Irreversible97(coefficient) => {
             let coefficient_simd = f32x8::splat(simd, coefficient);

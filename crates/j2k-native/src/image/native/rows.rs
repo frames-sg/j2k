@@ -15,6 +15,7 @@ use crate::color::{
 use crate::error::{bail, DecodeError, DecodingError, Result, ValidationError};
 use crate::j2c::codestream::ComponentInfo;
 use crate::j2c::DecoderContext;
+use crate::math::{dispatch, Level, Simd};
 use crate::roi::validate_roi;
 use crate::{
     checked_decode_byte_len2, checked_decode_sample_count, native_bytes_per_sample,
@@ -273,12 +274,35 @@ impl<'i> NativePlanesSink<'i> {
 /// samples `Image::extend_component_native_sample_bytes` appends for an
 /// `f32` component of `bit_depth`. Samples wider than 16 bits are packed
 /// in `scratch` first.
+pub(super) fn pack_native_samples(
+    destination: &mut [u8],
+    samples: &[f32],
+    bit_depth: u8,
+    signed: bool,
+    scratch: &mut Vec<u8>,
+) -> Result<()> {
+    dispatch!(Level::new(), simd => pack_native_samples_at(
+        simd,
+        destination,
+        samples,
+        bit_depth,
+        signed,
+        scratch,
+    ))
+}
+
+/// [`pack_native_samples`] inlined into a caller at `_simd`'s level, where
+/// the rounding in `round_clamped_native` is an instruction rather than a
+/// per-sample library call on baseline x86-64.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    reason = "samples are rounded and clamped to the component's 8- or 16-bit range before packing"
+    clippy::inline_always,
+    reason = "samples are rounded and clamped to the component's 8- or 16-bit range before packing; inlined into each SIMD dispatch target"
 )]
-pub(super) fn pack_native_samples(
+#[inline(always)]
+fn pack_native_samples_at<S: Simd>(
+    _simd: S,
     destination: &mut [u8],
     samples: &[f32],
     bit_depth: u8,

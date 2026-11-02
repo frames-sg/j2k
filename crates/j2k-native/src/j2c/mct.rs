@@ -331,13 +331,29 @@ impl DeferredMct {
     /// Retain the transform's FMA and rounding boundaries while writing RGB8
     /// directly. A separate indexed loop lets LLVM combine the conversion and
     /// interleaved stores without the streaming DWT's surrounding control flow.
+    /// Out of line on the targets that pack with it directly; x86-64 SIMD
+    /// builds use [`Self::pack_ict_rgb8_x86`].
+    #[cfg(any(test, not(all(feature = "simd", target_arch = "x86_64"))))]
+    #[inline(never)]
+    fn pack_ict_rgb8<const CENTERED: bool>(self, planes: [&[f32]; 3], output: &mut [u8]) {
+        self.pack_ict_rgb8_scalar::<CENTERED>(planes, output);
+    }
+
+    /// The loop of [`Self::pack_ict_rgb8`], inlined so the x86-64 SIMD pack
+    /// runs its remainder at the dispatched level, where the fused
+    /// multiply-adds and rounding are instructions rather than library calls.
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        reason = "RGB8 samples use the same rounding and saturating cast as the standard pack"
+        clippy::inline_always,
+        reason = "RGB8 samples use the same rounding and saturating cast as the standard pack; inlined into the dispatched SIMD pack for its remainder"
     )]
-    #[inline(never)]
-    fn pack_ict_rgb8<const CENTERED: bool>(self, [luma, cb, cr]: [&[f32]; 3], output: &mut [u8]) {
+    #[inline(always)]
+    fn pack_ict_rgb8_scalar<const CENTERED: bool>(
+        self,
+        [luma, cb, cr]: [&[f32]; 3],
+        output: &mut [u8],
+    ) {
         let pixels = output.as_chunks_mut::<3>().0;
         let len = pixels.len().min(luma.len()).min(cb.len()).min(cr.len());
         let shift = self.rounding.unwrap_or([0.0; 3]);
@@ -430,7 +446,7 @@ impl DeferredMct {
                 );
             }
         }
-        self.pack_ict_rgb8::<CENTERED>(
+        self.pack_ict_rgb8_scalar::<CENTERED>(
             [
                 &luma[vector_len..len],
                 &cb[vector_len..len],

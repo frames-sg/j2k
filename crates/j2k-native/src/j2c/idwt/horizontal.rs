@@ -4,8 +4,9 @@ use super::super::codestream::WaveletTransform;
 use super::super::rect::IntRect;
 use super::filter_common::{
     floor_div_i64, periodic_symmetric_extension_left, periodic_symmetric_extension_right,
+    reversible_53_predict, reversible_53_update,
 };
-use crate::math;
+use crate::math::{self, dispatch, Level, Simd};
 use j2k_codec_math::dwt;
 
 /// The `HOR_SR` procedure from F.3.4.
@@ -38,22 +39,52 @@ fn filter_horizontal_with_high_pass(
 ) {
     let width = rect.width() as usize;
 
-    for scanline in coefficients
-        .chunks_exact_mut(width)
-        .take(rect.height() as usize)
-    {
-        filter_row(
-            scanline,
-            width,
-            rect.x0 as usize,
-            transform,
-            irreversible_high_pass,
-        );
-    }
+    dispatch!(Level::new(), simd => {
+        for scanline in coefficients
+            .chunks_exact_mut(width)
+            .take(rect.height() as usize)
+        {
+            filter_row_at(
+                simd,
+                scanline,
+                width,
+                rect.x0 as usize,
+                transform,
+                irreversible_high_pass,
+            );
+        }
+    });
 }
 
-/// The `1D_SR` procedure from F.3.6.
+/// [`filter_row_at`] at the CPU's SIMD level, for callers outside a dispatch.
 pub(super) fn filter_row(
+    scanline: &mut [f32],
+    width: usize,
+    x0: usize,
+    transform: WaveletTransform,
+    irreversible_high_pass: f32,
+) {
+    dispatch!(Level::new(), simd => filter_row_at(
+        simd,
+        scanline,
+        width,
+        x0,
+        transform,
+        irreversible_high_pass,
+    ));
+}
+
+/// The `1D_SR` procedure from F.3.6, inlined into a caller at `_simd`'s
+/// level. Its 9-7I fused multiply-adds are instructions there; outside a
+/// dispatch, baseline x86-64 has none and calls a library routine per
+/// sample.
+#[expect(
+    clippy::inline_always,
+    reason = "the scalar row filter must be inlined into each SIMD dispatch target to use its instructions"
+)]
+#[inline(always)]
+pub(super) fn filter_row_at<S: Simd>(
+    _simd: S,
     scanline: &mut [f32],
     width: usize,
     x0: usize,
@@ -76,30 +107,23 @@ pub(super) fn filter_row(
     }
 }
 
-/// The 1D FILTER 5-3R procedure from F.3.8.1.
+/// The 1D FILTER 5-3R procedure from F.3.8.1, in integer arithmetic.
+#[expect(
+    clippy::inline_always,
+    reason = "inlined into filter_row_at so it compiles at the caller's SIMD level"
+)]
+#[inline(always)]
 fn reversible_filter_53r(scanline: &mut [f32], width: usize, x0: usize) {
     let first_even = x0 % 2;
     let first_odd = 1 - first_even;
 
     // Equation (F-5).
     // Originally: for i in (start / 2)..(end / 2 + 1).
-    filter_step_horizontal(
-        scanline,
-        width,
-        first_even,
-        #[inline(always)]
-        |s, left, right| s - math::floor_f32(math::mul_add(left + right, 0.25, 0.5)),
-    );
+    filter_step_horizontal(scanline, width, first_even, reversible_53_predict);
 
     // Equation (F-6).
     // Originally: for i in (start / 2)..(end / 2).
-    filter_step_horizontal(
-        scanline,
-        width,
-        first_odd,
-        #[inline(always)]
-        |s, left, right| s + math::floor_half_sum_f32(left, right),
-    );
+    filter_step_horizontal(scanline, width, first_odd, reversible_53_update);
 }
 
 pub(super) fn filter_horizontal_i64(coefficients: &mut [i64], rect: IntRect) {
@@ -136,7 +160,10 @@ fn reversible_filter_53r_i64(scanline: &mut [i64], width: usize, x0: usize) {
     });
 }
 
-/// The 1D Filter 9-7I procedure from F.3.8.2.
+/// The 1D Filter 9-7I procedure from F.3.8.2, inlined into
+/// [`filter_row_at`] so its fused multiply-adds compile at the caller's SIMD
+/// level.
+#[inline(always)]
 fn irreversible_filter_97i(scanline: &mut [f32], width: usize, x0: usize, high_pass: f32) {
     // Table F.4.
     const NEG_ALPHA: f32 = dwt::IDWT97_NEG_ALPHA_F32;

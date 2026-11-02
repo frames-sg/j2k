@@ -7,6 +7,13 @@ and stale roadmap entries have been removed from the public documentation set.
 
 Staged workspace version: `0.13.2`.
 
+- CPU decoding on default (baseline x86-64) builds no longer calls a library
+  routine per sample for floor, rounding or fused multiply-add. The scalar
+  inverse wavelet rows and the native, packed, direct-route and deferred-ICT
+  output loops run at the runtime-dispatched SIMD level, where these are
+  instructions, and the scalar reversible 5-3 lifting uses integer
+  arithmetic. Decoded output is unchanged; aarch64 code was already
+  library-call free.
 - SOP marker segments a decode parses require `Lsop` 4 and an `Nsop` equal to
   the tile-wide packet ordinal modulo 65536. The ordinal continues across
   tile-parts and counts packets skipped without parsing; an invalid SOP in a

@@ -426,6 +426,115 @@ fn pseudo_random_coefficients(count: usize, seed: u64, integral: bool) -> Vec<f3
         .collect()
 }
 
+/// Deterministic xorshift integers in `-magnitude..=magnitude`.
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "the drawn value is below 2 * magnitude + 1, which fits i64"
+)]
+fn pseudo_random_integers(count: usize, seed: u64, magnitude: i64) -> Vec<i64> {
+    let span = magnitude.unsigned_abs() * 2 + 1;
+    let mut state = seed | 1;
+    (0..count)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % span) as i64 - magnitude
+        })
+        .collect()
+}
+
+#[test]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "every value is below 2^23 in magnitude and exact in f32"
+)]
+fn reversible_53_lifting_terms_are_exact_floor_divisions() {
+    use super::filter_common::{floor_div_i64, reversible_53_predict, reversible_53_update};
+
+    let mut values = vec![
+        0,
+        1,
+        -1,
+        2,
+        -2,
+        3,
+        -3,
+        -5,
+        1 << 20,
+        -(1 << 20) - 1,
+        (1 << 22) - 1,
+        -(1 << 22),
+    ];
+    values.extend(pseudo_random_integers(96, 9, 1 << 22));
+    for s in [0_i64, 7, -9, 1 << 21] {
+        for &left in &values {
+            for &right in &values {
+                let (sf, lf, rf) = (s as f32, left as f32, right as f32);
+                assert_eq!(
+                    reversible_53_predict(sf, lf, rf),
+                    (s - floor_div_i64(left + right + 2, 4)) as f32,
+                    "(F-5) s={s} left={left} right={right}"
+                );
+                assert_eq!(
+                    reversible_53_update(sf, lf, rf),
+                    (s + floor_div_i64(left + right, 2)) as f32,
+                    "(F-6) s={s} left={left} right={right}"
+                );
+            }
+        }
+    }
+}
+
+/// The `f32` path holds integer-valued 5-3 coefficients. Where `f32` holds
+/// them exactly, its horizontal and vertical lifting must equal the exact
+/// integer reference sample for sample, at every origin parity.
+///
+/// A lone sample at an odd origin is not lifted but halved (F.3.7). The
+/// `f32` path keeps that half as a fraction and the integer reference
+/// floors it, so those one-sample dimensions are left out.
+#[test]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "fixture sizes fit u32; coefficients stay below 2^23 in magnitude, exact in f32"
+)]
+fn reversible_53_f32_filters_match_the_exact_integer_reference() {
+    let shapes = [
+        (1, 1),
+        (1, 5),
+        (2, 3),
+        (5, 1),
+        (7, 6),
+        (8, 9),
+        (13, 4),
+        (16, 16),
+        (33, 7),
+    ];
+    for (width, height) in shapes {
+        for (x0, y0) in [(0, 0), (1, 0), (0, 1), (3, 5)] {
+            if (width == 1 && x0 % 2 == 1) || (height == 1 && y0 % 2 == 1) {
+                continue;
+            }
+            for (seed, magnitude) in [(1, 255), (2, 1 << 16), (3, 1 << 20)] {
+                let rect = IntRect::from_xywh(x0, y0, width, height);
+                let count = (width * height) as usize;
+                let mut exact = pseudo_random_integers(count, seed, magnitude);
+                let mut samples: Vec<f32> = exact.iter().map(|&value| value as f32).collect();
+                filter_horizontal(&mut samples, rect, WaveletTransform::Reversible53);
+                filter_vertical(&mut samples, rect, WaveletTransform::Reversible53);
+                filter_horizontal_i64(&mut exact, rect);
+                filter_vertical_i64(&mut exact, rect);
+                let lifted: Vec<i64> = samples.iter().map(|&value| value as i64).collect();
+                assert_eq!(
+                    lifted, exact,
+                    "{width}x{height} at ({x0}, {y0}), magnitude {magnitude}"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 #[expect(
     clippy::too_many_lines,
