@@ -111,6 +111,9 @@ fn planned_bytes(prepared: &PreparedBatch) -> Vec<(usize, CpuExecution)> {
         .map(|(&index, image)| (index, image.cpu_execution()))
         .collect::<Vec<_>>();
     planned.sort_by_key(|(index, _)| *index);
+    assert!(planned.iter().all(|(_, execution)| {
+        execution.claim_bytes() <= crate::batch::allocation::GENERIC_WORKER_CLAIM_BYTES
+    }));
     planned
 }
 

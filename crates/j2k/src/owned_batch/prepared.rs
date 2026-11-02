@@ -59,16 +59,16 @@ pub(super) enum CpuExecution {
 }
 
 impl CpuExecution {
-    /// Admission claim for one execution: the planned peak of an offset
-    /// plan, or one worst-case native decode.
+    /// Conservative bytes for staged-window sizing: the planned peak of an
+    /// offset plan, or one worst-case native decode.
     pub(super) const fn claim_bytes(self) -> usize {
         match self {
             Self::OffsetPlan { bytes } => bytes,
-            // The streamed route has no planned peak yet; it is claimed as one
+            // The streamed route has no planned peak yet; size it as one
             // worst-case native decode (measured: 95 MiB for a 5661 x 8287
             // RGB8 scan at default threads).
             // An optional plan fits the bound, so its peak is within this
-            // claim too.
+            // amount too.
             Self::ComponentPlanes | Self::StreamedRows | Self::StreamedRowsOrPlan { .. } => {
                 crate::batch::allocation::GENERIC_WORKER_CLAIM_BYTES
             }
@@ -77,7 +77,7 @@ impl CpuExecution {
     }
 
     /// The planned peak of the offset plan this image may decode, if any:
-    /// what the staged route, which decodes plans only, claims for it.
+    /// what the staged route, which decodes plans only, budgets for it.
     pub(super) const fn plan_bytes(self) -> Option<usize> {
         match self {
             Self::OffsetPlan { bytes } | Self::StreamedRowsOrPlan { bytes } => Some(bytes),
@@ -206,6 +206,14 @@ pub struct PreparedBatchGroup {
     pub(super) execution_shape: BatchExecutionShape,
     pub(super) images: Vec<PreparedImage>,
     pub(super) source_indices: Vec<usize>,
+}
+
+/// Borrowed images and source indices of one homogeneous prepared group.
+#[derive(Clone, Copy)]
+pub(super) struct PreparedBatchGroupRef<'a> {
+    pub(super) info: &'a BatchGroupInfo,
+    pub(super) images: &'a [PreparedImage],
+    pub(super) source_indices: &'a [usize],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

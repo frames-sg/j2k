@@ -158,23 +158,6 @@ impl BatchAllocationClaim {
     }
 }
 
-/// Keep `held` at least `bytes`: one owner's claim at the largest planned
-/// execution it has run, because its retained scratch keeps that peak while
-/// later executions reuse it. A smaller claim is released before waiting for
-/// the larger one, so an owner never holds two.
-pub(crate) fn hold_at_least(
-    budget: &Arc<BatchAllocationBudget>,
-    held: &mut Option<BatchAllocationClaim>,
-    bytes: usize,
-) -> Result<(), BatchInfrastructureError> {
-    if held.as_ref().is_some_and(|claim| claim.bytes >= bytes) {
-        return Ok(());
-    }
-    *held = None;
-    *held = Some(budget.claim(bytes)?);
-    Ok(())
-}
-
 impl Drop for BatchAllocationClaim {
     fn drop(&mut self) {
         let mut state = self.budget.lock_state();

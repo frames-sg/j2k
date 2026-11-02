@@ -7,15 +7,13 @@ use super::{
     execute_staged_entropy_job, finish_staged_plan_samples, finish_staged_tile,
     prepare_staged_entropy_worker, prepare_staged_image, prepare_staged_tile, run_retained_chunks,
     staged_tile_count, BatchCodecRoute, BatchInfrastructureError, BatchWorker, CpuEntropyOutcome,
-    CpuGroupFastWorkspace, CpuStagedWorkspace, J2kError, Ordering, PreparedBatchGroup, Range,
+    CpuGroupFastWorkspace, CpuStagedWorkspace, J2kError, Ordering, PreparedBatchGroupRef, Range,
     TileBatchOptions, CPU_ENTROPY_IMAGES_PER_WINDOW,
 };
-use crate::batch::admission::BatchAllocationBudget;
 use crate::batch::allocation::batch_execution_cap_bytes;
-use alloc::sync::Arc;
 
 struct StagedWindowContext<'a> {
-    group: &'a PreparedBatchGroup,
+    group: PreparedBatchGroupRef<'a>,
     route: BatchCodecRoute,
     tile_options: TileBatchOptions,
     image_range: Range<usize>,
@@ -27,26 +25,24 @@ struct StagedWindowContext<'a> {
 )]
 pub(super) fn run_staged_typed_group<T: Copy + Send>(
     workers: &mut [BatchWorker],
-    group: &PreparedBatchGroup,
+    group: PreparedBatchGroupRef<'_>,
     tile_options: TileBatchOptions,
     image_jobs: &mut [CpuTypedDecodeJob<'_, '_, T>],
     image_results: &mut [Option<Result<(), J2kError>>],
     flattened: &mut CpuGroupFastWorkspace,
     staged: &mut CpuStagedWorkspace,
-    admission: &Arc<BatchAllocationBudget>,
     convert: fn(f32, u8) -> T,
 ) -> Result<(), BatchInfrastructureError> {
     let route = flattened
         .route()
         .ok_or(BatchInfrastructureError::MissingResult { index: 0 })?;
     // Every image of a window keeps its own whole-image scratch until the
-    // window is materialized, so the window claims the sum of its images'
-    // planned executions. Windows stay as wide as the admission cap allows:
-    // narrower windows cut throughput even with one worker.
+    // window is materialized. Keep the summed planned executions within the
+    // same cap the generic scheduler uses; windows run one after another.
     let window_budget = batch_execution_cap_bytes();
     let mut window_start = 0;
     while window_start < image_jobs.len() {
-        let (window_end, window_bytes) = staged_window_len(
+        let (window_end, _) = staged_window_len(
             image_jobs[window_start..].iter().map(|job| {
                 let execution = job.image.cpu_execution();
                 execution
@@ -56,7 +52,6 @@ pub(super) fn run_staged_typed_group<T: Copy + Send>(
             window_budget,
         );
         let window_end = window_start + window_end;
-        let _window_claim = admission.claim(window_bytes)?;
         let window = StagedWindowContext {
             group,
             route,
@@ -268,7 +263,7 @@ fn materialize_staged_window<T: Copy + Send>(
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 *result = Some(finish_staged_plan_samples(
                     job.image,
-                    &window.group.info,
+                    window.group.info,
                     &mut scratch,
                     job.output,
                     convert,
@@ -285,7 +280,7 @@ fn materialize_staged_window<T: Copy + Send>(
 )]
 fn prepare_staged_tile_window<T: Copy + Send>(
     workers: &mut [BatchWorker],
-    _group: &PreparedBatchGroup,
+    _group: PreparedBatchGroupRef<'_>,
     staged: &mut CpuStagedWorkspace,
     route: BatchCodecRoute,
     tile_options: TileBatchOptions,
@@ -349,7 +344,7 @@ fn prepare_staged_tile_window<T: Copy + Send>(
 )]
 fn execute_staged_tile_entropy(
     workers: &mut [BatchWorker],
-    group: &PreparedBatchGroup,
+    group: PreparedBatchGroupRef<'_>,
     staged: &mut CpuStagedWorkspace,
     flattened: &CpuGroupFastWorkspace,
     route: BatchCodecRoute,
@@ -446,7 +441,7 @@ fn execute_staged_tile_entropy(
 )]
 fn finish_staged_tile_window<T: Copy + Send>(
     workers: &mut [BatchWorker],
-    group: &PreparedBatchGroup,
+    group: PreparedBatchGroupRef<'_>,
     staged: &mut CpuStagedWorkspace,
     route: BatchCodecRoute,
     tile_options: TileBatchOptions,

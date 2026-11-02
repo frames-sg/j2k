@@ -259,9 +259,8 @@ Staged workspace version: `0.13.2`.
   image's output exceeds the allocation cap. On either preparation path,
   a group whose combined output exceeds that cap is decoded as several
   result groups, each with an output buffer within the cap.
-  Staged windows are admitted by planned execution memory, and an admission
-  claim that cannot fit beside the shared plan fails instead of waiting
-  indefinitely. Successful output is unchanged.
+  Staged windows stay within the budget computed from their planned
+  execution memory. Successful output is unchanged.
 - 16-bit full-image decodes (`J2kDecoder::decode_into`, `decode_scaled_into`
   and the decoders behind `decode_tiles_into` at `Rgb16`, `Rgba16` and
   `Gray16`) and `J2kDecoder::decode_native_components` whose component

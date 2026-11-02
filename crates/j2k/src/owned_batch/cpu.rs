@@ -7,10 +7,9 @@ use super::{
     prepare_batch_with_workers, BatchDecodeOptions, BatchDecoder, BatchGroupInfo,
     BatchInfrastructureError, BatchWorker, CpuBatchWorkspaceStats, CpuGroupFastWorkspace,
     CpuStagedWorkspace, CpuStreamPool, EncodedImage, IndexedBatchError, J2kDecodeWarning, Mutex,
-    NativeSampleType, NonZeroUsize, PrepareFor, PreparedBatch, PreparedBatchGroup, PreparedImage,
-    Rect, Vec,
+    NativeSampleType, NonZeroUsize, PrepareFor, PreparedBatch, PreparedBatchGroup,
+    PreparedBatchGroupRef, PreparedImage, Rect, Vec,
 };
-use crate::batch::admission::BatchAllocationBudget;
 use crate::batch::allocation::try_vec_with_capacity;
 use crate::batch::scheduler::decode_retained_tiles;
 use crate::{DecodeOutcome, PixelFormat, TileBatchError, TileBatchOptions, TileDecodeJob};
@@ -416,27 +415,8 @@ impl CpuBatchDecoder {
             try_vec_with_capacity(prepared.groups().len(), "J2K owned batch result groups")?;
         let mut errors = try_vec_with_capacity(input_count, "J2K owned batch indexed errors")?;
         errors.extend_from_slice(prepared.errors());
-        // Every execution in flight holds a claim sized from its prepared
-        // plan, under the same aggregate cap as the tile-batch facade.
-        let admission = BatchAllocationBudget::with_baseline(0)?;
         for group in prepared.groups() {
             let images_per_group = output_images_per_group(group);
-            if images_per_group >= group.images.len() {
-                if let Some(decoded) = decode_cpu_group(
-                    workers,
-                    &mut self.fast_workspace,
-                    &mut self.staged_workspace,
-                    stream_pool,
-                    group,
-                    prepared.options,
-                    self.options.workers,
-                    &admission,
-                    &mut errors,
-                )? {
-                    push_group(&mut groups, decoded)?;
-                }
-                continue;
-            }
             // One dense buffer for the whole group would exceed the
             // per-allocation cap: decode consecutive images as several
             // groups with the same info, each buffer within the cap.
@@ -445,30 +425,19 @@ impl CpuBatchDecoder {
                 .chunks(images_per_group)
                 .zip(group.source_indices.chunks(images_per_group))
             {
-                let mut part_images =
-                    try_vec_with_capacity(images.len(), "J2K owned batch output group images")?;
-                part_images.extend(images.iter().cloned());
-                let mut part_indices = try_vec_with_capacity(
-                    source_indices.len(),
-                    "J2K owned batch output group source indices",
-                )?;
-                part_indices.extend_from_slice(source_indices);
-                let part = PreparedBatchGroup {
-                    info: group.info.clone(),
-                    options: group.options,
-                    execution_shape: group.execution_shape,
-                    images: part_images,
-                    source_indices: part_indices,
+                let part = PreparedBatchGroupRef {
+                    info: &group.info,
+                    images,
+                    source_indices,
                 };
                 if let Some(decoded) = decode_cpu_group(
                     workers,
                     &mut self.fast_workspace,
                     &mut self.staged_workspace,
                     stream_pool,
-                    &part,
+                    part,
                     prepared.options,
                     self.options.workers,
-                    &admission,
                     &mut errors,
                 )? {
                     push_group(&mut groups, decoded)?;
@@ -484,15 +453,9 @@ impl CpuBatchDecoder {
 /// (at least one). An image whose own output exceeds the cap still fails in
 /// its own group, as before.
 fn output_images_per_group(group: &PreparedBatchGroup) -> usize {
-    let sample_bytes = match group.info.sample_type {
-        NativeSampleType::U8 => 1,
-        NativeSampleType::U16 | NativeSampleType::I16 => 2,
-        _ => return group.images.len(),
-    };
     group
         .info
-        .samples_per_image()
-        .and_then(|samples| samples.checked_mul(sample_bytes))
+        .output_bytes(1)
         .map_or(group.images.len(), |image_bytes| {
             images_within_cap(image_bytes, j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES)
         })

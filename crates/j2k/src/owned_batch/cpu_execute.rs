@@ -13,26 +13,24 @@ use super::{
     run_retained_chunks, Arc, BatchCodecRoute, BatchColor, BatchDecodeOptions, BatchErrorStage,
     BatchGroupInfo, BatchInfrastructureError, BatchItemError, BatchWorker, CpuBatchGroup,
     CpuBatchSamples, CpuDecodeParallelism, CpuGroupFastWorkspace, CpuStagedWorkspace,
-    IndexedBatchError, J2kError, NativeSampleType, NonZeroUsize, PreparedBatchGroup, PreparedImage,
-    TileBatchOptions, Vec,
+    IndexedBatchError, J2kError, NativeSampleType, NonZeroUsize, PreparedBatchGroupRef,
+    PreparedImage, TileBatchOptions, Vec,
 };
-use crate::batch::admission::{hold_at_least, BatchAllocationBudget};
 use crate::batch::allocation::try_vec_with_capacity;
 
 #[expect(
     clippy::too_many_lines,
     clippy::too_many_arguments,
-    reason = "the typed output allocation and one shared decode/compaction boundary remain together so every native sample type follows the same group-level ownership rules; retained workspaces and admission stay explicit"
+    reason = "the typed output allocation and one shared decode/compaction boundary remain together so every native sample type follows the same group-level ownership rules and retained workspaces stay explicit"
 )]
 pub(super) fn decode_cpu_group(
     workers: &mut [BatchWorker],
     fast_workspace: &mut CpuGroupFastWorkspace,
     staged_workspace: &mut CpuStagedWorkspace,
     stream_pool: &mut CpuStreamPool,
-    group: &PreparedBatchGroup,
+    group: PreparedBatchGroupRef<'_>,
     options: BatchDecodeOptions,
     workers_option: Option<NonZeroUsize>,
-    admission: &Arc<BatchAllocationBudget>,
     errors: &mut Vec<IndexedBatchError>,
 ) -> Result<Option<CpuBatchGroup>, BatchInfrastructureError> {
     let tile_options = TileBatchOptions::new(workers_option);
@@ -79,7 +77,7 @@ pub(super) fn decode_cpu_group(
             cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
         },
     )?;
-    ensure_batch_output_within_cap(sample_count, group.info.sample_type)?;
+    ensure_batch_output_within_cap(group.info, group.images.len())?;
 
     let (samples, successful_slots, copied_samples) = match group.info.sample_type {
         NativeSampleType::U8 => {
@@ -95,7 +93,6 @@ pub(super) fn decode_cpu_group(
                 staged_workspace,
                 stream_pool,
                 image_parallelism,
-                admission,
                 // The only image of a Gray8 group is the whole in-flight set.
                 if group.images.len() == 1 && group.info.color == BatchColor::Gray {
                     decode_lone_gray_u8
@@ -124,7 +121,6 @@ pub(super) fn decode_cpu_group(
                 staged_workspace,
                 stream_pool,
                 image_parallelism,
-                admission,
                 decode_image_u16,
                 convert_u16,
                 errors,
@@ -148,7 +144,6 @@ pub(super) fn decode_cpu_group(
                 staged_workspace,
                 stream_pool,
                 image_parallelism,
-                admission,
                 decode_image_i16,
                 round_signed,
                 errors,
@@ -297,7 +292,7 @@ type CpuDecodeFn<T> = for<'image> fn(
 )]
 fn run_typed_group<T: Copy + Send>(
     workers: &mut [BatchWorker],
-    group: &PreparedBatchGroup,
+    group: PreparedBatchGroupRef<'_>,
     options: BatchDecodeOptions,
     tile_options: TileBatchOptions,
     samples_per_image: usize,
@@ -306,7 +301,6 @@ fn run_typed_group<T: Copy + Send>(
     staged_workspace: &mut CpuStagedWorkspace,
     stream_pool: Option<&rayon::ThreadPool>,
     image_parallelism: Option<CpuDecodeParallelism>,
-    admission: &Arc<BatchAllocationBudget>,
     decode: CpuDecodeFn<T>,
     convert: fn(f32, u8) -> T,
     errors: &mut Vec<IndexedBatchError>,
@@ -335,7 +329,6 @@ fn run_typed_group<T: Copy + Send>(
             &mut results,
             flattened,
             staged_workspace,
-            admission,
             convert,
         )?;
     } else {
@@ -357,14 +350,8 @@ fn run_typed_group<T: Copy + Send>(
                 let parallelism = worker.prepare_owned_decode();
                 let workspace = worker.take_native_workspace();
                 let mut context = j2k_native::DecoderContext::from_workspace(workspace);
-                let mut claim = None;
                 for (job, slot) in jobs.iter_mut().zip(results) {
                     context.set_shared_pool(shared_pool && job.image.bytes().len() <= shared_bytes);
-                    hold_at_least(
-                        admission,
-                        &mut claim,
-                        job.image.cpu_execution().claim_bytes(),
-                    )?;
                     *slot = Some(match stream_pool {
                         // This thread waits while a pool thread decodes the
                         // image and idle ones take its bands.
@@ -372,7 +359,7 @@ fn run_typed_group<T: Copy + Send>(
                             decode(
                                 job.image,
                                 options,
-                                &group.info,
+                                group.info,
                                 CpuDecodeParallelism::Auto,
                                 &mut context,
                                 worker,
@@ -382,7 +369,7 @@ fn run_typed_group<T: Copy + Send>(
                         None => decode(
                             job.image,
                             options,
-                            &group.info,
+                            group.info,
                             parallelism,
                             &mut context,
                             worker,

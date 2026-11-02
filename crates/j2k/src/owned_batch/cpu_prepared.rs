@@ -2,10 +2,9 @@
 
 //! Parse-free prepared-plan execution and dense CPU final store.
 
-use j2k_core::Rect;
-
 use super::cpu_fast::{CpuFlattenedPayloadJob, CpuGroupFastWorkspace};
-use super::{BatchCodecRoute, BatchGroupInfo, BatchLayout, PreparedCodecPlan, PreparedImage};
+use super::cpu_materialize::write_batch_samples;
+use super::{BatchCodecRoute, BatchGroupInfo, PreparedCodecPlan, PreparedImage};
 use crate::{batch::worker::BatchWorker, J2kError};
 
 pub(super) fn decode_prepared_plan_samples<T: Copy>(
@@ -25,8 +24,12 @@ pub(super) fn decode_prepared_plan_samples<T: Copy>(
         PreparedCodecPlan::MetadataOnly => return Ok(false),
     };
     let output_rect = image.plan().output_rect();
-    validate_components(&components, output_rect, info, out.len())?;
-    write_samples(&components, output_rect, info, out, convert)?;
+    if (output_rect.w, output_rect.h) != info.dimensions {
+        return Err(J2kError::internal_backend(
+            "prepared codec plan output metadata changed during decode",
+        ));
+    }
+    write_direct_samples(&components, info, out, convert)?;
     Ok(true)
 }
 
@@ -202,75 +205,30 @@ pub(super) fn finish_staged_plan_samples<T: Copy>(
         }
     };
     let output_rect = image.plan().output_rect();
-    validate_components(&components, output_rect, info, out.len())?;
-    write_samples(&components, output_rect, info, out, convert)
-}
-
-fn validate_components(
-    components: &j2k_native::J2kDirectDecodedComponents<'_>,
-    output_rect: Rect,
-    info: &BatchGroupInfo,
-    output_len: usize,
-) -> Result<(), J2kError> {
-    if components.component_count() != info.color.channels()
-        || (output_rect.w, output_rect.h) != info.dimensions
-        || components.dimensions() != info.dimensions
-        || info.samples_per_image() != Some(output_len)
-    {
+    if (output_rect.w, output_rect.h) != info.dimensions {
         return Err(J2kError::internal_backend(
             "prepared codec plan output metadata changed during decode",
         ));
     }
-    let plane_len = (components.dimensions().0 as usize)
-        .checked_mul(components.dimensions().1 as usize)
-        .ok_or_else(|| J2kError::internal_backend("prepared HTJ2K plane size overflow"))?;
-    for component in 0..components.component_count() {
-        let plane = components.plane(component).ok_or_else(|| {
-            J2kError::internal_backend("prepared codec component plane is missing")
-        })?;
-        if plane.dimensions() != components.dimensions()
-            || plane.bit_depth() != info.precision
-            || plane.samples().len() < plane_len
-        {
-            return Err(J2kError::BackendComponentPlaneTooShort {
-                component,
-                samples: plane.samples().len(),
-                expected: plane_len,
-            });
-        }
-    }
-    Ok(())
+    write_direct_samples(&components, info, out, convert)
 }
 
-fn write_samples<T: Copy>(
+fn write_direct_samples<T: Copy>(
     components: &j2k_native::J2kDirectDecodedComponents<'_>,
-    output_rect: Rect,
     info: &BatchGroupInfo,
     out: &mut [T],
     convert: impl Fn(f32, u8) -> T,
 ) -> Result<(), J2kError> {
-    let output_width = output_rect.w as usize;
-    let output_height = output_rect.h as usize;
-    let source_width = components.dimensions().0 as usize;
-    let channels = components.component_count();
-    let output_pixels = output_width * output_height;
-    let planar = info.layout == BatchLayout::Nchw;
-    for y in 0..output_height {
-        for x in 0..output_width {
-            let output_pixel = y * output_width + x;
-            let source_pixel = y * source_width + x;
-            for channel in 0..channels {
-                let plane = components.plane(channel).ok_or_else(|| {
-                    J2kError::internal_backend("prepared codec component plane is missing")
-                })?;
-                let destination = if planar {
-                    channel * output_pixels + output_pixel
-                } else {
-                    output_pixel * channels + channel
-                };
-                out[destination] = convert(plane.samples()[source_pixel], plane.bit_depth());
-            }
-        }
-    }
-    Ok(())
+    write_batch_samples(
+        components.dimensions(),
+        components.component_count(),
+        |component| {
+            components
+                .plane(component)
+                .map(|plane| (plane.dimensions(), plane.bit_depth(), plane.samples()))
+        },
+        info,
+        out,
+        convert,
+    )
 }

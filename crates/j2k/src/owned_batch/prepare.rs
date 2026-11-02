@@ -5,9 +5,9 @@
 use super::{
     generic_batch_worker_limit, run_retained_chunks, size_of, Arc, BatchDecodeOptions,
     BatchErrorStage, BatchGroupInfo, BatchInfrastructureError, BatchItemError, BatchWorker,
-    CpuExecution, EncodedImage, IndexedBatchError, J2kError, NativeSampleType, NonZeroUsize,
-    PrepareImageResult, PrepareJob, PreparedBatch, PreparedBatchGroup, PreparedImage,
-    TileBatchOptions, Vec, J2K_BATCH_METADATA_ALLOWANCE_BYTES,
+    CpuExecution, EncodedImage, IndexedBatchError, J2kError, NonZeroUsize, PrepareImageResult,
+    PrepareJob, PreparedBatch, PreparedBatchGroup, PreparedImage, TileBatchOptions, Vec,
+    J2K_BATCH_METADATA_ALLOWANCE_BYTES,
 };
 
 #[cfg(test)]
@@ -229,16 +229,9 @@ fn cpu_preflight_error(image: &PreparedImage, info: &BatchGroupInfo) -> Option<B
     let source = if image.cpu_execution() == CpuExecution::ExceedsDecodeBound {
         CpuExecution::decode_bound_error()
     } else {
-        let sample_bytes = match info.sample_type {
-            NativeSampleType::U8 => 1,
-            NativeSampleType::U16 | NativeSampleType::I16 => 2,
-            // Decode reports an unsupported sample width itself.
-            _ => return None,
-        };
-        let output_bytes = info
-            .samples_per_image()
-            .and_then(|samples| samples.checked_mul(sample_bytes))
-            .unwrap_or(usize::MAX);
+        // Decode reports an unsupported sample width itself.
+        info.sample_bytes()?;
+        let output_bytes = info.output_bytes(1).unwrap_or(usize::MAX);
         if output_bytes <= j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES {
             return None;
         }

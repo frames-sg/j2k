@@ -9,14 +9,14 @@ use j2k_native::{
 };
 
 use super::checked_add;
-use crate::owned_batch::{cpu_fast::CpuPayloadBucket, PreparedBatchGroup};
+use crate::owned_batch::{cpu_fast::CpuPayloadBucket, PreparedBatchGroupRef};
 
 #[cfg(test)]
 #[path = "ht_tests.rs"]
 mod tests;
 
 pub(in crate::owned_batch::cpu_fast) fn ht_group_requirements(
-    group: &PreparedBatchGroup,
+    group: PreparedBatchGroupRef<'_>,
 ) -> Result<(usize, usize), BatchInfrastructureError> {
     let mut payload_count = 0usize;
     let mut payload_bytes = 0usize;

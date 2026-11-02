@@ -5,30 +5,25 @@
 use super::{
     backend, decode_prepared_plan_samples, size_of, BatchDecodeOptions, BatchGroupInfo,
     BatchInfrastructureError, BatchLayout, BatchWorker, CpuDecodeParallelism, CpuExecution,
-    J2kError, NativeSampleType, PreparedImage, Rect, Vec,
+    J2kError, PreparedImage, Rect, Vec,
 };
 
 pub(super) fn ensure_batch_output_within_cap(
-    samples: usize,
-    sample_type: NativeSampleType,
+    info: &BatchGroupInfo,
+    image_count: usize,
 ) -> Result<(), BatchInfrastructureError> {
-    let width = match sample_type {
-        NativeSampleType::U8 => size_of::<u8>(),
-        NativeSampleType::U16 => size_of::<u16>(),
-        NativeSampleType::I16 => size_of::<i16>(),
-        _ => {
-            return Err(BatchInfrastructureError::UnsupportedContract {
-                what: "owned CPU batch sample width",
-            });
-        }
-    };
-    let bytes = samples
-        .checked_mul(width)
-        .ok_or(BatchInfrastructureError::AllocationTooLarge {
-            what: "J2K owned batch output",
-            requested: usize::MAX,
-            cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
-        })?;
+    if info.sample_bytes().is_none() {
+        return Err(BatchInfrastructureError::UnsupportedContract {
+            what: "owned CPU batch sample width",
+        });
+    }
+    let bytes =
+        info.output_bytes(image_count)
+            .ok_or(BatchInfrastructureError::AllocationTooLarge {
+                what: "J2K owned batch output",
+                requested: usize::MAX,
+                cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+            })?;
     if bytes > j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES {
         return Err(BatchInfrastructureError::AllocationTooLarge {
             what: "J2K owned batch output",
@@ -147,11 +142,9 @@ fn decode_planned_u8<'image>(
         return Ok(());
     }
     let components = image_components(image, options, parallelism, context)?;
-    validate_decoded_components(&components, info)?;
-    write_samples(&components, info, out, |sample, precision| {
+    write_decoded_samples(&components, info, out, |sample, precision| {
         u8::try_from(round_unsigned(sample, precision)).unwrap_or(u8::MAX)
-    });
-    Ok(())
+    })
 }
 
 pub(super) fn decode_image_u16<'image>(
@@ -172,11 +165,9 @@ pub(super) fn decode_image_u16<'image>(
         return Ok(());
     }
     let components = image_components(image, options, parallelism, context)?;
-    validate_decoded_components(&components, info)?;
-    write_samples(&components, info, out, |sample, precision| {
+    write_decoded_samples(&components, info, out, |sample, precision| {
         u16::try_from(round_unsigned(sample, precision)).unwrap_or(u16::MAX)
-    });
-    Ok(())
+    })
 }
 
 pub(super) fn decode_image_i16<'image>(
@@ -195,14 +186,12 @@ pub(super) fn decode_image_i16<'image>(
         return Ok(());
     }
     let components = image_components(image, options, parallelism, context)?;
-    validate_decoded_components(&components, info)?;
-    write_samples(&components, info, out, round_signed);
-    Ok(())
+    write_decoded_samples(&components, info, out, round_signed)
 }
 
 /// Decode `image` through the bounded region decode, which hands over its
 /// rows as they are finished, writing each sample exactly as
-/// [`write_samples`] writes whole planes, a row at a time through
+/// [`write_batch_samples`] writes whole planes, a row at a time through
 /// `convert_row` (see [`convert_u8_row`]). Working memory stays bounded by
 /// the streamed decode instead of growing with the image.
 fn decode_streamed_samples<'image, T: Copy>(
@@ -303,28 +292,44 @@ impl<'out, 'info, T: Copy> SampleRowSink<'out, 'info, T> {
         if planes.len() != channels
             || x + rect_width > width
             || y + rect_height > self.info.dimensions.1 as usize
-            || planes.iter().any(|plane| {
-                plane.dimensions() != rect_dimensions || plane.samples().len() < rect_pixels
-            })
         {
             self.malformed = true;
             return;
         }
-        let precision = self.info.precision;
-        let planar = self.info.layout == BatchLayout::Nchw || channels == 1;
+        if planes.iter().enumerate().any(|(component, plane)| {
+            validate_sample_plane(
+                component,
+                plane.dimensions(),
+                plane.bit_depth(),
+                plane.samples().len(),
+                rect_dimensions,
+                self.info.precision,
+                rect_pixels,
+            )
+            .is_err()
+        }) {
+            self.malformed = true;
+            return;
+        }
         for (channel, plane) in planes.iter().enumerate() {
             for (row, samples) in plane.samples()[..rect_pixels]
                 .chunks_exact(rect_width)
                 .enumerate()
             {
                 let pixel = (y + row) * width + x;
-                if planar {
-                    let destination = &mut self.out[channel * self.pixels + pixel..][..rect_width];
-                    (self.convert_row)(destination, 1, samples, precision);
-                } else {
-                    let destination = &mut self.out[pixel * channels..][..rect_width * channels];
-                    (self.convert_row)(&mut destination[channel..], channels, samples, precision);
-                }
+                let Some((destination, stride)) = channel_destination(
+                    self.out,
+                    self.info.layout,
+                    self.pixels,
+                    channels,
+                    channel,
+                    pixel,
+                    rect_width,
+                ) else {
+                    self.malformed = true;
+                    return;
+                };
+                (self.convert_row)(destination, stride, samples, self.info.precision);
             }
         }
         self.written_pixels += rect_pixels;
@@ -339,55 +344,133 @@ impl<T: Copy> j2k_native::ComponentRowSink for SampleRowSink<'_, '_, T> {
     }
 }
 
-fn validate_decoded_components(
+fn write_decoded_samples<T: Copy>(
     components: &j2k_native::DecodedComponents<'_>,
     info: &BatchGroupInfo,
+    out: &mut [T],
+    convert: impl Fn(f32, u8) -> T,
 ) -> Result<(), J2kError> {
-    if components.dimensions() != info.dimensions
-        || components.planes().len() != info.color.channels()
+    write_batch_samples(
+        components.dimensions(),
+        components.planes().len(),
+        |component| {
+            components
+                .planes()
+                .get(component)
+                .map(|plane| (plane.dimensions(), plane.bit_depth(), plane.samples()))
+        },
+        info,
+        out,
+        convert,
+    )
+}
+
+/// Validate and write every decoded plane through the batch's native layout.
+pub(super) fn write_batch_samples<'a, T: Copy>(
+    dimensions: (u32, u32),
+    component_count: usize,
+    mut plane: impl FnMut(usize) -> Option<((u32, u32), u8, &'a [f32])>,
+    info: &BatchGroupInfo,
+    out: &mut [T],
+    convert: impl Fn(f32, u8) -> T,
+) -> Result<(), J2kError> {
+    if dimensions != info.dimensions
+        || component_count != info.color.channels()
+        || info.samples_per_image() != Some(out.len())
     {
         return Err(J2kError::internal_backend(
             "prepared batch output metadata changed during decode",
         ));
     }
-    let expected = (info.dimensions.0 as usize)
+    let pixels = (info.dimensions.0 as usize)
         .checked_mul(info.dimensions.1 as usize)
         .ok_or_else(|| J2kError::internal_backend("prepared batch sample count overflow"))?;
-    for (component, plane) in components.planes().iter().enumerate() {
-        if plane.dimensions() != info.dimensions || plane.samples().len() < expected {
-            return Err(J2kError::BackendComponentPlaneTooShort {
-                component,
-                samples: plane.samples().len(),
-                expected,
-            });
+    let channels = info.color.channels();
+    for channel in 0..channels {
+        let (plane_dimensions, bit_depth, samples) = plane(channel).ok_or_else(|| {
+            J2kError::internal_backend("prepared codec component plane is missing")
+        })?;
+        validate_sample_plane(
+            channel,
+            plane_dimensions,
+            bit_depth,
+            samples.len(),
+            info.dimensions,
+            info.precision,
+            pixels,
+        )?;
+        let (destination, stride) =
+            channel_destination(out, info.layout, pixels, channels, channel, 0, pixels)
+                .ok_or_else(|| {
+                    J2kError::internal_backend("prepared batch output slot is too short")
+                })?;
+        if stride == 1 {
+            for (destination, &sample) in destination.iter_mut().zip(&samples[..pixels]) {
+                *destination = convert(sample, bit_depth);
+            }
+        } else {
+            for (destination, &sample) in destination
+                .iter_mut()
+                .step_by(stride)
+                .zip(&samples[..pixels])
+            {
+                *destination = convert(sample, bit_depth);
+            }
         }
     }
     Ok(())
 }
 
-fn write_samples<T: Copy>(
-    components: &j2k_native::DecodedComponents<'_>,
-    info: &BatchGroupInfo,
-    out: &mut [T],
-    convert: impl Fn(f32, u8) -> T,
-) {
-    let pixels = info.dimensions.0 as usize * info.dimensions.1 as usize;
-    let channels = info.color.channels();
-    let precision = info.precision;
-    for (channel, plane) in components.planes().iter().enumerate() {
-        let samples = &plane.samples()[..pixels];
-        if info.layout == BatchLayout::Nchw || channels == 1 {
-            // One contiguous plane per channel.
-            let destination = &mut out[channel * pixels..][..pixels];
-            for (destination, &sample) in destination.iter_mut().zip(samples) {
-                *destination = convert(sample, precision);
-            }
-        } else {
-            for (pixel, &sample) in out.chunks_exact_mut(channels).zip(samples) {
-                pixel[channel] = convert(sample, precision);
-            }
-        }
+/// Validate one decoded sample plane against its prepared batch contract.
+pub(super) fn validate_sample_plane(
+    component: usize,
+    dimensions: (u32, u32),
+    bit_depth: u8,
+    samples: usize,
+    expected_dimensions: (u32, u32),
+    expected_bit_depth: u8,
+    expected_samples: usize,
+) -> Result<(), J2kError> {
+    if dimensions != expected_dimensions
+        || bit_depth != expected_bit_depth
+        || samples < expected_samples
+    {
+        return Err(J2kError::BackendComponentPlaneTooShort {
+            component,
+            samples,
+            expected: expected_samples,
+        });
     }
+    Ok(())
+}
+
+/// The destination span and sample stride for one channel of consecutive pixels.
+pub(super) fn channel_destination<T>(
+    out: &mut [T],
+    layout: BatchLayout,
+    pixels: usize,
+    channels: usize,
+    channel: usize,
+    first_pixel: usize,
+    count: usize,
+) -> Option<(&mut [T], usize)> {
+    let end_pixel = first_pixel.checked_add(count)?;
+    if channel >= channels || end_pixel > pixels {
+        return None;
+    }
+    let planar = layout == BatchLayout::Nchw || channels == 1;
+    let stride = if planar { 1 } else { channels };
+    let start = if planar {
+        channel.checked_mul(pixels)?.checked_add(first_pixel)?
+    } else {
+        first_pixel.checked_mul(channels)?.checked_add(channel)?
+    };
+    let len = if count == 0 {
+        0
+    } else {
+        (count - 1).checked_mul(stride)?.checked_add(1)?
+    };
+    Some((out.get_mut(start..start.checked_add(len)?)?, stride))
 }
 
 #[expect(
@@ -480,7 +563,8 @@ pub(super) fn round_signed(sample: f32, precision: u8) -> i16 {
 
 #[cfg(test)]
 mod tests {
-    use super::{convert_u8, convert_u8_row};
+    use super::{convert_u8, convert_u8_row, validate_sample_plane};
+    use crate::J2kError;
     use alloc::vec::Vec;
 
     /// Samples around every rounding and saturation boundary of 8-bit and
@@ -547,5 +631,19 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn sample_plane_validation_rejects_precision_drift() {
+        let error = validate_sample_plane(1, (8, 8), 10, 64, (8, 8), 12, 64)
+            .expect_err("prepared precision must match decoded plane");
+        assert!(matches!(
+            error,
+            J2kError::BackendComponentPlaneTooShort {
+                component: 1,
+                samples: 64,
+                expected: 64,
+            }
+        ));
     }
 }
