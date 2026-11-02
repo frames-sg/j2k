@@ -335,20 +335,21 @@ fn pack_direct_8_bit_at<S: Simd>(
 
 /// Pack 8-bit RGB planes as interleaved bytes, rounded and saturated.
 pub fn pack_rgb8(planes: [&[f32]; 3], output: &mut [u8]) {
-    #[cfg(all(feature = "simd", target_arch = "x86_64"))]
-    {
-        use fearless_simd::{dispatch, Level};
-        dispatch!(Level::new(), simd => pack_rgb8_simd(simd, planes, output));
-    }
-    // An indexed loop over whole pixels, which LLVM vectorizes on NEON.
-    #[cfg(not(all(feature = "simd", target_arch = "x86_64")))]
-    {
-        let [r, g, b] = planes;
-        let pixels = output.as_chunks_mut::<3>().0;
-        let len = pixels.len().min(r.len()).min(g.len()).min(b.len());
-        for i in 0..len {
-            pixels[i] = [round_to_u8(r[i]), round_to_u8(g[i]), round_to_u8(b[i])];
-        }
+    dispatch!(Level::new(), simd => pack_rgb8_at(simd, planes, output));
+}
+
+/// [`pack_rgb8`] at the dispatched SIMD level (see `math`): an indexed loop
+/// over whole pixels, which LLVM vectorizes.
+#[expect(
+    clippy::inline_always,
+    reason = "inlined into each SIMD dispatch target"
+)]
+#[inline(always)]
+fn pack_rgb8_at<S: Simd>(_simd: S, [r, g, b]: [&[f32]; 3], output: &mut [u8]) {
+    let pixels = output.as_chunks_mut::<3>().0;
+    let len = pixels.len().min(r.len()).min(g.len()).min(b.len());
+    for i in 0..len {
+        pixels[i] = [round_to_u8(r[i]), round_to_u8(g[i]), round_to_u8(b[i])];
     }
 }
 
@@ -361,85 +362,6 @@ pub fn pack_rgb8(planes: [&[f32]; 3], output: &mut [u8]) {
 #[inline(always)]
 fn round_to_u8(sample: f32) -> u8 {
     math::round_f32(sample) as u8
-}
-
-#[cfg(all(feature = "simd", target_arch = "x86_64"))]
-#[inline(always)]
-fn pack_rgb8_simd<S: fearless_simd::Simd>(simd: S, planes: [&[f32]; 3], output: &mut [u8]) {
-    use fearless_simd::{f32x8, SimdBase};
-
-    let vector_len = planes[0].len() / 8 * 8;
-    for start in (0..vector_len).step_by(8) {
-        store_rgb8_x8(
-            simd,
-            [
-                f32x8::from_slice(simd, &planes[0][start..start + 8]),
-                f32x8::from_slice(simd, &planes[1][start..start + 8]),
-                f32x8::from_slice(simd, &planes[2][start..start + 8]),
-            ],
-            &mut output[start * 3..start * 3 + 24],
-        );
-    }
-    for index in vector_len..planes[0].len() {
-        for channel in 0..3 {
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "pixel samples are rounded and saturated to the 8-bit output format"
-            )]
-            {
-                output[index * 3 + channel] = math::round_f32(planes[channel][index]) as u8;
-            }
-        }
-    }
-}
-
-/// Round and saturate eight pixels' red, green and blue samples as the
-/// scalar 8-bit cast does, and store them interleaved in the first 24 bytes
-/// of `output`.
-#[cfg(all(feature = "simd", target_arch = "x86_64"))]
-#[inline(always)]
-pub(crate) fn store_rgb8_x8<S: fearless_simd::Simd>(
-    simd: S,
-    [red, green, blue]: [fearless_simd::f32x8<S>; 3],
-    output: &mut [u8],
-) {
-    use fearless_simd::{u32x8, u8x16, Bytes, SimdBase};
-
-    let indices = u8x16::from_slice(simd, &[0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 0, 0, 0, 0]);
-    let packed: u32x8<S> = quantize_u8_x8(simd, red)
-        | (quantize_u8_x8(simd, green) << 8)
-        | (quantize_u8_x8(simd, blue) << 16);
-    let (first, second) = simd.split_u32x8(packed);
-    for (offset, words) in [(0, first), (12, second)] {
-        let bytes = words.bitcast::<u8x16<S>>().swizzle_dyn(indices).to_array();
-        output[offset..offset + 12].copy_from_slice(&bytes[..12]);
-    }
-}
-
-/// [`round_to_u8`] of eight samples, one byte value per lane.
-#[cfg(all(feature = "simd", target_arch = "x86_64"))]
-#[inline(always)]
-fn quantize_u8_x8<S: fearless_simd::Simd>(
-    simd: S,
-    value: fearless_simd::f32x8<S>,
-) -> fearless_simd::u32x8<S> {
-    use fearless_simd::{f32x8, Select, SimdBase, SimdFloat};
-
-    let zero = f32x8::splat(simd, 0.0);
-    // Match Rust's saturating float-to-u8 cast, including NaN -> 0.
-    let value = value
-        .simd_ge(zero)
-        .select(value, zero)
-        .min(f32x8::splat(simd, 255.0));
-    let integral = value.floor();
-    // Adding 0.5 before rounding would incorrectly round the float
-    // immediately below 0.5 up to 1. Compare the fractional part.
-    let rounded = integral
-        + (value - integral)
-            .simd_ge(f32x8::splat(simd, 0.5))
-            .select(f32x8::splat(simd, 1.0), zero);
-    simd.cvt_u32_f32x8(rounded)
 }
 
 pub(crate) fn interleave_and_convert_region(

@@ -553,35 +553,61 @@ fn fused_pairs(width: usize) -> usize {
 /// whose predict reads the next block's beta output. Low samples are stored at
 /// the start of `row`, behind the samples still to be read, and high samples
 /// in `high`. Each sample sees the operations of [`lift`].
-#[expect(
-    clippy::inline_always,
-    reason = "the lifting kernels are specialized inside each SIMD dispatch target"
-)]
+// Clippy skips `inline_always` on a body that opens with items.
 #[inline(always)]
 fn lift_row_97<S: Simd>(simd: S, row: &mut [f32], high: &mut [f32]) {
-    let split = |row: &[f32], block: usize| {
+    // Functions rather than closures: called several times, a closure is
+    // outlined, and an outlined closure lacks the dispatch's target features.
+    #[expect(
+        clippy::inline_always,
+        reason = "inlined into each SIMD dispatch target"
+    )]
+    #[inline(always)]
+    fn split<S: Simd>(simd: S, row: &[f32], block: usize) -> (f32x8<S>, f32x8<S>) {
         let samples = &row[2 * SIMD_WIDTH * block..][..2 * SIMD_WIDTH];
         let (first, second) = samples.split_at(SIMD_WIDTH);
         f32x8::from_slice(simd, first).deinterleave(f32x8::from_slice(simd, second))
-    };
-    let [alpha, beta, gamma, delta] = [ALPHA, BETA, GAMMA, DELTA].map(|c| f32x8::splat(simd, c));
+    }
     // High sample `k` lies between low samples `k` and `k + 1`.
-    let predict =
-        |low: f32x8<S>, next: f32x8<S>, high, c| (low + low.slide::<1>(next)).mul_add(c, high);
-    let update =
-        |previous: f32x8<S>, high, low, c| (previous.slide::<7>(high) + high).mul_add(c, low);
+    #[expect(
+        clippy::inline_always,
+        reason = "inlined into each SIMD dispatch target"
+    )]
+    #[inline(always)]
+    fn predict<S: Simd>(low: f32x8<S>, next: f32x8<S>, high: f32x8<S>, c: f32x8<S>) -> f32x8<S> {
+        (low + low.slide::<1>(next)).mul_add(c, high)
+    }
+    #[expect(
+        clippy::inline_always,
+        reason = "inlined into each SIMD dispatch target"
+    )]
+    #[inline(always)]
+    fn update<S: Simd>(previous: f32x8<S>, high: f32x8<S>, low: f32x8<S>, c: f32x8<S>) -> f32x8<S> {
+        (previous.slide::<7>(high) + high).mul_add(c, low)
+    }
     // T.800 F.4.7: low sample 0 mirrors onto high sample 0, which a block
     // rotated by one lane holds in its last lane.
-    let mirror = |high: f32x8<S>| high.slide::<1>(high);
-    let (first_low, first_high) = split(row, 0);
-    let (mut low0, mut high0) = split(row, 1);
+    #[expect(
+        clippy::inline_always,
+        reason = "inlined into each SIMD dispatch target"
+    )]
+    #[inline(always)]
+    fn mirror<S: Simd>(high: f32x8<S>) -> f32x8<S> {
+        high.slide::<1>(high)
+    }
+    let alpha = f32x8::splat(simd, ALPHA);
+    let beta = f32x8::splat(simd, BETA);
+    let gamma = f32x8::splat(simd, GAMMA);
+    let delta = f32x8::splat(simd, DELTA);
+    let (first_low, first_high) = split(simd, row, 0);
+    let (mut low0, mut high0) = split(simd, row, 1);
     let mut high1 = predict(first_low, low0, first_high, alpha);
     let mut low1 = update(mirror(high1), high1, first_low, beta);
     // Lane 0 of the first gamma output reads only lanes 0 and 1 of `low1`.
     let mut high2 = mirror(predict(low1, low1, high1, gamma));
     let (low_scale, high_scale) = (f32x8::splat(simd, INV_KAPPA), f32x8::splat(simd, KAPPA));
     for (index, high_out) in high.as_chunks_mut::<SIMD_WIDTH>().0.iter_mut().enumerate() {
-        let (next_low0, next_high0) = split(row, index + 2);
+        let (next_low0, next_high0) = split(simd, row, index + 2);
         let next_high1 = predict(low0, next_low0, high0, alpha);
         let next_low1 = update(high1, next_high1, low0, beta);
         let block_high2 = predict(low1, next_low1, high1, gamma);
@@ -628,8 +654,11 @@ fn lift<S: Simd>(
             (high, low),
             columns,
             !odd_origin,
+            #[inline(always)]
             |s, a, b| s - ((a + b) * 0.5).floor(),
+            #[inline(always)]
             |s, a, b| s - floor_half_sum_f32(a, b),
+            #[inline(always)]
             |s, a| {
                 s - if closed {
                     floor_f32(a)
@@ -643,8 +672,11 @@ fn lift<S: Simd>(
             (low, high),
             columns,
             odd_origin,
+            #[inline(always)]
             |s, a, b| s + ((a + b) * 0.25 + 0.5).floor(),
+            #[inline(always)]
             |s, a, b| s + floor_f32((a + b) * 0.25 + 0.5),
+            #[inline(always)]
             |s, a| s + floor_f32(if closed { a * 0.5 } else { (a + a) * 0.25 } + 0.5),
         );
         return;
@@ -663,8 +695,11 @@ fn lift<S: Simd>(
             bands,
             columns,
             predict != odd_origin,
+            #[inline(always)]
             move |s, a, b| (a + b).mul_add(vector, s),
+            #[inline(always)]
             move |s, a, b| mul_add(coefficient, a + b, s),
+            #[inline(always)]
             move |s, a| mul_add(coefficient, a + a, s),
         );
     }

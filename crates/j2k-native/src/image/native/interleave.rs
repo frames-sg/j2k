@@ -5,7 +5,6 @@
 
 use alloc::vec::Vec;
 
-use super::{round_clamped_native, signed_native_bounds, unsigned_native_max};
 use crate::j2c::ComponentData;
 use crate::math::{dispatch, Level, Simd};
 
@@ -35,76 +34,32 @@ impl Image<'_> {
         bit_depth: u8,
         parallel: bool,
     ) {
-        let Some(planes) = float_planes(components, pixel_count, bit_depth) else {
+        let push_each = |out: &mut Vec<u8>| {
             for index in 0..pixel_count {
                 for component in components {
                     Self::push_component_native_sample_bytes(out, component, index, bit_depth);
                 }
             }
+        };
+        let Some(planes) = float_planes(components, pixel_count) else {
+            push_each(out);
             return;
         };
         let planes = &planes[..components.len()];
-        let start = out.len();
-        let bytes = if bit_depth <= 8 { 1 } else { 2 };
-        // Callers reserve the full output first, so this does not reallocate.
-        out.resize(start + pixel_count * components.len() * bytes, 0);
-        let destination = &mut out[start..];
-        match (bit_depth, components[0].signed) {
-            (1..=8, true) => {
-                let (min, max) = signed_native_bounds(bit_depth);
-                interleave_converted(
-                    destination,
-                    planes,
-                    parallel,
-                    #[inline(always)]
-                    move |sample| [(round_clamped_native(sample, min, max) as i8) as u8],
-                );
-            }
-            (1..=8, false) => {
-                let max = unsigned_native_max(bit_depth);
-                interleave_converted(
-                    destination,
-                    planes,
-                    parallel,
-                    #[inline(always)]
-                    move |sample| [round_clamped_native(sample, 0.0, max) as u8],
-                );
-            }
-            (_, true) => {
-                let (min, max) = signed_native_bounds(bit_depth);
-                interleave_converted(
-                    destination,
-                    planes,
-                    parallel,
-                    #[inline(always)]
-                    move |sample| {
-                        ((round_clamped_native(sample, min, max) as i16) as u16).to_le_bytes()
-                    },
-                );
-            }
-            (_, false) => {
-                let max = unsigned_native_max(bit_depth);
-                interleave_converted(
-                    destination,
-                    planes,
-                    parallel,
-                    #[inline(always)]
-                    move |sample| (round_clamped_native(sample, 0.0, max) as u16).to_le_bytes(),
-                );
-            }
-        }
+        with_native_converter!(
+            bit_depth,
+            components[0].signed,
+            interleave_converted(out, planes, parallel),
+            _ => push_each(out),
+        );
     }
 }
 
 /// The first `pixel_count` samples of each component, when there are two
-/// to four `f32` components of one signedness and `bit_depth` is 1 to 16.
-fn float_planes(
-    components: &[ComponentData],
-    pixel_count: usize,
-    bit_depth: u8,
-) -> Option<[&[f32]; 4]> {
+/// to four `f32` components of one signedness.
+fn float_planes(components: &[ComponentData], pixel_count: usize) -> Option<[&[f32]; 4]> {
     let first = components.first()?;
-    if !(2..=4).contains(&components.len()) || !(1..=16).contains(&bit_depth) {
+    if !(2..=4).contains(&components.len()) {
         return None;
     }
     let mut planes: [&[f32]; 4] = [&[]; 4];
@@ -117,16 +72,20 @@ fn float_planes(
     Some(planes)
 }
 
-/// Write `convert(sample)` of every plane's sample, pixel by pixel, to
-/// `destination`, a block of pixels at a time, the blocks split across
-/// threads when `parallel` and the planes are large.
+/// Append `convert(sample)` of every plane's sample, pixel by pixel, to
+/// `out`, a block of pixels at a time, the blocks split across threads when
+/// `parallel` and the planes are large.
 fn interleave_converted<const N: usize>(
-    destination: &mut [u8],
+    out: &mut Vec<u8>,
     planes: &[&[f32]],
     parallel: bool,
     convert: impl Fn(f32) -> [u8; N] + Send + Sync,
 ) {
     let pixel_bytes = planes.len() * N;
+    let start = out.len();
+    // Callers reserve the full output first, so this does not reallocate.
+    out.resize(start + planes[0].len() * pixel_bytes, 0);
+    let destination = &mut out[start..];
     #[cfg(feature = "parallel")]
     if parallel && planes[0].len() >= super::PARALLEL_PACK_SAMPLES {
         use rayon::prelude::*;

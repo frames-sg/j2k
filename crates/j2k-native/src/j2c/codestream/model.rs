@@ -187,6 +187,15 @@ impl From<WaveletTransform> for crate::J2kWaveletTransform {
     }
 }
 
+impl From<crate::J2kWaveletTransform> for WaveletTransform {
+    fn from(transform: crate::J2kWaveletTransform) -> Self {
+        match transform {
+            crate::J2kWaveletTransform::Reversible53 => Self::Reversible53,
+            crate::J2kWaveletTransform::Irreversible97 => Self::Irreversible97,
+        }
+    }
+}
+
 /// Coding style flags (Table A.13).
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct CodingStyleFlags {

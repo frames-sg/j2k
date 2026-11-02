@@ -15,6 +15,69 @@ use crate::{
 
 use super::Image;
 
+/// Calls `$function($args..., convert)` with `convert` packing one `f32`
+/// sample of `$bit_depth` bits, 1 to 16, and `$signed` into its
+/// little-endian native bytes: clamped to the component's range, rounded
+/// half away from zero, `[u8; 1]` up to 8 bits and `[u8; 2]` above. Other
+/// depths evaluate `$wider`. Every native packer converts through this one
+/// match; a macro because the bytes' width differs between arms.
+macro_rules! with_native_converter {
+    (
+        $bit_depth:expr,
+        $signed:expr,
+        $function:ident($($arg:expr),* $(,)?),
+        _ => $wider:expr $(,)?
+    ) => {
+        match ($bit_depth, $signed) {
+            (bit_depth @ 1..=8, true) => {
+                let (min, max) = $crate::image::native::signed_native_bounds(bit_depth);
+                $function(
+                    $($arg,)*
+                    #[inline(always)]
+                    move |sample: f32| {
+                        [($crate::image::native::round_clamped_native(sample, min, max) as i8)
+                            as u8]
+                    },
+                )
+            }
+            (bit_depth @ 1..=8, false) => {
+                let max = $crate::image::native::unsigned_native_max(bit_depth);
+                $function(
+                    $($arg,)*
+                    #[inline(always)]
+                    move |sample: f32| {
+                        [$crate::image::native::round_clamped_native(sample, 0.0, max) as u8]
+                    },
+                )
+            }
+            (bit_depth @ 9..=16, true) => {
+                let (min, max) = $crate::image::native::signed_native_bounds(bit_depth);
+                $function(
+                    $($arg,)*
+                    #[inline(always)]
+                    move |sample: f32| {
+                        (($crate::image::native::round_clamped_native(sample, min, max) as i16)
+                            as u16)
+                            .to_le_bytes()
+                    },
+                )
+            }
+            (bit_depth @ 9..=16, false) => {
+                let max = $crate::image::native::unsigned_native_max(bit_depth);
+                $function(
+                    $($arg,)*
+                    #[inline(always)]
+                    move |sample: f32| {
+                        ($crate::image::native::round_clamped_native(sample, 0.0, max) as u16)
+                            .to_le_bytes()
+                    },
+                )
+            }
+            _ => $wider,
+        }
+    };
+}
+
 mod allocation;
 mod interleave;
 mod rows;
@@ -280,55 +343,16 @@ impl<'a> Image<'a> {
             return;
         }
         let samples = &component.container.truncated()[range];
-        match (bit_depth, component.signed) {
-            (1..=8, true) => {
-                let (min, max) = signed_native_bounds(bit_depth);
-                extend_converted(
-                    out,
-                    samples,
-                    parallel,
-                    #[inline(always)]
-                    move |sample| [(round_clamped_native(sample, min, max) as i8) as u8],
-                );
-            }
-            (1..=8, false) => {
-                let max = unsigned_native_max(bit_depth);
-                extend_converted(
-                    out,
-                    samples,
-                    parallel,
-                    #[inline(always)]
-                    move |sample| [round_clamped_native(sample, 0.0, max) as u8],
-                );
-            }
-            (9..=16, true) => {
-                let (min, max) = signed_native_bounds(bit_depth);
-                extend_converted(
-                    out,
-                    samples,
-                    parallel,
-                    #[inline(always)]
-                    move |sample| {
-                        ((round_clamped_native(sample, min, max) as i16) as u16).to_le_bytes()
-                    },
-                );
-            }
-            (9..=16, false) => {
-                let max = unsigned_native_max(bit_depth);
-                extend_converted(
-                    out,
-                    samples,
-                    parallel,
-                    #[inline(always)]
-                    move |sample| (round_clamped_native(sample, 0.0, max) as u16).to_le_bytes(),
-                );
-            }
+        with_native_converter!(
+            bit_depth,
+            component.signed,
+            extend_converted(out, samples, parallel),
             _ => {
                 for &sample in samples {
                     Self::push_native_sample_bytes(out, sample, bit_depth, component.signed);
                 }
-            }
-        }
+            },
+        );
     }
 
     pub(crate) fn push_component_native_sample_bytes(
@@ -476,13 +500,7 @@ fn round_clamped_native(sample: f32, min: f32, max: f32) -> i32 {
     // for every sample, which otherwise prevents vectorizing the packing loop.
     let clamped = if sample < min { min } else { sample };
     let clamped = if clamped > max { max } else { clamped };
-    #[cfg(feature = "std")]
-    let rounded = clamped.round();
-    // `libm::roundf` rounds ties away from zero exactly; `floor(x + 0.5)`
-    // would round 0.49999997 up.
-    #[cfg(not(feature = "std"))]
-    let rounded = libm::roundf(clamped);
-    rounded as i32
+    crate::math::round_f32(clamped) as i32
 }
 
 /// Planes with at least this many samples pack in parallel. Unit tests lower
@@ -541,7 +559,7 @@ fn convert_samples<S: Simd, const N: usize>(
     _simd: S,
     destination: &mut [[u8; N]],
     source: &[f32],
-    convert: &impl Fn(f32) -> [u8; N],
+    convert: impl Fn(f32) -> [u8; N],
 ) {
     for (destination, &sample) in destination.iter_mut().zip(source) {
         *destination = convert(sample);

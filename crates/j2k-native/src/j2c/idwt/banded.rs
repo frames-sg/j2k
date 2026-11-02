@@ -1270,7 +1270,14 @@ fn lift_wavefronts<S: Simd, const STEPS: usize, const ROWS: usize>(
             dwt::IDWT97_NEG_BETA_F32,
             dwt::IDWT97_NEG_ALPHA_F32,
         ];
-        let coefficients_simd = coefficients.map(|value| f32x8::splat(simd, value));
+        // Splatted one by one: an array `map` closure is outlined, without
+        // the dispatch's target features.
+        let coefficients_simd = [
+            f32x8::splat(simd, coefficients[0]),
+            f32x8::splat(simd, coefficients[1]),
+            f32x8::splat(simd, coefficients[2]),
+            f32x8::splat(simd, coefficients[3]),
+        ];
         lift_window::<S, STEPS, ROWS>(
             simd,
             &mut window,
@@ -1387,10 +1394,14 @@ fn three_rows(
     (current_row, neighbor(above), neighbor(below))
 }
 
-/// Apply one vertical lifting step to `current` from its neighbors.
+/// Apply one vertical lifting step to `current` from its neighbors. Each
+/// step goes to [`lift_rows`] as an `#[inline(always)]` closure: a function
+/// item's `Fn` shim is not inlined, so it would run outside the dispatched
+/// target features, calling out for every vector operation.
 #[expect(
     clippy::inline_always,
-    reason = "the lifting step is specialized with its scalar and SIMD operations"
+    clippy::redundant_closure,
+    reason = "the lifting step is specialized with its scalar and SIMD operations; the closures carry #[inline(always)], which function items cannot"
 )]
 #[inline(always)]
 fn apply_vertical_step<S: Simd>(
@@ -1407,8 +1418,10 @@ fn apply_vertical_step<S: Simd>(
                 current,
                 above,
                 below,
-                lift_53_low_simd,
-                reversible_53_predict,
+                #[inline(always)]
+                |s1, s2, s3| lift_53_low_simd(s1, s2, s3),
+                #[inline(always)]
+                |s1, s2, s3| reversible_53_predict(s1, s2, s3),
             );
         }
         VerticalStep::Reversible53High => {
@@ -1417,8 +1430,10 @@ fn apply_vertical_step<S: Simd>(
                 current,
                 above,
                 below,
-                lift_53_high_simd,
-                reversible_53_update,
+                #[inline(always)]
+                |s1, s2, s3| lift_53_high_simd(s1, s2, s3),
+                #[inline(always)]
+                |s1, s2, s3| reversible_53_update(s1, s2, s3),
             );
         }
         VerticalStep::Irreversible97(coefficient) => {
@@ -2049,10 +2064,7 @@ fn window_pairs_97(high_len: usize) -> usize {
 /// (at least two) first lifts the two blocks before it as far as their
 /// outputs need. Each sample sees the operations of the multi-pass steps in
 /// [`synthesize_row`].
-#[expect(
-    clippy::inline_always,
-    reason = "the lifting kernels are specialized inside each SIMD dispatch target"
-)]
+// Clippy skips `inline_always` on a body that opens with items.
 #[inline(always)]
 fn lift_row_97_window<S: Simd>(
     simd: S,
@@ -2063,30 +2075,50 @@ fn lift_row_97_window<S: Simd>(
     high_pass: f32,
     row_scale: f32,
 ) {
-    let [kappa, high_pass, row_scale] =
-        [dwt::DWT97_KAPPA_F32, high_pass, row_scale].map(|value| f32x8::splat(simd, value));
-    let [delta, gamma, beta, alpha] = [
-        dwt::IDWT97_NEG_DELTA_F32,
-        dwt::IDWT97_NEG_GAMMA_F32,
-        dwt::IDWT97_NEG_BETA_F32,
-        dwt::IDWT97_NEG_ALPHA_F32,
-    ]
-    .map(|value| f32x8::splat(simd, value));
+    // Low sample `k` lies between high samples `k - 1` and `k`; high sample
+    // `k` between low samples `k` and `k + 1`. Functions rather than
+    // closures, as for [`scaled_blocks`].
+    #[expect(
+        clippy::inline_always,
+        reason = "inlined into each SIMD dispatch target"
+    )]
+    #[inline(always)]
+    fn update<S: Simd>(previous: f32x8<S>, high: f32x8<S>, low: f32x8<S>, c: f32x8<S>) -> f32x8<S> {
+        (previous.slide::<7>(high) + high).mul_add(c, low)
+    }
+    #[expect(
+        clippy::inline_always,
+        reason = "inlined into each SIMD dispatch target"
+    )]
+    #[inline(always)]
+    fn predict<S: Simd>(low: f32x8<S>, next: f32x8<S>, high: f32x8<S>, c: f32x8<S>) -> f32x8<S> {
+        (low + low.slide::<1>(next)).mul_add(c, high)
+    }
+    // Splatted one by one: an array `map` closure is outlined, without the
+    // dispatch's target features.
+    let kappa = f32x8::splat(simd, dwt::DWT97_KAPPA_F32);
+    let high_pass = f32x8::splat(simd, high_pass);
+    let row_scale = f32x8::splat(simd, row_scale);
+    let delta = f32x8::splat(simd, dwt::IDWT97_NEG_DELTA_F32);
+    let gamma = f32x8::splat(simd, dwt::IDWT97_NEG_GAMMA_F32);
+    let beta = f32x8::splat(simd, dwt::IDWT97_NEG_BETA_F32);
+    let alpha = f32x8::splat(simd, dwt::IDWT97_NEG_ALPHA_F32);
     let bands = (low, high);
     let scales = (kappa, high_pass);
-    // Low sample `k` lies between high samples `k - 1` and `k`; high sample
-    // `k` between low samples `k` and `k + 1`.
-    let update =
-        |previous: f32x8<S>, high, low, c| (previous.slide::<7>(high) + high).mul_add(c, low);
-    let predict =
-        |low: f32x8<S>, next: f32x8<S>, high, c| (low + low.slide::<1>(next)).mul_add(c, high);
     // The pipeline before the first output block: its doubly lifted low
     // samples, its once lifted high samples, the next block's once lifted
     // low samples and the next block's scaled high samples.
     let (mut low2, mut high1, mut next_low1, mut next_high0) = if first_block == 0 {
         // T.800 F.3.7: high sample -1 mirrors high sample 0, which a block
         // rotated by one lane holds in its last lane.
-        let mirror = |high: f32x8<S>| high.slide::<1>(high);
+        #[expect(
+            clippy::inline_always,
+            reason = "inlined into each SIMD dispatch target"
+        )]
+        #[inline(always)]
+        fn mirror<S: Simd>(high: f32x8<S>) -> f32x8<S> {
+            high.slide::<1>(high)
+        }
         let (low0, high0) = scaled_blocks(simd, bands, scales, 0);
         let (next_low0, next_high0) = scaled_blocks(simd, bands, scales, 1);
         let low1 = update(mirror(high0), high0, low0, delta);

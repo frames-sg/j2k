@@ -6,7 +6,7 @@
 
 use alloc::vec::Vec;
 
-use crate::math::{floor_f32, mul_add};
+use crate::math::{dispatch, floor_f32, mul_add, Level};
 use j2k_codec_math::mct;
 
 /// Apply the forward Reversible Color Transform (RCT) in-place.
@@ -17,21 +17,16 @@ use j2k_codec_math::mct;
 ///   Cr = R - G
 ///
 /// This is the inverse of the decoder's inverse RCT (G.2).
+#[expect(
+    clippy::redundant_closure,
+    reason = "the closure carries #[inline(always)]; a function item's Fn shim stays out of line"
+)]
 pub(crate) fn forward_rct(components: &mut [Vec<f32>]) {
-    debug_assert!(components.len() >= 3);
-    let (r_components, rest) = components.split_at_mut(1);
-    let (g_components, b_components) = rest.split_at_mut(1);
-    let r_components = &mut r_components[0];
-    let g_components = &mut g_components[0];
-    let b_components = &mut b_components[0];
-
-    for ((r, g), b) in r_components
-        .iter_mut()
-        .zip(g_components.iter_mut())
-        .zip(b_components.iter_mut())
-    {
-        [*r, *g, *b] = rct_pixel(*r, *g, *b);
-    }
+    transform_pixels(
+        components,
+        #[inline(always)]
+        |r, g, b| rct_pixel(r, g, b),
+    );
 }
 
 /// The forward RCT of one (R, G, B) sample triple.
@@ -53,7 +48,22 @@ pub(crate) fn rct_pixel(r: f32, g: f32, b: f32) -> [f32; 3] {
 ///   Cr =  0.5     * R - 0.41869 * G - 0.08131 * B
 ///
 /// This is the inverse of the decoder's inverse ICT (G.3).
+#[expect(
+    clippy::redundant_closure,
+    reason = "the closure carries #[inline(always)]; a function item's Fn shim stays out of line"
+)]
 pub(crate) fn forward_ict(components: &mut [Vec<f32>]) {
+    transform_pixels(
+        components,
+        #[inline(always)]
+        |r, g, b| ict_pixel(r, g, b),
+    );
+}
+
+/// Replace each (R, G, B) sample triple of the first three components with
+/// its `transform`, at the dispatched SIMD level (see `math`): the ICT's
+/// fused multiply-adds are a library call per sample on baseline x86-64.
+fn transform_pixels(components: &mut [Vec<f32>], transform: impl Fn(f32, f32, f32) -> [f32; 3]) {
     debug_assert!(components.len() >= 3);
     let (r_components, rest) = components.split_at_mut(1);
     let (g_components, b_components) = rest.split_at_mut(1);
@@ -61,13 +71,15 @@ pub(crate) fn forward_ict(components: &mut [Vec<f32>]) {
     let g_components = &mut g_components[0];
     let b_components = &mut b_components[0];
 
-    for ((r, g), b) in r_components
-        .iter_mut()
-        .zip(g_components.iter_mut())
-        .zip(b_components.iter_mut())
-    {
-        [*r, *g, *b] = ict_pixel(*r, *g, *b);
-    }
+    dispatch!(Level::new(), _simd => {
+        for ((r, g), b) in r_components
+            .iter_mut()
+            .zip(g_components.iter_mut())
+            .zip(b_components.iter_mut())
+        {
+            [*r, *g, *b] = transform(*r, *g, *b);
+        }
+    });
 }
 
 /// The forward ICT of one (R, G, B) sample triple.
