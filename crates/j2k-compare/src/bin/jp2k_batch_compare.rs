@@ -125,15 +125,28 @@ fn intra_image_threads(batch_len: usize, thread_budget: usize) -> u32 {
     }
 }
 
-/// j2k's internal parallelism uses the global Rayon pool, so a lone image
-/// would otherwise use every core whatever the requested budget. Require
-/// `RAYON_NUM_THREADS` to match the budget so every decoder gets the same
-/// number of threads.
-fn check_rayon_threads(thread_budget: usize, rayon_env: Option<&str>) -> Result<(), String> {
-    let rayon = rayon_env
-        .ok_or_else(|| {
-            format!("set RAYON_NUM_THREADS={thread_budget} so j2k uses the same thread budget as the other decoders")
-        })?
+/// j2k's internal parallelism uses the global Rayon pool, which would
+/// otherwise size itself to every core whatever the requested budget. Size
+/// it to the budget before any decode, so every decoder gets the same number
+/// of threads. A `RAYON_NUM_THREADS` that disagrees is rejected rather than
+/// overridden.
+fn size_rayon_pool(thread_budget: usize) -> Result<(), String> {
+    check_rayon_env(
+        thread_budget,
+        std::env::var("RAYON_NUM_THREADS").ok().as_deref(),
+    )?;
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(thread_budget)
+        .build_global()
+        .map_err(|err| format!("cannot size the Rayon pool to {thread_budget} threads: {err}"))
+}
+
+/// An unset `RAYON_NUM_THREADS`, or one equal to the thread budget.
+fn check_rayon_env(thread_budget: usize, rayon_env: Option<&str>) -> Result<(), String> {
+    let Some(rayon) = rayon_env else {
+        return Ok(());
+    };
+    let rayon = rayon
         .trim()
         .parse::<usize>()
         .map_err(|err| format!("invalid RAYON_NUM_THREADS: {err}"))?;
@@ -141,7 +154,7 @@ fn check_rayon_threads(thread_budget: usize, rayon_env: Option<&str>) -> Result<
         Ok(())
     } else {
         Err(format!(
-            "RAYON_NUM_THREADS={rayon} differs from the thread budget {thread_budget}; set them equal"
+            "RAYON_NUM_THREADS={rayon} differs from the thread budget {thread_budget}; unset it or set them equal"
         ))
     }
 }
@@ -171,10 +184,7 @@ fn run() -> Result<(), String> {
         || std::thread::available_parallelism().map_or(1, NonZeroUsize::get),
         NonZeroUsize::get,
     );
-    check_rayon_threads(
-        pool_threads,
-        std::env::var("RAYON_NUM_THREADS").ok().as_deref(),
-    )?;
+    size_rayon_pool(pool_threads)?;
     if grok::is_available() {
         grok::initialize_with_threads(
             u32::try_from(pool_threads)
@@ -226,15 +236,16 @@ fn run() -> Result<(), String> {
     // the cell with its status, and an external decoder that errors or returns
     // different pixels is reported as failed and left out of the timing.
     let keep_going = std::env::var_os("J2K_BATCH_COMPARE_KEEP_GOING").is_some();
-    if let Err(err) = decode_j2k_outputs(&tiles, format, NonZeroUsize::new(1)) {
-        if keep_going {
+    let native = match decode_j2k_outputs(&tiles, format, NonZeroUsize::new(1)) {
+        Ok(native) => native,
+        Err(err) if keep_going => {
             println!("j2k_status\tfailed: {err}");
             return Ok(());
         }
-        return Err(err);
-    }
+        Err(err) => return Err(err),
+    };
     println!("j2k_status\tok");
-    let parity = reference_parity(&tiles, format, &options.excluded, keep_going)?;
+    let parity = reference_parity(&tiles, &native, &options.excluded, keep_going)?;
     let mut options = options;
     for (decoder, status) in &parity {
         if status.starts_with("failed") && !options.excluded.contains(decoder) {
@@ -317,9 +328,11 @@ fn parse_run_options() -> Result<RunOptions, String> {
     })
 }
 
+/// Each external decoder's maximum byte difference from j2k's `native`
+/// outputs of `tiles`, or why it was left out.
 fn reference_parity(
     tiles: &[TileInput],
-    format: PixelFormat,
+    native: &[Vec<u8>],
     excluded: &[ExternalDecoder],
     keep_going: bool,
 ) -> Result<Vec<(ExternalDecoder, String)>, String> {
@@ -338,7 +351,7 @@ fn reference_parity(
             if excluded.contains(&decoder) {
                 return Ok((decoder, "excluded".to_string()));
             }
-            match reference_parity_result(tiles, format, decoder, allowed_reference_difference) {
+            match reference_parity_result(tiles, native, decoder, allowed_reference_difference) {
                 Ok(difference) => Ok((decoder, difference)),
                 Err(err) if keep_going => Ok((decoder, format!("failed: {err}"))),
                 Err(err) => Err(err),
@@ -389,7 +402,10 @@ fn emit_configuration(
         "excluded_decoders\t{}",
         j2k_compare::common::join_string_labels(&excluded)
     );
-    println!("thread_budget\t{pool_threads}\nrayon_num_threads\t{pool_threads}");
+    println!(
+        "thread_budget\t{pool_threads}\nrayon_num_threads\t{}",
+        rayon::current_num_threads()
+    );
     if let Some(spec) = options.viewport {
         println!(
             "viewport\treduce={} count={} output_size={} seed={}\nopenjph_region_support\tnone-excluded-from-viewport-runs",
@@ -686,14 +702,14 @@ fn run_static_chunks(
 
 fn reference_parity_result(
     tiles: &[TileInput],
-    format: PixelFormat,
+    native: &[Vec<u8>],
     decoder: ExternalDecoder,
     allowed_difference: u8,
 ) -> Result<String, String> {
     if !decoder.is_available() {
         return Ok("unavailable".to_string());
     }
-    let observed = validate_reference_parity(tiles, format, decoder)?;
+    let observed = validate_reference_parity(tiles, native, decoder)?;
     if observed > allowed_difference {
         return Err(format!(
             "{} maximum absolute byte difference {observed} exceeds the configured {allowed_difference}",
@@ -705,10 +721,9 @@ fn reference_parity_result(
 
 fn validate_reference_parity(
     tiles: &[TileInput],
-    format: PixelFormat,
+    native: &[Vec<u8>],
     decoder: ExternalDecoder,
 ) -> Result<u8, String> {
-    let native = decode_j2k_outputs(tiles, format, NonZeroUsize::new(1))?;
     tiles
         .iter()
         .zip(native)
@@ -723,7 +738,7 @@ fn validate_reference_parity(
                     expected.len()
                 ));
             }
-            Ok(maximum.max(maximum_absolute_byte_difference(&actual, &expected)))
+            Ok(maximum.max(maximum_absolute_byte_difference(&actual, expected)))
         })
 }
 
@@ -834,7 +849,7 @@ fn output_len(tile: &TileInput, format: PixelFormat) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        check_rayon_threads, intra_image_threads, maximum_absolute_byte_difference, parse_excluded,
+        check_rayon_env, intra_image_threads, maximum_absolute_byte_difference, parse_excluded,
         ExternalDecoder,
     };
     use j2k_compare::{parse_positive_usize, sample_stats};
@@ -849,12 +864,12 @@ mod tests {
     }
 
     #[test]
-    fn rayon_pool_must_match_the_thread_budget() {
-        assert!(check_rayon_threads(10, Some("10")).is_ok());
-        assert!(check_rayon_threads(1, Some(" 1 ")).is_ok());
-        assert!(check_rayon_threads(10, None).is_err());
-        assert!(check_rayon_threads(10, Some("1")).is_err());
-        assert!(check_rayon_threads(10, Some("ten")).is_err());
+    fn rayon_env_may_only_repeat_the_thread_budget() {
+        assert!(check_rayon_env(10, None).is_ok());
+        assert!(check_rayon_env(10, Some("10")).is_ok());
+        assert!(check_rayon_env(1, Some(" 1 ")).is_ok());
+        assert!(check_rayon_env(10, Some("1")).is_err());
+        assert!(check_rayon_env(10, Some("ten")).is_err());
     }
 
     #[test]

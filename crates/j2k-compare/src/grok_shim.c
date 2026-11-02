@@ -1,10 +1,9 @@
 #include "grok.h"
+#include "j2k_shim_common.h"
 
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-
-#define GROK_OUTPUT_CAP_BYTES ((size_t)4 * 1024 * 1024 * 1024)
 
 #if GRK_VERSION_MAJOR == 10
 void j2k_grok_initialize(uint32_t threads) { (void)grk_initialize(NULL, threads); }
@@ -43,29 +42,6 @@ static int j2k_grok_checked_add_size(size_t lhs, size_t rhs, size_t *out) {
     return 0;
   }
   *out = lhs + rhs;
-  return 1;
-}
-
-static int j2k_grok_checked_output_len(uint32_t width, uint32_t height,
-                                       uint32_t channels, size_t *out) {
-  size_t pixels = 0;
-  size_t total = 0;
-  if (channels != 1 && channels != 3) {
-    return 0;
-  }
-  if (width == 0 || height == 0) {
-    return 0;
-  }
-  if (!j2k_grok_checked_mul_size((size_t)width, (size_t)height, &pixels)) {
-    return 0;
-  }
-  if (!j2k_grok_checked_mul_size(pixels, (size_t)channels, &total)) {
-    return 0;
-  }
-  if (total > GROK_OUTPUT_CAP_BYTES) {
-    return 0;
-  }
-  *out = total;
   return 1;
 }
 
@@ -383,56 +359,36 @@ int j2k_grok_decode_u8(const uint8_t *bytes, size_t len, uint8_t reduce,
 #endif
   size_t total = 0;
   size_t last_index = 0;
+  int ok = 0;
   if (!j2k_grok_validate_component_count(image->numcomps, channels) ||
-      !j2k_grok_checked_output_len(width, height, channels, &total)) {
-    grk_object_unref(codec);
-    return 0;
-  }
-  if (!j2k_grok_component_index(&image->comps[0], height - 1, width - 1,
+      !j2k_shim_output_len(width, height, channels, bytes_per_sample, &total) ||
+      !j2k_grok_component_index(&image->comps[0], height - 1, width - 1,
                                 &last_index)) {
-    grk_object_unref(codec);
-    return 0;
+    goto done;
   }
   if (channels == 3 && image->numcomps >= 3 &&
       (!j2k_grok_component_index(&image->comps[1], height - 1, width - 1,
                                  &last_index) ||
        !j2k_grok_component_index(&image->comps[2], height - 1, width - 1,
                                  &last_index))) {
-    grk_object_unref(codec);
-    return 0;
+    goto done;
   }
-  total *= bytes_per_sample;
   if (dest && dest_len != total) {
-    grk_object_unref(codec);
-    return 0;
+    goto done;
   }
   packed = dest ? dest : (uint8_t *)malloc(total);
   if (!packed) {
-    grk_object_unref(codec);
-    return 0;
+    goto done;
   }
 
 #if GRK_VERSION_MAJOR != 10
   if (bytes_per_sample == 2) {
-    int ok = j2k_grok_pack_gray16(image, width, height, packed);
-    if (ok) {
-      *out_data = packed;
-      *out_len = total;
-      *out_width = width;
-      *out_height = height;
-    } else if (!dest) {
-      free(packed);
-    }
-    grk_object_unref(codec);
-    return ok;
+    ok = j2k_grok_pack_gray16(image, width, height, packed);
+    goto done;
   }
   if (j2k_grok_pack_fast(image, width, height, channels, packed)) {
-    *out_data = packed;
-    *out_len = total;
-    *out_width = width;
-    *out_height = height;
-    grk_object_unref(codec);
-    return 1;
+    ok = 1;
+    goto done;
   }
 #endif
 
@@ -441,16 +397,10 @@ int j2k_grok_decode_u8(const uint8_t *bytes, size_t len, uint8_t reduce,
       size_t dst = ((size_t)row * width + col) * channels;
       grk_image_comp *c0 = &image->comps[0];
       size_t c0_index = 0;
-      if (!j2k_grok_component_index(c0, row, col, &c0_index)) {
-        if (!dest) free(packed);
-        grk_object_unref(codec);
-        return 0;
-      }
       uint8_t v0 = 0;
-      if (!j2k_grok_component_sample_u8(c0, c0_index, &v0)) {
-        if (!dest) free(packed);
-        grk_object_unref(codec);
-        return 0;
+      if (!j2k_grok_component_index(c0, row, col, &c0_index) ||
+          !j2k_grok_component_sample_u8(c0, c0_index, &v0)) {
+        goto done;
       }
       if (channels == 1) {
         packed[dst] = v0;
@@ -466,32 +416,32 @@ int j2k_grok_decode_u8(const uint8_t *bytes, size_t len, uint8_t reduce,
       grk_image_comp *c2 = &image->comps[2];
       size_t c1_index = 0;
       size_t c2_index = 0;
-      if (!j2k_grok_component_index(c1, row, col, &c1_index) ||
-          !j2k_grok_component_index(c2, row, col, &c2_index)) {
-        if (!dest) free(packed);
-        grk_object_unref(codec);
-        return 0;
-      }
       uint8_t v1 = 0;
       uint8_t v2 = 0;
-      if (!j2k_grok_component_sample_u8(c1, c1_index, &v1) ||
+      if (!j2k_grok_component_index(c1, row, col, &c1_index) ||
+          !j2k_grok_component_index(c2, row, col, &c2_index) ||
+          !j2k_grok_component_sample_u8(c1, c1_index, &v1) ||
           !j2k_grok_component_sample_u8(c2, c2_index, &v2)) {
-        if (!dest) free(packed);
-        grk_object_unref(codec);
-        return 0;
+        goto done;
       }
       packed[dst] = v0;
       packed[dst + 1] = v1;
       packed[dst + 2] = v2;
     }
   }
+  ok = 1;
 
-  *out_data = packed;
-  *out_len = total;
-  *out_width = width;
-  *out_height = height;
+done:
+  if (ok) {
+    *out_data = packed;
+    *out_len = total;
+    *out_width = width;
+    *out_height = height;
+  } else if (!dest) {
+    free(packed);
+  }
   grk_object_unref(codec);
-  return 1;
+  return ok;
 }
 
 void j2k_grok_free(void *ptr) { free(ptr); }

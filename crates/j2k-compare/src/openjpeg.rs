@@ -2,7 +2,7 @@
 
 use openjpeg_sys::{
     opj_codec_set_threads, opj_create_decompress, opj_decode, opj_destroy_codec, opj_dparameters_t,
-    opj_end_decompress, opj_image, opj_image_destroy, opj_image_t, opj_read_header,
+    opj_end_decompress, opj_image, opj_image_comp, opj_image_destroy, opj_image_t, opj_read_header,
     opj_set_decode_area, opj_set_decoded_resolution_factor, opj_set_default_decoder_parameters,
     opj_setup_decoder, opj_stream_create, opj_stream_destroy, opj_stream_set_read_function,
     opj_stream_set_seek_function, opj_stream_set_skip_function, opj_stream_set_user_data,
@@ -133,7 +133,7 @@ fn decode(bytes: &[u8], request: ExternalDecodeRequest) -> Result<Vec<u8>, Strin
 /// unscaled, clamped to `0..=65535`.
 #[expect(
     unsafe_code,
-    reason = "views the validated OpenJPEG component plane as a bounded slice"
+    reason = "dereferences the OpenJPEG image the caller's guard owns"
 )]
 fn pack_gray16(image: *mut opj_image_t) -> Result<Vec<u8>, String> {
     if image.is_null() {
@@ -141,20 +141,10 @@ fn pack_gray16(image: *mut opj_image_t) -> Result<Vec<u8>, String> {
     }
     // SAFETY: checked non-null; the caller's `ImageGuard` owns the image.
     let image = unsafe { &*image };
-    if image.numcomps == 0 || image.comps.is_null() {
-        return Err("openjpeg: image has no components".to_string());
-    }
-    // SAFETY: `numcomps > 0` and `comps` is non-null.
-    let comp = unsafe { &*image.comps };
-    if comp.data.is_null() {
-        return Err("openjpeg: component data missing".to_string());
-    }
+    let (comp, data) = component_plane(image, 0)?;
     let width = usize::try_from(comp.w).map_err(|_| "openjpeg: width exceeds usize".to_string())?;
     let height =
         usize::try_from(comp.h).map_err(|_| "openjpeg: height exceeds usize".to_string())?;
-    let len = checked_component_sample_len(width, height)?;
-    // SAFETY: OpenJPEG allocates `w * h` samples for a decoded component.
-    let data = unsafe { slice::from_raw_parts(comp.data, len) };
     let mut out = vec![0_u8; checked_output_len(width, height, 1)? * 2];
     for (px, &v) in out.as_chunks_mut::<2>().0.iter_mut().zip(data) {
         *px = u16::try_from(v.clamp(0, 65_535)).unwrap_or(0).to_ne_bytes();
@@ -349,7 +339,7 @@ fn pack_image(image: *mut opj_image_t, channels: usize) -> Result<Vec<u8>, Strin
 
 #[expect(
     unsafe_code,
-    reason = "component extraction validates OpenJPEG image arrays and copies their bounded sample buffers"
+    reason = "dereferences the OpenJPEG image the caller's guard owns"
 )]
 fn pack_components(image: *mut opj_image_t) -> Result<OpenJpegDecodedImage, String> {
     if image.is_null() {
@@ -379,19 +369,11 @@ fn pack_components(image: *mut opj_image_t) -> Result<OpenJpegDecodedImage, Stri
         .map_err(|_| "openjpeg: cannot allocate component owners".to_string())?;
     let mut total_samples = 0usize;
     for index in 0..component_count {
-        // SAFETY: `index < numcomps`; OpenJPEG owns a contiguous component array.
-        let component = unsafe { &*image.comps.add(index) };
+        let (component, source) = component_plane(image, index)?;
         if component.w == 0 || component.h == 0 || component.dx == 0 || component.dy == 0 {
             return Err(format!("openjpeg: component {index} has invalid geometry"));
         }
-        if component.data.is_null() {
-            return Err(format!("openjpeg: component {index} data missing"));
-        }
-        let component_width = usize::try_from(component.w)
-            .map_err(|_| "openjpeg: component width exceeds platform usize".to_string())?;
-        let component_height = usize::try_from(component.h)
-            .map_err(|_| "openjpeg: component height exceeds platform usize".to_string())?;
-        let sample_len = checked_component_sample_len(component_width, component_height)?;
+        let sample_len = source.len();
         total_samples = total_samples
             .checked_add(sample_len)
             .ok_or_else(|| "openjpeg: total component sample count overflow".to_string())?;
@@ -405,8 +387,6 @@ fn pack_components(image: *mut opj_image_t) -> Result<OpenJpegDecodedImage, Stri
         }
         let bit_depth = u8::try_from(component_precision(component.prec)?.0)
             .map_err(|_| "openjpeg: component precision exceeds u8".to_string())?;
-        // SAFETY: `data` is non-null and OpenJPEG allocated `w * h` i32 samples.
-        let source = unsafe { slice::from_raw_parts(component.data, sample_len) };
         let mut samples = Vec::new();
         samples
             .try_reserve_exact(sample_len)
@@ -426,10 +406,6 @@ fn pack_components(image: *mut opj_image_t) -> Result<OpenJpegDecodedImage, Stri
     })
 }
 
-#[expect(
-    unsafe_code,
-    reason = "component lookup validates OpenJPEG's component array and sample buffer bounds"
-)]
 fn read_component(
     image: &opj_image,
     index: usize,
@@ -438,22 +414,7 @@ fn read_component(
     full_width: usize,
     full_height: usize,
 ) -> Result<u8, String> {
-    let num_components = usize::try_from(image.numcomps)
-        .map_err(|_| "openjpeg: component count exceeds platform usize".to_string())?;
-    if index >= num_components {
-        return Err(format!("openjpeg: component {index} missing"));
-    }
-    // SAFETY: `index < numcomps`; OpenJPEG owns a contiguous component array for this image.
-    let comp = unsafe {
-        image
-            .comps
-            .add(index)
-            .as_ref()
-            .ok_or_else(|| "openjpeg: component missing".to_string())?
-    };
-    if comp.data.is_null() {
-        return Err("openjpeg: component data missing".to_string());
-    }
+    let (comp, data) = component_plane(image, index)?;
     let stride = usize::try_from(comp.w)
         .map_err(|_| "openjpeg: component width exceeds platform usize".to_string())?;
     let height = usize::try_from(comp.h)
@@ -462,13 +423,38 @@ fn read_component(
         return Err("openjpeg: component has zero-sized output".to_string());
     }
     let precision = component_precision(comp.prec)?;
-    let sample_len = checked_component_sample_len(stride, height)?;
-    // SAFETY: `comp.data` is non-null and `sample_len` is the checked component allocation shape.
-    let data = unsafe { slice::from_raw_parts(comp.data, sample_len) };
     let comp_col = col.saturating_mul(stride) / full_width.max(1);
     let comp_row = row.saturating_mul(height) / full_height.max(1);
     let value = data[comp_row.min(height - 1) * stride + comp_col.min(stride - 1)];
     Ok(scale_to_u8(value, precision, comp.sgnd != 0))
+}
+
+/// Component `index` of `image` with its `w * h` decoded samples.
+#[expect(
+    unsafe_code,
+    reason = "views a validated OpenJPEG component and its sample plane"
+)]
+fn component_plane(image: &opj_image, index: usize) -> Result<(&opj_image_comp, &[i32]), String> {
+    let count = usize::try_from(image.numcomps)
+        .map_err(|_| "openjpeg: component count exceeds platform usize".to_string())?;
+    if index >= count || image.comps.is_null() {
+        return Err(format!("openjpeg: component {index} missing"));
+    }
+    // SAFETY: `index < numcomps`, and OpenJPEG owns a contiguous array of
+    // `numcomps` components for this image.
+    let component = unsafe { &*image.comps.add(index) };
+    if component.data.is_null() {
+        return Err(format!("openjpeg: component {index} data missing"));
+    }
+    let width = usize::try_from(component.w)
+        .map_err(|_| "openjpeg: component width exceeds platform usize".to_string())?;
+    let height = usize::try_from(component.h)
+        .map_err(|_| "openjpeg: component height exceeds platform usize".to_string())?;
+    let len = checked_component_sample_len(width, height)?;
+    // SAFETY: `data` is non-null, and OpenJPEG allocates `w * h` samples for
+    // a decoded component.
+    let samples = unsafe { slice::from_raw_parts(component.data, len) };
+    Ok((component, samples))
 }
 
 /// Packs components that are all at the output resolution (no subsampling)
@@ -476,10 +462,6 @@ fn read_component(
 /// components `read_component` reads `data[row * width + col]`, so the output
 /// is identical. Returns `false`, writing nothing, when a component is
 /// subsampled; the caller then uses the general per-sample path.
-#[expect(
-    unsafe_code,
-    reason = "views each validated OpenJPEG component plane as a bounded slice"
-)]
 fn pack_full_resolution(
     image: &opj_image,
     channels: usize,
@@ -492,39 +474,60 @@ fn pack_full_resolution(
     } else {
         3
     };
-    let mut planes: [(&[i32], ComponentPrecision, bool); 3] =
-        [(&[], ComponentPrecision(8), false); 3];
+    let mut planes: [Plane<'_>; 3] = [(&[], ComponentPrecision(8), false); 3];
     for (index, plane) in planes.iter_mut().enumerate().take(used) {
-        // SAFETY: `validate_component_count` established that `image.comps`
-        // holds at least `used` components.
-        let comp = unsafe { image.comps.add(index).as_ref() }
-            .ok_or_else(|| "openjpeg: component missing".to_string())?;
-        if comp.data.is_null() {
-            return Err("openjpeg: component data missing".to_string());
-        }
+        let (comp, data) = component_plane(image, index)?;
         if usize::try_from(comp.w).ok() != Some(width)
             || usize::try_from(comp.h).ok() != Some(height)
         {
             return Ok(false);
         }
-        let len = checked_component_sample_len(width, height)?;
-        // SAFETY: OpenJPEG allocates `w * h` samples for a decoded component,
-        // and `w`/`h` equal `width`/`height` here.
-        let data = unsafe { slice::from_raw_parts(comp.data, len) };
         *plane = (data, component_precision(comp.prec)?, comp.sgnd != 0);
     }
-    let [(d0, p0, s0), (d1, p1, s1), (d2, p2, s2)] = planes;
+    // Unsigned samples of at most 8 bits only clamp: a loop without the
+    // per-sample scaling branches, as the C shims' plain path.
+    if planes[..used]
+        .iter()
+        .all(|&(_, precision, signed)| precision.0 <= 8 && !signed)
+    {
+        pack_rows(
+            &planes,
+            used,
+            (width, height, channels),
+            out,
+            |value, _, _| u8::try_from(value.clamp(0, 255)).unwrap_or(0),
+        );
+    } else {
+        pack_rows(&planes, used, (width, height, channels), out, scale_to_u8);
+    }
+    Ok(true)
+}
+
+/// A component's samples, precision and signedness.
+type Plane<'a> = (&'a [i32], ComponentPrecision, bool);
+
+/// Rows of `used` (1 or 3) full-resolution `planes` into `out` of `channels`
+/// (1 or 3) bytes per pixel, converting each sample with `convert`; one plane
+/// fills every channel when `used` is 1.
+fn pack_rows(
+    planes: &[Plane<'_>; 3],
+    used: usize,
+    (width, height, channels): (usize, usize, usize),
+    out: &mut [u8],
+    convert: impl Fn(i32, ComponentPrecision, bool) -> u8,
+) {
+    let [(d0, p0, s0), (d1, p1, s1), (d2, p2, s2)] = *planes;
     let row_bytes = width * channels;
     for (row, out_row) in out.chunks_exact_mut(row_bytes).enumerate().take(height) {
         let span = row * width..(row + 1) * width;
         let r0 = &d0[span.clone()];
         if channels == 1 {
             for (o, &v) in out_row.iter_mut().zip(r0) {
-                *o = scale_to_u8(v, p0, s0);
+                *o = convert(v, p0, s0);
             }
         } else if used == 1 {
             for (px, &v) in out_row.as_chunks_mut::<3>().0.iter_mut().zip(r0) {
-                px.fill(scale_to_u8(v, p0, s0));
+                px.fill(convert(v, p0, s0));
             }
         } else {
             let (r1, r2) = (&d1[span.clone()], &d2[span]);
@@ -536,13 +539,10 @@ fn pack_full_resolution(
                 .zip(r1)
                 .zip(r2)
             {
-                px[0] = scale_to_u8(a, p0, s0);
-                px[1] = scale_to_u8(b, p1, s1);
-                px[2] = scale_to_u8(c, p2, s2);
+                *px = [convert(a, p0, s0), convert(b, p1, s1), convert(c, p2, s2)];
             }
         }
     }
-    Ok(true)
 }
 
 fn validate_component_count(numcomps: usize, channels: usize) -> Result<(), String> {

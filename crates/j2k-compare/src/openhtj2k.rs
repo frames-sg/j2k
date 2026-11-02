@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-#[cfg(have_openhtj2k)]
-use std::{ffi::c_void, ptr};
-
 /// Whether the optional pinned `OpenHTJ2K` library was linked into this build.
 #[must_use]
 pub const fn is_available() -> bool {
@@ -21,63 +18,9 @@ pub fn library_path() -> &'static str {
     option_env!("J2K_OPENHTJ2K_LIB_DIR").unwrap_or("unavailable")
 }
 
-/// Decode a raw HTJ2K/JPH input to packed 8-bit grayscale in-process.
-pub fn decode_gray(bytes: &[u8], reduce: u8, threads: u32) -> Result<Vec<u8>, String> {
-    decode(bytes, reduce, threads, 1)
-}
-
-/// Decode a raw HTJ2K/JPH input to packed interleaved RGB8 in-process.
-pub fn decode_rgb(bytes: &[u8], reduce: u8, threads: u32) -> Result<Vec<u8>, String> {
-    decode(bytes, reduce, threads, 3)
-}
-
 /// Decode `request` directly into `out`, whose length must equal the
 /// output's. A region is in full-resolution coordinates and is decoded with
 /// `OpenHTJ2K`'s own viewport API, then scaled by `2^reduce`.
-pub fn decode_into(
-    bytes: &[u8],
-    request: crate::ExternalDecodeRequest,
-    out: &mut [u8],
-) -> Result<(), String> {
-    let reduce = u8::try_from(request.reduce.unwrap_or(0))
-        .map_err(|_| "openhtj2k: reduction factor exceeds u8".to_string())?;
-    call_shim(
-        bytes,
-        reduce,
-        request.threads,
-        (request.color.channels(), request.color.bytes_per_sample()),
-        request.region,
-        Some(out),
-    )
-    .map(|_| ())
-}
-
-#[cfg_attr(
-    have_openhtj2k,
-    expect(
-        unsafe_code,
-        reason = "views the shim allocation that the guard frees exactly once"
-    )
-)]
-fn decode(bytes: &[u8], reduce: u8, threads: u32, channels: u32) -> Result<Vec<u8>, String> {
-    let (ptr, len) = call_shim(bytes, reduce, threads, (channels, 1), None, None)?;
-    #[cfg(have_openhtj2k)]
-    {
-        let output = OpenHtj2kOutput(ptr);
-        // SAFETY: the non-null shim allocation has been independently bounded
-        // and its length matches the checked dimensions and channel count.
-        Ok(unsafe { std::slice::from_raw_parts(output.0, len) }.to_vec())
-    }
-    #[cfg(not(have_openhtj2k))]
-    {
-        let _ = (ptr, len);
-        Err("openhtj2k: local library not available".to_string())
-    }
-}
-
-/// Runs the shim. With `dest`, the pixels land in `dest` and the returned
-/// pointer is `dest`'s; without it, the returned pointer is a shim allocation
-/// the caller must free.
 #[cfg_attr(
     have_openhtj2k,
     expect(
@@ -85,37 +28,35 @@ fn decode(bytes: &[u8], reduce: u8, threads: u32, channels: u32) -> Result<Vec<u
         reason = "OpenHTJ2K decode uses the optional checked C++ shim"
     )
 )]
-fn call_shim(
+pub fn decode_into(
     bytes: &[u8],
-    reduce: u8,
-    threads: u32,
-    (channels, bytes_per_sample): (u32, u32),
-    region: Option<j2k_core::Rect>,
-    dest: Option<&mut [u8]>,
-) -> Result<(*mut u8, usize), String> {
+    request: crate::ExternalDecodeRequest,
+    out: &mut [u8],
+) -> Result<(), String> {
+    let reduce = u8::try_from(request.reduce.unwrap_or(0))
+        .map_err(|_| "openhtj2k: reduction factor exceeds u8".to_string())?;
+    let (channels, bytes_per_sample) = (request.color.channels(), request.color.bytes_per_sample());
     #[cfg(have_openhtj2k)]
     {
-        let (has_region, x0, y0, x1, y1) = match region {
+        let (has_region, x0, y0, x1, y1) = match request.region {
             Some(roi) => {
                 let [x0, y0, x1, y1] = crate::checked_region_bounds("openhtj2k", roi)?;
                 (1, x0, y0, x1, y1)
             }
             None => (0, 0, 0, 0, 0),
         };
-        let (dest_ptr, dest_len) = dest.map_or((ptr::null_mut(), 0), |d| (d.as_mut_ptr(), d.len()));
-        let mut out = ptr::null_mut();
         let mut out_len = 0_usize;
         let mut out_width = 0_u32;
         let mut out_height = 0_u32;
-        // SAFETY: the input slice and optional destination stay live for the
-        // call; the shim writes at most `dest_len` bytes into the destination
-        // and the output pointers refer to initialized writable locals.
+        // SAFETY: the input slice and destination stay live for the call; the
+        // shim writes at most `out.len()` bytes into the destination and the
+        // output pointers refer to initialized writable locals.
         let ok = unsafe {
             j2k_openhtj2k_decode_u8(
                 bytes.as_ptr(),
                 bytes.len(),
                 reduce,
-                threads.max(1),
+                request.threads.max(1),
                 channels,
                 bytes_per_sample,
                 has_region,
@@ -123,58 +64,26 @@ fn call_shim(
                 y0,
                 x1,
                 y1,
-                dest_ptr,
-                dest_len,
-                &raw mut out,
+                out.as_mut_ptr(),
+                out.len(),
                 &raw mut out_len,
                 &raw mut out_width,
                 &raw mut out_height,
             )
         };
-        let owned = dest_ptr.is_null() && !out.is_null();
         crate::checked_shim_output(
             "openhtj2k",
-            ok != 0 && !out.is_null(),
+            ok != 0,
             (out_len, out_width, out_height),
             (channels, bytes_per_sample),
-            || {
-                if owned {
-                    drop(OpenHtj2kOutput(out));
-                }
-            },
-        )?;
-        Ok((out, out_len))
+            || {},
+        )
     }
 
     #[cfg(not(have_openhtj2k))]
     {
-        let _ = (
-            bytes,
-            reduce,
-            threads,
-            channels,
-            bytes_per_sample,
-            region,
-            dest,
-        );
+        let _ = (bytes, reduce, channels, bytes_per_sample, out);
         Err("openhtj2k: local library not available".to_string())
-    }
-}
-
-#[cfg(have_openhtj2k)]
-struct OpenHtj2kOutput(*mut u8);
-
-#[cfg(have_openhtj2k)]
-impl Drop for OpenHtj2kOutput {
-    #[expect(
-        unsafe_code,
-        reason = "the guard frees the OpenHTJ2K shim allocation exactly once"
-    )]
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            // SAFETY: the pointer is the allocation returned by the paired shim.
-            unsafe { j2k_openhtj2k_free(self.0.cast()) };
-        }
     }
 }
 
@@ -198,12 +107,10 @@ unsafe extern "C" {
         y1: u32,
         dest: *mut u8,
         dest_len: usize,
-        out_data: *mut *mut u8,
         out_len: *mut usize,
         out_width: *mut u32,
         out_height: *mut u32,
     ) -> i32;
-    fn j2k_openhtj2k_free(ptr: *mut c_void);
 }
 
 #[cfg(test)]
@@ -218,8 +125,13 @@ mod tests {
         if !super::is_available() {
             return;
         }
-        let decoded = super::decode_gray(fixture.encoded, 0, 1)
-            .expect("decode through pinned OpenHTJ2K library");
+        let mut decoded = vec![0_u8; fixture.oracle.len()];
+        super::decode_into(
+            fixture.encoded,
+            crate::ExternalDecodeRequest::gray(),
+            &mut decoded,
+        )
+        .expect("decode through pinned OpenHTJ2K library");
         assert_eq!(decoded, fixture.oracle);
         assert_eq!(super::version(), "0.23.4");
     }
@@ -246,15 +158,20 @@ mod tests {
             .expect("parse native Qfactor codestream")
             .decode_native()
             .expect("decode native Qfactor codestream");
-        let reference =
-            super::decode_rgb(&codestream, 0, 1).expect("OpenHTJ2K decode of native codestream");
+        let mut reference = vec![0_u8; native.data.len()];
+        super::decode_into(
+            &codestream,
+            crate::ExternalDecodeRequest::rgb(),
+            &mut reference,
+        )
+        .expect("OpenHTJ2K decode of native codestream");
 
         assert_eq!(native.data.len(), reference.len());
         let max_delta = native
             .data
             .iter()
-            .zip(reference)
-            .map(|(&left, right)| left.abs_diff(right))
+            .zip(&reference)
+            .map(|(&left, &right)| left.abs_diff(right))
             .max()
             .unwrap_or_default();
         assert!(

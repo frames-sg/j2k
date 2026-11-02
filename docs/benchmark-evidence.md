@@ -100,8 +100,15 @@ their output.
   per-sample packing and extra copies inflated Grok by up to 61%, OpenJPEG by
   up to 39%, and OpenJPH and OpenHTJ2K by 4–8%. They were removed, and the
   first full round, measured before the fix, was discarded.
+  - After the rounds below, the OpenHTJ2K and OpenJPH shims' remaining
+    per-sample conversion was replaced by the row packers in
+    `j2k_shim_common.h`, and OpenJPEG's 8-bit pack gained a plain clamp
+    loop. Their timings below predate that change and are not yet
+    re-measured, so they may overstate those decoders' times.
 - **Same thread budget:**
-  - `RAYON_NUM_THREADS` must equal `J2K_BATCH_COMPARE_THREADS`.
+  - j2k's Rayon pool has `J2K_BATCH_COMPARE_THREADS` threads. These rounds
+    set `RAYON_NUM_THREADS` to match; the harness now sizes the pool itself
+    and rejects a `RAYON_NUM_THREADS` that disagrees.
   - A one-image batch gives the whole budget to each decoder's own
     intra-image threading.
   - A larger batch splits images across workers with the same static

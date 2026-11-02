@@ -287,7 +287,7 @@ J2K_OPENHTJ2K_SOURCE_DIR="$PWD/target/t803/openhtj2k-v0.23.4" \
 J2K_OPENHTJ2K_LIB_DIR="$PWD/target/t803/openhtj2k-v0.23.4/build-reference" \
 J2K_OPENJPH_SOURCE_DIR="$PWD/target/reference/openjph-0.33.0" \
 J2K_OPENJPH_LIB_DIR="$PWD/target/reference/openjph-0.33.0/build-reference/src/core" \
-J2K_BATCH_COMPARE_THREADS=1 RAYON_NUM_THREADS=1 \
+J2K_BATCH_COMPARE_THREADS=1 \
 cargo run -p j2k-compare --release --bin jp2k_batch_compare -- \
   corpus/vendor/openjph 1 16
 ```

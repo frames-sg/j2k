@@ -25,7 +25,8 @@ fn batch_compare_checks_rgb_output_and_reports_reference_thread_policy() {
         .arg("1")
         .env("J2K_BATCH_COMPARE_REPEATS", "2")
         .env("J2K_BATCH_COMPARE_THREADS", "2")
-        .env("RAYON_NUM_THREADS", "2")
+        // The tool sizes the Rayon pool to the budget itself.
+        .env_remove("RAYON_NUM_THREADS")
         .env("J2K_BATCH_COMPARE_MAX_ABS_DIFF", "0")
         .output()
         .expect("run batch compare");
@@ -80,7 +81,8 @@ fn batch_compare_checks_rgb_output_and_reports_reference_thread_policy() {
     }
 
     // J2K's internal parallelism uses the global Rayon pool, so a pool larger
-    // than the shared budget would give J2K more threads than the others.
+    // than the shared budget would give J2K more threads than the others: a
+    // RAYON_NUM_THREADS that disagrees with the budget is rejected.
     let output = Command::new(env!("CARGO_BIN_EXE_jp2k_batch_compare"))
         .arg(&dir)
         .arg("1")

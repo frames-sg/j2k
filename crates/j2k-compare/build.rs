@@ -11,6 +11,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=J2K_GROK_SOURCE");
     println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
     println!("cargo:rerun-if-changed=src/grok_shim.c");
+    println!("cargo:rerun-if-changed=src/j2k_shim_common.h");
     println!("cargo:rerun-if-env-changed=J2K_OPENHTJ2K_SOURCE_DIR");
     println!("cargo:rerun-if-env-changed=J2K_OPENHTJ2K_LIB_DIR");
     println!("cargo:rerun-if-changed=src/openhtj2k_shim.cpp");
