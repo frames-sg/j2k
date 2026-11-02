@@ -104,6 +104,7 @@ jobs:
           cargo xtask test
           cargo xtask release-integrity
           cargo xtask repo-lint
+          cargo xtask x86-codegen-audit
 
   docs:
     name: Documentation
