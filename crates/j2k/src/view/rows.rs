@@ -4,7 +4,10 @@
 
 use super::{J2kDecoder, J2kRowDecodeOptions};
 use crate::{
-    decode::{decode_prepared_image_region_into, J2kDecodeOutcome},
+    decode::{
+        decode_image_rows_in_stripes, decode_prepared_image_region_into, rows_stream_whole,
+        DeliverRow, J2kDecodeOutcome, StreamedRowsError,
+    },
     scratch::J2kScratchPool,
     J2kError,
 };
@@ -67,9 +70,35 @@ impl J2kDecoder<'_> {
     /// Decode rows into a `u8` row sink while bounding host output scratch to
     /// at most `options.max_rows_per_stripe()` rows.
     ///
+    /// Whether the image decodes once is planned from its main and tile
+    /// headers before anything is decoded: an image whose tiles span its
+    /// width and whose region decode streams its rows as far as those headers
+    /// say decodes as one region decode of the whole image, which hands
+    /// finished rows over a stripe at a time; other images decode each stripe
+    /// as a region of its own. Coding the plan does not see, such as a
+    /// tile-level coding style without decomposition levels or HTJ2K
+    /// code-blocks mixed with classic ones, can keep that region decode from
+    /// streaming: it then decodes into component planes of the whole image
+    /// and hands their rows over a stripe at a time once they are complete.
+    ///
+    /// # Memory
+    /// `max_rows_per_stripe` and `max_stripe_bytes` bound the packed output
+    /// stripe. These limits do not bound decoder working memory or total
+    /// process memory. Decoder memory depends on the image and parallelism
+    /// and may include the working set of a whole-image decode, including
+    /// component planes when native streaming is unavailable. Smaller stripes
+    /// do not necessarily reduce decoder memory.
+    ///
     /// # Errors
     /// Returns a decode error for unsupported formats or malformed input, and
     /// forwards sink errors without converting them to successful decodes.
+    /// An error may leave a prefix of rows delivered. A sink error stops
+    /// further sink calls and is returned as [`DecodeRowsError::Sink`], even
+    /// if decoding subsequently fails; the underlying decode may continue
+    /// before this method returns. A decode failure is retried stripe by
+    /// stripe only if no row has been handed to the sink. After delivery
+    /// starts, decode failures return [`DecodeRowsError::Decode`] without
+    /// replaying rows.
     pub fn decode_rows_u8_bounded<R: RowSink<u8>>(
         &mut self,
         sink: &mut R,
@@ -87,6 +116,24 @@ impl J2kDecoder<'_> {
         let (stripe_rows, max_stripe_len) = bounded_row_stripe_layout(row_bytes, height, options)
             .map_err(DecodeRowsError::Decode)?;
         self.ensure_image().map_err(DecodeRowsError::Decode)?;
+        let mut pool = J2kScratchPool::new();
+        if self.rows_stream_whole() {
+            let stripe = pool
+                .packed_bytes(max_stripe_len)
+                .map_err(|error| DecodeRowsError::Decode(J2kError::Buffer(error)))?;
+            match self.decode_rows_streamed(fmt, (stripe, row_bytes), &mut |y, row| {
+                sink.write_row(y, row)
+            }) {
+                Ok(()) => {
+                    return Ok(j2k_core::DecodeOutcome::new(
+                        Rect::full(self.info.dimensions),
+                        Vec::new(),
+                    ))
+                }
+                Err(StreamedRowsError::Rows(error)) => return Err(error),
+                Err(StreamedRowsError::BeforeFirstRow) => {}
+            }
+        }
         let (Some(image), native_context) = (self.image.as_ref(), &mut self.native_context) else {
             return Err(DecodeRowsError::Decode(J2kError::internal_backend(
                 "internal image cache missing",
@@ -95,7 +142,6 @@ impl J2kDecoder<'_> {
         let mut decoder = image
             .prepare_region_decoder_with_context(native_context)
             .map_err(|error| DecodeRowsError::Decode(J2kError::from_native_decode_error(error)))?;
-        let mut pool = J2kScratchPool::new();
         let mut y = 0_u32;
         while y < height {
             let rows = stripe_rows.min(height - y);
@@ -136,9 +182,29 @@ impl J2kDecoder<'_> {
     /// Decode rows into a `u16` row sink while bounding host output scratch to
     /// at most `options.max_rows_per_stripe()` rows.
     ///
+    /// Images decode once or a stripe at a time as planned for
+    /// [`Self::decode_rows_u8_bounded`]; images deeper than 24 bits decode a
+    /// stripe at a time.
+    ///
+    /// # Memory
+    /// `max_rows_per_stripe` and `max_stripe_bytes` bound the packed output
+    /// stripe, beside which this method uses one row of `u16` conversion
+    /// scratch. These limits do not bound decoder working memory or total
+    /// process memory. Decoder memory depends on the image and parallelism
+    /// and may include the working set of a whole-image decode, including
+    /// component planes when native streaming is unavailable. Smaller stripes
+    /// do not necessarily reduce decoder memory.
+    ///
     /// # Errors
     /// Returns a decode error for unsupported formats or malformed input, and
     /// forwards sink errors without converting them to successful decodes.
+    /// An error may leave a prefix of rows delivered. A sink error stops
+    /// further sink calls and is returned as [`DecodeRowsError::Sink`], even
+    /// if decoding subsequently fails; the underlying decode may continue
+    /// before this method returns. A decode failure is retried stripe by
+    /// stripe only if no row has been handed to the sink. After delivery
+    /// starts, decode failures return [`DecodeRowsError::Decode`] without
+    /// replaying rows.
     pub fn decode_rows_u16_bounded<R: RowSink<u16>>(
         &mut self,
         sink: &mut R,
@@ -180,6 +246,25 @@ impl J2kDecoder<'_> {
             return self.decode_rows_u16_exact_reparsed(sink, fmt, layout);
         }
         self.ensure_image().map_err(DecodeRowsError::Decode)?;
+        if self.rows_stream_whole() {
+            let mut pool = J2kScratchPool::new();
+            let (packed, row) = pool
+                .packed_bytes_and_row_u16(layout.max_stripe_len, layout.samples_per_row)
+                .map_err(|error| DecodeRowsError::Decode(J2kError::Buffer(error)))?;
+            match self.decode_rows_streamed(fmt, (packed, row_bytes), &mut |y, packed_row| {
+                widen_row_u16(packed_row, row);
+                sink.write_row(y, row)
+            }) {
+                Ok(()) => {
+                    return Ok(j2k_core::DecodeOutcome::new(
+                        Rect::full((width, height)),
+                        Vec::new(),
+                    ))
+                }
+                Err(StreamedRowsError::Rows(error)) => return Err(error),
+                Err(StreamedRowsError::BeforeFirstRow) => {}
+            }
+        }
         let (Some(image), native_context) = (self.image.as_ref(), &mut self.native_context) else {
             return Err(DecodeRowsError::Decode(J2kError::internal_backend(
                 "internal image cache missing",
@@ -191,6 +276,34 @@ impl J2kDecoder<'_> {
         pump_u16_rows(sink, layout, |packed, region| {
             decode_prepared_image_region_into(&mut decoder, packed, row_bytes, fmt, region)
         })
+    }
+
+    /// Whether this decoder's image decodes its rows in one streamed region
+    /// decode (see [`rows_stream_whole`]).
+    fn rows_stream_whole(&self) -> bool {
+        self.cached_image()
+            .is_ok_and(|image| rows_stream_whole(image, self.info.resolution_levels))
+    }
+
+    /// Decode the whole image in one streamed region decode, handing its
+    /// rows to `deliver` a stripe of `stripe` at a time (see
+    /// [`decode_image_rows_in_stripes`]).
+    fn decode_rows_streamed<E: core::error::Error + 'static>(
+        &mut self,
+        fmt: PixelFormat,
+        stripe: (&mut [u8], usize),
+        deliver: &mut DeliverRow<'_, E>,
+    ) -> Result<(), StreamedRowsError<E>> {
+        let (Some(image), native_context) = (self.image.as_ref(), &mut self.native_context) else {
+            return Err(StreamedRowsError::Rows(DecodeRowsError::Decode(
+                J2kError::internal_backend("internal image cache missing"),
+            )));
+        };
+        let decoded = decode_image_rows_in_stripes(image, native_context, fmt, stripe, deliver);
+        // As after a region decode, release the decode buffers rather than
+        // hold them while the decoder is idle.
+        self.native_context = self.fresh_native_context();
+        decoded
     }
 
     fn decode_rows_u16_exact_reparsed<R: RowSink<u16>>(
@@ -248,10 +361,7 @@ fn pump_u16_rows<R: RowSink<u16>>(
         .map_err(DecodeRowsError::Decode)?;
         for row_index in 0..rows {
             let start = row_index as usize * layout.row_bytes;
-            let packed_row = &packed[start..start + layout.row_bytes];
-            for (dst, src) in row.iter_mut().zip(packed_row.as_chunks::<2>().0) {
-                *dst = u16::from_le_bytes(*src);
-            }
+            widen_row_u16(&packed[start..start + layout.row_bytes], row);
             sink.write_row(y + row_index, row)
                 .map_err(DecodeRowsError::Sink)?;
         }
@@ -261,6 +371,13 @@ fn pump_u16_rows<R: RowSink<u16>>(
         Rect::full((layout.width, layout.height)),
         Vec::new(),
     ))
+}
+
+/// The 16-bit samples of a packed little-endian row.
+fn widen_row_u16(packed: &[u8], row: &mut [u16]) {
+    for (dst, src) in row.iter_mut().zip(packed.as_chunks::<2>().0) {
+        *dst = u16::from_le_bytes(*src);
+    }
 }
 
 fn row_format_u8(info: &j2k_core::Info) -> Result<PixelFormat, J2kError> {
@@ -337,6 +454,191 @@ fn row_samples_for(info: &j2k_core::Info, fmt: PixelFormat) -> Result<usize, J2k
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::decode::{InjectedFailure, INJECTED_FAILURE, STREAMED_ROW_DECODES};
+    use j2k_native::EncodeOptions;
+
+    /// A sink error carrying the row the sink refused.
+    #[derive(Debug, PartialEq, Eq)]
+    struct Refused(u32);
+
+    impl core::fmt::Display for Refused {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            write!(f, "row {} refused", self.0)
+        }
+    }
+
+    impl core::error::Error for Refused {}
+
+    /// Rows as little-endian bytes and every row index handed over, in
+    /// order, refusing row `refuse` when it is set.
+    #[derive(Default)]
+    struct Collect {
+        bytes: Vec<u8>,
+        order: Vec<u32>,
+        refuse: Option<u32>,
+    }
+
+    impl Collect {
+        fn take(&mut self, y: u32) -> Result<(), Refused> {
+            self.order.push(y);
+            if self.refuse == Some(y) {
+                return Err(Refused(y));
+            }
+            Ok(())
+        }
+    }
+
+    impl RowSink<u8> for Collect {
+        type Error = Refused;
+
+        fn write_row(&mut self, y: u32, row: &[u8]) -> Result<(), Refused> {
+            self.take(y)?;
+            self.bytes.extend_from_slice(row);
+            Ok(())
+        }
+    }
+
+    impl RowSink<u16> for Collect {
+        type Error = Refused;
+
+        fn write_row(&mut self, y: u32, row: &[u16]) -> Result<(), Refused> {
+            self.take(y)?;
+            self.bytes
+                .extend(row.iter().flat_map(|sample| sample.to_le_bytes()));
+            Ok(())
+        }
+    }
+
+    fn rgb_codestream(tile_size: Option<(u32, u32)>, num_decomposition_levels: u8) -> Vec<u8> {
+        let pixels: Vec<u8> = (0..64 * 48 * 3_u32)
+            .map(|index| u8::try_from(index * 7 % 251).expect("a byte"))
+            .collect();
+        let options = EncodeOptions {
+            tile_size,
+            num_decomposition_levels,
+            ..EncodeOptions::default()
+        };
+        j2k_native::encode(&pixels, 64, 48, 3, 8, false, &options).expect("encode")
+    }
+
+    /// The `decode_into` output in `fmt`.
+    fn full_decode(bytes: &[u8], fmt: PixelFormat) -> Vec<u8> {
+        let mut decoder = J2kDecoder::new(bytes).expect("decoder");
+        let stride = 64 * fmt.bytes_per_pixel();
+        let mut full = vec![0; stride * 48];
+        decoder
+            .decode_into(&mut full, stride, fmt)
+            .expect("full decode");
+        full
+    }
+
+    /// A bounded decode in 7-row stripes into `sink`, with `injected` set
+    /// for it, and the streamed decodes it started.
+    fn decode_rows(
+        bytes: &[u8],
+        fmt: PixelFormat,
+        injected: Option<InjectedFailure>,
+        sink: &mut Collect,
+    ) -> (Result<(), DecodeRowsError<J2kError, Refused>>, usize) {
+        let streamed = || STREAMED_ROW_DECODES.with(core::cell::Cell::get);
+        let mut decoder = J2kDecoder::new(bytes).expect("decoder");
+        let before = streamed();
+        INJECTED_FAILURE.with(|failure| failure.set(injected));
+        let options = J2kRowDecodeOptions::new(7);
+        let result = if fmt == PixelFormat::Rgb16 {
+            decoder.decode_rows_u16_bounded(sink, options)
+        } else {
+            decoder.decode_rows_u8_bounded(sink, options)
+        };
+        assert_eq!(INJECTED_FAILURE.with(core::cell::Cell::get), None);
+        (result.map(drop), streamed() - before)
+    }
+
+    #[test]
+    fn rows_decode_in_one_streamed_decode_only_when_they_arrive_whole_and_in_order() {
+        for (label, bytes, streams) in [
+            ("untiled", rgb_codestream(None, 3), true),
+            (
+                "tiles spanning the width",
+                rgb_codestream(Some((64, 16)), 3),
+                true,
+            ),
+            (
+                "tiles side by side",
+                rgb_codestream(Some((32, 16)), 3),
+                false,
+            ),
+            ("no decomposition levels", rgb_codestream(None, 0), false),
+        ] {
+            for fmt in [PixelFormat::Rgb8, PixelFormat::Rgb16] {
+                let mut sink = Collect::default();
+                let (result, streamed) = decode_rows(&bytes, fmt, None, &mut sink);
+                result.expect("rows");
+                assert_eq!(streamed, usize::from(streams), "{label} {fmt:?}");
+                assert_eq!(sink.order, (0..48).collect::<Vec<_>>(), "{label} {fmt:?}");
+                assert!(
+                    sink.bytes == full_decode(&bytes, fmt),
+                    "{label} {fmt:?}: rows differ from decode_into"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_streamed_decode_failing_before_its_first_row_decodes_a_stripe_at_a_time() {
+        let bytes = rgb_codestream(None, 3);
+        for fmt in [PixelFormat::Rgb8, PixelFormat::Rgb16] {
+            let full = full_decode(&bytes, fmt);
+            let mut sink = Collect::default();
+            let (result, streamed) =
+                decode_rows(&bytes, fmt, Some(InjectedFailure::BeforeRows), &mut sink);
+            result.expect("rows a stripe at a time");
+            assert_eq!(streamed, 1, "{fmt:?}");
+            assert_eq!(sink.order, (0..48).collect::<Vec<_>>(), "{fmt:?}");
+            assert!(sink.bytes == full, "{fmt:?}: rows differ from decode_into");
+            // The stripe-at-a-time decode meets the caller's sink as it is.
+            let mut sink = Collect {
+                refuse: Some(10),
+                ..Collect::default()
+            };
+            let (result, _) =
+                decode_rows(&bytes, fmt, Some(InjectedFailure::BeforeRows), &mut sink);
+            assert!(
+                matches!(result, Err(DecodeRowsError::Sink(Refused(10)))),
+                "{fmt:?}"
+            );
+            assert_eq!(sink.order, (0..=10).collect::<Vec<_>>(), "{fmt:?}");
+        }
+    }
+
+    #[test]
+    fn a_streamed_decode_failing_after_rows_reached_the_sink_reports_it_without_a_rerun() {
+        let bytes = rgb_codestream(None, 3);
+        for fmt in [PixelFormat::Rgb8, PixelFormat::Rgb16] {
+            let full = full_decode(&bytes, fmt);
+            let row_bytes = 64 * fmt.bytes_per_pixel();
+            let mut sink = Collect::default();
+            let (result, streamed) =
+                decode_rows(&bytes, fmt, Some(InjectedFailure::AfterRows), &mut sink);
+            assert!(matches!(result, Err(DecodeRowsError::Decode(_))), "{fmt:?}");
+            assert_eq!(streamed, 1, "{fmt:?}");
+            // Six whole 7-row stripes; the last one, which the failure
+            // ended, is held back, and nothing is handed over twice.
+            assert_eq!(sink.order, (0..42).collect::<Vec<_>>(), "{fmt:?}");
+            assert!(sink.bytes == full[..42 * row_bytes], "{fmt:?}");
+            // A sink error comes first.
+            let mut sink = Collect {
+                refuse: Some(10),
+                ..Collect::default()
+            };
+            let (result, _) = decode_rows(&bytes, fmt, Some(InjectedFailure::AfterRows), &mut sink);
+            assert!(
+                matches!(result, Err(DecodeRowsError::Sink(Refused(10)))),
+                "{fmt:?}"
+            );
+            assert_eq!(sink.order, (0..=10).collect::<Vec<_>>(), "{fmt:?}");
+        }
+    }
 
     #[test]
     fn bounded_row_stripe_layout_clamps_rows_to_byte_cap() {

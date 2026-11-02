@@ -72,11 +72,6 @@ pub(super) fn irreversible_row_scale(y0: u32, even_offset: bool, high_pass: f32)
     }
 }
 
-/// [`lift_row`] at the CPU's SIMD level, for callers outside a dispatch.
-pub(super) fn lift_one_row(step: VerticalStep, row: &mut [f32], above: &[f32], below: &[f32]) {
-    dispatch!(Level::new(), simd => lift_row(simd, step, row, above, below));
-}
-
 /// [`scale_row`] at the CPU's SIMD level, for callers outside a dispatch.
 pub(super) fn scale_one_row(row: &mut [f32], factor: f32) {
     dispatch!(Level::new(), simd => scale_row(simd, row, factor));

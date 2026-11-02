@@ -15,6 +15,8 @@ use crate::{
 use super::Image;
 
 mod allocation;
+mod interleave;
+mod rows;
 pub(super) use allocation::{try_clone_color_space, NativeOutputBudget};
 
 impl<'a> Image<'a> {
@@ -26,11 +28,14 @@ impl<'a> Image<'a> {
         retained_baseline_bytes: usize,
         parallel: bool,
     ) -> Result<DecodedNativeComponents> {
-        let mut budget = NativeOutputBudget::for_decoded_channels(
+        // The decode budget holds the `f32` planes the pack reads; the packed
+        // planes are the output and have their own allowance.
+        NativeOutputBudget::for_decoded_channels(
             retained_baseline_bytes,
             components,
             component_owner_capacity,
         )?;
+        let mut budget = NativeOutputBudget::for_output();
         budget.include_elements::<NativeComponentPlane>(components.len())?;
         for (component_idx, component) in components.iter().enumerate() {
             let sampling = self.component_plane_sampling_at(component_idx);
@@ -93,12 +98,7 @@ impl<'a> Image<'a> {
             has_alpha: self.has_alpha,
             planes,
         };
-        NativeOutputBudget::validate_component_pack(
-            retained_baseline_bytes,
-            components,
-            component_owner_capacity,
-            &packed,
-        )?;
+        NativeOutputBudget::validate_component_pack(&packed)?;
         Ok(packed)
     }
 

@@ -8,9 +8,13 @@
 //! delayed allocator call from reporting into a later measurement, and each
 //! measurement waits for already-admitted reporters before taking its
 //! snapshot.
+//!
+//! The allocator also keeps the bytes live at any moment and their high
+//! water, always on and independent of measurements, for probes that bound
+//! working memory rather than allocation calls (see [`reset_peak`]).
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 #[cfg(test)]
 use std::sync::atomic::AtomicBool;
@@ -33,6 +37,8 @@ static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 static REALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 static DEALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 static REQUESTED_BYTES: AtomicU64 = AtomicU64::new(0);
+static LIVE_BYTES: AtomicUsize = AtomicUsize::new(0);
+static PEAK_BYTES: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(test)]
 static TEST_HOOK: AtomicU8 = AtomicU8::new(TEST_HOOK_IDLE);
@@ -60,6 +66,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
         let pointer = unsafe { System.alloc(layout) };
         if !pointer.is_null() {
             reporter.record_allocation(layout.size());
+            grow_live(layout.size());
         }
         pointer
     }
@@ -70,6 +77,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
         let pointer = unsafe { System.alloc_zeroed(layout) };
         if !pointer.is_null() {
             reporter.record_allocation(layout.size());
+            grow_live(layout.size());
         }
         pointer
     }
@@ -77,6 +85,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
         let reporter = Reporter::begin();
         reporter.record_deallocation();
+        shrink_live(layout.size());
         // SAFETY: forwards the pointer and its original layout unchanged.
         unsafe { System.dealloc(pointer, layout) };
     }
@@ -88,6 +97,11 @@ unsafe impl GlobalAlloc for CountingAllocator {
         let replacement = unsafe { System.realloc(pointer, layout, new_size) };
         if !replacement.is_null() {
             reporter.record_reallocation(new_size);
+            if new_size >= layout.size() {
+                grow_live(new_size - layout.size());
+            } else {
+                shrink_live(layout.size() - new_size);
+            }
         }
         replacement
     }
@@ -189,6 +203,44 @@ pub fn assert_allocations<R>(label: &str, budget: Budget, operation: impl FnOnce
         "{label} exceeded allocation budget: stats={stats:?}, budget={budget:?}"
     );
     result
+}
+
+/// Bytes held through the global allocator right now, by every thread.
+#[must_use]
+pub fn live_bytes() -> usize {
+    LIVE_BYTES.load(Ordering::Relaxed)
+}
+
+/// Start a new high-water window at the bytes live now and return them.
+///
+/// The window is process-wide like a measurement: allocations on every
+/// thread raise [`peak_bytes`], so unrelated threads must stay idle while it
+/// is open. Windows need no guard and never block the allocator.
+pub fn reset_peak() -> usize {
+    let live = LIVE_BYTES.load(Ordering::Relaxed);
+    PEAK_BYTES.store(live, Ordering::Relaxed);
+    // An allocation between the load and the store raised the live bytes
+    // past `live`; keep it in the new window.
+    PEAK_BYTES.fetch_max(LIVE_BYTES.load(Ordering::Relaxed), Ordering::Relaxed);
+    live
+}
+
+/// The most bytes live at once since the last [`reset_peak`] (or since the
+/// process started).
+#[must_use]
+pub fn peak_bytes() -> usize {
+    PEAK_BYTES.load(Ordering::Relaxed)
+}
+
+fn grow_live(bytes: usize) {
+    let live = LIVE_BYTES
+        .fetch_add(bytes, Ordering::Relaxed)
+        .wrapping_add(bytes);
+    PEAK_BYTES.fetch_max(live, Ordering::Relaxed);
+}
+
+fn shrink_live(bytes: usize) {
+    LIVE_BYTES.fetch_sub(bytes, Ordering::Relaxed);
 }
 
 struct MeasurementGuard {

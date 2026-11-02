@@ -164,6 +164,8 @@ pub(crate) mod writer;
 use crate::math::{dispatch, Level};
 #[cfg(test)]
 use color::cielab_to_rgb;
+#[doc(hidden)]
+pub use color::pack_rgb8;
 pub(crate) use color::{
     convert_color_space, interleave_and_convert_after_mct, interleave_and_convert_region,
     resolve_alpha_and_color_space, resolve_palette_indices, validate_and_reorder_channels,
@@ -307,6 +309,17 @@ pub(crate) const MAX_J2K_TILE_COUNT: u64 = u16::MAX as u64 + 1;
 #[doc(hidden)]
 pub use j2k_types::{DEFAULT_MAX_CODEC_BYTES, DEFAULT_MAX_DECODE_BYTES};
 
+/// The threads a [`CpuDecodeParallelism::Auto`] decode runs on: the global
+/// worker pool's size with the `parallel` feature, else one.
+#[doc(hidden)]
+#[must_use]
+pub fn cpu_decode_pool_threads() -> usize {
+    #[cfg(feature = "parallel")]
+    return rayon::current_num_threads();
+    #[cfg(not(feature = "parallel"))]
+    1
+}
+
 #[inline]
 pub(crate) fn checked_decode_usize_product2(left: usize, right: usize) -> Result<usize> {
     left.checked_mul(right)
@@ -364,6 +377,52 @@ pub(crate) fn try_resize_decode_elements<T: Clone>(
     try_reserve_decode_elements(values, target_len)?;
     values.resize(target_len, value);
     Ok(())
+}
+
+/// [`try_resize_decode_elements`] to zeros. On a pool of at most
+/// [`MAX_POOL_THREADS_FOR_ZEROED_BUFFERS`] threads, an empty buffer whose
+/// capacity is short of `target_len` is replaced by a zeroed allocation
+/// instead of being zeroed here: memory fresh from the system is already
+/// zero, so the threads that fill the buffer take its page faults, instead
+/// of this thread taking every one of them first while the pool waits.
+pub(crate) fn try_zero_fill_decode_elements<T: Copy + Default + bytemuck::Zeroable>(
+    values: &mut Vec<T>,
+    target_len: usize,
+) -> Result<()> {
+    zero_fill_decode_elements(
+        values,
+        target_len,
+        cpu_decode_pool_threads() <= MAX_POOL_THREADS_FOR_ZEROED_BUFFERS,
+    )
+}
+
+/// Most pool threads for which fresh decode buffers come zeroed from the
+/// allocator. First-touch page faults on one allocation from many threads
+/// at once contend in the kernel: on 4 to 10 threads, spreading them over
+/// the pool cut a process's first decode of a 4096 x 2048 RGB image by 10 to
+/// 15%, but on 18 threads the faults took about four times the system time
+/// and HTJ2K images, which decode each page quickly, lost 3 to 7%.
+const MAX_POOL_THREADS_FOR_ZEROED_BUFFERS: usize = 10;
+
+/// [`try_zero_fill_decode_elements`] with the choice made. An empty buffer
+/// short of capacity holds nothing that is read, so it is released rather
+/// than copied into a larger allocation; the new one comes zeroed from the
+/// allocator when `zeroed_allocation`, else it is zeroed here.
+fn zero_fill_decode_elements<T: Copy + Default + bytemuck::Zeroable>(
+    values: &mut Vec<T>,
+    target_len: usize,
+    zeroed_allocation: bool,
+) -> Result<()> {
+    checked_decode_byte_len2(target_len, core::mem::size_of::<T>())?;
+    if values.is_empty() && values.capacity() < target_len {
+        *values = Vec::new();
+        if zeroed_allocation {
+            *values = bytemuck::allocation::try_zeroed_vec(target_len)
+                .map_err(|()| DecodingError::HostAllocationFailed)?;
+            return Ok(());
+        }
+    }
+    try_resize_decode_elements(values, target_len, T::default())
 }
 
 #[inline]

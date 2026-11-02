@@ -59,14 +59,16 @@ pub(crate) use decode::{
     build_referenced_classic_rgba_plan, build_referenced_htj2k_color_plan,
     build_referenced_htj2k_grayscale_plan, build_referenced_htj2k_rgba_plan,
     decode_preparsed_with_capacity_retry as decode_preparsed,
-    decode_rows_with_capacity_retry as decode_rows, prepare_region_tiles,
+    decode_rows_with_capacity_retry as decode_rows, full_decode_planes_floor, image_streams_rows,
+    prepare_region_tiles,
 };
 pub use decode::{CpuDecodeParallelism, DecoderContext, DecoderWorkspace, DecoderWorkspaceStats};
 pub use recode::Reversible53CoefficientImage;
+pub(crate) use roi::output_grid_offset;
 #[cfg(feature = "std")]
 pub(crate) use segment::directory::PacketDirectory;
 pub(crate) use segment::MAX_BITPLANE_COUNT;
-pub(crate) use tile::ParsedTiles;
+pub(crate) use tile::{tile_rect, ParsedTiles};
 
 pub(crate) struct ParsedCodestream<'a> {
     pub(crate) header: Header<'a>,

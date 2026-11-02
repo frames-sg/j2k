@@ -597,6 +597,10 @@ fn decode_combined_validated_with_scratch_reuses_zeroed_buffers() {
     let first_capacities = scratch.capacities_for_test();
     assert!(first_capacities.cleanup > 0);
     assert!(first_capacities.v_n > 0);
+    #[cfg(feature = "simd")]
+    assert!(first_capacities.vlc > 0);
+    #[cfg(not(feature = "simd"))]
+    assert_eq!(first_capacities.vlc, 0);
 
     scratch.poison_for_test();
     decoded.fill(0);

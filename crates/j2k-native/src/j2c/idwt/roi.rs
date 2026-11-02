@@ -15,7 +15,50 @@ use crate::error::{DecodingError, ValidationError};
 use crate::j2c::roi::output_region_rect;
 use crate::j2c::Header;
 use crate::math::{SimdBuffer, SIMD_WIDTH};
-use crate::{checked_decode_usize_product2, try_resize_decode_elements, Result};
+use crate::{
+    checked_decode_usize_product2, try_resize_decode_elements, try_zero_fill_decode_elements,
+    Result,
+};
+
+/// Samples of each component's rows a tile streaming from pool bands
+/// reconstructs at most at once, before they are transformed and handed over.
+const STREAMED_BATCH_SAMPLES: usize = 2 * 1024 * 1024;
+
+/// Batches a tile streaming from pool bands splits its rows into at least,
+/// so the two batches it holds at once stay at most half of the rows'
+/// samples.
+const STREAMED_MIN_BATCHES: usize = 4;
+
+/// Rows a batch of a tile holding one batch keeps at least when it is
+/// halved: halving the 116-row batches of an 18000-wide tile cost 2 to 5%.
+const STREAMED_DEEP_MIN_ROWS: usize = 128;
+
+/// Rows a batch of a tile holding two batches keeps at most. HTJ2K tiles
+/// pipeline two: on 10 to 18 threads, 256-row batches of a 4096-wide tile
+/// decode as fast as 512-row ones (0.99-1.01 of their time) and hold two
+/// thirds of the memory (48 vs 72 MiB); 128-row ones hold half (36 MiB) but
+/// take 3-10% longer, and 1024 x 1024 regions 6-15% longer.
+const STREAMED_PIPELINED_MAX_ROWS: usize = 256;
+
+/// Rows of each component a tile streaming from pool bands through a reader
+/// per component reconstructs at once, for `height` rows of `width` samples.
+/// A tile that holds `one_batch` (a classic tile; HTJ2K tiles pipeline two)
+/// transforms it before the next one reconstructs, so its batches take half
+/// the rows while that leaves at least `STREAMED_DEEP_MIN_ROWS`: as fast,
+/// with half the rows held. Two batches keep to
+/// `STREAMED_PIPELINED_MAX_ROWS` each. A tile with one reader holds no
+/// batch: it finishes each row in the IDWT's ring.
+pub(crate) fn streamed_batch_rows(width: usize, height: usize, one_batch: bool) -> usize {
+    let rows = STREAMED_BATCH_SAMPLES / width.max(1);
+    let rows = if !one_batch {
+        rows.min(STREAMED_PIPELINED_MAX_ROWS)
+    } else if rows / 2 >= STREAMED_DEEP_MIN_ROWS {
+        rows / 2
+    } else {
+        rows
+    };
+    rows.min(height / STREAMED_MIN_BATCHES).clamp(1, 512)
+}
 
 /// The most f32 samples [`apply_roi`] holds at once for any one component.
 ///
@@ -29,8 +72,9 @@ use crate::{checked_decode_usize_product2, try_resize_decode_elements, Result};
 /// at the 9/7 ring depth whatever the component's transform. With no active
 /// level it holds nothing, since it copies the LL window straight into the
 /// plane. When the tile streams its rows to a sink, every component's rings
-/// are live at once, with a scratch row each as wide as its final window, so
-/// the peak is their sum.
+/// are live at once, the rows finishing in place in them, with one or two
+/// batches of rows as wide as each final window from pool bands (see
+/// [`streamed_batch_rows`]), so the peak is their sum.
 pub(crate) fn roi_idwt_peak_elements(
     storage: &DecompositionStorage<'_>,
     skipped_resolution_levels: u8,
@@ -62,15 +106,34 @@ pub(crate) fn roi_idwt_peak_elements(
                 .decompositions
                 .clone()
                 .take(active_len)
+                .skip_while(|decomposition_idx| {
+                    roi_plan.idwt_window(*decomposition_idx).is_none()
+                        && storage.decompositions[*decomposition_idx].rect.is_empty()
+                })
                 .map_while(|decomposition_idx| roi_plan.idwt_window(decomposition_idx));
             let rings = ring_samples(windows, WaveletTransform::Irreversible97)?;
             if storage.lockstep_lines {
-                let scratch_row = roi_plan
-                    .final_window(component_idx)
-                    .map_or(0, |window| window.width() as usize);
+                let batch_rows = roi_plan.final_window(component_idx).map_or(0, |window| {
+                    let (width, height) = (window.width() as usize, window.height() as usize);
+                    if storage.parallel_bands && !storage.one_synthesis_reader {
+                        // Two batches, when each component reconstructs
+                        // on its own reader, unless the band rings hold
+                        // more bands instead; one reader holds none.
+                        let batches = if storage.deep_band_rings { 1 } else { 2 };
+                        width
+                            .saturating_mul(streamed_batch_rows(
+                                width,
+                                height,
+                                storage.deep_band_rings,
+                            ))
+                            .saturating_mul(batches)
+                    } else {
+                        0
+                    }
+                });
                 lockstep = lockstep
                     .checked_add(rings)
-                    .and_then(|total| total.checked_add(scratch_row))
+                    .and_then(|total| total.checked_add(batch_rows))
                     .ok_or(ValidationError::ImageTooLarge)?;
             } else {
                 peak = peak.max(rings);
@@ -199,6 +262,10 @@ pub(super) fn apply_roi(
     for (local_idx, decomposition) in decompositions.iter().take(active_len).enumerate() {
         let decomposition_idx = tile_decompositions.decompositions.start + local_idx;
         let Some(output_window) = roi_plan.idwt_window(decomposition_idx) else {
+            if !have_current && decomposition.rect.is_empty() {
+                // A coarse level with no samples: the next level's LL input is empty.
+                continue;
+            }
             output.coefficients.clear();
             output.rect = IntRect::from_xywh(0, 0, 0, 0);
             return Ok(());
@@ -346,6 +413,10 @@ impl LinePlan {
             // Without a window the level has nothing to reconstruct, as in the
             // whole-window path.
             let Some(window) = roi_plan.idwt_window(decomposition_idx) else {
+                if windows.is_empty() && storage.decompositions[decomposition_idx].rect.is_empty() {
+                    // A coarse level with no samples: the next level's LL input is empty.
+                    continue;
+                }
                 return Ok(None);
             };
             windows.push(window);
@@ -413,7 +484,7 @@ impl ComponentLines {
         let mut ring = core::mem::take(&mut tile_ctx.idwt_line_rings);
         let ring_len = plan.ring_len()?;
         if ring.len() < ring_len {
-            try_resize_decode_elements(&mut ring, ring_len, 0.0)?;
+            try_zero_fill_decode_elements(&mut ring, ring_len)?;
         }
         tile_ctx.idwt_line_rings = ring;
         record_workspace_now(tile_ctx, storage)?;

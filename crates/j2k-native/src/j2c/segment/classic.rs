@@ -6,7 +6,7 @@ use super::{
     code_block_is_read, decode_num_coding_passes, read_lblock_increment, read_segment_length,
     resolve_code_block_inclusion, PacketResult, PacketSkips, SegmentSink, MAX_BITPLANE_COUNT,
 };
-use crate::j2c::build::{CodeBlock, CodeBlockCoding, Segment};
+use crate::j2c::build::{CodeBlock, CodeBlockCoding, Layer, Segment};
 use crate::j2c::codestream::{CodeBlockStyle, ComponentInfo};
 use crate::j2c::decode::DecompositionStorage;
 use crate::j2c::progression::ProgressionData;
@@ -92,7 +92,8 @@ pub(super) fn resolve_segments(
                     packet_workspace_error: &mut storage.packet_workspace_error,
                 },
             )?;
-            layer.segments = Some(start..storage.segments.len());
+            *layer = Layer::with_segments(start..storage.segments.len())
+                .ok_or("classic segment records exceed the layer record range")?;
         } else {
             let mut bytes = 0;
             parse_contribution_lengths(

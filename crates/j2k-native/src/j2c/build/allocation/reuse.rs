@@ -65,6 +65,54 @@ impl ReallocationBudget {
         self.live_bytes
     }
 
+    /// [`Self::reserve`] for storage that starts as zeros. A buffer that
+    /// needs a new allocation is replaced by a zeroed one of `target_len`
+    /// elements (see [`crate::try_zero_fill_decode_elements`]); its old
+    /// contents are dead, so it is released first and never held beside it.
+    pub(super) fn reserve_zeroed<T: Copy + Default + bytemuck::Zeroable>(
+        &mut self,
+        values: &mut Vec<T>,
+        target_len: usize,
+    ) -> Result<()> {
+        values.clear();
+        if target_len <= values.capacity() {
+            return Ok(());
+        }
+        let old_bytes = values
+            .capacity()
+            .checked_mul(size_of::<T>())
+            .ok_or(ValidationError::ImageTooLarge)?;
+        *values = Vec::new();
+        self.live_bytes = self
+            .live_bytes
+            .checked_sub(old_bytes)
+            .ok_or(ValidationError::ImageTooLarge)?;
+        let requested_bytes = target_len
+            .checked_mul(size_of::<T>())
+            .ok_or(ValidationError::ImageTooLarge)?;
+        if self
+            .live_bytes
+            .checked_add(requested_bytes)
+            .is_none_or(|bytes| bytes > DEFAULT_MAX_DECODE_BYTES)
+        {
+            return Err(ValidationError::ImageTooLarge.into());
+        }
+        crate::try_zero_fill_decode_elements(values, target_len)?;
+        let new_live_bytes = values
+            .capacity()
+            .checked_mul(size_of::<T>())
+            .and_then(|bytes| self.live_bytes.checked_add(bytes))
+            .ok_or(ValidationError::ImageTooLarge)?;
+        if new_live_bytes > DEFAULT_MAX_DECODE_BYTES {
+            // As in `reserve`: never keep a larger allocation than requested
+            // after reporting the cap breach.
+            *values = Vec::new();
+            return Err(ValidationError::ImageTooLarge.into());
+        }
+        self.live_bytes = new_live_bytes;
+        Ok(())
+    }
+
     pub(super) fn reserve<T>(&mut self, values: &mut Vec<T>, target_len: usize) -> Result<()> {
         values.clear();
         if target_len <= values.capacity() {
@@ -134,7 +182,7 @@ pub(super) fn reserve_decomposition_storage(
     budget.reserve(&mut storage.code_blocks, plan.code_blocks)?;
     budget.reserve(&mut storage.layers, plan.layers)?;
     budget.reserve(&mut storage.tag_tree_nodes, plan.tag_tree_nodes)?;
-    budget.reserve(&mut storage.coefficients, plan.coefficient_storage_len())?;
+    budget.reserve_zeroed(&mut storage.coefficients, plan.coefficient_storage_len())?;
     if storage.exact_integer_decode {
         budget.reserve(
             &mut storage.coefficients_i64,

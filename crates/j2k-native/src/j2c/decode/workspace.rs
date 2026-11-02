@@ -207,7 +207,8 @@ impl Default for DecoderContext<'_> {
 impl DecoderContext<'_> {
     /// Create a borrowing decoder context from a lifetime-free reusable workspace.
     #[must_use]
-    pub fn from_workspace(workspace: DecoderWorkspace) -> Self {
+    pub fn from_workspace(mut workspace: DecoderWorkspace) -> Self {
+        workspace.tile_decode_context.shared_pool = false;
         Self {
             tile_decode_context: workspace.tile_decode_context,
             storage: DecompositionStorage::default(),
@@ -223,6 +224,7 @@ impl DecoderContext<'_> {
     #[must_use]
     pub fn into_workspace(mut self) -> DecoderWorkspace {
         self.storage.release_all_allocations();
+        self.tile_decode_context.shared_pool = false;
         DecoderWorkspace {
             tile_decode_context: self.tile_decode_context,
             cpu_decode_parallelism: self.cpu_decode_parallelism,
@@ -314,6 +316,19 @@ impl DecoderContext<'_> {
     /// Set the native CPU decode parallelism policy.
     pub fn set_cpu_decode_parallelism(&mut self, parallelism: CpuDecodeParallelism) {
         self.cpu_decode_parallelism = parallelism;
+    }
+
+    /// Mark this context's decodes as sharing their worker pool with other
+    /// images that decode on it at the same time, as the images of a batch do
+    /// that plans as many at once as its pool has threads.
+    /// Pool threads with no band of one image to decode take another image's
+    /// bands, so on a pool of fewer than 12 threads each image's band rings
+    /// hold two bands at every level and its bands stay whole; larger pools
+    /// keep the usual rings. Off by default; recovering the context's
+    /// workspace turns it off.
+    #[doc(hidden)]
+    pub fn set_shared_pool(&mut self, shared: bool) {
+        self.tile_decode_context.shared_pool = shared;
     }
 
     /// Turn the row-streamed region IDWT on or off; it is on by default and

@@ -3,7 +3,9 @@
 //! Fallible HT phase scratch reservation.
 
 use super::super::cleanup::cleanup_symbol_stride;
-use super::super::readers::{flat_magsgn_capacity, flat_vlc_capacity};
+use super::super::readers::flat_magsgn_capacity;
+#[cfg(feature = "simd")]
+use super::super::readers::flat_vlc_capacity;
 use super::super::significance::sigma_stride;
 use super::super::state::HtBlockDecodeScratch;
 use crate::error::{Result, ValidationError};
@@ -43,6 +45,10 @@ fn workspace_layout(width: u32, height: u32) -> Result<HtWorkspaceLayout> {
     let previous_row_len = (width.div_ceil(4) as usize)
         .checked_add(8)
         .ok_or(ValidationError::ImageTooLarge)?;
+    #[cfg(feature = "simd")]
+    let vlc_bytes = flat_vlc_capacity(width, height);
+    #[cfg(not(feature = "simd"))]
+    let vlc_bytes = 0;
     Ok(HtWorkspaceLayout {
         coefficients: coefficient_len,
         cleanup_symbols: cleanup_len,
@@ -50,7 +56,7 @@ fn workspace_layout(width: u32, height: u32) -> Result<HtWorkspaceLayout> {
         sigma_symbols: sigma_len,
         previous_row_symbols: previous_row_len,
         magsgn_bytes: flat_magsgn_capacity(coefficient_len)?,
-        vlc_bytes: flat_vlc_capacity(width, height),
+        vlc_bytes,
     })
 }
 

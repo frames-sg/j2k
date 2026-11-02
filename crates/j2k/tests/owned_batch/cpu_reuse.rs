@@ -356,8 +356,10 @@ fn cpu_session_retained_workspace_stabilizes_during_thousand_batch_soak() {
     assert_eq!(soaked.prepared_plan_decode_calls(), 1_001);
     assert_eq!(warmed.decode_calls(), 0);
     assert_eq!(soaked.decode_calls(), 0);
-    assert_eq!(warmed.flattened_group_plans(), 1);
-    assert_eq!(soaked.flattened_group_plans(), 1_001);
+    // A lone image decodes its plan with inner parallelism, so its payloads
+    // are never flattened for the staged route.
+    assert_eq!(warmed.flattened_group_plans(), 0);
+    assert_eq!(soaked.flattened_group_plans(), 0);
     assert!(warmed.retained_prepared_plan_classic_workspace_bytes() > 0);
     assert_eq!(soaked.scratch_capacity_retries(), 0);
     assert_eq!(

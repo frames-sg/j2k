@@ -2,10 +2,13 @@
 
 use super::{bit_capacity_bytes, NativeOutputBudget};
 use crate::error::DecodeError;
-use crate::j2c::ComponentData;
+use crate::j2c::{ComponentData, DecoderContext};
 use crate::math::{SimdBuffer, SIMD_WIDTH};
 use crate::DEFAULT_MAX_DECODE_BYTES;
-use crate::{ColorSpace, ComponentPlane, DecodedComponents, RawBitmap};
+use crate::{
+    encode, ColorSpace, ComponentPlane, CpuDecodeParallelism, DecodeErrorClass, DecodeSettings,
+    DecodedComponents, EncodeOptions, Image, RawBitmap,
+};
 use alloc::{vec, vec::Vec};
 use core::mem::size_of;
 
@@ -168,4 +171,57 @@ fn bit_vector_capacity_is_counted_in_storage_bytes() {
         Err(DecodeError::AllocationTooLarge { requested, cap, .. })
             if requested > cap && cap == DEFAULT_MAX_DECODE_BYTES
     ));
+}
+
+/// The packed planes of a native component decode are its output, like the
+/// rows route's planes: the decode budget holds the `f32` planes they are
+/// packed from, not the output beside them. An image that does not stream
+/// its rows (five components), given a budget with room for its working
+/// memory but not for its `f32` planes and output together, decodes to the
+/// bytes a decode with the whole budget gives; one with no room for the
+/// `f32` planes is still refused.
+#[test]
+fn native_component_planes_are_output_beside_the_decode_budget() {
+    let (width, height, components) = (256_u32, 256_u32, 5_u16);
+    let samples: Vec<u8> = (0..width * height * u32::from(components) * 2)
+        .map(|index| (index.wrapping_mul(2_654_435_761) >> 24) as u8)
+        .collect();
+    let options = EncodeOptions {
+        num_decomposition_levels: 2,
+        tile_size: Some((64, 64)),
+        ..EncodeOptions::default()
+    };
+    let bytes = encode(&samples, width, height, components, 12, false, &options).expect("encode");
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+    assert!(!image.region_decode_streams_rows());
+    let planes = |retained_baseline_bytes| {
+        let mut context = DecoderContext::default();
+        context.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
+        image
+            .decode_native_components_with_context_and_retained_baseline(
+                &mut context,
+                retained_baseline_bytes,
+            )
+            .map(|decoded| {
+                decoded
+                    .planes
+                    .into_iter()
+                    .map(|plane| (plane.data, plane.bit_depth, plane.bytes_per_sample))
+                    .collect::<Vec<_>>()
+            })
+    };
+    let expected = planes(0).expect("a decode with the whole budget");
+    let output: usize = expected.iter().map(|(data, ..)| data.len()).sum();
+    assert_eq!(output, 256 * 256 * 5 * 2);
+    // The `f32` planes without padding or owners: less than the decode holds.
+    let f32_planes = 256 * 256 * 5 * size_of::<f32>();
+    let decoded = planes(DEFAULT_MAX_DECODE_BYTES - (f32_planes + output - 1))
+        .expect("the output is not charged to the decode budget");
+    assert!(decoded == expected, "same planes");
+    let error = planes(DEFAULT_MAX_DECODE_BYTES - f32_planes / 2)
+        .expect_err("the f32 planes pass the budget");
+    assert!(
+        matches!(error.classify(), DecodeErrorClass::ResourceLimit { .. }),
+        "{error:?}"
+    );
 }

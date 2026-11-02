@@ -337,7 +337,7 @@ fn contribution_final_bytes(codestream: &[u8]) -> Vec<u8> {
         segment::parse(tile, &parsed.header, &mut storage).expect("parse encoded packets");
         for code_block in &storage.code_blocks {
             for layer in &storage.layers[code_block.layers.clone()] {
-                let Some(segments) = layer.segments.clone() else {
+                let Some(segments) = layer.segments() else {
                     continue;
                 };
                 if let Some(&last) = storage.segments[segments]

@@ -23,6 +23,7 @@ pub use output_planes::{
     DecodedComponentsParts, DecodedNativeComponents, DecodedNativeComponentsParts,
     NativeComponentPlane, NativeComponentPlaneParts,
 };
+pub use packing::pack_rgb8;
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
 pub(crate) use packing::store_rgb8_x8;
 pub(crate) use packing::{

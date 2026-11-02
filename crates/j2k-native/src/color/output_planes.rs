@@ -208,6 +208,17 @@ impl<'a> ComponentPlane<'a> {
 pub trait ComponentRowSink {
     /// Receive the samples of one rectangle of the region.
     fn write_rows(&mut self, x: u32, y: u32, planes: &[ComponentPlane<'_>]);
+
+    /// The sink's destination for a `width` x `height` region of three 8-bit
+    /// components, when it is interleaved RGB8 rows of `3 * width` bytes back
+    /// to back that the sink would fill from such planes by rounding and
+    /// saturating each sample. A decode may then pack its rows straight into
+    /// this buffer instead of calling [`Self::write_rows`]. The default,
+    /// `None`, always uses `write_rows`.
+    fn rgb8_region(&mut self, width: u32, height: u32) -> Option<&mut [u8]> {
+        let _ = (width, height);
+        None
+    }
 }
 
 /// Borrowed decoded component planes for an image.

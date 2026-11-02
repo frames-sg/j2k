@@ -46,7 +46,7 @@ fn decode_inner_with_observer<O: J2kDecodeObserver>(
     // Build a list so that we can associate coding passes with their segments
     // and data more easily.
     for layer in storage.layers.get(code_block.layers.clone())? {
-        if let Some(range) = layer.segments.clone() {
+        if let Some(range) = layer.segments() {
             let layer_segments = storage.segments.get(range)?;
             for segment in layer_segments {
                 if segment.idx != last_segment_idx {

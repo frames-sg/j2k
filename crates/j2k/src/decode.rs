@@ -12,15 +12,28 @@ pub use component_handoff::{
     J2kNativeComponentPlane,
 };
 mod output;
+pub(crate) use output::{
+    decode_native_components_with_native_context, native_components_route,
+    native_region_components_route, NativeRoute,
+};
+mod route;
 mod settings;
 mod srgb8;
+mod stripes;
 use output::{
-    can_decode_u8_directly, expand_rgb8_to_rgba8, write_components_u16_output,
-    write_components_u8_output, write_u16_output, write_u8_output, U8RowSink,
+    can_decode_u8_directly, expand_rgb8_to_rgba8, region_rows_preferred_u16, rows_match_native_u16,
+    write_components_u16_output, write_components_u8_output, write_u16_output, write_u8_output,
+    U16RowSink, U8RowSink,
 };
+pub(crate) use route::{full_image_route, FullImageRoute, PlanesBudget, RouteRequest};
 pub use settings::DecodeSettings;
 pub(crate) use srgb8::decode_image_srgb8;
 pub use srgb8::{J2kSrgb8Image, J2kSrgb8Layout};
+pub(crate) use stripes::{
+    decode_image_rows_in_stripes, rows_stream_whole, DeliverRow, StreamedRowsError,
+};
+#[cfg(test)]
+pub(crate) use stripes::{InjectedFailure, INJECTED_FAILURE, STREAMED_ROW_DECODES};
 
 /// Non-fatal JPEG 2000 decode warning surfaced through decode outcomes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +73,70 @@ pub(crate) fn decode_warnings_for_recovery(
 
 pub(crate) fn decode_warnings_for_image(image: &Image<'_>) -> Vec<J2kDecodeWarning> {
     decode_warnings_for_recovery(image.used_lenient_metadata_recovery())
+}
+
+/// Decode the full `image` into `out` on `route`, which
+/// [`full_image_route`] chose for it.
+pub(crate) fn decode_full_image_into_with_native_context<'a>(
+    image: &Image<'a>,
+    native_context: &mut j2k_native::DecoderContext<'a>,
+    out: &mut [u8],
+    stride: usize,
+    fmt: PixelFormat,
+    route: &FullImageRoute,
+) -> Result<(), J2kError> {
+    match route {
+        FullImageRoute::Planes => {
+            decode_image_into_with_native_context(image, native_context, out, stride, fmt)
+        }
+        FullImageRoute::StreamedRegion => decode_image_region_rows_into_with_native_context(
+            image,
+            native_context,
+            out,
+            stride,
+            fmt,
+            Rect::full((image.width(), image.height())),
+        ),
+        FullImageRoute::StreamedTiles { tiles, workers } => {
+            route::tiles::decode_tiles_into(image, tiles, *workers, (out, stride, fmt))
+        }
+    }
+}
+
+/// Decode the full `image` into `out` on `route`, which [`full_image_route`]
+/// chose for `request`. A stream the budget refuses runs on the planes
+/// instead, from a fresh context, when they fit the budget (see
+/// `route::planes_fit`); the planes write every row, including rows the
+/// stream wrote before it was refused.
+pub(crate) fn decode_full_image_on_route<'a>(
+    image: &Image<'a>,
+    native_context: &mut j2k_native::DecoderContext<'a>,
+    out: &mut [u8],
+    stride: usize,
+    request: RouteRequest,
+    route: &FullImageRoute,
+) -> Result<(), J2kError> {
+    let fmt = request.fmt;
+    match decode_full_image_into_with_native_context(image, native_context, out, stride, fmt, route)
+    {
+        Err(J2kError::ResourceLimit { .. })
+            if route.streams() && route::planes_fit(image, request) =>
+        {
+            let parallelism = native_context.cpu_decode_parallelism();
+            *native_context = j2k_native::DecoderContext::default();
+            native_context.set_cpu_decode_parallelism(parallelism);
+            let planes = FullImageRoute::Planes;
+            decode_full_image_into_with_native_context(
+                image,
+                native_context,
+                out,
+                stride,
+                fmt,
+                &planes,
+            )
+        }
+        decoded => decoded,
+    }
 }
 
 pub(crate) fn decode_image_into_with_native_context<'a>(
@@ -140,18 +217,26 @@ pub(crate) fn decode_image_region_into_with_native_context<'a>(
 ) -> Result<(), J2kError> {
     match fmt {
         PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Gray8 => {
-            // A serial decode writes rows as they are finished instead of
-            // holding the region's component planes. A decode that fails
-            // may have written some of them.
-            let mut sink = U8RowSink::new(image.color_space(), image.has_alpha(), out, stride, fmt);
-            image
-                .decode_region_rows_for_integer_output_with_context(
-                    (roi.x, roi.y, roi.w, roi.h),
-                    native_context,
-                    &mut sink,
-                )
-                .map_err(J2kError::from_native_decode_error)?;
-            sink.finish()
+            decode_image_region_rows_into_with_native_context(
+                image,
+                native_context,
+                out,
+                stride,
+                fmt,
+                roi,
+            )
+        }
+        PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16
+            if region_rows_preferred_u16(image, fmt, roi) =>
+        {
+            decode_image_region_rows_into_with_native_context(
+                image,
+                native_context,
+                out,
+                stride,
+                fmt,
+                roi,
+            )
         }
         PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16 => {
             let raw = image
@@ -168,6 +253,45 @@ pub(crate) fn decode_image_region_into_with_native_context<'a>(
         }
         _ => Err(Unsupported {
             what: "pixel format is not yet supported by j2k",
+        }
+        .into()),
+    }
+}
+
+/// Decode `roi` of `image` into `out` through a row sink, which writes
+/// rows as they are finished instead of holding the region's component
+/// planes: always at 8 bits, and at 16 bits when the rows carry the native
+/// samples (see `rows_match_native_u16`), whose conversion the sink then
+/// matches. A decode that fails may have written some rows.
+pub(crate) fn decode_image_region_rows_into_with_native_context<'a>(
+    image: &Image<'a>,
+    native_context: &mut j2k_native::DecoderContext<'a>,
+    out: &mut [u8],
+    stride: usize,
+    fmt: PixelFormat,
+    roi: Rect,
+) -> Result<(), J2kError> {
+    let roi = (roi.x, roi.y, roi.w, roi.h);
+    match fmt {
+        PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Gray8 => {
+            let mut sink = U8RowSink::new(image.color_space(), image.has_alpha(), out, stride, fmt);
+            image
+                .decode_region_rows_for_integer_output_with_context(roi, native_context, &mut sink)
+                .map_err(J2kError::from_native_decode_error)?;
+            sink.finish()
+        }
+        PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16
+            if rows_match_native_u16(image, fmt) =>
+        {
+            let mut sink =
+                U16RowSink::new(image.color_space(), image.has_alpha(), out, stride, fmt);
+            image
+                .decode_region_rows_for_integer_output_with_context(roi, native_context, &mut sink)
+                .map_err(J2kError::from_native_decode_error)?;
+            sink.finish()
+        }
+        _ => Err(Unsupported {
+            what: "pixel format cannot stream its rows for this image",
         }
         .into()),
     }

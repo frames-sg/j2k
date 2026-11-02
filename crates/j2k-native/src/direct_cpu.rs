@@ -95,10 +95,19 @@ pub struct J2kDirectCpuScratch {
     ht_task_workspaces: Vec<HtCodeBlockDecodeWorkspace>,
     /// Extra classic workspaces for parallel referenced classic execution,
     /// one per additional Rayon worker.
-    classic_task_workspaces: Vec<J2kCodeBlockDecodeWorkspace>,
+    classic_task_workspaces: Vec<ClassicTaskWorkspace>,
     /// Whether referenced execution may spread work over the Rayon pool.
     parallel: bool,
     staged_state: Option<StagedDirectState>,
+}
+
+/// One extra Rayon worker's state for parallel referenced classic execution:
+/// its code-block workspace and the buffer it joins a code block's payload
+/// fragments into when a multi-layer codestream splits them.
+#[derive(Debug, Default)]
+struct ClassicTaskWorkspace {
+    decode: J2kCodeBlockDecodeWorkspace,
+    payload: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,10 +179,19 @@ impl J2kDirectCpuScratch {
             .iter()
             .try_fold(
                 self.classic_workspace.allocated_bytes().ok(),
-                |bytes, workspace| Some(bytes?.checked_add(workspace.allocated_bytes().ok()?)),
+                |bytes, task| Some(bytes?.checked_add(task.decode.allocated_bytes().ok()?)),
             )
             .flatten()
             .unwrap_or(usize::MAX)
+    }
+
+    /// Length and capacity of each extra classic task's payload buffer.
+    #[cfg(test)]
+    fn classic_task_payloads(&self) -> Vec<(usize, usize)> {
+        self.classic_task_workspaces
+            .iter()
+            .map(|task| (task.payload.len(), task.payload.capacity()))
+            .collect()
     }
 
     /// Number of coefficient/IDWT buffer owners retained by this scratch.

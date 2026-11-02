@@ -23,9 +23,9 @@ fn collector_uses_the_selected_non_empty_ht_set() {
         non_empty_layer_count: 1,
     };
     let mut storage = DecompositionStorage::default();
-    storage.layers.push(Layer {
-        segments: Some(0..4),
-    });
+    storage
+        .layers
+        .push(Layer::with_segments(0..4).expect("test segment range"));
     storage.segments.extend([
         Segment {
             idx: 0,
@@ -88,12 +88,8 @@ fn referenced_collector_visits_refinement_fragments_in_packet_order() {
     };
     let mut storage = DecompositionStorage::default();
     storage.layers.extend([
-        Layer {
-            segments: Some(0..2),
-        },
-        Layer {
-            segments: Some(2..3),
-        },
+        Layer::with_segments(0..2).expect("test segment range"),
+        Layer::with_segments(2..3).expect("test segment range"),
     ]);
     storage.segments.extend([
         Segment {
@@ -152,12 +148,8 @@ fn owned_collector_concatenates_refinement_fragments_in_packet_order() {
     };
     let mut storage = DecompositionStorage::default();
     storage.layers.extend([
-        Layer {
-            segments: Some(0..2),
-        },
-        Layer {
-            segments: Some(2..3),
-        },
+        Layer::with_segments(0..2).expect("test segment range"),
+        Layer::with_segments(2..3).expect("test segment range"),
     ]);
     storage.segments.extend([
         Segment {

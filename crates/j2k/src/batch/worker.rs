@@ -35,6 +35,9 @@ pub(crate) struct BatchWorker {
     /// Parallelism one owned-batch image decode may use; set per submission
     /// by the retained scheduler.
     owned_inner_parallelism: CpuDecodeParallelism,
+    /// Test-only count of offset-plan executions with nested parallelism.
+    #[cfg(test)]
+    parallel_plan_decode_calls: u64,
 }
 
 impl BatchWorker {
@@ -56,6 +59,8 @@ impl BatchWorker {
             prepared_plan_decode_calls: 0,
             allocation_budget,
             owned_inner_parallelism: CpuDecodeParallelism::Serial,
+            #[cfg(test)]
+            parallel_plan_decode_calls: 0,
         }
     }
 

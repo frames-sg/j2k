@@ -4,7 +4,7 @@ use super::plan::{tag_tree_node_count, IdwtWorkspaceTracker};
 use super::reuse::{discard_stale_capacity, ReallocationBudget};
 use super::{
     release_unused_roi_workspace, roi_workspace_bytes, BuildWorkspace, DecompositionAllocationPlan,
-    Segment, DEFAULT_MAX_DECODE_BYTES,
+    RecordCounts, Segment, DEFAULT_MAX_DECODE_BYTES,
 };
 use crate::error::{DecodeError, ValidationError};
 use crate::j2c::build::{Decomposition, SubBand, SubBandType};
@@ -22,6 +22,19 @@ fn coefficient_plan(baseline: usize, coefficients: usize) -> DecompositionAlloca
     plan.add_component_coefficients(coefficients)
         .expect("target count");
     plan
+}
+
+#[test]
+fn logical_record_bytes_are_independent_of_the_decode_cap() {
+    let count = DEFAULT_MAX_DECODE_BYTES / size_of::<SubBand>() + 1;
+    let bytes = RecordCounts {
+        sub_bands: count,
+        ..RecordCounts::default()
+    }
+    .checked_bytes()
+    .expect("record byte count fits usize");
+    assert_eq!(bytes, count * size_of::<SubBand>());
+    assert!(bytes > DEFAULT_MAX_DECODE_BYTES);
 }
 
 #[test]
@@ -442,6 +455,66 @@ fn reusable_capacity_growth_rejects_a_logical_target_over_the_aggregate_cap() {
 }
 
 #[test]
+fn zeroed_growth_releases_the_old_buffer_before_taking_the_new_one() {
+    let mut storage = DecompositionStorage::default();
+    storage.coefficients.push(9.0);
+    let old_bytes = storage.coefficients.capacity() * size_of::<f32>();
+    let target = storage.coefficients.capacity() + 1;
+    // Room for the new buffer only once the old one is gone.
+    let baseline = DEFAULT_MAX_DECODE_BYTES - target * size_of::<f32>();
+    let mut reallocation =
+        ReallocationBudget::for_storage(&storage, baseline).expect("live baseline");
+    assert_eq!(reallocation.live_bytes(), baseline + old_bytes);
+
+    reallocation
+        .reserve_zeroed(&mut storage.coefficients, target)
+        .expect("the old buffer is released first");
+    assert_eq!(storage.coefficients, vec![0.0; target]);
+    assert_eq!(
+        reallocation.live_bytes(),
+        baseline + storage.coefficients.capacity() * size_of::<f32>()
+    );
+}
+
+#[test]
+fn zeroed_reuse_keeps_the_allocation_and_none_of_its_samples() {
+    let mut storage = DecompositionStorage::default();
+    storage.coefficients.extend([5.0_f32; 8]);
+    let capacity = storage.coefficients.capacity();
+    let baseline = DEFAULT_MAX_DECODE_BYTES - capacity * size_of::<f32>();
+    let mut reallocation =
+        ReallocationBudget::for_storage(&storage, baseline).expect("live baseline");
+
+    reallocation
+        .reserve_zeroed(&mut storage.coefficients, 6)
+        .expect("the retained allocation has room");
+    crate::try_zero_fill_decode_elements(&mut storage.coefficients, 6).expect("zero fill");
+    assert_eq!(storage.coefficients.capacity(), capacity);
+    assert_eq!(storage.coefficients, vec![0.0; 6]);
+    assert_eq!(reallocation.live_bytes(), DEFAULT_MAX_DECODE_BYTES);
+}
+
+#[test]
+fn zeroed_growth_rejects_a_target_over_the_aggregate_cap() {
+    let mut storage = DecompositionStorage::default();
+    storage
+        .coefficients
+        .try_reserve_exact(1)
+        .expect("small test capacity");
+    let coefficient_bytes = storage.coefficients.capacity() * size_of::<f32>();
+    let baseline = DEFAULT_MAX_DECODE_BYTES - coefficient_bytes;
+    let mut reallocation =
+        ReallocationBudget::for_storage(&storage, baseline).expect("live baseline");
+    let target = storage.coefficients.capacity() + 1;
+
+    assert_eq!(
+        reallocation.reserve_zeroed(&mut storage.coefficients, target),
+        Err(DecodeError::Validation(ValidationError::ImageTooLarge))
+    );
+    assert_eq!(storage.coefficients.capacity(), 0);
+}
+
+#[test]
 fn region_decode_scratch_preserves_the_allocation_boundary() {
     use crate::{
         encode, DecodeSettings, DecoderContext, EncodeOptions, EncodeProgressionOrder, Image,
@@ -519,4 +592,28 @@ fn region_decode_scratch_preserves_the_allocation_boundary() {
             );
         }
     }
+}
+
+/// A layer record keeps its segment range in 8 bytes, tells a layer whose
+/// packet is unread from one that contributed no segments, and refuses a
+/// range it can't hold rather than truncating it.
+#[test]
+fn layer_records_keep_their_segment_ranges() {
+    use crate::j2c::build::Layer;
+
+    assert_eq!(size_of::<Layer>(), 8);
+    assert_eq!(Layer::UNREAD.segments(), None);
+    for range in [0..0, 0..3, 7..7, 41..48] {
+        let layer = Layer::with_segments(range.clone()).expect("range fits");
+        assert_eq!(layer.segments(), Some(range));
+    }
+    let last = u32::MAX as usize;
+    assert_eq!(
+        Layer::with_segments(last - 2..last - 1).and_then(Layer::segments),
+        Some(last - 2..last - 1)
+    );
+    assert!(Layer::with_segments(last..last + 1).is_none());
+    assert!(Layer::with_segments(0..last).is_none());
+    let start = core::hint::black_box(5);
+    assert!(Layer::with_segments(start..start - 2).is_none());
 }

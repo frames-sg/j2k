@@ -7,7 +7,7 @@ use super::{
     read_segment_length, resolve_code_block_inclusion, PacketResult, PacketSkips, SegmentSink,
     MAX_BITPLANE_COUNT,
 };
-use crate::j2c::build::{CodeBlock, CodeBlockCoding, Segment};
+use crate::j2c::build::{CodeBlock, CodeBlockCoding, Layer, Segment};
 use crate::j2c::codestream::{CodeBlockStyle, ComponentInfo};
 use crate::j2c::decode::DecompositionStorage;
 use crate::j2c::progression::ProgressionData;
@@ -69,7 +69,7 @@ pub(super) fn resolve_segments(
             let layer = storage.layers[code_block.layers.clone()]
                 .get_mut(layer_num)
                 .ok_or("HT packet references a missing quality layer")?;
-            if layer.segments.is_some() {
+            if layer.segments().is_some() {
                 return Err("HT quality layer already owns segment metadata");
             }
             Some(layer)
@@ -112,7 +112,8 @@ pub(super) fn resolve_segments(
                     packet_workspace_error: &mut storage.packet_workspace_error,
                 },
             )?;
-            layer.segments = Some(start..storage.segments.len());
+            *layer = Layer::with_segments(start..storage.segments.len())
+                .ok_or("HT segment records exceed the layer record range")?;
         } else {
             let mut bytes = 0;
             parse_segment_lengths(

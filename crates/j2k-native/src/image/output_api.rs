@@ -198,13 +198,13 @@ impl<'a> Image<'a> {
                     parallel,
                 );
             } else {
-                for index in 0..pixel_count {
-                    for component in components {
-                        Self::push_component_native_sample_bytes(
-                            &mut data, component, index, bit_depth,
-                        );
-                    }
-                }
+                Self::extend_interleaved_native_sample_bytes(
+                    &mut data,
+                    components,
+                    pixel_count,
+                    bit_depth,
+                    parallel,
+                );
             }
             if data.len() != capacity {
                 bail!(DecodingError::CodeBlockDecodeFailure);
@@ -288,13 +288,13 @@ impl<'a> Image<'a> {
                     parallel,
                 );
             } else {
-                for index in 0..pixel_count {
-                    for component in components {
-                        Self::push_component_native_sample_bytes(
-                            &mut data, component, index, bit_depth,
-                        );
-                    }
-                }
+                Self::extend_interleaved_native_sample_bytes(
+                    &mut data,
+                    components,
+                    pixel_count,
+                    bit_depth,
+                    parallel,
+                );
             }
             if data.len() != capacity {
                 bail!(DecodingError::CodeBlockDecodeFailure);
@@ -476,9 +476,10 @@ impl<'a> Image<'a> {
 
     /// [`Self::decode_region_components_for_integer_output_with_context`]
     /// that hands the region's samples to `sink` instead of returning
-    /// component planes. A plain region decode on one thread streams them as
-    /// they are finished and never holds the whole planes; any other decode
-    /// hands over its planes as one rectangle at the end.
+    /// component planes. A plain region decode streams them as they are
+    /// finished and never holds the whole planes, its Tier-1 bands decoded
+    /// serially or on the worker pool; any other decode hands over its planes
+    /// as one rectangle at the end.
     ///
     /// # Errors
     ///
@@ -520,6 +521,95 @@ impl<'a> Image<'a> {
         )?;
         sink.write_rows(0, 0, &components.planes);
         Ok(())
+    }
+
+    /// Whether [`Self::decode_region_rows_for_integer_output_with_context`]
+    /// can stream this image's rows, as far as its main header and boxes
+    /// say: the image has no palette, channel definition, sYCC or `CIELab`
+    /// (see `permits_line_region_idwt`), its components are at full sampling
+    /// with at most 24 bits, and the image and its tiles have no offsets and
+    /// one to four components (see `j2c::image_streams_rows`, which the
+    /// decode checks before it streams). Any other region decode falls back
+    /// to component planes of the region and hands them over at the end.
+    /// A tile's own coding can still keep it there (see
+    /// [`Self::full_decode_planes_floor`], which plans the full image only
+    /// when this holds).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn region_decode_streams_rows(&self) -> bool {
+        self.permits_line_region_idwt()
+            && self.header.component_infos.iter().all(|component| {
+                component.size_info.precision <= 24
+                    && component.size_info.horizontal_resolution == 1
+                    && component.size_info.vertical_resolution == 1
+            })
+            && j2c::image_streams_rows(&self.header)
+    }
+
+    /// The bytes a full-image decode into component planes charges the
+    /// decode budget at least, planned from the codestream's tiles without
+    /// decoding, when [`Self::decode_region_rows_for_integer_output_with_context`]
+    /// over the whole image could stream its rows instead and so need no
+    /// planes. A caller holding the planes to `budget` bytes runs that
+    /// region decode when the floor passes it: the planes decode would be
+    /// refused, and an image it can finish never has a floor past the
+    /// budget.
+    ///
+    /// `None` when the region decode could not stream (see
+    /// [`Self::region_decode_streams_rows`], or a tile with an inverse MCT
+    /// over fewer than three components or over wavelets that differ), or
+    /// when the header alone puts the planes and one tile's coefficients and
+    /// IDWT buffers within half of `budget`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error parsing the tiles meets, which the planes decode
+    /// meets as well.
+    #[doc(hidden)]
+    pub fn full_decode_planes_floor(&self, budget: usize) -> Result<Option<usize>> {
+        if !self.region_decode_streams_rows() {
+            return Ok(None);
+        }
+        j2c::full_decode_planes_floor(
+            self.codestream,
+            &self.header,
+            self.retained_header_metadata_bytes()?,
+            budget,
+        )
+    }
+
+    /// The output rectangles `(x, y, width, height)` of the image's tiles at
+    /// this image's resolution, in raster order, leaving out tiles with no
+    /// output samples. A region decode of each rectangle decodes that tile
+    /// alone, and together they cover the image once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the header's sampling factors are invalid.
+    #[doc(hidden)]
+    pub fn output_tile_rects(&self) -> Result<Vec<(u32, u32, u32, u32)>> {
+        let size = &self.header.size_data;
+        let (x_shrink, y_shrink) = (
+            size.checked_x_shrink_factor()?,
+            size.checked_y_shrink_factor()?,
+        );
+        let (x_origin, y_origin) = j2c::output_grid_offset(size);
+        let mut rects = Vec::new();
+        for ty in 0..size.num_y_tiles() {
+            for tx in 0..size.num_x_tiles() {
+                let rect = j2c::tile_rect(size, tx, ty);
+                let x = rect.x0.div_ceil(x_shrink).saturating_sub(x_origin);
+                let y = rect.y0.div_ceil(y_shrink).saturating_sub(y_origin);
+                let x1 = rect.x1.div_ceil(x_shrink).saturating_sub(x_origin);
+                let y1 = rect.y1.div_ceil(y_shrink).saturating_sub(y_origin);
+                let width = x1.saturating_sub(x);
+                let height = y1.saturating_sub(y);
+                if width > 0 && height > 0 {
+                    rects.push((x, y, width, height));
+                }
+            }
+        }
+        Ok(rects)
     }
 
     /// Rounded-for-integer-output counterpart of

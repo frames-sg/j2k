@@ -15,6 +15,7 @@ mod plan;
 mod reuse;
 
 pub(super) use plan::{code_block_grid, tag_tree_node_count};
+pub(in crate::j2c) use plan::{global_code_block_count, IdwtWorkspaceTracker};
 pub(super) use reuse::push_preallocated;
 
 /// How sub-band coefficient ranges share [`DecompositionStorage::coefficients`].
@@ -59,6 +60,40 @@ impl BuildWorkspace {
             } => coefficient_layout,
             Self::CoefficientsOnly | Self::MetadataOnly => CoefficientLayout::Tile,
         }
+    }
+}
+
+/// Logical counts of the records every built tile owns.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(in crate::j2c) struct RecordCounts {
+    pub(in crate::j2c) tile_decompositions: usize,
+    pub(in crate::j2c) decompositions: usize,
+    pub(in crate::j2c) sub_bands: usize,
+    pub(in crate::j2c) precincts: usize,
+    pub(in crate::j2c) code_blocks: usize,
+    pub(in crate::j2c) layers: usize,
+    pub(in crate::j2c) tag_tree_nodes: usize,
+}
+
+impl RecordCounts {
+    /// These records' exact bytes, independent of the decode allocation cap.
+    pub(in crate::j2c) fn checked_bytes(self) -> Result<usize> {
+        let mut total = 0usize;
+        let mut include = |size: usize, count: usize| -> Result<()> {
+            total = size
+                .checked_mul(count)
+                .and_then(|bytes| total.checked_add(bytes))
+                .ok_or(ValidationError::ImageTooLarge)?;
+            Ok(())
+        };
+        include(size_of::<TileDecompositions>(), self.tile_decompositions)?;
+        include(size_of::<Decomposition>(), self.decompositions)?;
+        include(size_of::<SubBand>(), self.sub_bands)?;
+        include(size_of::<Precinct>(), self.precincts)?;
+        include(size_of::<CodeBlock>(), self.code_blocks)?;
+        include(size_of::<Layer>(), self.layers)?;
+        include(size_of::<TagNode>(), self.tag_tree_nodes)?;
+        Ok(total)
     }
 }
 
@@ -166,6 +201,18 @@ impl DecompositionAllocationPlan {
         Ok(())
     }
 
+    fn record_counts(&self) -> RecordCounts {
+        RecordCounts {
+            tile_decompositions: self.tile_decompositions,
+            decompositions: self.decompositions,
+            sub_bands: self.sub_bands,
+            precincts: self.precincts,
+            code_blocks: self.code_blocks,
+            layers: self.layers,
+            tag_tree_nodes: self.tag_tree_nodes,
+        }
+    }
+
     /// Charge the unbuilt precincts' records and tag-tree roots.
     fn include_unbuilt_precincts(&self, total_bytes: &mut usize) -> Result<()> {
         checked_include_elements::<Precinct>(total_bytes, self.unbuilt_precincts)?;
@@ -179,14 +226,8 @@ impl DecompositionAllocationPlan {
     /// Reject a logically impossible request before walking every precinct.
     fn validate_minimum_live_workspace(&self, idwt_workspace_elements: usize) -> Result<()> {
         let mut total_bytes = self.retained_baseline_bytes;
-        checked_include_elements::<TileDecompositions>(&mut total_bytes, self.tile_decompositions)?;
-        checked_include_elements::<Decomposition>(&mut total_bytes, self.decompositions)?;
-        checked_include_elements::<SubBand>(&mut total_bytes, self.sub_bands)?;
-        checked_include_elements::<Precinct>(&mut total_bytes, self.precincts)?;
-        checked_include_elements::<CodeBlock>(&mut total_bytes, self.code_blocks)?;
-        checked_include_elements::<Layer>(&mut total_bytes, self.layers)?;
+        checked_include_elements::<u8>(&mut total_bytes, self.record_counts().checked_bytes()?)?;
         checked_include_elements::<Layer>(&mut total_bytes, self.parse_only_layers)?;
-        checked_include_elements::<TagNode>(&mut total_bytes, self.tag_tree_nodes)?;
         checked_include_elements::<CodeBlock>(&mut total_bytes, self.parse_only_code_blocks)?;
         checked_include_elements::<TagNode>(&mut total_bytes, self.parse_only_tag_tree_nodes)?;
         self.include_unbuilt_precincts(&mut total_bytes)?;
@@ -380,8 +421,8 @@ pub(crate) fn allocate_deferred_coefficients(
             .unwrap_or(0)
     };
     let mut budget = reuse::ReallocationBudget::from_live_bytes(live_bytes)?;
-    budget.reserve(&mut storage.coefficients, coefficient_count)?;
-    crate::try_resize_decode_elements(&mut storage.coefficients, coefficient_count, 0.0)?;
+    budget.reserve_zeroed(&mut storage.coefficients, coefficient_count)?;
+    crate::try_zero_fill_decode_elements(&mut storage.coefficients, coefficient_count)?;
     storage.structural_workspace_bytes = budget.live_bytes();
     Ok(())
 }
@@ -392,6 +433,35 @@ pub(crate) fn allocate_deferred_coefficients(
 /// and are each read for the shortest time, so they need the deepest ring.
 pub(crate) const FINEST_LEVEL_BAND_SLOTS: u32 = 3;
 pub(crate) const OTHER_LEVEL_BAND_SLOTS: u32 = 2;
+
+/// Band slots of each level with `deep_band_rings`: one more band of
+/// lookahead for the pool's workers, held in place of a second batch of
+/// reconstructed rows.
+const DEEP_RING_EXTRA_SLOTS: u32 = 1;
+
+/// Band slots each sub-band of the finest active level holds with
+/// `shallow_band_rings`: one fewer, as the pool's threads split their bands
+/// into parts instead of waiting for whole bands further ahead.
+const SHALLOW_FINEST_LEVEL_BAND_SLOTS: u32 = 2;
+
+/// The band slots of each sub-band's ring with parallel bands, at the
+/// finest active level and at the others. With `shared_pool_band_rings` the
+/// finest level holds the shallow rings (and no ring the deep rings' extra
+/// band, which needs a larger pool): pool threads that find no band of the
+/// image to start take another image's bands instead of bands further ahead.
+fn pool_band_slots(storage: &DecompositionStorage<'_>) -> (u32, u32) {
+    let finest = if storage.shallow_band_rings || storage.shared_pool_band_rings {
+        SHALLOW_FINEST_LEVEL_BAND_SLOTS
+    } else {
+        FINEST_LEVEL_BAND_SLOTS
+    };
+    let extra = if storage.deep_band_rings {
+        DEEP_RING_EXTRA_SLOTS
+    } else {
+        0
+    };
+    (finest + extra, OTHER_LEVEL_BAND_SLOTS + extra)
+}
 
 /// Give each sub-band of a region decode the coefficient range for its
 /// stored rectangle: the required code-blocks, clipped to the IDWT windows
@@ -407,6 +477,7 @@ fn lay_out_region_coefficients(
         return Err(DecodingError::CodeBlockDecodeFailure.into());
     };
     let mut coefficient_count = 0usize;
+    let (finest_slots, other_slots) = pool_band_slots(storage);
     // Build stores each component's sub-bands together, starting with its
     // LL band, so a component starts where its LL band does.
     let per_component = storage.coefficient_layout == CoefficientLayout::Component;
@@ -455,9 +526,9 @@ fn lay_out_region_coefficients(
                         .contains(&sub_band_idx)
             });
             if finest {
-                FINEST_LEVEL_BAND_SLOTS
+                finest_slots
             } else {
-                OTHER_LEVEL_BAND_SLOTS
+                other_slots
             }
         } else {
             1
@@ -505,11 +576,14 @@ pub(crate) fn lay_out_whole_region_coefficients(
 ) -> Result<()> {
     storage.banded_tier1 = false;
     storage.parallel_bands = false;
+    storage.deep_band_rings = false;
+    storage.shallow_band_rings = false;
+    storage.shared_pool_band_rings = false;
     let coefficient_count = lay_out_region_coefficients(storage, true, 0)?;
     let mut budget =
         reuse::ReallocationBudget::from_live_bytes(storage.structural_workspace_bytes)?;
-    budget.reserve(&mut storage.coefficients, coefficient_count)?;
-    crate::try_resize_decode_elements(&mut storage.coefficients, coefficient_count, 0.0)?;
+    budget.reserve_zeroed(&mut storage.coefficients, coefficient_count)?;
+    crate::try_zero_fill_decode_elements(&mut storage.coefficients, coefficient_count)?;
     storage.structural_workspace_bytes = budget.live_bytes();
     Ok(())
 }

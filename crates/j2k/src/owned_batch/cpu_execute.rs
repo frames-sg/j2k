@@ -2,17 +2,19 @@
 
 //! CPU homogeneous-group execution and final materialization.
 
+use super::cpu_fast::classic_staging_fits;
 use super::cpu_materialize::{
     convert_u16, convert_u8, decode_image_i16, decode_image_u16, decode_image_u8,
-    ensure_batch_output_within_cap, round_signed, try_zeroed_vec,
+    decode_lone_gray_u8, ensure_batch_output_within_cap, round_signed, try_zeroed_vec,
 };
 use super::cpu_staged_execute::run_staged_typed_group;
 use super::{
-    decode_warnings_for_recovery, retained_inner_parallelism, run_retained_chunks, Arc,
-    BatchDecodeOptions, BatchErrorStage, BatchGroupInfo, BatchInfrastructureError, BatchItemError,
-    BatchWorker, CpuBatchGroup, CpuBatchSamples, CpuDecodeParallelism, CpuGroupFastWorkspace,
-    CpuStagedWorkspace, IndexedBatchError, J2kError, NativeSampleType, NonZeroUsize,
-    PreparedBatchGroup, PreparedImage, TileBatchOptions, Vec,
+    decode_warnings_for_recovery, retained_inner_parallelism, retained_worker_count,
+    run_retained_chunks, Arc, BatchCodecRoute, BatchColor, BatchDecodeOptions, BatchErrorStage,
+    BatchGroupInfo, BatchInfrastructureError, BatchItemError, BatchWorker, CpuBatchGroup,
+    CpuBatchSamples, CpuDecodeParallelism, CpuGroupFastWorkspace, CpuStagedWorkspace,
+    IndexedBatchError, J2kError, NativeSampleType, NonZeroUsize, PreparedBatchGroup, PreparedImage,
+    TileBatchOptions, Vec,
 };
 use crate::batch::admission::{hold_at_least, BatchAllocationBudget};
 use crate::batch::allocation::try_vec_with_capacity;
@@ -26,6 +28,7 @@ pub(super) fn decode_cpu_group(
     workers: &mut [BatchWorker],
     fast_workspace: &mut CpuGroupFastWorkspace,
     staged_workspace: &mut CpuStagedWorkspace,
+    stream_pool: &mut CpuStreamPool,
     group: &PreparedBatchGroup,
     options: BatchDecodeOptions,
     workers_option: Option<NonZeroUsize>,
@@ -36,10 +39,30 @@ pub(super) fn decode_cpu_group(
     // The staged route flattens entropy work across images for a few serial
     // workers. When workers may parallelize inside one image, each prepared
     // plan decodes faster on its own: its code-block rows and wavelet bands
-    // spread over every core, still without reparsing.
-    let has_flattened_payloads = fast_workspace.prepare_group(group)?
+    // spread over every core, still without reparsing. A group with an image
+    // whose rows stream never stages: streamed images hold a band of rows
+    // instead of whole-image scratch, at every worker count.
+    let streams_rows = group
+        .images
+        .iter()
+        .any(|image| image.cpu_execution().streams());
+    // Payloads are flattened only for the staged route, and only within the
+    // flattening and staged-window caps (see `classic_staging_fits`): a
+    // classic group beyond them decodes its plans one image at a time
+    // instead of failing.
+    let staged = !streams_rows
         && retained_inner_parallelism(group.images.len(), tile_options)?
-            == CpuDecodeParallelism::Serial;
+            == CpuDecodeParallelism::Serial
+        && (group.info.route != BatchCodecRoute::Classic
+            || classic_staging_fits(group.images.iter())?)
+        && fast_workspace.prepare_group(group)?;
+    let (pooled, image_parallelism) =
+        image_policy(group.images.len(), streams_rows, workers_option);
+    let stream_pool = if pooled {
+        Some(stream_pool.get(workers.len())?)
+    } else {
+        None
+    };
     let samples_per_image =
         group
             .info
@@ -68,10 +91,17 @@ pub(super) fn decode_cpu_group(
                 tile_options,
                 samples_per_image,
                 &mut values,
-                has_flattened_payloads.then_some(&mut *fast_workspace),
+                staged.then_some(&mut *fast_workspace),
                 staged_workspace,
+                stream_pool,
+                image_parallelism,
                 admission,
-                decode_image_u8,
+                // The only image of a Gray8 group is the whole in-flight set.
+                if group.images.len() == 1 && group.info.color == BatchColor::Gray {
+                    decode_lone_gray_u8
+                } else {
+                    decode_image_u8
+                },
                 convert_u8,
                 errors,
             )?;
@@ -90,8 +120,10 @@ pub(super) fn decode_cpu_group(
                 tile_options,
                 samples_per_image,
                 &mut values,
-                has_flattened_payloads.then_some(&mut *fast_workspace),
+                staged.then_some(&mut *fast_workspace),
                 staged_workspace,
+                stream_pool,
+                image_parallelism,
                 admission,
                 decode_image_u16,
                 convert_u16,
@@ -112,8 +144,10 @@ pub(super) fn decode_cpu_group(
                 tile_options,
                 samples_per_image,
                 &mut values,
-                has_flattened_payloads.then_some(&mut *fast_workspace),
+                staged.then_some(&mut *fast_workspace),
                 staged_workspace,
+                stream_pool,
+                image_parallelism,
                 admission,
                 decode_image_i16,
                 round_signed,
@@ -157,6 +191,89 @@ pub(super) fn decode_cpu_group(
     )))
 }
 
+/// How the images of a group that decode one at a time run: in the stream
+/// pool, and with which inner parallelism otherwise (`None`: the
+/// scheduler's own). With an explicit worker count and several images,
+/// streamed images decode in the pool of that many threads (two or more) and
+/// plans serially, also on the worker itself, where offset-plan executions
+/// read it; a single worker decodes serially.
+pub(super) fn image_policy(
+    image_count: usize,
+    streamed: bool,
+    workers: Option<NonZeroUsize>,
+) -> (bool, Option<CpuDecodeParallelism>) {
+    let explicit_group = image_count > 1 && workers.is_some();
+    let pooled = explicit_group && streamed && workers.is_some_and(|count| count.get() > 1);
+    (
+        pooled,
+        explicit_group.then_some(CpuDecodeParallelism::Serial),
+    )
+}
+
+/// Whether the images of a group of `job_count` that decode on a stream pool
+/// of `pool_threads` share it (see `DecoderContext::set_shared_pool`): the
+/// batch plans at least as many workers at once as the pool has threads, so
+/// each thread starts with an image of its own and an idle one takes the
+/// bands of other images still in flight. The images that finish last keep
+/// those rings with fewer images beside them. With fewer workers planned
+/// than threads, each image holds the rings of a decode alone on the pool.
+pub(super) fn shares_stream_pool(
+    job_count: usize,
+    tile_options: TileBatchOptions,
+    pool_threads: usize,
+) -> Result<bool, BatchInfrastructureError> {
+    Ok(retained_worker_count(job_count, tile_options)? >= pool_threads)
+}
+
+/// The encoded bytes up to which an image of a group that shares its stream
+/// pool holds the shared rings, from the encoded lengths of the group's
+/// images: one and a half times their mean. Tier-1 work follows the coded
+/// bytes, so a larger image is the likeliest to decode last with few other
+/// images beside it, and keeps the rings of a decode alone on the pool.
+pub(super) fn shared_ring_bytes(lengths: impl ExactSizeIterator<Item = usize>) -> usize {
+    let count = lengths.len().max(1);
+    let mean = lengths.fold(0_usize, usize::saturating_add) / count;
+    mean.saturating_add(mean / 2)
+}
+
+/// The threads a group's streamed images decode on when the caller set the
+/// worker count, created on first use and kept by the session.
+///
+/// A streamed image hands its Tier-1 bands to the rayon pool it decodes in.
+/// An explicit worker count used to keep each image serial on its worker
+/// thread instead, so `M` images on `N` workers kept
+/// `ceil(M / ceil(M / N))` threads busy (8 images on 6 workers: 4) and the
+/// last images alone at the end. In a pool of exactly `N` threads idle
+/// threads take bands of the images still in flight, so the group keeps all
+/// `N` busy and never runs more: the worker threads only wait for their
+/// images, and the images in flight stay one per worker.
+#[derive(Default)]
+pub(super) struct CpuStreamPool {
+    pool: Option<rayon::ThreadPool>,
+}
+
+impl CpuStreamPool {
+    fn get(&mut self, threads: usize) -> Result<&rayon::ThreadPool, BatchInfrastructureError> {
+        let pool = match self.pool.take() {
+            Some(pool) if pool.current_num_threads() == threads => pool,
+            _ => rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .thread_name(|index| format!("j2k-batch-stream-{index}"))
+                .build()
+                .map_err(|_| BatchInfrastructureError::WorkerSpawnFailed { worker: 0 })?,
+        };
+        Ok(self.pool.insert(pool))
+    }
+
+    /// Threads of the pool, once a group has used it.
+    #[cfg(test)]
+    pub(super) fn threads(&self) -> Option<usize> {
+        self.pool
+            .as_ref()
+            .map(rayon::ThreadPool::current_num_threads)
+    }
+}
+
 pub(super) struct CpuTypedDecodeJob<'image, 'output, T> {
     pub(super) slot: usize,
     pub(super) image: &'image PreparedImage,
@@ -187,6 +304,8 @@ fn run_typed_group<T: Copy + Send>(
     output: &mut Vec<T>,
     flattened_payloads: Option<&mut CpuGroupFastWorkspace>,
     staged_workspace: &mut CpuStagedWorkspace,
+    stream_pool: Option<&rayon::ThreadPool>,
+    image_parallelism: Option<CpuDecodeParallelism>,
     admission: &Arc<BatchAllocationBudget>,
     decode: CpuDecodeFn<T>,
     convert: fn(f32, u8) -> T,
@@ -220,31 +339,56 @@ fn run_typed_group<T: Copy + Send>(
             convert,
         )?;
     } else {
+        let shared_pool = match stream_pool {
+            Some(pool) => shares_stream_pool(jobs.len(), tile_options, pool.current_num_threads())?,
+            None => false,
+        };
+        let shared_bytes = shared_ring_bytes(group.images.iter().map(|image| image.bytes().len()));
         run_retained_chunks(
             workers,
             &mut jobs,
             &mut results,
             tile_options,
             |worker, jobs, results| {
+                // On the worker itself, where offset-plan executions read it.
+                if let Some(parallelism) = image_parallelism {
+                    worker.set_owned_inner_parallelism(parallelism);
+                }
                 let parallelism = worker.prepare_owned_decode();
                 let workspace = worker.take_native_workspace();
                 let mut context = j2k_native::DecoderContext::from_workspace(workspace);
                 let mut claim = None;
                 for (job, slot) in jobs.iter_mut().zip(results) {
+                    context.set_shared_pool(shared_pool && job.image.bytes().len() <= shared_bytes);
                     hold_at_least(
                         admission,
                         &mut claim,
                         job.image.cpu_execution().claim_bytes(),
                     )?;
-                    *slot = Some(decode(
-                        job.image,
-                        options,
-                        &group.info,
-                        parallelism,
-                        &mut context,
-                        worker,
-                        job.output,
-                    ));
+                    *slot = Some(match stream_pool {
+                        // This thread waits while a pool thread decodes the
+                        // image and idle ones take its bands.
+                        Some(pool) => pool.install(|| {
+                            decode(
+                                job.image,
+                                options,
+                                &group.info,
+                                CpuDecodeParallelism::Auto,
+                                &mut context,
+                                worker,
+                                job.output,
+                            )
+                        }),
+                        None => decode(
+                            job.image,
+                            options,
+                            &group.info,
+                            parallelism,
+                            &mut context,
+                            worker,
+                            job.output,
+                        ),
+                    });
                 }
                 worker.restore_native_workspace(context.into_workspace());
                 Ok(())

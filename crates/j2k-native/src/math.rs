@@ -922,9 +922,9 @@ impl<const N: usize> SimdBuffer<N> {
         let capacity =
             Self::padded_len(capacity_len.max(original_len)).ok_or(SimdBufferAllocationError)?;
         let mut data = Vec::new();
-        data.try_reserve_exact(capacity)
+        crate::try_zero_fill_decode_elements(&mut data, capacity)
             .map_err(|_| SimdBufferAllocationError)?;
-        data.resize(padded_len, 0.0);
+        data.truncate(padded_len);
         Ok(Self { data, original_len })
     }
 

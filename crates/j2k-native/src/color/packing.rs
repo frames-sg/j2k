@@ -301,7 +301,7 @@ pub(crate) fn interleave_and_convert(
 }
 
 /// Pack 8-bit RGB planes as interleaved bytes, rounded and saturated.
-fn pack_rgb8(planes: [&[f32]; 3], output: &mut [u8]) {
+pub fn pack_rgb8(planes: [&[f32]; 3], output: &mut [u8]) {
     #[cfg(all(feature = "simd", target_arch = "x86_64"))]
     {
         use fearless_simd::{dispatch, Level};

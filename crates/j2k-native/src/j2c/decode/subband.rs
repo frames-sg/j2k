@@ -44,7 +44,8 @@ pub(crate) use self::placement::BlockPlacement;
 pub(crate) use self::tile_parallel::MIN_BAND_WORK;
 #[cfg(feature = "parallel")]
 pub(in crate::j2c::decode) use self::tile_parallel::{
-    plan_band_route, routes_tile, BandRoute, BandRouting,
+    plan_band_route, plan_band_route_beside, pool_entry_bytes, routes_tile, BandOutput, BandRoute,
+    BandRouting, BlockScratch, PayloadSource, LOCK_BYTES,
 };
 
 /// Decode the code-blocks of the tile's `components` into their sub-bands.
@@ -233,7 +234,7 @@ pub(super) fn decode_sub_band_bitplanes(
 }
 
 /// Where `code_block` lands in `sub_band`'s stored rectangle.
-fn stored_placement(code_block: &CodeBlock, sub_band: &SubBand) -> BlockPlacement {
+pub(super) fn stored_placement(code_block: &CodeBlock, sub_band: &SubBand) -> BlockPlacement {
     BlockPlacement::new(code_block.rect, sub_band.storage_rect)
 }
 

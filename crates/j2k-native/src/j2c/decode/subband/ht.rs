@@ -289,8 +289,6 @@ pub(super) fn decode_sub_band_ht_blocks(
         }
     }
 
-    #[cfg(feature = "simd")]
-    let mut clipped_block_scratch = Vec::new();
     for precinct in sub_band
         .precincts
         .clone()
@@ -334,7 +332,7 @@ pub(super) fn decode_sub_band_ht_blocks(
                     let mut budget = DecodeAllocationBudget::for_storage(storage)?;
                     (
                         super::placement::zeroed_block_scratch(
-                            &mut clipped_block_scratch,
+                            &mut tile_ctx.ht_clipped_block_scratch,
                             code_block.rect.width(),
                             code_block.rect.height(),
                             &mut budget,
@@ -369,7 +367,7 @@ pub(super) fn decode_sub_band_ht_blocks(
                 }
                 if !whole {
                     placement.copy_from_block(
-                        &clipped_block_scratch,
+                        &tile_ctx.ht_clipped_block_scratch,
                         code_block.rect.width(),
                         &mut storage.coefficients[sub_band.coefficients.clone()],
                         stored_stride as usize,

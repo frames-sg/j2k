@@ -121,8 +121,28 @@ pub(crate) struct DecompositionStorage<'a> {
     /// IDWT on the worker pool (see [`parallel_bands`]). Each sub-band's
     /// `coefficients` then hold a ring of bands.
     pub(crate) parallel_bands: bool,
-    /// Whether every component's IDWT rings, and a scratch row each, are
-    /// live at once, because the tile streams its rows to a sink.
+    /// Whether the band rings of `parallel_bands` hold one band more at
+    /// every level, for a classic tile that streams whole rows at full
+    /// resolution from a reader per component (see
+    /// [`parallel_bands::deep_rings`] and [`parallel_bands::reads_whole_rows`]).
+    pub(crate) deep_band_rings: bool,
+    /// Whether the finest level's band rings of `parallel_bands` hold one
+    /// band fewer, for a classic tile that streams full-width rows from a
+    /// reader per component without deep rings (see
+    /// [`parallel_bands::shallow_rings`]).
+    pub(crate) shallow_band_rings: bool,
+    /// Whether the band rings of `parallel_bands` hold two bands at every
+    /// level and their bands stay whole, for a decode whose pool other images
+    /// share, on a pool too small for deep rings (see
+    /// [`parallel_bands::shared_rings`]).
+    pub(crate) shared_pool_band_rings: bool,
+    /// Whether a tile streaming its rows from `parallel_bands` reconstructs
+    /// them through one reader whatever its pool's workers (see
+    /// [`parallel_bands::one_reader`]), which finishes each row in the IDWT's
+    /// rings and holds no batch of rows.
+    pub(crate) one_synthesis_reader: bool,
+    /// Whether every component's IDWT rings are live at once, because the
+    /// tile streams its rows to a sink, finishing them in the rings.
     pub(crate) lockstep_lines: bool,
     /// The f32 samples of IDWT workspace the ROI plan charged for this tile.
     pub(crate) roi_idwt_charge_elements: usize,
@@ -162,6 +182,10 @@ impl DecompositionStorage<'_> {
         self.line_region_idwt = false;
         self.banded_tier1 = false;
         self.parallel_bands = false;
+        self.deep_band_rings = false;
+        self.shallow_band_rings = false;
+        self.shared_pool_band_rings = false;
+        self.one_synthesis_reader = false;
         self.lockstep_lines = false;
         self.roi_idwt_charge_elements = 0;
         self.tier1_band = None;
@@ -230,6 +254,10 @@ pub(crate) struct TileDecodeContext {
     pub(crate) bit_plane_decode_buffers: BitPlaneDecodeBuffers,
     /// A reusable context for decoding HTJ2K code blocks.
     pub(crate) ht_block_decode_context: HtBlockDecodeContext,
+    /// Scratch an HTJ2K code-block that the sub-band stores only part of
+    /// decodes into before its stored part is copied out, sized with the
+    /// serial Tier-1 workspace.
+    pub(crate) ht_clipped_block_scratch: Vec<f32>,
     #[cfg(feature = "parallel")]
     pub(in crate::j2c::decode) ht_task_workspaces: Vec<workspace::HtTaskWorkspace>,
     /// One classic workspace per worker of the tile-wide route.
@@ -258,6 +286,18 @@ pub(crate) struct TileDecodeContext {
     /// band is left running with no worker to finish it.
     #[cfg(all(test, feature = "parallel"))]
     pub(crate) strand_pool_band: bool,
+    /// Test-only: with `strand_pool_band`, the band task started after this
+    /// many others is the one abandoned.
+    #[cfg(all(test, feature = "parallel"))]
+    pub(crate) strand_pool_band_after: usize,
+    /// Test-only: a streamed tile's band decode after this many fails as a
+    /// corrupt code-block's would, on serial and pool bands.
+    #[cfg(test)]
+    pub(crate) fail_band_after: Option<usize>,
+    /// Test-only: each pool band splits into this many parts, as far as its
+    /// blocks allow, whatever the pool's size.
+    #[cfg(all(test, feature = "parallel"))]
+    pub(crate) band_parts: Option<usize>,
     /// Test-only: the average work per band below which a component's
     /// bands decode over whole windows instead of on the pool; zero, so
     /// unit tests' tiny fixtures take the pool, unless a test sets it.
@@ -285,6 +325,12 @@ pub(crate) struct TileDecodeContext {
     /// their per-thread counters see the decode.
     #[cfg(test)]
     pub(crate) enter_pool: bool,
+    /// Test-only decode budget for the component planes, in place of the
+    /// default: `reset` charges them against it, and a region decode
+    /// compares them with it when it chooses whether its rows stream from
+    /// serial bands (see `choose_region_idwt`).
+    #[cfg(test)]
+    pub(crate) planes_budget: Option<usize>,
     /// The raw, decoded samples for each channel.
     pub(crate) channel_data: Vec<ComponentData>,
     /// Optional output window for region-local decode storage.
@@ -294,6 +340,9 @@ pub(crate) struct TileDecodeContext {
     /// Whether the inverse MCT is left to the caller's RGB8 pack, set
     /// around a decode like `round_irreversible_output`.
     pub(crate) defer_mct: bool,
+    /// Whether this context's decodes share their pool with other images
+    /// decoding at the same time (see `DecoderContext::set_shared_pool`).
+    pub(crate) shared_pool: bool,
     /// The inverse MCT this decode left to the caller.
     pub(crate) deferred_mct: Option<mct::DeferredMct>,
     /// The last IDWT level this decode leaves to the RGB8 pack with the
@@ -350,6 +399,8 @@ impl TileDecodeContext {
         let serial_small_decodes = self.serial_small_decodes;
         #[cfg(test)]
         let enter_pool = self.enter_pool;
+        #[cfg(test)]
+        let planes_budget = self.planes_budget;
         *self = Self::default();
         self.output_region = output_region;
         self.round_irreversible_output = round_irreversible_output;
@@ -369,6 +420,7 @@ impl TileDecodeContext {
             self.staged_rgb8_pack = staged_rgb8_pack;
             self.serial_small_decodes = serial_small_decodes;
             self.enter_pool = enter_pool;
+            self.planes_budget = planes_budget;
         }
     }
 
@@ -381,6 +433,7 @@ impl TileDecodeContext {
         self.bit_plane_decode_context = BitPlaneDecodeContext::default();
         self.bit_plane_decode_buffers = BitPlaneDecodeBuffers::default();
         self.ht_block_decode_context = HtBlockDecodeContext::default();
+        self.ht_clipped_block_scratch = Vec::new();
         #[cfg(feature = "parallel")]
         {
             self.ht_task_workspaces = Vec::new();
@@ -393,9 +446,15 @@ impl TileDecodeContext {
         let classic_bytes = self.bit_plane_decode_context.allocated_bytes()?;
         let buffer_bytes = self.bit_plane_decode_buffers.allocated_bytes()?;
         let ht_bytes = self.ht_block_decode_context.allocated_bytes()?;
+        let clipped_bytes = self
+            .ht_clipped_block_scratch
+            .capacity()
+            .checked_mul(size_of::<f32>())
+            .ok_or(ValidationError::ImageTooLarge)?;
         classic_bytes
             .checked_add(buffer_bytes)
             .and_then(|bytes| bytes.checked_add(ht_bytes))
+            .and_then(|bytes| bytes.checked_add(clipped_bytes))
             .ok_or(ValidationError::ImageTooLarge.into())
     }
 

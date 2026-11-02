@@ -590,6 +590,10 @@ pub(super) fn read_u32_pair(values: &[u16], index: usize) -> u32 {
 mod tests;
 
 /// Largest cleanup suffix (MEL + VLC) in bytes, Clause 7.1.4.
+#[cfg_attr(
+    not(any(test, feature = "simd")),
+    expect(dead_code, reason = "only SIMD HT decoding sizes flat VLC bits")
+)]
 pub(super) const MAX_CLEANUP_SUFFIX: usize = 4079;
 
 /// Padding after the unstuffed VLC bytes: one top-up window past the data,
@@ -599,6 +603,10 @@ const FLAT_VLC_PADDING: usize = 16;
 /// Bytes of VLC data a `width` x `height` block can consume: a quad pair takes
 /// at most 30 bits (two seven-bit codewords and a 16-bit U-VLC pair), and the
 /// pairs of a quad row cover four columns.
+#[cfg_attr(
+    not(any(test, feature = "simd")),
+    expect(dead_code, reason = "only SIMD HT decoding sizes flat VLC bits")
+)]
 pub(super) fn flat_vlc_consumable(width: u32, height: u32) -> usize {
     let pairs = (width.div_ceil(4) as usize).saturating_mul(height.div_ceil(2) as usize);
     pairs
@@ -609,6 +617,10 @@ pub(super) fn flat_vlc_consumable(width: u32, height: u32) -> usize {
 }
 
 /// Capacity of the flat VLC buffer of a `width` x `height` block.
+#[cfg_attr(
+    not(any(test, feature = "simd")),
+    expect(dead_code, reason = "only SIMD HT decoding reserves flat VLC bits")
+)]
 pub(super) fn flat_vlc_capacity(width: u32, height: u32) -> usize {
     flat_vlc_consumable(width, height) + FLAT_VLC_PADDING
 }

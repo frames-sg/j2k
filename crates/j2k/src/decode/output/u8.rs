@@ -4,6 +4,7 @@
 
 use crate::backend::{ColorSpace, DecodedComponents as NativeDecodedComponents};
 use crate::J2kError;
+use core::ops::Range;
 use j2k_core::{PixelFormat, Unsupported};
 
 pub(in crate::decode) fn can_decode_u8_directly(
@@ -40,7 +41,7 @@ pub(in crate::decode) fn write_components_u8_output(
 }
 
 /// Write `planes`, each `dims` in size, to `out` from its first byte.
-fn write_planes_u8(
+pub(super) fn write_planes_u8(
     color_space: &ColorSpace,
     has_alpha: bool,
     planes: &[j2k_native::ComponentPlane<'_>],
@@ -49,101 +50,59 @@ fn write_planes_u8(
     stride: usize,
     fmt: PixelFormat,
 ) -> Result<(), J2kError> {
+    let rows = 0..dims.1 as usize;
+    write_plane_rows_u8(color_space, has_alpha, planes, dims, rows, out, stride, fmt)
+}
+
+/// Write rows `rows` of `planes`, each `dims` in size, to `out` from its
+/// first byte, as [`write_planes_u8`] writes those rows of whole planes.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the row-range writer keeps the planes' layout, the rows and the output layout explicit"
+)]
+pub(in crate::decode) fn write_plane_rows_u8(
+    color_space: &ColorSpace,
+    has_alpha: bool,
+    planes: &[j2k_native::ComponentPlane<'_>],
+    dims: (u32, u32),
+    rows: Range<usize>,
+    out: &mut [u8],
+    stride: usize,
+    fmt: PixelFormat,
+) -> Result<(), J2kError> {
     let expected_samples = component_sample_count(dims)?;
     let width = dims.0 as usize;
-    let height = dims.1 as usize;
+    if rows.start > rows.end || rows.end > dims.1 as usize {
+        return Err(J2kError::internal_backend(
+            "component rows outside their planes",
+        ));
+    }
     match (color_space, has_alpha, planes.len(), fmt) {
         (ColorSpace::Gray, false, 1, PixelFormat::Gray8) => {
             validate_component_planes(&planes[..1], expected_samples)?;
-            write_component_rows_u8(&planes[0], out, stride, width, height);
+            write_component_rows_u8(&planes[0], out, stride, width, rows);
             Ok(())
         }
         (ColorSpace::RGB, false, 3, PixelFormat::Rgb8)
         | (ColorSpace::RGB, true, 4, PixelFormat::Rgb8) => {
             validate_component_planes(&planes[..3], expected_samples)?;
-            write_rgb_component_rows_u8(planes, out, stride, width, height);
+            write_rgb_component_rows_u8(planes, out, stride, width, rows);
             Ok(())
         }
         (ColorSpace::RGB, false, 3, PixelFormat::Rgba8) => {
             validate_component_planes(&planes[..3], expected_samples)?;
-            write_rgba_component_rows_u8(planes, out, stride, width, height, true);
+            write_rgba_component_rows_u8(planes, out, stride, width, rows, true);
             Ok(())
         }
         (ColorSpace::RGB, true, 4, PixelFormat::Rgba8) => {
             validate_component_planes(&planes[..4], expected_samples)?;
-            write_rgba_component_rows_u8(planes, out, stride, width, height, false);
+            write_rgba_component_rows_u8(planes, out, stride, width, rows, false);
             Ok(())
         }
         _ => Err(Unsupported {
             what: "backend color space cannot be mapped to requested 8-bit pixel format",
         }
         .into()),
-    }
-}
-
-/// Writes a region decode's rectangles of component rows to an 8-bit
-/// output as [`write_components_u8_output`] writes whole planes. The first
-/// error stops every later write and is returned by [`Self::finish`].
-pub(in crate::decode) struct U8RowSink<'o> {
-    color_space: &'o ColorSpace,
-    has_alpha: bool,
-    out: &'o mut [u8],
-    stride: usize,
-    fmt: PixelFormat,
-    error: Option<J2kError>,
-}
-
-impl<'o> U8RowSink<'o> {
-    /// `out` must already hold the region at `stride` in `fmt`.
-    pub(in crate::decode) fn new(
-        color_space: &'o ColorSpace,
-        has_alpha: bool,
-        out: &'o mut [u8],
-        stride: usize,
-        fmt: PixelFormat,
-    ) -> Self {
-        Self {
-            color_space,
-            has_alpha,
-            out,
-            stride,
-            fmt,
-            error: None,
-        }
-    }
-
-    pub(in crate::decode) fn finish(self) -> Result<(), J2kError> {
-        self.error.map_or(Ok(()), Err)
-    }
-}
-
-impl j2k_native::ComponentRowSink for U8RowSink<'_> {
-    fn write_rows(&mut self, x: u32, y: u32, planes: &[j2k_native::ComponentPlane<'_>]) {
-        if self.error.is_some() {
-            return;
-        }
-        let dims = planes
-            .first()
-            .map_or((0, 0), j2k_native::ComponentPlane::dimensions);
-        let offset = (y as usize)
-            .checked_mul(self.stride)
-            .and_then(|row| row.checked_add((x as usize).checked_mul(self.fmt.bytes_per_pixel())?));
-        let result = match offset.and_then(|offset| self.out.get_mut(offset..)) {
-            Some(out) => write_planes_u8(
-                self.color_space,
-                self.has_alpha,
-                planes,
-                dims,
-                out,
-                self.stride,
-                self.fmt,
-            ),
-            None => Err(J2kError::DimensionOverflow {
-                width: x,
-                height: y,
-            }),
-        };
-        self.error = result.err();
     }
 }
 
@@ -188,16 +147,18 @@ pub(super) fn output_rows(
         .map(move |row| &mut row[..row_bytes])
 }
 
+/// Rows `rows` of `plane`, `width` samples each, written from the first row
+/// of `out` on.
 fn write_component_rows_u8(
     plane: &j2k_native::ComponentPlane<'_>,
     out: &mut [u8],
     stride: usize,
     width: usize,
-    height: usize,
+    rows: Range<usize>,
 ) {
-    for y in 0..height {
+    for (index, y) in rows.enumerate() {
         let src = &plane.samples()[y * width..(y + 1) * width];
-        let dst = &mut out[y * stride..y * stride + width];
+        let dst = &mut out[index * stride..index * stride + width];
         write_samples_as_u8(src, plane.bit_depth(), dst);
     }
 }
@@ -207,11 +168,23 @@ fn write_rgb_component_rows_u8(
     out: &mut [u8],
     stride: usize,
     width: usize,
-    height: usize,
+    rows: Range<usize>,
 ) {
-    for y in 0..height {
+    if planes[..3].iter().all(|plane| plane.bit_depth() == 8) {
+        // `sample_as_u8` at 8 bits is the RGB8 pack's rounding and saturation,
+        // which j2k-native runs at the CPU's SIMD level.
+        for (index, y) in rows.enumerate() {
+            let row = y * width..(y + 1) * width;
+            j2k_native::pack_rgb8(
+                [0, 1, 2].map(|channel| &planes[channel].samples()[row.clone()]),
+                &mut out[index * stride..index * stride + width * 3],
+            );
+        }
+        return;
+    }
+    for (index, y) in rows.enumerate() {
         let row = y * width;
-        let dst = &mut out[y * stride..y * stride + width * 3];
+        let dst = &mut out[index * stride..index * stride + width * 3];
         for x in 0..width {
             let dst = &mut dst[x * 3..x * 3 + 3];
             for channel in 0..3 {
@@ -229,12 +202,12 @@ fn write_rgba_component_rows_u8(
     out: &mut [u8],
     stride: usize,
     width: usize,
-    height: usize,
+    rows: Range<usize>,
     synthesize_alpha: bool,
 ) {
-    for y in 0..height {
+    for (index, y) in rows.enumerate() {
         let row = y * width;
-        let dst = &mut out[y * stride..y * stride + width * 4];
+        let dst = &mut out[index * stride..index * stride + width * 4];
         for x in 0..width {
             let dst = &mut dst[x * 4..x * 4 + 4];
             for channel in 0..3 {
@@ -258,15 +231,32 @@ fn write_samples_as_u8(src: &[f32], bit_depth: u8, dst: &mut [u8]) {
     }
 }
 
+/// [`sample_as_u8`] for an 8-bit sample.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     reason = "samples are rounded and clamped to the unsigned 8-bit output domain before conversion"
 )]
+fn sample_as_u8_depth8(sample: f32) -> u8 {
+    sample.round().clamp(0.0, f32::from(u8::MAX)) as u8
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "samples are rounded and clamped to the unsigned 8-bit output domain before conversion"
+)]
 fn sample_as_u8(sample: f32, bit_depth: u8) -> u8 {
     let rounded = sample.round();
     if bit_depth == 8 {
-        return rounded.clamp(0.0, f32::from(u8::MAX)) as u8;
+        return sample_as_u8_depth8(sample);
+    }
+    if bit_depth > 16 {
+        // The sample over the component's range, as the 8-bit planes of a
+        // full-image decode quantize it.
+        let source_max = ((1_u64 << bit_depth.min(63)) - 1) as f32;
+        return ((sample / source_max) * f32::from(u8::MAX)).round() as u8;
     }
     let max_value = if bit_depth >= 16 {
         f32::from(u16::MAX)

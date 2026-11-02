@@ -159,6 +159,17 @@ impl DecoderContext<'_> {
 }
 
 impl TileDecodeContext {
+    /// The decode budget the component planes are charged against.
+    pub(super) fn planes_budget(&self) -> usize {
+        #[cfg(test)]
+        return self.planes_budget.unwrap_or(DEFAULT_MAX_DECODE_BYTES);
+        #[cfg(not(test))]
+        {
+            let _ = self;
+            DEFAULT_MAX_DECODE_BYTES
+        }
+    }
+
     pub(crate) fn retained_channel_bytes(&self) -> Result<usize> {
         retained_channel_bytes_with_cap(&self.channel_data, DEFAULT_MAX_DECODE_BYTES)
     }
@@ -245,7 +256,8 @@ impl TileDecodeContext {
         let fresh_baseline = retained_baseline_bytes
             .checked_sub(retained_channel_bytes)
             .ok_or_else(allocation_overflow)?;
-        let mut budget = ContextCapacityBudget::from_live_bytes(retained_baseline_bytes)?;
+        let cap = self.planes_budget();
+        let mut budget = ContextCapacityBudget::with_cap(retained_baseline_bytes, cap)?;
         let reused = reset_channel_data(
             &mut self.channel_data,
             &initial_tile.component_infos,
@@ -258,7 +270,7 @@ impl TileDecodeContext {
             Ok(deferred) => (deferred, budget.bytes()),
             Err(error) if retained_channel_bytes != 0 && is_capacity_error(&error) => {
                 self.release_channel_allocations();
-                let mut fresh_budget = ContextCapacityBudget::from_live_bytes(fresh_baseline)?;
+                let mut fresh_budget = ContextCapacityBudget::with_cap(fresh_baseline, cap)?;
                 let deferred = reset_channel_data(
                     &mut self.channel_data,
                     &initial_tile.component_infos,
@@ -514,10 +526,6 @@ struct ContextCapacityBudget {
 }
 
 impl ContextCapacityBudget {
-    fn from_live_bytes(bytes: usize) -> Result<Self> {
-        Self::with_cap(bytes, DEFAULT_MAX_DECODE_BYTES)
-    }
-
     const fn with_cap(bytes: usize, cap: usize) -> Result<Self> {
         if bytes > cap {
             return Err(DecodeError::AllocationTooLarge {

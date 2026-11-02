@@ -14,7 +14,7 @@ use crate::{
     backend,
     batch::{
         allocation::{generic_batch_worker_limit, J2K_BATCH_METADATA_ALLOWANCE_BYTES},
-        scheduler::{retained_inner_parallelism, run_retained_chunks},
+        scheduler::{retained_inner_parallelism, retained_worker_count, run_retained_chunks},
         worker::BatchWorker,
     },
     decode::decode_warnings_for_recovery,
@@ -55,7 +55,7 @@ use self::cpu_fast::CpuGroupFastWorkspace;
 mod cpu_staged;
 use self::cpu_staged::{CpuEntropyOutcome, CpuStagedWorkspace, CPU_ENTROPY_IMAGES_PER_WINDOW};
 mod cpu_execute;
-use self::cpu_execute::decode_cpu_group;
+use self::cpu_execute::{decode_cpu_group, CpuStreamPool};
 mod cpu;
 mod cpu_materialize;
 mod cpu_staged_execute;

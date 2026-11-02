@@ -42,6 +42,7 @@ pub fn j2k::J2kDecoder<'a>::decode_scaled_into(&mut self, &mut Self::Pool, &mut 
 pub fn j2k::J2kDecoder<'a>::from_view(Self::View) -> core::result::Result<Self, Self::Error>
 pub fn j2k::J2kDecoder<'a>::inspect(&'a [u8]) -> core::result::Result<j2k_core::types::Info, Self::Error>
 pub fn j2k::J2kDecoder<'a>::parse(&'a [u8]) -> core::result::Result<Self::View, Self::Error>
+pub fn j2k::J2kDecoder<'a>::set_full_decode_planes_budget(&mut self, usize)
 pub fn j2k::J2kError::is_buffer_error(&self) -> bool
 pub fn j2k::J2kError::is_not_implemented(&self) -> bool
 pub fn j2k::J2kError::is_truncated(&self) -> bool
@@ -2463,11 +2464,13 @@ pub enum j2k_native::Jp2ColorSpec
 pub enum j2k_native::Jp2ComponentMappingType
 pub enum j2k_native::Jp2FileKind
 pub fn j2k_native::ComponentPlane<'a>::into_parts(self) -> j2k_native::ComponentPlaneParts<'a>
+pub fn j2k_native::ComponentRowSink::rgb8_region(&mut self, u32, u32) -> core::option::Option<&mut [u8]>
 pub fn j2k_native::ComponentRowSink::write_rows(&mut self, u32, u32, &[j2k_native::ComponentPlane<'_>])
 pub fn j2k_native::DecodedComponents<'a>::into_parts(self) -> j2k_native::DecodedComponentsParts<'a>
 pub fn j2k_native::DecodedComponents<'a>::live_bytes(&self) -> usize
 pub fn j2k_native::DecodedNativeComponents::allocated_bytes(&self) -> core::option::Option<usize>
 pub fn j2k_native::DecodedNativeComponents::into_parts(self) -> j2k_native::DecodedNativeComponentsParts
+pub fn j2k_native::DecoderContext<'_>::set_shared_pool(&mut self, bool)
 pub fn j2k_native::HtCodeBlockDecodeProfile::new() -> Self
 pub fn j2k_native::HtCodeBlockDecodeWorkspace::coefficient_capacity(&self) -> usize
 pub fn j2k_native::HtCodeBlockDecoder::decode_code_block(&mut self, j2k_native::HtCodeBlockDecodeJob<'_>, &mut [f32]) -> j2k_native::Result<()>
@@ -2499,6 +2502,7 @@ pub fn j2k_native::Image<'a>::decode_components_for_integer_output_with_context<
 pub fn j2k_native::Image<'a>::decode_components_for_integer_output_with_ht_decoder<'ctx>(&self, &'ctx mut j2k_native::DecoderContext<'a>, &mut dyn j2k_native::HtCodeBlockDecoder) -> j2k_native::Result<j2k_native::DecodedComponents<'ctx>>
 pub fn j2k_native::Image<'a>::decode_components_with_ht_decoder<'ctx>(&self, &'ctx mut j2k_native::DecoderContext<'a>, &mut dyn j2k_native::HtCodeBlockDecoder) -> j2k_native::Result<j2k_native::DecodedComponents<'ctx>>
 pub fn j2k_native::Image<'a>::decode_native_components_with_retained_capacity(&self, usize) -> j2k_native::Result<j2k_native::DecodedNativeComponents>
+pub fn j2k_native::Image<'a>::decode_native_region_components_rows_with_context(&self, (u32, u32, u32, u32), &mut j2k_native::DecoderContext<'a>) -> j2k_native::Result<j2k_native::DecodedNativeComponents>
 pub fn j2k_native::Image<'a>::decode_native_with_retained_capacity(&self, usize) -> j2k_native::Result<j2k_native::RawBitmap>
 pub fn j2k_native::Image<'a>::decode_region_components_for_integer_output_with_context<'ctx>(&self, (u32, u32, u32, u32), &'ctx mut j2k_native::DecoderContext<'a>) -> j2k_native::Result<j2k_native::DecodedComponents<'ctx>>
 pub fn j2k_native::Image<'a>::decode_region_components_for_integer_output_with_ht_decoder<'ctx>(&self, &'ctx mut j2k_native::DecoderContext<'a>, (u32, u32, u32, u32), &mut dyn j2k_native::HtCodeBlockDecoder) -> j2k_native::Result<j2k_native::DecodedComponents<'ctx>>
@@ -2506,11 +2510,15 @@ pub fn j2k_native::Image<'a>::decode_region_components_with_ht_decoder<'ctx>(&se
 pub fn j2k_native::Image<'a>::decode_region_rows_for_integer_output_with_context(&self, (u32, u32, u32, u32), &mut j2k_native::DecoderContext<'a>, &mut dyn j2k_native::ComponentRowSink) -> j2k_native::Result<()>
 pub fn j2k_native::Image<'a>::decode_reversible_53_coefficients(&self) -> j2k_native::Result<j2k_native::Reversible53CoefficientImage>
 pub fn j2k_native::Image<'a>::decode_reversible_53_coefficients_with_context(&self, &mut j2k_native::DecoderContext<'a>) -> j2k_native::Result<j2k_native::Reversible53CoefficientImage>
+pub fn j2k_native::Image<'a>::full_decode_planes_floor(&self, usize) -> j2k_native::Result<core::option::Option<usize>>
 pub fn j2k_native::Image<'a>::new_with_reduction(&'a [u8], &j2k_native::DecodeSettings, u8) -> j2k_native::Result<Self>
 pub fn j2k_native::Image<'a>::new_with_retained_baseline(&'a [u8], &j2k_native::DecodeSettings, usize) -> j2k_native::Result<Self>
+pub fn j2k_native::Image<'a>::output_tile_rects(&self) -> j2k_native::Result<alloc::vec::Vec<(u32, u32, u32, u32)>>
 pub fn j2k_native::Image<'a>::prepare_region_decoder_with_context<'image, 'context>(&'image self, &'context mut j2k_native::DecoderContext<'a>) -> j2k_native::Result<j2k_native::PreparedRegionDecoder<'image, 'context, 'a>>
 pub fn j2k_native::Image<'a>::primary_icc_profile(&self) -> core::option::Option<&[u8]>
+pub fn j2k_native::Image<'a>::region_decode_streams_rows(&self) -> bool
 pub fn j2k_native::Image<'a>::retained_allocation_bytes(&self) -> j2k_native::Result<usize>
+pub fn j2k_native::Image<'a>::streamed_rows_native_precision(&self) -> core::option::Option<u8>
 pub fn j2k_native::Image<'a>::supports_direct_device_plane_reuse(&self) -> bool
 pub fn j2k_native::Image<'a>::tile_count(&self) -> u32
 pub fn j2k_native::Image<'a>::uses_high_throughput_block_coding(&self) -> bool
@@ -2543,6 +2551,7 @@ pub fn j2k_native::ResidentHtj2kEncodeError::fmt(&self, &mut core::fmt::Formatte
 pub fn j2k_native::ResidentHtj2kEncodeError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn j2k_native::Reversible53CoefficientImage::encode_htj2k(&self, &j2k_native::EncodeOptions) -> j2k_native::EncodeResult<alloc::vec::Vec<u8>>
 pub fn j2k_native::collect_ht_cleanup_encode_distribution(&[i32], u32, u32, u8) -> j2k_native::EncodeResult<j2k_native::HtCleanupEncodeDistribution>
+pub fn j2k_native::cpu_decode_pool_threads() -> usize
 pub fn j2k_native::decode_ht_code_block_scalar(j2k_native::HtCodeBlockDecodeJob<'_>, &mut [f32]) -> j2k_native::Result<()>
 pub fn j2k_native::decode_ht_code_block_scalar_until_phase(j2k_native::HtCodeBlockDecodeJob<'_>, &mut [f32], j2k_native::HtCodeBlockDecodePhaseLimit) -> j2k_native::Result<()>
 pub fn j2k_native::decode_ht_code_block_scalar_with_workspace(j2k_native::HtCodeBlockDecodeJob<'_>, &mut [f32], &mut j2k_native::HtCodeBlockDecodeWorkspace) -> j2k_native::Result<()>
@@ -2628,6 +2637,7 @@ pub fn j2k_native::irreversible_quantization_profile_scale_ceiling(u8, &j2k_nati
 pub fn j2k_native::irreversible_quantization_scale_bounds(u8, &j2k_native::EncodeOptions) -> (f32, f32)
 pub fn j2k_native::irreversible_quantization_step_for_subband(u8, u8, f32, j2k_types::transform::quantization::IrreversibleQuantizationSubbandScales, j2k_types::tier1::classic::J2kSubBandType, u8, u8) -> j2k_types::transform::quantization::IrreversibleQuantizationStep
 pub fn j2k_native::pack_j2k_code_block_scalar_from_tier1_tokens(&[u8], &[j2k_native::J2kTier1TokenSegment], u8, u8) -> j2k_native::EncodeResult<j2k_types::tier1::classic::EncodedJ2kCodeBlock>
+pub fn j2k_native::pack_rgb8([&[f32]; 3], &mut [u8])
 pub fn j2k_native::packet_math::HtSegmentLengthError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn j2k_native::packet_math::bits_for_ht_cleanup_length(u32, u8) -> u32
 pub fn j2k_native::packet_math::bits_for_ht_refinement_only_length(u32, u8) -> u32

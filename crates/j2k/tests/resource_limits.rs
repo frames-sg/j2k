@@ -58,8 +58,18 @@ const TINY_ROI: Rect = Rect {
 #[test]
 fn decoder_component_planes_over_the_cap_report_requested_and_cap_bytes() {
     let codestream = large_siz_codestream(65_537);
-    let mut decoder = J2kDecoder::new(&codestream).expect("large SIZ parses");
+    // Past the budget, native component planes stream as a region decode of
+    // the whole image, which refuses the claimed tile as too large without
+    // byte counts.
+    let error = J2kDecoder::new(&codestream)
+        .expect("large SIZ parses")
+        .decode_native_components()
+        .expect_err("a 65537x65537 tile exceeds the decode limits");
+    resource_limit(&error);
 
+    // The planes route reports the bytes its planes need and the cap.
+    let mut decoder = J2kDecoder::new(&codestream).expect("large SIZ parses");
+    decoder.set_full_decode_planes_budget(usize::MAX);
     let error = decoder
         .decode_native_components()
         .expect_err("65537x65537 planes exceed the decode cap");
@@ -71,15 +81,19 @@ fn decoder_component_planes_over_the_cap_report_requested_and_cap_bytes() {
 #[test]
 fn decode_into_over_the_cap_reports_requested_and_cap_bytes() {
     // 11600x11600 gray needs 538 MB of f32 planes, over the 512 MiB decode
-    // cap. The decode is rejected before it writes the caller's buffer.
+    // cap. The decode is rejected before it writes the caller's buffer. By
+    // default, 8- and 16-bit decodes past the cap stream as a region of the
+    // whole image instead (and fail on this codestream's packets), so the
+    // planes route is pinned.
     let dimension = 11_600_u32;
     let codestream = large_siz_codestream(dimension);
     let mut decoder = J2kDecoder::new(&codestream).expect("large SIZ parses");
-    let stride = dimension as usize;
-    let mut out = vec![0_u8; stride * stride];
+    decoder.set_full_decode_planes_budget(usize::MAX);
+    let stride = dimension as usize * 2;
+    let mut out = vec![0_u8; stride * dimension as usize];
 
     let error = decoder
-        .decode_into(&mut out, stride, PixelFormat::Gray8)
+        .decode_into(&mut out, stride, PixelFormat::Gray16)
         .expect_err("the planes exceed the decode cap");
 
     let (requested, cap) = resource_limit(&error);

@@ -28,6 +28,7 @@ use super::horizontal::filter_row;
 use super::interleave::interleave_row;
 use super::model::{IDWTInput, IDWTTempOutput};
 use super::try_grow_level_buffer;
+use super::vertical::irreversible_row_scale;
 #[cfg(feature = "parallel")]
 use crate::error::{bail, DecodingError};
 use crate::math::{self, dispatch, f32x8, Level, Simd, SIMD_WIDTH};
@@ -58,7 +59,7 @@ const RING_ROWS: usize = MAX_HALO_ROWS + 2;
 const MIN_STRIP_ROWS: usize = 64;
 
 /// Scratch elements for the two horizontally lifted bands of one row.
-fn horizontal_scratch_elements(width: usize) -> Result<usize> {
+pub(super) fn horizontal_scratch_elements(width: usize) -> Result<usize> {
     if width < MIN_SIMD_ROW_WIDTH {
         return Ok(0);
     }
@@ -305,6 +306,23 @@ impl<'a> Level2d<'a> {
         }
     }
 
+    fn lifting(&self) -> Lifting {
+        Lifting {
+            transform: self.transform,
+            y0: self.y0,
+            height: self.height,
+        }
+    }
+
+    fn row_geometry(&self) -> RowGeometry {
+        RowGeometry {
+            width: self.width,
+            x0: self.x0,
+            transform: self.transform,
+            high_pass: self.high_pass,
+        }
+    }
+
     /// This level with its LL band rows `first_row..` taken from `rows`.
     #[cfg(feature = "parallel")]
     fn with_ll_rows(mut self, rows: &'a [f32], first_row: usize) -> Self {
@@ -317,6 +335,26 @@ impl<'a> Level2d<'a> {
         }
         self
     }
+}
+
+/// What the vertical lifting of a level needs from it: its transform, its
+/// first row, whose parity says which rows each step updates, and its height.
+#[derive(Clone, Copy)]
+pub(super) struct Lifting {
+    pub(super) transform: WaveletTransform,
+    pub(super) y0: usize,
+    pub(super) height: usize,
+}
+
+/// What the horizontal synthesis of one row needs from its level: the row's
+/// width, its first column, whose parity says whether it starts low-pass, the
+/// transform, and the 9-7I high-pass scale.
+#[derive(Clone, Copy)]
+pub(super) struct RowGeometry {
+    pub(super) width: usize,
+    pub(super) x0: usize,
+    pub(super) transform: WaveletTransform,
+    pub(super) high_pass: f32,
 }
 
 pub(super) fn filter_2d_banded(
@@ -407,11 +445,15 @@ pub(super) fn filter_2d_banded_from_bands(
         try_grow_level_buffer(band_scratch, scratch_len)?;
         dispatch!(Level::new(), simd => run_strips(
             simd,
-            level,
+            level.width,
             target,
             parallel_layout.strip_len,
             &mut band_scratch[..scratch_len],
             per_worker,
+            #[inline(always)]
+            |simd, first_row, output, worker_scratch| {
+                stream_strip(simd, level, first_row, output, worker_scratch);
+            },
         ));
     }
     Ok(())
@@ -421,11 +463,12 @@ pub(super) fn filter_2d_banded_from_bands(
 #[inline(always)]
 fn run_strips<S: Simd>(
     simd: S,
-    level: Level2d<'_>,
+    width: usize,
     target: &mut [f32],
     strip_len: usize,
     scratch: &mut [f32],
     per_worker: usize,
+    strip_kernel: impl Fn(S, usize, &mut [f32], &mut [f32]) + Sync,
 ) {
     use rayon::prelude::*;
     use std::sync::Mutex;
@@ -446,15 +489,15 @@ fn run_strips<S: Simd>(
                 #[inline(always)]
                 || {
                     while let Some((strip, output)) = next() {
-                        let first_row = strip * strip_len / level.width;
-                        stream_strip(simd, level, first_row, output, worker_scratch);
+                        let first_row = strip * strip_len / width;
+                        strip_kernel(simd, first_row, output, worker_scratch);
                     }
                 },
             );
             #[cfg(not(feature = "simd"))]
             while let Some((strip, output)) = next() {
-                let first_row = strip * strip_len / level.width;
-                stream_strip(simd, level, first_row, output, worker_scratch);
+                let first_row = strip * strip_len / width;
+                strip_kernel(simd, first_row, output, worker_scratch);
             }
         });
 }
@@ -532,13 +575,24 @@ fn filter_levels_pair(
     let steps = lifting_steps(outer_level.transform);
     let scratch = PairScratch::new(inner_level.width, width, layout, steps)?;
     try_grow_level_buffer(band_scratch, scratch.len)?;
-    dispatch!(Level::new(), simd => run_pair_strips(
+    dispatch!(Level::new(), simd => run_strips(
         simd,
-        [inner_level, outer_level],
+        outer_level.width,
         target,
         layout.strip_len,
         &mut band_scratch[..scratch.len],
-        [scratch.per_worker, scratch.rows_len],
+        scratch.per_worker,
+        #[inline(always)]
+        |simd, first_row, output, worker_scratch| {
+            pair_strip(
+                simd,
+                [inner_level, outer_level],
+                first_row,
+                output,
+                worker_scratch,
+                scratch.rows_len,
+            );
+        },
     ));
     Ok(())
 }
@@ -592,45 +646,6 @@ const fn pair_ll_rows(strip_rows: usize, count: usize) -> usize {
     strip_rows.div_ceil(2) + count + 3
 }
 
-#[cfg(feature = "parallel")]
-#[inline(always)]
-fn run_pair_strips<S: Simd>(
-    simd: S,
-    levels: [Level2d<'_>; 2],
-    target: &mut [f32],
-    strip_len: usize,
-    scratch: &mut [f32],
-    [per_worker, rows_len]: [usize; 2],
-) {
-    use rayon::prelude::*;
-    use std::sync::Mutex;
-
-    let strips = Mutex::new(target.chunks_mut(strip_len).enumerate());
-    let next = || strips.lock().ok().and_then(|mut strips| strips.next());
-    let width = levels[1].width;
-    scratch
-        .par_chunks_mut(per_worker)
-        .with_max_len(1)
-        .for_each(|worker_scratch| {
-            // As in `run_strips`.
-            #[cfg(feature = "simd")]
-            simd.vectorize(
-                #[inline(always)]
-                || {
-                    while let Some((strip, output)) = next() {
-                        let first_row = strip * strip_len / width;
-                        pair_strip(simd, levels, first_row, output, worker_scratch, rows_len);
-                    }
-                },
-            );
-            #[cfg(not(feature = "simd"))]
-            while let Some((strip, output)) = next() {
-                let first_row = strip * strip_len / width;
-                pair_strip(simd, levels, first_row, output, worker_scratch, rows_len);
-            }
-        });
-}
-
 /// Reconstruct rows `first_row..` of `outer` into `output`, after the rows
 /// of `inner` they read.
 #[cfg(feature = "parallel")]
@@ -647,7 +662,7 @@ fn pair_strip<S: Simd>(
     worker_scratch: &mut [f32],
     rows_len: usize,
 ) {
-    let (_, count) = vertical_steps(outer);
+    let (_, count) = vertical_steps(outer.lifting());
     let end = first_row + output.len() / outer.width;
     // The arrivals of `stream_strip` and the LL band rows they read.
     let lo = first_row.saturating_sub(count);
@@ -680,7 +695,7 @@ enum VerticalStep {
 
 /// The vertical lifting steps of a level in order, each with the parity of
 /// the rows it updates, and how many there are.
-fn vertical_steps(level: Level2d<'_>) -> ([(usize, VerticalStep); MAX_HALO_ROWS], usize) {
+fn vertical_steps(level: Lifting) -> ([(usize, VerticalStep); MAX_HALO_ROWS], usize) {
     let low = level.y0 % 2;
     let high = 1 - low;
     match level.transform {
@@ -736,31 +751,11 @@ fn synthesize_level_row<S: Simd>(
     low: &mut [f32],
     high: &mut [f32],
 ) {
-    let row_scale = if level.transform == WaveletTransform::Irreversible97 {
-        if index % 2 == level.y0 % 2 {
-            dwt::DWT97_KAPPA_F32
-        } else {
-            level.high_pass
-        }
-    } else {
-        1.0
-    };
-    let source = if index % 2 == level.even.start_row % 2 {
-        level.even.row(index)
-    } else {
-        level.odd.row(index)
-    };
-    match source {
-        Some((first, second)) => {
-            synthesize_row(simd, level, first, second, row, low, high, row_scale);
-        }
-        // Lifting maps an all-zero row to zeros.
-        None => row.fill(0.0),
-    }
+    synthesize_level_columns(simd, level, index, row, 0..level.width, low, high);
 }
 
-/// [`synthesize_level_row`] restricted to `columns`, one of the level's
-/// [`column_strips`], into `out`.
+/// Synthesize level row `index` over `columns` (the whole row, or one of the
+/// level's [`column_strips`]) into `out`, with 9-7I row scaling.
 #[expect(
     clippy::inline_always,
     reason = "specialized with the streaming kernels"
@@ -775,17 +770,11 @@ fn synthesize_level_columns<S: Simd>(
     low: &mut [f32],
     high: &mut [f32],
 ) {
-    if columns.len() == level.width {
-        synthesize_level_row(simd, level, index, out, low, high);
-        return;
-    }
-    // Strips are only made of even-origin levels (`column_strips`).
     let row_scale = if level.transform == WaveletTransform::Reversible53 {
         1.0
-    } else if index % 2 == level.y0 % 2 {
-        dwt::DWT97_KAPPA_F32
     } else {
-        level.high_pass
+        let y0_parity = u32::from(!level.y0.is_multiple_of(2));
+        irreversible_row_scale(y0_parity, index.is_multiple_of(2), level.high_pass)
     };
     let source = if index % 2 == level.even.start_row % 2 {
         level.even.row(index)
@@ -793,17 +782,34 @@ fn synthesize_level_columns<S: Simd>(
         level.odd.row(index)
     };
     match source {
-        Some((low_source, high_source)) => synthesize_row_columns(
-            simd,
-            level,
-            low_source,
-            high_source,
-            out,
-            columns,
-            low,
-            high,
-            row_scale,
-        ),
+        Some((low_source, high_source)) => {
+            if columns.len() == level.width {
+                synthesize_row(
+                    simd,
+                    level.row_geometry(),
+                    low_source,
+                    high_source,
+                    out,
+                    low,
+                    high,
+                    row_scale,
+                );
+            } else {
+                // Strips are only made of even-origin levels (`column_strips`).
+                synthesize_row_columns(
+                    simd,
+                    level,
+                    low_source,
+                    high_source,
+                    out,
+                    columns,
+                    low,
+                    high,
+                    row_scale,
+                );
+            }
+        }
+        // Lifting maps an all-zero row to zeros.
         None => out.fill(0.0),
     }
 }
@@ -832,7 +838,7 @@ fn stream_level<S: Simd>(
 ) {
     let width = level.width;
     let height = level.height;
-    let (_, count) = vertical_steps(level);
+    let (_, count) = vertical_steps(level.lifting());
     let (low, high) = split_horizontal_scratch(level, horizontal_scratch);
     let mut rows = RingRows {
         rows: target,
@@ -845,7 +851,7 @@ fn stream_level<S: Simd>(
         for arrival in arrivals.start..arrivals.end.min(height) {
             synthesize_level_row(simd, level, arrival, rows.row_mut(arrival), low, high);
         }
-        lift_arrivals(simd, level, arrivals, 0..height, &mut rows);
+        lift_arrivals(simd, level.lifting(), arrivals, 0..height, &mut rows);
     }
 }
 
@@ -870,7 +876,7 @@ fn stream_strip<S: Simd>(
 ) {
     let width = level.width;
     let height = level.height;
-    let (_, count) = vertical_steps(level);
+    let (_, count) = vertical_steps(level.lifting());
     let end = first_row + output.len() / width;
     let lo = first_row.saturating_sub(count);
     let hi = (end + count).min(height);
@@ -889,7 +895,7 @@ fn stream_strip<S: Simd>(
         for arrival in arrivals.start..arrivals.end.min(hi) {
             synthesize_level_row(simd, level, arrival, rows.row_mut(arrival), low, high);
         }
-        lift_arrivals(simd, level, arrivals, lo..hi, &mut rows);
+        lift_arrivals(simd, level.lifting(), arrivals, lo..hi, &mut rows);
     }
 }
 
@@ -1081,6 +1087,33 @@ trait LevelRows {
     fn window<const ROWS: usize>(&mut self, first: usize) -> Option<[&mut [f32]; ROWS]>;
 }
 
+/// Run the vertical lifting steps of `arrivals` (see [`lift_arrivals`]) on
+/// every row of a level `width` samples wide whose rows live in `ring`, row
+/// `n` in slot `n % (ring.len() / width)`, at the CPU's SIMD level, for
+/// callers outside a dispatch. The ring must hold every row the arrivals'
+/// steps read (see [`lift_arrivals`]).
+pub(super) fn lift_ring_arrivals(
+    level: Lifting,
+    width: usize,
+    ring: &mut [f32],
+    arrivals: Range<usize>,
+) {
+    let slots = ring.len().checked_div(width).unwrap_or(0);
+    let mut rows = RingRows {
+        rows: ring,
+        width,
+        stride: width,
+        slots,
+    };
+    dispatch!(Level::new(), simd => lift_arrivals(
+        simd,
+        level,
+        arrivals,
+        0..level.height,
+        &mut rows,
+    ));
+}
+
 /// Arrivals [`stream_level`] and [`stream_strip`] synthesize before they run
 /// those arrivals' vertical steps, so one sweep of the columns runs the
 /// steps of several wavefronts.
@@ -1107,7 +1140,7 @@ const SWEEP_WAVEFRONTS: usize = 2;
 #[inline(always)]
 fn lift_arrivals<S: Simd>(
     simd: S,
-    level: Level2d<'_>,
+    level: Lifting,
     arrivals: Range<usize>,
     live: Range<usize>,
     rows: &mut impl LevelRows,
@@ -1498,7 +1531,39 @@ pub(in crate::j2c) fn lift_rows<S: Simd>(
 }
 
 /// Rows narrower than this use the scalar interleaved `1D_SR`.
-const MIN_SIMD_ROW_WIDTH: usize = 2 * SIMD_WIDTH;
+pub(super) const MIN_SIMD_ROW_WIDTH: usize = 2 * SIMD_WIDTH;
+
+/// [`synthesize_row`] at the CPU's SIMD level, for callers outside a
+/// dispatch: the horizontal synthesis of one row of `geometry` from its two
+/// band rows, `first` holding the samples of column `x0`'s parity, written
+/// interleaved into `row` and, for 9-7I, scaled by `row_scale`. `scratch`
+/// holds at least [`horizontal_scratch_elements`] samples.
+pub(super) fn synthesize_band_row(
+    geometry: RowGeometry,
+    first: &[f32],
+    second: &[f32],
+    row: &mut [f32],
+    scratch: &mut [f32],
+    row_scale: f32,
+) {
+    let (low_len, high_len) = if geometry.x0.is_multiple_of(2) {
+        (first.len(), second.len())
+    } else {
+        (second.len(), first.len())
+    };
+    let (low, rest) = scratch.split_at_mut(low_len + 2);
+    let high = &mut rest[..high_len + 2];
+    dispatch!(Level::new(), simd => synthesize_row(
+        simd,
+        geometry,
+        first,
+        second,
+        row,
+        low,
+        high,
+        row_scale,
+    ));
+}
 
 /// Horizontal `1D_SR` (F.3.6) of one row from its two band rows, written
 /// interleaved into `row`.
@@ -1518,7 +1583,7 @@ const MIN_SIMD_ROW_WIDTH: usize = 2 * SIMD_WIDTH;
 #[inline(always)]
 fn synthesize_row<S: Simd>(
     simd: S,
-    level: Level2d<'_>,
+    level: RowGeometry,
     first: &[f32],
     second: &[f32],
     row: &mut [f32],
@@ -2304,7 +2369,7 @@ mod tests {
                 for (width, height) in [(1, 9), (7, 12), (8, 13), (9, 40), (17, 31), (33, 70)] {
                     let rect = IntRect::from_xywh(3, y0, width, height);
                     let level = Level2d::new(rect, [&[]; 4], transform, 1.25);
-                    let (steps, count) = vertical_steps(level);
+                    let (steps, count) = vertical_steps(level.lifting());
                     let height = height as usize;
                     let width = width as usize;
                     // The whole level, and strip-like windows with halos.
@@ -2340,7 +2405,7 @@ mod tests {
                                 let arrivals = first..(first + batch).min(live.end + count);
                                 dispatch!(Level::new(), simd => lift_arrivals(
                                     simd,
-                                    level,
+                                    level.lifting(),
                                     arrivals.clone(),
                                     live.clone(),
                                     &mut rows,

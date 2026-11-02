@@ -17,13 +17,25 @@ struct RegionDecode {
     decoded_blocks: usize,
     skipped_blocks: usize,
     pool_components: usize,
+    parted_bands: usize,
     peak_coefficients: usize,
 }
 
 /// Decode `roi` with Auto parallelism on the current pool, in bands on the
 /// pool unless `whole_windows`.
 fn decode(image: &Image<'_>, roi: (u32, u32, u32, u32), whole_windows: bool) -> RegionDecode {
-    decode_with_cutoff(image, roi, whole_windows, 0)
+    decode_with(image, roi, whole_windows, None, 0)
+}
+
+/// [`decode`], with every pool band split into `parts` parts as far as its
+/// blocks allow.
+fn decode_in_parts(
+    image: &Image<'_>,
+    roi: (u32, u32, u32, u32),
+    whole_windows: bool,
+    parts: Option<usize>,
+) -> RegionDecode {
+    decode_with(image, roi, whole_windows, parts, 0)
 }
 
 /// [`decode`] with bands averaging less than `band_work_cutoff` decoding over
@@ -34,10 +46,22 @@ fn decode_with_cutoff(
     whole_windows: bool,
     band_work_cutoff: usize,
 ) -> RegionDecode {
+    decode_with(image, roi, whole_windows, None, band_work_cutoff)
+}
+
+/// [`decode_in_parts`] and [`decode_with_cutoff`] at once.
+fn decode_with(
+    image: &Image<'_>,
+    roi: (u32, u32, u32, u32),
+    whole_windows: bool,
+    parts: Option<usize>,
+    band_work_cutoff: usize,
+) -> RegionDecode {
     let mut context = DecoderContext::default();
     context.tile_decode_context.band_work_cutoff = band_work_cutoff;
     context.set_cpu_decode_parallelism(CpuDecodeParallelism::Auto);
     context.tile_decode_context.whole_window_tier1 = whole_windows;
+    context.tile_decode_context.band_parts = parts;
     let native = image
         .decode_native_region_with_context(roi, &mut context)
         .expect("decode region")
@@ -48,6 +72,7 @@ fn decode_with_cutoff(
         decoded_blocks: counters.decoded_code_blocks,
         skipped_blocks: counters.skipped_code_blocks,
         pool_components: counters.pool_band_components,
+        parted_bands: counters.pool_band_parts,
         peak_coefficients: counters.workspace_peak.bytes().coefficients,
     }
 }
@@ -127,22 +152,80 @@ fn pool_bands_match_whole_window_tier1_bit_for_bit() {
                     }
                 }
             }
-            // The route decodes HT blocks and classic blocks of one
-            // arithmetic segment. The encoder terminates every pass when it
-            // writes several layers, so those classic blocks keep whole
-            // windows. Classic tiles with fewer rows of code-blocks than
-            // threads do too, so only two threads reach every other case.
-            let routed = case.options.use_ht_block_coding || case.options.num_layers <= 1;
-            if !routed {
-                assert_eq!(pool_components, 0, "{}", case.label);
-            } else if threads == 2 {
+            // The route decodes HT and classic blocks, those the encoder
+            // terminates at every pass when it writes several layers
+            // included. Classic tiles with fewer rows of code-blocks than
+            // threads keep whole windows, so only two threads reach every
+            // case.
+            if threads == 2 {
                 assert!(pool_components > 0, "{} never used the pool", case.label);
             }
         }
     }
 }
 
+/// Threads may decode a classic band in parts, runs of its blocks, at once:
+/// each part zeroes its own columns of the band's slot and copies its blocks
+/// in under the slot's lock. Every split must match whole-window Tier-1 bit
+/// for bit and decode and skip the same code-blocks.
+#[test]
+fn pool_band_parts_match_whole_window_tier1_bit_for_bit() {
+    let mut parted = 0;
+    for threads in [2, 5] {
+        let pool = pool(threads);
+        for case in cases()
+            .into_iter()
+            .filter(|case| !case.options.use_ht_block_coding && case.options.num_layers <= 1)
+        {
+            let pixels = noisy_pixels(case.components);
+            let bytes = encode(
+                &pixels,
+                WIDTH,
+                HEIGHT,
+                u16::from(case.components),
+                8,
+                false,
+                &case.options,
+            )
+            .expect("encode band part fixture");
+            for reduction in [0_u8, 1] {
+                let image =
+                    Image::new_with_reduction(&bytes, &DecodeSettings::default(), reduction)
+                        .expect("parse band part fixture");
+                let (width, height) = (image.width(), image.height());
+                let tile = TILE >> reduction;
+                for roi in [
+                    (0, 0, width, height),
+                    (width / 3, height / 3, width / 7, height / 9),
+                    (tile - 5, tile - 3, 11, 7),
+                    (width - 1, height - 1, 1, 1),
+                ] {
+                    let whole = pool.install(|| decode(&image, roi, true));
+                    for parts in [2, 3, 7] {
+                        let label = format!(
+                            "{} threads={threads} reduction={reduction} roi={roi:?} parts={parts}",
+                            case.label
+                        );
+                        let banded =
+                            pool.install(|| decode_in_parts(&image, roi, false, Some(parts)));
+                        assert_eq!(banded.native, whole.native, "{label}");
+                        assert_eq!(banded.decoded_blocks, whole.decoded_blocks, "{label}");
+                        assert_eq!(banded.skipped_blocks, whole.skipped_blocks, "{label}");
+                        parted += banded.parted_bands;
+                    }
+                }
+            }
+        }
+    }
+    assert!(parted > 0, "no band decoded in parts");
+}
+
 fn rgb_fixture() -> Vec<u8> {
+    rgb_fixture_coded(false)
+}
+
+/// The noisy RGB image in 16 x 16 code-blocks, HTJ2K ones when `ht`.
+fn rgb_fixture_coded(use_ht_block_coding: bool) -> Vec<u8> {
     let pixels = noisy_pixels(3);
     encode(
         &pixels,
@@ -156,10 +239,103 @@ fn rgb_fixture() -> Vec<u8> {
             num_decomposition_levels: 4,
             code_block_width_exp: 2,
             code_block_height_exp: 2,
+            use_ht_block_coding,
             ..EncodeOptions::default()
         },
     )
     .expect("encode rgb fixture")
+}
+
+/// Discards the rows a decode streams.
+struct DiscardRows;
+
+impl crate::ComponentRowSink for DiscardRows {
+    fn write_rows(&mut self, _x: u32, _y: u32, _planes: &[crate::ComponentPlane<'_>]) {}
+}
+
+/// A tile whose rows stream from pool bands holds every component's plan at
+/// once, beside the scratch of the threads that serve them all, and its
+/// workspace peak counts them together: the three plans add up to the ones
+/// a region decode into planes holds one after another, and the peak holds
+/// all of them.
+#[test]
+fn streamed_pool_bands_record_every_live_plan() {
+    let bytes = rgb_fixture();
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse rgb fixture");
+    let roi = (0, 0, WIDTH, HEIGHT);
+    pool(4).install(|| {
+        let mut context = DecoderContext::default();
+        context.set_cpu_decode_parallelism(CpuDecodeParallelism::Auto);
+        image
+            .decode_native_region_with_context(roi, &mut context)
+            .expect("decode region planes");
+        let one_at_a_time = context.tile_decode_context.debug_counters;
+        let mut context = DecoderContext::default();
+        context.set_cpu_decode_parallelism(CpuDecodeParallelism::Auto);
+        image
+            .decode_region_rows_for_integer_output_with_context(roi, &mut context, &mut DiscardRows)
+            .expect("decode region rows");
+        assert!(context.tile_decode_context.stream_rows);
+        let together = context.tile_decode_context.debug_counters;
+        assert_eq!(one_at_a_time.pool_band_components, 3);
+        assert_eq!(together.pool_band_components, 3);
+        assert_eq!(
+            together.pool_band_plan_bytes,
+            one_at_a_time.pool_band_plan_bytes
+        );
+        let bank = context
+            .tile_decode_context
+            .tier1_capacity_bytes()
+            .expect("bank bytes");
+        let tier1 = together.workspace_peak.bytes().tier1;
+        assert!(
+            tier1 >= bank + together.pool_band_plan_bytes,
+            "peak Tier-1 bytes {tier1}: the bank's {bank} and the plans' {}",
+            together.pool_band_plan_bytes
+        );
+    });
+}
+
+/// A tile streaming its rows from pool bands reserves each thread block
+/// scratch only for the blocks it decodes apart from their band's slot: an
+/// HTJ2K tile, whose bands never split into parts, at most for the blocks a
+/// region clips, and none for the whole image; a classic tile, whose bands
+/// may decode in parts, for a whole 16 x 16 block.
+#[test]
+fn streamed_pool_band_threads_reserve_block_scratch_as_their_bands_need_it() {
+    const BLOCK: usize = 16 * 16;
+    pool(4).install(|| {
+        for ht in [true, false] {
+            let bytes = rgb_fixture_coded(ht);
+            let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse rgb fixture");
+            let held = |roi| {
+                let mut context = DecoderContext::default();
+                context.set_cpu_decode_parallelism(CpuDecodeParallelism::Auto);
+                image
+                    .decode_region_rows_for_integer_output_with_context(
+                        roi,
+                        &mut context,
+                        &mut DiscardRows,
+                    )
+                    .expect("decode region rows");
+                let counters = context.tile_decode_context.debug_counters;
+                assert_eq!(counters.pool_band_components, 3, "ht={ht} {roi:?}");
+                assert_eq!(
+                    counters.thread_scratch_held, counters.thread_scratch_charged,
+                    "ht={ht} {roi:?}"
+                );
+                counters.thread_block_samples
+            };
+            let whole = held((0, 0, WIDTH, HEIGHT));
+            let clipped = held((10, 12, 170, 130));
+            if ht {
+                assert_eq!(whole, 0, "HTJ2K, whole image");
+                assert!(clipped <= BLOCK, "HTJ2K region: {clipped}");
+            } else {
+                assert_eq!((whole, clipped), (BLOCK, BLOCK), "classic");
+            }
+        }
+    });
 }
 
 /// With the pool's other thread held by unrelated work, workers can't run
@@ -451,4 +627,59 @@ fn cheap_bands_decode_over_whole_windows() {
     assert_eq!(cheap.pool_components, 0);
     assert_eq!(cheap.native, pixels);
     assert_eq!(cheap.native, unlimited.native);
+}
+
+/// A region can need a sub-band's rows only from a code-block row it clips,
+/// when the rows of code-blocks below it code nothing: the bands then hold
+/// fewer rows than the ring was laid out for, and the ring cuts more slots
+/// from its rows than it was laid out with. Each slot must still hold whole
+/// rows, so that the bands, split into parts, decode as on one thread.
+#[test]
+fn pool_band_parts_decode_where_only_clipped_code_block_rows_code() {
+    let (width, height) = (256, 256);
+    // Noise in the top rows, flat below: of the finest sub-bands' rows of
+    // 32 x 32 code-blocks, only the first codes anything.
+    let mut state = 0x2545_f491_u32;
+    let pixels: Vec<u8> = (0..width * height)
+        .map(|at| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            if at / width < 48 {
+                state.to_le_bytes()[3]
+            } else {
+                128
+            }
+        })
+        .collect();
+    let bytes = encode(
+        &pixels,
+        width,
+        height,
+        1,
+        8,
+        false,
+        &EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 2,
+            code_block_width_exp: 3,
+            code_block_height_exp: 3,
+            ..EncodeOptions::default()
+        },
+    )
+    .expect("encode clipped-rows fixture");
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("parse clipped-rows fixture");
+    // The regions clip the first row of code-blocks of every sub-band, to
+    // 20 down to 12 of the finest sub-bands' 32 rows: 96 rows laid out for
+    // three slots then hold four to eight bands of the clipped rows, five
+    // and seven of which leave rows over.
+    for top in (40..=56).step_by(2) {
+        let roi = (0, top, width, height - top);
+        let serial = pool(1).install(|| decode(&image, roi, false));
+        for parts in [2, 4] {
+            let pooled = pool(4).install(|| decode_in_parts(&image, roi, false, Some(parts)));
+            assert!(pooled.parted_bands > 0, "{roi:?} in {parts} parts");
+            assert_eq!(pooled.native, serial.native, "{roi:?} in {parts} parts");
+        }
+    }
 }

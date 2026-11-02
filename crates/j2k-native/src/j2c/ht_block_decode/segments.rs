@@ -71,7 +71,7 @@ pub(crate) fn visit_code_block_segments<'a>(
     let mut cleanup_seen = false;
 
     for layer in &storage.layers[code_block.layers.start..code_block.layers.end] {
-        let Some(range) = layer.segments.clone() else {
+        let Some(range) = layer.segments() else {
             continue;
         };
 

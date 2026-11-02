@@ -2,8 +2,9 @@
 
 //! Sixteen-bit channel-layout conversion for native decoded samples.
 
-use crate::backend::{ColorSpace, DecodedComponents as NativeDecodedComponents, RawBitmap};
+use crate::backend::{ColorSpace, DecodedComponents as NativeDecodedComponents, Image, RawBitmap};
 use crate::J2kError;
+use core::ops::Range;
 use j2k_core::{PixelFormat, Unsupported};
 
 use super::u8::{component_sample_count, output_rows, validate_component_planes};
@@ -14,36 +15,116 @@ pub(in crate::decode) fn write_components_u16_output(
     stride: usize,
     fmt: PixelFormat,
 ) -> Result<(), J2kError> {
-    let dims = components.dimensions();
-    let expected_samples = component_sample_count(dims)?;
-    let width = dims.0 as usize;
-    let height = dims.1 as usize;
-    let planes = components.planes();
-    match (
+    write_planes_u16(
         components.color_space(),
         components.has_alpha(),
-        planes.len(),
+        components.planes(),
+        components.dimensions(),
+        out,
+        stride,
         fmt,
-    ) {
+    )
+}
+
+/// Whether a region decode of `image` to `fmt` may stream its rows through
+/// [`super::U16RowSink`]: they carry the samples `decode_native_region` packs (see
+/// `Image::streamed_rows_native_precision`: every component has one
+/// precision of at most 24 bits), which `U16Conversion` converts to the
+/// bytes [`write_u16_output`] writes from those packed samples, and
+/// `fmt` is a layout the image's color space maps to. Images that fail any
+/// of these keep the native-bit-depth planes, with their output or error.
+pub(in crate::decode) fn rows_match_native_u16(image: &Image<'_>, fmt: PixelFormat) -> bool {
+    image.streamed_rows_native_precision().is_some()
+        && matches!(
+            (image.color_space(), image.has_alpha(), fmt),
+            (ColorSpace::Gray, false, PixelFormat::Gray16)
+                | (ColorSpace::RGB, _, PixelFormat::Rgb16 | PixelFormat::Rgba16)
+        )
+}
+
+/// The bytes the planes route charges at least when it packs `image`'s
+/// native samples for a 16-bit `fmt` (see [`super::planes_pack_floor`]),
+/// when a region decode of `image` may stream its rows to `fmt` instead
+/// (see [`rows_match_native_u16`]).
+pub(in crate::decode) fn u16_rows_pack_floor(image: &Image<'_>, fmt: PixelFormat) -> Option<usize> {
+    let precision = image.streamed_rows_native_precision()?;
+    rows_match_native_u16(image, fmt)
+        .then(|| super::planes_pack_floor(image, usize::from(precision).div_ceil(8)))
+}
+
+/// Whether a 16-bit region decode of `roi` of `image` to `fmt` streams its
+/// rows (see [`rows_match_native_u16`] and [`super::region_rows_preferred`])
+/// rather than packing the region's native samples.
+pub(in crate::decode) fn region_rows_preferred_u16(
+    image: &Image<'_>,
+    fmt: PixelFormat,
+    roi: j2k_core::Rect,
+) -> bool {
+    image
+        .streamed_rows_native_precision()
+        .is_some_and(|precision| {
+            rows_match_native_u16(image, fmt)
+                && super::region_rows_preferred(image, roi, usize::from(precision).div_ceil(8))
+        })
+}
+
+/// Write `planes`, each `dims` in size, to `out` from its first byte.
+pub(super) fn write_planes_u16(
+    color_space: &ColorSpace,
+    has_alpha: bool,
+    planes: &[j2k_native::ComponentPlane<'_>],
+    dims: (u32, u32),
+    out: &mut [u8],
+    stride: usize,
+    fmt: PixelFormat,
+) -> Result<(), J2kError> {
+    let rows = 0..dims.1 as usize;
+    write_plane_rows_u16(color_space, has_alpha, planes, dims, rows, out, stride, fmt)
+}
+
+/// Write rows `rows` of `planes`, each `dims` in size, to `out` from its
+/// first byte, as [`write_planes_u16`] writes those rows of whole planes.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the row-range writer keeps the planes' layout, the rows and the output layout explicit"
+)]
+pub(in crate::decode) fn write_plane_rows_u16(
+    color_space: &ColorSpace,
+    has_alpha: bool,
+    planes: &[j2k_native::ComponentPlane<'_>],
+    dims: (u32, u32),
+    rows: Range<usize>,
+    out: &mut [u8],
+    stride: usize,
+    fmt: PixelFormat,
+) -> Result<(), J2kError> {
+    let expected_samples = component_sample_count(dims)?;
+    let width = dims.0 as usize;
+    if rows.start > rows.end || rows.end > dims.1 as usize {
+        return Err(J2kError::internal_backend(
+            "component rows outside their planes",
+        ));
+    }
+    match (color_space, has_alpha, planes.len(), fmt) {
         (ColorSpace::Gray, false, 1, PixelFormat::Gray16) => {
             validate_component_planes(&planes[..1], expected_samples)?;
-            write_component_rows_u16(&planes[0], out, stride, width, height);
+            write_component_rows_u16(&planes[0], out, stride, width, rows);
             Ok(())
         }
         (ColorSpace::RGB, false, 3, PixelFormat::Rgb16)
         | (ColorSpace::RGB, true, 4, PixelFormat::Rgb16) => {
             validate_component_planes(&planes[..3], expected_samples)?;
-            write_rgb_component_rows_u16(planes, out, stride, width, height);
+            write_rgb_component_rows_u16(planes, out, stride, width, rows);
             Ok(())
         }
         (ColorSpace::RGB, false, 3, PixelFormat::Rgba16) => {
             validate_component_planes(&planes[..3], expected_samples)?;
-            write_rgba_component_rows_u16(planes, out, stride, width, height, true);
+            write_rgba_component_rows_u16(planes, out, stride, width, rows, true);
             Ok(())
         }
         (ColorSpace::RGB, true, 4, PixelFormat::Rgba16) => {
             validate_component_planes(&planes[..4], expected_samples)?;
-            write_rgba_component_rows_u16(planes, out, stride, width, height, false);
+            write_rgba_component_rows_u16(planes, out, stride, width, rows, false);
             Ok(())
         }
         _ => Err(Unsupported {
@@ -53,20 +134,23 @@ pub(in crate::decode) fn write_components_u16_output(
     }
 }
 
+/// Rows `rows` of `plane`, `width` samples each, written from the first row
+/// of `out` on.
 fn write_component_rows_u16(
     plane: &j2k_native::ComponentPlane<'_>,
     out: &mut [u8],
     stride: usize,
     width: usize,
-    height: usize,
+    rows: Range<usize>,
 ) {
-    for y in 0..height {
-        let src = &plane.samples()[y * width..(y + 1) * width];
-        let dst = &mut out[y * stride..y * stride + width * 2];
-        for (sample, destination) in src.iter().zip(dst.as_chunks_mut::<2>().0) {
-            *destination =
-                component_sample_as_u16(*sample, plane.bit_depth(), plane.signed()).to_le_bytes();
-        }
+    let conversion = U16Conversion::new(plane.bit_depth(), plane.signed());
+    for (index, y) in rows.enumerate() {
+        conversion.visit(ChannelWriter {
+            src: &plane.samples()[y * width..(y + 1) * width],
+            dst: &mut out[index * stride..index * stride + width * 2],
+            channels: 1,
+            channel: 0,
+        });
     }
 }
 
@@ -75,9 +159,9 @@ fn write_rgb_component_rows_u16(
     out: &mut [u8],
     stride: usize,
     width: usize,
-    height: usize,
+    rows: Range<usize>,
 ) {
-    write_color_component_rows_u16(planes, out, stride, width, height, 3, false);
+    write_color_component_rows_u16(planes, out, stride, width, rows, 3, false);
 }
 
 fn write_rgba_component_rows_u16(
@@ -85,10 +169,10 @@ fn write_rgba_component_rows_u16(
     out: &mut [u8],
     stride: usize,
     width: usize,
-    height: usize,
+    rows: Range<usize>,
     synthesize_alpha: bool,
 ) {
-    write_color_component_rows_u16(planes, out, stride, width, height, 4, synthesize_alpha);
+    write_color_component_rows_u16(planes, out, stride, width, rows, 4, synthesize_alpha);
 }
 
 fn write_color_component_rows_u16(
@@ -96,69 +180,247 @@ fn write_color_component_rows_u16(
     out: &mut [u8],
     stride: usize,
     width: usize,
-    height: usize,
+    rows: Range<usize>,
     output_channels: usize,
     synthesize_alpha: bool,
 ) {
-    for y in 0..height {
-        let row = y * width;
-        let destination = &mut out[y * stride..y * stride + width * output_channels * 2];
-        for x in 0..width {
-            let pixel = &mut destination[x * output_channels * 2..(x + 1) * output_channels * 2];
-            for channel in 0..3 {
-                let sample = component_sample_as_u16(
-                    planes[channel].samples()[row + x],
-                    planes[channel].bit_depth(),
-                    planes[channel].signed(),
-                );
-                pixel[channel * 2..channel * 2 + 2].copy_from_slice(&sample.to_le_bytes());
+    let color = [0, 1, 2]
+        .map(|channel| U16Conversion::new(planes[channel].bit_depth(), planes[channel].signed()));
+    let fused = color[1] == color[0] && color[2] == color[0];
+    let alpha = (output_channels == 4 && !synthesize_alpha)
+        .then(|| U16Conversion::new(planes[3].bit_depth(), planes[3].signed()));
+    let opaque = opaque_alpha_u16(
+        usize::from(planes[0].bit_depth()).div_ceil(8),
+        planes[0].bit_depth(),
+    )
+    .to_le_bytes();
+    for (index, y) in rows.enumerate() {
+        let row = y * width..(y + 1) * width;
+        let destination = &mut out[index * stride..index * stride + width * output_channels * 2];
+        if fused {
+            color[0].visit(PixelWriter {
+                src: [0, 1, 2].map(|channel| &planes[channel].samples()[row.clone()]),
+                dst: destination,
+                channels: output_channels,
+            });
+        } else {
+            for (channel, conversion) in color.iter().enumerate() {
+                conversion.visit(ChannelWriter {
+                    src: &planes[channel].samples()[row.clone()],
+                    dst: destination,
+                    channels: output_channels,
+                    channel,
+                });
             }
-            if output_channels == 4 {
-                let alpha = if synthesize_alpha {
-                    opaque_alpha_u16(
-                        usize::from(planes[0].bit_depth()).div_ceil(8),
-                        planes[0].bit_depth(),
-                    )
-                } else {
-                    component_sample_as_u16(
-                        planes[3].samples()[row + x],
-                        planes[3].bit_depth(),
-                        planes[3].signed(),
-                    )
-                };
-                pixel[6..8].copy_from_slice(&alpha.to_le_bytes());
+        }
+        match &alpha {
+            Some(conversion) => conversion.visit(ChannelWriter {
+                src: &planes[3].samples()[row],
+                dst: destination,
+                channels: 4,
+                channel: 3,
+            }),
+            None if output_channels == 4 => {
+                for pixel in destination.as_chunks_mut::<8>().0 {
+                    pixel[6..8].copy_from_slice(&opaque);
+                }
+            }
+            None => {}
+        }
+    }
+}
+
+/// How [`U16Conversion`] turns a rounded sample into its output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum U16Kind {
+    /// Unsigned 8 bits: the byte times 257, which is its widened value.
+    Byte,
+    /// Fewer unsigned bits: the byte's widened value from the table.
+    ByteTable,
+    /// Signed, at most 8 bits: the two's-complement byte's widened value.
+    SignedByteTable,
+    /// Unsigned, 9 bits or more: the sample clamped to 16 bits.
+    Unsigned,
+    /// Signed, 9 bits or more: the two's complement of the sample clamped
+    /// to 16 bits.
+    Signed,
+}
+
+/// Converts the decoded samples of one component of `bit_depth` bits to
+/// 16-bit output: rounded, clamped to the component's signed or unsigned
+/// range, and to 16 bits past 16, and, for at most 8 bits, clamped to a
+/// byte and widened across the 16-bit range as [`write_u16_output`] widens
+/// native 8-bit samples. The choices are made once per plane.
+#[derive(Debug, PartialEq)]
+struct U16Conversion {
+    kind: U16Kind,
+    /// The component's range, or the byte's for at most 8 unsigned bits.
+    bounds: (f32, f32),
+    /// The widened value of each byte for the table kinds.
+    widened: [u16; 256],
+}
+
+impl U16Conversion {
+    fn new(bit_depth: u8, signed: bool) -> Self {
+        if bit_depth <= 8 {
+            let (kind, bounds) = if signed {
+                let magnitude = 1_i16 << bit_depth.saturating_sub(1);
+                (
+                    U16Kind::SignedByteTable,
+                    (f32::from(-magnitude), f32::from(magnitude - 1)),
+                )
+            } else if bit_depth == 8 {
+                (U16Kind::Byte, (0.0, f32::from(u8::MAX)))
+            } else {
+                (U16Kind::ByteTable, (0.0, f32::from(u8::MAX)))
+            };
+            return Self {
+                kind,
+                bounds,
+                widened: widened_u8_samples(bit_depth),
+            };
+        }
+        let (kind, bounds) = if signed {
+            let magnitude = 1_i32 << (bit_depth.min(16) - 1);
+            (
+                U16Kind::Signed,
+                (
+                    f32::from(i16::try_from(-magnitude).unwrap_or(i16::MIN)),
+                    f32::from(i16::try_from(magnitude - 1).unwrap_or(i16::MAX)),
+                ),
+            )
+        } else {
+            let max = (1_u32 << bit_depth.min(16)) - 1;
+            (
+                U16Kind::Unsigned,
+                (0.0, f32::from(u16::try_from(max).unwrap_or(u16::MAX))),
+            )
+        };
+        Self {
+            kind,
+            bounds,
+            widened: [0; 256],
+        }
+    }
+
+    /// Hand `writer` this conversion as a closure of its kind.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::inline_always,
+        reason = "decoded samples are rounded and clamped to the component's declared integer representation; the chosen conversion is inlined into the writer so each kind compiles to its own fixed-size pixel loop"
+    )]
+    #[inline(always)]
+    fn visit(&self, writer: impl U16Writer) {
+        let (min, max) = self.bounds;
+        let widened = &self.widened;
+        match self.kind {
+            U16Kind::Byte => {
+                writer.write(|sample: f32| u16::from(sample.round().clamp(min, max) as u8) * 257);
+            }
+            U16Kind::ByteTable => writer
+                .write(|sample: f32| widened[usize::from(sample.round().clamp(min, max) as u8)]),
+            U16Kind::SignedByteTable => writer.write(|sample: f32| {
+                widened[usize::from((sample.round().clamp(min, max) as i8) as u8)]
+            }),
+            U16Kind::Unsigned => writer.write(|sample: f32| sample.round().clamp(min, max) as u16),
+            U16Kind::Signed => {
+                writer.write(|sample: f32| (sample.round().clamp(min, max) as i16) as u16);
             }
         }
     }
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "decoded samples are rounded and clamped to the component's declared integer representation"
-)]
-fn component_sample_as_u16(sample: f32, bit_depth: u8, signed: bool) -> u16 {
-    let rounded = sample.round();
-    if signed {
-        if bit_depth <= 8 {
-            let magnitude_bits = u32::from(bit_depth.saturating_sub(1));
-            let min = -(1_i16 << magnitude_bits);
-            let max = (1_i16 << magnitude_bits) - 1;
-            return widen_u8_sample_to_u16(
-                (rounded.clamp(f32::from(min), f32::from(max)) as i8) as u8,
-                bit_depth,
-            );
+/// Writes rows of samples with a [`U16Conversion`]'s closure.
+trait U16Writer {
+    fn write(self, convert: impl Fn(f32) -> u16);
+}
+
+/// One component's samples into one channel of interleaved pixels.
+struct ChannelWriter<'s, 'd> {
+    src: &'s [f32],
+    dst: &'d mut [u8],
+    channels: usize,
+    channel: usize,
+}
+
+impl U16Writer for ChannelWriter<'_, '_> {
+    #[expect(
+        clippy::inline_always,
+        reason = "the conversion closure is inlined into the fixed-size pixel loop it runs in"
+    )]
+    #[inline(always)]
+    fn write(self, convert: impl Fn(f32) -> u16) {
+        let Self {
+            src,
+            dst,
+            channels,
+            channel,
+        } = self;
+        // Whole pixels of a constant size, which the compiler vectorizes.
+        match channels {
+            1 => write_channel::<2>(src, dst, channel, convert),
+            3 => write_channel::<6>(src, dst, channel, convert),
+            _ => write_channel::<8>(src, dst, channel, convert),
         }
-        let magnitude_bits = u32::from(bit_depth.min(16).saturating_sub(1));
-        let min = i16::try_from(-(1_i32 << magnitude_bits)).unwrap_or(i16::MIN);
-        let max = i16::try_from((1_i32 << magnitude_bits) - 1).unwrap_or(i16::MAX);
-        return (rounded.clamp(f32::from(min), f32::from(max)) as i16) as u16;
     }
-    if bit_depth <= 8 {
-        return widen_u8_sample_to_u16(rounded.clamp(0.0, f32::from(u8::MAX)) as u8, bit_depth);
+}
+
+#[expect(
+    clippy::inline_always,
+    reason = "the conversion closure is inlined into the fixed-size pixel loop it runs in"
+)]
+#[inline(always)]
+fn write_channel<const PIXEL: usize>(
+    src: &[f32],
+    dst: &mut [u8],
+    channel: usize,
+    convert: impl Fn(f32) -> u16,
+) {
+    for (pixel, &sample) in dst.as_chunks_mut::<PIXEL>().0.iter_mut().zip(src) {
+        pixel[channel * 2..channel * 2 + 2].copy_from_slice(&convert(sample).to_le_bytes());
     }
-    let max = u16::try_from((1_u32 << u32::from(bit_depth.min(16))) - 1).unwrap_or(u16::MAX);
-    rounded.clamp(0.0, f32::from(max)) as u16
+}
+
+/// Three components' samples into the first three channels of interleaved
+/// pixels, one pixel at a time.
+struct PixelWriter<'s, 'd> {
+    src: [&'s [f32]; 3],
+    dst: &'d mut [u8],
+    channels: usize,
+}
+
+impl U16Writer for PixelWriter<'_, '_> {
+    #[expect(
+        clippy::inline_always,
+        reason = "the conversion closure is inlined into the fixed-size pixel loop it runs in"
+    )]
+    #[inline(always)]
+    fn write(self, convert: impl Fn(f32) -> u16) {
+        let Self { src, dst, channels } = self;
+        match channels {
+            3 => write_pixels::<6>(src, dst, convert),
+            _ => write_pixels::<8>(src, dst, convert),
+        }
+    }
+}
+
+#[expect(
+    clippy::inline_always,
+    reason = "the conversion closure is inlined into the fixed-size pixel loop it runs in"
+)]
+#[inline(always)]
+fn write_pixels<const PIXEL: usize>(
+    [red, green, blue]: [&[f32]; 3],
+    dst: &mut [u8],
+    convert: impl Fn(f32) -> u16,
+) {
+    let samples = red.iter().zip(green).zip(blue);
+    for (pixel, ((&red, &green), &blue)) in dst.as_chunks_mut::<PIXEL>().0.iter_mut().zip(samples) {
+        pixel[..2].copy_from_slice(&convert(red).to_le_bytes());
+        pixel[2..4].copy_from_slice(&convert(green).to_le_bytes());
+        pixel[4..6].copy_from_slice(&convert(blue).to_le_bytes());
+    }
 }
 
 pub(in crate::decode) fn write_u16_output(
@@ -171,13 +433,14 @@ pub(in crate::decode) fn write_u16_output(
 ) -> Result<(), J2kError> {
     let width = raw.width as usize;
     let height = raw.height as usize;
+    let signed = channel_signedness(raw);
     match (color_space, has_alpha, raw.num_components, fmt) {
         (ColorSpace::RGB, false, 3, PixelFormat::Rgb16) => {
             convert_or_copy_u16(
                 &raw.data,
                 raw.bytes_per_sample,
                 raw.bit_depth,
-                3,
+                &signed[..3],
                 out,
                 stride,
                 (width, height),
@@ -189,6 +452,7 @@ pub(in crate::decode) fn write_u16_output(
                 src: &raw.data,
                 bytes_per_sample: raw.bytes_per_sample,
                 bit_depth: raw.bit_depth,
+                signed,
                 source_channels: 4,
                 layout: U16ChannelLayout::Drop,
                 out,
@@ -202,6 +466,7 @@ pub(in crate::decode) fn write_u16_output(
                 src: &raw.data,
                 bytes_per_sample: raw.bytes_per_sample,
                 bit_depth: raw.bit_depth,
+                signed,
                 source_channels: 3,
                 layout: U16ChannelLayout::Synthesize,
                 out,
@@ -215,6 +480,7 @@ pub(in crate::decode) fn write_u16_output(
                 src: &raw.data,
                 bytes_per_sample: raw.bytes_per_sample,
                 bit_depth: raw.bit_depth,
+                signed,
                 source_channels: 4,
                 layout: U16ChannelLayout::Preserve,
                 out,
@@ -228,7 +494,7 @@ pub(in crate::decode) fn write_u16_output(
                 &raw.data,
                 raw.bytes_per_sample,
                 raw.bit_depth,
-                1,
+                &signed[..1],
                 out,
                 stride,
                 (width, height),
@@ -253,6 +519,8 @@ struct U16ChannelRows<'src, 'out> {
     src: &'src [u8],
     bytes_per_sample: u8,
     bit_depth: u8,
+    /// Whether each source channel is signed.
+    signed: [bool; 4],
     source_channels: usize,
     layout: U16ChannelLayout,
     out: &'out mut [u8],
@@ -265,6 +533,7 @@ fn write_u16_channel_rows(job: U16ChannelRows<'_, '_>) {
         src,
         bytes_per_sample,
         bit_depth,
+        signed,
         source_channels,
         layout,
         out,
@@ -280,6 +549,7 @@ fn write_u16_channel_rows(job: U16ChannelRows<'_, '_>) {
     let src_row_bytes = width * source_channels * bytes_per_sample;
     let dst_row_bytes = width * dst_channels * 2;
     let alpha = opaque_alpha_u16(bytes_per_sample, bit_depth);
+    let widened = widened_u8_samples(bit_depth);
 
     let dst_rows = output_rows(out, stride, dst_row_bytes, height);
     for (src_row, dst_row) in src.chunks_exact(src_row_bytes).zip(dst_rows) {
@@ -287,7 +557,13 @@ fn write_u16_channel_rows(job: U16ChannelRows<'_, '_>) {
             let src_pixel = &src_row[x * source_channels * bytes_per_sample..];
             let dst_pixel = &mut dst_row[x * dst_channels * 2..(x + 1) * dst_channels * 2];
             for channel in 0..3 {
-                let sample = output_u16_sample(src_pixel, channel, bytes_per_sample, bit_depth);
+                let sample = output_u16_sample(
+                    src_pixel,
+                    channel,
+                    bytes_per_sample,
+                    signed[channel],
+                    &widened,
+                );
                 dst_pixel[channel * 2..channel * 2 + 2].copy_from_slice(&sample.to_le_bytes());
             }
             match layout {
@@ -296,7 +572,8 @@ fn write_u16_channel_rows(job: U16ChannelRows<'_, '_>) {
                     dst_pixel[6..8].copy_from_slice(&alpha.to_le_bytes());
                 }
                 U16ChannelLayout::Preserve => {
-                    let sample = output_u16_sample(src_pixel, 3, bytes_per_sample, bit_depth);
+                    let sample =
+                        output_u16_sample(src_pixel, 3, bytes_per_sample, signed[3], &widened);
                     dst_pixel[6..8].copy_from_slice(&sample.to_le_bytes());
                 }
             }
@@ -312,17 +589,49 @@ fn opaque_alpha_u16(bytes_per_sample: usize, bit_depth: u8) -> u16 {
     }
 }
 
+/// Whether each channel of `raw`'s pixels is signed (the first four).
+fn channel_signedness(raw: &RawBitmap) -> [bool; 4] {
+    core::array::from_fn(|channel| {
+        raw.component_signed
+            .get(channel)
+            .copied()
+            .unwrap_or(raw.signed)
+    })
+}
+
+/// `widened` is [`widened_u8_samples`] of the samples' bit depth.
 fn output_u16_sample(
     src_pixel: &[u8],
     channel: usize,
     bytes_per_sample: usize,
-    bit_depth: u8,
+    signed: bool,
+    widened: &[u16; 256],
 ) -> u16 {
     let offset = channel * bytes_per_sample;
-    if bytes_per_sample == 2 {
-        return u16::from_le_bytes([src_pixel[offset], src_pixel[offset + 1]]);
+    match bytes_per_sample {
+        1 => widened[usize::from(src_pixel[offset])],
+        2 => u16::from_le_bytes([src_pixel[offset], src_pixel[offset + 1]]),
+        _ => clamped_wide_sample(&src_pixel[offset..offset + bytes_per_sample], signed),
     }
-    widen_u8_sample_to_u16(src_pixel[offset], bit_depth)
+}
+
+/// The 16-bit output of a native sample of more than two little-endian
+/// bytes, from an image deeper than 16 bits: its value clamped to the
+/// 16-bit range, as two's complement when `signed`. This is what
+/// [`U16Conversion`] writes for the sample's decoded value, and what scaled
+/// decodes, which convert component planes, always wrote.
+fn clamped_wide_sample(bytes: &[u8], signed: bool) -> u16 {
+    let len = bytes.len().min(8);
+    let mut le = [0_u8; 8];
+    le[..len].copy_from_slice(&bytes[..len]);
+    if signed {
+        // Sign-extend from the sample's top byte.
+        let unused = 64 - 8 * len;
+        let value = (i64::from_le_bytes(le) << unused) >> unused;
+        let clamped = value.clamp(i64::from(i16::MIN), i64::from(i16::MAX));
+        return u16::from_le_bytes(i16::try_from(clamped).unwrap_or(i16::MAX).to_le_bytes());
+    }
+    u16::try_from(u64::from_le_bytes(le)).unwrap_or(u16::MAX)
 }
 
 fn widen_u8_sample_to_u16(sample: u8, bit_depth: u8) -> u16 {
@@ -331,33 +640,218 @@ fn widen_u8_sample_to_u16(sample: u8, bit_depth: u8) -> u16 {
         .unwrap_or(u16::MAX)
 }
 
+/// [`widen_u8_sample_to_u16`] of every byte at `bit_depth`, so that a
+/// conversion looks each sample up instead of dividing.
+fn widened_u8_samples(bit_depth: u8) -> [u16; 256] {
+    core::array::from_fn(|byte| {
+        widen_u8_sample_to_u16(u8::try_from(byte).unwrap_or(u8::MAX), bit_depth)
+    })
+}
+
+/// `signed` holds whether each of the pixels' channels is signed.
 fn convert_or_copy_u16(
     src: &[u8],
     bytes_per_sample: u8,
     bit_depth: u8,
-    channels: usize,
+    signed: &[bool],
     out: &mut [u8],
     stride: usize,
     dims: (usize, usize),
 ) {
     let (width, height) = dims;
+    let channels = signed.len();
     let dst_row_bytes = width * channels * 2;
     let src_row_bytes = width * channels * usize::from(bytes_per_sample);
+    let widened = widened_u8_samples(bit_depth);
     let dst_rows = output_rows(out, stride, dst_row_bytes, height);
     for (src_row, dst_row) in src.chunks_exact(src_row_bytes).zip(dst_rows) {
         if bytes_per_sample == 2 {
             dst_row.copy_from_slice(src_row);
             continue;
         }
+        if bytes_per_sample > 2 {
+            let samples = src_row.chunks_exact(usize::from(bytes_per_sample));
+            for (index, (sample, dst_sample)) in
+                samples.zip(dst_row.as_chunks_mut::<2>().0).enumerate()
+            {
+                *dst_sample = clamped_wide_sample(sample, signed[index % channels]).to_le_bytes();
+            }
+            continue;
+        }
         for (sample, dst_sample) in src_row.iter().zip(dst_row.as_chunks_mut::<2>().0) {
-            *dst_sample = widen_u8_sample_to_u16(*sample, bit_depth).to_le_bytes();
+            *dst_sample = widened[usize::from(*sample)].to_le_bytes();
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{opaque_alpha_u16, widen_u8_sample_to_u16};
+    use super::{
+        clamped_wide_sample, convert_or_copy_u16, opaque_alpha_u16, widen_u8_sample_to_u16,
+        ChannelWriter, PixelWriter, U16Conversion,
+    };
+
+    /// The per-sample conversion the component-plane writers used before
+    /// they converted a plane at a time.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "decoded samples are rounded and clamped to the component's declared integer representation"
+    )]
+    fn component_sample_as_u16(sample: f32, bit_depth: u8, signed: bool) -> u16 {
+        let rounded = sample.round();
+        if signed {
+            if bit_depth <= 8 {
+                let magnitude_bits = u32::from(bit_depth.saturating_sub(1));
+                let min = -(1_i16 << magnitude_bits);
+                let max = (1_i16 << magnitude_bits) - 1;
+                return widen_u8_sample_to_u16(
+                    (rounded.clamp(f32::from(min), f32::from(max)) as i8) as u8,
+                    bit_depth,
+                );
+            }
+            let magnitude_bits = u32::from(bit_depth.min(16).saturating_sub(1));
+            let min = i16::try_from(-(1_i32 << magnitude_bits)).unwrap_or(i16::MIN);
+            let max = i16::try_from((1_i32 << magnitude_bits) - 1).unwrap_or(i16::MAX);
+            return (rounded.clamp(f32::from(min), f32::from(max)) as i16) as u16;
+        }
+        if bit_depth <= 8 {
+            return widen_u8_sample_to_u16(rounded.clamp(0.0, f32::from(u8::MAX)) as u8, bit_depth);
+        }
+        let max = u16::try_from((1_u32 << u32::from(bit_depth.min(16))) - 1).unwrap_or(u16::MAX);
+        rounded.clamp(0.0, f32::from(max)) as u16
+    }
+
+    #[test]
+    #[expect(clippy::cast_precision_loss, reason = "test values fit f32 exactly")]
+    fn plane_conversion_matches_the_sample_conversion() {
+        let mut samples = vec![
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            -0.0,
+            1.0e9,
+            -1.0e9,
+        ];
+        for value in -70_000_i32..70_000 {
+            for offset in [-0.5, 0.0, 0.25, 0.5] {
+                samples.push(value as f32 + offset);
+            }
+        }
+        for bit_depth in 1..=16 {
+            for signed in [false, true] {
+                let conversion = U16Conversion::new(bit_depth, signed);
+                let mut out = vec![0; samples.len() * 2];
+                conversion.visit(ChannelWriter {
+                    src: &samples,
+                    dst: &mut out,
+                    channels: 1,
+                    channel: 0,
+                });
+                let mut pixels = vec![0; samples.len() * 8];
+                conversion.visit(PixelWriter {
+                    src: [&samples; 3],
+                    dst: &mut pixels,
+                    channels: 4,
+                });
+                for (pixel, sample) in pixels.as_chunks::<8>().0.iter().zip(out.as_chunks::<2>().0)
+                {
+                    assert_eq!(
+                        pixel[..6],
+                        [*sample; 3].concat(),
+                        "{bit_depth} bits, signed {signed}"
+                    );
+                }
+                for (sample, bytes) in samples.iter().zip(out.as_chunks::<2>().0) {
+                    assert_eq!(
+                        u16::from_le_bytes(*bytes),
+                        component_sample_as_u16(*sample, bit_depth, signed),
+                        "{sample} at {bit_depth} bits, signed {signed}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[expect(clippy::cast_precision_loss, reason = "test values fit f32 exactly")]
+    fn deep_native_samples_convert_as_their_decoded_values_do() {
+        for bit_depth in 17..=24_u8 {
+            for signed in [false, true] {
+                let (min, max) = if signed {
+                    (-(1_i64 << (bit_depth - 1)), (1_i64 << (bit_depth - 1)) - 1)
+                } else {
+                    (0, (1_i64 << bit_depth) - 1)
+                };
+                let edges = [-32_769, -32_768, -1, 0, 1, 32_767, 32_768, 65_535, 65_536];
+                let values: Vec<i64> = (min..=max)
+                    .step_by(997)
+                    .chain([min, max])
+                    .chain(
+                        edges
+                            .into_iter()
+                            .filter(|value| (min..=max).contains(value)),
+                    )
+                    .collect();
+                let samples: Vec<f32> = values.iter().map(|value| *value as f32).collect();
+                let mut expected = vec![0; samples.len() * 2];
+                U16Conversion::new(bit_depth, signed).visit(ChannelWriter {
+                    src: &samples,
+                    dst: &mut expected,
+                    channels: 1,
+                    channel: 0,
+                });
+                // Native samples as `decode_native` packs them: three
+                // little-endian bytes, two's complement when signed.
+                let native: Vec<u8> = values
+                    .iter()
+                    .flat_map(|value| {
+                        let bytes = value.to_le_bytes();
+                        [bytes[0], bytes[1], bytes[2]]
+                    })
+                    .collect();
+                let stride = samples.len() * 2;
+                let mut out = vec![0; stride];
+                convert_or_copy_u16(
+                    &native,
+                    3,
+                    bit_depth,
+                    &[signed],
+                    &mut out,
+                    stride,
+                    (samples.len(), 1),
+                );
+                assert_eq!(out, expected, "{bit_depth} bits, signed {signed}");
+                for (sample, bytes) in samples.iter().zip(out.as_chunks::<2>().0) {
+                    assert_eq!(
+                        u16::from_le_bytes(*bytes),
+                        component_sample_as_u16(*sample, bit_depth, signed),
+                        "{sample} at {bit_depth} bits, signed {signed}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn samples_wider_than_three_bytes_clamp_to_sixteen_bits() {
+        assert_eq!(clamped_wide_sample(&(-5_i32).to_le_bytes(), true), 0xfffb);
+        assert_eq!(
+            clamped_wide_sample(&(-70_000_i32).to_le_bytes(), true),
+            0x8000
+        );
+        assert_eq!(clamped_wide_sample(&70_000_i32.to_le_bytes(), true), 0x7fff);
+        assert_eq!(clamped_wide_sample(&1234_u32.to_le_bytes(), false), 1234);
+        assert_eq!(
+            clamped_wide_sample(&(1_u64 << 36).to_le_bytes()[..5], false),
+            u16::MAX
+        );
+        assert_eq!(clamped_wide_sample(&i64::MIN.to_le_bytes(), true), 0x8000);
+        assert_eq!(
+            clamped_wide_sample(&u64::MAX.to_le_bytes(), false),
+            u16::MAX
+        );
+    }
 
     #[test]
     fn eight_bit_samples_widen_across_the_complete_u16_domain() {
@@ -370,5 +864,6 @@ mod tests {
         assert_eq!(opaque_alpha_u16(1, 8), u16::MAX);
         assert_eq!(opaque_alpha_u16(2, 12), 0x0fff);
         assert_eq!(opaque_alpha_u16(2, 16), u16::MAX);
+        assert_eq!(opaque_alpha_u16(3, 20), u16::MAX);
     }
 }

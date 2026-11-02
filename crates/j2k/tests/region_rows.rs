@@ -169,3 +169,83 @@ fn serial_region_rows_match_parallel_planes() {
     // Gray to RGB and RGB to gray are rejected; the rest must decode.
     assert!(decoded > 50, "{decoded} decodes succeeded");
 }
+
+/// The image decoded into a tight buffer, and its row length.
+fn decode_full(
+    bytes: &[u8],
+    parallelism: CpuDecodeParallelism,
+    fmt: PixelFormat,
+) -> (Vec<u8>, usize) {
+    let mut decoder = J2kDecoder::new(bytes).expect("decoder");
+    decoder.set_cpu_decode_parallelism(parallelism);
+    let (width, height) = decoder.info().dimensions;
+    let stride = width as usize * fmt.bytes_per_pixel();
+    let mut out = vec![0; stride * height as usize];
+    decoder
+        .decode_into(&mut out, stride, fmt)
+        .expect("full decode");
+    (out, stride)
+}
+
+/// A region of a tile whose coarse resolutions are empty (a one-sample tile
+/// row or column at an odd position, with two levels) decodes the full
+/// image's pixels, on the streamed rows and on the planes, at both bit depths.
+#[test]
+fn region_of_tile_with_empty_coarse_levels_matches_full_decode() {
+    let gray: &[u8] = include_bytes!(
+        "../../j2k-test-support/fixtures/empty_coarse_levels/openjpeg_gray_8x6_tile8x5_53.j2k"
+    );
+    let rgb: &[u8] = include_bytes!(
+        "../../j2k-test-support/fixtures/empty_coarse_levels/openjpeg_rgb_6x6_tile5x5_97.j2k"
+    );
+    let fixtures = [
+        (
+            "gray 5/3",
+            gray,
+            [PixelFormat::Gray8, PixelFormat::Gray16],
+            [(0, 5, 8, 1), (3, 5, 1, 1), (2, 3, 5, 3), (0, 0, 8, 6)],
+        ),
+        (
+            "rgb 9/7",
+            rgb,
+            [PixelFormat::Rgb8, PixelFormat::Rgb16],
+            [(5, 0, 1, 6), (5, 5, 1, 1), (0, 5, 6, 1), (3, 2, 3, 4)],
+        ),
+    ];
+    for (label, bytes, formats, regions) in fixtures {
+        for fmt in formats {
+            let bytes_per_pixel = fmt.bytes_per_pixel();
+            for parallelism in [CpuDecodeParallelism::Auto, CpuDecodeParallelism::Serial] {
+                let (full, full_stride) = decode_full(bytes, parallelism, fmt);
+                for (x, y, w, h) in regions {
+                    let roi = Rect { x, y, w, h };
+                    let stride = w as usize * bytes_per_pixel;
+                    let mut out = vec![0; stride * h as usize];
+                    let mut decoder = J2kDecoder::new(bytes).expect("decoder");
+                    decoder.set_cpu_decode_parallelism(parallelism);
+                    decoder
+                        .decode_region_into(&mut J2kScratchPool::new(), &mut out, stride, fmt, roi)
+                        .unwrap_or_else(|error| {
+                            panic!("{label} {fmt:?} {parallelism:?} {roi:?}: {error:?}")
+                        });
+                    let crop: Vec<u8> = full
+                        .chunks(full_stride)
+                        .skip(y as usize)
+                        .take(h as usize)
+                        .flat_map(|row| &row[x as usize * bytes_per_pixel..][..stride])
+                        .copied()
+                        .collect();
+                    assert_eq!(out, crop, "{label} {fmt:?} {parallelism:?} {roi:?}");
+                }
+            }
+        }
+    }
+    // The reversible image decodes losslessly.
+    let expected: Vec<u8> = (0..6_u32)
+        .flat_map(|y| (0..8_u32).map(move |x| ((13 * x + 29 * y + 7) % 251) as u8))
+        .collect();
+    assert_eq!(
+        decode_full(gray, CpuDecodeParallelism::Auto, PixelFormat::Gray8).0,
+        expected
+    );
+}

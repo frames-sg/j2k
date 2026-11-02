@@ -574,8 +574,8 @@ fn classic_tile_route_matches_serial_decode() {
     // (case, codestream, decoded in place on the tile route). The later
     // components of a colour image decode into the reused coefficient buffer,
     // most blocks of the three-layer OpenJPEG fixture gather their payloads,
-    // and the crate's own layered classic encode terminates every pass, which
-    // keeps it on the per-sub-band path.
+    // and the crate's own layered classic encode terminates every pass, so
+    // its blocks collect their codeword segments.
     for (case, bytes, in_place) in [
         ("lossless colour", gradient(3, 1), true),
         (
@@ -592,7 +592,7 @@ fn classic_tile_route_matches_serial_decode() {
             .to_vec(),
             true,
         ),
-        ("pass termination", gradient(1, 3), false),
+        ("pass termination", gradient(1, 3), true),
     ] {
         let image = Image::new(&bytes, &DecodeSettings::default()).expect("classic image");
         let mut serial = DecoderContext::default();

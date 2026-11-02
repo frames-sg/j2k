@@ -1015,16 +1015,21 @@ enum StridedRoute {
 /// Decode `bytes` on `route` to `fmt` at a stride three bytes past the
 /// output rows, into a buffer of exactly [`j2k_core::strided_output_len`]
 /// bytes when `tight`, which has no padding after its last row, and of one
-/// padded row per output row otherwise. Every byte starts as `0xa5`.
+/// padded row per output row otherwise. Every byte starts as `0xa5`. A
+/// `planes_budget` holds full-image decodes' planes to it: 0 streams every
+/// decode that can stream, `usize::MAX` keeps them on the planes.
 fn decode_to_strided_buffer(
     bytes: &[u8],
-    parallelism: CpuDecodeParallelism,
+    (parallelism, planes_budget): (CpuDecodeParallelism, Option<usize>),
     route: StridedRoute,
     fmt: PixelFormat,
     tight: bool,
 ) -> Vec<u8> {
     let mut decoder = J2kDecoder::new(bytes).expect("decoder");
     decoder.set_cpu_decode_parallelism(parallelism);
+    if let Some(bytes) = planes_budget {
+        decoder.set_full_decode_planes_budget(bytes);
+    }
     let dims = decoder.info().dimensions;
     let roi = Rect {
         x: 3,
@@ -1062,8 +1067,7 @@ fn decode_to_strided_buffer(
 
 #[test]
 fn decode_writes_the_last_row_of_a_buffer_without_trailing_padding() {
-    let (width, height) = (45_u32, 31_u32);
-    let encode_image = |components: u16, bit_depth: u8, reversible: bool| {
+    let encode_image = |(width, height): (u32, u32), components: u16, bit_depth: u8, tile| {
         let bytes_per_sample = u32::from(bit_depth).div_ceil(8);
         let mut pixels: Vec<u8> = (0..width * height * u32::from(components) * bytes_per_sample)
             .map(|i| (i * 37 + i / 11).to_le_bytes()[0])
@@ -1075,8 +1079,9 @@ fn decode_writes_the_last_row_of_a_buffer_without_trailing_padding() {
             }
         }
         let options = EncodeOptions {
-            reversible,
+            reversible: components != 3,
             num_decomposition_levels: 3,
+            tile_size: tile,
             ..EncodeOptions::default()
         };
         encode(
@@ -1084,11 +1089,14 @@ fn decode_writes_the_last_row_of_a_buffer_without_trailing_padding() {
         )
         .expect("encode")
     };
-    let gray8 = encode_image(1, 8, true);
-    let gray12 = encode_image(1, 12, false);
-    let rgb8 = encode_image(3, 8, false);
-    let rgb12 = encode_image(3, 12, true);
-    let rgba8_jp2 = wrap_jp2_rgba_codestream(&encode_image(4, 8, true), width, height, 8);
+    let small = (45, 31);
+    let gray8 = encode_image(small, 1, 8, None);
+    let gray12 = encode_image(small, 1, 12, None);
+    let rgb8 = encode_image(small, 3, 8, None);
+    let rgb12 = encode_image(small, 3, 12, None);
+    let rgba8_jp2 = wrap_jp2_rgba_codestream(&encode_image(small, 4, 8, None), 45, 31, 8);
+    // Six tiles, which a two-thread pool streams three at a time.
+    let rgb8_tiled = encode_image((768, 512), 3, 8, Some((256, 256)));
     let gray_formats = [PixelFormat::Gray8, PixelFormat::Gray16];
     let color_formats = [
         PixelFormat::Rgb8,
@@ -1104,24 +1112,38 @@ fn decode_writes_the_last_row_of_a_buffer_without_trailing_padding() {
         ("rgba8", &rgba8_jp2, &color_formats),
     ];
     let mut failures = Vec::new();
+    let mut compare = |name: &str, bytes: &[u8], settings, route, fmt| {
+        let padded = decode_to_strided_buffer(bytes, settings, route, fmt, false);
+        let tight = decode_to_strided_buffer(bytes, settings, route, fmt, true);
+        if tight != padded[..tight.len()] {
+            failures.push(format!("{name} {fmt:?} {route:?} {settings:?}"));
+        }
+    };
     for (name, bytes, formats) in cases {
         for &fmt in formats {
-            for route in [
-                StridedRoute::Full,
-                StridedRoute::Region,
-                StridedRoute::Scaled,
-                StridedRoute::RegionScaled,
-            ] {
-                for parallelism in [CpuDecodeParallelism::Auto, CpuDecodeParallelism::Serial] {
-                    let padded = decode_to_strided_buffer(bytes, parallelism, route, fmt, false);
-                    let tight = decode_to_strided_buffer(bytes, parallelism, route, fmt, true);
-                    if tight != padded[..tight.len()] {
-                        failures.push(format!("{name} {fmt:?} {route:?} {parallelism:?}"));
+            for parallelism in [CpuDecodeParallelism::Auto, CpuDecodeParallelism::Serial] {
+                // The planes, the streamed rows, and the default route.
+                for budget in [Some(usize::MAX), Some(0), None] {
+                    for route in [StridedRoute::Full, StridedRoute::Scaled] {
+                        compare(name, bytes, (parallelism, budget), route, fmt);
                     }
+                }
+                for route in [StridedRoute::Region, StridedRoute::RegionScaled] {
+                    compare(name, bytes, (parallelism, None), route, fmt);
                 }
             }
         }
     }
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(2)
+        .build()
+        .expect("pool");
+    pool.install(|| {
+        for fmt in color_formats {
+            let settings = (CpuDecodeParallelism::Auto, Some(0));
+            compare("rgb8 tiled", &rgb8_tiled, settings, StridedRoute::Full, fmt);
+        }
+    });
     assert!(
         failures.is_empty(),
         "a buffer that ends after the last row's pixels must hold the padded decode's \

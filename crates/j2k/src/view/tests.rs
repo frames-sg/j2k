@@ -29,6 +29,7 @@ fn fresh_native_context_preserves_configured_parallelism() {
         image: None,
         settings: DecodeSettings::strict(),
         native_context: j2k_native::DecoderContext::default(),
+        full_decode_planes_budget: None,
     };
     decoder.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
 

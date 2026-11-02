@@ -11,12 +11,15 @@ mod ht_refinement;
 mod idwt_into_channels;
 mod idwt_window_storage;
 mod line_region_idwt;
+#[cfg(feature = "parallel")]
+mod multi_segment;
 #[cfg(feature = "std")]
 mod packet_directory;
 #[cfg(feature = "parallel")]
 mod parallel_bands;
 mod progression_matrix;
 mod row_sink;
+mod streamed_publication;
 mod workspace_peak;
 mod workspace_reuse;
 
@@ -1407,9 +1410,9 @@ fn decode_region_rejects_code_block_layer_metadata_amplification() {
     };
     let mut bytes =
         encode(&pixels, 8, 8, 1, 8, false, &options).expect("encode many-layer classic fixture");
-    // About a million 4x4 code-blocks with 32 layers each: their layer
+    // About four million 4x4 code-blocks with 32 layers each: their layer
     // records alone would exceed the decode budget.
-    rewrite_siz_to_single_large_tile(&mut bytes, 4_096);
+    rewrite_siz_to_single_large_tile(&mut bytes, 8_192);
     let image = Image::new(&bytes, &DecodeSettings::default()).expect("large SIZ parses");
 
     // A tiny region builds layer records only for the code-blocks it reads,
@@ -2978,4 +2981,50 @@ fn decode_settings_constructors_make_strictness_explicit() {
     assert!(DecodeSettings::lenient().lenient_tolerance_enabled());
     assert!(!DecodeSettings::strict().lenient_tolerance_enabled());
     assert!(DecodeSettings::strict().strict);
+}
+
+#[test]
+fn zero_filled_decode_elements_start_as_zeros_whatever_the_buffer_held() {
+    for zeroed_allocation in [true, false] {
+        // An empty buffer without room gets a fresh zeroed buffer.
+        let mut fresh = Vec::<f32>::new();
+        zero_fill_decode_elements(&mut fresh, 4099, zeroed_allocation).expect("fresh buffer");
+        assert_eq!(fresh.len(), 4099);
+        assert!(fresh.iter().all(|&sample| sample == 0.0));
+
+        // An emptied buffer with room keeps its allocation, and none of the
+        // samples it held before shows through.
+        let mut reused = vec![7.5_f32; 64];
+        let capacity = reused.capacity();
+        reused.clear();
+        zero_fill_decode_elements(&mut reused, 48, zeroed_allocation).expect("reused buffer");
+        assert_eq!(reused.capacity(), capacity);
+        assert_eq!(reused, vec![0.0; 48]);
+
+        // A buffer that already holds samples keeps them, as
+        // `try_resize_decode_elements` does, and grows with zeros.
+        let mut grown = vec![3_i64; 3];
+        zero_fill_decode_elements(&mut grown, 5, zeroed_allocation).expect("grown buffer");
+        assert_eq!(grown, [3, 3, 3, 0, 0]);
+    }
+}
+
+#[test]
+fn zero_filled_decode_elements_reject_lengths_past_the_decode_cap() {
+    for zeroed_allocation in [true, false] {
+        let mut values = Vec::<f32>::new();
+        assert_eq!(
+            zero_fill_decode_elements(
+                &mut values,
+                DEFAULT_MAX_DECODE_BYTES / 4 + 1,
+                zeroed_allocation
+            ),
+            Err(DecodeError::Validation(ValidationError::ImageTooLarge))
+        );
+        assert_eq!(
+            zero_fill_decode_elements(&mut values, usize::MAX, zeroed_allocation),
+            Err(DecodeError::Validation(ValidationError::ImageTooLarge))
+        );
+        assert_eq!(values.capacity(), 0);
+    }
 }
