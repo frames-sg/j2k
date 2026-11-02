@@ -4,10 +4,9 @@
 //! - Lossy (irreversible 9-7): Scalar deadzone quantization with step sizes
 //!   derived from the DWT subband gain norms.
 
-use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::math::{floor_f32, log2_f32, pow2i, round_f32};
+use crate::math::{dispatch, floor_f32, log2_f32, pow2i, round_f32, Level};
 use crate::{
     EncodeError, EncodeResult, IrreversibleQuantizationStep, IrreversibleQuantizationSubbandScales,
     J2kSubBandType,
@@ -71,7 +70,9 @@ impl QuantStepSize {
         if !delta.is_finite() || delta <= 0.0 {
             return None;
         }
-        let floor_log2 = floor_f32(log2_f32(delta)) as i32;
+        // Once per subband: the `libm` crate's exact floor and round keep
+        // this off the C library on baseline x86-64 without a SIMD dispatch.
+        let floor_log2 = libm::floorf(log2_f32(delta)) as i32;
         let exponent = i32::from(range_bits) - floor_log2;
         // A mantissa carry lowers the exponent by one, so 32 can still round
         // into range. Bit depths above 31 store steps of 2^32 and coarser, so
@@ -80,7 +81,7 @@ impl QuantStepSize {
             return None;
         }
         let normalized = delta / pow2i(floor_log2);
-        let mantissa = round_f32((normalized - 1.0) * 2048.0) as i32;
+        let mantissa = libm::roundf((normalized - 1.0) * 2048.0) as i32;
         let (exponent, mantissa) = if mantissa >= 2048 {
             (exponent - 1, 0)
         } else {
@@ -723,38 +724,15 @@ fn openhtj2k_step_from_normalized_delta(mut delta: f64) -> QuantStepSize {
     clippy::trivially_copy_pass_by_ref,
     reason = "the stable codec boundary borrows shared Copy metadata used across nested calls"
 )]
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "finite wavelet coefficients are intentionally rounded at the codec quantization boundary"
-)]
-#[allow(
-    clippy::disallowed_macros,
-    reason = "the infallible scalar parity API preserves its established Vec-returning contract"
-)]
 pub(crate) fn quantize_subband(
     coefficients: &[f32],
     step_size: &QuantStepSize,
     range_bits: u8,
     reversible: bool,
 ) -> Vec<i32> {
-    if reversible {
-        // No quantization: round to nearest integer
-        coefficients.iter().map(|&c| round_f32(c) as i32).collect()
-    } else {
-        let delta = step_size.delta(range_bits);
-        if delta <= 0.0 {
-            return vec![0i32; coefficients.len()];
-        }
-        coefficients
-            .iter()
-            .map(|&c| {
-                // Deadzone quantization: q = sign(c) * floor(|c| / Δ)
-                let sign = if c < 0.0 { -1 } else { 1 };
-                let magnitude = floor_f32(c.abs() / delta) as i32;
-                sign * magnitude
-            })
-            .collect()
-    }
+    let mut quantized = Vec::new();
+    Quantizer::new(*step_size, range_bits, reversible).extend(&mut quantized, coefficients);
+    quantized
 }
 
 /// Fallible counterpart used by the allocation-bounded native encode path.
@@ -782,15 +760,11 @@ pub(crate) fn try_quantize_subband(
             what: "quantized subband coefficients",
             bytes: requested_bytes,
         })?;
-    match Quantizer::new(*step_size, range_bits, reversible) {
-        Quantizer::Round => extend_quantized(&mut quantized, coefficients, parallel, round_sample),
-        Quantizer::Zero => quantized.resize(coefficients.len(), 0),
-        Quantizer::Deadzone(delta) => {
-            extend_quantized(&mut quantized, coefficients, parallel, |c| {
-                deadzone_sample(c, delta)
-            });
-        }
-    }
+    Quantizer::new(*step_size, range_bits, reversible).extend_with(
+        &mut quantized,
+        coefficients,
+        parallel,
+    );
     Ok(quantized)
 }
 
@@ -818,20 +792,42 @@ impl Quantizer {
 
     /// Append the quantized `coefficients` to `quantized`.
     pub(crate) fn extend(self, quantized: &mut Vec<i32>, coefficients: &[f32]) {
+        self.extend_with(quantized, coefficients, false);
+    }
+
+    /// [`Self::extend`], splitting large subbands across the pool when
+    /// `parallel`.
+    #[expect(
+        clippy::redundant_closure,
+        reason = "the closures carry #[inline(always)], which a function item's Fn shim lacks"
+    )]
+    fn extend_with(self, quantized: &mut Vec<i32>, coefficients: &[f32], parallel: bool) {
         match self {
-            Self::Round => quantized.extend(coefficients.iter().map(|&c| round_sample(c))),
+            Self::Round => extend_quantized(
+                quantized,
+                coefficients,
+                parallel,
+                #[inline(always)]
+                |c| round_sample(c),
+            ),
             Self::Zero => quantized.resize(quantized.len() + coefficients.len(), 0),
-            Self::Deadzone(delta) => {
-                quantized.extend(coefficients.iter().map(|&c| deadzone_sample(c, delta)));
-            }
+            Self::Deadzone(delta) => extend_quantized(
+                quantized,
+                coefficients,
+                parallel,
+                #[inline(always)]
+                move |c| deadzone_sample(c, delta),
+            ),
         }
     }
 }
 
 #[expect(
     clippy::cast_possible_truncation,
-    reason = "finite wavelet coefficients are intentionally rounded at the codec quantization boundary"
+    clippy::inline_always,
+    reason = "finite wavelet coefficients are intentionally rounded at the codec quantization boundary; inlined into the dispatched quantization loop"
 )]
+#[inline(always)]
 fn round_sample(coefficient: f32) -> i32 {
     round_f32(coefficient) as i32
 }
@@ -839,35 +835,60 @@ fn round_sample(coefficient: f32) -> i32 {
 /// Deadzone quantization: `sign(c) * floor(|c| / delta)`.
 #[expect(
     clippy::cast_possible_truncation,
-    reason = "finite wavelet coefficients are intentionally rounded at the codec quantization boundary"
+    clippy::inline_always,
+    reason = "finite wavelet coefficients are intentionally rounded at the codec quantization boundary; inlined into the dispatched quantization loop"
 )]
+#[inline(always)]
 fn deadzone_sample(coefficient: f32, delta: f32) -> i32 {
     let sign = if coefficient < 0.0 { -1 } else { 1 };
     sign * floor_f32(coefficient.abs() / delta) as i32
 }
 
+/// Append `quantize` of every coefficient to `quantized`, whose capacity
+/// the caller reserved, at the dispatched SIMD level (see `math`): the
+/// rounding is a library call per coefficient on baseline x86-64 outside it.
 fn extend_quantized(
     quantized: &mut Vec<i32>,
     coefficients: &[f32],
     parallel: bool,
     quantize: impl Fn(f32) -> i32 + Send + Sync,
 ) {
+    let start = quantized.len();
+    quantized.resize(start + coefficients.len(), 0);
+    let output = &mut quantized[start..];
     #[cfg(feature = "parallel")]
     if parallel
         && coefficients.len() >= PARALLEL_QUANTIZE_SAMPLES
         && rayon::current_num_threads() > 1
     {
         use rayon::prelude::*;
-        quantized.par_extend(
-            coefficients
-                .par_iter()
-                .with_min_len(1 << 14)
-                .map(|&c| quantize(c)),
-        );
+        output
+            .par_chunks_mut(1 << 14)
+            .zip(coefficients.par_chunks(1 << 14))
+            .for_each(|(output, coefficients)| {
+                dispatch!(Level::new(), simd => quantize_at(simd, output, coefficients, &quantize));
+            });
         return;
     }
     let _ = parallel;
-    quantized.extend(coefficients.iter().map(|&c| quantize(c)));
+    dispatch!(Level::new(), simd => quantize_at(simd, output, coefficients, &quantize));
+}
+
+/// The loop of [`extend_quantized`] at the dispatched SIMD level.
+#[expect(
+    clippy::inline_always,
+    reason = "inlined into each SIMD dispatch target"
+)]
+#[inline(always)]
+fn quantize_at<S: crate::math::Simd>(
+    _simd: S,
+    output: &mut [i32],
+    coefficients: &[f32],
+    quantize: &impl Fn(f32) -> i32,
+) {
+    for (output, &coefficient) in output.iter_mut().zip(coefficients) {
+        *output = quantize(coefficient);
+    }
 }
 
 /// Smaller subbands quantize on one thread.
@@ -877,6 +898,8 @@ const PARALLEL_QUANTIZE_SAMPLES: usize = 1 << 16;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use alloc::vec;
 
     #[test]
     fn fallible_quantization_matches_the_reference_on_one_thread_and_the_pool() {

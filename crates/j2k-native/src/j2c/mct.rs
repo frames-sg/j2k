@@ -359,7 +359,10 @@ impl DeferredMct {
         [luma, cb, cr]: [&[f32]; 3],
         output: &mut [u8],
     ) {
-        let len = (output.len() / 3).min(luma.len()).min(cb.len()).min(cr.len());
+        let len = (output.len() / 3)
+            .min(luma.len())
+            .min(cb.len())
+            .min(cr.len());
         // On x86-64 whole blocks of eight pixels are packed by hand first,
         // which measured faster there than LLVM's vectorization of the loop.
         #[cfg(all(feature = "simd", target_arch = "x86_64"))]
