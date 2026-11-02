@@ -28,6 +28,7 @@ rayon = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+j2k-alloc-probe = { path = "../j2k-alloc-probe" }
 proptest = { workspace = true }
 criterion = { workspace = true }
 j2k-native = { path = "../j2k-native", version = "=0.13.2" }

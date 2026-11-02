@@ -2499,6 +2499,7 @@ name = "j2k"
 version = "0.13.2"
 dependencies = [
  "criterion",
+ "j2k-alloc-probe",
  "j2k-core",
  "j2k-native",
  "j2k-test-support",
