@@ -43,6 +43,7 @@ mod stable_api;
 mod t803;
 #[cfg(all(test, unix))]
 mod test_command;
+mod x86_codegen_audit;
 
 use benchmark_commands::{
     bench_build, j2k_bench_signoff, j2k_ml_batch_bench_cuda, j2k_ml_batch_bench_metal,
@@ -123,6 +124,7 @@ fn run() -> Result<(), String> {
         "promotion-codegen" => promotion_codegen::promotion_codegen(env::args().skip(2)),
         "no-std" => no_std(),
         "unsafe-audit" => verify_jpeg_simd_unsafe_boundary(),
+        "x86-codegen-audit" => x86_codegen_audit::x86_codegen_audit(env::args().skip(2)),
         "repo-lint" => repo_lint(env::args().skip(2)),
         "t803" => t803::t803(env::args().skip(2)),
         "release-integrity" => release_integrity(env::args().skip(2)),
@@ -178,6 +180,7 @@ fn print_help() {
           promotion-codegen generate or check verifier-backed GPU Auto-routing tables [--check]\n\
            no-std        check no_std-compatible codec crates and the serial wasm32 build\n\
            unsafe-audit  verify JPEG SIMD unsafe code stays in its boundary modules\n\
+           x86-codegen-audit check baseline x86-64 j2k-native for scalar libm calls and out-of-line AVX2 operations\n\
            repo-lint     run repository policy checks owned by xtask\n\
            t803          fetch, run, or verify pinned T.803 v3 conformance evidence\n\
            release-integrity validate offline release metadata; --publish requires final dated/signoff state\n\
