@@ -276,18 +276,18 @@ The workflow fails if either is unset.
 
 For low-overhead HTJ2K decode comparisons, prepare both pinned reference
 libraries and run the in-process batch harness. It decodes the same selected
-bytes through J2K, OpenHTJ2K 0.19.0, and OpenJPH 0.31.0, checks output parity
+bytes through J2K, OpenHTJ2K 0.23.4, and OpenJPH 0.33.0, checks output parity
 before timing, and records the linked versions and library paths:
 
 ```bash
 scripts/prepare-openhtj2k-reference.sh
 scripts/prepare-openjph-reference.sh
 
-J2K_OPENHTJ2K_SOURCE_DIR="$PWD/target/t803/openhtj2k-v0.19.0" \
-J2K_OPENHTJ2K_LIB_DIR="$PWD/target/t803/openhtj2k-v0.19.0/build-reference" \
-J2K_OPENJPH_SOURCE_DIR="$PWD/target/reference/openjph-0.31.0" \
-J2K_OPENJPH_LIB_DIR="$PWD/target/reference/openjph-0.31.0/build-reference/src/core" \
-J2K_BATCH_COMPARE_THREADS=1 \
+J2K_OPENHTJ2K_SOURCE_DIR="$PWD/target/t803/openhtj2k-v0.23.4" \
+J2K_OPENHTJ2K_LIB_DIR="$PWD/target/t803/openhtj2k-v0.23.4/build-reference" \
+J2K_OPENJPH_SOURCE_DIR="$PWD/target/reference/openjph-0.33.0" \
+J2K_OPENJPH_LIB_DIR="$PWD/target/reference/openjph-0.33.0/build-reference/src/core" \
+J2K_BATCH_COMPARE_THREADS=1 RAYON_NUM_THREADS=1 \
 cargo run -p j2k-compare --release --bin jp2k_batch_compare -- \
   corpus/vendor/openjph 1 16
 ```

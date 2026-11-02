@@ -25,12 +25,19 @@ fn batch_compare_checks_rgb_output_and_reports_reference_thread_policy() {
         .arg("1")
         .env("J2K_BATCH_COMPARE_REPEATS", "2")
         .env("J2K_BATCH_COMPARE_THREADS", "2")
+        .env("RAYON_NUM_THREADS", "2")
         .env("J2K_BATCH_COMPARE_MAX_ABS_DIFF", "0")
         .output()
         .expect("run batch compare");
     assert_success(&output);
     let stdout = String::from_utf8(output.stdout).expect("UTF-8 output");
     assert_eq!(metadata_value(&stdout, "openjpeg_max_abs_diff"), "0");
+    assert_eq!(metadata_value(&stdout, "thread_budget"), "2");
+    assert_eq!(metadata_value(&stdout, "rayon_num_threads"), "2");
+    assert_eq!(
+        metadata_value(&stdout, "intra_image_threads_policy"),
+        "budget-for-a-one-image-batch-else-1-per-worker"
+    );
     if j2k_compare::grok::is_available() {
         assert_eq!(metadata_value(&stdout, "grok_max_abs_diff"), "0");
         assert_eq!(metadata_value(&stdout, "grok_pool_threads"), "2");
@@ -56,6 +63,8 @@ fn batch_compare_checks_rgb_output_and_reports_reference_thread_policy() {
         .arg("1")
         .env("J2K_BATCH_COMPARE_REPEATS", "2")
         .env("J2K_BATCH_COMPARE_DECODER", "j2k")
+        .env("J2K_BATCH_COMPARE_THREADS", "1")
+        .env("RAYON_NUM_THREADS", "1")
         .env("J2K_BATCH_COMPARE_MAX_ABS_DIFF", "0")
         .output()
         .expect("run native-only profile workload");
@@ -69,6 +78,21 @@ fn batch_compare_checks_rgb_output_and_reports_reference_thread_policy() {
             .lines()
             .any(|line| line.starts_with(&format!("{decoder}\t"))));
     }
+
+    // J2K's internal parallelism uses the global Rayon pool, so a pool larger
+    // than the shared budget would give J2K more threads than the others.
+    let output = Command::new(env!("CARGO_BIN_EXE_jp2k_batch_compare"))
+        .arg(&dir)
+        .arg("1")
+        .env("J2K_BATCH_COMPARE_THREADS", "2")
+        .env("RAYON_NUM_THREADS", "4")
+        .output()
+        .expect("run with a mismatched Rayon pool");
+    assert!(
+        !output.status.success(),
+        "a mismatched Rayon pool must fail"
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("RAYON_NUM_THREADS"));
 }
 
 #[test]

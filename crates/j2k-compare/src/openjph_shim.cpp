@@ -9,11 +9,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <memory>
 
 namespace {
-constexpr std::size_t OUTPUT_CAP_BYTES = std::size_t{512} * 1024 * 1024;
+constexpr std::size_t OUTPUT_CAP_BYTES = std::size_t{4} * 1024 * 1024 * 1024;
 
 bool checked_output_len(std::uint32_t width, std::uint32_t height,
                         std::uint32_t channels, std::size_t &out) {
@@ -44,13 +45,21 @@ std::uint8_t sample_u8(std::int32_t sample, std::uint32_t depth,
 }
 } // namespace
 
+// Decodes into `dest` when it is non-null (its length must equal the decoded
+// image's), so a benchmark caller's buffer receives the pixels directly, as
+// the native decoder's does; otherwise the output is allocated here and
+// returned through `out_data` for j2k_openjph_free.
 extern "C" int j2k_openjph_decode_u8(
     const std::uint8_t *bytes, std::size_t len, std::uint8_t reduce,
-    std::uint32_t channels, std::uint8_t **out_data, std::size_t *out_len,
-    std::uint32_t *out_width, std::uint32_t *out_height) {
+    std::uint32_t channels, std::uint32_t bytes_per_sample, std::uint8_t *dest,
+    std::size_t dest_len,
+    std::uint8_t **out_data, std::size_t *out_len, std::uint32_t *out_width,
+    std::uint32_t *out_height) {
   if (bytes == nullptr || len == 0 || out_data == nullptr || out_len == nullptr ||
       out_width == nullptr || out_height == nullptr ||
-      (channels != 1 && channels != 3)) {
+      (channels != 1 && channels != 3) ||
+      (bytes_per_sample != 1 && bytes_per_sample != 2) ||
+      (bytes_per_sample == 2 && channels != 1)) {
     return 0;
   }
   *out_data = nullptr;
@@ -83,9 +92,16 @@ extern "C" int j2k_openjph_decode_u8(
     if (!checked_output_len(width, height, channels, required)) {
       return 0;
     }
-    std::unique_ptr<std::uint8_t, decltype(&std::free)> output(
-        static_cast<std::uint8_t *>(std::malloc(required)), &std::free);
-    if (!output) {
+    required *= bytes_per_sample;
+    if (dest != nullptr && dest_len != required) {
+      return 0;
+    }
+    std::unique_ptr<std::uint8_t, decltype(&std::free)> owned(
+        dest == nullptr ? static_cast<std::uint8_t *>(std::malloc(required))
+                        : nullptr,
+        &std::free);
+    std::uint8_t *const output = dest != nullptr ? dest : owned.get();
+    if (output == nullptr) {
       return 0;
     }
     codestream.create();
@@ -101,8 +117,18 @@ extern "C" int j2k_openjph_decode_u8(
         }
         const std::uint32_t depth = siz.get_bit_depth(component);
         const bool signedness = siz.is_signed(component);
+        if (bytes_per_sample == 2) {
+          // Unscaled value, clamped to 0..65535, as native-endian uint16.
+          std::uint8_t *row = output + static_cast<std::size_t>(y) * width * 2;
+          for (std::uint32_t x = 0; x < width; ++x) {
+            const auto v = static_cast<std::uint16_t>(
+                std::min(std::max(line->i32[x], 0), 65535));
+            std::memcpy(row + static_cast<std::size_t>(x) * 2, &v, sizeof v);
+          }
+          continue;
+        }
         for (std::uint32_t x = 0; x < width; ++x) {
-          output.get()[row_offset + static_cast<std::size_t>(x) * channels + component] =
+          output[row_offset + static_cast<std::size_t>(x) * channels + component] =
               sample_u8(line->i32[x], depth, signedness);
         }
       }
@@ -110,7 +136,7 @@ extern "C" int j2k_openjph_decode_u8(
     codestream.close();
     input.close();
 
-    *out_data = output.release();
+    *out_data = dest != nullptr ? dest : owned.release();
     *out_len = required;
     *out_width = width;
     *out_height = height;

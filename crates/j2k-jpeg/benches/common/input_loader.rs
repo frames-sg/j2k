@@ -35,6 +35,11 @@ pub(crate) fn load_inputs<T>(
         },
     ];
 
+    // External corpus runs can leave out the two tiny built-in images, so a
+    // mixed batch holds exactly the supplied files.
+    if std::env::var_os("J2K_BENCH_SKIP_REPO_INPUTS").is_some() {
+        inputs.clear();
+    }
     let mut seen = inputs
         .iter()
         .map(|input| input.name.clone())

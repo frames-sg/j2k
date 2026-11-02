@@ -15,8 +15,8 @@ class OpenHtj2kReferenceTests(unittest.TestCase):
         source = SCRIPT.read_text(encoding="utf-8")
 
         self.assertIn("https://github.com/osamu620/OpenHTJ2K.git", source)
-        self.assertIn("e0f7ae853220d1e359c438b0bb6ad6cb2b3899db", source)
-        self.assertIn('version="0.19.0"', source)
+        self.assertIn("990fc1873e4a414745784ae731c891962d7ab603", source)
+        self.assertIn('version="0.23.4"', source)
         self.assertIn("J2K_OPENHTJ2K_DEC_BIN", source)
         self.assertIn("J2K_OPENHTJ2K_SOURCE_DIR", source)
         self.assertIn("J2K_OPENHTJ2K_LIB_DIR", source)

@@ -7,9 +7,9 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 reference_common="reference-build-common.sh"
 source "${script_dir}/${reference_common}"
 
-version="0.31.0"
+version="0.33.0"
 source_url="https://github.com/aous72/OpenJPH.git"
-source_commit="c68064d0e4cad8e96bab9a068f6cc4e7799744fc"
+source_commit="345a8bcd1c7a3908e3870797057277660a412073"
 source_dir="${1:-target/reference/openjph-${version}}"
 build_dir="${source_dir}/build-reference"
 

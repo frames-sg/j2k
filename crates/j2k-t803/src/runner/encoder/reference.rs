@@ -18,9 +18,9 @@ use crate::runner::archive::sha256_file;
 
 pub(crate) const OPENHTJ2K_IMPLEMENTATION: &str = "OpenHTJ2K";
 pub(crate) const OPENHTJ2K_SCOPE: &str = "independent Part 15 interoperability evidence; not T.804";
-pub(crate) const OPENHTJ2K_SOURCE_COMMIT: &str = "e0f7ae853220d1e359c438b0bb6ad6cb2b3899db";
+pub(crate) const OPENHTJ2K_SOURCE_COMMIT: &str = "990fc1873e4a414745784ae731c891962d7ab603";
 pub(crate) const OPENHTJ2K_SOURCE_URL: &str = "https://github.com/osamu620/OpenHTJ2K";
-pub(crate) const OPENHTJ2K_VERSION: &str = "0.19.0";
+pub(crate) const OPENHTJ2K_VERSION: &str = "0.23.4";
 
 const EXECUTABLE_ENV: &str = "J2K_OPENHTJ2K_DEC_BIN";
 const SOURCE_ENV: &str = "J2K_OPENHTJ2K_SOURCE_DIR";
@@ -185,9 +185,9 @@ impl OpenHtj2kDecoder {
             )
             || !dirty.is_empty()
         {
-            return Err(
-                "OpenHTJ2K source is not the clean, pinned official v0.19.0 checkout".to_string(),
-            );
+            return Err(format!(
+                "OpenHTJ2K source is not the clean, pinned official v{OPENHTJ2K_VERSION} checkout"
+            ));
         }
         let executable_sha256 = sha256_file(&executable).map_err(|error| error.to_string())?;
         Ok(Self {

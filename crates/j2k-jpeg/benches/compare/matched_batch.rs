@@ -17,6 +17,8 @@ unsafe impl Send for WorkerDecoder {}
 #[derive(Clone, Copy)]
 struct BatchInput<'a> {
     bytes: &'a [u8],
+    width: usize,
+    height: usize,
     stride: usize,
     len: usize,
 }
@@ -24,13 +26,43 @@ struct BatchInput<'a> {
 impl<'a> BatchInput<'a> {
     fn new(bytes: &'a [u8], channels: usize) -> Self {
         let info = Decoder::inspect(bytes).expect("j2k inspect matched batch");
-        let stride = info.dimensions.0 as usize * channels;
+        let width = info.dimensions.0 as usize;
+        let height = info.dimensions.1 as usize;
+        let stride = width * channels;
         Self {
             bytes,
+            width,
+            height,
             stride,
-            len: stride * info.dimensions.1 as usize,
+            len: stride * height,
         }
     }
+}
+
+/// Comma-separated positive integers from `var`, or from `default` when unset.
+fn env_list(var: &str, default: &str) -> Vec<usize> {
+    let value = std::env::var(var).unwrap_or_else(|_| String::from(default));
+    value
+        .split(',')
+        .map(|item| {
+            item.trim()
+                .parse::<usize>()
+                .ok()
+                .filter(|&n| n > 0)
+                .unwrap_or_else(|| panic!("{var}: {item:?} is not a positive integer"))
+        })
+        .collect()
+}
+
+fn report_turbo_build() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        eprintln!(
+            "libjpeg_turbo_version\t{}\nlibjpeg_turbo_libdir\t{}",
+            option_env!("J2K_LIBJPEG_TURBO_VERSION").unwrap_or("unknown"),
+            option_env!("J2K_LIBJPEG_TURBO_LIBDIR").unwrap_or("unknown"),
+        );
+    });
 }
 
 pub(super) fn bench(c: &mut Criterion, name: &str, bytes: &[u8], mode: DecodeMode) {
@@ -71,6 +103,7 @@ fn bench_inputs(
     if !libjpeg_turbo_available() {
         return;
     }
+    report_turbo_build();
     let (format, channels, suffix) = match mode {
         DecodeMode::Gray => (PixelFormat::Gray8, 1, "gray"),
         DecodeMode::Rgb => (PixelFormat::Rgb8, 3, "rgb"),
@@ -80,7 +113,7 @@ fn bench_inputs(
         .map(|bytes| BatchInput::new(bytes, channels))
         .collect::<Vec<_>>();
     let mut group = c.benchmark_group(format!("decode_batch_{suffix}"));
-    for batch_size in [16, 64] {
+    for batch_size in env_list("J2K_BENCH_BATCH_SIZES", "16,64") {
         // Limit each codec's retained destinations to 256 MiB when a large
         // single-image corpus is also supplied to this opt-in batch group.
         let selected_inputs = inputs
@@ -128,7 +161,7 @@ fn bench_inputs(
         } else {
             selected_inputs
         };
-        for workers in [1, 2, 4] {
+        for workers in env_list("J2K_BENCH_BATCH_WORKERS", "1,2,4") {
             let mut native_outputs = batch_inputs
                 .iter()
                 .map(|input| vec![0u8; input.len])
@@ -137,14 +170,23 @@ fn bench_inputs(
                 workers: NonZeroUsize::new(workers),
             });
             run_native(&mut session, &mut native_outputs, &batch_inputs, format);
-            assert_eq!(session.worker_count(), workers, "batch worker count");
+            check_effective_workers(&session, batch_inputs.len(), workers);
 
             let mut turbo_outputs = batch_inputs
                 .iter()
                 .map(|input| vec![0u8; input.len])
                 .collect::<Vec<_>>();
+            // Each handle is set to full-frame, unscaled output once, outside
+            // the timed loop; tj3Decompress8 then parses every header itself,
+            // so each codec parses each header once per timed decode.
             let mut decoders = (0..workers)
-                .map(|_| WorkerDecoder(TurboJpegDecoder::new().expect("libjpeg-turbo decoder")))
+                .map(|_| {
+                    let mut decoder = TurboJpegDecoder::new().expect("libjpeg-turbo decoder");
+                    decoder
+                        .prepare_rgb(batch_inputs[0].bytes)
+                        .expect("libjpeg-turbo full-frame setup");
+                    WorkerDecoder(decoder)
+                })
                 .collect::<Vec<_>>();
             run_turbo(&mut decoders, &mut turbo_outputs, &batch_inputs, mode);
             if std::env::var_os("J2K_BENCH_VERIFY_OUTPUTS").is_some() {
@@ -165,6 +207,22 @@ fn bench_inputs(
         }
     }
     group.finish();
+}
+
+/// Both codecs split a batch into static chunks of `ceil(jobs / workers)`, so
+/// the threads actually used can be fewer than requested (24 jobs on 10
+/// workers run as 8 chunks of 3). Check j2k uses the same count turbo will.
+fn check_effective_workers(session: &JpegBatchSession, jobs: usize, workers: usize) {
+    let chunk = jobs.div_ceil(workers);
+    let effective_workers = jobs.div_ceil(chunk);
+    assert_eq!(
+        session.worker_count(),
+        effective_workers,
+        "batch worker count"
+    );
+    eprintln!(
+        "matched_batch\tjobs={jobs}\trequested_workers={workers}\teffective_workers={effective_workers}"
+    );
 }
 
 fn run_native(
@@ -238,14 +296,10 @@ impl WorkerDecoder {
         mode: DecodeMode,
     ) {
         for (out, input) in outputs.iter_mut().zip(inputs) {
-            // Every tile includes header/setup work on both sides. The handles
+            // Header parsing happens inside tj3Decompress8, once per tile, as
+            // j2k parses each header once inside its batch decode. The handles
             // and destination buffers are retained between timed iterations.
-            let info = self
-                .0
-                .prepare_rgb(input.bytes)
-                .expect("libjpeg-turbo batch header");
-            let width = info.width as usize;
-            let height = info.height as usize;
+            let (width, height) = (input.width, input.height);
             match mode {
                 DecodeMode::Gray => {
                     self.0

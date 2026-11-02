@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define GROK_OUTPUT_CAP_BYTES ((size_t)512 * 1024 * 1024)
+#define GROK_OUTPUT_CAP_BYTES ((size_t)4 * 1024 * 1024 * 1024)
 
 #if GRK_VERSION_MAJOR == 10
 void j2k_grok_initialize(uint32_t threads) { (void)grk_initialize(NULL, threads); }
@@ -143,9 +143,134 @@ static int j2k_grok_component_sample_u8(const grk_image_comp *component,
 #endif
 }
 
+#if GRK_VERSION_MAJOR != 10
+/* Whether every row the packer reads lies inside the component plane. */
+static int j2k_grok_component_covers(const grk_image_comp *c, uint32_t width,
+                                     uint32_t height) {
+  return c && c->data && c->stride != 0 && c->stride >= c->w &&
+         c->w >= width && c->h >= height;
+}
+
+static inline uint8_t j2k_u8_from_u8(uint8_t v) { return v; }
+static inline uint8_t j2k_u8_from_s8(int8_t v) { return j2k_clamp_u8(v); }
+static inline uint8_t j2k_u8_from_u16(uint16_t v) { return v > UINT8_MAX ? UINT8_MAX : (uint8_t)v; }
+static inline uint8_t j2k_u8_from_s16(int16_t v) { return j2k_clamp_u8(v); }
+static inline uint8_t j2k_u8_from_u32(uint32_t v) { return v > UINT8_MAX ? UINT8_MAX : (uint8_t)v; }
+static inline uint8_t j2k_u8_from_s32(int32_t v) { return j2k_clamp_u8(v); }
+
+/* Packs rows with the components' sample type known outside the loops, the
+ * same conversions as j2k_grok_component_sample_u8 applies per sample. */
+#define J2K_GROK_PACK(T, CONV)                                                  \
+  do {                                                                          \
+    for (uint32_t row = 0; row < height; ++row) {                               \
+      uint8_t *out = packed + (size_t)row * width * channels;                   \
+      const T *r0 = (const T *)c0->data + (size_t)row * c0->stride;             \
+      if (channels == 1) {                                                      \
+        for (uint32_t col = 0; col < width; ++col) out[col] = CONV(r0[col]);    \
+      } else if (image->numcomps == 1) {                                        \
+        for (uint32_t col = 0; col < width; ++col) {                            \
+          uint8_t v = CONV(r0[col]);                                            \
+          out[3 * (size_t)col] = v;                                             \
+          out[3 * (size_t)col + 1] = v;                                         \
+          out[3 * (size_t)col + 2] = v;                                         \
+        }                                                                       \
+      } else {                                                                  \
+        const T *r1 = (const T *)c1->data + (size_t)row * c1->stride;           \
+        const T *r2 = (const T *)c2->data + (size_t)row * c2->stride;           \
+        for (uint32_t col = 0; col < width; ++col) {                            \
+          out[3 * (size_t)col] = CONV(r0[col]);                                 \
+          out[3 * (size_t)col + 1] = CONV(r1[col]);                             \
+          out[3 * (size_t)col + 2] = CONV(r2[col]);                             \
+        }                                                                       \
+      }                                                                         \
+    }                                                                           \
+  } while (0)
+
+/* Fast path: every used component covers the output and shares one sample
+ * type. Returns 0 when that does not hold, so the caller falls back to the
+ * checked per-sample path. */
+static int j2k_grok_pack_fast(const grk_image *image, uint32_t width,
+                              uint32_t height, uint32_t channels,
+                              uint8_t *packed) {
+  const grk_image_comp *c0 = &image->comps[0];
+  const grk_image_comp *c1 = c0;
+  const grk_image_comp *c2 = c0;
+  if (!j2k_grok_component_covers(c0, width, height)) {
+    return 0;
+  }
+  if (channels == 3 && image->numcomps >= 3) {
+    c1 = &image->comps[1];
+    c2 = &image->comps[2];
+    if (!j2k_grok_component_covers(c1, width, height) ||
+        !j2k_grok_component_covers(c2, width, height) ||
+        c1->data_type != c0->data_type || c2->data_type != c0->data_type ||
+        c1->sgnd != c0->sgnd || c2->sgnd != c0->sgnd) {
+      return 0;
+    }
+  }
+  switch (c0->data_type) {
+  case GRK_INT_8:
+    if (c0->sgnd) J2K_GROK_PACK(int8_t, j2k_u8_from_s8); else J2K_GROK_PACK(uint8_t, j2k_u8_from_u8);
+    return 1;
+  case GRK_INT_16:
+    if (c0->sgnd) J2K_GROK_PACK(int16_t, j2k_u8_from_s16); else J2K_GROK_PACK(uint16_t, j2k_u8_from_u16);
+    return 1;
+  case GRK_INT_32:
+    if (c0->sgnd) J2K_GROK_PACK(int32_t, j2k_u8_from_s32); else J2K_GROK_PACK(uint32_t, j2k_u8_from_u32);
+    return 1;
+  default:
+    return 0;
+  }
+}
+#undef J2K_GROK_PACK
+
+static inline uint16_t j2k_u16_clamp(int64_t v) {
+  return v < 0 ? 0 : v > UINT16_MAX ? UINT16_MAX : (uint16_t)v;
+}
+
+/* 16-bit gray: component 0's values, unscaled, clamped to 0..65535, stored as
+ * native-endian uint16 through memcpy (the destination has no alignment
+ * guarantee). */
+#define J2K_GROK_PACK16(T)                                                      \
+  do {                                                                          \
+    for (uint32_t row = 0; row < height; ++row) {                               \
+      uint8_t *out = packed + (size_t)row * width * 2;                          \
+      const T *r0 = (const T *)c0->data + (size_t)row * c0->stride;             \
+      for (uint32_t col = 0; col < width; ++col) {                              \
+        uint16_t v = j2k_u16_clamp((int64_t)r0[col]);                           \
+        memcpy(out + 2 * (size_t)col, &v, sizeof v);                            \
+      }                                                                         \
+    }                                                                           \
+  } while (0)
+
+static int j2k_grok_pack_gray16(const grk_image *image, uint32_t width,
+                                uint32_t height, uint8_t *packed) {
+  const grk_image_comp *c0 = &image->comps[0];
+  if (!j2k_grok_component_covers(c0, width, height)) {
+    return 0;
+  }
+  switch (c0->data_type) {
+  case GRK_INT_8:
+    if (c0->sgnd) J2K_GROK_PACK16(int8_t); else J2K_GROK_PACK16(uint8_t);
+    return 1;
+  case GRK_INT_16:
+    if (c0->sgnd) J2K_GROK_PACK16(int16_t); else J2K_GROK_PACK16(uint16_t);
+    return 1;
+  case GRK_INT_32:
+    if (c0->sgnd) J2K_GROK_PACK16(int32_t); else J2K_GROK_PACK16(uint32_t);
+    return 1;
+  default:
+    return 0;
+  }
+}
+#undef J2K_GROK_PACK16
+#endif
+
 int j2k_grok_decode_u8(const uint8_t *bytes, size_t len, uint8_t reduce,
                        int has_region, uint32_t x0, uint32_t y0,
                        uint32_t x1, uint32_t y1, uint32_t channels,
+                       uint32_t threads, uint32_t bytes_per_sample,
+                       uint8_t *dest, size_t dest_len,
                        uint8_t **out_data, size_t *out_len,
                        uint32_t *out_width, uint32_t *out_height) {
   grk_object *codec = NULL;
@@ -159,7 +284,9 @@ int j2k_grok_decode_u8(const uint8_t *bytes, size_t len, uint8_t reduce,
   grk_header_info header_info;
   uint8_t *packed = NULL;
 
-  if (!bytes || !out_data || !out_len || !out_width || !out_height) {
+  if (!bytes || !out_data || !out_len || !out_width || !out_height ||
+      (bytes_per_sample != 1 && bytes_per_sample != 2) ||
+      (bytes_per_sample == 2 && channels != 1)) {
     return 0;
   }
 
@@ -182,13 +309,19 @@ int j2k_grok_decode_u8(const uint8_t *bytes, size_t len, uint8_t reduce,
 #endif
 
 #if GRK_VERSION_MAJOR == 10
+  if (bytes_per_sample != 1) {
+    return 0; /* the Grok 10 path packs 8-bit samples only */
+  }
   grk_decompress_set_default_params(&params);
   params.reduce = reduce;
+  (void)threads; /* Grok 10 sizes decoding only through grk_initialize. */
 #else
   params.core.reduce = reduce;
   params.force_rgb = channels == 3;
   params.upsample = channels == 3;
-  params.num_threads = 1;
+  /* 1 decodes on Grok's inline executor; more uses the global pool that
+   * j2k_grok_initialize sized. */
+  params.num_threads = threads ? threads : 1;
   if (has_region) {
     params.dw_x0 = x0;
     params.dw_y0 = y0;
@@ -268,11 +401,40 @@ int j2k_grok_decode_u8(const uint8_t *bytes, size_t len, uint8_t reduce,
     grk_object_unref(codec);
     return 0;
   }
-  packed = (uint8_t *)malloc(total);
+  total *= bytes_per_sample;
+  if (dest && dest_len != total) {
+    grk_object_unref(codec);
+    return 0;
+  }
+  packed = dest ? dest : (uint8_t *)malloc(total);
   if (!packed) {
     grk_object_unref(codec);
     return 0;
   }
+
+#if GRK_VERSION_MAJOR != 10
+  if (bytes_per_sample == 2) {
+    int ok = j2k_grok_pack_gray16(image, width, height, packed);
+    if (ok) {
+      *out_data = packed;
+      *out_len = total;
+      *out_width = width;
+      *out_height = height;
+    } else if (!dest) {
+      free(packed);
+    }
+    grk_object_unref(codec);
+    return ok;
+  }
+  if (j2k_grok_pack_fast(image, width, height, channels, packed)) {
+    *out_data = packed;
+    *out_len = total;
+    *out_width = width;
+    *out_height = height;
+    grk_object_unref(codec);
+    return 1;
+  }
+#endif
 
   for (uint32_t row = 0; row < height; ++row) {
     for (uint32_t col = 0; col < width; ++col) {
@@ -280,13 +442,13 @@ int j2k_grok_decode_u8(const uint8_t *bytes, size_t len, uint8_t reduce,
       grk_image_comp *c0 = &image->comps[0];
       size_t c0_index = 0;
       if (!j2k_grok_component_index(c0, row, col, &c0_index)) {
-        free(packed);
+        if (!dest) free(packed);
         grk_object_unref(codec);
         return 0;
       }
       uint8_t v0 = 0;
       if (!j2k_grok_component_sample_u8(c0, c0_index, &v0)) {
-        free(packed);
+        if (!dest) free(packed);
         grk_object_unref(codec);
         return 0;
       }
@@ -306,7 +468,7 @@ int j2k_grok_decode_u8(const uint8_t *bytes, size_t len, uint8_t reduce,
       size_t c2_index = 0;
       if (!j2k_grok_component_index(c1, row, col, &c1_index) ||
           !j2k_grok_component_index(c2, row, col, &c2_index)) {
-        free(packed);
+        if (!dest) free(packed);
         grk_object_unref(codec);
         return 0;
       }
@@ -314,7 +476,7 @@ int j2k_grok_decode_u8(const uint8_t *bytes, size_t len, uint8_t reduce,
       uint8_t v2 = 0;
       if (!j2k_grok_component_sample_u8(c1, c1_index, &v1) ||
           !j2k_grok_component_sample_u8(c2, c2_index, &v2)) {
-        free(packed);
+        if (!dest) free(packed);
         grk_object_unref(codec);
         return 0;
       }

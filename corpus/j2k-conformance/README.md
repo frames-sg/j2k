@@ -20,7 +20,7 @@ The deterministic encoder procedure is described by:
 Those Annex D/F results are informative under T.803 and are not decoder
 conformance results. Supported cases use the vendored OpenJPEG 2.5.3 T.804
 decoder. OpenJPEG rejects HT code-blocks carrying RGN before decoding, so the
-HT+RGN capability case is decoded by a clean, pinned OpenHTJ2K 0.19.0
+HT+RGN capability case is decoded by a clean, pinned OpenHTJ2K 0.23.4
 executable instead, as a labelled Part 15 interoperability check. Run
 `scripts/prepare-openhtj2k-reference.sh` before the CPU matrix; the report
 records the OpenHTJ2K source revision and executable hash and marks this case as

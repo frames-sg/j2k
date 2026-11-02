@@ -84,10 +84,46 @@ fn initialize() {
     have_grok,
     expect(
         unsafe_code,
-        reason = "Grok decode uses the optional checked C shim and frees its output exactly once"
+        reason = "views the shim allocation that the guard frees exactly once"
     )
 )]
 fn decode(bytes: &[u8], request: ExternalDecodeRequest) -> Result<Vec<u8>, String> {
+    let (ptr, len) = call_shim(bytes, request, None)?;
+    #[cfg(have_grok)]
+    {
+        let output = GrokOutput(ptr);
+        // SAFETY: the non-null shim allocation has been independently bounded and
+        // its reported length exactly matches the checked dimensions and channels.
+        Ok(unsafe { std::slice::from_raw_parts(output.0, len) }.to_vec())
+    }
+    #[cfg(not(have_grok))]
+    {
+        let _ = (ptr, len);
+        Err("grok: local library not available".to_string())
+    }
+}
+
+/// Decode `request` directly into `out`, whose length must equal the output's.
+pub fn decode_into(
+    bytes: &[u8],
+    request: ExternalDecodeRequest,
+    out: &mut [u8],
+) -> Result<(), String> {
+    call_shim(bytes, request, Some(out)).map(|_| ())
+}
+
+/// Runs the shim. With `dest`, the pixels land in `dest` and the returned
+/// pointer is `dest`'s; without it, the returned pointer is a shim allocation
+/// the caller must free.
+#[cfg_attr(
+    have_grok,
+    expect(unsafe_code, reason = "Grok decode uses the optional checked C shim")
+)]
+fn call_shim(
+    bytes: &[u8],
+    request: ExternalDecodeRequest,
+    dest: Option<&mut [u8]>,
+) -> Result<(*mut u8, usize), String> {
     #[cfg(have_grok)]
     {
         initialize();
@@ -104,8 +140,10 @@ fn decode(bytes: &[u8], request: ExternalDecodeRequest) -> Result<Vec<u8>, Strin
             }
             None => (0, 0, 0, 0, 0),
         };
-        // SAFETY: the source slice is live for the call and all output pointers
-        // refer to initialized writable locals governed by the C shim's ABI.
+        let (dest_ptr, dest_len) = dest.map_or((ptr::null_mut(), 0), |d| (d.as_mut_ptr(), d.len()));
+        // SAFETY: the source slice and optional destination are live for the
+        // call; the shim writes at most `dest_len` bytes into the destination
+        // and all output pointers refer to initialized writable locals.
         let ok = unsafe {
             j2k_grok_decode_u8(
                 bytes.as_ptr(),
@@ -117,31 +155,38 @@ fn decode(bytes: &[u8], request: ExternalDecodeRequest) -> Result<Vec<u8>, Strin
                 x1,
                 y1,
                 channels,
+                request.threads.max(1),
+                request.color.bytes_per_sample(),
+                dest_ptr,
+                dest_len,
                 &raw mut out,
                 &raw mut out_len,
                 &raw mut out_width,
                 &raw mut out_height,
             )
         };
-        let output = GrokOutput(out);
-        if ok == 0 || output.0.is_null() {
+        if ok == 0 || out.is_null() {
+            if dest_ptr.is_null() && !out.is_null() {
+                drop(GrokOutput(out));
+            }
             return Err("grok: decode failed".to_string());
         }
-        let expected = crate::checked_external_output_len("grok", out_width, out_height, channels)?;
+        let expected = crate::checked_external_output_len("grok", out_width, out_height, channels)?
+            * usize::try_from(request.color.bytes_per_sample()).unwrap_or(1);
         if out_len != expected {
+            if dest_ptr.is_null() {
+                drop(GrokOutput(out));
+            }
             return Err(format!(
                 "grok: unexpected output length {out_len} != {expected}"
             ));
         }
-        // SAFETY: the non-null shim allocation has been independently bounded and
-        // its reported length exactly matches the checked dimensions and channels.
-        let packed = unsafe { std::slice::from_raw_parts(output.0, expected) }.to_vec();
-        Ok(packed)
+        Ok((out, out_len))
     }
 
     #[cfg(not(have_grok))]
     {
-        let _ = (bytes, request);
+        let _ = (bytes, request, dest);
         Err("grok: local library not available".to_string())
     }
 }
@@ -182,6 +227,10 @@ unsafe extern "C" {
         x1: u32,
         y1: u32,
         channels: u32,
+        threads: u32,
+        bytes_per_sample: u32,
+        dest: *mut u8,
+        dest_len: usize,
         out_data: *mut *mut u8,
         out_len: *mut usize,
         out_width: *mut u32,

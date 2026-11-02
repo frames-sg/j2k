@@ -7,9 +7,9 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 reference_common="reference-build-common.sh"
 source "${script_dir}/${reference_common}"
 
-version="0.19.0"
+version="0.23.4"
 source_url="https://github.com/osamu620/OpenHTJ2K.git"
-source_commit="e0f7ae853220d1e359c438b0bb6ad6cb2b3899db"
+source_commit="990fc1873e4a414745784ae731c891962d7ab603"
 source_dir="${1:-target/t803/openhtj2k-v${version}}"
 build_dir="${source_dir}/build-reference"
 

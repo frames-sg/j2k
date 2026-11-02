@@ -8,6 +8,19 @@ use std::process::Command;
 const LIBJPEG_TURBO_PKG_CONFIG_ARGS: [&str; 2] = ["--libs", "libturbojpeg"];
 #[cfg(not(test))]
 const LIBJPEG_TURBO_VERSION_ARGS: [&str; 2] = ["--modversion", "libturbojpeg"];
+#[cfg(not(test))]
+const REQUIRE_LIBJPEG_TURBO_ENV: &str = "J2K_BENCH_REQUIRE_LIBJPEG_TURBO";
+
+/// Fails the build when the benchmark run requires libjpeg-turbo; otherwise
+/// warns that the comparator is not linked.
+#[cfg(not(test))]
+fn report_missing_libjpeg_turbo(require: bool, reason: &str) {
+    assert!(
+        !require,
+        "bench-libjpeg-turbo: {reason} ({REQUIRE_LIBJPEG_TURBO_ENV}=1)"
+    );
+    println!("cargo:warning=bench-libjpeg-turbo: {reason}; libjpeg-turbo is not linked");
+}
 
 fn is_v3(version: &[u8]) -> bool {
     std::str::from_utf8(version)
@@ -30,29 +43,54 @@ fn main() {
         return;
     }
     println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
+    println!("cargo:rerun-if-env-changed={REQUIRE_LIBJPEG_TURBO_ENV}");
 
-    let Ok(output) = Command::new("pkg-config")
+    // `--all-features` builds (docs.rs, clippy, public-api) enable this
+    // feature on machines without libjpeg-turbo, so a missing library is a
+    // build warning by default. Benchmark runs set the require variable to
+    // turn it into an error instead of building without the comparator.
+    let require = env::var_os(REQUIRE_LIBJPEG_TURBO_ENV).is_some_and(|value| value == "1");
+    let output = match Command::new("pkg-config")
         .args(LIBJPEG_TURBO_PKG_CONFIG_ARGS)
         .output()
-    else {
-        return;
+    {
+        Ok(output) if output.status.success() => output,
+        Ok(_) => {
+            return report_missing_libjpeg_turbo(
+                require,
+                "pkg-config cannot find libturbojpeg; set PKG_CONFIG_PATH",
+            );
+        }
+        Err(err) => {
+            return report_missing_libjpeg_turbo(require, &format!("cannot run pkg-config: {err}"));
+        }
     };
-    if !output.status.success() {
-        return;
-    }
 
     println!("cargo:rustc-cfg=has_libjpeg_turbo");
-    if Command::new("pkg-config")
+    let version = Command::new("pkg-config")
         .args(LIBJPEG_TURBO_VERSION_ARGS)
         .output()
-        .is_ok_and(|version| version.status.success() && is_v3(&version.stdout))
-    {
+        .ok()
+        .filter(|version| version.status.success())
+        .map(|version| version.stdout)
+        .unwrap_or_default();
+    if is_v3(&version) {
         println!("cargo:rustc-cfg=has_libjpeg_turbo_v3");
     }
+    println!(
+        "cargo:rustc-env=J2K_LIBJPEG_TURBO_VERSION={}",
+        String::from_utf8_lossy(&version).trim()
+    );
     let flags = String::from_utf8_lossy(&output.stdout);
     for token in flags.split_whitespace() {
         if let Some(path) = token.strip_prefix("-L") {
             println!("cargo:rustc-link-search=native={path}");
+            // Benches load the library pkg-config named, not another copy on
+            // the default search path. MSVC's linker has no rpath.
+            if env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
+                println!("cargo:rustc-link-arg-benches=-Wl,-rpath,{path}");
+            }
+            println!("cargo:rustc-env=J2K_LIBJPEG_TURBO_LIBDIR={path}");
         } else if let Some(lib) = token.strip_prefix("-l") {
             println!("cargo:rustc-link-lib={lib}");
         }

@@ -30,8 +30,8 @@ class OpenJphReferenceTests(unittest.TestCase):
         source = SCRIPT.read_text(encoding="utf-8")
 
         self.assertIn("https://github.com/aous72/OpenJPH.git", source)
-        self.assertIn("c68064d0e4cad8e96bab9a068f6cc4e7799744fc", source)
-        self.assertIn('version="0.31.0"', source)
+        self.assertIn("345a8bcd1c7a3908e3870797057277660a412073", source)
+        self.assertIn('version="0.33.0"', source)
         self.assertIn("J2K_OPENJPH_EXPAND_BIN", source)
         self.assertIn("J2K_OPENJPH_COMPRESS_BIN", source)
         self.assertIn("--target ojph_expand ojph_compress", source)

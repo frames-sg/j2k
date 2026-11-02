@@ -25,12 +25,12 @@ pub(super) fn discover_openjph_tools() -> Result<(PathBuf, PathBuf), String> {
         required_tool(
             "J2K_OPENJPH_COMPRESS_BIN",
             "ojph_compress",
-            "target/reference/openjph-0.31.0/build-reference/src/apps/ojph_compress/ojph_compress",
+            "target/reference/openjph-0.33.0/build-reference/src/apps/ojph_compress/ojph_compress",
         )?,
         required_tool(
             "J2K_OPENJPH_EXPAND_BIN",
             "ojph_expand",
-            "target/reference/openjph-0.31.0/build-reference/src/apps/ojph_expand/ojph_expand",
+            "target/reference/openjph-0.33.0/build-reference/src/apps/ojph_expand/ojph_expand",
         )?,
     ))
 }

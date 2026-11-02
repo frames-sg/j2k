@@ -311,9 +311,9 @@ fn supplemental_reference_identity_is_accepted_when_selected() {
         decoder: EncoderReferenceDecoder::OpenHtj2k,
         scope: "independent Part 15 interoperability evidence; not T.804".to_string(),
         implementation: "OpenHTJ2K".to_string(),
-        version: "0.19.0".to_string(),
+        version: "0.23.4".to_string(),
         source_url: "https://github.com/osamu620/OpenHTJ2K".to_string(),
-        source_commit: "e0f7ae853220d1e359c438b0bb6ad6cb2b3899db".to_string(),
+        source_commit: "990fc1873e4a414745784ae731c891962d7ab603".to_string(),
         executable_sha256: "4".repeat(64),
     };
 

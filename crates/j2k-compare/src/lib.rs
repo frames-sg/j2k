@@ -6,7 +6,9 @@ use std::time::Instant;
 
 use j2k_core::Rect;
 
-pub(crate) const MAX_EXTERNAL_OUTPUT_BYTES: usize = 512 * 1024 * 1024;
+/// Large enough for a full 16k x 16k RGB8 decode (768 MiB); a smaller cap here
+/// would read as a comparator failure on large images.
+pub(crate) const MAX_EXTERNAL_OUTPUT_BYTES: usize = 4 * 1024 * 1024 * 1024;
 
 #[cfg(any(have_grok, have_openhtj2k, have_openjph, test))]
 fn checked_external_output_len(
@@ -48,6 +50,9 @@ pub enum ExternalDecodeColor {
     Gray,
     /// Three-channel interleaved 8-bit RGB output.
     Rgb,
+    /// Single-channel 16-bit grayscale output: native-endian `u16` samples
+    /// holding each sample's value unscaled (clamped to `0..=65535`).
+    Gray16,
 }
 
 impl ExternalDecodeColor {
@@ -55,8 +60,17 @@ impl ExternalDecodeColor {
     #[must_use]
     pub const fn channels(self) -> u32 {
         match self {
-            Self::Gray => 1,
+            Self::Gray | Self::Gray16 => 1,
             Self::Rgb => 3,
+        }
+    }
+
+    /// Bytes per output sample.
+    #[must_use]
+    pub const fn bytes_per_sample(self) -> u32 {
+        match self {
+            Self::Gray | Self::Rgb => 1,
+            Self::Gray16 => 2,
         }
     }
 }
@@ -70,6 +84,9 @@ pub struct ExternalDecodeRequest {
     pub reduce: Option<u32>,
     /// Optional source region.
     pub region: Option<Rect>,
+    /// Decoder-internal threads for this one image; `1` decodes it on the
+    /// calling thread only.
+    pub threads: u32,
 }
 
 impl ExternalDecodeRequest {
@@ -80,6 +97,18 @@ impl ExternalDecodeRequest {
             color: ExternalDecodeColor::Rgb,
             reduce: None,
             region: None,
+            threads: 1,
+        }
+    }
+
+    /// Full-resolution 16-bit grayscale decode.
+    #[must_use]
+    pub const fn gray16() -> Self {
+        Self {
+            color: ExternalDecodeColor::Gray16,
+            reduce: None,
+            region: None,
+            threads: 1,
         }
     }
 
@@ -90,6 +119,17 @@ impl ExternalDecodeRequest {
             color: ExternalDecodeColor::Gray,
             reduce: None,
             region: None,
+            threads: 1,
+        }
+    }
+
+    /// The same request decoded with `threads` decoder-internal threads
+    /// (at least one).
+    #[must_use]
+    pub const fn with_threads(self, threads: u32) -> Self {
+        Self {
+            threads: if threads == 0 { 1 } else { threads },
+            ..self
         }
     }
 
@@ -158,6 +198,30 @@ macro_rules! external_decode_wrappers {
 
         pub fn decode_gray(bytes: &[u8]) -> Result<Vec<u8>, String> {
             $decode(bytes, crate::ExternalDecodeRequest::gray())
+        }
+
+        /// Decode exactly `request` (color, region, reduction and threads).
+        pub fn decode_request(
+            bytes: &[u8],
+            request: crate::ExternalDecodeRequest,
+        ) -> Result<Vec<u8>, String> {
+            $decode(bytes, request)
+        }
+
+        /// Full-resolution RGB decode using `threads` decoder-internal threads.
+        pub fn decode_rgb_threads(bytes: &[u8], threads: u32) -> Result<Vec<u8>, String> {
+            $decode(
+                bytes,
+                crate::ExternalDecodeRequest::rgb().with_threads(threads),
+            )
+        }
+
+        /// Full-resolution grayscale decode using `threads` decoder-internal threads.
+        pub fn decode_gray_threads(bytes: &[u8], threads: u32) -> Result<Vec<u8>, String> {
+            $decode(
+                bytes,
+                crate::ExternalDecodeRequest::gray().with_threads(threads),
+            )
         }
 
         pub fn decode_rgb_region(bytes: &[u8], roi: j2k_core::Rect) -> Result<Vec<u8>, String> {
@@ -276,9 +340,15 @@ mod external_output_len_tests {
         assert!(checked_external_output_len("codec", 0, 1, 1).is_err());
         assert!(checked_external_output_len("codec", 1, 1, 2).is_err());
         assert!(checked_external_output_len("codec", u32::MAX, u32::MAX, 3).is_err());
-        let over_cap =
-            u32::try_from(MAX_EXTERNAL_OUTPUT_BYTES + 1).expect("the shared output cap fits u32");
-        assert!(checked_external_output_len("codec", over_cap, 1, 1).is_err());
+        // The cap (4 GiB) is wider than one u32 dimension, so reach it with
+        // a square image: exactly at the cap is accepted, one row more is not.
+        let side = 1_u32 << 16;
+        assert_eq!(MAX_EXTERNAL_OUTPUT_BYTES, (1_usize << 16) * (1_usize << 16));
+        assert_eq!(
+            checked_external_output_len("codec", side, side, 1),
+            Ok(MAX_EXTERNAL_OUTPUT_BYTES)
+        );
+        assert!(checked_external_output_len("codec", side, side + 1, 1).is_err());
         assert_eq!(checked_external_output_len("codec", 2, 3, 3), Ok(18));
     }
 }

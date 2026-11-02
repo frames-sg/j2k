@@ -31,55 +31,146 @@ pub fn decode_rgb(bytes: &[u8], reduce: u8, threads: u32) -> Result<Vec<u8>, Str
     decode(bytes, reduce, threads, 3)
 }
 
+/// Decode directly into `out` (length must equal the output's): `channels`
+/// is 1 (gray) or 3 (RGB); `bytes_per_sample` 2 (gray only) writes unscaled
+/// native-endian `u16` values; `region` is in full-resolution coordinates and
+/// is decoded with `OpenHTJ2K`'s own viewport API, then scaled by `2^reduce`.
+pub fn decode_into(
+    bytes: &[u8],
+    reduce: u8,
+    threads: u32,
+    (channels, bytes_per_sample): (u32, u32),
+    region: Option<j2k_core::Rect>,
+    out: &mut [u8],
+) -> Result<(), String> {
+    call_shim(
+        bytes,
+        reduce,
+        threads,
+        (channels, bytes_per_sample),
+        region,
+        Some(out),
+    )
+    .map(|_| ())
+}
+
 #[cfg_attr(
     have_openhtj2k,
     expect(
         unsafe_code,
-        reason = "OpenHTJ2K decode uses the optional checked C++ shim and frees its output exactly once"
+        reason = "views the shim allocation that the guard frees exactly once"
     )
 )]
 fn decode(bytes: &[u8], reduce: u8, threads: u32, channels: u32) -> Result<Vec<u8>, String> {
+    let (ptr, len) = call_shim(bytes, reduce, threads, (channels, 1), None, None)?;
     #[cfg(have_openhtj2k)]
     {
-        let threads = threads.max(1);
+        let output = OpenHtj2kOutput(ptr);
+        // SAFETY: the non-null shim allocation has been independently bounded
+        // and its length matches the checked dimensions and channel count.
+        Ok(unsafe { std::slice::from_raw_parts(output.0, len) }.to_vec())
+    }
+    #[cfg(not(have_openhtj2k))]
+    {
+        let _ = (ptr, len);
+        Err("openhtj2k: local library not available".to_string())
+    }
+}
+
+/// Runs the shim. With `dest`, the pixels land in `dest` and the returned
+/// pointer is `dest`'s; without it, the returned pointer is a shim allocation
+/// the caller must free.
+#[cfg_attr(
+    have_openhtj2k,
+    expect(
+        unsafe_code,
+        reason = "OpenHTJ2K decode uses the optional checked C++ shim"
+    )
+)]
+fn call_shim(
+    bytes: &[u8],
+    reduce: u8,
+    threads: u32,
+    (channels, bytes_per_sample): (u32, u32),
+    region: Option<j2k_core::Rect>,
+    dest: Option<&mut [u8]>,
+) -> Result<(*mut u8, usize), String> {
+    #[cfg(have_openhtj2k)]
+    {
+        let (has_region, x0, y0, x1, y1) = match region {
+            Some(roi) => {
+                let x1 = roi
+                    .x
+                    .checked_add(roi.w)
+                    .ok_or("openhtj2k: region x overflow")?;
+                let y1 = roi
+                    .y
+                    .checked_add(roi.h)
+                    .ok_or("openhtj2k: region y overflow")?;
+                (1, roi.x, roi.y, x1, y1)
+            }
+            None => (0, 0, 0, 0, 0),
+        };
+        let (dest_ptr, dest_len) = dest.map_or((ptr::null_mut(), 0), |d| (d.as_mut_ptr(), d.len()));
         let mut out = ptr::null_mut();
         let mut out_len = 0_usize;
         let mut out_width = 0_u32;
         let mut out_height = 0_u32;
-        // SAFETY: the input slice remains live for the call and the output
-        // pointers refer to initialized writable locals governed by the shim ABI.
+        // SAFETY: the input slice and optional destination stay live for the
+        // call; the shim writes at most `dest_len` bytes into the destination
+        // and the output pointers refer to initialized writable locals.
         let ok = unsafe {
             j2k_openhtj2k_decode_u8(
                 bytes.as_ptr(),
                 bytes.len(),
                 reduce,
-                threads,
+                threads.max(1),
                 channels,
+                bytes_per_sample,
+                has_region,
+                x0,
+                y0,
+                x1,
+                y1,
+                dest_ptr,
+                dest_len,
                 &raw mut out,
                 &raw mut out_len,
                 &raw mut out_width,
                 &raw mut out_height,
             )
         };
-        let output = OpenHtj2kOutput(out);
-        if ok == 0 || output.0.is_null() {
+        if ok == 0 || out.is_null() {
+            if dest_ptr.is_null() && !out.is_null() {
+                drop(OpenHtj2kOutput(out));
+            }
             return Err("openhtj2k: decode failed".to_string());
         }
         let expected =
-            crate::checked_external_output_len("openhtj2k", out_width, out_height, channels)?;
+            crate::checked_external_output_len("openhtj2k", out_width, out_height, channels)?
+                * usize::try_from(bytes_per_sample).unwrap_or(1);
         if out_len != expected {
+            if dest_ptr.is_null() {
+                drop(OpenHtj2kOutput(out));
+            }
             return Err(format!(
                 "openhtj2k: unexpected output length {out_len} != {expected}"
             ));
         }
-        // SAFETY: the non-null shim allocation has been independently bounded
-        // and its length matches the checked dimensions and channel count.
-        Ok(unsafe { std::slice::from_raw_parts(output.0, expected) }.to_vec())
+        Ok((out, out_len))
     }
 
     #[cfg(not(have_openhtj2k))]
     {
-        let _ = (bytes, reduce, threads, channels);
+        let _ = (
+            bytes,
+            reduce,
+            threads,
+            channels,
+            bytes_per_sample,
+            region,
+            dest,
+        );
         Err("openhtj2k: local library not available".to_string())
     }
 }
@@ -113,6 +204,14 @@ unsafe extern "C" {
         reduce: u8,
         threads: u32,
         channels: u32,
+        bytes_per_sample: u32,
+        has_region: i32,
+        x0: u32,
+        y0: u32,
+        x1: u32,
+        y1: u32,
+        dest: *mut u8,
+        dest_len: usize,
         out_data: *mut *mut u8,
         out_len: *mut usize,
         out_width: *mut u32,
@@ -136,7 +235,7 @@ mod tests {
         let decoded = super::decode_gray(fixture.encoded, 0, 1)
             .expect("decode through pinned OpenHTJ2K library");
         assert_eq!(decoded, fixture.oracle);
-        assert_eq!(super::version(), "0.19.0");
+        assert_eq!(super::version(), "0.23.4");
     }
 
     #[test]
