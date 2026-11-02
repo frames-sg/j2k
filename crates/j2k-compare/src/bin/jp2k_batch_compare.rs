@@ -383,16 +383,11 @@ fn emit_configuration(
     let excluded = options
         .excluded
         .iter()
-        .map(|decoder| decoder.label())
-        .collect::<Vec<_>>()
-        .join(",");
+        .map(|decoder| decoder.label().to_string())
+        .collect::<Vec<_>>();
     println!(
         "excluded_decoders\t{}",
-        if excluded.is_empty() {
-            "none"
-        } else {
-            &excluded
-        }
+        j2k_compare::common::join_string_labels(&excluded)
     );
     println!("thread_budget\t{pool_threads}\nrayon_num_threads\t{pool_threads}");
     if let Some(spec) = options.viewport {
@@ -601,13 +596,13 @@ fn decode_j2k_outputs(
     format: PixelFormat,
     workers: Option<NonZeroUsize>,
 ) -> Result<Vec<Vec<u8>>, String> {
+    if tiles.iter().any(|tile| tile.roi.is_some()) {
+        return decode_j2k_viewport(tiles, format, workers);
+    }
     let mut outputs = tiles
         .iter()
         .map(|tile| vec![0_u8; output_len(tile, format)])
         .collect::<Vec<_>>();
-    if tiles.iter().any(|tile| tile.roi.is_some()) {
-        return decode_j2k_viewport(tiles, format, workers);
-    }
     let mut jobs = tiles
         .iter()
         .zip(outputs.iter_mut())
@@ -634,12 +629,13 @@ fn decode_j2k_viewport(
     let available = std::thread::available_parallelism().map_or(1, NonZeroUsize::get);
     let worker_count =
         tile_batch_worker_count(tiles.len(), TileBatchOptions { workers }, available);
-    let parallelism = if tiles.len() <= 1 {
+    let threads = intra_image_threads(tiles.len(), workers.map_or(available, NonZeroUsize::get));
+    let parallelism = if threads > 1 {
         CpuDecodeParallelism::Auto
     } else {
         CpuDecodeParallelism::Serial
     };
-    let decode_one = |tile: &TileInput| -> Result<Vec<u8>, String> {
+    run_static_chunks(tiles, worker_count, |tile| {
         let roi = tile.roi.unwrap_or_else(|| Rect::full(tile.dimensions));
         let mut view = J2kDecoder::new(&tile.bytes).map_err(|err| format!("j2k decoder: {err}"))?;
         view.set_cpu_decode_parallelism(parallelism);
@@ -654,12 +650,26 @@ fn decode_j2k_viewport(
         )
         .map_err(|err| format!("j2k region decode failed: {err}"))?;
         Ok(out)
-    };
-    let chunk_size = tiles.len().div_ceil(worker_count);
+    })
+}
+
+/// Decode every tile with `decode_one` as every decoder here is scheduled:
+/// static chunks, one per worker, on scoped threads, in input order. A single
+/// chunk runs on the calling thread.
+fn run_static_chunks(
+    tiles: &[TileInput],
+    worker_count: usize,
+    decode_one: impl Fn(&TileInput) -> Result<Vec<u8>, String> + Sync,
+) -> Result<Vec<Vec<u8>>, String> {
+    let chunk_size = tiles.len().div_ceil(worker_count.max(1)).max(1);
+    if chunk_size >= tiles.len() {
+        return tiles.iter().map(&decode_one).collect();
+    }
     std::thread::scope(|scope| {
         let handles = tiles
             .chunks(chunk_size)
             .map(|chunk| {
+                let decode_one = &decode_one;
                 scope.spawn(move || chunk.iter().map(decode_one).collect::<Result<Vec<_>, _>>())
             })
             .collect::<Vec<_>>();
@@ -734,30 +744,15 @@ fn decode_external_once(
     let worker_count =
         tile_batch_worker_count(tiles.len(), TileBatchOptions { workers }, available);
     let threads = intra_image_threads(tiles.len(), workers.map_or(available, NonZeroUsize::get));
-    let chunk_size = tiles.len().div_ceil(worker_count);
-    let outputs = std::thread::scope(|scope| {
-        let mut handles = Vec::with_capacity(worker_count);
-        for chunk in tiles.chunks(chunk_size) {
-            handles.push(scope.spawn(move || {
-                chunk
-                    .iter()
-                    .map(|tile| decode_external_tile(tile, decoder, threads))
-                    .collect::<Result<Vec<_>, _>>()
-            }));
-        }
-        let mut outputs = Vec::with_capacity(tiles.len());
-        for handle in handles {
-            match handle.join() {
-                Ok(Ok(mut chunk)) => outputs.append(&mut chunk),
-                Ok(Err(err)) => return Err(err),
-                Err(payload) => std::panic::resume_unwind(payload),
-            }
-        }
-        Ok(outputs)
+    let outputs = run_static_chunks(tiles, worker_count, |tile| {
+        decode_external_tile(tile, decoder, threads)
     })?;
     std::hint::black_box(&outputs);
     Ok(outputs.iter().map(Vec::len).sum())
 }
+
+/// A comparator's decode of a request into a caller-allocated buffer.
+type DecodeInto = fn(&[u8], ExternalDecodeRequest, &mut [u8]) -> Result<(), String>;
 
 /// Decode one input with `threads` decoder-internal threads; `OpenJPH`
 /// always decodes on the calling thread.
@@ -771,10 +766,10 @@ fn decode_external_tile(
     decoder: ExternalDecoder,
     threads: u32,
 ) -> Result<Vec<u8>, String> {
-    let (request, channels) = match tile.format {
-        PixelFormat::Gray8 => (ExternalDecodeRequest::gray(), 1),
-        PixelFormat::Rgb8 => (ExternalDecodeRequest::rgb(), 3),
-        PixelFormat::Gray16 => (ExternalDecodeRequest::gray16(), 1),
+    let request = match tile.format {
+        PixelFormat::Gray8 => ExternalDecodeRequest::gray(),
+        PixelFormat::Rgb8 => ExternalDecodeRequest::rgb(),
+        PixelFormat::Gray16 => ExternalDecodeRequest::gray16(),
         other => {
             return Err(format!(
                 "{other:?} is not implemented for external comparator"
@@ -786,34 +781,15 @@ fn decode_external_tile(
         reduce: (tile.reduce > 0).then_some(u32::from(tile.reduce)),
         ..request.with_threads(threads)
     };
-    let reduce_u8 = tile.reduce;
-    let result = if decoder == ExternalDecoder::OpenJpeg {
-        openjpeg::decode_request(&tile.bytes, request)
-    } else {
+    let into = |decode: DecodeInto| {
         let mut out = vec![0_u8; output_len(tile, tile.format)];
-        match decoder {
-            ExternalDecoder::Grok => grok::decode_into(&tile.bytes, request, &mut out),
-            ExternalDecoder::OpenHtj2k => openhtj2k::decode_into(
-                &tile.bytes,
-                reduce_u8,
-                threads,
-                (channels, request.color.bytes_per_sample()),
-                tile.roi,
-                &mut out,
-            ),
-            ExternalDecoder::OpenJph if tile.roi.is_some() => {
-                Err("OpenJPH has no region decode".to_string())
-            }
-            ExternalDecoder::OpenJph if tile.format == PixelFormat::Gray16 => {
-                openjph::decode_gray16_into(&tile.bytes, reduce_u8, &mut out)
-            }
-            ExternalDecoder::OpenJph if channels == 1 => {
-                openjph::decode_gray_into(&tile.bytes, reduce_u8, &mut out)
-            }
-            ExternalDecoder::OpenJph => openjph::decode_rgb_into(&tile.bytes, reduce_u8, &mut out),
-            ExternalDecoder::OpenJpeg => unreachable!("handled above"),
-        }
-        .map(|()| out)
+        decode(&tile.bytes, request, &mut out).map(|()| out)
+    };
+    let result = match decoder {
+        ExternalDecoder::OpenJpeg => openjpeg::decode_request(&tile.bytes, request),
+        ExternalDecoder::Grok => into(grok::decode_into),
+        ExternalDecoder::OpenHtj2k => into(openhtj2k::decode_into),
+        ExternalDecoder::OpenJph => into(openjph::decode_into),
     };
     result.map_err(|err| format!("{}: {err}", tile.path.display()))
 }

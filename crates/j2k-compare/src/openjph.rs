@@ -31,22 +31,27 @@ pub fn decode_rgb(bytes: &[u8], reduce: u8) -> Result<Vec<u8>, String> {
     decode(bytes, reduce, 3)
 }
 
-/// Decode to packed 8-bit grayscale directly into `out`, whose length must
-/// equal the decoded image's.
-pub fn decode_gray_into(bytes: &[u8], reduce: u8, out: &mut [u8]) -> Result<(), String> {
-    decode_into(bytes, reduce, 1, out)
-}
-
-/// Decode to packed interleaved RGB8 directly into `out`, whose length must
-/// equal the decoded image's.
-pub fn decode_rgb_into(bytes: &[u8], reduce: u8, out: &mut [u8]) -> Result<(), String> {
-    decode_into(bytes, reduce, 3, out)
-}
-
-/// Decode component 0 to native-endian `u16` samples (unscaled values,
-/// clamped to `0..=65535`) directly into `out`.
-pub fn decode_gray16_into(bytes: &[u8], reduce: u8, out: &mut [u8]) -> Result<(), String> {
-    call_shim(bytes, reduce, 1, 2, Some(out)).map(|_| ())
+/// Decode `request` directly into `out`, whose length must equal the
+/// output's. `OpenJPH` has no region decode and decodes on the calling
+/// thread, so a region request fails and the thread count is ignored.
+pub fn decode_into(
+    bytes: &[u8],
+    request: crate::ExternalDecodeRequest,
+    out: &mut [u8],
+) -> Result<(), String> {
+    if request.region.is_some() {
+        return Err("openjph: no region decode".to_string());
+    }
+    let reduce = u8::try_from(request.reduce.unwrap_or(0))
+        .map_err(|_| "openjph: reduction factor exceeds u8".to_string())?;
+    call_shim(
+        bytes,
+        reduce,
+        request.color.channels(),
+        request.color.bytes_per_sample(),
+        Some(out),
+    )
+    .map(|_| ())
 }
 
 #[cfg_attr(
@@ -70,10 +75,6 @@ fn decode(bytes: &[u8], reduce: u8, channels: u32) -> Result<Vec<u8>, String> {
         let _ = (ptr, len);
         Err("openjph: local library not available".to_string())
     }
-}
-
-fn decode_into(bytes: &[u8], reduce: u8, channels: u32, out: &mut [u8]) -> Result<(), String> {
-    call_shim(bytes, reduce, channels, 1, Some(out)).map(|_| ())
 }
 
 /// Runs the shim. With `dest`, the pixels land in `dest` and the returned
@@ -118,23 +119,18 @@ fn call_shim(
                 &raw mut out_height,
             )
         };
-        if ok == 0 || out.is_null() {
-            if dest_ptr.is_null() && !out.is_null() {
-                drop(OpenJphOutput(out));
-            }
-            return Err("openjph: decode failed".to_string());
-        }
-        let expected =
-            crate::checked_external_output_len("openjph", out_width, out_height, channels)?
-                * usize::try_from(bytes_per_sample).unwrap_or(1);
-        if out_len != expected {
-            if dest_ptr.is_null() {
-                drop(OpenJphOutput(out));
-            }
-            return Err(format!(
-                "openjph: unexpected output length {out_len} != {expected}"
-            ));
-        }
+        let owned = dest_ptr.is_null() && !out.is_null();
+        crate::checked_shim_output(
+            "openjph",
+            ok != 0 && !out.is_null(),
+            (out_len, out_width, out_height),
+            (channels, bytes_per_sample),
+            || {
+                if owned {
+                    drop(OpenJphOutput(out));
+                }
+            },
+        )?;
         Ok((out, out_len))
     }
 

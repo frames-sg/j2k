@@ -16,6 +16,7 @@ fn checked_external_output_len(
     width: u32,
     height: u32,
     channels: u32,
+    bytes_per_sample: u32,
 ) -> Result<usize, String> {
     if !matches!(channels, 1 | 3) {
         return Err(format!(
@@ -31,9 +32,12 @@ fn checked_external_output_len(
         usize::try_from(height).map_err(|_| format!("{codec}: height exceeds platform usize"))?;
     let channels = usize::try_from(channels)
         .map_err(|_| format!("{codec}: channel count exceeds platform usize"))?;
+    let bytes_per_sample = usize::try_from(bytes_per_sample)
+        .map_err(|_| format!("{codec}: sample size exceeds platform usize"))?;
     let len = width
         .checked_mul(height)
         .and_then(|pixels| pixels.checked_mul(channels))
+        .and_then(|samples| samples.checked_mul(bytes_per_sample))
         .ok_or_else(|| format!("{codec}: output byte count overflow"))?;
     if len > MAX_EXTERNAL_OUTPUT_BYTES {
         return Err(format!(
@@ -41,6 +45,52 @@ fn checked_external_output_len(
         ));
     }
     Ok(len)
+}
+
+/// Checks a comparator shim's result: it succeeded and wrote exactly the
+/// bytes its output dimensions imply for `channels` and `bytes_per_sample`.
+/// On failure, `free` releases the shim's own allocation, if it made one.
+#[cfg(any(have_grok, have_openhtj2k, have_openjph))]
+fn checked_shim_output(
+    codec: &str,
+    succeeded: bool,
+    (len, width, height): (usize, u32, u32),
+    (channels, bytes_per_sample): (u32, u32),
+    free: impl FnOnce(),
+) -> Result<(), String> {
+    let checked = if succeeded {
+        checked_external_output_len(codec, width, height, channels, bytes_per_sample).and_then(
+            |expected| {
+                if len == expected {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "{codec}: unexpected output length {len} != {expected}"
+                    ))
+                }
+            },
+        )
+    } else {
+        Err(format!("{codec}: decode failed"))
+    };
+    if checked.is_err() {
+        free();
+    }
+    checked
+}
+
+/// The exclusive `[x0, y0, x1, y1]` bounds of a region request.
+#[cfg(any(have_grok, have_openhtj2k, test))]
+fn checked_region_bounds(codec: &str, roi: Rect) -> Result<[u32; 4], String> {
+    let x1 = roi
+        .x
+        .checked_add(roi.w)
+        .ok_or_else(|| format!("{codec}: decode area x coordinate overflow"))?;
+    let y1 = roi
+        .y
+        .checked_add(roi.h)
+        .ok_or_else(|| format!("{codec}: decode area y coordinate overflow"))?;
+    Ok([roi.x, roi.y, x1, y1])
 }
 
 /// Color shape requested from an external comparator decode.
@@ -208,22 +258,6 @@ macro_rules! external_decode_wrappers {
             $decode(bytes, request)
         }
 
-        /// Full-resolution RGB decode using `threads` decoder-internal threads.
-        pub fn decode_rgb_threads(bytes: &[u8], threads: u32) -> Result<Vec<u8>, String> {
-            $decode(
-                bytes,
-                crate::ExternalDecodeRequest::rgb().with_threads(threads),
-            )
-        }
-
-        /// Full-resolution grayscale decode using `threads` decoder-internal threads.
-        pub fn decode_gray_threads(bytes: &[u8], threads: u32) -> Result<Vec<u8>, String> {
-            $decode(
-                bytes,
-                crate::ExternalDecodeRequest::gray().with_threads(threads),
-            )
-        }
-
         pub fn decode_rgb_region(bytes: &[u8], roi: j2k_core::Rect) -> Result<Vec<u8>, String> {
             $decode(bytes, crate::ExternalDecodeRequest::rgb_region(roi))
         }
@@ -337,18 +371,21 @@ mod external_output_len_tests {
 
     #[test]
     fn output_len_is_bounded_before_slice_construction() {
-        assert!(checked_external_output_len("codec", 0, 1, 1).is_err());
-        assert!(checked_external_output_len("codec", 1, 1, 2).is_err());
-        assert!(checked_external_output_len("codec", u32::MAX, u32::MAX, 3).is_err());
+        assert!(checked_external_output_len("codec", 0, 1, 1, 1).is_err());
+        assert!(checked_external_output_len("codec", 1, 1, 2, 1).is_err());
+        assert!(checked_external_output_len("codec", u32::MAX, u32::MAX, 3, 1).is_err());
         // The cap (4 GiB) is wider than one u32 dimension, so reach it with
         // a square image: exactly at the cap is accepted, one row more is not.
         let side = 1_u32 << 16;
         assert_eq!(MAX_EXTERNAL_OUTPUT_BYTES, (1_usize << 16) * (1_usize << 16));
         assert_eq!(
-            checked_external_output_len("codec", side, side, 1),
+            checked_external_output_len("codec", side, side, 1, 1),
             Ok(MAX_EXTERNAL_OUTPUT_BYTES)
         );
-        assert!(checked_external_output_len("codec", side, side + 1, 1).is_err());
-        assert_eq!(checked_external_output_len("codec", 2, 3, 3), Ok(18));
+        assert!(checked_external_output_len("codec", side, side + 1, 1, 1).is_err());
+        // Two-byte samples count toward the cap.
+        assert!(checked_external_output_len("codec", side, side, 1, 2).is_err());
+        assert_eq!(checked_external_output_len("codec", 2, 3, 1, 2), Ok(12));
+        assert_eq!(checked_external_output_len("codec", 2, 3, 3, 1), Ok(18));
     }
 }

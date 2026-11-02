@@ -65,7 +65,7 @@ Stability values:
 | `J2K_REQUIRE_GROK` | Makes Grok parity tests and benchmark comparator runs fail instead of skip when Grok tools or libraries are unavailable. | Skip unavailable comparator paths | Benchmark |
 | `J2K_REQUIRE_OPENJPH` | Makes optional OpenJPH fixture comparator rows fail instead of skip when `ojph_expand` is unavailable. Intended only for HTJ2K/JPH-compatible CLI context rows. | Skip unavailable OpenJPH path unless explicitly included | Benchmark |
 | `J2K_REQUIRE_KAKADU` | Makes optional Kakadu fixture/encoder comparator rows fail instead of skip when `kdu_expand` or `kdu_compress` is unavailable. Intended only for proprietary CLI/file-output context rows. | Skip unavailable Kakadu path unless explicitly included | Benchmark |
-| `J2K_REQUIRE_LIBJPEG_TURBO` | Makes libjpeg-turbo comparison tests fail instead of skip when the bench feature/tooling is unavailable. | Skip unavailable comparator path | Test/CI |
+| `J2K_REQUIRE_LIBJPEG_TURBO` | Makes libjpeg-turbo comparison tests fail instead of skip when the bench feature/tooling is unavailable, and makes a `bench-libjpeg-turbo` build fail instead of warn when `pkg-config` cannot find libturbojpeg. | Skip unavailable comparator path; the build warns | Test/CI |
 | `J2K_REQUIRE_CUDA` | Set to `1` to make `j2k-python` CUDA tests fail when the CUDA build or device is unavailable. | Skip unavailable Python CUDA tests | Test/CI |
 | `J2K_REQUIRE_METAL` | Set to `1` to make `j2k-python` Metal tests fail when the Metal build or PyTorch MPS device is unavailable. | Skip unavailable Python MPS tests | Test/CI |
 | `J2K_REQUIRE_CUDA_RUNTIME` | Makes CUDA tests and benchmarks require a usable CUDA runtime instead of skipping. | Skip runtime-only CUDA paths | Test/CI |
@@ -150,7 +150,6 @@ example, and the ignored `single_image_step_profile` test.
 | `J2K_BENCH_SKIP_REPO_INPUTS` | Set to any value to drop the two small built-in repository images from the JPEG benchmark inputs, so only `J2K_BENCH_INPUTS` is measured. | Built-in images included | Benchmark |
 | `J2K_BENCH_BATCH_SIZES` | Comma-separated positive batch sizes for the JPEG matched-batch decode comparison. | `16,64` | Benchmark |
 | `J2K_BENCH_BATCH_WORKERS` | Comma-separated positive worker counts for the JPEG matched-batch decode comparison. | `1,2,4` | Benchmark |
-| `J2K_BENCH_REQUIRE_LIBJPEG_TURBO` | Set to `1` to make the `bench-libjpeg-turbo` build fail when `pkg-config` cannot find libturbojpeg. Without it the build warns and does not link the comparator, so `--all-features` builds still succeed. | Warn | Benchmark |
 | `J2K_REPORT_ITERS` | Iteration count for custom report-style JPEG benchmarks. | Harness default | Benchmark |
 | `J2K_ALLOC_REPORT` | Enables allocation report output in the CPU JPEG encode benchmark. | Disabled | Benchmark |
 | `J2K_FORCE_FULL_FRAME` | Forces benchmark classification to full-frame mode. | Auto classification | Benchmark |

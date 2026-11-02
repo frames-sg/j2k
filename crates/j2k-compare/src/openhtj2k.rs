@@ -31,24 +31,22 @@ pub fn decode_rgb(bytes: &[u8], reduce: u8, threads: u32) -> Result<Vec<u8>, Str
     decode(bytes, reduce, threads, 3)
 }
 
-/// Decode directly into `out` (length must equal the output's): `channels`
-/// is 1 (gray) or 3 (RGB); `bytes_per_sample` 2 (gray only) writes unscaled
-/// native-endian `u16` values; `region` is in full-resolution coordinates and
-/// is decoded with `OpenHTJ2K`'s own viewport API, then scaled by `2^reduce`.
+/// Decode `request` directly into `out`, whose length must equal the
+/// output's. A region is in full-resolution coordinates and is decoded with
+/// `OpenHTJ2K`'s own viewport API, then scaled by `2^reduce`.
 pub fn decode_into(
     bytes: &[u8],
-    reduce: u8,
-    threads: u32,
-    (channels, bytes_per_sample): (u32, u32),
-    region: Option<j2k_core::Rect>,
+    request: crate::ExternalDecodeRequest,
     out: &mut [u8],
 ) -> Result<(), String> {
+    let reduce = u8::try_from(request.reduce.unwrap_or(0))
+        .map_err(|_| "openhtj2k: reduction factor exceeds u8".to_string())?;
     call_shim(
         bytes,
         reduce,
-        threads,
-        (channels, bytes_per_sample),
-        region,
+        request.threads,
+        (request.color.channels(), request.color.bytes_per_sample()),
+        request.region,
         Some(out),
     )
     .map(|_| ())
@@ -99,15 +97,8 @@ fn call_shim(
     {
         let (has_region, x0, y0, x1, y1) = match region {
             Some(roi) => {
-                let x1 = roi
-                    .x
-                    .checked_add(roi.w)
-                    .ok_or("openhtj2k: region x overflow")?;
-                let y1 = roi
-                    .y
-                    .checked_add(roi.h)
-                    .ok_or("openhtj2k: region y overflow")?;
-                (1, roi.x, roi.y, x1, y1)
+                let [x0, y0, x1, y1] = crate::checked_region_bounds("openhtj2k", roi)?;
+                (1, x0, y0, x1, y1)
             }
             None => (0, 0, 0, 0, 0),
         };
@@ -140,23 +131,18 @@ fn call_shim(
                 &raw mut out_height,
             )
         };
-        if ok == 0 || out.is_null() {
-            if dest_ptr.is_null() && !out.is_null() {
-                drop(OpenHtj2kOutput(out));
-            }
-            return Err("openhtj2k: decode failed".to_string());
-        }
-        let expected =
-            crate::checked_external_output_len("openhtj2k", out_width, out_height, channels)?
-                * usize::try_from(bytes_per_sample).unwrap_or(1);
-        if out_len != expected {
-            if dest_ptr.is_null() {
-                drop(OpenHtj2kOutput(out));
-            }
-            return Err(format!(
-                "openhtj2k: unexpected output length {out_len} != {expected}"
-            ));
-        }
+        let owned = dest_ptr.is_null() && !out.is_null();
+        crate::checked_shim_output(
+            "openhtj2k",
+            ok != 0 && !out.is_null(),
+            (out_len, out_width, out_height),
+            (channels, bytes_per_sample),
+            || {
+                if owned {
+                    drop(OpenHtj2kOutput(out));
+                }
+            },
+        )?;
         Ok((out, out_len))
     }
 

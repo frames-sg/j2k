@@ -135,7 +135,7 @@ fn call_shim(
         let reduce = checked_reduce(request.reduce)?;
         let (has_region, x0, y0, x1, y1) = match request.region {
             Some(roi) => {
-                let [x0, y0, x1, y1] = checked_region_bounds(roi)?;
+                let [x0, y0, x1, y1] = crate::checked_region_bounds("grok", roi)?;
                 (1, x0, y0, x1, y1)
             }
             None => (0, 0, 0, 0, 0),
@@ -165,22 +165,18 @@ fn call_shim(
                 &raw mut out_height,
             )
         };
-        if ok == 0 || out.is_null() {
-            if dest_ptr.is_null() && !out.is_null() {
-                drop(GrokOutput(out));
-            }
-            return Err("grok: decode failed".to_string());
-        }
-        let expected = crate::checked_external_output_len("grok", out_width, out_height, channels)?
-            * usize::try_from(request.color.bytes_per_sample()).unwrap_or(1);
-        if out_len != expected {
-            if dest_ptr.is_null() {
-                drop(GrokOutput(out));
-            }
-            return Err(format!(
-                "grok: unexpected output length {out_len} != {expected}"
-            ));
-        }
+        let owned = dest_ptr.is_null() && !out.is_null();
+        crate::checked_shim_output(
+            "grok",
+            ok != 0 && !out.is_null(),
+            (out_len, out_width, out_height),
+            (channels, request.color.bytes_per_sample()),
+            || {
+                if owned {
+                    drop(GrokOutput(out));
+                }
+            },
+        )?;
         Ok((out, out_len))
     }
 
@@ -195,19 +191,6 @@ fn call_shim(
 fn checked_reduce(reduce: Option<u32>) -> Result<u8, String> {
     u8::try_from(reduce.unwrap_or(0))
         .map_err(|_| "grok: reduction factor exceeds Grok u8 range".to_string())
-}
-
-#[cfg(any(have_grok, test))]
-fn checked_region_bounds(roi: j2k_core::Rect) -> Result<[u32; 4], String> {
-    let x1 = roi
-        .x
-        .checked_add(roi.w)
-        .ok_or_else(|| "grok: decode area x coordinate overflow".to_string())?;
-    let y1 = roi
-        .y
-        .checked_add(roi.h)
-        .ok_or_else(|| "grok: decode area y coordinate overflow".to_string())?;
-    Ok([roi.x, roi.y, x1, y1])
 }
 
 #[cfg(have_grok)]
@@ -243,24 +226,31 @@ unsafe extern "C" {
 mod tests {
     use j2k_core::Rect;
 
-    use super::{checked_reduce, checked_region_bounds};
+    use super::checked_reduce;
+    use crate::checked_region_bounds;
 
     #[test]
     fn region_bounds_reject_coordinate_overflow() {
-        assert!(checked_region_bounds(Rect {
-            x: u32::MAX,
-            y: 0,
-            w: 1,
-            h: 1,
-        })
+        assert!(checked_region_bounds(
+            "grok",
+            Rect {
+                x: u32::MAX,
+                y: 0,
+                w: 1,
+                h: 1,
+            }
+        )
         .is_err());
         assert_eq!(
-            checked_region_bounds(Rect {
-                x: 1,
-                y: 2,
-                w: 3,
-                h: 4,
-            })
+            checked_region_bounds(
+                "grok",
+                Rect {
+                    x: 1,
+                    y: 2,
+                    w: 3,
+                    h: 4,
+                }
+            )
             .expect("bounded Grok decode area"),
             [1, 2, 4, 6]
         );

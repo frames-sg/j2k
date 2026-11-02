@@ -8,8 +8,10 @@ use std::process::Command;
 const LIBJPEG_TURBO_PKG_CONFIG_ARGS: [&str; 2] = ["--libs", "libturbojpeg"];
 #[cfg(not(test))]
 const LIBJPEG_TURBO_VERSION_ARGS: [&str; 2] = ["--modversion", "libturbojpeg"];
+/// The variable that makes the libjpeg-turbo comparison tests fail instead
+/// of skip; it makes a missing library fail this build too.
 #[cfg(not(test))]
-const REQUIRE_LIBJPEG_TURBO_ENV: &str = "J2K_BENCH_REQUIRE_LIBJPEG_TURBO";
+const REQUIRE_LIBJPEG_TURBO_ENV: &str = "J2K_REQUIRE_LIBJPEG_TURBO";
 
 /// Fails the build when the benchmark run requires libjpeg-turbo; otherwise
 /// warns that the comparator is not linked.
@@ -17,7 +19,7 @@ const REQUIRE_LIBJPEG_TURBO_ENV: &str = "J2K_BENCH_REQUIRE_LIBJPEG_TURBO";
 fn report_missing_libjpeg_turbo(require: bool, reason: &str) {
     assert!(
         !require,
-        "bench-libjpeg-turbo: {reason} ({REQUIRE_LIBJPEG_TURBO_ENV}=1)"
+        "bench-libjpeg-turbo: {reason} ({REQUIRE_LIBJPEG_TURBO_ENV} is set)"
     );
     println!("cargo:warning=bench-libjpeg-turbo: {reason}; libjpeg-turbo is not linked");
 }
@@ -47,9 +49,8 @@ fn main() {
 
     // `--all-features` builds (docs.rs, clippy, public-api) enable this
     // feature on machines without libjpeg-turbo, so a missing library is a
-    // build warning by default. Benchmark runs set the require variable to
-    // turn it into an error instead of building without the comparator.
-    let require = env::var_os(REQUIRE_LIBJPEG_TURBO_ENV).is_some_and(|value| value == "1");
+    // build warning unless the require variable is set.
+    let require = env::var_os(REQUIRE_LIBJPEG_TURBO_ENV).is_some();
     let output = match Command::new("pkg-config")
         .args(LIBJPEG_TURBO_PKG_CONFIG_ARGS)
         .output()
