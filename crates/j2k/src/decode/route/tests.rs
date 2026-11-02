@@ -313,6 +313,43 @@ fn tiled_images_stream_tiles_at_once_on_the_pool() {
     assert_eq!(auto, FullImageRoute::StreamedRegion);
 }
 
+/// Eight 512 x 512 tiles whose tile-parts take turns in the codestream, one
+/// RPCL packet each, stream tile by tile at once at half resolution on four
+/// threads: the layout the forced-route tests check that route with.
+#[test]
+fn interleaved_tile_parts_stream_tiles_at_once() {
+    let options = EncodeOptions {
+        num_decomposition_levels: 2,
+        progression_order: j2k_native::EncodeProgressionOrder::Rpcl,
+        tile_size: Some((512, 512)),
+        tile_part_packet_limit: Some(1),
+        write_plt: true,
+        ..EncodeOptions::default()
+    };
+    let bytes = j2k_test_support::with_tile_parts_interleaved(
+        &encode(&vec![77; 2048 * 1024], 2048, 1024, 1, 8, false, &options).expect("encode fixture"),
+    );
+    let image = image_at_scale(&bytes, DecodeSettings::default(), Downscale::Half).expect("image");
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .expect("pool");
+    let route = pool.install(|| {
+        full_image_route(
+            &image,
+            RouteRequest {
+                components: 1,
+                scale: Downscale::Half,
+                ..request(PixelFormat::Gray8, 0, CpuDecodeParallelism::Auto)
+            },
+        )
+    });
+    assert!(
+        matches!(route, FullImageRoute::StreamedTiles { ref tiles, .. } if tiles.len() == 8),
+        "{route:?}"
+    );
+}
+
 /// Tiles at once take the calling thread and every pool thread, and need a
 /// tile for each that keeps them busy, of a size worth its own decode.
 #[test]

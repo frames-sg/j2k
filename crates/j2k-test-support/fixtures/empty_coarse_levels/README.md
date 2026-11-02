@@ -21,10 +21,20 @@ opj_compress -i gray8x6.pgm -o openjpeg_gray_8x6_tile8x5_53.j2k -n 3 -t 8,5
 opj_compress -i rgb6x6.ppm -o openjpeg_rgb_6x6_tile5x5_97.j2k -n 3 -t 5,5 -I
 ```
 
+A third image, 3 x 3 gray in 2 x 2 tiles with one decomposition level and
+EPH markers, has a corner tile of one sample whose detail sub-bands are
+empty: its full-resolution precinct holds no code-block, and its packet is
+the tile's last. From a 3 x 3 PGM of the same samples:
+
+```sh
+opj_compress -i gray3x3.pgm -o openjpeg_gray_3x3_tile2x2_53_eph.j2k -n 2 -t 2,2 -EPH
+```
+
 | File | Contents | SHA-256 |
 | --- | --- | --- |
 | `openjpeg_gray_8x6_tile8x5_53.j2k` | Gray, 8 x 5 tiles, reversible 5/3; decodes to the samples exactly. | `09b737d7300ea4ddfc81a29740083105594e77c9029a2635c77bd05c98fb4d85` |
 | `openjpeg_rgb_6x6_tile5x5_97.j2k` | RGB, 5 x 5 tiles, irreversible 9/7 with the colour transform. | `ea6d998d5d77cc63f86dbda5f9924177848eac1ea25c17cb5ea162ba687561e7` |
+| `openjpeg_gray_3x3_tile2x2_53_eph.j2k` | Gray, 2 x 2 tiles, reversible 5/3, EPH markers; decodes to the samples exactly. | `7427e785a23347fda3c2da701a91fdd07fd37feea2b5401a1d1bbc3fedab1a66` |
 
 The samples are generated for j2k and contain no externally sourced image
 content. OpenJPEG is an independent fixture encoder, not a production codec

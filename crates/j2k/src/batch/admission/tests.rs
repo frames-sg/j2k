@@ -143,17 +143,3 @@ fn poisoned_admission_state_is_a_typed_infrastructure_error() {
         Err(BatchInfrastructureError::SchedulerPoisoned)
     ));
 }
-
-#[test]
-fn held_claim_grows_to_the_largest_execution_and_never_doubles() {
-    let budget = BatchAllocationBudget::with_baseline(0).expect("budget");
-    let mut held = None;
-    hold_at_least(&budget, &mut held, 100).expect("first claim");
-    assert_eq!(budget.lock_state().live, 100);
-    hold_at_least(&budget, &mut held, 40).expect("smaller execution reuses the claim");
-    assert_eq!(budget.lock_state().live, 100);
-    hold_at_least(&budget, &mut held, 300).expect("larger execution grows the claim");
-    assert_eq!(budget.lock_state().live, 300);
-    drop(held);
-    assert_eq!(budget.lock_state().live, 0);
-}

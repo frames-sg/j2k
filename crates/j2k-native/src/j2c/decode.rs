@@ -881,7 +881,11 @@ fn decode_tile<'a>(
             output_region,
             retained_decode_baseline,
         )?,
-        None => None,
+        // A decode that builds every precinct reads the packets a region
+        // decode of the whole image reads.
+        None => {
+            build::select_whole_image_precincts(tile, header, storage, retained_decode_baseline)?
+        }
     };
     // The selection stays live through packet parsing, so its bytes are part
     // of the baseline every later phase budgets against until it is dropped.
@@ -912,7 +916,8 @@ fn decode_tile<'a>(
                 build::CoefficientLayout::Component
             },
         },
-        selection.as_ref(),
+        // Only a region decode builds just the selected precincts.
+        tile_ctx.output_region.and(selection.as_ref()),
     )?;
     if tile_ctx.output_region.is_some() {
         prepare_region_storage(

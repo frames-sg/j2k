@@ -9,9 +9,10 @@ use j2k_native::{
     decode_ht_code_block_scalar_with_workspace, encode,
     encode_ht_code_block_scalar_with_passes_and_workspace,
     encode_precomputed_htj2k_97_with_accelerator_and_max_host_bytes,
-    CpuOnlyJ2kEncodeStageAccelerator, DecodeSettings, DecoderContext, EncodeError, EncodeOptions,
-    HtCodeBlockDecodeJob, HtCodeBlockDecodeWorkspace, HtCodeBlockEncodeWorkspace, Image,
-    J2kForwardDwt97Output, PrecomputedHtj2k97Component, PrecomputedHtj2k97Image,
+    CpuOnlyJ2kEncodeStageAccelerator, DecodeErrorClass, DecodeSettings, DecoderContext,
+    EncodeError, EncodeOptions, HtCodeBlockDecodeJob, HtCodeBlockDecodeWorkspace,
+    HtCodeBlockEncodeWorkspace, Image, J2kForwardDwt97Output, PrecomputedHtj2k97Component,
+    PrecomputedHtj2k97Image,
 };
 use proptest::{
     collection::vec,
@@ -71,6 +72,10 @@ fn main() {
         (
             "precomputed_encode_obeys_ledger_and_allocator_budgets",
             precomputed_encode_obeys_ledger_and_allocator_budgets,
+        ),
+        (
+            "reduced_decodes_reject_a_precinct_grid_past_the_cap_before_walking_it",
+            reduced_decodes_reject_a_precinct_grid_past_the_cap_before_walking_it,
         ),
     ];
 
@@ -365,6 +370,71 @@ fn warmed_decoder_context_has_bounded_transients() {
     )
     .expect("decode with warm context");
     assert_eq!(output, pixels);
+}
+
+/// A raw codestream of one 16,383 x 16,383 gray tile with one decomposition
+/// level, one-sample precincts in the LL sub-band and two-sample ones above:
+/// 2^28 sub-band precincts, whose records no decode can hold within the cap,
+/// declared in 105 bytes. Its one tile-part holds one empty packet.
+fn precinct_grid_past_the_cap() -> Vec<u8> {
+    let mut bytes = vec![0xff, 0x4f, 0xff, 0x51, 0, 41, 0, 0];
+    for value in [16_383_u32, 16_383, 0, 0, 16_383, 16_383, 0, 0] {
+        bytes.extend_from_slice(&value.to_be_bytes());
+    }
+    bytes.extend_from_slice(&[0, 1, 7, 1, 1]);
+    // COD: precincts given; LRCP, one layer; one level, 4 x 4 blocks, 5/3;
+    // precincts 1 x 1 at resolution 0 and 2 x 2 at resolution 1.
+    bytes.extend_from_slice(&[0xff, 0x52, 0, 14, 1, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0x00, 0x11]);
+    // QCD: reversible, two guard bits.
+    bytes.extend_from_slice(&[0xff, 0x5c, 0, 7, 0x40, 0x48, 0x48, 0x48, 0x48]);
+    bytes.extend_from_slice(&[0xff, 0x90, 0, 10, 0, 0, 0, 0, 0, 15, 0, 1]);
+    bytes.extend_from_slice(&[0xff, 0x93, 0, 0xff, 0xd9]);
+    bytes
+}
+
+/// A half-resolution direct plan and planes decode of a tile whose precinct
+/// records cannot fit the cap fail as the build would, before choosing the
+/// packets they read, which would walk and record each of the 2^27 precincts
+/// first: the plan holds no more than 4 MiB at once, the planes decode no
+/// more beside the 8,192 x 8,192 coefficient plane it allocates before it
+/// builds the tile.
+fn reduced_decodes_reject_a_precinct_grid_past_the_cap_before_walking_it() {
+    const PEAK: usize = 4 << 20;
+    const PLANE: usize = 8_192 * 8_192 * size_of::<i32>();
+    let codestream = precinct_grid_past_the_cap();
+    let half = DecodeSettings {
+        target_resolution: Some((8_192, 8_192)),
+        ..DecodeSettings::default()
+    };
+    let image = Image::new(&codestream, &half).expect("parse header");
+    let resource_limit = |error: &j2k_native::DecodeError| {
+        matches!(error.classify(), DecodeErrorClass::ResourceLimit { .. })
+    };
+
+    let base = reset_peak();
+    let plan = image.build_direct_grayscale_plan_with_context(&mut DecoderContext::default());
+    let plan_peak = peak_bytes() - base;
+    assert!(
+        plan.as_ref().is_err_and(resource_limit),
+        "direct plan: {:?}",
+        plan.err()
+    );
+    assert!(plan_peak <= PEAK, "direct plan held {plan_peak} bytes");
+
+    let mut output = vec![0_u8; 8_192 * 8_192];
+    let mut context = DecoderContext::default();
+    let base = reset_peak();
+    let decoded = image.decode_into(&mut output, &mut context);
+    let decode_peak = peak_bytes() - base;
+    assert!(
+        decoded.as_ref().is_err_and(resource_limit),
+        "planes decode: {:?}",
+        decoded.err()
+    );
+    assert!(
+        decode_peak <= PLANE + PEAK,
+        "planes decode held {decode_peak} bytes"
+    );
 }
 
 fn profile_row_formatting_is_single_allocation() {

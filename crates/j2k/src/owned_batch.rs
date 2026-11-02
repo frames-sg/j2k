@@ -37,7 +37,9 @@ pub use self::errors::{
 
 mod prepared;
 pub use self::prepared::{BatchDecoder, PreparedBatch, PreparedBatchGroup, PreparedImage};
-use self::prepared::{BatchExecutionShape, CpuExecution, PreparedCodecPlan, PreparedImageInner};
+use self::prepared::{
+    BatchExecutionShape, CpuExecution, PreparedBatchGroupRef, PreparedCodecPlan, PreparedImageInner,
+};
 
 mod prepared_plan;
 pub use self::prepared_plan::{

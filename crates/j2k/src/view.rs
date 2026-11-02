@@ -442,6 +442,12 @@ impl<'a> J2kDecoder<'a> {
     /// must hold `roi.w * roi.h * fmt.bytes_per_pixel()` bytes with the
     /// provided row stride.
     ///
+    /// Reduced-resolution and region decoding validate the packets and
+    /// structural dependencies needed for the requested output and may leave
+    /// other packets unexamined; detected errors in required data remain
+    /// fatal, success does not establish whole-codestream validity, and
+    /// acceptance is independent of execution route or thread count.
+    ///
     /// # Errors
     /// Returns [`J2kError`] when the region is out of bounds, the output buffer
     /// is too small, the format is unsupported, or decode fails.
@@ -496,6 +502,12 @@ impl<'a> J2kDecoder<'a> {
     /// a decode whose component planes would pass the native decode budget
     /// runs as a region decode of the whole reduced image.
     ///
+    /// Reduced-resolution and region decoding validate the packets and
+    /// structural dependencies needed for the requested output and may leave
+    /// other packets unexamined; detected errors in required data remain
+    /// fatal, success does not establish whole-codestream validity, and
+    /// acceptance is independent of execution route or thread count.
+    ///
     /// # Errors
     /// Returns [`J2kError`] when the format or scale request is unsupported,
     /// including a scale deeper than the codestream's resolution ladder, the
@@ -538,6 +550,12 @@ impl<'a> J2kDecoder<'a> {
     ///
     /// `roi` is expressed in full-resolution source pixels. The decoded output
     /// covers `roi.scaled_covering(scale)` in reduced-resolution coordinates.
+    ///
+    /// Reduced-resolution and region decoding validate the packets and
+    /// structural dependencies needed for the requested output and may leave
+    /// other packets unexamined; detected errors in required data remain
+    /// fatal, success does not establish whole-codestream validity, and
+    /// acceptance is independent of execution route or thread count.
     ///
     /// # Errors
     /// Returns [`J2kError`] when the region is out of bounds, the scale or

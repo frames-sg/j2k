@@ -97,7 +97,10 @@ fn build_and_parse_direct_tile_metadata<'a>(
             output_region,
             structural_workspace_bytes,
         )?,
-        None => None,
+        // A plan reads the packets the decodes read.
+        None => {
+            build::select_whole_image_precincts(tile, header, storage, structural_workspace_bytes)?
+        }
     };
     let selection_bytes = selection
         .as_ref()
@@ -110,7 +113,7 @@ fn build_and_parse_direct_tile_metadata<'a>(
             .ok_or(ValidationError::ImageTooLarge)?,
         decode_region.is_some(),
         build::BuildWorkspace::MetadataOnly,
-        selection.as_ref(),
+        decode_region.and(selection.as_ref()),
     )?;
     if decode_region.is_some() && storage.roi_plan.is_none() {
         build::release_unused_roi_workspace(storage, tile.component_infos.len())?;
@@ -165,7 +168,7 @@ fn build_direct_grayscale_plan_inner<'a>(
 
     let mut next_band_id = 0;
     let output_region = ctx.tile_decode_context.output_region;
-    build_direct_grayscale_tile_plan(
+    let plan = build_direct_grayscale_tile_plan(
         data,
         payload_range_owner,
         &tiles[0],
@@ -177,7 +180,9 @@ fn build_direct_grayscale_plan_inner<'a>(
         None,
         ht_payloads,
         classic_payloads,
-    )
+    )?;
+    reject_grayscale_mct(&tiles, header)?;
+    Ok(plan)
 }
 
 #[expect(
@@ -272,6 +277,17 @@ fn validate_grayscale_tile(tile: &Tile<'_>) -> Result<()> {
         ));
     }
     validate_unit_sampled_component(&tile.component_infos[0])
+}
+
+/// A multiple component transform needs three components: a decode of a
+/// one-component image one of whose tiles asks for one fails, as
+/// `mct::apply_inverse` does, after every tile's packets are parsed, and so
+/// does its plan, once every tile it covers is planned.
+fn reject_grayscale_mct(tiles: &[Tile<'_>], header: &Header<'_>) -> Result<()> {
+    if header.strict && tiles.iter().any(|tile| tile.mct) {
+        bail!(ColorError::Mct);
+    }
+    Ok(())
 }
 
 fn validate_color_tile<const COMPONENT_COUNT: usize>(

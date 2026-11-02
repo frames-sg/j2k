@@ -20,7 +20,9 @@ use allocation::{
     DecompositionAllocationPlan,
 };
 pub(in crate::j2c) use allocation::{global_code_block_count, IdwtWorkspaceTracker, RecordCounts};
-pub(crate) use selection::{select_region_precincts, PrecinctSelection, PrecinctUse};
+pub(crate) use selection::{
+    select_region_precincts, select_whole_image_precincts, PrecinctSelection, PrecinctUse,
+};
 
 /// Build and allocate all necessary structures to process the code-blocks
 /// for a specific tile. Also parses the segments for each code-block.

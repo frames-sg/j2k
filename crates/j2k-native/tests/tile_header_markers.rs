@@ -4,7 +4,8 @@ use std::path::Path;
 
 use j2k_native::{
     encode, encode_with_roi_regions, ComponentPlane, ComponentRowSink, CpuDecodeParallelism,
-    DecodeSettings, DecoderContext, EncodeError, EncodeOptions, EncodeRoiRegion, Image, RawBitmap,
+    DecodeSettings, DecoderContext, EncodeError, EncodeOptions, EncodeProgressionOrder,
+    EncodeRoiRegion, Image, RawBitmap,
 };
 
 fn marker_offset(codestream: &[u8], marker: u8) -> usize {
@@ -368,6 +369,7 @@ const COC: u8 = 0x53;
 const QCD: u8 = 0x5C;
 const QCC: u8 = 0x5D;
 const SOT: u8 = 0x90;
+const SOP: u8 = 0x91;
 
 #[derive(Clone, Copy, Debug)]
 struct Style {
@@ -748,6 +750,181 @@ fn assert_decode_differs(patched: &[u8], original: &[u8], case: &str) {
 }
 
 const SINGLE_TILE: (u32, u32) = (96, 64);
+
+fn sop_offsets(codestream: &[u8]) -> Vec<usize> {
+    codestream
+        .windows(2)
+        .enumerate()
+        .filter_map(|(at, marker)| (marker == [0xff, SOP]).then_some(at))
+        .collect()
+}
+
+fn with_sop_fields(codestream: &[u8], packet: usize, length: u16, sequence: u16) -> Vec<u8> {
+    let at = sop_offsets(codestream)[packet];
+    let mut edited = codestream.to_vec();
+    edited[at + 2..at + 4].copy_from_slice(&length.to_be_bytes());
+    edited[at + 4..at + 6].copy_from_slice(&sequence.to_be_bytes());
+    edited
+}
+
+fn without_first_sop(codestream: &[u8]) -> Vec<u8> {
+    let sot = marker_offset(codestream, SOT);
+    let psot = u32::from_be_bytes(
+        codestream[sot + 6..sot + 10]
+            .try_into()
+            .expect("Psot is four bytes"),
+    );
+    let sop = sop_offsets(codestream)[0];
+    let mut edited = codestream.to_vec();
+    edited.drain(sop..sop + 6);
+    edited[sot + 6..sot + 10].copy_from_slice(&(psot - 6).to_be_bytes());
+    edited
+}
+
+fn assert_sop_decode_fails(codestream: &[u8], case: &str) {
+    let image = Image::new(codestream, &DecodeSettings::default()).expect("parse codestream");
+    let Err(error) = image.decode_native() else {
+        panic!("{case}: invalid SOP marker decoded");
+    };
+    assert!(
+        format!("{error}: {error:?}").contains("SOP marker"),
+        "{case}: {error:?}"
+    );
+}
+
+#[test]
+fn sop_markers_validate_length_and_tile_wide_sequence_when_parsed() {
+    let (width, height) = SINGLE_TILE;
+    let pixels = textured_pixels(width, height, 1);
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 2,
+        num_layers: 2,
+        write_plt: true,
+        write_sop: true,
+        tile_part_packet_limit: Some(1),
+        ..EncodeOptions::default()
+    };
+    let original = encode(&pixels, width, height, 1, 8, false, &options).expect("encode fixture");
+    let offsets = sop_offsets(&original);
+    assert_eq!(offsets.len(), 6, "two layers over three resolutions");
+    for (packet, &at) in offsets.iter().enumerate() {
+        assert_eq!(&original[at + 2..at + 4], &[0, 4], "Lsop");
+        assert_eq!(
+            u16::from_be_bytes([original[at + 4], original[at + 5]]),
+            u16::try_from(packet).expect("small packet ordinal"),
+            "Nsop"
+        );
+    }
+
+    assert_sop_decode_fails(&with_sop_fields(&original, 0, 3, 0), "bad Lsop");
+    assert_sop_decode_fails(
+        &with_sop_fields(&original, 0, 4, 1),
+        "first Nsop is not zero",
+    );
+    assert_sop_decode_fails(
+        &with_sop_fields(&original, 1, 4, 0),
+        "Nsop restarts in the second tile-part",
+    );
+
+    // SOP markers are optional packet by packet. Packet 1 keeps Nsop 1 when
+    // packet 0 has no SOP, so the sequence counts packets, not SOP markers.
+    let without_plt = encode(
+        &pixels,
+        width,
+        height,
+        1,
+        8,
+        false,
+        &EncodeOptions {
+            write_plt: false,
+            ..options.clone()
+        },
+    )
+    .expect("encode fixture without PLT");
+    let missing_first_sop = without_first_sop(&without_plt);
+    let expected = Image::new(&without_plt, &DecodeSettings::default())
+        .expect("parse clean codestream")
+        .decode_native()
+        .expect("decode clean codestream");
+    let actual = Image::new(&missing_first_sop, &DecodeSettings::default())
+        .expect("parse codestream without its first SOP")
+        .decode_native()
+        .expect("Nsop still counts the packet without an SOP");
+    assert_eq!(actual.data, expected.data);
+
+    // In LRCP order packet 2 is the discarded finest-resolution packet of
+    // layer 0. A half-resolution decode skips it by PLT length, then parses
+    // packet 3: the skipped marker is not validated, but still counts.
+    let damaged_discarded = with_sop_fields(&original, 2, 4, 99);
+    assert_sop_decode_fails(&damaged_discarded, "bad Nsop in a full decode");
+    let settings = DecodeSettings {
+        target_resolution: Some((width / 2, height / 2)),
+        ..DecodeSettings::default()
+    };
+    let expected = Image::new(&original, &settings)
+        .expect("parse clean codestream")
+        .decode_native()
+        .expect("decode clean half resolution");
+    let actual = Image::new(&damaged_discarded, &settings)
+        .expect("parse edited codestream")
+        .decode_native()
+        .expect("skip the discarded packet without validating its SOP");
+    assert_eq!(actual.data, expected.data);
+
+    // CPRL puts both layers of a component-resolution precinct together. A
+    // half decode skips C0R2L0 and C0R2L1 in one PLT operation, then parses
+    // C1R0L0 as packet 6: both skipped packets must advance its expected Nsop.
+    let cprl_pixels = textured_pixels(width, height, 3);
+    let cprl = encode(
+        &cprl_pixels,
+        width,
+        height,
+        3,
+        8,
+        false,
+        &EncodeOptions {
+            progression_order: EncodeProgressionOrder::Cprl,
+            tile_part_packet_limit: None,
+            ..options
+        },
+    )
+    .expect("encode CPRL fixture");
+    let cprl_sops = sop_offsets(&cprl);
+    assert_eq!(
+        u16::from_be_bytes([cprl[cprl_sops[6] + 4], cprl[cprl_sops[6] + 5]]),
+        6,
+        "C1R0L0 Nsop counts both discarded C0R2 packets"
+    );
+    let cprl_damaged_discarded = with_sop_fields(&cprl, 5, 4, u16::MAX);
+    let expected = Image::new(&cprl, &settings)
+        .expect("parse clean CPRL codestream")
+        .decode_native()
+        .expect("decode clean CPRL half resolution");
+    let actual = Image::new(&cprl_damaged_discarded, &settings)
+        .expect("parse edited CPRL codestream")
+        .decode_native()
+        .expect("skip both discarded CPRL packets and count both");
+    assert_eq!(actual.data, expected.data);
+}
+
+#[test]
+fn tile_part_cod_can_disable_sop_and_eph() {
+    let original = encode_fixture(SINGLE_TILE, 3, REVERSIBLE, None);
+    let cod = main_header_segment(&original, COD);
+    assert_eq!(cod[4] & 0x06, 0, "fixture COD has no packet markers");
+
+    let mut patched = original.clone();
+    let main_cod = main_header_segment_offset(&patched, COD);
+    patched[main_cod + 4] |= 0x06;
+    insert_tile_part_segments(&mut patched, 0, &cod);
+
+    assert_decodes_match(
+        &patched,
+        &original,
+        "tile-part COD disables main-header SOP and EPH",
+    );
+}
 
 #[test]
 fn tile_part_cod_overrides_the_main_header_wavelet() {

@@ -11,7 +11,7 @@ use j2k_native::{
     J2kReferencedClassicPlan,
 };
 
-use super::super::{PreparedBatchGroup, PreparedImage};
+use super::super::{PreparedBatchGroupRef, PreparedImage};
 use super::{CpuFlattenedPayloadJob, CpuImagePayloadSpan};
 use crate::batch::allocation::J2K_BATCH_METADATA_ALLOWANCE_BYTES;
 
@@ -19,7 +19,7 @@ mod ht;
 pub(super) use ht::{ht_bucket, ht_bucket_index, ht_group_requirements, visit_ht_jobs};
 
 pub(super) fn classic_group_requirements(
-    group: &PreparedBatchGroup,
+    group: PreparedBatchGroupRef<'_>,
 ) -> Result<(usize, usize), BatchInfrastructureError> {
     let mut payload_count = 0usize;
     let mut payload_bytes = 0usize;

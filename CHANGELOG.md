@@ -7,6 +7,20 @@ and stale roadmap entries have been removed from the public documentation set.
 
 Staged workspace version: `0.13.2`.
 
+- SOP marker segments a decode parses require `Lsop` 4 and an `Nsop` equal to
+  the tile-wide packet ordinal modulo 65536. The ordinal continues across
+  tile-parts and counts packets skipped without parsing; an invalid SOP in a
+  discarded packet remains unread by a selective decode.
+- A strict CUDA decode of a classic code-block whose ROI maxshift raises its
+  coded bit-plane count beyond the native decoder's limit fails with the
+  native `TooManyBitplanes` error, as a CPU decode does, instead of reporting
+  an unsupported CUDA request. Counts within the native limit but beyond the
+  device's limit remain unsupported.
+- A tile-part COD replaces all of the main-header COD style flags instead
+  of retaining its SOP and EPH flags. Valid codestreams that disable packet
+  markers for a tile now decode on the CPU, Metal and CUDA, at full and
+  reduced resolution, instead of requiring markers that the packets do not
+  contain.
 - `AdapterErrorKind::Decode`, `BackendErrorKind::Decode` and
   `BackendError::decode` classify GPU Tier-1 device decode failures. Metal FAIL
   statuses now use the existing `Error::Decode` and `J2kError::Backend`
@@ -15,6 +29,56 @@ Staged workspace version: `0.13.2`.
   status, detail and batch source index. CUDA keeps its typed source and job
   attribution. Unsupported statuses, raw runtime failures and combined
   cleanup or release failures keep their existing classes.
+- The CPU batch decoder converts the rows a streamed image hands over a
+  row at a time instead of a sample at a time, with the same rounding and
+  saturation, so the same bytes. The decode hands its rows over on the
+  thread that reads them, between the batches it reconstructs, while the
+  pool's band workers decode only as far ahead as their band rings hold,
+  so the conversion held the whole decode back. On an 18-core ARM64
+  machine a 5661 x 8287 RGB image as a one-image batch decodes in 127 ms
+  instead of 196 ms, at half resolution in 65 ms instead of 79 ms, and
+  four and eight copies with automatic workers in 447 and 876 ms instead
+  of 592 and 1065 ms.
+- A strict CUDA decode of a classic code-block whose packet headers claim
+  more missing bit-planes than its sub-band codes, or more coding passes
+  than its bit-planes hold, fails with a native decode error,
+  `InvalidBitplaneCount` or `TooManyCodingPasses`, of the class the CPU
+  decode reports for the same codestream, on the single-image decode, the
+  batch of images and the prepared batch. It was rejected as an unsupported
+  CUDA request, a different error class.
+- Grayscale direct and referenced plans, which GPU decodes and decode
+  batches execute, reject a one-component codestream whose COD asks for a
+  multiple component transform, as decodes of it already did. A 39 x 7
+  one-bit gray image in five tiles with that flag failed every decode and
+  decoded in decode batches on the CPU and on CUDA.
+- A PLT length shorter than any packet, zero or, where EPH markers are
+  required, below three bytes, for a packet that a region or
+  reduced-resolution decode skips by its length is a packet error. Skipping
+  by such a length made the decode read the next packet it needs from the
+  skipped packet's bytes: in a flat three-component image whose last needed
+  packet was found that way, reduced decodes wrote other colours and
+  reported success. Full decodes already rejected these lengths.
+- Decodes below full resolution read the packets the reduced output needs on
+  every route: the packets of the resolutions they keep, the others only
+  where they must be parsed to find a later needed one and their PLT
+  lengths cannot skip them, and none after the last needed one, as region
+  decodes already did. Decodes on the component planes and the direct plans
+  that GPU decodes and the staged batch run read every packet, so a
+  codestream damaged only in packets of the discarded resolutions decoded or
+  failed depending on the route and the pool's size; it now decodes
+  everywhere, as the undamaged codestream does at that resolution. Damage in
+  a packet the output needs, or in one parsed to find a later needed one,
+  remains an error. Full-resolution decodes are unchanged, except that the
+  packets of precincts holding no code-block, as at a one-sample tile
+  corner, are read on every route as region decodes read them.
+- A tile-part that holds data after its tile's last packet, bytes or PLT
+  packet lengths past it, decodes on every route. Decodes on the component
+  planes failed with a packet parse error where decodes that stream their
+  rows succeeded, so the same codestream decoded or failed depending on the
+  route, which can follow the pool's size (a half-resolution decode of a
+  512 x 512 RGB image failed on one thread and decoded on four). The output
+  is that of the codestream without the extra data. PLT lengths left over
+  while the tile's packets continue in a later tile-part remain an error.
 - Row-streamed decodes on serial bands finish directly from the inverse
   transform's own rows. The streamed inverse transform lifts every level
   with the banded transform's kernels, one arrival at a time on each level's
@@ -195,9 +259,8 @@ Staged workspace version: `0.13.2`.
   image's output exceeds the allocation cap. On either preparation path,
   a group whose combined output exceeds that cap is decoded as several
   result groups, each with an output buffer within the cap.
-  Staged windows are admitted by planned execution memory, and an admission
-  claim that cannot fit beside the shared plan fails instead of waiting
-  indefinitely. Successful output is unchanged.
+  Staged windows stay within the budget computed from their planned
+  execution memory. Successful output is unchanged.
 - 16-bit full-image decodes (`J2kDecoder::decode_into`, `decode_scaled_into`
   and the decoders behind `decode_tiles_into` at `Rgb16`, `Rgba16` and
   `Gray16`) and `J2kDecoder::decode_native_components` whose component

@@ -9,15 +9,17 @@
 //! signedness, at every scale, stride and parallelism, and fail where it
 //! fails.
 
-use j2k::{CpuDecodeParallelism, J2kDecodedNativeComponents, J2kDecoder, J2kScratchPool};
+#[path = "support/full_image_streaming.rs"]
+mod streaming;
+
+use j2k::{CpuDecodeParallelism, J2kDecodedNativeComponents, J2kScratchPool};
 use j2k_core::{Downscale, PixelFormat, Rect};
 use j2k_native::{encode, EncodeOptions};
 use j2k_test_support::wrap_jp2_rgba_codestream;
+use streaming::{decode, decoder, PADDING};
 
 const WIDTH: u32 = 203;
 const HEIGHT: u32 = 157;
-const PADDING: u8 = 0xab;
-
 const RGB_FORMATS: &[PixelFormat] = &[
     PixelFormat::Rgb16,
     PixelFormat::Rgba16,
@@ -149,51 +151,6 @@ fn fixtures() -> Vec<(&'static str, Vec<u8>, &'static [PixelFormat])> {
     ]
 }
 
-fn decoder(
-    bytes: &[u8],
-    planes_budget: Option<usize>,
-    parallelism: CpuDecodeParallelism,
-) -> J2kDecoder<'_> {
-    let mut decoder = J2kDecoder::new(bytes).expect("decoder");
-    decoder.set_cpu_decode_parallelism(parallelism);
-    if let Some(bytes) = planes_budget {
-        decoder.set_full_decode_planes_budget(bytes);
-    }
-    decoder
-}
-
-/// The image at `scale` in a buffer padded past each row, or `None` when the
-/// decode fails, from a decoder whose planes budget is `planes_budget` when
-/// one is given.
-fn decode(
-    bytes: &[u8],
-    planes_budget: Option<usize>,
-    parallelism: CpuDecodeParallelism,
-    fmt: PixelFormat,
-    scale: Downscale,
-    padding: usize,
-) -> Option<Vec<u8>> {
-    let mut decoder = decoder(bytes, planes_budget, parallelism);
-    let divisor = scale.denominator();
-    let (width, height) = (WIDTH.div_ceil(divisor), HEIGHT.div_ceil(divisor));
-    let row = width as usize * fmt.bytes_per_pixel();
-    let stride = row + padding;
-    let mut out = vec![PADDING; stride * height as usize];
-    let pool = &mut J2kScratchPool::new();
-    let result = match scale {
-        Downscale::None => decoder.decode_into(&mut out, stride, fmt),
-        _ => decoder.decode_scaled_into(pool, &mut out, stride, fmt, scale),
-    };
-    result.ok()?;
-    for line in out.chunks(stride) {
-        assert!(
-            line[row..].iter().all(|&byte| byte == PADDING),
-            "stride padding untouched"
-        );
-    }
-    Some(out)
-}
-
 #[test]
 fn streamed_full_image_outputs_match_planes() {
     let mut decoded = 0;
@@ -209,10 +166,10 @@ fn streamed_full_image_outputs_match_planes() {
                     assert!(
                         planes == streamed,
                         "{label} {fmt:?} {scale:?} {parallelism:?}: planes {} streamed {}",
-                        planes.is_some(),
-                        streamed.is_some()
+                        planes.is_ok(),
+                        streamed.is_ok()
                     );
-                    decoded += usize::from(planes.is_some());
+                    decoded += usize::from(planes.is_ok());
                 }
             }
         }
@@ -310,7 +267,7 @@ fn sixteen_bit_regions_match_the_full_image() {
     for (label, bytes, formats) in &fixtures() {
         for &fmt in formats.iter().filter(|fmt| fmt.bytes_per_pixel() % 2 == 0) {
             for parallelism in [CpuDecodeParallelism::Serial, CpuDecodeParallelism::Auto] {
-                let Some(full) = decode(bytes, None, parallelism, fmt, Downscale::None, 0) else {
+                let Ok(full) = decode(bytes, None, parallelism, fmt, Downscale::None, 0) else {
                     continue;
                 };
                 let pixel = fmt.bytes_per_pixel();
@@ -406,7 +363,7 @@ fn deep_samples_decode_to_their_values_clamped_to_sixteen_bits() {
         for parallelism in [CpuDecodeParallelism::Serial, CpuDecodeParallelism::Auto] {
             for budget in [None, Some(0)] {
                 let decoded = decode(&bytes, budget, parallelism, fmt, Downscale::None, 0)
-                    .unwrap_or_else(|| panic!("{label} {budget:?}: decode failed"));
+                    .unwrap_or_else(|error| panic!("{label} {budget:?}: {error:?}"));
                 assert!(
                     decoded == expected,
                     "{label} {parallelism:?} planes budget {budget:?}"
@@ -436,7 +393,7 @@ fn deep_samples_decode_to_their_values_clamped_to_sixteen_bits() {
                 for budget in [None, Some(0)] {
                     let decoded = decode(&bytes, budget, parallelism, fmt, Downscale::None, 0);
                     assert!(
-                        decoded.as_ref() == Some(&expected),
+                        decoded.as_deref() == Ok(expected.as_slice()),
                         "{label} {fmt:?} {parallelism:?} planes budget {budget:?}"
                     );
                 }

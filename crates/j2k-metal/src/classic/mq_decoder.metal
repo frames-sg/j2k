@@ -21,34 +21,26 @@ inline void arithmetic_read_byte(thread J2kArithmeticDecoder &decoder) {
     }
 }
 
-inline bool raw_read_bit(thread J2kBypassDecoder &decoder, thread uint &bit) {
+inline uint raw_read_bit(thread J2kBypassDecoder &decoder) {
     const uint byte_pos = decoder.bit_pos / 8u;
-    if (byte_pos >= decoder.data_len) {
-        if (decoder.strict != 0u) {
-            return false;
-        }
-        bit = 1u;
-        decoder.bit_pos += 1u;
-        return true;
-    }
-
-    const uint bit_pos = decoder.bit_pos % 8u;
-    bit = (uint(decoder.data[byte_pos]) >> (7u - bit_pos)) & 1u;
     decoder.bit_pos += 1u;
-    return true;
+    if (byte_pos >= decoder.data_len) {
+        // T.800 D.4.1 extends a cleanly exhausted terminated segment with
+        // 0xFF bytes, so raw bits past its end read as one in every mode.
+        return 1u;
+    }
+    const uint bit_pos = (decoder.bit_pos - 1u) % 8u;
+    return (uint(decoder.data[byte_pos]) >> (7u - bit_pos)) & 1u;
 }
 
+// Fails only in strict mode, when the stuffed bit after a 0xFF byte is one
+// or missing (the segment ends right after the 0xFF byte).
 inline bool bypass_read_bit(thread J2kBypassDecoder &decoder, thread uint &bit) {
     const uint byte_pos = decoder.bit_pos / 8u;
     const uint bit_pos = decoder.bit_pos % 8u;
-    if (!raw_read_bit(decoder, bit)) {
-        return false;
-    }
+    bit = raw_read_bit(decoder);
     if (bit_pos == 7u && byte_pos < decoder.data_len && decoder.data[byte_pos] == uchar(0xFFu)) {
-        uint stuffed_bit = 0u;
-        if (!raw_read_bit(decoder, stuffed_bit)) {
-            return decoder.strict == 0u;
-        }
+        const uint stuffed_bit = raw_read_bit(decoder);
         if (stuffed_bit != 0u && decoder.strict != 0u) {
             return false;
         }

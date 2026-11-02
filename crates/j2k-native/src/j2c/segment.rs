@@ -34,7 +34,6 @@ struct PacketWalk<'d> {
     recording: Option<&'d mut Vec<u64>>,
     #[cfg(feature = "std")]
     indexed: Option<&'d directory::PacketDirectory>,
-    #[cfg(feature = "std")]
     next_packet: usize,
     marker: core::marker::PhantomData<&'d ()>,
 }
@@ -254,6 +253,10 @@ fn parse_tile_parts<'a>(
     mut relevance: Option<&mut PacketRelevance<'_>>,
     walk: &mut PacketWalk<'_>,
 ) -> Result<()> {
+    #[cfg(feature = "std")]
+    let strict = header.strict || walk.recording.is_some();
+    #[cfg(not(feature = "std"))]
+    let strict = header.strict;
     for tile_part in &tile.tile_parts {
         if relevance
             .as_ref()
@@ -276,16 +279,13 @@ fn parse_tile_parts<'a>(
                     skips,
                     relevance.as_deref_mut(),
                     walk,
+                    strict,
                 )
             });
         if let Some(error) = storage.packet_workspace_error.take() {
             return Err(error);
         }
         if let Err(context) = parsed {
-            #[cfg(feature = "std")]
-            let strict = header.strict || walk.recording.is_some();
-            #[cfg(not(feature = "std"))]
-            let strict = header.strict;
             if strict {
                 bail!(DecodingError::PacketParseFailure(context));
             }
@@ -378,8 +378,9 @@ impl<'s> PacketRelevance<'s> {
     }
 }
 
-/// Parse packets until the tile-part ends, or until `relevance` has seen
-/// every packet the ROI plan needs, which returns `Ok(true)`.
+/// Parse packets until the tile-part or the tile's progression ends, or
+/// until `relevance` has seen every packet the ROI plan needs, which returns
+/// `Ok(true)`.
 #[expect(
     clippy::too_many_lines,
     reason = "one ordered pass keeps packet skipping, header parsing, body reads, and length checks together"
@@ -396,27 +397,25 @@ fn parse_inner<'a>(
     storage: &mut DecompositionStorage<'a>,
     skips: &mut PacketSkips,
     mut relevance: Option<&mut PacketRelevance<'_>>,
-    #[cfg_attr(
-        not(feature = "std"),
-        expect(
-            unused_variables,
-            reason = "without std there is no packet directory for the walk to record"
-        )
-    )]
     walk: &mut PacketWalk<'_>,
+    strict: bool,
 ) -> PacketResult<bool> {
     // The last precinct's place among its sub-bands' records, by (component,
     // resolution, precinct): position-major progressions read all of a
     // precinct's layers in a row, so it is looked up once for them.
     let mut last_record: Option<((u16, u8, u64), usize)> = None;
     while !tile_part.header().at_end() {
-        let progression_data = progression_iterator
-            .next()
-            .ok_or("packet header outlives the progression iterator")?;
+        let Some(progression_data) = progression_iterator.next() else {
+            // Every packet of the tile has been read. Bytes the tile-part
+            // holds after them belong to no packet and are left unread, as
+            // a region decode leaves the packets after its last required one.
+            lwarn!("tile-part data continues after the tile's last packet");
+            return Ok(false);
+        };
+        let ordinal = walk.next_packet;
+        walk.next_packet = ordinal.checked_add(1).ok_or("packet ordinal overflows")?;
         #[cfg(feature = "std")]
-        let ordinal = {
-            let ordinal = walk.next_packet;
-            walk.next_packet = ordinal.checked_add(1).ok_or("packet ordinal overflows")?;
+        {
             if let Some(directory) = walk.indexed {
                 if relevance.as_ref().is_some_and(|relevance| {
                     matches!(
@@ -437,8 +436,7 @@ fn parse_inner<'a>(
                     continue;
                 }
             }
-            ordinal
-        };
+        }
         let resolution = progression_data.resolution;
         let precinct_index = usize::try_from(progression_data.precinct)
             .map_err(|_| "packet precinct index does not fit the platform")?;
@@ -473,7 +471,14 @@ fn parse_inner<'a>(
             };
             #[cfg(not(feature = "std"))]
             let layers = progression_iterator.remaining_precinct_layers();
-            let (skipped, complete) = tile_part.skip_packets(1 + layers);
+            // A packet header takes a byte at least, and its EPH marker two
+            // more where the coding style requires one.
+            let min_length = if component_info.coding_style.flags.uses_eph_marker() {
+                3
+            } else {
+                1
+            };
+            let (skipped, complete) = tile_part.skip_packets(1 + layers, min_length)?;
             // The packets a one-by-one walk would have taken from the
             // progression after this one: each skipped, plus a failing one.
             let further = if complete {
@@ -482,13 +487,10 @@ fn parse_inner<'a>(
                 skipped
             };
             progression_iterator.skip_precinct_layers(further);
-            #[cfg(feature = "std")]
-            {
-                walk.next_packet = walk
-                    .next_packet
-                    .checked_add(further)
-                    .ok_or("packet ordinal overflows")?;
-            }
+            walk.next_packet = walk
+                .next_packet
+                .checked_add(further)
+                .ok_or("packet ordinal overflows")?;
             if !complete {
                 return Err("PLT packet length runs past the tile-part");
             }
@@ -524,12 +526,7 @@ fn parse_inner<'a>(
         if component_info.coding_style.flags.may_use_sop_markers()
             && body_reader.peek_marker() == Some(SOP)
         {
-            body_reader
-                .read_marker()
-                .map_err(|_| "SOP marker is truncated")?;
-            body_reader
-                .skip_bytes(4)
-                .ok_or("SOP marker segment is truncated")?;
+            parse_sop_marker(body_reader, ordinal)?;
         }
 
         let header_reader = tile_part.header();
@@ -668,11 +665,42 @@ fn parse_inner<'a>(
         }
     }
 
-    tile_part
-        .validate_all_packet_lengths_consumed()
-        .ok_or("packet length markers contain unused entries")?;
+    // PLT entries left once the tile's last packet has been read describe no
+    // packet, like bytes after it. Only a walk that stops at an error looks
+    // ahead: one that goes on needs the next packet for the next tile-part.
+    if tile_part.validate_all_packet_lengths_consumed().is_none()
+        && (!strict || progression_iterator.next().is_some())
+    {
+        return Err("packet length markers contain unused entries");
+    }
 
     Ok(false)
+}
+
+fn parse_sop_marker(body_reader: &mut BitReader<'_>, packet_ordinal: usize) -> PacketResult {
+    if body_reader
+        .read_marker()
+        .map_err(|_| "SOP marker is truncated")?
+        != SOP
+    {
+        return Err("packet does not start with an SOP marker");
+    }
+    let length = body_reader
+        .read_u16()
+        .ok_or("SOP marker segment is truncated")?;
+    if length != 4 {
+        return Err("SOP marker segment length is not 4");
+    }
+    let sequence = body_reader
+        .read_u16()
+        .ok_or("SOP marker segment is truncated")?;
+    let modulus = usize::from(u16::MAX) + 1;
+    let expected = u16::try_from(packet_ordinal % modulus)
+        .map_err(|_| "SOP packet sequence does not fit u16")?;
+    if sequence != expected {
+        return Err("SOP marker sequence number disagrees with the packet ordinal");
+    }
+    Ok(())
 }
 
 fn try_push_segment_with_budget<'a>(
@@ -956,6 +984,22 @@ mod tests {
     use super::*;
     use alloc::vec::Vec;
 
+    #[test]
+    fn sop_sequence_number_wraps_after_u16_max() {
+        for (ordinal, sequence) in [
+            (0, 0_u16),
+            (usize::from(u16::MAX), u16::MAX),
+            (usize::from(u16::MAX) + 1, 0),
+            (usize::from(u16::MAX) + 2, 1),
+        ] {
+            let sequence = sequence.to_be_bytes();
+            let bytes = [0xff, SOP, 0, 4, sequence[0], sequence[1]];
+            let mut reader = BitReader::new(&bytes);
+            assert_eq!(parse_sop_marker(&mut reader, ordinal), Ok(()));
+            assert!(reader.at_end());
+        }
+    }
+
     /// The original chain of separate peeks, as the reference for
     /// `decode_num_coding_passes`.
     fn coding_passes_by_peeks(reader: &mut BitReader<'_>) -> Option<u8> {
@@ -1024,6 +1068,78 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The segments a non-strict walk records for `codestream`'s tile.
+    fn non_strict_segments(codestream: &[u8]) -> Vec<(u8, u8, u32)> {
+        use crate::j2c::{build, tile};
+
+        let mut parsed = crate::j2c::parse_raw(codestream, &crate::DecodeSettings::default())
+            .expect("parse codestream");
+        parsed.header.strict = false;
+        let tiles =
+            tile::parse(&mut BitReader::new(parsed.data), &parsed.header, 0).expect("parse tiles");
+        let tile = tiles.iter().next().expect("one tile");
+        let mut storage = DecompositionStorage::default();
+        build::build(
+            tile,
+            &mut storage,
+            tiles.structural_workspace_bytes(),
+            false,
+            build::BuildWorkspace::MetadataOnly,
+            None,
+        )
+        .expect("plan code-blocks");
+        parse(tile, &parsed.header, &mut storage).expect("non-strict walk");
+        storage
+            .segments
+            .iter()
+            .map(|segment| (segment.idx, segment.coding_pases, segment.data_length))
+            .collect()
+    }
+
+    /// A walk that goes on past a tile-part's error, as a non-strict one
+    /// does, parses the next tile-parts from where the progression stands: a
+    /// PLT length left after the first tile-part's packet takes no packet
+    /// from it.
+    #[test]
+    fn non_strict_walk_keeps_the_progression_past_surplus_packet_lengths() {
+        let mut state = 0x2545_f491_u32;
+        let pixels: Vec<u8> = (0..16 * 16)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state.to_be_bytes()[0]
+            })
+            .collect();
+        let options = crate::EncodeOptions {
+            num_decomposition_levels: 1,
+            num_layers: 2,
+            tile_part_packet_limit: Some(1),
+            write_plt: true,
+            ..crate::EncodeOptions::default()
+        };
+        let clean = crate::encode(&pixels, 16, 16, 1, 8, false, &options).expect("encode");
+        let sot = clean
+            .windows(2)
+            .position(|window| window == [0xff, 0x90])
+            .expect("SOT marker");
+        let plt = sot
+            + clean[sot..]
+                .windows(2)
+                .position(|window| window == [0xff, 0x58])
+                .expect("PLT marker");
+        let mut edited = clean.clone();
+        let plt_length = u16::from_be_bytes([edited[plt + 2], edited[plt + 3]]);
+        edited.insert(plt + 2 + usize::from(plt_length), 5);
+        edited[plt + 2..plt + 4].copy_from_slice(&(plt_length + 1).to_be_bytes());
+        let psot = u32::from_be_bytes(edited[sot + 6..sot + 10].try_into().expect("Psot"));
+        edited[sot + 6..sot + 10].copy_from_slice(&(psot + 1).to_be_bytes());
+
+        let segments = non_strict_segments(&clean);
+        assert!(segments.len() > 1, "packets after the first tile-part");
+        assert_eq!(non_strict_segments(&edited), segments);
     }
 
     #[test]

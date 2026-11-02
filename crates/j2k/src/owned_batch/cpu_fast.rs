@@ -11,7 +11,7 @@ use j2k_native::{
 };
 
 use super::cpu_staged::{staged_window_fits, CPU_ENTROPY_IMAGES_PER_WINDOW};
-use super::{BatchCodecRoute, PreparedBatchGroup, PreparedImage};
+use super::{BatchCodecRoute, PreparedBatchGroupRef, PreparedImage};
 use crate::batch::allocation::{try_vec_with_capacity, J2K_BATCH_METADATA_ALLOWANCE_BYTES};
 
 mod classic;
@@ -149,7 +149,7 @@ pub(super) struct CpuGroupFastWorkspace {
 impl CpuGroupFastWorkspace {
     pub(super) fn prepare_group(
         &mut self,
-        group: &PreparedBatchGroup,
+        group: PreparedBatchGroupRef<'_>,
     ) -> Result<bool, BatchInfrastructureError> {
         self.clear_active_plan();
         let flattened = match group.info.route {
@@ -292,11 +292,11 @@ impl CpuGroupFastWorkspace {
 
     fn assign_image_spans(
         &mut self,
-        group: &PreparedBatchGroup,
+        images: &[PreparedImage],
         payload_count: impl Fn(&PreparedImage) -> Result<usize, BatchInfrastructureError>,
     ) -> Result<(), BatchInfrastructureError> {
         let mut start = 0usize;
-        for image in &group.images {
+        for image in images {
             let len = payload_count(image)?;
             self.image_spans.push(CpuImagePayloadSpan { start });
             start = start

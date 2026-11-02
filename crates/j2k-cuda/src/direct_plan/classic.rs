@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k_native::{
-    J2kCodeBlockSegment, J2kCodeBlockStyle, J2kOwnedCodeBlockBatchJob, J2kOwnedSubBandPlan,
-    J2kSubBandType,
+    DecodeError, DecodingError, J2kCodeBlockSegment, J2kCodeBlockStyle, J2kOwnedCodeBlockBatchJob,
+    J2kOwnedSubBandPlan, J2kSubBandType,
 };
 
 use super::{
     required_regions::RequiredBandRegions, shared::CudaPlanOwners, CudaClassicCodeBlock,
     CudaClassicSegment, CudaClassicSubband, Error, PLAN_PAYLOAD_TOO_LARGE,
 };
+use crate::error::NativeBackendError;
 
 const CLASSIC_PLAN_INVALID: &str = "strict CUDA classic Tier-1 plan is invalid";
+const NATIVE_CLASSIC_BITPLANE_LIMIT: u8 = 63;
 const STYLE_RESET_CONTEXT_PROBABILITIES: u32 = 1 << 0;
 const STYLE_TERMINATION_ON_EACH_PASS: u32 = 1 << 1;
 const STYLE_VERTICALLY_CAUSAL_CONTEXT: u32 = 1 << 2;
@@ -102,14 +104,25 @@ fn append_classic_job_metadata(
 
 fn validate_classic_job(job: &J2kOwnedCodeBlockBatchJob, payload_len: usize) -> Result<(), Error> {
     let Some(coded_bitplanes) = job.total_bitplanes.checked_add(job.roi_shift) else {
+        if job.strict {
+            return rejected_code_block(DecodingError::TooManyBitplanes);
+        }
         return invalid_classic_plan();
     };
+    if job.strict {
+        if coded_bitplanes > NATIVE_CLASSIC_BITPLANE_LIMIT {
+            return rejected_code_block(DecodingError::TooManyBitplanes);
+        }
+        check_strict_code_block(job, coded_bitplanes)?;
+    }
     if !(1..=64).contains(&job.width)
         || !(1..=64).contains(&job.height)
         || !(1..=31).contains(&job.total_bitplanes)
         || coded_bitplanes > 31
-        || job.missing_bit_planes >= coded_bitplanes
     {
+        return invalid_classic_plan();
+    }
+    if job.missing_bit_planes >= coded_bitplanes {
         return invalid_classic_plan();
     }
     let decoded_bitplanes = coded_bitplanes - job.missing_bit_planes;
@@ -139,6 +152,35 @@ fn validate_classic_job(job: &J2kOwnedCodeBlockBatchJob, payload_len: usize) -> 
         return invalid_classic_plan();
     }
     Ok(())
+}
+
+/// Reject, as the CPU decode does, a code-block whose packet headers claim
+/// more missing bit-planes than its sub-band codes, or more coding passes
+/// than its remaining bit-planes hold: errors in the codestream, which a
+/// strict decode reports with their native class on every backend.
+fn check_strict_code_block(
+    job: &J2kOwnedCodeBlockBatchJob,
+    coded_bitplanes: u8,
+) -> Result<(), Error> {
+    let Some(bitplanes) = coded_bitplanes.checked_sub(job.missing_bit_planes) else {
+        return rejected_code_block(DecodingError::InvalidBitplaneCount);
+    };
+    let max_passes = if bitplanes == 0 {
+        0
+    } else {
+        1 + 3 * (u32::from(bitplanes) - 1)
+    };
+    if u32::from(job.number_of_coding_passes) > max_passes {
+        return rejected_code_block(DecodingError::TooManyCodingPasses);
+    }
+    Ok(())
+}
+
+fn rejected_code_block(error: DecodingError) -> Result<(), Error> {
+    Err(Error::NativeDecode {
+        context: "CUDA decode rejected an invalid code-block",
+        source: NativeBackendError::decode(DecodeError::Decoding(error)),
+    })
 }
 
 fn invalid_classic_plan<T>() -> Result<T, Error> {
@@ -190,3 +232,6 @@ fn checked_u64(value: usize) -> Result<u64, Error> {
         ))
     })
 }
+
+#[cfg(test)]
+mod tests;

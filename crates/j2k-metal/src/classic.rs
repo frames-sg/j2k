@@ -1148,6 +1148,85 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    /// A raw (bypass) segment whose coded bytes run out before its coding
+    /// passes end: T.800 D.4.1 extends a cleanly exhausted terminated segment
+    /// with 0xFF bytes, so every raw bit past the end reads as one. The
+    /// scalar decoder and the Metal kernel must pad alike, in strict mode too.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn metal_classic_kernel_matches_scalar_for_exhausted_bypass_segment() {
+        if !should_run_metal_runtime() {
+            return;
+        }
+
+        let bytes = fixture_j2k_gray16_bypass();
+        let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+        let mut context = DecoderContext::default();
+        let mut capture = CaptureFirstClassicJob::default();
+        image
+            .decode_components_with_ht_decoder(&mut context, &mut capture)
+            .expect("capture classic job");
+
+        let mut job = capture.first.expect("captured classic job");
+        let original_coefficients = {
+            let mut coefficients = vec![0.0f32; job.output_len()];
+            decode_j2k_code_block_scalar(job.as_job(), &mut coefficients)
+                .expect("decode original bypass job");
+            integral_coefficients(&coefficients)
+        };
+        let encoded = j2k_native::encode_j2k_code_block_scalar_with_style(
+            &original_coefficients,
+            job.width,
+            job.height,
+            job.sub_band_type,
+            job.total_bitplanes,
+            j2k_native::J2kCodeBlockStyle {
+                selective_arithmetic_coding_bypass: true,
+                ..job.style
+            },
+        )
+        .expect("encode bypass classic job");
+        job.style.selective_arithmetic_coding_bypass = true;
+        job.data = encoded.data;
+        job.segments = encoded.segments;
+        job.number_of_coding_passes = encoded.number_of_coding_passes;
+        job.missing_bit_planes = encoded.missing_bit_planes;
+        job.strict = true;
+
+        // Drop the trailing bytes of one raw segment so its coding passes read
+        // past its coded data, which both decoders pad with one bits. The
+        // following segments keep their own data (their offsets slide down), so
+        // the coding-pass chain and the total payload length stay consistent.
+        // Keep at least one byte, not ending in 0xFF, so a cleanly exhausted
+        // read is exercised rather than a missing stuff bit, which strict mode
+        // rejects on both decoders.
+        let raw = job
+            .segments
+            .iter()
+            .rposition(|segment| !segment.use_arithmetic && segment.data_length > 1)
+            .expect("a raw segment with coded bytes");
+        let start = job.segments[raw].data_offset as usize;
+        let end = start + job.segments[raw].data_length as usize;
+        let keep_end = (start + 1..end)
+            .find(|&candidate| job.data[candidate - 1] != 0xff)
+            .expect("a truncation not ending in 0xFF");
+        let removed = u32::try_from(end - keep_end).expect("removed byte count fits u32");
+        job.data.drain(keep_end..end);
+        job.segments[raw].data_length -= removed;
+        for segment in &mut job.segments[raw + 1..] {
+            segment.data_offset -= removed;
+        }
+        assert!(removed > 0, "the raw segment is shortened");
+        assert!(super::supports_metal_classic_kernel(&job.as_job()));
+
+        let mut expected = vec![0.0f32; job.output_len()];
+        decode_j2k_code_block_scalar(job.as_job(), &mut expected).expect("scalar decode pads");
+        let mut actual = vec![0.0f32; job.output_len()];
+        compute::decode_classic_cleanup_code_block_with_midpoint(job.as_job(), &mut actual, false)
+            .expect("metal decode pads");
+        assert_eq!(actual, expected);
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn metal_classic_kernel_accepts_zero_length_prefix_segment() {

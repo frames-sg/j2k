@@ -158,16 +158,27 @@ impl<'data> TilePartCursor<'_, 'data> {
     /// skipped and whether the next skip would have succeeded: `false` when
     /// the length is not signalled, the headers live in PPM/PPT, or the length
     /// runs past the tile-part, which consumes nothing of that packet.
-    pub(crate) fn skip_packets(&mut self, count: usize) -> (usize, bool) {
+    ///
+    /// # Errors
+    ///
+    /// A length below `min_length`, the fewest bytes a packet with an in-band
+    /// header takes (its header's first byte, and an EPH marker where the
+    /// coding style requires one): skipping by it would read the next packet
+    /// from the bytes of the one it skips.
+    pub(crate) fn skip_packets(
+        &mut self,
+        count: usize,
+        min_length: u32,
+    ) -> Result<(usize, bool), &'static str> {
         let Self::Merged {
             data,
             packet_lengths,
         } = self
         else {
-            return (0, false);
+            return Ok((0, false));
         };
         if !packet_lengths.present {
-            return (0, false);
+            return Ok((0, false));
         }
         let mut skipped = 0;
         while skipped < count {
@@ -175,15 +186,18 @@ impl<'data> TilePartCursor<'_, 'data> {
                 break;
             }
             let Some(&length) = packet_lengths.lengths.get(packet_lengths.next) else {
-                return (skipped, false);
+                return Ok((skipped, false));
             };
+            if length < min_length {
+                return Err("PLT packet length is shorter than any packet");
+            }
             if data.skip_bytes(length as usize).is_none() {
-                return (skipped, false);
+                return Ok((skipped, false));
             }
             packet_lengths.next += 1;
             skipped += 1;
         }
-        (skipped, true)
+        Ok((skipped, true))
     }
 
     pub(crate) fn validate_all_packet_lengths_consumed(&self) -> Option<()> {

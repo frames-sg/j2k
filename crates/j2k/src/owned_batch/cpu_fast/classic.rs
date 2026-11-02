@@ -5,7 +5,7 @@
 use j2k_core::BatchInfrastructureError;
 use j2k_native::{J2kClassicCodeBlockPayload, J2kCodestreamRange};
 
-use super::super::{BatchCodecRoute, PreparedBatchGroup, PreparedClassicPlan};
+use super::super::{BatchCodecRoute, PreparedBatchGroupRef, PreparedClassicPlan};
 use super::plan::{
     append_input_range, classic_group_requirements, empty_range, reserve_reused, visit_classic_jobs,
 };
@@ -14,7 +14,7 @@ use super::{CpuFlattenedPayloadJob, CpuGroupFastWorkspace, CpuPayloadBucket};
 impl CpuGroupFastWorkspace {
     pub(super) fn prepare_classic(
         &mut self,
-        group: &PreparedBatchGroup,
+        group: PreparedBatchGroupRef<'_>,
     ) -> Result<(), BatchInfrastructureError> {
         let (payload_count, payload_bytes) = classic_group_requirements(group)?;
         self.prepare_storage::<(J2kClassicCodeBlockPayload, J2kCodestreamRange)>(
@@ -41,7 +41,7 @@ impl CpuGroupFastWorkspace {
             },
         );
         self.classic_ranges.resize(payload_count, empty_range());
-        self.assign_image_spans(group, |image| {
+        self.assign_image_spans(group.images, |image| {
             Ok(image
                 .classic_plan()
                 .map_or(0, PreparedClassicPlan::payload_count))
