@@ -23,8 +23,11 @@ use super::super::build::Decomposition;
 use super::super::codestream::WaveletTransform;
 use super::super::decode::DecompositionStorage;
 use super::super::rect::IntRect;
-use super::filter_common::{periodic_symmetric_extension_left, periodic_symmetric_extension_right};
-use super::horizontal::filter_row;
+use super::filter_common::{
+    periodic_symmetric_extension_left, periodic_symmetric_extension_right, reversible_53_predict,
+    reversible_53_update,
+};
+use super::horizontal::filter_row_at;
 use super::interleave::interleave_row;
 use super::model::{IDWTInput, IDWTTempOutput};
 use super::try_grow_level_buffer;
@@ -1430,14 +1433,15 @@ fn lift_53_low_simd<S: Simd>(s1: f32x8<S>, s2: f32x8<S>, s3: f32x8<S>) -> f32x8<
     s1 - ((s2 + s3 + 2.0) * 0.25).floor()
 }
 
-/// Equation (F-5): the scalar form of [`lift_53_low_simd`].
+/// Equation (F-5): the scalar form of [`lift_53_low_simd`], in integer
+/// arithmetic.
 #[expect(
     clippy::inline_always,
     reason = "the lifting step is specialized with its scalar and SIMD operations"
 )]
 #[inline(always)]
 fn lift_53_low(s1: f32, s2: f32, s3: f32) -> f32 {
-    s1 - math::floor_f32(math::mul_add(s2 + s3, 0.25, 0.5))
+    reversible_53_predict(s1, s2, s3)
 }
 
 /// Equation (F-6) on one sample from its two neighbors: the SIMD form.
@@ -1450,14 +1454,15 @@ fn lift_53_high_simd<S: Simd>(s1: f32x8<S>, s2: f32x8<S>, s3: f32x8<S>) -> f32x8
     s1 + ((s2 + s3) * 0.5).floor()
 }
 
-/// Equation (F-6): the scalar form of [`lift_53_high_simd`].
+/// Equation (F-6): the scalar form of [`lift_53_high_simd`], in integer
+/// arithmetic.
 #[expect(
     clippy::inline_always,
     reason = "the lifting step is specialized with its scalar and SIMD operations"
 )]
 #[inline(always)]
 fn lift_53_high(s1: f32, s2: f32, s3: f32) -> f32 {
-    s1 + math::floor_half_sum_f32(s2, s3)
+    reversible_53_update(s1, s2, s3)
 }
 
 /// One 9-7I lifting step on one sample from its two neighbors: the SIMD form.
@@ -1594,7 +1599,7 @@ fn synthesize_row<S: Simd>(
     let width = level.width;
     if width < MIN_SIMD_ROW_WIDTH {
         interleave_row(simd, first, second, row);
-        filter_row(row, width, level.x0, level.transform, level.high_pass);
+        filter_row_at(simd, row, width, level.x0, level.transform, level.high_pass);
         if level.transform == WaveletTransform::Irreversible97 {
             scale_samples(simd, row, row_scale);
         }
@@ -1708,8 +1713,7 @@ fn synthesize_53_tail<S: Simd>(
         low_reads,
         #[inline(always)]
         |s, a, b| s - (a + b).mul_add(quarter, half).floor(),
-        #[inline(always)]
-        |s, a, b| s - math::floor_f32(math::mul_add(a + b, 0.25, 0.5)),
+        reversible_53_predict,
     );
     lift_high_to_row::<S, false>(
         simd,
@@ -1721,8 +1725,7 @@ fn synthesize_53_tail<S: Simd>(
         1.0,
         #[inline(always)]
         |s, a, b| s + ((a + b) * 0.5).floor(),
-        #[inline(always)]
-        |s, a, b| s + math::floor_half_sum_f32(a, b),
+        reversible_53_update,
     );
 }
 

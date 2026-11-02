@@ -1,7 +1,7 @@
 use super::{
-    bail, execute_component_plan, floor_f32, mul_add, prepare_direct_scratch, round_f32,
+    bail, dispatch, execute_component_plan, floor_f32, mul_add, prepare_direct_scratch, round_f32,
     round_ties_even_then_add, DecodingError, DirectComponentPlane, J2kDirectColorPlan,
-    J2kDirectCpuScratch, J2kRect, J2kWaveletTransform, Result,
+    J2kDirectCpuScratch, J2kRect, J2kWaveletTransform, Level, Result, Simd,
 };
 use j2k_codec_math::mct;
 
@@ -180,6 +180,35 @@ pub(super) fn apply_inverse_mct_region(
         sign_addend(bit_depths[2])
     };
     let plane_width = plane0.width as usize;
+    dispatch!(Level::new(), simd => inverse_mct_rows_at(
+        simd,
+        transform,
+        round_irreversible_output,
+        region,
+        plane_width,
+        [plane0, plane1, plane2],
+        [addend0, addend1, addend2],
+    ))
+}
+
+/// The per-sample loop of [`apply_inverse_mct_region`], inlined into a
+/// caller at `_simd`'s level. Its fused multiply-adds, floor and rounding are
+/// instructions there; outside a dispatch, baseline x86-64 calls a library
+/// routine for each.
+#[expect(
+    clippy::inline_always,
+    reason = "the color loop must be inlined into each SIMD dispatch target to use its instructions"
+)]
+#[inline(always)]
+fn inverse_mct_rows_at<S: Simd>(
+    _simd: S,
+    transform: J2kWaveletTransform,
+    round_irreversible_output: bool,
+    region: J2kRect,
+    plane_width: usize,
+    [plane0, plane1, plane2]: [&mut DirectComponentPlane; 3],
+    [addend0, addend1, addend2]: [f32; 3],
+) -> Result<()> {
     for y in region.y0 as usize..region.y1 as usize {
         let row_start = y
             .checked_mul(plane_width)
@@ -229,18 +258,49 @@ fn write_rgb8_region(
     stride: usize,
     output: DirectColorU8Output,
 ) -> Result<()> {
-    let width = output_region.width() as usize;
-    let height = output_region.height() as usize;
-    let bytes_per_pixel = output.bytes_per_pixel();
-    let row_bytes = width
-        .checked_mul(bytes_per_pixel)
+    let row_bytes = (output_region.width() as usize)
+        .checked_mul(output.bytes_per_pixel())
         .ok_or(DecodingError::CodeBlockDecodeFailure)?;
     for plane in planes {
         if output_region.x1 > plane.width || output_region.y1 > plane.height {
             bail!(DecodingError::CodeBlockDecodeFailure);
         }
     }
+    dispatch!(Level::new(), simd => write_rgb8_rows_at(
+        simd,
+        planes,
+        bit_depths,
+        output_region,
+        out,
+        stride,
+        output,
+        row_bytes,
+    ));
+    Ok(())
+}
 
+/// The pixel loop of [`write_rgb8_region`], inlined into a caller at
+/// `_simd`'s level, where the rounding in [`sample_as_u8`] is an instruction
+/// rather than a per-sample library call on baseline x86-64.
+#[expect(
+    clippy::inline_always,
+    clippy::too_many_arguments,
+    reason = "the pixel loop must be inlined into each SIMD dispatch target to use its instructions; it keeps the validated geometry explicit"
+)]
+#[inline(always)]
+fn write_rgb8_rows_at<S: Simd>(
+    _simd: S,
+    planes: [&DirectComponentPlane; 3],
+    bit_depths: [u8; 3],
+    output_region: J2kRect,
+    out: &mut [u8],
+    stride: usize,
+    output: DirectColorU8Output,
+    row_bytes: usize,
+) {
+    let width = output_region.width() as usize;
+    let height = output_region.height() as usize;
+    let bytes_per_pixel = output.bytes_per_pixel();
     for y in 0..height {
         let src_y = output_region.y0 as usize + y;
         let dst = &mut out[y * stride..y * stride + row_bytes];
@@ -257,7 +317,6 @@ fn write_rgb8_region(
             }
         }
     }
-    Ok(())
 }
 
 fn validate_output_region(
@@ -311,8 +370,10 @@ fn sign_addend(bit_depth: u8) -> f32 {
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    reason = "samples are rounded and clamped before stable 8-bit output quantization"
+    clippy::inline_always,
+    reason = "samples are rounded and clamped before stable 8-bit output quantization; inlined into the dispatched pixel loop"
 )]
+#[inline(always)]
 fn sample_as_u8(sample: f32, bit_depth: u8) -> u8 {
     let rounded = round_f32(sample);
     if bit_depth == 8 {
