@@ -1257,9 +1257,9 @@ fn lift_wavefronts<S: Simd, const STEPS: usize, const ROWS: usize>(
             #[inline(always)]
             |step, current, above, below| {
                 if step == 0 {
-                    lift_53_low(current, above, below)
+                    reversible_53_predict(current, above, below)
                 } else {
-                    lift_53_high(current, above, below)
+                    reversible_53_update(current, above, below)
                 }
             },
         );
@@ -1402,10 +1402,24 @@ fn apply_vertical_step<S: Simd>(
 ) {
     match step {
         VerticalStep::Reversible53Low => {
-            lift_rows(simd, current, above, below, lift_53_low_simd, lift_53_low);
+            lift_rows(
+                simd,
+                current,
+                above,
+                below,
+                lift_53_low_simd,
+                reversible_53_predict,
+            );
         }
         VerticalStep::Reversible53High => {
-            lift_rows(simd, current, above, below, lift_53_high_simd, lift_53_high);
+            lift_rows(
+                simd,
+                current,
+                above,
+                below,
+                lift_53_high_simd,
+                reversible_53_update,
+            );
         }
         VerticalStep::Irreversible97(coefficient) => {
             let coefficient_simd = f32x8::splat(simd, coefficient);
@@ -1433,17 +1447,6 @@ fn lift_53_low_simd<S: Simd>(s1: f32x8<S>, s2: f32x8<S>, s3: f32x8<S>) -> f32x8<
     s1 - ((s2 + s3 + 2.0) * 0.25).floor()
 }
 
-/// Equation (F-5): the scalar form of [`lift_53_low_simd`], in integer
-/// arithmetic.
-#[expect(
-    clippy::inline_always,
-    reason = "the lifting step is specialized with its scalar and SIMD operations"
-)]
-#[inline(always)]
-fn lift_53_low(s1: f32, s2: f32, s3: f32) -> f32 {
-    reversible_53_predict(s1, s2, s3)
-}
-
 /// Equation (F-6) on one sample from its two neighbors: the SIMD form.
 #[expect(
     clippy::inline_always,
@@ -1452,17 +1455,6 @@ fn lift_53_low(s1: f32, s2: f32, s3: f32) -> f32 {
 #[inline(always)]
 fn lift_53_high_simd<S: Simd>(s1: f32x8<S>, s2: f32x8<S>, s3: f32x8<S>) -> f32x8<S> {
     s1 + ((s2 + s3) * 0.5).floor()
-}
-
-/// Equation (F-6): the scalar form of [`lift_53_high_simd`], in integer
-/// arithmetic.
-#[expect(
-    clippy::inline_always,
-    reason = "the lifting step is specialized with its scalar and SIMD operations"
-)]
-#[inline(always)]
-fn lift_53_high(s1: f32, s2: f32, s3: f32) -> f32 {
-    reversible_53_update(s1, s2, s3)
 }
 
 /// One 9-7I lifting step on one sample from its two neighbors: the SIMD form.

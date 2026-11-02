@@ -530,13 +530,11 @@ fn extend_converted<const N: usize>(
     });
 }
 
-/// Write `convert(sample)` of every `source` sample to `destination`,
-/// inlined into a caller at `_simd`'s level. The rounding in `convert` is an
-/// instruction there; outside a dispatch, baseline x86-64 calls a library
-/// routine per sample, which also keeps the loop from vectorizing.
+/// Write `convert(sample)` of every `source` sample to `destination`, at the
+/// dispatched SIMD level (see `math`), where its rounding also vectorizes.
 #[expect(
     clippy::inline_always,
-    reason = "the conversion loop must be inlined into each SIMD dispatch target to use its instructions"
+    reason = "inlined into each SIMD dispatch target"
 )]
 #[inline(always)]
 fn convert_samples<S: Simd, const N: usize>(

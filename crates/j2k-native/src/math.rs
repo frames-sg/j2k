@@ -837,6 +837,13 @@ pub(crate) fn max_f32(a: f32, b: f32) -> f32 {
     }
 }
 
+// Scalar loops that floor, round or fuse a multiply-add run inside a
+// `dispatch!`: baseline x86-64 has no instruction for these, so outside one
+// each is a library call per sample (aarch64 has them all). The convention is
+// `dispatch!(Level::new(), simd => foo_at(simd, ...))` around an
+// `#[inline(always)] fn foo_at<S: Simd>(_simd: S, ...)`. Target features reach
+// only code inlined into the dispatched closure, so the loop and every helper
+// it calls must be `#[inline(always)]`.
 #[cfg(not(feature = "simd"))]
 pub(crate) use inner::{dispatch, f32x8, Level, ScalarSimd, Simd};
 #[cfg(feature = "simd")]

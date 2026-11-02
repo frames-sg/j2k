@@ -407,16 +407,13 @@ fn public_idwt_function_signatures_stay_stable() {
 /// Deterministic xorshift values: small integers for 5/3, fractions for 9/7.
 #[expect(
     clippy::cast_precision_loss,
-    reason = "the drawn value is below 20001 and exact in f32"
+    reason = "the drawn value is at most 10000 in magnitude and exact in f32"
 )]
 fn pseudo_random_coefficients(count: usize, seed: u64, integral: bool) -> Vec<f32> {
-    let mut state = seed | 1;
-    (0..count)
-        .map(|_| {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            let value = (state % 20_001) as f32 - 10_000.0;
+    pseudo_random_integers(count, seed, 10_000)
+        .into_iter()
+        .map(|value| {
+            let value = value as f32;
             if integral {
                 value
             } else {

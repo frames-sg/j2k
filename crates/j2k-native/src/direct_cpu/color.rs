@@ -191,13 +191,11 @@ pub(super) fn apply_inverse_mct_region(
     ))
 }
 
-/// The per-sample loop of [`apply_inverse_mct_region`], inlined into a
-/// caller at `_simd`'s level. Its fused multiply-adds, floor and rounding are
-/// instructions there; outside a dispatch, baseline x86-64 calls a library
-/// routine for each.
+/// The per-sample loop of [`apply_inverse_mct_region`], at the dispatched
+/// SIMD level (see `math`).
 #[expect(
     clippy::inline_always,
-    reason = "the color loop must be inlined into each SIMD dispatch target to use its instructions"
+    reason = "inlined into each SIMD dispatch target"
 )]
 #[inline(always)]
 fn inverse_mct_rows_at<S: Simd>(
@@ -258,65 +256,38 @@ fn write_rgb8_region(
     stride: usize,
     output: DirectColorU8Output,
 ) -> Result<()> {
-    let row_bytes = (output_region.width() as usize)
-        .checked_mul(output.bytes_per_pixel())
+    let width = output_region.width() as usize;
+    let height = output_region.height() as usize;
+    let bytes_per_pixel = output.bytes_per_pixel();
+    let row_bytes = width
+        .checked_mul(bytes_per_pixel)
         .ok_or(DecodingError::CodeBlockDecodeFailure)?;
     for plane in planes {
         if output_region.x1 > plane.width || output_region.y1 > plane.height {
             bail!(DecodingError::CodeBlockDecodeFailure);
         }
     }
-    dispatch!(Level::new(), simd => write_rgb8_rows_at(
-        simd,
-        planes,
-        bit_depths,
-        output_region,
-        out,
-        stride,
-        output,
-        row_bytes,
-    ));
-    Ok(())
-}
 
-/// The pixel loop of [`write_rgb8_region`], inlined into a caller at
-/// `_simd`'s level, where the rounding in [`sample_as_u8`] is an instruction
-/// rather than a per-sample library call on baseline x86-64.
-#[expect(
-    clippy::inline_always,
-    clippy::too_many_arguments,
-    reason = "the pixel loop must be inlined into each SIMD dispatch target to use its instructions; it keeps the validated geometry explicit"
-)]
-#[inline(always)]
-fn write_rgb8_rows_at<S: Simd>(
-    _simd: S,
-    planes: [&DirectComponentPlane; 3],
-    bit_depths: [u8; 3],
-    output_region: J2kRect,
-    out: &mut [u8],
-    stride: usize,
-    output: DirectColorU8Output,
-    row_bytes: usize,
-) {
-    let width = output_region.width() as usize;
-    let height = output_region.height() as usize;
-    let bytes_per_pixel = output.bytes_per_pixel();
-    for y in 0..height {
-        let src_y = output_region.y0 as usize + y;
-        let dst = &mut out[y * stride..y * stride + row_bytes];
-        for x in 0..width {
-            let src_x = output_region.x0 as usize + x;
-            let dst = &mut dst[x * bytes_per_pixel..x * bytes_per_pixel + bytes_per_pixel];
-            for channel in 0..3 {
-                let plane = planes[channel];
-                let sample = plane.samples[src_y * plane.width as usize + src_x];
-                dst[channel] = sample_as_u8(sample, bit_depths[channel]);
-            }
-            if matches!(output, DirectColorU8Output::Rgba8) {
-                dst[3] = u8::MAX;
+    // At the SIMD level, so `sample_as_u8` rounds with an instruction.
+    dispatch!(Level::new(), _simd => {
+        for y in 0..height {
+            let src_y = output_region.y0 as usize + y;
+            let dst = &mut out[y * stride..y * stride + row_bytes];
+            for x in 0..width {
+                let src_x = output_region.x0 as usize + x;
+                let dst = &mut dst[x * bytes_per_pixel..x * bytes_per_pixel + bytes_per_pixel];
+                for channel in 0..3 {
+                    let plane = planes[channel];
+                    let sample = plane.samples[src_y * plane.width as usize + src_x];
+                    dst[channel] = sample_as_u8(sample, bit_depths[channel]);
+                }
+                if matches!(output, DirectColorU8Output::Rgba8) {
+                    dst[3] = u8::MAX;
+                }
             }
         }
-    }
+    });
+    Ok(())
 }
 
 fn validate_output_region(
