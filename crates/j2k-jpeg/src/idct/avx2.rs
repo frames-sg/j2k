@@ -34,7 +34,7 @@ use j2k_codec_math::jpeg::idct;
 
 use super::scalar::ISLOW_GAINS;
 
-use crate::simd::x86::exact_avx2_kernel;
+use crate::simd::x86::{exact_avx2_kernel, madd_pair};
 use crate::simd::x86_memory;
 
 #[expect(
@@ -158,11 +158,7 @@ const _: () = {
 /// The two gains `vpmaddwd` applies to the interleaved `(p[k], p[k + 4])`
 /// input pair for 1-D output `output`, packed into one 32-bit lane.
 const fn gain_pair(output: usize, k: usize) -> i32 {
-    let [first, second] = [ISLOW_GAINS[output][k], ISLOW_GAINS[output][k + 4]];
-    // `-32768` would allow the instruction's single wrapping case.
-    assert!(-32_767 <= first && first <= 32_767);
-    assert!(-32_767 <= second && second <= 32_767);
-    (first & 0xffff) | (second << 16)
+    madd_pair(ISLOW_GAINS[output][k], ISLOW_GAINS[output][k + 4])
 }
 
 // The kernels use the even/odd butterfly: for j < 4, output j is

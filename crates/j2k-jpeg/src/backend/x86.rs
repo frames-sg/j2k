@@ -2,23 +2,25 @@
 
 use alloc::vec::Vec;
 use core::arch::x86_64::{
-    __m128i, __m256i, _mm256_add_epi32, _mm256_cvtepu8_epi32, _mm256_extracti128_si256,
-    _mm256_mullo_epi32, _mm256_set1_epi32, _mm256_srai_epi32, _mm256_sub_epi32, _mm_cvtsi128_si64,
-    _mm_packs_epi32, _mm_packus_epi16,
+    __m256i, _mm256_add_epi16, _mm256_add_epi32, _mm256_broadcastsi128_si256, _mm256_cvtepu8_epi16,
+    _mm256_madd_epi16, _mm256_mulhi_epi16, _mm256_or_si256, _mm256_packs_epi32,
+    _mm256_packus_epi16, _mm256_permute2x128_si256, _mm256_set1_epi16, _mm256_set1_epi32,
+    _mm256_setzero_si256, _mm256_shuffle_epi8, _mm256_slli_epi16, _mm256_srai_epi16,
+    _mm256_srai_epi32, _mm256_srli_epi16, _mm256_sub_epi16, _mm256_unpackhi_epi16,
+    _mm256_unpackhi_epi8, _mm256_unpacklo_epi16, _mm256_unpacklo_epi8, _mm_setr_epi8,
 };
 use core::cell::RefCell;
 
-use crate::color::upsample::{
-    h2v2_fancy_sample, upsample_h2v2_fancy_row, upsample_h2v2_fancy_rows,
-};
+use crate::color::upsample::{emit_h2v2_row_with, h2v2_fancy_sample};
 use crate::color::ycbcr::{FIX_0_34414, FIX_0_71414, FIX_1_40200, FIX_1_77200, ROUND};
-use crate::simd::x86::{exact_avx2_kernel, ExactAvx2};
+use crate::simd::x86::{exact_avx2_kernel, madd_pair, ExactAvx2};
 use crate::simd::x86_memory;
 
 use super::row_pair::{normalize_simd_row_pair, normalize_ycbcr_row};
 use super::{scalar, Rgb420ChromaRows, Rgb420CroppedRowPair, Rgb420RowPair};
 
-const LANES: usize = 8;
+/// Pixels per colour-conversion step: one 256-bit register of bytes.
+const LANES: usize = 32;
 const RGB_UNROLL: usize = 8;
 
 #[derive(Default)]
@@ -128,40 +130,30 @@ exact_avx2_kernel! {
         dst: &mut [u8],
     ) {
         let width = y_row.len();
-        let mut sources = x86_memory::U8x8TripleCursor::new(avx2, y_row, cb_row, cr_row);
-
-        while let Some((offset, first, second)) = sources.next_pair() {
-            fill_chunk(
-                first.0,
-                first.1,
-                first.2,
-                &mut dst[offset * 3..(offset + LANES) * 3],
-            );
-            fill_chunk(
-                second.0,
-                second.1,
-                second.2,
-                &mut dst[(offset + LANES) * 3..(offset + LANES * 2) * 3],
-            );
+        let mut sources = x86_memory::U8x32TripleCursor::new(avx2, y_row, cb_row, cr_row);
+        while let Some((offset, (y, cb, cr))) = sources.next() {
+            let Some((chunk, _)) = dst[offset * 3..].split_first_chunk_mut::<{ LANES * 3 }>()
+            else {
+                break;
+            };
+            store_rgb_chunk(chunk, ycbcr_chunk_to_rgb(y, cb, cr));
         }
 
-        if let Some((offset, values)) = sources.next() {
-            fill_chunk(
-                values.0,
-                values.1,
-                values.2,
-                &mut dst[offset * 3..(offset + LANES) * 3],
-            );
-        }
-
+        // Convert the last partial chunk through zero-padded copies.
         let offset = sources.offset();
         if offset < width {
-            scalar::fill_rgb_row_from_ycbcr(
-                &y_row[offset..],
-                &cb_row[offset..],
-                &cr_row[offset..],
-                &mut dst[offset * 3..],
-            );
+            let tail = width - offset;
+            let mut padded = [[0u8; LANES]; 3];
+            for (buffer, row) in padded.iter_mut().zip([y_row, cb_row, cr_row]) {
+                buffer[..tail].copy_from_slice(&row[offset..width]);
+            }
+            let mut pixels = [0u8; LANES * 3];
+            let mut tail_source =
+                x86_memory::U8x32TripleCursor::new(avx2, &padded[0], &padded[1], &padded[2]);
+            if let Some((_, (y, cb, cr))) = tail_source.next() {
+                store_rgb_chunk(&mut pixels, ycbcr_chunk_to_rgb(y, cb, cr));
+            }
+            dst[offset * 3..width * 3].copy_from_slice(&pixels[..tail * 3]);
         }
     }
 }
@@ -305,15 +297,96 @@ fn fill_rgb_row_pair_from_420_avx2(
     if let (Some(y_bottom), Some(dst_bottom)) = (y_bottom, dst_bottom) {
         let cb_bottom = &mut cb_bottom[..width];
         let cr_bottom = &mut cr_bottom[..width];
-        upsample_h2v2_fancy_rows(prev_cb, curr_cb, next_cb, width, cb_top, cb_bottom);
-        upsample_h2v2_fancy_rows(prev_cr, curr_cr, next_cr, width, cr_top, cr_bottom);
+        upsample_h2v2_row(avx2, prev_cb, curr_cb, width, cb_top);
+        upsample_h2v2_row(avx2, next_cb, curr_cb, width, cb_bottom);
+        upsample_h2v2_row(avx2, prev_cr, curr_cr, width, cr_top);
+        upsample_h2v2_row(avx2, next_cr, curr_cr, width, cr_bottom);
         fill_rgb_row_from_ycbcr_kernel(avx2, y_top, cb_top, cr_top, dst_top);
         fill_rgb_row_from_ycbcr_kernel(avx2, y_bottom, cb_bottom, cr_bottom, dst_bottom);
     } else {
-        upsample_h2v2_fancy_row(prev_cb, curr_cb, next_cb, width, false, cb_top);
-        upsample_h2v2_fancy_row(prev_cr, curr_cr, next_cr, width, false, cr_top);
+        upsample_h2v2_row(avx2, prev_cb, curr_cb, width, cb_top);
+        upsample_h2v2_row(avx2, prev_cr, curr_cr, width, cr_top);
         fill_rgb_row_from_ycbcr_kernel(avx2, y_top, cb_top, cr_top, dst_top);
     }
+}
+
+/// One visible row of fancy 4:2:0 chroma upsampling, bit-exact with
+/// [`crate::color::upsample::upsample_h2v2_fancy_row`]: the shared row
+/// driver handles the edges and [`h2v2_fancy_pairs`] the interior.
+pub(super) fn upsample_h2v2_row(
+    avx2: ExactAvx2,
+    near: &[u8],
+    curr: &[u8],
+    output_width: usize,
+    out: &mut [u8],
+) {
+    emit_h2v2_row_with(near, curr, output_width, out, |curr, near, interior| {
+        h2v2_fancy_pairs(avx2, curr, near, interior)
+    });
+}
+
+exact_avx2_kernel! {
+    /// Fill the leading interior pairs of a fancy 4:2:0 chroma row, sixteen
+    /// chroma samples at a time; the AVX2 twin of
+    /// `neon_upsample::h2v2_fancy_pairs`. With column sums
+    /// `cs(i) = 3 * curr[i] + near[i]`, pair `i` is
+    /// `interior[2i] = (3 * cs(i) + cs(i + 1) + 7) >> 4` and
+    /// `interior[2i + 1] = (3 * cs(i + 1) + cs(i) + 8) >> 4`. Returns how many
+    /// pairs were filled; the caller finishes the rest.
+    fn h2v2_fancy_pairs(
+        avx2: ExactAvx2,
+        curr: &[u8],
+        near: &[u8],
+        interior: &mut [u8],
+    ) -> usize {
+        let pairs = interior.len() / 2;
+        let mut done = 0;
+        // Each step reads samples `done..done + 17` and writes 32 outputs.
+        while done + 16 <= pairs {
+            let (Some(c0), Some(c1), Some(n0), Some(n1)) = (
+                curr.get(done..).and_then(<[u8]>::first_chunk::<16>),
+                curr.get(done + 1..).and_then(<[u8]>::first_chunk::<16>),
+                near.get(done..).and_then(<[u8]>::first_chunk::<16>),
+                near.get(done + 1..).and_then(<[u8]>::first_chunk::<16>),
+            ) else {
+                break;
+            };
+            let Some(out) = interior[2 * done..].first_chunk_mut::<32>() else {
+                break;
+            };
+            // Column sums of samples `i` (left) and `i + 1` (right), in u16.
+            let left = column_sums(c0, n0);
+            let right = column_sums(c1, n1);
+            // At most 3 * 1020 + 1020 + 8 = 4088, so the u16 lanes cannot wrap.
+            let odd = _mm256_srli_epi16::<4>(_mm256_add_epi16(
+                _mm256_add_epi16(triple(left), right),
+                _mm256_set1_epi16(7),
+            ));
+            let even = _mm256_srli_epi16::<4>(_mm256_add_epi16(
+                _mm256_add_epi16(triple(right), left),
+                _mm256_set1_epi16(8),
+            ));
+            // Both fit a byte: lane `i` becomes the byte pair `(odd, even)`.
+            x86_memory::store_u8x32(out, _mm256_or_si256(odd, _mm256_slli_epi16::<8>(even)));
+            done += 16;
+        }
+        done
+    }
+}
+
+/// `3 * curr + near` for sixteen samples, widened to u16 lanes.
+#[inline]
+#[target_feature(enable = "avx2")]
+fn column_sums(curr: &[u8; 16], near: &[u8; 16]) -> __m256i {
+    let curr = _mm256_cvtepu8_epi16(x86_memory::load_u8x16(curr));
+    let near = _mm256_cvtepu8_epi16(x86_memory::load_u8x16(near));
+    _mm256_add_epi16(triple(curr), near)
+}
+
+#[inline]
+#[target_feature(enable = "avx2")]
+fn triple(values: __m256i) -> __m256i {
+    _mm256_add_epi16(_mm256_add_epi16(values, values), values)
 }
 
 #[cfg(test)]
@@ -342,71 +415,167 @@ pub(super) fn fill_rgb_row_from_rgb_for_test(
     fill_rgb_row_from_rgb(r_row, g_row, b_row, dst);
 }
 
+/// `R`, `G` and `B` bytes of 32 pixels, bit-exact with
+/// [`crate::color::ycbcr::ycbcr_to_rgb`]. The 16-bit halves hold pixels
+/// `[0..8 | 16..24]` and `[8..16 | 24..32]`; packing restores the order.
+#[inline]
 #[target_feature(enable = "avx2")]
-fn fill_chunk(y: __m128i, cb: __m128i, cr: __m128i, dst_chunk: &mut [u8]) {
-    debug_assert_eq!(dst_chunk.len(), LANES * 3);
-
-    let bias = _mm256_set1_epi32(128);
-    let y32 = _mm256_cvtepu8_epi32(y);
-    let cb32 = _mm256_sub_epi32(_mm256_cvtepu8_epi32(cb), bias);
-    let cr32 = _mm256_sub_epi32(_mm256_cvtepu8_epi32(cr), bias);
-
-    let r = _mm256_add_epi32(y32, fixed_mul_shift(cr32, FIX_1_40200));
-    let g = _mm256_sub_epi32(
-        y32,
-        _mm256_srai_epi32(
-            _mm256_add_epi32(
-                _mm256_add_epi32(
-                    _mm256_mullo_epi32(cb32, _mm256_set1_epi32(FIX_0_34414)),
-                    _mm256_mullo_epi32(cr32, _mm256_set1_epi32(FIX_0_71414)),
-                ),
-                _mm256_set1_epi32(ROUND),
-            ),
-            16,
-        ),
+fn ycbcr_chunk_to_rgb(y: __m256i, cb: __m256i, cr: __m256i) -> [__m256i; 3] {
+    let zero = _mm256_setzero_si256();
+    let [r_lo, g_lo, b_lo] = ycbcr16_to_rgb(
+        _mm256_unpacklo_epi8(y, zero),
+        _mm256_unpacklo_epi8(cb, zero),
+        _mm256_unpacklo_epi8(cr, zero),
     );
-    let b = _mm256_add_epi32(y32, fixed_mul_shift(cb32, FIX_1_77200));
-
-    store_rgb_chunk(dst_chunk, r, g, b);
+    let [r_hi, g_hi, b_hi] = ycbcr16_to_rgb(
+        _mm256_unpackhi_epi8(y, zero),
+        _mm256_unpackhi_epi8(cb, zero),
+        _mm256_unpackhi_epi8(cr, zero),
+    );
+    // Unsigned saturation is the scalar clamp to [0, 255].
+    [
+        _mm256_packus_epi16(r_lo, r_hi),
+        _mm256_packus_epi16(g_lo, g_hi),
+        _mm256_packus_epi16(b_lo, b_hi),
+    ]
 }
 
+/// Fractional `Cr` gain of red: `FIX_1_40200 = 2^16 + 26,345`.
+const R_CR_FRACTION: i32 = FIX_1_40200 - (1 << 16);
+/// Fractional `Cb` gain of blue: `FIX_1_77200 = 2 * 2^16 - 14,942`.
+const B_CB_FRACTION: i32 = FIX_1_77200 - (2 << 16);
+/// `vpmaddwd` gains for `(Cb, Cr)`: `FIX_0_34414` and `FIX_0_71414 - 2^16`.
+const G_GAIN_PAIR: i32 = madd_pair(FIX_0_34414, FIX_0_71414 - (1 << 16));
+
+const _: () = {
+    // The halving trick below rounds by exactly 2^15.
+    assert!(ROUND == 1 << 15);
+    assert!(-32_768 < R_CR_FRACTION && R_CR_FRACTION < 32_768);
+    assert!(-32_768 < B_CB_FRACTION && B_CB_FRACTION < 32_768);
+};
+
+/// `(2 * x * fraction) >> 16`, plus one, halved: `vpmulhw` floors the
+/// product of the doubled value, and `floor((floor(2v) + 1) / 2)` equals
+/// `floor(v + 1/2)`, so this is `(x * fraction + 2^15) >> 16` exactly.
+#[inline]
 #[target_feature(enable = "avx2")]
-fn fixed_mul_shift(values: __m256i, coefficient: i32) -> __m256i {
-    _mm256_srai_epi32(
-        _mm256_add_epi32(
-            _mm256_mullo_epi32(values, _mm256_set1_epi32(coefficient)),
-            _mm256_set1_epi32(ROUND),
-        ),
-        16,
-    )
+fn rounded_fraction(doubled: __m256i, fraction: i32) -> __m256i {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the fractional gains are asserted above to fit in i16"
+    )]
+    let fraction = fraction as i16;
+    _mm256_srai_epi16::<1>(_mm256_add_epi16(
+        _mm256_mulhi_epi16(doubled, _mm256_set1_epi16(fraction)),
+        _mm256_set1_epi16(1),
+    ))
 }
 
+/// 16 pixels of `ycbcr_to_rgb` in i16 lanes, before the clamp. Each
+/// coefficient splits into a whole multiple of 2^16 (added exactly) and a
+/// fraction, so every result equals the scalar 32-bit formula:
+/// `R = Y + Cr + ((26,345 Cr + 2^15) >> 16)`,
+/// `B = Y + 2 Cb + ((-14,942 Cb + 2^15) >> 16)` and
+/// `G = Y - Cr - ((22,554 Cb - 18,734 Cr + 2^15) >> 16)`, with
+/// `Cb`, `Cr` centred. All intermediates stay within [-600, 600].
+#[inline]
 #[target_feature(enable = "avx2")]
-fn store_rgb_chunk(dst_chunk: &mut [u8], r: __m256i, g: __m256i, b: __m256i) {
-    debug_assert_eq!(dst_chunk.len(), LANES * 3);
-    let r_bytes = pack_eight_u8(r);
-    let g_bytes = pack_eight_u8(g);
-    let b_bytes = pack_eight_u8(b);
+fn ycbcr16_to_rgb(y: __m256i, cb: __m256i, cr: __m256i) -> [__m256i; 3] {
+    let center = _mm256_set1_epi16(128);
+    let cb = _mm256_sub_epi16(cb, center);
+    let cr = _mm256_sub_epi16(cr, center);
+    let cb2 = _mm256_add_epi16(cb, cb);
+    let cr2 = _mm256_add_epi16(cr, cr);
+    let r = _mm256_add_epi16(
+        _mm256_add_epi16(y, cr),
+        rounded_fraction(cr2, R_CR_FRACTION),
+    );
+    let b = _mm256_add_epi16(
+        _mm256_add_epi16(y, cb2),
+        rounded_fraction(cb2, B_CB_FRACTION),
+    );
+    let gains = _mm256_set1_epi32(G_GAIN_PAIR);
+    let round = _mm256_set1_epi32(ROUND);
+    let g_lo = _mm256_srai_epi32::<16>(_mm256_add_epi32(
+        _mm256_madd_epi16(_mm256_unpacklo_epi16(cb, cr), gains),
+        round,
+    ));
+    let g_hi = _mm256_srai_epi32::<16>(_mm256_add_epi32(
+        _mm256_madd_epi16(_mm256_unpackhi_epi16(cb, cr), gains),
+        round,
+    ));
+    let g = _mm256_sub_epi16(_mm256_sub_epi16(y, cr), _mm256_packs_epi32(g_lo, g_hi));
+    [r, g, b]
+}
 
-    for ((((r, g), b), pixel), _) in r_bytes
-        .iter()
-        .zip(g_bytes.iter())
-        .zip(b_bytes.iter())
-        .zip(dst_chunk.as_chunks_mut::<3>().0)
-        .zip(0..LANES)
-    {
-        pixel[0] = *r;
-        pixel[1] = *g;
-        pixel[2] = *b;
+/// `vpshufb` mask placing channel `channel` of sixteen pixels into bytes
+/// `16 * part .. 16 * part + 16` of their interleaved RGB.
+const fn interleave_mask(part: usize, channel: usize) -> [i8; 16] {
+    let mut mask = [-128i8; 16];
+    let mut byte = 0;
+    while byte < 16 {
+        let index = 16 * part + byte;
+        if index % 3 == channel {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "pixel indices within a 16-pixel lane are below 16"
+            )]
+            let pixel = (index / 3) as i8;
+            mask[byte] = pixel;
+        }
+        byte += 1;
     }
+    mask
 }
 
+const INTERLEAVE_MASKS: [[[i8; 16]; 3]; 3] = {
+    let mut masks = [[[0; 16]; 3]; 3];
+    let mut part = 0;
+    while part < 3 {
+        let mut channel = 0;
+        while channel < 3 {
+            masks[part][channel] = interleave_mask(part, channel);
+            channel += 1;
+        }
+        part += 1;
+    }
+    masks
+};
+
+#[inline]
 #[target_feature(enable = "avx2")]
-fn pack_eight_u8(values: __m256i) -> [u8; LANES] {
-    let words = _mm_packs_epi32(
-        _mm256_extracti128_si256(values, 0),
-        _mm256_extracti128_si256(values, 1),
+fn lane_mask(mask: [i8; 16]) -> __m256i {
+    _mm256_broadcastsi128_si256(_mm_setr_epi8(
+        mask[0], mask[1], mask[2], mask[3], mask[4], mask[5], mask[6], mask[7], mask[8], mask[9],
+        mask[10], mask[11], mask[12], mask[13], mask[14], mask[15],
+    ))
+}
+
+/// Interleave 32 pixels of `R`, `G` and `B` bytes into 96 bytes of RGB.
+#[inline]
+#[target_feature(enable = "avx2")]
+fn store_rgb_chunk(dst: &mut [u8; LANES * 3], [r, g, b]: [__m256i; 3]) {
+    // Part `k` of each 128-bit lane is bytes 16k..16k+16 of that lane's
+    // sixteen pixels.
+    let mut parts = [_mm256_setzero_si256(); 3];
+    for (part, masks) in parts.iter_mut().zip(INTERLEAVE_MASKS) {
+        *part = _mm256_or_si256(
+            _mm256_or_si256(
+                _mm256_shuffle_epi8(r, lane_mask(masks[0])),
+                _mm256_shuffle_epi8(g, lane_mask(masks[1])),
+            ),
+            _mm256_shuffle_epi8(b, lane_mask(masks[2])),
+        );
+    }
+    let [first, second, third] = parts;
+    let (out, _) = dst.as_chunks_mut::<32>();
+    x86_memory::store_u8x32(
+        &mut out[0],
+        _mm256_permute2x128_si256::<0x20>(first, second),
     );
-    let bytes = _mm_packus_epi16(words, words);
-    _mm_cvtsi128_si64(bytes).to_ne_bytes()
+    x86_memory::store_u8x32(&mut out[1], _mm256_permute2x128_si256::<0x30>(third, first));
+    x86_memory::store_u8x32(
+        &mut out[2],
+        _mm256_permute2x128_si256::<0x31>(second, third),
+    );
 }
