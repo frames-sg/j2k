@@ -301,8 +301,9 @@ pub fn device_dct_window_layout(
 
 /// Entropy-decode the MCUs of `window` into `blocks`, laid out per
 /// [`device_dct_window_layout`]. As CPU region decode does, the scan is
-/// entered at the nearest preceding restart marker when there is one and is
-/// not validated past the window.
+/// entered at the decoder's resume point for the window's first MCU row (a
+/// restart marker, or a cached entropy checkpoint; the decoder keeps both
+/// across windows) and is not validated past the window.
 ///
 /// # Errors
 /// Returns the same entropy and restart errors as CPU decode, or
@@ -319,12 +320,14 @@ pub fn decode_device_dct_window_into(
         return Err(JpegError::NotImplemented { sof: info.sof_kind });
     }
     let plan = &decoder.plan;
-    decode_scan_dct_window_into(
-        plan,
-        &decoder.bytes[plan.scan_offset..],
-        window.into(),
-        blocks,
-    )
+    let scan_bytes = &decoder.bytes[plan.scan_offset..];
+    let window = McuWindow::from(window);
+    let checkpoint = decoder.checkpoint_for_mcu(
+        scan_bytes,
+        window.row.saturating_mul(sequential_mcu_grid(plan).0),
+        0,
+    )?;
+    decode_scan_dct_window_into(plan, scan_bytes, window, checkpoint.as_ref(), blocks)
 }
 
 /// Entropy-decode every DCT block into `blocks`, laid out per

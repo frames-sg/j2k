@@ -60,6 +60,16 @@ fn reader_from_checkpoint<'a>(
 /// next expected restart marker that hold there. Every sequential route
 /// seeks through [`scan_position_before_mcu`] and then skips the rest with
 /// [`skip_to_mcu`] or [`skip_to_mcu_with`].
+///
+/// A consumer that has a decoder asks `Decoder::checkpoint_for_mcu` for the
+/// resume point of the first MCU it needs and hands it to
+/// [`scan_position_before_mcu`]: for restart-coded scans the checkpoint at
+/// the start of that MCU's restart interval (from the decoder's cached
+/// restart index), otherwise the decoder's row-start or span checkpoint at
+/// or before it (from its lazily filled checkpoint grid). Without one, the
+/// position comes from a scan for the restart marker, or is the scan start.
+/// A resumed reader yields the same symbols, values, and errors as one that
+/// decoded every earlier MCU.
 pub(super) struct ScanPosition<'a> {
     pub(super) br: BitReader<'a>,
     pub(super) prev_dc: [i32; 4],

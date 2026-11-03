@@ -7,6 +7,11 @@ and stale roadmap entries have been removed from the public documentation set.
 
 Staged workspace version: `0.13.2`.
 
+- Device DCT-window requests (the hybrid and GPU JPEG paths) start from
+  the decoder's nearest entropy checkpoint instead of the start of the
+  scan. On Apple M5 Max, warm windows are 3.3–180x faster; for example a
+  window near the end of a 67-megapixel 4:4:4 image drops from 50.7 ms to
+  0.28 ms. Output is byte-identical.
 - A JPEG `Decoder`'s entropy checkpoints now sit on a grid of row starts
   plus spans within each row, looked up in constant time, and the
   checkpoint cache no longer holds its lock while it skips through the
