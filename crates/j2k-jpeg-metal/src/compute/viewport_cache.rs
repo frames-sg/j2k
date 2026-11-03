@@ -80,6 +80,7 @@ impl Drop for ViewportPlaneCacheLease {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *leased = false;
+        drop(leased);
         self.gate.available.notify_one();
     }
 }

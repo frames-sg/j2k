@@ -39,6 +39,10 @@ struct MetalBatchTextureSet {
     metal_fmt: MTLPixelFormat,
 }
 
+#[expect(
+    clippy::non_send_fields_in_send_ty,
+    reason = "the MTLTextures are serialized by `access_gate`, as the SAFETY comment states"
+)]
 // SAFETY: Metal textures support cross-thread ownership. Every safe operation
 // that can submit writes or expose readback holds `access_gate`, and raw
 // texture access is unsafe with an explicit external synchronization contract.

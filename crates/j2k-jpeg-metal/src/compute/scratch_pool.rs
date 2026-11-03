@@ -48,6 +48,10 @@ impl BatchScratchPool {
         }
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "`take_available` requires the availability gate to stay held until a slot is taken"
+    )]
     pub(super) fn try_acquire(&self) -> Result<Option<BatchScratchLease<'_>>, Error> {
         let availability = self.availability.lock().map_err(|_| poisoned())?;
         if *availability {
@@ -146,6 +150,7 @@ impl Drop for BatchScratchLease<'_> {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *entry = self.scratch.take();
         drop(entry);
+        drop(availability);
         // Wake every waiter so a poisoned owner cannot leave other callers
         // asleep indefinitely after the first waiter reports that failure.
         self.pool.released.notify_all();

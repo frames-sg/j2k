@@ -16,6 +16,10 @@ use j2k_jpeg_metal::{
 use jpeg_encoder::{ColorType, Encoder, SamplingFactor};
 use std::hint::black_box;
 
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the Criterion group is consumed by `finish()`, which the lint does not treat as a drop"
+)]
 pub(super) fn bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("jpeg_metal_representative_matrix");
     for side in [256_u16, 1024] {
