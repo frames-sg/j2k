@@ -29,32 +29,72 @@ pub(crate) struct MarkerWalker<'a> {
     soi_seen: bool,
 }
 
+/// The next marker found in entropy-coded data by [`next_entropy_marker`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EntropyMarker {
+    /// A marker other than `FF 00` stuffing. `code` sits at `code_pos`;
+    /// `fill_start` is the first `0xFF` of its prefix, so any fill bytes
+    /// (T.81 B.1.1.2) lie in `fill_start..code_pos - 1`.
+    Marker {
+        fill_start: usize,
+        code_pos: usize,
+        code: u8,
+    },
+    /// The input ends inside the run of `0xFF` bytes that starts at
+    /// `fill_start`.
+    Unterminated { fill_start: usize },
+}
+
+/// Find the next marker at or after `pos` in entropy-coded data, skipping
+/// `FF 00` stuffing (including fill bytes before the `00`). Returns `None`
+/// when no `0xFF` remains. Every entropy-segment marker walk (scan
+/// boundaries, restart indexes and seeks, EOI validation) uses this one
+/// memchr-based scanner.
+pub(crate) fn next_entropy_marker(bytes: &[u8], mut pos: usize) -> Option<EntropyMarker> {
+    while pos < bytes.len() {
+        let fill_start = pos + memchr(0xFF, &bytes[pos..])?;
+        let mut code_pos = fill_start + 1;
+        while code_pos < bytes.len() && bytes[code_pos] == 0xFF {
+            code_pos += 1;
+        }
+        let Some(&code) = bytes.get(code_pos) else {
+            return Some(EntropyMarker::Unterminated { fill_start });
+        };
+        if code != 0x00 {
+            return Some(EntropyMarker::Marker {
+                fill_start,
+                code_pos,
+                code,
+            });
+        }
+        pos = code_pos + 1;
+    }
+    None
+}
+
 pub(crate) fn next_marker_after_entropy(
     bytes: &[u8],
     mut pos: usize,
 ) -> Result<Option<(usize, u8)>, JpegError> {
-    while pos < bytes.len() {
-        let Some(ff_rel) = memchr(0xFF, &bytes[pos..]) else {
-            return Ok(None);
-        };
-        let marker_prefix = pos + ff_rel;
-        let mut code_pos = marker_prefix + 1;
-        while code_pos < bytes.len() && bytes[code_pos] == 0xFF {
-            code_pos += 1;
-        }
-        if code_pos >= bytes.len() {
-            return Err(JpegError::Truncated {
-                offset: code_pos,
-                expected: 1,
-            });
-        }
-        let code = bytes[code_pos];
-        match code {
-            0x00 | 0xD0..=0xD7 => pos = code_pos + 1,
-            _ => return Ok(Some((code_pos - 1, code))),
+    loop {
+        match next_entropy_marker(bytes, pos) {
+            None => return Ok(None),
+            Some(EntropyMarker::Unterminated { .. }) => {
+                return Err(JpegError::Truncated {
+                    offset: bytes.len(),
+                    expected: 1,
+                });
+            }
+            Some(EntropyMarker::Marker {
+                code_pos,
+                code: 0xD0..=0xD7,
+                ..
+            }) => pos = code_pos + 1,
+            Some(EntropyMarker::Marker { code_pos, code, .. }) => {
+                return Ok(Some((code_pos - 1, code)));
+            }
         }
     }
-    Ok(None)
 }
 
 impl<'a> MarkerWalker<'a> {
@@ -304,6 +344,29 @@ mod tests {
         let bytes = &[0x11, 0xFF, 0xFF, 0xFF, 0xDA];
 
         assert_eq!(next_marker_after_entropy(bytes, 0), Ok(Some((3, 0xDA))));
+    }
+
+    #[test]
+    fn shared_entropy_scanner_reports_marker_fill_and_unterminated_runs() {
+        // Stuffing, stuffing after fill bytes, a filled RST3, then a scan
+        // that ends inside a 0xFF run.
+        let bytes = &[
+            0x12, 0xFF, 0x00, 0x34, 0xFF, 0xFF, 0x00, 0xFF, 0xFF, 0xD3, 0x56, 0xFF,
+        ];
+        assert_eq!(
+            next_entropy_marker(bytes, 0),
+            Some(EntropyMarker::Marker {
+                fill_start: 7,
+                code_pos: 9,
+                code: 0xD3,
+            })
+        );
+        assert_eq!(
+            next_entropy_marker(bytes, 10),
+            Some(EntropyMarker::Unterminated { fill_start: 11 })
+        );
+        assert_eq!(next_entropy_marker(&bytes[..7], 0), None);
+        assert_eq!(next_entropy_marker(bytes, bytes.len()), None);
     }
 
     #[test]

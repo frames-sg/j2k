@@ -7,10 +7,9 @@ use crate::allocation::{
 };
 use crate::error::{JpegError, MarkerKind, UnsupportedReason};
 use crate::info::{SamplingFactors, SofKind};
-use crate::parse::markers::next_marker_after_entropy;
+use crate::parse::markers::{next_entropy_marker, next_marker_after_entropy, EntropyMarker};
 use alloc::vec::Vec;
 use core::ops::Range;
-use memchr::memchr;
 
 mod table_normalization;
 
@@ -452,26 +451,20 @@ fn validate_nonzero_sof_dimensions(
 
 fn validate_restart_markers(bytes: &[u8]) -> Result<(), JpegError> {
     let ranges = find_scan_ranges(bytes)?;
+    let entropy = &bytes[..ranges.entropy_range.end];
     let mut expected = 0u8;
     let mut pos = ranges.entropy_range.start;
-    while pos < ranges.entropy_range.end {
-        let Some(relative) = memchr(0xff, &bytes[pos..ranges.entropy_range.end]) else {
-            break;
+    while let Some(next) = next_entropy_marker(entropy, pos) {
+        let (marker_pos, marker) = match next {
+            EntropyMarker::Unterminated { fill_start } => {
+                return Err(JpegError::Truncated {
+                    offset: fill_start,
+                    expected: 1,
+                });
+            }
+            EntropyMarker::Marker { code_pos, code, .. } => (code_pos, code),
         };
-        let prefix = pos + relative;
-        let mut marker_pos = prefix + 1;
-        while marker_pos < ranges.entropy_range.end && bytes[marker_pos] == 0xff {
-            marker_pos += 1;
-        }
-        if marker_pos >= ranges.entropy_range.end {
-            return Err(JpegError::Truncated {
-                offset: prefix,
-                expected: 1,
-            });
-        }
-        let marker = bytes[marker_pos];
         match marker {
-            0x00 => pos = marker_pos + 1,
             0xd0..=0xd7 => {
                 let found = marker & 0x07;
                 if found != expected {

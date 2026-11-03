@@ -3,7 +3,7 @@
 //! Post-entropy marker payload and scan-count helpers.
 
 use crate::error::JpegError;
-use memchr::memchr;
+use crate::parse::markers::{next_entropy_marker, EntropyMarker};
 
 #[expect(
     clippy::cast_possible_truncation,
@@ -51,21 +51,15 @@ pub(super) fn marker_payload(
 
 pub(crate) fn count_scan_markers(bytes: &[u8], mut position: usize) -> u16 {
     let mut count = 1u16;
-    while position < bytes.len() {
-        let Some(relative) = memchr(0xff, &bytes[position..]) else {
-            break;
-        };
-        let marker_offset = position + relative;
-        let mut code_offset = marker_offset + 1;
-        while code_offset < bytes.len() && bytes[code_offset] == 0xff {
-            code_offset += 1;
-        }
-        if code_offset >= bytes.len() {
-            break;
-        }
+    while let Some(EntropyMarker::Marker {
+        fill_start: marker_offset,
+        code_pos: code_offset,
+        code,
+    }) = next_entropy_marker(bytes, position)
+    {
         position = code_offset + 1;
-        match bytes[code_offset] {
-            0x00 | 0xd0..=0xd7 => {}
+        match code {
+            0xd0..=0xd7 => {}
             0xd9 => break,
             0xda => {
                 count = count.saturating_add(1);

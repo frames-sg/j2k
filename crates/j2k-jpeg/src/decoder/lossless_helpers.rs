@@ -7,6 +7,7 @@ use super::{
 };
 use crate::allocation::{checked_allocation_bytes, try_vec_with_capacity};
 use crate::entropy::sequential::PreparedDecodePlan;
+use crate::parse::markers::{next_entropy_marker, EntropyMarker};
 
 pub(crate) fn restart_index_allocation_bytes(
     info: &Info,
@@ -54,27 +55,18 @@ pub(super) fn restart_index_for_stream(
     let mut found_restarts = 0u32;
     let mut expected_rst = 0xd0u8;
     let mut pos = scan_data_offset;
-    while pos < bytes.len() {
-        if bytes[pos] != 0xff {
-            pos += 1;
-            continue;
-        }
-
-        let mut marker_code_pos = pos + 1;
-        while marker_code_pos < bytes.len() && bytes[marker_code_pos] == 0xff {
-            marker_code_pos += 1;
-        }
-        if marker_code_pos >= bytes.len() {
-            return Err(JpegError::Truncated {
-                offset: pos,
-                expected: 1,
-            });
-        }
-
-        let marker = bytes[marker_code_pos];
+    while let Some(next) = next_entropy_marker(bytes, pos) {
+        let (marker_code_pos, marker) = match next {
+            EntropyMarker::Unterminated { fill_start } => {
+                return Err(JpegError::Truncated {
+                    offset: fill_start,
+                    expected: 1,
+                });
+            }
+            EntropyMarker::Marker { code_pos, code, .. } => (code_pos, code),
+        };
         let marker_offset = marker_code_pos - 1;
         match marker {
-            0x00 => pos = marker_code_pos + 1,
             0xd0..=0xd7 => {
                 if found_restarts >= expected_restarts {
                     return Err(JpegError::UnexpectedMarker {

@@ -51,11 +51,7 @@ impl Decoder<'_> {
             )?;
         }
         let checkpoint_bytes = self
-            .cpu_entropy_checkpoints
-            .lock()
-            .map_err(|_| JpegError::InternalInvariant {
-                reason: "CPU entropy checkpoint cache mutex poisoned",
-            })?
+            .lock_cpu_entropy_checkpoints()?
             .retained_allocation_bytes()?;
         prepared_bytes = checked_add_allocation_bytes(prepared_bytes, checkpoint_bytes)?;
         decode_workspace_cap_for_warning_capacity(self.warnings.capacity(), prepared_bytes)

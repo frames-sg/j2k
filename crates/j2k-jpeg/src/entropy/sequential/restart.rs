@@ -4,8 +4,10 @@ use super::PreparedDecodePlan;
 use crate::allocation::try_vec_with_capacity;
 use crate::entropy::block::skip_block;
 use crate::error::{JpegError, Warning};
+use crate::info::RestartIndex;
 use crate::internal::bit_reader::{BitReader, BitReaderSnapshot};
 use crate::internal::checkpoint::DeviceCheckpoint;
+use crate::parse::markers::{next_entropy_marker, EntropyMarker};
 use alloc::vec::Vec;
 
 pub(crate) fn finish_scan(
@@ -65,10 +67,17 @@ pub(super) struct ScanPosition<'a> {
     pub(super) expected_rst: u8,
 }
 
-/// Position a reader at or before `target_mcu`: just after the last restart
-/// marker before it when the scan has restart intervals (`restart != 0`),
-/// else at `checkpoint` when it does not pass the target, else at the scan
-/// start. The caller skips the remaining MCUs.
+/// Position a reader at or before `target_mcu`; the caller skips the
+/// remaining MCUs.
+///
+/// Restart-coded scans (`restart != 0`) resume just after the restart marker
+/// that opens the interval holding `target_mcu`: at `checkpoint` when it is
+/// that interval's restart-boundary checkpoint (from the decoder's cached
+/// restart index, see [`restart_checkpoint_from_index`]), else by scanning
+/// the entropy data for that marker. Either way the reader starts on the
+/// bytes after the marker, so results and error offsets do not depend on
+/// which source answered. Other scans resume at `checkpoint` when it does not
+/// pass the target, else at the scan start.
 pub(super) fn scan_position_before_mcu<'a>(
     scan_bytes: &'a [u8],
     restart: u16,
@@ -76,20 +85,33 @@ pub(super) fn scan_position_before_mcu<'a>(
     target_mcu: u32,
 ) -> ScanPosition<'a> {
     if restart != 0 {
-        return restart_seek_for_mcu(scan_bytes, restart, target_mcu).map_or_else(
-            || ScanPosition {
-                br: BitReader::new(scan_bytes),
-                prev_dc: [0; 4],
-                mcu_index: 0,
-                expected_rst: 0,
-            },
-            |seek| ScanPosition {
-                br: BitReader::new(&scan_bytes[seek.scan_offset..]),
-                prev_dc: [0; 4],
-                mcu_index: seek.mcu_index,
-                expected_rst: seek.expected_rst,
-            },
-        );
+        let interval_start = target_mcu / u32::from(restart) * u32::from(restart);
+        return checkpoint
+            .filter(|checkpoint| {
+                interval_start > 0
+                    && checkpoint.mcu_index == interval_start
+                    && checkpoint.bits_buffered == 0
+            })
+            .map(|checkpoint| RestartSeek {
+                scan_offset: checkpoint.scan_offset,
+                mcu_index: checkpoint.mcu_index,
+                expected_rst: checkpoint.expected_rst,
+            })
+            .or_else(|| restart_seek_for_mcu(scan_bytes, restart, target_mcu))
+            .map_or_else(
+                || ScanPosition {
+                    br: BitReader::new(scan_bytes),
+                    prev_dc: [0; 4],
+                    mcu_index: 0,
+                    expected_rst: 0,
+                },
+                |seek| ScanPosition {
+                    br: BitReader::new(&scan_bytes[seek.scan_offset..]),
+                    prev_dc: [0; 4],
+                    mcu_index: seek.mcu_index,
+                    expected_rst: seek.expected_rst,
+                },
+            );
     }
     let (br, prev_dc, mcu_index) = reader_from_checkpoint(scan_bytes, checkpoint, target_mcu);
     ScanPosition {
@@ -119,38 +141,50 @@ fn restart_seek_for_mcu(scan_bytes: &[u8], restart: u16, target_mcu: u32) -> Opt
     let marker_ordinal = restart_index - 1;
     let mut seen = 0u32;
     let mut pos = 0usize;
-    while pos + 1 < scan_bytes.len() {
-        if scan_bytes[pos] != 0xff {
-            pos += 1;
-            continue;
+    // Lenient by design: the first non-RST marker, or a scan ending inside a
+    // fill run, means "no seek"; decoding from the scan start then reports
+    // the stream's own error.
+    while let Some(EntropyMarker::Marker {
+        code_pos,
+        code: 0xd0..=0xd7,
+        ..
+    }) = next_entropy_marker(scan_bytes, pos)
+    {
+        if seen == marker_ordinal {
+            return Some(RestartSeek {
+                scan_offset: code_pos + 1,
+                mcu_index: restart_index * restart,
+                expected_rst: (restart_index & 0x07) as u8,
+            });
         }
-
-        let mut marker_pos = pos + 1;
-        while marker_pos < scan_bytes.len() && scan_bytes[marker_pos] == 0xff {
-            marker_pos += 1;
-        }
-        if marker_pos >= scan_bytes.len() {
-            return None;
-        }
-
-        let marker = scan_bytes[marker_pos];
-        match marker {
-            0x00 => pos = marker_pos + 1,
-            0xd0..=0xd7 => {
-                if seen == marker_ordinal {
-                    return Some(RestartSeek {
-                        scan_offset: marker_pos + 1,
-                        mcu_index: restart_index * restart,
-                        expected_rst: (restart_index & 0x07) as u8,
-                    });
-                }
-                seen += 1;
-                pos = marker_pos + 1;
-            }
-            _ => return None,
-        }
+        seen += 1;
+        pos = code_pos + 1;
     }
     None
+}
+
+/// The restart-boundary checkpoint that [`scan_position_before_mcu`] resumes
+/// from for `target_mcu`, answered from a validated [`RestartIndex`] of the
+/// same scan (`scan_data_offset` is where `scan_bytes` starts) instead of by
+/// rescanning the entropy data: the byte after the marker that opens the
+/// interval, with predictors reset and nothing buffered.
+pub(crate) fn restart_checkpoint_from_index(
+    index: &RestartIndex,
+    target_mcu: u32,
+) -> Option<DeviceCheckpoint> {
+    let restart_index = target_mcu.checked_div(index.interval_mcus)?;
+    if restart_index == 0 {
+        return None;
+    }
+    let segment = index.segments.get(usize::try_from(restart_index).ok()?)?;
+    Some(DeviceCheckpoint {
+        mcu_index: segment.start_mcu,
+        scan_offset: segment.entropy_offset.checked_sub(index.scan_data_offset)?,
+        bit_accumulator: 0,
+        bits_buffered: 0,
+        prev_dc: [0; 4],
+        expected_rst: (restart_index & 0x07) as u8,
+    })
 }
 
 pub(super) fn skip_mcu<const N: usize>(
@@ -255,4 +289,43 @@ pub(super) fn skip_to_mcu_with(
         *state.current_mcu += 1;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{restart_checkpoint_from_index, restart_seek_for_mcu, scan_position_before_mcu};
+    use crate::decoder::Decoder;
+
+    #[test]
+    fn indexed_restart_checkpoints_resume_where_the_marker_scan_does() {
+        let bytes = j2k_test_support::restart_coded_grayscale_jpeg(40, 24);
+        let decoder = Decoder::new(&bytes).expect("decoder");
+        let scan = &decoder.bytes[decoder.plan.scan_offset..];
+        let restart = decoder.plan.restart_interval.expect("restart-coded");
+        let index = decoder
+            .restart_index()
+            .expect("index")
+            .expect("restart-coded");
+        for target in 0..=15 {
+            let checkpoint = restart_checkpoint_from_index(&index, target);
+            let scanned = restart_seek_for_mcu(scan, restart, target);
+            assert_eq!(
+                checkpoint.map(|checkpoint| (
+                    checkpoint.scan_offset,
+                    checkpoint.mcu_index,
+                    checkpoint.expected_rst
+                )),
+                scanned.map(|seek| (seek.scan_offset, seek.mcu_index, seek.expected_rst)),
+                "{target}"
+            );
+            // A checkpoint for another interval is ignored: the scan decides.
+            let other = restart_checkpoint_from_index(&index, target + 2);
+            let position = scan_position_before_mcu(scan, restart, other.as_ref(), target);
+            assert_eq!(
+                position.mcu_index,
+                scanned.map_or(0, |seek| seek.mcu_index),
+                "{target}"
+            );
+        }
+    }
 }
