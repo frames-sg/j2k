@@ -34,6 +34,10 @@ pub(super) struct MetalRuntime {
     unsafe_code,
     reason = "objc2 Metal protocol objects require an audited cross-thread runtime boundary"
 )]
+#[expect(
+    clippy::non_send_fields_in_send_ty,
+    reason = "the immutable IDCT basis MTLBuffer is covered by the SAFETY comment's cross-thread contract"
+)]
 // SAFETY: Retained Metal devices, queues, pipelines, and buffers support
 // cross-thread ownership. This runtime is immutable after construction and
 // contains no unsynchronized host-side mutable cache.
