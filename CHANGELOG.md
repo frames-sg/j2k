@@ -7,6 +7,15 @@ and stale roadmap entries have been removed from the public documentation set.
 
 Staged workspace version: `0.13.2`.
 
+- Baseline JPEG Huffman decoding returns two AC coefficients from one table
+  lookup when both fit in the 12-bit lookup window: each AC table entry also
+  holds the symbol that follows it. Refills happen at the same points as
+  before, so restart handling, checkpoints, warnings and errors are unchanged.
+  On Apple M4, full decodes are 8–16% faster; on a Zen 3 x86-64 host, 4:4:4
+  images and scanner tiles decode 2–6% faster and single-thread 4:2:0 is
+  unchanged. Each dynamic Huffman table keeps 17 KB more memory. Output is
+  byte-identical.
+
 - Baseline JPEGs take the fast 4:2:0, 4:2:2 and 4:4:4 decode routes by one
   shape rule, shared by CPU decoding and device batch planning. Identity-RGB
   4:4:4 JPEGs (components tagged R, G, B, or marked RGB by an Adobe APP14

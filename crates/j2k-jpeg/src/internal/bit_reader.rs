@@ -91,7 +91,7 @@ impl<'a> BitReader<'a> {
     )]
     #[inline(always)]
     pub(crate) fn ensure_bits(&mut self, n: u8) -> Result<(), JpegError> {
-        if self.bits >= n || self.try_refill_bulk(n) {
+        if self.has_bits(n) || self.try_refill_bulk(n) {
             return Ok(());
         }
         *self = self.clone().ensure_bits_slow(n)?;
@@ -205,7 +205,7 @@ impl<'a> BitReader<'a> {
     )]
     #[inline(always)]
     pub(crate) fn ensure_bits_padded(&mut self, n: u8) -> Result<(), JpegError> {
-        if self.bits >= n || self.try_refill_bulk(n) {
+        if self.has_bits(n) || self.try_refill_bulk(n) {
             return Ok(());
         }
         *self = self.clone().ensure_bits_padded_slow(n)?;
@@ -315,6 +315,17 @@ impl<'a> BitReader<'a> {
         } else {
             (self.acc >> (ACC_BITS - n)) as u32
         }
+    }
+
+    /// Whether `n` bits are buffered: the test with which [`Self::ensure_bits`]
+    /// and [`Self::ensure_bits_padded`] decide not to refill.
+    #[expect(
+        clippy::inline_always,
+        reason = "measured bit-buffer hot path requires cross-helper inlining"
+    )]
+    #[inline(always)]
+    pub(crate) fn has_bits(&self, n: u8) -> bool {
+        self.bits >= n
     }
 
     /// Advance past `n` bits previously examined with `peek_bits`.
@@ -652,7 +663,7 @@ mod position_tests {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -885,7 +896,7 @@ mod tests {
     }
 
     /// Deterministic xorshift so failures reproduce from the printed seed.
-    fn next_random(state: &mut u64) -> u64 {
+    pub(crate) fn next_random(state: &mut u64) -> u64 {
         *state ^= *state << 13;
         *state ^= *state >> 7;
         *state ^= *state << 17;
