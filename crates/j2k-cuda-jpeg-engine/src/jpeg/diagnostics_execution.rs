@@ -43,6 +43,10 @@ impl JpegCudaEngine<'_> {
         clippy::similar_names,
         reason = "Y/Cb/Cr DC/AC names mirror the six distinct JPEG diagnostic table roles"
     )]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "`CudaPinnedUploadStagingCheckout::upload` consumes the staging checkout at its last use"
+    )]
     pub(super) fn diagnose_jpeg_420_entropy_self_sync_nonempty(
         self,
         plan: &CudaJpegChunkedEntropyPlan<'_>,
