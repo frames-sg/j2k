@@ -13,12 +13,14 @@ use crate::color::upsample::upsample_h2v2_fancy_rows;
 use crate::color::ycbcr::ycbcr_to_rgb;
 use crate::context::DecoderContext;
 use crate::decoder::{Decoder, JpegView, SinkWriter};
+use crate::entropy::block::CoefficientBlock;
 use crate::entropy::huffman::HuffmanTable;
 use crate::entropy::sequential::decode_scan_fast_tile_rgb_profiled;
 use crate::error::JpegError;
 use crate::idct::downscale::idct_islow_2x2_scalar;
 use crate::idct::{idct_islow, idct_islow_dc_only};
 use crate::internal::bit_reader::BitReader;
+use crate::internal::checkpoint::{decode_one_mcu, skip_one_mcu, total_mcus};
 use crate::internal::scratch::ScratchPool;
 use crate::parse::tables::{HuffmanTableRole, HuffmanValues, RawHuffmanTable};
 use alloc::vec;
@@ -320,6 +322,34 @@ impl BenchHuffmanState {
         }
         Ok(sum)
     }
+}
+
+/// Entropy-only pass over a baseline sequential scan: every MCU goes through
+/// the block decoder the fast routes use (`decode`: Huffman, dequantisation
+/// and coefficient stores, no IDCT) or the Huffman-only skip path, with
+/// restart markers consumed as the decoders do. Returns the final DC
+/// predictor sum so the traversal cannot be optimised away.
+#[doc(hidden)]
+pub fn bench_huffman_scan(dec: &Decoder<'_>, decode: bool) -> Result<i32, JpegError> {
+    let plan = &dec.plan;
+    let mut br = BitReader::new(&dec.bytes[plan.scan_offset..]);
+    let mut prev_dc = [0i32; 4];
+    let mut coeff = CoefficientBlock::default();
+    let mut expected_rst = 0u8;
+    let restart = u32::from(plan.restart_interval.unwrap_or(0));
+    let total = total_mcus(plan);
+    for mcu in 0..total {
+        if restart != 0 && mcu != 0 && mcu % restart == 0 {
+            expected_rst = br.consume_restart_marker(expected_rst, mcu, total)?;
+            prev_dc = [0; 4];
+        }
+        if decode {
+            decode_one_mcu(plan, &mut br, &mut coeff, &mut prev_dc)?;
+        } else {
+            skip_one_mcu(plan, &mut br, &mut prev_dc)?;
+        }
+    }
+    Ok(prev_dc.iter().copied().fold(0, i32::wrapping_add))
 }
 
 #[doc(hidden)]

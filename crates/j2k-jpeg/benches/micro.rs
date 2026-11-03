@@ -4,11 +4,11 @@ use std::time::Duration;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use j2k_jpeg::bench_support::{
-    bench_idct_reference_block, BenchColorRowScratch, BenchGrayRowScratch, BenchHuffmanState,
-    BenchRgb420RowPairScratch, BenchRgbRowScratch, BenchUpsampleH2V2Scratch,
+    bench_huffman_scan, bench_idct_reference_block, BenchColorRowScratch, BenchGrayRowScratch,
+    BenchHuffmanState, BenchRgb420RowPairScratch, BenchRgbRowScratch, BenchUpsampleH2V2Scratch,
 };
-use j2k_jpeg::Decoder;
-use j2k_test_support::JPEG_BASELINE_420_16X16;
+use j2k_jpeg::{Decoder, SofKind};
+use j2k_test_support::{collect_jpeg_paths, paths_from_env, JPEG_BASELINE_420_16X16};
 
 #[expect(
     clippy::too_many_lines,
@@ -40,6 +40,36 @@ fn bench_micro(c: &mut Criterion) {
             std::hint::black_box(BenchHuffmanState::luma_dc_zeros(std::hint::black_box(0)));
         });
     });
+
+    // Entropy-only passes over every baseline JPEG under J2K_BENCH_INPUTS
+    // (files or directories): block decode without IDCT, and the skip path.
+    let files: Vec<Vec<u8>> = paths_from_env("J2K_BENCH_INPUTS")
+        .iter()
+        .flat_map(|path| collect_jpeg_paths(path))
+        .map(|path| std::fs::read(path).expect("read J2K_BENCH_INPUTS file"))
+        .collect();
+    if !files.is_empty() {
+        // Like the corpus loaders, skip files that do not parse (for example
+        // AppleDouble `._*.jpg` companions) and non-sequential frames.
+        let decoders: Vec<Decoder<'_>> = files
+            .iter()
+            .filter_map(|bytes| Decoder::new(bytes).ok())
+            .filter(|dec| matches!(dec.info().sof_kind, SofKind::Baseline8 | SofKind::Extended8))
+            .collect();
+        assert!(
+            !decoders.is_empty(),
+            "J2K_BENCH_INPUTS has no 8-bit sequential JPEG for the Huffman scan benches"
+        );
+        for (name, decode) in [("decode", true), ("skip", false)] {
+            c.bench_function(&format!("micro/huffman_scan_{name}_inputs"), |b| {
+                b.iter(|| {
+                    for dec in &decoders {
+                        std::hint::black_box(bench_huffman_scan(dec, decode).expect("scan"));
+                    }
+                });
+            });
+        }
+    }
 
     c.bench_function("micro/idct_reference_block", |b| {
         b.iter(|| {
