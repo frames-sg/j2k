@@ -320,7 +320,7 @@ struct DLTensor {
 struct DLManagedTensor {
     tensor: DLTensor,
     context: *mut c_void,
-    deleter: Option<unsafe extern "C" fn(*mut DLManagedTensor)>,
+    deleter: Option<unsafe extern "C" fn(*mut Self)>,
 }
 #[repr(C)]
 struct ManagedOwner {

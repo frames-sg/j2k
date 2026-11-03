@@ -26,6 +26,10 @@ pub(crate) struct MetalSamples {
     len: usize,
 }
 
+#[expect(
+    clippy::non_send_fields_in_send_ty,
+    reason = "Metal permits retain/release of the MTLBuffer on any thread, and this owner never touches its contents"
+)]
 // SAFETY: Metal permits retain/release on any thread. This owner never accesses
 // sample contents, and it is constructed only after codec work has completed.
 // Once exported, only the DLPack consumer may access the allocation.

@@ -3,6 +3,7 @@
 //! Optional Python extension. Codec and tensor ownership are implemented in Rust.
 
 #![cfg(feature = "python")]
+#![warn(clippy::non_send_fields_in_send_ty)]
 
 use pyo3::prelude::*;
 pyo3::create_exception!(j2k, RecoveredImageWarning, pyo3::exceptions::PyUserWarning);
