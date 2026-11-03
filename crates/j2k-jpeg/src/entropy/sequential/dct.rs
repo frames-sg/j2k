@@ -2,10 +2,7 @@
 
 //! Sequential entropy traversal into preallocated DCT block storage.
 
-use super::restart::{
-    consume_restart_marker_if_due, finish_scan, scan_position_before_mcu, skip_mcu, skip_to_mcu,
-    McuPosition, McuSkipState, McuSkipTarget, ScanPosition,
-};
+use super::restart::{enter_scan_at_mcu, finish_scan, skip_mcu, McuPosition, RestartState};
 use super::{HuffmanPrimaryWidth, PreparedDecodePlan};
 use crate::entropy::block::{
     decode_block_dequantized_into, decode_block_quantized_and_dequantized_with_activity,
@@ -68,26 +65,19 @@ fn decode_scan_dct_blocks_with_entries<const N: usize>(
     let mut br = BitReader::new(scan_bytes);
     let mut quantized_coeff = CoefficientBlock::default();
     let mut dequantized_coeff = CoefficientBlock::default();
-    let restart = plan.restart_interval.unwrap_or(0);
-    let mut mcus_since_restart = 0_u32;
-    let mut expected_rst = 0_u8;
+    let mut restart = RestartState::new(plan.restart_interval.unwrap_or(0));
     let total_mcus = mcu_rows * mcus_per_row;
 
     for mcu_y in 0..mcu_rows {
         for mcu_x in 0..mcus_per_row {
-            let current_mcu = mcu_y * mcus_per_row + mcu_x;
-            if consume_restart_marker_if_due(
+            if restart.begin_mcu(
                 &mut br,
-                restart,
-                mcus_since_restart,
-                &mut expected_rst,
                 McuPosition {
-                    current: current_mcu,
+                    current: mcu_y * mcus_per_row + mcu_x,
                     total: total_mcus,
                 },
             )? {
                 storage.prev_dc.fill(0);
-                mcus_since_restart = 0;
             }
 
             for component in &plan.components {
@@ -128,7 +118,7 @@ fn decode_scan_dct_blocks_with_entries<const N: usize>(
                 }
             }
 
-            mcus_since_restart += 1;
+            restart.end_mcu();
         }
     }
 
@@ -183,29 +173,22 @@ fn decode_scan_dct_blocks_into_with_entries<const N: usize>(
 
     let mut br = BitReader::new(scan_bytes);
     let mut prev_dc = [0_i32; DEVICE_MAX_COMPONENTS];
-    let restart = plan.restart_interval.unwrap_or(0);
-    let mut mcus_since_restart = 0_u32;
-    let mut expected_rst = 0_u8;
+    let mut restart = RestartState::new(plan.restart_interval.unwrap_or(0));
     let total_mcus = mcu_rows * mcus_per_row;
 
     for mcu_y in 0..mcu_rows {
         for mcu_x in 0..mcus_per_row {
-            let current_mcu = mcu_y * mcus_per_row + mcu_x;
-            if consume_restart_marker_if_due(
+            if restart.begin_mcu(
                 &mut br,
-                restart,
-                mcus_since_restart,
-                &mut expected_rst,
                 McuPosition {
-                    current: current_mcu,
+                    current: mcu_y * mcus_per_row + mcu_x,
                     total: total_mcus,
                 },
             )? {
                 prev_dc.fill(0);
-                mcus_since_restart = 0;
             }
             grid.decode_mcu::<N>(plan, &mut br, &mut prev_dc, blocks, (mcu_x, mcu_y))?;
-            mcus_since_restart += 1;
+            restart.end_mcu();
         }
     }
 
@@ -360,62 +343,42 @@ fn decode_scan_dct_window_into_with_entries<const N: usize>(
         "sequential device DCT storage disagrees with the window block grid",
     )?;
 
-    let restart = plan.restart_interval.unwrap_or(0);
     let total_mcus = mcu_rows * mcus_per_row;
-    let first_mcu = window.row * mcus_per_row;
     let wide_huffman = plan.prefers_wide_huffman(scan_bytes.len());
-    let ScanPosition {
-        mut br,
-        mut prev_dc,
-        mcu_index: mut current_mcu,
-        mut expected_rst,
-    } = scan_position_before_mcu(scan_bytes, restart, checkpoint, first_mcu);
-    let mut mcus_since_restart = 0_u32;
-    skip_to_mcu::<N>(
+    let mut cursor = enter_scan_at_mcu::<N>(
         plan,
-        McuSkipTarget {
-            target_mcu: first_mcu,
-            total_mcus,
-            restart,
-            wide_huffman,
+        scan_bytes,
+        checkpoint,
+        McuPosition {
+            current: window.row * mcus_per_row,
+            total: total_mcus,
         },
-        &mut McuSkipState {
-            br: &mut br,
-            prev_dc: &mut prev_dc,
-            current_mcu: &mut current_mcu,
-            mcus_since_restart: &mut mcus_since_restart,
-            expected_rst: &mut expected_rst,
-        },
+        wide_huffman,
     )?;
 
     for row in 0..window.rows {
         for mcu_x in 0..mcus_per_row {
-            if consume_restart_marker_if_due(
-                &mut br,
-                restart,
-                mcus_since_restart,
-                &mut expected_rst,
+            if cursor.restart.begin_mcu(
+                &mut cursor.br,
                 McuPosition {
-                    current: current_mcu,
+                    current: (window.row + row) * mcus_per_row + mcu_x,
                     total: total_mcus,
                 },
             )? {
-                prev_dc.fill(0);
-                mcus_since_restart = 0;
+                cursor.prev_dc = [0; 4];
             }
             if mcu_x < window.col || mcu_x >= window.col + window.cols {
-                skip_mcu::<N>(plan, &mut br, &mut prev_dc, wide_huffman)?;
+                skip_mcu::<N>(plan, &mut cursor.br, &mut cursor.prev_dc, wide_huffman)?;
             } else {
                 grid.decode_mcu::<N>(
                     plan,
-                    &mut br,
-                    &mut prev_dc,
+                    &mut cursor.br,
+                    &mut cursor.prev_dc,
                     blocks,
                     (mcu_x - window.col, row),
                 )?;
             }
-            mcus_since_restart += 1;
-            current_mcu += 1;
+            cursor.restart.end_mcu();
         }
     }
     Ok(())

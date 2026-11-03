@@ -49,6 +49,7 @@ pub use device_plan::{
     build_device_plan, summarize_device_batch, DeviceBatchSummary, DeviceComponentPlan,
     DeviceDecodePlan,
 };
+pub(crate) use fast_packet::fast_packet_family_for_shape;
 pub use fast_packet::{
     build_fast420_packet, build_fast422_packet, build_fast444_packet, build_gray_packet,
     classify_color_fast_packet_family, FastPacketError, JpegCachedPlan, JpegCachedPlanBuildError,

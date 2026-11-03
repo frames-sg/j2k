@@ -263,7 +263,7 @@ pub fn bench_profile_fast420_tile_batch(
         let dec = Decoder::from_view_in_context(view, &mut ctx)?;
         profile.add_parse_plan_ns(parse_plan_start.elapsed().as_nanos());
 
-        if !dec.plan.matches_fast_tile_shape() {
+        if !dec.plan.matches_fast_420_shape() {
             return Ok(None);
         }
 

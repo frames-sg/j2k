@@ -7,10 +7,12 @@ mod rgb444;
 mod types;
 mod upsample;
 
+#[cfg(test)]
+pub(super) use self::upsample::component_row_triplet;
 pub(super) use self::{
     output::emit_stripe,
     rgb::emit_stripe_rgb,
-    rgb444::{emit_stripe_rgb_v1, StripeOutputWindow},
+    rgb444::FastRgbRowsEmitter,
     types::StripeEmit,
-    upsample::{component_row_triplet, valid_component_rows},
+    upsample::{rgb420_chroma_rows, valid_component_rows},
 };

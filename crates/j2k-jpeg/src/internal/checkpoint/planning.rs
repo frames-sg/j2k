@@ -4,7 +4,7 @@
 
 use super::allocation::checked_checkpoint_phase_bytes;
 use super::eoi::ValidatedScanBytes;
-use crate::entropy::sequential::PreparedDecodePlan;
+use crate::entropy::sequential::{sequential_mcu_grid, PreparedDecodePlan};
 use crate::error::JpegError;
 
 pub(super) struct CheckpointBuildPlan<'a> {
@@ -56,9 +56,6 @@ pub(crate) fn checkpoint_count_summary(
 }
 
 pub(crate) fn total_mcus(plan: &PreparedDecodePlan) -> u32 {
-    let mcu_width = u32::from(plan.sampling.max_h) * 8;
-    let mcu_height = u32::from(plan.sampling.max_v) * 8;
-    let mcus_per_row = plan.dimensions.0.div_ceil(mcu_width);
-    let mcu_rows = plan.dimensions.1.div_ceil(mcu_height);
+    let (mcus_per_row, mcu_rows) = sequential_mcu_grid(plan);
     mcus_per_row.saturating_mul(mcu_rows)
 }

@@ -7,11 +7,9 @@ use super::super::layout::{
     decode_mcu_row_end_for_rect, expanded_output_rect, fast420_decode_mcu_row_end,
     fast420_first_decode_mcu_row, first_decode_mcu_row_for_rect, last_mcu_row_for_rect,
     mcu_row_intersects_rect, scaled_dimensions, stripe_region_layout, uses_fancy_420_emit,
-    StripeRegionLayout,
+    McuColumns, StripeRegionLayout,
 };
-use super::super::restart::{
-    finish_scan, scan_position_before_mcu, skip_to_mcu, McuSkipState, McuSkipTarget, ScanPosition,
-};
+use super::super::restart::{enter_scan_at_mcu, finish_scan};
 use super::super::{PreparedDecodePlan, StripeBuffer};
 use super::row::{decode_mcu_row, McuRowContext, McuRowState};
 use crate::backend::Backend;
@@ -42,7 +40,6 @@ pub(super) struct ScanSetup {
     first_decode_mcu_row: u32,
     decode_mcu_row_end: u32,
     last_output_mcu_row: u32,
-    restart: u16,
 }
 
 impl ScanSetup {
@@ -93,7 +90,6 @@ impl ScanSetup {
             first_decode_mcu_row,
             decode_mcu_row_end,
             last_output_mcu_row: last_mcu_row_for_rect(emit_rect, mcu_height_px, mcu_rows),
-            restart: plan.restart_interval.unwrap_or(0),
         }
     }
 
@@ -109,6 +105,10 @@ impl ScanSetup {
             self.block_size,
             plan.scratch_bytes,
         )
+    }
+
+    fn columns(self) -> McuColumns {
+        McuColumns::new((self.mcus_per_row, self.mcu_rows), self.region)
     }
 
     fn should_emit(self, mcu_row: u32) -> bool {
@@ -145,34 +145,22 @@ pub(super) fn decode_scan_rows<const N: usize, E: StripeEmitter>(
     } = buffers;
     let mut coeff = CoefficientBlock::default();
     let mut pixels = [0u8; 64];
-    let mut mcus_since_restart = 0u32;
-    let total_mcus = setup.mcu_rows * setup.mcus_per_row;
-    let first_decode_mcu = setup.first_decode_mcu_row * setup.mcus_per_row;
-    let ScanPosition {
-        mut br,
-        prev_dc: position_dc,
-        mcu_index: mut current_mcu,
-        mut expected_rst,
-    } = scan_position_before_mcu(scan_bytes, setup.restart, None, first_decode_mcu);
-    for (dc, position_dc) in prev_dc.iter_mut().zip(position_dc) {
-        *dc = position_dc;
-    }
-    skip_to_mcu::<N>(
+    let columns = setup.columns();
+    let wide_huffman = plan.prefers_wide_huffman(scan_bytes.len());
+    let mut cursor = enter_scan_at_mcu::<N>(
         plan,
-        McuSkipTarget {
-            target_mcu: first_decode_mcu,
-            total_mcus,
-            restart: setup.restart,
-            wide_huffman: plan.prefers_wide_huffman(scan_bytes.len()),
-        },
-        &mut McuSkipState {
-            br: &mut br,
-            prev_dc,
-            current_mcu: &mut current_mcu,
-            mcus_since_restart: &mut mcus_since_restart,
-            expected_rst: &mut expected_rst,
-        },
+        scan_bytes,
+        None,
+        columns.mcu_position(0, setup.first_decode_mcu_row),
+        wide_huffman,
     )?;
+    let position_dc = cursor
+        .prev_dc
+        .get(..prev_dc.len())
+        .ok_or(JpegError::InternalInvariant {
+            reason: "sequential decode supports at most four components",
+        })?;
+    prev_dc.copy_from_slice(position_dc);
 
     let row_context = McuRowContext {
         plan,
@@ -181,12 +169,8 @@ pub(super) fn decode_scan_rows<const N: usize, E: StripeEmitter>(
         scaled: &setup.scaled,
         output_rect: setup.expanded_rect,
         full_output_rect: setup.full_output_rect,
-        stripe_mcu_start: setup.region.stripe_mcu_start,
-        stripe_mcus_per_row: setup.region.stripe_mcus_per_row,
-        mcus_per_row: setup.mcus_per_row,
-        mcu_rows: setup.mcu_rows,
-        restart: setup.restart,
-        wide_huffman: plan.prefers_wide_huffman(scan_bytes.len()),
+        columns,
+        wide_huffman,
     };
     let mut prev_stripe = stripe_a;
     let mut curr_stripe = stripe_b;
@@ -194,12 +178,11 @@ pub(super) fn decode_scan_rows<const N: usize, E: StripeEmitter>(
     let mut has_prev = false;
     {
         let mut row_state = McuRowState {
-            br: &mut br,
+            br: &mut cursor.br,
             prev_dc,
             coeff: &mut coeff,
             pixels: &mut pixels,
-            mcus_since_restart: &mut mcus_since_restart,
-            expected_rst: &mut expected_rst,
+            restart: &mut cursor.restart,
         };
         decode_mcu_row::<N>(
             &row_context,
@@ -238,5 +221,5 @@ pub(super) fn decode_scan_rows<const N: usize, E: StripeEmitter>(
             scaled: &setup.scaled,
         })?;
     }
-    finish_scan(&mut br, setup.decode_mcu_row_end == setup.mcu_rows)
+    finish_scan(&mut cursor.br, setup.decode_mcu_row_end == setup.mcu_rows)
 }

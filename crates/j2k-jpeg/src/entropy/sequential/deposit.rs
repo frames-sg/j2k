@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{ResolvedPreparedComponentPlan, StripeBuffer};
+use super::layout::McuColumns;
+use super::restart::RestartState;
+use super::{PreparedDecodePlan, ResolvedPreparedComponentPlan, StripeBuffer};
 use crate::backend::Backend;
-use crate::entropy::block::{BlockActivity, CoefficientBlock};
+use crate::entropy::block::{skip_block, BlockActivity, CoefficientBlock};
+use crate::error::JpegError;
 use crate::internal::bit_reader::BitReader;
 use core::ptr;
 
@@ -147,11 +150,68 @@ pub(super) struct PlaneBlockTarget<'a> {
     pub(super) y: u32,
 }
 
+/// The three coded components of a fast-route scan in output order (Y, Cb,
+/// Cr, or R, G, B for identity RGB), with tables resolved for the hot loops.
 #[derive(Clone, Copy)]
 pub(super) struct FastTile420Components<'a, const N: usize> {
     pub(super) y: ResolvedPreparedComponentPlan<'a, N>,
     pub(super) cb: ResolvedPreparedComponentPlan<'a, N>,
     pub(super) cr: ResolvedPreparedComponentPlan<'a, N>,
+}
+
+impl<'a, const N: usize> FastTile420Components<'a, N> {
+    pub(super) fn resolve(
+        plan: &'a PreparedDecodePlan,
+        wide_huffman: bool,
+    ) -> Result<Self, JpegError> {
+        let component = |index| {
+            plan.resolved_component_with_entries::<N>(index)
+                .map(|component| component.with_wide_huffman(wide_huffman))
+        };
+        Ok(Self {
+            y: component(0)?,
+            cb: component(1)?,
+            cr: component(2)?,
+        })
+    }
+
+    /// Entropy-skip one MCU of `LUMA_BLOCKS` luma blocks and one block of each
+    /// chroma component, for the seek to a route's first decoded MCU. The row
+    /// kernels skip MCUs outside their column window with direct
+    /// [`skip_block`] calls instead: this helper, inlined there, spills their
+    /// register-resident DC predictors and reader (+1–3 % decode time).
+    // ROI seeks invoke this leaf once per skipped MCU; forced inlining keeps
+    // its Huffman skips in the caller's hot loop without adding a
+    // branch-and-call boundary.
+    #[expect(
+        clippy::inline_always,
+        reason = "ROI seek hot path keeps the MCU's Huffman skips inside the caller loop"
+    )]
+    #[inline(always)]
+    pub(super) fn skip_mcu<const LUMA_BLOCKS: u32>(
+        self,
+        br: &mut BitReader<'_>,
+        y_dc: &mut i32,
+        cb_dc: &mut i32,
+        cr_dc: &mut i32,
+    ) -> Result<(), JpegError> {
+        for _ in 0..LUMA_BLOCKS {
+            skip_block(br, self.y.dc_table, self.y.ac_table, y_dc)?;
+        }
+        skip_block(br, self.cb.dc_table, self.cb.ac_table, cb_dc)?;
+        skip_block(br, self.cr.dc_table, self.cr.ac_table, cr_dc)?;
+        Ok(())
+    }
+}
+
+/// The first three of an entropy cursor's DC predictors, which the
+/// three-component fast routes keep in a fixed array.
+pub(super) fn three_component_dc(prev_dc: &mut [i32]) -> Result<&mut [i32; 3], JpegError> {
+    prev_dc
+        .first_chunk_mut::<3>()
+        .ok_or(JpegError::InternalInvariant {
+            reason: "fast sequential decode requires three DC predictors",
+        })
 }
 
 pub(super) struct FastTile420DcState<'a> {
@@ -164,8 +224,7 @@ pub(super) struct FastTile420EntropyState<'a, 'b> {
     pub(super) br: &'a mut BitReader<'b>,
     pub(super) dc: FastTile420DcState<'a>,
     pub(super) coeff: &'a mut CoefficientBlock,
-    pub(super) mcus_since_restart: &'a mut u32,
-    pub(super) expected_rst: &'a mut u8,
+    pub(super) restart: &'a mut RestartState,
 }
 
 /// Register-friendly copy of a [`FastTile420EntropyState`]'s reader and DC
@@ -195,8 +254,7 @@ impl<'b> LocalEntropy<'b> {
             br: &mut self.br,
             dc: FastTile420DcState { y, cb, cr },
             coeff: &mut *outer.coeff,
-            mcus_since_restart: &mut *outer.mcus_since_restart,
-            expected_rst: &mut *outer.expected_rst,
+            restart: &mut *outer.restart,
         }
     }
 }
@@ -227,33 +285,9 @@ impl<'b> FastTile420EntropyState<'_, 'b> {
 
 #[derive(Clone, Copy)]
 pub(super) struct FastTile420Window {
-    /// MCU row being decoded, for restart positions.
-    pub(super) mcu_y: u32,
-    pub(super) mcus_per_row: u32,
-    pub(super) mcu_rows: u32,
-    /// MCUs per restart interval; zero for a scan without restart markers.
-    pub(super) restart: u16,
-    pub(super) stripe_mcu_start: u32,
-    pub(super) stripe_mcus_per_row: u32,
+    pub(super) columns: McuColumns,
     /// Whether the final coded MCU's right luma blocks intersect the image.
     pub(super) right_luma: bool,
     /// Whether this row's bottom luma blocks intersect the image.
     pub(super) bottom_luma: bool,
-}
-
-impl FastTile420Window {
-    #[inline]
-    pub(super) fn stripe_mcu_end(self) -> u32 {
-        self.stripe_mcu_start + self.stripe_mcus_per_row
-    }
-
-    #[inline]
-    pub(super) fn contains_mcu(self, mx: u32) -> bool {
-        mx >= self.stripe_mcu_start && mx < self.stripe_mcu_end()
-    }
-
-    #[inline]
-    pub(super) fn local_mcu_x(self, mx: u32) -> u32 {
-        mx - self.stripe_mcu_start
-    }
 }

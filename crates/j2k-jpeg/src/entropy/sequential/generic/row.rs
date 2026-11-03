@@ -4,10 +4,10 @@
 
 use super::super::deposit::{
     assert_stripe_deposit_capacity, deposit_block, deposit_block_1x1, deposit_block_2x2,
-    deposit_block_4x4,
+    deposit_block_4x4, three_component_dc, FastTile420Components,
 };
-use super::super::layout::{component_block_intersects_rect, ComponentBlockPosition};
-use super::super::restart::{consume_restart_marker_if_due, McuPosition};
+use super::super::layout::{component_block_intersects_rect, ComponentBlockPosition, McuColumns};
+use super::super::restart::RestartState;
 use super::super::rgb444::{decode_mcu_row_fast_rgb, FastRgbMcuRowContext, FastRgbMcuRowState};
 use super::super::{PreparedDecodePlan, StripeBuffer};
 use crate::backend::Backend;
@@ -29,11 +29,7 @@ pub(super) struct McuRowContext<'a> {
     pub(super) scaled: &'a ScaledSampling,
     pub(super) output_rect: Rect,
     pub(super) full_output_rect: bool,
-    pub(super) stripe_mcu_start: u32,
-    pub(super) stripe_mcus_per_row: u32,
-    pub(super) mcus_per_row: u32,
-    pub(super) mcu_rows: u32,
-    pub(super) restart: u16,
+    pub(super) columns: McuColumns,
     pub(super) wide_huffman: bool,
 }
 
@@ -42,8 +38,7 @@ pub(super) struct McuRowState<'a, 'b> {
     pub(super) prev_dc: &'a mut [i32],
     pub(super) coeff: &'a mut CoefficientBlock,
     pub(super) pixels: &'a mut [u8; 64],
-    pub(super) mcus_since_restart: &'a mut u32,
-    pub(super) expected_rst: &'a mut u8,
+    pub(super) restart: &'a mut RestartState,
 }
 
 pub(super) fn decode_mcu_row<const N: usize>(
@@ -54,10 +49,9 @@ pub(super) fn decode_mcu_row<const N: usize>(
 ) -> Result<(), JpegError> {
     if context.downscale == DownscaleFactor::Full
         && context.full_output_rect
-        && context.stripe_mcu_start == 0
-        && context.stripe_mcus_per_row == context.mcus_per_row
+        && context.columns.is_whole_row()
     {
-        if context.plan.matches_fast_rgb422_shape() {
+        if context.plan.matches_fast_422_shape() {
             return decode_mcu_row_rgb422::<N>(context, state, mcu_y, stripe);
         }
         decode_mcu_row_specialized::<N, true>(context, state, mcu_y, stripe)
@@ -73,39 +67,16 @@ fn decode_mcu_row_rgb422<const N: usize>(
     stripe: &mut StripeBuffer,
 ) -> Result<(), JpegError> {
     let row_context = FastRgbMcuRowContext {
-        y_comp: context
-            .plan
-            .resolved_component_with_entries::<N>(0)?
-            .with_wide_huffman(context.wide_huffman),
-        cb_comp: context
-            .plan
-            .resolved_component_with_entries::<N>(1)?
-            .with_wide_huffman(context.wide_huffman),
-        cr_comp: context
-            .plan
-            .resolved_component_with_entries::<N>(2)?
-            .with_wide_huffman(context.wide_huffman),
+        components: FastTile420Components::resolve(context.plan, context.wide_huffman)?,
         backend: context.backend,
-        mcus_per_row: context.mcus_per_row,
-        mcu_rows: context.mcu_rows,
-        restart: context.restart,
-        stripe_mcu_start: 0,
-        stripe_mcus_per_row: context.mcus_per_row,
-    };
-    let [y_dc, cb_dc, cr_dc] = state.prev_dc else {
-        return Err(JpegError::InternalInvariant {
-            reason: "4:2:2 decode requires three DC predictors",
-        });
+        columns: context.columns,
     };
     let mut row_state = FastRgbMcuRowState {
         br: &mut *state.br,
-        y_dc,
-        cb_dc,
-        cr_dc,
+        dc: three_component_dc(state.prev_dc)?,
         coeff: &mut *state.coeff,
         pixels: &mut *state.pixels,
-        mcus_since_restart: &mut *state.mcus_since_restart,
-        expected_rst: &mut *state.expected_rst,
+        restart: &mut *state.restart,
     };
     decode_mcu_row_fast_rgb::<N, 2>(&row_context, &mut row_state, mcu_y, stripe)
 }
@@ -130,8 +101,7 @@ fn decode_mcu_row_specialized<const N: usize, const FULL_SIZE: bool>(
         prev_dc: &mut *local_dc,
         coeff: &mut *state.coeff,
         pixels: &mut *state.pixels,
-        mcus_since_restart: &mut *state.mcus_since_restart,
-        expected_rst: &mut *state.expected_rst,
+        restart: &mut *state.restart,
     };
     let result = decode_mcu_row_local::<N, FULL_SIZE>(context, &mut local_state, mcu_y, stripe);
     *state.br = br;
@@ -154,14 +124,14 @@ fn decode_mcu_row_local<const N: usize, const FULL_SIZE: bool>(
     mcu_y: u32,
     stripe: &mut StripeBuffer,
 ) -> Result<(), JpegError> {
-    let stripe_mcu_end = context.stripe_mcu_start + context.stripe_mcus_per_row;
+    let columns = context.columns;
     for comp in &context.plan.components {
         assert_stripe_deposit_capacity(
             stripe,
             comp.output_index,
             u32::from(comp.h),
             u32::from(comp.v),
-            context.stripe_mcus_per_row,
+            columns.stripe_mcus_per_row,
             context.scaled.component(comp.output_index).idct_size,
             0,
         );
@@ -182,26 +152,19 @@ fn decode_mcu_row_local<const N: usize, const FULL_SIZE: bool>(
             .resolve_component_with_entries::<N>(comp)?
             .with_wide_huffman(context.wide_huffman);
     }
-    for mx in 0..context.mcus_per_row {
-        if consume_restart_marker_if_due(
-            state.br,
-            context.restart,
-            *state.mcus_since_restart,
-            state.expected_rst,
-            McuPosition {
-                current: mcu_y * context.mcus_per_row + mx,
-                total: context.mcu_rows * context.mcus_per_row,
-            },
-        )? {
+    for mx in 0..columns.mcus_per_row {
+        if state
+            .restart
+            .begin_mcu(state.br, columns.mcu_position(mx, mcu_y))?
+        {
             state.prev_dc.fill(0);
-            *state.mcus_since_restart = 0;
         }
 
         for (comp, tables) in context.plan.components.iter().zip(&resolved) {
             let plane_idx = comp.output_index;
             let dc_table = tables.dc_table;
             let ac_table = tables.ac_table;
-            let in_region = FULL_SIZE || (mx >= context.stripe_mcu_start && mx < stripe_mcu_end);
+            let in_region = FULL_SIZE || columns.contains(mx);
             // libjpeg-turbo may decode a subsampled component with a larger
             // reduced IDCT than the scale's own block size.
             let block_size = if FULL_SIZE {
@@ -210,7 +173,7 @@ fn decode_mcu_row_local<const N: usize, const FULL_SIZE: bool>(
                 context.scaled.component(plane_idx).idct_size
             };
             let local_mcu_x0_px =
-                mx.saturating_sub(context.stripe_mcu_start) * u32::from(comp.h) * block_size;
+                mx.saturating_sub(columns.stripe_mcu_start) * u32::from(comp.h) * block_size;
             for vy in 0..u32::from(comp.v) {
                 for vx in 0..u32::from(comp.h) {
                     let should_output = FULL_SIZE
@@ -311,7 +274,7 @@ fn decode_mcu_row_local<const N: usize, const FULL_SIZE: bool>(
                 }
             }
         }
-        *state.mcus_since_restart += 1;
+        state.restart.end_mcu();
     }
 
     Ok(())

@@ -31,12 +31,27 @@ pub(super) fn classify_color_fast_packet_info(info: &Info) -> Option<JpegFastPac
     {
         return None;
     }
+    fast_packet_family_for_shape(
+        info.color_space,
+        info.sampling.components(),
+        info.dimensions.0,
+    )
+}
 
+/// The color fast-packet family a coded color space and per-component
+/// sampling select for an image `width` pixels wide, before scan, table and
+/// component-order validation. The one shape rule shared by packet
+/// classification, the device batch summary and the fast CPU routes.
+pub(crate) fn fast_packet_family_for_shape(
+    color_space: ColorSpace,
+    sampling: &[(u8, u8)],
+    width: u32,
+) -> Option<JpegFastPacketFamily> {
     // libjpeg-turbo replicates full-size 2:1 chroma at most two samples wide
     // (images at most four pixels wide) instead of smoothing it; the fused
-    // device kernels only smooth, so such images stay on the CPU decoder.
-    let smoothed_chroma = info.dimensions.0 > 4;
-    match (info.color_space, info.sampling.components()) {
+    // kernels only smooth, so such images take the generic CPU decoder.
+    let smoothed_chroma = width > 4;
+    match (color_space, sampling) {
         (ColorSpace::YCbCr, [(2, 2), (1, 1), (1, 1)]) if smoothed_chroma => {
             Some(JpegFastPacketFamily::Fast420)
         }

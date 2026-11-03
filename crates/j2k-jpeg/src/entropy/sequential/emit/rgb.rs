@@ -5,17 +5,23 @@ use super::{
     four_component::{fill_four_component_rgb_row, FourComponentRow},
     types::{ensure_color_components, StripeEmit, StripeNeighbors},
     upsample::{
-        component_row_triplet, upsample_component_row_stripe, valid_component_rows,
+        rgb420_chroma_rows, upsample_component_row_stripe, valid_component_rows,
         StripeComponentUpsample, StripeComponentUpsampleSpec,
     },
 };
 use crate::{
-    backend::{Backend, Rgb420ChromaRows, Rgb420RowPair, Rgb422Row},
+    backend::{Backend, Rgb420RowPair, Rgb422Row},
     color::scaled_sampling::{ScaledSampling, Upsample},
     error::JpegError,
     info::ColorSpace,
     output::{InterleavedRgbWriter, OutputWriter},
 };
+
+/// Whether full-size 4:2:2 rows `width` pixels wide go through the backend's
+/// fused upsample-and-convert kernel; both 4:2:2 emitters apply this gate.
+pub(in crate::entropy::sequential) fn uses_fused_422_row(backend: Backend, width: usize) -> bool {
+    width >= 33 && backend.prefers_fused_422()
+}
 
 #[expect(
     clippy::too_many_lines,
@@ -78,20 +84,17 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb<W: OutputWriter + Interlea
                     (next_local_y < stripe_rows).then(|| &curr.row(0, next_local_y)[..width]);
                 let row_count = if y_bottom.is_some() { 2 } else { 1 };
                 let chroma_y = (local_y / 2).min(curr.row_count(1).saturating_sub(1));
-                let chroma_cols = width.div_ceil(2);
-                let (prev_cb, curr_cb, next_cb) = component_row_triplet(
-                    prev.map(|stripe| stripe.plane(1)),
-                    curr.plane(1),
-                    next.map(|stripe| stripe.plane(1)),
+                let chroma = rgb420_chroma_rows(
+                    |plane_idx| {
+                        (
+                            prev.map(|stripe| stripe.plane(plane_idx)),
+                            curr.plane(plane_idx),
+                            next.map(|stripe| stripe.plane(plane_idx)),
+                        )
+                    },
                     chroma_y,
                     chroma_valid_rows,
-                );
-                let (prev_cr, curr_cr, next_cr) = component_row_triplet(
-                    prev.map(|stripe| stripe.plane(2)),
-                    curr.plane(2),
-                    next.map(|stripe| stripe.plane(2)),
-                    chroma_y,
-                    chroma_valid_rows,
+                    width.div_ceil(2),
                 );
 
                 writer.with_rgb_rows(
@@ -99,18 +102,7 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb<W: OutputWriter + Interlea
                     row_count,
                     |dst_top, dst_bottom| {
                         backend.fill_rgb_row_pair_from_420(Rgb420RowPair::new(
-                            y_top,
-                            y_bottom,
-                            Rgb420ChromaRows::new(
-                                &prev_cb[..chroma_cols],
-                                &curr_cb[..chroma_cols],
-                                &next_cb[..chroma_cols],
-                                &prev_cr[..chroma_cols],
-                                &curr_cr[..chroma_cols],
-                                &next_cr[..chroma_cols],
-                            ),
-                            dst_top,
-                            dst_bottom,
+                            y_top, y_bottom, chroma, dst_top, dst_bottom,
                         ));
                         Ok(())
                     },
@@ -160,8 +152,7 @@ pub(in crate::entropy::sequential) fn emit_stripe_rgb<W: OutputWriter + Interlea
                 return Ok(());
             }
 
-            if width >= 33
-                && backend.prefers_fused_422()
+            if uses_fused_422_row(backend, width)
                 && scaled.component(0).upsample == Upsample::None
                 && scaled.component(1).upsample == Upsample::FancyH2V1
                 && scaled.component(2).upsample == Upsample::FancyH2V1
