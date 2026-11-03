@@ -22,6 +22,10 @@ pub trait Sample: Copy + Default + Send + Sync + 'static {
 
 impl Sample for u8 {
     const TYPE: SampleType = SampleType::U8;
+    #[expect(
+        clippy::use_self,
+        reason = "`BITS` is the trait's `u8` bit count for every sample type, not a sample value"
+    )]
     const BITS: u8 = 8;
 }
 
