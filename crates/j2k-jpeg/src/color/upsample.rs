@@ -231,6 +231,48 @@ pub(crate) fn emit_h2v2_row_with(
     }
 }
 
+/// Loop driver for the SIMD `vector_pairs` of [`emit_h2v2_row_with`]: calls
+/// `block(c0, c1, n0, n1, out)` for each run of sixteen interior pairs that
+/// fits, where `c0`/`n0` are `curr`/`near` samples `i..i + 16`, `c1`/`n1`
+/// samples `i + 1..i + 17`, and `out` the 32 outputs of pairs `i..i + 16`.
+/// With column sums `cs(i) = 3 * curr[i] + near[i]`, pair `i` is
+/// `interior[2i] = (3 * cs(i) + cs(i + 1) + 7) >> 4` and
+/// `interior[2i + 1] = (3 * cs(i + 1) + cs(i) + 8) >> 4`, exactly as
+/// libjpeg-turbo's `h2v2_fancy_upsample`; each ISA supplies only that
+/// arithmetic. Returns how many pairs were filled.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[expect(
+    clippy::inline_always,
+    reason = "the driver must inline into each ISA's target-feature kernel so the block closure inlines too"
+)]
+#[inline(always)]
+pub(crate) fn h2v2_fancy_pair_blocks(
+    curr: &[u8],
+    near: &[u8],
+    interior: &mut [u8],
+    mut block: impl FnMut(&[u8; 16], &[u8; 16], &[u8; 16], &[u8; 16], &mut [u8; 32]),
+) -> usize {
+    let pairs = interior.len() / 2;
+    let mut done = 0;
+    // Each step reads samples `done..done + 17` and writes 32 outputs.
+    while done + 16 <= pairs {
+        let (Some(c0), Some(c1), Some(n0), Some(n1)) = (
+            curr.get(done..).and_then(<[u8]>::first_chunk::<16>),
+            curr.get(done + 1..).and_then(<[u8]>::first_chunk::<16>),
+            near.get(done..).and_then(<[u8]>::first_chunk::<16>),
+            near.get(done + 1..).and_then(<[u8]>::first_chunk::<16>),
+        ) else {
+            break;
+        };
+        let Some(out) = interior[2 * done..].first_chunk_mut::<32>() else {
+            break;
+        };
+        block(c0, c1, n0, n1, out);
+        done += 16;
+    }
+    done
+}
+
 #[inline]
 pub(crate) fn h2v2_fancy_sample(near: &[u8], curr: &[u8], x: usize) -> u8 {
     debug_assert_eq!(near.len(), curr.len());

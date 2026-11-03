@@ -2,16 +2,16 @@
 
 use alloc::vec::Vec;
 use core::arch::x86_64::{
-    __m256i, _mm256_add_epi16, _mm256_add_epi32, _mm256_broadcastsi128_si256, _mm256_cvtepu8_epi16,
-    _mm256_madd_epi16, _mm256_mulhi_epi16, _mm256_or_si256, _mm256_packs_epi32,
-    _mm256_packus_epi16, _mm256_permute2x128_si256, _mm256_set1_epi16, _mm256_set1_epi32,
-    _mm256_setzero_si256, _mm256_shuffle_epi8, _mm256_slli_epi16, _mm256_srai_epi16,
-    _mm256_srai_epi32, _mm256_srli_epi16, _mm256_sub_epi16, _mm256_unpackhi_epi16,
-    _mm256_unpackhi_epi8, _mm256_unpacklo_epi16, _mm256_unpacklo_epi8, _mm_setr_epi8,
+    __m256i, _mm256_add_epi16, _mm256_add_epi32, _mm256_cvtepu8_epi16, _mm256_madd_epi16,
+    _mm256_mulhi_epi16, _mm256_or_si256, _mm256_packs_epi32, _mm256_packus_epi16,
+    _mm256_permute2x128_si256, _mm256_set1_epi16, _mm256_set1_epi32, _mm256_setzero_si256,
+    _mm256_shuffle_epi8, _mm256_slli_epi16, _mm256_srai_epi16, _mm256_srai_epi32,
+    _mm256_srli_epi16, _mm256_sub_epi16, _mm256_unpackhi_epi16, _mm256_unpackhi_epi8,
+    _mm256_unpacklo_epi16, _mm256_unpacklo_epi8,
 };
 use core::cell::RefCell;
 
-use crate::color::upsample::{emit_h2v2_row_with, h2v2_fancy_sample};
+use crate::color::upsample::{emit_h2v2_row_with, h2v2_fancy_pair_blocks, h2v2_fancy_sample};
 use crate::color::ycbcr::{FIX_0_34414, FIX_0_71414, FIX_1_40200, FIX_1_77200, ROUND};
 use crate::simd::x86::{exact_avx2_kernel, madd_pair, ExactAvx2};
 use crate::simd::x86_memory;
@@ -327,33 +327,16 @@ pub(super) fn upsample_h2v2_row(
 
 exact_avx2_kernel! {
     /// Fill the leading interior pairs of a fancy 4:2:0 chroma row, sixteen
-    /// chroma samples at a time; the AVX2 twin of
-    /// `neon_upsample::h2v2_fancy_pairs`. With column sums
-    /// `cs(i) = 3 * curr[i] + near[i]`, pair `i` is
-    /// `interior[2i] = (3 * cs(i) + cs(i + 1) + 7) >> 4` and
-    /// `interior[2i + 1] = (3 * cs(i + 1) + cs(i) + 8) >> 4`. Returns how many
-    /// pairs were filled; the caller finishes the rest.
-    fn h2v2_fancy_pairs(
+    /// chroma samples at a time, with the arithmetic documented on
+    /// [`h2v2_fancy_pair_blocks`]. Returns how many pairs were filled; the
+    /// caller finishes the rest.
+    pub(super) fn h2v2_fancy_pairs(
         avx2: ExactAvx2,
         curr: &[u8],
         near: &[u8],
         interior: &mut [u8],
     ) -> usize {
-        let pairs = interior.len() / 2;
-        let mut done = 0;
-        // Each step reads samples `done..done + 17` and writes 32 outputs.
-        while done + 16 <= pairs {
-            let (Some(c0), Some(c1), Some(n0), Some(n1)) = (
-                curr.get(done..).and_then(<[u8]>::first_chunk::<16>),
-                curr.get(done + 1..).and_then(<[u8]>::first_chunk::<16>),
-                near.get(done..).and_then(<[u8]>::first_chunk::<16>),
-                near.get(done + 1..).and_then(<[u8]>::first_chunk::<16>),
-            ) else {
-                break;
-            };
-            let Some(out) = interior[2 * done..].first_chunk_mut::<32>() else {
-                break;
-            };
+        h2v2_fancy_pair_blocks(curr, near, interior, |c0, c1, n0, n1, out| {
             // Column sums of samples `i` (left) and `i + 1` (right), in u16.
             let left = column_sums(c0, n0);
             let right = column_sums(c1, n1);
@@ -368,9 +351,7 @@ exact_avx2_kernel! {
             ));
             // Both fit a byte: lane `i` becomes the byte pair `(odd, even)`.
             x86_memory::store_u8x32(out, _mm256_or_si256(odd, _mm256_slli_epi16::<8>(even)));
-            done += 16;
-        }
-        done
+        })
     }
 }
 
@@ -510,8 +491,8 @@ fn ycbcr16_to_rgb(y: __m256i, cb: __m256i, cr: __m256i) -> [__m256i; 3] {
 
 /// `vpshufb` mask placing channel `channel` of sixteen pixels into bytes
 /// `16 * part .. 16 * part + 16` of their interleaved RGB.
-const fn interleave_mask(part: usize, channel: usize) -> [i8; 16] {
-    let mut mask = [-128i8; 16];
+const fn interleave_mask(part: usize, channel: usize) -> [u8; 16] {
+    let mut mask = [0x80; 16];
     let mut byte = 0;
     while byte < 16 {
         let index = 16 * part + byte;
@@ -520,7 +501,7 @@ const fn interleave_mask(part: usize, channel: usize) -> [i8; 16] {
                 clippy::cast_possible_truncation,
                 reason = "pixel indices within a 16-pixel lane are below 16"
             )]
-            let pixel = (index / 3) as i8;
+            let pixel = (index / 3) as u8;
             mask[byte] = pixel;
         }
         byte += 1;
@@ -528,7 +509,7 @@ const fn interleave_mask(part: usize, channel: usize) -> [i8; 16] {
     mask
 }
 
-const INTERLEAVE_MASKS: [[[i8; 16]; 3]; 3] = {
+const INTERLEAVE_MASKS: [[[u8; 16]; 3]; 3] = {
     let mut masks = [[[0; 16]; 3]; 3];
     let mut part = 0;
     while part < 3 {
@@ -542,15 +523,6 @@ const INTERLEAVE_MASKS: [[[i8; 16]; 3]; 3] = {
     masks
 };
 
-#[inline]
-#[target_feature(enable = "avx2")]
-fn lane_mask(mask: [i8; 16]) -> __m256i {
-    _mm256_broadcastsi128_si256(_mm_setr_epi8(
-        mask[0], mask[1], mask[2], mask[3], mask[4], mask[5], mask[6], mask[7], mask[8], mask[9],
-        mask[10], mask[11], mask[12], mask[13], mask[14], mask[15],
-    ))
-}
-
 /// Interleave 32 pixels of `R`, `G` and `B` bytes into 96 bytes of RGB.
 #[inline]
 #[target_feature(enable = "avx2")]
@@ -558,13 +530,13 @@ fn store_rgb_chunk(dst: &mut [u8; LANES * 3], [r, g, b]: [__m256i; 3]) {
     // Part `k` of each 128-bit lane is bytes 16k..16k+16 of that lane's
     // sixteen pixels.
     let mut parts = [_mm256_setzero_si256(); 3];
-    for (part, masks) in parts.iter_mut().zip(INTERLEAVE_MASKS) {
+    for (part, masks) in parts.iter_mut().zip(&INTERLEAVE_MASKS) {
         *part = _mm256_or_si256(
             _mm256_or_si256(
-                _mm256_shuffle_epi8(r, lane_mask(masks[0])),
-                _mm256_shuffle_epi8(g, lane_mask(masks[1])),
+                _mm256_shuffle_epi8(r, x86_memory::broadcast_u8x16(&masks[0])),
+                _mm256_shuffle_epi8(g, x86_memory::broadcast_u8x16(&masks[1])),
             ),
-            _mm256_shuffle_epi8(b, lane_mask(masks[2])),
+            _mm256_shuffle_epi8(b, x86_memory::broadcast_u8x16(&masks[2])),
         );
     }
     let [first, second, third] = parts;

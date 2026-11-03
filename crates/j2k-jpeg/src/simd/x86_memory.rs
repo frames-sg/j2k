@@ -127,6 +127,13 @@ pub(crate) fn broadcast_i16x8(src: &[i16; 8]) -> __m256i {
     _mm256_broadcastsi128_si256(load_i16x8(src))
 }
 
+/// Load 16 bytes into both 128-bit lanes (`vbroadcasti128`).
+#[inline]
+#[target_feature(enable = "avx2")]
+pub(crate) fn broadcast_u8x16(src: &[u8; 16]) -> __m256i {
+    _mm256_broadcastsi128_si256(load_u8x16(src))
+}
+
 #[inline]
 #[target_feature(enable = "avx2")]
 pub(crate) fn store_u8x32(dst: &mut [u8; 32], values: __m256i) {

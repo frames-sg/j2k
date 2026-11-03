@@ -7,9 +7,8 @@
 //! `tests/idct_parity.rs`.
 
 use super::{
-    first_pass_fits_i16, idct_islow, idct_islow_bottom_half_zero, idct_islow_i16, idct_islow_i32,
-    idct_islow_right_half_zero, idct_islow_top_left_2x2, idct_islow_top_left_quadrant, ISLOW_GAINS,
-    MAX_COLUMN_ABS_SUM,
+    first_pass_fits_i16, idct_islow, idct_islow_i16, idct_islow_i32, ISLOW_GAINS,
+    MAX_COLUMN_ABS_SUM, MAX_COLUMN_ABS_SUM_I16, SHAPES,
 };
 use crate::idct::scalar::idct_islow as idct_scalar;
 use crate::simd::x86::{exact_avx2_kernel, ExactAvx2};
@@ -68,23 +67,13 @@ fn max_column_abs_sum(input: &[i16; 64]) -> i32 {
         .expect("eight columns")
 }
 
-type Kernel = fn(ExactAvx2, &[i16; 64], &mut [u8; 64]);
-
-/// The sparse entry points with the rows and columns their shape admits.
-const SHAPE_KERNELS: [(&str, usize, usize, Kernel); 4] = [
-    ("bottom half zero", 4, 8, idct_islow_bottom_half_zero),
-    ("right half zero", 8, 4, idct_islow_right_half_zero),
-    ("top-left quadrant", 4, 4, idct_islow_top_left_quadrant),
-    ("top-left 2x2", 2, 2, idct_islow_top_left_2x2),
-];
-
 /// The dispatch, the 32-bit kernel, and every shape kernel that admits the
 /// block always equal scalar; the check accepts exactly the blocks within
 /// the bound, and on those the 16-bit kernel equals scalar too.
 fn assert_exact(avx2: ExactAvx2, input: &[i16; 64]) {
     let expected = scalar(input);
     assert_eq!(dispatch(avx2, input), expected, "dispatch on {input:?}");
-    for (label, rows, cols, kernel) in SHAPE_KERNELS {
+    for (label, rows, cols, kernel) in SHAPES {
         let admitted = input
             .iter()
             .enumerate()
@@ -205,7 +194,7 @@ fn worst_case_columns_at_the_bound_match_scalar() {
     let Some(avx2) = ExactAvx2::detect() else {
         return;
     };
-    let bound = i16::try_from(MAX_COLUMN_ABS_SUM).expect("fits");
+    let bound = MAX_COLUMN_ABS_SUM_I16;
     // 7 * 738 + 739 = 5,905: the bound spread over a whole column.
     let spread = [738, 738, 738, 738, 738, 738, 738, 739];
     assert_eq!(
@@ -264,7 +253,7 @@ fn bound_is_tight_one_past_it_the_unchecked_16_bit_kernel_diverges() {
     let Some(avx2) = ExactAvx2::detect() else {
         return;
     };
-    let past = i16::try_from(MAX_COLUMN_ABS_SUM + 1).expect("fits");
+    let past = MAX_COLUMN_ABS_SUM_I16 + 1;
     for col in 0..8 {
         // Input row 1 has the largest gain (11,363) into output row 0: its
         // first-pass value is (11,363 * 5,906 + 1,024) >> 11 = 32,769.

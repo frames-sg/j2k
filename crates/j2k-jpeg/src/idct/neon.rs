@@ -20,34 +20,12 @@ use core::arch::aarch64::{
 };
 use j2k_codec_math::jpeg::idct;
 
-use super::scalar::ISLOW_GAINS;
+use super::scalar::{islow_gain_bounds, ISLOW_GAINS};
+use super::{
+    CONST_BITS, DC_ROUNDING, DC_SHIFT, PASS1_ROUNDING, PASS1_SHIFT, PASS1_SHIFT_12, PASS2_ROUNDING,
+    PASS2_SHIFT, PASS2_SHIFT_12,
+};
 use crate::simd::neon_memory;
-
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    reason = "shared IDCT shift constants are small positive compile-time values"
-)]
-const CONST_BITS: i32 = idct::CONST_BITS as i32;
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    reason = "shared IDCT shift constants are small positive compile-time values"
-)]
-const PASS1_BITS: i32 = idct::PASS1_BITS as i32;
-
-const FIX_0_298631336: i32 = idct::FIX_0_298631336;
-const FIX_0_390180644: i32 = idct::FIX_0_390180644;
-const FIX_0_541196100: i32 = idct::FIX_0_541196100;
-const FIX_0_765366865: i32 = idct::FIX_0_765366865;
-const FIX_0_899976223: i32 = idct::FIX_0_899976223;
-const FIX_1_175875602: i32 = idct::FIX_1_175875602;
-const FIX_1_501321110: i32 = idct::FIX_1_501321110;
-const FIX_1_847759065: i32 = idct::FIX_1_847759065;
-const FIX_1_961570560: i32 = idct::FIX_1_961570560;
-const FIX_2_053119869: i32 = idct::FIX_2_053119869;
-const FIX_2_562915447: i32 = idct::FIX_2_562915447;
-const FIX_3_072711026: i32 = idct::FIX_3_072711026;
 
 fearless_simd::kernel! {
     /// Inverse DCT of one 8×8 block. Output is level-shifted (+128) and
@@ -59,8 +37,6 @@ fearless_simd::kernel! {
 
 #[target_feature(enable = "neon")]
 fn idct_islow_kernel(input: &[i16; 64], output: &mut [u8; 64]) {
-    const PASS1_SHIFT: i32 = CONST_BITS - PASS1_BITS;
-    const PASS2_SHIFT: i32 = CONST_BITS + PASS1_BITS + 3;
     // Load 8 rows as int16x8_t so the common bottom-half-zero shortcut can
     // reuse the tail rows instead of rescanning coefficients scalar-by-scalar.
     let (rows, _) = input.as_chunks::<8>();
@@ -91,7 +67,7 @@ fn idct_islow_kernel(input: &[i16; 64], output: &mut [u8; 64]) {
     // passing them as `p0..p7` makes each SIMD lane process one column's 8
     // samples. Output `cw_*[k]` has lane `c` holding pass-1 result at
     // (row k, col c).
-    let round1 = vdupq_n_s32(1 << (PASS1_SHIFT - 1));
+    let round1 = vdupq_n_s32(PASS1_ROUNDING);
     let cw_lo = idct_1d_x4::<PASS1_SHIFT>([r0l, r1l, r2l, r3l, r4l, r5l, r6l, r7l], round1);
     let cw_hi = idct_1d_x4::<PASS1_SHIFT>([r0h, r1h, r2h, r3h, r4h, r5h, r6h, r7h], round1);
 
@@ -130,14 +106,12 @@ fn idct_islow_bottom_half_zero_rows(
     row3: int16x8_t,
     output: &mut [u8; 64],
 ) {
-    const PASS1_SHIFT: i32 = CONST_BITS - PASS1_BITS;
-    const PASS2_SHIFT: i32 = CONST_BITS + PASS1_BITS + 3;
     let (r0l, r0h) = widen(row0);
     let (r1l, r1h) = widen(row1);
     let (r2l, r2h) = widen(row2);
     let (r3l, r3h) = widen(row3);
 
-    let round1 = vdupq_n_s32(1 << (PASS1_SHIFT - 1));
+    let round1 = vdupq_n_s32(PASS1_ROUNDING);
     let cw_lo = idct_1d_x4_bottom_half_zero::<PASS1_SHIFT>(r0l, r1l, r2l, r3l, round1);
     let cw_hi = idct_1d_x4_bottom_half_zero::<PASS1_SHIFT>(r0h, r1h, r2h, r3h, round1);
 
@@ -159,9 +133,8 @@ fearless_simd::kernel! {
 
 #[target_feature(enable = "neon")]
 fn idct_islow_right_half_zero_kernel(input: &[i16; 64], output: &mut [u8; 64]) {
-    const PASS1_SHIFT: i32 = CONST_BITS - PASS1_BITS;
     let (rows, _) = input.as_chunks::<8>();
-    let round1 = vdupq_n_s32(1 << (PASS1_SHIFT - 1));
+    let round1 = vdupq_n_s32(PASS1_ROUNDING);
     let cw_lo = idct_1d_x4::<PASS1_SHIFT>(
         [
             widen_low(neon_memory::load_i16x8(&rows[0])),
@@ -192,9 +165,8 @@ fearless_simd::kernel! {
 
 #[target_feature(enable = "neon")]
 fn idct_islow_top_left_quadrant_kernel(input: &[i16; 64], output: &mut [u8; 64]) {
-    const PASS1_SHIFT: i32 = CONST_BITS - PASS1_BITS;
     let (rows, _) = input.as_chunks::<8>();
-    let round1 = vdupq_n_s32(1 << (PASS1_SHIFT - 1));
+    let round1 = vdupq_n_s32(PASS1_ROUNDING);
     let cw_lo = idct_1d_x4_bottom_half_zero::<PASS1_SHIFT>(
         widen_low(neon_memory::load_i16x8(&rows[0])),
         widen_low(neon_memory::load_i16x8(&rows[1])),
@@ -219,9 +191,8 @@ fearless_simd::kernel! {
 
 #[target_feature(enable = "neon")]
 fn idct_islow_top_left_2x2_kernel(input: &[i16; 64], output: &mut [u8; 64]) {
-    const PASS1_SHIFT: i32 = CONST_BITS - PASS1_BITS;
     let (rows, _) = input.as_chunks::<8>();
-    let round1 = vdupq_n_s32(1 << (PASS1_SHIFT - 1));
+    let round1 = vdupq_n_s32(PASS1_ROUNDING);
     let cw_lo = idct_1d_x4_first_two::<PASS1_SHIFT>(
         widen_low(neon_memory::load_i16x8(&rows[0])),
         widen_low(neon_memory::load_i16x8(&rows[1])),
@@ -342,10 +313,9 @@ fn pass2_row_major<const SHIFT: i32>(
 #[inline]
 #[target_feature(enable = "neon")]
 fn pass2_sparse_columns<const FIRST_TWO_ONLY: bool>(cw_lo: [int32x4_t; 8], output: &mut [u8; 64]) {
-    const PASS2_SHIFT: i32 = CONST_BITS + PASS1_BITS + 3;
     let q_lo = transpose_4x4_i32(cw_lo[0], cw_lo[1], cw_lo[2], cw_lo[3]);
     let q_hi = transpose_4x4_i32(cw_lo[4], cw_lo[5], cw_lo[6], cw_lo[7]);
-    let round2 = vdupq_n_s32(1 << (PASS2_SHIFT - 1));
+    let round2 = vdupq_n_s32(PASS2_ROUNDING);
     let (rw_lo, rw_hi) = if FIRST_TWO_ONLY {
         (
             idct_1d_x4_first_two::<PASS2_SHIFT>(q_lo[0], q_lo[1], round2),
@@ -431,9 +401,6 @@ fn store_rows_u8(output: &mut [u8; 64], rows: [(int32x4_t, int32x4_t); 8]) {
     }
 }
 
-/// Pass-1 precision bits of the 12-bit ISLOW transform (`jidctint.c`).
-const PASS1_BITS_12: i32 = 1;
-
 /// Largest `sum(|coefficient|)` for which every 12-bit ISLOW intermediate fits
 /// in `i32`. Pass 1 cannot overflow for any `i16` input (its largest L1 gain
 /// is 61,214, and 61,214 * 32,768 < 2^31). A pass-2 intermediate is a linear
@@ -442,6 +409,17 @@ const PASS1_BITS_12: i32 = 1;
 /// rounding, so `58,244 * sum + 96,143 < 2^31` holds up to a sum of 36,869.
 /// The margin below that absorbs `vqabsq_s16` reporting 32,767 for -32,768.
 const IDCT12_I32_SAFE_ABS_SUM: i32 = 36_800;
+
+const _: () = {
+    // The pass-1 claim above, against the shared gain table: the largest L1
+    // gain is 61,214 and no rounded pass-1 sum of `i16` inputs leaves `i32`.
+    let (_, max_l1) = islow_gain_bounds();
+    assert!(max_l1 == 61_214);
+    assert!(match max_l1.checked_mul(1 << 15) {
+        Some(sum) => sum.checked_add(1 << (PASS1_SHIFT_12 - 1)).is_some(),
+        None => false,
+    });
+};
 
 fearless_simd::kernel! {
     /// 12-bit ISLOW IDCT of one block into samples level-shifted by +2048 and
@@ -456,8 +434,6 @@ fearless_simd::kernel! {
 
 #[target_feature(enable = "neon")]
 fn idct_islow_12bit_kernel(input: &[i16; 64], output: &mut [u16; 64]) -> bool {
-    const PASS1_SHIFT: i32 = CONST_BITS - PASS1_BITS_12;
-    const PASS2_SHIFT: i32 = CONST_BITS + PASS1_BITS_12 + 3;
     let (rows, _) = input.as_chunks::<8>();
     let row0 = neon_memory::load_i16x8(&rows[0]);
     let row1 = neon_memory::load_i16x8(&rows[1]);
@@ -483,11 +459,11 @@ fn idct_islow_12bit_kernel(input: &[i16; 64], output: &mut [u16; 64]) -> bool {
     let (r5l, r5h) = widen(row5);
     let (r6l, r6h) = widen(row6);
     let (r7l, r7h) = widen(row7);
-    let round1 = vdupq_n_s32(1 << (PASS1_SHIFT - 1));
-    let cw_lo = idct_1d_x4::<PASS1_SHIFT>([r0l, r1l, r2l, r3l, r4l, r5l, r6l, r7l], round1);
-    let cw_hi = idct_1d_x4::<PASS1_SHIFT>([r0h, r1h, r2h, r3h, r4h, r5h, r6h, r7h], round1);
+    let round1 = vdupq_n_s32(1 << (PASS1_SHIFT_12 - 1));
+    let cw_lo = idct_1d_x4::<PASS1_SHIFT_12>([r0l, r1l, r2l, r3l, r4l, r5l, r6l, r7l], round1);
+    let cw_hi = idct_1d_x4::<PASS1_SHIFT_12>([r0h, r1h, r2h, r3h, r4h, r5h, r6h, r7h], round1);
     let (q_lo, q_hi) = transpose_pass1(cw_lo, cw_hi);
-    let rows = pass2_row_major::<PASS2_SHIFT>(q_lo, q_hi, 2048);
+    let rows = pass2_row_major::<PASS2_SHIFT_12>(q_lo, q_hi, 2048);
 
     let max_sample = vdupq_n_u16(4095);
     let (dst, _) = output.as_chunks_mut::<8>();
@@ -519,9 +495,9 @@ fn idct_1d_x4<const SHIFT: i32>(
     rounding: int32x4_t,
 ) -> [int32x4_t; 8] {
     // Even half.
-    let z1 = vmulq_n_s32(vaddq_s32(p2, p6), FIX_0_541196100);
-    let tmp2 = vaddq_s32(z1, vmulq_n_s32(p6, -FIX_1_847759065));
-    let tmp3 = vaddq_s32(z1, vmulq_n_s32(p2, FIX_0_765366865));
+    let z1 = vmulq_n_s32(vaddq_s32(p2, p6), idct::FIX_0_541196100);
+    let tmp2 = vaddq_s32(z1, vmulq_n_s32(p6, -idct::FIX_1_847759065));
+    let tmp3 = vaddq_s32(z1, vmulq_n_s32(p2, idct::FIX_0_765366865));
     let tmp0 = vshlq_n_s32::<CONST_BITS>(vaddq_s32(p0, p4));
     let tmp1 = vshlq_n_s32::<CONST_BITS>(vsubq_s32(p0, p4));
     let tmp10 = vaddq_s32(tmp0, tmp3);
@@ -534,16 +510,16 @@ fn idct_1d_x4<const SHIFT: i32>(
     let z2o = vaddq_s32(p5, p3);
     let z3o = vaddq_s32(p7, p3);
     let z4o = vaddq_s32(p5, p1);
-    let z5 = vmulq_n_s32(vaddq_s32(z3o, z4o), FIX_1_175875602);
+    let z5 = vmulq_n_s32(vaddq_s32(z3o, z4o), idct::FIX_1_175875602);
 
-    let o0 = vmulq_n_s32(p7, FIX_0_298631336);
-    let o1 = vmulq_n_s32(p5, FIX_2_053119869);
-    let o2 = vmulq_n_s32(p3, FIX_3_072711026);
-    let o3 = vmulq_n_s32(p1, FIX_1_501321110);
-    let z1m = vmulq_n_s32(z1o, -FIX_0_899976223);
-    let z2m = vmulq_n_s32(z2o, -FIX_2_562915447);
-    let z3m = vmulq_n_s32(z3o, -FIX_1_961570560);
-    let z4m = vmulq_n_s32(z4o, -FIX_0_390180644);
+    let o0 = vmulq_n_s32(p7, idct::FIX_0_298631336);
+    let o1 = vmulq_n_s32(p5, idct::FIX_2_053119869);
+    let o2 = vmulq_n_s32(p3, idct::FIX_3_072711026);
+    let o3 = vmulq_n_s32(p1, idct::FIX_1_501321110);
+    let z1m = vmulq_n_s32(z1o, -idct::FIX_0_899976223);
+    let z2m = vmulq_n_s32(z2o, -idct::FIX_2_562915447);
+    let z3m = vmulq_n_s32(z3o, -idct::FIX_1_961570560);
+    let z4m = vmulq_n_s32(z4o, -idct::FIX_0_390180644);
     let z3f = vaddq_s32(z3m, z5);
     let z4f = vaddq_s32(z4m, z5);
 
@@ -562,7 +538,7 @@ fn idct_1d_x4<const SHIFT: i32>(
     let out4 = vshrq_n_s32::<SHIFT>(vaddq_s32(vsubq_s32(tmp13, k0), rounding));
 
     let outputs = [out0, out1, out2, out3, out4, out5, out6, out7];
-    if SHIFT == CONST_BITS + PASS1_BITS + 3 {
+    if SHIFT == PASS2_SHIFT {
         let ac = vorrq_s32(
             vorrq_s32(vorrq_s32(p1, p2), vorrq_s32(p3, p4)),
             vorrq_s32(vorrq_s32(p5, p6), p7),
@@ -581,9 +557,9 @@ fn idct_1d_x4_bottom_half_zero<const SHIFT: i32>(
     p3: int32x4_t,
     rounding: int32x4_t,
 ) -> [int32x4_t; 8] {
-    let z1 = vmulq_n_s32(p2, FIX_0_541196100);
+    let z1 = vmulq_n_s32(p2, idct::FIX_0_541196100);
     let tmp2 = z1;
-    let tmp3 = vaddq_s32(z1, vmulq_n_s32(p2, FIX_0_765366865));
+    let tmp3 = vaddq_s32(z1, vmulq_n_s32(p2, idct::FIX_0_765366865));
     let tmp0 = vshlq_n_s32::<CONST_BITS>(p0);
     let tmp1 = tmp0;
     let tmp10 = vaddq_s32(tmp0, tmp3);
@@ -591,16 +567,16 @@ fn idct_1d_x4_bottom_half_zero<const SHIFT: i32>(
     let tmp11 = vaddq_s32(tmp1, tmp2);
     let tmp12 = vsubq_s32(tmp1, tmp2);
 
-    let z5 = vmulq_n_s32(vaddq_s32(p1, p3), FIX_1_175875602);
-    let z1m = vmulq_n_s32(p1, -FIX_0_899976223);
-    let z2m = vmulq_n_s32(p3, -FIX_2_562915447);
-    let z3f = vaddq_s32(vmulq_n_s32(p3, -FIX_1_961570560), z5);
-    let z4f = vaddq_s32(vmulq_n_s32(p1, -FIX_0_390180644), z5);
+    let z5 = vmulq_n_s32(vaddq_s32(p1, p3), idct::FIX_1_175875602);
+    let z1m = vmulq_n_s32(p1, -idct::FIX_0_899976223);
+    let z2m = vmulq_n_s32(p3, -idct::FIX_2_562915447);
+    let z3f = vaddq_s32(vmulq_n_s32(p3, -idct::FIX_1_961570560), z5);
+    let z4f = vaddq_s32(vmulq_n_s32(p1, -idct::FIX_0_390180644), z5);
 
     let k0 = vaddq_s32(z1m, z3f);
     let k1 = vaddq_s32(z2m, z4f);
-    let k2 = vaddq_s32(vaddq_s32(vmulq_n_s32(p3, FIX_3_072711026), z2m), z3f);
-    let k3 = vaddq_s32(vaddq_s32(vmulq_n_s32(p1, FIX_1_501321110), z1m), z4f);
+    let k2 = vaddq_s32(vaddq_s32(vmulq_n_s32(p3, idct::FIX_3_072711026), z2m), z3f);
+    let k3 = vaddq_s32(vaddq_s32(vmulq_n_s32(p1, idct::FIX_1_501321110), z1m), z4f);
 
     let out0 = vshrq_n_s32::<SHIFT>(vaddq_s32(vaddq_s32(tmp10, k3), rounding));
     let out7 = vshrq_n_s32::<SHIFT>(vaddq_s32(vsubq_s32(tmp10, k3), rounding));
@@ -612,7 +588,7 @@ fn idct_1d_x4_bottom_half_zero<const SHIFT: i32>(
     let out4 = vshrq_n_s32::<SHIFT>(vaddq_s32(vsubq_s32(tmp13, k0), rounding));
 
     let outputs = [out0, out1, out2, out3, out4, out5, out6, out7];
-    if SHIFT == CONST_BITS + PASS1_BITS + 3 {
+    if SHIFT == PASS2_SHIFT {
         let ac = vorrq_s32(vorrq_s32(p1, p2), p3);
         select_row_dc_shortcut(p0, ac, outputs)
     } else {
@@ -645,7 +621,7 @@ fn idct_1d_x4_first_two<const SHIFT: i32>(
     let out4 = vshrq_n_s32::<SHIFT>(vaddq_s32(vsubq_s32(base, k0), rounding));
 
     let outputs = [out0, out1, out2, out3, out4, out5, out6, out7];
-    if SHIFT == CONST_BITS + PASS1_BITS + 3 {
+    if SHIFT == PASS2_SHIFT {
         select_row_dc_shortcut(p0, p1, outputs)
     } else {
         outputs
@@ -658,7 +634,7 @@ fn idct_1d_x4_first_two<const SHIFT: i32>(
 #[target_feature(enable = "neon")]
 fn select_row_dc_shortcut(p0: int32x4_t, ac: int32x4_t, outputs: [int32x4_t; 8]) -> [int32x4_t; 8] {
     let dc_mask = vceqq_s32(ac, vdupq_n_s32(0));
-    let dc = vshrq_n_s32::<{ PASS1_BITS + 3 }>(vaddq_s32(p0, vdupq_n_s32(16)));
+    let dc = vshrq_n_s32::<DC_SHIFT>(vaddq_s32(p0, vdupq_n_s32(DC_ROUNDING)));
     outputs.map(|value| vbslq_s32(dc_mask, dc, value))
 }
 

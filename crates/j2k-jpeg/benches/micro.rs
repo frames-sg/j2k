@@ -151,40 +151,22 @@ fn bench_micro(c: &mut Criterion) {
             for index in [0, 1, 8, 9] {
                 top_left_2x2[index] = bottom_half_zero[index];
             }
-            let sparse: [(
-                &str,
-                fn(&BenchAvx2Idct, &[i16; 64], &mut [u8; 64]),
-                &[i16; 64],
-            ); 4] = [
-                (
-                    "micro/idct_islow_avx2_bottom_half_zero_block",
-                    BenchAvx2Idct::run_bottom_half_zero,
-                    &bottom_half_zero,
-                ),
-                (
-                    "micro/idct_islow_avx2_right_half_zero_block",
-                    BenchAvx2Idct::run_right_half_zero,
-                    &bottom_half_zero,
-                ),
-                (
-                    "micro/idct_islow_avx2_top_left_quadrant_block",
-                    BenchAvx2Idct::run_top_left_quadrant,
-                    &bottom_half_zero,
-                ),
-                (
-                    "micro/idct_islow_avx2_top_left_2x2_block",
-                    BenchAvx2Idct::run_top_left_2x2,
-                    &top_left_2x2,
-                ),
-            ];
-            for (name, run, block) in sparse {
-                c.bench_function(name, |b| {
-                    let mut out = [0u8; 64];
-                    b.iter(|| {
-                        run(&avx2, std::hint::black_box(block), &mut out);
-                        std::hint::black_box(&out);
-                    });
-                });
+            for shape in BenchAvx2Idct::SHAPES {
+                let block = if shape.rows > 2 {
+                    &bottom_half_zero
+                } else {
+                    &top_left_2x2
+                };
+                c.bench_function(
+                    &format!("micro/idct_islow_avx2_{}_block", shape.name),
+                    |b| {
+                        let mut out = [0u8; 64];
+                        b.iter(|| {
+                            avx2.run_shape(shape, std::hint::black_box(block), &mut out);
+                            std::hint::black_box(&out);
+                        });
+                    },
+                );
             }
             // The general entry point on the 2x2 block, for comparison with
             // its sparse kernel (`idct_islow_avx2_block` already runs the
