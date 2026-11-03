@@ -21,6 +21,16 @@ impl ExactAvx2 {
     }
 }
 
+/// Pack the two 16-bit multipliers `vpmaddwd` applies to an interleaved
+/// `(first, second)` input pair into one 32-bit lane. Excluding `-32768`
+/// rules out the instruction's single wrapping case, so each lane's two
+/// products and their sum are exact.
+pub(crate) const fn madd_pair(first: i32, second: i32) -> i32 {
+    assert!(-32_767 <= first && first <= 32_767);
+    assert!(-32_767 <= second && second <= 32_767);
+    (first & 0xffff) | (second << 16)
+}
+
 /// Define a safe AVX2 entry point whose first argument is an unforgeable
 /// [`ExactAvx2`] capability token.
 macro_rules! exact_avx2_kernel {

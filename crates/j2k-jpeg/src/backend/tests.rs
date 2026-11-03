@@ -363,8 +363,7 @@ fn gray_rows_expand_to_equal_rgb_channels() {
 }
 
 /// The SIMD converters restructure the fixed-point arithmetic, so check them
-/// against the scalar reference for every (Cb, Cr) pair, with luma swept
-/// across the range so both saturation edges are exercised.
+/// against the scalar reference for every (Y, Cb, Cr) triple: all 2^24.
 #[test]
 fn detected_backend_ycbcr_matches_scalar_for_every_chroma_pair() {
     let backend = super::Backend::detect();
@@ -373,7 +372,7 @@ fn detected_backend_ycbcr_matches_scalar_for_every_chroma_pair() {
     let mut actual = vec![0u8; 256 * 3];
     for cr_value in 0..=255u8 {
         let cr = vec![cr_value; 256];
-        for y_value in (0..=255u8).step_by(15).chain([1, 128, 254, 255]) {
+        for y_value in 0..=255u8 {
             let y = vec![y_value; 256];
             scalar::fill_rgb_row_from_ycbcr(&y, &cb, &cr, &mut expected);
             backend.fill_rgb_row_from_ycbcr(&y, &cb, &cr, &mut actual);
@@ -1290,6 +1289,58 @@ fn fancy_h2v2_rows_match_the_per_sample_reference_on_every_backend() {
                     );
                 }
             }
+        }
+    }
+}
+
+/// Every interior output of a fancy 4:2:0 row is `(3 * a + b + 7) >> 4` or
+/// `(3 * b + a + 8) >> 4` of two adjacent column sums `a`, `b` in
+/// `0..=1020`. Rows alternating one column sum with all others cover every
+/// ordered `(a, b)` pair, and a row of all 65,536 `(curr, near)` sample
+/// pairs covers every way to form a column sum.
+#[test]
+fn fancy_h2v2_interior_matches_the_reference_for_every_column_sum_pair() {
+    let kinds = [
+        super::BackendKind::Scalar,
+        #[cfg(target_arch = "aarch64")]
+        super::BackendKind::Neon,
+        #[cfg(target_arch = "x86_64")]
+        super::BackendKind::Avx2,
+    ];
+    // A (curr, near) sample pair with column sum 3 * curr + near == sum.
+    let samples = |sum: u16| -> (u8, u8) {
+        let curr = (sum / 3).min(255);
+        let near = sum - 3 * curr;
+        (
+            u8::try_from(curr).expect("byte"),
+            u8::try_from(near).expect("byte"),
+        )
+    };
+    let mut rows: Vec<(Vec<u8>, Vec<u8>)> = (0..=1020u16)
+        .map(|left| {
+            (0..=1020u16)
+                .flat_map(|right| [samples(left), samples(right)])
+                .unzip()
+        })
+        .collect();
+    rows.push(
+        (0..=u16::MAX)
+            .map(|pair| <(u8, u8)>::from(pair.to_le_bytes()))
+            .unzip(),
+    );
+    for (curr, near) in &rows {
+        let output_width = 2 * curr.len();
+        let expected: Vec<u8> = (0..output_width)
+            .map(|x| crate::color::upsample::h2v2_fancy_sample(near, curr, x))
+            .collect();
+        for kind in kinds {
+            let Some(backend) = super::Backend::for_test_kind(kind) else {
+                continue;
+            };
+            let mut actual = vec![0u8; output_width];
+            // `near` serves as the previous row of a top output.
+            backend.upsample_h2v2_fancy_row([near, curr, near], output_width, false, &mut actual);
+            assert_eq!(actual, expected, "{kind:?} row of {} samples", curr.len());
         }
     }
 }

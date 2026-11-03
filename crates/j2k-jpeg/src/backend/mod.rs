@@ -368,6 +368,11 @@ impl Backend {
                     },
                 );
             }
+            #[cfg(target_arch = "x86_64")]
+            Self::Avx2(avx2) => {
+                let near = if output_is_bottom { next } else { prev };
+                x86::upsample_h2v2_row(avx2, near, curr, output_width, out);
+            }
             _ => crate::color::upsample::upsample_h2v2_fancy_row(
                 prev,
                 curr,

@@ -30,6 +30,15 @@ Staged workspace version: `0.13.2`.
   transform to sRGB moves no 8-bit channel or neutral ramp sample by more
   than one code value. Other ICC profiles remain unsupported for these
   outputs (#321).
+- On x86-64 hosts with AVX2, 8-bit YCbCr-to-RGB conversion runs 32 pixels at
+  a time in 16-bit lanes and stores interleaved RGB with byte shuffles,
+  instead of eight at a time with 32-bit multiplies and a scalar store, and
+  fancy 4:2:0 chroma upsampling vectorizes the interior of each row as on
+  NEON. Each fixed-point gain is split into a whole multiple of 2^16 and a
+  16-bit fraction, so output stays bit-exact with the scalar formulas; the
+  conversion is tested on all 2^24 (Y, Cb, Cr) triples and the upsampler on
+  every pair of adjacent column sums. Kodak 4:2:0 decodes 9% faster on one
+  thread and 4:4:4 5% faster.
 - On x86-64 hosts with AVX2, 8-bit JPEG blocks whose coefficients sit in the
   top half, the left half, the top-left 4x4 or the top-left 2x2 run sparse
   forms of the 16-bit inverse DCT that skip the zero rows and columns, as
