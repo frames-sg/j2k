@@ -10,9 +10,10 @@
 //! available.
 
 use core::arch::x86_64::{
-    __m128i, _mm_add_epi32, _mm_cvtepi16_epi32, _mm_mullo_epi32, _mm_packs_epi32, _mm_packus_epi16,
-    _mm_set1_epi32, _mm_slli_epi32, _mm_srai_epi32, _mm_srli_si128, _mm_sub_epi32,
-    _mm_unpackhi_epi32, _mm_unpackhi_epi64, _mm_unpacklo_epi32, _mm_unpacklo_epi64,
+    __m128i, _mm_add_epi32, _mm_blendv_epi8, _mm_cmpeq_epi32, _mm_cvtepi16_epi32, _mm_mullo_epi32,
+    _mm_or_si128, _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi32, _mm_setzero_si128,
+    _mm_slli_epi32, _mm_srai_epi32, _mm_srli_si128, _mm_sub_epi32, _mm_unpackhi_epi32,
+    _mm_unpackhi_epi64, _mm_unpacklo_epi32, _mm_unpacklo_epi64,
 };
 use j2k_codec_math::jpeg::idct;
 
@@ -154,7 +155,8 @@ fn store_row(dst: &mut [u8; 8], lo: __m128i, hi: __m128i) {
     x86_memory::store_u8x8(dst, u8_packed);
 }
 
-/// 1D IDCT pass over 4 i32 lanes. Mirrors `idct::neon::idct_1d_x4`.
+/// 1D IDCT pass over 4 i32 lanes. Mirrors `idct::neon::idct_1d_x4`,
+/// including the scalar row transform's DC-only shortcut.
 #[target_feature(enable = "avx2")]
 fn idct_1d_x4<const SHIFT: i32>(
     [p0, p1, p2, p3, p4, p5, p6, p7]: [__m128i; 8],
@@ -195,16 +197,30 @@ fn idct_1d_x4<const SHIFT: i32>(
     let k3 = _mm_add_epi32(_mm_add_epi32(o3, z1m), z4f);
 
     let shift = |v| _mm_srai_epi32::<SHIFT>(_mm_add_epi32(v, rounding));
-    let out0 = shift(_mm_add_epi32(tmp10, k3));
-    let out7 = shift(_mm_sub_epi32(tmp10, k3));
-    let out1 = shift(_mm_add_epi32(tmp11, k2));
-    let out6 = shift(_mm_sub_epi32(tmp11, k2));
-    let out2 = shift(_mm_add_epi32(tmp12, k1));
-    let out5 = shift(_mm_sub_epi32(tmp12, k1));
-    let out3 = shift(_mm_add_epi32(tmp13, k0));
-    let out4 = shift(_mm_sub_epi32(tmp13, k0));
-
-    [out0, out1, out2, out3, out4, out5, out6, out7]
+    let outputs = [
+        shift(_mm_add_epi32(tmp10, k3)),
+        shift(_mm_add_epi32(tmp11, k2)),
+        shift(_mm_add_epi32(tmp12, k1)),
+        shift(_mm_add_epi32(tmp13, k0)),
+        shift(_mm_sub_epi32(tmp13, k0)),
+        shift(_mm_sub_epi32(tmp12, k1)),
+        shift(_mm_sub_epi32(tmp11, k2)),
+        shift(_mm_sub_epi32(tmp10, k3)),
+    ];
+    if SHIFT == CONST_BITS + PASS1_BITS + 3 {
+        // The scalar row transform descales `p0` directly when every AC input
+        // of the row is zero, avoiding the overflow `p0 << CONST_BITS` hits
+        // for first-pass values of 2^18 and more.
+        let ac = _mm_or_si128(
+            _mm_or_si128(_mm_or_si128(p1, p2), _mm_or_si128(p3, p4)),
+            _mm_or_si128(_mm_or_si128(p5, p6), p7),
+        );
+        let dc_only = _mm_cmpeq_epi32(ac, _mm_setzero_si128());
+        let dc = _mm_srai_epi32::<{ PASS1_BITS + 3 }>(_mm_add_epi32(p0, _mm_set1_epi32(16)));
+        outputs.map(|value| _mm_blendv_epi8(value, dc, dc_only))
+    } else {
+        outputs
+    }
 }
 
 /// 4×4 i32 transpose via SSE2 unpack intrinsics.
@@ -288,6 +304,28 @@ mod tests {
     fn avx2_matches_scalar_on_horizontal_basis() {
         let mut input = [0i16; 64];
         input[1] = 400;
+        let (s, a) = run_both(&input);
+        assert_eq!(s, a);
+    }
+
+    #[test]
+    fn avx2_matches_scalar_when_rows_reduce_to_dc() {
+        // One nonzero column makes every first-pass row DC-only. From 2^18 up
+        // the scalar's `(p0 + 16) >> 5` differs from the wrapped full
+        // transform.
+        for col in 0..8 {
+            for column in [[i16::MAX; 8], [i16::MIN; 8], [4_096; 8], [100; 8]] {
+                let mut input = [0i16; 64];
+                for (row, value) in column.into_iter().enumerate() {
+                    input[row * 8 + col] = value;
+                }
+                let (s, a) = run_both(&input);
+                assert_eq!(s, a, "column {col}: {column:?}");
+            }
+        }
+        let mut input = [0i16; 64];
+        input[0] = i16::MAX;
+        input[8] = i16::MAX;
         let (s, a) = run_both(&input);
         assert_eq!(s, a);
     }

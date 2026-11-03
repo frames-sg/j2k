@@ -30,6 +30,11 @@ Staged workspace version: `0.13.2`.
   transform to sRGB moves no 8-bit channel or neutral ramp sample by more
   than one code value. Other ICC profiles remain unsupported for these
   outputs (#321).
+- On x86-64 hosts with AVX2, the 8-bit JPEG inverse DCT applies the scalar
+  row transform's DC-only shortcut, as the NEON kernel already did. Crafted
+  blocks whose coefficients sit in one column (first-pass values of 2^18 and
+  more) decoded to different bytes there than on the scalar path; they now
+  match it. Valid images are unaffected.
 - CPU decoding and encoding on default (baseline x86-64) builds no longer
   call a library routine per sample for floor, rounding or fused
   multiply-add: the loops that use them run at the runtime-dispatched SIMD
