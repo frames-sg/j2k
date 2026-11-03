@@ -71,7 +71,6 @@ fn bottom_half_zero_blocks() -> impl Strategy<Value = [i16; 64]> {
     })
 }
 
-#[cfg(target_arch = "aarch64")]
 fn top_left_2x2_blocks() -> impl Strategy<Value = [i16; 64]> {
     prop_oneof![
         4 => prop::array::uniform4(any::<i16>()),
@@ -88,6 +87,38 @@ fn top_left_2x2_blocks() -> impl Strategy<Value = [i16; 64]> {
         let mut block = [0i16; 64];
         for (index, coefficient) in [0, 1, 8, 9].into_iter().zip(coefficients) {
             block[index] = coefficient;
+        }
+        block
+    })
+}
+
+/// One nonzero column: every first-pass row is DC-only, which the scalar row
+/// transform shortcuts.
+#[cfg(target_arch = "x86_64")]
+fn single_column_blocks() -> impl Strategy<Value = [i16; 64]> {
+    (0usize..8, prop::array::uniform8(any::<i16>())).prop_map(|(col, column)| {
+        let mut block = [0i16; 64];
+        for (row, value) in column.into_iter().enumerate() {
+            block[row * 8 + col] = value;
+        }
+        block
+    })
+}
+
+/// Coefficients only in natural-order columns 0..3 (right half zero) or,
+/// with `quadrant`, only in the top-left 4x4 quadrant.
+#[cfg(target_arch = "x86_64")]
+fn left_half_blocks(
+    quadrant: bool,
+    values: impl Strategy<Value = i16>,
+) -> impl Strategy<Value = [i16; 64]> {
+    prop::collection::vec(values, 32..=32).prop_map(move |values| {
+        let mut block = [0i16; 64];
+        for (index, value) in values.into_iter().enumerate() {
+            let (row, col) = (index / 4, index % 4);
+            if !quadrant || row < 4 {
+                block[row * 8 + col] = value;
+            }
         }
         block
     })
@@ -153,6 +184,34 @@ proptest! {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn avx2_matches_scalar_on_bottom_half_zero_blocks(block in bottom_half_zero_blocks()) {
+        assert_avx2_matches_scalar(&block);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn avx2_matches_scalar_on_single_column_blocks(block in single_column_blocks()) {
+        assert_avx2_matches_scalar(&block);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn avx2_matches_scalar_on_right_half_zero_blocks(
+        block in left_half_blocks(false, any::<i16>()),
+    ) {
+        assert_avx2_matches_scalar(&block);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn avx2_matches_scalar_on_top_left_quadrant_blocks(
+        block in left_half_blocks(true, any::<i16>()),
+    ) {
+        assert_avx2_matches_scalar(&block);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn avx2_matches_scalar_on_top_left_2x2_blocks(block in top_left_2x2_blocks()) {
         assert_avx2_matches_scalar(&block);
     }
 }
