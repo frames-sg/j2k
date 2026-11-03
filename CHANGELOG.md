@@ -48,44 +48,6 @@ Staged workspace version: `0.13.2`.
   interval without rescanning. Malformed streams are not rescanned. Errors
   and their offsets are unchanged. On Apple M5 Max, cold restart-coded
   decodes are 1.04–3.2x faster and repeated deep seeks 25–128x faster.
-- `J2kDecoder::decode_srgb8` decodes Gray, RGB and RGBA images without an
-  ICC profile on the route `decode_into` plans, straight into the returned
-  buffer, so an image whose component planes would pass the decode budget
-  streams its rows instead of failing with `ResourceLimit`. Images converted
-  from an ICC profile or expanded from grey with alpha still decode their
-  planes first. `J2kSrgb8Image::warnings` reports lenient recoveries.
-- Bounded row decodes (`decode_rows_u8_bounded`, `decode_rows_u16_bounded`)
-  report `LenientMetadataRecovery` like the other decode methods; every
-  successful row path returned no warnings before.
-- Lenient batch preparation applies the JP2/JPH recoveries a lenient decode
-  applies. A file with a malformed trailing box was rejected at preparation
-  with `TruncatedAt` although `J2kDecoder` decoded it, and a four-component
-  sRGB file without channel definitions now decodes as straight-alpha RGBA,
-  as a lenient single-image decode infers it. `J2kView::support_info` is now
-  available for recovered files, which are no passthrough candidates.
-  `j2k_native::inspect_jp2_container_with_settings` exposes the recovering
-  container parse.
-- Python decoders on CUDA or MPS prepare batches with the shared,
-  backend-neutral preparation their device decoders use. They went through
-  CPU preparation, whose admission rejects images whose CPU execution would
-  pass the CPU decode bound.
-- Reduced-resolution decodes of images whose reference-grid origin is not a
-  multiple of the scale cover the reduced samples the standard places under
-  the request, as OpenJPEG decodes them: a reduction spans
-  `[ceil(origin / s), ceil((origin + size) / s))`, which can be a sample
-  narrower than `ceil(size / s)`. Exact-level methods
-  (`decode_native_components_at_reduction`, `decode_region_scaled_pow2_into`)
-  rejected such images as an inexact reduction; batch, tile-batch and Metal
-  reductions sized their output `ceil(size / s)`; and regions were mapped as
-  if the origin were zero. `J2kReferenceGrid` (from
-  `J2kView::reference_grid`, `J2kDecoder::reference_grid` and the
-  header-only `J2kDecoder::inspect_reference_grid`) reports the SIZ image and
-  tile origins, and `DeviceDecodePlan::for_reference_grid` sizes device
-  plans with them. Images at a scale-aligned origin, including every image
-  at origin zero, decode as before.
-- The README's comparison lists Grok's optional closed-source CUDA/Metal
-  plugin instead of no GPU support.
-
 - Baseline 4:2:2 JPEGs decode to RGB through the streaming row path,
   including region requests. Horizontal-only fancy upsampling needs no
   window of chroma rows, so each MCU row is upsampled and converted as it
