@@ -138,16 +138,16 @@ impl<'a> J2kDecoder<'a> {
             )?;
             match request.op {
                 MetalDecodeOp::Full => crate::engine::with_runtime_for_session(session, |_| {
-                    if let Some(surface) =
-                        self.decode_direct_to_surface_with_session(request.fmt, session)?
-                    {
-                        Ok(surface)
-                    } else {
-                        self.decode_full_to_metal_surface_with_device(
-                            request.fmt,
-                            session.device_handle(),
+                    self.decode_direct_to_surface_with_session(request.fmt, session)?
+                        .map_or_else(
+                            || {
+                                self.decode_full_to_metal_surface_with_device(
+                                    request.fmt,
+                                    session.device_handle(),
+                                )
+                            },
+                            Ok,
                         )
-                    }
                 }),
                 MetalDecodeOp::Region(roi) => self
                     .decode_region_scaled_to_metal_surface_with_session(
