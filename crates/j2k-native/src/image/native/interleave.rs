@@ -24,7 +24,6 @@ impl Image<'_> {
     /// of pixels at a time, the blocks split across threads when `parallel`.
     #[expect(
         clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
         reason = "samples are rounded and clamped to the component's 8- or 16-bit range before packing"
     )]
     pub(crate) fn extend_interleaved_native_sample_bytes(

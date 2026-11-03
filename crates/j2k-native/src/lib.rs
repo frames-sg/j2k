@@ -224,6 +224,8 @@ pub use jp2::{
     Jp2ImageHeaderMetadata, Jp2PaletteColumn, Jp2PaletteMetadata,
 };
 #[doc(hidden)]
+pub use math::{at_simd_level, round_clamped_native};
+#[doc(hidden)]
 pub use roi::idwt_band_index;
 pub(crate) use roi::{add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_i64, validate_roi};
 #[cfg(test)]

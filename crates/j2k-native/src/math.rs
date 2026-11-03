@@ -943,6 +943,55 @@ pub(crate) use inner::{dispatch, f32x8, Level, ScalarSimd, Simd};
 #[cfg(feature = "simd")]
 pub(crate) use inner::{dispatch, f32x8, Level, Simd};
 
+/// Runs `f` inside a `dispatch!`, for crates above this one that convert
+/// decoded samples: the loops `f` runs, and the rounding in them, compile at
+/// the CPU's widest SIMD level instead of calling the C library per sample
+/// on baseline x86-64. As the convention above requires, `f` is an
+/// `#[inline(always)]` closure and everything it calls is `#[inline(always)]`.
+#[doc(hidden)]
+#[inline]
+pub fn at_simd_level<R>(f: impl FnOnce() -> R) -> R {
+    dispatch!(Level::new(), _simd => f())
+}
+
+/// Rounds `sample`, clamped to the integer bounds `[min, max]`, half away
+/// from zero, as two's complement in the low bits of a `u32`, NaN as zero:
+/// for bounds within 16 bits, the bytes a saturating cast of the rounded
+/// sample to the 8- or 16-bit integer of those bounds gives, and what
+/// `Image::push_native_sample_bytes` packs. Clamping to integer bounds
+/// before rounding cannot change the rounded value, and [`round_f32`] rounds
+/// ties away from zero exactly like truncating `x ± 0.5` in `f64`. Native
+/// packing and the `j2k` crate's 16-bit output convert through it.
+///
+/// A saturating float-to-int cast converts lane by lane on x86-64, so there
+/// the value is added to 1.5 x 2^23 instead, which vectorizes: a whole value
+/// within 16 bits then lies in `[2^23, 2^24)`, where `f32` integers are
+/// exact and the mantissa bits hold 2^22 plus the value. Elsewhere the cast
+/// is one vector instruction (`fcvtzs` on aarch64), and faster.
+#[doc(hidden)]
+#[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::inline_always,
+    reason = "the clamped value fits 16 bits, whose two's complement is kept; inlined into the dispatched packing loops"
+)]
+#[inline(always)]
+pub fn round_clamped_native(sample: f32, min: f32, max: f32) -> u32 {
+    // The callers supply ordered finite bounds. Explicit comparisons preserve
+    // NaN without repeating clamp's bounds assertion for every sample, which
+    // otherwise prevents vectorizing the packing loop.
+    let clamped = if sample < min { min } else { sample };
+    let clamped = if clamped > max { max } else { clamped };
+    let rounded = round_f32(clamped);
+    if cfg!(target_arch = "x86_64") {
+        let rounded = if rounded.is_nan() { 0.0 } else { rounded };
+        (rounded + 12_582_912.0).to_bits()
+    } else {
+        rounded as i32 as u32
+    }
+}
+
 /// A wrapper around `Vec<f32>` that pads the vector to a multiple of `N` elements.
 /// This allows SIMD operations to safely process the data without bounds checking
 /// at the end of the buffer.

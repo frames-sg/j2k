@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Audit of `j2k-native`'s baseline x86-64 machine code for two regressions
-//! the source cannot show:
+//! Audit of the baseline x86-64 machine code of `j2k-native` and of the `j2k`
+//! facade, which converts decoded samples to output pixels, for two
+//! regressions the source cannot show:
 //!
 //! - A floor, round or fused multiply-add on scalar `f32` outside a runtime
 //!   SIMD dispatch. Baseline x86-64 (SSE2) has no instruction for these, so
@@ -25,6 +26,9 @@ use crate::process::retry_executable_busy;
 
 const TARGET: &str = "x86_64-unknown-linux-gnu";
 const TARGET_DIR: &str = "target/x86-codegen-audit";
+
+/// The audited crates and their library files.
+const CRATES: [(&str, &str); 2] = [("j2k-native", "libj2k_native.rlib"), ("j2k", "libj2k.rlib")];
 
 /// Library routines baseline x86-64 calls for scalar rounding and fused
 /// multiply-add.
@@ -72,34 +76,37 @@ pub(crate) fn x86_codegen_audit(args: impl Iterator<Item = String>) -> Result<()
         ));
     }
     run_program("rustup".into(), &["target", "add", TARGET], &[])?;
-    // Without LTO the library keeps object code, not only bitcode.
+    let mut build = vec!["build"];
+    for (package, _) in CRATES {
+        build.extend(["-p", package]);
+    }
+    build.extend(["--lib", "--release", "--target", TARGET]);
+    // Without LTO each library keeps object code, not only bitcode.
     run_cargo_with_env(
-        &[
-            "build",
-            "-p",
-            "j2k-native",
-            "--lib",
-            "--release",
-            "--target",
-            TARGET,
-        ],
+        &build,
         &[
             ("CARGO_PROFILE_RELEASE_LTO", "false"),
             ("CARGO_TARGET_DIR", TARGET_DIR),
         ],
     )?;
-    let library = Path::new(TARGET_DIR)
-        .join(TARGET)
-        .join("release")
-        .join("libj2k_native.rlib");
-    let violations = audit_library(&library)?;
+    let mut violations = Vec::new();
+    for (package, library) in CRATES {
+        let library = Path::new(TARGET_DIR)
+            .join(TARGET)
+            .join("release")
+            .join(library);
+        let found = audit_library(&library)?;
+        if !found.is_empty() {
+            violations.push(format!("{package}:"));
+            violations.extend(found);
+        }
+    }
     if violations.is_empty() {
         eprintln!("x86-codegen-audit: no scalar library calls or out-of-line wide SIMD operations");
         return Ok(());
     }
     Err(format!(
-        "x86-codegen-audit found {} violation(s) in baseline x86-64 j2k-native:\n{}",
-        violations.len(),
+        "x86-codegen-audit found violations in baseline x86-64 code:\n{}",
         violations.join("\n")
     ))
 }

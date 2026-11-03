@@ -135,7 +135,8 @@ pub(in crate::decode) fn write_plane_rows_u16(
 }
 
 /// Rows `rows` of `plane`, `width` samples each, written from the first row
-/// of `out` on.
+/// of `out` on, at the CPU's SIMD level, as the conversion rounds every
+/// sample (see [`j2k_native::at_simd_level`]).
 fn write_component_rows_u16(
     plane: &j2k_native::ComponentPlane<'_>,
     out: &mut [u8],
@@ -144,14 +145,19 @@ fn write_component_rows_u16(
     rows: Range<usize>,
 ) {
     let conversion = U16Conversion::new(plane.bit_depth(), plane.signed());
-    for (index, y) in rows.enumerate() {
-        conversion.visit(ChannelWriter {
-            src: &plane.samples()[y * width..(y + 1) * width],
-            dst: &mut out[index * stride..index * stride + width * 2],
-            channels: 1,
-            channel: 0,
-        });
-    }
+    j2k_native::at_simd_level(
+        #[inline(always)]
+        || {
+            for (index, y) in rows.enumerate() {
+                conversion.visit(ChannelWriter {
+                    src: &plane.samples()[y * width..(y + 1) * width],
+                    dst: &mut out[index * stride..index * stride + width * 2],
+                    channels: 1,
+                    channel: 0,
+                });
+            }
+        },
+    );
 }
 
 fn write_rgb_component_rows_u16(
@@ -194,40 +200,48 @@ fn write_color_component_rows_u16(
         planes[0].bit_depth(),
     )
     .to_le_bytes();
-    for (index, y) in rows.enumerate() {
-        let row = y * width..(y + 1) * width;
-        let destination = &mut out[index * stride..index * stride + width * output_channels * 2];
-        if fused {
-            color[0].visit(PixelWriter {
-                src: [0, 1, 2].map(|channel| &planes[channel].samples()[row.clone()]),
-                dst: destination,
-                channels: output_channels,
-            });
-        } else {
-            for (channel, conversion) in color.iter().enumerate() {
-                conversion.visit(ChannelWriter {
-                    src: &planes[channel].samples()[row.clone()],
-                    dst: destination,
-                    channels: output_channels,
-                    channel,
-                });
-            }
-        }
-        match &alpha {
-            Some(conversion) => conversion.visit(ChannelWriter {
-                src: &planes[3].samples()[row],
-                dst: destination,
-                channels: 4,
-                channel: 3,
-            }),
-            None if output_channels == 4 => {
-                for pixel in destination.as_chunks_mut::<8>().0 {
-                    pixel[6..8].copy_from_slice(&opaque);
+    // At the CPU's SIMD level, as the conversions round every sample (see
+    // `j2k_native::at_simd_level`).
+    j2k_native::at_simd_level(
+        #[inline(always)]
+        || {
+            for (index, y) in rows.enumerate() {
+                let row = y * width..(y + 1) * width;
+                let destination =
+                    &mut out[index * stride..index * stride + width * output_channels * 2];
+                if fused {
+                    color[0].visit(PixelWriter {
+                        src: [0, 1, 2].map(|channel| &planes[channel].samples()[row.clone()]),
+                        dst: destination,
+                        channels: output_channels,
+                    });
+                } else {
+                    for (channel, conversion) in color.iter().enumerate() {
+                        conversion.visit(ChannelWriter {
+                            src: &planes[channel].samples()[row.clone()],
+                            dst: destination,
+                            channels: output_channels,
+                            channel,
+                        });
+                    }
+                }
+                match &alpha {
+                    Some(conversion) => conversion.visit(ChannelWriter {
+                        src: &planes[3].samples()[row],
+                        dst: destination,
+                        channels: 4,
+                        channel: 3,
+                    }),
+                    None if output_channels == 4 => {
+                        for pixel in destination.as_chunks_mut::<8>().0 {
+                            pixel[6..8].copy_from_slice(&opaque);
+                        }
+                    }
+                    None => {}
                 }
             }
-            None => {}
-        }
-    }
+        },
+    );
 }
 
 /// How [`U16Conversion`] turns a rounded sample into its output.
@@ -303,10 +317,12 @@ impl U16Conversion {
         }
     }
 
-    /// Hand `writer` this conversion as a closure of its kind.
+    /// Hand `writer` this conversion as a closure of its kind. Each rounds
+    /// and clamps as native packing does (see
+    /// [`j2k_native::round_clamped_native`]), whose low bits hold the
+    /// clamped value's two's complement.
     #[expect(
         clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
         clippy::inline_always,
         reason = "decoded samples are rounded and clamped to the component's declared integer representation; the chosen conversion is inlined into the writer so each kind compiles to its own fixed-size pixel loop"
     )]
@@ -315,18 +331,22 @@ impl U16Conversion {
         let (min, max) = self.bounds;
         let widened = &self.widened;
         match self.kind {
-            U16Kind::Byte => {
-                writer.write(|sample: f32| u16::from(sample.round().clamp(min, max) as u8) * 257);
-            }
-            U16Kind::ByteTable => writer
-                .write(|sample: f32| widened[usize::from(sample.round().clamp(min, max) as u8)]),
-            U16Kind::SignedByteTable => writer.write(|sample: f32| {
-                widened[usize::from((sample.round().clamp(min, max) as i8) as u8)]
-            }),
-            U16Kind::Unsigned => writer.write(|sample: f32| sample.round().clamp(min, max) as u16),
-            U16Kind::Signed => {
-                writer.write(|sample: f32| (sample.round().clamp(min, max) as i16) as u16);
-            }
+            U16Kind::Byte => writer.write(
+                #[inline(always)]
+                |sample: f32| {
+                    u16::from(j2k_native::round_clamped_native(sample, min, max) as u8) * 257
+                },
+            ),
+            U16Kind::ByteTable | U16Kind::SignedByteTable => writer.write(
+                #[inline(always)]
+                |sample: f32| {
+                    widened[usize::from(j2k_native::round_clamped_native(sample, min, max) as u8)]
+                },
+            ),
+            U16Kind::Unsigned | U16Kind::Signed => writer.write(
+                #[inline(always)]
+                |sample: f32| j2k_native::round_clamped_native(sample, min, max) as u16,
+            ),
         }
     }
 }

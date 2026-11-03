@@ -99,6 +99,23 @@ Staged workspace version: `0.13.2`.
   blocks whose coefficients sit in one column (first-pass values of 2^18 and
   more) decoded to different bytes there than on the scalar path; they now
   match it. Valid images are unaffected.
+- On x86-64, 9- to 16-bit decodes to `Gray16`, `Rgb16` or `Rgba16` spent up
+  to half their time converting samples. The `j2k` crate converts streamed
+  rows (512x512 images and larger on one thread) itself, compiled for
+  baseline x86-64 outside any runtime SIMD dispatch, so it called the C
+  library's `roundf` once per sample; and every 16-bit conversion, the
+  native packing of smaller images included, made its saturating
+  float-to-integer cast one lane at a time. The crate's 8- and 16-bit plane
+  conversions now run at the dispatched SIMD level through
+  `j2k_native::at_simd_level` and round and clamp through the native
+  packers' `j2k_native::round_clamped_native`, which on x86-64 adds 1.5 x
+  2^23 instead of casting, so the conversion vectorizes. `cargo xtask
+  x86-codegen-audit` checks `j2k` as well as `j2k-native`, and the lossy
+  encoder's byte-target rounding no longer calls `ceil`. On a Ryzen 7
+  5800X3D, 12-bit HTJ2K CT, radiograph and mammography sets decode to
+  `Gray16` 1.5x, 1.8x and 2.0x as fast on one thread and 16-bit MR slices
+  1.2x as fast. Output is byte-identical on x86-64 and aarch64, and aarch64
+  timings are unchanged.
 - CPU decoding and encoding on default (baseline x86-64) builds no longer
   call a library routine per sample for floor, rounding or fused
   multiply-add: the loops that use them run at the runtime-dispatched SIMD

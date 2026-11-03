@@ -499,35 +499,43 @@ pub(super) fn convert_u8(sample: f32, precision: u8) -> u8 {
 /// floor of the sample plus one half, and any value past the precision's
 /// maximum saturates. Per sample, `convert_u8` costs a call and `f64` math;
 /// over a row, the compiler can vectorize the contiguous rows of planar
-/// output, and interleaved rows convert in a tight loop.
+/// output, and interleaved rows convert in a tight loop, both at the CPU's
+/// SIMD level (see [`j2k_native::at_simd_level`]).
 fn convert_u8_row(destination: &mut [u8], stride: usize, samples: &[f32], precision: u8) {
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "a u8 output's maximum is far below f32's exact integer range"
-    )]
-    let ceiling = ((1_u32 << u32::from(precision)) - 1) as f32;
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        reason = "the sample is positive and rounded below the ceiling before the cast, which saturates"
+        clippy::inline_always,
+        reason = "the sample is positive and rounded below the ceiling before the cast, which saturates; inlined into the SIMD dispatch below"
     )]
-    let round = |sample: f32| -> u8 {
+    #[inline(always)]
+    fn round(sample: f32, ceiling: f32) -> u8 {
         let rounded = if sample > 0.0 {
             sample.min(ceiling).round() as u32
         } else {
             0
         };
         u8::try_from(rounded).unwrap_or(u8::MAX)
-    };
-    if stride == 1 {
-        for (destination, &sample) in destination.iter_mut().zip(samples) {
-            *destination = round(sample);
-        }
-    } else {
-        for (destination, &sample) in destination.iter_mut().step_by(stride).zip(samples) {
-            *destination = round(sample);
-        }
     }
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a u8 output's maximum is far below f32's exact integer range"
+    )]
+    let ceiling = ((1_u32 << u32::from(precision)) - 1) as f32;
+    j2k_native::at_simd_level(
+        #[inline(always)]
+        || {
+            if stride == 1 {
+                for (destination, &sample) in destination.iter_mut().zip(samples) {
+                    *destination = round(sample, ceiling);
+                }
+            } else {
+                for (destination, &sample) in destination.iter_mut().step_by(stride).zip(samples) {
+                    *destination = round(sample, ceiling);
+                }
+            }
+        },
+    );
 }
 
 pub(super) fn convert_u16(sample: f32, precision: u8) -> u16 {
