@@ -28,6 +28,10 @@ pub struct ResidentMetalImage {
     layout: MetalImageLayout,
 }
 
+#[expect(
+    clippy::non_send_fields_in_send_ty,
+    reason = "the retained MTLBuffer is moved under the immutable-view contract in the SAFETY comment"
+)]
 // SAFETY: Metal resources are cross-thread objects. Safe APIs expose this
 // retained allocation only as immutable image metadata; raw resource access is
 // unsafe and carries an explicit no-writer/synchronization contract.
@@ -216,6 +220,10 @@ pub struct SubmittedMetalImages {
     inputs: Vec<ResidentMetalImage>,
 }
 
+#[expect(
+    clippy::non_send_fields_in_send_ty,
+    reason = "the command buffer moves with exclusive ownership, as the SAFETY comment states"
+)]
 // SAFETY: The submission exclusively owns its command buffer and output
 // allocations until completion. Moving that ownership between threads does not
 // introduce concurrent encoding or CPU access.
