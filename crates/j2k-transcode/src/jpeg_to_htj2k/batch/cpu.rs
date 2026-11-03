@@ -54,6 +54,10 @@ pub(in super::super) fn jpeg_cpu_tile_batch_to_htj2k_with_scratch(
     )
 }
 
+#[expect(
+    clippy::iter_with_drain,
+    reason = "`wave_results` is reused, with its budgeted capacity, by every wave; draining keeps the allocation"
+)]
 fn transcode_cpu_tiles(
     tiles: &[JpegTileBatchInput<'_>],
     options: &JpegToHtj2kOptions,
