@@ -293,7 +293,9 @@ fn neon_backend_uses_a_genuine_fearless_simd_token() {
 #[test]
 fn detected_backend_matches_scalar_for_unaligned_and_boundary_width_rows() {
     let backend = super::Backend::detect();
-    for width in [0usize, 1, 7, 8, 15, 16, 255, 256] {
+    for width in [
+        0usize, 1, 7, 8, 15, 16, 31, 32, 33, 63, 64, 65, 97, 255, 256,
+    ] {
         let y_storage: Vec<u8> = (0..=width)
             .map(|i| u8::try_from(i & 0xff).expect("masked fixture byte"))
             .collect();
