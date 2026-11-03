@@ -334,6 +334,10 @@ impl CudaBufferPool {
     /// Each part is copied once, straight into page-locked staging, so callers
     /// holding several host buffers need not concatenate them first.
     #[doc(hidden)]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "`CudaPinnedUploadStagingCheckout::recycle` consumes the staging checkout at its last use"
+    )]
     pub fn upload_pinned_parts(
         &self,
         parts: &[&[u8]],
@@ -386,6 +390,10 @@ impl CudaBufferPool {
     /// relies on the pool reusing a buffer only after that work completed.
     /// Other streams must establish their own dependency on the default stream.
     #[doc(hidden)]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "`into_pending` consumes the staging checkout, and the upload-stream guard must outlive the stream borrowed by `enqueue`"
+    )]
     pub fn upload_pinned_parts_enqueue(
         &self,
         parts: &[&[u8]],

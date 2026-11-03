@@ -82,9 +82,9 @@ pub enum CudaError {
     )]
     CompletionFailed {
         /// Error returned by the original CUDA operation.
-        primary: Box<CudaError>,
+        primary: Box<Self>,
         /// Error returned while establishing context-wide completion.
-        completion: Box<CudaError>,
+        completion: Box<Self>,
     },
     /// A CUDA operation failed and releasing its retained resources also failed.
     #[error(
@@ -92,9 +92,9 @@ pub enum CudaError {
     )]
     ResourceReleaseFailed {
         /// Error returned by the original CUDA operation.
-        primary: Box<CudaError>,
+        primary: Box<Self>,
         /// Error returned while releasing retained resources.
-        release: Box<CudaError>,
+        release: Box<Self>,
     },
     /// A J2K CUDA kernel reported a validated runtime failure.
     #[error("CUDA kernel {kernel} reported status {code} detail {detail}")]

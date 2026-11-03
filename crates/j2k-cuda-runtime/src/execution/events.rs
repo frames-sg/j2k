@@ -36,15 +36,15 @@ impl CudaContext {
     /// Create a CUDA timing event owned by this context.
     #[doc(hidden)]
     pub fn create_event(&self) -> Result<CudaEvent, CudaError> {
-        if let Some(event) = self
+        let pooled = self
             .inner
             .event_pool
             .lock()
             .map_err(|error| CudaError::StatePoisoned {
                 message: error.to_string(),
             })?
-            .take()
-        {
+            .take();
+        if let Some(event) = pooled {
             return Ok(CudaEvent {
                 context: self.clone(),
                 event,

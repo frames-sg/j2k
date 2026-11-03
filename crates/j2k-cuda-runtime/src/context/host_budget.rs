@@ -76,6 +76,7 @@ impl SharedCudaHostBudget {
     ) -> Result<CudaExternalHostOwner, CudaError> {
         let mut guard = self.lock()?;
         guard.reconcile_external(0, bytes)?;
+        drop(guard);
         Ok(CudaExternalHostOwner {
             authority: Arc::clone(self),
             bytes,
@@ -240,6 +241,7 @@ impl CudaExternalHostOwner {
         let authority = Arc::clone(&self.authority);
         let mut guard = authority.lock()?;
         guard.reconcile_external(self.bytes, bytes)?;
+        drop(guard);
         self.bytes = bytes;
         Ok(())
     }
@@ -341,6 +343,7 @@ impl CudaExternalHostReservation<'_> {
         let mut guard = authority.lock()?;
         self.release_reservation_locked(&mut guard)?;
         guard.reconcile_external(self.owner.bytes, new_bytes)?;
+        drop(guard);
         self.owner.bytes = new_bytes;
         self.finished = true;
         Ok(())
