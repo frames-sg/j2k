@@ -48,8 +48,9 @@ pub const fn predict(predictor: u8, ra: u16, rb: u16, rc: u16) -> u16 {
     wrapped
 }
 
-/// The prediction for the sample at column `x` of row `row` of a component,
-/// where `row` counts from the start of the scan or of the current restart
+/// The prediction for the sample at column `x` of row `row` of a component.
+///
+/// `row` counts from the start of the scan or of the current restart
 /// interval. The first row predicts from the left, seeded with
 /// `initial_predictor` (`2^(P - Pt - 1)`); later rows predict their first
 /// sample from above and the rest with `predictor`.
