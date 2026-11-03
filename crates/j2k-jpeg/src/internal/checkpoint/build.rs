@@ -10,7 +10,7 @@ use super::eoi::validate_scan_bytes;
 use super::eoi::ValidatedScanBytes;
 use super::planning::plan_checkpoint_build_from_validated;
 use super::DeviceCheckpoint;
-#[cfg(test)]
+#[cfg(any(test, feature = "bench-internals"))]
 use crate::entropy::block::{decode_block_with_activity, CoefficientBlock};
 use crate::entropy::huffman::{FULL_PRIMARY_ENTRIES, NARROW_PRIMARY_ENTRIES};
 use crate::entropy::sequential::{skip_mcu, HuffmanPrimaryWidth, PreparedDecodePlan};
@@ -198,8 +198,8 @@ pub(super) fn snapshot_checkpoint(
     }
 }
 
-#[cfg(test)]
-pub(super) fn skip_one_mcu(
+#[cfg(any(test, feature = "bench-internals"))]
+pub(crate) fn skip_one_mcu(
     plan: &PreparedDecodePlan,
     br: &mut BitReader<'_>,
     prev_dc: &mut [i32; 4],
@@ -212,8 +212,8 @@ pub(super) fn skip_one_mcu(
     }
 }
 
-#[cfg(test)]
-pub(super) fn decode_one_mcu(
+#[cfg(any(test, feature = "bench-internals"))]
+pub(crate) fn decode_one_mcu(
     plan: &PreparedDecodePlan,
     br: &mut BitReader<'_>,
     coeff: &mut CoefficientBlock,
@@ -229,7 +229,7 @@ pub(super) fn decode_one_mcu(
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "bench-internals"))]
 fn decode_one_mcu_with_entries<const N: usize>(
     plan: &PreparedDecodePlan,
     br: &mut BitReader<'_>,
