@@ -128,28 +128,28 @@ fn classic_tile_color_geometry(
     tile: &J2kReferencedTilePlan,
 ) -> Result<ReferencedTileColorGeometry<'_>, Error> {
     if let Some(geometry) = tile.color_geometry() {
-        Ok((
+        return Ok((
             geometry.dimensions,
             rgba_bit_depths_from_rgb(geometry.bit_depths),
             geometry.mct,
             geometry.transform,
             &geometry.component_plans,
-        ))
-    } else if let Some(geometry) = tile.rgba_geometry() {
-        Ok((
+        ));
+    }
+    if let Some(geometry) = tile.rgba_geometry() {
+        return Ok((
             geometry.dimensions,
             geometry.bit_depths,
             geometry.mct,
             geometry.transform,
             &geometry.component_plans,
-        ))
-    } else {
-        Err(Error::capability_rejected(
-            j2k_core::CapabilityRejection::geometry_mismatch(
-                "prepared CUDA classic color batch received a grayscale tile",
-            ),
-        ))
+        ));
     }
+    Err(Error::capability_rejected(
+        j2k_core::CapabilityRejection::geometry_mismatch(
+            "prepared CUDA classic color batch received a grayscale tile",
+        ),
+    ))
 }
 
 fn classic_tile_payloads<'a>(

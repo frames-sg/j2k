@@ -100,9 +100,9 @@ pub enum Error {
     #[error("CUDA operation failed ({primary}); CUDA cleanup also failed ({cleanup})")]
     CudaCleanupFailed {
         /// Error returned by the original operation.
-        primary: Box<Error>,
+        primary: Box<Self>,
         /// Error returned while synchronizing or releasing queued resources.
-        cleanup: Box<Error>,
+        cleanup: Box<Self>,
     },
 }
 

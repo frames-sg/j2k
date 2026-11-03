@@ -55,6 +55,7 @@ pub(crate) fn run() {
         }
     }
     criterion.final_summary();
+    drop(criterion);
 
     let evidence = AutoRoutingEvidence {
         schema_version: workloads.manifest.schema_version,

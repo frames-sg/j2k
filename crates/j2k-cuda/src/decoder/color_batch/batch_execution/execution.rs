@@ -720,13 +720,19 @@ fn upload_color_batch_resources(
     let payload_upload_start = profile::profile_now(collect_stage_timings);
     // Preparation rebased block offsets onto this back-to-back layout.
     let engine = J2kCudaEngine::new(context);
-    let resources = match table_resources.as_ref() {
-        Some(tables) => {
-            engine.upload_htj2k_decode_resources_with_tables_and_pool(payload_parts, tables, pool)
-        }
-        None => engine.upload_j2k_decode_payload_with_pool(payload_parts, pool),
-    }
-    .map_err(cuda_error)?;
+    let resources = table_resources
+        .as_ref()
+        .map_or_else(
+            || engine.upload_j2k_decode_payload_with_pool(payload_parts, pool),
+            |tables| {
+                engine.upload_htj2k_decode_resources_with_tables_and_pool(
+                    payload_parts,
+                    tables,
+                    pool,
+                )
+            },
+        )
+        .map_err(cuda_error)?;
     Ok(UploadedColorResources {
         resources: ColorBatchDecodeResources::Uploaded(resources),
         table_upload_us,

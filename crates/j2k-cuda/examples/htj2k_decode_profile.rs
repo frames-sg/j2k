@@ -411,6 +411,13 @@ fn validate_batch(
 ) -> usize {
     // Batches above the library's single-allocation cap still validate in caller order.
     let actual = output.download();
+    #[cfg_attr(
+        not(feature = "cuda-runtime"),
+        expect(
+            clippy::infallible_destructuring_match,
+            reason = "the CUDA runtime build adds the planar output arm"
+        )
+    )]
     let surfaces = match output {
         ProfileOutput::Surfaces(surfaces) => surfaces,
         #[cfg(feature = "cuda-runtime")]

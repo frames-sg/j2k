@@ -192,34 +192,38 @@ fn cuda_auto_host_output_lossy_matches_cpu_for_rgb_fixture_when_runtime_required
         return;
     }
 
-    let (pixels, width, height, components) =
-        if let Some(path) = std::env::var_os("J2K_CUDA_LOSSY_PARITY_PNM") {
-            let image = j2k_test_support::read_pnm_image(path).expect("read parity PNM fixture");
-            (
-                image.pixels,
-                image.width,
-                image.height,
-                u16::try_from(image.channels).expect("PNM component count fits u16"),
-            )
-        } else {
-            const WIDTH: u32 = 640;
-            const HEIGHT: u32 = 480;
-            let pixels = (0u32..WIDTH * HEIGHT)
-                .flat_map(|index| {
-                    let x = index % WIDTH;
-                    let y = index / WIDTH;
-                    [
-                        u8::try_from((x * 17 + y * 31 + index / 7) & 0xFF)
-                            .expect("masked red sample fits u8"),
-                        u8::try_from((x * 11 + y * 47 + index / 13) & 0xFF)
-                            .expect("masked green sample fits u8"),
-                        u8::try_from((x * 43 + y * 5 + index / 29) & 0xFF)
-                            .expect("masked blue sample fits u8"),
-                    ]
-                })
-                .collect();
-            (pixels, WIDTH, HEIGHT, 3)
-        };
+    let (pixels, width, height, components) = std::env::var_os("J2K_CUDA_LOSSY_PARITY_PNM")
+        .map_or_else(
+            || {
+                const WIDTH: u32 = 640;
+                const HEIGHT: u32 = 480;
+                let pixels = (0u32..WIDTH * HEIGHT)
+                    .flat_map(|index| {
+                        let x = index % WIDTH;
+                        let y = index / WIDTH;
+                        [
+                            u8::try_from((x * 17 + y * 31 + index / 7) & 0xFF)
+                                .expect("masked red sample fits u8"),
+                            u8::try_from((x * 11 + y * 47 + index / 13) & 0xFF)
+                                .expect("masked green sample fits u8"),
+                            u8::try_from((x * 43 + y * 5 + index / 29) & 0xFF)
+                                .expect("masked blue sample fits u8"),
+                        ]
+                    })
+                    .collect();
+                (pixels, WIDTH, HEIGHT, 3)
+            },
+            |path| {
+                let image =
+                    j2k_test_support::read_pnm_image(path).expect("read parity PNM fixture");
+                (
+                    image.pixels,
+                    image.width,
+                    image.height,
+                    u16::try_from(image.channels).expect("PNM component count fits u16"),
+                )
+            },
+        );
     let samples = || {
         J2kLossySamples::new(&pixels, width, height, components, 8, false)
             .expect("valid RGB8 samples")

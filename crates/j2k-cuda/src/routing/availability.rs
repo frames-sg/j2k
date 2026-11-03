@@ -2,6 +2,13 @@
 
 use crate::{CudaSession, Error};
 
+#[cfg_attr(
+    not(feature = "cuda-runtime"),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "feature-disabled shim preserves the runtime-enabled fallible signature"
+    )
+)]
 pub(crate) fn auto_cuda_available(session: &mut CudaSession) -> Result<bool, Error> {
     #[cfg(feature = "cuda-runtime")]
     {
