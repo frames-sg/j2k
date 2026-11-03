@@ -496,13 +496,11 @@ fn reject_cuda_skip_markers(output: &str, label: &str) -> Result<(), String> {
             .find(|marker| lowercase.contains(**marker))
             .copied()
     };
-    if let Some(marker) = marker {
+    marker.map_or(Ok(()), |marker| {
         Err(format!(
             "{label} emitted CUDA skip evidence `{marker}`; release validation must fail rather than skip"
         ))
-    } else {
-        Ok(())
-    }
+    })
 }
 
 fn listed_rust_tests(output: &str) -> BTreeSet<String> {

@@ -140,9 +140,7 @@ fn semver_check_command_uses_the_computed_candidate_release_type() {
         baseline_count: 1,
         candidate_count: 0,
         added: BTreeSet::new(),
-        removed: ["pub struct j2k_core::DecoderContext<C>".to_string()]
-            .into_iter()
-            .collect(),
+        removed: std::iter::once("pub struct j2k_core::DecoderContext<C>".to_string()).collect(),
         hidden: BTreeSet::new(),
     };
 

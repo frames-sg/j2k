@@ -22,12 +22,14 @@ static TEST_CARGO_SERIAL: Mutex<()> = Mutex::new(());
 
 fn runner_cargo() -> OsString {
     #[cfg(all(test, unix))]
-    if let Some(program) = TEST_CARGO_PROGRAM
-        .lock()
-        .expect("test Cargo program lock")
-        .clone()
     {
-        return program;
+        let program = TEST_CARGO_PROGRAM
+            .lock()
+            .expect("test Cargo program lock")
+            .clone();
+        if let Some(program) = program {
+            return program;
+        }
     }
     cargo()
 }

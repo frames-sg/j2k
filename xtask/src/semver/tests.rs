@@ -248,9 +248,7 @@ fn published_candidate_uses_its_computed_release_type() {
         baseline_count: 1,
         candidate_count: 0,
         added: BTreeSet::new(),
-        removed: ["pub fn alpha::removed()".to_string()]
-            .into_iter()
-            .collect(),
+        removed: std::iter::once("pub fn alpha::removed()".to_string()).collect(),
         hidden: BTreeSet::new(),
     };
     assert_eq!(semver_check_release_type(&diff), ReleaseType::Major);
@@ -266,7 +264,7 @@ fn report_has_one_published_details_section_without_consumed_transition() {
         candidate_count: 1,
         added: BTreeSet::new(),
         removed: BTreeSet::new(),
-        hidden: ["pub fn alpha::hidden()".to_string()].into_iter().collect(),
+        hidden: std::iter::once("pub fn alpha::hidden()".to_string()).collect(),
     };
     let report = render_report("0.7.0", &[diff], "0.52.0");
     assert_eq!(report.matches("## Published-package details").count(), 1);
@@ -344,12 +342,8 @@ reviews:
 
 #[test]
 fn unreviewed_and_stale_breaking_fingerprints_fail() {
-    let removed = ["pub fn alpha::old()".to_string()]
-        .into_iter()
-        .collect::<BTreeSet<_>>();
-    let added = ["pub fn alpha::new()".to_string()]
-        .into_iter()
-        .collect::<BTreeSet<_>>();
+    let removed = std::iter::once("pub fn alpha::old()".to_string()).collect::<BTreeSet<_>>();
+    let added = std::iter::once("pub fn alpha::new()".to_string()).collect::<BTreeSet<_>>();
     let diff = PackageApiDiff {
         package: "alpha".to_string(),
         candidate_version: "0.7.0".to_string(),
@@ -367,9 +361,7 @@ fn unreviewed_and_stale_breaking_fingerprints_fail() {
     };
     assert!(validate_reviews(&empty, "0.7.0", &[diff]).is_err());
 
-    let removed = ["pub fn alpha::old()".to_string()]
-        .into_iter()
-        .collect::<BTreeSet<_>>();
+    let removed = std::iter::once("pub fn alpha::old()".to_string()).collect::<BTreeSet<_>>();
     let diff = PackageApiDiff {
         package: "alpha".to_string(),
         candidate_version: "0.7.0".to_string(),
@@ -378,24 +370,23 @@ fn unreviewed_and_stale_breaking_fingerprints_fail() {
         candidate_count: 0,
         added: BTreeSet::new(),
         removed,
-        hidden: ["pub fn alpha::hidden()".to_string()].into_iter().collect(),
+        hidden: std::iter::once("pub fn alpha::hidden()".to_string()).collect(),
     };
-    let reviews = [(
+    let reviews = std::iter::once((
         "alpha".to_string(),
         ReviewEntry {
             removed_fingerprint: "fnv1a64:stale".to_string(),
             added_fingerprint: "none".to_string(),
             hidden_count: 1,
             hidden_fingerprint: fingerprint(
-                &["pub fn alpha::hidden()".to_string()].into_iter().collect(),
+                &std::iter::once("pub fn alpha::hidden()".to_string()).collect(),
             ),
             rationale: "Intentional reviewed compatibility change.".to_string(),
             hidden_rationale: Some(
                 "Reviewed reachable implementation adapter inventory.".to_string(),
             ),
         },
-    )]
-    .into_iter()
+    ))
     .collect();
     let stale = ReviewConfig {
         candidate_version: "0.7.0".to_string(),
@@ -408,7 +399,7 @@ fn unreviewed_and_stale_breaking_fingerprints_fail() {
 #[test]
 fn source_break_ledger_exactly_covers_removed_api_items() {
     let removed_item = "pub fn alpha::old()".to_string();
-    let removed = [removed_item.clone()].into_iter().collect::<BTreeSet<_>>();
+    let removed = std::iter::once(removed_item.clone()).collect::<BTreeSet<_>>();
     let diff = PackageApiDiff {
         package: "alpha".to_string(),
         candidate_version: "0.8.0".to_string(),
@@ -419,7 +410,7 @@ fn source_break_ledger_exactly_covers_removed_api_items() {
         removed: removed.clone(),
         hidden: BTreeSet::new(),
     };
-    let reviews = [(
+    let reviews = std::iter::once((
         "alpha".to_string(),
         ReviewEntry {
             removed_fingerprint: fingerprint(&removed),
@@ -429,13 +420,12 @@ fn source_break_ledger_exactly_covers_removed_api_items() {
             rationale: "Intentional reviewed compatibility change.".to_string(),
             hidden_rationale: None,
         },
-    )]
-    .into_iter()
+    ))
     .collect();
     let source_break = BreakLedgerEntry {
         id: "remove-old".to_string(),
         kind: BreakKind::Source,
-        packages: ["alpha".to_string()].into_iter().collect(),
+        packages: std::iter::once("alpha".to_string()).collect(),
         removed_items: vec![RemovedApiItem {
             package: "alpha".to_string(),
             item: removed_item,
