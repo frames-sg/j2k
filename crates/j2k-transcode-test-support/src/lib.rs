@@ -80,6 +80,11 @@ pub fn prequantized_component_from_dwt97(
 ///
 /// Code-blocks are emitted outer `cby`, inner `cbx`; each block's coefficients
 /// are row-major, matching the native encoder's `copy_code_block_coefficients`.
+///
+/// # Panics
+///
+/// Panics if a code-block dimension or count does not fit its codestream `u32`
+/// field.
 #[must_use]
 pub fn quantize_codeblock_subband(
     coefficients: &[f64],
@@ -261,57 +266,12 @@ mod tests {
 
         let expected = encode_precomputed_htj2k_97(&precomputed_image, &options)
             .expect("native precomputed 9/7 encode");
-        let actual =
-            encode_prequantized_htj2k_97(&native_prequantized_image(prequantized_image), &options)
-                .expect("oracle prequantized 9/7 encode");
+        let actual = encode_prequantized_htj2k_97(&prequantized_image, &options)
+            .expect("oracle prequantized 9/7 encode");
 
         assert_eq!(
             actual, expected,
             "prequantized oracle must reproduce the native precomputed-DWT codestream"
         );
-    }
-
-    fn native_prequantized_image(
-        image: PrequantizedHtj2k97Image,
-    ) -> j2k_native::PrequantizedHtj2k97Image {
-        j2k_native::PrequantizedHtj2k97Image {
-            width: image.width,
-            height: image.height,
-            bit_depth: image.bit_depth,
-            signed: image.signed,
-            components: image
-                .components
-                .into_iter()
-                .map(|component| j2k_native::PrequantizedHtj2k97Component {
-                    x_rsiz: component.x_rsiz,
-                    y_rsiz: component.y_rsiz,
-                    resolutions: component
-                        .resolutions
-                        .into_iter()
-                        .map(|resolution| j2k_native::PrequantizedHtj2k97Resolution {
-                            subbands: resolution
-                                .subbands
-                                .into_iter()
-                                .map(|subband| j2k_native::PrequantizedHtj2k97Subband {
-                                    sub_band_type: subband.sub_band_type,
-                                    num_cbs_x: subband.num_cbs_x,
-                                    num_cbs_y: subband.num_cbs_y,
-                                    total_bitplanes: subband.total_bitplanes,
-                                    code_blocks: subband
-                                        .code_blocks
-                                        .into_iter()
-                                        .map(|block| j2k_native::PrequantizedHtj2k97CodeBlock {
-                                            coefficients: block.coefficients,
-                                            width: block.width,
-                                            height: block.height,
-                                        })
-                                        .collect(),
-                                })
-                                .collect(),
-                        })
-                        .collect(),
-                })
-                .collect(),
-        }
     }
 }

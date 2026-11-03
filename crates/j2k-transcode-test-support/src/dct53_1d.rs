@@ -22,7 +22,7 @@ pub struct Dwt53OneLevel<T> {
 }
 
 /// One single-level 5/3 transform result for an arbitrary-length 1D row.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dwt53Row<T> {
     /// Low-pass samples, corresponding to even positions after lifting.
     pub low: Vec<T>,
@@ -101,6 +101,10 @@ pub fn idct8_then_dwt53_float(coefficients: [f64; 8]) -> Dwt53OneLevel<f64> {
 ///
 /// Like the production path, output coefficients are projected from the DCT
 /// basis without first creating a row of spatial samples.
+///
+/// # Panics
+///
+/// Never in practice: the full row length is always covered by `blocks`.
 #[must_use]
 pub fn dct8_blocks_to_dwt53_float_linear(blocks: &[[f64; 8]]) -> Dwt53Row<f64> {
     dct8_blocks_to_dwt53_float_linear_with_len(blocks, blocks.len() * 8)
@@ -139,6 +143,10 @@ pub fn dct8_blocks_to_dwt53_float_linear_with_len(
 
 /// Reference path for an arbitrary-length row:
 /// DCT coefficients -> float IDCT samples -> linearized 5/3.
+///
+/// # Panics
+///
+/// Never in practice: the full row length is always covered by `blocks`.
 #[must_use]
 pub fn idct8_blocks_then_dwt53_float(blocks: &[[f64; 8]]) -> Dwt53Row<f64> {
     idct8_blocks_then_dwt53_float_with_len(blocks, blocks.len() * 8)

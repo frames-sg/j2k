@@ -32,6 +32,11 @@ crate::move_only::assert_move_only!(Dwt53MultiLevel<f64>);
 
 impl Dwt53MultiLevel<f64> {
     /// Maximum absolute coefficient difference across matching levels.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the two decompositions differ in level count or final LL
+    /// dimensions.
     #[must_use]
     pub fn max_abs_diff(&self, other: &Self) -> f64 {
         assert_eq!(self.levels.len(), other.levels.len());
@@ -94,6 +99,15 @@ impl fmt::Display for Dwt53MultiLevelError {
 impl std::error::Error for Dwt53MultiLevelError {}
 
 /// Direct level-1 DCT-to-5/3 followed by conventional LL recursion.
+///
+/// # Errors
+///
+/// Returns [`Dwt53MultiLevelError`] when `levels` is zero or exceeds what an
+/// 8x8 block supports.
+///
+/// # Panics
+///
+/// Never in practice: a single 8x8 block is always a valid DCT grid.
 pub fn dct8x8_to_dwt53_multilevel_float_linear(
     block: [[f64; 8]; 8],
     levels: usize,
@@ -107,6 +121,15 @@ pub fn dct8x8_to_dwt53_multilevel_float_linear(
 
 /// Reference multilevel path:
 /// DCT coefficients -> float IDCT samples -> conventional 5/3 recursion.
+///
+/// # Errors
+///
+/// Returns [`Dwt53MultiLevelError`] when `levels` is zero or exceeds what an
+/// 8x8 block supports.
+///
+/// # Panics
+///
+/// Never in practice: a single 8x8 block is always a valid DCT grid.
 pub fn idct8x8_then_dwt53_multilevel_float(
     block: [[f64; 8]; 8],
     levels: usize,
