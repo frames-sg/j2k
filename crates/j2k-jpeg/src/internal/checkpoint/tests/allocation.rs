@@ -7,7 +7,7 @@ use crate::internal::checkpoint::{
     checked_actual_checkpoint_live_bytes, checked_checkpoint_reservation_peak,
     checked_checkpoint_workspace_bytes, host_allocation_error,
     reconcile_actual_checkpoint_capacity, reserve_checkpoint_capacity, try_checkpoint_vec,
-    CpuCheckpointCache, DeviceCheckpoint,
+    CompactCheckpoint, CpuCheckpointCache, DeviceCheckpoint,
 };
 
 #[test]
@@ -54,14 +54,17 @@ fn allocator_returned_checkpoint_capacity_is_postchecked() {
 
 #[test]
 fn retained_checkpoint_cache_reduces_the_next_workspace_boundary() {
+    let cache_checkpoint_bytes = core::mem::size_of::<CompactCheckpoint>();
     let checkpoint_bytes = core::mem::size_of::<DeviceCheckpoint>();
-    let mut cache = CpuCheckpointCache::default();
-    reserve_checkpoint_capacity(&mut cache.checkpoints, 3, 0, 3 * checkpoint_bytes)
+    let cache = CpuCheckpointCache::default();
+    cache
+        .reserve(3, 0, 3 * cache_checkpoint_bytes)
         .expect("cache reservation fits its boundary");
     let retained = cache
         .retained_allocation_bytes()
         .expect("retained checkpoint capacity fits usize");
-    assert_eq!(retained, cache.checkpoints.capacity() * checkpoint_bytes);
+    assert!(retained >= 3 * cache_checkpoint_bytes);
+    assert_eq!(retained % cache_checkpoint_bytes, 0);
 
     let terminated_copy_bytes = 5;
     let new_workspace_bytes = checkpoint_bytes + terminated_copy_bytes;
@@ -188,7 +191,7 @@ fn checkpoint_reservation_fails_before_exceeding_the_host_cap() {
         }
     );
 
-    let mut cached = Vec::new();
+    let mut cached = Vec::<DeviceCheckpoint>::new();
     let error = reserve_checkpoint_capacity(&mut cached, 2, 0, checkpoint_bytes)
         .expect_err("lazy checkpoint growth must use the same host cap");
     assert_eq!(

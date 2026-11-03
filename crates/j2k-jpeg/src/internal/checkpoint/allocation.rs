@@ -4,6 +4,7 @@
 
 use alloc::vec::Vec;
 
+#[cfg(test)]
 use super::DeviceCheckpoint;
 use crate::error::JpegError;
 
@@ -69,13 +70,6 @@ pub(super) fn try_checkpoint_vec(
 ) -> Result<Vec<DeviceCheckpoint>, JpegError> {
     let mut live_bytes = 0;
     try_checkpoint_vec_with_live_budget(capacity, &mut live_bytes, allocation_cap)
-}
-
-pub(super) fn checkpoint_allocation_bytes(
-    checkpoint_count: usize,
-    allocation_cap: usize,
-) -> Result<usize, JpegError> {
-    element_capacity_bytes::<DeviceCheckpoint>(checkpoint_count, allocation_cap)
 }
 
 pub(super) fn element_capacity_bytes<T>(

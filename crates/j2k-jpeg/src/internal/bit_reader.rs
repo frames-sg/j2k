@@ -533,6 +533,124 @@ impl<'a> BitReader<'a> {
     }
 }
 
+// Readers at an arbitrary data position, for entropy checkpoints that must
+// not depend on refill read-ahead (cache, persisted and speculative index
+// builds). Kept apart from the refill paths.
+impl<'a> BitReader<'a> {
+    /// Canonical position of the next unread real bit: the raw offset of the
+    /// data byte that holds it and the bit's index from that byte's MSB.
+    ///
+    /// Unlike [`Self::snapshot`], the result does not depend on how far
+    /// earlier refills read ahead, so two readers at the same point of the
+    /// coded stream always agree. A data `0xFF` starts at the first `0xFF`
+    /// of its `FF.. 00` run; a reader parked on a marker reports the
+    /// marker's first fill byte. [`Self::from_data_position`] inverts it.
+    pub(crate) fn data_position(&self) -> (usize, u8) {
+        let mut start = self.pos;
+        if self.marker.is_some() {
+            // A refill that observed a marker parks on its last 0xFF; the
+            // earlier fill bytes belong to the marker, not to the data.
+            while start > 0 && self.bytes[start - 1] == 0xFF {
+                start -= 1;
+            }
+        }
+        let real_bits = self.unread_real_bits();
+        for _ in 0..real_bits.div_ceil(8) {
+            start = previous_data_byte(self.bytes, start);
+        }
+        (start, (8 - real_bits % 8) % 8)
+    }
+
+    /// Reader positioned at a [`Self::data_position`] of `bytes`, or `None`
+    /// when `byte`/`bit` cannot name a data bit there (past the end, or a
+    /// partly read byte that is not data).
+    pub(crate) fn from_data_position(bytes: &'a [u8], byte: usize, bit: u8) -> Option<Self> {
+        if bit >= 8 || byte > bytes.len() {
+            return None;
+        }
+        let mut reader = Self::new(bytes);
+        reader.pos = byte;
+        if bit == 0 {
+            return Some(reader);
+        }
+        let mut next = byte + 1;
+        let value = *bytes.get(byte)?;
+        if value == 0xFF {
+            while bytes.get(next) == Some(&0xFF) {
+                next += 1;
+            }
+            if bytes.get(next) != Some(&0x00) {
+                return None;
+            }
+            next += 1;
+        }
+        reader.pos = next;
+        reader.acc = (u64::from(value) << (ACC_BITS - 8)) << bit;
+        reader.bits = 8 - bit;
+        Some(reader)
+    }
+}
+
+/// Raw offset where the data byte ending at `end` starts: one ordinary byte,
+/// or a whole `FF.. 00` run, which refill decodes as a single `0xFF`.
+fn previous_data_byte(bytes: &[u8], end: usize) -> usize {
+    if end >= 2 && bytes[end - 1] == 0x00 && bytes[end - 2] == 0xFF {
+        let mut start = end - 2;
+        while start > 0 && bytes[start - 1] == 0xFF {
+            start -= 1;
+        }
+        start
+    } else {
+        end - 1
+    }
+}
+
+#[cfg(test)]
+mod position_tests {
+    use super::BitReader;
+
+    /// Readers rebuilt from `data_position` at every bit of a stream with
+    /// stuffing, filled stuffing, and a filled terminal marker read the same
+    /// bits and report the same position as the reader they came from.
+    #[test]
+    fn data_position_round_trips_at_every_bit() {
+        let data = [
+            0x12, 0xFF, 0x00, 0x00, 0x7F, 0xFF, 0xFF, 0x00, 0xA5, 0xFF, 0x00, 0xFF, 0x00, 0x3C,
+            0xC3, 0x01, 0xFF, 0xFF, 0xD9,
+        ];
+        let data_bits = 11 * 8;
+        for step in 1..=13u8 {
+            let mut reader = BitReader::new(&data);
+            let mut consumed = 0;
+            while consumed < data_bits {
+                let (byte, bit) = reader.data_position();
+                let mut rebuilt =
+                    BitReader::from_data_position(&data, byte, bit).expect("valid data position");
+                assert_eq!(rebuilt.data_position(), (byte, bit), "consumed {consumed}");
+                let take = step.min(u8::try_from(data_bits - consumed).unwrap());
+                let expected = reader.read_bits(take).unwrap();
+                assert_eq!(
+                    rebuilt.read_bits(take).unwrap(),
+                    expected,
+                    "consumed {consumed}"
+                );
+                assert_eq!(rebuilt.data_position(), reader.data_position());
+                consumed += usize::from(take);
+            }
+            assert_eq!(reader.data_position(), (16, 0));
+        }
+    }
+
+    #[test]
+    fn data_position_rejects_positions_that_are_not_data() {
+        let data = [0x12, 0xFF, 0xD9];
+        assert!(BitReader::from_data_position(&data, 1, 3).is_none());
+        assert!(BitReader::from_data_position(&data, 4, 0).is_none());
+        assert!(BitReader::from_data_position(&data, 0, 8).is_none());
+        assert!(BitReader::from_data_position(&data, 3, 0).is_some());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

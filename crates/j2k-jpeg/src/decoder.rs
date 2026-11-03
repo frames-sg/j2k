@@ -41,12 +41,10 @@ use j2k_core::{
     CompressedTransferSyntax, DecodeOutcome as CoreDecodeOutcome, DecodeRowsError, Downscale,
     ImageCodec, ImageDecode, ImageDecodeRows, PixelFormat, RowSink, TileBatchDecode,
 };
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 pub(crate) const DEFAULT_MAX_DECODE_BYTES: usize = 512 * 1024 * 1024;
 pub(super) const MAX_DECODE_SCAN_WARNINGS: usize = 1;
-const CPU_ROI_CHECKPOINT_CADENCE_MCUS: u32 = 1024;
 const CPU_ROI_CHECKPOINT_MIN_TARGET_MCUS: u32 = 4096;
 
 std::thread_local! {
@@ -307,7 +305,7 @@ pub struct Decoder<'a> {
     pub(crate) plan: PreparedDecodePlan,
     pub(crate) progressive_plan: Option<PreparedProgressivePlan>,
     lossless_plan: Option<PreparedLosslessPlan>,
-    pub(crate) cpu_entropy_checkpoints: Mutex<CpuCheckpointCache>,
+    pub(crate) cpu_entropy_checkpoints: CpuCheckpointCache,
 }
 
 struct PreparedDecoderMetadata {
@@ -481,7 +479,7 @@ impl<'a> Decoder<'a> {
             plan,
             progressive_plan,
             lossless_plan,
-            cpu_entropy_checkpoints: Mutex::new(CpuCheckpointCache::default()),
+            cpu_entropy_checkpoints: CpuCheckpointCache::default(),
         })
     }
 
@@ -506,7 +504,7 @@ impl<'a> Decoder<'a> {
             plan,
             progressive_plan: None,
             lossless_plan: None,
-            cpu_entropy_checkpoints: Mutex::new(CpuCheckpointCache::default()),
+            cpu_entropy_checkpoints: CpuCheckpointCache::default(),
         }))
     }
 
@@ -569,7 +567,7 @@ impl<'a> Decoder<'a> {
             plan,
             progressive_plan: None,
             lossless_plan: None,
-            cpu_entropy_checkpoints: Mutex::new(CpuCheckpointCache::default()),
+            cpu_entropy_checkpoints: CpuCheckpointCache::default(),
         };
         let result = operation(&decoder);
         let Self { plan, .. } = decoder;

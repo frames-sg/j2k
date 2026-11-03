@@ -414,10 +414,7 @@ fn decode_region_output_format_writes_custom_rgba_alpha() {
 }
 
 fn has_restart_index(dec: &Decoder<'_>) -> bool {
-    dec.lock_cpu_entropy_checkpoints()
-        .expect("cache")
-        .restart_index
-        .is_some()
+    dec.cpu_entropy_checkpoints.has_restart_index()
 }
 
 #[test]
@@ -486,14 +483,9 @@ fn large_fast_420_region_decode_populates_cpu_entropy_checkpoints() {
     )
     .expect("deep ROI decode");
 
-    let cache = dec
-        .cpu_entropy_checkpoints
-        .lock()
-        .expect("checkpoint cache mutex");
-    assert!(cache
-        .checkpoints
-        .iter()
-        .any(|checkpoint| checkpoint.mcu_index >= CPU_ROI_CHECKPOINT_MIN_TARGET_MCUS));
+    let grid = crate::internal::checkpoint::CheckpointGrid::for_plan(&dec.plan);
+    let published = dec.cpu_entropy_checkpoints.published().len();
+    assert!(published > grid.slot_at_or_before(CPU_ROI_CHECKPOINT_MIN_TARGET_MCUS));
 }
 
 #[test]

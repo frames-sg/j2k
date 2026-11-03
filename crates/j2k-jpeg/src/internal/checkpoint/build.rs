@@ -10,11 +10,10 @@ use super::eoi::validate_scan_bytes;
 use super::eoi::ValidatedScanBytes;
 use super::planning::plan_checkpoint_build_from_validated;
 use super::DeviceCheckpoint;
-use crate::entropy::block::skip_block;
 #[cfg(test)]
 use crate::entropy::block::{decode_block_with_activity, CoefficientBlock};
 use crate::entropy::huffman::{FULL_PRIMARY_ENTRIES, NARROW_PRIMARY_ENTRIES};
-use crate::entropy::sequential::{HuffmanPrimaryWidth, PreparedDecodePlan};
+use crate::entropy::sequential::{skip_mcu, HuffmanPrimaryWidth, PreparedDecodePlan};
 use crate::error::{JpegError, MarkerKind};
 use crate::internal::bit_reader::BitReader;
 
@@ -219,18 +218,11 @@ pub(super) fn skip_one_mcu_with_entries<const N: usize>(
     br: &mut BitReader<'_>,
     prev_dc: &mut [i32; 4],
 ) -> Result<(), JpegError> {
-    // Checkpoints retain only the entropy position and DC predictors. `skip_block`
-    // performs the same Huffman validation and bit consumption without writing
-    // dequantized coefficients that this traversal would immediately discard.
-    for component in &plan.components {
-        let plane_index = component.output_index;
-        let dc_table = plan.dc_table_with_entries::<N>(component)?;
-        let ac_table = plan.ac_table_with_entries::<N>(component)?;
-        for _ in 0..u32::from(component.h) * u32::from(component.v) {
-            skip_block(br, dc_table, ac_table, &mut prev_dc[plane_index])?;
-        }
-    }
-    Ok(())
+    // Checkpoints retain only the entropy position and DC predictors; the
+    // shared skip performs the same Huffman validation and bit consumption
+    // without writing dequantized coefficients. Device packet checkpoints
+    // keep the narrow primary lookup they were specified with.
+    skip_mcu::<N>(plan, br, prev_dc, false)
 }
 
 #[cfg(test)]

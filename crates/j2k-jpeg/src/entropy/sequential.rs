@@ -30,7 +30,7 @@ use self::output_scratch::{OutputScratch, RgbOutputScratch};
 pub(crate) use self::plan::{
     HuffmanPrimaryWidth, PreparedComponentPlan, PreparedDecodePlan, ResolvedPreparedComponentPlan,
 };
-pub(crate) use self::restart::{finish_scan, restart_checkpoint_from_index};
+pub(crate) use self::restart::{finish_scan, restart_checkpoint_from_index, skip_mcu, McuSkipper};
 pub(crate) use self::rgb444::{decode_scan_fast_rgb_v1, decode_scan_fast_rgb_v1_region};
 use self::stripe::StripePlane;
 pub(crate) use self::stripe::{StripeBuffer, StripeLayout};
@@ -62,6 +62,6 @@ use crate::internal::bit_reader::BitReader;
 use crate::internal::scratch::ScratchPool;
 
 #[cfg(test)]
-mod stream_tests;
+pub(crate) mod stream_tests;
 #[cfg(test)]
 mod tests;

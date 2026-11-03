@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::PreparedDecodePlan;
+use super::{PreparedDecodePlan, ResolvedPreparedComponentPlan};
 use crate::allocation::try_vec_with_capacity;
 use crate::entropy::block::skip_block;
 use crate::error::{JpegError, Warning};
@@ -187,7 +187,7 @@ pub(crate) fn restart_checkpoint_from_index(
     })
 }
 
-pub(super) fn skip_mcu<const N: usize>(
+pub(crate) fn skip_mcu<const N: usize>(
     plan: &PreparedDecodePlan,
     br: &mut BitReader<'_>,
     prev_dc: &mut [i32],
@@ -204,6 +204,54 @@ pub(super) fn skip_mcu<const N: usize>(
         }
     }
     Ok(())
+}
+
+/// [`skip_mcu`] with every component's Huffman tables resolved once, for
+/// loops that skip many MCUs. A single MCU skip should stay on [`skip_mcu`]:
+/// resolving four components up front costs more than one MCU's lookups.
+#[derive(Clone, Copy)]
+pub(crate) struct McuSkipper<'a, const N: usize> {
+    /// Tables, plane index, and blocks per MCU of each scan component.
+    components: [(ResolvedPreparedComponentPlan<'a, N>, usize, u32); 4],
+    component_count: usize,
+}
+
+impl<'a, const N: usize> McuSkipper<'a, N> {
+    pub(crate) fn new(plan: &'a PreparedDecodePlan, wide_huffman: bool) -> Result<Self, JpegError> {
+        let first = plan.resolved_component_with_entries::<N>(0)?;
+        let mut components = [(first, 0, 0); 4];
+        if plan.components.len() > components.len() {
+            return Err(JpegError::InternalInvariant {
+                reason: "sequential decode supports at most four components",
+            });
+        }
+        for (slot, comp) in components.iter_mut().zip(&plan.components) {
+            *slot = (
+                plan.resolve_component_with_entries::<N>(comp)?
+                    .with_wide_huffman(wide_huffman),
+                comp.output_index,
+                u32::from(comp.h) * u32::from(comp.v),
+            );
+        }
+        Ok(Self {
+            components,
+            component_count: plan.components.len(),
+        })
+    }
+
+    #[inline]
+    pub(crate) fn skip(
+        &self,
+        br: &mut BitReader<'_>,
+        prev_dc: &mut [i32],
+    ) -> Result<(), JpegError> {
+        for &(tables, plane, blocks) in &self.components[..self.component_count] {
+            for _ in 0..blocks {
+                skip_block(br, tables.dc_table, tables.ac_table, &mut prev_dc[plane])?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -257,9 +305,11 @@ pub(super) fn skip_to_mcu<const N: usize>(
     target: McuSkipTarget,
     state: &mut McuSkipState<'_, '_>,
 ) -> Result<(), JpegError> {
-    skip_to_mcu_with(target, state, |br, prev_dc| {
-        skip_mcu::<N>(plan, br, prev_dc, target.wide_huffman)
-    })
+    if *state.current_mcu >= target.target_mcu {
+        return Ok(());
+    }
+    let skipper = McuSkipper::<N>::new(plan, target.wide_huffman)?;
+    skip_to_mcu_with(target, state, |br, prev_dc| skipper.skip(br, prev_dc))
 }
 
 /// [`skip_to_mcu`] with a route's own single-MCU skip, for decoders whose

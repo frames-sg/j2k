@@ -30,6 +30,12 @@ Staged workspace version: `0.13.2`.
   transform to sRGB moves no 8-bit channel or neutral ramp sample by more
   than one code value. Other ICC profiles remain unsupported for these
   outputs (#321).
+- A JPEG `Decoder`'s entropy checkpoints now sit on a grid of row starts
+  plus spans within each row, looked up in constant time, and the
+  checkpoint cache no longer holds its lock while it skips through the
+  scan. The fast 4:2:0, 4:4:4 and 4:2:2 region routes seek through it. On
+  Apple M5 Max, warm requests for the last rows of a scan are 2–4.4x
+  faster. Output is byte-identical.
 - JPEG restart markers are found by one memchr-based scanner, which
   replaces two byte-at-a-time loops and four other marker scanners. A
   `Decoder` builds the restart index of a restart-coded scan on its second

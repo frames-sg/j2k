@@ -8,11 +8,10 @@ use super::{
     scaled_rect_covering, DecodeOptions, DecodeOutcome, DecodedTile, Decoder, DecoderContext,
     Downscale, JpegError, JpegView, PixelFormat, PreparedJpeg, PreparedJpegTileJob, Rect,
     ScratchPool, TileBatchError, TileBatchOptions, TileDecodeJob, TileDecodeOutput,
-    TileRegionScaledDecodeJob, TileScaledDecodeJob, Vec, CPU_ROI_CHECKPOINT_CADENCE_MCUS,
-    DEFAULT_CONTEXT, DEFAULT_MAX_DECODE_BYTES,
+    TileRegionScaledDecodeJob, TileScaledDecodeJob, Vec, DEFAULT_CONTEXT, DEFAULT_MAX_DECODE_BYTES,
 };
 use crate::allocation::checked_add_allocation_bytes;
-use crate::internal::checkpoint::DeviceCheckpoint;
+use crate::internal::checkpoint::CheckpointGrid;
 
 /// One-shot parse-plus-decode of an independent JPEG tile into the caller's
 /// buffer, reusing a pre-allocated [`ScratchPool`]. This is the primitive
@@ -244,32 +243,7 @@ fn planned_roi_checkpoint_bytes(decoder: &Decoder<'_>, roi: Rect) -> Result<usiz
     if roi == Rect::full(decoder.info.dimensions) || decoder.plan.restart_interval.is_some() {
         return Ok(0);
     }
-    let mcu_width = u32::from(decoder.plan.sampling.max_h) * 8;
-    let mcu_height = u32::from(decoder.plan.sampling.max_v) * 8;
-    let total_mcus = decoder
-        .info
-        .dimensions
-        .0
-        .div_ceil(mcu_width)
-        .checked_mul(decoder.info.dimensions.1.div_ceil(mcu_height))
-        .ok_or(JpegError::MemoryCapExceeded {
-            requested: usize::MAX,
-            cap: DEFAULT_MAX_DECODE_BYTES,
-        })?;
-    let checkpoint_count = usize::try_from(total_mcus.div_ceil(CPU_ROI_CHECKPOINT_CADENCE_MCUS))
-        .ok()
-        .and_then(|count| count.checked_add(1))
-        .ok_or(JpegError::MemoryCapExceeded {
-            requested: usize::MAX,
-            cap: DEFAULT_MAX_DECODE_BYTES,
-        })?;
-    let checkpoint_bytes = checkpoint_count
-        .checked_mul(core::mem::size_of::<DeviceCheckpoint>())
-        .ok_or(JpegError::MemoryCapExceeded {
-            requested: usize::MAX,
-            cap: DEFAULT_MAX_DECODE_BYTES,
-        })?;
-    checked_add_allocation_bytes(0, checkpoint_bytes)
+    CheckpointGrid::for_plan(&decoder.plan).full_cache_bytes()
 }
 
 /// Decode prepared TIFF/WSI JPEG tiles into caller-owned RGB8 output buffers.
