@@ -104,6 +104,7 @@ impl<B: Backend> Batcher<B, TrainingItem, Result<TrainingBatch<B>, TrainingBatch
             .ok_or(TrainingBatchError::DecoderUnavailable)?
             .decode(inputs)
             .map_err(|error| TrainingBatchError::Decode(error.to_string()))?;
+        drop(decoder);
 
         let mut failures = output
             .errors()

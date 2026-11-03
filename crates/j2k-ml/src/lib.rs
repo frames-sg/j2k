@@ -120,6 +120,17 @@ pub enum ImageDecodeWarning {
 
 #[derive(Debug)]
 pub(crate) enum GroupInfo {
+    #[cfg_attr(
+        not(any(
+            feature = "cpu",
+            feature = "cuda",
+            all(feature = "metal", target_os = "macos")
+        )),
+        expect(
+            dead_code,
+            reason = "only the backend features produce groups; the accessors stay feature-independent"
+        )
+    )]
     Jpeg2000(BatchGroupInfo),
     #[cfg(feature = "cpu")]
     Jpeg {
