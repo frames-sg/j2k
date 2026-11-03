@@ -464,6 +464,26 @@ impl BenchAvx2Idct {
     pub fn run(&self, input: &[i16; 64], output: &mut [u8; 64]) {
         crate::idct::avx2::idct_islow(self.avx2, input, output);
     }
+
+    /// The entry point for blocks whose natural-order rows 4..7 are zero.
+    pub fn run_bottom_half_zero(&self, input: &[i16; 64], output: &mut [u8; 64]) {
+        crate::idct::avx2::idct_islow_bottom_half_zero(self.avx2, input, output);
+    }
+
+    /// The entry point for blocks whose natural-order columns 4..7 are zero.
+    pub fn run_right_half_zero(&self, input: &[i16; 64], output: &mut [u8; 64]) {
+        crate::idct::avx2::idct_islow_right_half_zero(self.avx2, input, output);
+    }
+
+    /// The entry point for blocks with coefficients only in the top-left 4x4.
+    pub fn run_top_left_quadrant(&self, input: &[i16; 64], output: &mut [u8; 64]) {
+        crate::idct::avx2::idct_islow_top_left_quadrant(self.avx2, input, output);
+    }
+
+    /// The entry point for blocks with coefficients only in the top-left 2x2.
+    pub fn run_top_left_2x2(&self, input: &[i16; 64], output: &mut [u8; 64]) {
+        crate::idct::avx2::idct_islow_top_left_2x2(self.avx2, input, output);
+    }
 }
 
 #[cfg(test)]

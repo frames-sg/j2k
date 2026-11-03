@@ -21,14 +21,14 @@ use core::arch::x86_64::{
     __m128i, __m256i, _mm256_abs_epi16, _mm256_add_epi32, _mm256_adds_epu16, _mm256_blend_epi16,
     _mm256_broadcastsi128_si256, _mm256_castsi256_si128, _mm256_extracti128_si256,
     _mm256_madd_epi16, _mm256_packs_epi32, _mm256_packus_epi16, _mm256_permute4x64_epi64,
-    _mm256_set1_epi32, _mm256_setr_epi32, _mm256_shuffle_epi8, _mm256_slli_epi32,
-    _mm256_srai_epi32, _mm256_sub_epi32, _mm256_unpackhi_epi16, _mm256_unpackhi_epi32,
-    _mm256_unpackhi_epi64, _mm256_unpacklo_epi16, _mm256_unpacklo_epi32, _mm256_unpacklo_epi64,
-    _mm_add_epi32, _mm_adds_epu16, _mm_blendv_epi8, _mm_cmpeq_epi32, _mm_cvtepi16_epi32,
-    _mm_mullo_epi32, _mm_or_si128, _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi16,
-    _mm_set1_epi32, _mm_setr_epi8, _mm_setzero_si128, _mm_slli_epi32, _mm_srai_epi32,
-    _mm_srli_si128, _mm_sub_epi32, _mm_subs_epu16, _mm_testz_si128, _mm_unpackhi_epi32,
-    _mm_unpackhi_epi64, _mm_unpacklo_epi32, _mm_unpacklo_epi64,
+    _mm256_set1_epi32, _mm256_setr_epi32, _mm256_setzero_si256, _mm256_shuffle_epi8,
+    _mm256_slli_epi32, _mm256_srai_epi32, _mm256_sub_epi32, _mm256_unpackhi_epi16,
+    _mm256_unpackhi_epi32, _mm256_unpackhi_epi64, _mm256_unpacklo_epi16, _mm256_unpacklo_epi32,
+    _mm256_unpacklo_epi64, _mm_add_epi32, _mm_adds_epu16, _mm_blendv_epi8, _mm_cmpeq_epi32,
+    _mm_cvtepi16_epi32, _mm_mullo_epi32, _mm_or_si128, _mm_packs_epi32, _mm_packus_epi16,
+    _mm_set1_epi16, _mm_set1_epi32, _mm_setr_epi8, _mm_setzero_si128, _mm_slli_epi32,
+    _mm_srai_epi32, _mm_srli_si128, _mm_sub_epi32, _mm_subs_epu16, _mm_testz_si128,
+    _mm_unpackhi_epi32, _mm_unpackhi_epi64, _mm_unpacklo_epi32, _mm_unpacklo_epi64,
 };
 use j2k_codec_math::jpeg::idct;
 
@@ -218,31 +218,95 @@ exact_avx2_kernel! {
     /// saturated to `[0, 255]`, matching the scalar path byte-for-byte on
     /// every input.
     pub(crate) fn idct_islow(avx2: ExactAvx2, input: &[i16; 64], output: &mut [u8; 64]) {
-        if first_pass_fits_i16(input) {
-            idct_islow_i16(input, output);
-        } else {
-            idct_islow_i32(input, output);
-        }
+        idct_islow_shape::<8, 8>(input, output);
+    }
+}
+
+exact_avx2_kernel! {
+    /// [`idct_islow`] for blocks whose natural-order rows 4..7 are zero.
+    pub(crate) fn idct_islow_bottom_half_zero(
+        avx2: ExactAvx2,
+        input: &[i16; 64],
+        output: &mut [u8; 64],
+    ) {
+        idct_islow_shape::<4, 8>(input, output);
+    }
+}
+
+exact_avx2_kernel! {
+    /// [`idct_islow`] for blocks whose natural-order columns 4..7 are zero.
+    pub(crate) fn idct_islow_right_half_zero(
+        avx2: ExactAvx2,
+        input: &[i16; 64],
+        output: &mut [u8; 64],
+    ) {
+        idct_islow_shape::<8, 4>(input, output);
+    }
+}
+
+exact_avx2_kernel! {
+    /// [`idct_islow`] for blocks with coefficients only in the natural-order
+    /// top-left 4x4 quadrant.
+    pub(crate) fn idct_islow_top_left_quadrant(
+        avx2: ExactAvx2,
+        input: &[i16; 64],
+        output: &mut [u8; 64],
+    ) {
+        idct_islow_shape::<4, 4>(input, output);
+    }
+}
+
+exact_avx2_kernel! {
+    /// [`idct_islow`] for blocks with coefficients only in the natural-order
+    /// top-left 2x2 corner.
+    pub(crate) fn idct_islow_top_left_2x2(
+        avx2: ExactAvx2,
+        input: &[i16; 64],
+        output: &mut [u8; 64],
+    ) {
+        idct_islow_shape::<2, 2>(input, output);
+    }
+}
+
+/// Inverse DCT of a block whose coefficients outside natural-order rows
+/// `0..ROWS` and columns `0..COLS` are zero (`ROWS`, `COLS` in 2, 4, 8). The
+/// 16-bit kernel skips the work those zeros make constant; the 32-bit
+/// fallback handles any block.
+#[inline]
+#[target_feature(enable = "avx2")]
+fn idct_islow_shape<const ROWS: usize, const COLS: usize>(
+    input: &[i16; 64],
+    output: &mut [u8; 64],
+) {
+    if first_pass_fits_i16::<ROWS>(input) {
+        idct_islow_i16::<ROWS, COLS>(input, output);
+    } else {
+        idct_islow_i32(input, output);
     }
 }
 
 /// Whether every column of `input` satisfies the bound documented on
-/// [`MAX_COLUMN_ABS_SUM`]. Saturating unsigned adds keep the column sums
-/// exact up to 65,535 (`|i16::MIN|` = 32,768 is exact in `u16`) and above the
-/// bound beyond it, so this accepts exactly the blocks within the bound.
+/// [`MAX_COLUMN_ABS_SUM`], given that rows `ROWS..8` are zero. Saturating
+/// unsigned adds keep the column sums exact up to 65,535 (`|i16::MIN|` =
+/// 32,768 is exact in `u16`) and above the bound beyond it, so this accepts
+/// exactly the blocks within the bound.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn first_pass_fits_i16(input: &[i16; 64]) -> bool {
+fn first_pass_fits_i16<const ROWS: usize>(input: &[i16; 64]) -> bool {
     let (row_pairs, _) = input.as_chunks::<16>();
     let rows01 = _mm256_abs_epi16(x86_memory::load_i16x16(&row_pairs[0]));
     let rows23 = _mm256_abs_epi16(x86_memory::load_i16x16(&row_pairs[1]));
-    let rows45 = _mm256_abs_epi16(x86_memory::load_i16x16(&row_pairs[2]));
-    let rows67 = _mm256_abs_epi16(x86_memory::load_i16x16(&row_pairs[3]));
     // Lanes: [sum over rows 0, 2, 4, 6 | sum over rows 1, 3, 5, 7].
-    let halves = _mm256_adds_epu16(
-        _mm256_adds_epu16(rows01, rows23),
-        _mm256_adds_epu16(rows45, rows67),
-    );
+    let halves = if ROWS > 4 {
+        let rows45 = _mm256_abs_epi16(x86_memory::load_i16x16(&row_pairs[2]));
+        let rows67 = _mm256_abs_epi16(x86_memory::load_i16x16(&row_pairs[3]));
+        _mm256_adds_epu16(
+            _mm256_adds_epu16(rows01, rows23),
+            _mm256_adds_epu16(rows45, rows67),
+        )
+    } else {
+        _mm256_adds_epu16(rows01, rows23)
+    };
     let columns = _mm_adds_epu16(
         _mm256_castsi256_si128(halves),
         _mm256_extracti128_si256::<1>(halves),
@@ -261,39 +325,60 @@ fn first_pass_fits_i16(input: &[i16; 64]) -> bool {
 /// 32-bit transpose with in-lane unpacks hands pass 2 the same pairing with
 /// lanes as rows, in the order `[0, 3, 4, 7 | 1, 2, 5, 6]`; the final byte
 /// transpose restores natural order.
+///
+/// `ROWS` and `COLS` are as in [`idct_islow_shape`]: zero rows are not
+/// loaded, columns 4..7 skip half of pass 1 when zero, and pass 2 drops the
+/// products of zero first-pass columns.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn idct_islow_i16(input: &[i16; 64], output: &mut [u8; 64]) {
+fn idct_islow_i16<const ROWS: usize, const COLS: usize>(input: &[i16; 64], output: &mut [u8; 64]) {
     let (rows, _) = input.as_chunks::<8>();
+    let zero = _mm256_setzero_si256();
     let r0 = x86_memory::broadcast_i16x8(&rows[0]);
     let r1 = x86_memory::broadcast_i16x8(&rows[1]);
-    let r2 = x86_memory::broadcast_i16x8(&rows[2]);
-    let r3 = x86_memory::broadcast_i16x8(&rows[3]);
-    let r4 = x86_memory::broadcast_i16x8(&rows[4]);
-    let r5 = x86_memory::broadcast_i16x8(&rows[5]);
-    let r6 = x86_memory::broadcast_i16x8(&rows[6]);
-    let r7 = x86_memory::broadcast_i16x8(&rows[7]);
+    let [r2, r3] = if ROWS > 2 {
+        [
+            x86_memory::broadcast_i16x8(&rows[2]),
+            x86_memory::broadcast_i16x8(&rows[3]),
+        ]
+    } else {
+        [zero; 2]
+    };
+    let [r4, r5, r6, r7] = if ROWS > 4 {
+        [
+            x86_memory::broadcast_i16x8(&rows[4]),
+            x86_memory::broadcast_i16x8(&rows[5]),
+            x86_memory::broadcast_i16x8(&rows[6]),
+            x86_memory::broadcast_i16x8(&rows[7]),
+        ]
+    } else {
+        [zero; 4]
+    };
 
     // Columns 0..3 and 4..7.
-    let lo = pass1_four_columns([
+    let lo = pass1_four_columns::<ROWS>([
         _mm256_unpacklo_epi16(r0, r4),
         _mm256_unpacklo_epi16(r1, r5),
         _mm256_unpacklo_epi16(r2, r6),
         _mm256_unpacklo_epi16(r3, r7),
     ]);
-    let hi = pass1_four_columns([
-        _mm256_unpackhi_epi16(r0, r4),
-        _mm256_unpackhi_epi16(r1, r5),
-        _mm256_unpackhi_epi16(r2, r6),
-        _mm256_unpackhi_epi16(r3, r7),
-    ]);
+    let hi = if COLS > 4 {
+        pass1_four_columns::<ROWS>([
+            _mm256_unpackhi_epi16(r0, r4),
+            _mm256_unpackhi_epi16(r1, r5),
+            _mm256_unpackhi_epi16(r2, r6),
+            _mm256_unpackhi_epi16(r3, r7),
+        ])
+    } else {
+        [zero; 4]
+    };
     let pass1 = [
         narrow_pass1(lo[0], hi[0]),
         narrow_pass1(lo[1], hi[1]),
         narrow_pass1(lo[2], hi[2]),
         narrow_pass1(lo[3], hi[3]),
     ];
-    store_block(output, pass2_rows(transpose_pass1(pass1)));
+    store_block(output, pass2_rows::<COLS>(transpose_pass1::<COLS>(pass1)));
 }
 
 /// `vpmaddwd` gain pairs: the low 128-bit lane applies `low`, the high lane
@@ -305,30 +390,41 @@ fn lane_gains(low: i32, high: i32) -> __m256i {
 }
 
 /// Odd term `low` (low lane) and `high` (high lane) from the `(p1, p5)` and
-/// `(p3, p7)` input pairs.
+/// `(p3, p7)` input pairs; `None` means the `(p3, p7)` pair is zero.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn odd_terms(p15: __m256i, p37: __m256i, low: [i32; 2], high: [i32; 2]) -> __m256i {
-    _mm256_add_epi32(
-        _mm256_madd_epi16(p15, lane_gains(low[0], high[0])),
-        _mm256_madd_epi16(p37, lane_gains(low[1], high[1])),
-    )
+fn odd_terms(p15: __m256i, p37: Option<__m256i>, low: [i32; 2], high: [i32; 2]) -> __m256i {
+    let p15_terms = _mm256_madd_epi16(p15, lane_gains(low[0], high[0]));
+    p37.map_or(p15_terms, |p37| {
+        _mm256_add_epi32(
+            p15_terms,
+            _mm256_madd_epi16(p37, lane_gains(low[1], high[1])),
+        )
+    })
 }
 
 /// First-pass 1-D IDCT of four columns. `pairs` are the `(p0, p4)`,
-/// `(p1, p5)`, `(p2, p6)` and `(p3, p7)` registers, identical in both lanes.
-/// Returns the rounded, unshifted outputs as `[out0 | out1]`,
-/// `[out3 | out2]`, `[out4 | out5]` and `[out7 | out6]`.
+/// `(p1, p5)`, `(p2, p6)` and `(p3, p7)` registers, identical in both lanes;
+/// with `ROWS` at most 2 the last two are zero and skipped. Returns the
+/// rounded, unshifted outputs as `[out0 | out1]`, `[out3 | out2]`,
+/// `[out4 | out5]` and `[out7 | out6]`.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn pass1_four_columns([p04, p15, p26, p37]: [__m256i; 4]) -> [__m256i; 4] {
+fn pass1_four_columns<const ROWS: usize>([p04, p15, p26, p37]: [__m256i; 4]) -> [__m256i; 4] {
     let tmp0_1 = _mm256_add_epi32(
         _mm256_madd_epi16(p04, lane_gains(TMP0_PAIR, TMP1_PAIR)),
         _mm256_set1_epi32(PASS1_ROUNDING),
     );
-    let tmp3_2 = _mm256_madd_epi16(p26, lane_gains(TMP3_PAIR, TMP2_PAIR));
-    let tmp10_11 = _mm256_add_epi32(tmp0_1, tmp3_2);
-    let tmp13_12 = _mm256_sub_epi32(tmp0_1, tmp3_2);
+    let (tmp10_11, tmp13_12) = if ROWS > 2 {
+        let tmp3_2 = _mm256_madd_epi16(p26, lane_gains(TMP3_PAIR, TMP2_PAIR));
+        (
+            _mm256_add_epi32(tmp0_1, tmp3_2),
+            _mm256_sub_epi32(tmp0_1, tmp3_2),
+        )
+    } else {
+        (tmp0_1, tmp0_1)
+    };
+    let p37 = (ROWS > 2).then_some(p37);
     let odd0_1 = odd_terms(p15, p37, ODD_PAIRS[0], ODD_PAIRS[1]);
     let odd3_2 = odd_terms(p15, p37, ODD_PAIRS[3], ODD_PAIRS[2]);
     [
@@ -356,27 +452,39 @@ fn narrow_pass1(lo: __m256i, hi: __m256i) -> __m256i {
 /// Turn `[row a | row b]` registers (rows as `(y[m], y[m + 4])` pairs, in
 /// the order rows 0|1, 3|2, 4|5, 7|6) into the `(q0, q4)`, `(q1, q5)`,
 /// `(q2, q6)` and `(q3, q7)` registers of pass 2, whose 32-bit lanes are rows
-/// `[0, 3, 4, 7 | 1, 2, 5, 6]`.
+/// `[0, 3, 4, 7 | 1, 2, 5, 6]`. With `COLS` at most 2 the last two are zero
+/// and not formed.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn transpose_pass1([rows01, rows32, rows45, rows76]: [__m256i; 4]) -> [__m256i; 4] {
+fn transpose_pass1<const COLS: usize>(
+    [rows01, rows32, rows45, rows76]: [__m256i; 4],
+) -> [__m256i; 4] {
     let pairs01 = _mm256_unpacklo_epi32(rows01, rows32);
     let pairs01_tail = _mm256_unpacklo_epi32(rows45, rows76);
-    let pairs23 = _mm256_unpackhi_epi32(rows01, rows32);
-    let pairs23_tail = _mm256_unpackhi_epi32(rows45, rows76);
+    let [q26, q37] = if COLS > 2 {
+        let pairs23 = _mm256_unpackhi_epi32(rows01, rows32);
+        let pairs23_tail = _mm256_unpackhi_epi32(rows45, rows76);
+        [
+            _mm256_unpacklo_epi64(pairs23, pairs23_tail),
+            _mm256_unpackhi_epi64(pairs23, pairs23_tail),
+        ]
+    } else {
+        [_mm256_setzero_si256(); 2]
+    };
     [
         _mm256_unpacklo_epi64(pairs01, pairs01_tail),
         _mm256_unpackhi_epi64(pairs01, pairs01_tail),
-        _mm256_unpacklo_epi64(pairs23, pairs23_tail),
-        _mm256_unpackhi_epi64(pairs23, pairs23_tail),
+        q26,
+        q37,
     ]
 }
 
 /// Second-pass 1-D IDCT of all eight rows at once. Returns output column `j`
-/// at index `j`, descaled and level-shifted, lanes in pass-2 row order.
+/// at index `j`, descaled and level-shifted, lanes in pass-2 row order. With
+/// `COLS` at most 2 the `(q2, q6)` and `(q3, q7)` pairs are zero and skipped.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn pass2_rows([q04, q15, q26, q37]: [__m256i; 4]) -> [__m256i; 8] {
+fn pass2_rows<const COLS: usize>([q04, q15, q26, q37]: [__m256i; 4]) -> [__m256i; 8] {
     let rounding = _mm256_set1_epi32(PASS2_ROUNDING);
     let tmp0 = _mm256_add_epi32(
         _mm256_madd_epi16(q04, _mm256_set1_epi32(TMP0_PAIR)),
@@ -386,12 +494,19 @@ fn pass2_rows([q04, q15, q26, q37]: [__m256i; 4]) -> [__m256i; 8] {
         _mm256_madd_epi16(q04, _mm256_set1_epi32(TMP1_PAIR)),
         rounding,
     );
-    let tmp3 = _mm256_madd_epi16(q26, _mm256_set1_epi32(TMP3_PAIR));
-    let tmp2 = _mm256_madd_epi16(q26, _mm256_set1_epi32(TMP2_PAIR));
-    let tmp10 = _mm256_add_epi32(tmp0, tmp3);
-    let tmp13 = _mm256_sub_epi32(tmp0, tmp3);
-    let tmp11 = _mm256_add_epi32(tmp1, tmp2);
-    let tmp12 = _mm256_sub_epi32(tmp1, tmp2);
+    let [tmp10, tmp11, tmp12, tmp13] = if COLS > 2 {
+        let tmp3 = _mm256_madd_epi16(q26, _mm256_set1_epi32(TMP3_PAIR));
+        let tmp2 = _mm256_madd_epi16(q26, _mm256_set1_epi32(TMP2_PAIR));
+        [
+            _mm256_add_epi32(tmp0, tmp3),
+            _mm256_add_epi32(tmp1, tmp2),
+            _mm256_sub_epi32(tmp1, tmp2),
+            _mm256_sub_epi32(tmp0, tmp3),
+        ]
+    } else {
+        [tmp0, tmp1, tmp1, tmp0]
+    };
+    let q37 = (COLS > 2).then_some(q37);
     let odd0 = odd_terms(q15, q37, ODD_PAIRS[0], ODD_PAIRS[0]);
     let odd1 = odd_terms(q15, q37, ODD_PAIRS[1], ODD_PAIRS[1]);
     let odd2 = odd_terms(q15, q37, ODD_PAIRS[2], ODD_PAIRS[2]);

@@ -7,6 +7,11 @@ and stale roadmap entries have been removed from the public documentation set.
 
 Staged workspace version: `0.13.2`.
 
+- On x86-64 hosts with AVX2, 8-bit JPEG blocks whose coefficients sit in the
+  top half, the left half, the top-left 4x4 or the top-left 2x2 run sparse
+  forms of the 16-bit inverse DCT that skip the zero rows and columns, as
+  NEON already does; the range check and the 32-bit fallback are shared, so
+  output is unchanged. Kodak 4:4:4 decodes about 2% faster.
 - On x86-64 hosts with AVX2, the 8-bit JPEG inverse DCT keeps samples in
   16-bit lanes of 256-bit registers and multiplies pairs with `vpmaddwd`, as
   libjpeg-turbo does, and takes half the time per block. It never adds two

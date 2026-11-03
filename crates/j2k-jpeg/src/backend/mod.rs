@@ -409,7 +409,7 @@ impl Backend {
         match self {
             Self::Scalar => idct::scalar::idct_islow_bottom_half_zero(input, output),
             #[cfg(target_arch = "x86_64")]
-            Self::Avx2(avx2) => idct::avx2::idct_islow(avx2, input, output),
+            Self::Avx2(avx2) => idct::avx2::idct_islow_bottom_half_zero(avx2, input, output),
             #[cfg(target_arch = "aarch64")]
             Self::Neon(neon) => idct::neon::idct_islow_bottom_half_zero(neon, input, output),
         }
@@ -419,7 +419,7 @@ impl Backend {
         match self {
             Self::Scalar => idct::scalar::idct_islow(input, output),
             #[cfg(target_arch = "x86_64")]
-            Self::Avx2(avx2) => idct::avx2::idct_islow(avx2, input, output),
+            Self::Avx2(avx2) => idct::avx2::idct_islow_right_half_zero(avx2, input, output),
             #[cfg(target_arch = "aarch64")]
             Self::Neon(neon) => idct::neon::idct_islow_right_half_zero(neon, input, output),
         }
@@ -429,7 +429,7 @@ impl Backend {
         match self {
             Self::Scalar => idct::scalar::idct_islow(input, output),
             #[cfg(target_arch = "x86_64")]
-            Self::Avx2(avx2) => idct::avx2::idct_islow(avx2, input, output),
+            Self::Avx2(avx2) => idct::avx2::idct_islow_top_left_quadrant(avx2, input, output),
             #[cfg(target_arch = "aarch64")]
             Self::Neon(neon) => idct::neon::idct_islow_top_left_quadrant(neon, input, output),
         }
@@ -439,7 +439,7 @@ impl Backend {
         match self {
             Self::Scalar => idct::scalar::idct_islow(input, output),
             #[cfg(target_arch = "x86_64")]
-            Self::Avx2(avx2) => idct::avx2::idct_islow(avx2, input, output),
+            Self::Avx2(avx2) => idct::avx2::idct_islow_top_left_2x2(avx2, input, output),
             #[cfg(target_arch = "aarch64")]
             Self::Neon(neon) => idct::neon::idct_islow_top_left_2x2(neon, input, output),
         }
