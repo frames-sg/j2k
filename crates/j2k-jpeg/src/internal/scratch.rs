@@ -4,9 +4,9 @@
 //!
 //! A [`ScratchPool`] owns every `Vec` that the sequential scan decoder
 //! would otherwise allocate on each call: the three rolling MCU stripe
-//! buffers (the block-streaming 4:2:0 route needs only the first, with a
-//! halo row), the per-component DC predictor, the chroma upsample rows, and
-//! the RGB row buffers used by [`j2k_core::RowSink`] drivers.
+//! buffers (the streaming 4:2:0 and 4:4:4 routes need only the first, 4:2:0
+//! with a halo row), the per-component DC predictor, the chroma upsample
+//! rows, and the RGB row buffers used by [`j2k_core::RowSink`] drivers.
 //!
 //! Use [`Decoder::decode_into_with_scratch`](crate::Decoder::decode_into_with_scratch)
 //! / [`decode_rows_with_scratch`](crate::Decoder::decode_rows_with_scratch)
@@ -18,9 +18,7 @@
 use crate::allocation::{
     checked_add_allocation_bytes, checked_allocation_bytes, try_reserve_for_len_with_live_budget,
 };
-use crate::entropy::sequential::{
-    PreparedDecodePlan, StripeBuffer, StripeLayout, FAST420_HALO_ROWS,
-};
+use crate::entropy::sequential::{PreparedDecodePlan, StripeBuffer, StripeLayout};
 use crate::error::JpegError;
 use crate::info::SamplingFactors;
 use alloc::vec::Vec;
@@ -98,14 +96,19 @@ impl SequentialScratchLayout {
         })
     }
 
-    /// One full-size stripe below a halo row, and no row buffers.
-    fn for_fast420_stream(plan: &PreparedDecodePlan, mcus_per_row: u32) -> Result<Self, JpegError> {
+    /// One full-size stripe below `halo_rows` context rows, and no row
+    /// buffers.
+    fn for_streaming(
+        plan: &PreparedDecodePlan,
+        mcus_per_row: u32,
+        halo_rows: usize,
+    ) -> Result<Self, JpegError> {
         Ok(Self {
             stripe: StripeLayout::for_sampling_with_halo(
                 plan.sampling,
                 mcus_per_row,
                 8,
-                FAST420_HALO_ROWS as usize,
+                halo_rows,
             )?,
             stripe_count: 1,
             component_count: plan.sampling.len(),
@@ -158,17 +161,18 @@ impl ScratchPool {
         )
     }
 
-    /// [`Self::prepare_for`] for the block-streaming 4:2:0 route: zeroed DC
+    /// [`Self::prepare_for`] for the streaming full-size routes: zeroed DC
     /// predictors and only `stripe_a`, laid out for `mcus_per_row` MCUs below
-    /// a halo row.
-    pub(crate) fn prepare_for_fast420_stream(
+    /// `halo_rows` context rows.
+    pub(crate) fn prepare_for_streaming(
         &mut self,
         plan: &PreparedDecodePlan,
         mcus_per_row: u32,
+        halo_rows: usize,
         max_bytes: usize,
     ) -> Result<(), JpegError> {
         self.prepare_sequential(
-            SequentialScratchLayout::for_fast420_stream(plan, mcus_per_row)?,
+            SequentialScratchLayout::for_streaming(plan, mcus_per_row, halo_rows)?,
             max_bytes,
         )
     }

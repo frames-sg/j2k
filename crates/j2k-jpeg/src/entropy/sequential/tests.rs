@@ -609,8 +609,16 @@ fn emit_stripe_rgb_444_matches_direct_ycbcr_conversion_with_trailing_row() {
         u32::try_from(width).expect("fixture width fits in u32"),
     );
 
-    emit_stripe_rgb_444(&plan, Backend::detect(), &stripe, 0, &mut writer)
-        .expect("emit stripe must succeed");
+    emit_stripe_rgb_444(
+        &plan,
+        Backend::detect(),
+        &stripe,
+        0,
+        Rect::full(plan.dimensions),
+        0,
+        &mut writer,
+    )
+    .expect("emit stripe must succeed");
 
     let mut expected = vec![0u8; actual.len()];
     for row in 0..height as usize {

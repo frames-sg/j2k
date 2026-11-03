@@ -144,8 +144,15 @@ impl PreparedDecodePlan {
             && self.components[2].v == 1
     }
 
+    /// Coded 4:4:4 YCbCr, the 4:4:4 shape the device kernels implement.
+    pub(crate) fn matches_fast_444_device_shape(&self) -> bool {
+        self.color_space == ColorSpace::YCbCr && self.matches_fast_rgb444_shape()
+    }
+
+    /// Three full-resolution components in output order, coded as YCbCr or
+    /// as identity RGB: the shape the streaming CPU 4:4:4 route decodes.
     pub(crate) fn matches_fast_rgb444_shape(&self) -> bool {
-        self.color_space == ColorSpace::YCbCr
+        matches!(self.color_space, ColorSpace::YCbCr | ColorSpace::Rgb)
             && self.components.len() == 3
             && self.components[0].output_index == 0
             && self.components[0].h == 1

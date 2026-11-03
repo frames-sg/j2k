@@ -13,9 +13,9 @@ use crate::entropy::progressive::{
 };
 use crate::entropy::sequential::{
     decode_scan_baseline, decode_scan_baseline_rgb, decode_scan_fast_rgb_444,
-    decode_scan_fast_tile_rgb, decode_scan_fast_tile_rgb_region, fast_tile_region_first_decode_mcu,
-    finish_scan, stripe_region_layout, PreparedComponentPlan, PreparedDecodePlan,
-    ResolvedPreparedComponentPlan,
+    decode_scan_fast_rgb_444_region, decode_scan_fast_tile_rgb, decode_scan_fast_tile_rgb_region,
+    fast_tile_region_first_decode_mcu, finish_scan, stripe_region_layout, PreparedComponentPlan,
+    PreparedDecodePlan, ResolvedPreparedComponentPlan,
 };
 use crate::entropy::ZIGZAG;
 use crate::error::{JpegError, MarkerKind, Warning};

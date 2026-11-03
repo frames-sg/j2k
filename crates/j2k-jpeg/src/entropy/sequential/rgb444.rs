@@ -1,17 +1,32 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Fast sequential RGB output and horizontal MCU rows for YCbCr scans.
+//! Fast sequential RGB output and horizontal MCU rows for 4:4:4 scans, coded
+//! as YCbCr or identity RGB.
+//!
+//! Whole images and regions, with or without restart intervals, decode one
+//! MCU row of the requested MCU columns into a single stripe and convert it
+//! to the output right away. 4:4:4 needs no upsampling context, so neither a
+//! halo row nor margin columns.
 
 use super::deposit::{assert_stripe_deposit_capacity, deposit_block};
 use super::emit::emit_stripe_rgb_444;
-use super::restart::{consume_restart_marker_if_due, finish_scan, McuPosition};
+use super::layout::{
+    fast_tile_region_first_decode_mcu, last_mcu_row_for_rect, stripe_region_layout,
+};
+use super::restart::{
+    consume_restart_marker_if_due, finish_scan, scan_position_before_mcu, skip_to_mcu_with,
+    McuPosition, McuSkipState, McuSkipTarget, ScanPosition,
+};
 use super::{HuffmanPrimaryWidth, PreparedDecodePlan, ResolvedPreparedComponentPlan, StripeBuffer};
 use crate::backend::Backend;
-use crate::entropy::block::{decode_block_with_activity, BlockActivity, CoefficientBlock};
+use crate::entropy::block::{
+    decode_block_with_activity, skip_block, BlockActivity, CoefficientBlock,
+};
 use crate::entropy::huffman::{FULL_PRIMARY_ENTRIES, NARROW_PRIMARY_ENTRIES};
 use crate::error::{JpegError, Warning};
-use crate::info::DownscaleFactor;
+use crate::info::{DownscaleFactor, Rect};
 use crate::internal::bit_reader::BitReader;
+use crate::internal::checkpoint::DeviceCheckpoint;
 use crate::internal::scratch::ScratchPool;
 use crate::output::{InterleavedRgbWriter, OutputWriter};
 use alloc::vec::Vec;
@@ -45,15 +60,40 @@ pub(crate) fn decode_scan_fast_rgb_444<W: OutputWriter + InterleavedRgbWriter>(
     pool: &mut ScratchPool,
     writer: &mut W,
 ) -> Result<Vec<Warning>, JpegError> {
+    decode_scan_fast_rgb_444_region(
+        plan,
+        backend,
+        scan_bytes,
+        pool,
+        writer,
+        Rect::full(plan.dimensions),
+        None,
+    )
+}
+
+/// Decode `roi` of a 4:4:4 scan into `writer`, whose row 0 is `roi.y`,
+/// entering the scan at `checkpoint` or a restart marker when either is
+/// nearer than the scan start.
+pub(crate) fn decode_scan_fast_rgb_444_region<W: OutputWriter + InterleavedRgbWriter>(
+    plan: &PreparedDecodePlan,
+    backend: Backend,
+    scan_bytes: &[u8],
+    pool: &mut ScratchPool,
+    writer: &mut W,
+    roi: Rect,
+    checkpoint: Option<&DeviceCheckpoint>,
+) -> Result<Vec<Warning>, JpegError> {
     match plan.huffman_primary_width {
-        HuffmanPrimaryWidth::Narrow8 => decode_scan_fast_rgb_444_with_entries::<
-            NARROW_PRIMARY_ENTRIES,
-            W,
-        >(plan, backend, scan_bytes, pool, writer),
-        HuffmanPrimaryWidth::Full12 => decode_scan_fast_rgb_444_with_entries::<
-            FULL_PRIMARY_ENTRIES,
-            W,
-        >(plan, backend, scan_bytes, pool, writer),
+        HuffmanPrimaryWidth::Narrow8 => {
+            decode_scan_fast_rgb_444_with_entries::<NARROW_PRIMARY_ENTRIES, W>(
+                plan, backend, scan_bytes, pool, writer, roi, checkpoint,
+            )
+        }
+        HuffmanPrimaryWidth::Full12 => {
+            decode_scan_fast_rgb_444_with_entries::<FULL_PRIMARY_ENTRIES, W>(
+                plan, backend, scan_bytes, pool, writer, roi, checkpoint,
+            )
+        }
     }
 }
 
@@ -63,32 +103,55 @@ fn decode_scan_fast_rgb_444_with_entries<const N: usize, W: OutputWriter + Inter
     scan_bytes: &[u8],
     pool: &mut ScratchPool,
     writer: &mut W,
+    roi: Rect,
+    checkpoint: Option<&DeviceCheckpoint>,
 ) -> Result<Vec<Warning>, JpegError> {
     debug_assert!(plan.matches_fast_rgb444_shape());
 
     let (width, height) = plan.dimensions;
     let mcus_per_row = width.div_ceil(8);
     let mcu_rows = height.div_ceil(8);
+    let region = stripe_region_layout(plan, DownscaleFactor::Full, roi);
+    let first_mcu = fast_tile_region_first_decode_mcu(plan, roi, DownscaleFactor::Full);
+    let first_row = first_mcu / mcus_per_row;
+    let row_end = last_mcu_row_for_rect(roi, 8, mcu_rows) + 1;
+    pool.prepare_for_streaming(plan, region.stripe_mcus_per_row, 0, plan.scratch_bytes)?;
 
-    pool.prepare_for(
-        plan,
-        plan.sampling,
-        mcus_per_row,
-        DownscaleFactor::Full.output_block_size(),
-        plan.scratch_bytes,
-    )?;
-
-    let mut br = BitReader::new(scan_bytes);
-    let mut coeff = CoefficientBlock::default();
-    let mut pixels = [0u8; 64];
     let (y_comp, cb_comp, cr_comp) =
         fast_rgb444_components::<N>(plan, plan.prefers_wide_huffman(scan_bytes.len()))?;
-    let mut y_dc = 0i32;
-    let mut cb_dc = 0i32;
-    let mut cr_dc = 0i32;
     let restart = plan.restart_interval.unwrap_or(0);
+    let ScanPosition {
+        mut br,
+        prev_dc,
+        mcu_index: mut current_mcu,
+        mut expected_rst,
+    } = scan_position_before_mcu(scan_bytes, restart, checkpoint, first_mcu);
+    let mut dc = [prev_dc[0], prev_dc[1], prev_dc[2]];
     let mut mcus_since_restart = 0u32;
-    let mut expected_rst = 0u8;
+    skip_to_mcu_with(
+        McuSkipTarget {
+            target_mcu: first_mcu,
+            total_mcus: mcus_per_row * mcu_rows,
+            restart,
+            wide_huffman: plan.prefers_wide_huffman(scan_bytes.len()),
+        },
+        &mut McuSkipState {
+            br: &mut br,
+            prev_dc: &mut dc,
+            current_mcu: &mut current_mcu,
+            mcus_since_restart: &mut mcus_since_restart,
+            expected_rst: &mut expected_rst,
+        },
+        |br, dc| {
+            for (comp, dc) in [y_comp, cb_comp, cr_comp].into_iter().zip(dc) {
+                skip_block(br, comp.dc_table, comp.ac_table, dc)?;
+            }
+            Ok(())
+        },
+    )?;
+    let [mut y_dc, mut cb_dc, mut cr_dc] = dc;
+    let mut coeff = CoefficientBlock::default();
+    let mut pixels = [0u8; 64];
     let stripe = &mut pool.stripe_a;
     let row_context = FastRgbMcuRowContext {
         y_comp,
@@ -98,7 +161,10 @@ fn decode_scan_fast_rgb_444_with_entries<const N: usize, W: OutputWriter + Inter
         mcus_per_row,
         mcu_rows,
         restart,
+        stripe_mcu_start: region.stripe_mcu_start,
+        stripe_mcus_per_row: region.stripe_mcus_per_row,
     };
+    let crop_start = (roi.x - region.source_x0) as usize;
 
     {
         let mut row_state = FastRgbMcuRowState {
@@ -111,13 +177,13 @@ fn decode_scan_fast_rgb_444_with_entries<const N: usize, W: OutputWriter + Inter
             mcus_since_restart: &mut mcus_since_restart,
             expected_rst: &mut expected_rst,
         };
-        for my in 0..mcu_rows {
+        for my in first_row..row_end {
             decode_mcu_row_fast_rgb::<N, 1>(&row_context, &mut row_state, my, stripe)?;
-            emit_stripe_rgb_444(plan, backend, stripe, my, writer)?;
+            emit_stripe_rgb_444(plan, backend, stripe, my, roi, crop_start, writer)?;
         }
     }
 
-    finish_scan(&mut br, true)
+    finish_scan(&mut br, row_end == mcu_rows)
 }
 
 pub(super) struct FastRgbMcuRowContext<'a, const N: usize> {
@@ -128,6 +194,9 @@ pub(super) struct FastRgbMcuRowContext<'a, const N: usize> {
     pub(super) mcus_per_row: u32,
     pub(super) mcu_rows: u32,
     pub(super) restart: u16,
+    /// Decoded MCU columns; the others are entropy-skipped.
+    pub(super) stripe_mcu_start: u32,
+    pub(super) stripe_mcus_per_row: u32,
 }
 
 pub(super) struct FastRgbMcuRowState<'a, 'b> {
@@ -179,8 +248,9 @@ fn decode_mcu_row_fast_rgb_local<const N: usize, const LUMA_H: u32>(
     let [y_dc, cb_dc, cr_dc] = dc;
     for plane_idx in 0..3 {
         let h = if plane_idx == 0 { LUMA_H } else { 1 };
-        assert_stripe_deposit_capacity(stripe, plane_idx, h, 1, context.mcus_per_row, 8, 0);
+        assert_stripe_deposit_capacity(stripe, plane_idx, h, 1, context.stripe_mcus_per_row, 8, 0);
     }
+    let window_end = context.stripe_mcu_start + context.stripe_mcus_per_row;
     for mx in 0..context.mcus_per_row {
         if consume_restart_marker_if_due(
             br,
@@ -198,8 +268,29 @@ fn decode_mcu_row_fast_rgb_local<const N: usize, const LUMA_H: u32>(
             *state.mcus_since_restart = 0;
         }
 
+        if mx < context.stripe_mcu_start || mx >= window_end {
+            for _ in 0..LUMA_H {
+                skip_block(br, context.y_comp.dc_table, context.y_comp.ac_table, y_dc)?;
+            }
+            skip_block(
+                br,
+                context.cb_comp.dc_table,
+                context.cb_comp.ac_table,
+                cb_dc,
+            )?;
+            skip_block(
+                br,
+                context.cr_comp.dc_table,
+                context.cr_comp.ac_table,
+                cr_dc,
+            )?;
+            *state.mcus_since_restart += 1;
+            continue;
+        }
+        let local_mx = mx - context.stripe_mcu_start;
+
         for vx in 0..LUMA_H {
-            let block_x = (mx * LUMA_H + vx) * 8;
+            let block_x = (local_mx * LUMA_H + vx) * 8;
 
             let y_activity = decode_block_with_activity(
                 br,
@@ -240,7 +331,7 @@ fn decode_mcu_row_fast_rgb_local<const N: usize, const LUMA_H: u32>(
             );
         }
 
-        let block_x = mx * 8;
+        let block_x = local_mx * 8;
 
         let cb_activity = decode_block_with_activity(
             br,
