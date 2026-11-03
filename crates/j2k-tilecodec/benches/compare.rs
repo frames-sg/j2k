@@ -84,6 +84,10 @@ fn bench_compare(c: &mut Criterion) {
     });
 
     group.bench_function(BenchmarkId::new("reference", "uncompressed"), |b| {
+        #[expect(
+            clippy::collection_is_never_read,
+            reason = "the reference benchmark measures the copy into a write-only buffer"
+        )]
         let mut out = vec![0_u8; source.len()];
         b.iter(|| out.copy_from_slice(&source));
     });
