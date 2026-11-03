@@ -7,6 +7,16 @@ and stale roadmap entries have been removed from the public documentation set.
 
 Staged workspace version: `0.13.2`.
 
+- On x86-64 hosts with AVX2, the 8-bit JPEG inverse DCT keeps samples in
+  16-bit lanes of 256-bit registers and multiplies pairs with `vpmaddwd`, as
+  libjpeg-turbo does, and takes half the time per block. It never adds two
+  inputs in 16 bits, and a per-block check (every column's absolute
+  coefficient sum at most 5,905, a proved bound) sends any block whose
+  first pass could leave 16 bits to the 32-bit kernel, so output stays
+  byte-identical to the scalar transform for every input. Kodak 4:2:0
+  decodes 12% faster on one thread and 4:4:4 16% faster. The per-input
+  gains of the transform are defined once, beside the scalar reference,
+  and the NEON 2x2 kernel uses them too.
 - On x86-64 hosts with AVX2, the 8-bit JPEG inverse DCT applies the scalar
   row transform's DC-only shortcut, as the NEON kernel already did. Crafted
   blocks whose coefficients sit in one column (first-pass values of 2^18 and
