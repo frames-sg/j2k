@@ -30,6 +30,15 @@ Staged workspace version: `0.13.2`.
   transform to sRGB moves no 8-bit channel or neutral ramp sample by more
   than one code value. Other ICC profiles remain unsupported for these
   outputs (#321).
+- Baseline 4:2:0 JPEG decoding to RGB streams each MCU row through one
+  stripe with a two-row halo and writes its output rows as soon as their
+  chroma neighbours exist, instead of rotating three stripe buffers and
+  upsampling each stripe in a second pass. On Kodak the working set falls
+  from about 55 KB to 21.5 KB. Files with restart intervals and region
+  requests take the same path, so 4:2:0 files with restart markers no
+  longer fall back to the generic decoder (5–6% faster on Apple M4/M5).
+  Every seek (scan start, restart segment or checkpoint) goes through one
+  function, `scan_position_before_mcu`. Output is byte-identical.
 - On x86-64 hosts with AVX2, 8-bit YCbCr-to-RGB conversion runs 32 pixels at
   a time in 16-bit lanes and stores interleaved RGB with byte shuffles,
   instead of eight at a time with 32-bit multiplies and a scalar store, and

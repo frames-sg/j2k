@@ -161,6 +161,7 @@ fn decode_mcu_row_local<const N: usize, const FULL_SIZE: bool>(
             u32::from(comp.v),
             context.stripe_mcus_per_row,
             context.scaled.component(comp.output_index).idct_size,
+            0,
         );
     }
     let mut pixels_4x4 = [0u8; 16];

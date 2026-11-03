@@ -9,9 +9,10 @@ use core::ptr;
 /// Release-mode precondition for the raw-pointer writes in [`deposit_block`]
 /// and [`deposit_dc_block`]: the stripe plane must carry the stride and
 /// capacity [`StripeBuffer::resize_for`] establishes for
-/// `stripe_mcus_per_row` MCUs of `h`×`v` `block_size`-pixel blocks. Asserted
-/// once per stripe row so the per-block deposits stay bounds-check free in
-/// the hot loop.
+/// `stripe_mcus_per_row` MCUs of `h`×`v` `block_size`-pixel blocks below
+/// `halo_rows` context rows (see [`super::StripeLayout::for_sampling_with_halo`]).
+/// Asserted once per stripe row so the per-block deposits stay bounds-check
+/// free in the hot loop.
 pub(super) fn assert_stripe_deposit_capacity(
     stripe: &StripeBuffer,
     plane_idx: usize,
@@ -19,9 +20,10 @@ pub(super) fn assert_stripe_deposit_capacity(
     v: u32,
     stripe_mcus_per_row: u32,
     block_size: u32,
+    halo_rows: u32,
 ) {
     let needed_cols = stripe_mcus_per_row as usize * h as usize * block_size as usize;
-    let needed_rows = v as usize * block_size as usize;
+    let needed_rows = v as usize * block_size as usize + halo_rows as usize;
     let stride = stripe.plane_strides[plane_idx];
     let len = stripe.planes[plane_idx].len();
     assert!(
@@ -30,8 +32,8 @@ pub(super) fn assert_stripe_deposit_capacity(
                 .checked_mul(needed_rows)
                 .is_some_and(|needed| len >= needed),
         "stripe plane {plane_idx} ({len} bytes, stride {stride}) is not sized for \
-         {stripe_mcus_per_row} MCUs of {h}x{v} blocks of {block_size}px; \
-         StripeBuffer::resize_for must run first"
+         {stripe_mcus_per_row} MCUs of {h}x{v} blocks of {block_size}px below \
+         {halo_rows} halo rows; StripeBuffer::resize_for must run first"
     );
 }
 
@@ -162,6 +164,8 @@ pub(super) struct FastTile420EntropyState<'a, 'b> {
     pub(super) br: &'a mut BitReader<'b>,
     pub(super) dc: FastTile420DcState<'a>,
     pub(super) coeff: &'a mut CoefficientBlock,
+    pub(super) mcus_since_restart: &'a mut u32,
+    pub(super) expected_rst: &'a mut u8,
 }
 
 /// Register-friendly copy of a [`FastTile420EntropyState`]'s reader and DC
@@ -175,6 +179,8 @@ pub(super) struct LocalEntropy<'b> {
 }
 
 impl<'b> LocalEntropy<'b> {
+    /// Entropy state that decodes against these locals and `outer`'s other
+    /// fields.
     #[expect(
         clippy::inline_always,
         reason = "must inline so the borrowed locals never escape the row frame"
@@ -182,13 +188,15 @@ impl<'b> LocalEntropy<'b> {
     #[inline(always)]
     pub(super) fn state<'a>(
         &'a mut self,
-        coeff: &'a mut CoefficientBlock,
+        outer: &'a mut FastTile420EntropyState<'_, 'b>,
     ) -> FastTile420EntropyState<'a, 'b> {
         let [y, cb, cr] = &mut self.dc;
         FastTile420EntropyState {
             br: &mut self.br,
             dc: FastTile420DcState { y, cb, cr },
-            coeff,
+            coeff: &mut *outer.coeff,
+            mcus_since_restart: &mut *outer.mcus_since_restart,
+            expected_rst: &mut *outer.expected_rst,
         }
     }
 }
@@ -219,7 +227,12 @@ impl<'b> FastTile420EntropyState<'_, 'b> {
 
 #[derive(Clone, Copy)]
 pub(super) struct FastTile420Window {
+    /// MCU row being decoded, for restart positions.
+    pub(super) mcu_y: u32,
     pub(super) mcus_per_row: u32,
+    pub(super) mcu_rows: u32,
+    /// MCUs per restart interval; zero for a scan without restart markers.
+    pub(super) restart: u16,
     pub(super) stripe_mcu_start: u32,
     pub(super) stripe_mcus_per_row: u32,
     /// Whether the final coded MCU's right luma blocks intersect the image.

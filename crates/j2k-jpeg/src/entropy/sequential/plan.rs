@@ -118,10 +118,11 @@ impl PreparedDecodePlan {
         )
     }
 
+    /// Whether the block-streaming CPU 4:2:0 route decodes this scan. It
+    /// consumes restart markers itself, so it takes the same shapes as
+    /// accelerator packets.
     pub(crate) fn matches_fast_tile_shape(&self) -> bool {
-        // The CPU fused route cannot cross restart boundaries; accelerator
-        // packets retain restart checkpoints and use the shape predicate below.
-        self.restart_interval.is_none() && self.matches_fast_420_device_shape()
+        self.matches_fast_420_device_shape()
     }
 
     /// Coded 4:2:0 YCbCr whose full-size chroma libjpeg-turbo smooths with

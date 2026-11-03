@@ -10,7 +10,7 @@ use super::super::layout::{
     StripeRegionLayout,
 };
 use super::super::restart::{
-    finish_scan, restart_seek_for_mcu, skip_to_mcu, McuSkipState, McuSkipTarget,
+    finish_scan, scan_position_before_mcu, skip_to_mcu, McuSkipState, McuSkipTarget, ScanPosition,
 };
 use super::super::{PreparedDecodePlan, StripeBuffer};
 use super::row::{decode_mcu_row, McuRowContext, McuRowState};
@@ -19,7 +19,6 @@ use crate::color::scaled_sampling::ScaledSampling;
 use crate::entropy::block::CoefficientBlock;
 use crate::error::{JpegError, Warning};
 use crate::info::{DownscaleFactor, Rect};
-use crate::internal::bit_reader::BitReader;
 use crate::internal::scratch::ScratchPool;
 use alloc::vec::Vec;
 
@@ -76,7 +75,7 @@ impl ScanSetup {
             first_decode_mcu_row_for_rect(full_output_rect, expanded_rect, mcu_height_px)
         };
         let decode_mcu_row_end = if use_420_context_window {
-            fast420_decode_mcu_row_end(output_rect, mcu_height_px, mcu_rows)
+            fast420_decode_mcu_row_end(output_rect, mcu_height_px, mcu_rows, 1)
         } else {
             decode_mcu_row_end_for_rect(full_output_rect, expanded_rect, mcu_height_px, mcu_rows)
         };
@@ -144,18 +143,19 @@ pub(super) fn decode_scan_rows<const N: usize, E: StripeEmitter>(
         stripe_b,
         stripe_c,
     } = buffers;
-    let mut br = BitReader::new(scan_bytes);
     let mut coeff = CoefficientBlock::default();
     let mut pixels = [0u8; 64];
     let mut mcus_since_restart = 0u32;
-    let mut expected_rst = 0u8;
     let total_mcus = setup.mcu_rows * setup.mcus_per_row;
     let first_decode_mcu = setup.first_decode_mcu_row * setup.mcus_per_row;
-    let mut current_mcu = 0u32;
-    if let Some(seek) = restart_seek_for_mcu(scan_bytes, setup.restart, first_decode_mcu) {
-        br = BitReader::new(&scan_bytes[seek.scan_offset..]);
-        current_mcu = seek.mcu_index;
-        expected_rst = seek.expected_rst;
+    let ScanPosition {
+        mut br,
+        prev_dc: position_dc,
+        mcu_index: mut current_mcu,
+        mut expected_rst,
+    } = scan_position_before_mcu(scan_bytes, setup.restart, None, first_decode_mcu);
+    for (dc, position_dc) in prev_dc.iter_mut().zip(position_dc) {
+        *dc = position_dc;
     }
     skip_to_mcu::<N>(
         plan,

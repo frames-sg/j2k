@@ -1,21 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::super::{Fast420RegionLayout, PreparedDecodePlan, StripeBuffer};
+use super::super::{PreparedDecodePlan, StripeBuffer};
 use crate::{
     color::scaled_sampling::ScaledSampling,
     error::JpegError,
-    info::{ColorSpace, DownscaleFactor, Rect},
-    internal::scratch::SinkRows,
+    info::{ColorSpace, DownscaleFactor},
 };
-
-pub(in crate::entropy::sequential) struct Fast420RegionStripe<'a> {
-    pub(in crate::entropy::sequential) neighbors: StripeNeighbors<'a>,
-    pub(in crate::entropy::sequential) stripe_index: u32,
-    pub(in crate::entropy::sequential) roi: Rect,
-    pub(in crate::entropy::sequential) region_layout: Fast420RegionLayout,
-    pub(in crate::entropy::sequential) crop_rows: &'a mut SinkRows,
-    pub(in crate::entropy::sequential) downscale: DownscaleFactor,
-}
 
 #[derive(Clone, Copy)]
 pub(in crate::entropy::sequential) struct StripeEmit<'a> {

@@ -1,24 +1,25 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Fast 4:2:0 sequential scan drivers and ROI planning (full-size only; scaled
-//! 4:2:0 decodes chroma with a larger IDCT on the generic route).
+//! Fast 4:2:0 sequential scan driver (full-size only; scaled 4:2:0 decodes
+//! chroma with a larger IDCT on the generic route).
+//!
+//! Whole images and regions, with or without restart intervals, decode one
+//! MCU row at a time into a single stripe and convert it to RGB right away;
+//! see [`emit`] for the row window.
 
 use super::deposit::{
     FastTile420Components, FastTile420DcState, FastTile420EntropyState, FastTile420Window,
 };
-use super::emit::{
-    emit_stripe_rgb, emit_stripe_rgb_420_region, Fast420RegionStripe, StripeEmit, StripeNeighbors,
-};
 use super::layout::{
-    fast420_decode_mcu_row_end, fast420_first_decode_mcu_row, last_mcu_row_for_rect,
-    mcu_row_intersects_rect, uses_fancy_420_emit, Fast420RegionLayout,
+    fast420_decode_mcu_row_end, fast420_first_decode_mcu_row, uses_fancy_420_emit,
+    Fast420RegionLayout,
 };
-use super::profile::{Fast420ScanProfiler, NoopFast420Profiler, NoopFast420ScanProfile};
-use super::restart::{finish_scan, reader_from_checkpoint};
-use super::{
-    HuffmanPrimaryWidth, PreparedDecodePlan, ResolvedPreparedComponentPlan, RgbOutputScratch,
-    StripeBuffer,
+use super::profile::{Fast420ScanProfiler, NoopFast420ScanProfile};
+use super::restart::{
+    finish_scan, scan_position_before_mcu, skip_to_mcu_with, McuSkipState, McuSkipTarget,
+    ScanPosition,
 };
+use super::{HuffmanPrimaryWidth, PreparedDecodePlan, StripeBuffer};
 use crate::backend::Backend;
 #[cfg(feature = "bench-internals")]
 use crate::bench_support::BenchFast420Profile;
@@ -27,37 +28,52 @@ use crate::entropy::block::CoefficientBlock;
 use crate::entropy::huffman::{FULL_PRIMARY_ENTRIES, NARROW_PRIMARY_ENTRIES};
 use crate::error::{JpegError, Warning};
 use crate::info::{DownscaleFactor, Rect};
-use crate::internal::bit_reader::BitReader;
 use crate::internal::checkpoint::DeviceCheckpoint;
 use crate::internal::scratch::ScratchPool;
 use crate::output::{InterleavedRgbWriter, OutputWriter};
 use alloc::vec::Vec;
 
+mod emit;
 mod rows;
+#[cfg(test)]
+mod tests;
 
+use self::emit::{emit_pass_rows, Fast420RowPass};
 pub(super) use self::rows::decode_mcu_row_fast_tile_420;
 use self::rows::skip_mcu_fast_tile_420;
+
+/// Luma pixels per 4:2:0 MCU in each direction.
+const MCU_PX: u32 = 16;
+
+/// Rows of context the streaming stripe keeps above each plane's MCU-row
+/// samples: the previous MCU row's last two rows, so every pass emits whole
+/// row pairs that share one chroma row.
+pub(crate) const FAST420_HALO_ROWS: u32 = 2;
 
 fn fast_tile_components<const N: usize>(
     plan: &PreparedDecodePlan,
     wide_huffman: bool,
-) -> Result<
-    (
-        ResolvedPreparedComponentPlan<'_, N>,
-        ResolvedPreparedComponentPlan<'_, N>,
-        ResolvedPreparedComponentPlan<'_, N>,
-    ),
-    JpegError,
-> {
+) -> Result<FastTile420Components<'_, N>, JpegError> {
     debug_assert!(plan.matches_fast_tile_shape());
-    Ok((
-        plan.resolved_component_with_entries::<N>(0)?
+    Ok(FastTile420Components {
+        y: plan
+            .resolved_component_with_entries::<N>(0)?
             .with_wide_huffman(wide_huffman),
-        plan.resolved_component_with_entries::<N>(1)?
+        cb: plan
+            .resolved_component_with_entries::<N>(1)?
             .with_wide_huffman(wide_huffman),
-        plan.resolved_component_with_entries::<N>(2)?
+        cr: plan
+            .resolved_component_with_entries::<N>(2)?
             .with_wide_huffman(wide_huffman),
-    ))
+    })
+}
+
+/// The part of the image a fast 4:2:0 scan writes, and an optional entropy
+/// checkpoint to start nearer to it.
+#[derive(Clone, Copy)]
+struct Fast420Request<'a> {
+    roi: Rect,
+    checkpoint: Option<&'a DeviceCheckpoint>,
 }
 
 pub(crate) fn decode_scan_fast_tile_rgb<W: OutputWriter + InterleavedRgbWriter>(
@@ -67,184 +83,20 @@ pub(crate) fn decode_scan_fast_tile_rgb<W: OutputWriter + InterleavedRgbWriter>(
     pool: &mut ScratchPool,
     writer: &mut W,
 ) -> Result<Vec<Warning>, JpegError> {
+    let request = Fast420Request {
+        roi: Rect::full(plan.dimensions),
+        checkpoint: None,
+    };
     let mut profile = NoopFast420ScanProfile::default();
-    match plan.huffman_primary_width {
-        HuffmanPrimaryWidth::Narrow8 => decode_scan_fast_tile_rgb_impl::<
-            NARROW_PRIMARY_ENTRIES,
-            W,
-            _,
-        >(
-            plan, backend, scan_bytes, pool, writer, &mut profile
-        ),
-        HuffmanPrimaryWidth::Full12 => {
-            decode_scan_fast_tile_rgb_impl::<FULL_PRIMARY_ENTRIES, W, _>(
-                plan,
-                backend,
-                scan_bytes,
-                pool,
-                writer,
-                &mut profile,
-            )
-        }
-    }
-}
-
-#[expect(
-    clippy::too_many_lines,
-    reason = "the fused 4:2:0 scan loop keeps predictor, restart, stripe, and writer state together for hot-path codegen"
-)]
-fn decode_scan_fast_tile_rgb_impl<const N: usize, W, P>(
-    plan: &PreparedDecodePlan,
-    backend: Backend,
-    scan_bytes: &[u8],
-    pool: &mut ScratchPool,
-    writer: &mut W,
-    profile: &mut P,
-) -> Result<Vec<Warning>, JpegError>
-where
-    W: OutputWriter + InterleavedRgbWriter,
-    P: Fast420ScanProfiler,
-{
-    debug_assert!(plan.matches_fast_tile_shape());
-
-    let (width, height) = plan.dimensions;
-    let max_h = u32::from(plan.sampling.max_h);
-    let max_v = u32::from(plan.sampling.max_v);
-    let mcu_width_px = 8 * max_h;
-    let mcu_height_px = 8 * max_v;
-    let mcus_per_row = width.div_ceil(mcu_width_px);
-    let mcu_rows = height.div_ceil(mcu_height_px);
-
-    pool.prepare_for(
-        plan,
-        plan.sampling,
-        mcus_per_row,
-        DownscaleFactor::Full.output_block_size(),
-        plan.scratch_bytes,
-    )?;
-    let scaled = ScaledSampling::new(plan.sampling, DownscaleFactor::Full, plan.dimensions);
-    debug_assert!(uses_fancy_420_emit(plan, &scaled));
-
-    let mut br = BitReader::new(scan_bytes);
-    let mut coeff = CoefficientBlock::default();
-    let mut pixels = [0u8; 64];
-    let (y_comp, cb_comp, cr_comp) =
-        fast_tile_components::<N>(plan, plan.prefers_wide_huffman(scan_bytes.len()))?;
-    let components = FastTile420Components {
-        y: y_comp,
-        cb: cb_comp,
-        cr: cr_comp,
-    };
-    let window = FastTile420Window {
-        mcus_per_row,
-        stripe_mcu_start: 0,
-        stripe_mcus_per_row: mcus_per_row,
-        right_luma: width % 16 == 0 || width % 16 > 8,
-        bottom_luma: height > 8,
-    };
-    let mut y_dc = 0i32;
-    let mut cb_dc = 0i32;
-    let mut cr_dc = 0i32;
-
-    let ScratchPool {
-        stripe_a,
-        stripe_b,
-        stripe_c,
-        ..
-    } = pool;
-    let mut prev_stripe: &mut StripeBuffer = stripe_a;
-    let mut curr_stripe: &mut StripeBuffer = stripe_b;
-    let mut next_stripe: &mut StripeBuffer = stripe_c;
-    let mut output_scratch = RgbOutputScratch::YCbCr420;
-
-    let mcu_timer = profile.begin_mcu_decode();
-    decode_mcu_row_fast_tile_420(
-        components,
-        backend,
-        &mut FastTile420EntropyState {
-            br: &mut br,
-            dc: FastTile420DcState {
-                y: &mut y_dc,
-                cb: &mut cb_dc,
-                cr: &mut cr_dc,
-            },
-            coeff: &mut coeff,
-        },
-        &mut pixels,
-        window,
-        curr_stripe,
-        profile.activity_profiler(),
-    )?;
-    profile.finish_mcu_decode(mcu_timer);
-
-    let mut has_prev = false;
-    for my in 1..mcu_rows {
-        let mcu_timer = profile.begin_mcu_decode();
-        decode_mcu_row_fast_tile_420(
-            components,
-            backend,
-            &mut FastTile420EntropyState {
-                br: &mut br,
-                dc: FastTile420DcState {
-                    y: &mut y_dc,
-                    cb: &mut cb_dc,
-                    cr: &mut cr_dc,
-                },
-                coeff: &mut coeff,
-            },
-            &mut pixels,
-            FastTile420Window {
-                bottom_luma: height.saturating_sub(my * 16) > 8,
-                ..window
-            },
-            next_stripe,
-            profile.activity_profiler(),
-        )?;
-        profile.finish_mcu_decode(mcu_timer);
-
-        let emit_timer = profile.begin_rgb_emit();
-        emit_stripe_rgb(
-            plan,
-            backend,
-            writer,
-            &mut output_scratch,
-            StripeEmit {
-                prev: has_prev.then_some(&*prev_stripe),
-                curr: curr_stripe,
-                next: Some(&*next_stripe),
-                stripe_index: my - 1,
-                source_width: width as usize,
-                downscale: DownscaleFactor::Full,
-                scaled: &scaled,
-            },
-        )?;
-        profile.finish_rgb_emit(emit_timer);
-        (prev_stripe, curr_stripe, next_stripe) = (curr_stripe, next_stripe, prev_stripe);
-        has_prev = true;
-    }
-
-    let emit_timer = profile.begin_rgb_emit();
-    emit_stripe_rgb(
+    decode_scan_fast_tile_rgb_request(
         plan,
         backend,
+        scan_bytes,
+        pool,
         writer,
-        &mut output_scratch,
-        StripeEmit {
-            prev: has_prev.then_some(&*prev_stripe),
-            curr: curr_stripe,
-            next: None,
-            stripe_index: mcu_rows - 1,
-            source_width: width as usize,
-            downscale: DownscaleFactor::Full,
-            scaled: &scaled,
-        },
-    )?;
-    profile.finish_rgb_emit(emit_timer);
-
-    let finish_timer = profile.begin_finish_scan();
-    let result = finish_scan(&mut br, true);
-    profile.finish_finish_scan(finish_timer);
-    result
+        request,
+        &mut profile,
+    )
 }
 
 #[cfg(feature = "bench-internals")]
@@ -256,18 +108,11 @@ pub(crate) fn decode_scan_fast_tile_rgb_profiled<W: OutputWriter + InterleavedRg
     writer: &mut W,
     profile: &mut BenchFast420Profile,
 ) -> Result<Vec<Warning>, JpegError> {
-    match plan.huffman_primary_width {
-        HuffmanPrimaryWidth::Narrow8 => {
-            decode_scan_fast_tile_rgb_impl::<NARROW_PRIMARY_ENTRIES, W, _>(
-                plan, backend, scan_bytes, pool, writer, profile,
-            )
-        }
-        HuffmanPrimaryWidth::Full12 => {
-            decode_scan_fast_tile_rgb_impl::<FULL_PRIMARY_ENTRIES, W, _>(
-                plan, backend, scan_bytes, pool, writer, profile,
-            )
-        }
-    }
+    let request = Fast420Request {
+        roi: Rect::full(plan.dimensions),
+        checkpoint: None,
+    };
+    decode_scan_fast_tile_rgb_request(plan, backend, scan_bytes, pool, writer, request, profile)
 }
 
 pub(crate) fn decode_scan_fast_tile_rgb_region<W: OutputWriter + InterleavedRgbWriter>(
@@ -279,189 +124,240 @@ pub(crate) fn decode_scan_fast_tile_rgb_region<W: OutputWriter + InterleavedRgbW
     roi: Rect,
     checkpoint: Option<&DeviceCheckpoint>,
 ) -> Result<Vec<Warning>, JpegError> {
-    match plan.huffman_primary_width {
-        HuffmanPrimaryWidth::Narrow8 => {
-            decode_scan_fast_tile_rgb_region_with_entries::<NARROW_PRIMARY_ENTRIES, W>(
-                plan, backend, scan_bytes, pool, writer, roi, checkpoint,
-            )
-        }
-        HuffmanPrimaryWidth::Full12 => {
-            decode_scan_fast_tile_rgb_region_with_entries::<FULL_PRIMARY_ENTRIES, W>(
-                plan, backend, scan_bytes, pool, writer, roi, checkpoint,
-            )
-        }
-    }
+    let request = Fast420Request { roi, checkpoint };
+    let mut profile = NoopFast420ScanProfile::default();
+    decode_scan_fast_tile_rgb_request(
+        plan,
+        backend,
+        scan_bytes,
+        pool,
+        writer,
+        request,
+        &mut profile,
+    )
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "the fused region loop keeps ROI seek, restart, stripe, and writer state together for hot-path codegen"
-)]
-fn decode_scan_fast_tile_rgb_region_with_entries<
-    const N: usize,
-    W: OutputWriter + InterleavedRgbWriter,
->(
+fn decode_scan_fast_tile_rgb_request<W, P>(
     plan: &PreparedDecodePlan,
     backend: Backend,
     scan_bytes: &[u8],
     pool: &mut ScratchPool,
     writer: &mut W,
-    roi: Rect,
-    checkpoint: Option<&DeviceCheckpoint>,
-) -> Result<Vec<Warning>, JpegError> {
-    debug_assert!(plan.matches_fast_tile_shape());
-
-    let (width, height) = plan.dimensions;
-    let max_h = u32::from(plan.sampling.max_h);
-    let max_v = u32::from(plan.sampling.max_v);
-    let mcu_width_px = 8 * max_h;
-    let mcu_height_px = 8 * max_v;
-    let mcus_per_row = width.div_ceil(mcu_width_px);
-    let mcu_rows = height.div_ceil(mcu_height_px);
-    let first_decode_mcu_row = fast420_first_decode_mcu_row(roi, mcu_height_px);
-    let decode_mcu_row_end = fast420_decode_mcu_row_end(roi, mcu_height_px, mcu_rows);
-    let last_output_mcu_row = last_mcu_row_for_rect(roi, mcu_height_px, mcu_rows);
-
-    let region_layout = Fast420RegionLayout::new(width as usize, roi);
-
-    let mut crop_rows = pool.take_sink_rows(
-        region_layout.row_width().saturating_mul(3),
-        plan.scratch_bytes,
-    )?;
-    if let Err(error) = pool.prepare_for(
+    request: Fast420Request<'_>,
+    profile: &mut P,
+) -> Result<Vec<Warning>, JpegError>
+where
+    W: OutputWriter + InterleavedRgbWriter,
+    P: Fast420ScanProfiler,
+{
+    let scan = Fast420Scan {
         plan,
-        plan.sampling,
-        region_layout.stripe_mcus_per_row,
-        DownscaleFactor::Full.output_block_size(),
-        plan.scratch_bytes,
-    ) {
-        pool.restore_sink_rows(crop_rows);
-        return Err(error);
-    }
-    let result = (|| {
-        let mut coeff = CoefficientBlock::default();
-        let mut pixels = [0u8; 64];
-        let (y_comp, cb_comp, cr_comp) =
-            fast_tile_components::<N>(plan, plan.prefers_wide_huffman(scan_bytes.len()))?;
-        let components = FastTile420Components {
-            y: y_comp,
-            cb: cb_comp,
-            cr: cr_comp,
-        };
-        let window = FastTile420Window {
-            mcus_per_row,
-            stripe_mcu_start: region_layout.stripe_mcu_start,
-            stripe_mcus_per_row: region_layout.stripe_mcus_per_row,
-            right_luma: true,
-            bottom_luma: true,
-        };
-        let target_mcu = first_decode_mcu_row * mcus_per_row;
-        let (mut br, prev_dc, start_mcu) =
-            reader_from_checkpoint(scan_bytes, checkpoint, target_mcu);
-        let mut y_dc = prev_dc[0];
-        let mut cb_dc = prev_dc[1];
-        let mut cr_dc = prev_dc[2];
-        for _ in start_mcu..target_mcu {
-            skip_mcu_fast_tile_420(
-                y_comp, cb_comp, cr_comp, &mut br, &mut y_dc, &mut cb_dc, &mut cr_dc,
-            )?;
+        backend,
+        scan_bytes,
+        request,
+    };
+    match plan.huffman_primary_width {
+        HuffmanPrimaryWidth::Narrow8 => {
+            scan.decode::<NARROW_PRIMARY_ENTRIES, W, P>(pool, writer, profile)
         }
+        HuffmanPrimaryWidth::Full12 => {
+            scan.decode::<FULL_PRIMARY_ENTRIES, W, P>(pool, writer, profile)
+        }
+    }
+}
 
-        let ScratchPool {
-            stripe_a,
-            stripe_b,
-            stripe_c,
-            ..
-        } = pool;
-        let mut prev_stripe: &mut StripeBuffer = stripe_a;
-        let mut curr_stripe: &mut StripeBuffer = stripe_b;
-        let mut next_stripe: &mut StripeBuffer = stripe_c;
-        let mut profiler = NoopFast420Profiler;
+#[derive(Clone, Copy)]
+struct Fast420Scan<'a, 'r> {
+    plan: &'a PreparedDecodePlan,
+    backend: Backend,
+    scan_bytes: &'a [u8],
+    request: Fast420Request<'r>,
+}
 
-        decode_mcu_row_fast_tile_420(
-            components,
-            backend,
-            &mut FastTile420EntropyState {
-                br: &mut br,
-                dc: FastTile420DcState {
-                    y: &mut y_dc,
-                    cb: &mut cb_dc,
-                    cr: &mut cr_dc,
-                },
-                coeff: &mut coeff,
+/// Geometry of the MCU rows a scan decodes.
+#[derive(Clone, Copy)]
+struct Fast420Rows {
+    mcus_per_row: u32,
+    mcu_rows: u32,
+    first_row: u32,
+    row_end: u32,
+    window: FastTile420Window,
+    layout: Fast420RegionLayout,
+    roi: Rect,
+    image_height: u32,
+}
+
+impl Fast420Rows {
+    fn window(self, mcu_y: u32) -> FastTile420Window {
+        FastTile420Window {
+            mcu_y,
+            bottom_luma: self.image_height.saturating_sub(mcu_y * MCU_PX) > 8,
+            ..self.window
+        }
+    }
+
+    fn pass(self, mcu_y: u32) -> Result<Fast420RowPass, JpegError> {
+        Fast420RowPass::new(
+            self.roi,
+            self.image_height,
+            mcu_y,
+            mcu_y > self.first_row,
+            mcu_y + 1 == self.mcu_rows,
+        )
+    }
+}
+
+impl Fast420Scan<'_, '_> {
+    fn rows(self) -> Fast420Rows {
+        let (width, height) = self.plan.dimensions;
+        let roi = self.request.roi;
+        let mcus_per_row = width.div_ceil(MCU_PX);
+        let mcu_rows = height.div_ceil(MCU_PX);
+        let layout = Fast420RegionLayout::new(width as usize, roi);
+        Fast420Rows {
+            mcus_per_row,
+            mcu_rows,
+            first_row: fast420_first_decode_mcu_row(roi, MCU_PX),
+            row_end: fast420_decode_mcu_row_end(roi, MCU_PX, mcu_rows, FAST420_HALO_ROWS),
+            window: FastTile420Window {
+                mcu_y: 0,
+                mcus_per_row,
+                mcu_rows,
+                restart: self.plan.restart_interval.unwrap_or(0),
+                stripe_mcu_start: layout.stripe_mcu_start,
+                stripe_mcus_per_row: layout.stripe_mcus_per_row,
+                // Whether the final coded MCU's right luma blocks reach into
+                // the image; the IDCT skips them otherwise.
+                right_luma: width % MCU_PX == 0 || width % MCU_PX > 8,
+                bottom_luma: true,
             },
-            &mut pixels,
-            window,
-            curr_stripe,
-            &mut profiler,
-        )?;
+            layout,
+            roi,
+            image_height: height,
+        }
+    }
 
-        let mut has_prev = false;
-        for my in first_decode_mcu_row + 1..decode_mcu_row_end {
+    fn decode<const N: usize, W, P>(
+        self,
+        pool: &mut ScratchPool,
+        writer: &mut W,
+        profile: &mut P,
+    ) -> Result<Vec<Warning>, JpegError>
+    where
+        W: OutputWriter + InterleavedRgbWriter,
+        P: Fast420ScanProfiler,
+    {
+        let plan = self.plan;
+        debug_assert!(plan.matches_fast_tile_shape());
+        debug_assert!(uses_fancy_420_emit(
+            plan,
+            &ScaledSampling::new(plan.sampling, DownscaleFactor::Full, plan.dimensions)
+        ));
+        let rows = self.rows();
+        pool.prepare_for_fast420_stream(plan, rows.window.stripe_mcus_per_row, plan.scratch_bytes)?;
+
+        let components =
+            fast_tile_components::<N>(plan, plan.prefers_wide_huffman(self.scan_bytes.len()))?;
+        let first_mcu = rows.first_row * rows.mcus_per_row;
+        let ScanPosition {
+            mut br,
+            prev_dc,
+            mcu_index: mut current_mcu,
+            mut expected_rst,
+        } = scan_position_before_mcu(
+            self.scan_bytes,
+            rows.window.restart,
+            self.request.checkpoint,
+            first_mcu,
+        );
+        let mut dc = [prev_dc[0], prev_dc[1], prev_dc[2]];
+        let mut mcus_since_restart = 0u32;
+        skip_to_mcu_with(
+            McuSkipTarget {
+                target_mcu: first_mcu,
+                total_mcus: rows.mcus_per_row * rows.mcu_rows,
+                restart: rows.window.restart,
+                wide_huffman: plan.prefers_wide_huffman(self.scan_bytes.len()),
+            },
+            &mut McuSkipState {
+                br: &mut br,
+                prev_dc: &mut dc,
+                current_mcu: &mut current_mcu,
+                mcus_since_restart: &mut mcus_since_restart,
+                expected_rst: &mut expected_rst,
+            },
+            |br, dc| {
+                let [y_dc, cb_dc, cr_dc] = dc else {
+                    return Err(JpegError::InternalInvariant {
+                        reason: "4:2:0 seek requires three DC predictors",
+                    });
+                };
+                skip_mcu_fast_tile_420(
+                    components.y,
+                    components.cb,
+                    components.cr,
+                    br,
+                    y_dc,
+                    cb_dc,
+                    cr_dc,
+                )
+            },
+        )?;
+        let [mut y_dc, mut cb_dc, mut cr_dc] = dc;
+        let mut coeff = CoefficientBlock::default();
+        let mut state = FastTile420EntropyState {
+            br: &mut br,
+            dc: FastTile420DcState {
+                y: &mut y_dc,
+                cb: &mut cb_dc,
+                cr: &mut cr_dc,
+            },
+            coeff: &mut coeff,
+            mcus_since_restart: &mut mcus_since_restart,
+            expected_rst: &mut expected_rst,
+        };
+
+        self.decode_rows(components, &mut state, &mut pool.stripe_a, writer, profile)?;
+
+        let finish_timer = profile.begin_finish_scan();
+        let result = finish_scan(&mut br, rows.row_end == rows.mcu_rows);
+        profile.finish_finish_scan(finish_timer);
+        result
+    }
+
+    fn decode_rows<const N: usize, W, P>(
+        self,
+        components: FastTile420Components<'_, N>,
+        state: &mut FastTile420EntropyState<'_, '_>,
+        stripe: &mut StripeBuffer,
+        writer: &mut W,
+        profile: &mut P,
+    ) -> Result<(), JpegError>
+    where
+        W: InterleavedRgbWriter,
+        P: Fast420ScanProfiler,
+    {
+        let rows = self.rows();
+        for mcu_y in rows.first_row..rows.row_end {
+            let pass = rows.pass(mcu_y)?;
+            let mcu_timer = profile.begin_mcu_decode();
             decode_mcu_row_fast_tile_420(
                 components,
-                backend,
-                &mut FastTile420EntropyState {
-                    br: &mut br,
-                    dc: FastTile420DcState {
-                        y: &mut y_dc,
-                        cb: &mut cb_dc,
-                        cr: &mut cr_dc,
-                    },
-                    coeff: &mut coeff,
-                },
-                &mut pixels,
-                window,
-                next_stripe,
-                &mut profiler,
+                self.backend,
+                state,
+                rows.window(mcu_y),
+                stripe,
+                profile.activity_profiler(),
             )?;
-            if mcu_row_intersects_rect(my - 1, mcu_height_px, roi) {
-                emit_stripe_rgb_420_region(
-                    plan,
-                    backend,
-                    writer,
-                    Fast420RegionStripe {
-                        neighbors: StripeNeighbors {
-                            prev: has_prev.then_some(&*prev_stripe),
-                            curr: curr_stripe,
-                            next: Some(&*next_stripe),
-                        },
-                        stripe_index: my - 1,
-                        roi,
-                        region_layout,
-                        crop_rows: &mut crop_rows,
-                        downscale: DownscaleFactor::Full,
-                    },
-                )?;
-            }
-            (prev_stripe, curr_stripe, next_stripe) = (curr_stripe, next_stripe, prev_stripe);
-            has_prev = true;
-        }
+            profile.finish_mcu_decode(mcu_timer);
 
-        let curr_mcu_row = decode_mcu_row_end - 1;
-        if curr_mcu_row <= last_output_mcu_row
-            && mcu_row_intersects_rect(curr_mcu_row, mcu_height_px, roi)
-        {
-            emit_stripe_rgb_420_region(
-                plan,
-                backend,
-                writer,
-                Fast420RegionStripe {
-                    neighbors: StripeNeighbors {
-                        prev: has_prev.then_some(&*prev_stripe),
-                        curr: curr_stripe,
-                        next: None,
-                    },
-                    stripe_index: curr_mcu_row,
-                    roi,
-                    region_layout,
-                    crop_rows: &mut crop_rows,
-                    downscale: DownscaleFactor::Full,
-                },
-            )?;
+            let emit_timer = profile.begin_rgb_emit();
+            emit_pass_rows(self.backend, rows.layout, pass, stripe, writer)?;
+            profile.finish_rgb_emit(emit_timer);
+            if mcu_y + 1 < rows.row_end {
+                stripe.carry_last_rows_to_halo(FAST420_HALO_ROWS as usize);
+            }
         }
-        finish_scan(&mut br, decode_mcu_row_end == mcu_rows)
-    })();
-    pool.restore_sink_rows(crop_rows);
-    result
+        Ok(())
+    }
 }
