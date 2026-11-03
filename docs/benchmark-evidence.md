@@ -21,40 +21,52 @@ generated in-repo fixtures.
 
 ## Fair decode comparison against OpenJPEG, Grok, OpenJPH, OpenHTJ2K, libjpeg-turbo and Kakadu - 2026-11-02
 
-j2k at `70eaacaf`, decode only. All ratios are **competitor time ÷ j2k
-time**: above 1 means j2k is faster, below 1 means the competitor is faster.
-The harness changes that made this comparison fair are listed under
-"Harness rules". Competitor rows in older sections of this file were measured
-before those changes, so they are not comparable with this section.
+Rerun after the comparator packing fix listed under "Harness rules", decode
+only. j2k at `3d253077` on mini and studio, whose ARM decode code is
+identical to the bench branch tip, and at the tip `84b93cd9` on cuda. The
+JPEG and Kakadu rows were not rerun: they are copied from the first run, at
+`70eaacaf`. The JPEG decode code did not change between the runs, and the
+Kakadu rows compare command lines, which use no comparator wrapper.
+
+All ratios are **competitor time ÷ j2k time**: above 1 means j2k is faster,
+below 1 means the competitor is faster. The harness changes that made this
+comparison fair are listed under "Harness rules". Competitor rows in older
+sections of this file were measured before those changes, so they are not
+comparable with this section.
 
 ### Summary
 
 - **Apple Silicon (M4 Mac mini, M5 Max Mac Studio):** j2k is the fastest
   decoder in every full-image workload except JPEG at high thread counts.
-  - Batch HTJ2K: OpenJPH, Grok and OpenHTJ2K are 1.8–2.8× slower, and
-    OpenJPEG is 3.8–5.6× slower.
-  - Batch Part 1: competitors are 1.3–1.8× slower.
-  - 16-bit medical (lossless): competitors are 1.4–2.7× slower, and OpenJPEG
-    is 3.6–4.5× slower on HTJ2K.
+  - Batch HTJ2K: OpenJPH and Grok are 1.7–2.6× slower, OpenHTJ2K is
+    1.2–1.4× slower, and OpenJPEG is 3.7–5.5× slower.
+  - Batch Part 1: competitors are 1.2–1.8× slower.
+  - 16-bit medical (lossless): on HTJ2K, OpenJPH and Grok are 1.9–2.7×
+    slower, OpenHTJ2K is 1.2–1.3× slower and OpenJPEG is 3.6–4.4× slower.
+    Part 1 competitors are 1.4–1.5× slower. One set goes the other way:
+    OpenHTJ2K is slightly faster on CT slices at 18 threads on studio
+    (0.95–0.97).
   - JPEG: j2k is 14–21% faster than libjpeg-turbo at 1 thread, and ties it at
     8–18 threads.
 - **x86 (Ryzen 7 5800X3D, WSL2):** most of the lead is gone.
-  - 8-bit batch HTJ2K ties OpenJPH and Grok at 16 threads (0.93–1.03).
-  - j2k loses 16-bit HTJ2K to OpenJPH (0.66–0.70), Grok (0.81–0.85) and
-    OpenHTJ2K (0.78–0.83).
+  - 8-bit batch HTJ2K: j2k leads OpenJPH (1.05) and Grok (1.17–1.26) at 1
+    thread, but both are faster at 16 threads (OpenJPH 0.82–0.83, Grok
+    0.91–0.96). OpenHTJ2K is 1.09–1.21× slower and OpenJPEG 2.0–3.1× slower.
+  - j2k loses 16-bit HTJ2K to OpenJPH (0.69–0.74), Grok (0.81–0.86) and
+    OpenHTJ2K (0.66–0.73).
   - libjpeg-turbo is up to 20% faster on JPEG. j2k still wins Part 1 by
-    1.1–1.4×.
+    1.06–1.32×.
   - The cause is in j2k (see "Where j2k is behind").
 - **Region and zoom decode of a 16384² image:**
-  - j2k is 1.8–3.2× faster than Grok on HTJ2K and 1.06–1.38× on Part 1
+  - j2k is 1.7–3.2× faster than Grok on HTJ2K and 1.05–1.38× on Part 1
     (geomeans).
   - OpenJPEG 2.5.4 returns wrong pixels for every partial HTJ2K region.
   - OpenHTJ2K returns wrong pixels for windows of tiled images.
   - OpenJPH has no region API.
   - Reduced-resolution requests on tiled images don't scale with threads in
-    j2k, and Grok is up to 4.5× faster there.
-- **Kakadu 8.4.1** (command line vs command line, whole process): the j2k
-  command line is faster in all 16 cases, by 1.06–1.90×.
+    j2k, and Grok is up to 5.0× faster there.
+- **Kakadu 8.4.1** (command line vs command line, whole process, first run):
+  the j2k command line is faster in all 16 cases, by 1.06–1.90×.
 - **Correctness:** every full-image decode by every library matched j2k:
   bit-exact on lossless, within 2 on 9/7, and exact with libjpeg-turbo.
 
@@ -73,7 +85,7 @@ its own upstream CMake `Release` configuration.
 
 | Decoder | Version | Build |
 |---|---|---|
-| j2k | `70eaacaf` | Workspace `release` profile (fat LTO, one codegen unit), default target CPU |
+| j2k | `3d253077` (mini, studio); `84b93cd9` (cuda); `70eaacaf` (JPEG and Kakadu rows) | Workspace `release` profile (fat LTO, one codegen unit), default target CPU. `3d253077`'s ARM decode code is identical to `84b93cd9`'s; the commits between them change x86-64 decode code and the encoder. |
 | OpenJPEG | 2.5.4 | Upstream static library, linked through a local `[patch.crates-io]` overlay of `openjpeg-sys`. The crate's vendored 2.5.3 is compiled without `NDEBUG`, so it was not used. GCC builds get upstream's `-ffast-math`. |
 | Grok | 20.4.24 | Upstream Release |
 | OpenJPH | 0.33.0 | Upstream Release. Upstream has AVX2 paths on x86 and no NEON, so Mac runs use its generic C++. |
@@ -96,31 +108,42 @@ their output.
   - With `J2K_BATCH_COMPARE_KEEP_GOING`, a failure is recorded as a result,
     and that decoder is left out of the cell's timing.
 - **Same output work:** every decoder writes once, directly into a buffer
-  allocated the same way inside the timed region. The comparators' former
-  per-sample packing and extra copies inflated Grok by up to 61%, OpenJPEG by
-  up to 39%, and OpenJPH and OpenHTJ2K by 4–8%. They were removed, and the
-  first full round, measured before the fix, was discarded.
-  - After the rounds below, the OpenHTJ2K and OpenJPH shims' remaining
-    per-sample conversion was replaced by the row packers in
-    `j2k_shim_common.h`, and OpenJPEG's 8-bit pack gained a plain clamp
-    loop. Their timings below predate that change and are not yet
-    re-measured, so they may overstate those decoders' times.
+  allocated the same way inside the timed region.
+  - Before the first run, the Grok and OpenJPEG wrappers packed output one
+    sample at a time, and the Grok, OpenJPH and OpenHTJ2K wrappers made
+    extra copies. This inflated Grok by up to 61%, OpenJPEG by up to 39%,
+    and OpenJPH and OpenHTJ2K by 4–8%. Both were removed, and the first full
+    round, measured before that fix, was discarded.
+  - For this rerun, the OpenHTJ2K and OpenJPH shims' remaining per-sample
+    conversion, which branched on depth and sign for every sample, was
+    replaced by row packers that every C and C++ shim shares
+    (`crates/j2k-compare/src/j2k_shim_common.h`). Their allocating decode
+    mode, used only by tests, was removed. OpenJPEG's full-resolution pack
+    gained a plain clamp loop for unsigned samples of at most 8 bits.
+  - Against the first run, OpenHTJ2K's batch HTJ2K ratio at 1 thread fell
+    from 2.09–2.12× to 1.34–1.36× on the Macs and from 1.87× to 1.18× on
+    cuda. OpenJPH's fell from 2.79–2.82× to 2.51–2.54× on the Macs, and on
+    cuda from 1.18× to 1.05× at 1 thread and from 0.93× to 0.82× at 16
+    threads. On the Macs, j2k's, Grok's and OpenJPEG's own times moved by at
+    most 3% (geomean per corpus).
 - **Same thread budget:**
-  - j2k's Rayon pool has `J2K_BATCH_COMPARE_THREADS` threads. These rounds
-    set `RAYON_NUM_THREADS` to match; the harness now sizes the pool itself
-    and rejects a `RAYON_NUM_THREADS` that disagrees.
+  - The harness sizes j2k's global Rayon pool to `J2K_BATCH_COMPARE_THREADS`
+    in-process, before any decode, and exits if `RAYON_NUM_THREADS` is set
+    to a different value. These runs set both to the same value.
   - A one-image batch gives the whole budget to each decoder's own
     intra-image threading.
   - A larger batch splits images across workers with the same static
     chunking for everyone, and each worker decodes one image serially.
 - **Statistics:**
-  - 3 fresh processes per cell, with the decoder order rotated in each.
+  - 3 rounds per cell, each in a fresh process. The set order rotates
+    between rounds, and the decoder order rotates between repeats inside
+    each process.
   - 11 timed repeats per process on the main corpus, 7 on tiles and 16-bit,
     5 on region.
   - A decoder's time is the median over processes of each process's median.
   - The ratio is computed within each process, then the median is taken.
-  - The typical spread of a cell's three ratios was 0.8% on the Macs and 2%
-    on cuda.
+  - The typical spread of a cell's three ratios was 0.8% on the Macs and
+    2.4% on cuda.
 
 ### Inputs
 
@@ -150,28 +173,28 @@ Main corpus:
 
 | host | family | OpenJPH 1T | OpenJPH allT | Grok 1T | Grok allT | OpenJPEG 1T | OpenJPEG allT | OpenHTJ2K 1T | OpenHTJ2K allT | libjpeg-turbo 1T | libjpeg-turbo allT |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| mini (10T) | HTJ2K | 2.82× | 2.13× | 2.61× | 2.07× | 4.90× | 3.79× | 2.09× | 1.90× | – | – |
-| mini (10T) | Part 1 | – | – | 1.44× | 1.35× | 1.60× | 1.54× | 1.48× | 1.39× | – | – |
+| mini (10T) | HTJ2K | 2.54× | 1.91× | 2.58× | 2.07× | 4.80× | 3.73× | 1.34× | 1.27× | – | – |
+| mini (10T) | Part 1 | – | – | 1.44× | 1.36× | 1.60× | 1.53× | 1.39× | 1.29× | – | – |
 | mini (10T) | JPEG | – | – | – | – | – | – | – | – | 1.15× | 1.06× |
-| studio (18T) | HTJ2K | 2.79× | 2.07× | 2.59× | 2.17× | 5.08× | 4.19× | 2.12× | 1.84× | – | – |
-| studio (18T) | Part 1 | – | – | 1.36× | 1.26× | 1.61× | 1.49× | 1.45× | 1.33× | – | – |
+| studio (18T) | HTJ2K | 2.51× | 1.80× | 2.57× | 2.12× | 4.99× | 4.02× | 1.36× | 1.21× | – | – |
+| studio (18T) | Part 1 | – | – | 1.36× | 1.26× | 1.60× | 1.48× | 1.36× | 1.23× | – | – |
 | studio (18T) | JPEG | – | – | – | – | – | – | – | – | 1.17× | 0.97× |
-| cuda (16T) | HTJ2K | 1.18× | 0.93× | 1.24× | 1.03× | 3.37× | 2.78× | 1.87× | 1.76× | – | – |
-| cuda (16T) | Part 1 | – | – | 1.20× | 1.09× | 1.29× | 1.34× | 1.34× | 1.27× | – | – |
+| cuda (16T) | HTJ2K | 1.05× | 0.82× | 1.17× | 0.96× | 3.14× | 2.38× | 1.18× | 1.21× | – | – |
+| cuda (16T) | Part 1 | – | – | 1.19× | 1.06× | 1.27× | 1.26× | 1.24× | 1.15× | – | – |
 | cuda (16T) | JPEG | – | – | – | – | – | – | – | – | 0.92× | 0.83× |
 
 Whole-slide tiles:
 
 | host | family | OpenJPH 1T | OpenJPH allT | Grok 1T | Grok allT | OpenJPEG 1T | OpenJPEG allT | OpenHTJ2K 1T | OpenHTJ2K allT | libjpeg-turbo 1T | libjpeg-turbo allT |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| mini (10T) | HTJ2K | 2.42× | 1.98× | 2.09× | 1.80× | 5.36× | 3.90× | 2.45× | 2.10× | – | – |
-| mini (10T) | Part 1 | – | – | 1.49× | 1.42× | 1.82× | 1.56× | 1.52× | 1.40× | – | – |
+| mini (10T) | HTJ2K | 2.02× | 1.68× | 2.06× | 1.78× | 5.17× | 3.81× | 1.36× | 1.25× | – | – |
+| mini (10T) | Part 1 | – | – | 1.49× | 1.45× | 1.78× | 1.55× | 1.32× | 1.26× | – | – |
 | mini (10T) | JPEG | – | – | – | – | – | – | – | – | 1.14× | 1.05× |
-| studio (18T) | HTJ2K | 2.39× | 1.94× | 2.08× | 2.02× | 5.63× | 4.29× | 2.46× | 2.02× | – | – |
-| studio (18T) | Part 1 | – | – | 1.30× | 1.28× | 1.83× | 1.54× | 1.49× | 1.37× | – | – |
+| studio (18T) | HTJ2K | 2.00× | 1.68× | 2.07× | 2.05× | 5.48× | 4.21× | 1.36× | 1.27× | – | – |
+| studio (18T) | Part 1 | – | – | 1.30× | 1.29× | 1.81× | 1.52× | 1.28× | 1.24× | – | – |
 | studio (18T) | JPEG | – | – | – | – | – | – | – | – | 1.21× | 1.05× |
-| cuda (16T) | HTJ2K | 1.25× | 1.00× | 1.40× | 1.02× | 3.16× | 2.38× | 2.11× | 1.63× | – | – |
-| cuda (16T) | Part 1 | – | – | 1.23× | 1.14× | 1.39× | 1.30× | 1.40× | 1.36× | – | – |
+| cuda (16T) | HTJ2K | 1.05× | 0.83× | 1.26× | 0.91× | 2.79× | 2.02× | 1.21× | 1.09× | – | – |
+| cuda (16T) | Part 1 | – | – | 1.20× | 1.12× | 1.32× | 1.26× | 1.18× | 1.21× | – | – |
 | cuda (16T) | JPEG | – | – | – | – | – | – | – | – | 1.00× | 0.91× |
 
 On native scanner JPEG tiles alone, the ratios range from 1.00 to 1.30 on
@@ -181,25 +204,25 @@ the Macs at 1 thread, and from 0.78 to 1.13 on cuda.
 
 | host | family | OpenJPH 1T | OpenJPH allT | Grok 1T | Grok allT | OpenJPEG 1T | OpenJPEG allT | OpenHTJ2K 1T | OpenHTJ2K allT |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| mini (10T) | HTJ2K | 2.53× | 2.09× | 2.65× | 2.39× | 4.27× | 3.55× | 1.62× | 1.56× |
-| mini (10T) | Part 1 | – | – | 1.48× | 1.41× | 1.54× | 1.46× | 1.46× | 1.39× |
-| studio (18T) | HTJ2K | 2.62× | 2.05× | 2.74× | 2.51× | 4.45× | 3.79× | 1.66× | 1.53× |
-| studio (18T) | Part 1 | – | – | 1.44× | 1.38× | 1.52× | 1.47× | 1.44× | 1.37× |
-| cuda (16T) | HTJ2K | 0.70× | 0.66× | 0.85× | 0.81× | 2.17× | 1.88× | 0.83× | 0.78× |
-| cuda (16T) | Part 1 | – | – | 1.19× | 1.09× | 1.26× | 1.17× | 1.33× | 1.24× |
+| mini (10T) | HTJ2K | 2.39× | 1.99× | 2.62× | 2.38× | 4.19× | 3.55× | 1.26× | 1.25× |
+| mini (10T) | Part 1 | – | – | 1.47× | 1.41× | 1.52× | 1.46× | 1.44× | 1.38× |
+| studio (18T) | HTJ2K | 2.44× | 1.93× | 2.71× | 2.49× | 4.43× | 3.81× | 1.29× | 1.22× |
+| studio (18T) | Part 1 | – | – | 1.44× | 1.38× | 1.52× | 1.46× | 1.42× | 1.36× |
+| cuda (16T) | HTJ2K | 0.69× | 0.74× | 0.81× | 0.86× | 2.27× | 2.05× | 0.66× | 0.73× |
+| cuda (16T) | Part 1 | – | – | 1.20× | 1.11× | 1.27× | 1.21× | 1.32× | 1.24× |
 
 ### One large image: intra-image threading (4096×2048 mosaic)
 
 | host | family | OpenJPH 1T | OpenJPH allT | Grok 1T | Grok allT | OpenJPEG 1T | OpenJPEG allT | OpenHTJ2K 1T | OpenHTJ2K allT | libjpeg-turbo 1T | libjpeg-turbo allT |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| mini (10T) | HTJ2K | 2.76× | 11.10× | 2.81× | 2.46× | 7.05× | 8.45× | 1.90× | 4.59× | – | – |
-| mini (10T) | Part 1 | – | – | 1.39× | 1.60× | 1.84× | 2.28× | 1.46× | 1.89× | – | – |
+| mini (10T) | HTJ2K | 2.53× | 10.16× | 2.81× | 2.47× | 6.98× | 8.02× | 1.22× | 1.95× | – | – |
+| mini (10T) | Part 1 | – | – | 1.40× | 1.60× | 1.83× | 2.19× | 1.37× | 1.53× | – | – |
 | mini (10T) | JPEG | – | – | – | – | – | – | – | – | 1.09× | – |
-| studio (18T) | HTJ2K | 2.82× | 16.55× | 2.94× | 2.35× | 7.49× | 10.40× | 1.99× | 7.07× | – | – |
-| studio (18T) | Part 1 | – | – | 1.37× | 1.34× | 1.82× | 2.63× | 1.42× | 2.83× | – | – |
+| studio (18T) | HTJ2K | 2.56× | 15.14× | 2.92× | 2.44× | 7.35× | 9.63× | 1.26× | 2.90× | – | – |
+| studio (18T) | Part 1 | – | – | 1.38× | 1.35× | 1.82× | 2.49× | 1.33× | 2.15× | – | – |
 | studio (18T) | JPEG | – | – | – | – | – | – | – | – | 1.13× | – |
-| cuda (16T) | HTJ2K | 1.17× | 4.41× | 1.21× | 1.77× | 4.07× | 5.00× | 1.74× | 4.55× | – | – |
-| cuda (16T) | Part 1 | – | – | 1.19× | 1.18× | 1.41× | 1.97× | 1.33× | 2.17× | – | – |
+| cuda (16T) | HTJ2K | 1.09× | 4.20× | 1.17× | 1.58× | 3.88× | 4.07× | 1.10× | 2.02× | – | – |
+| cuda (16T) | Part 1 | – | – | 1.19× | 1.15× | 1.38× | 1.72× | 1.23× | 1.67× | – | – |
 | cuda (16T) | JPEG | – | – | – | – | – | – | – | – | 0.90× | – |
 
 OpenJPH cannot use more than one thread on one image, which accounts for
@@ -211,24 +234,27 @@ Geomean against Grok, timed cells:
 
 | Host | HTJ2K, 1T | HTJ2K, allT | Part 1, 1T | Part 1, allT |
 |---|---:|---:|---:|---:|
-| mini | 3.20 | 2.15 | 1.38 | 1.31 |
-| studio | 3.20 | 1.83 | 1.36 | 1.06 |
-| cuda | 1.96 | 2.63 | 1.26 | 1.34 |
+| mini | 3.20 | 2.19 | 1.38 | 1.32 |
+| studio | 3.16 | 1.93 | 1.36 | 1.05 |
+| cuda | 1.71 | 2.60 | 1.22 | 1.33 |
 
 Cells where Grok is faster:
 - Reduced-resolution requests on `tiled1024` at full thread count: Part 1
-  thumbnails, and 1/4-resolution windows in both families (0.22–0.77).
+  thumbnails, and 1/4-resolution windows in both families (0.20–0.78).
 - `classic_2bpp_prec256` full-resolution windows, mostly at 1 thread
-  (0.79–0.99).
+  (0.80–0.97).
+- Near ties (0.98–0.99): HTJ2K `prec256` thumbnails at 1 thread on cuda, and
+  lossless HTJ2K `tiled1024` full-resolution windows at 18 threads on studio.
 
 Where OpenJPEG returns correct HTJ2K output (full-image thumbnails), it is
-3.9–69× slower than j2k. Where OpenHTJ2K's output is correct, it is 3.0–42×
+3.9–86× slower than j2k. Where OpenHTJ2K's output is correct, it is 3.0–42×
 slower on HTJ2K and 1.8–22× slower on Part 1.
 
 ### Kakadu (command line vs command line, studio)
 
-Each run reads the codestream, decodes it and writes a 25 MB PPM, timed by
-wall clock over 9 alternating rounds. Process start-up is included for both
+Not rerun: these rows are from the first run, with j2k at `70eaacaf`. Each
+run reads the codestream, decodes it and writes a 25 MB PPM, timed by wall
+clock over 9 alternating rounds. Process start-up is included for both
 tools.
 
 | set (4096×2048 RGB) | threads | j2k CLI ms | Kakadu CLI ms | Kakadu / j2k | max diff vs source, j2k / Kakadu |
@@ -261,42 +287,47 @@ tools.
 | j2k | The batch region API rejects reduced-resolution requests that span tiles. `J2kDecoder`, used here, handles them. |
 
 Releasing j2k's retained workspaces before every sample
-(`J2K_BATCH_COMPARE_J2K_COLD`) changed j2k's time by −1.0% to +3.2%, so
-workspace retention does not explain j2k's lead.
+(`J2K_BATCH_COMPARE_J2K_COLD`) changed j2k's time by −1.9% to +0.7% at 1
+thread and by −5.6% to +5.2% at full thread count, so workspace retention
+does not explain j2k's lead.
 
 ### Where j2k is behind
 
-1. **x86 throughput.** Moving from the M4 to the Ryzen at 1 thread:
-   - j2k gets 2.7× slower on HTJ2K and 4.25× slower on 16-bit HTJ2K.
-   - OpenJPH gets 1.1–1.4× slower and Grok 1.3–1.8× slower.
+1. **x86 throughput.** Moving from the M4 to the Ryzen at 1 thread (geomean
+   over the batch sets):
+   - j2k gets 2.7× slower on HTJ2K and 3.9× slower on 16-bit HTJ2K.
+   - OpenJPH gets 1.1–1.4× slower on HTJ2K and 1.13× slower on 16-bit
+     HTJ2K. Grok gets 1.2–1.7× and 1.21× slower.
 
-   Stage profiles (`J2K_PROFILE_STAGES=summary`), Ryzen against an M4 Pro:
-   - The inverse wavelet transform is 6.2–7.2× slower on 16-bit images.
-   - Code-block decoding is 2.1–2.6× slower.
+   The cuda build includes `035d3046`, which took the default x86-64
+   build's decode loops off per-sample libm calls. Before it, the scalar
+   horizontal wavelet filter (`filter_row`), among others, called a software
+   `floorf` and an `fmaf` trampoline for every sample, because baseline
+   x86-64 has neither instruction; aarch64 has both. In a j2k-only A/B on
+   cuda (3 processes of 7 repeats per build, build order rotated), that
+   change made MR 1.28× faster at 1 thread and moved every other 1-thread
+   case by at most 2%. A `-C target-cpu=native` build (of `70eaacaf`) is
+   still faster than the default build of the cuda decode code:
 
-   In the default x86-64 build, the scalar horizontal wavelet filter
-   (`filter_row`) calls a software `floorf` and an `fmaf` trampoline for
-   every sample, because baseline x86-64 has neither instruction; aarch64
-   has both. A `-C target-cpu=native` build of j2k is 1.31–1.53× faster on
-   16-bit HTJ2K, and changes 8-bit HTJ2K and Part 1 by only 2–7%. In the
-   same process, that native build:
+   | Image set | Default ÷ native time, 1 thread |
+   |---|---:|
+   | CT | 1.31× |
+   | Radiographs | 1.46× |
+   | Mammograms | 1.53× |
+   | MR | 1.04× |
+   | Camelyon17 p000 tiles; CT Part 1 | 1.02–1.04× |
 
-   | Image set | j2k default → native | OpenJPH | Grok | OpenHTJ2K |
-   |---|---|---|---|---|
-   | CT | 107.9 → 82.3 ms | 0.72 → 0.94 | 0.80 → 1.10 | 0.86 → 1.14 |
-   | Radiographs | 123.2 → 83.2 ms | 0.68 → 0.99 | 0.76 → 1.21 | 0.73 → 1.07 |
-   | Mammograms | 138.2 → 90.3 ms | 0.61 → 0.94 | 0.72 → 1.19 | 0.70 → 1.07 |
-   | MR | 28.4 → 20.7 ms | 0.86 → 1.19 | 1.07 → 1.47 | 1.10 → 1.52 |
-
-   These are single-process A/B runs, not the 3-process protocol.
+   The remaining 16-bit HTJ2K gap is not yet isolated.
 2. **Tiled reduced-resolution regions.**
    - Thumbnails of `tiled1024` images take the same time at 1 thread and at
      full thread count.
    - HTJ2K 1/4-resolution windows get slower with more threads on studio and
-     cuda (cuda: 23.9 → 40.0 ms).
+     cuda (cuda lossless: 22.8 → 38.4 ms).
 3. **JPEG at high thread counts and on x86.** libjpeg-turbo ties j2k at 8–18
    threads on the Macs. On cuda, ratios are 0.83–1.00, and as low as 0.73 for
-   one set. 4:2:0 is the weaker format.
+   one set. 4:2:0 is the weaker format. Later JPEG work on `main` is not
+   reflected here: x86 16-bit AVX2 kernels and streaming row decode took
+   Kodak 4:2:0 on cuda at 1 thread from 0.87× to about 1.09× libjpeg-turbo.
 
 ### Caveats
 
@@ -306,6 +337,12 @@ workspace retention does not explain j2k's lead.
 - Only one coding family was tested (RPCL, 1 layer, 64×64 blocks). Natural
   images are limited to Kodak 24. GPU decoders and encoding were not
   measured.
+- Between the two runs, some times moved more than the wrapper changes
+  account for. On cuda, Grok's batch times fell 1–7% and j2k's 8-bit batch
+  times at 16 threads rose 3–6% (geomeans per corpus), so part of the drop
+  in cuda's all-thread ratios, such as Grok on 8-bit HTJ2K from 1.02–1.03 to
+  0.91–0.96, comes from drift or the j2k build rather than the wrappers. On
+  the Macs, some OpenHTJ2K and OpenJPEG region cells got up to 1.6× slower.
 
 ### Reproduce
 
@@ -331,9 +368,12 @@ J2K_BATCH_COMPARE_MAX_ABS_DIFF=0 J2K_BATCH_COMPARE_KEEP_GOING=1 \
 What a plain repository build does not yet reproduce:
 - **OpenJPEG:** the in-repo build still links `openjpeg-sys`'s vendored 2.5.3
   without `NDEBUG`. This comparison linked upstream 2.5.4 instead.
-- **Run directory:** the orchestration scripts, input generators, raw
-  per-process TSVs and the full per-cell report are in the local run
-  directory `target/fairbench-20261101`, which is not committed.
+- **OpenHTJ2K:** the prepare script pins 0.23.4. The speed rows used 0.23.3.
+- **Run directories:** the first run's orchestration scripts, input
+  generators, raw per-process TSVs and full per-cell report are in the local
+  run directory `target/fairbench-20261101`. The rerun's driver
+  (`run-rerun.sh`) and raw per-process TSVs are in the `fairbench-20261102`
+  run directory on each host. Neither is committed.
 
 ## CPU classic Tier-1 decoding - 2026-10-29
 
