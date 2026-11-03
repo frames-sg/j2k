@@ -28,11 +28,10 @@ fn report(cases: Vec<CaseReport>) -> T803Report {
         ["parallel".to_string(), "simd".to_string()]
             .into_iter()
             .collect(),
-        [CorpusFile {
+        std::iter::once(CorpusFile {
             path: "files/codestreams_profile0/p0_13.j2k".to_string(),
             sha256: "0".repeat(64),
-        }]
-        .into_iter()
+        })
         .collect(),
         Vec::from([oracle_evidence()]),
         cases,
@@ -167,7 +166,7 @@ fn cpu_stages() -> Vec<RouteStage> {
 
 #[test]
 fn report_json_is_deterministic_versioned_and_round_trips() {
-    let report = report([passing_case(cpu_stages())].into_iter().collect());
+    let report = report(std::iter::once(passing_case(cpu_stages())).collect());
 
     assert_eq!(report.suite, T803Suite::Part1);
 
@@ -354,7 +353,7 @@ fn report_status_fails_when_any_case_fails_or_errors() {
     failed.peak = Some(1);
     failed.error = None;
     assert_eq!(
-        report([failed].into_iter().collect()).status,
+        report(std::iter::once(failed).collect()).status,
         ReportStatus::Fail
     );
 
@@ -364,7 +363,7 @@ fn report_status_fails_when_any_case_fails_or_errors() {
     error.mse = None;
     error.error = Some("decode failed".to_string());
     assert_eq!(
-        report([error].into_iter().collect()).status,
+        report(std::iter::once(error).collect()).status,
         ReportStatus::Fail
     );
 }
@@ -401,23 +400,21 @@ fn report_rejects_route_labels_that_hide_cpu_assistance() {
         },
         "0".repeat(64),
         Vec::new(),
-        [CorpusFile {
+        std::iter::once(CorpusFile {
             path: "files/input.j2k".to_string(),
             sha256: "0".repeat(64),
-        }]
-        .into_iter()
+        })
         .collect(),
         Vec::from([{
             let mut oracle = oracle_evidence();
             oracle.codestream_path = "files/input.j2k".to_string();
             oracle
         }]),
-        [{
+        std::iter::once({
             let mut case = passing_case(stages);
             case.route = RouteKind::DeviceNative;
             case
-        }]
-        .into_iter()
+        })
         .collect(),
         encoder_evidence(),
     )
@@ -428,7 +425,7 @@ fn report_rejects_route_labels_that_hide_cpu_assistance() {
 
 #[test]
 fn markdown_discloses_metrics_bounds_and_route_stages() {
-    let report = report([passing_case(cpu_stages())].into_iter().collect());
+    let report = report(std::iter::once(passing_case(cpu_stages())).collect());
 
     let markdown = report.to_markdown().expect("render Markdown");
 

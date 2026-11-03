@@ -34,7 +34,7 @@ pub(super) fn validate_metadata(
         .zip(&actual.components)
         .enumerate()
     {
-        let expected_dimensions = (expected.dimensions[0], expected.dimensions[1]);
+        let expected_dimensions = <(_, _)>::from(expected.dimensions);
         let expected_sampling = (
             u32::from(expected.sampling[0]),
             u32::from(expected.sampling[1]),
