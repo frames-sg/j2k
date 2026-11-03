@@ -17,7 +17,7 @@ pub(super) fn lossless_options(
     options.block_coding_mode = block_coding(case.block_coding);
     options.progression = progression(case.progression);
     options.max_decomposition_levels = Some(case.decomposition_levels);
-    options.tile_size = case.tile_size.map(|[width, height]| (width, height));
+    options.tile_size = case.tile_size.map(Into::into);
     options.tile_part_packet_limit = case.tile_part_packet_limit;
     options.quality_layers = case.lossless_quality_layers;
     options.write_tlm = case.markers.contains(&crate::EncoderMarker::Tlm);
@@ -54,7 +54,7 @@ pub(super) fn lossy_options(
         .map(rate_target)
         .map(J2kQualityLayer::new)
         .collect();
-    options.tile_size = case.tile_size.map(|[width, height]| (width, height));
+    options.tile_size = case.tile_size.map(Into::into);
     options.tile_part_packet_limit = case.tile_part_packet_limit;
     options.precinct_exponents = case
         .precinct_exponents
