@@ -102,6 +102,7 @@ impl SharedHostLedger {
                 .context_live_bytes()
                 .map_err(crate::runtime::cuda_error);
         }
+        drop(owner);
         cache_retained_bytes
             .checked_add(self.active_bytes()?)
             .ok_or_else(|| {
@@ -132,6 +133,7 @@ impl SharedHostLedger {
                 })
                 .map_err(crate::runtime::cuda_error);
         }
+        drop(owner);
         cache_retained_bytes
             .checked_add(self.active_bytes()?)
             .ok_or_else(|| {
@@ -301,6 +303,7 @@ impl SharedHostLedger {
                 .register_external_host_owner(bytes)
                 .map_err(crate::runtime::cuda_error)?,
         );
+        drop(owner);
         Ok(())
     }
 
@@ -335,10 +338,7 @@ impl SharedHostLedger {
                 })?;
             let (result, retained_bytes) = operation(reservation.external_live_bytes());
             let active = self.active_bytes.load(Ordering::Acquire);
-            let registered = match retained_bytes.checked_add(active) {
-                Some(bytes) => bytes,
-                None => usize::MAX,
-            };
+            let registered = retained_bytes.saturating_add(active);
             let accounting = reservation
                 .commit(registered)
                 .map_err(crate::runtime::cuda_error);
@@ -389,6 +389,7 @@ impl SharedHostLedger {
         if let Some(owner) = owner.as_mut() {
             owner.reconcile(bytes).map_err(crate::runtime::cuda_error)?;
         }
+        drop(owner);
         Ok(())
     }
 

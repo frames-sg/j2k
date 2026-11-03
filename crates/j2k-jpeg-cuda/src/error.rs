@@ -51,9 +51,9 @@ pub enum Error {
     #[error("CUDA operation failed ({primary}); host-accounting verification also failed ({accounting})")]
     OperationAndHostAccountingFailed {
         /// Primary operation failure.
-        primary: Box<Error>,
+        primary: Box<Self>,
         /// Host-accounting verification failure.
-        accounting: Box<Error>,
+        accounting: Box<Self>,
     },
     /// A host-side allocation needed by the adapter could not be reserved.
     #[error("host allocation failed for {what}: {bytes} bytes")]
