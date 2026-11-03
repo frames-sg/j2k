@@ -57,6 +57,7 @@ pub struct CudaJpegHostMemoryDiagnostics {
 }
 
 #[derive(Clone)]
+#[cfg_attr(not(feature = "cuda-runtime"), derive(Default))]
 /// Reusable CUDA JPEG decode session.
 pub struct CudaSession {
     submissions: u64,
@@ -100,14 +101,10 @@ impl Drop for PinnedUploadAccountingGuard<'_, '_> {
     }
 }
 
+#[cfg(feature = "cuda-runtime")]
 impl Default for CudaSession {
     fn default() -> Self {
-        #[cfg(feature = "cuda-runtime")]
-        {
-            Self::with_owned_packet_cache(Arc::new(OwnedPacketPlanCache::default()))
-        }
-        #[cfg(not(feature = "cuda-runtime"))]
-        Self { submissions: 0 }
+        Self::with_owned_packet_cache(Arc::new(OwnedPacketPlanCache::default()))
     }
 }
 
