@@ -92,6 +92,13 @@ fn top_left_2x2_blocks() -> impl Strategy<Value = [i16; 64]> {
     })
 }
 
+/// Columns whose absolute sums stay within the x86 16-bit kernel's bound
+/// (5,905), where it runs instead of the 32-bit fallback.
+#[cfg(target_arch = "x86_64")]
+fn within_16_bit_bound_blocks() -> impl Strategy<Value = [i16; 64]> {
+    prop::collection::vec(-738i16..=738, 64..=64).prop_map(|values| vec_into_block(&values))
+}
+
 /// One nonzero column: every first-pass row is DC-only, which the scalar row
 /// transform shortcuts.
 #[cfg(target_arch = "x86_64")]
@@ -103,6 +110,30 @@ fn single_column_blocks() -> impl Strategy<Value = [i16; 64]> {
         }
         block
     })
+}
+
+/// Columns whose absolute values sum to exactly the 16-bit kernel's bound
+/// (5,905), with random signs: seven random cut points split each column.
+#[cfg(target_arch = "x86_64")]
+fn columns_at_the_16_bit_bound() -> impl Strategy<Value = [i16; 64]> {
+    let column = (
+        prop::array::uniform7(0i16..=5_905),
+        prop::array::uniform8(any::<bool>()),
+    )
+        .prop_map(|(mut cuts, negative)| {
+            cuts.sort_unstable();
+            core::array::from_fn::<i16, 8, _>(|row| {
+                let low = if row == 0 { 0 } else { cuts[row - 1] };
+                let high = if row == 7 { 5_905 } else { cuts[row] };
+                if negative[row] {
+                    low - high
+                } else {
+                    high - low
+                }
+            })
+        });
+    prop::array::uniform8(column)
+        .prop_map(|columns| core::array::from_fn(|index| columns[index % 8][index / 8]))
 }
 
 /// Coefficients only in natural-order columns 0..3 (right half zero) or,
@@ -189,7 +220,19 @@ proptest! {
 
     #[cfg(target_arch = "x86_64")]
     #[test]
+    fn avx2_matches_scalar_within_the_16_bit_bound(block in within_16_bit_bound_blocks()) {
+        assert_avx2_matches_scalar(&block);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
     fn avx2_matches_scalar_on_single_column_blocks(block in single_column_blocks()) {
+        assert_avx2_matches_scalar(&block);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn avx2_matches_scalar_on_columns_at_the_16_bit_bound(block in columns_at_the_16_bit_bound()) {
         assert_avx2_matches_scalar(&block);
     }
 
@@ -203,8 +246,24 @@ proptest! {
 
     #[cfg(target_arch = "x86_64")]
     #[test]
+    fn avx2_matches_scalar_on_in_range_right_half_zero_blocks(
+        block in left_half_blocks(false, -738i16..=738),
+    ) {
+        assert_avx2_matches_scalar(&block);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
     fn avx2_matches_scalar_on_top_left_quadrant_blocks(
         block in left_half_blocks(true, any::<i16>()),
+    ) {
+        assert_avx2_matches_scalar(&block);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn avx2_matches_scalar_on_in_range_top_left_quadrant_blocks(
+        block in left_half_blocks(true, -1_476i16..=1_476),
     ) {
         assert_avx2_matches_scalar(&block);
     }

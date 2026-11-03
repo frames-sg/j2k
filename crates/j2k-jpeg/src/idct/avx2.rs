@@ -1,21 +1,38 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! `x86_64` SIMD integer ISLOW IDCT. Bit-exact with `super::scalar::idct_islow`.
+//! `x86_64` AVX2 integer ISLOW IDCT. Bit-exact with `super::scalar::idct_islow`
+//! on every input, including crafted out-of-range coefficient blocks.
 //!
-//! Uses 128-bit SSE4.1 intrinsics (a subset of AVX2) so the arithmetic
-//! matches the NEON port 1:1 — same 4-lane i32 SIMD-ISLOW structure,
-//! four independent 4×4 i32 transposes between and after the two passes.
-//! Dispatched when `Backend::detect` sees AVX2 at runtime; AVX2 implies
-//! SSE4.1 so the load/store/multiply/pack intrinsics used here are all
-//! available.
+//! Two kernels share the dispatch in [`idct_islow`]:
+//!
+//! - The hot kernel keeps samples in 16-bit lanes of 256-bit registers, as
+//!   libjpeg-turbo's `jidctint-avx2` does. `vpmaddwd` multiplies interleaved
+//!   pairs of 16-bit inputs by 16-bit gains and adds the two products in
+//!   32 bits, so every product and sum of the butterfly is exact. Unlike
+//!   turbo it never adds two inputs in 16 bits: each scalar shared product
+//!   such as `(p7 + p3) * FIX` is expanded into per-input gains. The only
+//!   narrowing left is the 16-bit hand-off between the passes, which
+//!   [`first_pass_fits_i16`] proves exact before the kernel runs.
+//! - Blocks that check rejects run the 32-bit-lane port of the NEON kernel,
+//!   whose wrapping arithmetic reproduces the scalar `Wrapping<i32>` path for
+//!   any input.
 
 use core::arch::x86_64::{
-    __m128i, _mm_add_epi32, _mm_blendv_epi8, _mm_cmpeq_epi32, _mm_cvtepi16_epi32, _mm_mullo_epi32,
-    _mm_or_si128, _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi32, _mm_setzero_si128,
-    _mm_slli_epi32, _mm_srai_epi32, _mm_srli_si128, _mm_sub_epi32, _mm_unpackhi_epi32,
+    __m128i, __m256i, _mm256_abs_epi16, _mm256_add_epi32, _mm256_adds_epu16, _mm256_blend_epi16,
+    _mm256_broadcastsi128_si256, _mm256_castsi256_si128, _mm256_extracti128_si256,
+    _mm256_madd_epi16, _mm256_packs_epi32, _mm256_packus_epi16, _mm256_permute4x64_epi64,
+    _mm256_set1_epi32, _mm256_setr_epi32, _mm256_shuffle_epi8, _mm256_slli_epi32,
+    _mm256_srai_epi32, _mm256_sub_epi32, _mm256_unpackhi_epi16, _mm256_unpackhi_epi32,
+    _mm256_unpackhi_epi64, _mm256_unpacklo_epi16, _mm256_unpacklo_epi32, _mm256_unpacklo_epi64,
+    _mm_add_epi32, _mm_adds_epu16, _mm_blendv_epi8, _mm_cmpeq_epi32, _mm_cvtepi16_epi32,
+    _mm_mullo_epi32, _mm_or_si128, _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi16,
+    _mm_set1_epi32, _mm_setr_epi8, _mm_setzero_si128, _mm_slli_epi32, _mm_srai_epi32,
+    _mm_srli_si128, _mm_sub_epi32, _mm_subs_epu16, _mm_testz_si128, _mm_unpackhi_epi32,
     _mm_unpackhi_epi64, _mm_unpacklo_epi32, _mm_unpacklo_epi64,
 };
 use j2k_codec_math::jpeg::idct;
+
+use super::scalar::ISLOW_GAINS;
 
 use crate::simd::x86::exact_avx2_kernel;
 use crate::simd::x86_memory;
@@ -32,6 +49,8 @@ const CONST_BITS: i32 = idct::CONST_BITS as i32;
     reason = "shared IDCT shift constants are small positive compile-time values"
 )]
 const PASS1_BITS: i32 = idct::PASS1_BITS as i32;
+const PASS1_SHIFT: i32 = CONST_BITS - PASS1_BITS;
+const PASS2_SHIFT: i32 = CONST_BITS + PASS1_BITS + 3;
 
 const FIX_0_298631336: i32 = idct::FIX_0_298631336;
 const FIX_0_390180644: i32 = idct::FIX_0_390180644;
@@ -46,21 +65,383 @@ const FIX_2_053119869: i32 = idct::FIX_2_053119869;
 const FIX_2_562915447: i32 = idct::FIX_2_562915447;
 const FIX_3_072711026: i32 = idct::FIX_3_072711026;
 
+/// Largest gain magnitude of any input in any 1-D output (11,363).
+const MAX_GAIN: i32 = {
+    let mut max = 0;
+    let mut j = 0;
+    while j < 8 {
+        let mut k = 0;
+        while k < 8 {
+            if ISLOW_GAINS[j][k].abs() > max {
+                max = ISLOW_GAINS[j][k].abs();
+            }
+            k += 1;
+        }
+        j += 1;
+    }
+    max
+};
+
+/// Largest L1 norm of one output's gains (61,214).
+const MAX_GAIN_L1: i32 = {
+    let mut max = 0;
+    let mut j = 0;
+    while j < 8 {
+        let mut sum = 0;
+        let mut k = 0;
+        while k < 8 {
+            sum += ISLOW_GAINS[j][k].abs();
+            k += 1;
+        }
+        if sum > max {
+            max = sum;
+        }
+        j += 1;
+    }
+    max
+};
+
+const PASS1_ROUNDING: i32 = 1 << (PASS1_SHIFT - 1);
+/// Second-pass rounding with the +128 level shift folded in: adding
+/// `128 << PASS2_SHIFT` before the arithmetic shift adds exactly 128 after it.
+const PASS2_ROUNDING: i32 = (1 << (PASS2_SHIFT - 1)) + (128 << PASS2_SHIFT);
+
+/// Largest per-column `sum(|coefficient|)` the 16-bit kernel accepts (5,905).
+///
+/// Derivation. Every 1-D output of both passes is the exact integer linear
+/// form `sum_k ISLOW_GAINS[j][k] * p[k]`, rounded and shifted:
+///
+/// 1. Nothing leaves `i32`. `vpmaddwd` sums two `i16 * i16` products exactly
+///    (it wraps only for two `-32768 * -32768` products, and no gain is
+///    `-32768`). Any output's gains have L1 norm at most `MAX_GAIN_L1`
+///    = 61,214, and `61,214 * 32,768 + PASS2_ROUNDING < 2^31`, so no
+///    first- or second-pass sum overflows for any `i16` inputs (asserted
+///    below). The scalar's wrapping `i32` sums are therefore the exact
+///    integers as well.
+/// 2. The first-pass outputs fit in `i16`, the only narrowing. For column
+///    `c`, `|sum_k gain[k] * x[k][c]| <= MAX_GAIN * S_c`, where `MAX_GAIN` =
+///    11,363 and `S_c = sum_k |x[k][c]|`. The output is
+///    `floor((sum + 2^10) / 2^11)`; `S_c <= 5,905` gives
+///    `|sum| <= 67,098,515 <= 32,767 * 2^11 - 2^10`, so it lies in
+///    `[-32,764, 32,763]`. The bound is tight: `x[1][c] = 5,906` alone (gain
+///    11,363 into output row 0) gives 32,769.
+/// 3. The scalar's DC-only row shortcut `(p0 + 16) >> 5` equals the full row
+///    transform `(p0 * 2^13 + 2^17) >> 18` whenever `p0 * 2^13 + 2^17` fits in
+///    `i32`, which (2) guarantees; its column shortcuts always equal the full
+///    transform.
+///
+/// The second pass needs no further bound: its inputs are `i16` by
+/// construction, and narrowing its results `i32 -> i16 -> u8` with saturation
+/// at each step is the monotone clamp `clamp(v + 128, 0, 255)` the scalar
+/// applies. Decoded photographs stay far below the bound; a block above it is
+/// still exact, it only takes the 32-bit kernel.
+const MAX_COLUMN_ABS_SUM: i32 = (32_767 * (1 << PASS1_SHIFT) - PASS1_ROUNDING) / MAX_GAIN;
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the column bound is 5,905, asserted below to fit in i16"
+)]
+const MAX_COLUMN_ABS_SUM_I16: i16 = MAX_COLUMN_ABS_SUM as i16;
+
+const _: () = {
+    assert!(MAX_GAIN == 11_363);
+    assert!(MAX_GAIN_L1 == 61_214);
+    assert!(MAX_COLUMN_ABS_SUM == 5_905);
+    // (2): the worst column sum stays inside the i16 output range.
+    assert!(MAX_GAIN * MAX_COLUMN_ABS_SUM + PASS1_ROUNDING < 32_767 * (1 << PASS1_SHIFT) + 1);
+    // (1): no second-pass sum overflows for any i16 inputs.
+    assert!(match MAX_GAIN_L1.checked_mul(1 << 15) {
+        Some(sum) => sum.checked_add(PASS2_ROUNDING).is_some(),
+        None => false,
+    });
+};
+
+/// The two gains `vpmaddwd` applies to the interleaved `(p[k], p[k + 4])`
+/// input pair for 1-D output `output`, packed into one 32-bit lane.
+const fn gain_pair(output: usize, k: usize) -> i32 {
+    let [first, second] = [ISLOW_GAINS[output][k], ISLOW_GAINS[output][k + 4]];
+    // `-32768` would allow the instruction's single wrapping case.
+    assert!(-32_767 <= first && first <= 32_767);
+    assert!(-32_767 <= second && second <= 32_767);
+    (first & 0xffff) | (second << 16)
+}
+
+// The kernels use the even/odd butterfly: for j < 4, output j is
+// `even[j] + odd[j]` and output 7 - j is `even[j] - odd[j]`, where even[0..4]
+// are tmp10 = tmp0 + tmp3, tmp11 = tmp1 + tmp2, tmp12 = tmp1 - tmp2 and
+// tmp13 = tmp0 - tmp3. Output 0's `(p0, p4)` and `(p2, p6)` gains are tmp0
+// and tmp3; output 1's are tmp1 and tmp2.
+const TMP0_PAIR: i32 = gain_pair(0, 0);
+const TMP1_PAIR: i32 = gain_pair(1, 0);
+const TMP3_PAIR: i32 = gain_pair(0, 2);
+const TMP2_PAIR: i32 = gain_pair(1, 2);
+/// `[(p1, p5), (p3, p7)]` gain pairs of the odd term of outputs j and 7 - j.
+const ODD_PAIRS: [[i32; 2]; 4] = [
+    [gain_pair(0, 1), gain_pair(0, 3)],
+    [gain_pair(1, 1), gain_pair(1, 3)],
+    [gain_pair(2, 1), gain_pair(2, 3)],
+    [gain_pair(3, 1), gain_pair(3, 3)],
+];
+
+const _: () = {
+    // The butterfly the kernels rely on, checked against the shared table:
+    // outputs j and 7 - j share even gains and negate odd ones, tmp13 and
+    // tmp12 reuse tmp0/tmp1 and negate tmp3/tmp2, and tmp0/tmp1 are p0 ± p4.
+    let mut k = 0;
+    while k < 8 {
+        let mut j = 0;
+        while j < 4 {
+            let (gain, mirrored) = (ISLOW_GAINS[j][k], ISLOW_GAINS[7 - j][k]);
+            assert!(if k % 2 == 0 {
+                gain == mirrored
+            } else {
+                gain == -mirrored
+            });
+            j += 1;
+        }
+        if k % 4 == 0 {
+            assert!(
+                ISLOW_GAINS[3][k] == ISLOW_GAINS[0][k] && ISLOW_GAINS[2][k] == ISLOW_GAINS[1][k]
+            );
+        } else if k % 2 == 0 {
+            assert!(
+                ISLOW_GAINS[3][k] == -ISLOW_GAINS[0][k] && ISLOW_GAINS[2][k] == -ISLOW_GAINS[1][k]
+            );
+        }
+        k += 1;
+    }
+    let one = ISLOW_GAINS[0][0];
+    assert!(ISLOW_GAINS[0][4] == one && ISLOW_GAINS[1][0] == one && ISLOW_GAINS[1][4] == -one);
+};
+
 exact_avx2_kernel! {
     /// Inverse DCT of one 8×8 block. Output is level-shifted (+128) and
     /// saturated to `[0, 255]`, matching the scalar path byte-for-byte on
-    /// legal JPEG coefficients and on the adversarial saturating edges
-    /// proptested against.
+    /// every input.
     pub(crate) fn idct_islow(avx2: ExactAvx2, input: &[i16; 64], output: &mut [u8; 64]) {
-        idct_islow_kernel(input, output);
+        if first_pass_fits_i16(input) {
+            idct_islow_i16(input, output);
+        } else {
+            idct_islow_i32(input, output);
+        }
     }
 }
 
+/// Whether every column of `input` satisfies the bound documented on
+/// [`MAX_COLUMN_ABS_SUM`]. Saturating unsigned adds keep the column sums
+/// exact up to 65,535 (`|i16::MIN|` = 32,768 is exact in `u16`) and above the
+/// bound beyond it, so this accepts exactly the blocks within the bound.
+#[inline]
 #[target_feature(enable = "avx2")]
-fn idct_islow_kernel(input: &[i16; 64], output: &mut [u8; 64]) {
-    const PASS1_SHIFT: i32 = CONST_BITS - PASS1_BITS;
-    const PASS2_SHIFT: i32 = CONST_BITS + PASS1_BITS + 3;
+fn first_pass_fits_i16(input: &[i16; 64]) -> bool {
+    let (row_pairs, _) = input.as_chunks::<16>();
+    let rows01 = _mm256_abs_epi16(x86_memory::load_i16x16(&row_pairs[0]));
+    let rows23 = _mm256_abs_epi16(x86_memory::load_i16x16(&row_pairs[1]));
+    let rows45 = _mm256_abs_epi16(x86_memory::load_i16x16(&row_pairs[2]));
+    let rows67 = _mm256_abs_epi16(x86_memory::load_i16x16(&row_pairs[3]));
+    // Lanes: [sum over rows 0, 2, 4, 6 | sum over rows 1, 3, 5, 7].
+    let halves = _mm256_adds_epu16(
+        _mm256_adds_epu16(rows01, rows23),
+        _mm256_adds_epu16(rows45, rows67),
+    );
+    let columns = _mm_adds_epu16(
+        _mm256_castsi256_si128(halves),
+        _mm256_extracti128_si256::<1>(halves),
+    );
+    let excess = _mm_subs_epu16(columns, _mm_set1_epi16(MAX_COLUMN_ABS_SUM_I16));
+    _mm_testz_si128(excess, excess) == 1
+}
 
+/// 16-bit-lane ISLOW IDCT. Exact only for blocks [`first_pass_fits_i16`]
+/// accepts.
+///
+/// Pass 1 runs on the natural layout: lanes are columns. Each input register
+/// holds `(row k, row k + 4)` pairs of four columns in both 128-bit lanes,
+/// and lane-specific gains make the low lane compute one output row and the
+/// high lane another. Narrowing pairs column `m` with column `m + 4`, so a
+/// 32-bit transpose with in-lane unpacks hands pass 2 the same pairing with
+/// lanes as rows, in the order `[0, 3, 4, 7 | 1, 2, 5, 6]`; the final byte
+/// transpose restores natural order.
+#[inline]
+#[target_feature(enable = "avx2")]
+fn idct_islow_i16(input: &[i16; 64], output: &mut [u8; 64]) {
+    let (rows, _) = input.as_chunks::<8>();
+    let r0 = x86_memory::broadcast_i16x8(&rows[0]);
+    let r1 = x86_memory::broadcast_i16x8(&rows[1]);
+    let r2 = x86_memory::broadcast_i16x8(&rows[2]);
+    let r3 = x86_memory::broadcast_i16x8(&rows[3]);
+    let r4 = x86_memory::broadcast_i16x8(&rows[4]);
+    let r5 = x86_memory::broadcast_i16x8(&rows[5]);
+    let r6 = x86_memory::broadcast_i16x8(&rows[6]);
+    let r7 = x86_memory::broadcast_i16x8(&rows[7]);
+
+    // Columns 0..3 and 4..7.
+    let lo = pass1_four_columns([
+        _mm256_unpacklo_epi16(r0, r4),
+        _mm256_unpacklo_epi16(r1, r5),
+        _mm256_unpacklo_epi16(r2, r6),
+        _mm256_unpacklo_epi16(r3, r7),
+    ]);
+    let hi = pass1_four_columns([
+        _mm256_unpackhi_epi16(r0, r4),
+        _mm256_unpackhi_epi16(r1, r5),
+        _mm256_unpackhi_epi16(r2, r6),
+        _mm256_unpackhi_epi16(r3, r7),
+    ]);
+    let pass1 = [
+        narrow_pass1(lo[0], hi[0]),
+        narrow_pass1(lo[1], hi[1]),
+        narrow_pass1(lo[2], hi[2]),
+        narrow_pass1(lo[3], hi[3]),
+    ];
+    store_block(output, pass2_rows(transpose_pass1(pass1)));
+}
+
+/// `vpmaddwd` gain pairs: the low 128-bit lane applies `low`, the high lane
+/// `high`.
+#[inline]
+#[target_feature(enable = "avx2")]
+fn lane_gains(low: i32, high: i32) -> __m256i {
+    _mm256_setr_epi32(low, low, low, low, high, high, high, high)
+}
+
+/// Odd term `low` (low lane) and `high` (high lane) from the `(p1, p5)` and
+/// `(p3, p7)` input pairs.
+#[inline]
+#[target_feature(enable = "avx2")]
+fn odd_terms(p15: __m256i, p37: __m256i, low: [i32; 2], high: [i32; 2]) -> __m256i {
+    _mm256_add_epi32(
+        _mm256_madd_epi16(p15, lane_gains(low[0], high[0])),
+        _mm256_madd_epi16(p37, lane_gains(low[1], high[1])),
+    )
+}
+
+/// First-pass 1-D IDCT of four columns. `pairs` are the `(p0, p4)`,
+/// `(p1, p5)`, `(p2, p6)` and `(p3, p7)` registers, identical in both lanes.
+/// Returns the rounded, unshifted outputs as `[out0 | out1]`,
+/// `[out3 | out2]`, `[out4 | out5]` and `[out7 | out6]`.
+#[inline]
+#[target_feature(enable = "avx2")]
+fn pass1_four_columns([p04, p15, p26, p37]: [__m256i; 4]) -> [__m256i; 4] {
+    let tmp0_1 = _mm256_add_epi32(
+        _mm256_madd_epi16(p04, lane_gains(TMP0_PAIR, TMP1_PAIR)),
+        _mm256_set1_epi32(PASS1_ROUNDING),
+    );
+    let tmp3_2 = _mm256_madd_epi16(p26, lane_gains(TMP3_PAIR, TMP2_PAIR));
+    let tmp10_11 = _mm256_add_epi32(tmp0_1, tmp3_2);
+    let tmp13_12 = _mm256_sub_epi32(tmp0_1, tmp3_2);
+    let odd0_1 = odd_terms(p15, p37, ODD_PAIRS[0], ODD_PAIRS[1]);
+    let odd3_2 = odd_terms(p15, p37, ODD_PAIRS[3], ODD_PAIRS[2]);
+    [
+        _mm256_add_epi32(tmp10_11, odd0_1),
+        _mm256_add_epi32(tmp13_12, odd3_2),
+        _mm256_sub_epi32(tmp13_12, odd3_2),
+        _mm256_sub_epi32(tmp10_11, odd0_1),
+    ]
+}
+
+/// Descale two first-pass output rows to 16 bits. `lo` holds columns 0..3
+/// and `hi` columns 4..7; 32-bit lane `m` of each half becomes
+/// `(out[m], out[m + 4])`. `x >> 11` leaves the result's low 16 bits in
+/// place and `x << 5` moves the same bits to the high half; the range check
+/// guarantees those 16 bits are the whole output.
+#[inline]
+#[target_feature(enable = "avx2")]
+fn narrow_pass1(lo: __m256i, hi: __m256i) -> __m256i {
+    _mm256_blend_epi16::<0xaa>(
+        _mm256_srai_epi32::<PASS1_SHIFT>(lo),
+        _mm256_slli_epi32::<{ 16 - PASS1_SHIFT }>(hi),
+    )
+}
+
+/// Turn `[row a | row b]` registers (rows as `(y[m], y[m + 4])` pairs, in
+/// the order rows 0|1, 3|2, 4|5, 7|6) into the `(q0, q4)`, `(q1, q5)`,
+/// `(q2, q6)` and `(q3, q7)` registers of pass 2, whose 32-bit lanes are rows
+/// `[0, 3, 4, 7 | 1, 2, 5, 6]`.
+#[inline]
+#[target_feature(enable = "avx2")]
+fn transpose_pass1([rows01, rows32, rows45, rows76]: [__m256i; 4]) -> [__m256i; 4] {
+    let pairs01 = _mm256_unpacklo_epi32(rows01, rows32);
+    let pairs01_tail = _mm256_unpacklo_epi32(rows45, rows76);
+    let pairs23 = _mm256_unpackhi_epi32(rows01, rows32);
+    let pairs23_tail = _mm256_unpackhi_epi32(rows45, rows76);
+    [
+        _mm256_unpacklo_epi64(pairs01, pairs01_tail),
+        _mm256_unpackhi_epi64(pairs01, pairs01_tail),
+        _mm256_unpacklo_epi64(pairs23, pairs23_tail),
+        _mm256_unpackhi_epi64(pairs23, pairs23_tail),
+    ]
+}
+
+/// Second-pass 1-D IDCT of all eight rows at once. Returns output column `j`
+/// at index `j`, descaled and level-shifted, lanes in pass-2 row order.
+#[inline]
+#[target_feature(enable = "avx2")]
+fn pass2_rows([q04, q15, q26, q37]: [__m256i; 4]) -> [__m256i; 8] {
+    let rounding = _mm256_set1_epi32(PASS2_ROUNDING);
+    let tmp0 = _mm256_add_epi32(
+        _mm256_madd_epi16(q04, _mm256_set1_epi32(TMP0_PAIR)),
+        rounding,
+    );
+    let tmp1 = _mm256_add_epi32(
+        _mm256_madd_epi16(q04, _mm256_set1_epi32(TMP1_PAIR)),
+        rounding,
+    );
+    let tmp3 = _mm256_madd_epi16(q26, _mm256_set1_epi32(TMP3_PAIR));
+    let tmp2 = _mm256_madd_epi16(q26, _mm256_set1_epi32(TMP2_PAIR));
+    let tmp10 = _mm256_add_epi32(tmp0, tmp3);
+    let tmp13 = _mm256_sub_epi32(tmp0, tmp3);
+    let tmp11 = _mm256_add_epi32(tmp1, tmp2);
+    let tmp12 = _mm256_sub_epi32(tmp1, tmp2);
+    let odd0 = odd_terms(q15, q37, ODD_PAIRS[0], ODD_PAIRS[0]);
+    let odd1 = odd_terms(q15, q37, ODD_PAIRS[1], ODD_PAIRS[1]);
+    let odd2 = odd_terms(q15, q37, ODD_PAIRS[2], ODD_PAIRS[2]);
+    let odd3 = odd_terms(q15, q37, ODD_PAIRS[3], ODD_PAIRS[3]);
+    [
+        _mm256_srai_epi32::<PASS2_SHIFT>(_mm256_add_epi32(tmp10, odd0)),
+        _mm256_srai_epi32::<PASS2_SHIFT>(_mm256_add_epi32(tmp11, odd1)),
+        _mm256_srai_epi32::<PASS2_SHIFT>(_mm256_add_epi32(tmp12, odd2)),
+        _mm256_srai_epi32::<PASS2_SHIFT>(_mm256_add_epi32(tmp13, odd3)),
+        _mm256_srai_epi32::<PASS2_SHIFT>(_mm256_sub_epi32(tmp13, odd3)),
+        _mm256_srai_epi32::<PASS2_SHIFT>(_mm256_sub_epi32(tmp12, odd2)),
+        _mm256_srai_epi32::<PASS2_SHIFT>(_mm256_sub_epi32(tmp11, odd1)),
+        _mm256_srai_epi32::<PASS2_SHIFT>(_mm256_sub_epi32(tmp10, odd0)),
+    ]
+}
+
+/// Saturate the eight output columns to bytes, transpose them to rows and
+/// store the block.
+#[inline]
+#[target_feature(enable = "avx2")]
+fn store_block(output: &mut [u8; 64], columns: [__m256i; 8]) {
+    // Each 128-bit lane: columns 0..3 (or 4..7) of four rows, column-major.
+    let left = _mm256_packus_epi16(
+        _mm256_packs_epi32(columns[0], columns[1]),
+        _mm256_packs_epi32(columns[2], columns[3]),
+    );
+    let right = _mm256_packus_epi16(
+        _mm256_packs_epi32(columns[4], columns[5]),
+        _mm256_packs_epi32(columns[6], columns[7]),
+    );
+    let transpose_4x4 = _mm256_broadcastsi128_si256(_mm_setr_epi8(
+        0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15,
+    ));
+    // 32-bit lanes now hold four bytes of one row: rows [0, 3, 4, 7 | 1, 2, 5, 6].
+    let left = _mm256_shuffle_epi8(left, transpose_4x4);
+    let right = _mm256_shuffle_epi8(right, transpose_4x4);
+    // 64-bit lanes hold whole rows: [0, 3 | 1, 2] and [4, 7 | 5, 6].
+    let top = _mm256_unpacklo_epi32(left, right);
+    let bottom = _mm256_unpackhi_epi32(left, right);
+    let (halves, _) = output.as_chunks_mut::<32>();
+    x86_memory::store_u8x32(&mut halves[0], _mm256_permute4x64_epi64::<0x78>(top));
+    x86_memory::store_u8x32(&mut halves[1], _mm256_permute4x64_epi64::<0x78>(bottom));
+}
+
+/// 32-bit-lane ISLOW IDCT, exact for every input. Only blocks outside the
+/// 16-bit kernel's bound reach it.
+#[cold]
+#[inline(never)]
+#[target_feature(enable = "avx2")]
+fn idct_islow_i32(input: &[i16; 64], output: &mut [u8; 64]) {
     let (rows, _) = input.as_chunks::<8>();
     let (
         (r0l, r0h),
@@ -207,7 +588,7 @@ fn idct_1d_x4<const SHIFT: i32>(
         shift(_mm_sub_epi32(tmp11, k2)),
         shift(_mm_sub_epi32(tmp10, k3)),
     ];
-    if SHIFT == CONST_BITS + PASS1_BITS + 3 {
+    if SHIFT == PASS2_SHIFT {
         // The scalar row transform descales `p0` directly when every AC input
         // of the row is zero, avoiding the overflow `p0 << CONST_BITS` hits
         // for first-pass values of 2^18 and more.
@@ -242,91 +623,4 @@ fn transpose_4x4_i32(a: __m128i, b: __m128i, c: __m128i, d: __m128i) -> [__m128i
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::idct::scalar::idct_islow as idct_scalar;
-    use crate::simd::x86::ExactAvx2;
-
-    fn run_both(input: &[i16; 64]) -> ([u8; 64], [u8; 64]) {
-        let mut scalar_out = [0u8; 64];
-        idct_scalar(input, &mut scalar_out);
-        let mut avx_out = [0u8; 64];
-        if let Some(avx2) = ExactAvx2::detect() {
-            idct_islow(avx2, input, &mut avx_out);
-        } else {
-            // Running the test on a non-AVX2 host: copy scalar output so
-            // assertion passes and the test becomes a skip.
-            avx_out = scalar_out;
-        }
-        (scalar_out, avx_out)
-    }
-
-    #[test]
-    fn avx2_matches_scalar_on_all_zero() {
-        let (s, a) = run_both(&[0; 64]);
-        assert_eq!(s, a);
-    }
-
-    #[test]
-    fn avx2_matches_scalar_on_dc_only() {
-        let mut input = [0i16; 64];
-        input[0] = 8 * 8;
-        let (s, a) = run_both(&input);
-        assert_eq!(s, a);
-    }
-
-    #[test]
-    fn avx2_matches_scalar_on_mixed_coefficients() {
-        let mut input = [0i16; 64];
-        input[0] = 64;
-        input[1] = 24;
-        input[2] = -12;
-        input[8] = 18;
-        input[9] = -7;
-        input[16] = 5;
-        let (s, a) = run_both(&input);
-        assert_eq!(s, a);
-    }
-
-    #[test]
-    fn avx2_matches_scalar_on_saturation() {
-        let mut input = [0i16; 64];
-        input[0] = i16::MAX;
-        let (s, a) = run_both(&input);
-        assert_eq!(s, a);
-
-        input[0] = i16::MIN;
-        let (s, a) = run_both(&input);
-        assert_eq!(s, a);
-    }
-
-    #[test]
-    fn avx2_matches_scalar_on_horizontal_basis() {
-        let mut input = [0i16; 64];
-        input[1] = 400;
-        let (s, a) = run_both(&input);
-        assert_eq!(s, a);
-    }
-
-    #[test]
-    fn avx2_matches_scalar_when_rows_reduce_to_dc() {
-        // One nonzero column makes every first-pass row DC-only. From 2^18 up
-        // the scalar's `(p0 + 16) >> 5` differs from the wrapped full
-        // transform.
-        for col in 0..8 {
-            for column in [[i16::MAX; 8], [i16::MIN; 8], [4_096; 8], [100; 8]] {
-                let mut input = [0i16; 64];
-                for (row, value) in column.into_iter().enumerate() {
-                    input[row * 8 + col] = value;
-                }
-                let (s, a) = run_both(&input);
-                assert_eq!(s, a, "column {col}: {column:?}");
-            }
-        }
-        let mut input = [0i16; 64];
-        input[0] = i16::MAX;
-        input[8] = i16::MAX;
-        let (s, a) = run_both(&input);
-        assert_eq!(s, a);
-    }
-}
+mod tests;

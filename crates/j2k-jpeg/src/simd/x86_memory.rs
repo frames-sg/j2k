@@ -2,7 +2,9 @@
 
 //! Fixed-size x86 SIMD memory operations.
 
-use core::arch::x86_64::{__m128i, _mm_loadl_epi64, _mm_storel_epi64};
+use core::arch::x86_64::{
+    __m128i, __m256i, _mm256_broadcastsi128_si256, _mm_loadl_epi64, _mm_storel_epi64,
+};
 
 use crate::simd::x86::ExactAvx2;
 
@@ -108,6 +110,37 @@ pub(crate) fn load_i16x8(src: &[i16; 8]) -> __m128i {
     // - Aliasing: the shared reference permits reads and no writes occur.
     // - Initialization: all coefficients behind the reference are initialized.
     unsafe { core::ptr::read_unaligned(src.as_ptr().cast::<__m128i>()) }
+}
+
+#[inline]
+#[target_feature(enable = "avx2")]
+pub(crate) fn load_i16x16(src: &[i16; 16]) -> __m256i {
+    // SAFETY:
+    // - Feature availability: callers run inside an exact-AVX2 kernel.
+    // - Bounds: the array reference proves thirty-two readable bytes.
+    // - Alignment: `read_unaligned` deliberately accepts any i16 alignment.
+    // - Aliasing: the shared reference permits reads and no writes occur.
+    // - Initialization: all coefficients behind the reference are initialized.
+    unsafe { core::ptr::read_unaligned(src.as_ptr().cast::<__m256i>()) }
+}
+
+/// Load 8 `i16` values into both 128-bit lanes (`vbroadcasti128`).
+#[inline]
+#[target_feature(enable = "avx2")]
+pub(crate) fn broadcast_i16x8(src: &[i16; 8]) -> __m256i {
+    _mm256_broadcastsi128_si256(load_i16x8(src))
+}
+
+#[inline]
+#[target_feature(enable = "avx2")]
+pub(crate) fn store_u8x32(dst: &mut [u8; 32], values: __m256i) {
+    // SAFETY:
+    // - Feature availability: callers run inside an exact-AVX2 kernel.
+    // - Bounds: the array reference proves thirty-two writable bytes.
+    // - Alignment: `write_unaligned` deliberately accepts any byte alignment.
+    // - Aliasing: the exclusive reference prevents overlapping live access.
+    // - Initialization: the store initializes every byte in the output array.
+    unsafe { core::ptr::write_unaligned(dst.as_mut_ptr().cast::<__m256i>(), values) };
 }
 
 #[inline]

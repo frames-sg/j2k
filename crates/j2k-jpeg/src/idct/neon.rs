@@ -20,6 +20,7 @@ use core::arch::aarch64::{
 };
 use j2k_codec_math::jpeg::idct;
 
+use super::scalar::ISLOW_GAINS;
 use crate::simd::neon_memory;
 
 #[expect(
@@ -628,10 +629,11 @@ fn idct_1d_x4_first_two<const SHIFT: i32>(
     rounding: int32x4_t,
 ) -> [int32x4_t; 8] {
     let base = vshlq_n_s32::<CONST_BITS>(p0);
-    let k0 = vmulq_n_s32(p1, 2_260);
-    let k1 = vmulq_n_s32(p1, 6_437);
-    let k2 = vmulq_n_s32(p1, 9_633);
-    let k3 = vmulq_n_s32(p1, 11_363);
+    // `p1`'s gains into outputs 3, 2, 1 and 0.
+    let k0 = vmulq_n_s32(p1, ISLOW_GAINS[3][1]);
+    let k1 = vmulq_n_s32(p1, ISLOW_GAINS[2][1]);
+    let k2 = vmulq_n_s32(p1, ISLOW_GAINS[1][1]);
+    let k3 = vmulq_n_s32(p1, ISLOW_GAINS[0][1]);
 
     let out0 = vshrq_n_s32::<SHIFT>(vaddq_s32(vaddq_s32(base, k3), rounding));
     let out7 = vshrq_n_s32::<SHIFT>(vaddq_s32(vsubq_s32(base, k3), rounding));

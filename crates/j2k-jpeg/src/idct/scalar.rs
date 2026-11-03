@@ -32,6 +32,81 @@ const FIX_2_053119869: Wrapping<i32> = Wrapping(idct::FIX_2_053119869);
 const FIX_2_562915447: Wrapping<i32> = Wrapping(idct::FIX_2_562915447);
 const FIX_3_072711026: Wrapping<i32> = Wrapping(idct::FIX_3_072711026);
 
+/// Gain of input `p[k]` in output `j` of the 8-bit ISLOW 1-D transform
+/// below, in units of `2^-CONST_BITS`: before rounding, every pass computes
+/// `out[j] = sum_k ISLOW_GAINS[j][k] * p[k]`. This is the same transform with
+/// the shared `z1..z5` products expanded per input, for SIMD kernels that
+/// multiply inputs directly; `islow_gains_match_the_column_transform` pins it
+/// to `idct_1d_column`.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64", test))]
+pub(crate) const ISLOW_GAINS: [[i32; 8]; 8] = islow_gains();
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64", test))]
+const fn islow_gains() -> [[i32; 8]; 8] {
+    let one = 1 << CONST_BITS;
+    let tmp3 = [
+        idct::FIX_0_541196100 + idct::FIX_0_765366865,
+        idct::FIX_0_541196100,
+    ];
+    let tmp2 = [
+        idct::FIX_0_541196100,
+        idct::FIX_0_541196100 - idct::FIX_1_847759065,
+    ];
+    // `[p0, p2, p4, p6]` gains of tmp10, tmp11, tmp12 and tmp13.
+    let even = [
+        [one, tmp3[0], one, tmp3[1]],
+        [one, tmp2[0], -one, tmp2[1]],
+        [one, -tmp2[0], -one, -tmp2[1]],
+        [one, -tmp3[0], one, -tmp3[1]],
+    ];
+    let z5 = idct::FIX_1_175875602;
+    // `[p1, p3, p5, p7]` gains of the odd terms added to tmp10..tmp13 (the
+    // scalar's tmp3, tmp2, tmp1 and tmp0), with z1 = -(p7 + p1) * 0.899,
+    // z2 = -(p5 + p3) * 2.562, z3 = -(p7 + p3) * 1.961 + z5 and
+    // z4 = -(p5 + p1) * 0.390 + z5 expanded.
+    let odd = [
+        [
+            idct::FIX_1_501321110 - idct::FIX_0_899976223 - idct::FIX_0_390180644 + z5,
+            z5,
+            z5 - idct::FIX_0_390180644,
+            z5 - idct::FIX_0_899976223,
+        ],
+        [
+            z5,
+            idct::FIX_3_072711026 - idct::FIX_2_562915447 - idct::FIX_1_961570560 + z5,
+            z5 - idct::FIX_2_562915447,
+            z5 - idct::FIX_1_961570560,
+        ],
+        [
+            z5 - idct::FIX_0_390180644,
+            z5 - idct::FIX_2_562915447,
+            idct::FIX_2_053119869 - idct::FIX_2_562915447 - idct::FIX_0_390180644 + z5,
+            z5,
+        ],
+        [
+            z5 - idct::FIX_0_899976223,
+            z5 - idct::FIX_1_961570560,
+            z5,
+            idct::FIX_0_298631336 - idct::FIX_0_899976223 - idct::FIX_1_961570560 + z5,
+        ],
+    ];
+    // out[j] = even[j] + odd[j] and out[7 - j] = even[j] - odd[j].
+    let mut gains = [[0; 8]; 8];
+    let mut j = 0;
+    while j < 4 {
+        let mut i = 0;
+        while i < 4 {
+            gains[j][2 * i] = even[j][i];
+            gains[7 - j][2 * i] = even[j][i];
+            gains[j][2 * i + 1] = odd[j][i];
+            gains[7 - j][2 * i + 1] = -odd[j][i];
+            i += 1;
+        }
+        j += 1;
+    }
+    gains
+}
+
 /// Inverse DCT of a single 8×8 block, with level shift and clamping.
 pub(crate) fn idct_islow(input: &[i16; 64], output: &mut [u8; 64]) {
     let mut work = [Wrapping(0i32); 64];
@@ -417,6 +492,28 @@ mod tests {
         idct_islow(&input, &mut output);
         for (i, &px) in output.iter().enumerate() {
             assert_eq!(px, 128, "pixel {i} = {px}, expected 128");
+        }
+    }
+
+    #[test]
+    fn islow_gains_match_the_column_transform() {
+        // An impulse of ±2^(CONST_BITS - PASS1_BITS) in input k makes column
+        // output j exactly ±gain[j][k]: (g * 2048 + 1024) >> 11 = g.
+        let impulse = 1i16 << (CONST_BITS - PASS1_BITS);
+        for k in 0..8 {
+            for sign in [1, -1] {
+                let mut input = [0i16; 64];
+                input[k * 8] = sign * impulse;
+                let mut work = [Wrapping(0i32); 64];
+                idct_1d_column(&input, &mut work, 0);
+                for (j, gains) in ISLOW_GAINS.iter().enumerate() {
+                    assert_eq!(
+                        work[j * 8].0,
+                        i32::from(sign) * gains[k],
+                        "output {j}, input {k}"
+                    );
+                }
+            }
         }
     }
 
