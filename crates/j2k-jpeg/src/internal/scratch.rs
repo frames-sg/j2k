@@ -4,9 +4,9 @@
 //!
 //! A [`ScratchPool`] owns every `Vec` that the sequential scan decoder
 //! would otherwise allocate on each call: the three rolling MCU stripe
-//! buffers (the streaming 4:2:0 and 4:4:4 routes need only the first, 4:2:0
-//! with a halo row), the per-component DC predictor, the chroma upsample
-//! rows, and the RGB row buffers used by [`j2k_core::RowSink`] drivers.
+//! buffers (the streaming full-size routes need only the first, 4:2:0 with a
+//! halo row), the per-component DC predictor, the chroma upsample rows, and
+//! the RGB row buffers used by [`j2k_core::RowSink`] drivers.
 //!
 //! Use [`Decoder::decode_into_with_scratch`](crate::Decoder::decode_into_with_scratch)
 //! / [`decode_rows_with_scratch`](crate::Decoder::decode_rows_with_scratch)
@@ -96,12 +96,13 @@ impl SequentialScratchLayout {
         })
     }
 
-    /// One full-size stripe below `halo_rows` context rows, and no row
-    /// buffers.
+    /// One full-size stripe below `halo_rows` context rows, and row buffers
+    /// of `row_width` (zero when the route needs none).
     fn for_streaming(
         plan: &PreparedDecodePlan,
         mcus_per_row: u32,
         halo_rows: usize,
+        row_width: usize,
     ) -> Result<Self, JpegError> {
         Ok(Self {
             stripe: StripeLayout::for_sampling_with_halo(
@@ -112,7 +113,7 @@ impl SequentialScratchLayout {
             )?,
             stripe_count: 1,
             component_count: plan.sampling.len(),
-            row_width: 0,
+            row_width,
         })
     }
 
@@ -162,17 +163,18 @@ impl ScratchPool {
     }
 
     /// [`Self::prepare_for`] for the streaming full-size routes: zeroed DC
-    /// predictors and only `stripe_a`, laid out for `mcus_per_row` MCUs below
-    /// `halo_rows` context rows.
+    /// predictors, only `stripe_a`, laid out for `mcus_per_row` MCUs below
+    /// `halo_rows` context rows, and upsample rows of `row_width`.
     pub(crate) fn prepare_for_streaming(
         &mut self,
         plan: &PreparedDecodePlan,
         mcus_per_row: u32,
         halo_rows: usize,
+        row_width: usize,
         max_bytes: usize,
     ) -> Result<(), JpegError> {
         self.prepare_sequential(
-            SequentialScratchLayout::for_streaming(plan, mcus_per_row, halo_rows)?,
+            SequentialScratchLayout::for_streaming(plan, mcus_per_row, halo_rows, row_width)?,
             max_bytes,
         )
     }

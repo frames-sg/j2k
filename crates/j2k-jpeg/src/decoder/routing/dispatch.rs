@@ -3,7 +3,7 @@
 //! Output-format dispatch after routing has validated geometry and scratch.
 
 use super::super::{
-    decode_scan_fast_rgb_444_region, decode_scan_fast_tile_rgb_region,
+    decode_scan_fast_rgb_v1_region, decode_scan_fast_tile_rgb_region,
     fast_tile_region_first_decode_mcu, merged_warnings, CroppedWriter, DecodeOutcome, Decoder,
     DownscaleFactor, Gray8Writer, JpegError, OutputFormat, Rect, Rgb8Writer, Rgba8Writer,
     ScratchPool, SofKind,
@@ -234,7 +234,7 @@ impl Decoder<'_> {
         if fmt == OutputFormat::Rgb8
             && downscale == DownscaleFactor::Full
             && self.progressive_plan.is_none()
-            && (fast_420 || self.plan.matches_fast_rgb444_shape())
+            && (fast_420 || self.plan.matches_fast_rgb_v1_shape())
         {
             let mut writer = Rgb8Writer::new_with_backend(out, stride, output_rect.w, self.backend);
             let scan_bytes = &self.bytes[self.plan.scan_offset..];
@@ -254,7 +254,7 @@ impl Decoder<'_> {
                     checkpoint.as_ref(),
                 )?
             } else {
-                decode_scan_fast_rgb_444_region(
+                decode_scan_fast_rgb_v1_region(
                     &self.plan,
                     self.backend,
                     scan_bytes,

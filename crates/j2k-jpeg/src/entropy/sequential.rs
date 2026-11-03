@@ -31,7 +31,7 @@ pub(crate) use self::plan::{
     HuffmanPrimaryWidth, PreparedComponentPlan, PreparedDecodePlan, ResolvedPreparedComponentPlan,
 };
 pub(crate) use self::restart::finish_scan;
-pub(crate) use self::rgb444::{decode_scan_fast_rgb_444, decode_scan_fast_rgb_444_region};
+pub(crate) use self::rgb444::{decode_scan_fast_rgb_v1, decode_scan_fast_rgb_v1_region};
 use self::stripe::StripePlane;
 pub(crate) use self::stripe::{StripeBuffer, StripeLayout};
 
@@ -41,7 +41,7 @@ use self::deposit::{
     FastTile420EntropyState, FastTile420Window,
 };
 #[cfg(test)]
-use self::emit::{component_row_triplet, emit_stripe_rgb_444};
+use self::emit::{component_row_triplet, emit_stripe_rgb_v1, StripeOutputWindow};
 #[cfg(test)]
 use self::fast420::{decode_mcu_row_fast_tile_420, FAST420_HALO_ROWS};
 #[cfg(test)]
