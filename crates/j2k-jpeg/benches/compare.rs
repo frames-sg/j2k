@@ -33,6 +33,10 @@ use j2k_jpeg::{
     clippy::too_many_lines,
     reason = "this benchmark registry keeps the comparable codec cases in one ordered Criterion group"
 )]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "each Criterion group is consumed by `finish()` right after its last use; the lint only recognizes `drop`"
+)]
 fn bench_compare(c: &mut Criterion) {
     let inputs = load_bench_inputs();
     if std::env::var_os("J2K_BENCH_VERIFY_OUTPUTS").is_some() {

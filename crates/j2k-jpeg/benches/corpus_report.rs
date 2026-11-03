@@ -821,14 +821,15 @@ fn compare_measurements(lhs: &Measurement, rhs: &Measurement) -> Option<Ordering
 }
 
 fn format_measurement(measurement: &Measurement) -> String {
-    if let Some(ns) = measurement.ns {
-        format_ns(ns)
-    } else {
-        measurement
-            .error
-            .clone()
-            .unwrap_or_else(|| "n/a".to_string())
-    }
+    measurement.ns.map_or_else(
+        || {
+            measurement
+                .error
+                .clone()
+                .unwrap_or_else(|| "n/a".to_string())
+        },
+        format_ns,
+    )
 }
 
 fn render_ns(measurement: &Measurement) -> String {

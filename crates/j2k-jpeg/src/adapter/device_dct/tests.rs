@@ -177,46 +177,46 @@ fn rgb_of(color_space: ColorSpace, precision: u8, c: [u32; 4]) -> [u32; 3] {
     match (color_space, precision) {
         (ColorSpace::Grayscale, _) => [c[0]; 3],
         (ColorSpace::Rgb, _) => [c[0], c[1], c[2]],
-        (ColorSpace::YCbCr, 8) => {
-            let (r, g, b) = ycbcr::ycbcr_to_rgb(narrow8(c[0]), narrow8(c[1]), narrow8(c[2]));
-            [r, g, b].map(u32::from)
-        }
-        (ColorSpace::YCbCr, _) => {
-            let (r, g, b) = ycbcr::ycbcr12_to_rgb16(narrow12(c[0]), narrow12(c[1]), narrow12(c[2]));
-            [r, g, b].map(u32::from)
-        }
-        (ColorSpace::Cmyk, 8) => {
-            let (r, g, b) = cmyk::inverted_cmyk_to_rgb(
-                narrow8(c[0]),
-                narrow8(c[1]),
-                narrow8(c[2]),
-                narrow8(c[3]),
-            );
-            [r, g, b].map(u32::from)
-        }
-        (ColorSpace::Cmyk, _) => {
-            let (r, g, b) = cmyk::inverted_cmyk12_to_rgb16(
-                narrow12(c[0]),
-                narrow12(c[1]),
-                narrow12(c[2]),
-                narrow12(c[3]),
-            );
-            [r, g, b].map(u32::from)
-        }
-        (ColorSpace::Ycck, 8) => {
-            let (r, g, b) =
-                cmyk::ycck_to_rgb(narrow8(c[0]), narrow8(c[1]), narrow8(c[2]), narrow8(c[3]));
-            [r, g, b].map(u32::from)
-        }
-        (ColorSpace::Ycck, _) => {
-            let (r, g, b) = cmyk::ycck12_to_rgb16(
-                narrow12(c[0]),
-                narrow12(c[1]),
-                narrow12(c[2]),
-                narrow12(c[3]),
-            );
-            [r, g, b].map(u32::from)
-        }
+        (ColorSpace::YCbCr, 8) => <[_; 3]>::from(ycbcr::ycbcr_to_rgb(
+            narrow8(c[0]),
+            narrow8(c[1]),
+            narrow8(c[2]),
+        ))
+        .map(u32::from),
+        (ColorSpace::YCbCr, _) => <[_; 3]>::from(ycbcr::ycbcr12_to_rgb16(
+            narrow12(c[0]),
+            narrow12(c[1]),
+            narrow12(c[2]),
+        ))
+        .map(u32::from),
+        (ColorSpace::Cmyk, 8) => <[_; 3]>::from(cmyk::inverted_cmyk_to_rgb(
+            narrow8(c[0]),
+            narrow8(c[1]),
+            narrow8(c[2]),
+            narrow8(c[3]),
+        ))
+        .map(u32::from),
+        (ColorSpace::Cmyk, _) => <[_; 3]>::from(cmyk::inverted_cmyk12_to_rgb16(
+            narrow12(c[0]),
+            narrow12(c[1]),
+            narrow12(c[2]),
+            narrow12(c[3]),
+        ))
+        .map(u32::from),
+        (ColorSpace::Ycck, 8) => <[_; 3]>::from(cmyk::ycck_to_rgb(
+            narrow8(c[0]),
+            narrow8(c[1]),
+            narrow8(c[2]),
+            narrow8(c[3]),
+        ))
+        .map(u32::from),
+        (ColorSpace::Ycck, _) => <[_; 3]>::from(cmyk::ycck12_to_rgb16(
+            narrow12(c[0]),
+            narrow12(c[1]),
+            narrow12(c[2]),
+            narrow12(c[3]),
+        ))
+        .map(u32::from),
     }
 }
 

@@ -55,8 +55,9 @@ pub(crate) fn fill_rgb_row_from_422(request: Rgb422Row<'_>) {
         .iter_mut()
         .enumerate()
     {
-        let (r, g, b) = ycbcr_to_rgb(y[x], h2v1_fancy_sample(cb, x), h2v1_fancy_sample(cr, x));
-        pixel.copy_from_slice(&[r, g, b]);
+        let rgb: [u8; 3] =
+            ycbcr_to_rgb(y[x], h2v1_fancy_sample(cb, x), h2v1_fancy_sample(cr, x)).into();
+        pixel.copy_from_slice(&rgb);
     }
 }
 
@@ -142,7 +143,9 @@ pub(crate) fn fill_rgb_row_pair_from_420(request: Rgb420RowPair<'_>) {
     let width = y_top.len();
     debug_assert_eq!(width * 3, dst_top.len());
     debug_assert!(y_bottom.is_none_or(|row| row.len() == width));
-    debug_assert!(dst_bottom.as_ref().is_none_or(|row| row.len() == width * 3));
+    debug_assert!(dst_bottom
+        .as_deref()
+        .is_none_or(|row| row.len() == width * 3));
 
     for (x, pixel) in dst_top.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         let cb = h2v2_fancy_sample(prev_cb, curr_cb, x);
@@ -187,7 +190,7 @@ pub(crate) fn fill_rgb_row_pair_from_420_cropped(request: Rgb420CroppedRowPair<'
     debug_assert_eq!(crop_width * 3, dst_top.len());
     debug_assert!(y_bottom.is_none_or(|row| row.len() == y_top.len()));
     debug_assert!(dst_bottom
-        .as_ref()
+        .as_deref()
         .is_none_or(|row| row.len() == crop_width * 3));
     debug_assert_eq!(prev_cb.len(), curr_cb.len());
     debug_assert_eq!(prev_cb.len(), next_cb.len());

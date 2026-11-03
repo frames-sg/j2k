@@ -229,12 +229,13 @@ pub(super) fn fdct_quantize(
     let is_constant = prefix == prefix.rotate_right(8) && {
         #[cfg(target_arch = "aarch64")]
         {
-            if let Some(neon) = divisors.neon {
-                neon::is_constant_block(neon, block)
-            } else {
-                let first = block[0];
-                block[8..].iter().all(|&sample| sample == first)
-            }
+            divisors.neon.map_or_else(
+                || {
+                    let first = block[0];
+                    block[8..].iter().all(|&sample| sample == first)
+                },
+                |neon| neon::is_constant_block(neon, block),
+            )
         }
         #[cfg(not(target_arch = "aarch64"))]
         {

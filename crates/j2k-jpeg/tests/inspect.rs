@@ -98,7 +98,7 @@ fn jpeg_tables_only(bytes: &[u8]) -> Vec<u8> {
 }
 
 fn without_coding_tables(bytes: &[u8]) -> Vec<u8> {
-    let mut ranges = iter_segments(bytes)
+    let ranges = iter_segments(bytes)
         .filter_map(|segment| {
             let segment = segment.expect("fixture segment parses");
             matches!(segment.marker, 0xdb | 0xc4)
@@ -106,7 +106,7 @@ fn without_coding_tables(bytes: &[u8]) -> Vec<u8> {
         })
         .collect::<Vec<_>>();
     let mut tile = bytes.to_vec();
-    for range in ranges.drain(..).rev() {
+    for range in ranges.into_iter().rev() {
         tile.drain(range);
     }
     tile

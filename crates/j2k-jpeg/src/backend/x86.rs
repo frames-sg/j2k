@@ -227,7 +227,9 @@ pub(crate) fn fill_rgb_row_pair_from_420_cropped(
     let dst_bottom = dst_bottom.and_then(|row| row.get_mut(..width * 3));
     debug_assert_eq!(dst_top.len(), width * 3);
     debug_assert!(y_bottom.is_none_or(|row| row.len() == width));
-    debug_assert!(dst_bottom.as_ref().is_none_or(|row| row.len() == width * 3));
+    debug_assert!(dst_bottom
+        .as_deref()
+        .is_none_or(|row| row.len() == width * 3));
     debug_assert_eq!(prev_cb.len(), curr_cb.len());
     debug_assert_eq!(prev_cb.len(), next_cb.len());
     debug_assert_eq!(prev_cr.len(), curr_cr.len());

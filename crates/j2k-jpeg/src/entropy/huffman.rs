@@ -512,6 +512,7 @@ const fn standard_dc_lookups<const N: usize>(bits: &[u8; 16], values: &[u8; N]) 
 
 #[expect(
     clippy::large_stack_arrays,
+    clippy::large_stack_frames,
     reason = "this const builder is evaluated into static standard-table storage"
 )]
 const fn standard_ac_lookups<const N: usize>(bits: &[u8; 16], values: &[u8; N]) -> StaticAcLookups {

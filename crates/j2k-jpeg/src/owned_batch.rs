@@ -227,7 +227,7 @@ impl JpegBatchDecoder {
                 .iter()
                 .position(|(seen, _)| seen.dimensions == plan.dimensions)
                 .unwrap_or_else(|| {
-                    plans.push((admission::Admission { ..plan }, Vec::new()));
+                    plans.push((plan, Vec::new()));
                     plans.len() - 1
                 });
             plans[group].0.worker_bytes = plans[group].0.worker_bytes.max(plan.worker_bytes);
@@ -345,13 +345,13 @@ impl JpegBatchDecoder {
 fn to_planar(interleaved: &[u8], planar: &mut [u8], pixels: usize) {
     let (red, rest) = planar.split_at_mut(pixels);
     let (green, blue) = rest.split_at_mut(pixels);
-    for (&[r, g, b], ((red, green), blue)) in interleaved
+    for (&pixel, ((red, green), blue)) in interleaved
         .as_chunks::<3>()
         .0
         .iter()
         .zip(red.iter_mut().zip(green.iter_mut()).zip(blue.iter_mut()))
     {
-        (*red, *green, *blue) = (r, g, b);
+        [*red, *green, *blue] = pixel;
     }
 }
 

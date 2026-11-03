@@ -55,8 +55,7 @@ pub(super) fn convert_ycbcr8_to_rgb8_in_place(
     for y in 0..height as usize {
         let row = &mut out[y * stride..y * stride + row_bytes];
         for pixel in row.as_chunks_mut::<3>().0 {
-            let (r, g, b) = crate::color::ycbcr::ycbcr_to_rgb(pixel[0], pixel[1], pixel[2]);
-            pixel.copy_from_slice(&[r, g, b]);
+            *pixel = crate::color::ycbcr::ycbcr_to_rgb(pixel[0], pixel[1], pixel[2]).into();
         }
     }
 }
@@ -69,8 +68,7 @@ pub(super) fn copy_ycbcr8_row_to_rgb8(src: &[u8], dst: &mut [u8]) {
         .iter()
         .zip(dst.as_chunks_mut::<3>().0.iter_mut())
     {
-        let (r, g, b) = crate::color::ycbcr::ycbcr_to_rgb(source[0], source[1], source[2]);
-        target.copy_from_slice(&[r, g, b]);
+        *target = crate::color::ycbcr::ycbcr_to_rgb(source[0], source[1], source[2]).into();
     }
 }
 
