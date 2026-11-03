@@ -176,13 +176,9 @@ impl J2kDecoder<'_> {
             },
             #[cfg(target_os = "macos")]
             routing::RouteDecision::MetalKernel => match request.op {
-                MetalDecodeOp::Full => {
-                    if let Some(surface) = self.decode_direct_to_surface(request.fmt)? {
-                        Ok(surface)
-                    } else {
-                        self.decode_full_to_metal_surface(request.fmt)
-                    }
-                }
+                MetalDecodeOp::Full => self
+                    .decode_direct_to_surface(request.fmt)?
+                    .map_or_else(|| self.decode_full_to_metal_surface(request.fmt), Ok),
                 MetalDecodeOp::Region(_) => self.decode_region_scaled_to_metal_surface(
                     request.fmt,
                     plan.source_rect(),
