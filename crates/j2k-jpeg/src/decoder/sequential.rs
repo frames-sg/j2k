@@ -91,7 +91,7 @@ impl Decoder<'_> {
     /// [`Self::restart_checkpoint`]); other scans get the cached entropy
     /// checkpoint at or before the target, for targets deep enough to be
     /// worth extending the cache.
-    pub(super) fn checkpoint_for_mcu(
+    pub(crate) fn checkpoint_for_mcu(
         &self,
         scan_bytes: &[u8],
         target_mcu: u32,

@@ -5,3 +5,4 @@ mod build;
 mod cache;
 mod eoi;
 mod fixtures;
+mod seek;

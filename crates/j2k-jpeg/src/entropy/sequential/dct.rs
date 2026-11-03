@@ -14,6 +14,7 @@ use crate::entropy::block::{
 use crate::entropy::huffman::{FULL_PRIMARY_ENTRIES, NARROW_PRIMARY_ENTRIES};
 use crate::error::JpegError;
 use crate::internal::bit_reader::BitReader;
+use crate::internal::checkpoint::DeviceCheckpoint;
 
 mod allocation;
 
@@ -310,8 +311,10 @@ pub(crate) struct McuWindow {
 
 /// Decode only the MCUs of `window` into caller-owned dequantized blocks.
 ///
-/// As CPU region decode does, the scan is entered at the nearest restart
-/// marker before the window (or traversed entropy-only from its start), MCUs
+/// As CPU region decode does, the scan is entered through
+/// `scan_position_before_mcu` (at `checkpoint`, the decoder's resume point
+/// for the window's first MCU row, or at the nearest restart marker, or at
+/// the scan start), MCUs
 /// left and right of the window are skipped entropy-only, and decoding stops
 /// after the window's last MCU row without validating the rest of the scan.
 /// `blocks` holds each component's `window.cols * h` by `window.rows * v`
@@ -320,15 +323,16 @@ pub(crate) fn decode_scan_dct_window_into(
     plan: &PreparedDecodePlan,
     scan_bytes: &[u8],
     window: McuWindow,
+    checkpoint: Option<&DeviceCheckpoint>,
     blocks: &mut [[i16; 64]],
 ) -> Result<(), JpegError> {
     match plan.huffman_primary_width {
         HuffmanPrimaryWidth::Narrow8 => decode_scan_dct_window_into_with_entries::<
             NARROW_PRIMARY_ENTRIES,
-        >(plan, scan_bytes, window, blocks),
+        >(plan, scan_bytes, window, checkpoint, blocks),
         HuffmanPrimaryWidth::Full12 => decode_scan_dct_window_into_with_entries::<
             FULL_PRIMARY_ENTRIES,
-        >(plan, scan_bytes, window, blocks),
+        >(plan, scan_bytes, window, checkpoint, blocks),
     }
 }
 
@@ -336,6 +340,7 @@ fn decode_scan_dct_window_into_with_entries<const N: usize>(
     plan: &PreparedDecodePlan,
     scan_bytes: &[u8],
     window: McuWindow,
+    checkpoint: Option<&DeviceCheckpoint>,
     blocks: &mut [[i16; 64]],
 ) -> Result<(), JpegError> {
     let (mcus_per_row, mcu_rows) = sequential_mcu_grid(plan);
@@ -364,7 +369,7 @@ fn decode_scan_dct_window_into_with_entries<const N: usize>(
         mut prev_dc,
         mcu_index: mut current_mcu,
         mut expected_rst,
-    } = scan_position_before_mcu(scan_bytes, restart, None, first_mcu);
+    } = scan_position_before_mcu(scan_bytes, restart, checkpoint, first_mcu);
     let mut mcus_since_restart = 0_u32;
     skip_to_mcu::<N>(
         plan,
