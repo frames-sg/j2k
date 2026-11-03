@@ -16,8 +16,10 @@
 use core::num::Wrapping;
 use j2k_codec_math::jpeg::idct;
 
-const CONST_BITS: usize = idct::CONST_BITS;
-const PASS1_BITS: usize = idct::PASS1_BITS;
+use super::{
+    DC_ROUNDING, DC_SHIFT, PASS1_ROUNDING, PASS1_SHIFT, PASS1_SHIFT_12, PASS2_ROUNDING,
+    PASS2_SHIFT, PASS2_SHIFT_12,
+};
 
 const FIX_0_298631336: Wrapping<i32> = Wrapping(idct::FIX_0_298631336);
 const FIX_0_390180644: Wrapping<i32> = Wrapping(idct::FIX_0_390180644);
@@ -43,7 +45,7 @@ pub(crate) const ISLOW_GAINS: [[i32; 8]; 8] = islow_gains();
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64", test))]
 const fn islow_gains() -> [[i32; 8]; 8] {
-    let one = 1 << CONST_BITS;
+    let one = 1 << idct::CONST_BITS;
     let tmp3 = [
         idct::FIX_0_541196100 + idct::FIX_0_765366865,
         idct::FIX_0_541196100,
@@ -107,6 +109,34 @@ const fn islow_gains() -> [[i32; 8]; 8] {
     gains
 }
 
+/// `(max_gain, max_l1)` of [`ISLOW_GAINS`]: the largest gain magnitude of
+/// any input into any output (11,363) and the largest L1 norm of one
+/// output's gains (61,214). A 1-D output is at most `max_gain * sum(|p|)`
+/// and at most `max_l1 * max(|p|)` before rounding; the SIMD kernels derive
+/// their overflow bounds from these.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub(crate) const fn islow_gain_bounds() -> (i32, i32) {
+    let (mut max_gain, mut max_l1) = (0, 0);
+    let mut j = 0;
+    while j < 8 {
+        let mut l1 = 0;
+        let mut k = 0;
+        while k < 8 {
+            let gain = ISLOW_GAINS[j][k].abs();
+            if gain > max_gain {
+                max_gain = gain;
+            }
+            l1 += gain;
+            k += 1;
+        }
+        if l1 > max_l1 {
+            max_l1 = l1;
+        }
+        j += 1;
+    }
+    (max_gain, max_l1)
+}
+
 /// Inverse DCT of a single 8×8 block, with level shift and clamping.
 pub(crate) fn idct_islow(input: &[i16; 64], output: &mut [u8; 64]) {
     let mut work = [Wrapping(0i32); 64];
@@ -146,10 +176,6 @@ pub(crate) fn idct_islow_dc_only_pixel(dc_coeff: i16) -> u8 {
     idct_islow_dc_only_sample::<u8>(dc_coeff)
 }
 
-/// Fractional bits kept between the passes of the 12-bit IDCT. libjpeg-turbo's
-/// `jidctint.c` keeps one instead of the 8-bit path's two, to leave headroom.
-const PASS1_BITS_12: usize = 1;
-
 /// Inverse DCT of a 12-bit JPEG block, returning native 0..4095 sample values.
 ///
 /// Mirrors `jidctint.c` built with `BITS_IN_JSAMPLE == 12`: `PASS1_BITS = 1`
@@ -158,20 +184,18 @@ const PASS1_BITS_12: usize = 1;
 /// computation here and are omitted.
 pub(crate) fn idct_islow_12bit(input: &[i16; 64], output: &mut [u16; 64]) {
     let mut work = [0i64; 64];
-    let column_shift = CONST_BITS - PASS1_BITS_12;
     for col in 0..8 {
         let samples = core::array::from_fn(|row| i64::from(input[row * 8 + col]));
         let outputs = islow_1d_i64(samples);
         for (row, value) in outputs.into_iter().enumerate() {
-            work[row * 8 + col] = descale_i64(value, column_shift);
+            work[row * 8 + col] = descale_i64(value, PASS1_SHIFT_12);
         }
     }
-    let row_shift = CONST_BITS + PASS1_BITS_12 + 3;
     for row in 0..8 {
         let samples = core::array::from_fn(|col| work[row * 8 + col]);
         let outputs = islow_1d_i64(samples);
         for (col, value) in outputs.into_iter().enumerate() {
-            let sample = (descale_i64(value, row_shift) + 2048).clamp(0, 4095);
+            let sample = (descale_i64(value, PASS2_SHIFT_12) + 2048).clamp(0, 4095);
             output[row * 8 + col] = u16::try_from(sample).expect("clamped 12-bit sample");
         }
     }
@@ -184,8 +208,8 @@ fn islow_1d_i64(p: [i64; 8]) -> [i64; 8] {
     let z1 = (p[2] + p[6]) * fix(idct::FIX_0_541196100);
     let tmp2 = z1 - p[6] * fix(idct::FIX_1_847759065);
     let tmp3 = z1 + p[2] * fix(idct::FIX_0_765366865);
-    let tmp0 = (p[0] + p[4]) << CONST_BITS;
-    let tmp1 = (p[0] - p[4]) << CONST_BITS;
+    let tmp0 = (p[0] + p[4]) << idct::CONST_BITS;
+    let tmp1 = (p[0] - p[4]) << idct::CONST_BITS;
     let (tmp10, tmp13) = (tmp0 + tmp3, tmp0 - tmp3);
     let (tmp11, tmp12) = (tmp1 + tmp2, tmp1 - tmp2);
 
@@ -213,7 +237,7 @@ fn islow_1d_i64(p: [i64; 8]) -> [i64; 8] {
 }
 
 /// `DESCALE` from `jdct.h`: round half up, then arithmetic shift.
-const fn descale_i64(value: i64, shift: usize) -> i64 {
+pub(super) const fn descale_i64(value: i64, shift: i32) -> i64 {
     (value + (1 << (shift - 1))) >> shift
 }
 
@@ -273,7 +297,7 @@ fn idct_1d_column(input: &[i16; 64], work: &mut [Wrapping<i32>; 64], col: usize)
     let p7 = Wrapping(i32::from(input[col + 56]));
 
     if p1.0 == 0 && p2.0 == 0 && p3.0 == 0 && p4.0 == 0 && p5.0 == 0 && p6.0 == 0 && p7.0 == 0 {
-        let dc = p0 << PASS1_BITS;
+        let dc = p0 << idct::PASS1_BITS;
         work[col] = dc;
         work[col + 8] = dc;
         work[col + 16] = dc;
@@ -293,8 +317,8 @@ fn idct_1d_column(input: &[i16; 64], work: &mut [Wrapping<i32>; 64], col: usize)
 
     let z2 = p0;
     let z3 = p4;
-    let tmp0 = (z2 + z3) << CONST_BITS;
-    let tmp1 = (z2 - z3) << CONST_BITS;
+    let tmp0 = (z2 + z3) << idct::CONST_BITS;
+    let tmp1 = (z2 - z3) << idct::CONST_BITS;
 
     let tmp10 = tmp0 + tmp3;
     let tmp13 = tmp0 - tmp3;
@@ -329,16 +353,15 @@ fn idct_1d_column(input: &[i16; 64], work: &mut [Wrapping<i32>; 64], col: usize)
     let tmp2 = tmp2 + z2 + z3;
     let tmp3 = tmp3 + z1 + z4;
 
-    let shift = CONST_BITS - PASS1_BITS;
-    let rounding = Wrapping(1i32 << (shift - 1));
-    work[col] = descale(tmp10 + tmp3 + rounding, shift);
-    work[col + 56] = descale(tmp10 - tmp3 + rounding, shift);
-    work[col + 8] = descale(tmp11 + tmp2 + rounding, shift);
-    work[col + 48] = descale(tmp11 - tmp2 + rounding, shift);
-    work[col + 16] = descale(tmp12 + tmp1 + rounding, shift);
-    work[col + 40] = descale(tmp12 - tmp1 + rounding, shift);
-    work[col + 24] = descale(tmp13 + tmp0 + rounding, shift);
-    work[col + 32] = descale(tmp13 - tmp0 + rounding, shift);
+    let rounding = Wrapping(PASS1_ROUNDING);
+    work[col] = descale(tmp10 + tmp3 + rounding, PASS1_SHIFT);
+    work[col + 56] = descale(tmp10 - tmp3 + rounding, PASS1_SHIFT);
+    work[col + 8] = descale(tmp11 + tmp2 + rounding, PASS1_SHIFT);
+    work[col + 48] = descale(tmp11 - tmp2 + rounding, PASS1_SHIFT);
+    work[col + 16] = descale(tmp12 + tmp1 + rounding, PASS1_SHIFT);
+    work[col + 40] = descale(tmp12 - tmp1 + rounding, PASS1_SHIFT);
+    work[col + 24] = descale(tmp13 + tmp0 + rounding, PASS1_SHIFT);
+    work[col + 32] = descale(tmp13 - tmp0 + rounding, PASS1_SHIFT);
 }
 
 fn idct_1d_column_bottom_half_zero(input: &[i16; 64], work: &mut [Wrapping<i32>; 64], col: usize) {
@@ -348,7 +371,7 @@ fn idct_1d_column_bottom_half_zero(input: &[i16; 64], work: &mut [Wrapping<i32>;
     let p3 = Wrapping(i32::from(input[col + 24]));
 
     if p1.0 == 0 && p2.0 == 0 && p3.0 == 0 {
-        let dc = p0 << PASS1_BITS;
+        let dc = p0 << idct::PASS1_BITS;
         work[col] = dc;
         work[col + 8] = dc;
         work[col + 16] = dc;
@@ -364,8 +387,8 @@ fn idct_1d_column_bottom_half_zero(input: &[i16; 64], work: &mut [Wrapping<i32>;
     let tmp2 = z1;
     let tmp3 = z1 + p2 * FIX_0_765366865;
 
-    let tmp0 = p0 << CONST_BITS;
-    let tmp1 = p0 << CONST_BITS;
+    let tmp0 = p0 << idct::CONST_BITS;
+    let tmp1 = p0 << idct::CONST_BITS;
 
     let tmp10 = tmp0 + tmp3;
     let tmp13 = tmp0 - tmp3;
@@ -383,19 +406,18 @@ fn idct_1d_column_bottom_half_zero(input: &[i16; 64], work: &mut [Wrapping<i32>;
     let tmp2 = p3 * FIX_3_072711026 + z2 + z3;
     let tmp3 = p1 * FIX_1_501321110 + z1 + z4;
 
-    let shift = CONST_BITS - PASS1_BITS;
-    let rounding = Wrapping(1i32 << (shift - 1));
-    work[col] = descale(tmp10 + tmp3 + rounding, shift);
-    work[col + 56] = descale(tmp10 - tmp3 + rounding, shift);
-    work[col + 8] = descale(tmp11 + tmp2 + rounding, shift);
-    work[col + 48] = descale(tmp11 - tmp2 + rounding, shift);
-    work[col + 16] = descale(tmp12 + tmp1 + rounding, shift);
-    work[col + 40] = descale(tmp12 - tmp1 + rounding, shift);
-    work[col + 24] = descale(tmp13 + tmp0 + rounding, shift);
-    work[col + 32] = descale(tmp13 - tmp0 + rounding, shift);
+    let rounding = Wrapping(PASS1_ROUNDING);
+    work[col] = descale(tmp10 + tmp3 + rounding, PASS1_SHIFT);
+    work[col + 56] = descale(tmp10 - tmp3 + rounding, PASS1_SHIFT);
+    work[col + 8] = descale(tmp11 + tmp2 + rounding, PASS1_SHIFT);
+    work[col + 48] = descale(tmp11 - tmp2 + rounding, PASS1_SHIFT);
+    work[col + 16] = descale(tmp12 + tmp1 + rounding, PASS1_SHIFT);
+    work[col + 40] = descale(tmp12 - tmp1 + rounding, PASS1_SHIFT);
+    work[col + 24] = descale(tmp13 + tmp0 + rounding, PASS1_SHIFT);
+    work[col + 32] = descale(tmp13 - tmp0 + rounding, PASS1_SHIFT);
 }
 
-fn descale(v: Wrapping<i32>, shift: usize) -> Wrapping<i32> {
+fn descale(v: Wrapping<i32>, shift: i32) -> Wrapping<i32> {
     Wrapping(v.0 >> shift)
 }
 
@@ -410,13 +432,8 @@ fn idct_1d_row<T: IdctSample>(work: &[Wrapping<i32>; 64], output: &mut [T; 64], 
     let p6 = work[base + 6];
     let p7 = work[base + 7];
 
-    let shift = CONST_BITS + PASS1_BITS + 3;
-    let rounding = Wrapping(1i32 << (shift - 1));
-
     if p1.0 == 0 && p2.0 == 0 && p3.0 == 0 && p4.0 == 0 && p5.0 == 0 && p6.0 == 0 && p7.0 == 0 {
-        let dc_shift = PASS1_BITS + 3;
-        let rounding_dc = Wrapping(1i32 << (dc_shift - 1));
-        let pixel = descale_and_clamp::<T>(p0 + rounding_dc, dc_shift);
+        let pixel = descale_and_clamp::<T>(p0 + Wrapping(DC_ROUNDING), DC_SHIFT);
         for i in 0..8 {
             output[base + i] = pixel;
         }
@@ -429,8 +446,8 @@ fn idct_1d_row<T: IdctSample>(work: &[Wrapping<i32>; 64], output: &mut [T; 64], 
     let tmp2 = z1 + z3 * (-FIX_1_847759065);
     let tmp3 = z1 + z2 * FIX_0_765366865;
 
-    let tmp0 = (p0 + p4) << CONST_BITS;
-    let tmp1 = (p0 - p4) << CONST_BITS;
+    let tmp0 = (p0 + p4) << idct::CONST_BITS;
+    let tmp1 = (p0 - p4) << idct::CONST_BITS;
 
     let tmp10 = tmp0 + tmp3;
     let tmp13 = tmp0 - tmp3;
@@ -465,17 +482,18 @@ fn idct_1d_row<T: IdctSample>(work: &[Wrapping<i32>; 64], output: &mut [T; 64], 
     let tmp2 = tmp2 + z2 + z3;
     let tmp3 = tmp3 + z1 + z4;
 
-    output[base] = descale_and_clamp::<T>(tmp10 + tmp3 + rounding, shift);
-    output[base + 7] = descale_and_clamp::<T>(tmp10 - tmp3 + rounding, shift);
-    output[base + 1] = descale_and_clamp::<T>(tmp11 + tmp2 + rounding, shift);
-    output[base + 6] = descale_and_clamp::<T>(tmp11 - tmp2 + rounding, shift);
-    output[base + 2] = descale_and_clamp::<T>(tmp12 + tmp1 + rounding, shift);
-    output[base + 5] = descale_and_clamp::<T>(tmp12 - tmp1 + rounding, shift);
-    output[base + 3] = descale_and_clamp::<T>(tmp13 + tmp0 + rounding, shift);
-    output[base + 4] = descale_and_clamp::<T>(tmp13 - tmp0 + rounding, shift);
+    let rounding = Wrapping(PASS2_ROUNDING);
+    output[base] = descale_and_clamp::<T>(tmp10 + tmp3 + rounding, PASS2_SHIFT);
+    output[base + 7] = descale_and_clamp::<T>(tmp10 - tmp3 + rounding, PASS2_SHIFT);
+    output[base + 1] = descale_and_clamp::<T>(tmp11 + tmp2 + rounding, PASS2_SHIFT);
+    output[base + 6] = descale_and_clamp::<T>(tmp11 - tmp2 + rounding, PASS2_SHIFT);
+    output[base + 2] = descale_and_clamp::<T>(tmp12 + tmp1 + rounding, PASS2_SHIFT);
+    output[base + 5] = descale_and_clamp::<T>(tmp12 - tmp1 + rounding, PASS2_SHIFT);
+    output[base + 3] = descale_and_clamp::<T>(tmp13 + tmp0 + rounding, PASS2_SHIFT);
+    output[base + 4] = descale_and_clamp::<T>(tmp13 - tmp0 + rounding, PASS2_SHIFT);
 }
 
-fn descale_and_clamp<T: IdctSample>(value: Wrapping<i32>, shift: usize) -> T {
+fn descale_and_clamp<T: IdctSample>(value: Wrapping<i32>, shift: i32) -> T {
     let shifted = value.0 >> shift;
     let level_shifted = shifted.wrapping_add(T::LEVEL_SHIFT);
     T::from_clamped_i32(level_shifted.clamp(0, T::MAX))
@@ -497,9 +515,9 @@ mod tests {
 
     #[test]
     fn islow_gains_match_the_column_transform() {
-        // An impulse of ±2^(CONST_BITS - PASS1_BITS) in input k makes column
-        // output j exactly ±gain[j][k]: (g * 2048 + 1024) >> 11 = g.
-        let impulse = 1i16 << (CONST_BITS - PASS1_BITS);
+        // An impulse of ±2^PASS1_SHIFT in input k makes column output j
+        // exactly ±gain[j][k]: (g * 2048 + 1024) >> 11 = g.
+        let impulse = 1i16 << PASS1_SHIFT;
         for k in 0..8 {
             for sign in [1, -1] {
                 let mut input = [0i16; 64];

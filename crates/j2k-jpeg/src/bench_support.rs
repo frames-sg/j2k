@@ -465,24 +465,53 @@ impl BenchAvx2Idct {
         crate::idct::avx2::idct_islow(self.avx2, input, output);
     }
 
-    /// The entry point for blocks whose natural-order rows 4..7 are zero.
-    pub fn run_bottom_half_zero(&self, input: &[i16; 64], output: &mut [u8; 64]) {
-        crate::idct::avx2::idct_islow_bottom_half_zero(self.avx2, input, output);
+    /// Run the sparse entry point `shape` on a block of its shape.
+    pub fn run_shape(&self, shape: BenchAvx2Shape, input: &[i16; 64], output: &mut [u8; 64]) {
+        (shape.kernel)(self.avx2, input, output);
     }
 
-    /// The entry point for blocks whose natural-order columns 4..7 are zero.
-    pub fn run_right_half_zero(&self, input: &[i16; 64], output: &mut [u8; 64]) {
-        crate::idct::avx2::idct_islow_right_half_zero(self.avx2, input, output);
-    }
+    /// Every sparse entry point, from the one list in `idct::avx2`.
+    pub const SHAPES: [BenchAvx2Shape; crate::idct::avx2::SHAPES.len()] = {
+        let entries = crate::idct::avx2::SHAPES;
+        let mut shapes = [BenchAvx2Shape::new(entries[0]); crate::idct::avx2::SHAPES.len()];
+        let mut index = 1;
+        while index < entries.len() {
+            shapes[index] = BenchAvx2Shape::new(entries[index]);
+            index += 1;
+        }
+        shapes
+    };
 
-    /// The entry point for blocks with coefficients only in the top-left 4x4.
-    pub fn run_top_left_quadrant(&self, input: &[i16; 64], output: &mut [u8; 64]) {
-        crate::idct::avx2::idct_islow_top_left_quadrant(self.avx2, input, output);
-    }
+    /// Largest per-column `sum(|coefficient|)` the 16-bit kernel accepts;
+    /// columns above it take the 32-bit kernel.
+    pub const MAX_COLUMN_ABS_SUM: i16 = crate::idct::avx2::MAX_COLUMN_ABS_SUM_I16;
+}
 
-    /// The entry point for blocks with coefficients only in the top-left 2x2.
-    pub fn run_top_left_2x2(&self, input: &[i16; 64], output: &mut [u8; 64]) {
-        crate::idct::avx2::idct_islow_top_left_2x2(self.avx2, input, output);
+/// A sparse AVX2 IDCT entry point from [`BenchAvx2Idct::SHAPES`].
+#[cfg(target_arch = "x86_64")]
+#[doc(hidden)]
+#[derive(Clone, Copy)]
+pub struct BenchAvx2Shape {
+    /// Entry point name, such as `bottom_half_zero`.
+    pub name: &'static str,
+    /// Natural-order rows that may hold nonzero coefficients.
+    pub rows: usize,
+    /// Natural-order columns that may hold nonzero coefficients.
+    pub cols: usize,
+    kernel: crate::idct::avx2::Kernel,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl BenchAvx2Shape {
+    const fn new(
+        (name, rows, cols, kernel): (&'static str, usize, usize, crate::idct::avx2::Kernel),
+    ) -> Self {
+        Self {
+            name,
+            rows,
+            cols,
+            kernel,
+        }
     }
 }
 

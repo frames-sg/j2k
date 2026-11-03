@@ -3,23 +3,24 @@
 //! Reduced-size ISLOW IDCTs derived from libjpeg-turbo's `jidctred.c`.
 
 use core::num::Wrapping;
+use j2k_codec_math::jpeg::idct;
 
-const CONST_BITS: usize = 13;
-const PASS1_BITS: usize = 2;
+use super::scalar::descale_i64;
+use super::{DC_SHIFT, PASS1_SHIFT, PASS1_SHIFT_12, PASS2_SHIFT, PASS2_SHIFT_12};
 
 const FIX_0_211164243: Wrapping<i32> = Wrapping(1730);
 const FIX_0_509795579: Wrapping<i32> = Wrapping(4176);
 const FIX_0_601344887: Wrapping<i32> = Wrapping(4926);
 const FIX_0_720959822: Wrapping<i32> = Wrapping(5906);
-const FIX_0_765366865: Wrapping<i32> = Wrapping(6270);
+const FIX_0_765366865: Wrapping<i32> = Wrapping(idct::FIX_0_765366865);
 const FIX_0_850430095: Wrapping<i32> = Wrapping(6967);
-const FIX_0_899976223: Wrapping<i32> = Wrapping(7373);
+const FIX_0_899976223: Wrapping<i32> = Wrapping(idct::FIX_0_899976223);
 const FIX_1_061594337: Wrapping<i32> = Wrapping(8697);
 const FIX_1_272758580: Wrapping<i32> = Wrapping(10426);
 const FIX_1_451774981: Wrapping<i32> = Wrapping(11893);
-const FIX_1_847759065: Wrapping<i32> = Wrapping(15137);
+const FIX_1_847759065: Wrapping<i32> = Wrapping(idct::FIX_1_847759065);
 const FIX_2_172734803: Wrapping<i32> = Wrapping(17799);
-const FIX_2_562915447: Wrapping<i32> = Wrapping(20995);
+const FIX_2_562915447: Wrapping<i32> = Wrapping(idct::FIX_2_562915447);
 const FIX_3_624509785: Wrapping<i32> = Wrapping(29692);
 
 pub(crate) fn idct_islow_4x4(input: &[i16; 64], output: &mut [u8; 16]) {
@@ -79,7 +80,7 @@ fn idct_4x4_column(input: &[i16; 64], work: &mut [Wrapping<i32>; 32], col: usize
     let p7 = Wrapping(i32::from(input[col + 56]));
 
     if p1.0 == 0 && p2.0 == 0 && p3.0 == 0 && p5.0 == 0 && p6.0 == 0 && p7.0 == 0 {
-        let dc = p0 << PASS1_BITS;
+        let dc = p0 << idct::PASS1_BITS;
         work[col] = dc;
         work[8 + col] = dc;
         work[16 + col] = dc;
@@ -87,7 +88,7 @@ fn idct_4x4_column(input: &[i16; 64], work: &mut [Wrapping<i32>; 32], col: usize
         return;
     }
 
-    let mut tmp0 = p0 << (CONST_BITS + 1);
+    let mut tmp0 = p0 << (idct::CONST_BITS + 1);
     let z2 = p2;
     let z3 = p6;
     let tmp2 = z2 * FIX_1_847759065 + z3 * (-FIX_0_765366865);
@@ -107,7 +108,7 @@ fn idct_4x4_column(input: &[i16; 64], work: &mut [Wrapping<i32>; 32], col: usize
         + z3 * FIX_0_899976223
         + z4 * FIX_2_562915447;
 
-    let shift = CONST_BITS - PASS1_BITS + 1;
+    let shift = PASS1_SHIFT + 1;
     work[col] = descale(tmp10 + tmp2, shift);
     work[24 + col] = descale(tmp10 - tmp2, shift);
     work[8 + col] = descale(tmp12 + tmp0, shift);
@@ -125,13 +126,13 @@ fn idct_4x4_row(work: &[Wrapping<i32>; 32], output: &mut [u8; 16], row: usize) {
     let p7 = work[base + 7];
 
     if p1.0 == 0 && p2.0 == 0 && p3.0 == 0 && p5.0 == 0 && p6.0 == 0 && p7.0 == 0 {
-        let dc = descale_and_clamp(p0, PASS1_BITS + 3);
+        let dc = descale_and_clamp(p0, DC_SHIFT);
         let out = row * 4;
         output[out..out + 4].fill(dc);
         return;
     }
 
-    let mut tmp0 = p0 << (CONST_BITS + 1);
+    let mut tmp0 = p0 << (idct::CONST_BITS + 1);
     let tmp2 = p2 * FIX_1_847759065 + p6 * (-FIX_0_765366865);
     let tmp10 = tmp0 + tmp2;
     let tmp12 = tmp0 - tmp2;
@@ -145,7 +146,7 @@ fn idct_4x4_row(work: &[Wrapping<i32>; 32], output: &mut [u8; 16], row: usize) {
         + p3 * FIX_0_899976223
         + p1 * FIX_2_562915447;
 
-    let shift = CONST_BITS + PASS1_BITS + 3 + 1;
+    let shift = PASS2_SHIFT + 1;
     let out = row * 4;
     output[out] = descale_and_clamp(tmp10 + tmp2, shift);
     output[out + 3] = descale_and_clamp(tmp10 - tmp2, shift);
@@ -161,19 +162,19 @@ fn idct_2x2_column(input: &[i16; 64], work: &mut [Wrapping<i32>; 16], col: usize
     let p7 = Wrapping(i32::from(input[col + 56]));
 
     if p1.0 == 0 && p3.0 == 0 && p5.0 == 0 && p7.0 == 0 {
-        let dc = p0 << PASS1_BITS;
+        let dc = p0 << idct::PASS1_BITS;
         work[col] = dc;
         work[8 + col] = dc;
         return;
     }
 
-    let tmp10 = p0 << (CONST_BITS + 2);
+    let tmp10 = p0 << (idct::CONST_BITS + 2);
     let tmp0 = p7 * (-FIX_0_720959822)
         + p5 * FIX_0_850430095
         + p3 * (-FIX_1_272758580)
         + p1 * FIX_3_624509785;
 
-    let shift = CONST_BITS - PASS1_BITS + 2;
+    let shift = PASS1_SHIFT + 2;
     work[col] = descale(tmp10 + tmp0, shift);
     work[8 + col] = descale(tmp10 - tmp0, shift);
 }
@@ -187,32 +188,31 @@ fn idct_2x2_row(work: &[Wrapping<i32>; 16], output: &mut [u8; 4], row: usize) {
     let p7 = work[base + 7];
 
     if p1.0 == 0 && p3.0 == 0 && p5.0 == 0 && p7.0 == 0 {
-        let dc = descale_and_clamp(p0, PASS1_BITS + 3);
+        let dc = descale_and_clamp(p0, DC_SHIFT);
         let out = row * 2;
         output[out] = dc;
         output[out + 1] = dc;
         return;
     }
 
-    let tmp10 = p0 << (CONST_BITS + 2);
+    let tmp10 = p0 << (idct::CONST_BITS + 2);
     let tmp0 = p7 * (-FIX_0_720959822)
         + p5 * FIX_0_850430095
         + p3 * (-FIX_1_272758580)
         + p1 * FIX_3_624509785;
 
-    let shift = CONST_BITS + PASS1_BITS + 3 + 2;
+    let shift = PASS2_SHIFT + 2;
     let out = row * 2;
     output[out] = descale_and_clamp(tmp10 + tmp0, shift);
     output[out + 1] = descale_and_clamp(tmp10 - tmp0, shift);
 }
 
+/// Reduced 4x4 IDCT of a 12-bit block (`jpeg_idct_4x4`).
+///
 /// 12-bit `jidctred.c`: `BITS_IN_JSAMPLE == 12` keeps `PASS1_BITS = 1` for
 /// headroom and computes in 64-bit `JLONG`. The C code's zero-AC shortcuts give
 /// the same results as the full computation and are omitted, as in
 /// [`super::scalar::idct_islow_12bit`].
-const PASS1_BITS_12: usize = 1;
-
-/// Reduced 4x4 IDCT of a 12-bit block (`jpeg_idct_4x4`).
 pub(crate) fn idct_islow_12bit_4x4(input: &[i16; 64], output: &mut [u16; 16]) {
     let fix = |value: Wrapping<i32>| i64::from(value.0);
     let odd = |z1: i64, z2: i64, z3: i64, z4: i64| {
@@ -228,7 +228,7 @@ pub(crate) fn idct_islow_12bit_4x4(input: &[i16; 64], output: &mut [u16; 16]) {
         )
     };
     let even = |p0: i64, p2: i64, p6: i64| {
-        let tmp0 = p0 << (CONST_BITS + 1);
+        let tmp0 = p0 << (idct::CONST_BITS + 1);
         let tmp2 = p2 * fix(FIX_1_847759065) - p6 * fix(FIX_0_765366865);
         (tmp0 + tmp2, tmp0 - tmp2)
     };
@@ -237,7 +237,7 @@ pub(crate) fn idct_islow_12bit_4x4(input: &[i16; 64], output: &mut [u16; 16]) {
         let p = |row: usize| i64::from(input[row * 8 + col]);
         let (tmp10, tmp12) = even(p(0), p(2), p(6));
         let (tmp0, tmp2) = odd(p(7), p(5), p(3), p(1));
-        let shift = CONST_BITS - PASS1_BITS_12 + 1;
+        let shift = PASS1_SHIFT_12 + 1;
         work[col] = descale_i64(tmp10 + tmp2, shift);
         work[24 + col] = descale_i64(tmp10 - tmp2, shift);
         work[8 + col] = descale_i64(tmp12 + tmp0, shift);
@@ -247,7 +247,7 @@ pub(crate) fn idct_islow_12bit_4x4(input: &[i16; 64], output: &mut [u16; 16]) {
         let w = |col: usize| work[row * 8 + col];
         let (tmp10, tmp12) = even(w(0), w(2), w(6));
         let (tmp0, tmp2) = odd(w(7), w(5), w(3), w(1));
-        let shift = CONST_BITS + PASS1_BITS_12 + 3 + 1;
+        let shift = PASS2_SHIFT_12 + 1;
         let out = &mut output[row * 4..row * 4 + 4];
         out[0] = level_shift_12bit(descale_i64(tmp10 + tmp2, shift));
         out[3] = level_shift_12bit(descale_i64(tmp10 - tmp2, shift));
@@ -268,17 +268,17 @@ pub(crate) fn idct_islow_12bit_2x2(input: &[i16; 64], output: &mut [u16; 4]) {
     let mut work = [0i64; 16];
     for col in [0, 1, 3, 5, 7] {
         let p = |row: usize| i64::from(input[row * 8 + col]);
-        let tmp10 = p(0) << (CONST_BITS + 2);
+        let tmp10 = p(0) << (idct::CONST_BITS + 2);
         let tmp0 = odd(p(7), p(5), p(3), p(1));
-        let shift = CONST_BITS - PASS1_BITS_12 + 2;
+        let shift = PASS1_SHIFT_12 + 2;
         work[col] = descale_i64(tmp10 + tmp0, shift);
         work[8 + col] = descale_i64(tmp10 - tmp0, shift);
     }
     for row in 0..2 {
         let w = |col: usize| work[row * 8 + col];
-        let tmp10 = w(0) << (CONST_BITS + 2);
+        let tmp10 = w(0) << (idct::CONST_BITS + 2);
         let tmp0 = odd(w(7), w(5), w(3), w(1));
-        let shift = CONST_BITS + PASS1_BITS_12 + 3 + 2;
+        let shift = PASS2_SHIFT_12 + 2;
         output[row * 2] = level_shift_12bit(descale_i64(tmp10 + tmp0, shift));
         output[row * 2 + 1] = level_shift_12bit(descale_i64(tmp10 - tmp0, shift));
     }
@@ -287,10 +287,6 @@ pub(crate) fn idct_islow_12bit_2x2(input: &[i16; 64], output: &mut [u16; 4]) {
 /// Reduced 1x1 IDCT of a 12-bit block (`jpeg_idct_1x1`).
 pub(crate) fn idct_islow_12bit_1x1(input: &[i16; 64]) -> u16 {
     level_shift_12bit(descale_i64(i64::from(input[0]), 3))
-}
-
-const fn descale_i64(value: i64, shift: usize) -> i64 {
-    (value + (1 << (shift - 1))) >> shift
 }
 
 #[expect(
@@ -304,7 +300,7 @@ fn level_shift_12bit(value: i64) -> u16 {
 /// libjpeg's `DESCALE`: arithmetic right shift that rounds half up. Every
 /// stage of `jidctred.c` (and libjpeg-turbo's NEON/SSE2 ports) rounds, so a
 /// plain shift biases scaled output low by up to one level per component.
-fn descale(value: Wrapping<i32>, shift: usize) -> Wrapping<i32> {
+fn descale(value: Wrapping<i32>, shift: i32) -> Wrapping<i32> {
     Wrapping((value + Wrapping(1 << (shift - 1))).0 >> shift)
 }
 
@@ -312,7 +308,7 @@ fn descale(value: Wrapping<i32>, shift: usize) -> Wrapping<i32> {
     clippy::cast_sign_loss,
     reason = "reduced IDCT samples are clamped to the u8 output range before conversion"
 )]
-fn descale_and_clamp(value: Wrapping<i32>, shift: usize) -> u8 {
+fn descale_and_clamp(value: Wrapping<i32>, shift: i32) -> u8 {
     let shifted = descale(value, shift).0;
     let level_shifted = shifted.wrapping_add(128);
     level_shifted.clamp(0, 255) as u8

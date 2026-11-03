@@ -354,34 +354,20 @@ impl Backend {
         out: &mut [u8],
     ) {
         let [prev, curr, next] = rows;
-        match self {
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(neon) => {
-                let near = if output_is_bottom { next } else { prev };
-                crate::color::upsample::emit_h2v2_row_with(
-                    near,
-                    curr,
-                    output_width,
-                    out,
-                    |curr, near, interior| {
-                        neon_upsample::h2v2_fancy_pairs(neon, curr, near, interior)
-                    },
-                );
-            }
-            #[cfg(target_arch = "x86_64")]
-            Self::Avx2(avx2) => {
-                let near = if output_is_bottom { next } else { prev };
-                x86::upsample_h2v2_row(avx2, near, curr, output_width, out);
-            }
-            _ => crate::color::upsample::upsample_h2v2_fancy_row(
-                prev,
-                curr,
-                next,
-                output_width,
-                output_is_bottom,
-                out,
-            ),
-        }
+        let near = if output_is_bottom { next } else { prev };
+        crate::color::upsample::emit_h2v2_row_with(
+            near,
+            curr,
+            output_width,
+            out,
+            |curr, near, interior| match self {
+                #[cfg(target_arch = "aarch64")]
+                Self::Neon(neon) => neon_upsample::h2v2_fancy_pairs(neon, curr, near, interior),
+                #[cfg(target_arch = "x86_64")]
+                Self::Avx2(avx2) => x86::h2v2_fancy_pairs(avx2, curr, near, interior),
+                _ => 0,
+            },
+        );
     }
 
     /// 8×8 inverse DCT of a dequantized coefficient block. Output is

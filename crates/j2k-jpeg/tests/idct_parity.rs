@@ -11,6 +11,9 @@
 
 use proptest::prelude::*;
 
+#[cfg(target_arch = "x86_64")]
+use j2k_jpeg::bench_support::BenchAvx2Idct;
+
 fn scalar(input: &[i16; 64]) -> [u8; 64] {
     let mut out = [0u8; 64];
     j2k_jpeg::bench_support::bench_idct_reference_block_with(input, &mut out);
@@ -39,20 +42,30 @@ fn assert_avx2_matches_scalar(input: &[i16; 64]) {
     );
 }
 
-fn vec_into_block(v: &[i16]) -> [i16; 64] {
-    let mut arr = [0i16; 64];
-    arr.copy_from_slice(v);
-    arr
+/// Coefficients only in natural-order rows `0..rows` and columns `0..cols`,
+/// the shapes the sparse IDCT entry points accept.
+fn shaped_blocks(
+    rows: usize,
+    cols: usize,
+    values: impl Strategy<Value = i16>,
+) -> impl Strategy<Value = [i16; 64]> {
+    prop::collection::vec(values, rows * cols).prop_map(move |values| {
+        let mut block = [0i16; 64];
+        for (index, value) in values.into_iter().enumerate() {
+            block[(index / cols) * 8 + index % cols] = value;
+        }
+        block
+    })
 }
 
 fn small_coefficients() -> impl Strategy<Value = [i16; 64]> {
     // Typical JPEG space after dequantization: DC up to ~1024, AC small.
-    prop::collection::vec(-512i16..512, 64..=64).prop_map(|values| vec_into_block(&values))
+    shaped_blocks(8, 8, -512i16..512)
 }
 
 fn large_coefficients() -> impl Strategy<Value = [i16; 64]> {
     // Full i16 range — exercises wrapping-then-clamp on saturating inputs.
-    prop::collection::vec(any::<i16>(), 64..=64).prop_map(|values| vec_into_block(&values))
+    shaped_blocks(8, 8, any::<i16>())
 }
 
 fn sparse_blocks() -> impl Strategy<Value = [i16; 64]> {
@@ -64,11 +77,7 @@ fn sparse_blocks() -> impl Strategy<Value = [i16; 64]> {
 }
 
 fn bottom_half_zero_blocks() -> impl Strategy<Value = [i16; 64]> {
-    prop::collection::vec(-512i16..512, 32..=32).prop_map(|top_half| {
-        let mut block = [0i16; 64];
-        block[..32].copy_from_slice(&top_half);
-        block
-    })
+    shaped_blocks(4, 8, -512i16..512)
 }
 
 fn top_left_2x2_blocks() -> impl Strategy<Value = [i16; 64]> {
@@ -92,11 +101,12 @@ fn top_left_2x2_blocks() -> impl Strategy<Value = [i16; 64]> {
     })
 }
 
-/// Columns whose absolute sums stay within the x86 16-bit kernel's bound
-/// (5,905), where it runs instead of the 32-bit fallback.
+/// Coefficients small enough that columns of `rows` of them stay within the
+/// x86 16-bit kernel's bound, where it runs instead of the 32-bit fallback.
 #[cfg(target_arch = "x86_64")]
-fn within_16_bit_bound_blocks() -> impl Strategy<Value = [i16; 64]> {
-    prop::collection::vec(-738i16..=738, 64..=64).prop_map(|values| vec_into_block(&values))
+fn within_16_bit_bound(rows: i16) -> core::ops::RangeInclusive<i16> {
+    let max = BenchAvx2Idct::MAX_COLUMN_ABS_SUM / rows;
+    -max..=max
 }
 
 /// One nonzero column: every first-pass row is DC-only, which the scalar row
@@ -112,19 +122,20 @@ fn single_column_blocks() -> impl Strategy<Value = [i16; 64]> {
     })
 }
 
-/// Columns whose absolute values sum to exactly the 16-bit kernel's bound
-/// (5,905), with random signs: seven random cut points split each column.
+/// Columns whose absolute values sum to exactly the 16-bit kernel's bound,
+/// with random signs: seven random cut points split each column.
 #[cfg(target_arch = "x86_64")]
 fn columns_at_the_16_bit_bound() -> impl Strategy<Value = [i16; 64]> {
+    let bound = BenchAvx2Idct::MAX_COLUMN_ABS_SUM;
     let column = (
-        prop::array::uniform7(0i16..=5_905),
+        prop::array::uniform7(0i16..=bound),
         prop::array::uniform8(any::<bool>()),
     )
-        .prop_map(|(mut cuts, negative)| {
+        .prop_map(move |(mut cuts, negative)| {
             cuts.sort_unstable();
             core::array::from_fn::<i16, 8, _>(|row| {
                 let low = if row == 0 { 0 } else { cuts[row - 1] };
-                let high = if row == 7 { 5_905 } else { cuts[row] };
+                let high = if row == 7 { bound } else { cuts[row] };
                 if negative[row] {
                     low - high
                 } else {
@@ -136,43 +147,25 @@ fn columns_at_the_16_bit_bound() -> impl Strategy<Value = [i16; 64]> {
         .prop_map(|columns| core::array::from_fn(|index| columns[index % 8][index / 8]))
 }
 
-/// Coefficients only in natural-order rows `0..rows` and columns `0..cols`,
-/// the shapes the sparse IDCT entry points accept.
-#[cfg(target_arch = "x86_64")]
-fn shaped_blocks(
-    rows: usize,
-    cols: usize,
-    values: impl Strategy<Value = i16>,
-) -> impl Strategy<Value = [i16; 64]> {
-    prop::collection::vec(values, rows * cols).prop_map(move |values| {
-        let mut block = [0i16; 64];
-        for (index, value) in values.into_iter().enumerate() {
-            block[(index / cols) * 8 + index % cols] = value;
-        }
-        block
-    })
-}
-
 /// Each x86 sparse entry point and the dispatch equal scalar on a block of
 /// that entry point's shape.
 #[cfg(target_arch = "x86_64")]
 fn assert_avx2_shape_matches_scalar(rows: usize, cols: usize, input: &[i16; 64]) {
     assert_avx2_matches_scalar(input);
-    let Some(avx2) = j2k_jpeg::bench_support::BenchAvx2Idct::try_new() else {
+    let Some(avx2) = BenchAvx2Idct::try_new() else {
         return;
     };
+    let shape = BenchAvx2Idct::SHAPES
+        .into_iter()
+        .find(|shape| (shape.rows, shape.cols) == (rows, cols))
+        .unwrap_or_else(|| panic!("no {rows}x{cols} entry point"));
     let expected = scalar(input);
     let mut actual = [0u8; 64];
-    match (rows, cols) {
-        (4, 8) => avx2.run_bottom_half_zero(input, &mut actual),
-        (8, 4) => avx2.run_right_half_zero(input, &mut actual),
-        (4, 4) => avx2.run_top_left_quadrant(input, &mut actual),
-        (2, 2) => avx2.run_top_left_2x2(input, &mut actual),
-        _ => unreachable!("no {rows}x{cols} entry point"),
-    }
+    avx2.run_shape(shape, input, &mut actual);
     assert_eq!(
         actual, expected,
-        "{rows}x{cols} kernel diverged on {input:?}"
+        "{} kernel diverged on {input:?}",
+        shape.name
     );
 }
 
@@ -241,7 +234,7 @@ proptest! {
 
     #[cfg(target_arch = "x86_64")]
     #[test]
-    fn avx2_matches_scalar_within_the_16_bit_bound(block in within_16_bit_bound_blocks()) {
+    fn avx2_matches_scalar_within_the_16_bit_bound(block in shaped_blocks(8, 8, within_16_bit_bound(8))) {
         assert_avx2_matches_scalar(&block);
     }
 
@@ -265,7 +258,7 @@ proptest! {
 
     #[cfg(target_arch = "x86_64")]
     #[test]
-    fn avx2_matches_scalar_on_in_range_bottom_half_zero_blocks(block in shaped_blocks(4, 8, -1_476i16..=1_476)) {
+    fn avx2_matches_scalar_on_in_range_bottom_half_zero_blocks(block in shaped_blocks(4, 8, within_16_bit_bound(4))) {
         assert_avx2_shape_matches_scalar(4, 8, &block);
     }
 
@@ -277,7 +270,7 @@ proptest! {
 
     #[cfg(target_arch = "x86_64")]
     #[test]
-    fn avx2_matches_scalar_on_in_range_right_half_zero_blocks(block in shaped_blocks(8, 4, -738i16..=738)) {
+    fn avx2_matches_scalar_on_in_range_right_half_zero_blocks(block in shaped_blocks(8, 4, within_16_bit_bound(8))) {
         assert_avx2_shape_matches_scalar(8, 4, &block);
     }
 
@@ -289,7 +282,7 @@ proptest! {
 
     #[cfg(target_arch = "x86_64")]
     #[test]
-    fn avx2_matches_scalar_on_in_range_top_left_quadrant_blocks(block in shaped_blocks(4, 4, -1_476i16..=1_476)) {
+    fn avx2_matches_scalar_on_in_range_top_left_quadrant_blocks(block in shaped_blocks(4, 4, within_16_bit_bound(4))) {
         assert_avx2_shape_matches_scalar(4, 4, &block);
     }
 
@@ -301,7 +294,7 @@ proptest! {
 
     #[cfg(target_arch = "x86_64")]
     #[test]
-    fn avx2_matches_scalar_on_in_range_top_left_2x2_blocks(block in shaped_blocks(2, 2, -2_952i16..=2_952)) {
+    fn avx2_matches_scalar_on_in_range_top_left_2x2_blocks(block in shaped_blocks(2, 2, within_16_bit_bound(2))) {
         assert_avx2_shape_matches_scalar(2, 2, &block);
     }
 

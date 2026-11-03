@@ -19,92 +19,35 @@
 
 use core::arch::x86_64::{
     __m128i, __m256i, _mm256_abs_epi16, _mm256_add_epi32, _mm256_adds_epu16, _mm256_blend_epi16,
-    _mm256_broadcastsi128_si256, _mm256_castsi256_si128, _mm256_extracti128_si256,
-    _mm256_madd_epi16, _mm256_packs_epi32, _mm256_packus_epi16, _mm256_permute4x64_epi64,
-    _mm256_set1_epi32, _mm256_setr_epi32, _mm256_setzero_si256, _mm256_shuffle_epi8,
-    _mm256_slli_epi32, _mm256_srai_epi32, _mm256_sub_epi32, _mm256_unpackhi_epi16,
-    _mm256_unpackhi_epi32, _mm256_unpackhi_epi64, _mm256_unpacklo_epi16, _mm256_unpacklo_epi32,
-    _mm256_unpacklo_epi64, _mm_add_epi32, _mm_adds_epu16, _mm_blendv_epi8, _mm_cmpeq_epi32,
-    _mm_cvtepi16_epi32, _mm_mullo_epi32, _mm_or_si128, _mm_packs_epi32, _mm_packus_epi16,
-    _mm_set1_epi16, _mm_set1_epi32, _mm_setr_epi8, _mm_setzero_si128, _mm_slli_epi32,
-    _mm_srai_epi32, _mm_srli_si128, _mm_sub_epi32, _mm_subs_epu16, _mm_testz_si128,
-    _mm_unpackhi_epi32, _mm_unpackhi_epi64, _mm_unpacklo_epi32, _mm_unpacklo_epi64,
+    _mm256_castsi256_si128, _mm256_extracti128_si256, _mm256_madd_epi16, _mm256_packs_epi32,
+    _mm256_packus_epi16, _mm256_permute4x64_epi64, _mm256_set1_epi32, _mm256_setr_epi32,
+    _mm256_setzero_si256, _mm256_shuffle_epi8, _mm256_slli_epi32, _mm256_srai_epi32,
+    _mm256_sub_epi32, _mm256_unpackhi_epi16, _mm256_unpackhi_epi32, _mm256_unpackhi_epi64,
+    _mm256_unpacklo_epi16, _mm256_unpacklo_epi32, _mm256_unpacklo_epi64, _mm_add_epi32,
+    _mm_adds_epu16, _mm_blendv_epi8, _mm_cmpeq_epi32, _mm_cvtepi16_epi32, _mm_mullo_epi32,
+    _mm_or_si128, _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi16, _mm_set1_epi32,
+    _mm_setzero_si128, _mm_slli_epi32, _mm_srai_epi32, _mm_srli_si128, _mm_sub_epi32,
+    _mm_subs_epu16, _mm_testz_si128, _mm_unpackhi_epi32, _mm_unpackhi_epi64, _mm_unpacklo_epi32,
+    _mm_unpacklo_epi64,
 };
 use j2k_codec_math::jpeg::idct;
 
-use super::scalar::ISLOW_GAINS;
+use super::scalar::{islow_gain_bounds, ISLOW_GAINS};
+use super::{
+    CONST_BITS, DC_ROUNDING, DC_SHIFT, PASS1_ROUNDING, PASS1_SHIFT, PASS2_ROUNDING, PASS2_SHIFT,
+};
 
 use crate::simd::x86::{exact_avx2_kernel, madd_pair};
 use crate::simd::x86_memory;
 
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    reason = "shared IDCT shift constants are small positive compile-time values"
-)]
-const CONST_BITS: i32 = idct::CONST_BITS as i32;
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    reason = "shared IDCT shift constants are small positive compile-time values"
-)]
-const PASS1_BITS: i32 = idct::PASS1_BITS as i32;
-const PASS1_SHIFT: i32 = CONST_BITS - PASS1_BITS;
-const PASS2_SHIFT: i32 = CONST_BITS + PASS1_BITS + 3;
+/// Largest gain magnitude of any input in any 1-D output (11,363), and the
+/// largest L1 norm of one output's gains (61,214).
+const MAX_GAIN: i32 = islow_gain_bounds().0;
+const MAX_GAIN_L1: i32 = islow_gain_bounds().1;
 
-const FIX_0_298631336: i32 = idct::FIX_0_298631336;
-const FIX_0_390180644: i32 = idct::FIX_0_390180644;
-const FIX_0_541196100: i32 = idct::FIX_0_541196100;
-const FIX_0_765366865: i32 = idct::FIX_0_765366865;
-const FIX_0_899976223: i32 = idct::FIX_0_899976223;
-const FIX_1_175875602: i32 = idct::FIX_1_175875602;
-const FIX_1_501321110: i32 = idct::FIX_1_501321110;
-const FIX_1_847759065: i32 = idct::FIX_1_847759065;
-const FIX_1_961570560: i32 = idct::FIX_1_961570560;
-const FIX_2_053119869: i32 = idct::FIX_2_053119869;
-const FIX_2_562915447: i32 = idct::FIX_2_562915447;
-const FIX_3_072711026: i32 = idct::FIX_3_072711026;
-
-/// Largest gain magnitude of any input in any 1-D output (11,363).
-const MAX_GAIN: i32 = {
-    let mut max = 0;
-    let mut j = 0;
-    while j < 8 {
-        let mut k = 0;
-        while k < 8 {
-            if ISLOW_GAINS[j][k].abs() > max {
-                max = ISLOW_GAINS[j][k].abs();
-            }
-            k += 1;
-        }
-        j += 1;
-    }
-    max
-};
-
-/// Largest L1 norm of one output's gains (61,214).
-const MAX_GAIN_L1: i32 = {
-    let mut max = 0;
-    let mut j = 0;
-    while j < 8 {
-        let mut sum = 0;
-        let mut k = 0;
-        while k < 8 {
-            sum += ISLOW_GAINS[j][k].abs();
-            k += 1;
-        }
-        if sum > max {
-            max = sum;
-        }
-        j += 1;
-    }
-    max
-};
-
-const PASS1_ROUNDING: i32 = 1 << (PASS1_SHIFT - 1);
 /// Second-pass rounding with the +128 level shift folded in: adding
 /// `128 << PASS2_SHIFT` before the arithmetic shift adds exactly 128 after it.
-const PASS2_ROUNDING: i32 = (1 << (PASS2_SHIFT - 1)) + (128 << PASS2_SHIFT);
+const PASS2_ROUNDING_LEVEL_SHIFTED: i32 = PASS2_ROUNDING + (128 << PASS2_SHIFT);
 
 /// Largest per-column `sum(|coefficient|)` the 16-bit kernel accepts (5,905).
 ///
@@ -114,10 +57,10 @@ const PASS2_ROUNDING: i32 = (1 << (PASS2_SHIFT - 1)) + (128 << PASS2_SHIFT);
 /// 1. Nothing leaves `i32`. `vpmaddwd` sums two `i16 * i16` products exactly
 ///    (it wraps only for two `-32768 * -32768` products, and no gain is
 ///    `-32768`). Any output's gains have L1 norm at most `MAX_GAIN_L1`
-///    = 61,214, and `61,214 * 32,768 + PASS2_ROUNDING < 2^31`, so no
-///    first- or second-pass sum overflows for any `i16` inputs (asserted
-///    below). The scalar's wrapping `i32` sums are therefore the exact
-///    integers as well.
+///    = 61,214, and `61,214 * 32,768 + PASS2_ROUNDING_LEVEL_SHIFTED < 2^31`,
+///    so no first- or second-pass sum overflows for any `i16` inputs
+///    (asserted below). The scalar's wrapping `i32` sums are therefore the
+///    exact integers as well.
 /// 2. The first-pass outputs fit in `i16`, the only narrowing. For column
 ///    `c`, `|sum_k gain[k] * x[k][c]| <= MAX_GAIN * S_c`, where `MAX_GAIN` =
 ///    11,363 and `S_c = sum_k |x[k][c]|`. The output is
@@ -140,7 +83,7 @@ const MAX_COLUMN_ABS_SUM: i32 = (32_767 * (1 << PASS1_SHIFT) - PASS1_ROUNDING) /
     clippy::cast_possible_truncation,
     reason = "the column bound is 5,905, asserted below to fit in i16"
 )]
-const MAX_COLUMN_ABS_SUM_I16: i16 = MAX_COLUMN_ABS_SUM as i16;
+pub(crate) const MAX_COLUMN_ABS_SUM_I16: i16 = MAX_COLUMN_ABS_SUM as i16;
 
 const _: () = {
     assert!(MAX_GAIN == 11_363);
@@ -150,7 +93,7 @@ const _: () = {
     assert!(MAX_GAIN * MAX_COLUMN_ABS_SUM + PASS1_ROUNDING < 32_767 * (1 << PASS1_SHIFT) + 1);
     // (1): no second-pass sum overflows for any i16 inputs.
     assert!(match MAX_GAIN_L1.checked_mul(1 << 15) {
-        Some(sum) => sum.checked_add(PASS2_ROUNDING).is_some(),
+        Some(sum) => sum.checked_add(PASS2_ROUNDING_LEVEL_SHIFTED).is_some(),
         None => false,
     });
 };
@@ -164,12 +107,13 @@ const fn gain_pair(output: usize, k: usize) -> i32 {
 // The kernels use the even/odd butterfly: for j < 4, output j is
 // `even[j] + odd[j]` and output 7 - j is `even[j] - odd[j]`, where even[0..4]
 // are tmp10 = tmp0 + tmp3, tmp11 = tmp1 + tmp2, tmp12 = tmp1 - tmp2 and
-// tmp13 = tmp0 - tmp3. Output 0's `(p0, p4)` and `(p2, p6)` gains are tmp0
-// and tmp3; output 1's are tmp1 and tmp2.
-const TMP0_PAIR: i32 = gain_pair(0, 0);
-const TMP1_PAIR: i32 = gain_pair(1, 0);
-const TMP3_PAIR: i32 = gain_pair(0, 2);
-const TMP2_PAIR: i32 = gain_pair(1, 2);
+// tmp13 = tmp0 - tmp3.
+/// `[(p0, p4), (p2, p6)]` gain pairs of the even part of outputs 0 and 1:
+/// tmp0 and tmp3 for output 0, tmp1 and tmp2 for output 1.
+const EVEN_PAIRS: [[i32; 2]; 2] = [
+    [gain_pair(0, 0), gain_pair(0, 2)],
+    [gain_pair(1, 0), gain_pair(1, 2)],
+];
 /// `[(p1, p5), (p3, p7)]` gain pairs of the odd term of outputs j and 7 - j.
 const ODD_PAIRS: [[i32; 2]; 4] = [
     [gain_pair(0, 1), gain_pair(0, 3)],
@@ -264,6 +208,22 @@ exact_avx2_kernel! {
     }
 }
 
+/// An AVX2 IDCT entry point.
+#[cfg(any(test, feature = "bench-internals"))]
+pub(crate) type Kernel = fn(crate::simd::x86::ExactAvx2, &[i16; 64], &mut [u8; 64]);
+
+/// The sparse entry points as `(name, rows, cols, kernel)`: `kernel` accepts
+/// blocks whose coefficients outside natural-order rows `0..rows` and
+/// columns `0..cols` are zero. The one list the unit tests, the parity
+/// tests and the micro benches iterate.
+#[cfg(any(test, feature = "bench-internals"))]
+pub(crate) const SHAPES: [(&str, usize, usize, Kernel); 4] = [
+    ("bottom_half_zero", 4, 8, idct_islow_bottom_half_zero),
+    ("right_half_zero", 8, 4, idct_islow_right_half_zero),
+    ("top_left_quadrant", 4, 4, idct_islow_top_left_quadrant),
+    ("top_left_2x2", 2, 2, idct_islow_top_left_2x2),
+];
+
 /// Inverse DCT of a block whose coefficients outside natural-order rows
 /// `0..ROWS` and columns `0..COLS` are zero (`ROWS`, `COLS` in 2, 4, 8). The
 /// 16-bit kernel skips the work those zeros make constant; the 32-bit
@@ -351,20 +311,28 @@ fn idct_islow_i16<const ROWS: usize, const COLS: usize>(input: &[i16; 64], outpu
         [zero; 4]
     };
 
-    // Columns 0..3 and 4..7.
-    let lo = pass1_four_columns::<ROWS>([
-        _mm256_unpacklo_epi16(r0, r4),
-        _mm256_unpacklo_epi16(r1, r5),
-        _mm256_unpacklo_epi16(r2, r6),
-        _mm256_unpacklo_epi16(r3, r7),
-    ]);
+    // Columns 0..3 and 4..7. The input registers are identical in both
+    // lanes, so lane-specific gains give rows `[0|1, 3|2, 4|5, 7|6]`.
+    let rounding = _mm256_set1_epi32(PASS1_ROUNDING);
+    let lo = butterfly::<ROWS, 0, 1>(
+        [
+            _mm256_unpacklo_epi16(r0, r4),
+            _mm256_unpacklo_epi16(r1, r5),
+            _mm256_unpacklo_epi16(r2, r6),
+            _mm256_unpacklo_epi16(r3, r7),
+        ],
+        rounding,
+    );
     let hi = if COLS > 4 {
-        pass1_four_columns::<ROWS>([
-            _mm256_unpackhi_epi16(r0, r4),
-            _mm256_unpackhi_epi16(r1, r5),
-            _mm256_unpackhi_epi16(r2, r6),
-            _mm256_unpackhi_epi16(r3, r7),
-        ])
+        butterfly::<ROWS, 0, 1>(
+            [
+                _mm256_unpackhi_epi16(r0, r4),
+                _mm256_unpackhi_epi16(r1, r5),
+                _mm256_unpackhi_epi16(r2, r6),
+                _mm256_unpackhi_epi16(r3, r7),
+            ],
+            rounding,
+        )
     } else {
         [zero; 4]
     };
@@ -399,35 +367,41 @@ fn odd_terms(p15: __m256i, p37: Option<__m256i>, low: [i32; 2], high: [i32; 2]) 
     })
 }
 
-/// First-pass 1-D IDCT of four columns. `pairs` are the `(p0, p4)`,
-/// `(p1, p5)`, `(p2, p6)` and `(p3, p7)` registers, identical in both lanes;
-/// with `ROWS` at most 2 the last two are zero and skipped. Returns the
-/// rounded, unshifted outputs as `[out0 | out1]`, `[out3 | out2]`,
-/// `[out4 | out5]` and `[out7 | out6]`.
+/// The even/odd butterfly of both passes. `p04`, `p15`, `p26` and `p37`
+/// hold the `(p0, p4)`, `(p1, p5)`, `(p2, p6)` and `(p3, p7)` input pairs;
+/// inputs `INPUTS..8` are zero, so with `INPUTS` at most 2 the last two are
+/// skipped. The low 128-bit lane computes outputs `LOW`, `3 - LOW`,
+/// `4 + LOW` and `7 - LOW` (`LOW` is 0 or 1), the high lane the same for
+/// `HIGH`, returned in that order with `rounding` added and not shifted.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn pass1_four_columns<const ROWS: usize>([p04, p15, p26, p37]: [__m256i; 4]) -> [__m256i; 4] {
-    let tmp0_1 = _mm256_add_epi32(
-        _mm256_madd_epi16(p04, lane_gains(TMP0_PAIR, TMP1_PAIR)),
-        _mm256_set1_epi32(PASS1_ROUNDING),
+fn butterfly<const INPUTS: usize, const LOW: usize, const HIGH: usize>(
+    [p04, p15, p26, p37]: [__m256i; 4],
+    rounding: __m256i,
+) -> [__m256i; 4] {
+    // tmp0 for output 0, tmp1 for output 1; adding and subtracting tmp3 or
+    // tmp2 gives tmp10 and tmp13, or tmp11 and tmp12.
+    let even = _mm256_add_epi32(
+        _mm256_madd_epi16(p04, lane_gains(EVEN_PAIRS[LOW][0], EVEN_PAIRS[HIGH][0])),
+        rounding,
     );
-    let (tmp10_11, tmp13_12) = if ROWS > 2 {
-        let tmp3_2 = _mm256_madd_epi16(p26, lane_gains(TMP3_PAIR, TMP2_PAIR));
+    let (sum, difference) = if INPUTS > 2 {
+        let p26_terms = _mm256_madd_epi16(p26, lane_gains(EVEN_PAIRS[LOW][1], EVEN_PAIRS[HIGH][1]));
         (
-            _mm256_add_epi32(tmp0_1, tmp3_2),
-            _mm256_sub_epi32(tmp0_1, tmp3_2),
+            _mm256_add_epi32(even, p26_terms),
+            _mm256_sub_epi32(even, p26_terms),
         )
     } else {
-        (tmp0_1, tmp0_1)
+        (even, even)
     };
-    let p37 = (ROWS > 2).then_some(p37);
-    let odd0_1 = odd_terms(p15, p37, ODD_PAIRS[0], ODD_PAIRS[1]);
-    let odd3_2 = odd_terms(p15, p37, ODD_PAIRS[3], ODD_PAIRS[2]);
+    let p37 = (INPUTS > 2).then_some(p37);
+    let odd = odd_terms(p15, p37, ODD_PAIRS[LOW], ODD_PAIRS[HIGH]);
+    let mirrored_odd = odd_terms(p15, p37, ODD_PAIRS[3 - LOW], ODD_PAIRS[3 - HIGH]);
     [
-        _mm256_add_epi32(tmp10_11, odd0_1),
-        _mm256_add_epi32(tmp13_12, odd3_2),
-        _mm256_sub_epi32(tmp13_12, odd3_2),
-        _mm256_sub_epi32(tmp10_11, odd0_1),
+        _mm256_add_epi32(sum, odd),
+        _mm256_add_epi32(difference, mirrored_odd),
+        _mm256_sub_epi32(difference, mirrored_odd),
+        _mm256_sub_epi32(sum, odd),
     ]
 }
 
@@ -480,44 +454,16 @@ fn transpose_pass1<const COLS: usize>(
 /// `COLS` at most 2 the `(q2, q6)` and `(q3, q7)` pairs are zero and skipped.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn pass2_rows<const COLS: usize>([q04, q15, q26, q37]: [__m256i; 4]) -> [__m256i; 8] {
-    let rounding = _mm256_set1_epi32(PASS2_ROUNDING);
-    let tmp0 = _mm256_add_epi32(
-        _mm256_madd_epi16(q04, _mm256_set1_epi32(TMP0_PAIR)),
-        rounding,
-    );
-    let tmp1 = _mm256_add_epi32(
-        _mm256_madd_epi16(q04, _mm256_set1_epi32(TMP1_PAIR)),
-        rounding,
-    );
-    let [tmp10, tmp11, tmp12, tmp13] = if COLS > 2 {
-        let tmp3 = _mm256_madd_epi16(q26, _mm256_set1_epi32(TMP3_PAIR));
-        let tmp2 = _mm256_madd_epi16(q26, _mm256_set1_epi32(TMP2_PAIR));
-        [
-            _mm256_add_epi32(tmp0, tmp3),
-            _mm256_add_epi32(tmp1, tmp2),
-            _mm256_sub_epi32(tmp1, tmp2),
-            _mm256_sub_epi32(tmp0, tmp3),
-        ]
-    } else {
-        [tmp0, tmp1, tmp1, tmp0]
-    };
-    let q37 = (COLS > 2).then_some(q37);
-    let odd0 = odd_terms(q15, q37, ODD_PAIRS[0], ODD_PAIRS[0]);
-    let odd1 = odd_terms(q15, q37, ODD_PAIRS[1], ODD_PAIRS[1]);
-    let odd2 = odd_terms(q15, q37, ODD_PAIRS[2], ODD_PAIRS[2]);
-    let odd3 = odd_terms(q15, q37, ODD_PAIRS[3], ODD_PAIRS[3]);
-    [
-        _mm256_srai_epi32::<PASS2_SHIFT>(_mm256_add_epi32(tmp10, odd0)),
-        _mm256_srai_epi32::<PASS2_SHIFT>(_mm256_add_epi32(tmp11, odd1)),
-        _mm256_srai_epi32::<PASS2_SHIFT>(_mm256_add_epi32(tmp12, odd2)),
-        _mm256_srai_epi32::<PASS2_SHIFT>(_mm256_add_epi32(tmp13, odd3)),
-        _mm256_srai_epi32::<PASS2_SHIFT>(_mm256_sub_epi32(tmp13, odd3)),
-        _mm256_srai_epi32::<PASS2_SHIFT>(_mm256_sub_epi32(tmp12, odd2)),
-        _mm256_srai_epi32::<PASS2_SHIFT>(_mm256_sub_epi32(tmp11, odd1)),
-        _mm256_srai_epi32::<PASS2_SHIFT>(_mm256_sub_epi32(tmp10, odd0)),
-    ]
+fn pass2_rows<const COLS: usize>(pairs: [__m256i; 4]) -> [__m256i; 8] {
+    let rounding = _mm256_set1_epi32(PASS2_ROUNDING_LEVEL_SHIFTED);
+    let [out0, out3, out4, out7] = butterfly::<COLS, 0, 0>(pairs, rounding);
+    let [out1, out2, out5, out6] = butterfly::<COLS, 1, 1>(pairs, rounding);
+    [out0, out1, out2, out3, out4, out5, out6, out7]
+        .map(|out| _mm256_srai_epi32::<PASS2_SHIFT>(out))
 }
+
+/// `pshufb` mask transposing the 4x4 bytes of each 128-bit lane.
+const TRANSPOSE_4X4_BYTES: [u8; 16] = [0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15];
 
 /// Saturate the eight output columns to bytes, transpose them to rows and
 /// store the block.
@@ -533,9 +479,7 @@ fn store_block(output: &mut [u8; 64], columns: [__m256i; 8]) {
         _mm256_packs_epi32(columns[4], columns[5]),
         _mm256_packs_epi32(columns[6], columns[7]),
     );
-    let transpose_4x4 = _mm256_broadcastsi128_si256(_mm_setr_epi8(
-        0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15,
-    ));
+    let transpose_4x4 = x86_memory::broadcast_u8x16(&TRANSPOSE_4X4_BYTES);
     // 32-bit lanes now hold four bytes of one row: rows [0, 3, 4, 7 | 1, 2, 5, 6].
     let left = _mm256_shuffle_epi8(left, transpose_4x4);
     let right = _mm256_shuffle_epi8(right, transpose_4x4);
@@ -574,7 +518,7 @@ fn idct_islow_i32(input: &[i16; 64], output: &mut [u8; 64]) {
         widen(&rows[7]),
     );
 
-    let round1 = _mm_set1_epi32(1 << (PASS1_SHIFT - 1));
+    let round1 = _mm_set1_epi32(PASS1_ROUNDING);
     let cw_lo = idct_1d_x4::<PASS1_SHIFT>([r0l, r1l, r2l, r3l, r4l, r5l, r6l, r7l], round1);
     let cw_hi = idct_1d_x4::<PASS1_SHIFT>([r0h, r1h, r2h, r3h, r4h, r5h, r6h, r7h], round1);
 
@@ -583,7 +527,7 @@ fn idct_islow_i32(input: &[i16; 64], output: &mut [u8; 64]) {
     let [q0h, q1h, q2h, q3h] = transpose_4x4_i32(cw_lo[4], cw_lo[5], cw_lo[6], cw_lo[7]);
     let [q4h, q5h, q6h, q7h] = transpose_4x4_i32(cw_hi[4], cw_hi[5], cw_hi[6], cw_hi[7]);
 
-    let round2 = _mm_set1_epi32(1 << (PASS2_SHIFT - 1));
+    let round2 = _mm_set1_epi32(PASS2_ROUNDING);
     let rw_lo = idct_1d_x4::<PASS2_SHIFT>([q0l, q1l, q2l, q3l, q4l, q5l, q6l, q7l], round2);
     let rw_hi = idct_1d_x4::<PASS2_SHIFT>([q0h, q1h, q2h, q3h, q4h, q5h, q6h, q7h], round2);
 
@@ -656,9 +600,9 @@ fn idct_1d_x4<const SHIFT: i32>(
 ) -> [__m128i; 8] {
     let mul = |v, c: i32| _mm_mullo_epi32(v, _mm_set1_epi32(c));
 
-    let z1 = mul(_mm_add_epi32(p2, p6), FIX_0_541196100);
-    let tmp2 = _mm_add_epi32(z1, mul(p6, -FIX_1_847759065));
-    let tmp3 = _mm_add_epi32(z1, mul(p2, FIX_0_765366865));
+    let z1 = mul(_mm_add_epi32(p2, p6), idct::FIX_0_541196100);
+    let tmp2 = _mm_add_epi32(z1, mul(p6, -idct::FIX_1_847759065));
+    let tmp3 = _mm_add_epi32(z1, mul(p2, idct::FIX_0_765366865));
     let tmp0 = _mm_slli_epi32::<CONST_BITS>(_mm_add_epi32(p0, p4));
     let tmp1 = _mm_slli_epi32::<CONST_BITS>(_mm_sub_epi32(p0, p4));
     let tmp10 = _mm_add_epi32(tmp0, tmp3);
@@ -670,16 +614,16 @@ fn idct_1d_x4<const SHIFT: i32>(
     let z2o = _mm_add_epi32(p5, p3);
     let z3o = _mm_add_epi32(p7, p3);
     let z4o = _mm_add_epi32(p5, p1);
-    let z5 = mul(_mm_add_epi32(z3o, z4o), FIX_1_175875602);
+    let z5 = mul(_mm_add_epi32(z3o, z4o), idct::FIX_1_175875602);
 
-    let o0 = mul(p7, FIX_0_298631336);
-    let o1 = mul(p5, FIX_2_053119869);
-    let o2 = mul(p3, FIX_3_072711026);
-    let o3 = mul(p1, FIX_1_501321110);
-    let z1m = mul(z1o, -FIX_0_899976223);
-    let z2m = mul(z2o, -FIX_2_562915447);
-    let z3m = mul(z3o, -FIX_1_961570560);
-    let z4m = mul(z4o, -FIX_0_390180644);
+    let o0 = mul(p7, idct::FIX_0_298631336);
+    let o1 = mul(p5, idct::FIX_2_053119869);
+    let o2 = mul(p3, idct::FIX_3_072711026);
+    let o3 = mul(p1, idct::FIX_1_501321110);
+    let z1m = mul(z1o, -idct::FIX_0_899976223);
+    let z2m = mul(z2o, -idct::FIX_2_562915447);
+    let z3m = mul(z3o, -idct::FIX_1_961570560);
+    let z4m = mul(z4o, -idct::FIX_0_390180644);
     let z3f = _mm_add_epi32(z3m, z5);
     let z4f = _mm_add_epi32(z4m, z5);
 
@@ -708,7 +652,7 @@ fn idct_1d_x4<const SHIFT: i32>(
             _mm_or_si128(_mm_or_si128(p5, p6), p7),
         );
         let dc_only = _mm_cmpeq_epi32(ac, _mm_setzero_si128());
-        let dc = _mm_srai_epi32::<{ PASS1_BITS + 3 }>(_mm_add_epi32(p0, _mm_set1_epi32(16)));
+        let dc = _mm_srai_epi32::<DC_SHIFT>(_mm_add_epi32(p0, _mm_set1_epi32(DC_ROUNDING)));
         outputs.map(|value| _mm_blendv_epi8(value, dc, dc_only))
     } else {
         outputs

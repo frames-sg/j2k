@@ -161,6 +161,44 @@ fn backend_for_kind(kind: super::BackendKind) -> super::Backend {
         .unwrap_or_else(|| panic!("requested backend {kind:?} is unavailable on this host"))
 }
 
+/// Every backend this host can run, scalar first.
+fn available_backends() -> impl Iterator<Item = super::Backend> {
+    [
+        super::BackendKind::Scalar,
+        #[cfg(target_arch = "aarch64")]
+        super::BackendKind::Neon,
+        #[cfg(target_arch = "x86_64")]
+        super::BackendKind::Avx2,
+    ]
+    .into_iter()
+    .filter_map(super::Backend::for_test_kind)
+}
+
+/// `backend`'s fancy 4:2:0 output row equals the per-sample reference and
+/// writes nothing past `output_width`.
+fn assert_h2v2_row_matches_reference(
+    backend: super::Backend,
+    rows: [&[u8]; 3],
+    output_width: usize,
+    output_is_bottom: bool,
+    label: &str,
+) {
+    let [prev, curr, next] = rows;
+    let near = if output_is_bottom { next } else { prev };
+    let expected: Vec<u8> = (0..output_width)
+        .map(|x| crate::color::upsample::h2v2_fancy_sample(near, curr, x))
+        .collect();
+    let mut actual = vec![0xAA; output_width + 3];
+    backend.upsample_h2v2_fancy_row(rows, output_width, output_is_bottom, &mut actual);
+    let kind = backend.kind();
+    assert_eq!(&actual[..output_width], &expected[..], "{kind:?} {label}");
+    assert_eq!(
+        &actual[output_width..],
+        &[0xAA; 3],
+        "{kind:?} {label}: wrote past width"
+    );
+}
+
 fn assert_rgb420_pair_matches_scalar(
     label: &str,
     kind: super::BackendKind,
@@ -1219,36 +1257,19 @@ fn every_backend_matches_the_64_bit_scalar_12bit_idct() {
         core::array::from_fn(|i| i16::try_from(i * 37 % 211).expect("small") - 100),
         core::array::from_fn(|i| if i % 2 == 0 { i16::MAX } else { i16::MIN }),
     ];
-    let kinds = [
-        super::BackendKind::Scalar,
-        #[cfg(target_arch = "aarch64")]
-        super::BackendKind::Neon,
-        #[cfg(target_arch = "x86_64")]
-        super::BackendKind::Avx2,
-    ];
-    for kind in kinds {
-        let Some(backend) = super::Backend::for_test_kind(kind) else {
-            continue;
-        };
+    for backend in available_backends() {
         for (index, block) in blocks.iter().enumerate() {
             let mut expected = [0u16; 64];
             crate::idct::scalar::idct_islow_12bit(block, &mut expected);
             let mut actual = [0u16; 64];
             backend.idct_12bit(block, &mut actual);
-            assert_eq!(actual, expected, "{kind:?} block {index}");
+            assert_eq!(actual, expected, "{:?} block {index}", backend.kind());
         }
     }
 }
 
 #[test]
 fn fancy_h2v2_rows_match_the_per_sample_reference_on_every_backend() {
-    let kinds = [
-        super::BackendKind::Scalar,
-        #[cfg(target_arch = "aarch64")]
-        super::BackendKind::Neon,
-        #[cfg(target_arch = "x86_64")]
-        super::BackendKind::Avx2,
-    ];
     let mut state = 0x1357_9bdf_u32;
     let mut row = |len: usize| -> Vec<u8> {
         (0..len)
@@ -1264,30 +1285,13 @@ fn fancy_h2v2_rows_match_the_per_sample_reference_on_every_backend() {
         let (prev, curr, next) = (row(chroma_width), row(chroma_width), row(chroma_width));
         for output_width in [2 * chroma_width, 2 * chroma_width - 1, chroma_width] {
             for bottom in [false, true] {
-                let near = if bottom { &next } else { &prev };
-                let expected: Vec<u8> = (0..output_width)
-                    .map(|x| crate::color::upsample::h2v2_fancy_sample(near, &curr, x))
-                    .collect();
-                for kind in kinds {
-                    let Some(backend) = super::Backend::for_test_kind(kind) else {
-                        continue;
-                    };
-                    let mut actual = vec![0xAA; output_width + 3];
-                    backend.upsample_h2v2_fancy_row(
+                for backend in available_backends() {
+                    assert_h2v2_row_matches_reference(
+                        backend,
                         [&prev, &curr, &next],
                         output_width,
                         bottom,
-                        &mut actual,
-                    );
-                    assert_eq!(
-                        &actual[..output_width],
-                        &expected[..],
-                        "{kind:?} chroma {chroma_width} width {output_width} bottom {bottom}"
-                    );
-                    assert_eq!(
-                        &actual[output_width..],
-                        &[0xAA; 3],
-                        "{kind:?} wrote past width"
+                        &format!("chroma {chroma_width} width {output_width} bottom {bottom}"),
                     );
                 }
             }
@@ -1302,13 +1306,6 @@ fn fancy_h2v2_rows_match_the_per_sample_reference_on_every_backend() {
 /// pairs covers every way to form a column sum.
 #[test]
 fn fancy_h2v2_interior_matches_the_reference_for_every_column_sum_pair() {
-    let kinds = [
-        super::BackendKind::Scalar,
-        #[cfg(target_arch = "aarch64")]
-        super::BackendKind::Neon,
-        #[cfg(target_arch = "x86_64")]
-        super::BackendKind::Avx2,
-    ];
     // A (curr, near) sample pair with column sum 3 * curr + near == sum.
     let samples = |sum: u16| -> (u8, u8) {
         let curr = (sum / 3).min(255);
@@ -1331,38 +1328,26 @@ fn fancy_h2v2_interior_matches_the_reference_for_every_column_sum_pair() {
             .unzip(),
     );
     for (curr, near) in &rows {
-        let output_width = 2 * curr.len();
-        let expected: Vec<u8> = (0..output_width)
-            .map(|x| crate::color::upsample::h2v2_fancy_sample(near, curr, x))
-            .collect();
-        for kind in kinds {
-            let Some(backend) = super::Backend::for_test_kind(kind) else {
-                continue;
-            };
-            let mut actual = vec![0u8; output_width];
+        for backend in available_backends() {
             // `near` serves as the previous row of a top output.
-            backend.upsample_h2v2_fancy_row([near, curr, near], output_width, false, &mut actual);
-            assert_eq!(actual, expected, "{kind:?} row of {} samples", curr.len());
+            assert_h2v2_row_matches_reference(
+                backend,
+                [near, curr, near],
+                2 * curr.len(),
+                false,
+                &format!("row of {} samples", curr.len()),
+            );
         }
     }
 }
 
 #[test]
 fn every_backend_fused_422_matches_separate_fancy_upsample_and_color_conversion() {
-    let kinds = [
-        super::BackendKind::Scalar,
-        #[cfg(target_arch = "aarch64")]
-        super::BackendKind::Neon,
-        #[cfg(target_arch = "x86_64")]
-        super::BackendKind::Avx2,
-    ];
     let widths = [
         1usize, 2, 3, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 255, 256, 257, 1023, 1024, 1025,
     ];
-    for kind in kinds {
-        let Some(backend) = super::Backend::for_test_kind(kind) else {
-            continue;
-        };
+    for backend in available_backends() {
+        let kind = backend.kind();
         for width in widths {
             let chroma_width = width.div_ceil(2);
             for prefix in [0usize, 1, 3] {
