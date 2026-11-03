@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Fast sequential RGB output and horizontal MCU rows for 4:4:4 scans, coded
-//! as YCbCr or identity RGB.
+//! Fast sequential RGB output and horizontal MCU rows for full-size 4:4:4
+//! (YCbCr or identity RGB) and 4:2:2 scans.
 //!
 //! Whole images and regions, with or without restart intervals, decode one
 //! MCU row of the requested MCU columns into a single stripe and convert it
-//! to the output right away. 4:4:4 needs no upsampling context, so neither a
-//! halo row nor margin columns.
+//! to the output right away. Neither shape needs vertical upsampling context,
+//! so the stripe has no halo row; 4:2:2's horizontal context comes from the
+//! decoded window's margin columns.
 
 use super::deposit::{assert_stripe_deposit_capacity, deposit_block};
-use super::emit::emit_stripe_rgb_444;
+use super::emit::{emit_stripe_rgb_v1, StripeOutputWindow};
 use super::layout::{
     fast_tile_region_first_decode_mcu, last_mcu_row_for_rect, stripe_region_layout,
 };
@@ -42,7 +43,7 @@ fn fast_rgb444_components<const N: usize>(
     ),
     JpegError,
 > {
-    debug_assert!(plan.matches_fast_rgb444_shape());
+    debug_assert!(plan.matches_fast_rgb_v1_shape());
     Ok((
         plan.resolved_component_with_entries::<N>(0)?
             .with_wide_huffman(wide_huffman),
@@ -53,14 +54,14 @@ fn fast_rgb444_components<const N: usize>(
     ))
 }
 
-pub(crate) fn decode_scan_fast_rgb_444<W: OutputWriter + InterleavedRgbWriter>(
+pub(crate) fn decode_scan_fast_rgb_v1<W: OutputWriter + InterleavedRgbWriter>(
     plan: &PreparedDecodePlan,
     backend: Backend,
     scan_bytes: &[u8],
     pool: &mut ScratchPool,
     writer: &mut W,
 ) -> Result<Vec<Warning>, JpegError> {
-    decode_scan_fast_rgb_444_region(
+    decode_scan_fast_rgb_v1_region(
         plan,
         backend,
         scan_bytes,
@@ -71,10 +72,10 @@ pub(crate) fn decode_scan_fast_rgb_444<W: OutputWriter + InterleavedRgbWriter>(
     )
 }
 
-/// Decode `roi` of a 4:4:4 scan into `writer`, whose row 0 is `roi.y`,
-/// entering the scan at `checkpoint` or a restart marker when either is
-/// nearer than the scan start.
-pub(crate) fn decode_scan_fast_rgb_444_region<W: OutputWriter + InterleavedRgbWriter>(
+/// Decode `roi` of a 4:4:4 or 4:2:2 scan into `writer`, whose row 0 is
+/// `roi.y`, entering the scan at `checkpoint` or a restart marker when either
+/// is nearer than the scan start.
+pub(crate) fn decode_scan_fast_rgb_v1_region<W: OutputWriter + InterleavedRgbWriter>(
     plan: &PreparedDecodePlan,
     backend: Backend,
     scan_bytes: &[u8],
@@ -83,21 +84,35 @@ pub(crate) fn decode_scan_fast_rgb_444_region<W: OutputWriter + InterleavedRgbWr
     roi: Rect,
     checkpoint: Option<&DeviceCheckpoint>,
 ) -> Result<Vec<Warning>, JpegError> {
-    match plan.huffman_primary_width {
-        HuffmanPrimaryWidth::Narrow8 => {
-            decode_scan_fast_rgb_444_with_entries::<NARROW_PRIMARY_ENTRIES, W>(
+    match (plan.huffman_primary_width, plan.sampling.max_h) {
+        (HuffmanPrimaryWidth::Narrow8, 2) => {
+            decode_scan_fast_rgb_v1_with_entries::<NARROW_PRIMARY_ENTRIES, 2, W>(
                 plan, backend, scan_bytes, pool, writer, roi, checkpoint,
             )
         }
-        HuffmanPrimaryWidth::Full12 => {
-            decode_scan_fast_rgb_444_with_entries::<FULL_PRIMARY_ENTRIES, W>(
+        (HuffmanPrimaryWidth::Narrow8, _) => {
+            decode_scan_fast_rgb_v1_with_entries::<NARROW_PRIMARY_ENTRIES, 1, W>(
+                plan, backend, scan_bytes, pool, writer, roi, checkpoint,
+            )
+        }
+        (HuffmanPrimaryWidth::Full12, 2) => {
+            decode_scan_fast_rgb_v1_with_entries::<FULL_PRIMARY_ENTRIES, 2, W>(
+                plan, backend, scan_bytes, pool, writer, roi, checkpoint,
+            )
+        }
+        (HuffmanPrimaryWidth::Full12, _) => {
+            decode_scan_fast_rgb_v1_with_entries::<FULL_PRIMARY_ENTRIES, 1, W>(
                 plan, backend, scan_bytes, pool, writer, roi, checkpoint,
             )
         }
     }
 }
 
-fn decode_scan_fast_rgb_444_with_entries<const N: usize, W: OutputWriter + InterleavedRgbWriter>(
+fn decode_scan_fast_rgb_v1_with_entries<
+    const N: usize,
+    const LUMA_H: u32,
+    W: OutputWriter + InterleavedRgbWriter,
+>(
     plan: &PreparedDecodePlan,
     backend: Backend,
     scan_bytes: &[u8],
@@ -106,16 +121,30 @@ fn decode_scan_fast_rgb_444_with_entries<const N: usize, W: OutputWriter + Inter
     roi: Rect,
     checkpoint: Option<&DeviceCheckpoint>,
 ) -> Result<Vec<Warning>, JpegError> {
-    debug_assert!(plan.matches_fast_rgb444_shape());
+    debug_assert!(plan.matches_fast_rgb_v1_shape());
+    debug_assert_eq!(u32::from(plan.sampling.max_h), LUMA_H);
 
     let (width, height) = plan.dimensions;
-    let mcus_per_row = width.div_ceil(8);
+    let mcus_per_row = width.div_ceil(8 * LUMA_H);
     let mcu_rows = height.div_ceil(8);
     let region = stripe_region_layout(plan, DownscaleFactor::Full, roi);
     let first_mcu = fast_tile_region_first_decode_mcu(plan, roi, DownscaleFactor::Full);
     let first_row = first_mcu / mcus_per_row;
     let row_end = last_mcu_row_for_rect(roi, 8, mcu_rows) + 1;
-    pool.prepare_for_streaming(plan, region.stripe_mcus_per_row, 0, plan.scratch_bytes)?;
+    let window = StripeOutputWindow {
+        roi,
+        crop_start: (roi.x - region.source_x0) as usize,
+        row_width: region.source_width_usize(),
+    };
+    // 4:2:2 upsamples a chroma row into row buffers before conversion.
+    let upsample_width = if LUMA_H == 2 { window.row_width } else { 0 };
+    pool.prepare_for_streaming(
+        plan,
+        region.stripe_mcus_per_row,
+        0,
+        upsample_width,
+        plan.scratch_bytes,
+    )?;
 
     let (y_comp, cb_comp, cr_comp) =
         fast_rgb444_components::<N>(plan, plan.prefers_wide_huffman(scan_bytes.len()))?;
@@ -143,8 +172,13 @@ fn decode_scan_fast_rgb_444_with_entries<const N: usize, W: OutputWriter + Inter
             expected_rst: &mut expected_rst,
         },
         |br, dc| {
-            for (comp, dc) in [y_comp, cb_comp, cr_comp].into_iter().zip(dc) {
-                skip_block(br, comp.dc_table, comp.ac_table, dc)?;
+            for ((comp, blocks), dc) in [(y_comp, LUMA_H), (cb_comp, 1), (cr_comp, 1)]
+                .into_iter()
+                .zip(dc)
+            {
+                for _ in 0..blocks {
+                    skip_block(br, comp.dc_table, comp.ac_table, dc)?;
+                }
             }
             Ok(())
         },
@@ -152,7 +186,11 @@ fn decode_scan_fast_rgb_444_with_entries<const N: usize, W: OutputWriter + Inter
     let [mut y_dc, mut cb_dc, mut cr_dc] = dc;
     let mut coeff = CoefficientBlock::default();
     let mut pixels = [0u8; 64];
-    let stripe = &mut pool.stripe_a;
+    let ScratchPool {
+        stripe_a: stripe,
+        ycbcr_generic_rows: upsampled,
+        ..
+    } = pool;
     let row_context = FastRgbMcuRowContext {
         y_comp,
         cb_comp,
@@ -164,7 +202,6 @@ fn decode_scan_fast_rgb_444_with_entries<const N: usize, W: OutputWriter + Inter
         stripe_mcu_start: region.stripe_mcu_start,
         stripe_mcus_per_row: region.stripe_mcus_per_row,
     };
-    let crop_start = (roi.x - region.source_x0) as usize;
 
     {
         let mut row_state = FastRgbMcuRowState {
@@ -178,8 +215,8 @@ fn decode_scan_fast_rgb_444_with_entries<const N: usize, W: OutputWriter + Inter
             expected_rst: &mut expected_rst,
         };
         for my in first_row..row_end {
-            decode_mcu_row_fast_rgb::<N, 1>(&row_context, &mut row_state, my, stripe)?;
-            emit_stripe_rgb_444(plan, backend, stripe, my, roi, crop_start, writer)?;
+            decode_mcu_row_fast_rgb::<N, LUMA_H>(&row_context, &mut row_state, my, stripe)?;
+            emit_stripe_rgb_v1(plan, backend, stripe, my, window, upsampled, writer)?;
         }
     }
 

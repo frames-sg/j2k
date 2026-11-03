@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! The streaming fast routes (4:2:0, and 4:4:4 coded as YCbCr or identity
-//! RGB) against the stripe-at-a-time generic route, which shares no row
-//! windowing or emission code with them, across partial edge MCUs, restart
-//! intervals, writer kinds, and regions.
+//! The streaming fast routes (4:2:0, 4:2:2, and 4:4:4 coded as YCbCr or
+//! identity RGB) against the stripe-at-a-time generic route, which shares no
+//! row windowing or emission code with them, across partial edge MCUs,
+//! restart intervals, writer kinds, and regions.
 
 use super::decode_scan_baseline_rgb;
 use crate::info::{DownscaleFactor, Rect};
@@ -41,12 +41,18 @@ fn noisy_rgb8(width: u32, height: u32, seed: u32) -> Vec<u8> {
 #[derive(Clone, Copy, Debug)]
 enum Shape {
     Ycbcr420,
+    Ycbcr422,
     Ycbcr444,
     /// 4:4:4 whose three components are decoded as identity RGB.
     Rgb444,
 }
 
-const SHAPES: [Shape; 3] = [Shape::Ycbcr420, Shape::Ycbcr444, Shape::Rgb444];
+const SHAPES: [Shape; 4] = [
+    Shape::Ycbcr420,
+    Shape::Ycbcr422,
+    Shape::Ycbcr444,
+    Shape::Rgb444,
+];
 
 fn encode(shape: Shape, width: u32, height: u32, restart_interval: Option<u16>) -> Vec<u8> {
     let pixels = noisy_rgb8(width, height, width * 131 + height);
@@ -60,6 +66,7 @@ fn encode(shape: Shape, width: u32, height: u32, restart_interval: Option<u16>) 
             quality: 92,
             subsampling: match shape {
                 Shape::Ycbcr420 => JpegSubsampling::Ybr420,
+                Shape::Ycbcr422 => JpegSubsampling::Ybr422,
                 Shape::Ycbcr444 | Shape::Rgb444 => JpegSubsampling::Ybr444,
             },
             restart_interval,
@@ -73,7 +80,7 @@ fn encode(shape: Shape, width: u32, height: u32, restart_interval: Option<u16>) 
 /// A decoder of `bytes` that takes the shape's streaming route.
 fn decoder(bytes: &[u8], shape: Shape) -> Decoder<'_> {
     let dec = match shape {
-        Shape::Ycbcr420 | Shape::Ycbcr444 => Decoder::new(bytes),
+        Shape::Ycbcr420 | Shape::Ycbcr422 | Shape::Ycbcr444 => Decoder::new(bytes),
         Shape::Rgb444 => Decoder::from_view(
             JpegView::parse_with_options(
                 bytes,
@@ -85,6 +92,7 @@ fn decoder(bytes: &[u8], shape: Shape) -> Decoder<'_> {
     .expect("fixture decoder");
     let streams = match shape {
         Shape::Ycbcr420 => dec.plan.matches_fast_tile_shape(),
+        Shape::Ycbcr422 => dec.plan.matches_fast_rgb422_shape(),
         Shape::Ycbcr444 | Shape::Rgb444 => dec.plan.matches_fast_rgb444_shape(),
     };
     assert!(streams, "{shape:?} takes its streaming route");

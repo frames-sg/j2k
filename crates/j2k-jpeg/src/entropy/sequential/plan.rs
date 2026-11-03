@@ -165,6 +165,12 @@ impl PreparedDecodePlan {
             && self.components[2].v == 1
     }
 
+    /// The full-size shapes whose MCU rows the streaming CPU route converts
+    /// without vertical upsampling context: 4:4:4 and 4:2:2.
+    pub(crate) fn matches_fast_rgb_v1_shape(&self) -> bool {
+        self.matches_fast_rgb444_shape() || self.matches_fast_rgb422_shape()
+    }
+
     /// Coded 4:2:2 YCbCr whose full-size chroma libjpeg-turbo smooths (more
     /// than two chroma samples wide), the shape the device 4:2:2 kernels
     /// implement.

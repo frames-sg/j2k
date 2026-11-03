@@ -30,6 +30,11 @@ Staged workspace version: `0.13.2`.
   transform to sRGB moves no 8-bit channel or neutral ramp sample by more
   than one code value. Other ICC profiles remain unsupported for these
   outputs (#321).
+- Baseline 4:2:2 JPEGs decode to RGB through the streaming row path,
+  including region requests. Horizontal-only fancy upsampling needs no
+  window of chroma rows, so each MCU row is upsampled and converted as it
+  is decoded. On Apple M4, 4:2:2 regions decode about 12% faster and full
+  images about 1% faster. Output is byte-identical.
 - Baseline 4:4:4 JPEGs, both YCbCr and identity RGB (components tagged R,
   G, B, or marked RGB by an Adobe APP14 segment, as many slide-scanner
   tiles are), decode to RGB through the streaming row path, including

@@ -12,8 +12,8 @@ use crate::entropy::progressive::{
     COMPONENT_IMAGE_METADATA_BYTES,
 };
 use crate::entropy::sequential::{
-    decode_scan_baseline, decode_scan_baseline_rgb, decode_scan_fast_rgb_444,
-    decode_scan_fast_rgb_444_region, decode_scan_fast_tile_rgb, decode_scan_fast_tile_rgb_region,
+    decode_scan_baseline, decode_scan_baseline_rgb, decode_scan_fast_rgb_v1,
+    decode_scan_fast_rgb_v1_region, decode_scan_fast_tile_rgb, decode_scan_fast_tile_rgb_region,
     fast_tile_region_first_decode_mcu, finish_scan, stripe_region_layout, PreparedComponentPlan,
     PreparedDecodePlan, ResolvedPreparedComponentPlan,
 };

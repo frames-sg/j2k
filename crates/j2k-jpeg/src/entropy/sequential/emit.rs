@@ -10,7 +10,7 @@ mod upsample;
 pub(super) use self::{
     output::emit_stripe,
     rgb::emit_stripe_rgb,
-    rgb444::emit_stripe_rgb_444,
+    rgb444::{emit_stripe_rgb_v1, StripeOutputWindow},
     types::StripeEmit,
     upsample::{component_row_triplet, valid_component_rows},
 };

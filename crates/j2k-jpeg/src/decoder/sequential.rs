@@ -7,7 +7,7 @@ use crate::context::MAX_DECODER_CONTEXT_ALLOCATION_BYTES;
 
 use super::{
     checkpoint_before_mcu, decode_progressive, decode_scan_baseline, decode_scan_baseline_rgb,
-    decode_scan_fast_rgb_444, decode_scan_fast_tile_rgb, emit_decode_scan_profile,
+    decode_scan_fast_rgb_v1, decode_scan_fast_tile_rgb, emit_decode_scan_profile,
     jpeg_profile_stages_enabled, merged_warnings, scaled_dimensions, scaled_rect_covering,
     stripe_region_layout, DecodeOutcome, Decoder, DeviceCheckpoint, DownscaleFactor, Instant,
     InterleavedRgbWriter, JpegError, OutputWriter, Rect, ScratchPool,
@@ -232,11 +232,15 @@ impl Decoder<'_> {
                 )
             } else if downscale == DownscaleFactor::Full
                 && decoded == Rect::full(self.info.dimensions)
-                && self.plan.matches_fast_rgb444_shape()
+                && self.plan.matches_fast_rgb_v1_shape()
             {
                 (
-                    "fast444_rgb",
-                    decode_scan_fast_rgb_444(&self.plan, self.backend, scan_bytes, pool, writer)?,
+                    if self.plan.sampling.max_h == 2 {
+                        "fast422_rgb"
+                    } else {
+                        "fast444_rgb"
+                    },
+                    decode_scan_fast_rgb_v1(&self.plan, self.backend, scan_bytes, pool, writer)?,
                 )
             } else {
                 (

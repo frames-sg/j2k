@@ -4,6 +4,7 @@ use super::*;
 use crate::color::scaled_sampling::ScaledSampling;
 use crate::entropy::huffman::{HuffmanTable, PreparedHuffmanTables};
 use crate::info::{ColorSpace, SamplingFactors};
+use crate::internal::scratch::YCbCrGenericRows;
 use crate::output::Rgb8Writer;
 use crate::parse::tables::{HuffmanTableRole, HuffmanValues, RawHuffmanTable};
 use crate::Decoder;
@@ -609,13 +610,17 @@ fn emit_stripe_rgb_444_matches_direct_ycbcr_conversion_with_trailing_row() {
         u32::try_from(width).expect("fixture width fits in u32"),
     );
 
-    emit_stripe_rgb_444(
+    emit_stripe_rgb_v1(
         &plan,
         Backend::detect(),
         &stripe,
         0,
-        Rect::full(plan.dimensions),
-        0,
+        StripeOutputWindow {
+            roi: Rect::full(plan.dimensions),
+            crop_start: 0,
+            row_width: width,
+        },
+        &mut YCbCrGenericRows::default(),
         &mut writer,
     )
     .expect("emit stripe must succeed");

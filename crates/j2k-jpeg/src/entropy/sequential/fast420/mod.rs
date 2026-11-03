@@ -256,6 +256,7 @@ impl Fast420Scan<'_, '_> {
             plan,
             rows.window.stripe_mcus_per_row,
             FAST420_HALO_ROWS as usize,
+            0,
             plan.scratch_bytes,
         )?;
 

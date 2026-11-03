@@ -143,7 +143,8 @@ pub(super) fn fast420_decode_mcu_row_end(
 }
 
 /// First MCU a fast-route region decode of `roi` reads: fancy 4:2:0 also
-/// needs the chroma row above an MCU-aligned top edge, 4:4:4 no context.
+/// needs the chroma row above an MCU-aligned top edge, 4:4:4 and 4:2:2 no
+/// vertical context.
 pub(crate) fn fast_tile_region_first_decode_mcu(
     plan: &PreparedDecodePlan,
     roi: Rect,
@@ -154,7 +155,7 @@ pub(crate) fn fast_tile_region_first_decode_mcu(
     let mcu_width_px = block_size * u32::from(plan.sampling.max_h);
     let mcu_height_px = block_size * u32::from(plan.sampling.max_v);
     let mcus_per_row = width.div_ceil(mcu_width_px);
-    let first_row = if plan.matches_fast_rgb444_shape() {
+    let first_row = if plan.matches_fast_rgb_v1_shape() {
         first_mcu_row_for_rect(roi, mcu_height_px)
     } else {
         fast420_first_decode_mcu_row(roi, mcu_height_px)
