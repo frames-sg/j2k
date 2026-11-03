@@ -39,6 +39,7 @@ fn poisoned_pool_retains_returned_raw_allocation_wrapper() {
         Err(poisoned) => poisoned.into_inner(),
     };
     let diagnostics = retained.diagnostics().expect("inspect retained staging");
+    drop(retained);
     assert_eq!(diagnostics.cached_buffers, 0);
     assert_eq!(diagnostics.cached_bytes, 0);
     assert_eq!(diagnostics.uncertain_buffers, 1);
@@ -120,4 +121,5 @@ fn abandoned_or_unwound_checkout_uses_prepared_quarantine_and_fails_closed() {
         pool.take_best_fit(1),
         Err(CudaError::StatePoisoned { .. })
     ));
+    drop(pool);
 }

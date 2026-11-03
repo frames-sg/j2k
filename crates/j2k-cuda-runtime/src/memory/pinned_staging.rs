@@ -45,6 +45,7 @@ pub(super) fn retain_pinned_upload_staging_after_lock_poison(
             retention_error,
         );
     }
+    drop(pool);
     CudaError::StatePoisoned { message }
 }
 
@@ -65,6 +66,7 @@ pub(super) fn retain_pinned_upload_staging_after_release_failure(
         // Returning consumes the no-Drop token without freeing its raw pointer.
         return Err(error);
     }
+    drop(pool);
     Ok(())
 }
 

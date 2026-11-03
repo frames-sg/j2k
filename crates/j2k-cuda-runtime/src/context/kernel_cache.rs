@@ -71,6 +71,7 @@ impl ContextInner {
         let compiled = CompiledKernel::load(self, key)?;
         let function = compiled.function;
         modules.insert(key, compiled);
+        drop(modules);
         Ok(function)
     }
 
