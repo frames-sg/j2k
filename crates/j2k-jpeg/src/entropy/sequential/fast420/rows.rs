@@ -7,7 +7,9 @@ use super::super::deposit::{
     FastTile420EntropyState, FastTile420Window, PlaneBlockTarget,
 };
 use super::super::profile::Fast420Profiler;
+use super::super::restart::{consume_restart_marker_if_due, McuPosition};
 use super::super::{ResolvedPreparedComponentPlan, StripeBuffer};
+use super::FAST420_HALO_ROWS as HALO_ROWS;
 use crate::backend::Backend;
 use crate::entropy::block::{decode_block_with_activity, skip_block};
 use crate::error::JpegError;
@@ -37,41 +39,49 @@ pub(super) fn skip_mcu_fast_tile_420<const N: usize>(
     Ok(())
 }
 
+/// Decode one MCU row into `stripe`, below its halo row.
 pub(in crate::entropy::sequential) fn decode_mcu_row_fast_tile_420<const N: usize>(
     components: FastTile420Components<'_, N>,
     backend: Backend,
     state: &mut FastTile420EntropyState<'_, '_>,
-    pixels: &mut [u8; 64],
     window: FastTile420Window,
     stripe: &mut StripeBuffer,
     profiler: &mut impl Fast420Profiler,
 ) -> Result<(), JpegError> {
-    if window.right_luma && window.bottom_luma {
-        decode_mcu_row_fast_tile_420_specialized::<N, false>(
-            components, backend, state, pixels, window, stripe, profiler,
-        )
-    } else {
-        decode_mcu_row_fast_tile_420_specialized::<N, true>(
-            components, backend, state, pixels, window, stripe, profiler,
-        )
+    let clip_padding = !(window.right_luma && window.bottom_luma);
+    match (clip_padding, window.restart != 0) {
+        (false, false) => decode_mcu_row_fast_tile_420_specialized::<N, false, false>(
+            components, backend, state, window, stripe, profiler,
+        ),
+        (false, true) => decode_mcu_row_fast_tile_420_specialized::<N, false, true>(
+            components, backend, state, window, stripe, profiler,
+        ),
+        (true, false) => decode_mcu_row_fast_tile_420_specialized::<N, true, false>(
+            components, backend, state, window, stripe, profiler,
+        ),
+        (true, true) => decode_mcu_row_fast_tile_420_specialized::<N, true, true>(
+            components, backend, state, window, stripe, profiler,
+        ),
     }
 }
 
-fn decode_mcu_row_fast_tile_420_specialized<const N: usize, const CLIP_PADDING: bool>(
+fn decode_mcu_row_fast_tile_420_specialized<
+    const N: usize,
+    const CLIP_PADDING: bool,
+    const RESTART: bool,
+>(
     components: FastTile420Components<'_, N>,
     backend: Backend,
     state: &mut FastTile420EntropyState<'_, '_>,
-    pixels: &mut [u8; 64],
     window: FastTile420Window,
     stripe: &mut StripeBuffer,
     profiler: &mut impl Fast420Profiler,
 ) -> Result<(), JpegError> {
     let mut local = state.take_local();
-    let result = decode_mcu_row_fast_tile_420_local::<N, CLIP_PADDING>(
+    let result = decode_mcu_row_fast_tile_420_local::<N, CLIP_PADDING, RESTART>(
         components,
         backend,
-        &mut local.state(&mut *state.coeff),
-        pixels,
+        &mut local.state(state),
         window,
         stripe,
         profiler,
@@ -89,19 +99,50 @@ fn decode_mcu_row_fast_tile_420_specialized<const N: usize, const CLIP_PADDING: 
     reason = "inlining into the row wrapper is what keeps the local reader out of memory"
 )]
 #[inline(always)]
-fn decode_mcu_row_fast_tile_420_local<const N: usize, const CLIP_PADDING: bool>(
+fn decode_mcu_row_fast_tile_420_local<
+    const N: usize,
+    const CLIP_PADDING: bool,
+    const RESTART: bool,
+>(
     components: FastTile420Components<'_, N>,
     backend: Backend,
     state: &mut FastTile420EntropyState<'_, '_>,
-    pixels: &mut [u8; 64],
     window: FastTile420Window,
     stripe: &mut StripeBuffer,
     profiler: &mut impl Fast420Profiler,
 ) -> Result<(), JpegError> {
-    assert_stripe_deposit_capacity(stripe, 0, 2, 2, window.stripe_mcus_per_row, 8);
-    assert_stripe_deposit_capacity(stripe, 1, 1, 1, window.stripe_mcus_per_row, 8);
-    assert_stripe_deposit_capacity(stripe, 2, 1, 1, window.stripe_mcus_per_row, 8);
+    for (plane_idx, h, v) in [(0, 2, 2), (1, 1, 1), (2, 1, 1)] {
+        assert_stripe_deposit_capacity(
+            stripe,
+            plane_idx,
+            h,
+            v,
+            window.stripe_mcus_per_row,
+            8,
+            HALO_ROWS,
+        );
+    }
+    let mut pixels = [0u8; 64];
+    let row_first_mcu = window.mcu_y * window.mcus_per_row;
+    let total_mcus = window.mcu_rows * window.mcus_per_row;
     for mx in 0..window.mcus_per_row {
+        if RESTART
+            && consume_restart_marker_if_due(
+                &mut *state.br,
+                window.restart,
+                *state.mcus_since_restart,
+                &mut *state.expected_rst,
+                McuPosition {
+                    current: row_first_mcu + mx,
+                    total: total_mcus,
+                },
+            )?
+        {
+            *state.dc.y = 0;
+            *state.dc.cb = 0;
+            *state.dc.cr = 0;
+            *state.mcus_since_restart = 0;
+        }
         if !window.contains_mcu(mx) {
             for _ in 0..4 {
                 skip_block(
@@ -123,6 +164,9 @@ fn decode_mcu_row_fast_tile_420_local<const N: usize, const CLIP_PADDING: bool>(
                 components.cr.ac_table,
                 &mut *state.dc.cr,
             )?;
+            if RESTART {
+                *state.mcus_since_restart += 1;
+            }
             continue;
         }
 
@@ -145,12 +189,12 @@ fn decode_mcu_row_fast_tile_420_local<const N: usize, const CLIP_PADDING: bool>(
             y0_activity,
             backend,
             &*state.coeff,
-            pixels,
+            &mut pixels,
             PlaneBlockTarget {
                 plane: &mut stripe.planes[0],
                 stride: stripe.plane_strides[0],
                 x: y_x,
-                y: 0,
+                y: HALO_ROWS,
             },
         );
 
@@ -168,12 +212,12 @@ fn decode_mcu_row_fast_tile_420_local<const N: usize, const CLIP_PADDING: bool>(
                 y1_activity,
                 backend,
                 &*state.coeff,
-                pixels,
+                &mut pixels,
                 PlaneBlockTarget {
                     plane: &mut stripe.planes[0],
                     stride: stripe.plane_strides[0],
                     x: y_x + 8,
-                    y: 0,
+                    y: HALO_ROWS,
                 },
             );
         }
@@ -192,12 +236,12 @@ fn decode_mcu_row_fast_tile_420_local<const N: usize, const CLIP_PADDING: bool>(
                 y2_activity,
                 backend,
                 &*state.coeff,
-                pixels,
+                &mut pixels,
                 PlaneBlockTarget {
                     plane: &mut stripe.planes[0],
                     stride: stripe.plane_strides[0],
                     x: y_x,
-                    y: 8,
+                    y: HALO_ROWS + 8,
                 },
             );
         }
@@ -216,12 +260,12 @@ fn decode_mcu_row_fast_tile_420_local<const N: usize, const CLIP_PADDING: bool>(
                 y3_activity,
                 backend,
                 &*state.coeff,
-                pixels,
+                &mut pixels,
                 PlaneBlockTarget {
                     plane: &mut stripe.planes[0],
                     stride: stripe.plane_strides[0],
                     x: y_x + 8,
-                    y: 8,
+                    y: HALO_ROWS + 8,
                 },
             );
         }
@@ -239,12 +283,12 @@ fn decode_mcu_row_fast_tile_420_local<const N: usize, const CLIP_PADDING: bool>(
             cb_activity,
             backend,
             &*state.coeff,
-            pixels,
+            &mut pixels,
             PlaneBlockTarget {
                 plane: &mut stripe.planes[1],
                 stride: stripe.plane_strides[1],
                 x: c_x,
-                y: 0,
+                y: HALO_ROWS,
             },
         );
 
@@ -261,14 +305,18 @@ fn decode_mcu_row_fast_tile_420_local<const N: usize, const CLIP_PADDING: bool>(
             cr_activity,
             backend,
             &*state.coeff,
-            pixels,
+            &mut pixels,
             PlaneBlockTarget {
                 plane: &mut stripe.planes[2],
                 stride: stripe.plane_strides[2],
                 x: c_x,
-                y: 0,
+                y: HALO_ROWS,
             },
         );
+
+        if RESTART {
+            *state.mcus_since_restart += 1;
+        }
     }
 
     Ok(())

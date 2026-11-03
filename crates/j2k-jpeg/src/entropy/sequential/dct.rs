@@ -3,8 +3,8 @@
 //! Sequential entropy traversal into preallocated DCT block storage.
 
 use super::restart::{
-    consume_restart_marker_if_due, finish_scan, restart_seek_for_mcu, skip_mcu, skip_to_mcu,
-    McuPosition, McuSkipState, McuSkipTarget,
+    consume_restart_marker_if_due, finish_scan, scan_position_before_mcu, skip_mcu, skip_to_mcu,
+    McuPosition, McuSkipState, McuSkipTarget, ScanPosition,
 };
 use super::{HuffmanPrimaryWidth, PreparedDecodePlan};
 use crate::entropy::block::{
@@ -359,16 +359,13 @@ fn decode_scan_dct_window_into_with_entries<const N: usize>(
     let total_mcus = mcu_rows * mcus_per_row;
     let first_mcu = window.row * mcus_per_row;
     let wide_huffman = plan.prefers_wide_huffman(scan_bytes.len());
-    let mut br = BitReader::new(scan_bytes);
-    let mut prev_dc = [0_i32; DEVICE_MAX_COMPONENTS];
-    let mut current_mcu = 0_u32;
+    let ScanPosition {
+        mut br,
+        mut prev_dc,
+        mcu_index: mut current_mcu,
+        mut expected_rst,
+    } = scan_position_before_mcu(scan_bytes, restart, None, first_mcu);
     let mut mcus_since_restart = 0_u32;
-    let mut expected_rst = 0_u8;
-    if let Some(seek) = restart_seek_for_mcu(scan_bytes, restart, first_mcu) {
-        br = BitReader::new(&scan_bytes[seek.scan_offset..]);
-        current_mcu = seek.mcu_index;
-        expected_rst = seek.expected_rst;
-    }
     skip_to_mcu::<N>(
         plan,
         McuSkipTarget {

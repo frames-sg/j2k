@@ -40,7 +40,10 @@ pub(super) struct Stripe420PairUpsample<'a, 'b> {
 /// Rows of a component plane that hold image samples when its stripe emits
 /// `stripe_rows` output rows. Only the image's final stripe is short; the rest
 /// of that stripe's plane is MCU padding.
-pub(super) fn valid_component_rows(stripe_rows: usize, v_ratio: usize) -> usize {
+pub(in crate::entropy::sequential) fn valid_component_rows(
+    stripe_rows: usize,
+    v_ratio: usize,
+) -> usize {
     stripe_rows.div_ceil(v_ratio)
 }
 

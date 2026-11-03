@@ -100,7 +100,7 @@ fn fast_tile_profiled_rgb_matches_unprofiled_decode() {
 }
 
 #[test]
-fn fast_tile_row_decoder_uses_stripe_local_y_offsets() {
+fn fast_tile_row_decoder_deposits_below_the_halo_row() {
     let mut huffman_tables =
         PreparedHuffmanTables::try_with_capacity(2).expect("bounded test arena");
     let dc = huffman_tables
@@ -149,17 +149,20 @@ fn fast_tile_row_decoder_uses_stripe_local_y_offsets() {
         cb: plan.resolved_component(1).expect("Cb component"),
         cr: plan.resolved_component(2).expect("Cr component"),
     };
+    let halo = FAST420_HALO_ROWS as usize;
     let mut stripe = StripeBuffer {
-        planes: vec![vec![0u8; 16 * 16], vec![0u8; 8 * 8], vec![0u8; 8 * 8]],
-        plane_strides: vec![16, 8, 8],
-        plane_rows: vec![16, 8, 8],
+        planes: vec![
+            vec![0xA5u8; 32 * (16 + halo)],
+            vec![0xA5u8; 16 * (8 + halo)],
+            vec![0xA5u8; 16 * (8 + halo)],
+        ],
+        plane_strides: vec![32, 16, 16],
+        plane_rows: vec![16 + halo, 8 + halo, 8 + halo],
     };
     let mut br = BitReader::new(&[0u8; 16]);
     let mut coeff = CoefficientBlock::default();
-    let mut pixels = [0u8; 64];
-    let mut y_dc = 0;
-    let mut cb_dc = 0;
-    let mut cr_dc = 0;
+    let [mut y_dc, mut cb_dc, mut cr_dc] = [0; 3];
+    let (mut mcus_since_restart, mut expected_rst) = (0, 0);
     let mut profiler = NoopFast420Profiler;
 
     decode_mcu_row_fast_tile_420(
@@ -173,26 +176,31 @@ fn fast_tile_row_decoder_uses_stripe_local_y_offsets() {
                 cr: &mut cr_dc,
             },
             coeff: &mut coeff,
+            mcus_since_restart: &mut mcus_since_restart,
+            expected_rst: &mut expected_rst,
         },
-        &mut pixels,
         FastTile420Window {
-            mcus_per_row: 1,
+            mcu_y: 0,
+            mcus_per_row: 2,
+            mcu_rows: 1,
+            restart: 0,
             stripe_mcu_start: 0,
-            stripe_mcus_per_row: 1,
+            stripe_mcus_per_row: 2,
             right_luma: true,
             bottom_luma: true,
         },
         &mut stripe,
         &mut profiler,
     )
-    .expect("second stripe row must still decode within stripe-local buffers");
+    .expect("MCU row must decode into the halo stripe");
 
-    assert_eq!(stripe.planes[0][0], 128);
-    assert_eq!(stripe.planes[0][8], 128);
-    assert_eq!(stripe.planes[0][16 * 8], 128);
-    assert_eq!(stripe.planes[0][16 * 8 + 8], 128);
-    assert_eq!(stripe.planes[1][0], 128);
-    assert_eq!(stripe.planes[2][0], 128);
+    for (plane, stride) in stripe.planes.iter().zip(&stripe.plane_strides) {
+        let (halo_rows, block_rows) = plane.split_at(stride * halo);
+        assert!(halo_rows.iter().all(|&value| value == 0xA5));
+        assert!(block_rows.iter().all(|&value| value == 128));
+    }
+    stripe.carry_last_rows_to_halo(halo);
+    assert!(stripe.planes.iter().flatten().all(|&value| value == 128));
 }
 
 #[test]
@@ -217,24 +225,6 @@ fn fast_tile_region_layout_shrinks_horizontal_stripe_span() {
 }
 
 #[test]
-fn direct_420_crop_policy_includes_scaled_regions_when_backend_supports_it() {
-    let backend = Backend::detect();
-    assert!(backend.prefers_cropped_420_region(64, 9));
-    assert!(should_use_direct_420_crop(
-        backend,
-        DownscaleFactor::Quarter,
-        64,
-        9
-    ));
-    assert!(should_use_direct_420_crop(
-        backend,
-        DownscaleFactor::Eighth,
-        64,
-        9
-    ));
-}
-
-#[test]
 fn fast420_vertical_context_only_keeps_neighbor_stripes_when_needed() {
     let middle_roi = Rect {
         x: 0,
@@ -243,7 +233,7 @@ fn fast420_vertical_context_only_keeps_neighbor_stripes_when_needed() {
         h: 256,
     };
     assert_eq!(fast420_first_decode_mcu_row(middle_roi, 16), 4);
-    assert_eq!(fast420_decode_mcu_row_end(middle_roi, 16, 26), 21);
+    assert_eq!(fast420_decode_mcu_row_end(middle_roi, 16, 26, 1), 21);
 
     let top_edge_roi = Rect {
         x: 0,
@@ -259,7 +249,22 @@ fn fast420_vertical_context_only_keeps_neighbor_stripes_when_needed() {
         w: 32,
         h: 18,
     };
-    assert_eq!(fast420_decode_mcu_row_end(bottom_edge_roi, 16, 26), 7);
+    assert_eq!(fast420_decode_mcu_row_end(bottom_edge_roi, 16, 26, 1), 7);
+    // Rows 94 and 95 of MCU row 5 wait for the next MCU row's first chroma
+    // row when a pass emits two rows late; row 93 does not.
+    let pass_edge_roi = Rect {
+        x: 0,
+        y: 80,
+        w: 32,
+        h: 15,
+    };
+    assert_eq!(fast420_decode_mcu_row_end(pass_edge_roi, 16, 26, 1), 6);
+    assert_eq!(fast420_decode_mcu_row_end(pass_edge_roi, 16, 26, 2), 7);
+    let pass_interior_roi = Rect {
+        h: 14,
+        ..pass_edge_roi
+    };
+    assert_eq!(fast420_decode_mcu_row_end(pass_interior_roi, 16, 26, 2), 6);
 }
 
 #[test]

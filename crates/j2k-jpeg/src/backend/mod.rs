@@ -331,19 +331,6 @@ impl Backend {
         }
     }
 
-    pub(crate) fn prefers_cropped_420_region(self, row_width: usize, crop_width: usize) -> bool {
-        if crop_width == 0 || crop_width >= row_width {
-            return false;
-        }
-        match self {
-            Self::Scalar => true,
-            #[cfg(target_arch = "x86_64")]
-            Self::Avx2(_) => true,
-            #[cfg(target_arch = "aarch64")]
-            Self::Neon(_) => true,
-        }
-    }
-
     /// One visible row of fancy 4:2:0 chroma upsampling; bit-exact with
     /// [`crate::color::upsample::upsample_h2v2_fancy_row`].
     pub(crate) fn upsample_h2v2_fancy_row(

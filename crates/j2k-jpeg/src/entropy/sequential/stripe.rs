@@ -32,6 +32,18 @@ impl StripeLayout {
         mcus_per_row: u32,
         block_size: u32,
     ) -> Result<Self, JpegError> {
+        Self::for_sampling_with_halo(sampling, mcus_per_row, block_size, 0)
+    }
+
+    /// [`Self::for_sampling`] with `halo_rows` extra rows above every plane's
+    /// MCU-row samples. Streaming emitters keep the previous MCU row's last
+    /// rows there as vertical upsampling context.
+    pub(crate) fn for_sampling_with_halo(
+        sampling: SamplingFactors,
+        mcus_per_row: u32,
+        block_size: u32,
+        halo_rows: usize,
+    ) -> Result<Self, JpegError> {
         let component_count = sampling.len();
         if component_count > 4 {
             return Err(JpegError::UnsupportedComponentCount {
@@ -51,7 +63,12 @@ impl StripeLayout {
                     },
                 )?,
             )?;
-            let rows = checked_allocation_len::<u8>(usize::from(v), block_size as usize)?;
+            let rows = checked_allocation_len::<u8>(usize::from(v), block_size as usize)?
+                .checked_add(halo_rows)
+                .ok_or(JpegError::MemoryCapExceeded {
+                    requested: usize::MAX,
+                    cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+                })?;
             plane_lens[index] = checked_allocation_len::<u8>(stride, rows)?;
             plane_strides[index] = stride;
             plane_rows[index] = rows;
@@ -174,6 +191,22 @@ impl StripeBuffer {
                     Some(plane) => plane.capacity() < target_len,
                     None => target_len != 0,
                 })
+    }
+
+    /// Copy each plane's last `halo_rows` rows into its first rows, the halo a
+    /// [`StripeLayout::for_sampling_with_halo`] layout keeps for the next MCU
+    /// row's vertical upsampling context.
+    pub(super) fn carry_last_rows_to_halo(&mut self, halo_rows: usize) {
+        for ((plane, &stride), &rows) in self
+            .planes
+            .iter_mut()
+            .zip(&self.plane_strides)
+            .zip(&self.plane_rows)
+        {
+            if let Some(first) = rows.checked_sub(halo_rows) {
+                plane.copy_within(first * stride..rows * stride, 0);
+            }
+        }
     }
 
     pub(super) fn row_count(&self, plane_idx: usize) -> usize {

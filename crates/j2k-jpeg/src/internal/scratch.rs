@@ -4,7 +4,8 @@
 //!
 //! A [`ScratchPool`] owns every `Vec` that the sequential scan decoder
 //! would otherwise allocate on each call: the three rolling MCU stripe
-//! buffers, the per-component DC predictor, the chroma upsample rows, and
+//! buffers (the block-streaming 4:2:0 route needs only the first, with a
+//! halo row), the per-component DC predictor, the chroma upsample rows, and
 //! the RGB row buffers used by [`j2k_core::RowSink`] drivers.
 //!
 //! Use [`Decoder::decode_into_with_scratch`](crate::Decoder::decode_into_with_scratch)
@@ -17,7 +18,9 @@
 use crate::allocation::{
     checked_add_allocation_bytes, checked_allocation_bytes, try_reserve_for_len_with_live_budget,
 };
-use crate::entropy::sequential::{PreparedDecodePlan, StripeBuffer, StripeLayout};
+use crate::entropy::sequential::{
+    PreparedDecodePlan, StripeBuffer, StripeLayout, FAST420_HALO_ROWS,
+};
 use crate::error::JpegError;
 use crate::info::SamplingFactors;
 use alloc::vec::Vec;
@@ -73,7 +76,10 @@ pub struct ScratchPool {
 #[derive(Clone, Copy)]
 struct SequentialScratchLayout {
     stripe: StripeLayout,
+    /// Stripes in use: three rolling stripes, or one for block streaming.
+    stripe_count: usize,
     component_count: usize,
+    /// Width of the upsample and RGB row buffers; zero when unused.
     row_width: usize,
 }
 
@@ -86,15 +92,31 @@ impl SequentialScratchLayout {
     ) -> Result<Self, JpegError> {
         Ok(Self {
             stripe: StripeLayout::for_sampling(sampling, mcus_per_row, block_size)?,
+            stripe_count: 3,
             component_count: sampling.len(),
             row_width: plan.dimensions.0.div_ceil(8 / block_size.max(1)) as usize,
+        })
+    }
+
+    /// One full-size stripe below a halo row, and no row buffers.
+    fn for_fast420_stream(plan: &PreparedDecodePlan, mcus_per_row: u32) -> Result<Self, JpegError> {
+        Ok(Self {
+            stripe: StripeLayout::for_sampling_with_halo(
+                plan.sampling,
+                mcus_per_row,
+                8,
+                FAST420_HALO_ROWS as usize,
+            )?,
+            stripe_count: 1,
+            component_count: plan.sampling.len(),
+            row_width: 0,
         })
     }
 
     fn minimum_bytes(self, detached_sink_bytes: usize) -> Result<usize, JpegError> {
         let mut total = checked_allocation_bytes::<i32>(self.component_count)?;
         let stripe_bytes = self.stripe.allocation_bytes()?;
-        for _ in 0..3 {
+        for _ in 0..self.stripe_count {
             total = checked_add_allocation_bytes(total, stripe_bytes)?;
         }
         let row_bytes = self
@@ -130,7 +152,32 @@ impl ScratchPool {
         block_size: u32,
         max_bytes: usize,
     ) -> Result<(), JpegError> {
-        let layout = SequentialScratchLayout::for_plan(plan, sampling, mcus_per_row, block_size)?;
+        self.prepare_sequential(
+            SequentialScratchLayout::for_plan(plan, sampling, mcus_per_row, block_size)?,
+            max_bytes,
+        )
+    }
+
+    /// [`Self::prepare_for`] for the block-streaming 4:2:0 route: zeroed DC
+    /// predictors and only `stripe_a`, laid out for `mcus_per_row` MCUs below
+    /// a halo row.
+    pub(crate) fn prepare_for_fast420_stream(
+        &mut self,
+        plan: &PreparedDecodePlan,
+        mcus_per_row: u32,
+        max_bytes: usize,
+    ) -> Result<(), JpegError> {
+        self.prepare_sequential(
+            SequentialScratchLayout::for_fast420_stream(plan, mcus_per_row)?,
+            max_bytes,
+        )
+    }
+
+    fn prepare_sequential(
+        &mut self,
+        layout: SequentialScratchLayout,
+        max_bytes: usize,
+    ) -> Result<(), JpegError> {
         let target_bytes = layout.minimum_bytes(self.detached_sink_bytes)?;
         ensure_request_bytes(target_bytes, max_bytes)?;
         if self.retained_bytes() > target_bytes
@@ -341,10 +388,17 @@ impl ScratchPool {
 
     fn projected_sequential_bytes(&self, layout: SequentialScratchLayout) -> usize {
         let mut total = projected_vec_bytes(&self.prev_dc, layout.component_count);
+        let [stripe_b, stripe_c] = [&self.stripe_b, &self.stripe_c].map(|stripe| {
+            if layout.stripe_count == 3 {
+                stripe.projected_bytes(layout.stripe)
+            } else {
+                stripe.retained_bytes()
+            }
+        });
         total = total
             .saturating_add(self.stripe_a.projected_bytes(layout.stripe))
-            .saturating_add(self.stripe_b.projected_bytes(layout.stripe))
-            .saturating_add(self.stripe_c.projected_bytes(layout.stripe))
+            .saturating_add(stripe_b)
+            .saturating_add(stripe_c)
             .saturating_add(projected_rows_bytes(&self.ycbcr_420_rows, layout.row_width))
             .saturating_add(projected_generic_rows_bytes(
                 &self.ycbcr_generic_rows,
@@ -415,10 +469,12 @@ impl ScratchPool {
         )?;
         self.stripe_a
             .resize_for(layout.stripe, &mut live_bytes, cap)?;
-        self.stripe_b
-            .resize_for(layout.stripe, &mut live_bytes, cap)?;
-        self.stripe_c
-            .resize_for(layout.stripe, &mut live_bytes, cap)?;
+        if layout.stripe_count == 3 {
+            self.stripe_b
+                .resize_for(layout.stripe, &mut live_bytes, cap)?;
+            self.stripe_c
+                .resize_for(layout.stripe, &mut live_bytes, cap)?;
+        }
         ensure_request_bytes(live_bytes, cap)
     }
 
@@ -428,8 +484,9 @@ impl ScratchPool {
             || generic_rows_require_growth(&self.ycbcr_generic_rows, layout.row_width)
             || rgb_rows_require_growth(&self.rgb_generic_rows, layout.row_width)
             || self.stripe_a.requires_growth(layout.stripe)
-            || self.stripe_b.requires_growth(layout.stripe)
-            || self.stripe_c.requires_growth(layout.stripe)
+            || layout.stripe_count == 3
+                && (self.stripe_b.requires_growth(layout.stripe)
+                    || self.stripe_c.requires_growth(layout.stripe))
     }
 
     fn sink_requires_growth(&self, row_len: usize) -> bool {

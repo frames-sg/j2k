@@ -179,7 +179,7 @@ fn decode_mcu_row_fast_rgb_local<const N: usize, const LUMA_H: u32>(
     let [y_dc, cb_dc, cr_dc] = dc;
     for plane_idx in 0..3 {
         let h = if plane_idx == 0 { LUMA_H } else { 1 };
-        assert_stripe_deposit_capacity(stripe, plane_idx, h, 1, context.mcus_per_row, 8);
+        assert_stripe_deposit_capacity(stripe, plane_idx, h, 1, context.mcus_per_row, 8, 0);
     }
     for mx in 0..context.mcus_per_row {
         if consume_restart_marker_if_due(

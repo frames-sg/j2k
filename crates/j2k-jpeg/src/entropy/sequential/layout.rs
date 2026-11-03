@@ -121,11 +121,20 @@ pub(super) fn fast420_first_decode_mcu_row(roi: Rect, mcu_height_px: u32) -> u32
     }
 }
 
+/// End of the MCU rows a fancy 4:2:0 region decode reads when an MCU row's
+/// last `trailing_rows` output rows are emitted with the next MCU row (one
+/// for stripe-at-a-time emission, which needs the next chroma row only for
+/// the very last row).
 #[inline]
-pub(super) fn fast420_decode_mcu_row_end(roi: Rect, mcu_height_px: u32, mcu_rows: u32) -> u32 {
+pub(super) fn fast420_decode_mcu_row_end(
+    roi: Rect,
+    mcu_height_px: u32,
+    mcu_rows: u32,
+    trailing_rows: u32,
+) -> u32 {
     let last_row = last_mcu_row_for_rect(roi, mcu_height_px, mcu_rows);
     let last_local_y = (roi.y + roi.h - 1) % mcu_height_px;
-    let needs_next_row = last_local_y == mcu_height_px.saturating_sub(1);
+    let needs_next_row = last_local_y >= mcu_height_px.saturating_sub(trailing_rows);
     if needs_next_row && last_row + 1 < mcu_rows {
         last_row + 2
     } else {
@@ -204,7 +213,6 @@ impl Fast420RegionLayout {
         self.y_decode_end - self.y_decode_start
     }
 
-    #[cfg(test)]
     pub(super) fn chroma_width(self) -> usize {
         self.row_width().div_ceil(2)
     }

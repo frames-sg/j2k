@@ -31,7 +31,7 @@ pub(crate) fn finish_scan(
     }
 }
 
-pub(super) fn reader_from_checkpoint<'a>(
+fn reader_from_checkpoint<'a>(
     scan_bytes: &'a [u8],
     checkpoint: Option<&DeviceCheckpoint>,
     target_mcu: u32,
@@ -54,18 +54,60 @@ pub(super) fn reader_from_checkpoint<'a>(
     (BitReader::new(scan_bytes), [0; 4], 0)
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(super) struct RestartSeek {
-    pub(super) scan_offset: usize,
+/// Entropy reader positioned at or before an MCU, with the DC predictors and
+/// next expected restart marker that hold there. Every sequential route
+/// seeks through [`scan_position_before_mcu`] and then skips the rest with
+/// [`skip_to_mcu`] or [`skip_to_mcu_with`].
+pub(super) struct ScanPosition<'a> {
+    pub(super) br: BitReader<'a>,
+    pub(super) prev_dc: [i32; 4],
     pub(super) mcu_index: u32,
     pub(super) expected_rst: u8,
 }
 
-pub(super) fn restart_seek_for_mcu(
-    scan_bytes: &[u8],
+/// Position a reader at or before `target_mcu`: just after the last restart
+/// marker before it when the scan has restart intervals (`restart != 0`),
+/// else at `checkpoint` when it does not pass the target, else at the scan
+/// start. The caller skips the remaining MCUs.
+pub(super) fn scan_position_before_mcu<'a>(
+    scan_bytes: &'a [u8],
     restart: u16,
+    checkpoint: Option<&DeviceCheckpoint>,
     target_mcu: u32,
-) -> Option<RestartSeek> {
+) -> ScanPosition<'a> {
+    if restart != 0 {
+        return restart_seek_for_mcu(scan_bytes, restart, target_mcu).map_or_else(
+            || ScanPosition {
+                br: BitReader::new(scan_bytes),
+                prev_dc: [0; 4],
+                mcu_index: 0,
+                expected_rst: 0,
+            },
+            |seek| ScanPosition {
+                br: BitReader::new(&scan_bytes[seek.scan_offset..]),
+                prev_dc: [0; 4],
+                mcu_index: seek.mcu_index,
+                expected_rst: seek.expected_rst,
+            },
+        );
+    }
+    let (br, prev_dc, mcu_index) = reader_from_checkpoint(scan_bytes, checkpoint, target_mcu);
+    ScanPosition {
+        br,
+        prev_dc,
+        mcu_index,
+        expected_rst: 0,
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RestartSeek {
+    scan_offset: usize,
+    mcu_index: u32,
+    expected_rst: u8,
+}
+
+fn restart_seek_for_mcu(scan_bytes: &[u8], restart: u16, target_mcu: u32) -> Option<RestartSeek> {
     if restart == 0 {
         return None;
     }
@@ -181,6 +223,18 @@ pub(super) fn skip_to_mcu<const N: usize>(
     target: McuSkipTarget,
     state: &mut McuSkipState<'_, '_>,
 ) -> Result<(), JpegError> {
+    skip_to_mcu_with(target, state, |br, prev_dc| {
+        skip_mcu::<N>(plan, br, prev_dc, target.wide_huffman)
+    })
+}
+
+/// [`skip_to_mcu`] with a route's own single-MCU skip, for decoders whose
+/// component layout is fixed and whose skip loop is specialized for it.
+pub(super) fn skip_to_mcu_with(
+    target: McuSkipTarget,
+    state: &mut McuSkipState<'_, '_>,
+    mut skip_one_mcu: impl FnMut(&mut BitReader<'_>, &mut [i32]) -> Result<(), JpegError>,
+) -> Result<(), JpegError> {
     while *state.current_mcu < target.target_mcu {
         if consume_restart_marker_if_due(
             state.br,
@@ -196,7 +250,7 @@ pub(super) fn skip_to_mcu<const N: usize>(
             *state.mcus_since_restart = 0;
         }
 
-        skip_mcu::<N>(plan, state.br, state.prev_dc, target.wide_huffman)?;
+        skip_one_mcu(state.br, state.prev_dc)?;
         *state.mcus_since_restart += 1;
         *state.current_mcu += 1;
     }

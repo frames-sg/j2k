@@ -22,10 +22,12 @@ pub(crate) use self::dct::{
 };
 #[cfg(feature = "bench-internals")]
 pub(crate) use self::fast420::decode_scan_fast_tile_rgb_profiled;
-pub(crate) use self::fast420::{decode_scan_fast_tile_rgb, decode_scan_fast_tile_rgb_region};
+pub(crate) use self::fast420::{
+    decode_scan_fast_tile_rgb, decode_scan_fast_tile_rgb_region, FAST420_HALO_ROWS,
+};
 pub(crate) use self::generic::{decode_scan_baseline, decode_scan_baseline_rgb};
 pub(crate) use self::layout::{fast_tile_region_first_decode_mcu, stripe_region_layout};
-use self::layout::{scaled_dimensions, uses_fancy_420_emit, Fast420RegionLayout};
+use self::layout::{scaled_dimensions, uses_fancy_420_emit};
 use self::output_scratch::{OutputScratch, RgbOutputScratch};
 pub(crate) use self::plan::{
     HuffmanPrimaryWidth, PreparedComponentPlan, PreparedDecodePlan, ResolvedPreparedComponentPlan,
@@ -41,11 +43,11 @@ use self::deposit::{
     FastTile420EntropyState, FastTile420Window,
 };
 #[cfg(test)]
-use self::emit::{component_row_triplet, emit_stripe_rgb_444, should_use_direct_420_crop};
+use self::emit::{component_row_triplet, emit_stripe_rgb_444};
 #[cfg(test)]
 use self::fast420::decode_mcu_row_fast_tile_420;
 #[cfg(test)]
-use self::layout::{fast420_decode_mcu_row_end, fast420_first_decode_mcu_row};
+use self::layout::{fast420_decode_mcu_row_end, fast420_first_decode_mcu_row, Fast420RegionLayout};
 #[cfg(test)]
 use self::profile::NoopFast420Profiler;
 #[cfg(test)]
