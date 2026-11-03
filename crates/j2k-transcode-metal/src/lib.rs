@@ -15,6 +15,8 @@
 //! `ProtocolObject<dyn MTLDevice>` owners as of 0.9. There is no `metal-rs`
 //! constructor compatibility layer.
 
+#![warn(clippy::non_send_fields_in_send_ty)]
+
 #[cfg(target_os = "macos")]
 mod metal;
 
