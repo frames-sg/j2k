@@ -26,6 +26,10 @@ impl core::ops::Deref for CudaJpegChunkedEntropyReport {
     }
 }
 
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "`PinnedUploadAccountingGuard::finish` consumes the accounting guard, and the pinned-upload operation gate stays held until the report's retained bytes are reserved"
+)]
 pub(crate) fn diagnose_owned_cuda_420_entropy(
     bytes: &[u8],
     config: j2k_cuda_jpeg_engine::CudaJpegChunkedEntropyConfig,

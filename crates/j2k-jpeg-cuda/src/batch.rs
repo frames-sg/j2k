@@ -135,7 +135,7 @@ impl<T> IntoIterator for CudaJpegBatch<T> {
     type IntoIter = CudaJpegBatchIntoIter<T>;
 
     fn into_iter(self) -> Self::IntoIter {
-        let CudaJpegBatch {
+        let Self {
             items,
             what: _,
             #[cfg(feature = "cuda-runtime")]

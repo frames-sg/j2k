@@ -66,6 +66,10 @@ pub(crate) fn decode_owned_cuda_rgb8_from_decoder(
 }
 
 #[cfg(feature = "cuda-runtime")]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "`PinnedUploadAccountingGuard::finish` consumes the accounting guard at its last use"
+)]
 pub(crate) fn profile_owned_cuda_rgb8_from_decoder(
     decoder: &CpuDecoder<'_>,
     session: &mut CudaSession,
@@ -143,6 +147,10 @@ fn decode_owned_cuda_rgb8_from_packet(
 }
 
 #[cfg(feature = "cuda-runtime")]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "`PinnedUploadAccountingGuard::finish` consumes the accounting guard at its last use"
+)]
 pub(crate) fn decode_owned_cuda_rgb8_from_decoder_into(
     decoder: &CpuDecoder<'_>,
     session: &mut CudaSession,

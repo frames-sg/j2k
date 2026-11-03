@@ -66,6 +66,10 @@ impl OwnedPacketPlanCache {
         })
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the plan-cache guard is held until the coherent entry count is recorded and the packet lease is reserved against the same cache snapshot"
+    )]
     fn resolve_packet_inner(
         &self,
         existing_decoder_bytes: Option<usize>,
@@ -127,6 +131,10 @@ impl OwnedPacketPlanCache {
         }))
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the plan-cache guard pins the retained-bytes snapshot while the host owner is allocated against it"
+    )]
     pub(super) fn allocate_host_owner<T>(
         &self,
         allocate: impl FnOnce(usize) -> Result<(T, usize), Error>,
@@ -178,6 +186,10 @@ impl OwnedPacketPlanCache {
             .combined_bytes_without_pinned(cache.diagnostics().retained_bytes)
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the cache and ledger totals are read under one plan-cache guard to report a single combined snapshot"
+    )]
     pub(super) fn host_memory_diagnostics(&self) -> Result<PacketHostMemoryDiagnostics, Error> {
         let _allocation = self.ledger.lock_allocations()?;
         let cache = self
@@ -225,6 +237,7 @@ impl OwnedPacketPlanCache {
             .map_err(|_| Error::OwnedPacketCachePoisoned)?;
         let diagnostics = cache.diagnostics();
         self.record_coherent_entries(diagnostics);
+        drop(cache);
         Ok(diagnostics)
     }
 

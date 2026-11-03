@@ -64,6 +64,7 @@ impl SharedCudaRuntimeState {
         }
         state.context = Some(context.clone());
         self.initialized.store(true, Ordering::Release);
+        drop(state);
         Ok(context.clone())
     }
 
@@ -93,6 +94,7 @@ impl SharedCudaRuntimeState {
             .ok_or(Error::CudaUnavailable)?
             .buffer_pool();
         state.owned_output_pool = Some(pool.clone());
+        drop(state);
         Ok(pool)
     }
 
