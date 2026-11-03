@@ -63,12 +63,10 @@ impl StripeLayout {
                     },
                 )?,
             )?;
-            let rows = checked_allocation_len::<u8>(usize::from(v), block_size as usize)?
-                .checked_add(halo_rows)
-                .ok_or(JpegError::MemoryCapExceeded {
-                    requested: usize::MAX,
-                    cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
-                })?;
+            let rows = checked_add_allocation_bytes(
+                checked_allocation_len::<u8>(usize::from(v), block_size as usize)?,
+                halo_rows,
+            )?;
             plane_lens[index] = checked_allocation_len::<u8>(stride, rows)?;
             plane_strides[index] = stride;
             plane_rows[index] = rows;

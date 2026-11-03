@@ -7,37 +7,11 @@ use super::super::deposit::{
     FastTile420EntropyState, FastTile420Window, PlaneBlockTarget,
 };
 use super::super::profile::Fast420Profiler;
-use super::super::restart::{consume_restart_marker_if_due, McuPosition};
-use super::super::{ResolvedPreparedComponentPlan, StripeBuffer};
+use super::super::StripeBuffer;
 use super::FAST420_HALO_ROWS as HALO_ROWS;
 use crate::backend::Backend;
 use crate::entropy::block::{decode_block_with_activity, skip_block};
 use crate::error::JpegError;
-use crate::internal::bit_reader::BitReader;
-
-// ROI seeks invoke this leaf once per skipped MCU; forced inlining keeps its six Huffman skips
-// in the caller's hot loop without adding a branch-and-call boundary.
-#[expect(
-    clippy::inline_always,
-    reason = "ROI seek hot path keeps six Huffman skips inside the caller loop"
-)]
-#[inline(always)]
-pub(super) fn skip_mcu_fast_tile_420<const N: usize>(
-    y_comp: ResolvedPreparedComponentPlan<'_, N>,
-    cb_comp: ResolvedPreparedComponentPlan<'_, N>,
-    cr_comp: ResolvedPreparedComponentPlan<'_, N>,
-    br: &mut BitReader<'_>,
-    y_dc: &mut i32,
-    cb_dc: &mut i32,
-    cr_dc: &mut i32,
-) -> Result<(), JpegError> {
-    for _ in 0..4 {
-        skip_block(br, y_comp.dc_table, y_comp.ac_table, y_dc)?;
-    }
-    skip_block(br, cb_comp.dc_table, cb_comp.ac_table, cb_dc)?;
-    skip_block(br, cr_comp.dc_table, cr_comp.ac_table, cr_dc)?;
-    Ok(())
-}
 
 /// Decode one MCU row into `stripe`, below its halo row.
 pub(in crate::entropy::sequential) fn decode_mcu_row_fast_tile_420<const N: usize>(
@@ -45,22 +19,23 @@ pub(in crate::entropy::sequential) fn decode_mcu_row_fast_tile_420<const N: usiz
     backend: Backend,
     state: &mut FastTile420EntropyState<'_, '_>,
     window: FastTile420Window,
+    mcu_y: u32,
     stripe: &mut StripeBuffer,
     profiler: &mut impl Fast420Profiler,
 ) -> Result<(), JpegError> {
     let clip_padding = !(window.right_luma && window.bottom_luma);
-    match (clip_padding, window.restart != 0) {
+    match (clip_padding, state.restart.interval != 0) {
         (false, false) => decode_mcu_row_fast_tile_420_specialized::<N, false, false>(
-            components, backend, state, window, stripe, profiler,
+            components, backend, state, window, mcu_y, stripe, profiler,
         ),
         (false, true) => decode_mcu_row_fast_tile_420_specialized::<N, false, true>(
-            components, backend, state, window, stripe, profiler,
+            components, backend, state, window, mcu_y, stripe, profiler,
         ),
         (true, false) => decode_mcu_row_fast_tile_420_specialized::<N, true, false>(
-            components, backend, state, window, stripe, profiler,
+            components, backend, state, window, mcu_y, stripe, profiler,
         ),
         (true, true) => decode_mcu_row_fast_tile_420_specialized::<N, true, true>(
-            components, backend, state, window, stripe, profiler,
+            components, backend, state, window, mcu_y, stripe, profiler,
         ),
     }
 }
@@ -74,6 +49,7 @@ fn decode_mcu_row_fast_tile_420_specialized<
     backend: Backend,
     state: &mut FastTile420EntropyState<'_, '_>,
     window: FastTile420Window,
+    mcu_y: u32,
     stripe: &mut StripeBuffer,
     profiler: &mut impl Fast420Profiler,
 ) -> Result<(), JpegError> {
@@ -83,6 +59,7 @@ fn decode_mcu_row_fast_tile_420_specialized<
         backend,
         &mut local.state(state),
         window,
+        mcu_y,
         stripe,
         profiler,
     );
@@ -108,42 +85,36 @@ fn decode_mcu_row_fast_tile_420_local<
     backend: Backend,
     state: &mut FastTile420EntropyState<'_, '_>,
     window: FastTile420Window,
+    mcu_y: u32,
     stripe: &mut StripeBuffer,
     profiler: &mut impl Fast420Profiler,
 ) -> Result<(), JpegError> {
+    let columns = window.columns;
     for (plane_idx, h, v) in [(0, 2, 2), (1, 1, 1), (2, 1, 1)] {
         assert_stripe_deposit_capacity(
             stripe,
             plane_idx,
             h,
             v,
-            window.stripe_mcus_per_row,
+            columns.stripe_mcus_per_row,
             8,
             HALO_ROWS,
         );
     }
     let mut pixels = [0u8; 64];
-    let row_first_mcu = window.mcu_y * window.mcus_per_row;
-    let total_mcus = window.mcu_rows * window.mcus_per_row;
-    for mx in 0..window.mcus_per_row {
+    for mx in 0..columns.mcus_per_row {
         if RESTART
-            && consume_restart_marker_if_due(
-                &mut *state.br,
-                window.restart,
-                *state.mcus_since_restart,
-                &mut *state.expected_rst,
-                McuPosition {
-                    current: row_first_mcu + mx,
-                    total: total_mcus,
-                },
-            )?
+            && state
+                .restart
+                .begin_mcu(&mut *state.br, columns.mcu_position(mx, mcu_y))?
         {
             *state.dc.y = 0;
             *state.dc.cb = 0;
             *state.dc.cr = 0;
-            *state.mcus_since_restart = 0;
         }
-        if !window.contains_mcu(mx) {
+        if !columns.contains(mx) {
+            // Direct skips keep the DC predictors in registers; see
+            // `FastTile420Components::skip_mcu`.
             for _ in 0..4 {
                 skip_block(
                     &mut *state.br,
@@ -165,15 +136,15 @@ fn decode_mcu_row_fast_tile_420_local<
                 &mut *state.dc.cr,
             )?;
             if RESTART {
-                *state.mcus_since_restart += 1;
+                state.restart.end_mcu();
             }
             continue;
         }
 
-        let local_mx = window.local_mcu_x(mx);
+        let local_mx = columns.local(mx);
         let y_x = local_mx * 16;
         let c_x = local_mx * 8;
-        let emit_right = !CLIP_PADDING || window.right_luma || mx + 1 < window.mcus_per_row;
+        let emit_right = !CLIP_PADDING || window.right_luma || mx + 1 < columns.mcus_per_row;
         let emit_bottom = !CLIP_PADDING || window.bottom_luma;
 
         let y0_activity = decode_block_with_activity(
@@ -315,7 +286,7 @@ fn decode_mcu_row_fast_tile_420_local<
         );
 
         if RESTART {
-            *state.mcus_since_restart += 1;
+            state.restart.end_mcu();
         }
     }
 

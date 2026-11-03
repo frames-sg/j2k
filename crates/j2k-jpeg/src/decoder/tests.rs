@@ -464,7 +464,7 @@ fn malformed_restart_numbering_keeps_the_lenient_restart_seek() {
 fn large_fast_420_region_decode_populates_cpu_entropy_checkpoints() {
     let bytes = dc_only_420_jpeg(1024, 2048);
     let dec = Decoder::new(&bytes).expect("decoder");
-    assert!(dec.plan.matches_fast_tile_shape());
+    assert!(dec.plan.matches_fast_420_shape());
 
     let roi = Rect {
         x: 64,

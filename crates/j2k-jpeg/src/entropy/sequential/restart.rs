@@ -58,8 +58,8 @@ fn reader_from_checkpoint<'a>(
 
 /// Entropy reader positioned at or before an MCU, with the DC predictors and
 /// next expected restart marker that hold there. Every sequential route
-/// seeks through [`scan_position_before_mcu`] and then skips the rest with
-/// [`skip_to_mcu`] or [`skip_to_mcu_with`].
+/// seeks through [`scan_position_before_mcu`] and skips the rest, both inside
+/// [`enter_scan_at_mcu`] or [`enter_scan_at_mcu_with`].
 ///
 /// A consumer that has a decoder asks `Decoder::checkpoint_for_mcu` for the
 /// resume point of the first MCU it needs and hands it to
@@ -264,91 +264,168 @@ impl<'a, const N: usize> McuSkipper<'a, N> {
     }
 }
 
-#[derive(Clone, Copy)]
-pub(super) struct McuSkipTarget {
-    pub(super) target_mcu: u32,
-    pub(super) total_mcus: u32,
-    pub(super) restart: u16,
-    pub(super) wide_huffman: bool,
-}
-
-pub(super) struct McuSkipState<'a, 'b> {
-    pub(super) br: &'a mut BitReader<'b>,
-    pub(super) prev_dc: &'a mut [i32],
-    pub(super) current_mcu: &'a mut u32,
-    pub(super) mcus_since_restart: &'a mut u32,
-    pub(super) expected_rst: &'a mut u8,
-}
-
+/// An MCU's index in scan order and the scan's MCU count.
 #[derive(Clone, Copy)]
 pub(super) struct McuPosition {
     pub(super) current: u32,
     pub(super) total: u32,
 }
 
-#[expect(
-    clippy::inline_always,
-    reason = "the due check runs once per MCU and must inline so callers' local readers stay in registers"
-)]
-#[inline(always)]
-pub(super) fn consume_restart_marker_if_due(
-    br: &mut BitReader<'_>,
-    restart: u16,
+/// Restart-interval bookkeeping of a sequential scan.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct RestartState {
+    /// MCUs per restart interval; zero for a scan without restart markers.
+    pub(super) interval: u16,
     mcus_since_restart: u32,
-    expected_rst: &mut u8,
-    position: McuPosition,
-) -> Result<bool, JpegError> {
-    if restart == 0 || mcus_since_restart != u32::from(restart) {
-        return Ok(false);
-    }
-
-    let (restarted, next_rst) =
-        br.clone()
-            .restarted(*expected_rst, position.current, position.total)?;
-    *br = restarted;
-    *expected_rst = next_rst;
-    Ok(true)
+    expected_rst: u8,
 }
 
-pub(super) fn skip_to_mcu<const N: usize>(
-    plan: &PreparedDecodePlan,
-    target: McuSkipTarget,
-    state: &mut McuSkipState<'_, '_>,
-) -> Result<(), JpegError> {
-    if *state.current_mcu >= target.target_mcu {
-        return Ok(());
-    }
-    let skipper = McuSkipper::<N>::new(plan, target.wide_huffman)?;
-    skip_to_mcu_with(target, state, |br, prev_dc| skipper.skip(br, prev_dc))
-}
-
-/// [`skip_to_mcu`] with a route's own single-MCU skip, for decoders whose
-/// component layout is fixed and whose skip loop is specialized for it.
-pub(super) fn skip_to_mcu_with(
-    target: McuSkipTarget,
-    state: &mut McuSkipState<'_, '_>,
-    mut skip_one_mcu: impl FnMut(&mut BitReader<'_>, &mut [i32]) -> Result<(), JpegError>,
-) -> Result<(), JpegError> {
-    while *state.current_mcu < target.target_mcu {
-        if consume_restart_marker_if_due(
-            state.br,
-            target.restart,
-            *state.mcus_since_restart,
-            state.expected_rst,
-            McuPosition {
-                current: *state.current_mcu,
-                total: target.total_mcus,
-            },
-        )? {
-            state.prev_dc.fill(0);
-            *state.mcus_since_restart = 0;
+impl RestartState {
+    /// Bookkeeping at the start of a scan.
+    pub(super) const fn new(interval: u16) -> Self {
+        Self {
+            interval,
+            mcus_since_restart: 0,
+            expected_rst: 0,
         }
-
-        skip_one_mcu(state.br, state.prev_dc)?;
-        *state.mcus_since_restart += 1;
-        *state.current_mcu += 1;
     }
-    Ok(())
+
+    /// Before the MCU at `position`: when a restart interval ends there,
+    /// consume its marker and restart the interval count. Returns whether it
+    /// did, in which case the caller resets its DC predictors. They stay with
+    /// the caller because the fast row kernels keep them in registers; a
+    /// slice reset in here measurably defeats that (+1–3 % decode time).
+    #[expect(
+        clippy::inline_always,
+        reason = "the due check runs once per MCU and must inline so callers' local readers stay in registers"
+    )]
+    #[inline(always)]
+    pub(super) fn begin_mcu(
+        &mut self,
+        br: &mut BitReader<'_>,
+        position: McuPosition,
+    ) -> Result<bool, JpegError> {
+        if self.interval == 0 || self.mcus_since_restart != u32::from(self.interval) {
+            return Ok(false);
+        }
+        let (restarted, next_rst) =
+            br.clone()
+                .restarted(self.expected_rst, position.current, position.total)?;
+        *br = restarted;
+        self.expected_rst = next_rst;
+        self.mcus_since_restart = 0;
+        Ok(true)
+    }
+
+    /// After an MCU, decoded or skipped.
+    #[expect(
+        clippy::inline_always,
+        reason = "runs once per MCU next to the inlined restart check"
+    )]
+    #[inline(always)]
+    pub(super) fn end_mcu(&mut self) {
+        self.mcus_since_restart += 1;
+    }
+}
+
+/// Entropy state at an MCU boundary: the reader, the DC predictors in output
+/// component order, and the restart bookkeeping that hold there.
+pub(super) struct EntropyCursor<'a> {
+    pub(super) br: BitReader<'a>,
+    pub(super) prev_dc: [i32; 4],
+    pub(super) restart: RestartState,
+}
+
+impl<'a> EntropyCursor<'a> {
+    /// The cursor at the position [`scan_position_before_mcu`] finds for
+    /// `target_mcu`, and that position's MCU index.
+    fn before_mcu(
+        scan_bytes: &'a [u8],
+        restart_interval: u16,
+        checkpoint: Option<&DeviceCheckpoint>,
+        target_mcu: u32,
+    ) -> (Self, u32) {
+        let ScanPosition {
+            br,
+            prev_dc,
+            mcu_index,
+            expected_rst,
+        } = scan_position_before_mcu(scan_bytes, restart_interval, checkpoint, target_mcu);
+        let mut restart = RestartState::new(restart_interval);
+        restart.expected_rst = expected_rst;
+        (
+            Self {
+                br,
+                prev_dc,
+                restart,
+            },
+            mcu_index,
+        )
+    }
+
+    /// Skip MCUs `mcus` of a scan of `total_mcus` with `skip_one_mcu`.
+    fn skip_mcus(
+        &mut self,
+        mcus: core::ops::Range<u32>,
+        total_mcus: u32,
+        mut skip_one_mcu: impl FnMut(&mut BitReader<'_>, &mut [i32]) -> Result<(), JpegError>,
+    ) -> Result<(), JpegError> {
+        for current in mcus {
+            if self.restart.begin_mcu(
+                &mut self.br,
+                McuPosition {
+                    current,
+                    total: total_mcus,
+                },
+            )? {
+                self.prev_dc = [0; 4];
+            }
+            skip_one_mcu(&mut self.br, &mut self.prev_dc)?;
+            self.restart.end_mcu();
+        }
+        Ok(())
+    }
+}
+
+/// Enter a scan of any component layout at MCU `target.current` of
+/// `target.total`: seek through [`scan_position_before_mcu`] (from
+/// `checkpoint` when it applies), then skip the MCUs left before the target
+/// with an [`McuSkipper`], built only when there is something to skip.
+pub(super) fn enter_scan_at_mcu<'a, const N: usize>(
+    plan: &PreparedDecodePlan,
+    scan_bytes: &'a [u8],
+    checkpoint: Option<&DeviceCheckpoint>,
+    target: McuPosition,
+    wide_huffman: bool,
+) -> Result<EntropyCursor<'a>, JpegError> {
+    let (mut cursor, first_mcu) = EntropyCursor::before_mcu(
+        scan_bytes,
+        plan.restart_interval.unwrap_or(0),
+        checkpoint,
+        target.current,
+    );
+    if first_mcu < target.current {
+        let skipper = McuSkipper::<N>::new(plan, wide_huffman)?;
+        cursor.skip_mcus(first_mcu..target.current, target.total, |br, prev_dc| {
+            skipper.skip(br, prev_dc)
+        })?;
+    }
+    Ok(cursor)
+}
+
+/// [`enter_scan_at_mcu`] with a route's own single-MCU skip, for decoders
+/// whose component layout is fixed and whose skip is specialized for it.
+pub(super) fn enter_scan_at_mcu_with<'a>(
+    scan_bytes: &'a [u8],
+    restart_interval: u16,
+    checkpoint: Option<&DeviceCheckpoint>,
+    target: McuPosition,
+    skip_one_mcu: impl FnMut(&mut BitReader<'_>, &mut [i32]) -> Result<(), JpegError>,
+) -> Result<EntropyCursor<'a>, JpegError> {
+    let (mut cursor, first_mcu) =
+        EntropyCursor::before_mcu(scan_bytes, restart_interval, checkpoint, target.current);
+    cursor.skip_mcus(first_mcu..target.current, target.total, skip_one_mcu)?;
+    Ok(cursor)
 }
 
 #[cfg(test)]

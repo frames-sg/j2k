@@ -14,8 +14,8 @@
 //! Every pixel comes from the same per-row 4:2:0 kernels, window rows, and
 //! edge rules a stripe-at-a-time pass uses.
 
-use super::super::emit::{component_row_triplet, valid_component_rows};
-use super::super::layout::Fast420RegionLayout;
+use super::super::emit::{rgb420_chroma_rows, valid_component_rows};
+use super::super::layout::CropWindow;
 use super::super::{StripeBuffer, StripePlane};
 use super::{FAST420_HALO_ROWS as HALO_ROWS, MCU_PX};
 use crate::backend::{Backend, Rgb420ChromaRows, Rgb420Crop, Rgb420CroppedRowPair, Rgb420RowPair};
@@ -106,41 +106,36 @@ struct RowSources<'s> {
     stripe: &'s StripeBuffer,
     pass: Fast420RowPass,
     row_width: usize,
-    cb: [&'s [u8]; 3],
-    cr: [&'s [u8]; 3],
+    chroma: Rgb420ChromaRows<'s>,
 }
 
 impl<'s> RowSources<'s> {
     /// The sources of output row `y` and of the other row on its chroma row.
-    fn new(
-        stripe: &'s StripeBuffer,
-        layout: Fast420RegionLayout,
-        pass: Fast420RowPass,
-        y: u32,
-    ) -> Self {
+    fn new(stripe: &'s StripeBuffer, crop: CropWindow, pass: Fast420RowPass, y: u32) -> Self {
         let halo = HALO_ROWS as usize;
         // At the image's top edge the halo holds nothing; leaving it out of
         // the plane view makes the first chroma row replicate upwards.
         let dropped = if pass.mcu_y == 0 { halo } else { 0 };
         let row = ((y / 2 + HALO_ROWS - pass.mcu_y * (MCU_PX / 2)) as usize) - dropped;
         let valid_rows = halo - dropped + pass.chroma_rows;
-        let chroma_width = layout.chroma_width();
-        let triplet = |plane_idx| {
+        let view = |plane_idx| {
             let plane = stripe.plane(plane_idx);
-            let view = StripePlane {
+            StripePlane {
                 data: &plane.data[dropped * plane.stride..],
                 stride: plane.stride,
                 rows: plane.rows - dropped,
-            };
-            <[&[u8]; 3]>::from(component_row_triplet(None, view, None, row, valid_rows))
-                .map(|chroma_row| &chroma_row[..chroma_width])
+            }
         };
         Self {
             stripe,
             pass,
-            row_width: layout.row_width(),
-            cb: triplet(1),
-            cr: triplet(2),
+            row_width: crop.row_width,
+            chroma: rgb420_chroma_rows(
+                |plane_idx| (None, view(plane_idx), None),
+                row,
+                valid_rows,
+                crop.chroma_width(),
+            ),
         }
     }
 
@@ -155,11 +150,10 @@ impl<'s> RowSources<'s> {
     where
         's: 'd,
     {
-        let ([above_cb, curr_cb, below_cb], [above_cr, curr_cr, below_cr]) = (self.cb, self.cr);
         Rgb420RowPair::new(
             self.luma(y),
             Some(self.luma(y + 1)),
-            Rgb420ChromaRows::new(above_cb, curr_cb, below_cb, above_cr, curr_cr, below_cr),
+            self.chroma,
             dst_top,
             Some(dst_bottom),
         )
@@ -173,12 +167,23 @@ impl<'s> RowSources<'s> {
     where
         's: 'd,
     {
-        let near = if y.is_multiple_of(2) { 0 } else { 2 };
-        let (near_cb, near_cr) = (self.cb[near], self.cr[near]);
+        let chroma = self.chroma;
+        let (near_cb, near_cr) = if y.is_multiple_of(2) {
+            (chroma.prev_cb, chroma.prev_cr)
+        } else {
+            (chroma.next_cb, chroma.next_cr)
+        };
         Rgb420RowPair::new(
             self.luma(y),
             None,
-            Rgb420ChromaRows::new(near_cb, self.cb[1], near_cb, near_cr, self.cr[1], near_cr),
+            Rgb420ChromaRows::new(
+                near_cb,
+                chroma.curr_cb,
+                near_cb,
+                near_cr,
+                chroma.curr_cr,
+                near_cr,
+            ),
             dst,
             None,
         )
@@ -189,18 +194,19 @@ impl<'s> RowSources<'s> {
 /// window columns.
 pub(super) fn emit_pass_rows<W: InterleavedRgbWriter>(
     backend: Backend,
-    layout: Fast420RegionLayout,
+    crop: CropWindow,
     pass: Fast420RowPass,
     stripe: &StripeBuffer,
     writer: &mut W,
 ) -> Result<(), JpegError> {
-    let crop = Rgb420Crop::new(layout.crop_start, layout.crop_end - layout.crop_start);
-    let full_width = layout.crop_start == 0 && layout.crop_end == layout.row_width();
+    let full_width = crop.is_full_width();
+    let kernel_crop = Rgb420Crop::new(crop.crop_start, crop.crop_width);
     let fill = |rows: Rgb420RowPair<'_>| {
         if full_width {
             backend.fill_rgb_row_pair_from_420(rows);
         } else {
-            backend.fill_rgb_row_pair_from_420_cropped(Rgb420CroppedRowPair::new(rows, crop));
+            backend
+                .fill_rgb_row_pair_from_420_cropped(Rgb420CroppedRowPair::new(rows, kernel_crop));
         }
     };
     pass.for_each_row_group(|group| match group {
@@ -208,11 +214,11 @@ pub(super) fn emit_pass_rows<W: InterleavedRgbWriter>(
             let dst_bottom = dst_bottom.ok_or(JpegError::InternalInvariant {
                 reason: "row_count=2 supplies bottom row",
             })?;
-            fill(RowSources::new(stripe, layout, pass, y).pair(y, dst_top, dst_bottom));
+            fill(RowSources::new(stripe, crop, pass, y).pair(y, dst_top, dst_bottom));
             Ok(())
         }),
         RowGroup::Single(y) => writer.with_rgb_rows(y - pass.out_y0, 1, |dst, _| {
-            fill(RowSources::new(stripe, layout, pass, y).single(y, dst));
+            fill(RowSources::new(stripe, crop, pass, y).single(y, dst));
             Ok(())
         }),
     })

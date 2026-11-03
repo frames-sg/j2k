@@ -7,6 +7,13 @@ and stale roadmap entries have been removed from the public documentation set.
 
 Staged workspace version: `0.13.2`.
 
+- Baseline JPEGs take the fast 4:2:0, 4:2:2 and 4:4:4 decode routes by one
+  shape rule, shared by CPU decoding and device batch planning. Identity-RGB
+  4:4:4 JPEGs (components tagged R, G, B, or marked RGB by an Adobe APP14
+  segment, as many slide-scanner tiles are) now also take the Metal 4:4:4
+  fast path, whose output matches the CPU; the CUDA 4:4:4 route, which
+  requires YCbCr, is unchanged. CPU output is byte-identical.
+
 - Device DCT-window requests (the hybrid and GPU JPEG paths) start from
   the decoder's nearest entropy checkpoint instead of the start of the
   scan. On Apple M5 Max, warm windows are 3.3–180x faster; for example a

@@ -1,30 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use super::restart::McuPosition;
 use super::{PreparedComponentPlan, PreparedDecodePlan};
 use crate::color::scaled_sampling::ScaledSampling;
 use crate::info::{ColorSpace, DownscaleFactor, Rect};
-
-#[derive(Clone, Copy)]
-pub(super) struct RgbCropWindow {
-    scratch_x0: usize,
-    scratch_x1: usize,
-}
-
-impl RgbCropWindow {
-    pub(super) fn new(width: usize, roi: Rect) -> Self {
-        let roi_x0 = roi.x as usize;
-        let roi_x1 = roi_x0 + roi.w as usize;
-        let chroma_width = width.div_ceil(2);
-        let sample_start = (roi_x0 / 2).saturating_sub(1);
-        let sample_end = (roi_x1.div_ceil(2) + 1).min(chroma_width);
-        let scratch_x0 = sample_start * 2;
-        let scratch_x1 = (sample_end * 2).min(width);
-        Self {
-            scratch_x0,
-            scratch_x1,
-        }
-    }
-}
 
 #[derive(Clone, Copy)]
 pub(crate) struct StripeRegionLayout {
@@ -53,8 +32,115 @@ impl StripeRegionLayout {
         }
     }
 
+    /// The window a fancy 4:2:0 region of `roi` decodes in an image `width`
+    /// pixels wide: the MCU columns covering the chroma samples of `roi`
+    /// plus one on either side, which the edge columns' upsampling reads.
+    pub(super) fn for_fancy_420(width: u32, roi: Rect) -> Self {
+        let chroma_width = width.div_ceil(2);
+        let sample_start = (roi.x / 2).saturating_sub(1);
+        let sample_end = ((roi.x + roi.w).div_ceil(2) + 1).min(chroma_width);
+        let x0 = sample_start * 2;
+        let x1 = (sample_end * 2).min(width);
+        Self::new(
+            width,
+            16,
+            Rect {
+                x: x0,
+                y: 0,
+                w: x1 - x0,
+                h: 1,
+            },
+        )
+    }
+
     pub(super) fn source_width_usize(self) -> usize {
         self.source_width as usize
+    }
+}
+
+/// The MCU grid of a scan and the MCU columns a decode deposits into its
+/// stripe; MCUs in the other columns are entropy-skipped.
+#[derive(Clone, Copy)]
+pub(super) struct McuColumns {
+    pub(super) mcus_per_row: u32,
+    pub(super) mcu_rows: u32,
+    pub(super) stripe_mcu_start: u32,
+    pub(super) stripe_mcus_per_row: u32,
+}
+
+impl McuColumns {
+    /// The columns of `region` in a scan of `(mcus_per_row, mcu_rows)` MCUs.
+    pub(super) const fn new(
+        (mcus_per_row, mcu_rows): (u32, u32),
+        region: StripeRegionLayout,
+    ) -> Self {
+        Self {
+            mcus_per_row,
+            mcu_rows,
+            stripe_mcu_start: region.stripe_mcu_start,
+            stripe_mcus_per_row: region.stripe_mcus_per_row,
+        }
+    }
+
+    #[inline]
+    pub(super) const fn contains(self, mcu_x: u32) -> bool {
+        mcu_x >= self.stripe_mcu_start && mcu_x < self.stripe_mcu_start + self.stripe_mcus_per_row
+    }
+
+    /// Stripe column of MCU column `mcu_x`, which [`Self::contains`].
+    #[inline]
+    pub(super) const fn local(self, mcu_x: u32) -> u32 {
+        mcu_x - self.stripe_mcu_start
+    }
+
+    /// Scan position of the MCU at column `mcu_x` of row `mcu_y`.
+    #[inline]
+    pub(super) const fn mcu_position(self, mcu_x: u32, mcu_y: u32) -> McuPosition {
+        McuPosition {
+            current: mcu_y * self.mcus_per_row + mcu_x,
+            total: self.mcu_rows * self.mcus_per_row,
+        }
+    }
+
+    /// Whether every MCU column is decoded.
+    pub(super) const fn is_whole_row(self) -> bool {
+        self.stripe_mcu_start == 0 && self.stripe_mcus_per_row == self.mcus_per_row
+    }
+}
+
+/// The columns of a decoded window that reach the writer.
+#[derive(Clone, Copy)]
+pub(super) struct CropWindow {
+    /// Visible luma width of the decoded window.
+    pub(super) row_width: usize,
+    /// Window column of the first output column.
+    pub(super) crop_start: usize,
+    /// Output columns.
+    pub(super) crop_width: usize,
+}
+
+impl CropWindow {
+    /// The columns of `roi` in the decoded `region`.
+    pub(super) const fn new(region: StripeRegionLayout, roi: Rect) -> Self {
+        Self {
+            row_width: region.source_width as usize,
+            crop_start: (roi.x - region.source_x0) as usize,
+            crop_width: roi.w as usize,
+        }
+    }
+
+    pub(super) const fn columns(self) -> core::ops::Range<usize> {
+        self.crop_start..self.crop_start + self.crop_width
+    }
+
+    /// Whether the writer takes the decoded window's whole rows.
+    pub(super) const fn is_full_width(self) -> bool {
+        self.crop_start == 0 && self.crop_width == self.row_width
+    }
+
+    /// Visible 2:1 chroma width of the decoded window.
+    pub(super) const fn chroma_width(self) -> usize {
+        self.row_width.div_ceil(2)
     }
 }
 
@@ -142,88 +228,12 @@ pub(super) fn fast420_decode_mcu_row_end(
     }
 }
 
-/// First MCU a fast-route region decode of `roi` reads: fancy 4:2:0 also
-/// needs the chroma row above an MCU-aligned top edge, 4:4:4 and 4:2:2 no
-/// vertical context.
-pub(crate) fn fast_tile_region_first_decode_mcu(
-    plan: &PreparedDecodePlan,
-    roi: Rect,
-    downscale: DownscaleFactor,
-) -> u32 {
-    let (width, _) = scaled_dimensions(plan.dimensions, downscale);
-    let block_size = downscale.output_block_size();
-    let mcu_width_px = block_size * u32::from(plan.sampling.max_h);
-    let mcu_height_px = block_size * u32::from(plan.sampling.max_v);
-    let mcus_per_row = width.div_ceil(mcu_width_px);
-    let first_row = if plan.matches_fast_rgb_v1_shape() {
-        first_mcu_row_for_rect(roi, mcu_height_px)
-    } else {
-        fast420_first_decode_mcu_row(roi, mcu_height_px)
-    };
-    first_row * mcus_per_row
-}
-
 #[inline]
 pub(super) fn mcu_row_intersects_rect(stripe_index: u32, mcu_height_px: u32, rect: Rect) -> bool {
     let y0 = stripe_index * mcu_height_px;
     let y1 = y0 + mcu_height_px;
     let rect_y1 = rect.y + rect.h;
     y0 < rect_y1 && y1 > rect.y
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct Fast420RegionLayout {
-    pub(super) stripe_mcu_start: u32,
-    pub(super) stripe_mcus_per_row: u32,
-    pub(super) y_decode_start: usize,
-    pub(super) y_decode_end: usize,
-    pub(super) crop_start: usize,
-    pub(super) crop_end: usize,
-}
-
-impl Fast420RegionLayout {
-    pub(super) fn new(width: usize, roi: Rect) -> Self {
-        Self::new_for_mcu_width(width, roi, 16)
-    }
-
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "layout widths originate from validated u32 JPEG dimensions before allocation"
-    )]
-    pub(super) fn new_for_mcu_width(width: usize, roi: Rect, mcu_width_px: u32) -> Self {
-        let crop_window = RgbCropWindow::new(width, roi);
-        let stripe = StripeRegionLayout::new(
-            width as u32,
-            mcu_width_px,
-            Rect {
-                x: crop_window.scratch_x0 as u32,
-                y: 0,
-                w: (crop_window.scratch_x1 - crop_window.scratch_x0) as u32,
-                h: 1,
-            },
-        );
-        let y_decode_start = stripe.source_x0 as usize;
-        let y_decode_end = y_decode_start + stripe.source_width as usize;
-        let crop_start = roi.x as usize - y_decode_start;
-        let crop_end = crop_start + roi.w as usize;
-
-        Self {
-            stripe_mcu_start: stripe.stripe_mcu_start,
-            stripe_mcus_per_row: stripe.stripe_mcus_per_row,
-            y_decode_start,
-            y_decode_end,
-            crop_start,
-            crop_end,
-        }
-    }
-
-    pub(super) fn row_width(self) -> usize {
-        self.y_decode_end - self.y_decode_start
-    }
-
-    pub(super) fn chroma_width(self) -> usize {
-        self.row_width().div_ceil(2)
-    }
 }
 
 /// Whether the dedicated 4:2:0 smoothing emitters produce this decode: coded

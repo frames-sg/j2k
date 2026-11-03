@@ -16,6 +16,7 @@ use crate::{
 use alloc::vec;
 use alloc::vec::Vec;
 use j2k_core::RowSink;
+use j2k_test_support::{crop_interleaved_bytes, PixelRect};
 
 /// Gradients plus per-pixel noise, so neighbouring chroma samples differ and
 /// every fancy-upsampling tap matters.
@@ -91,9 +92,9 @@ fn decoder(bytes: &[u8], shape: Shape) -> Decoder<'_> {
     }
     .expect("fixture decoder");
     let streams = match shape {
-        Shape::Ycbcr420 => dec.plan.matches_fast_tile_shape(),
-        Shape::Ycbcr422 => dec.plan.matches_fast_rgb422_shape(),
-        Shape::Ycbcr444 | Shape::Rgb444 => dec.plan.matches_fast_rgb444_shape(),
+        Shape::Ycbcr420 => dec.plan.matches_fast_420_shape(),
+        Shape::Ycbcr422 => dec.plan.matches_fast_422_shape(),
+        Shape::Ycbcr444 | Shape::Rgb444 => dec.plan.matches_fast_444_shape(),
     };
     assert!(streams, "{shape:?} takes its streaming route");
     dec
@@ -161,13 +162,12 @@ fn streamed_rows_rgb(dec: &Decoder<'_>) -> Vec<u8> {
 }
 
 fn crop_rgb(full: &[u8], width: u32, roi: Rect) -> Vec<u8> {
-    let stride = width as usize * 3;
-    let mut out = Vec::with_capacity(roi.w as usize * roi.h as usize * 3);
-    for y in roi.y..roi.y + roi.h {
-        let start = y as usize * stride + roi.x as usize * 3;
-        out.extend_from_slice(&full[start..start + roi.w as usize * 3]);
-    }
-    out
+    crop_interleaved_bytes(
+        full,
+        width as usize,
+        3,
+        PixelRect::new(roi.x, roi.y, roi.w, roi.h),
+    )
 }
 
 const WIDTHS: [u32; 12] = [5, 7, 9, 15, 16, 17, 24, 31, 33, 47, 65, 100];

@@ -19,6 +19,7 @@ pub use cache::{
     SharedJpegInput, DEFAULT_JPEG_PLAN_CACHE_ENTRIES, DEFAULT_JPEG_PLAN_CACHE_HOST_BYTES,
 };
 pub use error::{FastPacketError, TableKind};
+pub(crate) use family::fast_packet_family_for_shape;
 pub use family::{classify_color_fast_packet_family, JpegFastPacketFamily};
 pub use types::{
     JpegCanonicalHuffmanTable, JpegEntropyCheckpointV1, JpegFast420PacketV1, JpegFast422PacketV1,

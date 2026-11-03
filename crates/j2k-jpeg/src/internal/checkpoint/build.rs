@@ -143,7 +143,8 @@ where
             }
         }
 
-        skip_one_mcu_with_entries::<N>(plan, &mut br, &mut prev_dc).map_err(E::from)?;
+        // Checkpoints keep the narrow primary lookup they were specified with.
+        skip_mcu::<N>(plan, &mut br, &mut prev_dc, false).map_err(E::from)?;
         mcus_since_restart += 1;
     }
 
@@ -205,24 +206,10 @@ pub(super) fn skip_one_mcu(
 ) -> Result<(), JpegError> {
     match plan.huffman_primary_width {
         HuffmanPrimaryWidth::Narrow8 => {
-            skip_one_mcu_with_entries::<NARROW_PRIMARY_ENTRIES>(plan, br, prev_dc)
+            skip_mcu::<NARROW_PRIMARY_ENTRIES>(plan, br, prev_dc, false)
         }
-        HuffmanPrimaryWidth::Full12 => {
-            skip_one_mcu_with_entries::<FULL_PRIMARY_ENTRIES>(plan, br, prev_dc)
-        }
+        HuffmanPrimaryWidth::Full12 => skip_mcu::<FULL_PRIMARY_ENTRIES>(plan, br, prev_dc, false),
     }
-}
-
-pub(super) fn skip_one_mcu_with_entries<const N: usize>(
-    plan: &PreparedDecodePlan,
-    br: &mut BitReader<'_>,
-    prev_dc: &mut [i32; 4],
-) -> Result<(), JpegError> {
-    // Checkpoints retain only the entropy position and DC predictors; the
-    // shared skip performs the same Huffman validation and bit consumption
-    // without writing dequantized coefficients. Device packet checkpoints
-    // keep the narrow primary lookup they were specified with.
-    skip_mcu::<N>(plan, br, prev_dc, false)
 }
 
 #[cfg(test)]

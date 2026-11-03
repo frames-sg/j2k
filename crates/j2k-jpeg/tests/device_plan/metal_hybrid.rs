@@ -29,6 +29,21 @@ fn fast_packet_jpeg_resolves_to_the_metal_fast_path() {
     );
 }
 
+/// Identity-RGB 4:4:4 takes the same 4:4:4 fast packet as YCbCr: its kernels
+/// skip the color transform (`PlaneMode::Rgb`).
+#[test]
+fn identity_rgb_444_jpeg_resolves_to_the_metal_fast_path() {
+    let input = j2k_test_support::rgb_app14_8x8_jpeg();
+    let report = report(&input, JpegDecodeOp::Full, PixelFormat::Rgb8);
+
+    assert!(report.device.matches_fast_444);
+    assert!(report.metal_fast.eligible);
+    assert_eq!(
+        report.resolve_path(BackendRequest::Metal),
+        JpegResolvedDecodePath::MetalFast
+    );
+}
+
 #[test]
 fn jpeg_classes_outside_the_fast_path_resolve_to_hybrid_metal_decode() {
     let lossless = j2k_test_support::lossless_matrix_cases()
@@ -36,7 +51,7 @@ fn jpeg_classes_outside_the_fast_path_resolve_to_hybrid_metal_decode() {
         .find(|case| case.is_gray() && case.precision == 16 && case.restart_rows == 0)
         .expect("16-bit grayscale lossless case")
         .jpeg;
-    let cases: [(&str, Vec<u8>, PixelFormat); 6] = [
+    let cases: [(&str, Vec<u8>, PixelFormat); 5] = [
         (
             "grayscale",
             j2k_test_support::baseline_grayscale_jpeg(37, 29),
@@ -58,11 +73,6 @@ fn jpeg_classes_outside_the_fast_path_resolve_to_hybrid_metal_decode() {
             PixelFormat::Rgb16,
         ),
         ("lossless", lossless.to_vec(), PixelFormat::Gray16),
-        (
-            "rgb app14",
-            j2k_test_support::rgb_app14_8x8_jpeg(),
-            PixelFormat::Rgb8,
-        ),
     ];
     let ops = [
         JpegDecodeOp::Full,

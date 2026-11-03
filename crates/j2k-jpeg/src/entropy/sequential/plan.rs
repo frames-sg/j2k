@@ -11,7 +11,8 @@ use crate::entropy::huffman::{
 use crate::error::JpegError;
 use crate::info::{ColorSpace, SamplingFactors};
 
-use super::layout::is_ycbcr_420;
+use super::FastRgbRoute;
+use crate::adapter::{fast_packet_family_for_shape, JpegFastPacketFamily};
 
 mod resolved;
 pub(crate) use self::resolved::ResolvedPreparedComponentPlan;
@@ -118,75 +119,51 @@ impl PreparedDecodePlan {
         )
     }
 
-    /// Whether the block-streaming CPU 4:2:0 route decodes this scan. It
-    /// consumes restart markers itself, so it takes the same shapes as
-    /// accelerator packets.
-    pub(crate) fn matches_fast_tile_shape(&self) -> bool {
-        self.matches_fast_420_device_shape()
+    /// The color fast-packet family of this scan's coded shape when its three
+    /// components are stored in output order: the one shape rule the fast CPU
+    /// routes, the device batch summary and packet classification share (see
+    /// [`fast_packet_family_for_shape`]).
+    fn fast_shape_family(&self) -> Option<JpegFastPacketFamily> {
+        let in_output_order = self
+            .components
+            .iter()
+            .enumerate()
+            .all(|(index, component)| component.output_index == index);
+        if !in_output_order {
+            return None;
+        }
+        fast_packet_family_for_shape(
+            self.color_space,
+            self.sampling.components(),
+            self.dimensions.0,
+        )
     }
 
     /// Coded 4:2:0 YCbCr whose full-size chroma libjpeg-turbo smooths with
     /// `h2v2_fancy_upsample`, the only upsampler the fused 4:2:0 routes
-    /// implement. Chroma at most two samples wide (images at most four pixels
-    /// wide) is replicated instead and takes the generic route.
-    pub(crate) fn matches_fast_420_device_shape(&self) -> bool {
-        self.dimensions.0 > 4
-            && is_ycbcr_420(self)
-            && self.components.len() == 3
-            && self.components[0].output_index == 0
-            && self.components[0].h == 2
-            && self.components[0].v == 2
-            && self.components[1].output_index == 1
-            && self.components[1].h == 1
-            && self.components[1].v == 1
-            && self.components[2].output_index == 2
-            && self.components[2].h == 1
-            && self.components[2].v == 1
-    }
-
-    /// Coded 4:4:4 YCbCr, the 4:4:4 shape the device kernels implement.
-    pub(crate) fn matches_fast_444_device_shape(&self) -> bool {
-        self.color_space == ColorSpace::YCbCr && self.matches_fast_rgb444_shape()
-    }
-
-    /// Three full-resolution components in output order, coded as YCbCr or
-    /// as identity RGB: the shape the streaming CPU 4:4:4 route decodes.
-    pub(crate) fn matches_fast_rgb444_shape(&self) -> bool {
-        matches!(self.color_space, ColorSpace::YCbCr | ColorSpace::Rgb)
-            && self.components.len() == 3
-            && self.components[0].output_index == 0
-            && self.components[0].h == 1
-            && self.components[0].v == 1
-            && self.components[1].output_index == 1
-            && self.components[1].h == 1
-            && self.components[1].v == 1
-            && self.components[2].output_index == 2
-            && self.components[2].h == 1
-            && self.components[2].v == 1
-    }
-
-    /// The full-size shapes whose MCU rows the streaming CPU route converts
-    /// without vertical upsampling context: 4:4:4 and 4:2:2.
-    pub(crate) fn matches_fast_rgb_v1_shape(&self) -> bool {
-        self.matches_fast_rgb444_shape() || self.matches_fast_rgb422_shape()
-    }
-
-    /// Coded 4:2:2 YCbCr whose full-size chroma libjpeg-turbo smooths (more
-    /// than two chroma samples wide), the shape the device 4:2:2 kernels
     /// implement.
-    pub(crate) fn matches_fast_rgb422_shape(&self) -> bool {
-        self.dimensions.0 > 4
-            && self.color_space == ColorSpace::YCbCr
-            && self.components.len() == 3
-            && self.components[0].output_index == 0
-            && self.components[0].h == 2
-            && self.components[0].v == 1
-            && self.components[1].output_index == 1
-            && self.components[1].h == 1
-            && self.components[1].v == 1
-            && self.components[2].output_index == 2
-            && self.components[2].h == 1
-            && self.components[2].v == 1
+    pub(crate) fn matches_fast_420_shape(&self) -> bool {
+        self.fast_shape_family() == Some(JpegFastPacketFamily::Fast420)
+    }
+
+    /// Coded 4:2:2 YCbCr whose full-size chroma libjpeg-turbo smooths.
+    pub(crate) fn matches_fast_422_shape(&self) -> bool {
+        self.fast_shape_family() == Some(JpegFastPacketFamily::Fast422)
+    }
+
+    /// Three full-resolution components coded as YCbCr or as identity RGB.
+    pub(crate) fn matches_fast_444_shape(&self) -> bool {
+        self.fast_shape_family() == Some(JpegFastPacketFamily::Fast444)
+    }
+
+    /// The streaming route that decodes this scan's full-size RGB output.
+    pub(crate) fn fast_rgb_route(&self) -> Option<FastRgbRoute> {
+        match self.fast_shape_family()? {
+            JpegFastPacketFamily::Fast420 => Some(FastRgbRoute::Fancy420),
+            JpegFastPacketFamily::Fast422 | JpegFastPacketFamily::Fast444 => {
+                Some(FastRgbRoute::Rows)
+            }
+        }
     }
 }
 

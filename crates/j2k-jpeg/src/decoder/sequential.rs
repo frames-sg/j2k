@@ -8,11 +8,10 @@ use crate::entropy::sequential::restart_checkpoint_from_index;
 
 use super::{
     checkpoint_before_mcu, decode_progressive, decode_scan_baseline, decode_scan_baseline_rgb,
-    decode_scan_fast_rgb_v1, decode_scan_fast_tile_rgb, emit_decode_scan_profile,
-    jpeg_profile_stages_enabled, merged_warnings, scaled_dimensions, scaled_rect_covering,
-    stripe_region_layout, DecodeOutcome, Decoder, DeviceCheckpoint, DownscaleFactor, Instant,
-    InterleavedRgbWriter, JpegError, OutputWriter, Rect, ScratchPool,
-    CPU_ROI_CHECKPOINT_MIN_TARGET_MCUS,
+    emit_decode_scan_profile, jpeg_profile_stages_enabled, merged_warnings, scaled_dimensions,
+    scaled_rect_covering, stripe_region_layout, DecodeOutcome, Decoder, DeviceCheckpoint,
+    DownscaleFactor, FastRgbRequest, FastRgbRoute, Instant, InterleavedRgbWriter, JpegError,
+    OutputWriter, Rect, ScratchPool, CPU_ROI_CHECKPOINT_MIN_TARGET_MCUS,
 };
 
 fn checked_live_workspace_bytes(
@@ -257,38 +256,39 @@ impl Decoder<'_> {
         let output_rect = scaled_rect_covering(decoded, downscale)?;
         let scan_bytes = &self.bytes[self.plan.scan_offset..];
         let scan_start = profile_enabled.then(Instant::now);
-        let (scan_path, scan_warnings) =
-            if downscale == DownscaleFactor::Full && self.plan.matches_fast_tile_shape() {
-                (
-                    "fast420_rgb",
-                    decode_scan_fast_tile_rgb(&self.plan, self.backend, scan_bytes, pool, writer)?,
-                )
-            } else if downscale == DownscaleFactor::Full
-                && decoded == Rect::full(self.info.dimensions)
-                && self.plan.matches_fast_rgb_v1_shape()
-            {
-                (
-                    if self.plan.sampling.max_h == 2 {
-                        "fast422_rgb"
-                    } else {
-                        "fast444_rgb"
-                    },
-                    decode_scan_fast_rgb_v1(&self.plan, self.backend, scan_bytes, pool, writer)?,
-                )
-            } else {
-                (
-                    "baseline_rgb",
-                    decode_scan_baseline_rgb(
-                        &self.plan,
-                        self.backend,
-                        scan_bytes,
-                        pool,
-                        writer,
-                        downscale,
-                        output_rect,
-                    )?,
-                )
+        // A partial 4:2:0 decode streams the whole image through the cropping
+        // writer; the other fast shapes take it only for whole images.
+        let fast_route = self.plan.fast_rgb_route().filter(|&route| {
+            downscale == DownscaleFactor::Full
+                && (route == FastRgbRoute::Fancy420 || decoded == Rect::full(self.info.dimensions))
+        });
+        let (scan_path, scan_warnings) = if let Some(route) = fast_route {
+            let request = FastRgbRequest {
+                roi: Rect::full(self.plan.dimensions),
+                checkpoint: None,
             };
+            (
+                match (route, self.plan.sampling.max_h) {
+                    (FastRgbRoute::Fancy420, _) => "fast420_rgb",
+                    (FastRgbRoute::Rows, 2) => "fast422_rgb",
+                    (FastRgbRoute::Rows, _) => "fast444_rgb",
+                },
+                route.decode(&self.plan, self.backend, scan_bytes, pool, writer, request)?,
+            )
+        } else {
+            (
+                "baseline_rgb",
+                decode_scan_baseline_rgb(
+                    &self.plan,
+                    self.backend,
+                    scan_bytes,
+                    pool,
+                    writer,
+                    downscale,
+                    output_rect,
+                )?,
+            )
+        };
         if let Some(start) = scan_start {
             emit_decode_scan_profile(
                 scan_path,

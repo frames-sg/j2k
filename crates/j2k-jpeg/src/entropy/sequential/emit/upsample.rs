@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{super::StripePlane, types::StripeNeighbors};
+use crate::backend::Rgb420ChromaRows;
 use crate::color::scaled_sampling::{ScaledComponent, Upsample};
 use crate::color::upsample::{
     upsample_1x1, upsample_h1v2_fancy_row, upsample_h2v1_fancy_row, upsample_h2v2_fancy_row,
@@ -92,6 +93,38 @@ pub(in crate::entropy::sequential) fn component_row_triplet<'a>(
         }
     };
     (prev_row, curr_row, next_row)
+}
+
+/// The Cb and Cr rows above, at and below chroma row `local_row` (see
+/// [`component_row_triplet`]), cut to `chroma_width` samples: the chroma a
+/// 4:2:0 row-pair kernel reads. `planes(plane_idx)` gives the previous,
+/// current and next stripe's view of chroma plane 1 or 2.
+#[expect(
+    clippy::inline_always,
+    reason = "runs once per output row pair in both 4:2:0 emitters, next to the row kernels"
+)]
+#[inline(always)]
+pub(in crate::entropy::sequential) fn rgb420_chroma_rows<'a>(
+    planes: impl Fn(
+        usize,
+    ) -> (
+        Option<StripePlane<'a>>,
+        StripePlane<'a>,
+        Option<StripePlane<'a>>,
+    ),
+    local_row: usize,
+    valid_rows: usize,
+    chroma_width: usize,
+) -> Rgb420ChromaRows<'a> {
+    let rows = |plane_idx| {
+        let (prev, curr, next) = planes(plane_idx);
+        <[&[u8]; 3]>::from(component_row_triplet(
+            prev, curr, next, local_row, valid_rows,
+        ))
+        .map(|row| &row[..chroma_width])
+    };
+    let ([prev_cb, curr_cb, next_cb], [prev_cr, curr_cr, next_cr]) = (rows(1), rows(2));
+    Rgb420ChromaRows::new(prev_cb, curr_cb, next_cb, prev_cr, curr_cr, next_cr)
 }
 
 #[expect(
