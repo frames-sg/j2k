@@ -343,16 +343,11 @@ pub(in crate::compute) fn encode_fast_subsampled_scaled_batch_item<P: FastSubsam
         pack_encoder.endEncoding();
     }
 
-    let surface = match out_buffer {
-        Some(out_buffer) => {
-            Surface::from_metal_buffer(out_buffer, (params.scaled_width, params.scaled_height), fmt)
-        }
-        None => Surface::from_metal_buffer(
-            y_plane.clone(),
-            (params.scaled_width, params.scaled_height),
-            fmt,
-        ),
-    }?;
+    let surface = Surface::from_metal_buffer(
+        out_buffer.unwrap_or_else(|| y_plane.clone()),
+        (params.scaled_width, params.scaled_height),
+        fmt,
+    )?;
 
     Ok(BatchedDecodeItem {
         surface,

@@ -212,6 +212,7 @@ fn metal_sessions_without_a_backend_share_one_default_runtime() {
     let runtime_of = |session: &MetalSession| {
         let mut state = session.shared.lock().expect("session state");
         let backend = state.backend_session().expect("default backend").clone();
+        drop(state);
         backend.runtime_result().as_ref().expect("runtime");
         backend.runtime_ptr_for_test().expect("initialized runtime")
     };

@@ -30,20 +30,22 @@ fn downscale(denominator: u32) -> Downscale {
 }
 
 fn metal_request(request: DecodeRequest) -> MetalDecodeRequest {
-    match request.region {
-        None => MetalDecodeRequest::scaled(request.fmt, request.scale, BackendRequest::Metal),
-        Some(roi) => MetalDecodeRequest::region_scaled(
-            request.fmt,
-            Rect {
-                x: roi.x,
-                y: roi.y,
-                w: roi.w,
-                h: roi.h,
-            },
-            request.scale,
-            BackendRequest::Metal,
-        ),
-    }
+    request.region.map_or_else(
+        || MetalDecodeRequest::scaled(request.fmt, request.scale, BackendRequest::Metal),
+        |roi| {
+            MetalDecodeRequest::region_scaled(
+                request.fmt,
+                Rect {
+                    x: roi.x,
+                    y: roi.y,
+                    w: roi.w,
+                    h: roi.h,
+                },
+                request.scale,
+                BackendRequest::Metal,
+            )
+        },
+    )
 }
 
 fn first_difference(expected: &[u8], actual: &[u8]) -> Option<String> {

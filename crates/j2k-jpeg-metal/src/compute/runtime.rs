@@ -45,6 +45,7 @@ pub(crate) fn default_tile_backend_session() -> Result<crate::MetalBackendSessio
     }
     let session = crate::MetalBackendSession::system_default()?;
     *slot = Some(session.clone());
+    drop(slot);
     install_memory_pressure_release();
     Ok(session)
 }
@@ -119,6 +120,10 @@ pub(crate) struct MetalRuntime {
     viewport_plane_cache_gate: Arc<ViewportPlaneCacheGate>,
 }
 
+#[expect(
+    clippy::non_send_fields_in_send_ty,
+    reason = "the pooled Metal buffers and plane cache are mutex-guarded, as the SAFETY comment states"
+)]
 // SAFETY: Metal devices, queues, and immutable pipeline states support
 // cross-thread use. All mutable host-side caches are protected by mutexes, and
 // each command encoder remains confined to the submission that creates it.

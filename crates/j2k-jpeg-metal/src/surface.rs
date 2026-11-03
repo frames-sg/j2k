@@ -61,6 +61,13 @@ pub struct Surface {
     pub(crate) storage: Storage,
 }
 
+#[cfg_attr(
+    target_os = "macos",
+    expect(
+        clippy::non_send_fields_in_send_ty,
+        reason = "Metal-backed storage is covered by the access-gate contract in the SAFETY comment"
+    )
+)]
 // SAFETY: Host storage uses `Arc`; immutable resident Metal storage is covered
 // by `ResidentMetalImage`; and safe access to reusable Metal storage is
 // serialized by `access_gate`. Raw buffer access is unsafe and documents the

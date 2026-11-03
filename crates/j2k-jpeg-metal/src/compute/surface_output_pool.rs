@@ -64,6 +64,7 @@ impl SurfaceOutputPool {
             // A free slot was too small; keep the larger buffer instead.
             *slot = buffer.clone();
         }
+        drop(slots);
         Ok(buffer)
     }
 

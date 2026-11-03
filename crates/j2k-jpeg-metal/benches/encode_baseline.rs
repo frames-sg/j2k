@@ -188,6 +188,10 @@ fn bench_encode_baseline(c: &mut Criterion) {
     clippy::cast_sign_loss,
     reason = "phantom values are clamped to the sample range before narrowing"
 )]
+#[expect(
+    clippy::imprecise_flops,
+    reason = "`hypot` would change the established phantom samples this benchmark encodes"
+)]
 fn phantom16(width: u32, height: u32, precision: u8) -> Vec<u16> {
     let max = f64::from((1_u32 << precision) - 1);
     let mut state = 0x9e37_79b9_u32;

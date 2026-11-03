@@ -130,6 +130,7 @@ impl JpegTileBatch {
                     ),
                     retained_capacity,
                 )?;
+                drop(state);
                 Ok(batch::MetalSubmission {
                     session: session.shared.clone(),
                     slot,
@@ -182,5 +183,6 @@ mod tests {
         let state = batch.session.shared.lock().expect("session state");
         assert_eq!(state.queued.len(), 1);
         assert!(SharedJpegInput::ptr_eq(&expected, &state.queued[0].input));
+        drop(state);
     }
 }

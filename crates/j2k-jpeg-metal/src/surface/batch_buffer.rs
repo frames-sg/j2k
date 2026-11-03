@@ -25,6 +25,10 @@ pub struct MetalBatchOutputBuffer {
     tile_capacity: usize,
 }
 
+#[expect(
+    clippy::non_send_fields_in_send_ty,
+    reason = "the MTLBuffer is serialized by `access_gate`, as the SAFETY comment states"
+)]
 // SAFETY: The Metal allocation is cross-thread capable, and all safe access
 // that can overlap decoder reuse is serialized by the shared `access_gate`.
 // Raw access remains unsafe and carries the synchronization contract.
