@@ -184,7 +184,7 @@ pub fn build_device_plan<'a>(
 pub(super) fn retained_decoder_allocation_bytes(decoder: &Decoder<'_>) -> Result<usize, JpegError> {
     let baseline = decoder.retained_allocation_bytes_excluding_cpu_checkpoint_cache()?;
     let checkpoint_cache_bytes = decoder
-        .lock_cpu_entropy_checkpoints()?
+        .cpu_entropy_checkpoints
         .retained_allocation_bytes()?;
     checked_add_allocation_bytes(baseline, checkpoint_cache_bytes)
 }
@@ -274,13 +274,13 @@ mod tests {
         let decoder = Decoder::new(&bytes).unwrap();
         let before = retained_decoder_allocation_bytes(&decoder).unwrap();
         let retained_checkpoint_bytes = {
-            let mut cache = decoder.cpu_entropy_checkpoints.lock().unwrap();
-            cache.checkpoints.try_reserve_exact(4).unwrap();
+            let cache = &decoder.cpu_entropy_checkpoints;
+            cache.reserve(4, 0, usize::MAX).unwrap();
             cache.retained_allocation_bytes().unwrap()
         };
         let after = retained_decoder_allocation_bytes(&decoder).unwrap();
 
-        assert!(retained_checkpoint_bytes >= 4 * core::mem::size_of::<DeviceCheckpoint>());
+        assert!(retained_checkpoint_bytes >= 4 * core::mem::size_of::<[i32; 4]>());
         assert_eq!(after, before + retained_checkpoint_bytes);
     }
 }

@@ -10,9 +10,9 @@ use super::{
     checkpoint_before_mcu, decode_progressive, decode_scan_baseline, decode_scan_baseline_rgb,
     decode_scan_fast_rgb_v1, decode_scan_fast_tile_rgb, emit_decode_scan_profile,
     jpeg_profile_stages_enabled, merged_warnings, scaled_dimensions, scaled_rect_covering,
-    stripe_region_layout, CpuCheckpointCache, DecodeOutcome, Decoder, DeviceCheckpoint,
-    DownscaleFactor, Instant, InterleavedRgbWriter, JpegError, OutputWriter, Rect, ScratchPool,
-    CPU_ROI_CHECKPOINT_CADENCE_MCUS, CPU_ROI_CHECKPOINT_MIN_TARGET_MCUS,
+    stripe_region_layout, DecodeOutcome, Decoder, DeviceCheckpoint, DownscaleFactor, Instant,
+    InterleavedRgbWriter, JpegError, OutputWriter, Rect, ScratchPool,
+    CPU_ROI_CHECKPOINT_MIN_TARGET_MCUS,
 };
 
 fn checked_live_workspace_bytes(
@@ -113,14 +113,12 @@ impl Decoder<'_> {
             )?,
             external_decode_phase_bytes,
         )?;
-        let mut cache = self.lock_cpu_entropy_checkpoints()?;
         checkpoint_before_mcu(
             &self.plan,
             scan_bytes,
-            CPU_ROI_CHECKPOINT_CADENCE_MCUS,
             target_mcu,
             retained_decoder_baseline_bytes,
-            &mut cache,
+            &self.cpu_entropy_checkpoints,
         )
     }
 
@@ -131,13 +129,12 @@ impl Decoder<'_> {
     /// index the host budget cannot retain, keeps returning `None`, so its
     /// routes keep the lenient marker scan with its exact results and errors.
     fn restart_checkpoint(&self, target_mcu: u32) -> Result<Option<DeviceCheckpoint>, JpegError> {
-        let build = {
-            let mut cache = self.lock_cpu_entropy_checkpoints()?;
-            if let Some(index) = &cache.restart_index {
-                return Ok(restart_checkpoint_from_index(index, target_mcu));
-            }
-            cache.uncached_restart_seeks = cache.uncached_restart_seeks.saturating_add(1);
-            cache.uncached_restart_seeks == 2
+        let build = match self
+            .cpu_entropy_checkpoints
+            .with_restart_index(|index| restart_checkpoint_from_index(index, target_mcu))?
+        {
+            Ok(checkpoint) => return Ok(checkpoint),
+            Err(build) => build,
         };
         if !build {
             return Ok(None);
@@ -150,19 +147,9 @@ impl Decoder<'_> {
             MAX_DECODER_CONTEXT_ALLOCATION_BYTES,
             self.retained_allocation_bytes_excluding_cpu_checkpoint_cache()?,
         )?;
-        self.lock_cpu_entropy_checkpoints()?
+        self.cpu_entropy_checkpoints
             .retain_restart_index(index, retained_decoder_baseline_bytes)?;
         Ok(checkpoint)
-    }
-
-    pub(crate) fn lock_cpu_entropy_checkpoints(
-        &self,
-    ) -> Result<std::sync::MutexGuard<'_, CpuCheckpointCache>, JpegError> {
-        self.cpu_entropy_checkpoints
-            .lock()
-            .map_err(|_| JpegError::InternalInvariant {
-                reason: "CPU entropy checkpoint cache mutex poisoned",
-            })
     }
 
     pub(super) fn source_window_for_output_rect(

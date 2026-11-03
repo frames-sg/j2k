@@ -18,7 +18,7 @@ mod planning;
 pub(crate) use self::build::build_checkpoint_plan_mapped_from_validated_with_live_budget;
 #[cfg(test)]
 use self::build::build_checkpoint_plan_mapped_with_live_budget;
-pub(crate) use self::cache::{checkpoint_before_mcu, CpuCheckpointCache};
+pub(crate) use self::cache::{checkpoint_before_mcu, CheckpointGrid, CpuCheckpointCache};
 pub(crate) use self::eoi::{validate_scan_bytes, ValidatedScanBytes};
 pub(crate) use self::planning::{checkpoint_count_summary, total_mcus};
 
@@ -32,7 +32,7 @@ use self::build::{decode_one_mcu, skip_one_mcu, snapshot_checkpoint};
 #[cfg(test)]
 use self::cache::{
     checked_checkpoint_reservation_peak, reconcile_actual_checkpoint_capacity,
-    reserve_checkpoint_capacity,
+    reserve_checkpoint_capacity, CompactCheckpoint,
 };
 #[cfg(test)]
 use self::eoi::{terminated_scan_bytes, terminated_scan_bytes_with_cap};

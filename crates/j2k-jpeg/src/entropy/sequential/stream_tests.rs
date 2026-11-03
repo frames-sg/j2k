@@ -19,7 +19,7 @@ use j2k_core::RowSink;
 
 /// Gradients plus per-pixel noise, so neighbouring chroma samples differ and
 /// every fancy-upsampling tap matters.
-fn noisy_rgb8(width: u32, height: u32, seed: u32) -> Vec<u8> {
+pub(crate) fn noisy_rgb8(width: u32, height: u32, seed: u32) -> Vec<u8> {
     let mut state = seed.wrapping_mul(2_654_435_761).wrapping_add(1);
     let mut pixels = Vec::with_capacity(width as usize * height as usize * 3);
     for y in 0..height {

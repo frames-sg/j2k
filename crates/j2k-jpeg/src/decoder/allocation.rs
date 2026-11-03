@@ -50,9 +50,7 @@ impl Decoder<'_> {
                 progressive.retained_allocation_bytes()?,
             )?;
         }
-        let checkpoint_bytes = self
-            .lock_cpu_entropy_checkpoints()?
-            .retained_allocation_bytes()?;
+        let checkpoint_bytes = self.cpu_entropy_checkpoints.retained_allocation_bytes()?;
         prepared_bytes = checked_add_allocation_bytes(prepared_bytes, checkpoint_bytes)?;
         decode_workspace_cap_for_warning_capacity(self.warnings.capacity(), prepared_bytes)
     }
@@ -293,14 +291,8 @@ mod tests {
             .decode_workspace_cap()
             .expect("empty-cache workspace cap");
         let retained_checkpoint_bytes = {
-            let mut cache = decoder
-                .cpu_entropy_checkpoints
-                .lock()
-                .expect("checkpoint cache lock");
-            cache
-                .checkpoints
-                .try_reserve_exact(8)
-                .expect("bounded test cache");
+            let cache = &decoder.cpu_entropy_checkpoints;
+            cache.reserve(8, 0, usize::MAX).expect("bounded test cache");
             let retained = cache.retained_allocation_bytes().expect("cache bytes");
             assert!(retained > 0);
             retained
