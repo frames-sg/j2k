@@ -136,23 +136,44 @@ fn columns_at_the_16_bit_bound() -> impl Strategy<Value = [i16; 64]> {
         .prop_map(|columns| core::array::from_fn(|index| columns[index % 8][index / 8]))
 }
 
-/// Coefficients only in natural-order columns 0..3 (right half zero) or,
-/// with `quadrant`, only in the top-left 4x4 quadrant.
+/// Coefficients only in natural-order rows `0..rows` and columns `0..cols`,
+/// the shapes the sparse IDCT entry points accept.
 #[cfg(target_arch = "x86_64")]
-fn left_half_blocks(
-    quadrant: bool,
+fn shaped_blocks(
+    rows: usize,
+    cols: usize,
     values: impl Strategy<Value = i16>,
 ) -> impl Strategy<Value = [i16; 64]> {
-    prop::collection::vec(values, 32..=32).prop_map(move |values| {
+    prop::collection::vec(values, rows * cols).prop_map(move |values| {
         let mut block = [0i16; 64];
         for (index, value) in values.into_iter().enumerate() {
-            let (row, col) = (index / 4, index % 4);
-            if !quadrant || row < 4 {
-                block[row * 8 + col] = value;
-            }
+            block[(index / cols) * 8 + index % cols] = value;
         }
         block
     })
+}
+
+/// Each x86 sparse entry point and the dispatch equal scalar on a block of
+/// that entry point's shape.
+#[cfg(target_arch = "x86_64")]
+fn assert_avx2_shape_matches_scalar(rows: usize, cols: usize, input: &[i16; 64]) {
+    assert_avx2_matches_scalar(input);
+    let Some(avx2) = j2k_jpeg::bench_support::BenchAvx2Idct::try_new() else {
+        return;
+    };
+    let expected = scalar(input);
+    let mut actual = [0u8; 64];
+    match (rows, cols) {
+        (4, 8) => avx2.run_bottom_half_zero(input, &mut actual),
+        (8, 4) => avx2.run_right_half_zero(input, &mut actual),
+        (4, 4) => avx2.run_top_left_quadrant(input, &mut actual),
+        (2, 2) => avx2.run_top_left_2x2(input, &mut actual),
+        _ => unreachable!("no {rows}x{cols} entry point"),
+    }
+    assert_eq!(
+        actual, expected,
+        "{rows}x{cols} kernel diverged on {input:?}"
+    );
 }
 
 proptest! {
@@ -215,7 +236,7 @@ proptest! {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn avx2_matches_scalar_on_bottom_half_zero_blocks(block in bottom_half_zero_blocks()) {
-        assert_avx2_matches_scalar(&block);
+        assert_avx2_shape_matches_scalar(4, 8, &block);
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -238,40 +259,56 @@ proptest! {
 
     #[cfg(target_arch = "x86_64")]
     #[test]
-    fn avx2_matches_scalar_on_right_half_zero_blocks(
-        block in left_half_blocks(false, any::<i16>()),
-    ) {
-        assert_avx2_matches_scalar(&block);
+    fn avx2_matches_scalar_on_full_range_bottom_half_zero_blocks(block in shaped_blocks(4, 8, any::<i16>())) {
+        assert_avx2_shape_matches_scalar(4, 8, &block);
     }
 
     #[cfg(target_arch = "x86_64")]
     #[test]
-    fn avx2_matches_scalar_on_in_range_right_half_zero_blocks(
-        block in left_half_blocks(false, -738i16..=738),
-    ) {
-        assert_avx2_matches_scalar(&block);
+    fn avx2_matches_scalar_on_in_range_bottom_half_zero_blocks(block in shaped_blocks(4, 8, -1_476i16..=1_476)) {
+        assert_avx2_shape_matches_scalar(4, 8, &block);
     }
 
     #[cfg(target_arch = "x86_64")]
     #[test]
-    fn avx2_matches_scalar_on_top_left_quadrant_blocks(
-        block in left_half_blocks(true, any::<i16>()),
-    ) {
-        assert_avx2_matches_scalar(&block);
+    fn avx2_matches_scalar_on_right_half_zero_blocks(block in shaped_blocks(8, 4, any::<i16>())) {
+        assert_avx2_shape_matches_scalar(8, 4, &block);
     }
 
     #[cfg(target_arch = "x86_64")]
     #[test]
-    fn avx2_matches_scalar_on_in_range_top_left_quadrant_blocks(
-        block in left_half_blocks(true, -1_476i16..=1_476),
-    ) {
-        assert_avx2_matches_scalar(&block);
+    fn avx2_matches_scalar_on_in_range_right_half_zero_blocks(block in shaped_blocks(8, 4, -738i16..=738)) {
+        assert_avx2_shape_matches_scalar(8, 4, &block);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn avx2_matches_scalar_on_top_left_quadrant_blocks(block in shaped_blocks(4, 4, any::<i16>())) {
+        assert_avx2_shape_matches_scalar(4, 4, &block);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn avx2_matches_scalar_on_in_range_top_left_quadrant_blocks(block in shaped_blocks(4, 4, -1_476i16..=1_476)) {
+        assert_avx2_shape_matches_scalar(4, 4, &block);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn avx2_matches_scalar_on_full_range_top_left_2x2_blocks(block in shaped_blocks(2, 2, any::<i16>())) {
+        assert_avx2_shape_matches_scalar(2, 2, &block);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn avx2_matches_scalar_on_in_range_top_left_2x2_blocks(block in shaped_blocks(2, 2, -2_952i16..=2_952)) {
+        assert_avx2_shape_matches_scalar(2, 2, &block);
     }
 
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn avx2_matches_scalar_on_top_left_2x2_blocks(block in top_left_2x2_blocks()) {
-        assert_avx2_matches_scalar(&block);
+        assert_avx2_shape_matches_scalar(2, 2, &block);
     }
 }
 

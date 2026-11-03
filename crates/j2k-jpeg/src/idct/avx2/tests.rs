@@ -2,11 +2,13 @@
 
 //! Exactness of the AVX2 IDCT against `scalar::idct_islow` on structured
 //! inputs: the dispatch everywhere, the 16-bit kernel inside its range bound,
-//! the bound's tightness, and the 32-bit kernel outside it. Randomized
-//! coverage lives in `tests/idct_parity.rs`.
+//! the bound's tightness, the 32-bit kernel outside it, and every sparse
+//! shape kernel on the blocks its shape admits. Randomized coverage lives in
+//! `tests/idct_parity.rs`.
 
 use super::{
-    first_pass_fits_i16, idct_islow, idct_islow_i16, idct_islow_i32, ISLOW_GAINS,
+    first_pass_fits_i16, idct_islow, idct_islow_bottom_half_zero, idct_islow_i16, idct_islow_i32,
+    idct_islow_right_half_zero, idct_islow_top_left_2x2, idct_islow_top_left_quadrant, ISLOW_GAINS,
     MAX_COLUMN_ABS_SUM,
 };
 use crate::idct::scalar::idct_islow as idct_scalar;
@@ -14,13 +16,13 @@ use crate::simd::x86::{exact_avx2_kernel, ExactAvx2};
 
 exact_avx2_kernel! {
     fn fits_i16(avx2: ExactAvx2, input: &[i16; 64]) -> bool {
-        first_pass_fits_i16(input)
+        first_pass_fits_i16::<8>(input)
     }
 }
 
 exact_avx2_kernel! {
     fn run_i16_unchecked(avx2: ExactAvx2, input: &[i16; 64], output: &mut [u8; 64]) {
-        idct_islow_i16(input, output);
+        idct_islow_i16::<8, 8>(input, output);
     }
 }
 
@@ -66,12 +68,33 @@ fn max_column_abs_sum(input: &[i16; 64]) -> i32 {
         .expect("eight columns")
 }
 
-/// The dispatch and the 32-bit kernel always equal scalar; the check accepts
-/// exactly the blocks within the bound, and on those the 16-bit kernel
-/// equals scalar too.
+type Kernel = fn(ExactAvx2, &[i16; 64], &mut [u8; 64]);
+
+/// The sparse entry points with the rows and columns their shape admits.
+const SHAPE_KERNELS: [(&str, usize, usize, Kernel); 4] = [
+    ("bottom half zero", 4, 8, idct_islow_bottom_half_zero),
+    ("right half zero", 8, 4, idct_islow_right_half_zero),
+    ("top-left quadrant", 4, 4, idct_islow_top_left_quadrant),
+    ("top-left 2x2", 2, 2, idct_islow_top_left_2x2),
+];
+
+/// The dispatch, the 32-bit kernel, and every shape kernel that admits the
+/// block always equal scalar; the check accepts exactly the blocks within
+/// the bound, and on those the 16-bit kernel equals scalar too.
 fn assert_exact(avx2: ExactAvx2, input: &[i16; 64]) {
     let expected = scalar(input);
     assert_eq!(dispatch(avx2, input), expected, "dispatch on {input:?}");
+    for (label, rows, cols, kernel) in SHAPE_KERNELS {
+        let admitted = input
+            .iter()
+            .enumerate()
+            .all(|(index, &value)| value == 0 || (index / 8 < rows && index % 8 < cols));
+        if admitted {
+            let mut actual = [0u8; 64];
+            kernel(avx2, input, &mut actual);
+            assert_eq!(actual, expected, "{label} kernel on {input:?}");
+        }
+    }
     assert_eq!(
         i32_kernel(avx2, input),
         expected,
@@ -208,6 +231,30 @@ fn worst_case_columns_at_the_bound_match_scalar() {
                 assert!(fits_i16(avx2, &block), "output {output} col {col}");
                 assert_exact(avx2, &block);
             }
+        }
+    }
+}
+
+#[test]
+fn dense_bottom_half_blocks_at_and_past_the_bound_match_scalar() {
+    let Some(avx2) = ExactAvx2::detect() else {
+        return;
+    };
+    // Four rows of 1,476 sum to 5,904 per column (within the bound); 1,477
+    // sums to 5,908 and takes the 32-bit kernel. Signs follow each output's
+    // gains so the first pass runs near its i16 limit.
+    for magnitude in [1_476, 1_477] {
+        for gains in &ISLOW_GAINS {
+            let block: [i16; 64] = core::array::from_fn(|index| {
+                let row = index / 8;
+                if row < 4 {
+                    signed_like(gains[row], magnitude)
+                } else {
+                    0
+                }
+            });
+            assert_eq!(fits_i16(avx2, &block), magnitude == 1_476);
+            assert_exact(avx2, &block);
         }
     }
 }
