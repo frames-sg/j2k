@@ -38,6 +38,10 @@ pub struct MetalImageDestination {
     layout: MetalImageLayout,
 }
 
+#[expect(
+    clippy::non_send_fields_in_send_ty,
+    reason = "the retained MTLBuffer moves under the constructor's exclusive-access contract in the SAFETY comment"
+)]
 // SAFETY: The destination owns a retained Metal resource and only exposes safe
 // immutable metadata. Moving it preserves the constructor's exclusive-access
 // contract, while raw binding remains an unsafe operation for the caller.
