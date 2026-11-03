@@ -194,10 +194,7 @@ fn join_batch_workers(
             }
         }
     }
-    match first_error {
-        Some(error) => Err(error),
-        None => Ok(()),
-    }
+    first_error.map_or(Ok(()), Err)
 }
 
 fn allocate_result_slots<R>(

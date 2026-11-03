@@ -300,10 +300,12 @@ pub fn device_dct_window_layout(
 }
 
 /// Entropy-decode the MCUs of `window` into `blocks`, laid out per
-/// [`device_dct_window_layout`]. As CPU region decode does, the scan is
-/// entered at the decoder's resume point for the window's first MCU row (a
-/// restart marker, or a cached entropy checkpoint; the decoder keeps both
-/// across windows) and is not validated past the window.
+/// [`device_dct_window_layout`].
+///
+/// As CPU region decode does, the scan is entered at the decoder's resume
+/// point for the window's first MCU row (a restart marker, or a cached entropy
+/// checkpoint; the decoder keeps both across windows) and is not validated
+/// past the window.
 ///
 /// # Errors
 /// Returns the same entropy and restart errors as CPU decode, or

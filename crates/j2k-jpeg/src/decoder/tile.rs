@@ -14,9 +14,10 @@ use crate::allocation::checked_add_allocation_bytes;
 use crate::internal::checkpoint::CheckpointGrid;
 
 /// One-shot parse-plus-decode of an independent JPEG tile into the caller's
-/// buffer, reusing a pre-allocated [`ScratchPool`]. This is the primitive
-/// WSI tile-batch readers want: one function call per tile, with all
-/// heap state external.
+/// buffer, reusing a pre-allocated [`ScratchPool`].
+///
+/// This is the primitive WSI tile-batch readers want: one function call per
+/// tile, with all heap state external.
 ///
 /// Parallelism is the caller's responsibility for this primitive. For
 /// production batch decode, use [`decode_tiles_into`].

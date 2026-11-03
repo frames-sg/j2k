@@ -194,10 +194,6 @@ fearless_simd::kernel! {
 }
 
 #[target_feature(enable = "neon")]
-#[expect(
-    clippy::many_single_char_names,
-    reason = "the hot color kernel uses standard y/cb/cr and r/g/b channel names"
-)]
 fn fill_rgb_row_from_422_neon(y: &[u8], cb: &[u8], cr: &[u8], dst: &mut [u8]) {
     debug_assert_eq!(cb.len(), cr.len());
     debug_assert_eq!(y.len(), dst.len() / 3);
@@ -207,8 +203,8 @@ fn fill_rgb_row_from_422_neon(y: &[u8], cb: &[u8], cr: &[u8], dst: &mut [u8]) {
         return;
     }
 
-    let (r, g, b) = ycbcr_to_rgb(y[0], cb[0], cr[0]);
-    dst[..3].copy_from_slice(&[r, g, b]);
+    let rgb: [u8; 3] = ycbcr_to_rgb(y[0], cb[0], cr[0]).into();
+    dst[..3].copy_from_slice(&rgb);
 
     let mut sample = 0usize;
     let mut x = 1usize;
@@ -274,8 +270,8 @@ fn fill_rgb_row_from_422_neon(y: &[u8], cb: &[u8], cr: &[u8], dst: &mut [u8]) {
         let output_x = output_x + x;
         let cb = scalar::h2v1_fancy_sample(cb, output_x);
         let cr = scalar::h2v1_fancy_sample(cr, output_x);
-        let (r, g, b) = ycbcr_to_rgb(y[output_x], cb, cr);
-        pixel.copy_from_slice(&[r, g, b]);
+        let rgb: [u8; 3] = ycbcr_to_rgb(y[output_x], cb, cr).into();
+        pixel.copy_from_slice(&rgb);
     }
 }
 
@@ -339,7 +335,9 @@ pub(crate) fn fill_rgb_row_pair_from_420_cropped(
     debug_assert!(crop_end <= y_top.len());
     debug_assert_eq!(dst_top.len(), width * 3);
     debug_assert!(y_bottom.is_none_or(|row| crop_end <= row.len()));
-    debug_assert!(dst_bottom.as_ref().is_none_or(|row| row.len() == width * 3));
+    debug_assert!(dst_bottom
+        .as_deref()
+        .is_none_or(|row| row.len() == width * 3));
     debug_assert_eq!(prev_cb.len(), curr_cb.len());
     debug_assert_eq!(prev_cb.len(), next_cb.len());
     debug_assert_eq!(prev_cr.len(), curr_cr.len());
@@ -1193,11 +1191,12 @@ fn fill_rgb_row_pair_from_420_tail_neon_dual(
                 ((u32::from(next_cb[sample]) + 3 * u32::from(curr_cb[sample])) * 4 + 7) >> 4;
             let bottom_cr =
                 ((u32::from(next_cr[sample]) + 3 * u32::from(curr_cr[sample])) * 4 + 7) >> 4;
-            let (r_top, g_top, b_top) = ycbcr_to_rgb(y_top[last], top_cb as u8, top_cr as u8);
-            let (r_bottom, g_bottom, b_bottom) =
-                ycbcr_to_rgb(y_bottom[last], bottom_cb as u8, bottom_cr as u8);
-            dst_top[last * 3..last * 3 + 3].copy_from_slice(&[r_top, g_top, b_top]);
-            dst_bottom[last * 3..last * 3 + 3].copy_from_slice(&[r_bottom, g_bottom, b_bottom]);
+            let rgb_top_last: [u8; 3] =
+                ycbcr_to_rgb(y_top[last], top_cb as u8, top_cr as u8).into();
+            let rgb_bottom_last: [u8; 3] =
+                ycbcr_to_rgb(y_bottom[last], bottom_cb as u8, bottom_cr as u8).into();
+            dst_top[last * 3..last * 3 + 3].copy_from_slice(&rgb_top_last);
+            dst_bottom[last * 3..last * 3 + 3].copy_from_slice(&rgb_bottom_last);
         }
     } else {
         let mut rgb_top = [0u8; UPSAMPLED_LANES * 3];
@@ -1230,12 +1229,12 @@ fn fill_rgb_row_pair_from_420_tail_neon_dual(
                 ((u32::from(next_cb[sample]) + 3 * u32::from(curr_cb[sample])) * 4 + 7) >> 4;
             let bottom_cr =
                 ((u32::from(next_cr[sample]) + 3 * u32::from(curr_cr[sample])) * 4 + 7) >> 4;
-            let (r_top, g_top, b_top) = ycbcr_to_rgb(y_top[last], top_cb as u8, top_cr as u8);
-            let (r_bottom, g_bottom, b_bottom) =
-                ycbcr_to_rgb(y_bottom[last], bottom_cb as u8, bottom_cr as u8);
-            rgb_top[(chunk_width - 1) * 3..chunk_width * 3].copy_from_slice(&[r_top, g_top, b_top]);
-            rgb_bottom[(chunk_width - 1) * 3..chunk_width * 3]
-                .copy_from_slice(&[r_bottom, g_bottom, b_bottom]);
+            let rgb_top_last: [u8; 3] =
+                ycbcr_to_rgb(y_top[last], top_cb as u8, top_cr as u8).into();
+            let rgb_bottom_last: [u8; 3] =
+                ycbcr_to_rgb(y_bottom[last], bottom_cb as u8, bottom_cr as u8).into();
+            rgb_top[(chunk_width - 1) * 3..chunk_width * 3].copy_from_slice(&rgb_top_last);
+            rgb_bottom[(chunk_width - 1) * 3..chunk_width * 3].copy_from_slice(&rgb_bottom_last);
         }
 
         dst_top[x * 3..x * 3 + chunk_width * 3].copy_from_slice(&rgb_top[..chunk_width * 3]);
@@ -1296,8 +1295,8 @@ fn fill_rgb_row_pair_from_420_tail_neon_top_only(
                 ((u32::from(prev_cb[sample]) + 3 * u32::from(curr_cb[sample])) * 4 + 7) >> 4;
             let cr_last =
                 ((u32::from(prev_cr[sample]) + 3 * u32::from(curr_cr[sample])) * 4 + 7) >> 4;
-            let (r, g, b) = ycbcr_to_rgb(y_top[last], cb_last as u8, cr_last as u8);
-            dst_top[last * 3..last * 3 + 3].copy_from_slice(&[r, g, b]);
+            let rgb: [u8; 3] = ycbcr_to_rgb(y_top[last], cb_last as u8, cr_last as u8).into();
+            dst_top[last * 3..last * 3 + 3].copy_from_slice(&rgb);
         }
     } else {
         let mut rgb = [0u8; UPSAMPLED_LANES * 3];
@@ -1313,8 +1312,8 @@ fn fill_rgb_row_pair_from_420_tail_neon_top_only(
                 ((u32::from(prev_cb[sample]) + 3 * u32::from(curr_cb[sample])) * 4 + 7) >> 4;
             let cr_last =
                 ((u32::from(prev_cr[sample]) + 3 * u32::from(curr_cr[sample])) * 4 + 7) >> 4;
-            let (r, g, b) = ycbcr_to_rgb(y_top[last], cb_last as u8, cr_last as u8);
-            rgb[(chunk_width - 1) * 3..chunk_width * 3].copy_from_slice(&[r, g, b]);
+            let last_rgb: [u8; 3] = ycbcr_to_rgb(y_top[last], cb_last as u8, cr_last as u8).into();
+            rgb[(chunk_width - 1) * 3..chunk_width * 3].copy_from_slice(&last_rgb);
         }
 
         dst_top[x * 3..x * 3 + chunk_width * 3].copy_from_slice(&rgb[..chunk_width * 3]);
@@ -1327,10 +1326,6 @@ fn can_use_tail_420_chunk(chroma_width: usize, sample_offset: usize, out_len: us
     out_len <= UPSAMPLED_LANES && sample_offset > 0 && sample_offset + LANES >= chroma_width
 }
 
-#[expect(
-    clippy::many_single_char_names,
-    reason = "the color helper uses standard y/cb/cr and r/g/b channel names"
-)]
 fn last_420_pixel(
     y: &[u8],
     near_cb: &[u8],
@@ -1342,8 +1337,7 @@ fn last_420_pixel(
     let x = width - 1;
     let cb = h2v2_fancy_sample(near_cb, curr_cb, x);
     let cr = h2v2_fancy_sample(near_cr, curr_cr, x);
-    let (r, g, b) = ycbcr_to_rgb(y[x], cb, cr);
-    [r, g, b]
+    ycbcr_to_rgb(y[x], cb, cr).into()
 }
 
 fn fill_last_420_pixel_dual(

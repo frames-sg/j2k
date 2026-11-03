@@ -436,10 +436,11 @@ impl DecodeOptions {
     }
 }
 
-/// Header-derived image metadata. Populated by `Decoder::inspect` and by
-/// `Decoder::new`. `scan_count` is the number of SOS markers observed in
-/// the input — for sequential this is always 1; for progressive it is the
-/// count of refinement passes.
+/// Header-derived image metadata.
+///
+/// Populated by `Decoder::inspect` and by `Decoder::new`. `scan_count` is the
+/// number of SOS markers observed in the input — for sequential this is
+/// always 1; for progressive it is the count of refinement passes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Info {
     /// Image dimensions as `(width, height)` in pixels.

@@ -433,10 +433,7 @@ fn ycbcr_rows_match_per_pixel_reference() {
         .iter()
         .zip(cb.iter())
         .zip(cr.iter())
-        .flat_map(|((&y, &cb), &cr)| {
-            let (r, g, b) = ycbcr_to_rgb(y, cb, cr);
-            [r, g, b]
-        })
+        .flat_map(|((&y, &cb), &cr)| <[u8; 3]>::from(ycbcr_to_rgb(y, cb, cr)))
         .collect();
 
     assert_eq!(dst, expected);
@@ -493,19 +490,13 @@ fn ycbcr_420_row_pair_matches_reference() {
         .iter()
         .zip(cb_top.iter())
         .zip(cr_top.iter())
-        .flat_map(|((&y, &cb), &cr)| {
-            let (r, g, b) = ycbcr_to_rgb(y, cb, cr);
-            [r, g, b]
-        })
+        .flat_map(|((&y, &cb), &cr)| <[u8; 3]>::from(ycbcr_to_rgb(y, cb, cr)))
         .collect();
     let expected_bot: Vec<u8> = y_bot
         .iter()
         .zip(cb_bot.iter())
         .zip(cr_bot.iter())
-        .flat_map(|((&y, &cb), &cr)| {
-            let (r, g, b) = ycbcr_to_rgb(y, cb, cr);
-            [r, g, b]
-        })
+        .flat_map(|((&y, &cb), &cr)| <[u8; 3]>::from(ycbcr_to_rgb(y, cb, cr)))
         .collect();
 
     assert_eq!(dst_top, expected_top);

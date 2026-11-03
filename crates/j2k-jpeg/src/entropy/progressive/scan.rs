@@ -731,11 +731,7 @@ pub(super) fn refine_band(
     } else {
         None
     };
-    let mut pending = nonzero
-        & match stop {
-            Some(position) => band & !(u64::MAX << position),
-            None => band,
-        };
+    let mut pending = nonzero & stop.map_or(band, |position| band & !(u64::MAX << position));
     while pending != 0 {
         let k = pending.trailing_zeros() as usize;
         pending &= pending - 1;

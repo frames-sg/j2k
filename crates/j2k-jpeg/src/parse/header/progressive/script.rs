@@ -121,16 +121,15 @@ fn validate_transition(
             al: scan.al,
         })
     };
-    match state {
-        Some(state) => Err(script_error(
+    state.map_or(Ok(()), |state| {
+        Err(script_error(
             marker_offset,
             0xda,
             component,
             coefficient,
             state,
-        )),
-        None => Ok(()),
-    }
+        ))
+    })
 }
 
 fn script_error(

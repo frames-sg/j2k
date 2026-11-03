@@ -67,7 +67,7 @@ fn reconstruct(component: JpegDeviceLosslessComponent, diffs: &[u16]) -> Option<
     reason = "reference samples are bounded by the output sample width"
 )]
 fn ycbcr_at_precision(rgb: [u32; 3], precision: u8) -> [u32; 3] {
-    let (r, g, b) = match precision {
+    let converted: (u16, u16, u16) = match precision {
         8 => {
             let (r, g, b) = ycbcr::ycbcr_to_rgb(rgb[0] as u8, rgb[1] as u8, rgb[2] as u8);
             (r.into(), g.into(), b.into())
@@ -80,7 +80,7 @@ fn ycbcr_at_precision(rgb: [u32; 3], precision: u8) -> [u32; 3] {
             precision,
         ),
     };
-    [r, g, b].map(u32::from)
+    <[u16; 3]>::from(converted).map(u32::from)
 }
 
 #[expect(

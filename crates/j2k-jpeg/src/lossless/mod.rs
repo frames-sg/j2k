@@ -65,7 +65,7 @@ impl LosslessSample for u8 {
         reason = "lossless samples up to 8 bits are range-checked to 0..=255 during reconstruction"
     )]
     fn from_sample(sample: u16) -> Self {
-        sample as u8
+        sample as Self
     }
 
     fn to_sample(self) -> u16 {
