@@ -4,13 +4,14 @@
 
 use crate::allocation::checked_add_allocation_bytes;
 use crate::context::MAX_DECODER_CONTEXT_ALLOCATION_BYTES;
+use crate::entropy::sequential::restart_checkpoint_from_index;
 
 use super::{
     checkpoint_before_mcu, decode_progressive, decode_scan_baseline, decode_scan_baseline_rgb,
     decode_scan_fast_rgb_v1, decode_scan_fast_tile_rgb, emit_decode_scan_profile,
     jpeg_profile_stages_enabled, merged_warnings, scaled_dimensions, scaled_rect_covering,
-    stripe_region_layout, DecodeOutcome, Decoder, DeviceCheckpoint, DownscaleFactor, Instant,
-    InterleavedRgbWriter, JpegError, OutputWriter, Rect, ScratchPool,
+    stripe_region_layout, CpuCheckpointCache, DecodeOutcome, Decoder, DeviceCheckpoint,
+    DownscaleFactor, Instant, InterleavedRgbWriter, JpegError, OutputWriter, Rect, ScratchPool,
     CPU_ROI_CHECKPOINT_CADENCE_MCUS, CPU_ROI_CHECKPOINT_MIN_TARGET_MCUS,
 };
 
@@ -84,13 +85,22 @@ impl Decoder<'_> {
         Ok(scratch_bytes)
     }
 
+    /// The decoder's resume point for `target_mcu`, which a route hands to
+    /// `scan_position_before_mcu`. Restart-coded scans get the
+    /// restart-boundary checkpoint from this decoder's restart index (see
+    /// [`Self::restart_checkpoint`]); other scans get the cached entropy
+    /// checkpoint at or before the target, for targets deep enough to be
+    /// worth extending the cache.
     pub(super) fn checkpoint_for_mcu(
         &self,
         scan_bytes: &[u8],
         target_mcu: u32,
         external_decode_phase_bytes: usize,
     ) -> Result<Option<DeviceCheckpoint>, JpegError> {
-        if self.plan.restart_interval.is_some() || target_mcu < CPU_ROI_CHECKPOINT_MIN_TARGET_MCUS {
+        if self.plan.restart_interval.is_some() {
+            return self.restart_checkpoint(target_mcu);
+        }
+        if target_mcu < CPU_ROI_CHECKPOINT_MIN_TARGET_MCUS {
             return Ok(None);
         }
 
@@ -103,12 +113,7 @@ impl Decoder<'_> {
             )?,
             external_decode_phase_bytes,
         )?;
-        let mut cache =
-            self.cpu_entropy_checkpoints
-                .lock()
-                .map_err(|_| JpegError::InternalInvariant {
-                    reason: "CPU entropy checkpoint cache mutex poisoned",
-                })?;
+        let mut cache = self.lock_cpu_entropy_checkpoints()?;
         checkpoint_before_mcu(
             &self.plan,
             scan_bytes,
@@ -117,6 +122,47 @@ impl Decoder<'_> {
             retained_decoder_baseline_bytes,
             &mut cache,
         )
+    }
+
+    /// Restart-boundary checkpoint for `target_mcu` from this decoder's
+    /// restart index. The first seek returns `None`, so one-shot decodes scan
+    /// only up to their marker; the second builds and keeps the validated
+    /// index. A stream whose markers do not validate as an index, or whose
+    /// index the host budget cannot retain, keeps returning `None`, so its
+    /// routes keep the lenient marker scan with its exact results and errors.
+    fn restart_checkpoint(&self, target_mcu: u32) -> Result<Option<DeviceCheckpoint>, JpegError> {
+        let build = {
+            let mut cache = self.lock_cpu_entropy_checkpoints()?;
+            if let Some(index) = &cache.restart_index {
+                return Ok(restart_checkpoint_from_index(index, target_mcu));
+            }
+            cache.uncached_restart_seeks = cache.uncached_restart_seeks.saturating_add(1);
+            cache.uncached_restart_seeks == 2
+        };
+        if !build {
+            return Ok(None);
+        }
+        let Ok(Some(index)) = self.restart_index() else {
+            return Ok(None);
+        };
+        let checkpoint = restart_checkpoint_from_index(&index, target_mcu);
+        let retained_decoder_baseline_bytes = checked_add_allocation_bytes(
+            MAX_DECODER_CONTEXT_ALLOCATION_BYTES,
+            self.retained_allocation_bytes_excluding_cpu_checkpoint_cache()?,
+        )?;
+        self.lock_cpu_entropy_checkpoints()?
+            .retain_restart_index(index, retained_decoder_baseline_bytes)?;
+        Ok(checkpoint)
+    }
+
+    pub(crate) fn lock_cpu_entropy_checkpoints(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, CpuCheckpointCache>, JpegError> {
+        self.cpu_entropy_checkpoints
+            .lock()
+            .map_err(|_| JpegError::InternalInvariant {
+                reason: "CPU entropy checkpoint cache mutex poisoned",
+            })
     }
 
     pub(super) fn source_window_for_output_rect(

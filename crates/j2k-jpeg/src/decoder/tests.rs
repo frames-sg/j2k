@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::*;
+use crate::entropy::sequential::restart_checkpoint_from_index;
 use crate::error::Warning;
 use crate::output::OutputWriter;
 use alloc::vec;
@@ -410,6 +411,56 @@ fn decode_region_output_format_writes_custom_rgba_alpha() {
             assert_eq!(buf[idx + 3], 123, "pixel ({x},{y}) alpha");
         }
     }
+}
+
+fn has_restart_index(dec: &Decoder<'_>) -> bool {
+    dec.lock_cpu_entropy_checkpoints()
+        .expect("cache")
+        .restart_index
+        .is_some()
+}
+
+#[test]
+fn restart_checkpoints_come_from_the_cached_index_after_the_first_seek() {
+    let bytes = j2k_test_support::restart_coded_grayscale_jpeg(40, 24);
+    let dec = Decoder::new(&bytes).expect("decoder");
+    let scan = &dec.bytes[dec.plan.scan_offset..];
+    let index = dec.restart_index().expect("index").expect("restart-coded");
+    let seek = |target| dec.checkpoint_for_mcu(scan, target, 0).expect("seek");
+    assert_eq!(seek(7), None, "the first seek scans only up to its marker");
+    assert!(!has_restart_index(&dec));
+    for pass in 0..2 {
+        for target in 0..=15 {
+            assert_eq!(
+                seek(target),
+                restart_checkpoint_from_index(&index, target),
+                "pass {pass} target {target}"
+            );
+        }
+        assert!(has_restart_index(&dec));
+    }
+    assert!((1..15).all(|target| seek(target).is_some()));
+}
+
+#[test]
+fn malformed_restart_numbering_keeps_the_lenient_restart_seek() {
+    let mut bytes = j2k_test_support::restart_coded_grayscale_jpeg(40, 24);
+    let second_rst = bytes
+        .windows(2)
+        .position(|pair| pair == [0xff, 0xd1])
+        .expect("second restart marker");
+    bytes[second_rst + 1] = 0xd5;
+    let dec = Decoder::new(&bytes).expect("decoder");
+    assert!(dec.restart_index().is_err());
+    let scan = &dec.bytes[dec.plan.scan_offset..];
+    for target in 0..=15 {
+        assert_eq!(
+            dec.checkpoint_for_mcu(scan, target, 0).expect("seek"),
+            None,
+            "{target}"
+        );
+    }
+    assert!(!has_restart_index(&dec));
 }
 
 #[test]

@@ -4,12 +4,14 @@
 
 use alloc::vec::Vec;
 
-use super::allocation::checkpoint_allocation_bytes;
+use super::allocation::{checked_live_bytes, checkpoint_allocation_bytes};
 use super::build::{skip_one_mcu_with_entries, snapshot_checkpoint};
 use super::{total_mcus, DeviceCheckpoint};
+use crate::allocation::{checked_add_allocation_bytes, checked_allocation_bytes};
 use crate::entropy::huffman::{FULL_PRIMARY_ENTRIES, NARROW_PRIMARY_ENTRIES};
 use crate::entropy::sequential::{HuffmanPrimaryWidth, PreparedDecodePlan};
 use crate::error::JpegError;
+use crate::info::{RestartIndex, RestartSegment};
 use crate::internal::bit_reader::{BitReader, BitReaderSnapshot};
 use j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES;
 
@@ -24,14 +26,51 @@ pub(super) use self::allocation::{
 #[derive(Debug, Default)]
 pub(crate) struct CpuCheckpointCache {
     pub(crate) checkpoints: Vec<DeviceCheckpoint>,
+    /// The scan's validated restart-marker index, once built, so restart
+    /// seeks stop rescanning the entropy data.
+    pub(crate) restart_index: Option<RestartIndex>,
+    /// Restart seeks answered without an index. The first seek scans only up
+    /// to its marker; a decoder that seeks again builds and keeps the index.
+    pub(crate) uncached_restart_seeks: u32,
 }
 
 impl CpuCheckpointCache {
     pub(crate) fn retained_allocation_bytes(&self) -> Result<usize, JpegError> {
-        checkpoint_allocation_bytes(
+        let checkpoints = checkpoint_allocation_bytes(
             self.checkpoints.capacity(),
             DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+        )?;
+        let restart_index = self.restart_index.as_ref().map_or(Ok(0), |index| {
+            checked_allocation_bytes::<RestartSegment>(index.segments.capacity())
+        })?;
+        checked_add_allocation_bytes(checkpoints, restart_index)
+    }
+
+    /// Keep `index` when it fits beside the decoder baseline and this cache
+    /// under the host cap. An index that does not fit is not retained; its
+    /// callers then seek by rescanning the entropy data, as before.
+    pub(crate) fn retain_restart_index(
+        &mut self,
+        index: RestartIndex,
+        retained_baseline_bytes: usize,
+    ) -> Result<(), JpegError> {
+        if self.restart_index.is_some() {
+            return Ok(());
+        }
+        let index_bytes = checked_allocation_bytes::<RestartSegment>(index.segments.capacity())?;
+        if checked_live_bytes(
+            [
+                retained_baseline_bytes,
+                self.retained_allocation_bytes()?,
+                index_bytes,
+            ],
+            DEFAULT_MAX_HOST_ALLOCATION_BYTES,
         )
+        .is_ok()
+        {
+            self.restart_index = Some(index);
+        }
+        Ok(())
     }
 }
 

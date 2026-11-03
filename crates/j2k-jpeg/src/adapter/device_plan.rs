@@ -184,11 +184,7 @@ pub fn build_device_plan<'a>(
 pub(super) fn retained_decoder_allocation_bytes(decoder: &Decoder<'_>) -> Result<usize, JpegError> {
     let baseline = decoder.retained_allocation_bytes_excluding_cpu_checkpoint_cache()?;
     let checkpoint_cache_bytes = decoder
-        .cpu_entropy_checkpoints
-        .lock()
-        .map_err(|_| JpegError::InternalInvariant {
-            reason: "CPU entropy checkpoint cache mutex poisoned",
-        })?
+        .lock_cpu_entropy_checkpoints()?
         .retained_allocation_bytes()?;
     checked_add_allocation_bytes(baseline, checkpoint_cache_bytes)
 }

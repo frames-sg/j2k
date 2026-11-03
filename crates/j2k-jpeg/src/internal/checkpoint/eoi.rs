@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 
 use super::allocation::{checked_live_bytes, element_capacity_bytes, host_allocation_error};
 use crate::error::{JpegError, MarkerKind};
+use crate::parse::markers::{next_entropy_marker, EntropyMarker};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ValidatedScanBytes<'a> {
@@ -74,37 +75,22 @@ pub(crate) fn validate_scan_bytes(
     marker_offset_base: usize,
 ) -> Result<ValidatedScanBytes<'_>, JpegError> {
     let mut index = 0usize;
-    while index < scan_bytes.len() {
-        if scan_bytes[index] != 0xff {
-            index += 1;
-            continue;
-        }
-
-        // Any number of 0xFF fill bytes may precede a marker (T.81
-        // B.1.1.2); DICOM encoders pad fragments with one before EOI.
-        let mut next = index + 1;
-        while next < scan_bytes.len() && scan_bytes[next] == 0xff {
-            next += 1;
-        }
-        let marker_start = next - 1;
-        if next >= scan_bytes.len() {
-            return Ok(ValidatedScanBytes {
-                bytes: scan_bytes,
-                eoi_end: None,
-            });
-        }
-
-        match scan_bytes[next] {
-            0x00 => index = next + 1,
-            0xd0..=0xd7 if allow_restart_markers => index = next + 1,
+    // Any number of 0xFF fill bytes may precede a marker (T.81 B.1.1.2);
+    // DICOM encoders pad fragments with one before EOI. A scan that ends
+    // inside such a run has no EOI.
+    while let Some(EntropyMarker::Marker { code_pos, code, .. }) =
+        next_entropy_marker(scan_bytes, index)
+    {
+        match code {
+            0xd0..=0xd7 if allow_restart_markers => index = code_pos + 1,
             0xd9 => {
                 return Ok(ValidatedScanBytes {
                     bytes: scan_bytes,
-                    eoi_end: Some(next + 1),
+                    eoi_end: Some(code_pos + 1),
                 });
             }
             found => {
-                let offset = marker_offset_base.checked_add(marker_start).ok_or(
+                let offset = marker_offset_base.checked_add(code_pos - 1).ok_or(
                     JpegError::MemoryCapExceeded {
                         requested: usize::MAX,
                         cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
