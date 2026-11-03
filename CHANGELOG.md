@@ -7,6 +7,14 @@ and stale roadmap entries have been removed from the public documentation set.
 
 Staged workspace version: `0.13.2`.
 
+- Baseline 4:4:4 JPEGs, both YCbCr and identity RGB (components tagged R,
+  G, B, or marked RGB by an Adobe APP14 segment, as many slide-scanner
+  tiles are), decode to RGB through the streaming row path, including
+  region requests, instead of the generic decoder. With no chroma
+  upsampling each MCU's pixels are converted or copied straight to the
+  output. On Apple M4/M5, identity-RGB scanner tiles decode 14–28% faster
+  and centred 256x256 regions of 4:4:4 images 4–48% faster. Output is
+  byte-identical.
 - Baseline 4:2:0 JPEG decoding to RGB streams each MCU row through one
   stripe with a two-row halo and writes its output rows as soon as their
   chroma neighbours exist, instead of rotating three stripe buffers and

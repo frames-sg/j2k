@@ -89,6 +89,8 @@ fn decode_mcu_row_rgb422<const N: usize>(
         mcus_per_row: context.mcus_per_row,
         mcu_rows: context.mcu_rows,
         restart: context.restart,
+        stripe_mcu_start: 0,
+        stripe_mcus_per_row: context.mcus_per_row,
     };
     let [y_dc, cb_dc, cr_dc] = state.prev_dc else {
         return Err(JpegError::InternalInvariant {

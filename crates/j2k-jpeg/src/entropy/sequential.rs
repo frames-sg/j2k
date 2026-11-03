@@ -22,9 +22,7 @@ pub(crate) use self::dct::{
 };
 #[cfg(feature = "bench-internals")]
 pub(crate) use self::fast420::decode_scan_fast_tile_rgb_profiled;
-pub(crate) use self::fast420::{
-    decode_scan_fast_tile_rgb, decode_scan_fast_tile_rgb_region, FAST420_HALO_ROWS,
-};
+pub(crate) use self::fast420::{decode_scan_fast_tile_rgb, decode_scan_fast_tile_rgb_region};
 pub(crate) use self::generic::{decode_scan_baseline, decode_scan_baseline_rgb};
 pub(crate) use self::layout::{fast_tile_region_first_decode_mcu, stripe_region_layout};
 use self::layout::{scaled_dimensions, uses_fancy_420_emit};
@@ -33,7 +31,7 @@ pub(crate) use self::plan::{
     HuffmanPrimaryWidth, PreparedComponentPlan, PreparedDecodePlan, ResolvedPreparedComponentPlan,
 };
 pub(crate) use self::restart::finish_scan;
-pub(crate) use self::rgb444::decode_scan_fast_rgb_444;
+pub(crate) use self::rgb444::{decode_scan_fast_rgb_444, decode_scan_fast_rgb_444_region};
 use self::stripe::StripePlane;
 pub(crate) use self::stripe::{StripeBuffer, StripeLayout};
 
@@ -45,7 +43,7 @@ use self::deposit::{
 #[cfg(test)]
 use self::emit::{component_row_triplet, emit_stripe_rgb_444};
 #[cfg(test)]
-use self::fast420::decode_mcu_row_fast_tile_420;
+use self::fast420::{decode_mcu_row_fast_tile_420, FAST420_HALO_ROWS};
 #[cfg(test)]
 use self::layout::{fast420_decode_mcu_row_end, fast420_first_decode_mcu_row, Fast420RegionLayout};
 #[cfg(test)]
@@ -63,5 +61,7 @@ use crate::internal::bit_reader::BitReader;
 #[cfg(test)]
 use crate::internal::scratch::ScratchPool;
 
+#[cfg(test)]
+mod stream_tests;
 #[cfg(test)]
 mod tests;

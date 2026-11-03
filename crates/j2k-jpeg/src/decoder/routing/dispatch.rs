@@ -3,9 +3,10 @@
 //! Output-format dispatch after routing has validated geometry and scratch.
 
 use super::super::{
-    decode_scan_fast_tile_rgb_region, fast_tile_region_first_decode_mcu, merged_warnings,
-    CroppedWriter, DecodeOutcome, Decoder, DownscaleFactor, Gray8Writer, JpegError, OutputFormat,
-    Rect, Rgb8Writer, Rgba8Writer, ScratchPool, SofKind,
+    decode_scan_fast_rgb_444_region, decode_scan_fast_tile_rgb_region,
+    fast_tile_region_first_decode_mcu, merged_warnings, CroppedWriter, DecodeOutcome, Decoder,
+    DownscaleFactor, Gray8Writer, JpegError, OutputFormat, Rect, Rgb8Writer, Rgba8Writer,
+    ScratchPool, SofKind,
 };
 use crate::allocation::checked_add_allocation_bytes;
 
@@ -229,10 +230,11 @@ impl Decoder<'_> {
             downscale,
             external_live_bytes,
         } = request;
+        let fast_420 = self.plan.matches_fast_tile_shape();
         if fmt == OutputFormat::Rgb8
             && downscale == DownscaleFactor::Full
             && self.progressive_plan.is_none()
-            && self.plan.matches_fast_tile_shape()
+            && (fast_420 || self.plan.matches_fast_rgb444_shape())
         {
             let mut writer = Rgb8Writer::new_with_backend(out, stride, output_rect.w, self.backend);
             let scan_bytes = &self.bytes[self.plan.scan_offset..];
@@ -241,15 +243,27 @@ impl Decoder<'_> {
                 fast_tile_region_first_decode_mcu(&self.plan, source_roi, DownscaleFactor::Full),
                 checked_add_allocation_bytes(external_live_bytes, pool.retained_bytes())?,
             )?;
-            let scan_warnings = decode_scan_fast_tile_rgb_region(
-                &self.plan,
-                self.backend,
-                scan_bytes,
-                pool,
-                &mut writer,
-                source_roi,
-                checkpoint.as_ref(),
-            )?;
+            let scan_warnings = if fast_420 {
+                decode_scan_fast_tile_rgb_region(
+                    &self.plan,
+                    self.backend,
+                    scan_bytes,
+                    pool,
+                    &mut writer,
+                    source_roi,
+                    checkpoint.as_ref(),
+                )?
+            } else {
+                decode_scan_fast_rgb_444_region(
+                    &self.plan,
+                    self.backend,
+                    scan_bytes,
+                    pool,
+                    &mut writer,
+                    source_roi,
+                    checkpoint.as_ref(),
+                )?
+            };
             return self
                 .finish_outcome(source_roi, merged_warnings(&self.warnings, scan_warnings)?);
         }

@@ -35,8 +35,6 @@ use alloc::vec::Vec;
 
 mod emit;
 mod rows;
-#[cfg(test)]
-mod tests;
 
 use self::emit::{emit_pass_rows, Fast420RowPass};
 pub(super) use self::rows::decode_mcu_row_fast_tile_420;
@@ -48,7 +46,7 @@ const MCU_PX: u32 = 16;
 /// Rows of context the streaming stripe keeps above each plane's MCU-row
 /// samples: the previous MCU row's last two rows, so every pass emits whole
 /// row pairs that share one chroma row.
-pub(crate) const FAST420_HALO_ROWS: u32 = 2;
+pub(super) const FAST420_HALO_ROWS: u32 = 2;
 
 fn fast_tile_components<const N: usize>(
     plan: &PreparedDecodePlan,
@@ -254,7 +252,12 @@ impl Fast420Scan<'_, '_> {
             &ScaledSampling::new(plan.sampling, DownscaleFactor::Full, plan.dimensions)
         ));
         let rows = self.rows();
-        pool.prepare_for_fast420_stream(plan, rows.window.stripe_mcus_per_row, plan.scratch_bytes)?;
+        pool.prepare_for_streaming(
+            plan,
+            rows.window.stripe_mcus_per_row,
+            FAST420_HALO_ROWS as usize,
+            plan.scratch_bytes,
+        )?;
 
         let components =
             fast_tile_components::<N>(plan, plan.prefers_wide_huffman(self.scan_bytes.len()))?;
