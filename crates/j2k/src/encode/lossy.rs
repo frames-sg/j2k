@@ -507,16 +507,27 @@ const U64_EXCLUSIVE_UPPER_BOUND_AS_F64: f64 = 18_446_744_073_709_551_616.0;
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    reason = "finite positive byte targets are checked below the exclusive 2^64 bound before conversion"
+    clippy::cast_precision_loss,
+    reason = "finite positive byte targets are checked below the exclusive 2^64 bound before conversion; a truncated target with a fraction is below 2^53"
 )]
 pub(super) fn target_bytes_for_bpp(
     samples: J2kLossySamples<'_>,
     bits_per_pixel: f64,
 ) -> Result<u64, J2kError> {
     let pixels = f64::from(samples.width) * f64::from(samples.height);
-    let bytes = (pixels * bits_per_pixel / 8.0).ceil();
+    let bytes = pixels * bits_per_pixel / 8.0;
     if bytes.is_finite() && bytes > 0.0 && bytes < U64_EXCLUSIVE_UPPER_BOUND_AS_F64 {
-        Ok(bytes as u64)
+        // `bytes` rounded up without `f64::ceil`, a C library call on baseline
+        // x86-64 (see `cargo xtask x86-codegen-audit`): the cast truncates, and
+        // a target with a fraction is below 2^53, where the truncation is
+        // exact. Every `f64` from 2^52 up is whole, so testing `bytes` rather
+        // than its ceiling against the bounds accepts the same targets.
+        let whole = bytes as u64;
+        Ok(if (whole as f64) < bytes {
+            whole + 1
+        } else {
+            whole
+        })
     } else {
         Err(J2kError::Unsupported(Unsupported {
             what: "JPEG 2000 lossy bits-per-pixel target overflows byte target",

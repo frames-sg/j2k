@@ -180,7 +180,7 @@ fn print_help() {
           promotion-codegen generate or check verifier-backed GPU Auto-routing tables [--check]\n\
            no-std        check no_std-compatible codec crates and the serial wasm32 build\n\
            unsafe-audit  verify JPEG SIMD unsafe code stays in its boundary modules\n\
-           x86-codegen-audit check baseline x86-64 j2k-native for scalar libm calls and out-of-line AVX2 operations\n\
+           x86-codegen-audit check baseline x86-64 j2k-native and j2k for scalar libm calls and out-of-line AVX2 operations\n\
            repo-lint     run repository policy checks owned by xtask\n\
            t803          fetch, run, or verify pinned T.803 v3 conformance evidence\n\
            release-integrity validate offline release metadata; --publish requires final dated/signoff state\n\

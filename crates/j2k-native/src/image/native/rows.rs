@@ -309,7 +309,6 @@ pub(super) fn pack_native_samples(
 /// [`pack_native_samples`] at the dispatched SIMD level (see `math`).
 #[expect(
     clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
     clippy::inline_always,
     reason = "samples are rounded and clamped to the component's 8- or 16-bit range before packing; inlined into each SIMD dispatch target"
 )]

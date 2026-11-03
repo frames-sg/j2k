@@ -35,8 +35,7 @@ macro_rules! with_native_converter {
                     $($arg,)*
                     #[inline(always)]
                     move |sample: f32| {
-                        [($crate::image::native::round_clamped_native(sample, min, max) as i8)
-                            as u8]
+                        [$crate::math::round_clamped_native(sample, min, max) as u8]
                     },
                 )
             }
@@ -46,7 +45,7 @@ macro_rules! with_native_converter {
                     $($arg,)*
                     #[inline(always)]
                     move |sample: f32| {
-                        [$crate::image::native::round_clamped_native(sample, 0.0, max) as u8]
+                        [$crate::math::round_clamped_native(sample, 0.0, max) as u8]
                     },
                 )
             }
@@ -56,9 +55,7 @@ macro_rules! with_native_converter {
                     $($arg,)*
                     #[inline(always)]
                     move |sample: f32| {
-                        (($crate::image::native::round_clamped_native(sample, min, max) as i16)
-                            as u16)
-                            .to_le_bytes()
+                        ($crate::math::round_clamped_native(sample, min, max) as u16).to_le_bytes()
                     },
                 )
             }
@@ -68,8 +65,7 @@ macro_rules! with_native_converter {
                     $($arg,)*
                     #[inline(always)]
                     move |sample: f32| {
-                        ($crate::image::native::round_clamped_native(sample, 0.0, max) as u16)
-                            .to_le_bytes()
+                        ($crate::math::round_clamped_native(sample, 0.0, max) as u16).to_le_bytes()
                     },
                 )
             }
@@ -326,7 +322,6 @@ impl<'a> Image<'a> {
     /// eight- and sixteen-bit float planes in chunks the compiler vectorizes.
     #[expect(
         clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
         reason = "samples are rounded and clamped to the component's 8- or 16-bit range before packing"
     )]
     pub(crate) fn extend_component_native_sample_bytes(
@@ -480,27 +475,6 @@ fn signed_native_bounds(bit_depth: u8) -> (f32, f32) {
 /// Largest unsigned value of a component with `1..=16` bits.
 fn unsigned_native_max(bit_depth: u8) -> f32 {
     f32::from(u16::MAX >> (16 - bit_depth.clamp(1, 16)))
-}
-
-/// Round a sample half away from zero after clamping it to integer bounds.
-///
-/// Matches [`Image::push_native_sample_bytes`] for bounds within 16 bits:
-/// clamping to integer bounds before rounding cannot change the rounded value,
-/// `f32::round` rounds ties away from zero exactly like truncating `x ± 0.5`
-/// in `f64`, and the saturating float-to-int cast maps NaN to zero.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::inline_always,
-    reason = "the clamped value fits the 16-bit native range; inlined into the packing loops"
-)]
-#[inline(always)]
-fn round_clamped_native(sample: f32, min: f32, max: f32) -> i32 {
-    // The callers supply ordered finite bounds. Explicit comparisons preserve
-    // NaN for the saturating cast without repeating clamp's bounds assertion
-    // for every sample, which otherwise prevents vectorizing the packing loop.
-    let clamped = if sample < min { min } else { sample };
-    let clamped = if clamped > max { max } else { clamped };
-    crate::math::round_f32(clamped) as i32
 }
 
 /// Planes with at least this many samples pack in parallel. Unit tests lower

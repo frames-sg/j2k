@@ -148,7 +148,8 @@ pub(super) fn output_rows(
 }
 
 /// Rows `rows` of `plane`, `width` samples each, written from the first row
-/// of `out` on.
+/// of `out` on, at the CPU's SIMD level, as the conversion rounds every
+/// sample (see [`j2k_native::at_simd_level`]).
 fn write_component_rows_u8(
     plane: &j2k_native::ComponentPlane<'_>,
     out: &mut [u8],
@@ -156,11 +157,16 @@ fn write_component_rows_u8(
     width: usize,
     rows: Range<usize>,
 ) {
-    for (index, y) in rows.enumerate() {
-        let src = &plane.samples()[y * width..(y + 1) * width];
-        let dst = &mut out[index * stride..index * stride + width];
-        write_samples_as_u8(src, plane.bit_depth(), dst);
-    }
+    j2k_native::at_simd_level(
+        #[inline(always)]
+        || {
+            for (index, y) in rows.enumerate() {
+                let src = &plane.samples()[y * width..(y + 1) * width];
+                let dst = &mut out[index * stride..index * stride + width];
+                write_samples_as_u8(src, plane.bit_depth(), dst);
+            }
+        },
+    );
 }
 
 fn write_rgb_component_rows_u8(
@@ -182,19 +188,24 @@ fn write_rgb_component_rows_u8(
         }
         return;
     }
-    for (index, y) in rows.enumerate() {
-        let row = y * width;
-        let dst = &mut out[index * stride..index * stride + width * 3];
-        for x in 0..width {
-            let dst = &mut dst[x * 3..x * 3 + 3];
-            for channel in 0..3 {
-                dst[channel] = sample_as_u8(
-                    planes[channel].samples()[row + x],
-                    planes[channel].bit_depth(),
-                );
+    j2k_native::at_simd_level(
+        #[inline(always)]
+        || {
+            for (index, y) in rows.enumerate() {
+                let row = y * width;
+                let dst = &mut out[index * stride..index * stride + width * 3];
+                for x in 0..width {
+                    let dst = &mut dst[x * 3..x * 3 + 3];
+                    for channel in 0..3 {
+                        dst[channel] = sample_as_u8(
+                            planes[channel].samples()[row + x],
+                            planes[channel].bit_depth(),
+                        );
+                    }
+                }
             }
-        }
-    }
+        },
+    );
 }
 
 fn write_rgba_component_rows_u8(
@@ -205,26 +216,36 @@ fn write_rgba_component_rows_u8(
     rows: Range<usize>,
     synthesize_alpha: bool,
 ) {
-    for (index, y) in rows.enumerate() {
-        let row = y * width;
-        let dst = &mut out[index * stride..index * stride + width * 4];
-        for x in 0..width {
-            let dst = &mut dst[x * 4..x * 4 + 4];
-            for channel in 0..3 {
-                dst[channel] = sample_as_u8(
-                    planes[channel].samples()[row + x],
-                    planes[channel].bit_depth(),
-                );
+    j2k_native::at_simd_level(
+        #[inline(always)]
+        || {
+            for (index, y) in rows.enumerate() {
+                let row = y * width;
+                let dst = &mut out[index * stride..index * stride + width * 4];
+                for x in 0..width {
+                    let dst = &mut dst[x * 4..x * 4 + 4];
+                    for channel in 0..3 {
+                        dst[channel] = sample_as_u8(
+                            planes[channel].samples()[row + x],
+                            planes[channel].bit_depth(),
+                        );
+                    }
+                    dst[3] = if synthesize_alpha {
+                        u8::MAX
+                    } else {
+                        sample_as_u8(planes[3].samples()[row + x], planes[3].bit_depth())
+                    };
+                }
             }
-            dst[3] = if synthesize_alpha {
-                u8::MAX
-            } else {
-                sample_as_u8(planes[3].samples()[row + x], planes[3].bit_depth())
-            };
-        }
-    }
+        },
+    );
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "inlined into the callers' SIMD dispatch (see `j2k_native::at_simd_level`)"
+)]
+#[inline(always)]
 fn write_samples_as_u8(src: &[f32], bit_depth: u8, dst: &mut [u8]) {
     for (sample, dst) in src.iter().zip(dst.iter_mut()) {
         *dst = sample_as_u8(*sample, bit_depth);
@@ -235,8 +256,10 @@ fn write_samples_as_u8(src: &[f32], bit_depth: u8, dst: &mut [u8]) {
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    reason = "samples are rounded and clamped to the unsigned 8-bit output domain before conversion"
+    clippy::inline_always,
+    reason = "samples are rounded and clamped to the unsigned 8-bit output domain before conversion; inlined into the callers' SIMD dispatch"
 )]
+#[inline(always)]
 fn sample_as_u8_depth8(sample: f32) -> u8 {
     sample.round().clamp(0.0, f32::from(u8::MAX)) as u8
 }
@@ -245,8 +268,10 @@ fn sample_as_u8_depth8(sample: f32) -> u8 {
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::cast_precision_loss,
-    reason = "samples are rounded and clamped to the unsigned 8-bit output domain before conversion"
+    clippy::inline_always,
+    reason = "samples are rounded and clamped to the unsigned 8-bit output domain before conversion; inlined into the callers' SIMD dispatch"
 )]
+#[inline(always)]
 fn sample_as_u8(sample: f32, bit_depth: u8) -> u8 {
     let rounded = sample.round();
     if bit_depth == 8 {
