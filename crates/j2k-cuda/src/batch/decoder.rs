@@ -319,7 +319,7 @@ impl BatchDecoder for CudaBatchDecoder {
     type Error = CudaBatchError;
 
     fn decode_prepared(&mut self, prepared: &PreparedBatch) -> Result<Self::Output, Self::Error> {
-        CudaBatchDecoder::decode_prepared(self, prepared)
+        Self::decode_prepared(self, prepared)
     }
 
     fn options(&self) -> BatchDecodeOptions {

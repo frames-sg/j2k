@@ -36,7 +36,7 @@ fn cuda_encoder_auto_reports_unavailable_fallback_and_reuses_after_success() {
             result.dispatch_report(),
             j2k::J2kEncodeDispatchReport::default()
         );
-        assert!(!result.encoded().codestream.is_empty());
+        assert_ne!(result.encoded().codestream, b"");
     }
 }
 

@@ -29,11 +29,12 @@ pub(super) fn decode_cuda_component_plan(
 ) -> Result<CudaDecodedComponent, Error> {
     let resource_upload_start = profile::profile_now(collect_stage_timings);
     let engine = J2kCudaEngine::new(context);
-    let decode_resources = match tables {
-        Some(tables) => engine.upload_htj2k_decode_resources_with_tables(plan.payload(), tables),
-        None => engine.upload_j2k_decode_payload(plan.payload()),
-    }
-    .map_err(cuda_error)?;
+    let decode_resources = tables
+        .map_or_else(
+            || engine.upload_j2k_decode_payload(plan.payload()),
+            |tables| engine.upload_htj2k_decode_resources_with_tables(plan.payload(), tables),
+        )
+        .map_err(cuda_error)?;
     let resource_upload_us = profile::elapsed_us(resource_upload_start);
     let mut component = decode_cuda_component_plan_with_resources(
         context,
