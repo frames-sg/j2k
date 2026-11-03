@@ -783,8 +783,9 @@ mod soft_rounding {
         let magnitude = x.abs();
         if magnitude < INTEGRAL_MAGNITUDE {
             let nearest = nearest_even_magnitude(magnitude);
-            // `magnitude - nearest` is exact: `nearest` is within one half.
-            let away = if magnitude - nearest == 0.5 {
+            // `magnitude - nearest` is exact: `nearest` is within one half,
+            // so a tie is an exact bit match with 0.5.
+            let away = if (magnitude - nearest).to_bits() == 0.5_f32.to_bits() {
                 nearest + 1.0
             } else {
                 nearest
