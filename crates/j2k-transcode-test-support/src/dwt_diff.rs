@@ -2,6 +2,11 @@
 
 use j2k_transcode::{Dwt53TwoDimensional, Dwt97TwoDimensional};
 
+/// Maximum absolute coefficient difference between two 5/3 decompositions.
+///
+/// # Panics
+///
+/// Panics if the two decompositions differ in any band dimension.
 #[must_use]
 pub fn max_abs_diff_53(
     actual: &Dwt53TwoDimensional<f64>,
@@ -36,6 +41,11 @@ pub fn max_abs_diff_53(
     ])
 }
 
+/// Maximum absolute coefficient difference between two 9/7 decompositions.
+///
+/// # Panics
+///
+/// Panics if the two decompositions differ in any band dimension.
 #[must_use]
 pub fn max_abs_diff_97(
     actual: &Dwt97TwoDimensional<f64>,
