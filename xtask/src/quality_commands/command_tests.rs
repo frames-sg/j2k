@@ -2,6 +2,7 @@
 
 use super::{
     clippy, clippy_strict, doc, fmt, fuzz_build, repo_lint, test, test_workspace_without_benches,
+    STRICT_CLIPPY_PACKAGES,
 };
 use crate::command_support::use_test_cargo_program;
 use crate::test_command::RecordingProgram;
@@ -37,14 +38,25 @@ fn quality_command_plans_are_complete_and_never_launch_real_tools() {
         log.contains("clippy -p xtask --test repo_lint --all-features -- -D warnings|"),
         "the test=false repo-lint target needs an explicit Clippy pass: {log}"
     );
-    assert!(log.contains(
-        "clippy -p j2k-native -p j2k --lib --all-features --no-deps -- \
+    for package in ["j2k-native", "j2k", "j2k-jpeg"] {
+        assert!(
+            STRICT_CLIPPY_PACKAGES.contains(&package),
+            "strict Clippy must keep covering {package}"
+        );
+    }
+    let strict_packages = STRICT_CLIPPY_PACKAGES
+        .iter()
+        .map(|package| format!("-p {package}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(log.contains(&format!(
+        "clippy {strict_packages} --lib --all-features --no-deps -- \
          -W clippy::pedantic -W clippy::nursery -D warnings"
-    ));
-    assert!(log.contains(
-        "clippy -p j2k-native -p j2k --bins --examples --tests --benches --all-features \
+    )));
+    assert!(log.contains(&format!(
+        "clippy {strict_packages} --bins --examples --tests --benches --all-features \
          --no-deps -- -W clippy::pedantic -W clippy::nursery -D warnings"
-    ));
+    )));
     assert!(log.contains("-A clippy::disallowed_methods -A clippy::disallowed_macros|"));
     assert!(log.contains("test --workspace --all-features --lib --bins --tests"));
     assert!(log.contains("--exclude j2k-alloc-probe"));

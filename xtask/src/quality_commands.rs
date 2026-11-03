@@ -87,33 +87,60 @@ pub(super) fn clippy() -> Result<(), String> {
     ])
 }
 
+/// Packages held to the strict pedantic + nursery gate. The gate is a ratchet:
+/// add a package once it is clean, and never drop one to make the gate pass.
+const STRICT_CLIPPY_PACKAGES: &[&str] = &[
+    "j2k-native",
+    "j2k",
+    "j2k-alloc-probe",
+    "j2k-cli",
+    "j2k-codec-math",
+    "j2k-compare",
+    "j2k-core",
+    "j2k-cuda",
+    "j2k-cuda-build-support",
+    "j2k-cuda-j2k-engine",
+    "j2k-cuda-jpeg-engine",
+    "j2k-cuda-runtime",
+    "j2k-cuda-transcode-engine",
+    "j2k-jpeg",
+    "j2k-jpeg-cuda",
+    "j2k-jpeg-metal",
+    "j2k-metal",
+    "j2k-metal-support",
+    "j2k-ml",
+    "j2k-mpsgraph",
+    "j2k-mpsgraph-support",
+    "j2k-profile",
+    "j2k-python",
+    "j2k-t803",
+    "j2k-test-support",
+    "j2k-tilecodec",
+    "j2k-transcode",
+    "j2k-transcode-cuda",
+    "j2k-transcode-metal",
+    "j2k-transcode-test-support",
+    "j2k-types",
+    "xtask",
+];
+
 pub(super) fn clippy_strict() -> Result<(), String> {
-    let mut library_args = vec![
-        "clippy",
-        "-p",
-        "j2k-native",
-        "-p",
-        "j2k",
-        "--lib",
-        "--all-features",
-        "--no-deps",
-    ];
+    let mut library_args = vec!["clippy"];
+    append_strict_clippy_packages(&mut library_args);
+    library_args.extend(["--lib", "--all-features", "--no-deps"]);
     append_strict_clippy_lints(&mut library_args);
     run_cargo(&library_args)?;
 
-    let mut non_library_args = vec![
-        "clippy",
-        "-p",
-        "j2k-native",
-        "-p",
-        "j2k",
+    let mut non_library_args = vec!["clippy"];
+    append_strict_clippy_packages(&mut non_library_args);
+    non_library_args.extend([
         "--bins",
         "--examples",
         "--tests",
         "--benches",
         "--all-features",
         "--no-deps",
-    ];
+    ]);
     append_strict_clippy_lints(&mut non_library_args);
     non_library_args.extend([
         "-A",
@@ -123,6 +150,12 @@ pub(super) fn clippy_strict() -> Result<(), String> {
     ]);
 
     run_cargo(&non_library_args)
+}
+
+fn append_strict_clippy_packages(args: &mut Vec<&'static str>) {
+    for &package in STRICT_CLIPPY_PACKAGES {
+        args.extend(["-p", package]);
+    }
 }
 
 fn append_strict_clippy_lints(args: &mut Vec<&'static str>) {
