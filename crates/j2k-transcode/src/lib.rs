@@ -150,6 +150,10 @@ pub use j2k::J2kProgressionOrder as EncodeProgressionOrder;
 
 /// One separable single-level 2D 5/3 transform result.
 #[derive(Debug, PartialEq)]
+#[expect(
+    clippy::derive_partial_eq_without_eq,
+    reason = "an `Eq` impl would extend the reviewed public API snapshot"
+)]
 pub struct Dwt53TwoDimensional<T> {
     /// Low-horizontal, low-vertical band.
     pub ll: Vec<T>,
@@ -171,6 +175,10 @@ pub struct Dwt53TwoDimensional<T> {
 
 /// One separable single-level 2D 9/7 transform result.
 #[derive(Debug, PartialEq)]
+#[expect(
+    clippy::derive_partial_eq_without_eq,
+    reason = "an `Eq` impl would extend the reviewed public API snapshot"
+)]
 pub struct Dwt97TwoDimensional<T> {
     /// Low-horizontal, low-vertical band.
     pub ll: Vec<T>,

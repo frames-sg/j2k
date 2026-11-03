@@ -604,9 +604,7 @@ fn float_direct_transcode_paths_use_acceleration_hooks_when_available() {
     assert_eq!(encoded_53.report.timings.accelerator_dispatches, 1);
     assert_eq!(encoded_53.report.timings.cpu_fallback_jobs, 0);
 
-    let options_97 = JpegToHtj2kOptions {
-        ..JpegToHtj2kOptions::lossy_97()
-    };
+    let options_97 = JpegToHtj2kOptions::lossy_97();
     let encoded_97 = transcoder
         .transcode_with_accelerator(jpeg, &options_97, &mut accelerator)
         .expect("accelerated 9/7 float transcode succeeds");
