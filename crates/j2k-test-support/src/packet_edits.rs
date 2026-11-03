@@ -174,8 +174,10 @@ pub fn with_surplus_packet_lengths(codestream: &[u8]) -> Vec<u8> {
 }
 
 /// The byte range of every packet of `codestream`, header and body, in
-/// codestream order (tile-part by tile-part, each in its progression order),
-/// from the PLT lengths each tile-part signals for its in-band packets.
+/// codestream order.
+///
+/// Packets run tile-part by tile-part, each in its progression order, and
+/// come from the PLT lengths each tile-part signals for its in-band packets.
 ///
 /// # Panics
 ///
@@ -276,9 +278,11 @@ pub fn with_packet_lengths_edited(
     })
 }
 
-/// `codestream` with its tile-parts reordered so that tiles take turns: every
-/// tile's first tile-part in tile order, then every second one, and so on.
-/// Each tile's tile-parts keep their order, as the standard requires.
+/// `codestream` with its tile-parts reordered so that tiles take turns.
+///
+/// Every tile's first tile-part comes first, in tile order, then every second
+/// one, and so on. Each tile's tile-parts keep their order, as the standard
+/// requires.
 ///
 /// # Panics
 ///

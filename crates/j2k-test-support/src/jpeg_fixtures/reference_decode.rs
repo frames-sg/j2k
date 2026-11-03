@@ -89,8 +89,8 @@ pub(super) fn ycbcr12_to_rgb16_for_fixture(y: u16, cb: u16, cr: u16) -> (u16, u1
 pub(super) fn ycbcr8_pixels_to_rgb8(samples: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(samples.len());
     for pixel in samples.as_chunks::<3>().0 {
-        let (r, g, b) = ycbcr8_to_rgb8_for_fixture(pixel[0], pixel[1], pixel[2]);
-        out.extend_from_slice(&[r, g, b]);
+        let rgb = ycbcr8_to_rgb8_for_fixture(pixel[0], pixel[1], pixel[2]);
+        out.extend_from_slice(&<[u8; 3]>::from(rgb));
     }
     out
 }
@@ -172,13 +172,13 @@ pub(super) fn lossless_422_planes_to_rgb8(
             // libjpeg-turbo's lossless upsampler replicates chroma.
             let c1_sample = c1_row[x / 2];
             let c2_sample = c2_row[x / 2];
-            let (r, g, b) = match color_space {
+            let rgb = match color_space {
                 ColorSpaceFixture::Rgb => (c0_sample, c1_sample, c2_sample),
                 ColorSpaceFixture::YCbCr => {
                     ycbcr8_to_rgb8_for_fixture(c0_sample, c1_sample, c2_sample)
                 }
             };
-            out.extend_from_slice(&[r, g, b]);
+            out.extend_from_slice(&<[u8; 3]>::from(rgb));
         }
     }
     out
@@ -200,13 +200,13 @@ pub(super) fn lossless_420_planes_to_rgb8(
             // libjpeg-turbo's lossless upsampler replicates chroma.
             let c1_sample = c1[(y / 2) * chroma_width + x / 2];
             let c2_sample = c2[(y / 2) * chroma_width + x / 2];
-            let (r, g, b) = match color_space {
+            let rgb = match color_space {
                 ColorSpaceFixture::Rgb => (c0_sample, c1_sample, c2_sample),
                 ColorSpaceFixture::YCbCr => {
                     ycbcr8_to_rgb8_for_fixture(c0_sample, c1_sample, c2_sample)
                 }
             };
-            out.extend_from_slice(&[r, g, b]);
+            out.extend_from_slice(&<[u8; 3]>::from(rgb));
         }
     }
     out
@@ -230,13 +230,13 @@ pub(super) fn lossless_422_planes_to_rgb16(
             // libjpeg-turbo's lossless upsampler replicates chroma.
             let c1_sample = c1_row[x / 2];
             let c2_sample = c2_row[x / 2];
-            let (r, g, b) = match color_space {
+            let rgb = match color_space {
                 ColorSpaceFixture::Rgb => (c0_sample, c1_sample, c2_sample),
                 ColorSpaceFixture::YCbCr => {
                     ycbcr16_to_rgb16_for_fixture(c0_sample, c1_sample, c2_sample)
                 }
             };
-            append_rgb16_pixel(&mut out, [r, g, b]);
+            append_rgb16_pixel(&mut out, rgb.into());
         }
     }
     out
@@ -258,13 +258,13 @@ pub(super) fn lossless_420_planes_to_rgb16(
             // libjpeg-turbo's lossless upsampler replicates chroma.
             let c1_sample = c1[(y / 2) * chroma_width + x / 2];
             let c2_sample = c2[(y / 2) * chroma_width + x / 2];
-            let (r, g, b) = match color_space {
+            let rgb = match color_space {
                 ColorSpaceFixture::Rgb => (c0_sample, c1_sample, c2_sample),
                 ColorSpaceFixture::YCbCr => {
                     ycbcr16_to_rgb16_for_fixture(c0_sample, c1_sample, c2_sample)
                 }
             };
-            append_rgb16_pixel(&mut out, [r, g, b]);
+            append_rgb16_pixel(&mut out, rgb.into());
         }
     }
     out
