@@ -117,10 +117,10 @@ pub(crate) fn decode_component_grid_color_batch(
         complete_direct_color_batch_command(runtime, &command, false, &mut timings, &mut metadata)?;
         Ok(surfaces)
     };
-    match session {
-        Some(session) => with_runtime_for_session(session, execute),
-        None => with_runtime(execute),
-    }
+    session.map_or_else(
+        || with_runtime(execute),
+        |session| with_runtime_for_session(session, execute),
+    )
 }
 
 fn encode_sampled_plan(

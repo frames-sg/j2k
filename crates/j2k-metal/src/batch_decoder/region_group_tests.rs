@@ -233,15 +233,15 @@ fn cropping_a_referenced_plan_drops_blocks_and_keeps_pixels() {
             .expect("prepare whole image");
         let image = &prepared.groups()[0].images()[0];
         let surface = crate::engine::with_runtime_for_session(decoder.backend_session(), |_| {
-            let mut plan = match image.htj2k_plan() {
-                Some(plan) => {
-                    crate::engine::prepare_referenced_htj2k_color_plan(plan.geometry(), &bytes)
-                }
-                None => crate::engine::prepare_referenced_classic_color_plan(
-                    image.classic_plan().expect("classic plan").geometry(),
-                    &bytes,
-                ),
-            }?;
+            let mut plan = image.htj2k_plan().map_or_else(
+                || {
+                    crate::engine::prepare_referenced_classic_color_plan(
+                        image.classic_plan().expect("classic plan").geometry(),
+                        &bytes,
+                    )
+                },
+                |plan| crate::engine::prepare_referenced_htj2k_color_plan(plan.geometry(), &bytes),
+            )?;
             let (whole_jobs, _) = plan.jobs_for_test();
             crate::engine::crop_prepared_direct_color_plan_to_output_region(&mut plan, roi)?;
             let (cropped_jobs, _) = plan.jobs_for_test();

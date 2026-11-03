@@ -14,6 +14,7 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(unreachable_pub)]
+#![warn(clippy::non_send_fields_in_send_ty)]
 
 mod batch;
 mod batch_allocation;

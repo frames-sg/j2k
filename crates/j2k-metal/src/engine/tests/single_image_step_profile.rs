@@ -109,22 +109,26 @@ fn single_image_step_profile() {
         return;
     }
     let _restore = SingleStepsOnDrop;
-    let images: Vec<(String, Vec<u8>)> = match std::env::var_os("J2K_STEP_PROFILE_FILES") {
-        Some(paths) => std::env::split_paths(&paths)
-            .map(|path| {
-                let bytes = std::fs::read(&path).expect("read profile codestream");
-                (path.display().to_string(), bytes)
-            })
-            .collect(),
-        None => [(512, 512), (1024, 1024), (3072, 4096)]
-            .into_iter()
-            .map(|(width, height)| {
-                let reversible = std::env::var_os("J2K_STEP_PROFILE_LOSSY").is_none();
-                let label = format!("{width}x{height}{}", if reversible { "" } else { " 9/7" });
-                (label, gray16(width, height, reversible))
-            })
-            .collect(),
-    };
+    let images: Vec<(String, Vec<u8>)> = std::env::var_os("J2K_STEP_PROFILE_FILES").map_or_else(
+        || {
+            [(512, 512), (1024, 1024), (3072, 4096)]
+                .into_iter()
+                .map(|(width, height)| {
+                    let reversible = std::env::var_os("J2K_STEP_PROFILE_LOSSY").is_none();
+                    let label = format!("{width}x{height}{}", if reversible { "" } else { " 9/7" });
+                    (label, gray16(width, height, reversible))
+                })
+                .collect()
+        },
+        |paths| {
+            std::env::split_paths(&paths)
+                .map(|path| {
+                    let bytes = std::fs::read(&path).expect("read profile codestream");
+                    (path.display().to_string(), bytes)
+                })
+                .collect()
+        },
+    );
     for (label, bytes) in &images {
         let mut decoder = J2kDecoder::new(bytes).expect("parse profile codestream");
         let destination = std::env::var_os("J2K_STEP_PROFILE_INTO").map(|_| {

@@ -58,6 +58,10 @@ pub(crate) struct MetalRuntime {
     output_heap: super::ReusableHeap,
 }
 
+#[expect(
+    clippy::non_send_fields_in_send_ty,
+    reason = "the dummy buffer, pools and heaps follow the mutex-guarded contract in the SAFETY comment"
+)]
 // SAFETY: Every retained Metal object in the runtime is documented by Metal
 // as usable across threads. CPU-side mutable pool/cache state is protected by
 // its own mutex. OnceLock serializes each kernel group's initialization;

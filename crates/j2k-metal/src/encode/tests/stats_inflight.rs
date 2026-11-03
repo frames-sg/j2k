@@ -21,11 +21,12 @@ fn inflight_limited_runner_starts_next_item_before_slow_peer_finishes() {
             0 => Ok(item),
             1 => {
                 let (lock, cvar) = &*task_probe;
-                let state = lock.lock().expect("probe mutex");
                 let (state, _timeout) = cvar
-                    .wait_timeout_while(state, Duration::from_millis(250), |state| {
-                        !state.third_item_started
-                    })
+                    .wait_timeout_while(
+                        lock.lock().expect("probe mutex"),
+                        Duration::from_millis(250),
+                        |state| !state.third_item_started,
+                    )
                     .expect("probe wait");
                 if !state.third_item_started {
                     return Err(crate::Error::MetalKernel {
@@ -40,6 +41,7 @@ fn inflight_limited_runner_starts_next_item_before_slow_peer_finishes() {
                 let (lock, cvar) = &*task_probe;
                 let mut state = lock.lock().expect("probe mutex");
                 state.third_item_started = true;
+                drop(state);
                 cvar.notify_all();
                 Ok(item)
             }

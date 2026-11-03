@@ -171,6 +171,7 @@ pub(crate) fn queue_tile_request_shared_with_retained(
     state
         .queued
         .push(QueuedRequest::new(input, fmt, backend, op, slot));
+    drop(state);
     Ok(MetalSubmission {
         session: session.shared.clone(),
         slot: Some(slot),

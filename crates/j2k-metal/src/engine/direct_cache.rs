@@ -100,6 +100,7 @@ impl PreparedDirectGrayscalePlan {
                 coefficients: cached,
             });
         }
+        drop(state);
         Ok(coefficients)
     }
 
@@ -112,6 +113,7 @@ impl PreparedDirectGrayscalePlan {
                     state: "hybrid CPU Tier-1 coefficient cache",
                 })?;
         state.entries.clear();
+        drop(state);
         Ok(())
     }
 
@@ -125,6 +127,7 @@ impl PreparedDirectGrayscalePlan {
                 })?;
         state.retention_enabled = false;
         state.entries.clear();
+        drop(state);
         Ok(())
     }
 }

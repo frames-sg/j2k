@@ -41,10 +41,9 @@ pub(crate) fn decode_region_scaled_grayscale_batch_direct_to_device_routed(
         }
         crate::engine::execute_prepared_direct_grayscale_plan_batch(&plans, fmt)
     };
-    match session {
-        Some(session) => crate::engine::with_runtime_for_session(session, |_| decode()),
-        None => decode(),
-    }
+    session.map_or_else(decode, |session| {
+        crate::engine::with_runtime_for_session(session, |_| decode())
+    })
 }
 
 #[cfg(test)]
@@ -73,10 +72,10 @@ pub(crate) fn decode_region_scaled_color_batch_direct_to_device_routed(
     }
 
     let decode = || {
-        let cache = match session {
-            Some(session) => RegionScaledColorPlanCache::Session(session),
-            None => RegionScaledColorPlanCache::Global,
-        };
+        let cache = session.map_or(
+            RegionScaledColorPlanCache::Global,
+            RegionScaledColorPlanCache::Session,
+        );
         let plans = if let Some((input, roi, scale)) = repeated_region_scaled_request(requests) {
             let plan = build_region_scaled_direct_color_plan_cached_with_cache(
                 input.as_ref(),
@@ -106,10 +105,9 @@ pub(crate) fn decode_region_scaled_color_batch_direct_to_device_routed(
         };
         crate::engine::execute_hybrid_cpu_tier1_direct_color_plan_batch(&plans, fmt)
     };
-    match session {
-        Some(session) => crate::engine::with_runtime_for_session(session, |_| decode()),
-        None => decode(),
-    }
+    session.map_or_else(decode, |session| {
+        crate::engine::with_runtime_for_session(session, |_| decode())
+    })
 }
 
 #[cfg(test)]
@@ -150,10 +148,10 @@ pub(crate) fn decode_repeated_region_scaled_color_batch_direct_to_device_routed(
     }
 
     let decode = || {
-        let cache = match session {
-            Some(session) => RegionScaledColorPlanCache::Session(session),
-            None => RegionScaledColorPlanCache::Global,
-        };
+        let cache = session.map_or(
+            RegionScaledColorPlanCache::Global,
+            RegionScaledColorPlanCache::Session,
+        );
         let plan =
             build_region_scaled_direct_color_plan_cached_with_cache(input, fmt, roi, scale, cache)?;
         let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
@@ -163,10 +161,9 @@ pub(crate) fn decode_repeated_region_scaled_color_batch_direct_to_device_routed(
             budget.try_filled(count, plan, "J2K Metal repeated region-scaled color plans")?;
         crate::engine::execute_hybrid_cpu_tier1_direct_color_plan_batch(&plans, fmt)
     };
-    match session {
-        Some(session) => crate::engine::with_runtime_for_session(session, |_| decode()),
-        None => decode(),
-    }
+    session.map_or_else(decode, |session| {
+        crate::engine::with_runtime_for_session(session, |_| decode())
+    })
 }
 
 fn repeated_region_scaled_request(

@@ -336,14 +336,16 @@ impl J2kDecoder<'_> {
                 reason: MetalDirectFallbackReason::UnsupportedPlan,
             });
         };
-        match session {
-            Some(session) => crate::engine::with_runtime_for_session(session, |_| {
-                crate::engine::execute_repeated_prepared_direct_grayscale_plan(&plan, fmt, count)
-            }),
-            None => {
-                crate::engine::execute_repeated_prepared_direct_grayscale_plan(&plan, fmt, count)
-            }
-        }
+        session.map_or_else(
+            || crate::engine::execute_repeated_prepared_direct_grayscale_plan(&plan, fmt, count),
+            |session| {
+                crate::engine::with_runtime_for_session(session, |_| {
+                    crate::engine::execute_repeated_prepared_direct_grayscale_plan(
+                        &plan, fmt, count,
+                    )
+                })
+            },
+        )
     }
 
     #[cfg(target_os = "macos")]
@@ -516,12 +518,14 @@ pub(crate) fn decode_full_grayscale_batch_direct_to_device_routed(
         };
         plans.push(plan);
     }
-    match session {
-        Some(session) => crate::engine::with_runtime_for_session(session, |_| {
-            crate::engine::execute_prepared_direct_grayscale_plan_batch(&plans, fmt)
-        }),
-        None => crate::engine::execute_prepared_direct_grayscale_plan_batch(&plans, fmt),
-    }
+    session.map_or_else(
+        || crate::engine::execute_prepared_direct_grayscale_plan_batch(&plans, fmt),
+        |session| {
+            crate::engine::with_runtime_for_session(session, |_| {
+                crate::engine::execute_prepared_direct_grayscale_plan_batch(&plans, fmt)
+            })
+        },
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -558,12 +562,14 @@ pub(crate) fn decode_full_color_batch_direct_to_device_routed(
         };
         plans.push(plan);
     }
-    let result = match session {
-        Some(session) => crate::engine::with_runtime_for_session(session, |_| {
-            crate::engine::execute_prepared_direct_color_plan_batch(&plans, fmt)
-        }),
-        None => crate::engine::execute_prepared_direct_color_plan_batch(&plans, fmt),
-    };
+    let result = session.map_or_else(
+        || crate::engine::execute_prepared_direct_color_plan_batch(&plans, fmt),
+        |session| {
+            crate::engine::with_runtime_for_session(session, |_| {
+                crate::engine::execute_prepared_direct_color_plan_batch(&plans, fmt)
+            })
+        },
+    );
     match result {
         Ok(surfaces) => Ok(surfaces),
         Err(error) if is_direct_runtime_fallback_error(&error) => Err(Error::capability_rejected(

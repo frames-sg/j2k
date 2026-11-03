@@ -21,6 +21,10 @@ type EncodeCase = AutoRoutingPnm;
 
 const BATCH_SIZE: usize = 16;
 
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the Criterion group is consumed by `finish()`, which the lint does not treat as a drop"
+)]
 pub(crate) fn bench_cell(
     criterion: &mut Criterion,
     case: &EncodeCase,
@@ -72,6 +76,10 @@ pub(crate) fn bench_cell(
     route_cell(&case.id, operation, &group_id, auto_routing_sha256(&cpu))
 }
 
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the Criterion group is consumed by `finish()`, which the lint does not treat as a drop"
+)]
 pub(crate) fn bench_batch_cell(criterion: &mut Criterion, case: &EncodeCase) -> AutoRoutingCell {
     assert!(
         case.codec.is_high_throughput(),
