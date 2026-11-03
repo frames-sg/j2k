@@ -62,8 +62,8 @@ fn roi(x: u32) -> Rect {
     }
 }
 
-fn id(value: Option<&TestValue>) -> Option<usize> {
-    value.map(|value| value.id)
+fn id(value: &TestValue) -> usize {
+    value.id
 }
 
 #[test]
@@ -80,11 +80,13 @@ fn prepared_image_keys_match_only_the_exact_arc_request_and_format() {
         .expect("insert exact prepared-image identity");
 
     assert_eq!(
-        id(cache.get(PreparedPlanCacheKey::prepared_gray(
-            &alias,
-            DecodeRequest::Full,
-            PixelFormat::Gray16,
-        ))),
+        cache
+            .get(PreparedPlanCacheKey::prepared_gray(
+                &alias,
+                DecodeRequest::Full,
+                PixelFormat::Gray16,
+            ))
+            .map(id),
         Some(41)
     );
     for key in [
@@ -103,7 +105,7 @@ fn prepared_image_keys_match_only_the_exact_arc_request_and_format() {
         PreparedPlanCacheKey::prepared_gray(&bytes, DecodeRequest::Full, PixelFormat::GrayI16),
         PreparedPlanCacheKey::prepared_color(&bytes, DecodeRequest::Full, PixelFormat::Gray16),
     ] {
-        assert_eq!(id(cache.get(key)), None);
+        assert_eq!(cache.get(key).map(id), None);
     }
 }
 
@@ -141,8 +143,8 @@ fn prepared_image_arc_bytes_drive_eviction_and_oversized_admission() {
         bounded.insert(second_key, value(2, 0, 0)).unwrap(),
         PreparedPlanCacheInsert::Cached
     );
-    assert_eq!(id(bounded.get(first_key)), None);
-    assert_eq!(id(bounded.get(second_key)), Some(2));
+    assert_eq!(bounded.get(first_key).map(id), None);
+    assert_eq!(bounded.get(second_key).map(id), Some(2));
     assert!(bounded.retained_host_bytes().unwrap() <= one_entry_limit);
 
     let oversized = Arc::<[u8]>::from(vec![3_u8; 33]);
@@ -181,17 +183,21 @@ fn forced_digest_collision_does_not_cross_hit_distinct_inputs() {
         .expect("insert colliding second cache entry");
 
     assert_eq!(
-        id(cache.get(PreparedPlanCacheKey::direct_color(
-            b"first codestream",
-            PixelFormat::Rgb8,
-        ))),
+        cache
+            .get(PreparedPlanCacheKey::direct_color(
+                b"first codestream",
+                PixelFormat::Rgb8,
+            ))
+            .map(id),
         Some(11)
     );
     assert_eq!(
-        id(cache.get(PreparedPlanCacheKey::direct_color(
-            b"second codestream",
-            PixelFormat::Rgb8,
-        ))),
+        cache
+            .get(PreparedPlanCacheKey::direct_color(
+                b"second codestream",
+                PixelFormat::Rgb8,
+            ))
+            .map(id),
         Some(17)
     );
 }
@@ -216,11 +222,11 @@ fn forced_digest_collision_does_not_cross_hit_semantic_dimensions() {
         roi(9),
         Downscale::Half,
     );
-    assert_eq!(id(cache.get(distinct)), None);
+    assert_eq!(cache.get(distinct).map(id), None);
     cache
         .insert(distinct, value(29, 0, 0))
         .expect("insert distinct ROI");
-    assert_eq!(id(cache.get(first)), Some(23));
+    assert_eq!(cache.get(first).map(id), Some(23));
 
     for key in [
         PreparedPlanCacheKey::region_scaled_color(
@@ -237,7 +243,7 @@ fn forced_digest_collision_does_not_cross_hit_semantic_dimensions() {
         ),
         PreparedPlanCacheKey::direct_color(input, PixelFormat::Rgb8),
     ] {
-        assert_eq!(id(cache.get(key)), None);
+        assert_eq!(cache.get(key).map(id), None);
     }
 }
 
@@ -263,10 +269,12 @@ fn cache_owns_identity_bytes_and_hits_share_the_same_owner() {
         .expect("owned key hit");
     assert!(Arc::ptr_eq(&owner, &hit.owner));
     assert_eq!(
-        id(cache.get(PreparedPlanCacheKey::direct_gray(
-            &source,
-            PixelFormat::Gray8,
-        ))),
+        cache
+            .get(PreparedPlanCacheKey::direct_gray(
+                &source,
+                PixelFormat::Gray8,
+            ))
+            .map(id),
         None
     );
 }
@@ -283,10 +291,12 @@ fn deterministic_lru_eviction_honors_hits() {
             .expect("fill cache");
     }
     assert_eq!(
-        id(cache.get(PreparedPlanCacheKey::direct_color(
-            b"one",
-            PixelFormat::Rgb8,
-        ))),
+        cache
+            .get(PreparedPlanCacheKey::direct_color(
+                b"one",
+                PixelFormat::Rgb8,
+            ))
+            .map(id),
         Some(1)
     );
     cache
@@ -297,17 +307,21 @@ fn deterministic_lru_eviction_honors_hits() {
         .expect("insert with eviction");
 
     assert_eq!(
-        id(cache.get(PreparedPlanCacheKey::direct_color(
-            b"two",
-            PixelFormat::Rgb8,
-        ))),
+        cache
+            .get(PreparedPlanCacheKey::direct_color(
+                b"two",
+                PixelFormat::Rgb8,
+            ))
+            .map(id),
         None
     );
     assert_eq!(
-        id(cache.get(PreparedPlanCacheKey::direct_color(
-            b"one",
-            PixelFormat::Rgb8,
-        ))),
+        cache
+            .get(PreparedPlanCacheKey::direct_color(
+                b"one",
+                PixelFormat::Rgb8,
+            ))
+            .map(id),
         Some(1)
     );
 }
@@ -333,17 +347,21 @@ fn one_hundred_twenty_eight_entry_limit_evicts_the_oldest_exactly() {
 
     assert_eq!(cache.len(), 128);
     assert_eq!(
-        id(cache.get(PreparedPlanCacheKey::direct_color(
-            &inputs[0],
-            PixelFormat::Rgb8,
-        ))),
+        cache
+            .get(PreparedPlanCacheKey::direct_color(
+                &inputs[0],
+                PixelFormat::Rgb8,
+            ))
+            .map(id),
         None
     );
     assert_eq!(
-        id(cache.get(PreparedPlanCacheKey::direct_color(
-            &inputs[128],
-            PixelFormat::Rgb8,
-        ))),
+        cache
+            .get(PreparedPlanCacheKey::direct_color(
+                &inputs[128],
+                PixelFormat::Rgb8,
+            ))
+            .map(id),
         Some(128)
     );
 }
@@ -457,8 +475,8 @@ fn replacement_reuses_owned_key_and_evicts_before_committing_larger_value() {
         PreparedPlanCacheInsert::Cached
     );
     assert_eq!(cache.len(), 1);
-    assert_eq!(id(cache.get(first)), Some(3));
-    assert_eq!(id(cache.get(second)), None);
+    assert_eq!(cache.get(first).map(id), Some(3));
+    assert_eq!(cache.get(second).map(id), None);
     assert!(cache.retained_host_bytes().unwrap() <= limit);
 }
 
@@ -478,7 +496,7 @@ fn oversized_admission_does_not_mutate_existing_entries() {
         PreparedPlanCacheInsert::SkippedOversized
     );
     assert_eq!(cache.len(), 1);
-    assert_eq!(id(cache.get(retained)), Some(1));
+    assert_eq!(cache.get(retained).map(id), Some(1));
 }
 
 #[test]

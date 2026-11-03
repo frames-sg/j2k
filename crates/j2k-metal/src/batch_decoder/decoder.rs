@@ -308,6 +308,6 @@ impl j2k::BatchDecoder for MetalBatchDecoder {
     }
 
     fn decode_prepared(&mut self, prepared: &PreparedBatch) -> Result<Self::Output, Self::Error> {
-        MetalBatchDecoder::decode_prepared(self, prepared)
+        Self::decode_prepared(self, prepared)
     }
 }

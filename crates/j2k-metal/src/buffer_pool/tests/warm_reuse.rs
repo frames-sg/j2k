@@ -4,6 +4,10 @@ use super::{device, MetalBufferPools, PoolLimits};
 use j2k_metal_support::{checked_private_buffer, checked_shared_buffer};
 
 #[test]
+#[expect(
+    clippy::iter_with_drain,
+    reason = "the working set is refilled after the drain and keeps its reserved capacity"
+)]
 fn byte_admitted_resident_working_set_is_fully_reused_after_warmup() {
     const RESIDENT_WORKING_SET_BUFFERS: usize = 103;
     const BUFFER_BYTES: usize = 4 * 1024;

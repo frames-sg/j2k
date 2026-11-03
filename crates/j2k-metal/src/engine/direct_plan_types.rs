@@ -33,6 +33,10 @@ pub(crate) struct PreparedDirectGrayscalePlan {
     pub(super) cpu_tier1_cache: Arc<CpuTier1CoefficientCache>,
 }
 
+#[expect(
+    clippy::non_send_fields_in_send_ty,
+    reason = "the steps' Metal buffers are filled once under `OnceLock` and read-only after, as the SAFETY comment states"
+)]
 // SAFETY: A prepared plan is immutable after construction, except that each
 // classic sub-band and group fills its Tier-1 input buffers on first use. The
 // `OnceLock` holding them synchronizes that first fill, and the buffers are

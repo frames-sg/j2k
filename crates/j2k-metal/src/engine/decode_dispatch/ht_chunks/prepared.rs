@@ -26,6 +26,10 @@ pub(in crate::engine) struct PreparedMetalHtChunk {
     pub(in crate::engine) jobs_buffer: Buffer,
 }
 
+#[expect(
+    clippy::non_send_fields_in_send_ty,
+    reason = "the retained coded/job MTLBuffers are read-only after construction, as the SAFETY comment states"
+)]
 // SAFETY: A prepared execution is immutable after construction. Its host
 // arenas are read-only, and its retained coded/job Metal buffers are bound only
 // for shader reads while each submission owns separate writable outputs.

@@ -19,6 +19,10 @@ pub(super) struct SharedKernelGroups {
     pub(super) buffers: OnceLock<Result<BufferKernels, MetalSupportError>>,
 }
 
+#[expect(
+    clippy::non_send_fields_in_send_ty,
+    reason = "the kernel groups' lookup buffers are immutable once published, as the SAFETY comment states"
+)]
 // SAFETY: The retained Metal pipeline states and lookup buffers become
 // immutable before each OnceLock publishes a kernel group. Metal permits
 // concurrent use of those resources across queues and threads, and OnceLock
@@ -103,17 +107,16 @@ impl KernelGroupCache {
                 .as_ref()
                 .is_none_or(|entry| entry.groups.strong_count() == 0)
         });
-        let slot = if let Some(slot) = reusable_slot {
-            slot
-        } else {
+        let slot = reusable_slot.unwrap_or_else(|| {
             let slot = state.next_replacement;
             state.next_replacement = (state.next_replacement + 1) % MAX_TRACKED_METAL_DEVICES;
             slot
-        };
+        });
         state.slots[slot] = Some(KernelGroupCacheEntry {
             device,
             groups: Arc::downgrade(&shared),
         });
+        drop(state);
         Ok(shared)
     }
 }

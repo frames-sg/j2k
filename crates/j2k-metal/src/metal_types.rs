@@ -210,13 +210,11 @@ mod tests {
     }
 
     fn panic_message(payload: &(dyn Any + Send)) -> String {
-        if let Some(message) = payload.downcast_ref::<&str>() {
-            (*message).to_owned()
-        } else if let Some(message) = payload.downcast_ref::<String>() {
-            message.clone()
-        } else {
-            "non-string panic payload".to_owned()
-        }
+        payload
+            .downcast_ref::<&str>()
+            .map(|message| (*message).to_owned())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "non-string panic payload".to_owned())
     }
 
     fn assert_panics_with(f: impl FnOnce(), expected: &str) {

@@ -71,10 +71,8 @@ impl ReusableHeap {
         })?;
         let buffer = heap_buffer(&grown, bytes)?;
         *heap = Some(grown);
-        match buffer {
-            Some(buffer) => Ok(buffer),
-            None => new_shared_buffer(device, bytes),
-        }
+        drop(heap);
+        buffer.map_or_else(|| new_shared_buffer(device, bytes), Ok)
     }
 
     /// The heap size that serves `bytes`: room for two such buffers when that
@@ -121,10 +119,10 @@ impl<'a> HtInputAllocator<'a> {
     }
 
     pub(in crate::engine) fn shared_buffer(self, bytes: usize) -> Result<Buffer, Error> {
-        match self.heap {
-            Some(heap) => heap.allocate(self.device, bytes),
-            None => new_shared_buffer(self.device, bytes),
-        }
+        self.heap.map_or_else(
+            || new_shared_buffer(self.device, bytes),
+            |heap| heap.allocate(self.device, bytes),
+        )
     }
 
     pub(in crate::engine) fn copied_slice<T: GpuAbi>(self, values: &[T]) -> Result<Buffer, Error> {
@@ -197,6 +195,7 @@ mod tests {
             None,
             "requests over the cap never use a heap"
         );
+        drop(live);
     }
 
     #[test]
