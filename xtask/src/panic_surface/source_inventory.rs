@@ -22,14 +22,18 @@ use crate::source_audit::{
 // The CUDA packet-header kernel's two const assertions check at compile time
 // that its shared tag-tree arena splits evenly and holds the parallel
 // builder's scratch; they cannot fail at run time.
+// The JPEG SIMD kernels prove their lane ranges the same way: the AVX2 islow
+// IDCT (gain-table symmetry and i16/i32 sum bounds), the AVX2 colour constants,
+// `madd_pair`'s `vpmaddwd` operands (only evaluated in const items) and the NEON
+// 12-bit IDCT's i32 pass-1 bound are all const assertions.
 const PANIC_MACRO_BASELINE: PanicMacroInventory = PanicMacroInventory {
     panic: 3,
-    unreachable: 59,
-    assert: 74,
+    unreachable: 52,
+    assert: 90,
     assert_eq: 30,
     assert_ne: 6,
-    debug_assert: 148,
-    debug_assert_eq: 95,
+    debug_assert: 144,
+    debug_assert_eq: 94,
     debug_assert_ne: 4,
 };
 
