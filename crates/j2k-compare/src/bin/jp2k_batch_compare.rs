@@ -379,10 +379,10 @@ fn decode_once(
     workers: Option<NonZeroUsize>,
     decoder: Option<ExternalDecoder>,
 ) -> Result<usize, String> {
-    decoder.map_or_else(
-        || decode_j2k_once(tiles, tiles[0].format, workers),
-        |decoder| decode_external_once(tiles, workers, decoder),
-    )
+    match decoder {
+        Some(decoder) => decode_external_once(tiles, workers, decoder),
+        None => decode_j2k_once(tiles, tiles[0].format, workers),
+    }
 }
 
 fn decode_j2k_once(

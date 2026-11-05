@@ -147,6 +147,8 @@ pub(super) fn clippy_strict() -> Result<(), String> {
         "clippy::disallowed_methods",
         "-A",
         "clippy::disallowed_macros",
+        "-A",
+        "clippy::significant_drop_tightening",
     ]);
 
     run_cargo(&non_library_args)
@@ -205,6 +207,7 @@ const STRICT_CLIPPY_BASELINE_ALLOWED_LINTS: &[&str] = &[
     "clippy::needless_pass_by_ref_mut",
     "clippy::needless_pass_by_value",
     "clippy::no_effect_underscore_binding",
+    "clippy::option_if_let_else",
     "clippy::or_fun_call",
     "clippy::redundant_clone",
     "clippy::redundant_closure_for_method_calls",

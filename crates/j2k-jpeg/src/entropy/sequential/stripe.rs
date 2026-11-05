@@ -185,10 +185,9 @@ impl StripeBuffer {
             || layout.plane_lens[..n]
                 .iter()
                 .enumerate()
-                .any(|(index, &target_len)| {
-                    self.planes
-                        .get(index)
-                        .map_or(target_len != 0, |plane| plane.capacity() < target_len)
+                .any(|(index, &target_len)| match self.planes.get(index) {
+                    Some(plane) => plane.capacity() < target_len,
+                    None => target_len != 0,
                 })
     }
 

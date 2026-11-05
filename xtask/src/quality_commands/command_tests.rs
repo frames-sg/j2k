@@ -57,7 +57,10 @@ fn quality_command_plans_are_complete_and_never_launch_real_tools() {
         "clippy {strict_packages} --bins --examples --tests --benches --all-features \
          --no-deps -- -W clippy::pedantic -W clippy::nursery -D warnings"
     )));
-    assert!(log.contains("-A clippy::disallowed_methods -A clippy::disallowed_macros|"));
+    assert!(log.contains(
+        "-A clippy::disallowed_methods -A clippy::disallowed_macros \
+         -A clippy::significant_drop_tightening|"
+    ));
     assert!(log.contains("test --workspace --all-features --lib --bins --tests"));
     assert!(log.contains("--exclude j2k-alloc-probe"));
     for invocation in log

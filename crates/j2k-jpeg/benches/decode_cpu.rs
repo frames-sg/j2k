@@ -295,10 +295,6 @@ fn decode_cases() -> Vec<DecodeCase> {
     cases
 }
 
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "each Criterion group is consumed by `finish()` right after its last use; the lint only recognizes `drop`"
-)]
 fn bench_comparable_decode_routes(c: &mut Criterion) {
     let cases = decode_cases();
 

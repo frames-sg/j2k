@@ -49,10 +49,6 @@ impl<'a> DecodeCase<'a> {
     }
 }
 
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the Criterion group is consumed by `finish()`, which the lint does not treat as a drop"
-)]
 pub(crate) fn bench_cell(
     criterion: &mut Criterion,
     case: &DecodeCase<'_>,

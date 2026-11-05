@@ -207,23 +207,22 @@ fn encode_cpu_lossless(
                 case.signed,
             )
             .map_err(|error| error.to_string())?;
-            case.roi.map_or_else(
-                || encode_j2k_lossless(samples, &options),
-                |roi| {
-                    encode_j2k_lossless_with_roi_regions(
-                        samples,
-                        &options,
-                        &[J2kRoiRegion {
-                            component: roi.component,
-                            x: roi.x,
-                            y: roi.y,
-                            width: roi.width,
-                            height: roi.height,
-                            shift: roi.shift,
-                        }],
-                    )
-                },
-            )
+            if let Some(roi) = case.roi {
+                encode_j2k_lossless_with_roi_regions(
+                    samples,
+                    &options,
+                    &[J2kRoiRegion {
+                        component: roi.component,
+                        x: roi.x,
+                        y: roi.y,
+                        width: roi.width,
+                        height: roi.height,
+                        shift: roi.shift,
+                    }],
+                )
+            } else {
+                encode_j2k_lossless(samples, &options)
+            }
         }
         EncoderInputKind::ComponentPlanes => {
             let planes = input

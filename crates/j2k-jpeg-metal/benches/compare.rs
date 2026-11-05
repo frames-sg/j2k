@@ -940,10 +940,6 @@ fn metal_available() -> bool {
     }
 }
 
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "each Criterion group is consumed by `finish()`, which the lint does not treat as a drop"
-)]
 fn bench_full_and_tile_decode_groups(c: &mut Criterion, inputs: &[BenchInput], has_metal: bool) {
     let mut decode_rgb = c.benchmark_group("decode_rgb");
     for input in inputs.iter().filter(|input| {
@@ -1215,10 +1211,6 @@ fn bench_retained_single_decode(c: &mut Criterion, has_metal: bool) {
 #[cfg(not(target_os = "macos"))]
 fn bench_retained_single_decode(_c: &mut Criterion, _has_metal: bool) {}
 
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "each Criterion group is consumed by `finish()`, which the lint does not treat as a drop"
-)]
 fn bench_region_and_scaled_decode_groups(
     c: &mut Criterion,
     inputs: &[BenchInput],
@@ -1300,10 +1292,6 @@ fn bench_region_and_scaled_decode_groups(
     wsi_region_scaled_rgb_q8.finish();
 }
 
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "each Criterion group is consumed by `finish()`, which the lint does not treat as a drop"
-)]
 fn bench_scaled_tile_batch_groups(
     c: &mut Criterion,
     inputs: &[BenchInput],
@@ -1395,10 +1383,6 @@ fn bench_scaled_tile_batch_groups(
     wsi_tile_batch_region_scaled_distinct_rgb_q4.finish();
 }
 
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "each Criterion group is consumed by `finish()`, which the lint does not treat as a drop"
-)]
 fn bench_cold_viewport_groups(c: &mut Criterion, inputs: &[BenchInput], has_metal: bool) {
     let mut viewer_region_scaled_composite_rgb =
         c.benchmark_group("viewer_region_scaled_composite_rgb");
@@ -1552,10 +1536,6 @@ fn bench_warm_viewport_device_group(c: &mut Criterion, inputs: &[BenchInput], ha
     viewer_region_scaled_composite_rgb_device_warm.finish();
 }
 
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "each Criterion group is consumed by `finish()`, which the lint does not treat as a drop"
-)]
 fn bench_contiguous_viewport_groups(c: &mut Criterion, inputs: &[BenchInput], has_metal: bool) {
     let mut viewer_contiguous_region_scaled_rgb =
         c.benchmark_group("viewer_contiguous_region_scaled_rgb");
@@ -1645,10 +1625,6 @@ fn bench_contiguous_viewport_groups(c: &mut Criterion, inputs: &[BenchInput], ha
     viewer_contiguous_region_scaled_rgb_device.finish();
 }
 
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "each Criterion group is consumed by `finish()`, which the lint does not treat as a drop"
-)]
 fn bench_adaptive_viewport_groups(c: &mut Criterion, inputs: &[BenchInput]) {
     let mut viewer_best_region_scaled_rgb_device =
         c.benchmark_group("viewer_best_region_scaled_rgb_device");

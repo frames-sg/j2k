@@ -157,10 +157,6 @@ fn run_rgb_encode(
 }
 
 #[cfg(target_os = "macos")]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the Criterion group is consumed by `finish()`, which the lint does not treat as a drop"
-)]
 fn bench_transform_stages(criterion: &mut Criterion) {
     let samples = stage_samples();
     let pixels = encode_pixels();

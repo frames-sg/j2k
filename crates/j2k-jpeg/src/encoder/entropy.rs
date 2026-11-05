@@ -428,13 +428,6 @@ fn encode_entropy_mcu_range_into_mode<
             };
             let ac_table = packed_huffman.ac[table_index];
             let mut block_storage;
-            #[cfg_attr(
-                not(all(target_arch = "aarch64", not(feature = "scalar-only"))),
-                expect(
-                    clippy::option_if_let_else,
-                    reason = "the compact-plane fallback initializes the deferred `block_storage` and returns a borrow of it, which a closure cannot do"
-                )
-            )]
             let block = if BLOCK_PLANES && !COMPACT_BLOCK_PLANES {
                 debug_assert!(matches!(
                     MODE,

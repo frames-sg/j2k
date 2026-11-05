@@ -116,12 +116,13 @@ impl MetalBackendSession {
     pub(crate) fn runtime(&self) -> Result<Arc<crate::engine::MetalRuntime>, Error> {
         let command_queue = self.command_queue.clone();
         match self.runtime_session.get_or_init_runtime(move |device| {
-            command_queue
-                .map_or_else(
-                    || crate::engine::MetalRuntime::new_with_device(device),
-                    |queue| crate::engine::MetalRuntime::new_with_device_and_queue(device, queue),
-                )
-                .map(Arc::new)
+            match command_queue {
+                Some(queue) => {
+                    crate::engine::MetalRuntime::new_with_device_and_queue(device, queue)
+                }
+                None => crate::engine::MetalRuntime::new_with_device(device),
+            }
+            .map(Arc::new)
         }) {
             Ok(runtime) => Ok(runtime.clone()),
             Err(error) => Err(crate::engine::runtime_initialization_error(error)),

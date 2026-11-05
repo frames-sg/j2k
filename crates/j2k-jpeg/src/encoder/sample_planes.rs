@@ -1789,10 +1789,6 @@ mod tests {
                             for block_y in 0..sampling.v[component] {
                                 for block_x in 0..sampling.h[component] {
                                     let mut scratch = [0u8; 64];
-                                    #[expect(
-                                        clippy::option_if_let_else,
-                                        reason = "the edge fallback fills `scratch` and returns a borrow of it, which a closure cannot do"
-                                    )]
                                     let actual = if block_layout_444
                                         || block_layout_422
                                         || block_layout_420

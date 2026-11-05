@@ -6,10 +6,6 @@ use j2k_cuda::CudaEncodeStageAccelerator;
 
 const BENCH_DIMS: &[u32] = &[512, 1024, 2048];
 
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "Criterion's `BenchmarkGroup::finish` consumes each group at its last use"
-)]
 fn bench_encode_stages(c: &mut Criterion) {
     let cuda_available = cuda_encode_available();
 

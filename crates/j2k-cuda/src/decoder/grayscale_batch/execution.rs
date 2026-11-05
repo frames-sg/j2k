@@ -140,19 +140,13 @@ fn upload_grayscale_decode_resources(
     let mut payload_parts = payload_budget.try_vec_with_capacity(prepared.payload_parts.len())?;
     payload_parts.extend(prepared.payload_parts.iter().map(Vec::as_slice));
     let engine = J2kCudaEngine::new(&context);
-    let resources = tables
-        .as_ref()
-        .map_or_else(
-            || engine.upload_j2k_decode_payload_with_pool(&payload_parts, &pool),
-            |tables| {
-                engine.upload_htj2k_decode_resources_with_tables_and_pool(
-                    &payload_parts,
-                    tables,
-                    &pool,
-                )
-            },
-        )
-        .map_err(cuda_error)?;
+    let resources = match tables.as_ref() {
+        Some(tables) => {
+            engine.upload_htj2k_decode_resources_with_tables_and_pool(&payload_parts, tables, &pool)
+        }
+        None => engine.upload_j2k_decode_payload_with_pool(&payload_parts, &pool),
+    }
+    .map_err(cuda_error)?;
     Ok((
         resources,
         table_upload_us,

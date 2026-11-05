@@ -18,10 +18,6 @@ use crate::assert_output_parity;
 
 type EncodeCase = AutoRoutingPnm;
 
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "Criterion's `BenchmarkGroup::finish` consumes each group at its last use"
-)]
 pub(crate) fn bench_cell(
     criterion: &mut Criterion,
     case: &EncodeCase,
