@@ -2417,6 +2417,7 @@ pub struct j2k_transcode_metal::weights::SparseWeightTap
 ```text
 #[non_exhaustive] pub enum j2k_native::J2kClassicReconstruction
 #[non_exhaustive] pub enum j2k_native::J2kIdwtNormalization
+#[non_exhaustive] pub enum j2k_native::RegionRowsBlocker
 #[non_exhaustive] pub enum j2k_native::ResidentHtj2kEncodeError
 #[non_exhaustive] pub enum j2k_native::packet_math::HtSegmentLengthError
 #[non_exhaustive] pub struct j2k_native::HtCodeBlockDecodeProfile
@@ -2465,6 +2466,7 @@ pub enum j2k_native::Jp2ComponentMappingType
 pub enum j2k_native::Jp2FileKind
 pub fn j2k_native::ComponentPlane<'a>::into_parts(self) -> j2k_native::ComponentPlaneParts<'a>
 pub fn j2k_native::ComponentRowSink::rgb8_region(&mut self, u32, u32) -> core::option::Option<&mut [u8]>
+pub fn j2k_native::ComponentRowSink::stopped(&self) -> bool
 pub fn j2k_native::ComponentRowSink::write_rows(&mut self, u32, u32, &[j2k_native::ComponentPlane<'_>])
 pub fn j2k_native::DecodedComponents<'a>::into_parts(self) -> j2k_native::DecodedComponentsParts<'a>
 pub fn j2k_native::DecodedComponents<'a>::live_bytes(&self) -> usize
@@ -2508,9 +2510,11 @@ pub fn j2k_native::Image<'a>::decode_region_components_for_integer_output_with_c
 pub fn j2k_native::Image<'a>::decode_region_components_for_integer_output_with_ht_decoder<'ctx>(&self, &'ctx mut j2k_native::DecoderContext<'a>, (u32, u32, u32, u32), &mut dyn j2k_native::HtCodeBlockDecoder) -> j2k_native::Result<j2k_native::DecodedComponents<'ctx>>
 pub fn j2k_native::Image<'a>::decode_region_components_with_ht_decoder<'ctx>(&self, &'ctx mut j2k_native::DecoderContext<'a>, (u32, u32, u32, u32), &mut dyn j2k_native::HtCodeBlockDecoder) -> j2k_native::Result<j2k_native::DecodedComponents<'ctx>>
 pub fn j2k_native::Image<'a>::decode_region_rows_for_integer_output_with_context(&self, (u32, u32, u32, u32), &mut j2k_native::DecoderContext<'a>, &mut dyn j2k_native::ComponentRowSink) -> j2k_native::Result<()>
+pub fn j2k_native::Image<'a>::decode_region_rows_for_integer_output_with_retained_baseline(&self, (u32, u32, u32, u32), &mut j2k_native::DecoderContext<'a>, &mut dyn j2k_native::ComponentRowSink, usize) -> j2k_native::Result<()>
 pub fn j2k_native::Image<'a>::decode_reversible_53_coefficients(&self) -> j2k_native::Result<j2k_native::Reversible53CoefficientImage>
 pub fn j2k_native::Image<'a>::decode_reversible_53_coefficients_with_context(&self, &mut j2k_native::DecoderContext<'a>) -> j2k_native::Result<j2k_native::Reversible53CoefficientImage>
 pub fn j2k_native::Image<'a>::full_decode_planes_floor(&self, usize) -> j2k_native::Result<core::option::Option<usize>>
+pub fn j2k_native::Image<'a>::image_origin(&self) -> (u32, u32)
 pub fn j2k_native::Image<'a>::keep_ignored_components(&mut self)
 pub fn j2k_native::Image<'a>::new_with_reduction(&'a [u8], &j2k_native::DecodeSettings, u8) -> j2k_native::Result<Self>
 pub fn j2k_native::Image<'a>::new_with_retained_baseline(&'a [u8], &j2k_native::DecodeSettings, usize) -> j2k_native::Result<Self>
@@ -2518,10 +2522,12 @@ pub fn j2k_native::Image<'a>::output_tile_rects(&self) -> j2k_native::Result<all
 pub fn j2k_native::Image<'a>::prepare_region_decoder_with_context<'image, 'context>(&'image self, &'context mut j2k_native::DecoderContext<'a>) -> j2k_native::Result<j2k_native::PreparedRegionDecoder<'image, 'context, 'a>>
 pub fn j2k_native::Image<'a>::primary_icc_profile(&self) -> core::option::Option<&[u8]>
 pub fn j2k_native::Image<'a>::region_decode_streams_rows(&self) -> bool
+pub fn j2k_native::Image<'a>::region_rows_blocker(&self) -> core::option::Option<j2k_native::RegionRowsBlocker>
 pub fn j2k_native::Image<'a>::retained_allocation_bytes(&self) -> j2k_native::Result<usize>
 pub fn j2k_native::Image<'a>::streamed_rows_native_precision(&self) -> core::option::Option<u8>
 pub fn j2k_native::Image<'a>::supports_direct_device_plane_reuse(&self) -> bool
 pub fn j2k_native::Image<'a>::tile_count(&self) -> u32
+pub fn j2k_native::Image<'a>::tile_grid(&self) -> ((u32, u32), (u32, u32))
 pub fn j2k_native::Image<'a>::uses_high_throughput_block_coding(&self) -> bool
 pub fn j2k_native::IrreversibleScaleEncoder<'a>::encode_at_scale(&mut self, f32) -> j2k_native::EncodeResult<alloc::vec::Vec<u8>>
 pub fn j2k_native::IrreversibleScaleEncoder<'a>::new(&'a [u8], u32, u32, u16, u8, bool, j2k_native::EncodeOptions, &'a [j2k_native::EncodeRoiRegion]) -> Self
@@ -2632,6 +2638,7 @@ pub fn j2k_native::idwt_band_index(u32, u32, bool) -> u32
 pub fn j2k_native::idwt_required_input_window_for_rects(j2k_native::J2kRequiredBandRegion, j2k_types::decode_plan::J2kRect, j2k_types::decode_plan::J2kRect, bool, bool) -> j2k_native::J2kRequiredBandRegion
 pub fn j2k_native::idwt_required_input_windows(&j2k_types::decode_plan::J2kDirectIdwtStep, j2k_native::J2kRequiredBandRegion) -> j2k_native::J2kIdwtRequiredInputWindows
 pub fn j2k_native::inspect_jp2_container(&[u8]) -> j2k_native::Result<j2k_native::Jp2Container<'_>>
+pub fn j2k_native::inspect_jp2_container_with_settings<'a>(&'a [u8], &j2k_native::DecodeSettings) -> j2k_native::Result<j2k_native::Jp2Container<'a>>
 pub fn j2k_native::inverse_dwt97_reference(&j2k_types::transform::dwt97::J2kForwardDwt97Output) -> j2k_native::Result<alloc::vec::Vec<f32>>
 pub fn j2k_native::inverse_ict_reference(alloc::vec::Vec<alloc::vec::Vec<f32>>) -> j2k_native::Result<alloc::vec::Vec<alloc::vec::Vec<f32>>>
 pub fn j2k_native::irreversible_quantization_profile_scale_ceiling(u8, &j2k_native::EncodeOptions) -> core::option::Option<f32>
@@ -2854,6 +2861,13 @@ pub j2k_native::NativeComponentPlaneParts::data: alloc::vec::Vec<u8>
 pub j2k_native::NativeComponentPlaneParts::dimensions: (u32, u32)
 pub j2k_native::NativeComponentPlaneParts::sampling: (u8, u8)
 pub j2k_native::NativeComponentPlaneParts::signed: bool
+pub j2k_native::RegionRowsBlocker::ChannelDefinitions
+pub j2k_native::RegionRowsBlocker::ColorConversion
+pub j2k_native::RegionRowsBlocker::ComponentCount
+pub j2k_native::RegionRowsBlocker::GridOffset
+pub j2k_native::RegionRowsBlocker::Palette
+pub j2k_native::RegionRowsBlocker::PrecisionAbove24Bits
+pub j2k_native::RegionRowsBlocker::SubsampledComponents
 pub j2k_native::ResidentHtj2kEncodeError::Accelerator(j2k_types::dispatch::error::J2kEncodeStageError)
 pub j2k_native::ResidentHtj2kEncodeError::Backend(j2k_native::EncodeError)
 pub j2k_native::ResidentHtj2kEncodeError::Declined

@@ -111,6 +111,17 @@ j2k transcode input.jpg output.j2k --htj2k --lossless-53   # JPEG to HTJ2K
 The CLI only has these two commands. To decode or encode images, use the
 library.
 
+## C and C++
+
+[`j2k-c`](crates/j2k-c/README.md) is a CPU C ABI (`j2k.h`), a
+header-only C++17 wrapper (`j2k.hpp`), and a relocatable shared-library
+package with CMake configuration. It inspects images and decodes full images,
+regions, and reduced resolutions into caller-owned buffers as native U8, U16,
+or I16 samples, streams full images row by row without a whole-image buffer,
+and encodes losslessly. Build a package with
+`python3 crates/j2k-c/scripts/package.py --output dist/j2k-c`; consumers need
+only a C/C++ compiler and CMake.
+
 ## GPU support
 
 On the GPU, the CPU still reads the file's structure, and the GPU does the
@@ -187,6 +198,7 @@ Most code only needs `j2k`. Add a GPU crate if you want GPU decoding.
 | Extract selected wavelet coefficients in Rust | `j2k::J2kDecoder::decode_wavelets` |
 | Decompress Deflate, Zstd, or LZW tiles (as in TIFF) | `j2k-tilecodec` |
 | A command-line tool | `j2k-cli` |
+| Decode from C or C++ | `j2k-c` (C ABI, C++17 wrapper, CMake package) |
 
 The remaining `j2k-*` crates are shared building blocks used by the crates
 above. [docs/architecture.md](docs/architecture.md) shows how they fit
@@ -222,7 +234,7 @@ expects.
 | --- | --- | --- | --- |
 | **J2K** | Rust | CUDA and Metal | MIT / Apache-2.0 |
 | [OpenJPEG](https://github.com/uclouvain/openjpeg) | C | none | BSD-2-Clause |
-| [Grok](https://github.com/GrokImageCompression/grok) | C++ | none | AGPL-3.0 |
+| [Grok](https://github.com/GrokImageCompression/grok) | C++ | optional closed-source CUDA/Metal plugin | AGPL-3.0 |
 | [Kakadu](https://kakadusoftware.com) | C++ | none | commercial |
 | [OpenJPH](https://github.com/aous72/OpenJPH) | C++ | none | BSD-2-Clause |
 | NVIDIA nvJPEG2000 | C | CUDA only | proprietary |

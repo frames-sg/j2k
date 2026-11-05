@@ -64,6 +64,87 @@ Staged workspace version: `0.13.2`.
   interval without rescanning. Malformed streams are not rescanned. Errors
   and their offsets are unchanged. On Apple M5 Max, cold restart-coded
   decodes are 1.04–3.2x faster and repeated deep seeks 25–128x faster.
+- `J2kDecoder::decode_srgb8` decodes Gray, RGB and RGBA images without an
+  ICC profile on the route `decode_into` plans, straight into the returned
+  buffer, so an image whose component planes would pass the decode budget
+  streams its rows instead of failing with `ResourceLimit`. Images converted
+  from an ICC profile or expanded from grey with alpha still decode their
+  planes first. `J2kSrgb8Image::warnings` reports lenient recoveries.
+- Bounded row decodes (`decode_rows_u8_bounded`, `decode_rows_u16_bounded`)
+  report `LenientMetadataRecovery` like the other decode methods; every
+  successful row path returned no warnings before.
+- Lenient batch preparation applies the JP2/JPH recoveries a lenient decode
+  applies. A file with a malformed trailing box was rejected at preparation
+  with `TruncatedAt` although `J2kDecoder` decoded it, and a four-component
+  sRGB file without channel definitions now decodes as straight-alpha RGBA,
+  as a lenient single-image decode infers it. `J2kView::support_info` is now
+  available for recovered files, which are no passthrough candidates.
+  `j2k_native::inspect_jp2_container_with_settings` exposes the recovering
+  container parse.
+- Python decoders on CUDA or MPS prepare batches with the shared,
+  backend-neutral preparation their device decoders use. They went through
+  CPU preparation, whose admission rejects images whose CPU execution would
+  pass the CPU decode bound.
+- Reduced-resolution decodes of images whose reference-grid origin is not a
+  multiple of the scale cover the reduced samples the standard places under
+  the request, as OpenJPEG decodes them: a reduction spans
+  `[ceil(origin / s), ceil((origin + size) / s))`, which can be a sample
+  narrower than `ceil(size / s)`. Exact-level methods
+  (`decode_native_components_at_reduction`, `decode_region_scaled_pow2_into`)
+  rejected such images as an inexact reduction; batch, tile-batch and Metal
+  reductions sized their output `ceil(size / s)`; and regions were mapped as
+  if the origin were zero. `J2kReferenceGrid` (from
+  `J2kView::reference_grid`, `J2kDecoder::reference_grid` and the
+  header-only `J2kDecoder::inspect_reference_grid`) reports the SIZ image and
+  tile origins, and `DeviceDecodePlan::for_reference_grid` sizes device
+  plans with them. Images at a scale-aligned origin, including every image
+  at origin zero, decode as before.
+- The README's comparison lists Grok's optional closed-source CUDA/Metal
+  plugin instead of no GPU support.
+- Bounded row decodes of images deeper than 24 bits decode the image once
+  and hand its rows over a stripe at a time; 16-bit rows decoded it again
+  for every stripe, and 8-bit rows rejected such images although
+  `decode_into` decodes them.
+- `J2kDecoder::full_decode_plan` and `J2kDecoder::rows_decode_plan` report
+  the route a decode is planned to take (`J2kDecodeRoute`) and, when its
+  rows cannot stream, the first reason the headers give
+  (`J2kStreamingBlocker`: palette, channel definitions, colour conversion,
+  precision, subsampling, grid offset, tiles side by side and so on),
+  before anything is decoded.
+- A row sink that fails stops a streamed decode at its next hand-over,
+  instead of the decode running to the end of the image with no rows to
+  deliver. `j2k_native::DecodingError::SinkStopped` marks the stop; the
+  facade reports the sink's own error.
+- Tiles of a full-image decode that stream several at once share one native
+  decode budget: each tile decode runs beside the other workers' shares and
+  its own tile buffer, where every worker could claim the whole budget. A
+  tile its share cannot hold decodes again alone once the others finish,
+  so every decode that succeeded still does.
+- `BatchDecodeOptions::max_working_memory_bytes` bounds what the CPU batch
+  decoder plans before decoding: the per-image planned execution bound,
+  the summed plans of images staged together, and the worker count. Images
+  whose plans pass it stream where their output can, and are otherwise
+  rejected at CPU preparation. `None` keeps the default policy.
+- CPU batches of 16-bit (unsigned and signed) Gray and RGB images whose
+  plans pass the per-decode bound stream their rows, writing the samples
+  their plans would, where they were rejected; within the bound they keep
+  their plans. RGBA outputs still keep the bound: their channel definitions
+  keep the region decode on component planes.
+- The C and C++ API is now part of this repository as `crates/j2k-c`,
+  under the workspace's MIT OR Apache-2.0 license: a CPU C ABI (`j2k.h`),
+  a header-only C++17 wrapper (`j2k.hpp`), and relocatable `libj2k`
+  packages with CMake configuration (`J2K::j2k`), built against the
+  workspace `j2k` crate. It decodes full images, regions, and reduced
+  resolutions into caller buffers, streams full images row by row through
+  a callback, encodes losslessly, decodes strictly or leniently, and runs
+  a decoder on the shared pool or on its own threads.
+- `J2kDecoder::inspect_support_with_settings` inspects support metadata
+  with the JP2/JPH recoveries a lenient decode applies, as
+  `J2kDecoder::new_with_settings` parses with them. Pull
+  requests that touch it or the crates it links build a package on
+  GNU/Linux and macOS and run C and C++ consumers against it. See
+  `crates/j2k-c/CHANGELOG.md`.
+
 - Baseline 4:2:2 JPEGs decode to RGB through the streaming row path,
   including region requests. Horizontal-only fancy upsampling needs no
   window of chroma rows, so each MCU row is upsampled and converted as it

@@ -2,7 +2,29 @@ version: 3
 baseline_tag: v0.13.1
 baseline_version: 0.13.1
 candidate_version: "0.13.2"
-break_ledger: []
+break_ledger:
+  - id: cuda-box-self-spelling
+    kind: source
+    packages: [j2k-cuda-runtime, j2k-jpeg-cuda, j2k-cuda]
+    removed_items:
+      - package: j2k-cuda-runtime
+        item: "pub j2k_cuda_runtime::CudaError::CompletionFailed::completion: alloc::boxed::Box<j2k_cuda_runtime::CudaError>"
+      - package: j2k-cuda-runtime
+        item: "pub j2k_cuda_runtime::CudaError::CompletionFailed::primary: alloc::boxed::Box<j2k_cuda_runtime::CudaError>"
+      - package: j2k-cuda-runtime
+        item: "pub j2k_cuda_runtime::CudaError::ResourceReleaseFailed::primary: alloc::boxed::Box<j2k_cuda_runtime::CudaError>"
+      - package: j2k-cuda-runtime
+        item: "pub j2k_cuda_runtime::CudaError::ResourceReleaseFailed::release: alloc::boxed::Box<j2k_cuda_runtime::CudaError>"
+      - package: j2k-jpeg-cuda
+        item: "pub j2k_jpeg_cuda::Error::OperationAndHostAccountingFailed::accounting: alloc::boxed::Box<j2k_jpeg_cuda::Error>"
+      - package: j2k-jpeg-cuda
+        item: "pub j2k_jpeg_cuda::Error::OperationAndHostAccountingFailed::primary: alloc::boxed::Box<j2k_jpeg_cuda::Error>"
+      - package: j2k-cuda
+        item: "pub j2k_cuda::Error::CudaCleanupFailed::cleanup: alloc::boxed::Box<j2k_cuda::Error>"
+      - package: j2k-cuda
+        item: "pub j2k_cuda::Error::CudaCleanupFailed::primary: alloc::boxed::Box<j2k_cuda::Error>"
+    summary: "The generated inventory replaces eight Box<NamedError> field spellings with Box<Self> after lint cleanup. In each enum Self resolves to that same named error type. These are textual inventory replacements, not removed fields or source-incompatible type changes."
+    migration: "No caller migration is required. Existing field construction, pattern matching and explicit Box<NamedError> annotations remain valid; the normal minor-release cargo-semver-checks gate still checks compatibility."
 reviews:
   j2k-core:
     removed_fingerprint: "none"
@@ -27,10 +49,10 @@ reviews:
     hidden_rationale: "Compared the complete hidden API inventory against v0.13.1; it is unchanged."
   j2k-codec-math:
     removed_fingerprint: "none"
-    added_fingerprint: "none"
+    added_fingerprint: "fnv1a64:7a58b0b55902142e"
     hidden_count: 0
     hidden_fingerprint: "none"
-    rationale: "Compared the complete ordinary API inventory against v0.13.1; no signatures were added, removed, or changed."
+    rationale: "Adds 43 JPEG ISLOW constants and transform helpers shared by CPU and device backends: reduced-size coefficients, shifts, gain tables, 1-D and block transforms, rounding and sample conversion. Existing constants keep their names, types and values; no existing item is removed or changed."
     hidden_rationale: "Compared the complete hidden API inventory against v0.13.1; it is unchanged."
   j2k-cuda-build-support:
     removed_fingerprint: "none"
@@ -40,11 +62,11 @@ reviews:
     rationale: "Compared the complete ordinary API inventory against v0.13.1; no signatures were added, removed, or changed."
     hidden_rationale: "Compared the complete hidden API inventory against v0.13.1; it is unchanged."
   j2k-cuda-runtime:
-    removed_fingerprint: "none"
-    added_fingerprint: "none"
+    removed_fingerprint: "fnv1a64:91b1d2d04bdb7f88"
+    added_fingerprint: "fnv1a64:7ca384c73932c7e2"
     hidden_count: 255
     hidden_fingerprint: "fnv1a64:57c61a4568990ce6"
-    rationale: "Compared the complete ordinary API inventory against v0.13.1; no signatures were added, removed, or changed."
+    rationale: "CompletionFailed and ResourceReleaseFailed now spell their four recursive fields as Box<Self> instead of Box<CudaError>. Self denotes the same CudaError enum, so field types, construction, matching and error behavior are unchanged. The cuda-box-self-spelling ledger records the exact textual replacements."
     hidden_rationale: "Compared the complete hidden API inventory against v0.13.1; it is unchanged."
   j2k-cuda-j2k-engine:
     removed_fingerprint: "none"
@@ -83,18 +105,18 @@ reviews:
     hidden_rationale: "Compared the complete hidden API inventory against v0.13.1; it is unchanged."
   j2k-native:
     removed_fingerprint: "none"
-    added_fingerprint: "fnv1a64:4c2d12d5bbd5aad8"
-    hidden_count: 596
-    hidden_fingerprint: "fnv1a64:d63da58635d2b8d9"
-    rationale: "Compared the complete ordinary API inventory against v0.13.1. Adds DecodeErrorClass::ResourceLimit { requested, cap } to an already non-exhaustive enum; no existing item changes and existing variant discriminants are preserved. AllocationTooLarge and ImageTooLarge now classify as ResourceLimit instead of the generic Backend class. This is a compatible refinement of the extensible error taxonomy: invalid-input and allocator-failure classes stay unchanged. Callers that want to handle memory limits separately can match the new variant; existing wildcard matches remain valid. Adds Image::ignored_components to report trailing unspecified JP2 components omitted from decoded output. A declared color space without a channel definition box now keeps its color interpretation when extra components are present. Existing signatures are unchanged; lenient alpha inference and raw-codestream interpretation remain unchanged. No caller migration is required."
-    hidden_rationale: "Adds referenced_classic_plan_execution_bytes and referenced_htj2k_plan_execution_bytes for sibling CPU batch adapters to check planned live execution memory before allocation. For the facade's streamed routes, j2k-native also adds decode_native_region_components_rows_with_context, full_decode_planes_floor, output_tile_rects, region_decode_streams_rows and streamed_rows_native_precision; cpu_decode_pool_threads reports the pool thread count for facade routing, DecoderContext::set_shared_pool marks CpuBatchDecoder's shared-pool images, and pack_rgb8 shares the existing pixel conversion. ComponentRowSink::rgb8_region is an optional default method, so existing sink implementations remain valid. These are unsupported implementation helpers; existing signatures are unchanged. Adds Image::keep_ignored_components for recoding and its round-trip validation to retain and compare all codestream components, including unspecified extras. This is an unsupported implementation helper; no existing hidden signature changes."
+    added_fingerprint: "fnv1a64:3d670e4ba14e5445"
+    hidden_count: 613
+    hidden_fingerprint: "fnv1a64:bbefc608403ed122"
+    rationale: "Compared the complete ordinary API inventory against v0.13.1. Adds DecodeErrorClass::ResourceLimit { requested, cap } to an already non-exhaustive enum; no existing item changes and existing variant discriminants are preserved. AllocationTooLarge and ImageTooLarge now classify as ResourceLimit instead of the generic Backend class. This is a compatible refinement of the extensible error taxonomy: invalid-input and allocator-failure classes stay unchanged. Callers that want to handle memory limits separately can match the new variant; existing wildcard matches remain valid. Adds inspect_j2k_reference_grid and the non-exhaustive J2kCodestreamReferenceGrid it returns, a sibling of inspect_htj2k_capabilities that reports the SIZ image and tile origins the existing J2kCodestreamHeaderMetadata omits; that struct's layout is unchanged. Adds DecodingError::SinkStopped to the already non-exhaustive enum, the error a streamed region decode returns when its row sink asks it to stop; existing variants and wildcard matches are unaffected."
+    hidden_rationale: "Adds referenced_classic_plan_execution_bytes and referenced_htj2k_plan_execution_bytes for sibling CPU batch adapters to check planned live execution memory before allocation. For the facade's streamed routes, j2k-native also adds decode_native_region_components_rows_with_context, full_decode_planes_floor, output_tile_rects, region_decode_streams_rows and streamed_rows_native_precision; cpu_decode_pool_threads reports the pool thread count for facade routing, DecoderContext::set_shared_pool marks CpuBatchDecoder's shared-pool images, and pack_rgb8 shares the existing pixel conversion. ComponentRowSink::rgb8_region is an optional default method, so existing sink implementations remain valid. Image::image_origin and Image::tile_grid report the SIZ origins the facade needs to size reduced outputs on the reference grid, and inspect_jp2_container_with_settings applies a decode's lenient container recoveries so facade batch preparation plans from the metadata a lenient decode uses; inspect_jp2_container keeps its strict behavior. ComponentRowSink::stopped is an optional default method returning false, so existing sinks remain valid, through which facade sinks that failed stop a streamed decode at its next hand-over. Image::region_rows_blocker and the non-exhaustive RegionRowsBlocker name the condition region_decode_streams_rows fails, which is now derived from them, and decode_region_rows_for_integer_output_with_retained_baseline charges memory concurrent tile decodes hold so they share one decode budget. at_simd_level, round_clamped_native, signed_native_bounds and unsigned_native_max share dispatched sample conversion and its bounds with sibling crates. These are unsupported implementation helpers; existing signatures are unchanged."
   j2k-jpeg:
     removed_fingerprint: "none"
     added_fingerprint: "none"
-    hidden_count: 701
-    hidden_fingerprint: "fnv1a64:bd0cf738a0f96592"
+    hidden_count: 703
+    hidden_fingerprint: "fnv1a64:85ffa8c958fb66ab"
     rationale: "Compared the complete ordinary API inventory against v0.13.1; no signatures were added, removed, or changed."
-    hidden_rationale: "Compared the complete hidden API inventory against v0.13.1; it is unchanged."
+    hidden_rationale: "Adds bench_support::bench_huffman_scan behind bench-internals for entropy-only measurements. Rustdoc also records the JpegFastPacketFamily inherent impl used by the shared streaming routes; its methods remain crate-private. Existing hidden signatures are unchanged."
   j2k-tilecodec:
     removed_fingerprint: "none"
     added_fingerprint: "none"
@@ -104,10 +126,10 @@ reviews:
     hidden_rationale: "Compared the complete hidden API inventory against v0.13.1; it is unchanged."
   j2k:
     removed_fingerprint: "none"
-    added_fingerprint: "fnv1a64:78b9622111db3437"
+    added_fingerprint: "fnv1a64:6608c77e01b4a14d"
     hidden_count: 109
     hidden_fingerprint: "fnv1a64:0427dd567531c8dd"
-    rationale: "Compared the complete ordinary API inventory against v0.13.1. Adds J2kError::ResourceLimit { requested, cap, source } to an already non-exhaustive enum; no existing item changes and existing variant discriminants are preserved. Budget and image-size failures now use this variant instead of NativeDecode, retaining the structured native cause. Callers specifically handling budget failures through NativeDecode should also handle ResourceLimit. Batches prepared by CpuBatchDecoder report items whose output allocation or planned execution cannot fit as indexed preparation errors and exclude those items from the prepared groups. Backend-neutral prepare_batch and prepare_batch_from_images retain whole-call output-cap failures for a single oversized image when subsequently decoded on the CPU. On either preparation path, groups whose combined output exceeds the allocation cap are decoded into several result groups, each with a buffer within the cap. Automatic streamed routes also allow requests that previously exceeded working-memory limits to succeed. The documented deep-sample conversion fixes make 16-bit outputs of images deeper than 16 bits hold the native sample value clamped to the 16-bit range (two's complement when signed), as scaled decodes already did, and quantize 8-bit outputs over the full component precision, correcting the prior wider-sample byte interpretation and 16-bit scaling ceiling. These preserve the output contracts and ordinary decode signatures. Adds BackendErrorKind::Decode at the end of its existing non-exhaustive enum and BackendError::decode for failures during backend decode execution. Existing discriminants and constructors are preserved. The public error documentation and changelog describe the refinements."
+    rationale: "Compared the complete ordinary API inventory against v0.13.1. Adds J2kError::ResourceLimit { requested, cap, source } to an already non-exhaustive enum; no existing item changes and existing variant discriminants are preserved. Budget and image-size failures now use this variant instead of NativeDecode, retaining the structured native cause. Callers specifically handling budget failures through NativeDecode should also handle ResourceLimit. Batches prepared by CpuBatchDecoder report items whose output allocation or planned execution cannot fit as indexed preparation errors and exclude those items from the prepared groups. Backend-neutral prepare_batch and prepare_batch_from_images retain whole-call output-cap failures for a single oversized image when subsequently decoded on the CPU. On either preparation path, groups whose combined output exceeds the allocation cap are decoded into several result groups, each with a buffer within the cap. Automatic streamed routes also allow requests that previously exceeded working-memory limits to succeed. The documented deep-sample conversion fixes make 16-bit outputs of images deeper than 16 bits hold the native sample value clamped to the 16-bit range (two's complement when signed), as scaled decodes already did, and quantize 8-bit outputs over the full component precision, correcting the prior wider-sample byte interpretation and 16-bit scaling ceiling. These preserve the output contracts and ordinary decode signatures. Adds BackendErrorKind::Decode at the end of its existing non-exhaustive enum and BackendError::decode for failures during backend decode execution. Existing discriminants and constructors are preserved. The public error documentation and changelog describe the refinements. Adds the non-exhaustive J2kReferenceGrid with J2kView::reference_grid, J2kDecoder::reference_grid and J2kDecoder::inspect_reference_grid, which report the SIZ image and tile origins, and DeviceDecodePlan::for_reference_grid and DeviceDecodePlan::reduced_image_dims, which size reduced outputs on the reference grid; DeviceDecodePlan::for_image keeps its signature and behavior for images at a scale-aligned origin. Reduced-resolution decodes of images whose origin is not a multiple of the scale now cover the reduced samples the standard places under the request, as OpenJPEG does, instead of failing (exact-level methods) or returning ceil(size / s) samples (batches): this corrects output, not a signature. Adds J2kSrgb8Image::warnings; decode_srgb8 of Gray, RGB and RGBA images without an ICC profile now takes decode_into's route, and bounded row decodes and lenient batch preparation now report and apply the lenient recoveries their settings allow. Adds BatchDecodeOptions::max_working_memory_bytes to the already non-exhaustive options struct (None keeps the default policy), and J2kDecoder::full_decode_plan and J2kDecoder::rows_decode_plan with the non-exhaustive J2kDecodePlan, J2kDecodeRoute and J2kStreamingBlocker, which report a decode's planned route and why its rows cannot stream before decoding. Adds J2kDecoder::inspect_support_with_settings, which inspects support metadata with the JP2/JPH recoveries the given settings allow, as J2kDecoder::new_with_settings parses; inspect_support keeps its strict behavior."
     hidden_rationale: "Adds set_full_decode_planes_budget as an unsupported test hook for isolated integration tests of automatic planes/streamed routing. Existing public decode methods continue choosing their routes automatically; no supported user configuration is added. All other hidden facade items are unchanged."
   j2k-transcode:
     removed_fingerprint: "none"
@@ -145,18 +167,18 @@ reviews:
     rationale: "Compared the complete ordinary API inventory against v0.13.1; no signatures were added, removed, or changed."
     hidden_rationale: "Compared the complete hidden API inventory against v0.13.1; it is unchanged."
   j2k-jpeg-cuda:
-    removed_fingerprint: "none"
-    added_fingerprint: "none"
+    removed_fingerprint: "fnv1a64:5f62bcf613283922"
+    added_fingerprint: "fnv1a64:897215586a4dee66"
     hidden_count: 133
     hidden_fingerprint: "fnv1a64:9aa724bde7af1618"
-    rationale: "Compared the complete ordinary API inventory against v0.13.1; no signatures were added, removed, or changed."
+    rationale: "OperationAndHostAccountingFailed now spells its primary and accounting fields as Box<Self> instead of Box<Error>. Self denotes the same j2k-jpeg-cuda Error enum, so field types and caller behavior are unchanged. The cuda-box-self-spelling ledger records the exact textual replacements."
     hidden_rationale: "Compared the complete hidden API inventory against v0.13.1; it is unchanged."
   j2k-cuda:
-    removed_fingerprint: "none"
-    added_fingerprint: "none"
+    removed_fingerprint: "fnv1a64:d78cd0f4549c54c7"
+    added_fingerprint: "fnv1a64:bc7afd2c3ac8f17f"
     hidden_count: 193
     hidden_fingerprint: "fnv1a64:8a9b0ac701f08d00"
-    rationale: "No ordinary signatures or error variants were added, removed, or changed. AdapterErrorParts reports Decode only for a CudaTier1JobFailed with a direct bare KernelJobStatus source whose code is the classic/HT FAIL value 1. The typed CUDA source and job attribution remain available. Unsupported or unknown statuses, raw runtime errors and nested completion, release or adapter-cleanup failures retain their existing classes and fallback behavior."
+    rationale: "CudaCleanupFailed now spells its primary and cleanup fields as Box<Self> instead of Box<Error>, preserving the same field types; cuda-box-self-spelling records these textual replacements. No error variants were added or removed. AdapterErrorParts reports Decode only for a CudaTier1JobFailed with a direct bare KernelJobStatus source whose code is the classic/HT FAIL value 1. The typed CUDA source and job attribution remain available. Unsupported or unknown statuses, raw runtime errors and nested completion, release or adapter-cleanup failures retain their existing classes and fallback behavior."
     hidden_rationale: "Compared the complete hidden API inventory against v0.13.1; it is unchanged."
   j2k-ml:
     removed_fingerprint: "none"
