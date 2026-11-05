@@ -18,7 +18,7 @@ use super::super::emit::{rgb420_chroma_rows, valid_component_rows};
 use super::super::layout::CropWindow;
 use super::super::{StripeBuffer, StripePlane};
 use super::{FAST420_HALO_ROWS as HALO_ROWS, MCU_PX};
-use crate::backend::{Backend, Rgb420ChromaRows, Rgb420Crop, Rgb420CroppedRowPair, Rgb420RowPair};
+use crate::backend::{Backend, Rgb420ChromaRows, Rgb420CroppedRowPair, Rgb420RowPair};
 use crate::error::JpegError;
 use crate::info::Rect;
 use crate::output::InterleavedRgbWriter;
@@ -200,13 +200,11 @@ pub(super) fn emit_pass_rows<W: InterleavedRgbWriter>(
     writer: &mut W,
 ) -> Result<(), JpegError> {
     let full_width = crop.is_full_width();
-    let kernel_crop = Rgb420Crop::new(crop.crop_start, crop.crop_width);
     let fill = |rows: Rgb420RowPair<'_>| {
         if full_width {
             backend.fill_rgb_row_pair_from_420(rows);
         } else {
-            backend
-                .fill_rgb_row_pair_from_420_cropped(Rgb420CroppedRowPair::new(rows, kernel_crop));
+            backend.fill_rgb_row_pair_from_420_cropped(Rgb420CroppedRowPair::new(rows, crop.crop));
         }
     };
     pass.for_each_row_group(|group| match group {

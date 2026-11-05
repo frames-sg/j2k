@@ -9,30 +9,34 @@
 //! so the stripe has no halo row; 4:2:2's horizontal context comes from the
 //! decoded window's margin columns.
 
-use super::dct::sequential_mcu_grid;
+use super::dct::sequential_mcu_size;
 use super::deposit::{
-    assert_stripe_deposit_capacity, deposit_block, three_component_dc, FastTile420Components,
+    assert_stripe_deposit_capacity, deposit_block, FastRowState, FastTile420Components,
+    LocalEntropy,
 };
 use super::emit::FastRgbRowsEmitter;
-use super::layout::{last_mcu_row_for_rect, stripe_region_layout, CropWindow, McuColumns};
-use super::restart::{enter_scan_at_mcu_with, finish_scan, RestartState};
-use super::{FastRgbRequest, FastRgbRoute, HuffmanPrimaryWidth, PreparedDecodePlan, StripeBuffer};
+use super::layout::{last_mcu_row_for_rect, McuColumns};
+use super::restart::finish_scan;
+use super::{FastRgbRequest, HuffmanPrimaryWidth, PreparedDecodePlan, StripeBuffer};
+use crate::adapter::JpegFastPacketFamily;
 use crate::backend::Backend;
 use crate::entropy::block::{
     decode_block_with_activity, skip_block, BlockActivity, CoefficientBlock,
 };
 use crate::entropy::huffman::{FULL_PRIMARY_ENTRIES, NARROW_PRIMARY_ENTRIES};
 use crate::error::{JpegError, Warning};
-use crate::info::DownscaleFactor;
-use crate::internal::bit_reader::BitReader;
 use crate::internal::scratch::ScratchPool;
 use crate::output::{InterleavedRgbWriter, OutputWriter};
 use alloc::vec::Vec;
 
-/// Decode `request.roi` of a 4:4:4 or 4:2:2 scan into `writer`, whose row 0
-/// is `request.roi.y`, entering the scan at `request.checkpoint` or a restart
-/// marker when either is nearer than the scan start.
-pub(super) fn decode_scan_fast_rgb_rows<W: OutputWriter + InterleavedRgbWriter>(
+/// Decode `request.roi` of a 4:4:4 (`LUMA_H` 1) or 4:2:2 (`LUMA_H` 2) scan
+/// into `writer`, whose row 0 is `request.roi.y`, entering the scan at
+/// `request.checkpoint` or a restart marker when either is nearer than the
+/// scan start.
+pub(super) fn decode_scan_fast_rgb_rows<
+    const LUMA_H: u32,
+    W: OutputWriter + InterleavedRgbWriter,
+>(
     plan: &PreparedDecodePlan,
     backend: Backend,
     scan_bytes: &[u8],
@@ -40,24 +44,14 @@ pub(super) fn decode_scan_fast_rgb_rows<W: OutputWriter + InterleavedRgbWriter>(
     writer: &mut W,
     request: FastRgbRequest<'_>,
 ) -> Result<Vec<Warning>, JpegError> {
-    match (plan.huffman_primary_width, plan.sampling.max_h) {
-        (HuffmanPrimaryWidth::Narrow8, 2) => {
-            decode_scan_fast_rgb_rows_with_entries::<NARROW_PRIMARY_ENTRIES, 2, W>(
+    match plan.huffman_primary_width {
+        HuffmanPrimaryWidth::Narrow8 => {
+            decode_scan_fast_rgb_rows_with_entries::<NARROW_PRIMARY_ENTRIES, LUMA_H, W>(
                 plan, backend, scan_bytes, pool, writer, request,
             )
         }
-        (HuffmanPrimaryWidth::Narrow8, _) => {
-            decode_scan_fast_rgb_rows_with_entries::<NARROW_PRIMARY_ENTRIES, 1, W>(
-                plan, backend, scan_bytes, pool, writer, request,
-            )
-        }
-        (HuffmanPrimaryWidth::Full12, 2) => {
-            decode_scan_fast_rgb_rows_with_entries::<FULL_PRIMARY_ENTRIES, 2, W>(
-                plan, backend, scan_bytes, pool, writer, request,
-            )
-        }
-        (HuffmanPrimaryWidth::Full12, _) => {
-            decode_scan_fast_rgb_rows_with_entries::<FULL_PRIMARY_ENTRIES, 1, W>(
+        HuffmanPrimaryWidth::Full12 => {
+            decode_scan_fast_rgb_rows_with_entries::<FULL_PRIMARY_ENTRIES, LUMA_H, W>(
                 plan, backend, scan_bytes, pool, writer, request,
             )
         }
@@ -80,15 +74,14 @@ fn decode_scan_fast_rgb_rows_with_entries<
     debug_assert_eq!(u32::from(plan.sampling.max_h), LUMA_H);
 
     let roi = request.roi;
-    let region = stripe_region_layout(plan, DownscaleFactor::Full, roi);
-    let columns = McuColumns::new(sequential_mcu_grid(plan), region);
-    let first_row = FastRgbRoute::Rows.first_decode_row(plan, roi);
-    let row_end = last_mcu_row_for_rect(roi, 8, columns.mcu_rows) + 1;
+    let (columns, crop) = request.columns(plan);
+    let first_row = JpegFastPacketFamily::Fast444.first_decode_row(plan, roi);
+    let row_end = last_mcu_row_for_rect(roi, sequential_mcu_size(plan).1, columns.mcu_rows) + 1;
     let emitter = FastRgbRowsEmitter {
         plan,
         backend,
         roi,
-        crop: CropWindow::new(region, roi),
+        crop,
     };
     // 4:2:2 upsamples a chroma row into row buffers before conversion.
     let upsample_width = if LUMA_H == 2 {
@@ -104,19 +97,12 @@ fn decode_scan_fast_rgb_rows_with_entries<
         plan.scratch_bytes,
     )?;
 
-    let components =
-        FastTile420Components::<N>::resolve(plan, plan.prefers_wide_huffman(scan_bytes.len()))?;
-    let mut cursor = enter_scan_at_mcu_with(
+    let (components, mut cursor, mut dc) = FastTile420Components::<N>::enter_scan::<LUMA_H>(
+        plan,
         scan_bytes,
-        plan.restart_interval.unwrap_or(0),
         request.checkpoint,
         columns.mcu_position(0, first_row),
-        |br, dc| {
-            let [y_dc, cb_dc, cr_dc] = three_component_dc(dc)?;
-            components.skip_mcu::<LUMA_H>(br, y_dc, cb_dc, cr_dc)
-        },
     )?;
-    let mut dc = *three_component_dc(&mut cursor.prev_dc)?;
     let mut coeff = CoefficientBlock::default();
     let mut pixels = [0u8; 64];
     let ScratchPool {
@@ -131,15 +117,20 @@ fn decode_scan_fast_rgb_rows_with_entries<
     };
 
     {
-        let mut row_state = FastRgbMcuRowState {
+        let mut row_state = FastRowState {
             br: &mut cursor.br,
             dc: &mut dc,
             coeff: &mut coeff,
-            pixels: &mut pixels,
             restart: &mut cursor.restart,
         };
         for my in first_row..row_end {
-            decode_mcu_row_fast_rgb::<N, LUMA_H>(&row_context, &mut row_state, my, stripe)?;
+            decode_mcu_row_fast_rgb::<N, LUMA_H>(
+                &row_context,
+                &mut row_state,
+                &mut pixels,
+                my,
+                stripe,
+            )?;
             emitter.emit_stripe_rgb_rows(stripe, my, upsampled, writer)?;
         }
     }
@@ -153,29 +144,24 @@ pub(super) struct FastRgbMcuRowContext<'a, const N: usize> {
     pub(super) columns: McuColumns,
 }
 
-pub(super) struct FastRgbMcuRowState<'a, 'b> {
-    pub(super) br: &'a mut BitReader<'b>,
-    pub(super) dc: &'a mut [i32; 3],
-    pub(super) coeff: &'a mut CoefficientBlock,
-    pub(super) pixels: &'a mut [u8; 64],
-    pub(super) restart: &'a mut RestartState,
-}
-
 pub(super) fn decode_mcu_row_fast_rgb<const N: usize, const LUMA_H: u32>(
     context: &FastRgbMcuRowContext<'_, N>,
-    state: &mut FastRgbMcuRowState<'_, '_>,
+    state: &mut FastRowState<'_, '_>,
+    pixels: &mut [u8; 64],
     mcu_y: u32,
     stripe: &mut StripeBuffer,
 ) -> Result<(), JpegError> {
-    // Decode against locals so the bit accumulator and DC predictors live in
-    // registers for the whole row instead of round-tripping through `state`
-    // on every symbol. They are written back even when the row fails.
-    let mut br = state.br.clone();
-    let mut dc = *state.dc;
-    let result =
-        decode_mcu_row_fast_rgb_local::<N, LUMA_H>(context, state, &mut br, &mut dc, mcu_y, stripe);
-    *state.br = br;
-    *state.dc = dc;
+    // The kernel takes the caller's `state` beside the local copy, and the
+    // caller's pixel block. Through a state rebuilt around the local, as the
+    // 4:2:0 kernel decodes, the coefficient-block and restart pointers stay
+    // live for the whole row and this kernel spills (aarch64: +7 %
+    // instructions, +7-30 % stack accesses); a kernel-local pixel block made
+    // x86 4:4:4 decodes 2-4 % slower.
+    let mut local = state.take_local();
+    let result = decode_mcu_row_fast_rgb_local::<N, LUMA_H>(
+        context, state, &mut local, pixels, mcu_y, stripe,
+    );
+    state.restore_local(local);
     result
 }
 
@@ -190,9 +176,9 @@ pub(super) fn decode_mcu_row_fast_rgb<const N: usize, const LUMA_H: u32>(
 #[inline(always)]
 fn decode_mcu_row_fast_rgb_local<const N: usize, const LUMA_H: u32>(
     context: &FastRgbMcuRowContext<'_, N>,
-    state: &mut FastRgbMcuRowState<'_, '_>,
-    br: &mut BitReader<'_>,
-    dc: &mut [i32; 3],
+    state: &mut FastRowState<'_, '_>,
+    local: &mut LocalEntropy<'_>,
+    pixels: &mut [u8; 64],
     mcu_y: u32,
     stripe: &mut StripeBuffer,
 ) -> Result<(), JpegError> {
@@ -201,7 +187,10 @@ fn decode_mcu_row_fast_rgb_local<const N: usize, const LUMA_H: u32>(
         backend,
         columns,
     } = *context;
-    let [y_dc, cb_dc, cr_dc] = dc;
+    let LocalEntropy {
+        br,
+        dc: [y_dc, cb_dc, cr_dc],
+    } = local;
     for plane_idx in 0..3 {
         let h = if plane_idx == 0 { LUMA_H } else { 1 };
         assert_stripe_deposit_capacity(stripe, plane_idx, h, 1, columns.stripe_mcus_per_row, 8, 0);
@@ -242,28 +231,28 @@ fn decode_mcu_row_fast_rgb_local<const N: usize, const LUMA_H: u32>(
             )?;
             match y_activity {
                 BlockActivity::DcOnly => {
-                    crate::idct::idct_islow_dc_only(state.coeff.dc_coeff(), state.pixels);
+                    crate::idct::idct_islow_dc_only(state.coeff.dc_coeff(), pixels);
                 }
                 BlockActivity::TopLeft2x2 => {
-                    backend.idct_top_left_2x2(state.coeff.coefficients(), state.pixels);
+                    backend.idct_top_left_2x2(state.coeff.coefficients(), pixels);
                 }
                 BlockActivity::TopLeftQuadrant => {
-                    backend.idct_top_left_quadrant(state.coeff.coefficients(), state.pixels);
+                    backend.idct_top_left_quadrant(state.coeff.coefficients(), pixels);
                 }
                 BlockActivity::RightHalfZero => {
-                    backend.idct_right_half_zero(state.coeff.coefficients(), state.pixels);
+                    backend.idct_right_half_zero(state.coeff.coefficients(), pixels);
                 }
                 BlockActivity::BottomHalfZero => {
-                    backend.idct_bottom_half_zero(state.coeff.coefficients(), state.pixels);
+                    backend.idct_bottom_half_zero(state.coeff.coefficients(), pixels);
                 }
-                BlockActivity::General => backend.idct(state.coeff.coefficients(), state.pixels),
+                BlockActivity::General => backend.idct(state.coeff.coefficients(), pixels),
             }
             deposit_block(
                 &mut stripe.planes[0],
                 stripe.plane_strides[0],
                 block_x,
                 0,
-                state.pixels,
+                pixels,
             );
         }
 
@@ -279,28 +268,28 @@ fn decode_mcu_row_fast_rgb_local<const N: usize, const LUMA_H: u32>(
         )?;
         match cb_activity {
             BlockActivity::DcOnly => {
-                crate::idct::idct_islow_dc_only(state.coeff.dc_coeff(), state.pixels);
+                crate::idct::idct_islow_dc_only(state.coeff.dc_coeff(), pixels);
             }
             BlockActivity::TopLeft2x2 => {
-                backend.idct_top_left_2x2(state.coeff.coefficients(), state.pixels);
+                backend.idct_top_left_2x2(state.coeff.coefficients(), pixels);
             }
             BlockActivity::TopLeftQuadrant => {
-                backend.idct_top_left_quadrant(state.coeff.coefficients(), state.pixels);
+                backend.idct_top_left_quadrant(state.coeff.coefficients(), pixels);
             }
             BlockActivity::RightHalfZero => {
-                backend.idct_right_half_zero(state.coeff.coefficients(), state.pixels);
+                backend.idct_right_half_zero(state.coeff.coefficients(), pixels);
             }
             BlockActivity::BottomHalfZero => {
-                backend.idct_bottom_half_zero(state.coeff.coefficients(), state.pixels);
+                backend.idct_bottom_half_zero(state.coeff.coefficients(), pixels);
             }
-            BlockActivity::General => backend.idct(state.coeff.coefficients(), state.pixels),
+            BlockActivity::General => backend.idct(state.coeff.coefficients(), pixels),
         }
         deposit_block(
             &mut stripe.planes[1],
             stripe.plane_strides[1],
             block_x,
             0,
-            state.pixels,
+            pixels,
         );
 
         let cr_activity = decode_block_with_activity(
@@ -313,28 +302,28 @@ fn decode_mcu_row_fast_rgb_local<const N: usize, const LUMA_H: u32>(
         )?;
         match cr_activity {
             BlockActivity::DcOnly => {
-                crate::idct::idct_islow_dc_only(state.coeff.dc_coeff(), state.pixels);
+                crate::idct::idct_islow_dc_only(state.coeff.dc_coeff(), pixels);
             }
             BlockActivity::TopLeft2x2 => {
-                backend.idct_top_left_2x2(state.coeff.coefficients(), state.pixels);
+                backend.idct_top_left_2x2(state.coeff.coefficients(), pixels);
             }
             BlockActivity::TopLeftQuadrant => {
-                backend.idct_top_left_quadrant(state.coeff.coefficients(), state.pixels);
+                backend.idct_top_left_quadrant(state.coeff.coefficients(), pixels);
             }
             BlockActivity::RightHalfZero => {
-                backend.idct_right_half_zero(state.coeff.coefficients(), state.pixels);
+                backend.idct_right_half_zero(state.coeff.coefficients(), pixels);
             }
             BlockActivity::BottomHalfZero => {
-                backend.idct_bottom_half_zero(state.coeff.coefficients(), state.pixels);
+                backend.idct_bottom_half_zero(state.coeff.coefficients(), pixels);
             }
-            BlockActivity::General => backend.idct(state.coeff.coefficients(), state.pixels),
+            BlockActivity::General => backend.idct(state.coeff.coefficients(), pixels),
         }
         deposit_block(
             &mut stripe.planes[2],
             stripe.plane_strides[2],
             block_x,
             0,
-            state.pixels,
+            pixels,
         );
 
         state.restart.end_mcu();

@@ -2,6 +2,7 @@
 
 //! Shared geometry, restart seek, and rolling-stripe scan orchestration.
 
+use super::super::dct::sequential_mcu_grid;
 use super::super::emit::StripeEmit;
 use super::super::layout::{
     decode_mcu_row_end_for_rect, expanded_output_rect, fast420_decode_mcu_row_end,
@@ -31,8 +32,8 @@ pub(super) struct ScanSetup {
     pub(super) scaled: ScaledSampling,
     block_size: u32,
     mcu_height_px: u32,
-    mcus_per_row: u32,
-    mcu_rows: u32,
+    /// The scan's MCU grid and the columns of `region`.
+    columns: McuColumns,
     region: StripeRegionLayout,
     expanded_rect: Rect,
     emit_rect: Rect,
@@ -52,10 +53,10 @@ impl ScanSetup {
         let (width, height) = scaled_dimensions(plan.dimensions, downscale);
         let scaled = ScaledSampling::new(plan.sampling, downscale, plan.dimensions);
         let block_size = downscale.output_block_size();
-        let mcu_width_px = block_size * u32::from(plan.sampling.max_h);
         let mcu_height_px = block_size * u32::from(plan.sampling.max_v);
-        let mcus_per_row = width.div_ceil(mcu_width_px);
-        let mcu_rows = height.div_ceil(mcu_height_px);
+        let grid = sequential_mcu_grid(plan);
+        let (_, mcu_rows) = grid;
+        let region = stripe_region_layout(plan, downscale, output_rect);
         let expanded_rect = expanded_output_rect(output_rect, width, height);
         let full_output_rect = expanded_rect == Rect::full((width, height));
         let use_420_context_window = matches!(mode, ScanOutputMode::InterleavedRgb)
@@ -81,9 +82,8 @@ impl ScanSetup {
             scaled,
             block_size,
             mcu_height_px,
-            mcus_per_row,
-            mcu_rows,
-            region: stripe_region_layout(plan, downscale, output_rect),
+            columns: McuColumns::for_region(grid, region),
+            region,
             expanded_rect,
             emit_rect,
             full_output_rect,
@@ -101,14 +101,10 @@ impl ScanSetup {
         pool.prepare_for(
             plan,
             self.scaled.effective,
-            self.region.stripe_mcus_per_row,
+            self.columns.stripe_mcus_per_row,
             self.block_size,
             plan.scratch_bytes,
         )
-    }
-
-    fn columns(self) -> McuColumns {
-        McuColumns::new((self.mcus_per_row, self.mcu_rows), self.region)
     }
 
     fn should_emit(self, mcu_row: u32) -> bool {
@@ -145,7 +141,7 @@ pub(super) fn decode_scan_rows<const N: usize, E: StripeEmitter>(
     } = buffers;
     let mut coeff = CoefficientBlock::default();
     let mut pixels = [0u8; 64];
-    let columns = setup.columns();
+    let columns = setup.columns;
     let wide_huffman = plan.prefers_wide_huffman(scan_bytes.len());
     let mut cursor = enter_scan_at_mcu::<N>(
         plan,
@@ -221,5 +217,8 @@ pub(super) fn decode_scan_rows<const N: usize, E: StripeEmitter>(
             scaled: &setup.scaled,
         })?;
     }
-    finish_scan(&mut cursor.br, setup.decode_mcu_row_end == setup.mcu_rows)
+    finish_scan(
+        &mut cursor.br,
+        setup.decode_mcu_row_end == setup.columns.mcu_rows,
+    )
 }

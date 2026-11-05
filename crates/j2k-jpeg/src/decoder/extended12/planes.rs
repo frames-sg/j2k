@@ -2,13 +2,14 @@
 
 //! Extended-precision sequential decode and progressive plane rendering.
 
+use crate::entropy::sequential::{McuPosition, RestartState};
 use alloc::vec::Vec;
 
 use super::super::{
     finish_scan, Backend, BitReader, CoefficientBlock, JpegError, PreparedDecodePlan,
     PreparedProgressivePlan, SofKind, Warning, ZIGZAG,
 };
-use super::state::{decode_extended12_block_pixels, Extended12RestartTracker};
+use super::state::decode_extended12_block_pixels;
 use crate::entropy::progressive::ProgressiveDctBlocks;
 
 mod allocation;
@@ -43,12 +44,18 @@ pub(super) fn decode_extended12_color_planes(
         .1
         .div_ceil(u32::from(plan.sampling.max_v) * 8);
     let total_mcus = mcu_cols * mcu_rows;
-    let mut restart_tracker = Extended12RestartTracker::new(plan.restart_interval, total_mcus);
+    let mut restart = RestartState::new(plan.restart_interval.unwrap_or(0));
 
     for mcu_y in 0..mcu_rows {
         for mcu_x in 0..mcu_cols {
             let current_mcu = mcu_y * mcu_cols + mcu_x;
-            if restart_tracker.begin_mcu(&mut br, current_mcu)? {
+            if restart.begin_mcu(
+                &mut br,
+                McuPosition {
+                    current: current_mcu,
+                    total: total_mcus,
+                },
+            )? {
                 prev_dc.fill(0);
             }
             for component in &plan.components {
@@ -76,7 +83,7 @@ pub(super) fn decode_extended12_color_planes(
                     }
                 }
             }
-            restart_tracker.finish_mcu();
+            restart.end_mcu();
         }
     }
 
@@ -107,12 +114,18 @@ pub(super) fn decode_extended12_four_component_planes(
         .1
         .div_ceil(u32::from(plan.sampling.max_v) * 8);
     let total_mcus = mcu_cols * mcu_rows;
-    let mut restart_tracker = Extended12RestartTracker::new(plan.restart_interval, total_mcus);
+    let mut restart = RestartState::new(plan.restart_interval.unwrap_or(0));
 
     for mcu_y in 0..mcu_rows {
         for mcu_x in 0..mcu_cols {
             let current_mcu = mcu_y * mcu_cols + mcu_x;
-            if restart_tracker.begin_mcu(&mut br, current_mcu)? {
+            if restart.begin_mcu(
+                &mut br,
+                McuPosition {
+                    current: current_mcu,
+                    total: total_mcus,
+                },
+            )? {
                 prev_dc.fill(0);
             }
             for component in &plan.components {
@@ -140,7 +153,7 @@ pub(super) fn decode_extended12_four_component_planes(
                     }
                 }
             }
-            restart_tracker.finish_mcu();
+            restart.end_mcu();
         }
     }
 

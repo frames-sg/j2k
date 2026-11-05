@@ -129,7 +129,7 @@ pub(crate) struct Rgb420Crop {
 }
 
 impl Rgb420Crop {
-    pub(crate) fn new(start: usize, width: usize) -> Self {
+    pub(crate) const fn new(start: usize, width: usize) -> Self {
         Self { start, width }
     }
 }

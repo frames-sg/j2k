@@ -4,11 +4,11 @@
 
 use super::super::deposit::{
     assert_stripe_deposit_capacity, deposit_block, deposit_block_1x1, deposit_block_2x2,
-    deposit_block_4x4, three_component_dc, FastTile420Components,
+    deposit_block_4x4, FastRowState, FastTile420Components,
 };
 use super::super::layout::{component_block_intersects_rect, ComponentBlockPosition, McuColumns};
 use super::super::restart::RestartState;
-use super::super::rgb444::{decode_mcu_row_fast_rgb, FastRgbMcuRowContext, FastRgbMcuRowState};
+use super::super::rgb444::{decode_mcu_row_fast_rgb, FastRgbMcuRowContext};
 use super::super::{PreparedDecodePlan, StripeBuffer};
 use crate::backend::Backend;
 use crate::color::scaled_sampling::ScaledSampling;
@@ -71,14 +71,18 @@ fn decode_mcu_row_rgb422<const N: usize>(
         backend: context.backend,
         columns: context.columns,
     };
-    let mut row_state = FastRgbMcuRowState {
+    let mut row_state = FastRowState {
         br: &mut *state.br,
-        dc: three_component_dc(state.prev_dc)?,
+        dc: state
+            .prev_dc
+            .first_chunk_mut()
+            .ok_or(JpegError::InternalInvariant {
+                reason: "fast sequential decode requires three DC predictors",
+            })?,
         coeff: &mut *state.coeff,
-        pixels: &mut *state.pixels,
         restart: &mut *state.restart,
     };
-    decode_mcu_row_fast_rgb::<N, 2>(&row_context, &mut row_state, mcu_y, stripe)
+    decode_mcu_row_fast_rgb::<N, 2>(&row_context, &mut row_state, state.pixels, mcu_y, stripe)
 }
 
 fn decode_mcu_row_specialized<const N: usize, const FULL_SIZE: bool>(
@@ -172,8 +176,7 @@ fn decode_mcu_row_local<const N: usize, const FULL_SIZE: bool>(
             } else {
                 context.scaled.component(plane_idx).idct_size
             };
-            let local_mcu_x0_px =
-                mx.saturating_sub(columns.stripe_mcu_start) * u32::from(comp.h) * block_size;
+            let local_mcu_x0_px = columns.local(mx) * u32::from(comp.h) * block_size;
             for vy in 0..u32::from(comp.v) {
                 for vx in 0..u32::from(comp.h) {
                     let should_output = FULL_SIZE

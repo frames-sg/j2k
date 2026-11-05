@@ -228,20 +228,20 @@ impl Decoder<'_> {
             downscale,
             external_live_bytes,
         } = request;
-        let fast_route = self.plan.fast_rgb_route().filter(|_| {
+        let fast_family = self.plan.fast_shape_family().filter(|_| {
             fmt == OutputFormat::Rgb8
                 && downscale == DownscaleFactor::Full
                 && self.progressive_plan.is_none()
         });
-        if let Some(route) = fast_route {
+        if let Some(family) = fast_family {
             let mut writer = Rgb8Writer::new_with_backend(out, stride, output_rect.w, self.backend);
             let scan_bytes = &self.bytes[self.plan.scan_offset..];
             let checkpoint = self.checkpoint_for_mcu(
                 scan_bytes,
-                route.first_decode_mcu(&self.plan, source_roi),
+                family.first_decode_mcu(&self.plan, source_roi),
                 checked_add_allocation_bytes(external_live_bytes, pool.retained_bytes())?,
             )?;
-            let scan_warnings = route.decode(
+            let scan_warnings = family.decode(
                 &self.plan,
                 self.backend,
                 scan_bytes,
