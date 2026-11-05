@@ -2847,8 +2847,8 @@ pub j2k_jpeg_cuda::Error::InFlightHostLedgerPoisoned
 pub j2k_jpeg_cuda::Error::JpegHostOperationPoisoned
 pub j2k_jpeg_cuda::Error::JpegPlanCache(j2k_jpeg::adapter::fast_packet::cache::JpegPlanCacheError)
 pub j2k_jpeg_cuda::Error::OperationAndHostAccountingFailed
-pub j2k_jpeg_cuda::Error::OperationAndHostAccountingFailed::accounting: alloc::boxed::Box<j2k_jpeg_cuda::Error>
-pub j2k_jpeg_cuda::Error::OperationAndHostAccountingFailed::primary: alloc::boxed::Box<j2k_jpeg_cuda::Error>
+pub j2k_jpeg_cuda::Error::OperationAndHostAccountingFailed::accounting: alloc::boxed::Box<Self>
+pub j2k_jpeg_cuda::Error::OperationAndHostAccountingFailed::primary: alloc::boxed::Box<Self>
 pub j2k_jpeg_cuda::Error::OwnedPacketCachePoisoned
 pub j2k_jpeg_cuda::Error::UnsupportedBackend
 pub j2k_jpeg_cuda::Error::UnsupportedBackend::request: j2k_core::backend::BackendRequest
@@ -3070,8 +3070,8 @@ pub j2k_cuda::CudaSessionDiagnostics::pools: j2k_cuda::CudaDecodePoolDiagnostics
 pub j2k_cuda::CudaSessionDiagnostics::runtime: core::option::Option<j2k_cuda_runtime::context::diagnostics::CudaContextDiagnostics>
 pub j2k_cuda::Error::Buffer(j2k_core::error::BufferError)
 pub j2k_cuda::Error::CudaCleanupFailed
-pub j2k_cuda::Error::CudaCleanupFailed::cleanup: alloc::boxed::Box<j2k_cuda::Error>
-pub j2k_cuda::Error::CudaCleanupFailed::primary: alloc::boxed::Box<j2k_cuda::Error>
+pub j2k_cuda::Error::CudaCleanupFailed::cleanup: alloc::boxed::Box<Self>
+pub j2k_cuda::Error::CudaCleanupFailed::primary: alloc::boxed::Box<Self>
 pub j2k_cuda::Error::CudaRuntime
 pub j2k_cuda::Error::CudaRuntime::source: j2k_cuda_runtime::error::CudaError
 pub j2k_cuda::Error::CudaTier1JobFailed
@@ -5065,8 +5065,8 @@ pub fn j2k_cuda_runtime::CudaPooledDeviceBuffer::drop(&mut self)
 pub fn j2k_cuda_runtime::CudaPooledDeviceBuffer::into_device_buffer(self) -> core::result::Result<j2k_cuda_runtime::CudaDeviceBuffer, j2k_cuda_runtime::CudaError>
 pub fn j2k_cuda_runtime::cuda_kernel_param<T>(&mut T) -> *mut core::ffi::c_void where T: j2k_cuda_runtime::CudaKernelParam
 pub j2k_cuda_runtime::CudaError::CompletionFailed
-pub j2k_cuda_runtime::CudaError::CompletionFailed::completion: alloc::boxed::Box<j2k_cuda_runtime::CudaError>
-pub j2k_cuda_runtime::CudaError::CompletionFailed::primary: alloc::boxed::Box<j2k_cuda_runtime::CudaError>
+pub j2k_cuda_runtime::CudaError::CompletionFailed::completion: alloc::boxed::Box<Self>
+pub j2k_cuda_runtime::CudaError::CompletionFailed::primary: alloc::boxed::Box<Self>
 pub j2k_cuda_runtime::CudaError::Driver
 pub j2k_cuda_runtime::CudaError::Driver::code: std::os::raw::c_int
 pub j2k_cuda_runtime::CudaError::Driver::name: alloc::string::String
@@ -5103,8 +5103,8 @@ pub j2k_cuda_runtime::CudaError::OutputTooSmall
 pub j2k_cuda_runtime::CudaError::OutputTooSmall::have: usize
 pub j2k_cuda_runtime::CudaError::OutputTooSmall::required: usize
 pub j2k_cuda_runtime::CudaError::ResourceReleaseFailed
-pub j2k_cuda_runtime::CudaError::ResourceReleaseFailed::primary: alloc::boxed::Box<j2k_cuda_runtime::CudaError>
-pub j2k_cuda_runtime::CudaError::ResourceReleaseFailed::release: alloc::boxed::Box<j2k_cuda_runtime::CudaError>
+pub j2k_cuda_runtime::CudaError::ResourceReleaseFailed::primary: alloc::boxed::Box<Self>
+pub j2k_cuda_runtime::CudaError::ResourceReleaseFailed::release: alloc::boxed::Box<Self>
 pub j2k_cuda_runtime::CudaError::StatePoisoned
 pub j2k_cuda_runtime::CudaError::StatePoisoned::message: alloc::string::String
 pub j2k_cuda_runtime::CudaError::Unavailable
