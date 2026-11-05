@@ -15,7 +15,7 @@ use crate::backend::{ColorSpace, Image};
 use crate::J2kError;
 use j2k_core::{DecodeRowsError, PixelFormat};
 
-use super::output::{write_plane_rows_u16, write_plane_rows_u8};
+use super::output::{resolve_u8_color_space, write_plane_rows_u16, write_plane_rows_u8};
 
 #[cfg(test)]
 std::thread_local! {
@@ -124,7 +124,7 @@ pub(crate) fn decode_image_rows_in_stripes<'a, E: core::error::Error + 'static>(
     #[cfg(test)]
     let skip_decode = injected == Some(InjectedFailure::BeforeRows);
     let mut sink = StripeSink {
-        color_space: image.color_space(),
+        color_space: resolve_u8_color_space(image.color_space(), fmt),
         has_alpha: image.has_alpha(),
         fmt,
         pack,

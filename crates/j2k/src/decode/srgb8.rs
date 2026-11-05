@@ -167,6 +167,92 @@ fn convert_icc_data(
     }
 }
 
+/// Whether `profile` describes IEC 61966-2-1 sRGB closely enough for its
+/// samples to be written as sRGB without a colour transform.
+///
+/// The profile must be a restricted matrix/TRC RGB profile whose linear
+/// RGB-to-sRGB matrix is within [`SRGB_MATRIX_OFF_DIAGONAL_TOLERANCE`] and
+/// [`SRGB_MATRIX_DIAGONAL_TOLERANCE`] of identity, and whose 8-bit transform
+/// to sRGB, as [`decode_image_srgb8`] would apply it, moves no sample of the
+/// per-channel and neutral ramps by more than one code value. The ramps
+/// alone cannot bound mixed colours: a negative off-diagonal term clips to
+/// zero on a single-channel ramp and cancels on neutrals, yet shifts a
+/// mixed colour such as (30, 255, 0) by tens of code values, so the matrix
+/// is checked directly. Any parse or transform failure reports the profile
+/// as not sRGB.
+pub(in crate::decode) fn is_srgb_equivalent_icc_profile(profile: &[u8]) -> bool {
+    let Some(max_profile_size) = profile.len().checked_add(1) else {
+        return false;
+    };
+    let Ok(source) = ColorProfile::new_from_slice_with_options(
+        profile,
+        ParsingOptions {
+            max_profile_size,
+            max_allowed_clut_size: 0,
+            max_allowed_trc_size: 65_536,
+        },
+    ) else {
+        return false;
+    };
+    if source.color_space != DataColorSpace::Rgb || reject_non_restricted_profile(&source).is_err()
+    {
+        return false;
+    }
+    let srgb = ColorProfile::new_srgb();
+    if !is_near_identity(&source.transform_matrix(&srgb).v) {
+        return false;
+    }
+    let Ok(transform) =
+        source.create_transform_8bit(Layout::Rgb, &srgb, Layout::Rgb, TransformOptions::default())
+    else {
+        return false;
+    };
+
+    // Red, green, blue, and neutral ramps over every 8-bit code value.
+    let mut probe = Vec::new();
+    if probe.try_reserve_exact(256 * 4 * 3).is_err() {
+        return false;
+    }
+    for value in 0..=u8::MAX {
+        probe.extend_from_slice(&[value, 0, 0, 0, value, 0, 0, 0, value, value, value, value]);
+    }
+    let mut converted = Vec::new();
+    if converted.try_reserve_exact(probe.len()).is_err() {
+        return false;
+    }
+    converted.resize(probe.len(), 0_u8);
+    transform.transform(&probe, &mut converted).is_ok()
+        && probe
+            .iter()
+            .zip(&converted)
+            .all(|(&expected, &actual)| expected.abs_diff(actual) <= 1)
+}
+
+/// Largest sum of one row's off-diagonal entries in the linear
+/// source-to-sRGB matrix. Leakage into a channel that should be zero is
+/// steepest on the sRGB toe, where one 8-bit code value is
+/// `1 / (12.92 * 255)` (about 3.0e-4) of linear light; this keeps the
+/// leakage under one code value.
+const SRGB_MATRIX_OFF_DIAGONAL_TOLERANCE: f64 = 2.5e-4;
+
+/// Largest distance of a diagonal entry from one. Its error in code values
+/// peaks at full intensity, where the sRGB curve changes about 112 code
+/// values per unit of linear light, so this stays near 0.1 code value.
+const SRGB_MATRIX_DIAGONAL_TOLERANCE: f64 = 1e-3;
+
+fn is_near_identity(matrix: &[[f64; 3]; 3]) -> bool {
+    matrix.iter().enumerate().all(|(row, entries)| {
+        let off_diagonal: f64 = entries
+            .iter()
+            .enumerate()
+            .filter(|&(column, _)| column != row)
+            .map(|(_, entry)| entry.abs())
+            .sum();
+        (entries[row] - 1.0).abs() <= SRGB_MATRIX_DIAGONAL_TOLERANCE
+            && off_diagonal <= SRGB_MATRIX_OFF_DIAGONAL_TOLERANCE
+    })
+}
+
 fn reject_non_restricted_profile(profile: &ColorProfile) -> Result<(), J2kError> {
     if profile.lut_a_to_b_perceptual.is_some()
         || profile.lut_a_to_b_colorimetric.is_some()
