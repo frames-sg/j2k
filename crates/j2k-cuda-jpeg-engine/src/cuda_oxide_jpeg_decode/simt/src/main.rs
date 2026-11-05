@@ -1,5 +1,6 @@
 use cuda_device::{kernel, thread};
 use cuda_host::cuda_module;
+use j2k_codec_math::jpeg::idct::islow_block;
 
 include!("../../../cuda_oxide_simt_prelude.rs");
 
@@ -192,21 +193,6 @@ impl From<JpegDecodeHuffmanPtrs> for Jpeg420EntropyTables {
 }
 
 const J2K_JPEG_ZIGZAG: [u8; 64] = j2k_codec_math::jpeg::ZIGZAG;
-
-const JPEG_CONST_BITS: i32 = j2k_codec_math::jpeg::idct::CONST_BITS as i32;
-const JPEG_PASS1_BITS: i32 = j2k_codec_math::jpeg::idct::PASS1_BITS as i32;
-const JPEG_FIX_0_298631336: i32 = j2k_codec_math::jpeg::idct::FIX_0_298631336;
-const JPEG_FIX_0_390180644: i32 = j2k_codec_math::jpeg::idct::FIX_0_390180644;
-const JPEG_FIX_0_541196100: i32 = j2k_codec_math::jpeg::idct::FIX_0_541196100;
-const JPEG_FIX_0_765366865: i32 = j2k_codec_math::jpeg::idct::FIX_0_765366865;
-const JPEG_FIX_0_899976223: i32 = j2k_codec_math::jpeg::idct::FIX_0_899976223;
-const JPEG_FIX_1_175875602: i32 = j2k_codec_math::jpeg::idct::FIX_1_175875602;
-const JPEG_FIX_1_501321110: i32 = j2k_codec_math::jpeg::idct::FIX_1_501321110;
-const JPEG_FIX_1_847759065: i32 = j2k_codec_math::jpeg::idct::FIX_1_847759065;
-const JPEG_FIX_1_961570560: i32 = j2k_codec_math::jpeg::idct::FIX_1_961570560;
-const JPEG_FIX_2_053119869: i32 = j2k_codec_math::jpeg::idct::FIX_2_053119869;
-const JPEG_FIX_2_562915447: i32 = j2k_codec_math::jpeg::idct::FIX_2_562915447;
-const JPEG_FIX_3_072711026: i32 = j2k_codec_math::jpeg::idct::FIX_3_072711026;
 
 #[inline(always)]
 fn min_u32(a: u32, b: u32) -> u32 {
@@ -658,190 +644,6 @@ fn clamp_i32(value: i32) -> u8 {
         255
     } else {
         value as u8
-    }
-}
-
-#[inline(always)]
-fn descale(value: i32, shift: i32) -> i32 {
-    value >> shift
-}
-
-#[inline(always)]
-fn descale_and_clamp(value: i32, shift: i32) -> u8 {
-    clamp_i32((value >> shift) + 128)
-}
-
-#[inline(always)]
-fn idct_column(input: &[i32; 64], work: &mut [i32; 64], col: u32) {
-    let p0 = input[col as usize];
-    let p1 = input[(col + 8) as usize];
-    let p2 = input[(col + 16) as usize];
-    let p3 = input[(col + 24) as usize];
-    let p4 = input[(col + 32) as usize];
-    let p5 = input[(col + 40) as usize];
-    let p6 = input[(col + 48) as usize];
-    let p7 = input[(col + 56) as usize];
-
-    if p1 == 0 && p2 == 0 && p3 == 0 && p4 == 0 && p5 == 0 && p6 == 0 && p7 == 0 {
-        let dc = p0 << JPEG_PASS1_BITS;
-        work[col as usize] = dc;
-        work[(col + 8) as usize] = dc;
-        work[(col + 16) as usize] = dc;
-        work[(col + 24) as usize] = dc;
-        work[(col + 32) as usize] = dc;
-        work[(col + 40) as usize] = dc;
-        work[(col + 48) as usize] = dc;
-        work[(col + 56) as usize] = dc;
-        return;
-    }
-
-    let mut z2 = p2;
-    let mut z3 = p6;
-    let mut z1 = (z2 + z3) * JPEG_FIX_0_541196100;
-    let tmp2 = z1 - z3 * JPEG_FIX_1_847759065;
-    let tmp3 = z1 + z2 * JPEG_FIX_0_765366865;
-
-    z2 = p0;
-    z3 = p4;
-    let tmp0 = (z2 + z3) << JPEG_CONST_BITS;
-    let tmp1 = (z2 - z3) << JPEG_CONST_BITS;
-
-    let tmp10 = tmp0 + tmp3;
-    let tmp13 = tmp0 - tmp3;
-    let tmp11 = tmp1 + tmp2;
-    let tmp12 = tmp1 - tmp2;
-
-    let mut tmp0 = p7;
-    let mut tmp1 = p5;
-    let mut tmp2 = p3;
-    let mut tmp3 = p1;
-
-    z1 = tmp0 + tmp3;
-    z2 = tmp1 + tmp2;
-    z3 = tmp0 + tmp2;
-    let mut z4 = tmp1 + tmp3;
-    let z5 = (z3 + z4) * JPEG_FIX_1_175875602;
-
-    tmp0 *= JPEG_FIX_0_298631336;
-    tmp1 *= JPEG_FIX_2_053119869;
-    tmp2 *= JPEG_FIX_3_072711026;
-    tmp3 *= JPEG_FIX_1_501321110;
-    z1 *= -JPEG_FIX_0_899976223;
-    z2 *= -JPEG_FIX_2_562915447;
-    z3 *= -JPEG_FIX_1_961570560;
-    z4 *= -JPEG_FIX_0_390180644;
-
-    z3 += z5;
-    z4 += z5;
-
-    tmp0 += z1 + z3;
-    tmp1 += z2 + z4;
-    tmp2 += z2 + z3;
-    tmp3 += z1 + z4;
-
-    let shift = JPEG_CONST_BITS - JPEG_PASS1_BITS;
-    let rounding = 1 << (shift - 1);
-    work[col as usize] = descale(tmp10 + tmp3 + rounding, shift);
-    work[(col + 56) as usize] = descale(tmp10 - tmp3 + rounding, shift);
-    work[(col + 8) as usize] = descale(tmp11 + tmp2 + rounding, shift);
-    work[(col + 48) as usize] = descale(tmp11 - tmp2 + rounding, shift);
-    work[(col + 16) as usize] = descale(tmp12 + tmp1 + rounding, shift);
-    work[(col + 40) as usize] = descale(tmp12 - tmp1 + rounding, shift);
-    work[(col + 24) as usize] = descale(tmp13 + tmp0 + rounding, shift);
-    work[(col + 32) as usize] = descale(tmp13 - tmp0 + rounding, shift);
-}
-
-#[inline(always)]
-fn idct_row(work: &[i32; 64], pixels: &mut [u8; 64], row: u32) {
-    let base = row * 8;
-    let p0 = work[base as usize];
-    let p1 = work[(base + 1) as usize];
-    let p2 = work[(base + 2) as usize];
-    let p3 = work[(base + 3) as usize];
-    let p4 = work[(base + 4) as usize];
-    let p5 = work[(base + 5) as usize];
-    let p6 = work[(base + 6) as usize];
-    let p7 = work[(base + 7) as usize];
-
-    let shift = JPEG_CONST_BITS + JPEG_PASS1_BITS + 3;
-    let rounding = 1 << (shift - 1);
-
-    if p1 == 0 && p2 == 0 && p3 == 0 && p4 == 0 && p5 == 0 && p6 == 0 && p7 == 0 {
-        let dc_shift = JPEG_PASS1_BITS + 3;
-        let rounding_dc = 1 << (dc_shift - 1);
-        let pixel = descale_and_clamp(p0 + rounding_dc, dc_shift);
-        let mut i = 0;
-        while i < 8 {
-            pixels[(base + i) as usize] = pixel;
-            i += 1;
-        }
-        return;
-    }
-
-    let mut z2 = p2;
-    let mut z3 = p6;
-    let mut z1 = (z2 + z3) * JPEG_FIX_0_541196100;
-    let tmp2 = z1 - z3 * JPEG_FIX_1_847759065;
-    let tmp3 = z1 + z2 * JPEG_FIX_0_765366865;
-
-    let tmp0 = (p0 + p4) << JPEG_CONST_BITS;
-    let tmp1 = (p0 - p4) << JPEG_CONST_BITS;
-
-    let tmp10 = tmp0 + tmp3;
-    let tmp13 = tmp0 - tmp3;
-    let tmp11 = tmp1 + tmp2;
-    let tmp12 = tmp1 - tmp2;
-
-    let mut tmp0 = p7;
-    let mut tmp1 = p5;
-    let mut tmp2 = p3;
-    let mut tmp3 = p1;
-
-    z1 = tmp0 + tmp3;
-    z2 = tmp1 + tmp2;
-    z3 = tmp0 + tmp2;
-    let mut z4 = tmp1 + tmp3;
-    let z5 = (z3 + z4) * JPEG_FIX_1_175875602;
-
-    tmp0 *= JPEG_FIX_0_298631336;
-    tmp1 *= JPEG_FIX_2_053119869;
-    tmp2 *= JPEG_FIX_3_072711026;
-    tmp3 *= JPEG_FIX_1_501321110;
-    z1 *= -JPEG_FIX_0_899976223;
-    z2 *= -JPEG_FIX_2_562915447;
-    z3 *= -JPEG_FIX_1_961570560;
-    z4 *= -JPEG_FIX_0_390180644;
-
-    z3 += z5;
-    z4 += z5;
-
-    tmp0 += z1 + z3;
-    tmp1 += z2 + z4;
-    tmp2 += z2 + z3;
-    tmp3 += z1 + z4;
-
-    pixels[base as usize] = descale_and_clamp(tmp10 + tmp3 + rounding, shift);
-    pixels[(base + 7) as usize] = descale_and_clamp(tmp10 - tmp3 + rounding, shift);
-    pixels[(base + 1) as usize] = descale_and_clamp(tmp11 + tmp2 + rounding, shift);
-    pixels[(base + 6) as usize] = descale_and_clamp(tmp11 - tmp2 + rounding, shift);
-    pixels[(base + 2) as usize] = descale_and_clamp(tmp12 + tmp1 + rounding, shift);
-    pixels[(base + 5) as usize] = descale_and_clamp(tmp12 - tmp1 + rounding, shift);
-    pixels[(base + 3) as usize] = descale_and_clamp(tmp13 + tmp0 + rounding, shift);
-    pixels[(base + 4) as usize] = descale_and_clamp(tmp13 - tmp0 + rounding, shift);
-}
-
-#[inline(always)]
-fn idct_islow(coeffs: &[i32; 64], pixels: &mut [u8; 64]) {
-    let mut work = [0i32; 64];
-    let mut col = 0;
-    while col < 8 {
-        idct_column(coeffs, &mut work, col);
-        col += 1;
-    }
-    let mut row = 0;
-    while row < 8 {
-        idct_row(&work, pixels, row);
-        row += 1;
     }
 }
 
@@ -1418,7 +1220,7 @@ mod kernels {
                 store_decode_status(status, gid, thread_status);
                 return;
             }
-            idct_islow(&coeffs, &mut y0);
+            islow_block(&coeffs, &mut y0);
             if !decode_block(
                 &mut reader,
                 y_decode,
@@ -1429,7 +1231,7 @@ mod kernels {
                 store_decode_status(status, gid, thread_status);
                 return;
             }
-            idct_islow(&coeffs, &mut y1);
+            islow_block(&coeffs, &mut y1);
             if !decode_block(
                 &mut reader,
                 y_decode,
@@ -1440,7 +1242,7 @@ mod kernels {
                 store_decode_status(status, gid, thread_status);
                 return;
             }
-            idct_islow(&coeffs, &mut y2);
+            islow_block(&coeffs, &mut y2);
             if !decode_block(
                 &mut reader,
                 y_decode,
@@ -1451,7 +1253,7 @@ mod kernels {
                 store_decode_status(status, gid, thread_status);
                 return;
             }
-            idct_islow(&coeffs, &mut y3);
+            islow_block(&coeffs, &mut y3);
             if !decode_block(
                 &mut reader,
                 cb_decode,
@@ -1462,7 +1264,7 @@ mod kernels {
                 store_decode_status(status, gid, thread_status);
                 return;
             }
-            idct_islow(&coeffs, &mut cb);
+            islow_block(&coeffs, &mut cb);
             if !decode_block(
                 &mut reader,
                 cr_decode,
@@ -1473,7 +1275,7 @@ mod kernels {
                 store_decode_status(status, gid, thread_status);
                 return;
             }
-            idct_islow(&coeffs, &mut cr);
+            islow_block(&coeffs, &mut cr);
             let mx = mcu - (mcu / params.mcus_per_row) * params.mcus_per_row;
             let my = mcu / params.mcus_per_row;
             component_planes::store_420_mcu(
@@ -1579,7 +1381,7 @@ mod kernels {
                 store_decode_status(status, gid, thread_status);
                 return;
             }
-            idct_islow(&coeffs, &mut y0);
+            islow_block(&coeffs, &mut y0);
             if !decode_block(
                 &mut reader,
                 y_decode,
@@ -1590,7 +1392,7 @@ mod kernels {
                 store_decode_status(status, gid, thread_status);
                 return;
             }
-            idct_islow(&coeffs, &mut y1);
+            islow_block(&coeffs, &mut y1);
             if !decode_block(
                 &mut reader,
                 cb_decode,
@@ -1601,7 +1403,7 @@ mod kernels {
                 store_decode_status(status, gid, thread_status);
                 return;
             }
-            idct_islow(&coeffs, &mut cb);
+            islow_block(&coeffs, &mut cb);
             if !decode_block(
                 &mut reader,
                 cr_decode,
@@ -1612,7 +1414,7 @@ mod kernels {
                 store_decode_status(status, gid, thread_status);
                 return;
             }
-            idct_islow(&coeffs, &mut cr);
+            islow_block(&coeffs, &mut cr);
             let mx = mcu - (mcu / params.mcus_per_row) * params.mcus_per_row;
             let my = mcu / params.mcus_per_row;
             component_planes::store_422_mcu(
@@ -1735,7 +1537,7 @@ mod kernels {
                 store_decode_status(status, gid, thread_status);
                 return;
             }
-            idct_islow(&coeffs, &mut y);
+            islow_block(&coeffs, &mut y);
             if !decode_block(
                 &mut reader,
                 cb_decode,
@@ -1746,7 +1548,7 @@ mod kernels {
                 store_decode_status(status, gid, thread_status);
                 return;
             }
-            idct_islow(&coeffs, &mut cb);
+            islow_block(&coeffs, &mut cb);
             if !decode_block(
                 &mut reader,
                 cr_decode,
@@ -1757,7 +1559,7 @@ mod kernels {
                 store_decode_status(status, gid, thread_status);
                 return;
             }
-            idct_islow(&coeffs, &mut cr);
+            islow_block(&coeffs, &mut cr);
             let mx = mcu - (mcu / params.mcus_per_row) * params.mcus_per_row;
             let my = mcu / params.mcus_per_row;
             store_rgb444_mcu(out, params, mx, my, &y, &cb, &cr);
