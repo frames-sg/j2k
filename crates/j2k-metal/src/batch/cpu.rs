@@ -140,7 +140,14 @@ fn decode_cpu_region_scaled_batch_inner(
                 "CPU region-scaled batch contains a non-region-scaled request",
             ));
         };
-        let dimensions = roi.scaled_covering(scale);
+        // The reduced samples the region covers on the reference grid, which
+        // the tile batch decodes and reports.
+        let grid = j2k::J2kDecoder::inspect_reference_grid(request.input.as_ref())?;
+        let dimensions = j2k::DeviceDecodePlan::for_reference_grid(
+            grid,
+            j2k::DeviceDecodeRequest::RegionScaled { roi, scale },
+        )?
+        .output_rect();
         let dims_tuple = (dimensions.w, dimensions.h);
         let allocation = checked_cpu_batch_surface(dims_tuple, fmt)?;
         dims.push(dims_tuple);

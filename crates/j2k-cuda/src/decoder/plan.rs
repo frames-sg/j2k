@@ -3,8 +3,8 @@
 use super::{
     native_decode_error, profile, CudaHtj2kColorDecodePlans, CudaHtj2kDecodePlan,
     CudaHtj2kDecodeProfileDetail, CudaHtj2kProfileReport, CudaHtj2kTransform, DecodeSettings,
-    DeviceDecodePlan, DeviceDecodeRequest, Downscale, Error, J2kDecoder, NativeDecoderContext,
-    NativeImage, PixelFormat, Rect,
+    DeviceDecodePlan, Downscale, Error, J2kDecoder, NativeDecoderContext, NativeImage, PixelFormat,
+    Rect,
 };
 #[cfg(feature = "cuda-runtime")]
 use crate::allocation::HostPhaseBudget;

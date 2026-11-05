@@ -174,8 +174,8 @@ pub(in crate::decoder) fn decode_region_to_cuda_resident_surface_impl(
     fmt: PixelFormat,
     roi: Rect,
 ) -> Result<Surface, Error> {
-    let plan = DeviceDecodePlan::for_image(
-        decoder.inner.info().dimensions,
+    let plan = DeviceDecodePlan::for_reference_grid(
+        decoder.inner.reference_grid(),
         DeviceDecodeRequest::Region { roi },
     )?;
     if plan.is_full_frame() {
@@ -205,8 +205,8 @@ pub(in crate::decoder) fn decode_scaled_to_cuda_resident_surface_impl(
     if scale == Downscale::None {
         return decode_to_cuda_resident_surface_impl(decoder, session, fmt);
     }
-    let output_dimensions = DeviceDecodePlan::for_image(
-        decoder.inner.info().dimensions,
+    let output_dimensions = DeviceDecodePlan::for_reference_grid(
+        decoder.inner.reference_grid(),
         DeviceDecodeRequest::Scaled { scale },
     )?
     .output_dims();
@@ -235,14 +235,11 @@ pub(in crate::decoder) fn decode_region_scaled_to_cuda_resident_surface_impl(
     if scale == Downscale::None {
         return decode_region_to_cuda_resident_surface_impl(decoder, session, fmt, roi);
     }
-    let source_dimensions = decoder.inner.info().dimensions;
-    let scaled_dimensions =
-        DeviceDecodePlan::for_image(source_dimensions, DeviceDecodeRequest::Scaled { scale })?
-            .output_dims();
-    let plan = DeviceDecodePlan::for_image(
-        source_dimensions,
+    let plan = DeviceDecodePlan::for_reference_grid(
+        decoder.inner.reference_grid(),
         DeviceDecodeRequest::RegionScaled { roi, scale },
     )?;
+    let scaled_dimensions = plan.reduced_image_dims();
     let scaled_roi = plan.output_rect();
 
     match fmt {
