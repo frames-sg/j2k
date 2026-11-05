@@ -174,24 +174,29 @@ fn available_backends() -> impl Iterator<Item = super::Backend> {
     .filter_map(super::Backend::for_test_kind)
 }
 
-/// `backend`'s fancy 4:2:0 output row equals the per-sample reference and
-/// writes nothing past `output_width`.
+/// The per-sample reference of a fancy 4:2:0 output row of `output_width`.
+fn h2v2_reference_row(rows: [&[u8]; 3], output_width: usize, output_is_bottom: bool) -> Vec<u8> {
+    let [prev, curr, next] = rows;
+    let near = if output_is_bottom { next } else { prev };
+    (0..output_width)
+        .map(|x| crate::color::upsample::h2v2_fancy_sample(near, curr, x))
+        .collect()
+}
+
+/// `backend`'s fancy 4:2:0 output row equals `expected` (see
+/// [`h2v2_reference_row`]) and writes nothing past its width.
 fn assert_h2v2_row_matches_reference(
     backend: super::Backend,
     rows: [&[u8]; 3],
-    output_width: usize,
+    expected: &[u8],
     output_is_bottom: bool,
-    label: &str,
+    label: core::fmt::Arguments<'_>,
 ) {
-    let [prev, curr, next] = rows;
-    let near = if output_is_bottom { next } else { prev };
-    let expected: Vec<u8> = (0..output_width)
-        .map(|x| crate::color::upsample::h2v2_fancy_sample(near, curr, x))
-        .collect();
+    let output_width = expected.len();
     let mut actual = vec![0xAA; output_width + 3];
     backend.upsample_h2v2_fancy_row(rows, output_width, output_is_bottom, &mut actual);
     let kind = backend.kind();
-    assert_eq!(&actual[..output_width], &expected[..], "{kind:?} {label}");
+    assert_eq!(&actual[..output_width], expected, "{kind:?} {label}");
     assert_eq!(
         &actual[output_width..],
         &[0xAA; 3],
@@ -1264,13 +1269,15 @@ fn fancy_h2v2_rows_match_the_per_sample_reference_on_every_backend() {
         let (prev, curr, next) = (row(chroma_width), row(chroma_width), row(chroma_width));
         for output_width in [2 * chroma_width, 2 * chroma_width - 1, chroma_width] {
             for bottom in [false, true] {
+                let rows = [&prev[..], &curr[..], &next[..]];
+                let expected = h2v2_reference_row(rows, output_width, bottom);
                 for backend in available_backends() {
                     assert_h2v2_row_matches_reference(
                         backend,
-                        [&prev, &curr, &next],
-                        output_width,
+                        rows,
+                        &expected,
                         bottom,
-                        &format!("chroma {chroma_width} width {output_width} bottom {bottom}"),
+                        format_args!("chroma {chroma_width} width {output_width} bottom {bottom}"),
                     );
                 }
             }
@@ -1294,27 +1301,28 @@ fn fancy_h2v2_interior_matches_the_reference_for_every_column_sum_pair() {
             u8::try_from(near).expect("byte"),
         )
     };
-    let mut rows: Vec<(Vec<u8>, Vec<u8>)> = (0..=1020u16)
-        .map(|left| {
+    let rows = (0..=1020u16)
+        .map(|left| -> (Vec<u8>, Vec<u8>) {
             (0..=1020u16)
                 .flat_map(|right| [samples(left), samples(right)])
                 .unzip()
         })
-        .collect();
-    rows.push(
-        (0..=u16::MAX)
-            .map(|pair| <(u8, u8)>::from(pair.to_le_bytes()))
-            .unzip(),
-    );
-    for (curr, near) in &rows {
+        .chain(core::iter::once(
+            (0..=u16::MAX)
+                .map(|pair| <(u8, u8)>::from(pair.to_le_bytes()))
+                .unzip(),
+        ));
+    for (curr, near) in rows {
+        // `near` serves as the previous row of a top output.
+        let rows = [&near[..], &curr[..], &near[..]];
+        let expected = h2v2_reference_row(rows, 2 * curr.len(), false);
         for backend in available_backends() {
-            // `near` serves as the previous row of a top output.
             assert_h2v2_row_matches_reference(
                 backend,
-                [near, curr, near],
-                2 * curr.len(),
+                rows,
+                &expected,
                 false,
-                &format!("row of {} samples", curr.len()),
+                format_args!("row of {} samples", curr.len()),
             );
         }
     }

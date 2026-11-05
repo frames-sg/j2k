@@ -14,15 +14,12 @@ use j2k_codec_math::jpeg::idct;
 
 fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo::rerun-if-changed=build.rs");
-    let constants: [(&str, i64); 32] = [
+    let constants: [(&str, i64); 29] = [
         ("CONST_BITS", i64::try_from(idct::CONST_BITS)?),
         ("PASS1_BITS", i64::try_from(idct::PASS1_BITS)?),
         ("PASS1_SHIFT", idct::PASS1_SHIFT.into()),
-        ("PASS1_ROUNDING", idct::PASS1_ROUNDING.into()),
         ("PASS2_SHIFT", idct::PASS2_SHIFT.into()),
-        ("PASS2_ROUNDING", idct::PASS2_ROUNDING.into()),
         ("DC_SHIFT", idct::DC_SHIFT.into()),
-        ("DC_ROUNDING", idct::DC_ROUNDING.into()),
         ("PASS1_SHIFT_12", idct::PASS1_SHIFT_12.into()),
         ("PASS2_SHIFT_12", idct::PASS2_SHIFT_12.into()),
         ("FIX_0_298631336", idct::FIX_0_298631336.into()),

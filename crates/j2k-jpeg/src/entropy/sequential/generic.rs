@@ -5,7 +5,7 @@
 mod driver;
 mod row;
 
-use self::driver::{decode_scan_rows, ScanBuffers, ScanOutputMode, ScanSetup, StripeEmitter};
+use self::driver::{decode_scan_rows, ScanOutputMode, ScanSetup, StripeEmitter};
 use super::emit::{emit_stripe, emit_stripe_rgb, StripeEmit};
 use super::layout::uses_fancy_420_emit;
 use super::{HuffmanPrimaryWidth, OutputScratch, PreparedDecodePlan, RgbOutputScratch};
@@ -98,7 +98,6 @@ fn decode_scan_baseline_with_entries<const N: usize, W: OutputWriter>(
     setup.prepare_pool(plan, pool)?;
     let fancy_420 = uses_fancy_420_emit(plan, &setup.scaled);
     let ScratchPool {
-        prev_dc,
         stripe_a,
         stripe_b,
         stripe_c,
@@ -126,12 +125,7 @@ fn decode_scan_baseline_with_entries<const N: usize, W: OutputWriter>(
         scan_bytes,
         downscale,
         setup,
-        ScanBuffers {
-            prev_dc: prev_dc.as_mut_slice(),
-            stripe_a,
-            stripe_b,
-            stripe_c,
-        },
+        [stripe_a, stripe_b, stripe_c],
         &mut emitter,
     )
 }
@@ -184,7 +178,6 @@ fn decode_scan_baseline_rgb_with_entries<const N: usize, W: OutputWriter + Inter
     setup.prepare_pool(plan, pool)?;
     let fancy_420 = uses_fancy_420_emit(plan, &setup.scaled);
     let ScratchPool {
-        prev_dc,
         stripe_a,
         stripe_b,
         stripe_c,
@@ -212,12 +205,7 @@ fn decode_scan_baseline_rgb_with_entries<const N: usize, W: OutputWriter + Inter
         scan_bytes,
         downscale,
         setup,
-        ScanBuffers {
-            prev_dc: prev_dc.as_mut_slice(),
-            stripe_a,
-            stripe_b,
-            stripe_c,
-        },
+        [stripe_a, stripe_b, stripe_c],
         &mut emitter,
     )
 }

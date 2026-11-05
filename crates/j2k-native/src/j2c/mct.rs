@@ -4,10 +4,9 @@
 use super::codestream::{ComponentInfo, Header, WaveletTransform};
 use super::decode::TileDecodeContext;
 use super::idwt::{pack_last_level, LastLevel};
+use crate::color::round_to_u8;
 use crate::error::{bail, err, ColorError, DecodingError, Result};
-use crate::math::{
-    dispatch, f32x8, floor_f32, mul_add, round_f32, round_ties_even_then_add, Level, Simd,
-};
+use crate::math::{dispatch, f32x8, floor_f32, mul_add, round_ties_even_then_add, Level, Simd};
 use crate::{HtCodeBlockDecoder, J2kInverseMctJob, J2kWaveletTransform};
 use j2k_codec_math::mct;
 
@@ -347,8 +346,6 @@ impl DeferredMct {
     /// expressions, then [`round_centered_and_shift`] for centered output,
     /// then the standard RGB8 pack's rounding and saturating cast.
     #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
         clippy::inline_always,
         reason = "RGB8 samples use the same rounding and saturating cast as the standard pack; inlined into each SIMD dispatch target"
     )]
@@ -387,11 +384,7 @@ impl DeferredMct {
                 green = round_ties_even_then_add(green, shift[1]);
                 blue = round_ties_even_then_add(blue, shift[2]);
             }
-            pixels[index] = [
-                round_f32(red) as u8,
-                round_f32(green) as u8,
-                round_f32(blue) as u8,
-            ];
+            pixels[index] = [round_to_u8(red), round_to_u8(green), round_to_u8(blue)];
         }
     }
 
@@ -808,6 +801,7 @@ fn apply_inner_impl<S: Simd>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::math::round_f32;
     use std::time::{Duration, Instant};
 
     #[test]

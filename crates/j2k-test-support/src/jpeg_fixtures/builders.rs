@@ -398,8 +398,7 @@ pub fn extended_12bit_ycbcr_420_32x32_rgb16() -> Vec<u8> {
         for x in 0..32 {
             let cb = upsample_h2v2_12bit_for_fixture(&blue_difference_plane, x, y);
             let cr = upsample_h2v2_12bit_for_fixture(&red_difference_plane, x, y);
-            let rgb = ycbcr12_to_rgb16_for_fixture(2064, cb, cr);
-            append_rgb16_pixel(&mut out, rgb.into());
+            append_rgb16_pixel(&mut out, ycbcr12_to_rgb16_for_fixture(2064, cb, cr));
         }
     }
     out

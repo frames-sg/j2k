@@ -220,20 +220,12 @@ pub(crate) struct McuSkipper<'a, const N: usize> {
 
 impl<'a, const N: usize> McuSkipper<'a, N> {
     pub(crate) fn new(plan: &'a PreparedDecodePlan, wide_huffman: bool) -> Result<Self, JpegError> {
-        let first = plan.resolved_component_with_entries::<N>(0)?;
-        let mut components = [(first, 0, 0); 4];
-        if plan.components.len() > components.len() {
-            return Err(JpegError::InternalInvariant {
-                reason: "sequential decode supports at most four components",
-            });
-        }
-        for (slot, comp) in components.iter_mut().zip(&plan.components) {
-            *slot = (
-                plan.resolve_component_with_entries::<N>(comp)?
-                    .with_wide_huffman(wide_huffman),
-                comp.output_index,
-                u32::from(comp.h) * u32::from(comp.v),
-            );
+        let mut components = plan
+            .resolved_components_with_entries::<N>(wide_huffman)?
+            .map(|tables| (tables, 0, 0));
+        for ((_, plane, blocks), comp) in components.iter_mut().zip(&plan.components) {
+            *plane = comp.output_index;
+            *blocks = u32::from(comp.h) * u32::from(comp.v);
         }
         Ok(Self {
             components,

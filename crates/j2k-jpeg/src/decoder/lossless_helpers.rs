@@ -7,7 +7,7 @@ use super::{
 };
 use crate::allocation::{checked_allocation_bytes, try_vec_with_capacity};
 use crate::entropy::sequential::PreparedDecodePlan;
-use crate::parse::markers::{next_entropy_marker, EntropyMarker};
+use crate::parse::markers::next_entropy_marker_code;
 
 pub(crate) fn restart_index_allocation_bytes(
     info: &Info,
@@ -55,16 +55,7 @@ pub(super) fn restart_index_for_stream(
     let mut found_restarts = 0u32;
     let mut expected_rst = 0xd0u8;
     let mut pos = scan_data_offset;
-    while let Some(next) = next_entropy_marker(bytes, pos) {
-        let (marker_code_pos, marker) = match next {
-            EntropyMarker::Unterminated { fill_start } => {
-                return Err(JpegError::Truncated {
-                    offset: fill_start,
-                    expected: 1,
-                });
-            }
-            EntropyMarker::Marker { code_pos, code, .. } => (code_pos, code),
-        };
+    while let Some((marker_code_pos, marker)) = next_entropy_marker_code(bytes, pos)? {
         let marker_offset = marker_code_pos - 1;
         match marker {
             0xd0..=0xd7 => {

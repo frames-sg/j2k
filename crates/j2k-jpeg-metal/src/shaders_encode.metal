@@ -586,13 +586,6 @@ inline bool block_intersects_rect(
     return block_x < rect_x1 && rect_x < block_x1 && block_y < rect_y1 && rect_y < block_y1;
 }
 
-// Callers of descale_and_clamp add their own rounding term (the full islow IDCT
-// folds it into the DC path).
-inline uchar descale_and_clamp(int value, int shift) {
-    const int shifted = value >> shift;
-    return clamp_u8(shifted + 128);
-}
-
 // libjpeg DESCALE: arithmetic right shift that rounds half up. Every stage of
 // jidctred.c (and libjpeg-turbo's SIMD ports) rounds; a plain shift biases
 // DCT-scaled output low by up to one level per component.
@@ -692,7 +685,7 @@ inline void idct_islow_columns_x4(
 ) {
     islow_1d(p0, p1, p2, p3, p4, p5, p6, p7, out);
     for (uint i = 0; i < 8u; ++i) {
-        out[i] = (out[i] + CODEC_MATH_JPEG_IDCT_PASS1_ROUNDING) >> CODEC_MATH_JPEG_IDCT_PASS1_SHIFT;
+        out[i] = descale_rounded(out[i], CODEC_MATH_JPEG_IDCT_PASS1_SHIFT);
     }
 }
 
@@ -709,7 +702,7 @@ inline void idct_islow_row(int4 left_in, int4 right_in, thread uchar4 &left, thr
     const int p7 = right_in.w;
 
     if (p1 == 0 && p2 == 0 && p3 == 0 && p4 == 0 && p5 == 0 && p6 == 0 && p7 == 0) {
-        const uchar pixel = descale_and_clamp(p0 + CODEC_MATH_JPEG_IDCT_DC_ROUNDING, CODEC_MATH_JPEG_IDCT_DC_SHIFT);
+        const uchar pixel = descale_rounded_and_clamp(p0, CODEC_MATH_JPEG_IDCT_DC_SHIFT);
         left = uchar4(pixel);
         right = uchar4(pixel);
         return;
@@ -718,18 +711,17 @@ inline void idct_islow_row(int4 left_in, int4 right_in, thread uchar4 &left, thr
     int out[8];
     islow_1d(p0, p1, p2, p3, p4, p5, p6, p7, out);
     const int shift = CODEC_MATH_JPEG_IDCT_PASS2_SHIFT;
-    const int rounding = CODEC_MATH_JPEG_IDCT_PASS2_ROUNDING;
     left = uchar4(
-        descale_and_clamp(out[0] + rounding, shift),
-        descale_and_clamp(out[1] + rounding, shift),
-        descale_and_clamp(out[2] + rounding, shift),
-        descale_and_clamp(out[3] + rounding, shift)
+        descale_rounded_and_clamp(out[0], shift),
+        descale_rounded_and_clamp(out[1], shift),
+        descale_rounded_and_clamp(out[2], shift),
+        descale_rounded_and_clamp(out[3], shift)
     );
     right = uchar4(
-        descale_and_clamp(out[4] + rounding, shift),
-        descale_and_clamp(out[5] + rounding, shift),
-        descale_and_clamp(out[6] + rounding, shift),
-        descale_and_clamp(out[7] + rounding, shift)
+        descale_rounded_and_clamp(out[4], shift),
+        descale_rounded_and_clamp(out[5], shift),
+        descale_rounded_and_clamp(out[6], shift),
+        descale_rounded_and_clamp(out[7], shift)
     );
 }
 

@@ -87,4 +87,24 @@ impl PreparedDecodePlan {
             })?;
         self.resolve_component_with_entries::<N>(component)
     }
+
+    /// Every scan component's tables in plan order, AC lookups widened per
+    /// `wide_huffman`; slots past the component count hold component 0's.
+    pub(crate) fn resolved_components_with_entries<const N: usize>(
+        &self,
+        wide_huffman: bool,
+    ) -> Result<[ResolvedPreparedComponentPlan<'_, N>; 4], JpegError> {
+        let mut resolved = [self.resolved_component_with_entries::<N>(0)?; 4];
+        if self.components.len() > resolved.len() {
+            return Err(JpegError::InternalInvariant {
+                reason: "sequential decode supports at most four components",
+            });
+        }
+        for (tables, comp) in resolved.iter_mut().zip(&self.components) {
+            *tables = self
+                .resolve_component_with_entries::<N>(comp)?
+                .with_wide_huffman(wide_huffman);
+        }
+        Ok(resolved)
+    }
 }

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use crate::adapter::JpegFastPacketFamily;
 use crate::allocation::{
     checked_add_allocation_bytes, checked_allocation_bytes, ensure_allocation_bytes,
     try_reserve_for_len_with_live_budget,
@@ -167,6 +168,7 @@ pub fn build_device_plan<'a>(
         });
     }
 
+    let fast_family = plan.fast_shape_family();
     Ok(DeviceDecodePlan {
         dimensions: plan.dimensions,
         color_space: plan.color_space,
@@ -175,9 +177,9 @@ pub fn build_device_plan<'a>(
         scan_bytes,
         components,
         checkpoints,
-        matches_fast_420: plan.matches_fast_420_shape(),
-        matches_fast_422: plan.matches_fast_422_shape(),
-        matches_fast_444: plan.matches_fast_444_shape(),
+        matches_fast_420: fast_family == Some(JpegFastPacketFamily::Fast420),
+        matches_fast_422: fast_family == Some(JpegFastPacketFamily::Fast422),
+        matches_fast_444: fast_family == Some(JpegFastPacketFamily::Fast444),
     })
 }
 
@@ -227,12 +229,13 @@ pub fn summarize_device_batch(decoder: &Decoder<'_>, cadence_mcus: u32) -> Devic
         restart_interval.map(u32::from),
     );
 
+    let fast_family = plan.fast_shape_family();
     DeviceBatchSummary {
         restart_interval,
         checkpoint_count,
-        matches_fast_420: plan.matches_fast_420_shape(),
-        matches_fast_422: plan.matches_fast_422_shape(),
-        matches_fast_444: plan.matches_fast_444_shape(),
+        matches_fast_420: fast_family == Some(JpegFastPacketFamily::Fast420),
+        matches_fast_422: fast_family == Some(JpegFastPacketFamily::Fast422),
+        matches_fast_444: fast_family == Some(JpegFastPacketFamily::Fast444),
     }
 }
 

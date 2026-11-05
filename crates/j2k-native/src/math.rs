@@ -688,38 +688,6 @@ pub(crate) fn mul_add(a: f32, b: f32, c: f32) -> f32 {
 // xtask x86-codegen-audit`). [`soft_rounding`] is exact without the
 // instructions, but it made AVX2 output loops about 5% slower on a Ryzen
 // 7 5800X3D, so only no-std builds use it.
-#[cfg(feature = "std")]
-mod rounding {
-    #[expect(
-        clippy::inline_always,
-        reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
-    )]
-    #[inline(always)]
-    pub(super) fn floor(x: f32) -> f32 {
-        x.floor()
-    }
-
-    #[expect(
-        clippy::inline_always,
-        reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
-    )]
-    #[inline(always)]
-    pub(super) fn round(x: f32) -> f32 {
-        x.round()
-    }
-
-    #[expect(
-        clippy::inline_always,
-        reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
-    )]
-    #[inline(always)]
-    pub(super) fn round_ties_even(x: f32) -> f32 {
-        x.round_ties_even()
-    }
-}
-
-#[cfg(not(feature = "std"))]
-use soft_rounding as rounding;
 
 /// Floor and rounding in plain `f32` arithmetic, exact for every input
 /// including signed zeros, infinities and NaN, and free of library calls.
@@ -803,7 +771,11 @@ mod soft_rounding {
 )]
 #[inline(always)]
 pub(crate) fn floor_f32(x: f32) -> f32 {
-    rounding::floor(x)
+    #[cfg(feature = "std")]
+    let result = x.floor();
+    #[cfg(not(feature = "std"))]
+    let result = soft_rounding::floor(x);
+    result
 }
 
 /// `floor((a + b) / 2)` with the sum rounded in `f32`, as 5/3 lifting needs.
@@ -827,16 +799,11 @@ pub(crate) fn floor_half_sum_f32(a: f32, b: f32) -> f32 {
 )]
 #[inline(always)]
 pub(crate) fn round_f32(x: f32) -> f32 {
-    rounding::round(x)
-}
-
-#[expect(
-    clippy::inline_always,
-    reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
-)]
-#[inline(always)]
-pub(crate) fn round_ties_even_f32(x: f32) -> f32 {
-    rounding::round_ties_even(x)
+    #[cfg(feature = "std")]
+    let result = x.round();
+    #[cfg(not(feature = "std"))]
+    let result = soft_rounding::round(x);
+    result
 }
 
 #[expect(
@@ -845,7 +812,11 @@ pub(crate) fn round_ties_even_f32(x: f32) -> f32 {
 )]
 #[inline(always)]
 pub(crate) fn round_ties_even_then_add(sample: f32, addend: f32) -> f32 {
-    round_ties_even_f32(sample) + addend
+    #[cfg(feature = "std")]
+    let nearest = sample.round_ties_even();
+    #[cfg(not(feature = "std"))]
+    let nearest = soft_rounding::round_ties_even(sample);
+    nearest + addend
 }
 
 #[expect(

@@ -5,16 +5,18 @@
 use alloc::vec::Vec;
 
 use super::super::allocation::{checked_live_bytes, element_capacity_bytes, host_allocation_error};
+use super::CompactCheckpoint;
 use crate::error::JpegError;
 
-pub(in crate::internal::checkpoint) fn reserve_checkpoint_capacity<T>(
-    checkpoints: &mut Vec<T>,
+pub(in crate::internal::checkpoint) fn reserve_checkpoint_capacity(
+    checkpoints: &mut Vec<CompactCheckpoint>,
     capacity: usize,
     retained_baseline_bytes: usize,
     allocation_cap: usize,
 ) -> Result<(), JpegError> {
-    let planned_bytes = element_capacity_bytes::<T>(capacity, allocation_cap)?;
-    let retained_bytes = element_capacity_bytes::<T>(checkpoints.capacity(), allocation_cap)?;
+    let planned_bytes = element_capacity_bytes::<CompactCheckpoint>(capacity, allocation_cap)?;
+    let retained_bytes =
+        element_capacity_bytes::<CompactCheckpoint>(checkpoints.capacity(), allocation_cap)?;
     checked_checkpoint_reservation_peak(
         retained_baseline_bytes,
         retained_bytes,
@@ -36,22 +38,22 @@ pub(in crate::internal::checkpoint) fn reserve_checkpoint_capacity<T>(
     )
 }
 
-pub(in crate::internal::checkpoint) fn reconcile_actual_checkpoint_capacity<T>(
-    checkpoints: &mut Vec<T>,
+pub(in crate::internal::checkpoint) fn reconcile_actual_checkpoint_capacity(
+    checkpoints: &mut Vec<CompactCheckpoint>,
     retained_baseline_bytes: usize,
     replaced_cache_bytes: usize,
     allocation_cap: usize,
 ) -> Result<(), JpegError> {
-    let postcheck = element_capacity_bytes::<T>(checkpoints.capacity(), allocation_cap).and_then(
-        |actual_bytes| {
-            checked_checkpoint_reservation_peak(
-                retained_baseline_bytes,
-                replaced_cache_bytes,
-                actual_bytes,
-                allocation_cap,
-            )
-        },
-    );
+    let postcheck =
+        element_capacity_bytes::<CompactCheckpoint>(checkpoints.capacity(), allocation_cap)
+            .and_then(|actual_bytes| {
+                checked_checkpoint_reservation_peak(
+                    retained_baseline_bytes,
+                    replaced_cache_bytes,
+                    actual_bytes,
+                    allocation_cap,
+                )
+            });
     if let Err(error) = postcheck {
         *checkpoints = Vec::new();
         return Err(error);

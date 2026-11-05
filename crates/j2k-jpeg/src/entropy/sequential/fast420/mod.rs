@@ -211,7 +211,14 @@ impl Fast420Scan<'_, '_> {
             restart: &mut cursor.restart,
         };
 
-        self.decode_rows(components, &mut state, &mut pool.stripe_a, writer, profile)?;
+        self.decode_rows(
+            rows,
+            components,
+            &mut state,
+            &mut pool.stripe_a,
+            writer,
+            profile,
+        )?;
 
         let finish_timer = profile.begin_finish_scan();
         let result = finish_scan(&mut cursor.br, rows.row_end == columns.mcu_rows);
@@ -221,6 +228,7 @@ impl Fast420Scan<'_, '_> {
 
     fn decode_rows<const N: usize, W, P>(
         self,
+        rows: Fast420Rows,
         components: FastTile420Components<'_, N>,
         state: &mut FastRowState<'_, '_>,
         stripe: &mut StripeBuffer,
@@ -231,7 +239,6 @@ impl Fast420Scan<'_, '_> {
         W: InterleavedRgbWriter,
         P: Fast420ScanProfiler,
     {
-        let rows = self.rows();
         for mcu_y in rows.first_row..rows.row_end {
             let pass = rows.pass(self.request.roi, mcu_y)?;
             let mcu_timer = profile.begin_mcu_decode();

@@ -61,6 +61,8 @@ const OLD_CPU_LEVELS: [&str; 6] = [
     "fallback::Fallback",
 ];
 
+const OBJDUMP_ARGS: [&str; 4] = ["-d", "-r", "-C", "--no-show-raw-insn"];
+
 /// The levels whose operations must be inlined into their dispatch.
 const WIDE_LEVELS: [(&str, &str); 2] = [
     ("vectorize_avx2", "13fearless_simd9generated4avx2"),
@@ -116,12 +118,13 @@ fn audit_library(library: &Path) -> Result<Vec<String>, String> {
     let objdump = std::env::var_os("OBJDUMP").unwrap_or_else(|| "objdump".into());
     let mut command = Command::new(&objdump);
     command
-        .args(["-d", "-r", "-C", "--no-show-raw-insn"])
+        .args(OBJDUMP_ARGS)
         .arg(library)
         .stdout(Stdio::piped());
     eprintln!(
-        "+ {} -d -r -C --no-show-raw-insn {}",
+        "+ {} {} {}",
         objdump.to_string_lossy(),
+        OBJDUMP_ARGS.join(" "),
         library.display()
     );
     let mut child = retry_executable_busy(|| command.spawn())

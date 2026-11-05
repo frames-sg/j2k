@@ -103,22 +103,29 @@ impl Decoder<'_> {
         if target_mcu < CPU_ROI_CHECKPOINT_MIN_TARGET_MCUS {
             return Ok(None);
         }
+        checkpoint_before_mcu(
+            &self.plan,
+            scan_bytes,
+            target_mcu,
+            self.checkpoint_baseline_bytes(external_decode_phase_bytes)?,
+            &self.cpu_entropy_checkpoints,
+        )
+    }
 
-        // The shared decoder context stays live beside the decode, charged
-        // once as in `decode_workspace_cap`.
-        let retained_decoder_baseline_bytes = checked_add_allocation_bytes(
+    /// Bytes the checkpoint cache's allocations must fit beside: the decoder
+    /// without that cache, plus `external_decode_phase_bytes`. The shared
+    /// decoder context stays live beside the decode, charged once as in
+    /// `decode_workspace_cap`.
+    fn checkpoint_baseline_bytes(
+        &self,
+        external_decode_phase_bytes: usize,
+    ) -> Result<usize, JpegError> {
+        checked_add_allocation_bytes(
             checked_add_allocation_bytes(
                 MAX_DECODER_CONTEXT_ALLOCATION_BYTES,
                 self.retained_allocation_bytes_excluding_cpu_checkpoint_cache()?,
             )?,
             external_decode_phase_bytes,
-        )?;
-        checkpoint_before_mcu(
-            &self.plan,
-            scan_bytes,
-            target_mcu,
-            retained_decoder_baseline_bytes,
-            &self.cpu_entropy_checkpoints,
         )
     }
 
@@ -143,12 +150,8 @@ impl Decoder<'_> {
             return Ok(None);
         };
         let checkpoint = restart_checkpoint_from_index(&index, target_mcu);
-        let retained_decoder_baseline_bytes = checked_add_allocation_bytes(
-            MAX_DECODER_CONTEXT_ALLOCATION_BYTES,
-            self.retained_allocation_bytes_excluding_cpu_checkpoint_cache()?,
-        )?;
         self.cpu_entropy_checkpoints
-            .retain_restart_index(index, retained_decoder_baseline_bytes)?;
+            .retain_restart_index(index, self.checkpoint_baseline_bytes(0)?)?;
         Ok(checkpoint)
     }
 

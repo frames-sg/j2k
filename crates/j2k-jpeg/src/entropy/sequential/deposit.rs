@@ -207,9 +207,6 @@ impl<'a, const N: usize> FastTile420Components<'a, N> {
     /// kernels skip MCUs outside their column window with direct
     /// [`skip_block`] calls instead: this helper, inlined there, spills their
     /// register-resident DC predictors and reader (+1–3 % decode time).
-    // ROI seeks invoke this leaf once per skipped MCU; forced inlining keeps
-    // its Huffman skips in the caller's hot loop without adding a
-    // branch-and-call boundary.
     #[expect(
         clippy::inline_always,
         reason = "ROI seek hot path keeps the MCU's Huffman skips inside the caller loop"

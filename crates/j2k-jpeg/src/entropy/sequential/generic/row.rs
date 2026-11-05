@@ -144,18 +144,9 @@ fn decode_mcu_row_local<const N: usize, const FULL_SIZE: bool>(
     let mut pixels_2x2 = [0u8; 4];
     // Resolve immutable Huffman handles outside the MCU loop, including the
     // generic grayscale, restart, and subsampled paths.
-    let mut resolved = [context.plan.resolved_component_with_entries::<N>(0)?; 4];
-    if context.plan.components.len() > resolved.len() {
-        return Err(JpegError::InternalInvariant {
-            reason: "sequential decode supports at most four components",
-        });
-    }
-    for (tables, comp) in resolved.iter_mut().zip(&context.plan.components) {
-        *tables = context
-            .plan
-            .resolve_component_with_entries::<N>(comp)?
-            .with_wide_huffman(context.wide_huffman);
-    }
+    let resolved = context
+        .plan
+        .resolved_components_with_entries::<N>(context.wide_huffman)?;
     for mx in 0..columns.mcus_per_row {
         if state
             .restart

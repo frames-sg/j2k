@@ -524,17 +524,6 @@ fn column_of(input: &[i16; 64], col: usize) -> [i32; 8] {
     p
 }
 
-#[inline]
-fn column_of_i64(input: &[i16; 64], col: usize) -> [i64; 8] {
-    let mut p = [0; 8];
-    let mut row = 0;
-    while row < 8 {
-        p[row] = i64::from(input[row * 8 + col]);
-        row += 1;
-    }
-    p
-}
-
 /// The 12-bit 8x8 ISLOW (`jidctint.c` with `BITS_IN_JSAMPLE == 12`) of one
 /// block to native `0..=4095` samples. The C code's zero shortcuts give the
 /// same result as the full computation in `i64` and are omitted.
@@ -543,7 +532,7 @@ pub fn islow_block_12bit(input: &[i16; 64], output: &mut [u16; 64]) {
     let mut work = [0i64; 64];
     let mut col = 0;
     while col < 8 {
-        let out = islow_1d_i64(column_of_i64(input, col));
+        let out = islow_1d_i64(column_of(input, col).map(i64::from));
         let mut row = 0;
         while row < 8 {
             work[row * 8 + col] = descale_i64(out[row], PASS1_SHIFT_12);
@@ -688,7 +677,7 @@ pub fn islow_block_12bit_4x4(input: &[i16; 64], output: &mut [u16; 16]) {
     let mut col = 0;
     while col < 8 {
         if col != 4 {
-            let out = islow_1d_4_i64(column_of_i64(input, col));
+            let out = islow_1d_4_i64(column_of(input, col).map(i64::from));
             let mut row = 0;
             while row < 4 {
                 work[row * 8 + col] = descale_i64(out[row], PASS1_SHIFT_12 + 1);
@@ -715,15 +704,12 @@ pub fn islow_block_12bit_4x4(input: &[i16; 64], output: &mut [u16; 16]) {
 pub fn islow_block_12bit_2x2(input: &[i16; 64], output: &mut [u16; 4]) {
     let mut work = [0i64; 16];
     for col in REDUCED_2X2_INPUTS {
-        let at = |row: usize| i64::from(input[row * 8 + col]);
-        // The 2-point transform does not read `p[2]`, `p[4]` or `p[6]`.
-        let out = islow_1d_2_i64([at(0), at(1), 0, at(3), 0, at(5), 0, at(7)]);
+        let out = islow_1d_2_i64(column_of(input, col).map(i64::from));
         work[col] = descale_i64(out[0], PASS1_SHIFT_12 + 2);
         work[8 + col] = descale_i64(out[1], PASS1_SHIFT_12 + 2);
     }
     for row in 0..2 {
-        let at = |col: usize| work[row * 8 + col];
-        let out = islow_1d_2_i64([at(0), at(1), 0, at(3), 0, at(5), 0, at(7)]);
+        let out = islow_1d_2_i64(row_of(&work, row * 8));
         output[row * 2] = sample_12bit(descale_i64(out[0], PASS2_SHIFT_12 + 2));
         output[row * 2 + 1] = sample_12bit(descale_i64(out[1], PASS2_SHIFT_12 + 2));
     }

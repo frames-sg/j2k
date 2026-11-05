@@ -113,13 +113,6 @@ impl ScanSetup {
     }
 }
 
-pub(super) struct ScanBuffers<'a> {
-    pub(super) prev_dc: &'a mut [i32],
-    pub(super) stripe_a: &'a mut StripeBuffer,
-    pub(super) stripe_b: &'a mut StripeBuffer,
-    pub(super) stripe_c: &'a mut StripeBuffer,
-}
-
 pub(super) trait StripeEmitter {
     fn emit(&mut self, stripe: StripeEmit<'_>) -> Result<(), JpegError>;
 }
@@ -130,15 +123,10 @@ pub(super) fn decode_scan_rows<const N: usize, E: StripeEmitter>(
     scan_bytes: &[u8],
     downscale: DownscaleFactor,
     setup: ScanSetup,
-    buffers: ScanBuffers<'_>,
+    stripes: [&mut StripeBuffer; 3],
     emitter: &mut E,
 ) -> Result<Vec<Warning>, JpegError> {
-    let ScanBuffers {
-        prev_dc,
-        stripe_a,
-        stripe_b,
-        stripe_c,
-    } = buffers;
+    let [stripe_a, stripe_b, stripe_c] = stripes;
     let mut coeff = CoefficientBlock::default();
     let mut pixels = [0u8; 64];
     let columns = setup.columns;
@@ -150,13 +138,12 @@ pub(super) fn decode_scan_rows<const N: usize, E: StripeEmitter>(
         columns.mcu_position(0, setup.first_decode_mcu_row),
         wide_huffman,
     )?;
-    let position_dc = cursor
+    let prev_dc = cursor
         .prev_dc
-        .get(..prev_dc.len())
+        .get_mut(..setup.scaled.effective.len())
         .ok_or(JpegError::InternalInvariant {
             reason: "sequential decode supports at most four components",
         })?;
-    prev_dc.copy_from_slice(position_dc);
 
     let row_context = McuRowContext {
         plan,

@@ -105,7 +105,7 @@ fn checkpoint_cache_growth_counts_decoder_baseline_old_and_replacement_exactly()
 
 #[test]
 fn prepopulated_checkpoint_growth_counts_external_output_and_scratch_exactly() {
-    let checkpoint_bytes = core::mem::size_of::<DeviceCheckpoint>();
+    let checkpoint_bytes = core::mem::size_of::<CompactCheckpoint>();
     let decoder_retained = 17;
     let output_capacity = 19;
     let scratch_capacity = 23;
@@ -115,7 +115,7 @@ fn prepopulated_checkpoint_growth_counts_external_output_and_scratch_exactly() {
     let exact =
         phase_baseline + old_capacity * checkpoint_bytes + replacement_capacity * checkpoint_bytes;
 
-    let mut exact_cache = Vec::<DeviceCheckpoint>::with_capacity(old_capacity);
+    let mut exact_cache = Vec::<CompactCheckpoint>::with_capacity(old_capacity);
     reserve_checkpoint_capacity(
         &mut exact_cache,
         replacement_capacity,
@@ -125,7 +125,7 @@ fn prepopulated_checkpoint_growth_counts_external_output_and_scratch_exactly() {
     .expect("external owners plus cache replacement fit the exact boundary");
     assert!(exact_cache.capacity() >= replacement_capacity);
 
-    let mut rejected_cache = Vec::<DeviceCheckpoint>::with_capacity(old_capacity);
+    let mut rejected_cache = Vec::<CompactCheckpoint>::with_capacity(old_capacity);
     let retained_capacity = rejected_cache.capacity();
     assert_eq!(
         reserve_checkpoint_capacity(
@@ -144,8 +144,8 @@ fn prepopulated_checkpoint_growth_counts_external_output_and_scratch_exactly() {
 
 #[test]
 fn failed_actual_cache_postcheck_releases_the_retained_allocation() {
-    let mut checkpoints = Vec::<DeviceCheckpoint>::with_capacity(2);
-    let actual_bytes = checkpoints.capacity() * core::mem::size_of::<DeviceCheckpoint>();
+    let mut checkpoints = Vec::<CompactCheckpoint>::with_capacity(2);
+    let actual_bytes = checkpoints.capacity() * core::mem::size_of::<CompactCheckpoint>();
     let baseline = 1;
     let error = reconcile_actual_checkpoint_capacity(&mut checkpoints, baseline, 0, actual_bytes)
         .expect_err("allocator overcapacity must fail its aggregate postcheck");
@@ -191,14 +191,15 @@ fn checkpoint_reservation_fails_before_exceeding_the_host_cap() {
         }
     );
 
-    let mut cached = Vec::<DeviceCheckpoint>::new();
-    let error = reserve_checkpoint_capacity(&mut cached, 2, 0, checkpoint_bytes)
+    let cache_checkpoint_bytes = core::mem::size_of::<CompactCheckpoint>();
+    let mut cached = Vec::<CompactCheckpoint>::new();
+    let error = reserve_checkpoint_capacity(&mut cached, 2, 0, cache_checkpoint_bytes)
         .expect_err("lazy checkpoint growth must use the same host cap");
     assert_eq!(
         error,
         JpegError::MemoryCapExceeded {
-            requested: checkpoint_bytes * 2,
-            cap: checkpoint_bytes,
+            requested: cache_checkpoint_bytes * 2,
+            cap: cache_checkpoint_bytes,
         }
     );
     assert!(cached.is_empty(), "{cached:?}");
