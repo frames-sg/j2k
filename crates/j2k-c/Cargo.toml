@@ -1,0 +1,31 @@
+[package]
+name = "j2k-c"
+description = "C ABI and C++17 wrapper for the j2k JPEG 2000 / HTJ2K codec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "j2k_c"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+j2k = { path = "../j2k" }
+rayon = { workspace = true }
+
+[dev-dependencies]
+j2k-test-support = { path = "../j2k-test-support" }
+
+# The workspace forbids unsafe code; this crate is the C ABI boundary, so it
+# keeps every raw-pointer operation in `src/ffi.rs` behind documented blocks.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "deny"
+unreachable_pub = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "deny"

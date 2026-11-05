@@ -32,6 +32,8 @@ METAL_ROOTS = frozenset(
     }
 )
 SHARED_GPU_PACKAGES = frozenset({"j2k-ml"})
+# The C/C++ API (j2k-c) builds a native package and runs C and C++ consumers against it.
+C_API_ROOTS = frozenset({"j2k-c"})
 DOCUMENTATION_PREFIXES = ("docs/",)
 DOCUMENTATION_PATHS = frozenset(
     {
@@ -60,7 +62,7 @@ BROAD_PATHS = frozenset(
     }
 )
 BROAD_PREFIXES = (".cargo/", ".github/workflows/", "scripts/", "xtask/")
-CONDITIONAL_JOBS = ("rust-quality", "docs", "metal-compile", "public-api")
+CONDITIONAL_JOBS = ("rust-quality", "docs", "metal-compile", "public-api", "c-api")
 
 
 class PlanError(RuntimeError):
@@ -75,6 +77,7 @@ class Plan:
     metal: bool
     metal_compile: bool
     public_api: bool
+    c_api: bool
     paths: tuple[str, ...]
 
     def expectations(self) -> dict[str, bool]:
@@ -83,6 +86,7 @@ class Plan:
             "docs": self.docs,
             "metal-compile": self.metal_compile,
             "public-api": self.public_api,
+            "c-api": self.c_api,
         }
 
 
@@ -248,6 +252,7 @@ def classify_paths(paths: Iterable[str], metadata: Mapping[str, Any]) -> Plan:
     workspace = _metadata_graph(metadata)
     cuda_dependencies = _dependency_closure(CUDA_ROOTS, workspace.dependencies)
     metal_dependencies = _dependency_closure(METAL_ROOTS, workspace.dependencies)
+    c_api_dependencies = _dependency_closure(C_API_ROOTS, workspace.dependencies)
     public_api_packages = _dependency_closure(workspace.published, workspace.normal_dependencies)
 
     rust = False
@@ -255,6 +260,7 @@ def classify_paths(paths: Iterable[str], metadata: Mapping[str, Any]) -> Plan:
     cuda = False
     metal = False
     public_api = False
+    c_api = False
     for path in normalized_paths:
         if _is_quality_evidence(path):
             docs = True
@@ -262,6 +268,7 @@ def classify_paths(paths: Iterable[str], metadata: Mapping[str, Any]) -> Plan:
             cuda = True
             metal = True
             public_api = True
+            c_api = True
             continue
         if _is_documentation(path):
             docs = True
@@ -271,12 +278,14 @@ def classify_paths(paths: Iterable[str], metadata: Mapping[str, Any]) -> Plan:
             cuda = True
             metal = True
             public_api = True
+            c_api = True
             continue
 
         package = _package_for_path(path, workspace.package_roots)
         if package is not None:
             rust = True
             public_api = public_api or package in public_api_packages
+            c_api = c_api or package in c_api_dependencies
             if package in SHARED_GPU_PACKAGES:
                 cuda = True
                 metal = True
@@ -290,6 +299,7 @@ def classify_paths(paths: Iterable[str], metadata: Mapping[str, Any]) -> Plan:
             cuda = True
             metal = True
             public_api = True
+            c_api = True
             continue
 
         if path.endswith((".rs", ".toml", ".lock", ".py", ".sh", ".yml", ".yaml")):
@@ -297,6 +307,7 @@ def classify_paths(paths: Iterable[str], metadata: Mapping[str, Any]) -> Plan:
             cuda = True
             metal = True
             public_api = True
+            c_api = True
             continue
 
         # Known repository metadata stays hosted-only. Everything else fails broad.
@@ -307,6 +318,7 @@ def classify_paths(paths: Iterable[str], metadata: Mapping[str, Any]) -> Plan:
         cuda = True
         metal = True
         public_api = True
+        c_api = True
 
     return Plan(
         rust=rust,
@@ -315,6 +327,7 @@ def classify_paths(paths: Iterable[str], metadata: Mapping[str, Any]) -> Plan:
         metal=metal,
         metal_compile=metal,
         public_api=public_api,
+        c_api=c_api,
         paths=normalized_paths,
     )
 
@@ -405,6 +418,7 @@ def _write_outputs(plan: Plan, output_path: str | None) -> None:
         "metal": plan.metal,
         "metal_compile": plan.metal_compile,
         "public_api": plan.public_api,
+        "c_api": plan.c_api,
         "expectations": plan.expectations(),
         "plan": asdict(plan),
     }

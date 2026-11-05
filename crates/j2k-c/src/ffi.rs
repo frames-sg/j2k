@@ -1,0 +1,505 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! Raw pointer validation, ownership transfer, and unwind containment.
+
+use crate::{
+    abi::{
+        J2kCComponentInfo, J2kCDecodeOptions, J2kCEncodeOptions, J2kCError, J2kCHeader,
+        J2kCImageInfo, J2kCOpenOptions, J2kCOutputInfo, J2K_ABI_MISMATCH, J2K_ABI_VERSION,
+        J2K_BUFFER_TOO_SMALL, J2K_INTERNAL_ERROR, J2K_INVALID_ARGUMENT, J2K_INVALID_INPUT,
+        J2K_PANIC,
+    },
+    decoder::Decoder,
+    encode::encode_lossless,
+    error::{Error, Result},
+};
+use std::{
+    ffi::{c_char, c_void},
+    mem::{align_of, size_of},
+    panic::{catch_unwind, AssertUnwindSafe},
+    ptr, slice,
+};
+
+/// Opaque decoder. Never instantiate, copy, dereference, or free it directly.
+#[repr(C)]
+pub struct J2kCDecoder {
+    _private: [u8; 0],
+}
+
+/// Return the C ABI revision.
+#[no_mangle]
+pub extern "C" fn j2k_abi_version() -> u32 {
+    J2K_ABI_VERSION
+}
+
+/// Return an immutable, process-lifetime NUL-terminated library version string.
+#[no_mangle]
+pub extern "C" fn j2k_version() -> *const c_char {
+    concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr().cast()
+}
+
+/// Inspect and copy an encoded input into a new CPU decoder.
+///
+/// # Safety
+/// Non-null arguments must point to valid, appropriately aligned allocations.
+/// `input` must cover `input_len` readable bytes. `out` must be a writable pointer
+/// slot that does not own a live decoder. Options must contain a readable ABI
+/// header and the prefix declared by it. All output arguments must be disjoint
+/// from each other and all inputs. `options` and `error` may be null.
+#[no_mangle]
+pub unsafe extern "C" fn j2k_decoder_open(
+    input: *const u8,
+    input_len: usize,
+    options: *const J2kCOpenOptions,
+    out: *mut *mut J2kCDecoder,
+    error: *mut J2kCError,
+) -> u32 {
+    if check_pointer(out).is_ok() {
+        // SAFETY: `out` is a non-null, aligned, writable slot by contract. Clearing it before
+        // `error` is validated keeps the null-on-failure promise for every failure.
+        unsafe { out.write(ptr::null_mut()) };
+    }
+    // SAFETY: Caller provides the valid storage documented above; prefixes and lengths are checked before access.
+    unsafe {
+        boundary(error, || {
+            check_pointer(out)?;
+            let options = read_options(options)?;
+            if input_len as u64 > Decoder::input_limit(options)? {
+                return Err(Error::limit("encoded input exceeds max_input_bytes"));
+            }
+            check_bytes(input, input_len)?;
+            if input_len == 0 {
+                return Err(Error::new(J2K_INVALID_INPUT, "encoded input is empty"));
+            }
+            let state = Decoder::open(slice::from_raw_parts(input, input_len), options)?;
+            out.write(Box::into_raw(Box::new(state)).cast());
+            Ok(())
+        })
+    }
+}
+
+/// Release a decoder and set the caller's slot to null. A null handle is a no-op.
+///
+/// # Safety
+/// `decoder` must point to a writable slot containing null or a live handle from
+/// this library. No other call may use the handle during destruction or later.
+/// `error`, if non-null, must be writable and disjoint from the handle and slot.
+#[no_mangle]
+pub unsafe extern "C" fn j2k_decoder_close(
+    decoder: *mut *mut J2kCDecoder,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: Slot ownership and exclusivity are the caller's obligations.
+    unsafe {
+        boundary(error, || {
+            check_pointer(decoder)?;
+            let handle = decoder.read().cast::<Decoder>();
+            if !handle.is_null() {
+                check_pointer(handle)?;
+                decoder.write(ptr::null_mut());
+                drop(Box::from_raw(handle));
+            }
+            Ok(())
+        })
+    }
+}
+
+/// Read source image metadata.
+///
+/// # Safety
+/// The handle must be live and exclusively used for this call. `out` must be a
+/// writable, initialized ABI structure. `error` may be null; otherwise it must
+/// be writable. Arguments must be aligned, valid, and non-overlapping.
+#[no_mangle]
+pub unsafe extern "C" fn j2k_decoder_info(
+    decoder: *mut J2kCDecoder,
+    out: *mut J2kCImageInfo,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: Caller supplies exclusive live storage; validate the output prefix before mutation.
+    unsafe {
+        boundary(error, || {
+            validate_struct(out)?;
+            with_decoder(decoder, |state| {
+                out.write(state.info());
+                Ok(())
+            })
+        })
+    }
+}
+
+/// Read precision and sampling of a zero-based source component.
+///
+/// # Safety
+/// Same storage and exclusivity requirements as [`j2k_decoder_info`].
+#[no_mangle]
+pub unsafe extern "C" fn j2k_decoder_component_info(
+    decoder: *mut J2kCDecoder,
+    index: u32,
+    out: *mut J2kCComponentInfo,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: Caller supplies live disjoint storage; validate the output prefix before mutation.
+    unsafe {
+        boundary(error, || {
+            validate_struct(out)?;
+            with_decoder(decoder, |state| {
+                out.write(state.component(index)?);
+                Ok(())
+            })
+        })
+    }
+}
+
+/// Prepare a decode request and report its exact native output layout.
+///
+/// # Safety
+/// Same requirements as [`j2k_decoder_info`]. `options` may be null, otherwise
+/// it must contain a valid readable structure prefix disjoint from outputs.
+#[no_mangle]
+pub unsafe extern "C" fn j2k_decoder_output_info(
+    decoder: *mut J2kCDecoder,
+    options: *const J2kCDecodeOptions,
+    out: *mut J2kCOutputInfo,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: Caller supplies live disjoint storage; validate versioned prefixes first.
+    unsafe {
+        boundary(error, || {
+            validate_struct(out)?;
+            let options = read_options(options)?;
+            with_decoder(decoder, |state| {
+                out.write(state.prepare(options)?);
+                Ok(())
+            })
+        })
+    }
+}
+
+/// Decode native interleaved samples into a caller-owned strided byte buffer.
+///
+/// # Safety
+/// The decoder must be live and exclusively used. `output` must cover
+/// `output_len` writable bytes and must not overlap any other argument. Options
+/// and optional error storage follow [`j2k_decoder_output_info`].
+#[no_mangle]
+pub unsafe extern "C" fn j2k_decoder_decode_into(
+    decoder: *mut J2kCDecoder,
+    options: *const J2kCDecodeOptions,
+    output: *mut u8,
+    output_len: usize,
+    stride: usize,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: Caller owns the destination and handle; validate sizes before making a mutable slice.
+    unsafe {
+        boundary(error, || {
+            let options = read_options(options)?;
+            check_bytes(output, output_len)?;
+            with_decoder(decoder, |state| {
+                let info = state.prepare(options)?;
+                let required = state.output_span(info, stride)?;
+                if output_len < required {
+                    return Err(Error::new(
+                        J2K_BUFFER_TOO_SMALL,
+                        "output buffer is shorter than the requested strided image",
+                    ));
+                }
+                state.decode_prepared(slice::from_raw_parts_mut(output, required), stride)
+            })
+        })
+    }
+}
+
+/// `j2k_row_callback`: receives one row of `row_bytes` bytes at `row`, valid
+/// only during the call. Returns zero to continue and nonzero to stop.
+pub type J2kCRowCallback = Option<
+    unsafe extern "C" fn(user_data: *mut c_void, y: u32, row: *const u8, row_bytes: usize) -> i32,
+>;
+
+/// Report the layout `j2k_decoder_decode_rows` delivers: the full image at full
+/// resolution in the native samples `j2k_decoder_output_info` describes.
+///
+/// # Safety
+/// Same requirements as [`j2k_decoder_output_info`].
+#[no_mangle]
+pub unsafe extern "C" fn j2k_decoder_row_info(
+    decoder: *mut J2kCDecoder,
+    options: *const J2kCDecodeOptions,
+    out: *mut J2kCOutputInfo,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: Caller supplies live disjoint storage; validate versioned prefixes first.
+    unsafe {
+        boundary(error, || {
+            validate_struct(out)?;
+            let options = read_options(options)?;
+            with_decoder(decoder, |state| {
+                out.write(state.row_info(options)?);
+                Ok(())
+            })
+        })
+    }
+}
+
+/// Decode the full image and hand its rows to `callback` in order, once each.
+///
+/// # Safety
+/// The decoder must be live and exclusively used. `callback` must be a valid
+/// function that may be called with `user_data` from a thread of this library
+/// while the call blocks, and must not unwind. `out`, if non-null, must be a
+/// writable, initialized ABI structure. Options and `error` follow
+/// [`j2k_decoder_output_info`].
+#[no_mangle]
+pub unsafe extern "C" fn j2k_decoder_decode_rows(
+    decoder: *mut J2kCDecoder,
+    options: *const J2kCDecodeOptions,
+    max_rows_per_stripe: u32,
+    callback: J2kCRowCallback,
+    user_data: *mut c_void,
+    out: *mut J2kCOutputInfo,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: Caller supplies live disjoint storage and a callable callback;
+    // prefixes are validated before any row is decoded.
+    unsafe {
+        boundary(error, || {
+            if !out.is_null() {
+                validate_struct(out)?;
+            }
+            let options = read_options(options)?;
+            let function = callback.ok_or_else(|| Error::argument("row callback is null"))?;
+            let target = RowTarget {
+                function,
+                user_data,
+            };
+            let mut consumer = move |y: u32, row: &[u8]| target.call(y, row);
+            let info = with_decoder(decoder, |state| {
+                state.decode_rows(options, max_rows_per_stripe, &mut consumer)
+            })?;
+            if !out.is_null() {
+                out.write(info);
+            }
+            Ok(())
+        })
+    }
+}
+
+/// The caller's row callback and its data.
+#[derive(Clone, Copy)]
+struct RowTarget {
+    function: unsafe extern "C" fn(*mut c_void, u32, *const u8, usize) -> i32,
+    user_data: *mut c_void,
+}
+
+// SAFETY: `j2k_decoder_decode_rows` documents that the callback and its data
+// may be used from a library thread while the call blocks; rows are delivered
+// one at a time, never concurrently.
+unsafe impl Send for RowTarget {}
+
+impl RowTarget {
+    /// Hand one row to the callback: whether to continue.
+    fn call(self, y: u32, row: &[u8]) -> bool {
+        // SAFETY: The caller provides a valid callback; `row` stays valid for the call.
+        unsafe { (self.function)(self.user_data, y, row.as_ptr(), row.len()) == 0 }
+    }
+}
+
+/// Encode interleaved samples losslessly into a buffer this library allocates.
+///
+/// # Safety
+/// `samples` must cover `samples_len` readable bytes. `options` must be a valid
+/// ABI structure. `out` and `out_len` must be writable and disjoint from all
+/// other arguments. `error` may be null. Release a successful result with
+/// [`j2k_buffer_free`] exactly once.
+#[no_mangle]
+pub unsafe extern "C" fn j2k_encode_lossless(
+    samples: *const u8,
+    samples_len: usize,
+    options: *const J2kCEncodeOptions,
+    out: *mut *mut u8,
+    out_len: *mut usize,
+    error: *mut J2kCError,
+) -> u32 {
+    if check_pointer(out).is_ok() && check_pointer(out_len).is_ok() {
+        // SAFETY: Both slots are non-null, aligned and writable by contract;
+        // clearing them first keeps the empty-on-failure promise.
+        unsafe {
+            out.write(ptr::null_mut());
+            out_len.write(0);
+        }
+    }
+    // SAFETY: Caller provides the valid storage documented above; prefixes and lengths are checked before access.
+    unsafe {
+        boundary(error, || {
+            check_pointer(out)?;
+            check_pointer(out_len)?;
+            if options.is_null() {
+                return Err(Error::argument("encode options are required"));
+            }
+            let options = read_options(options)?;
+            check_bytes(samples, samples_len)?;
+            let encoded = encode_lossless(slice::from_raw_parts(samples, samples_len), options)?;
+            let encoded = encoded.into_boxed_slice();
+            let length = encoded.len();
+            out.write(Box::into_raw(encoded).cast::<u8>());
+            out_len.write(length);
+            Ok(())
+        })
+    }
+}
+
+/// Release a buffer from [`j2k_encode_lossless`]. A null buffer is a no-op.
+///
+/// # Safety
+/// `data` must be null or a buffer this library returned, with the length it
+/// returned, not yet released.
+#[no_mangle]
+pub unsafe extern "C" fn j2k_buffer_free(data: *mut u8, length: usize) {
+    if !data.is_null() {
+        // SAFETY: `j2k_encode_lossless` made this pointer and length from a
+        // boxed slice, which the caller hands back once.
+        drop(unsafe { Box::from_raw(ptr::slice_from_raw_parts_mut(data, length)) });
+    }
+}
+
+fn check_pointer<T>(pointer: *const T) -> Result<()> {
+    if pointer.is_null() || !(pointer as usize).is_multiple_of(align_of::<T>()) {
+        return Err(Error::argument("required pointer is null or misaligned"));
+    }
+    Ok(())
+}
+
+fn check_bytes(pointer: *const u8, length: usize) -> Result<()> {
+    check_pointer(pointer)?;
+    if length > isize::MAX as usize || (pointer as usize).checked_add(length).is_none() {
+        return Err(Error::argument(
+            "buffer length exceeds the host address space",
+        ));
+    }
+    Ok(())
+}
+
+// T must be one of this crate's repr(C) structs starting with J2kCHeader.
+unsafe fn validate_struct<T>(pointer: *const T) -> Result<()> {
+    check_pointer(pointer)?;
+    // SAFETY: Caller promises a readable header; all internal calls use header-prefixed ABI structs.
+    let header = unsafe { pointer.cast::<J2kCHeader>().read() };
+    if header.abi_version != J2K_ABI_VERSION || (header.struct_size as usize) < size_of::<T>() {
+        return Err(Error::new(
+            J2K_ABI_MISMATCH,
+            "unsupported ABI version or structure too small",
+        ));
+    }
+    Ok(())
+}
+
+unsafe fn read_options<T: Copy + Default>(pointer: *const T) -> Result<T> {
+    if pointer.is_null() {
+        return Ok(T::default());
+    }
+    // SAFETY: Caller supplies a readable prefix; internal uses are restricted to header-prefixed option types.
+    unsafe {
+        validate_struct(pointer)?;
+        Ok(pointer.read())
+    }
+}
+
+unsafe fn with_decoder<T>(
+    pointer: *mut J2kCDecoder,
+    operation: impl FnOnce(&mut Decoder) -> Result<T>,
+) -> Result<T> {
+    let pointer = pointer.cast::<Decoder>();
+    check_pointer(pointer)?;
+    // SAFETY: A live handle was allocated as Box<Decoder>; caller guarantees exclusive access.
+    let decoder = unsafe { &mut *pointer };
+    if decoder.poisoned {
+        return Err(Error::new(
+            J2K_PANIC,
+            "decoder is poisoned; close it and create a new one",
+        ));
+    }
+    decoder.poisoned = true;
+    let result = operation(decoder);
+    decoder.poisoned =
+        matches!(&result, Err(error) if matches!(error.code, J2K_PANIC | J2K_INTERNAL_ERROR));
+    result
+}
+
+unsafe fn boundary(error: *mut J2kCError, operation: impl FnOnce() -> Result<()>) -> u32 {
+    if !error.is_null() && check_pointer(error).is_err() {
+        return J2K_INVALID_ARGUMENT;
+    }
+    let result = match catch_unwind(AssertUnwindSafe(operation)) {
+        Ok(result) => result,
+        Err(payload) => {
+            // A custom panic payload may panic again during Drop.
+            std::mem::forget(payload);
+            Err(Error::new(
+                J2K_PANIC,
+                "Rust panic contained at the C ABI boundary",
+            ))
+        }
+    };
+    let diagnostic = result
+        .err()
+        .map_or_else(J2kCError::default, |value| value.diagnostic());
+    let code = diagnostic.code;
+    if !error.is_null() {
+        // SAFETY: Caller provides disjoint writable error storage; alignment was checked above.
+        unsafe {
+            error.write(diagnostic);
+        }
+    }
+    code
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unwinding_is_contained_and_poisoned_decoder_cannot_be_reused() {
+        let samples = [1_u8; 16];
+        let image = j2k::encode_j2k_lossless(
+            j2k::J2kLosslessSamples::new(&samples, 4, 4, 1, 8, false).unwrap(),
+            &j2k::J2kLosslessEncodeOptions::default(),
+        )
+        .unwrap();
+        let mut decoder = Decoder::open(&image.codestream, J2kCOpenOptions::default()).unwrap();
+        let handle = ptr::from_mut(&mut decoder).cast();
+        let mut error = J2kCError::default();
+        // SAFETY: Stack decoder is exclusively borrowed and is not passed to close.
+        let status = unsafe {
+            boundary(&raw mut error, || {
+                with_decoder(handle, |_| panic!("test panic"))
+            })
+        };
+        assert_eq!(status, J2K_PANIC);
+        // SAFETY: Same live exclusive stack decoder, now poisoned.
+        let status = unsafe { boundary(&raw mut error, || with_decoder(handle, |_| Ok(()))) };
+        assert_eq!(status, J2K_PANIC);
+        assert_eq!(error.code, status);
+        // SAFETY: Reset through the same raw handle so the stack borrow stays valid.
+        unsafe { (*handle.cast::<Decoder>()).poisoned = false };
+        // SAFETY: Same live exclusive stack decoder; an invariant failure also poisons it.
+        let status = unsafe {
+            boundary(&raw mut error, || {
+                with_decoder(handle, |_| Err::<(), _>(Error::internal("test")))
+            })
+        };
+        assert_eq!(status, J2K_INTERNAL_ERROR);
+        // SAFETY: Same live exclusive stack decoder, now poisoned.
+        let status = unsafe { boundary(&raw mut error, || with_decoder(handle, |_| Ok(()))) };
+        assert_eq!(status, J2K_PANIC);
+        // Diagnostics truncate at a UTF-8 boundary and stay NUL-terminated.
+        let message = Error::new(J2K_INTERNAL_ERROR, "\u{e9}".repeat(200))
+            .diagnostic()
+            .message
+            .map(|c| u8::from_ne_bytes(c.to_ne_bytes()));
+        assert_eq!(
+            (&message[252..254], &message[254..]),
+            ("\u{e9}".as_bytes(), &[0_u8, 0][..])
+        );
+    }
+}

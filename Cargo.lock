@@ -2521,6 +2521,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "j2k-c"
+version = "0.13.2"
+dependencies = [
+ "j2k",
+ "j2k-test-support",
+ "rayon",
+]
+
+[[package]]
 name = "j2k-cli"
 version = "0.13.2"
 dependencies = [
