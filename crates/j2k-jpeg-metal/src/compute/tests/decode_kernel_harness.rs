@@ -828,13 +828,15 @@ fn tile_and_texture_batch_output_hashes() {
 // Stage profile
 // ---------------------------------------------------------------------------
 
+/// The shader files of `dir` in `SHADER_SOURCE` order, after the IDCT
+/// constants `build.rs` renders from `j2k_codec_math::jpeg::idct`.
 fn read_shader_dir(dir: &std::path::Path) -> String {
-    SHADER_FILES
-        .iter()
-        .map(|name| {
+    let constants = include_str!(concat!(env!("OUT_DIR"), "/jpeg_idct_constants.metal"));
+    std::iter::once(constants.to_string())
+        .chain(SHADER_FILES.iter().map(|name| {
             std::fs::read_to_string(dir.join(name))
                 .unwrap_or_else(|error| panic!("read {}: {error}", dir.join(name).display()))
-        })
+        }))
         .collect()
 }
 

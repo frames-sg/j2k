@@ -2677,6 +2677,7 @@ version = "0.13.2"
 dependencies = [
  "criterion",
  "dispatch2",
+ "j2k-codec-math",
  "j2k-core",
  "j2k-jpeg",
  "j2k-metal-support",

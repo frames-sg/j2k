@@ -335,32 +335,6 @@ constant ushort ZIGZAG[64] = {
     53, 60, 61, 54, 47, 55, 62, 63
 };
 
-constant int CONST_BITS = 13;
-constant int PASS1_BITS = 2;
-
-constant int FIX_0_211164243 = 1730;
-constant int FIX_0_298631336 = 2446;
-constant int FIX_0_390180644 = 3196;
-constant int FIX_0_509795579 = 4176;
-constant int FIX_0_541196100 = 4433;
-constant int FIX_0_601344887 = 4926;
-constant int FIX_0_720959822 = 5906;
-constant int FIX_0_765366865 = 6270;
-constant int FIX_0_850430095 = 6967;
-constant int FIX_0_899976223 = 7373;
-constant int FIX_1_061594337 = 8697;
-constant int FIX_1_175875602 = 9633;
-constant int FIX_1_272758580 = 10426;
-constant int FIX_1_451774981 = 11893;
-constant int FIX_1_501321110 = 12299;
-constant int FIX_1_847759065 = 15137;
-constant int FIX_1_961570560 = 16069;
-constant int FIX_2_053119869 = 16819;
-constant int FIX_2_172734803 = 17799;
-constant int FIX_2_562915447 = 20995;
-constant int FIX_3_072711026 = 25172;
-constant int FIX_3_624509785 = 29692;
-
 inline uchar clamp_u8(int value) {
     return uchar(clamp(value, 0, 255));
 }
