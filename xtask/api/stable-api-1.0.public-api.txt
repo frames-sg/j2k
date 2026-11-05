@@ -1411,6 +1411,21 @@ pub const fn j2k_codec_math::dwt::Dwt53LinearTap::weight(self) -> f64
 pub const fn j2k_codec_math::dwt::max_decomposition_levels(u32, u32) -> u8
 pub const fn j2k_codec_math::dwt::reflect_index(i64, u32) -> u32
 pub const fn j2k_codec_math::jpeg::derive_canonical_huffman(&[u8; 16], usize) -> core::result::Result<j2k_codec_math::jpeg::CanonicalHuffmanDerivation, j2k_codec_math::jpeg::CanonicalHuffmanError>
+pub const fn j2k_codec_math::jpeg::idct::descale(i32, i32) -> i32
+pub const fn j2k_codec_math::jpeg::idct::islow_1d([i32; 8]) -> [i32; 8]
+pub const fn j2k_codec_math::jpeg::idct::islow_1d_2([i32; 8]) -> [i32; 2]
+pub const fn j2k_codec_math::jpeg::idct::islow_1d_2_i64([i64; 8]) -> [i64; 2]
+pub const fn j2k_codec_math::jpeg::idct::islow_1d_4([i32; 8]) -> [i32; 4]
+pub const fn j2k_codec_math::jpeg::idct::islow_1d_4_i64([i64; 8]) -> [i64; 4]
+pub const fn j2k_codec_math::jpeg::idct::islow_1d_i64([i64; 8]) -> [i64; 8]
+pub const fn j2k_codec_math::jpeg::idct::islow_column([i32; 8]) -> [i32; 8]
+pub const fn j2k_codec_math::jpeg::idct::islow_dc(i32) -> i32
+pub const fn j2k_codec_math::jpeg::idct::islow_gain_bounds() -> (i32, i32)
+pub const fn j2k_codec_math::jpeg::idct::islow_pass1([i32; 8]) -> [i32; 8]
+pub const fn j2k_codec_math::jpeg::idct::islow_pass2([i32; 8]) -> [i32; 8]
+pub const fn j2k_codec_math::jpeg::idct::islow_row([i32; 8]) -> [i32; 8]
+pub const fn j2k_codec_math::jpeg::idct::sample_centered(i32) -> i32
+pub const fn j2k_codec_math::jpeg::idct::sample_u8(i32) -> u8
 pub const fn j2k_codec_math::jpeg::lossless::additional_bits(u8) -> u8
 pub const fn j2k_codec_math::jpeg::lossless::difference_category(u16) -> (u8, u16)
 pub const fn j2k_codec_math::jpeg::lossless::initial_predictor(u8, u8) -> core::option::Option<u16>
@@ -1455,19 +1470,39 @@ pub const j2k_codec_math::generated::DWT97_CONSTANTS_METAL: &str
 pub const j2k_codec_math::htj2k::HT_MAX_SCRATCH: usize
 pub const j2k_codec_math::jpeg::ZIGZAG: [u8; 64]
 pub const j2k_codec_math::jpeg::idct::CONST_BITS: usize
+pub const j2k_codec_math::jpeg::idct::DC_ROUNDING: i32
+pub const j2k_codec_math::jpeg::idct::DC_SHIFT: i32
+pub const j2k_codec_math::jpeg::idct::FIX_0_211164243: i32
 pub const j2k_codec_math::jpeg::idct::FIX_0_298631336: i32
 pub const j2k_codec_math::jpeg::idct::FIX_0_390180644: i32
+pub const j2k_codec_math::jpeg::idct::FIX_0_509795579: i32
 pub const j2k_codec_math::jpeg::idct::FIX_0_541196100: i32
+pub const j2k_codec_math::jpeg::idct::FIX_0_601344887: i32
+pub const j2k_codec_math::jpeg::idct::FIX_0_720959822: i32
 pub const j2k_codec_math::jpeg::idct::FIX_0_765366865: i32
+pub const j2k_codec_math::jpeg::idct::FIX_0_850430095: i32
 pub const j2k_codec_math::jpeg::idct::FIX_0_899976223: i32
+pub const j2k_codec_math::jpeg::idct::FIX_1_061594337: i32
 pub const j2k_codec_math::jpeg::idct::FIX_1_175875602: i32
+pub const j2k_codec_math::jpeg::idct::FIX_1_272758580: i32
+pub const j2k_codec_math::jpeg::idct::FIX_1_451774981: i32
 pub const j2k_codec_math::jpeg::idct::FIX_1_501321110: i32
 pub const j2k_codec_math::jpeg::idct::FIX_1_847759065: i32
 pub const j2k_codec_math::jpeg::idct::FIX_1_961570560: i32
 pub const j2k_codec_math::jpeg::idct::FIX_2_053119869: i32
+pub const j2k_codec_math::jpeg::idct::FIX_2_172734803: i32
 pub const j2k_codec_math::jpeg::idct::FIX_2_562915447: i32
 pub const j2k_codec_math::jpeg::idct::FIX_3_072711026: i32
+pub const j2k_codec_math::jpeg::idct::FIX_3_624509785: i32
+pub const j2k_codec_math::jpeg::idct::ISLOW_GAINS: [[i32; 8]; 8]
 pub const j2k_codec_math::jpeg::idct::PASS1_BITS: usize
+pub const j2k_codec_math::jpeg::idct::PASS1_BITS_12: i32
+pub const j2k_codec_math::jpeg::idct::PASS1_ROUNDING: i32
+pub const j2k_codec_math::jpeg::idct::PASS1_SHIFT: i32
+pub const j2k_codec_math::jpeg::idct::PASS1_SHIFT_12: i32
+pub const j2k_codec_math::jpeg::idct::PASS2_ROUNDING: i32
+pub const j2k_codec_math::jpeg::idct::PASS2_SHIFT: i32
+pub const j2k_codec_math::jpeg::idct::PASS2_SHIFT_12: i32
 pub const j2k_codec_math::jpeg::lossless::DIFFERENCE_SYMBOLS: usize
 pub const j2k_codec_math::jpeg::lossless::MAX_DIFFERENCE_BITS: u32
 pub const j2k_codec_math::jpeg::lossless::MAX_DIFFERENCE_CATEGORY: u8
@@ -1496,6 +1531,14 @@ pub enum j2k_codec_math::jpeg::CanonicalHuffmanError
 pub fn j2k_codec_math::dwt::Dwt53LinearRow::taps(&self) -> &[j2k_codec_math::dwt::Dwt53LinearTap]
 pub fn j2k_codec_math::dwt::linearized_dwt53_row(usize, j2k_codec_math::dwt::Dwt53Band, usize) -> core::option::Option<j2k_codec_math::dwt::Dwt53LinearRow>
 pub fn j2k_codec_math::jpeg::CanonicalHuffmanError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn j2k_codec_math::jpeg::idct::islow_block<T: core::marker::Copy + core::convert::Into<i32>>(&[T; 64], &mut [u8; 64])
+pub fn j2k_codec_math::jpeg::idct::islow_block_12bit(&[i16; 64], &mut [u16; 64])
+pub fn j2k_codec_math::jpeg::idct::islow_block_12bit_2x2(&[i16; 64], &mut [u16; 4])
+pub fn j2k_codec_math::jpeg::idct::islow_block_12bit_4x4(&[i16; 64], &mut [u16; 16])
+pub fn j2k_codec_math::jpeg::idct::islow_block_2x2(&[i16; 64], &mut [u8; 4])
+pub fn j2k_codec_math::jpeg::idct::islow_block_4x4(&[i16; 64], &mut [u8; 16])
+pub fn j2k_codec_math::jpeg::idct::islow_block_top_half<T: core::marker::Copy + core::convert::Into<i32>>(&[T; 64], &mut [u8; 64])
+pub fn j2k_codec_math::jpeg::idct::sample_12bit(i64) -> u16
 pub j2k_codec_math::classic::ClassicMqState::nlps: u8
 pub j2k_codec_math::classic::ClassicMqState::nmps: u8
 pub j2k_codec_math::classic::ClassicMqState::qe: u32
