@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 
 use crate::allocation::{
     checked_add_allocation_bytes, checked_allocation_bytes, checked_allocation_len,
-    try_reserve_for_len_with_live_budget,
+    try_reserve_for_len_with_live_budget, try_vec_filled_with_live_budget,
 };
 use crate::color::scaled_sampling::ScaledSampling;
 use crate::error::JpegError;
@@ -41,15 +41,12 @@ pub(super) fn allocate_coefficients(
             component.block_cols as usize,
             component.block_rows as usize,
         )?;
-        let mut component_coeffs = Vec::new();
-        try_reserve_for_len_with_live_budget(
-            &mut component_coeffs,
+        coeffs.push(try_vec_filled_with_live_budget(
             blocks,
+            [0i32; 64],
             &mut live_bytes,
             plan.scratch_bytes,
-        )?;
-        component_coeffs.resize(blocks, [0i32; 64]);
-        coeffs.push(component_coeffs);
+        )?);
     }
     Ok(coeffs)
 }
@@ -100,15 +97,12 @@ pub(super) fn allocate_nonzero_masks(
         plan.scratch_bytes,
     )?;
     for component_coeffs in coeffs {
-        let mut component_masks = Vec::new();
-        try_reserve_for_len_with_live_budget(
-            &mut component_masks,
+        masks.push(try_vec_filled_with_live_budget(
             component_coeffs.len(),
+            0u64,
             &mut live_bytes,
             plan.scratch_bytes,
-        )?;
-        component_masks.resize(component_coeffs.len(), 0u64);
-        masks.push(component_masks);
+        )?);
     }
     Ok((masks, live_bytes))
 }
@@ -150,14 +144,8 @@ pub(super) fn allocate_component_images(
     for (index, component) in plan.components.iter().enumerate() {
         let (stride, rows) = component_image_extent(component, scaled, index)?;
         let plane_len = checked_allocation_len::<u8>(stride, rows)?;
-        let mut plane = Vec::new();
-        try_reserve_for_len_with_live_budget(
-            &mut plane,
-            plane_len,
-            &mut live_bytes,
-            plan.scratch_bytes,
-        )?;
-        plane.resize(plane_len, 0u8);
+        let plane =
+            try_vec_filled_with_live_budget(plane_len, 0u8, &mut live_bytes, plan.scratch_bytes)?;
         images.push(ComponentImage { plane, stride });
     }
     Ok(images)

@@ -23,6 +23,7 @@ use crate::internal::bit_reader::BitReader;
 use crate::internal::checkpoint::{decode_one_mcu, skip_one_mcu, total_mcus};
 use crate::internal::scratch::ScratchPool;
 use crate::parse::tables::{HuffmanTableRole, HuffmanValues, RawHuffmanTable};
+use crate::standard_huffman::{STD_LUMA_DC_BITS, STD_LUMA_DC_VALUES};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::Cell;
@@ -300,8 +301,8 @@ impl BenchHuffmanState {
     pub fn luma_dc_zeros(symbols: usize) -> Self {
         let table = HuffmanTable::from_raw(
             &RawHuffmanTable {
-                bits: [0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
-                values: HuffmanValues::from_slice(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
+                bits: STD_LUMA_DC_BITS,
+                values: HuffmanValues::from_slice(&STD_LUMA_DC_VALUES),
             },
             HuffmanTableRole::Dc,
         )

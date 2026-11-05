@@ -67,6 +67,14 @@ pub(crate) struct RawHuffmanTable {
     pub(crate) values: HuffmanValues,
 }
 
+#[cfg(test)]
+pub(crate) fn raw_table(bits: [u8; 16], values: &[u8]) -> RawHuffmanTable {
+    RawHuffmanTable {
+        bits,
+        values: HuffmanValues::from_slice(values),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HuffmanTableRole {
     Dc,

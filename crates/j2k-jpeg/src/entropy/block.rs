@@ -418,7 +418,7 @@ mod tests {
     };
     use crate::internal::bit_reader::tests::next_random;
     use crate::optimal_huffman::{optimal_huffman_spec, HuffmanFrequencies};
-    use crate::parse::tables::{HuffmanTableRole, HuffmanValues, RawHuffmanTable};
+    use crate::parse::tables::{raw_table, HuffmanTableRole, HuffmanValues, RawHuffmanTable};
     use crate::standard_huffman::{
         STD_LUMA_AC_BITS, STD_LUMA_AC_CANONICAL, STD_LUMA_AC_VALUES, STD_LUMA_DC_BITS,
         STD_LUMA_DC_CANONICAL, STD_LUMA_DC_VALUES,
@@ -885,13 +885,6 @@ mod tests {
             if expected.is_err() {
                 break;
             }
-        }
-    }
-
-    fn raw_table(bits: [u8; 16], values: &[u8]) -> RawHuffmanTable {
-        RawHuffmanTable {
-            bits,
-            values: HuffmanValues::from_slice(values),
         }
     }
 
