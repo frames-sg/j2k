@@ -955,6 +955,25 @@ pub fn at_simd_level<R>(f: impl FnOnce() -> R) -> R {
     dispatch!(Level::new(), _simd => f())
 }
 
+/// Inclusive signed range of a component with `1..=16` bits, the bounds
+/// [`round_clamped_native`] packs signed native samples to; more bits clamp
+/// to 16.
+#[doc(hidden)]
+#[must_use]
+pub fn signed_native_bounds(bit_depth: u8) -> (f32, f32) {
+    let magnitude = 1_u16 << (bit_depth.clamp(1, 16) - 1);
+    (-f32::from(magnitude), f32::from(magnitude - 1))
+}
+
+/// Largest unsigned value of a component with `1..=16` bits, the upper bound
+/// [`round_clamped_native`] packs unsigned native samples to; more bits
+/// clamp to 16.
+#[doc(hidden)]
+#[must_use]
+pub fn unsigned_native_max(bit_depth: u8) -> f32 {
+    f32::from(u16::MAX >> (16 - bit_depth.clamp(1, 16)))
+}
+
 /// Rounds `sample`, clamped to the integer bounds `[min, max]`, half away
 /// from zero, as two's complement in the low bits of a `u32`, NaN as zero:
 /// for bounds within 16 bits, the bytes a saturating cast of the rounded
