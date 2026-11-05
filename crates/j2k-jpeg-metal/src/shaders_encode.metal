@@ -586,22 +586,94 @@ inline bool block_intersects_rect(
     return block_x < rect_x1 && rect_x < block_x1 && block_y < rect_y1 && rect_y < block_y1;
 }
 
-// Callers of descale_and_clamp add their own rounding term (the full islow IDCT
-// folds it into the DC path).
-inline uchar descale_and_clamp(int value, int shift) {
-    const int shifted = value >> shift;
-    return clamp_u8(shifted + 128);
-}
-
 // libjpeg DESCALE: arithmetic right shift that rounds half up. Every stage of
 // jidctred.c (and libjpeg-turbo's SIMD ports) rounds; a plain shift biases
 // DCT-scaled output low by up to one level per component.
-inline int descale_rounded(int value, int shift) {
-    return (value + (1 << (shift - 1))) >> shift;
+template <typename T>
+inline T descale_rounded(T value, int shift) {
+    return (value + (T(1) << (shift - 1))) >> shift;
 }
 
 inline uchar descale_rounded_and_clamp(int value, int shift) {
     return clamp_u8(descale_rounded(value, shift) + 128);
+}
+
+// The ISLOW 1-D transforms of j2k_codec_math::jpeg::idct (islow_1d,
+// islow_1d_4, islow_1d_2) for int (8-bit), int4 (four 8-bit columns at once)
+// and long (12-bit) lanes. Outputs are scaled by 2^CONST_BITS (8-point),
+// 2^(CONST_BITS + 1) (4-point) or 2^(CONST_BITS + 2) (2-point) and not yet
+// rounded. The reduced transforms take only the inputs they use.
+template <typename T>
+inline void islow_1d(T p0, T p1, T p2, T p3, T p4, T p5, T p6, T p7, thread T (&out)[8]) {
+    const T z1 = (p2 + p6) * CODEC_MATH_JPEG_IDCT_FIX_0_541196100;
+    const T tmp2 = z1 - p6 * CODEC_MATH_JPEG_IDCT_FIX_1_847759065;
+    const T tmp3 = z1 + p2 * CODEC_MATH_JPEG_IDCT_FIX_0_765366865;
+
+    const T tmp0 = (p0 + p4) << CODEC_MATH_JPEG_IDCT_CONST_BITS;
+    const T tmp1 = (p0 - p4) << CODEC_MATH_JPEG_IDCT_CONST_BITS;
+
+    const T tmp10 = tmp0 + tmp3;
+    const T tmp13 = tmp0 - tmp3;
+    const T tmp11 = tmp1 + tmp2;
+    const T tmp12 = tmp1 - tmp2;
+
+    const T z1o = p7 + p1;
+    const T z2o = p5 + p3;
+    const T z3o = p7 + p3;
+    const T z4o = p5 + p1;
+    const T z5 = (z3o + z4o) * CODEC_MATH_JPEG_IDCT_FIX_1_175875602;
+
+    const T z1m = z1o * -CODEC_MATH_JPEG_IDCT_FIX_0_899976223;
+    const T z2m = z2o * -CODEC_MATH_JPEG_IDCT_FIX_2_562915447;
+    const T z3m = z3o * -CODEC_MATH_JPEG_IDCT_FIX_1_961570560 + z5;
+    const T z4m = z4o * -CODEC_MATH_JPEG_IDCT_FIX_0_390180644 + z5;
+
+    const T out0 = p7 * CODEC_MATH_JPEG_IDCT_FIX_0_298631336 + z1m + z3m;
+    const T out1 = p5 * CODEC_MATH_JPEG_IDCT_FIX_2_053119869 + z2m + z4m;
+    const T out2 = p3 * CODEC_MATH_JPEG_IDCT_FIX_3_072711026 + z2m + z3m;
+    const T out3 = p1 * CODEC_MATH_JPEG_IDCT_FIX_1_501321110 + z1m + z4m;
+
+    out[0] = tmp10 + out3;
+    out[1] = tmp11 + out2;
+    out[2] = tmp12 + out1;
+    out[3] = tmp13 + out0;
+    out[4] = tmp13 - out0;
+    out[5] = tmp12 - out1;
+    out[6] = tmp11 - out2;
+    out[7] = tmp10 - out3;
+}
+
+template <typename T>
+inline void islow_1d_4(T p0, T p1, T p2, T p3, T p5, T p6, T p7, thread T (&out)[4]) {
+    const T tmp0_base = p0 << (CODEC_MATH_JPEG_IDCT_CONST_BITS + 1);
+    const T tmp2_even = p2 * CODEC_MATH_JPEG_IDCT_FIX_1_847759065 + p6 * -CODEC_MATH_JPEG_IDCT_FIX_0_765366865;
+    const T tmp10 = tmp0_base + tmp2_even;
+    const T tmp12 = tmp0_base - tmp2_even;
+
+    const T tmp0 = p7 * -CODEC_MATH_JPEG_IDCT_FIX_0_211164243
+        + p5 * CODEC_MATH_JPEG_IDCT_FIX_1_451774981
+        + p3 * -CODEC_MATH_JPEG_IDCT_FIX_2_172734803
+        + p1 * CODEC_MATH_JPEG_IDCT_FIX_1_061594337;
+    const T tmp2 = p7 * -CODEC_MATH_JPEG_IDCT_FIX_0_509795579
+        + p5 * -CODEC_MATH_JPEG_IDCT_FIX_0_601344887
+        + p3 * CODEC_MATH_JPEG_IDCT_FIX_0_899976223
+        + p1 * CODEC_MATH_JPEG_IDCT_FIX_2_562915447;
+
+    out[0] = tmp10 + tmp2;
+    out[1] = tmp12 + tmp0;
+    out[2] = tmp12 - tmp0;
+    out[3] = tmp10 - tmp2;
+}
+
+template <typename T>
+inline void islow_1d_2(T p0, T p1, T p3, T p5, T p7, thread T (&out)[2]) {
+    const T tmp10 = p0 << (CODEC_MATH_JPEG_IDCT_CONST_BITS + 2);
+    const T tmp0 = p7 * -CODEC_MATH_JPEG_IDCT_FIX_0_720959822
+        + p5 * CODEC_MATH_JPEG_IDCT_FIX_0_850430095
+        + p3 * -CODEC_MATH_JPEG_IDCT_FIX_1_272758580
+        + p1 * CODEC_MATH_JPEG_IDCT_FIX_3_624509785;
+    out[0] = tmp10 + tmp0;
+    out[1] = tmp10 - tmp0;
 }
 
 // libjpeg islow column pass over four columns at once. There is no per-column
@@ -611,44 +683,10 @@ inline void idct_islow_columns_x4(
     int4 p0, int4 p1, int4 p2, int4 p3, int4 p4, int4 p5, int4 p6, int4 p7,
     thread int4 (&out)[8]
 ) {
-    const int4 z1 = (p2 + p6) * FIX_0_541196100;
-    const int4 tmp2 = z1 - p6 * FIX_1_847759065;
-    const int4 tmp3 = z1 + p2 * FIX_0_765366865;
-
-    const int4 tmp0 = (p0 + p4) << CONST_BITS;
-    const int4 tmp1 = (p0 - p4) << CONST_BITS;
-
-    const int4 tmp10 = tmp0 + tmp3;
-    const int4 tmp13 = tmp0 - tmp3;
-    const int4 tmp11 = tmp1 + tmp2;
-    const int4 tmp12 = tmp1 - tmp2;
-
-    const int4 z1o = p7 + p1;
-    const int4 z2o = p5 + p3;
-    const int4 z3o = p7 + p3;
-    const int4 z4o = p5 + p1;
-    const int4 z5 = (z3o + z4o) * FIX_1_175875602;
-
-    const int4 z1m = z1o * -FIX_0_899976223;
-    const int4 z2m = z2o * -FIX_2_562915447;
-    const int4 z3m = z3o * -FIX_1_961570560 + z5;
-    const int4 z4m = z4o * -FIX_0_390180644 + z5;
-
-    const int4 out0 = p7 * FIX_0_298631336 + z1m + z3m;
-    const int4 out1 = p5 * FIX_2_053119869 + z2m + z4m;
-    const int4 out2 = p3 * FIX_3_072711026 + z2m + z3m;
-    const int4 out3 = p1 * FIX_1_501321110 + z1m + z4m;
-
-    const int shift = CONST_BITS - PASS1_BITS;
-    const int rounding = 1 << (shift - 1);
-    out[0] = (tmp10 + out3 + rounding) >> shift;
-    out[7] = (tmp10 - out3 + rounding) >> shift;
-    out[1] = (tmp11 + out2 + rounding) >> shift;
-    out[6] = (tmp11 - out2 + rounding) >> shift;
-    out[2] = (tmp12 + out1 + rounding) >> shift;
-    out[5] = (tmp12 - out1 + rounding) >> shift;
-    out[3] = (tmp13 + out0 + rounding) >> shift;
-    out[4] = (tmp13 - out0 + rounding) >> shift;
+    islow_1d(p0, p1, p2, p3, p4, p5, p6, p7, out);
+    for (uint i = 0; i < 8u; ++i) {
+        out[i] = descale_rounded(out[i], CODEC_MATH_JPEG_IDCT_PASS1_SHIFT);
+    }
 }
 
 // libjpeg islow row pass for one row held in registers. The AC-zero shortcut stays: the
@@ -664,56 +702,33 @@ inline void idct_islow_row(int4 left_in, int4 right_in, thread uchar4 &left, thr
     const int p7 = right_in.w;
 
     if (p1 == 0 && p2 == 0 && p3 == 0 && p4 == 0 && p5 == 0 && p6 == 0 && p7 == 0) {
-        const int dc_shift = PASS1_BITS + 3;
-        const int dc_rounding = 1 << (dc_shift - 1);
-        const uchar pixel = descale_and_clamp(p0 + dc_rounding, dc_shift);
+        const uchar pixel = descale_rounded_and_clamp(p0, CODEC_MATH_JPEG_IDCT_DC_SHIFT);
         left = uchar4(pixel);
         right = uchar4(pixel);
         return;
     }
 
-    const int z1 = (p2 + p6) * FIX_0_541196100;
-    const int tmp2 = z1 - p6 * FIX_1_847759065;
-    const int tmp3 = z1 + p2 * FIX_0_765366865;
-
-    const int tmp0 = (p0 + p4) << CONST_BITS;
-    const int tmp1 = (p0 - p4) << CONST_BITS;
-
-    const int tmp10 = tmp0 + tmp3;
-    const int tmp13 = tmp0 - tmp3;
-    const int tmp11 = tmp1 + tmp2;
-    const int tmp12 = tmp1 - tmp2;
-
-    const int z1o = p7 + p1;
-    const int z2o = p5 + p3;
-    const int z3o = p7 + p3;
-    const int z4o = p5 + p1;
-    const int z5 = (z3o + z4o) * FIX_1_175875602;
-
-    const int z1m = z1o * -FIX_0_899976223;
-    const int z2m = z2o * -FIX_2_562915447;
-    const int z3m = z3o * -FIX_1_961570560 + z5;
-    const int z4m = z4o * -FIX_0_390180644 + z5;
-
-    const int out0 = p7 * FIX_0_298631336 + z1m + z3m;
-    const int out1 = p5 * FIX_2_053119869 + z2m + z4m;
-    const int out2 = p3 * FIX_3_072711026 + z2m + z3m;
-    const int out3 = p1 * FIX_1_501321110 + z1m + z4m;
-
-    const int shift = CONST_BITS + PASS1_BITS + 3;
-    const int rounding = 1 << (shift - 1);
+    int out[8];
+    islow_1d(p0, p1, p2, p3, p4, p5, p6, p7, out);
+    const int shift = CODEC_MATH_JPEG_IDCT_PASS2_SHIFT;
     left = uchar4(
-        descale_and_clamp(tmp10 + out3 + rounding, shift),
-        descale_and_clamp(tmp11 + out2 + rounding, shift),
-        descale_and_clamp(tmp12 + out1 + rounding, shift),
-        descale_and_clamp(tmp13 + out0 + rounding, shift)
+        descale_rounded_and_clamp(out[0], shift),
+        descale_rounded_and_clamp(out[1], shift),
+        descale_rounded_and_clamp(out[2], shift),
+        descale_rounded_and_clamp(out[3], shift)
     );
     right = uchar4(
-        descale_and_clamp(tmp13 - out0 + rounding, shift),
-        descale_and_clamp(tmp12 - out1 + rounding, shift),
-        descale_and_clamp(tmp11 - out2 + rounding, shift),
-        descale_and_clamp(tmp10 - out3 + rounding, shift)
+        descale_rounded_and_clamp(out[4], shift),
+        descale_rounded_and_clamp(out[5], shift),
+        descale_rounded_and_clamp(out[6], shift),
+        descale_rounded_and_clamp(out[7], shift)
     );
+}
+
+// The uniform sample of a block whose AC coefficients are zero, at every
+// output size: DESCALE(dc, 3) + 128, clamped (j2k_codec_math islow_dc).
+inline uchar idct_islow_dc_pixel(short dc_coeff) {
+    return descale_rounded_and_clamp(int(dc_coeff), 3);
 }
 
 inline void idct_islow(
@@ -749,7 +764,7 @@ inline void idct_islow_dc_only(
     short dc_coeff,
     thread uchar output[64]
 ) {
-    const uchar pixel = clamp_u8(((int(dc_coeff) + 4) >> 3) + 128);
+    const uchar pixel = idct_islow_dc_pixel(dc_coeff);
     for (uint i = 0; i < 64; ++i) {
         output[i] = pixel;
     }
@@ -885,7 +900,7 @@ inline void deposit_dc_block(
     if (x >= width || y >= height) {
         return;
     }
-    const uchar4 pixel = uchar4(clamp_u8(((int(dc_coeff) + 4) >> 3) + 128));
+    const uchar4 pixel = uchar4(idct_islow_dc_pixel(dc_coeff));
     const uint copy_width = min(8u, width - x);
     const uint copy_height = min(8u, height - y);
     const bool vector_store = copy_width == 8u && copy_height == 8u && (stride & 3u) == 0u;
@@ -937,7 +952,7 @@ inline void idct_4x4_column(
     const int p7 = int(input[col + 56]);
 
     if (p1 == 0 && p2 == 0 && p3 == 0 && p5 == 0 && p6 == 0 && p7 == 0) {
-        const int dc = p0 << PASS1_BITS;
+        const int dc = p0 << CODEC_MATH_JPEG_IDCT_PASS1_BITS;
         work[col] = dc;
         work[8 + col] = dc;
         work[16 + col] = dc;
@@ -945,25 +960,13 @@ inline void idct_4x4_column(
         return;
     }
 
-    const int tmp0_base = p0 << (CONST_BITS + 1);
-    const int tmp2_even = p2 * FIX_1_847759065 + p6 * -FIX_0_765366865;
-    const int tmp10 = tmp0_base + tmp2_even;
-    const int tmp12 = tmp0_base - tmp2_even;
-
-    const int tmp0 = p7 * -FIX_0_211164243
-        + p5 * FIX_1_451774981
-        + p3 * -FIX_2_172734803
-        + p1 * FIX_1_061594337;
-    const int tmp2 = p7 * -FIX_0_509795579
-        + p5 * -FIX_0_601344887
-        + p3 * FIX_0_899976223
-        + p1 * FIX_2_562915447;
-
-    const int shift = CONST_BITS - PASS1_BITS + 1;
-    work[col] = descale_rounded(tmp10 + tmp2, shift);
-    work[24 + col] = descale_rounded(tmp10 - tmp2, shift);
-    work[8 + col] = descale_rounded(tmp12 + tmp0, shift);
-    work[16 + col] = descale_rounded(tmp12 - tmp0, shift);
+    int out[4];
+    islow_1d_4(p0, p1, p2, p3, p5, p6, p7, out);
+    const int shift = CODEC_MATH_JPEG_IDCT_PASS1_SHIFT + 1;
+    work[col] = descale_rounded(out[0], shift);
+    work[8 + col] = descale_rounded(out[1], shift);
+    work[16 + col] = descale_rounded(out[2], shift);
+    work[24 + col] = descale_rounded(out[3], shift);
 }
 
 inline void idct_4x4_row(
@@ -982,7 +985,7 @@ inline void idct_4x4_row(
 
     const uint out = row * 4;
     if (p1 == 0 && p2 == 0 && p3 == 0 && p5 == 0 && p6 == 0 && p7 == 0) {
-        const uchar dc = descale_rounded_and_clamp(p0, PASS1_BITS + 3);
+        const uchar dc = descale_rounded_and_clamp(p0, CODEC_MATH_JPEG_IDCT_DC_SHIFT);
         output[out] = dc;
         output[out + 1] = dc;
         output[out + 2] = dc;
@@ -990,25 +993,12 @@ inline void idct_4x4_row(
         return;
     }
 
-    const int tmp0_base = p0 << (CONST_BITS + 1);
-    const int tmp2_even = p2 * FIX_1_847759065 + p6 * -FIX_0_765366865;
-    const int tmp10 = tmp0_base + tmp2_even;
-    const int tmp12 = tmp0_base - tmp2_even;
-
-    const int tmp0 = p7 * -FIX_0_211164243
-        + p5 * FIX_1_451774981
-        + p3 * -FIX_2_172734803
-        + p1 * FIX_1_061594337;
-    const int tmp2 = p7 * -FIX_0_509795579
-        + p5 * -FIX_0_601344887
-        + p3 * FIX_0_899976223
-        + p1 * FIX_2_562915447;
-
-    const int shift = CONST_BITS + PASS1_BITS + 3 + 1;
-    output[out] = descale_rounded_and_clamp(tmp10 + tmp2, shift);
-    output[out + 3] = descale_rounded_and_clamp(tmp10 - tmp2, shift);
-    output[out + 1] = descale_rounded_and_clamp(tmp12 + tmp0, shift);
-    output[out + 2] = descale_rounded_and_clamp(tmp12 - tmp0, shift);
+    int samples[4];
+    islow_1d_4(p0, p1, p2, p3, p5, p6, p7, samples);
+    const int shift = CODEC_MATH_JPEG_IDCT_PASS2_SHIFT + 1;
+    for (uint i = 0; i < 4u; ++i) {
+        output[out + i] = descale_rounded_and_clamp(samples[i], shift);
+    }
 }
 
 inline void idct_islow_4x4(
@@ -1039,21 +1029,17 @@ inline void idct_2x2_column(
     const int p7 = int(input[col + 56]);
 
     if (p1 == 0 && p3 == 0 && p5 == 0 && p7 == 0) {
-        const int dc = p0 << PASS1_BITS;
+        const int dc = p0 << CODEC_MATH_JPEG_IDCT_PASS1_BITS;
         work[col] = dc;
         work[8 + col] = dc;
         return;
     }
 
-    const int tmp10 = p0 << (CONST_BITS + 2);
-    const int tmp0 = p7 * -FIX_0_720959822
-        + p5 * FIX_0_850430095
-        + p3 * -FIX_1_272758580
-        + p1 * FIX_3_624509785;
-
-    const int shift = CONST_BITS - PASS1_BITS + 2;
-    work[col] = descale_rounded(tmp10 + tmp0, shift);
-    work[8 + col] = descale_rounded(tmp10 - tmp0, shift);
+    int out[2];
+    islow_1d_2(p0, p1, p3, p5, p7, out);
+    const int shift = CODEC_MATH_JPEG_IDCT_PASS1_SHIFT + 2;
+    work[col] = descale_rounded(out[0], shift);
+    work[8 + col] = descale_rounded(out[1], shift);
 }
 
 inline void idct_2x2_row(
@@ -1069,23 +1055,19 @@ inline void idct_2x2_row(
     const int p7 = work[base + 7];
 
     if (p1 == 0 && p3 == 0 && p5 == 0 && p7 == 0) {
-        const uchar dc = descale_rounded_and_clamp(p0, PASS1_BITS + 3);
+        const uchar dc = descale_rounded_and_clamp(p0, CODEC_MATH_JPEG_IDCT_DC_SHIFT);
         const uint out = row * 2;
         output[out] = dc;
         output[out + 1] = dc;
         return;
     }
 
-    const int tmp10 = p0 << (CONST_BITS + 2);
-    const int tmp0 = p7 * -FIX_0_720959822
-        + p5 * FIX_0_850430095
-        + p3 * -FIX_1_272758580
-        + p1 * FIX_3_624509785;
-
-    const int shift = CONST_BITS + PASS1_BITS + 5;
+    int samples[2];
+    islow_1d_2(p0, p1, p3, p5, p7, samples);
+    const int shift = CODEC_MATH_JPEG_IDCT_PASS2_SHIFT + 2;
     const uint out = row * 2;
-    output[out] = descale_rounded_and_clamp(tmp10 + tmp0, shift);
-    output[out + 1] = descale_rounded_and_clamp(tmp10 - tmp0, shift);
+    output[out] = descale_rounded_and_clamp(samples[0], shift);
+    output[out + 1] = descale_rounded_and_clamp(samples[1], shift);
 }
 
 inline void idct_islow_2x2(
@@ -1105,7 +1087,7 @@ inline void idct_islow_2x2(
 }
 
 inline uchar idct_islow_1x1(thread const short input[64]) {
-    return descale_rounded_and_clamp(int(input[0]), 3);
+    return idct_islow_dc_pixel(input[0]);
 }
 
 inline void deposit_block_region(

@@ -22,10 +22,6 @@ const DEFAULT_BATCH_DIM: u16 = 1024;
 #[cfg(feature = "cuda-runtime")]
 const DEFAULT_BATCH_SIZE: usize = 64;
 
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "Criterion's `BenchmarkGroup::finish` consumes the group at its last use"
-)]
 fn bench_device_decode(c: &mut Criterion) {
     let input = bench_input();
     let mut group = c.benchmark_group("jpeg_cuda_device_decode");

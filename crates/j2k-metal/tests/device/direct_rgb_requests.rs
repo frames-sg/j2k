@@ -258,3 +258,69 @@ fn explicit_metal_tile_unsupported_rgba16_is_rejected() {
         ),
     }
 }
+
+/// Reduced Metal decodes of an image whose reference-grid origin is odd at
+/// every resolution, whole and of a region, have the host decoder's
+/// dimensions and samples: the reduced samples the request covers on the
+/// reference grid, a sample narrower than `ceil(size / s)` here.
+#[test]
+fn explicit_metal_reductions_of_an_odd_origin_image_match_host_decode() {
+    use j2k_test_support::{OPENJPH_ORIGIN_23X17_AT_3_5, ORIGIN_REDUCED_RGB};
+    if !should_run_metal_runtime() {
+        return;
+    }
+    let fmt = PixelFormat::Rgb8;
+    let interior = Rect {
+        x: 4,
+        y: 2,
+        w: 13,
+        h: 11,
+    };
+    let scales = [Downscale::Half, Downscale::Quarter, Downscale::Eighth];
+    for (scale, (dims, reference)) in scales.into_iter().zip(ORIGIN_REDUCED_RGB) {
+        let mut decoder = J2kDecoder::new(OPENJPH_ORIGIN_23X17_AT_3_5).expect("decoder");
+        let surface = decoder
+            .decode_scaled_to_device(fmt, scale, BackendRequest::Metal)
+            .unwrap_or_else(|error| panic!("{scale:?}: Metal scaled decode: {error:?}"));
+        assert_eq!(surface.dimensions(), dims, "{scale:?}: scaled");
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            reference,
+            "{scale:?}: scaled"
+        );
+
+        let stride = dims.0 as usize * fmt.bytes_per_pixel();
+        let mut padded = vec![0_u8; reference.len()];
+        let host = J2kDecoder::new(OPENJPH_ORIGIN_23X17_AT_3_5)
+            .expect("host decoder")
+            .decode_region_scaled_into(
+                &mut J2kScratchPool::new(),
+                &mut padded,
+                stride,
+                fmt,
+                interior,
+                scale,
+            )
+            .expect("host region decode");
+        let covered = host.decoded;
+        let row_bytes = covered.w as usize * fmt.bytes_per_pixel();
+        let expected = padded
+            .chunks(stride)
+            .take(covered.h as usize)
+            .flat_map(|row| row[..row_bytes].iter().copied())
+            .collect::<Vec<_>>();
+        let surface = decoder
+            .decode_region_scaled_to_device(fmt, interior, scale, BackendRequest::Metal)
+            .unwrap_or_else(|error| panic!("{scale:?}: Metal region decode: {error:?}"));
+        assert_eq!(
+            surface.dimensions(),
+            (covered.w, covered.h),
+            "{scale:?}: region"
+        );
+        assert_eq!(
+            surface.as_bytes().expect("surface byte access"),
+            expected.as_slice(),
+            "{scale:?}: region"
+        );
+    }
+}

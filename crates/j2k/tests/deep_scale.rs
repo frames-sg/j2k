@@ -362,3 +362,145 @@ fn native_component_reduction_zero_delegates_and_excess_levels_fail() {
         .expect_err("reduction beyond the wavelet ladder must fail");
     assert!(matches!(error, J2kError::Unsupported(_)));
 }
+
+/// An image whose reference-grid origin is odd at every resolution reduces
+/// to `[ceil(origin / s), ceil(extent / s))` on each axis, narrower than
+/// `ceil(size / s)`. Every reduced decode of it, whole or of a region and with
+/// classic or HTJ2K coding, writes the samples `OpenJPEG` decodes at that
+/// reduction, and a region covers the reduced samples whose reference-grid
+/// footprint it overlaps.
+#[test]
+fn reductions_of_an_odd_origin_image_match_openjpeg() {
+    use j2k_test_support::{
+        OPENJPEG_ORIGIN_23X17_AT_3_5, OPENJPH_ORIGIN_23X17_AT_3_5, ORIGIN_REDUCED_RGB,
+        ORIGIN_SOURCE_23X17_RGB,
+    };
+    let size = (23, 17);
+    for (coding, fixture) in [
+        ("classic", OPENJPEG_ORIGIN_23X17_AT_3_5),
+        ("HTJ2K", OPENJPH_ORIGIN_23X17_AT_3_5),
+    ] {
+        let mut decoder = J2kDecoder::new(fixture).expect("decoder");
+        assert_eq!(decoder.info().dimensions, size, "{coding}");
+        let grid = decoder.reference_grid();
+        assert_eq!(grid.image_origin, (3, 5), "{coding}");
+        assert_eq!(grid.image_size, size, "{coding}");
+        assert_eq!(grid.extent(), (26, 22), "{coding}");
+        assert_eq!(
+            J2kDecoder::inspect_reference_grid(fixture).expect("header-only grid"),
+            grid,
+            "{coding}"
+        );
+        let mut out = vec![0_u8; ORIGIN_SOURCE_23X17_RGB.len()];
+        decoder
+            .decode_into(&mut out, 23 * 3, PixelFormat::Rgb8)
+            .expect("full-resolution decode");
+        assert_eq!(out, ORIGIN_SOURCE_23X17_RGB, "{coding}");
+
+        let scales = [Downscale::Half, Downscale::Quarter, Downscale::Eighth];
+        for ((levels, scale), (dims, reference)) in (1_u8..).zip(scales).zip(ORIGIN_REDUCED_RGB) {
+            let case = format!("{coding}, {levels} levels");
+            assert_reduced_decodes_match(&mut decoder, levels, scale, dims, reference, &case);
+        }
+    }
+}
+
+fn assert_reduced_decodes_match(
+    decoder: &mut J2kDecoder<'_>,
+    levels: u8,
+    scale: Downscale,
+    dims: (u32, u32),
+    reference: &[u8],
+    case: &str,
+) {
+    let mut pool = J2kScratchPool::new();
+    let stride = dims.0 as usize * 3;
+
+    let native = decoder
+        .decode_native_components_at_reduction(levels)
+        .unwrap_or_else(|error| panic!("{case}: native components: {error:?}"));
+    assert_eq!(native.dimensions(), dims, "{case}: native components");
+    for (channel, plane) in native.planes().iter().enumerate() {
+        let expected = reference
+            .iter()
+            .skip(channel)
+            .step_by(3)
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(plane.data(), expected, "{case}: native component {channel}");
+    }
+
+    let mut whole = vec![0_u8; reference.len()];
+    let outcome = decoder
+        .decode_scaled_into(&mut pool, &mut whole, stride, PixelFormat::Rgb8, scale)
+        .unwrap_or_else(|error| panic!("{case}: scaled: {error:?}"));
+    assert_eq!(outcome.decoded, Rect::full(dims), "{case}: scaled");
+    assert_eq!(whole, reference, "{case}: scaled");
+
+    // The whole image, and a region whose edges fall inside reduced samples
+    // on every side.
+    let interior = Rect {
+        x: 4,
+        y: 2,
+        w: 13,
+        h: 11,
+    };
+    for roi in [Rect::full((23, 17)), interior] {
+        let covered = reference_grid_covering(roi, (3, 5), (23, 17), levels);
+        let expected = crop_rgb(reference, dims.0 as usize, covered);
+        let region_stride = covered.w as usize * 3;
+        let mut region = vec![0_u8; expected.len()];
+        let outcome = decoder
+            .decode_region_scaled_pow2_into(
+                &mut pool,
+                &mut region,
+                region_stride,
+                PixelFormat::Rgb8,
+                roi,
+                levels,
+            )
+            .unwrap_or_else(|error| panic!("{case}, {roi:?}: pow2 region: {error:?}"));
+        assert_eq!(outcome.decoded, covered, "{case}, {roi:?}: pow2 region");
+        assert_eq!(region, expected, "{case}, {roi:?}: pow2 region");
+
+        let mut region = vec![0_u8; expected.len()];
+        let outcome = decoder
+            .decode_region_scaled_into(
+                &mut pool,
+                &mut region,
+                region_stride,
+                PixelFormat::Rgb8,
+                roi,
+                scale,
+            )
+            .unwrap_or_else(|error| panic!("{case}, {roi:?}: scaled region: {error:?}"));
+        assert_eq!(outcome.decoded, covered, "{case}, {roi:?}: scaled region");
+        assert_eq!(region, expected, "{case}, {roi:?}: scaled region");
+    }
+}
+
+/// The reduced samples, in reduced image coordinates, whose reference-grid
+/// footprint `[k * s, (k + 1) * s)` overlaps image region `roi` of an image
+/// of `size` at `origin`.
+fn reference_grid_covering(roi: Rect, origin: (u32, u32), size: (u32, u32), levels: u8) -> Rect {
+    let scale = 1_u32 << levels;
+    let axis = |start: u32, length: u32, origin: u32, size: u32| {
+        let first = origin.div_ceil(scale);
+        let end = (origin + size).div_ceil(scale);
+        let low = ((origin + start) / scale).max(first);
+        let high = (origin + start + length).div_ceil(scale).min(end);
+        (low - first, high - low)
+    };
+    let (x, w) = axis(roi.x, roi.w, origin.0, size.0);
+    let (y, h) = axis(roi.y, roi.h, origin.1, size.1);
+    Rect { x, y, w, h }
+}
+
+fn crop_rgb(samples: &[u8], width: usize, rect: Rect) -> Vec<u8> {
+    (rect.y..rect.y + rect.h)
+        .flat_map(|y| {
+            let start = (y as usize * width + rect.x as usize) * 3;
+            samples[start..start + rect.w as usize * 3].iter().copied()
+        })
+        .collect()
+}

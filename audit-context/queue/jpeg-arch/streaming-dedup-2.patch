@@ -1,0 +1,2289 @@
+diff --git a/crates/j2k-jpeg/src/adapter/fast_packet/family.rs b/crates/j2k-jpeg/src/adapter/fast_packet/family.rs
+index 00d0122..bd151cb 100644
+--- a/crates/j2k-jpeg/src/adapter/fast_packet/family.rs
++++ b/crates/j2k-jpeg/src/adapter/fast_packet/family.rs
+@@ -40,8 +40,10 @@ pub(super) fn classify_color_fast_packet_info(info: &Info) -> Option<JpegFastPac
+ 
+ /// The color fast-packet family a coded color space and per-component
+ /// sampling select for an image `width` pixels wide, before scan, table and
+-/// component-order validation. The one shape rule shared by packet
+-/// classification, the device batch summary and the fast CPU routes.
++/// component-order validation: the shape rule packet classification, the
++/// device batch summary and the fast CPU routes share. The explicit-family
++/// packet builders (`FAST4xx_LAYOUT` in `header.rs`) check only the layout
++/// they are asked for, without the width rule.
+ pub(crate) fn fast_packet_family_for_shape(
+     color_space: ColorSpace,
+     sampling: &[(u8, u8)],
+diff --git a/crates/j2k-jpeg/src/backend/mod.rs b/crates/j2k-jpeg/src/backend/mod.rs
+index 4418789..365e784 100644
+--- a/crates/j2k-jpeg/src/backend/mod.rs
++++ b/crates/j2k-jpeg/src/backend/mod.rs
+@@ -129,7 +129,7 @@ pub(crate) struct Rgb420Crop {
+ }
+ 
+ impl Rgb420Crop {
+-    pub(crate) fn new(start: usize, width: usize) -> Self {
++    pub(crate) const fn new(start: usize, width: usize) -> Self {
+         Self { start, width }
+     }
+ }
+diff --git a/crates/j2k-jpeg/src/decoder/extended12/planes.rs b/crates/j2k-jpeg/src/decoder/extended12/planes.rs
+index 8360f42..ec5abbf 100644
+--- a/crates/j2k-jpeg/src/decoder/extended12/planes.rs
++++ b/crates/j2k-jpeg/src/decoder/extended12/planes.rs
+@@ -2,13 +2,14 @@
+ 
+ //! Extended-precision sequential decode and progressive plane rendering.
+ 
++use crate::entropy::sequential::{McuPosition, RestartState};
+ use alloc::vec::Vec;
+ 
+ use super::super::{
+     finish_scan, Backend, BitReader, CoefficientBlock, JpegError, PreparedDecodePlan,
+     PreparedProgressivePlan, SofKind, Warning, ZIGZAG,
+ };
+-use super::state::{decode_extended12_block_pixels, Extended12RestartTracker};
++use super::state::decode_extended12_block_pixels;
+ use crate::entropy::progressive::ProgressiveDctBlocks;
+ 
+ mod allocation;
+@@ -43,12 +44,18 @@ pub(super) fn decode_extended12_color_planes(
+         .1
+         .div_ceil(u32::from(plan.sampling.max_v) * 8);
+     let total_mcus = mcu_cols * mcu_rows;
+-    let mut restart_tracker = Extended12RestartTracker::new(plan.restart_interval, total_mcus);
++    let mut restart = RestartState::new(plan.restart_interval.unwrap_or(0));
+ 
+     for mcu_y in 0..mcu_rows {
+         for mcu_x in 0..mcu_cols {
+             let current_mcu = mcu_y * mcu_cols + mcu_x;
+-            if restart_tracker.begin_mcu(&mut br, current_mcu)? {
++            if restart.begin_mcu(
++                &mut br,
++                McuPosition {
++                    current: current_mcu,
++                    total: total_mcus,
++                },
++            )? {
+                 prev_dc.fill(0);
+             }
+             for component in &plan.components {
+@@ -76,7 +83,7 @@ pub(super) fn decode_extended12_color_planes(
+                     }
+                 }
+             }
+-            restart_tracker.finish_mcu();
++            restart.end_mcu();
+         }
+     }
+ 
+@@ -107,12 +114,18 @@ pub(super) fn decode_extended12_four_component_planes(
+         .1
+         .div_ceil(u32::from(plan.sampling.max_v) * 8);
+     let total_mcus = mcu_cols * mcu_rows;
+-    let mut restart_tracker = Extended12RestartTracker::new(plan.restart_interval, total_mcus);
++    let mut restart = RestartState::new(plan.restart_interval.unwrap_or(0));
+ 
+     for mcu_y in 0..mcu_rows {
+         for mcu_x in 0..mcu_cols {
+             let current_mcu = mcu_y * mcu_cols + mcu_x;
+-            if restart_tracker.begin_mcu(&mut br, current_mcu)? {
++            if restart.begin_mcu(
++                &mut br,
++                McuPosition {
++                    current: current_mcu,
++                    total: total_mcus,
++                },
++            )? {
+                 prev_dc.fill(0);
+             }
+             for component in &plan.components {
+@@ -140,7 +153,7 @@ pub(super) fn decode_extended12_four_component_planes(
+                     }
+                 }
+             }
+-            restart_tracker.finish_mcu();
++            restart.end_mcu();
+         }
+     }
+ 
+diff --git a/crates/j2k-jpeg/src/decoder/extended12/scaled.rs b/crates/j2k-jpeg/src/decoder/extended12/scaled.rs
+index bdc58cc..328284e 100644
+--- a/crates/j2k-jpeg/src/decoder/extended12/scaled.rs
++++ b/crates/j2k-jpeg/src/decoder/extended12/scaled.rs
+@@ -11,6 +11,7 @@
+ //! Every other whole-ratio color layout (4:4:0, 4:1:1, 4:1:0, 1x4, ...)
+ //! always takes this route.
+ 
++use crate::entropy::sequential::{McuPosition, RestartState};
+ use alloc::vec::Vec;
+ 
+ use super::super::{
+@@ -19,7 +20,6 @@ use super::super::{
+     CoefficientBlock, ColorSpace, DecodeOutcome, Decoder, DownscaleFactor, JpegError, Rect,
+ };
+ use super::planes::{dequantize_progressive12_block, ensure_progressive12_coefficient_capacities};
+-use super::state::Extended12RestartTracker;
+ use super::writers::{Extended12Output, Extended12RgbProjection};
+ use crate::allocation::try_reserve_for_len_with_live_budget;
+ use crate::color::scaled_sampling::{ScaledComponent, ScaledSampling, Upsample};
+@@ -234,11 +234,17 @@ impl Decoder<'_> {
+         let mut prev_dc = [0i32; 4];
+         let mut coeff = CoefficientBlock::default();
+         let mut pixels = [0u16; 64];
+-        let mut restart_tracker =
+-            Extended12RestartTracker::new(plan.restart_interval, mcu_cols * mcu_rows);
++        let mut restart = RestartState::new(plan.restart_interval.unwrap_or(0));
++        let total_mcus = mcu_cols * mcu_rows;
+         for mcu_y in 0..mcu_rows {
+             for mcu_x in 0..mcu_cols {
+-                if restart_tracker.begin_mcu(&mut br, mcu_y * mcu_cols + mcu_x)? {
++                if restart.begin_mcu(
++                    &mut br,
++                    McuPosition {
++                        current: mcu_y * mcu_cols + mcu_x,
++                        total: total_mcus,
++                    },
++                )? {
+                     prev_dc.fill(0);
+                 }
+                 for component in &plan.components {
+@@ -275,7 +281,7 @@ impl Decoder<'_> {
+                         }
+                     }
+                 }
+-                restart_tracker.finish_mcu();
++                restart.end_mcu();
+             }
+         }
+         let scan_warnings = finish_scan(&mut br, true)?;
+diff --git a/crates/j2k-jpeg/src/decoder/extended12/sequential/color444.rs b/crates/j2k-jpeg/src/decoder/extended12/sequential/color444.rs
+index bafc00c..3e4b278 100644
+--- a/crates/j2k-jpeg/src/decoder/extended12/sequential/color444.rs
++++ b/crates/j2k-jpeg/src/decoder/extended12/sequential/color444.rs
+@@ -7,11 +7,12 @@ use super::super::super::{
+     Decoder, DownscaleFactor, JpegError, Rect,
+ };
+ use super::super::sampling::validate_extended12_color444_plan;
+-use super::super::state::{decode_extended12_block_pixels, Extended12RestartTracker};
++use super::super::state::decode_extended12_block_pixels;
+ use super::super::writers::{
+     write_extended12_rgb_block_region, Extended12Output, Extended12RgbProjection,
+     Extended12WriteRegion,
+ };
++use crate::entropy::sequential::{McuPosition, RestartState};
+ 
+ impl Decoder<'_> {
+     pub(super) fn decode_extended12_color444_region_into(
+@@ -35,8 +36,7 @@ impl Decoder<'_> {
+             core::array::from_fn(|_| CoefficientBlock::default());
+         let mut pixels = [[0u16; 64]; 3];
+         let total_mcus = mcu_cols * mcu_rows;
+-        let mut restart_tracker =
+-            Extended12RestartTracker::new(self.plan.restart_interval, total_mcus);
++        let mut restart = RestartState::new(self.plan.restart_interval.unwrap_or(0));
+         let write_region = Extended12WriteRegion {
+             output_rect,
+             dimensions: (width, height),
+@@ -47,7 +47,13 @@ impl Decoder<'_> {
+         for mcu_y in 0..mcu_rows {
+             for mcu_x in 0..mcu_cols {
+                 let current_mcu = mcu_y * mcu_cols + mcu_x;
+-                if restart_tracker.begin_mcu(&mut br, current_mcu)? {
++                if restart.begin_mcu(
++                    &mut br,
++                    McuPosition {
++                        current: current_mcu,
++                        total: total_mcus,
++                    },
++                )? {
+                     prev_dc.fill(0);
+                 }
+                 for component in &self.plan.components {
+@@ -70,7 +76,7 @@ impl Decoder<'_> {
+                     (mcu_x * 8, mcu_y * 8),
+                     &pixels,
+                 );
+-                restart_tracker.finish_mcu();
++                restart.end_mcu();
+             }
+         }
+ 
+diff --git a/crates/j2k-jpeg/src/decoder/extended12/sequential/four_component.rs b/crates/j2k-jpeg/src/decoder/extended12/sequential/four_component.rs
+index 8b2c142..6c80508 100644
+--- a/crates/j2k-jpeg/src/decoder/extended12/sequential/four_component.rs
++++ b/crates/j2k-jpeg/src/decoder/extended12/sequential/four_component.rs
+@@ -11,11 +11,12 @@ use super::super::sampling::{
+     extended12_four_component_sampling, validate_extended12_four_component444_plan,
+     Extended12ColorSampling,
+ };
+-use super::super::state::{decode_extended12_block_pixels, Extended12RestartTracker};
++use super::super::state::decode_extended12_block_pixels;
+ use super::super::writers::{
+     write_extended12_four_component_block_region, write_extended12_four_component_planes_region,
+     Extended12Output, Extended12WriteRegion,
+ };
++use crate::entropy::sequential::{McuPosition, RestartState};
+ 
+ impl Decoder<'_> {
+     pub(super) fn decode_extended12_four_component444_region_into(
+@@ -38,8 +39,7 @@ impl Decoder<'_> {
+             core::array::from_fn(|_| CoefficientBlock::default());
+         let mut pixels = [[0u16; 64]; 4];
+         let total_mcus = mcu_cols * mcu_rows;
+-        let mut restart_tracker =
+-            Extended12RestartTracker::new(self.plan.restart_interval, total_mcus);
++        let mut restart = RestartState::new(self.plan.restart_interval.unwrap_or(0));
+         let write_region = Extended12WriteRegion {
+             output_rect,
+             dimensions: (width, height),
+@@ -50,7 +50,13 @@ impl Decoder<'_> {
+         for mcu_y in 0..mcu_rows {
+             for mcu_x in 0..mcu_cols {
+                 let current_mcu = mcu_y * mcu_cols + mcu_x;
+-                if restart_tracker.begin_mcu(&mut br, current_mcu)? {
++                if restart.begin_mcu(
++                    &mut br,
++                    McuPosition {
++                        current: current_mcu,
++                        total: total_mcus,
++                    },
++                )? {
+                     prev_dc.fill(0);
+                 }
+                 for component in &self.plan.components {
+@@ -73,7 +79,7 @@ impl Decoder<'_> {
+                     (mcu_x * 8, mcu_y * 8),
+                     &pixels,
+                 );
+-                restart_tracker.finish_mcu();
++                restart.end_mcu();
+             }
+         }
+ 
+diff --git a/crates/j2k-jpeg/src/decoder/extended12/sequential.rs b/crates/j2k-jpeg/src/decoder/extended12/sequential.rs
+index ba2005b..ff636ca 100644
+--- a/crates/j2k-jpeg/src/decoder/extended12/sequential.rs
++++ b/crates/j2k-jpeg/src/decoder/extended12/sequential.rs
+@@ -11,11 +11,12 @@ use super::sampling::{
+     Extended12Layout,
+ };
+ use super::scaled::{needs_scaled_extended12_route, Extended12Color};
+-use super::state::{decode_extended12_block_pixels, Extended12RestartTracker};
++use super::state::decode_extended12_block_pixels;
+ use super::writers::{
+     write_extended12_block_region, Extended12Output, Extended12RgbProjection, Extended12WriteRegion,
+ };
+ use crate::color::scaled_sampling::ScaledSampling;
++use crate::entropy::sequential::{McuPosition, RestartState};
+ 
+ mod color444;
+ mod four_component;
+@@ -212,8 +213,7 @@ impl Decoder<'_> {
+         let mut coeff = CoefficientBlock::default();
+         let mut pixels = [0u16; 64];
+         let total_mcus = mcu_cols * mcu_rows;
+-        let mut restart_tracker =
+-            Extended12RestartTracker::new(self.plan.restart_interval, total_mcus);
++        let mut restart = RestartState::new(self.plan.restart_interval.unwrap_or(0));
+         let write_region = Extended12WriteRegion {
+             output_rect,
+             dimensions: (width, height),
+@@ -224,7 +224,13 @@ impl Decoder<'_> {
+         for mcu_y in 0..mcu_rows {
+             for mcu_x in 0..mcu_cols {
+                 let current_mcu = mcu_y * mcu_cols + mcu_x;
+-                if restart_tracker.begin_mcu(&mut br, current_mcu)? {
++                if restart.begin_mcu(
++                    &mut br,
++                    McuPosition {
++                        current: current_mcu,
++                        total: total_mcus,
++                    },
++                )? {
+                     prev_dc = 0;
+                 }
+                 decode_extended12_block_pixels(
+@@ -242,7 +248,7 @@ impl Decoder<'_> {
+                     (mcu_x * 8, mcu_y * 8),
+                     &pixels,
+                 );
+-                restart_tracker.finish_mcu();
++                restart.end_mcu();
+             }
+         }
+ 
+diff --git a/crates/j2k-jpeg/src/decoder/extended12/state.rs b/crates/j2k-jpeg/src/decoder/extended12/state.rs
+index aea9db5..2873741 100644
+--- a/crates/j2k-jpeg/src/decoder/extended12/state.rs
++++ b/crates/j2k-jpeg/src/decoder/extended12/state.rs
+@@ -2,7 +2,6 @@
+ 
+ //! Extended-precision entropy block and restart state.
+ 
+-pub(super) use super::super::lossless_helpers::Extended12RestartTracker;
+ use super::super::{
+     decode_block_with_activity, Backend, BitReader, BlockActivity, CoefficientBlock, JpegError,
+     ResolvedPreparedComponentPlan,
+diff --git a/crates/j2k-jpeg/src/decoder/lossless_helpers.rs b/crates/j2k-jpeg/src/decoder/lossless_helpers.rs
+index 575fe25..dc64891 100644
+--- a/crates/j2k-jpeg/src/decoder/lossless_helpers.rs
++++ b/crates/j2k-jpeg/src/decoder/lossless_helpers.rs
+@@ -1,9 +1,9 @@
+ // SPDX-License-Identifier: MIT OR Apache-2.0
+ 
+ use super::{
+-    downscale_profile_name, emit_jpeg_profile_fields, BitReader, ColorSpace, DownscaleFactor,
+-    Duration, Info, JpegError, LosslessSample, MarkerKind, PreparedLosslessPlan, ProfileField,
+-    Rect, RestartIndex, RestartSegment, SofKind,
++    downscale_profile_name, emit_jpeg_profile_fields, ColorSpace, DownscaleFactor, Duration, Info,
++    JpegError, LosslessSample, MarkerKind, PreparedLosslessPlan, ProfileField, Rect, RestartIndex,
++    RestartSegment, SofKind,
+ };
+ use crate::allocation::{checked_allocation_bytes, try_vec_with_capacity};
+ use crate::entropy::sequential::PreparedDecodePlan;
+@@ -161,52 +161,6 @@ pub(super) fn emit_decode_scan_profile(
+     });
+ }
+ 
+-pub(super) fn consume_extended12_restart(
+-    br: &mut BitReader<'_>,
+-    mcu_index: u32,
+-    total_mcus: u32,
+-    expected_rst: &mut u8,
+-) -> Result<(), JpegError> {
+-    *expected_rst = br.consume_restart_marker(*expected_rst, mcu_index, total_mcus)?;
+-    Ok(())
+-}
+-
+-pub(super) struct Extended12RestartTracker {
+-    restart_interval: u32,
+-    total_mcus: u32,
+-    mcus_since_restart: u32,
+-    expected_rst: u8,
+-}
+-
+-impl Extended12RestartTracker {
+-    pub(super) fn new(restart_interval: Option<u16>, total_mcus: u32) -> Self {
+-        Self {
+-            restart_interval: u32::from(restart_interval.unwrap_or(0)),
+-            total_mcus,
+-            mcus_since_restart: 0,
+-            expected_rst: 0,
+-        }
+-    }
+-
+-    pub(super) fn begin_mcu(
+-        &mut self,
+-        br: &mut BitReader<'_>,
+-        mcu_index: u32,
+-    ) -> Result<bool, JpegError> {
+-        if self.restart_interval > 0 && self.mcus_since_restart == self.restart_interval {
+-            consume_extended12_restart(br, mcu_index, self.total_mcus, &mut self.expected_rst)?;
+-            self.mcus_since_restart = 0;
+-            Ok(true)
+-        } else {
+-            Ok(false)
+-        }
+-    }
+-
+-    pub(super) fn finish_mcu(&mut self) {
+-        self.mcus_since_restart += 1;
+-    }
+-}
+-
+ /// Scan-component index feeding each of the three output channels.
+ pub(super) fn lossless_output_order(
+     decode_plan: &PreparedDecodePlan,
+diff --git a/crates/j2k-jpeg/src/decoder/routing/dispatch.rs b/crates/j2k-jpeg/src/decoder/routing/dispatch.rs
+index 2203af4..5ba62bb 100644
+--- a/crates/j2k-jpeg/src/decoder/routing/dispatch.rs
++++ b/crates/j2k-jpeg/src/decoder/routing/dispatch.rs
+@@ -228,20 +228,20 @@ impl Decoder<'_> {
+             downscale,
+             external_live_bytes,
+         } = request;
+-        let fast_route = self.plan.fast_rgb_route().filter(|_| {
++        let fast_family = self.plan.fast_shape_family().filter(|_| {
+             fmt == OutputFormat::Rgb8
+                 && downscale == DownscaleFactor::Full
+                 && self.progressive_plan.is_none()
+         });
+-        if let Some(route) = fast_route {
++        if let Some(family) = fast_family {
+             let mut writer = Rgb8Writer::new_with_backend(out, stride, output_rect.w, self.backend);
+             let scan_bytes = &self.bytes[self.plan.scan_offset..];
+             let checkpoint = self.checkpoint_for_mcu(
+                 scan_bytes,
+-                route.first_decode_mcu(&self.plan, source_roi),
++                family.first_decode_mcu(&self.plan, source_roi),
+                 checked_add_allocation_bytes(external_live_bytes, pool.retained_bytes())?,
+             )?;
+-            let scan_warnings = route.decode(
++            let scan_warnings = family.decode(
+                 &self.plan,
+                 self.backend,
+                 scan_bytes,
+diff --git a/crates/j2k-jpeg/src/decoder/sequential.rs b/crates/j2k-jpeg/src/decoder/sequential.rs
+index 9c9000d..b4c0f9c 100644
+--- a/crates/j2k-jpeg/src/decoder/sequential.rs
++++ b/crates/j2k-jpeg/src/decoder/sequential.rs
+@@ -2,6 +2,7 @@
+ 
+ //! Sequential and progressive writer-based decode paths.
+ 
++use crate::adapter::JpegFastPacketFamily;
+ use crate::allocation::checked_add_allocation_bytes;
+ use crate::context::MAX_DECODER_CONTEXT_ALLOCATION_BYTES;
+ use crate::entropy::sequential::restart_checkpoint_from_index;
+@@ -10,8 +11,8 @@ use super::{
+     checkpoint_before_mcu, decode_progressive, decode_scan_baseline, decode_scan_baseline_rgb,
+     emit_decode_scan_profile, jpeg_profile_stages_enabled, merged_warnings, scaled_dimensions,
+     scaled_rect_covering, stripe_region_layout, DecodeOutcome, Decoder, DeviceCheckpoint,
+-    DownscaleFactor, FastRgbRequest, FastRgbRoute, Instant, InterleavedRgbWriter, JpegError,
+-    OutputWriter, Rect, ScratchPool, CPU_ROI_CHECKPOINT_MIN_TARGET_MCUS,
++    DownscaleFactor, FastRgbRequest, Instant, InterleavedRgbWriter, JpegError, OutputWriter, Rect,
++    ScratchPool, CPU_ROI_CHECKPOINT_MIN_TARGET_MCUS,
+ };
+ 
+ fn checked_live_workspace_bytes(
+@@ -258,22 +259,23 @@ impl Decoder<'_> {
+         let scan_start = profile_enabled.then(Instant::now);
+         // A partial 4:2:0 decode streams the whole image through the cropping
+         // writer; the other fast shapes take it only for whole images.
+-        let fast_route = self.plan.fast_rgb_route().filter(|&route| {
++        let fast_family = self.plan.fast_shape_family().filter(|&family| {
+             downscale == DownscaleFactor::Full
+-                && (route == FastRgbRoute::Fancy420 || decoded == Rect::full(self.info.dimensions))
++                && (family == JpegFastPacketFamily::Fast420
++                    || decoded == Rect::full(self.info.dimensions))
+         });
+-        let (scan_path, scan_warnings) = if let Some(route) = fast_route {
++        let (scan_path, scan_warnings) = if let Some(family) = fast_family {
+             let request = FastRgbRequest {
+                 roi: Rect::full(self.plan.dimensions),
+                 checkpoint: None,
+             };
+             (
+-                match (route, self.plan.sampling.max_h) {
+-                    (FastRgbRoute::Fancy420, _) => "fast420_rgb",
+-                    (FastRgbRoute::Rows, 2) => "fast422_rgb",
+-                    (FastRgbRoute::Rows, _) => "fast444_rgb",
++                match family {
++                    JpegFastPacketFamily::Fast420 => "fast420_rgb",
++                    JpegFastPacketFamily::Fast422 => "fast422_rgb",
++                    JpegFastPacketFamily::Fast444 => "fast444_rgb",
+                 },
+-                route.decode(&self.plan, self.backend, scan_bytes, pool, writer, request)?,
++                family.decode(&self.plan, self.backend, scan_bytes, pool, writer, request)?,
+             )
+         } else {
+             (
+diff --git a/crates/j2k-jpeg/src/decoder.rs b/crates/j2k-jpeg/src/decoder.rs
+index 194a03f..a3db26e 100644
+--- a/crates/j2k-jpeg/src/decoder.rs
++++ b/crates/j2k-jpeg/src/decoder.rs
+@@ -13,8 +13,7 @@ use crate::entropy::progressive::{
+ };
+ use crate::entropy::sequential::{
+     decode_scan_baseline, decode_scan_baseline_rgb, finish_scan, stripe_region_layout,
+-    FastRgbRequest, FastRgbRoute, PreparedComponentPlan, PreparedDecodePlan,
+-    ResolvedPreparedComponentPlan,
++    FastRgbRequest, PreparedComponentPlan, PreparedDecodePlan, ResolvedPreparedComponentPlan,
+ };
+ use crate::entropy::ZIGZAG;
+ use crate::error::{JpegError, MarkerKind, Warning};
+diff --git a/crates/j2k-jpeg/src/entropy/sequential/dct.rs b/crates/j2k-jpeg/src/entropy/sequential/dct.rs
+index 26d06a9..0e23516 100644
+--- a/crates/j2k-jpeg/src/entropy/sequential/dct.rs
++++ b/crates/j2k-jpeg/src/entropy/sequential/dct.rs
+@@ -2,7 +2,8 @@
+ 
+ //! Sequential entropy traversal into preallocated DCT block storage.
+ 
+-use super::restart::{enter_scan_at_mcu, finish_scan, skip_mcu, McuPosition, RestartState};
++use super::layout::McuColumns;
++use super::restart::{enter_scan_at_mcu, finish_scan, skip_mcu, RestartState};
+ use super::{HuffmanPrimaryWidth, PreparedDecodePlan};
+ use crate::entropy::block::{
+     decode_block_dequantized_into, decode_block_quantized_and_dequantized_with_activity,
+@@ -48,12 +49,8 @@ fn decode_scan_dct_blocks_with_entries<const N: usize>(
+     retain_quantized_blocks: bool,
+     lifecycle: SequentialDctLifecycleMetadata,
+ ) -> Result<DecodedDctBlocks, JpegError> {
+-    let max_h = u32::from(plan.sampling.max_h);
+-    let max_v = u32::from(plan.sampling.max_v);
+-    let mcu_width_px = 8 * max_h;
+-    let mcu_height_px = 8 * max_v;
+-    let mcus_per_row = plan.dimensions.0.div_ceil(mcu_width_px);
+-    let mcu_rows = plan.dimensions.1.div_ceil(mcu_height_px);
++    let grid = sequential_mcu_grid(plan);
++    let (mcus_per_row, mcu_rows) = grid;
+     let mut storage = allocate_dct_decode_storage(
+         plan,
+         mcus_per_row,
+@@ -66,17 +63,11 @@ fn decode_scan_dct_blocks_with_entries<const N: usize>(
+     let mut quantized_coeff = CoefficientBlock::default();
+     let mut dequantized_coeff = CoefficientBlock::default();
+     let mut restart = RestartState::new(plan.restart_interval.unwrap_or(0));
+-    let total_mcus = mcu_rows * mcus_per_row;
++    let columns = McuColumns::whole_rows(grid);
+ 
+     for mcu_y in 0..mcu_rows {
+         for mcu_x in 0..mcus_per_row {
+-            if restart.begin_mcu(
+-                &mut br,
+-                McuPosition {
+-                    current: mcu_y * mcus_per_row + mcu_x,
+-                    total: total_mcus,
+-                },
+-            )? {
++            if restart.begin_mcu(&mut br, columns.mcu_position(mcu_x, mcu_y))? {
+                 storage.prev_dc.fill(0);
+             }
+ 
+@@ -126,10 +117,19 @@ fn decode_scan_dct_blocks_with_entries<const N: usize>(
+     storage.finish(lifecycle)
+ }
+ 
+-/// Block grid `(mcus_per_row, mcu_rows)` of a sequential interleaved scan.
++/// Full-size pixel size `(width, height)` of an MCU of a sequential
++/// interleaved scan.
++pub(crate) fn sequential_mcu_size(plan: &PreparedDecodePlan) -> (u32, u32) {
++    (
++        8 * u32::from(plan.sampling.max_h),
++        8 * u32::from(plan.sampling.max_v),
++    )
++}
++
++/// MCU grid `(mcus_per_row, mcu_rows)` of a sequential interleaved scan, at
++/// full size or any downscale (both edges round up to whole MCUs).
+ pub(crate) fn sequential_mcu_grid(plan: &PreparedDecodePlan) -> (u32, u32) {
+-    let mcu_width_px = 8 * u32::from(plan.sampling.max_h);
+-    let mcu_height_px = 8 * u32::from(plan.sampling.max_v);
++    let (mcu_width_px, mcu_height_px) = sequential_mcu_size(plan);
+     (
+         plan.dimensions.0.div_ceil(mcu_width_px),
+         plan.dimensions.1.div_ceil(mcu_height_px),
+@@ -174,17 +174,11 @@ fn decode_scan_dct_blocks_into_with_entries<const N: usize>(
+     let mut br = BitReader::new(scan_bytes);
+     let mut prev_dc = [0_i32; DEVICE_MAX_COMPONENTS];
+     let mut restart = RestartState::new(plan.restart_interval.unwrap_or(0));
+-    let total_mcus = mcu_rows * mcus_per_row;
++    let columns = McuColumns::whole_rows((mcus_per_row, mcu_rows));
+ 
+     for mcu_y in 0..mcu_rows {
+         for mcu_x in 0..mcus_per_row {
+-            if restart.begin_mcu(
+-                &mut br,
+-                McuPosition {
+-                    current: mcu_y * mcus_per_row + mcu_x,
+-                    total: total_mcus,
+-                },
+-            )? {
++            if restart.begin_mcu(&mut br, columns.mcu_position(mcu_x, mcu_y))? {
+                 prev_dc.fill(0);
+             }
+             grid.decode_mcu::<N>(plan, &mut br, &mut prev_dc, blocks, (mcu_x, mcu_y))?;
+@@ -343,16 +337,13 @@ fn decode_scan_dct_window_into_with_entries<const N: usize>(
+         "sequential device DCT storage disagrees with the window block grid",
+     )?;
+ 
+-    let total_mcus = mcu_rows * mcus_per_row;
++    let columns = McuColumns::new((mcus_per_row, mcu_rows), window.col, window.cols);
+     let wide_huffman = plan.prefers_wide_huffman(scan_bytes.len());
+     let mut cursor = enter_scan_at_mcu::<N>(
+         plan,
+         scan_bytes,
+         checkpoint,
+-        McuPosition {
+-            current: window.row * mcus_per_row,
+-            total: total_mcus,
+-        },
++        columns.mcu_position(0, window.row),
+         wide_huffman,
+     )?;
+ 
+@@ -360,23 +351,20 @@ fn decode_scan_dct_window_into_with_entries<const N: usize>(
+         for mcu_x in 0..mcus_per_row {
+             if cursor.restart.begin_mcu(
+                 &mut cursor.br,
+-                McuPosition {
+-                    current: (window.row + row) * mcus_per_row + mcu_x,
+-                    total: total_mcus,
+-                },
++                columns.mcu_position(mcu_x, window.row + row),
+             )? {
+                 cursor.prev_dc = [0; 4];
+             }
+-            if mcu_x < window.col || mcu_x >= window.col + window.cols {
+-                skip_mcu::<N>(plan, &mut cursor.br, &mut cursor.prev_dc, wide_huffman)?;
+-            } else {
++            if columns.contains(mcu_x) {
+                 grid.decode_mcu::<N>(
+                     plan,
+                     &mut cursor.br,
+                     &mut cursor.prev_dc,
+                     blocks,
+-                    (mcu_x - window.col, row),
++                    (columns.local(mcu_x), row),
+                 )?;
++            } else {
++                skip_mcu::<N>(plan, &mut cursor.br, &mut cursor.prev_dc, wide_huffman)?;
+             }
+             cursor.restart.end_mcu();
+         }
+diff --git a/crates/j2k-jpeg/src/entropy/sequential/deposit.rs b/crates/j2k-jpeg/src/entropy/sequential/deposit.rs
+index 2aa49ac..29fb923 100644
+--- a/crates/j2k-jpeg/src/entropy/sequential/deposit.rs
++++ b/crates/j2k-jpeg/src/entropy/sequential/deposit.rs
+@@ -1,12 +1,13 @@
+ // SPDX-License-Identifier: MIT OR Apache-2.0
+ 
+ use super::layout::McuColumns;
+-use super::restart::RestartState;
++use super::restart::{enter_scan_at_mcu_with, EntropyCursor, McuPosition, RestartState};
+ use super::{PreparedDecodePlan, ResolvedPreparedComponentPlan, StripeBuffer};
+ use crate::backend::Backend;
+ use crate::entropy::block::{skip_block, BlockActivity, CoefficientBlock};
+ use crate::error::JpegError;
+ use crate::internal::bit_reader::BitReader;
++use crate::internal::checkpoint::DeviceCheckpoint;
+ use core::ptr;
+ 
+ /// Release-mode precondition for the raw-pointer writes in [`deposit_block`]
+@@ -175,6 +176,32 @@ impl<'a, const N: usize> FastTile420Components<'a, N> {
+         })
+     }
+ 
++    /// Resolve the tables of a fast route's `scan_bytes` and enter the scan
++    /// at `target` (from `checkpoint` when it applies), skipping the MCUs
++    /// before it, each `LUMA_BLOCKS` luma blocks and one block per chroma
++    /// component, with [`Self::skip_mcu`]. The three DC predictors come back
++    /// as the array the row kernels decode against; the cursor's own
++    /// `prev_dc` is not kept up to date after this.
++    pub(super) fn enter_scan<'s, const LUMA_BLOCKS: u32>(
++        plan: &'a PreparedDecodePlan,
++        scan_bytes: &'s [u8],
++        checkpoint: Option<&DeviceCheckpoint>,
++        target: McuPosition,
++    ) -> Result<(Self, EntropyCursor<'s>, [i32; 3]), JpegError> {
++        let components = Self::resolve(plan, plan.prefers_wide_huffman(scan_bytes.len()))?;
++        let cursor = enter_scan_at_mcu_with(
++            plan,
++            scan_bytes,
++            checkpoint,
++            target,
++            |br, [y_dc, cb_dc, cr_dc, _]| {
++                components.skip_mcu::<LUMA_BLOCKS>(br, y_dc, cb_dc, cr_dc)
++            },
++        )?;
++        let [y_dc, cb_dc, cr_dc, _] = cursor.prev_dc;
++        Ok((components, cursor, [y_dc, cb_dc, cr_dc]))
++    }
++
+     /// Entropy-skip one MCU of `LUMA_BLOCKS` luma blocks and one block of each
+     /// chroma component, for the seek to a route's first decoded MCU. The row
+     /// kernels skip MCUs outside their column window with direct
+@@ -204,42 +231,30 @@ impl<'a, const N: usize> FastTile420Components<'a, N> {
+     }
+ }
+ 
+-/// The first three of an entropy cursor's DC predictors, which the
+-/// three-component fast routes keep in a fixed array.
+-pub(super) fn three_component_dc(prev_dc: &mut [i32]) -> Result<&mut [i32; 3], JpegError> {
+-    prev_dc
+-        .first_chunk_mut::<3>()
+-        .ok_or(JpegError::InternalInvariant {
+-            reason: "fast sequential decode requires three DC predictors",
+-        })
+-}
+-
+-pub(super) struct FastTile420DcState<'a> {
+-    pub(super) y: &'a mut i32,
+-    pub(super) cb: &'a mut i32,
+-    pub(super) cr: &'a mut i32,
+-}
+-
+-pub(super) struct FastTile420EntropyState<'a, 'b> {
++/// What a fast row kernel (4:2:0, or 4:4:4 and 4:2:2) decodes against: the
++/// entropy reader, the Y, Cb and Cr (or R, G and B) DC predictors, the
++/// coefficient block it decodes into, and the scan's restart bookkeeping.
++pub(super) struct FastRowState<'a, 'b> {
+     pub(super) br: &'a mut BitReader<'b>,
+-    pub(super) dc: FastTile420DcState<'a>,
++    pub(super) dc: &'a mut [i32; 3],
+     pub(super) coeff: &'a mut CoefficientBlock,
+     pub(super) restart: &'a mut RestartState,
+ }
+ 
+-/// Register-friendly copy of a [`FastTile420EntropyState`]'s reader and DC
+-/// predictors. Behind `&mut` fields the accumulator round-trips through
+-/// memory on every Huffman symbol; decoding a row against this local (with
+-/// the row kernel inlined, so it never escapes) lets LLVM keep it in
+-/// registers. Callers restore it even when the row fails.
++/// Register-friendly copy of a [`FastRowState`]'s reader and DC predictors.
++/// Behind `&mut` the bit accumulator and predictors round-trip through
++/// memory on every Huffman symbol; a row kernel inlined into its wrapper and
++/// decoding against this local (it never escapes) keeps them in registers.
++/// The coefficient block and restart bookkeeping stay behind the state's
++/// pointers. Callers restore the local even when the row fails.
+ pub(super) struct LocalEntropy<'b> {
+-    br: BitReader<'b>,
+-    dc: [i32; 3],
++    pub(super) br: BitReader<'b>,
++    pub(super) dc: [i32; 3],
+ }
+ 
+ impl<'b> LocalEntropy<'b> {
+-    /// Entropy state that decodes against these locals and `outer`'s other
+-    /// fields.
++    /// Row state that decodes against these locals and `outer`'s other
++    /// fields, for the 4:2:0 kernel.
+     #[expect(
+         clippy::inline_always,
+         reason = "must inline so the borrowed locals never escape the row frame"
+@@ -247,19 +262,18 @@ impl<'b> LocalEntropy<'b> {
+     #[inline(always)]
+     pub(super) fn state<'a>(
+         &'a mut self,
+-        outer: &'a mut FastTile420EntropyState<'_, 'b>,
+-    ) -> FastTile420EntropyState<'a, 'b> {
+-        let [y, cb, cr] = &mut self.dc;
+-        FastTile420EntropyState {
++        outer: &'a mut FastRowState<'_, 'b>,
++    ) -> FastRowState<'a, 'b> {
++        FastRowState {
+             br: &mut self.br,
+-            dc: FastTile420DcState { y, cb, cr },
++            dc: &mut self.dc,
+             coeff: &mut *outer.coeff,
+             restart: &mut *outer.restart,
+         }
+     }
+ }
+ 
+-impl<'b> FastTile420EntropyState<'_, 'b> {
++impl<'b> FastRowState<'_, 'b> {
+     #[expect(
+         clippy::inline_always,
+         reason = "must inline so the copied reader stays register-resident"
+@@ -268,7 +282,7 @@ impl<'b> FastTile420EntropyState<'_, 'b> {
+     pub(super) fn take_local(&self) -> LocalEntropy<'b> {
+         LocalEntropy {
+             br: self.br.clone(),
+-            dc: [*self.dc.y, *self.dc.cb, *self.dc.cr],
++            dc: *self.dc,
+         }
+     }
+ 
+@@ -279,7 +293,7 @@ impl<'b> FastTile420EntropyState<'_, 'b> {
+     #[inline(always)]
+     pub(super) fn restore_local(&mut self, local: LocalEntropy<'b>) {
+         *self.br = local.br;
+-        [*self.dc.y, *self.dc.cb, *self.dc.cr] = local.dc;
++        *self.dc = local.dc;
+     }
+ }
+ 
+diff --git a/crates/j2k-jpeg/src/entropy/sequential/fast420/emit.rs b/crates/j2k-jpeg/src/entropy/sequential/fast420/emit.rs
+index 4736410..b167476 100644
+--- a/crates/j2k-jpeg/src/entropy/sequential/fast420/emit.rs
++++ b/crates/j2k-jpeg/src/entropy/sequential/fast420/emit.rs
+@@ -18,7 +18,7 @@ use super::super::emit::{rgb420_chroma_rows, valid_component_rows};
+ use super::super::layout::CropWindow;
+ use super::super::{StripeBuffer, StripePlane};
+ use super::{FAST420_HALO_ROWS as HALO_ROWS, MCU_PX};
+-use crate::backend::{Backend, Rgb420ChromaRows, Rgb420Crop, Rgb420CroppedRowPair, Rgb420RowPair};
++use crate::backend::{Backend, Rgb420ChromaRows, Rgb420CroppedRowPair, Rgb420RowPair};
+ use crate::error::JpegError;
+ use crate::info::Rect;
+ use crate::output::InterleavedRgbWriter;
+@@ -200,13 +200,11 @@ pub(super) fn emit_pass_rows<W: InterleavedRgbWriter>(
+     writer: &mut W,
+ ) -> Result<(), JpegError> {
+     let full_width = crop.is_full_width();
+-    let kernel_crop = Rgb420Crop::new(crop.crop_start, crop.crop_width);
+     let fill = |rows: Rgb420RowPair<'_>| {
+         if full_width {
+             backend.fill_rgb_row_pair_from_420(rows);
+         } else {
+-            backend
+-                .fill_rgb_row_pair_from_420_cropped(Rgb420CroppedRowPair::new(rows, kernel_crop));
++            backend.fill_rgb_row_pair_from_420_cropped(Rgb420CroppedRowPair::new(rows, crop.crop));
+         }
+     };
+     pass.for_each_row_group(|group| match group {
+diff --git a/crates/j2k-jpeg/src/entropy/sequential/fast420/mod.rs b/crates/j2k-jpeg/src/entropy/sequential/fast420/mod.rs
+index b0f4097..0e1bb5b 100644
+--- a/crates/j2k-jpeg/src/entropy/sequential/fast420/mod.rs
++++ b/crates/j2k-jpeg/src/entropy/sequential/fast420/mod.rs
+@@ -7,17 +7,13 @@
+ //! MCU row at a time into a single stripe and convert it to RGB right away;
+ //! see [`emit`] for the row window.
+ 
+-use super::dct::sequential_mcu_grid;
+-use super::deposit::{
+-    three_component_dc, FastTile420Components, FastTile420DcState, FastTile420EntropyState,
+-    FastTile420Window,
+-};
+-use super::layout::{
+-    fast420_decode_mcu_row_end, uses_fancy_420_emit, CropWindow, McuColumns, StripeRegionLayout,
+-};
++use super::dct::sequential_mcu_size;
++use super::deposit::{FastRowState, FastTile420Components, FastTile420Window};
++use super::layout::{fast420_decode_mcu_row_end, uses_fancy_420_emit, CropWindow};
+ use super::profile::{Fast420ScanProfiler, NoopFast420ScanProfile};
+-use super::restart::{enter_scan_at_mcu_with, finish_scan};
+-use super::{FastRgbRequest, FastRgbRoute, HuffmanPrimaryWidth, PreparedDecodePlan, StripeBuffer};
++use super::restart::finish_scan;
++use super::{FastRgbRequest, HuffmanPrimaryWidth, PreparedDecodePlan, StripeBuffer};
++use crate::adapter::JpegFastPacketFamily;
+ use crate::backend::Backend;
+ #[cfg(feature = "bench-internals")]
+ use crate::bench_support::BenchFast420Profile;
+@@ -153,11 +149,16 @@ impl Fast420Scan<'_, '_> {
+     fn rows(self) -> Fast420Rows {
+         let (width, height) = self.plan.dimensions;
+         let roi = self.request.roi;
+-        let region = StripeRegionLayout::for_fancy_420(width, roi);
+-        let columns = McuColumns::new(sequential_mcu_grid(self.plan), region);
++        let (columns, crop) = self.request.columns(self.plan);
++        let (_, mcu_height_px) = sequential_mcu_size(self.plan);
+         Fast420Rows {
+-            first_row: FastRgbRoute::Fancy420.first_decode_row(self.plan, roi),
+-            row_end: fast420_decode_mcu_row_end(roi, MCU_PX, columns.mcu_rows, FAST420_HALO_ROWS),
++            first_row: JpegFastPacketFamily::Fast420.first_decode_row(self.plan, roi),
++            row_end: fast420_decode_mcu_row_end(
++                roi,
++                mcu_height_px,
++                columns.mcu_rows,
++                FAST420_HALO_ROWS,
++            ),
+             window: FastTile420Window {
+                 columns,
+                 // Whether the final coded MCU's right luma blocks reach into
+@@ -165,7 +166,7 @@ impl Fast420Scan<'_, '_> {
+                 right_luma: width % MCU_PX == 0 || width % MCU_PX > 8,
+                 bottom_luma: true,
+             },
+-            crop: CropWindow::new(region, roi),
++            crop,
+             image_height: height,
+         }
+     }
+@@ -196,29 +197,16 @@ impl Fast420Scan<'_, '_> {
+             plan.scratch_bytes,
+         )?;
+ 
+-        let components = FastTile420Components::<N>::resolve(
++        let (components, mut cursor, mut dc) = FastTile420Components::<N>::enter_scan::<4>(
+             plan,
+-            plan.prefers_wide_huffman(self.scan_bytes.len()),
+-        )?;
+-        let mut cursor = enter_scan_at_mcu_with(
+             self.scan_bytes,
+-            plan.restart_interval.unwrap_or(0),
+             self.request.checkpoint,
+             columns.mcu_position(0, rows.first_row),
+-            |br, dc| {
+-                let [y_dc, cb_dc, cr_dc] = three_component_dc(dc)?;
+-                components.skip_mcu::<4>(br, y_dc, cb_dc, cr_dc)
+-            },
+         )?;
+-        let [mut y_dc, mut cb_dc, mut cr_dc] = *three_component_dc(&mut cursor.prev_dc)?;
+         let mut coeff = CoefficientBlock::default();
+-        let mut state = FastTile420EntropyState {
++        let mut state = FastRowState {
+             br: &mut cursor.br,
+-            dc: FastTile420DcState {
+-                y: &mut y_dc,
+-                cb: &mut cb_dc,
+-                cr: &mut cr_dc,
+-            },
++            dc: &mut dc,
+             coeff: &mut coeff,
+             restart: &mut cursor.restart,
+         };
+@@ -234,7 +222,7 @@ impl Fast420Scan<'_, '_> {
+     fn decode_rows<const N: usize, W, P>(
+         self,
+         components: FastTile420Components<'_, N>,
+-        state: &mut FastTile420EntropyState<'_, '_>,
++        state: &mut FastRowState<'_, '_>,
+         stripe: &mut StripeBuffer,
+         writer: &mut W,
+         profile: &mut P,
+diff --git a/crates/j2k-jpeg/src/entropy/sequential/fast420/rows.rs b/crates/j2k-jpeg/src/entropy/sequential/fast420/rows.rs
+index 8240030..d8facd5 100644
+--- a/crates/j2k-jpeg/src/entropy/sequential/fast420/rows.rs
++++ b/crates/j2k-jpeg/src/entropy/sequential/fast420/rows.rs
+@@ -3,8 +3,8 @@
+ //! Entropy and IDCT row kernels for the fast 4:2:0 sequential route.
+ 
+ use super::super::deposit::{
+-    assert_stripe_deposit_capacity, idct_deposit_fast_tile_block, FastTile420Components,
+-    FastTile420EntropyState, FastTile420Window, PlaneBlockTarget,
++    assert_stripe_deposit_capacity, idct_deposit_fast_tile_block, FastRowState,
++    FastTile420Components, FastTile420Window, PlaneBlockTarget,
+ };
+ use super::super::profile::Fast420Profiler;
+ use super::super::StripeBuffer;
+@@ -17,7 +17,7 @@ use crate::error::JpegError;
+ pub(in crate::entropy::sequential) fn decode_mcu_row_fast_tile_420<const N: usize>(
+     components: FastTile420Components<'_, N>,
+     backend: Backend,
+-    state: &mut FastTile420EntropyState<'_, '_>,
++    state: &mut FastRowState<'_, '_>,
+     window: FastTile420Window,
+     mcu_y: u32,
+     stripe: &mut StripeBuffer,
+@@ -47,7 +47,7 @@ fn decode_mcu_row_fast_tile_420_specialized<
+ >(
+     components: FastTile420Components<'_, N>,
+     backend: Backend,
+-    state: &mut FastTile420EntropyState<'_, '_>,
++    state: &mut FastRowState<'_, '_>,
+     window: FastTile420Window,
+     mcu_y: u32,
+     stripe: &mut StripeBuffer,
+@@ -83,13 +83,17 @@ fn decode_mcu_row_fast_tile_420_local<
+ >(
+     components: FastTile420Components<'_, N>,
+     backend: Backend,
+-    state: &mut FastTile420EntropyState<'_, '_>,
++    state: &mut FastRowState<'_, '_>,
+     window: FastTile420Window,
+     mcu_y: u32,
+     stripe: &mut StripeBuffer,
+     profiler: &mut impl Fast420Profiler,
+ ) -> Result<(), JpegError> {
+     let columns = window.columns;
++    let br = &mut *state.br;
++    let [y_dc, cb_dc, cr_dc] = &mut *state.dc;
++    let coeff = &mut *state.coeff;
++    let restart = &mut *state.restart;
+     for (plane_idx, h, v) in [(0, 2, 2), (1, 1, 1), (2, 1, 1)] {
+         assert_stripe_deposit_capacity(
+             stripe,
+@@ -103,40 +107,36 @@ fn decode_mcu_row_fast_tile_420_local<
+     }
+     let mut pixels = [0u8; 64];
+     for mx in 0..columns.mcus_per_row {
+-        if RESTART
+-            && state
+-                .restart
+-                .begin_mcu(&mut *state.br, columns.mcu_position(mx, mcu_y))?
+-        {
+-            *state.dc.y = 0;
+-            *state.dc.cb = 0;
+-            *state.dc.cr = 0;
++        if RESTART && restart.begin_mcu(&mut *br, columns.mcu_position(mx, mcu_y))? {
++            *y_dc = 0;
++            *cb_dc = 0;
++            *cr_dc = 0;
+         }
+         if !columns.contains(mx) {
+             // Direct skips keep the DC predictors in registers; see
+             // `FastTile420Components::skip_mcu`.
+             for _ in 0..4 {
+                 skip_block(
+-                    &mut *state.br,
++                    &mut *br,
+                     components.y.dc_table,
+                     components.y.ac_table,
+-                    &mut *state.dc.y,
++                    &mut *y_dc,
+                 )?;
+             }
+             skip_block(
+-                &mut *state.br,
++                &mut *br,
+                 components.cb.dc_table,
+                 components.cb.ac_table,
+-                &mut *state.dc.cb,
++                &mut *cb_dc,
+             )?;
+             skip_block(
+-                &mut *state.br,
++                &mut *br,
+                 components.cr.dc_table,
+                 components.cr.ac_table,
+-                &mut *state.dc.cr,
++                &mut *cr_dc,
+             )?;
+             if RESTART {
+-                state.restart.end_mcu();
++                restart.end_mcu();
+             }
+             continue;
+         }
+@@ -148,18 +148,18 @@ fn decode_mcu_row_fast_tile_420_local<
+         let emit_bottom = !CLIP_PADDING || window.bottom_luma;
+ 
+         let y0_activity = decode_block_with_activity(
+-            &mut *state.br,
++            &mut *br,
+             components.y.dc_table,
+             components.y.ac_table,
+-            &mut *state.dc.y,
++            &mut *y_dc,
+             components.y.quant,
+-            &mut *state.coeff,
++            coeff,
+         )?;
+         profiler.record_activity(y0_activity);
+         idct_deposit_fast_tile_block(
+             y0_activity,
+             backend,
+-            &*state.coeff,
++            coeff,
+             &mut pixels,
+             PlaneBlockTarget {
+                 plane: &mut stripe.planes[0],
+@@ -170,19 +170,19 @@ fn decode_mcu_row_fast_tile_420_local<
+         );
+ 
+         let y1_activity = decode_block_with_activity(
+-            &mut *state.br,
++            &mut *br,
+             components.y.dc_table,
+             components.y.ac_table,
+-            &mut *state.dc.y,
++            &mut *y_dc,
+             components.y.quant,
+-            &mut *state.coeff,
++            coeff,
+         )?;
+         profiler.record_activity(y1_activity);
+         if emit_right {
+             idct_deposit_fast_tile_block(
+                 y1_activity,
+                 backend,
+-                &*state.coeff,
++                coeff,
+                 &mut pixels,
+                 PlaneBlockTarget {
+                     plane: &mut stripe.planes[0],
+@@ -194,19 +194,19 @@ fn decode_mcu_row_fast_tile_420_local<
+         }
+ 
+         let y2_activity = decode_block_with_activity(
+-            &mut *state.br,
++            &mut *br,
+             components.y.dc_table,
+             components.y.ac_table,
+-            &mut *state.dc.y,
++            &mut *y_dc,
+             components.y.quant,
+-            &mut *state.coeff,
++            coeff,
+         )?;
+         profiler.record_activity(y2_activity);
+         if emit_bottom {
+             idct_deposit_fast_tile_block(
+                 y2_activity,
+                 backend,
+-                &*state.coeff,
++                coeff,
+                 &mut pixels,
+                 PlaneBlockTarget {
+                     plane: &mut stripe.planes[0],
+@@ -218,19 +218,19 @@ fn decode_mcu_row_fast_tile_420_local<
+         }
+ 
+         let y3_activity = decode_block_with_activity(
+-            &mut *state.br,
++            &mut *br,
+             components.y.dc_table,
+             components.y.ac_table,
+-            &mut *state.dc.y,
++            &mut *y_dc,
+             components.y.quant,
+-            &mut *state.coeff,
++            coeff,
+         )?;
+         profiler.record_activity(y3_activity);
+         if emit_right && emit_bottom {
+             idct_deposit_fast_tile_block(
+                 y3_activity,
+                 backend,
+-                &*state.coeff,
++                coeff,
+                 &mut pixels,
+                 PlaneBlockTarget {
+                     plane: &mut stripe.planes[0],
+@@ -242,18 +242,18 @@ fn decode_mcu_row_fast_tile_420_local<
+         }
+ 
+         let cb_activity = decode_block_with_activity(
+-            &mut *state.br,
++            &mut *br,
+             components.cb.dc_table,
+             components.cb.ac_table,
+-            &mut *state.dc.cb,
++            &mut *cb_dc,
+             components.cb.quant,
+-            &mut *state.coeff,
++            coeff,
+         )?;
+         profiler.record_activity(cb_activity);
+         idct_deposit_fast_tile_block(
+             cb_activity,
+             backend,
+-            &*state.coeff,
++            coeff,
+             &mut pixels,
+             PlaneBlockTarget {
+                 plane: &mut stripe.planes[1],
+@@ -264,18 +264,18 @@ fn decode_mcu_row_fast_tile_420_local<
+         );
+ 
+         let cr_activity = decode_block_with_activity(
+-            &mut *state.br,
++            &mut *br,
+             components.cr.dc_table,
+             components.cr.ac_table,
+-            &mut *state.dc.cr,
++            &mut *cr_dc,
+             components.cr.quant,
+-            &mut *state.coeff,
++            coeff,
+         )?;
+         profiler.record_activity(cr_activity);
+         idct_deposit_fast_tile_block(
+             cr_activity,
+             backend,
+-            &*state.coeff,
++            coeff,
+             &mut pixels,
+             PlaneBlockTarget {
+                 plane: &mut stripe.planes[2],
+@@ -286,7 +286,7 @@ fn decode_mcu_row_fast_tile_420_local<
+         );
+ 
+         if RESTART {
+-            state.restart.end_mcu();
++            restart.end_mcu();
+         }
+     }
+ 
+diff --git a/crates/j2k-jpeg/src/entropy/sequential/generic/driver.rs b/crates/j2k-jpeg/src/entropy/sequential/generic/driver.rs
+index f50447c..dad87ff 100644
+--- a/crates/j2k-jpeg/src/entropy/sequential/generic/driver.rs
++++ b/crates/j2k-jpeg/src/entropy/sequential/generic/driver.rs
+@@ -2,6 +2,7 @@
+ 
+ //! Shared geometry, restart seek, and rolling-stripe scan orchestration.
+ 
++use super::super::dct::sequential_mcu_grid;
+ use super::super::emit::StripeEmit;
+ use super::super::layout::{
+     decode_mcu_row_end_for_rect, expanded_output_rect, fast420_decode_mcu_row_end,
+@@ -31,8 +32,8 @@ pub(super) struct ScanSetup {
+     pub(super) scaled: ScaledSampling,
+     block_size: u32,
+     mcu_height_px: u32,
+-    mcus_per_row: u32,
+-    mcu_rows: u32,
++    /// The scan's MCU grid and the columns of `region`.
++    columns: McuColumns,
+     region: StripeRegionLayout,
+     expanded_rect: Rect,
+     emit_rect: Rect,
+@@ -52,10 +53,10 @@ impl ScanSetup {
+         let (width, height) = scaled_dimensions(plan.dimensions, downscale);
+         let scaled = ScaledSampling::new(plan.sampling, downscale, plan.dimensions);
+         let block_size = downscale.output_block_size();
+-        let mcu_width_px = block_size * u32::from(plan.sampling.max_h);
+         let mcu_height_px = block_size * u32::from(plan.sampling.max_v);
+-        let mcus_per_row = width.div_ceil(mcu_width_px);
+-        let mcu_rows = height.div_ceil(mcu_height_px);
++        let grid = sequential_mcu_grid(plan);
++        let (_, mcu_rows) = grid;
++        let region = stripe_region_layout(plan, downscale, output_rect);
+         let expanded_rect = expanded_output_rect(output_rect, width, height);
+         let full_output_rect = expanded_rect == Rect::full((width, height));
+         let use_420_context_window = matches!(mode, ScanOutputMode::InterleavedRgb)
+@@ -81,9 +82,8 @@ impl ScanSetup {
+             scaled,
+             block_size,
+             mcu_height_px,
+-            mcus_per_row,
+-            mcu_rows,
+-            region: stripe_region_layout(plan, downscale, output_rect),
++            columns: McuColumns::for_region(grid, region),
++            region,
+             expanded_rect,
+             emit_rect,
+             full_output_rect,
+@@ -101,16 +101,12 @@ impl ScanSetup {
+         pool.prepare_for(
+             plan,
+             self.scaled.effective,
+-            self.region.stripe_mcus_per_row,
++            self.columns.stripe_mcus_per_row,
+             self.block_size,
+             plan.scratch_bytes,
+         )
+     }
+ 
+-    fn columns(self) -> McuColumns {
+-        McuColumns::new((self.mcus_per_row, self.mcu_rows), self.region)
+-    }
+-
+     fn should_emit(self, mcu_row: u32) -> bool {
+         self.full_output_rect
+             || mcu_row_intersects_rect(mcu_row, self.mcu_height_px, self.emit_rect)
+@@ -145,7 +141,7 @@ pub(super) fn decode_scan_rows<const N: usize, E: StripeEmitter>(
+     } = buffers;
+     let mut coeff = CoefficientBlock::default();
+     let mut pixels = [0u8; 64];
+-    let columns = setup.columns();
++    let columns = setup.columns;
+     let wide_huffman = plan.prefers_wide_huffman(scan_bytes.len());
+     let mut cursor = enter_scan_at_mcu::<N>(
+         plan,
+@@ -221,5 +217,8 @@ pub(super) fn decode_scan_rows<const N: usize, E: StripeEmitter>(
+             scaled: &setup.scaled,
+         })?;
+     }
+-    finish_scan(&mut cursor.br, setup.decode_mcu_row_end == setup.mcu_rows)
++    finish_scan(
++        &mut cursor.br,
++        setup.decode_mcu_row_end == setup.columns.mcu_rows,
++    )
+ }
+diff --git a/crates/j2k-jpeg/src/entropy/sequential/generic/row.rs b/crates/j2k-jpeg/src/entropy/sequential/generic/row.rs
+index feba2d6..97a6beb 100644
+--- a/crates/j2k-jpeg/src/entropy/sequential/generic/row.rs
++++ b/crates/j2k-jpeg/src/entropy/sequential/generic/row.rs
+@@ -4,11 +4,11 @@
+ 
+ use super::super::deposit::{
+     assert_stripe_deposit_capacity, deposit_block, deposit_block_1x1, deposit_block_2x2,
+-    deposit_block_4x4, three_component_dc, FastTile420Components,
++    deposit_block_4x4, FastRowState, FastTile420Components,
+ };
+ use super::super::layout::{component_block_intersects_rect, ComponentBlockPosition, McuColumns};
+ use super::super::restart::RestartState;
+-use super::super::rgb444::{decode_mcu_row_fast_rgb, FastRgbMcuRowContext, FastRgbMcuRowState};
++use super::super::rgb444::{decode_mcu_row_fast_rgb, FastRgbMcuRowContext};
+ use super::super::{PreparedDecodePlan, StripeBuffer};
+ use crate::backend::Backend;
+ use crate::color::scaled_sampling::ScaledSampling;
+@@ -71,14 +71,18 @@ fn decode_mcu_row_rgb422<const N: usize>(
+         backend: context.backend,
+         columns: context.columns,
+     };
+-    let mut row_state = FastRgbMcuRowState {
++    let mut row_state = FastRowState {
+         br: &mut *state.br,
+-        dc: three_component_dc(state.prev_dc)?,
++        dc: state
++            .prev_dc
++            .first_chunk_mut()
++            .ok_or(JpegError::InternalInvariant {
++                reason: "fast sequential decode requires three DC predictors",
++            })?,
+         coeff: &mut *state.coeff,
+-        pixels: &mut *state.pixels,
+         restart: &mut *state.restart,
+     };
+-    decode_mcu_row_fast_rgb::<N, 2>(&row_context, &mut row_state, mcu_y, stripe)
++    decode_mcu_row_fast_rgb::<N, 2>(&row_context, &mut row_state, state.pixels, mcu_y, stripe)
+ }
+ 
+ fn decode_mcu_row_specialized<const N: usize, const FULL_SIZE: bool>(
+@@ -172,8 +176,7 @@ fn decode_mcu_row_local<const N: usize, const FULL_SIZE: bool>(
+             } else {
+                 context.scaled.component(plane_idx).idct_size
+             };
+-            let local_mcu_x0_px =
+-                mx.saturating_sub(columns.stripe_mcu_start) * u32::from(comp.h) * block_size;
++            let local_mcu_x0_px = columns.local(mx) * u32::from(comp.h) * block_size;
+             for vy in 0..u32::from(comp.v) {
+                 for vx in 0..u32::from(comp.h) {
+                     let should_output = FULL_SIZE
+diff --git a/crates/j2k-jpeg/src/entropy/sequential/layout.rs b/crates/j2k-jpeg/src/entropy/sequential/layout.rs
+index 2484775..dd61c19 100644
+--- a/crates/j2k-jpeg/src/entropy/sequential/layout.rs
++++ b/crates/j2k-jpeg/src/entropy/sequential/layout.rs
+@@ -2,6 +2,7 @@
+ 
+ use super::restart::McuPosition;
+ use super::{PreparedComponentPlan, PreparedDecodePlan};
++use crate::backend::Rgb420Crop;
+ use crate::color::scaled_sampling::ScaledSampling;
+ use crate::info::{ColorSpace, DownscaleFactor, Rect};
+ 
+@@ -32,28 +33,7 @@ impl StripeRegionLayout {
+         }
+     }
+ 
+-    /// The window a fancy 4:2:0 region of `roi` decodes in an image `width`
+-    /// pixels wide: the MCU columns covering the chroma samples of `roi`
+-    /// plus one on either side, which the edge columns' upsampling reads.
+-    pub(super) fn for_fancy_420(width: u32, roi: Rect) -> Self {
+-        let chroma_width = width.div_ceil(2);
+-        let sample_start = (roi.x / 2).saturating_sub(1);
+-        let sample_end = ((roi.x + roi.w).div_ceil(2) + 1).min(chroma_width);
+-        let x0 = sample_start * 2;
+-        let x1 = (sample_end * 2).min(width);
+-        Self::new(
+-            width,
+-            16,
+-            Rect {
+-                x: x0,
+-                y: 0,
+-                w: x1 - x0,
+-                h: 1,
+-            },
+-        )
+-    }
+-
+-    pub(super) fn source_width_usize(self) -> usize {
++    pub(super) const fn source_width_usize(self) -> usize {
+         self.source_width as usize
+     }
+ }
+@@ -69,28 +49,37 @@ pub(super) struct McuColumns {
+ }
+ 
+ impl McuColumns {
+-    /// The columns of `region` in a scan of `(mcus_per_row, mcu_rows)` MCUs.
+-    pub(super) const fn new(
+-        (mcus_per_row, mcu_rows): (u32, u32),
+-        region: StripeRegionLayout,
+-    ) -> Self {
++    /// `count` MCU columns from column `first` in a scan of
++    /// `(mcus_per_row, mcu_rows)` MCUs.
++    pub(super) const fn new((mcus_per_row, mcu_rows): (u32, u32), first: u32, count: u32) -> Self {
+         Self {
+             mcus_per_row,
+             mcu_rows,
+-            stripe_mcu_start: region.stripe_mcu_start,
+-            stripe_mcus_per_row: region.stripe_mcus_per_row,
++            stripe_mcu_start: first,
++            stripe_mcus_per_row: count,
+         }
+     }
+ 
++    /// Every MCU column of a scan of `grid` MCUs.
++    pub(super) const fn whole_rows(grid: (u32, u32)) -> Self {
++        Self::new(grid, 0, grid.0)
++    }
++
++    /// The columns of `region` in a scan of `grid` MCUs.
++    pub(super) const fn for_region(grid: (u32, u32), region: StripeRegionLayout) -> Self {
++        Self::new(grid, region.stripe_mcu_start, region.stripe_mcus_per_row)
++    }
++
+     #[inline]
+     pub(super) const fn contains(self, mcu_x: u32) -> bool {
+         mcu_x >= self.stripe_mcu_start && mcu_x < self.stripe_mcu_start + self.stripe_mcus_per_row
+     }
+ 
+-    /// Stripe column of MCU column `mcu_x`, which [`Self::contains`].
++    /// Stripe column of MCU column `mcu_x` when [`Self::contains`] it, else
++    /// zero for a column left of the window.
+     #[inline]
+     pub(super) const fn local(self, mcu_x: u32) -> u32 {
+-        mcu_x - self.stripe_mcu_start
++        mcu_x.saturating_sub(self.stripe_mcu_start)
+     }
+ 
+     /// Scan position of the MCU at column `mcu_x` of row `mcu_y`.
+@@ -113,29 +102,26 @@ impl McuColumns {
+ pub(super) struct CropWindow {
+     /// Visible luma width of the decoded window.
+     pub(super) row_width: usize,
+-    /// Window column of the first output column.
+-    pub(super) crop_start: usize,
+-    /// Output columns.
+-    pub(super) crop_width: usize,
++    /// The output columns within the window.
++    pub(super) crop: Rgb420Crop,
+ }
+ 
+ impl CropWindow {
+     /// The columns of `roi` in the decoded `region`.
+     pub(super) const fn new(region: StripeRegionLayout, roi: Rect) -> Self {
+         Self {
+-            row_width: region.source_width as usize,
+-            crop_start: (roi.x - region.source_x0) as usize,
+-            crop_width: roi.w as usize,
++            row_width: region.source_width_usize(),
++            crop: Rgb420Crop::new((roi.x - region.source_x0) as usize, roi.w as usize),
+         }
+     }
+ 
+     pub(super) const fn columns(self) -> core::ops::Range<usize> {
+-        self.crop_start..self.crop_start + self.crop_width
++        self.crop.start..self.crop.start + self.crop.width
+     }
+ 
+     /// Whether the writer takes the decoded window's whole rows.
+     pub(super) const fn is_full_width(self) -> bool {
+-        self.crop_start == 0 && self.crop_width == self.row_width
++        self.crop.start == 0 && self.crop.width == self.row_width
+     }
+ 
+     /// Visible 2:1 chroma width of the decoded window.
+@@ -243,7 +229,7 @@ pub(super) fn uses_fancy_420_emit(plan: &PreparedDecodePlan, scaled: &ScaledSamp
+     is_ycbcr_420(plan) && scaled.is_fancy_420()
+ }
+ 
+-pub(super) fn is_ycbcr_420(plan: &PreparedDecodePlan) -> bool {
++fn is_ycbcr_420(plan: &PreparedDecodePlan) -> bool {
+     plan.color_space == ColorSpace::YCbCr
+         && plan.sampling.max_h == 2
+         && plan.sampling.max_v == 2
+diff --git a/crates/j2k-jpeg/src/entropy/sequential/plan.rs b/crates/j2k-jpeg/src/entropy/sequential/plan.rs
+index b79eaa2..c4384c9 100644
+--- a/crates/j2k-jpeg/src/entropy/sequential/plan.rs
++++ b/crates/j2k-jpeg/src/entropy/sequential/plan.rs
+@@ -11,7 +11,6 @@ use crate::entropy::huffman::{
+ use crate::error::JpegError;
+ use crate::info::{ColorSpace, SamplingFactors};
+ 
+-use super::FastRgbRoute;
+ use crate::adapter::{fast_packet_family_for_shape, JpegFastPacketFamily};
+ 
+ mod resolved;
+@@ -120,10 +119,12 @@ impl PreparedDecodePlan {
+     }
+ 
+     /// The color fast-packet family of this scan's coded shape when its three
+-    /// components are stored in output order: the one shape rule the fast CPU
+-    /// routes, the device batch summary and packet classification share (see
+-    /// [`fast_packet_family_for_shape`]).
+-    fn fast_shape_family(&self) -> Option<JpegFastPacketFamily> {
++    /// components are stored in output order, which also picks the streaming
++    /// CPU route that decodes it. The fast CPU routes, the device batch
++    /// summary and packet classification share this shape rule (see
++    /// [`fast_packet_family_for_shape`]); the explicit-family packet builders
++    /// check only the layout they are asked for.
++    pub(crate) fn fast_shape_family(&self) -> Option<JpegFastPacketFamily> {
+         let in_output_order = self
+             .components
+             .iter()
+@@ -155,16 +156,6 @@ impl PreparedDecodePlan {
+     pub(crate) fn matches_fast_444_shape(&self) -> bool {
+         self.fast_shape_family() == Some(JpegFastPacketFamily::Fast444)
+     }
+-
+-    /// The streaming route that decodes this scan's full-size RGB output.
+-    pub(crate) fn fast_rgb_route(&self) -> Option<FastRgbRoute> {
+-        match self.fast_shape_family()? {
+-            JpegFastPacketFamily::Fast420 => Some(FastRgbRoute::Fancy420),
+-            JpegFastPacketFamily::Fast422 | JpegFastPacketFamily::Fast444 => {
+-                Some(FastRgbRoute::Rows)
+-            }
+-        }
+-    }
+ }
+ 
+ #[cfg(test)]
+diff --git a/crates/j2k-jpeg/src/entropy/sequential/restart.rs b/crates/j2k-jpeg/src/entropy/sequential/restart.rs
+index c40842c..ee3255f 100644
+--- a/crates/j2k-jpeg/src/entropy/sequential/restart.rs
++++ b/crates/j2k-jpeg/src/entropy/sequential/restart.rs
+@@ -56,29 +56,19 @@ fn reader_from_checkpoint<'a>(
+     (BitReader::new(scan_bytes), [0; 4], 0)
+ }
+ 
+-/// Entropy reader positioned at or before an MCU, with the DC predictors and
+-/// next expected restart marker that hold there. Every sequential route
+-/// seeks through [`scan_position_before_mcu`] and skips the rest, both inside
+-/// [`enter_scan_at_mcu`] or [`enter_scan_at_mcu_with`].
++/// Position an [`EntropyCursor`] at or before `target_mcu`, and return the
++/// MCU it is at; the caller skips the remaining MCUs. Every sequential route
++/// seeks through here, inside [`enter_scan_at_mcu`] or
++/// [`enter_scan_at_mcu_with`].
+ ///
+ /// A consumer that has a decoder asks `Decoder::checkpoint_for_mcu` for the
+-/// resume point of the first MCU it needs and hands it to
+-/// [`scan_position_before_mcu`]: for restart-coded scans the checkpoint at
+-/// the start of that MCU's restart interval (from the decoder's cached
+-/// restart index), otherwise the decoder's row-start or span checkpoint at
+-/// or before it (from its lazily filled checkpoint grid). Without one, the
+-/// position comes from a scan for the restart marker, or is the scan start.
+-/// A resumed reader yields the same symbols, values, and errors as one that
+-/// decoded every earlier MCU.
+-pub(super) struct ScanPosition<'a> {
+-    pub(super) br: BitReader<'a>,
+-    pub(super) prev_dc: [i32; 4],
+-    pub(super) mcu_index: u32,
+-    pub(super) expected_rst: u8,
+-}
+-
+-/// Position a reader at or before `target_mcu`; the caller skips the
+-/// remaining MCUs.
++/// resume point of the first MCU it needs and hands it in as `checkpoint`:
++/// for restart-coded scans the checkpoint at the start of that MCU's restart
++/// interval (from the decoder's cached restart index), otherwise the
++/// decoder's row-start or span checkpoint at or before it (from its lazily
++/// filled checkpoint grid). Without one, the position comes from a scan for
++/// the restart marker, or is the scan start. A resumed cursor yields the same
++/// symbols, values, and errors as one that decoded every earlier MCU.
+ ///
+ /// Restart-coded scans (`restart != 0`) resume just after the restart marker
+ /// that opens the interval holding `target_mcu`: at `checkpoint` when it is
+@@ -93,7 +83,15 @@ pub(super) fn scan_position_before_mcu<'a>(
+     restart: u16,
+     checkpoint: Option<&DeviceCheckpoint>,
+     target_mcu: u32,
+-) -> ScanPosition<'a> {
++) -> (EntropyCursor<'a>, u32) {
++    let cursor = |br, prev_dc, expected_rst| EntropyCursor {
++        br,
++        prev_dc,
++        restart: RestartState {
++            expected_rst,
++            ..RestartState::new(restart)
++        },
++    };
+     if restart != 0 {
+         let interval_start = target_mcu / u32::from(restart) * u32::from(restart);
+         return checkpoint
+@@ -109,27 +107,21 @@ pub(super) fn scan_position_before_mcu<'a>(
+             })
+             .or_else(|| restart_seek_for_mcu(scan_bytes, restart, target_mcu))
+             .map_or_else(
+-                || ScanPosition {
+-                    br: BitReader::new(scan_bytes),
+-                    prev_dc: [0; 4],
+-                    mcu_index: 0,
+-                    expected_rst: 0,
+-                },
+-                |seek| ScanPosition {
+-                    br: BitReader::new(&scan_bytes[seek.scan_offset..]),
+-                    prev_dc: [0; 4],
+-                    mcu_index: seek.mcu_index,
+-                    expected_rst: seek.expected_rst,
++                || (cursor(BitReader::new(scan_bytes), [0; 4], 0), 0),
++                |seek| {
++                    (
++                        cursor(
++                            BitReader::new(&scan_bytes[seek.scan_offset..]),
++                            [0; 4],
++                            seek.expected_rst,
++                        ),
++                        seek.mcu_index,
++                    )
+                 },
+             );
+     }
+     let (br, prev_dc, mcu_index) = reader_from_checkpoint(scan_bytes, checkpoint, target_mcu);
+-    ScanPosition {
+-        br,
+-        prev_dc,
+-        mcu_index,
+-        expected_rst: 0,
+-    }
++    (cursor(br, prev_dc, 0), mcu_index)
+ }
+ 
+ #[derive(Debug, Clone, Copy)]
+@@ -266,14 +258,15 @@ impl<'a, const N: usize> McuSkipper<'a, N> {
+ 
+ /// An MCU's index in scan order and the scan's MCU count.
+ #[derive(Clone, Copy)]
+-pub(super) struct McuPosition {
+-    pub(super) current: u32,
+-    pub(super) total: u32,
++pub(crate) struct McuPosition {
++    pub(crate) current: u32,
++    pub(crate) total: u32,
+ }
+ 
+-/// Restart-interval bookkeeping of a sequential scan.
++/// Restart-interval bookkeeping of a scan with MCUs in a fixed order: the
++/// sequential routes and the extended 12-bit decoders.
+ #[derive(Clone, Copy, Debug)]
+-pub(super) struct RestartState {
++pub(crate) struct RestartState {
+     /// MCUs per restart interval; zero for a scan without restart markers.
+     pub(super) interval: u16,
+     mcus_since_restart: u32,
+@@ -282,7 +275,7 @@ pub(super) struct RestartState {
+ 
+ impl RestartState {
+     /// Bookkeeping at the start of a scan.
+-    pub(super) const fn new(interval: u16) -> Self {
++    pub(crate) const fn new(interval: u16) -> Self {
+         Self {
+             interval,
+             mcus_since_restart: 0,
+@@ -300,7 +293,7 @@ impl RestartState {
+         reason = "the due check runs once per MCU and must inline so callers' local readers stay in registers"
+     )]
+     #[inline(always)]
+-    pub(super) fn begin_mcu(
++    pub(crate) fn begin_mcu(
+         &mut self,
+         br: &mut BitReader<'_>,
+         position: McuPosition,
+@@ -323,7 +316,7 @@ impl RestartState {
+         reason = "runs once per MCU next to the inlined restart check"
+     )]
+     #[inline(always)]
+-    pub(super) fn end_mcu(&mut self) {
++    pub(crate) fn end_mcu(&mut self) {
+         self.mcus_since_restart += 1;
+     }
+ }
+@@ -336,39 +329,13 @@ pub(super) struct EntropyCursor<'a> {
+     pub(super) restart: RestartState,
+ }
+ 
+-impl<'a> EntropyCursor<'a> {
+-    /// The cursor at the position [`scan_position_before_mcu`] finds for
+-    /// `target_mcu`, and that position's MCU index.
+-    fn before_mcu(
+-        scan_bytes: &'a [u8],
+-        restart_interval: u16,
+-        checkpoint: Option<&DeviceCheckpoint>,
+-        target_mcu: u32,
+-    ) -> (Self, u32) {
+-        let ScanPosition {
+-            br,
+-            prev_dc,
+-            mcu_index,
+-            expected_rst,
+-        } = scan_position_before_mcu(scan_bytes, restart_interval, checkpoint, target_mcu);
+-        let mut restart = RestartState::new(restart_interval);
+-        restart.expected_rst = expected_rst;
+-        (
+-            Self {
+-                br,
+-                prev_dc,
+-                restart,
+-            },
+-            mcu_index,
+-        )
+-    }
+-
++impl EntropyCursor<'_> {
+     /// Skip MCUs `mcus` of a scan of `total_mcus` with `skip_one_mcu`.
+     fn skip_mcus(
+         &mut self,
+         mcus: core::ops::Range<u32>,
+         total_mcus: u32,
+-        mut skip_one_mcu: impl FnMut(&mut BitReader<'_>, &mut [i32]) -> Result<(), JpegError>,
++        mut skip_one_mcu: impl FnMut(&mut BitReader<'_>, &mut [i32; 4]) -> Result<(), JpegError>,
+     ) -> Result<(), JpegError> {
+         for current in mcus {
+             if self.restart.begin_mcu(
+@@ -398,7 +365,7 @@ pub(super) fn enter_scan_at_mcu<'a, const N: usize>(
+     target: McuPosition,
+     wide_huffman: bool,
+ ) -> Result<EntropyCursor<'a>, JpegError> {
+-    let (mut cursor, first_mcu) = EntropyCursor::before_mcu(
++    let (mut cursor, first_mcu) = scan_position_before_mcu(
+         scan_bytes,
+         plan.restart_interval.unwrap_or(0),
+         checkpoint,
+@@ -416,14 +383,18 @@ pub(super) fn enter_scan_at_mcu<'a, const N: usize>(
+ /// [`enter_scan_at_mcu`] with a route's own single-MCU skip, for decoders
+ /// whose component layout is fixed and whose skip is specialized for it.
+ pub(super) fn enter_scan_at_mcu_with<'a>(
++    plan: &PreparedDecodePlan,
+     scan_bytes: &'a [u8],
+-    restart_interval: u16,
+     checkpoint: Option<&DeviceCheckpoint>,
+     target: McuPosition,
+-    skip_one_mcu: impl FnMut(&mut BitReader<'_>, &mut [i32]) -> Result<(), JpegError>,
++    skip_one_mcu: impl FnMut(&mut BitReader<'_>, &mut [i32; 4]) -> Result<(), JpegError>,
+ ) -> Result<EntropyCursor<'a>, JpegError> {
+-    let (mut cursor, first_mcu) =
+-        EntropyCursor::before_mcu(scan_bytes, restart_interval, checkpoint, target.current);
++    let (mut cursor, first_mcu) = scan_position_before_mcu(
++        scan_bytes,
++        plan.restart_interval.unwrap_or(0),
++        checkpoint,
++        target.current,
++    );
+     cursor.skip_mcus(first_mcu..target.current, target.total, skip_one_mcu)?;
+     Ok(cursor)
+ }
+@@ -457,9 +428,9 @@ mod tests {
+             );
+             // A checkpoint for another interval is ignored: the scan decides.
+             let other = restart_checkpoint_from_index(&index, target + 2);
+-            let position = scan_position_before_mcu(scan, restart, other.as_ref(), target);
++            let (_, mcu_index) = scan_position_before_mcu(scan, restart, other.as_ref(), target);
+             assert_eq!(
+-                position.mcu_index,
++                mcu_index,
+                 scanned.map_or(0, |seek| seek.mcu_index),
+                 "{target}"
+             );
+diff --git a/crates/j2k-jpeg/src/entropy/sequential/rgb444.rs b/crates/j2k-jpeg/src/entropy/sequential/rgb444.rs
+index 36122ff..3199904 100644
+--- a/crates/j2k-jpeg/src/entropy/sequential/rgb444.rs
++++ b/crates/j2k-jpeg/src/entropy/sequential/rgb444.rs
+@@ -9,30 +9,34 @@
+ //! so the stripe has no halo row; 4:2:2's horizontal context comes from the
+ //! decoded window's margin columns.
+ 
+-use super::dct::sequential_mcu_grid;
++use super::dct::sequential_mcu_size;
+ use super::deposit::{
+-    assert_stripe_deposit_capacity, deposit_block, three_component_dc, FastTile420Components,
++    assert_stripe_deposit_capacity, deposit_block, FastRowState, FastTile420Components,
++    LocalEntropy,
+ };
+ use super::emit::FastRgbRowsEmitter;
+-use super::layout::{last_mcu_row_for_rect, stripe_region_layout, CropWindow, McuColumns};
+-use super::restart::{enter_scan_at_mcu_with, finish_scan, RestartState};
+-use super::{FastRgbRequest, FastRgbRoute, HuffmanPrimaryWidth, PreparedDecodePlan, StripeBuffer};
++use super::layout::{last_mcu_row_for_rect, McuColumns};
++use super::restart::finish_scan;
++use super::{FastRgbRequest, HuffmanPrimaryWidth, PreparedDecodePlan, StripeBuffer};
++use crate::adapter::JpegFastPacketFamily;
+ use crate::backend::Backend;
+ use crate::entropy::block::{
+     decode_block_with_activity, skip_block, BlockActivity, CoefficientBlock,
+ };
+ use crate::entropy::huffman::{FULL_PRIMARY_ENTRIES, NARROW_PRIMARY_ENTRIES};
+ use crate::error::{JpegError, Warning};
+-use crate::info::DownscaleFactor;
+-use crate::internal::bit_reader::BitReader;
+ use crate::internal::scratch::ScratchPool;
+ use crate::output::{InterleavedRgbWriter, OutputWriter};
+ use alloc::vec::Vec;
+ 
+-/// Decode `request.roi` of a 4:4:4 or 4:2:2 scan into `writer`, whose row 0
+-/// is `request.roi.y`, entering the scan at `request.checkpoint` or a restart
+-/// marker when either is nearer than the scan start.
+-pub(super) fn decode_scan_fast_rgb_rows<W: OutputWriter + InterleavedRgbWriter>(
++/// Decode `request.roi` of a 4:4:4 (`LUMA_H` 1) or 4:2:2 (`LUMA_H` 2) scan
++/// into `writer`, whose row 0 is `request.roi.y`, entering the scan at
++/// `request.checkpoint` or a restart marker when either is nearer than the
++/// scan start.
++pub(super) fn decode_scan_fast_rgb_rows<
++    const LUMA_H: u32,
++    W: OutputWriter + InterleavedRgbWriter,
++>(
+     plan: &PreparedDecodePlan,
+     backend: Backend,
+     scan_bytes: &[u8],
+@@ -40,24 +44,14 @@ pub(super) fn decode_scan_fast_rgb_rows<W: OutputWriter + InterleavedRgbWriter>(
+     writer: &mut W,
+     request: FastRgbRequest<'_>,
+ ) -> Result<Vec<Warning>, JpegError> {
+-    match (plan.huffman_primary_width, plan.sampling.max_h) {
+-        (HuffmanPrimaryWidth::Narrow8, 2) => {
+-            decode_scan_fast_rgb_rows_with_entries::<NARROW_PRIMARY_ENTRIES, 2, W>(
++    match plan.huffman_primary_width {
++        HuffmanPrimaryWidth::Narrow8 => {
++            decode_scan_fast_rgb_rows_with_entries::<NARROW_PRIMARY_ENTRIES, LUMA_H, W>(
+                 plan, backend, scan_bytes, pool, writer, request,
+             )
+         }
+-        (HuffmanPrimaryWidth::Narrow8, _) => {
+-            decode_scan_fast_rgb_rows_with_entries::<NARROW_PRIMARY_ENTRIES, 1, W>(
+-                plan, backend, scan_bytes, pool, writer, request,
+-            )
+-        }
+-        (HuffmanPrimaryWidth::Full12, 2) => {
+-            decode_scan_fast_rgb_rows_with_entries::<FULL_PRIMARY_ENTRIES, 2, W>(
+-                plan, backend, scan_bytes, pool, writer, request,
+-            )
+-        }
+-        (HuffmanPrimaryWidth::Full12, _) => {
+-            decode_scan_fast_rgb_rows_with_entries::<FULL_PRIMARY_ENTRIES, 1, W>(
++        HuffmanPrimaryWidth::Full12 => {
++            decode_scan_fast_rgb_rows_with_entries::<FULL_PRIMARY_ENTRIES, LUMA_H, W>(
+                 plan, backend, scan_bytes, pool, writer, request,
+             )
+         }
+@@ -80,15 +74,14 @@ fn decode_scan_fast_rgb_rows_with_entries<
+     debug_assert_eq!(u32::from(plan.sampling.max_h), LUMA_H);
+ 
+     let roi = request.roi;
+-    let region = stripe_region_layout(plan, DownscaleFactor::Full, roi);
+-    let columns = McuColumns::new(sequential_mcu_grid(plan), region);
+-    let first_row = FastRgbRoute::Rows.first_decode_row(plan, roi);
+-    let row_end = last_mcu_row_for_rect(roi, 8, columns.mcu_rows) + 1;
++    let (columns, crop) = request.columns(plan);
++    let first_row = JpegFastPacketFamily::Fast444.first_decode_row(plan, roi);
++    let row_end = last_mcu_row_for_rect(roi, sequential_mcu_size(plan).1, columns.mcu_rows) + 1;
+     let emitter = FastRgbRowsEmitter {
+         plan,
+         backend,
+         roi,
+-        crop: CropWindow::new(region, roi),
++        crop,
+     };
+     // 4:2:2 upsamples a chroma row into row buffers before conversion.
+     let upsample_width = if LUMA_H == 2 {
+@@ -104,19 +97,12 @@ fn decode_scan_fast_rgb_rows_with_entries<
+         plan.scratch_bytes,
+     )?;
+ 
+-    let components =
+-        FastTile420Components::<N>::resolve(plan, plan.prefers_wide_huffman(scan_bytes.len()))?;
+-    let mut cursor = enter_scan_at_mcu_with(
++    let (components, mut cursor, mut dc) = FastTile420Components::<N>::enter_scan::<LUMA_H>(
++        plan,
+         scan_bytes,
+-        plan.restart_interval.unwrap_or(0),
+         request.checkpoint,
+         columns.mcu_position(0, first_row),
+-        |br, dc| {
+-            let [y_dc, cb_dc, cr_dc] = three_component_dc(dc)?;
+-            components.skip_mcu::<LUMA_H>(br, y_dc, cb_dc, cr_dc)
+-        },
+     )?;
+-    let mut dc = *three_component_dc(&mut cursor.prev_dc)?;
+     let mut coeff = CoefficientBlock::default();
+     let mut pixels = [0u8; 64];
+     let ScratchPool {
+@@ -131,15 +117,20 @@ fn decode_scan_fast_rgb_rows_with_entries<
+     };
+ 
+     {
+-        let mut row_state = FastRgbMcuRowState {
++        let mut row_state = FastRowState {
+             br: &mut cursor.br,
+             dc: &mut dc,
+             coeff: &mut coeff,
+-            pixels: &mut pixels,
+             restart: &mut cursor.restart,
+         };
+         for my in first_row..row_end {
+-            decode_mcu_row_fast_rgb::<N, LUMA_H>(&row_context, &mut row_state, my, stripe)?;
++            decode_mcu_row_fast_rgb::<N, LUMA_H>(
++                &row_context,
++                &mut row_state,
++                &mut pixels,
++                my,
++                stripe,
++            )?;
+             emitter.emit_stripe_rgb_rows(stripe, my, upsampled, writer)?;
+         }
+     }
+@@ -153,29 +144,24 @@ pub(super) struct FastRgbMcuRowContext<'a, const N: usize> {
+     pub(super) columns: McuColumns,
+ }
+ 
+-pub(super) struct FastRgbMcuRowState<'a, 'b> {
+-    pub(super) br: &'a mut BitReader<'b>,
+-    pub(super) dc: &'a mut [i32; 3],
+-    pub(super) coeff: &'a mut CoefficientBlock,
+-    pub(super) pixels: &'a mut [u8; 64],
+-    pub(super) restart: &'a mut RestartState,
+-}
+-
+ pub(super) fn decode_mcu_row_fast_rgb<const N: usize, const LUMA_H: u32>(
+     context: &FastRgbMcuRowContext<'_, N>,
+-    state: &mut FastRgbMcuRowState<'_, '_>,
++    state: &mut FastRowState<'_, '_>,
++    pixels: &mut [u8; 64],
+     mcu_y: u32,
+     stripe: &mut StripeBuffer,
+ ) -> Result<(), JpegError> {
+-    // Decode against locals so the bit accumulator and DC predictors live in
+-    // registers for the whole row instead of round-tripping through `state`
+-    // on every symbol. They are written back even when the row fails.
+-    let mut br = state.br.clone();
+-    let mut dc = *state.dc;
+-    let result =
+-        decode_mcu_row_fast_rgb_local::<N, LUMA_H>(context, state, &mut br, &mut dc, mcu_y, stripe);
+-    *state.br = br;
+-    *state.dc = dc;
++    // The kernel takes the caller's `state` beside the local copy, and the
++    // caller's pixel block. Through a state rebuilt around the local, as the
++    // 4:2:0 kernel decodes, the coefficient-block and restart pointers stay
++    // live for the whole row and this kernel spills (aarch64: +7 %
++    // instructions, +7-30 % stack accesses); a kernel-local pixel block made
++    // x86 4:4:4 decodes 2-4 % slower.
++    let mut local = state.take_local();
++    let result = decode_mcu_row_fast_rgb_local::<N, LUMA_H>(
++        context, state, &mut local, pixels, mcu_y, stripe,
++    );
++    state.restore_local(local);
+     result
+ }
+ 
+@@ -190,9 +176,9 @@ pub(super) fn decode_mcu_row_fast_rgb<const N: usize, const LUMA_H: u32>(
+ #[inline(always)]
+ fn decode_mcu_row_fast_rgb_local<const N: usize, const LUMA_H: u32>(
+     context: &FastRgbMcuRowContext<'_, N>,
+-    state: &mut FastRgbMcuRowState<'_, '_>,
+-    br: &mut BitReader<'_>,
+-    dc: &mut [i32; 3],
++    state: &mut FastRowState<'_, '_>,
++    local: &mut LocalEntropy<'_>,
++    pixels: &mut [u8; 64],
+     mcu_y: u32,
+     stripe: &mut StripeBuffer,
+ ) -> Result<(), JpegError> {
+@@ -201,7 +187,10 @@ fn decode_mcu_row_fast_rgb_local<const N: usize, const LUMA_H: u32>(
+         backend,
+         columns,
+     } = *context;
+-    let [y_dc, cb_dc, cr_dc] = dc;
++    let LocalEntropy {
++        br,
++        dc: [y_dc, cb_dc, cr_dc],
++    } = local;
+     for plane_idx in 0..3 {
+         let h = if plane_idx == 0 { LUMA_H } else { 1 };
+         assert_stripe_deposit_capacity(stripe, plane_idx, h, 1, columns.stripe_mcus_per_row, 8, 0);
+@@ -242,28 +231,28 @@ fn decode_mcu_row_fast_rgb_local<const N: usize, const LUMA_H: u32>(
+             )?;
+             match y_activity {
+                 BlockActivity::DcOnly => {
+-                    crate::idct::idct_islow_dc_only(state.coeff.dc_coeff(), state.pixels);
++                    crate::idct::idct_islow_dc_only(state.coeff.dc_coeff(), pixels);
+                 }
+                 BlockActivity::TopLeft2x2 => {
+-                    backend.idct_top_left_2x2(state.coeff.coefficients(), state.pixels);
++                    backend.idct_top_left_2x2(state.coeff.coefficients(), pixels);
+                 }
+                 BlockActivity::TopLeftQuadrant => {
+-                    backend.idct_top_left_quadrant(state.coeff.coefficients(), state.pixels);
++                    backend.idct_top_left_quadrant(state.coeff.coefficients(), pixels);
+                 }
+                 BlockActivity::RightHalfZero => {
+-                    backend.idct_right_half_zero(state.coeff.coefficients(), state.pixels);
++                    backend.idct_right_half_zero(state.coeff.coefficients(), pixels);
+                 }
+                 BlockActivity::BottomHalfZero => {
+-                    backend.idct_bottom_half_zero(state.coeff.coefficients(), state.pixels);
++                    backend.idct_bottom_half_zero(state.coeff.coefficients(), pixels);
+                 }
+-                BlockActivity::General => backend.idct(state.coeff.coefficients(), state.pixels),
++                BlockActivity::General => backend.idct(state.coeff.coefficients(), pixels),
+             }
+             deposit_block(
+                 &mut stripe.planes[0],
+                 stripe.plane_strides[0],
+                 block_x,
+                 0,
+-                state.pixels,
++                pixels,
+             );
+         }
+ 
+@@ -279,28 +268,28 @@ fn decode_mcu_row_fast_rgb_local<const N: usize, const LUMA_H: u32>(
+         )?;
+         match cb_activity {
+             BlockActivity::DcOnly => {
+-                crate::idct::idct_islow_dc_only(state.coeff.dc_coeff(), state.pixels);
++                crate::idct::idct_islow_dc_only(state.coeff.dc_coeff(), pixels);
+             }
+             BlockActivity::TopLeft2x2 => {
+-                backend.idct_top_left_2x2(state.coeff.coefficients(), state.pixels);
++                backend.idct_top_left_2x2(state.coeff.coefficients(), pixels);
+             }
+             BlockActivity::TopLeftQuadrant => {
+-                backend.idct_top_left_quadrant(state.coeff.coefficients(), state.pixels);
++                backend.idct_top_left_quadrant(state.coeff.coefficients(), pixels);
+             }
+             BlockActivity::RightHalfZero => {
+-                backend.idct_right_half_zero(state.coeff.coefficients(), state.pixels);
++                backend.idct_right_half_zero(state.coeff.coefficients(), pixels);
+             }
+             BlockActivity::BottomHalfZero => {
+-                backend.idct_bottom_half_zero(state.coeff.coefficients(), state.pixels);
++                backend.idct_bottom_half_zero(state.coeff.coefficients(), pixels);
+             }
+-            BlockActivity::General => backend.idct(state.coeff.coefficients(), state.pixels),
++            BlockActivity::General => backend.idct(state.coeff.coefficients(), pixels),
+         }
+         deposit_block(
+             &mut stripe.planes[1],
+             stripe.plane_strides[1],
+             block_x,
+             0,
+-            state.pixels,
++            pixels,
+         );
+ 
+         let cr_activity = decode_block_with_activity(
+@@ -313,28 +302,28 @@ fn decode_mcu_row_fast_rgb_local<const N: usize, const LUMA_H: u32>(
+         )?;
+         match cr_activity {
+             BlockActivity::DcOnly => {
+-                crate::idct::idct_islow_dc_only(state.coeff.dc_coeff(), state.pixels);
++                crate::idct::idct_islow_dc_only(state.coeff.dc_coeff(), pixels);
+             }
+             BlockActivity::TopLeft2x2 => {
+-                backend.idct_top_left_2x2(state.coeff.coefficients(), state.pixels);
++                backend.idct_top_left_2x2(state.coeff.coefficients(), pixels);
+             }
+             BlockActivity::TopLeftQuadrant => {
+-                backend.idct_top_left_quadrant(state.coeff.coefficients(), state.pixels);
++                backend.idct_top_left_quadrant(state.coeff.coefficients(), pixels);
+             }
+             BlockActivity::RightHalfZero => {
+-                backend.idct_right_half_zero(state.coeff.coefficients(), state.pixels);
++                backend.idct_right_half_zero(state.coeff.coefficients(), pixels);
+             }
+             BlockActivity::BottomHalfZero => {
+-                backend.idct_bottom_half_zero(state.coeff.coefficients(), state.pixels);
++                backend.idct_bottom_half_zero(state.coeff.coefficients(), pixels);
+             }
+-            BlockActivity::General => backend.idct(state.coeff.coefficients(), state.pixels),
++            BlockActivity::General => backend.idct(state.coeff.coefficients(), pixels),
+         }
+         deposit_block(
+             &mut stripe.planes[2],
+             stripe.plane_strides[2],
+             block_x,
+             0,
+-            state.pixels,
++            pixels,
+         );
+ 
+         state.restart.end_mcu();
+diff --git a/crates/j2k-jpeg/src/entropy/sequential/tests.rs b/crates/j2k-jpeg/src/entropy/sequential/tests.rs
+index 1a4317f..45e4b66 100644
+--- a/crates/j2k-jpeg/src/entropy/sequential/tests.rs
++++ b/crates/j2k-jpeg/src/entropy/sequential/tests.rs
+@@ -1,6 +1,8 @@
+ // SPDX-License-Identifier: MIT OR Apache-2.0
+ 
+ use super::*;
++use crate::adapter::JpegFastPacketFamily;
++use crate::backend::Rgb420Crop;
+ use crate::color::scaled_sampling::ScaledSampling;
+ use crate::entropy::huffman::{HuffmanTable, PreparedHuffmanTables, FULL_PRIMARY_ENTRIES};
+ use crate::info::{ColorSpace, SamplingFactors};
+@@ -14,7 +16,10 @@ use j2k_test_support::JPEG_BASELINE_420_16X16;
+ #[test]
+ fn fast_tile_rgb_matches_generic_baseline_decode() {
+     let dec = Decoder::new(JPEG_BASELINE_420_16X16).expect("fixture must parse");
+-    assert_eq!(dec.plan.fast_rgb_route(), Some(FastRgbRoute::Fancy420));
++    assert_eq!(
++        dec.plan.fast_shape_family(),
++        Some(JpegFastPacketFamily::Fast420)
++    );
+     assert_eq!(dec.plan.huffman_primary_width, HuffmanPrimaryWidth::Narrow8);
+ 
+     let mut generic = vec![0u8; (dec.info.dimensions.0 * dec.info.dimensions.1 * 3) as usize];
+@@ -43,7 +48,7 @@ fn fast_tile_rgb_matches_generic_baseline_decode() {
+         Rect::full(dec.info.dimensions),
+     )
+     .expect("generic path must decode");
+-    FastRgbRoute::Fancy420
++    JpegFastPacketFamily::Fast420
+         .decode(
+             &dec.plan,
+             dec.backend,
+@@ -64,7 +69,10 @@ fn fast_tile_rgb_matches_generic_baseline_decode() {
+ #[test]
+ fn fast_tile_profiled_rgb_matches_unprofiled_decode() {
+     let dec = Decoder::new(JPEG_BASELINE_420_16X16).expect("fixture must parse");
+-    assert_eq!(dec.plan.fast_rgb_route(), Some(FastRgbRoute::Fancy420));
++    assert_eq!(
++        dec.plan.fast_shape_family(),
++        Some(JpegFastPacketFamily::Fast420)
++    );
+ 
+     let mut unprofiled = vec![0u8; (dec.info.dimensions.0 * dec.info.dimensions.1 * 3) as usize];
+     let mut profiled = vec![0u8; unprofiled.len()];
+@@ -83,7 +91,7 @@ fn fast_tile_profiled_rgb_matches_unprofiled_decode() {
+     let mut profile = BenchFast420Profile::default();
+     let scan_bytes = &dec.bytes[dec.plan.scan_offset..];
+ 
+-    FastRgbRoute::Fancy420
++    JpegFastPacketFamily::Fast420
+         .decode(
+             &dec.plan,
+             dec.backend,
+@@ -169,30 +177,21 @@ fn fast_tile_row_decoder_deposits_below_the_halo_row() {
+     };
+     let mut br = BitReader::new(&[0u8; 16]);
+     let mut coeff = CoefficientBlock::default();
+-    let [mut y_dc, mut cb_dc, mut cr_dc] = [0; 3];
++    let mut dc = [0; 3];
+     let mut restart = RestartState::new(0);
+     let mut profiler = NoopFast420Profiler;
+ 
+     decode_mcu_row_fast_tile_420(
+         components,
+         Backend::detect(),
+-        &mut FastTile420EntropyState {
++        &mut FastRowState {
+             br: &mut br,
+-            dc: FastTile420DcState {
+-                y: &mut y_dc,
+-                cb: &mut cb_dc,
+-                cr: &mut cr_dc,
+-            },
++            dc: &mut dc,
+             coeff: &mut coeff,
+             restart: &mut restart,
+         },
+         FastTile420Window {
+-            columns: McuColumns {
+-                mcus_per_row: 2,
+-                mcu_rows: 1,
+-                stripe_mcu_start: 0,
+-                stripe_mcus_per_row: 2,
+-            },
++            columns: McuColumns::whole_rows((2, 1)),
+             right_luma: true,
+             bottom_luma: true,
+         },
+@@ -220,7 +219,9 @@ fn fast_tile_region_layout_shrinks_horizontal_stripe_span() {
+         h: 8,
+     };
+ 
+-    let region = StripeRegionLayout::for_fancy_420(64, roi);
++    let mut dec = Decoder::new(JPEG_BASELINE_420_16X16).expect("fixture must parse");
++    dec.plan.dimensions = (64, 16);
++    let region = stripe_region_layout(&dec.plan, DownscaleFactor::Full, roi);
+     let crop = CropWindow::new(region, roi);
+ 
+     assert_eq!(region.stripe_mcu_start, 0);
+@@ -624,8 +625,7 @@ fn emit_stripe_rgb_rows_matches_direct_ycbcr_conversion_with_trailing_row() {
+         roi: Rect::full(plan.dimensions),
+         crop: CropWindow {
+             row_width: width,
+-            crop_start: 0,
+-            crop_width: width,
++            crop: Rgb420Crop::new(0, width),
+         },
+     }
+     .emit_stripe_rgb_rows(&stripe, 0, &mut YCbCrGenericRows::default(), &mut writer)
+diff --git a/crates/j2k-jpeg/src/entropy/sequential.rs b/crates/j2k-jpeg/src/entropy/sequential.rs
+index 62dbacd..5657f59 100644
+--- a/crates/j2k-jpeg/src/entropy/sequential.rs
++++ b/crates/j2k-jpeg/src/entropy/sequential.rs
+@@ -18,23 +18,27 @@ mod stripe;
+ 
+ pub(crate) use self::dct::{
+     decode_scan_dct_blocks, decode_scan_dct_blocks_into, decode_scan_dct_window_into,
+-    sequential_mcu_grid, DecodedDctBlocks, McuWindow, SequentialDctLifecycleMetadata,
++    sequential_mcu_grid, sequential_mcu_size, DecodedDctBlocks, McuWindow,
++    SequentialDctLifecycleMetadata,
+ };
+ #[cfg(feature = "bench-internals")]
+ pub(crate) use self::fast420::decode_scan_fast_tile_rgb_profiled;
+ pub(crate) use self::generic::{decode_scan_baseline, decode_scan_baseline_rgb};
+ pub(crate) use self::layout::stripe_region_layout;
+-use self::layout::{scaled_dimensions, uses_fancy_420_emit};
++use self::layout::{scaled_dimensions, uses_fancy_420_emit, CropWindow, McuColumns};
+ use self::output_scratch::{OutputScratch, RgbOutputScratch};
+ pub(crate) use self::plan::{
+     HuffmanPrimaryWidth, PreparedComponentPlan, PreparedDecodePlan, ResolvedPreparedComponentPlan,
+ };
+-pub(crate) use self::restart::{finish_scan, restart_checkpoint_from_index, skip_mcu, McuSkipper};
++pub(crate) use self::restart::{
++    finish_scan, restart_checkpoint_from_index, skip_mcu, McuPosition, McuSkipper, RestartState,
++};
+ use self::stripe::StripePlane;
+ pub(crate) use self::stripe::{StripeBuffer, StripeLayout};
++use crate::adapter::JpegFastPacketFamily;
+ use crate::backend::Backend;
+ use crate::error::{JpegError, Warning};
+-use crate::info::Rect;
++use crate::info::{DownscaleFactor, Rect};
+ use crate::internal::checkpoint::DeviceCheckpoint;
+ use crate::internal::scratch::ScratchPool;
+ use crate::output::{InterleavedRgbWriter, OutputWriter};
+@@ -42,29 +46,21 @@ use alloc::vec::Vec;
+ 
+ #[cfg(test)]
+ use self::deposit::{
+-    deposit_block, deposit_dc_block, FastTile420Components, FastTile420DcState,
+-    FastTile420EntropyState, FastTile420Window,
++    deposit_block, deposit_dc_block, FastRowState, FastTile420Components, FastTile420Window,
+ };
+ #[cfg(test)]
+ use self::emit::{component_row_triplet, FastRgbRowsEmitter};
+ #[cfg(test)]
+ use self::fast420::{decode_mcu_row_fast_tile_420, FAST420_HALO_ROWS};
+ #[cfg(test)]
+-use self::layout::{
+-    fast420_decode_mcu_row_end, fast420_first_decode_mcu_row, CropWindow, McuColumns,
+-    StripeRegionLayout,
+-};
++use self::layout::{fast420_decode_mcu_row_end, fast420_first_decode_mcu_row};
+ #[cfg(test)]
+ use self::profile::NoopFast420Profiler;
+-#[cfg(test)]
+-use self::restart::RestartState;
+ #[cfg(all(test, feature = "bench-internals"))]
+ use crate::bench_support::BenchFast420Profile;
+ #[cfg(test)]
+ use crate::entropy::block::CoefficientBlock;
+ #[cfg(test)]
+-use crate::info::DownscaleFactor;
+-#[cfg(test)]
+ use crate::internal::bit_reader::BitReader;
+ 
+ /// The part of a full-size scan a fast RGB route writes (the writer's row 0
+@@ -75,26 +71,30 @@ pub(crate) struct FastRgbRequest<'a> {
+     pub(crate) checkpoint: Option<&'a DeviceCheckpoint>,
+ }
+ 
+-/// The streaming route that decodes a full-size sequential scan to
+-/// interleaved RGB, chosen once from the coded shape by
+-/// [`PreparedDecodePlan::fast_rgb_route`].
+-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+-pub(crate) enum FastRgbRoute {
+-    /// Fancy-upsampled 4:2:0 YCbCr, streamed through a two-row halo.
+-    Fancy420,
+-    /// 4:4:4 (YCbCr or identity RGB) and 4:2:2 YCbCr, which need no vertical
+-    /// upsampling context.
+-    Rows,
++impl FastRgbRequest<'_> {
++    /// The MCU columns of `plan`'s scan a decode of `roi` reads, and the
++    /// columns of them it writes.
++    fn columns(self, plan: &PreparedDecodePlan) -> (McuColumns, CropWindow) {
++        let region = stripe_region_layout(plan, DownscaleFactor::Full, self.roi);
++        (
++            McuColumns::for_region(sequential_mcu_grid(plan), region),
++            CropWindow::new(region, self.roi),
++        )
++    }
+ }
+ 
+-impl FastRgbRoute {
++/// The streaming CPU routes that decode a full-size sequential scan of a
++/// fast shape (see [`PreparedDecodePlan::fast_shape_family`]) to interleaved
++/// RGB: fancy-upsampled 4:2:0 streams through a two-row halo; 4:2:2 and
++/// 4:4:4 (YCbCr or identity RGB) need no vertical upsampling context.
++impl JpegFastPacketFamily {
+     /// First MCU row a decode of `roi` reads: fancy 4:2:0 also needs the
+     /// chroma row above an MCU-aligned top edge.
+     pub(crate) fn first_decode_row(self, plan: &PreparedDecodePlan, roi: Rect) -> u32 {
+-        let mcu_height_px = 8 * u32::from(plan.sampling.max_v);
++        let (_, mcu_height_px) = sequential_mcu_size(plan);
+         match self {
+-            Self::Fancy420 => layout::fast420_first_decode_mcu_row(roi, mcu_height_px),
+-            Self::Rows => layout::first_mcu_row_for_rect(roi, mcu_height_px),
++            Self::Fast420 => layout::fast420_first_decode_mcu_row(roi, mcu_height_px),
++            Self::Fast422 | Self::Fast444 => layout::first_mcu_row_for_rect(roi, mcu_height_px),
+         }
+     }
+ 
+@@ -115,12 +115,15 @@ impl FastRgbRoute {
+         request: FastRgbRequest<'_>,
+     ) -> Result<Vec<Warning>, JpegError> {
+         match self {
+-            Self::Fancy420 => {
++            Self::Fast420 => {
+                 fast420::decode_scan_fast_tile_rgb(plan, backend, scan_bytes, pool, writer, request)
+             }
+-            Self::Rows => {
+-                rgb444::decode_scan_fast_rgb_rows(plan, backend, scan_bytes, pool, writer, request)
+-            }
++            Self::Fast422 => rgb444::decode_scan_fast_rgb_rows::<2, W>(
++                plan, backend, scan_bytes, pool, writer, request,
++            ),
++            Self::Fast444 => rgb444::decode_scan_fast_rgb_rows::<1, W>(
++                plan, backend, scan_bytes, pool, writer, request,
++            ),
+         }
+     }
+ }

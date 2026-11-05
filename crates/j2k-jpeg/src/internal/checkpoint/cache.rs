@@ -21,7 +21,7 @@ use super::DeviceCheckpoint;
 use crate::allocation::{checked_add_allocation_bytes, checked_allocation_bytes};
 use crate::entropy::huffman::{FULL_PRIMARY_ENTRIES, NARROW_PRIMARY_ENTRIES};
 use crate::entropy::sequential::{
-    sequential_mcu_grid, HuffmanPrimaryWidth, McuSkipper, PreparedDecodePlan,
+    sequential_mcu_grid, sequential_mcu_size, HuffmanPrimaryWidth, McuSkipper, PreparedDecodePlan,
 };
 use crate::error::JpegError;
 use crate::info::{RestartIndex, RestartSegment};
@@ -52,7 +52,7 @@ pub(crate) struct CheckpointGrid {
 impl CheckpointGrid {
     pub(crate) fn for_plan(plan: &PreparedDecodePlan) -> Self {
         let (mcus_per_row, mcu_rows) = sequential_mcu_grid(plan);
-        let mcu_width_px = 8 * u32::from(plan.sampling.max_h);
+        let (mcu_width_px, _) = sequential_mcu_size(plan);
         let span_mcus = CHECKPOINT_SPAN_PX.div_ceil(mcu_width_px).max(1);
         Self {
             mcus_per_row,
@@ -155,9 +155,9 @@ struct CacheState {
 
 impl CacheState {
     fn restart_index_bytes(&self) -> Result<usize, JpegError> {
-        self.restart_index.as_ref().map_or(Ok(0), |index| {
-            checked_allocation_bytes::<RestartSegment>(index.segments.capacity())
-        })
+        self.restart_index
+            .as_ref()
+            .map_or(Ok(0), restart_index_bytes)
     }
 
     fn retained_allocation_bytes(&self) -> Result<usize, JpegError> {
@@ -184,6 +184,10 @@ impl CacheState {
             allocation_cap,
         )
     }
+}
+
+fn restart_index_bytes(index: &RestartIndex) -> Result<usize, JpegError> {
+    checked_allocation_bytes::<RestartSegment>(index.segments.capacity())
 }
 
 /// Per-decoder entropy seek cache: lazily published checkpoints and the
@@ -242,7 +246,7 @@ impl CpuCheckpointCache {
         index: RestartIndex,
         retained_baseline_bytes: usize,
     ) -> Result<(), JpegError> {
-        let index_bytes = checked_allocation_bytes::<RestartSegment>(index.segments.capacity())?;
+        let index_bytes = restart_index_bytes(&index)?;
         let mut state = self.lock()?;
         let fits = state.restart_index.is_none()
             && checked_live_bytes(

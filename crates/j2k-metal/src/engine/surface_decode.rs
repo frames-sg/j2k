@@ -99,37 +99,54 @@ fn select_plane_stage(
     PlaneStage::from_planes(&runtime.device, decoded, None)
 }
 
+/// The native image of `bytes` reduced by exactly `scale`'s levels of its
+/// resolution ladder, and the reduced region covering `roi` on the reference
+/// grid, as the CPU decoder decodes and reports it.
+///
+/// A reduction spans `[ceil(origin / s), ceil((origin + size) / s))` on each
+/// axis, so an image whose origin is not a multiple of `s` reduces to fewer
+/// samples than `ceil(size / s)` and its regions shift against
+/// `roi.scaled_covering(scale)`.
+pub(crate) fn reduced_image_and_region(
+    bytes: &[u8],
+    roi: j2k_core::Rect,
+    scale: j2k_core::Downscale,
+) -> Result<(NativeImage<'_>, j2k_core::Rect), Error> {
+    let grid = j2k::J2kDecoder::inspect_reference_grid(bytes)?;
+    let request = if scale == j2k_core::Downscale::None {
+        j2k::DeviceDecodeRequest::Region { roi }
+    } else {
+        j2k::DeviceDecodeRequest::RegionScaled { roi, scale }
+    };
+    let region = j2k::DeviceDecodePlan::for_reference_grid(grid, request)?.output_rect();
+    // A level count past the ladder fails the reduced image below.
+    let levels = u8::try_from(scale.denominator().trailing_zeros()).unwrap_or(u8::MAX);
+    let image = NativeImage::new_with_reduction(bytes, &NativeDecodeSettings::default(), levels)
+        .map_err(native_decode_error)?;
+    Ok((image, region))
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) fn decode_region_scaled_to_surface(
     bytes: &[u8],
-    dims: (u32, u32),
     fmt: PixelFormat,
     roi: j2k_core::Rect,
     scale: j2k_core::Downscale,
 ) -> Result<Surface, Error> {
-    let target_dims = (
-        dims.0.div_ceil(scale.denominator()),
-        dims.1.div_ceil(scale.denominator()),
-    );
-    let settings = NativeDecodeSettings {
-        target_resolution: Some(target_dims),
-        ..NativeDecodeSettings::default()
-    };
-    let image = NativeImage::new(bytes, &settings).map_err(native_decode_error)?;
+    let (image, region) = reduced_image_and_region(bytes, roi, scale)?;
     let mut context = NativeDecoderContext::default();
-    decode_image_region_to_surface(&image, &mut context, fmt, roi.scaled_covering(scale))
+    decode_image_region_to_surface(&image, &mut context, fmt, region)
 }
 
 #[cfg(target_os = "macos")]
 pub(crate) fn decode_region_scaled_to_surface_with_device(
     bytes: &[u8],
-    dims: (u32, u32),
     fmt: PixelFormat,
     roi: j2k_core::Rect,
     scale: j2k_core::Downscale,
     device: &Device,
 ) -> Result<Surface, Error> {
     with_runtime_for_device(device, |_| {
-        decode_region_scaled_to_surface(bytes, dims, fmt, roi, scale)
+        decode_region_scaled_to_surface(bytes, fmt, roi, scale)
     })
 }

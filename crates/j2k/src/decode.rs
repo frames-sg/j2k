@@ -22,12 +22,14 @@ mod srgb8;
 mod stripes;
 use output::{
     can_decode_u8_directly, expand_rgb8_to_rgba8, region_rows_preferred_u16, rows_match_native_u16,
-    write_components_u16_output, write_components_u8_output, write_u16_output, write_u8_output,
-    U16RowSink, U8RowSink,
+    write_components_u16_output, write_components_u8_output, write_u16_output,
+    write_u16_output_rows, write_u8_output, U16RowSink, U8RowSink,
 };
-pub(crate) use route::{full_image_route, FullImageRoute, PlanesBudget, RouteRequest};
+pub(crate) use route::{
+    full_image_route, output_streams_rows, FullImageRoute, PlanesBudget, RouteRequest,
+};
 pub use settings::DecodeSettings;
-pub(crate) use srgb8::decode_image_srgb8;
+pub(crate) use srgb8::{decode_image_srgb8, RoutedSrgb8};
 pub use srgb8::{J2kSrgb8Image, J2kSrgb8Layout};
 pub(crate) use stripes::{
     decode_image_rows_in_stripes, rows_stream_whole, DeliverRow, StreamedRowsError,
@@ -73,6 +75,91 @@ pub(crate) fn decode_warnings_for_recovery(
 
 pub(crate) fn decode_warnings_for_image(image: &Image<'_>) -> Vec<J2kDecodeWarning> {
     decode_warnings_for_recovery(image.used_lenient_metadata_recovery())
+}
+
+/// The whole of an image decoded once, from which its rows are written a
+/// stripe at a time as the planes route of `decode_into` writes them: the
+/// row decode of images deeper than 24 bits, whose exact samples no region
+/// decode streams. Decoding once keeps a stripe height from multiplying the
+/// decode work.
+pub(crate) enum WholeImageRows {
+    U8(crate::backend::Bitmap),
+    U16(crate::backend::RawBitmap),
+}
+
+impl WholeImageRows {
+    /// Decode the whole of `image` for rows in `fmt`.
+    pub(crate) fn decode<'a>(
+        image: &Image<'a>,
+        native_context: &mut j2k_native::DecoderContext<'a>,
+        fmt: PixelFormat,
+    ) -> Result<Self, J2kError> {
+        match fmt {
+            PixelFormat::Gray8 | PixelFormat::Rgb8 | PixelFormat::Rgba8 => image
+                .decode_with_context(native_context)
+                .map(Self::U8)
+                .map_err(J2kError::from_native_decode_error),
+            PixelFormat::Gray16 | PixelFormat::Rgb16 | PixelFormat::Rgba16 => image
+                .decode_native_with_context(native_context)
+                .map(Self::U16)
+                .map_err(J2kError::from_native_decode_error),
+            _ => Err(Unsupported {
+                what: "pixel format is not yet supported by j2k",
+            }
+            .into()),
+        }
+    }
+
+    /// Write rows `rows` of `image`, decoded as `self`, to `out` from its
+    /// first row.
+    pub(crate) fn write_rows(
+        &self,
+        image: &Image<'_>,
+        rows: core::ops::Range<usize>,
+        out: &mut [u8],
+        stride: usize,
+        fmt: PixelFormat,
+    ) -> Result<(), J2kError> {
+        match self {
+            Self::U8(bitmap) => {
+                let channels =
+                    usize::from(bitmap.color_space.num_channels()) + usize::from(bitmap.has_alpha);
+                let row_bytes = (bitmap.width as usize).checked_mul(channels).ok_or(
+                    J2kError::DimensionOverflow {
+                        width: bitmap.width,
+                        height: bitmap.height,
+                    },
+                )?;
+                if rows.start > rows.end || rows.end > bitmap.height as usize {
+                    return Err(J2kError::internal_backend("bitmap rows outside the bitmap"));
+                }
+                let height = u32::try_from(rows.len())
+                    .map_err(|_| J2kError::internal_backend("bitmap rows exceed u32"))?;
+                let data = bitmap
+                    .data
+                    .get(rows.start * row_bytes..rows.end * row_bytes)
+                    .ok_or_else(|| J2kError::internal_backend("bitmap shorter than its rows"))?;
+                write_u8_output(
+                    image.color_space(),
+                    image.has_alpha(),
+                    (bitmap.width, height),
+                    data,
+                    out,
+                    stride,
+                    fmt,
+                )
+            }
+            Self::U16(raw) => write_u16_output_rows(
+                image.color_space(),
+                image.has_alpha(),
+                raw,
+                rows,
+                out,
+                stride,
+                fmt,
+            ),
+        }
+    }
 }
 
 /// Decode the full `image` into `out` on `route`, which
@@ -271,24 +358,55 @@ pub(crate) fn decode_image_region_rows_into_with_native_context<'a>(
     fmt: PixelFormat,
     roi: Rect,
 ) -> Result<(), J2kError> {
+    decode_image_region_rows_into_beside(image, native_context, (out, stride, fmt), roi, 0)
+}
+
+/// Whether a region decode of `roi` in `fmt` runs on its rows, as
+/// [`decode_image_region_into_with_native_context`] chooses, so that
+/// [`decode_image_region_rows_into_beside`] decodes it the same way.
+pub(crate) fn region_rows_write(image: &Image<'_>, fmt: PixelFormat, roi: Rect) -> bool {
+    match fmt {
+        PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Gray8 => true,
+        PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16 => {
+            region_rows_preferred_u16(image, fmt, roi)
+        }
+        _ => false,
+    }
+}
+
+/// [`decode_image_region_rows_into_with_native_context`] whose decode
+/// charges `baseline_bytes` the caller holds beside it to the decode budget.
+pub(crate) fn decode_image_region_rows_into_beside<'a>(
+    image: &Image<'a>,
+    native_context: &mut j2k_native::DecoderContext<'a>,
+    (out, stride, fmt): (&mut [u8], usize, PixelFormat),
+    roi: Rect,
+    baseline_bytes: usize,
+) -> Result<(), J2kError> {
     let roi = (roi.x, roi.y, roi.w, roi.h);
     match fmt {
         PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Gray8 => {
             let mut sink = U8RowSink::new(image.color_space(), image.has_alpha(), out, stride, fmt);
-            image
-                .decode_region_rows_for_integer_output_with_context(roi, native_context, &mut sink)
-                .map_err(J2kError::from_native_decode_error)?;
-            sink.finish()
+            let decoded = image.decode_region_rows_for_integer_output_with_retained_baseline(
+                roi,
+                native_context,
+                &mut sink,
+                baseline_bytes,
+            );
+            sink.finish_decode(decoded)
         }
         PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16
             if rows_match_native_u16(image, fmt) =>
         {
             let mut sink =
                 U16RowSink::new(image.color_space(), image.has_alpha(), out, stride, fmt);
-            image
-                .decode_region_rows_for_integer_output_with_context(roi, native_context, &mut sink)
-                .map_err(J2kError::from_native_decode_error)?;
-            sink.finish()
+            let decoded = image.decode_region_rows_for_integer_output_with_retained_baseline(
+                roi,
+                native_context,
+                &mut sink,
+                baseline_bytes,
+            );
+            sink.finish_decode(decoded)
         }
         _ => Err(Unsupported {
             what: "pixel format cannot stream its rows for this image",

@@ -123,151 +123,79 @@ kernel void jpeg_hybrid_idct8(
 // 12-bit IDCTs: jidctint.c / jidctred.c built with BITS_IN_JSAMPLE == 12 keep
 // PASS1_BITS = 1 and 64-bit intermediates, so nothing wraps. Samples are the
 // native 0..4095 values.
-constant int PASS1_BITS_12 = 1;
-
-inline long hybrid_descale_long(long value, int shift) {
-    return (value + (long(1) << (shift - 1))) >> shift;
-}
-
 inline ushort hybrid_level_shift_12(long value) {
     return ushort(clamp(value + 2048, long(0), long(4095)));
 }
 
-inline void hybrid_islow_1d_long(thread const long p[8], thread long out[8]) {
-    const long z1 = (p[2] + p[6]) * FIX_0_541196100;
-    const long tmp2 = z1 - p[6] * FIX_1_847759065;
-    const long tmp3 = z1 + p[2] * FIX_0_765366865;
-    const long tmp0 = (p[0] + p[4]) << CONST_BITS;
-    const long tmp1 = (p[0] - p[4]) << CONST_BITS;
-    const long tmp10 = tmp0 + tmp3;
-    const long tmp13 = tmp0 - tmp3;
-    const long tmp11 = tmp1 + tmp2;
-    const long tmp12 = tmp1 - tmp2;
-
-    const long t0 = p[7];
-    const long t1 = p[5];
-    const long t2 = p[3];
-    const long t3 = p[1];
-    const long z5 = (t0 + t2 + t1 + t3) * FIX_1_175875602;
-    const long z1o = -(t0 + t3) * FIX_0_899976223;
-    const long z2o = -(t1 + t2) * FIX_2_562915447;
-    const long z3o = -(t0 + t2) * FIX_1_961570560 + z5;
-    const long z4o = -(t1 + t3) * FIX_0_390180644 + z5;
-    const long o0 = t0 * FIX_0_298631336 + z1o + z3o;
-    const long o1 = t1 * FIX_2_053119869 + z2o + z4o;
-    const long o2 = t2 * FIX_3_072711026 + z2o + z3o;
-    const long o3 = t3 * FIX_1_501321110 + z1o + z4o;
-
-    out[0] = tmp10 + o3;
-    out[1] = tmp11 + o2;
-    out[2] = tmp12 + o1;
-    out[3] = tmp13 + o0;
-    out[4] = tmp13 - o0;
-    out[5] = tmp12 - o1;
-    out[6] = tmp11 - o2;
-    out[7] = tmp10 - o3;
-}
-
 inline void hybrid_idct12_8x8(thread const short input[64], thread ushort output[64]) {
     long work[64];
-    long p[8];
     long r[8];
-    const int column_shift = CONST_BITS - PASS1_BITS_12;
     for (uint col = 0; col < 8u; ++col) {
+        thread const short *p = input + col;
+        islow_1d(
+            long(p[0]), long(p[8]), long(p[16]), long(p[24]),
+            long(p[32]), long(p[40]), long(p[48]), long(p[56]),
+            r
+        );
         for (uint row = 0; row < 8u; ++row) {
-            p[row] = long(input[row * 8u + col]);
-        }
-        hybrid_islow_1d_long(p, r);
-        for (uint row = 0; row < 8u; ++row) {
-            work[row * 8u + col] = hybrid_descale_long(r[row], column_shift);
+            work[row * 8u + col] = descale_rounded(r[row], CODEC_MATH_JPEG_IDCT_PASS1_SHIFT_12);
         }
     }
-    const int row_shift = CONST_BITS + PASS1_BITS_12 + 3;
     for (uint row = 0; row < 8u; ++row) {
+        thread const long *w = work + row * 8u;
+        islow_1d(w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], r);
         for (uint col = 0; col < 8u; ++col) {
-            p[col] = work[row * 8u + col];
-        }
-        hybrid_islow_1d_long(p, r);
-        for (uint col = 0; col < 8u; ++col) {
-            output[row * 8u + col] = hybrid_level_shift_12(hybrid_descale_long(r[col], row_shift));
+            output[row * 8u + col] = hybrid_level_shift_12(descale_rounded(r[col], CODEC_MATH_JPEG_IDCT_PASS2_SHIFT_12));
         }
     }
-}
-
-inline void hybrid_idct12_4x4_even(long p0, long p2, long p6, thread long &tmp10, thread long &tmp12) {
-    const long tmp0 = p0 << (CONST_BITS + 1);
-    const long tmp2 = p2 * FIX_1_847759065 - p6 * FIX_0_765366865;
-    tmp10 = tmp0 + tmp2;
-    tmp12 = tmp0 - tmp2;
-}
-
-inline void hybrid_idct12_4x4_odd(long z1, long z2, long z3, long z4, thread long &tmp0, thread long &tmp2) {
-    tmp0 = z1 * -FIX_0_211164243
-        + z2 * FIX_1_451774981
-        + z3 * -FIX_2_172734803
-        + z4 * FIX_1_061594337;
-    tmp2 = z1 * -FIX_0_509795579
-        + z2 * -FIX_0_601344887
-        + z3 * FIX_0_899976223
-        + z4 * FIX_2_562915447;
 }
 
 inline void hybrid_idct12_4x4(thread const short input[64], thread ushort output[16]) {
     long work[32];
+    long r[4];
     for (uint col = 0; col < 8u; ++col) {
         if (col == 4u) {
             continue;
         }
-        long tmp10, tmp12, tmp0, tmp2;
-        hybrid_idct12_4x4_even(long(input[col]), long(input[16u + col]), long(input[48u + col]), tmp10, tmp12);
-        hybrid_idct12_4x4_odd(long(input[56u + col]), long(input[40u + col]), long(input[24u + col]), long(input[8u + col]), tmp0, tmp2);
-        const int shift = CONST_BITS - PASS1_BITS_12 + 1;
-        work[col] = hybrid_descale_long(tmp10 + tmp2, shift);
-        work[24u + col] = hybrid_descale_long(tmp10 - tmp2, shift);
-        work[8u + col] = hybrid_descale_long(tmp12 + tmp0, shift);
-        work[16u + col] = hybrid_descale_long(tmp12 - tmp0, shift);
+        thread const short *p = input + col;
+        islow_1d_4(
+            long(p[0]), long(p[8]), long(p[16]), long(p[24]),
+            long(p[40]), long(p[48]), long(p[56]),
+            r
+        );
+        const int shift = CODEC_MATH_JPEG_IDCT_PASS1_SHIFT_12 + 1;
+        for (uint row = 0; row < 4u; ++row) {
+            work[row * 8u + col] = descale_rounded(r[row], shift);
+        }
     }
     for (uint row = 0; row < 4u; ++row) {
         thread const long *w = work + row * 8u;
-        long tmp10, tmp12, tmp0, tmp2;
-        hybrid_idct12_4x4_even(w[0], w[2], w[6], tmp10, tmp12);
-        hybrid_idct12_4x4_odd(w[7], w[5], w[3], w[1], tmp0, tmp2);
-        const int shift = CONST_BITS + PASS1_BITS_12 + 3 + 1;
-        thread ushort *out = output + row * 4u;
-        out[0] = hybrid_level_shift_12(hybrid_descale_long(tmp10 + tmp2, shift));
-        out[3] = hybrid_level_shift_12(hybrid_descale_long(tmp10 - tmp2, shift));
-        out[1] = hybrid_level_shift_12(hybrid_descale_long(tmp12 + tmp0, shift));
-        out[2] = hybrid_level_shift_12(hybrid_descale_long(tmp12 - tmp0, shift));
+        islow_1d_4(w[0], w[1], w[2], w[3], w[5], w[6], w[7], r);
+        const int shift = CODEC_MATH_JPEG_IDCT_PASS2_SHIFT_12 + 1;
+        for (uint col = 0; col < 4u; ++col) {
+            output[row * 4u + col] = hybrid_level_shift_12(descale_rounded(r[col], shift));
+        }
     }
-}
-
-inline long hybrid_idct12_2x2_odd(long p7, long p5, long p3, long p1) {
-    return p7 * -FIX_0_720959822
-        + p5 * FIX_0_850430095
-        + p3 * -FIX_1_272758580
-        + p1 * FIX_3_624509785;
 }
 
 inline void hybrid_idct12_2x2(thread const short input[64], thread ushort output[4]) {
     long work[16];
+    long r[2];
     const uint columns[5] = {0u, 1u, 3u, 5u, 7u};
     for (uint i = 0; i < 5u; ++i) {
         const uint col = columns[i];
-        const long tmp10 = long(input[col]) << (CONST_BITS + 2);
-        const long tmp0 = hybrid_idct12_2x2_odd(
-            long(input[56u + col]), long(input[40u + col]), long(input[24u + col]), long(input[8u + col])
-        );
-        const int shift = CONST_BITS - PASS1_BITS_12 + 2;
-        work[col] = hybrid_descale_long(tmp10 + tmp0, shift);
-        work[8u + col] = hybrid_descale_long(tmp10 - tmp0, shift);
+        thread const short *p = input + col;
+        islow_1d_2(long(p[0]), long(p[8]), long(p[24]), long(p[40]), long(p[56]), r);
+        const int shift = CODEC_MATH_JPEG_IDCT_PASS1_SHIFT_12 + 2;
+        work[col] = descale_rounded(r[0], shift);
+        work[8u + col] = descale_rounded(r[1], shift);
     }
     for (uint row = 0; row < 2u; ++row) {
         thread const long *w = work + row * 8u;
-        const long tmp10 = w[0] << (CONST_BITS + 2);
-        const long tmp0 = hybrid_idct12_2x2_odd(w[7], w[5], w[3], w[1]);
-        const int shift = CONST_BITS + PASS1_BITS_12 + 3 + 2;
-        output[row * 2u] = hybrid_level_shift_12(hybrid_descale_long(tmp10 + tmp0, shift));
-        output[row * 2u + 1u] = hybrid_level_shift_12(hybrid_descale_long(tmp10 - tmp0, shift));
+        islow_1d_2(w[0], w[1], w[3], w[5], w[7], r);
+        const int shift = CODEC_MATH_JPEG_IDCT_PASS2_SHIFT_12 + 2;
+        output[row * 2u] = hybrid_level_shift_12(descale_rounded(r[0], shift));
+        output[row * 2u + 1u] = hybrid_level_shift_12(descale_rounded(r[1], shift));
     }
 }
 
@@ -294,7 +222,7 @@ kernel void jpeg_hybrid_idct12(
             hybrid_idct12_2x2(input, pixels);
             break;
         default:
-            pixels[0] = hybrid_level_shift_12(hybrid_descale_long(long(input[0]), 3));
+            pixels[0] = hybrid_level_shift_12(descale_rounded(long(input[0]), 3));
             break;
     }
     hybrid_store_block(plane, params, gid, pixels);

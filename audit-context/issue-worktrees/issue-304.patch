@@ -1,0 +1,861 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index eb5f65352e50502677c5cf8053404145ec8ee5db..97f009590ff5bb9241c27cc3280aadcb9000568d 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -3,6 +3,14 @@
+ This changelog tracks the current release line. Historical phase notes
+ and stale roadmap entries have been removed from the public documentation set.
+ 
++## [Unreleased]
++
++- HTJ2K Qfactor encoding accepts zero-magnitude-bitplane subbands, fixing
++  RGB qualities 1 through 36. Their all-zero blocks are emitted without
++  coding passes; nonzero coefficients with zero available bitplanes still
++  fail validation. Empty zero-bitplane blocks bypass accelerator entropy
++  hooks, including fused subband and rate-control candidate hooks.
++
+ ## [0.13.1] - 2026-10-29
+ 
+ - `CpuBatchDecoder` region and region-plus-reduced requests no longer
+diff --git a/crates/j2k-native/src/j2c/encode/prepared_packets/layered/ht/prepare.rs b/crates/j2k-native/src/j2c/encode/prepared_packets/layered/ht/prepare.rs
+index 4cac1d0379bf0797cda371e4fb43db327c7e3747..2e82d6f91a1577e793eb82804f5841d46e20647f 100644
+--- a/crates/j2k-native/src/j2c/encode/prepared_packets/layered/ht/prepare.rs
++++ b/crates/j2k-native/src/j2c/encode/prepared_packets/layered/ht/prepare.rs
+@@ -155,6 +155,12 @@ pub(super) fn try_accelerated_candidate_outputs(
+     tracker: &mut Tier1PhaseTracker<'_, '_>,
+     accelerator: &mut impl J2kEncodeStageAccelerator,
+ ) -> NativeEncodePipelineResult<Option<alloc::vec::IntoIter<crate::EncodedHtJ2kCodeBlockSet>>> {
++    // A zero-bitplane subband has no entropy work. The scalar candidate path
++    // validates that every coefficient is zero and materializes empty blocks;
++    // do not send an unsupported no-op job to a device backend.
++    if subband.total_bitplanes == 0 {
++        return Ok(None);
++    }
+     let job_count = subband
+         .code_blocks
+         .len()
+@@ -288,12 +294,14 @@ fn validated_accelerated_candidate(
+         && output.cleanup_length == 0
+         && refinement_length == 0
+         && output.num_zero_bitplanes == total_bitplanes;
+-    let expected_missing = total_bitplanes - cleanup_bitplane - 1;
++    let expected_missing = total_bitplanes
++        .checked_sub(cleanup_bitplane)
++        .and_then(|value| value.checked_sub(1));
+     let valid_nonempty = output.num_coding_passes == expected_passes
+         && !input_is_zero
+         && output.data.len() == expected_length
+         && output.cleanup_length > 0
+-        && output.num_zero_bitplanes == expected_missing
++        && Some(output.num_zero_bitplanes) == expected_missing
+         && (expected_passes == 1 || refinement_length > 0);
+     if !valid_empty && !valid_nonempty {
+         return Err(candidate_accelerator_error(
+@@ -332,3 +340,32 @@ fn candidate_accelerator_error(detail: &'static str) -> NativeEncodePipelineErro
+     }
+     .into()
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn zero_bitplane_accelerated_candidate_is_a_canonical_empty_block() {
++        let candidate = validated_accelerated_candidate(
++            crate::EncodedHtJ2kCodeBlockSet {
++                data: Vec::new(),
++                cleanup_length: 0,
++                sigprop_length: 0,
++                magref_length: 0,
++                num_coding_passes: 0,
++                num_zero_bitplanes: 0,
++            },
++            &[0],
++            1,
++            1,
++            0,
++            0,
++        )
++        .expect("zero-bitplane candidate");
++
++        assert_eq!(candidate.data, [] as [u8; 0]);
++        assert_eq!(candidate.num_coding_passes, 0);
++        assert_eq!(candidate.num_zero_bitplanes, 0);
++    }
++}
+diff --git a/crates/j2k-native/src/j2c/encode/subband.rs b/crates/j2k-native/src/j2c/encode/subband.rs
+index 337fb5d8fab5bfa398e73db625ac024006a1ba69..99fa3f66226a478b55aa146416d18ea0a4e55652 100644
+--- a/crates/j2k-native/src/j2c/encode/subband.rs
++++ b/crates/j2k-native/src/j2c/encode/subband.rs
+@@ -358,6 +358,10 @@ fn try_prepare_fused_ht_subband(
+     accelerator: &mut impl J2kEncodeStageAccelerator,
+ ) -> NativeEncodePipelineResult<Option<PreparedEncodeSubband>> {
+     if request.block_coding_mode != BlockCodingMode::HighThroughput
++        // Let the quantization stage materialize and validate canonical empty
++        // blocks instead of sending unsupported zero-bitplane entropy work to
++        // a fused device backend.
++        || plan.total_bitplanes == 0
+         || request.roi_shift != 0
+         || request.ht_target_coding_passes != 1
+         || (!request.origin.0.is_multiple_of(request.cb_width)
+diff --git a/crates/j2k-native/src/j2c/encode/subband/tests.rs b/crates/j2k-native/src/j2c/encode/subband/tests.rs
+index 38901c0d1a0b7faaa3725e1590331ff2b6c1db79..dc59ecf6dc68f329fb7015f659df91d69c331bba 100644
+--- a/crates/j2k-native/src/j2c/encode/subband/tests.rs
++++ b/crates/j2k-native/src/j2c/encode/subband/tests.rs
+@@ -85,3 +85,75 @@ fn malformed_fused_ht_metadata_keeps_the_accelerator_operation_category() {
+         }
+     );
+ }
++
++#[derive(Default)]
++struct ZeroBitplaneFusedAccelerator {
++    fused: usize,
++    quantize: usize,
++    ht_batch: usize,
++}
++
++impl J2kEncodeStageAccelerator for ZeroBitplaneFusedAccelerator {
++    fn encode_ht_subband(
++        &mut self,
++        _job: J2kHtSubbandEncodeJob<'_>,
++    ) -> crate::J2kEncodeStageResult<Option<Vec<EncodedHtJ2kCodeBlock>>> {
++        self.fused += 1;
++        Ok(None)
++    }
++
++    fn encode_quantize_subband(
++        &mut self,
++        job: J2kQuantizeSubbandJob<'_>,
++    ) -> crate::J2kEncodeStageResult<Option<Vec<i32>>> {
++        self.quantize += 1;
++        Ok(Some(vec![0; job.coefficients.len()]))
++    }
++
++    fn encode_ht_code_blocks(
++        &mut self,
++        _jobs: &[crate::J2kHtCodeBlockEncodeJob<'_>],
++    ) -> crate::J2kEncodeStageResult<Option<Vec<EncodedHtJ2kCodeBlock>>> {
++        self.ht_batch += 1;
++        Ok(None)
++    }
++}
++
++#[test]
++fn zero_bitplane_subbands_bypass_fused_and_batch_entropy_hooks() {
++    let coefficients = [1.0; 16];
++    let mut accelerator = ZeroBitplaneFusedAccelerator::default();
++    let prepared = prepare_subband(
++        &coefficients,
++        4,
++        4,
++        &QuantStepSize {
++            exponent: 0,
++            mantissa: 0,
++        },
++        8,
++        1,
++        false,
++        BlockCodingMode::HighThroughput,
++        2,
++        2,
++        SubBandType::LowLow,
++        0,
++        &[],
++        1,
++        1,
++        &mut accelerator,
++    )
++    .expect("prepare zero-bitplane subband");
++    let subbands = vec![prepared];
++    let encoded = super::super::tier1_driver::encode_prepared_subbands(subbands, &mut accelerator)
++        .expect("encode zero-bitplane subband");
++
++    assert_eq!(accelerator.fused, 0);
++    assert_eq!(accelerator.quantize, 1);
++    assert_eq!(accelerator.ht_batch, 0);
++    assert!(encoded
++        .iter()
++        .flat_map(|subband| &subband.code_blocks)
++        .all(|block| block.data.is_empty() && block.num_coding_passes == 0));
++}
+diff --git a/crates/j2k-native/src/j2c/encode/tier1_driver.rs b/crates/j2k-native/src/j2c/encode/tier1_driver.rs
+index 462d2501b774d21363734248ebc246efcd897f2b..f2ff45a8e03074af26b670c99896303a57f3da02 100644
+--- a/crates/j2k-native/src/j2c/encode/tier1_driver.rs
++++ b/crates/j2k-native/src/j2c/encode/tier1_driver.rs
+@@ -246,13 +246,7 @@ fn encode_ht_subbands(
+         job_bytes,
+     ];
+ 
+-    if let Some(encoded) = accelerator.encode_ht_code_blocks(&jobs).map_err(|source| {
+-        crate::EncodeError::Accelerator {
+-            operation: "HT Tier-1 code-block batch encode",
+-            source,
+-        }
+-    })? {
+-        validate_ht_batch_outputs(&encoded, &jobs)?;
++    if let Some(encoded) = try_accelerated_ht_batch(&jobs, tracker, fixed, accelerator)? {
+         let encoded_bytes = public_ht_blocks_ownership(&encoded, encoded.capacity())?;
+         tracker.check(
+             fixed.into_iter().chain([encoded_bytes]),
+@@ -287,6 +281,100 @@ fn encode_ht_subbands(
+     )
+ }
+ 
++fn try_accelerated_ht_batch(
++    jobs: &[crate::J2kHtCodeBlockEncodeJob<'_>],
++    tracker: &mut Tier1PhaseTracker<'_, '_>,
++    fixed: [usize; 4],
++    accelerator: &mut impl J2kEncodeStageAccelerator,
++) -> NativeEncodePipelineResult<Option<Vec<crate::EncodedHtJ2kCodeBlock>>> {
++    const OPERATION: &str = "HT Tier-1 code-block batch encode";
++    let device_job_count = jobs.iter().filter(|job| job.total_bitplanes != 0).count();
++    if device_job_count == jobs.len() {
++        let encoded = accelerator.encode_ht_code_blocks(jobs).map_err(|source| {
++            crate::EncodeError::Accelerator {
++                operation: OPERATION,
++                source,
++            }
++        })?;
++        if let Some(encoded) = encoded.as_ref() {
++            validate_ht_batch_outputs(encoded, jobs)?;
++        }
++        return Ok(encoded);
++    }
++    for job in jobs.iter().filter(|job| job.total_bitplanes == 0) {
++        empty_ht_output(job)?;
++    }
++
++    let (mut device_jobs, device_job_bytes) = tracker
++        .try_vec::<crate::J2kHtCodeBlockEncodeJob<'_>>(
++            device_job_count,
++            fixed,
++            "nonempty accelerated HT job descriptors",
++        )?;
++    device_jobs.extend(jobs.iter().copied().filter(|job| job.total_bitplanes != 0));
++    let device_outputs = if device_jobs.is_empty() {
++        Vec::new()
++    } else {
++        let Some(encoded) = accelerator
++            .encode_ht_code_blocks(&device_jobs)
++            .map_err(|source| crate::EncodeError::Accelerator {
++                operation: OPERATION,
++                source,
++            })?
++        else {
++            return Ok(None);
++        };
++        validate_ht_batch_outputs(&encoded, &device_jobs)?;
++        encoded
++    };
++    let device_output_bytes =
++        public_ht_blocks_ownership(&device_outputs, device_outputs.capacity())?;
++    let (mut merged, _) = tracker.try_vec::<crate::EncodedHtJ2kCodeBlock>(
++        jobs.len(),
++        fixed
++            .into_iter()
++            .chain([device_job_bytes, device_output_bytes]),
++        "accelerated HT output with empty blocks",
++    )?;
++    let mut device_outputs = device_outputs.into_iter();
++    for job in jobs {
++        if job.total_bitplanes == 0 {
++            merged.push(empty_ht_output(job)?);
++        } else {
++            merged.push(device_outputs.next().ok_or_else(|| {
++                NativeEncodePipelineError::internal_invariant(
++                    "accelerated nonempty HT output is missing",
++                )
++            })?);
++        }
++    }
++    if device_outputs.next().is_some() {
++        return Err(NativeEncodePipelineError::internal_invariant(
++            "accelerated nonempty HT output has trailing blocks",
++        ));
++    }
++    validate_ht_batch_outputs(&merged, jobs)?;
++    Ok(Some(merged))
++}
++
++fn empty_ht_output(
++    job: &crate::J2kHtCodeBlockEncodeJob<'_>,
++) -> NativeEncodePipelineResult<crate::EncodedHtJ2kCodeBlock> {
++    if job.coefficients.iter().any(|coefficient| *coefficient != 0) {
++        return Err(crate::EncodeError::InvalidInput {
++            what: "HTJ2K block magnitude exceeds configured bitplane count",
++        }
++        .into());
++    }
++    Ok(crate::EncodedHtJ2kCodeBlock {
++        data: Vec::new(),
++        cleanup_length: 0,
++        refinement_length: 0,
++        num_coding_passes: 0,
++        num_zero_bitplanes: 0,
++    })
++}
++
+ fn encode_ht_serial(
+     jobs: &[crate::J2kHtCodeBlockEncodeJob<'_>],
+     prepared_subbands: &[PreparedEncodeSubband],
+@@ -631,6 +719,11 @@ fn encode_ht_code_block_typed(
+     accelerator: &mut impl J2kEncodeStageAccelerator,
+     workspace: &mut Option<ht_block_encode::HtEncodeWorkspace>,
+ ) -> NativeEncodePipelineResult<bitplane_encode::EncodedCodeBlock> {
++    if job.total_bitplanes == 0 {
++        return Ok(ht_encoded_code_block_from_accelerator(empty_ht_output(
++            job,
++        )?));
++    }
+     if let Some(encoded) = accelerator.encode_ht_code_block(*job).map_err(|source| {
+         crate::EncodeError::Accelerator {
+             operation: "HT Tier-1 code-block encode",
+diff --git a/crates/j2k-native/src/j2c/encode/tier1_driver/tests.rs b/crates/j2k-native/src/j2c/encode/tier1_driver/tests.rs
+index 68c6a11fff5c46e5fa5c3dea36e14cefd7cfa67e..730826b56d6e91fd77ea473573d209926c34944f 100644
+--- a/crates/j2k-native/src/j2c/encode/tier1_driver/tests.rs
++++ b/crates/j2k-native/src/j2c/encode/tier1_driver/tests.rs
+@@ -69,6 +69,42 @@ fn ht_refinement_fixture() -> Vec<PreparedEncodeSubband> {
+     subbands
+ }
+ 
++fn ht_zero_bitplane_fixture() -> Vec<PreparedEncodeSubband> {
++    let mut coefficients = exact_vec(16);
++    coefficients.resize(16, 0);
++    let mut blocks = exact_vec(1);
++    blocks.push(super::super::PreparedEncodeCodeBlock {
++        coefficients: PreparedCodeBlockCoefficients::I32(coefficients),
++        width: 4,
++        height: 4,
++    });
++    let mut subbands = exact_vec(1);
++    subbands.push(PreparedEncodeSubband {
++        origin: (0, 0),
++        code_blocks: blocks,
++        preencoded_ht_code_blocks: None,
++        preencoded_ht_maximum_cleanup_magnitude: None,
++        num_cbs_x: 1,
++        num_cbs_y: 1,
++        code_block_width: 4,
++        code_block_height: 4,
++        width: 4,
++        height: 4,
++        sub_band_type: super::super::SubBandType::HighHigh,
++        total_bitplanes: 0,
++        block_coding_mode: BlockCodingMode::HighThroughput,
++        ht_target_coding_passes: 1,
++    });
++    subbands
++}
++
++fn ht_fixture_with_zero_bitplane_subband() -> Vec<PreparedEncodeSubband> {
++    let mut subbands = exact_vec(2);
++    subbands.extend(ht_zero_bitplane_fixture());
++    subbands.extend(ht_refinement_fixture());
++    subbands
++}
++
+ #[test]
+ fn mixed_tier1_modes_remain_unsupported() {
+     let mut mixed = exact_vec(2);
+diff --git a/crates/j2k-native/src/j2c/encode/tier1_driver/tests/accelerator_metadata.rs b/crates/j2k-native/src/j2c/encode/tier1_driver/tests/accelerator_metadata.rs
+index a51c00e7301c1b78baebd08408f76f0833999995..e744f11c050af110c0d00ce33f08168c61762198 100644
+--- a/crates/j2k-native/src/j2c/encode/tier1_driver/tests/accelerator_metadata.rs
++++ b/crates/j2k-native/src/j2c/encode/tier1_driver/tests/accelerator_metadata.rs
+@@ -138,6 +138,134 @@ fn omitted_nonzero_ht_block_keeps_the_accelerator_operation_category() {
+     );
+ }
+ 
++#[derive(Default)]
++struct NonemptyHtBatchAccelerator {
++    jobs_seen: usize,
++}
++
++impl J2kEncodeStageAccelerator for NonemptyHtBatchAccelerator {
++    fn encode_ht_code_blocks(
++        &mut self,
++        jobs: &[crate::J2kHtCodeBlockEncodeJob<'_>],
++    ) -> crate::J2kEncodeStageResult<Option<Vec<EncodedHtJ2kCodeBlock>>> {
++        assert!(jobs.iter().all(|job| job.total_bitplanes != 0));
++        self.jobs_seen += jobs.len();
++        jobs.iter()
++            .map(|job| {
++                crate::encode_ht_code_block_scalar_with_passes(
++                    job.coefficients,
++                    job.width,
++                    job.height,
++                    job.total_bitplanes,
++                    job.target_coding_passes,
++                )
++                .map_err(|error| {
++                    crate::J2kEncodeStageError::backend("test", "HT batch encode", error)
++                })
++            })
++            .collect::<Result<Vec<_>, _>>()
++            .map(Some)
++    }
++}
++
++#[test]
++fn zero_bitplane_blocks_bypass_batch_accelerators_without_hiding_other_work() {
++    let session =
++        NativeEncodeSession::try_new(NativeEncodeRetainedInput::none()).expect("Tier-1 session");
++    let mut accelerator = NonemptyHtBatchAccelerator::default();
++    let encoded = encode_prepared_subbands_for_session(
++        ht_fixture_with_zero_bitplane_subband(),
++        &session,
++        0,
++        &mut accelerator,
++    )
++    .expect("mixed empty and coded HT subbands");
++
++    assert_eq!(accelerator.jobs_seen, 1);
++    assert_eq!(encoded[0].code_blocks[0].num_coding_passes, 0);
++    assert_eq!(encoded[0].code_blocks[0].data, [] as [u8; 0]);
++    assert_eq!(encoded[1].code_blocks[0].num_coding_passes, 3);
++    assert_ne!(encoded[1].code_blocks[0].data, [] as [u8; 0]);
++}
++
++#[test]
++fn zero_bitplane_nonzero_coefficients_are_rejected_before_batch_accelerators() {
++    let session =
++        NativeEncodeSession::try_new(NativeEncodeRetainedInput::none()).expect("Tier-1 session");
++    let mut subbands = ht_zero_bitplane_fixture();
++    let PreparedCodeBlockCoefficients::I32(coefficients) =
++        &mut subbands[0].code_blocks[0].coefficients
++    else {
++        panic!("zero-bitplane fixture must use i32 coefficients");
++    };
++    coefficients[0] = 1;
++    let mut accelerator = NonemptyHtBatchAccelerator::default();
++
++    let error = encode_prepared_subbands_for_session(subbands, &session, 0, &mut accelerator)
++        .expect_err("nonzero coefficients must not be accepted with zero bitplanes");
++
++    assert_eq!(accelerator.jobs_seen, 0);
++    assert_eq!(
++        error.into_encode_error(),
++        EncodeError::InvalidInput {
++            what: "HTJ2K block magnitude exceeds configured bitplane count",
++        }
++    );
++}
++
++#[derive(Default)]
++struct NonemptyHtSingleAccelerator {
++    batch_calls: usize,
++    single_calls: usize,
++}
++
++impl J2kEncodeStageAccelerator for NonemptyHtSingleAccelerator {
++    fn encode_ht_code_blocks(
++        &mut self,
++        jobs: &[crate::J2kHtCodeBlockEncodeJob<'_>],
++    ) -> crate::J2kEncodeStageResult<Option<Vec<EncodedHtJ2kCodeBlock>>> {
++        assert!(jobs.iter().all(|job| job.total_bitplanes != 0));
++        self.batch_calls += 1;
++        Ok(None)
++    }
++
++    fn encode_ht_code_block(
++        &mut self,
++        job: crate::J2kHtCodeBlockEncodeJob<'_>,
++    ) -> crate::J2kEncodeStageResult<Option<EncodedHtJ2kCodeBlock>> {
++        assert_ne!(job.total_bitplanes, 0);
++        self.single_calls += 1;
++        crate::encode_ht_code_block_scalar_with_passes(
++            job.coefficients,
++            job.width,
++            job.height,
++            job.total_bitplanes,
++            job.target_coding_passes,
++        )
++        .map(Some)
++        .map_err(|error| crate::J2kEncodeStageError::backend("test", "HT encode", error))
++    }
++}
++
++#[test]
++fn zero_bitplane_blocks_bypass_single_accelerators_after_batch_declines() {
++    let session =
++        NativeEncodeSession::try_new(NativeEncodeRetainedInput::none()).expect("Tier-1 session");
++    let mut accelerator = NonemptyHtSingleAccelerator::default();
++    let encoded = encode_prepared_subbands_for_session(
++        ht_fixture_with_zero_bitplane_subband(),
++        &session,
++        0,
++        &mut accelerator,
++    )
++    .expect("serial mixed empty and coded HT subbands");
++
++    assert_eq!(accelerator.batch_calls, 1);
++    assert_eq!(accelerator.single_calls, 1);
++    assert_eq!(encoded[0].code_blocks[0].num_coding_passes, 0);
++    assert_eq!(encoded[1].code_blocks[0].num_coding_passes, 3);
++}
++
+ #[derive(Clone, Copy)]
+ enum ClassicMetadataFault {
+     TooManyPasses,
+diff --git a/crates/j2k-native/src/j2c/encode_tests.rs b/crates/j2k-native/src/j2c/encode_tests.rs
+index d81bce97d57aec6fc28bfecdd0660202c60a21db..8d46060f6edc19279b0d779b03aa67f33423560a 100644
+--- a/crates/j2k-native/src/j2c/encode_tests.rs
++++ b/crates/j2k-native/src/j2c/encode_tests.rs
+@@ -5,8 +5,9 @@ use super::{
+     copy_code_block_coefficients, deinterleave_rgb8_unsigned_to_f32, deinterleave_to_f32,
+     downcast_i64_coefficients_to_i32, encode, encode_all_ht_code_blocks_parallel,
+     encode_all_ht_code_blocks_serial_cpu, encode_htj2k, encode_htj2k_with_qfactor,
+-    encode_precomputed_htj2k_53, encode_precomputed_htj2k_53_with_accelerator,
+-    encode_precomputed_htj2k_97, encode_precomputed_htj2k_97_batch_with_accelerator,
++    encode_htj2k_with_qfactor_and_accelerator, encode_precomputed_htj2k_53,
++    encode_precomputed_htj2k_53_with_accelerator, encode_precomputed_htj2k_97,
++    encode_precomputed_htj2k_97_batch_with_accelerator,
+     encode_precomputed_htj2k_97_with_accelerator, encode_preencoded_htj2k_97,
+     encode_preencoded_htj2k_97_compact_owned_with_accelerator, encode_prepared_subbands,
+     encode_prequantized_htj2k_97, encode_prequantized_htj2k_97_with_accelerator,
+@@ -2708,13 +2709,17 @@ fn htj2k_bounded_rate_control_offers_two_set_jobs_to_accelerators() {
+ #[test]
+ fn htj2k_bounded_rate_control_accepts_exact_accelerator_sets() {
+     #[derive(Default)]
+-    struct ExactSetAccelerator;
++    struct ExactSetAccelerator {
++        set_jobs: usize,
++    }
+ 
+     impl crate::J2kEncodeStageAccelerator for ExactSetAccelerator {
+         fn encode_ht_code_block_sets(
+             &mut self,
+             jobs: &[crate::J2kHtCodeBlockSetEncodeJob<'_>],
+         ) -> crate::J2kEncodeStageResult<Option<Vec<crate::EncodedHtJ2kCodeBlockSet>>> {
++            assert!(jobs.iter().all(|job| job.total_bitplanes != 0));
++            self.set_jobs += jobs.len();
+             let mut workspace = crate::j2c::ht_block_encode::HtEncodeWorkspace::try_new()
+                 .map_err(|error| crate::J2kEncodeStageError::backend("test", "workspace", error))?;
+             jobs.iter()
+@@ -2755,7 +2760,7 @@ fn htj2k_bounded_rate_control_accepts_exact_accelerator_sets() {
+         quality_layer_byte_targets: vec![128, 512, 2_048],
+         ..Default::default()
+     };
+-    let mut accelerator = ExactSetAccelerator;
++    let mut accelerator = ExactSetAccelerator::default();
+     let codestream =
+         encode_with_accelerator(&pixels, 32, 32, 1, 8, false, &options, &mut accelerator)
+             .expect("accelerated exact-set encode");
+@@ -2763,4 +2768,34 @@ fn htj2k_bounded_rate_control_accepts_exact_accelerator_sets() {
+     Image::new(&codestream, &DecodeSettings::default())
+         .and_then(|image| image.decode_native())
+         .expect("decode accelerated exact-set codestream");
++
++    assert!(accelerator.set_jobs >= 2);
++
++    let flat = vec![128; 64 * 64 * 3];
++    let qfactor_options = EncodeOptions {
++        use_ht_block_coding: true,
++        num_decomposition_levels: 5,
++        reversible: false,
++        guard_bits: 1,
++        num_layers: 3,
++        quality_layer_byte_targets: vec![128, 512, 2_048],
++        ..Default::default()
++    };
++    let flat_codestream = encode_htj2k_with_qfactor_and_accelerator(
++        &flat,
++        64,
++        64,
++        3,
++        8,
++        false,
++        1,
++        &qfactor_options,
++        &mut accelerator,
++    )
++    .expect("zero-bitplane bounded HT Qfactor encode");
++
++    let decoded = Image::new(&flat_codestream, &DecodeSettings::default())
++        .and_then(|image| image.decode_native())
++        .expect("decode zero-bitplane bounded HT codestream");
++    assert_eq!(decoded.data, flat);
+ }
+diff --git a/crates/j2k-native/src/j2c/ht_block_encode/distribution.rs b/crates/j2k-native/src/j2c/ht_block_encode/distribution.rs
+index 47408f5e052204cf6cd9a1c452c1e0ebf4da395d..73c571ffc17fb6b6a582342ebf8eb5acd2475cc2 100644
+--- a/crates/j2k-native/src/j2c/ht_block_encode/distribution.rs
++++ b/crates/j2k-native/src/j2c/ht_block_encode/distribution.rs
+@@ -96,9 +96,9 @@ pub(crate) fn collect_encode_distribution(
+     height: u32,
+     total_bitplanes: u8,
+ ) -> EncodeResult<HtCleanupEncodeDistribution> {
+-    if total_bitplanes == 0 || total_bitplanes > MAX_HT_BITPLANES {
++    if total_bitplanes > MAX_HT_BITPLANES {
+         return Err(EncodeError::InvalidInput {
+-            what: "HTJ2K scalar encoder currently supports 1..=31 bitplanes",
++            what: "HTJ2K scalar encoder currently supports 0..=31 bitplanes",
+         });
+     }
+ 
+diff --git a/crates/j2k-native/src/j2c/ht_block_encode/distribution/tests.rs b/crates/j2k-native/src/j2c/ht_block_encode/distribution/tests.rs
+index 31f77bce16de15182eeb67fbb9679bf63c312548..3b57b4fd3d8f35450a0e7ffba47c0ce5d630fcfe 100644
+--- a/crates/j2k-native/src/j2c/ht_block_encode/distribution/tests.rs
++++ b/crates/j2k-native/src/j2c/ht_block_encode/distribution/tests.rs
+@@ -27,9 +27,15 @@ fn distribution_rejects_mismatched_and_oversized_geometry_before_walking() {
+ #[test]
+ fn distribution_rejects_bitplane_range_and_magnitude_with_typed_input_errors() {
+     assert_eq!(
+-        collect_encode_distribution(&[0], 1, 1, 0).expect_err("zero bitplanes are invalid"),
++        collect_encode_distribution(&[0], 1, 1, 32).expect_err("32 bitplanes are invalid"),
+         crate::EncodeError::InvalidInput {
+-            what: "HTJ2K scalar encoder currently supports 1..=31 bitplanes",
++            what: "HTJ2K scalar encoder currently supports 0..=31 bitplanes",
++        }
++    );
++    assert_eq!(
++        collect_encode_distribution(&[1], 1, 1, 0).expect_err("zero bitplanes require zeros"),
++        crate::EncodeError::InvalidInput {
++            what: "HTJ2K block magnitude exceeds configured bitplane count",
+         }
+     );
+     assert_eq!(
+diff --git a/crates/j2k-native/src/j2c/ht_block_encode/facade.rs b/crates/j2k-native/src/j2c/ht_block_encode/facade.rs
+index 1ac6bc4b9184648f8f103e298e01caad7695a4fb..66e50130f3d864bbcad3c1af3db7e66bb601dcab 100644
+--- a/crates/j2k-native/src/j2c/ht_block_encode/facade.rs
++++ b/crates/j2k-native/src/j2c/ht_block_encode/facade.rs
+@@ -23,11 +23,14 @@ fn validate_set_request(
+     cleanup_bitplane: u8,
+     target_coding_passes: u8,
+ ) -> crate::EncodeResult<()> {
+-    let what = if !(1..=MAX_HT_BITPLANES).contains(&total_bitplanes) {
+-        "HTJ2K scalar encoder currently supports 1..=31 bitplanes"
++    // A zero-bitplane subband may contain only empty blocks. Accept its
++    // cleanup-zero request here; the coefficient check rejects any nonzero
++    // magnitude before an entropy coder can run.
++    let what = if total_bitplanes > MAX_HT_BITPLANES {
++        "HTJ2K scalar encoder currently supports 0..=31 bitplanes"
+     } else if !(1..=3).contains(&target_coding_passes) {
+         "HTJ2K scalar encoder currently supports cleanup, sigprop, and one magref refinement pass"
+-    } else if cleanup_bitplane >= total_bitplanes {
++    } else if cleanup_bitplane >= total_bitplanes.max(1) {
+         "HTJ2K cleanup bitplane must be below the configured bitplane count"
+     } else if cleanup_bitplane == 0 && target_coding_passes > 1 {
+         "HTJ2K cleanup bitplane zero cannot carry refinement passes"
+diff --git a/crates/j2k-native/src/j2c/ht_block_encode/facade/candidates.rs b/crates/j2k-native/src/j2c/ht_block_encode/facade/candidates.rs
+index f1472c2d876a4cd07fa72611f8ededc478392eb3..0eef9cc1b3f5213adcfe0f4b38ce038563d84ed6 100644
+--- a/crates/j2k-native/src/j2c/ht_block_encode/facade/candidates.rs
++++ b/crates/j2k-native/src/j2c/ht_block_encode/facade/candidates.rs
+@@ -4,7 +4,7 @@
+ 
+ use alloc::vec::Vec;
+ 
+-use super::try_encode_code_block_set_with_workspace;
++use super::{try_encode_code_block_set_with_workspace, MAX_HT_BITPLANES};
+ use crate::j2c::bitplane_encode::EncodedCodeBlock;
+ use crate::j2c::coefficient_view::CoefficientBlockView;
+ use crate::j2c::ht_block_encode::distortion::pass_distortion_deltas;
+@@ -13,12 +13,12 @@ use crate::{EncodeError, EncodeResult};
+ 
+ pub(crate) fn candidate_cleanup_bitplanes(total_bitplanes: u8) -> EncodeResult<&'static [u8]> {
+     match total_bitplanes {
+-        0 => Err(EncodeError::InvalidInput {
+-            what: "HTJ2K scalar encoder currently supports 1..=31 bitplanes",
+-        }),
+-        1 => Ok(&[0]),
++        0 | 1 => Ok(&[0]),
+         2 => Ok(&[1]),
+-        _ => Ok(&[2, 1]),
++        3..=MAX_HT_BITPLANES => Ok(&[2, 1]),
++        _ => Err(EncodeError::InvalidInput {
++            what: "HTJ2K scalar encoder currently supports 0..=31 bitplanes",
++        }),
+     }
+ }
+ 
+diff --git a/crates/j2k-native/src/j2c/ht_block_encode/golden_tests.rs b/crates/j2k-native/src/j2c/ht_block_encode/golden_tests.rs
+index f91eb36d3bfdd144911c2d0ffa0457b8a3dbd266..f7057c26172e6b5d01a04f48aae7c9933805c55d 100644
+--- a/crates/j2k-native/src/j2c/ht_block_encode/golden_tests.rs
++++ b/crates/j2k-native/src/j2c/ht_block_encode/golden_tests.rs
+@@ -291,15 +291,14 @@ fn representative_cleanup_distribution_is_exact() {
+ 
+ #[test]
+ fn validation_error_text_and_empty_block_result_remain_exact() {
+-    for bitplanes in [0, 32] {
+-        let Err(error) = encode_code_block_with_passes(&[1], 1, 1, bitplanes, 1) else {
+-            panic!("invalid bitplane count must fail");
+-        };
+-        assert_eq!(
+-            error,
+-            "HTJ2K scalar encoder currently supports 1..=31 bitplanes"
+-        );
+-    }
++    assert_eq!(
++        encode_code_block_with_passes(&[1], 1, 1, 32, 1).unwrap_err(),
++        "HTJ2K scalar encoder currently supports 0..=31 bitplanes"
++    );
++    assert_eq!(
++        encode_code_block_with_passes(&[1], 1, 1, 0, 1).unwrap_err(),
++        "HTJ2K block magnitude exceeds configured bitplane count"
++    );
+     for passes in [0, 4] {
+         let Err(error) = encode_code_block_with_passes(&[1], 1, 1, 5, passes) else {
+             panic!("invalid pass count must fail");
+@@ -317,11 +316,13 @@ fn validation_error_text_and_empty_block_result_remain_exact() {
+         "HTJ2K block magnitude exceeds configured bitplane count"
+     );
+ 
+-    let encoded =
+-        encode_code_block_with_passes(&[0; 9], 3, 3, 8, 3).expect("all-zero block is valid");
+-    assert_eq!(encoded.data, [] as [u8; 0]);
+-    assert_eq!(encoded.num_coding_passes, 0);
+-    assert_eq!(encoded.num_zero_bitplanes, 8);
+-    assert_eq!(encoded.ht_cleanup_length, 0);
+-    assert_eq!(encoded.ht_refinement_length, 0);
++    for (bitplanes, passes) in [(0, 1), (8, 3)] {
++        let encoded = encode_code_block_with_passes(&[0; 9], 3, 3, bitplanes, passes)
++            .expect("all-zero block is valid");
++        assert_eq!(encoded.data, [] as [u8; 0]);
++        assert_eq!(encoded.num_coding_passes, 0);
++        assert_eq!(encoded.num_zero_bitplanes, bitplanes);
++        assert_eq!(encoded.ht_cleanup_length, 0);
++        assert_eq!(encoded.ht_refinement_length, 0);
++    }
+ }
+diff --git a/crates/j2k-native/src/j2c/ht_block_encode/tests.rs b/crates/j2k-native/src/j2c/ht_block_encode/tests.rs
+index 171c75397bef3307bc2a8d205e01b17849471347..7c7a72c42d692f8e6fbc7ee3d976a17f2a18da36 100644
+--- a/crates/j2k-native/src/j2c/ht_block_encode/tests.rs
++++ b/crates/j2k-native/src/j2c/ht_block_encode/tests.rs
+@@ -118,12 +118,13 @@ fn aligned_sign_magnitude_conversion_reports_max_and_skips_all_zero_blocks() {
+ 
+ #[test]
+ fn all_zero_distribution_input_remains_a_zero_distribution() {
+-    let distribution =
+-        collect_encode_distribution(&[0], 1, 1, 1).expect("all-zero distribution input is valid");
+-
+-    assert_eq!(distribution.total_quads, 0);
+-    assert_eq!(distribution.mag_sign_calls, 0);
+-    assert_eq!(distribution.mag_sign_encoded_samples, 0);
++    for bitplanes in [0, 1] {
++        let distribution = collect_encode_distribution(&[0], 1, 1, bitplanes)
++            .expect("all-zero distribution input is valid");
++        assert_eq!(distribution.total_quads, 0);
++        assert_eq!(distribution.mag_sign_calls, 0);
++        assert_eq!(distribution.mag_sign_encoded_samples, 0);
++    }
+ }
+ 
+ #[test]
+@@ -308,10 +309,33 @@ fn explicit_cleanup_bitplane_selects_the_requested_ht_set() {
+ #[test]
+ fn explicit_cleanup_bitplane_rejects_impossible_refinement() {
+     let mut workspace = HtEncodeWorkspace::try_new().expect("HT workspace allocation");
+-    let error = try_encode_code_block_set_with_workspace(&[1], 1, 1, 1, 0, 2, &mut workspace)
+-        .expect_err("p=0 has no lower refinement bitplane");
++    for bitplanes in [0, 1] {
++        let error =
++            try_encode_code_block_set_with_workspace(&[0], 1, 1, bitplanes, 0, 2, &mut workspace)
++                .expect_err("p=0 has no lower refinement bitplane");
++        assert!(matches!(error, crate::EncodeError::InvalidInput { .. }));
++    }
++}
+ 
+-    assert!(matches!(error, crate::EncodeError::InvalidInput { .. }));
++#[test]
++fn zero_bitplane_candidates_are_empty_and_reject_nonzero_coefficients() {
++    let mut workspace = HtEncodeWorkspace::try_new().expect("HT workspace allocation");
++    let candidates =
++        try_encode_code_block_candidate_sets_with_workspace(&[0; 4], 2, 2, 0, &mut workspace)
++            .expect("an all-zero subband needs no coded bitplanes");
++    assert_eq!(candidates.len(), 1);
++    assert_eq!(candidates[0].data, [] as [u8; 0]);
++    assert_eq!(candidates[0].num_coding_passes, 0);
++    assert_eq!(candidates[0].num_zero_bitplanes, 0);
++    assert_eq!(candidates[0].ht_cleanup_length, 0);
++    assert_eq!(candidates[0].ht_refinement_length, 0);
++    assert_eq!(
++        try_encode_code_block_candidate_sets_with_workspace(&[0, 1, 0, 0], 2, 2, 0, &mut workspace)
++            .unwrap_err(),
++        crate::EncodeError::InvalidInput {
++            what: "HTJ2K block magnitude exceeds configured bitplane count",
++        }
++    );
+ }
+ 
+ #[test]
+diff --git a/crates/j2k-native/src/tests.rs b/crates/j2k-native/src/tests.rs
+index 6136f6790847181b475b4b9d1e25e50be5b59b52..19a82d3faae106859f8e83dff0072bd93d440455 100644
+--- a/crates/j2k-native/src/tests.rs
++++ b/crates/j2k-native/src/tests.rs
+@@ -374,9 +374,9 @@ fn scalar_encode_adapters_preserve_typed_input_and_cap_categories() {
+         })
+     ));
+     assert!(matches!(
+-        encode_ht_code_block_scalar(&[0], 1, 1, 0),
++        encode_ht_code_block_scalar(&[0], 1, 1, 32),
+         Err(EncodeError::InvalidInput {
+-            what: "HTJ2K scalar encoder currently supports 1..=31 bitplanes",
++            what: "HTJ2K scalar encoder currently supports 0..=31 bitplanes",
+         })
+     ));
+     assert!(matches!(
+diff --git a/crates/j2k/tests/encode_lossy.rs b/crates/j2k/tests/encode_lossy.rs
+index 52c67d19ede54cdaec9e5583b51a648c88e173bc..897b75e4063d013e5e00b18ed8cea0bfee230dd7 100644
+--- a/crates/j2k/tests/encode_lossy.rs
++++ b/crates/j2k/tests/encode_lossy.rs
+@@ -12,28 +12,41 @@ use j2k::{
+ 
+ #[test]
+ fn htj2k_qfactor_is_opt_in_and_round_trips() {
+-    let pixels = (0_usize..64 * 64 * 3)
++    let patterned = (0_usize..64 * 64 * 3)
+         .map(|index| masked_u8(index.wrapping_mul(29)))
+         .collect::<Vec<_>>();
+-    let samples =
+-        j2k::J2kLossySamples::new(&pixels, 64, 64, 3, 8, false).expect("valid RGB samples");
+-    let encoded = j2k::encode_j2k_lossy(
+-        samples,
+-        &J2kLossyEncodeOptions::default()
+-            .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+-            .with_qfactor(Some(90)),
+-    )
+-    .expect("Qfactor HTJ2K encode");
+-
+-    assert!(encoded
+-        .codestream
+-        .windows(2)
+-        .any(|bytes| bytes == [0xff, 0x5d]));
+-    let decoded = decode_native(&encoded.codestream);
+-    assert_eq!(
+-        (decoded.width, decoded.height, decoded.num_components),
+-        (64, 64, 3)
+-    );
++    let flat = vec![128; 64 * 64 * 3];
++    for pixels in [&flat, &patterned] {
++        for levels in [1, 3, 5] {
++            // Qfactor 36 is the first profile whose finest Cb HH band has
++            // zero magnitude bitplanes; lower qualities add more empty bands.
++            for qfactor in [36, 37, 1, 3, 10, 13, 90, 100] {
++                let samples = j2k::J2kLossySamples::new(pixels, 64, 64, 3, 8, false)
++                    .expect("valid RGB samples");
++                let encoded = j2k::encode_j2k_lossy(
++                    samples,
++                    &J2kLossyEncodeOptions::default()
++                        .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
++                        .with_max_decomposition_levels(Some(levels))
++                        .with_qfactor(Some(qfactor)),
++                )
++                .unwrap_or_else(|error| panic!("Qfactor {qfactor}, {levels} levels: {error}"));
++
++                assert!(encoded
++                    .codestream
++                    .windows(2)
++                    .any(|bytes| bytes == [0xff, 0x5d]));
++                let decoded = strict_decode_native(&encoded.codestream);
++                assert_eq!(
++                    (decoded.width, decoded.height, decoded.num_components),
++                    (64, 64, 3)
++                );
++                if pixels == &flat {
++                    assert_eq!(decoded.data, flat);
++                }
++            }
++        }
++    }
+ }
+ use j2k_core::{BackendKind, CodecError};
+ use j2k_native::{DecodeSettings, Image};

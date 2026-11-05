@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 use super::super::PreparedDecodePlan;
 use crate::allocation::{
     checked_add_allocation_bytes, checked_allocation_bytes, checked_allocation_len,
-    try_reserve_for_len_with_live_budget,
+    try_reserve_for_len_with_live_budget, try_vec_filled_with_live_budget,
 };
 use crate::error::JpegError;
 use j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES;
@@ -37,22 +37,18 @@ pub(super) fn allocate_dct_decode_storage(
 
     let component_count = plan.sampling.len();
     let mut live_bytes = 0;
-    let mut block_cols_by_component = Vec::new();
-    try_reserve_for_len_with_live_budget(
-        &mut block_cols_by_component,
+    let mut block_cols_by_component = try_vec_filled_with_live_budget(
         component_count,
+        0_u32,
         &mut live_bytes,
         lifecycle.workspace_cap,
     )?;
-    block_cols_by_component.resize(component_count, 0_u32);
-    let mut block_rows_by_component = Vec::new();
-    try_reserve_for_len_with_live_budget(
-        &mut block_rows_by_component,
+    let mut block_rows_by_component = try_vec_filled_with_live_budget(
         component_count,
+        0_u32,
         &mut live_bytes,
         lifecycle.workspace_cap,
     )?;
-    block_rows_by_component.resize(component_count, 0_u32);
     for component in &plan.components {
         block_cols_by_component[component.output_index] = mcus_per_row * u32::from(component.h);
         block_rows_by_component[component.output_index] = mcu_rows * u32::from(component.v);
@@ -75,38 +71,30 @@ pub(super) fn allocate_dct_decode_storage(
     for (&cols, &rows) in block_cols_by_component.iter().zip(&block_rows_by_component) {
         let block_count = checked_allocation_len::<[i16; 64]>(cols as usize, rows as usize)?;
         let quantized = if retain_quantized_blocks {
-            let mut blocks = Vec::new();
-            try_reserve_for_len_with_live_budget(
-                &mut blocks,
+            try_vec_filled_with_live_budget(
                 block_count,
+                [0_i16; 64],
                 &mut live_bytes,
                 lifecycle.workspace_cap,
-            )?;
-            blocks.resize(block_count, [0_i16; 64]);
-            blocks
+            )?
         } else {
             Vec::new()
         };
         quantized_blocks.push(quantized);
-        let mut dequantized = Vec::new();
-        try_reserve_for_len_with_live_budget(
-            &mut dequantized,
+        dequantized_blocks.push(try_vec_filled_with_live_budget(
             block_count,
+            [0_i16; 64],
             &mut live_bytes,
             lifecycle.workspace_cap,
-        )?;
-        dequantized.resize(block_count, [0_i16; 64]);
-        dequantized_blocks.push(dequantized);
+        )?);
     }
 
-    let mut prev_dc = Vec::new();
-    try_reserve_for_len_with_live_budget(
-        &mut prev_dc,
+    let prev_dc = try_vec_filled_with_live_budget(
         component_count,
+        0_i32,
         &mut live_bytes,
         lifecycle.workspace_cap,
     )?;
-    prev_dc.resize(component_count, 0_i32);
     Ok(DctDecodeStorage {
         block_cols_by_component,
         block_rows_by_component,

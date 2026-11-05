@@ -1,0 +1,1508 @@
+diff --git a/crates/j2k-codec-math/src/jpeg/idct.rs b/crates/j2k-codec-math/src/jpeg/idct.rs
+index b9f102f..72fd578 100644
+--- a/crates/j2k-codec-math/src/jpeg/idct.rs
++++ b/crates/j2k-codec-math/src/jpeg/idct.rs
+@@ -524,17 +524,6 @@ fn column_of(input: &[i16; 64], col: usize) -> [i32; 8] {
+     p
+ }
+ 
+-#[inline]
+-fn column_of_i64(input: &[i16; 64], col: usize) -> [i64; 8] {
+-    let mut p = [0; 8];
+-    let mut row = 0;
+-    while row < 8 {
+-        p[row] = i64::from(input[row * 8 + col]);
+-        row += 1;
+-    }
+-    p
+-}
+-
+ /// The 12-bit 8x8 ISLOW (`jidctint.c` with `BITS_IN_JSAMPLE == 12`) of one
+ /// block to native `0..=4095` samples. The C code's zero shortcuts give the
+ /// same result as the full computation in `i64` and are omitted.
+@@ -543,7 +532,7 @@ pub fn islow_block_12bit(input: &[i16; 64], output: &mut [u16; 64]) {
+     let mut work = [0i64; 64];
+     let mut col = 0;
+     while col < 8 {
+-        let out = islow_1d_i64(column_of_i64(input, col));
++        let out = islow_1d_i64(column_of(input, col).map(i64::from));
+         let mut row = 0;
+         while row < 8 {
+             work[row * 8 + col] = descale_i64(out[row], PASS1_SHIFT_12);
+@@ -688,7 +677,7 @@ pub fn islow_block_12bit_4x4(input: &[i16; 64], output: &mut [u16; 16]) {
+     let mut col = 0;
+     while col < 8 {
+         if col != 4 {
+-            let out = islow_1d_4_i64(column_of_i64(input, col));
++            let out = islow_1d_4_i64(column_of(input, col).map(i64::from));
+             let mut row = 0;
+             while row < 4 {
+                 work[row * 8 + col] = descale_i64(out[row], PASS1_SHIFT_12 + 1);
+@@ -715,15 +704,12 @@ pub fn islow_block_12bit_4x4(input: &[i16; 64], output: &mut [u16; 16]) {
+ pub fn islow_block_12bit_2x2(input: &[i16; 64], output: &mut [u16; 4]) {
+     let mut work = [0i64; 16];
+     for col in REDUCED_2X2_INPUTS {
+-        let at = |row: usize| i64::from(input[row * 8 + col]);
+-        // The 2-point transform does not read `p[2]`, `p[4]` or `p[6]`.
+-        let out = islow_1d_2_i64([at(0), at(1), 0, at(3), 0, at(5), 0, at(7)]);
++        let out = islow_1d_2_i64(column_of(input, col).map(i64::from));
+         work[col] = descale_i64(out[0], PASS1_SHIFT_12 + 2);
+         work[8 + col] = descale_i64(out[1], PASS1_SHIFT_12 + 2);
+     }
+     for row in 0..2 {
+-        let at = |col: usize| work[row * 8 + col];
+-        let out = islow_1d_2_i64([at(0), at(1), 0, at(3), 0, at(5), 0, at(7)]);
++        let out = islow_1d_2_i64(row_of(&work, row * 8));
+         output[row * 2] = sample_12bit(descale_i64(out[0], PASS2_SHIFT_12 + 2));
+         output[row * 2 + 1] = sample_12bit(descale_i64(out[1], PASS2_SHIFT_12 + 2));
+     }
+diff --git a/crates/j2k-jpeg-metal/build.rs b/crates/j2k-jpeg-metal/build.rs
+index a3407ae..6db0ddb 100644
+--- a/crates/j2k-jpeg-metal/build.rs
++++ b/crates/j2k-jpeg-metal/build.rs
+@@ -14,15 +14,12 @@ use j2k_codec_math::jpeg::idct;
+ 
+ fn main() -> Result<(), Box<dyn Error>> {
+     println!("cargo::rerun-if-changed=build.rs");
+-    let constants: [(&str, i64); 32] = [
++    let constants: [(&str, i64); 29] = [
+         ("CONST_BITS", i64::try_from(idct::CONST_BITS)?),
+         ("PASS1_BITS", i64::try_from(idct::PASS1_BITS)?),
+         ("PASS1_SHIFT", idct::PASS1_SHIFT.into()),
+-        ("PASS1_ROUNDING", idct::PASS1_ROUNDING.into()),
+         ("PASS2_SHIFT", idct::PASS2_SHIFT.into()),
+-        ("PASS2_ROUNDING", idct::PASS2_ROUNDING.into()),
+         ("DC_SHIFT", idct::DC_SHIFT.into()),
+-        ("DC_ROUNDING", idct::DC_ROUNDING.into()),
+         ("PASS1_SHIFT_12", idct::PASS1_SHIFT_12.into()),
+         ("PASS2_SHIFT_12", idct::PASS2_SHIFT_12.into()),
+         ("FIX_0_298631336", idct::FIX_0_298631336.into()),
+diff --git a/crates/j2k-jpeg-metal/src/shaders_encode.metal b/crates/j2k-jpeg-metal/src/shaders_encode.metal
+index 766a79a..446efd7 100644
+--- a/crates/j2k-jpeg-metal/src/shaders_encode.metal
++++ b/crates/j2k-jpeg-metal/src/shaders_encode.metal
+@@ -586,13 +586,6 @@ inline bool block_intersects_rect(
+     return block_x < rect_x1 && rect_x < block_x1 && block_y < rect_y1 && rect_y < block_y1;
+ }
+ 
+-// Callers of descale_and_clamp add their own rounding term (the full islow IDCT
+-// folds it into the DC path).
+-inline uchar descale_and_clamp(int value, int shift) {
+-    const int shifted = value >> shift;
+-    return clamp_u8(shifted + 128);
+-}
+-
+ // libjpeg DESCALE: arithmetic right shift that rounds half up. Every stage of
+ // jidctred.c (and libjpeg-turbo's SIMD ports) rounds; a plain shift biases
+ // DCT-scaled output low by up to one level per component.
+@@ -692,7 +685,7 @@ inline void idct_islow_columns_x4(
+ ) {
+     islow_1d(p0, p1, p2, p3, p4, p5, p6, p7, out);
+     for (uint i = 0; i < 8u; ++i) {
+-        out[i] = (out[i] + CODEC_MATH_JPEG_IDCT_PASS1_ROUNDING) >> CODEC_MATH_JPEG_IDCT_PASS1_SHIFT;
++        out[i] = descale_rounded(out[i], CODEC_MATH_JPEG_IDCT_PASS1_SHIFT);
+     }
+ }
+ 
+@@ -709,7 +702,7 @@ inline void idct_islow_row(int4 left_in, int4 right_in, thread uchar4 &left, thr
+     const int p7 = right_in.w;
+ 
+     if (p1 == 0 && p2 == 0 && p3 == 0 && p4 == 0 && p5 == 0 && p6 == 0 && p7 == 0) {
+-        const uchar pixel = descale_and_clamp(p0 + CODEC_MATH_JPEG_IDCT_DC_ROUNDING, CODEC_MATH_JPEG_IDCT_DC_SHIFT);
++        const uchar pixel = descale_rounded_and_clamp(p0, CODEC_MATH_JPEG_IDCT_DC_SHIFT);
+         left = uchar4(pixel);
+         right = uchar4(pixel);
+         return;
+@@ -718,18 +711,17 @@ inline void idct_islow_row(int4 left_in, int4 right_in, thread uchar4 &left, thr
+     int out[8];
+     islow_1d(p0, p1, p2, p3, p4, p5, p6, p7, out);
+     const int shift = CODEC_MATH_JPEG_IDCT_PASS2_SHIFT;
+-    const int rounding = CODEC_MATH_JPEG_IDCT_PASS2_ROUNDING;
+     left = uchar4(
+-        descale_and_clamp(out[0] + rounding, shift),
+-        descale_and_clamp(out[1] + rounding, shift),
+-        descale_and_clamp(out[2] + rounding, shift),
+-        descale_and_clamp(out[3] + rounding, shift)
++        descale_rounded_and_clamp(out[0], shift),
++        descale_rounded_and_clamp(out[1], shift),
++        descale_rounded_and_clamp(out[2], shift),
++        descale_rounded_and_clamp(out[3], shift)
+     );
+     right = uchar4(
+-        descale_and_clamp(out[4] + rounding, shift),
+-        descale_and_clamp(out[5] + rounding, shift),
+-        descale_and_clamp(out[6] + rounding, shift),
+-        descale_and_clamp(out[7] + rounding, shift)
++        descale_rounded_and_clamp(out[4], shift),
++        descale_rounded_and_clamp(out[5], shift),
++        descale_rounded_and_clamp(out[6], shift),
++        descale_rounded_and_clamp(out[7], shift)
+     );
+ }
+ 
+diff --git a/crates/j2k-jpeg/src/adapter/device_plan.rs b/crates/j2k-jpeg/src/adapter/device_plan.rs
+index e802ca5..719297c 100644
+--- a/crates/j2k-jpeg/src/adapter/device_plan.rs
++++ b/crates/j2k-jpeg/src/adapter/device_plan.rs
+@@ -1,5 +1,6 @@
+ // SPDX-License-Identifier: MIT OR Apache-2.0
+ 
++use crate::adapter::JpegFastPacketFamily;
+ use crate::allocation::{
+     checked_add_allocation_bytes, checked_allocation_bytes, ensure_allocation_bytes,
+     try_reserve_for_len_with_live_budget,
+@@ -167,6 +168,7 @@ pub fn build_device_plan<'a>(
+         });
+     }
+ 
++    let fast_family = plan.fast_shape_family();
+     Ok(DeviceDecodePlan {
+         dimensions: plan.dimensions,
+         color_space: plan.color_space,
+@@ -175,9 +177,9 @@ pub fn build_device_plan<'a>(
+         scan_bytes,
+         components,
+         checkpoints,
+-        matches_fast_420: plan.matches_fast_420_shape(),
+-        matches_fast_422: plan.matches_fast_422_shape(),
+-        matches_fast_444: plan.matches_fast_444_shape(),
++        matches_fast_420: fast_family == Some(JpegFastPacketFamily::Fast420),
++        matches_fast_422: fast_family == Some(JpegFastPacketFamily::Fast422),
++        matches_fast_444: fast_family == Some(JpegFastPacketFamily::Fast444),
+     })
+ }
+ 
+@@ -227,12 +229,13 @@ pub fn summarize_device_batch(decoder: &Decoder<'_>, cadence_mcus: u32) -> Devic
+         restart_interval.map(u32::from),
+     );
+ 
++    let fast_family = plan.fast_shape_family();
+     DeviceBatchSummary {
+         restart_interval,
+         checkpoint_count,
+-        matches_fast_420: plan.matches_fast_420_shape(),
+-        matches_fast_422: plan.matches_fast_422_shape(),
+-        matches_fast_444: plan.matches_fast_444_shape(),
++        matches_fast_420: fast_family == Some(JpegFastPacketFamily::Fast420),
++        matches_fast_422: fast_family == Some(JpegFastPacketFamily::Fast422),
++        matches_fast_444: fast_family == Some(JpegFastPacketFamily::Fast444),
+     }
+ }
+ 
+diff --git a/crates/j2k-jpeg/src/backend/tests.rs b/crates/j2k-jpeg/src/backend/tests.rs
+index 7c61967..bdf2707 100644
+--- a/crates/j2k-jpeg/src/backend/tests.rs
++++ b/crates/j2k-jpeg/src/backend/tests.rs
+@@ -174,24 +174,29 @@ fn available_backends() -> impl Iterator<Item = super::Backend> {
+     .filter_map(super::Backend::for_test_kind)
+ }
+ 
+-/// `backend`'s fancy 4:2:0 output row equals the per-sample reference and
+-/// writes nothing past `output_width`.
++/// The per-sample reference of a fancy 4:2:0 output row of `output_width`.
++fn h2v2_reference_row(rows: [&[u8]; 3], output_width: usize, output_is_bottom: bool) -> Vec<u8> {
++    let [prev, curr, next] = rows;
++    let near = if output_is_bottom { next } else { prev };
++    (0..output_width)
++        .map(|x| crate::color::upsample::h2v2_fancy_sample(near, curr, x))
++        .collect()
++}
++
++/// `backend`'s fancy 4:2:0 output row equals `expected` (see
++/// [`h2v2_reference_row`]) and writes nothing past its width.
+ fn assert_h2v2_row_matches_reference(
+     backend: super::Backend,
+     rows: [&[u8]; 3],
+-    output_width: usize,
++    expected: &[u8],
+     output_is_bottom: bool,
+-    label: &str,
++    label: core::fmt::Arguments<'_>,
+ ) {
+-    let [prev, curr, next] = rows;
+-    let near = if output_is_bottom { next } else { prev };
+-    let expected: Vec<u8> = (0..output_width)
+-        .map(|x| crate::color::upsample::h2v2_fancy_sample(near, curr, x))
+-        .collect();
++    let output_width = expected.len();
+     let mut actual = vec![0xAA; output_width + 3];
+     backend.upsample_h2v2_fancy_row(rows, output_width, output_is_bottom, &mut actual);
+     let kind = backend.kind();
+-    assert_eq!(&actual[..output_width], &expected[..], "{kind:?} {label}");
++    assert_eq!(&actual[..output_width], expected, "{kind:?} {label}");
+     assert_eq!(
+         &actual[output_width..],
+         &[0xAA; 3],
+@@ -1264,13 +1269,15 @@ fn fancy_h2v2_rows_match_the_per_sample_reference_on_every_backend() {
+         let (prev, curr, next) = (row(chroma_width), row(chroma_width), row(chroma_width));
+         for output_width in [2 * chroma_width, 2 * chroma_width - 1, chroma_width] {
+             for bottom in [false, true] {
++                let rows = [&prev[..], &curr[..], &next[..]];
++                let expected = h2v2_reference_row(rows, output_width, bottom);
+                 for backend in available_backends() {
+                     assert_h2v2_row_matches_reference(
+                         backend,
+-                        [&prev, &curr, &next],
+-                        output_width,
++                        rows,
++                        &expected,
+                         bottom,
+-                        &format!("chroma {chroma_width} width {output_width} bottom {bottom}"),
++                        format_args!("chroma {chroma_width} width {output_width} bottom {bottom}"),
+                     );
+                 }
+             }
+@@ -1294,27 +1301,28 @@ fn fancy_h2v2_interior_matches_the_reference_for_every_column_sum_pair() {
+             u8::try_from(near).expect("byte"),
+         )
+     };
+-    let mut rows: Vec<(Vec<u8>, Vec<u8>)> = (0..=1020u16)
+-        .map(|left| {
++    let rows = (0..=1020u16)
++        .map(|left| -> (Vec<u8>, Vec<u8>) {
+             (0..=1020u16)
+                 .flat_map(|right| [samples(left), samples(right)])
+                 .unzip()
+         })
+-        .collect();
+-    rows.push(
+-        (0..=u16::MAX)
+-            .map(|pair| <(u8, u8)>::from(pair.to_le_bytes()))
+-            .unzip(),
+-    );
+-    for (curr, near) in &rows {
++        .chain(core::iter::once(
++            (0..=u16::MAX)
++                .map(|pair| <(u8, u8)>::from(pair.to_le_bytes()))
++                .unzip(),
++        ));
++    for (curr, near) in rows {
++        // `near` serves as the previous row of a top output.
++        let rows = [&near[..], &curr[..], &near[..]];
++        let expected = h2v2_reference_row(rows, 2 * curr.len(), false);
+         for backend in available_backends() {
+-            // `near` serves as the previous row of a top output.
+             assert_h2v2_row_matches_reference(
+                 backend,
+-                [near, curr, near],
+-                2 * curr.len(),
++                rows,
++                &expected,
+                 false,
+-                &format!("row of {} samples", curr.len()),
++                format_args!("row of {} samples", curr.len()),
+             );
+         }
+     }
+diff --git a/crates/j2k-jpeg/src/backend/x86.rs b/crates/j2k-jpeg/src/backend/x86.rs
+index 9d9e53d..440decf 100644
+--- a/crates/j2k-jpeg/src/backend/x86.rs
++++ b/crates/j2k-jpeg/src/backend/x86.rs
+@@ -315,7 +315,7 @@ fn fill_rgb_row_pair_from_420_avx2(
+ /// One visible row of fancy 4:2:0 chroma upsampling, bit-exact with
+ /// [`crate::color::upsample::upsample_h2v2_fancy_row`]: the shared row
+ /// driver handles the edges and [`h2v2_fancy_pairs`] the interior.
+-pub(super) fn upsample_h2v2_row(
++fn upsample_h2v2_row(
+     avx2: ExactAvx2,
+     near: &[u8],
+     curr: &[u8],
+diff --git a/crates/j2k-jpeg/src/decoder/lossless_helpers.rs b/crates/j2k-jpeg/src/decoder/lossless_helpers.rs
+index dc64891..6f719fe 100644
+--- a/crates/j2k-jpeg/src/decoder/lossless_helpers.rs
++++ b/crates/j2k-jpeg/src/decoder/lossless_helpers.rs
+@@ -7,7 +7,7 @@ use super::{
+ };
+ use crate::allocation::{checked_allocation_bytes, try_vec_with_capacity};
+ use crate::entropy::sequential::PreparedDecodePlan;
+-use crate::parse::markers::{next_entropy_marker, EntropyMarker};
++use crate::parse::markers::next_entropy_marker_code;
+ 
+ pub(crate) fn restart_index_allocation_bytes(
+     info: &Info,
+@@ -55,16 +55,7 @@ pub(super) fn restart_index_for_stream(
+     let mut found_restarts = 0u32;
+     let mut expected_rst = 0xd0u8;
+     let mut pos = scan_data_offset;
+-    while let Some(next) = next_entropy_marker(bytes, pos) {
+-        let (marker_code_pos, marker) = match next {
+-            EntropyMarker::Unterminated { fill_start } => {
+-                return Err(JpegError::Truncated {
+-                    offset: fill_start,
+-                    expected: 1,
+-                });
+-            }
+-            EntropyMarker::Marker { code_pos, code, .. } => (code_pos, code),
+-        };
++    while let Some((marker_code_pos, marker)) = next_entropy_marker_code(bytes, pos)? {
+         let marker_offset = marker_code_pos - 1;
+         match marker {
+             0xd0..=0xd7 => {
+diff --git a/crates/j2k-jpeg/src/decoder/sequential.rs b/crates/j2k-jpeg/src/decoder/sequential.rs
+index b4c0f9c..b503cf1 100644
+--- a/crates/j2k-jpeg/src/decoder/sequential.rs
++++ b/crates/j2k-jpeg/src/decoder/sequential.rs
+@@ -103,22 +103,29 @@ impl Decoder<'_> {
+         if target_mcu < CPU_ROI_CHECKPOINT_MIN_TARGET_MCUS {
+             return Ok(None);
+         }
++        checkpoint_before_mcu(
++            &self.plan,
++            scan_bytes,
++            target_mcu,
++            self.checkpoint_baseline_bytes(external_decode_phase_bytes)?,
++            &self.cpu_entropy_checkpoints,
++        )
++    }
+ 
+-        // The shared decoder context stays live beside the decode, charged
+-        // once as in `decode_workspace_cap`.
+-        let retained_decoder_baseline_bytes = checked_add_allocation_bytes(
++    /// Bytes the checkpoint cache's allocations must fit beside: the decoder
++    /// without that cache, plus `external_decode_phase_bytes`. The shared
++    /// decoder context stays live beside the decode, charged once as in
++    /// `decode_workspace_cap`.
++    fn checkpoint_baseline_bytes(
++        &self,
++        external_decode_phase_bytes: usize,
++    ) -> Result<usize, JpegError> {
++        checked_add_allocation_bytes(
+             checked_add_allocation_bytes(
+                 MAX_DECODER_CONTEXT_ALLOCATION_BYTES,
+                 self.retained_allocation_bytes_excluding_cpu_checkpoint_cache()?,
+             )?,
+             external_decode_phase_bytes,
+-        )?;
+-        checkpoint_before_mcu(
+-            &self.plan,
+-            scan_bytes,
+-            target_mcu,
+-            retained_decoder_baseline_bytes,
+-            &self.cpu_entropy_checkpoints,
+         )
+     }
+ 
+@@ -143,12 +150,8 @@ impl Decoder<'_> {
+             return Ok(None);
+         };
+         let checkpoint = restart_checkpoint_from_index(&index, target_mcu);
+-        let retained_decoder_baseline_bytes = checked_add_allocation_bytes(
+-            MAX_DECODER_CONTEXT_ALLOCATION_BYTES,
+-            self.retained_allocation_bytes_excluding_cpu_checkpoint_cache()?,
+-        )?;
+         self.cpu_entropy_checkpoints
+-            .retain_restart_index(index, retained_decoder_baseline_bytes)?;
++            .retain_restart_index(index, self.checkpoint_baseline_bytes(0)?)?;
+         Ok(checkpoint)
+     }
+ 
+diff --git a/crates/j2k-jpeg/src/decoder/tests.rs b/crates/j2k-jpeg/src/decoder/tests.rs
+index 6bf823f..0841cac 100644
+--- a/crates/j2k-jpeg/src/decoder/tests.rs
++++ b/crates/j2k-jpeg/src/decoder/tests.rs
+@@ -413,10 +413,6 @@ fn decode_region_output_format_writes_custom_rgba_alpha() {
+     }
+ }
+ 
+-fn has_restart_index(dec: &Decoder<'_>) -> bool {
+-    dec.cpu_entropy_checkpoints.has_restart_index()
+-}
+-
+ #[test]
+ fn restart_checkpoints_come_from_the_cached_index_after_the_first_seek() {
+     let bytes = j2k_test_support::restart_coded_grayscale_jpeg(40, 24);
+@@ -425,7 +421,7 @@ fn restart_checkpoints_come_from_the_cached_index_after_the_first_seek() {
+     let index = dec.restart_index().expect("index").expect("restart-coded");
+     let seek = |target| dec.checkpoint_for_mcu(scan, target, 0).expect("seek");
+     assert_eq!(seek(7), None, "the first seek scans only up to its marker");
+-    assert!(!has_restart_index(&dec));
++    assert!(!dec.cpu_entropy_checkpoints.has_restart_index());
+     for pass in 0..2 {
+         for target in 0..=15 {
+             assert_eq!(
+@@ -434,7 +430,7 @@ fn restart_checkpoints_come_from_the_cached_index_after_the_first_seek() {
+                 "pass {pass} target {target}"
+             );
+         }
+-        assert!(has_restart_index(&dec));
++        assert!(dec.cpu_entropy_checkpoints.has_restart_index());
+     }
+     assert!((1..15).all(|target| seek(target).is_some()));
+ }
+@@ -457,7 +453,7 @@ fn malformed_restart_numbering_keeps_the_lenient_restart_seek() {
+             "{target}"
+         );
+     }
+-    assert!(!has_restart_index(&dec));
++    assert!(!dec.cpu_entropy_checkpoints.has_restart_index());
+ }
+ 
+ #[test]
+diff --git a/crates/j2k-jpeg/src/entropy/sequential/deposit.rs b/crates/j2k-jpeg/src/entropy/sequential/deposit.rs
+index 29fb923..1382064 100644
+--- a/crates/j2k-jpeg/src/entropy/sequential/deposit.rs
++++ b/crates/j2k-jpeg/src/entropy/sequential/deposit.rs
+@@ -207,9 +207,6 @@ impl<'a, const N: usize> FastTile420Components<'a, N> {
+     /// kernels skip MCUs outside their column window with direct
+     /// [`skip_block`] calls instead: this helper, inlined there, spills their
+     /// register-resident DC predictors and reader (+1–3 % decode time).
+-    // ROI seeks invoke this leaf once per skipped MCU; forced inlining keeps
+-    // its Huffman skips in the caller's hot loop without adding a
+-    // branch-and-call boundary.
+     #[expect(
+         clippy::inline_always,
+         reason = "ROI seek hot path keeps the MCU's Huffman skips inside the caller loop"
+diff --git a/crates/j2k-jpeg/src/entropy/sequential/fast420/mod.rs b/crates/j2k-jpeg/src/entropy/sequential/fast420/mod.rs
+index 0e1bb5b..55d4657 100644
+--- a/crates/j2k-jpeg/src/entropy/sequential/fast420/mod.rs
++++ b/crates/j2k-jpeg/src/entropy/sequential/fast420/mod.rs
+@@ -211,7 +211,14 @@ impl Fast420Scan<'_, '_> {
+             restart: &mut cursor.restart,
+         };
+ 
+-        self.decode_rows(components, &mut state, &mut pool.stripe_a, writer, profile)?;
++        self.decode_rows(
++            rows,
++            components,
++            &mut state,
++            &mut pool.stripe_a,
++            writer,
++            profile,
++        )?;
+ 
+         let finish_timer = profile.begin_finish_scan();
+         let result = finish_scan(&mut cursor.br, rows.row_end == columns.mcu_rows);
+@@ -221,6 +228,7 @@ impl Fast420Scan<'_, '_> {
+ 
+     fn decode_rows<const N: usize, W, P>(
+         self,
++        rows: Fast420Rows,
+         components: FastTile420Components<'_, N>,
+         state: &mut FastRowState<'_, '_>,
+         stripe: &mut StripeBuffer,
+@@ -231,7 +239,6 @@ impl Fast420Scan<'_, '_> {
+         W: InterleavedRgbWriter,
+         P: Fast420ScanProfiler,
+     {
+-        let rows = self.rows();
+         for mcu_y in rows.first_row..rows.row_end {
+             let pass = rows.pass(self.request.roi, mcu_y)?;
+             let mcu_timer = profile.begin_mcu_decode();
+diff --git a/crates/j2k-jpeg/src/entropy/sequential/generic.rs b/crates/j2k-jpeg/src/entropy/sequential/generic.rs
+index b0bfb4f..cdcc857 100644
+--- a/crates/j2k-jpeg/src/entropy/sequential/generic.rs
++++ b/crates/j2k-jpeg/src/entropy/sequential/generic.rs
+@@ -5,7 +5,7 @@
+ mod driver;
+ mod row;
+ 
+-use self::driver::{decode_scan_rows, ScanBuffers, ScanOutputMode, ScanSetup, StripeEmitter};
++use self::driver::{decode_scan_rows, ScanOutputMode, ScanSetup, StripeEmitter};
+ use super::emit::{emit_stripe, emit_stripe_rgb, StripeEmit};
+ use super::layout::uses_fancy_420_emit;
+ use super::{HuffmanPrimaryWidth, OutputScratch, PreparedDecodePlan, RgbOutputScratch};
+@@ -98,7 +98,6 @@ fn decode_scan_baseline_with_entries<const N: usize, W: OutputWriter>(
+     setup.prepare_pool(plan, pool)?;
+     let fancy_420 = uses_fancy_420_emit(plan, &setup.scaled);
+     let ScratchPool {
+-        prev_dc,
+         stripe_a,
+         stripe_b,
+         stripe_c,
+@@ -126,12 +125,7 @@ fn decode_scan_baseline_with_entries<const N: usize, W: OutputWriter>(
+         scan_bytes,
+         downscale,
+         setup,
+-        ScanBuffers {
+-            prev_dc: prev_dc.as_mut_slice(),
+-            stripe_a,
+-            stripe_b,
+-            stripe_c,
+-        },
++        [stripe_a, stripe_b, stripe_c],
+         &mut emitter,
+     )
+ }
+@@ -184,7 +178,6 @@ fn decode_scan_baseline_rgb_with_entries<const N: usize, W: OutputWriter + Inter
+     setup.prepare_pool(plan, pool)?;
+     let fancy_420 = uses_fancy_420_emit(plan, &setup.scaled);
+     let ScratchPool {
+-        prev_dc,
+         stripe_a,
+         stripe_b,
+         stripe_c,
+@@ -212,12 +205,7 @@ fn decode_scan_baseline_rgb_with_entries<const N: usize, W: OutputWriter + Inter
+         scan_bytes,
+         downscale,
+         setup,
+-        ScanBuffers {
+-            prev_dc: prev_dc.as_mut_slice(),
+-            stripe_a,
+-            stripe_b,
+-            stripe_c,
+-        },
++        [stripe_a, stripe_b, stripe_c],
+         &mut emitter,
+     )
+ }
+diff --git a/crates/j2k-jpeg/src/entropy/sequential/generic/driver.rs b/crates/j2k-jpeg/src/entropy/sequential/generic/driver.rs
+index dad87ff..b00e699 100644
+--- a/crates/j2k-jpeg/src/entropy/sequential/generic/driver.rs
++++ b/crates/j2k-jpeg/src/entropy/sequential/generic/driver.rs
+@@ -113,13 +113,6 @@ impl ScanSetup {
+     }
+ }
+ 
+-pub(super) struct ScanBuffers<'a> {
+-    pub(super) prev_dc: &'a mut [i32],
+-    pub(super) stripe_a: &'a mut StripeBuffer,
+-    pub(super) stripe_b: &'a mut StripeBuffer,
+-    pub(super) stripe_c: &'a mut StripeBuffer,
+-}
+-
+ pub(super) trait StripeEmitter {
+     fn emit(&mut self, stripe: StripeEmit<'_>) -> Result<(), JpegError>;
+ }
+@@ -130,15 +123,10 @@ pub(super) fn decode_scan_rows<const N: usize, E: StripeEmitter>(
+     scan_bytes: &[u8],
+     downscale: DownscaleFactor,
+     setup: ScanSetup,
+-    buffers: ScanBuffers<'_>,
++    stripes: [&mut StripeBuffer; 3],
+     emitter: &mut E,
+ ) -> Result<Vec<Warning>, JpegError> {
+-    let ScanBuffers {
+-        prev_dc,
+-        stripe_a,
+-        stripe_b,
+-        stripe_c,
+-    } = buffers;
++    let [stripe_a, stripe_b, stripe_c] = stripes;
+     let mut coeff = CoefficientBlock::default();
+     let mut pixels = [0u8; 64];
+     let columns = setup.columns;
+@@ -150,13 +138,12 @@ pub(super) fn decode_scan_rows<const N: usize, E: StripeEmitter>(
+         columns.mcu_position(0, setup.first_decode_mcu_row),
+         wide_huffman,
+     )?;
+-    let position_dc = cursor
++    let prev_dc = cursor
+         .prev_dc
+-        .get(..prev_dc.len())
++        .get_mut(..setup.scaled.effective.len())
+         .ok_or(JpegError::InternalInvariant {
+             reason: "sequential decode supports at most four components",
+         })?;
+-    prev_dc.copy_from_slice(position_dc);
+ 
+     let row_context = McuRowContext {
+         plan,
+diff --git a/crates/j2k-jpeg/src/entropy/sequential/generic/row.rs b/crates/j2k-jpeg/src/entropy/sequential/generic/row.rs
+index 97a6beb..da266f1 100644
+--- a/crates/j2k-jpeg/src/entropy/sequential/generic/row.rs
++++ b/crates/j2k-jpeg/src/entropy/sequential/generic/row.rs
+@@ -144,18 +144,9 @@ fn decode_mcu_row_local<const N: usize, const FULL_SIZE: bool>(
+     let mut pixels_2x2 = [0u8; 4];
+     // Resolve immutable Huffman handles outside the MCU loop, including the
+     // generic grayscale, restart, and subsampled paths.
+-    let mut resolved = [context.plan.resolved_component_with_entries::<N>(0)?; 4];
+-    if context.plan.components.len() > resolved.len() {
+-        return Err(JpegError::InternalInvariant {
+-            reason: "sequential decode supports at most four components",
+-        });
+-    }
+-    for (tables, comp) in resolved.iter_mut().zip(&context.plan.components) {
+-        *tables = context
+-            .plan
+-            .resolve_component_with_entries::<N>(comp)?
+-            .with_wide_huffman(context.wide_huffman);
+-    }
++    let resolved = context
++        .plan
++        .resolved_components_with_entries::<N>(context.wide_huffman)?;
+     for mx in 0..columns.mcus_per_row {
+         if state
+             .restart
+diff --git a/crates/j2k-jpeg/src/entropy/sequential/plan/resolved.rs b/crates/j2k-jpeg/src/entropy/sequential/plan/resolved.rs
+index 420aede..06b6031 100644
+--- a/crates/j2k-jpeg/src/entropy/sequential/plan/resolved.rs
++++ b/crates/j2k-jpeg/src/entropy/sequential/plan/resolved.rs
+@@ -87,4 +87,24 @@ impl PreparedDecodePlan {
+             })?;
+         self.resolve_component_with_entries::<N>(component)
+     }
++
++    /// Every scan component's tables in plan order, AC lookups widened per
++    /// `wide_huffman`; slots past the component count hold component 0's.
++    pub(crate) fn resolved_components_with_entries<const N: usize>(
++        &self,
++        wide_huffman: bool,
++    ) -> Result<[ResolvedPreparedComponentPlan<'_, N>; 4], JpegError> {
++        let mut resolved = [self.resolved_component_with_entries::<N>(0)?; 4];
++        if self.components.len() > resolved.len() {
++            return Err(JpegError::InternalInvariant {
++                reason: "sequential decode supports at most four components",
++            });
++        }
++        for (tables, comp) in resolved.iter_mut().zip(&self.components) {
++            *tables = self
++                .resolve_component_with_entries::<N>(comp)?
++                .with_wide_huffman(wide_huffman);
++        }
++        Ok(resolved)
++    }
+ }
+diff --git a/crates/j2k-jpeg/src/entropy/sequential/restart.rs b/crates/j2k-jpeg/src/entropy/sequential/restart.rs
+index ee3255f..fb7a121 100644
+--- a/crates/j2k-jpeg/src/entropy/sequential/restart.rs
++++ b/crates/j2k-jpeg/src/entropy/sequential/restart.rs
+@@ -220,20 +220,12 @@ pub(crate) struct McuSkipper<'a, const N: usize> {
+ 
+ impl<'a, const N: usize> McuSkipper<'a, N> {
+     pub(crate) fn new(plan: &'a PreparedDecodePlan, wide_huffman: bool) -> Result<Self, JpegError> {
+-        let first = plan.resolved_component_with_entries::<N>(0)?;
+-        let mut components = [(first, 0, 0); 4];
+-        if plan.components.len() > components.len() {
+-            return Err(JpegError::InternalInvariant {
+-                reason: "sequential decode supports at most four components",
+-            });
+-        }
+-        for (slot, comp) in components.iter_mut().zip(&plan.components) {
+-            *slot = (
+-                plan.resolve_component_with_entries::<N>(comp)?
+-                    .with_wide_huffman(wide_huffman),
+-                comp.output_index,
+-                u32::from(comp.h) * u32::from(comp.v),
+-            );
++        let mut components = plan
++            .resolved_components_with_entries::<N>(wide_huffman)?
++            .map(|tables| (tables, 0, 0));
++        for ((_, plane, blocks), comp) in components.iter_mut().zip(&plan.components) {
++            *plane = comp.output_index;
++            *blocks = u32::from(comp.h) * u32::from(comp.v);
+         }
+         Ok(Self {
+             components,
+diff --git a/crates/j2k-jpeg/src/entropy/sequential/stream_tests.rs b/crates/j2k-jpeg/src/entropy/sequential/stream_tests.rs
+index e842820..04e99f4 100644
+--- a/crates/j2k-jpeg/src/entropy/sequential/stream_tests.rs
++++ b/crates/j2k-jpeg/src/entropy/sequential/stream_tests.rs
+@@ -38,6 +38,33 @@ pub(crate) fn noisy_rgb8(width: u32, height: u32, seed: u32) -> Vec<u8> {
+     pixels
+ }
+ 
++/// Baseline JPEG of [`noisy_rgb8`], so every block carries real AC symbols
++/// and `FF 00` stuffing occurs throughout the scan.
++pub(crate) fn noisy_jpeg(
++    width: u32,
++    height: u32,
++    subsampling: JpegSubsampling,
++    restart_interval: Option<u16>,
++    seed: u32,
++) -> Vec<u8> {
++    let pixels = noisy_rgb8(width, height, seed);
++    encode_jpeg_baseline(
++        JpegSamples::Rgb8 {
++            data: &pixels,
++            width,
++            height,
++        },
++        JpegEncodeOptions {
++            quality: 92,
++            subsampling,
++            restart_interval,
++            backend: JpegBackend::Cpu,
++        },
++    )
++    .expect("encode noisy fixture")
++    .data
++}
++
+ /// Coded layouts the streaming routes decode.
+ #[derive(Clone, Copy, Debug)]
+ enum Shape {
+@@ -56,26 +83,18 @@ const SHAPES: [Shape; 4] = [
+ ];
+ 
+ fn encode(shape: Shape, width: u32, height: u32, restart_interval: Option<u16>) -> Vec<u8> {
+-    let pixels = noisy_rgb8(width, height, width * 131 + height);
+-    encode_jpeg_baseline(
+-        JpegSamples::Rgb8 {
+-            data: &pixels,
+-            width,
+-            height,
+-        },
+-        JpegEncodeOptions {
+-            quality: 92,
+-            subsampling: match shape {
+-                Shape::Ycbcr420 => JpegSubsampling::Ybr420,
+-                Shape::Ycbcr422 => JpegSubsampling::Ybr422,
+-                Shape::Ycbcr444 | Shape::Rgb444 => JpegSubsampling::Ybr444,
+-            },
+-            restart_interval,
+-            backend: JpegBackend::Cpu,
+-        },
++    let subsampling = match shape {
++        Shape::Ycbcr420 => JpegSubsampling::Ybr420,
++        Shape::Ycbcr422 => JpegSubsampling::Ybr422,
++        Shape::Ycbcr444 | Shape::Rgb444 => JpegSubsampling::Ybr444,
++    };
++    noisy_jpeg(
++        width,
++        height,
++        subsampling,
++        restart_interval,
++        width * 131 + height,
+     )
+-    .expect("encode fixture")
+-    .data
+ }
+ 
+ /// A decoder of `bytes` that takes the shape's streaming route.
+diff --git a/crates/j2k-jpeg/src/internal/checkpoint/cache.rs b/crates/j2k-jpeg/src/internal/checkpoint/cache.rs
+index 898ae6b..523dbb1 100644
+--- a/crates/j2k-jpeg/src/internal/checkpoint/cache.rs
++++ b/crates/j2k-jpeg/src/internal/checkpoint/cache.rs
+@@ -21,7 +21,7 @@ use super::DeviceCheckpoint;
+ use crate::allocation::{checked_add_allocation_bytes, checked_allocation_bytes};
+ use crate::entropy::huffman::{FULL_PRIMARY_ENTRIES, NARROW_PRIMARY_ENTRIES};
+ use crate::entropy::sequential::{
+-    sequential_mcu_grid, HuffmanPrimaryWidth, McuSkipper, PreparedDecodePlan,
++    sequential_mcu_grid, sequential_mcu_size, HuffmanPrimaryWidth, McuSkipper, PreparedDecodePlan,
+ };
+ use crate::error::JpegError;
+ use crate::info::{RestartIndex, RestartSegment};
+@@ -52,7 +52,7 @@ pub(crate) struct CheckpointGrid {
+ impl CheckpointGrid {
+     pub(crate) fn for_plan(plan: &PreparedDecodePlan) -> Self {
+         let (mcus_per_row, mcu_rows) = sequential_mcu_grid(plan);
+-        let mcu_width_px = 8 * u32::from(plan.sampling.max_h);
++        let (mcu_width_px, _) = sequential_mcu_size(plan);
+         let span_mcus = CHECKPOINT_SPAN_PX.div_ceil(mcu_width_px).max(1);
+         Self {
+             mcus_per_row,
+@@ -155,9 +155,9 @@ struct CacheState {
+ 
+ impl CacheState {
+     fn restart_index_bytes(&self) -> Result<usize, JpegError> {
+-        self.restart_index.as_ref().map_or(Ok(0), |index| {
+-            checked_allocation_bytes::<RestartSegment>(index.segments.capacity())
+-        })
++        self.restart_index
++            .as_ref()
++            .map_or(Ok(0), restart_index_bytes)
+     }
+ 
+     fn retained_allocation_bytes(&self) -> Result<usize, JpegError> {
+@@ -186,6 +186,10 @@ impl CacheState {
+     }
+ }
+ 
++fn restart_index_bytes(index: &RestartIndex) -> Result<usize, JpegError> {
++    checked_allocation_bytes::<RestartSegment>(index.segments.capacity())
++}
++
+ /// Per-decoder entropy seek cache: lazily published checkpoints and the
+ /// restart-marker index. Internally synchronized; `Decoder` is `Sync`.
+ #[derive(Debug, Default)]
+@@ -242,7 +246,7 @@ impl CpuCheckpointCache {
+         index: RestartIndex,
+         retained_baseline_bytes: usize,
+     ) -> Result<(), JpegError> {
+-        let index_bytes = checked_allocation_bytes::<RestartSegment>(index.segments.capacity())?;
++        let index_bytes = restart_index_bytes(&index)?;
+         let mut state = self.lock()?;
+         let fits = state.restart_index.is_none()
+             && checked_live_bytes(
+diff --git a/crates/j2k-jpeg/src/internal/checkpoint/cache/allocation.rs b/crates/j2k-jpeg/src/internal/checkpoint/cache/allocation.rs
+index 4b11e31..daec4c9 100644
+--- a/crates/j2k-jpeg/src/internal/checkpoint/cache/allocation.rs
++++ b/crates/j2k-jpeg/src/internal/checkpoint/cache/allocation.rs
+@@ -5,16 +5,18 @@
+ use alloc::vec::Vec;
+ 
+ use super::super::allocation::{checked_live_bytes, element_capacity_bytes, host_allocation_error};
++use super::CompactCheckpoint;
+ use crate::error::JpegError;
+ 
+-pub(in crate::internal::checkpoint) fn reserve_checkpoint_capacity<T>(
+-    checkpoints: &mut Vec<T>,
++pub(in crate::internal::checkpoint) fn reserve_checkpoint_capacity(
++    checkpoints: &mut Vec<CompactCheckpoint>,
+     capacity: usize,
+     retained_baseline_bytes: usize,
+     allocation_cap: usize,
+ ) -> Result<(), JpegError> {
+-    let planned_bytes = element_capacity_bytes::<T>(capacity, allocation_cap)?;
+-    let retained_bytes = element_capacity_bytes::<T>(checkpoints.capacity(), allocation_cap)?;
++    let planned_bytes = element_capacity_bytes::<CompactCheckpoint>(capacity, allocation_cap)?;
++    let retained_bytes =
++        element_capacity_bytes::<CompactCheckpoint>(checkpoints.capacity(), allocation_cap)?;
+     checked_checkpoint_reservation_peak(
+         retained_baseline_bytes,
+         retained_bytes,
+@@ -36,22 +38,22 @@ pub(in crate::internal::checkpoint) fn reserve_checkpoint_capacity<T>(
+     )
+ }
+ 
+-pub(in crate::internal::checkpoint) fn reconcile_actual_checkpoint_capacity<T>(
+-    checkpoints: &mut Vec<T>,
++pub(in crate::internal::checkpoint) fn reconcile_actual_checkpoint_capacity(
++    checkpoints: &mut Vec<CompactCheckpoint>,
+     retained_baseline_bytes: usize,
+     replaced_cache_bytes: usize,
+     allocation_cap: usize,
+ ) -> Result<(), JpegError> {
+-    let postcheck = element_capacity_bytes::<T>(checkpoints.capacity(), allocation_cap).and_then(
+-        |actual_bytes| {
+-            checked_checkpoint_reservation_peak(
+-                retained_baseline_bytes,
+-                replaced_cache_bytes,
+-                actual_bytes,
+-                allocation_cap,
+-            )
+-        },
+-    );
++    let postcheck =
++        element_capacity_bytes::<CompactCheckpoint>(checkpoints.capacity(), allocation_cap)
++            .and_then(|actual_bytes| {
++                checked_checkpoint_reservation_peak(
++                    retained_baseline_bytes,
++                    replaced_cache_bytes,
++                    actual_bytes,
++                    allocation_cap,
++                )
++            });
+     if let Err(error) = postcheck {
+         *checkpoints = Vec::new();
+         return Err(error);
+diff --git a/crates/j2k-jpeg/src/internal/checkpoint/tests/allocation.rs b/crates/j2k-jpeg/src/internal/checkpoint/tests/allocation.rs
+index 3851e82..8d2b76e 100644
+--- a/crates/j2k-jpeg/src/internal/checkpoint/tests/allocation.rs
++++ b/crates/j2k-jpeg/src/internal/checkpoint/tests/allocation.rs
+@@ -105,7 +105,7 @@ fn checkpoint_cache_growth_counts_decoder_baseline_old_and_replacement_exactly()
+ 
+ #[test]
+ fn prepopulated_checkpoint_growth_counts_external_output_and_scratch_exactly() {
+-    let checkpoint_bytes = core::mem::size_of::<DeviceCheckpoint>();
++    let checkpoint_bytes = core::mem::size_of::<CompactCheckpoint>();
+     let decoder_retained = 17;
+     let output_capacity = 19;
+     let scratch_capacity = 23;
+@@ -115,7 +115,7 @@ fn prepopulated_checkpoint_growth_counts_external_output_and_scratch_exactly() {
+     let exact =
+         phase_baseline + old_capacity * checkpoint_bytes + replacement_capacity * checkpoint_bytes;
+ 
+-    let mut exact_cache = Vec::<DeviceCheckpoint>::with_capacity(old_capacity);
++    let mut exact_cache = Vec::<CompactCheckpoint>::with_capacity(old_capacity);
+     reserve_checkpoint_capacity(
+         &mut exact_cache,
+         replacement_capacity,
+@@ -125,7 +125,7 @@ fn prepopulated_checkpoint_growth_counts_external_output_and_scratch_exactly() {
+     .expect("external owners plus cache replacement fit the exact boundary");
+     assert!(exact_cache.capacity() >= replacement_capacity);
+ 
+-    let mut rejected_cache = Vec::<DeviceCheckpoint>::with_capacity(old_capacity);
++    let mut rejected_cache = Vec::<CompactCheckpoint>::with_capacity(old_capacity);
+     let retained_capacity = rejected_cache.capacity();
+     assert_eq!(
+         reserve_checkpoint_capacity(
+@@ -144,8 +144,8 @@ fn prepopulated_checkpoint_growth_counts_external_output_and_scratch_exactly() {
+ 
+ #[test]
+ fn failed_actual_cache_postcheck_releases_the_retained_allocation() {
+-    let mut checkpoints = Vec::<DeviceCheckpoint>::with_capacity(2);
+-    let actual_bytes = checkpoints.capacity() * core::mem::size_of::<DeviceCheckpoint>();
++    let mut checkpoints = Vec::<CompactCheckpoint>::with_capacity(2);
++    let actual_bytes = checkpoints.capacity() * core::mem::size_of::<CompactCheckpoint>();
+     let baseline = 1;
+     let error = reconcile_actual_checkpoint_capacity(&mut checkpoints, baseline, 0, actual_bytes)
+         .expect_err("allocator overcapacity must fail its aggregate postcheck");
+@@ -191,14 +191,15 @@ fn checkpoint_reservation_fails_before_exceeding_the_host_cap() {
+         }
+     );
+ 
+-    let mut cached = Vec::<DeviceCheckpoint>::new();
+-    let error = reserve_checkpoint_capacity(&mut cached, 2, 0, checkpoint_bytes)
++    let cache_checkpoint_bytes = core::mem::size_of::<CompactCheckpoint>();
++    let mut cached = Vec::<CompactCheckpoint>::new();
++    let error = reserve_checkpoint_capacity(&mut cached, 2, 0, cache_checkpoint_bytes)
+         .expect_err("lazy checkpoint growth must use the same host cap");
+     assert_eq!(
+         error,
+         JpegError::MemoryCapExceeded {
+-            requested: checkpoint_bytes * 2,
+-            cap: checkpoint_bytes,
++            requested: cache_checkpoint_bytes * 2,
++            cap: cache_checkpoint_bytes,
+         }
+     );
+     assert!(cached.is_empty(), "{cached:?}");
+diff --git a/crates/j2k-jpeg/src/internal/checkpoint/tests/cache.rs b/crates/j2k-jpeg/src/internal/checkpoint/tests/cache.rs
+index f5d8804..e745047 100644
+--- a/crates/j2k-jpeg/src/internal/checkpoint/tests/cache.rs
++++ b/crates/j2k-jpeg/src/internal/checkpoint/tests/cache.rs
+@@ -2,9 +2,10 @@
+ 
+ use alloc::vec::Vec;
+ 
+-use super::fixtures::{grayscale_jpeg, noisy_jpeg};
++use super::fixtures::grayscale_jpeg;
+ use crate::decoder::Decoder;
+ use crate::entropy::huffman::{FULL_PRIMARY_ENTRIES, NARROW_PRIMARY_ENTRIES};
++use crate::entropy::sequential::stream_tests::noisy_jpeg;
+ use crate::entropy::sequential::{skip_mcu, HuffmanPrimaryWidth, PreparedDecodePlan};
+ use crate::internal::bit_reader::BitReader;
+ use crate::internal::checkpoint::{
+@@ -85,7 +86,7 @@ fn published_checkpoints_match_a_direct_skip_at_every_grid_slot() {
+         (257, 130, JpegSubsampling::Ybr444),
+         (523, 61, JpegSubsampling::Ybr422),
+     ] {
+-        let bytes = noisy_jpeg(width, height, subsampling, None);
++        let bytes = noisy_jpeg(width, height, subsampling, None, width ^ height);
+         let decoder = Decoder::new(&bytes).expect("decoder");
+         let plan = &decoder.plan;
+         let scan_bytes = &decoder.bytes[plan.scan_offset..];
+@@ -114,7 +115,7 @@ fn published_checkpoints_match_a_direct_skip_at_every_grid_slot() {
+ 
+ #[test]
+ fn concurrent_lookups_publish_one_consistent_prefix() {
+-    let bytes = noisy_jpeg(640, 480, JpegSubsampling::Ybr420, None);
++    let bytes = noisy_jpeg(640, 480, JpegSubsampling::Ybr420, None, 864);
+     let decoder = Decoder::new(&bytes).expect("decoder");
+     let plan = &decoder.plan;
+     let scan_bytes = &decoder.bytes[plan.scan_offset..];
+diff --git a/crates/j2k-jpeg/src/internal/checkpoint/tests/fixtures.rs b/crates/j2k-jpeg/src/internal/checkpoint/tests/fixtures.rs
+index b5cd957..dd77c26 100644
+--- a/crates/j2k-jpeg/src/internal/checkpoint/tests/fixtures.rs
++++ b/crates/j2k-jpeg/src/internal/checkpoint/tests/fixtures.rs
+@@ -27,29 +27,3 @@ pub(super) fn grayscale_jpeg(width: u16, height: u16) -> Vec<u8> {
+     bytes.extend_from_slice(&[0xff, 0xd9]);
+     bytes
+ }
+-
+-/// Baseline JPEG of deterministic noise, so every block carries real AC
+-/// symbols and `FF 00` stuffing occurs throughout the scan.
+-pub(super) fn noisy_jpeg(
+-    width: u32,
+-    height: u32,
+-    subsampling: crate::JpegSubsampling,
+-    restart_interval: Option<u16>,
+-) -> Vec<u8> {
+-    let rgb = crate::entropy::sequential::stream_tests::noisy_rgb8(width, height, width ^ height);
+-    crate::encode_jpeg_baseline(
+-        crate::JpegSamples::Rgb8 {
+-            width,
+-            height,
+-            data: &rgb,
+-        },
+-        crate::JpegEncodeOptions {
+-            quality: 92,
+-            subsampling,
+-            restart_interval,
+-            backend: crate::JpegBackend::Cpu,
+-        },
+-    )
+-    .expect("encode noisy fixture")
+-    .data
+-}
+diff --git a/crates/j2k-jpeg/src/internal/checkpoint/tests/seek.rs b/crates/j2k-jpeg/src/internal/checkpoint/tests/seek.rs
+index 18daf0c..6546079 100644
+--- a/crates/j2k-jpeg/src/internal/checkpoint/tests/seek.rs
++++ b/crates/j2k-jpeg/src/internal/checkpoint/tests/seek.rs
+@@ -2,8 +2,8 @@
+ 
+ use alloc::vec;
+ 
+-use super::fixtures::noisy_jpeg;
+ use crate::decoder::Decoder;
++use crate::entropy::sequential::stream_tests::noisy_jpeg;
+ use crate::entropy::sequential::{decode_scan_dct_window_into, sequential_mcu_grid, McuWindow};
+ use crate::internal::checkpoint::{checkpoint_before_mcu, CpuCheckpointCache};
+ use crate::JpegSubsampling;
+@@ -14,7 +14,7 @@ use crate::JpegSubsampling;
+ #[test]
+ fn resume_points_decode_windows_exactly_like_the_unindexed_seek() {
+     for restart_interval in [None, Some(5), Some(37)] {
+-        let bytes = noisy_jpeg(300, 180, JpegSubsampling::Ybr420, restart_interval);
++        let bytes = noisy_jpeg(300, 180, JpegSubsampling::Ybr420, restart_interval, 408);
+         let decoder = Decoder::new(&bytes).expect("decoder");
+         let plan = &decoder.plan;
+         let scan_bytes = &decoder.bytes[plan.scan_offset..];
+diff --git a/crates/j2k-jpeg/src/parse/markers.rs b/crates/j2k-jpeg/src/parse/markers.rs
+index 944d640..b38d456 100644
+--- a/crates/j2k-jpeg/src/parse/markers.rs
++++ b/crates/j2k-jpeg/src/parse/markers.rs
+@@ -72,6 +72,22 @@ pub(crate) fn next_entropy_marker(bytes: &[u8], mut pos: usize) -> Option<Entrop
+     None
+ }
+ 
++/// [`next_entropy_marker`] for walks that reject input ending inside a fill
++/// run: the next marker's `(code_pos, code)`.
++pub(crate) fn next_entropy_marker_code(
++    bytes: &[u8],
++    pos: usize,
++) -> Result<Option<(usize, u8)>, JpegError> {
++    match next_entropy_marker(bytes, pos) {
++        None => Ok(None),
++        Some(EntropyMarker::Unterminated { fill_start }) => Err(JpegError::Truncated {
++            offset: fill_start,
++            expected: 1,
++        }),
++        Some(EntropyMarker::Marker { code_pos, code, .. }) => Ok(Some((code_pos, code))),
++    }
++}
++
+ pub(crate) fn next_marker_after_entropy(
+     bytes: &[u8],
+     mut pos: usize,
+diff --git a/crates/j2k-jpeg/src/segment.rs b/crates/j2k-jpeg/src/segment.rs
+index f6be9bd..e5ff393 100644
+--- a/crates/j2k-jpeg/src/segment.rs
++++ b/crates/j2k-jpeg/src/segment.rs
+@@ -7,7 +7,7 @@ use crate::allocation::{
+ };
+ use crate::error::{JpegError, MarkerKind, UnsupportedReason};
+ use crate::info::{SamplingFactors, SofKind};
+-use crate::parse::markers::{next_entropy_marker, next_marker_after_entropy, EntropyMarker};
++use crate::parse::markers::{next_entropy_marker_code, next_marker_after_entropy};
+ use alloc::vec::Vec;
+ use core::ops::Range;
+ 
+@@ -454,16 +454,7 @@ fn validate_restart_markers(bytes: &[u8]) -> Result<(), JpegError> {
+     let entropy = &bytes[..ranges.entropy_range.end];
+     let mut expected = 0u8;
+     let mut pos = ranges.entropy_range.start;
+-    while let Some(next) = next_entropy_marker(entropy, pos) {
+-        let (marker_pos, marker) = match next {
+-            EntropyMarker::Unterminated { fill_start } => {
+-                return Err(JpegError::Truncated {
+-                    offset: fill_start,
+-                    expected: 1,
+-                });
+-            }
+-            EntropyMarker::Marker { code_pos, code, .. } => (code_pos, code),
+-        };
++    while let Some((marker_pos, marker)) = next_entropy_marker_code(entropy, pos)? {
+         match marker {
+             0xd0..=0xd7 => {
+                 let found = marker & 0x07;
+diff --git a/crates/j2k-native/src/color/mod.rs b/crates/j2k-native/src/color/mod.rs
+index 058257a..1683fab 100644
+--- a/crates/j2k-native/src/color/mod.rs
++++ b/crates/j2k-native/src/color/mod.rs
+@@ -27,7 +27,7 @@ pub use packing::pack_rgb8;
+ #[cfg(all(feature = "simd", target_arch = "x86_64"))]
+ pub(crate) use packing::store_rgb8_x8;
+ pub(crate) use packing::{
+-    interleave_and_convert_after_mct, interleave_and_convert_region,
++    interleave_and_convert_after_mct, interleave_and_convert_region, round_to_u8,
+     validate_interleaved_output_buffer,
+ };
+ pub(crate) use palette::resolve_palette_indices;
+diff --git a/crates/j2k-native/src/color/packing.rs b/crates/j2k-native/src/color/packing.rs
+index 6d420ee..d4b25a5 100644
+--- a/crates/j2k-native/src/color/packing.rs
++++ b/crates/j2k-native/src/color/packing.rs
+@@ -395,7 +395,7 @@ fn pack_rgb8_blocks<S: fearless_simd::Simd>(
+     reason = "8-bit samples are rounded and saturated to the stable 8-bit output format; inlined into the dispatched packing loops"
+ )]
+ #[inline(always)]
+-fn round_to_u8(sample: f32) -> u8 {
++pub(crate) fn round_to_u8(sample: f32) -> u8 {
+     math::round_f32(sample) as u8
+ }
+ 
+diff --git a/crates/j2k-native/src/image/native/rows.rs b/crates/j2k-native/src/image/native/rows.rs
+index 291a33f..884a441 100644
+--- a/crates/j2k-native/src/image/native/rows.rs
++++ b/crates/j2k-native/src/image/native/rows.rs
+@@ -286,27 +286,8 @@ impl<'i> NativePlanesSink<'i> {
+ 
+ /// Write `samples` to `destination` as the packed little-endian native
+ /// samples `Image::extend_component_native_sample_bytes` appends for an
+-/// `f32` component of `bit_depth`. Samples wider than 16 bits are packed
+-/// in `scratch` first.
+-#[cfg(test)]
+-pub(super) fn pack_native_samples(
+-    destination: &mut [u8],
+-    samples: &[f32],
+-    bit_depth: u8,
+-    signed: bool,
+-    scratch: &mut Vec<u8>,
+-) -> Result<()> {
+-    dispatch!(Level::new(), simd => pack_native_samples_at(
+-        simd,
+-        destination,
+-        samples,
+-        bit_depth,
+-        signed,
+-        scratch,
+-    ))
+-}
+-
+-/// [`pack_native_samples`] at the dispatched SIMD level (see `math`).
++/// `f32` component of `bit_depth`, at the dispatched SIMD level (see `math`).
++/// Samples wider than 16 bits are packed in `scratch` first.
+ #[expect(
+     clippy::cast_possible_truncation,
+     clippy::inline_always,
+@@ -344,9 +325,10 @@ fn pack_native_samples_at<S: Simd>(
+ mod tests {
+     use alloc::vec::Vec;
+ 
+-    use super::{pack_native_samples, NativePlanesSink};
++    use super::{pack_native_samples_at, NativePlanesSink};
+     use crate::image::Image;
+     use crate::j2c::DecoderContext;
++    use crate::math::{dispatch, Level};
+     use crate::{
+         encode, native_bytes_per_sample, CpuDecodeParallelism, DecodeErrorClass, DecodeSettings,
+         EncodeOptions,
+@@ -384,8 +366,15 @@ mod tests {
+                 }
+                 let bytes = native_bytes_per_sample(bit_depth).expect("bytes per sample");
+                 let mut packed = alloc::vec![0xa5; samples.len() * bytes];
+-                pack_native_samples(&mut packed, &samples, bit_depth, signed, &mut scratch)
+-                    .expect("pack");
++                dispatch!(Level::new(), simd => pack_native_samples_at(
++                    simd,
++                    &mut packed,
++                    &samples,
++                    bit_depth,
++                    signed,
++                    &mut scratch,
++                ))
++                .expect("pack");
+                 assert_eq!(packed, expected, "{bit_depth} bits, signed {signed}");
+             }
+         }
+diff --git a/crates/j2k-native/src/j2c/mct.rs b/crates/j2k-native/src/j2c/mct.rs
+index bb47693..a8b7450 100644
+--- a/crates/j2k-native/src/j2c/mct.rs
++++ b/crates/j2k-native/src/j2c/mct.rs
+@@ -4,10 +4,9 @@
+ use super::codestream::{ComponentInfo, Header, WaveletTransform};
+ use super::decode::TileDecodeContext;
+ use super::idwt::{pack_last_level, LastLevel};
++use crate::color::round_to_u8;
+ use crate::error::{bail, err, ColorError, DecodingError, Result};
+-use crate::math::{
+-    dispatch, f32x8, floor_f32, mul_add, round_f32, round_ties_even_then_add, Level, Simd,
+-};
++use crate::math::{dispatch, f32x8, floor_f32, mul_add, round_ties_even_then_add, Level, Simd};
+ use crate::{HtCodeBlockDecoder, J2kInverseMctJob, J2kWaveletTransform};
+ use j2k_codec_math::mct;
+ 
+@@ -347,8 +346,6 @@ impl DeferredMct {
+     /// expressions, then [`round_centered_and_shift`] for centered output,
+     /// then the standard RGB8 pack's rounding and saturating cast.
+     #[expect(
+-        clippy::cast_possible_truncation,
+-        clippy::cast_sign_loss,
+         clippy::inline_always,
+         reason = "RGB8 samples use the same rounding and saturating cast as the standard pack; inlined into each SIMD dispatch target"
+     )]
+@@ -387,11 +384,7 @@ impl DeferredMct {
+                 green = round_ties_even_then_add(green, shift[1]);
+                 blue = round_ties_even_then_add(blue, shift[2]);
+             }
+-            pixels[index] = [
+-                round_f32(red) as u8,
+-                round_f32(green) as u8,
+-                round_f32(blue) as u8,
+-            ];
++            pixels[index] = [round_to_u8(red), round_to_u8(green), round_to_u8(blue)];
+         }
+     }
+ 
+@@ -808,6 +801,7 @@ fn apply_inner_impl<S: Simd>(
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    use crate::math::round_f32;
+     use std::time::{Duration, Instant};
+ 
+     #[test]
+diff --git a/crates/j2k-native/src/math.rs b/crates/j2k-native/src/math.rs
+index 1de31f0..3771f41 100644
+--- a/crates/j2k-native/src/math.rs
++++ b/crates/j2k-native/src/math.rs
+@@ -688,38 +688,6 @@ pub(crate) fn mul_add(a: f32, b: f32, c: f32) -> f32 {
+ // xtask x86-codegen-audit`). [`soft_rounding`] is exact without the
+ // instructions, but it made AVX2 output loops about 5% slower on a Ryzen
+ // 7 5800X3D, so only no-std builds use it.
+-#[cfg(feature = "std")]
+-mod rounding {
+-    #[expect(
+-        clippy::inline_always,
+-        reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+-    )]
+-    #[inline(always)]
+-    pub(super) fn floor(x: f32) -> f32 {
+-        x.floor()
+-    }
+-
+-    #[expect(
+-        clippy::inline_always,
+-        reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+-    )]
+-    #[inline(always)]
+-    pub(super) fn round(x: f32) -> f32 {
+-        x.round()
+-    }
+-
+-    #[expect(
+-        clippy::inline_always,
+-        reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+-    )]
+-    #[inline(always)]
+-    pub(super) fn round_ties_even(x: f32) -> f32 {
+-        x.round_ties_even()
+-    }
+-}
+-
+-#[cfg(not(feature = "std"))]
+-use soft_rounding as rounding;
+ 
+ /// Floor and rounding in plain `f32` arithmetic, exact for every input
+ /// including signed zeros, infinities and NaN, and free of library calls.
+@@ -803,7 +771,11 @@ mod soft_rounding {
+ )]
+ #[inline(always)]
+ pub(crate) fn floor_f32(x: f32) -> f32 {
+-    rounding::floor(x)
++    #[cfg(feature = "std")]
++    let result = x.floor();
++    #[cfg(not(feature = "std"))]
++    let result = soft_rounding::floor(x);
++    result
+ }
+ 
+ /// `floor((a + b) / 2)` with the sum rounded in `f32`, as 5/3 lifting needs.
+@@ -827,16 +799,11 @@ pub(crate) fn floor_half_sum_f32(a: f32, b: f32) -> f32 {
+ )]
+ #[inline(always)]
+ pub(crate) fn round_f32(x: f32) -> f32 {
+-    rounding::round(x)
+-}
+-
+-#[expect(
+-    clippy::inline_always,
+-    reason = "tiny SIMD and scalar wrappers must disappear inside transform loops"
+-)]
+-#[inline(always)]
+-pub(crate) fn round_ties_even_f32(x: f32) -> f32 {
+-    rounding::round_ties_even(x)
++    #[cfg(feature = "std")]
++    let result = x.round();
++    #[cfg(not(feature = "std"))]
++    let result = soft_rounding::round(x);
++    result
+ }
+ 
+ #[expect(
+@@ -845,7 +812,11 @@ pub(crate) fn round_ties_even_f32(x: f32) -> f32 {
+ )]
+ #[inline(always)]
+ pub(crate) fn round_ties_even_then_add(sample: f32, addend: f32) -> f32 {
+-    round_ties_even_f32(sample) + addend
++    #[cfg(feature = "std")]
++    let nearest = sample.round_ties_even();
++    #[cfg(not(feature = "std"))]
++    let nearest = soft_rounding::round_ties_even(sample);
++    nearest + addend
+ }
+ 
+ #[expect(
+diff --git a/crates/j2k-test-support/src/jpeg_fixtures/builders.rs b/crates/j2k-test-support/src/jpeg_fixtures/builders.rs
+index 494b7b2..ec29e06 100644
+--- a/crates/j2k-test-support/src/jpeg_fixtures/builders.rs
++++ b/crates/j2k-test-support/src/jpeg_fixtures/builders.rs
+@@ -398,8 +398,7 @@ pub fn extended_12bit_ycbcr_420_32x32_rgb16() -> Vec<u8> {
+         for x in 0..32 {
+             let cb = upsample_h2v2_12bit_for_fixture(&blue_difference_plane, x, y);
+             let cr = upsample_h2v2_12bit_for_fixture(&red_difference_plane, x, y);
+-            let rgb = ycbcr12_to_rgb16_for_fixture(2064, cb, cr);
+-            append_rgb16_pixel(&mut out, rgb.into());
++            append_rgb16_pixel(&mut out, ycbcr12_to_rgb16_for_fixture(2064, cb, cr));
+         }
+     }
+     out
+diff --git a/crates/j2k-test-support/src/jpeg_fixtures/reference_decode.rs b/crates/j2k-test-support/src/jpeg_fixtures/reference_decode.rs
+index 0f34291..2384164 100644
+--- a/crates/j2k-test-support/src/jpeg_fixtures/reference_decode.rs
++++ b/crates/j2k-test-support/src/jpeg_fixtures/reference_decode.rs
+@@ -65,7 +65,7 @@ pub(super) fn upsample_h2v2_12bit_for_fixture(
+     }
+ }
+ 
+-pub(super) fn ycbcr12_to_rgb16_for_fixture(y: u16, cb: u16, cr: u16) -> (u16, u16, u16) {
++pub(super) fn ycbcr12_to_rgb16_for_fixture(y: u16, cb: u16, cr: u16) -> [u16; 3] {
+     const FIX_1_40200: i32 = 91_881;
+     const FIX_0_34414: i32 = 22_554;
+     const FIX_0_71414: i32 = 46_802;
+@@ -79,23 +79,22 @@ pub(super) fn ycbcr12_to_rgb16_for_fixture(y: u16, cb: u16, cr: u16) -> (u16, u1
+     let g = y - ((FIX_0_34414 * blue_delta + FIX_0_71414 * red_delta + ROUND) >> 16);
+     let b = y + ((FIX_1_77200 * blue_delta + ROUND) >> 16);
+ 
+-    (
++    [
+         u16::try_from(r.clamp(0, 4095)).expect("clamped 12-bit red sample fits u16"),
+         u16::try_from(g.clamp(0, 4095)).expect("clamped 12-bit green sample fits u16"),
+         u16::try_from(b.clamp(0, 4095)).expect("clamped 12-bit blue sample fits u16"),
+-    )
++    ]
+ }
+ 
+ pub(super) fn ycbcr8_pixels_to_rgb8(samples: &[u8]) -> Vec<u8> {
+     let mut out = Vec::with_capacity(samples.len());
+     for pixel in samples.as_chunks::<3>().0 {
+-        let rgb = ycbcr8_to_rgb8_for_fixture(pixel[0], pixel[1], pixel[2]);
+-        out.extend_from_slice(&<[u8; 3]>::from(rgb));
++        out.extend_from_slice(&ycbcr8_to_rgb8_for_fixture(pixel[0], pixel[1], pixel[2]));
+     }
+     out
+ }
+ 
+-pub(super) fn ycbcr8_to_rgb8_for_fixture(y: u8, cb: u8, cr: u8) -> (u8, u8, u8) {
++pub(super) fn ycbcr8_to_rgb8_for_fixture(y: u8, cb: u8, cr: u8) -> [u8; 3] {
+     const FIX_1_40200: i32 = 91_881;
+     const FIX_0_34414: i32 = 22_554;
+     const FIX_0_71414: i32 = 46_802;
+@@ -109,25 +108,25 @@ pub(super) fn ycbcr8_to_rgb8_for_fixture(y: u8, cb: u8, cr: u8) -> (u8, u8, u8)
+     let g = y - ((FIX_0_34414 * blue_delta + FIX_0_71414 * red_delta + ROUND) >> 16);
+     let b = y + ((FIX_1_77200 * blue_delta + ROUND) >> 16);
+ 
+-    (
++    [
+         u8::try_from(r.clamp(0, 255)).expect("clamped red sample fits u8"),
+         u8::try_from(g.clamp(0, 255)).expect("clamped green sample fits u8"),
+         u8::try_from(b.clamp(0, 255)).expect("clamped blue sample fits u8"),
+-    )
++    ]
+ }
+ 
+ pub(super) fn ycbcr16_pixels_to_rgb16(samples: &[u16]) -> Vec<u8> {
+     let mut out = Vec::with_capacity(samples.len() * 2);
+     for pixel in samples.as_chunks::<3>().0 {
+-        let (r, g, b) = ycbcr16_to_rgb16_for_fixture(pixel[0], pixel[1], pixel[2]);
+-        out.extend_from_slice(&r.to_le_bytes());
+-        out.extend_from_slice(&g.to_le_bytes());
+-        out.extend_from_slice(&b.to_le_bytes());
++        append_rgb16_pixel(
++            &mut out,
++            ycbcr16_to_rgb16_for_fixture(pixel[0], pixel[1], pixel[2]),
++        );
+     }
+     out
+ }
+ 
+-pub(super) fn ycbcr16_to_rgb16_for_fixture(y: u16, cb: u16, cr: u16) -> (u16, u16, u16) {
++pub(super) fn ycbcr16_to_rgb16_for_fixture(y: u16, cb: u16, cr: u16) -> [u16; 3] {
+     const FIX_1_40200: i64 = 91_881;
+     const FIX_0_34414: i64 = 22_554;
+     const FIX_0_71414: i64 = 46_802;
+@@ -141,11 +140,11 @@ pub(super) fn ycbcr16_to_rgb16_for_fixture(y: u16, cb: u16, cr: u16) -> (u16, u1
+     let g = y - ((FIX_0_34414 * blue_delta + FIX_0_71414 * red_delta + ROUND) >> 16);
+     let b = y + ((FIX_1_77200 * blue_delta + ROUND) >> 16);
+ 
+-    (
++    [
+         u16::try_from(r.clamp(0, i64::from(u16::MAX))).expect("clamped red sample fits u16"),
+         u16::try_from(g.clamp(0, i64::from(u16::MAX))).expect("clamped green sample fits u16"),
+         u16::try_from(b.clamp(0, i64::from(u16::MAX))).expect("clamped blue sample fits u16"),
+-    )
++    ]
+ }
+ 
+ #[derive(Clone, Copy)]
+@@ -173,12 +172,12 @@ pub(super) fn lossless_422_planes_to_rgb8(
+             let c1_sample = c1_row[x / 2];
+             let c2_sample = c2_row[x / 2];
+             let rgb = match color_space {
+-                ColorSpaceFixture::Rgb => (c0_sample, c1_sample, c2_sample),
++                ColorSpaceFixture::Rgb => [c0_sample, c1_sample, c2_sample],
+                 ColorSpaceFixture::YCbCr => {
+                     ycbcr8_to_rgb8_for_fixture(c0_sample, c1_sample, c2_sample)
+                 }
+             };
+-            out.extend_from_slice(&<[u8; 3]>::from(rgb));
++            out.extend_from_slice(&rgb);
+         }
+     }
+     out
+@@ -201,12 +200,12 @@ pub(super) fn lossless_420_planes_to_rgb8(
+             let c1_sample = c1[(y / 2) * chroma_width + x / 2];
+             let c2_sample = c2[(y / 2) * chroma_width + x / 2];
+             let rgb = match color_space {
+-                ColorSpaceFixture::Rgb => (c0_sample, c1_sample, c2_sample),
++                ColorSpaceFixture::Rgb => [c0_sample, c1_sample, c2_sample],
+                 ColorSpaceFixture::YCbCr => {
+                     ycbcr8_to_rgb8_for_fixture(c0_sample, c1_sample, c2_sample)
+                 }
+             };
+-            out.extend_from_slice(&<[u8; 3]>::from(rgb));
++            out.extend_from_slice(&rgb);
+         }
+     }
+     out
+@@ -231,12 +230,12 @@ pub(super) fn lossless_422_planes_to_rgb16(
+             let c1_sample = c1_row[x / 2];
+             let c2_sample = c2_row[x / 2];
+             let rgb = match color_space {
+-                ColorSpaceFixture::Rgb => (c0_sample, c1_sample, c2_sample),
++                ColorSpaceFixture::Rgb => [c0_sample, c1_sample, c2_sample],
+                 ColorSpaceFixture::YCbCr => {
+                     ycbcr16_to_rgb16_for_fixture(c0_sample, c1_sample, c2_sample)
+                 }
+             };
+-            append_rgb16_pixel(&mut out, rgb.into());
++            append_rgb16_pixel(&mut out, rgb);
+         }
+     }
+     out
+@@ -259,12 +258,12 @@ pub(super) fn lossless_420_planes_to_rgb16(
+             let c1_sample = c1[(y / 2) * chroma_width + x / 2];
+             let c2_sample = c2[(y / 2) * chroma_width + x / 2];
+             let rgb = match color_space {
+-                ColorSpaceFixture::Rgb => (c0_sample, c1_sample, c2_sample),
++                ColorSpaceFixture::Rgb => [c0_sample, c1_sample, c2_sample],
+                 ColorSpaceFixture::YCbCr => {
+                     ycbcr16_to_rgb16_for_fixture(c0_sample, c1_sample, c2_sample)
+                 }
+             };
+-            append_rgb16_pixel(&mut out, rgb.into());
++            append_rgb16_pixel(&mut out, rgb);
+         }
+     }
+     out
+diff --git a/xtask/src/x86_codegen_audit.rs b/xtask/src/x86_codegen_audit.rs
+index 5ab2f7d..064fae7 100644
+--- a/xtask/src/x86_codegen_audit.rs
++++ b/xtask/src/x86_codegen_audit.rs
+@@ -61,6 +61,8 @@ const OLD_CPU_LEVELS: [&str; 6] = [
+     "fallback::Fallback",
+ ];
+ 
++const OBJDUMP_ARGS: [&str; 4] = ["-d", "-r", "-C", "--no-show-raw-insn"];
++
+ /// The levels whose operations must be inlined into their dispatch.
+ const WIDE_LEVELS: [(&str, &str); 2] = [
+     ("vectorize_avx2", "13fearless_simd9generated4avx2"),
+@@ -116,12 +118,13 @@ fn audit_library(library: &Path) -> Result<Vec<String>, String> {
+     let objdump = std::env::var_os("OBJDUMP").unwrap_or_else(|| "objdump".into());
+     let mut command = Command::new(&objdump);
+     command
+-        .args(["-d", "-r", "-C", "--no-show-raw-insn"])
++        .args(OBJDUMP_ARGS)
+         .arg(library)
+         .stdout(Stdio::piped());
+     eprintln!(
+-        "+ {} -d -r -C --no-show-raw-insn {}",
++        "+ {} {} {}",
+         objdump.to_string_lossy(),
++        OBJDUMP_ARGS.join(" "),
+         library.display()
+     );
+     let mut child = retry_executable_busy(|| command.spawn())

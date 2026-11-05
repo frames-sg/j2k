@@ -87,7 +87,8 @@ impl Codec {
             return decoder.decode_request_to_device_with_session(fmt, operation, session);
         }
 
-        let plan = DeviceDecodePlan::for_image(CpuDecoder::inspect(input)?.dimensions, operation)?;
+        let grid = CpuDecoder::inspect_reference_grid(input)?;
+        let plan = DeviceDecodePlan::for_reference_grid(grid, operation)?;
         let dims = plan.output_dims();
         let (mut out, stride) = allocate_cpu_surface(dims, fmt)?;
         match operation {

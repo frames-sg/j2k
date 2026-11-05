@@ -16,6 +16,79 @@ pub struct J2kComponentInfo {
     pub y_rsiz: u8,
 }
 
+/// Where an image and its tiles lie on the JPEG 2000 reference grid (the SIZ
+/// marker's origins and sizes), in full-resolution reference-grid units.
+///
+/// Image coordinates elsewhere in this crate count from the image area's own
+/// corner, `image_origin`. A reduction by `s` spans
+/// `[ceil(origin / s), ceil((origin + size) / s))` on each axis (ITU-T T.800
+/// B.5), so an origin that is not a multiple of `s` moves the reduced grid
+/// against the image's own; see [`crate::DeviceDecodePlan::for_reference_grid`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct J2kReferenceGrid {
+    /// Offset of the image area from the grid's origin (`XOsiz`, `YOsiz`).
+    pub image_origin: (u32, u32),
+    /// Width and height of the image area (`Xsiz - XOsiz`, `Ysiz - YOsiz`).
+    pub image_size: (u32, u32),
+    /// Offset of the first tile from the grid's origin (`XTOsiz`, `YTOsiz`).
+    pub tile_origin: (u32, u32),
+    /// Nominal width and height of a tile (`XTsiz`, `YTsiz`).
+    pub tile_size: (u32, u32),
+}
+
+impl J2kReferenceGrid {
+    /// The grid of `image`, a native image at any resolution of a
+    /// full-resolution image of `image_size`.
+    pub(crate) fn of_native(image: &j2k_native::Image<'_>, image_size: (u32, u32)) -> Self {
+        let (tile_origin, tile_size) = image.tile_grid();
+        Self {
+            image_origin: image.image_origin(),
+            image_size,
+            tile_origin,
+            tile_size,
+        }
+    }
+
+    /// The grid of an image of `image_size` at the grid's origin, in one tile.
+    #[must_use]
+    pub const fn at_origin(image_size: (u32, u32)) -> Self {
+        Self {
+            image_origin: (0, 0),
+            image_size,
+            tile_origin: (0, 0),
+            tile_size: image_size,
+        }
+    }
+
+    /// The far corner of the image area (`Xsiz`, `Ysiz`).
+    #[must_use]
+    pub const fn extent(&self) -> (u64, u64) {
+        (
+            self.image_origin.0 as u64 + self.image_size.0 as u64,
+            self.image_origin.1 as u64 + self.image_size.1 as u64,
+        )
+    }
+
+    /// The samples of the image reduced by `levels` resolution levels whose
+    /// reference-grid footprints overlap `region` of the full-resolution
+    /// image, in reduced image coordinates: what a reduced decode of
+    /// `region` covers. `None` when `region` is empty or leaves the image, or
+    /// `levels` is 32 or more.
+    #[must_use]
+    pub fn reduced_region(&self, region: j2k_core::Rect, levels: u8) -> Option<j2k_core::Rect> {
+        let denominator = 1_u32.checked_shl(u32::from(levels))?;
+        (region.w > 0 && region.h > 0 && region.is_within(self.image_size)).then(|| {
+            crate::adapter::device_plan::reference_grid_covering(
+                self.image_origin,
+                self.image_size,
+                region,
+                denominator,
+            )
+        })
+    }
+}
+
 /// Full parsed JPEG 2000 / HTJ2K support metadata.
 ///
 /// This preserves the existing compact [`Info`] summary while exposing fields

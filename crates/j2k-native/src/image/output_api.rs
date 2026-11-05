@@ -19,6 +19,28 @@ use crate::{
 use super::native::{try_clone_color_space, NativeOutputBudget};
 use super::Image;
 
+/// What keeps a region decode from streaming its rows, as an image's main
+/// header and boxes say (see [`Image::region_rows_blocker`]).
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum RegionRowsBlocker {
+    /// A JP2 palette maps the samples.
+    Palette,
+    /// A JP2 channel-definition box reorders or interprets the channels.
+    ChannelDefinitions,
+    /// An sYCC or `CIELab` colour space is converted after decoding.
+    ColorConversion,
+    /// A component is deeper than 24 bits.
+    PrecisionAbove24Bits,
+    /// A component is subsampled.
+    SubsampledComponents,
+    /// The image or its tile grid is offset from the reference grid's origin.
+    GridOffset,
+    /// The image has no components or more than four.
+    ComponentCount,
+}
+
 impl<'a> Image<'a> {
     /// Extract selected native wavelet bands without inverse DWT or color conversion.
     ///
@@ -493,14 +515,44 @@ impl<'a> Image<'a> {
         decoder_context: &mut DecoderContext<'a>,
         sink: &mut dyn ComponentRowSink,
     ) -> Result<()> {
+        self.decode_region_rows_for_integer_output_with_retained_baseline(
+            roi,
+            decoder_context,
+            sink,
+            0,
+        )
+    }
+
+    /// [`Self::decode_region_rows_for_integer_output_with_context`] that
+    /// charges `retained_baseline_bytes` to the decode budget besides this
+    /// image's own metadata: memory the caller holds while this decode runs,
+    /// such as the shares of the decode budget concurrent decodes hold, so
+    /// that together they stay within it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::decode_region_rows_for_integer_output_with_context`], and
+    /// a resource limit when the decode does not fit beside the baseline.
+    #[doc(hidden)]
+    pub fn decode_region_rows_for_integer_output_with_retained_baseline(
+        &self,
+        roi: (u32, u32, u32, u32),
+        decoder_context: &mut DecoderContext<'a>,
+        sink: &mut dyn ComponentRowSink,
+        retained_baseline_bytes: usize,
+    ) -> Result<()> {
         validate_roi((self.width(), self.height()), roi)?;
         self.validate_component_plane_precision()?;
+        let baseline = self
+            .retained_header_metadata_bytes()?
+            .checked_add(retained_baseline_bytes)
+            .ok_or(ValidationError::ImageTooLarge)?;
         let charged_image_bytes = self.run_decode_rows(
             decoder_context,
             Some(roi),
             None,
             true,
-            self.retained_header_metadata_bytes()?,
+            baseline,
             Some(&mut *sink),
         )?;
         if decoder_context.tile_decode_context.stream_rows {
@@ -517,7 +569,7 @@ impl<'a> Image<'a> {
             decoded_components.as_slice(),
             decoded_components.capacity(),
             (roi.2, roi.3),
-            self.retained_header_metadata_bytes()?,
+            baseline,
         )?;
         sink.write_rows(0, 0, &components.planes);
         Ok(())
@@ -537,13 +589,44 @@ impl<'a> Image<'a> {
     #[doc(hidden)]
     #[must_use]
     pub fn region_decode_streams_rows(&self) -> bool {
-        self.permits_line_region_idwt()
-            && self.header.component_infos.iter().all(|component| {
-                component.size_info.precision <= 24
-                    && component.size_info.horizontal_resolution == 1
-                    && component.size_info.vertical_resolution == 1
-            })
-            && j2c::image_streams_rows(&self.header)
+        self.region_rows_blocker().is_none()
+    }
+
+    /// What keeps [`Self::region_decode_streams_rows`] from holding, the
+    /// first of its conditions in the order it checks them, or `None` when
+    /// it holds.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn region_rows_blocker(&self) -> Option<RegionRowsBlocker> {
+        if self.boxes.palette.is_some() {
+            return Some(RegionRowsBlocker::Palette);
+        }
+        if self.boxes.channel_definition.is_some() {
+            return Some(RegionRowsBlocker::ChannelDefinitions);
+        }
+        if !self.permits_line_region_idwt() {
+            return Some(RegionRowsBlocker::ColorConversion);
+        }
+        let components = &self.header.component_infos;
+        if components
+            .iter()
+            .any(|component| component.size_info.precision > 24)
+        {
+            return Some(RegionRowsBlocker::PrecisionAbove24Bits);
+        }
+        if components.iter().any(|component| {
+            component.size_info.horizontal_resolution != 1
+                || component.size_info.vertical_resolution != 1
+        }) {
+            return Some(RegionRowsBlocker::SubsampledComponents);
+        }
+        if !(1..=4).contains(&components.len()) {
+            return Some(RegionRowsBlocker::ComponentCount);
+        }
+        if !j2c::image_streams_rows(&self.header) {
+            return Some(RegionRowsBlocker::GridOffset);
+        }
+        None
     }
 
     /// The bytes a full-image decode into component planes charges the

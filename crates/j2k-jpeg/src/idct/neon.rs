@@ -7,8 +7,8 @@
 //! (pass 2, shift 18) → second 8×8 transpose → level shift +128 → saturate
 //! to u8 → store.
 //!
-//! Intermediates live in `int32x4_t` throughout — same 32-bit wrapping
-//! arithmetic as the scalar's `Wrapping<i32>`, so no information is lost
+//! Intermediates live in `int32x4_t` throughout — the same 32-bit wrapping
+//! arithmetic as the scalar transform, so no information is lost
 //! between passes even on adversarial coefficients.
 
 use core::arch::aarch64::{
@@ -18,13 +18,12 @@ use core::arch::aarch64::{
     vpadalq_s16, vqabsq_s16, vqmovn_s32, vqmovun_s16, vqmovun_s32, vreinterpretq_u64_s16,
     vshlq_n_s32, vshrq_n_s32, vsubq_s32, vtrnq_s32,
 };
-use j2k_codec_math::jpeg::idct;
-
-use super::scalar::{islow_gain_bounds, ISLOW_GAINS};
-use super::{
-    CONST_BITS, DC_ROUNDING, DC_SHIFT, PASS1_ROUNDING, PASS1_SHIFT, PASS1_SHIFT_12, PASS2_ROUNDING,
-    PASS2_SHIFT, PASS2_SHIFT_12,
+use j2k_codec_math::jpeg::idct::{
+    self, islow_gain_bounds, DC_ROUNDING, DC_SHIFT, ISLOW_GAINS, PASS1_ROUNDING, PASS1_SHIFT,
+    PASS1_SHIFT_12, PASS2_ROUNDING, PASS2_SHIFT, PASS2_SHIFT_12,
 };
+
+use super::CONST_BITS;
 use crate::simd::neon_memory;
 
 fearless_simd::kernel! {

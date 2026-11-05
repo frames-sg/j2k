@@ -5,6 +5,8 @@ use super::{
     decode_warnings_for_image, validate_buffer, validate_region, J2kDecoder,
 };
 use crate::{
+    adapter::device_plan::reference_grid_covering,
+    backend::Image,
     decode::{J2kDecodeOutcome, J2kDecodedNativeComponents},
     scratch::J2kScratchPool,
     view::component_handoff_image_bytes,
@@ -25,19 +27,16 @@ fn reduction_denominator(levels: u8) -> Result<u32, J2kError> {
         .ok_or_else(|| unsupported(UNREPRESENTABLE_REDUCTION))
 }
 
-fn scaled_covering_pow2(rect: Rect, denominator: u32) -> Rect {
-    let x_end = rect.x.saturating_add(rect.w);
-    let y_end = rect.y.saturating_add(rect.h);
-    let x0 = rect.x / denominator;
-    let y0 = rect.y / denominator;
-    let x1 = x_end.div_ceil(denominator);
-    let y1 = y_end.div_ceil(denominator);
-    Rect {
-        x: x0,
-        y: y0,
-        w: x1.saturating_sub(x0),
-        h: y1.saturating_sub(y0),
-    }
+/// The samples of `image`'s reduction by `denominator` whose reference-grid
+/// footprints overlap region `rect` of the full-resolution image of `size`,
+/// in reduced image coordinates (see [`reference_grid_covering`]).
+pub(super) fn image_covering(
+    image: &Image<'_>,
+    size: (u32, u32),
+    rect: Rect,
+    denominator: u32,
+) -> Rect {
+    reference_grid_covering(image.image_origin(), size, rect, denominator)
 }
 
 impl J2kDecoder<'_> {
@@ -62,12 +61,10 @@ impl J2kDecoder<'_> {
         }
 
         let denominator = reduction_denominator(reduction_levels)?;
-        let expected_dims = (
-            self.info.dimensions.0.div_ceil(denominator),
-            self.info.dimensions.1.div_ceil(denominator),
-        );
         let image = backend_image_with_reduction(self.bytes, self.settings, reduction_levels)?;
-        if (image.width(), image.height()) != expected_dims {
+        let dims = self.info.dimensions;
+        let expected = image_covering(&image, dims, Rect::full(dims), denominator);
+        if (image.width(), image.height()) != (expected.w, expected.h) {
             return Err(unsupported(INEXACT_REDUCTION));
         }
 
@@ -109,19 +106,16 @@ impl J2kDecoder<'_> {
         }
 
         let denominator = reduction_denominator(levels)?;
-        validate_region(roi, self.info.dimensions)?;
-        let scaled_roi = scaled_covering_pow2(roi, denominator);
-        validate_buffer((scaled_roi.w, scaled_roi.h), out.len(), stride, fmt)?;
-
-        let expected_dims = (
-            self.info.dimensions.0.div_ceil(denominator),
-            self.info.dimensions.1.div_ceil(denominator),
-        );
+        let dims = self.info.dimensions;
+        validate_region(roi, dims)?;
         let image = backend_image_with_reduction(self.bytes, self.settings, levels)?;
+        let expected = image_covering(&image, dims, Rect::full(dims), denominator);
         let image_dims = (image.width(), image.height());
-        if image_dims != expected_dims {
+        if image_dims != (expected.w, expected.h) {
             return Err(unsupported(INEXACT_REDUCTION));
         }
+        let scaled_roi = image_covering(&image, dims, roi, denominator);
+        validate_buffer((scaled_roi.w, scaled_roi.h), out.len(), stride, fmt)?;
         validate_region(scaled_roi, image_dims)?;
 
         let warnings = decode_warnings_for_image(&image);

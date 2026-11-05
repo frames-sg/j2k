@@ -8,7 +8,7 @@ use super::super::super::{
     checked_scratch_len, JpegError, PreparedDecodePlan, PreparedProgressivePlan, SofKind,
 };
 use crate::allocation::{
-    checked_add_allocation_bytes, checked_allocation_bytes, try_reserve_for_len_with_live_budget,
+    checked_add_allocation_bytes, checked_allocation_bytes, try_vec_filled_with_live_budget,
 };
 use crate::entropy::progressive::ProgressiveDctBlocks;
 
@@ -38,11 +38,8 @@ fn allocate_plane(
     live_bytes: &mut usize,
     cap: usize,
 ) -> Result<Extended12Plane, JpegError> {
-    let mut pixels = Vec::new();
-    try_reserve_for_len_with_live_budget(&mut pixels, spec.len, live_bytes, cap)?;
-    pixels.resize(spec.len, 0u16);
     Ok(Extended12Plane {
-        pixels,
+        pixels: try_vec_filled_with_live_budget(spec.len, 0u16, live_bytes, cap)?,
         stride: spec.stride,
         width: spec.width,
     })

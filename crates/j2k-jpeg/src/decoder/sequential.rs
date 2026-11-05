@@ -2,6 +2,7 @@
 
 //! Sequential and progressive writer-based decode paths.
 
+use crate::adapter::JpegFastPacketFamily;
 use crate::allocation::checked_add_allocation_bytes;
 use crate::context::MAX_DECODER_CONTEXT_ALLOCATION_BYTES;
 use crate::entropy::sequential::restart_checkpoint_from_index;
@@ -10,8 +11,8 @@ use super::{
     checkpoint_before_mcu, decode_progressive, decode_scan_baseline, decode_scan_baseline_rgb,
     emit_decode_scan_profile, jpeg_profile_stages_enabled, merged_warnings, scaled_dimensions,
     scaled_rect_covering, stripe_region_layout, DecodeOutcome, Decoder, DeviceCheckpoint,
-    DownscaleFactor, FastRgbRequest, FastRgbRoute, Instant, InterleavedRgbWriter, JpegError,
-    OutputWriter, Rect, ScratchPool, CPU_ROI_CHECKPOINT_MIN_TARGET_MCUS,
+    DownscaleFactor, FastRgbRequest, Instant, InterleavedRgbWriter, JpegError, OutputWriter, Rect,
+    ScratchPool, CPU_ROI_CHECKPOINT_MIN_TARGET_MCUS,
 };
 
 fn checked_live_workspace_bytes(
@@ -102,22 +103,29 @@ impl Decoder<'_> {
         if target_mcu < CPU_ROI_CHECKPOINT_MIN_TARGET_MCUS {
             return Ok(None);
         }
+        checkpoint_before_mcu(
+            &self.plan,
+            scan_bytes,
+            target_mcu,
+            self.checkpoint_baseline_bytes(external_decode_phase_bytes)?,
+            &self.cpu_entropy_checkpoints,
+        )
+    }
 
-        // The shared decoder context stays live beside the decode, charged
-        // once as in `decode_workspace_cap`.
-        let retained_decoder_baseline_bytes = checked_add_allocation_bytes(
+    /// Bytes the checkpoint cache's allocations must fit beside: the decoder
+    /// without that cache, plus `external_decode_phase_bytes`. The shared
+    /// decoder context stays live beside the decode, charged once as in
+    /// `decode_workspace_cap`.
+    fn checkpoint_baseline_bytes(
+        &self,
+        external_decode_phase_bytes: usize,
+    ) -> Result<usize, JpegError> {
+        checked_add_allocation_bytes(
             checked_add_allocation_bytes(
                 MAX_DECODER_CONTEXT_ALLOCATION_BYTES,
                 self.retained_allocation_bytes_excluding_cpu_checkpoint_cache()?,
             )?,
             external_decode_phase_bytes,
-        )?;
-        checkpoint_before_mcu(
-            &self.plan,
-            scan_bytes,
-            target_mcu,
-            retained_decoder_baseline_bytes,
-            &self.cpu_entropy_checkpoints,
         )
     }
 
@@ -142,12 +150,8 @@ impl Decoder<'_> {
             return Ok(None);
         };
         let checkpoint = restart_checkpoint_from_index(&index, target_mcu);
-        let retained_decoder_baseline_bytes = checked_add_allocation_bytes(
-            MAX_DECODER_CONTEXT_ALLOCATION_BYTES,
-            self.retained_allocation_bytes_excluding_cpu_checkpoint_cache()?,
-        )?;
         self.cpu_entropy_checkpoints
-            .retain_restart_index(index, retained_decoder_baseline_bytes)?;
+            .retain_restart_index(index, self.checkpoint_baseline_bytes(0)?)?;
         Ok(checkpoint)
     }
 
@@ -258,22 +262,23 @@ impl Decoder<'_> {
         let scan_start = profile_enabled.then(Instant::now);
         // A partial 4:2:0 decode streams the whole image through the cropping
         // writer; the other fast shapes take it only for whole images.
-        let fast_route = self.plan.fast_rgb_route().filter(|&route| {
+        let fast_family = self.plan.fast_shape_family().filter(|&family| {
             downscale == DownscaleFactor::Full
-                && (route == FastRgbRoute::Fancy420 || decoded == Rect::full(self.info.dimensions))
+                && (family == JpegFastPacketFamily::Fast420
+                    || decoded == Rect::full(self.info.dimensions))
         });
-        let (scan_path, scan_warnings) = if let Some(route) = fast_route {
+        let (scan_path, scan_warnings) = if let Some(family) = fast_family {
             let request = FastRgbRequest {
                 roi: Rect::full(self.plan.dimensions),
                 checkpoint: None,
             };
             (
-                match (route, self.plan.sampling.max_h) {
-                    (FastRgbRoute::Fancy420, _) => "fast420_rgb",
-                    (FastRgbRoute::Rows, 2) => "fast422_rgb",
-                    (FastRgbRoute::Rows, _) => "fast444_rgb",
+                match family {
+                    JpegFastPacketFamily::Fast420 => "fast420_rgb",
+                    JpegFastPacketFamily::Fast422 => "fast422_rgb",
+                    JpegFastPacketFamily::Fast444 => "fast444_rgb",
                 },
-                route.decode(&self.plan, self.backend, scan_bytes, pool, writer, request)?,
+                family.decode(&self.plan, self.backend, scan_bytes, pool, writer, request)?,
             )
         } else {
             (

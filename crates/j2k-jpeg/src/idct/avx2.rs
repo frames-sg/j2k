@@ -14,7 +14,7 @@
 //!   narrowing left is the 16-bit hand-off between the passes, which
 //!   [`first_pass_fits_i16`] proves exact before the kernel runs.
 //! - Blocks that check rejects run the 32-bit-lane port of the NEON kernel,
-//!   whose wrapping arithmetic reproduces the scalar `Wrapping<i32>` path for
+//!   whose wrapping arithmetic reproduces the scalar's wrapping `i32` path for
 //!   any input.
 
 use core::arch::x86_64::{
@@ -30,12 +30,12 @@ use core::arch::x86_64::{
     _mm_subs_epu16, _mm_testz_si128, _mm_unpackhi_epi32, _mm_unpackhi_epi64, _mm_unpacklo_epi32,
     _mm_unpacklo_epi64,
 };
-use j2k_codec_math::jpeg::idct;
-
-use super::scalar::{islow_gain_bounds, ISLOW_GAINS};
-use super::{
-    CONST_BITS, DC_ROUNDING, DC_SHIFT, PASS1_ROUNDING, PASS1_SHIFT, PASS2_ROUNDING, PASS2_SHIFT,
+use j2k_codec_math::jpeg::idct::{
+    self, islow_gain_bounds, DC_ROUNDING, DC_SHIFT, ISLOW_GAINS, PASS1_ROUNDING, PASS1_SHIFT,
+    PASS2_ROUNDING, PASS2_SHIFT,
 };
+
+use super::CONST_BITS;
 
 use crate::simd::x86::{exact_avx2_kernel, madd_pair};
 use crate::simd::x86_memory;

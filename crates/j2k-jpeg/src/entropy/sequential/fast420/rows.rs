@@ -3,8 +3,8 @@
 //! Entropy and IDCT row kernels for the fast 4:2:0 sequential route.
 
 use super::super::deposit::{
-    assert_stripe_deposit_capacity, idct_deposit_fast_tile_block, FastTile420Components,
-    FastTile420EntropyState, FastTile420Window, PlaneBlockTarget,
+    assert_stripe_deposit_capacity, idct_deposit_fast_tile_block, FastRowState,
+    FastTile420Components, FastTile420Window, PlaneBlockTarget,
 };
 use super::super::profile::Fast420Profiler;
 use super::super::StripeBuffer;
@@ -17,7 +17,7 @@ use crate::error::JpegError;
 pub(in crate::entropy::sequential) fn decode_mcu_row_fast_tile_420<const N: usize>(
     components: FastTile420Components<'_, N>,
     backend: Backend,
-    state: &mut FastTile420EntropyState<'_, '_>,
+    state: &mut FastRowState<'_, '_>,
     window: FastTile420Window,
     mcu_y: u32,
     stripe: &mut StripeBuffer,
@@ -47,7 +47,7 @@ fn decode_mcu_row_fast_tile_420_specialized<
 >(
     components: FastTile420Components<'_, N>,
     backend: Backend,
-    state: &mut FastTile420EntropyState<'_, '_>,
+    state: &mut FastRowState<'_, '_>,
     window: FastTile420Window,
     mcu_y: u32,
     stripe: &mut StripeBuffer,
@@ -83,13 +83,17 @@ fn decode_mcu_row_fast_tile_420_local<
 >(
     components: FastTile420Components<'_, N>,
     backend: Backend,
-    state: &mut FastTile420EntropyState<'_, '_>,
+    state: &mut FastRowState<'_, '_>,
     window: FastTile420Window,
     mcu_y: u32,
     stripe: &mut StripeBuffer,
     profiler: &mut impl Fast420Profiler,
 ) -> Result<(), JpegError> {
     let columns = window.columns;
+    let br = &mut *state.br;
+    let [y_dc, cb_dc, cr_dc] = &mut *state.dc;
+    let coeff = &mut *state.coeff;
+    let restart = &mut *state.restart;
     for (plane_idx, h, v) in [(0, 2, 2), (1, 1, 1), (2, 1, 1)] {
         assert_stripe_deposit_capacity(
             stripe,
@@ -103,40 +107,36 @@ fn decode_mcu_row_fast_tile_420_local<
     }
     let mut pixels = [0u8; 64];
     for mx in 0..columns.mcus_per_row {
-        if RESTART
-            && state
-                .restart
-                .begin_mcu(&mut *state.br, columns.mcu_position(mx, mcu_y))?
-        {
-            *state.dc.y = 0;
-            *state.dc.cb = 0;
-            *state.dc.cr = 0;
+        if RESTART && restart.begin_mcu(&mut *br, columns.mcu_position(mx, mcu_y))? {
+            *y_dc = 0;
+            *cb_dc = 0;
+            *cr_dc = 0;
         }
         if !columns.contains(mx) {
             // Direct skips keep the DC predictors in registers; see
             // `FastTile420Components::skip_mcu`.
             for _ in 0..4 {
                 skip_block(
-                    &mut *state.br,
+                    &mut *br,
                     components.y.dc_table,
                     components.y.ac_table,
-                    &mut *state.dc.y,
+                    &mut *y_dc,
                 )?;
             }
             skip_block(
-                &mut *state.br,
+                &mut *br,
                 components.cb.dc_table,
                 components.cb.ac_table,
-                &mut *state.dc.cb,
+                &mut *cb_dc,
             )?;
             skip_block(
-                &mut *state.br,
+                &mut *br,
                 components.cr.dc_table,
                 components.cr.ac_table,
-                &mut *state.dc.cr,
+                &mut *cr_dc,
             )?;
             if RESTART {
-                state.restart.end_mcu();
+                restart.end_mcu();
             }
             continue;
         }
@@ -148,18 +148,18 @@ fn decode_mcu_row_fast_tile_420_local<
         let emit_bottom = !CLIP_PADDING || window.bottom_luma;
 
         let y0_activity = decode_block_with_activity(
-            &mut *state.br,
+            &mut *br,
             components.y.dc_table,
             components.y.ac_table,
-            &mut *state.dc.y,
+            &mut *y_dc,
             components.y.quant,
-            &mut *state.coeff,
+            coeff,
         )?;
         profiler.record_activity(y0_activity);
         idct_deposit_fast_tile_block(
             y0_activity,
             backend,
-            &*state.coeff,
+            coeff,
             &mut pixels,
             PlaneBlockTarget {
                 plane: &mut stripe.planes[0],
@@ -170,19 +170,19 @@ fn decode_mcu_row_fast_tile_420_local<
         );
 
         let y1_activity = decode_block_with_activity(
-            &mut *state.br,
+            &mut *br,
             components.y.dc_table,
             components.y.ac_table,
-            &mut *state.dc.y,
+            &mut *y_dc,
             components.y.quant,
-            &mut *state.coeff,
+            coeff,
         )?;
         profiler.record_activity(y1_activity);
         if emit_right {
             idct_deposit_fast_tile_block(
                 y1_activity,
                 backend,
-                &*state.coeff,
+                coeff,
                 &mut pixels,
                 PlaneBlockTarget {
                     plane: &mut stripe.planes[0],
@@ -194,19 +194,19 @@ fn decode_mcu_row_fast_tile_420_local<
         }
 
         let y2_activity = decode_block_with_activity(
-            &mut *state.br,
+            &mut *br,
             components.y.dc_table,
             components.y.ac_table,
-            &mut *state.dc.y,
+            &mut *y_dc,
             components.y.quant,
-            &mut *state.coeff,
+            coeff,
         )?;
         profiler.record_activity(y2_activity);
         if emit_bottom {
             idct_deposit_fast_tile_block(
                 y2_activity,
                 backend,
-                &*state.coeff,
+                coeff,
                 &mut pixels,
                 PlaneBlockTarget {
                     plane: &mut stripe.planes[0],
@@ -218,19 +218,19 @@ fn decode_mcu_row_fast_tile_420_local<
         }
 
         let y3_activity = decode_block_with_activity(
-            &mut *state.br,
+            &mut *br,
             components.y.dc_table,
             components.y.ac_table,
-            &mut *state.dc.y,
+            &mut *y_dc,
             components.y.quant,
-            &mut *state.coeff,
+            coeff,
         )?;
         profiler.record_activity(y3_activity);
         if emit_right && emit_bottom {
             idct_deposit_fast_tile_block(
                 y3_activity,
                 backend,
-                &*state.coeff,
+                coeff,
                 &mut pixels,
                 PlaneBlockTarget {
                     plane: &mut stripe.planes[0],
@@ -242,18 +242,18 @@ fn decode_mcu_row_fast_tile_420_local<
         }
 
         let cb_activity = decode_block_with_activity(
-            &mut *state.br,
+            &mut *br,
             components.cb.dc_table,
             components.cb.ac_table,
-            &mut *state.dc.cb,
+            &mut *cb_dc,
             components.cb.quant,
-            &mut *state.coeff,
+            coeff,
         )?;
         profiler.record_activity(cb_activity);
         idct_deposit_fast_tile_block(
             cb_activity,
             backend,
-            &*state.coeff,
+            coeff,
             &mut pixels,
             PlaneBlockTarget {
                 plane: &mut stripe.planes[1],
@@ -264,18 +264,18 @@ fn decode_mcu_row_fast_tile_420_local<
         );
 
         let cr_activity = decode_block_with_activity(
-            &mut *state.br,
+            &mut *br,
             components.cr.dc_table,
             components.cr.ac_table,
-            &mut *state.dc.cr,
+            &mut *cr_dc,
             components.cr.quant,
-            &mut *state.coeff,
+            coeff,
         )?;
         profiler.record_activity(cr_activity);
         idct_deposit_fast_tile_block(
             cr_activity,
             backend,
-            &*state.coeff,
+            coeff,
             &mut pixels,
             PlaneBlockTarget {
                 plane: &mut stripe.planes[2],
@@ -286,7 +286,7 @@ fn decode_mcu_row_fast_tile_420_local<
         );
 
         if RESTART {
-            state.restart.end_mcu();
+            restart.end_mcu();
         }
     }
 

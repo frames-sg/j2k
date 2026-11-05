@@ -413,10 +413,6 @@ fn decode_region_output_format_writes_custom_rgba_alpha() {
     }
 }
 
-fn has_restart_index(dec: &Decoder<'_>) -> bool {
-    dec.cpu_entropy_checkpoints.has_restart_index()
-}
-
 #[test]
 fn restart_checkpoints_come_from_the_cached_index_after_the_first_seek() {
     let bytes = j2k_test_support::restart_coded_grayscale_jpeg(40, 24);
@@ -425,7 +421,7 @@ fn restart_checkpoints_come_from_the_cached_index_after_the_first_seek() {
     let index = dec.restart_index().expect("index").expect("restart-coded");
     let seek = |target| dec.checkpoint_for_mcu(scan, target, 0).expect("seek");
     assert_eq!(seek(7), None, "the first seek scans only up to its marker");
-    assert!(!has_restart_index(&dec));
+    assert!(!dec.cpu_entropy_checkpoints.has_restart_index());
     for pass in 0..2 {
         for target in 0..=15 {
             assert_eq!(
@@ -434,7 +430,7 @@ fn restart_checkpoints_come_from_the_cached_index_after_the_first_seek() {
                 "pass {pass} target {target}"
             );
         }
-        assert!(has_restart_index(&dec));
+        assert!(dec.cpu_entropy_checkpoints.has_restart_index());
     }
     assert!((1..15).all(|target| seek(target).is_some()));
 }
@@ -457,7 +453,7 @@ fn malformed_restart_numbering_keeps_the_lenient_restart_seek() {
             "{target}"
         );
     }
-    assert!(!has_restart_index(&dec));
+    assert!(!dec.cpu_entropy_checkpoints.has_restart_index());
 }
 
 #[test]

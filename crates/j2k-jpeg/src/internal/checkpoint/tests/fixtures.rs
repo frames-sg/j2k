@@ -27,29 +27,3 @@ pub(super) fn grayscale_jpeg(width: u16, height: u16) -> Vec<u8> {
     bytes.extend_from_slice(&[0xff, 0xd9]);
     bytes
 }
-
-/// Baseline JPEG of deterministic noise, so every block carries real AC
-/// symbols and `FF 00` stuffing occurs throughout the scan.
-pub(super) fn noisy_jpeg(
-    width: u32,
-    height: u32,
-    subsampling: crate::JpegSubsampling,
-    restart_interval: Option<u16>,
-) -> Vec<u8> {
-    let rgb = crate::entropy::sequential::stream_tests::noisy_rgb8(width, height, width ^ height);
-    crate::encode_jpeg_baseline(
-        crate::JpegSamples::Rgb8 {
-            width,
-            height,
-            data: &rgb,
-        },
-        crate::JpegEncodeOptions {
-            quality: 92,
-            subsampling,
-            restart_interval,
-            backend: crate::JpegBackend::Cpu,
-        },
-    )
-    .expect("encode noisy fixture")
-    .data
-}

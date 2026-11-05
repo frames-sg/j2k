@@ -99,7 +99,7 @@ impl DirectWorkerState {
             return Ok(None);
         }
 
-        let decoded = job.roi.scaled_covering(job.scale);
+        let decoded = covered_rect(shared_plan.output_region);
         validate_buffer((decoded.w, decoded.h), job.out.len(), job.stride, fmt)?;
         if self.allocation_claim.is_none() {
             let plan_bytes = shared_plan.retained_allocation_bytes()?;
@@ -147,8 +147,6 @@ impl DirectWorkerState {
             return Ok(None);
         }
 
-        let decoded = job.roi.scaled_covering(job.scale);
-        validate_buffer((decoded.w, decoded.h), job.out.len(), job.stride, fmt)?;
         let key = DirectColorRegionKey::for_job(job);
         if !self.cache.as_ref().is_some_and(|cache| cache.matches(key)) {
             // A prior cache and its scratch must not overlap construction of a
@@ -183,6 +181,8 @@ impl DirectWorkerState {
         let cache = self.cache.as_ref().ok_or_else(|| {
             J2kError::internal_backend("internal direct color plan cache missing")
         })?;
+        let decoded = covered_rect(cache.output_region);
+        validate_buffer((decoded.w, decoded.h), job.out.len(), job.stride, fmt)?;
         if let Err(error) = execute_direct_color_plan_u8_into(
             &cache.plan,
             cache.output_region,
@@ -265,6 +265,16 @@ impl DirectColorRegionCache {
         self.plan
             .retained_allocation_bytes()
             .map_err(|error| J2kError::from_native_decode_error(error.into()))
+    }
+}
+
+/// The reduced-resolution rectangle a direct plan's output region covers.
+fn covered_rect(region: J2kRect) -> Rect {
+    Rect {
+        x: region.x0,
+        y: region.y0,
+        w: region.x1 - region.x0,
+        h: region.y1 - region.y0,
     }
 }
 

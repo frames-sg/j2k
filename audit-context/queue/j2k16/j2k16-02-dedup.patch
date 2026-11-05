@@ -1,0 +1,387 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 1934d20..b84e2a2 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -76,30 +76,24 @@ Staged workspace version: `0.13.2`.
+   blocks whose coefficients sit in one column (first-pass values of 2^18 and
+   more) decoded to different bytes there than on the scalar path; they now
+   match it. Valid images are unaffected.
+-- On x86-64, 9- to 16-bit decodes to `Gray16`, `Rgb16` or `Rgba16` spent up
+-  to half their time converting samples. The `j2k` crate converts streamed
+-  rows (512x512 images and larger on one thread) itself, compiled for
+-  baseline x86-64 outside any runtime SIMD dispatch, so it called the C
+-  library's `roundf` once per sample; and every 16-bit conversion, the
+-  native packing of smaller images included, made its saturating
+-  float-to-integer cast one lane at a time. The crate's 8- and 16-bit plane
+-  conversions now run at the dispatched SIMD level through
+-  `j2k_native::at_simd_level` and round and clamp through the native
+-  packers' `j2k_native::round_clamped_native`, which on x86-64 adds 1.5 x
+-  2^23 instead of casting, so the conversion vectorizes. `cargo xtask
+-  x86-codegen-audit` checks `j2k` as well as `j2k-native`, and the lossy
+-  encoder's byte-target rounding no longer calls `ceil`. On a Ryzen 7
+-  5800X3D, 12-bit HTJ2K CT, radiograph and mammography sets decode to
+-  `Gray16` 1.5x, 1.8x and 2.0x as fast on one thread and 16-bit MR slices
+-  1.2x as fast. Output is byte-identical on x86-64 and aarch64, and aarch64
+-  timings are unchanged.
+ - CPU decoding and encoding on default (baseline x86-64) builds no longer
+   call a library routine per sample for floor, rounding or fused
+   multiply-add: the loops that use them run at the runtime-dispatched SIMD
+   level, and the scalar reversible 5-3 lifting uses integer arithmetic.
+-  No-std builds floor and round exactly in plain `f32` arithmetic instead of
+-  approximations that were wrong for large magnitudes. Output is unchanged;
+-  aarch64 code was already library-call free.
++  That includes the `j2k` crate's conversion of decoded planes to 8- and
++  16-bit pixels, which streamed 9- to 16-bit decodes (512x512 images and
++  larger on one thread) run and which called `roundf` per sample: it runs
++  inside `j2k_native::at_simd_level` and rounds and clamps through the
++  native packers' `j2k_native::round_clamped_native`, which on x86-64 adds
++  1.5 x 2^23 instead of making a saturating float-to-integer cast, which
++  converts one lane at a time. `cargo xtask x86-codegen-audit` disassembles
++  `j2k` as well as `j2k-native`, and the lossy encoder's byte-target
++  rounding no longer calls `ceil`. On a Ryzen 7 5800X3D, 12-bit HTJ2K CT,
++  radiograph and mammography sets decode to `Gray16` 1.5x, 1.8x and 2.0x as
++  fast on one thread and 16-bit MR slices 1.2x as fast. No-std builds floor
++  and round exactly in plain `f32` arithmetic instead of approximations that
++  were wrong for large magnitudes. Output is unchanged; aarch64 code was
++  already library-call free, and its timings are unchanged.
+ - On x86-64, the vertical reversible 5-3 lifting of the banded inverse
+   wavelet and several encoder lifting helpers ran out of line from the
+   dispatched AVX2 code, without its target features, calling out for every
+diff --git a/crates/j2k-native/src/image/native.rs b/crates/j2k-native/src/image/native.rs
+index 9dcfce0..e998607 100644
+--- a/crates/j2k-native/src/image/native.rs
++++ b/crates/j2k-native/src/image/native.rs
+@@ -30,7 +30,7 @@ macro_rules! with_native_converter {
+     ) => {
+         match ($bit_depth, $signed) {
+             (bit_depth @ 1..=8, true) => {
+-                let (min, max) = $crate::image::native::signed_native_bounds(bit_depth);
++                let (min, max) = $crate::math::signed_native_bounds(bit_depth);
+                 $function(
+                     $($arg,)*
+                     #[inline(always)]
+@@ -40,7 +40,7 @@ macro_rules! with_native_converter {
+                 )
+             }
+             (bit_depth @ 1..=8, false) => {
+-                let max = $crate::image::native::unsigned_native_max(bit_depth);
++                let max = $crate::math::unsigned_native_max(bit_depth);
+                 $function(
+                     $($arg,)*
+                     #[inline(always)]
+@@ -50,7 +50,7 @@ macro_rules! with_native_converter {
+                 )
+             }
+             (bit_depth @ 9..=16, true) => {
+-                let (min, max) = $crate::image::native::signed_native_bounds(bit_depth);
++                let (min, max) = $crate::math::signed_native_bounds(bit_depth);
+                 $function(
+                     $($arg,)*
+                     #[inline(always)]
+@@ -60,7 +60,7 @@ macro_rules! with_native_converter {
+                 )
+             }
+             (bit_depth @ 9..=16, false) => {
+-                let max = $crate::image::native::unsigned_native_max(bit_depth);
++                let max = $crate::math::unsigned_native_max(bit_depth);
+                 $function(
+                     $($arg,)*
+                     #[inline(always)]
+@@ -466,17 +466,6 @@ impl<'a> Image<'a> {
+     }
+ }
+ 
+-/// Inclusive signed range of a component with `1..=16` bits.
+-fn signed_native_bounds(bit_depth: u8) -> (f32, f32) {
+-    let magnitude = 1_u16 << (bit_depth.clamp(1, 16) - 1);
+-    (-f32::from(magnitude), f32::from(magnitude - 1))
+-}
+-
+-/// Largest unsigned value of a component with `1..=16` bits.
+-fn unsigned_native_max(bit_depth: u8) -> f32 {
+-    f32::from(u16::MAX >> (16 - bit_depth.clamp(1, 16)))
+-}
+-
+ /// Planes with at least this many samples pack in parallel. Unit tests lower
+ /// it so the parallel packer runs on small fixtures.
+ #[cfg(all(feature = "parallel", not(test)))]
+diff --git a/crates/j2k-native/src/lib.rs b/crates/j2k-native/src/lib.rs
+index 29cc96a..b2a5a38 100644
+--- a/crates/j2k-native/src/lib.rs
++++ b/crates/j2k-native/src/lib.rs
+@@ -224,7 +224,7 @@ pub use jp2::{
+     Jp2ImageHeaderMetadata, Jp2PaletteColumn, Jp2PaletteMetadata,
+ };
+ #[doc(hidden)]
+-pub use math::{at_simd_level, round_clamped_native};
++pub use math::{at_simd_level, round_clamped_native, signed_native_bounds, unsigned_native_max};
+ #[doc(hidden)]
+ pub use roi::idwt_band_index;
+ pub(crate) use roi::{add_roi_shift_to_bitplanes, apply_roi_maxshift_inverse_i64, validate_roi};
+diff --git a/crates/j2k-native/src/math.rs b/crates/j2k-native/src/math.rs
+index a1daa87..47fc674 100644
+--- a/crates/j2k-native/src/math.rs
++++ b/crates/j2k-native/src/math.rs
+@@ -954,6 +954,25 @@ pub fn at_simd_level<R>(f: impl FnOnce() -> R) -> R {
+     dispatch!(Level::new(), _simd => f())
+ }
+ 
++/// Inclusive signed range of a component with `1..=16` bits, the bounds
++/// [`round_clamped_native`] packs signed native samples to; more bits clamp
++/// to 16.
++#[doc(hidden)]
++#[must_use]
++pub fn signed_native_bounds(bit_depth: u8) -> (f32, f32) {
++    let magnitude = 1_u16 << (bit_depth.clamp(1, 16) - 1);
++    (-f32::from(magnitude), f32::from(magnitude - 1))
++}
++
++/// Largest unsigned value of a component with `1..=16` bits, the upper bound
++/// [`round_clamped_native`] packs unsigned native samples to; more bits
++/// clamp to 16.
++#[doc(hidden)]
++#[must_use]
++pub fn unsigned_native_max(bit_depth: u8) -> f32 {
++    f32::from(u16::MAX >> (16 - bit_depth.clamp(1, 16)))
++}
++
+ /// Rounds `sample`, clamped to the integer bounds `[min, max]`, half away
+ /// from zero, as two's complement in the low bits of a `u32`, NaN as zero:
+ /// for bounds within 16 bits, the bytes a saturating cast of the rounded
+diff --git a/crates/j2k/src/decode/output/u16.rs b/crates/j2k/src/decode/output/u16.rs
+index bc12c21..c4e4e39 100644
+--- a/crates/j2k/src/decode/output/u16.rs
++++ b/crates/j2k/src/decode/output/u16.rs
+@@ -7,7 +7,9 @@ use crate::J2kError;
+ use core::ops::Range;
+ use j2k_core::{PixelFormat, Unsupported};
+ 
+-use super::u8::{component_sample_count, output_rows, validate_component_planes};
++use super::u8::{
++    component_sample_count, output_rows, sample_as_u8_depth8, validate_component_planes,
++};
+ 
+ pub(in crate::decode) fn write_components_u16_output(
+     components: &NativeDecodedComponents<'_>,
+@@ -244,20 +246,19 @@ fn write_color_component_rows_u16(
+     );
+ }
+ 
+-/// How [`U16Conversion`] turns a rounded sample into its output.
++/// How [`U16Conversion`] turns a rounded sample into its output. Every kind
++/// rounds and clamps through [`j2k_native::round_clamped_native`], whose low
++/// bits hold the clamped value's two's complement, so a signed component
++/// differs from an unsigned one only in its bounds.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ enum U16Kind {
+     /// Unsigned 8 bits: the byte times 257, which is its widened value.
+     Byte,
+-    /// Fewer unsigned bits: the byte's widened value from the table.
+-    ByteTable,
+-    /// Signed, at most 8 bits: the two's-complement byte's widened value.
+-    SignedByteTable,
+-    /// Unsigned, 9 bits or more: the sample clamped to 16 bits.
+-    Unsigned,
+-    /// Signed, 9 bits or more: the two's complement of the sample clamped
+-    /// to 16 bits.
+-    Signed,
++    /// Other components of at most 8 bits: the low byte's widened value from
++    /// the table.
++    Table,
++    /// 9 to 16 bits, and deeper components clamped to 16: the low 16 bits.
++    Wide,
+ }
+ 
+ /// Converts the decoded samples of one component of `bit_depth` bits to
+@@ -277,16 +278,14 @@ struct U16Conversion {
+ impl U16Conversion {
+     fn new(bit_depth: u8, signed: bool) -> Self {
+         if bit_depth <= 8 {
++            // Unsigned samples clamp to a byte, not to their own range, and
++            // the table widens every byte.
+             let (kind, bounds) = if signed {
+-                let magnitude = 1_i16 << bit_depth.saturating_sub(1);
+-                (
+-                    U16Kind::SignedByteTable,
+-                    (f32::from(-magnitude), f32::from(magnitude - 1)),
+-                )
++                (U16Kind::Table, j2k_native::signed_native_bounds(bit_depth))
+             } else if bit_depth == 8 {
+                 (U16Kind::Byte, (0.0, f32::from(u8::MAX)))
+             } else {
+-                (U16Kind::ByteTable, (0.0, f32::from(u8::MAX)))
++                (U16Kind::Table, (0.0, f32::from(u8::MAX)))
+             };
+             return Self {
+                 kind,
+@@ -294,33 +293,19 @@ impl U16Conversion {
+                 widened: widened_u8_samples(bit_depth),
+             };
+         }
+-        let (kind, bounds) = if signed {
+-            let magnitude = 1_i32 << (bit_depth.min(16) - 1);
+-            (
+-                U16Kind::Signed,
+-                (
+-                    f32::from(i16::try_from(-magnitude).unwrap_or(i16::MIN)),
+-                    f32::from(i16::try_from(magnitude - 1).unwrap_or(i16::MAX)),
+-                ),
+-            )
++        let bounds = if signed {
++            j2k_native::signed_native_bounds(bit_depth)
+         } else {
+-            let max = (1_u32 << bit_depth.min(16)) - 1;
+-            (
+-                U16Kind::Unsigned,
+-                (0.0, f32::from(u16::try_from(max).unwrap_or(u16::MAX))),
+-            )
++            (0.0, j2k_native::unsigned_native_max(bit_depth))
+         };
+         Self {
+-            kind,
++            kind: U16Kind::Wide,
+             bounds,
+             widened: [0; 256],
+         }
+     }
+ 
+-    /// Hand `writer` this conversion as a closure of its kind. Each rounds
+-    /// and clamps as native packing does (see
+-    /// [`j2k_native::round_clamped_native`]), whose low bits hold the
+-    /// clamped value's two's complement.
++    /// Hand `writer` this conversion as a closure of its kind.
+     #[expect(
+         clippy::cast_possible_truncation,
+         clippy::inline_always,
+@@ -333,17 +318,15 @@ impl U16Conversion {
+         match self.kind {
+             U16Kind::Byte => writer.write(
+                 #[inline(always)]
+-                |sample: f32| {
+-                    u16::from(j2k_native::round_clamped_native(sample, min, max) as u8) * 257
+-                },
++                |sample: f32| u16::from(sample_as_u8_depth8(sample)) * 257,
+             ),
+-            U16Kind::ByteTable | U16Kind::SignedByteTable => writer.write(
++            U16Kind::Table => writer.write(
+                 #[inline(always)]
+                 |sample: f32| {
+                     widened[usize::from(j2k_native::round_clamped_native(sample, min, max) as u8)]
+                 },
+             ),
+-            U16Kind::Unsigned | U16Kind::Signed => writer.write(
++            U16Kind::Wide => writer.write(
+                 #[inline(always)]
+                 |sample: f32| j2k_native::round_clamped_native(sample, min, max) as u16,
+             ),
+diff --git a/crates/j2k/src/decode/output/u8.rs b/crates/j2k/src/decode/output/u8.rs
+index 1622360..e140d69 100644
+--- a/crates/j2k/src/decode/output/u8.rs
++++ b/crates/j2k/src/decode/output/u8.rs
+@@ -252,16 +252,16 @@ fn write_samples_as_u8(src: &[f32], bit_depth: u8, dst: &mut [u8]) {
+     }
+ }
+ 
+-/// [`sample_as_u8`] for an 8-bit sample.
++/// [`sample_as_u8`] for an 8-bit sample: rounded and clamped to a byte as
++/// native packing does (see [`j2k_native::round_clamped_native`]).
+ #[expect(
+     clippy::cast_possible_truncation,
+-    clippy::cast_sign_loss,
+     clippy::inline_always,
+     reason = "samples are rounded and clamped to the unsigned 8-bit output domain before conversion; inlined into the callers' SIMD dispatch"
+ )]
+ #[inline(always)]
+-fn sample_as_u8_depth8(sample: f32) -> u8 {
+-    sample.round().clamp(0.0, f32::from(u8::MAX)) as u8
++pub(super) fn sample_as_u8_depth8(sample: f32) -> u8 {
++    j2k_native::round_clamped_native(sample, 0.0, f32::from(u8::MAX)) as u8
+ }
+ 
+ #[expect(
+@@ -273,7 +273,6 @@ fn sample_as_u8_depth8(sample: f32) -> u8 {
+ )]
+ #[inline(always)]
+ fn sample_as_u8(sample: f32, bit_depth: u8) -> u8 {
+-    let rounded = sample.round();
+     if bit_depth == 8 {
+         return sample_as_u8_depth8(sample);
+     }
+@@ -288,7 +287,10 @@ fn sample_as_u8(sample: f32, bit_depth: u8) -> u8 {
+     } else {
+         f32::from(((1_u16 << bit_depth) - 1).max(1))
+     };
+-    ((rounded.clamp(0.0, max_value) / max_value) * f32::from(u8::MAX)).round() as u8
++    // The low 16 bits hold the rounded sample clamped to `[0, max_value]`,
++    // NaN as zero, which scales to zero as NaN rounds to it.
++    let clamped = f32::from(j2k_native::round_clamped_native(sample, 0.0, max_value) as u16);
++    ((clamped / max_value) * f32::from(u8::MAX)).round() as u8
+ }
+ 
+ pub(in crate::decode) fn write_u8_output(
+diff --git a/crates/j2k/src/owned_batch/cpu_materialize.rs b/crates/j2k/src/owned_batch/cpu_materialize.rs
+index 0df5afe..c3a067c 100644
+--- a/crates/j2k/src/owned_batch/cpu_materialize.rs
++++ b/crates/j2k/src/owned_batch/cpu_materialize.rs
+@@ -494,44 +494,35 @@ pub(super) fn convert_u8(sample: f32, precision: u8) -> u8 {
+ }
+ 
+ /// [`convert_u8`] for a row of `samples`, written `stride` apart from the
+-/// start of `destination`. It rounds and saturates in `f32`, which gives the
+-/// same bytes: `f32::round` is exact and, above zero, equals the `f64`
+-/// floor of the sample plus one half, and any value past the precision's
+-/// maximum saturates. Per sample, `convert_u8` costs a call and `f64` math;
+-/// over a row, the compiler can vectorize the contiguous rows of planar
+-/// output, and interleaved rows convert in a tight loop, both at the CPU's
+-/// SIMD level (see [`j2k_native::at_simd_level`]).
++/// start of `destination`. It rounds and saturates in `f32` as native
++/// packing does (see [`j2k_native::round_clamped_native`]), clamped to the
++/// precision's maximum and a byte, which gives the same bytes: `f32::round`
++/// is exact and, above zero, equals the `f64` floor of the sample plus one
++/// half, and any value past the precision's maximum saturates. Per sample,
++/// `convert_u8` costs a call and `f64` math; over a row, the compiler can
++/// vectorize the contiguous rows of planar output, and interleaved rows
++/// convert in a tight loop, both at the CPU's SIMD level (see
++/// [`j2k_native::at_simd_level`]).
++#[expect(
++    clippy::cast_possible_truncation,
++    reason = "the sample is rounded and clamped to a byte before the cast"
++)]
+ fn convert_u8_row(destination: &mut [u8], stride: usize, samples: &[f32], precision: u8) {
+-    #[expect(
+-        clippy::cast_possible_truncation,
+-        clippy::cast_sign_loss,
+-        clippy::inline_always,
+-        reason = "the sample is positive and rounded below the ceiling before the cast, which saturates; inlined into the SIMD dispatch below"
+-    )]
+-    #[inline(always)]
+-    fn round(sample: f32, ceiling: f32) -> u8 {
+-        let rounded = if sample > 0.0 {
+-            sample.min(ceiling).round() as u32
+-        } else {
+-            0
+-        };
+-        u8::try_from(rounded).unwrap_or(u8::MAX)
+-    }
+     #[expect(
+         clippy::cast_precision_loss,
+-        reason = "a u8 output's maximum is far below f32's exact integer range"
++        reason = "a 16-bit precision's maximum is within f32's exact integer range"
+     )]
+-    let ceiling = ((1_u32 << u32::from(precision)) - 1) as f32;
++    let ceiling = (((1_u32 << u32::from(precision)) - 1) as f32).min(f32::from(u8::MAX));
+     j2k_native::at_simd_level(
+         #[inline(always)]
+         || {
+             if stride == 1 {
+                 for (destination, &sample) in destination.iter_mut().zip(samples) {
+-                    *destination = round(sample, ceiling);
++                    *destination = j2k_native::round_clamped_native(sample, 0.0, ceiling) as u8;
+                 }
+             } else {
+                 for (destination, &sample) in destination.iter_mut().step_by(stride).zip(samples) {
+-                    *destination = round(sample, ceiling);
++                    *destination = j2k_native::round_clamped_native(sample, 0.0, ceiling) as u8;
+                 }
+             }
+         },

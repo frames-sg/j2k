@@ -1,0 +1,2361 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index eb5f65352e50502677c5cf8053404145ec8ee5db..e77b34965c4df01be2b27086adb5fce482b65bbf 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -3,6 +3,17 @@
+ This changelog tracks the current release line. Historical phase notes
+ and stale roadmap entries have been removed from the public documentation set.
+ 
++## [Unreleased]
++
++- `j2k-jpeg` coefficient extraction can retain quantized blocks without a
++  duplicate dequantized plane. MCU-window extraction keeps only requested
++  baseline blocks, uses restart intervals when present, and exposes a
++  header-only working-set estimate. The new lossless crop API re-emits
++  baseline or progressive Huffman sources as MCU-aligned baseline crops while
++  preserving JFIF/Adobe colour signalling, SOF component identifiers, and
++  independent component quantization tables. Progressive and multi-scan
++  crops still require whole-image coefficient accumulation.
++
+ ## [0.13.1] - 2026-10-29
+ 
+ - `CpuBatchDecoder` region and region-plus-reduced requests no longer
+diff --git a/crates/j2k-jpeg/README.md b/crates/j2k-jpeg/README.md
+index fdfe63f33e38fc430a9e1f152ecc14a5a7aff9e6..4776164e1f439ece26dcc8fde192990eb23550b4 100644
+--- a/crates/j2k-jpeg/README.md
++++ b/crates/j2k-jpeg/README.md
+@@ -27,6 +27,23 @@ and replacement; color management is left to the caller.
+ Use this crate directly for JPEG input; use `j2k` for JPEG 2000 / HTJ2K and
+ `j2k-transcode` for JPEG-to-HTJ2K coefficient-domain transcode paths.
+ 
++## Lossless JPEG crops
++
++`transcode::lossless_crop(bytes, rect, LosslessCropOptions::default())` copies
++quantized DCT coefficients into a standalone baseline JPEG, preserving the
++source's JFIF/Adobe color signalling, component IDs, sampling, and quantization
++tables. The output begins at the MCU corner above-left of `rect` and ends at
++its requested far edges, clamped to the source. The returned `region` locates
++the requested pixels inside that output.
++
++For several windows from one source, use `transcode::extract_dct_windows` with
++`DctExtractOptions::quantized_only()`. Baseline extraction traverses the scan
++once and retains only the requested blocks, using restart markers to skip to
++the first window. `estimate_dct_windows` estimates the extraction working set
++before entropy decoding; `LosslessCropOptions::max_working_bytes` limits crop
++admission. Progressive and multi-scan inputs remain supported, with whole-image
++coefficient accumulation included in the estimate.
++
+ ## Dense owned batches
+ 
+ `JpegBatchDecoder::new(JpegBatchDecodeOptions::default())` decodes complete
+diff --git a/crates/j2k-jpeg/src/adapter/baseline_encode.rs b/crates/j2k-jpeg/src/adapter/baseline_encode.rs
+index 6152b66dc57bd26a1da305228821162a0f139c8d..19f2044ee1ff51f144b70a0885936e3229e2c840 100644
+--- a/crates/j2k-jpeg/src/adapter/baseline_encode.rs
++++ b/crates/j2k-jpeg/src/adapter/baseline_encode.rs
+@@ -14,7 +14,10 @@ pub(crate) use self::allocation::{
+     checked_cpu_encode_live_bytes, checked_encode_host_live_bytes, cpu_owned_plane_capacity_limit,
+ };
+ pub use self::frame::assemble_jpeg_baseline_frame;
+-pub(crate) use self::frame::assemble_jpeg_baseline_frame_with_quant_tables;
++pub(crate) use self::frame::{
++    assemble_jpeg_baseline_frame_with_metadata, assemble_jpeg_baseline_frame_with_quant_tables,
++    JpegBaselineFrameMetadata,
++};
+ pub use self::orchestrate::{
+     encode_jpeg_baseline_gpu_batch, encode_jpeg_baseline_gpu_batch_with_external_live,
+     encode_jpeg_baseline_gpu_tile, encode_jpeg_baseline_gpu_tile_with_external_live,
+diff --git a/crates/j2k-jpeg/src/adapter/baseline_encode/frame.rs b/crates/j2k-jpeg/src/adapter/baseline_encode/frame.rs
+index 5f1b64f2724a9d274ff424303945d4cb3285c8a4..dd055cd6f25b848f1a7316bfb82be54b7b663b57 100644
+--- a/crates/j2k-jpeg/src/adapter/baseline_encode/frame.rs
++++ b/crates/j2k-jpeg/src/adapter/baseline_encode/frame.rs
+@@ -11,6 +11,7 @@ use super::types::{JpegBaselineEncodeTables, JpegBaselineSampling};
+ use super::validation::{
+     validate_jpeg_baseline_dimensions, validate_jpeg_baseline_restart_interval,
+ };
++use crate::dct_contract::JpegDctImageError;
+ use crate::encoded_frame::{write_marker, write_segment, write_segment_header};
+ use crate::encoded_output::{checked_jpeg_baseline_frame_capacity, CappedBytes};
+ use crate::encoder::{EncodedJpeg, JpegBackend, JpegEncodeError, JpegEncodeOptions};
+@@ -92,6 +93,177 @@ pub(crate) fn assemble_jpeg_baseline_frame_with_quant_tables(
+     })
+ }
+ 
++#[derive(Clone, Copy)]
++pub(crate) struct JpegBaselineFrameMetadata<'a> {
++    pub(crate) sampling: JpegBaselineSampling,
++    pub(crate) component_ids: &'a [u8],
++    pub(crate) component_quant: &'a [[u8; 64]],
++    pub(crate) app_segments: &'a [u8],
++}
++
++pub(crate) fn assemble_jpeg_baseline_frame_with_metadata(
++    entropy: &[u8],
++    width: u32,
++    height: u32,
++    metadata: JpegBaselineFrameMetadata<'_>,
++    backend: JpegBackend,
++) -> Result<EncodedJpeg, JpegEncodeError> {
++    let JpegBaselineFrameMetadata {
++        sampling,
++        component_ids,
++        component_quant,
++        app_segments,
++    } = metadata;
++    validate_jpeg_baseline_dimensions(width, height)?;
++    validate_app_segments(app_segments)?;
++    if component_ids.len() != usize::from(sampling.components)
++        || component_quant.len() != usize::from(sampling.components)
++    {
++        return Err(JpegEncodeError::InvalidDctImage {
++            reason: JpegDctImageError::InvalidMetadata {
++                reason: "DCT frame metadata does not match component count",
++            },
++        });
++    }
++    for (index, id) in component_ids.iter().enumerate() {
++        if component_ids[..index].contains(id) {
++            return Err(JpegEncodeError::InvalidDctImage {
++                reason: JpegDctImageError::InvalidMetadata {
++                    reason: "DCT frame component identifiers must be unique",
++                },
++            });
++        }
++    }
++
++    let extra = app_segments
++        .len()
++        .checked_add(component_quant.len().saturating_mul(65))
++        .ok_or(JpegEncodeError::HostAllocationFailed { bytes: usize::MAX })?;
++    let capacity = checked_jpeg_baseline_frame_capacity(
++        entropy
++            .len()
++            .checked_add(extra)
++            .ok_or(JpegEncodeError::HostAllocationFailed { bytes: usize::MAX })?,
++    )?;
++    let mut out = CappedBytes::try_with_capacity(capacity, capacity)?;
++    write_marker(&mut out, 0xD8)?;
++    out.extend_from_slice(app_segments)?;
++
++    let mut unique_quant = [[0u8; 64]; 3];
++    let mut unique_quant_count = 0usize;
++    let mut quant_ids = [0u8; 3];
++    for (index, table) in component_quant.iter().enumerate() {
++        let slot = unique_quant[..unique_quant_count]
++            .iter()
++            .position(|existing| existing == table);
++        let slot = slot.unwrap_or_else(|| {
++            let slot = unique_quant_count;
++            unique_quant[slot] = *table;
++            unique_quant_count += 1;
++            slot
++        });
++        quant_ids[index] = u8::try_from(slot).map_err(|_| JpegEncodeError::InternalInvariant {
++            reason: "DCT quantization table identifier exceeds u8",
++        })?;
++    }
++    for (id, table) in unique_quant[..unique_quant_count].iter().enumerate() {
++        write_dqt(
++            &mut out,
++            u8::try_from(id).map_err(|_| JpegEncodeError::InternalInvariant {
++                reason: "DCT quantization table identifier exceeds u8",
++            })?,
++            table,
++        )?;
++    }
++    write_sof0_with_metadata(&mut out, width, height, sampling, component_ids, quant_ids)?;
++    write_dht(&mut out, 0, 0, &STD_LUMA_DC_BITS, &STD_LUMA_DC_VALUES)?;
++    write_dht(&mut out, 1, 0, &STD_LUMA_AC_BITS, &STD_LUMA_AC_VALUES)?;
++    if sampling.components == 3 {
++        write_dht(&mut out, 0, 1, &STD_CHROMA_DC_BITS, &STD_CHROMA_DC_VALUES)?;
++        write_dht(&mut out, 1, 1, &STD_CHROMA_AC_BITS, &STD_CHROMA_AC_VALUES)?;
++    }
++    write_sos_with_ids(&mut out, component_ids)?;
++    out.extend_from_slice(entropy)?;
++    write_marker(&mut out, 0xD9)?;
++    Ok(EncodedJpeg {
++        data: out.into_vec(),
++        backend,
++    })
++}
++
++fn validate_app_segments(segments: &[u8]) -> Result<(), JpegEncodeError> {
++    let mut offset = 0usize;
++    while offset < segments.len() {
++        let marker = *segments.get(offset).unwrap_or(&0);
++        let kind = *segments.get(offset + 1).unwrap_or(&0);
++        let length = segments
++            .get(offset + 2..offset + 4)
++            .and_then(|bytes| <[u8; 2]>::try_from(bytes).ok())
++            .map(u16::from_be_bytes)
++            .map(usize::from);
++        let Some(end) = length
++            .filter(|length| *length >= 2)
++            .and_then(|length| offset.checked_add(length + 2))
++        else {
++            return Err(JpegEncodeError::InvalidDctImage {
++                reason: JpegDctImageError::InvalidMetadata {
++                    reason: "DCT frame APP marker is truncated",
++                },
++            });
++        };
++        if marker != 0xff || !(0xe0..=0xef).contains(&kind) || end > segments.len() {
++            return Err(JpegEncodeError::InvalidDctImage {
++                reason: JpegDctImageError::InvalidMetadata {
++                    reason: "DCT frame metadata must contain complete APP markers only",
++                },
++            });
++        }
++        offset = end;
++    }
++    Ok(())
++}
++
++fn write_sof0_with_metadata(
++    out: &mut CappedBytes,
++    width: u32,
++    height: u32,
++    sampling: JpegBaselineSampling,
++    component_ids: &[u8],
++    quant_ids: [u8; 3],
++) -> Result<(), JpegEncodeError> {
++    let height =
++        u16::try_from(height).map_err(|_| JpegEncodeError::DimensionsTooLarge { width, height })?;
++    let width = u16::try_from(width).map_err(|_| JpegEncodeError::DimensionsTooLarge {
++        width,
++        height: u32::from(height),
++    })?;
++    write_segment_header(out, 0xC0, 6 + component_ids.len() * 3, "SOF0")?;
++    out.push(8)?;
++    out.extend_from_slice(&height.to_be_bytes())?;
++    out.extend_from_slice(&width.to_be_bytes())?;
++    out.push(sampling.components)?;
++    for (index, &id) in component_ids.iter().enumerate() {
++        out.push(id)?;
++        out.push((sampling.h[index] << 4) | sampling.v[index])?;
++        out.push(quant_ids[index])?;
++    }
++    Ok(())
++}
++
++fn write_sos_with_ids(out: &mut CappedBytes, component_ids: &[u8]) -> Result<(), JpegEncodeError> {
++    write_segment_header(out, 0xDA, 4 + component_ids.len() * 2, "SOS")?;
++    out.push(u8::try_from(component_ids.len()).map_err(|_| {
++        JpegEncodeError::InternalInvariant {
++            reason: "DCT frame component count exceeds u8",
++        }
++    })?)?;
++    for (index, &id) in component_ids.iter().enumerate() {
++        out.push(id)?;
++        out.push(if index == 0 { 0x00 } else { 0x11 })?;
++    }
++    out.extend_from_slice(&[0, 63, 0])
++}
++
+ fn write_dqt(out: &mut CappedBytes, table_id: u8, quant: &[u8; 64]) -> Result<(), JpegEncodeError> {
+     write_segment_header(out, 0xDB, 65, "DQT")?;
+     out.push(table_id)?;
+diff --git a/crates/j2k-jpeg/src/adapter/mod.rs b/crates/j2k-jpeg/src/adapter/mod.rs
+index eb4e6fd72dbe34f0ca176b02ed5dfaebe4682ea5..c49f7b2ab969b2ae13edf318d796c8bf29c9bef5 100644
+--- a/crates/j2k-jpeg/src/adapter/mod.rs
++++ b/crates/j2k-jpeg/src/adapter/mod.rs
+@@ -30,10 +30,11 @@ pub use baseline_encode::{
+     JPEG_BASELINE_ZIGZAG,
+ };
+ pub(crate) use baseline_encode::{
+-    assemble_jpeg_baseline_frame_with_quant_tables, checked_cpu_encode_live_bytes,
+-    checked_encode_host_live_bytes, cpu_owned_plane_capacity_limit,
++    assemble_jpeg_baseline_frame_with_metadata, assemble_jpeg_baseline_frame_with_quant_tables,
++    checked_cpu_encode_live_bytes, checked_encode_host_live_bytes, cpu_owned_plane_capacity_limit,
+     jpeg_baseline_entropy_capacity_bytes, jpeg_baseline_entropy_capacity_for_mcus,
+     validate_jpeg_baseline_dimensions, validate_jpeg_baseline_restart_interval,
++    JpegBaselineFrameMetadata,
+ };
+ pub use device_dct::{
+     decode_device_dct_blocks_into, decode_device_dct_window_into, device_component_geometry,
+diff --git a/crates/j2k-jpeg/src/dct_contract.rs b/crates/j2k-jpeg/src/dct_contract.rs
+index 2f10c34b13a8dc532966a93691b0db5ab8827aa9..431871ca979209a3396e7847657f80c75dd78d58 100644
+--- a/crates/j2k-jpeg/src/dct_contract.rs
++++ b/crates/j2k-jpeg/src/dct_contract.rs
+@@ -156,4 +156,10 @@ pub enum JpegDctImageError {
+     /// The two chroma components require different quantization tables.
+     #[error("baseline DCT re-emission supports one shared chroma quantization table")]
+     ChromaQuantizationTableMismatch,
++    /// Caller-supplied APP segments or component identifiers are invalid.
++    #[error("invalid DCT frame metadata: {reason}")]
++    InvalidMetadata {
++        /// Static invalid-input diagnostic.
++        reason: &'static str,
++    },
+ }
+diff --git a/crates/j2k-jpeg/src/entropy/block.rs b/crates/j2k-jpeg/src/entropy/block.rs
+index ecfe33f44a70c66ff2131505ac3eb077bf3a972e..d9811e1795c781bc89634b8579e28eaabd4cd15f 100644
+--- a/crates/j2k-jpeg/src/entropy/block.rs
++++ b/crates/j2k-jpeg/src/entropy/block.rs
+@@ -219,6 +219,32 @@ pub(crate) fn decode_block_dequantized_into<const N: usize>(
+     Ok(())
+ }
+ 
++/// Decode one quantized block directly into a freshly zeroed output block.
++///
++/// The caller must pass an output block that is all zeroes; this function only
++/// writes non-zero decoded coefficients.
++#[expect(
++    clippy::inline_always,
++    reason = "the quantized crop path shares the measured entropy-block hot loop"
++)]
++#[inline(always)]
++pub(crate) fn decode_block_quantized_into<const N: usize>(
++    br: &mut BitReader<'_>,
++    dc_table: DcHuffmanTable<'_, N>,
++    ac_table: AcHuffmanTable<'_, N>,
++    prev_dc: &mut i32,
++    out: &mut [i16; 64],
++) -> Result<(), JpegError> {
++    let diff = dc_table.decode_fast_dc(br)?;
++    *prev_dc = prev_dc.wrapping_add(diff);
++    out[0] = clamp_i16(*prev_dc);
++
++    drive_ac_fast::<N, false, _>(br, ac_table, |k, ac| {
++        out[ZIGZAG[k] as usize] = clamp_i16(ac_decoded_value(ac));
++        Ok(())
++    })
++}
++
+ #[expect(
+     clippy::inline_always,
+     reason = "measured entropy-block hot path requires cross-helper inlining"
+diff --git a/crates/j2k-jpeg/src/entropy/sequential.rs b/crates/j2k-jpeg/src/entropy/sequential.rs
+index 728f0351b9a0f785d518da0559b36ca946593c20..63fa0e83c3fd70fc0e3707e091785b7923334ed9 100644
+--- a/crates/j2k-jpeg/src/entropy/sequential.rs
++++ b/crates/j2k-jpeg/src/entropy/sequential.rs
+@@ -18,7 +18,8 @@ mod stripe;
+ 
+ pub(crate) use self::dct::{
+     decode_scan_dct_blocks, decode_scan_dct_blocks_into, decode_scan_dct_window_into,
+-    sequential_mcu_grid, DecodedDctBlocks, McuWindow, SequentialDctLifecycleMetadata,
++    decode_scan_quantized_dct_windows_into, sequential_mcu_grid, DecodedDctBlocks, McuWindow,
++    SequentialDctLifecycleMetadata,
+ };
+ #[cfg(feature = "bench-internals")]
+ pub(crate) use self::fast420::decode_scan_fast_tile_rgb_profiled;
+diff --git a/crates/j2k-jpeg/src/entropy/sequential/dct.rs b/crates/j2k-jpeg/src/entropy/sequential/dct.rs
+index f2238c6a848ba0ea4257f4815151c01f12c73d78..a330d6b1ae8ba64567196d20dbe54a152e1ef39a 100644
+--- a/crates/j2k-jpeg/src/entropy/sequential/dct.rs
++++ b/crates/j2k-jpeg/src/entropy/sequential/dct.rs
+@@ -9,7 +9,7 @@ use super::restart::{
+ use super::{HuffmanPrimaryWidth, PreparedDecodePlan};
+ use crate::entropy::block::{
+     decode_block_dequantized_into, decode_block_quantized_and_dequantized_with_activity,
+-    CoefficientBlock,
++    decode_block_quantized_into, CoefficientBlock,
+ };
+ use crate::entropy::huffman::{FULL_PRIMARY_ENTRIES, NARROW_PRIMARY_ENTRIES};
+ use crate::error::JpegError;
+@@ -24,6 +24,7 @@ pub(crate) fn decode_scan_dct_blocks(
+     plan: &PreparedDecodePlan,
+     scan_bytes: &[u8],
+     retain_quantized_blocks: bool,
++    retain_dequantized_blocks: bool,
+     lifecycle: SequentialDctLifecycleMetadata,
+ ) -> Result<DecodedDctBlocks, JpegError> {
+     match plan.huffman_primary_width {
+@@ -32,6 +33,7 @@ pub(crate) fn decode_scan_dct_blocks(
+                 plan,
+                 scan_bytes,
+                 retain_quantized_blocks,
++                retain_dequantized_blocks,
+                 lifecycle,
+             )
+         }
+@@ -39,6 +41,7 @@ pub(crate) fn decode_scan_dct_blocks(
+             plan,
+             scan_bytes,
+             retain_quantized_blocks,
++            retain_dequantized_blocks,
+             lifecycle,
+         ),
+     }
+@@ -48,6 +51,7 @@ fn decode_scan_dct_blocks_with_entries<const N: usize>(
+     plan: &PreparedDecodePlan,
+     scan_bytes: &[u8],
+     retain_quantized_blocks: bool,
++    retain_dequantized_blocks: bool,
+     lifecycle: SequentialDctLifecycleMetadata,
+ ) -> Result<DecodedDctBlocks, JpegError> {
+     let max_h = u32::from(plan.sampling.max_h);
+@@ -61,6 +65,7 @@ fn decode_scan_dct_blocks_with_entries<const N: usize>(
+         mcus_per_row,
+         mcu_rows,
+         retain_quantized_blocks,
++        retain_dequantized_blocks,
+         lifecycle,
+     )?;
+ 
+@@ -99,7 +104,7 @@ fn decode_scan_dct_blocks_with_entries<const N: usize>(
+                         let block_x = mcu_x * u32::from(component.h) + vx;
+                         let block_y = mcu_y * u32::from(component.v) + vy;
+                         let block_idx = (block_y * block_cols + block_x) as usize;
+-                        if retain_quantized_blocks {
++                        if retain_quantized_blocks && retain_dequantized_blocks {
+                             decode_block_quantized_and_dequantized_with_activity(
+                                 &mut br,
+                                 dc_table,
+@@ -113,6 +118,15 @@ fn decode_scan_dct_blocks_with_entries<const N: usize>(
+                                 *quantized_coeff.coefficients();
+                             storage.dequantized_blocks[plane_idx][block_idx] =
+                                 *dequantized_coeff.coefficients();
++                        } else if retain_quantized_blocks {
++                            let block = &mut storage.quantized_blocks[plane_idx][block_idx];
++                            decode_block_quantized_into(
++                                &mut br,
++                                dc_table,
++                                ac_table,
++                                &mut storage.prev_dc[plane_idx],
++                                block,
++                            )?;
+                         } else {
+                             decode_block_dequantized_into(
+                                 &mut br,
+@@ -332,6 +346,168 @@ pub(crate) fn decode_scan_dct_window_into(
+     }
+ }
+ 
++/// Decode several quantized MCU windows in one entropy traversal.
++pub(crate) fn decode_scan_quantized_dct_windows_into(
++    plan: &PreparedDecodePlan,
++    scan_bytes: &[u8],
++    windows: &[McuWindow],
++    blocks: &mut [Vec<Vec<[i16; 64]>>],
++) -> Result<(), JpegError> {
++    match plan.huffman_primary_width {
++        HuffmanPrimaryWidth::Narrow8 => decode_scan_quantized_dct_windows_with_entries::<
++            NARROW_PRIMARY_ENTRIES,
++        >(plan, scan_bytes, windows, blocks),
++        HuffmanPrimaryWidth::Full12 => decode_scan_quantized_dct_windows_with_entries::<
++            FULL_PRIMARY_ENTRIES,
++        >(plan, scan_bytes, windows, blocks),
++    }
++}
++
++#[expect(
++    clippy::too_many_lines,
++    reason = "window validation, restart entry, and one-pass MCU traversal remain explicit"
++)]
++fn decode_scan_quantized_dct_windows_with_entries<const N: usize>(
++    plan: &PreparedDecodePlan,
++    scan_bytes: &[u8],
++    windows: &[McuWindow],
++    blocks: &mut [Vec<Vec<[i16; 64]>>],
++) -> Result<(), JpegError> {
++    if windows.len() != blocks.len() || windows.is_empty() {
++        return Err(JpegError::InternalInvariant {
++            reason: "quantized DCT windows disagree with their output owners",
++        });
++    }
++    let (mcus_per_row, mcu_rows) = sequential_mcu_grid(plan);
++    for (window, output) in windows.iter().zip(blocks.iter()) {
++        if window.cols == 0
++            || window.rows == 0
++            || window
++                .col
++                .checked_add(window.cols)
++                .is_none_or(|end| end > mcus_per_row)
++            || window
++                .row
++                .checked_add(window.rows)
++                .is_none_or(|end| end > mcu_rows)
++            || output.len() != plan.sampling.len()
++        {
++            return Err(JpegError::InternalInvariant {
++                reason:
++                    "quantized DCT window lies outside the scan or has the wrong component count",
++            });
++        }
++        for component in &plan.components {
++            let expected = (window.cols as usize)
++                .checked_mul(window.rows as usize)
++                .and_then(|count| count.checked_mul(usize::from(component.h)))
++                .and_then(|count| count.checked_mul(usize::from(component.v)))
++                .ok_or(JpegError::InternalInvariant {
++                    reason: "quantized DCT component block count overflowed",
++                })?;
++            if output[component.output_index].len() != expected {
++                return Err(JpegError::InternalInvariant {
++                    reason: "quantized DCT component grid disagrees with its window",
++                });
++            }
++        }
++    }
++
++    let first_row = windows.iter().map(|window| window.row).min().unwrap_or(0);
++    let last_row = windows
++        .iter()
++        .map(|window| window.row + window.rows)
++        .max()
++        .unwrap_or(first_row);
++    let restart = plan.restart_interval.unwrap_or(0);
++    let total_mcus = mcu_rows * mcus_per_row;
++    let first_mcu = first_row * mcus_per_row;
++    let wide_huffman = plan.prefers_wide_huffman(scan_bytes.len());
++    let mut br = BitReader::new(scan_bytes);
++    let mut prev_dc = [0_i32; DEVICE_MAX_COMPONENTS];
++    let mut current_mcu = 0_u32;
++    let mut mcus_since_restart = 0_u32;
++    let mut expected_rst = 0_u8;
++    if let Some(seek) = restart_seek_for_mcu(scan_bytes, restart, first_mcu) {
++        br = BitReader::new(&scan_bytes[seek.scan_offset..]);
++        current_mcu = seek.mcu_index;
++        expected_rst = seek.expected_rst;
++    }
++    skip_to_mcu::<N>(
++        plan,
++        McuSkipTarget {
++            target_mcu: first_mcu,
++            total_mcus,
++            restart,
++            wide_huffman,
++        },
++        &mut McuSkipState {
++            br: &mut br,
++            prev_dc: &mut prev_dc,
++            current_mcu: &mut current_mcu,
++            mcus_since_restart: &mut mcus_since_restart,
++            expected_rst: &mut expected_rst,
++        },
++    )?;
++
++    for mcu_y in first_row..last_row {
++        for mcu_x in 0..mcus_per_row {
++            if consume_restart_marker_if_due(
++                &mut br,
++                restart,
++                mcus_since_restart,
++                &mut expected_rst,
++                McuPosition {
++                    current: current_mcu,
++                    total: total_mcus,
++                },
++            )? {
++                prev_dc.fill(0);
++                mcus_since_restart = 0;
++            }
++            let selected = windows.iter().any(|window| {
++                (window.col..window.col + window.cols).contains(&mcu_x)
++                    && (window.row..window.row + window.rows).contains(&mcu_y)
++            });
++            if selected {
++                for component in &plan.components {
++                    let plane = component.output_index;
++                    let dc_table = plan.dc_table_with_entries::<N>(component)?;
++                    let ac_table = plan.ac_table_with_entries::<N>(component)?;
++                    for vy in 0..u32::from(component.v) {
++                        for vx in 0..u32::from(component.h) {
++                            let mut block = [0; 64];
++                            decode_block_quantized_into(
++                                &mut br,
++                                dc_table,
++                                ac_table,
++                                &mut prev_dc[plane],
++                                &mut block,
++                            )?;
++                            for (window, output) in windows.iter().zip(blocks.iter_mut()) {
++                                if !(window.col..window.col + window.cols).contains(&mcu_x)
++                                    || !(window.row..window.row + window.rows).contains(&mcu_y)
++                                {
++                                    continue;
++                                }
++                                let cols = window.cols * u32::from(component.h);
++                                let x = (mcu_x - window.col) * u32::from(component.h) + vx;
++                                let y = (mcu_y - window.row) * u32::from(component.v) + vy;
++                                output[plane][(y * cols + x) as usize] = block;
++                            }
++                        }
++                    }
++                }
++            } else {
++                skip_mcu::<N>(plan, &mut br, &mut prev_dc, wide_huffman)?;
++            }
++            mcus_since_restart += 1;
++            current_mcu += 1;
++        }
++    }
++    Ok(())
++}
++
+ fn decode_scan_dct_window_into_with_entries<const N: usize>(
+     plan: &PreparedDecodePlan,
+     scan_bytes: &[u8],
+diff --git a/crates/j2k-jpeg/src/entropy/sequential/dct/allocation.rs b/crates/j2k-jpeg/src/entropy/sequential/dct/allocation.rs
+index 1f632710e4add50111f0030a4f1c18540d78e17f..4dfc9fb2a5c96cdda9f28e4120f52155969a71cd 100644
+--- a/crates/j2k-jpeg/src/entropy/sequential/dct/allocation.rs
++++ b/crates/j2k-jpeg/src/entropy/sequential/dct/allocation.rs
+@@ -25,6 +25,7 @@ pub(super) fn allocate_dct_decode_storage(
+     mcus_per_row: u32,
+     mcu_rows: u32,
+     retain_quantized_blocks: bool,
++    retain_dequantized_blocks: bool,
+     lifecycle: SequentialDctLifecycleMetadata,
+ ) -> Result<DctDecodeStorage, JpegError> {
+     validate_dct_workspace(
+@@ -32,6 +33,7 @@ pub(super) fn allocate_dct_decode_storage(
+         mcus_per_row,
+         mcu_rows,
+         retain_quantized_blocks,
++        retain_dequantized_blocks,
+         lifecycle,
+     )?;
+ 
+@@ -89,13 +91,15 @@ pub(super) fn allocate_dct_decode_storage(
+         };
+         quantized_blocks.push(quantized);
+         let mut dequantized = Vec::new();
+-        try_reserve_for_len_with_live_budget(
+-            &mut dequantized,
+-            block_count,
+-            &mut live_bytes,
+-            lifecycle.workspace_cap,
+-        )?;
+-        dequantized.resize(block_count, [0_i16; 64]);
++        if retain_dequantized_blocks {
++            try_reserve_for_len_with_live_budget(
++                &mut dequantized,
++                block_count,
++                &mut live_bytes,
++                lifecycle.workspace_cap,
++            )?;
++            dequantized.resize(block_count, [0_i16; 64]);
++        }
+         dequantized_blocks.push(dequantized);
+     }
+ 
+@@ -145,6 +149,7 @@ fn validate_dct_workspace(
+     mcus_per_row: u32,
+     mcu_rows: u32,
+     retain_quantized_blocks: bool,
++    retain_dequantized_blocks: bool,
+     lifecycle: SequentialDctLifecycleMetadata,
+ ) -> Result<(), JpegError> {
+     let component_count = plan.sampling.len();
+@@ -177,11 +182,13 @@ fn validate_dct_workspace(
+             checked_allocation_bytes::<[i16; 64]>(block_count)?,
+         )?;
+     }
+-    let retained_plane_bytes = if retain_quantized_blocks {
+-        checked_add_allocation_bytes(plane_bytes, plane_bytes)?
+-    } else {
+-        plane_bytes
+-    };
++    let mut retained_plane_bytes = 0usize;
++    if retain_quantized_blocks {
++        retained_plane_bytes = checked_add_allocation_bytes(retained_plane_bytes, plane_bytes)?;
++    }
++    if retain_dequantized_blocks {
++        retained_plane_bytes = checked_add_allocation_bytes(retained_plane_bytes, plane_bytes)?;
++    }
+     ensure_phase_capacity(
+         entropy_state_bytes,
+         retained_plane_bytes,
+diff --git a/crates/j2k-jpeg/src/error.rs b/crates/j2k-jpeg/src/error.rs
+index 11126f45674210681142339d75f4e1dea9986b48..6095f9ade43448b0e65499840a984f05c075fb92 100644
+--- a/crates/j2k-jpeg/src/error.rs
++++ b/crates/j2k-jpeg/src/error.rs
+@@ -649,6 +649,29 @@ pub enum JpegError {
+     #[error("row sink aborted decode")]
+     /// Row sink returned an error and aborted row-based decoding.
+     RowSinkAborted,
++
++    #[error("DCT extraction must retain quantized or dequantized blocks")]
++    /// Neither coefficient plane was selected for DCT extraction.
++    InvalidDctExtractOptions,
++
++    #[error(
++        "DCT MCU window ({x}, {y}, {width}, {height}) is outside the {mcu_cols}x{mcu_rows} MCU grid"
++    )]
++    /// An MCU-aligned DCT extraction window lies outside the source grid.
++    DctWindowOutOfBounds {
++        /// First MCU column.
++        x: u32,
++        /// First MCU row.
++        y: u32,
++        /// Window width in MCUs.
++        width: u32,
++        /// Window height in MCUs.
++        height: u32,
++        /// Source MCU columns.
++        mcu_cols: u32,
++        /// Source MCU rows.
++        mcu_rows: u32,
++    },
+ }
+ 
+ impl JpegError {
+diff --git a/crates/j2k-jpeg/src/transcode.rs b/crates/j2k-jpeg/src/transcode.rs
+index fb3cdf971fc8c534dc8786f0b67376a7036e73b3..5f01ceaaa5062e3712f03da21503cafe8ecea11d 100644
+--- a/crates/j2k-jpeg/src/transcode.rs
++++ b/crates/j2k-jpeg/src/transcode.rs
+@@ -3,8 +3,9 @@
+ //! Experimental JPEG coefficient extraction for transcode pipelines.
+ 
+ use crate::adapter::{
+-    assemble_jpeg_baseline_frame_with_quant_tables, baseline_encode_tables,
+-    checked_encode_host_live_bytes, jpeg_baseline_entropy_capacity_bytes, JpegBaselineSampling,
++    assemble_jpeg_baseline_frame_with_metadata, assemble_jpeg_baseline_frame_with_quant_tables,
++    baseline_encode_tables, checked_encode_host_live_bytes, jpeg_baseline_entropy_capacity_bytes,
++    JpegBaselineFrameMetadata, JpegBaselineSampling,
+ };
+ use crate::allocation::{
+     checked_add_allocation_bytes, checked_allocation_bytes, checked_allocation_len,
+@@ -18,7 +19,8 @@ use crate::entropy::progressive::{
+     decode_progressive_dct_blocks, PreparedProgressiveComponentPlan, ProgressiveDctBlocks,
+ };
+ use crate::entropy::sequential::{
+-    decode_scan_dct_blocks, DecodedDctBlocks, SequentialDctLifecycleMetadata,
++    decode_scan_dct_blocks, decode_scan_quantized_dct_windows_into, DecodedDctBlocks, McuWindow,
++    SequentialDctLifecycleMetadata,
+ };
+ use crate::entropy::ZIGZAG;
+ use crate::error::{JpegError, MarkerKind};
+@@ -26,7 +28,9 @@ use crate::info::{ColorSpace, RestartIndex, SofKind};
+ use alloc::vec::Vec;
+ 
+ mod validation;
+-use self::validation::validate_baseline_dct_image;
++use self::validation::{
++    validate_baseline_dct_image, validate_baseline_dct_image_with_independent_quant_tables,
++};
+ pub use crate::dct_contract::{JpegDctCodingMode, JpegDctImageError};
+ 
+ /// Options for experimental DCT block extraction.
+@@ -39,6 +43,12 @@ pub struct DctExtractOptions {
+     /// coefficients. Coefficient-domain transcode paths that only need
+     /// dequantized coefficients can disable this to avoid extra block writes.
+     pub retain_quantized_blocks: bool,
++    /// Whether to retain dequantized DCT blocks in the extracted image.
++    ///
++    /// Pixel-domain transcode paths need these blocks. Coefficient-domain
++    /// re-emission and lossless cropping can disable them to halve baseline
++    /// extraction storage.
++    pub retain_dequantized_blocks: bool,
+ }
+ 
+ impl DctExtractOptions {
+@@ -47,6 +57,16 @@ impl DctExtractOptions {
+     pub const fn dequantized_only() -> Self {
+         Self {
+             retain_quantized_blocks: false,
++            retain_dequantized_blocks: true,
++        }
++    }
++
++    /// Extract only quantized DCT blocks for coefficient-domain re-emission.
++    #[must_use]
++    pub const fn quantized_only() -> Self {
++        Self {
++            retain_quantized_blocks: true,
++            retain_dequantized_blocks: false,
+         }
+     }
+ }
+@@ -55,10 +75,251 @@ impl Default for DctExtractOptions {
+     fn default() -> Self {
+         Self {
+             retain_quantized_blocks: true,
++            retain_dequantized_blocks: true,
+         }
+     }
+ }
+ 
++/// MCU-aligned rectangle for coefficient extraction.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct McuRect {
++    /// First MCU column.
++    pub x: u32,
++    /// First MCU row.
++    pub y: u32,
++    /// Number of MCU columns.
++    pub width: u32,
++    /// Number of MCU rows.
++    pub height: u32,
++}
++
++/// Source signalling retained while re-emitting quantized DCT blocks.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct BaselineDctEncodeOptions<'a> {
++    /// Complete `APPn` marker segments written immediately after SOI.
++    pub app_segments: &'a [u8],
++    /// SOF and SOS component identifiers in declaration order.
++    pub component_ids: &'a [u8],
++}
++
++/// Extraction working storage estimated from JPEG headers before entropy decoding.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct DctWorkingSetEstimate {
++    /// Bytes retained by coefficient planes and their result metadata.
++    pub retained_bytes: usize,
++    /// Peak bytes for coefficients, result owners, restart data, and progressive
++    /// accumulation when needed.
++    pub peak_bytes: usize,
++}
++
++/// Options for coefficient-domain lossless JPEG cropping.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[non_exhaustive]
++pub struct LosslessCropOptions {
++    /// Maximum extraction working set admitted before entropy decoding.
++    pub max_working_bytes: usize,
++}
++
++impl Default for LosslessCropOptions {
++    fn default() -> Self {
++        Self {
++            max_working_bytes: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
++        }
++    }
++}
++
++/// Result of a coefficient-domain lossless crop.
++#[derive(Debug, PartialEq, Eq)]
++pub struct LosslessCrop {
++    /// Standalone baseline JPEG containing the crop window.
++    pub data: Vec<u8>,
++    /// Encoded image width.
++    pub width: u32,
++    /// Encoded image height.
++    pub height: u32,
++    /// Requested rectangle inside the encoded image.
++    pub region: crate::Rect,
++}
++
++/// Errors produced by coefficient-domain lossless cropping.
++#[derive(Debug, thiserror::Error)]
++pub enum LosslessCropError {
++    /// Source parsing or coefficient extraction failed.
++    #[error(transparent)]
++    Decode(#[from] JpegError),
++    /// Baseline re-emission failed.
++    #[error(transparent)]
++    Encode(#[from] JpegEncodeError),
++}
++
++impl DctExtractOptions {
++    /// Estimate whole-image extraction storage without entropy decoding.
++    pub fn estimate(self, bytes: &[u8]) -> Result<DctWorkingSetEstimate, JpegError> {
++        estimate_dct_windows(bytes, &[], self)
++    }
++}
++
++/// Estimate extraction working storage for MCU windows without entropy decoding.
++///
++/// An empty `windows` slice means the whole image. Progressive and multi-scan
++/// streams include their required whole-image 32-bit accumulation plane.
++#[expect(
++    clippy::too_many_lines,
++    reason = "the estimate mirrors baseline, fallback, and progressive allocation phases explicitly"
++)]
++pub fn estimate_dct_windows(
++    bytes: &[u8],
++    windows: &[McuRect],
++    options: DctExtractOptions,
++) -> Result<DctWorkingSetEstimate, JpegError> {
++    validate_extract_options(options)?;
++    let decoder = Decoder::new(bytes)?;
++    validate_extract_color_space(decoder.info().color_space)?;
++    validate_extract_frame(&decoder)?;
++    let (mcu_cols, mcu_rows, _, _) = decoder_mcu_grid(&decoder);
++    for &window in windows {
++        validate_mcu_window(window, mcu_cols, mcu_rows)?;
++    }
++    let output_blocks = if windows.is_empty() {
++        coefficient_blocks_for_window(
++            &decoder,
++            McuRect {
++                x: 0,
++                y: 0,
++                width: mcu_cols,
++                height: mcu_rows,
++            },
++        )?
++    } else {
++        windows.iter().try_fold(0usize, |total, &window| {
++            total
++                .checked_add(coefficient_blocks_for_window(&decoder, window)?)
++                .ok_or(JpegError::MemoryCapExceeded {
++                    requested: usize::MAX,
++                    cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
++                })
++        })?
++    };
++    let output_planes = usize::from(options.retain_quantized_blocks)
++        + usize::from(options.retain_dequantized_blocks);
++    let coefficient_retained_bytes =
++        checked_allocation_bytes::<[i16; 64]>(output_blocks.checked_mul(output_planes).ok_or(
++            JpegError::MemoryCapExceeded {
++                requested: usize::MAX,
++                cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
++            },
++        )?)?;
++    let result_count = windows.len().max(1);
++    let component_count = decoder.info().sampling.len();
++    let result_metadata = checked_add_allocation_bytes(
++        checked_allocation_bytes::<JpegDctImage>(result_count)?,
++        checked_allocation_bytes::<JpegDctComponent>(
++            result_count
++                .checked_mul(component_count)
++                .ok_or(JpegError::MemoryCapExceeded {
++                    requested: usize::MAX,
++                    cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
++                })?,
++        )?,
++    )?;
++    let restart_bytes =
++        restart_index_allocation_bytes(decoder.info(), decoder.plan.restart_interval)?;
++    let retained_bytes = checked_add_allocation_bytes(
++        checked_add_allocation_bytes(coefficient_retained_bytes, result_metadata)?,
++        if windows.is_empty() { restart_bytes } else { 0 },
++    )?;
++    let progressive = decoder.progressive_plan.is_some();
++    let full_blocks = coefficient_blocks_for_window(
++        &decoder,
++        McuRect {
++            x: 0,
++            y: 0,
++            width: mcu_cols,
++            height: mcu_rows,
++        },
++    )?;
++    let full_output_bytes =
++        checked_allocation_bytes::<[i16; 64]>(full_blocks.checked_mul(output_planes).ok_or(
++            JpegError::MemoryCapExceeded {
++                requested: usize::MAX,
++                cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
++            },
++        )?)?;
++    let full_metadata = checked_add_allocation_bytes(
++        checked_allocation_bytes::<JpegDctImage>(1)?,
++        checked_allocation_bytes::<JpegDctComponent>(component_count)?,
++    )?;
++    let full_retained = checked_add_allocation_bytes(
++        checked_add_allocation_bytes(full_output_bytes, full_metadata)?,
++        restart_bytes,
++    )?;
++    let progressive_accumulation = if progressive {
++        checked_add_allocation_bytes(
++            checked_allocation_bytes::<[i32; 64]>(full_blocks)?,
++            checked_allocation_bytes::<Vec<[i32; 64]>>(component_count)?,
++        )?
++    } else {
++        0
++    };
++    let peak_bytes = if windows.is_empty() {
++        checked_add_allocation_bytes(full_retained, progressive_accumulation)?
++    } else if decoder.info().sof_kind == SofKind::Baseline8
++        && !progressive
++        && options == DctExtractOptions::quantized_only()
++    {
++        let temporary_metadata = checked_add_allocation_bytes(
++            checked_allocation_bytes::<Vec<Vec<[i16; 64]>>>(windows.len())?,
++            checked_add_allocation_bytes(
++                checked_allocation_bytes::<Vec<[i16; 64]>>(
++                    windows.len().checked_mul(component_count).ok_or(
++                        JpegError::MemoryCapExceeded {
++                            requested: usize::MAX,
++                            cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
++                        },
++                    )?,
++                )?,
++                checked_allocation_bytes::<McuWindow>(windows.len())?,
++            )?,
++        )?;
++        checked_add_allocation_bytes(retained_bytes, temporary_metadata)?
++    } else {
++        let while_copying = checked_add_allocation_bytes(full_retained, retained_bytes)?;
++        let while_decoding = checked_add_allocation_bytes(full_retained, progressive_accumulation)?;
++        while_copying.max(while_decoding)
++    };
++    Ok(DctWorkingSetEstimate {
++        retained_bytes,
++        peak_bytes,
++    })
++}
++
++fn coefficient_blocks_for_window(
++    decoder: &Decoder<'_>,
++    window: McuRect,
++) -> Result<usize, JpegError> {
++    decoder
++        .info()
++        .sampling
++        .components()
++        .iter()
++        .try_fold(0usize, |total, &(h, v)| {
++            let blocks = (window.width as usize)
++                .checked_mul(window.height as usize)
++                .and_then(|blocks| blocks.checked_mul(usize::from(h)))
++                .and_then(|blocks| blocks.checked_mul(usize::from(v)))
++                .ok_or(JpegError::MemoryCapExceeded {
++                    requested: usize::MAX,
++                    cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
++                })?;
++            total
++                .checked_add(blocks)
++                .ok_or(JpegError::MemoryCapExceeded {
++                    requested: usize::MAX,
++                    cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
++                })
++        })
++}
++
+ /// JPEG image represented as entropy-decoded DCT blocks.
+ ///
+ /// Coefficient planes can approach the shared host-allocation cap. This owner
+@@ -135,6 +396,7 @@ pub fn extract_dct_blocks(
+     bytes: &[u8],
+     options: DctExtractOptions,
+ ) -> Result<JpegDctImage, JpegError> {
++    validate_extract_options(options)?;
+     let decoder = Decoder::new(bytes)?;
+     match decoder.info().color_space {
+         ColorSpace::Grayscale | ColorSpace::YCbCr | ColorSpace::Rgb => {}
+@@ -156,6 +418,7 @@ pub fn extract_dct_blocks(
+                 &decoder.plan,
+                 scan_bytes,
+                 options.retain_quantized_blocks,
++                options.retain_dequantized_blocks,
+                 lifecycle,
+             )?;
+             (
+@@ -173,6 +436,7 @@ pub fn extract_dct_blocks(
+             validate_progressive_extraction_workspace(
+                 &progressive_plan.components,
+                 options.retain_quantized_blocks,
++                options.retain_dequantized_blocks,
+                 workspace_cap,
+             )?;
+             let decoded_blocks = decode_progressive_dct_blocks(progressive_plan, decoder.bytes, 0)?;
+@@ -187,6 +451,7 @@ pub fn extract_dct_blocks(
+                     &decoder,
+                     decoded_blocks,
+                     options.retain_quantized_blocks,
++                    options.retain_dequantized_blocks,
+                     workspace_cap,
+                 )?,
+             )
+@@ -218,6 +483,531 @@ pub fn extract_dct_blocks(
+     })
+ }
+ 
++/// Extract one or more MCU-aligned coefficient windows.
++///
++/// Baseline sequential quantized-only extraction retains only the requested
++/// blocks and enters the scan at the nearest restart interval. Progressive
++/// and multi-scan inputs currently accumulate their full coefficient state,
++/// then copy the requested windows; this preserves refinement dependencies.
++/// Results are returned in the same order as `windows`.
++pub fn extract_dct_windows(
++    bytes: &[u8],
++    windows: &[McuRect],
++    options: DctExtractOptions,
++) -> Result<Vec<JpegDctImage>, JpegError> {
++    validate_extract_options(options)?;
++    if windows.is_empty() {
++        let decoder = Decoder::new(bytes)?;
++        validate_extract_color_space(decoder.info().color_space)?;
++        validate_extract_frame(&decoder)?;
++        return Ok(Vec::new());
++    }
++    let estimate = estimate_dct_windows(bytes, windows, options)?;
++    let decoder = Decoder::new(bytes)?;
++    validate_extract_color_space(decoder.info().color_space)?;
++    validate_extract_frame(&decoder)?;
++    let workspace_cap = decoder.decode_workspace_cap()?;
++    if estimate.peak_bytes > workspace_cap {
++        return Err(JpegError::MemoryCapExceeded {
++            requested: estimate.peak_bytes,
++            cap: workspace_cap,
++        });
++    }
++    let (mcu_cols, mcu_rows, mcu_width, mcu_height) = decoder_mcu_grid(&decoder);
++    for &window in windows {
++        validate_mcu_window(window, mcu_cols, mcu_rows)?;
++    }
++    if decoder.info().sof_kind == SofKind::Baseline8
++        && decoder.progressive_plan.is_none()
++        && options == DctExtractOptions::quantized_only()
++    {
++        let out = extract_sequential_quantized_windows(
++            &decoder,
++            windows,
++            (mcu_width, mcu_height),
++            workspace_cap,
++        )?;
++        decoder.validate_completed_warnings(&[])?;
++        return Ok(out);
++    }
++
++    drop(decoder);
++    let full = extract_dct_blocks(bytes, options)?;
++    let mut live_bytes = full.retained_bytes()?;
++    let mut out = Vec::new();
++    try_reserve_for_len_with_live_budget(&mut out, windows.len(), &mut live_bytes, workspace_cap)?;
++    for &window in windows {
++        out.push(window_from_full(
++            &full,
++            window,
++            (mcu_width, mcu_height),
++            &mut live_bytes,
++            workspace_cap,
++        )?);
++    }
++    Ok(out)
++}
++
++/// Crop one standalone JPEG without changing its quantized coefficients.
++///
++/// The encoded crop begins at the MCU corner at or above-left of `rect` and
++/// ends at the requested far edges, clamped to the source. `region` locates
++/// the requested pixels in that MCU-aligned output. Baseline and progressive
++/// Huffman inputs with one or three 8-bit components are emitted as baseline
++/// sequential JPEGs with their JFIF/Adobe signalling, component identifiers,
++/// sampling, and per-component quantization tables preserved.
++pub fn lossless_crop(
++    bytes: &[u8],
++    rect: crate::Rect,
++    options: LosslessCropOptions,
++) -> Result<LosslessCrop, LosslessCropError> {
++    let decoder = Decoder::new(bytes)?;
++    validate_extract_color_space(decoder.info().color_space)?;
++    let source = decoder.info().dimensions;
++    if rect.w == 0 || rect.h == 0 || rect.x >= source.0 || rect.y >= source.1 {
++        return Err(JpegError::RectOutOfBounds {
++            rect,
++            width: source.0,
++            height: source.1,
++        }
++        .into());
++    }
++    let x_end = rect
++        .x
++        .checked_add(rect.w)
++        .ok_or(JpegError::RectOutOfBounds {
++            rect,
++            width: source.0,
++            height: source.1,
++        })?
++        .min(source.0);
++    let y_end = rect
++        .y
++        .checked_add(rect.h)
++        .ok_or(JpegError::RectOutOfBounds {
++            rect,
++            width: source.0,
++            height: source.1,
++        })?
++        .min(source.1);
++    let (_, _, mcu_width, mcu_height) = decoder_mcu_grid(&decoder);
++    let x0 = rect.x - rect.x % mcu_width;
++    let y0 = rect.y - rect.y % mcu_height;
++    let window = McuRect {
++        x: x0 / mcu_width,
++        y: y0 / mcu_height,
++        width: (x_end - x0).div_ceil(mcu_width),
++        height: (y_end - y0).div_ceil(mcu_height),
++    };
++    drop(decoder);
++
++    let estimate = estimate_dct_windows(bytes, &[window], DctExtractOptions::quantized_only())?;
++    if estimate.peak_bytes > options.max_working_bytes {
++        return Err(JpegError::MemoryCapExceeded {
++            requested: estimate.peak_bytes,
++            cap: options.max_working_bytes,
++        }
++        .into());
++    }
++    let mut extracted = extract_dct_windows(bytes, &[window], DctExtractOptions::quantized_only())?
++        .pop()
++        .ok_or(JpegError::InternalInvariant {
++            reason: "lossless crop extraction returned no window",
++        })?;
++    // A complete progressive coefficient grid can be written as a baseline
++    // sequential scan without changing any quantized coefficient.
++    extracted.coding_mode = JpegDctCodingMode::BaselineSequential;
++    extracted.scan_count = 1;
++    extracted.width = x_end - x0;
++    extracted.height = y_end - y0;
++    let max_h = extracted
++        .components
++        .iter()
++        .map(|component| component.h_samp)
++        .max()
++        .unwrap_or(1);
++    let max_v = extracted
++        .components
++        .iter()
++        .map(|component| component.v_samp)
++        .max()
++        .unwrap_or(1);
++    for component in &mut extracted.components {
++        component.width = extracted
++            .width
++            .saturating_mul(u32::from(component.h_samp))
++            .div_ceil(u32::from(max_h));
++        component.height = extracted
++            .height
++            .saturating_mul(u32::from(component.v_samp))
++            .div_ceil(u32::from(max_v));
++    }
++    let sof = source_sof_info(bytes)?;
++    let app_segments = source_color_app_segments(bytes)?;
++    let data = encode_baseline_dct_image_with_options(
++        &extracted,
++        BaselineDctEncodeOptions {
++            app_segments: &app_segments,
++            component_ids: &sof.component_ids,
++        },
++    )?;
++    Ok(LosslessCrop {
++        data,
++        width: extracted.width,
++        height: extracted.height,
++        region: crate::Rect {
++            x: rect.x - x0,
++            y: rect.y - y0,
++            w: x_end - rect.x,
++            h: y_end - rect.y,
++        },
++    })
++}
++
++fn source_sof_info(bytes: &[u8]) -> Result<crate::JpegSofInfo, JpegError> {
++    for segment in crate::iter_segments(bytes) {
++        let segment = segment?;
++        if crate::is_sof_marker(segment.marker) {
++            return crate::parse_sof_info(segment.marker, segment.payload);
++        }
++    }
++    Err(JpegError::MissingMarker {
++        marker: MarkerKind::Sof,
++    })
++}
++
++fn source_color_app_segments(bytes: &[u8]) -> Result<Vec<u8>, JpegError> {
++    let mut out = Vec::new();
++    for segment in crate::iter_segments(bytes) {
++        let segment = segment?;
++        if segment.marker == 0xda {
++            break;
++        }
++        let is_color = (segment.marker == 0xe0 && segment.payload.starts_with(b"JFIF\0"))
++            || (segment.marker == 0xee && segment.payload.starts_with(b"Adobe"));
++        if !is_color {
++            continue;
++        }
++        let end = segment
++            .payload_offset
++            .checked_add(segment.payload.len())
++            .ok_or(JpegError::HostAllocationFailed { bytes: usize::MAX })?;
++        let marker = bytes
++            .get(segment.marker_offset..end)
++            .ok_or(JpegError::InternalInvariant {
++                reason: "JPEG APP marker range lies outside the source",
++            })?;
++        let required = out
++            .len()
++            .checked_add(marker.len())
++            .ok_or(JpegError::MemoryCapExceeded {
++                requested: usize::MAX,
++                cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
++            })?;
++        if required > j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES {
++            return Err(JpegError::MemoryCapExceeded {
++                requested: required,
++                cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
++            });
++        }
++        out.try_reserve(marker.len())
++            .map_err(|_| JpegError::HostAllocationFailed { bytes: required })?;
++        out.extend_from_slice(marker);
++    }
++    Ok(out)
++}
++
++fn validate_extract_color_space(color_space: ColorSpace) -> Result<(), JpegError> {
++    match color_space {
++        ColorSpace::Grayscale | ColorSpace::YCbCr | ColorSpace::Rgb => Ok(()),
++        color_space => Err(JpegError::UnsupportedColorSpace { color_space }),
++    }
++}
++
++fn validate_extract_frame(decoder: &Decoder<'_>) -> Result<(), JpegError> {
++    match decoder.info().sof_kind {
++        SofKind::Baseline8 | SofKind::Progressive8 => Ok(()),
++        sof => Err(JpegError::NotImplemented { sof }),
++    }
++}
++
++fn validate_extract_options(options: DctExtractOptions) -> Result<(), JpegError> {
++    if options.retain_quantized_blocks || options.retain_dequantized_blocks {
++        Ok(())
++    } else {
++        Err(JpegError::InvalidDctExtractOptions)
++    }
++}
++
++fn decoder_mcu_grid(decoder: &Decoder<'_>) -> (u32, u32, u32, u32) {
++    let sampling = decoder.info().sampling;
++    let mcu_width = u32::from(sampling.max_h) * 8;
++    let mcu_height = u32::from(sampling.max_v) * 8;
++    let (width, height) = decoder.info().dimensions;
++    (
++        width.div_ceil(mcu_width),
++        height.div_ceil(mcu_height),
++        mcu_width,
++        mcu_height,
++    )
++}
++
++fn validate_mcu_window(window: McuRect, cols: u32, rows: u32) -> Result<(), JpegError> {
++    if window.width == 0
++        || window.height == 0
++        || window
++            .x
++            .checked_add(window.width)
++            .is_none_or(|end| end > cols)
++        || window
++            .y
++            .checked_add(window.height)
++            .is_none_or(|end| end > rows)
++    {
++        return Err(JpegError::DctWindowOutOfBounds {
++            x: window.x,
++            y: window.y,
++            width: window.width,
++            height: window.height,
++            mcu_cols: cols,
++            mcu_rows: rows,
++        });
++    }
++    Ok(())
++}
++
++fn extract_sequential_quantized_windows(
++    decoder: &Decoder<'_>,
++    windows: &[McuRect],
++    (mcu_width, mcu_height): (u32, u32),
++    workspace_cap: usize,
++) -> Result<Vec<JpegDctImage>, JpegError> {
++    let total_blocks = windows.iter().try_fold(0usize, |total, &window| {
++        total
++            .checked_add(coefficient_blocks_for_window(decoder, window)?)
++            .ok_or(JpegError::MemoryCapExceeded {
++                requested: usize::MAX,
++                cap: workspace_cap,
++            })
++    })?;
++    let bytes = checked_allocation_bytes::<[i16; 64]>(total_blocks)?;
++    if bytes > workspace_cap {
++        return Err(JpegError::MemoryCapExceeded {
++            requested: bytes,
++            cap: workspace_cap,
++        });
++    }
++    let mut all_blocks = Vec::new();
++    let mut live_bytes = 0usize;
++    try_reserve_for_len_with_live_budget(
++        &mut all_blocks,
++        windows.len(),
++        &mut live_bytes,
++        workspace_cap,
++    )?;
++    for &window in windows {
++        let mut blocks = Vec::new();
++        try_reserve_for_len_with_live_budget(
++            &mut blocks,
++            decoder.info().sampling.len(),
++            &mut live_bytes,
++            workspace_cap,
++        )?;
++        for component_index in 0..decoder.info().sampling.len() {
++            let plan_component = decoder
++                .plan
++                .components
++                .iter()
++                .find(|component| component.output_index == component_index)
++                .ok_or(JpegError::InternalInvariant {
++                    reason: "DCT extraction plan does not cover every component",
++                })?;
++            let count = (window.width as usize)
++                * (window.height as usize)
++                * usize::from(plan_component.h)
++                * usize::from(plan_component.v);
++            let mut plane = Vec::new();
++            try_reserve_for_len_with_live_budget(
++                &mut plane,
++                count,
++                &mut live_bytes,
++                workspace_cap,
++            )?;
++            plane.resize(count, [0; 64]);
++            blocks.push(plane);
++        }
++        all_blocks.push(blocks);
++    }
++    let mut mcu_windows = Vec::new();
++    try_reserve_for_len_with_live_budget(
++        &mut mcu_windows,
++        windows.len(),
++        &mut live_bytes,
++        workspace_cap,
++    )?;
++    mcu_windows.extend(windows.iter().map(|window| McuWindow {
++        col: window.x,
++        cols: window.width,
++        row: window.y,
++        rows: window.height,
++    }));
++    decode_scan_quantized_dct_windows_into(
++        &decoder.plan,
++        &decoder.bytes[decoder.plan.scan_offset..],
++        &mcu_windows,
++        &mut all_blocks,
++    )?;
++
++    let mut out = Vec::new();
++    try_reserve_for_len_with_live_budget(&mut out, windows.len(), &mut live_bytes, workspace_cap)?;
++    for (window, blocks) in windows.iter().copied().zip(all_blocks) {
++        out.push(sequential_quantized_window_image(
++            decoder,
++            window,
++            (mcu_width, mcu_height),
++            blocks,
++            &mut live_bytes,
++            workspace_cap,
++        )?);
++    }
++    Ok(out)
++}
++
++fn sequential_quantized_window_image(
++    decoder: &Decoder<'_>,
++    window: McuRect,
++    (mcu_width, mcu_height): (u32, u32),
++    blocks: Vec<Vec<[i16; 64]>>,
++    live_bytes: &mut usize,
++    workspace_cap: usize,
++) -> Result<JpegDctImage, JpegError> {
++    let source_dimensions = decoder.info().dimensions;
++    let width = source_dimensions
++        .0
++        .saturating_sub(window.x * mcu_width)
++        .min(window.width * mcu_width);
++    let height = source_dimensions
++        .1
++        .saturating_sub(window.y * mcu_height)
++        .min(window.height * mcu_height);
++    let max_h = u32::from(decoder.info().sampling.max_h);
++    let max_v = u32::from(decoder.info().sampling.max_v);
++    let mut components = Vec::new();
++    try_reserve_for_len_with_live_budget(
++        &mut components,
++        decoder.info().sampling.len(),
++        live_bytes,
++        workspace_cap,
++    )?;
++    for (component_index, quantized_blocks) in blocks.into_iter().enumerate() {
++        let plan_component = decoder
++            .plan
++            .components
++            .iter()
++            .find(|component| component.output_index == component_index)
++            .ok_or(JpegError::InternalInvariant {
++                reason: "DCT extraction plan does not cover every component",
++            })?;
++        let block_cols = window.width * u32::from(plan_component.h);
++        let block_rows = window.height * u32::from(plan_component.v);
++        components.push(JpegDctComponent {
++            component_index,
++            width: width
++                .saturating_mul(u32::from(plan_component.h))
++                .div_ceil(max_h),
++            height: height
++                .saturating_mul(u32::from(plan_component.v))
++                .div_ceil(max_v),
++            h_samp: plan_component.h,
++            v_samp: plan_component.v,
++            block_cols,
++            block_rows,
++            quant_table: plan_component.quant,
++            quantized_blocks,
++            dequantized_blocks: Vec::new(),
++        });
++    }
++    Ok(JpegDctImage {
++        width,
++        height,
++        color_space: decoder.info().color_space,
++        coding_mode: JpegDctCodingMode::BaselineSequential,
++        scan_count: 1,
++        components,
++        restart_index: None,
++    })
++}
++
++fn window_from_full(
++    full: &JpegDctImage,
++    window: McuRect,
++    (mcu_width, mcu_height): (u32, u32),
++    live_bytes: &mut usize,
++    workspace_cap: usize,
++) -> Result<JpegDctImage, JpegError> {
++    let width = full
++        .width
++        .saturating_sub(window.x * mcu_width)
++        .min(window.width * mcu_width);
++    let height = full
++        .height
++        .saturating_sub(window.y * mcu_height)
++        .min(window.height * mcu_height);
++    let max_h = mcu_width / 8;
++    let max_v = mcu_height / 8;
++    let mut components = Vec::new();
++    try_reserve_for_len_with_live_budget(
++        &mut components,
++        full.components.len(),
++        live_bytes,
++        workspace_cap,
++    )?;
++    for component in &full.components {
++        let block_x = window.x * u32::from(component.h_samp);
++        let block_y = window.y * u32::from(component.v_samp);
++        let block_cols = window.width * u32::from(component.h_samp);
++        let block_rows = window.height * u32::from(component.v_samp);
++        let mut copy_plane = |source: &[[i16; 64]]| -> Result<Vec<[i16; 64]>, JpegError> {
++            if source.is_empty() {
++                return Ok(Vec::new());
++            }
++            let mut copied = Vec::new();
++            let count = block_cols as usize * block_rows as usize;
++            try_reserve_for_len_with_live_budget(&mut copied, count, live_bytes, workspace_cap)?;
++            for row in block_y..block_y + block_rows {
++                let start = (row * component.block_cols + block_x) as usize;
++                copied.extend_from_slice(&source[start..start + block_cols as usize]);
++            }
++            Ok(copied)
++        };
++        components.push(JpegDctComponent {
++            component_index: component.component_index,
++            width: width
++                .saturating_mul(u32::from(component.h_samp))
++                .div_ceil(max_h),
++            height: height
++                .saturating_mul(u32::from(component.v_samp))
++                .div_ceil(max_v),
++            h_samp: component.h_samp,
++            v_samp: component.v_samp,
++            block_cols,
++            block_rows,
++            quant_table: component.quant_table,
++            quantized_blocks: copy_plane(&component.quantized_blocks)?,
++            dequantized_blocks: copy_plane(&component.dequantized_blocks)?,
++        });
++    }
++    Ok(JpegDctImage {
++        width,
++        height,
++        color_space: full.color_space,
++        coding_mode: full.coding_mode,
++        scan_count: full.scan_count,
++        components,
++        restart_index: None,
++    })
++}
++
+ /// Re-emit a baseline JPEG from quantized DCT blocks.
+ ///
+ /// This path writes a fresh JPEG header and entropy stream, but it does not
+@@ -267,6 +1057,65 @@ pub fn encode_baseline_dct_image(image: &JpegDctImage) -> Result<Vec<u8>, JpegEn
+     Ok(encoded.data)
+ }
+ 
++/// Re-emit a baseline JPEG while preserving source component signalling.
++///
++/// Each component keeps its own quantization table; equal tables share one
++/// DQT slot. `options.app_segments` must contain complete `APPn` segments only.
++pub fn encode_baseline_dct_image_with_options(
++    image: &JpegDctImage,
++    options: BaselineDctEncodeOptions<'_>,
++) -> Result<Vec<u8>, JpegEncodeError> {
++    let validated = validate_baseline_dct_image_with_independent_quant_tables(image)
++        .map_err(|reason| JpegEncodeError::InvalidDctImage { reason })?;
++    let entropy_capacity =
++        jpeg_baseline_entropy_capacity_bytes(image.width, image.height, validated.sampling, None)?;
++    validate_dct_reemission_live_bytes(entropy_capacity)?;
++    let huffman_tables = baseline_encode_tables(JpegEncodeOptions {
++        quality: 90,
++        subsampling: if validated.sampling.components == 1 {
++            JpegSubsampling::Gray
++        } else {
++            JpegSubsampling::Ybr420
++        },
++        restart_interval: None,
++        backend: JpegBackend::Cpu,
++    })?;
++    let entropy = encode_dct_entropy(
++        image,
++        validated.sampling,
++        [&huffman_tables.huff_dc_luma, &huffman_tables.huff_dc_chroma],
++        [&huffman_tables.huff_ac_luma, &huffman_tables.huff_ac_chroma],
++        entropy_capacity,
++    )?;
++    let component_count = usize::from(validated.sampling.components);
++    let metadata_bytes = options
++        .app_segments
++        .len()
++        .checked_add(component_count.saturating_mul(65))
++        .ok_or(JpegEncodeError::HostAllocationFailed { bytes: usize::MAX })?;
++    let frame_capacity = checked_jpeg_baseline_frame_capacity(
++        entropy
++            .len()
++            .checked_add(metadata_bytes)
++            .ok_or(JpegEncodeError::HostAllocationFailed { bytes: usize::MAX })?,
++    )?;
++    checked_encode_host_live_bytes([entropy.capacity(), frame_capacity])?;
++    let encoded = assemble_jpeg_baseline_frame_with_metadata(
++        &entropy,
++        image.width,
++        image.height,
++        JpegBaselineFrameMetadata {
++            sampling: validated.sampling,
++            component_ids: options.component_ids,
++            component_quant: &validated.component_quant[..component_count],
++            app_segments: options.app_segments,
++        },
++        JpegBackend::Cpu,
++    )?;
++    checked_encode_host_live_bytes([entropy.capacity(), encoded.data.capacity()])?;
++    Ok(encoded.data)
++}
++
+ fn validate_dct_reemission_live_bytes(entropy_capacity: usize) -> Result<usize, JpegEncodeError> {
+     let frame_capacity = checked_jpeg_baseline_frame_capacity(entropy_capacity)?;
+     checked_encode_host_live_bytes([entropy_capacity, frame_capacity])
+@@ -454,6 +1303,7 @@ fn build_progressive_components(
+     decoder: &Decoder<'_>,
+     mut decoded_blocks: ProgressiveDctBlocks,
+     retain_quantized_blocks: bool,
++    retain_dequantized_blocks: bool,
+     workspace_cap: usize,
+ ) -> Result<Vec<JpegDctComponent>, JpegError> {
+     let plan = decoder
+@@ -488,18 +1338,21 @@ fn build_progressive_components(
+             )?;
+         }
+         let mut dequantized_blocks = Vec::new();
+-        try_reserve_for_len_with_live_budget(
+-            &mut dequantized_blocks,
+-            quantized_i32.len(),
+-            &mut live_bytes,
+-            workspace_cap,
+-        )?;
++        if retain_dequantized_blocks {
++            try_reserve_for_len_with_live_budget(
++                &mut dequantized_blocks,
++                quantized_i32.len(),
++                &mut live_bytes,
++                workspace_cap,
++            )?;
++        }
+         for block in &quantized_i32 {
+             if retain_quantized_blocks {
+                 quantized_blocks.push(quantized_i16_block(block));
+             }
+-            let dequantized = dequantize_progressive_block(block, &component.quant);
+-            dequantized_blocks.push(dequantized);
++            if retain_dequantized_blocks {
++                dequantized_blocks.push(dequantize_progressive_block(block, &component.quant));
++            }
+         }
+         let released_bytes = checked_allocation_bytes::<[i32; 64]>(quantized_i32.capacity())?;
+         drop(quantized_i32);
+@@ -530,12 +1383,14 @@ fn build_progressive_components(
+ fn validate_progressive_extraction_workspace(
+     components: &[PreparedProgressiveComponentPlan],
+     retain_quantized_blocks: bool,
++    retain_dequantized_blocks: bool,
+     workspace_cap: usize,
+ ) -> Result<(), JpegError> {
+     let decoded_metadata = checked_allocation_bytes::<Vec<[i32; 64]>>(components.len())?;
+     let output_metadata = checked_allocation_bytes::<JpegDctComponent>(components.len())?;
+     let mut total = checked_add_allocation_bytes(decoded_metadata, output_metadata)?;
+-    let output_plane_count = usize::from(retain_quantized_blocks) + 1;
++    let output_plane_count =
++        usize::from(retain_quantized_blocks) + usize::from(retain_dequantized_blocks);
+     for component in components {
+         let blocks = checked_allocation_len::<[i32; 64]>(
+             component.block_cols as usize,
+@@ -601,9 +1456,9 @@ mod tests {
+             sample_height: 8,
+         }];
+ 
+-        assert!(validate_progressive_extraction_workspace(&components, false, cap).is_ok());
++        assert!(validate_progressive_extraction_workspace(&components, false, true, cap).is_ok());
+         assert!(matches!(
+-            validate_progressive_extraction_workspace(&components, true, cap),
++            validate_progressive_extraction_workspace(&components, true, true, cap),
+             Err(JpegError::MemoryCapExceeded { requested, cap: limit })
+                 if requested > limit && limit == cap
+         ));
+diff --git a/crates/j2k-jpeg/src/transcode/validation.rs b/crates/j2k-jpeg/src/transcode/validation.rs
+index 3d7c12c02be92642b36c453f92aeeb512b184856..bcad635e055d3e1d09fe41da730c76d37a9fc7da 100644
+--- a/crates/j2k-jpeg/src/transcode/validation.rs
++++ b/crates/j2k-jpeg/src/transcode/validation.rs
+@@ -18,10 +18,24 @@ pub(super) struct ValidatedBaselineDctImage {
+     pub(super) sampling: JpegBaselineSampling,
+     pub(super) luma_quant: [u8; 64],
+     pub(super) chroma_quant: Option<[u8; 64]>,
++    pub(super) component_quant: [[u8; 64]; 3],
+ }
+ 
+ pub(super) fn validate_baseline_dct_image(
+     image: &JpegDctImage,
++) -> Result<ValidatedBaselineDctImage, JpegDctImageError> {
++    validate_baseline_dct_image_impl(image, true)
++}
++
++pub(super) fn validate_baseline_dct_image_with_independent_quant_tables(
++    image: &JpegDctImage,
++) -> Result<ValidatedBaselineDctImage, JpegDctImageError> {
++    validate_baseline_dct_image_impl(image, false)
++}
++
++fn validate_baseline_dct_image_impl(
++    image: &JpegDctImage,
++    require_shared_chroma: bool,
+ ) -> Result<ValidatedBaselineDctImage, JpegDctImageError> {
+     if image.coding_mode != JpegDctCodingMode::BaselineSequential {
+         return Err(JpegDctImageError::UnsupportedCodingMode {
+@@ -40,7 +54,9 @@ pub(super) fn validate_baseline_dct_image(
+ 
+     let luma_quant = quant_table_to_natural_u8(0, &image.components[0].quant_table)?;
+     let chroma_quant = if component_count == 3 {
+-        if image.components[1].quant_table != image.components[2].quant_table {
++        if require_shared_chroma
++            && image.components[1].quant_table != image.components[2].quant_table
++        {
+             return Err(JpegDctImageError::ChromaQuantizationTableMismatch);
+         }
+         Some(quant_table_to_natural_u8(
+@@ -52,10 +68,15 @@ pub(super) fn validate_baseline_dct_image(
+     };
+     validate_baseline_coefficients(image, sampling)?;
+ 
++    let mut component_quant = [[0; 64]; 3];
++    for (index, component) in image.components.iter().enumerate() {
++        component_quant[index] = quant_table_to_natural_u8(index, &component.quant_table)?;
++    }
+     Ok(ValidatedBaselineDctImage {
+         sampling,
+         luma_quant,
+         chroma_quant,
++        component_quant,
+     })
+ }
+ 
+diff --git a/crates/j2k-jpeg/tests/dct_reemit_contract.rs b/crates/j2k-jpeg/tests/dct_reemit_contract.rs
+index ff4703b81e4adabcdf22c3fff0648533a521ce25..c855fac2918a872c4cb0a76d1e79a415c4ac6f68 100644
+--- a/crates/j2k-jpeg/tests/dct_reemit_contract.rs
++++ b/crates/j2k-jpeg/tests/dct_reemit_contract.rs
+@@ -1,8 +1,9 @@
+ // SPDX-License-Identifier: MIT OR Apache-2.0
+ 
+ use j2k_jpeg::transcode::{
+-    encode_baseline_dct_image, extract_dct_blocks, DctExtractOptions, JpegDctCodingMode,
+-    JpegDctImage, JpegDctImageError,
++    encode_baseline_dct_image, encode_baseline_dct_image_with_options, extract_dct_blocks,
++    BaselineDctEncodeOptions, DctExtractOptions, JpegDctCodingMode, JpegDctImage,
++    JpegDctImageError,
+ };
+ use j2k_jpeg::{ColorSpace, JpegEncodeError, RestartIndex};
+ use j2k_test_support as fixtures;
+@@ -205,6 +206,58 @@ fn dct_reemission_rejects_nonbaseline_and_unshared_quantization_tables() {
+     ));
+ }
+ 
++#[test]
++fn options_reemission_preserves_component_ids_app_markers_and_distinct_quant_tables() {
++    let mut image = color_image();
++    image.components[2].quant_table[0] = image.components[2].quant_table[0].saturating_add(1);
++    let app14 = [
++        0xff, 0xee, 0, 14, b'A', b'd', b'o', b'b', b'e', 0, 100, 0, 0, 0, 0, 0,
++    ];
++    let encoded = encode_baseline_dct_image_with_options(
++        &image,
++        BaselineDctEncodeOptions {
++            app_segments: &app14,
++            component_ids: b"RGB",
++        },
++    )
++    .expect("re-emit source signalling");
++    let sof = j2k_jpeg::iter_segments(&encoded)
++        .map(Result::unwrap)
++        .find(|segment| j2k_jpeg::is_sof_marker(segment.marker))
++        .map(|segment| j2k_jpeg::parse_sof_info(segment.marker, segment.payload).unwrap())
++        .expect("SOF marker");
++    assert_eq!(sof.component_ids, b"RGB");
++    assert!(encoded.windows(app14.len()).any(|window| window == app14));
++    let decoded = extract_dct_blocks(&encoded, DctExtractOptions::quantized_only())
++        .expect("extract re-emitted coefficients");
++    for (actual, expected) in decoded.components.iter().zip(&image.components) {
++        assert_eq!(actual.quant_table, expected.quant_table);
++        assert_eq!(actual.quantized_blocks, expected.quantized_blocks);
++    }
++}
++
++#[test]
++fn options_reemission_rejects_invalid_source_signalling_as_caller_input() {
++    let image = color_image();
++    for options in [
++        BaselineDctEncodeOptions {
++            app_segments: &[],
++            component_ids: &[1, 1, 3],
++        },
++        BaselineDctEncodeOptions {
++            app_segments: &[0xff, 0xdb, 0, 2],
++            component_ids: &[1, 2, 3],
++        },
++    ] {
++        assert!(matches!(
++            encode_baseline_dct_image_with_options(&image, options),
++            Err(JpegEncodeError::InvalidDctImage {
++                reason: JpegDctImageError::InvalidMetadata { .. },
++            })
++        ));
++    }
++}
++
+ #[test]
+ fn dct_reemission_ignores_metadata_that_does_not_affect_baseline_output() {
+     let source = color_image();
+diff --git a/crates/j2k-jpeg/tests/transcode_blocks.rs b/crates/j2k-jpeg/tests/transcode_blocks.rs
+index 9c7b23701c809c3b0f4770d199442499da6b4050..75bbada734601dc7cdd8ccb1dec49678d51c0482 100644
+--- a/crates/j2k-jpeg/tests/transcode_blocks.rs
++++ b/crates/j2k-jpeg/tests/transcode_blocks.rs
+@@ -3,9 +3,13 @@
+ use j2k_test_support as fixtures;
+ 
+ use j2k_jpeg::transcode::{
+-    extract_dct_blocks, idct_islow_block, DctExtractOptions, JpegDctCodingMode,
++    estimate_dct_windows, extract_dct_blocks, extract_dct_windows, idct_islow_block, lossless_crop,
++    DctExtractOptions, JpegDctCodingMode, LosslessCropOptions, McuRect,
++};
++use j2k_jpeg::{
++    encode_jpeg_baseline, rewrite_sof_dimensions, JpegEncodeOptions, JpegError, JpegSamples,
++    JpegSubsampling, Rect,
+ };
+-use j2k_jpeg::{rewrite_sof_dimensions, JpegError};
+ 
+ #[test]
+ fn huge_sequential_dct_planes_are_rejected_before_entropy_for_both_extract_modes() {
+@@ -25,6 +29,48 @@ fn huge_sequential_dct_planes_are_rejected_before_entropy_for_both_extract_modes
+     }
+ }
+ 
++#[test]
++fn estimate_rejects_the_same_unsupported_dct_frame_as_extraction() {
++    let bytes = fixtures::extended_12bit_grayscale_8x8_jpeg();
++    let error = DctExtractOptions::quantized_only()
++        .estimate(&bytes)
++        .expect_err("12-bit extended extraction remains unsupported");
++    assert!(matches!(error, JpegError::NotImplemented { .. }));
++}
++
++#[test]
++fn extraction_rejects_out_of_grid_windows_as_input_errors() {
++    let bytes = fixtures::grayscale_8x8_jpeg();
++    assert!(matches!(
++        extract_dct_windows(
++            &bytes,
++            &[McuRect {
++                x: 1,
++                y: 0,
++                width: 1,
++                height: 1,
++            }],
++            DctExtractOptions::quantized_only(),
++        ),
++        Err(JpegError::DctWindowOutOfBounds { .. })
++    ));
++}
++
++#[test]
++fn repeated_windows_are_rejected_by_the_aggregate_working_set_before_entropy() {
++    let bytes = rewrite_sof_dimensions(&fixtures::minimal_baseline_420_jpeg(), (4096, 4096))
++        .expect("rewrite large 4:2:0 dimensions");
++    let windows = [McuRect {
++        x: 0,
++        y: 0,
++        width: 256,
++        height: 256,
++    }; 11];
++    let error = extract_dct_windows(&bytes, &windows, DctExtractOptions::quantized_only())
++        .expect_err("aggregate retained windows must exceed the shared cap");
++    assert!(matches!(error, JpegError::MemoryCapExceeded { requested, cap } if requested > cap));
++}
++
+ #[test]
+ fn extracts_grayscale_dct_blocks() {
+     let image = extract_dct_blocks(
+@@ -106,6 +152,261 @@ fn dequantized_only_extraction_omits_quantized_blocks() {
+     }
+ }
+ 
++#[test]
++fn quantized_only_extraction_omits_dequantized_blocks() {
++    for bytes in [
++        fixtures::baseline_422_16x8_jpeg(),
++        fixtures::progressive_8x8_jpeg(),
++    ] {
++        let expected = extract_dct_blocks(&bytes, DctExtractOptions::default())
++            .expect("extract default DCT blocks");
++        let actual = extract_dct_blocks(&bytes, DctExtractOptions::quantized_only())
++            .expect("extract quantized-only DCT blocks");
++        for (actual, expected) in actual.components.iter().zip(&expected.components) {
++            assert_eq!(actual.quantized_blocks, expected.quantized_blocks);
++            assert!(actual.dequantized_blocks.is_empty());
++        }
++    }
++}
++
++#[test]
++fn baseline_windows_match_full_quantized_subgrids_and_estimate_their_storage() {
++    let bytes = fixtures::baseline_420_restart_32x16_jpeg();
++    let windows = [
++        McuRect {
++            x: 0,
++            y: 0,
++            width: 1,
++            height: 1,
++        },
++        McuRect {
++            x: 1,
++            y: 0,
++            width: 1,
++            height: 1,
++        },
++    ];
++    let full = extract_dct_blocks(&bytes, DctExtractOptions::quantized_only())
++        .expect("extract full coefficient grid");
++    let extracted = extract_dct_windows(&bytes, &windows, DctExtractOptions::quantized_only())
++        .expect("extract coefficient windows");
++    assert_eq!(extracted.len(), windows.len());
++    for (window_index, image) in extracted.iter().enumerate() {
++        assert_eq!((image.width, image.height), (16, 16));
++        for (component, source) in image.components.iter().zip(&full.components) {
++            let h = u32::from(component.h_samp);
++            let expected = (0..component.block_rows)
++                .flat_map(|row| {
++                    let start = (row * source.block_cols + windows[window_index].x * h) as usize;
++                    source.quantized_blocks[start..start + component.block_cols as usize].iter()
++                })
++                .copied()
++                .collect::<Vec<_>>();
++            assert_eq!(component.quantized_blocks, expected);
++            assert!(component.dequantized_blocks.is_empty());
++        }
++    }
++    let estimate = estimate_dct_windows(&bytes, &windows[..1], DctExtractOptions::quantized_only())
++        .expect("estimate window storage");
++    assert!(estimate.retained_bytes >= 6 * 64 * 2);
++    assert!(estimate.peak_bytes >= estimate.retained_bytes);
++}
++
++#[test]
++fn multiscan_window_at_the_bottom_right_matches_the_full_grid() {
++    let case = fixtures::scaled_matrix_cases()
++        .into_iter()
++        .find(|case| case.coding == "multiscan" && case.layout == "444" && case.precision == 8)
++        .expect("8-bit 4:4:4 multi-scan fixture");
++    let full = extract_dct_blocks(case.jpeg, DctExtractOptions::quantized_only())
++        .expect("extract full multi-scan coefficients");
++    let max_h = full
++        .components
++        .iter()
++        .map(|component| component.h_samp)
++        .max()
++        .unwrap();
++    let max_v = full
++        .components
++        .iter()
++        .map(|component| component.v_samp)
++        .max()
++        .unwrap();
++    let mcu_cols = full.width.div_ceil(u32::from(max_h) * 8);
++    let mcu_rows = full.height.div_ceil(u32::from(max_v) * 8);
++    let window = McuRect {
++        x: mcu_cols - 1,
++        y: mcu_rows - 1,
++        width: 1,
++        height: 1,
++    };
++    let actual = extract_dct_windows(case.jpeg, &[window], DctExtractOptions::quantized_only())
++        .expect("extract multi-scan edge window")
++        .pop()
++        .unwrap();
++    for (actual, source) in actual.components.iter().zip(&full.components) {
++        let block_x = window.x * u32::from(source.h_samp);
++        let block_y = window.y * u32::from(source.v_samp);
++        let expected = (0..actual.block_rows)
++            .flat_map(|row| {
++                let start = ((block_y + row) * source.block_cols + block_x) as usize;
++                source.quantized_blocks[start..start + actual.block_cols as usize].iter()
++            })
++            .copied()
++            .collect::<Vec<_>>();
++        assert_eq!(actual.quantized_blocks, expected);
++    }
++}
++
++#[test]
++fn progressive_odd_bottom_right_window_matches_native_component_grids() {
++    let case = fixtures::scaled_matrix_cases()
++        .into_iter()
++        .find(|case| case.coding == "progressive" && case.layout == "420" && case.precision == 8)
++        .expect("8-bit 4:2:0 progressive fixture");
++    let full = extract_dct_blocks(case.jpeg, DctExtractOptions::quantized_only())
++        .expect("extract full progressive coefficients");
++    let max_h = full
++        .components
++        .iter()
++        .map(|component| component.h_samp)
++        .max()
++        .unwrap();
++    let max_v = full
++        .components
++        .iter()
++        .map(|component| component.v_samp)
++        .max()
++        .unwrap();
++    let mcu_cols = full.width.div_ceil(u32::from(max_h) * 8);
++    let mcu_rows = full.height.div_ceil(u32::from(max_v) * 8);
++    let window = McuRect {
++        x: mcu_cols - 1,
++        y: mcu_rows - 1,
++        width: 1,
++        height: 1,
++    };
++    let actual = extract_dct_windows(case.jpeg, &[window], DctExtractOptions::quantized_only())
++        .expect("extract progressive edge window")
++        .pop()
++        .unwrap();
++    for (actual, source) in actual.components.iter().zip(&full.components) {
++        let block_x = window.x * u32::from(source.h_samp);
++        let block_y = window.y * u32::from(source.v_samp);
++        let expected = (0..actual.block_rows)
++            .flat_map(|row| {
++                let start = ((block_y + row) * source.block_cols + block_x) as usize;
++                source.quantized_blocks[start..start + actual.block_cols as usize].iter()
++            })
++            .copied()
++            .collect::<Vec<_>>();
++        assert_eq!(actual.quantized_blocks, expected);
++    }
++}
++
++#[test]
++fn lossless_crop_preserves_progressive_coefficients_and_source_signalling() {
++    let bytes = fixtures::progressive_8x8_jpeg();
++    let estimate = estimate_dct_windows(
++        &bytes,
++        &[McuRect {
++            x: 0,
++            y: 0,
++            width: 1,
++            height: 1,
++        }],
++        DctExtractOptions::quantized_only(),
++    )
++    .expect("estimate progressive crop");
++    assert!(estimate.peak_bytes > estimate.retained_bytes);
++    let crop = lossless_crop(
++        &bytes,
++        Rect {
++            x: 2,
++            y: 3,
++            w: 4,
++            h: 4,
++        },
++        LosslessCropOptions::default(),
++    )
++    .expect("crop progressive JPEG");
++    assert_eq!((crop.width, crop.height), (6, 7));
++    assert_eq!(
++        crop.region,
++        Rect {
++            x: 2,
++            y: 3,
++            w: 4,
++            h: 4
++        }
++    );
++    let expected = extract_dct_blocks(&bytes, DctExtractOptions::quantized_only())
++        .expect("extract source coefficients");
++    let actual = extract_dct_blocks(&crop.data, DctExtractOptions::quantized_only())
++        .expect("extract crop coefficients");
++    for (actual, expected) in actual.components.iter().zip(&expected.components) {
++        assert_eq!(actual.quantized_blocks, expected.quantized_blocks);
++    }
++
++    let rgb = fixtures::rgb_app14_8x8_jpeg();
++    let rgb_crop = lossless_crop(&rgb, Rect::full((8, 8)), LosslessCropOptions::default())
++        .expect("crop APP14 RGB JPEG");
++    assert!(rgb_crop
++        .data
++        .windows(7)
++        .any(|window| window == b"\xff\xee\0\x0eAdo"));
++    assert_eq!(
++        j2k_jpeg::Decoder::inspect(&rgb_crop.data)
++            .unwrap()
++            .color_space,
++        j2k_jpeg::ColorSpace::Rgb
++    );
++}
++
++#[test]
++fn lossless_crop_uses_the_requested_far_edge_in_its_sof() {
++    let pixels = (0..64 * 64)
++        .map(|index| (index * 17) as u8)
++        .collect::<Vec<_>>();
++    let source = encode_jpeg_baseline(
++        JpegSamples::Gray8 {
++            data: &pixels,
++            width: 64,
++            height: 64,
++        },
++        JpegEncodeOptions {
++            subsampling: JpegSubsampling::Gray,
++            ..JpegEncodeOptions::default()
++        },
++    )
++    .expect("encode crop fixture");
++    let crop = lossless_crop(
++        &source.data,
++        Rect {
++            x: 5,
++            y: 6,
++            w: 19,
++            h: 11,
++        },
++        LosslessCropOptions::default(),
++    )
++    .expect("crop unaligned rectangle");
++    assert_eq!((crop.width, crop.height), (24, 17));
++    assert_eq!(
++        crop.region,
++        Rect {
++            x: 5,
++            y: 6,
++            w: 19,
++            h: 11
++        }
++    );
++    assert_eq!(
++        j2k_jpeg::Decoder::inspect(&crop.data).unwrap().dimensions,
++        (24, 17)
++    );
++}
++
+ #[test]
+ fn extracts_ycbcr_444_dct_blocks() {
+     let image = extract_dct_blocks(
+diff --git a/xtask/api/stable-api-1.0.implementation-public-api.txt b/xtask/api/stable-api-1.0.implementation-public-api.txt
+index 31946860175f6297867a64720615af8de6bd48c2..c97447c5540ebd084bf5913ad7cc577cb74571f1 100644
+--- a/xtask/api/stable-api-1.0.implementation-public-api.txt
++++ b/xtask/api/stable-api-1.0.implementation-public-api.txt
+@@ -365,6 +365,7 @@ pub type j2k_core::ReadySubmission<T, E>::Output = T
+ ```text
+ #[non_exhaustive] pub enum j2k_jpeg::transcode::JpegDctImageError
+ #[non_exhaustive] pub struct j2k_jpeg::transcode::DctExtractOptions
++#[non_exhaustive] pub struct j2k_jpeg::transcode::LosslessCropOptions
+ #[repr(C)] pub struct j2k_jpeg::adapter::JpegEntropyCheckpointV1
+ #[repr(C)] pub struct j2k_jpeg::adapter::JpegFast420PacketV1
+ #[repr(C)] pub struct j2k_jpeg::adapter::JpegFast422PacketV1
+@@ -380,6 +381,7 @@ impl core::convert::From<j2k_jpeg::adapter::JpegFast444PacketV1> for j2k_jpeg::a
+ impl core::default::Default for j2k_jpeg::adapter::JpegPlanCache
+ impl core::default::Default for j2k_jpeg::bench_support::BenchNeonIdct
+ impl core::default::Default for j2k_jpeg::transcode::DctExtractOptions
++impl core::default::Default for j2k_jpeg::transcode::LosslessCropOptions
+ impl core::fmt::Debug for j2k_jpeg::adapter::SharedJpegFastPacket
+ impl core::fmt::Debug for j2k_jpeg::adapter::SharedJpegInput
+ impl j2k_core::context::CodecContext for j2k_jpeg::DecoderContext
+@@ -435,6 +437,7 @@ pub const fn j2k_jpeg::adapter::JpegLosslessEncodePlan::samples(&self) -> usize
+ pub const fn j2k_jpeg::adapter::JpegLosslessGpuEncodeParams::chunks(&self) -> u32
+ pub const fn j2k_jpeg::adapter::JpegPlanCache::diagnostics(&self) -> j2k_jpeg::adapter::JpegPlanCacheDiagnostics
+ pub const fn j2k_jpeg::transcode::DctExtractOptions::dequantized_only() -> Self
++pub const fn j2k_jpeg::transcode::DctExtractOptions::quantized_only() -> Self
+ pub const j2k_jpeg::adapter::DEFAULT_JPEG_PLAN_CACHE_ENTRIES: usize
+ pub const j2k_jpeg::adapter::DEFAULT_JPEG_PLAN_CACHE_HOST_BYTES: usize
+ pub const j2k_jpeg::adapter::JPEG_BASELINE_ZIGZAG: [u8; 64]
+@@ -453,6 +456,7 @@ pub enum j2k_jpeg::adapter::JpegPlanCacheError
+ pub enum j2k_jpeg::adapter::JpegPlanCacheInsert
+ pub enum j2k_jpeg::adapter::TableKind
+ pub enum j2k_jpeg::transcode::JpegDctCodingMode
++pub enum j2k_jpeg::transcode::LosslessCropError
+ pub fn j2k_jpeg::Decoder<'_>::decode_request_with_external_live(&self, j2k_jpeg::DecodeRequest, usize) -> core::result::Result<(alloc::vec::Vec<u8>, j2k_jpeg::DecodeOutcome), j2k_jpeg::JpegError>
+ pub fn j2k_jpeg::Decoder<'_>::decode_request_with_scratch_and_external_live(&self, &mut j2k_jpeg::ScratchPool, j2k_jpeg::DecodeRequest, usize) -> core::result::Result<(alloc::vec::Vec<u8>, j2k_jpeg::DecodeOutcome), j2k_jpeg::JpegError>
+ pub fn j2k_jpeg::Decoder<'a>::decode_into(&mut self, &mut [u8], usize, j2k_core::pixel::PixelFormat) -> core::result::Result<j2k_core::types::DecodeOutcome<Self::Warning>, Self::Error>
+@@ -631,10 +635,16 @@ pub fn j2k_jpeg::decode_tiles_into_with_options(&mut [j2k_jpeg::TileDecodeJob<'_
+ pub fn j2k_jpeg::decode_tiles_region_scaled_into_with_options(&mut [j2k_jpeg::TileRegionScaledDecodeJob<'_, '_>], j2k_core::pixel::PixelFormat, j2k_jpeg::DecodeOptions, j2k_core::batch::TileBatchOptions) -> core::result::Result<alloc::vec::Vec<j2k_jpeg::DecodeOutcome>, j2k_jpeg::TileBatchError>
+ pub fn j2k_jpeg::decode_tiles_scaled_into_with_options(&mut [j2k_jpeg::TileScaledDecodeJob<'_, '_>], j2k_core::pixel::PixelFormat, j2k_jpeg::DecodeOptions, j2k_core::batch::TileBatchOptions) -> core::result::Result<alloc::vec::Vec<j2k_jpeg::DecodeOutcome>, j2k_jpeg::TileBatchError>
+ pub fn j2k_jpeg::transcode::DctExtractOptions::default() -> Self
++pub fn j2k_jpeg::transcode::DctExtractOptions::estimate(self, &[u8]) -> core::result::Result<j2k_jpeg::transcode::DctWorkingSetEstimate, j2k_jpeg::JpegError>
+ pub fn j2k_jpeg::transcode::JpegDctImage::retained_bytes(&self) -> core::result::Result<usize, j2k_jpeg::JpegError>
++pub fn j2k_jpeg::transcode::LosslessCropOptions::default() -> Self
+ pub fn j2k_jpeg::transcode::encode_baseline_dct_image(&j2k_jpeg::transcode::JpegDctImage) -> core::result::Result<alloc::vec::Vec<u8>, j2k_jpeg::JpegEncodeError>
++pub fn j2k_jpeg::transcode::encode_baseline_dct_image_with_options(&j2k_jpeg::transcode::JpegDctImage, j2k_jpeg::transcode::BaselineDctEncodeOptions<'_>) -> core::result::Result<alloc::vec::Vec<u8>, j2k_jpeg::JpegEncodeError>
++pub fn j2k_jpeg::transcode::estimate_dct_windows(&[u8], &[j2k_jpeg::transcode::McuRect], j2k_jpeg::transcode::DctExtractOptions) -> core::result::Result<j2k_jpeg::transcode::DctWorkingSetEstimate, j2k_jpeg::JpegError>
+ pub fn j2k_jpeg::transcode::extract_dct_blocks(&[u8], j2k_jpeg::transcode::DctExtractOptions) -> core::result::Result<j2k_jpeg::transcode::JpegDctImage, j2k_jpeg::JpegError>
++pub fn j2k_jpeg::transcode::extract_dct_windows(&[u8], &[j2k_jpeg::transcode::McuRect], j2k_jpeg::transcode::DctExtractOptions) -> core::result::Result<alloc::vec::Vec<j2k_jpeg::transcode::JpegDctImage>, j2k_jpeg::JpegError>
+ pub fn j2k_jpeg::transcode::idct_islow_block(&[i16; 64]) -> [u8; 64]
++pub fn j2k_jpeg::transcode::lossless_crop(&[u8], j2k_jpeg::Rect, j2k_jpeg::transcode::LosslessCropOptions) -> core::result::Result<j2k_jpeg::transcode::LosslessCrop, j2k_jpeg::transcode::LosslessCropError>
+ pub j2k_jpeg::DeviceBatchSummary::checkpoint_count: usize
+ pub j2k_jpeg::DeviceBatchSummary::matches_fast_420: bool
+ pub j2k_jpeg::DeviceBatchSummary::matches_fast_422: bool
+@@ -937,7 +947,12 @@ pub j2k_jpeg::adapter::JpegPlanCacheInsert::SkippedDisabled
+ pub j2k_jpeg::adapter::JpegPlanCacheInsert::SkippedOversized
+ pub j2k_jpeg::adapter::TableKind::Ac
+ pub j2k_jpeg::adapter::TableKind::Dc
++pub j2k_jpeg::transcode::BaselineDctEncodeOptions::app_segments: &'a [u8]
++pub j2k_jpeg::transcode::BaselineDctEncodeOptions::component_ids: &'a [u8]
++pub j2k_jpeg::transcode::DctExtractOptions::retain_dequantized_blocks: bool
+ pub j2k_jpeg::transcode::DctExtractOptions::retain_quantized_blocks: bool
++pub j2k_jpeg::transcode::DctWorkingSetEstimate::peak_bytes: usize
++pub j2k_jpeg::transcode::DctWorkingSetEstimate::retained_bytes: usize
+ pub j2k_jpeg::transcode::JpegDctCodingMode::BaselineSequential
+ pub j2k_jpeg::transcode::JpegDctCodingMode::Progressive
+ pub j2k_jpeg::transcode::JpegDctComponent::block_cols: u32
+@@ -986,6 +1001,8 @@ pub j2k_jpeg::transcode::JpegDctImageError::DimensionsTooLarge::width: u32
+ pub j2k_jpeg::transcode::JpegDctImageError::EmptyDimensions
+ pub j2k_jpeg::transcode::JpegDctImageError::EmptyDimensions::height: u32
+ pub j2k_jpeg::transcode::JpegDctImageError::EmptyDimensions::width: u32
++pub j2k_jpeg::transcode::JpegDctImageError::InvalidMetadata
++pub j2k_jpeg::transcode::JpegDctImageError::InvalidMetadata::reason: &'static str
+ pub j2k_jpeg::transcode::JpegDctImageError::QuantizationValueOutOfRange
+ pub j2k_jpeg::transcode::JpegDctImageError::QuantizationValueOutOfRange::component_index: usize
+ pub j2k_jpeg::transcode::JpegDctImageError::QuantizationValueOutOfRange::value: u16
+@@ -1007,6 +1024,17 @@ pub j2k_jpeg::transcode::JpegDctImageError::UnsupportedComponentCount::actual: u
+ pub j2k_jpeg::transcode::JpegDctImageError::UnsupportedGrayscaleSampling
+ pub j2k_jpeg::transcode::JpegDctImageError::UnsupportedGrayscaleSampling::h_samp: u8
+ pub j2k_jpeg::transcode::JpegDctImageError::UnsupportedGrayscaleSampling::v_samp: u8
++pub j2k_jpeg::transcode::LosslessCrop::data: alloc::vec::Vec<u8>
++pub j2k_jpeg::transcode::LosslessCrop::height: u32
++pub j2k_jpeg::transcode::LosslessCrop::region: j2k_jpeg::Rect
++pub j2k_jpeg::transcode::LosslessCrop::width: u32
++pub j2k_jpeg::transcode::LosslessCropError::Decode(j2k_jpeg::JpegError)
++pub j2k_jpeg::transcode::LosslessCropError::Encode(j2k_jpeg::JpegEncodeError)
++pub j2k_jpeg::transcode::LosslessCropOptions::max_working_bytes: usize
++pub j2k_jpeg::transcode::McuRect::height: u32
++pub j2k_jpeg::transcode::McuRect::width: u32
++pub j2k_jpeg::transcode::McuRect::x: u32
++pub j2k_jpeg::transcode::McuRect::y: u32
+ pub mod j2k_jpeg::adapter
+ pub mod j2k_jpeg::bench_support
+ pub mod j2k_jpeg::transcode
+@@ -1051,8 +1079,12 @@ pub struct j2k_jpeg::bench_support::BenchRgb420RowPair<'a>
+ pub struct j2k_jpeg::bench_support::BenchRgb420RowPairScratch
+ pub struct j2k_jpeg::bench_support::BenchRgbRowScratch
+ pub struct j2k_jpeg::bench_support::BenchUpsampleH2V2Scratch
++pub struct j2k_jpeg::transcode::BaselineDctEncodeOptions<'a>
++pub struct j2k_jpeg::transcode::DctWorkingSetEstimate
+ pub struct j2k_jpeg::transcode::JpegDctComponent
+ pub struct j2k_jpeg::transcode::JpegDctImage
++pub struct j2k_jpeg::transcode::LosslessCrop
++pub struct j2k_jpeg::transcode::McuRect
+ pub trait j2k_jpeg::adapter::JpegBaselineGpuEncodeHostAdapter<T: core::marker::Copy>
+ pub type j2k_jpeg::Decoder<'_>::Error = j2k_jpeg::JpegError
+ pub type j2k_jpeg::Decoder<'_>::Pool = j2k_jpeg::ScratchPool
+diff --git a/xtask/api/stable-api-1.0.public-api.txt b/xtask/api/stable-api-1.0.public-api.txt
+index b84af23e79e80d01daf5c6134128dc9c0a679a10..26c2c1f64a249f9eb1c0f08e38c2b60714f07cf8 100644
+--- a/xtask/api/stable-api-1.0.public-api.txt
++++ b/xtask/api/stable-api-1.0.public-api.txt
+@@ -1829,6 +1829,13 @@ pub j2k_jpeg::JpegError::ConflictingExpectedDimensions
+ pub j2k_jpeg::JpegError::ConflictingExpectedDimensions::actual: (u16, u16)
+ pub j2k_jpeg::JpegError::ConflictingExpectedDimensions::expected: (u16, u16)
+ pub j2k_jpeg::JpegError::ConflictingExpectedDimensions::offset: usize
++pub j2k_jpeg::JpegError::DctWindowOutOfBounds
++pub j2k_jpeg::JpegError::DctWindowOutOfBounds::height: u32
++pub j2k_jpeg::JpegError::DctWindowOutOfBounds::mcu_cols: u32
++pub j2k_jpeg::JpegError::DctWindowOutOfBounds::mcu_rows: u32
++pub j2k_jpeg::JpegError::DctWindowOutOfBounds::width: u32
++pub j2k_jpeg::JpegError::DctWindowOutOfBounds::x: u32
++pub j2k_jpeg::JpegError::DctWindowOutOfBounds::y: u32
+ pub j2k_jpeg::JpegError::DimensionOverflow
+ pub j2k_jpeg::JpegError::DimensionOverflow::height: u32
+ pub j2k_jpeg::JpegError::DimensionOverflow::width: u32
+@@ -1849,6 +1856,7 @@ pub j2k_jpeg::JpegError::HuffmanDecode::mcu: u32
+ pub j2k_jpeg::JpegError::HuffmanDecode::reason: j2k_jpeg::HuffmanFailure
+ pub j2k_jpeg::JpegError::InternalInvariant
+ pub j2k_jpeg::JpegError::InternalInvariant::reason: &'static str
++pub j2k_jpeg::JpegError::InvalidDctExtractOptions
+ pub j2k_jpeg::JpegError::InvalidJpegAssembly
+ pub j2k_jpeg::JpegError::InvalidJpegAssembly::offset: usize
+ pub j2k_jpeg::JpegError::InvalidJpegAssembly::reason: &'static str
+diff --git a/xtask/release-evidence/public-api/public-api-review-0.13.1.yml b/xtask/release-evidence/public-api/public-api-review-0.13.1.yml
+index 1e7dd9c2c0b2a18dff170833f81c337346ce65e6..86b6bf15cdc459bc689b181166f2bae9da04b05b 100644
+--- a/xtask/release-evidence/public-api/public-api-review-0.13.1.yml
++++ b/xtask/release-evidence/public-api/public-api-review-0.13.1.yml
+@@ -90,11 +90,11 @@ reviews:
+     hidden_rationale: "Adds the ComponentRowSink trait and Image::decode_region_rows_for_integer_output_with_context, which hand a serial region decode's finished integer-output rows to a sink as disjoint rectangles instead of filling component planes; decodes that cannot stream hand their planes over as one rectangle. Adds window_referenced_classic_plan_to_stores and window_referenced_htj2k_plan_to_stores, which return a copy of a referenced region plan whose sub-bands and IDWT levels hold only what its stores read, or None when that would not pay off; the facade's CPU batch executes the copy while GPU backends keep the shared whole-level plan. All five items are additions; no other hidden item changed and no caller migration is required."
+   j2k-jpeg:
+     removed_fingerprint: "none"
+-    added_fingerprint: "none"
+-    hidden_count: 701
+-    hidden_fingerprint: "fnv1a64:bd0cf738a0f96592"
+-    rationale: "Compared the complete ordinary API inventory against v0.13.0; no signatures were added, removed, or changed."
+-    hidden_rationale: "Compared the complete hidden API inventory against v0.13.0; it is unchanged."
++    added_fingerprint: "fnv1a64:f61e3d83f19f962d"
++    hidden_count: 733
++    hidden_fingerprint: "fnv1a64:5518800ed95bf080"
++    rationale: "Adds DctWindowOutOfBounds and InvalidDctExtractOptions to the non-exhaustive JpegError enum for caller-input validation. Existing signatures and exhaustive JpegEncodeError variants are unchanged; metadata errors use its existing InvalidDctImage variant. No caller migration is required."
++    hidden_rationale: "Adds quantized_only and estimate to DctExtractOptions, with retain_dequantized_blocks on that non-exhaustive struct; existing default and dequantized_only behavior is preserved. Adds MCU-window extraction, extraction working-set estimates, a baseline writer with source metadata, and standalone lossless crops under the experimental transcode module. InvalidMetadata extends the non-exhaustive JpegDctImageError enum. Existing extraction and canonical re-emission signatures and behavior are unchanged. Progressive and multi-scan windows retain whole-image coefficient accumulation, reflected in the estimate."
+   j2k-tilecodec:
+     removed_fingerprint: "none"
+     added_fingerprint: "none"
+diff --git a/xtask/release-evidence/public-api/reviewed-public-api-diff-0.13.1.md b/xtask/release-evidence/public-api/reviewed-public-api-diff-0.13.1.md
+index 87399764d99f75c80511d77fe4a5b5efd2f69f98..e90cfd0fbe0bac4f80ac6cfbe1e1710139633fd4 100644
+--- a/xtask/release-evidence/public-api/reviewed-public-api-diff-0.13.1.md
++++ b/xtask/release-evidence/public-api/reviewed-public-api-diff-0.13.1.md
+@@ -23,7 +23,7 @@ This report is generated by `cargo xtask semver --write-report`. Normal `cargo x
+ | `j2k-metal-support` | `0.13.0` | `0.13.1` | `minor` | 0 | 0 | `none` | `none` | 11 | `fnv1a64:02139606f1202938` |
+ | `j2k-mpsgraph-support` | `0.13.0` | `0.13.1` | `minor` | 0 | 0 | `none` | `none` | 0 | `none` |
+ | `j2k-native` | `0.13.0` | `0.13.1` | `minor` | 0 | 0 | `none` | `none` | 584 | `fnv1a64:0fb38a581f613d0f` |
+-| `j2k-jpeg` | `0.13.0` | `0.13.1` | `minor` | 0 | 0 | `none` | `none` | 701 | `fnv1a64:bd0cf738a0f96592` |
++| `j2k-jpeg` | `0.13.0` | `0.13.1` | `minor` | 8 | 0 | `none` | `fnv1a64:f61e3d83f19f962d` | 733 | `fnv1a64:5518800ed95bf080` |
+ | `j2k-tilecodec` | `0.13.0` | `0.13.1` | `minor` | 0 | 0 | `none` | `none` | 32 | `fnv1a64:eb677842559d9b0e` |
+ | `j2k` | `0.13.0` | `0.13.1` | `minor` | 0 | 0 | `none` | `none` | 108 | `fnv1a64:01e74ad6c3ff416e` |
+ | `j2k-transcode` | `0.13.0` | `0.13.1` | `minor` | 0 | 0 | `none` | `none` | 458 | `fnv1a64:449a76476549c1e2` |
+@@ -184,7 +184,7 @@ None.
+ 
+ ### `j2k-jpeg`
+ 
+-Baseline items: 710. Candidate items: 710. Computed release type: `minor`. Rustdoc-hidden candidate items: 701. Full hidden-inventory fingerprint: `fnv1a64:bd0cf738a0f96592`.
++Baseline items: 710. Candidate items: 718. Computed release type: `minor`. Rustdoc-hidden candidate items: 733. Full hidden-inventory fingerprint: `fnv1a64:5518800ed95bf080`.
+ 
+ #### Removed or changed baseline API items
+ 
+@@ -192,7 +192,16 @@ None.
+ 
+ #### Added candidate API items
+ 
+-None.
++```text
++pub j2k_jpeg::JpegError::DctWindowOutOfBounds
++pub j2k_jpeg::JpegError::DctWindowOutOfBounds::height: u32
++pub j2k_jpeg::JpegError::DctWindowOutOfBounds::mcu_cols: u32
++pub j2k_jpeg::JpegError::DctWindowOutOfBounds::mcu_rows: u32
++pub j2k_jpeg::JpegError::DctWindowOutOfBounds::width: u32
++pub j2k_jpeg::JpegError::DctWindowOutOfBounds::x: u32
++pub j2k_jpeg::JpegError::DctWindowOutOfBounds::y: u32
++pub j2k_jpeg::JpegError::InvalidDctExtractOptions
++```
+ 
+ ### `j2k-tilecodec`
+ 

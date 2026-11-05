@@ -72,6 +72,22 @@ pub(crate) fn next_entropy_marker(bytes: &[u8], mut pos: usize) -> Option<Entrop
     None
 }
 
+/// [`next_entropy_marker`] for walks that reject input ending inside a fill
+/// run: the next marker's `(code_pos, code)`.
+pub(crate) fn next_entropy_marker_code(
+    bytes: &[u8],
+    pos: usize,
+) -> Result<Option<(usize, u8)>, JpegError> {
+    match next_entropy_marker(bytes, pos) {
+        None => Ok(None),
+        Some(EntropyMarker::Unterminated { fill_start }) => Err(JpegError::Truncated {
+            offset: fill_start,
+            expected: 1,
+        }),
+        Some(EntropyMarker::Marker { code_pos, code, .. }) => Ok(Some((code_pos, code))),
+    }
+}
+
 pub(crate) fn next_marker_after_entropy(
     bytes: &[u8],
     mut pos: usize,

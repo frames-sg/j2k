@@ -11,11 +11,12 @@ use super::super::sampling::{
     extended12_four_component_sampling, validate_extended12_four_component444_plan,
     Extended12ColorSampling,
 };
-use super::super::state::{decode_extended12_block_pixels, Extended12RestartTracker};
+use super::super::state::decode_extended12_block_pixels;
 use super::super::writers::{
     write_extended12_four_component_block_region, write_extended12_four_component_planes_region,
     Extended12Output, Extended12WriteRegion,
 };
+use crate::entropy::sequential::{McuPosition, RestartState};
 
 impl Decoder<'_> {
     pub(super) fn decode_extended12_four_component444_region_into(
@@ -38,8 +39,7 @@ impl Decoder<'_> {
             core::array::from_fn(|_| CoefficientBlock::default());
         let mut pixels = [[0u16; 64]; 4];
         let total_mcus = mcu_cols * mcu_rows;
-        let mut restart_tracker =
-            Extended12RestartTracker::new(self.plan.restart_interval, total_mcus);
+        let mut restart = RestartState::new(self.plan.restart_interval.unwrap_or(0));
         let write_region = Extended12WriteRegion {
             output_rect,
             dimensions: (width, height),
@@ -50,7 +50,13 @@ impl Decoder<'_> {
         for mcu_y in 0..mcu_rows {
             for mcu_x in 0..mcu_cols {
                 let current_mcu = mcu_y * mcu_cols + mcu_x;
-                if restart_tracker.begin_mcu(&mut br, current_mcu)? {
+                if restart.begin_mcu(
+                    &mut br,
+                    McuPosition {
+                        current: current_mcu,
+                        total: total_mcus,
+                    },
+                )? {
                     prev_dc.fill(0);
                 }
                 for component in &self.plan.components {
@@ -73,7 +79,7 @@ impl Decoder<'_> {
                     (mcu_x * 8, mcu_y * 8),
                     &pixels,
                 );
-                restart_tracker.finish_mcu();
+                restart.end_mcu();
             }
         }
 

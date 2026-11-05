@@ -2,6 +2,7 @@
 
 use super::restart::McuPosition;
 use super::{PreparedComponentPlan, PreparedDecodePlan};
+use crate::backend::Rgb420Crop;
 use crate::color::scaled_sampling::ScaledSampling;
 use crate::info::{ColorSpace, DownscaleFactor, Rect};
 
@@ -32,28 +33,7 @@ impl StripeRegionLayout {
         }
     }
 
-    /// The window a fancy 4:2:0 region of `roi` decodes in an image `width`
-    /// pixels wide: the MCU columns covering the chroma samples of `roi`
-    /// plus one on either side, which the edge columns' upsampling reads.
-    pub(super) fn for_fancy_420(width: u32, roi: Rect) -> Self {
-        let chroma_width = width.div_ceil(2);
-        let sample_start = (roi.x / 2).saturating_sub(1);
-        let sample_end = ((roi.x + roi.w).div_ceil(2) + 1).min(chroma_width);
-        let x0 = sample_start * 2;
-        let x1 = (sample_end * 2).min(width);
-        Self::new(
-            width,
-            16,
-            Rect {
-                x: x0,
-                y: 0,
-                w: x1 - x0,
-                h: 1,
-            },
-        )
-    }
-
-    pub(super) fn source_width_usize(self) -> usize {
+    pub(super) const fn source_width_usize(self) -> usize {
         self.source_width as usize
     }
 }
@@ -69,17 +49,25 @@ pub(super) struct McuColumns {
 }
 
 impl McuColumns {
-    /// The columns of `region` in a scan of `(mcus_per_row, mcu_rows)` MCUs.
-    pub(super) const fn new(
-        (mcus_per_row, mcu_rows): (u32, u32),
-        region: StripeRegionLayout,
-    ) -> Self {
+    /// `count` MCU columns from column `first` in a scan of
+    /// `(mcus_per_row, mcu_rows)` MCUs.
+    pub(super) const fn new((mcus_per_row, mcu_rows): (u32, u32), first: u32, count: u32) -> Self {
         Self {
             mcus_per_row,
             mcu_rows,
-            stripe_mcu_start: region.stripe_mcu_start,
-            stripe_mcus_per_row: region.stripe_mcus_per_row,
+            stripe_mcu_start: first,
+            stripe_mcus_per_row: count,
         }
+    }
+
+    /// Every MCU column of a scan of `grid` MCUs.
+    pub(super) const fn whole_rows(grid: (u32, u32)) -> Self {
+        Self::new(grid, 0, grid.0)
+    }
+
+    /// The columns of `region` in a scan of `grid` MCUs.
+    pub(super) const fn for_region(grid: (u32, u32), region: StripeRegionLayout) -> Self {
+        Self::new(grid, region.stripe_mcu_start, region.stripe_mcus_per_row)
     }
 
     #[inline]
@@ -87,10 +75,11 @@ impl McuColumns {
         mcu_x >= self.stripe_mcu_start && mcu_x < self.stripe_mcu_start + self.stripe_mcus_per_row
     }
 
-    /// Stripe column of MCU column `mcu_x`, which [`Self::contains`].
+    /// Stripe column of MCU column `mcu_x` when [`Self::contains`] it, else
+    /// zero for a column left of the window.
     #[inline]
     pub(super) const fn local(self, mcu_x: u32) -> u32 {
-        mcu_x - self.stripe_mcu_start
+        mcu_x.saturating_sub(self.stripe_mcu_start)
     }
 
     /// Scan position of the MCU at column `mcu_x` of row `mcu_y`.
@@ -113,29 +102,26 @@ impl McuColumns {
 pub(super) struct CropWindow {
     /// Visible luma width of the decoded window.
     pub(super) row_width: usize,
-    /// Window column of the first output column.
-    pub(super) crop_start: usize,
-    /// Output columns.
-    pub(super) crop_width: usize,
+    /// The output columns within the window.
+    pub(super) crop: Rgb420Crop,
 }
 
 impl CropWindow {
     /// The columns of `roi` in the decoded `region`.
     pub(super) const fn new(region: StripeRegionLayout, roi: Rect) -> Self {
         Self {
-            row_width: region.source_width as usize,
-            crop_start: (roi.x - region.source_x0) as usize,
-            crop_width: roi.w as usize,
+            row_width: region.source_width_usize(),
+            crop: Rgb420Crop::new((roi.x - region.source_x0) as usize, roi.w as usize),
         }
     }
 
     pub(super) const fn columns(self) -> core::ops::Range<usize> {
-        self.crop_start..self.crop_start + self.crop_width
+        self.crop.start..self.crop.start + self.crop.width
     }
 
     /// Whether the writer takes the decoded window's whole rows.
     pub(super) const fn is_full_width(self) -> bool {
-        self.crop_start == 0 && self.crop_width == self.row_width
+        self.crop.start == 0 && self.crop.width == self.row_width
     }
 
     /// Visible 2:1 chroma width of the decoded window.
@@ -243,7 +229,7 @@ pub(super) fn uses_fancy_420_emit(plan: &PreparedDecodePlan, scaled: &ScaledSamp
     is_ycbcr_420(plan) && scaled.is_fancy_420()
 }
 
-pub(super) fn is_ycbcr_420(plan: &PreparedDecodePlan) -> bool {
+fn is_ycbcr_420(plan: &PreparedDecodePlan) -> bool {
     plan.color_space == ColorSpace::YCbCr
         && plan.sampling.max_h == 2
         && plan.sampling.max_v == 2

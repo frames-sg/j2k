@@ -286,27 +286,8 @@ impl<'i> NativePlanesSink<'i> {
 
 /// Write `samples` to `destination` as the packed little-endian native
 /// samples `Image::extend_component_native_sample_bytes` appends for an
-/// `f32` component of `bit_depth`. Samples wider than 16 bits are packed
-/// in `scratch` first.
-#[cfg(test)]
-pub(super) fn pack_native_samples(
-    destination: &mut [u8],
-    samples: &[f32],
-    bit_depth: u8,
-    signed: bool,
-    scratch: &mut Vec<u8>,
-) -> Result<()> {
-    dispatch!(Level::new(), simd => pack_native_samples_at(
-        simd,
-        destination,
-        samples,
-        bit_depth,
-        signed,
-        scratch,
-    ))
-}
-
-/// [`pack_native_samples`] at the dispatched SIMD level (see `math`).
+/// `f32` component of `bit_depth`, at the dispatched SIMD level (see `math`).
+/// Samples wider than 16 bits are packed in `scratch` first.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::inline_always,
@@ -344,9 +325,10 @@ fn pack_native_samples_at<S: Simd>(
 mod tests {
     use alloc::vec::Vec;
 
-    use super::{pack_native_samples, NativePlanesSink};
+    use super::{pack_native_samples_at, NativePlanesSink};
     use crate::image::Image;
     use crate::j2c::DecoderContext;
+    use crate::math::{dispatch, Level};
     use crate::{
         encode, native_bytes_per_sample, CpuDecodeParallelism, DecodeErrorClass, DecodeSettings,
         EncodeOptions,
@@ -384,8 +366,15 @@ mod tests {
                 }
                 let bytes = native_bytes_per_sample(bit_depth).expect("bytes per sample");
                 let mut packed = alloc::vec![0xa5; samples.len() * bytes];
-                pack_native_samples(&mut packed, &samples, bit_depth, signed, &mut scratch)
-                    .expect("pack");
+                dispatch!(Level::new(), simd => pack_native_samples_at(
+                    simd,
+                    &mut packed,
+                    &samples,
+                    bit_depth,
+                    signed,
+                    &mut scratch,
+                ))
+                .expect("pack");
                 assert_eq!(packed, expected, "{bit_depth} bits, signed {signed}");
             }
         }

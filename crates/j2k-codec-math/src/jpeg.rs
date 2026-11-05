@@ -2,6 +2,9 @@
 
 use core::fmt;
 
+/// Integer "slow" inverse DCT (ISLOW): fixed-point constants and the 1-D,
+/// pass, and block transforms shared by CPU and device backends.
+pub mod idct;
 /// Lossless (SOF3) prediction and difference coding.
 pub mod lossless;
 
@@ -142,39 +145,6 @@ pub const fn derive_canonical_huffman(
         huffsize,
         huffsize_len,
     })
-}
-
-/// Fixed-point constants used by the baseline JPEG integer IDCT.
-pub mod idct {
-    /// Number of fractional bits in the integer IDCT constants.
-    pub const CONST_BITS: usize = 13;
-    /// First-pass post-IDCT scaling bits.
-    pub const PASS1_BITS: usize = 2;
-
-    /// Fixed-point integer approximation of 0.298631336.
-    pub const FIX_0_298631336: i32 = 2_446;
-    /// Fixed-point integer approximation of 0.390180644.
-    pub const FIX_0_390180644: i32 = 3_196;
-    /// Fixed-point integer approximation of 0.541196100.
-    pub const FIX_0_541196100: i32 = 4_433;
-    /// Fixed-point integer approximation of 0.765366865.
-    pub const FIX_0_765366865: i32 = 6_270;
-    /// Fixed-point integer approximation of 0.899976223.
-    pub const FIX_0_899976223: i32 = 7_373;
-    /// Fixed-point integer approximation of 1.175875602.
-    pub const FIX_1_175875602: i32 = 9_633;
-    /// Fixed-point integer approximation of 1.501321110.
-    pub const FIX_1_501321110: i32 = 12_299;
-    /// Fixed-point integer approximation of 1.847759065.
-    pub const FIX_1_847759065: i32 = 15_137;
-    /// Fixed-point integer approximation of 1.961570560.
-    pub const FIX_1_961570560: i32 = 16_069;
-    /// Fixed-point integer approximation of 2.053119869.
-    pub const FIX_2_053119869: i32 = 16_819;
-    /// Fixed-point integer approximation of 2.562915447.
-    pub const FIX_2_562915447: i32 = 20_995;
-    /// Fixed-point integer approximation of 3.072711026.
-    pub const FIX_3_072711026: i32 = 25_172;
 }
 
 /// Fixed-point constants used by JPEG YCbCr to RGB conversion.

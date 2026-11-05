@@ -2,9 +2,10 @@
 
 use alloc::vec::Vec;
 
-use super::fixtures::{grayscale_jpeg, noisy_jpeg};
+use super::fixtures::grayscale_jpeg;
 use crate::decoder::Decoder;
 use crate::entropy::huffman::{FULL_PRIMARY_ENTRIES, NARROW_PRIMARY_ENTRIES};
+use crate::entropy::sequential::stream_tests::noisy_jpeg;
 use crate::entropy::sequential::{skip_mcu, HuffmanPrimaryWidth, PreparedDecodePlan};
 use crate::internal::bit_reader::BitReader;
 use crate::internal::checkpoint::{
@@ -85,7 +86,7 @@ fn published_checkpoints_match_a_direct_skip_at_every_grid_slot() {
         (257, 130, JpegSubsampling::Ybr444),
         (523, 61, JpegSubsampling::Ybr422),
     ] {
-        let bytes = noisy_jpeg(width, height, subsampling, None);
+        let bytes = noisy_jpeg(width, height, subsampling, None, width ^ height);
         let decoder = Decoder::new(&bytes).expect("decoder");
         let plan = &decoder.plan;
         let scan_bytes = &decoder.bytes[plan.scan_offset..];
@@ -114,7 +115,7 @@ fn published_checkpoints_match_a_direct_skip_at_every_grid_slot() {
 
 #[test]
 fn concurrent_lookups_publish_one_consistent_prefix() {
-    let bytes = noisy_jpeg(640, 480, JpegSubsampling::Ybr420, None);
+    let bytes = noisy_jpeg(640, 480, JpegSubsampling::Ybr420, None, 864);
     let decoder = Decoder::new(&bytes).expect("decoder");
     let plan = &decoder.plan;
     let scan_bytes = &decoder.bytes[plan.scan_offset..];

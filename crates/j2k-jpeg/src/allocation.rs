@@ -134,6 +134,20 @@ pub(crate) fn try_reserve_for_len_with_live_budget<T>(
         .map_err(map_allocation_budget_error)
 }
 
+/// [`try_vec_filled`] charged to a live-byte total through
+/// [`try_reserve_for_len_with_live_budget`].
+pub(crate) fn try_vec_filled_with_live_budget<T: Clone>(
+    len: usize,
+    value: T,
+    live_bytes: &mut usize,
+    cap: usize,
+) -> Result<Vec<T>, JpegError> {
+    let mut values = Vec::new();
+    try_reserve_for_len_with_live_budget(&mut values, len, live_bytes, cap)?;
+    values.resize(len, value);
+    Ok(values)
+}
+
 pub(crate) fn try_new_vec_with_live_budget<T>(
     capacity: usize,
     live_bytes: &mut usize,

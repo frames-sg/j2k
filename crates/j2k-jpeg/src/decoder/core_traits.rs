@@ -164,14 +164,12 @@ impl<'a> ImageDecodeRows<'a, u8> for Decoder<'a> {
         };
         match Decoder::decode_rows(self, &mut adapter) {
             Ok(outcome) => Ok(core_outcome(outcome)),
-            Err(JpegError::RowSinkAborted) => Err(adapter.sink_error.map_or_else(
-                || {
-                    DecodeRowsError::Decode(JpegError::InternalInvariant {
-                        reason: "row sink abort stores the original sink error",
-                    })
-                },
-                DecodeRowsError::Sink,
-            )),
+            Err(JpegError::RowSinkAborted) => match adapter.sink_error {
+                Some(err) => Err(DecodeRowsError::Sink(err)),
+                None => Err(DecodeRowsError::Decode(JpegError::InternalInvariant {
+                    reason: "row sink abort stores the original sink error",
+                })),
+            },
             Err(err) => Err(DecodeRowsError::Decode(err)),
         }
     }

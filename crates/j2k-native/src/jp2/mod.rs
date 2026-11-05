@@ -13,7 +13,8 @@ pub(crate) mod pclr;
 mod validation;
 
 pub use self::container::{
-    extract_jp2_codestream_payload, inspect_jp2_container, Jp2Container, Jp2FileKind,
+    extract_jp2_codestream_payload, inspect_jp2_container, inspect_jp2_container_with_settings,
+    Jp2Container, Jp2FileKind,
 };
 pub(crate) use self::container::{parse, parse_with_retained_baseline};
 pub(crate) use self::metadata::{ComponentDescriptor, DecodedImage, ImageBoxes, ImageHeaderBox};

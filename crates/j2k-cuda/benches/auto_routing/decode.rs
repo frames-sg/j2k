@@ -45,10 +45,6 @@ impl<'a> DecodeCase<'a> {
     }
 }
 
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "Criterion's `BenchmarkGroup::finish` consumes each group at its last use"
-)]
 pub(crate) fn bench_cell(
     criterion: &mut Criterion,
     case: &DecodeCase<'_>,

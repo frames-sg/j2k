@@ -113,7 +113,6 @@ fn fully_waited_cpu_session_reuses_bounded_completion_state() {
         assert!(state.completed.is_empty());
         assert_eq!(state.completed_host_bytes(), 0);
         let peak = state.peak_collective_host_bytes();
-        drop(state);
         if let Some(warmed_peak) = warmed_peak {
             assert_eq!(peak, warmed_peak);
         } else {

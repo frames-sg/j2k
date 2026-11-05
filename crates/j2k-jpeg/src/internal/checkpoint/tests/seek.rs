@@ -2,8 +2,8 @@
 
 use alloc::vec;
 
-use super::fixtures::noisy_jpeg;
 use crate::decoder::Decoder;
+use crate::entropy::sequential::stream_tests::noisy_jpeg;
 use crate::entropy::sequential::{decode_scan_dct_window_into, sequential_mcu_grid, McuWindow};
 use crate::internal::checkpoint::{checkpoint_before_mcu, CpuCheckpointCache};
 use crate::JpegSubsampling;
@@ -14,7 +14,7 @@ use crate::JpegSubsampling;
 #[test]
 fn resume_points_decode_windows_exactly_like_the_unindexed_seek() {
     for restart_interval in [None, Some(5), Some(37)] {
-        let bytes = noisy_jpeg(300, 180, JpegSubsampling::Ybr420, restart_interval);
+        let bytes = noisy_jpeg(300, 180, JpegSubsampling::Ybr420, restart_interval, 408);
         let decoder = Decoder::new(&bytes).expect("decoder");
         let plan = &decoder.plan;
         let scan_bytes = &decoder.bytes[plan.scan_offset..];

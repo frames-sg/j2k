@@ -58,6 +58,7 @@ requires separate subsystem work and independently derived table definitions.
 | `j2k-jpeg-metal`, `j2k-metal`, `j2k-transcode-metal` | Metal adapter | macOS Metal adapters built on `j2k-metal-support`. J2K transforms, Tier-1, packetization, store, and resident encode/decode are in the private `j2k-metal::engine` module; the transcode adapter has its own coefficient-domain kernels and does not depend on `j2k-metal`. |
 | `j2k-ml` | framework integration | Thin Burn allocation and codec-interop adapter for owned integer batch output, including mixed JPEG and JPEG 2000 CPU batches. |
 | `j2k-python` | optional framework integration | Rust PyO3 extension exposing pixels and selected wavelet bands through owned DLPack tensors; optional CUDA decode into PyTorch-owned storage and Metal decode into fresh buffers transferred to PyTorch MPS; CPU RGB research encode/decode and float 9/7 transforms. No Python dependencies in default Rust builds. |
+| `j2k-c` | C/C++ integration | Unpublished CPU C ABI, header-only C++17 ownership wrapper, and relocatable native packages over the owned `j2k` batch decoder. |
 | `j2k-mpsgraph-support` | support | Codec-independent graph submission, callback/error ownership, completion, and retained input lifetime shared with JPEG XR. |
 | `j2k-mpsgraph` | framework integration | Experimental Apple Silicon direct bridge from Metal-resident native integer batches to static rank-four MPSGraph programs. |
 | `j2k-transcode` | transcode | JPEG-to-HTJ2K coefficient-domain transcode algorithms and shared types. |
@@ -86,6 +87,9 @@ requires separate subsystem work and independently derived table definitions.
   CUDA/Metal PyTorch allocation boundary. It reuses codec preparation and external
   destinations. Dataset policy, normalization, and model code stay with the
   application.
+- `j2k-c` owns raw C pointers, handle ownership, ABI versioning, and native
+  packaging. It reuses `j2k` preparation and owned batch decode and must not
+  implement codec algorithms or sample transformations.
 - Codec crates may depend on `j2k-core` and support crates.
 - Adapter crates may depend inward on codec/core/support crates.
 - Support crates must not depend on adapters.
@@ -117,6 +121,7 @@ j2k-cuda-jpeg-engine -> j2k-codec-math, j2k-core, j2k-cuda-runtime
 j2k-cuda-transcode-engine -> j2k-core, j2k-cuda-runtime
 j2k-ml -> j2k, j2k-core, j2k-cuda, j2k-cuda-runtime, j2k-jpeg, j2k-metal, j2k-metal-support
 j2k-python -> j2k, j2k-cuda, j2k-cuda-runtime, j2k-jpeg, j2k-metal, j2k-metal-support, j2k-native
+j2k-c -> j2k
 j2k-mpsgraph -> j2k, j2k-core, j2k-metal, j2k-metal-support, j2k-mpsgraph-support
 j2k-transcode-metal -> j2k-codec-math, j2k-core, j2k-metal-support, j2k-transcode, j2k-types
 j2k-transcode-cuda -> j2k-core, j2k-cuda-j2k-engine, j2k-cuda-runtime, j2k-cuda-transcode-engine, j2k-native, j2k-transcode

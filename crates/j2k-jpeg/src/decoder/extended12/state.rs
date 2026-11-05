@@ -2,7 +2,6 @@
 
 //! Extended-precision entropy block and restart state.
 
-pub(super) use super::super::lossless_helpers::Extended12RestartTracker;
 use super::super::{
     decode_block_with_activity, Backend, BitReader, BlockActivity, CoefficientBlock, JpegError,
     ResolvedPreparedComponentPlan,

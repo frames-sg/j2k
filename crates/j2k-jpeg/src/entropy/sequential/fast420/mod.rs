@@ -7,17 +7,13 @@
 //! MCU row at a time into a single stripe and convert it to RGB right away;
 //! see [`emit`] for the row window.
 
-use super::dct::sequential_mcu_grid;
-use super::deposit::{
-    three_component_dc, FastTile420Components, FastTile420DcState, FastTile420EntropyState,
-    FastTile420Window,
-};
-use super::layout::{
-    fast420_decode_mcu_row_end, uses_fancy_420_emit, CropWindow, McuColumns, StripeRegionLayout,
-};
+use super::dct::sequential_mcu_size;
+use super::deposit::{FastRowState, FastTile420Components, FastTile420Window};
+use super::layout::{fast420_decode_mcu_row_end, uses_fancy_420_emit, CropWindow};
 use super::profile::{Fast420ScanProfiler, NoopFast420ScanProfile};
-use super::restart::{enter_scan_at_mcu_with, finish_scan};
-use super::{FastRgbRequest, FastRgbRoute, HuffmanPrimaryWidth, PreparedDecodePlan, StripeBuffer};
+use super::restart::finish_scan;
+use super::{FastRgbRequest, HuffmanPrimaryWidth, PreparedDecodePlan, StripeBuffer};
+use crate::adapter::JpegFastPacketFamily;
 use crate::backend::Backend;
 #[cfg(feature = "bench-internals")]
 use crate::bench_support::BenchFast420Profile;
@@ -153,11 +149,16 @@ impl Fast420Scan<'_, '_> {
     fn rows(self) -> Fast420Rows {
         let (width, height) = self.plan.dimensions;
         let roi = self.request.roi;
-        let region = StripeRegionLayout::for_fancy_420(width, roi);
-        let columns = McuColumns::new(sequential_mcu_grid(self.plan), region);
+        let (columns, crop) = self.request.columns(self.plan);
+        let (_, mcu_height_px) = sequential_mcu_size(self.plan);
         Fast420Rows {
-            first_row: FastRgbRoute::Fancy420.first_decode_row(self.plan, roi),
-            row_end: fast420_decode_mcu_row_end(roi, MCU_PX, columns.mcu_rows, FAST420_HALO_ROWS),
+            first_row: JpegFastPacketFamily::Fast420.first_decode_row(self.plan, roi),
+            row_end: fast420_decode_mcu_row_end(
+                roi,
+                mcu_height_px,
+                columns.mcu_rows,
+                FAST420_HALO_ROWS,
+            ),
             window: FastTile420Window {
                 columns,
                 // Whether the final coded MCU's right luma blocks reach into
@@ -165,7 +166,7 @@ impl Fast420Scan<'_, '_> {
                 right_luma: width % MCU_PX == 0 || width % MCU_PX > 8,
                 bottom_luma: true,
             },
-            crop: CropWindow::new(region, roi),
+            crop,
             image_height: height,
         }
     }
@@ -196,34 +197,28 @@ impl Fast420Scan<'_, '_> {
             plan.scratch_bytes,
         )?;
 
-        let components = FastTile420Components::<N>::resolve(
+        let (components, mut cursor, mut dc) = FastTile420Components::<N>::enter_scan::<4>(
             plan,
-            plan.prefers_wide_huffman(self.scan_bytes.len()),
-        )?;
-        let mut cursor = enter_scan_at_mcu_with(
             self.scan_bytes,
-            plan.restart_interval.unwrap_or(0),
             self.request.checkpoint,
             columns.mcu_position(0, rows.first_row),
-            |br, dc| {
-                let [y_dc, cb_dc, cr_dc] = three_component_dc(dc)?;
-                components.skip_mcu::<4>(br, y_dc, cb_dc, cr_dc)
-            },
         )?;
-        let [mut y_dc, mut cb_dc, mut cr_dc] = *three_component_dc(&mut cursor.prev_dc)?;
         let mut coeff = CoefficientBlock::default();
-        let mut state = FastTile420EntropyState {
+        let mut state = FastRowState {
             br: &mut cursor.br,
-            dc: FastTile420DcState {
-                y: &mut y_dc,
-                cb: &mut cb_dc,
-                cr: &mut cr_dc,
-            },
+            dc: &mut dc,
             coeff: &mut coeff,
             restart: &mut cursor.restart,
         };
 
-        self.decode_rows(components, &mut state, &mut pool.stripe_a, writer, profile)?;
+        self.decode_rows(
+            rows,
+            components,
+            &mut state,
+            &mut pool.stripe_a,
+            writer,
+            profile,
+        )?;
 
         let finish_timer = profile.begin_finish_scan();
         let result = finish_scan(&mut cursor.br, rows.row_end == columns.mcu_rows);
@@ -233,8 +228,9 @@ impl Fast420Scan<'_, '_> {
 
     fn decode_rows<const N: usize, W, P>(
         self,
+        rows: Fast420Rows,
         components: FastTile420Components<'_, N>,
-        state: &mut FastTile420EntropyState<'_, '_>,
+        state: &mut FastRowState<'_, '_>,
         stripe: &mut StripeBuffer,
         writer: &mut W,
         profile: &mut P,
@@ -243,7 +239,6 @@ impl Fast420Scan<'_, '_> {
         W: InterleavedRgbWriter,
         P: Fast420ScanProfiler,
     {
-        let rows = self.rows();
         for mcu_y in rows.first_row..rows.row_end {
             let pass = rows.pass(self.request.roi, mcu_y)?;
             let mcu_timer = profile.begin_mcu_decode();

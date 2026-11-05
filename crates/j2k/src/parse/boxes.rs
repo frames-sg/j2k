@@ -12,9 +12,9 @@ use crate::{
 };
 use j2k_core::{Colorspace, CompressedPayloadKind, InputError};
 use j2k_native::{
-    extract_jp2_codestream_payload as native_extract_jp2_codestream_payload, inspect_jp2_container,
-    DecodeError as NativeDecodeError, FormatError as NativeFormatError,
-    Jp2ChannelAssociation as NativeChannelAssociation,
+    extract_jp2_codestream_payload as native_extract_jp2_codestream_payload,
+    inspect_jp2_container_with_settings, DecodeError as NativeDecodeError,
+    FormatError as NativeFormatError, Jp2ChannelAssociation as NativeChannelAssociation,
     Jp2ChannelDefinition as NativeChannelDefinition, Jp2ChannelType as NativeChannelType,
     Jp2ColorSpec as NativeColorSpec, Jp2ComponentMapping as NativeComponentMapping,
     Jp2ComponentMappingType as NativeComponentMappingType,
@@ -41,8 +41,15 @@ pub(crate) fn extract_jp2_codestream_payload(
     ))
 }
 
-pub(crate) fn parse_jp2(input: &[u8]) -> Result<ParsedImageInfo, J2kError> {
-    let container = inspect_jp2_container(input).map_err(map_native_jp2_error)?;
+/// Parse `input` as a JP2/JPH file with the container recoveries
+/// `settings` allows a decode, so that the metadata returned is the
+/// metadata that decode uses.
+pub(crate) fn parse_jp2(
+    input: &[u8],
+    settings: crate::DecodeSettings,
+) -> Result<ParsedImageInfo, J2kError> {
+    let container = inspect_jp2_container_with_settings(input, &settings.to_native(None))
+        .map_err(map_native_jp2_error)?;
     let payload_kind = payload_kind_from_native(container.file_kind);
     let image_header = image_header_from_native(container.image_header);
     let (file_metadata, metadata_bytes) = file_metadata_from_native(container.metadata)?;

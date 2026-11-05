@@ -27,7 +27,7 @@ pub use packing::pack_rgb8;
 #[cfg(all(feature = "simd", target_arch = "x86_64"))]
 pub(crate) use packing::store_rgb8_x8;
 pub(crate) use packing::{
-    interleave_and_convert_after_mct, interleave_and_convert_region,
+    interleave_and_convert_after_mct, interleave_and_convert_region, round_to_u8,
     validate_interleaved_output_buffer,
 };
 pub(crate) use palette::resolve_palette_indices;

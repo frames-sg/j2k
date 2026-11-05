@@ -7,7 +7,9 @@ use crate::J2kError;
 use core::ops::Range;
 use j2k_core::{PixelFormat, Unsupported};
 
-use super::u8::{component_sample_count, output_rows, validate_component_planes};
+use super::u8::{
+    component_sample_count, output_rows, sample_as_u8_depth8, validate_component_planes,
+};
 
 pub(in crate::decode) fn write_components_u16_output(
     components: &NativeDecodedComponents<'_>,
@@ -244,20 +246,19 @@ fn write_color_component_rows_u16(
     );
 }
 
-/// How [`U16Conversion`] turns a rounded sample into its output.
+/// How [`U16Conversion`] turns a rounded sample into its output. Every kind
+/// rounds and clamps through [`j2k_native::round_clamped_native`], whose low
+/// bits hold the clamped value's two's complement, so a signed component
+/// differs from an unsigned one only in its bounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum U16Kind {
     /// Unsigned 8 bits: the byte times 257, which is its widened value.
     Byte,
-    /// Fewer unsigned bits: the byte's widened value from the table.
-    ByteTable,
-    /// Signed, at most 8 bits: the two's-complement byte's widened value.
-    SignedByteTable,
-    /// Unsigned, 9 bits or more: the sample clamped to 16 bits.
-    Unsigned,
-    /// Signed, 9 bits or more: the two's complement of the sample clamped
-    /// to 16 bits.
-    Signed,
+    /// Other components of at most 8 bits: the low byte's widened value from
+    /// the table.
+    Table,
+    /// 9 to 16 bits, and deeper components clamped to 16: the low 16 bits.
+    Wide,
 }
 
 /// Converts the decoded samples of one component of `bit_depth` bits to
@@ -277,16 +278,14 @@ struct U16Conversion {
 impl U16Conversion {
     fn new(bit_depth: u8, signed: bool) -> Self {
         if bit_depth <= 8 {
+            // Unsigned samples clamp to a byte, not to their own range, and
+            // the table widens every byte.
             let (kind, bounds) = if signed {
-                let magnitude = 1_i16 << bit_depth.saturating_sub(1);
-                (
-                    U16Kind::SignedByteTable,
-                    (f32::from(-magnitude), f32::from(magnitude - 1)),
-                )
+                (U16Kind::Table, j2k_native::signed_native_bounds(bit_depth))
             } else if bit_depth == 8 {
                 (U16Kind::Byte, (0.0, f32::from(u8::MAX)))
             } else {
-                (U16Kind::ByteTable, (0.0, f32::from(u8::MAX)))
+                (U16Kind::Table, (0.0, f32::from(u8::MAX)))
             };
             return Self {
                 kind,
@@ -294,33 +293,19 @@ impl U16Conversion {
                 widened: widened_u8_samples(bit_depth),
             };
         }
-        let (kind, bounds) = if signed {
-            let magnitude = 1_i32 << (bit_depth.min(16) - 1);
-            (
-                U16Kind::Signed,
-                (
-                    f32::from(i16::try_from(-magnitude).unwrap_or(i16::MIN)),
-                    f32::from(i16::try_from(magnitude - 1).unwrap_or(i16::MAX)),
-                ),
-            )
+        let bounds = if signed {
+            j2k_native::signed_native_bounds(bit_depth)
         } else {
-            let max = (1_u32 << bit_depth.min(16)) - 1;
-            (
-                U16Kind::Unsigned,
-                (0.0, f32::from(u16::try_from(max).unwrap_or(u16::MAX))),
-            )
+            (0.0, j2k_native::unsigned_native_max(bit_depth))
         };
         Self {
-            kind,
+            kind: U16Kind::Wide,
             bounds,
             widened: [0; 256],
         }
     }
 
-    /// Hand `writer` this conversion as a closure of its kind. Each rounds
-    /// and clamps as native packing does (see
-    /// [`j2k_native::round_clamped_native`]), whose low bits hold the
-    /// clamped value's two's complement.
+    /// Hand `writer` this conversion as a closure of its kind.
     #[expect(
         clippy::cast_possible_truncation,
         clippy::inline_always,
@@ -333,17 +318,15 @@ impl U16Conversion {
         match self.kind {
             U16Kind::Byte => writer.write(
                 #[inline(always)]
-                |sample: f32| {
-                    u16::from(j2k_native::round_clamped_native(sample, min, max) as u8) * 257
-                },
+                |sample: f32| u16::from(sample_as_u8_depth8(sample)) * 257,
             ),
-            U16Kind::ByteTable | U16Kind::SignedByteTable => writer.write(
+            U16Kind::Table => writer.write(
                 #[inline(always)]
                 |sample: f32| {
                     widened[usize::from(j2k_native::round_clamped_native(sample, min, max) as u8)]
                 },
             ),
-            U16Kind::Unsigned | U16Kind::Signed => writer.write(
+            U16Kind::Wide => writer.write(
                 #[inline(always)]
                 |sample: f32| j2k_native::round_clamped_native(sample, min, max) as u16,
             ),
@@ -451,13 +434,42 @@ pub(in crate::decode) fn write_u16_output(
     stride: usize,
     fmt: PixelFormat,
 ) -> Result<(), J2kError> {
+    let rows = 0..raw.height as usize;
+    write_u16_output_rows(color_space, has_alpha, raw, rows, out, stride, fmt)
+}
+
+/// Write rows `rows` of `raw` to `out` from its first row, as
+/// [`write_u16_output`] writes those rows of the whole bitmap.
+pub(in crate::decode) fn write_u16_output_rows(
+    color_space: &ColorSpace,
+    has_alpha: bool,
+    raw: &RawBitmap,
+    rows: Range<usize>,
+    out: &mut [u8],
+    stride: usize,
+    fmt: PixelFormat,
+) -> Result<(), J2kError> {
     let width = raw.width as usize;
-    let height = raw.height as usize;
+    if rows.start > rows.end || rows.end > raw.height as usize {
+        return Err(J2kError::internal_backend("bitmap rows outside the bitmap"));
+    }
+    let height = rows.len();
+    let row_bytes = width
+        .checked_mul(usize::from(raw.num_components))
+        .and_then(|samples| samples.checked_mul(usize::from(raw.bytes_per_sample)))
+        .ok_or(J2kError::DimensionOverflow {
+            width: raw.width,
+            height: raw.height,
+        })?;
+    let data = raw
+        .data
+        .get(rows.start * row_bytes..rows.end * row_bytes)
+        .ok_or_else(|| J2kError::internal_backend("bitmap shorter than its rows"))?;
     let signed = channel_signedness(raw);
     match (color_space, has_alpha, raw.num_components, fmt) {
         (ColorSpace::RGB, false, 3, PixelFormat::Rgb16) => {
             convert_or_copy_u16(
-                &raw.data,
+                data,
                 raw.bytes_per_sample,
                 raw.bit_depth,
                 &signed[..3],
@@ -469,7 +481,7 @@ pub(in crate::decode) fn write_u16_output(
         }
         (ColorSpace::RGB, true, 4, PixelFormat::Rgb16) => {
             write_u16_channel_rows(U16ChannelRows {
-                src: &raw.data,
+                src: data,
                 bytes_per_sample: raw.bytes_per_sample,
                 bit_depth: raw.bit_depth,
                 signed,
@@ -483,7 +495,7 @@ pub(in crate::decode) fn write_u16_output(
         }
         (ColorSpace::RGB, false, 3, PixelFormat::Rgba16) => {
             write_u16_channel_rows(U16ChannelRows {
-                src: &raw.data,
+                src: data,
                 bytes_per_sample: raw.bytes_per_sample,
                 bit_depth: raw.bit_depth,
                 signed,
@@ -497,7 +509,7 @@ pub(in crate::decode) fn write_u16_output(
         }
         (ColorSpace::RGB, true, 4, PixelFormat::Rgba16) => {
             write_u16_channel_rows(U16ChannelRows {
-                src: &raw.data,
+                src: data,
                 bytes_per_sample: raw.bytes_per_sample,
                 bit_depth: raw.bit_depth,
                 signed,
@@ -511,7 +523,7 @@ pub(in crate::decode) fn write_u16_output(
         }
         (ColorSpace::Gray, false, 1, PixelFormat::Gray16) => {
             convert_or_copy_u16(
-                &raw.data,
+                data,
                 raw.bytes_per_sample,
                 raw.bit_depth,
                 &signed[..1],

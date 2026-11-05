@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::*;
+use crate::adapter::JpegFastPacketFamily;
+use crate::backend::Rgb420Crop;
 use crate::color::scaled_sampling::ScaledSampling;
 use crate::entropy::huffman::{HuffmanTable, PreparedHuffmanTables, FULL_PRIMARY_ENTRIES};
 use crate::info::{ColorSpace, SamplingFactors};
@@ -14,7 +16,10 @@ use j2k_test_support::JPEG_BASELINE_420_16X16;
 #[test]
 fn fast_tile_rgb_matches_generic_baseline_decode() {
     let dec = Decoder::new(JPEG_BASELINE_420_16X16).expect("fixture must parse");
-    assert_eq!(dec.plan.fast_rgb_route(), Some(FastRgbRoute::Fancy420));
+    assert_eq!(
+        dec.plan.fast_shape_family(),
+        Some(JpegFastPacketFamily::Fast420)
+    );
     assert_eq!(dec.plan.huffman_primary_width, HuffmanPrimaryWidth::Narrow8);
 
     let mut generic = vec![0u8; (dec.info.dimensions.0 * dec.info.dimensions.1 * 3) as usize];
@@ -43,7 +48,7 @@ fn fast_tile_rgb_matches_generic_baseline_decode() {
         Rect::full(dec.info.dimensions),
     )
     .expect("generic path must decode");
-    FastRgbRoute::Fancy420
+    JpegFastPacketFamily::Fast420
         .decode(
             &dec.plan,
             dec.backend,
@@ -64,7 +69,10 @@ fn fast_tile_rgb_matches_generic_baseline_decode() {
 #[test]
 fn fast_tile_profiled_rgb_matches_unprofiled_decode() {
     let dec = Decoder::new(JPEG_BASELINE_420_16X16).expect("fixture must parse");
-    assert_eq!(dec.plan.fast_rgb_route(), Some(FastRgbRoute::Fancy420));
+    assert_eq!(
+        dec.plan.fast_shape_family(),
+        Some(JpegFastPacketFamily::Fast420)
+    );
 
     let mut unprofiled = vec![0u8; (dec.info.dimensions.0 * dec.info.dimensions.1 * 3) as usize];
     let mut profiled = vec![0u8; unprofiled.len()];
@@ -83,7 +91,7 @@ fn fast_tile_profiled_rgb_matches_unprofiled_decode() {
     let mut profile = BenchFast420Profile::default();
     let scan_bytes = &dec.bytes[dec.plan.scan_offset..];
 
-    FastRgbRoute::Fancy420
+    JpegFastPacketFamily::Fast420
         .decode(
             &dec.plan,
             dec.backend,
@@ -169,30 +177,21 @@ fn fast_tile_row_decoder_deposits_below_the_halo_row() {
     };
     let mut br = BitReader::new(&[0u8; 16]);
     let mut coeff = CoefficientBlock::default();
-    let [mut y_dc, mut cb_dc, mut cr_dc] = [0; 3];
+    let mut dc = [0; 3];
     let mut restart = RestartState::new(0);
     let mut profiler = NoopFast420Profiler;
 
     decode_mcu_row_fast_tile_420(
         components,
         Backend::detect(),
-        &mut FastTile420EntropyState {
+        &mut FastRowState {
             br: &mut br,
-            dc: FastTile420DcState {
-                y: &mut y_dc,
-                cb: &mut cb_dc,
-                cr: &mut cr_dc,
-            },
+            dc: &mut dc,
             coeff: &mut coeff,
             restart: &mut restart,
         },
         FastTile420Window {
-            columns: McuColumns {
-                mcus_per_row: 2,
-                mcu_rows: 1,
-                stripe_mcu_start: 0,
-                stripe_mcus_per_row: 2,
-            },
+            columns: McuColumns::whole_rows((2, 1)),
             right_luma: true,
             bottom_luma: true,
         },
@@ -220,7 +219,9 @@ fn fast_tile_region_layout_shrinks_horizontal_stripe_span() {
         h: 8,
     };
 
-    let region = StripeRegionLayout::for_fancy_420(64, roi);
+    let mut dec = Decoder::new(JPEG_BASELINE_420_16X16).expect("fixture must parse");
+    dec.plan.dimensions = (64, 16);
+    let region = stripe_region_layout(&dec.plan, DownscaleFactor::Full, roi);
     let crop = CropWindow::new(region, roi);
 
     assert_eq!(region.stripe_mcu_start, 0);
@@ -624,8 +625,7 @@ fn emit_stripe_rgb_rows_matches_direct_ycbcr_conversion_with_trailing_row() {
         roi: Rect::full(plan.dimensions),
         crop: CropWindow {
             row_width: width,
-            crop_start: 0,
-            crop_width: width,
+            crop: Rgb420Crop::new(0, width),
         },
     }
     .emit_stripe_rgb_rows(&stripe, 0, &mut YCbCrGenericRows::default(), &mut writer)

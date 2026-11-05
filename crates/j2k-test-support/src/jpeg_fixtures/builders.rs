@@ -398,8 +398,7 @@ pub fn extended_12bit_ycbcr_420_32x32_rgb16() -> Vec<u8> {
         for x in 0..32 {
             let cb = upsample_h2v2_12bit_for_fixture(&blue_difference_plane, x, y);
             let cr = upsample_h2v2_12bit_for_fixture(&red_difference_plane, x, y);
-            let rgb = ycbcr12_to_rgb16_for_fixture(2064, cb, cr);
-            append_rgb16_pixel(&mut out, rgb.into());
+            append_rgb16_pixel(&mut out, ycbcr12_to_rgb16_for_fixture(2064, cb, cr));
         }
     }
     out
@@ -1614,20 +1613,19 @@ fn lossless_color_8bit_422_jpeg_impl(
     bytes.extend_from_slice(&[
         0xff, 0xda, 0x00, 0x0c, 3, 1, 0x00, 2, 0x00, 3, 0x00, predictor, 0, 0,
     ]);
-    let entropy = restart_interval.map_or_else(
-        || lossless_422_entropy_8bit(width, height, predictor, planes.c0, planes.c1, planes.c2),
-        |restart_interval| {
-            lossless_422_entropy_8bit_with_restarts(
-                width,
-                height,
-                predictor,
-                planes.c0,
-                planes.c1,
-                planes.c2,
-                restart_interval,
-            )
-        },
-    );
+    let entropy = if let Some(restart_interval) = restart_interval {
+        lossless_422_entropy_8bit_with_restarts(
+            width,
+            height,
+            predictor,
+            planes.c0,
+            planes.c1,
+            planes.c2,
+            restart_interval,
+        )
+    } else {
+        lossless_422_entropy_8bit(width, height, predictor, planes.c0, planes.c1, planes.c2)
+    };
     bytes.extend(entropy);
     bytes.extend_from_slice(&[0xff, 0xd9]);
     bytes
@@ -1705,18 +1703,11 @@ fn lossless_color_8bit_420_jpeg_impl(
     bytes.extend_from_slice(&[
         0xff, 0xda, 0x00, 0x0c, 3, 1, 0x00, 2, 0x00, 3, 0x00, predictor, 0, 0,
     ]);
-    let entropy = restart_interval.map_or_else(
-        || lossless_420_entropy_8bit(width, height, predictor, planes),
-        |restart_interval| {
-            lossless_420_entropy_8bit_with_restarts(
-                width,
-                height,
-                predictor,
-                planes,
-                restart_interval,
-            )
-        },
-    );
+    let entropy = if let Some(restart_interval) = restart_interval {
+        lossless_420_entropy_8bit_with_restarts(width, height, predictor, planes, restart_interval)
+    } else {
+        lossless_420_entropy_8bit(width, height, predictor, planes)
+    };
     bytes.extend(entropy);
     bytes.extend_from_slice(&[0xff, 0xd9]);
     bytes
@@ -1793,20 +1784,19 @@ fn lossless_color_16bit_422_jpeg_impl(
     bytes.extend_from_slice(&[
         0xff, 0xda, 0x00, 0x0c, 3, 1, 0x00, 2, 0x00, 3, 0x00, predictor, 0, 0,
     ]);
-    let entropy = restart_interval.map_or_else(
-        || lossless_422_entropy_16bit(width, height, predictor, planes.c0, planes.c1, planes.c2),
-        |restart_interval| {
-            lossless_422_entropy_16bit_with_restarts(
-                width,
-                height,
-                predictor,
-                planes.c0,
-                planes.c1,
-                planes.c2,
-                restart_interval,
-            )
-        },
-    );
+    let entropy = if let Some(restart_interval) = restart_interval {
+        lossless_422_entropy_16bit_with_restarts(
+            width,
+            height,
+            predictor,
+            planes.c0,
+            planes.c1,
+            planes.c2,
+            restart_interval,
+        )
+    } else {
+        lossless_422_entropy_16bit(width, height, predictor, planes.c0, planes.c1, planes.c2)
+    };
     bytes.extend(entropy);
     bytes.extend_from_slice(&[0xff, 0xd9]);
     bytes
@@ -1884,18 +1874,11 @@ fn lossless_color_16bit_420_jpeg_impl(
     bytes.extend_from_slice(&[
         0xff, 0xda, 0x00, 0x0c, 3, 1, 0x00, 2, 0x00, 3, 0x00, predictor, 0, 0,
     ]);
-    let entropy = restart_interval.map_or_else(
-        || lossless_420_entropy_16bit(width, height, predictor, planes),
-        |restart_interval| {
-            lossless_420_entropy_16bit_with_restarts(
-                width,
-                height,
-                predictor,
-                planes,
-                restart_interval,
-            )
-        },
-    );
+    let entropy = if let Some(restart_interval) = restart_interval {
+        lossless_420_entropy_16bit_with_restarts(width, height, predictor, planes, restart_interval)
+    } else {
+        lossless_420_entropy_16bit(width, height, predictor, planes)
+    };
     bytes.extend(entropy);
     bytes.extend_from_slice(&[0xff, 0xd9]);
     bytes

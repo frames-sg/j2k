@@ -395,7 +395,7 @@ fn pack_rgb8_blocks<S: fearless_simd::Simd>(
     reason = "8-bit samples are rounded and saturated to the stable 8-bit output format; inlined into the dispatched packing loops"
 )]
 #[inline(always)]
-fn round_to_u8(sample: f32) -> u8 {
+pub(crate) fn round_to_u8(sample: f32) -> u8 {
     math::round_f32(sample) as u8
 }
 

@@ -1,0 +1,2075 @@
+diff --git a/crates/j2k-codec-math/src/jpeg.rs b/crates/j2k-codec-math/src/jpeg.rs
+index 45fe0ff..c0614ab 100644
+--- a/crates/j2k-codec-math/src/jpeg.rs
++++ b/crates/j2k-codec-math/src/jpeg.rs
+@@ -2,6 +2,9 @@
+ 
+ use core::fmt;
+ 
++/// Integer "slow" inverse DCT (ISLOW): fixed-point constants and the 1-D,
++/// pass, and block transforms shared by CPU and device backends.
++pub mod idct;
+ /// Lossless (SOF3) prediction and difference coding.
+ pub mod lossless;
+ 
+@@ -144,39 +147,6 @@ pub const fn derive_canonical_huffman(
+     })
+ }
+ 
+-/// Fixed-point constants used by the baseline JPEG integer IDCT.
+-pub mod idct {
+-    /// Number of fractional bits in the integer IDCT constants.
+-    pub const CONST_BITS: usize = 13;
+-    /// First-pass post-IDCT scaling bits.
+-    pub const PASS1_BITS: usize = 2;
+-
+-    /// Fixed-point integer approximation of 0.298631336.
+-    pub const FIX_0_298631336: i32 = 2_446;
+-    /// Fixed-point integer approximation of 0.390180644.
+-    pub const FIX_0_390180644: i32 = 3_196;
+-    /// Fixed-point integer approximation of 0.541196100.
+-    pub const FIX_0_541196100: i32 = 4_433;
+-    /// Fixed-point integer approximation of 0.765366865.
+-    pub const FIX_0_765366865: i32 = 6_270;
+-    /// Fixed-point integer approximation of 0.899976223.
+-    pub const FIX_0_899976223: i32 = 7_373;
+-    /// Fixed-point integer approximation of 1.175875602.
+-    pub const FIX_1_175875602: i32 = 9_633;
+-    /// Fixed-point integer approximation of 1.501321110.
+-    pub const FIX_1_501321110: i32 = 12_299;
+-    /// Fixed-point integer approximation of 1.847759065.
+-    pub const FIX_1_847759065: i32 = 15_137;
+-    /// Fixed-point integer approximation of 1.961570560.
+-    pub const FIX_1_961570560: i32 = 16_069;
+-    /// Fixed-point integer approximation of 2.053119869.
+-    pub const FIX_2_053119869: i32 = 16_819;
+-    /// Fixed-point integer approximation of 2.562915447.
+-    pub const FIX_2_562915447: i32 = 20_995;
+-    /// Fixed-point integer approximation of 3.072711026.
+-    pub const FIX_3_072711026: i32 = 25_172;
+-}
+-
+ /// Fixed-point constants used by JPEG YCbCr to RGB conversion.
+ pub mod ycbcr {
+     /// Fixed-point integer approximation of 1.40200 * 2^16.
+diff --git a/crates/j2k-codec-math/src/jpeg/idct.rs b/crates/j2k-codec-math/src/jpeg/idct.rs
+new file mode 100644
+index 0000000..b9f102f
+--- /dev/null
++++ b/crates/j2k-codec-math/src/jpeg/idct.rs
+@@ -0,0 +1,921 @@
++//! Integer "slow" inverse DCT (ISLOW) of baseline and 12-bit JPEG.
++//!
++//! This module is the workspace's one implementation of the ISLOW maths,
++//! bit-exact with libjpeg-turbo's `jidctint.c` (8x8) and `jidctred.c` (4x4,
++//! 2x2, 1x1). The CPU scalar decoder, the CPU transcode oracle, and the
++//! CUDA-Oxide decode and transcode kernels call it; the CPU SIMD kernels take
++//! their constants and [`ISLOW_GAINS`] from it; the Metal shaders include a
++//! constant fragment that `j2k-jpeg-metal`'s build script renders from it.
++//!
++//! Inputs are dequantized coefficients in natural (row-major) order. The 8-bit
++//! transforms compute in `i32` with wrapping arithmetic, so intermediate
++//! overflow on malformed coefficients wraps modulo 2^32 as in libjpeg-turbo
++//! instead of panicking. The 12-bit transforms compute in `i64` (`JLONG`),
++//! where `i16` inputs cannot overflow.
++//!
++//! Every transform is `#[inline]`, which exports the MIR the cuda-oxide device
++//! compiler needs; rustc exports it unprompted only for leaf functions. The
++//! passes and row loads the block loops call are `#[inline(always)]`: left to
++//! its cost model, LLVM calls them out of line from the unrolled loops and
++//! moves every `[i32; 8]` through memory.
++
++/// Number of fractional bits in the integer IDCT constants.
++pub const CONST_BITS: usize = 13;
++/// First-pass post-IDCT scaling bits.
++pub const PASS1_BITS: usize = 2;
++
++/// Fixed-point integer approximation of 0.298631336.
++pub const FIX_0_298631336: i32 = 2_446;
++/// Fixed-point integer approximation of 0.390180644.
++pub const FIX_0_390180644: i32 = 3_196;
++/// Fixed-point integer approximation of 0.541196100.
++pub const FIX_0_541196100: i32 = 4_433;
++/// Fixed-point integer approximation of 0.765366865.
++pub const FIX_0_765366865: i32 = 6_270;
++/// Fixed-point integer approximation of 0.899976223.
++pub const FIX_0_899976223: i32 = 7_373;
++/// Fixed-point integer approximation of 1.175875602.
++pub const FIX_1_175875602: i32 = 9_633;
++/// Fixed-point integer approximation of 1.501321110.
++pub const FIX_1_501321110: i32 = 12_299;
++/// Fixed-point integer approximation of 1.847759065.
++pub const FIX_1_847759065: i32 = 15_137;
++/// Fixed-point integer approximation of 1.961570560.
++pub const FIX_1_961570560: i32 = 16_069;
++/// Fixed-point integer approximation of 2.053119869.
++pub const FIX_2_053119869: i32 = 16_819;
++/// Fixed-point integer approximation of 2.562915447.
++pub const FIX_2_562915447: i32 = 20_995;
++/// Fixed-point integer approximation of 3.072711026.
++pub const FIX_3_072711026: i32 = 25_172;
++
++/// Fixed-point integer approximation of 0.211164243 (reduced-size IDCTs).
++pub const FIX_0_211164243: i32 = 1_730;
++/// Fixed-point integer approximation of 0.509795579 (reduced-size IDCTs).
++pub const FIX_0_509795579: i32 = 4_176;
++/// Fixed-point integer approximation of 0.601344887 (reduced-size IDCTs).
++pub const FIX_0_601344887: i32 = 4_926;
++/// Fixed-point integer approximation of 0.720959822 (reduced-size IDCTs).
++pub const FIX_0_720959822: i32 = 5_906;
++/// Fixed-point integer approximation of 0.850430095 (reduced-size IDCTs).
++pub const FIX_0_850430095: i32 = 6_967;
++/// Fixed-point integer approximation of 1.061594337 (reduced-size IDCTs).
++pub const FIX_1_061594337: i32 = 8_697;
++/// Fixed-point integer approximation of 1.272758580 (reduced-size IDCTs).
++pub const FIX_1_272758580: i32 = 10_426;
++/// Fixed-point integer approximation of 1.451774981 (reduced-size IDCTs).
++pub const FIX_1_451774981: i32 = 11_893;
++/// Fixed-point integer approximation of 2.172734803 (reduced-size IDCTs).
++pub const FIX_2_172734803: i32 = 17_799;
++/// Fixed-point integer approximation of 3.624509785 (reduced-size IDCTs).
++pub const FIX_3_624509785: i32 = 29_692;
++
++#[expect(
++    clippy::cast_possible_truncation,
++    clippy::cast_possible_wrap,
++    reason = "IDCT bit counts are small positive compile-time values"
++)]
++const fn bits(count: usize) -> i32 {
++    count as i32
++}
++
++/// Right shift ending the 8-bit column pass.
++pub const PASS1_SHIFT: i32 = bits(CONST_BITS) - bits(PASS1_BITS);
++/// Right shift ending the 8-bit row pass, including the 1/8 normalisation.
++pub const PASS2_SHIFT: i32 = bits(CONST_BITS) + bits(PASS1_BITS) + 3;
++/// Round-half-up addend of the 8-bit column pass.
++pub const PASS1_ROUNDING: i32 = 1 << (PASS1_SHIFT - 1);
++/// Round-half-up addend of the 8-bit row pass.
++pub const PASS2_ROUNDING: i32 = 1 << (PASS2_SHIFT - 1);
++/// The row pass's DC-only shortcut is `(p0 + DC_ROUNDING) >> DC_SHIFT`; it
++/// equals the full row transform while `p0 << CONST_BITS` fits in `i32`.
++pub const DC_SHIFT: i32 = bits(PASS1_BITS) + 3;
++/// Round-half-up addend of the row pass's DC-only shortcut.
++pub const DC_ROUNDING: i32 = 1 << (DC_SHIFT - 1);
++
++/// Fraction bits the 12-bit transforms keep between their passes:
++/// libjpeg-turbo's `jidctint.c` keeps one instead of [`PASS1_BITS`] to leave
++/// headroom.
++pub const PASS1_BITS_12: i32 = 1;
++/// Right shift ending the 12-bit column pass.
++pub const PASS1_SHIFT_12: i32 = bits(CONST_BITS) - PASS1_BITS_12;
++/// Right shift ending the 12-bit row pass, including the 1/8 normalisation.
++pub const PASS2_SHIFT_12: i32 = bits(CONST_BITS) + PASS1_BITS_12 + 3;
++
++/// The matrix of [`islow_1d`], in units of `2^-CONST_BITS`.
++///
++/// `islow_1d(p)[j] == sum_k ISLOW_GAINS[j][k] * p[k]`: it is the transform's
++/// impulse response, for SIMD kernels that multiply inputs by per-output
++/// gains instead of sharing the `z1..z5` products.
++pub const ISLOW_GAINS: [[i32; 8]; 8] = islow_gains();
++
++const fn islow_gains() -> [[i32; 8]; 8] {
++    let mut gains = [[0; 8]; 8];
++    let mut k = 0;
++    while k < 8 {
++        let mut impulse = [0; 8];
++        impulse[k] = 1;
++        let response = islow_1d(impulse);
++        let mut j = 0;
++        while j < 8 {
++            gains[j][k] = response[j];
++            j += 1;
++        }
++        k += 1;
++    }
++    gains
++}
++
++/// `(max_gain, max_l1)` of [`ISLOW_GAINS`].
++///
++/// These are the largest gain magnitude of any input into any output (11,363)
++/// and the largest L1 norm of one output's gains (61,214). A 1-D output is at
++/// most `max_gain * sum(|p|)` and at most `max_l1 * max(|p|)` before
++/// rounding; SIMD kernels derive their overflow bounds from these.
++#[must_use]
++pub const fn islow_gain_bounds() -> (i32, i32) {
++    let (mut max_gain, mut max_l1) = (0, 0);
++    let mut j = 0;
++    while j < 8 {
++        let mut l1 = 0;
++        let mut k = 0;
++        while k < 8 {
++            let gain = ISLOW_GAINS[j][k].abs();
++            if gain > max_gain {
++                max_gain = gain;
++            }
++            l1 += gain;
++            k += 1;
++        }
++        if l1 > max_l1 {
++            max_l1 = l1;
++        }
++        j += 1;
++    }
++    (max_gain, max_l1)
++}
++
++#[inline]
++const fn fix_i32(constant: i32) -> i32 {
++    constant
++}
++
++#[inline]
++const fn fix_i64(constant: i32) -> i64 {
++    constant as i64
++}
++
++// Stamps out the 1-D transforms for one arithmetic type. Only ring
++// operations (`+`, `-`, `*`, `<<`) appear, so the `i32` instances agree bit
++// for bit with any evaluation order of the same products modulo 2^32.
++macro_rules! islow_butterflies {
++    (
++        $t:ty, $fix:ident,
++        $(#[$full_meta:meta])* fn $full:ident,
++        $(#[$half_meta:meta])* fn $half:ident,
++        $(#[$quarter_meta:meta])* fn $quarter:ident $(,)?
++    ) => {
++        $(#[$full_meta])*
++        #[inline]
++        #[must_use]
++        pub const fn $full(p: [$t; 8]) -> [$t; 8] {
++            // Even part: rotation of p2/p6 and the p0/p4 butterfly.
++            let z1 = p[2].wrapping_add(p[6]).wrapping_mul($fix(FIX_0_541196100));
++            let tmp2 = z1.wrapping_add(p[6].wrapping_mul($fix(-FIX_1_847759065)));
++            let tmp3 = z1.wrapping_add(p[2].wrapping_mul($fix(FIX_0_765366865)));
++            let tmp0 = p[0].wrapping_add(p[4]) << CONST_BITS;
++            let tmp1 = p[0].wrapping_sub(p[4]) << CONST_BITS;
++            let tmp10 = tmp0.wrapping_add(tmp3);
++            let tmp13 = tmp0.wrapping_sub(tmp3);
++            let tmp11 = tmp1.wrapping_add(tmp2);
++            let tmp12 = tmp1.wrapping_sub(tmp2);
++
++            // Odd part: Chen-Wang rotations sharing the z1..z5 products.
++            let (tmp0, tmp1, tmp2, tmp3) = (p[7], p[5], p[3], p[1]);
++            let z1 = tmp0.wrapping_add(tmp3);
++            let z2 = tmp1.wrapping_add(tmp2);
++            let z3 = tmp0.wrapping_add(tmp2);
++            let z4 = tmp1.wrapping_add(tmp3);
++            let z5 = z3.wrapping_add(z4).wrapping_mul($fix(FIX_1_175875602));
++            let tmp0 = tmp0.wrapping_mul($fix(FIX_0_298631336));
++            let tmp1 = tmp1.wrapping_mul($fix(FIX_2_053119869));
++            let tmp2 = tmp2.wrapping_mul($fix(FIX_3_072711026));
++            let tmp3 = tmp3.wrapping_mul($fix(FIX_1_501321110));
++            let z1 = z1.wrapping_mul($fix(-FIX_0_899976223));
++            let z2 = z2.wrapping_mul($fix(-FIX_2_562915447));
++            let z3 = z3.wrapping_mul($fix(-FIX_1_961570560)).wrapping_add(z5);
++            let z4 = z4.wrapping_mul($fix(-FIX_0_390180644)).wrapping_add(z5);
++            let tmp0 = tmp0.wrapping_add(z1).wrapping_add(z3);
++            let tmp1 = tmp1.wrapping_add(z2).wrapping_add(z4);
++            let tmp2 = tmp2.wrapping_add(z2).wrapping_add(z3);
++            let tmp3 = tmp3.wrapping_add(z1).wrapping_add(z4);
++
++            [
++                tmp10.wrapping_add(tmp3),
++                tmp11.wrapping_add(tmp2),
++                tmp12.wrapping_add(tmp1),
++                tmp13.wrapping_add(tmp0),
++                tmp13.wrapping_sub(tmp0),
++                tmp12.wrapping_sub(tmp1),
++                tmp11.wrapping_sub(tmp2),
++                tmp10.wrapping_sub(tmp3),
++            ]
++        }
++
++        $(#[$half_meta])*
++        #[inline]
++        #[must_use]
++        pub const fn $half(p: [$t; 8]) -> [$t; 4] {
++            let tmp0 = p[0] << (CONST_BITS + 1);
++            let tmp2 = p[2]
++                .wrapping_mul($fix(FIX_1_847759065))
++                .wrapping_add(p[6].wrapping_mul($fix(-FIX_0_765366865)));
++            let tmp10 = tmp0.wrapping_add(tmp2);
++            let tmp12 = tmp0.wrapping_sub(tmp2);
++
++            let (z1, z2, z3, z4) = (p[7], p[5], p[3], p[1]);
++            let tmp0 = z1
++                .wrapping_mul($fix(-FIX_0_211164243))
++                .wrapping_add(z2.wrapping_mul($fix(FIX_1_451774981)))
++                .wrapping_add(z3.wrapping_mul($fix(-FIX_2_172734803)))
++                .wrapping_add(z4.wrapping_mul($fix(FIX_1_061594337)));
++            let tmp2 = z1
++                .wrapping_mul($fix(-FIX_0_509795579))
++                .wrapping_add(z2.wrapping_mul($fix(-FIX_0_601344887)))
++                .wrapping_add(z3.wrapping_mul($fix(FIX_0_899976223)))
++                .wrapping_add(z4.wrapping_mul($fix(FIX_2_562915447)));
++
++            [
++                tmp10.wrapping_add(tmp2),
++                tmp12.wrapping_add(tmp0),
++                tmp12.wrapping_sub(tmp0),
++                tmp10.wrapping_sub(tmp2),
++            ]
++        }
++
++        $(#[$quarter_meta])*
++        #[inline]
++        #[must_use]
++        pub const fn $quarter(p: [$t; 8]) -> [$t; 2] {
++            let tmp10 = p[0] << (CONST_BITS + 2);
++            let tmp0 = p[7]
++                .wrapping_mul($fix(-FIX_0_720959822))
++                .wrapping_add(p[5].wrapping_mul($fix(FIX_0_850430095)))
++                .wrapping_add(p[3].wrapping_mul($fix(-FIX_1_272758580)))
++                .wrapping_add(p[1].wrapping_mul($fix(FIX_3_624509785)));
++            [tmp10.wrapping_add(tmp0), tmp10.wrapping_sub(tmp0)]
++        }
++    };
++}
++
++islow_butterflies!(
++    i32,
++    fix_i32,
++    /// The 8-point ISLOW transform (`jidctint.c`).
++    ///
++    /// It transforms one row or column `p` of the 8-bit block in wrapping
++    /// `i32` arithmetic. Outputs are scaled by `2^CONST_BITS` and not yet
++    /// rounded or shifted.
++    fn islow_1d,
++    /// The 4-point reduced ISLOW (`jpeg_idct_4x4` in `jidctred.c`).
++    ///
++    /// It transforms one row or column `p` of the 8-bit block; `p[4]` is
++    /// unused. Outputs are scaled by `2^(CONST_BITS + 1)` and not yet rounded
++    /// or shifted.
++    fn islow_1d_4,
++    /// The 2-point reduced ISLOW (`jpeg_idct_2x2` in `jidctred.c`).
++    ///
++    /// It transforms one row or column `p` of the 8-bit block; `p[2]`, `p[4]`
++    /// and `p[6]` are unused. Outputs are scaled by `2^(CONST_BITS + 2)` and
++    /// not yet rounded or shifted.
++    fn islow_1d_2,
++);
++
++islow_butterflies!(
++    i64,
++    fix_i64,
++    /// [`islow_1d`] in `i64` (`JLONG`) arithmetic, for the 12-bit transforms.
++    fn islow_1d_i64,
++    /// [`islow_1d_4`] in `i64` (`JLONG`) arithmetic, for the 12-bit
++    /// transforms.
++    fn islow_1d_4_i64,
++    /// [`islow_1d_2`] in `i64` (`JLONG`) arithmetic, for the 12-bit
++    /// transforms.
++    fn islow_1d_2_i64,
++);
++
++/// libjpeg's `DESCALE`: add half of `2^shift`, then shift right
++/// arithmetically (round half up).
++#[inline]
++#[must_use]
++pub const fn descale(value: i32, shift: i32) -> i32 {
++    value.wrapping_add(1 << (shift - 1)) >> shift
++}
++
++#[inline]
++const fn descale_i64(value: i64, shift: i32) -> i64 {
++    (value + (1 << (shift - 1))) >> shift
++}
++
++#[inline]
++const fn descale_8(values: [i32; 8], shift: i32) -> [i32; 8] {
++    let mut out = [0; 8];
++    let mut i = 0;
++    while i < 8 {
++        out[i] = descale(values[i], shift);
++        i += 1;
++    }
++    out
++}
++
++/// The column (first) pass of the 8-bit transform, without zero shortcuts:
++/// [`islow_1d`] rounded and shifted by [`PASS1_SHIFT`].
++#[inline]
++#[must_use]
++pub const fn islow_pass1(p: [i32; 8]) -> [i32; 8] {
++    descale_8(islow_1d(p), PASS1_SHIFT)
++}
++
++/// The row (second) pass of the 8-bit transform, without zero shortcuts:
++/// [`islow_1d`] rounded and shifted by [`PASS2_SHIFT`]. Samples are signed;
++/// [`sample_u8`] level-shifts and clamps them.
++#[inline]
++#[must_use]
++pub const fn islow_pass2(p: [i32; 8]) -> [i32; 8] {
++    descale_8(islow_1d(p), PASS2_SHIFT)
++}
++
++#[inline]
++const fn ac_is_zero(p: &[i32; 8]) -> bool {
++    p[1] == 0 && p[2] == 0 && p[3] == 0 && p[4] == 0 && p[5] == 0 && p[6] == 0 && p[7] == 0
++}
++
++/// [`islow_pass1`] with `jidctint.c`'s AC-zero column shortcut.
++///
++/// A column whose AC terms are zero gives `p[0] << PASS1_BITS` in every
++/// output. The shortcut equals the full pass while `p[0] << CONST_BITS` fits
++/// in `i32`, which holds for every `i16` input.
++#[expect(
++    clippy::inline_always,
++    reason = "measured: out of line, the 8x8 block loops pass every column and row through memory"
++)]
++#[inline(always)]
++#[must_use]
++pub const fn islow_column(p: [i32; 8]) -> [i32; 8] {
++    if ac_is_zero(&p) {
++        [p[0] << PASS1_BITS; 8]
++    } else {
++        islow_pass1(p)
++    }
++}
++
++/// [`islow_pass2`] with `jidctint.c`'s AC-zero row shortcut.
++///
++/// A row whose AC terms are zero gives `(p[0] + DC_ROUNDING) >> DC_SHIFT` in
++/// every output. The shortcut equals the full pass while `p[0] << CONST_BITS`
++/// fits in `i32`; beyond that it avoids the overflow the full pass would wrap
++/// through.
++#[expect(
++    clippy::inline_always,
++    reason = "measured: out of line, the 8x8 block loops pass every column and row through memory"
++)]
++#[inline(always)]
++#[must_use]
++pub const fn islow_row(p: [i32; 8]) -> [i32; 8] {
++    if ac_is_zero(&p) {
++        [p[0].wrapping_add(DC_ROUNDING) >> DC_SHIFT; 8]
++    } else {
++        islow_pass2(p)
++    }
++}
++
++/// The output of a block whose AC coefficients are zero: `DESCALE(dc, 3)`.
++///
++/// Every output sample takes this value, before the level shift, at every
++/// output size. It is also the whole 1x1 reduced IDCT (`jpeg_idct_1x1`).
++#[inline]
++#[must_use]
++pub const fn islow_dc(dc: i32) -> i32 {
++    descale(dc, 3)
++}
++
++/// An 8-bit output sample: `value + 128` clamped to `0..=255`.
++#[inline]
++#[must_use]
++#[expect(
++    clippy::cast_possible_truncation,
++    clippy::cast_sign_loss,
++    reason = "the sample is clamped to the u8 range before conversion"
++)]
++pub const fn sample_u8(value: i32) -> u8 {
++    // Two selects on the value, then one cast: the shape LLVM lowers to
++    // branchless max/min.
++    let shifted = value.wrapping_add(128);
++    let low = if shifted < 0 { 0 } else { shifted };
++    let clamped = if low > 255 { 255 } else { low };
++    clamped as u8
++}
++
++/// An 8-bit output sample centred on zero, as the JPEG 2000 DC level shift
++/// leaves it: `value` clamped to `-128..=127`.
++///
++/// It equals `i32::from(sample_u8(value)) - 128` for every value the row
++/// passes produce.
++#[inline]
++#[must_use]
++pub const fn sample_centered(value: i32) -> i32 {
++    let low = if value < -128 { -128 } else { value };
++    if low > 127 {
++        127
++    } else {
++        low
++    }
++}
++
++/// A 12-bit output sample: `value + 2048` clamped to `0..=4095`.
++#[inline]
++#[must_use]
++#[expect(
++    clippy::cast_sign_loss,
++    reason = "the sample is clamped to the 12-bit range before conversion"
++)]
++pub fn sample_12bit(value: i64) -> u16 {
++    (value + 2048).clamp(0, 4095) as u16
++}
++
++/// The 8-bit 8x8 ISLOW of one block of dequantized coefficients to
++/// level-shifted, clamped samples, with `jidctint.c`'s zero shortcuts
++/// ([`islow_column`], [`islow_row`]).
++#[inline]
++pub fn islow_block<T: Copy + Into<i32>>(input: &[T; 64], output: &mut [u8; 64]) {
++    islow_block_rows::<T, 8>(input, output);
++}
++
++/// [`islow_block`] for a block whose coefficient rows 4..7 (`input[32..]`)
++/// are zero. It reads only `input[..32]` and skips the products of the zero
++/// rows; the result equals [`islow_block`]'s.
++#[inline]
++pub fn islow_block_top_half<T: Copy + Into<i32>>(input: &[T; 64], output: &mut [u8; 64]) {
++    islow_block_rows::<T, 4>(input, output);
++}
++
++/// The 8x8 ISLOW of a block whose coefficient rows `ROWS..8` are zero.
++#[inline]
++fn islow_block_rows<T: Copy + Into<i32>, const ROWS: usize>(
++    input: &[T; 64],
++    output: &mut [u8; 64],
++) {
++    let mut work = [0i32; 64];
++    let mut col = 0;
++    while col < 8 {
++        let mut p = [0; 8];
++        let mut row = 0;
++        while row < ROWS {
++            p[row] = input[row * 8 + col].into();
++            row += 1;
++        }
++        let out = islow_column(p);
++        let mut row = 0;
++        while row < 8 {
++            work[row * 8 + col] = out[row];
++            row += 1;
++        }
++        col += 1;
++    }
++    let mut row = 0;
++    while row < 8 {
++        let base = row * 8;
++        let out = islow_row(row_of(&work, base));
++        let mut i = 0;
++        while i < 8 {
++            output[base + i] = sample_u8(out[i]);
++            i += 1;
++        }
++        row += 1;
++    }
++}
++
++#[expect(
++    clippy::inline_always,
++    reason = "measured: left to LLVM, the 12-bit 8x8 row loop calls this out of line"
++)]
++#[inline(always)]
++const fn row_of<T: Copy>(work: &[T], base: usize) -> [T; 8] {
++    [
++        work[base],
++        work[base + 1],
++        work[base + 2],
++        work[base + 3],
++        work[base + 4],
++        work[base + 5],
++        work[base + 6],
++        work[base + 7],
++    ]
++}
++
++#[inline]
++fn column_of(input: &[i16; 64], col: usize) -> [i32; 8] {
++    let mut p = [0; 8];
++    let mut row = 0;
++    while row < 8 {
++        p[row] = i32::from(input[row * 8 + col]);
++        row += 1;
++    }
++    p
++}
++
++#[inline]
++fn column_of_i64(input: &[i16; 64], col: usize) -> [i64; 8] {
++    let mut p = [0; 8];
++    let mut row = 0;
++    while row < 8 {
++        p[row] = i64::from(input[row * 8 + col]);
++        row += 1;
++    }
++    p
++}
++
++/// The 12-bit 8x8 ISLOW (`jidctint.c` with `BITS_IN_JSAMPLE == 12`) of one
++/// block to native `0..=4095` samples. The C code's zero shortcuts give the
++/// same result as the full computation in `i64` and are omitted.
++#[inline]
++pub fn islow_block_12bit(input: &[i16; 64], output: &mut [u16; 64]) {
++    let mut work = [0i64; 64];
++    let mut col = 0;
++    while col < 8 {
++        let out = islow_1d_i64(column_of_i64(input, col));
++        let mut row = 0;
++        while row < 8 {
++            work[row * 8 + col] = descale_i64(out[row], PASS1_SHIFT_12);
++            row += 1;
++        }
++        col += 1;
++    }
++    let mut row = 0;
++    while row < 8 {
++        let base = row * 8;
++        let out = islow_1d_i64(row_of(&work, base));
++        let mut i = 0;
++        while i < 8 {
++            output[base + i] = sample_12bit(descale_i64(out[i], PASS2_SHIFT_12));
++            i += 1;
++        }
++        row += 1;
++    }
++}
++
++/// Whether the inputs of [`islow_1d_4`] other than `p[0]` are zero.
++#[inline]
++const fn ac_is_zero_4(p: &[i32; 8]) -> bool {
++    p[1] == 0 && p[2] == 0 && p[3] == 0 && p[5] == 0 && p[6] == 0 && p[7] == 0
++}
++
++/// Whether the inputs of [`islow_1d_2`] other than `p[0]` are zero.
++#[inline]
++const fn ac_is_zero_2(p: &[i32; 8]) -> bool {
++    p[1] == 0 && p[3] == 0 && p[5] == 0 && p[7] == 0
++}
++
++/// The reduced 4x4 ISLOW (`jpeg_idct_4x4`) of an 8-bit block to
++/// level-shifted, clamped samples, with `jidctred.c`'s zero shortcuts.
++#[inline]
++pub fn islow_block_4x4(input: &[i16; 64], output: &mut [u8; 16]) {
++    let mut work = [0i32; 32];
++    for col in 0..8 {
++        // Column 4 feeds only the unused `p[4]` of the row pass.
++        if col != 4 {
++            column_4x4(input, &mut work, col);
++        }
++    }
++    for row in 0..4 {
++        row_4x4(&work, output, row);
++    }
++}
++
++#[expect(
++    clippy::inline_always,
++    reason = "measured: out of line, the 4x4 block loops pass every column and row through memory"
++)]
++#[inline(always)]
++fn column_4x4(input: &[i16; 64], work: &mut [i32; 32], col: usize) {
++    let at = |row: usize| i32::from(input[row * 8 + col]);
++    // `p[4]` is unused by the 4-point transform.
++    let p = [at(0), at(1), at(2), at(3), 0, at(5), at(6), at(7)];
++    if ac_is_zero_4(&p) {
++        let dc = p[0] << PASS1_BITS;
++        work[col] = dc;
++        work[8 + col] = dc;
++        work[16 + col] = dc;
++        work[24 + col] = dc;
++        return;
++    }
++    let out = islow_1d_4(p);
++    let shift = PASS1_SHIFT + 1;
++    work[col] = descale(out[0], shift);
++    work[24 + col] = descale(out[3], shift);
++    work[8 + col] = descale(out[1], shift);
++    work[16 + col] = descale(out[2], shift);
++}
++
++#[expect(
++    clippy::inline_always,
++    reason = "measured: out of line, the 4x4 block loops pass every column and row through memory"
++)]
++#[inline(always)]
++fn row_4x4(work: &[i32; 32], output: &mut [u8; 16], row: usize) {
++    let at = |col: usize| work[row * 8 + col];
++    let p = [at(0), at(1), at(2), at(3), 0, at(5), at(6), at(7)];
++    let out = row * 4;
++    if ac_is_zero_4(&p) {
++        output[out..out + 4].fill(sample_u8(descale(p[0], DC_SHIFT)));
++        return;
++    }
++    let samples = islow_1d_4(p);
++    let shift = PASS2_SHIFT + 1;
++    output[out] = sample_u8(descale(samples[0], shift));
++    output[out + 3] = sample_u8(descale(samples[3], shift));
++    output[out + 1] = sample_u8(descale(samples[1], shift));
++    output[out + 2] = sample_u8(descale(samples[2], shift));
++}
++
++/// The columns and rows the 2-point reduced transforms read: the even
++/// indices other than 0 feed only unused inputs.
++const REDUCED_2X2_INPUTS: [usize; 5] = [0, 1, 3, 5, 7];
++
++/// The reduced 2x2 ISLOW (`jpeg_idct_2x2`) of an 8-bit block to
++/// level-shifted, clamped samples, with `jidctred.c`'s zero shortcuts.
++#[inline]
++pub fn islow_block_2x2(input: &[i16; 64], output: &mut [u8; 4]) {
++    let mut work = [0i32; 16];
++    for col in REDUCED_2X2_INPUTS {
++        let p = column_of(input, col);
++        let (top, bottom) = if ac_is_zero_2(&p) {
++            let dc = p[0] << PASS1_BITS;
++            (dc, dc)
++        } else {
++            let out = islow_1d_2(p);
++            (
++                descale(out[0], PASS1_SHIFT + 2),
++                descale(out[1], PASS1_SHIFT + 2),
++            )
++        };
++        work[col] = top;
++        work[8 + col] = bottom;
++    }
++    for row in 0..2 {
++        let p = row_of(&work, row * 8);
++        let (left, right) = if ac_is_zero_2(&p) {
++            let dc = sample_u8(descale(p[0], DC_SHIFT));
++            (dc, dc)
++        } else {
++            let out = islow_1d_2(p);
++            (
++                sample_u8(descale(out[0], PASS2_SHIFT + 2)),
++                sample_u8(descale(out[1], PASS2_SHIFT + 2)),
++            )
++        };
++        output[row * 2] = left;
++        output[row * 2 + 1] = right;
++    }
++}
++
++/// The reduced 4x4 ISLOW of a 12-bit block (`jpeg_idct_4x4` with
++/// `BITS_IN_JSAMPLE == 12`) to native samples. The zero shortcuts give the
++/// same result as the full computation in `i64` and are omitted.
++#[inline]
++pub fn islow_block_12bit_4x4(input: &[i16; 64], output: &mut [u16; 16]) {
++    let mut work = [0i64; 32];
++    let mut col = 0;
++    while col < 8 {
++        if col != 4 {
++            let out = islow_1d_4_i64(column_of_i64(input, col));
++            let mut row = 0;
++            while row < 4 {
++                work[row * 8 + col] = descale_i64(out[row], PASS1_SHIFT_12 + 1);
++                row += 1;
++            }
++        }
++        col += 1;
++    }
++    let mut row = 0;
++    while row < 4 {
++        let out = islow_1d_4_i64(row_of(&work, row * 8));
++        let mut i = 0;
++        while i < 4 {
++            output[row * 4 + i] = sample_12bit(descale_i64(out[i], PASS2_SHIFT_12 + 1));
++            i += 1;
++        }
++        row += 1;
++    }
++}
++
++/// The reduced 2x2 ISLOW of a 12-bit block (`jpeg_idct_2x2` with
++/// `BITS_IN_JSAMPLE == 12`) to native samples.
++#[inline]
++pub fn islow_block_12bit_2x2(input: &[i16; 64], output: &mut [u16; 4]) {
++    let mut work = [0i64; 16];
++    for col in REDUCED_2X2_INPUTS {
++        let at = |row: usize| i64::from(input[row * 8 + col]);
++        // The 2-point transform does not read `p[2]`, `p[4]` or `p[6]`.
++        let out = islow_1d_2_i64([at(0), at(1), 0, at(3), 0, at(5), 0, at(7)]);
++        work[col] = descale_i64(out[0], PASS1_SHIFT_12 + 2);
++        work[8 + col] = descale_i64(out[1], PASS1_SHIFT_12 + 2);
++    }
++    for row in 0..2 {
++        let at = |col: usize| work[row * 8 + col];
++        let out = islow_1d_2_i64([at(0), at(1), 0, at(3), 0, at(5), 0, at(7)]);
++        output[row * 2] = sample_12bit(descale_i64(out[0], PASS2_SHIFT_12 + 2));
++        output[row * 2 + 1] = sample_12bit(descale_i64(out[1], PASS2_SHIFT_12 + 2));
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn derived_shifts_match_libjpeg() {
++        assert_eq!(
++            (
++                PASS1_SHIFT,
++                PASS2_SHIFT,
++                DC_SHIFT,
++                PASS1_SHIFT_12,
++                PASS2_SHIFT_12
++            ),
++            (11, 18, 5, 12, 17)
++        );
++        assert_eq!(
++            (PASS1_ROUNDING, PASS2_ROUNDING, DC_ROUNDING),
++            (1 << 10, 1 << 17, 1 << 4)
++        );
++    }
++
++    #[test]
++    fn reduced_constants_match_libjpeg_fix() {
++        // FIX(x) = round(x * 2^CONST_BITS), as in jidctred.c.
++        for (constant, value) in [
++            (FIX_0_211164243, 0.211_164_243),
++            (FIX_0_509795579, 0.509_795_579),
++            (FIX_0_601344887, 0.601_344_887),
++            (FIX_0_720959822, 0.720_959_822),
++            (FIX_0_850430095, 0.850_430_095),
++            (FIX_1_061594337, 1.061_594_337),
++            (FIX_1_272758580, 1.272_758_580),
++            (FIX_1_451774981, 1.451_774_981),
++            (FIX_2_172734803, 2.172_734_803),
++            (FIX_3_624509785, 3.624_509_785),
++        ] {
++            let error = f64::from(constant) - value * f64::from(1u32 << CONST_BITS);
++            assert!((-0.5..=0.5).contains(&error), "{value}");
++        }
++    }
++
++    #[test]
++    fn islow_gains_match_the_column_transform() {
++        // An impulse of ±2^PASS1_SHIFT in input k makes column output j
++        // exactly ±gain[j][k]: (g * 2048 + 1024) >> 11 = g.
++        let impulse = 1i32 << PASS1_SHIFT;
++        for k in 0..8 {
++            for sign in [1, -1] {
++                let mut input = [0; 8];
++                input[k] = sign * impulse;
++                let output = islow_column(input);
++                for (j, gains) in ISLOW_GAINS.iter().enumerate() {
++                    assert_eq!(output[j], sign * gains[k], "output {j}, input {k}");
++                }
++            }
++        }
++    }
++
++    #[test]
++    fn islow_gain_bounds_match_the_documented_values() {
++        assert_eq!(islow_gain_bounds(), (11_363, 61_214));
++    }
++
++    #[test]
++    fn i64_transforms_agree_with_i32_without_overflow() {
++        let mut state = 0x1234_5678_9abc_def0u64;
++        for _ in 0..1_000 {
++            let p: [i32; 8] = core::array::from_fn(|_| {
++                state = state
++                    .wrapping_mul(6_364_136_223_846_793_005)
++                    .wrapping_add(1_442_695_040_888_963_407);
++                (i32::try_from(state >> 48).unwrap() - 32_768) / 16
++            });
++            let wide = p.map(i64::from);
++            assert_eq!(islow_1d_i64(wide), islow_1d(p).map(i64::from));
++            assert_eq!(islow_1d_4_i64(wide), islow_1d_4(p).map(i64::from));
++            assert_eq!(islow_1d_2_i64(wide), islow_1d_2(p).map(i64::from));
++        }
++    }
++
++    #[test]
++    fn shortcut_passes_equal_full_passes_on_i16_dc() {
++        for dc in [
++            i32::from(i16::MIN),
++            -1_000,
++            -1,
++            0,
++            1,
++            777,
++            i32::from(i16::MAX),
++        ] {
++            let p = [dc, 0, 0, 0, 0, 0, 0, 0];
++            assert_eq!(islow_column(p), islow_pass1(p), "column dc={dc}");
++            let q = [dc << PASS1_BITS, 0, 0, 0, 0, 0, 0, 0];
++            assert_eq!(islow_row(q), islow_pass2(q), "row dc={dc}");
++            assert_eq!(islow_row(q)[0], islow_dc(dc), "dc-only dc={dc}");
++        }
++    }
++
++    #[test]
++    fn row_shortcut_avoids_the_full_pass_overflow() {
++        // p0 << CONST_BITS wraps for p0 >= 2^18; the shortcut does not.
++        let p = [1 << 20, 0, 0, 0, 0, 0, 0, 0];
++        assert_eq!(islow_row(p), [((1 << 20) + DC_ROUNDING) >> DC_SHIFT; 8]);
++        assert_ne!(islow_row(p), islow_pass2(p));
++    }
++
++    #[test]
++    fn top_half_block_matches_full_block() {
++        let mut input = [0i16; 64];
++        for (i, value) in input.iter_mut().take(32).enumerate() {
++            *value = i16::try_from(i * 37 % 211).unwrap() - 105;
++        }
++        let mut full = [0u8; 64];
++        let mut top = [0u8; 64];
++        islow_block(&input, &mut full);
++        islow_block_top_half(&input, &mut top);
++        assert_eq!(full, top);
++    }
++
++    #[test]
++    fn i32_and_i16_block_inputs_agree() {
++        let input: [i16; 64] = core::array::from_fn(|i| i16::try_from(i * 53 % 401).unwrap() - 200);
++        let mut narrow = [0u8; 64];
++        let mut wide = [0u8; 64];
++        islow_block(&input, &mut narrow);
++        islow_block(&input.map(i32::from), &mut wide);
++        assert_eq!(narrow, wide);
++    }
++
++    #[test]
++    fn sample_conversions_level_shift_and_clamp() {
++        assert_eq!(
++            [-200, -128, 0, 127, 300].map(sample_u8),
++            [0, 0, 128, 255, 255]
++        );
++        assert_eq!(
++            [-5_000, -2_048, 0, 2_047, 9_000].map(sample_12bit),
++            [0, 0, 2_048, 4_095, 4_095]
++        );
++        assert_eq!(sample_u8(i32::MAX), 0, "wrapping level shift");
++        // Row-pass outputs are shifted right by at least 3, so |value| < 2^28.
++        for value in (-(1 << 28)..(1 << 28)).step_by(4_093).chain(-300..300) {
++            assert_eq!(
++                sample_centered(value),
++                i32::from(sample_u8(value)) - 128,
++                "{value}"
++            );
++        }
++    }
++
++    #[test]
++    fn dc_only_blocks_are_uniform_at_every_size() {
++        for dc in [-1_024i16, -37, -5, 0, 4, 12, 300, 1_023] {
++            let mut input = [0i16; 64];
++            input[0] = dc;
++            let expected = sample_u8(islow_dc(i32::from(dc)));
++            let mut out8 = [0u8; 64];
++            let mut out4 = [0u8; 16];
++            let mut out2 = [0u8; 4];
++            islow_block(&input, &mut out8);
++            islow_block_4x4(&input, &mut out4);
++            islow_block_2x2(&input, &mut out2);
++            assert!(out8.iter().all(|&px| px == expected), "8x8 dc={dc}");
++            assert!(out4.iter().all(|&px| px == expected), "4x4 dc={dc}");
++            assert!(out2.iter().all(|&px| px == expected), "2x2 dc={dc}");
++
++            let expected12 = sample_12bit(i64::from(islow_dc(i32::from(dc))));
++            let mut out8 = [0u16; 64];
++            let mut out4 = [0u16; 16];
++            let mut out2 = [0u16; 4];
++            islow_block_12bit(&input, &mut out8);
++            islow_block_12bit_4x4(&input, &mut out4);
++            islow_block_12bit_2x2(&input, &mut out2);
++            assert!(
++                out8.iter().all(|&px| px == expected12),
++                "12-bit 8x8 dc={dc}"
++            );
++            assert!(
++                out4.iter().all(|&px| px == expected12),
++                "12-bit 4x4 dc={dc}"
++            );
++            assert!(
++                out2.iter().all(|&px| px == expected12),
++                "12-bit 2x2 dc={dc}"
++            );
++        }
++    }
++}
+diff --git a/crates/j2k-cuda-build-support/src/lib.rs b/crates/j2k-cuda-build-support/src/lib.rs
+index 02b648d..06ebe34 100644
+--- a/crates/j2k-cuda-build-support/src/lib.rs
++++ b/crates/j2k-cuda-build-support/src/lib.rs
+@@ -155,6 +155,7 @@ fn emit_metadata(
+         "src/classic.rs",
+         "src/dwt.rs",
+         "src/jpeg.rs",
++        "src/jpeg/idct.rs",
+         "src/jpeg/lossless.rs",
+         "src/mct.rs",
+     ] {
+diff --git a/crates/j2k-jpeg/src/idct/avx2.rs b/crates/j2k-jpeg/src/idct/avx2.rs
+index c130dea..48a5ac6 100644
+--- a/crates/j2k-jpeg/src/idct/avx2.rs
++++ b/crates/j2k-jpeg/src/idct/avx2.rs
+@@ -14,7 +14,7 @@
+ //!   narrowing left is the 16-bit hand-off between the passes, which
+ //!   [`first_pass_fits_i16`] proves exact before the kernel runs.
+ //! - Blocks that check rejects run the 32-bit-lane port of the NEON kernel,
+-//!   whose wrapping arithmetic reproduces the scalar `Wrapping<i32>` path for
++//!   whose wrapping arithmetic reproduces the scalar's wrapping `i32` path for
+ //!   any input.
+ 
+ use core::arch::x86_64::{
+@@ -30,13 +30,13 @@ use core::arch::x86_64::{
+     _mm_subs_epu16, _mm_testz_si128, _mm_unpackhi_epi32, _mm_unpackhi_epi64, _mm_unpacklo_epi32,
+     _mm_unpacklo_epi64,
+ };
+-use j2k_codec_math::jpeg::idct;
+-
+-use super::scalar::{islow_gain_bounds, ISLOW_GAINS};
+-use super::{
+-    CONST_BITS, DC_ROUNDING, DC_SHIFT, PASS1_ROUNDING, PASS1_SHIFT, PASS2_ROUNDING, PASS2_SHIFT,
++use j2k_codec_math::jpeg::idct::{
++    self, islow_gain_bounds, DC_ROUNDING, DC_SHIFT, ISLOW_GAINS, PASS1_ROUNDING, PASS1_SHIFT,
++    PASS2_ROUNDING, PASS2_SHIFT,
+ };
+ 
++use super::CONST_BITS;
++
+ use crate::simd::x86::{exact_avx2_kernel, madd_pair};
+ use crate::simd::x86_memory;
+ 
+diff --git a/crates/j2k-jpeg/src/idct/downscale.rs b/crates/j2k-jpeg/src/idct/downscale.rs
+index e91b09b..6a07a51 100644
+--- a/crates/j2k-jpeg/src/idct/downscale.rs
++++ b/crates/j2k-jpeg/src/idct/downscale.rs
+@@ -1,39 +1,14 @@
+ // SPDX-License-Identifier: MIT OR Apache-2.0
+ 
+-//! Reduced-size ISLOW IDCTs derived from libjpeg-turbo's `jidctred.c`.
++//! Reduced-size ISLOW IDCTs derived from libjpeg-turbo's `jidctred.c`. The
++//! maths is `j2k_codec_math::jpeg::idct`; these are the CPU entry points.
+ 
+-use core::num::Wrapping;
+ use j2k_codec_math::jpeg::idct;
+ 
+-use super::scalar::descale_i64;
+-use super::{DC_SHIFT, PASS1_SHIFT, PASS1_SHIFT_12, PASS2_SHIFT, PASS2_SHIFT_12};
+-
+-const FIX_0_211164243: Wrapping<i32> = Wrapping(1730);
+-const FIX_0_509795579: Wrapping<i32> = Wrapping(4176);
+-const FIX_0_601344887: Wrapping<i32> = Wrapping(4926);
+-const FIX_0_720959822: Wrapping<i32> = Wrapping(5906);
+-const FIX_0_765366865: Wrapping<i32> = Wrapping(idct::FIX_0_765366865);
+-const FIX_0_850430095: Wrapping<i32> = Wrapping(6967);
+-const FIX_0_899976223: Wrapping<i32> = Wrapping(idct::FIX_0_899976223);
+-const FIX_1_061594337: Wrapping<i32> = Wrapping(8697);
+-const FIX_1_272758580: Wrapping<i32> = Wrapping(10426);
+-const FIX_1_451774981: Wrapping<i32> = Wrapping(11893);
+-const FIX_1_847759065: Wrapping<i32> = Wrapping(idct::FIX_1_847759065);
+-const FIX_2_172734803: Wrapping<i32> = Wrapping(17799);
+-const FIX_2_562915447: Wrapping<i32> = Wrapping(idct::FIX_2_562915447);
+-const FIX_3_624509785: Wrapping<i32> = Wrapping(29692);
++use super::scalar::{idct_islow_12bit_dc_only_sample, idct_islow_dc_only_pixel as dc_only_pixel};
+ 
+ pub(crate) fn idct_islow_4x4(input: &[i16; 64], output: &mut [u8; 16]) {
+-    let mut work = [Wrapping(0i32); 32];
+-    for col in 0..8 {
+-        if col == 4 {
+-            continue;
+-        }
+-        idct_4x4_column(input, &mut work, col);
+-    }
+-    for row in 0..4 {
+-        idct_4x4_row(&work, output, row);
+-    }
++    idct::islow_block_4x4(input, output);
+ }
+ 
+ pub(crate) fn idct_islow_4x4_dc_only(dc_coeff: i16, output: &mut [u8; 16]) {
+@@ -49,162 +24,11 @@ pub(crate) fn idct_islow_2x2_dc_only(dc_coeff: i16, output: &mut [u8; 4]) {
+ }
+ 
+ pub(crate) fn idct_islow_2x2_scalar(input: &[i16; 64], output: &mut [u8; 4]) {
+-    let mut work = [Wrapping(0i32); 16];
+-    for col in 0..8 {
+-        if col == 2 || col == 4 || col == 6 {
+-            continue;
+-        }
+-        idct_2x2_column(input, &mut work, col);
+-    }
+-    for row in 0..2 {
+-        idct_2x2_row(&work, output, row);
+-    }
++    idct::islow_block_2x2(input, output);
+ }
+ 
+ pub(crate) fn idct_islow_1x1(input: &[i16; 64]) -> u8 {
+-    descale_and_clamp(Wrapping(i32::from(input[0])), 3)
+-}
+-
+-#[inline]
+-fn dc_only_pixel(dc_coeff: i16) -> u8 {
+-    descale_and_clamp(Wrapping(i32::from(dc_coeff)), 3)
+-}
+-
+-fn idct_4x4_column(input: &[i16; 64], work: &mut [Wrapping<i32>; 32], col: usize) {
+-    let p0 = Wrapping(i32::from(input[col]));
+-    let p1 = Wrapping(i32::from(input[col + 8]));
+-    let p2 = Wrapping(i32::from(input[col + 16]));
+-    let p3 = Wrapping(i32::from(input[col + 24]));
+-    let p5 = Wrapping(i32::from(input[col + 40]));
+-    let p6 = Wrapping(i32::from(input[col + 48]));
+-    let p7 = Wrapping(i32::from(input[col + 56]));
+-
+-    if p1.0 == 0 && p2.0 == 0 && p3.0 == 0 && p5.0 == 0 && p6.0 == 0 && p7.0 == 0 {
+-        let dc = p0 << idct::PASS1_BITS;
+-        work[col] = dc;
+-        work[8 + col] = dc;
+-        work[16 + col] = dc;
+-        work[24 + col] = dc;
+-        return;
+-    }
+-
+-    let mut tmp0 = p0 << (idct::CONST_BITS + 1);
+-    let z2 = p2;
+-    let z3 = p6;
+-    let tmp2 = z2 * FIX_1_847759065 + z3 * (-FIX_0_765366865);
+-    let tmp10 = tmp0 + tmp2;
+-    let tmp12 = tmp0 - tmp2;
+-
+-    let z1 = p7;
+-    let z2 = p5;
+-    let z3 = p3;
+-    let z4 = p1;
+-    tmp0 = z1 * (-FIX_0_211164243)
+-        + z2 * FIX_1_451774981
+-        + z3 * (-FIX_2_172734803)
+-        + z4 * FIX_1_061594337;
+-    let tmp2 = z1 * (-FIX_0_509795579)
+-        + z2 * (-FIX_0_601344887)
+-        + z3 * FIX_0_899976223
+-        + z4 * FIX_2_562915447;
+-
+-    let shift = PASS1_SHIFT + 1;
+-    work[col] = descale(tmp10 + tmp2, shift);
+-    work[24 + col] = descale(tmp10 - tmp2, shift);
+-    work[8 + col] = descale(tmp12 + tmp0, shift);
+-    work[16 + col] = descale(tmp12 - tmp0, shift);
+-}
+-
+-fn idct_4x4_row(work: &[Wrapping<i32>; 32], output: &mut [u8; 16], row: usize) {
+-    let base = row * 8;
+-    let p0 = work[base];
+-    let p1 = work[base + 1];
+-    let p2 = work[base + 2];
+-    let p3 = work[base + 3];
+-    let p5 = work[base + 5];
+-    let p6 = work[base + 6];
+-    let p7 = work[base + 7];
+-
+-    if p1.0 == 0 && p2.0 == 0 && p3.0 == 0 && p5.0 == 0 && p6.0 == 0 && p7.0 == 0 {
+-        let dc = descale_and_clamp(p0, DC_SHIFT);
+-        let out = row * 4;
+-        output[out..out + 4].fill(dc);
+-        return;
+-    }
+-
+-    let mut tmp0 = p0 << (idct::CONST_BITS + 1);
+-    let tmp2 = p2 * FIX_1_847759065 + p6 * (-FIX_0_765366865);
+-    let tmp10 = tmp0 + tmp2;
+-    let tmp12 = tmp0 - tmp2;
+-
+-    tmp0 = p7 * (-FIX_0_211164243)
+-        + p5 * FIX_1_451774981
+-        + p3 * (-FIX_2_172734803)
+-        + p1 * FIX_1_061594337;
+-    let tmp2 = p7 * (-FIX_0_509795579)
+-        + p5 * (-FIX_0_601344887)
+-        + p3 * FIX_0_899976223
+-        + p1 * FIX_2_562915447;
+-
+-    let shift = PASS2_SHIFT + 1;
+-    let out = row * 4;
+-    output[out] = descale_and_clamp(tmp10 + tmp2, shift);
+-    output[out + 3] = descale_and_clamp(tmp10 - tmp2, shift);
+-    output[out + 1] = descale_and_clamp(tmp12 + tmp0, shift);
+-    output[out + 2] = descale_and_clamp(tmp12 - tmp0, shift);
+-}
+-
+-fn idct_2x2_column(input: &[i16; 64], work: &mut [Wrapping<i32>; 16], col: usize) {
+-    let p0 = Wrapping(i32::from(input[col]));
+-    let p1 = Wrapping(i32::from(input[col + 8]));
+-    let p3 = Wrapping(i32::from(input[col + 24]));
+-    let p5 = Wrapping(i32::from(input[col + 40]));
+-    let p7 = Wrapping(i32::from(input[col + 56]));
+-
+-    if p1.0 == 0 && p3.0 == 0 && p5.0 == 0 && p7.0 == 0 {
+-        let dc = p0 << idct::PASS1_BITS;
+-        work[col] = dc;
+-        work[8 + col] = dc;
+-        return;
+-    }
+-
+-    let tmp10 = p0 << (idct::CONST_BITS + 2);
+-    let tmp0 = p7 * (-FIX_0_720959822)
+-        + p5 * FIX_0_850430095
+-        + p3 * (-FIX_1_272758580)
+-        + p1 * FIX_3_624509785;
+-
+-    let shift = PASS1_SHIFT + 2;
+-    work[col] = descale(tmp10 + tmp0, shift);
+-    work[8 + col] = descale(tmp10 - tmp0, shift);
+-}
+-
+-fn idct_2x2_row(work: &[Wrapping<i32>; 16], output: &mut [u8; 4], row: usize) {
+-    let base = row * 8;
+-    let p0 = work[base];
+-    let p1 = work[base + 1];
+-    let p3 = work[base + 3];
+-    let p5 = work[base + 5];
+-    let p7 = work[base + 7];
+-
+-    if p1.0 == 0 && p3.0 == 0 && p5.0 == 0 && p7.0 == 0 {
+-        let dc = descale_and_clamp(p0, DC_SHIFT);
+-        let out = row * 2;
+-        output[out] = dc;
+-        output[out + 1] = dc;
+-        return;
+-    }
+-
+-    let tmp10 = p0 << (idct::CONST_BITS + 2);
+-    let tmp0 = p7 * (-FIX_0_720959822)
+-        + p5 * FIX_0_850430095
+-        + p3 * (-FIX_1_272758580)
+-        + p1 * FIX_3_624509785;
+-
+-    let shift = PASS2_SHIFT + 2;
+-    let out = row * 2;
+-    output[out] = descale_and_clamp(tmp10 + tmp0, shift);
+-    output[out + 1] = descale_and_clamp(tmp10 - tmp0, shift);
++    dc_only_pixel(input[0])
+ }
+ 
+ /// Reduced 4x4 IDCT of a 12-bit block (`jpeg_idct_4x4`).
+@@ -214,104 +38,17 @@ fn idct_2x2_row(work: &[Wrapping<i32>; 16], output: &mut [u8; 4], row: usize) {
+ /// the same results as the full computation and are omitted, as in
+ /// [`super::scalar::idct_islow_12bit`].
+ pub(crate) fn idct_islow_12bit_4x4(input: &[i16; 64], output: &mut [u16; 16]) {
+-    let fix = |value: Wrapping<i32>| i64::from(value.0);
+-    let odd = |z1: i64, z2: i64, z3: i64, z4: i64| {
+-        (
+-            z1 * -fix(FIX_0_211164243)
+-                + z2 * fix(FIX_1_451774981)
+-                + z3 * -fix(FIX_2_172734803)
+-                + z4 * fix(FIX_1_061594337),
+-            z1 * -fix(FIX_0_509795579)
+-                + z2 * -fix(FIX_0_601344887)
+-                + z3 * fix(FIX_0_899976223)
+-                + z4 * fix(FIX_2_562915447),
+-        )
+-    };
+-    let even = |p0: i64, p2: i64, p6: i64| {
+-        let tmp0 = p0 << (idct::CONST_BITS + 1);
+-        let tmp2 = p2 * fix(FIX_1_847759065) - p6 * fix(FIX_0_765366865);
+-        (tmp0 + tmp2, tmp0 - tmp2)
+-    };
+-    let mut work = [0i64; 32];
+-    for col in (0..8).filter(|&col| col != 4) {
+-        let p = |row: usize| i64::from(input[row * 8 + col]);
+-        let (tmp10, tmp12) = even(p(0), p(2), p(6));
+-        let (tmp0, tmp2) = odd(p(7), p(5), p(3), p(1));
+-        let shift = PASS1_SHIFT_12 + 1;
+-        work[col] = descale_i64(tmp10 + tmp2, shift);
+-        work[24 + col] = descale_i64(tmp10 - tmp2, shift);
+-        work[8 + col] = descale_i64(tmp12 + tmp0, shift);
+-        work[16 + col] = descale_i64(tmp12 - tmp0, shift);
+-    }
+-    for row in 0..4 {
+-        let w = |col: usize| work[row * 8 + col];
+-        let (tmp10, tmp12) = even(w(0), w(2), w(6));
+-        let (tmp0, tmp2) = odd(w(7), w(5), w(3), w(1));
+-        let shift = PASS2_SHIFT_12 + 1;
+-        let out = &mut output[row * 4..row * 4 + 4];
+-        out[0] = level_shift_12bit(descale_i64(tmp10 + tmp2, shift));
+-        out[3] = level_shift_12bit(descale_i64(tmp10 - tmp2, shift));
+-        out[1] = level_shift_12bit(descale_i64(tmp12 + tmp0, shift));
+-        out[2] = level_shift_12bit(descale_i64(tmp12 - tmp0, shift));
+-    }
++    idct::islow_block_12bit_4x4(input, output);
+ }
+ 
+ /// Reduced 2x2 IDCT of a 12-bit block (`jpeg_idct_2x2`).
+ pub(crate) fn idct_islow_12bit_2x2(input: &[i16; 64], output: &mut [u16; 4]) {
+-    let fix = |value: Wrapping<i32>| i64::from(value.0);
+-    let odd = |p7: i64, p5: i64, p3: i64, p1: i64| {
+-        p7 * -fix(FIX_0_720959822)
+-            + p5 * fix(FIX_0_850430095)
+-            + p3 * -fix(FIX_1_272758580)
+-            + p1 * fix(FIX_3_624509785)
+-    };
+-    let mut work = [0i64; 16];
+-    for col in [0, 1, 3, 5, 7] {
+-        let p = |row: usize| i64::from(input[row * 8 + col]);
+-        let tmp10 = p(0) << (idct::CONST_BITS + 2);
+-        let tmp0 = odd(p(7), p(5), p(3), p(1));
+-        let shift = PASS1_SHIFT_12 + 2;
+-        work[col] = descale_i64(tmp10 + tmp0, shift);
+-        work[8 + col] = descale_i64(tmp10 - tmp0, shift);
+-    }
+-    for row in 0..2 {
+-        let w = |col: usize| work[row * 8 + col];
+-        let tmp10 = w(0) << (idct::CONST_BITS + 2);
+-        let tmp0 = odd(w(7), w(5), w(3), w(1));
+-        let shift = PASS2_SHIFT_12 + 2;
+-        output[row * 2] = level_shift_12bit(descale_i64(tmp10 + tmp0, shift));
+-        output[row * 2 + 1] = level_shift_12bit(descale_i64(tmp10 - tmp0, shift));
+-    }
++    idct::islow_block_12bit_2x2(input, output);
+ }
+ 
+ /// Reduced 1x1 IDCT of a 12-bit block (`jpeg_idct_1x1`).
+ pub(crate) fn idct_islow_12bit_1x1(input: &[i16; 64]) -> u16 {
+-    level_shift_12bit(descale_i64(i64::from(input[0]), 3))
+-}
+-
+-#[expect(
+-    clippy::cast_sign_loss,
+-    reason = "reduced 12-bit IDCT samples are clamped to 0..=4095 before conversion"
+-)]
+-fn level_shift_12bit(value: i64) -> u16 {
+-    (value + 2048).clamp(0, 4095) as u16
+-}
+-
+-/// libjpeg's `DESCALE`: arithmetic right shift that rounds half up. Every
+-/// stage of `jidctred.c` (and libjpeg-turbo's NEON/SSE2 ports) rounds, so a
+-/// plain shift biases scaled output low by up to one level per component.
+-fn descale(value: Wrapping<i32>, shift: i32) -> Wrapping<i32> {
+-    Wrapping((value + Wrapping(1 << (shift - 1))).0 >> shift)
+-}
+-
+-#[expect(
+-    clippy::cast_sign_loss,
+-    reason = "reduced IDCT samples are clamped to the u8 output range before conversion"
+-)]
+-fn descale_and_clamp(value: Wrapping<i32>, shift: i32) -> u8 {
+-    let shifted = descale(value, shift).0;
+-    let level_shifted = shifted.wrapping_add(128);
+-    level_shifted.clamp(0, 255) as u8
++    idct_islow_12bit_dc_only_sample(input[0])
+ }
+ 
+ #[cfg(test)]
+diff --git a/crates/j2k-jpeg/src/idct/mod.rs b/crates/j2k-jpeg/src/idct/mod.rs
+index 135929c..a883e77 100644
+--- a/crates/j2k-jpeg/src/idct/mod.rs
++++ b/crates/j2k-jpeg/src/idct/mod.rs
+@@ -1,44 +1,19 @@
+ // SPDX-License-Identifier: MIT OR Apache-2.0
+ 
+-//! Inverse discrete cosine transform. The scalar ISLOW path is the parity
+-//! oracle — every SIMD variant is proptested for bit-exact match against
+-//! `scalar::idct_islow`.
+-
+-use j2k_codec_math::jpeg::idct;
+-
+-/// Fraction bits of the ISLOW gains, as `i32`: the type of shift amounts in
+-/// the scalar transforms and of the SIMD shift-count generics.
+-#[expect(
+-    clippy::cast_possible_truncation,
+-    clippy::cast_possible_wrap,
+-    reason = "shared IDCT shift constants are small positive compile-time values"
+-)]
+-pub(crate) const CONST_BITS: i32 = idct::CONST_BITS as i32;
+-/// Fraction bits the 8-bit transform keeps between its passes.
++//! Inverse discrete cosine transform. The ISLOW maths lives in
++//! `j2k_codec_math::jpeg::idct`; the scalar path here calls it and is the
++//! parity oracle — every SIMD variant is proptested for bit-exact match
++//! against `scalar::idct_islow`.
++
++/// [`j2k_codec_math::jpeg::idct::CONST_BITS`] as `i32`, the type of the SIMD
++/// shift-count generics.
++#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+ #[expect(
+     clippy::cast_possible_truncation,
+     clippy::cast_possible_wrap,
+     reason = "shared IDCT shift constants are small positive compile-time values"
+ )]
+-pub(crate) const PASS1_BITS: i32 = idct::PASS1_BITS as i32;
+-/// Right shift ending the 8-bit column pass.
+-pub(crate) const PASS1_SHIFT: i32 = CONST_BITS - PASS1_BITS;
+-/// Right shift ending the 8-bit row pass, including the 1/8 normalisation.
+-pub(crate) const PASS2_SHIFT: i32 = CONST_BITS + PASS1_BITS + 3;
+-/// Round-half-up addends of the two 8-bit passes.
+-pub(crate) const PASS1_ROUNDING: i32 = 1 << (PASS1_SHIFT - 1);
+-pub(crate) const PASS2_ROUNDING: i32 = 1 << (PASS2_SHIFT - 1);
+-/// The row pass's DC-only shortcut is `(p0 + DC_ROUNDING) >> DC_SHIFT`; it
+-/// equals the full row transform while `p0 << CONST_BITS` fits in `i32`.
+-pub(crate) const DC_SHIFT: i32 = PASS1_BITS + 3;
+-pub(crate) const DC_ROUNDING: i32 = 1 << (DC_SHIFT - 1);
+-
+-/// Fraction bits the 12-bit transform keeps between its passes:
+-/// libjpeg-turbo's `jidctint.c` keeps one instead of two to leave headroom.
+-pub(crate) const PASS1_BITS_12: i32 = 1;
+-/// Right shifts ending the 12-bit column and row passes.
+-pub(crate) const PASS1_SHIFT_12: i32 = CONST_BITS - PASS1_BITS_12;
+-pub(crate) const PASS2_SHIFT_12: i32 = CONST_BITS + PASS1_BITS_12 + 3;
++pub(crate) const CONST_BITS: i32 = j2k_codec_math::jpeg::idct::CONST_BITS as i32;
+ 
+ pub(crate) mod downscale;
+ pub(crate) mod scalar;
+diff --git a/crates/j2k-jpeg/src/idct/neon.rs b/crates/j2k-jpeg/src/idct/neon.rs
+index 2dccb5b..0dc5f08 100644
+--- a/crates/j2k-jpeg/src/idct/neon.rs
++++ b/crates/j2k-jpeg/src/idct/neon.rs
+@@ -7,8 +7,8 @@
+ //! (pass 2, shift 18) → second 8×8 transpose → level shift +128 → saturate
+ //! to u8 → store.
+ //!
+-//! Intermediates live in `int32x4_t` throughout — same 32-bit wrapping
+-//! arithmetic as the scalar's `Wrapping<i32>`, so no information is lost
++//! Intermediates live in `int32x4_t` throughout — the same 32-bit wrapping
++//! arithmetic as the scalar transform, so no information is lost
+ //! between passes even on adversarial coefficients.
+ 
+ use core::arch::aarch64::{
+@@ -18,13 +18,12 @@ use core::arch::aarch64::{
+     vpadalq_s16, vqabsq_s16, vqmovn_s32, vqmovun_s16, vqmovun_s32, vreinterpretq_u64_s16,
+     vshlq_n_s32, vshrq_n_s32, vsubq_s32, vtrnq_s32,
+ };
+-use j2k_codec_math::jpeg::idct;
+-
+-use super::scalar::{islow_gain_bounds, ISLOW_GAINS};
+-use super::{
+-    CONST_BITS, DC_ROUNDING, DC_SHIFT, PASS1_ROUNDING, PASS1_SHIFT, PASS1_SHIFT_12, PASS2_ROUNDING,
+-    PASS2_SHIFT, PASS2_SHIFT_12,
++use j2k_codec_math::jpeg::idct::{
++    self, islow_gain_bounds, DC_ROUNDING, DC_SHIFT, ISLOW_GAINS, PASS1_ROUNDING, PASS1_SHIFT,
++    PASS1_SHIFT_12, PASS2_ROUNDING, PASS2_SHIFT, PASS2_SHIFT_12,
+ };
++
++use super::CONST_BITS;
+ use crate::simd::neon_memory;
+ 
+ fearless_simd::kernel! {
+diff --git a/crates/j2k-jpeg/src/idct/scalar.rs b/crates/j2k-jpeg/src/idct/scalar.rs
+index 1018f2f..5243e6b 100644
+--- a/crates/j2k-jpeg/src/idct/scalar.rs
++++ b/crates/j2k-jpeg/src/idct/scalar.rs
+@@ -2,6 +2,7 @@
+ 
+ //! Integer "slow" IDCT (ISLOW) — Chen-Wang decomposition, 16-bit fixed point.
+ //! Bit-exact with libjpeg-turbo's `jidctint.c` algorithm on the same inputs.
++//! The maths is `j2k_codec_math::jpeg::idct`; these are the CPU entry points.
+ //!
+ //! Input: 64 dequantized DCT coefficients in natural (row-major) order, each
+ //! already multiplied by its quantization entry.
+@@ -9,160 +10,29 @@
+ //! Output: 64 u8 pixel samples in natural order, level-shifted by +128 and
+ //! clamped to `[0, 255]`.
+ //!
+-//! Arithmetic uses `core::num::Wrapping<i32>` so intermediate overflow on
+-//! adversarial (malformed) inputs wraps modulo 2^32 rather than panicking in
+-//! debug builds. libjpeg-turbo exhibits the same modular behavior in release.
++//! Arithmetic wraps modulo 2^32, so intermediate overflow on adversarial
++//! (malformed) inputs wraps rather than panicking in debug builds.
++//! libjpeg-turbo exhibits the same modular behavior in release.
+ 
+-use core::num::Wrapping;
+ use j2k_codec_math::jpeg::idct;
+ 
+-use super::{
+-    DC_ROUNDING, DC_SHIFT, PASS1_ROUNDING, PASS1_SHIFT, PASS1_SHIFT_12, PASS2_ROUNDING,
+-    PASS2_SHIFT, PASS2_SHIFT_12,
+-};
+-
+-const FIX_0_298631336: Wrapping<i32> = Wrapping(idct::FIX_0_298631336);
+-const FIX_0_390180644: Wrapping<i32> = Wrapping(idct::FIX_0_390180644);
+-const FIX_0_541196100: Wrapping<i32> = Wrapping(idct::FIX_0_541196100);
+-const FIX_0_765366865: Wrapping<i32> = Wrapping(idct::FIX_0_765366865);
+-const FIX_0_899976223: Wrapping<i32> = Wrapping(idct::FIX_0_899976223);
+-const FIX_1_175875602: Wrapping<i32> = Wrapping(idct::FIX_1_175875602);
+-const FIX_1_501321110: Wrapping<i32> = Wrapping(idct::FIX_1_501321110);
+-const FIX_1_847759065: Wrapping<i32> = Wrapping(idct::FIX_1_847759065);
+-const FIX_1_961570560: Wrapping<i32> = Wrapping(idct::FIX_1_961570560);
+-const FIX_2_053119869: Wrapping<i32> = Wrapping(idct::FIX_2_053119869);
+-const FIX_2_562915447: Wrapping<i32> = Wrapping(idct::FIX_2_562915447);
+-const FIX_3_072711026: Wrapping<i32> = Wrapping(idct::FIX_3_072711026);
+-
+-/// Gain of input `p[k]` in output `j` of the 8-bit ISLOW 1-D transform
+-/// below, in units of `2^-CONST_BITS`: before rounding, every pass computes
+-/// `out[j] = sum_k ISLOW_GAINS[j][k] * p[k]`. This is the same transform with
+-/// the shared `z1..z5` products expanded per input, for SIMD kernels that
+-/// multiply inputs directly; `islow_gains_match_the_column_transform` pins it
+-/// to `idct_1d_column`.
+-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64", test))]
+-pub(crate) const ISLOW_GAINS: [[i32; 8]; 8] = islow_gains();
+-
+-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64", test))]
+-const fn islow_gains() -> [[i32; 8]; 8] {
+-    let one = 1 << idct::CONST_BITS;
+-    let tmp3 = [
+-        idct::FIX_0_541196100 + idct::FIX_0_765366865,
+-        idct::FIX_0_541196100,
+-    ];
+-    let tmp2 = [
+-        idct::FIX_0_541196100,
+-        idct::FIX_0_541196100 - idct::FIX_1_847759065,
+-    ];
+-    // `[p0, p2, p4, p6]` gains of tmp10, tmp11, tmp12 and tmp13.
+-    let even = [
+-        [one, tmp3[0], one, tmp3[1]],
+-        [one, tmp2[0], -one, tmp2[1]],
+-        [one, -tmp2[0], -one, -tmp2[1]],
+-        [one, -tmp3[0], one, -tmp3[1]],
+-    ];
+-    let z5 = idct::FIX_1_175875602;
+-    // `[p1, p3, p5, p7]` gains of the odd terms added to tmp10..tmp13 (the
+-    // scalar's tmp3, tmp2, tmp1 and tmp0), with z1 = -(p7 + p1) * 0.899,
+-    // z2 = -(p5 + p3) * 2.562, z3 = -(p7 + p3) * 1.961 + z5 and
+-    // z4 = -(p5 + p1) * 0.390 + z5 expanded.
+-    let odd = [
+-        [
+-            idct::FIX_1_501321110 - idct::FIX_0_899976223 - idct::FIX_0_390180644 + z5,
+-            z5,
+-            z5 - idct::FIX_0_390180644,
+-            z5 - idct::FIX_0_899976223,
+-        ],
+-        [
+-            z5,
+-            idct::FIX_3_072711026 - idct::FIX_2_562915447 - idct::FIX_1_961570560 + z5,
+-            z5 - idct::FIX_2_562915447,
+-            z5 - idct::FIX_1_961570560,
+-        ],
+-        [
+-            z5 - idct::FIX_0_390180644,
+-            z5 - idct::FIX_2_562915447,
+-            idct::FIX_2_053119869 - idct::FIX_2_562915447 - idct::FIX_0_390180644 + z5,
+-            z5,
+-        ],
+-        [
+-            z5 - idct::FIX_0_899976223,
+-            z5 - idct::FIX_1_961570560,
+-            z5,
+-            idct::FIX_0_298631336 - idct::FIX_0_899976223 - idct::FIX_1_961570560 + z5,
+-        ],
+-    ];
+-    // out[j] = even[j] + odd[j] and out[7 - j] = even[j] - odd[j].
+-    let mut gains = [[0; 8]; 8];
+-    let mut j = 0;
+-    while j < 4 {
+-        let mut i = 0;
+-        while i < 4 {
+-            gains[j][2 * i] = even[j][i];
+-            gains[7 - j][2 * i] = even[j][i];
+-            gains[j][2 * i + 1] = odd[j][i];
+-            gains[7 - j][2 * i + 1] = -odd[j][i];
+-            i += 1;
+-        }
+-        j += 1;
+-    }
+-    gains
+-}
+-
+-/// `(max_gain, max_l1)` of [`ISLOW_GAINS`]: the largest gain magnitude of
+-/// any input into any output (11,363) and the largest L1 norm of one
+-/// output's gains (61,214). A 1-D output is at most `max_gain * sum(|p|)`
+-/// and at most `max_l1 * max(|p|)` before rounding; the SIMD kernels derive
+-/// their overflow bounds from these.
+-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+-pub(crate) const fn islow_gain_bounds() -> (i32, i32) {
+-    let (mut max_gain, mut max_l1) = (0, 0);
+-    let mut j = 0;
+-    while j < 8 {
+-        let mut l1 = 0;
+-        let mut k = 0;
+-        while k < 8 {
+-            let gain = ISLOW_GAINS[j][k].abs();
+-            if gain > max_gain {
+-                max_gain = gain;
+-            }
+-            l1 += gain;
+-            k += 1;
+-        }
+-        if l1 > max_l1 {
+-            max_l1 = l1;
+-        }
+-        j += 1;
+-    }
+-    (max_gain, max_l1)
+-}
+-
+ /// Inverse DCT of a single 8×8 block, with level shift and clamping.
++// Out of line: inlined as the scalar arm of the `Backend` IDCT dispatch, it
++// grows the AVX2 4:4:4 decode loops and costs them ~3% (measured).
++#[inline(never)]
+ pub(crate) fn idct_islow(input: &[i16; 64], output: &mut [u8; 64]) {
+-    let mut work = [Wrapping(0i32); 64];
+     if input[32..].iter().all(|&coeff| coeff == 0) {
+-        for col in 0..8 {
+-            idct_1d_column_bottom_half_zero(input, &mut work, col);
+-        }
++        idct::islow_block_top_half(input, output);
+     } else {
+-        for col in 0..8 {
+-            idct_1d_column(input, &mut work, col);
+-        }
+-    }
+-    for row in 0..8 {
+-        idct_1d_row::<u8>(&work, output, row);
++        idct::islow_block(input, output);
+     }
+ }
+ 
+ /// Inverse DCT for blocks whose natural-order rows 4..7 are known to be zero.
++// Out of line for the same reason as `idct_islow`.
++#[inline(never)]
+ pub(crate) fn idct_islow_bottom_half_zero(input: &[i16; 64], output: &mut [u8; 64]) {
+-    let mut work = [Wrapping(0i32); 64];
+-    for col in 0..8 {
+-        idct_1d_column_bottom_half_zero(input, &mut work, col);
+-    }
+-    for row in 0..8 {
+-        idct_1d_row::<u8>(&work, output, row);
+-    }
++    idct::islow_block_top_half(input, output);
+ }
+ 
+ /// Bit-exact DC-only ISLOW path. Equivalent to `idct_islow` when every AC
+@@ -173,7 +43,7 @@ pub(crate) fn idct_islow_dc_only(dc_coeff: i16, output: &mut [u8; 64]) {
+ 
+ /// Return the uniform output sample produced by the DC-only ISLOW path.
+ pub(crate) fn idct_islow_dc_only_pixel(dc_coeff: i16) -> u8 {
+-    idct_islow_dc_only_sample::<u8>(dc_coeff)
++    idct::sample_u8(idct::islow_dc(i32::from(dc_coeff)))
+ }
+ 
+ /// Inverse DCT of a 12-bit JPEG block, returning native 0..4095 sample values.
+@@ -183,320 +53,12 @@ pub(crate) fn idct_islow_dc_only_pixel(dc_coeff: i16) -> u8 {
+ /// zero-AC shortcuts of the C code give the same result as the full
+ /// computation here and are omitted.
+ pub(crate) fn idct_islow_12bit(input: &[i16; 64], output: &mut [u16; 64]) {
+-    let mut work = [0i64; 64];
+-    for col in 0..8 {
+-        let samples = core::array::from_fn(|row| i64::from(input[row * 8 + col]));
+-        let outputs = islow_1d_i64(samples);
+-        for (row, value) in outputs.into_iter().enumerate() {
+-            work[row * 8 + col] = descale_i64(value, PASS1_SHIFT_12);
+-        }
+-    }
+-    for row in 0..8 {
+-        let samples = core::array::from_fn(|col| work[row * 8 + col]);
+-        let outputs = islow_1d_i64(samples);
+-        for (col, value) in outputs.into_iter().enumerate() {
+-            let sample = (descale_i64(value, PASS2_SHIFT_12) + 2048).clamp(0, 4095);
+-            output[row * 8 + col] = u16::try_from(sample).expect("clamped 12-bit sample");
+-        }
+-    }
+-}
+-
+-/// One ISLOW 1-D pass in 64-bit arithmetic; outputs are scaled by
+-/// `2^CONST_BITS` and not yet descaled.
+-fn islow_1d_i64(p: [i64; 8]) -> [i64; 8] {
+-    let fix = i64::from;
+-    let z1 = (p[2] + p[6]) * fix(idct::FIX_0_541196100);
+-    let tmp2 = z1 - p[6] * fix(idct::FIX_1_847759065);
+-    let tmp3 = z1 + p[2] * fix(idct::FIX_0_765366865);
+-    let tmp0 = (p[0] + p[4]) << idct::CONST_BITS;
+-    let tmp1 = (p[0] - p[4]) << idct::CONST_BITS;
+-    let (tmp10, tmp13) = (tmp0 + tmp3, tmp0 - tmp3);
+-    let (tmp11, tmp12) = (tmp1 + tmp2, tmp1 - tmp2);
+-
+-    let (t0, t1, t2, t3) = (p[7], p[5], p[3], p[1]);
+-    let z5 = (t0 + t2 + t1 + t3) * fix(idct::FIX_1_175875602);
+-    let z1 = -(t0 + t3) * fix(idct::FIX_0_899976223);
+-    let z2 = -(t1 + t2) * fix(idct::FIX_2_562915447);
+-    let z3 = -(t0 + t2) * fix(idct::FIX_1_961570560) + z5;
+-    let z4 = -(t1 + t3) * fix(idct::FIX_0_390180644) + z5;
+-    let t0 = t0 * fix(idct::FIX_0_298631336) + z1 + z3;
+-    let t1 = t1 * fix(idct::FIX_2_053119869) + z2 + z4;
+-    let t2 = t2 * fix(idct::FIX_3_072711026) + z2 + z3;
+-    let t3 = t3 * fix(idct::FIX_1_501321110) + z1 + z4;
+-
+-    [
+-        tmp10 + t3,
+-        tmp11 + t2,
+-        tmp12 + t1,
+-        tmp13 + t0,
+-        tmp13 - t0,
+-        tmp12 - t1,
+-        tmp11 - t2,
+-        tmp10 - t3,
+-    ]
+-}
+-
+-/// `DESCALE` from `jdct.h`: round half up, then arithmetic shift.
+-pub(super) const fn descale_i64(value: i64, shift: i32) -> i64 {
+-    (value + (1 << (shift - 1))) >> shift
++    idct::islow_block_12bit(input, output);
+ }
+ 
+ /// Return the uniform native 12-bit sample produced by the DC-only ISLOW path.
+ pub(crate) fn idct_islow_12bit_dc_only_sample(dc_coeff: i16) -> u16 {
+-    idct_islow_dc_only_sample::<u16>(dc_coeff)
+-}
+-
+-trait IdctSample: Copy {
+-    const LEVEL_SHIFT: i32;
+-    const MAX: i32;
+-
+-    fn from_clamped_i32(value: i32) -> Self;
+-}
+-
+-impl IdctSample for u8 {
+-    const LEVEL_SHIFT: i32 = 128;
+-    const MAX: i32 = 255;
+-
+-    #[expect(
+-        clippy::cast_possible_truncation,
+-        clippy::cast_sign_loss,
+-        reason = "IDCT samples are clamped to the u8 output range before conversion"
+-    )]
+-    fn from_clamped_i32(value: i32) -> Self {
+-        value as Self
+-    }
+-}
+-
+-impl IdctSample for u16 {
+-    const LEVEL_SHIFT: i32 = 2048;
+-    const MAX: i32 = 4095;
+-
+-    #[expect(
+-        clippy::cast_possible_truncation,
+-        clippy::cast_sign_loss,
+-        reason = "12-bit IDCT samples are clamped to their u16 output range before conversion"
+-    )]
+-    fn from_clamped_i32(value: i32) -> Self {
+-        value as Self
+-    }
+-}
+-
+-fn idct_islow_dc_only_sample<T: IdctSample>(dc_coeff: i16) -> T {
+-    let level_shifted = ((i32::from(dc_coeff) + 4) >> 3).wrapping_add(T::LEVEL_SHIFT);
+-    T::from_clamped_i32(level_shifted.clamp(0, T::MAX))
+-}
+-
+-fn idct_1d_column(input: &[i16; 64], work: &mut [Wrapping<i32>; 64], col: usize) {
+-    let p0 = Wrapping(i32::from(input[col]));
+-    let p1 = Wrapping(i32::from(input[col + 8]));
+-    let p2 = Wrapping(i32::from(input[col + 16]));
+-    let p3 = Wrapping(i32::from(input[col + 24]));
+-    let p4 = Wrapping(i32::from(input[col + 32]));
+-    let p5 = Wrapping(i32::from(input[col + 40]));
+-    let p6 = Wrapping(i32::from(input[col + 48]));
+-    let p7 = Wrapping(i32::from(input[col + 56]));
+-
+-    if p1.0 == 0 && p2.0 == 0 && p3.0 == 0 && p4.0 == 0 && p5.0 == 0 && p6.0 == 0 && p7.0 == 0 {
+-        let dc = p0 << idct::PASS1_BITS;
+-        work[col] = dc;
+-        work[col + 8] = dc;
+-        work[col + 16] = dc;
+-        work[col + 24] = dc;
+-        work[col + 32] = dc;
+-        work[col + 40] = dc;
+-        work[col + 48] = dc;
+-        work[col + 56] = dc;
+-        return;
+-    }
+-
+-    let z2 = p2;
+-    let z3 = p6;
+-    let z1 = (z2 + z3) * FIX_0_541196100;
+-    let tmp2 = z1 + z3 * (-FIX_1_847759065);
+-    let tmp3 = z1 + z2 * FIX_0_765366865;
+-
+-    let z2 = p0;
+-    let z3 = p4;
+-    let tmp0 = (z2 + z3) << idct::CONST_BITS;
+-    let tmp1 = (z2 - z3) << idct::CONST_BITS;
+-
+-    let tmp10 = tmp0 + tmp3;
+-    let tmp13 = tmp0 - tmp3;
+-    let tmp11 = tmp1 + tmp2;
+-    let tmp12 = tmp1 - tmp2;
+-
+-    let tmp0 = p7;
+-    let tmp1 = p5;
+-    let tmp2 = p3;
+-    let tmp3 = p1;
+-
+-    let z1 = tmp0 + tmp3;
+-    let z2 = tmp1 + tmp2;
+-    let z3 = tmp0 + tmp2;
+-    let z4 = tmp1 + tmp3;
+-    let z5 = (z3 + z4) * FIX_1_175875602;
+-
+-    let tmp0 = tmp0 * FIX_0_298631336;
+-    let tmp1 = tmp1 * FIX_2_053119869;
+-    let tmp2 = tmp2 * FIX_3_072711026;
+-    let tmp3 = tmp3 * FIX_1_501321110;
+-    let z1 = z1 * (-FIX_0_899976223);
+-    let z2 = z2 * (-FIX_2_562915447);
+-    let z3 = z3 * (-FIX_1_961570560);
+-    let z4 = z4 * (-FIX_0_390180644);
+-
+-    let z3 = z3 + z5;
+-    let z4 = z4 + z5;
+-
+-    let tmp0 = tmp0 + z1 + z3;
+-    let tmp1 = tmp1 + z2 + z4;
+-    let tmp2 = tmp2 + z2 + z3;
+-    let tmp3 = tmp3 + z1 + z4;
+-
+-    let rounding = Wrapping(PASS1_ROUNDING);
+-    work[col] = descale(tmp10 + tmp3 + rounding, PASS1_SHIFT);
+-    work[col + 56] = descale(tmp10 - tmp3 + rounding, PASS1_SHIFT);
+-    work[col + 8] = descale(tmp11 + tmp2 + rounding, PASS1_SHIFT);
+-    work[col + 48] = descale(tmp11 - tmp2 + rounding, PASS1_SHIFT);
+-    work[col + 16] = descale(tmp12 + tmp1 + rounding, PASS1_SHIFT);
+-    work[col + 40] = descale(tmp12 - tmp1 + rounding, PASS1_SHIFT);
+-    work[col + 24] = descale(tmp13 + tmp0 + rounding, PASS1_SHIFT);
+-    work[col + 32] = descale(tmp13 - tmp0 + rounding, PASS1_SHIFT);
+-}
+-
+-fn idct_1d_column_bottom_half_zero(input: &[i16; 64], work: &mut [Wrapping<i32>; 64], col: usize) {
+-    let p0 = Wrapping(i32::from(input[col]));
+-    let p1 = Wrapping(i32::from(input[col + 8]));
+-    let p2 = Wrapping(i32::from(input[col + 16]));
+-    let p3 = Wrapping(i32::from(input[col + 24]));
+-
+-    if p1.0 == 0 && p2.0 == 0 && p3.0 == 0 {
+-        let dc = p0 << idct::PASS1_BITS;
+-        work[col] = dc;
+-        work[col + 8] = dc;
+-        work[col + 16] = dc;
+-        work[col + 24] = dc;
+-        work[col + 32] = dc;
+-        work[col + 40] = dc;
+-        work[col + 48] = dc;
+-        work[col + 56] = dc;
+-        return;
+-    }
+-
+-    let z1 = p2 * FIX_0_541196100;
+-    let tmp2 = z1;
+-    let tmp3 = z1 + p2 * FIX_0_765366865;
+-
+-    let tmp0 = p0 << idct::CONST_BITS;
+-    let tmp1 = p0 << idct::CONST_BITS;
+-
+-    let tmp10 = tmp0 + tmp3;
+-    let tmp13 = tmp0 - tmp3;
+-    let tmp11 = tmp1 + tmp2;
+-    let tmp12 = tmp1 - tmp2;
+-
+-    let z5 = (p1 + p3) * FIX_1_175875602;
+-    let z1 = p1 * (-FIX_0_899976223);
+-    let z2 = p3 * (-FIX_2_562915447);
+-    let z3 = p3 * (-FIX_1_961570560) + z5;
+-    let z4 = p1 * (-FIX_0_390180644) + z5;
+-
+-    let tmp0 = z1 + z3;
+-    let tmp1 = z2 + z4;
+-    let tmp2 = p3 * FIX_3_072711026 + z2 + z3;
+-    let tmp3 = p1 * FIX_1_501321110 + z1 + z4;
+-
+-    let rounding = Wrapping(PASS1_ROUNDING);
+-    work[col] = descale(tmp10 + tmp3 + rounding, PASS1_SHIFT);
+-    work[col + 56] = descale(tmp10 - tmp3 + rounding, PASS1_SHIFT);
+-    work[col + 8] = descale(tmp11 + tmp2 + rounding, PASS1_SHIFT);
+-    work[col + 48] = descale(tmp11 - tmp2 + rounding, PASS1_SHIFT);
+-    work[col + 16] = descale(tmp12 + tmp1 + rounding, PASS1_SHIFT);
+-    work[col + 40] = descale(tmp12 - tmp1 + rounding, PASS1_SHIFT);
+-    work[col + 24] = descale(tmp13 + tmp0 + rounding, PASS1_SHIFT);
+-    work[col + 32] = descale(tmp13 - tmp0 + rounding, PASS1_SHIFT);
+-}
+-
+-fn descale(v: Wrapping<i32>, shift: i32) -> Wrapping<i32> {
+-    Wrapping(v.0 >> shift)
+-}
+-
+-fn idct_1d_row<T: IdctSample>(work: &[Wrapping<i32>; 64], output: &mut [T; 64], row: usize) {
+-    let base = row * 8;
+-    let p0 = work[base];
+-    let p1 = work[base + 1];
+-    let p2 = work[base + 2];
+-    let p3 = work[base + 3];
+-    let p4 = work[base + 4];
+-    let p5 = work[base + 5];
+-    let p6 = work[base + 6];
+-    let p7 = work[base + 7];
+-
+-    if p1.0 == 0 && p2.0 == 0 && p3.0 == 0 && p4.0 == 0 && p5.0 == 0 && p6.0 == 0 && p7.0 == 0 {
+-        let pixel = descale_and_clamp::<T>(p0 + Wrapping(DC_ROUNDING), DC_SHIFT);
+-        for i in 0..8 {
+-            output[base + i] = pixel;
+-        }
+-        return;
+-    }
+-
+-    let z2 = p2;
+-    let z3 = p6;
+-    let z1 = (z2 + z3) * FIX_0_541196100;
+-    let tmp2 = z1 + z3 * (-FIX_1_847759065);
+-    let tmp3 = z1 + z2 * FIX_0_765366865;
+-
+-    let tmp0 = (p0 + p4) << idct::CONST_BITS;
+-    let tmp1 = (p0 - p4) << idct::CONST_BITS;
+-
+-    let tmp10 = tmp0 + tmp3;
+-    let tmp13 = tmp0 - tmp3;
+-    let tmp11 = tmp1 + tmp2;
+-    let tmp12 = tmp1 - tmp2;
+-
+-    let tmp0 = p7;
+-    let tmp1 = p5;
+-    let tmp2 = p3;
+-    let tmp3 = p1;
+-
+-    let z1 = tmp0 + tmp3;
+-    let z2 = tmp1 + tmp2;
+-    let z3 = tmp0 + tmp2;
+-    let z4 = tmp1 + tmp3;
+-    let z5 = (z3 + z4) * FIX_1_175875602;
+-
+-    let tmp0 = tmp0 * FIX_0_298631336;
+-    let tmp1 = tmp1 * FIX_2_053119869;
+-    let tmp2 = tmp2 * FIX_3_072711026;
+-    let tmp3 = tmp3 * FIX_1_501321110;
+-    let z1 = z1 * (-FIX_0_899976223);
+-    let z2 = z2 * (-FIX_2_562915447);
+-    let z3 = z3 * (-FIX_1_961570560);
+-    let z4 = z4 * (-FIX_0_390180644);
+-
+-    let z3 = z3 + z5;
+-    let z4 = z4 + z5;
+-
+-    let tmp0 = tmp0 + z1 + z3;
+-    let tmp1 = tmp1 + z2 + z4;
+-    let tmp2 = tmp2 + z2 + z3;
+-    let tmp3 = tmp3 + z1 + z4;
+-
+-    let rounding = Wrapping(PASS2_ROUNDING);
+-    output[base] = descale_and_clamp::<T>(tmp10 + tmp3 + rounding, PASS2_SHIFT);
+-    output[base + 7] = descale_and_clamp::<T>(tmp10 - tmp3 + rounding, PASS2_SHIFT);
+-    output[base + 1] = descale_and_clamp::<T>(tmp11 + tmp2 + rounding, PASS2_SHIFT);
+-    output[base + 6] = descale_and_clamp::<T>(tmp11 - tmp2 + rounding, PASS2_SHIFT);
+-    output[base + 2] = descale_and_clamp::<T>(tmp12 + tmp1 + rounding, PASS2_SHIFT);
+-    output[base + 5] = descale_and_clamp::<T>(tmp12 - tmp1 + rounding, PASS2_SHIFT);
+-    output[base + 3] = descale_and_clamp::<T>(tmp13 + tmp0 + rounding, PASS2_SHIFT);
+-    output[base + 4] = descale_and_clamp::<T>(tmp13 - tmp0 + rounding, PASS2_SHIFT);
+-}
+-
+-fn descale_and_clamp<T: IdctSample>(value: Wrapping<i32>, shift: i32) -> T {
+-    let shifted = value.0 >> shift;
+-    let level_shifted = shifted.wrapping_add(T::LEVEL_SHIFT);
+-    T::from_clamped_i32(level_shifted.clamp(0, T::MAX))
++    idct::sample_12bit(i64::from(idct::islow_dc(i32::from(dc_coeff))))
+ }
+ 
+ #[cfg(test)]
+@@ -513,28 +75,6 @@ mod tests {
+         }
+     }
+ 
+-    #[test]
+-    fn islow_gains_match_the_column_transform() {
+-        // An impulse of ±2^PASS1_SHIFT in input k makes column output j
+-        // exactly ±gain[j][k]: (g * 2048 + 1024) >> 11 = g.
+-        let impulse = 1i16 << PASS1_SHIFT;
+-        for k in 0..8 {
+-            for sign in [1, -1] {
+-                let mut input = [0i16; 64];
+-                input[k * 8] = sign * impulse;
+-                let mut work = [Wrapping(0i32); 64];
+-                idct_1d_column(&input, &mut work, 0);
+-                for (j, gains) in ISLOW_GAINS.iter().enumerate() {
+-                    assert_eq!(
+-                        work[j * 8].0,
+-                        i32::from(sign) * gains[k],
+-                        "output {j}, input {k}"
+-                    );
+-                }
+-            }
+-        }
+-    }
+-
+     #[test]
+     fn dc_only_input_produces_uniform_block() {
+         let mut input = [0i16; 64];
+@@ -701,8 +241,8 @@ mod tests {
+ 
+     #[test]
+     fn does_not_panic_on_extreme_adversarial_coefficients() {
+-        // All maxed-out i16 — intermediate multiplies overflow i32. Wrapping<i32>
+-        // makes this produce garbage pixels instead of panicking.
++        // All maxed-out i16 — intermediate multiplies overflow i32. Wrapping
++        // arithmetic makes this produce garbage pixels instead of panicking.
+         let input = [i16::MAX; 64];
+         let mut output = [0u8; 64];
+         idct_islow(&input, &mut output);
+diff --git a/xtask/api/stable-api-1.0.public-api.txt b/xtask/api/stable-api-1.0.public-api.txt
+index 9f3b45b..d4f00b5 100644
+--- a/xtask/api/stable-api-1.0.public-api.txt
++++ b/xtask/api/stable-api-1.0.public-api.txt
+@@ -1370,6 +1370,21 @@ pub const fn j2k_codec_math::dwt::Dwt53LinearTap::weight(self) -> f64
+ pub const fn j2k_codec_math::dwt::max_decomposition_levels(u32, u32) -> u8
+ pub const fn j2k_codec_math::dwt::reflect_index(i64, u32) -> u32
+ pub const fn j2k_codec_math::jpeg::derive_canonical_huffman(&[u8; 16], usize) -> core::result::Result<j2k_codec_math::jpeg::CanonicalHuffmanDerivation, j2k_codec_math::jpeg::CanonicalHuffmanError>
++pub const fn j2k_codec_math::jpeg::idct::descale(i32, i32) -> i32
++pub const fn j2k_codec_math::jpeg::idct::islow_1d([i32; 8]) -> [i32; 8]
++pub const fn j2k_codec_math::jpeg::idct::islow_1d_2([i32; 8]) -> [i32; 2]
++pub const fn j2k_codec_math::jpeg::idct::islow_1d_2_i64([i64; 8]) -> [i64; 2]
++pub const fn j2k_codec_math::jpeg::idct::islow_1d_4([i32; 8]) -> [i32; 4]
++pub const fn j2k_codec_math::jpeg::idct::islow_1d_4_i64([i64; 8]) -> [i64; 4]
++pub const fn j2k_codec_math::jpeg::idct::islow_1d_i64([i64; 8]) -> [i64; 8]
++pub const fn j2k_codec_math::jpeg::idct::islow_column([i32; 8]) -> [i32; 8]
++pub const fn j2k_codec_math::jpeg::idct::islow_dc(i32) -> i32
++pub const fn j2k_codec_math::jpeg::idct::islow_gain_bounds() -> (i32, i32)
++pub const fn j2k_codec_math::jpeg::idct::islow_pass1([i32; 8]) -> [i32; 8]
++pub const fn j2k_codec_math::jpeg::idct::islow_pass2([i32; 8]) -> [i32; 8]
++pub const fn j2k_codec_math::jpeg::idct::islow_row([i32; 8]) -> [i32; 8]
++pub const fn j2k_codec_math::jpeg::idct::sample_centered(i32) -> i32
++pub const fn j2k_codec_math::jpeg::idct::sample_u8(i32) -> u8
+ pub const fn j2k_codec_math::jpeg::lossless::additional_bits(u8) -> u8
+ pub const fn j2k_codec_math::jpeg::lossless::difference_category(u16) -> (u8, u16)
+ pub const fn j2k_codec_math::jpeg::lossless::initial_predictor(u8, u8) -> core::option::Option<u16>
+@@ -1414,19 +1429,39 @@ pub const j2k_codec_math::generated::DWT97_CONSTANTS_METAL: &str
+ pub const j2k_codec_math::htj2k::HT_MAX_SCRATCH: usize
+ pub const j2k_codec_math::jpeg::ZIGZAG: [u8; 64]
+ pub const j2k_codec_math::jpeg::idct::CONST_BITS: usize
++pub const j2k_codec_math::jpeg::idct::DC_ROUNDING: i32
++pub const j2k_codec_math::jpeg::idct::DC_SHIFT: i32
++pub const j2k_codec_math::jpeg::idct::FIX_0_211164243: i32
+ pub const j2k_codec_math::jpeg::idct::FIX_0_298631336: i32
+ pub const j2k_codec_math::jpeg::idct::FIX_0_390180644: i32
++pub const j2k_codec_math::jpeg::idct::FIX_0_509795579: i32
+ pub const j2k_codec_math::jpeg::idct::FIX_0_541196100: i32
++pub const j2k_codec_math::jpeg::idct::FIX_0_601344887: i32
++pub const j2k_codec_math::jpeg::idct::FIX_0_720959822: i32
+ pub const j2k_codec_math::jpeg::idct::FIX_0_765366865: i32
++pub const j2k_codec_math::jpeg::idct::FIX_0_850430095: i32
+ pub const j2k_codec_math::jpeg::idct::FIX_0_899976223: i32
++pub const j2k_codec_math::jpeg::idct::FIX_1_061594337: i32
+ pub const j2k_codec_math::jpeg::idct::FIX_1_175875602: i32
++pub const j2k_codec_math::jpeg::idct::FIX_1_272758580: i32
++pub const j2k_codec_math::jpeg::idct::FIX_1_451774981: i32
+ pub const j2k_codec_math::jpeg::idct::FIX_1_501321110: i32
+ pub const j2k_codec_math::jpeg::idct::FIX_1_847759065: i32
+ pub const j2k_codec_math::jpeg::idct::FIX_1_961570560: i32
+ pub const j2k_codec_math::jpeg::idct::FIX_2_053119869: i32
++pub const j2k_codec_math::jpeg::idct::FIX_2_172734803: i32
+ pub const j2k_codec_math::jpeg::idct::FIX_2_562915447: i32
+ pub const j2k_codec_math::jpeg::idct::FIX_3_072711026: i32
++pub const j2k_codec_math::jpeg::idct::FIX_3_624509785: i32
++pub const j2k_codec_math::jpeg::idct::ISLOW_GAINS: [[i32; 8]; 8]
+ pub const j2k_codec_math::jpeg::idct::PASS1_BITS: usize
++pub const j2k_codec_math::jpeg::idct::PASS1_BITS_12: i32
++pub const j2k_codec_math::jpeg::idct::PASS1_ROUNDING: i32
++pub const j2k_codec_math::jpeg::idct::PASS1_SHIFT: i32
++pub const j2k_codec_math::jpeg::idct::PASS1_SHIFT_12: i32
++pub const j2k_codec_math::jpeg::idct::PASS2_ROUNDING: i32
++pub const j2k_codec_math::jpeg::idct::PASS2_SHIFT: i32
++pub const j2k_codec_math::jpeg::idct::PASS2_SHIFT_12: i32
+ pub const j2k_codec_math::jpeg::lossless::DIFFERENCE_SYMBOLS: usize
+ pub const j2k_codec_math::jpeg::lossless::MAX_DIFFERENCE_BITS: u32
+ pub const j2k_codec_math::jpeg::lossless::MAX_DIFFERENCE_CATEGORY: u8
+@@ -1455,6 +1490,14 @@ pub enum j2k_codec_math::jpeg::CanonicalHuffmanError
+ pub fn j2k_codec_math::dwt::Dwt53LinearRow::taps(&self) -> &[j2k_codec_math::dwt::Dwt53LinearTap]
+ pub fn j2k_codec_math::dwt::linearized_dwt53_row(usize, j2k_codec_math::dwt::Dwt53Band, usize) -> core::option::Option<j2k_codec_math::dwt::Dwt53LinearRow>
+ pub fn j2k_codec_math::jpeg::CanonicalHuffmanError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
++pub fn j2k_codec_math::jpeg::idct::islow_block<T: core::marker::Copy + core::convert::Into<i32>>(&[T; 64], &mut [u8; 64])
++pub fn j2k_codec_math::jpeg::idct::islow_block_12bit(&[i16; 64], &mut [u16; 64])
++pub fn j2k_codec_math::jpeg::idct::islow_block_12bit_2x2(&[i16; 64], &mut [u16; 4])
++pub fn j2k_codec_math::jpeg::idct::islow_block_12bit_4x4(&[i16; 64], &mut [u16; 16])
++pub fn j2k_codec_math::jpeg::idct::islow_block_2x2(&[i16; 64], &mut [u8; 4])
++pub fn j2k_codec_math::jpeg::idct::islow_block_4x4(&[i16; 64], &mut [u8; 16])
++pub fn j2k_codec_math::jpeg::idct::islow_block_top_half<T: core::marker::Copy + core::convert::Into<i32>>(&[T; 64], &mut [u8; 64])
++pub fn j2k_codec_math::jpeg::idct::sample_12bit(i64) -> u16
+ pub j2k_codec_math::classic::ClassicMqState::nlps: u8
+ pub j2k_codec_math::classic::ClassicMqState::nmps: u8
+ pub j2k_codec_math::classic::ClassicMqState::qe: u32

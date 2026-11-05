@@ -40,8 +40,10 @@ pub(super) fn classify_color_fast_packet_info(info: &Info) -> Option<JpegFastPac
 
 /// The color fast-packet family a coded color space and per-component
 /// sampling select for an image `width` pixels wide, before scan, table and
-/// component-order validation. The one shape rule shared by packet
-/// classification, the device batch summary and the fast CPU routes.
+/// component-order validation: the shape rule packet classification, the
+/// device batch summary and the fast CPU routes share. The explicit-family
+/// packet builders (`FAST4xx_LAYOUT` in `header.rs`) check only the layout
+/// they are asked for, without the width rule.
 pub(crate) fn fast_packet_family_for_shape(
     color_space: ColorSpace,
     sampling: &[(u8, u8)],

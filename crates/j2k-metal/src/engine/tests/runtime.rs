@@ -206,7 +206,6 @@ fn scaled_htj2k_decode_runs_through_metal_compute_path() {
 
     let surface = decode_region_scaled_to_surface(
         &bytes,
-        (4, 4),
         PixelFormat::Gray8,
         j2k_core::Rect {
             x: 0,

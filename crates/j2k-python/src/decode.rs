@@ -492,11 +492,22 @@ impl Decoder {
         cpu_decoded(decoded)
     }
 
+    /// Prepare `inputs` for this decoder's backend. A device backend prepares
+    /// as its own decoder does, with the shared preparation: the CPU
+    /// decoder's admission rejects images whose CPU execution would pass the
+    /// CPU decode bound, which a device decoder decodes on its own terms.
     fn prepare_encoded(
         &self,
         py: Python<'_>,
         inputs: Vec<EncodedImage>,
     ) -> PyResult<PreparedBatch> {
+        if self.has_device_backend() {
+            return py.detach(|| {
+                j2k::prepare_batch(inputs, self.options)
+                    .map(|inner| PreparedBatch { inner })
+                    .map_err(value_error)
+            });
+        }
         py.detach(|| {
             self.cpu
                 .lock()
@@ -505,6 +516,29 @@ impl Decoder {
                 .map(|inner| PreparedBatch { inner })
                 .map_err(value_error)
         })
+    }
+
+    /// Whether batches decode on a CUDA or Metal device instead of the CPU.
+    #[cfg_attr(
+        not(any(
+            feature = "cuda",
+            all(feature = "metal", target_os = "macos", target_arch = "aarch64")
+        )),
+        expect(
+            clippy::unused_self,
+            reason = "builds without a device backend have no device to check"
+        )
+    )]
+    fn has_device_backend(&self) -> bool {
+        #[cfg(feature = "cuda")]
+        if self.cuda.is_some() {
+            return true;
+        }
+        #[cfg(all(feature = "metal", target_os = "macos", target_arch = "aarch64"))]
+        if self.metal.is_some() {
+            return true;
+        }
+        false
     }
 
     fn decode_j2k(&self, py: Python<'_>, prepared: &j2k::PreparedBatch) -> PyResult<Decoded> {

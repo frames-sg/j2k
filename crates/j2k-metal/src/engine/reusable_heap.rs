@@ -72,7 +72,10 @@ impl ReusableHeap {
         let buffer = heap_buffer(&grown, bytes)?;
         *heap = Some(grown);
         drop(heap);
-        buffer.map_or_else(|| new_shared_buffer(device, bytes), Ok)
+        match buffer {
+            Some(buffer) => Ok(buffer),
+            None => new_shared_buffer(device, bytes),
+        }
     }
 
     /// The heap size that serves `bytes`: room for two such buffers when that
@@ -119,10 +122,10 @@ impl<'a> HtInputAllocator<'a> {
     }
 
     pub(in crate::engine) fn shared_buffer(self, bytes: usize) -> Result<Buffer, Error> {
-        self.heap.map_or_else(
-            || new_shared_buffer(self.device, bytes),
-            |heap| heap.allocate(self.device, bytes),
-        )
+        match self.heap {
+            Some(heap) => heap.allocate(self.device, bytes),
+            None => new_shared_buffer(self.device, bytes),
+        }
     }
 
     pub(in crate::engine) fn copied_slice<T: GpuAbi>(self, values: &[T]) -> Result<Buffer, Error> {

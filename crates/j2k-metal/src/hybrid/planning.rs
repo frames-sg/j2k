@@ -5,17 +5,14 @@
 use std::{sync::Arc, time::Instant};
 
 use j2k_core::{Downscale, PixelFormat, Rect};
-use j2k_native::{
-    DecodeSettings as NativeDecodeSettings, DecoderContext as NativeDecoderContext,
-    Image as NativeImage,
-};
+use j2k_native::DecoderContext as NativeDecoderContext;
 
 use super::cache::RegionScaledColorPlanCache;
 use super::profile::emit_region_scaled_color_plan_build_timings;
 use crate::error::native_decode_error;
 use crate::profile_env::elapsed_since_us;
 use crate::session::PreparedPlanCacheKey;
-use crate::{direct, Error, J2kDecoder};
+use crate::{direct, Error};
 
 pub(super) const RGB_REGION_SCALED_METAL_DIRECT_UNSUPPORTED: &str =
     "J2K Metal ROI+scaled hybrid decode currently supports single-tile RGB direct plans for Rgb8/Rgba8/Rgb16";
@@ -107,9 +104,8 @@ pub(super) fn build_region_scaled_direct_gray_plan(
     roi: Rect,
     scale: Downscale,
 ) -> Result<crate::engine::PreparedDirectGrayscalePlan, Error> {
-    let image = build_region_scaled_native_image(input, scale)?;
+    let (image, output_region) = crate::engine::reduced_image_and_region(input, roi, scale)?;
     let mut context = NativeDecoderContext::default();
-    let output_region = roi.scaled_covering(scale);
     let plan = match image.build_direct_grayscale_plan_region_with_context(
         &mut context,
         (
@@ -149,13 +145,12 @@ fn build_region_scaled_direct_color_plan(
     let profile_stages = crate::engine::metal_profile_stages_enabled();
     let total_started = profile_stages.then(Instant::now);
     let native_image_started = profile_stages.then(Instant::now);
-    let image = build_region_scaled_native_image(input, scale)?;
+    let (image, output_region) = crate::engine::reduced_image_and_region(input, roi, scale)?;
     let native_image_us = native_image_started
         .map(elapsed_since_us)
         .unwrap_or_default();
     let direct_plan_started = profile_stages.then(Instant::now);
     let mut context = NativeDecoderContext::default();
-    let output_region = roi.scaled_covering(scale);
     let plan = match image.build_direct_color_plan_region_with_context(
         &mut context,
         (
@@ -211,24 +206,6 @@ pub(super) fn build_region_scaled_direct_color_plan_cached_with_cache(
     let plan = Arc::new(build_region_scaled_direct_color_plan(input, roi, scale)?);
     cache.store(cache_key, plan.clone())?;
     Ok(plan)
-}
-
-fn build_region_scaled_native_image(
-    input: &[u8],
-    scale: Downscale,
-) -> Result<NativeImage<'_>, Error> {
-    let decoder = J2kDecoder::new(input)?;
-    let dims = decoder.inner.info().dimensions;
-    let target_dims = (
-        dims.0.div_ceil(scale.denominator()),
-        dims.1.div_ceil(scale.denominator()),
-    );
-    let settings = NativeDecodeSettings {
-        target_resolution: Some(target_dims),
-        ..NativeDecodeSettings::default()
-    };
-    let image = NativeImage::new(input, &settings).map_err(native_decode_error)?;
-    Ok(image)
 }
 
 pub(super) fn is_direct_region_scaled_runtime_fallback_error(error: &Error) -> bool {

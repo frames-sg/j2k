@@ -104,6 +104,11 @@ pub(crate) fn full_image_route(image: &Image<'_>, request: RouteRequest) -> Full
     }
 }
 
+/// Whether streamed rows can write `image` in `fmt` (see [`pack_floor`]).
+pub(crate) fn output_streams_rows(image: &Image<'_>, fmt: PixelFormat) -> bool {
+    pack_floor(image, fmt).is_some()
+}
+
 /// What the 16-bit pack of `image` into `fmt` holds besides the planes (see
 /// `u16_rows_pack_floor`), nothing for an 8-bit output, or `None` when the
 /// streamed rows cannot write `fmt`.

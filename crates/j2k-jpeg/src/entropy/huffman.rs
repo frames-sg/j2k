@@ -16,15 +16,12 @@
 //! longest code; every path preserves input and error behavior.
 //!
 //! AC primary entries are 64 bits: the single-symbol entry and a pair
-//! extension. When the lookup window holds the next symbol too (a value or
-//! EOB), the extension lets one lookup decode both; the AC loop takes it only
-//! where the one-symbol loop would have decoded that symbol from the same
-//! window, so the reader's refill points, outputs, and errors are unchanged.
+//! extension; `drive_ac_fast_with_width` explains when the AC loop uses it.
 //!
 //! Built once from [`crate::parse::tables::RawHuffmanTable`]; read many times
 //! by [`crate::entropy::block::decode_block_with_activity`].
 
-use crate::allocation::{checked_add_allocation_bytes, try_reserve_for_len_with_live_budget};
+use crate::allocation::{checked_add_allocation_bytes, try_vec_filled_with_live_budget};
 use crate::error::{HuffmanFailure, JpegError};
 use crate::internal::bit_reader::BitReader;
 use crate::parse::tables::{HuffmanTableRole, HuffmanValues, RawHuffmanTable};
@@ -299,21 +296,6 @@ fn derive_compact_raw_canonical_huffman(
     })
 }
 
-/// Zero-filled lookup storage charged to a table's live-byte total; zero
-/// entries allocate nothing.
-fn zeroed_lookup<T: Clone + Default>(
-    entries: usize,
-    live_bytes: &mut usize,
-    cap: usize,
-) -> Result<Vec<T>, JpegError> {
-    let mut lookup = Vec::new();
-    if entries != 0 {
-        try_reserve_for_len_with_live_budget(&mut lookup, entries, live_bytes, cap)?;
-        lookup.resize(entries, T::default());
-    }
-    Ok(lookup)
-}
-
 fn charge_live_bytes(
     live_bytes: &mut usize,
     additional: usize,
@@ -428,7 +410,7 @@ impl AcEntries<'_> {
     const fn fill(&mut self, start: usize, end: usize, entry: u32) {
         match self {
             Self::Single(output) => fill_range(output, start, end, entry),
-            Self::Paired(output) => fill_range(output, start, end, entry as u64),
+            Self::Paired(output) => fill_range(output, start, end, join_ac_entry(entry, 0)),
         }
     }
 }
@@ -489,36 +471,31 @@ const fn fill_ac_lookup(
 /// ensures `FULL_PRIMARY_BITS`.
 #[expect(
     clippy::cast_possible_truncation,
-    reason = "the low half of an AC primary entry is its single-symbol entry"
+    reason = "a decoded AC run is four bits"
 )]
 const fn fill_ac_pairs(primary: &mut [u64], lookup_bits: u8) {
     let window = lookup_bits as u32;
     let mask = (1usize << lookup_bits) - 1;
     let mut index = 0usize;
     while index < primary.len() {
-        let first = primary[index] as u32;
+        let (first, _) = split_ac_entry(primary[index]);
         let mut pair = 0;
         if first & AC_FAST_KIND_MASK == AC_FAST_VALUE {
             let first_len = first & AC_FAST_LEN_MASK;
-            let first_value = (first >> AC_FAST_VALUE_SHIFT) & 0xFFFF;
-            pair = first_len | (first_value << AC_PAIR_VALUE_SHIFT);
+            pair = pack_ac_pair(first_len, 0, 0, first);
             if first_len < window {
-                let second = primary[(index << first_len) & mask] as u32;
+                let (second, _) = split_ac_entry(primary[(index << first_len) & mask]);
                 let len = first_len + (second & AC_FAST_LEN_MASK);
-                let guard = (first_len + FULL_PRIMARY_BITS as u32) << AC_PAIR_GUARD_SHIFT;
+                let guard = first_len + FULL_PRIMARY_BITS as u32;
                 if len <= window && second & AC_FAST_KIND_MASK == AC_FAST_VALUE {
-                    let distance = ((second & AC_FAST_RUN_MASK) >> 4) + 1;
-                    let second_value = (second >> AC_FAST_VALUE_SHIFT) & 0xFFFF;
-                    pair = len
-                        | (distance << AC_PAIR_DISTANCE_SHIFT)
-                        | guard
-                        | (second_value << AC_PAIR_VALUE_SHIFT);
+                    let distance = ac_decoded_run(second) as u32 + 1;
+                    pair = pack_ac_pair(len, distance, guard, second);
                 } else if len <= window && second & AC_FAST_KIND_MASK == AC_FAST_EOB {
-                    pair = len | guard | AC_PAIR_EOB | (first_value << AC_PAIR_VALUE_SHIFT);
+                    pair = pack_ac_pair(len, 0, guard, first) | AC_PAIR_EOB;
                 }
             }
         }
-        primary[index] |= (pair as u64) << 32;
+        primary[index] = join_ac_entry(first, pair);
         index += 1;
     }
 }
@@ -773,13 +750,24 @@ fn standard_compiled_table(
     }
 }
 
-fn dynamic_raw_lookup_bits(canonical: &CanonicalHuffmanDerivation) -> u8 {
-    canonical.huffsize[..canonical.huffsize_len]
-        .iter()
-        .copied()
-        .max()
-        .unwrap_or(MIN_DYNAMIC_RAW_BITS)
-        .clamp(MIN_DYNAMIC_RAW_BITS, FAST_BITS)
+/// The `N`-entry primary lookup of a table whose primary is `full`: for 8-bit
+/// entries its narrow companion, which only Full tables retain, otherwise
+/// `full` itself, which a Narrow table sizes for 8 bits.
+fn select_primary<'a, T, const N: usize>(
+    full: &'a [T],
+    narrow: &'a [T],
+    reason: &'static str,
+) -> Result<&'a [T; N], JpegError> {
+    let entries = if N == NARROW_PRIMARY_ENTRIES && !narrow.is_empty() {
+        narrow
+    } else if N == NARROW_PRIMARY_ENTRIES || N == FULL_PRIMARY_ENTRIES {
+        full
+    } else {
+        &[]
+    };
+    entries
+        .first_chunk()
+        .ok_or(JpegError::InternalInvariant { reason })
 }
 
 impl HuffmanTable {
@@ -792,6 +780,16 @@ impl HuffmanTable {
             + (FULL_PRIMARY_ENTRIES + NARROW_PRIMARY_ENTRIES) * size_of::<u64>()
             + FAST_ENTRIES * size_of::<u32>()
     }
+
+    /// Retained bytes a Full table gains from its narrow companion primary,
+    /// plus those the pair extensions add to a Full AC table: the high halves
+    /// of its full and narrow primary entries, and the two AC primary vectors
+    /// every compiled table carries.
+    pub(crate) const FULL_TABLE_GROWTH_ALLOCATION_BYTES: usize = NARROW_PRIMARY_ENTRIES
+        * size_of::<u32>()
+        + size_of::<Vec<u32>>()
+        + (FULL_PRIMARY_ENTRIES + NARROW_PRIMARY_ENTRIES) * (size_of::<u64>() - size_of::<u32>())
+        + 2 * size_of::<Vec<u64>>();
 
     pub(crate) fn retained_allocation_bytes(&self) -> usize {
         match self {
@@ -850,31 +848,28 @@ impl HuffmanTable {
         let initial_live_bytes = *live_bytes;
         let mut table_live_bytes = initial_live_bytes;
         charge_live_bytes(&mut table_live_bytes, Self::COMPILED_OWNER_BYTES, cap)?;
-        let raw_lookup_bits = match (requirement, role) {
-            (HuffmanLookupRequirement::Raw, _) => dynamic_raw_lookup_bits(&canonical),
-            (HuffmanLookupRequirement::FusedNarrow, _) => NARROW_RAW_BITS,
-            (HuffmanLookupRequirement::FusedFull, _) => FAST_BITS,
-        };
         let full = requirement == HuffmanLookupRequirement::FusedFull;
+        let (raw_lookup_bits, primary_entries, primary_bits) = if full {
+            (FAST_BITS, FULL_PRIMARY_ENTRIES, FULL_PRIMARY_BITS)
+        } else {
+            (NARROW_RAW_BITS, NARROW_PRIMARY_ENTRIES, NARROW_PRIMARY_BITS)
+        };
         let ac = role == HuffmanTableRole::Ac;
         let live = &mut table_live_bytes;
-        let mut fast = zeroed_lookup(1usize << raw_lookup_bits, live, cap)?;
-        let mut packed = zeroed_lookup(if full && ac { FAST_ENTRIES } else { 0 }, live, cap)?;
-        let (primary_entries, primary_bits) = match requirement {
-            HuffmanLookupRequirement::Raw => (0, FULL_PRIMARY_BITS),
-            HuffmanLookupRequirement::FusedNarrow => (NARROW_PRIMARY_ENTRIES, NARROW_PRIMARY_BITS),
-            HuffmanLookupRequirement::FusedFull => (FULL_PRIMARY_ENTRIES, FULL_PRIMARY_BITS),
-        };
+        let mut fast =
+            try_vec_filled_with_live_budget(1usize << raw_lookup_bits, (0, 0), live, cap)?;
+        let packed_entries = if full && ac { FAST_ENTRIES } else { 0 };
+        let mut packed = try_vec_filled_with_live_budget(packed_entries, 0, live, cap)?;
         let narrow_entries = if full { NARROW_PRIMARY_ENTRIES } else { 0 };
         let (dc_entries, ac_entries) = if ac {
             ((0, 0), (primary_entries, narrow_entries))
         } else {
             ((primary_entries, narrow_entries), (0, 0))
         };
-        let mut primary = zeroed_lookup(dc_entries.0, live, cap)?;
-        let mut primary8 = zeroed_lookup(dc_entries.1, live, cap)?;
-        let mut ac_primary = zeroed_lookup(ac_entries.0, live, cap)?;
-        let mut ac_primary8 = zeroed_lookup(ac_entries.1, live, cap)?;
+        let mut primary = try_vec_filled_with_live_budget(dc_entries.0, 0, live, cap)?;
+        let mut primary8 = try_vec_filled_with_live_budget(dc_entries.1, 0, live, cap)?;
+        let mut ac_primary = try_vec_filled_with_live_budget(ac_entries.0, 0, live, cap)?;
+        let mut ac_primary8 = try_vec_filled_with_live_budget(ac_entries.1, 0, live, cap)?;
         let lookups = if ac {
             PrimaryLookups::Ac {
                 primary: &mut ac_primary,
@@ -938,7 +933,12 @@ impl HuffmanTable {
         let mut table_live_bytes = initial_live_bytes;
         charge_live_bytes(&mut table_live_bytes, Self::COMPILED_OWNER_BYTES, cap)?;
         let raw_lookup_bits = canonical.lookup_bits;
-        let mut fast = zeroed_lookup(1usize << raw_lookup_bits, &mut table_live_bytes, cap)?;
+        let mut fast = try_vec_filled_with_live_budget(
+            1usize << raw_lookup_bits,
+            (0, 0),
+            &mut table_live_bytes,
+            cap,
+        )?;
         fill_raw_lookup_from_bits(&mut fast, raw_lookup_bits, raw, &canonical)?;
 
         let retained_allocation_bytes = table_live_bytes.checked_sub(initial_live_bytes).ok_or(
@@ -1056,54 +1056,45 @@ impl HuffmanTable {
         self.satisfies_lookup_requirement(HuffmanLookupRequirement::FusedNarrow)
     }
 
-    /// DC primary lookup for `N` entries.
     fn primary<const N: usize>(&self) -> Result<&[u32; N], JpegError> {
-        let entries = match self {
-            Self::Static(compiled) if N == NARROW_PRIMARY_ENTRIES => compiled
-                .primary8
-                .map_or(&[][..], |primary| primary.as_slice()),
-            Self::Static(compiled) if N == FULL_PRIMARY_ENTRIES => compiled
-                .primary
-                .map_or(&[][..], |primary| primary.as_slice()),
-            Self::Dynamic(compiled)
-                if N == NARROW_PRIMARY_ENTRIES
-                    && compiled.primary.len() == FULL_PRIMARY_ENTRIES =>
-            {
-                compiled.primary8.as_slice()
-            }
-            Self::Dynamic(compiled) if N == NARROW_PRIMARY_ENTRIES => compiled.primary.as_slice(),
-            Self::Dynamic(compiled) if N == FULL_PRIMARY_ENTRIES => compiled.primary.as_slice(),
-            Self::Static(_) | Self::Dynamic(_) => &[],
+        let (full, narrow) = match self {
+            Self::Static(compiled) => (
+                compiled
+                    .primary
+                    .map_or(&[][..], |primary| primary.as_slice()),
+                compiled
+                    .primary8
+                    .map_or(&[][..], |primary| primary.as_slice()),
+            ),
+            Self::Dynamic(compiled) => (compiled.primary.as_slice(), compiled.primary8.as_slice()),
         };
-        entries.first_chunk().ok_or(JpegError::InternalInvariant {
-            reason: "compiled Huffman primary lookup has the wrong length",
-        })
+        select_primary(
+            full,
+            narrow,
+            "compiled Huffman primary lookup has the wrong length",
+        )
     }
 
-    /// AC primary lookup of pair entries for `N` entries.
     fn ac_primary<const N: usize>(&self) -> Result<&[u64; N], JpegError> {
-        let entries = match self {
-            Self::Static(compiled) if N == NARROW_PRIMARY_ENTRIES => compiled
-                .ac_primary8
-                .map_or(&[][..], |primary| primary.as_slice()),
-            Self::Static(compiled) if N == FULL_PRIMARY_ENTRIES => compiled
-                .ac_primary
-                .map_or(&[][..], |primary| primary.as_slice()),
-            Self::Dynamic(compiled)
-                if N == NARROW_PRIMARY_ENTRIES
-                    && compiled.ac_primary.len() == FULL_PRIMARY_ENTRIES =>
-            {
-                compiled.ac_primary8.as_slice()
-            }
-            Self::Dynamic(compiled) if N == NARROW_PRIMARY_ENTRIES => {
-                compiled.ac_primary.as_slice()
-            }
-            Self::Dynamic(compiled) if N == FULL_PRIMARY_ENTRIES => compiled.ac_primary.as_slice(),
-            Self::Static(_) | Self::Dynamic(_) => &[],
+        let (full, narrow) = match self {
+            Self::Static(compiled) => (
+                compiled
+                    .ac_primary
+                    .map_or(&[][..], |primary| primary.as_slice()),
+                compiled
+                    .ac_primary8
+                    .map_or(&[][..], |primary| primary.as_slice()),
+            ),
+            Self::Dynamic(compiled) => (
+                compiled.ac_primary.as_slice(),
+                compiled.ac_primary8.as_slice(),
+            ),
         };
-        entries.first_chunk().ok_or(JpegError::InternalInvariant {
-            reason: "compiled Huffman AC primary lookup has the wrong length",
-        })
+        select_primary(
+            full,
+            narrow,
+            "compiled Huffman AC primary lookup has the wrong length",
+        )
     }
 
     fn packed(&self) -> Result<(&[u32; FAST_ENTRIES], bool), JpegError> {
@@ -1479,10 +1470,6 @@ impl<const N: usize> AcHuffmanTable<'_, N> {
         reason = "measured Huffman lookup hot path requires cross-helper inlining"
     )]
     #[inline(always)]
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the low half of an AC primary entry is its single-symbol entry"
-    )]
     pub(crate) fn lookup_ac<const WIDE: bool>(
         self,
         br: &mut BitReader<'_>,
@@ -1497,12 +1484,8 @@ impl<const N: usize> AcHuffmanTable<'_, N> {
                 peek,
             }
         } else {
-            let entry = self.primary[primary_index::<N>(peek)];
-            AcLookup {
-                packed: entry as u32,
-                pair: (entry >> 32) as u32,
-                peek,
-            }
+            let (packed, pair) = split_ac_entry(self.primary[primary_index::<N>(peek)]);
+            AcLookup { packed, pair, peek }
         })
     }
 
@@ -1824,7 +1807,7 @@ impl PreparedHuffmanTables {
     reason = "measured Huffman lookup hot path requires cross-helper inlining"
 )]
 #[inline(always)]
-pub(crate) fn ac_decoded_run(packed: u32) -> usize {
+pub(crate) const fn ac_decoded_run(packed: u32) -> usize {
     ((packed & AC_FAST_RUN_MASK) >> 4) as usize
 }
 
@@ -1902,6 +1885,34 @@ const fn pack_ac_value(total_len: u8, run: u8, value: i16) -> u32 {
         | total_len as u32
 }
 
+/// Pair extension consuming `len` bits when `guard` bits are buffered. Its
+/// value field is copied from the single-symbol value entry `value_entry`.
+#[inline]
+const fn pack_ac_pair(len: u32, distance: u32, guard: u32, value_entry: u32) -> u32 {
+    len | (distance << AC_PAIR_DISTANCE_SHIFT)
+        | (guard << AC_PAIR_GUARD_SHIFT)
+        | (((value_entry >> AC_FAST_VALUE_SHIFT) & 0xFFFF) << AC_PAIR_VALUE_SHIFT)
+}
+
+/// The single-symbol entry and pair extension of an AC primary entry.
+#[expect(
+    clippy::inline_always,
+    reason = "measured Huffman lookup hot path requires cross-helper inlining"
+)]
+#[inline(always)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "an AC primary entry is two 32-bit halves"
+)]
+const fn split_ac_entry(entry: u64) -> (u32, u32) {
+    (entry as u32, (entry >> 32) as u32)
+}
+
+#[inline]
+const fn join_ac_entry(single: u32, pair: u32) -> u64 {
+    (single as u64) | ((pair as u64) << 32)
+}
+
 #[inline]
 const fn pack_ac_eob(total_len: u8) -> u32 {
     AC_FAST_EOB | total_len as u32
@@ -1933,6 +1944,7 @@ const fn huff_extend(v: i32, ssss: u8) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parse::tables::raw_table;
 
     struct LegacyLookups {
         fast: Vec<(u8, u8)>,
@@ -2119,6 +2131,15 @@ mod tests {
             );
             assert_eq!(compact_reader.snapshot(), full_reader.snapshot());
         }
+    }
+
+    fn dynamic_raw_lookup_bits(canonical: &CanonicalHuffmanDerivation) -> u8 {
+        canonical.huffsize[..canonical.huffsize_len]
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(MIN_DYNAMIC_RAW_BITS)
+            .clamp(MIN_DYNAMIC_RAW_BITS, FAST_BITS)
     }
 
     #[test]
@@ -2713,25 +2734,7 @@ mod tests {
     #[test]
     fn role_specializations_match_legacy_tables_for_all_fast_indices_and_code_lengths() {
         let standard_dc = luma_dc_raw();
-        // Annex K luminance AC symbol order.
-        let standard_ac_values = [
-            0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12, 0x21, 0x31, 0x41, 0x06, 0x13, 0x51,
-            0x61, 0x07, 0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xA1, 0x08, 0x23, 0x42, 0xB1, 0xC1,
-            0x15, 0x52, 0xD1, 0xF0, 0x24, 0x33, 0x62, 0x72, 0x82, 0x09, 0x0A, 0x16, 0x17, 0x18,
-            0x19, 0x1A, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39,
-            0x3A, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x53, 0x54, 0x55, 0x56, 0x57,
-            0x58, 0x59, 0x5A, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6A, 0x73, 0x74, 0x75,
-            0x76, 0x77, 0x78, 0x79, 0x7A, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8A, 0x92,
-            0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9A, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7,
-            0xA8, 0xA9, 0xAA, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xC2, 0xC3,
-            0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8,
-            0xD9, 0xDA, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xF1, 0xF2,
-            0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0xFA,
-        ];
-        let standard_ac = RawHuffmanTable {
-            bits: [0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 0x7D],
-            values: HuffmanValues::from_slice(&standard_ac_values),
-        };
+        let standard_ac = raw_table(STD_LUMA_AC_BITS, &STD_LUMA_AC_VALUES);
         let length_values: Vec<u8> = (0..16).collect();
         let length_coverage = RawHuffmanTable {
             bits: [1; 16],
@@ -2797,12 +2800,12 @@ mod tests {
                     table
                         .ac_primary::<FULL_PRIMARY_ENTRIES>()
                         .unwrap()
-                        .map(single_entry)
+                        .map(|entry| split_ac_entry(entry).0)
                         .to_vec(),
                     table
                         .ac_primary::<NARROW_PRIMARY_ENTRIES>()
                         .unwrap()
-                        .map(single_entry)
+                        .map(|entry| split_ac_entry(entry).0)
                         .to_vec(),
                 ),
             };
@@ -2839,16 +2842,6 @@ mod tests {
                 assert_eq!(actual, expected.as_slice(), "lookup bits {bits}");
             }
         }
-    }
-
-    /// Standard JPEG luminance DC table from Annex K.3 — well-known fixture.
-    /// `bits[0..16]` counts per length; `values` lists the symbols in order.
-    fn single_entry(entry: u64) -> u32 {
-        u32::try_from(entry & u64::from(u32::MAX)).unwrap()
-    }
-
-    fn pair_extension(entry: u64) -> u32 {
-        u32::try_from(entry >> 32).unwrap()
     }
 
     /// Pair extension expected at `index` of an AC primary table `window`
@@ -2901,14 +2894,8 @@ mod tests {
 
     #[test]
     fn ac_pair_extensions_match_two_symbol_canonical_decode() {
-        let luma = RawHuffmanTable {
-            bits: STD_LUMA_AC_BITS,
-            values: HuffmanValues::from_slice(&STD_LUMA_AC_VALUES),
-        };
-        let chroma = RawHuffmanTable {
-            bits: STD_CHROMA_AC_BITS,
-            values: HuffmanValues::from_slice(&STD_CHROMA_AC_VALUES),
-        };
+        let luma = raw_table(STD_LUMA_AC_BITS, &STD_LUMA_AC_VALUES);
+        let chroma = raw_table(STD_CHROMA_AC_BITS, &STD_CHROMA_AC_VALUES);
         // EOB on a two-bit code and run-0 values of sizes 1-5 on three-bit
         // codes: most of the window holds two symbols.
         let short = luma_dc_raw();
@@ -2926,7 +2913,7 @@ mod tests {
             let full_entries = full.ac_primary::<FULL_PRIMARY_ENTRIES>().unwrap();
             let mut paired = 0;
             for (index, &entry) in full_entries.iter().enumerate() {
-                let pair = pair_extension(entry);
+                let (_, pair) = split_ac_entry(entry);
                 assert_eq!(
                     pair,
                     expected_ac_pair(&raw, FULL_PRIMARY_BITS, index),
@@ -2938,7 +2925,7 @@ mod tests {
                 let entries = table.ac_primary::<NARROW_PRIMARY_ENTRIES>().unwrap();
                 for (index, &entry) in entries.iter().enumerate() {
                     assert_eq!(
-                        pair_extension(entry),
+                        split_ac_entry(entry).1,
                         expected_ac_pair(&raw, NARROW_PRIMARY_BITS, index),
                         "index {index}"
                     );
@@ -2948,49 +2935,32 @@ mod tests {
         }
     }
 
+    /// Standard JPEG luminance DC table from Annex K.3 — well-known fixture.
     fn luma_dc_raw() -> RawHuffmanTable {
-        RawHuffmanTable {
-            bits: [0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
-            values: HuffmanValues::from_slice(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
-        }
+        raw_table(STD_LUMA_DC_BITS, &STD_LUMA_DC_VALUES)
     }
 
     fn nonstandard_dc_shape_raw() -> RawHuffmanTable {
-        RawHuffmanTable {
-            bits: STD_LUMA_DC_BITS,
-            values: HuffmanValues::from_slice(&[11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]),
-        }
+        raw_table(STD_LUMA_DC_BITS, &[11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0])
     }
 
     #[test]
     fn annex_k_tables_reuse_static_storage_without_charging_live_heap() {
         let cases = [
             (
-                RawHuffmanTable {
-                    bits: STD_LUMA_DC_BITS,
-                    values: HuffmanValues::from_slice(&STD_LUMA_DC_VALUES),
-                },
+                raw_table(STD_LUMA_DC_BITS, &STD_LUMA_DC_VALUES),
                 HuffmanTableRole::Dc,
             ),
             (
-                RawHuffmanTable {
-                    bits: STD_CHROMA_DC_BITS,
-                    values: HuffmanValues::from_slice(&STD_CHROMA_DC_VALUES),
-                },
+                raw_table(STD_CHROMA_DC_BITS, &STD_CHROMA_DC_VALUES),
                 HuffmanTableRole::Dc,
             ),
             (
-                RawHuffmanTable {
-                    bits: STD_LUMA_AC_BITS,
-                    values: HuffmanValues::from_slice(&STD_LUMA_AC_VALUES),
-                },
+                raw_table(STD_LUMA_AC_BITS, &STD_LUMA_AC_VALUES),
                 HuffmanTableRole::Ac,
             ),
             (
-                RawHuffmanTable {
-                    bits: STD_CHROMA_AC_BITS,
-                    values: HuffmanValues::from_slice(&STD_CHROMA_AC_VALUES),
-                },
+                raw_table(STD_CHROMA_AC_BITS, &STD_CHROMA_AC_VALUES),
                 HuffmanTableRole::Ac,
             ),
         ];

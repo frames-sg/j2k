@@ -1,0 +1,434 @@
+diff --git a/crates/j2k-jpeg/benches/micro.rs b/crates/j2k-jpeg/benches/micro.rs
+index f267655b..8c6a27aa 100644
+--- a/crates/j2k-jpeg/benches/micro.rs
++++ b/crates/j2k-jpeg/benches/micro.rs
+@@ -1,22 +1,14 @@
+ // SPDX-License-Identifier: MIT OR Apache-2.0
+ 
+-#[path = "common/classification.rs"]
+-mod classification;
+-#[path = "common/fast420_inputs.rs"]
+-mod fast420_inputs;
+-#[path = "common/input_loader.rs"]
+-mod input_loader;
+-
+ use std::time::Duration;
+ 
+ use criterion::{criterion_group, criterion_main, Criterion};
+-use fast420_inputs::load_bench_inputs;
+ use j2k_jpeg::bench_support::{
+     bench_huffman_scan, bench_idct_reference_block, BenchColorRowScratch, BenchGrayRowScratch,
+     BenchHuffmanState, BenchRgb420RowPairScratch, BenchRgbRowScratch, BenchUpsampleH2V2Scratch,
+ };
+ use j2k_jpeg::{Decoder, SofKind};
+-use j2k_test_support::JPEG_BASELINE_420_16X16;
++use j2k_test_support::{collect_jpeg_paths, paths_from_env, JPEG_BASELINE_420_16X16};
+ 
+ #[expect(
+     clippy::too_many_lines,
+@@ -51,17 +43,17 @@ fn bench_micro(c: &mut Criterion) {
+ 
+     // Entropy-only passes over every baseline JPEG under J2K_BENCH_INPUTS
+     // (files or directories): block decode without IDCT, and the skip path.
+-    // The loader skips files that do not parse (for example AppleDouble
+-    // `._*.jpg` companions); its built-in `repo/` images are left out so these
+-    // benches run only for J2K_BENCH_INPUTS.
+-    let inputs: Vec<_> = load_bench_inputs()
+-        .into_iter()
+-        .filter(|input| !input.name.starts_with("repo/"))
++    let files: Vec<Vec<u8>> = paths_from_env("J2K_BENCH_INPUTS")
++        .iter()
++        .flat_map(|path| collect_jpeg_paths(path))
++        .map(|path| std::fs::read(path).expect("read J2K_BENCH_INPUTS file"))
+         .collect();
+-    if !inputs.is_empty() {
+-        let decoders: Vec<Decoder<'_>> = inputs
++    if !files.is_empty() {
++        // Like the corpus loaders, skip files that do not parse (for example
++        // AppleDouble `._*.jpg` companions) and non-sequential frames.
++        let decoders: Vec<Decoder<'_>> = files
+             .iter()
+-            .filter_map(|input| Decoder::new(&input.bytes).ok())
++            .filter_map(|bytes| Decoder::new(bytes).ok())
+             .filter(|dec| matches!(dec.info().sof_kind, SofKind::Baseline8 | SofKind::Extended8))
+             .collect();
+         assert!(
+diff --git a/xtask/api/stable-api-1.0.implementation-public-api.txt b/xtask/api/stable-api-1.0.implementation-public-api.txt
+index c32ff36b..14bf7c2b 100644
+--- a/xtask/api/stable-api-1.0.implementation-public-api.txt
++++ b/xtask/api/stable-api-1.0.implementation-public-api.txt
+@@ -396,6 +396,7 @@ impl j2k_jpeg::adapter::JpegDeviceDctComponentLayout
+ impl j2k_jpeg::adapter::JpegDeviceDctLayout
+ impl j2k_jpeg::adapter::JpegDeviceLosslessLayout
+ impl j2k_jpeg::adapter::JpegFastPacket
++impl j2k_jpeg::adapter::JpegFastPacketFamily
+ impl j2k_jpeg::adapter::JpegHuffmanTable
+ impl j2k_jpeg::adapter::JpegLosslessEncodePlan
+ impl j2k_jpeg::adapter::JpegLosslessGpuEncodeParams
+@@ -609,6 +610,7 @@ pub fn j2k_jpeg::bench_support::BenchRgbRowScratch::new(usize) -> Self
+ pub fn j2k_jpeg::bench_support::BenchRgbRowScratch::run_backend(&mut self)
+ pub fn j2k_jpeg::bench_support::BenchUpsampleH2V2Scratch::new(usize) -> Self
+ pub fn j2k_jpeg::bench_support::BenchUpsampleH2V2Scratch::run(&mut self)
++pub fn j2k_jpeg::bench_support::bench_huffman_scan(&j2k_jpeg::Decoder<'_>, bool) -> core::result::Result<i32, j2k_jpeg::JpegError>
+ pub fn j2k_jpeg::bench_support::bench_idct_dc_only_block_with(i16, &mut [u8; 64])
+ pub fn j2k_jpeg::bench_support::bench_idct_neon_block(&[i16; 64], &mut [u8; 64])
+ pub fn j2k_jpeg::bench_support::bench_idct_neon_top_left_2x2_block(&[i16; 64], &mut [u8; 64])
+@@ -2550,6 +2552,7 @@ pub fn j2k_native::PreparedRegionDecoder<'_, '_, '_>::decode_region_components_f
+ pub fn j2k_native::ResidentHtj2kEncodeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+ pub fn j2k_native::ResidentHtj2kEncodeError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+ pub fn j2k_native::Reversible53CoefficientImage::encode_htj2k(&self, &j2k_native::EncodeOptions) -> j2k_native::EncodeResult<alloc::vec::Vec<u8>>
++pub fn j2k_native::at_simd_level<R>(impl core::ops::function::FnOnce() -> R) -> R
+ pub fn j2k_native::collect_ht_cleanup_encode_distribution(&[i32], u32, u32, u8) -> j2k_native::EncodeResult<j2k_native::HtCleanupEncodeDistribution>
+ pub fn j2k_native::cpu_decode_pool_threads() -> usize
+ pub fn j2k_native::decode_ht_code_block_scalar(j2k_native::HtCodeBlockDecodeJob<'_>, &mut [f32]) -> j2k_native::Result<()>
+@@ -2655,7 +2658,10 @@ pub fn j2k_native::quantize_reversible_reference(&[f32], u16, u16, u8, bool) ->
+ pub fn j2k_native::quantize_subband_reference(&[f32], u16, u16, u8, bool) -> alloc::vec::Vec<i32>
+ pub fn j2k_native::referenced_classic_plan_execution_bytes(&j2k_types::decode_plan::referenced::J2kReferencedClassicPlan, bool) -> j2k_native::Result<usize>
+ pub fn j2k_native::referenced_htj2k_plan_execution_bytes(&j2k_types::decode_plan::referenced::J2kReferencedHtj2kPlan, bool) -> j2k_native::Result<usize>
++pub fn j2k_native::round_clamped_native(f32, f32, f32) -> u32
++pub fn j2k_native::signed_native_bounds(u8) -> (f32, f32)
+ pub fn j2k_native::try_deinterleave_reference(&[u8], usize, u16, u8, bool) -> j2k_native::Result<alloc::vec::Vec<alloc::vec::Vec<f32>>>
++pub fn j2k_native::unsigned_native_max(u8) -> f32
+ pub fn j2k_native::window_referenced_classic_plan_to_stores(&j2k_types::decode_plan::referenced::J2kReferencedClassicPlan) -> j2k_native::Result<core::option::Option<j2k_types::decode_plan::referenced::J2kReferencedClassicPlan>>
+ pub fn j2k_native::window_referenced_htj2k_plan_to_stores(&j2k_types::decode_plan::referenced::J2kReferencedHtj2kPlan) -> j2k_native::Result<core::option::Option<j2k_types::decode_plan::referenced::J2kReferencedHtj2kPlan>>
+ pub fn j2k_types::decode_plan::J2kRect::from(j2k_native::J2kRequiredBandRegion) -> Self
+diff --git a/xtask/api/stable-api-1.0.public-api.txt b/xtask/api/stable-api-1.0.public-api.txt
+index d4f00b57..80415ab3 100644
+--- a/xtask/api/stable-api-1.0.public-api.txt
++++ b/xtask/api/stable-api-1.0.public-api.txt
+@@ -2806,8 +2806,8 @@ pub j2k_jpeg_cuda::Error::InFlightHostLedgerPoisoned
+ pub j2k_jpeg_cuda::Error::JpegHostOperationPoisoned
+ pub j2k_jpeg_cuda::Error::JpegPlanCache(j2k_jpeg::adapter::fast_packet::cache::JpegPlanCacheError)
+ pub j2k_jpeg_cuda::Error::OperationAndHostAccountingFailed
+-pub j2k_jpeg_cuda::Error::OperationAndHostAccountingFailed::accounting: alloc::boxed::Box<j2k_jpeg_cuda::Error>
+-pub j2k_jpeg_cuda::Error::OperationAndHostAccountingFailed::primary: alloc::boxed::Box<j2k_jpeg_cuda::Error>
++pub j2k_jpeg_cuda::Error::OperationAndHostAccountingFailed::accounting: alloc::boxed::Box<Self>
++pub j2k_jpeg_cuda::Error::OperationAndHostAccountingFailed::primary: alloc::boxed::Box<Self>
+ pub j2k_jpeg_cuda::Error::OwnedPacketCachePoisoned
+ pub j2k_jpeg_cuda::Error::UnsupportedBackend
+ pub j2k_jpeg_cuda::Error::UnsupportedBackend::request: j2k_core::backend::BackendRequest
+@@ -3029,8 +3029,8 @@ pub j2k_cuda::CudaSessionDiagnostics::pools: j2k_cuda::CudaDecodePoolDiagnostics
+ pub j2k_cuda::CudaSessionDiagnostics::runtime: core::option::Option<j2k_cuda_runtime::context::diagnostics::CudaContextDiagnostics>
+ pub j2k_cuda::Error::Buffer(j2k_core::error::BufferError)
+ pub j2k_cuda::Error::CudaCleanupFailed
+-pub j2k_cuda::Error::CudaCleanupFailed::cleanup: alloc::boxed::Box<j2k_cuda::Error>
+-pub j2k_cuda::Error::CudaCleanupFailed::primary: alloc::boxed::Box<j2k_cuda::Error>
++pub j2k_cuda::Error::CudaCleanupFailed::cleanup: alloc::boxed::Box<Self>
++pub j2k_cuda::Error::CudaCleanupFailed::primary: alloc::boxed::Box<Self>
+ pub j2k_cuda::Error::CudaRuntime
+ pub j2k_cuda::Error::CudaRuntime::source: j2k_cuda_runtime::error::CudaError
+ pub j2k_cuda::Error::CudaTier1JobFailed
+@@ -5016,8 +5016,8 @@ pub fn j2k_cuda_runtime::CudaPooledDeviceBuffer::drop(&mut self)
+ pub fn j2k_cuda_runtime::CudaPooledDeviceBuffer::into_device_buffer(self) -> core::result::Result<j2k_cuda_runtime::CudaDeviceBuffer, j2k_cuda_runtime::CudaError>
+ pub fn j2k_cuda_runtime::cuda_kernel_param<T>(&mut T) -> *mut core::ffi::c_void where T: j2k_cuda_runtime::CudaKernelParam
+ pub j2k_cuda_runtime::CudaError::CompletionFailed
+-pub j2k_cuda_runtime::CudaError::CompletionFailed::completion: alloc::boxed::Box<j2k_cuda_runtime::CudaError>
+-pub j2k_cuda_runtime::CudaError::CompletionFailed::primary: alloc::boxed::Box<j2k_cuda_runtime::CudaError>
++pub j2k_cuda_runtime::CudaError::CompletionFailed::completion: alloc::boxed::Box<Self>
++pub j2k_cuda_runtime::CudaError::CompletionFailed::primary: alloc::boxed::Box<Self>
+ pub j2k_cuda_runtime::CudaError::Driver
+ pub j2k_cuda_runtime::CudaError::Driver::code: std::os::raw::c_int
+ pub j2k_cuda_runtime::CudaError::Driver::name: alloc::string::String
+@@ -5054,8 +5054,8 @@ pub j2k_cuda_runtime::CudaError::OutputTooSmall
+ pub j2k_cuda_runtime::CudaError::OutputTooSmall::have: usize
+ pub j2k_cuda_runtime::CudaError::OutputTooSmall::required: usize
+ pub j2k_cuda_runtime::CudaError::ResourceReleaseFailed
+-pub j2k_cuda_runtime::CudaError::ResourceReleaseFailed::primary: alloc::boxed::Box<j2k_cuda_runtime::CudaError>
+-pub j2k_cuda_runtime::CudaError::ResourceReleaseFailed::release: alloc::boxed::Box<j2k_cuda_runtime::CudaError>
++pub j2k_cuda_runtime::CudaError::ResourceReleaseFailed::primary: alloc::boxed::Box<Self>
++pub j2k_cuda_runtime::CudaError::ResourceReleaseFailed::release: alloc::boxed::Box<Self>
+ pub j2k_cuda_runtime::CudaError::StatePoisoned
+ pub j2k_cuda_runtime::CudaError::StatePoisoned::message: alloc::string::String
+ pub j2k_cuda_runtime::CudaError::Unavailable
+diff --git a/xtask/release-evidence/public-api/public-api-review-0.13.2.yml b/xtask/release-evidence/public-api/public-api-review-0.13.2.yml
+index f256ed65..0d450d64 100644
+--- a/xtask/release-evidence/public-api/public-api-review-0.13.2.yml
++++ b/xtask/release-evidence/public-api/public-api-review-0.13.2.yml
+@@ -2,7 +2,29 @@ version: 3
+ baseline_tag: v0.13.1
+ baseline_version: 0.13.1
+ candidate_version: "0.13.2"
+-break_ledger: []
++break_ledger:
++  - id: cuda-box-self-spelling
++    kind: source
++    packages: [j2k-cuda-runtime, j2k-jpeg-cuda, j2k-cuda]
++    removed_items:
++      - package: j2k-cuda-runtime
++        item: "pub j2k_cuda_runtime::CudaError::CompletionFailed::completion: alloc::boxed::Box<j2k_cuda_runtime::CudaError>"
++      - package: j2k-cuda-runtime
++        item: "pub j2k_cuda_runtime::CudaError::CompletionFailed::primary: alloc::boxed::Box<j2k_cuda_runtime::CudaError>"
++      - package: j2k-cuda-runtime
++        item: "pub j2k_cuda_runtime::CudaError::ResourceReleaseFailed::primary: alloc::boxed::Box<j2k_cuda_runtime::CudaError>"
++      - package: j2k-cuda-runtime
++        item: "pub j2k_cuda_runtime::CudaError::ResourceReleaseFailed::release: alloc::boxed::Box<j2k_cuda_runtime::CudaError>"
++      - package: j2k-jpeg-cuda
++        item: "pub j2k_jpeg_cuda::Error::OperationAndHostAccountingFailed::accounting: alloc::boxed::Box<j2k_jpeg_cuda::Error>"
++      - package: j2k-jpeg-cuda
++        item: "pub j2k_jpeg_cuda::Error::OperationAndHostAccountingFailed::primary: alloc::boxed::Box<j2k_jpeg_cuda::Error>"
++      - package: j2k-cuda
++        item: "pub j2k_cuda::Error::CudaCleanupFailed::cleanup: alloc::boxed::Box<j2k_cuda::Error>"
++      - package: j2k-cuda
++        item: "pub j2k_cuda::Error::CudaCleanupFailed::primary: alloc::boxed::Box<j2k_cuda::Error>"
++    summary: "The generated inventory replaces eight Box<NamedError> field spellings with Box<Self> after lint cleanup. In each enum Self resolves to that same named error type. These are textual inventory replacements, not removed fields or source-incompatible type changes."
++    migration: "No caller migration is required. Existing field construction, pattern matching and explicit Box<NamedError> annotations remain valid; the normal minor-release cargo-semver-checks gate still checks compatibility."
+ reviews:
+   j2k-core:
+     removed_fingerprint: "none"
+@@ -27,10 +49,10 @@ reviews:
+     hidden_rationale: "Compared the complete hidden API inventory against v0.13.1; it is unchanged."
+   j2k-codec-math:
+     removed_fingerprint: "none"
+-    added_fingerprint: "none"
++    added_fingerprint: "fnv1a64:7a58b0b55902142e"
+     hidden_count: 0
+     hidden_fingerprint: "none"
+-    rationale: "Compared the complete ordinary API inventory against v0.13.1; no signatures were added, removed, or changed."
++    rationale: "Adds 43 JPEG ISLOW constants and transform helpers shared by CPU and device backends: reduced-size coefficients, shifts, gain tables, 1-D and block transforms, rounding and sample conversion. Existing constants keep their names, types and values; no existing item is removed or changed."
+     hidden_rationale: "Compared the complete hidden API inventory against v0.13.1; it is unchanged."
+   j2k-cuda-build-support:
+     removed_fingerprint: "none"
+@@ -40,11 +62,11 @@ reviews:
+     rationale: "Compared the complete ordinary API inventory against v0.13.1; no signatures were added, removed, or changed."
+     hidden_rationale: "Compared the complete hidden API inventory against v0.13.1; it is unchanged."
+   j2k-cuda-runtime:
+-    removed_fingerprint: "none"
+-    added_fingerprint: "none"
++    removed_fingerprint: "fnv1a64:91b1d2d04bdb7f88"
++    added_fingerprint: "fnv1a64:7ca384c73932c7e2"
+     hidden_count: 255
+     hidden_fingerprint: "fnv1a64:57c61a4568990ce6"
+-    rationale: "Compared the complete ordinary API inventory against v0.13.1; no signatures were added, removed, or changed."
++    rationale: "CompletionFailed and ResourceReleaseFailed now spell their four recursive fields as Box<Self> instead of Box<CudaError>. Self denotes the same CudaError enum, so field types, construction, matching and error behavior are unchanged. The cuda-box-self-spelling ledger records the exact textual replacements."
+     hidden_rationale: "Compared the complete hidden API inventory against v0.13.1; it is unchanged."
+   j2k-cuda-j2k-engine:
+     removed_fingerprint: "none"
+@@ -84,17 +106,17 @@ reviews:
+   j2k-native:
+     removed_fingerprint: "none"
+     added_fingerprint: "fnv1a64:22b943651a07318e"
+-    hidden_count: 595
+-    hidden_fingerprint: "fnv1a64:0d8774f02739bc1e"
++    hidden_count: 599
++    hidden_fingerprint: "fnv1a64:88361832b7d0379e"
+     rationale: "Compared the complete ordinary API inventory against v0.13.1. Adds DecodeErrorClass::ResourceLimit { requested, cap } to an already non-exhaustive enum; no existing item changes and existing variant discriminants are preserved. AllocationTooLarge and ImageTooLarge now classify as ResourceLimit instead of the generic Backend class. This is a compatible refinement of the extensible error taxonomy: invalid-input and allocator-failure classes stay unchanged. Callers that want to handle memory limits separately can match the new variant; existing wildcard matches remain valid."
+-    hidden_rationale: "Adds referenced_classic_plan_execution_bytes and referenced_htj2k_plan_execution_bytes for sibling CPU batch adapters to check planned live execution memory before allocation. For the facade's streamed routes, j2k-native also adds decode_native_region_components_rows_with_context, full_decode_planes_floor, output_tile_rects, region_decode_streams_rows and streamed_rows_native_precision; cpu_decode_pool_threads reports the pool thread count for facade routing, DecoderContext::set_shared_pool marks CpuBatchDecoder's shared-pool images, and pack_rgb8 shares the existing pixel conversion. ComponentRowSink::rgb8_region is an optional default method, so existing sink implementations remain valid. These are unsupported implementation helpers; existing signatures are unchanged."
++    hidden_rationale: "Adds referenced_classic_plan_execution_bytes and referenced_htj2k_plan_execution_bytes for sibling CPU batch adapters to check planned live execution memory before allocation. For the facade's streamed routes, j2k-native also adds decode_native_region_components_rows_with_context, full_decode_planes_floor, output_tile_rects, region_decode_streams_rows and streamed_rows_native_precision; cpu_decode_pool_threads reports the pool thread count for facade routing, DecoderContext::set_shared_pool marks CpuBatchDecoder's shared-pool images, and pack_rgb8 shares the existing pixel conversion. ComponentRowSink::rgb8_region is an optional default method, so existing sink implementations remain valid. at_simd_level, round_clamped_native, signed_native_bounds and unsigned_native_max share dispatched sample conversion and its bounds with sibling crates. These are unsupported implementation helpers; existing signatures are unchanged."
+   j2k-jpeg:
+     removed_fingerprint: "none"
+     added_fingerprint: "none"
+-    hidden_count: 701
+-    hidden_fingerprint: "fnv1a64:bd0cf738a0f96592"
++    hidden_count: 703
++    hidden_fingerprint: "fnv1a64:85ffa8c958fb66ab"
+     rationale: "Compared the complete ordinary API inventory against v0.13.1; no signatures were added, removed, or changed."
+-    hidden_rationale: "Compared the complete hidden API inventory against v0.13.1; it is unchanged."
++    hidden_rationale: "Adds bench_support::bench_huffman_scan behind bench-internals for entropy-only measurements. Rustdoc also records the JpegFastPacketFamily inherent impl used by the shared streaming routes; its methods remain crate-private. Existing hidden signatures are unchanged."
+   j2k-tilecodec:
+     removed_fingerprint: "none"
+     added_fingerprint: "none"
+@@ -145,18 +167,18 @@ reviews:
+     rationale: "Compared the complete ordinary API inventory against v0.13.1; no signatures were added, removed, or changed."
+     hidden_rationale: "Compared the complete hidden API inventory against v0.13.1; it is unchanged."
+   j2k-jpeg-cuda:
+-    removed_fingerprint: "none"
+-    added_fingerprint: "none"
++    removed_fingerprint: "fnv1a64:5f62bcf613283922"
++    added_fingerprint: "fnv1a64:897215586a4dee66"
+     hidden_count: 133
+     hidden_fingerprint: "fnv1a64:9aa724bde7af1618"
+-    rationale: "Compared the complete ordinary API inventory against v0.13.1; no signatures were added, removed, or changed."
++    rationale: "OperationAndHostAccountingFailed now spells its primary and accounting fields as Box<Self> instead of Box<Error>. Self denotes the same j2k-jpeg-cuda Error enum, so field types and caller behavior are unchanged. The cuda-box-self-spelling ledger records the exact textual replacements."
+     hidden_rationale: "Compared the complete hidden API inventory against v0.13.1; it is unchanged."
+   j2k-cuda:
+-    removed_fingerprint: "none"
+-    added_fingerprint: "none"
++    removed_fingerprint: "fnv1a64:d78cd0f4549c54c7"
++    added_fingerprint: "fnv1a64:bc7afd2c3ac8f17f"
+     hidden_count: 193
+     hidden_fingerprint: "fnv1a64:8a9b0ac701f08d00"
+-    rationale: "No ordinary signatures or error variants were added, removed, or changed. AdapterErrorParts reports Decode only for a CudaTier1JobFailed with a direct bare KernelJobStatus source whose code is the classic/HT FAIL value 1. The typed CUDA source and job attribution remain available. Unsupported or unknown statuses, raw runtime errors and nested completion, release or adapter-cleanup failures retain their existing classes and fallback behavior."
++    rationale: "CudaCleanupFailed now spells its primary and cleanup fields as Box<Self> instead of Box<Error>, preserving the same field types; cuda-box-self-spelling records these textual replacements. No error variants were added or removed. AdapterErrorParts reports Decode only for a CudaTier1JobFailed with a direct bare KernelJobStatus source whose code is the classic/HT FAIL value 1. The typed CUDA source and job attribution remain available. Unsupported or unknown statuses, raw runtime errors and nested completion, release or adapter-cleanup failures retain their existing classes and fallback behavior."
+     hidden_rationale: "Compared the complete hidden API inventory against v0.13.1; it is unchanged."
+   j2k-ml:
+     removed_fingerprint: "none"
+diff --git a/xtask/release-evidence/public-api/reviewed-public-api-diff-0.13.2.md b/xtask/release-evidence/public-api/reviewed-public-api-diff-0.13.2.md
+index 4815642d..fe64fae4 100644
+--- a/xtask/release-evidence/public-api/reviewed-public-api-diff-0.13.2.md
++++ b/xtask/release-evidence/public-api/reviewed-public-api-diff-0.13.2.md
+@@ -14,16 +14,16 @@ This report is generated by `cargo xtask semver --write-report`. Normal `cargo x
+ | `j2k-core` | `0.13.1` | `0.13.2` | `minor` | 1 | 0 | `none` | `fnv1a64:1783cd7e6f188540` | 226 | `fnv1a64:487523cc4e7f504e` |
+ | `j2k-profile` | `0.13.1` | `0.13.2` | `minor` | 0 | 0 | `none` | `none` | 117 | `fnv1a64:a1546f56ae38f2e3` |
+ | `j2k-types` | `0.13.1` | `0.13.2` | `minor` | 0 | 0 | `none` | `none` | 111 | `fnv1a64:6eaf63f068893d17` |
+-| `j2k-codec-math` | `0.13.1` | `0.13.2` | `minor` | 0 | 0 | `none` | `none` | 0 | `none` |
++| `j2k-codec-math` | `0.13.1` | `0.13.2` | `minor` | 43 | 0 | `none` | `fnv1a64:7a58b0b55902142e` | 0 | `none` |
+ | `j2k-cuda-build-support` | `0.13.1` | `0.13.2` | `minor` | 0 | 0 | `none` | `none` | 0 | `none` |
+-| `j2k-cuda-runtime` | `0.13.1` | `0.13.2` | `minor` | 0 | 0 | `none` | `none` | 255 | `fnv1a64:57c61a4568990ce6` |
++| `j2k-cuda-runtime` | `0.13.1` | `0.13.2` | `minor` | 4 | 4 | `fnv1a64:91b1d2d04bdb7f88` | `fnv1a64:7ca384c73932c7e2` | 255 | `fnv1a64:57c61a4568990ce6` |
+ | `j2k-cuda-j2k-engine` | `0.13.1` | `0.13.2` | `minor` | 0 | 0 | `none` | `none` | 692 | `fnv1a64:684fbcddde38e1f1` |
+ | `j2k-cuda-jpeg-engine` | `0.13.1` | `0.13.2` | `minor` | 0 | 0 | `none` | `none` | 205 | `fnv1a64:ad37da6966da1cfd` |
+ | `j2k-cuda-transcode-engine` | `0.13.1` | `0.13.2` | `minor` | 0 | 0 | `none` | `none` | 84 | `fnv1a64:b2fcaa9b0171aba7` |
+ | `j2k-metal-support` | `0.13.1` | `0.13.2` | `minor` | 0 | 0 | `none` | `none` | 11 | `fnv1a64:02139606f1202938` |
+ | `j2k-mpsgraph-support` | `0.13.1` | `0.13.2` | `minor` | 0 | 0 | `none` | `none` | 0 | `none` |
+-| `j2k-native` | `0.13.1` | `0.13.2` | `minor` | 3 | 0 | `none` | `fnv1a64:22b943651a07318e` | 595 | `fnv1a64:0d8774f02739bc1e` |
+-| `j2k-jpeg` | `0.13.1` | `0.13.2` | `minor` | 0 | 0 | `none` | `none` | 701 | `fnv1a64:bd0cf738a0f96592` |
++| `j2k-native` | `0.13.1` | `0.13.2` | `minor` | 3 | 0 | `none` | `fnv1a64:22b943651a07318e` | 599 | `fnv1a64:88361832b7d0379e` |
++| `j2k-jpeg` | `0.13.1` | `0.13.2` | `minor` | 0 | 0 | `none` | `none` | 703 | `fnv1a64:85ffa8c958fb66ab` |
+ | `j2k-tilecodec` | `0.13.1` | `0.13.2` | `minor` | 0 | 0 | `none` | `none` | 32 | `fnv1a64:eb677842559d9b0e` |
+ | `j2k` | `0.13.1` | `0.13.2` | `minor` | 6 | 0 | `none` | `fnv1a64:78b9622111db3437` | 109 | `fnv1a64:0427dd567531c8dd` |
+ | `j2k-transcode` | `0.13.1` | `0.13.2` | `minor` | 0 | 0 | `none` | `none` | 458 | `fnv1a64:449a76476549c1e2` |
+@@ -31,8 +31,8 @@ This report is generated by `cargo xtask semver --write-report`. Normal `cargo x
+ | `j2k-jpeg-metal` | `0.13.1` | `0.13.2` | `minor` | 0 | 0 | `none` | `none` | 83 | `fnv1a64:79397ffc221464c3` |
+ | `j2k-metal` | `0.13.1` | `0.13.2` | `minor` | 0 | 0 | `none` | `none` | 321 | `fnv1a64:41513c1e93413909` |
+ | `j2k-transcode-metal` | `0.13.1` | `0.13.2` | `minor` | 0 | 0 | `none` | `none` | 49 | `fnv1a64:b4a8b53d5e10bb00` |
+-| `j2k-jpeg-cuda` | `0.13.1` | `0.13.2` | `minor` | 0 | 0 | `none` | `none` | 133 | `fnv1a64:9aa724bde7af1618` |
+-| `j2k-cuda` | `0.13.1` | `0.13.2` | `minor` | 0 | 0 | `none` | `none` | 193 | `fnv1a64:8a9b0ac701f08d00` |
++| `j2k-jpeg-cuda` | `0.13.1` | `0.13.2` | `minor` | 2 | 2 | `fnv1a64:5f62bcf613283922` | `fnv1a64:897215586a4dee66` | 133 | `fnv1a64:9aa724bde7af1618` |
++| `j2k-cuda` | `0.13.1` | `0.13.2` | `minor` | 2 | 2 | `fnv1a64:d78cd0f4549c54c7` | `fnv1a64:bc7afd2c3ac8f17f` | 193 | `fnv1a64:8a9b0ac701f08d00` |
+ | `j2k-ml` | `0.13.1` | `0.13.2` | `minor` | 0 | 0 | `none` | `none` | 0 | `none` |
+ | `j2k-mpsgraph` | `0.13.1` | `0.13.2` | `minor` | 0 | 0 | `none` | `none` | 0 | `none` |
+ 
+@@ -78,7 +78,7 @@ None.
+ 
+ ### `j2k-codec-math`
+ 
+-Baseline items: 124. Candidate items: 124. Computed release type: `minor`. Rustdoc-hidden candidate items: 0. Full hidden-inventory fingerprint: `none`.
++Baseline items: 124. Candidate items: 167. Computed release type: `minor`. Rustdoc-hidden candidate items: 0. Full hidden-inventory fingerprint: `none`.
+ 
+ #### Removed or changed baseline API items
+ 
+@@ -86,7 +86,51 @@ None.
+ 
+ #### Added candidate API items
+ 
+-None.
++```text
++pub const fn j2k_codec_math::jpeg::idct::descale(i32, i32) -> i32
++pub const fn j2k_codec_math::jpeg::idct::islow_1d([i32; 8]) -> [i32; 8]
++pub const fn j2k_codec_math::jpeg::idct::islow_1d_2([i32; 8]) -> [i32; 2]
++pub const fn j2k_codec_math::jpeg::idct::islow_1d_2_i64([i64; 8]) -> [i64; 2]
++pub const fn j2k_codec_math::jpeg::idct::islow_1d_4([i32; 8]) -> [i32; 4]
++pub const fn j2k_codec_math::jpeg::idct::islow_1d_4_i64([i64; 8]) -> [i64; 4]
++pub const fn j2k_codec_math::jpeg::idct::islow_1d_i64([i64; 8]) -> [i64; 8]
++pub const fn j2k_codec_math::jpeg::idct::islow_column([i32; 8]) -> [i32; 8]
++pub const fn j2k_codec_math::jpeg::idct::islow_dc(i32) -> i32
++pub const fn j2k_codec_math::jpeg::idct::islow_gain_bounds() -> (i32, i32)
++pub const fn j2k_codec_math::jpeg::idct::islow_pass1([i32; 8]) -> [i32; 8]
++pub const fn j2k_codec_math::jpeg::idct::islow_pass2([i32; 8]) -> [i32; 8]
++pub const fn j2k_codec_math::jpeg::idct::islow_row([i32; 8]) -> [i32; 8]
++pub const fn j2k_codec_math::jpeg::idct::sample_centered(i32) -> i32
++pub const fn j2k_codec_math::jpeg::idct::sample_u8(i32) -> u8
++pub const j2k_codec_math::jpeg::idct::DC_ROUNDING: i32
++pub const j2k_codec_math::jpeg::idct::DC_SHIFT: i32
++pub const j2k_codec_math::jpeg::idct::FIX_0_211164243: i32
++pub const j2k_codec_math::jpeg::idct::FIX_0_509795579: i32
++pub const j2k_codec_math::jpeg::idct::FIX_0_601344887: i32
++pub const j2k_codec_math::jpeg::idct::FIX_0_720959822: i32
++pub const j2k_codec_math::jpeg::idct::FIX_0_850430095: i32
++pub const j2k_codec_math::jpeg::idct::FIX_1_061594337: i32
++pub const j2k_codec_math::jpeg::idct::FIX_1_272758580: i32
++pub const j2k_codec_math::jpeg::idct::FIX_1_451774981: i32
++pub const j2k_codec_math::jpeg::idct::FIX_2_172734803: i32
++pub const j2k_codec_math::jpeg::idct::FIX_3_624509785: i32
++pub const j2k_codec_math::jpeg::idct::ISLOW_GAINS: [[i32; 8]; 8]
++pub const j2k_codec_math::jpeg::idct::PASS1_BITS_12: i32
++pub const j2k_codec_math::jpeg::idct::PASS1_ROUNDING: i32
++pub const j2k_codec_math::jpeg::idct::PASS1_SHIFT: i32
++pub const j2k_codec_math::jpeg::idct::PASS1_SHIFT_12: i32
++pub const j2k_codec_math::jpeg::idct::PASS2_ROUNDING: i32
++pub const j2k_codec_math::jpeg::idct::PASS2_SHIFT: i32
++pub const j2k_codec_math::jpeg::idct::PASS2_SHIFT_12: i32
++pub fn j2k_codec_math::jpeg::idct::islow_block<T: core::marker::Copy + core::convert::Into<i32>>(&[T; 64], &mut [u8; 64])
++pub fn j2k_codec_math::jpeg::idct::islow_block_12bit(&[i16; 64], &mut [u16; 64])
++pub fn j2k_codec_math::jpeg::idct::islow_block_12bit_2x2(&[i16; 64], &mut [u16; 4])
++pub fn j2k_codec_math::jpeg::idct::islow_block_12bit_4x4(&[i16; 64], &mut [u16; 16])
++pub fn j2k_codec_math::jpeg::idct::islow_block_2x2(&[i16; 64], &mut [u8; 4])
++pub fn j2k_codec_math::jpeg::idct::islow_block_4x4(&[i16; 64], &mut [u8; 16])
++pub fn j2k_codec_math::jpeg::idct::islow_block_top_half<T: core::marker::Copy + core::convert::Into<i32>>(&[T; 64], &mut [u8; 64])
++pub fn j2k_codec_math::jpeg::idct::sample_12bit(i64) -> u16
++```
+ 
+ ### `j2k-cuda-build-support`
+ 
+@@ -106,11 +150,21 @@ Baseline items: 129. Candidate items: 129. Computed release type: `minor`. Rustd
+ 
+ #### Removed or changed baseline API items
+ 
+-None.
++```text
++pub j2k_cuda_runtime::CudaError::CompletionFailed::completion: alloc::boxed::Box<j2k_cuda_runtime::CudaError>
++pub j2k_cuda_runtime::CudaError::CompletionFailed::primary: alloc::boxed::Box<j2k_cuda_runtime::CudaError>
++pub j2k_cuda_runtime::CudaError::ResourceReleaseFailed::primary: alloc::boxed::Box<j2k_cuda_runtime::CudaError>
++pub j2k_cuda_runtime::CudaError::ResourceReleaseFailed::release: alloc::boxed::Box<j2k_cuda_runtime::CudaError>
++```
+ 
+ #### Added candidate API items
+ 
+-None.
++```text
++pub j2k_cuda_runtime::CudaError::CompletionFailed::completion: alloc::boxed::Box<Self>
++pub j2k_cuda_runtime::CudaError::CompletionFailed::primary: alloc::boxed::Box<Self>
++pub j2k_cuda_runtime::CudaError::ResourceReleaseFailed::primary: alloc::boxed::Box<Self>
++pub j2k_cuda_runtime::CudaError::ResourceReleaseFailed::release: alloc::boxed::Box<Self>
++```
+ 
+ ### `j2k-cuda-j2k-engine`
+ 
+@@ -174,7 +228,7 @@ None.
+ 
+ ### `j2k-native`
+ 
+-Baseline items: 422. Candidate items: 425. Computed release type: `minor`. Rustdoc-hidden candidate items: 595. Full hidden-inventory fingerprint: `fnv1a64:0d8774f02739bc1e`.
++Baseline items: 422. Candidate items: 425. Computed release type: `minor`. Rustdoc-hidden candidate items: 599. Full hidden-inventory fingerprint: `fnv1a64:88361832b7d0379e`.
+ 
+ #### Removed or changed baseline API items
+ 
+@@ -190,7 +244,7 @@ pub j2k_native::DecodeErrorClass::ResourceLimit::requested: core::option::Option
+ 
+ ### `j2k-jpeg`
+ 
+-Baseline items: 710. Candidate items: 710. Computed release type: `minor`. Rustdoc-hidden candidate items: 701. Full hidden-inventory fingerprint: `fnv1a64:bd0cf738a0f96592`.
++Baseline items: 710. Candidate items: 710. Computed release type: `minor`. Rustdoc-hidden candidate items: 703. Full hidden-inventory fingerprint: `fnv1a64:85ffa8c958fb66ab`.
+ 
+ #### Removed or changed baseline API items
+ 
+@@ -297,11 +351,17 @@ Baseline items: 79. Candidate items: 79. Computed release type: `minor`. Rustdoc
+ 
+ #### Removed or changed baseline API items
+ 
+-None.
++```text
++pub j2k_jpeg_cuda::Error::OperationAndHostAccountingFailed::accounting: alloc::boxed::Box<j2k_jpeg_cuda::Error>
++pub j2k_jpeg_cuda::Error::OperationAndHostAccountingFailed::primary: alloc::boxed::Box<j2k_jpeg_cuda::Error>
++```
+ 
+ #### Added candidate API items
+ 
+-None.
++```text
++pub j2k_jpeg_cuda::Error::OperationAndHostAccountingFailed::accounting: alloc::boxed::Box<Self>
++pub j2k_jpeg_cuda::Error::OperationAndHostAccountingFailed::primary: alloc::boxed::Box<Self>
++```
+ 
+ ### `j2k-cuda`
+ 
+@@ -309,11 +369,17 @@ Baseline items: 247. Candidate items: 247. Computed release type: `minor`. Rustd
+ 
+ #### Removed or changed baseline API items
+ 
+-None.
++```text
++pub j2k_cuda::Error::CudaCleanupFailed::cleanup: alloc::boxed::Box<j2k_cuda::Error>
++pub j2k_cuda::Error::CudaCleanupFailed::primary: alloc::boxed::Box<j2k_cuda::Error>
++```
+ 
+ #### Added candidate API items
+ 
+-None.
++```text
++pub j2k_cuda::Error::CudaCleanupFailed::cleanup: alloc::boxed::Box<Self>
++pub j2k_cuda::Error::CudaCleanupFailed::primary: alloc::boxed::Box<Self>
++```
+ 
+ ### `j2k-ml`
+ 

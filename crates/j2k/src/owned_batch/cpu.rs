@@ -3,12 +3,11 @@
 //! Persistent CPU batch session and public native output owners.
 
 use super::{
-    decode_cpu_group, fmt, generic_batch_worker_limit, prepare_batch_from_images_for,
-    prepare_batch_with_workers, BatchDecodeOptions, BatchDecoder, BatchGroupInfo,
-    BatchInfrastructureError, BatchWorker, CpuBatchWorkspaceStats, CpuGroupFastWorkspace,
-    CpuStagedWorkspace, CpuStreamPool, EncodedImage, IndexedBatchError, J2kDecodeWarning, Mutex,
-    NativeSampleType, NonZeroUsize, PrepareFor, PreparedBatch, PreparedBatchGroup,
-    PreparedBatchGroupRef, PreparedImage, Rect, Vec,
+    decode_cpu_group, fmt, prepare_batch_from_images_for, prepare_batch_with_workers,
+    BatchDecodeOptions, BatchDecoder, BatchGroupInfo, BatchInfrastructureError, BatchWorker,
+    CpuBatchWorkspaceStats, CpuGroupFastWorkspace, CpuStagedWorkspace, CpuStreamPool, EncodedImage,
+    IndexedBatchError, J2kDecodeWarning, Mutex, NativeSampleType, NonZeroUsize, PrepareFor,
+    PreparedBatch, PreparedBatchGroup, PreparedBatchGroupRef, PreparedImage, Rect, Vec,
 };
 use crate::batch::allocation::try_vec_with_capacity;
 use crate::batch::scheduler::decode_retained_tiles;
@@ -191,10 +190,8 @@ impl CpuBatchDecoder {
     #[must_use]
     pub fn new(options: BatchDecodeOptions) -> Self {
         let available = std::thread::available_parallelism().map_or(1, NonZeroUsize::get);
-        let worker_count = options
-            .workers
-            .map_or(available, NonZeroUsize::get)
-            .clamp(1, generic_batch_worker_limit());
+        let worker_count =
+            options.worker_limit(options.workers.map_or(available, NonZeroUsize::get));
         let workers = (0..worker_count)
             .map(|_| BatchWorker::new_owned(worker_count.max(2)))
             .collect();
@@ -331,13 +328,12 @@ impl CpuBatchDecoder {
             .workers
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let held = self.options.scheduled_workers(workers.len());
         decode_retained_tiles(
             workers,
             jobs,
             fmt,
-            TileBatchOptions {
-                workers: self.options.workers,
-            },
+            TileBatchOptions { workers: held },
             self.options.settings,
         )
     }
@@ -429,7 +425,9 @@ impl CpuBatchDecoder {
                     info: &group.info,
                     images,
                     source_indices,
+                    working_memory_limit: self.options.max_working_memory_bytes,
                 };
+                let held = self.options.scheduled_workers(workers.len());
                 if let Some(decoded) = decode_cpu_group(
                     workers,
                     &mut self.fast_workspace,
@@ -437,7 +435,7 @@ impl CpuBatchDecoder {
                     stream_pool,
                     part,
                     prepared.options,
-                    self.options.workers,
+                    held,
                     &mut errors,
                 )? {
                     push_group(&mut groups, decoded)?;

@@ -13,8 +13,7 @@ use crate::entropy::progressive::{
 };
 use crate::entropy::sequential::{
     decode_scan_baseline, decode_scan_baseline_rgb, finish_scan, stripe_region_layout,
-    FastRgbRequest, FastRgbRoute, PreparedComponentPlan, PreparedDecodePlan,
-    ResolvedPreparedComponentPlan,
+    FastRgbRequest, PreparedComponentPlan, PreparedDecodePlan, ResolvedPreparedComponentPlan,
 };
 use crate::entropy::ZIGZAG;
 use crate::error::{JpegError, MarkerKind, Warning};

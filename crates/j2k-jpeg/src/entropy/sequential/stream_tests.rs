@@ -38,6 +38,33 @@ pub(crate) fn noisy_rgb8(width: u32, height: u32, seed: u32) -> Vec<u8> {
     pixels
 }
 
+/// Baseline JPEG of [`noisy_rgb8`], so every block carries real AC symbols
+/// and `FF 00` stuffing occurs throughout the scan.
+pub(crate) fn noisy_jpeg(
+    width: u32,
+    height: u32,
+    subsampling: JpegSubsampling,
+    restart_interval: Option<u16>,
+    seed: u32,
+) -> Vec<u8> {
+    let pixels = noisy_rgb8(width, height, seed);
+    encode_jpeg_baseline(
+        JpegSamples::Rgb8 {
+            data: &pixels,
+            width,
+            height,
+        },
+        JpegEncodeOptions {
+            quality: 92,
+            subsampling,
+            restart_interval,
+            backend: JpegBackend::Cpu,
+        },
+    )
+    .expect("encode noisy fixture")
+    .data
+}
+
 /// Coded layouts the streaming routes decode.
 #[derive(Clone, Copy, Debug)]
 enum Shape {
@@ -56,26 +83,18 @@ const SHAPES: [Shape; 4] = [
 ];
 
 fn encode(shape: Shape, width: u32, height: u32, restart_interval: Option<u16>) -> Vec<u8> {
-    let pixels = noisy_rgb8(width, height, width * 131 + height);
-    encode_jpeg_baseline(
-        JpegSamples::Rgb8 {
-            data: &pixels,
-            width,
-            height,
-        },
-        JpegEncodeOptions {
-            quality: 92,
-            subsampling: match shape {
-                Shape::Ycbcr420 => JpegSubsampling::Ybr420,
-                Shape::Ycbcr422 => JpegSubsampling::Ybr422,
-                Shape::Ycbcr444 | Shape::Rgb444 => JpegSubsampling::Ybr444,
-            },
-            restart_interval,
-            backend: JpegBackend::Cpu,
-        },
+    let subsampling = match shape {
+        Shape::Ycbcr420 => JpegSubsampling::Ybr420,
+        Shape::Ycbcr422 => JpegSubsampling::Ybr422,
+        Shape::Ycbcr444 | Shape::Rgb444 => JpegSubsampling::Ybr444,
+    };
+    noisy_jpeg(
+        width,
+        height,
+        subsampling,
+        restart_interval,
+        width * 131 + height,
     )
-    .expect("encode fixture")
-    .data
 }
 
 /// A decoder of `bytes` that takes the shape's streaming route.

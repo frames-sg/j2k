@@ -30,7 +30,7 @@ macro_rules! with_native_converter {
     ) => {
         match ($bit_depth, $signed) {
             (bit_depth @ 1..=8, true) => {
-                let (min, max) = $crate::image::native::signed_native_bounds(bit_depth);
+                let (min, max) = $crate::math::signed_native_bounds(bit_depth);
                 $function(
                     $($arg,)*
                     #[inline(always)]
@@ -40,7 +40,7 @@ macro_rules! with_native_converter {
                 )
             }
             (bit_depth @ 1..=8, false) => {
-                let max = $crate::image::native::unsigned_native_max(bit_depth);
+                let max = $crate::math::unsigned_native_max(bit_depth);
                 $function(
                     $($arg,)*
                     #[inline(always)]
@@ -50,7 +50,7 @@ macro_rules! with_native_converter {
                 )
             }
             (bit_depth @ 9..=16, true) => {
-                let (min, max) = $crate::image::native::signed_native_bounds(bit_depth);
+                let (min, max) = $crate::math::signed_native_bounds(bit_depth);
                 $function(
                     $($arg,)*
                     #[inline(always)]
@@ -60,7 +60,7 @@ macro_rules! with_native_converter {
                 )
             }
             (bit_depth @ 9..=16, false) => {
-                let max = $crate::image::native::unsigned_native_max(bit_depth);
+                let max = $crate::math::unsigned_native_max(bit_depth);
                 $function(
                     $($arg,)*
                     #[inline(always)]
@@ -464,17 +464,6 @@ impl<'a> Image<'a> {
             }
         }
     }
-}
-
-/// Inclusive signed range of a component with `1..=16` bits.
-fn signed_native_bounds(bit_depth: u8) -> (f32, f32) {
-    let magnitude = 1_u16 << (bit_depth.clamp(1, 16) - 1);
-    (-f32::from(magnitude), f32::from(magnitude - 1))
-}
-
-/// Largest unsigned value of a component with `1..=16` bits.
-fn unsigned_native_max(bit_depth: u8) -> f32 {
-    f32::from(u16::MAX >> (16 - bit_depth.clamp(1, 16)))
 }
 
 /// Planes with at least this many samples pack in parallel. Unit tests lower

@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    downscale_profile_name, emit_jpeg_profile_fields, BitReader, ColorSpace, DownscaleFactor,
-    Duration, Info, JpegError, LosslessSample, MarkerKind, PreparedLosslessPlan, ProfileField,
-    Rect, RestartIndex, RestartSegment, SofKind,
+    downscale_profile_name, emit_jpeg_profile_fields, ColorSpace, DownscaleFactor, Duration, Info,
+    JpegError, LosslessSample, MarkerKind, PreparedLosslessPlan, ProfileField, Rect, RestartIndex,
+    RestartSegment, SofKind,
 };
 use crate::allocation::{checked_allocation_bytes, try_vec_with_capacity};
 use crate::entropy::sequential::PreparedDecodePlan;
-use crate::parse::markers::{next_entropy_marker, EntropyMarker};
+use crate::parse::markers::next_entropy_marker_code;
 
 pub(crate) fn restart_index_allocation_bytes(
     info: &Info,
@@ -55,16 +55,7 @@ pub(super) fn restart_index_for_stream(
     let mut found_restarts = 0u32;
     let mut expected_rst = 0xd0u8;
     let mut pos = scan_data_offset;
-    while let Some(next) = next_entropy_marker(bytes, pos) {
-        let (marker_code_pos, marker) = match next {
-            EntropyMarker::Unterminated { fill_start } => {
-                return Err(JpegError::Truncated {
-                    offset: fill_start,
-                    expected: 1,
-                });
-            }
-            EntropyMarker::Marker { code_pos, code, .. } => (code_pos, code),
-        };
+    while let Some((marker_code_pos, marker)) = next_entropy_marker_code(bytes, pos)? {
         let marker_offset = marker_code_pos - 1;
         match marker {
             0xd0..=0xd7 => {
@@ -159,52 +150,6 @@ pub(super) fn emit_decode_scan_profile(
             ProfileField::metric("scan_us", elapsed.as_micros())?,
         ])
     });
-}
-
-pub(super) fn consume_extended12_restart(
-    br: &mut BitReader<'_>,
-    mcu_index: u32,
-    total_mcus: u32,
-    expected_rst: &mut u8,
-) -> Result<(), JpegError> {
-    *expected_rst = br.consume_restart_marker(*expected_rst, mcu_index, total_mcus)?;
-    Ok(())
-}
-
-pub(super) struct Extended12RestartTracker {
-    restart_interval: u32,
-    total_mcus: u32,
-    mcus_since_restart: u32,
-    expected_rst: u8,
-}
-
-impl Extended12RestartTracker {
-    pub(super) fn new(restart_interval: Option<u16>, total_mcus: u32) -> Self {
-        Self {
-            restart_interval: u32::from(restart_interval.unwrap_or(0)),
-            total_mcus,
-            mcus_since_restart: 0,
-            expected_rst: 0,
-        }
-    }
-
-    pub(super) fn begin_mcu(
-        &mut self,
-        br: &mut BitReader<'_>,
-        mcu_index: u32,
-    ) -> Result<bool, JpegError> {
-        if self.restart_interval > 0 && self.mcus_since_restart == self.restart_interval {
-            consume_extended12_restart(br, mcu_index, self.total_mcus, &mut self.expected_rst)?;
-            self.mcus_since_restart = 0;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
-
-    pub(super) fn finish_mcu(&mut self) {
-        self.mcus_since_restart += 1;
-    }
 }
 
 /// Scan-component index feeding each of the three output channels.

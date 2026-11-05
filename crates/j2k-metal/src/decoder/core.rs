@@ -132,8 +132,8 @@ impl<'a> J2kDecoder<'a> {
 
         #[cfg(target_os = "macos")]
         {
-            let plan = DeviceDecodePlan::for_image(
-                self.inner.info().dimensions,
+            let plan = DeviceDecodePlan::for_reference_grid(
+                self.inner.reference_grid(),
                 request.op.device_request(),
             )?;
             match request.op {
@@ -154,7 +154,6 @@ impl<'a> J2kDecoder<'a> {
                         request.fmt,
                         roi,
                         j2k_core::Downscale::None,
-                        plan,
                         session,
                     ),
                 MetalDecodeOp::Scaled(scale) => self
@@ -162,7 +161,6 @@ impl<'a> J2kDecoder<'a> {
                         request.fmt,
                         plan.source_rect(),
                         scale,
-                        plan,
                         session,
                     ),
                 MetalDecodeOp::RegionScaled { roi, scale } => self
@@ -170,7 +168,6 @@ impl<'a> J2kDecoder<'a> {
                         request.fmt,
                         roi,
                         scale,
-                        plan,
                         session,
                     ),
             }
@@ -187,8 +184,10 @@ impl<'a> J2kDecoder<'a> {
         &mut self,
         request: MetalDecodeRequest,
     ) -> Result<Surface, Error> {
-        let plan =
-            DeviceDecodePlan::for_image(self.inner.info().dimensions, request.op.device_request())?;
+        let plan = DeviceDecodePlan::for_reference_grid(
+            self.inner.reference_grid(),
+            request.op.device_request(),
+        )?;
         match request.op {
             MetalDecodeOp::Full => self.decode_to_cpu_surface(request.fmt),
             MetalDecodeOp::Region(_) => self.decode_region_to_cpu_surface(request.fmt, plan),
@@ -209,8 +208,8 @@ impl<'a> J2kDecoder<'a> {
     ) -> Result<Surface, Error> {
         #[cfg(target_os = "macos")]
         {
-            let plan = DeviceDecodePlan::for_image(
-                self.inner.info().dimensions,
+            let plan = DeviceDecodePlan::for_reference_grid(
+                self.inner.reference_grid(),
                 request.op.device_request(),
             )?;
             match request.op {

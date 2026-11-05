@@ -17,6 +17,38 @@ pub const OPENJPEG_CPRL_97X61_TILES_PLT: &[u8] =
 /// Interleaved RGB8 source samples for the `OpenJPEG` progression fixtures.
 pub const OPENJPEG_PROGRESSION_SOURCE_97X61_RGB: &[u8] =
     include_bytes!("../fixtures/openjpeg_progression/source_97x61.rgb");
+/// `OpenJPEG` 2.5.4 RGB8 codestream of a 23 x 17 image at reference-grid origin (3, 5).
+///
+/// The origin is odd at every resolution, with three decomposition levels.
+/// `fixtures/openjpeg_origin/README.md` documents how `generate.sh` makes it.
+/// It decodes losslessly to [`ORIGIN_SOURCE_23X17_RGB`].
+pub const OPENJPEG_ORIGIN_23X17_AT_3_5: &[u8] =
+    include_bytes!("../fixtures/openjpeg_origin/rgb_23x17_origin_3_5.j2k");
+/// `OpenJPH` HTJ2K codestream of the image of
+/// [`OPENJPEG_ORIGIN_23X17_AT_3_5`], at the same origin and with the same
+/// three decomposition levels. It decodes to the same samples at every
+/// reduction.
+pub const OPENJPH_ORIGIN_23X17_AT_3_5: &[u8] =
+    include_bytes!("../fixtures/openjpeg_origin/rgb_23x17_origin_3_5_ht.j2c");
+/// Interleaved RGB8 source samples of the odd-origin fixtures.
+pub const ORIGIN_SOURCE_23X17_RGB: &[u8] =
+    include_bytes!("../fixtures/openjpeg_origin/source_23x17.rgb");
+/// `OpenJPEG`'s decodes of the odd-origin fixtures with one, two and three
+/// resolutions discarded: their dimensions and interleaved RGB8 samples.
+pub const ORIGIN_REDUCED_RGB: [((u32, u32), &[u8]); 3] = [
+    (
+        (11, 8),
+        include_bytes!("../fixtures/openjpeg_origin/reduced_r1.rgb"),
+    ),
+    (
+        (6, 4),
+        include_bytes!("../fixtures/openjpeg_origin/reduced_r2.rgb"),
+    ),
+    (
+        (3, 2),
+        include_bytes!("../fixtures/openjpeg_origin/reduced_r3.rgb"),
+    ),
+];
 
 pub const JPEG_BASELINE_420_16X16: &[u8] =
     include_bytes!("../fixtures/conformance/baseline_420_16x16.jpg");

@@ -105,7 +105,7 @@ impl<'a> J2kDecoder<'a> {
         backend: BackendRequest,
     ) -> Result<Surface, Error> {
         validate_surface_request(backend)?;
-        let plan = DeviceDecodePlan::for_image(self.inner.info().dimensions, request)?;
+        let plan = DeviceDecodePlan::for_reference_grid(self.inner.reference_grid(), request)?;
         let dims = plan.output_dims();
         let auto_operation = match request {
             DeviceDecodeRequest::Full => Some(AutoDecodeOperation::Full),
@@ -262,7 +262,7 @@ impl<'a> J2kDecoder<'a> {
         request: DeviceDecodeRequest,
         session: &mut CudaSession,
     ) -> Result<Surface, Error> {
-        let plan = DeviceDecodePlan::for_image(self.inner.info().dimensions, request)?;
+        let plan = DeviceDecodePlan::for_reference_grid(self.inner.reference_grid(), request)?;
         let (out, dims) = self.decode_op_on_cpu(fmt, request, plan)?;
         wrap_cpu_staged_cuda_surface(&out, dims, fmt, session)
     }

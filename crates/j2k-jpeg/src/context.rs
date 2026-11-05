@@ -5,9 +5,7 @@
 use crate::allocation::{
     checked_add_allocation_bytes, checked_allocation_bytes, try_reserve_for_len_with_live_budget,
 };
-use crate::entropy::huffman::{
-    HuffmanLookupRequirement, HuffmanTable, FULL_PRIMARY_ENTRIES, NARROW_PRIMARY_ENTRIES,
-};
+use crate::entropy::huffman::{HuffmanLookupRequirement, HuffmanTable};
 use crate::entropy::sequential::{PreparedComponentPlan, PreparedDecodePlan};
 use crate::error::{JpegError, Warning};
 use crate::info::Info;
@@ -21,18 +19,11 @@ const QUANT_CACHE_SLOTS: usize = 8;
 const HUFFMAN_CACHE_SLOTS: usize = 20;
 const PLAN_CACHE_SLOTS: usize = 8;
 const MAX_DECODE_PLAN_CACHE_BYTES: usize = 16 * 1024 * 1024;
-const PRIMARY8_COMPANION_ALLOCATION_BYTES: usize =
-    NARROW_PRIMARY_ENTRIES * size_of::<u32>() + size_of::<Vec<u32>>();
-// A Full AC table's primary lookups widen to 64-bit pair entries, and every
-// compiled table carries the two AC primary vectors.
-const AC_PAIR_EXTENSION_ALLOCATION_BYTES: usize =
-    (FULL_PRIMARY_ENTRIES + NARROW_PRIMARY_ENTRIES) * size_of::<u32>() + 2 * size_of::<Vec<u64>>();
 // Preserve the established common working set (2 DC + 8 AC tables) and its
 // one in-flight construction slot after every Full table gains primary8 and
 // every Full AC table gains pair extensions.
-const TABLE_CACHE_ALLOCATION_RESERVE_BYTES: usize = 2 * 1024 * 1024
-    + 11 * PRIMARY8_COMPANION_ALLOCATION_BYTES
-    + 11 * AC_PAIR_EXTENSION_ALLOCATION_BYTES;
+const TABLE_CACHE_ALLOCATION_RESERVE_BYTES: usize =
+    2 * 1024 * 1024 + 11 * HuffmanTable::FULL_TABLE_GROWTH_ALLOCATION_BYTES;
 
 /// Conservative retained-byte reservation used by decode workspace planning.
 /// Decode plan keys, plans, and exact-header templates are hard-capped at

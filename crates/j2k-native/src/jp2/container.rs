@@ -63,7 +63,25 @@ const JP2_SIGNATURE_PAYLOAD: [u8; 4] = [0x0D, 0x0A, 0x87, 0x0A];
 ///
 /// Returns an error when the wrapper is malformed or its metadata is inconsistent.
 pub fn inspect_jp2_container(data: &[u8]) -> Result<Jp2Container<'_>> {
-    let parsed = parse_jp2_container_with_strict(data, true)?;
+    inspect_jp2_container_with_settings(data, &DecodeSettings::default())
+}
+
+/// Parse JP2/JPH container boxes as [`Image::new`] parses them under
+/// `settings`, without decoding the codestream.
+///
+/// A lenient `settings` applies the container recoveries a lenient decode
+/// applies (see [`DecodeSettings::lenient`]), so the metadata returned is the
+/// metadata such a decode uses. Codestream validation stays strict.
+///
+/// # Errors
+///
+/// Returns an error when the wrapper is malformed beyond those recoveries or
+/// its metadata is inconsistent.
+pub fn inspect_jp2_container_with_settings<'a>(
+    data: &'a [u8],
+    settings: &DecodeSettings,
+) -> Result<Jp2Container<'a>> {
+    let parsed = parse_jp2_container_with_strict(data, settings.strict)?;
     let image_header = parsed
         .boxes
         .image_header

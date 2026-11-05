@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Relocatable package; consumers require no Rust toolchain.
+get_filename_component(_j2k_prefix "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+# The real file is named by C ABI revision; lib/ also holds an unversioned symlink.
+set(_j2k_library "${_j2k_prefix}/lib/@LIBRARY_FILE@")
+if(NOT EXISTS "${_j2k_library}")
+    set(J2K_FOUND FALSE)
+    set(J2K_NOT_FOUND_MESSAGE "J2K shared library not found: ${_j2k_library}")
+elseif(NOT TARGET J2K::j2k)
+    add_library(J2K::j2k SHARED IMPORTED)
+    set_target_properties(J2K::j2k PROPERTIES
+        IMPORTED_LOCATION "${_j2k_library}"
+        IMPORTED_SONAME "@LIBRARY_SONAME@"
+        INTERFACE_INCLUDE_DIRECTORIES "${_j2k_prefix}/include")
+endif()
+unset(_j2k_library)
+unset(_j2k_prefix)

@@ -2,7 +2,8 @@
 
 //! Sequential entropy traversal into preallocated DCT block storage.
 
-use super::restart::{enter_scan_at_mcu, finish_scan, skip_mcu, McuPosition, RestartState};
+use super::layout::McuColumns;
+use super::restart::{enter_scan_at_mcu, finish_scan, skip_mcu, RestartState};
 use super::{HuffmanPrimaryWidth, PreparedDecodePlan};
 use crate::entropy::block::{
     decode_block_dequantized_into, decode_block_quantized_and_dequantized_with_activity,
@@ -48,12 +49,8 @@ fn decode_scan_dct_blocks_with_entries<const N: usize>(
     retain_quantized_blocks: bool,
     lifecycle: SequentialDctLifecycleMetadata,
 ) -> Result<DecodedDctBlocks, JpegError> {
-    let max_h = u32::from(plan.sampling.max_h);
-    let max_v = u32::from(plan.sampling.max_v);
-    let mcu_width_px = 8 * max_h;
-    let mcu_height_px = 8 * max_v;
-    let mcus_per_row = plan.dimensions.0.div_ceil(mcu_width_px);
-    let mcu_rows = plan.dimensions.1.div_ceil(mcu_height_px);
+    let grid = sequential_mcu_grid(plan);
+    let (mcus_per_row, mcu_rows) = grid;
     let mut storage = allocate_dct_decode_storage(
         plan,
         mcus_per_row,
@@ -66,17 +63,11 @@ fn decode_scan_dct_blocks_with_entries<const N: usize>(
     let mut quantized_coeff = CoefficientBlock::default();
     let mut dequantized_coeff = CoefficientBlock::default();
     let mut restart = RestartState::new(plan.restart_interval.unwrap_or(0));
-    let total_mcus = mcu_rows * mcus_per_row;
+    let columns = McuColumns::whole_rows(grid);
 
     for mcu_y in 0..mcu_rows {
         for mcu_x in 0..mcus_per_row {
-            if restart.begin_mcu(
-                &mut br,
-                McuPosition {
-                    current: mcu_y * mcus_per_row + mcu_x,
-                    total: total_mcus,
-                },
-            )? {
+            if restart.begin_mcu(&mut br, columns.mcu_position(mcu_x, mcu_y))? {
                 storage.prev_dc.fill(0);
             }
 
@@ -126,10 +117,19 @@ fn decode_scan_dct_blocks_with_entries<const N: usize>(
     storage.finish(lifecycle)
 }
 
-/// Block grid `(mcus_per_row, mcu_rows)` of a sequential interleaved scan.
+/// Full-size pixel size `(width, height)` of an MCU of a sequential
+/// interleaved scan.
+pub(crate) fn sequential_mcu_size(plan: &PreparedDecodePlan) -> (u32, u32) {
+    (
+        8 * u32::from(plan.sampling.max_h),
+        8 * u32::from(plan.sampling.max_v),
+    )
+}
+
+/// MCU grid `(mcus_per_row, mcu_rows)` of a sequential interleaved scan, at
+/// full size or any downscale (both edges round up to whole MCUs).
 pub(crate) fn sequential_mcu_grid(plan: &PreparedDecodePlan) -> (u32, u32) {
-    let mcu_width_px = 8 * u32::from(plan.sampling.max_h);
-    let mcu_height_px = 8 * u32::from(plan.sampling.max_v);
+    let (mcu_width_px, mcu_height_px) = sequential_mcu_size(plan);
     (
         plan.dimensions.0.div_ceil(mcu_width_px),
         plan.dimensions.1.div_ceil(mcu_height_px),
@@ -174,17 +174,11 @@ fn decode_scan_dct_blocks_into_with_entries<const N: usize>(
     let mut br = BitReader::new(scan_bytes);
     let mut prev_dc = [0_i32; DEVICE_MAX_COMPONENTS];
     let mut restart = RestartState::new(plan.restart_interval.unwrap_or(0));
-    let total_mcus = mcu_rows * mcus_per_row;
+    let columns = McuColumns::whole_rows((mcus_per_row, mcu_rows));
 
     for mcu_y in 0..mcu_rows {
         for mcu_x in 0..mcus_per_row {
-            if restart.begin_mcu(
-                &mut br,
-                McuPosition {
-                    current: mcu_y * mcus_per_row + mcu_x,
-                    total: total_mcus,
-                },
-            )? {
+            if restart.begin_mcu(&mut br, columns.mcu_position(mcu_x, mcu_y))? {
                 prev_dc.fill(0);
             }
             grid.decode_mcu::<N>(plan, &mut br, &mut prev_dc, blocks, (mcu_x, mcu_y))?;
@@ -343,16 +337,13 @@ fn decode_scan_dct_window_into_with_entries<const N: usize>(
         "sequential device DCT storage disagrees with the window block grid",
     )?;
 
-    let total_mcus = mcu_rows * mcus_per_row;
+    let columns = McuColumns::new((mcus_per_row, mcu_rows), window.col, window.cols);
     let wide_huffman = plan.prefers_wide_huffman(scan_bytes.len());
     let mut cursor = enter_scan_at_mcu::<N>(
         plan,
         scan_bytes,
         checkpoint,
-        McuPosition {
-            current: window.row * mcus_per_row,
-            total: total_mcus,
-        },
+        columns.mcu_position(0, window.row),
         wide_huffman,
     )?;
 
@@ -360,23 +351,20 @@ fn decode_scan_dct_window_into_with_entries<const N: usize>(
         for mcu_x in 0..mcus_per_row {
             if cursor.restart.begin_mcu(
                 &mut cursor.br,
-                McuPosition {
-                    current: (window.row + row) * mcus_per_row + mcu_x,
-                    total: total_mcus,
-                },
+                columns.mcu_position(mcu_x, window.row + row),
             )? {
                 cursor.prev_dc = [0; 4];
             }
-            if mcu_x < window.col || mcu_x >= window.col + window.cols {
-                skip_mcu::<N>(plan, &mut cursor.br, &mut cursor.prev_dc, wide_huffman)?;
-            } else {
+            if columns.contains(mcu_x) {
                 grid.decode_mcu::<N>(
                     plan,
                     &mut cursor.br,
                     &mut cursor.prev_dc,
                     blocks,
-                    (mcu_x - window.col, row),
+                    (columns.local(mcu_x), row),
                 )?;
+            } else {
+                skip_mcu::<N>(plan, &mut cursor.br, &mut cursor.prev_dc, wide_huffman)?;
             }
             cursor.restart.end_mcu();
         }

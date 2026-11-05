@@ -11,6 +11,7 @@
 //! Every other whole-ratio color layout (4:4:0, 4:1:1, 4:1:0, 1x4, ...)
 //! always takes this route.
 
+use crate::entropy::sequential::{McuPosition, RestartState};
 use alloc::vec::Vec;
 
 use super::super::{
@@ -19,9 +20,8 @@ use super::super::{
     CoefficientBlock, ColorSpace, DecodeOutcome, Decoder, DownscaleFactor, JpegError, Rect,
 };
 use super::planes::{dequantize_progressive12_block, ensure_progressive12_coefficient_capacities};
-use super::state::Extended12RestartTracker;
 use super::writers::{Extended12Output, Extended12RgbProjection};
-use crate::allocation::try_reserve_for_len_with_live_budget;
+use crate::allocation::{try_reserve_for_len_with_live_budget, try_vec_filled_with_live_budget};
 use crate::color::scaled_sampling::{ScaledComponent, ScaledSampling, Upsample};
 use crate::idct::downscale::{idct_islow_12bit_1x1, idct_islow_12bit_2x2, idct_islow_12bit_4x4};
 
@@ -125,11 +125,8 @@ fn allocate_scaled_planes(
         let size = component.idct_size as usize;
         let stride = checked_scratch_len(&[cols, size])?;
         let len = checked_scratch_len(&[stride, rows, size])?;
-        let mut samples = Vec::new();
-        try_reserve_for_len_with_live_budget(&mut samples, len, &mut live_bytes, cap)?;
-        samples.resize(len, 0);
         planes[index] = ScaledPlane {
-            samples,
+            samples: try_vec_filled_with_live_budget(len, 0, &mut live_bytes, cap)?,
             stride,
             component,
         };
@@ -234,11 +231,17 @@ impl Decoder<'_> {
         let mut prev_dc = [0i32; 4];
         let mut coeff = CoefficientBlock::default();
         let mut pixels = [0u16; 64];
-        let mut restart_tracker =
-            Extended12RestartTracker::new(plan.restart_interval, mcu_cols * mcu_rows);
+        let mut restart = RestartState::new(plan.restart_interval.unwrap_or(0));
+        let total_mcus = mcu_cols * mcu_rows;
         for mcu_y in 0..mcu_rows {
             for mcu_x in 0..mcu_cols {
-                if restart_tracker.begin_mcu(&mut br, mcu_y * mcu_cols + mcu_x)? {
+                if restart.begin_mcu(
+                    &mut br,
+                    McuPosition {
+                        current: mcu_y * mcu_cols + mcu_x,
+                        total: total_mcus,
+                    },
+                )? {
                     prev_dc.fill(0);
                 }
                 for component in &plan.components {
@@ -275,7 +278,7 @@ impl Decoder<'_> {
                         }
                     }
                 }
-                restart_tracker.finish_mcu();
+                restart.end_mcu();
             }
         }
         let scan_warnings = finish_scan(&mut br, true)?;

@@ -7,7 +7,7 @@ use crate::allocation::{
 };
 use crate::error::{JpegError, MarkerKind, UnsupportedReason};
 use crate::info::{SamplingFactors, SofKind};
-use crate::parse::markers::{next_entropy_marker, next_marker_after_entropy, EntropyMarker};
+use crate::parse::markers::{next_entropy_marker_code, next_marker_after_entropy};
 use alloc::vec::Vec;
 use core::ops::Range;
 
@@ -454,16 +454,7 @@ fn validate_restart_markers(bytes: &[u8]) -> Result<(), JpegError> {
     let entropy = &bytes[..ranges.entropy_range.end];
     let mut expected = 0u8;
     let mut pos = ranges.entropy_range.start;
-    while let Some(next) = next_entropy_marker(entropy, pos) {
-        let (marker_pos, marker) = match next {
-            EntropyMarker::Unterminated { fill_start } => {
-                return Err(JpegError::Truncated {
-                    offset: fill_start,
-                    expected: 1,
-                });
-            }
-            EntropyMarker::Marker { code_pos, code, .. } => (code_pos, code),
-        };
+    while let Some((marker_pos, marker)) = next_entropy_marker_code(entropy, pos)? {
         match marker {
             0xd0..=0xd7 => {
                 let found = marker & 0x07;

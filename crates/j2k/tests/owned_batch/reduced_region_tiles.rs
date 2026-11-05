@@ -115,3 +115,76 @@ fn reduced_regions_ending_at_rounded_tile_edges_prepare_for_every_fixture() {
         assert_batch_matches_single_image(&encoded, &requests, fixture.name);
     }
 }
+
+/// Reduced batch decodes of an image whose reference-grid origin is odd at
+/// every resolution write the samples `OpenJPEG` decodes at that reduction,
+/// whole and of a region, with classic and HTJ2K coding, as the single-image
+/// decoder does: a narrower image than `ceil(size / s)`.
+#[test]
+fn reduced_batches_of_an_odd_origin_image_match_openjpeg() {
+    use j2k::{CpuBatchSamples, PixelFormat};
+    use j2k_test_support::{
+        OPENJPEG_ORIGIN_23X17_AT_3_5, OPENJPH_ORIGIN_23X17_AT_3_5, ORIGIN_REDUCED_RGB,
+    };
+    let scales = [Downscale::Half, Downscale::Quarter, Downscale::Eighth];
+    let interior = Rect {
+        x: 4,
+        y: 2,
+        w: 13,
+        h: 11,
+    };
+    for fixture in [OPENJPEG_ORIGIN_23X17_AT_3_5, OPENJPH_ORIGIN_23X17_AT_3_5] {
+        let bytes = Arc::<[u8]>::from(fixture);
+        for (scale, (dims, reference)) in scales.into_iter().zip(ORIGIN_REDUCED_RGB) {
+            let mut single = j2k::J2kDecoder::new(fixture).expect("single-image decoder");
+            let stride = dims.0 as usize * 3;
+            let mut padded = vec![0_u8; reference.len()];
+            let outcome = single
+                .decode_region_scaled_into(
+                    &mut j2k::J2kScratchPool::new(),
+                    &mut padded,
+                    stride,
+                    PixelFormat::Rgb8,
+                    interior,
+                    scale,
+                )
+                .expect("single-image region");
+            let covered = outcome.decoded;
+            let row_bytes = covered.w as usize * 3;
+            let region = padded
+                .chunks(stride)
+                .take(covered.h as usize)
+                .flat_map(|row| row[..row_bytes].iter().copied())
+                .collect::<Vec<_>>();
+            let requests = [
+                (DecodeRequest::Reduced { scale }, dims, reference.to_vec()),
+                (
+                    DecodeRequest::RegionReduced {
+                        roi: interior,
+                        scale,
+                    },
+                    (covered.w, covered.h),
+                    region,
+                ),
+            ];
+            for (request, dims, expected) in requests {
+                let mut options = BatchDecodeOptions::default();
+                options.layout = BatchLayout::Nhwc;
+                let decoded = CpuBatchDecoder::new(options)
+                    .decode(vec![EncodedImage::new(Arc::clone(&bytes), request)])
+                    .expect("batch decode");
+                assert!(
+                    decoded.errors().is_empty(),
+                    "{request:?}: {:?}",
+                    decoded.errors()
+                );
+                let group = &decoded.groups()[0];
+                assert_eq!(group.info().dimensions, dims, "{request:?}");
+                let CpuBatchSamples::U8(samples) = group.samples() else {
+                    panic!("{request:?}: expected u8 samples");
+                };
+                assert_eq!(samples.as_slice(), expected, "{request:?}");
+            }
+        }
+    }
+}

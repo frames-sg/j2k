@@ -3,11 +3,10 @@
 //! Concurrent inspection, representability validation, and homogeneous grouping.
 
 use super::{
-    generic_batch_worker_limit, run_retained_chunks, size_of, Arc, BatchDecodeOptions,
-    BatchErrorStage, BatchGroupInfo, BatchInfrastructureError, BatchItemError, BatchWorker,
-    CpuExecution, EncodedImage, IndexedBatchError, J2kError, NonZeroUsize, PrepareImageResult,
-    PrepareJob, PreparedBatch, PreparedBatchGroup, PreparedImage, TileBatchOptions, Vec,
-    J2K_BATCH_METADATA_ALLOWANCE_BYTES,
+    run_retained_chunks, size_of, Arc, BatchDecodeOptions, BatchErrorStage, BatchGroupInfo,
+    BatchInfrastructureError, BatchItemError, BatchWorker, CpuExecution, EncodedImage,
+    IndexedBatchError, J2kError, NonZeroUsize, PrepareImageResult, PrepareJob, PreparedBatch,
+    PreparedBatchGroup, PreparedImage, TileBatchOptions, Vec, J2K_BATCH_METADATA_ALLOWANCE_BYTES,
 };
 
 #[cfg(test)]
@@ -37,9 +36,7 @@ pub fn prepare_batch(
     let input_count = inputs.len();
     let available = std::thread::available_parallelism().map_or(1, NonZeroUsize::get);
     let worker_count = options
-        .workers
-        .map_or(available, NonZeroUsize::get)
-        .clamp(1, generic_batch_worker_limit())
+        .worker_limit(options.workers.map_or(available, NonZeroUsize::get))
         .min(input_count.max(1));
     let mut workers = try_prepare_vec(worker_count, "J2K preparation workers")?;
     for _ in 0..worker_count {
@@ -71,7 +68,7 @@ pub(super) fn prepare_batch_with_workers(
         workers,
         &mut jobs,
         &mut prepared,
-        TileBatchOptions::new(options.workers),
+        TileBatchOptions::new(options.scheduled_workers(workers.len())),
         |worker, jobs, results| {
             worker.prepare_owned_decode();
             for (job, slot) in jobs.iter_mut().zip(results) {
@@ -160,7 +157,7 @@ fn regroup_prepared_image(image: PreparedImage, options: BatchDecodeOptions) -> 
             requested: options.settings,
         });
     }
-    let mut info = batch_group_info(image.support(), image.plan(), options.layout)?;
+    let mut info = batch_group_info(image.support(), image.plan(), options)?;
     reconcile_codec_plan_metadata(&mut info, image.codec_plan())?;
     let execution_shape =
         batch_execution_shape(image.support(), image.plan(), image.preparation_depth());

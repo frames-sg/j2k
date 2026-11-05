@@ -11,7 +11,6 @@ use crate::entropy::huffman::{
 use crate::error::JpegError;
 use crate::info::{ColorSpace, SamplingFactors};
 
-use super::FastRgbRoute;
 use crate::adapter::{fast_packet_family_for_shape, JpegFastPacketFamily};
 
 mod resolved;
@@ -120,10 +119,12 @@ impl PreparedDecodePlan {
     }
 
     /// The color fast-packet family of this scan's coded shape when its three
-    /// components are stored in output order: the one shape rule the fast CPU
-    /// routes, the device batch summary and packet classification share (see
-    /// [`fast_packet_family_for_shape`]).
-    fn fast_shape_family(&self) -> Option<JpegFastPacketFamily> {
+    /// components are stored in output order, which also picks the streaming
+    /// CPU route that decodes it. The fast CPU routes, the device batch
+    /// summary and packet classification share this shape rule (see
+    /// [`fast_packet_family_for_shape`]); the explicit-family packet builders
+    /// check only the layout they are asked for.
+    pub(crate) fn fast_shape_family(&self) -> Option<JpegFastPacketFamily> {
         let in_output_order = self
             .components
             .iter()
@@ -154,16 +155,6 @@ impl PreparedDecodePlan {
     /// Three full-resolution components coded as YCbCr or as identity RGB.
     pub(crate) fn matches_fast_444_shape(&self) -> bool {
         self.fast_shape_family() == Some(JpegFastPacketFamily::Fast444)
-    }
-
-    /// The streaming route that decodes this scan's full-size RGB output.
-    pub(crate) fn fast_rgb_route(&self) -> Option<FastRgbRoute> {
-        match self.fast_shape_family()? {
-            JpegFastPacketFamily::Fast420 => Some(FastRgbRoute::Fancy420),
-            JpegFastPacketFamily::Fast422 | JpegFastPacketFamily::Fast444 => {
-                Some(FastRgbRoute::Rows)
-            }
-        }
     }
 }
 

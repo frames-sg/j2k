@@ -64,20 +64,13 @@ impl J2kDecoder<'_> {
         fmt: PixelFormat,
         roi: Rect,
         scale: Downscale,
-        plan: DeviceDecodePlan,
     ) -> Result<Surface, Error> {
         if let Some(surface) =
             crate::hybrid::decode_region_scaled_direct_to_surface(self.bytes, fmt, roi, scale)?
         {
             return Ok(surface);
         }
-        crate::engine::decode_region_scaled_to_surface(
-            self.bytes,
-            plan.source_dims(),
-            fmt,
-            roi,
-            scale,
-        )
+        crate::engine::decode_region_scaled_to_surface(self.bytes, fmt, roi, scale)
     }
 
     #[cfg(target_os = "macos")]
@@ -86,7 +79,6 @@ impl J2kDecoder<'_> {
         fmt: PixelFormat,
         roi: Rect,
         scale: Downscale,
-        plan: DeviceDecodePlan,
         session: &MetalBackendSession,
     ) -> Result<Surface, Error> {
         if let Some(surface) = crate::hybrid::decode_region_scaled_direct_to_surface_with_session(
@@ -97,7 +89,6 @@ impl J2kDecoder<'_> {
         crate::engine::with_runtime_for_session(session, |_| {
             crate::engine::decode_region_scaled_to_surface_with_device(
                 self.bytes,
-                plan.source_dims(),
                 fmt,
                 roi,
                 scale,
@@ -110,8 +101,10 @@ impl J2kDecoder<'_> {
         &mut self,
         request: MetalDecodeRequest,
     ) -> Result<Surface, Error> {
-        let plan =
-            DeviceDecodePlan::for_image(self.inner.info().dimensions, request.op.device_request())?;
+        let plan = DeviceDecodePlan::for_reference_grid(
+            self.inner.reference_grid(),
+            request.op.device_request(),
+        )?;
 
         #[cfg(target_os = "macos")]
         let selected = match request.op {
@@ -183,15 +176,9 @@ impl J2kDecoder<'_> {
                     request.fmt,
                     plan.source_rect(),
                     Downscale::None,
-                    plan,
                 ),
                 MetalDecodeOp::Scaled(scale) | MetalDecodeOp::RegionScaled { scale, .. } => self
-                    .decode_region_scaled_to_metal_surface(
-                        request.fmt,
-                        plan.source_rect(),
-                        scale,
-                        plan,
-                    ),
+                    .decode_region_scaled_to_metal_surface(request.fmt, plan.source_rect(), scale),
             },
             routing::RouteDecision::RejectExplicitMetal { .. }
             | routing::RouteDecision::RejectUnsupportedBackend { .. } => {

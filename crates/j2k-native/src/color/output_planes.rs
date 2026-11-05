@@ -219,6 +219,15 @@ pub trait ComponentRowSink {
         let _ = (width, height);
         None
     }
+
+    /// Whether the decode should stop instead of decoding the rest of the
+    /// region, such as after the sink failed to take rows. A decode checks
+    /// after each hand-over and returns `DecodingError::SinkStopped` once it
+    /// holds; rows already handed over stay with the sink. The default,
+    /// `false`, decodes the whole region.
+    fn stopped(&self) -> bool {
+        false
+    }
 }
 
 /// Borrowed decoded component planes for an image.

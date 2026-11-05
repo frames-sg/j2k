@@ -1,0 +1,774 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index eb5f65352e50502677c5cf8053404145ec8ee5db..ec52e4b58ddacdb8bfaefe0445e93db01f1c7ceb 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -3,6 +3,20 @@
+ This changelog tracks the current release line. Historical phase notes
+ and stale roadmap entries have been removed from the public documentation set.
+ 
++## [Unreleased]
++
++- `MetalBatchDecoder` sends classic Tier-1 for batches of at least eight
++  distinct full-image RGB8 inputs with sampled components to the CPU pool,
++  then keeps inverse transforms, chroma expansion and output resident on
++  Metal. The GPU's serial MQ code-block chains set the latency floor for
++  256 x 256 Aperio 33003 tiles; using the existing flattened CPU coefficient
++  cache removes that floor without a host pixel round trip. Across eight
++  fresh groups of 32 level-0 tiles from each public OpenSlide 33003 test
++  slide, median prepare-plus-decode time falls from 12.63 to 7.35 ms and
++  14.94 to 8.52 ms. Output matches the CPU byte for byte. Small, repeated,
++  HTJ2K, high-bit, nested-Rayon and single-worker groups retain their existing
++  Metal route; explicit multi-worker limits cap the CPU stage.
++
+ ## [0.13.1] - 2026-10-29
+ 
+ - `CpuBatchDecoder` region and region-plus-reduced requests no longer
+diff --git a/crates/j2k-metal/src/batch_decoder.rs b/crates/j2k-metal/src/batch_decoder.rs
+index 3d3e4ea8e68e38c842e49bbe3fd0149ee7885c9b..acab8c983f7c388f9e8da01da1816b267d163b69 100644
+--- a/crates/j2k-metal/src/batch_decoder.rs
++++ b/crates/j2k-metal/src/batch_decoder.rs
+@@ -66,6 +66,13 @@ use self::submission::{
+     allocate_codec_owned_group_destination, validate_codec_owned_resident_group,
+     MetalResidentGroupMetadata, SubmittedMetalResidentGroup,
+ };
++
++#[cfg(target_os = "macos")]
++fn automatic_cpu_tier1_workers(options: BatchDecodeOptions) -> Option<std::num::NonZeroUsize> {
++    options
++        .workers
++        .or_else(|| std::thread::available_parallelism().ok())
++}
+ #[cfg(test)]
+ mod batch_contract_tests {
+     use super::*;
+diff --git a/crates/j2k-metal/src/batch_decoder/cooperative.rs b/crates/j2k-metal/src/batch_decoder/cooperative.rs
+index 2a8edf26c356af20a99b37a074d8785d9966ccac..c5aa295ad7edddc6b37faf3c107dafc610a1b421 100644
+--- a/crates/j2k-metal/src/batch_decoder/cooperative.rs
++++ b/crates/j2k-metal/src/batch_decoder/cooperative.rs
+@@ -68,10 +68,10 @@ impl MetalBatchDecoder {
+         let available = std::thread::available_parallelism().map_or(1, NonZeroUsize::get);
+         let workers = max_cpu_workers.get().min(available);
+         if workers < 2 {
+-            return self.decode_prepared(prepared);
++            return self.decode_prepared_without_automatic_cpu_tier1(prepared);
+         }
+         let Some(split) = self.cooperative_split(prepared, workers, available)? else {
+-            return self.decode_prepared(prepared);
++            return self.decode_prepared_without_automatic_cpu_tier1(prepared);
+         };
+         let CooperativeSubmission {
+             pending,
+@@ -163,10 +163,11 @@ impl MetalBatchDecoder {
+                 destination: &parts.gpu.allocation.destination,
+                 source_indices: Some(&parts.gpu.sources),
+                 consumer_ordering: engine::DirectDestinationConsumerOrdering::HostCompletionOnly,
++                automatic_cpu_workers: None,
+             });
+         // Pending guards retire all committed work on a fatal error.
+         let (submitted, cohort_results) =
+-            self.submit_resident_groups(residents, gpu_cohort.into_iter().collect())?;
++            self.submit_resident_groups(residents, gpu_cohort.into_iter().collect(), false)?;
+         for (index, result) in resident_indices.into_iter().zip(submitted) {
+             match result {
+                 Ok(work) => pending.push((index, work)),
+diff --git a/crates/j2k-metal/src/batch_decoder/decoder.rs b/crates/j2k-metal/src/batch_decoder/decoder.rs
+index 18c2d0f3ffd500fd4bb48c54b6b1b9209e347a95..465f507d6d6ae7b78fbbe3ada8207b446746894e 100644
+--- a/crates/j2k-metal/src/batch_decoder/decoder.rs
++++ b/crates/j2k-metal/src/batch_decoder/decoder.rs
+@@ -200,6 +200,24 @@ impl MetalBatchDecoder {
+     pub fn submit_prepared(
+         &mut self,
+         prepared: &PreparedBatch,
++    ) -> Result<SubmittedMetalPreparedBatch, Error> {
++        self.submit_prepared_with_automatic_cpu_tier1(prepared, true)
++    }
++
++    #[cfg(target_os = "macos")]
++    pub(super) fn decode_prepared_without_automatic_cpu_tier1(
++        &mut self,
++        prepared: &PreparedBatch,
++    ) -> Result<MetalBatchDecodeResult, Error> {
++        self.submit_prepared_with_automatic_cpu_tier1(prepared, false)?
++            .wait()
++    }
++
++    #[cfg(target_os = "macos")]
++    fn submit_prepared_with_automatic_cpu_tier1(
++        &mut self,
++        prepared: &PreparedBatch,
++        allow_automatic_cpu_tier1: bool,
+     ) -> Result<SubmittedMetalPreparedBatch, Error> {
+         let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
+             "J2K submitted shared prepared Metal batch",
+@@ -238,7 +256,8 @@ impl MetalBatchDecoder {
+                 }
+             }
+         }
+-        let (submitted, _) = self.submit_resident_groups(residents, Vec::new())?;
++        let (submitted, _) =
++            self.submit_resident_groups(residents, Vec::new(), allow_automatic_cpu_tier1)?;
+         for (index, result) in resident_indices.into_iter().zip(submitted) {
+             match result {
+                 Ok(pending) => pending_groups.push(pending),
+diff --git a/crates/j2k-metal/src/batch_decoder/external.rs b/crates/j2k-metal/src/batch_decoder/external.rs
+index e37a79c67c442bbb9ee190db007d1ba454d7069f..383c198c9dac412e97d56ea53d4c57c740366cd9 100644
+--- a/crates/j2k-metal/src/batch_decoder/external.rs
++++ b/crates/j2k-metal/src/batch_decoder/external.rs
+@@ -186,6 +186,9 @@ impl MetalBatchDecoder {
+                     destination: &external.destination,
+                     source_indices: Some(external.group.source_indices()),
+                     consumer_ordering: crate::engine::DirectDestinationConsumerOrdering::Deferred,
++                    automatic_cpu_workers: super::automatic_cpu_tier1_workers(
++                        external.group.options(),
++                    ),
+                 });
+             }
+         }
+diff --git a/crates/j2k-metal/src/batch_decoder/resident.rs b/crates/j2k-metal/src/batch_decoder/resident.rs
+index c00e8adb03b49a1cc04bf7b3660c32ef12a9ab8a..18e1649be488c2261a5a55bdd51e60857b349596 100644
+--- a/crates/j2k-metal/src/batch_decoder/resident.rs
++++ b/crates/j2k-metal/src/batch_decoder/resident.rs
+@@ -70,7 +70,7 @@ impl MetalBatchDecoder {
+             [prepared],
+             "J2K submitted codec-owned Metal group",
+         )?;
+-        let (mut submitted, _) = self.submit_resident_groups(prepared, Vec::new())?;
++        let (mut submitted, _) = self.submit_resident_groups(prepared, Vec::new(), true)?;
+         submitted
+             .pop()
+             .ok_or(Error::MetalStateInvariant {
+@@ -129,6 +129,7 @@ impl MetalBatchDecoder {
+         &mut self,
+         groups: Vec<PreparedResidentGroup<'_>>,
+         extra: Vec<crate::engine::ColorGroupSubmission<'_>>,
++        allow_automatic_cpu_tier1: bool,
+     ) -> Result<ResidentSubmissions, Error> {
+         let runtime = self.backend_session().runtime()?;
+         let extra_count = extra.len();
+@@ -149,6 +150,9 @@ impl MetalBatchDecoder {
+                     source_indices: Some(prepared.group.source_indices()),
+                     consumer_ordering:
+                         crate::engine::DirectDestinationConsumerOrdering::HostCompletionOnly,
++                    automatic_cpu_workers: allow_automatic_cpu_tier1
++                        .then(|| super::automatic_cpu_tier1_workers(prepared.group.options()))
++                        .flatten(),
+                 });
+             }
+         }
+diff --git a/crates/j2k-metal/src/batch_decoder/sampled_group_tests.rs b/crates/j2k-metal/src/batch_decoder/sampled_group_tests.rs
+index ca5d7806c12ba93c8f769f890dca025577da12ee..44e39be416c593e5f7de77797620242e7fcf0cdc 100644
+--- a/crates/j2k-metal/src/batch_decoder/sampled_group_tests.rs
++++ b/crates/j2k-metal/src/batch_decoder/sampled_group_tests.rs
+@@ -101,14 +101,27 @@ fn cpu_bytes(samples: &CpuBatchSamples) -> Vec<u8> {
+     }
+ }
+ 
++struct ResidentRouteReport {
++    command_buffers: usize,
++    cpu_tier1_images: usize,
++}
++
+ /// Decodes `inputs` through the codec-owned resident path, cooperatively
+-/// when `cpu_workers` is set, and returns the command buffers it used.
++/// when `cpu_workers` is set, and returns its route observations.
+ fn assert_resident_matches_cpu(
+     inputs: &[Arc<[u8]>],
+     case: &str,
+     cpu_workers: Option<NonZeroUsize>,
+-) -> usize {
+-    let options = options(BatchLayout::Nhwc);
++) -> ResidentRouteReport {
++    assert_resident_matches_cpu_with_options(inputs, case, options(BatchLayout::Nhwc), cpu_workers)
++}
++
++fn assert_resident_matches_cpu_with_options(
++    inputs: &[Arc<[u8]>],
++    case: &str,
++    options: BatchDecodeOptions,
++    cooperative_workers: Option<NonZeroUsize>,
++) -> ResidentRouteReport {
+     let encoded = inputs
+         .iter()
+         .cloned()
+@@ -132,7 +145,7 @@ fn assert_resident_matches_cpu(
+         prepared.errors()
+     );
+     crate::engine::reset_metal_command_buffers_for_test();
+-    let result = match cpu_workers {
++    let result = match cooperative_workers {
+         Some(workers) => decoder.decode_prepared_cooperative(&prepared, workers),
+         None => decoder.decode_prepared(&prepared),
+     }
+@@ -159,7 +172,14 @@ fn assert_resident_matches_cpu(
+             );
+         }
+     }
+-    command_buffers
++    let cpu_tier1_images = groups
++        .iter()
++        .map(|group| group.dispatch_report().cpu_tier1_images)
++        .sum();
++    ResidentRouteReport {
++        command_buffers,
++        cpu_tier1_images,
++    }
+ }
+ 
+ /// Decodes one prepared group into a caller destination with `layout`.
+@@ -250,11 +270,9 @@ fn sampled_groups_decode_on_metal_in_one_command_buffer() {
+                     ("partially repeated", vec![a.clone(), b.clone(), a.clone()]),
+                 ] {
+                     let case = format!("ht={ht} factors={factors:?} precision={precision} {shape}");
+-                    assert_eq!(
+-                        assert_resident_matches_cpu(&inputs, &case, None),
+-                        1,
+-                        "{case}"
+-                    );
++                    let report = assert_resident_matches_cpu(&inputs, &case, None);
++                    assert_eq!(report.command_buffers, 1, "{case}");
++                    assert_eq!(report.cpu_tier1_images, 0, "{case}");
+                     for layout in [BatchLayout::Nchw, BatchLayout::Nhwc] {
+                         assert_external_matches_cpu(&inputs, layout, &format!("{case} {layout:?}"));
+                     }
+@@ -280,16 +298,89 @@ fn sampled_and_unit_sampled_groups_decode_together() {
+ }
+ 
+ #[test]
+-fn cooperative_decode_keeps_sampled_groups_on_the_gpu_route() {
++fn sampled_classic_batch_uses_automatic_cpu_tier1_and_matches_cpu() {
++    if !j2k_test_support::metal_runtime_gate(module_path!()) {
++        return;
++    }
++    // Eight distinct RGB8 classic inputs cross the automatic route threshold.
++    let inputs = (0..8)
++        .map(|seed| sampled_rgb((130, 128), (2, 1), 8, false, seed))
++        .collect::<Vec<_>>();
++    let report = assert_resident_matches_cpu(&inputs, "sampled CPU Tier-1 batch", None);
++    assert_eq!(report.command_buffers, 1);
++    assert_eq!(report.cpu_tier1_images, inputs.len());
++    assert_external_matches_cpu(
++        &inputs,
++        BatchLayout::Nhwc,
++        "sampled CPU Tier-1 external batch",
++    );
++}
++
++#[test]
++fn sampled_automatic_cpu_tier1_honors_the_batch_worker_budget() {
++    if !j2k_test_support::metal_runtime_gate(module_path!()) {
++        return;
++    }
++    let inputs = (0..8)
++        .map(|seed| sampled_rgb((130, 128), (2, 1), 8, false, seed))
++        .collect::<Vec<_>>();
++
++    let mut single_worker = options(BatchLayout::Nhwc);
++    single_worker.workers = NonZeroUsize::new(1);
++    let report = assert_resident_matches_cpu_with_options(
++        &inputs,
++        "single-worker sampled batch",
++        single_worker,
++        None,
++    );
++    assert_eq!(report.command_buffers, 1);
++    assert_eq!(report.cpu_tier1_images, 0);
++
++    let mut two_workers = options(BatchLayout::Nhwc);
++    two_workers.workers = NonZeroUsize::new(2);
++    let report = assert_resident_matches_cpu_with_options(
++        &inputs,
++        "two-worker sampled batch",
++        two_workers,
++        None,
++    );
++    assert_eq!(report.command_buffers, 1);
++    assert_eq!(report.cpu_tier1_images, inputs.len());
++}
++
++#[test]
++fn sampled_cooperative_fallback_disables_automatic_cpu_tier1() {
++    if !j2k_test_support::metal_runtime_gate(module_path!()) {
++        return;
++    }
++    let inputs = (0..8)
++        .map(|seed| sampled_rgb((130, 128), (2, 1), 8, false, seed))
++        .collect::<Vec<_>>();
++
++    for workers in [1, 2] {
++        let case = format!("sampled cooperative fallback with {workers} worker(s)");
++        let report = assert_resident_matches_cpu(&inputs, &case, NonZeroUsize::new(workers));
++        assert_eq!(report.command_buffers, 1, "{case}");
++        assert_eq!(report.cpu_tier1_images, 0, "{case}");
++    }
++}
++
++#[test]
++fn sampled_decode_inside_rayon_keeps_cpu_tier1_off_the_busy_pool() {
+     if !j2k_test_support::metal_runtime_gate(module_path!()) {
+         return;
+     }
+-    // Large enough to be a cooperative candidate by shape; without MCT the
+-    // group is not a CPU Tier-1 cohort and decodes through the GPU route.
+     let inputs = (0..8)
+         .map(|seed| sampled_rgb((130, 128), (2, 1), 8, false, seed))
+         .collect::<Vec<_>>();
+-    assert_resident_matches_cpu(&inputs, "cooperative sampled batch", NonZeroUsize::new(2));
++    let pool = rayon::ThreadPoolBuilder::new()
++        .num_threads(2)
++        .build()
++        .expect("two-thread pool");
++    let report =
++        pool.install(|| assert_resident_matches_cpu(&inputs, "nested sampled batch", None));
++    assert_eq!(report.command_buffers, 1);
++    assert_eq!(report.cpu_tier1_images, 0);
+ }
+ 
+ #[test]
+diff --git a/crates/j2k-metal/src/decoder/tests/sampled.rs b/crates/j2k-metal/src/decoder/tests/sampled.rs
+index 8b3c894782a639c8e558daf6f413ba37832c4517..6de4ddabe84424ac19e5dc56a4992e559021a4a2 100644
+--- a/crates/j2k-metal/src/decoder/tests/sampled.rs
++++ b/crates/j2k-metal/src/decoder/tests/sampled.rs
+@@ -119,10 +119,28 @@ fn sampled_color_batch_keeps_one_resident_submission() {
+     }
+ }
+ 
++#[cfg(not(debug_assertions))]
++#[derive(Clone, Copy, Debug)]
++struct OwnedBatchTimings {
++    prepare_ms: f64,
++    submit_ms: f64,
++    wait_ms: f64,
++}
++
++#[cfg(not(debug_assertions))]
++impl OwnedBatchTimings {
++    fn total_ms(self) -> f64 {
++        self.prepare_ms + self.submit_ms + self.wait_ms
++    }
++}
++
+ /// Prepares, submits, and completes `inputs` through the owned
+-/// `MetalBatchDecoder`, keeping output resident; returns elapsed ms.
++/// `MetalBatchDecoder`, keeping output resident; returns stage timings.
+ #[cfg(not(debug_assertions))]
+-fn time_owned_batch(inputs: &[Arc<[u8]>], session: &crate::MetalBackendSession) -> f64 {
++fn time_owned_batch(
++    inputs: &[Arc<[u8]>],
++    session: &crate::MetalBackendSession,
++) -> OwnedBatchTimings {
+     let mut decoder = crate::MetalBatchDecoder::with_backend_session_and_options(
+         session.clone(),
+         j2k::BatchDecodeOptions::default(),
+@@ -137,17 +155,63 @@ fn time_owned_batch(inputs: &[Arc<[u8]>], session: &crate::MetalBackendSession)
+                 .collect(),
+         )
+         .unwrap();
+-    let (_, errors, group_errors) = decoder
+-        .submit_prepared(&prepared)
+-        .unwrap()
+-        .wait()
+-        .unwrap()
+-        .into_parts();
+-    let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
++    let prepare_ms = started.elapsed().as_secs_f64() * 1000.0;
++    let started = std::time::Instant::now();
++    let submitted = decoder.submit_prepared(&prepared).unwrap();
++    let submit_ms = started.elapsed().as_secs_f64() * 1000.0;
++    let started = std::time::Instant::now();
++    let (groups, errors, group_errors) = submitted.wait().unwrap().into_parts();
++    let wait_ms = started.elapsed().as_secs_f64() * 1000.0;
+     assert!(
+         errors.is_empty() && group_errors.is_empty(),
+         "{errors:?} {group_errors:?}"
+     );
++    assert_eq!(groups.len(), 1);
++    let resident = groups[0].resident_batch().unwrap();
++    // SAFETY: the completed resident batch is read-only for this check.
++    let actual = unsafe {
++        j2k_metal_support::checked_buffer_read_vec::<u8>(
++            resident.metal_buffer(),
++            resident.byte_offset(),
++            resident.byte_len(),
++        )
++        .unwrap()
++    };
++    let expected = j2k::CpuBatchDecoder::new(j2k::BatchDecodeOptions::default())
++        .decode(
++            inputs
++                .iter()
++                .cloned()
++                .map(j2k::EncodedImage::full)
++                .collect(),
++        )
++        .unwrap();
++    let j2k::CpuBatchSamples::U8(expected) = expected.groups()[0].samples() else {
++        panic!("8-bit sampled CPU oracle returned another sample type");
++    };
++    assert_eq!(&actual, expected);
++    OwnedBatchTimings {
++        prepare_ms,
++        submit_ms,
++        wait_ms,
++    }
++}
++
++/// Prepares and decodes `inputs` with the CPU batch decoder; returns elapsed ms.
++#[cfg(not(debug_assertions))]
++fn time_cpu_batch(inputs: &[Arc<[u8]>]) -> f64 {
++    let started = std::time::Instant::now();
++    let result = j2k::CpuBatchDecoder::new(j2k::BatchDecodeOptions::default())
++        .decode(
++            inputs
++                .iter()
++                .cloned()
++                .map(j2k::EncodedImage::full)
++                .collect(),
++        )
++        .unwrap();
++    let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
++    assert!(result.errors().is_empty(), "{:?}", result.errors());
+     elapsed_ms
+ }
+ 
+@@ -171,7 +235,8 @@ fn time_per_image(inputs: &[Arc<[u8]>], session: &crate::MetalBackendSession) ->
+ // This local timing harness requires a release build and an external corpus.
+ // The generated-fixture tests above and the owned-batch sampled group tests
+ // exercise the same assertions in CI coverage. `J2K_SAMPLED_COUNT` sets the
+-// tiles per level (default 8).
++// tiles per group (default 8); `J2K_SAMPLED_GROUP_COUNT` uses consecutive,
++// non-overlapping groups (default 1).
+ #[cfg(not(debug_assertions))]
+ #[test]
+ #[ignore = "release sampled DICOM decode characterization; requires J2K_SAMPLED_CORPUS"]
+@@ -184,23 +249,37 @@ fn local_sampled_color_batch_characterization() -> Result<(), &'static str> {
+     let count = std::env::var("J2K_SAMPLED_COUNT")
+         .ok()
+         .map_or(8, |count| count.parse::<usize>().unwrap());
++    let level_count = std::env::var("J2K_SAMPLED_LEVEL_COUNT")
++        .ok()
++        .map_or(3, |count| count.parse::<usize>().unwrap());
++    let group_count = std::env::var("J2K_SAMPLED_GROUP_COUNT")
++        .ok()
++        .map_or(1, |count| count.parse::<usize>().unwrap());
+     let session = crate::MetalBackendSession::system_default().unwrap();
+-    for level in 0..3 {
+-        let inputs: Vec<Arc<[u8]>> = (0..count)
+-            .map(|index| {
+-                std::fs::read(
+-                    std::path::Path::new(&directory).join(format!("level{level}-tile{index}.j2k")),
+-                )
+-                .unwrap()
+-                .into()
+-            })
+-            .collect();
++    for level in 0..level_count {
+         for sample in 0..8 {
++            let group = sample % group_count;
++            let inputs: Vec<Arc<[u8]>> = (0..count)
++                .map(|index| {
++                    let index = group * count + index;
++                    std::fs::read(
++                        std::path::Path::new(&directory)
++                            .join(format!("level{level}-tile{index}.j2k")),
++                    )
++                    .unwrap()
++                    .into()
++                })
++                .collect();
+             let ms = compare_batch(&inputs, 2, PixelFormat::Rgb8);
+-            let owned_ms = time_owned_batch(&inputs, &session);
++            let owned = time_owned_batch(&inputs, &session);
+             let single_ms = time_per_image(&inputs, &session);
++            let cpu_ms = time_cpu_batch(&inputs);
+             eprintln!(
+-                "sampled_native level={level} sample={sample} count={count} commands=1 ms={ms:.3} owned_batch_ms={owned_ms:.3} per_image_ms={single_ms:.3}"
++                "sampled_native level={level} sample={sample} group={group} count={count} commands=1 legacy_batch_ms={ms:.3} owned_batch_ms={:.3} prepare_ms={:.3} submit_ms={:.3} wait_ms={:.3} per_image_ms={single_ms:.3} cpu_batch_ms={cpu_ms:.3}",
++                owned.total_ms(),
++                owned.prepare_ms,
++                owned.submit_ms,
++                owned.wait_ms,
+             );
+         }
+     }
+diff --git a/crates/j2k-metal/src/engine/direct_grayscale_execute/color_destination.rs b/crates/j2k-metal/src/engine/direct_grayscale_execute/color_destination.rs
+index 5e5449d576b29045c6545ba641aa73f2d29dceb5..2beb358db0f1884008caac719b993881f185045a 100644
+--- a/crates/j2k-metal/src/engine/direct_grayscale_execute/color_destination.rs
++++ b/crates/j2k-metal/src/engine/direct_grayscale_execute/color_destination.rs
+@@ -31,10 +31,35 @@ use store::encode_exact_native_color_batch_store_in_encoder;
+ use validation::validate_color_group;
+ 
+ enum ColorTier1Execution {
+-    Metal(DirectDestinationConsumerOrdering),
++    Metal {
++        consumer_ordering: DirectDestinationConsumerOrdering,
++        automatic_cpu_workers: Option<std::num::NonZeroUsize>,
++    },
+     Cpu(std::num::NonZeroUsize),
+ }
+ 
++impl ColorTier1Execution {
++    fn parts(
++        self,
++    ) -> (
++        DirectDestinationConsumerOrdering,
++        Option<std::num::NonZeroUsize>,
++        Option<std::num::NonZeroUsize>,
++    ) {
++        match self {
++            Self::Metal {
++                consumer_ordering,
++                automatic_cpu_workers,
++            } => (consumer_ordering, None, automatic_cpu_workers),
++            Self::Cpu(workers) => (
++                DirectDestinationConsumerOrdering::HostCompletionOnly,
++                Some(workers),
++                None,
++            ),
++        }
++    }
++}
++
+ #[cfg(target_os = "macos")]
+ pub(crate) fn submit_prepared_direct_color_plan_batch_into_group(
+     runtime: Arc<MetalRuntime>,
+@@ -52,7 +77,10 @@ pub(crate) fn submit_prepared_direct_color_plan_batch_into_group(
+         layout,
+         destination,
+         source_indices,
+-        ColorTier1Execution::Metal(consumer_ordering),
++        ColorTier1Execution::Metal {
++            consumer_ordering,
++            automatic_cpu_workers: None,
++        },
+         None,
+     )
+ }
+@@ -65,6 +93,7 @@ pub(crate) struct ColorGroupSubmission<'a> {
+     pub(crate) destination: &'a MetalImageDestination,
+     pub(crate) source_indices: Option<&'a [usize]>,
+     pub(crate) consumer_ordering: DirectDestinationConsumerOrdering,
++    pub(crate) automatic_cpu_workers: Option<std::num::NonZeroUsize>,
+ }
+ 
+ /// Submits several color groups, returning one result per group in order.
+@@ -131,7 +160,10 @@ pub(crate) fn submit_prepared_direct_color_plan_batches_into_groups(
+             group.layout,
+             group.destination,
+             group.source_indices,
+-            ColorTier1Execution::Metal(group.consumer_ordering),
++            ColorTier1Execution::Metal {
++                consumer_ordering: group.consumer_ordering,
++                automatic_cpu_workers: group.automatic_cpu_workers,
++            },
+             shared,
+         );
+         match result {
+@@ -222,13 +254,7 @@ fn submit_color_group(
+     execution: ColorTier1Execution,
+     shared_tier1: Option<super::super::SharedClassicTier1Group>,
+ ) -> Result<SubmittedDirectDestination, Error> {
+-    let (consumer_ordering, cpu_workers) = match execution {
+-        ColorTier1Execution::Metal(ordering) => (ordering, None),
+-        ColorTier1Execution::Cpu(workers) => (
+-            DirectDestinationConsumerOrdering::HostCompletionOnly,
+-            Some(workers),
+-        ),
+-    };
++    let (consumer_ordering, cpu_workers, automatic_cpu_workers) = execution.parts();
+     let Some(_) = plans.first() else {
+         return Err(Error::capability_rejected(
+             j2k_core::CapabilityRejection::contract_violation(
+@@ -266,24 +292,26 @@ fn submit_color_group(
+         && component_plan_refs
+             .iter()
+             .all(|refs| supports_stacked_direct_component_plane_batch(refs));
++    let effective_cpu_workers = color_cpu_tier1_workers(
++        plans,
++        &component_plan_refs,
++        fmt,
++        use_stacked,
++        cpu_workers,
++        automatic_cpu_workers,
++    )?;
+     let mut stage_timings = DirectHybridStageTimings::default();
+-    let cpu_cache = if let Some(max_workers) = cpu_workers {
+-        if cooperative_color_costs(plans)?.is_none() || !use_stacked {
+-            return Err(Error::MetalStateInvariant {
+-                state: "J2K cooperative CPU color group",
+-                reason: "CPU cohort must contain compatible distinct classic RGB8 plans",
+-            });
+-        }
+-        Some(super::super::build_flattened_cpu_tier1_cache(
+-            &runtime,
+-            plans,
+-            &mut stage_timings,
+-            &mut metadata.retained_buffers,
+-            Some(max_workers),
+-        )?)
+-    } else {
+-        None
+-    };
++    let cpu_cache = effective_cpu_workers
++        .map(|max_workers| {
++            super::super::build_flattened_cpu_tier1_cache(
++                &runtime,
++                plans,
++                &mut stage_timings,
++                &mut metadata.retained_buffers,
++                Some(max_workers),
++            )
++        })
++        .transpose()?;
+     let command_buffer = new_command_buffer(&runtime.queue)?;
+     let compute_encoder = new_compute_command_encoder(&command_buffer)?;
+     let mut encoder = ColorGroupEncoder {
+@@ -313,7 +341,7 @@ fn submit_color_group(
+         .transpose()?;
+ 
+     metadata.record_tier1_dispatches();
+-    if cpu_workers.is_some() {
++    if effective_cpu_workers.is_some() {
+         metadata.dispatch_report.cpu_tier1_images = plans.len();
+     }
+ 
+@@ -325,6 +353,69 @@ fn submit_color_group(
+     Ok(submitted)
+ }
+ 
++fn color_cpu_tier1_workers(
++    plans: &[Arc<PreparedDirectColorPlan>],
++    component_plan_refs: &[Vec<&PreparedDirectGrayscalePlan>],
++    fmt: PixelFormat,
++    use_stacked: bool,
++    requested_workers: Option<std::num::NonZeroUsize>,
++    automatic_workers: Option<std::num::NonZeroUsize>,
++) -> Result<Option<std::num::NonZeroUsize>, Error> {
++    if let Some(workers) = requested_workers {
++        if cooperative_color_costs(plans)?.is_none() || !use_stacked {
++            return Err(Error::MetalStateInvariant {
++                state: "J2K cooperative CPU color group",
++                reason: "CPU cohort must contain compatible distinct classic RGB8 plans",
++            });
++        }
++        return Ok(Some(workers));
++    }
++    Ok(sampled_classic_cpu_tier1_workers(
++        plans,
++        component_plan_refs,
++        fmt,
++        use_stacked,
++        automatic_workers,
++    ))
++}
++
++/// The CPU worker budget for a sampled classic group whose GPU latency is set
++/// by serial MQ code-block chains. CPU Tier-1 stays off nested Rayon callers,
++/// small groups, repeated inputs, HTJ2K, high-bit output, and shapes that the
++/// existing stacked CPU-upload executor cannot run as one group.
++fn sampled_classic_cpu_tier1_workers(
++    plans: &[Arc<PreparedDirectColorPlan>],
++    component_plan_refs: &[Vec<&PreparedDirectGrayscalePlan>],
++    fmt: PixelFormat,
++    use_stacked: bool,
++    max_workers: Option<std::num::NonZeroUsize>,
++) -> Option<std::num::NonZeroUsize> {
++    let max_workers = max_workers?;
++    if plans.len() < 8
++        || fmt != PixelFormat::Rgb8
++        || !use_stacked
++        || max_workers.get() < 2
++        || rayon::current_thread_index().is_some()
++        || plans.iter().enumerate().any(|(index, plan)| {
++            !plan.has_sampled_components()
++                || plan.component_plans.len() != 3
++                || plan.signed
++                || plan.alpha_bit_depth.is_some()
++                || plan.bit_depths != [8; 3]
++                || plans[..index].iter().any(|other| Arc::ptr_eq(plan, other))
++        })
++        || component_plan_refs.iter().any(|components| {
++            !super::super::stacked_plans_use_classic_tier1_only(components)
++                || components
++                    .iter()
++                    .any(|component| component.tier1_prepare_mode != DirectTier1Mode::Metal)
++        })
++    {
++        return None;
++    }
++    Some(max_workers)
++}
++
+ /// Conservative eligibility and entropy work estimates; no pixel decoding or caching.
+ pub(crate) fn cooperative_color_costs(
+     plans: &[Arc<PreparedDirectColorPlan>],
+diff --git a/crates/j2k-metal/src/engine/tests/shared_tier1.rs b/crates/j2k-metal/src/engine/tests/shared_tier1.rs
+index 8fba8a678604a0bcb610198cb839e2102e702cfd..54b21bf48d997f9e8e483666bd70e5d1bbbfa434 100644
+--- a/crates/j2k-metal/src/engine/tests/shared_tier1.rs
++++ b/crates/j2k-metal/src/engine/tests/shared_tier1.rs
+@@ -118,6 +118,7 @@ fn shared_classic_tier1_reports_failure_against_its_own_group_and_source() {
+                 destination: &first_destination,
+                 source_indices: Some(&[0, 2]),
+                 consumer_ordering: DirectDestinationConsumerOrdering::HostCompletionOnly,
++                automatic_cpu_workers: None,
+             },
+             ColorGroupSubmission {
+                 plans: &second,
+@@ -126,6 +127,7 @@ fn shared_classic_tier1_reports_failure_against_its_own_group_and_source() {
+                 destination: &second_destination,
+                 source_indices: Some(&[1, 3]),
+                 consumer_ordering: DirectDestinationConsumerOrdering::HostCompletionOnly,
++                automatic_cpu_workers: None,
+             },
+         ],
+     )
+@@ -181,6 +183,7 @@ fn decode_groups(
+             destination,
+             source_indices: None,
+             consumer_ordering: DirectDestinationConsumerOrdering::HostCompletionOnly,
++            automatic_cpu_workers: None,
+         })
+         .collect();
+     for result in submit_prepared_direct_color_plan_batches_into_groups(runtime, submissions)
+diff --git a/docs/benchmark-evidence.md b/docs/benchmark-evidence.md
+index 5c1e4540775b9a5a0e8df1f866e4e081199b4945..1b08da1f53560394602befddcd3c31290068f69b 100644
+--- a/docs/benchmark-evidence.md
++++ b/docs/benchmark-evidence.md
+@@ -160,6 +160,38 @@ errors. The per-image path waits for the GPU after each tile. A separate
+ check on the same tiles found the owned batch, per-image Metal and CPU batch
+ outputs byte-identical.
+ 
++### Sampled classic Tier-1 on the CPU pool - 2026-10-29
++
++The same Apple M4 Pro decoded eight different groups of 32 interior level-0
++tiles from each slide. No tile appeared in two groups. Each sample included
++`MetalBatchDecoder::prepare`, submission and completion; output stayed
++resident and was compared byte for byte with `CpuBatchDecoder` after timing.
++The control disables the new automatic route in the same release binary.
++
++| Slide | GPU Tier-1 median | CPU Tier-1 + Metal reconstruction median | CPU batch median |
++| --- | ---: | ---: | ---: |
++| JP2K-33003-1 | 12.63 ms | 7.35 ms | 5.95 ms |
++| JP2K-33003-2 | 14.94 ms | 8.52 ms | 6.63 ms |
++
++The automatic route raises median submission time to 5.50 and 5.70 ms
++because Tier-1 finishes before the Metal command is returned; completion wait
++falls to 1.61 and 1.67 ms. It applies only to at least eight distinct,
++full-image, sampled classic RGB8 plans whose components can use the stacked
++executor, and only when called outside a Rayon worker. Smaller, repeated,
++HTJ2K, high-bit, nested-pool and single-worker calls keep the all-Metal route;
++an explicit multi-worker limit caps the CPU stage.
++
++The characterization harness accepts consecutive groups with
++`J2K_SAMPLED_GROUP_COUNT`:
++
++```bash
++J2K_REQUIRE_METAL_RUNTIME=1 \
++J2K_SAMPLED_CORPUS=<level{L}-tile{i}.j2k dir> \
++J2K_SAMPLED_COUNT=32 J2K_SAMPLED_LEVEL_COUNT=1 \
++J2K_SAMPLED_GROUP_COUNT=8 cargo test --release -p j2k-metal --lib \
++  local_sampled_color_batch_characterization -- --ignored --nocapture
++```
++
+ ## HTJ2K CPU comparator and WSI development run - 2026-10-20
+ 
+ This run checks the in-process OpenJPH and Grok integrations on pathology

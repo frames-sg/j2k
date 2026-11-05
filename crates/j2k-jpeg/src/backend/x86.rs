@@ -315,7 +315,7 @@ fn fill_rgb_row_pair_from_420_avx2(
 /// One visible row of fancy 4:2:0 chroma upsampling, bit-exact with
 /// [`crate::color::upsample::upsample_h2v2_fancy_row`]: the shared row
 /// driver handles the edges and [`h2v2_fancy_pairs`] the interior.
-pub(super) fn upsample_h2v2_row(
+fn upsample_h2v2_row(
     avx2: ExactAvx2,
     near: &[u8],
     curr: &[u8],

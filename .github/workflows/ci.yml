@@ -26,6 +26,7 @@ jobs:
       metal: ${{ steps.plan.outputs.metal }}
       metal_compile: ${{ steps.plan.outputs.metal_compile }}
       public_api: ${{ steps.plan.outputs.public_api }}
+      c_api: ${{ steps.plan.outputs.c_api }}
       expectations: ${{ steps.plan.outputs.expectations }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -167,6 +168,65 @@ jobs:
       - run: cargo xtask stable-api
       - run: cargo xtask semver
 
+  c-api:
+    name: C/C++ API (${{ matrix.os }})
+    needs: [planner]
+    if: ${{ needs.planner.outputs.c_api == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: "1.99.0"
+      - run: cargo test -p j2k-c --locked
+      - run: python3 crates/j2k-c/scripts/package.py --output dist/j2k-c
+      - name: Inspect the packaged shared library
+        shell: bash
+        run: |
+          set -euo pipefail
+          abi=$(sed -En 's/^pub const J2K_ABI_VERSION: u32 = ([0-9]+);$/\1/p' crates/j2k-c/src/abi.rs)
+          test -n "$abi"
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            lib="dist/j2k-c/lib/libj2k.so.$abi"
+            readelf -d "$lib" | grep -F "Library soname: [libj2k.so.$abi]"
+            test "$(readlink dist/j2k-c/lib/libj2k.so)" = "libj2k.so.$abi"
+            nm -D --defined-only "$lib"
+            echo "Newest required glibc symbol version (package floor):"
+            objdump -T "$lib" | grep -o 'GLIBC_[0-9][0-9.]*' | sort -uV | tail -n 1
+            ldd --version | head -n 1
+          else
+            lib="dist/j2k-c/lib/libj2k.$abi.dylib"
+            test "$(otool -D "$lib" | tail -n 1)" = "@rpath/libj2k.$abi.dylib"
+            otool -L "$lib" | grep -F "@rpath/libj2k.$abi.dylib (compatibility version $abi.0.0,"
+            test "$(readlink dist/j2k-c/lib/libj2k.dylib)" = "libj2k.$abi.dylib"
+            nm -gU "$lib"
+            otool -l "$lib" | grep -A4 LC_BUILD_VERSION
+          fi
+          if strings "$lib" | grep -F "$HOME/"; then
+            echo "::error::$lib embeds runner-local paths"
+            exit 1
+          fi
+      - name: Test a relocated package from C and C++
+        shell: bash
+        run: |
+          set -euo pipefail
+          mv dist/j2k-c "dist/relocated package"
+          cargo run -p j2k-c --locked --example make_fixture -- target/fixture.j2c
+          cmake -S crates/j2k-c/native/tests -B target/native-tests -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$PWD/dist/relocated package" -DJ2K_FIXTURE="$PWD/target/fixture.j2c"
+          cmake --build target/native-tests
+          ctest --test-dir target/native-tests --output-on-failure
+          cmake -S "dist/relocated package/examples" -B target/examples -DCMAKE_PREFIX_PATH="$PWD/dist/relocated package"
+          cmake --build target/examples
+          target/examples/j2k_decode target/fixture.j2c
+          target/examples/j2k_decode_cpp target/fixture.j2c
+
   gpu-evidence:
     name: GPU evidence policy
     needs: [planner]
@@ -219,6 +279,7 @@ jobs:
       - docs
       - metal-compile
       - public-api
+      - c-api
       - gpu-evidence
     runs-on: ubuntu-latest
     env:

@@ -23,6 +23,7 @@ mod contract_tests;
 mod direct_api;
 mod native;
 mod output_api;
+pub use self::output_api::RegionRowsBlocker;
 #[cfg(feature = "std")]
 pub(crate) mod packet_directory;
 use self::allocation::retained_metadata_bytes;
@@ -420,6 +421,32 @@ impl<'a> Image<'a> {
     #[must_use]
     pub fn height(&self) -> u32 {
         self.header.size_data.image_height()
+    }
+
+    /// The image area's offset on the full-resolution reference grid
+    /// (`XOsiz`, `YOsiz`). A reduction by `s` spans
+    /// `[ceil(origin / s), ceil(extent / s))` on each axis, so an origin that
+    /// is not a multiple of `s` can make the image one sample narrower than
+    /// `ceil(size / s)`.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn image_origin(&self) -> (u32, u32) {
+        (
+            self.header.size_data.image_area_x_offset,
+            self.header.size_data.image_area_y_offset,
+        )
+    }
+
+    /// The tile grid's offset on the full-resolution reference grid
+    /// (`XTOsiz`, `YTOsiz`) and its nominal tile size (`XTsiz`, `YTsiz`).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn tile_grid(&self) -> ((u32, u32), (u32, u32)) {
+        let size = &self.header.size_data;
+        (
+            (size.tile_x_offset, size.tile_y_offset),
+            (size.tile_width, size.tile_height),
+        )
     }
 
     /// Whether the main header's default coding style selects HT block coding.

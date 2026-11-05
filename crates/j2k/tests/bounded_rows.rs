@@ -32,6 +32,11 @@ fn noisy_samples(components: u32, bit_depth: u8) -> Vec<u8> {
         return (0..samples).map(|_| (next() >> 24) as u8).collect();
     }
     let max = (1_u32 << bit_depth) - 1;
+    if bit_depth > 16 {
+        return (0..samples)
+            .flat_map(|_| (next() % (max + 1)).to_le_bytes())
+            .collect();
+    }
     (0..samples)
         .flat_map(|_| {
             u16::try_from(next() % (max + 1))
@@ -250,6 +255,7 @@ fn fixtures() -> Vec<Fixture> {
             wide: true,
             streams: false,
         },
+        deep_fixture(&base),
         // No wavelet levels to stream through.
         Fixture {
             name: "rgb without decomposition levels",
@@ -266,6 +272,18 @@ fn fixtures() -> Vec<Fixture> {
             streams: false,
         },
     ]
+}
+
+/// Deeper than 24 bits: exact integer samples, decoded whole once and handed
+/// over a stripe at a time.
+fn deep_fixture(base: &EncodeOptions) -> Fixture {
+    Fixture {
+        name: "gray 29-bit 5/3",
+        bytes: codestream(1, 29, base),
+        components: 1,
+        wide: true,
+        streams: false,
+    }
 }
 
 fn parallelisms() -> [(&'static str, CpuDecodeParallelism, usize); 4] {
@@ -406,4 +424,78 @@ fn a_codestream_that_fails_before_its_rows_hands_over_none_and_reports_the_decod
             }
         });
     }
+}
+
+/// The plans name the route each decode takes, as the fixtures declare it,
+/// and the first reason a decode's rows cannot stream.
+#[test]
+fn decode_plans_name_each_route_and_why_rows_cannot_stream() {
+    use j2k::{J2kDecodeRoute as Route, J2kStreamingBlocker as Blocker};
+    let blocker_of = |name: &str| match name {
+        "rgb tiles side by side" => Some(Blocker::TilesSideBySide),
+        "rgba with channel definition" => Some(Blocker::ChannelDefinitions),
+        "gray 29-bit 5/3" => Some(Blocker::PrecisionAbove24Bits),
+        "rgb without decomposition levels" => Some(Blocker::NoDecompositionLevels),
+        _ => None,
+    };
+    for fixture in fixtures() {
+        let mut decoder = J2kDecoder::new(&fixture.bytes).expect("decoder");
+        let rows = decoder.rows_decode_plan().expect("rows plan");
+        let expected_route = match (fixture.streams, fixture.name) {
+            (true, _) => Route::StreamedRows,
+            (false, "gray 29-bit 5/3") => Route::WholeImageThenRows,
+            (false, _) => Route::StripeRegions,
+        };
+        assert_eq!(rows.route, expected_route, "{}: rows route", fixture.name);
+        assert_eq!(
+            rows.blocker,
+            blocker_of(fixture.name),
+            "{}: rows blocker",
+            fixture.name
+        );
+
+        // A full-image decode keeps the planes while they fit, whatever
+        // keeps rows from streaming, and streams every image whose region
+        // decode can when the planes are held to nothing.
+        let fmt = fmt_for(fixture.components, false);
+        decoder.set_full_decode_planes_budget(usize::MAX);
+        let planes = decoder.full_decode_plan(fmt).expect("planes plan");
+        assert_eq!(
+            planes.route,
+            Route::Planes,
+            "{}: planes route",
+            fixture.name
+        );
+        decoder.set_full_decode_planes_budget(0);
+        let full = decoder.full_decode_plan(fmt).expect("full plan");
+        // Only the rows decode needs decomposition levels to stream whole.
+        let region_blocker = match fixture.name {
+            "rgba with channel definition" => Some(Blocker::ChannelDefinitions),
+            "gray 29-bit 5/3" => Some(Blocker::PrecisionAbove24Bits),
+            _ => None,
+        };
+        assert_eq!(
+            full.blocker, region_blocker,
+            "{}: full blocker",
+            fixture.name
+        );
+        assert_eq!(
+            full.route == Route::Planes,
+            region_blocker.is_some(),
+            "{}: full route {:?}",
+            fixture.name,
+            full.route
+        );
+        assert_eq!(
+            planes.blocker, region_blocker,
+            "{}: planes blocker",
+            fixture.name
+        );
+    }
+
+    let mut odd_origin =
+        J2kDecoder::new(j2k_test_support::OPENJPEG_ORIGIN_23X17_AT_3_5).expect("decoder");
+    let rows = odd_origin.rows_decode_plan().expect("rows plan");
+    assert_eq!(rows.route, Route::StripeRegions);
+    assert_eq!(rows.blocker, Some(Blocker::GridOffset));
 }

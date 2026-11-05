@@ -1,0 +1,1259 @@
+diff --git a/crates/j2k-compare/src/bin/jp2k_batch_compare.rs b/crates/j2k-compare/src/bin/jp2k_batch_compare.rs
+index 9a628b6..474fada 100644
+--- a/crates/j2k-compare/src/bin/jp2k_batch_compare.rs
++++ b/crates/j2k-compare/src/bin/jp2k_batch_compare.rs
+@@ -379,10 +379,10 @@ fn decode_once(
+     workers: Option<NonZeroUsize>,
+     decoder: Option<ExternalDecoder>,
+ ) -> Result<usize, String> {
+-    decoder.map_or_else(
+-        || decode_j2k_once(tiles, tiles[0].format, workers),
+-        |decoder| decode_external_once(tiles, workers, decoder),
+-    )
++    match decoder {
++        Some(decoder) => decode_external_once(tiles, workers, decoder),
++        None => decode_j2k_once(tiles, tiles[0].format, workers),
++    }
+ }
+ 
+ fn decode_j2k_once(
+diff --git a/crates/j2k-cuda-runtime/src/memory/pinned_staging/tests.rs b/crates/j2k-cuda-runtime/src/memory/pinned_staging/tests.rs
+index 2a9e241..bea9191 100644
+--- a/crates/j2k-cuda-runtime/src/memory/pinned_staging/tests.rs
++++ b/crates/j2k-cuda-runtime/src/memory/pinned_staging/tests.rs
+@@ -39,7 +39,6 @@ fn poisoned_pool_retains_returned_raw_allocation_wrapper() {
+         Err(poisoned) => poisoned.into_inner(),
+     };
+     let diagnostics = retained.diagnostics().expect("inspect retained staging");
+-    drop(retained);
+     assert_eq!(diagnostics.cached_buffers, 0);
+     assert_eq!(diagnostics.cached_bytes, 0);
+     assert_eq!(diagnostics.uncertain_buffers, 1);
+@@ -121,5 +120,4 @@ fn abandoned_or_unwound_checkout_uses_prepared_quarantine_and_fails_closed() {
+         pool.take_best_fit(1),
+         Err(CudaError::StatePoisoned { .. })
+     ));
+-    drop(pool);
+ }
+diff --git a/crates/j2k-cuda/benches/auto_routing/decode.rs b/crates/j2k-cuda/benches/auto_routing/decode.rs
+index 5dfd350..85bcbc2 100644
+--- a/crates/j2k-cuda/benches/auto_routing/decode.rs
++++ b/crates/j2k-cuda/benches/auto_routing/decode.rs
+@@ -45,10 +45,6 @@ impl<'a> DecodeCase<'a> {
+     }
+ }
+ 
+-#[expect(
+-    clippy::significant_drop_tightening,
+-    reason = "Criterion's `BenchmarkGroup::finish` consumes each group at its last use"
+-)]
+ pub(crate) fn bench_cell(
+     criterion: &mut Criterion,
+     case: &DecodeCase<'_>,
+diff --git a/crates/j2k-cuda/benches/auto_routing/encode.rs b/crates/j2k-cuda/benches/auto_routing/encode.rs
+index 352a9f3..753fee3 100644
+--- a/crates/j2k-cuda/benches/auto_routing/encode.rs
++++ b/crates/j2k-cuda/benches/auto_routing/encode.rs
+@@ -18,10 +18,6 @@ use crate::assert_output_parity;
+ 
+ type EncodeCase = AutoRoutingPnm;
+ 
+-#[expect(
+-    clippy::significant_drop_tightening,
+-    reason = "Criterion's `BenchmarkGroup::finish` consumes each group at its last use"
+-)]
+ pub(crate) fn bench_cell(
+     criterion: &mut Criterion,
+     case: &EncodeCase,
+diff --git a/crates/j2k-cuda/benches/auto_routing/runner.rs b/crates/j2k-cuda/benches/auto_routing/runner.rs
+index b18f568..3f40624 100644
+--- a/crates/j2k-cuda/benches/auto_routing/runner.rs
++++ b/crates/j2k-cuda/benches/auto_routing/runner.rs
+@@ -55,7 +55,6 @@ pub(crate) fn run() {
+         }
+     }
+     criterion.final_summary();
+-    drop(criterion);
+ 
+     let evidence = AutoRoutingEvidence {
+         schema_version: workloads.manifest.schema_version,
+diff --git a/crates/j2k-cuda/benches/encode_stages.rs b/crates/j2k-cuda/benches/encode_stages.rs
+index af1419a..91c398d 100644
+--- a/crates/j2k-cuda/benches/encode_stages.rs
++++ b/crates/j2k-cuda/benches/encode_stages.rs
+@@ -6,10 +6,6 @@ use j2k_cuda::CudaEncodeStageAccelerator;
+ 
+ const BENCH_DIMS: &[u32] = &[512, 1024, 2048];
+ 
+-#[expect(
+-    clippy::significant_drop_tightening,
+-    reason = "Criterion's `BenchmarkGroup::finish` consumes each group at its last use"
+-)]
+ fn bench_encode_stages(c: &mut Criterion) {
+     let cuda_available = cuda_encode_available();
+ 
+diff --git a/crates/j2k-cuda/src/decoder/color_batch/batch_execution/execution.rs b/crates/j2k-cuda/src/decoder/color_batch/batch_execution/execution.rs
+index 545d39d..01d3933 100644
+--- a/crates/j2k-cuda/src/decoder/color_batch/batch_execution/execution.rs
++++ b/crates/j2k-cuda/src/decoder/color_batch/batch_execution/execution.rs
+@@ -720,19 +720,13 @@ fn upload_color_batch_resources(
+     let payload_upload_start = profile::profile_now(collect_stage_timings);
+     // Preparation rebased block offsets onto this back-to-back layout.
+     let engine = J2kCudaEngine::new(context);
+-    let resources = table_resources
+-        .as_ref()
+-        .map_or_else(
+-            || engine.upload_j2k_decode_payload_with_pool(payload_parts, pool),
+-            |tables| {
+-                engine.upload_htj2k_decode_resources_with_tables_and_pool(
+-                    payload_parts,
+-                    tables,
+-                    pool,
+-                )
+-            },
+-        )
+-        .map_err(cuda_error)?;
++    let resources = match table_resources.as_ref() {
++        Some(tables) => {
++            engine.upload_htj2k_decode_resources_with_tables_and_pool(payload_parts, tables, pool)
++        }
++        None => engine.upload_j2k_decode_payload_with_pool(payload_parts, pool),
++    }
++    .map_err(cuda_error)?;
+     Ok(UploadedColorResources {
+         resources: ColorBatchDecodeResources::Uploaded(resources),
+         table_upload_us,
+diff --git a/crates/j2k-cuda/src/decoder/grayscale_batch/execution.rs b/crates/j2k-cuda/src/decoder/grayscale_batch/execution.rs
+index dc5cb0d..9b23256 100644
+--- a/crates/j2k-cuda/src/decoder/grayscale_batch/execution.rs
++++ b/crates/j2k-cuda/src/decoder/grayscale_batch/execution.rs
+@@ -140,19 +140,13 @@ fn upload_grayscale_decode_resources(
+     let mut payload_parts = payload_budget.try_vec_with_capacity(prepared.payload_parts.len())?;
+     payload_parts.extend(prepared.payload_parts.iter().map(Vec::as_slice));
+     let engine = J2kCudaEngine::new(&context);
+-    let resources = tables
+-        .as_ref()
+-        .map_or_else(
+-            || engine.upload_j2k_decode_payload_with_pool(&payload_parts, &pool),
+-            |tables| {
+-                engine.upload_htj2k_decode_resources_with_tables_and_pool(
+-                    &payload_parts,
+-                    tables,
+-                    &pool,
+-                )
+-            },
+-        )
+-        .map_err(cuda_error)?;
++    let resources = match tables.as_ref() {
++        Some(tables) => {
++            engine.upload_htj2k_decode_resources_with_tables_and_pool(&payload_parts, tables, &pool)
++        }
++        None => engine.upload_j2k_decode_payload_with_pool(&payload_parts, &pool),
++    }
++    .map_err(cuda_error)?;
+     Ok((
+         resources,
+         table_upload_us,
+diff --git a/crates/j2k-cuda/src/decoder/resident/component.rs b/crates/j2k-cuda/src/decoder/resident/component.rs
+index f590e5d..fda052d 100644
+--- a/crates/j2k-cuda/src/decoder/resident/component.rs
++++ b/crates/j2k-cuda/src/decoder/resident/component.rs
+@@ -29,12 +29,11 @@ pub(super) fn decode_cuda_component_plan(
+ ) -> Result<CudaDecodedComponent, Error> {
+     let resource_upload_start = profile::profile_now(collect_stage_timings);
+     let engine = J2kCudaEngine::new(context);
+-    let decode_resources = tables
+-        .map_or_else(
+-            || engine.upload_j2k_decode_payload(plan.payload()),
+-            |tables| engine.upload_htj2k_decode_resources_with_tables(plan.payload(), tables),
+-        )
+-        .map_err(cuda_error)?;
++    let decode_resources = match tables {
++        Some(tables) => engine.upload_htj2k_decode_resources_with_tables(plan.payload(), tables),
++        None => engine.upload_j2k_decode_payload(plan.payload()),
++    }
++    .map_err(cuda_error)?;
+     let resource_upload_us = profile::elapsed_us(resource_upload_start);
+     let mut component = decode_cuda_component_plan_with_resources(
+         context,
+diff --git a/crates/j2k-cuda/src/encode/tests/routing.rs b/crates/j2k-cuda/src/encode/tests/routing.rs
+index 485d43e..74b24a8 100644
+--- a/crates/j2k-cuda/src/encode/tests/routing.rs
++++ b/crates/j2k-cuda/src/encode/tests/routing.rs
+@@ -192,38 +192,34 @@ fn cuda_auto_host_output_lossy_matches_cpu_for_rgb_fixture_when_runtime_required
+         return;
+     }
+ 
+-    let (pixels, width, height, components) = std::env::var_os("J2K_CUDA_LOSSY_PARITY_PNM")
+-        .map_or_else(
+-            || {
+-                const WIDTH: u32 = 640;
+-                const HEIGHT: u32 = 480;
+-                let pixels = (0u32..WIDTH * HEIGHT)
+-                    .flat_map(|index| {
+-                        let x = index % WIDTH;
+-                        let y = index / WIDTH;
+-                        [
+-                            u8::try_from((x * 17 + y * 31 + index / 7) & 0xFF)
+-                                .expect("masked red sample fits u8"),
+-                            u8::try_from((x * 11 + y * 47 + index / 13) & 0xFF)
+-                                .expect("masked green sample fits u8"),
+-                            u8::try_from((x * 43 + y * 5 + index / 29) & 0xFF)
+-                                .expect("masked blue sample fits u8"),
+-                        ]
+-                    })
+-                    .collect();
+-                (pixels, WIDTH, HEIGHT, 3)
+-            },
+-            |path| {
+-                let image =
+-                    j2k_test_support::read_pnm_image(path).expect("read parity PNM fixture");
+-                (
+-                    image.pixels,
+-                    image.width,
+-                    image.height,
+-                    u16::try_from(image.channels).expect("PNM component count fits u16"),
+-                )
+-            },
+-        );
++    let (pixels, width, height, components) =
++        if let Some(path) = std::env::var_os("J2K_CUDA_LOSSY_PARITY_PNM") {
++            let image = j2k_test_support::read_pnm_image(path).expect("read parity PNM fixture");
++            (
++                image.pixels,
++                image.width,
++                image.height,
++                u16::try_from(image.channels).expect("PNM component count fits u16"),
++            )
++        } else {
++            const WIDTH: u32 = 640;
++            const HEIGHT: u32 = 480;
++            let pixels = (0u32..WIDTH * HEIGHT)
++                .flat_map(|index| {
++                    let x = index % WIDTH;
++                    let y = index / WIDTH;
++                    [
++                        u8::try_from((x * 17 + y * 31 + index / 7) & 0xFF)
++                            .expect("masked red sample fits u8"),
++                        u8::try_from((x * 11 + y * 47 + index / 13) & 0xFF)
++                            .expect("masked green sample fits u8"),
++                        u8::try_from((x * 43 + y * 5 + index / 29) & 0xFF)
++                            .expect("masked blue sample fits u8"),
++                    ]
++                })
++                .collect();
++            (pixels, WIDTH, HEIGHT, 3)
++        };
+     let samples = || {
+         J2kLossySamples::new(&pixels, width, height, components, 8, false)
+             .expect("valid RGB8 samples")
+diff --git a/crates/j2k-jpeg-cuda/benches/device_decode.rs b/crates/j2k-jpeg-cuda/benches/device_decode.rs
+index 3626037..9858f23 100644
+--- a/crates/j2k-jpeg-cuda/benches/device_decode.rs
++++ b/crates/j2k-jpeg-cuda/benches/device_decode.rs
+@@ -22,10 +22,6 @@ const DEFAULT_BATCH_DIM: u16 = 1024;
+ #[cfg(feature = "cuda-runtime")]
+ const DEFAULT_BATCH_SIZE: usize = 64;
+ 
+-#[expect(
+-    clippy::significant_drop_tightening,
+-    reason = "Criterion's `BenchmarkGroup::finish` consumes the group at its last use"
+-)]
+ fn bench_device_decode(c: &mut Criterion) {
+     let input = bench_input();
+     let mut group = c.benchmark_group("jpeg_cuda_device_decode");
+diff --git a/crates/j2k-jpeg-metal/benches/compare.rs b/crates/j2k-jpeg-metal/benches/compare.rs
+index e279b52..e349aff 100644
+--- a/crates/j2k-jpeg-metal/benches/compare.rs
++++ b/crates/j2k-jpeg-metal/benches/compare.rs
+@@ -940,10 +940,6 @@ fn metal_available() -> bool {
+     }
+ }
+ 
+-#[expect(
+-    clippy::significant_drop_tightening,
+-    reason = "each Criterion group is consumed by `finish()`, which the lint does not treat as a drop"
+-)]
+ fn bench_full_and_tile_decode_groups(c: &mut Criterion, inputs: &[BenchInput], has_metal: bool) {
+     let mut decode_rgb = c.benchmark_group("decode_rgb");
+     for input in inputs.iter().filter(|input| {
+@@ -1215,10 +1211,6 @@ fn bench_retained_single_decode(c: &mut Criterion, has_metal: bool) {
+ #[cfg(not(target_os = "macos"))]
+ fn bench_retained_single_decode(_c: &mut Criterion, _has_metal: bool) {}
+ 
+-#[expect(
+-    clippy::significant_drop_tightening,
+-    reason = "each Criterion group is consumed by `finish()`, which the lint does not treat as a drop"
+-)]
+ fn bench_region_and_scaled_decode_groups(
+     c: &mut Criterion,
+     inputs: &[BenchInput],
+@@ -1300,10 +1292,6 @@ fn bench_region_and_scaled_decode_groups(
+     wsi_region_scaled_rgb_q8.finish();
+ }
+ 
+-#[expect(
+-    clippy::significant_drop_tightening,
+-    reason = "each Criterion group is consumed by `finish()`, which the lint does not treat as a drop"
+-)]
+ fn bench_scaled_tile_batch_groups(
+     c: &mut Criterion,
+     inputs: &[BenchInput],
+@@ -1395,10 +1383,6 @@ fn bench_scaled_tile_batch_groups(
+     wsi_tile_batch_region_scaled_distinct_rgb_q4.finish();
+ }
+ 
+-#[expect(
+-    clippy::significant_drop_tightening,
+-    reason = "each Criterion group is consumed by `finish()`, which the lint does not treat as a drop"
+-)]
+ fn bench_cold_viewport_groups(c: &mut Criterion, inputs: &[BenchInput], has_metal: bool) {
+     let mut viewer_region_scaled_composite_rgb =
+         c.benchmark_group("viewer_region_scaled_composite_rgb");
+@@ -1552,10 +1536,6 @@ fn bench_warm_viewport_device_group(c: &mut Criterion, inputs: &[BenchInput], ha
+     viewer_region_scaled_composite_rgb_device_warm.finish();
+ }
+ 
+-#[expect(
+-    clippy::significant_drop_tightening,
+-    reason = "each Criterion group is consumed by `finish()`, which the lint does not treat as a drop"
+-)]
+ fn bench_contiguous_viewport_groups(c: &mut Criterion, inputs: &[BenchInput], has_metal: bool) {
+     let mut viewer_contiguous_region_scaled_rgb =
+         c.benchmark_group("viewer_contiguous_region_scaled_rgb");
+@@ -1645,10 +1625,6 @@ fn bench_contiguous_viewport_groups(c: &mut Criterion, inputs: &[BenchInput], ha
+     viewer_contiguous_region_scaled_rgb_device.finish();
+ }
+ 
+-#[expect(
+-    clippy::significant_drop_tightening,
+-    reason = "each Criterion group is consumed by `finish()`, which the lint does not treat as a drop"
+-)]
+ fn bench_adaptive_viewport_groups(c: &mut Criterion, inputs: &[BenchInput]) {
+     let mut viewer_best_region_scaled_rgb_device =
+         c.benchmark_group("viewer_best_region_scaled_rgb_device");
+diff --git a/crates/j2k-jpeg-metal/benches/device_upload.rs b/crates/j2k-jpeg-metal/benches/device_upload.rs
+index bd5fd3d..8978d87 100644
+--- a/crates/j2k-jpeg-metal/benches/device_upload.rs
++++ b/crates/j2k-jpeg-metal/benches/device_upload.rs
+@@ -14,10 +14,6 @@ const DEFAULT_GENERATED_DIM: u16 = 2048;
+ const DEFAULT_BATCH_DIM: u16 = 1024;
+ const DEFAULT_BATCH_SIZE: usize = 64;
+ 
+-#[expect(
+-    clippy::significant_drop_tightening,
+-    reason = "the Criterion group is consumed by `finish()`, which the lint does not treat as a drop"
+-)]
+ fn bench_device_upload(c: &mut Criterion) {
+     let input = bench_input();
+     let mut group = c.benchmark_group("jpeg_metal_device");
+diff --git a/crates/j2k-jpeg-metal/benches/support/representative_matrix.rs b/crates/j2k-jpeg-metal/benches/support/representative_matrix.rs
+index f6ccbfa..43008df 100644
+--- a/crates/j2k-jpeg-metal/benches/support/representative_matrix.rs
++++ b/crates/j2k-jpeg-metal/benches/support/representative_matrix.rs
+@@ -16,10 +16,6 @@ use j2k_jpeg_metal::{
+ use jpeg_encoder::{ColorType, Encoder, SamplingFactor};
+ use std::hint::black_box;
+ 
+-#[expect(
+-    clippy::significant_drop_tightening,
+-    reason = "the Criterion group is consumed by `finish()`, which the lint does not treat as a drop"
+-)]
+ pub(super) fn bench(c: &mut Criterion) {
+     let mut group = c.benchmark_group("jpeg_metal_representative_matrix");
+     for side in [256_u16, 1024] {
+diff --git a/crates/j2k-jpeg-metal/src/session/tests/ledger/completions.rs b/crates/j2k-jpeg-metal/src/session/tests/ledger/completions.rs
+index ccdfbe6..97b038d 100644
+--- a/crates/j2k-jpeg-metal/src/session/tests/ledger/completions.rs
++++ b/crates/j2k-jpeg-metal/src/session/tests/ledger/completions.rs
+@@ -113,7 +113,6 @@ fn fully_waited_cpu_session_reuses_bounded_completion_state() {
+         assert!(state.completed.is_empty());
+         assert_eq!(state.completed_host_bytes(), 0);
+         let peak = state.peak_collective_host_bytes();
+-        drop(state);
+         if let Some(warmed_peak) = warmed_peak {
+             assert_eq!(peak, warmed_peak);
+         } else {
+diff --git a/crates/j2k-jpeg-metal/src/tile_batch.rs b/crates/j2k-jpeg-metal/src/tile_batch.rs
+index d8a68f4..2daa37e 100644
+--- a/crates/j2k-jpeg-metal/src/tile_batch.rs
++++ b/crates/j2k-jpeg-metal/src/tile_batch.rs
+@@ -183,6 +183,5 @@ mod tests {
+         let state = batch.session.shared.lock().expect("session state");
+         assert_eq!(state.queued.len(), 1);
+         assert!(SharedJpegInput::ptr_eq(&expected, &state.queued[0].input));
+-        drop(state);
+     }
+ }
+diff --git a/crates/j2k-jpeg-metal/tests/hybrid.rs b/crates/j2k-jpeg-metal/tests/hybrid.rs
+index c14ba8f..3325a53 100644
+--- a/crates/j2k-jpeg-metal/tests/hybrid.rs
++++ b/crates/j2k-jpeg-metal/tests/hybrid.rs
+@@ -30,22 +30,20 @@ fn downscale(denominator: u32) -> Downscale {
+ }
+ 
+ fn metal_request(request: DecodeRequest) -> MetalDecodeRequest {
+-    request.region.map_or_else(
+-        || MetalDecodeRequest::scaled(request.fmt, request.scale, BackendRequest::Metal),
+-        |roi| {
+-            MetalDecodeRequest::region_scaled(
+-                request.fmt,
+-                Rect {
+-                    x: roi.x,
+-                    y: roi.y,
+-                    w: roi.w,
+-                    h: roi.h,
+-                },
+-                request.scale,
+-                BackendRequest::Metal,
+-            )
+-        },
+-    )
++    match request.region {
++        None => MetalDecodeRequest::scaled(request.fmt, request.scale, BackendRequest::Metal),
++        Some(roi) => MetalDecodeRequest::region_scaled(
++            request.fmt,
++            Rect {
++                x: roi.x,
++                y: roi.y,
++                w: roi.w,
++                h: roi.h,
++            },
++            request.scale,
++            BackendRequest::Metal,
++        ),
++    }
+ }
+ 
+ fn first_difference(expected: &[u8], actual: &[u8]) -> Option<String> {
+diff --git a/crates/j2k-jpeg/benches/compare.rs b/crates/j2k-jpeg/benches/compare.rs
+index 6225282..9ea1155 100644
+--- a/crates/j2k-jpeg/benches/compare.rs
++++ b/crates/j2k-jpeg/benches/compare.rs
+@@ -33,10 +33,6 @@ use j2k_jpeg::{
+     clippy::too_many_lines,
+     reason = "this benchmark registry keeps the comparable codec cases in one ordered Criterion group"
+ )]
+-#[expect(
+-    clippy::significant_drop_tightening,
+-    reason = "each Criterion group is consumed by `finish()` right after its last use; the lint only recognizes `drop`"
+-)]
+ fn bench_compare(c: &mut Criterion) {
+     let inputs = load_bench_inputs();
+     if std::env::var_os("J2K_BENCH_VERIFY_OUTPUTS").is_some() {
+diff --git a/crates/j2k-jpeg/benches/corpus_report.rs b/crates/j2k-jpeg/benches/corpus_report.rs
+index 283dc4f..675f280 100644
+--- a/crates/j2k-jpeg/benches/corpus_report.rs
++++ b/crates/j2k-jpeg/benches/corpus_report.rs
+@@ -821,15 +821,14 @@ fn compare_measurements(lhs: &Measurement, rhs: &Measurement) -> Option<Ordering
+ }
+ 
+ fn format_measurement(measurement: &Measurement) -> String {
+-    measurement.ns.map_or_else(
+-        || {
+-            measurement
+-                .error
+-                .clone()
+-                .unwrap_or_else(|| "n/a".to_string())
+-        },
+-        format_ns,
+-    )
++    if let Some(ns) = measurement.ns {
++        format_ns(ns)
++    } else {
++        measurement
++            .error
++            .clone()
++            .unwrap_or_else(|| "n/a".to_string())
++    }
+ }
+ 
+ fn render_ns(measurement: &Measurement) -> String {
+diff --git a/crates/j2k-jpeg/benches/decode_cpu.rs b/crates/j2k-jpeg/benches/decode_cpu.rs
+index fce8196..e560388 100644
+--- a/crates/j2k-jpeg/benches/decode_cpu.rs
++++ b/crates/j2k-jpeg/benches/decode_cpu.rs
+@@ -295,10 +295,6 @@ fn decode_cases() -> Vec<DecodeCase> {
+     cases
+ }
+ 
+-#[expect(
+-    clippy::significant_drop_tightening,
+-    reason = "each Criterion group is consumed by `finish()` right after its last use; the lint only recognizes `drop`"
+-)]
+ fn bench_comparable_decode_routes(c: &mut Criterion) {
+     let cases = decode_cases();
+ 
+diff --git a/crates/j2k-jpeg/src/adapter/fast_packet/build/materialization.rs b/crates/j2k-jpeg/src/adapter/fast_packet/build/materialization.rs
+index 7638dd3..c4cb0cd 100644
+--- a/crates/j2k-jpeg/src/adapter/fast_packet/build/materialization.rs
++++ b/crates/j2k-jpeg/src/adapter/fast_packet/build/materialization.rs
+@@ -10,11 +10,12 @@ pub(super) fn scan_live_bytes(
+     initial_live_bytes: usize,
+     owned_capacity: Option<usize>,
+ ) -> Result<usize, FastPacketError> {
+-    owned_capacity.map_or(Ok(initial_live_bytes), |capacity| {
+-        checked_actual_vec_live_bytes::<u8>(
++    match owned_capacity {
++        None => Ok(initial_live_bytes),
++        Some(capacity) => checked_actual_vec_live_bytes::<u8>(
+             initial_live_bytes,
+             capacity,
+             DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+-        )
+-    })
++        ),
++    }
+ }
+diff --git a/crates/j2k-jpeg/src/decoder/core_traits.rs b/crates/j2k-jpeg/src/decoder/core_traits.rs
+index c355835..091b2d1 100644
+--- a/crates/j2k-jpeg/src/decoder/core_traits.rs
++++ b/crates/j2k-jpeg/src/decoder/core_traits.rs
+@@ -164,14 +164,12 @@ impl<'a> ImageDecodeRows<'a, u8> for Decoder<'a> {
+         };
+         match Decoder::decode_rows(self, &mut adapter) {
+             Ok(outcome) => Ok(core_outcome(outcome)),
+-            Err(JpegError::RowSinkAborted) => Err(adapter.sink_error.map_or_else(
+-                || {
+-                    DecodeRowsError::Decode(JpegError::InternalInvariant {
+-                        reason: "row sink abort stores the original sink error",
+-                    })
+-                },
+-                DecodeRowsError::Sink,
+-            )),
++            Err(JpegError::RowSinkAborted) => match adapter.sink_error {
++                Some(err) => Err(DecodeRowsError::Sink(err)),
++                None => Err(DecodeRowsError::Decode(JpegError::InternalInvariant {
++                    reason: "row sink abort stores the original sink error",
++                })),
++            },
+             Err(err) => Err(DecodeRowsError::Decode(err)),
+         }
+     }
+diff --git a/crates/j2k-jpeg/src/encoder/entropy.rs b/crates/j2k-jpeg/src/encoder/entropy.rs
+index 814eb51..f7faf47 100644
+--- a/crates/j2k-jpeg/src/encoder/entropy.rs
++++ b/crates/j2k-jpeg/src/encoder/entropy.rs
+@@ -428,13 +428,6 @@ fn encode_entropy_mcu_range_into_mode<
+             };
+             let ac_table = packed_huffman.ac[table_index];
+             let mut block_storage;
+-            #[cfg_attr(
+-                not(all(target_arch = "aarch64", not(feature = "scalar-only"))),
+-                expect(
+-                    clippy::option_if_let_else,
+-                    reason = "the compact-plane fallback initializes the deferred `block_storage` and returns a borrow of it, which a closure cannot do"
+-                )
+-            )]
+             let block = if BLOCK_PLANES && !COMPACT_BLOCK_PLANES {
+                 debug_assert!(matches!(
+                     MODE,
+diff --git a/crates/j2k-jpeg/src/encoder/sample_planes.rs b/crates/j2k-jpeg/src/encoder/sample_planes.rs
+index 4096818..363d7b1 100644
+--- a/crates/j2k-jpeg/src/encoder/sample_planes.rs
++++ b/crates/j2k-jpeg/src/encoder/sample_planes.rs
+@@ -1789,10 +1789,6 @@ mod tests {
+                             for block_y in 0..sampling.v[component] {
+                                 for block_x in 0..sampling.h[component] {
+                                     let mut scratch = [0u8; 64];
+-                                    #[expect(
+-                                        clippy::option_if_let_else,
+-                                        reason = "the edge fallback fills `scratch` and returns a borrow of it, which a closure cannot do"
+-                                    )]
+                                     let actual = if block_layout_444
+                                         || block_layout_422
+                                         || block_layout_420
+diff --git a/crates/j2k-jpeg/src/encoder/transform.rs b/crates/j2k-jpeg/src/encoder/transform.rs
+index ff1bbc6..bf79a7d 100644
+--- a/crates/j2k-jpeg/src/encoder/transform.rs
++++ b/crates/j2k-jpeg/src/encoder/transform.rs
+@@ -229,13 +229,12 @@ pub(super) fn fdct_quantize(
+     let is_constant = prefix == prefix.rotate_right(8) && {
+         #[cfg(target_arch = "aarch64")]
+         {
+-            divisors.neon.map_or_else(
+-                || {
+-                    let first = block[0];
+-                    block[8..].iter().all(|&sample| sample == first)
+-                },
+-                |neon| neon::is_constant_block(neon, block),
+-            )
++            if let Some(neon) = divisors.neon {
++                neon::is_constant_block(neon, block)
++            } else {
++                let first = block[0];
++                block[8..].iter().all(|&sample| sample == first)
++            }
+         }
+         #[cfg(not(target_arch = "aarch64"))]
+         {
+diff --git a/crates/j2k-jpeg/src/entropy/sequential/emit/upsample.rs b/crates/j2k-jpeg/src/entropy/sequential/emit/upsample.rs
+index 04bb8be..445c2bc 100644
+--- a/crates/j2k-jpeg/src/entropy/sequential/emit/upsample.rs
++++ b/crates/j2k-jpeg/src/entropy/sequential/emit/upsample.rs
+@@ -76,10 +76,10 @@ pub(in crate::entropy::sequential) fn component_row_triplet<'a>(
+         "only the final stripe may end before its padded height"
+     );
+     let prev_row = if local_row == 0 {
+-        prev.map_or_else(
+-            || plane_row(curr, 0),
+-            |plane| plane_row(plane, plane.rows - 1),
+-        )
++        match prev {
++            Some(plane) => plane_row(plane, plane.rows - 1),
++            None => plane_row(curr, 0),
++        }
+     } else {
+         plane_row(curr, local_row - 1)
+     };
+@@ -87,10 +87,10 @@ pub(in crate::entropy::sequential) fn component_row_triplet<'a>(
+     let next_row = if local_row + 1 < curr_rows {
+         plane_row(curr, local_row + 1)
+     } else {
+-        next.map_or_else(
+-            || plane_row(curr, curr_rows - 1),
+-            |plane| plane_row(plane, 0),
+-        )
++        match next {
++            Some(plane) => plane_row(plane, 0),
++            None => plane_row(curr, curr_rows - 1),
++        }
+     };
+     (prev_row, curr_row, next_row)
+ }
+diff --git a/crates/j2k-jpeg/src/entropy/sequential/stripe.rs b/crates/j2k-jpeg/src/entropy/sequential/stripe.rs
+index 9313cea..9ebb076 100644
+--- a/crates/j2k-jpeg/src/entropy/sequential/stripe.rs
++++ b/crates/j2k-jpeg/src/entropy/sequential/stripe.rs
+@@ -185,10 +185,9 @@ impl StripeBuffer {
+             || layout.plane_lens[..n]
+                 .iter()
+                 .enumerate()
+-                .any(|(index, &target_len)| {
+-                    self.planes
+-                        .get(index)
+-                        .map_or(target_len != 0, |plane| plane.capacity() < target_len)
++                .any(|(index, &target_len)| match self.planes.get(index) {
++                    Some(plane) => plane.capacity() < target_len,
++                    None => target_len != 0,
+                 })
+     }
+ 
+diff --git a/crates/j2k-jpeg/src/parse/header/progressive/script.rs b/crates/j2k-jpeg/src/parse/header/progressive/script.rs
+index 7e5c00a..a572405 100644
+--- a/crates/j2k-jpeg/src/parse/header/progressive/script.rs
++++ b/crates/j2k-jpeg/src/parse/header/progressive/script.rs
+@@ -121,15 +121,16 @@ fn validate_transition(
+             al: scan.al,
+         })
+     };
+-    state.map_or(Ok(()), |state| {
+-        Err(script_error(
++    match state {
++        Some(state) => Err(script_error(
+             marker_offset,
+             0xda,
+             component,
+             coefficient,
+             state,
+-        ))
+-    })
++        )),
++        None => Ok(()),
++    }
+ }
+ 
+ fn script_error(
+diff --git a/crates/j2k-metal/benches/auto_routing/decode.rs b/crates/j2k-metal/benches/auto_routing/decode.rs
+index b90d091..0fdda98 100644
+--- a/crates/j2k-metal/benches/auto_routing/decode.rs
++++ b/crates/j2k-metal/benches/auto_routing/decode.rs
+@@ -49,10 +49,6 @@ impl<'a> DecodeCase<'a> {
+     }
+ }
+ 
+-#[expect(
+-    clippy::significant_drop_tightening,
+-    reason = "the Criterion group is consumed by `finish()`, which the lint does not treat as a drop"
+-)]
+ pub(crate) fn bench_cell(
+     criterion: &mut Criterion,
+     case: &DecodeCase<'_>,
+diff --git a/crates/j2k-metal/benches/auto_routing/encode.rs b/crates/j2k-metal/benches/auto_routing/encode.rs
+index e804fb8..4bb885c 100644
+--- a/crates/j2k-metal/benches/auto_routing/encode.rs
++++ b/crates/j2k-metal/benches/auto_routing/encode.rs
+@@ -21,10 +21,6 @@ type EncodeCase = AutoRoutingPnm;
+ 
+ const BATCH_SIZE: usize = 16;
+ 
+-#[expect(
+-    clippy::significant_drop_tightening,
+-    reason = "the Criterion group is consumed by `finish()`, which the lint does not treat as a drop"
+-)]
+ pub(crate) fn bench_cell(
+     criterion: &mut Criterion,
+     case: &EncodeCase,
+@@ -76,10 +72,6 @@ pub(crate) fn bench_cell(
+     route_cell(&case.id, operation, &group_id, auto_routing_sha256(&cpu))
+ }
+ 
+-#[expect(
+-    clippy::significant_drop_tightening,
+-    reason = "the Criterion group is consumed by `finish()`, which the lint does not treat as a drop"
+-)]
+ pub(crate) fn bench_batch_cell(criterion: &mut Criterion, case: &EncodeCase) -> AutoRoutingCell {
+     assert!(
+         case.codec.is_high_throughput(),
+diff --git a/crates/j2k-metal/benches/auto_routing/runner.rs b/crates/j2k-metal/benches/auto_routing/runner.rs
+index 966a018..e5f2e41 100644
+--- a/crates/j2k-metal/benches/auto_routing/runner.rs
++++ b/crates/j2k-metal/benches/auto_routing/runner.rs
+@@ -68,7 +68,6 @@ pub(crate) fn run() {
+         }
+     }
+     criterion.final_summary();
+-    drop(criterion);
+ 
+     let evidence = AutoRoutingEvidence {
+         schema_version: workloads.manifest.schema_version,
+diff --git a/crates/j2k-metal/benches/transform_stages.rs b/crates/j2k-metal/benches/transform_stages.rs
+index 3260e0f..8e7dff8 100644
+--- a/crates/j2k-metal/benches/transform_stages.rs
++++ b/crates/j2k-metal/benches/transform_stages.rs
+@@ -157,10 +157,6 @@ fn run_rgb_encode(
+ }
+ 
+ #[cfg(target_os = "macos")]
+-#[expect(
+-    clippy::significant_drop_tightening,
+-    reason = "the Criterion group is consumed by `finish()`, which the lint does not treat as a drop"
+-)]
+ fn bench_transform_stages(criterion: &mut Criterion) {
+     let samples = stage_samples();
+     let pixels = encode_pixels();
+diff --git a/crates/j2k-metal/src/batch_decoder/region_group_tests.rs b/crates/j2k-metal/src/batch_decoder/region_group_tests.rs
+index dc75e89..e7385b6 100644
+--- a/crates/j2k-metal/src/batch_decoder/region_group_tests.rs
++++ b/crates/j2k-metal/src/batch_decoder/region_group_tests.rs
+@@ -233,15 +233,15 @@ fn cropping_a_referenced_plan_drops_blocks_and_keeps_pixels() {
+             .expect("prepare whole image");
+         let image = &prepared.groups()[0].images()[0];
+         let surface = crate::engine::with_runtime_for_session(decoder.backend_session(), |_| {
+-            let mut plan = image.htj2k_plan().map_or_else(
+-                || {
+-                    crate::engine::prepare_referenced_classic_color_plan(
+-                        image.classic_plan().expect("classic plan").geometry(),
+-                        &bytes,
+-                    )
+-                },
+-                |plan| crate::engine::prepare_referenced_htj2k_color_plan(plan.geometry(), &bytes),
+-            )?;
++            let mut plan = match image.htj2k_plan() {
++                Some(plan) => {
++                    crate::engine::prepare_referenced_htj2k_color_plan(plan.geometry(), &bytes)
++                }
++                None => crate::engine::prepare_referenced_classic_color_plan(
++                    image.classic_plan().expect("classic plan").geometry(),
++                    &bytes,
++                ),
++            }?;
+             let (whole_jobs, _) = plan.jobs_for_test();
+             crate::engine::crop_prepared_direct_color_plan_to_output_region(&mut plan, roi)?;
+             let (cropped_jobs, _) = plan.jobs_for_test();
+diff --git a/crates/j2k-metal/src/decoder/direct_paths.rs b/crates/j2k-metal/src/decoder/direct_paths.rs
+index fa2165f..d42c7bf 100644
+--- a/crates/j2k-metal/src/decoder/direct_paths.rs
++++ b/crates/j2k-metal/src/decoder/direct_paths.rs
+@@ -336,16 +336,14 @@ impl J2kDecoder<'_> {
+                 reason: MetalDirectFallbackReason::UnsupportedPlan,
+             });
+         };
+-        session.map_or_else(
+-            || crate::engine::execute_repeated_prepared_direct_grayscale_plan(&plan, fmt, count),
+-            |session| {
+-                crate::engine::with_runtime_for_session(session, |_| {
+-                    crate::engine::execute_repeated_prepared_direct_grayscale_plan(
+-                        &plan, fmt, count,
+-                    )
+-                })
+-            },
+-        )
++        match session {
++            Some(session) => crate::engine::with_runtime_for_session(session, |_| {
++                crate::engine::execute_repeated_prepared_direct_grayscale_plan(&plan, fmt, count)
++            }),
++            None => {
++                crate::engine::execute_repeated_prepared_direct_grayscale_plan(&plan, fmt, count)
++            }
++        }
+     }
+ 
+     #[cfg(target_os = "macos")]
+@@ -518,14 +516,12 @@ pub(crate) fn decode_full_grayscale_batch_direct_to_device_routed(
+         };
+         plans.push(plan);
+     }
+-    session.map_or_else(
+-        || crate::engine::execute_prepared_direct_grayscale_plan_batch(&plans, fmt),
+-        |session| {
+-            crate::engine::with_runtime_for_session(session, |_| {
+-                crate::engine::execute_prepared_direct_grayscale_plan_batch(&plans, fmt)
+-            })
+-        },
+-    )
++    match session {
++        Some(session) => crate::engine::with_runtime_for_session(session, |_| {
++            crate::engine::execute_prepared_direct_grayscale_plan_batch(&plans, fmt)
++        }),
++        None => crate::engine::execute_prepared_direct_grayscale_plan_batch(&plans, fmt),
++    }
+ }
+ 
+ #[cfg(target_os = "macos")]
+@@ -562,14 +558,12 @@ pub(crate) fn decode_full_color_batch_direct_to_device_routed(
+         };
+         plans.push(plan);
+     }
+-    let result = session.map_or_else(
+-        || crate::engine::execute_prepared_direct_color_plan_batch(&plans, fmt),
+-        |session| {
+-            crate::engine::with_runtime_for_session(session, |_| {
+-                crate::engine::execute_prepared_direct_color_plan_batch(&plans, fmt)
+-            })
+-        },
+-    );
++    let result = match session {
++        Some(session) => crate::engine::with_runtime_for_session(session, |_| {
++            crate::engine::execute_prepared_direct_color_plan_batch(&plans, fmt)
++        }),
++        None => crate::engine::execute_prepared_direct_color_plan_batch(&plans, fmt),
++    };
+     match result {
+         Ok(surfaces) => Ok(surfaces),
+         Err(error) if is_direct_runtime_fallback_error(&error) => Err(Error::capability_rejected(
+diff --git a/crates/j2k-metal/src/engine/direct_grayscale_execute/sampled_color.rs b/crates/j2k-metal/src/engine/direct_grayscale_execute/sampled_color.rs
+index 9321f6c..c64e26c 100644
+--- a/crates/j2k-metal/src/engine/direct_grayscale_execute/sampled_color.rs
++++ b/crates/j2k-metal/src/engine/direct_grayscale_execute/sampled_color.rs
+@@ -117,10 +117,10 @@ pub(crate) fn decode_component_grid_color_batch(
+         complete_direct_color_batch_command(runtime, &command, false, &mut timings, &mut metadata)?;
+         Ok(surfaces)
+     };
+-    session.map_or_else(
+-        || with_runtime(execute),
+-        |session| with_runtime_for_session(session, execute),
+-    )
++    match session {
++        Some(session) => with_runtime_for_session(session, execute),
++        None => with_runtime(execute),
++    }
+ }
+ 
+ fn encode_sampled_plan(
+diff --git a/crates/j2k-metal/src/engine/reusable_heap.rs b/crates/j2k-metal/src/engine/reusable_heap.rs
+index 1dbdc9d..07f965e 100644
+--- a/crates/j2k-metal/src/engine/reusable_heap.rs
++++ b/crates/j2k-metal/src/engine/reusable_heap.rs
+@@ -72,7 +72,10 @@ impl ReusableHeap {
+         let buffer = heap_buffer(&grown, bytes)?;
+         *heap = Some(grown);
+         drop(heap);
+-        buffer.map_or_else(|| new_shared_buffer(device, bytes), Ok)
++        match buffer {
++            Some(buffer) => Ok(buffer),
++            None => new_shared_buffer(device, bytes),
++        }
+     }
+ 
+     /// The heap size that serves `bytes`: room for two such buffers when that
+@@ -119,10 +122,10 @@ impl<'a> HtInputAllocator<'a> {
+     }
+ 
+     pub(in crate::engine) fn shared_buffer(self, bytes: usize) -> Result<Buffer, Error> {
+-        self.heap.map_or_else(
+-            || new_shared_buffer(self.device, bytes),
+-            |heap| heap.allocate(self.device, bytes),
+-        )
++        match self.heap {
++            Some(heap) => heap.allocate(self.device, bytes),
++            None => new_shared_buffer(self.device, bytes),
++        }
+     }
+ 
+     pub(in crate::engine) fn copied_slice<T: GpuAbi>(self, values: &[T]) -> Result<Buffer, Error> {
+diff --git a/crates/j2k-metal/src/engine/tests/single_image_step_profile.rs b/crates/j2k-metal/src/engine/tests/single_image_step_profile.rs
+index 952d706..1e6fa19 100644
+--- a/crates/j2k-metal/src/engine/tests/single_image_step_profile.rs
++++ b/crates/j2k-metal/src/engine/tests/single_image_step_profile.rs
+@@ -109,26 +109,22 @@ fn single_image_step_profile() {
+         return;
+     }
+     let _restore = SingleStepsOnDrop;
+-    let images: Vec<(String, Vec<u8>)> = std::env::var_os("J2K_STEP_PROFILE_FILES").map_or_else(
+-        || {
+-            [(512, 512), (1024, 1024), (3072, 4096)]
+-                .into_iter()
+-                .map(|(width, height)| {
+-                    let reversible = std::env::var_os("J2K_STEP_PROFILE_LOSSY").is_none();
+-                    let label = format!("{width}x{height}{}", if reversible { "" } else { " 9/7" });
+-                    (label, gray16(width, height, reversible))
+-                })
+-                .collect()
+-        },
+-        |paths| {
+-            std::env::split_paths(&paths)
+-                .map(|path| {
+-                    let bytes = std::fs::read(&path).expect("read profile codestream");
+-                    (path.display().to_string(), bytes)
+-                })
+-                .collect()
+-        },
+-    );
++    let images: Vec<(String, Vec<u8>)> = match std::env::var_os("J2K_STEP_PROFILE_FILES") {
++        Some(paths) => std::env::split_paths(&paths)
++            .map(|path| {
++                let bytes = std::fs::read(&path).expect("read profile codestream");
++                (path.display().to_string(), bytes)
++            })
++            .collect(),
++        None => [(512, 512), (1024, 1024), (3072, 4096)]
++            .into_iter()
++            .map(|(width, height)| {
++                let reversible = std::env::var_os("J2K_STEP_PROFILE_LOSSY").is_none();
++                let label = format!("{width}x{height}{}", if reversible { "" } else { " 9/7" });
++                (label, gray16(width, height, reversible))
++            })
++            .collect(),
++    };
+     for (label, bytes) in &images {
+         let mut decoder = J2kDecoder::new(bytes).expect("parse profile codestream");
+         let destination = std::env::var_os("J2K_STEP_PROFILE_INTO").map(|_| {
+diff --git a/crates/j2k-metal/src/hybrid/batch.rs b/crates/j2k-metal/src/hybrid/batch.rs
+index 9483faf..d584a36 100644
+--- a/crates/j2k-metal/src/hybrid/batch.rs
++++ b/crates/j2k-metal/src/hybrid/batch.rs
+@@ -41,9 +41,10 @@ pub(crate) fn decode_region_scaled_grayscale_batch_direct_to_device_routed(
+         }
+         crate::engine::execute_prepared_direct_grayscale_plan_batch(&plans, fmt)
+     };
+-    session.map_or_else(decode, |session| {
+-        crate::engine::with_runtime_for_session(session, |_| decode())
+-    })
++    match session {
++        Some(session) => crate::engine::with_runtime_for_session(session, |_| decode()),
++        None => decode(),
++    }
+ }
+ 
+ #[cfg(test)]
+@@ -105,9 +106,10 @@ pub(crate) fn decode_region_scaled_color_batch_direct_to_device_routed(
+         };
+         crate::engine::execute_hybrid_cpu_tier1_direct_color_plan_batch(&plans, fmt)
+     };
+-    session.map_or_else(decode, |session| {
+-        crate::engine::with_runtime_for_session(session, |_| decode())
+-    })
++    match session {
++        Some(session) => crate::engine::with_runtime_for_session(session, |_| decode()),
++        None => decode(),
++    }
+ }
+ 
+ #[cfg(test)]
+@@ -161,9 +163,10 @@ pub(crate) fn decode_repeated_region_scaled_color_batch_direct_to_device_routed(
+             budget.try_filled(count, plan, "J2K Metal repeated region-scaled color plans")?;
+         crate::engine::execute_hybrid_cpu_tier1_direct_color_plan_batch(&plans, fmt)
+     };
+-    session.map_or_else(decode, |session| {
+-        crate::engine::with_runtime_for_session(session, |_| decode())
+-    })
++    match session {
++        Some(session) => crate::engine::with_runtime_for_session(session, |_| decode()),
++        None => decode(),
++    }
+ }
+ 
+ fn repeated_region_scaled_request(
+diff --git a/crates/j2k-metal/src/session.rs b/crates/j2k-metal/src/session.rs
+index d08ef91..18729ae 100644
+--- a/crates/j2k-metal/src/session.rs
++++ b/crates/j2k-metal/src/session.rs
+@@ -116,12 +116,13 @@ impl MetalBackendSession {
+     pub(crate) fn runtime(&self) -> Result<Arc<crate::engine::MetalRuntime>, Error> {
+         let command_queue = self.command_queue.clone();
+         match self.runtime_session.get_or_init_runtime(move |device| {
+-            command_queue
+-                .map_or_else(
+-                    || crate::engine::MetalRuntime::new_with_device(device),
+-                    |queue| crate::engine::MetalRuntime::new_with_device_and_queue(device, queue),
+-                )
+-                .map(Arc::new)
++            match command_queue {
++                Some(queue) => {
++                    crate::engine::MetalRuntime::new_with_device_and_queue(device, queue)
++                }
++                None => crate::engine::MetalRuntime::new_with_device(device),
++            }
++            .map(Arc::new)
+         }) {
+             Ok(runtime) => Ok(runtime.clone()),
+             Err(error) => Err(crate::engine::runtime_initialization_error(error)),
+diff --git a/crates/j2k-t803/src/runner/encoder/backend.rs b/crates/j2k-t803/src/runner/encoder/backend.rs
+index 39b5c76..921e578 100644
+--- a/crates/j2k-t803/src/runner/encoder/backend.rs
++++ b/crates/j2k-t803/src/runner/encoder/backend.rs
+@@ -207,23 +207,22 @@ fn encode_cpu_lossless(
+                 case.signed,
+             )
+             .map_err(|error| error.to_string())?;
+-            case.roi.map_or_else(
+-                || encode_j2k_lossless(samples, &options),
+-                |roi| {
+-                    encode_j2k_lossless_with_roi_regions(
+-                        samples,
+-                        &options,
+-                        &[J2kRoiRegion {
+-                            component: roi.component,
+-                            x: roi.x,
+-                            y: roi.y,
+-                            width: roi.width,
+-                            height: roi.height,
+-                            shift: roi.shift,
+-                        }],
+-                    )
+-                },
+-            )
++            if let Some(roi) = case.roi {
++                encode_j2k_lossless_with_roi_regions(
++                    samples,
++                    &options,
++                    &[J2kRoiRegion {
++                        component: roi.component,
++                        x: roi.x,
++                        y: roi.y,
++                        width: roi.width,
++                        height: roi.height,
++                        shift: roi.shift,
++                    }],
++                )
++            } else {
++                encode_j2k_lossless(samples, &options)
++            }
+         }
+         EncoderInputKind::ComponentPlanes => {
+             let planes = input
+diff --git a/crates/j2k-test-support/src/jpeg_fixtures/builders.rs b/crates/j2k-test-support/src/jpeg_fixtures/builders.rs
+index 494b7b2..ecc181c 100644
+--- a/crates/j2k-test-support/src/jpeg_fixtures/builders.rs
++++ b/crates/j2k-test-support/src/jpeg_fixtures/builders.rs
+@@ -1614,20 +1614,19 @@ fn lossless_color_8bit_422_jpeg_impl(
+     bytes.extend_from_slice(&[
+         0xff, 0xda, 0x00, 0x0c, 3, 1, 0x00, 2, 0x00, 3, 0x00, predictor, 0, 0,
+     ]);
+-    let entropy = restart_interval.map_or_else(
+-        || lossless_422_entropy_8bit(width, height, predictor, planes.c0, planes.c1, planes.c2),
+-        |restart_interval| {
+-            lossless_422_entropy_8bit_with_restarts(
+-                width,
+-                height,
+-                predictor,
+-                planes.c0,
+-                planes.c1,
+-                planes.c2,
+-                restart_interval,
+-            )
+-        },
+-    );
++    let entropy = if let Some(restart_interval) = restart_interval {
++        lossless_422_entropy_8bit_with_restarts(
++            width,
++            height,
++            predictor,
++            planes.c0,
++            planes.c1,
++            planes.c2,
++            restart_interval,
++        )
++    } else {
++        lossless_422_entropy_8bit(width, height, predictor, planes.c0, planes.c1, planes.c2)
++    };
+     bytes.extend(entropy);
+     bytes.extend_from_slice(&[0xff, 0xd9]);
+     bytes
+@@ -1705,18 +1704,11 @@ fn lossless_color_8bit_420_jpeg_impl(
+     bytes.extend_from_slice(&[
+         0xff, 0xda, 0x00, 0x0c, 3, 1, 0x00, 2, 0x00, 3, 0x00, predictor, 0, 0,
+     ]);
+-    let entropy = restart_interval.map_or_else(
+-        || lossless_420_entropy_8bit(width, height, predictor, planes),
+-        |restart_interval| {
+-            lossless_420_entropy_8bit_with_restarts(
+-                width,
+-                height,
+-                predictor,
+-                planes,
+-                restart_interval,
+-            )
+-        },
+-    );
++    let entropy = if let Some(restart_interval) = restart_interval {
++        lossless_420_entropy_8bit_with_restarts(width, height, predictor, planes, restart_interval)
++    } else {
++        lossless_420_entropy_8bit(width, height, predictor, planes)
++    };
+     bytes.extend(entropy);
+     bytes.extend_from_slice(&[0xff, 0xd9]);
+     bytes
+@@ -1793,20 +1785,19 @@ fn lossless_color_16bit_422_jpeg_impl(
+     bytes.extend_from_slice(&[
+         0xff, 0xda, 0x00, 0x0c, 3, 1, 0x00, 2, 0x00, 3, 0x00, predictor, 0, 0,
+     ]);
+-    let entropy = restart_interval.map_or_else(
+-        || lossless_422_entropy_16bit(width, height, predictor, planes.c0, planes.c1, planes.c2),
+-        |restart_interval| {
+-            lossless_422_entropy_16bit_with_restarts(
+-                width,
+-                height,
+-                predictor,
+-                planes.c0,
+-                planes.c1,
+-                planes.c2,
+-                restart_interval,
+-            )
+-        },
+-    );
++    let entropy = if let Some(restart_interval) = restart_interval {
++        lossless_422_entropy_16bit_with_restarts(
++            width,
++            height,
++            predictor,
++            planes.c0,
++            planes.c1,
++            planes.c2,
++            restart_interval,
++        )
++    } else {
++        lossless_422_entropy_16bit(width, height, predictor, planes.c0, planes.c1, planes.c2)
++    };
+     bytes.extend(entropy);
+     bytes.extend_from_slice(&[0xff, 0xd9]);
+     bytes
+@@ -1884,18 +1875,11 @@ fn lossless_color_16bit_420_jpeg_impl(
+     bytes.extend_from_slice(&[
+         0xff, 0xda, 0x00, 0x0c, 3, 1, 0x00, 2, 0x00, 3, 0x00, predictor, 0, 0,
+     ]);
+-    let entropy = restart_interval.map_or_else(
+-        || lossless_420_entropy_16bit(width, height, predictor, planes),
+-        |restart_interval| {
+-            lossless_420_entropy_16bit_with_restarts(
+-                width,
+-                height,
+-                predictor,
+-                planes,
+-                restart_interval,
+-            )
+-        },
+-    );
++    let entropy = if let Some(restart_interval) = restart_interval {
++        lossless_420_entropy_16bit_with_restarts(width, height, predictor, planes, restart_interval)
++    } else {
++        lossless_420_entropy_16bit(width, height, predictor, planes)
++    };
+     bytes.extend(entropy);
+     bytes.extend_from_slice(&[0xff, 0xd9]);
+     bytes
+diff --git a/crates/j2k-transcode/benches/dct53.rs b/crates/j2k-transcode/benches/dct53.rs
+index 0bce753..a3388f1 100644
+--- a/crates/j2k-transcode/benches/dct53.rs
++++ b/crates/j2k-transcode/benches/dct53.rs
+@@ -28,10 +28,6 @@ use j2k_transcode_test_support::dct53_multilevel::{
+ };
+ use std::hint::black_box;
+ 
+-#[expect(
+-    clippy::significant_drop_tightening,
+-    reason = "each Criterion group is consumed by `finish()` right after its last use; the lint only recognizes `drop`"
+-)]
+ fn bench_dct53_math(c: &mut Criterion) {
+     bench_dct53_1d(c);
+ 
+@@ -125,10 +121,6 @@ fn bench_dct53_math(c: &mut Criterion) {
+     multilevel.finish();
+ }
+ 
+-#[expect(
+-    clippy::significant_drop_tightening,
+-    reason = "each Criterion group is consumed by `finish()` right after its last use; the lint only recognizes `drop`"
+-)]
+ fn bench_dct53_1d(c: &mut Criterion) {
+     let coeffs = [91.0, -36.0, 14.0, -9.0, 3.0, 22.0, -11.0, 4.0];
+ 
+@@ -208,10 +200,6 @@ fn bench_layout_candidates(c: &mut Criterion) {
+     layout.finish();
+ }
+ 
+-#[expect(
+-    clippy::significant_drop_tightening,
+-    reason = "each Criterion group is consumed by `finish()` right after its last use; the lint only recognizes `drop`"
+-)]
+ fn bench_jpeg_paths(c: &mut Criterion) {
+     let jpeg_420 = JPEG_BASELINE_420_16X16;
+     let jpeg_restart = JPEG_BASELINE_420_RESTART_32X16;
+diff --git a/xtask/src/cuda.rs b/xtask/src/cuda.rs
+index 9f70edb..ddec4f7 100644
+--- a/xtask/src/cuda.rs
++++ b/xtask/src/cuda.rs
+@@ -496,11 +496,13 @@ fn reject_cuda_skip_markers(output: &str, label: &str) -> Result<(), String> {
+             .find(|marker| lowercase.contains(**marker))
+             .copied()
+     };
+-    marker.map_or(Ok(()), |marker| {
++    if let Some(marker) = marker {
+         Err(format!(
+             "{label} emitted CUDA skip evidence `{marker}`; release validation must fail rather than skip"
+         ))
+-    })
++    } else {
++        Ok(())
++    }
+ }
+ 
+ fn listed_rust_tests(output: &str) -> BTreeSet<String> {
+diff --git a/xtask/src/quality_commands.rs b/xtask/src/quality_commands.rs
+index ac43112..6fc2bb1 100644
+--- a/xtask/src/quality_commands.rs
++++ b/xtask/src/quality_commands.rs
+@@ -147,6 +147,8 @@ pub(super) fn clippy_strict() -> Result<(), String> {
+         "clippy::disallowed_methods",
+         "-A",
+         "clippy::disallowed_macros",
++        "-A",
++        "clippy::significant_drop_tightening",
+     ]);
+ 
+     run_cargo(&non_library_args)
+@@ -205,6 +207,7 @@ const STRICT_CLIPPY_BASELINE_ALLOWED_LINTS: &[&str] = &[
+     "clippy::needless_pass_by_ref_mut",
+     "clippy::needless_pass_by_value",
+     "clippy::no_effect_underscore_binding",
++    "clippy::option_if_let_else",
+     "clippy::or_fun_call",
+     "clippy::redundant_clone",
+     "clippy::redundant_closure_for_method_calls",
+diff --git a/xtask/src/quality_commands/command_tests.rs b/xtask/src/quality_commands/command_tests.rs
+index 4b21d0b..fd2406a 100644
+--- a/xtask/src/quality_commands/command_tests.rs
++++ b/xtask/src/quality_commands/command_tests.rs
+@@ -57,7 +57,10 @@ fn quality_command_plans_are_complete_and_never_launch_real_tools() {
+         "clippy {strict_packages} --bins --examples --tests --benches --all-features \
+          --no-deps -- -W clippy::pedantic -W clippy::nursery -D warnings"
+     )));
+-    assert!(log.contains("-A clippy::disallowed_methods -A clippy::disallowed_macros|"));
++    assert!(log.contains(
++        "-A clippy::disallowed_methods -A clippy::disallowed_macros \
++         -A clippy::significant_drop_tightening|"
++    ));
+     assert!(log.contains("test --workspace --all-features --lib --bins --tests"));
+     assert!(log.contains("--exclude j2k-alloc-probe"));
+     for invocation in log

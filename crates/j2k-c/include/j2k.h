@@ -1,0 +1,233 @@
+/* SPDX-License-Identifier: MIT OR Apache-2.0 */
+/* ABI declarations: crates/j2k-c/src/abi.rs. */
+#ifndef J2K_H
+#define J2K_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#if defined(_WIN32)
+#define J2K_API __declspec(dllimport)
+#else
+#define J2K_API
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define J2K_ABI_VERSION UINT32_C(1)
+typedef uint32_t j2k_status;
+#define J2K_OK UINT32_C(0)
+#define J2K_INVALID_ARGUMENT UINT32_C(1)
+#define J2K_ABI_MISMATCH UINT32_C(2)
+#define J2K_INVALID_INPUT UINT32_C(3)
+#define J2K_UNSUPPORTED UINT32_C(4)
+#define J2K_BUFFER_TOO_SMALL UINT32_C(5)
+#define J2K_RESOURCE_LIMIT UINT32_C(6)
+#define J2K_ALLOCATION_FAILED UINT32_C(7)
+#define J2K_INTERNAL_ERROR UINT32_C(8)
+#define J2K_PANIC UINT32_C(9)
+#define J2K_DECODE_FAILED UINT32_C(10)
+/* A row callback returned nonzero; rows already delivered stay delivered. */
+#define J2K_STOPPED UINT32_C(11)
+#define J2K_ENCODE_FAILED UINT32_C(12)
+
+/* j2k_open_options.flags: accept the JP2/JPH metadata recoveries of lenient
+ * decoding (malformed trailing or optional boxes, an undeclared alpha). */
+#define J2K_OPEN_LENIENT UINT32_C(1)
+/* j2k_output_info.warnings: a lenient metadata recovery applies. */
+#define J2K_WARNING_LENIENT_RECOVERY UINT32_C(1)
+/* j2k_encode_options.flags: HTJ2K (Part 15) instead of classic Part 1;
+ * two's-complement signed samples; a JP2 file (JPH with HTJ2K). */
+#define J2K_ENCODE_HTJ2K UINT32_C(1)
+#define J2K_ENCODE_SIGNED UINT32_C(2)
+#define J2K_ENCODE_FILE UINT32_C(4)
+
+#define J2K_U8 UINT32_C(1)
+#define J2K_U16_LE UINT32_C(2)
+#define J2K_I16_LE UINT32_C(3)
+#define J2K_ALPHA_NONE UINT32_C(0)
+#define J2K_ALPHA_STRAIGHT UINT32_C(1)
+#define J2K_ALPHA_PREMULTIPLIED UINT32_C(2)
+
+typedef struct j2k_decoder j2k_decoder;
+
+typedef struct j2k_header {
+    uint32_t struct_size;
+    uint32_t abi_version;
+} j2k_header;
+
+/* Optional, per-call, caller-owned error. Always cleared on success.
+ * message is NUL-terminated UTF-8. The layout is fixed for ABI 1. */
+typedef struct j2k_error {
+    uint32_t code;
+    char message[256];
+} j2k_error;
+
+typedef struct j2k_open_options {
+    j2k_header header;
+    uint64_t max_input_bytes;  /* 0 = 512 MiB; checked before input is copied. */
+    uint64_t max_output_bytes; /* 0 = 512 MiB; includes inter-row padding. */
+    uint32_t workers;          /* 0 = shared codec pool; 1-64 = own pool of that many threads. */
+    uint32_t flags;            /* J2K_OPEN_*; other bits must be zero. */
+} j2k_open_options;
+
+typedef struct j2k_decode_options {
+    j2k_header header;
+    uint32_t x;         /* Full-resolution image-relative coordinates. */
+    uint32_t y;
+    uint32_t width;     /* An entirely zero rectangle selects the full image. */
+    uint32_t height;    /* Other rectangles require positive width and height. */
+    uint32_t reduction; /* 0-3, bounded by the source resolution ladder. */
+    uint32_t reserved;  /* Must be zero. */
+} j2k_decode_options;
+
+typedef struct j2k_image_info {
+    j2k_header header;
+    uint32_t width;
+    uint32_t height;
+    uint32_t components;
+    uint32_t resolution_levels;
+    uint32_t has_signed_components; /* 0 or 1. */
+    uint32_t has_icc_profile;       /* 0 or 1. */
+    uint32_t image_x0;    /* Image origin on the reference grid (XOsiz, YOsiz). */
+    uint32_t image_y0;
+    uint32_t tile_x0;     /* Tile-grid origin (XTOsiz, YTOsiz). */
+    uint32_t tile_y0;
+    uint32_t tile_width;  /* Nominal tile size (XTsiz, YTsiz). */
+    uint32_t tile_height;
+} j2k_image_info;
+
+typedef struct j2k_component_info {
+    j2k_header header;
+    uint32_t precision;
+    uint32_t is_signed; /* 0 or 1. */
+    uint32_t sampling_x;
+    uint32_t sampling_y;
+} j2k_component_info;
+
+typedef struct j2k_output_info {
+    j2k_header header;
+    uint32_t x; /* Covering rectangle in reduced-resolution coordinates. */
+    uint32_t y;
+    uint32_t width;
+    uint32_t height;
+    uint32_t channels;    /* Interleaved: 1 = gray, 3 = RGB, 4 = RGBA. */
+    uint32_t sample_type; /* J2K_U8, J2K_U16_LE, or J2K_I16_LE. */
+    uint32_t precision;   /* Significant bits; no range normalization. */
+    uint32_t alpha;       /* J2K_ALPHA_*. */
+    uint64_t row_bytes;   /* Minimum stride in bytes. */
+    uint64_t buffer_bytes;/* Tightly packed byte length. */
+    uint32_t warnings;    /* J2K_WARNING_* recoveries the request applies. */
+    uint32_t reserved;    /* Written as zero. */
+} j2k_output_info;
+
+typedef struct j2k_encode_options {
+    j2k_header header;
+    uint32_t width;
+    uint32_t height;
+    uint32_t components; /* Interleaved samples per pixel. */
+    uint32_t bit_depth;  /* 1-16; up to 8 bits take one byte, more take two (LE). */
+    uint32_t flags;      /* J2K_ENCODE_*; other bits must be zero. */
+    uint32_t reserved;   /* Must be zero. */
+} j2k_encode_options;
+
+/* Receives one row of row_bytes bytes, valid only during the call. Return 0 to
+ * continue or nonzero to stop the decode with J2K_STOPPED. */
+typedef int32_t (*j2k_row_callback)(
+    void *user_data, uint32_t y, const uint8_t *row, size_t row_bytes);
+
+#define J2K_HEADER_INIT(type) {(uint32_t)sizeof(type), J2K_ABI_VERSION}
+#define J2K_OPEN_OPTIONS_INIT {J2K_HEADER_INIT(j2k_open_options), 0, 0, 0, 0}
+#define J2K_DECODE_OPTIONS_INIT {J2K_HEADER_INIT(j2k_decode_options), 0, 0, 0, 0, 0, 0}
+#define J2K_IMAGE_INFO_INIT {J2K_HEADER_INIT(j2k_image_info), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+#define J2K_COMPONENT_INFO_INIT {J2K_HEADER_INIT(j2k_component_info), 0, 0, 0, 0}
+#define J2K_OUTPUT_INFO_INIT {J2K_HEADER_INIT(j2k_output_info), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+#define J2K_ENCODE_OPTIONS_INIT {J2K_HEADER_INIT(j2k_encode_options), 0, 0, 0, 0, 0, 0}
+
+/* Pointer contract for every call:
+ * - Pointers must reference valid, aligned storage for their declared lengths.
+ * - Output arguments must not overlap each other, inputs, or decoder storage.
+ * - Serialize all calls on the same decoder, including inspection and close.
+ *   Different decoders may be used concurrently; a handle may move between threads.
+ * - Options may be NULL for defaults. Error may be NULL to discard diagnostics.
+ * - Initialize options and result structures with the macros above. Larger
+ *   structures with ABI 1 are accepted; only the known prefix is read/written.
+ * - Null, size, and alignment checks do not validate dangling/forged pointers.
+ * See docs/api.md for memory, sample, failure, and compatibility contracts. */
+
+J2K_API uint32_t j2k_abi_version(void);
+/* Immutable, NUL-terminated string with library lifetime; never free it. */
+J2K_API const char *j2k_version(void);
+
+/* Copies input on success. Caller may then release or modify input.
+ * out must not already own a decoder; it is set to NULL on failure.
+ * Header inspection succeeds independently of pixel-decode support. */
+J2K_API j2k_status j2k_decoder_open(
+    const uint8_t *input, size_t input_len, const j2k_open_options *options,
+    j2k_decoder **out, j2k_error *error);
+
+/* Releases a handle and sets *decoder to NULL; closing a NULL handle succeeds. */
+J2K_API j2k_status j2k_decoder_close(
+    j2k_decoder **decoder, j2k_error *error);
+
+J2K_API j2k_status j2k_decoder_info(
+    j2k_decoder *decoder, j2k_image_info *out, j2k_error *error);
+
+J2K_API j2k_status j2k_decoder_component_info(
+    j2k_decoder *decoder, uint32_t index,
+    j2k_component_info *out, j2k_error *error);
+
+/* Prepares and validates an output layout. Does not guarantee valid entropy data
+ * or that the codec's working-memory budget suffices; see docs/supported.md. */
+J2K_API j2k_status j2k_decoder_output_info(
+    j2k_decoder *decoder, const j2k_decode_options *options,
+    j2k_output_info *out, j2k_error *error);
+
+/* Exact native integer samples, interleaved by pixel; 16-bit values are LE.
+ * stride >= row_bytes. Required span = stride*(height-1)+row_bytes; last-row
+ * padding is not required. Padding and bytes beyond that span are untouched.
+ * On ordinary errors, output is unchanged. After PANIC/INTERNAL_ERROR, discard
+ * output and close the decoder. No exception or unwinding crosses this ABI. */
+J2K_API j2k_status j2k_decoder_decode_into(
+    j2k_decoder *decoder, const j2k_decode_options *options,
+    uint8_t *output, size_t output_len, size_t stride, j2k_error *error);
+
+/* The layout j2k_decoder_decode_rows delivers: the full image at full
+ * resolution, in the native samples j2k_decoder_output_info would report for
+ * it. options must be NULL or select the full image at reduction 0. No
+ * whole-image output limit applies. 8-bit unsigned and 9- to 16-bit samples
+ * only; other precisions return J2K_UNSUPPORTED (use decode_into). */
+J2K_API j2k_status j2k_decoder_row_info(
+    j2k_decoder *decoder, const j2k_decode_options *options,
+    j2k_output_info *out, j2k_error *error);
+
+/* Decodes the full image and calls callback with each row, in order and once
+ * each, holding at most max_rows_per_stripe decoded rows (0 = 64). The callback
+ * runs on the calling thread or, for a decoder with its own threads, on one of
+ * them while this call blocks; it is never called concurrently and must not
+ * call back into this decoder. A nonzero return stops the decode with
+ * J2K_STOPPED; rows already delivered stay delivered. On success out (may be
+ * NULL) receives the j2k_decoder_row_info layout with warnings. */
+J2K_API j2k_status j2k_decoder_decode_rows(
+    j2k_decoder *decoder, const j2k_decode_options *options,
+    uint32_t max_rows_per_stripe, j2k_row_callback callback, void *user_data,
+    j2k_output_info *out, j2k_error *error);
+
+/* Encodes interleaved samples losslessly into a buffer this library allocates.
+ * The encoder decodes its result and compares it with the samples before
+ * returning it. On success *out and *out_len describe the encoded bytes;
+ * release them with j2k_buffer_free. On failure *out is NULL and *out_len 0.
+ * Encoding runs on the codec's shared CPU pool. */
+J2K_API j2k_status j2k_encode_lossless(
+    const uint8_t *samples, size_t samples_len, const j2k_encode_options *options,
+    uint8_t **out, size_t *out_len, j2k_error *error);
+
+/* Releases a buffer from j2k_encode_lossless with its length. NULL is ignored. */
+J2K_API void j2k_buffer_free(uint8_t *data, size_t length);
+
+#ifdef __cplusplus
+}
+#endif
+#endif

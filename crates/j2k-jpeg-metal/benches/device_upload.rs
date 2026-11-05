@@ -14,10 +14,6 @@ const DEFAULT_GENERATED_DIM: u16 = 2048;
 const DEFAULT_BATCH_DIM: u16 = 1024;
 const DEFAULT_BATCH_SIZE: usize = 64;
 
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the Criterion group is consumed by `finish()`, which the lint does not treat as a drop"
-)]
 fn bench_device_upload(c: &mut Criterion) {
     let input = bench_input();
     let mut group = c.benchmark_group("jpeg_metal_device");

@@ -5,7 +5,7 @@
 use super::{
     native_decode_error, parse_with_host_cap, profile, CudaHtj2kDecodePlan,
     CudaHtj2kDecodeProfileDetail, CudaHtj2kProfileReport, DecodeSettings, DeviceDecodePlan,
-    DeviceDecodeRequest, Downscale, Error, HostPhaseBudget, J2kDecoder, J2kReferencedClassicPlan,
+    Downscale, Error, HostPhaseBudget, J2kDecoder, J2kReferencedClassicPlan,
     J2kReferencedHtj2kPlan, NativeDecoderContext, NativeImage, PixelFormat, Rect,
 };
 
@@ -37,15 +37,7 @@ pub(in crate::decoder) fn build_cuda_htj2k_grayscale_plan_from_bytes_for_device_
     let total_start = profile::profile_now(true);
     let parse_start = profile::profile_now(true);
     let target_resolution = match device_plan {
-        Some(plan) if plan.scale() != Downscale::None => Some(
-            DeviceDecodePlan::for_image(
-                plan.source_dims(),
-                DeviceDecodeRequest::Scaled {
-                    scale: plan.scale(),
-                },
-            )?
-            .output_dims(),
-        ),
+        Some(plan) if plan.scale() != Downscale::None => Some(plan.reduced_image_dims()),
         _ => settings.target_resolution,
     };
     let decode_settings = DecodeSettings {

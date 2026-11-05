@@ -28,10 +28,6 @@ use j2k_transcode_test_support::dct53_multilevel::{
 };
 use std::hint::black_box;
 
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "each Criterion group is consumed by `finish()` right after its last use; the lint only recognizes `drop`"
-)]
 fn bench_dct53_math(c: &mut Criterion) {
     bench_dct53_1d(c);
 
@@ -125,10 +121,6 @@ fn bench_dct53_math(c: &mut Criterion) {
     multilevel.finish();
 }
 
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "each Criterion group is consumed by `finish()` right after its last use; the lint only recognizes `drop`"
-)]
 fn bench_dct53_1d(c: &mut Criterion) {
     let coeffs = [91.0, -36.0, 14.0, -9.0, 3.0, 22.0, -11.0, 4.0];
 
@@ -208,10 +200,6 @@ fn bench_layout_candidates(c: &mut Criterion) {
     layout.finish();
 }
 
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "each Criterion group is consumed by `finish()` right after its last use; the lint only recognizes `drop`"
-)]
 fn bench_jpeg_paths(c: &mut Criterion) {
     let jpeg_420 = JPEG_BASELINE_420_16X16;
     let jpeg_restart = JPEG_BASELINE_420_RESTART_32X16;

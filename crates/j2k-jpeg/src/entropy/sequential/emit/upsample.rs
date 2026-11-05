@@ -76,10 +76,10 @@ pub(in crate::entropy::sequential) fn component_row_triplet<'a>(
         "only the final stripe may end before its padded height"
     );
     let prev_row = if local_row == 0 {
-        prev.map_or_else(
-            || plane_row(curr, 0),
-            |plane| plane_row(plane, plane.rows - 1),
-        )
+        match prev {
+            Some(plane) => plane_row(plane, plane.rows - 1),
+            None => plane_row(curr, 0),
+        }
     } else {
         plane_row(curr, local_row - 1)
     };
@@ -87,10 +87,10 @@ pub(in crate::entropy::sequential) fn component_row_triplet<'a>(
     let next_row = if local_row + 1 < curr_rows {
         plane_row(curr, local_row + 1)
     } else {
-        next.map_or_else(
-            || plane_row(curr, curr_rows - 1),
-            |plane| plane_row(plane, 0),
-        )
+        match next {
+            Some(plane) => plane_row(plane, 0),
+            None => plane_row(curr, curr_rows - 1),
+        }
     };
     (prev_row, curr_row, next_row)
 }

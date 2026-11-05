@@ -214,6 +214,8 @@ pub(super) struct PreparedBatchGroupRef<'a> {
     pub(super) info: &'a BatchGroupInfo,
     pub(super) images: &'a [PreparedImage],
     pub(super) source_indices: &'a [usize],
+    /// The decoding session's [`BatchDecodeOptions::max_working_memory_bytes`].
+    pub(super) working_memory_limit: Option<core::num::NonZeroUsize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

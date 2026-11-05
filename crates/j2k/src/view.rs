@@ -13,9 +13,9 @@ use crate::{
         J2kDecodeOutcome, J2kDecodedComponents, J2kDecodedNativeComponents, NativeRoute,
         PlanesBudget, RouteRequest,
     },
-    parse::{parse_image_info, parse_info},
+    parse::{parse_image_info, parse_image_info_with_settings, parse_info},
     scratch::J2kScratchPool,
-    CpuDecodeParallelism, DecodeSettings, J2kError, J2kSupportInfo,
+    CpuDecodeParallelism, DecodeSettings, J2kError, J2kReferenceGrid, J2kSupportInfo,
 };
 use j2k_core::{
     CompressedPayloadKind, CompressedTransferSyntax, Downscale, Info, PassthroughCandidate,
@@ -23,7 +23,9 @@ use j2k_core::{
 };
 
 mod deep_scale;
+mod plan;
 mod rows;
+pub use plan::{J2kDecodePlan, J2kDecodeRoute, J2kStreamingBlocker};
 mod srgb8;
 mod traits;
 
@@ -34,6 +36,7 @@ mod traits;
 pub struct J2kView<'a> {
     bytes: &'a [u8],
     info: Info,
+    reference_grid: J2kReferenceGrid,
     support_info: Option<J2kSupportInfo>,
     image: Option<Image<'a>>,
     settings: DecodeSettings,
@@ -64,24 +67,30 @@ impl<'a> J2kView<'a> {
         settings: DecodeSettings,
     ) -> Result<Self, J2kError> {
         let image = backend_image(input, settings, None)?;
-        let (info, support_info, passthrough) = match parse_image_info(input) {
-            Ok(parsed) => {
-                let support_info = parsed.into_support_info();
-                let passthrough = Some((support_info.transfer_syntax, support_info.payload_kind));
-                (support_info.info.clone(), Some(support_info), passthrough)
-            }
-            Err(error)
-                if should_fallback_to_backend_after_parse_error(
-                    &error,
-                    image.used_lenient_metadata_recovery(),
-                ) =>
-            {
-                (inspect_info_from_image(&image), None, None)
-            }
-            Err(error) => return Err(error),
-        };
+        // The settings' recoveries apply to this parse as to the image's, so
+        // a recovered file has the metadata its decodes use. Its bytes are
+        // not a passthrough candidate: they hold what was recovered from.
+        let (info, support_info, passthrough) =
+            match parse_image_info_with_settings(input, settings) {
+                Ok(parsed) => {
+                    let support_info = parsed.into_support_info();
+                    let passthrough = (!image.used_lenient_metadata_recovery())
+                        .then_some((support_info.transfer_syntax, support_info.payload_kind));
+                    (support_info.info.clone(), Some(support_info), passthrough)
+                }
+                Err(error)
+                    if should_fallback_to_backend_after_parse_error(
+                        &error,
+                        image.used_lenient_metadata_recovery(),
+                    ) =>
+                {
+                    (inspect_info_from_image(&image), None, None)
+                }
+                Err(error) => return Err(error),
+            };
         Ok(Self {
             bytes: input,
+            reference_grid: J2kReferenceGrid::of_native(&image, info.dimensions),
             info,
             support_info,
             image: Some(image),
@@ -93,6 +102,12 @@ impl<'a> J2kView<'a> {
     /// Header-derived image metadata.
     pub fn info(&self) -> &Info {
         &self.info
+    }
+
+    /// Where the image and its tiles lie on the JPEG 2000 reference grid.
+    #[must_use]
+    pub const fn reference_grid(&self) -> J2kReferenceGrid {
+        self.reference_grid
     }
 
     /// Full JPEG 2000 / HTJ2K support metadata when header parsing classified
@@ -122,6 +137,7 @@ impl<'a> J2kView<'a> {
 pub struct J2kDecoder<'a> {
     bytes: &'a [u8],
     info: Info,
+    reference_grid: J2kReferenceGrid,
     image: Option<Image<'a>>,
     settings: DecodeSettings,
     native_context: j2k_native::DecoderContext<'a>,
@@ -164,6 +180,33 @@ impl<'a> J2kDecoder<'a> {
         parse_image_info(input).map(crate::parse::ParsedImageInfo::into_support_info)
     }
 
+    /// [`Self::inspect_support`] with the JP2/JPH metadata recoveries
+    /// `settings` allows a decode: the metadata a decoder made by
+    /// [`Self::new_with_settings`] with the same settings decodes with.
+    /// Raw codestream inspection is strict under every setting.
+    ///
+    /// # Errors
+    /// Returns [`J2kError`] when the input cannot be parsed as a JP2/JPH file
+    /// or raw JPEG 2000 / HTJ2K codestream within the settings' recoveries.
+    pub fn inspect_support_with_settings(
+        input: &'a [u8],
+        settings: DecodeSettings,
+    ) -> Result<J2kSupportInfo, J2kError> {
+        crate::parse::parse_image_info_with_settings(input, settings)
+            .map(crate::parse::ParsedImageInfo::into_support_info)
+    }
+
+    /// Inspect where the image and its tiles lie on the JPEG 2000 reference
+    /// grid from the codestream's main header, without building a decoder:
+    /// what [`Self::reference_grid`] reports for the same input.
+    ///
+    /// # Errors
+    /// Returns [`J2kError`] when the input is not a raw codestream or JP2/JPH
+    /// file, or its main header is malformed.
+    pub fn inspect_reference_grid(input: &'a [u8]) -> Result<J2kReferenceGrid, J2kError> {
+        crate::parse::parse_reference_grid(input)
+    }
+
     /// Create a decoder from compressed bytes.
     ///
     /// # Errors
@@ -192,6 +235,7 @@ impl<'a> J2kDecoder<'a> {
         Ok(Self {
             bytes: view.bytes,
             info: view.info,
+            reference_grid: view.reference_grid,
             image: view.image,
             settings: view.settings,
             native_context: j2k_native::DecoderContext::default(),
@@ -202,6 +246,16 @@ impl<'a> J2kDecoder<'a> {
     /// Header-derived image metadata.
     pub fn info(&self) -> &Info {
         &self.info
+    }
+
+    /// Where the image and its tiles lie on the JPEG 2000 reference grid.
+    ///
+    /// Reduced-resolution decodes cover the reduced samples whose
+    /// reference-grid footprints overlap the request; build device plans
+    /// with [`crate::DeviceDecodePlan::for_reference_grid`] and this grid.
+    #[must_use]
+    pub const fn reference_grid(&self) -> J2kReferenceGrid {
+        self.reference_grid
     }
 
     /// Decode the full image into borrowed component planes.
@@ -364,9 +418,10 @@ impl<'a> J2kDecoder<'a> {
 
     /// Decode the full image with caller-owned scratch.
     ///
-    /// The current native full-frame path writes directly into the caller's
-    /// output buffer; the pool is accepted to satisfy the shared codec trait
-    /// and is used by reduced-resolution and row-bounded paths.
+    /// Decodes exactly as [`Self::decode_into`], which writes directly into
+    /// the caller's output buffer. The pool is accepted to satisfy the shared
+    /// codec trait; no decode path currently draws on it. Native decode
+    /// allocations are reused through this decoder's own context instead.
     ///
     /// # Errors
     /// Same as [`Self::decode_into`].
@@ -549,7 +604,12 @@ impl<'a> J2kDecoder<'a> {
     /// Decode a source-coordinate region at a reduced resolution.
     ///
     /// `roi` is expressed in full-resolution source pixels. The decoded output
-    /// covers `roi.scaled_covering(scale)` in reduced-resolution coordinates.
+    /// covers the reduced-resolution samples whose reference-grid footprints
+    /// overlap `roi`: `roi.scaled_covering(scale)` when the image's
+    /// reference-grid origin is a multiple of the scale's denominator. Another
+    /// origin shifts the reduced grid against the image's own, as the
+    /// standard defines it, and the returned outcome reports the covered
+    /// rectangle in reduced-resolution coordinates.
     ///
     /// Reduced-resolution and region decoding validate the packets and
     /// structural dependencies needed for the requested output and may leave
@@ -578,9 +638,10 @@ impl<'a> J2kDecoder<'a> {
             return self.decode_region_into(pool, out, stride, fmt, roi);
         }
         validate_region(roi, self.info.dimensions)?;
-        let scaled_roi = roi.scaled_covering(scale);
-        validate_buffer((scaled_roi.w, scaled_roi.h), out.len(), stride, fmt)?;
         let image = backend_image_at_scale(self.bytes, self.settings, scale)?;
+        let scaled_roi =
+            deep_scale::image_covering(&image, self.info.dimensions, roi, scale.denominator());
+        validate_buffer((scaled_roi.w, scaled_roi.h), out.len(), stride, fmt)?;
         let warnings = decode_warnings_for_image(&image);
         let image_dims = (image.width(), image.height());
         validate_region(scaled_roi, image_dims)?;

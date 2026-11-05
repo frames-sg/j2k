@@ -307,6 +307,10 @@ pub enum DecodingError {
     /// Component planes reused without zeroing were not written in full, so
     /// samples from a previous image would have reached the output.
     IncompletePlaneStore,
+    /// The row sink of a streamed region decode asked it to stop (see
+    /// `ComponentRowSink::stopped`), so the rest of the region was not
+    /// decoded. The sink holds the reason.
+    SinkStopped,
 }
 
 /// Errors related to color space and component handling.
@@ -525,6 +529,7 @@ impl fmt::Display for DecodingError {
                     "component planes reused without zeroing were not fully written"
                 )
             }
+            Self::SinkStopped => write!(f, "the row sink stopped the region decode"),
         }
     }
 }

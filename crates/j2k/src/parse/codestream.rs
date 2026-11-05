@@ -22,6 +22,18 @@ pub(crate) fn looks_like_codestream(input: &[u8]) -> bool {
     looks_like_j2k_codestream(input)
 }
 
+/// Where the image and tiles of raw codestream `input` lie on the reference
+/// grid, from its main header alone.
+pub(crate) fn parse_reference_grid(input: &[u8]) -> Result<crate::J2kReferenceGrid, J2kError> {
+    let grid = j2k_native::inspect_j2k_reference_grid(input).map_err(map_header_error)?;
+    Ok(crate::J2kReferenceGrid {
+        image_origin: grid.image_origin,
+        image_size: grid.image_size,
+        tile_origin: grid.tile_origin,
+        tile_size: grid.tile_size,
+    })
+}
+
 pub(crate) fn parse_codestream(
     input: &[u8],
     retained_bytes: usize,

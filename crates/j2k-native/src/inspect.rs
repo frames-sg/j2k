@@ -190,9 +190,41 @@ pub fn inspect_htj2k_capabilities(
     inspect_main_header(input).map(|inspected| inspected.htj2k)
 }
 
+/// Inspect where the image and its tiles lie on the reference grid (SIZ
+/// `XOsiz`, `YOsiz`, `XTOsiz`, `YTOsiz`, `XTsiz`, `YTsiz`) without decoding
+/// tile data.
+///
+/// The existing [`inspect_j2k_codestream_header`] metadata layout remains
+/// unchanged; this expert API carries the origins it omits.
+///
+/// # Errors
+///
+/// Returns the errors of [`inspect_j2k_codestream_header`].
+pub fn inspect_j2k_reference_grid(
+    input: &[u8],
+) -> Result<J2kCodestreamReferenceGrid, J2kCodestreamHeaderError> {
+    inspect_main_header(input).map(|inspected| inspected.reference_grid)
+}
+
+/// Where a codestream's image and tiles lie on the full-resolution reference
+/// grid, from its SIZ marker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct J2kCodestreamReferenceGrid {
+    /// Offset of the image area from the grid's origin (`XOsiz`, `YOsiz`).
+    pub image_origin: (u32, u32),
+    /// Width and height of the image area (`Xsiz - XOsiz`, `Ysiz - YOsiz`).
+    pub image_size: (u32, u32),
+    /// Offset of the first tile from the grid's origin (`XTOsiz`, `YTOsiz`).
+    pub tile_origin: (u32, u32),
+    /// Nominal width and height of a tile (`XTsiz`, `YTsiz`).
+    pub tile_size: (u32, u32),
+}
+
 struct InspectedMainHeader {
     metadata: J2kCodestreamHeaderMetadata,
     htj2k: Option<Htj2kCapabilities>,
+    reference_grid: J2kCodestreamReferenceGrid,
 }
 
 fn inspect_main_header(input: &[u8]) -> Result<InspectedMainHeader, J2kCodestreamHeaderError> {
@@ -272,7 +304,14 @@ fn inspect_main_header(input: &[u8]) -> Result<InspectedMainHeader, J2kCodestrea
         )
         .map_err(map_capability_error)?;
 
+    let reference_grid = J2kCodestreamReferenceGrid {
+        image_origin: siz.image_origin,
+        image_size: siz.dimensions,
+        tile_origin: siz.tile_origin,
+        tile_size: siz.tile_size,
+    };
     Ok(InspectedMainHeader {
+        reference_grid,
         metadata: J2kCodestreamHeaderMetadata {
             dimensions: siz.dimensions,
             components: siz.components,
@@ -308,6 +347,8 @@ pub fn looks_like_j2k_codestream(input: &[u8]) -> bool {
 #[derive(Debug, Clone)]
 struct ParsedSiz {
     rsiz: u16,
+    image_origin: (u32, u32),
+    tile_origin: (u32, u32),
     dimensions: (u32, u32),
     components: u16,
     bit_depth: u8,
@@ -462,6 +503,8 @@ fn parse_siz(payload: &[u8]) -> Result<ParsedSiz, J2kCodestreamHeaderError> {
 
     Ok(ParsedSiz {
         rsiz: read_u16(payload, 0),
+        image_origin: (geometry.x_origin, geometry.y_origin),
+        tile_origin: (geometry.tile_x_origin, geometry.tile_y_origin),
         dimensions: (width, height),
         components: component_count,
         bit_depth,

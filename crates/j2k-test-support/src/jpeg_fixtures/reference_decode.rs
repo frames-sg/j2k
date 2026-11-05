@@ -65,7 +65,7 @@ pub(super) fn upsample_h2v2_12bit_for_fixture(
     }
 }
 
-pub(super) fn ycbcr12_to_rgb16_for_fixture(y: u16, cb: u16, cr: u16) -> (u16, u16, u16) {
+pub(super) fn ycbcr12_to_rgb16_for_fixture(y: u16, cb: u16, cr: u16) -> [u16; 3] {
     const FIX_1_40200: i32 = 91_881;
     const FIX_0_34414: i32 = 22_554;
     const FIX_0_71414: i32 = 46_802;
@@ -79,23 +79,22 @@ pub(super) fn ycbcr12_to_rgb16_for_fixture(y: u16, cb: u16, cr: u16) -> (u16, u1
     let g = y - ((FIX_0_34414 * blue_delta + FIX_0_71414 * red_delta + ROUND) >> 16);
     let b = y + ((FIX_1_77200 * blue_delta + ROUND) >> 16);
 
-    (
+    [
         u16::try_from(r.clamp(0, 4095)).expect("clamped 12-bit red sample fits u16"),
         u16::try_from(g.clamp(0, 4095)).expect("clamped 12-bit green sample fits u16"),
         u16::try_from(b.clamp(0, 4095)).expect("clamped 12-bit blue sample fits u16"),
-    )
+    ]
 }
 
 pub(super) fn ycbcr8_pixels_to_rgb8(samples: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(samples.len());
     for pixel in samples.as_chunks::<3>().0 {
-        let rgb = ycbcr8_to_rgb8_for_fixture(pixel[0], pixel[1], pixel[2]);
-        out.extend_from_slice(&<[u8; 3]>::from(rgb));
+        out.extend_from_slice(&ycbcr8_to_rgb8_for_fixture(pixel[0], pixel[1], pixel[2]));
     }
     out
 }
 
-pub(super) fn ycbcr8_to_rgb8_for_fixture(y: u8, cb: u8, cr: u8) -> (u8, u8, u8) {
+pub(super) fn ycbcr8_to_rgb8_for_fixture(y: u8, cb: u8, cr: u8) -> [u8; 3] {
     const FIX_1_40200: i32 = 91_881;
     const FIX_0_34414: i32 = 22_554;
     const FIX_0_71414: i32 = 46_802;
@@ -109,25 +108,25 @@ pub(super) fn ycbcr8_to_rgb8_for_fixture(y: u8, cb: u8, cr: u8) -> (u8, u8, u8) 
     let g = y - ((FIX_0_34414 * blue_delta + FIX_0_71414 * red_delta + ROUND) >> 16);
     let b = y + ((FIX_1_77200 * blue_delta + ROUND) >> 16);
 
-    (
+    [
         u8::try_from(r.clamp(0, 255)).expect("clamped red sample fits u8"),
         u8::try_from(g.clamp(0, 255)).expect("clamped green sample fits u8"),
         u8::try_from(b.clamp(0, 255)).expect("clamped blue sample fits u8"),
-    )
+    ]
 }
 
 pub(super) fn ycbcr16_pixels_to_rgb16(samples: &[u16]) -> Vec<u8> {
     let mut out = Vec::with_capacity(samples.len() * 2);
     for pixel in samples.as_chunks::<3>().0 {
-        let (r, g, b) = ycbcr16_to_rgb16_for_fixture(pixel[0], pixel[1], pixel[2]);
-        out.extend_from_slice(&r.to_le_bytes());
-        out.extend_from_slice(&g.to_le_bytes());
-        out.extend_from_slice(&b.to_le_bytes());
+        append_rgb16_pixel(
+            &mut out,
+            ycbcr16_to_rgb16_for_fixture(pixel[0], pixel[1], pixel[2]),
+        );
     }
     out
 }
 
-pub(super) fn ycbcr16_to_rgb16_for_fixture(y: u16, cb: u16, cr: u16) -> (u16, u16, u16) {
+pub(super) fn ycbcr16_to_rgb16_for_fixture(y: u16, cb: u16, cr: u16) -> [u16; 3] {
     const FIX_1_40200: i64 = 91_881;
     const FIX_0_34414: i64 = 22_554;
     const FIX_0_71414: i64 = 46_802;
@@ -141,11 +140,11 @@ pub(super) fn ycbcr16_to_rgb16_for_fixture(y: u16, cb: u16, cr: u16) -> (u16, u1
     let g = y - ((FIX_0_34414 * blue_delta + FIX_0_71414 * red_delta + ROUND) >> 16);
     let b = y + ((FIX_1_77200 * blue_delta + ROUND) >> 16);
 
-    (
+    [
         u16::try_from(r.clamp(0, i64::from(u16::MAX))).expect("clamped red sample fits u16"),
         u16::try_from(g.clamp(0, i64::from(u16::MAX))).expect("clamped green sample fits u16"),
         u16::try_from(b.clamp(0, i64::from(u16::MAX))).expect("clamped blue sample fits u16"),
-    )
+    ]
 }
 
 #[derive(Clone, Copy)]
@@ -173,12 +172,12 @@ pub(super) fn lossless_422_planes_to_rgb8(
             let c1_sample = c1_row[x / 2];
             let c2_sample = c2_row[x / 2];
             let rgb = match color_space {
-                ColorSpaceFixture::Rgb => (c0_sample, c1_sample, c2_sample),
+                ColorSpaceFixture::Rgb => [c0_sample, c1_sample, c2_sample],
                 ColorSpaceFixture::YCbCr => {
                     ycbcr8_to_rgb8_for_fixture(c0_sample, c1_sample, c2_sample)
                 }
             };
-            out.extend_from_slice(&<[u8; 3]>::from(rgb));
+            out.extend_from_slice(&rgb);
         }
     }
     out
@@ -201,12 +200,12 @@ pub(super) fn lossless_420_planes_to_rgb8(
             let c1_sample = c1[(y / 2) * chroma_width + x / 2];
             let c2_sample = c2[(y / 2) * chroma_width + x / 2];
             let rgb = match color_space {
-                ColorSpaceFixture::Rgb => (c0_sample, c1_sample, c2_sample),
+                ColorSpaceFixture::Rgb => [c0_sample, c1_sample, c2_sample],
                 ColorSpaceFixture::YCbCr => {
                     ycbcr8_to_rgb8_for_fixture(c0_sample, c1_sample, c2_sample)
                 }
             };
-            out.extend_from_slice(&<[u8; 3]>::from(rgb));
+            out.extend_from_slice(&rgb);
         }
     }
     out
@@ -231,12 +230,12 @@ pub(super) fn lossless_422_planes_to_rgb16(
             let c1_sample = c1_row[x / 2];
             let c2_sample = c2_row[x / 2];
             let rgb = match color_space {
-                ColorSpaceFixture::Rgb => (c0_sample, c1_sample, c2_sample),
+                ColorSpaceFixture::Rgb => [c0_sample, c1_sample, c2_sample],
                 ColorSpaceFixture::YCbCr => {
                     ycbcr16_to_rgb16_for_fixture(c0_sample, c1_sample, c2_sample)
                 }
             };
-            append_rgb16_pixel(&mut out, rgb.into());
+            append_rgb16_pixel(&mut out, rgb);
         }
     }
     out
@@ -259,12 +258,12 @@ pub(super) fn lossless_420_planes_to_rgb16(
             let c1_sample = c1[(y / 2) * chroma_width + x / 2];
             let c2_sample = c2[(y / 2) * chroma_width + x / 2];
             let rgb = match color_space {
-                ColorSpaceFixture::Rgb => (c0_sample, c1_sample, c2_sample),
+                ColorSpaceFixture::Rgb => [c0_sample, c1_sample, c2_sample],
                 ColorSpaceFixture::YCbCr => {
                     ycbcr16_to_rgb16_for_fixture(c0_sample, c1_sample, c2_sample)
                 }
             };
-            append_rgb16_pixel(&mut out, rgb.into());
+            append_rgb16_pixel(&mut out, rgb);
         }
     }
     out

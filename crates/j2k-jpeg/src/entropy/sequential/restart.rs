@@ -56,29 +56,19 @@ fn reader_from_checkpoint<'a>(
     (BitReader::new(scan_bytes), [0; 4], 0)
 }
 
-/// Entropy reader positioned at or before an MCU, with the DC predictors and
-/// next expected restart marker that hold there. Every sequential route
-/// seeks through [`scan_position_before_mcu`] and skips the rest, both inside
-/// [`enter_scan_at_mcu`] or [`enter_scan_at_mcu_with`].
+/// Position an [`EntropyCursor`] at or before `target_mcu`, and return the
+/// MCU it is at; the caller skips the remaining MCUs. Every sequential route
+/// seeks through here, inside [`enter_scan_at_mcu`] or
+/// [`enter_scan_at_mcu_with`].
 ///
 /// A consumer that has a decoder asks `Decoder::checkpoint_for_mcu` for the
-/// resume point of the first MCU it needs and hands it to
-/// [`scan_position_before_mcu`]: for restart-coded scans the checkpoint at
-/// the start of that MCU's restart interval (from the decoder's cached
-/// restart index), otherwise the decoder's row-start or span checkpoint at
-/// or before it (from its lazily filled checkpoint grid). Without one, the
-/// position comes from a scan for the restart marker, or is the scan start.
-/// A resumed reader yields the same symbols, values, and errors as one that
-/// decoded every earlier MCU.
-pub(super) struct ScanPosition<'a> {
-    pub(super) br: BitReader<'a>,
-    pub(super) prev_dc: [i32; 4],
-    pub(super) mcu_index: u32,
-    pub(super) expected_rst: u8,
-}
-
-/// Position a reader at or before `target_mcu`; the caller skips the
-/// remaining MCUs.
+/// resume point of the first MCU it needs and hands it in as `checkpoint`:
+/// for restart-coded scans the checkpoint at the start of that MCU's restart
+/// interval (from the decoder's cached restart index), otherwise the
+/// decoder's row-start or span checkpoint at or before it (from its lazily
+/// filled checkpoint grid). Without one, the position comes from a scan for
+/// the restart marker, or is the scan start. A resumed cursor yields the same
+/// symbols, values, and errors as one that decoded every earlier MCU.
 ///
 /// Restart-coded scans (`restart != 0`) resume just after the restart marker
 /// that opens the interval holding `target_mcu`: at `checkpoint` when it is
@@ -93,7 +83,15 @@ pub(super) fn scan_position_before_mcu<'a>(
     restart: u16,
     checkpoint: Option<&DeviceCheckpoint>,
     target_mcu: u32,
-) -> ScanPosition<'a> {
+) -> (EntropyCursor<'a>, u32) {
+    let cursor = |br, prev_dc, expected_rst| EntropyCursor {
+        br,
+        prev_dc,
+        restart: RestartState {
+            expected_rst,
+            ..RestartState::new(restart)
+        },
+    };
     if restart != 0 {
         let interval_start = target_mcu / u32::from(restart) * u32::from(restart);
         return checkpoint
@@ -109,27 +107,21 @@ pub(super) fn scan_position_before_mcu<'a>(
             })
             .or_else(|| restart_seek_for_mcu(scan_bytes, restart, target_mcu))
             .map_or_else(
-                || ScanPosition {
-                    br: BitReader::new(scan_bytes),
-                    prev_dc: [0; 4],
-                    mcu_index: 0,
-                    expected_rst: 0,
-                },
-                |seek| ScanPosition {
-                    br: BitReader::new(&scan_bytes[seek.scan_offset..]),
-                    prev_dc: [0; 4],
-                    mcu_index: seek.mcu_index,
-                    expected_rst: seek.expected_rst,
+                || (cursor(BitReader::new(scan_bytes), [0; 4], 0), 0),
+                |seek| {
+                    (
+                        cursor(
+                            BitReader::new(&scan_bytes[seek.scan_offset..]),
+                            [0; 4],
+                            seek.expected_rst,
+                        ),
+                        seek.mcu_index,
+                    )
                 },
             );
     }
     let (br, prev_dc, mcu_index) = reader_from_checkpoint(scan_bytes, checkpoint, target_mcu);
-    ScanPosition {
-        br,
-        prev_dc,
-        mcu_index,
-        expected_rst: 0,
-    }
+    (cursor(br, prev_dc, 0), mcu_index)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -228,20 +220,12 @@ pub(crate) struct McuSkipper<'a, const N: usize> {
 
 impl<'a, const N: usize> McuSkipper<'a, N> {
     pub(crate) fn new(plan: &'a PreparedDecodePlan, wide_huffman: bool) -> Result<Self, JpegError> {
-        let first = plan.resolved_component_with_entries::<N>(0)?;
-        let mut components = [(first, 0, 0); 4];
-        if plan.components.len() > components.len() {
-            return Err(JpegError::InternalInvariant {
-                reason: "sequential decode supports at most four components",
-            });
-        }
-        for (slot, comp) in components.iter_mut().zip(&plan.components) {
-            *slot = (
-                plan.resolve_component_with_entries::<N>(comp)?
-                    .with_wide_huffman(wide_huffman),
-                comp.output_index,
-                u32::from(comp.h) * u32::from(comp.v),
-            );
+        let mut components = plan
+            .resolved_components_with_entries::<N>(wide_huffman)?
+            .map(|tables| (tables, 0, 0));
+        for ((_, plane, blocks), comp) in components.iter_mut().zip(&plan.components) {
+            *plane = comp.output_index;
+            *blocks = u32::from(comp.h) * u32::from(comp.v);
         }
         Ok(Self {
             components,
@@ -266,14 +250,15 @@ impl<'a, const N: usize> McuSkipper<'a, N> {
 
 /// An MCU's index in scan order and the scan's MCU count.
 #[derive(Clone, Copy)]
-pub(super) struct McuPosition {
-    pub(super) current: u32,
-    pub(super) total: u32,
+pub(crate) struct McuPosition {
+    pub(crate) current: u32,
+    pub(crate) total: u32,
 }
 
-/// Restart-interval bookkeeping of a sequential scan.
+/// Restart-interval bookkeeping of a scan with MCUs in a fixed order: the
+/// sequential routes and the extended 12-bit decoders.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct RestartState {
+pub(crate) struct RestartState {
     /// MCUs per restart interval; zero for a scan without restart markers.
     pub(super) interval: u16,
     mcus_since_restart: u32,
@@ -282,7 +267,7 @@ pub(super) struct RestartState {
 
 impl RestartState {
     /// Bookkeeping at the start of a scan.
-    pub(super) const fn new(interval: u16) -> Self {
+    pub(crate) const fn new(interval: u16) -> Self {
         Self {
             interval,
             mcus_since_restart: 0,
@@ -300,7 +285,7 @@ impl RestartState {
         reason = "the due check runs once per MCU and must inline so callers' local readers stay in registers"
     )]
     #[inline(always)]
-    pub(super) fn begin_mcu(
+    pub(crate) fn begin_mcu(
         &mut self,
         br: &mut BitReader<'_>,
         position: McuPosition,
@@ -323,7 +308,7 @@ impl RestartState {
         reason = "runs once per MCU next to the inlined restart check"
     )]
     #[inline(always)]
-    pub(super) fn end_mcu(&mut self) {
+    pub(crate) fn end_mcu(&mut self) {
         self.mcus_since_restart += 1;
     }
 }
@@ -336,39 +321,13 @@ pub(super) struct EntropyCursor<'a> {
     pub(super) restart: RestartState,
 }
 
-impl<'a> EntropyCursor<'a> {
-    /// The cursor at the position [`scan_position_before_mcu`] finds for
-    /// `target_mcu`, and that position's MCU index.
-    fn before_mcu(
-        scan_bytes: &'a [u8],
-        restart_interval: u16,
-        checkpoint: Option<&DeviceCheckpoint>,
-        target_mcu: u32,
-    ) -> (Self, u32) {
-        let ScanPosition {
-            br,
-            prev_dc,
-            mcu_index,
-            expected_rst,
-        } = scan_position_before_mcu(scan_bytes, restart_interval, checkpoint, target_mcu);
-        let mut restart = RestartState::new(restart_interval);
-        restart.expected_rst = expected_rst;
-        (
-            Self {
-                br,
-                prev_dc,
-                restart,
-            },
-            mcu_index,
-        )
-    }
-
+impl EntropyCursor<'_> {
     /// Skip MCUs `mcus` of a scan of `total_mcus` with `skip_one_mcu`.
     fn skip_mcus(
         &mut self,
         mcus: core::ops::Range<u32>,
         total_mcus: u32,
-        mut skip_one_mcu: impl FnMut(&mut BitReader<'_>, &mut [i32]) -> Result<(), JpegError>,
+        mut skip_one_mcu: impl FnMut(&mut BitReader<'_>, &mut [i32; 4]) -> Result<(), JpegError>,
     ) -> Result<(), JpegError> {
         for current in mcus {
             if self.restart.begin_mcu(
@@ -398,7 +357,7 @@ pub(super) fn enter_scan_at_mcu<'a, const N: usize>(
     target: McuPosition,
     wide_huffman: bool,
 ) -> Result<EntropyCursor<'a>, JpegError> {
-    let (mut cursor, first_mcu) = EntropyCursor::before_mcu(
+    let (mut cursor, first_mcu) = scan_position_before_mcu(
         scan_bytes,
         plan.restart_interval.unwrap_or(0),
         checkpoint,
@@ -416,14 +375,18 @@ pub(super) fn enter_scan_at_mcu<'a, const N: usize>(
 /// [`enter_scan_at_mcu`] with a route's own single-MCU skip, for decoders
 /// whose component layout is fixed and whose skip is specialized for it.
 pub(super) fn enter_scan_at_mcu_with<'a>(
+    plan: &PreparedDecodePlan,
     scan_bytes: &'a [u8],
-    restart_interval: u16,
     checkpoint: Option<&DeviceCheckpoint>,
     target: McuPosition,
-    skip_one_mcu: impl FnMut(&mut BitReader<'_>, &mut [i32]) -> Result<(), JpegError>,
+    skip_one_mcu: impl FnMut(&mut BitReader<'_>, &mut [i32; 4]) -> Result<(), JpegError>,
 ) -> Result<EntropyCursor<'a>, JpegError> {
-    let (mut cursor, first_mcu) =
-        EntropyCursor::before_mcu(scan_bytes, restart_interval, checkpoint, target.current);
+    let (mut cursor, first_mcu) = scan_position_before_mcu(
+        scan_bytes,
+        plan.restart_interval.unwrap_or(0),
+        checkpoint,
+        target.current,
+    );
     cursor.skip_mcus(first_mcu..target.current, target.total, skip_one_mcu)?;
     Ok(cursor)
 }
@@ -457,9 +420,9 @@ mod tests {
             );
             // A checkpoint for another interval is ignored: the scan decides.
             let other = restart_checkpoint_from_index(&index, target + 2);
-            let position = scan_position_before_mcu(scan, restart, other.as_ref(), target);
+            let (_, mcu_index) = scan_position_before_mcu(scan, restart, other.as_ref(), target);
             assert_eq!(
-                position.mcu_index,
+                mcu_index,
                 scanned.map_or(0, |seek| seek.mcu_index),
                 "{target}"
             );
