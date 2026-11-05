@@ -1,6 +1,6 @@
 # Maintainability audit snapshot
 
-Audit the source on `audit/maintainability-20261104`, including the repository-wide callers and tests. This branch combines the development work that was absent from public `main` when the audit was requested.
+Audit the source on `pending_refactor/cpu_speed`, including the repository-wide callers and tests. This branch combines the development work that was absent from public `main` when the audit was requested.
 
 ## What is included
 
