@@ -1441,3 +1441,81 @@ fn reduced_windows_stream_on_a_pool_with_more_threads_than_their_rows() {
         }
     }
 }
+
+/// A sink that stops after it has taken `limit` hand-overs, counting every
+/// hand-over it is given.
+struct StoppingSink {
+    limit: usize,
+    calls: usize,
+}
+
+impl ComponentRowSink for StoppingSink {
+    fn write_rows(&mut self, _x: u32, _y: u32, _planes: &[ComponentPlane<'_>]) {
+        self.calls += 1;
+    }
+
+    fn stopped(&self) -> bool {
+        self.calls >= self.limit
+    }
+}
+
+/// A sink that stops ends the region decode at that hand-over, serially and
+/// on a pool, with `SinkStopped`: the rest of the region is not decoded for
+/// rows that would go nowhere.
+#[test]
+fn a_stopped_sink_ends_the_decode_at_its_hand_over() {
+    let bytes = pool_band_fixture(3, 2, 2);
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+    let roi = (0, 0, image.width(), image.height());
+    let mut full = StoppingSink {
+        limit: usize::MAX,
+        calls: 0,
+    };
+    image
+        .decode_region_rows_for_integer_output_with_context(
+            roi,
+            &mut DecoderContext::default(),
+            &mut full,
+        )
+        .expect("whole decode");
+    assert!(
+        full.calls > 4,
+        "the fixture hands over {} times",
+        full.calls
+    );
+
+    let mut parallelisms = alloc::vec![(CpuDecodeParallelism::Serial, 1)];
+    if cfg!(feature = "parallel") {
+        parallelisms.push((CpuDecodeParallelism::Auto, 4));
+    }
+    for (parallelism, threads) in parallelisms {
+        let run = || {
+            let mut context = DecoderContext::default();
+            context.set_cpu_decode_parallelism(parallelism);
+            let mut sink = StoppingSink { limit: 1, calls: 0 };
+            let decoded = image.decode_region_rows_for_integer_output_with_context(
+                roi,
+                &mut context,
+                &mut sink,
+            );
+            (decoded, sink.calls)
+        };
+        #[cfg(feature = "parallel")]
+        let (decoded, calls) = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("pool")
+            .install(run);
+        #[cfg(not(feature = "parallel"))]
+        let (decoded, calls) = {
+            let _ = threads;
+            run()
+        };
+        assert_eq!(
+            decoded,
+            Err(crate::DecodingError::SinkStopped.into()),
+            "{parallelism:?}"
+        );
+        assert_eq!(calls, 1, "{parallelism:?}: hand-overs after the stop");
+    }
+}

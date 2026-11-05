@@ -210,16 +210,17 @@ pub use direct_roi::{
     J2kIdwtRequiredInputWindows, J2kRequiredBandRegion,
 };
 pub use inspect::{
-    inspect_htj2k_capabilities, inspect_j2k_codestream_header, looks_like_j2k_codestream,
-    J2kCodestreamComponentHeader, J2kCodestreamHeaderError, J2kCodestreamHeaderMetadata,
+    inspect_htj2k_capabilities, inspect_j2k_codestream_header, inspect_j2k_reference_grid,
+    looks_like_j2k_codestream, J2kCodestreamComponentHeader, J2kCodestreamHeaderError,
+    J2kCodestreamHeaderMetadata, J2kCodestreamReferenceGrid,
 };
 #[doc(hidden)]
 pub use j2c::capabilities::required_magnitude_bound as htj2k_required_magnitude_bound;
 pub use j2c::capabilities::{Htj2kCapabilities, Htj2kCapabilityMode, J2kCorrespondingProfile};
 #[doc(hidden)]
 pub use jp2::{
-    extract_jp2_codestream_payload, inspect_jp2_container, Jp2ChannelAssociation,
-    Jp2ChannelDefinition, Jp2ChannelType, Jp2ColorSpec, Jp2ComponentMapping,
+    extract_jp2_codestream_payload, inspect_jp2_container, inspect_jp2_container_with_settings,
+    Jp2ChannelAssociation, Jp2ChannelDefinition, Jp2ChannelType, Jp2ColorSpec, Jp2ComponentMapping,
     Jp2ComponentMappingType, Jp2ComponentMetadata, Jp2Container, Jp2FileKind, Jp2FileMetadata,
     Jp2ImageHeaderMetadata, Jp2PaletteColumn, Jp2PaletteMetadata,
 };
@@ -492,6 +493,8 @@ pub(crate) const JP2_MAGIC: &[u8] = b"\x00\x00\x00\x0C\x6A\x50\x20\x20";
 pub(crate) const CODESTREAM_MAGIC: &[u8] = b"\xFF\x4F\xFF\x51";
 
 mod image;
+#[doc(hidden)]
+pub use image::RegionRowsBlocker;
 pub use image::{DecodeSettings, Image, PreparedRegionDecoder};
 
 #[cfg(test)]

@@ -457,6 +457,9 @@ impl<'o, 't> RowOutput<'o, 't> {
                 &component_rows[..components],
             );
             self.streamed = self.streamed.saturating_add(width * components);
+            if self.sink.stopped() {
+                return Err(DecodingError::SinkStopped.into());
+            }
         }
         Ok(())
     }
@@ -607,6 +610,9 @@ impl RowOutput<'_, '_> {
         finished?;
         self.write_component_rows(&parts[..components], y, rows);
         self.streamed = self.streamed.saturating_add(samples);
+        if self.sink.stopped() {
+            return Err(DecodingError::SinkStopped.into());
+        }
         Ok(())
     }
 
