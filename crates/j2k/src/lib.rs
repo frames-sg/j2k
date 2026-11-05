@@ -57,7 +57,10 @@ pub use j2k_types::{
 };
 
 mod view;
-pub use view::{J2kCodec, J2kDecoder, J2kRowDecodeOptions, J2kView};
+pub use view::{
+    J2kCodec, J2kDecodePlan, J2kDecodeRoute, J2kDecoder, J2kRowDecodeOptions, J2kStreamingBlocker,
+    J2kView,
+};
 
 pub use batch::{
     decode_tile_into_in_context, decode_tile_region_into_in_context,
@@ -84,7 +87,7 @@ pub use j2k_types::{
 pub use metadata::{
     J2kChannelAssociation, J2kChannelDefinition, J2kChannelType, J2kColorSpec, J2kComponentInfo,
     J2kComponentMapping, J2kComponentMappingType, J2kFileMetadata, J2kPaletteColumn,
-    J2kPaletteMetadata, J2kSupportInfo,
+    J2kPaletteMetadata, J2kReferenceGrid, J2kSupportInfo,
 };
 
 pub use owned_batch::{

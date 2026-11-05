@@ -32,8 +32,15 @@ pub(super) fn build_direct_color_region_plan(
     }
 
     validate_region(roi, parsed.info.dimensions)?;
-    let output_region = roi.scaled_covering(scale);
     let image = backend::image_at_scale(input, DecodeSettings::default(), scale)?;
+    // The reduced samples `roi` covers on the reference grid, as the
+    // single-image decoder decodes them.
+    let output_region = crate::adapter::device_plan::reference_grid_covering(
+        image.image_origin(),
+        parsed.info.dimensions,
+        roi,
+        scale.denominator(),
+    );
     validate_region(output_region, (image.width(), image.height()))?;
 
     let mut native_context = j2k_native::DecoderContext::default();

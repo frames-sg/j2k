@@ -156,8 +156,20 @@ pub(super) fn decode_image_u16<'image>(
     worker: &mut BatchWorker,
     out: &mut [u16],
 ) -> Result<(), J2kError> {
-    if image.cpu_execution() == CpuExecution::ExceedsDecodeBound {
-        return Err(CpuExecution::decode_bound_error());
+    match image.cpu_execution() {
+        CpuExecution::ExceedsDecodeBound => return Err(CpuExecution::decode_bound_error()),
+        CpuExecution::StreamedRows | CpuExecution::StreamedRowsOrPlan { .. } => {
+            return decode_streamed_samples(
+                image,
+                options,
+                info,
+                parallelism,
+                context,
+                out,
+                convert_u16_row,
+            );
+        }
+        CpuExecution::OffsetPlan { .. } | CpuExecution::ComponentPlanes => {}
     }
     if decode_prepared_plan_samples(image, info, worker, out, |sample, precision| {
         u16::try_from(round_unsigned(sample, precision)).unwrap_or(u16::MAX)
@@ -179,8 +191,20 @@ pub(super) fn decode_image_i16<'image>(
     worker: &mut BatchWorker,
     out: &mut [i16],
 ) -> Result<(), J2kError> {
-    if image.cpu_execution() == CpuExecution::ExceedsDecodeBound {
-        return Err(CpuExecution::decode_bound_error());
+    match image.cpu_execution() {
+        CpuExecution::ExceedsDecodeBound => return Err(CpuExecution::decode_bound_error()),
+        CpuExecution::StreamedRows | CpuExecution::StreamedRowsOrPlan { .. } => {
+            return decode_streamed_samples(
+                image,
+                options,
+                info,
+                parallelism,
+                context,
+                out,
+                convert_i16_row,
+            );
+        }
+        CpuExecution::OffsetPlan { .. } | CpuExecution::ComponentPlanes => {}
     }
     if decode_prepared_plan_samples(image, info, worker, out, round_signed)? {
         return Ok(());
@@ -213,13 +237,16 @@ fn decode_streamed_samples<'image, T: Copy>(
         ));
     }
     let mut sink = SampleRowSink::new(info, out, convert_row)?;
-    decoded
-        .decode_region_rows_for_integer_output_with_context(
-            (output_rect.x, output_rect.y, output_rect.w, output_rect.h),
-            context,
-            &mut sink,
-        )
-        .map_err(J2kError::from_native_decode_error)?;
+    let result = decoded.decode_region_rows_for_integer_output_with_context(
+        (output_rect.x, output_rect.y, output_rect.w, output_rect.h),
+        context,
+        &mut sink,
+    );
+    // A malformed hand-over stops the decode; report it rather than the stop.
+    if sink.malformed {
+        return sink.finish();
+    }
+    result.map_err(J2kError::from_native_decode_error)?;
     sink.finish()
 }
 
@@ -337,6 +364,10 @@ impl<'out, 'info, T: Copy> SampleRowSink<'out, 'info, T> {
 }
 
 impl<T: Copy> j2k_native::ComponentRowSink for SampleRowSink<'_, '_, T> {
+    fn stopped(&self) -> bool {
+        self.malformed
+    }
+
     fn write_rows(&mut self, x: u32, y: u32, planes: &[j2k_native::ComponentPlane<'_>]) {
         if !self.malformed {
             self.write_rectangle(x, y, planes);
@@ -540,6 +571,22 @@ fn convert_u8_row(destination: &mut [u8], stride: usize, samples: &[f32], precis
 
 pub(super) fn convert_u16(sample: f32, precision: u8) -> u16 {
     u16::try_from(round_unsigned(sample, precision)).unwrap_or(u16::MAX)
+}
+
+/// [`convert_u16`] for a row of `samples`, written `stride` apart from the
+/// start of `destination`: the planned route's conversion, sample by sample.
+fn convert_u16_row(destination: &mut [u16], stride: usize, samples: &[f32], precision: u8) {
+    for (destination, &sample) in destination.iter_mut().step_by(stride).zip(samples) {
+        *destination = convert_u16(sample, precision);
+    }
+}
+
+/// [`round_signed`] for a row of `samples`, written `stride` apart from the
+/// start of `destination`: the planned route's conversion, sample by sample.
+fn convert_i16_row(destination: &mut [i16], stride: usize, samples: &[f32], precision: u8) {
+    for (destination, &sample) in destination.iter_mut().step_by(stride).zip(samples) {
+        *destination = round_signed(sample, precision);
+    }
 }
 
 #[expect(

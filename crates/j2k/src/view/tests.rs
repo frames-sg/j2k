@@ -26,6 +26,7 @@ fn fresh_native_context_preserves_configured_parallelism() {
             restart_interval: None,
             resolution_levels: 1,
         },
+        reference_grid: crate::J2kReferenceGrid::at_origin((1, 1)),
         image: None,
         settings: DecodeSettings::strict(),
         native_context: j2k_native::DecoderContext::default(),

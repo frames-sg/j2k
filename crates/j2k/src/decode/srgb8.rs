@@ -2,11 +2,12 @@
 
 //! Explicit 8-bit sRGB output normalization.
 
+use super::{decode_warnings_for_image, J2kDecodeWarning};
 use crate::{backend::ColorSpace, backend::Image, J2kError};
 use alloc::vec::Vec;
 use j2k_core::{
     ensure_allocation_within_cap, try_host_vec_filled, BufferError, HostAllocationError,
-    DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+    PixelFormat, DEFAULT_MAX_HOST_ALLOCATION_BYTES,
 };
 use moxcms::{CmsError, ColorProfile, DataColorSpace, Layout, ParsingOptions, TransformOptions};
 
@@ -40,9 +41,17 @@ pub struct J2kSrgb8Image {
     dimensions: (u32, u32),
     layout: J2kSrgb8Layout,
     data: Vec<u8>,
+    warnings: Vec<J2kDecodeWarning>,
 }
 
 impl J2kSrgb8Image {
+    /// Non-fatal warnings from the decode, such as a lenient metadata
+    /// recovery the decoder's settings allowed.
+    #[must_use]
+    pub fn warnings(&self) -> &[J2kDecodeWarning] {
+        &self.warnings
+    }
+
     /// Decoded image dimensions.
     #[must_use]
     pub const fn dimensions(&self) -> (u32, u32) {
@@ -66,9 +75,85 @@ impl J2kSrgb8Image {
     pub fn into_data(self) -> Vec<u8> {
         self.data
     }
+
+    fn with_warnings(mut self, warnings: Vec<J2kDecodeWarning>) -> Self {
+        self.warnings = warnings;
+        self
+    }
 }
 
+/// The output of an image whose sRGB8 samples are the samples
+/// `decode_into` writes in one of its own pixel formats: a Gray, RGB or
+/// RGBA image without a primary ICC profile. Such an image decodes on
+/// `decode_into`'s full-image route, straight into the result.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RoutedSrgb8 {
+    dimensions: (u32, u32),
+    layout: J2kSrgb8Layout,
+    retained_image_bytes: usize,
+}
+
+impl RoutedSrgb8 {
+    /// The routed output of `image`, or `None` when its samples need an ICC
+    /// conversion or a grey-alpha expansion first.
+    pub(crate) fn plan(image: &Image<'_>) -> Result<Option<Self>, J2kError> {
+        if image.primary_icc_profile().is_some() {
+            return Ok(None);
+        }
+        let layout = match (image.color_space(), image.has_alpha()) {
+            (ColorSpace::Gray, false) => J2kSrgb8Layout::Gray,
+            (ColorSpace::RGB, false) => J2kSrgb8Layout::Rgb,
+            (ColorSpace::RGB, true) => J2kSrgb8Layout::Rgba,
+            _ => return Ok(None),
+        };
+        let retained_image_bytes = image
+            .retained_allocation_bytes()
+            .map_err(J2kError::from_native_decode_error)?;
+        Ok(Some(Self {
+            dimensions: (image.width(), image.height()),
+            layout,
+            retained_image_bytes,
+        }))
+    }
+
+    pub(crate) const fn format(self) -> PixelFormat {
+        match self.layout {
+            J2kSrgb8Layout::Gray => PixelFormat::Gray8,
+            J2kSrgb8Layout::Rgb => PixelFormat::Rgb8,
+            J2kSrgb8Layout::Rgba => PixelFormat::Rgba8,
+        }
+    }
+
+    pub(crate) const fn stride(self) -> usize {
+        self.dimensions.0 as usize * self.layout.channels()
+    }
+
+    /// The zeroed result buffer, within the host allocation cap beside the
+    /// image's retained metadata.
+    pub(crate) fn allocate(self) -> Result<Vec<u8>, J2kError> {
+        allocate_output(self.dimensions, self.layout, self.retained_image_bytes)
+    }
+
+    pub(crate) fn finish(
+        self,
+        data: Vec<u8>,
+        warnings: Vec<J2kDecodeWarning>,
+    ) -> Result<J2kSrgb8Image, J2kError> {
+        finish(data, self.dimensions, self.layout).map(|image| image.with_warnings(warnings))
+    }
+}
+
+/// Decode the whole of `image` into component planes, then normalize them
+/// to 8-bit sRGB: the route of images [`RoutedSrgb8::plan`] does not route.
 pub(crate) fn decode_image_srgb8<'a>(
+    image: &Image<'a>,
+    native_context: &mut j2k_native::DecoderContext<'a>,
+) -> Result<J2kSrgb8Image, J2kError> {
+    let warnings = decode_warnings_for_image(image);
+    decode_image_srgb8_planes(image, native_context).map(|decoded| decoded.with_warnings(warnings))
+}
+
+fn decode_image_srgb8_planes<'a>(
     image: &Image<'a>,
     native_context: &mut j2k_native::DecoderContext<'a>,
 ) -> Result<J2kSrgb8Image, J2kError> {
@@ -401,6 +486,7 @@ fn finish(
         dimensions,
         layout,
         data,
+        warnings: Vec::new(),
     })
 }
 

@@ -18,7 +18,7 @@ use native::{planes_pack_floor, region_rows_preferred};
 
 pub(super) use u16::{
     region_rows_preferred_u16, rows_match_native_u16, u16_rows_pack_floor,
-    write_components_u16_output, write_plane_rows_u16, write_u16_output,
+    write_components_u16_output, write_plane_rows_u16, write_u16_output, write_u16_output_rows,
 };
 pub(super) use u8::{
     can_decode_u8_directly, expand_rgb8_to_rgba8, resolve_u8_color_space,
@@ -60,12 +60,30 @@ impl<'o> ComponentRowOutput<'o> {
     pub(in crate::decode) fn finish(self) -> Result<(), J2kError> {
         self.error.map_or(Ok(()), Err)
     }
+
+    /// The outcome of a region decode into this sink that returned
+    /// `decoded`: the sink's own error first, which also stops the decode
+    /// (see `ComponentRowSink::stopped`), then the decode's.
+    pub(in crate::decode) fn finish_decode(
+        self,
+        decoded: j2k_native::Result<()>,
+    ) -> Result<(), J2kError> {
+        if self.error.is_some() {
+            return self.finish();
+        }
+        decoded.map_err(J2kError::from_native_decode_error)?;
+        self.finish()
+    }
 }
 
 pub(in crate::decode) type U8RowSink<'o> = ComponentRowOutput<'o>;
 pub(in crate::decode) type U16RowSink<'o> = ComponentRowOutput<'o>;
 
 impl j2k_native::ComponentRowSink for ComponentRowOutput<'_> {
+    fn stopped(&self) -> bool {
+        self.error.is_some()
+    }
+
     fn write_rows(&mut self, x: u32, y: u32, planes: &[j2k_native::ComponentPlane<'_>]) {
         if self.error.is_some() {
             return;

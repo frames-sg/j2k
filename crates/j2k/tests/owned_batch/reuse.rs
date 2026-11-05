@@ -4,11 +4,13 @@ use std::{num::NonZeroUsize, sync::Arc};
 
 use j2k::{
     prepare_batch, BatchCodecRoute, BatchDecodeOptions, BatchItemError, BatchLayout,
-    CpuBatchDecoder, CpuBatchSamples, DecodeSettings, EncodedImage, NativeSampleType,
-    PreparationDepth,
+    CpuBatchDecodeResult, CpuBatchDecoder, CpuBatchSamples, DecodeSettings, EncodedImage,
+    J2kDecodeWarning, NativeSampleType, PreparationDepth,
 };
 
-use super::fixtures::{classic_gray8_fixture_with_tile_size, htj2k_gray8_fixture};
+use super::fixtures::{
+    classic_gray8_fixture_with_tile_size, htj2k_gray8_fixture, lenient_trailing_metadata_jp2,
+};
 
 #[test]
 fn prepared_batch_is_reusable_and_groups_heterogeneous_images_without_padding() {
@@ -284,4 +286,132 @@ fn cpu_session_reuses_preparation_workers_across_one_shot_batches() {
     assert_eq!(first_stats.preparation_worker_reuses(), 0);
     assert_eq!(second_stats.preparation_calls(), 2);
     assert_eq!(second_stats.preparation_worker_reuses(), 1);
+}
+
+/// A JP2 only a lenient parse recovers fails preparation under strict
+/// settings, and under lenient settings prepares and decodes through shared
+/// preparation, CPU preparation and the one-shot decode, reporting the
+/// recovery among its warnings as a single-image decode does.
+#[test]
+fn lenient_batches_recover_trailing_metadata_and_report_it() {
+    let (width, height) = (5, 3);
+    let bytes = Arc::<[u8]>::from(lenient_trailing_metadata_jp2(width, height));
+    let inputs = || vec![EncodedImage::full(Arc::clone(&bytes))];
+    let pixels = (0_u8..15).collect::<Vec<_>>();
+
+    let strict = prepare_batch(inputs(), BatchDecodeOptions::default())
+        .expect("strict preparation is an infrastructure success");
+    assert_eq!(strict.errors().len(), 1, "strict settings reject the box");
+    assert!(strict.groups().is_empty());
+
+    let lenient = {
+        let mut options = BatchDecodeOptions::default();
+        options.settings = DecodeSettings::lenient();
+        options
+    };
+    let mut decoder = CpuBatchDecoder::new(lenient);
+    let shared = prepare_batch(inputs(), lenient).expect("shared preparation");
+    let cpu = decoder.prepare(inputs()).expect("CPU preparation");
+    for (route, prepared) in [("shared", &shared), ("CPU", &cpu)] {
+        assert!(
+            prepared.errors().is_empty(),
+            "{route}: {:?}",
+            prepared.errors()
+        );
+        let output = decoder.decode_prepared(prepared).expect("decode prepared");
+        assert_recovered_gray(&output, &pixels, route);
+    }
+    let one_shot = decoder.decode(inputs()).expect("one-shot decode");
+    assert_recovered_gray(&one_shot, &pixels, "one-shot");
+}
+
+fn assert_recovered_gray(decoded: &CpuBatchDecodeResult, pixels: &[u8], route: &str) {
+    assert!(
+        decoded.errors().is_empty(),
+        "{route}: {:?}",
+        decoded.errors()
+    );
+    assert_eq!(decoded.groups().len(), 1, "{route}");
+    let group = &decoded.groups()[0];
+    let CpuBatchSamples::U8(samples) = group.samples() else {
+        panic!("{route}: expected u8 samples");
+    };
+    assert_eq!(samples.as_slice(), pixels, "{route}");
+    assert_eq!(
+        group.warnings(),
+        &[vec![J2kDecodeWarning::LenientMetadataRecovery]],
+        "{route}"
+    );
+}
+
+/// A four-component sRGB JP2 without channel definitions has no alpha a
+/// strict batch can name, while a lenient decode takes the fourth component
+/// as straight alpha, as a lenient single-image decode does.
+#[test]
+fn lenient_batches_infer_undeclared_alpha_as_single_image_decodes_do() {
+    let (width, height) = (3_u32, 2_u32);
+    let pixels = (0_u8..24).map(|value| value * 9).collect::<Vec<_>>();
+    let codestream = j2k_native::encode(
+        &pixels,
+        width,
+        height,
+        4,
+        8,
+        false,
+        &j2k_native::EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 1,
+            ..j2k_native::EncodeOptions::default()
+        },
+    )
+    .expect("encode four components");
+    let bytes = Arc::<[u8]>::from(j2k_test_support::wrap_jp2_codestream(
+        &codestream,
+        width,
+        height,
+        4,
+        8,
+        16,
+    ));
+    let inputs = || vec![EncodedImage::full(Arc::clone(&bytes))];
+
+    let strict = prepare_batch(inputs(), BatchDecodeOptions::default()).expect("strict prepare");
+    assert!(
+        matches!(
+            strict.errors(),
+            [error] if matches!(error.source, BatchItemError::NonRepresentableBatchOutput { .. })
+        ),
+        "{:?}",
+        strict.errors()
+    );
+
+    let lenient = {
+        let mut options = BatchDecodeOptions::default();
+        options.settings = DecodeSettings::lenient();
+        options.layout = BatchLayout::Nhwc;
+        options
+    };
+    let mut single = j2k::J2kDecoder::new_with_settings(&bytes, DecodeSettings::lenient())
+        .expect("lenient single-image decoder");
+    let mut expected = vec![0_u8; pixels.len()];
+    single
+        .decode_into(&mut expected, width as usize * 4, j2k::PixelFormat::Rgba8)
+        .expect("lenient single-image RGBA decode");
+    assert_eq!(expected, pixels);
+
+    let decoded = CpuBatchDecoder::new(lenient)
+        .decode(inputs())
+        .expect("lenient batch decode");
+    assert!(decoded.errors().is_empty(), "{:?}", decoded.errors());
+    let group = &decoded.groups()[0];
+    assert_eq!(group.info().color, j2k::BatchColor::Rgba);
+    assert_eq!(group.info().alpha, j2k::BatchAlpha::Straight);
+    let CpuBatchSamples::U8(samples) = group.samples() else {
+        panic!("expected u8 samples");
+    };
+    assert_eq!(samples.as_slice(), expected);
+    assert_eq!(
+        group.warnings(),
+        &[vec![J2kDecodeWarning::LenientMetadataRecovery]]
+    );
 }

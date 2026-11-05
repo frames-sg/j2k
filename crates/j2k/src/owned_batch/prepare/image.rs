@@ -3,12 +3,13 @@
 //! Per-image metadata validation and retained native plan construction.
 
 use super::super::{
-    extract_j2k_codestream_payload, parse_image_info, Arc, BatchAlpha, BatchCodecRoute, BatchColor,
-    BatchDecodeOptions, BatchErrorStage, BatchExecutionShape, BatchGroupInfo, BatchItemError,
-    BatchLayout, BatchWaveletTransform, BatchWorker, Colorspace, CompressedTransferSyntax,
-    CpuExecution, DeviceDecodePlan, EncodedImage, J2kCodestreamRange, J2kError, J2kSupportInfo,
-    NativeSampleType, NonRepresentableReason, PreparationDepth, PrepareImageResult,
-    PreparedClassicPlan, PreparedCodecPlan, PreparedHtj2kPlan, PreparedImage, PreparedImageInner,
+    extract_j2k_codestream_payload, parse_image_info_with_settings, Arc, BatchAlpha,
+    BatchCodecRoute, BatchColor, BatchDecodeOptions, BatchErrorStage, BatchExecutionShape,
+    BatchGroupInfo, BatchItemError, BatchWaveletTransform, BatchWorker, Colorspace,
+    CompressedTransferSyntax, CpuExecution, DeviceDecodePlan, EncodedImage, J2kCodestreamRange,
+    J2kError, J2kSupportInfo, NativeSampleType, NonRepresentableReason, PreparationDepth,
+    PrepareImageResult, PreparedClassicPlan, PreparedCodecPlan, PreparedHtj2kPlan, PreparedImage,
+    PreparedImageInner,
 };
 
 pub(super) fn prepare_image(
@@ -17,17 +18,22 @@ pub(super) fn prepare_image(
     options: BatchDecodeOptions,
     worker: &mut BatchWorker,
 ) -> PrepareImageResult {
-    let parsed = parse_image_info(&input.bytes).map_err(|source| BatchItemError::Codec {
-        stage: BatchErrorStage::Prepare,
-        source: Arc::new(source),
-    })?;
+    // Parse with the caller's settings, as the native image below parses:
+    // a lenient batch then plans from the metadata its decode recovers.
+    let parsed =
+        parse_image_info_with_settings(&input.bytes, options.settings).map_err(|source| {
+            BatchItemError::Codec {
+                stage: BatchErrorStage::Prepare,
+                source: Arc::new(source),
+            }
+        })?;
     let support = parsed.into_support_info();
     let plan = DeviceDecodePlan::for_image(support.info.dimensions, input.request.device_request())
         .map_err(|source| BatchItemError::Codec {
             stage: BatchErrorStage::Prepare,
             source: Arc::new(source),
         })?;
-    let mut info = batch_group_info(&support, plan, options.layout)?;
+    let mut info = batch_group_info(&support, plan, options)?;
     let codestream =
         extract_j2k_codestream_payload(&input.bytes).map_err(|source| BatchItemError::Codec {
             stage: BatchErrorStage::Prepare,
@@ -44,7 +50,22 @@ pub(super) fn prepare_image(
             stage: BatchErrorStage::Prepare,
             source: Arc::new(source),
         })?;
+    // Size reduced outputs on the reference grid, now that the image's origin
+    // is known: an origin that is not a multiple of the scale narrows them.
+    let plan = DeviceDecodePlan::for_reference_grid(
+        crate::J2kReferenceGrid::of_native(&native_image, support.info.dimensions),
+        input.request.device_request(),
+    )
+    .map_err(|source| BatchItemError::Codec {
+        stage: BatchErrorStage::Prepare,
+        source: Arc::new(source),
+    })?;
+    info.dimensions = plan.output_dims();
     let used_lenient_metadata_recovery = native_image.used_lenient_metadata_recovery();
+    // The planned alpha must be the alpha the native decode writes.
+    if (info.alpha != BatchAlpha::None) != native_image.has_alpha() {
+        return Err(nonrepresentable(NonRepresentableReason::UnsupportedColor));
+    }
     let codec_plan = match info.route {
         BatchCodecRoute::Classic => {
             prepare_classic_offset_plan(&native_image, &info, plan, worker)?
@@ -58,6 +79,7 @@ pub(super) fn prepare_image(
         &codec_plan,
         &info,
         native_image.region_decode_streams_rows(),
+        options.planned_decode_bound(planned_decode_bound()),
     );
     let preparation_depth = codec_plan.preparation_depth();
     let execution_shape = batch_execution_shape(&support, plan, preparation_depth);
@@ -90,14 +112,16 @@ pub(super) fn prepare_image(
 /// the streamed route holds a band of rows. While its plan fits the
 /// per-decode bound, the image keeps it for decoding alone in a Gray8 group
 /// ([`CpuExecution::StreamedRowsOrPlan`]). Other outputs keep their offset
-/// plan unless its serial execution exceeds the per-decode bound, which
-/// rejects them, as it does images whose region decode would hand over
+/// plan unless its serial execution exceeds the per-decode bound: a 16-bit
+/// Gray or RGB image whose rows stream then streams them, and any other
+/// image is rejected, as are images whose region decode would hand over
 /// whole component planes instead of rows. The claim of an offset plan is
 /// its parallel peak.
 pub(super) fn choose_cpu_execution(
     codec_plan: &PreparedCodecPlan,
     info: &BatchGroupInfo,
     region_streams_rows: bool,
+    decode_bound: usize,
 ) -> CpuExecution {
     let planned = |parallel| match codec_plan {
         PreparedCodecPlan::Classic(plan) => {
@@ -112,6 +136,10 @@ pub(super) fn choose_cpu_execution(
         return CpuExecution::ComponentPlanes;
     }
     let streams_rows = region_streams_rows && has_streamed_output(info);
+    // Only 8-bit outputs stream by preference, where the streamed route is
+    // measured to be the better one; 16-bit outputs stream only in place of
+    // a plan the bound refuses.
+    let prefers_streaming = streams_rows && info.sample_type == NativeSampleType::U8;
     let exceeds_bound = if streams_rows {
         CpuExecution::StreamedRows
     } else {
@@ -122,13 +150,13 @@ pub(super) fn choose_cpu_execution(
             Err(j2k_native::DecodeError::Validation(j2k_native::ValidationError::ImageTooLarge)),
             _,
         ) => exceeds_bound,
-        (Ok(serial), _) if serial > planned_decode_bound() => exceeds_bound,
-        (Ok(_), Ok(bytes)) if !streams_rows || bytes <= stream_above_planned_bytes() => {
+        (Ok(serial), _) if serial > decode_bound => exceeds_bound,
+        (Ok(_), Ok(bytes)) if !prefers_streaming || bytes <= stream_above_planned_bytes() => {
             CpuExecution::OffsetPlan { bytes }
         }
         (Ok(_), Ok(bytes)) => CpuExecution::StreamedRowsOrPlan { bytes },
         // An 8-bit plan that fits only serially streams.
-        (Ok(_), _) if streams_rows => CpuExecution::StreamedRows,
+        (Ok(_), _) if prefers_streaming => CpuExecution::StreamedRows,
         // Any other plan that fits only serially, or a malformed plan, keeps
         // the worst-case claim and reports any error from execution.
         _ => CpuExecution::OffsetPlan {
@@ -137,13 +165,17 @@ pub(super) fn choose_cpu_execution(
     }
 }
 
-/// Gray8 and RGB8 outputs have a streamed route: the region decode hands
-/// over finished rows of 8-bit components where the image lets it (see
-/// `j2k_native::Image::region_decode_streams_rows`). Other outputs keep the
-/// bound.
+/// Gray and RGB outputs of every sample type have a streamed route: the
+/// region decode hands over finished rows of components where the image lets
+/// it (see `j2k_native::Image::region_decode_streams_rows`), each sample
+/// converted as the planned route converts it. RGBA outputs keep the bound:
+/// their alpha needs a channel-definition box, which keeps the region decode
+/// on whole component planes.
 fn has_streamed_output(info: &BatchGroupInfo) -> bool {
-    info.sample_type == NativeSampleType::U8
-        && matches!(info.color, BatchColor::Gray | BatchColor::Rgb)
+    matches!(
+        info.sample_type,
+        NativeSampleType::U8 | NativeSampleType::U16 | NativeSampleType::I16
+    ) && matches!(info.color, BatchColor::Gray | BatchColor::Rgb)
 }
 
 /// Planned offset-plan execution above which Gray8/RGB8 images stream
@@ -281,7 +313,7 @@ fn prepare_htj2k_offset_plan(
 pub(super) fn batch_group_info(
     support: &J2kSupportInfo,
     plan: DeviceDecodePlan,
-    layout: BatchLayout,
+    options: BatchDecodeOptions,
 ) -> Result<BatchGroupInfo, BatchItemError> {
     let Some(first) = support.components.first().copied() else {
         return Err(nonrepresentable(
@@ -319,7 +351,7 @@ pub(super) fn batch_group_info(
         ));
     }
 
-    let (color, alpha) = representable_batch_color(support)?;
+    let (color, alpha) = representable_batch_color(support, options.settings)?;
     let sample_type = if first.signed {
         NativeSampleType::I16
     } else if first.bit_depth <= 8 {
@@ -353,7 +385,7 @@ pub(super) fn batch_group_info(
         precision: first.bit_depth,
         signed: first.signed,
         sample_type,
-        layout,
+        layout: options.layout,
         colorspace: support.info.colorspace,
         route,
         transform,
@@ -402,6 +434,7 @@ pub(super) fn reconcile_codec_plan_metadata(
 
 fn representable_batch_color(
     support: &J2kSupportInfo,
+    settings: crate::DecodeSettings,
 ) -> Result<(BatchColor, BatchAlpha), BatchItemError> {
     let file_metadata = support.file_metadata.as_ref();
     if file_metadata.is_some_and(|metadata| {
@@ -424,6 +457,15 @@ fn representable_batch_color(
             }) =>
         {
             Ok((BatchColor::Rgb, BatchAlpha::None))
+        }
+        // A lenient decode takes a fourth component without channel
+        // definitions as straight alpha, as `j2k_native` infers it.
+        (4, Colorspace::Rgb | Colorspace::SRgb | Colorspace::Rct | Colorspace::Ict)
+            if settings.lenient_tolerance_enabled()
+                && file_metadata
+                    .is_some_and(|metadata| metadata.channel_definitions.is_empty()) =>
+        {
+            Ok((BatchColor::Rgba, BatchAlpha::Straight))
         }
         (4, Colorspace::Rgb | Colorspace::SRgb | Colorspace::Rct | Colorspace::Ict) => {
             file_metadata

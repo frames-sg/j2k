@@ -252,6 +252,11 @@ impl<E: core::error::Error + 'static> StripeSink<'_, E> {
 }
 
 impl<E: core::error::Error + 'static> j2k_native::ComponentRowSink for StripeSink<'_, E> {
+    /// A failed sink stops the decode: its rows would go nowhere.
+    fn stopped(&self) -> bool {
+        self.error.is_some()
+    }
+
     fn write_rows(&mut self, x: u32, y: u32, planes: &[j2k_native::ComponentPlane<'_>]) {
         if self.error.is_some() {
             return;

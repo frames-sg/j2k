@@ -545,3 +545,64 @@ fn production_batch_decode_reports_first_failing_tile_index() {
 
     let _: &j2k_core::BatchDecodeError<j2k::J2kError> = &err;
 }
+
+/// Tile batches of reduced regions of an image whose reference-grid origin
+/// is odd at every resolution, classic and HTJ2K (whose RGB regions take the
+/// direct colour plan), write and report what the single-image decoder does:
+/// the reduced samples the region covers on the reference grid.
+#[test]
+fn reduced_tile_regions_of_an_odd_origin_image_match_single_image_decodes() {
+    use j2k_test_support::{OPENJPEG_ORIGIN_23X17_AT_3_5, OPENJPH_ORIGIN_23X17_AT_3_5};
+    let rois = [
+        Rect::full((23, 17)),
+        Rect {
+            x: 4,
+            y: 2,
+            w: 13,
+            h: 11,
+        },
+    ];
+    let fmt = PixelFormat::Rgb8;
+    for fixture in [OPENJPEG_ORIGIN_23X17_AT_3_5, OPENJPH_ORIGIN_23X17_AT_3_5] {
+        for scale in [Downscale::Half, Downscale::Quarter, Downscale::Eighth] {
+            for roi in rois {
+                let case = format!("{scale:?}, {roi:?}");
+                let stride = 12 * fmt.bytes_per_pixel();
+                let mut expected = vec![0_u8; stride * 9];
+                let reference = J2kDecoder::new(fixture)
+                    .expect("decoder")
+                    .decode_region_scaled_into(
+                        &mut j2k::J2kScratchPool::new(),
+                        &mut expected,
+                        stride,
+                        fmt,
+                        roi,
+                        scale,
+                    )
+                    .unwrap_or_else(|error| panic!("{case}: reference: {error:?}"));
+                // Two identical jobs share one direct plan; one runs alone.
+                for jobs in [1, 2] {
+                    let mut outputs = vec![vec![0_u8; expected.len()]; jobs];
+                    let outcomes = {
+                        let mut jobs = outputs
+                            .iter_mut()
+                            .map(|out| TileRegionScaledDecodeJob {
+                                input: fixture,
+                                out: out.as_mut_slice(),
+                                stride,
+                                roi,
+                                scale,
+                            })
+                            .collect::<Vec<_>>();
+                        decode_tiles_region_scaled_into(&mut jobs, fmt, TileBatchOptions::default())
+                            .unwrap_or_else(|error| panic!("{case}: batch: {error:?}"))
+                    };
+                    for (outcome, out) in outcomes.iter().zip(&outputs) {
+                        assert_eq!(outcome.decoded, reference.decoded, "{case}, {jobs} jobs");
+                        assert!(out == &expected, "{case}, {jobs} jobs: samples differ");
+                    }
+                }
+            }
+        }
+    }
+}

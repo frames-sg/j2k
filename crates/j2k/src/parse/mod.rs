@@ -6,7 +6,7 @@ mod codestream;
 
 use self::boxes::{extract_jp2_codestream_payload, parse_jp2};
 use self::codestream::{parse_codestream, CodestreamInfo};
-use crate::{J2kComponentInfo, J2kError, J2kFileMetadata, J2kSupportInfo};
+use crate::{DecodeSettings, J2kComponentInfo, J2kError, J2kFileMetadata, J2kSupportInfo};
 use j2k_core::{
     Colorspace, CompressedPayloadKind, CompressedTransferSyntax, Info, TileLayout, Unsupported,
 };
@@ -16,8 +16,18 @@ pub(crate) fn parse_info(input: &[u8]) -> Result<Info, J2kError> {
 }
 
 pub(crate) fn parse_image_info(input: &[u8]) -> Result<ParsedImageInfo, J2kError> {
+    parse_image_info_with_settings(input, DecodeSettings::strict())
+}
+
+/// [`parse_image_info`] with the JP2/JPH metadata recoveries `settings`
+/// allows a decode: the metadata of a lenient decode's recovered container.
+/// Raw codestream parsing is strict under every setting.
+pub(crate) fn parse_image_info_with_settings(
+    input: &[u8],
+    settings: DecodeSettings,
+) -> Result<ParsedImageInfo, J2kError> {
     if boxes::looks_like_jp2(input) {
-        return parse_jp2(input);
+        return parse_jp2(input, settings);
     }
     if codestream::looks_like_codestream(input) {
         let parsed = parse_codestream(input, 0)?;
@@ -33,6 +43,13 @@ pub(crate) fn parse_image_info(input: &[u8]) -> Result<ParsedImageInfo, J2kError
     Err(J2kError::Unsupported(Unsupported {
         what: "input is not a JP2 container or raw JPEG 2000 codestream",
     }))
+}
+
+/// Where the image and tiles of `input`, a raw codestream or JP2/JPH file,
+/// lie on the reference grid, from the codestream's main header alone.
+pub(crate) fn parse_reference_grid(input: &[u8]) -> Result<crate::J2kReferenceGrid, J2kError> {
+    let payload = extract_j2k_codestream_payload(input)?;
+    codestream::parse_reference_grid(payload.codestream())
 }
 
 /// Borrowed raw codestream slice extracted from raw JPEG 2000 bytes or a JP2/JPH wrapper.

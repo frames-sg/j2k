@@ -206,11 +206,17 @@ fn cpu_batch_streams_rgb8_and_gray8_plans_over_the_decode_bound() {
 #[test]
 fn cpu_prepare_rejects_plans_over_the_bound_without_a_streamed_route() {
     let small = classic_rgb8(16, 16);
-    let gray12 = classic_fixture(96, 64, 1, 12);
+    // Channel definitions keep the region decode on component planes, so
+    // this 16-bit RGB image has no streamed route.
+    let rgb12 = wrap_jp2(
+        &classic_fixture(96, 64, 3, 12),
+        j2k_core::Colorspace::SRgb,
+        &identity_rgb_channel_definitions(),
+    );
     let inputs = || {
         vec![
             EncodedImage::full(Arc::clone(&small)),
-            EncodedImage::full(Arc::clone(&gray12)),
+            EncodedImage::full(Arc::clone(&rgb12)),
         ]
     };
     let mut decoder = CpuBatchDecoder::new(single_worker_options());
@@ -837,6 +843,64 @@ fn planned_images_among_streamed_ones_keep_the_group_worker_policy() {
                 (workers > 1).then_some(workers.min(limit)),
                 "{label}"
             );
+        }
+    }
+}
+
+/// 16-bit Gray and RGB images whose plans pass the per-decode bound stream
+/// their rows instead of being rejected, unsigned and signed and in both
+/// layouts, to the samples their plans write; within the bound they keep
+/// their plans.
+#[test]
+fn sixteen_bit_plans_over_the_bound_stream_to_the_planned_samples() {
+    let signed_gray12 = {
+        let samples = (0_i32..96 * 64)
+            .flat_map(|index| {
+                i16::try_from(index * 37 % 4096 - 2048)
+                    .expect("12-bit sample")
+                    .to_le_bytes()
+            })
+            .collect::<Vec<_>>();
+        let options = j2k_native::EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 3,
+            ..j2k_native::EncodeOptions::default()
+        };
+        Arc::<[u8]>::from(
+            j2k_native::encode(&samples, 96, 64, 1, 12, true, &options).expect("encode signed"),
+        )
+    };
+    let fixtures = [
+        ("gray12", classic_fixture(96, 64, 1, 12)),
+        ("rgb12", classic_fixture(96, 64, 3, 12)),
+        ("signed gray12", signed_gray12),
+    ];
+    for layout in [BatchLayout::Nchw, BatchLayout::Nhwc] {
+        for (name, bytes) in &fixtures {
+            let label = format!("{name} {layout:?}");
+            let inputs = || vec![EncodedImage::full(Arc::clone(bytes))];
+            let mut decoder = CpuBatchDecoder::new(single_worker_options_with(layout));
+            let planned = decoder.prepare(inputs()).expect("prepare plans");
+            assert!(
+                matches!(
+                    planned_bytes(&planned)[..],
+                    [(0, CpuExecution::OffsetPlan { .. })]
+                ),
+                "{label}"
+            );
+            let reference = decoder.decode_prepared(&planned).expect("decode plans");
+            assert_eq!(reference.errors(), &[] as &[IndexedBatchError], "{label}");
+
+            let _bound = PlannedBound::hold(1);
+            let streamed = decoder.prepare(inputs()).expect("prepare streamed");
+            assert_eq!(
+                planned_bytes(&streamed),
+                [(0, CpuExecution::StreamedRows)],
+                "{label}"
+            );
+            let output = decoder.decode_prepared(&streamed).expect("decode streamed");
+            assert_eq!(output.errors(), &[] as &[IndexedBatchError], "{label}");
+            assert_eq!(output.groups(), reference.groups(), "{label}");
         }
     }
 }

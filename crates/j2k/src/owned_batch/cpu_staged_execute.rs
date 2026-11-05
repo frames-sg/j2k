@@ -39,7 +39,11 @@ pub(super) fn run_staged_typed_group<T: Copy + Send>(
     // Every image of a window keeps its own whole-image scratch until the
     // window is materialized. Keep the summed planned executions within the
     // same cap the generic scheduler uses; windows run one after another.
-    let window_budget = batch_execution_cap_bytes();
+    let window_budget = group
+        .working_memory_limit
+        .map_or(batch_execution_cap_bytes(), |limit| {
+            batch_execution_cap_bytes().min(limit.get())
+        });
     let mut window_start = 0;
     while window_start < image_jobs.len() {
         let (window_end, _) = staged_window_len(

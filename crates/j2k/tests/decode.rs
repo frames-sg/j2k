@@ -414,6 +414,14 @@ fn strict_default_rejects_but_explicit_lenient_recovers_trailing_jp2_metadata() 
 
     let view =
         J2kView::parse_with_settings(&jp2, FacadeDecodeSettings::lenient()).expect("lenient view");
+    let support = view
+        .support_info()
+        .expect("a lenient parse classifies the recovered file");
+    assert_eq!(support.info.dimensions, (2, 2));
+    assert!(
+        view.passthrough_candidate().is_none(),
+        "recovered bytes are not passed through"
+    );
     let mut decoder = J2kDecoder::from_view(view).expect("decoder from lenient view");
     let mut out = [0_u8; 4];
     let outcome = decoder
@@ -440,6 +448,59 @@ fn strict_default_rejects_but_explicit_lenient_recovers_trailing_jp2_metadata() 
         scaled_outcome.warnings,
         vec![J2kDecodeWarning::LenientMetadataRecovery]
     );
+}
+
+/// The single-image entry points that decode a recovered image report the
+/// recovery: rows that stream from one whole-image decode (one level) or
+/// decode a stripe at a time (no levels, and 29-bit rows), at 8 and 16
+/// bits, and the 8-bit sRGB result.
+#[test]
+fn lenient_recovery_warns_from_every_single_image_entry_point() {
+    let (width, height) = (16_u32, 12_u32);
+    let pixels = (0..width * height)
+        .map(|index| u8::try_from(index * 7 % 256).expect("byte"))
+        .collect::<Vec<_>>();
+    let wide = (0..width * height)
+        .flat_map(|index| unsigned_29_bytes(index * 0x0001_0203))
+        .collect::<Vec<_>>();
+    let expected = vec![J2kDecodeWarning::LenientMetadataRecovery];
+    let rows = J2kRowDecodeOptions::new(5);
+    for (levels, bit_depth) in [(1, 8), (0, 8), (1, 29)] {
+        let case = format!("{levels} levels, {bit_depth} bits");
+        let samples = if bit_depth == 8 { &pixels } else { &wide };
+        let codestream =
+            encode_codestream_with_levels(samples, width, height, 1, bit_depth, true, levels);
+        let mut jp2 = wrap_jp2_codestream(&codestream, width, height, 1, bit_depth, 17);
+        jp2.extend_from_slice(&[0, 0, 0, 16, b'x', b'm', b'l', b' ']);
+        let lenient = || {
+            J2kDecoder::new_with_settings(&jp2, FacadeDecodeSettings::lenient())
+                .expect("lenient decoder")
+        };
+
+        let mut out = vec![0_u8; (width * height) as usize];
+        let outcome = lenient()
+            .decode_into(&mut out, width as usize, PixelFormat::Gray8)
+            .expect("decode_into");
+        assert_eq!(outcome.warnings, expected, "decode_into, {case}");
+
+        let mut rows_u8 = CollectRowsU8::default();
+        let outcome = lenient()
+            .decode_rows_u8_bounded(&mut rows_u8, rows)
+            .expect("u8 rows");
+        assert_eq!(outcome.warnings, expected, "u8 rows, {case}");
+        assert_eq!(rows_u8.rows, out, "u8 rows, {case}");
+
+        let mut rows_u16 = CollectRowsU16::default();
+        let outcome = lenient()
+            .decode_rows_u16_bounded(&mut rows_u16, rows)
+            .expect("u16 rows");
+        assert_eq!(outcome.warnings, expected, "u16 rows, {case}");
+        assert_eq!(rows_u16.rows.len(), out.len(), "u16 rows, {case}");
+
+        let srgb8 = lenient().decode_srgb8().expect("decode_srgb8");
+        assert_eq!(srgb8.warnings(), expected, "decode_srgb8, {case}");
+        assert_eq!(srgb8.data(), out, "decode_srgb8, {case}");
+    }
 }
 
 #[test]

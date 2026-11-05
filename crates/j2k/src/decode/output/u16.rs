@@ -451,13 +451,42 @@ pub(in crate::decode) fn write_u16_output(
     stride: usize,
     fmt: PixelFormat,
 ) -> Result<(), J2kError> {
+    let rows = 0..raw.height as usize;
+    write_u16_output_rows(color_space, has_alpha, raw, rows, out, stride, fmt)
+}
+
+/// Write rows `rows` of `raw` to `out` from its first row, as
+/// [`write_u16_output`] writes those rows of the whole bitmap.
+pub(in crate::decode) fn write_u16_output_rows(
+    color_space: &ColorSpace,
+    has_alpha: bool,
+    raw: &RawBitmap,
+    rows: Range<usize>,
+    out: &mut [u8],
+    stride: usize,
+    fmt: PixelFormat,
+) -> Result<(), J2kError> {
     let width = raw.width as usize;
-    let height = raw.height as usize;
+    if rows.start > rows.end || rows.end > raw.height as usize {
+        return Err(J2kError::internal_backend("bitmap rows outside the bitmap"));
+    }
+    let height = rows.len();
+    let row_bytes = width
+        .checked_mul(usize::from(raw.num_components))
+        .and_then(|samples| samples.checked_mul(usize::from(raw.bytes_per_sample)))
+        .ok_or(J2kError::DimensionOverflow {
+            width: raw.width,
+            height: raw.height,
+        })?;
+    let data = raw
+        .data
+        .get(rows.start * row_bytes..rows.end * row_bytes)
+        .ok_or_else(|| J2kError::internal_backend("bitmap shorter than its rows"))?;
     let signed = channel_signedness(raw);
     match (color_space, has_alpha, raw.num_components, fmt) {
         (ColorSpace::RGB, false, 3, PixelFormat::Rgb16) => {
             convert_or_copy_u16(
-                &raw.data,
+                data,
                 raw.bytes_per_sample,
                 raw.bit_depth,
                 &signed[..3],
@@ -469,7 +498,7 @@ pub(in crate::decode) fn write_u16_output(
         }
         (ColorSpace::RGB, true, 4, PixelFormat::Rgb16) => {
             write_u16_channel_rows(U16ChannelRows {
-                src: &raw.data,
+                src: data,
                 bytes_per_sample: raw.bytes_per_sample,
                 bit_depth: raw.bit_depth,
                 signed,
@@ -483,7 +512,7 @@ pub(in crate::decode) fn write_u16_output(
         }
         (ColorSpace::RGB, false, 3, PixelFormat::Rgba16) => {
             write_u16_channel_rows(U16ChannelRows {
-                src: &raw.data,
+                src: data,
                 bytes_per_sample: raw.bytes_per_sample,
                 bit_depth: raw.bit_depth,
                 signed,
@@ -497,7 +526,7 @@ pub(in crate::decode) fn write_u16_output(
         }
         (ColorSpace::RGB, true, 4, PixelFormat::Rgba16) => {
             write_u16_channel_rows(U16ChannelRows {
-                src: &raw.data,
+                src: data,
                 bytes_per_sample: raw.bytes_per_sample,
                 bit_depth: raw.bit_depth,
                 signed,
@@ -511,7 +540,7 @@ pub(in crate::decode) fn write_u16_output(
         }
         (ColorSpace::Gray, false, 1, PixelFormat::Gray16) => {
             convert_or_copy_u16(
-                &raw.data,
+                data,
                 raw.bytes_per_sample,
                 raw.bit_depth,
                 &signed[..1],

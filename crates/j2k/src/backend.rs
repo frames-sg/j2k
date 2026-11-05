@@ -3,7 +3,7 @@
 use crate::{DecodeSettings, J2kError};
 use j2k_core::{Colorspace, Downscale, Info};
 
-pub(crate) use j2k_native::{ColorSpace, DecodedComponents, Image, RawBitmap};
+pub(crate) use j2k_native::{Bitmap, ColorSpace, DecodedComponents, Image, RawBitmap};
 
 pub(crate) fn image(
     bytes: &[u8],

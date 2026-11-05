@@ -108,6 +108,53 @@ pub struct BatchDecodeOptions {
     pub settings: DecodeSettings,
     /// CPU worker count. `None` uses available parallelism.
     pub workers: Option<NonZeroUsize>,
+    /// Working memory the CPU batch decoder may plan for at once. `None`
+    /// keeps the default, which scales with the memory the host reports and
+    /// never admits fewer than four worst-case decodes.
+    ///
+    /// A limit lowers the per-image planned execution bound (an image whose
+    /// plan passes it streams its rows where its output can stream, and is
+    /// otherwise rejected when [`crate::CpuBatchDecoder`] prepares it), the
+    /// summed plans of images staged together, and the worker count, to one
+    /// worker per worst-case native decode the limit holds and never fewer
+    /// than one. Preparation records the outcome with each image.
+    ///
+    /// This bounds what the decoder plans before it decodes, not process
+    /// memory: inputs and outputs are not included, and a streamed or
+    /// admitted decode still runs under the native per-decode budget.
+    pub max_working_memory_bytes: Option<NonZeroUsize>,
+}
+
+impl BatchDecodeOptions {
+    /// The per-decode planned execution bound under these options.
+    pub(crate) fn planned_decode_bound(self, default: usize) -> usize {
+        self.max_working_memory_bytes
+            .map_or(default, |limit| default.min(limit.get()))
+    }
+
+    /// The worker setting to schedule `held` retained workers with: the
+    /// caller's own unless a working-memory limit made the workers fewer
+    /// than it asks for.
+    pub(crate) fn scheduled_workers(self, held: usize) -> Option<NonZeroUsize> {
+        let requested = self.workers.map_or_else(
+            || std::thread::available_parallelism().map_or(1, NonZeroUsize::get),
+            NonZeroUsize::get,
+        );
+        if self.max_working_memory_bytes.is_some() && held < requested {
+            return NonZeroUsize::new(held);
+        }
+        self.workers
+    }
+
+    /// The worker count these options allow, of `requested`.
+    pub(crate) fn worker_limit(self, requested: usize) -> usize {
+        let claims = self.max_working_memory_bytes.map_or(usize::MAX, |limit| {
+            (limit.get() / crate::batch::allocation::GENERIC_WORKER_CLAIM_BYTES).max(1)
+        });
+        requested
+            .clamp(1, crate::batch::allocation::generic_batch_worker_limit())
+            .min(claims)
+    }
 }
 
 impl Default for BatchDecodeOptions {
@@ -116,6 +163,7 @@ impl Default for BatchDecodeOptions {
             layout: BatchLayout::Nchw,
             settings: DecodeSettings::strict(),
             workers: None,
+            max_working_memory_bytes: None,
         }
     }
 }

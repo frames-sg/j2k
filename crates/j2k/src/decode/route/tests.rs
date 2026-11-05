@@ -1340,3 +1340,61 @@ fn one_thread_default_streams_write_the_planes_bytes() {
         assert!(decode(None) == decode(Some(usize::MAX)), "{label}");
     }
 }
+
+/// Tiles whose share of the decode budget cannot hold them decode again once
+/// the other workers finish, alone with the whole budget: a share of one
+/// KiB refuses every tile on four workers, and the decode still writes the
+/// planes route's bytes.
+#[test]
+fn tiles_their_share_refuses_decode_alone_afterwards() {
+    use super::tiles::{decode_tiles_into, REFUSED_TILES, TILE_SHARE_OVERRIDE};
+    use core::sync::atomic::Ordering;
+    let bytes = codestream(
+        3,
+        &EncodeOptions {
+            num_decomposition_levels: 2,
+            tile_size: Some((32, 40)),
+            ..EncodeOptions::default()
+        },
+    );
+    let image = image_at_scale(&bytes, DecodeSettings::default(), Downscale::None).expect("image");
+    let tiles = image
+        .output_tile_rects()
+        .expect("tile rects")
+        .into_iter()
+        .map(|(x, y, w, h)| Rect { x, y, w, h })
+        .collect::<Vec<_>>();
+    assert_eq!(tiles.len(), 6);
+    let fmt = PixelFormat::Rgb8;
+    let stride = 96 * fmt.bytes_per_pixel();
+    let mut planes = vec![0_u8; stride * 80];
+    decode_full_image_into_with_native_context(
+        &image,
+        &mut DecoderContext::default(),
+        &mut planes,
+        stride,
+        fmt,
+        &FullImageRoute::Planes,
+    )
+    .expect("planes");
+
+    for share in [None, Some(1024)] {
+        TILE_SHARE_OVERRIDE.with(|cell| cell.set(share));
+        let refused_before = REFUSED_TILES.load(Ordering::Relaxed);
+        let mut out = vec![0_u8; planes.len()];
+        let decoded = decode_tiles_into(&image, &tiles, 4, (&mut out, stride, fmt));
+        TILE_SHARE_OVERRIDE.with(|cell| cell.set(None));
+        decoded.unwrap_or_else(|error| panic!("share {share:?}: {error:?}"));
+        assert!(
+            out == planes,
+            "share {share:?}: tiles differ from the planes"
+        );
+        if share.is_some() {
+            // Other tests' tiles never refuse at their default shares.
+            assert!(
+                REFUSED_TILES.load(Ordering::Relaxed) > refused_before,
+                "a one-KiB share refuses tiles"
+            );
+        }
+    }
+}

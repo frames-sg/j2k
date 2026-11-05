@@ -455,3 +455,89 @@ fn prepare_rejects_palette_mapped_wrapper_before_pixel_decode() {
         }
     ));
 }
+
+/// A working-memory limit holds what the CPU batch decoder plans: under a
+/// limit no plan fits, 8-bit and 16-bit Gray and RGB images whose rows
+/// stream still decode, to the samples an unlimited decoder writes, while an
+/// RGBA image, whose channel definitions keep its rows from streaming, is
+/// rejected when the decoder prepares it. Shared preparation keeps it for
+/// device decoders.
+#[test]
+fn working_memory_limit_streams_or_rejects_images_whose_plans_pass_it() {
+    let rgb = Arc::<[u8]>::from(rgb8_fixture());
+    let gray12_samples = (0_u16..96 * 64)
+        .flat_map(|index| (index * 7 % 4096).to_le_bytes())
+        .collect::<Vec<_>>();
+    let gray12 = Arc::<[u8]>::from(
+        encode(
+            &gray12_samples,
+            96,
+            64,
+            1,
+            12,
+            false,
+            &EncodeOptions {
+                reversible: true,
+                num_decomposition_levels: 2,
+                ..EncodeOptions::default()
+            },
+        )
+        .expect("encode gray12"),
+    );
+    let rgba = Arc::<[u8]>::from(super::fixtures::wrap_rgba_jp2(
+        &four_component_fixture(),
+        j2k_test_support::Htj2kRgbaAlpha::Straight,
+    ));
+    let inputs = || {
+        vec![
+            EncodedImage::full(Arc::clone(&rgb)),
+            EncodedImage::full(Arc::clone(&gray12)),
+            EncodedImage::full(Arc::clone(&rgba)),
+        ]
+    };
+    let unlimited = CpuBatchDecoder::new(BatchDecodeOptions::default())
+        .decode(inputs())
+        .expect("unlimited decode");
+    assert!(unlimited.errors().is_empty(), "{:?}", unlimited.errors());
+
+    let limited_options = {
+        let mut options = BatchDecodeOptions::default();
+        options.max_working_memory_bytes = NonZeroUsize::new(1);
+        options
+    };
+    let mut limited = CpuBatchDecoder::new(limited_options);
+    let prepared = limited.prepare(inputs()).expect("limited prepare");
+    assert!(
+        matches!(
+            prepared.errors(),
+            [error] if error.index == 2
+                && matches!(
+                    &error.source,
+                    BatchItemError::Codec { stage: BatchErrorStage::Prepare, .. }
+                )
+        ),
+        "{:?}",
+        prepared.errors()
+    );
+    let decoded = limited.decode_prepared(&prepared).expect("limited decode");
+    // The preparation error carries over; the Gray and RGB images decode.
+    assert_eq!(decoded.errors(), prepared.errors());
+    for color in [j2k::BatchColor::Rgb, j2k::BatchColor::Gray] {
+        assert_eq!(
+            group_samples(decoded.groups(), color),
+            group_samples(unlimited.groups(), color),
+            "{color:?}"
+        );
+    }
+
+    let shared = prepare_batch(inputs(), limited_options).expect("shared prepare");
+    assert!(shared.errors().is_empty(), "{:?}", shared.errors());
+}
+
+fn group_samples(groups: &[j2k::CpuBatchGroup], color: j2k::BatchColor) -> &CpuBatchSamples {
+    groups
+        .iter()
+        .find(|group| group.info().color == color)
+        .map(j2k::CpuBatchGroup::samples)
+        .expect("group")
+}

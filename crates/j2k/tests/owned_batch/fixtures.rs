@@ -41,6 +41,19 @@ pub(super) fn classic_gray8_fixture_with_tile_size(
     .expect("encode classic J2K gray8")
 }
 
+/// A greyscale JP2 of [`classic_gray8_fixture`] followed by a truncated XML
+/// box: a strict parse rejects it, and a lenient parse recovers it by
+/// ignoring the box.
+pub(super) fn lenient_trailing_metadata_jp2(width: u32, height: u32) -> Vec<u8> {
+    let mut jp2 = wrap_j2k_codestream(
+        &classic_gray8_fixture(width, height),
+        J2kFileWrapOptions::jp2().with_color(J2kFileColorSpec::Enumerated(Colorspace::SGray)),
+    )
+    .expect("wrap gray JP2");
+    jp2.extend_from_slice(&[0, 0, 0, 16, b'x', b'm', b'l', b' ']);
+    jp2
+}
+
 pub(super) fn htj2k_gray8_fixture_with_levels(
     width: u32,
     height: u32,
