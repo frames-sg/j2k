@@ -7,6 +7,15 @@ and stale roadmap entries have been removed from the public documentation set.
 
 Staged workspace version: `0.13.2`.
 
+- `decode_region_into`, `decode_region_scaled_pow2_into`, `decode_into`,
+  and `decode_rows_u8_bounded` accept a JP2 whose ICC profile is equivalent
+  to IEC 61966-2-1 sRGB when the output is `Rgb8` or `Rgba8`, writing its
+  samples as RGB without a colour transform. A profile qualifies when it is
+  a restricted RGB matrix/TRC profile whose linear matrix to sRGB is within
+  2.5e-4 (off-diagonal row sums) and 1e-3 (diagonal) of identity, and whose
+  transform to sRGB moves no 8-bit channel or neutral ramp sample by more
+  than one code value. Other ICC profiles remain unsupported for these
+  outputs (#321).
 - SOP marker segments a decode parses require `Lsop` 4 and an `Nsop` equal to
   the tile-wide packet ordinal modulo 65536. The ordinal continues across
   tile-parts and counts packets skipped without parsing; an invalid SOP in a

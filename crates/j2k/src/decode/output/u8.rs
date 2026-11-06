@@ -3,9 +3,31 @@
 //! Eight-bit direct-layout and component-plane conversion.
 
 use crate::backend::{ColorSpace, DecodedComponents as NativeDecodedComponents};
+use crate::decode::srgb8::is_srgb_equivalent_icc_profile;
 use crate::J2kError;
 use core::ops::Range;
 use j2k_core::{PixelFormat, Unsupported};
+
+static SRGB_ICC_AS_RGB: ColorSpace = ColorSpace::RGB;
+
+/// The colour space whose samples `fmt` receives. A three-channel ICC
+/// profile equivalent to IEC 61966-2-1 sRGB is written to RGB output as
+/// RGB; every other colour space is returned unchanged.
+pub(in crate::decode) fn resolve_u8_color_space(
+    color_space: &ColorSpace,
+    fmt: PixelFormat,
+) -> &ColorSpace {
+    match (color_space, fmt) {
+        (
+            ColorSpace::Icc {
+                profile,
+                num_channels: 3,
+            },
+            PixelFormat::Rgb8 | PixelFormat::Rgba8,
+        ) if is_srgb_equivalent_icc_profile(profile) => &SRGB_ICC_AS_RGB,
+        _ => color_space,
+    }
+}
 
 pub(in crate::decode) fn can_decode_u8_directly(
     color_space: &ColorSpace,
@@ -30,7 +52,7 @@ pub(in crate::decode) fn write_components_u8_output(
     fmt: PixelFormat,
 ) -> Result<(), J2kError> {
     write_planes_u8(
-        components.color_space(),
+        resolve_u8_color_space(components.color_space(), fmt),
         components.has_alpha(),
         components.planes(),
         components.dimensions(),
@@ -277,7 +299,7 @@ pub(in crate::decode) fn write_u8_output(
 ) -> Result<(), J2kError> {
     let width = dims.0 as usize;
     let height = dims.1 as usize;
-    match (color_space, has_alpha, fmt) {
+    match (resolve_u8_color_space(color_space, fmt), has_alpha, fmt) {
         (ColorSpace::RGB, false, PixelFormat::Rgb8) => {
             copy_rows_exact(decoded, out, stride, width * 3, height);
             Ok(())

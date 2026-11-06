@@ -21,8 +21,8 @@ pub(super) use u16::{
     write_components_u16_output, write_plane_rows_u16, write_u16_output,
 };
 pub(super) use u8::{
-    can_decode_u8_directly, expand_rgb8_to_rgba8, write_components_u8_output, write_plane_rows_u8,
-    write_u8_output,
+    can_decode_u8_directly, expand_rgb8_to_rgba8, resolve_u8_color_space,
+    write_components_u8_output, write_plane_rows_u8, write_u8_output,
 };
 
 /// Shared destination and error plumbing for the 8- and 16-bit component
@@ -48,7 +48,7 @@ impl<'o> ComponentRowOutput<'o> {
         fmt: PixelFormat,
     ) -> Self {
         Self {
-            color_space,
+            color_space: resolve_u8_color_space(color_space, fmt),
             has_alpha,
             out,
             stride,
