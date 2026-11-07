@@ -13,7 +13,7 @@ use crate::{
     interleave_and_convert_region, resolve_palette_indices, try_resize_decode_elements,
     validate_and_reorder_channels, validate_interleaved_output_buffer, validate_roi, Bitmap,
     ColorSpace, DecodedComponents, DecodedNativeComponents, DecoderContext, DecodingError,
-    FormatError, HtCodeBlockDecoder, Result, CODESTREAM_MAGIC, JP2_MAGIC,
+    FormatError, HtCodeBlockDecoder, ResolvedColor, Result, CODESTREAM_MAGIC, JP2_MAGIC,
 };
 
 mod allocation;
@@ -136,6 +136,9 @@ pub struct Image<'a> {
     pub(crate) has_alpha: bool,
     /// The color space of the image.
     pub(crate) color_space: ColorSpace,
+    /// Trailing codestream components that decoded output omits: extra
+    /// channels no channel definition describes (see [`ResolvedColor`]).
+    pub(crate) ignored_components: usize,
     /// Codec-owned bytes already live when this image was parsed, set by
     /// `new_with_retained_baseline`. Only the planning entry points charge it:
     /// `prepare_region_decoder_with_context` and the `build_*_plan*_with_context`
@@ -179,25 +182,19 @@ impl<'a> ImageSource<'a> {
 pub(crate) struct ImageProperties {
     boxes: ImageBoxes,
     settings: DecodeSettings,
-    color_space: ColorSpace,
-    has_alpha: bool,
-    used_lenient_metadata_recovery: bool,
+    color: ResolvedColor,
 }
 
 impl ImageProperties {
     pub(crate) const fn new(
         boxes: ImageBoxes,
         settings: DecodeSettings,
-        color_space: ColorSpace,
-        has_alpha: bool,
-        used_lenient_metadata_recovery: bool,
+        color: ResolvedColor,
     ) -> Self {
         Self {
             boxes,
             settings,
-            color_space,
-            has_alpha,
-            used_lenient_metadata_recovery,
+            color,
         }
     }
 }
@@ -254,9 +251,13 @@ impl<'a> Image<'a> {
         let ImageProperties {
             boxes,
             settings,
-            color_space,
-            has_alpha,
-            used_lenient_metadata_recovery,
+            color:
+                ResolvedColor {
+                    color_space,
+                    has_alpha,
+                    used_lenient_metadata_recovery,
+                    ignored_components,
+                },
         } = properties;
         let metadata_bytes = retained_metadata_bytes(&header, &boxes, &color_space)?;
         allocation::combine_retained_bytes(retained_baseline_bytes, metadata_bytes)?;
@@ -269,6 +270,7 @@ impl<'a> Image<'a> {
             used_lenient_metadata_recovery,
             has_alpha,
             color_space,
+            ignored_components,
             retained_baseline_bytes,
             #[cfg(feature = "std")]
             packet_cache: packet_directory::PacketDirectoryCache::default(),
@@ -396,6 +398,31 @@ impl<'a> Image<'a> {
         &self.color_space
     }
 
+    /// Trailing codestream components that decoded output omits.
+    ///
+    /// Without a channel definition box, ISO/IEC 15444-1 I.5.3.6 leaves the
+    /// components after those of the declared color space unspecified: a
+    /// JP2 declaring sRGB over four components has three color channels and
+    /// an extra component, not CMYK. Decoded components, planes and bitmaps
+    /// hold only the color (and alpha) channels.
+    #[must_use]
+    pub fn ignored_components(&self) -> usize {
+        self.ignored_components
+    }
+
+    /// Keep every codestream component in decoded output, as a re-encode of
+    /// the whole codestream needs.
+    #[doc(hidden)]
+    pub fn keep_ignored_components(&mut self) {
+        self.ignored_components = 0;
+    }
+
+    /// Drop the [`Self::ignored_components`] from the end of `components`.
+    pub(crate) fn drop_ignored_components(&self, components: &mut Vec<ComponentData>) {
+        let kept = components.len().saturating_sub(self.ignored_components);
+        components.truncate(kept);
+    }
+
     /// Return the primary JP2 restricted ICC profile, when present.
     #[doc(hidden)]
     #[must_use]
@@ -449,7 +476,7 @@ impl<'a> Image<'a> {
         if self.settings.resolve_palette_indices && self.boxes.palette.is_some() {
             return false;
         }
-        if self.boxes.channel_definition.is_some() {
+        if self.boxes.channel_definition.is_some() || self.ignored_components != 0 {
             return false;
         }
         !matches!(
@@ -1222,6 +1249,7 @@ impl<'a> Image<'a> {
                 retained_baseline_bytes,
             )?;
         }
+        self.drop_ignored_components(decoded_image.decoded_components);
 
         let bit_depth = decoded_image
             .decoded_components

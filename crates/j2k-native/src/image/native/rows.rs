@@ -156,7 +156,8 @@ impl<'i> NativePlanesSink<'i> {
     /// yet.
     fn new(image: &'i Image<'_>, dimensions: (u32, u32)) -> Self {
         Self {
-            components: &image.header.component_infos,
+            components: &image.header.component_infos
+                [..image.header.component_infos.len() - image.ignored_components],
             color_space: &image.color_space,
             dimensions,
             planes: Vec::new(),
