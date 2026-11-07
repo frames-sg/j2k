@@ -35,8 +35,11 @@ pub(super) fn recode(
     });
     let encoded = {
         let components = {
-            let source = Image::new(bytes, &DecodeSettings::default())
+            let mut source = Image::new(bytes, &DecodeSettings::default())
                 .map_err(|err| map_native_decode_error(err, "source JPEG 2000 parse failed"))?;
+            // The re-encode keeps the source's JP2 metadata, so it carries
+            // every codestream component, unspecified extras included.
+            source.keep_ignored_components();
             source.decode_native_components().map_err(|err| {
                 map_native_decode_error(err, "source JPEG 2000 component pixel fallback failed")
             })?
