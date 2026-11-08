@@ -38,6 +38,71 @@ policy for decomposition depth. Header inspection accepts dimensions beyond
 60,000 pixels; decode resource budgets still apply. See the
 [geometry and implementation scope](architecture.md#encode-geometry-and-implementation-scope).
 
+## Region planning
+
+`J2kDecoder::region_decode_plan` reports the source and reduced rectangles,
+reference-grid origin, packed layout, sample and alpha interpretation, exact tight
+or padded buffer span, and the native decoder's header-planned reconstruction route.
+It parses bounded metadata without allocating decoded pixels. A later decode can
+still reject malformed entropy data or exceed its working-memory allowance.
+
+`max_reduction_levels` reports the common effective component/tile ladder,
+including COD/COC overrides that shorten or lengthen main-header defaults.
+Exact reductions are never silently clamped. Invalid source regions, regions
+with no samples at a reduction, unsupported output interpretations and resource
+failures remain distinct errors. The ordinary packed query does not request ICC
+normalization; native component APIs preserve their original sample metadata.
+
+`srgb8_region_decode_plan` and `decode_region_srgb8_at_reduction` explicitly request
+eight-bit sRGB output for a bounded native region. They share full-image colour
+classification, supported restricted ICC conversion, palette/sampling handling,
+and straight-alpha interpretation. Ordinary packed eight-bit routes also accept
+recognized sRGB-equivalent ICC profiles. Other profiles require explicit
+normalization; unsupported profiles remain errors. Premultiplied normalization
+unassociates colour in source code values at the source precision, after palette
+mapping and before sYCC conversion or quantization, so low-alpha colour is kept.
+Premultiplied CIE Lab input is rejected, and premultiplied input with subsampled
+or signed components still requires eight-bit mapped samples without native
+colour conversion. Native output
+retains its original alpha association and precision. Exact-integer reversible
+5/3 regions with unit-sampled components reuse the bounded window planner and
+the existing integer lifting filters. Subsampled exact-integer regions, which
+the window planner does not cover, reconstruct the tiles they touch and store
+only the region's replicated samples, as floating-point regions do, so neither
+native nor normalized regions decode and crop the full image. Integer row
+streaming is not implied by window support.
+
+`J2kDecodeControl` supplies per-operation working and output limits plus an
+optional `J2kCancellationToken`. Working allocations include newly parsed native
+metadata, derived operation plans, scratch and codec-owned conversion/output
+buffers while they are built. Caller-owned compressed input, immutable source
+preparation and caller-supplied output are separate ownership domains. Output
+limits check the required packed span, including stride gaps. Neither option is
+an RSS limit or a way to raise the native ceiling. Under an explicit working
+limit, ICC classification and normalization charge a bound on the pinned
+colour-management crate's state (the profile copy, its tone curves and the fixed
+8-bit transform tables) before creating it; profiles outside the bounded
+matrix/TRC or gray-TRC shape with an XYZ connection space return `Unsupported`.
+Output limits and cancellation apply to every ICC operation.
+
+Cancellation is permanent for a token and checked before preparation and between
+native marker, packet, code-block, transform and row work. A cancellable native
+operation selects serial blocks/row bands; it cannot preempt a submitted GPU
+command or an individual library call. Failure can leave a prefix of a caller
+buffer written. Published rows are not replayed, and later operations with a
+fresh token can reuse the decoder. `J2kView::parse_with_control` and
+`J2kDecoder::new_with_control` parse the source itself under a control, and
+`CpuBatchDecoder::prepare_with_control` prepares inputs one at a time so a
+working limit bounds each input beside the plans already kept for earlier
+inputs; inputs failing a limit or observing cancellation become indexed
+preparation errors. Neither retains the control's allowance.
+
+Borrowed decoders retain at most one native reduction's parsed image and packet
+information across regions. `set_preparation_cache_limit_bytes` bounds that
+retention; zero disables it. CPU sessions separately bound their most recent
+derived exact-operation plan with `set_operation_cache_limit_bytes`. The source
+owner and concurrent operations' mutable scratch remain independent.
+
 ## Owned batch decoding
 
 The owned-batch decoder accepts full, region, reduced, and region-plus-reduced
@@ -56,6 +121,60 @@ inputs their plans cannot describe; they do not fall back to the CPU.
 Preparation failures are reported per input. A GPU decode error tied to a
 specific job names that job's source; a command-buffer failure fails the whole
 group.
+
+`PreparedImageOperation` adds exact JPEG 2000 reduction counts and source regions
+to `CpuBatchDecoder::decode_operations` without changing the legacy
+`PreparedImage::plan()` or shared JPEG `Downscale` semantics. The receiving CPU
+session chooses admission afresh. Controlled operations use native execution
+and separate output groups so one operation's limits do not pool unrelated
+outputs; source indices refer to the submitted operation slice.
+`MetalBatchDecoder::decode_operations` and `submit_operations` accept the same
+descriptors and return the CPU path's geometry, native samples and grouping at
+any reduction the source supports. The Metal route requires an offset plan, so
+shapes it cannot describe, such as subsampled components below full resolution,
+fail per group with a capability error. Metal applies a `J2kDecodeControl`'s
+output limit and cancellation: tokens are checked during preparation, before a
+group's storage is allocated and before its command buffers are committed, and
+operations share a group only with operations carrying the same token. A
+working limit fails the operation as unsupported, because Metal working memory
+is not accounted against a host allowance. `CudaBatchDecoder::decode_operations`
+and `submit_operations` accept the same descriptors and return CUDA-resident
+groups with the CPU path's geometry and grouping; reversible inputs reproduce the
+CPU's samples and irreversible 9/7 inputs stay within one sample value, as CUDA
+prepared batches do. Operations decode only through their offset plans, so shapes
+without one, such as subsampled colour components, fail per group with a
+capability error, as in CUDA prepared batches. CUDA applies a
+`J2kDecodeControl`'s output limit and cancellation: tokens are checked during
+preparation and before each group is planned and submitted, submitted CUDA work
+runs to completion, and operations share a group only with operations carrying
+the same token. A working limit fails the operation as unsupported, because CUDA
+working memory is not accounted against a host allowance.
+
+The additive C exact-operation API preserves ABI 1 layouts. Use
+`j2k_decoder_prepare_operations` for immutable input preparation, then
+`j2k_decoder_plan_region` and `j2k_decoder_decode_region_into` with
+`J2K_OPERATION_OPTIONS_INIT`. Explicit preparation is optional: a controlled
+native operation on an unprepared decoder prepares the source under its own
+working limit and cancellation, keeping only a successful preparation. Raw sRGB
+binding operations parse their source under the same controls; ICC conversion
+under a working limit requires a bounded matrix/TRC or gray-TRC profile with an
+XYZ connection space. The C++ wrapper exposes the same calls and an owned
+cancellation token. Existing C decode options keep their original reduction
+range. See [the C API documentation](../crates/j2k-c/docs/api.md).
+
+Python CPU `ImageRequest`, single/batch decode and prepared operations accept
+exact JPEG 2000 reductions through 31, subject to the source's actual ladder.
+`Decoder.plan_region` borrows input for geometry and native/sRGB metadata;
+`Decoder.decode_srgb8` produces explicit display output under a control's
+working limit, output limit and cancellation. CPU `prepare(control=...)` and
+`decode_prepared(control=...)` apply controls to preparation and to each prepared
+decode separately. New prepared overrides require the receiving decoder to use
+the captured layout, so adding a control cannot silently change axis order. MPS
+decoders run exact requests and prepared operations on Metal, with output limits
+and cancellation; working limits, controlled preparation, explicit sRGB output
+and region planning remain CPU-only. CUDA and JPEG retain their documented subsets and reject unavailable
+exact-operation/control requests explicitly. See
+[the Python API and capability notes](../crates/j2k-python/README.md).
 
 Separately, the legacy Metal full-image/tile-batch display APIs can decode
 unsigned origin-zero single-tile sampled RGB codestreams without MCT using

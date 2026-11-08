@@ -60,23 +60,41 @@ Decode a 1024 x 1024 area at quarter resolution without decoding the rest of
 the image:
 
 ```rust
-use j2k::{Downscale, J2kDecoder, J2kScratchPool, PixelFormat, Rect};
+use j2k::{J2kDecoder, J2kScratchPool, PixelFormat, Rect};
 
 let mut decoder = J2kDecoder::new(&bytes)?;
 let mut scratch = J2kScratchPool::new();
 
 let area = Rect { x: 4096, y: 8192, w: 1024, h: 1024 }; // full-resolution pixels
-let out = area.scaled_covering(Downscale::Quarter);       // 256 x 256
-let mut pixels = vec![0_u8; (out.w * out.h * 3) as usize];
-decoder.decode_region_scaled_into(
+let plan = decoder.region_decode_plan(PixelFormat::Rgb8, area, 2)?;
+let mut pixels = vec![0_u8; plan.buffer_bytes];
+decoder.decode_region_scaled_pow2_into(
     &mut scratch,
     &mut pixels,
-    out.w as usize * 3, // bytes per row
+    plan.row_bytes,
     PixelFormat::Rgb8,
     area,
-    Downscale::Quarter,
+    plan.reduction_levels,
 )?;
 ```
+
+The plan reports the actual reduced rectangle, reference grid, packed sample
+interpretation and expected decode route, including images with nonzero origins.
+Use `plan.buffer_len(stride)` for padded output and `decoder.max_reduction_levels()`
+to query the common component/tile resolution ladder. Unavailable exact reductions
+and regions with no reduced samples are rejected explicitly.
+
+For explicit colour normalization, use `srgb8_region_decode_plan` and
+`decode_region_srgb8_at_reduction`. These reconstruct the requested native region
+before converting it to eight-bit sRGB with straight alpha. Native-component
+decoding keeps the original precision and interpretation.
+
+The corresponding `*_with_control` methods accept `J2kDecodeControl` for a
+working-memory bound, packed-output limit, and cooperative cancellation token.
+These are operation limits, not process-memory limits. Repeated CPU requests can
+use `PreparedImageOperation` with `CpuBatchDecoder::decode_operations` to vary the
+region and exact reduction while sharing the owned source preparation. See
+[the supported combinations and limits](docs/public-support.md#region-planning).
 
 For 16-bit images, use `PixelFormat::Gray16` or `Rgb16`, or
 `decode_native_components()` to get each component at its original bit depth.

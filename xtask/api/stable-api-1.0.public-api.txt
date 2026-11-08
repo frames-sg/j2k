@@ -26,15 +26,18 @@ It is the item-level companion to `docs/stable-api-1.0.md`: every public module,
 #[non_exhaustive] pub enum j2k::J2kDecodedColorSpace
 #[non_exhaustive] pub enum j2k::J2kError
 #[non_exhaustive] pub enum j2k::J2kFileColorSpec<'a>
+#[non_exhaustive] pub enum j2k::J2kSampleInterpretation
 #[non_exhaustive] pub enum j2k::J2kSrgb8Layout
 #[non_exhaustive] pub enum j2k::J2kStreamingBlocker
 #[non_exhaustive] pub enum j2k::NonRepresentableReason
 #[non_exhaustive] pub enum j2k::PreparationDepth
 #[non_exhaustive] pub struct j2k::BatchDecodeOptions
+#[non_exhaustive] pub struct j2k::J2kDecodeControl
 #[non_exhaustive] pub struct j2k::J2kDecodePlan
 #[non_exhaustive] pub struct j2k::J2kLosslessEncodeOptions
 #[non_exhaustive] pub struct j2k::J2kLossyEncodeOptions
 #[non_exhaustive] pub struct j2k::J2kReferenceGrid
+#[non_exhaustive] pub struct j2k::J2kRegionDecodePlan
 #[non_exhaustive] pub struct j2k::J2kToHtj2kOptions
 impl core::default::Default for j2k::BatchDecodeOptions
 impl core::default::Default for j2k::DecodeSettings
@@ -60,6 +63,7 @@ impl j2k::CpuBatchWorkspaceStats
 impl j2k::DecodeSettings
 impl j2k::DeviceDecodePlan
 impl j2k::EncodedImage
+impl j2k::J2kCancellationToken
 impl j2k::J2kChannelDefinition
 impl j2k::J2kContext
 impl j2k::J2kDecodedNativeComponents
@@ -72,6 +76,7 @@ impl j2k::J2kLossyEncodeOptions
 impl j2k::J2kNativeComponentPlane
 impl j2k::J2kQualityLayer
 impl j2k::J2kReferenceGrid
+impl j2k::J2kRegionDecodePlan
 impl j2k::J2kRowDecodeOptions
 impl j2k::J2kScratchPool
 impl j2k::J2kSrgb8Image
@@ -94,7 +99,9 @@ impl<'a> j2k::J2kLosslessSamples<'a>
 impl<'a> j2k::J2kLosslessTypedComponentSamples<'a>
 impl<'a> j2k::J2kLossySamples<'a>
 impl<'a> j2k::J2kView<'a>
+impl<'a> j2k::PreparedImageOperation<'a>
 pub const fn j2k::BackendError::kind(&self) -> j2k::BackendErrorKind
+pub const fn j2k::CpuBatchDecoder::operation_cache_limit_bytes(&self) -> usize
 pub const fn j2k::CpuBatchDecoder::options(&self) -> j2k::BatchDecodeOptions
 pub const fn j2k::CpuBatchGroup::samples(&self) -> &j2k::CpuBatchSamples
 pub const fn j2k::CpuBatchSamples::sample_type(&self) -> j2k_core::sample::SampleType
@@ -134,6 +141,7 @@ pub const fn j2k::J2kCodestreamPayload<'a>::codestream(self) -> &'a [u8]
 pub const fn j2k::J2kCodestreamPayload<'a>::codestream_offset(self) -> usize
 pub const fn j2k::J2kCodestreamPayload<'a>::payload_kind(self) -> j2k_core::passthrough::CompressedPayloadKind
 pub const fn j2k::J2kContext::new() -> Self
+pub const fn j2k::J2kDecoder<'a>::preparation_cache_limit_bytes(&self) -> usize
 pub const fn j2k::J2kDecoder<'a>::reference_grid(&self) -> j2k::J2kReferenceGrid
 pub const fn j2k::J2kFileBoxMetadata<'_>::empty() -> Self
 pub const fn j2k::J2kFileWrapOptions<'_>::jp2() -> Self
@@ -163,6 +171,7 @@ pub const fn j2k::J2kRowDecodeOptions::new(u32) -> Self
 pub const fn j2k::J2kRowDecodeOptions::new_with_max_stripe_bytes(u32, usize) -> Self
 pub const fn j2k::J2kRowDecodeOptions::with_max_stripe_bytes(self, usize) -> Self
 pub const fn j2k::J2kScratchPool::new() -> Self
+pub const fn j2k::J2kSrgb8Image::alpha(&self) -> j2k::BatchAlpha
 pub const fn j2k::J2kSrgb8Image::dimensions(&self) -> (u32, u32)
 pub const fn j2k::J2kSrgb8Image::layout(&self) -> j2k::J2kSrgb8Layout
 pub const fn j2k::J2kToHtj2kOptions::new(j2k_core::passthrough::CompressedPayloadKind, j2k::J2kProgressionOrder, j2k::J2kEncodeValidation) -> Self
@@ -170,6 +179,8 @@ pub const fn j2k::J2kToHtj2kOptions::with_coefficient_only(self) -> Self
 pub const fn j2k::J2kView<'a>::reference_grid(&self) -> j2k::J2kReferenceGrid
 pub const fn j2k::PreparedBatch::options(&self) -> j2k::BatchDecodeOptions
 pub const fn j2k::PreparedBatchGroup::options(&self) -> j2k::BatchDecodeOptions
+pub const fn j2k::PreparedImageOperation<'a>::new(&'a j2k::PreparedImage, j2k_core::types::Rect, u8) -> Self
+pub const fn j2k::PreparedImageOperation<'a>::with_control(self, &'a j2k::J2kDecodeControl) -> Self
 pub enum j2k::CpuDecodeParallelism
 pub enum j2k::DeviceDecodeRequest
 pub enum j2k::EncodeBackendPreference
@@ -206,6 +217,7 @@ pub fn j2k::CpuBatchDecodeResult::groups(&self) -> &[j2k::CpuBatchGroup]
 pub fn j2k::CpuBatchDecodeResult::into_parts(self) -> (alloc::vec::Vec<j2k::CpuBatchGroup>, alloc::vec::Vec<j2k::IndexedBatchError>)
 pub fn j2k::CpuBatchDecoder::decode(&mut self, alloc::vec::Vec<j2k::EncodedImage>) -> core::result::Result<j2k::CpuBatchDecodeResult, j2k_core::batch::BatchInfrastructureError>
 pub fn j2k::CpuBatchDecoder::decode_batch(&mut self, alloc::vec::Vec<j2k::EncodedImage>) -> core::result::Result<Self::Output, Self::Error>
+pub fn j2k::CpuBatchDecoder::decode_operations(&mut self, &[j2k::PreparedImageOperation<'_>]) -> core::result::Result<j2k::CpuBatchDecodeResult, j2k_core::batch::BatchInfrastructureError>
 pub fn j2k::CpuBatchDecoder::decode_prepared(&mut self, &j2k::PreparedBatch) -> core::result::Result<Self::Output, Self::Error>
 pub fn j2k::CpuBatchDecoder::decode_prepared(&mut self, &j2k::PreparedBatch) -> core::result::Result<j2k::CpuBatchDecodeResult, j2k_core::batch::BatchInfrastructureError>
 pub fn j2k::CpuBatchDecoder::decode_prepared_images(&mut self, alloc::vec::Vec<j2k::PreparedImage>) -> core::result::Result<Self::Output, Self::Error>
@@ -213,12 +225,16 @@ pub fn j2k::CpuBatchDecoder::decode_prepared_images(&mut self, alloc::vec::Vec<j
 pub fn j2k::CpuBatchDecoder::decode_tiles_into(&mut self, &mut [j2k::TileDecodeJob<'_, '_>], j2k_core::pixel::PixelFormat) -> core::result::Result<alloc::vec::Vec<j2k_core::types::DecodeOutcome<j2k::J2kDecodeWarning>>, j2k::TileBatchError>
 pub fn j2k::CpuBatchDecoder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn j2k::CpuBatchDecoder::new(j2k::BatchDecodeOptions) -> Self
+pub fn j2k::CpuBatchDecoder::operation_cache_retained_bytes(&self) -> usize
+pub fn j2k::CpuBatchDecoder::operation_cache_stats(&self) -> j2k_core::context::CacheStats
 pub fn j2k::CpuBatchDecoder::options(&self) -> j2k::BatchDecodeOptions
 pub fn j2k::CpuBatchDecoder::prepare(&self, alloc::vec::Vec<j2k::EncodedImage>) -> core::result::Result<j2k::PreparedBatch, j2k_core::batch::BatchInfrastructureError>
 pub fn j2k::CpuBatchDecoder::prepare_batch(&self, alloc::vec::Vec<j2k::EncodedImage>) -> core::result::Result<j2k::PreparedBatch, Self::Error>
 pub fn j2k::CpuBatchDecoder::prepare_prepared_images(&self, alloc::vec::Vec<j2k::PreparedImage>) -> core::result::Result<j2k::PreparedBatch, Self::Error>
 pub fn j2k::CpuBatchDecoder::prepare_prepared_images(&self, alloc::vec::Vec<j2k::PreparedImage>) -> core::result::Result<j2k::PreparedBatch, j2k_core::batch::BatchInfrastructureError>
+pub fn j2k::CpuBatchDecoder::prepare_with_control(&self, alloc::vec::Vec<j2k::EncodedImage>, &j2k::J2kDecodeControl) -> core::result::Result<j2k::PreparedBatch, j2k_core::batch::BatchInfrastructureError>
 pub fn j2k::CpuBatchDecoder::retained_worker_count(&self) -> usize
+pub fn j2k::CpuBatchDecoder::set_operation_cache_limit_bytes(&mut self, usize)
 pub fn j2k::CpuBatchDecoder::workspace_stats(&self) -> j2k::CpuBatchWorkspaceStats
 pub fn j2k::CpuBatchGroup::decoded_rects(&self) -> &[j2k_core::types::Rect]
 pub fn j2k::CpuBatchGroup::info(&self) -> &j2k::BatchGroupInfo
@@ -240,6 +256,9 @@ pub fn j2k::DeviceDecodePlan::source_rect(self) -> j2k_core::types::Rect
 pub fn j2k::DeviceDecodePlan::target_resolution(self) -> core::option::Option<(u32, u32)>
 pub fn j2k::EncodedImage::full(alloc::sync::Arc<[u8]>) -> Self
 pub fn j2k::EncodedImage::new(alloc::sync::Arc<[u8]>, j2k::DecodeRequest) -> Self
+pub fn j2k::J2kCancellationToken::cancel(&self)
+pub fn j2k::J2kCancellationToken::is_cancelled(&self) -> bool
+pub fn j2k::J2kCancellationToken::new() -> Self
 pub fn j2k::J2kComponentPlane<'a>::bit_depth(&self) -> u8
 pub fn j2k::J2kComponentPlane<'a>::dimensions(&self) -> (u32, u32)
 pub fn j2k::J2kComponentPlane<'a>::samples(&self) -> &'a [f32]
@@ -258,11 +277,22 @@ pub fn j2k::J2kDecodedNativeComponents::has_alpha(&self) -> bool
 pub fn j2k::J2kDecodedNativeComponents::planes(&self) -> &[j2k::J2kNativeComponentPlane]
 pub fn j2k::J2kDecoder<'_>::decode_native_components_at_reduction(&mut self, u8) -> core::result::Result<j2k::J2kDecodedNativeComponents, j2k::J2kError>
 pub fn j2k::J2kDecoder<'_>::decode_region_scaled_pow2_into(&mut self, &mut j2k::J2kScratchPool, &mut [u8], usize, j2k_core::pixel::PixelFormat, j2k_core::types::Rect, u8) -> core::result::Result<j2k_core::types::DecodeOutcome<j2k::J2kDecodeWarning>, j2k::J2kError>
+pub fn j2k::J2kDecoder<'_>::decode_region_scaled_pow2_into_with_control(&mut self, &mut [u8], usize, j2k_core::pixel::PixelFormat, j2k_core::types::Rect, u8, &j2k::J2kDecodeControl) -> core::result::Result<j2k_core::types::DecodeOutcome<j2k::J2kDecodeWarning>, j2k::J2kError>
+pub fn j2k::J2kDecoder<'_>::decode_region_srgb8(&mut self, j2k_core::types::Rect) -> core::result::Result<j2k::J2kSrgb8Image, j2k::J2kError>
+pub fn j2k::J2kDecoder<'_>::decode_region_srgb8_at_reduction(&mut self, j2k_core::types::Rect, u8) -> core::result::Result<j2k::J2kSrgb8Image, j2k::J2kError>
+pub fn j2k::J2kDecoder<'_>::decode_region_srgb8_at_reduction_with_control(&mut self, j2k_core::types::Rect, u8, &j2k::J2kDecodeControl) -> core::result::Result<j2k::J2kSrgb8Image, j2k::J2kError>
 pub fn j2k::J2kDecoder<'_>::decode_rows_u16_bounded<R: j2k_core::row_sink::RowSink<u16>>(&mut self, &mut R, j2k::J2kRowDecodeOptions) -> core::result::Result<j2k_core::types::DecodeOutcome<j2k::J2kDecodeWarning>, j2k_core::traits::DecodeRowsError<j2k::J2kError, <R as j2k_core::row_sink::RowSink>::Error>>
 pub fn j2k::J2kDecoder<'_>::decode_rows_u8_bounded<R: j2k_core::row_sink::RowSink<u8>>(&mut self, &mut R, j2k::J2kRowDecodeOptions) -> core::result::Result<j2k_core::types::DecodeOutcome<j2k::J2kDecodeWarning>, j2k_core::traits::DecodeRowsError<j2k::J2kError, <R as j2k_core::row_sink::RowSink>::Error>>
 pub fn j2k::J2kDecoder<'_>::decode_srgb8(&mut self) -> core::result::Result<j2k::J2kSrgb8Image, j2k::J2kError>
+pub fn j2k::J2kDecoder<'_>::decode_srgb8_with_control(&mut self, &j2k::J2kDecodeControl) -> core::result::Result<j2k::J2kSrgb8Image, j2k::J2kError>
 pub fn j2k::J2kDecoder<'_>::full_decode_plan(&mut self, j2k_core::pixel::PixelFormat) -> core::result::Result<j2k::J2kDecodePlan, j2k::J2kError>
+pub fn j2k::J2kDecoder<'_>::max_reduction_levels(&mut self) -> core::result::Result<u8, j2k::J2kError>
+pub fn j2k::J2kDecoder<'_>::max_reduction_levels_with_control(&mut self, &j2k::J2kDecodeControl) -> core::result::Result<u8, j2k::J2kError>
+pub fn j2k::J2kDecoder<'_>::region_decode_plan(&mut self, j2k_core::pixel::PixelFormat, j2k_core::types::Rect, u8) -> core::result::Result<j2k::J2kRegionDecodePlan, j2k::J2kError>
+pub fn j2k::J2kDecoder<'_>::region_decode_plan_with_control(&mut self, j2k_core::pixel::PixelFormat, j2k_core::types::Rect, u8, &j2k::J2kDecodeControl) -> core::result::Result<j2k::J2kRegionDecodePlan, j2k::J2kError>
 pub fn j2k::J2kDecoder<'_>::rows_decode_plan(&mut self) -> core::result::Result<j2k::J2kDecodePlan, j2k::J2kError>
+pub fn j2k::J2kDecoder<'_>::srgb8_region_decode_plan(&mut self, j2k_core::types::Rect, u8) -> core::result::Result<j2k::J2kRegionDecodePlan, j2k::J2kError>
+pub fn j2k::J2kDecoder<'_>::srgb8_region_decode_plan_with_control(&mut self, j2k_core::types::Rect, u8, &j2k::J2kDecodeControl) -> core::result::Result<j2k::J2kRegionDecodePlan, j2k::J2kError>
 pub fn j2k::J2kDecoder<'a>::cpu_decode_parallelism(&self) -> j2k::CpuDecodeParallelism
 pub fn j2k::J2kDecoder<'a>::decode_components(&mut self) -> core::result::Result<j2k::J2kDecodedComponents<'_>, j2k::J2kError>
 pub fn j2k::J2kDecoder<'a>::decode_into(&mut self, &mut [u8], usize, j2k_core::pixel::PixelFormat) -> core::result::Result<j2k_core::types::DecodeOutcome<j2k::J2kDecodeWarning>, j2k::J2kError>
@@ -281,8 +311,12 @@ pub fn j2k::J2kDecoder<'a>::inspect_reference_grid(&'a [u8]) -> core::result::Re
 pub fn j2k::J2kDecoder<'a>::inspect_support(&'a [u8]) -> core::result::Result<j2k::J2kSupportInfo, j2k::J2kError>
 pub fn j2k::J2kDecoder<'a>::inspect_support_with_settings(&'a [u8], j2k::DecodeSettings) -> core::result::Result<j2k::J2kSupportInfo, j2k::J2kError>
 pub fn j2k::J2kDecoder<'a>::new(&'a [u8]) -> core::result::Result<Self, j2k::J2kError>
+pub fn j2k::J2kDecoder<'a>::new_with_control(&'a [u8], j2k::DecodeSettings, &j2k::J2kDecodeControl) -> core::result::Result<Self, j2k::J2kError>
 pub fn j2k::J2kDecoder<'a>::new_with_settings(&'a [u8], j2k::DecodeSettings) -> core::result::Result<Self, j2k::J2kError>
+pub fn j2k::J2kDecoder<'a>::preparation_cache_retained_bytes(&self) -> core::result::Result<usize, j2k::J2kError>
+pub fn j2k::J2kDecoder<'a>::preparation_cache_stats(&self) -> j2k_core::context::CacheStats
 pub fn j2k::J2kDecoder<'a>::set_cpu_decode_parallelism(&mut self, j2k::CpuDecodeParallelism)
+pub fn j2k::J2kDecoder<'a>::set_preparation_cache_limit_bytes(&mut self, usize)
 pub fn j2k::J2kFileBoxMetadata<'a>::from_file_metadata(&'a j2k::J2kFileMetadata) -> Self
 pub fn j2k::J2kFileColorSpec<'a>::from_file_metadata(&'a j2k::J2kFileMetadata) -> core::option::Option<Self>
 pub fn j2k::J2kFileColorSpec<'a>::from_inspected(&'a j2k::J2kColorSpec) -> core::option::Option<Self>
@@ -320,6 +354,7 @@ pub fn j2k::J2kNativeComponentPlane::dimensions(&self) -> (u32, u32)
 pub fn j2k::J2kNativeComponentPlane::sampling(&self) -> (u8, u8)
 pub fn j2k::J2kNativeComponentPlane::signed(&self) -> bool
 pub fn j2k::J2kReferenceGrid::reduced_region(&self, j2k_core::types::Rect, u8) -> core::option::Option<j2k_core::types::Rect>
+pub fn j2k::J2kRegionDecodePlan::buffer_len(&self, usize) -> core::result::Result<usize, j2k::J2kError>
 pub fn j2k::J2kRowDecodeOptions::default() -> Self
 pub fn j2k::J2kSrgb8Image::data(&self) -> &[u8]
 pub fn j2k::J2kSrgb8Image::into_data(self) -> alloc::vec::Vec<u8>
@@ -332,6 +367,7 @@ pub fn j2k::J2kToHtj2kOptions::default() -> Self
 pub fn j2k::J2kView<'a>::bytes(&self) -> &'a [u8]
 pub fn j2k::J2kView<'a>::info(&self) -> &j2k_core::types::Info
 pub fn j2k::J2kView<'a>::parse(&'a [u8]) -> core::result::Result<Self, j2k::J2kError>
+pub fn j2k::J2kView<'a>::parse_with_control(&'a [u8], j2k::DecodeSettings, &j2k::J2kDecodeControl) -> core::result::Result<Self, j2k::J2kError>
 pub fn j2k::J2kView<'a>::parse_with_settings(&'a [u8], j2k::DecodeSettings) -> core::result::Result<Self, j2k::J2kError>
 pub fn j2k::J2kView<'a>::passthrough_candidate(&self) -> core::option::Option<j2k_core::passthrough::PassthroughCandidate<'a>>
 pub fn j2k::J2kView<'a>::support_info(&self) -> core::option::Option<&j2k::J2kSupportInfo>
@@ -372,6 +408,7 @@ pub fn j2k::PreparedImage::decode_settings(&self) -> j2k::DecodeSettings
 pub fn j2k::PreparedImage::htj2k_plan(&self) -> core::option::Option<&j2k::PreparedHtj2kPlan>
 pub fn j2k::PreparedImage::plan(&self) -> j2k::DeviceDecodePlan
 pub fn j2k::PreparedImage::preparation_depth(&self) -> j2k::PreparationDepth
+pub fn j2k::PreparedImage::reference_grid(&self) -> j2k::J2kReferenceGrid
 pub fn j2k::PreparedImage::request(&self) -> j2k::DecodeRequest
 pub fn j2k::PreparedImage::source_index(&self) -> usize
 pub fn j2k::PreparedImage::support(&self) -> &j2k::J2kSupportInfo
@@ -516,6 +553,9 @@ pub j2k::J2kComponentMappingType::Palette::column: u8
 pub j2k::J2kComponentMappingType::Unknown
 pub j2k::J2kComponentMappingType::Unknown::column: u8
 pub j2k::J2kComponentMappingType::Unknown::value: u8
+pub j2k::J2kDecodeControl::cancellation: core::option::Option<j2k::J2kCancellationToken>
+pub j2k::J2kDecodeControl::max_output_bytes: core::option::Option<usize>
+pub j2k::J2kDecodeControl::max_working_memory_bytes: core::option::Option<core::num::nonzero::NonZeroUsize>
 pub j2k::J2kDecodePlan::blocker: core::option::Option<j2k::J2kStreamingBlocker>
 pub j2k::J2kDecodePlan::route: j2k::J2kDecodeRoute
 pub j2k::J2kDecodeRoute::Planes
@@ -541,6 +581,7 @@ pub j2k::J2kError::BackendComponentPlaneTooShort::component: usize
 pub j2k::J2kError::BackendComponentPlaneTooShort::expected: usize
 pub j2k::J2kError::BackendComponentPlaneTooShort::samples: usize
 pub j2k::J2kError::Buffer(j2k_core::error::BufferError)
+pub j2k::J2kError::Cancelled
 pub j2k::J2kError::CodestreamHeader
 pub j2k::J2kError::CodestreamHeader::context: &'static str
 pub j2k::J2kError::CodestreamHeader::source: j2k::NativeBackendError
@@ -703,12 +744,26 @@ pub j2k::J2kReferenceGrid::image_origin: (u32, u32)
 pub j2k::J2kReferenceGrid::image_size: (u32, u32)
 pub j2k::J2kReferenceGrid::tile_origin: (u32, u32)
 pub j2k::J2kReferenceGrid::tile_size: (u32, u32)
+pub j2k::J2kRegionDecodePlan::alpha: j2k::BatchAlpha
+pub j2k::J2kRegionDecodePlan::buffer_bytes: usize
+pub j2k::J2kRegionDecodePlan::decode: j2k::J2kDecodePlan
+pub j2k::J2kRegionDecodePlan::format: j2k_core::pixel::PixelFormat
+pub j2k::J2kRegionDecodePlan::output_region: j2k_core::types::Rect
+pub j2k::J2kRegionDecodePlan::reduced_image_dimensions: (u32, u32)
+pub j2k::J2kRegionDecodePlan::reduction_levels: u8
+pub j2k::J2kRegionDecodePlan::reference_grid: j2k::J2kReferenceGrid
+pub j2k::J2kRegionDecodePlan::row_bytes: usize
+pub j2k::J2kRegionDecodePlan::sample_interpretation: j2k::J2kSampleInterpretation
+pub j2k::J2kRegionDecodePlan::source_region: j2k_core::types::Rect
 pub j2k::J2kRoiRegion::component: u16
 pub j2k::J2kRoiRegion::height: u32
 pub j2k::J2kRoiRegion::shift: u8
 pub j2k::J2kRoiRegion::width: u32
 pub j2k::J2kRoiRegion::x: u32
 pub j2k::J2kRoiRegion::y: u32
+pub j2k::J2kSampleInterpretation::Native16
+pub j2k::J2kSampleInterpretation::NormalizedU8
+pub j2k::J2kSampleInterpretation::Srgb8
 pub j2k::J2kSrgb8Layout::Gray
 pub j2k::J2kSrgb8Layout::Rgb
 pub j2k::J2kSrgb8Layout::Rgba
@@ -775,6 +830,7 @@ pub struct j2k::EncodedImage
 pub struct j2k::EncodedJ2k
 pub struct j2k::EncodedLossyJ2k
 pub struct j2k::IndexedBatchError
+pub struct j2k::J2kCancellationToken
 pub struct j2k::J2kChannelDefinition
 pub struct j2k::J2kCodec
 pub struct j2k::J2kCodestreamPayload<'a>
@@ -812,6 +868,7 @@ pub struct j2k::PreparedBatchGroup
 pub struct j2k::PreparedClassicPlan
 pub struct j2k::PreparedHtj2kPlan
 pub struct j2k::PreparedImage
+pub struct j2k::PreparedImageOperation<'a>
 pub struct j2k::ReencodedHtj2k
 pub struct j2k::TileDecodeOutput<'o>
 pub trait j2k::BatchDecoder
@@ -2584,6 +2641,7 @@ pub fn j2k_metal::MetalBatchDecodeResult::groups(&self) -> &[j2k_metal::MetalBat
 pub fn j2k_metal::MetalBatchDecodeResult::into_parts(self) -> (alloc::vec::Vec<j2k_metal::MetalBatchGroup>, alloc::vec::Vec<j2k::owned_batch::errors::IndexedBatchError>, alloc::vec::Vec<j2k_metal::MetalBatchGroupError>)
 pub fn j2k_metal::MetalBatchDecoder::backend_session(&self) -> &j2k_metal::MetalBackendSession
 pub fn j2k_metal::MetalBatchDecoder::decode_batch(&mut self, alloc::vec::Vec<j2k::owned_batch::contracts::EncodedImage>) -> core::result::Result<j2k_metal::MetalBatchDecodeResult, j2k_metal::Error>
+pub fn j2k_metal::MetalBatchDecoder::decode_operations(&mut self, &[j2k::owned_batch::cpu_operation::PreparedImageOperation<'_>]) -> core::result::Result<j2k_metal::MetalBatchDecodeResult, j2k_metal::Error>
 pub fn j2k_metal::MetalBatchDecoder::decode_prepared(&mut self, &j2k::owned_batch::prepared::PreparedBatch) -> core::result::Result<Self::Output, Self::Error>
 pub fn j2k_metal::MetalBatchDecoder::decode_prepared(&mut self, &j2k::owned_batch::prepared::PreparedBatch) -> core::result::Result<j2k_metal::MetalBatchDecodeResult, j2k_metal::Error>
 pub fn j2k_metal::MetalBatchDecoder::decode_prepared_cooperative(&mut self, &j2k::owned_batch::prepared::PreparedBatch, core::num::nonzero::NonZeroUsize) -> core::result::Result<j2k_metal::MetalBatchDecodeResult, j2k_metal::Error>
@@ -2596,6 +2654,7 @@ pub fn j2k_metal::MetalBatchDecoder::prepare(&self, alloc::vec::Vec<j2k::owned_b
 pub fn j2k_metal::MetalBatchDecoder::prepare_prepared_images(&self, alloc::vec::Vec<j2k::owned_batch::prepared::PreparedImage>) -> core::result::Result<j2k::owned_batch::prepared::PreparedBatch, j2k_metal::Error>
 pub fn j2k_metal::MetalBatchDecoder::submissions(&self) -> core::result::Result<u64, j2k_metal::Error>
 pub fn j2k_metal::MetalBatchDecoder::submit_batch(&mut self, alloc::vec::Vec<j2k::owned_batch::contracts::EncodedImage>) -> core::result::Result<j2k_metal::SubmittedMetalPreparedBatch, j2k_metal::Error>
+pub fn j2k_metal::MetalBatchDecoder::submit_operations(&mut self, &[j2k::owned_batch::cpu_operation::PreparedImageOperation<'_>]) -> core::result::Result<j2k_metal::SubmittedMetalPreparedBatch, j2k_metal::Error>
 pub fn j2k_metal::MetalBatchDecoder::submit_prepared(&mut self, &j2k::owned_batch::prepared::PreparedBatch) -> core::result::Result<j2k_metal::SubmittedMetalPreparedBatch, j2k_metal::Error>
 pub fn j2k_metal::MetalBatchDecoder::submit_prepared_group_into(&mut self, &j2k::owned_batch::prepared::PreparedBatchGroup, j2k_metal_support::resident::destination::MetalImageDestination) -> core::result::Result<j2k_metal::SubmittedMetalGroupDecodeInto, j2k_metal::Error>
 pub fn j2k_metal::MetalBatchDecoder::submit_prepared_group_into_for_consumer_queue(&mut self, &j2k::owned_batch::prepared::PreparedBatchGroup, j2k_metal_support::resident::destination::MetalImageDestination, &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLCommandQueue::MTLCommandQueue>) -> core::result::Result<j2k_metal::SubmittedMetalGroupDecodeInto, j2k_metal::Error>
@@ -2936,6 +2995,7 @@ pub fn j2k_cuda::CudaBatchDecodeResult::group_errors(&self) -> &[j2k_cuda::CudaB
 pub fn j2k_cuda::CudaBatchDecodeResult::groups(&self) -> &[j2k_cuda::CudaBatchGroup]
 pub fn j2k_cuda::CudaBatchDecodeResult::into_parts(self) -> (alloc::vec::Vec<j2k_cuda::CudaBatchGroup>, alloc::vec::Vec<j2k::owned_batch::errors::IndexedBatchError>, alloc::vec::Vec<j2k_cuda::CudaBatchGroupError>)
 pub fn j2k_cuda::CudaBatchDecoder::decode_batch(&mut self, alloc::vec::Vec<j2k::owned_batch::contracts::EncodedImage>) -> core::result::Result<j2k_cuda::CudaBatchDecodeResult, j2k_cuda::CudaBatchError>
+pub fn j2k_cuda::CudaBatchDecoder::decode_operations(&mut self, &[j2k::owned_batch::cpu_operation::PreparedImageOperation<'_>]) -> core::result::Result<j2k_cuda::CudaBatchDecodeResult, j2k_cuda::CudaBatchError>
 pub fn j2k_cuda::CudaBatchDecoder::decode_pool_diagnostics(&self) -> core::result::Result<j2k_cuda::CudaDecodePoolDiagnostics, j2k_cuda::Error>
 pub fn j2k_cuda::CudaBatchDecoder::decode_prepared(&mut self, &j2k::owned_batch::prepared::PreparedBatch) -> core::result::Result<Self::Output, Self::Error>
 pub fn j2k_cuda::CudaBatchDecoder::decode_prepared(&mut self, &j2k::owned_batch::prepared::PreparedBatch) -> core::result::Result<j2k_cuda::CudaBatchDecodeResult, j2k_cuda::CudaBatchError>
@@ -2947,6 +3007,7 @@ pub fn j2k_cuda::CudaBatchDecoder::prepare(&self, alloc::vec::Vec<j2k::owned_bat
 pub fn j2k_cuda::CudaBatchDecoder::prepare_prepared_images(&self, alloc::vec::Vec<j2k::owned_batch::prepared::PreparedImage>) -> core::result::Result<j2k::owned_batch::prepared::PreparedBatch, j2k_core::batch::BatchInfrastructureError>
 pub fn j2k_cuda::CudaBatchDecoder::session_mut(&mut self) -> &mut j2k_cuda::CudaSession
 pub fn j2k_cuda::CudaBatchDecoder::submit_batch(&mut self, alloc::vec::Vec<j2k::owned_batch::contracts::EncodedImage>) -> core::result::Result<j2k_cuda::SubmittedCudaResidentBatch, j2k_cuda::CudaBatchError>
+pub fn j2k_cuda::CudaBatchDecoder::submit_operations(&mut self, &[j2k::owned_batch::cpu_operation::PreparedImageOperation<'_>]) -> core::result::Result<j2k_cuda::SubmittedCudaResidentBatch, j2k_cuda::CudaBatchError>
 pub fn j2k_cuda::CudaBatchDecoder::submit_prepared(&mut self, &j2k::owned_batch::prepared::PreparedBatch) -> core::result::Result<j2k_cuda::SubmittedCudaResidentBatch, j2k_cuda::CudaBatchError>
 pub fn j2k_cuda::CudaBatchDecoder::with_options(j2k::owned_batch::contracts::BatchDecodeOptions) -> Self
 pub fn j2k_cuda::CudaBatchDecoder::with_session(j2k_cuda::CudaSession) -> Self
@@ -4111,6 +4172,7 @@ pub j2k_native::DecodeError::Marker(j2k_native::MarkerError)
 pub j2k_native::DecodeError::Tile(j2k_native::TileError)
 pub j2k_native::DecodeError::Validation(j2k_native::ValidationError)
 pub j2k_native::DecodeErrorClass::Backend
+pub j2k_native::DecodeErrorClass::Cancelled
 pub j2k_native::DecodeErrorClass::InputTooShort
 pub j2k_native::DecodeErrorClass::InputTooShort::have: usize
 pub j2k_native::DecodeErrorClass::InputTooShort::need: usize
@@ -4125,6 +4187,7 @@ pub j2k_native::DecodeErrorClass::Unsupported::what: &'static str
 pub j2k_native::DecodeSettings::resolve_palette_indices: bool
 pub j2k_native::DecodeSettings::strict: bool
 pub j2k_native::DecodeSettings::target_resolution: core::option::Option<(u32, u32)>
+pub j2k_native::DecodingError::Cancelled
 pub j2k_native::DecodingError::CodeBlockDecodeFailure
 pub j2k_native::DecodingError::CodeBlockDecodeFailureWithContext(&'static str)
 pub j2k_native::DecodingError::DirectPlanUnsupported(j2k_native::DirectPlanUnsupportedReason)

@@ -7,6 +7,26 @@ and stale roadmap entries have been removed from the public documentation set.
 
 Staged workspace version: `0.13.2`.
 
+- `decode_region_into`, `decode_region_scaled_pow2_into`, `decode_into`,
+  and `decode_rows_u8_bounded` accept a JP2 whose ICC profile is equivalent
+  to IEC 61966-2-1 sRGB when the output is `Rgb8` or `Rgba8`, writing its
+  samples as RGB without a colour transform. A profile qualifies when it is
+  a restricted RGB matrix/TRC profile whose linear matrix to sRGB is within
+  2.5e-4 (off-diagonal row sums) and 1e-3 (diagonal) of identity, and whose
+  transform to sRGB moves no 8-bit channel or neutral ramp sample by more
+  than one code value. Other ICC profiles remain unsupported for these
+  outputs (#321).
+- Security: an ICC profile's text tags could make decoding allocate memory
+  in proportion to the square of the profile's size, outside every decode
+  memory limit. One multi-localized Unicode (`mluc`) tag whose records all
+  name the same string, with all six text signatures naming that tag, made a
+  29 KB profile hold about 200 MB during an ordinary `decode_into` to
+  `Rgb8`, and larger profiles could abort the process. Profiles are now
+  parsed without their text tags (`cprt`, `desc`, `vued`, `dmnd`, `dmdd`,
+  `targ`), which never affect colour. Lookup-table tags are refused before
+  their tables are allocated, and profiles with repeated tag signatures or
+  more than 256 tags are rejected as invalid or unsupported.
+
 - A JP2 whose codestream has more components than its declared color space
   and no `cdef` box keeps that color space under strict decoding instead of
   being reinterpreted from its component count. The extra components are
@@ -21,15 +41,143 @@ Staged workspace version: `0.13.2`.
   back to the generic decode instead of failing. Bounded 8-bit and 16-bit
   rows use the resolved color channels and alpha state, and recode validation
   compares every component even when display output omits unspecified ones.
-- `decode_region_into`, `decode_region_scaled_pow2_into`, `decode_into`,
-  and `decode_rows_u8_bounded` accept a JP2 whose ICC profile is equivalent
-  to IEC 61966-2-1 sRGB when the output is `Rgb8` or `Rgba8`, writing its
-  samples as RGB without a colour transform. A profile qualifies when it is
-  a restricted RGB matrix/TRC profile whose linear matrix to sRGB is within
-  2.5e-4 (off-diagonal row sums) and 1e-3 (diagonal) of identity, and whose
-  transform to sRGB moves no 8-bit channel or neutral ramp sample by more
-  than one code value. Other ICC profiles remain unsupported for these
-  outputs (#321).
+
+- `J2kDecoder::region_decode_plan(format, roi, levels)` plans a region decode
+  at an exact JPEG 2000 reduction before anything is decoded. The returned
+  `J2kRegionDecodePlan` reports the reduced output rectangle with its source
+  region and reference grid, the reduced image dimensions, the sample
+  interpretation and alpha meaning, checked `row_bytes` and `buffer_bytes`
+  (`buffer_len(stride)` for padded rows), and the decode route.
+  `max_reduction_levels` returns the deepest reduction that every component
+  and tile supports. An unavailable reduction, or a region with no samples at
+  the requested reduction, fails instead of being clamped or cropped. Existing
+  `Downscale` requests and JPEG DCT scaling are unchanged.
+
+- `decode_region_srgb8`, `decode_region_srgb8_at_reduction` and
+  `srgb8_region_decode_plan` decode explicit 8-bit sRGB regions by
+  reconstructing the region's native support window, not by cropping a full
+  decode. ICC profiles equivalent to standard sRGB take the sRGB path, also
+  for ordinary packed and row output. `J2kSrgb8Image::alpha` and
+  `J2kRegionDecodePlan::alpha` report the output's `BatchAlpha`: sRGB output
+  is straight, and ordinary RGBA plans distinguish straight from
+  premultiplied. Premultiplied colour is unassociated in source code values
+  at the source precision, after palette mapping and before sYCC conversion
+  (about the chroma midpoint) and quantization: a 16-bit RGBA pixel
+  [128, 256, 384, 512] normalizes to [64, 128, 191, 2] rather than the
+  [0, 128, 128] that quantizing first gives. Premultiplied CIE Lab input, and
+  premultiplied input with subsampled or signed components other than
+  eight-bit mapped samples without colour conversion, fail as `Unsupported`.
+
+- `J2kDecodeControl` applies a working-memory limit, a packed-output limit and
+  a `J2kCancellationToken` to one operation:
+  `region_decode_plan_with_control`,
+  `decode_region_scaled_pow2_into_with_control`, `decode_srgb8_with_control`
+  and `decode_region_srgb8_at_reduction_with_control`. Cancellation is checked
+  before expensive work and between bounded blocks and row bands, and fails
+  with `J2kError::Cancelled` (`DecodingError::Cancelled` and
+  `DecodeErrorClass::Cancelled` in `j2k-native`). Rows already handed to a
+  sink stay written, and the operation is not retried after it publishes
+  rows. A cancelled or refused operation leaves the decoder usable. The
+  working limit counts the operation's derived plans, scratch and owned
+  output, not the compressed input, and is not a process-memory limit.
+  ICC colour management under a working limit charges a bound on the
+  colour-management state before creating it; profiles outside the bounded
+  matrix/TRC or gray-TRC shape with an XYZ connection space are refused under a
+  limit. Output limits and cancellation apply to every ICC operation.
+  `J2kView::parse_with_control`, `J2kDecoder::new_with_control`,
+  `max_reduction_levels_with_control` and
+  `srgb8_region_decode_plan_with_control` bring source parsing and planning
+  under the same controls, and `CpuBatchDecoder::prepare_with_control`
+  prepares a batch one input at a time so the working limit bounds each
+  input beside the plans already kept for earlier ones; inputs that fail a
+  limit or observe cancellation become indexed preparation errors. A
+  decoder or batch prepared this way keeps only its actual plans, not the
+  control's allowance.
+
+- `PreparedImageOperation::new(image, roi, levels)` with
+  `CpuBatchDecoder::decode_operations` decodes regions at exact reductions of
+  an existing `PreparedImage` without reparsing or copying its source, and
+  `with_control` applies a `J2kDecodeControl` to one operation. Admission and
+  concurrency come from the receiving session, so a `PreparedImage` shared by
+  two sessions follows each session's own options. Derived plans stay in a
+  bounded per-session cache (`set_operation_cache_limit_bytes`,
+  `operation_cache_stats`). A `J2kDecoder` keeps one reduction's parsed image
+  across region requests, bounded by `set_preparation_cache_limit_bytes`.
+
+- `MetalBatchDecoder::decode_operations` and `submit_operations` decode the
+  same `PreparedImageOperation`s on Metal, at any reduction the source
+  supports, with the CPU path's output geometry, native samples and grouping.
+  Each operation's plan is cached under its own source region and reduction,
+  never under its source's full-image plan. Shapes without an offset plan,
+  such as subsampled components below full resolution, fail per group with a
+  capability error. A `J2kDecodeControl`'s output limit and cancellation
+  apply: tokens are checked during preparation, before a group's Metal
+  storage is allocated and before its command buffers are committed, and
+  operations share a group only with operations carrying the same token.
+  A working limit fails the operation as unsupported, because Metal working
+  memory is not counted against a host allowance. Python MPS decoders use
+  this path for exact requests and prepared operations.
+
+- `CudaBatchDecoder::decode_operations` and `submit_operations` decode the
+  same `PreparedImageOperation`s on CUDA, into resident groups with the CPU
+  path's output geometry and grouping at any reduction the source supports.
+  Reversible inputs reproduce the CPU's samples; irreversible 9/7 inputs stay
+  within one sample value, as CUDA prepared batches do. Operations decode only
+  through their offset plans and never re-parse their bytes, so shapes
+  without one, such as subsampled colour components, fail per group with a
+  capability error, as they do in CUDA prepared batches. A
+  `J2kDecodeControl`'s output limit and cancellation apply: tokens are checked
+  during preparation and before each group is planned and submitted, and
+  submitted CUDA work runs to completion. A working limit fails the operation
+  as unsupported, because CUDA working memory is not counted against a host
+  allowance. Python CUDA decoders use this path for exact requests, prepared
+  operations and decode controls, decoding each group into a new PyTorch CUDA
+  tensor.
+
+- Regions of exact-integer images (25–38-bit samples, reversible 5/3) whose
+  components are not subsampled reconstruct only the region's wavelet windows
+  instead of decoding the whole image and cropping. A 17 × 13 region of a
+  512 × 384 29-bit image now fits a 512 KiB working limit that a full decode
+  exceeds. Output is identical. Exact-integer regions with subsampled
+  components reconstruct the tiles they touch and keep only the region's
+  samples, as floating-point regions do, instead of decoding the full image
+  and cropping it; explicit sRGB regions of such images are no longer
+  refused.
+
+- Reduced CUDA decodes of images whose reference-grid origin is not a multiple
+  of the reduction factor inferred the reduction from planned dimensions and
+  could decode the wrong level: a `Downscale::Half` request on the 23 × 17
+  image at origin (3, 5) returned 6 × 4 instead of 11 × 8. The requested
+  reduction now carries through CUDA colour, grayscale, region and prepared
+  planning.
+
+- Memory limits and error reporting are enforced where they were missed.
+  Tiles that stream several at once, including 16-bit Gray, count the memory
+  the decode already retains, and reused edge buffers charge their full
+  capacity before they grow. A JPEG
+  restart index counts the memory a decode already holds before it is built;
+  when it does not fit, seeks continue uncached. Native row sinks stop on
+  their first error and report it ahead of later decode errors, including
+  after a fallback route takes over. Metal decodes routed through `Auto`, and
+  repeated grayscale batches, run on the caller's session and command queue,
+  and a failed Metal batch completes every request with the selected route's
+  error.
+
+- The C API adds exact region operations without changing ABI 1 layouts:
+  `j2k_decoder_prepare_operations`, `j2k_decoder_plan_region` and
+  `j2k_decoder_decode_region_into` with `J2K_OPERATION_OPTIONS_INIT`, plus
+  `j2k_cancellation_*` tokens and `J2K_CANCELLED`. `j2k_decoder_row_info` and
+  row callbacks no longer fail under an output cap smaller than the whole
+  image; whole-output decodes still enforce it. Python CPU requests accept
+  exact reductions 0–31, and `Decoder.plan_region`, `Decoder.decode_srgb8`,
+  `DecodeControl` and `CancellationToken` expose the same planning, sRGB and
+  control behaviour. A controlled C operation on an unprepared decoder prepares the source under
+  its own working limit and cancellation, keeping only a successful
+  preparation, and raw sRGB calls in both bindings parse their input under
+  the operation's controls. Python CPU `Decoder.prepare` takes a `control`.
+  See
+  [`crates/j2k-c/CHANGELOG.md`](crates/j2k-c/CHANGELOG.md).
+
 - Baseline JPEG Huffman decoding returns two AC coefficients from one table
   lookup when both fit in the 12-bit lookup window: each AC table entry also
   holds the symbol that follows it. Refills happen at the same points as
