@@ -20,6 +20,7 @@ use super::{
 use crate::j2c::encode::allocation::{checked_add_bytes, checked_element_bytes};
 use crate::j2c::encode::magnitude::required_ht_magnitude_bound;
 use crate::j2c::encode::tier1_allocation::prepared_packets_ownership;
+use crate::j2c::encode::validate_common_encode_options;
 use crate::EncodeResult;
 
 const MAX_QUANTIZATION_GUARD_BITS: u8 = 7;
@@ -107,7 +108,9 @@ pub(in crate::j2c::encode) fn validate_legacy_packet_options(
             "precomputed 9/7 sampling comes from the coefficient image",
         ));
     }
-    Ok(())
+    // After the route's own checks, so their errors keep precedence: the
+    // options every route rejects fail here, before any block is coded.
+    validate_common_encode_options(options)
 }
 
 #[expect(

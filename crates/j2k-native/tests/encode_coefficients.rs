@@ -657,3 +657,45 @@ fn push_box(bytes: &mut Vec<u8>, box_type: [u8; 4], payload: &[u8]) {
     bytes.extend_from_slice(&box_type);
     bytes.extend_from_slice(payload);
 }
+
+/// Options every encode route rejects are rejected by the precomputed 9/7
+/// route too, during option validation rather than after block coding.
+#[test]
+fn precomputed_97_encode_rejects_invalid_common_options() {
+    let image = PrecomputedHtj2k97Image {
+        width: 8,
+        height: 8,
+        bit_depth: 8,
+        signed: false,
+        components: vec![PrecomputedHtj2k97Component {
+            x_rsiz: 1,
+            y_rsiz: 1,
+            dwt: zero_dwt97(8, 8),
+        }],
+    };
+    for (options, what) in [
+        (
+            EncodeOptions {
+                write_ppm: true,
+                write_ppt: true,
+                ..precomputed_lossy_options()
+            },
+            "PPM and PPT packet header markers are mutually exclusive",
+        ),
+        (
+            EncodeOptions {
+                tile_part_packet_limit: Some(0),
+                ..precomputed_lossy_options()
+            },
+            "tile-part packet limit must be non-zero",
+        ),
+    ] {
+        assert!(
+            matches!(
+                encode_precomputed_htj2k_97(&image, &options),
+                Err(j2k_native::EncodeError::InvalidInput { what: actual }) if actual == what
+            ),
+            "{what}"
+        );
+    }
+}
