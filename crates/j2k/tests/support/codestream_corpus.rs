@@ -38,6 +38,13 @@ fn rgb_fixture(
 /// Codestreams covering odd image origins, tiles, empty coarse levels,
 /// progression orders, HTJ2K, sampled components and 12/16-bit precision.
 pub(super) fn parity_corpus() -> Vec<(String, Vec<u8>)> {
+    let mut corpus = fixture_files();
+    corpus.extend(encoded_variants());
+    corpus
+}
+
+/// The checked-in odd-origin, progression, empty-coarse-level and HTJ2K files.
+fn fixture_files() -> Vec<(String, Vec<u8>)> {
     let fixtures =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../j2k-test-support/fixtures");
     let mut corpus = Vec::new();
@@ -66,6 +73,12 @@ pub(super) fn parity_corpus() -> Vec<(String, Vec<u8>)> {
             ));
         }
     }
+    corpus
+}
+
+/// Encoded tiled, 16-bit, signed, RGBA and sampled variants.
+fn encoded_variants() -> Vec<(String, Vec<u8>)> {
+    let mut corpus = Vec::new();
     corpus.push(("rgb 61x47 5 levels".into(), rgb_fixture(61, 47, 5, None)));
     corpus.push((
         "rgb 61x47 tiled 3 levels".into(),
