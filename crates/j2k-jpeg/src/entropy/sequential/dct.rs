@@ -300,6 +300,34 @@ pub(crate) struct McuWindow {
     pub(crate) rows: u32,
 }
 
+impl McuWindow {
+    /// Whether the window is non-empty and inside an MCU grid of
+    /// `(mcus_per_row, mcu_rows)`.
+    ///
+    /// The ends are added with overflow checks: device windows arrive through
+    /// a public type with public fields, and release builds do not check
+    /// arithmetic, so a wrapped end would otherwise pass the bounds test.
+    pub(crate) fn lies_within(self, (mcus_per_row, mcu_rows): (u32, u32)) -> bool {
+        self.cols != 0
+            && self.rows != 0
+            && self
+                .col
+                .checked_add(self.cols)
+                .is_some_and(|end| end <= mcus_per_row)
+            && self
+                .row
+                .checked_add(self.rows)
+                .is_some_and(|end| end <= mcu_rows)
+    }
+
+    /// Whether MCU `(mcu_x, mcu_y)` is inside a window that [`Self::lies_within`]
+    /// accepted, so its ends cannot overflow.
+    fn contains(self, mcu_x: u32, mcu_y: u32) -> bool {
+        (self.col..self.col + self.cols).contains(&mcu_x)
+            && (self.row..self.row + self.rows).contains(&mcu_y)
+    }
+}
+
 /// Decode only the MCUs of `window` into caller-owned dequantized blocks.
 ///
 /// As CPU region decode does, the scan is entered through
@@ -344,10 +372,6 @@ pub(crate) fn decode_scan_quantized_dct_windows_into(
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "window validation, restart entry, and one-pass MCU traversal remain explicit"
-)]
 fn decode_scan_quantized_dct_windows_with_entries<const N: usize>(
     plan: &PreparedDecodePlan,
     scan_bytes: &[u8],
@@ -361,18 +385,7 @@ fn decode_scan_quantized_dct_windows_with_entries<const N: usize>(
     }
     let (mcus_per_row, mcu_rows) = sequential_mcu_grid(plan);
     for (window, output) in windows.iter().zip(blocks.iter()) {
-        if window.cols == 0
-            || window.rows == 0
-            || window
-                .col
-                .checked_add(window.cols)
-                .is_none_or(|end| end > mcus_per_row)
-            || window
-                .row
-                .checked_add(window.rows)
-                .is_none_or(|end| end > mcu_rows)
-            || output.len() != plan.sampling.len()
-        {
+        if !window.lies_within((mcus_per_row, mcu_rows)) || output.len() != plan.sampling.len() {
             return Err(JpegError::InternalInvariant {
                 reason:
                     "quantized DCT window lies outside the scan or has the wrong component count",
@@ -420,10 +433,7 @@ fn decode_scan_quantized_dct_windows_with_entries<const N: usize>(
             {
                 cursor.prev_dc = [0; 4];
             }
-            let selected = windows.iter().any(|window| {
-                (window.col..window.col + window.cols).contains(&mcu_x)
-                    && (window.row..window.row + window.rows).contains(&mcu_y)
-            });
+            let selected = windows.iter().any(|window| window.contains(mcu_x, mcu_y));
             if selected {
                 for component in &plan.components {
                     let plane = component.output_index;
@@ -440,9 +450,7 @@ fn decode_scan_quantized_dct_windows_with_entries<const N: usize>(
                                 &mut block,
                             )?;
                             for (window, output) in windows.iter().zip(blocks.iter_mut()) {
-                                if !(window.col..window.col + window.cols).contains(&mcu_x)
-                                    || !(window.row..window.row + window.rows).contains(&mcu_y)
-                                {
+                                if !window.contains(mcu_x, mcu_y) {
                                     continue;
                                 }
                                 let cols = window.cols * u32::from(component.h);
@@ -470,11 +478,7 @@ fn decode_scan_dct_window_into_with_entries<const N: usize>(
     blocks: &mut [[i16; 64]],
 ) -> Result<(), JpegError> {
     let (mcus_per_row, mcu_rows) = sequential_mcu_grid(plan);
-    if window.cols == 0
-        || window.rows == 0
-        || window.col + window.cols > mcus_per_row
-        || window.row + window.rows > mcu_rows
-    {
+    if !window.lies_within((mcus_per_row, mcu_rows)) {
         return Err(JpegError::InternalInvariant {
             reason: "sequential device DCT window lies outside the scan",
         });

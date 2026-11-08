@@ -265,12 +265,7 @@ pub fn device_dct_window_layout(
         return Err(JpegError::NotImplemented { sof: info.sof_kind });
     }
     let plan = &decoder.plan;
-    let (mcus_per_row, mcu_rows) = sequential_mcu_grid(plan);
-    if window.cols == 0
-        || window.rows == 0
-        || window.col + window.cols > mcus_per_row
-        || window.row + window.rows > mcu_rows
-    {
+    if !McuWindow::from(window).lies_within(sequential_mcu_grid(plan)) {
         return Err(JpegError::InternalInvariant {
             reason: "device DCT window lies outside the scan",
         });

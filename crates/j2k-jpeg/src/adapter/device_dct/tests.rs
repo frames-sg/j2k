@@ -440,3 +440,45 @@ fn device_reference_matches_cpu_on_four_component_and_rgb_fixtures() {
     }
     assert!(compared > 32 * 8, "compared {compared}");
 }
+
+/// A device window whose end wraps `u32` is outside the scan, in release
+/// builds too (they do not check arithmetic overflow).
+#[test]
+fn device_dct_windows_with_wrapping_ends_are_rejected() {
+    let jpeg = j2k_test_support::minimal_baseline_420_jpeg();
+    let decoder = Decoder::new(&jpeg).expect("decoder");
+    let mut blocks = vec![[0_i16; 64]; 6];
+    for window in [
+        JpegDeviceMcuWindow {
+            col: u32::MAX,
+            cols: 2,
+            row: 0,
+            rows: 1,
+        },
+        JpegDeviceMcuWindow {
+            col: 0,
+            cols: 1,
+            row: u32::MAX,
+            rows: 2,
+        },
+    ] {
+        assert!(
+            matches!(
+                device_dct_window_layout(&decoder, window),
+                Err(JpegError::InternalInvariant {
+                    reason: "device DCT window lies outside the scan",
+                })
+            ),
+            "{window:?}"
+        );
+        assert!(
+            matches!(
+                decode_device_dct_window_into(&decoder, window, &mut blocks),
+                Err(JpegError::InternalInvariant {
+                    reason: "sequential device DCT window lies outside the scan",
+                })
+            ),
+            "{window:?}"
+        );
+    }
+}
