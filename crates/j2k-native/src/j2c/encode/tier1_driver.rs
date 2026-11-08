@@ -246,13 +246,7 @@ fn encode_ht_subbands(
         job_bytes,
     ];
 
-    if let Some(encoded) = accelerator.encode_ht_code_blocks(&jobs).map_err(|source| {
-        crate::EncodeError::Accelerator {
-            operation: "HT Tier-1 code-block batch encode",
-            source,
-        }
-    })? {
-        validate_ht_batch_outputs(&encoded, &jobs)?;
+    if let Some(encoded) = try_accelerated_ht_batch(&jobs, tracker, fixed, accelerator)? {
         let encoded_bytes = public_ht_blocks_ownership(&encoded, encoded.capacity())?;
         tracker.check(
             fixed.into_iter().chain([encoded_bytes]),
@@ -285,6 +279,100 @@ fn encode_ht_subbands(
         tracker,
         accelerator,
     )
+}
+
+fn try_accelerated_ht_batch(
+    jobs: &[crate::J2kHtCodeBlockEncodeJob<'_>],
+    tracker: &mut Tier1PhaseTracker<'_, '_>,
+    fixed: [usize; 4],
+    accelerator: &mut impl J2kEncodeStageAccelerator,
+) -> NativeEncodePipelineResult<Option<Vec<crate::EncodedHtJ2kCodeBlock>>> {
+    const OPERATION: &str = "HT Tier-1 code-block batch encode";
+    let device_job_count = jobs.iter().filter(|job| job.total_bitplanes != 0).count();
+    if device_job_count == jobs.len() {
+        let encoded = accelerator.encode_ht_code_blocks(jobs).map_err(|source| {
+            crate::EncodeError::Accelerator {
+                operation: OPERATION,
+                source,
+            }
+        })?;
+        if let Some(encoded) = encoded.as_ref() {
+            validate_ht_batch_outputs(encoded, jobs)?;
+        }
+        return Ok(encoded);
+    }
+    for job in jobs.iter().filter(|job| job.total_bitplanes == 0) {
+        empty_ht_output(job)?;
+    }
+
+    let (mut device_jobs, device_job_bytes) = tracker
+        .try_vec::<crate::J2kHtCodeBlockEncodeJob<'_>>(
+            device_job_count,
+            fixed,
+            "nonempty accelerated HT job descriptors",
+        )?;
+    device_jobs.extend(jobs.iter().copied().filter(|job| job.total_bitplanes != 0));
+    let device_outputs = if device_jobs.is_empty() {
+        Vec::new()
+    } else {
+        let Some(encoded) = accelerator
+            .encode_ht_code_blocks(&device_jobs)
+            .map_err(|source| crate::EncodeError::Accelerator {
+                operation: OPERATION,
+                source,
+            })?
+        else {
+            return Ok(None);
+        };
+        validate_ht_batch_outputs(&encoded, &device_jobs)?;
+        encoded
+    };
+    let device_output_bytes =
+        public_ht_blocks_ownership(&device_outputs, device_outputs.capacity())?;
+    let (mut merged, _) = tracker.try_vec::<crate::EncodedHtJ2kCodeBlock>(
+        jobs.len(),
+        fixed
+            .into_iter()
+            .chain([device_job_bytes, device_output_bytes]),
+        "accelerated HT output with empty blocks",
+    )?;
+    let mut device_outputs = device_outputs.into_iter();
+    for job in jobs {
+        if job.total_bitplanes == 0 {
+            merged.push(empty_ht_output(job)?);
+        } else {
+            merged.push(device_outputs.next().ok_or_else(|| {
+                NativeEncodePipelineError::internal_invariant(
+                    "accelerated nonempty HT output is missing",
+                )
+            })?);
+        }
+    }
+    if device_outputs.next().is_some() {
+        return Err(NativeEncodePipelineError::internal_invariant(
+            "accelerated nonempty HT output has trailing blocks",
+        ));
+    }
+    validate_ht_batch_outputs(&merged, jobs)?;
+    Ok(Some(merged))
+}
+
+fn empty_ht_output(
+    job: &crate::J2kHtCodeBlockEncodeJob<'_>,
+) -> NativeEncodePipelineResult<crate::EncodedHtJ2kCodeBlock> {
+    if job.coefficients.iter().any(|coefficient| *coefficient != 0) {
+        return Err(crate::EncodeError::InvalidInput {
+            what: "HTJ2K block magnitude exceeds configured bitplane count",
+        }
+        .into());
+    }
+    Ok(crate::EncodedHtJ2kCodeBlock {
+        data: Vec::new(),
+        cleanup_length: 0,
+        refinement_length: 0,
+        num_coding_passes: 0,
+        num_zero_bitplanes: 0,
+    })
 }
 
 fn encode_ht_serial(
@@ -631,6 +719,11 @@ fn encode_ht_code_block_typed(
     accelerator: &mut impl J2kEncodeStageAccelerator,
     workspace: &mut Option<ht_block_encode::HtEncodeWorkspace>,
 ) -> NativeEncodePipelineResult<bitplane_encode::EncodedCodeBlock> {
+    if job.total_bitplanes == 0 {
+        return Ok(ht_encoded_code_block_from_accelerator(empty_ht_output(
+            job,
+        )?));
+    }
     if let Some(encoded) = accelerator.encode_ht_code_block(*job).map_err(|source| {
         crate::EncodeError::Accelerator {
             operation: "HT Tier-1 code-block encode",

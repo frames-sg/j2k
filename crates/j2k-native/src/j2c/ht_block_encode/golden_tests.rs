@@ -291,15 +291,14 @@ fn representative_cleanup_distribution_is_exact() {
 
 #[test]
 fn validation_error_text_and_empty_block_result_remain_exact() {
-    for bitplanes in [0, 32] {
-        let Err(error) = encode_code_block_with_passes(&[1], 1, 1, bitplanes, 1) else {
-            panic!("invalid bitplane count must fail");
-        };
-        assert_eq!(
-            error,
-            "HTJ2K scalar encoder currently supports 1..=31 bitplanes"
-        );
-    }
+    assert_eq!(
+        encode_code_block_with_passes(&[1], 1, 1, 32, 1).unwrap_err(),
+        "HTJ2K scalar encoder currently supports 0..=31 bitplanes"
+    );
+    assert_eq!(
+        encode_code_block_with_passes(&[1], 1, 1, 0, 1).unwrap_err(),
+        "HTJ2K block magnitude exceeds configured bitplane count"
+    );
     for passes in [0, 4] {
         let Err(error) = encode_code_block_with_passes(&[1], 1, 1, 5, passes) else {
             panic!("invalid pass count must fail");
@@ -317,11 +316,13 @@ fn validation_error_text_and_empty_block_result_remain_exact() {
         "HTJ2K block magnitude exceeds configured bitplane count"
     );
 
-    let encoded =
-        encode_code_block_with_passes(&[0; 9], 3, 3, 8, 3).expect("all-zero block is valid");
-    assert_eq!(encoded.data, [] as [u8; 0]);
-    assert_eq!(encoded.num_coding_passes, 0);
-    assert_eq!(encoded.num_zero_bitplanes, 8);
-    assert_eq!(encoded.ht_cleanup_length, 0);
-    assert_eq!(encoded.ht_refinement_length, 0);
+    for (bitplanes, passes) in [(0, 1), (8, 3)] {
+        let encoded = encode_code_block_with_passes(&[0; 9], 3, 3, bitplanes, passes)
+            .expect("all-zero block is valid");
+        assert_eq!(encoded.data, [] as [u8; 0]);
+        assert_eq!(encoded.num_coding_passes, 0);
+        assert_eq!(encoded.num_zero_bitplanes, bitplanes);
+        assert_eq!(encoded.ht_cleanup_length, 0);
+        assert_eq!(encoded.ht_refinement_length, 0);
+    }
 }

@@ -27,9 +27,15 @@ fn distribution_rejects_mismatched_and_oversized_geometry_before_walking() {
 #[test]
 fn distribution_rejects_bitplane_range_and_magnitude_with_typed_input_errors() {
     assert_eq!(
-        collect_encode_distribution(&[0], 1, 1, 0).expect_err("zero bitplanes are invalid"),
+        collect_encode_distribution(&[0], 1, 1, 32).expect_err("32 bitplanes are invalid"),
         crate::EncodeError::InvalidInput {
-            what: "HTJ2K scalar encoder currently supports 1..=31 bitplanes",
+            what: "HTJ2K scalar encoder currently supports 0..=31 bitplanes",
+        }
+    );
+    assert_eq!(
+        collect_encode_distribution(&[1], 1, 1, 0).expect_err("zero bitplanes require zeros"),
+        crate::EncodeError::InvalidInput {
+            what: "HTJ2K block magnitude exceeds configured bitplane count",
         }
     );
     assert_eq!(

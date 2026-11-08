@@ -118,12 +118,13 @@ fn aligned_sign_magnitude_conversion_reports_max_and_skips_all_zero_blocks() {
 
 #[test]
 fn all_zero_distribution_input_remains_a_zero_distribution() {
-    let distribution =
-        collect_encode_distribution(&[0], 1, 1, 1).expect("all-zero distribution input is valid");
-
-    assert_eq!(distribution.total_quads, 0);
-    assert_eq!(distribution.mag_sign_calls, 0);
-    assert_eq!(distribution.mag_sign_encoded_samples, 0);
+    for bitplanes in [0, 1] {
+        let distribution = collect_encode_distribution(&[0], 1, 1, bitplanes)
+            .expect("all-zero distribution input is valid");
+        assert_eq!(distribution.total_quads, 0);
+        assert_eq!(distribution.mag_sign_calls, 0);
+        assert_eq!(distribution.mag_sign_encoded_samples, 0);
+    }
 }
 
 #[test]
@@ -308,10 +309,33 @@ fn explicit_cleanup_bitplane_selects_the_requested_ht_set() {
 #[test]
 fn explicit_cleanup_bitplane_rejects_impossible_refinement() {
     let mut workspace = HtEncodeWorkspace::try_new().expect("HT workspace allocation");
-    let error = try_encode_code_block_set_with_workspace(&[1], 1, 1, 1, 0, 2, &mut workspace)
-        .expect_err("p=0 has no lower refinement bitplane");
+    for bitplanes in [0, 1] {
+        let error =
+            try_encode_code_block_set_with_workspace(&[0], 1, 1, bitplanes, 0, 2, &mut workspace)
+                .expect_err("p=0 has no lower refinement bitplane");
+        assert!(matches!(error, crate::EncodeError::InvalidInput { .. }));
+    }
+}
 
-    assert!(matches!(error, crate::EncodeError::InvalidInput { .. }));
+#[test]
+fn zero_bitplane_candidates_are_empty_and_reject_nonzero_coefficients() {
+    let mut workspace = HtEncodeWorkspace::try_new().expect("HT workspace allocation");
+    let candidates =
+        try_encode_code_block_candidate_sets_with_workspace(&[0; 4], 2, 2, 0, &mut workspace)
+            .expect("an all-zero subband needs no coded bitplanes");
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].data, [] as [u8; 0]);
+    assert_eq!(candidates[0].num_coding_passes, 0);
+    assert_eq!(candidates[0].num_zero_bitplanes, 0);
+    assert_eq!(candidates[0].ht_cleanup_length, 0);
+    assert_eq!(candidates[0].ht_refinement_length, 0);
+    assert_eq!(
+        try_encode_code_block_candidate_sets_with_workspace(&[0, 1, 0, 0], 2, 2, 0, &mut workspace)
+            .unwrap_err(),
+        crate::EncodeError::InvalidInput {
+            what: "HTJ2K block magnitude exceeds configured bitplane count",
+        }
+    );
 }
 
 #[test]

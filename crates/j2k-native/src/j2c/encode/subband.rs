@@ -358,6 +358,10 @@ fn try_prepare_fused_ht_subband(
     accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> NativeEncodePipelineResult<Option<PreparedEncodeSubband>> {
     if request.block_coding_mode != BlockCodingMode::HighThroughput
+        // Let the quantization stage materialize and validate canonical empty
+        // blocks instead of sending unsupported zero-bitplane entropy work to
+        // a fused device backend.
+        || plan.total_bitplanes == 0
         || request.roi_shift != 0
         || request.ht_target_coding_passes != 1
         || (!request.origin.0.is_multiple_of(request.cb_width)

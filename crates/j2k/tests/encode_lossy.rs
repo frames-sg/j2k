@@ -12,28 +12,41 @@ use j2k::{
 
 #[test]
 fn htj2k_qfactor_is_opt_in_and_round_trips() {
-    let pixels = (0_usize..64 * 64 * 3)
+    let patterned = (0_usize..64 * 64 * 3)
         .map(|index| masked_u8(index.wrapping_mul(29)))
         .collect::<Vec<_>>();
-    let samples =
-        j2k::J2kLossySamples::new(&pixels, 64, 64, 3, 8, false).expect("valid RGB samples");
-    let encoded = j2k::encode_j2k_lossy(
-        samples,
-        &J2kLossyEncodeOptions::default()
-            .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
-            .with_qfactor(Some(90)),
-    )
-    .expect("Qfactor HTJ2K encode");
+    let flat = vec![128; 64 * 64 * 3];
+    for pixels in [&flat, &patterned] {
+        for levels in [1, 3, 5] {
+            // Qfactor 36 is the first profile whose finest Cb HH band has
+            // zero magnitude bitplanes; lower qualities add more empty bands.
+            for qfactor in [36, 37, 1, 3, 10, 13, 90, 100] {
+                let samples = j2k::J2kLossySamples::new(pixels, 64, 64, 3, 8, false)
+                    .expect("valid RGB samples");
+                let encoded = j2k::encode_j2k_lossy(
+                    samples,
+                    &J2kLossyEncodeOptions::default()
+                        .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+                        .with_max_decomposition_levels(Some(levels))
+                        .with_qfactor(Some(qfactor)),
+                )
+                .unwrap_or_else(|error| panic!("Qfactor {qfactor}, {levels} levels: {error}"));
 
-    assert!(encoded
-        .codestream
-        .windows(2)
-        .any(|bytes| bytes == [0xff, 0x5d]));
-    let decoded = decode_native(&encoded.codestream);
-    assert_eq!(
-        (decoded.width, decoded.height, decoded.num_components),
-        (64, 64, 3)
-    );
+                assert!(encoded
+                    .codestream
+                    .windows(2)
+                    .any(|bytes| bytes == [0xff, 0x5d]));
+                let decoded = strict_decode_native(&encoded.codestream);
+                assert_eq!(
+                    (decoded.width, decoded.height, decoded.num_components),
+                    (64, 64, 3)
+                );
+                if pixels == &flat {
+                    assert_eq!(decoded.data, flat);
+                }
+            }
+        }
+    }
 }
 use j2k_core::{BackendKind, CodecError};
 use j2k_native::{DecodeSettings, Image};

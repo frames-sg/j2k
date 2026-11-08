@@ -178,6 +178,12 @@ Staged workspace version: `0.13.2`.
   See
   [`crates/j2k-c/CHANGELOG.md`](crates/j2k-c/CHANGELOG.md).
 
+- HTJ2K Qfactor encoding accepts zero-magnitude-bitplane subbands, fixing
+  RGB qualities 1 through 36 (#304). Their all-zero blocks are emitted without
+  coding passes; nonzero coefficients with zero available bitplanes still
+  fail validation. Empty zero-bitplane blocks bypass accelerator entropy
+  hooks, including fused subband and rate-control candidate hooks.
+
 - Baseline JPEG Huffman decoding returns two AC coefficients from one table
   lookup when both fit in the 12-bit lookup window: each AC table entry also
   holds the symbol that follows it. Refills happen at the same points as

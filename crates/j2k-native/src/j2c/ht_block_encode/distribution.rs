@@ -96,9 +96,9 @@ pub(crate) fn collect_encode_distribution(
     height: u32,
     total_bitplanes: u8,
 ) -> EncodeResult<HtCleanupEncodeDistribution> {
-    if total_bitplanes == 0 || total_bitplanes > MAX_HT_BITPLANES {
+    if total_bitplanes > MAX_HT_BITPLANES {
         return Err(EncodeError::InvalidInput {
-            what: "HTJ2K scalar encoder currently supports 1..=31 bitplanes",
+            what: "HTJ2K scalar encoder currently supports 0..=31 bitplanes",
         });
     }
 

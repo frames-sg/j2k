@@ -4,7 +4,7 @@
 
 use alloc::vec::Vec;
 
-use super::try_encode_code_block_set_with_workspace;
+use super::{try_encode_code_block_set_with_workspace, MAX_HT_BITPLANES};
 use crate::j2c::bitplane_encode::EncodedCodeBlock;
 use crate::j2c::coefficient_view::CoefficientBlockView;
 use crate::j2c::ht_block_encode::distortion::pass_distortion_deltas;
@@ -13,12 +13,12 @@ use crate::{EncodeError, EncodeResult};
 
 pub(crate) fn candidate_cleanup_bitplanes(total_bitplanes: u8) -> EncodeResult<&'static [u8]> {
     match total_bitplanes {
-        0 => Err(EncodeError::InvalidInput {
-            what: "HTJ2K scalar encoder currently supports 1..=31 bitplanes",
-        }),
-        1 => Ok(&[0]),
+        0 | 1 => Ok(&[0]),
         2 => Ok(&[1]),
-        _ => Ok(&[2, 1]),
+        3..=MAX_HT_BITPLANES => Ok(&[2, 1]),
+        _ => Err(EncodeError::InvalidInput {
+            what: "HTJ2K scalar encoder currently supports 0..=31 bitplanes",
+        }),
     }
 }
 

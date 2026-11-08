@@ -155,6 +155,12 @@ pub(super) fn try_accelerated_candidate_outputs(
     tracker: &mut Tier1PhaseTracker<'_, '_>,
     accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> NativeEncodePipelineResult<Option<alloc::vec::IntoIter<crate::EncodedHtJ2kCodeBlockSet>>> {
+    // A zero-bitplane subband has no entropy work. The scalar candidate path
+    // validates that every coefficient is zero and materializes empty blocks;
+    // do not send an unsupported no-op job to a device backend.
+    if subband.total_bitplanes == 0 {
+        return Ok(None);
+    }
     let job_count = subband
         .code_blocks
         .len()
@@ -288,12 +294,14 @@ fn validated_accelerated_candidate(
         && output.cleanup_length == 0
         && refinement_length == 0
         && output.num_zero_bitplanes == total_bitplanes;
-    let expected_missing = total_bitplanes - cleanup_bitplane - 1;
+    let expected_missing = total_bitplanes
+        .checked_sub(cleanup_bitplane)
+        .and_then(|value| value.checked_sub(1));
     let valid_nonempty = output.num_coding_passes == expected_passes
         && !input_is_zero
         && output.data.len() == expected_length
         && output.cleanup_length > 0
-        && output.num_zero_bitplanes == expected_missing
+        && Some(output.num_zero_bitplanes) == expected_missing
         && (expected_passes == 1 || refinement_length > 0);
     if !valid_empty && !valid_nonempty {
         return Err(candidate_accelerator_error(
@@ -331,4 +339,33 @@ fn candidate_accelerator_error(detail: &'static str) -> NativeEncodePipelineErro
         source: crate::J2kEncodeStageError::internal_invariant(detail),
     }
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zero_bitplane_accelerated_candidate_is_a_canonical_empty_block() {
+        let candidate = validated_accelerated_candidate(
+            crate::EncodedHtJ2kCodeBlockSet {
+                data: Vec::new(),
+                cleanup_length: 0,
+                sigprop_length: 0,
+                magref_length: 0,
+                num_coding_passes: 0,
+                num_zero_bitplanes: 0,
+            },
+            &[0],
+            1,
+            1,
+            0,
+            0,
+        )
+        .expect("zero-bitplane candidate");
+
+        assert_eq!(candidate.data, [] as [u8; 0]);
+        assert_eq!(candidate.num_coding_passes, 0);
+        assert_eq!(candidate.num_zero_bitplanes, 0);
+    }
 }

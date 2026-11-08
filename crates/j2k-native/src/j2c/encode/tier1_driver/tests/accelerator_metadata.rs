@@ -138,6 +138,134 @@ fn omitted_nonzero_ht_block_keeps_the_accelerator_operation_category() {
     );
 }
 
+#[derive(Default)]
+struct NonemptyHtBatchAccelerator {
+    jobs_seen: usize,
+}
+
+impl J2kEncodeStageAccelerator for NonemptyHtBatchAccelerator {
+    fn encode_ht_code_blocks(
+        &mut self,
+        jobs: &[crate::J2kHtCodeBlockEncodeJob<'_>],
+    ) -> crate::J2kEncodeStageResult<Option<Vec<EncodedHtJ2kCodeBlock>>> {
+        assert!(jobs.iter().all(|job| job.total_bitplanes != 0));
+        self.jobs_seen += jobs.len();
+        jobs.iter()
+            .map(|job| {
+                crate::encode_ht_code_block_scalar_with_passes(
+                    job.coefficients,
+                    job.width,
+                    job.height,
+                    job.total_bitplanes,
+                    job.target_coding_passes,
+                )
+                .map_err(|error| {
+                    crate::J2kEncodeStageError::backend("test", "HT batch encode", error)
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some)
+    }
+}
+
+#[test]
+fn zero_bitplane_blocks_bypass_batch_accelerators_without_hiding_other_work() {
+    let session =
+        NativeEncodeSession::try_new(NativeEncodeRetainedInput::none()).expect("Tier-1 session");
+    let mut accelerator = NonemptyHtBatchAccelerator::default();
+    let encoded = encode_prepared_subbands_for_session(
+        ht_fixture_with_zero_bitplane_subband(),
+        &session,
+        0,
+        &mut accelerator,
+    )
+    .expect("mixed empty and coded HT subbands");
+
+    assert_eq!(accelerator.jobs_seen, 1);
+    assert_eq!(encoded[0].code_blocks[0].num_coding_passes, 0);
+    assert_eq!(encoded[0].code_blocks[0].data, [] as [u8; 0]);
+    assert_eq!(encoded[1].code_blocks[0].num_coding_passes, 3);
+    assert_ne!(encoded[1].code_blocks[0].data, [] as [u8; 0]);
+}
+
+#[test]
+fn zero_bitplane_nonzero_coefficients_are_rejected_before_batch_accelerators() {
+    let session =
+        NativeEncodeSession::try_new(NativeEncodeRetainedInput::none()).expect("Tier-1 session");
+    let mut subbands = ht_zero_bitplane_fixture();
+    let PreparedCodeBlockCoefficients::I32(coefficients) =
+        &mut subbands[0].code_blocks[0].coefficients
+    else {
+        panic!("zero-bitplane fixture must use i32 coefficients");
+    };
+    coefficients[0] = 1;
+    let mut accelerator = NonemptyHtBatchAccelerator::default();
+
+    let error = encode_prepared_subbands_for_session(subbands, &session, 0, &mut accelerator)
+        .expect_err("nonzero coefficients must not be accepted with zero bitplanes");
+
+    assert_eq!(accelerator.jobs_seen, 0);
+    assert_eq!(
+        error.into_encode_error(),
+        EncodeError::InvalidInput {
+            what: "HTJ2K block magnitude exceeds configured bitplane count",
+        }
+    );
+}
+
+#[derive(Default)]
+struct NonemptyHtSingleAccelerator {
+    batch_calls: usize,
+    single_calls: usize,
+}
+
+impl J2kEncodeStageAccelerator for NonemptyHtSingleAccelerator {
+    fn encode_ht_code_blocks(
+        &mut self,
+        jobs: &[crate::J2kHtCodeBlockEncodeJob<'_>],
+    ) -> crate::J2kEncodeStageResult<Option<Vec<EncodedHtJ2kCodeBlock>>> {
+        assert!(jobs.iter().all(|job| job.total_bitplanes != 0));
+        self.batch_calls += 1;
+        Ok(None)
+    }
+
+    fn encode_ht_code_block(
+        &mut self,
+        job: crate::J2kHtCodeBlockEncodeJob<'_>,
+    ) -> crate::J2kEncodeStageResult<Option<EncodedHtJ2kCodeBlock>> {
+        assert_ne!(job.total_bitplanes, 0);
+        self.single_calls += 1;
+        crate::encode_ht_code_block_scalar_with_passes(
+            job.coefficients,
+            job.width,
+            job.height,
+            job.total_bitplanes,
+            job.target_coding_passes,
+        )
+        .map(Some)
+        .map_err(|error| crate::J2kEncodeStageError::backend("test", "HT encode", error))
+    }
+}
+
+#[test]
+fn zero_bitplane_blocks_bypass_single_accelerators_after_batch_declines() {
+    let session =
+        NativeEncodeSession::try_new(NativeEncodeRetainedInput::none()).expect("Tier-1 session");
+    let mut accelerator = NonemptyHtSingleAccelerator::default();
+    let encoded = encode_prepared_subbands_for_session(
+        ht_fixture_with_zero_bitplane_subband(),
+        &session,
+        0,
+        &mut accelerator,
+    )
+    .expect("serial mixed empty and coded HT subbands");
+
+    assert_eq!(accelerator.batch_calls, 1);
+    assert_eq!(accelerator.single_calls, 1);
+    assert_eq!(encoded[0].code_blocks[0].num_coding_passes, 0);
+    assert_eq!(encoded[1].code_blocks[0].num_coding_passes, 3);
+}
+
 #[derive(Clone, Copy)]
 enum ClassicMetadataFault {
     TooManyPasses,

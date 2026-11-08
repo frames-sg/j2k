@@ -380,9 +380,9 @@ fn scalar_encode_adapters_preserve_typed_input_and_cap_categories() {
         })
     ));
     assert!(matches!(
-        encode_ht_code_block_scalar(&[0], 1, 1, 0),
+        encode_ht_code_block_scalar(&[0], 1, 1, 32),
         Err(EncodeError::InvalidInput {
-            what: "HTJ2K scalar encoder currently supports 1..=31 bitplanes",
+            what: "HTJ2K scalar encoder currently supports 0..=31 bitplanes",
         })
     ));
     assert!(matches!(

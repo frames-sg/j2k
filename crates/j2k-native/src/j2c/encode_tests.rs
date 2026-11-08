@@ -5,8 +5,9 @@ use super::{
     copy_code_block_coefficients, deinterleave_rgb8_unsigned_to_f32, deinterleave_to_f32,
     downcast_i64_coefficients_to_i32, encode, encode_all_ht_code_blocks_parallel,
     encode_all_ht_code_blocks_serial_cpu, encode_htj2k, encode_htj2k_with_qfactor,
-    encode_precomputed_htj2k_53, encode_precomputed_htj2k_53_with_accelerator,
-    encode_precomputed_htj2k_97, encode_precomputed_htj2k_97_batch_with_accelerator,
+    encode_htj2k_with_qfactor_and_accelerator, encode_precomputed_htj2k_53,
+    encode_precomputed_htj2k_53_with_accelerator, encode_precomputed_htj2k_97,
+    encode_precomputed_htj2k_97_batch_with_accelerator,
     encode_precomputed_htj2k_97_with_accelerator, encode_preencoded_htj2k_97,
     encode_preencoded_htj2k_97_compact_owned_with_accelerator, encode_prepared_subbands,
     encode_prequantized_htj2k_97, encode_prequantized_htj2k_97_with_accelerator,
@@ -2708,13 +2709,17 @@ fn htj2k_bounded_rate_control_offers_two_set_jobs_to_accelerators() {
 #[test]
 fn htj2k_bounded_rate_control_accepts_exact_accelerator_sets() {
     #[derive(Default)]
-    struct ExactSetAccelerator;
+    struct ExactSetAccelerator {
+        set_jobs: usize,
+    }
 
     impl crate::J2kEncodeStageAccelerator for ExactSetAccelerator {
         fn encode_ht_code_block_sets(
             &mut self,
             jobs: &[crate::J2kHtCodeBlockSetEncodeJob<'_>],
         ) -> crate::J2kEncodeStageResult<Option<Vec<crate::EncodedHtJ2kCodeBlockSet>>> {
+            assert!(jobs.iter().all(|job| job.total_bitplanes != 0));
+            self.set_jobs += jobs.len();
             let mut workspace = crate::j2c::ht_block_encode::HtEncodeWorkspace::try_new()
                 .map_err(|error| crate::J2kEncodeStageError::backend("test", "workspace", error))?;
             jobs.iter()
@@ -2755,7 +2760,7 @@ fn htj2k_bounded_rate_control_accepts_exact_accelerator_sets() {
         quality_layer_byte_targets: vec![128, 512, 2_048],
         ..Default::default()
     };
-    let mut accelerator = ExactSetAccelerator;
+    let mut accelerator = ExactSetAccelerator::default();
     let codestream =
         encode_with_accelerator(&pixels, 32, 32, 1, 8, false, &options, &mut accelerator)
             .expect("accelerated exact-set encode");
@@ -2763,4 +2768,34 @@ fn htj2k_bounded_rate_control_accepts_exact_accelerator_sets() {
     Image::new(&codestream, &DecodeSettings::default())
         .and_then(|image| image.decode_native())
         .expect("decode accelerated exact-set codestream");
+
+    assert!(accelerator.set_jobs >= 2);
+
+    let flat = vec![128; 64 * 64 * 3];
+    let qfactor_options = EncodeOptions {
+        use_ht_block_coding: true,
+        num_decomposition_levels: 5,
+        reversible: false,
+        guard_bits: 1,
+        num_layers: 3,
+        quality_layer_byte_targets: vec![128, 512, 2_048],
+        ..Default::default()
+    };
+    let flat_codestream = encode_htj2k_with_qfactor_and_accelerator(
+        &flat,
+        64,
+        64,
+        3,
+        8,
+        false,
+        1,
+        &qfactor_options,
+        &mut accelerator,
+    )
+    .expect("zero-bitplane bounded HT Qfactor encode");
+
+    let decoded = Image::new(&flat_codestream, &DecodeSettings::default())
+        .and_then(|image| image.decode_native())
+        .expect("decode zero-bitplane bounded HT codestream");
+    assert_eq!(decoded.data, flat);
 }

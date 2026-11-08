@@ -23,11 +23,14 @@ fn validate_set_request(
     cleanup_bitplane: u8,
     target_coding_passes: u8,
 ) -> crate::EncodeResult<()> {
-    let what = if !(1..=MAX_HT_BITPLANES).contains(&total_bitplanes) {
-        "HTJ2K scalar encoder currently supports 1..=31 bitplanes"
+    // A zero-bitplane subband may contain only empty blocks. Accept its
+    // cleanup-zero request here; the coefficient check rejects any nonzero
+    // magnitude before an entropy coder can run.
+    let what = if total_bitplanes > MAX_HT_BITPLANES {
+        "HTJ2K scalar encoder currently supports 0..=31 bitplanes"
     } else if !(1..=3).contains(&target_coding_passes) {
         "HTJ2K scalar encoder currently supports cleanup, sigprop, and one magref refinement pass"
-    } else if cleanup_bitplane >= total_bitplanes {
+    } else if cleanup_bitplane >= total_bitplanes.max(1) {
         "HTJ2K cleanup bitplane must be below the configured bitplane count"
     } else if cleanup_bitplane == 0 && target_coding_passes > 1 {
         "HTJ2K cleanup bitplane zero cannot carry refinement passes"

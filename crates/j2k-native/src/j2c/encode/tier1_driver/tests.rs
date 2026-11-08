@@ -69,6 +69,42 @@ fn ht_refinement_fixture() -> Vec<PreparedEncodeSubband> {
     subbands
 }
 
+fn ht_zero_bitplane_fixture() -> Vec<PreparedEncodeSubband> {
+    let mut coefficients = exact_vec(16);
+    coefficients.resize(16, 0);
+    let mut blocks = exact_vec(1);
+    blocks.push(super::super::PreparedEncodeCodeBlock {
+        coefficients: PreparedCodeBlockCoefficients::I32(coefficients),
+        width: 4,
+        height: 4,
+    });
+    let mut subbands = exact_vec(1);
+    subbands.push(PreparedEncodeSubband {
+        origin: (0, 0),
+        code_blocks: blocks,
+        preencoded_ht_code_blocks: None,
+        preencoded_ht_maximum_cleanup_magnitude: None,
+        num_cbs_x: 1,
+        num_cbs_y: 1,
+        code_block_width: 4,
+        code_block_height: 4,
+        width: 4,
+        height: 4,
+        sub_band_type: super::super::SubBandType::HighHigh,
+        total_bitplanes: 0,
+        block_coding_mode: BlockCodingMode::HighThroughput,
+        ht_target_coding_passes: 1,
+    });
+    subbands
+}
+
+fn ht_fixture_with_zero_bitplane_subband() -> Vec<PreparedEncodeSubband> {
+    let mut subbands = exact_vec(2);
+    subbands.extend(ht_zero_bitplane_fixture());
+    subbands.extend(ht_refinement_fixture());
+    subbands
+}
+
 #[test]
 fn mixed_tier1_modes_remain_unsupported() {
     let mut mixed = exact_vec(2);
