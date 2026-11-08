@@ -120,17 +120,18 @@ fn sampled_color_batch_keeps_one_resident_submission() {
 }
 
 #[cfg(not(debug_assertions))]
+/// Stage timings of one owned batch decode, in milliseconds.
 #[derive(Clone, Copy, Debug)]
 struct OwnedBatchTimings {
-    prepare_ms: f64,
-    submit_ms: f64,
-    wait_ms: f64,
+    prepare: f64,
+    submit: f64,
+    wait: f64,
 }
 
 #[cfg(not(debug_assertions))]
 impl OwnedBatchTimings {
     fn total_ms(self) -> f64 {
-        self.prepare_ms + self.submit_ms + self.wait_ms
+        self.prepare + self.submit + self.wait
     }
 }
 
@@ -191,9 +192,9 @@ fn time_owned_batch(
     };
     assert_eq!(&actual, expected);
     OwnedBatchTimings {
-        prepare_ms,
-        submit_ms,
-        wait_ms,
+        prepare: prepare_ms,
+        submit: submit_ms,
+        wait: wait_ms,
     }
 }
 
@@ -277,9 +278,9 @@ fn local_sampled_color_batch_characterization() -> Result<(), &'static str> {
             eprintln!(
                 "sampled_native level={level} sample={sample} group={group} count={count} commands=1 legacy_batch_ms={ms:.3} owned_batch_ms={:.3} prepare_ms={:.3} submit_ms={:.3} wait_ms={:.3} per_image_ms={single_ms:.3} cpu_batch_ms={cpu_ms:.3}",
                 owned.total_ms(),
-                owned.prepare_ms,
-                owned.submit_ms,
-                owned.wait_ms,
+                owned.prepare,
+                owned.submit,
+                owned.wait,
             );
         }
     }
