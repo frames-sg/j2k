@@ -68,10 +68,10 @@ impl MetalBatchDecoder {
         let available = std::thread::available_parallelism().map_or(1, NonZeroUsize::get);
         let workers = max_cpu_workers.get().min(available);
         if workers < 2 {
-            return self.decode_prepared(prepared);
+            return self.decode_prepared_without_automatic_cpu_tier1(prepared);
         }
         let Some(split) = self.cooperative_split(prepared, workers, available)? else {
-            return self.decode_prepared(prepared);
+            return self.decode_prepared_without_automatic_cpu_tier1(prepared);
         };
         let CooperativeSubmission {
             pending,
@@ -163,10 +163,11 @@ impl MetalBatchDecoder {
                 destination: &parts.gpu.allocation.destination,
                 source_indices: Some(&parts.gpu.sources),
                 consumer_ordering: engine::DirectDestinationConsumerOrdering::HostCompletionOnly,
+                automatic_cpu_workers: None,
             });
         // Pending guards retire all committed work on a fatal error.
         let (submitted, cohort_results) =
-            self.submit_resident_groups(residents, gpu_cohort.into_iter().collect())?;
+            self.submit_resident_groups(residents, gpu_cohort.into_iter().collect(), false)?;
         for (index, result) in resident_indices.into_iter().zip(submitted) {
             match result {
                 Ok(work) => pending.push((index, work)),

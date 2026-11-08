@@ -178,6 +178,20 @@ Staged workspace version: `0.13.2`.
   See
   [`crates/j2k-c/CHANGELOG.md`](crates/j2k-c/CHANGELOG.md).
 
+- `MetalBatchDecoder` sends classic Tier-1 for batches of at least eight
+  distinct full-image RGB8 inputs with sampled components to the CPU pool,
+  then keeps inverse transforms, chroma expansion and output resident on
+  Metal (#300). The GPU's serial MQ code-block chains set the latency floor for
+  256 x 256 Aperio 33003 tiles; using the existing flattened CPU coefficient
+  cache removes that floor without a host pixel round trip. Across eight
+  fresh groups of 32 level-0 tiles from each public OpenSlide 33003 test
+  slide, median prepare-plus-decode time falls from 12.63 to 7.35 ms and
+  14.94 to 8.52 ms. Output matches the CPU byte for byte. Exact operations
+  that decode whole sampled images at full resolution take the same route.
+  Small, repeated, HTJ2K, high-bit, nested-Rayon and single-worker groups
+  retain their existing Metal route; explicit multi-worker limits cap the CPU
+  stage.
+
 - HTJ2K Qfactor encoding accepts zero-magnitude-bitplane subbands, fixing
   RGB qualities 1 through 36 (#304). Their all-zero blocks are emitted without
   coding passes; nonzero coefficients with zero available bitplanes still

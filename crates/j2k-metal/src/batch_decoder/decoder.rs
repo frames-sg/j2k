@@ -203,12 +203,31 @@ impl MetalBatchDecoder {
         &mut self,
         prepared: &PreparedBatch,
     ) -> Result<SubmittedMetalPreparedBatch, Error> {
+        self.submit_prepared_with_automatic_cpu_tier1(prepared, true)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn decode_prepared_without_automatic_cpu_tier1(
+        &mut self,
+        prepared: &PreparedBatch,
+    ) -> Result<MetalBatchDecodeResult, Error> {
+        self.submit_prepared_with_automatic_cpu_tier1(prepared, false)?
+            .wait()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn submit_prepared_with_automatic_cpu_tier1(
+        &mut self,
+        prepared: &PreparedBatch,
+        allow_automatic_cpu_tier1: bool,
+    ) -> Result<SubmittedMetalPreparedBatch, Error> {
         let groups = prepared.groups();
         self.submit_group_views(
             groups.len(),
             groups.iter().map(ResidentGroupView::from),
             prepared.errors(),
             prepared.options(),
+            allow_automatic_cpu_tier1,
         )
     }
 
@@ -266,6 +285,7 @@ impl MetalBatchDecoder {
             groups.iter().map(ResidentGroupView::from),
             prepared.errors(),
             self.options,
+            true,
         )
     }
 
@@ -278,6 +298,7 @@ impl MetalBatchDecoder {
         groups: impl Iterator<Item = ResidentGroupView<'g>>,
         preparation_errors: &[IndexedBatchError],
         options: BatchDecodeOptions,
+        allow_automatic_cpu_tier1: bool,
     ) -> Result<SubmittedMetalPreparedBatch, Error> {
         let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
             "J2K submitted shared prepared Metal batch",
@@ -336,7 +357,8 @@ impl MetalBatchDecoder {
             }
         }
         let (residents, resident_indices) = (committed, committed_indices);
-        let (submitted, _) = self.submit_resident_groups(residents, Vec::new())?;
+        let (submitted, _) =
+            self.submit_resident_groups(residents, Vec::new(), allow_automatic_cpu_tier1)?;
         for (index, result) in resident_indices.into_iter().zip(submitted) {
             match result {
                 Ok(pending) => pending_groups.push(pending),

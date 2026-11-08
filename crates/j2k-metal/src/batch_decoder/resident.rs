@@ -220,6 +220,9 @@ pub(super) struct PreparedResidentGroup<'g> {
     plans: GroupPlans,
     allocation: CodecOwnedMetalGroupDestination,
     metadata: MetalResidentGroupMetadata,
+    /// CPU workers for automatic Tier-1 on this group, from the options it
+    /// was prepared with.
+    automatic_cpu_workers: Option<std::num::NonZeroUsize>,
 }
 
 /// Submitted resident groups in input order, and the results of the extra
@@ -262,7 +265,7 @@ impl MetalBatchDecoder {
             [prepared],
             "J2K submitted codec-owned Metal group",
         )?;
-        let (mut submitted, _) = self.submit_resident_groups(prepared, Vec::new())?;
+        let (mut submitted, _) = self.submit_resident_groups(prepared, Vec::new(), true)?;
         submitted
             .pop()
             .ok_or(Error::MetalStateInvariant {
@@ -297,6 +300,7 @@ impl MetalBatchDecoder {
             plans,
             allocation,
             metadata: MetalResidentGroupMetadata::from_view(group, options)?,
+            automatic_cpu_workers: super::automatic_cpu_tier1_workers(options),
         })
     }
 
@@ -330,6 +334,7 @@ impl MetalBatchDecoder {
         &mut self,
         groups: Vec<PreparedResidentGroup<'_>>,
         extra: Vec<crate::engine::ColorGroupSubmission<'_>>,
+        allow_automatic_cpu_tier1: bool,
     ) -> Result<ResidentSubmissions, Error> {
         let runtime = self.backend_session().runtime()?;
         let extra_count = extra.len();
@@ -350,6 +355,9 @@ impl MetalBatchDecoder {
                     source_indices: Some(prepared.group.source_indices),
                     consumer_ordering:
                         crate::engine::DirectDestinationConsumerOrdering::HostCompletionOnly,
+                    automatic_cpu_workers: prepared
+                        .automatic_cpu_workers
+                        .filter(|_| allow_automatic_cpu_tier1),
                 });
             }
         }

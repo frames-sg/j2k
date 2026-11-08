@@ -118,6 +118,7 @@ fn shared_classic_tier1_reports_failure_against_its_own_group_and_source() {
                 destination: &first_destination,
                 source_indices: Some(&[0, 2]),
                 consumer_ordering: DirectDestinationConsumerOrdering::HostCompletionOnly,
+                automatic_cpu_workers: None,
             },
             ColorGroupSubmission {
                 plans: &second,
@@ -126,6 +127,7 @@ fn shared_classic_tier1_reports_failure_against_its_own_group_and_source() {
                 destination: &second_destination,
                 source_indices: Some(&[1, 3]),
                 consumer_ordering: DirectDestinationConsumerOrdering::HostCompletionOnly,
+                automatic_cpu_workers: None,
             },
         ],
     )
@@ -181,6 +183,7 @@ fn decode_groups(
             destination,
             source_indices: None,
             consumer_ordering: DirectDestinationConsumerOrdering::HostCompletionOnly,
+            automatic_cpu_workers: None,
         })
         .collect();
     for result in submit_prepared_direct_color_plan_batches_into_groups(runtime, submissions)

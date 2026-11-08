@@ -187,7 +187,11 @@ impl MetalBatchDecoder {
                 "J2K prepared external groups",
             )?;
             prepared.push(
-                match self.prepare_external_group(group.into(), destination) {
+                match self.prepare_external_group(
+                    group.into(),
+                    destination,
+                    super::automatic_cpu_tier1_workers(group.options()),
+                ) {
                     Ok(external) => Ok(external),
                     Err(source) if source.session_is_unusable() => return Err(source),
                     Err(source) => Err(MetalBatchGroupError::new(group, source)),
@@ -206,6 +210,7 @@ impl MetalBatchDecoder {
                     destination: &external.destination,
                     source_indices: Some(external.group.source_indices),
                     consumer_ordering: crate::engine::DirectDestinationConsumerOrdering::Deferred,
+                    automatic_cpu_workers: external.automatic_cpu_workers,
                 });
             }
         }
@@ -268,7 +273,7 @@ impl MetalBatchDecoder {
         consumer_ordering: crate::engine::DirectDestinationConsumerOrdering,
     ) -> Result<SubmittedMetalGroupDecodeInto, Error> {
         group.check_cancelled()?;
-        let external = self.prepare_external_group(group, destination)?;
+        let external = self.prepare_external_group(group, destination, None)?;
         group.check_cancelled()?;
         let runtime = self.backend_session().runtime()?;
         let submission = match &external.plans {
@@ -306,6 +311,7 @@ impl MetalBatchDecoder {
         &mut self,
         group: ResidentGroupView<'g>,
         destination: MetalImageDestination,
+        automatic_cpu_workers: Option<std::num::NonZeroUsize>,
     ) -> Result<ExternalGroup<'g>, Error> {
         let fmt = validate_group_contract(group.info)?;
         destination
@@ -324,6 +330,7 @@ impl MetalBatchDecoder {
             plans,
             destination,
             completion: MetalBatchGroupCompletion::from_view(group)?,
+            automatic_cpu_workers,
         })
     }
 }
@@ -336,4 +343,6 @@ struct ExternalGroup<'g> {
     plans: GroupPlans,
     destination: MetalImageDestination,
     completion: MetalBatchGroupCompletion,
+    /// CPU workers for automatic Tier-1 when submitted with other groups.
+    automatic_cpu_workers: Option<std::num::NonZeroUsize>,
 }

@@ -160,6 +160,38 @@ errors. The per-image path waits for the GPU after each tile. A separate
 check on the same tiles found the owned batch, per-image Metal and CPU batch
 outputs byte-identical.
 
+### Sampled classic Tier-1 on the CPU pool - 2026-10-29
+
+The same Apple M4 Pro decoded eight different groups of 32 interior level-0
+tiles from each slide. No tile appeared in two groups. Each sample included
+`MetalBatchDecoder::prepare`, submission and completion; output stayed
+resident and was compared byte for byte with `CpuBatchDecoder` after timing.
+The control disables the new automatic route in the same release binary.
+
+| Slide | GPU Tier-1 median | CPU Tier-1 + Metal reconstruction median | CPU batch median |
+| --- | ---: | ---: | ---: |
+| JP2K-33003-1 | 12.63 ms | 7.35 ms | 5.95 ms |
+| JP2K-33003-2 | 14.94 ms | 8.52 ms | 6.63 ms |
+
+The automatic route raises median submission time to 5.50 and 5.70 ms
+because Tier-1 finishes before the Metal command is returned; completion wait
+falls to 1.61 and 1.67 ms. It applies only to at least eight distinct,
+full-image, sampled classic RGB8 plans whose components can use the stacked
+executor, and only when called outside a Rayon worker. Smaller, repeated,
+HTJ2K, high-bit, nested-pool and single-worker calls keep the all-Metal route;
+an explicit multi-worker limit caps the CPU stage.
+
+The characterization harness accepts consecutive groups with
+`J2K_SAMPLED_GROUP_COUNT`:
+
+```bash
+J2K_REQUIRE_METAL_RUNTIME=1 \
+J2K_SAMPLED_CORPUS=<level{L}-tile{i}.j2k dir> \
+J2K_SAMPLED_COUNT=32 J2K_SAMPLED_LEVEL_COUNT=1 \
+J2K_SAMPLED_GROUP_COUNT=8 cargo test --release -p j2k-metal --lib \
+  local_sampled_color_batch_characterization -- --ignored --nocapture
+```
+
 ## HTJ2K CPU comparator and WSI development run - 2026-10-20
 
 This run checks the in-process OpenJPH and Grok integrations on pathology

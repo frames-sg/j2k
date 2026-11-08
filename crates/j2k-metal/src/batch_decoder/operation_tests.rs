@@ -364,3 +364,87 @@ fn a_group_cancelled_after_preparation_is_never_committed() {
     );
     assert_eq!(decoder.submissions().expect("submissions"), before);
 }
+
+/// Eight distinct sampled classic RGB8 sources cross the automatic CPU Tier-1
+/// threshold. Whole-image operations at full resolution take that route and
+/// still match the CPU; sampled regions keep failing per group with a
+/// capability error rather than decoding the wrong samples.
+#[test]
+fn sampled_classic_operations_use_automatic_cpu_tier1_and_match_the_cpu() {
+    if !j2k_test_support::metal_runtime_gate(module_path!()) {
+        return;
+    }
+    let mut decoder =
+        MetalBatchDecoder::system_default_with_options(options()).expect("Metal decoder");
+    let inputs = (0..8)
+        .map(|seed| {
+            EncodedImage::full(super::sampled_group_tests::sampled_rgb(
+                (130, 128),
+                (2, 1),
+                8,
+                false,
+                seed,
+            ))
+        })
+        .collect::<Vec<_>>();
+    let prepared = j2k::prepare_batch(inputs, options()).expect("prepare sampled sources");
+    assert!(prepared.errors().is_empty(), "{:?}", prepared.errors());
+    let images = prepared
+        .groups()
+        .iter()
+        .flat_map(j2k::PreparedBatchGroup::images)
+        .collect::<Vec<_>>();
+    assert_eq!(images.len(), 8);
+    let whole = images
+        .iter()
+        .map(|image| PreparedImageOperation::new(image, Rect::full((130, 128)), 0))
+        .collect::<Vec<_>>();
+    let expected = cpu_operations(&whole);
+    let (groups, errors, group_errors) = decoder
+        .decode_operations(&whole)
+        .expect("Metal operations")
+        .into_parts();
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(group_errors.is_empty(), "{group_errors:?}");
+    let mut cpu_tier1_images = 0;
+    let mut actual = vec![(Rect::full((0, 0)), Vec::new()); whole.len()];
+    for group in groups {
+        cpu_tier1_images += group.dispatch_report().cpu_tier1_images;
+        let (_, indices, rects, _, surfaces) = group.into_parts();
+        for ((index, rect), surface) in indices.into_iter().zip(rects).zip(surfaces) {
+            actual[index] = (
+                rect,
+                surface.as_bytes().expect("operation surface").into_owned(),
+            );
+        }
+    }
+    assert_eq!(cpu_tier1_images, whole.len());
+    assert_eq!(actual, expected);
+
+    let region = Rect {
+        x: 17,
+        y: 9,
+        w: 64,
+        h: 48,
+    };
+    let regions = images
+        .iter()
+        .map(|image| PreparedImageOperation::new(image, region, 0))
+        .collect::<Vec<_>>();
+    let (groups, errors, group_errors) = decoder
+        .decode_operations(&regions)
+        .expect("Metal operations")
+        .into_parts();
+    assert!(groups.is_empty());
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(group_errors.len(), 1, "{group_errors:?}");
+    assert_eq!(group_errors[0].source_indices, (0..8).collect::<Vec<_>>());
+    assert!(
+        matches!(
+            *group_errors[0].source,
+            crate::Error::UnsupportedMetalRequest { .. }
+        ),
+        "{:?}",
+        group_errors[0].source
+    );
+}

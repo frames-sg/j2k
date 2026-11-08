@@ -31,8 +31,33 @@ use store::encode_exact_native_color_batch_store_in_encoder;
 use validation::validate_color_group;
 
 enum ColorTier1Execution {
-    Metal(DirectDestinationConsumerOrdering),
+    Metal {
+        consumer_ordering: DirectDestinationConsumerOrdering,
+        automatic_cpu_workers: Option<std::num::NonZeroUsize>,
+    },
     Cpu(std::num::NonZeroUsize),
+}
+
+impl ColorTier1Execution {
+    fn parts(
+        self,
+    ) -> (
+        DirectDestinationConsumerOrdering,
+        Option<std::num::NonZeroUsize>,
+        Option<std::num::NonZeroUsize>,
+    ) {
+        match self {
+            Self::Metal {
+                consumer_ordering,
+                automatic_cpu_workers,
+            } => (consumer_ordering, None, automatic_cpu_workers),
+            Self::Cpu(workers) => (
+                DirectDestinationConsumerOrdering::HostCompletionOnly,
+                Some(workers),
+                None,
+            ),
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -52,7 +77,10 @@ pub(crate) fn submit_prepared_direct_color_plan_batch_into_group(
         layout,
         destination,
         source_indices,
-        ColorTier1Execution::Metal(consumer_ordering),
+        ColorTier1Execution::Metal {
+            consumer_ordering,
+            automatic_cpu_workers: None,
+        },
         None,
     )
 }
@@ -65,6 +93,7 @@ pub(crate) struct ColorGroupSubmission<'a> {
     pub(crate) destination: &'a MetalImageDestination,
     pub(crate) source_indices: Option<&'a [usize]>,
     pub(crate) consumer_ordering: DirectDestinationConsumerOrdering,
+    pub(crate) automatic_cpu_workers: Option<std::num::NonZeroUsize>,
 }
 
 /// Submits several color groups, returning one result per group in order.
@@ -131,7 +160,10 @@ pub(crate) fn submit_prepared_direct_color_plan_batches_into_groups(
             group.layout,
             group.destination,
             group.source_indices,
-            ColorTier1Execution::Metal(group.consumer_ordering),
+            ColorTier1Execution::Metal {
+                consumer_ordering: group.consumer_ordering,
+                automatic_cpu_workers: group.automatic_cpu_workers,
+            },
             shared,
         );
         match result {
@@ -222,13 +254,7 @@ fn submit_color_group(
     execution: ColorTier1Execution,
     shared_tier1: Option<super::super::SharedClassicTier1Group>,
 ) -> Result<SubmittedDirectDestination, Error> {
-    let (consumer_ordering, cpu_workers) = match execution {
-        ColorTier1Execution::Metal(ordering) => (ordering, None),
-        ColorTier1Execution::Cpu(workers) => (
-            DirectDestinationConsumerOrdering::HostCompletionOnly,
-            Some(workers),
-        ),
-    };
+    let (consumer_ordering, cpu_workers, automatic_cpu_workers) = execution.parts();
     let Some(_) = plans.first() else {
         return Err(Error::capability_rejected(
             j2k_core::CapabilityRejection::contract_violation(
@@ -266,24 +292,26 @@ fn submit_color_group(
         && component_plan_refs
             .iter()
             .all(|refs| supports_stacked_direct_component_plane_batch(refs));
+    let effective_cpu_workers = color_cpu_tier1_workers(
+        plans,
+        &component_plan_refs,
+        fmt,
+        use_stacked,
+        cpu_workers,
+        automatic_cpu_workers,
+    )?;
     let mut stage_timings = DirectHybridStageTimings::default();
-    let cpu_cache = if let Some(max_workers) = cpu_workers {
-        if cooperative_color_costs(plans)?.is_none() || !use_stacked {
-            return Err(Error::MetalStateInvariant {
-                state: "J2K cooperative CPU color group",
-                reason: "CPU cohort must contain compatible distinct classic RGB8 plans",
-            });
-        }
-        Some(super::super::build_flattened_cpu_tier1_cache(
-            &runtime,
-            plans,
-            &mut stage_timings,
-            &mut metadata.retained_buffers,
-            Some(max_workers),
-        )?)
-    } else {
-        None
-    };
+    let cpu_cache = effective_cpu_workers
+        .map(|max_workers| {
+            super::super::build_flattened_cpu_tier1_cache(
+                &runtime,
+                plans,
+                &mut stage_timings,
+                &mut metadata.retained_buffers,
+                Some(max_workers),
+            )
+        })
+        .transpose()?;
     let command_buffer = new_command_buffer(&runtime.queue)?;
     let compute_encoder = new_compute_command_encoder(&command_buffer)?;
     let mut encoder = ColorGroupEncoder {
@@ -313,7 +341,7 @@ fn submit_color_group(
         .transpose()?;
 
     metadata.record_tier1_dispatches();
-    if cpu_workers.is_some() {
+    if effective_cpu_workers.is_some() {
         metadata.dispatch_report.cpu_tier1_images = plans.len();
     }
 
@@ -323,6 +351,69 @@ fn submit_color_group(
         submitted.depend_on_shared_tier1(pass);
     }
     Ok(submitted)
+}
+
+fn color_cpu_tier1_workers(
+    plans: &[Arc<PreparedDirectColorPlan>],
+    component_plan_refs: &[Vec<&PreparedDirectGrayscalePlan>],
+    fmt: PixelFormat,
+    use_stacked: bool,
+    requested_workers: Option<std::num::NonZeroUsize>,
+    automatic_workers: Option<std::num::NonZeroUsize>,
+) -> Result<Option<std::num::NonZeroUsize>, Error> {
+    if let Some(workers) = requested_workers {
+        if cooperative_color_costs(plans)?.is_none() || !use_stacked {
+            return Err(Error::MetalStateInvariant {
+                state: "J2K cooperative CPU color group",
+                reason: "CPU cohort must contain compatible distinct classic RGB8 plans",
+            });
+        }
+        return Ok(Some(workers));
+    }
+    Ok(sampled_classic_cpu_tier1_workers(
+        plans,
+        component_plan_refs,
+        fmt,
+        use_stacked,
+        automatic_workers,
+    ))
+}
+
+/// The CPU worker budget for a sampled classic group whose GPU latency is set
+/// by serial MQ code-block chains. CPU Tier-1 stays off nested Rayon callers,
+/// small groups, repeated inputs, HTJ2K, high-bit output, and shapes that the
+/// existing stacked CPU-upload executor cannot run as one group.
+fn sampled_classic_cpu_tier1_workers(
+    plans: &[Arc<PreparedDirectColorPlan>],
+    component_plan_refs: &[Vec<&PreparedDirectGrayscalePlan>],
+    fmt: PixelFormat,
+    use_stacked: bool,
+    max_workers: Option<std::num::NonZeroUsize>,
+) -> Option<std::num::NonZeroUsize> {
+    let max_workers = max_workers?;
+    if plans.len() < 8
+        || fmt != PixelFormat::Rgb8
+        || !use_stacked
+        || max_workers.get() < 2
+        || rayon::current_thread_index().is_some()
+        || plans.iter().enumerate().any(|(index, plan)| {
+            !plan.has_sampled_components()
+                || plan.component_plans.len() != 3
+                || plan.signed
+                || plan.alpha_bit_depth.is_some()
+                || plan.bit_depths != [8; 3]
+                || plans[..index].iter().any(|other| Arc::ptr_eq(plan, other))
+        })
+        || component_plan_refs.iter().any(|components| {
+            !super::super::stacked_plans_use_classic_tier1_only(components)
+                || components
+                    .iter()
+                    .any(|component| component.tier1_prepare_mode != DirectTier1Mode::Metal)
+        })
+    {
+        return None;
+    }
+    Some(max_workers)
 }
 
 /// Conservative eligibility and entropy work estimates; no pixel decoding or caching.

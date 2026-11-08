@@ -13,7 +13,7 @@ use super::MetalBatchDecoder;
 use crate::Error;
 
 /// RGB codestream without MCT whose second and third components use `sampling`.
-fn sampled_rgb(
+pub(super) fn sampled_rgb(
     dimensions: (u32, u32),
     sampling: (u8, u8),
     precision: u8,
@@ -101,14 +101,27 @@ fn cpu_bytes(samples: &CpuBatchSamples) -> Vec<u8> {
     }
 }
 
+struct ResidentRouteReport {
+    command_buffers: usize,
+    cpu_tier1_images: usize,
+}
+
 /// Decodes `inputs` through the codec-owned resident path, cooperatively
-/// when `cpu_workers` is set, and returns the command buffers it used.
+/// when `cpu_workers` is set, and returns its route observations.
 fn assert_resident_matches_cpu(
     inputs: &[Arc<[u8]>],
     case: &str,
     cpu_workers: Option<NonZeroUsize>,
-) -> usize {
-    let options = options(BatchLayout::Nhwc);
+) -> ResidentRouteReport {
+    assert_resident_matches_cpu_with_options(inputs, case, options(BatchLayout::Nhwc), cpu_workers)
+}
+
+fn assert_resident_matches_cpu_with_options(
+    inputs: &[Arc<[u8]>],
+    case: &str,
+    options: BatchDecodeOptions,
+    cooperative_workers: Option<NonZeroUsize>,
+) -> ResidentRouteReport {
     let encoded = inputs
         .iter()
         .cloned()
@@ -132,7 +145,7 @@ fn assert_resident_matches_cpu(
         prepared.errors()
     );
     crate::engine::reset_metal_command_buffers_for_test();
-    let result = match cpu_workers {
+    let result = match cooperative_workers {
         Some(workers) => decoder.decode_prepared_cooperative(&prepared, workers),
         None => decoder.decode_prepared(&prepared),
     }
@@ -159,7 +172,14 @@ fn assert_resident_matches_cpu(
             );
         }
     }
-    command_buffers
+    let cpu_tier1_images = groups
+        .iter()
+        .map(|group| group.dispatch_report().cpu_tier1_images)
+        .sum();
+    ResidentRouteReport {
+        command_buffers,
+        cpu_tier1_images,
+    }
 }
 
 /// Decodes one prepared group into a caller destination with `layout`.
@@ -250,11 +270,9 @@ fn sampled_groups_decode_on_metal_in_one_command_buffer() {
                     ("partially repeated", vec![a.clone(), b.clone(), a.clone()]),
                 ] {
                     let case = format!("ht={ht} factors={factors:?} precision={precision} {shape}");
-                    assert_eq!(
-                        assert_resident_matches_cpu(&inputs, &case, None),
-                        1,
-                        "{case}"
-                    );
+                    let report = assert_resident_matches_cpu(&inputs, &case, None);
+                    assert_eq!(report.command_buffers, 1, "{case}");
+                    assert_eq!(report.cpu_tier1_images, 0, "{case}");
                     for layout in [BatchLayout::Nchw, BatchLayout::Nhwc] {
                         assert_external_matches_cpu(&inputs, layout, &format!("{case} {layout:?}"));
                     }
@@ -280,16 +298,89 @@ fn sampled_and_unit_sampled_groups_decode_together() {
 }
 
 #[test]
-fn cooperative_decode_keeps_sampled_groups_on_the_gpu_route() {
+fn sampled_classic_batch_uses_automatic_cpu_tier1_and_matches_cpu() {
     if !j2k_test_support::metal_runtime_gate(module_path!()) {
         return;
     }
-    // Large enough to be a cooperative candidate by shape; without MCT the
-    // group is not a CPU Tier-1 cohort and decodes through the GPU route.
+    // Eight distinct RGB8 classic inputs cross the automatic route threshold.
     let inputs = (0..8)
         .map(|seed| sampled_rgb((130, 128), (2, 1), 8, false, seed))
         .collect::<Vec<_>>();
-    assert_resident_matches_cpu(&inputs, "cooperative sampled batch", NonZeroUsize::new(2));
+    let report = assert_resident_matches_cpu(&inputs, "sampled CPU Tier-1 batch", None);
+    assert_eq!(report.command_buffers, 1);
+    assert_eq!(report.cpu_tier1_images, inputs.len());
+    assert_external_matches_cpu(
+        &inputs,
+        BatchLayout::Nhwc,
+        "sampled CPU Tier-1 external batch",
+    );
+}
+
+#[test]
+fn sampled_automatic_cpu_tier1_honors_the_batch_worker_budget() {
+    if !j2k_test_support::metal_runtime_gate(module_path!()) {
+        return;
+    }
+    let inputs = (0..8)
+        .map(|seed| sampled_rgb((130, 128), (2, 1), 8, false, seed))
+        .collect::<Vec<_>>();
+
+    let mut single_worker = options(BatchLayout::Nhwc);
+    single_worker.workers = NonZeroUsize::new(1);
+    let report = assert_resident_matches_cpu_with_options(
+        &inputs,
+        "single-worker sampled batch",
+        single_worker,
+        None,
+    );
+    assert_eq!(report.command_buffers, 1);
+    assert_eq!(report.cpu_tier1_images, 0);
+
+    let mut two_workers = options(BatchLayout::Nhwc);
+    two_workers.workers = NonZeroUsize::new(2);
+    let report = assert_resident_matches_cpu_with_options(
+        &inputs,
+        "two-worker sampled batch",
+        two_workers,
+        None,
+    );
+    assert_eq!(report.command_buffers, 1);
+    assert_eq!(report.cpu_tier1_images, inputs.len());
+}
+
+#[test]
+fn sampled_cooperative_fallback_disables_automatic_cpu_tier1() {
+    if !j2k_test_support::metal_runtime_gate(module_path!()) {
+        return;
+    }
+    let inputs = (0..8)
+        .map(|seed| sampled_rgb((130, 128), (2, 1), 8, false, seed))
+        .collect::<Vec<_>>();
+
+    for workers in [1, 2] {
+        let case = format!("sampled cooperative fallback with {workers} worker(s)");
+        let report = assert_resident_matches_cpu(&inputs, &case, NonZeroUsize::new(workers));
+        assert_eq!(report.command_buffers, 1, "{case}");
+        assert_eq!(report.cpu_tier1_images, 0, "{case}");
+    }
+}
+
+#[test]
+fn sampled_decode_inside_rayon_keeps_cpu_tier1_off_the_busy_pool() {
+    if !j2k_test_support::metal_runtime_gate(module_path!()) {
+        return;
+    }
+    let inputs = (0..8)
+        .map(|seed| sampled_rgb((130, 128), (2, 1), 8, false, seed))
+        .collect::<Vec<_>>();
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(2)
+        .build()
+        .expect("two-thread pool");
+    let report =
+        pool.install(|| assert_resident_matches_cpu(&inputs, "nested sampled batch", None));
+    assert_eq!(report.command_buffers, 1);
+    assert_eq!(report.cpu_tier1_images, 0);
 }
 
 #[test]

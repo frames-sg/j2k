@@ -68,6 +68,13 @@ use self::submission::{
     allocate_codec_owned_group_destination, validate_codec_owned_resident_group,
     MetalResidentGroupMetadata, SubmittedMetalResidentGroup,
 };
+
+#[cfg(target_os = "macos")]
+fn automatic_cpu_tier1_workers(options: BatchDecodeOptions) -> Option<std::num::NonZeroUsize> {
+    options
+        .workers
+        .or_else(|| std::thread::available_parallelism().ok())
+}
 #[cfg(test)]
 mod batch_contract_tests {
     use super::*;
