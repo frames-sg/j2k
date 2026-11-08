@@ -16,16 +16,20 @@ pub(super) fn roundtrip(
     context: &'static str,
 ) -> Result<(), J2kError> {
     let settings = DecodeSettings::default();
-    let source_image = Image::new_with_retained_baseline(source, &settings, encoded.capacity())
+    let mut source_image = Image::new_with_retained_baseline(source, &settings, encoded.capacity())
         .map_err(|err| map_native_decode_error(err, "source JPEG 2000 validation parse failed"))?;
     let source_metadata_bytes = source_image.retained_allocation_bytes().map_err(|err| {
         map_native_decode_error(err, "source JPEG 2000 validation metadata failed")
     })?;
     let encoded_parse_baseline = encoded.capacity().saturating_add(source_metadata_bytes);
-    let encoded_image =
+    let mut encoded_image =
         Image::new_with_retained_baseline(encoded, &settings, encoded_parse_baseline)
             .map_err(|err| map_native_decode_error(err, "HTJ2K validation parse failed"))?;
 
+    // Recode preserves every component, including channels omitted from
+    // display output. Compare those samples for both raw and wrapped output.
+    source_image.keep_ignored_components();
+    encoded_image.keep_ignored_components();
     let equal = source_image
         .decoded_samples_equal_with_retained_bytes(&encoded_image, encoded)
         .map_err(|err| map_native_decode_error(err, "JPEG 2000 paired validation decode failed"))?;

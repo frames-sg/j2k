@@ -18,7 +18,9 @@ Staged workspace version: `0.13.2`.
   decoding still infers alpha for one extra component, raw codestreams keep
   their component-count interpretation, and recode re-encodes every
   component. HTJ2K batch jobs whose direct color plan is unsupported fall
-  back to the generic decode instead of failing.
+  back to the generic decode instead of failing. Bounded 8-bit and 16-bit
+  rows use the resolved color channels and alpha state, and recode validation
+  compares every component even when display output omits unspecified ones.
 - `decode_region_into`, `decode_region_scaled_pow2_into`, `decode_into`,
   and `decode_rows_u8_bounded` accept a JP2 whose ICC profile is equivalent
   to IEC 61966-2-1 sRGB when the output is `Rgb8` or `Rgba8`, writing its

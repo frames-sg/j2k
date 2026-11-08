@@ -3966,6 +3966,7 @@ pub fn j2k_native::Image<'a>::decode_wavelets_with_context(&self, &mut j2k_nativ
 pub fn j2k_native::Image<'a>::decode_with_context(&self, &mut j2k_native::DecoderContext<'a>) -> j2k_native::Result<j2k_native::Bitmap>
 pub fn j2k_native::Image<'a>::has_alpha(&self) -> bool
 pub fn j2k_native::Image<'a>::height(&self) -> u32
+pub fn j2k_native::Image<'a>::ignored_components(&self) -> usize
 pub fn j2k_native::Image<'a>::new(&'a [u8], &j2k_native::DecodeSettings) -> j2k_native::Result<Self>
 pub fn j2k_native::Image<'a>::original_bit_depth(&self) -> u8
 pub fn j2k_native::Image<'a>::width(&self) -> u32

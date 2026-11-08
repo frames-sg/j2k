@@ -6,7 +6,10 @@
 //! extras are left out of decoded output. Kakadu wrote such files from RGBA
 //! TIFFs: an `sRGB` `colr` box over four components and no `cdef` box.
 
-use j2k::{DecodeSettings, J2kDecoder, J2kScratchPool, PixelFormat, Rect};
+use j2k::{
+    recode_j2k_to_htj2k_lossless, DecodeSettings, J2kDecoder, J2kRowDecodeOptions, J2kScratchPool,
+    J2kToHtj2kMode, J2kToHtj2kOptions, PixelFormat, Rect, RowSink,
+};
 use j2k_native::{encode, ColorSpace, EncodeOptions, Image};
 
 const WIDTH: u32 = 24;
@@ -256,4 +259,88 @@ fn raw_codestreams_keep_their_component_count_interpretation() {
     let image = Image::new(&bytes, &j2k_native::DecodeSettings::default()).expect("image");
     assert_eq!(image.ignored_components(), 0);
     assert!(matches!(image.color_space(), ColorSpace::CMYK));
+}
+
+struct Rows<T> {
+    samples: Vec<T>,
+    row_len: usize,
+    next_y: u32,
+}
+
+impl<T> Rows<T> {
+    fn new(channels: usize) -> Self {
+        Self {
+            samples: Vec::new(),
+            row_len: WIDTH as usize * channels,
+            next_y: 0,
+        }
+    }
+}
+
+impl<T: j2k_core::Sample> RowSink<T> for Rows<T> {
+    type Error = core::convert::Infallible;
+
+    fn write_row(&mut self, y: u32, row: &[T]) -> Result<(), Self::Error> {
+        assert_eq!(y, self.next_y);
+        assert_eq!(row.len(), self.row_len);
+        self.samples.extend_from_slice(row);
+        self.next_y += 1;
+        Ok(())
+    }
+}
+
+#[test]
+fn bounded_u8_rows_omit_unspecified_components() {
+    for (components, enumerated, kept) in [(2, GREYSCALE, 1), (5, SRGB, 3), (4, SRGB, 3)] {
+        let bytes = jp2_without_cdef(components, enumerated);
+        let expected = leading_channels(&pixels(components), usize::from(components), kept);
+        for stripe_rows in [1, 7, HEIGHT] {
+            let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
+            let mut rows = Rows::<u8>::new(kept);
+            decoder
+                .decode_rows_u8_bounded(&mut rows, J2kRowDecodeOptions::new(stripe_rows))
+                .expect("bounded u8 rows");
+            assert_eq!(rows.next_y, HEIGHT);
+            assert_eq!(rows.samples, expected, "{components} components");
+            assert_eq!(decoder.info().components, components);
+        }
+    }
+}
+
+#[test]
+fn bounded_u16_rows_omit_unspecified_components() {
+    for (components, enumerated, kept) in [(2, GREYSCALE, 1), (5, SRGB, 3), (4, SRGB, 3)] {
+        let bytes = jp2_without_cdef(components, enumerated);
+        let expected: Vec<u16> =
+            leading_channels(&pixels(components), usize::from(components), kept)
+                .into_iter()
+                .map(|sample| u16::from(sample) * 257)
+                .collect();
+        for stripe_rows in [1, 7, HEIGHT] {
+            let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
+            let mut rows = Rows::<u16>::new(kept);
+            decoder
+                .decode_rows_u16_bounded(&mut rows, J2kRowDecodeOptions::new(stripe_rows))
+                .expect("bounded u16 rows");
+            assert_eq!(rows.next_y, HEIGHT);
+            assert_eq!(rows.samples, expected, "{components} components");
+            assert_eq!(decoder.info().components, components);
+        }
+    }
+}
+
+#[test]
+fn recode_preserves_unspecified_component_samples() {
+    let bytes = jp2_without_cdef(4, SRGB);
+    let recoded = recode_j2k_to_htj2k_lossless(&bytes, J2kToHtj2kOptions::default())
+        .expect("recode all four components");
+    assert_eq!(recoded.report.mode, J2kToHtj2kMode::PixelPreserving);
+    assert_eq!(recoded.report.components, 4);
+    // Decode the raw output codestream so display-channel filtering cannot
+    // hide the fourth component from this comparison.
+    let image = Image::new(&recoded.bytes, &j2k_native::DecodeSettings::default())
+        .expect("recoded codestream");
+    let bitmap = image.decode_native().expect("all recoded samples");
+    assert_eq!(bitmap.num_components, 4);
+    assert_eq!(bitmap.data, pixels(4));
 }
