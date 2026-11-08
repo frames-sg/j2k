@@ -14,7 +14,10 @@ pub(crate) use self::allocation::{
     checked_cpu_encode_live_bytes, checked_encode_host_live_bytes, cpu_owned_plane_capacity_limit,
 };
 pub use self::frame::assemble_jpeg_baseline_frame;
-pub(crate) use self::frame::assemble_jpeg_baseline_frame_with_quant_tables;
+pub(crate) use self::frame::{
+    assemble_jpeg_baseline_frame_with_metadata, assemble_jpeg_baseline_frame_with_quant_tables,
+    JpegBaselineFrameMetadata,
+};
 pub use self::orchestrate::{
     encode_jpeg_baseline_gpu_batch, encode_jpeg_baseline_gpu_batch_with_external_live,
     encode_jpeg_baseline_gpu_tile, encode_jpeg_baseline_gpu_tile_with_external_live,

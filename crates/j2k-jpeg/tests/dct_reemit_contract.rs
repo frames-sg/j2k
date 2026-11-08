@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k_jpeg::transcode::{
-    encode_baseline_dct_image, extract_dct_blocks, DctExtractOptions, JpegDctCodingMode,
-    JpegDctImage, JpegDctImageError,
+    encode_baseline_dct_image, encode_baseline_dct_image_with_options, extract_dct_blocks,
+    BaselineDctEncodeOptions, DctExtractOptions, JpegDctCodingMode, JpegDctImage,
+    JpegDctImageError,
 };
 use j2k_jpeg::{ColorSpace, JpegEncodeError, RestartIndex};
 use j2k_test_support as fixtures;
@@ -203,6 +204,58 @@ fn dct_reemission_rejects_nonbaseline_and_unshared_quantization_tables() {
         invalid_reason(&image),
         JpegDctImageError::ChromaQuantizationTableMismatch
     ));
+}
+
+#[test]
+fn options_reemission_preserves_component_ids_app_markers_and_distinct_quant_tables() {
+    let mut image = color_image();
+    image.components[2].quant_table[0] = image.components[2].quant_table[0].saturating_add(1);
+    let app14 = [
+        0xff, 0xee, 0, 14, b'A', b'd', b'o', b'b', b'e', 0, 100, 0, 0, 0, 0, 0,
+    ];
+    let encoded = encode_baseline_dct_image_with_options(
+        &image,
+        BaselineDctEncodeOptions {
+            app_segments: &app14,
+            component_ids: b"RGB",
+        },
+    )
+    .expect("re-emit source signalling");
+    let sof = j2k_jpeg::iter_segments(&encoded)
+        .map(Result::unwrap)
+        .find(|segment| j2k_jpeg::is_sof_marker(segment.marker))
+        .map(|segment| j2k_jpeg::parse_sof_info(segment.marker, segment.payload).unwrap())
+        .expect("SOF marker");
+    assert_eq!(sof.component_ids, b"RGB");
+    assert!(encoded.windows(app14.len()).any(|window| window == app14));
+    let decoded = extract_dct_blocks(&encoded, DctExtractOptions::quantized_only())
+        .expect("extract re-emitted coefficients");
+    for (actual, expected) in decoded.components.iter().zip(&image.components) {
+        assert_eq!(actual.quant_table, expected.quant_table);
+        assert_eq!(actual.quantized_blocks, expected.quantized_blocks);
+    }
+}
+
+#[test]
+fn options_reemission_rejects_invalid_source_signalling_as_caller_input() {
+    let image = color_image();
+    for options in [
+        BaselineDctEncodeOptions {
+            app_segments: &[],
+            component_ids: &[1, 1, 3],
+        },
+        BaselineDctEncodeOptions {
+            app_segments: &[0xff, 0xdb, 0, 2],
+            component_ids: &[1, 2, 3],
+        },
+    ] {
+        assert!(matches!(
+            encode_baseline_dct_image_with_options(&image, options),
+            Err(JpegEncodeError::InvalidDctImage {
+                reason: JpegDctImageError::InvalidMetadata { .. },
+            })
+        ));
+    }
 }
 
 #[test]

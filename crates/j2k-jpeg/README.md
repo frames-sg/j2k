@@ -27,6 +27,23 @@ and replacement; color management is left to the caller.
 Use this crate directly for JPEG input; use `j2k` for JPEG 2000 / HTJ2K and
 `j2k-transcode` for JPEG-to-HTJ2K coefficient-domain transcode paths.
 
+## Lossless JPEG crops
+
+`transcode::lossless_crop(bytes, rect, LosslessCropOptions::default())` copies
+quantized DCT coefficients into a standalone baseline JPEG, preserving the
+source's JFIF/Adobe color signalling, component IDs, sampling, and quantization
+tables. The output begins at the MCU corner above-left of `rect` and ends at
+its requested far edges, clamped to the source. The returned `region` locates
+the requested pixels inside that output.
+
+For several windows from one source, use `transcode::extract_dct_windows` with
+`DctExtractOptions::quantized_only()`. Baseline extraction traverses the scan
+once and retains only the requested blocks, using restart markers to skip to
+the first window. `estimate_dct_windows` estimates the extraction working set
+before entropy decoding; `LosslessCropOptions::max_working_bytes` limits crop
+admission. Progressive and multi-scan inputs remain supported, with whole-image
+coefficient accumulation included in the estimate.
+
 ## Dense owned batches
 
 `JpegBatchDecoder::new(JpegBatchDecodeOptions::default())` decodes complete

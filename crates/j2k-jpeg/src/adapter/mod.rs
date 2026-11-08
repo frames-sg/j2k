@@ -30,10 +30,11 @@ pub use baseline_encode::{
     JPEG_BASELINE_ZIGZAG,
 };
 pub(crate) use baseline_encode::{
-    assemble_jpeg_baseline_frame_with_quant_tables, checked_cpu_encode_live_bytes,
-    checked_encode_host_live_bytes, cpu_owned_plane_capacity_limit,
+    assemble_jpeg_baseline_frame_with_metadata, assemble_jpeg_baseline_frame_with_quant_tables,
+    checked_cpu_encode_live_bytes, checked_encode_host_live_bytes, cpu_owned_plane_capacity_limit,
     jpeg_baseline_entropy_capacity_bytes, jpeg_baseline_entropy_capacity_for_mcus,
     validate_jpeg_baseline_dimensions, validate_jpeg_baseline_restart_interval,
+    JpegBaselineFrameMetadata,
 };
 pub use device_dct::{
     decode_device_dct_blocks_into, decode_device_dct_window_into, device_component_geometry,

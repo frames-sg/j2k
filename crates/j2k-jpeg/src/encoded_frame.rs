@@ -220,6 +220,12 @@ impl FrameWriter {
         }
     }
 
+    /// Append complete marker segments the caller has already validated, such
+    /// as a source's color `APPn` segments.
+    pub(crate) fn raw_segments(&mut self, segments: &[u8]) -> Result<(), JpegEncodeError> {
+        self.out.extend_from_slice(segments)
+    }
+
     /// Write a quantization table given in natural order; 16-bit precision
     /// (`Pq = 1`) is used only when an entry exceeds 255.
     pub(crate) fn dqt(&mut self, table_id: u8, natural: &[u16; 64]) -> Result<(), JpegEncodeError> {

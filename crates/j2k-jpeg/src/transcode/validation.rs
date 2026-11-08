@@ -18,10 +18,24 @@ pub(super) struct ValidatedBaselineDctImage {
     pub(super) sampling: JpegBaselineSampling,
     pub(super) luma_quant: [u8; 64],
     pub(super) chroma_quant: Option<[u8; 64]>,
+    pub(super) component_quant: [[u8; 64]; 3],
 }
 
 pub(super) fn validate_baseline_dct_image(
     image: &JpegDctImage,
+) -> Result<ValidatedBaselineDctImage, JpegDctImageError> {
+    validate_baseline_dct_image_impl(image, true)
+}
+
+pub(super) fn validate_baseline_dct_image_with_independent_quant_tables(
+    image: &JpegDctImage,
+) -> Result<ValidatedBaselineDctImage, JpegDctImageError> {
+    validate_baseline_dct_image_impl(image, false)
+}
+
+fn validate_baseline_dct_image_impl(
+    image: &JpegDctImage,
+    require_shared_chroma: bool,
 ) -> Result<ValidatedBaselineDctImage, JpegDctImageError> {
     if image.coding_mode != JpegDctCodingMode::BaselineSequential {
         return Err(JpegDctImageError::UnsupportedCodingMode {
@@ -40,7 +54,9 @@ pub(super) fn validate_baseline_dct_image(
 
     let luma_quant = quant_table_to_natural_u8(0, &image.components[0].quant_table)?;
     let chroma_quant = if component_count == 3 {
-        if image.components[1].quant_table != image.components[2].quant_table {
+        if require_shared_chroma
+            && image.components[1].quant_table != image.components[2].quant_table
+        {
             return Err(JpegDctImageError::ChromaQuantizationTableMismatch);
         }
         Some(quant_table_to_natural_u8(
@@ -52,10 +68,15 @@ pub(super) fn validate_baseline_dct_image(
     };
     validate_baseline_coefficients(image, sampling)?;
 
+    let mut component_quant = [[0; 64]; 3];
+    for (index, component) in image.components.iter().enumerate() {
+        component_quant[index] = quant_table_to_natural_u8(index, &component.quant_table)?;
+    }
     Ok(ValidatedBaselineDctImage {
         sampling,
         luma_quant,
         chroma_quant,
+        component_quant,
     })
 }
 

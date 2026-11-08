@@ -7,7 +7,7 @@ use super::restart::{enter_scan_at_mcu, finish_scan, skip_mcu, RestartState};
 use super::{HuffmanPrimaryWidth, PreparedDecodePlan};
 use crate::entropy::block::{
     decode_block_dequantized_into, decode_block_quantized_and_dequantized_with_activity,
-    CoefficientBlock,
+    decode_block_quantized_into, CoefficientBlock,
 };
 use crate::entropy::huffman::{FULL_PRIMARY_ENTRIES, NARROW_PRIMARY_ENTRIES};
 use crate::error::JpegError;
@@ -23,6 +23,7 @@ pub(crate) fn decode_scan_dct_blocks(
     plan: &PreparedDecodePlan,
     scan_bytes: &[u8],
     retain_quantized_blocks: bool,
+    retain_dequantized_blocks: bool,
     lifecycle: SequentialDctLifecycleMetadata,
 ) -> Result<DecodedDctBlocks, JpegError> {
     match plan.huffman_primary_width {
@@ -31,6 +32,7 @@ pub(crate) fn decode_scan_dct_blocks(
                 plan,
                 scan_bytes,
                 retain_quantized_blocks,
+                retain_dequantized_blocks,
                 lifecycle,
             )
         }
@@ -38,6 +40,7 @@ pub(crate) fn decode_scan_dct_blocks(
             plan,
             scan_bytes,
             retain_quantized_blocks,
+            retain_dequantized_blocks,
             lifecycle,
         ),
     }
@@ -47,6 +50,7 @@ fn decode_scan_dct_blocks_with_entries<const N: usize>(
     plan: &PreparedDecodePlan,
     scan_bytes: &[u8],
     retain_quantized_blocks: bool,
+    retain_dequantized_blocks: bool,
     lifecycle: SequentialDctLifecycleMetadata,
 ) -> Result<DecodedDctBlocks, JpegError> {
     let grid = sequential_mcu_grid(plan);
@@ -56,6 +60,7 @@ fn decode_scan_dct_blocks_with_entries<const N: usize>(
         mcus_per_row,
         mcu_rows,
         retain_quantized_blocks,
+        retain_dequantized_blocks,
         lifecycle,
     )?;
 
@@ -81,7 +86,7 @@ fn decode_scan_dct_blocks_with_entries<const N: usize>(
                         let block_x = mcu_x * u32::from(component.h) + vx;
                         let block_y = mcu_y * u32::from(component.v) + vy;
                         let block_idx = (block_y * block_cols + block_x) as usize;
-                        if retain_quantized_blocks {
+                        if retain_quantized_blocks && retain_dequantized_blocks {
                             decode_block_quantized_and_dequantized_with_activity(
                                 &mut br,
                                 dc_table,
@@ -95,6 +100,15 @@ fn decode_scan_dct_blocks_with_entries<const N: usize>(
                                 *quantized_coeff.coefficients();
                             storage.dequantized_blocks[plane_idx][block_idx] =
                                 *dequantized_coeff.coefficients();
+                        } else if retain_quantized_blocks {
+                            let block = &mut storage.quantized_blocks[plane_idx][block_idx];
+                            decode_block_quantized_into(
+                                &mut br,
+                                dc_table,
+                                ac_table,
+                                &mut storage.prev_dc[plane_idx],
+                                block,
+                            )?;
                         } else {
                             decode_block_dequantized_into(
                                 &mut br,
@@ -311,6 +325,141 @@ pub(crate) fn decode_scan_dct_window_into(
             FULL_PRIMARY_ENTRIES,
         >(plan, scan_bytes, window, checkpoint, blocks),
     }
+}
+
+/// Decode several quantized MCU windows in one entropy traversal.
+pub(crate) fn decode_scan_quantized_dct_windows_into(
+    plan: &PreparedDecodePlan,
+    scan_bytes: &[u8],
+    windows: &[McuWindow],
+    blocks: &mut [Vec<Vec<[i16; 64]>>],
+) -> Result<(), JpegError> {
+    match plan.huffman_primary_width {
+        HuffmanPrimaryWidth::Narrow8 => decode_scan_quantized_dct_windows_with_entries::<
+            NARROW_PRIMARY_ENTRIES,
+        >(plan, scan_bytes, windows, blocks),
+        HuffmanPrimaryWidth::Full12 => decode_scan_quantized_dct_windows_with_entries::<
+            FULL_PRIMARY_ENTRIES,
+        >(plan, scan_bytes, windows, blocks),
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "window validation, restart entry, and one-pass MCU traversal remain explicit"
+)]
+fn decode_scan_quantized_dct_windows_with_entries<const N: usize>(
+    plan: &PreparedDecodePlan,
+    scan_bytes: &[u8],
+    windows: &[McuWindow],
+    blocks: &mut [Vec<Vec<[i16; 64]>>],
+) -> Result<(), JpegError> {
+    if windows.len() != blocks.len() || windows.is_empty() {
+        return Err(JpegError::InternalInvariant {
+            reason: "quantized DCT windows disagree with their output owners",
+        });
+    }
+    let (mcus_per_row, mcu_rows) = sequential_mcu_grid(plan);
+    for (window, output) in windows.iter().zip(blocks.iter()) {
+        if window.cols == 0
+            || window.rows == 0
+            || window
+                .col
+                .checked_add(window.cols)
+                .is_none_or(|end| end > mcus_per_row)
+            || window
+                .row
+                .checked_add(window.rows)
+                .is_none_or(|end| end > mcu_rows)
+            || output.len() != plan.sampling.len()
+        {
+            return Err(JpegError::InternalInvariant {
+                reason:
+                    "quantized DCT window lies outside the scan or has the wrong component count",
+            });
+        }
+        for component in &plan.components {
+            let expected = (window.cols as usize)
+                .checked_mul(window.rows as usize)
+                .and_then(|count| count.checked_mul(usize::from(component.h)))
+                .and_then(|count| count.checked_mul(usize::from(component.v)))
+                .ok_or(JpegError::InternalInvariant {
+                    reason: "quantized DCT component block count overflowed",
+                })?;
+            if output[component.output_index].len() != expected {
+                return Err(JpegError::InternalInvariant {
+                    reason: "quantized DCT component grid disagrees with its window",
+                });
+            }
+        }
+    }
+
+    let first_row = windows.iter().map(|window| window.row).min().unwrap_or(0);
+    let last_row = windows
+        .iter()
+        .map(|window| window.row + window.rows)
+        .max()
+        .unwrap_or(first_row);
+    // Whole rows are traversed so every window's DC predictors stay exact;
+    // MCUs outside every window are entropy-skipped.
+    let columns = McuColumns::whole_rows((mcus_per_row, mcu_rows));
+    let wide_huffman = plan.prefers_wide_huffman(scan_bytes.len());
+    let mut cursor = enter_scan_at_mcu::<N>(
+        plan,
+        scan_bytes,
+        None,
+        columns.mcu_position(0, first_row),
+        wide_huffman,
+    )?;
+
+    for mcu_y in first_row..last_row {
+        for mcu_x in 0..mcus_per_row {
+            if cursor
+                .restart
+                .begin_mcu(&mut cursor.br, columns.mcu_position(mcu_x, mcu_y))?
+            {
+                cursor.prev_dc = [0; 4];
+            }
+            let selected = windows.iter().any(|window| {
+                (window.col..window.col + window.cols).contains(&mcu_x)
+                    && (window.row..window.row + window.rows).contains(&mcu_y)
+            });
+            if selected {
+                for component in &plan.components {
+                    let plane = component.output_index;
+                    let dc_table = plan.dc_table_with_entries::<N>(component)?;
+                    let ac_table = plan.ac_table_with_entries::<N>(component)?;
+                    for vy in 0..u32::from(component.v) {
+                        for vx in 0..u32::from(component.h) {
+                            let mut block = [0; 64];
+                            decode_block_quantized_into(
+                                &mut cursor.br,
+                                dc_table,
+                                ac_table,
+                                &mut cursor.prev_dc[plane],
+                                &mut block,
+                            )?;
+                            for (window, output) in windows.iter().zip(blocks.iter_mut()) {
+                                if !(window.col..window.col + window.cols).contains(&mcu_x)
+                                    || !(window.row..window.row + window.rows).contains(&mcu_y)
+                                {
+                                    continue;
+                                }
+                                let cols = window.cols * u32::from(component.h);
+                                let x = (mcu_x - window.col) * u32::from(component.h) + vx;
+                                let y = (mcu_y - window.row) * u32::from(component.v) + vy;
+                                output[plane][(y * cols + x) as usize] = block;
+                            }
+                        }
+                    }
+                }
+            } else {
+                skip_mcu::<N>(plan, &mut cursor.br, &mut cursor.prev_dc, wide_huffman)?;
+            }
+            cursor.restart.end_mcu();
+        }
+    }
+    Ok(())
 }
 
 fn decode_scan_dct_window_into_with_entries<const N: usize>(

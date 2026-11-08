@@ -390,6 +390,7 @@ pub type j2k_core::ReadySubmission<T, E>::Output = T
 ```text
 #[non_exhaustive] pub enum j2k_jpeg::transcode::JpegDctImageError
 #[non_exhaustive] pub struct j2k_jpeg::transcode::DctExtractOptions
+#[non_exhaustive] pub struct j2k_jpeg::transcode::LosslessCropOptions
 #[repr(C)] pub struct j2k_jpeg::adapter::JpegEntropyCheckpointV1
 #[repr(C)] pub struct j2k_jpeg::adapter::JpegFast420PacketV1
 #[repr(C)] pub struct j2k_jpeg::adapter::JpegFast422PacketV1
@@ -405,6 +406,7 @@ impl core::convert::From<j2k_jpeg::adapter::JpegFast444PacketV1> for j2k_jpeg::a
 impl core::default::Default for j2k_jpeg::adapter::JpegPlanCache
 impl core::default::Default for j2k_jpeg::bench_support::BenchNeonIdct
 impl core::default::Default for j2k_jpeg::transcode::DctExtractOptions
+impl core::default::Default for j2k_jpeg::transcode::LosslessCropOptions
 impl core::fmt::Debug for j2k_jpeg::adapter::SharedJpegFastPacket
 impl core::fmt::Debug for j2k_jpeg::adapter::SharedJpegInput
 impl j2k_core::context::CodecContext for j2k_jpeg::DecoderContext
@@ -461,6 +463,7 @@ pub const fn j2k_jpeg::adapter::JpegLosslessEncodePlan::samples(&self) -> usize
 pub const fn j2k_jpeg::adapter::JpegLosslessGpuEncodeParams::chunks(&self) -> u32
 pub const fn j2k_jpeg::adapter::JpegPlanCache::diagnostics(&self) -> j2k_jpeg::adapter::JpegPlanCacheDiagnostics
 pub const fn j2k_jpeg::transcode::DctExtractOptions::dequantized_only() -> Self
+pub const fn j2k_jpeg::transcode::DctExtractOptions::quantized_only() -> Self
 pub const j2k_jpeg::adapter::DEFAULT_JPEG_PLAN_CACHE_ENTRIES: usize
 pub const j2k_jpeg::adapter::DEFAULT_JPEG_PLAN_CACHE_HOST_BYTES: usize
 pub const j2k_jpeg::adapter::JPEG_BASELINE_ZIGZAG: [u8; 64]
@@ -479,6 +482,7 @@ pub enum j2k_jpeg::adapter::JpegPlanCacheError
 pub enum j2k_jpeg::adapter::JpegPlanCacheInsert
 pub enum j2k_jpeg::adapter::TableKind
 pub enum j2k_jpeg::transcode::JpegDctCodingMode
+pub enum j2k_jpeg::transcode::LosslessCropError
 pub fn j2k_jpeg::Decoder<'_>::decode_request_with_external_live(&self, j2k_jpeg::DecodeRequest, usize) -> core::result::Result<(alloc::vec::Vec<u8>, j2k_jpeg::DecodeOutcome), j2k_jpeg::JpegError>
 pub fn j2k_jpeg::Decoder<'_>::decode_request_with_scratch_and_external_live(&self, &mut j2k_jpeg::ScratchPool, j2k_jpeg::DecodeRequest, usize) -> core::result::Result<(alloc::vec::Vec<u8>, j2k_jpeg::DecodeOutcome), j2k_jpeg::JpegError>
 pub fn j2k_jpeg::Decoder<'a>::decode_into(&mut self, &mut [u8], usize, j2k_core::pixel::PixelFormat) -> core::result::Result<j2k_core::types::DecodeOutcome<Self::Warning>, Self::Error>
@@ -658,10 +662,16 @@ pub fn j2k_jpeg::decode_tiles_into_with_options(&mut [j2k_jpeg::TileDecodeJob<'_
 pub fn j2k_jpeg::decode_tiles_region_scaled_into_with_options(&mut [j2k_jpeg::TileRegionScaledDecodeJob<'_, '_>], j2k_core::pixel::PixelFormat, j2k_jpeg::DecodeOptions, j2k_core::batch::TileBatchOptions) -> core::result::Result<alloc::vec::Vec<j2k_jpeg::DecodeOutcome>, j2k_jpeg::TileBatchError>
 pub fn j2k_jpeg::decode_tiles_scaled_into_with_options(&mut [j2k_jpeg::TileScaledDecodeJob<'_, '_>], j2k_core::pixel::PixelFormat, j2k_jpeg::DecodeOptions, j2k_core::batch::TileBatchOptions) -> core::result::Result<alloc::vec::Vec<j2k_jpeg::DecodeOutcome>, j2k_jpeg::TileBatchError>
 pub fn j2k_jpeg::transcode::DctExtractOptions::default() -> Self
+pub fn j2k_jpeg::transcode::DctExtractOptions::estimate(self, &[u8]) -> core::result::Result<j2k_jpeg::transcode::DctWorkingSetEstimate, j2k_jpeg::JpegError>
 pub fn j2k_jpeg::transcode::JpegDctImage::retained_bytes(&self) -> core::result::Result<usize, j2k_jpeg::JpegError>
+pub fn j2k_jpeg::transcode::LosslessCropOptions::default() -> Self
 pub fn j2k_jpeg::transcode::encode_baseline_dct_image(&j2k_jpeg::transcode::JpegDctImage) -> core::result::Result<alloc::vec::Vec<u8>, j2k_jpeg::JpegEncodeError>
+pub fn j2k_jpeg::transcode::encode_baseline_dct_image_with_options(&j2k_jpeg::transcode::JpegDctImage, j2k_jpeg::transcode::BaselineDctEncodeOptions<'_>) -> core::result::Result<alloc::vec::Vec<u8>, j2k_jpeg::JpegEncodeError>
+pub fn j2k_jpeg::transcode::estimate_dct_windows(&[u8], &[j2k_jpeg::transcode::McuRect], j2k_jpeg::transcode::DctExtractOptions) -> core::result::Result<j2k_jpeg::transcode::DctWorkingSetEstimate, j2k_jpeg::JpegError>
 pub fn j2k_jpeg::transcode::extract_dct_blocks(&[u8], j2k_jpeg::transcode::DctExtractOptions) -> core::result::Result<j2k_jpeg::transcode::JpegDctImage, j2k_jpeg::JpegError>
+pub fn j2k_jpeg::transcode::extract_dct_windows(&[u8], &[j2k_jpeg::transcode::McuRect], j2k_jpeg::transcode::DctExtractOptions) -> core::result::Result<alloc::vec::Vec<j2k_jpeg::transcode::JpegDctImage>, j2k_jpeg::JpegError>
 pub fn j2k_jpeg::transcode::idct_islow_block(&[i16; 64]) -> [u8; 64]
+pub fn j2k_jpeg::transcode::lossless_crop(&[u8], j2k_jpeg::Rect, j2k_jpeg::transcode::LosslessCropOptions) -> core::result::Result<j2k_jpeg::transcode::LosslessCrop, j2k_jpeg::transcode::LosslessCropError>
 pub j2k_jpeg::DeviceBatchSummary::checkpoint_count: usize
 pub j2k_jpeg::DeviceBatchSummary::matches_fast_420: bool
 pub j2k_jpeg::DeviceBatchSummary::matches_fast_422: bool
@@ -964,7 +974,12 @@ pub j2k_jpeg::adapter::JpegPlanCacheInsert::SkippedDisabled
 pub j2k_jpeg::adapter::JpegPlanCacheInsert::SkippedOversized
 pub j2k_jpeg::adapter::TableKind::Ac
 pub j2k_jpeg::adapter::TableKind::Dc
+pub j2k_jpeg::transcode::BaselineDctEncodeOptions::app_segments: &'a [u8]
+pub j2k_jpeg::transcode::BaselineDctEncodeOptions::component_ids: &'a [u8]
+pub j2k_jpeg::transcode::DctExtractOptions::retain_dequantized_blocks: bool
 pub j2k_jpeg::transcode::DctExtractOptions::retain_quantized_blocks: bool
+pub j2k_jpeg::transcode::DctWorkingSetEstimate::peak_bytes: usize
+pub j2k_jpeg::transcode::DctWorkingSetEstimate::retained_bytes: usize
 pub j2k_jpeg::transcode::JpegDctCodingMode::BaselineSequential
 pub j2k_jpeg::transcode::JpegDctCodingMode::Progressive
 pub j2k_jpeg::transcode::JpegDctComponent::block_cols: u32
@@ -1013,6 +1028,8 @@ pub j2k_jpeg::transcode::JpegDctImageError::DimensionsTooLarge::width: u32
 pub j2k_jpeg::transcode::JpegDctImageError::EmptyDimensions
 pub j2k_jpeg::transcode::JpegDctImageError::EmptyDimensions::height: u32
 pub j2k_jpeg::transcode::JpegDctImageError::EmptyDimensions::width: u32
+pub j2k_jpeg::transcode::JpegDctImageError::InvalidMetadata
+pub j2k_jpeg::transcode::JpegDctImageError::InvalidMetadata::reason: &'static str
 pub j2k_jpeg::transcode::JpegDctImageError::QuantizationValueOutOfRange
 pub j2k_jpeg::transcode::JpegDctImageError::QuantizationValueOutOfRange::component_index: usize
 pub j2k_jpeg::transcode::JpegDctImageError::QuantizationValueOutOfRange::value: u16
@@ -1034,6 +1051,17 @@ pub j2k_jpeg::transcode::JpegDctImageError::UnsupportedComponentCount::actual: u
 pub j2k_jpeg::transcode::JpegDctImageError::UnsupportedGrayscaleSampling
 pub j2k_jpeg::transcode::JpegDctImageError::UnsupportedGrayscaleSampling::h_samp: u8
 pub j2k_jpeg::transcode::JpegDctImageError::UnsupportedGrayscaleSampling::v_samp: u8
+pub j2k_jpeg::transcode::LosslessCrop::data: alloc::vec::Vec<u8>
+pub j2k_jpeg::transcode::LosslessCrop::height: u32
+pub j2k_jpeg::transcode::LosslessCrop::region: j2k_jpeg::Rect
+pub j2k_jpeg::transcode::LosslessCrop::width: u32
+pub j2k_jpeg::transcode::LosslessCropError::Decode(j2k_jpeg::JpegError)
+pub j2k_jpeg::transcode::LosslessCropError::Encode(j2k_jpeg::JpegEncodeError)
+pub j2k_jpeg::transcode::LosslessCropOptions::max_working_bytes: usize
+pub j2k_jpeg::transcode::McuRect::height: u32
+pub j2k_jpeg::transcode::McuRect::width: u32
+pub j2k_jpeg::transcode::McuRect::x: u32
+pub j2k_jpeg::transcode::McuRect::y: u32
 pub mod j2k_jpeg::adapter
 pub mod j2k_jpeg::bench_support
 pub mod j2k_jpeg::transcode
@@ -1078,8 +1106,12 @@ pub struct j2k_jpeg::bench_support::BenchRgb420RowPair<'a>
 pub struct j2k_jpeg::bench_support::BenchRgb420RowPairScratch
 pub struct j2k_jpeg::bench_support::BenchRgbRowScratch
 pub struct j2k_jpeg::bench_support::BenchUpsampleH2V2Scratch
+pub struct j2k_jpeg::transcode::BaselineDctEncodeOptions<'a>
+pub struct j2k_jpeg::transcode::DctWorkingSetEstimate
 pub struct j2k_jpeg::transcode::JpegDctComponent
 pub struct j2k_jpeg::transcode::JpegDctImage
+pub struct j2k_jpeg::transcode::LosslessCrop
+pub struct j2k_jpeg::transcode::McuRect
 pub trait j2k_jpeg::adapter::JpegBaselineGpuEncodeHostAdapter<T: core::marker::Copy>
 pub type j2k_jpeg::Decoder<'_>::Error = j2k_jpeg::JpegError
 pub type j2k_jpeg::Decoder<'_>::Pool = j2k_jpeg::ScratchPool

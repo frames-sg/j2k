@@ -1977,6 +1977,13 @@ pub j2k_jpeg::JpegError::ConflictingExpectedDimensions
 pub j2k_jpeg::JpegError::ConflictingExpectedDimensions::actual: (u16, u16)
 pub j2k_jpeg::JpegError::ConflictingExpectedDimensions::expected: (u16, u16)
 pub j2k_jpeg::JpegError::ConflictingExpectedDimensions::offset: usize
+pub j2k_jpeg::JpegError::DctWindowOutOfBounds
+pub j2k_jpeg::JpegError::DctWindowOutOfBounds::height: u32
+pub j2k_jpeg::JpegError::DctWindowOutOfBounds::mcu_cols: u32
+pub j2k_jpeg::JpegError::DctWindowOutOfBounds::mcu_rows: u32
+pub j2k_jpeg::JpegError::DctWindowOutOfBounds::width: u32
+pub j2k_jpeg::JpegError::DctWindowOutOfBounds::x: u32
+pub j2k_jpeg::JpegError::DctWindowOutOfBounds::y: u32
 pub j2k_jpeg::JpegError::DimensionOverflow
 pub j2k_jpeg::JpegError::DimensionOverflow::height: u32
 pub j2k_jpeg::JpegError::DimensionOverflow::width: u32
@@ -1997,6 +2004,7 @@ pub j2k_jpeg::JpegError::HuffmanDecode::mcu: u32
 pub j2k_jpeg::JpegError::HuffmanDecode::reason: j2k_jpeg::HuffmanFailure
 pub j2k_jpeg::JpegError::InternalInvariant
 pub j2k_jpeg::JpegError::InternalInvariant::reason: &'static str
+pub j2k_jpeg::JpegError::InvalidDctExtractOptions
 pub j2k_jpeg::JpegError::InvalidJpegAssembly
 pub j2k_jpeg::JpegError::InvalidJpegAssembly::offset: usize
 pub j2k_jpeg::JpegError::InvalidJpegAssembly::reason: &'static str

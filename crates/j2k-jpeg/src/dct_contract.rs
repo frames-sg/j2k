@@ -156,4 +156,10 @@ pub enum JpegDctImageError {
     /// The two chroma components require different quantization tables.
     #[error("baseline DCT re-emission supports one shared chroma quantization table")]
     ChromaQuantizationTableMismatch,
+    /// Caller-supplied APP segments or component identifiers are invalid.
+    #[error("invalid DCT frame metadata: {reason}")]
+    InvalidMetadata {
+        /// Static invalid-input diagnostic.
+        reason: &'static str,
+    },
 }

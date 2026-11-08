@@ -649,6 +649,29 @@ pub enum JpegError {
     #[error("row sink aborted decode")]
     /// Row sink returned an error and aborted row-based decoding.
     RowSinkAborted,
+
+    #[error("DCT extraction must retain quantized or dequantized blocks")]
+    /// Neither coefficient plane was selected for DCT extraction.
+    InvalidDctExtractOptions,
+
+    #[error(
+        "DCT MCU window ({x}, {y}, {width}, {height}) is outside the {mcu_cols}x{mcu_rows} MCU grid"
+    )]
+    /// An MCU-aligned DCT extraction window lies outside the source grid.
+    DctWindowOutOfBounds {
+        /// First MCU column.
+        x: u32,
+        /// First MCU row.
+        y: u32,
+        /// Window width in MCUs.
+        width: u32,
+        /// Window height in MCUs.
+        height: u32,
+        /// Source MCU columns.
+        mcu_cols: u32,
+        /// Source MCU rows.
+        mcu_rows: u32,
+    },
 }
 
 impl JpegError {

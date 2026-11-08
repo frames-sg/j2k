@@ -25,6 +25,7 @@ pub(super) fn allocate_dct_decode_storage(
     mcus_per_row: u32,
     mcu_rows: u32,
     retain_quantized_blocks: bool,
+    retain_dequantized_blocks: bool,
     lifecycle: SequentialDctLifecycleMetadata,
 ) -> Result<DctDecodeStorage, JpegError> {
     validate_dct_workspace(
@@ -32,6 +33,7 @@ pub(super) fn allocate_dct_decode_storage(
         mcus_per_row,
         mcu_rows,
         retain_quantized_blocks,
+        retain_dequantized_blocks,
         lifecycle,
     )?;
 
@@ -81,12 +83,17 @@ pub(super) fn allocate_dct_decode_storage(
             Vec::new()
         };
         quantized_blocks.push(quantized);
-        dequantized_blocks.push(try_vec_filled_with_live_budget(
-            block_count,
-            [0_i16; 64],
-            &mut live_bytes,
-            lifecycle.workspace_cap,
-        )?);
+        let dequantized = if retain_dequantized_blocks {
+            try_vec_filled_with_live_budget(
+                block_count,
+                [0_i16; 64],
+                &mut live_bytes,
+                lifecycle.workspace_cap,
+            )?
+        } else {
+            Vec::new()
+        };
+        dequantized_blocks.push(dequantized);
     }
 
     let prev_dc = try_vec_filled_with_live_budget(
@@ -133,6 +140,7 @@ fn validate_dct_workspace(
     mcus_per_row: u32,
     mcu_rows: u32,
     retain_quantized_blocks: bool,
+    retain_dequantized_blocks: bool,
     lifecycle: SequentialDctLifecycleMetadata,
 ) -> Result<(), JpegError> {
     let component_count = plan.sampling.len();
@@ -165,11 +173,13 @@ fn validate_dct_workspace(
             checked_allocation_bytes::<[i16; 64]>(block_count)?,
         )?;
     }
-    let retained_plane_bytes = if retain_quantized_blocks {
-        checked_add_allocation_bytes(plane_bytes, plane_bytes)?
-    } else {
-        plane_bytes
-    };
+    let mut retained_plane_bytes = 0usize;
+    if retain_quantized_blocks {
+        retained_plane_bytes = checked_add_allocation_bytes(retained_plane_bytes, plane_bytes)?;
+    }
+    if retain_dequantized_blocks {
+        retained_plane_bytes = checked_add_allocation_bytes(retained_plane_bytes, plane_bytes)?;
+    }
     ensure_phase_capacity(
         entropy_state_bytes,
         retained_plane_bytes,

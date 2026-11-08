@@ -178,6 +178,18 @@ Staged workspace version: `0.13.2`.
   See
   [`crates/j2k-c/CHANGELOG.md`](crates/j2k-c/CHANGELOG.md).
 
+- `j2k-jpeg` coefficient extraction can retain quantized blocks without a
+  duplicate dequantized plane (#308). MCU-window extraction keeps only requested
+  baseline blocks, uses restart intervals when present, and exposes a
+  header-only working-set estimate. A baseline quantized-only window is
+  admitted by its own blocks: a one-MCU window of a 16384 x 16384 4:2:0 image
+  is no longer refused for the whole-image coefficient matrix it never
+  allocates. The new lossless crop API re-emits baseline or progressive
+  Huffman sources as MCU-aligned baseline crops while preserving JFIF/Adobe
+  colour signalling, SOF component identifiers, and independent component
+  quantization tables. Progressive and multi-scan crops still require
+  whole-image coefficient accumulation.
+
 - `MetalBatchDecoder` sends classic Tier-1 for batches of at least eight
   distinct full-image RGB8 inputs with sampled components to the CPU pool,
   then keeps inverse transforms, chroma expansion and output resident on

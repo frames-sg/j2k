@@ -218,6 +218,32 @@ pub(crate) fn decode_block_dequantized_into<const N: usize>(
     Ok(())
 }
 
+/// Decode one quantized block directly into a freshly zeroed output block.
+///
+/// The caller must pass an output block that is all zeroes; this function only
+/// writes non-zero decoded coefficients.
+#[expect(
+    clippy::inline_always,
+    reason = "the quantized crop path shares the measured entropy-block hot loop"
+)]
+#[inline(always)]
+pub(crate) fn decode_block_quantized_into<const N: usize>(
+    br: &mut BitReader<'_>,
+    dc_table: DcHuffmanTable<'_, N>,
+    ac_table: AcHuffmanTable<'_, N>,
+    prev_dc: &mut i32,
+    out: &mut [i16; 64],
+) -> Result<(), JpegError> {
+    let diff = dc_table.decode_fast_dc(br)?;
+    *prev_dc = prev_dc.wrapping_add(diff);
+    out[0] = clamp_i16(*prev_dc);
+
+    drive_ac_fast::<N, false, _>(br, ac_table, |k, value| {
+        out[ZIGZAG[k] as usize] = clamp_i16(value);
+        Ok(())
+    })
+}
+
 #[expect(
     clippy::inline_always,
     reason = "measured entropy-block hot path requires cross-helper inlining"
