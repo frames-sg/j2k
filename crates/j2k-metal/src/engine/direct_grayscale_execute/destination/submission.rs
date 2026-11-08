@@ -100,6 +100,14 @@ impl SubmittedDirectDestination {
         (has_event, has_signal, self.consumer_waits.len())
     }
 
+    /// The dispatch report recorded when the group was committed.
+    #[cfg(test)]
+    pub(crate) fn submitted_dispatch_report_for_test(&self) -> Option<MetalDecodeDispatchReport> {
+        self.metadata
+            .as_ref()
+            .map(|metadata| metadata.dispatch_report)
+    }
+
     #[cfg(test)]
     pub(crate) fn known_consumer_timeline_for_test(&self) -> Option<(usize, u64)> {
         self.known_consumer_event_ptr.zip(self.known_consumer_value)

@@ -79,6 +79,7 @@ impl MetalBatchDecoder {
                     destination,
                     Some(group.source_indices()),
                     crate::engine::DirectDestinationConsumerOrdering::HostCompletionOnly,
+                    super::automatic_cpu_tier1_workers(group.options()),
                 )?
                 .wait()?;
             }
@@ -111,6 +112,7 @@ impl MetalBatchDecoder {
             group.into(),
             destination,
             crate::engine::DirectDestinationConsumerOrdering::Deferred,
+            super::automatic_cpu_tier1_workers(group.options()),
         )
     }
 
@@ -125,10 +127,13 @@ impl MetalBatchDecoder {
         group: &j2k::PreparedDeviceOperationGroup,
         destination: MetalImageDestination,
     ) -> Result<SubmittedMetalGroupDecodeInto, Error> {
+        // Operation groups carry no options; resident operation decode uses
+        // the session's, as here.
         self.submit_prepared_group_into_with_ordering(
             group.into(),
             destination,
             crate::engine::DirectDestinationConsumerOrdering::Deferred,
+            super::automatic_cpu_tier1_workers(self.options),
         )
     }
 
@@ -156,6 +161,7 @@ impl MetalBatchDecoder {
                 consumer_queue: consumer_queue.retain(),
                 timeline: self.backend_session().consumer_event_timeline(),
             },
+            super::automatic_cpu_tier1_workers(group.options()),
         )
     }
 
@@ -271,9 +277,10 @@ impl MetalBatchDecoder {
         group: ResidentGroupView<'_>,
         destination: MetalImageDestination,
         consumer_ordering: crate::engine::DirectDestinationConsumerOrdering,
+        automatic_cpu_workers: Option<std::num::NonZeroUsize>,
     ) -> Result<SubmittedMetalGroupDecodeInto, Error> {
         group.check_cancelled()?;
-        let external = self.prepare_external_group(group, destination, None)?;
+        let external = self.prepare_external_group(group, destination, automatic_cpu_workers)?;
         group.check_cancelled()?;
         let runtime = self.backend_session().runtime()?;
         let submission = match &external.plans {
@@ -296,6 +303,7 @@ impl MetalBatchDecoder {
                     &external.destination,
                     Some(group.source_indices),
                     consumer_ordering,
+                    external.automatic_cpu_workers,
                 )?
             }
         };

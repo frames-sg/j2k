@@ -31,6 +31,18 @@ Staged workspace version: `0.13.2`.
   narrower planes do, instead of ignoring them, and validate the shift count
   and coded-bitplane limit like every other route.
 
+- Metal: the single-group external entry points
+  (`MetalBatchDecoder::submit_prepared_group_into`,
+  `submit_prepared_group_into_for_consumer_queue`,
+  `decode_prepared_group_into` and `submit_operation_group_into`) now take
+  the CPU Tier-1 route for sampled classic RGB8 groups, as resident batches
+  and `submit_prepared_groups_into` already did. Python MPS submits one group
+  per call through these. On an Apple M4 Pro, 32-tile groups of the Aperio
+  slides JP2K-33003-1 and JP2K-33003-2 went from 11.76 to 6.61 ms and from
+  15.01 to 6.93 ms (medians of 24). The worker budget is the group's
+  `BatchDecodeOptions::workers`, or the session's for operation groups;
+  one worker keeps Tier-1 on Metal.
+
 - The device DCT window entry points (`device_dct_window_layout`,
   `decode_device_dct_window_into`) check a window's ends with overflow
   checks. A `JpegDeviceMcuWindow` whose `col + cols` or `row + rows` wrapped

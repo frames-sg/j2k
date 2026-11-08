@@ -365,6 +365,65 @@ fn a_group_cancelled_after_preparation_is_never_committed() {
     assert_eq!(decoder.submissions().expect("submissions"), before);
 }
 
+/// Submits `operations` as one external operation group and checks that every
+/// operation decoded its Tier-1 code blocks on the CPU and matches `expected`.
+fn assert_external_operation_group_uses_cpu_tier1(
+    decoder: &mut MetalBatchDecoder,
+    operations: &[PreparedImageOperation<'_>],
+    expected: &[(Rect, Vec<u8>)],
+) {
+    let device = j2k::prepare_device_operations(operations, options()).expect("device operations");
+    assert!(device.errors().is_empty(), "{:?}", device.errors());
+    assert_eq!(device.groups().len(), 1);
+    let group = &device.groups()[0];
+    let fmt = group
+        .info()
+        .native_pixel_format()
+        .expect("native RGB format");
+    let (width, height) = group.info().dimensions;
+    let row_bytes = width as usize * fmt.bytes_per_pixel();
+    let image_bytes = row_bytes * height as usize;
+    let output = j2k_metal_support::checked_shared_buffer_for_len::<u8>(
+        decoder.backend_session().device(),
+        image_bytes * group.source_indices().len(),
+    )
+    .expect("operation destination allocation");
+    let layout = j2k_metal_support::MetalImageLayout::new_batch(
+        0,
+        (width, height),
+        row_bytes,
+        fmt,
+        group.source_indices().len(),
+        image_bytes,
+    )
+    .expect("operation destination layout");
+    // SAFETY: the fresh allocation has one logical writer until completion.
+    let destination = unsafe {
+        j2k_metal_support::MetalImageDestination::from_exclusive_buffer(output.clone(), layout)
+            .expect("operation destination")
+    };
+    let submitted = decoder
+        .submit_operation_group_into(group, destination)
+        .expect("submit operation group");
+    assert_eq!(submitted.cpu_tier1_images_for_test(), operations.len());
+    submitted.wait().expect("complete operation group");
+    // SAFETY: completion released the destination's exclusive write guard.
+    let bytes = unsafe {
+        j2k_metal_support::checked_buffer_read_vec::<u8>(
+            &output,
+            0,
+            image_bytes * group.source_indices().len(),
+        )
+        .expect("operation destination bytes")
+    };
+    for (slot, &index) in group.source_indices().iter().enumerate() {
+        assert!(
+            bytes[slot * image_bytes..][..image_bytes] == expected[index].1[..],
+            "external operation {index} differs from the CPU"
+        );
+    }
+}
+
 /// Eight distinct sampled classic RGB8 sources cross the automatic CPU Tier-1
 /// threshold. Whole-image operations at full resolution take that route and
 /// still match the CPU; sampled regions keep failing per group with a
@@ -420,6 +479,9 @@ fn sampled_classic_operations_use_automatic_cpu_tier1_and_match_the_cpu() {
     }
     assert_eq!(cpu_tier1_images, whole.len());
     assert_eq!(actual, expected);
+
+    // The external operation-group entry point takes the same route.
+    assert_external_operation_group_uses_cpu_tier1(&mut decoder, &whole, &expected);
 
     let region = Rect {
         x: 17,

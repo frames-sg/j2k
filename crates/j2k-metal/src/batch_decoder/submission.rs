@@ -49,6 +49,14 @@ impl SubmittedMetalGroupDecodeInto {
         self.submission.enqueue_consumer_wait(consumer_queue)
     }
 
+    /// Images whose Tier-1 code blocks this submission decoded on the CPU.
+    #[cfg(test)]
+    pub(crate) fn cpu_tier1_images_for_test(&self) -> usize {
+        self.submission
+            .submitted_dispatch_report_for_test()
+            .map_or(0, |report| report.cpu_tier1_images)
+    }
+
     /// Wait for GPU completion, validate group status, and release exclusive
     /// access to the destination.
     pub fn wait(self) -> Result<MetalBatchGroupCompletion, Error> {

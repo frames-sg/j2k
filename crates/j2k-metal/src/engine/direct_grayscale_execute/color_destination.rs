@@ -60,7 +60,16 @@ impl ColorTier1Execution {
     }
 }
 
+/// Submits one color group into `destination`.
+///
+/// `automatic_cpu_workers` is the CPU worker budget a sampled classic RGB8
+/// group may use to decode its Tier-1 code blocks on the host, as the
+/// multi-group and resident submissions do; `None` keeps Tier-1 on Metal.
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the group's plans, output contract, attribution, ordering, and CPU budget are independent"
+)]
 pub(crate) fn submit_prepared_direct_color_plan_batch_into_group(
     runtime: Arc<MetalRuntime>,
     plans: &[Arc<PreparedDirectColorPlan>],
@@ -69,6 +78,7 @@ pub(crate) fn submit_prepared_direct_color_plan_batch_into_group(
     destination: &MetalImageDestination,
     source_indices: Option<&[usize]>,
     consumer_ordering: DirectDestinationConsumerOrdering,
+    automatic_cpu_workers: Option<std::num::NonZeroUsize>,
 ) -> Result<SubmittedDirectDestination, Error> {
     submit_color_group(
         runtime,
@@ -79,7 +89,7 @@ pub(crate) fn submit_prepared_direct_color_plan_batch_into_group(
         source_indices,
         ColorTier1Execution::Metal {
             consumer_ordering,
-            automatic_cpu_workers: None,
+            automatic_cpu_workers,
         },
         None,
     )

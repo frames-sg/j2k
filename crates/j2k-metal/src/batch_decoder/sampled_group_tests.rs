@@ -182,8 +182,10 @@ fn assert_resident_matches_cpu_with_options(
     }
 }
 
-/// Decodes one prepared group into a caller destination with `layout`.
-fn assert_external_matches_cpu(inputs: &[Arc<[u8]>], layout: BatchLayout, case: &str) {
+/// Decodes one prepared group into caller destinations with `layout`, through
+/// the submitting and the synchronous entry points, and returns how many images
+/// the submitted group decoded with CPU Tier-1.
+fn assert_external_matches_cpu(inputs: &[Arc<[u8]>], layout: BatchLayout, case: &str) -> usize {
     let options = options(layout);
     let encoded = inputs
         .iter()
@@ -212,39 +214,60 @@ fn assert_external_matches_cpu(inputs: &[Arc<[u8]>], layout: BatchLayout, case: 
     let (width, height) = group.info().dimensions;
     let row_bytes = width as usize * fmt.bytes_per_pixel();
     let image_bytes = row_bytes * height as usize;
-    let output = j2k_metal_support::checked_shared_buffer_for_len::<u8>(
-        decoder.backend_session().device(),
-        image_bytes * inputs.len(),
-    )
-    .expect("sampled destination allocation");
-    let destination_layout = MetalImageLayout::new_batch(
-        0,
-        (width, height),
-        row_bytes,
-        fmt,
-        inputs.len(),
-        image_bytes,
-    )
-    .expect("sampled destination layout");
-    // SAFETY: the fresh allocation has one logical writer until completion.
-    let destination = unsafe {
-        MetalImageDestination::from_exclusive_buffer(output.clone(), destination_layout)
-            .expect("sampled destination")
+    let destination = || {
+        let output = j2k_metal_support::checked_shared_buffer_for_len::<u8>(
+            decoder.backend_session().device(),
+            image_bytes * inputs.len(),
+        )
+        .expect("sampled destination allocation");
+        let destination_layout = MetalImageLayout::new_batch(
+            0,
+            (width, height),
+            row_bytes,
+            fmt,
+            inputs.len(),
+            image_bytes,
+        )
+        .expect("sampled destination layout");
+        // SAFETY: the fresh allocation has one logical writer until completion.
+        let destination = unsafe {
+            MetalImageDestination::from_exclusive_buffer(output.clone(), destination_layout)
+                .expect("sampled destination")
+        };
+        (output, destination)
     };
-    decoder
-        .submit_prepared_group_into(group, destination)
-        .unwrap_or_else(|error| panic!("{case}: submit sampled group: {error}"))
+    let read = |output: &objc2::rc::Retained<
+        objc2::runtime::ProtocolObject<dyn objc2_metal::MTLBuffer>,
+    >| {
+        // SAFETY: completion released the destination's exclusive write guard.
+        unsafe {
+            j2k_metal_support::checked_buffer_read_vec::<u8>(output, 0, image_bytes * inputs.len())
+                .expect("sampled destination bytes")
+        }
+    };
+
+    let (submitted_output, submitted_destination) = destination();
+    let (sync_output, sync_destination) = destination();
+    let submitted = decoder
+        .submit_prepared_group_into(group, submitted_destination)
+        .unwrap_or_else(|error| panic!("{case}: submit sampled group: {error}"));
+    let cpu_tier1_images = submitted.cpu_tier1_images_for_test();
+    submitted
         .wait()
         .unwrap_or_else(|error| panic!("{case}: complete sampled group: {error}"));
-    // SAFETY: completion released the destination's exclusive write guard.
-    let actual = unsafe {
-        j2k_metal_support::checked_buffer_read_vec::<u8>(&output, 0, image_bytes * inputs.len())
-            .expect("sampled destination bytes")
-    };
     assert!(
-        actual == expected,
-        "{case}: external destination differs from CPU"
+        read(&submitted_output) == expected,
+        "{case}: submitted external destination differs from CPU"
     );
+    decoder
+        .decode_prepared_group_into(group, &sync_destination)
+        .unwrap_or_else(|error| panic!("{case}: decode sampled group: {error}"));
+    drop(sync_destination);
+    assert!(
+        read(&sync_output) == expected,
+        "{case}: synchronous external destination differs from CPU"
+    );
+    cpu_tier1_images
 }
 
 #[test]
@@ -274,7 +297,12 @@ fn sampled_groups_decode_on_metal_in_one_command_buffer() {
                     assert_eq!(report.command_buffers, 1, "{case}");
                     assert_eq!(report.cpu_tier1_images, 0, "{case}");
                     for layout in [BatchLayout::Nchw, BatchLayout::Nhwc] {
-                        assert_external_matches_cpu(&inputs, layout, &format!("{case} {layout:?}"));
+                        let cpu_tier1_images = assert_external_matches_cpu(
+                            &inputs,
+                            layout,
+                            &format!("{case} {layout:?}"),
+                        );
+                        assert_eq!(cpu_tier1_images, 0, "{case} {layout:?}");
                     }
                 }
             }
@@ -309,11 +337,18 @@ fn sampled_classic_batch_uses_automatic_cpu_tier1_and_matches_cpu() {
     let report = assert_resident_matches_cpu(&inputs, "sampled CPU Tier-1 batch", None);
     assert_eq!(report.command_buffers, 1);
     assert_eq!(report.cpu_tier1_images, inputs.len());
-    assert_external_matches_cpu(
-        &inputs,
-        BatchLayout::Nhwc,
-        "sampled CPU Tier-1 external batch",
-    );
+    // The single-group external entry points take the same route.
+    for layout in [BatchLayout::Nchw, BatchLayout::Nhwc] {
+        assert_eq!(
+            assert_external_matches_cpu(
+                &inputs,
+                layout,
+                &format!("sampled CPU Tier-1 external batch {layout:?}"),
+            ),
+            inputs.len(),
+            "{layout:?}"
+        );
+    }
 }
 
 #[test]

@@ -198,6 +198,68 @@ fn time_owned_batch(
     }
 }
 
+/// Submits the one prepared group of `inputs` into a caller-owned destination
+/// and waits, as Python MPS does; returns elapsed ms for submit and wait.
+#[cfg(not(debug_assertions))]
+fn time_external_group(inputs: &[Arc<[u8]>], session: &crate::MetalBackendSession) -> f64 {
+    let options = j2k::BatchDecodeOptions::default();
+    let mut decoder =
+        crate::MetalBatchDecoder::with_backend_session_and_options(session.clone(), options);
+    let encoded = || {
+        inputs
+            .iter()
+            .cloned()
+            .map(j2k::EncodedImage::full)
+            .collect::<Vec<_>>()
+    };
+    let prepared = decoder.prepare(encoded()).unwrap();
+    assert_eq!(prepared.groups().len(), 1);
+    let group = &prepared.groups()[0];
+    let fmt = group.info().native_pixel_format().unwrap();
+    let (width, height) = group.info().dimensions;
+    let row_bytes = width as usize * fmt.bytes_per_pixel();
+    let image_bytes = row_bytes * height as usize;
+    let output = j2k_metal_support::checked_shared_buffer_for_len::<u8>(
+        session.device(),
+        image_bytes * inputs.len(),
+    )
+    .unwrap();
+    let layout = j2k_metal_support::MetalImageLayout::new_batch(
+        0,
+        (width, height),
+        row_bytes,
+        fmt,
+        inputs.len(),
+        image_bytes,
+    )
+    .unwrap();
+    // SAFETY: the fresh allocation has one logical writer until completion.
+    let destination = unsafe {
+        j2k_metal_support::MetalImageDestination::from_exclusive_buffer(output.clone(), layout)
+            .unwrap()
+    };
+    let started = std::time::Instant::now();
+    decoder
+        .submit_prepared_group_into(group, destination)
+        .unwrap()
+        .wait()
+        .unwrap();
+    let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+    // SAFETY: completion released the destination's exclusive write guard.
+    let actual = unsafe {
+        j2k_metal_support::checked_buffer_read_vec::<u8>(&output, 0, image_bytes * inputs.len())
+            .unwrap()
+    };
+    let expected = j2k::CpuBatchDecoder::new(options)
+        .decode(encoded())
+        .unwrap();
+    let j2k::CpuBatchSamples::U8(expected) = expected.groups()[0].samples() else {
+        panic!("8-bit sampled CPU oracle returned another sample type");
+    };
+    assert_eq!(&actual, expected);
+    elapsed_ms
+}
+
 /// Prepares and decodes `inputs` with the CPU batch decoder; returns elapsed ms.
 #[cfg(not(debug_assertions))]
 fn time_cpu_batch(inputs: &[Arc<[u8]>]) -> f64 {
@@ -273,10 +335,11 @@ fn local_sampled_color_batch_characterization() -> Result<(), &'static str> {
                 .collect();
             let ms = compare_batch(&inputs, 2, PixelFormat::Rgb8);
             let owned = time_owned_batch(&inputs, &session);
+            let external_ms = time_external_group(&inputs, &session);
             let single_ms = time_per_image(&inputs, &session);
             let cpu_ms = time_cpu_batch(&inputs);
             eprintln!(
-                "sampled_native level={level} sample={sample} group={group} count={count} commands=1 legacy_batch_ms={ms:.3} owned_batch_ms={:.3} prepare_ms={:.3} submit_ms={:.3} wait_ms={:.3} per_image_ms={single_ms:.3} cpu_batch_ms={cpu_ms:.3}",
+                "sampled_native level={level} sample={sample} group={group} count={count} commands=1 legacy_batch_ms={ms:.3} owned_batch_ms={:.3} prepare_ms={:.3} submit_ms={:.3} wait_ms={:.3} external_group_ms={external_ms:.3} per_image_ms={single_ms:.3} cpu_batch_ms={cpu_ms:.3}",
                 owned.total_ms(),
                 owned.prepare,
                 owned.submit,

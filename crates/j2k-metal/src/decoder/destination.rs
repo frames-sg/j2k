@@ -137,6 +137,8 @@ impl J2kDecoder<'_> {
             destination,
             None,
             DirectDestinationConsumerOrdering::HostCompletionOnly,
+            // One image never reaches the automatic CPU Tier-1 group size.
+            None,
         )?
         .wait()?;
         Ok(())
