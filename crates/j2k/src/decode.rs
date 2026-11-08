@@ -31,8 +31,8 @@ pub(crate) use route::{
 };
 pub use settings::DecodeSettings;
 pub(crate) use srgb8::{
-    check_icc_working_control, decode_image_region_srgb8, decode_image_srgb8,
-    decode_image_srgb8_with_control, srgb8_output_layout, RoutedSrgb8,
+    check_icc_working_control, decode_image_region_srgb8, decode_image_srgb8_with_control,
+    srgb8_output_layout, RoutedSrgb8,
 };
 pub use srgb8::{J2kSrgb8Image, J2kSrgb8Layout};
 pub(crate) use stripes::{

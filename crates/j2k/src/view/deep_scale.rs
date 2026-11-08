@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{
-    decode_image_region_into_with_native_context, decode_warnings_for_image, validate_buffer,
-    validate_region, J2kDecoder,
-};
+use super::J2kDecoder;
 use crate::{
     adapter::device_plan::reference_grid_covering,
     backend::Image,
@@ -135,32 +132,17 @@ impl J2kDecoder<'_> {
         if levels == 0 {
             return self.decode_region_into(pool, out, stride, fmt, roi);
         }
-
-        let result = (|| {
-            let denominator = reduction_denominator(levels)?;
-            let dims = self.info.dimensions;
-            validate_region(roi, dims)?;
-            self.ensure_image_at_reduction(levels)?;
-            self.native_context.release_reusable_allocations();
-            let image = self.cached_image()?;
-            let image_dims = (image.width(), image.height());
-            validate_reduced_image_dimensions(image, dims, denominator)?;
-            let scaled_roi = image_covering(image, dims, roi, denominator);
-            validate_buffer((scaled_roi.w, scaled_roi.h), out.len(), stride, fmt)?;
-            validate_region(scaled_roi, image_dims)?;
-            let warnings = decode_warnings_for_image(image);
-            let mut native_context = self.fresh_native_context();
-            decode_image_region_into_with_native_context(
-                image,
-                &mut native_context,
-                out,
-                stride,
-                fmt,
-                scaled_roi,
-            )?;
-            Ok(j2k_core::DecodeOutcome::new(scaled_roi, warnings))
-        })();
-        self.trim_preparation_cache();
+        let result = self.decode_region_scaled_pow2_into_with_control(
+            out,
+            stride,
+            fmt,
+            roi,
+            levels,
+            &crate::J2kDecodeControl::default(),
+        );
+        // Unlike explicit operations, legacy region decodes leave no decode
+        // buffers in the decoder while it is idle (see `decode_region_into`).
+        self.native_context = self.fresh_native_context();
         result
     }
 }

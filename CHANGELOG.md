@@ -31,6 +31,34 @@ Staged workspace version: `0.13.2`.
   narrower planes do, instead of ignoring them, and validate the shift count
   and coded-bitplane limit like every other route.
 
+- `J2kDecoder::decode_srgb8_with_control` takes the routes `decode_srgb8`
+  takes: a Gray, RGB or RGBA image without an ICC profile streams its rows
+  into the result when its planes would pass the decode budget, instead of
+  always decoding whole-image planes first. A control that only carried a
+  cancellation token used to raise the peak (a 512x384 Gray8 image held
+  2.6 MB instead of 0.6 MB); the output is unchanged. `decode_srgb8` is now
+  `decode_srgb8_with_control` with a default control, and
+  `decode_region_scaled_pow2_into` (and `decode_region_scaled_into`) the
+  controlled region decode with a default control, followed by the same
+  release of decode buffers as before. Both pairs decoded identical output
+  for every request either accepted. Requests both refuse keep their
+  `J2kError` variant, but a reduced-region request now reports the
+  planner's reasons: "requested reduction exceeds a component or tile
+  resolution ladder", "region has no samples at the requested reduction",
+  or "backend color space cannot be mapped to requested pixel format".
+
+- A lossy encode with `EncodeBackendPreference::RequireDevice` on a CUDA
+  accelerator and PPM or PPT markers, or a tile-part packet limit, no longer
+  fails with "requested JPEG 2000 device encode backend did not dispatch
+  packetization". The native encoder packetizes those on the CPU, as it does
+  PLT, PLM, SOP and EPH, which the facade already did not count as a missing
+  device stage; with `Auto` they now report the device backend. Output is
+  unchanged.
+
+- The precomputed 9/7 HTJ2K encoders check the options every route rejects
+  (PPM with PPT, a zero tile-part packet limit, layer counts, tile sizes)
+  during validation instead of after block coding. The errors are the same.
+
 - Metal: the single-group external entry points
   (`MetalBatchDecoder::submit_prepared_group_into`,
   `submit_prepared_group_into_for_consumer_queue`,

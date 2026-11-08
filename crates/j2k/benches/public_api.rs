@@ -210,6 +210,14 @@ fn bench_decode(c: &mut Criterion) {
         });
     });
 
+    group.bench_function("rgb8_srgb8_full_128x128", |b| {
+        b.iter(|| {
+            let mut decoder =
+                J2kDecoder::new(std::hint::black_box(codestream.as_slice())).expect("rgb8 decoder");
+            std::hint::black_box(decoder.decode_srgb8().expect("decode full srgb8"));
+        });
+    });
+
     let ht_stride = HT_TILE_SIDE as usize;
     let mut ht_out = vec![0u8; ht_stride * HT_TILE_SIDE as usize];
     group.bench_function("htj2k_gray8_full_512x512", |b| {
@@ -220,6 +228,14 @@ fn bench_decode(c: &mut Criterion) {
                 .decode_into(&mut ht_out, ht_stride, PixelFormat::Gray8)
                 .expect("decode full htj2k gray8");
             std::hint::black_box(&ht_out);
+        });
+    });
+
+    group.bench_function("htj2k_gray8_srgb8_full_512x512", |b| {
+        b.iter(|| {
+            let mut decoder = J2kDecoder::new(std::hint::black_box(ht_codestream.as_slice()))
+                .expect("htj2k decoder");
+            std::hint::black_box(decoder.decode_srgb8().expect("decode full htj2k srgb8"));
         });
     });
 

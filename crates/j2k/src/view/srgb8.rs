@@ -2,9 +2,7 @@
 
 use super::J2kDecoder;
 use crate::{
-    decode::{
-        decode_image_region_srgb8, decode_image_srgb8, decode_image_srgb8_with_control, RoutedSrgb8,
-    },
+    decode::{decode_image_region_srgb8, decode_image_srgb8_with_control, RoutedSrgb8},
     J2kDecodeControl, J2kError, J2kSrgb8Image, Rect,
 };
 
@@ -38,36 +36,14 @@ impl J2kDecoder<'_> {
     /// allocation cannot be made. A routed decode that fails partway may
     /// have written some rows of an output it then drops.
     pub fn decode_srgb8(&mut self) -> Result<J2kSrgb8Image, J2kError> {
-        let result = (|| {
-            self.ensure_image()?;
-            let Some(image) = self.image.as_ref() else {
-                return Err(J2kError::internal_backend("internal image cache missing"));
-            };
-            let Some(routed) = RoutedSrgb8::plan(image)? else {
-                return decode_image_srgb8(image, &mut self.native_context);
-            };
-            let mut data = routed.allocate(
-                self.native_context
-                    .retained_allocation_bytes()
-                    .map_err(J2kError::from_native_decode_error)?,
-            )?;
-            let retained_capacity = data.capacity();
-            let outcome = self.decode_into_cached_beside(
-                &mut data,
-                routed.stride(),
-                routed.format(),
-                retained_capacity,
-            )?;
-            routed.finish(data, outcome.warnings)
-        })();
-        self.trim_preparation_cache();
-        result
+        self.decode_srgb8_with_control(&J2kDecodeControl::default())
     }
 
     /// Decode the full image to straight-alpha sRGB with operation-specific
-    /// limits and cancellation. It reconstructs the full native bitmap before
-    /// colour normalization, including high-precision full-image capabilities
-    /// that bounded region reconstruction may not support.
+    /// limits and cancellation, on the routes [`Self::decode_srgb8`] takes:
+    /// a Gray, RGB or RGBA image without an ICC profile streams its rows
+    /// into the result when its planes would pass the decode budget. The
+    /// result buffer is codec-owned, so it counts toward the working limit.
     ///
     /// # Errors
     /// Returns the same colour/decode errors as [`Self::decode_srgb8`], or a
@@ -79,13 +55,29 @@ impl J2kDecoder<'_> {
         let result = (|| {
             control.check_cancelled()?;
             self.ensure_image_at_reduction_with_control(0, control)?;
-            let image = self
-                .image
-                .as_ref()
-                .ok_or_else(|| J2kError::internal_backend("internal image cache missing"))?;
-            control.with_native_context(&mut self.native_context, |context| {
-                decode_image_srgb8_with_control(image, context, control)
-            })
+            let Some(image) = self.image.as_ref() else {
+                return Err(J2kError::internal_backend("internal image cache missing"));
+            };
+            let Some(routed) = RoutedSrgb8::plan(image)? else {
+                return control.with_native_context(&mut self.native_context, |context| {
+                    decode_image_srgb8_with_control(image, context, control)
+                });
+            };
+            let mut data = routed.allocate(
+                self.native_context
+                    .retained_allocation_bytes()
+                    .map_err(|error| control.native_error(error))?,
+                control,
+            )?;
+            let retained_capacity = data.capacity();
+            let outcome = self.decode_into_cached_beside(
+                &mut data,
+                routed.stride(),
+                routed.format(),
+                retained_capacity,
+                control,
+            )?;
+            routed.finish(data, outcome.warnings, control)
         })();
         self.trim_preparation_cache();
         result

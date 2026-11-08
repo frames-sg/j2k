@@ -7,6 +7,9 @@ use j2k_core::{Downscale, PixelFormat, Rect};
 use j2k_native::{encode, EncodeOptions};
 use j2k_test_support::wrap_jp2_codestream;
 
+#[path = "support/codestream_corpus.rs"]
+mod codestream_corpus;
+
 fn encode_rgb_fixture(
     width: u32,
     height: u32,
@@ -1388,4 +1391,108 @@ fn smallest_parsing_allowance(bytes: &[u8]) -> usize {
     }
     assert!(!parses(high - 1));
     high
+}
+
+/// The plain reduced-region decode and its controlled form with a default
+/// control decode the same requests to the same bytes, and the controlled
+/// form never refuses a request the plain one decodes.
+#[test]
+fn plain_and_default_controlled_reduced_region_decodes_agree() {
+    const FORMATS: [PixelFormat; 9] = [
+        PixelFormat::Gray8,
+        PixelFormat::Gray16,
+        PixelFormat::GrayI16,
+        PixelFormat::Rgb8,
+        PixelFormat::Rgb16,
+        PixelFormat::RgbI16,
+        PixelFormat::Rgba8,
+        PixelFormat::Rgba16,
+        PixelFormat::RgbaI16,
+    ];
+    let control = j2k::J2kDecodeControl::default();
+    let (mut compared, mut both_refused) = (0, 0);
+    for (name, bytes) in codestream_corpus::parity_corpus() {
+        let Ok(probe) = J2kDecoder::new(&bytes) else {
+            continue;
+        };
+        let (width, height) = probe.info().dimensions;
+        let regions = [
+            Rect::full((width, height)),
+            Rect {
+                x: 3.min(width - 1),
+                y: 5.min(height - 1),
+                w: (width / 2).max(1),
+                h: (height / 3).max(1),
+            },
+            Rect {
+                x: width - 1,
+                y: height - 1,
+                w: 1,
+                h: 1,
+            },
+            Rect {
+                x: width / 3,
+                y: 0,
+                w: width - width / 3,
+                h: height.min(7),
+            },
+        ];
+        for levels in 1_u8..=6 {
+            for fmt in FORMATS {
+                for roi in regions {
+                    let stride = width as usize * fmt.bytes_per_pixel() + 5;
+                    let len = stride * height as usize;
+                    let mut plain_out = vec![0xa5_u8; len];
+                    let mut controlled_out = vec![0xa5_u8; len];
+                    let plain = J2kDecoder::new(&bytes)
+                        .expect("decoder")
+                        .decode_region_scaled_pow2_into(
+                            &mut J2kScratchPool::new(),
+                            &mut plain_out,
+                            stride,
+                            fmt,
+                            roi,
+                            levels,
+                        );
+                    let controlled = J2kDecoder::new(&bytes)
+                        .expect("decoder")
+                        .decode_region_scaled_pow2_into_with_control(
+                            &mut controlled_out,
+                            stride,
+                            fmt,
+                            roi,
+                            levels,
+                            &control,
+                        );
+                    let case = format!("{name} {fmt:?} levels={levels} roi={roi:?}");
+                    match (plain, controlled) {
+                        (Ok(plain), Ok(controlled)) => {
+                            assert_eq!(plain.decoded, controlled.decoded, "{case}");
+                            assert_eq!(plain.warnings, controlled.warnings, "{case}");
+                            assert!(plain_out == controlled_out, "{case}: bytes differ");
+                            compared += 1;
+                        }
+                        (Err(plain), Err(controlled)) => {
+                            assert_eq!(
+                                core::mem::discriminant(&plain),
+                                core::mem::discriminant(&controlled),
+                                "{case}: {plain} | {controlled}"
+                            );
+                            both_refused += 1;
+                        }
+                        (Ok(_), Err(error)) => {
+                            panic!("{case}: controlled refuses a plain decode: {error}")
+                        }
+                        (Err(error), Ok(_)) => {
+                            panic!("{case}: plain refuses a controlled decode: {error}")
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        compared > 500 && both_refused > 0,
+        "compared {compared}, both refused {both_refused}"
+    );
 }

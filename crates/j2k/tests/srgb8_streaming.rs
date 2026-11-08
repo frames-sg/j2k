@@ -9,8 +9,8 @@
 //! `j2k_alloc_probe`, so this binary holds one test and decodes serially.
 
 use j2k::{
-    wrap_j2k_codestream, CpuDecodeParallelism, J2kDecoder, J2kFileColorSpec, J2kFileWrapOptions,
-    J2kSrgb8Layout, Rect,
+    wrap_j2k_codestream, CpuDecodeParallelism, J2kCancellationToken, J2kDecodeControl, J2kDecoder,
+    J2kFileColorSpec, J2kFileWrapOptions, J2kSrgb8Layout, Rect,
 };
 use j2k_core::{Colorspace, PixelFormat};
 use j2k_native::{encode, EncodeOptions};
@@ -115,6 +115,22 @@ fn srgb8_streams_rows_where_decode_into_streams_them() {
             assert!(
                 srgb8_peak <= route_peak + output_bytes + SLACK_BYTES,
                 "{fmt:?} at {budget}: decode_srgb8 held {srgb8_peak} bytes, \
+                 decode_into {route_peak} beside its {output_bytes}-byte output"
+            );
+
+            // A control that only carries a cancellation token takes the
+            // same route; it does not fall back to whole-image planes.
+            let mut control = J2kDecodeControl::default();
+            control.cancellation = Some(J2kCancellationToken::new());
+            let mut controlled_decoder = self::decoder(&bytes, budget);
+            let (controlled, controlled_peak) =
+                peak_during(|| controlled_decoder.decode_srgb8_with_control(&control));
+            let controlled =
+                controlled.unwrap_or_else(|error| panic!("{fmt:?} at {budget}: {error:?}"));
+            assert_eq!(controlled, image, "{fmt:?} at {budget}: controlled output");
+            assert!(
+                controlled_peak <= route_peak + output_bytes + SLACK_BYTES,
+                "{fmt:?} at {budget}: decode_srgb8_with_control held {controlled_peak} bytes, \
                  decode_into {route_peak} beside its {output_bytes}-byte output"
             );
         }

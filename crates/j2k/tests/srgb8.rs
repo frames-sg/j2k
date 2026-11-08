@@ -6,6 +6,9 @@ use j2k::{
 use j2k_core::Colorspace;
 use j2k_native::{encode, EncodeOptions};
 
+#[path = "support/codestream_corpus.rs"]
+mod codestream_corpus;
+
 fn encode_fixture(pixels: &[u8], width: u32, height: u32, components: u16) -> Vec<u8> {
     encode(
         pixels,
@@ -449,5 +452,63 @@ fn srgb8_unassociates_premultiplied_sycc_before_colour_conversion() {
             .expect("primary RGB region")
             .data(),
         [128, 64, 32, 128]
+    );
+}
+
+/// `decode_srgb8` and `decode_srgb8_with_control` with a default control
+/// decode the same images to the same output, and the controlled form never
+/// refuses an image the plain one decodes. The corpus adds JP2 wrappers with
+/// enumerated sRGB, a restricted ICC profile and premultiplied alpha.
+#[test]
+fn plain_and_default_controlled_srgb8_decodes_agree() {
+    let mut corpus = codestream_corpus::parity_corpus();
+    let profile = moxcms::ColorProfile::new_pro_photo_rgb()
+        .encode()
+        .expect("encode restricted ProPhoto RGB profile");
+    let rgb = encode_fixture(&[128, 64, 32, 200, 120, 80, 32, 160, 220], 3, 1, 3);
+    for (name, color) in [
+        ("srgb jp2", J2kFileColorSpec::Enumerated(Colorspace::SRgb)),
+        ("icc jp2", J2kFileColorSpec::IccProfile(&profile)),
+    ] {
+        corpus.push((
+            name.into(),
+            wrap_j2k_codestream(&rgb, J2kFileWrapOptions::jp2().with_color(color))
+                .expect("wrap RGB fixture"),
+        ));
+    }
+    corpus.push((
+        "premultiplied srgb jp2".into(),
+        premultiplied_rgba(J2kFileColorSpec::Enumerated(Colorspace::SRgb)),
+    ));
+    let control = j2k::J2kDecodeControl::default();
+    let (mut compared, mut both_refused) = (0, 0);
+    for (name, bytes) in corpus {
+        let Ok(mut plain) = J2kDecoder::new(&bytes) else {
+            continue;
+        };
+        let plain = plain.decode_srgb8();
+        let controlled = J2kDecoder::new(&bytes)
+            .expect("decoder")
+            .decode_srgb8_with_control(&control);
+        match (plain, controlled) {
+            (Ok(plain), Ok(controlled)) => {
+                assert_eq!(plain, controlled, "{name}");
+                compared += 1;
+            }
+            (Err(plain), Err(controlled)) => {
+                assert_eq!(
+                    core::mem::discriminant(&plain),
+                    core::mem::discriminant(&controlled),
+                    "{name}: {plain} | {controlled}"
+                );
+                both_refused += 1;
+            }
+            (Ok(_), Err(error)) => panic!("{name}: controlled refuses a plain decode: {error}"),
+            (Err(error), Ok(_)) => panic!("{name}: plain refuses a controlled decode: {error}"),
+        }
+    }
+    assert!(
+        compared > 10,
+        "compared {compared}, both refused {both_refused}"
     );
 }

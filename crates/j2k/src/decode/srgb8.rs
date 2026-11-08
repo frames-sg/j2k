@@ -152,14 +152,20 @@ impl RoutedSrgb8 {
         self.dimensions.0 as usize * self.layout.channels()
     }
 
-    /// The zeroed result buffer, within the host allocation cap beside the
-    /// image's retained metadata and already-live reusable context storage.
-    pub(crate) fn allocate(self, retained_context_bytes: usize) -> Result<Vec<u8>, J2kError> {
+    /// The zeroed result buffer, within the host allocation cap and the
+    /// control's output and working limits beside the image's retained
+    /// metadata and already-live reusable context storage.
+    pub(crate) fn allocate(
+        self,
+        retained_context_bytes: usize,
+        control: &J2kDecodeControl,
+    ) -> Result<Vec<u8>, J2kError> {
+        control.check_output(expected_len(self.dimensions, self.layout)?)?;
         allocate_output(
             self.dimensions,
             self.layout,
             checked_peak_bytes(self.retained_image_bytes, retained_context_bytes, 0)?,
-            &J2kDecodeControl::default(),
+            control,
         )
     }
 
@@ -167,9 +173,10 @@ impl RoutedSrgb8 {
         self,
         mut data: Vec<u8>,
         warnings: Vec<J2kDecodeWarning>,
+        control: &J2kDecodeControl,
     ) -> Result<J2kSrgb8Image, J2kError> {
         if self.premultiplied {
-            straighten_alpha(&mut data, 4, &J2kDecodeControl::default())?;
+            straighten_alpha(&mut data, 4, control)?;
         }
         finish(data, self.dimensions, self.layout).map(|image| image.with_warnings(warnings))
     }
@@ -177,13 +184,6 @@ impl RoutedSrgb8 {
 
 /// Decode the whole of `image` into component planes, then normalize them
 /// to 8-bit sRGB: the route of images [`RoutedSrgb8::plan`] does not route.
-pub(crate) fn decode_image_srgb8<'a>(
-    image: &Image<'a>,
-    native_context: &mut j2k_native::DecoderContext<'a>,
-) -> Result<J2kSrgb8Image, J2kError> {
-    decode_image_srgb8_with_control(image, native_context, &J2kDecodeControl::default())
-}
-
 pub(crate) fn decode_image_srgb8_with_control<'a>(
     image: &Image<'a>,
     native_context: &mut j2k_native::DecoderContext<'a>,

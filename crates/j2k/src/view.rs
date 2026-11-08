@@ -546,16 +546,20 @@ impl<'a> J2kDecoder<'a> {
         stride: usize,
         fmt: PixelFormat,
     ) -> Result<J2kDecodeOutcome, J2kError> {
-        self.decode_into_cached_beside(out, stride, fmt, 0)
+        self.decode_into_cached_beside(out, stride, fmt, 0, &J2kDecodeControl::default())
     }
 
-    fn decode_into_cached_beside(
+    /// Decode the full image on its planned route into `out`, under
+    /// `control`, beside `retained_capacity` codec-owned output bytes.
+    pub(super) fn decode_into_cached_beside(
         &mut self,
         out: &mut [u8],
         stride: usize,
         fmt: PixelFormat,
         retained_capacity: usize,
+        control: &J2kDecodeControl,
     ) -> Result<J2kDecodeOutcome, J2kError> {
+        control.check_cancelled()?;
         validate_buffer(self.info.dimensions, out.len(), stride, fmt)?;
         self.ensure_image()?;
         let budget = self.full_decode_planes_budget();
@@ -570,22 +574,23 @@ impl<'a> J2kDecoder<'a> {
             coded_bytes: self.bytes.len(),
             scale: Downscale::None,
         };
-        let control = native_context
-            .operation_control()
-            .clone()
+        let native_control = control
+            .to_native()
             .beside_retained_bytes(retained_capacity)
-            .map_err(J2kError::from_native_decode_error)?;
+            .map_err(|error| control.native_error(error))?;
         let route = crate::decode::full_image_route_beside(
             image,
             request,
             native_context
                 .retained_allocation_bytes()
                 .map_err(J2kError::from_native_decode_error)?,
-            &control,
+            &native_control,
         );
-        let decoded = native_context.with_operation_control(control, |context| {
-            decode_full_image_on_route(image, context, out, stride, request, &route)
-        });
+        let decoded = native_context
+            .with_operation_control(native_control, |context| {
+                decode_full_image_on_route(image, context, out, stride, request, &route)
+            })
+            .map_err(|error| control.normalize_error(error));
         let warnings = decode_warnings_for_image(image);
         if route.streams() {
             // As after a region decode, release the decode buffers rather
