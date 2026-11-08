@@ -13,7 +13,9 @@ use source_inventory::enforce_panic_macro_inventory;
 const PANIC_SURFACE_UNWRAP_USED_BASELINE: usize = 16;
 // Reviewed JPEG scalar/NEON specializations use `expect` for validated
 // geometry, fixed-size shapes, and internal construction/order invariants.
-const PANIC_SURFACE_EXPECT_USED_BASELINE: usize = 106;
+// The shared Metal `CompletionSlots` `Index`/`IndexMut` impls replace plain
+// `Vec` indexing of active completion slots with the same invariant panic.
+const PANIC_SURFACE_EXPECT_USED_BASELINE: usize = 107;
 const PANIC_SURFACE_DEV_ONLY_FEATURES: &[(&str, &str)] = &[
     ("j2k-jpeg", "bench-internals"),
     ("j2k-jpeg", "bench-libjpeg-turbo"),

@@ -78,19 +78,7 @@ pub(crate) fn x86_codegen_audit(args: impl Iterator<Item = String>) -> Result<()
         ));
     }
     run_program("rustup".into(), &["target", "add", TARGET], &[])?;
-    let mut build = vec!["build"];
-    for (package, _) in CRATES {
-        build.extend(["-p", package]);
-    }
-    build.extend(["--lib", "--release", "--target", TARGET]);
-    // Without LTO each library keeps object code, not only bitcode.
-    run_cargo_with_env(
-        &build,
-        &[
-            ("CARGO_PROFILE_RELEASE_LTO", "false"),
-            ("CARGO_TARGET_DIR", TARGET_DIR),
-        ],
-    )?;
+    build_audited_libraries()?;
     let mut violations = Vec::new();
     for (package, library) in CRATES {
         let library = Path::new(TARGET_DIR)
@@ -111,6 +99,27 @@ pub(crate) fn x86_codegen_audit(args: impl Iterator<Item = String>) -> Result<()
         "x86-codegen-audit found violations in baseline x86-64 code:\n{}",
         violations.join("\n")
     ))
+}
+
+fn build_audited_libraries() -> Result<(), String> {
+    let mut build = vec!["build"];
+    for (package, _) in CRATES {
+        build.extend(["-p", package]);
+    }
+    build.extend(["--lib", "--release", "--target", TARGET]);
+    // Without LTO each library keeps object code, not only bitcode.
+    run_cargo_with_env(
+        &build,
+        &[
+            ("CARGO_PROFILE_RELEASE_LTO", "false"),
+            ("CARGO_TARGET_DIR", TARGET_DIR),
+            // Cargo prefers encoded flags over inherited plain and target flags.
+            (
+                "CARGO_ENCODED_RUSTFLAGS",
+                "-C\x1ftarget-cpu=x86-64\x1f-D\x1fwarnings",
+            ),
+        ],
+    )
 }
 
 /// Disassemble `library` with `objdump` (or `$OBJDUMP`) and audit it.
@@ -267,6 +276,58 @@ fn relocation_symbol(line: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::{Audit, Report};
+
+    #[cfg(unix)]
+    #[test]
+    fn audit_build_replaces_inherited_cpu_and_feature_flags() {
+        use crate::{command_support::use_test_cargo_program, test_command::RecordingProgram};
+        use std::{env, fs, process::Command};
+
+        const CHILD_ENV: &str = "XTASK_TEST_X86_AUDIT_FLAGS_CHILD";
+        const PLAIN_FLAGS: &str = "-C target-cpu=native -C target-feature=+avx2 -A warnings";
+        const ENCODED_FLAGS: &str =
+            "-C\x1ftarget-cpu=x86-64-v4\x1f-C\x1ftarget-feature=+avx512f\x1f-A\x1fwarnings";
+
+        if env::var_os(CHILD_ENV).is_none() {
+            let output = Command::new(env::current_exe().expect("current test binary"))
+                .args([
+                    "x86_codegen_audit::tests::audit_build_replaces_inherited_cpu_and_feature_flags",
+                    "--exact",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, "1")
+                .env("RUSTFLAGS", PLAIN_FLAGS)
+                .env("CARGO_ENCODED_RUSTFLAGS", ENCODED_FLAGS)
+                .output()
+                .expect("run audit command test with isolated inherited flags");
+            assert!(
+                output.status.success(),
+                "audit command child failed:\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            return;
+        }
+
+        let recording = RecordingProgram::new(
+            "x86-audit-flags-test",
+            "printf '%s' \"$CARGO_ENCODED_RUSTFLAGS\" > \"${0}.flags\"",
+        );
+        let _cargo = use_test_cargo_program(recording.program().as_os_str().to_owned());
+        super::build_audited_libraries().expect("audit build command");
+
+        let flags = fs::read_to_string(recording.program().with_extension("sh.flags"))
+            .expect("recorded build flags");
+        assert_eq!(
+            flags.split('\x1f').collect::<Vec<_>>(),
+            ["-C", "target-cpu=x86-64", "-D", "warnings"]
+        );
+        assert!(recording.log().starts_with(
+            "build -p j2k-native -p j2k --lib --release --target x86_64-unknown-linux-gnu|"
+        ));
+        assert_eq!(env::var("RUSTFLAGS").unwrap(), PLAIN_FLAGS);
+        assert_eq!(env::var("CARGO_ENCODED_RUSTFLAGS").unwrap(), ENCODED_FLAGS);
+    }
 
     fn audit(disassembly: &str) -> Report {
         let mut audit = Audit::default();
