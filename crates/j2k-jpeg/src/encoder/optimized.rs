@@ -12,13 +12,13 @@
 
 use alloc::vec::Vec;
 
-use super::dct_entropy::{encode_dct_scan_optimized, DctComponent, DctEntropy, DctScan};
+use super::dct_entropy::{encode_dct_scan_optimized, DctComponent, DctScan};
 use super::{
     encode_jpeg_baseline_cpu, EncodedJpeg, JpegBackend, JpegEncodeError, JpegEncodeOptions,
     JpegSamples,
 };
-use crate::adapter::{baseline_encode_tables, JpegBaselineSampling};
-use crate::encoded_frame::{FrameComponent, FrameKind, FrameWriter, ScanComponent, ScanParameters};
+use crate::adapter::baseline_encode_tables;
+use crate::encoded_frame::{DctFrame, FrameKind, FrameWriter};
 use crate::transcode::{extract_dct_blocks, DctExtractOptions};
 
 /// Largest DC difference category of 8-bit DCT JPEG.
@@ -74,83 +74,22 @@ pub fn encode_jpeg_baseline_optimized(
         max_dc_category: MAX_DC_CATEGORY_8BIT,
     })?;
     let quant = [tables.q_luma.map(u16::from), tables.q_chroma.map(u16::from)];
-    assemble_dct_frame(
-        FrameKind::Baseline,
-        8,
-        (image.width, image.height),
-        tables.sampling,
-        &quant,
-        options.restart_interval,
-        &entropy,
-    )
-}
-
-/// Assemble a sequential DCT frame in the baseline encoder's segment order:
-/// DQT, DRI, SOF, then one DHT per table, SOS, and the entropy-coded data.
-pub(super) fn assemble_dct_frame(
-    kind: FrameKind,
-    precision: u8,
-    dimensions: (u32, u32),
-    sampling: JpegBaselineSampling,
-    quant: &[[u16; 64]; 2],
-    restart_interval: Option<u16>,
-    entropy: &DctEntropy,
-) -> Result<EncodedJpeg, JpegEncodeError> {
-    let count = usize::from(sampling.components);
-    let mut frame = FrameWriter::new(entropy.bytes.len())?;
-    frame.dqt(0, &quant[0])?;
-    if count == 3 {
-        frame.dqt(1, &quant[1])?;
-    }
-    if let Some(interval) = restart_interval {
-        frame.dri(interval)?;
-    }
-    let mut frame_components = [FrameComponent {
-        id: 0,
-        h: 1,
-        v: 1,
-        quant_table: 0,
-    }; 3];
-    let mut scan_components = [ScanComponent {
-        id: 0,
-        dc_table: 0,
-        ac_table: 0,
-    }; 3];
-    for (index, (frame_component, scan_component)) in frame_components
-        .iter_mut()
-        .zip(&mut scan_components)
-        .enumerate()
-        .take(count)
-    {
-        let id = u8::try_from(index + 1).unwrap_or(u8::MAX);
-        let table = u8::from(index != 0);
-        *frame_component = FrameComponent {
-            id,
-            h: sampling.h[index],
-            v: sampling.v[index],
-            quant_table: table,
-        };
-        *scan_component = ScanComponent {
-            id,
-            dc_table: table,
-            ac_table: table,
-        };
-    }
-    frame.sof(kind, precision, dimensions, &frame_components[..count])?;
-    for (table_id, (dc, ac)) in (0_u8..).zip(entropy.tables.dc.iter().zip(&entropy.tables.ac)) {
-        if let (Some(dc), Some(ac)) = (dc, ac) {
-            frame.dht(0, table_id, dc)?;
-            frame.dht(1, table_id, ac)?;
-        }
-    }
-    frame.sos(
-        &scan_components[..count],
-        ScanParameters {
-            ss: 0,
-            se: 63,
-            ah: 0,
-            al: 0,
+    FrameWriter::new(entropy.bytes.len())?.assemble_dct(
+        DctFrame {
+            kind: FrameKind::Baseline,
+            precision: 8,
+            dimensions: (image.width, image.height),
+            sampling: tables.sampling,
+            quant: &quant,
+            huffman: core::array::from_fn(|index| {
+                entropy.tables.dc[index]
+                    .as_ref()
+                    .zip(entropy.tables.ac[index].as_ref())
+                    .map(|(dc, ac)| [dc.into(), ac.into()])
+            }),
+            restart_interval: options.restart_interval,
         },
-    )?;
-    frame.finish(&entropy.bytes, JpegBackend::Cpu)
+        &entropy.bytes,
+        JpegBackend::Cpu,
+    )
 }

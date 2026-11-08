@@ -14,14 +14,13 @@ use super::{
     TranscodeValidationClassification, TranscodeValidationMetrics,
 };
 
-struct PreparedSingleTranscode {
-    jpeg: JpegDctImage,
-    component_sampling: Vec<(u8, u8)>,
-    decomposition_levels: u8,
-    all_unit_sampled: bool,
-    component_reports: Vec<TranscodeComponentReport>,
-    extract_us: u128,
-    retained_pipeline: HostLiveBudget,
+pub(super) struct PreparedJpegTranscode {
+    pub(super) jpeg: JpegDctImage,
+    pub(super) component_sampling: Vec<(u8, u8)>,
+    pub(super) decomposition_levels: u8,
+    pub(super) all_unit_sampled: bool,
+    pub(super) component_reports: Vec<TranscodeComponentReport>,
+    pub(super) extract_us: u128,
 }
 
 struct CompletedSingleTranscode {
@@ -86,13 +85,33 @@ fn prepare_single_transcode(
     options: &JpegToHtj2kOptions,
     scratch: &JpegToHtj2kScratch,
     external_live_bytes: usize,
-) -> Result<PreparedSingleTranscode, JpegToHtj2kError> {
+) -> Result<(PreparedJpegTranscode, HostLiveBudget), JpegToHtj2kError> {
     validate_transcode_options(options)?;
+    let prepared = prepare_jpeg_transcode(bytes, options, |workspace_bytes| {
+        let mut admission_budget = HostLiveBudget::process_cap();
+        admission_budget.add_bytes(external_live_bytes)?;
+        admission_budget.add_bytes(scratch.retained_bytes()?)?;
+        admission_budget.add_bytes(workspace_bytes)?;
+        Ok(())
+    })?;
+    let mut retained_pipeline = HostLiveBudget::process_cap();
+    retained_pipeline.add_bytes(external_live_bytes)?;
+    retained_pipeline.add_bytes(prepared.jpeg.retained_bytes()?)?;
+    retained_pipeline.add_capacity::<(u8, u8)>(prepared.component_sampling.capacity())?;
+    retained_pipeline
+        .add_capacity::<TranscodeComponentReport>(prepared.component_reports.capacity())?;
+    Ok((prepared, retained_pipeline))
+}
+
+/// Shared JPEG facts before single-image or grouped transform preparation.
+/// Caller admission runs after workspace validation, before DCT allocation.
+pub(super) fn prepare_jpeg_transcode(
+    bytes: &[u8],
+    options: &JpegToHtj2kOptions,
+    admit_workspace: impl FnOnce(usize) -> Result<(), JpegToHtj2kError>,
+) -> Result<PreparedJpegTranscode, JpegToHtj2kError> {
     let workspace = validate_jpeg_transcode_workspace(bytes, options)?;
-    let mut admission_budget = HostLiveBudget::process_cap();
-    admission_budget.add_bytes(external_live_bytes)?;
-    admission_budget.add_bytes(scratch.retained_bytes()?)?;
-    admission_budget.add_bytes(workspace.peak_bytes())?;
+    admit_workspace(workspace.peak_bytes())?;
 
     let extract_start = Instant::now();
     let jpeg = extract_dct_blocks(bytes, DctExtractOptions::dequantized_only())?;
@@ -129,19 +148,13 @@ fn prepare_single_transcode(
         });
     }
 
-    let mut retained_pipeline = HostLiveBudget::process_cap();
-    retained_pipeline.add_bytes(external_live_bytes)?;
-    retained_pipeline.add_bytes(jpeg.retained_bytes()?)?;
-    retained_pipeline.add_capacity::<(u8, u8)>(component_sampling.capacity())?;
-    retained_pipeline.add_capacity::<TranscodeComponentReport>(component_reports.capacity())?;
-    Ok(PreparedSingleTranscode {
+    Ok(PreparedJpegTranscode {
         jpeg,
         component_sampling,
         decomposition_levels,
         all_unit_sampled,
         component_reports,
         extract_us,
-        retained_pipeline,
     })
 }
 
@@ -156,15 +169,17 @@ pub(super) fn jpeg_to_htj2k_with_scratch<
     encode_accelerator: &mut E,
     external_live_bytes: usize,
 ) -> Result<EncodedTranscode, JpegToHtj2kError> {
-    let PreparedSingleTranscode {
-        jpeg,
-        component_sampling,
-        decomposition_levels,
-        all_unit_sampled,
-        component_reports,
-        extract_us,
+    let (
+        PreparedJpegTranscode {
+            jpeg,
+            component_sampling,
+            decomposition_levels,
+            all_unit_sampled,
+            component_reports,
+            extract_us,
+        },
         retained_pipeline,
-    } = prepare_single_transcode(bytes, options, scratch, external_live_bytes)?;
+    ) = prepare_single_transcode(bytes, options, scratch, external_live_bytes)?;
     let mut timings = TranscodeTimingReport {
         tile_count: 1,
         ..TranscodeTimingReport::default()
@@ -251,4 +266,107 @@ pub(super) fn jpeg_to_htj2k_with_scratch<
         scratch,
         external_live_bytes,
     )
+}
+
+#[cfg(test)]
+mod preparation_tests {
+    use super::super::batch::{
+        batch_component_groups, float97_batch_component_groups, prepare_float97_batch_tile,
+        prepare_integer_batch_tile,
+    };
+    use super::*;
+    use j2k_test_support::{
+        progressive_8x8_jpeg, JPEG_BASELINE_420_16X16, JPEG_BASELINE_444_8X8, JPEG_GRAYSCALE_8X8,
+    };
+
+    #[test]
+    fn single_integer_and_float_preparation_preserve_the_same_jpeg_facts() {
+        let progressive = progressive_8x8_jpeg();
+        for bytes in [
+            JPEG_GRAYSCALE_8X8,
+            JPEG_BASELINE_444_8X8,
+            JPEG_BASELINE_420_16X16,
+            progressive.as_slice(),
+        ] {
+            let mut options = JpegToHtj2kOptions::lossless_53();
+            options.encode_options.num_decomposition_levels = 3;
+            let (single, _) =
+                prepare_single_transcode(bytes, &options, &JpegToHtj2kScratch::default(), 0)
+                    .expect("single preparation");
+            let integer =
+                prepare_integer_batch_tile(0, bytes, &options).expect("integer batch preparation");
+            let mut float_options = JpegToHtj2kOptions::lossy_97();
+            float_options.encode_options.num_decomposition_levels = 3;
+            let float = prepare_float97_batch_tile(0, bytes, &float_options)
+                .expect("float batch preparation");
+            for (jpeg, sampling, levels, unit, reports) in [
+                (
+                    &integer.jpeg,
+                    &integer.component_sampling,
+                    integer.decomposition_levels,
+                    integer.all_unit_sampled,
+                    &integer.component_reports,
+                ),
+                (
+                    &float.jpeg,
+                    &float.component_sampling,
+                    float.decomposition_levels,
+                    float.all_unit_sampled,
+                    &float.component_reports,
+                ),
+            ] {
+                assert_eq!(jpeg, &single.jpeg);
+                assert_eq!(sampling, &single.component_sampling);
+                assert_eq!(levels, single.decomposition_levels);
+                assert_eq!(unit, single.all_unit_sampled);
+                assert_eq!(reports, &single.component_reports);
+                assert!(jpeg.components.iter().all(|component| {
+                    component.quantized_blocks.is_empty()
+                        && !component.dequantized_blocks.is_empty()
+                }));
+            }
+            assert_eq!(integer.timings.tile_count, 1);
+            assert_eq!(float.timings.tile_count, 1);
+            if bytes == JPEG_BASELINE_444_8X8 {
+                assert_eq!(
+                    batch_component_groups(core::slice::from_ref(&integer))
+                        .unwrap()
+                        .len(),
+                    3,
+                    "integer groups keep component identity"
+                );
+                assert_eq!(
+                    float97_batch_component_groups(core::slice::from_ref(&float))
+                        .unwrap()
+                        .len(),
+                    1,
+                    "float groups can share compatible color geometry"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn preparation_keeps_workspace_errors_and_single_external_admission() {
+        let options = JpegToHtj2kOptions::lossless_53();
+        let scratch = JpegToHtj2kScratch::default();
+        let cap = j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES;
+        let malformed = [0_u8];
+        let single = prepare_single_transcode(&malformed, &options, &scratch, cap)
+            .err()
+            .expect("invalid JPEG precedes external admission");
+        let integer = prepare_integer_batch_tile(0, &malformed, &options)
+            .err()
+            .expect("invalid integer input");
+        let float = prepare_float97_batch_tile(0, &malformed, &options)
+            .err()
+            .expect("invalid float input");
+        assert_eq!(single.to_string(), integer.to_string());
+        assert_eq!(single.to_string(), float.to_string());
+        assert!(matches!(
+            prepare_single_transcode(JPEG_GRAYSCALE_8X8, &options, &scratch, cap),
+            Err(JpegToHtj2kError::MemoryCapExceeded { requested, cap: limit })
+                if requested > cap && limit == cap
+        ));
+    }
 }

@@ -1338,17 +1338,23 @@ fn convert_4(r: uint16x4_t, g: uint16x4_t, b: uint16x4_t) -> (uint16x4_t, uint16
     let red_difference = vsub_s16(r, g);
     let blue_difference = vsub_s16(b, g);
 
-    let mut y = vmull_n_s16(red_difference, 19_595);
-    y = vmlal_n_s16(y, blue_difference, 7_471);
-    let y = vadd_s16(vrshrn_n_s32::<16>(y), g);
+    let mut y = vmull_n_s16(red_difference, super::RGB_Y_RED);
+    y = vmlal_n_s16(y, blue_difference, super::RGB_Y_BLUE);
+    let y = vadd_s16(vrshrn_n_s32::<{ super::RGB_FIXED_SHIFT }>(y), g);
 
-    let mut cb = vshll_n_s16::<15>(blue_difference);
-    cb = vmlsl_n_s16(cb, red_difference, 11_059);
-    let cb = vadd_s16(vrshrn_n_s32::<16>(cb), vdup_n_s16(128));
+    let mut cb = vshll_n_s16::<{ super::RGB_FIXED_SHIFT - 1 }>(blue_difference);
+    cb = vmlsl_n_s16(cb, red_difference, super::RGB_CB_RED);
+    let cb = vadd_s16(
+        vrshrn_n_s32::<{ super::RGB_FIXED_SHIFT }>(cb),
+        vdup_n_s16(super::RGB8_CHROMA_CENTER),
+    );
 
-    let mut cr = vshll_n_s16::<15>(red_difference);
-    cr = vmlsl_n_s16(cr, blue_difference, 5_329);
-    let cr = vadd_s16(vrshrn_n_s32::<16>(cr), vdup_n_s16(128));
+    let mut cr = vshll_n_s16::<{ super::RGB_FIXED_SHIFT - 1 }>(red_difference);
+    cr = vmlsl_n_s16(cr, blue_difference, super::RGB_CR_BLUE);
+    let cr = vadd_s16(
+        vrshrn_n_s32::<{ super::RGB_FIXED_SHIFT }>(cr),
+        vdup_n_s16(super::RGB8_CHROMA_CENTER),
+    );
 
     (
         vreinterpret_u16_s16(y),

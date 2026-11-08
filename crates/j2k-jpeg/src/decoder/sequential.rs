@@ -2,17 +2,21 @@
 
 //! Sequential and progressive writer-based decode paths.
 
+use alloc::vec::Vec;
+
 use crate::adapter::JpegFastPacketFamily;
 use crate::allocation::checked_add_allocation_bytes;
 use crate::context::MAX_DECODER_CONTEXT_ALLOCATION_BYTES;
 use crate::entropy::sequential::restart_checkpoint_from_index;
+use crate::error::Warning;
 
 use super::{
     checkpoint_before_mcu, decode_progressive, decode_scan_baseline, decode_scan_baseline_rgb,
-    emit_decode_scan_profile, jpeg_profile_stages_enabled, merged_warnings, scaled_dimensions,
-    scaled_rect_covering, stripe_region_layout, DecodeOutcome, Decoder, DeviceCheckpoint,
-    DownscaleFactor, FastRgbRequest, Instant, InterleavedRgbWriter, JpegError, OutputWriter, Rect,
-    ScratchPool, CPU_ROI_CHECKPOINT_MIN_TARGET_MCUS,
+    emit_decode_scan_profile, jpeg_profile_stages_enabled, merged_warnings,
+    restart_index_allocation_bytes, scaled_dimensions, scaled_rect_covering, stripe_region_layout,
+    DecodeOutcome, Decoder, DeviceCheckpoint, DownscaleFactor, FastRgbRequest, Instant,
+    InterleavedRgbWriter, JpegError, OutputWriter, Rect, ScratchPool,
+    CPU_ROI_CHECKPOINT_MIN_TARGET_MCUS,
 };
 
 fn checked_live_workspace_bytes(
@@ -98,7 +102,7 @@ impl Decoder<'_> {
         external_decode_phase_bytes: usize,
     ) -> Result<Option<DeviceCheckpoint>, JpegError> {
         if self.plan.restart_interval.is_some() {
-            return self.restart_checkpoint(target_mcu);
+            return self.restart_checkpoint(target_mcu, external_decode_phase_bytes);
         }
         if target_mcu < CPU_ROI_CHECKPOINT_MIN_TARGET_MCUS {
             return Ok(None);
@@ -135,7 +139,11 @@ impl Decoder<'_> {
     /// index. A stream whose markers do not validate as an index, or whose
     /// index the host budget cannot retain, keeps returning `None`, so its
     /// routes keep the lenient marker scan with its exact results and errors.
-    fn restart_checkpoint(&self, target_mcu: u32) -> Result<Option<DeviceCheckpoint>, JpegError> {
+    fn restart_checkpoint(
+        &self,
+        target_mcu: u32,
+        external_decode_phase_bytes: usize,
+    ) -> Result<Option<DeviceCheckpoint>, JpegError> {
         let build = match self
             .cpu_entropy_checkpoints
             .with_restart_index(|index| restart_checkpoint_from_index(index, target_mcu))?
@@ -146,12 +154,29 @@ impl Decoder<'_> {
         if !build {
             return Ok(None);
         }
+        let Ok(retained_baseline_bytes) =
+            self.checkpoint_baseline_bytes(external_decode_phase_bytes)
+        else {
+            return Ok(None);
+        };
+        let Ok(index_bytes) =
+            restart_index_allocation_bytes(&self.info, self.plan.restart_interval)
+        else {
+            return Ok(None);
+        };
+        let cache_bytes = self.cpu_entropy_checkpoints.retained_allocation_bytes()?;
+        if checked_add_allocation_bytes(retained_baseline_bytes, cache_bytes)
+            .and_then(|live_bytes| checked_add_allocation_bytes(live_bytes, index_bytes))
+            .is_err()
+        {
+            return Ok(None);
+        }
         let Ok(Some(index)) = self.restart_index() else {
             return Ok(None);
         };
         let checkpoint = restart_checkpoint_from_index(&index, target_mcu);
         self.cpu_entropy_checkpoints
-            .retain_restart_index(index, self.checkpoint_baseline_bytes(0)?)?;
+            .retain_restart_index(index, retained_baseline_bytes)?;
         Ok(checkpoint)
     }
 
@@ -167,21 +192,31 @@ impl Decoder<'_> {
         (layout.source_x0, layout.source_width)
     }
 
-    pub(super) fn decode_with_writer<W: OutputWriter>(
+    /// Own progressive setup and admission for the generic and RGB writers.
+    /// Baseline strategy and eligibility stay explicit in the caller.
+    #[inline]
+    fn decode_scan_with_writer<W: OutputWriter>(
         &self,
         pool: &mut ScratchPool,
         writer: &mut W,
         downscale: DownscaleFactor,
         decoded: Rect,
+        progressive_profile: &'static str,
+        baseline_scan: impl FnOnce(
+            &[u8],
+            &mut ScratchPool,
+            &mut W,
+            Rect,
+        ) -> Result<(&'static str, Vec<Warning>), JpegError>,
     ) -> Result<DecodeOutcome, JpegError> {
         let _ = self.decode_scratch_bytes(self.decode_workspace_cap()?)?;
         let profile_enabled = jpeg_profile_stages_enabled();
-        if let Some(plan) = &self.progressive_plan {
+        let (scan_path, scan_start, scan_warnings) = if let Some(plan) = &self.progressive_plan {
             let scan_start = profile_enabled.then(Instant::now);
             let detached_sink_bytes = pool.detached_sink_bytes();
             let external_live_bytes =
                 checked_live_workspace_bytes(detached_sink_bytes, 0, plan.scratch_bytes)?;
-            let scan_warnings = decode_progressive(
+            let warnings = decode_progressive(
                 plan,
                 self.backend,
                 self.bytes,
@@ -189,32 +224,35 @@ impl Decoder<'_> {
                 external_live_bytes,
                 downscale,
             )?;
-            if let Some(start) = scan_start {
-                emit_decode_scan_profile(
-                    "progressive",
-                    self.info.dimensions,
-                    decoded,
-                    downscale,
-                    start.elapsed(),
-                );
-            }
-            return self.finish_outcome(decoded, merged_warnings(&self.warnings, scan_warnings)?);
-        }
-        let output_rect = scaled_rect_covering(decoded, downscale)?;
-        let scan_bytes = &self.bytes[self.plan.scan_offset..];
-        let scan_start = profile_enabled.then(Instant::now);
-        let scan_warnings = decode_scan_baseline(
-            &self.plan,
-            self.backend,
-            scan_bytes,
-            pool,
-            writer,
+            (progressive_profile, scan_start, warnings)
+        } else {
+            let output_rect = scaled_rect_covering(decoded, downscale)?;
+            let scan_bytes = &self.bytes[self.plan.scan_offset..];
+            let scan_start = profile_enabled.then(Instant::now);
+            let (path, warnings) = baseline_scan(scan_bytes, pool, writer, output_rect)?;
+            (path, scan_start, warnings)
+        };
+        self.finish_scan(
+            decoded,
             downscale,
-            output_rect,
-        )?;
-        if let Some(start) = scan_start {
+            scan_start.map(|start| (scan_path, start)),
+            scan_warnings,
+        )
+    }
+
+    /// Complete every writer strategy once. Direct fast regions retain their
+    /// outer routing profile and pass no separate scan profile here.
+    #[inline]
+    pub(super) fn finish_scan(
+        &self,
+        decoded: Rect,
+        downscale: DownscaleFactor,
+        profile: Option<(&'static str, Instant)>,
+        scan_warnings: Vec<Warning>,
+    ) -> Result<DecodeOutcome, JpegError> {
+        if let Some((path, start)) = profile {
             emit_decode_scan_profile(
-                "baseline",
+                path,
                 self.info.dimensions,
                 decoded,
                 downscale,
@@ -224,66 +262,21 @@ impl Decoder<'_> {
         self.finish_outcome(decoded, merged_warnings(&self.warnings, scan_warnings)?)
     }
 
-    pub(super) fn decode_rgb_with_writer<W: OutputWriter + InterleavedRgbWriter>(
+    pub(super) fn decode_with_writer<W: OutputWriter>(
         &self,
         pool: &mut ScratchPool,
         writer: &mut W,
         downscale: DownscaleFactor,
         decoded: Rect,
     ) -> Result<DecodeOutcome, JpegError> {
-        let _ = self.decode_scratch_bytes(self.decode_workspace_cap()?)?;
-        let profile_enabled = jpeg_profile_stages_enabled();
-        if let Some(plan) = &self.progressive_plan {
-            let scan_start = profile_enabled.then(Instant::now);
-            let detached_sink_bytes = pool.detached_sink_bytes();
-            let external_live_bytes =
-                checked_live_workspace_bytes(detached_sink_bytes, 0, plan.scratch_bytes)?;
-            let scan_warnings = decode_progressive(
-                plan,
-                self.backend,
-                self.bytes,
-                writer,
-                external_live_bytes,
-                downscale,
-            )?;
-            if let Some(start) = scan_start {
-                emit_decode_scan_profile(
-                    "progressive_rgb",
-                    self.info.dimensions,
-                    decoded,
-                    downscale,
-                    start.elapsed(),
-                );
-            }
-            return self.finish_outcome(decoded, merged_warnings(&self.warnings, scan_warnings)?);
-        }
-        let output_rect = scaled_rect_covering(decoded, downscale)?;
-        let scan_bytes = &self.bytes[self.plan.scan_offset..];
-        let scan_start = profile_enabled.then(Instant::now);
-        // A partial 4:2:0 decode streams the whole image through the cropping
-        // writer; the other fast shapes take it only for whole images.
-        let fast_family = self.plan.fast_shape_family().filter(|&family| {
-            downscale == DownscaleFactor::Full
-                && (family == JpegFastPacketFamily::Fast420
-                    || decoded == Rect::full(self.info.dimensions))
-        });
-        let (scan_path, scan_warnings) = if let Some(family) = fast_family {
-            let request = FastRgbRequest {
-                roi: Rect::full(self.plan.dimensions),
-                checkpoint: None,
-            };
-            (
-                match family {
-                    JpegFastPacketFamily::Fast420 => "fast420_rgb",
-                    JpegFastPacketFamily::Fast422 => "fast422_rgb",
-                    JpegFastPacketFamily::Fast444 => "fast444_rgb",
-                },
-                family.decode(&self.plan, self.backend, scan_bytes, pool, writer, request)?,
-            )
-        } else {
-            (
-                "baseline_rgb",
-                decode_scan_baseline_rgb(
+        self.decode_scan_with_writer(
+            pool,
+            writer,
+            downscale,
+            decoded,
+            "progressive",
+            |scan_bytes, pool, writer, output_rect| {
+                decode_scan_baseline(
                     &self.plan,
                     self.backend,
                     scan_bytes,
@@ -291,19 +284,60 @@ impl Decoder<'_> {
                     writer,
                     downscale,
                     output_rect,
-                )?,
-            )
-        };
-        if let Some(start) = scan_start {
-            emit_decode_scan_profile(
-                scan_path,
-                self.info.dimensions,
-                decoded,
-                downscale,
-                start.elapsed(),
-            );
-        }
-        self.finish_outcome(decoded, merged_warnings(&self.warnings, scan_warnings)?)
+                )
+                .map(|warnings| ("baseline", warnings))
+            },
+        )
+    }
+
+    pub(super) fn decode_rgb_with_writer<W: OutputWriter + InterleavedRgbWriter>(
+        &self,
+        pool: &mut ScratchPool,
+        writer: &mut W,
+        downscale: DownscaleFactor,
+        decoded: Rect,
+    ) -> Result<DecodeOutcome, JpegError> {
+        self.decode_scan_with_writer(
+            pool,
+            writer,
+            downscale,
+            decoded,
+            "progressive_rgb",
+            |scan_bytes, pool, writer, output_rect| {
+                // A partial 4:2:0 decode streams the whole image through the
+                // cropping writer; other fast shapes require a whole image.
+                let fast_family = self.plan.fast_shape_family().filter(|&family| {
+                    downscale == DownscaleFactor::Full
+                        && (family == JpegFastPacketFamily::Fast420
+                            || decoded == Rect::full(self.info.dimensions))
+                });
+                if let Some(family) = fast_family {
+                    let request = FastRgbRequest {
+                        roi: Rect::full(self.plan.dimensions),
+                        checkpoint: None,
+                    };
+                    let path = match family {
+                        JpegFastPacketFamily::Fast420 => "fast420_rgb",
+                        JpegFastPacketFamily::Fast422 => "fast422_rgb",
+                        JpegFastPacketFamily::Fast444 => "fast444_rgb",
+                    };
+                    family
+                        .decode(&self.plan, self.backend, scan_bytes, pool, writer, request)
+                        .map(|warnings| (path, warnings))
+                } else {
+                    decode_scan_baseline_rgb(
+                        &self.plan,
+                        self.backend,
+                        scan_bytes,
+                        pool,
+                        writer,
+                        downscale,
+                        output_rect,
+                    )
+                    .map(|warnings| ("baseline_rgb", warnings))
+                }
+            },
+        )
     }
 }
 

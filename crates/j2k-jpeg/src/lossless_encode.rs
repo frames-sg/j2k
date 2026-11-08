@@ -422,7 +422,7 @@ pub fn assemble_jpeg_lossless_frame(
         (plan.width, plan.height),
         &frame_components[..components],
     )?;
-    frame.dht(0, 0, &table.spec)?;
+    frame.dht(0, 0, (&table.spec).into())?;
     if let Some(interval) = plan.restart_interval_mcus() {
         frame.dri(interval)?;
     }

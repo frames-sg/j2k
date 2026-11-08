@@ -16,14 +16,13 @@ use alloc::vec::Vec;
 use j2k_core::try_host_vec_with_capacity;
 
 use super::dct_entropy::{encode_dct_scan_optimized, DctComponent, DctScan};
-use super::optimized::assemble_dct_frame;
 use super::transform::{cosine_table, fdct_quantize_centered};
 use super::{EncodedJpeg, JpegBackend, JpegEncodeError, JpegEncodeOptions, JpegSubsampling};
 use crate::adapter::{
     baseline_encode_tables, checked_encode_host_live_bytes, validate_jpeg_baseline_dimensions,
     validate_jpeg_baseline_restart_interval, JpegBaselineSampling,
 };
-use crate::encoded_frame::FrameKind;
+use crate::encoded_frame::{DctFrame, FrameKind, FrameWriter};
 
 /// Largest 12-bit sample.
 const MAX_SAMPLE: u16 = 4095;
@@ -84,6 +83,10 @@ impl<'a> JpegSamples12<'a> {
 /// Returns an error for invalid dimensions, sample length, subsampling, or
 /// restart interval; for a sample above 4095; for coefficients above the
 /// host allocation cap; and for a GPU backend.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the sequential pipeline keeps plane/block allocation phases and their early releases explicit"
+)]
 pub fn encode_jpeg_extended12(
     samples: JpegSamples12<'_>,
     options: JpegEncodeOptions,
@@ -172,14 +175,23 @@ pub fn encode_jpeg_extended12(
         restart_interval: options.restart_interval,
         max_dc_category: MAX_DC_CATEGORY_12BIT,
     })?;
-    assemble_dct_frame(
-        FrameKind::ExtendedSequential,
-        12,
-        (width, height),
-        sampling,
-        &quant,
-        options.restart_interval,
-        &entropy,
+    FrameWriter::new(entropy.bytes.len())?.assemble_dct(
+        DctFrame {
+            kind: FrameKind::ExtendedSequential,
+            precision: 12,
+            dimensions: (width, height),
+            sampling,
+            quant: &quant,
+            huffman: core::array::from_fn(|index| {
+                entropy.tables.dc[index]
+                    .as_ref()
+                    .zip(entropy.tables.ac[index].as_ref())
+                    .map(|(dc, ac)| [dc.into(), ac.into()])
+            }),
+            restart_interval: options.restart_interval,
+        },
+        &entropy.bytes,
+        JpegBackend::Cpu,
     )
 }
 
@@ -263,11 +275,12 @@ fn component_planes<'a>(
     reason = "converted samples are clamped to the 12-bit range"
 )]
 fn rgb_to_ycbcr12(r: u16, g: u16, b: u16) -> (u16, u16, u16) {
-    let (r, g, b) = (i32::from(r), i32::from(g), i32::from(b));
-    let chroma_offset = (CENTER << 16) + 32_768;
-    let y = (19_595 * r + 38_470 * g + 7_471 * b + 32_768) >> 16;
-    let cb = (-11_059 * r - 21_709 * g + 32_768 * b + chroma_offset) >> 16;
-    let cr = (32_768 * r - 27_439 * g - 5_329 * b + chroma_offset) >> 16;
+    let (y, cb, cr) = super::sample_planes::rgb_to_ycbcr_samples(
+        i32::from(r),
+        i32::from(g),
+        i32::from(b),
+        CENTER,
+    );
     let clamp = |value: i32| value.clamp(0, i32::from(MAX_SAMPLE)) as u16;
     (clamp(y), clamp(cb), clamp(cr))
 }

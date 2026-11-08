@@ -1073,13 +1073,42 @@ fn fill_rgb_to_ycbcr_420_block_planes_scalar(
     }
 }
 
+// JPEG's forward full-range transform, rounded by adding half a fixed-point
+// unit before the signed shift, then clamped by the caller to its precision.
+// Keep the neutral-axis identities exact: Y coefficients sum to one, and each
+// chroma row sums to zero. NEON factors this same matrix around G.
+const RGB_FIXED_SHIFT: i32 = 16;
+const RGB_Y_RED: i16 = 19_595;
+const RGB_Y_BLUE: i16 = 7_471;
+const RGB_CB_RED: i16 = 11_059;
+const RGB_CR_BLUE: i16 = 5_329;
+const RGB8_CHROMA_CENTER: i16 = 128;
+
+/// Scalar reference for the existing 8- and 12-bit encoders. Inputs are unsigned
+/// samples at one precision; `center` is half that precision's sample range.
+/// Products and accumulated numerators fit i32 through 12-bit input.
+#[inline]
+pub(super) fn rgb_to_ycbcr_samples(r: i32, g: i32, b: i32, center: i32) -> (i32, i32, i32) {
+    let half = 1 << (RGB_FIXED_SHIFT - 1);
+    let y_red = i32::from(RGB_Y_RED);
+    let y_blue = i32::from(RGB_Y_BLUE);
+    let y_green = (1 << RGB_FIXED_SHIFT) - y_red - y_blue;
+    let cb_red = i32::from(RGB_CB_RED);
+    let cr_blue = i32::from(RGB_CR_BLUE);
+    let offset = (center << RGB_FIXED_SHIFT) + half;
+    let y = (y_red * r + y_green * g + y_blue * b + half) >> RGB_FIXED_SHIFT;
+    let cb = (-cb_red * r - (half - cb_red) * g + half * b + offset) >> RGB_FIXED_SHIFT;
+    let cr = (half * r - (half - cr_blue) * g - cr_blue * b + offset) >> RGB_FIXED_SHIFT;
+    (y, cb, cr)
+}
+
 fn rgb_to_ycbcr(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
-    let r = i32::from(r);
-    let g = i32::from(g);
-    let b = i32::from(b);
-    let y = (19_595 * r + 38_470 * g + 7_471 * b + 32_768) >> 16;
-    let cb = (-11_059 * r - 21_709 * g + 32_768 * b + 8_421_376) >> 16;
-    let cr = (32_768 * r - 27_439 * g - 5_329 * b + 8_421_376) >> 16;
+    let (y, cb, cr) = rgb_to_ycbcr_samples(
+        i32::from(r),
+        i32::from(g),
+        i32::from(b),
+        i32::from(RGB8_CHROMA_CENTER),
+    );
     (clamp_u8(y), clamp_u8(cb), clamp_u8(cr))
 }
 

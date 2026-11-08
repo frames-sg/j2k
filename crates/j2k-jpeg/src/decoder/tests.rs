@@ -436,6 +436,39 @@ fn restart_checkpoints_come_from_the_cached_index_after_the_first_seek() {
 }
 
 #[test]
+fn restart_checkpoint_budget_keeps_the_second_seek_uncached() {
+    use crate::context::MAX_DECODER_CONTEXT_ALLOCATION_BYTES;
+    use j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES as CAP;
+
+    let bytes = j2k_test_support::restart_coded_grayscale_jpeg(40, 24);
+    let dec = Decoder::new(&bytes).expect("decoder");
+    let scan = &bytes[dec.plan.scan_offset..];
+    let retained = dec
+        .retained_allocation_bytes_excluding_cpu_checkpoint_cache()
+        .expect("retained decoder bytes");
+    let index_bytes = restart_index_allocation_bytes(&dec.info, dec.plan.restart_interval)
+        .expect("restart index estimate");
+    assert!(index_bytes > 0);
+    let external = CAP - MAX_DECODER_CONTEXT_ALLOCATION_BYTES - retained - (index_bytes - 1);
+
+    for seek in 0..3 {
+        assert_eq!(
+            dec.checkpoint_for_mcu(scan, 7, external)
+                .expect("budget pressure keeps the lenient seek"),
+            None,
+            "seek {seek} must use the uncached marker scan"
+        );
+        assert!(!dec.cpu_entropy_checkpoints.has_restart_index());
+        assert_eq!(
+            dec.cpu_entropy_checkpoints
+                .retained_allocation_bytes()
+                .expect("retained cache bytes"),
+            0
+        );
+    }
+}
+
+#[test]
 fn malformed_restart_numbering_keeps_the_lenient_restart_seek() {
     let mut bytes = j2k_test_support::restart_coded_grayscale_jpeg(40, 24);
     let second_rst = bytes

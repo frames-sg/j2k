@@ -360,6 +360,58 @@ fn bench_comparable_decode_routes(c: &mut Criterion) {
     cold.finish();
 }
 
+fn bench_reused_rgb_regions(c: &mut Criterion) {
+    let roi = j2k_jpeg::Rect {
+        x: 97,
+        y: 113,
+        w: 96,
+        h: 80,
+    };
+    let mut group = c.benchmark_group("jpeg_cpu_decode_region_context_scratch_output_reused");
+    for (name, subsampling) in [
+        ("rgb8_512_444", JpegSubsampling::Ybr444),
+        ("rgb8_512_420", JpegSubsampling::Ybr420),
+    ] {
+        let bytes = encode_rgb(512, 512, subsampling);
+        let decoder = Decoder::new(&bytes).expect("region benchmark decoder");
+        let expected = decode_buffer_output(&decoder, PixelFormat::Rgb8);
+        let stride = roi.w as usize * 3;
+        let mut output = zeroed_bytes(stride * roi.h as usize);
+        let mut scratch = ScratchPool::new();
+        decoder
+            .decode_region_scaled_into_with_scratch(
+                &mut scratch,
+                &mut output,
+                stride,
+                PixelFormat::Rgb8,
+                roi,
+                j2k_core::Downscale::None,
+            )
+            .expect("region benchmark validation");
+        for (y, row) in output.chunks_exact(stride).enumerate() {
+            let start = ((roi.y as usize + y) * 512 + roi.x as usize) * 3;
+            assert_eq!(row, &expected[start..start + stride]);
+        }
+        group.throughput(Throughput::Elements(u64::from(roi.w) * u64::from(roi.h)));
+        group.bench_function(name, |b| {
+            b.iter(|| {
+                let outcome = decoder
+                    .decode_region_scaled_into_with_scratch(
+                        &mut scratch,
+                        &mut output,
+                        stride,
+                        PixelFormat::Rgb8,
+                        roi,
+                        j2k_core::Downscale::None,
+                    )
+                    .expect("region benchmark decode");
+                std::hint::black_box((&output, outcome));
+            });
+        });
+    }
+    group.finish();
+}
+
 fn bench_fast_packet_prepare_with_implicit_context(c: &mut Criterion) {
     let cases = decode_cases();
     let mut group = c.benchmark_group("jpeg_fast_packet_prepare_implicit_context");
@@ -536,6 +588,6 @@ criterion_group! {
         .sample_size(50)
         .warm_up_time(Duration::from_secs(3))
         .measurement_time(Duration::from_secs(10));
-    targets = bench_decode_cpu, bench_comparable_decode_routes, bench_fast_packet_prepare_with_implicit_context, bench_context_reused_distinct_inputs
+    targets = bench_decode_cpu, bench_comparable_decode_routes, bench_reused_rgb_regions, bench_fast_packet_prepare_with_implicit_context, bench_context_reused_distinct_inputs
 }
 criterion_main!(decode_cpu_benches);

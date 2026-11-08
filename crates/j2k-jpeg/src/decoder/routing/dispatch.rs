@@ -3,8 +3,8 @@
 //! Output-format dispatch after routing has validated geometry and scratch.
 
 use super::super::{
-    merged_warnings, CroppedWriter, DecodeOutcome, Decoder, DownscaleFactor, FastRgbRequest,
-    Gray8Writer, JpegError, OutputFormat, Rect, Rgb8Writer, Rgba8Writer, ScratchPool, SofKind,
+    CroppedWriter, DecodeOutcome, Decoder, DownscaleFactor, FastRgbRequest, Gray8Writer, JpegError,
+    OutputFormat, Rect, Rgb8Writer, Rgba8Writer, ScratchPool, SofKind,
 };
 use crate::allocation::checked_add_allocation_bytes;
 
@@ -252,8 +252,7 @@ impl Decoder<'_> {
                     checkpoint: checkpoint.as_ref(),
                 },
             )?;
-            return self
-                .finish_outcome(source_roi, merged_warnings(&self.warnings, scan_warnings)?);
+            return self.finish_scan(source_roi, downscale, None, scan_warnings);
         }
         // Scaled 4:2:0 takes the generic route: libjpeg-turbo decodes its
         // chroma with a larger reduced IDCT, so no 4:2:0 upsampling remains.
