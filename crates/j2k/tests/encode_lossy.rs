@@ -85,6 +85,9 @@ struct FullHtj2kLossyAccelerator {
     quantize_subband: usize,
     ht_code_block: usize,
     packetization: usize,
+    /// A single-layer encode codes one HT pass; the default expects the three
+    /// passes of a multi-layer encode.
+    single_layer: bool,
 }
 
 impl J2kEncodeStageAccelerator for FullHtj2kLossyAccelerator {
@@ -134,7 +137,10 @@ impl J2kEncodeStageAccelerator for FullHtj2kLossyAccelerator {
         job: J2kHtCodeBlockEncodeJob<'_>,
     ) -> J2kEncodeStageResult<Option<EncodedHtJ2kCodeBlock>> {
         self.ht_code_block = self.ht_code_block.saturating_add(1);
-        assert_eq!(job.target_coding_passes, 3);
+        assert_eq!(
+            job.target_coding_passes,
+            if self.single_layer { 1 } else { 3 }
+        );
         j2k_native::encode_ht_code_block_scalar_with_passes(
             job.coefficients,
             job.width,
@@ -1184,6 +1190,65 @@ fn accelerator_facade_htj2k_lossy_multilayer_require_device_checks_supported_sta
     assert!(accelerator.quantize_subband > 0);
     assert!(accelerator.ht_code_block > 0);
     assert_eq!(decode_native(&encoded.codestream).num_components, 1);
+}
+
+/// Packet-header markers and tile-part limits that keep packetization on the
+/// CPU do not count as missing device stages, as PLT, PLM, SOP and EPH
+/// already did not: the native encoder packetizes them on the CPU itself.
+#[test]
+fn accelerator_facade_lossy_require_device_accepts_cpu_packetization_options() {
+    let pixels: Vec<u8> = (0..32 * 32)
+        .map(|index| masked_u8(index * 47 + index / 31))
+        .collect();
+    let samples = J2kLossySamples::new(&pixels, 32, 32, 1, 8, false).unwrap();
+    let base = J2kLossyEncodeOptions::default()
+        .with_backend(EncodeBackendPreference::RequireDevice)
+        .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+        .with_max_decomposition_levels(Some(0))
+        .with_validation(J2kEncodeValidation::External);
+    for (name, options) in [
+        (
+            "PLT",
+            base.clone()
+                .with_marker_segments(vec![J2kMarkerSegment::Plt]),
+        ),
+        (
+            "PPM",
+            base.clone()
+                .with_marker_segments(vec![J2kMarkerSegment::Ppm]),
+        ),
+        (
+            "PPT",
+            base.clone()
+                .with_marker_segments(vec![J2kMarkerSegment::Ppt]),
+        ),
+        (
+            "tile-part limit",
+            base.clone().with_tile_part_packet_limit(Some(1)),
+        ),
+    ] {
+        let mut accelerator = FullHtj2kLossyAccelerator {
+            single_layer: true,
+            ..FullHtj2kLossyAccelerator::default()
+        };
+        let encoded = encode_j2k_lossy_with_accelerator(
+            samples,
+            &options,
+            BackendKind::Cuda,
+            &mut accelerator,
+        )
+        .unwrap_or_else(|error| panic!("{name}: {error}"));
+        assert_eq!(encoded.backend, BackendKind::Cuda, "{name}");
+        assert_eq!(
+            accelerator.packetization, 0,
+            "{name}: packetized on the CPU"
+        );
+        assert_eq!(
+            decode_native(&encoded.codestream).num_components,
+            1,
+            "{name}"
+        );
+    }
 }
 
 #[test]

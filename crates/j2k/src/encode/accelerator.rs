@@ -353,11 +353,20 @@ pub(super) fn required_lossy_encode_stages(
     let decomposition_levels = j2k_lossy_decomposition_levels_for_options(samples, options);
     let high_throughput = options.block_coding_mode == J2kBlockCodingMode::HighThroughput;
 
+    // The native encoder's `packetization_requires_scalar` rule: these
+    // packetize on the CPU, so a device cannot be required to.
     let scalar_packetization_required = lossy_quality_layer_count(options) > 1
-        || options.marker_segments.contains(&J2kMarkerSegment::Plt)
-        || options.marker_segments.contains(&J2kMarkerSegment::Plm)
-        || options.marker_segments.contains(&J2kMarkerSegment::Sop)
-        || options.marker_segments.contains(&J2kMarkerSegment::Eph);
+        || options.tile_part_packet_limit.is_some()
+        || [
+            J2kMarkerSegment::Plt,
+            J2kMarkerSegment::Plm,
+            J2kMarkerSegment::Ppm,
+            J2kMarkerSegment::Ppt,
+            J2kMarkerSegment::Sop,
+            J2kMarkerSegment::Eph,
+        ]
+        .iter()
+        .any(|marker| options.marker_segments.contains(marker));
     let mut bits = 0;
     if !scalar_packetization_required || accelerated_backend == BackendKind::Metal {
         bits |= RequiredEncodeStages::PACKETIZATION;
