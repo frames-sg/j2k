@@ -15,6 +15,8 @@ use crate::{DecodeSettings, DeviceDecodePlan, J2kSupportInfo};
 #[derive(Debug, Clone)]
 pub struct PreparedImage {
     pub(super) inner: Arc<PreparedImageInner>,
+    /// Receiving-session policy; immutable parsed facts remain shared in `inner`.
+    pub(super) cpu_execution: CpuExecution,
 }
 
 #[derive(Debug)]
@@ -32,9 +34,20 @@ impl PreparedCodecPlan {
             Self::Classic(_) => PreparationDepth::ClassicOffsetPlan,
         }
     }
+
+    /// Capacity the retained offset plan holds; none without a plan.
+    pub(super) fn retained_allocation_bytes(
+        &self,
+    ) -> Result<usize, j2k_types::DecodePlanAllocationError> {
+        match self {
+            Self::MetadataOnly => Ok(0),
+            Self::Classic(plan) => plan.retained_allocation_bytes(),
+            Self::Htj2k(plan) => plan.retained_allocation_bytes(),
+        }
+    }
 }
 
-/// CPU execution chosen during preparation from the planned working memory.
+/// CPU execution derived under the receiving session's working-memory bound.
 /// Device decoders ignore it: the retained codec plan is unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CpuExecution {
@@ -43,10 +56,10 @@ pub(super) enum CpuExecution {
     /// Reparse and decode whole component planes; no offset plan exists.
     ComponentPlanes,
     /// The planned offset-plan execution exceeds the per-decode memory
-    /// bound and the output has no streamed route (not Gray8 or RGB8), so the
-    /// CPU decoder rejects the image before any decode work.
+    /// bound and the output has no streamed route, so the CPU decoder rejects
+    /// the image before any decode work.
     ExceedsDecodeBound,
-    /// A Gray8/RGB8 image whose offset plan exceeds the per-decode bound
+    /// A native Gray/RGB image whose offset plan exceeds the per-decode bound
     /// streams rows from the full-output region decode, whose working memory
     /// does not grow with the image.
     StreamedRows,
@@ -54,7 +67,8 @@ pub(super) enum CpuExecution {
     /// parallel peak) but exceeds the streaming threshold. It streams rows
     /// like [`Self::StreamedRows`], except as the only image of a Gray8
     /// group: alone in flight, its plan spreads one component's code-block
-    /// rows over every core, which the streamed route does not match.
+    /// rows over every core, which the streamed route does not match. If a
+    /// preferred stream exceeds its budget, this admitted plan may retry.
     StreamedRowsOrPlan { bytes: usize },
 }
 
@@ -105,10 +119,11 @@ pub(super) struct PreparedImageInner {
     pub(super) decode_settings: DecodeSettings,
     pub(super) used_lenient_metadata_recovery: bool,
     pub(super) support: Arc<J2kSupportInfo>,
+    pub(super) reference_grid: crate::J2kReferenceGrid,
     pub(super) plan: DeviceDecodePlan,
     pub(super) codestream_range: J2kCodestreamRange,
     pub(super) codec_plan: PreparedCodecPlan,
-    pub(super) cpu_execution: CpuExecution,
+    pub(super) region_streams_rows: bool,
 }
 
 impl PreparedImage {
@@ -147,6 +162,12 @@ impl PreparedImage {
     #[must_use]
     pub fn support(&self) -> &J2kSupportInfo {
         &self.inner.support
+    }
+
+    /// Original full-resolution image and tile coordinates.
+    #[must_use]
+    pub fn reference_grid(&self) -> crate::J2kReferenceGrid {
+        self.inner.reference_grid
     }
 
     /// Normalized source and output geometry.
@@ -194,7 +215,7 @@ impl PreparedImage {
     }
 
     pub(super) fn cpu_execution(&self) -> CpuExecution {
-        self.inner.cpu_execution
+        self.cpu_execution
     }
 }
 
@@ -212,7 +233,7 @@ pub struct PreparedBatchGroup {
 #[derive(Clone, Copy)]
 pub(super) struct PreparedBatchGroupRef<'a> {
     pub(super) info: &'a BatchGroupInfo,
-    pub(super) images: &'a [PreparedImage],
+    pub(super) images: &'a [super::CpuPreparedImage],
     pub(super) source_indices: &'a [usize],
     /// The decoding session's [`BatchDecodeOptions::max_working_memory_bytes`].
     pub(super) working_memory_limit: Option<core::num::NonZeroUsize>,
@@ -237,8 +258,10 @@ impl PreparedBatchGroup {
 
     /// Decode policy captured when every image in this group was prepared.
     ///
-    /// Backend sessions use this value instead of their current defaults so a
+    /// Backend sessions preserve these validation and output settings so a
     /// reusable group cannot silently drift between strict and lenient decode.
+    /// CPU admission and scheduling use the receiving session's working-memory
+    /// limit and worker policy.
     #[must_use]
     pub const fn options(&self) -> BatchDecodeOptions {
         self.options

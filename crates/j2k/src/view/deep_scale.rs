@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    backend_image_with_reduction, decode_image_region_into_with_native_context,
-    decode_warnings_for_image, validate_buffer, validate_region, J2kDecoder,
+    decode_image_region_into_with_native_context, decode_warnings_for_image, validate_buffer,
+    validate_region, J2kDecoder,
 };
 use crate::{
     adapter::device_plan::reference_grid_covering,
     backend::Image,
-    decode::{J2kDecodeOutcome, J2kDecodedNativeComponents},
+    decode::{
+        decode_native_components_with_native_context, native_components_route, J2kDecodeOutcome,
+        J2kDecodedNativeComponents, PlanesBudget,
+    },
     scratch::J2kScratchPool,
     view::component_handoff_image_bytes,
     J2kError,
@@ -21,10 +24,27 @@ fn unsupported(what: &'static str) -> J2kError {
     J2kError::Unsupported(Unsupported { what })
 }
 
-fn reduction_denominator(levels: u8) -> Result<u32, J2kError> {
+pub(super) fn reduction_denominator(levels: u8) -> Result<u32, J2kError> {
     1_u32
         .checked_shl(u32::from(levels))
         .ok_or_else(|| unsupported(UNREPRESENTABLE_REDUCTION))
+}
+
+pub(super) fn validate_reduced_image_dimensions(
+    image: &Image<'_>,
+    source_dimensions: (u32, u32),
+    denominator: u32,
+) -> Result<(), J2kError> {
+    let expected = image_covering(
+        image,
+        source_dimensions,
+        Rect::full(source_dimensions),
+        denominator,
+    );
+    if (image.width(), image.height()) != (expected.w, expected.h) {
+        return Err(unsupported(INEXACT_REDUCTION));
+    }
+    Ok(())
 }
 
 /// The samples of `image`'s reduction by `denominator` whose reference-grid
@@ -60,20 +80,31 @@ impl J2kDecoder<'_> {
             return self.decode_native_components();
         }
 
-        let denominator = reduction_denominator(reduction_levels)?;
-        let image = backend_image_with_reduction(self.bytes, self.settings, reduction_levels)?;
-        let dims = self.info.dimensions;
-        let expected = image_covering(&image, dims, Rect::full(dims), denominator);
-        if (image.width(), image.height()) != (expected.w, expected.h) {
-            return Err(unsupported(INEXACT_REDUCTION));
-        }
-
-        let retained_image_bytes = component_handoff_image_bytes(&image)?;
-        let mut native_context = self.fresh_native_context();
-        let decoded = image
-            .decode_native_components_with_context(&mut native_context)
-            .map_err(J2kError::from_native_decode_error)?;
-        J2kDecodedNativeComponents::try_from_native(decoded, retained_image_bytes)
+        let result = (|| {
+            let denominator = reduction_denominator(reduction_levels)?;
+            self.ensure_image_at_reduction(reduction_levels)?;
+            self.native_context.release_reusable_allocations();
+            let image = self.cached_image()?;
+            validate_reduced_image_dimensions(image, self.info.dimensions, denominator)?;
+            let planes_budget = match self.full_decode_planes_budget() {
+                PlanesBudget::Default => j2k_native::DEFAULT_MAX_DECODE_BYTES,
+                PlanesBudget::Fixed(bytes) => bytes,
+            };
+            let route = native_components_route(image, planes_budget);
+            let mut native_context = self.fresh_native_context();
+            let decoded = decode_native_components_with_native_context(
+                image,
+                &mut native_context,
+                None,
+                route,
+            )?;
+            J2kDecodedNativeComponents::try_from_native(
+                decoded,
+                component_handoff_image_bytes(image)?,
+            )
+        })();
+        self.trim_preparation_cache();
+        result
     }
 
     /// Decode a source-coordinate region after discarding an exact number of
@@ -105,29 +136,31 @@ impl J2kDecoder<'_> {
             return self.decode_region_into(pool, out, stride, fmt, roi);
         }
 
-        let denominator = reduction_denominator(levels)?;
-        let dims = self.info.dimensions;
-        validate_region(roi, dims)?;
-        let image = backend_image_with_reduction(self.bytes, self.settings, levels)?;
-        let expected = image_covering(&image, dims, Rect::full(dims), denominator);
-        let image_dims = (image.width(), image.height());
-        if image_dims != (expected.w, expected.h) {
-            return Err(unsupported(INEXACT_REDUCTION));
-        }
-        let scaled_roi = image_covering(&image, dims, roi, denominator);
-        validate_buffer((scaled_roi.w, scaled_roi.h), out.len(), stride, fmt)?;
-        validate_region(scaled_roi, image_dims)?;
-
-        let warnings = decode_warnings_for_image(&image);
-        let mut native_context = self.fresh_native_context();
-        decode_image_region_into_with_native_context(
-            &image,
-            &mut native_context,
-            out,
-            stride,
-            fmt,
-            scaled_roi,
-        )?;
-        Ok(j2k_core::DecodeOutcome::new(scaled_roi, warnings))
+        let result = (|| {
+            let denominator = reduction_denominator(levels)?;
+            let dims = self.info.dimensions;
+            validate_region(roi, dims)?;
+            self.ensure_image_at_reduction(levels)?;
+            self.native_context.release_reusable_allocations();
+            let image = self.cached_image()?;
+            let image_dims = (image.width(), image.height());
+            validate_reduced_image_dimensions(image, dims, denominator)?;
+            let scaled_roi = image_covering(image, dims, roi, denominator);
+            validate_buffer((scaled_roi.w, scaled_roi.h), out.len(), stride, fmt)?;
+            validate_region(scaled_roi, image_dims)?;
+            let warnings = decode_warnings_for_image(image);
+            let mut native_context = self.fresh_native_context();
+            decode_image_region_into_with_native_context(
+                image,
+                &mut native_context,
+                out,
+                stride,
+                fmt,
+                scaled_roi,
+            )?;
+            Ok(j2k_core::DecodeOutcome::new(scaled_roi, warnings))
+        })();
+        self.trim_preparation_cache();
+        result
     }
 }

@@ -143,3 +143,311 @@ fn srgb8_converts_a_restricted_monochrome_icc_profile() {
         image.data()
     );
 }
+
+fn premultiplied_rgba(color: J2kFileColorSpec<'_>) -> Vec<u8> {
+    use j2k::{J2kChannelAssociation, J2kChannelDefinition, J2kChannelType, J2kFileBoxMetadata};
+    let definitions = [
+        J2kChannelDefinition {
+            channel_index: 0,
+            channel_type: J2kChannelType::Color,
+            association: J2kChannelAssociation::Color { index: 1 },
+        },
+        J2kChannelDefinition {
+            channel_index: 1,
+            channel_type: J2kChannelType::Color,
+            association: J2kChannelAssociation::Color { index: 2 },
+        },
+        J2kChannelDefinition {
+            channel_index: 2,
+            channel_type: J2kChannelType::Color,
+            association: J2kChannelAssociation::Color { index: 3 },
+        },
+        J2kChannelDefinition {
+            channel_index: 3,
+            channel_type: J2kChannelType::PremultipliedOpacity,
+            association: J2kChannelAssociation::WholeImage,
+        },
+    ];
+    let codestream = encode_fixture(&[64, 32, 16, 128, 7, 9, 11, 0], 2, 1, 4);
+    wrap_j2k_codestream(
+        &codestream,
+        J2kFileWrapOptions::jp2()
+            .with_color(color)
+            .with_metadata(J2kFileBoxMetadata {
+                channel_definitions: &definitions,
+                ..J2kFileBoxMetadata::empty()
+            }),
+    )
+    .expect("wrap premultiplied alpha")
+}
+
+#[test]
+fn srgb8_makes_premultiplied_alpha_straight_before_colour_conversion() {
+    let plain = premultiplied_rgba(J2kFileColorSpec::Enumerated(Colorspace::SRgb));
+    let mut ordinary = [0_u8; 8];
+    J2kDecoder::new(&plain)
+        .expect("decoder")
+        .decode_into(&mut ordinary, 8, j2k::PixelFormat::Rgba8)
+        .expect("ordinary output");
+    assert_eq!(ordinary, [64, 32, 16, 128, 7, 9, 11, 0]);
+    let normalized = J2kDecoder::new(&plain)
+        .expect("decoder")
+        .decode_srgb8()
+        .expect("normalized");
+    assert_eq!(normalized.data(), [128, 64, 32, 128, 0, 0, 0, 0]);
+
+    let srgb = moxcms::ColorProfile::new_srgb()
+        .encode()
+        .expect("sRGB profile");
+    let tagged_srgb = premultiplied_rgba(J2kFileColorSpec::IccProfile(&srgb));
+    J2kDecoder::new(&tagged_srgb)
+        .expect("sRGB ICC decoder")
+        .decode_into(&mut ordinary, 8, j2k::PixelFormat::Rgba8)
+        .expect("ordinary ICC output");
+    assert_eq!(ordinary, [64, 32, 16, 128, 7, 9, 11, 0]);
+
+    let profile = moxcms::ColorProfile::new_pro_photo_rgb()
+        .encode()
+        .expect("profile");
+    let tagged = premultiplied_rgba(J2kFileColorSpec::IccProfile(&profile));
+    let normalized = J2kDecoder::new(&tagged)
+        .expect("decoder")
+        .decode_srgb8()
+        .expect("normalized ICC");
+    // Same independent Little CMS reference as the RGB test, after undoing
+    // association in the source profile's code values, before the ICC transform.
+    for (&actual, expected) in normalized.data()[..3].iter().zip([191_u8, 53, 29]) {
+        assert!(actual.abs_diff(expected) <= 2, "{actual} versus {expected}");
+    }
+    assert_eq!(normalized.data()[3..], [128, 0, 0, 0, 0]);
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "direct, paletted and sub-8-bit sources share fixtures with the eight-bit palette case"
+)]
+fn srgb8_unassociates_premultiplied_samples_at_source_precision() {
+    use j2k::{J2kFileBoxMetadata, J2kPaletteColumn, J2kPaletteMetadata, Rect};
+    let samples = [128_u16, 256, 384, 512];
+    let pixels: Vec<u8> = samples.into_iter().flat_map(u16::to_le_bytes).collect();
+    let options = EncodeOptions {
+        reversible: true,
+        use_mct: false,
+        num_decomposition_levels: 0,
+        ..EncodeOptions::default()
+    };
+    let definitions: Vec<_> = (0..4_u16)
+        .map(|channel| j2k::J2kChannelDefinition {
+            channel_index: channel,
+            channel_type: if channel == 3 {
+                j2k::J2kChannelType::PremultipliedOpacity
+            } else {
+                j2k::J2kChannelType::Color
+            },
+            association: if channel == 3 {
+                j2k::J2kChannelAssociation::WholeImage
+            } else {
+                j2k::J2kChannelAssociation::Color { index: channel + 1 }
+            },
+        })
+        .collect();
+    let direct = encode(&pixels, 1, 1, 4, 16, false, &options).expect("RGBA16");
+    let direct = wrap_j2k_codestream(
+        &direct,
+        J2kFileWrapOptions::jp2().with_color(J2kFileColorSpec::Enumerated(Colorspace::SRgb)),
+    )
+    .expect("RGBA16 container");
+    let indices = encode(&[0], 1, 1, 1, 8, false, &options).expect("palette index");
+    let palette = J2kPaletteMetadata {
+        columns: vec![
+            J2kPaletteColumn {
+                bit_depth: 16,
+                signed: false
+            };
+            4
+        ],
+        entries: vec![samples.into_iter().map(u64::from).collect()],
+    };
+    let paletted = wrap_j2k_codestream(
+        &indices,
+        J2kFileWrapOptions::jp2()
+            .with_color(J2kFileColorSpec::Enumerated(Colorspace::SRgb))
+            .with_metadata(J2kFileBoxMetadata {
+                palette: Some(&palette),
+                channel_definitions: &definitions,
+                ..J2kFileBoxMetadata::empty()
+            }),
+    )
+    .expect("RGBA16 palette");
+    let sub8 = encode(&[63, 0, 0, 64], 1, 1, 4, 7, false, &options).expect("RGBA7");
+    let sub8 = wrap_j2k_codestream(
+        &sub8,
+        J2kFileWrapOptions::jp2().with_color(J2kFileColorSpec::Enumerated(Colorspace::SRgb)),
+    )
+    .expect("RGBA7 container");
+    // Dividing original 16-bit samples gives straight RGB [64, 128, 191],
+    // alpha 2; quantizing first would give [0, 128, 128]. Seven-bit
+    // [63, 0, 0, 64] gives red 251 (quantizing first gives 249) and alpha
+    // 64 / 127 of full scale, 129.
+    let expected = [[64_u8, 128, 191, 2], [64, 128, 191, 2], [251, 0, 0, 129]];
+    for (index, mut bytes) in [direct, paletted, sub8].into_iter().enumerate() {
+        let cdef = bytes
+            .windows(4)
+            .position(|tag| tag == b"cdef")
+            .expect("RGBA channel definitions");
+        let alpha_type = cdef + 4 + 2 + 3 * 6 + 2;
+        bytes[alpha_type..alpha_type + 2].copy_from_slice(&2_u16.to_be_bytes());
+        if index == 0 {
+            let mut native = [0_u8; 8];
+            J2kDecoder::new(&bytes)
+                .expect("decoder")
+                .decode_into(&mut native, 8, j2k::PixelFormat::Rgba16)
+                .expect("native packed precision");
+            assert_eq!(
+                native
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|sample| u16::from_ne_bytes(*sample))
+                    .collect::<Vec<_>>(),
+                samples
+            );
+        }
+        let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
+        assert_eq!(
+            decoder.decode_srgb8().expect("normalized").data(),
+            expected[index],
+            "source {index}"
+        );
+        decoder
+            .srgb8_region_decode_plan(Rect::full((1, 1)), 0)
+            .expect("region plan");
+        assert_eq!(
+            decoder
+                .decode_region_srgb8(Rect::full((1, 1)))
+                .expect("normalized region")
+                .data(),
+            expected[index],
+            "source {index}"
+        );
+    }
+
+    // The source index precision is not the mapped colour precision. A 16-bit
+    // index into an 8-bit RGBA palette still has lossless 8-bit unassociation.
+    let index16 = encode(&0_u16.to_le_bytes(), 1, 1, 1, 16, false, &options).expect("index16");
+    let eight_bit_palette = J2kPaletteMetadata {
+        columns: vec![
+            J2kPaletteColumn {
+                bit_depth: 8,
+                signed: false
+            };
+            4
+        ],
+        entries: vec![vec![32, 64, 96, 128]],
+    };
+    let mut bytes = wrap_j2k_codestream(
+        &index16,
+        J2kFileWrapOptions::jp2()
+            .with_color(J2kFileColorSpec::Enumerated(Colorspace::SRgb))
+            .with_metadata(J2kFileBoxMetadata {
+                palette: Some(&eight_bit_palette),
+                channel_definitions: &definitions,
+                ..J2kFileBoxMetadata::empty()
+            }),
+    )
+    .expect("mapped8-bit colour");
+    let cdef = bytes
+        .windows(4)
+        .position(|tag| tag == b"cdef")
+        .expect("cdef");
+    bytes[cdef + 4 + 2 + 3 * 6 + 2..cdef + 4 + 2 + 3 * 6 + 4].copy_from_slice(&2_u16.to_be_bytes());
+    let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
+    assert_eq!(
+        decoder
+            .decode_srgb8()
+            .expect("mapped precision controls support")
+            .data(),
+        [64, 128, 191, 128]
+    );
+    decoder
+        .srgb8_region_decode_plan(Rect::full((1, 1)), 0)
+        .expect("mapped8-bit region plan");
+    assert_eq!(
+        decoder
+            .decode_region_srgb8(Rect::full((1, 1)))
+            .expect("mapped8-bit region")
+            .data(),
+        [64, 128, 191, 128]
+    );
+}
+
+#[test]
+fn srgb8_unassociates_premultiplied_sycc_before_colour_conversion() {
+    let codestream = encode_fixture(&[1, 128, 127, 2], 1, 1, 4);
+    let mut sycc = wrap_j2k_codestream(
+        &codestream,
+        J2kFileWrapOptions::jp2().with_color(J2kFileColorSpec::Enumerated(Colorspace::SRgb)),
+    )
+    .expect("RGBA wrapper");
+    let colr = sycc
+        .windows(4)
+        .position(|tag| tag == b"colr")
+        .expect("colr");
+    sycc[colr + 7..colr + 11].copy_from_slice(&18_u32.to_be_bytes());
+    let cdef = sycc
+        .windows(4)
+        .position(|tag| tag == b"cdef")
+        .expect("cdef");
+    sycc[cdef + 4 + 2 + 3 * 6 + 2..cdef + 4 + 2 + 3 * 6 + 4].copy_from_slice(&2_u16.to_be_bytes());
+    let mut decoder = J2kDecoder::new(&sycc).expect("sYCC decoder");
+    // In source YCC, unassociation about the chroma midpoint before
+    // conversion gives RGB [0, 219, 128]. Converting and quantizing first
+    // instead loses the green fraction.
+    assert_eq!(
+        decoder.decode_srgb8().expect("normalized sYCC").data(),
+        [0, 219, 128, 2]
+    );
+    let region = j2k::Rect::full((1, 1));
+    decoder
+        .srgb8_region_decode_plan(region, 0)
+        .expect("sYCC region plan");
+    assert_eq!(
+        decoder
+            .decode_region_srgb8(region)
+            .expect("normalized sYCC region")
+            .data(),
+        [0, 219, 128, 2]
+    );
+
+    let codestream = encode_fixture(&[64, 32, 16, 128], 1, 1, 4);
+    let colors = [
+        J2kFileColorSpec::Enumerated(Colorspace::SRgb),
+        J2kFileColorSpec::Enumerated(Colorspace::YCbCr),
+    ];
+    let mut rgb = wrap_j2k_codestream(
+        &codestream,
+        J2kFileWrapOptions::jp2().with_color_specs(&colors),
+    )
+    .expect("secondary colour box");
+    let cdef = rgb.windows(4).position(|tag| tag == b"cdef").expect("cdef");
+    rgb[cdef + 4 + 2 + 3 * 6 + 2..cdef + 4 + 2 + 3 * 6 + 4].copy_from_slice(&2_u16.to_be_bytes());
+    let mut decoder = J2kDecoder::new(&rgb).expect("primary RGB decoder");
+    assert_eq!(
+        decoder
+            .decode_srgb8()
+            .expect("secondary sYCC does not select conversion")
+            .data(),
+        [128, 64, 32, 128]
+    );
+    decoder
+        .srgb8_region_decode_plan(region, 0)
+        .expect("primary RGB plan");
+    assert_eq!(
+        decoder
+            .decode_region_srgb8(region)
+            .expect("primary RGB region")
+            .data(),
+        [128, 64, 32, 128]
+    );
+}

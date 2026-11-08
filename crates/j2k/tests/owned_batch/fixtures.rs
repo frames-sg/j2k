@@ -242,6 +242,17 @@ pub(super) fn htj2k_native_fixture(
     width: u32,
     height: u32,
 ) -> Vec<u8> {
+    htj2k_native_fixture_with_levels(components, precision, signed, width, height, 1)
+}
+
+pub(super) fn htj2k_native_fixture_with_levels(
+    components: u16,
+    precision: u8,
+    signed: bool,
+    width: u32,
+    height: u32,
+    levels: u8,
+) -> Vec<u8> {
     let sample_count = width as usize * height as usize * components as usize;
     let bytes: Vec<u8> = if signed {
         let magnitude = 1_i32 << u32::from(precision - 1);
@@ -258,7 +269,8 @@ pub(super) fn htj2k_native_fixture(
     } else if precision <= 8 {
         (0..sample_count)
             .map(|index| {
-                u8::try_from((index * 47 + 13) & 0xff).expect("masked 8-bit fixture value")
+                u8::try_from((index * 47 + 13) & ((1 << precision) - 1))
+                    .expect("masked 8-bit fixture value")
             })
             .collect()
     } else {
@@ -280,7 +292,7 @@ pub(super) fn htj2k_native_fixture(
         signed,
         &EncodeOptions {
             reversible: true,
-            num_decomposition_levels: 1,
+            num_decomposition_levels: levels,
             use_mct: false,
             ..EncodeOptions::default()
         },

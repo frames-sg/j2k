@@ -4,6 +4,23 @@
 
 use alloc::sync::Arc;
 
+/// Arc data and its two reference counters, as charged by the native packet cache.
+pub(super) const fn arc_owner_bytes<T>() -> usize {
+    core::mem::size_of::<T>() + 2 * core::mem::size_of::<usize>()
+}
+
+fn check_plan_owners(retained: usize, additional: usize) -> j2k_native::Result<()> {
+    let requested = retained.saturating_add(additional);
+    if requested > j2k_native::DEFAULT_MAX_DECODE_BYTES {
+        return Err(j2k_native::DecodeError::AllocationTooLarge {
+            what: "prepared CPU plan owners",
+            requested,
+            cap: j2k_native::DEFAULT_MAX_DECODE_BYTES,
+        });
+    }
+    Ok(())
+}
+
 pub use j2k_types::{
     HtCodeBlockPayloadRanges as Htj2kPayloadRanges,
     J2kClassicCodeBlockPayload as ClassicCodeBlockPayload, J2kCodestreamRange,
@@ -29,8 +46,41 @@ pub struct PreparedClassicPlan {
 }
 
 impl PreparedClassicPlan {
-    pub(super) fn from_native(plan: ClassicPreparedGeometry) -> j2k_native::Result<Self> {
-        let cpu = j2k_native::window_referenced_classic_plan_to_stores(&plan)?;
+    pub(super) fn retained_allocation_bytes(
+        &self,
+    ) -> Result<usize, j2k_types::DecodePlanAllocationError> {
+        let bytes = self
+            .plan
+            .retained_allocation_bytes()?
+            .checked_add(arc_owner_bytes::<ClassicPreparedGeometry>())
+            .ok_or(j2k_types::DecodePlanAllocationError)?;
+        if Arc::ptr_eq(&self.plan, &self.cpu) {
+            Ok(bytes)
+        } else {
+            bytes
+                .checked_add(self.cpu.retained_allocation_bytes()?)
+                .and_then(|bytes| bytes.checked_add(arc_owner_bytes::<ClassicPreparedGeometry>()))
+                .ok_or(j2k_types::DecodePlanAllocationError)
+        }
+    }
+
+    pub(super) fn from_native(
+        plan: ClassicPreparedGeometry,
+        retained_bytes: usize,
+    ) -> j2k_native::Result<Self> {
+        let cpu = j2k_native::window_referenced_classic_plan_to_stores_with_retained_baseline(
+            &plan,
+            retained_bytes,
+        )?;
+        let mut bytes = plan
+            .retained_allocation_bytes()?
+            .saturating_add(arc_owner_bytes::<ClassicPreparedGeometry>());
+        if let Some(cpu) = &cpu {
+            bytes = bytes
+                .saturating_add(cpu.retained_allocation_bytes()?)
+                .saturating_add(arc_owner_bytes::<ClassicPreparedGeometry>());
+        }
+        check_plan_owners(retained_bytes, bytes)?;
         let plan = Arc::new(plan);
         let cpu = cpu.map_or_else(|| Arc::clone(&plan), Arc::new);
         Ok(Self { plan, cpu })
@@ -126,8 +176,41 @@ pub struct PreparedHtj2kPlan {
 }
 
 impl PreparedHtj2kPlan {
-    pub(super) fn from_native(plan: Htj2kPreparedGeometry) -> j2k_native::Result<Self> {
-        let cpu = j2k_native::window_referenced_htj2k_plan_to_stores(&plan)?;
+    pub(super) fn retained_allocation_bytes(
+        &self,
+    ) -> Result<usize, j2k_types::DecodePlanAllocationError> {
+        let bytes = self
+            .plan
+            .retained_allocation_bytes()?
+            .checked_add(arc_owner_bytes::<Htj2kPreparedGeometry>())
+            .ok_or(j2k_types::DecodePlanAllocationError)?;
+        if Arc::ptr_eq(&self.plan, &self.cpu) {
+            Ok(bytes)
+        } else {
+            bytes
+                .checked_add(self.cpu.retained_allocation_bytes()?)
+                .and_then(|bytes| bytes.checked_add(arc_owner_bytes::<Htj2kPreparedGeometry>()))
+                .ok_or(j2k_types::DecodePlanAllocationError)
+        }
+    }
+
+    pub(super) fn from_native(
+        plan: Htj2kPreparedGeometry,
+        retained_bytes: usize,
+    ) -> j2k_native::Result<Self> {
+        let cpu = j2k_native::window_referenced_htj2k_plan_to_stores_with_retained_baseline(
+            &plan,
+            retained_bytes,
+        )?;
+        let mut bytes = plan
+            .retained_allocation_bytes()?
+            .saturating_add(arc_owner_bytes::<Htj2kPreparedGeometry>());
+        if let Some(cpu) = &cpu {
+            bytes = bytes
+                .saturating_add(cpu.retained_allocation_bytes()?)
+                .saturating_add(arc_owner_bytes::<Htj2kPreparedGeometry>());
+        }
+        check_plan_owners(retained_bytes, bytes)?;
         let plan = Arc::new(plan);
         let cpu = cpu.map_or_else(|| Arc::clone(&plan), Arc::new);
         Ok(Self { plan, cpu })

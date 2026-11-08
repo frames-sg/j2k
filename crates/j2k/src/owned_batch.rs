@@ -59,6 +59,12 @@ use self::cpu_staged::{CpuEntropyOutcome, CpuStagedWorkspace, CPU_ENTROPY_IMAGES
 mod cpu_execute;
 use self::cpu_execute::{decode_cpu_group, CpuStreamPool};
 mod cpu;
+mod cpu_operation;
+pub use self::cpu_operation::{
+    prepare_device_operations, PreparedDeviceOperation, PreparedDeviceOperationGroup,
+    PreparedDeviceOperations, PreparedImageOperation,
+};
+use self::cpu_operation::{CpuOperationCache, CpuPreparedImage};
 mod cpu_materialize;
 mod cpu_staged_execute;
 pub use self::cpu::{CpuBatchDecodeResult, CpuBatchDecoder, CpuBatchGroup, CpuBatchSamples};

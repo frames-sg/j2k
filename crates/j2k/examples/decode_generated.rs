@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Generate a tiny HTJ2K grayscale codestream and decode it through the public
-//! API.
+//! Inspect, plan, allocate, and decode an exact-reduction region through the
+//! public API, using a generated HTJ2K source so no external fixture is needed.
 //!
 //! Run with:
 //! `cargo run -p j2k --example decode_generated`
 
-use j2k::{Downscale, J2kDecoder, J2kScratchPool, PixelFormat, Rect};
+use j2k::{J2kDecodeControl, J2kDecoder, PixelFormat, Rect};
 use j2k_native::{encode_htj2k, EncodeOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -22,41 +22,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         1,
         8,
         false,
-        &EncodeOptions::default(),
+        &EncodeOptions {
+            num_decomposition_levels: 3,
+            ..EncodeOptions::default()
+        },
     )?;
 
     let mut decoder = J2kDecoder::new(&bytes)?;
-    let mut scratch = J2kScratchPool::new();
-
+    let source_dimensions = decoder.info().dimensions;
+    let available_reduction = decoder.max_reduction_levels()?;
+    // Coordinates stay relative to the full-resolution source. The plan owns
+    // the rounding and reference-grid origin math at the exact requested level.
     let roi = Rect {
-        x: 4,
-        y: 4,
-        w: 8,
-        h: 8,
+        x: 3,
+        y: 5,
+        w: 9,
+        h: 7,
     };
-    let mut region = vec![0_u8; (roi.w * roi.h) as usize];
-    decoder.decode_region_into(
-        &mut scratch,
+    let plan = decoder.region_decode_plan(PixelFormat::Gray8, roi, 1)?;
+    let mut region = vec![0_u8; plan.buffer_bytes];
+    let mut control = J2kDecodeControl::default();
+    control.max_output_bytes = Some(plan.buffer_bytes);
+    let outcome = decoder.decode_region_scaled_pow2_into_with_control(
         &mut region,
-        roi.w as usize,
-        PixelFormat::Gray8,
+        plan.row_bytes,
+        plan.format,
         roi,
+        plan.reduction_levels,
+        &control,
     )?;
-
-    let scaled_dims = (width / 2, height / 2);
-    let mut scaled = vec![0_u8; (scaled_dims.0 * scaled_dims.1) as usize];
-    decoder.decode_scaled_into(
-        &mut scratch,
-        &mut scaled,
-        scaled_dims.0 as usize,
-        PixelFormat::Gray8,
-        Downscale::Half,
-    )?;
+    assert_eq!(outcome.decoded, plan.output_region);
 
     println!(
-        "decoded {} ROI bytes and {} half-scale bytes",
+        "source {source_dimensions:?}, reductions 0..={available_reduction}; decoded {:?} into {} bytes ({:?})",
+        outcome.decoded,
         region.len(),
-        scaled.len()
+        plan.decode.route,
     );
     Ok(())
 }

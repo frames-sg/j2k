@@ -63,17 +63,37 @@ impl BatchWorker {
         self.native_workspace = workspace;
     }
 
+    pub(crate) fn retained_native_workspace_bytes(&mut self) -> j2k_native::Result<usize> {
+        let context = j2k_native::DecoderContext::from_workspace(self.take_native_workspace());
+        let bytes = context.retained_allocation_bytes();
+        self.restore_native_workspace(context.into_workspace());
+        bytes
+    }
+
+    /// Drop optional idle owners before applying a new operation's hard limit.
+    pub(crate) fn release_owned_allocations(&mut self) {
+        let mut context = j2k_native::DecoderContext::from_workspace(self.take_native_workspace());
+        context.release_reusable_allocations();
+        self.restore_native_workspace(context.into_workspace());
+        self.pool = crate::J2kScratchPool::new();
+        self.direct = super::DirectWorkerState::default();
+        self.prepared_plan_scratch = j2k_native::J2kDirectCpuScratch::new();
+        self.prepared_entropy_workspace = j2k_native::J2kDirectCpuEntropyWorkspace::default();
+    }
+
     pub(crate) fn build_prepared_htj2k_plan(
         &mut self,
         image: &j2k_native::Image<'_>,
         output_region: (u32, u32, u32, u32),
+        control: j2k_native::DecodeOperationControl,
     ) -> j2k_native::Result<j2k_native::J2kReferencedHtj2kPlan> {
         self.record_preparation_call();
         let workspace = self.take_native_workspace();
         let mut context = j2k_native::DecoderContext::from_workspace(workspace);
         context.set_cpu_decode_parallelism(j2k_native::CpuDecodeParallelism::Serial);
-        let result =
-            image.build_referenced_htj2k_plan_region_with_context(&mut context, output_region);
+        let result = context.with_operation_control(control, |context| {
+            image.build_referenced_htj2k_plan_region_with_context(context, output_region)
+        });
         self.restore_native_workspace(context.into_workspace());
         result
     }
@@ -82,13 +102,15 @@ impl BatchWorker {
         &mut self,
         image: &j2k_native::Image<'_>,
         output_region: (u32, u32, u32, u32),
+        control: j2k_native::DecodeOperationControl,
     ) -> j2k_native::Result<j2k_native::J2kReferencedClassicPlan> {
         self.record_preparation_call();
         let workspace = self.take_native_workspace();
         let mut context = j2k_native::DecoderContext::from_workspace(workspace);
         context.set_cpu_decode_parallelism(j2k_native::CpuDecodeParallelism::Serial);
-        let result =
-            image.build_referenced_classic_plan_region_with_context(&mut context, output_region);
+        let result = context.with_operation_control(control, |context| {
+            image.build_referenced_classic_plan_region_with_context(context, output_region)
+        });
         self.restore_native_workspace(context.into_workspace());
         result
     }

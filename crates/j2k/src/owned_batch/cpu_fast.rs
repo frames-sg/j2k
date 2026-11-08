@@ -11,7 +11,7 @@ use j2k_native::{
 };
 
 use super::cpu_staged::{staged_window_fits, CPU_ENTROPY_IMAGES_PER_WINDOW};
-use super::{BatchCodecRoute, PreparedBatchGroupRef, PreparedImage};
+use super::{BatchCodecRoute, CpuPreparedImage, PreparedBatchGroupRef};
 use crate::batch::allocation::{try_vec_with_capacity, J2K_BATCH_METADATA_ALLOWANCE_BYTES};
 
 mod classic;
@@ -55,7 +55,7 @@ pub(super) fn classic_flattened_metadata_bytes(image_count: usize, payload_count
 /// # Errors
 /// Only when the per-image counts cannot be allocated.
 pub(super) fn classic_staging_fits<'a>(
-    images: impl ExactSizeIterator<Item = &'a PreparedImage>,
+    images: impl ExactSizeIterator<Item = &'a CpuPreparedImage>,
 ) -> Result<bool, BatchInfrastructureError> {
     let image_count = images.len();
     let mut counts = try_vec_with_capacity(image_count, "J2K CPU staged payload counts")?;
@@ -147,6 +147,14 @@ pub(super) struct CpuGroupFastWorkspace {
 }
 
 impl CpuGroupFastWorkspace {
+    pub(super) fn release_allocations(&mut self) {
+        let stats = self.stats;
+        *self = Self {
+            stats,
+            ..Self::default()
+        };
+    }
+
     pub(super) fn prepare_group(
         &mut self,
         group: PreparedBatchGroupRef<'_>,
@@ -292,8 +300,8 @@ impl CpuGroupFastWorkspace {
 
     fn assign_image_spans(
         &mut self,
-        images: &[PreparedImage],
-        payload_count: impl Fn(&PreparedImage) -> Result<usize, BatchInfrastructureError>,
+        images: &[CpuPreparedImage],
+        payload_count: impl Fn(&CpuPreparedImage) -> Result<usize, BatchInfrastructureError>,
     ) -> Result<(), BatchInfrastructureError> {
         let mut start = 0usize;
         for image in images {

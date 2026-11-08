@@ -58,7 +58,8 @@ pub use j2k_types::{
 
 mod view;
 pub use view::{
-    J2kCodec, J2kDecodePlan, J2kDecodeRoute, J2kDecoder, J2kRowDecodeOptions, J2kStreamingBlocker,
+    J2kCancellationToken, J2kCodec, J2kDecodeControl, J2kDecodePlan, J2kDecodeRoute, J2kDecoder,
+    J2kRegionDecodePlan, J2kRowDecodeOptions, J2kSampleInterpretation, J2kStreamingBlocker,
     J2kView,
 };
 
@@ -98,6 +99,12 @@ pub use owned_batch::{
     EncodedImage, Htj2kPayloadRanges, Htj2kPreparedGeometry, IndexedBatchError, J2kCodestreamRange,
     NativeSampleType, NonRepresentableReason, PreparationDepth, PreparedBatch, PreparedBatchGroup,
     PreparedClassicPlan, PreparedHtj2kPlan, PreparedImage, PreparedImageGeometry,
+    PreparedImageOperation,
+};
+#[doc(hidden)]
+pub use owned_batch::{
+    prepare_device_operations, PreparedDeviceOperation, PreparedDeviceOperationGroup,
+    PreparedDeviceOperations,
 };
 
 pub use encode::{

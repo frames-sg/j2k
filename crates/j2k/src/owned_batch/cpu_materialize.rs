@@ -5,7 +5,7 @@
 use super::{
     backend, decode_prepared_plan_samples, size_of, BatchDecodeOptions, BatchGroupInfo,
     BatchInfrastructureError, BatchLayout, BatchWorker, CpuDecodeParallelism, CpuExecution,
-    J2kError, PreparedImage, Rect, Vec,
+    CpuPreparedImage, J2kError, Rect, Vec,
 };
 
 pub(super) fn ensure_batch_output_within_cap(
@@ -51,15 +51,21 @@ pub(super) fn try_zeroed_vec<T: Clone>(
 }
 
 fn image_components<'ctx, 'input>(
-    image: &'input PreparedImage,
-    options: BatchDecodeOptions,
+    image: &'input CpuPreparedImage,
+    _options: BatchDecodeOptions,
     parallelism: CpuDecodeParallelism,
     context: &'ctx mut j2k_native::DecoderContext<'input>,
+    output_bytes: usize,
 ) -> Result<j2k_native::DecodedComponents<'ctx>, J2kError> {
     context.set_cpu_decode_parallelism(parallelism.to_native());
-    let plan = image.plan();
-    let decoded = backend::image_at_scale(image.bytes(), options.settings, plan.scale())?;
-    let output_rect = plan.output_rect();
+    let decoded = backend::image_for_operation(
+        image.bytes(),
+        image.settings(),
+        image.reduction_levels(),
+        image.retained_bytes().saturating_add(output_bytes),
+        image.control(),
+    )?;
+    let output_rect = image.output_rect();
     let decoded_dims = (decoded.width(), decoded.height());
     // Every batch sample type is an integer output, so irreversible samples
     // are rounded before the level shift exactly as the single-image decode.
@@ -78,30 +84,58 @@ fn image_components<'ctx, 'input>(
 }
 
 pub(super) fn decode_image_u8<'image>(
-    image: &'image PreparedImage,
+    image: &'image CpuPreparedImage,
     options: BatchDecodeOptions,
     info: &BatchGroupInfo,
     parallelism: CpuDecodeParallelism,
     context: &mut j2k_native::DecoderContext<'image>,
     worker: &mut BatchWorker,
-    out: &mut [u8],
+    (out, output_bytes): (&mut [u8], usize),
 ) -> Result<(), J2kError> {
     match image.cpu_execution() {
         CpuExecution::ExceedsDecodeBound => Err(CpuExecution::decode_bound_error()),
         CpuExecution::StreamedRows | CpuExecution::StreamedRowsOrPlan { .. } => {
-            decode_streamed_samples(
+            let streamed = decode_streamed_samples(
                 image,
                 options,
                 info,
                 parallelism,
                 context,
-                out,
+                (out, output_bytes),
                 convert_u8_row,
-            )
+            );
+            if matches!(streamed, Err(J2kError::ResourceLimit { .. }))
+                && matches!(
+                    image.cpu_execution(),
+                    CpuExecution::StreamedRowsOrPlan { .. }
+                )
+            {
+                // The receiving session admitted this plan. Release streamed
+                // scratch before retrying; the plan rewrites the entire owned
+                // output, including any rows already produced by the stream.
+                *context = context.fresh_for_operation();
+                decode_planned_u8(
+                    image,
+                    options,
+                    info,
+                    parallelism,
+                    context,
+                    worker,
+                    (out, output_bytes),
+                )
+            } else {
+                streamed
+            }
         }
-        CpuExecution::OffsetPlan { .. } | CpuExecution::ComponentPlanes => {
-            decode_planned_u8(image, options, info, parallelism, context, worker, out)
-        }
+        CpuExecution::OffsetPlan { .. } | CpuExecution::ComponentPlanes => decode_planned_u8(
+            image,
+            options,
+            info,
+            parallelism,
+            context,
+            worker,
+            (out, output_bytes),
+        ),
     }
 }
 
@@ -109,52 +143,68 @@ pub(super) fn decode_image_u8<'image>(
 /// stream or decode its plan decodes its plan, which spreads one component's
 /// code-block rows over every core while nothing else is in flight.
 pub(super) fn decode_lone_gray_u8<'image>(
-    image: &'image PreparedImage,
+    image: &'image CpuPreparedImage,
     options: BatchDecodeOptions,
     info: &BatchGroupInfo,
     parallelism: CpuDecodeParallelism,
     context: &mut j2k_native::DecoderContext<'image>,
     worker: &mut BatchWorker,
-    out: &mut [u8],
+    (out, output_bytes): (&mut [u8], usize),
 ) -> Result<(), J2kError> {
     if matches!(
         image.cpu_execution(),
         CpuExecution::StreamedRowsOrPlan { .. }
     ) {
-        decode_planned_u8(image, options, info, parallelism, context, worker, out)
+        decode_planned_u8(
+            image,
+            options,
+            info,
+            parallelism,
+            context,
+            worker,
+            (out, output_bytes),
+        )
     } else {
-        decode_image_u8(image, options, info, parallelism, context, worker, out)
+        decode_image_u8(
+            image,
+            options,
+            info,
+            parallelism,
+            context,
+            worker,
+            (out, output_bytes),
+        )
     }
 }
 
 fn decode_planned_u8<'image>(
-    image: &'image PreparedImage,
+    image: &'image CpuPreparedImage,
     options: BatchDecodeOptions,
     info: &BatchGroupInfo,
     parallelism: CpuDecodeParallelism,
     context: &mut j2k_native::DecoderContext<'image>,
     worker: &mut BatchWorker,
-    out: &mut [u8],
+    (out, output_bytes): (&mut [u8], usize),
 ) -> Result<(), J2kError> {
     if decode_prepared_plan_samples(image, info, worker, out, |sample, precision| {
         u8::try_from(round_unsigned(sample, precision)).unwrap_or(u8::MAX)
     })? {
         return Ok(());
     }
-    let components = image_components(image, options, parallelism, context)?;
+    let components = image_components(image, options, parallelism, context, output_bytes)?;
     write_decoded_samples(&components, info, out, |sample, precision| {
         u8::try_from(round_unsigned(sample, precision)).unwrap_or(u8::MAX)
     })
 }
 
 pub(super) fn decode_image_u16<'image>(
-    image: &'image PreparedImage,
+    image: &'image CpuPreparedImage,
     options: BatchDecodeOptions,
     info: &BatchGroupInfo,
     parallelism: CpuDecodeParallelism,
     context: &mut j2k_native::DecoderContext<'image>,
     worker: &mut BatchWorker,
-    out: &mut [u16],
+    (out, output_bytes): (&mut [u16], usize),
 ) -> Result<(), J2kError> {
     match image.cpu_execution() {
         CpuExecution::ExceedsDecodeBound => return Err(CpuExecution::decode_bound_error()),
@@ -165,7 +215,7 @@ pub(super) fn decode_image_u16<'image>(
                 info,
                 parallelism,
                 context,
-                out,
+                (out, output_bytes),
                 convert_u16_row,
             );
         }
@@ -176,20 +226,20 @@ pub(super) fn decode_image_u16<'image>(
     })? {
         return Ok(());
     }
-    let components = image_components(image, options, parallelism, context)?;
+    let components = image_components(image, options, parallelism, context, output_bytes)?;
     write_decoded_samples(&components, info, out, |sample, precision| {
         u16::try_from(round_unsigned(sample, precision)).unwrap_or(u16::MAX)
     })
 }
 
 pub(super) fn decode_image_i16<'image>(
-    image: &'image PreparedImage,
+    image: &'image CpuPreparedImage,
     options: BatchDecodeOptions,
     info: &BatchGroupInfo,
     parallelism: CpuDecodeParallelism,
     context: &mut j2k_native::DecoderContext<'image>,
     worker: &mut BatchWorker,
-    out: &mut [i16],
+    (out, output_bytes): (&mut [i16], usize),
 ) -> Result<(), J2kError> {
     match image.cpu_execution() {
         CpuExecution::ExceedsDecodeBound => return Err(CpuExecution::decode_bound_error()),
@@ -200,7 +250,7 @@ pub(super) fn decode_image_i16<'image>(
                 info,
                 parallelism,
                 context,
-                out,
+                (out, output_bytes),
                 convert_i16_row,
             );
         }
@@ -209,7 +259,7 @@ pub(super) fn decode_image_i16<'image>(
     if decode_prepared_plan_samples(image, info, worker, out, round_signed)? {
         return Ok(());
     }
-    let components = image_components(image, options, parallelism, context)?;
+    let components = image_components(image, options, parallelism, context, output_bytes)?;
     write_decoded_samples(&components, info, out, round_signed)
 }
 
@@ -219,28 +269,38 @@ pub(super) fn decode_image_i16<'image>(
 /// `convert_row` (see [`convert_u8_row`]). Working memory stays bounded by
 /// the streamed decode instead of growing with the image.
 fn decode_streamed_samples<'image, T: Copy>(
-    image: &'image PreparedImage,
-    options: BatchDecodeOptions,
+    image: &'image CpuPreparedImage,
+    _options: BatchDecodeOptions,
     info: &BatchGroupInfo,
     parallelism: CpuDecodeParallelism,
     context: &mut j2k_native::DecoderContext<'image>,
-    out: &mut [T],
+    (out, output_bytes): (&mut [T], usize),
     convert_row: ConvertRow<T>,
 ) -> Result<(), J2kError> {
     context.set_cpu_decode_parallelism(parallelism.to_native());
-    let plan = image.plan();
-    let decoded = backend::image_at_scale(image.bytes(), options.settings, plan.scale())?;
-    let output_rect = plan.output_rect();
+    let decoded = backend::image_for_operation(
+        image.bytes(),
+        image.settings(),
+        image.reduction_levels(),
+        image.retained_bytes().saturating_add(output_bytes),
+        image.control(),
+    )?;
+    let output_rect = image.output_rect();
     if (output_rect.w, output_rect.h) != info.dimensions {
         return Err(J2kError::internal_backend(
             "prepared batch output metadata changed during decode",
         ));
     }
     let mut sink = SampleRowSink::new(info, out, convert_row)?;
-    let result = decoded.decode_region_rows_for_integer_output_with_context(
+    #[cfg(test)]
+    let baseline = STREAMED_RETAINED_BASELINE.with(core::cell::Cell::get);
+    #[cfg(not(test))]
+    let baseline = 0;
+    let result = decoded.decode_region_rows_for_integer_output_with_retained_baseline(
         (output_rect.x, output_rect.y, output_rect.w, output_rect.h),
         context,
         &mut sink,
+        baseline,
     );
     // A malformed hand-over stops the decode; report it rather than the stop.
     if sink.malformed {
@@ -248,6 +308,12 @@ fn decode_streamed_samples<'image, T: Copy>(
     }
     result.map_err(J2kError::from_native_decode_error)?;
     sink.finish()
+}
+
+#[cfg(test)]
+std::thread_local! {
+    /// Lower the streamed decode's remaining budget on small test images.
+    pub(super) static STREAMED_RETAINED_BASELINE: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
 }
 
 /// Converts a row of decoded samples of the given precision into

@@ -4,16 +4,21 @@
 
 use super::cpu_fast::{CpuFlattenedPayloadJob, CpuGroupFastWorkspace};
 use super::cpu_materialize::write_batch_samples;
-use super::{BatchCodecRoute, BatchGroupInfo, PreparedCodecPlan, PreparedImage};
+use super::{BatchCodecRoute, BatchGroupInfo, CpuPreparedImage, PreparedCodecPlan};
 use crate::{batch::worker::BatchWorker, J2kError};
 
 pub(super) fn decode_prepared_plan_samples<T: Copy>(
-    image: &PreparedImage,
+    image: &CpuPreparedImage,
     info: &BatchGroupInfo,
     worker: &mut BatchWorker,
     out: &mut [T],
     convert: impl Fn(f32, u8) -> T,
 ) -> Result<bool, J2kError> {
+    // General native reconstruction carries operation policy through bounded
+    // loops. Direct offset execution retains separate, uncontrolled scratch.
+    if image.control().is_some() {
+        return Ok(false);
+    }
     let components = match image.codec_plan() {
         PreparedCodecPlan::Htj2k(prepared_plan) => worker
             .execute_prepared_htj2k_plan(prepared_plan.cpu_plan(), image.bytes(), info.signed)
@@ -23,7 +28,7 @@ pub(super) fn decode_prepared_plan_samples<T: Copy>(
             .map_err(J2kError::from_native_decode_error)?,
         PreparedCodecPlan::MetadataOnly => return Ok(false),
     };
-    let output_rect = image.plan().output_rect();
+    let output_rect = image.output_rect();
     if (output_rect.w, output_rect.h) != info.dimensions {
         return Err(J2kError::internal_backend(
             "prepared codec plan output metadata changed during decode",
@@ -34,7 +39,7 @@ pub(super) fn decode_prepared_plan_samples<T: Copy>(
 }
 
 pub(super) fn prepare_staged_image(
-    image: &PreparedImage,
+    image: &CpuPreparedImage,
     route: BatchCodecRoute,
     worker: &mut BatchWorker,
     scratch: &mut j2k_native::J2kDirectCpuScratch,
@@ -53,7 +58,7 @@ pub(super) fn prepare_staged_image(
 }
 
 pub(super) fn execute_staged_entropy_job(
-    image: &PreparedImage,
+    image: &CpuPreparedImage,
     job: CpuFlattenedPayloadJob,
     flattened: &CpuGroupFastWorkspace,
     worker: &mut BatchWorker,
@@ -95,7 +100,7 @@ pub(super) fn execute_staged_entropy_job(
 }
 
 pub(super) fn prepare_staged_entropy_worker(
-    image: &PreparedImage,
+    image: &CpuPreparedImage,
     route: BatchCodecRoute,
     worker: &mut BatchWorker,
 ) -> Result<(), J2kError> {
@@ -113,7 +118,7 @@ pub(super) fn prepare_staged_entropy_worker(
 }
 
 pub(super) fn staged_tile_count(
-    image: &PreparedImage,
+    image: &CpuPreparedImage,
     route: BatchCodecRoute,
 ) -> Result<usize, J2kError> {
     match (route, image.codec_plan()) {
@@ -130,7 +135,7 @@ pub(super) fn staged_tile_count(
 }
 
 pub(super) fn prepare_staged_tile(
-    image: &PreparedImage,
+    image: &CpuPreparedImage,
     route: BatchCodecRoute,
     tile_index: usize,
     scratch: &mut j2k_native::J2kDirectCpuScratch,
@@ -151,7 +156,7 @@ pub(super) fn prepare_staged_tile(
 }
 
 pub(super) fn finish_staged_tile(
-    image: &PreparedImage,
+    image: &CpuPreparedImage,
     route: BatchCodecRoute,
     tile_index: usize,
     signed: bool,
@@ -183,7 +188,7 @@ pub(super) fn finish_staged_tile(
 }
 
 pub(super) fn finish_staged_plan_samples<T: Copy>(
-    image: &PreparedImage,
+    image: &CpuPreparedImage,
     info: &BatchGroupInfo,
     scratch: &mut j2k_native::J2kDirectCpuScratch,
     out: &mut [T],
@@ -204,7 +209,7 @@ pub(super) fn finish_staged_plan_samples<T: Copy>(
             ));
         }
     };
-    let output_rect = image.plan().output_rect();
+    let output_rect = image.output_rect();
     if (output_rect.w, output_rect.h) != info.dimensions {
         return Err(J2kError::internal_backend(
             "prepared codec plan output metadata changed during decode",

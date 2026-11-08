@@ -10,13 +10,9 @@ use j2k_core::{PixelFormat, Unsupported};
 
 static SRGB_ICC_AS_RGB: ColorSpace = ColorSpace::RGB;
 
-/// The colour space whose samples `fmt` receives. A three-channel ICC
-/// profile equivalent to IEC 61966-2-1 sRGB is written to RGB output as
-/// RGB; every other colour space is returned unchanged.
-pub(in crate::decode) fn resolve_u8_color_space(
-    color_space: &ColorSpace,
-    fmt: PixelFormat,
-) -> &ColorSpace {
+/// Resolve only restricted RGB ICC profiles whose eight-bit samples can be
+/// written as sRGB unchanged. Other profiles and native output stay explicit.
+pub(crate) fn resolve_u8_color_space(color_space: &ColorSpace, fmt: PixelFormat) -> &ColorSpace {
     match (color_space, fmt) {
         (
             ColorSpace::Icc {

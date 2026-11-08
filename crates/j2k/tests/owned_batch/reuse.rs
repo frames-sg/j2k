@@ -13,6 +13,295 @@ use super::fixtures::{
 };
 
 #[test]
+fn exact_operations_reuse_sources_and_bound_retained_plans() {
+    use j2k::{J2kDecoder, J2kScratchPool, PixelFormat, PreparedImageOperation, Rect};
+    let bytes: Arc<[u8]> = super::fixtures::htj2k_gray8_fixture_with_levels(65, 49, 4).into();
+    let prepared = prepare_batch(
+        vec![EncodedImage::full(Arc::clone(&bytes))],
+        BatchDecodeOptions::default(),
+    )
+    .unwrap();
+    let image = &prepared.groups()[0].images()[0];
+    let mut session = CpuBatchDecoder::new(BatchDecodeOptions::default());
+    let regions = [
+        Rect::full((65, 49)),
+        Rect {
+            x: 9,
+            y: 11,
+            w: 33,
+            h: 25,
+        },
+    ];
+    for (index, levels) in [4, 4, 2, 0, 4].into_iter().enumerate() {
+        let roi = regions[index % 2];
+        let operation = PreparedImageOperation::new(image, roi, levels);
+        let result = session.decode_operations(&[operation, operation]).unwrap();
+        assert!(result.errors().is_empty(), "{:?}", result.errors());
+        let group = &result.groups()[0];
+        assert_eq!(group.source_indices(), &[0, 1]);
+        let mut decoder = J2kDecoder::new(&bytes).unwrap();
+        let plan = decoder
+            .region_decode_plan(PixelFormat::Gray8, roi, levels)
+            .unwrap();
+        let mut expected = vec![0; plan.buffer_bytes];
+        decoder
+            .decode_region_scaled_pow2_into(
+                &mut J2kScratchPool::new(),
+                &mut expected,
+                plan.row_bytes,
+                PixelFormat::Gray8,
+                roi,
+                levels,
+            )
+            .unwrap();
+        let CpuBatchSamples::U8(samples) = group.samples() else {
+            panic!("U8 samples")
+        };
+        assert_eq!(group.decoded_rects(), &[plan.output_region; 2]);
+        assert_eq!(&samples[..expected.len()], expected);
+        assert_eq!(&samples[expected.len()..], expected);
+        assert!(session.operation_cache_stats().hits >= (index + 1) as u64);
+        assert!(session.operation_cache_retained_bytes() <= session.operation_cache_limit_bytes());
+    }
+    assert_eq!(image.plan().scale(), j2k::Downscale::None);
+    assert!(Arc::ptr_eq(image.bytes(), &bytes));
+    session.set_operation_cache_limit_bytes(0);
+    assert_eq!(session.operation_cache_retained_bytes(), 0);
+    let operation = PreparedImageOperation::new(image, regions[0], 4);
+    let uncached = session.decode_operations(&[operation]).unwrap();
+    assert!(uncached.errors().is_empty(), "{:?}", uncached.errors());
+    assert_eq!(session.operation_cache_retained_bytes(), 0);
+    session.set_operation_cache_limit_bytes(j2k_native::DEFAULT_MAX_DECODE_BYTES);
+    let cached = session.decode_operations(&[operation]).unwrap();
+    assert!(cached.errors().is_empty(), "{:?}", cached.errors());
+    assert!(session.operation_cache_retained_bytes() > 0);
+    let bytes_owner_count = Arc::strong_count(&bytes);
+    drop(prepared);
+    assert!(
+        Arc::strong_count(&bytes) < bytes_owner_count,
+        "session does not retain source input"
+    );
+}
+
+#[test]
+fn exact_operation_controls_do_not_leak_through_cached_preparation() {
+    use j2k::{J2kCancellationToken, J2kDecodeControl, J2kError, PreparedImageOperation, Rect};
+    let bytes: Arc<[u8]> = super::fixtures::htj2k_gray8_fixture_with_levels(65, 49, 4).into();
+    let prepared = prepare_batch(
+        vec![EncodedImage::full(bytes)],
+        BatchDecodeOptions::default(),
+    )
+    .unwrap();
+    let image = &prepared.groups()[0].images()[0];
+    let operation = PreparedImageOperation::new(image, Rect::full((65, 49)), 4);
+    let mut session = CpuBatchDecoder::new(BatchDecodeOptions::default());
+    let expected = session.decode_operations(&[operation]).unwrap();
+    assert!(expected.errors().is_empty(), "{:?}", expected.errors());
+    let mut control = J2kDecodeControl::default();
+    control.max_output_bytes = Some(19);
+    let refused = session
+        .decode_operations(&[operation.with_control(&control)])
+        .unwrap();
+    assert!(refused.groups().is_empty(), "{:?}", refused.groups());
+    assert_eq!(refused.errors().len(), 1);
+    assert_eq!(refused.errors()[0].index, 0);
+
+    control.max_output_bytes = Some(20);
+    control.max_working_memory_bytes = NonZeroUsize::new(1);
+    let refused = session
+        .decode_operations(&[operation.with_control(&control)])
+        .unwrap();
+    assert!(
+        matches!(&refused.errors()[0].source, BatchItemError::Codec { source, .. } if matches!(source.as_ref(), J2kError::ResourceLimit { .. }))
+    );
+    control.max_working_memory_bytes = None;
+    let cancellation = J2kCancellationToken::new();
+    cancellation.cancel();
+    control.cancellation = Some(cancellation);
+    let cancelled = session
+        .decode_operations(&[operation.with_control(&control)])
+        .unwrap();
+    assert!(
+        matches!(&cancelled.errors()[0].source, BatchItemError::Codec { source, .. } if matches!(source.as_ref(), J2kError::Cancelled))
+    );
+    control.cancellation = None;
+    assert_eq!(
+        session
+            .decode_operations(&[operation.with_control(&control)])
+            .unwrap(),
+        expected
+    );
+    assert_eq!(session.decode_operations(&[operation]).unwrap(), expected);
+
+    // A controlled miss uses native preparation without caching that route as
+    // an immutable offset-plan capability for subsequent ordinary operations.
+    let mut cold = CpuBatchDecoder::new(BatchDecodeOptions::default());
+    assert_eq!(
+        cold.decode_operations(&[operation.with_control(&control)])
+            .unwrap(),
+        expected
+    );
+    assert_eq!(cold.operation_cache_stats().occupied_slots, 0);
+    assert_eq!(cold.decode_operations(&[operation]).unwrap(), expected);
+    assert_eq!(cold.operation_cache_stats().occupied_slots, 1);
+    let invalid = PreparedImageOperation::new(image, Rect::full((65, 49)), 5);
+    let refused = cold.decode_operations(&[invalid]).unwrap();
+    assert!(refused.groups().is_empty(), "{:?}", refused.groups());
+    assert!(
+        matches!(&refused.errors()[0].source, BatchItemError::Codec { source, .. } if matches!(source.as_ref(), J2kError::Unsupported(_)))
+    );
+
+    // Find the smallest fitting allowance using tiny deterministic allocations.
+    // An unused offset plan from an earlier ordinary call must not make the
+    // same controlled operation fail when a fresh session can run it.
+    let cold_at_limit = |bytes| {
+        let mut control = J2kDecodeControl::default();
+        control.max_working_memory_bytes = NonZeroUsize::new(bytes);
+        CpuBatchDecoder::new(BatchDecodeOptions::default())
+            .decode_operations(&[operation.with_control(&control)])
+            .unwrap()
+    };
+    let (mut low, mut high) = (1, 1 << 20);
+    let unrestricted = cold_at_limit(high);
+    assert!(
+        unrestricted.errors().is_empty(),
+        "{:?}",
+        unrestricted.errors()
+    );
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if cold_at_limit(middle).errors().is_empty() {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+    let cold = cold_at_limit(high);
+    let mut warm = CpuBatchDecoder::new(BatchDecodeOptions::default());
+    let warmed = warm.decode_operations(&[operation]).unwrap();
+    assert!(warmed.errors().is_empty(), "{:?}", warmed.errors());
+    let mut control = J2kDecodeControl::default();
+    control.max_working_memory_bytes = NonZeroUsize::new(high);
+    assert_eq!(
+        warm.decode_operations(&[operation.with_control(&control)])
+            .unwrap(),
+        cold
+    );
+}
+
+#[test]
+fn controlled_preparation_bounds_the_whole_call_and_keeps_only_actual_plans() {
+    use j2k::{J2kCancellationToken, J2kDecodeControl, J2kError};
+    let first: Arc<[u8]> = htj2k_gray8_fixture(96, 80).into();
+    let second: Arc<[u8]> = classic_gray8_fixture_with_tile_size(72, 64, Some((32, 32))).into();
+    let inputs = || {
+        vec![
+            EncodedImage::full(Arc::clone(&first)),
+            EncodedImage::full(Arc::clone(&second)),
+        ]
+    };
+    let mut session = CpuBatchDecoder::new(BatchDecodeOptions::default());
+    let ordinary = session.prepare(inputs()).unwrap();
+    assert!(ordinary.errors().is_empty(), "{:?}", ordinary.errors());
+    let expected = session.decode_prepared(&ordinary).unwrap();
+    let depths = |batch: &j2k::PreparedBatch| {
+        batch
+            .groups()
+            .iter()
+            .flat_map(j2k::PreparedBatchGroup::images)
+            .map(j2k::PreparedImage::preparation_depth)
+            .collect::<Vec<_>>()
+    };
+
+    let unlimited = session
+        .prepare_with_control(inputs(), &J2kDecodeControl::default())
+        .unwrap();
+    assert!(unlimited.errors().is_empty(), "{:?}", unlimited.errors());
+    assert_eq!(depths(&unlimited), depths(&ordinary));
+    assert_eq!(session.decode_prepared(&unlimited).unwrap(), expected);
+
+    let token = J2kCancellationToken::new();
+    token.cancel();
+    let mut control = J2kDecodeControl::default();
+    control.cancellation = Some(token);
+    let cancelled = session.prepare_with_control(inputs(), &control).unwrap();
+    assert!(cancelled.groups().is_empty(), "{:?}", cancelled.groups());
+    assert_eq!(cancelled.errors().len(), 2);
+    assert!(cancelled.errors().iter().all(|error| matches!(
+        &error.source,
+        BatchItemError::Codec { source, .. } if matches!(source.as_ref(), J2kError::Cancelled)
+    )));
+
+    // 96 x 80 Gray8 is 7680 output bytes; 72 x 64 is 4608.
+    let mut control = J2kDecodeControl::default();
+    control.max_output_bytes = Some(4608);
+    let bounded = session.prepare_with_control(inputs(), &control).unwrap();
+    assert_eq!(
+        bounded
+            .errors()
+            .iter()
+            .map(|error| error.index)
+            .collect::<Vec<_>>(),
+        [0]
+    );
+    assert_eq!(bounded.groups()[0].source_indices(), [1]);
+
+    // The working limit covers each input's preparation beside the plans the
+    // call already retains: the smallest allowance for one input refuses a
+    // second copy of it.
+    let prepare_at = |inputs: Vec<EncodedImage>, limit: usize| {
+        let mut control = J2kDecodeControl::default();
+        control.max_working_memory_bytes = NonZeroUsize::new(limit);
+        session.prepare_with_control(inputs, &control).unwrap()
+    };
+    let one = || vec![EncodedImage::full(Arc::clone(&first))];
+    let (mut low, mut high) = (1, 64 << 20);
+    let unrestricted = prepare_at(one(), high);
+    assert!(
+        unrestricted.errors().is_empty(),
+        "{:?}",
+        unrestricted.errors()
+    );
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if prepare_at(one(), middle).errors().is_empty() {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+    let refused = prepare_at(one(), high - 1);
+    assert!(matches!(
+        &refused.errors()[0].source,
+        BatchItemError::Codec { source, .. } if matches!(source.as_ref(), J2kError::ResourceLimit { .. })
+    ));
+    let at_limit = prepare_at(one(), high);
+    assert_eq!(depths(&at_limit), [PreparationDepth::Htj2kOffsetPlan]);
+    let twice = prepare_at(
+        vec![
+            EncodedImage::full(Arc::clone(&first)),
+            EncodedImage::full(Arc::clone(&first)),
+        ],
+        high,
+    );
+    assert_eq!(
+        twice
+            .errors()
+            .iter()
+            .map(|error| error.index)
+            .collect::<Vec<_>>(),
+        [1]
+    );
+    // A batch prepared under a tight limit decodes as any other.
+    let mut decoder = CpuBatchDecoder::new(BatchDecodeOptions::default());
+    let ordinary_one = decoder.prepare(one()).unwrap();
+    assert_eq!(
+        decoder.decode_prepared(&at_limit).unwrap(),
+        decoder.decode_prepared(&ordinary_one).unwrap()
+    );
+}
+
+#[test]
 fn prepared_batch_is_reusable_and_groups_heterogeneous_images_without_padding() {
     let gray_4x3 = Arc::<[u8]>::from(htj2k_gray8_fixture(4, 3));
     let gray_2x2 = Arc::<[u8]>::from(htj2k_gray8_fixture(2, 2));

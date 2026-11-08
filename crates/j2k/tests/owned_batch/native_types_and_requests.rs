@@ -11,6 +11,71 @@ use super::fixtures::htj2k_native_fixture;
 use super::oracles::{decoded_samples_for_source, native_request_oracle};
 
 #[test]
+fn exact_operations_preserve_native_samples_and_independent_sessions() {
+    use super::fixtures::htj2k_native_fixture_with_levels;
+    use super::oracles::native_exact_request_oracle;
+    use j2k::{prepare_batch, J2kDecodeControl, PreparedImageOperation};
+    let regions = [
+        Rect::full((65, 49)),
+        Rect {
+            x: 9,
+            y: 11,
+            w: 33,
+            h: 25,
+        },
+    ];
+    for (precision, signed) in [(7, false), (12, false), (16, true)] {
+        let encoded: Arc<[u8]> =
+            htj2k_native_fixture_with_levels(3, precision, signed, 65, 49, 4).into();
+        let prepared = prepare_batch(
+            vec![EncodedImage::full(encoded)],
+            BatchDecodeOptions::default(),
+        )
+        .unwrap();
+        assert!(prepared.errors().is_empty(), "{:?}", prepared.errors());
+        let image = &prepared.groups()[0].images()[0];
+        std::thread::scope(|scope| {
+            for layout in [BatchLayout::Nchw, BatchLayout::Nhwc] {
+                scope.spawn(move || {
+                    let mut options = BatchDecodeOptions::default();
+                    options.layout = layout;
+                    options.workers = NonZeroUsize::new(1);
+                    let mut session = CpuBatchDecoder::new(options);
+                    let mut control = J2kDecodeControl::default();
+                    control.max_working_memory_bytes = NonZeroUsize::new(8 << 20);
+                    for levels in [4, 2] {
+                        let operations = regions.map(|roi| {
+                            let operation = PreparedImageOperation::new(image, roi, levels);
+                            if layout == BatchLayout::Nhwc {
+                                operation.with_control(&control)
+                            } else {
+                                operation
+                            }
+                        });
+                        let result = session.decode_operations(&operations).unwrap();
+                        assert!(result.errors().is_empty(), "{:?}", result.errors());
+                        for (index, roi) in regions.into_iter().enumerate() {
+                            let factor = 1_u32 << levels;
+                            let output = Rect {
+                                x: roi.x / factor,
+                                y: roi.y / factor,
+                                w: (roi.x + roi.w).div_ceil(factor) - roi.x / factor,
+                                h: (roi.y + roi.h).div_ceil(factor) - roi.y / factor,
+                            };
+                            assert_eq!(
+                                decoded_samples_for_source(&result, index),
+                                native_exact_request_oracle(image, output, levels, layout),
+                                "precision={precision} signed={signed} layout={layout:?}"
+                            );
+                        }
+                    }
+                });
+            }
+        });
+    }
+}
+
+#[test]
 fn prepared_htj2k_gray_and_rgb_support_native_types_and_requests_exactly() {
     const WIDTH: u32 = 8;
     const HEIGHT: u32 = 6;

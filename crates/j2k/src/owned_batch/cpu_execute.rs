@@ -12,9 +12,9 @@ use super::{
     decode_warnings_for_recovery, retained_inner_parallelism, retained_worker_count,
     run_retained_chunks, Arc, BatchCodecRoute, BatchColor, BatchDecodeOptions, BatchErrorStage,
     BatchGroupInfo, BatchInfrastructureError, BatchItemError, BatchWorker, CpuBatchGroup,
-    CpuBatchSamples, CpuDecodeParallelism, CpuGroupFastWorkspace, CpuStagedWorkspace,
-    IndexedBatchError, J2kError, NativeSampleType, NonZeroUsize, PreparedBatchGroupRef,
-    PreparedImage, TileBatchOptions, Vec,
+    CpuBatchSamples, CpuDecodeParallelism, CpuGroupFastWorkspace, CpuPreparedImage,
+    CpuStagedWorkspace, IndexedBatchError, J2kError, NativeSampleType, NonZeroUsize,
+    PreparedBatchGroupRef, TileBatchOptions, Vec,
 };
 use crate::batch::allocation::try_vec_with_capacity;
 
@@ -33,6 +33,13 @@ pub(super) fn decode_cpu_group(
     workers_option: Option<NonZeroUsize>,
     errors: &mut Vec<IndexedBatchError>,
 ) -> Result<Option<CpuBatchGroup>, BatchInfrastructureError> {
+    if group.images.iter().any(|image| image.control().is_some()) {
+        for worker in workers.iter_mut() {
+            worker.release_owned_allocations();
+        }
+        fast_workspace.release_allocations();
+        *staged_workspace = CpuStagedWorkspace::default();
+    }
     let tile_options = TileBatchOptions::new(workers_option);
     // The staged route flattens entropy work across images for a few serial
     // workers. When workers may parallelize inside one image, each prepared
@@ -49,6 +56,11 @@ pub(super) fn decode_cpu_group(
     // classic group beyond them decodes its plans one image at a time
     // instead of failing.
     let staged = !streams_rows
+        && group.images.iter().all(|image| image.control().is_none())
+        && group
+            .images
+            .iter()
+            .all(|image| image.cpu_execution().plan_bytes().is_some())
         && retained_inner_parallelism(group.images.len(), tile_options)?
             == CpuDecodeParallelism::Serial
         && (group.info.route != BatchCodecRoute::Classic
@@ -78,6 +90,22 @@ pub(super) fn decode_cpu_group(
         },
     )?;
     ensure_batch_output_within_cap(group.info, group.images.len())?;
+    // A controlled request has its own group, so refuse its output before
+    // allocating it. Actual capacity is reconciled below before decoding.
+    if let [image] = group.images {
+        if let Err(source) =
+            image.check_owned_output(group.info.output_bytes(1).unwrap_or(usize::MAX))
+        {
+            errors.push(IndexedBatchError {
+                index: group.source_indices[0],
+                source: BatchItemError::Codec {
+                    stage: BatchErrorStage::Decode,
+                    source: Arc::new(source),
+                },
+            });
+            return Ok(None);
+        }
+    }
 
     let (samples, successful_slots, copied_samples) = match group.info.sample_type {
         NativeSampleType::U8 => {
@@ -172,7 +200,7 @@ pub(super) fn decode_cpu_group(
     let mut warnings = try_vec_with_capacity(successful_count, "J2K owned batch warnings")?;
     for &slot in &successful_slots {
         source_indices.push(group.source_indices[slot]);
-        decoded_rects.push(group.images[slot].plan().output_rect());
+        decoded_rects.push(group.images[slot].output_rect());
         warnings.push(decode_warnings_for_recovery(
             group.images[slot].used_lenient_metadata_recovery(),
         ));
@@ -271,18 +299,18 @@ impl CpuStreamPool {
 
 pub(super) struct CpuTypedDecodeJob<'image, 'output, T> {
     pub(super) slot: usize,
-    pub(super) image: &'image PreparedImage,
+    pub(super) image: &'image CpuPreparedImage,
     pub(super) output: &'output mut [T],
 }
 
 type CpuDecodeFn<T> = for<'image> fn(
-    &'image PreparedImage,
+    &'image CpuPreparedImage,
     BatchDecodeOptions,
     &BatchGroupInfo,
     CpuDecodeParallelism,
     &mut j2k_native::DecoderContext<'image>,
     &mut BatchWorker,
-    &mut [T],
+    (&mut [T], usize),
 ) -> Result<(), J2kError>;
 
 #[expect(
@@ -305,6 +333,7 @@ fn run_typed_group<T: Copy + Send>(
     convert: fn(f32, u8) -> T,
     errors: &mut Vec<IndexedBatchError>,
 ) -> Result<(Vec<usize>, usize), BatchInfrastructureError> {
+    let output_bytes = output.capacity().saturating_mul(core::mem::size_of::<T>());
     let mut jobs = try_vec_with_capacity(group.images.len(), "J2K owned batch decode jobs")?;
     for (slot, (image, output)) in group
         .images
@@ -352,30 +381,50 @@ fn run_typed_group<T: Copy + Send>(
                 let mut context = j2k_native::DecoderContext::from_workspace(workspace);
                 for (job, slot) in jobs.iter_mut().zip(results) {
                     context.set_shared_pool(shared_pool && job.image.bytes().len() <= shared_bytes);
-                    *slot = Some(match stream_pool {
-                        // This thread waits while a pool thread decodes the
-                        // image and idle ones take its bands.
-                        Some(pool) => pool.install(|| {
-                            decode(
-                                job.image,
-                                options,
-                                group.info,
-                                CpuDecodeParallelism::Auto,
-                                &mut context,
-                                worker,
-                                job.output,
-                            )
-                        }),
-                        None => decode(
-                            job.image,
-                            options,
-                            group.info,
-                            parallelism,
-                            &mut context,
-                            worker,
-                            job.output,
-                        ),
-                    });
+                    let owned_output_bytes = if job.image.control().is_some() {
+                        output_bytes
+                    } else {
+                        0
+                    };
+                    let default_control = crate::J2kDecodeControl::default();
+                    let control = job.image.control().unwrap_or(&default_control);
+                    *slot = Some(job.image.check_owned_output(output_bytes).and_then(|()| {
+                        control.with_native_context(&mut context, |context| {
+                            let native = context
+                                .operation_control()
+                                .clone()
+                                .beside_retained_bytes(
+                                    job.image
+                                        .retained_bytes()
+                                        .saturating_add(owned_output_bytes),
+                                )
+                                .map_err(|error| control.native_error(error))?;
+                            context.with_operation_control(native, |context| match stream_pool {
+                                // This thread waits while a pool thread decodes
+                                // the image and idle ones take its bands.
+                                Some(pool) => pool.install(|| {
+                                    decode(
+                                        job.image,
+                                        options,
+                                        group.info,
+                                        CpuDecodeParallelism::Auto,
+                                        context,
+                                        worker,
+                                        (job.output, owned_output_bytes),
+                                    )
+                                }),
+                                None => decode(
+                                    job.image,
+                                    options,
+                                    group.info,
+                                    parallelism,
+                                    context,
+                                    worker,
+                                    (job.output, owned_output_bytes),
+                                ),
+                            })
+                        })
+                    }));
                 }
                 worker.restore_native_workspace(context.into_workspace());
                 Ok(())

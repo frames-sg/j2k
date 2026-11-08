@@ -79,6 +79,21 @@ pub(crate) struct RouteRequest {
 /// A planning error keeps the planes route, which meets the same error and
 /// reports it.
 pub(crate) fn full_image_route(image: &Image<'_>, request: RouteRequest) -> FullImageRoute {
+    full_image_route_beside(
+        image,
+        request,
+        0,
+        &j2k_native::DecodeOperationControl::default(),
+    )
+}
+
+/// Select the same route while admitting its metadata scan beside live owners.
+pub(crate) fn full_image_route_beside(
+    image: &Image<'_>,
+    request: RouteRequest,
+    retained_capacity: usize,
+    control: &j2k_native::DecodeOperationControl,
+) -> FullImageRoute {
     let Some(pack_floor) = pack_floor(image, request.fmt) else {
         return FullImageRoute::Planes;
     };
@@ -90,10 +105,13 @@ pub(crate) fn full_image_route(image: &Image<'_>, request: RouteRequest) -> Full
     // floor is known whenever the region decode would stream; the shortcut
     // saves the tile parse when only the budget can choose streaming.
     let streams = if request.budget == PlanesBudget::Default && streams_by_default(image, request) {
-        matches!(image.full_decode_planes_floor(0), Ok(Some(_)))
+        matches!(
+            image.full_decode_planes_floor_with_operation_control(0, retained_capacity, control),
+            Ok(Some(_))
+        )
     } else {
         matches!(
-            image.full_decode_planes_floor(planes_budget),
+            image.full_decode_planes_floor_with_operation_control(planes_budget, retained_capacity, control),
             Ok(Some(floor)) if floor.max(pack_floor) > planes_budget
         )
     };
@@ -129,12 +147,18 @@ fn pack_floor(image: &Image<'_>, fmt: PixelFormat) -> Option<usize> {
 /// buffers with its width, so a wide and shallow image can fit the one and
 /// not the other: an RGB image 8,388,608 samples wide and a row or two deep
 /// fits its planes, but not its reconstruction rows.
-pub(super) fn planes_fit(image: &Image<'_>, request: RouteRequest) -> bool {
+pub(super) fn planes_fit(
+    image: &Image<'_>,
+    request: RouteRequest,
+    context: &j2k_native::DecoderContext<'_>,
+) -> bool {
     let budget = j2k_native::DEFAULT_MAX_DECODE_BYTES;
     request.budget == PlanesBudget::Default
         && pack_floor(image, request.fmt).is_some_and(|pack_floor| {
             !matches!(
-                image.full_decode_planes_floor(budget),
+                image.full_decode_planes_floor_with_operation_control(
+                    budget, context.retained_allocation_bytes().unwrap_or(usize::MAX), context.operation_control(),
+                ),
                 Ok(Some(floor)) if floor.max(pack_floor) > budget
             )
         })

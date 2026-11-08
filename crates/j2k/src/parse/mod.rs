@@ -6,7 +6,9 @@ mod codestream;
 
 use self::boxes::{extract_jp2_codestream_payload, parse_jp2};
 use self::codestream::{parse_codestream, CodestreamInfo};
-use crate::{DecodeSettings, J2kComponentInfo, J2kError, J2kFileMetadata, J2kSupportInfo};
+use crate::{
+    DecodeSettings, J2kComponentInfo, J2kDecodeControl, J2kError, J2kFileMetadata, J2kSupportInfo,
+};
 use j2k_core::{
     Colorspace, CompressedPayloadKind, CompressedTransferSyntax, Info, TileLayout, Unsupported,
 };
@@ -26,11 +28,56 @@ pub(crate) fn parse_image_info_with_settings(
     input: &[u8],
     settings: DecodeSettings,
 ) -> Result<ParsedImageInfo, J2kError> {
+    parse_image_info_with(input, settings, None)
+}
+
+/// [`parse_image_info_with_settings`] within one operation's working
+/// allowance beside `live_bytes` it already holds, stopping at container
+/// checkpoints when it is cancelled. Inspection allocations beyond the
+/// allowance report the operation's cap.
+pub(crate) fn parse_image_info_with_control(
+    input: &[u8],
+    settings: DecodeSettings,
+    control: &J2kDecodeControl,
+    live_bytes: usize,
+) -> Result<ParsedImageInfo, J2kError> {
+    control.check_cancelled()?;
+    let parsed =
+        parse_image_info_with(input, settings, Some((control, live_bytes))).map_err(|error| {
+            match error {
+                // Facade inspection charges the same default ceiling the working
+                // allowance lowers; report it as that operation's resource limit.
+                J2kError::Buffer(j2k_core::BufferError::AllocationTooLarge {
+                    requested,
+                    cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+                    what,
+                }) if control.working_baseline() != 0 => {
+                    control.native_error(j2k_native::DecodeError::AllocationTooLarge {
+                        what,
+                        requested,
+                        cap: j2k_native::DEFAULT_MAX_DECODE_BYTES,
+                    })
+                }
+                error => control.normalize_error(error),
+            }
+        })?;
+    control.check_cancelled()?;
+    Ok(parsed)
+}
+
+fn parse_image_info_with(
+    input: &[u8],
+    settings: DecodeSettings,
+    control: Option<(&J2kDecodeControl, usize)>,
+) -> Result<ParsedImageInfo, J2kError> {
     if boxes::looks_like_jp2(input) {
-        return parse_jp2(input, settings);
+        return parse_jp2(input, settings, control);
     }
     if codestream::looks_like_codestream(input) {
-        let parsed = parse_codestream(input, 0)?;
+        let live_bytes = control.map_or(0, |(control, live_bytes)| {
+            control.working_baseline().saturating_add(live_bytes)
+        });
+        let parsed = parse_codestream(input, live_bytes)?;
         let (info, transfer_syntax, components) = parsed.into_parts(None);
         return Ok(ParsedImageInfo {
             info,

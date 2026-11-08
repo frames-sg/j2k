@@ -20,6 +20,29 @@ pub(super) fn native_request_oracle(
     )
     .expect("parse broad native RGBA oracle");
     let output = plan.output_rect();
+    native_region_samples(&decoded, output, layout)
+}
+
+pub(super) fn native_exact_request_oracle(
+    image: &j2k::PreparedImage,
+    output: Rect,
+    levels: u8,
+    layout: BatchLayout,
+) -> CpuBatchSamples {
+    let decoded = j2k_native::Image::new_with_reduction(
+        image.bytes(),
+        &j2k_native::DecodeSettings::strict(),
+        levels,
+    )
+    .expect("parse native exact oracle");
+    native_region_samples(&decoded, output, layout)
+}
+
+fn native_region_samples(
+    decoded: &j2k_native::Image<'_>,
+    output: Rect,
+    layout: BatchLayout,
+) -> CpuBatchSamples {
     let raw = if output == Rect::full((decoded.width(), decoded.height())) {
         decoded.decode_native().expect("decode broad native oracle")
     } else {

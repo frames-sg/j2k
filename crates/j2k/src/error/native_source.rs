@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use alloc::sync::Arc;
+
 use j2k_native::{
     DecodeError, DecodeErrorClass, EncodeError, J2kCodestreamHeaderError, ResidentHtj2kEncodeError,
 };
@@ -10,16 +12,18 @@ use j2k_native::{
 /// [`core::error::Error::source`] without becoming part of this crate's public
 /// type signatures. Callers should normally classify the enclosing
 /// [`crate::J2kError`] through [`crate::CodecError`].
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeBackendError {
     source: NativeBackendErrorSource,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+// Decode/header errors stay inline. Encode errors may carry non-cloneable dynamic
+// accelerator sources; sharing only those preserves their original source chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum NativeBackendErrorSource {
     Decode(DecodeError),
-    Encode(EncodeError),
-    ResidentEncode(ResidentHtj2kEncodeError),
+    Encode(Arc<EncodeError>),
+    ResidentEncode(Arc<ResidentHtj2kEncodeError>),
     CodestreamHeader(J2kCodestreamHeaderError),
 }
 
@@ -30,15 +34,15 @@ impl NativeBackendError {
         }
     }
 
-    pub(crate) const fn encode(source: EncodeError) -> Self {
+    pub(crate) fn encode(source: EncodeError) -> Self {
         Self {
-            source: NativeBackendErrorSource::Encode(source),
+            source: NativeBackendErrorSource::Encode(Arc::new(source)),
         }
     }
 
-    pub(crate) const fn resident_encode(source: ResidentHtj2kEncodeError) -> Self {
+    pub(crate) fn resident_encode(source: ResidentHtj2kEncodeError) -> Self {
         Self {
-            source: NativeBackendErrorSource::ResidentEncode(source),
+            source: NativeBackendErrorSource::ResidentEncode(Arc::new(source)),
         }
     }
 
@@ -65,12 +69,13 @@ impl NativeBackendError {
             NativeBackendErrorSource::Decode(source) => {
                 matches!(source.classify(), DecodeErrorClass::Unsupported { .. })
             }
-            NativeBackendErrorSource::Encode(EncodeError::Unsupported { .. })
-            | NativeBackendErrorSource::CodestreamHeader(J2kCodestreamHeaderError::Unsupported {
+            NativeBackendErrorSource::Encode(source) => {
+                matches!(source.as_ref(), EncodeError::Unsupported { .. })
+            }
+            NativeBackendErrorSource::CodestreamHeader(J2kCodestreamHeaderError::Unsupported {
                 ..
             }) => true,
-            NativeBackendErrorSource::Encode(_)
-            | NativeBackendErrorSource::ResidentEncode(_)
+            NativeBackendErrorSource::ResidentEncode(_)
             | NativeBackendErrorSource::CodestreamHeader(_) => false,
         }
     }
@@ -101,8 +106,8 @@ impl core::error::Error for NativeBackendError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         Some(match &self.source {
             NativeBackendErrorSource::Decode(source) => source,
-            NativeBackendErrorSource::Encode(source) => source,
-            NativeBackendErrorSource::ResidentEncode(source) => source,
+            NativeBackendErrorSource::Encode(source) => source.as_ref(),
+            NativeBackendErrorSource::ResidentEncode(source) => source.as_ref(),
             NativeBackendErrorSource::CodestreamHeader(source) => source,
         })
     }

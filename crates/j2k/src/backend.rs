@@ -23,6 +23,31 @@ pub(crate) fn image_with_reduction(
         .map_err(J2kError::from_native_decode_error)
 }
 
+pub(crate) fn image_for_operation<'a>(
+    bytes: &'a [u8],
+    settings: DecodeSettings,
+    reduction_levels: u8,
+    retained_bytes: usize,
+    control: Option<&crate::J2kDecodeControl>,
+) -> Result<Image<'a>, J2kError> {
+    let native = control.map_or_else(j2k_native::DecodeOperationControl::default, |control| {
+        control.to_native()
+    });
+    Image::new_with_operation_control(
+        bytes,
+        &settings.to_native(None),
+        reduction_levels,
+        retained_bytes,
+        &native,
+    )
+    .map_err(|error| {
+        control.map_or_else(
+            || J2kError::from_native_decode_error(error),
+            |control| control.native_error(error),
+        )
+    })
+}
+
 /// Build the image for a power-of-two [`Downscale`] request.
 ///
 /// Every halving must come from the codestream's resolution ladder. A request

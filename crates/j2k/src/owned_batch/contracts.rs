@@ -117,7 +117,8 @@ pub struct BatchDecodeOptions {
     /// otherwise rejected when [`crate::CpuBatchDecoder`] prepares it), the
     /// summed plans of images staged together, and the worker count, to one
     /// worker per worst-case native decode the limit holds and never fewer
-    /// than one. Preparation records the outcome with each image.
+    /// than one. CPU sessions apply their current limit when preparing fresh
+    /// inputs, regrouping prepared images, and decoding a prepared batch.
     ///
     /// This bounds what the decoder plans before it decodes, not process
     /// memory: inputs and outputs are not included, and a streamed or
@@ -230,6 +231,18 @@ pub struct BatchGroupInfo {
 }
 
 impl BatchGroupInfo {
+    /// Classify native integer output from inspected source metadata and
+    /// already validated output dimensions, without retaining encoded input
+    /// or building packet/offset plans. Later codec validation can still fail.
+    #[doc(hidden)]
+    pub fn classify_native_output(
+        support: &crate::J2kSupportInfo,
+        dimensions: (u32, u32),
+        options: BatchDecodeOptions,
+    ) -> Result<Self, BatchItemError> {
+        super::prepare::image::batch_group_info(support, dimensions, options)
+    }
+
     /// Number of samples in one image in this group.
     #[must_use]
     pub fn samples_per_image(&self) -> Option<usize> {

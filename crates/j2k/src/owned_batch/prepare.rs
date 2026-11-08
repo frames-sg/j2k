@@ -11,7 +11,8 @@ use super::{
 
 #[cfg(test)]
 mod cpu_preflight_tests;
-mod image;
+pub(super) mod image;
+pub(super) use self::image::cpu_execution_for;
 use self::image::{
     batch_execution_shape, batch_group_info, prepare_image, reconcile_codec_plan_metadata,
 };
@@ -78,7 +79,14 @@ pub(super) fn prepare_batch_with_workers(
                     .ok_or(BatchInfrastructureError::MissingResult {
                         index: job.source_index,
                     })?;
-                *slot = Some(prepare_image(input, job.source_index, options, worker));
+                *slot = Some(prepare_image(
+                    input,
+                    job.source_index,
+                    options,
+                    worker,
+                    None,
+                    0,
+                ));
             }
             Ok(())
         },
@@ -150,18 +158,73 @@ pub(super) fn prepare_batch_from_images_for(
     })
 }
 
-fn regroup_prepared_image(image: PreparedImage, options: BatchDecodeOptions) -> PrepareImageResult {
+fn regroup_prepared_image(
+    mut image: PreparedImage,
+    options: BatchDecodeOptions,
+) -> PrepareImageResult {
     if image.decode_settings() != options.settings {
         return Err(BatchItemError::PreparedDecodeSettingsMismatch {
             prepared: image.decode_settings(),
             requested: options.settings,
         });
     }
-    let mut info = batch_group_info(image.support(), image.plan(), options)?;
+    let mut info = batch_group_info(image.support(), image.plan().output_dims(), options)?;
     reconcile_codec_plan_metadata(&mut info, image.codec_plan())?;
+    image.cpu_execution = cpu_execution_for(&image, &info, options);
     let execution_shape =
         batch_execution_shape(image.support(), image.plan(), image.preparation_depth());
     Ok((image, info, execution_shape))
+}
+
+/// Prepare inputs one at a time under one operation's controls.
+///
+/// Serial preparation lets the working-memory limit bound the whole call:
+/// each input's native parse and plan construction runs beside the plans
+/// already retained for earlier inputs. Every input that fails a limit or
+/// observes cancellation is an indexed preparation error.
+pub(super) fn prepare_batch_with_control(
+    inputs: Vec<EncodedImage>,
+    options: BatchDecodeOptions,
+    worker: &mut BatchWorker,
+    prepare_for: PrepareFor,
+    control: &crate::J2kDecodeControl,
+) -> Result<PreparedBatch, BatchInfrastructureError> {
+    prepare_staging_bytes(inputs.len())?;
+    let mut groups: Vec<PreparedBatchGroup> = Vec::new();
+    let mut errors = Vec::new();
+    let mut live_bytes = 0usize;
+    worker.prepare_owned_decode();
+    for (source_index, input) in inputs.into_iter().enumerate() {
+        let result = prepare_image(
+            input,
+            source_index,
+            options,
+            worker,
+            Some(control),
+            live_bytes,
+        );
+        if let Ok((image, _, _)) = &result {
+            // An unrepresentable count leaves no allowance for later inputs.
+            let retained = image
+                .codec_plan()
+                .retained_allocation_bytes()
+                .unwrap_or(usize::MAX);
+            live_bytes = live_bytes.saturating_add(retained);
+        }
+        push_prepared_result(
+            &mut groups,
+            &mut errors,
+            source_index,
+            result,
+            options,
+            prepare_for,
+        )?;
+    }
+    Ok(PreparedBatch {
+        groups: Arc::from(groups),
+        errors: Arc::from(errors),
+        options,
+    })
 }
 
 fn push_prepared_result(
@@ -174,7 +237,7 @@ fn push_prepared_result(
 ) -> Result<(), BatchInfrastructureError> {
     let result = match (prepare_for, result) {
         (PrepareFor::CpuDecoder, Ok((image, info, execution_shape))) => {
-            cpu_preflight_error(&image, &info)
+            cpu_preflight_error(image.cpu_execution(), &info)
                 .map_or_else(|| Ok((image, info, execution_shape)), Err)
         }
         (_, result) => result,
@@ -222,8 +285,11 @@ fn push_prepared_result(
 /// plan whose execution exceeds the per-decode bound, or one image whose own
 /// output exceeds the per-allocation output cap, can never decode, so each
 /// fails here as an indexed error instead of at decode time.
-fn cpu_preflight_error(image: &PreparedImage, info: &BatchGroupInfo) -> Option<BatchItemError> {
-    let source = if image.cpu_execution() == CpuExecution::ExceedsDecodeBound {
+pub(super) fn cpu_preflight_error(
+    execution: CpuExecution,
+    info: &BatchGroupInfo,
+) -> Option<BatchItemError> {
+    let source = if execution == CpuExecution::ExceedsDecodeBound {
         CpuExecution::decode_bound_error()
     } else {
         // Decode reports an unsupported sample width itself.
@@ -311,7 +377,7 @@ fn try_prepare_vec<T>(
     })
 }
 
-fn try_reserve_one<T>(
+pub(super) fn try_reserve_one<T>(
     values: &mut Vec<T>,
     what: &'static str,
 ) -> Result<(), BatchInfrastructureError> {

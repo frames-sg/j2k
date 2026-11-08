@@ -78,8 +78,9 @@ fn sampled_trc_srgb_profile() -> ColorProfile {
 }
 
 fn region(bytes: &[u8], fmt: PixelFormat, roi: Rect) -> Result<Vec<u8>, j2k::J2kError> {
-    let stride = roi.w as usize * fmt.bytes_per_pixel();
-    let mut out = vec![0_u8; stride * roi.h as usize];
+    let row_bytes = roi.w as usize * fmt.bytes_per_pixel();
+    let stride = row_bytes + 5;
+    let mut out = vec![0xA5_u8; stride * roi.h as usize];
     J2kDecoder::new(bytes)?.decode_region_into(
         &mut J2kScratchPool::new(),
         &mut out,
@@ -87,7 +88,12 @@ fn region(bytes: &[u8], fmt: PixelFormat, roi: Rect) -> Result<Vec<u8>, j2k::J2k
         fmt,
         roi,
     )?;
-    Ok(out)
+    let mut packed = Vec::new();
+    for row in out.chunks_exact(stride) {
+        packed.extend_from_slice(&row[..row_bytes]);
+        assert!(row[row_bytes..].iter().all(|&byte| byte == 0xA5));
+    }
+    Ok(packed)
 }
 
 fn scaled_region(bytes: &[u8], fmt: PixelFormat, roi: Rect, levels: u8) -> Vec<u8> {
@@ -153,6 +159,38 @@ fn srgb_icc_scaled_region_matches_enumerated_srgb() {
                 "{fmt:?} at {levels} levels"
             );
         }
+    }
+}
+
+#[test]
+fn srgb_icc_region_plan_matches_supported_output_and_keeps_native16_unsupported() {
+    let tagged = icc_jp2(&sampled_trc_srgb_profile());
+    let mut decoder = J2kDecoder::new(&tagged).expect("decoder");
+    for levels in [0, 1, 2] {
+        for fmt in [PixelFormat::Rgb8, PixelFormat::Rgba8] {
+            let plan = decoder
+                .region_decode_plan(fmt, ROI, levels)
+                .expect("sRGB ICC plan");
+            assert_eq!(plan.format, fmt);
+            assert_eq!(
+                plan.row_bytes,
+                plan.output_region.w as usize * fmt.bytes_per_pixel()
+            );
+            assert_eq!(
+                scaled_region(&tagged, fmt, ROI, levels).len(),
+                plan.buffer_bytes
+            );
+        }
+    }
+    for fmt in [PixelFormat::Rgb16, PixelFormat::Rgba16] {
+        assert!(matches!(
+            decoder.region_decode_plan(fmt, ROI, 0),
+            Err(J2kError::Unsupported(_))
+        ));
+        assert!(matches!(
+            region(&tagged, fmt, ROI),
+            Err(J2kError::Unsupported(_))
+        ));
     }
 }
 

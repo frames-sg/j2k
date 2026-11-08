@@ -11,7 +11,7 @@ use j2k_native::{
     J2kReferencedClassicPlan,
 };
 
-use super::super::{PreparedBatchGroupRef, PreparedImage};
+use super::super::{CpuPreparedImage, PreparedBatchGroupRef};
 use super::{CpuFlattenedPayloadJob, CpuImagePayloadSpan};
 use crate::batch::allocation::J2K_BATCH_METADATA_ALLOWANCE_BYTES;
 
@@ -98,7 +98,7 @@ fn visit_classic_component_jobs(
 
 pub(super) fn append_input_range(
     arena: &mut Vec<u8>,
-    image: &PreparedImage,
+    image: &CpuPreparedImage,
     range: J2kCodestreamRange,
     source_index: usize,
 ) -> Result<J2kCodestreamRange, BatchInfrastructureError> {

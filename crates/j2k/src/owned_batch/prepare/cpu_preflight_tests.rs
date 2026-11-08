@@ -904,3 +904,149 @@ fn sixteen_bit_plans_over_the_bound_stream_to_the_planned_samples() {
         }
     }
 }
+
+#[test]
+fn cpu_reused_preparations_apply_receiving_session_admission() {
+    let mut rgba_channels = identity_rgb_channel_definitions().to_vec();
+    rgba_channels.push(crate::J2kChannelDefinition {
+        channel_index: 3,
+        channel_type: crate::J2kChannelType::Opacity,
+        association: crate::J2kChannelAssociation::WholeImage,
+    });
+    for ht in [false, true] {
+        let wrapper = if ht {
+            crate::J2kFileWrapOptions::jph()
+        } else {
+            crate::J2kFileWrapOptions::jp2()
+        };
+        let rgba = Arc::from(
+            crate::wrap_j2k_codestream(
+                &fixture(48, 32, 4, 8, ht),
+                wrapper
+                    .with_color(crate::J2kFileColorSpec::Enumerated(
+                        j2k_core::Colorspace::SRgb,
+                    ))
+                    .with_metadata(crate::J2kFileBoxMetadata {
+                        palette: None,
+                        component_mappings: &[],
+                        channel_definitions: &rgba_channels,
+                    }),
+            )
+            .unwrap(),
+        );
+        let fixtures = [
+            ("RGBA8", rgba, false),
+            ("Gray12", fixture(48, 32, 1, 12, ht), true),
+            ("RGB12", fixture(48, 32, 3, 12, ht), true),
+        ];
+        for (name, bytes, streams) in &fixtures {
+            for layout in [BatchLayout::Nchw, BatchLayout::Nhwc] {
+                for source_limited in [false, true] {
+                    let options = |limited: bool| BatchDecodeOptions {
+                        max_working_memory_bytes: limited.then(|| NonZeroUsize::new(1).unwrap()),
+                        ..single_worker_options_with(layout)
+                    };
+                    let inputs = || vec![EncodedImage::full(Arc::clone(bytes)); 2];
+                    let source = prepare_batch(inputs(), options(source_limited)).unwrap();
+                    assert!(source.errors().is_empty(), "{name}: {:?}", source.errors());
+                    let source_decisions = planned_bytes(&source);
+                    let images = || {
+                        source
+                            .groups()
+                            .iter()
+                            .flat_map(|group| group.images().iter().cloned())
+                            .collect()
+                    };
+                    let target_options = options(!source_limited);
+                    let mut fresh_session = CpuBatchDecoder::new(target_options);
+                    let fresh = fresh_session.prepare(inputs()).unwrap();
+                    let expected = fresh_session.decode_prepared(&fresh).unwrap();
+                    let mut regroup_session = CpuBatchDecoder::new(target_options);
+                    let regrouped = regroup_session.prepare_prepared_images(images()).unwrap();
+                    assert_eq!(
+                        planned_bytes(&regrouped),
+                        planned_bytes(&fresh),
+                        "{name}, HT={ht}, {layout:?}, source limited={source_limited}"
+                    );
+                    assert_eq!(regrouped.errors(), fresh.errors());
+                    assert_eq!(
+                        regroup_session.decode_prepared(&regrouped).unwrap(),
+                        expected
+                    );
+                    let mut direct_session = CpuBatchDecoder::new(target_options);
+                    let direct = direct_session.decode_prepared(&source).unwrap();
+                    assert_eq!(
+                        direct.groups(),
+                        expected.groups(),
+                        "{name}, HT={ht}, {layout:?}, source limited={source_limited}"
+                    );
+                    if !source_limited && !streams {
+                        assert_eq!(direct.errors().len(), 2);
+                        assert!(direct.errors().iter().enumerate().all(|(index, error)| {
+                            is_decode_bound_error(error, index, BatchErrorStage::Decode)
+                        }));
+                    } else {
+                        assert!(direct.errors().is_empty(), "{name}: {:?}", direct.errors());
+                    }
+                    assert_eq!(
+                        direct_session.workspace_stats().decode_calls(),
+                        fresh_session.workspace_stats().decode_calls(),
+                        "fresh and reused preparations select the same native route"
+                    );
+                    assert_eq!(
+                        planned_bytes(&source),
+                        source_decisions,
+                        "receiving sessions do not alter the source preparation"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn preferred_cpu_stream_recovers_only_to_an_admitted_plan() {
+    use super::super::cpu_materialize::STREAMED_RETAINED_BASELINE;
+    let bytes = classic_rgb8(96, 64);
+    let inputs = || vec![EncodedImage::full(Arc::clone(&bytes)); 2];
+    let mut reference_session = CpuBatchDecoder::new(single_worker_options());
+    let reference = reference_session.decode(inputs()).unwrap();
+    assert!(reference.errors().is_empty(), "{:?}", reference.errors());
+    let _threshold = StreamAbove::hold(1);
+    for required in [false, true] {
+        let options = BatchDecodeOptions {
+            max_working_memory_bytes: required.then(|| NonZeroUsize::new(1).unwrap()),
+            ..single_worker_options()
+        };
+        let mut session = CpuBatchDecoder::new(options);
+        let prepared = session.prepare(inputs()).unwrap();
+        assert!(planned_bytes(&prepared)
+            .iter()
+            .all(|(_, execution)| if required {
+                *execution == CpuExecution::StreamedRows
+            } else {
+                matches!(execution, CpuExecution::StreamedRowsOrPlan { .. })
+            }));
+        let output = STREAMED_RETAINED_BASELINE.with(|baseline| {
+            baseline.set(j2k_native::DEFAULT_MAX_DECODE_BYTES);
+            let output = session.decode_prepared(&prepared);
+            baseline.set(0);
+            output.unwrap()
+        });
+        if required {
+            assert!(output.groups().is_empty(), "{:?}", output.groups());
+            assert_eq!(output.errors().len(), 2);
+            assert!(output.errors().iter().all(|error| matches!(&error.source,
+                BatchItemError::Codec { stage: BatchErrorStage::Decode, source }
+                if matches!(source.as_ref(), crate::J2kError::ResourceLimit { .. }))));
+            assert_eq!(session.workspace_stats().prepared_plan_decode_calls(), 0);
+        } else {
+            assert!(output.errors().is_empty(), "{:?}", output.errors());
+            assert!(
+                output == reference,
+                "recovered samples match the admitted plan"
+            );
+            assert_eq!(session.workspace_stats().prepared_plan_decode_calls(), 2);
+        }
+    }
+}

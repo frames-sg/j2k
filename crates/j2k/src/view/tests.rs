@@ -28,6 +28,10 @@ fn fresh_native_context_preserves_configured_parallelism() {
         },
         reference_grid: crate::J2kReferenceGrid::at_origin((1, 1)),
         image: None,
+        image_reduction_levels: 0,
+        source_max_reduction_levels: None,
+        preparation_cache_limit_bytes: j2k_native::DEFAULT_MAX_DECODE_BYTES,
+        preparation_cache_stats: j2k_core::CacheStats::default(),
         settings: DecodeSettings::strict(),
         native_context: j2k_native::DecoderContext::default(),
         full_decode_planes_budget: None,
@@ -76,4 +80,46 @@ fn region_decode_leaves_no_decode_buffers_in_the_decoder() {
     let stats = decoder.native_context.workspace_stats();
     assert_eq!(stats.retained_component_bytes(), 0);
     assert_eq!(stats.retained_scratch_bytes(), 0);
+
+    // Explicit normalized output retains native scratch. A following legacy
+    // decode at the same cached level must release it before local scratch.
+    for operation in 0..3 {
+        decoder
+            .decode_region_srgb8_at_reduction(Rect::full((32, 32)), 1)
+            .unwrap();
+        assert!(decoder.native_context.retained_allocation_bytes().unwrap() > 0);
+        let mut reduced = vec![0; 16 * 16 * 3];
+        match operation {
+            0 => {
+                decoder
+                    .decode_scaled_into(
+                        &mut J2kScratchPool::new(),
+                        &mut reduced,
+                        16 * 3,
+                        PixelFormat::Rgb8,
+                        Downscale::Half,
+                    )
+                    .unwrap();
+            }
+            1 => {
+                decoder
+                    .decode_region_scaled_pow2_into(
+                        &mut J2kScratchPool::new(),
+                        &mut reduced,
+                        16 * 3,
+                        PixelFormat::Rgb8,
+                        Rect::full((32, 32)),
+                        1,
+                    )
+                    .unwrap();
+            }
+            _ => {
+                decoder.decode_native_components_at_reduction(1).unwrap();
+            }
+        }
+        assert_eq!(
+            decoder.native_context.retained_allocation_bytes().unwrap(),
+            0
+        );
+    }
 }

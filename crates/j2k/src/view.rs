@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::{
-    backend::{
-        image as backend_image, image_at_scale as backend_image_at_scale,
-        image_with_reduction as backend_image_with_reduction, inspect_info,
-        inspect_info_from_image, Image,
-    },
+    backend::{image as backend_image, inspect_info, inspect_info_from_image, Image},
     decode::{
         decode_full_image_on_route, decode_image_region_into_with_native_context,
         decode_native_components_with_native_context, decode_warnings_for_image, full_image_route,
@@ -22,10 +18,15 @@ use j2k_core::{
     PixelFormat, Rect,
 };
 
+mod control;
 mod deep_scale;
+pub use control::{J2kCancellationToken, J2kDecodeControl};
 mod plan;
 mod rows;
-pub use plan::{J2kDecodePlan, J2kDecodeRoute, J2kStreamingBlocker};
+pub use plan::{
+    J2kDecodePlan, J2kDecodeRoute, J2kRegionDecodePlan, J2kSampleInterpretation,
+    J2kStreamingBlocker,
+};
 mod srgb8;
 mod traits;
 
@@ -66,28 +67,67 @@ impl<'a> J2kView<'a> {
         input: &'a [u8],
         settings: DecodeSettings,
     ) -> Result<Self, J2kError> {
-        let image = backend_image(input, settings, None)?;
+        Self::parse_with(input, settings, None)
+    }
+
+    /// Parse container/codestream metadata under one operation's controls.
+    ///
+    /// The native image parse and header inspection stay within the control's
+    /// working-memory limit and stop at their cooperative checkpoints when it
+    /// is cancelled. The output limit does not apply: parsing allocates no
+    /// output. The parsed view retains only what it actually holds; the
+    /// control's allowance is not carried into later operations.
+    ///
+    /// # Errors
+    /// Returns the errors of [`Self::parse_with_settings`], or a resource-limit
+    /// or cancellation error.
+    pub fn parse_with_control(
+        input: &'a [u8],
+        settings: DecodeSettings,
+        control: &J2kDecodeControl,
+    ) -> Result<Self, J2kError> {
+        Self::parse_with(input, settings, Some(control))
+    }
+
+    fn parse_with(
+        input: &'a [u8],
+        settings: DecodeSettings,
+        control: Option<&J2kDecodeControl>,
+    ) -> Result<Self, J2kError> {
+        let image = match control {
+            None => backend_image(input, settings, None)?,
+            Some(control) => {
+                crate::backend::image_for_operation(input, settings, 0, 0, Some(control))?
+            }
+        };
+        let parsed = match control {
+            None => parse_image_info_with_settings(input, settings),
+            Some(control) => {
+                crate::parse::parse_image_info_with_control(input, settings, control, 0)
+            }
+        };
         // The settings' recoveries apply to this parse as to the image's, so
         // a recovered file has the metadata its decodes use. Its bytes are
         // not a passthrough candidate: they hold what was recovered from.
-        let (info, support_info, passthrough) =
-            match parse_image_info_with_settings(input, settings) {
-                Ok(parsed) => {
-                    let support_info = parsed.into_support_info();
-                    let passthrough = (!image.used_lenient_metadata_recovery())
-                        .then_some((support_info.transfer_syntax, support_info.payload_kind));
-                    (support_info.info.clone(), Some(support_info), passthrough)
-                }
-                Err(error)
-                    if should_fallback_to_backend_after_parse_error(
+        let (info, support_info, passthrough) = match parsed {
+            Ok(parsed) => {
+                let support_info = parsed.into_support_info();
+                let passthrough = (!image.used_lenient_metadata_recovery())
+                    .then_some((support_info.transfer_syntax, support_info.payload_kind));
+                (support_info.info.clone(), Some(support_info), passthrough)
+            }
+            // A control's own stop is never a reason to fall back.
+            Err(error)
+                if !matches!(error, J2kError::Cancelled)
+                    && should_fallback_to_backend_after_parse_error(
                         &error,
                         image.used_lenient_metadata_recovery(),
                     ) =>
-                {
-                    (inspect_info_from_image(&image), None, None)
-                }
-                Err(error) => return Err(error),
-            };
+            {
+                (inspect_info_from_image(&image), None, None)
+            }
+            Err(error) => return Err(error),
+        };
         Ok(Self {
             bytes: input,
             reference_grid: J2kReferenceGrid::of_native(&image, info.dimensions),
@@ -139,6 +179,10 @@ pub struct J2kDecoder<'a> {
     info: Info,
     reference_grid: J2kReferenceGrid,
     image: Option<Image<'a>>,
+    image_reduction_levels: u8,
+    source_max_reduction_levels: Option<u8>,
+    preparation_cache_limit_bytes: usize,
+    preparation_cache_stats: j2k_core::CacheStats,
     settings: DecodeSettings,
     native_context: j2k_native::DecoderContext<'a>,
     /// Set by [`Self::set_full_decode_planes_budget`]; see
@@ -227,6 +271,23 @@ impl<'a> J2kDecoder<'a> {
         Self::from_view(J2kView::parse_with_settings(input, settings)?)
     }
 
+    /// Create a decoder with a per-image validation policy, parsing it under
+    /// one operation's controls as [`J2kView::parse_with_control`] does.
+    ///
+    /// The control applies to this construction only; pass it again to each
+    /// later `*_with_control` operation.
+    ///
+    /// # Errors
+    /// Returns [`J2kError`] for unsupported or malformed input, or a
+    /// resource-limit or cancellation error.
+    pub fn new_with_control(
+        input: &'a [u8],
+        settings: DecodeSettings,
+        control: &J2kDecodeControl,
+    ) -> Result<Self, J2kError> {
+        Self::from_view(J2kView::parse_with_control(input, settings, control)?)
+    }
+
     /// Create a decoder from a previously parsed [`J2kView`].
     ///
     /// # Errors
@@ -237,6 +298,10 @@ impl<'a> J2kDecoder<'a> {
             info: view.info,
             reference_grid: view.reference_grid,
             image: view.image,
+            image_reduction_levels: 0,
+            source_max_reduction_levels: None,
+            preparation_cache_limit_bytes: j2k_native::DEFAULT_MAX_DECODE_BYTES,
+            preparation_cache_stats: j2k_core::CacheStats::default(),
             settings: view.settings,
             native_context: j2k_native::DecoderContext::default(),
             full_decode_planes_budget: None,
@@ -274,9 +339,17 @@ impl<'a> J2kDecoder<'a> {
         };
         let decoded = image
             .decode_components_with_context(native_context)
-            .map_err(J2kError::from_native_decode_error)?;
-        let retained_image_bytes = component_handoff_image_bytes(image)?;
-        J2kDecodedComponents::try_from_native(decoded, retained_image_bytes)
+            .map_err(J2kError::from_native_decode_error);
+        trim_image_cache(
+            &mut self.image,
+            self.preparation_cache_limit_bytes,
+            &mut self.preparation_cache_stats,
+        );
+        let retained_image_bytes = self
+            .image
+            .as_ref()
+            .map_or(Ok(0), component_handoff_image_bytes);
+        J2kDecodedComponents::try_from_native(decoded?, retained_image_bytes?)
     }
 
     /// Decode a source-coordinate region into borrowed component planes.
@@ -295,9 +368,17 @@ impl<'a> J2kDecoder<'a> {
         };
         let decoded = image
             .decode_region_components_with_context((roi.x, roi.y, roi.w, roi.h), native_context)
-            .map_err(J2kError::from_native_decode_error)?;
-        let retained_image_bytes = component_handoff_image_bytes(image)?;
-        J2kDecodedComponents::try_from_native(decoded, retained_image_bytes)
+            .map_err(J2kError::from_native_decode_error);
+        trim_image_cache(
+            &mut self.image,
+            self.preparation_cache_limit_bytes,
+            &mut self.preparation_cache_stats,
+        );
+        let retained_image_bytes = self
+            .image
+            .as_ref()
+            .map_or(Ok(0), component_handoff_image_bytes);
+        J2kDecodedComponents::try_from_native(decoded?, retained_image_bytes?)
     }
 
     /// Decode the full image into owned native-bit-depth component planes.
@@ -323,10 +404,11 @@ impl<'a> J2kDecoder<'a> {
         let route = native_components_route(image, planes_budget);
         let decoded =
             decode_native_components_with_native_context(image, native_context, None, route);
-        let retained_image_bytes = component_handoff_image_bytes(image);
         if route == NativeRoute::Rows {
             self.native_context = self.fresh_native_context();
         }
+        self.trim_preparation_cache();
+        let retained_image_bytes = self.preparation_cache_retained_bytes();
         J2kDecodedNativeComponents::try_from_native(decoded?, retained_image_bytes?)
     }
 
@@ -344,9 +426,11 @@ impl<'a> J2kDecoder<'a> {
         let (Some(image), context) = (self.image.as_ref(), &mut self.native_context) else {
             return Err(J2kError::internal_backend("internal image cache missing"));
         };
-        image
+        let result = image
             .decode_wavelets_with_context(context, selection)
-            .map_err(J2kError::from_native_decode_error)
+            .map_err(J2kError::from_native_decode_error);
+        self.trim_preparation_cache();
+        result
     }
 
     /// Decode a source-coordinate region into owned native-bit-depth component
@@ -374,10 +458,11 @@ impl<'a> J2kDecoder<'a> {
         let route = native_region_components_route(image, roi);
         let decoded =
             decode_native_components_with_native_context(image, native_context, Some(roi), route);
-        let retained_image_bytes = component_handoff_image_bytes(image);
         if route == NativeRoute::Rows {
             self.native_context = self.fresh_native_context();
         }
+        self.trim_preparation_cache();
+        let retained_image_bytes = self.preparation_cache_retained_bytes();
         J2kDecodedNativeComponents::try_from_native(decoded?, retained_image_bytes?)
     }
 
@@ -461,6 +546,16 @@ impl<'a> J2kDecoder<'a> {
         stride: usize,
         fmt: PixelFormat,
     ) -> Result<J2kDecodeOutcome, J2kError> {
+        self.decode_into_cached_beside(out, stride, fmt, 0)
+    }
+
+    fn decode_into_cached_beside(
+        &mut self,
+        out: &mut [u8],
+        stride: usize,
+        fmt: PixelFormat,
+        retained_capacity: usize,
+    ) -> Result<J2kDecodeOutcome, J2kError> {
         validate_buffer(self.info.dimensions, out.len(), stride, fmt)?;
         self.ensure_image()?;
         let budget = self.full_decode_planes_budget();
@@ -475,15 +570,29 @@ impl<'a> J2kDecoder<'a> {
             coded_bytes: self.bytes.len(),
             scale: Downscale::None,
         };
-        let route = full_image_route(image, request);
-        let decoded =
-            decode_full_image_on_route(image, native_context, out, stride, request, &route);
+        let control = native_context
+            .operation_control()
+            .clone()
+            .beside_retained_bytes(retained_capacity)
+            .map_err(J2kError::from_native_decode_error)?;
+        let route = crate::decode::full_image_route_beside(
+            image,
+            request,
+            native_context
+                .retained_allocation_bytes()
+                .map_err(J2kError::from_native_decode_error)?,
+            &control,
+        );
+        let decoded = native_context.with_operation_control(control, |context| {
+            decode_full_image_on_route(image, context, out, stride, request, &route)
+        });
         let warnings = decode_warnings_for_image(image);
         if route.streams() {
             // As after a region decode, release the decode buffers rather
             // than hold them while the decoder is idle.
             self.native_context = self.fresh_native_context();
         }
+        self.trim_preparation_cache();
         decoded?;
         Ok(j2k_core::DecodeOutcome::new(
             Rect::full(self.info.dimensions),
@@ -546,6 +655,7 @@ impl<'a> J2kDecoder<'a> {
         // them would only save their allocation. Release them and the other
         // decode buffers rather than hold them while the decoder is idle.
         self.native_context = self.fresh_native_context();
+        self.trim_preparation_cache();
         decoded?;
         Ok(j2k_core::DecodeOutcome::new(roi, warnings))
     }
@@ -580,25 +690,33 @@ impl<'a> J2kDecoder<'a> {
         if scale == Downscale::None {
             return self.decode_into_with_scratch(pool, out, stride, fmt);
         }
-        let image = backend_image_at_scale(self.bytes, self.settings, scale)?;
-        let warnings = decode_warnings_for_image(&image);
-        let image_dims = (image.width(), image.height());
-        validate_buffer(image_dims, out.len(), stride, fmt)?;
-        let mut native_context = self.fresh_native_context();
-        let request = RouteRequest {
-            fmt,
-            budget: self.full_decode_planes_budget(),
-            parallelism: native_context.cpu_decode_parallelism(),
-            components: self.info.components,
-            coded_bytes: self.bytes.len(),
-            scale,
-        };
-        let route = full_image_route(&image, request);
-        decode_full_image_on_route(&image, &mut native_context, out, stride, request, &route)?;
-        Ok(j2k_core::DecodeOutcome::new(
-            Rect::full(image_dims),
-            warnings,
-        ))
+        let levels = u8::try_from(scale.denominator().trailing_zeros())
+            .map_err(|_| J2kError::internal_backend("downscale level count overflow"))?;
+        let result = (|| {
+            self.ensure_image_at_reduction(levels)?;
+            self.native_context.release_reusable_allocations();
+            let image = self.cached_image()?;
+            let warnings = decode_warnings_for_image(image);
+            let image_dims = (image.width(), image.height());
+            validate_buffer(image_dims, out.len(), stride, fmt)?;
+            let mut native_context = self.fresh_native_context();
+            let request = RouteRequest {
+                fmt,
+                budget: self.full_decode_planes_budget(),
+                parallelism: native_context.cpu_decode_parallelism(),
+                components: self.info.components,
+                coded_bytes: self.bytes.len(),
+                scale,
+            };
+            let route = full_image_route(image, request);
+            decode_full_image_on_route(image, &mut native_context, out, stride, request, &route)?;
+            Ok(j2k_core::DecodeOutcome::new(
+                Rect::full(image_dims),
+                warnings,
+            ))
+        })();
+        self.trim_preparation_cache();
+        result
     }
 
     /// Decode a source-coordinate region at a reduced resolution.
@@ -634,43 +752,138 @@ impl<'a> J2kDecoder<'a> {
         roi: Rect,
         scale: Downscale,
     ) -> Result<J2kDecodeOutcome, J2kError> {
-        if scale == Downscale::None {
-            return self.decode_region_into(pool, out, stride, fmt, roi);
-        }
-        validate_region(roi, self.info.dimensions)?;
-        let image = backend_image_at_scale(self.bytes, self.settings, scale)?;
-        let scaled_roi =
-            deep_scale::image_covering(&image, self.info.dimensions, roi, scale.denominator());
-        validate_buffer((scaled_roi.w, scaled_roi.h), out.len(), stride, fmt)?;
-        let warnings = decode_warnings_for_image(&image);
-        let image_dims = (image.width(), image.height());
-        validate_region(scaled_roi, image_dims)?;
-        let mut native_context = self.fresh_native_context();
-        decode_image_region_into_with_native_context(
-            &image,
-            &mut native_context,
-            out,
-            stride,
-            fmt,
-            scaled_roi,
-        )?;
-        Ok(j2k_core::DecodeOutcome::new(scaled_roi, warnings))
+        let levels = u8::try_from(scale.denominator().trailing_zeros())
+            .map_err(|_| J2kError::internal_backend("downscale level count overflow"))?;
+        self.decode_region_scaled_pow2_into(pool, out, stride, fmt, roi, levels)
     }
 
     fn ensure_image(&mut self) -> Result<(), J2kError> {
-        if self.image.is_none() {
-            self.image = Some(backend_image(self.bytes, self.settings, None)?);
-            if self.info.tile_layout.is_none() {
-                self.info = inspect_info_from_image(self.cached_image()?);
+        self.ensure_image_at_reduction(0)
+    }
+
+    /// Select one cached native image at an exact level. Misses release prior
+    /// image and execution owners before parsing, so no external live-byte
+    /// snapshot is embedded in an image retained for a later operation.
+    pub(super) fn ensure_image_at_reduction(&mut self, levels: u8) -> Result<(), J2kError> {
+        self.ensure_image_at_reduction_with_control(levels, &J2kDecodeControl::default())
+    }
+
+    pub(super) fn ensure_image_at_reduction_with_control(
+        &mut self,
+        levels: u8,
+        control: &J2kDecodeControl,
+    ) -> Result<(), J2kError> {
+        control.check_cancelled()?;
+        let cap = j2k_native::DEFAULT_MAX_DECODE_BYTES - control.working_baseline();
+        let cached_bytes = self
+            .image
+            .as_ref()
+            .and_then(|image| image.retained_allocation_bytes().ok());
+        if self.image_reduction_levels == levels && cached_bytes.is_some_and(|bytes| bytes <= cap) {
+            if !self
+                .native_context
+                .retained_allocation_bytes()
+                .is_ok_and(|bytes| bytes.saturating_add(cached_bytes.unwrap_or(0)) <= cap)
+            {
+                self.native_context = self.fresh_native_context();
             }
+            self.preparation_cache_stats.hits = self.preparation_cache_stats.hits.saturating_add(1);
+            return Ok(());
+        }
+        self.native_context = self.fresh_native_context();
+        self.clear_preparation_image();
+        self.preparation_cache_stats.misses = self.preparation_cache_stats.misses.saturating_add(1);
+        self.image = Some(crate::backend::image_for_operation(
+            self.bytes,
+            self.settings,
+            levels,
+            0,
+            Some(control),
+        )?);
+        self.image_reduction_levels = levels;
+        if levels == 0 && self.info.tile_layout.is_none() {
+            self.info = inspect_info_from_image(self.cached_image()?);
         }
         Ok(())
     }
 
-    fn cached_image(&self) -> Result<&Image<'a>, J2kError> {
+    pub(super) fn cached_image(&self) -> Result<&Image<'a>, J2kError> {
         self.image
             .as_ref()
             .ok_or_else(|| J2kError::internal_backend("internal image cache missing"))
+    }
+
+    pub(super) fn source_max_reduction_levels(&mut self) -> Result<u8, J2kError> {
+        self.source_max_reduction_levels_with_control(&J2kDecodeControl::default())
+    }
+
+    pub(super) fn source_max_reduction_levels_with_control(
+        &mut self,
+        control: &J2kDecodeControl,
+    ) -> Result<u8, J2kError> {
+        control.check_cancelled()?;
+        if let Some(levels) = self.source_max_reduction_levels {
+            return Ok(levels);
+        }
+        // Tile-header planning must not overlap a prior decode's retained
+        // component or transform scratch outside its controlled baseline.
+        self.native_context = self.fresh_native_context();
+        self.ensure_image_at_reduction_with_control(0, control)?;
+        let levels = self
+            .cached_image()?
+            .max_reduction_levels_with_operation_control(&control.to_native())
+            .map_err(|error| control.native_error(error))?;
+        self.source_max_reduction_levels = Some(levels);
+        Ok(levels)
+    }
+
+    /// Limit parsed image and packet-directory bytes retained between operations.
+    ///
+    /// Zero disables this cache. The limit excludes borrowed compressed input,
+    /// caller output, and execution scratch; it is not a process-memory limit.
+    /// It does not prevent an operation from temporarily parsing larger metadata.
+    pub fn set_preparation_cache_limit_bytes(&mut self, bytes: usize) {
+        self.preparation_cache_limit_bytes = bytes;
+        self.trim_preparation_cache();
+    }
+
+    /// Configured parsed-image retention limit.
+    #[must_use]
+    pub const fn preparation_cache_limit_bytes(&self) -> usize {
+        self.preparation_cache_limit_bytes
+    }
+
+    /// Actual allocator capacities retained by the parsed-image cache.
+    pub fn preparation_cache_retained_bytes(&self) -> Result<usize, J2kError> {
+        self.image.as_ref().map_or(Ok(0), |image| {
+            image
+                .retained_allocation_bytes()
+                .map_err(J2kError::from_native_decode_error)
+        })
+    }
+
+    /// Parsed-image cache lookups and evictions since this decoder was created.
+    #[must_use]
+    pub fn preparation_cache_stats(&self) -> j2k_core::CacheStats {
+        j2k_core::CacheStats {
+            occupied_slots: u64::from(self.image.is_some()),
+            ..self.preparation_cache_stats
+        }
+    }
+
+    fn clear_preparation_image(&mut self) {
+        if self.image.take().is_some() {
+            self.preparation_cache_stats.evictions =
+                self.preparation_cache_stats.evictions.saturating_add(1);
+        }
+    }
+
+    pub(super) fn trim_preparation_cache(&mut self) {
+        trim_image_cache(
+            &mut self.image,
+            self.preparation_cache_limit_bytes,
+            &mut self.preparation_cache_stats,
+        );
     }
 
     /// What a full-image decode's component planes may charge: the native
@@ -697,6 +910,17 @@ impl<'a> J2kDecoder<'a> {
         let mut native_context = j2k_native::DecoderContext::default();
         native_context.set_cpu_decode_parallelism(self.native_context.cpu_decode_parallelism());
         native_context
+    }
+}
+
+fn trim_image_cache(image: &mut Option<Image<'_>>, limit: usize, stats: &mut j2k_core::CacheStats) {
+    if image.as_ref().is_some_and(|image| {
+        image
+            .retained_allocation_bytes()
+            .map_or(true, |bytes| bytes > limit)
+    }) {
+        *image = None;
+        stats.evictions = stats.evictions.saturating_add(1);
     }
 }
 

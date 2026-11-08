@@ -12,7 +12,7 @@ use j2k_core::{Downscale, PixelFormat, Rect};
 use j2k_native::{encode, CpuDecodeParallelism, EncodeOptions};
 use j2k_native::{DecodeError, DecoderContext, DecodingError};
 
-fn codestream(components: u16, options: &EncodeOptions) -> Vec<u8> {
+pub(super) fn codestream(components: u16, options: &EncodeOptions) -> Vec<u8> {
     let (width, height) = (96_u32, 80_u32);
     let pixels: Vec<u8> = (0..width * height * u32::from(components))
         .map(|index| (index.wrapping_mul(2_654_435_761) >> 24) as u8)
@@ -100,6 +100,48 @@ fn reduced_decodes_plan_full_resolution_coefficients() {
     let half = floor(&bytes, Downscale::Half);
     assert!(half < full, "{half} < {full}");
     assert!(half > 96 * 80 * 4, "{half}");
+}
+
+#[test]
+fn full_planes_floor_accounts_live_planning_owners_without_changing_estimate() {
+    let bytes = codestream(
+        3,
+        &EncodeOptions {
+            num_decomposition_levels: 1,
+            tile_size: Some((8, 8)),
+            ..EncodeOptions::default()
+        },
+    );
+    let settings = DecodeSettings::default().to_native(None);
+    let ordinary = Image::new(&bytes, &settings).expect("ordinary image");
+    let expected = ordinary
+        .full_decode_planes_floor(0)
+        .expect("ordinary floor");
+    assert!(expected.is_some());
+    let with_owners = Image::new_with_retained_baseline(&bytes, &settings, 1024)
+        .expect("image beside retained owners");
+    assert_eq!(
+        with_owners
+            .full_decode_planes_floor(0)
+            .expect("same execution estimate"),
+        expected
+    );
+
+    // Main-header metadata fits within 32 KiB, but 120 effective tile records
+    // do not. Model other live owners without allocating near the global cap.
+    let tight = Image::new_with_retained_baseline(
+        &bytes,
+        &settings,
+        j2k_native::DEFAULT_MAX_DECODE_BYTES - 32 * 1024,
+    )
+    .expect("main header fits");
+    let error = tight
+        .full_decode_planes_floor(0)
+        .expect_err("tile metadata must fit beside retained owners");
+    assert!(matches!(
+        error.classify(),
+        j2k_native::DecodeErrorClass::ResourceLimit { .. }
+    ));
 }
 
 /// A 16-bit decode streams when the planes decode or the pack of its native
@@ -962,6 +1004,17 @@ fn deep_and_signed_images_stream_past_the_budget() {
             FullImageRoute::Planes
         );
         assert_eq!(native_components_route(&image, budget), NativeRoute::Planes);
+        for levels in [0, 1, 3] {
+            let decode = |budget| {
+                let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
+                decoder.set_cpu_decode_parallelism(crate::CpuDecodeParallelism::Serial);
+                decoder.set_full_decode_planes_budget(budget);
+                decoder
+                    .decode_native_components_at_reduction(levels)
+                    .unwrap_or_else(|error| panic!("{label}, reduction {levels}: {error:?}"))
+            };
+            assert_eq!(decode(0), decode(usize::MAX), "{label}, reduction {levels}");
+        }
     }
 }
 
@@ -1349,52 +1402,81 @@ fn one_thread_default_streams_write_the_planes_bytes() {
 fn tiles_their_share_refuses_decode_alone_afterwards() {
     use super::tiles::{decode_tiles_into, REFUSED_TILES, TILE_SHARE_OVERRIDE};
     use core::sync::atomic::Ordering;
-    let bytes = codestream(
-        3,
-        &EncodeOptions {
-            num_decomposition_levels: 2,
-            tile_size: Some((32, 40)),
-            ..EncodeOptions::default()
-        },
-    );
-    let image = image_at_scale(&bytes, DecodeSettings::default(), Downscale::None).expect("image");
-    let tiles = image
-        .output_tile_rects()
-        .expect("tile rects")
-        .into_iter()
-        .map(|(x, y, w, h)| Rect { x, y, w, h })
-        .collect::<Vec<_>>();
-    assert_eq!(tiles.len(), 6);
-    let fmt = PixelFormat::Rgb8;
-    let stride = 96 * fmt.bytes_per_pixel();
-    let mut planes = vec![0_u8; stride * 80];
-    decode_full_image_into_with_native_context(
-        &image,
-        &mut DecoderContext::default(),
-        &mut planes,
-        stride,
-        fmt,
-        &FullImageRoute::Planes,
-    )
-    .expect("planes");
-
-    for share in [None, Some(1024)] {
-        TILE_SHARE_OVERRIDE.with(|cell| cell.set(share));
-        let refused_before = REFUSED_TILES.load(Ordering::Relaxed);
-        let mut out = vec![0_u8; planes.len()];
-        let decoded = decode_tiles_into(&image, &tiles, 4, (&mut out, stride, fmt));
-        TILE_SHARE_OVERRIDE.with(|cell| cell.set(None));
-        decoded.unwrap_or_else(|error| panic!("share {share:?}: {error:?}"));
-        assert!(
-            out == planes,
-            "share {share:?}: tiles differ from the planes"
+    for (components, fmt, native_fallback) in [
+        (3, PixelFormat::Rgb8, false),
+        (1, PixelFormat::Gray16, false),
+        (3, PixelFormat::Rgb8, true),
+    ] {
+        let bytes = codestream(
+            components,
+            &EncodeOptions {
+                num_decomposition_levels: 2,
+                tile_size: Some((32, 40)),
+                ..EncodeOptions::default()
+            },
         );
-        if share.is_some() {
-            // Other tests' tiles never refuse at their default shares.
+        let bytes = if native_fallback {
+            let channels = [1, 2, 3].map(|index| crate::J2kChannelDefinition {
+                channel_index: index - 1,
+                channel_type: crate::J2kChannelType::Color,
+                association: crate::J2kChannelAssociation::Color { index },
+            });
+            crate::wrap_j2k_codestream(
+                &bytes,
+                crate::J2kFileWrapOptions::jp2()
+                    .with_color(crate::J2kFileColorSpec::Enumerated(
+                        j2k_core::Colorspace::SRgb,
+                    ))
+                    .with_metadata(crate::J2kFileBoxMetadata {
+                        palette: None,
+                        component_mappings: &[],
+                        channel_definitions: &channels,
+                    }),
+            )
+            .expect("wrap native plane fallback")
+        } else {
+            bytes
+        };
+        let image =
+            image_at_scale(&bytes, DecodeSettings::default(), Downscale::None).expect("image");
+        assert_eq!(image.region_decode_streams_rows(), !native_fallback);
+        let tiles = image
+            .output_tile_rects()
+            .expect("tile rects")
+            .into_iter()
+            .map(|(x, y, w, h)| Rect { x, y, w, h })
+            .collect::<Vec<_>>();
+        assert_eq!(tiles.len(), 6);
+        let stride = 96 * fmt.bytes_per_pixel();
+        let mut planes = vec![0_u8; stride * 80];
+        decode_full_image_into_with_native_context(
+            &image,
+            &mut DecoderContext::default(),
+            &mut planes,
+            stride,
+            fmt,
+            &FullImageRoute::Planes,
+        )
+        .expect("planes");
+
+        for share in [None, Some(1024)] {
+            TILE_SHARE_OVERRIDE.with(|cell| cell.set(share));
+            let refused_before = REFUSED_TILES.load(Ordering::Relaxed);
+            let mut out = vec![0_u8; planes.len()];
+            let decoded = decode_tiles_into(&image, &tiles, 4, (&mut out, stride, fmt));
+            TILE_SHARE_OVERRIDE.with(|cell| cell.set(None));
+            decoded.unwrap_or_else(|error| panic!("share {share:?}: {error:?}"));
             assert!(
-                REFUSED_TILES.load(Ordering::Relaxed) > refused_before,
-                "a one-KiB share refuses tiles"
+                out == planes,
+                "share {share:?}: tiles differ from the planes"
             );
+            if share.is_some() {
+                // Other tests' tiles never refuse at their default shares.
+                assert!(
+                    REFUSED_TILES.load(Ordering::Relaxed) > refused_before,
+                    "a one-KiB share refuses tiles"
+                );
+            }
         }
     }
 }

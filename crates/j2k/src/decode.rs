@@ -14,7 +14,7 @@ pub use component_handoff::{
 mod output;
 pub(crate) use output::{
     decode_native_components_with_native_context, native_components_route,
-    native_region_components_route, NativeRoute,
+    native_region_components_route, resolve_u8_color_space, NativeRoute,
 };
 mod route;
 mod settings;
@@ -26,10 +26,14 @@ use output::{
     write_u16_output_rows, write_u8_output, U16RowSink, U8RowSink,
 };
 pub(crate) use route::{
-    full_image_route, output_streams_rows, FullImageRoute, PlanesBudget, RouteRequest,
+    full_image_route, full_image_route_beside, output_streams_rows, FullImageRoute, PlanesBudget,
+    RouteRequest,
 };
 pub use settings::DecodeSettings;
-pub(crate) use srgb8::{decode_image_srgb8, RoutedSrgb8};
+pub(crate) use srgb8::{
+    check_icc_working_control, decode_image_region_srgb8, decode_image_srgb8,
+    decode_image_srgb8_with_control, srgb8_output_layout, RoutedSrgb8,
+};
 pub use srgb8::{J2kSrgb8Image, J2kSrgb8Layout};
 pub(crate) use stripes::{
     decode_image_rows_in_stripes, rows_stream_whole, DeliverRow, StreamedRowsError,
@@ -185,7 +189,13 @@ pub(crate) fn decode_full_image_into_with_native_context<'a>(
             Rect::full((image.width(), image.height())),
         ),
         FullImageRoute::StreamedTiles { tiles, workers } => {
-            route::tiles::decode_tiles_into(image, tiles, *workers, (out, stride, fmt))
+            route::tiles::decode_tiles_into_with_control(
+                image,
+                tiles,
+                *workers,
+                (out, stride, fmt),
+                native_context.operation_control(),
+            )
         }
     }
 }
@@ -207,11 +217,9 @@ pub(crate) fn decode_full_image_on_route<'a>(
     match decode_full_image_into_with_native_context(image, native_context, out, stride, fmt, route)
     {
         Err(J2kError::ResourceLimit { .. })
-            if route.streams() && route::planes_fit(image, request) =>
+            if route.streams() && route::planes_fit(image, request, native_context) =>
         {
-            let parallelism = native_context.cpu_decode_parallelism();
-            *native_context = j2k_native::DecoderContext::default();
-            native_context.set_cpu_decode_parallelism(parallelism);
+            *native_context = native_context.fresh_for_operation();
             let planes = FullImageRoute::Planes;
             decode_full_image_into_with_native_context(
                 image,
@@ -302,47 +310,52 @@ pub(crate) fn decode_image_region_into_with_native_context<'a>(
     fmt: PixelFormat,
     roi: Rect,
 ) -> Result<(), J2kError> {
-    match fmt {
-        PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Gray8 => {
-            decode_image_region_rows_into_with_native_context(
-                image,
-                native_context,
-                out,
-                stride,
-                fmt,
-                roi,
-            )
-        }
-        PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16
-            if region_rows_preferred_u16(image, fmt, roi) =>
-        {
-            decode_image_region_rows_into_with_native_context(
-                image,
-                native_context,
-                out,
-                stride,
-                fmt,
-                roi,
-            )
-        }
-        PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16 => {
-            let raw = image
-                .decode_native_region_with_context((roi.x, roi.y, roi.w, roi.h), native_context)
-                .map_err(J2kError::from_native_decode_error)?;
-            write_u16_output(
-                image.color_space(),
-                image.has_alpha(),
-                &raw,
-                out,
-                stride,
-                fmt,
-            )
-        }
-        _ => Err(Unsupported {
-            what: "pixel format is not yet supported by j2k",
-        }
-        .into()),
+    if region_decode_uses_rows(image, fmt, roi)? {
+        decode_image_region_rows_into_with_native_context(
+            image,
+            native_context,
+            out,
+            stride,
+            fmt,
+            roi,
+        )
+    } else {
+        let raw = image
+            .decode_native_region_with_context((roi.x, roi.y, roi.w, roi.h), native_context)
+            .map_err(J2kError::from_native_decode_error)?;
+        write_u16_output(
+            image.color_space(),
+            image.has_alpha(),
+            &raw,
+            out,
+            stride,
+            fmt,
+        )
     }
+}
+
+/// Region execution policy shared with the public planning query.
+pub(crate) fn region_decode_uses_rows(
+    image: &Image<'_>,
+    fmt: PixelFormat,
+    roi: Rect,
+) -> Result<bool, J2kError> {
+    let rows = match fmt {
+        PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Gray8 => true,
+        PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16 => {
+            region_rows_preferred_u16(image, fmt, roi)
+        }
+        _ => {
+            return Err(Unsupported {
+                what: "pixel format is not yet supported by j2k",
+            }
+            .into())
+        }
+    };
+    image
+        .validate_region_sample_layout(rows)
+        .map_err(J2kError::from_native_decode_error)?;
+    Ok(rows)
 }
 
 /// Decode `roi` of `image` into `out` through a row sink, which writes
@@ -359,19 +372,6 @@ pub(crate) fn decode_image_region_rows_into_with_native_context<'a>(
     roi: Rect,
 ) -> Result<(), J2kError> {
     decode_image_region_rows_into_beside(image, native_context, (out, stride, fmt), roi, 0)
-}
-
-/// Whether a region decode of `roi` in `fmt` runs on its rows, as
-/// [`decode_image_region_into_with_native_context`] chooses, so that
-/// [`decode_image_region_rows_into_beside`] decodes it the same way.
-pub(crate) fn region_rows_write(image: &Image<'_>, fmt: PixelFormat, roi: Rect) -> bool {
-    match fmt {
-        PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Gray8 => true,
-        PixelFormat::Rgb16 | PixelFormat::Rgba16 | PixelFormat::Gray16 => {
-            region_rows_preferred_u16(image, fmt, roi)
-        }
-        _ => false,
-    }
 }
 
 /// [`decode_image_region_rows_into_with_native_context`] whose decode
@@ -449,7 +449,7 @@ pub(crate) fn validate_buffer(
 }
 
 pub(crate) fn validate_region(roi: Rect, dims: (u32, u32)) -> Result<(), J2kError> {
-    if roi.is_within(dims) {
+    if roi.w != 0 && roi.h != 0 && roi.is_within(dims) {
         return Ok(());
     }
     Err(J2kError::InvalidRegion {

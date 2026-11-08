@@ -100,7 +100,7 @@ impl BackendError {
 }
 
 /// Error returned by JPEG 2000 inspect, decode, encode, and recode APIs.
-#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum J2kError {
     /// Caller-owned buffers were too small or malformed.
@@ -298,7 +298,7 @@ pub enum J2kError {
     ///
     /// Unlike invalid or unsupported input, the same codestream may decode
     /// through a smaller request, such as a region or a reduced resolution.
-    #[error("decode resource limit exceeded: {source}")]
+    #[error("decode resource limit exceeded: {}", ResourceLimitDisplay(.requested, .cap, .source))]
     ResourceLimit {
         /// Requested live bytes at the rejected boundary, when known.
         requested: Option<usize>,
@@ -308,6 +308,24 @@ pub enum J2kError {
         #[source]
         source: NativeBackendError,
     },
+    /// The operation's cooperative cancellation token was cancelled.
+    #[error("decode operation was cancelled")]
+    Cancelled,
+}
+
+// Operation limits can be projected without a trustworthy requested byte count.
+// Keep the raw engine reservation in the typed source, not the caller's message.
+struct ResourceLimitDisplay<'a>(&'a Option<usize>, &'a Option<usize>, &'a NativeBackendError);
+
+impl core::fmt::Display for ResourceLimitDisplay<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match (*self.0, *self.1) {
+            (None, Some(cap)) if cap < j2k_native::DEFAULT_MAX_DECODE_BYTES => {
+                write!(f, "working memory limit {cap} bytes")
+            }
+            _ => core::fmt::Display::fmt(self.2, f),
+        }
+    }
 }
 
 impl J2kError {
@@ -333,6 +351,7 @@ impl J2kError {
         context: &'static str,
     ) -> Self {
         match error.classify() {
+            NativeDecodeErrorClass::Cancelled => Self::Cancelled,
             NativeDecodeErrorClass::InputTooShort { need, have } => {
                 Self::Input(InputError::TooShort { need, have })
             }
@@ -352,7 +371,7 @@ impl J2kError {
         }
     }
 
-    pub(crate) const fn from_native_encode_error_with_context(
+    pub(crate) fn from_native_encode_error_with_context(
         source: NativeEncodeError,
         context: &'static str,
     ) -> Self {
@@ -364,7 +383,7 @@ impl J2kError {
 
     /// Normalize a CPU batch decode failure to the heap-free error subset.
     ///
-    /// Encode-only string-bearing variants cannot arise from the batch worker
+    /// Encode-only heap-owning variants cannot arise from the batch worker
     /// methods. Converting an unexpected legacy backend variant to a static
     /// invariant prevents one overlooked path from retaining unbounded error
     /// strings across a caller-sized batch.
@@ -381,7 +400,11 @@ impl J2kError {
     pub(crate) const fn is_heap_free_batch_decode_error(&self) -> bool {
         !matches!(
             self,
-            Self::Backend(_) | Self::InvalidSamples { .. } | Self::RateTargetUnreachable { .. }
+            Self::Backend(_)
+                | Self::InvalidSamples { .. }
+                | Self::RateTargetUnreachable { .. }
+                | Self::NativeEncode { .. }
+                | Self::NativeResidentEncode { .. }
         )
     }
 }
@@ -489,7 +512,7 @@ mod tests {
             };
             assert_eq!(*context, "native encode fixture failed");
             assert_eq!(source.to_string(), expected);
-            assert!(error.is_heap_free_batch_decode_error());
+            assert!(!error.is_heap_free_batch_decode_error());
             let concrete_source = core::error::Error::source(&error)
                 .and_then(core::error::Error::source)
                 .and_then(|source| source.downcast_ref::<NativeEncodeError>())
@@ -546,6 +569,10 @@ mod tests {
             } if stored == &NativeBackendError::decode(source)
         ));
         assert!(error.is_heap_free_batch_decode_error());
+        let cloned = error.clone();
+        assert_eq!(cloned, error);
+        assert!(cloned.is_heap_free_batch_decode_error());
+        assert_native_source_chain(&cloned, &source);
         assert_native_source_chain(&error, &source);
     }
 
@@ -729,6 +756,62 @@ mod tests {
             )
         ));
         assert_native_source_chain(&error, &NativeResidentHtj2kEncodeError::Declined);
+    }
+
+    #[test]
+    fn cloned_encode_errors_preserve_dynamic_source_identity() {
+        #[derive(Debug, thiserror::Error)]
+        #[error("test accelerator failure")]
+        struct BackendFailure;
+        let stage = || {
+            j2k_native::J2kEncodeStageError::backend(
+                "test accelerator",
+                "encode fixture",
+                BackendFailure,
+            )
+        };
+        let errors = [
+            J2kError::from_native_encode_error_with_context(
+                NativeEncodeError::Accelerator {
+                    operation: "encode fixture",
+                    source: stage(),
+                },
+                "native encode failed",
+            ),
+            J2kError::NativeResidentEncode {
+                context: "resident encode failed",
+                source: NativeBackendError::resident_encode(
+                    NativeResidentHtj2kEncodeError::Accelerator(stage()),
+                ),
+            },
+        ];
+        for error in errors {
+            let cloned = error.clone();
+            assert_eq!(cloned, error);
+            assert!(!cloned.is_heap_free_batch_decode_error());
+            let original_source = core::error::Error::source(&error)
+                .unwrap()
+                .source()
+                .unwrap();
+            let cloned_source = core::error::Error::source(&cloned)
+                .unwrap()
+                .source()
+                .unwrap();
+            assert!(core::ptr::eq(original_source, cloned_source));
+            match &error {
+                J2kError::NativeEncode { .. } => assert!(original_source.is::<NativeEncodeError>()),
+                J2kError::NativeResidentEncode { .. } => {
+                    assert!(original_source.is::<NativeResidentHtj2kEncodeError>());
+                }
+                _ => unreachable!("encode fixtures"),
+            }
+            let backend = original_source.source().unwrap().source().unwrap();
+            assert!(backend.downcast_ref::<BackendFailure>().is_some());
+            assert!(matches!(
+                cloned.into_heap_free_batch_decode_error(),
+                J2kError::InternalInvariant { .. }
+            ));
+        }
     }
 
     fn assert_native_source_chain<E>(error: &J2kError, expected: &E)

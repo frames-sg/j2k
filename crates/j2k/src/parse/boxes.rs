@@ -47,12 +47,35 @@ pub(crate) fn extract_jp2_codestream_payload(
 pub(crate) fn parse_jp2(
     input: &[u8],
     settings: crate::DecodeSettings,
+    control: Option<(&crate::J2kDecodeControl, usize)>,
 ) -> Result<ParsedImageInfo, J2kError> {
-    let container = inspect_jp2_container_with_settings(input, &settings.to_native(None))
-        .map_err(map_native_jp2_error)?;
+    let native_settings = settings.to_native(None);
+    let container = match control {
+        None => inspect_jp2_container_with_settings(input, &native_settings),
+        Some((control, live_bytes)) => control
+            .to_native()
+            .beside_retained_bytes(live_bytes)
+            .and_then(|native| {
+                j2k_native::inspect_jp2_container_with_operation_control(
+                    input,
+                    &native_settings,
+                    &native,
+                )
+            }),
+    }
+    .map_err(map_native_jp2_error)?;
     let payload_kind = payload_kind_from_native(container.file_kind);
     let image_header = image_header_from_native(container.image_header);
-    let (file_metadata, metadata_bytes) = file_metadata_from_native(container.metadata)?;
+    let (file_metadata, mut metadata_bytes) = file_metadata_from_native(container.metadata)?;
+    if let Some((control, live_bytes)) = control {
+        // The copied metadata stays live while the codestream header is
+        // inspected, inside the operation's working allowance.
+        checked_add_bytes(
+            &mut metadata_bytes,
+            control.working_baseline().saturating_add(live_bytes),
+            "JPEG 2000 inspection metadata",
+        )?;
+    }
     let parsed = parse_codestream(container.codestream, metadata_bytes)?;
 
     validate_ihdr_matches_codestream(image_header, &parsed.siz)?;
@@ -492,6 +515,9 @@ fn map_native_jp2_error(error: NativeDecodeError) -> J2kError {
             offset: 0,
             what: "unsupported JP2/JPH box metadata",
         },
+        source @ NativeDecodeError::Decoding(j2k_native::DecodingError::Cancelled) => {
+            J2kError::from_native_decode_error(source)
+        }
         // A cap failure classifies as a resource limit.
         source @ NativeDecodeError::AllocationTooLarge { .. } => {
             J2kError::from_native_decode_error_with_context(

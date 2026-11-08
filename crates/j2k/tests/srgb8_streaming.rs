@@ -10,7 +10,7 @@
 
 use j2k::{
     wrap_j2k_codestream, CpuDecodeParallelism, J2kDecoder, J2kFileColorSpec, J2kFileWrapOptions,
-    J2kSrgb8Layout,
+    J2kSrgb8Layout, Rect,
 };
 use j2k_core::{Colorspace, PixelFormat};
 use j2k_native::{encode, EncodeOptions};
@@ -119,4 +119,37 @@ fn srgb8_streams_rows_where_decode_into_streams_them() {
             );
         }
     }
+
+    // The explicit ICC route also reconstructs only the region. Measuring a
+    // fresh context includes native scratch as well as both conversion buffers;
+    // a crop of a whole-source decode cannot meet this separation.
+    let raw = fixture(3);
+    let profile = moxcms::ColorProfile::new_pro_photo_rgb()
+        .encode()
+        .expect("ICC profile");
+    let bytes = wrap_j2k_codestream(
+        &raw,
+        J2kFileWrapOptions::jph().with_color(J2kFileColorSpec::IccProfile(&profile)),
+    )
+    .expect("ICC image");
+    let mut full_decoder = decoder(&bytes, usize::MAX);
+    let (full, full_peak) = peak_during(|| full_decoder.decode_srgb8());
+    let full = full.expect("whole-source normalized reference");
+    let roi = Rect {
+        x: 7,
+        y: 9,
+        w: 63,
+        h: 47,
+    };
+    let mut region_decoder = decoder(&bytes, usize::MAX);
+    let (region, region_peak) = peak_during(|| region_decoder.decode_region_srgb8(roi));
+    let region = region.expect("bounded normalized region");
+    for (y, row) in region.data().chunks_exact(roi.w as usize * 3).enumerate() {
+        let start = ((roi.y as usize + y) * WIDTH as usize + roi.x as usize) * 3;
+        assert_eq!(row, &full.data()[start..start + row.len()]);
+    }
+    assert!(
+        region_peak + full.data().len() + SLACK_BYTES < full_peak,
+        "small-region peak {region_peak}, whole-source peak {full_peak}"
+    );
 }

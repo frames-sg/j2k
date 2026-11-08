@@ -23,10 +23,7 @@ use j2k_core::{PixelFormat, Rect};
 use j2k_native::CpuDecodeParallelism;
 
 use crate::backend::Image;
-use crate::decode::{
-    decode_image_region_into_with_native_context, decode_image_region_rows_into_beside,
-    region_rows_write,
-};
+use crate::decode::decode_image_region_rows_into_beside;
 use crate::J2kError;
 
 /// Decode the tiles at `tiles`, output rectangles that cover `image` once,
@@ -36,14 +33,31 @@ use crate::J2kError;
 /// The error is the one of the first tile, in raster order, that failed:
 /// tiles are claimed in that order and every claimed tile finishes, so the
 /// first failing tile is always among them.
+#[cfg(test)]
 pub(crate) fn decode_tiles_into(
     image: &Image<'_>,
     tiles: &[Rect],
     workers: usize,
     (out, stride, fmt): (&mut [u8], usize, PixelFormat),
 ) -> Result<(), J2kError> {
+    decode_tiles_into_with_control(
+        image,
+        tiles,
+        workers,
+        (out, stride, fmt),
+        &j2k_native::DecodeOperationControl::default(),
+    )
+}
+
+pub(crate) fn decode_tiles_into_with_control(
+    image: &Image<'_>,
+    tiles: &[Rect],
+    workers: usize,
+    (out, stride, fmt): (&mut [u8], usize, PixelFormat),
+    control: &j2k_native::DecodeOperationControl,
+) -> Result<(), J2kError> {
     let workers = workers.max(1);
-    let shares = TileShares::new(image, workers)?;
+    let shares = TileShares::new(image, workers, control)?;
     let next = AtomicUsize::new(0);
     let failed = AtomicBool::new(false);
     let first_error: Mutex<Option<(usize, J2kError)>> = Mutex::new(None);
@@ -66,15 +80,17 @@ pub(crate) fn decode_tiles_into(
             let Some(&tile) = tiles.get(index) else {
                 break;
             };
-            let baseline = shares.beside_share(tile, fmt);
-            match decode_and_copy(
-                image,
-                &mut native_context,
-                &mut buffer,
-                tile,
-                baseline,
-                (&out, stride, fmt),
-            ) {
+            let baseline = shares.others;
+            match native_context.with_operation_control(control.clone(), |context| {
+                decode_and_copy(
+                    image,
+                    context,
+                    &mut buffer,
+                    tile,
+                    baseline,
+                    (&out, stride, fmt),
+                )
+            }) {
                 Ok(()) => {}
                 // Its share could not hold the tile: decode it alone later.
                 Err(J2kError::ResourceLimit { .. }) if workers > 1 => {
@@ -117,15 +133,9 @@ pub(crate) fn decode_tiles_into(
         let mut buffer = Vec::new();
         for index in refused {
             let tile = tiles[index];
-            let alone = shares.alone(tile, fmt);
-            if let Err(error) = decode_and_copy(
-                image,
-                &mut native_context,
-                &mut buffer,
-                tile,
-                alone,
-                (&out, stride, fmt),
-            ) {
+            if let Err(error) = native_context.with_operation_control(control.clone(), |context| {
+                decode_and_copy(image, context, &mut buffer, tile, 0, (&out, stride, fmt))
+            }) {
                 record(index, error);
                 break;
             }
@@ -158,9 +168,16 @@ std::thread_local! {
 }
 
 impl TileShares {
-    fn new(image: &Image<'_>, workers: usize) -> Result<Self, J2kError> {
+    fn new(
+        image: &Image<'_>,
+        workers: usize,
+        control: &j2k_native::DecodeOperationControl,
+    ) -> Result<Self, J2kError> {
         let retained = image
             .retained_allocation_bytes()
+            .map_err(J2kError::from_native_decode_error)?;
+        let retained = control
+            .baseline(retained)
             .map_err(J2kError::from_native_decode_error)?;
         let available = j2k_native::DEFAULT_MAX_DECODE_BYTES.saturating_sub(retained);
         #[cfg(test)]
@@ -173,23 +190,6 @@ impl TileShares {
             others: available - share,
         })
     }
-
-    /// The baseline of a tile decode beside the other workers.
-    fn beside_share(&self, tile: Rect, fmt: PixelFormat) -> usize {
-        self.others.saturating_add(tile_buffer_bytes(tile, fmt))
-    }
-
-    /// The baseline of a tile decode running alone.
-    fn alone(&self, tile: Rect, fmt: PixelFormat) -> usize {
-        let _ = self;
-        tile_buffer_bytes(tile, fmt)
-    }
-}
-
-fn tile_buffer_bytes(tile: Rect, fmt: PixelFormat) -> usize {
-    (tile.w as usize)
-        .saturating_mul(tile.h as usize)
-        .saturating_mul(fmt.bytes_per_pixel())
 }
 
 /// Decode `tile` beside `baseline` bytes into `buffer` and copy it into the
@@ -228,32 +228,57 @@ fn decode_tile<'a>(
     fmt: PixelFormat,
     baseline: usize,
 ) -> Result<usize, J2kError> {
-    let tile_stride = tile.w as usize * fmt.bytes_per_pixel();
-    let len = tile_stride * tile.h as usize;
-    if buffer.len() < len {
+    let tile_stride = (tile.w as usize)
+        .checked_mul(fmt.bytes_per_pixel())
+        .ok_or_else(|| {
+            J2kError::from_native_decode_error(j2k_native::ValidationError::ImageTooLarge.into())
+        })?;
+    let len = tile_stride.checked_mul(tile.h as usize).ok_or_else(|| {
+        J2kError::from_native_decode_error(j2k_native::ValidationError::ImageTooLarge.into())
+    })?;
+    let retained = image
+        .retained_allocation_bytes()
+        .map_err(J2kError::from_native_decode_error)?;
+    let control = native_context.operation_control().clone();
+    let check_capacity = |capacity: usize| {
+        let requested = control
+            .baseline(baseline.saturating_add(retained).saturating_add(capacity))
+            .map_err(J2kError::from_native_decode_error)?;
+        let cap = j2k_native::DEFAULT_MAX_DECODE_BYTES;
+        if requested > cap {
+            Err(J2kError::from_native_decode_error(
+                j2k_native::DecodeError::AllocationTooLarge {
+                    what: "streamed tile output buffer",
+                    requested,
+                    cap,
+                },
+            ))
+        } else {
+            Ok(())
+        }
+    };
+    if buffer.capacity() < len {
+        // A reallocation may hold both buffers. Release the previous decode's
+        // scratch before growing, so only its output remains beside the growth.
+        check_capacity(buffer.capacity().saturating_add(len))?;
+        *native_context = native_context.fresh_for_operation();
         buffer
             .try_reserve_exact(len - buffer.len())
             .map_err(|_| J2kError::internal_backend("tile output buffer allocation failed"))?;
-        buffer.resize(len, 0);
     }
-    if region_rows_write(image, fmt, tile) {
-        decode_image_region_rows_into_beside(
-            image,
-            native_context,
-            (&mut buffer[..len], tile_stride, fmt),
-            tile,
-            baseline,
-        )?;
-    } else {
-        decode_image_region_into_with_native_context(
-            image,
-            native_context,
-            &mut buffer[..len],
-            tile_stride,
-            fmt,
-            tile,
-        )?;
-    }
+    check_capacity(buffer.capacity())?;
+    buffer.resize(len, 0);
+    // StreamedTiles already established row-output eligibility. A small gray
+    // tile's standalone preference for native packing must not discard its
+    // shared budget; this API also charges any native component-plane fallback.
+    let baseline = baseline.saturating_add(buffer.capacity());
+    decode_image_region_rows_into_beside(
+        image,
+        native_context,
+        (&mut buffer[..len], tile_stride, fmt),
+        tile,
+        baseline,
+    )?;
     Ok(tile_stride)
 }
 
@@ -270,5 +295,67 @@ fn copy_tile(
     for (row, source) in buffer.chunks_exact(tile_stride).enumerate() {
         let start = (tile.y as usize + row) * stride + x;
         out[start..start + tile_stride].copy_from_slice(source);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::image_at_scale;
+    use crate::decode::route::tests::codestream;
+    use crate::DecodeSettings;
+    use j2k_core::Downscale;
+    use j2k_native::EncodeOptions;
+
+    #[test]
+    fn retained_tile_output_and_growth_must_fit_before_decode() {
+        let bytes = codestream(
+            1,
+            &EncodeOptions {
+                num_decomposition_levels: 2,
+                tile_size: Some((64, 64)),
+                ..EncodeOptions::default()
+            },
+        );
+        let image = image_at_scale(&bytes, DecodeSettings::default(), Downscale::None).unwrap();
+        let full = Rect {
+            x: 0,
+            y: 0,
+            w: 64,
+            h: 64,
+        };
+        let edge = Rect {
+            x: 64,
+            y: 64,
+            w: 32,
+            h: 16,
+        };
+        let fmt = PixelFormat::Gray16;
+        let mut context = j2k_native::DecoderContext::default();
+        context.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
+        let mut buffer = Vec::new();
+        let retained = image.retained_allocation_bytes().unwrap();
+        let tight_baseline = j2k_native::DEFAULT_MAX_DECODE_BYTES - retained - 1024;
+        assert!(matches!(
+            decode_tile(&image, &mut context, &mut buffer, full, fmt, tight_baseline),
+            Err(J2kError::ResourceLimit { .. })
+        ));
+        assert_eq!(
+            buffer.capacity(),
+            0,
+            "refuse growth before allocating the tile buffer"
+        );
+        decode_tile(&image, &mut context, &mut buffer, full, fmt, 0).unwrap();
+        let capacity = buffer.capacity();
+        let edge_baseline = j2k_native::DEFAULT_MAX_DECODE_BYTES - retained - capacity + 1;
+        assert!(matches!(
+            decode_tile(&image, &mut context, &mut buffer, edge, fmt, edge_baseline),
+            Err(J2kError::ResourceLimit { .. })
+        ));
+        assert_eq!(buffer.capacity(), capacity);
+        decode_tile(&image, &mut context, &mut buffer, edge, fmt, 0).unwrap();
+        let mut fresh = Vec::new();
+        decode_tile(&image, &mut context, &mut fresh, edge, fmt, 0).unwrap();
+        assert_eq!(&buffer[..fresh.len()], fresh);
     }
 }

@@ -5,9 +5,10 @@
 use super::{
     decode_cpu_group, fmt, prepare_batch_from_images_for, prepare_batch_with_workers,
     BatchDecodeOptions, BatchDecoder, BatchGroupInfo, BatchInfrastructureError, BatchWorker,
-    CpuBatchWorkspaceStats, CpuGroupFastWorkspace, CpuStagedWorkspace, CpuStreamPool, EncodedImage,
-    IndexedBatchError, J2kDecodeWarning, Mutex, NativeSampleType, NonZeroUsize, PrepareFor,
-    PreparedBatch, PreparedBatchGroup, PreparedBatchGroupRef, PreparedImage, Rect, Vec,
+    CpuBatchWorkspaceStats, CpuGroupFastWorkspace, CpuOperationCache, CpuPreparedImage,
+    CpuStagedWorkspace, CpuStreamPool, EncodedImage, IndexedBatchError, J2kDecodeWarning, Mutex,
+    NativeSampleType, NonZeroUsize, PrepareFor, PreparedBatch, PreparedBatchGroup,
+    PreparedBatchGroupRef, PreparedImage, Rect, Vec,
 };
 use crate::batch::allocation::try_vec_with_capacity;
 use crate::batch::scheduler::decode_retained_tiles;
@@ -134,8 +135,8 @@ impl CpuBatchGroup {
 /// CPU batch decode successes and indexed item failures.
 #[derive(Debug, PartialEq, Eq)]
 pub struct CpuBatchDecodeResult {
-    groups: Vec<CpuBatchGroup>,
-    errors: Vec<IndexedBatchError>,
+    pub(super) groups: Vec<CpuBatchGroup>,
+    pub(super) errors: Vec<IndexedBatchError>,
 }
 
 impl CpuBatchDecodeResult {
@@ -169,11 +170,12 @@ impl CpuBatchDecodeResult {
 /// per-tile offset plans directly. Metadata-only inputs retain the general
 /// decode fallback.
 pub struct CpuBatchDecoder {
-    options: BatchDecodeOptions,
-    workers: Mutex<Vec<BatchWorker>>,
-    fast_workspace: CpuGroupFastWorkspace,
-    staged_workspace: CpuStagedWorkspace,
-    stream_pool: Mutex<CpuStreamPool>,
+    pub(super) options: BatchDecodeOptions,
+    pub(super) workers: Mutex<Vec<BatchWorker>>,
+    pub(super) fast_workspace: CpuGroupFastWorkspace,
+    pub(super) staged_workspace: CpuStagedWorkspace,
+    pub(super) stream_pool: Mutex<CpuStreamPool>,
+    pub(super) operation_cache: CpuOperationCache,
 }
 
 impl fmt::Debug for CpuBatchDecoder {
@@ -201,6 +203,7 @@ impl CpuBatchDecoder {
             fast_workspace: CpuGroupFastWorkspace::default(),
             staged_workspace: CpuStagedWorkspace::default(),
             stream_pool: Mutex::default(),
+            operation_cache: CpuOperationCache::default(),
         }
     }
 
@@ -355,6 +358,45 @@ impl CpuBatchDecoder {
         prepare_batch_with_workers(inputs, self.options, &mut workers, PrepareFor::CpuDecoder)
     }
 
+    /// Inspect and group owned encoded inputs as [`Self::prepare`] does, under
+    /// one operation's limits and cancellation.
+    ///
+    /// Inputs are prepared one at a time. The working-memory limit bounds each
+    /// input's native parsing and packet planning together with the plans
+    /// already retained for earlier inputs of this call; the prepared batch
+    /// keeps only those actual plans, never the control's allowance. The output
+    /// limit rejects inputs whose planned decoded output exceeds it, and
+    /// cancellation stops at the next input or native checkpoint. Inputs that
+    /// fail a limit or observe cancellation are indexed preparation errors.
+    /// The control applies to this preparation only; decoding the batch later
+    /// is a separate operation.
+    pub fn prepare_with_control(
+        &self,
+        inputs: Vec<EncodedImage>,
+        control: &crate::J2kDecodeControl,
+    ) -> Result<PreparedBatch, BatchInfrastructureError> {
+        let mut workers = self
+            .workers
+            .lock()
+            .map_err(|_| BatchInfrastructureError::SchedulerPoisoned)?;
+        let mut spare;
+        let worker = if let Some(worker) = workers.first_mut() {
+            worker
+        } else {
+            spare = BatchWorker::new_owned(2);
+            &mut spare
+        };
+        let prepared = super::prepare::prepare_batch_with_control(
+            inputs,
+            self.options,
+            worker,
+            PrepareFor::CpuDecoder,
+            control,
+        );
+        drop(workers);
+        prepared
+    }
+
     /// Regroup caller-supplied prepared images under this session's output policy.
     ///
     /// This applies the same per-image memory checks as [`Self::prepare`].
@@ -384,6 +426,9 @@ impl CpuBatchDecoder {
     }
 
     /// Decode a previously prepared batch without consuming it.
+    ///
+    /// Retains the batch's validation and output settings while applying this
+    /// session's working-memory admission limit and worker policy.
     pub fn decode_prepared(
         &mut self,
         prepared: &PreparedBatch,
@@ -421,9 +466,15 @@ impl CpuBatchDecoder {
                 .chunks(images_per_group)
                 .zip(group.source_indices.chunks(images_per_group))
             {
+                // Keep immutable preparation shared while reapplying this
+                // receiving session's admission and scheduler claims.
+                let mut admitted = try_vec_with_capacity(images.len(), "J2K CPU session images")?;
+                for image in images {
+                    admitted.push(CpuPreparedImage::legacy(image, &group.info, self.options));
+                }
                 let part = PreparedBatchGroupRef {
                     info: &group.info,
-                    images,
+                    images: &admitted,
                     source_indices,
                     working_memory_limit: self.options.max_working_memory_bytes,
                 };

@@ -78,6 +78,25 @@ fn sampled_fixture(
 }
 
 #[test]
+fn exact_metadata_only_preparation_still_consumes_cache_capacity() {
+    let bytes: Arc<[u8]> = sampled_rgb_fixture(17, 13, (2, 2), 8, true).into();
+    let mut decoder = CpuBatchDecoder::new(BatchDecodeOptions::default());
+    let prepared = decoder.prepare(vec![EncodedImage::full(bytes)]).unwrap();
+    let image = &prepared.groups()[0].images()[0];
+    assert_eq!(image.preparation_depth(), PreparationDepth::MetadataOnly);
+    decoder.set_operation_cache_limit_bytes(1);
+    let request = j2k::PreparedImageOperation::new(image, Rect::full((17, 13)), 0);
+    let result = decoder.decode_operations(&[request]).unwrap();
+    assert!(result.errors().is_empty(), "{:?}", result.errors());
+    assert_eq!(decoder.operation_cache_retained_bytes(), 0);
+    assert_eq!(
+        decoder.operation_cache_stats().occupied_slots,
+        0,
+        "one byte cannot retain an immutable preparation owner"
+    );
+}
+
+#[test]
 fn cpu_batch_upsamples_subsampled_components_like_single_image_decode() {
     const WIDTH: u32 = 17;
     const HEIGHT: u32 = 13;

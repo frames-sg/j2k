@@ -11,29 +11,39 @@ use super::super::{
     PrepareImageResult, PreparedClassicPlan, PreparedCodecPlan, PreparedHtj2kPlan, PreparedImage,
     PreparedImageInner,
 };
+use crate::J2kDecodeControl;
 
+/// Prepare one input. With a control, every native parse and plan build runs
+/// within its working allowance beside `live_bytes` of plans the call already
+/// retains, stops at cooperative checkpoints, and the planned output obeys
+/// its output limit.
 pub(super) fn prepare_image(
     input: EncodedImage,
     source_index: usize,
     options: BatchDecodeOptions,
     worker: &mut BatchWorker,
+    control: Option<&J2kDecodeControl>,
+    live_bytes: usize,
 ) -> PrepareImageResult {
     // Parse with the caller's settings, as the native image below parses:
     // a lenient batch then plans from the metadata its decode recovers.
-    let parsed =
-        parse_image_info_with_settings(&input.bytes, options.settings).map_err(|source| {
-            BatchItemError::Codec {
-                stage: BatchErrorStage::Prepare,
-                source: Arc::new(source),
-            }
-        })?;
+    let parsed = match control {
+        None => parse_image_info_with_settings(&input.bytes, options.settings),
+        Some(control) => crate::parse::parse_image_info_with_control(
+            &input.bytes,
+            options.settings,
+            control,
+            live_bytes,
+        ),
+    }
+    .map_err(prepare_error)?;
     let support = parsed.into_support_info();
     let plan = DeviceDecodePlan::for_image(support.info.dimensions, input.request.device_request())
         .map_err(|source| BatchItemError::Codec {
             stage: BatchErrorStage::Prepare,
             source: Arc::new(source),
         })?;
-    let mut info = batch_group_info(&support, plan, options)?;
+    let mut info = batch_group_info(&support, plan.output_dims(), options)?;
     let codestream =
         extract_j2k_codestream_payload(&input.bytes).map_err(|source| BatchItemError::Codec {
             stage: BatchErrorStage::Prepare,
@@ -43,13 +53,15 @@ pub(super) fn prepare_image(
         offset: codestream.codestream_offset(),
         length: codestream.codestream().len(),
     };
+    if let Some(control) = control {
+        control
+            .check_output(info.output_bytes(1).unwrap_or(usize::MAX))
+            .map_err(prepare_error)?;
+    }
     // Check the main-header ladder here; plan construction below also checks
     // tile overrides. Neither failure can be repaired by a fallback decode.
-    let native_image = crate::backend::image_at_scale(&input.bytes, options.settings, plan.scale())
-        .map_err(|source| BatchItemError::Codec {
-            stage: BatchErrorStage::Prepare,
-            source: Arc::new(source),
-        })?;
+    let native_image = native_image_at_scale(&input, options, plan.scale(), control, live_bytes)
+        .map_err(prepare_error)?;
     // Size reduced outputs on the reference grid, now that the image's origin
     // is known: an origin that is not a multiple of the scale narrows them.
     let plan = DeviceDecodePlan::for_reference_grid(
@@ -67,22 +79,36 @@ pub(super) fn prepare_image(
         return Err(nonrepresentable(NonRepresentableReason::UnsupportedColor));
     }
     let codec_plan = match info.route {
-        BatchCodecRoute::Classic => {
-            prepare_classic_offset_plan(&native_image, &info, plan, worker)?
-                .map_or(PreparedCodecPlan::MetadataOnly, PreparedCodecPlan::Classic)
-        }
-        BatchCodecRoute::Htj2k => prepare_htj2k_offset_plan(&native_image, &info, plan, worker)?
-            .map_or(PreparedCodecPlan::MetadataOnly, PreparedCodecPlan::Htj2k),
+        BatchCodecRoute::Classic => prepare_classic_offset_plan(
+            &native_image,
+            &info,
+            plan.output_rect(),
+            worker,
+            live_bytes,
+            control,
+        )?
+        .map_or(PreparedCodecPlan::MetadataOnly, PreparedCodecPlan::Classic),
+        BatchCodecRoute::Htj2k => prepare_htj2k_offset_plan(
+            &native_image,
+            &info,
+            plan.output_rect(),
+            worker,
+            live_bytes,
+            control,
+        )?
+        .map_or(PreparedCodecPlan::MetadataOnly, PreparedCodecPlan::Htj2k),
     };
     reconcile_codec_plan_metadata(&mut info, &codec_plan)?;
+    let region_streams_rows = native_image.region_decode_streams_rows();
     let cpu_execution = choose_cpu_execution(
         &codec_plan,
         &info,
-        native_image.region_decode_streams_rows(),
+        region_streams_rows,
         options.planned_decode_bound(planned_decode_bound()),
     );
     let preparation_depth = codec_plan.preparation_depth();
     let execution_shape = batch_execution_shape(&support, plan, preparation_depth);
+    let reference_grid = crate::J2kReferenceGrid::of_native(&native_image, support.info.dimensions);
     let image = PreparedImage {
         inner: Arc::new(PreparedImageInner {
             bytes: input.bytes,
@@ -90,14 +116,30 @@ pub(super) fn prepare_image(
             source_index,
             decode_settings: options.settings,
             used_lenient_metadata_recovery,
+            reference_grid,
             support: Arc::new(support),
             plan,
             codestream_range,
             codec_plan,
-            cpu_execution,
+            region_streams_rows,
         }),
+        cpu_execution,
     };
     Ok((image, info, execution_shape))
+}
+
+/// Reapply session admission without reparsing or changing the retained codec plan.
+pub(in crate::owned_batch) fn cpu_execution_for(
+    image: &PreparedImage,
+    info: &BatchGroupInfo,
+    options: BatchDecodeOptions,
+) -> CpuExecution {
+    choose_cpu_execution(
+        image.codec_plan(),
+        info,
+        image.inner.region_streams_rows,
+        options.planned_decode_bound(planned_decode_bound()),
+    )
 }
 
 /// Choose the CPU execution from the planned working memory, before any
@@ -117,7 +159,7 @@ pub(super) fn prepare_image(
 /// image is rejected, as are images whose region decode would hand over
 /// whole component planes instead of rows. The claim of an offset plan is
 /// its parallel peak.
-pub(super) fn choose_cpu_execution(
+pub(in crate::owned_batch) fn choose_cpu_execution(
     codec_plan: &PreparedCodecPlan,
     info: &BatchGroupInfo,
     region_streams_rows: bool,
@@ -238,11 +280,13 @@ fn exceeds_tile_resolution_ladder(error: &j2k_native::DecodeError) -> bool {
     )
 }
 
-fn prepare_classic_offset_plan(
+pub(in crate::owned_batch) fn prepare_classic_offset_plan(
     image: &j2k_native::Image<'_>,
     info: &BatchGroupInfo,
-    plan: DeviceDecodePlan,
+    output: j2k_core::Rect,
     worker: &mut BatchWorker,
+    retained_bytes: usize,
+    control: Option<&J2kDecodeControl>,
 ) -> Result<Option<PreparedClassicPlan>, BatchItemError> {
     if info.route != BatchCodecRoute::Classic
         || !matches!(
@@ -252,32 +296,33 @@ fn prepare_classic_offset_plan(
     {
         return Ok(None);
     }
-    let output = plan.output_rect();
-    match worker.build_prepared_classic_plan(image, (output.x, output.y, output.w, output.h)) {
-        Ok(plan) => PreparedClassicPlan::from_native(plan)
+    let (native_control, copy_baseline) = plan_controls(control, retained_bytes)?;
+    match worker.build_prepared_classic_plan(
+        image,
+        (output.x, output.y, output.w, output.h),
+        native_control,
+    ) {
+        Ok(plan) => window_copy_baseline(image, worker, copy_baseline)
+            .and_then(|bytes| PreparedClassicPlan::from_native(plan, bytes))
             .map(Some)
-            .map_err(|source| BatchItemError::Codec {
-                stage: BatchErrorStage::Prepare,
-                source: Arc::new(J2kError::from_native_decode_error(source)),
-            }),
+            .map_err(|source| plan_error(source, control)),
         Err(
             source @ j2k_native::DecodeError::Decoding(
                 j2k_native::DecodingError::DirectPlanUnsupported(_)
                 | j2k_native::DecodingError::UnsupportedFeature(_),
             ),
         ) if !exceeds_tile_resolution_ladder(&source) => Ok(None),
-        Err(source) => Err(BatchItemError::Codec {
-            stage: BatchErrorStage::Prepare,
-            source: Arc::new(J2kError::from_native_decode_error(source)),
-        }),
+        Err(source) => Err(plan_error(source, control)),
     }
 }
 
-fn prepare_htj2k_offset_plan(
+pub(in crate::owned_batch) fn prepare_htj2k_offset_plan(
     image: &j2k_native::Image<'_>,
     info: &BatchGroupInfo,
-    plan: DeviceDecodePlan,
+    output: j2k_core::Rect,
     worker: &mut BatchWorker,
+    retained_bytes: usize,
+    control: Option<&J2kDecodeControl>,
 ) -> Result<Option<PreparedHtj2kPlan>, BatchItemError> {
     if info.route != BatchCodecRoute::Htj2k
         || !matches!(
@@ -287,14 +332,16 @@ fn prepare_htj2k_offset_plan(
     {
         return Ok(None);
     }
-    let output = plan.output_rect();
-    match worker.build_prepared_htj2k_plan(image, (output.x, output.y, output.w, output.h)) {
-        Ok(plan) => PreparedHtj2kPlan::from_native(plan)
+    let (native_control, copy_baseline) = plan_controls(control, retained_bytes)?;
+    match worker.build_prepared_htj2k_plan(
+        image,
+        (output.x, output.y, output.w, output.h),
+        native_control,
+    ) {
+        Ok(plan) => window_copy_baseline(image, worker, copy_baseline)
+            .and_then(|bytes| PreparedHtj2kPlan::from_native(plan, bytes))
             .map(Some)
-            .map_err(|source| BatchItemError::Codec {
-                stage: BatchErrorStage::Prepare,
-                source: Arc::new(J2kError::from_native_decode_error(source)),
-            }),
+            .map_err(|source| plan_error(source, control)),
         Err(source)
             if matches!(
                 source.classify(),
@@ -303,16 +350,90 @@ fn prepare_htj2k_offset_plan(
         {
             Ok(None)
         }
-        Err(source) => Err(BatchItemError::Codec {
-            stage: BatchErrorStage::Prepare,
-            source: Arc::new(J2kError::from_native_decode_error(source)),
-        }),
+        Err(source) => Err(plan_error(source, control)),
     }
 }
 
-pub(super) fn batch_group_info(
+fn prepare_error(source: J2kError) -> BatchItemError {
+    BatchItemError::Codec {
+        stage: BatchErrorStage::Prepare,
+        source: Arc::new(source),
+    }
+}
+
+/// The native image of a scaled request, parsed within a control's working
+/// allowance beside `live_bytes` when there is one.
+fn native_image_at_scale<'a>(
+    input: &'a EncodedImage,
+    options: BatchDecodeOptions,
+    scale: j2k_core::Downscale,
+    control: Option<&J2kDecodeControl>,
+    live_bytes: usize,
+) -> Result<j2k_native::Image<'a>, J2kError> {
+    let Some(control) = control else {
+        return crate::backend::image_at_scale(&input.bytes, options.settings, scale);
+    };
+    let levels = u8::try_from(scale.denominator().trailing_zeros())
+        .map_err(|_| J2kError::internal_backend("downscale level count overflow"))?;
+    crate::backend::image_for_operation(
+        &input.bytes,
+        options.settings,
+        levels,
+        live_bytes,
+        Some(control),
+    )
+}
+
+/// The native policy a plan build runs under, and the baseline its region
+/// copy is checked against: beside `retained_bytes` of live owners, and
+/// within a control's working allowance when there is one.
+fn plan_controls(
+    control: Option<&J2kDecodeControl>,
+    retained_bytes: usize,
+) -> Result<(j2k_native::DecodeOperationControl, usize), BatchItemError> {
+    let Some(control) = control else {
+        return Ok((
+            j2k_native::DecodeOperationControl::default(),
+            retained_bytes,
+        ));
+    };
+    let native = control
+        .to_native()
+        .beside_retained_bytes(retained_bytes)
+        .map_err(|source| plan_error(source, Some(control)))?;
+    Ok((
+        native,
+        retained_bytes.saturating_add(control.working_baseline()),
+    ))
+}
+
+fn plan_error(
+    source: j2k_native::DecodeError,
+    control: Option<&J2kDecodeControl>,
+) -> BatchItemError {
+    let source = match control {
+        None => J2kError::from_native_decode_error(source),
+        Some(control) => control.native_error(source),
+    };
+    BatchItemError::Codec {
+        stage: BatchErrorStage::Prepare,
+        source: Arc::new(source),
+    }
+}
+
+fn window_copy_baseline(
+    image: &j2k_native::Image<'_>,
+    worker: &mut BatchWorker,
+    retained_bytes: usize,
+) -> j2k_native::Result<usize> {
+    Ok(retained_bytes
+        .saturating_add(image.retained_allocation_bytes()?)
+        .saturating_add(worker.retained_native_workspace_bytes()?))
+}
+
+pub(in crate::owned_batch) fn batch_group_info(
     support: &J2kSupportInfo,
-    plan: DeviceDecodePlan,
+    dimensions: (u32, u32),
     options: BatchDecodeOptions,
 ) -> Result<BatchGroupInfo, BatchItemError> {
     let Some(first) = support.components.first().copied() else {
@@ -379,7 +500,7 @@ pub(super) fn batch_group_info(
     };
 
     Ok(BatchGroupInfo {
-        dimensions: plan.output_dims(),
+        dimensions,
         color,
         alpha,
         precision: first.bit_depth,
@@ -394,7 +515,7 @@ pub(super) fn batch_group_info(
     })
 }
 
-pub(super) fn reconcile_codec_plan_metadata(
+pub(in crate::owned_batch) fn reconcile_codec_plan_metadata(
     info: &mut BatchGroupInfo,
     codec_plan: &PreparedCodecPlan,
 ) -> Result<(), BatchItemError> {
