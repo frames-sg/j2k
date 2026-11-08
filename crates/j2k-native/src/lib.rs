@@ -169,7 +169,7 @@ pub use color::pack_rgb8;
 pub(crate) use color::{
     convert_color_space, interleave_and_convert_after_mct, interleave_and_convert_region,
     resolve_alpha_and_color_space, resolve_palette_indices, validate_and_reorder_channels,
-    validate_interleaved_output_buffer,
+    validate_interleaved_output_buffer, ResolvedColor,
 };
 pub use color::{
     Bitmap, ColorSpace, ComponentPlane, DecodedComponents, DecodedNativeComponents,

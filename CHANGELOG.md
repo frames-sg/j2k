@@ -7,6 +7,20 @@ and stale roadmap entries have been removed from the public documentation set.
 
 Staged workspace version: `0.13.2`.
 
+- A JP2 whose codestream has more components than its declared color space
+  and no `cdef` box keeps that color space under strict decoding instead of
+  being reinterpreted from its component count. The extra components are
+  unspecified (ISO/IEC 15444-1 I.5.3.6) and decoded output omits them:
+  `Image::ignored_components` counts them. An sRGB JP2 over four components,
+  as Kakadu 7 wrote from RGBA TIFFs without `-jp2_alpha`, decodes to `Rgb8`,
+  or to `Rgba8` with opaque alpha, instead of failing as CMYK with "backend
+  color space cannot be mapped to requested 8-bit pixel format". Lenient
+  decoding still infers alpha for one extra component, raw codestreams keep
+  their component-count interpretation, and recode re-encodes every
+  component. HTJ2K batch jobs whose direct color plan is unsupported fall
+  back to the generic decode instead of failing. Bounded 8-bit and 16-bit
+  rows use the resolved color channels and alpha state, and recode validation
+  compares every component even when display output omits unspecified ones.
 - `decode_region_into`, `decode_region_scaled_pow2_into`, `decode_into`,
   and `decode_rows_u8_bounded` accept a JP2 whose ICC profile is equivalent
   to IEC 61966-2-1 sRGB when the output is `Rgb8` or `Rgba8`, writing its

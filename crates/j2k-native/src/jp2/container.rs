@@ -181,21 +181,15 @@ pub(crate) fn parse_with_retained_baseline(
         image_boxes.component_mapping = Some(ComponentMappingBox { entries: mappings });
     }
 
-    let (color_space, has_alpha, recovered_alpha_metadata) = resolve_alpha_and_color_space(
+    let mut color = resolve_alpha_and_color_space(
         &image_boxes,
         &parsed_codestream.header,
         &settings,
         retained_baseline_bytes,
+        true,
     )?;
-    let used_lenient_metadata_recovery =
-        container.used_lenient_metadata_recovery || recovered_alpha_metadata;
-    let properties = ImageProperties::new(
-        image_boxes,
-        settings,
-        color_space,
-        has_alpha,
-        used_lenient_metadata_recovery,
-    );
+    color.used_lenient_metadata_recovery |= container.used_lenient_metadata_recovery;
+    let properties = ImageProperties::new(image_boxes, settings, color);
     if retained_baseline_bytes == 0 {
         Image::from_parsed_parts(
             ImageSource::new(data, parsed_codestream.data),

@@ -162,6 +162,7 @@ impl<'a> Image<'a> {
             let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
             let retained_baseline_bytes =
                 self.run_decode(decoder_context, None, None, true, retained_baseline_bytes)?;
+            self.drop_ignored_components(&mut decoder_context.tile_decode_context.channel_data);
 
             let components = &decoder_context.tile_decode_context.channel_data;
             let component_owner_capacity = components.capacity();
@@ -251,6 +252,7 @@ impl<'a> Image<'a> {
             let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
             let retained_image_bytes =
                 self.run_decode(decoder_context, Some(roi), None, true, retained_image_bytes)?;
+            self.drop_ignored_components(&mut decoder_context.tile_decode_context.channel_data);
 
             let components = &decoder_context.tile_decode_context.channel_data;
             let component_owner_capacity = components.capacity();
@@ -495,13 +497,17 @@ impl<'a> Image<'a> {
     ) -> Result<()> {
         validate_roi((self.width(), self.height()), roi)?;
         self.validate_component_plane_precision()?;
+        let mut kept_sink = KeptComponentsSink {
+            sink: &mut *sink,
+            ignored_components: self.ignored_components,
+        };
         let charged_image_bytes = self.run_decode_rows(
             decoder_context,
             Some(roi),
             None,
             true,
             self.retained_header_metadata_bytes()?,
-            Some(&mut *sink),
+            Some(&mut kept_sink),
         )?;
         if decoder_context.tile_decode_context.stream_rows {
             return Ok(());
@@ -675,5 +681,23 @@ impl<'a> Image<'a> {
             dimensions,
             self.retained_header_metadata_bytes()?,
         )
+    }
+}
+
+/// Hands a sink the streamed rows of every component but the image's
+/// [`Image::ignored_components`].
+struct KeptComponentsSink<'s> {
+    sink: &'s mut dyn ComponentRowSink,
+    ignored_components: usize,
+}
+
+impl ComponentRowSink for KeptComponentsSink<'_> {
+    fn write_rows(&mut self, x: u32, y: u32, planes: &[ComponentPlane<'_>]) {
+        let kept = planes.len().saturating_sub(self.ignored_components);
+        self.sink.write_rows(x, y, &planes[..kept]);
+    }
+
+    fn rgb8_region(&mut self, width: u32, height: u32) -> Option<&mut [u8]> {
+        self.sink.rgb8_region(width, height)
     }
 }

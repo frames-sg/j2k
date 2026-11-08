@@ -86,6 +86,9 @@ fn direct_color_plan_uses_only_htj2k(plan: &J2kDirectColorPlan) -> bool {
 fn is_unsupported_direct_color_plan_error(error: NativeDecodeError) -> bool {
     matches!(
         error,
-        NativeDecodeError::Decoding(NativeDecodingError::UnsupportedFeature(_))
+        NativeDecodeError::Decoding(
+            NativeDecodingError::UnsupportedFeature(_)
+                | NativeDecodingError::DirectPlanUnsupported(_)
+        )
     )
 }

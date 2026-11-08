@@ -19,12 +19,28 @@ use crate::{
 
 const BITS_PER_ASSOCIATION_WORD: usize = 64;
 
+/// The color interpretation of an image's codestream components.
+pub(crate) struct ResolvedColor {
+    pub(crate) color_space: ColorSpace,
+    pub(crate) has_alpha: bool,
+    /// Whether one of the documented lenient metadata recoveries was used.
+    pub(crate) used_lenient_metadata_recovery: bool,
+    /// Trailing codestream components beyond the color (and alpha) channels
+    /// that no channel definition describes. ISO/IEC 15444-1 I.5.3.6 leaves
+    /// such components to the application; decoded output omits them.
+    pub(crate) ignored_components: usize,
+}
+
+/// Resolve the color space and alpha channel of `boxes` over `header`'s
+/// components. `declared_color` is whether `boxes` carry the file's own
+/// color specification rather than one synthesized for a raw codestream.
 pub(crate) fn resolve_alpha_and_color_space(
     boxes: &ImageBoxes,
     header: &Header<'_>,
     settings: &DecodeSettings,
     retained_baseline_bytes: usize,
-) -> Result<(ColorSpace, bool, bool)> {
+    declared_color: bool,
+) -> Result<ResolvedColor> {
     let mut num_components = header.component_infos.len();
     if settings.resolve_palette_indices {
         if let Some(palette_box) = &boxes.palette {
@@ -57,15 +73,24 @@ pub(crate) fn resolve_alpha_and_color_space(
 
     let actual_num_components = header.component_infos.len();
     let mut used_lenient_metadata_recovery = false;
-    if boxes.palette.is_none()
-        && actual_num_components != usize::from(color_space.num_channels() + u16::from(has_alpha))
-    {
+    let mut ignored_components = 0;
+    let declared_channels = usize::from(color_space.num_channels()) + usize::from(has_alpha);
+    if boxes.palette.is_none() && actual_num_components != declared_channels {
         if !settings.strict
             && actual_num_components == usize::from(color_space.num_channels()) + 1
             && !has_alpha
         {
             has_alpha = true;
             used_lenient_metadata_recovery = true;
+        } else if declared_color
+            && boxes.channel_definition.is_none()
+            && declares_color_space(boxes)
+            && actual_num_components > declared_channels
+        {
+            // Without a channel definition, the components after those of
+            // the declared color space are unspecified (ISO/IEC 15444-1
+            // I.5.3.6), not a reason to reinterpret the color space.
+            ignored_components = actual_num_components - declared_channels;
         } else if actual_num_components == 1 || (actual_num_components == 2 && has_alpha) {
             color_space = ColorSpace::Gray;
         } else if actual_num_components == 3 {
@@ -84,7 +109,23 @@ pub(crate) fn resolve_alpha_and_color_space(
         }
     }
 
-    Ok((color_space, has_alpha, used_lenient_metadata_recovery))
+    Ok(ResolvedColor {
+        color_space,
+        has_alpha,
+        used_lenient_metadata_recovery,
+        ignored_components,
+    })
+}
+
+/// Whether the primary color specification names a color space, as an
+/// enumerated value or an ICC profile, rather than leaving it unknown.
+fn declares_color_space(boxes: &ImageBoxes) -> bool {
+    matches!(
+        boxes
+            .primary_color_specification()
+            .map(|specification| &specification.color_space),
+        Some(jp2::colr::ColorSpace::Enumerated(_) | jp2::colr::ColorSpace::Icc(_))
+    )
 }
 
 fn get_color_space(

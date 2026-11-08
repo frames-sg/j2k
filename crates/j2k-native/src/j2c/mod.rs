@@ -132,13 +132,15 @@ pub(crate) fn parse_with_retained_baseline<'a>(
         retained_baseline_bytes,
     )?;
 
-    let (color_space, has_alpha, _) = resolve_alpha_and_color_space(
+    let mut color = resolve_alpha_and_color_space(
         &boxes,
         &parsed_codestream.header,
         &strict_settings,
         retained_baseline_bytes,
+        false,
     )?;
-    let properties = ImageProperties::new(boxes, *settings, color_space, has_alpha, false);
+    color.used_lenient_metadata_recovery = false;
+    let properties = ImageProperties::new(boxes, *settings, color);
     if retained_baseline_bytes == 0 {
         Image::from_parsed_parts(
             ImageSource::new(stream, parsed_codestream.data),

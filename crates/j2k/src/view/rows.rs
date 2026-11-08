@@ -104,7 +104,11 @@ impl J2kDecoder<'_> {
         sink: &mut R,
         options: J2kRowDecodeOptions,
     ) -> Result<J2kDecodeOutcome, DecodeRowsError<J2kError, R::Error>> {
-        let fmt = row_format_u8(self.info()).map_err(DecodeRowsError::Decode)?;
+        self.ensure_image().map_err(DecodeRowsError::Decode)?;
+        let fmt = self
+            .cached_image()
+            .and_then(row_format_u8)
+            .map_err(DecodeRowsError::Decode)?;
         let row_bytes = row_bytes_for(self.info(), fmt).map_err(DecodeRowsError::Decode)?;
         let width = self.info.dimensions.0;
         let height = self.info.dimensions.1;
@@ -115,7 +119,6 @@ impl J2kDecoder<'_> {
         );
         let (stripe_rows, max_stripe_len) = bounded_row_stripe_layout(row_bytes, height, options)
             .map_err(DecodeRowsError::Decode)?;
-        self.ensure_image().map_err(DecodeRowsError::Decode)?;
         let mut pool = J2kScratchPool::new();
         if self.rows_stream_whole() {
             let stripe = pool
@@ -210,7 +213,11 @@ impl J2kDecoder<'_> {
         sink: &mut R,
         options: J2kRowDecodeOptions,
     ) -> Result<J2kDecodeOutcome, DecodeRowsError<J2kError, R::Error>> {
-        let fmt = row_format_u16(self.info()).map_err(DecodeRowsError::Decode)?;
+        self.ensure_image().map_err(DecodeRowsError::Decode)?;
+        let fmt = self
+            .cached_image()
+            .and_then(row_format_u16)
+            .map_err(DecodeRowsError::Decode)?;
         let row_bytes = row_bytes_for(self.info(), fmt).map_err(DecodeRowsError::Decode)?;
         let samples_per_row = row_samples_for(self.info(), fmt).map_err(DecodeRowsError::Decode)?;
         let width = self.info.dimensions.0;
@@ -245,7 +252,6 @@ impl J2kDecoder<'_> {
         if self.info.bit_depth > 24 {
             return self.decode_rows_u16_exact_reparsed(sink, fmt, layout);
         }
-        self.ensure_image().map_err(DecodeRowsError::Decode)?;
         if self.rows_stream_whole() {
             let mut pool = J2kScratchPool::new();
             let (packed, row) = pool
@@ -380,11 +386,11 @@ fn widen_row_u16(packed: &[u8], row: &mut [u16]) {
     }
 }
 
-fn row_format_u8(info: &j2k_core::Info) -> Result<PixelFormat, J2kError> {
-    match info.components {
-        1 => Ok(PixelFormat::Gray8),
-        3 => Ok(PixelFormat::Rgb8),
-        4 => Ok(PixelFormat::Rgba8),
+fn row_format_u8(image: &j2k_native::Image<'_>) -> Result<PixelFormat, J2kError> {
+    match (image.color_space().num_channels(), image.has_alpha()) {
+        (1, false) => Ok(PixelFormat::Gray8),
+        (3, false) => Ok(PixelFormat::Rgb8),
+        (3, true) => Ok(PixelFormat::Rgba8),
         _ => Err(j2k_core::Unsupported {
             what: "row decode only supports Gray/RGB/RGBA images",
         }
@@ -392,11 +398,11 @@ fn row_format_u8(info: &j2k_core::Info) -> Result<PixelFormat, J2kError> {
     }
 }
 
-fn row_format_u16(info: &j2k_core::Info) -> Result<PixelFormat, J2kError> {
-    match info.components {
-        1 => Ok(PixelFormat::Gray16),
-        3 => Ok(PixelFormat::Rgb16),
-        4 => Ok(PixelFormat::Rgba16),
+fn row_format_u16(image: &j2k_native::Image<'_>) -> Result<PixelFormat, J2kError> {
+    match (image.color_space().num_channels(), image.has_alpha()) {
+        (1, false) => Ok(PixelFormat::Gray16),
+        (3, false) => Ok(PixelFormat::Rgb16),
+        (3, true) => Ok(PixelFormat::Rgba16),
         _ => Err(j2k_core::Unsupported {
             what: "row decode only supports Gray/RGB/RGBA images",
         }
