@@ -5,7 +5,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use j2k::{BatchDecodeOptions, DecodeRequest, EncodedImage, NativeSampleType, PreparedBatch};
+use j2k::{
+    BatchDecodeOptions, BatchGroupInfo, DecodeRequest, EncodedImage, NativeSampleType,
+    PreparedBatch, PreparedBatchGroup, PreparedDeviceOperationGroup, PreparedImageOperation,
+};
 use j2k_cuda::{CudaBatchDecoder, CudaSession};
 use j2k_cuda_runtime::{CudaContext, CudaExternalDeviceBufferViewMut};
 use pyo3::{
@@ -25,6 +28,29 @@ pub(crate) struct CudaDecoder {
     decoder: Mutex<CudaBatchDecoder>,
     context: CudaContext,
     ordinal: usize,
+}
+
+/// One homogeneous group to decode into a fresh tensor.
+#[derive(Clone, Copy)]
+enum Group<'g> {
+    Prepared(&'g PreparedBatchGroup),
+    Operations(&'g PreparedDeviceOperationGroup),
+}
+
+impl<'g> Group<'g> {
+    fn info(self) -> &'g BatchGroupInfo {
+        match self {
+            Self::Prepared(group) => group.info(),
+            Self::Operations(group) => group.info(),
+        }
+    }
+
+    fn source_indices(self) -> &'g [usize] {
+        match self {
+            Self::Prepared(group) => group.source_indices(),
+            Self::Operations(group) => group.source_indices(),
+        }
+    }
 }
 
 impl CudaDecoder {
@@ -56,7 +82,7 @@ impl CudaDecoder {
         let mut groups = Vec::new();
         let mut group_errors = Vec::new();
         for group in prepared.groups() {
-            match self.decode_group(py, group) {
+            match self.decode_group(py, Group::Prepared(group), false) {
                 Ok(output) => groups.push(output),
                 Err(error) => group_errors.push((
                     owned_items(group.source_indices().iter().copied())?,
@@ -73,6 +99,37 @@ impl CudaDecoder {
                 .collect(),
             group_errors,
         })
+    }
+
+    /// Decode exact region/reduction operations. Indices in the result refer
+    /// to positions in `operations`.
+    pub fn decode_operations(
+        &self,
+        py: Python<'_>,
+        operations: &[PreparedImageOperation<'_>],
+        options: BatchDecodeOptions,
+    ) -> PyResult<Decoded> {
+        let prepared = py
+            .detach(|| j2k::prepare_device_operations(operations, options))
+            .map_err(value_error)?;
+        let mut decoded = Decoded {
+            errors: prepared
+                .errors()
+                .iter()
+                .map(|e| (e.index, e.source.to_string()))
+                .collect(),
+            ..Decoded::default()
+        };
+        for group in prepared.groups() {
+            match self.decode_group(py, Group::Operations(group), false) {
+                Ok(output) => decoded.groups.push(output),
+                Err(error) => decoded.group_errors.push((
+                    owned_items(group.source_indices().iter().copied())?,
+                    error.to_string(),
+                )),
+            }
+        }
+        Ok(decoded)
     }
 
     pub fn decode_one(
@@ -97,25 +154,21 @@ impl CudaDecoder {
                 "single CUDA input did not produce one group",
             ));
         }
-        self.decode_group_inner(py, &prepared.groups()[0], true)
+        self.decode_group(py, Group::Prepared(&prepared.groups()[0]), true)
             .map(|group| group.tensor)
     }
 
     fn decode_group(
         &self,
         py: Python<'_>,
-        group: &j2k::PreparedBatchGroup,
-    ) -> PyResult<MaterializedGroup> {
-        self.decode_group_inner(py, group, false)
-    }
-
-    fn decode_group_inner(
-        &self,
-        py: Python<'_>,
-        group: &j2k::PreparedBatchGroup,
+        group: Group<'_>,
         squeeze: bool,
     ) -> PyResult<MaterializedGroup> {
-        let mut dimensions = shape(group.info(), group.images().len())?;
+        // A cancelled operation group allocates no tensor.
+        if let Group::Operations(group) = group {
+            group.check_cancelled().map_err(value_error)?;
+        }
+        let mut dimensions = shape(group.info(), group.source_indices().len())?;
         let dtype = match group.info().sample_type {
             NativeSampleType::U8 => DType::U8,
             NativeSampleType::U16 => DType::U16,
@@ -161,10 +214,20 @@ impl CudaDecoder {
                     )
                 }
                 .map_err(value_error)?;
-                // SAFETY: the unique unpublished allocation is retained until
+                // The unique unpublished allocation is retained until
                 // successful completion. Every error is synchronized below;
                 // uncertain completion quarantines the owner instead of freeing it.
-                unsafe { decoder.decode_batch_into(group, &mut destination) }.map_err(value_error)
+                match group {
+                    // SAFETY: as described above.
+                    Group::Prepared(group) => unsafe {
+                        decoder.decode_batch_into(group, &mut destination)
+                    },
+                    // SAFETY: as described above.
+                    Group::Operations(group) => unsafe {
+                        decoder.decode_operation_group_into(group, &mut destination)
+                    },
+                }
+                .map_err(value_error)
             };
             if stream_ptr == 0 {
                 // Both torch's legacy default stream and the codec use stream

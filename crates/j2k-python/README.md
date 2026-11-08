@@ -57,7 +57,14 @@ image = decoder.decode(data).to_torch()  # [C,H,W], U8/U16/I16
 small = decoder.decode(data, reduction=1).to_numpy()  # [C,H,W], half resolution
 ```
 
-`reduction` is 0, 1, 2, or 3 for full, half, quarter, or eighth resolution.
+`reduction` is an exact count from 0 through 31; 0–3 retain their full, half,
+quarter, and eighth meanings. MPS and CUDA decoders decode exact requests and
+prepared operations on the device with the CPU's rectangles and, for reversible
+inputs, its samples (CUDA's irreversible 9/7 output stays within one sample
+value); device operations honor output limits and cancellation and reject
+working limits explicitly. CUDA operations require an offset plan, so an
+image with subsampled colour components is a group error on CUDA; MPS also
+decodes the whole such image at full resolution.
 Each halving comes from the codestream's wavelet ladder, so `reduction` cannot
 exceed the decomposition levels; a deeper request raises `ValueError` (or an
 indexed batch error) rather than resampling or cropping a shallower reduction.
@@ -70,10 +77,10 @@ RGB, or RGBA with U8, U16, or I16 output. When components use different
 sampling factors, the subsampled ones are replicated onto the image grid.
 ICC-tagged, palette-mapped, uniformly subsampled, mixed-precision/signedness,
 and above-16-bit pixel-batch inputs are rejected.
-The general Rust decoder supports additional cases.
+The general Rust decoder and explicit `decode_srgb8` support additional colour cases.
 Inspection reports per-component precision, signedness, and sampling. The
-adapter does not apply orientation, ICC transforms, resizing, padding, alpha
-compositing, or normalization.
+native adapter does not apply orientation, display normalization, arbitrary
+resizing, padding, or alpha compositing. Explicit sRGB output is described below.
 
 `decode` and `decode_batch` also accept complete 8-bit JPEG files, detected by
 their SOI marker, in the same call as JPEG 2000 inputs. JPEG groups are always
@@ -140,6 +147,93 @@ retains their owned outputs, independently of future session calls.
 
 Each group preserves precision, signedness, color/alpha interpretation,
 warnings, and decoded rectangles. Do not discard the error lists silently.
+
+## Exact plans and controlled prepared operations
+
+`Decoder.plan_region(data, region=..., reduction=..., interpretation="native")`
+returns source and output rectangles, the reference-grid origin, the effective
+image-wide maximum reduction, native sample metadata, shape, byte strides,
+row bytes, and total bytes. `interpretation="srgb8"` plans explicit normalized
+output. Shape and strides use the decoder's NCHW/NHWC layout. `native_cpu`
+means the native route is selected at execution; later packet validation or
+working-memory admission may still fail. Planning initializes source facts,
+does not allocate decoded pixels, and is outside operation controls.
+
+CPU `ImageRequest`, `prepare`, `decode`, and `decode_batch` accept exact
+reductions 0–31. Exact preparations retain native source owners and request
+facts; bounded derived plans are selected by the receiving CPU session.
+Original input indices, preparation errors, integer ranges, and tensor/DLPack
+ownership remain unchanged. No legacy `Downscale` is fabricated for a deep
+request.
+
+Preparation and each prepared decode take independent operation controls:
+
+```python
+prepared = decoder.prepare([data], control=j2k.DecodeControl(
+    max_working_memory_bytes=64 << 20))
+token = j2k.CancellationToken()
+control = j2k.DecodeControl(
+    max_working_memory_bytes=32 << 20,
+    max_output_bytes=8 << 20,
+    cancellation=token,
+)
+batch = decoder.decode_prepared(prepared, region=(16, 16, 128, 128),
+                                reduction=4, control=control)
+# Another thread can call token.cancel() while CPU work releases the interpreter.
+```
+
+The source's validation settings stay fixed. Omitted region/reduction overrides
+retain each prepared request; original preparation errors remain indexed errors.
+Exact/overridden/controlled prepared decoding requires a decoder with the same
+output layout used for preparation. A mismatched layout is rejected explicitly.
+On MPS and CUDA, output limits and cancellation apply (a token is checked before
+each Metal group is committed or each CUDA group is submitted; submitted GPU
+work completes), while a working limit is an indexed capability error because
+device working memory is not accounted against a host allowance.
+
+`prepare(inputs, control=...)` prepares on a CPU decoder one input at a time:
+the working limit bounds each input's parsing and planning beside the plans
+already kept for earlier inputs, the output limit rejects inputs whose decoded
+output would exceed it, and cancellation stops at the next checkpoint. Failing
+inputs are indexed preparation errors. The control applies to preparation only;
+a prepared batch keeps its actual plans, never the allowance.
+Legacy `decode_prepared(prepared)` without new arguments keeps its existing
+behavior. Independent decoders with matching layouts can share preparation and
+use different operation controls.
+
+Working memory includes live derived plans, the current codec-owned output,
+and native scratch. Original immutable source preparation, compressed input,
+and completed sibling outputs are separate domains; this is not an RSS bound.
+`max_working_memory_bytes` must be positive when supplied and cannot raise the
+engine's ceiling. `max_output_bytes=0` rejects nonempty output. Cancellation
+is permanent for a token and appears in the existing indexed error messages;
+create another token for independent work. No tensor row is returned for a
+failed or cancelled item. Raw `decode`/`decode_batch` do not accept controls;
+prepare with a control, then decode the prepared batch with one.
+
+`Decoder.set_operation_cache_limit(bytes)` bounds only derived native plans
+retained by the session; zero disables their cache. Caller-held `PreparedBatch`
+source owners remain live until the caller releases them. Controlled work drops
+unused offset caches, so earlier requests cannot change its admission.
+
+## Explicit sRGB output
+
+`Decoder.decode_srgb8(data, region=..., reduction=...)` returns a CPU U8 tensor
+in the decoder's layout. It reconstructs the exact reduced region before
+normalizing supported gray/RGB, ICC, palette/channel mapping, and subsampled
+inputs. RGBA output has straight alpha. Premultiplied colour is unassociated
+at the source precision before sYCC conversion and quantization. Premultiplied
+CIE Lab input, and premultiplied subsampled or signed input other than eight-bit
+mapped samples without colour conversion, fail explicitly.
+Ordinary native samples retain their existing interpretation.
+
+This raw-input method accepts a `DecodeControl`: the input is parsed and
+decoded under its working limit and cancellation, and the output limit bounds
+the result. NCHW conversion charges both layouts against the working limit.
+ICC conversion under a working limit requires a matrix/TRC or gray-TRC profile
+with an XYZ connection space. Lenient metadata recoveries emit the
+existing `RecoveredImageWarning`. The method and region planner reject JPEG
+and device backends rather than silently changing codecs or devices.
 
 For CPU decoding, create one CPU decoder lazily inside each DataLoader worker,
 with a small explicit worker count, and convert outputs to ordinary CPU torch

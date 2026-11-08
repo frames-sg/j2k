@@ -19,6 +19,10 @@ if os.environ.get("J2K_REQUIRE_CUDA") == "1" and not AVAILABLE:
 
 @unittest.skipUnless(AVAILABLE, "requires the cuda extension build and CUDA hardware")
 class CudaTests(unittest.TestCase):
+    def test_exact_operations_match_the_cpu_and_reject_unsupported_features(self):
+        from test_operations import assert_exact_device_capabilities
+        assert_exact_device_capabilities(self, "cuda")
+
     def test_bare_device_binds_current_device_once(self):
         ordinal = torch.cuda.current_device()
         with patch.object(torch.cuda, "current_device", return_value=ordinal) as current:
@@ -51,8 +55,10 @@ class CudaTests(unittest.TestCase):
         data = encoded("gray_u8_53")
         output = j2k.Decoder(device="cuda").decode(data)
         for _ in range(3):
-            with self.assertRaises(BufferError):
+            with self.assertRaises((BufferError, RuntimeError)) as rejected:
                 np.from_dlpack(output)
+            if isinstance(rejected.exception, RuntimeError):
+                self.assertEqual(str(rejected.exception), "Unsupported device in DLTensor.")
             gc.collect()
         expected = j2k.Decoder().decode(data).to_torch()
         self.assertTrue(torch.equal(output.to_torch().cpu(), expected))

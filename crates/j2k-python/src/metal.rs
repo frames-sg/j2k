@@ -4,8 +4,10 @@
 
 use std::{ffi::c_void, sync::Mutex};
 
-use j2k::{BatchDecodeOptions, NativeSampleType, PreparedBatch, PreparedBatchGroup};
-use j2k_metal::MetalBatchDecoder;
+use j2k::{
+    BatchDecodeOptions, BatchGroupInfo, NativeSampleType, PreparedBatch, PreparedImageOperation,
+};
+use j2k_metal::{MetalBatchDecoder, SubmittedMetalGroupDecodeInto};
 use j2k_metal_support::{checked_private_buffer, MetalImageDestination, MetalImageLayout};
 use objc2::{rc::Retained, runtime::ProtocolObject};
 use objc2_metal::MTLBuffer;
@@ -62,10 +64,6 @@ impl MetalDecoder {
     }
 
     pub fn decode(&self, prepared: &PreparedBatch) -> PyResult<Decoded> {
-        let mut decoder = self
-            .decoder
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("Metal decoder is poisoned"))?;
         let mut decoded = Decoded {
             errors: prepared
                 .errors()
@@ -74,24 +72,84 @@ impl MetalDecoder {
                 .collect(),
             ..Decoded::default()
         };
+        let mut decoder = self
+            .decoder
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Metal decoder is poisoned"))?;
         for group in prepared.groups() {
-            match decode_group(&mut decoder, group) {
-                Ok(output) => decoded.groups.push(output),
-                Err(error) => decoded.group_errors.push((
-                    owned_items(group.source_indices().iter().copied())?,
-                    error.to_string(),
-                )),
-            }
+            let output = decode_group(
+                &mut decoder,
+                group.info(),
+                group.source_indices(),
+                |decoder, destination| decoder.submit_prepared_group_into(group, destination),
+            );
+            push_group(&mut decoded, output, group.source_indices())?;
         }
+        drop(decoder);
+        Ok(decoded)
+    }
+
+    /// Decode exact region/reduction operations. Indices in the result refer
+    /// to positions in `operations`.
+    pub fn decode_operations(
+        &self,
+        operations: &[PreparedImageOperation<'_>],
+        options: BatchDecodeOptions,
+    ) -> PyResult<Decoded> {
+        let prepared = j2k::prepare_device_operations(operations, options).map_err(value_error)?;
+        let mut decoded = Decoded {
+            errors: prepared
+                .errors()
+                .iter()
+                .map(|e| (e.index, e.source.to_string()))
+                .collect(),
+            ..Decoded::default()
+        };
+        let mut decoder = self
+            .decoder
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Metal decoder is poisoned"))?;
+        for group in prepared.groups() {
+            let output = decode_group(
+                &mut decoder,
+                group.info(),
+                group.source_indices(),
+                |decoder, destination| decoder.submit_operation_group_into(group, destination),
+            );
+            push_group(&mut decoded, output, group.source_indices())?;
+        }
+        drop(decoder);
         Ok(decoded)
     }
 }
 
+fn push_group(
+    decoded: &mut Decoded,
+    output: PyResult<MaterializedGroup>,
+    source_indices: &[usize],
+) -> PyResult<()> {
+    match output {
+        Ok(output) => decoded.groups.push(output),
+        Err(error) => decoded.group_errors.push((
+            owned_items(source_indices.iter().copied())?,
+            error.to_string(),
+        )),
+    }
+    Ok(())
+}
+
+/// Decode one homogeneous group into a fresh private allocation that the
+/// returned tensor solely owns.
 fn decode_group(
     decoder: &mut MetalBatchDecoder,
-    group: &PreparedBatchGroup,
+    info: &BatchGroupInfo,
+    source_indices: &[usize],
+    submit: impl FnOnce(
+        &mut MetalBatchDecoder,
+        MetalImageDestination,
+    ) -> Result<SubmittedMetalGroupDecodeInto, j2k_metal::Error>,
 ) -> PyResult<MaterializedGroup> {
-    let info = group.info();
+    let image_count = source_indices.len();
     let dtype = match info.sample_type {
         NativeSampleType::U8 => DType::U8,
         NativeSampleType::U16 => DType::U16,
@@ -114,7 +172,7 @@ fn decode_group(
         info.dimensions,
         row_bytes,
         format,
-        group.images().len(),
+        image_count,
         image_bytes,
     )
     .map_err(value_error)?;
@@ -126,15 +184,14 @@ fn decode_group(
     let destination =
         unsafe { MetalImageDestination::from_exclusive_buffer(buffer.clone(), layout) }
             .map_err(value_error)?;
-    let completion = decoder
-        .submit_prepared_group_into(group, destination)
+    let completion = submit(decoder, destination)
         .and_then(|submission| submission.wait())
         .map_err(value_error)?;
     let (rects, warnings) = completion.into_parts();
     Ok(MaterializedGroup {
         meta: GroupMeta::of(info),
-        recovered: owned_items((0..group.source_indices().len()).map(|_| false))?,
-        indices: owned_items(group.source_indices().iter().copied())?,
+        recovered: owned_items((0..image_count).map(|_| false))?,
+        indices: owned_items(source_indices.iter().copied())?,
         rects,
         warnings: warnings
             .into_iter()
@@ -145,7 +202,7 @@ fn decode_group(
                 buffer,
                 len: layout.byte_len() / usize::from(dtype.bits / 8),
             }),
-            shape(info, group.images().len())?,
+            shape(info, image_count)?,
             dtype,
             (8, 0),
         )?,

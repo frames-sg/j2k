@@ -19,6 +19,7 @@ mod decode;
 mod encode;
 #[cfg(all(feature = "metal", target_os = "macos", target_arch = "aarch64"))]
 mod metal;
+mod operations;
 mod tensor;
 mod transforms;
 mod wavelets;
@@ -35,11 +36,16 @@ fn is_jpeg(bytes: &[u8]) -> bool {
 // Codec allocations are budgeted by the engine. Adapter metadata also uses
 // fallible allocation so a failed reservation becomes a Python exception.
 fn owned_items<T>(items: impl ExactSizeIterator<Item = T>) -> PyResult<Vec<T>> {
+    let mut output = owned_capacity(items.len())?;
+    output.extend(items);
+    Ok(output)
+}
+
+fn owned_capacity<T>(capacity: usize) -> PyResult<Vec<T>> {
     let mut output = Vec::new();
     output
-        .try_reserve_exact(items.len())
+        .try_reserve_exact(capacity)
         .map_err(|error| PyMemoryError::new_err(error.to_string()))?;
-    output.extend(items);
     Ok(output)
 }
 
@@ -105,6 +111,8 @@ fn j2k_python(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<decode::PreparedBatch>()?;
     module.add_class::<decode::Batch>()?;
     module.add_class::<decode::BatchGroup>()?;
+    module.add_class::<operations::CancellationToken>()?;
+    module.add_class::<operations::DecodeControl>()?;
     module.add_class::<tensor::Tensor>()?;
     module.add_class::<wavelets::Wavelets>()?;
     module.add_class::<wavelets::Component>()?;

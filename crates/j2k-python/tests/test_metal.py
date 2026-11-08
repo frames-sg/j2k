@@ -32,6 +32,10 @@ def compressed_records(items):
 
 @unittest.skipUnless(AVAILABLE, "requires the metal extension build and MPS hardware")
 class MetalTests(unittest.TestCase):
+    def test_exact_operations_match_the_cpu_and_reject_unsupported_features(self):
+        from test_operations import assert_exact_device_capabilities
+        assert_exact_device_capabilities(self, "mps")
+
     def test_reader_workers_send_records_to_main_process_mps_decoder(self):
         loader = torch.utils.data.DataLoader(CompressedDataset(), batch_size=2,
             num_workers=2, multiprocessing_context="spawn", pin_memory=False,
@@ -59,8 +63,12 @@ class MetalTests(unittest.TestCase):
         data = encoded("gray_u8_53")
         output = j2k.Decoder(device="mps").decode(data)
         for _ in range(3):
-            with self.assertRaises(BufferError):
+            with self.assertRaises((BufferError, RuntimeError)) as rejected:
                 np.from_dlpack(output)
+            # NumPy 2.4 rejects the foreign device itself with RuntimeError;
+            # earlier consumers request CPU conversion and receive BufferError.
+            if isinstance(rejected.exception, RuntimeError):
+                self.assertEqual(str(rejected.exception), "Unsupported device in DLTensor.")
             gc.collect()
         expected = j2k.Decoder().decode(data).to_torch()
         self.assertTrue(torch.equal(output.to_torch().cpu(), expected))
