@@ -895,16 +895,19 @@ fn cpu_lossless_classic_high_bit_rectangular_roi_rejects_56_coded_bitplanes_expl
     ));
 }
 
-/// The coded-bitplane limit is per block coder (classic allows 55), but the
-/// 8-bit route stores coefficients in 32 bits. A shift whose coefficients fit
-/// must round-trip; one that would wrap must be refused, never written.
+/// The coded-bitplane limit is per block coder (classic allows 55), and the
+/// 8-bit route quantizes into 32-bit coefficients. A classic shift that would
+/// not fit them widens the subband to 64 bits, so on any image every shift
+/// within the limit round-trips and only shifts past it are refused, before
+/// any coefficient is shifted.
 #[test]
-fn cpu_lossless_classic_8_bit_roi_refuses_shifts_that_overflow_32_bit_coefficients() {
-    let pixels: Vec<_> = (0_usize..32 * 32)
+fn cpu_lossless_classic_8_bit_roi_shifts_past_32_bit_coefficients_round_trip() {
+    let textured: Vec<_> = (0_usize..32 * 32)
         .map(|idx| u8::try_from((idx * 97 + idx / 7 * 13) % 256).expect("fixture sample fits u8"))
         .collect();
-    let encode = |levels: u8, shift: u8| {
-        let samples = J2kLosslessSamples::new(&pixels, 32, 32, 1, 8, false).unwrap();
+    let flat = vec![128_u8; 32 * 32];
+    let encode = |pixels: &[u8], levels: u8, shift: u8| {
+        let samples = J2kLosslessSamples::new(pixels, 32, 32, 1, 8, false).unwrap();
         let roi = [J2kRoiRegion {
             component: 0,
             x: 3,
@@ -925,29 +928,44 @@ fn cpu_lossless_classic_8_bit_roi_refuses_shifts_that_overflow_32_bit_coefficien
             &roi,
         )
     };
-    for (levels, shift) in [(5, 21), (5, 24), (0, 23), (0, 24)] {
-        let encoded = encode(levels, shift).expect("ROI shift that fits 32-bit coefficients");
-        assert_eq!(
-            decode_native(&encoded.codestream).data,
-            pixels,
-            "levels {levels} shift {shift}"
-        );
-    }
-    for (levels, shift) in [(5, 31), (0, 31), (5, 32), (5, 40)] {
-        let err = encode(levels, shift).expect_err("ROI shift that overflows 32-bit coefficients");
-        let j2k::J2kError::NativeEncode { source, .. } = &err else {
-            panic!("expected a native encode error, got {err:?}");
-        };
-        assert!(
-            matches!(
-                std::error::Error::source(source)
-                    .and_then(|source| source.downcast_ref::<j2k_native::EncodeError>()),
-                Some(j2k_native::EncodeError::Unsupported {
-                    what: "ROI maxshift coefficient exceeds 32-bit storage",
-                })
-            ),
-            "levels {levels} shift {shift}: {err:?}"
-        );
+    for (pixels, image) in [(&textured, "textured"), (&flat, "flat")] {
+        for levels in [0, 5] {
+            let mut largest_accepted = None;
+            for shift in 21..=60 {
+                let case = format!("{image}, levels {levels}, shift {shift}");
+                match encode(pixels, levels, shift) {
+                    Ok(encoded) => {
+                        assert!(
+                            largest_accepted.is_none_or(|largest| largest + 1 == shift),
+                            "{case}: accepted after a refusal"
+                        );
+                        assert_eq!(decode_native(&encoded.codestream).data, *pixels, "{case}");
+                        largest_accepted = Some(shift);
+                    }
+                    Err(err) => {
+                        let j2k::J2kError::NativeEncode { source, .. } = &err else {
+                            panic!("{case}: expected a native encode error, got {err:?}");
+                        };
+                        assert!(
+                            matches!(
+                                std::error::Error::source(source).and_then(|source| {
+                                    source.downcast_ref::<j2k_native::EncodeError>()
+                                }),
+                                Some(j2k_native::EncodeError::Unsupported {
+                                    what: "ROI maxshift exceeds supported coded bitplane count",
+                                })
+                            ),
+                            "{case}: {err:?}"
+                        );
+                    }
+                }
+            }
+            // Every subband then codes more than 31 bitplanes.
+            assert!(
+                largest_accepted.is_some_and(|largest| largest >= 40),
+                "{image}, levels {levels}: largest accepted shift {largest_accepted:?}"
+            );
+        }
     }
 }
 

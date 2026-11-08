@@ -320,6 +320,40 @@ fn cpu_lossy_rectangular_roi_writes_rgn_and_decodes() {
     assert_eq!(decoded.num_components, 1);
 }
 
+/// A classic lossy ROI shift that would not fit 32-bit coefficients widens
+/// the subband instead of failing. With every pass kept, any maxshift that
+/// separates the region decodes to the same pixels, so shifts past 32-bit
+/// storage match a shift that fits it.
+#[test]
+fn cpu_classic_lossy_roi_shifts_past_32_bit_coefficients_match_a_shift_that_fits() {
+    let pixels: Vec<u8> = (0..64 * 64)
+        .map(|index| masked_u8((index * 13) ^ (index / 5)))
+        .collect();
+    let options = J2kLossyEncodeOptions::default()
+        .with_backend(EncodeBackendPreference::CpuOnly)
+        .with_block_coding_mode(J2kBlockCodingMode::Classic)
+        .with_max_decomposition_levels(Some(1))
+        .with_validation(J2kEncodeValidation::External);
+    let decode_with_shift = |shift| {
+        let samples = J2kLossySamples::new(&pixels, 64, 64, 1, 8, false).unwrap();
+        let roi = [J2kRoiRegion {
+            component: 0,
+            x: 8,
+            y: 12,
+            width: 24,
+            height: 20,
+            shift,
+        }];
+        let encoded = encode_j2k_lossy_with_roi_regions(samples, &options, &roi)
+            .unwrap_or_else(|err| panic!("shift {shift}: {err:?}"));
+        strict_decode_native(&encoded.codestream).data
+    };
+    let expected = decode_with_shift(12);
+    for shift in [30, 40] {
+        assert_eq!(decode_with_shift(shift), expected, "shift {shift}");
+    }
+}
+
 #[test]
 fn lossy_sample_descriptor_accepts_part1_high_bit_depths() {
     let pixels = vec![0u8; 2 * 2 * 5];

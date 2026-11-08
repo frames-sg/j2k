@@ -22,10 +22,12 @@ Staged workspace version: `0.13.2`.
   keep coefficients in 32 bits, and a shifted value that lost high bits or
   changed sign was coded silently: an 8-bit classic lossless encode with
   `J2kEncodeValidation::External` and an ROI shift of 31 decoded to the wrong
-  pixels. Such shifts now fail with `EncodeError::Unsupported` ("ROI maxshift
-  coefficient exceeds 32-bit storage"), which also replaces the "size
-  overflow" error that shifts of 32 and more reported. Shifts whose
-  coefficients fit encode exactly as before. Typed component planes above 24
+  pixels, and shifts of 32 and more failed with a "size overflow" error. A
+  classic subband whose shifted coefficients may need more than 31 bitplanes
+  is now widened to 64 bits before the shift, so every shift within the
+  55-bitplane limit encodes correctly whatever the image, lossless or lossy;
+  only shifts past the limit are refused, during validation. Encodes that
+  worked before keep their exact bytes. Typed component planes above 24
   bits (`encode_typed_component_planes_53`) now apply
   `EncodeOptions::roi_component_shifts` and write their `RGN` markers, as
   narrower planes do, instead of ignoring them, and validate the shift count

@@ -15,8 +15,49 @@ use super::{
 };
 use crate::j2c::fdwt::PackedSubbandView;
 
-fn apply_roi_maxshift_encode_for_session(
-    coefficients: &mut [i32],
+/// The most magnitude bitplanes a code block's coefficients can carry in
+/// 32-bit storage.
+const MAX_I32_CODED_BITPLANES: u8 = 31;
+
+/// Storage of a quantized subband's coefficients and of its code blocks.
+trait QuantizedCoefficient: Copy + Send + Sync {
+    /// Allocation label of the prepared code-block coefficients.
+    const CODE_BLOCK_WHAT: &'static str;
+
+    /// Scale the coefficient by the ROI maxshift, refusing a result the
+    /// storage cannot hold.
+    fn shift_roi(&mut self, roi_shift: u8) -> Result<(), &'static str>;
+
+    /// The prepared code-block owner of `values`.
+    fn code_block(values: Vec<Self>) -> super::PreparedCodeBlockCoefficients;
+}
+
+impl QuantizedCoefficient for i32 {
+    const CODE_BLOCK_WHAT: &'static str = "prepared i32 code-block coefficients";
+
+    fn shift_roi(&mut self, roi_shift: u8) -> Result<(), &'static str> {
+        shift_roi_coefficient(self, roi_shift)
+    }
+
+    fn code_block(values: Vec<Self>) -> super::PreparedCodeBlockCoefficients {
+        super::PreparedCodeBlockCoefficients::I32(values)
+    }
+}
+
+impl QuantizedCoefficient for i64 {
+    const CODE_BLOCK_WHAT: &'static str = "prepared i64 code-block coefficients";
+
+    fn shift_roi(&mut self, roi_shift: u8) -> Result<(), &'static str> {
+        shift_roi_coefficient_i64(self, roi_shift)
+    }
+
+    fn code_block(values: Vec<Self>) -> super::PreparedCodeBlockCoefficients {
+        super::PreparedCodeBlockCoefficients::I64(values)
+    }
+}
+
+fn apply_roi_maxshift_encode_for_session<T: QuantizedCoefficient>(
+    coefficients: &mut [T],
     request: &F32SubbandEncodeRequest<'_, '_>,
     quantized_bytes: usize,
     tracker: &mut Tier1PhaseTracker<'_, '_>,
@@ -34,7 +75,8 @@ fn apply_roi_maxshift_encode_for_session(
     }
     if request.roi_regions.is_empty() {
         for coefficient in coefficients {
-            shift_roi_coefficient(coefficient, request.roi_shift)
+            coefficient
+                .shift_roi(request.roi_shift)
                 .map_err(NativeEncodePipelineError::unsupported)?;
         }
         return Ok(());
@@ -64,7 +106,8 @@ fn apply_roi_maxshift_encode_for_session(
                     continue;
                 }
                 selected[idx] = 1;
-                shift_roi_coefficient(&mut coefficients[idx], request.roi_shift)
+                coefficients[idx]
+                    .shift_roi(request.roi_shift)
                     .map_err(NativeEncodePipelineError::unsupported)?;
             }
         }
@@ -75,9 +118,10 @@ fn apply_roi_maxshift_encode_for_session(
 /// Scale one 32-bit coefficient by the ROI maxshift.
 ///
 /// The coded-bitplane limit is checked per block-coding mode, not per storage
-/// width, so a shift can be valid yet not fit a coefficient's 32-bit storage.
-/// A shifted value that would lose high bits or change sign is refused rather
-/// than wrapped.
+/// width. A subband whose shifted coefficients may need more than
+/// [`MAX_I32_CODED_BITPLANES`] is widened to 64 bits before the shift, so a
+/// value that would still lose high bits or change sign here is refused
+/// rather than wrapped.
 fn shift_roi_coefficient(coefficient: &mut i32, roi_shift: u8) -> Result<(), &'static str> {
     let mut wide = i64::from(*coefficient);
     shift_roi_coefficient_i64(&mut wide, roi_shift)?;
@@ -272,14 +316,67 @@ pub(super) fn prepare_subband_for_session(
         return Ok(prepared);
     }
 
-    let (mut quantized, quantized_bytes) =
+    let (quantized, quantized_bytes) =
         try_quantize_subband(request, coefficients, plan, &mut tracker, accelerator)?;
-    apply_roi_maxshift_encode_for_session(&mut quantized, request, quantized_bytes, &mut tracker)?;
+    if request.roi_shift != 0 && plan.total_bitplanes > MAX_I32_CODED_BITPLANES {
+        // The maxshift may carry coefficients past 32 bits, which classic
+        // coding allows up to its 55-bitplane limit. Widen the whole subband
+        // so success never depends on the image: Tier-1 narrows the blocks
+        // that still fit 32 bits and codes the rest from 64-bit storage.
+        let (widened, widened_bytes) =
+            widen_quantized_subband(&quantized, quantized_bytes, &mut tracker)?;
+        drop(quantized);
+        return shift_and_prepare_code_blocks(
+            request,
+            plan,
+            widened,
+            widened_bytes,
+            &mut tracker,
+            parallel,
+        );
+    }
+    shift_and_prepare_code_blocks(
+        request,
+        plan,
+        quantized,
+        quantized_bytes,
+        &mut tracker,
+        parallel,
+    )
+}
+
+/// A 64-bit copy of a quantized subband, charged beside the 32-bit one it is
+/// made from.
+fn widen_quantized_subband(
+    quantized: &[i32],
+    quantized_bytes: usize,
+    tracker: &mut Tier1PhaseTracker<'_, '_>,
+) -> NativeEncodePipelineResult<(Vec<i64>, usize)> {
+    let (mut widened, widened_bytes) = tracker.try_vec::<i64>(
+        quantized.len(),
+        [quantized_bytes],
+        "ROI-widened subband coefficients",
+    )?;
+    widened.extend(quantized.iter().copied().map(i64::from));
+    Ok((widened, widened_bytes))
+}
+
+/// Apply the ROI maxshift to a quantized subband, then split it into code
+/// blocks of the same storage.
+fn shift_and_prepare_code_blocks<T: QuantizedCoefficient>(
+    request: &F32SubbandEncodeRequest<'_, '_>,
+    plan: F32SubbandPlan,
+    mut quantized: Vec<T>,
+    quantized_bytes: usize,
+    tracker: &mut Tier1PhaseTracker<'_, '_>,
+    parallel: bool,
+) -> NativeEncodePipelineResult<PreparedEncodeSubband> {
+    apply_roi_maxshift_encode_for_session(&mut quantized, request, quantized_bytes, tracker)?;
     prepare_code_blocks(
         request,
         plan,
         quantized_bytes,
-        &mut tracker,
+        tracker,
         parallel,
         |x0, y0, width, height, out| {
             copy_code_block_coefficients_into(
@@ -738,13 +835,13 @@ fn encode_preencoded_ht_block(
 /// Split a subband into code blocks, each filled by `fill(x0, y0, width,
 /// height, block)` with its row-major quantized samples. `source_bytes` are
 /// the bytes the fill reads from while the blocks are built.
-fn prepare_code_blocks(
+fn prepare_code_blocks<T: QuantizedCoefficient>(
     request: &F32SubbandEncodeRequest<'_, '_>,
     plan: F32SubbandPlan,
     source_bytes: usize,
     tracker: &mut Tier1PhaseTracker<'_, '_>,
     parallel: bool,
-    fill: impl Fn(u32, u32, u32, u32, &mut Vec<i32>) -> NativeEncodePipelineResult<()> + Sync,
+    fill: impl Fn(u32, u32, u32, u32, &mut Vec<T>) -> NativeEncodePipelineResult<()> + Sync,
 ) -> NativeEncodePipelineResult<PreparedEncodeSubband> {
     let code_block_count = usize::try_from(plan.num_cbs_x.checked_mul(plan.num_cbs_y).ok_or(
         crate::EncodeError::ArithmeticOverflow {
@@ -761,11 +858,11 @@ fn prepare_code_blocks(
     )?;
     // The blocks tile the subband, so charging all of its samples up front
     // lets the blocks fill in any order.
-    let what = "prepared i32 code-block coefficients";
+    let what = T::CODE_BLOCK_WHAT;
     let samples = (request.width as usize)
         .checked_mul(request.height as usize)
         .ok_or_else(|| NativeEncodePipelineError::arithmetic_overflow("subband sample count"))?;
-    let coefficient_bytes = checked_element_bytes::<i32>(samples, what)?;
+    let coefficient_bytes = checked_element_bytes::<T>(samples, what)?;
     tracker.check(
         [source_bytes, code_block_owner_bytes, coefficient_bytes],
         what,
@@ -791,9 +888,9 @@ fn prepare_code_blocks(
             },
         )?;
         let mut cb_coeffs = Vec::new();
-        cb_coeffs
-            .try_reserve_exact(count)
-            .map_err(|_| host_allocation_failed(what, count.saturating_mul(4)))?;
+        cb_coeffs.try_reserve_exact(count).map_err(|_| {
+            host_allocation_failed(what, count.saturating_mul(core::mem::size_of::<T>()))
+        })?;
         fill(x0, y0, cbw, cbh, &mut cb_coeffs)?;
         if cb_coeffs.len() != count {
             return Err(NativeEncodePipelineError::internal_invariant(
@@ -801,7 +898,7 @@ fn prepare_code_blocks(
             ));
         }
         *block = PreparedEncodeCodeBlock {
-            coefficients: super::PreparedCodeBlockCoefficients::I32(cb_coeffs),
+            coefficients: T::code_block(cb_coeffs),
             width: cbw,
             height: cbh,
         };
@@ -907,14 +1004,14 @@ fn code_block_shapes_for_session(
     Ok(code_blocks)
 }
 
-fn copy_code_block_coefficients_into(
-    quantized: &[i32],
+fn copy_code_block_coefficients_into<T: Copy>(
+    quantized: &[T],
     width: usize,
     x0: usize,
     y0: usize,
     cbw: usize,
     cbh: usize,
-    output: &mut Vec<i32>,
+    output: &mut Vec<T>,
 ) -> NativeEncodePipelineResult<()> {
     let expected = cbw
         .checked_mul(cbh)
