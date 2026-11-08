@@ -10,6 +10,8 @@
 static_assert(!std::is_copy_constructible_v<j2k::decoder>);
 static_assert(std::is_nothrow_move_constructible_v<j2k::decoder>);
 static_assert(std::is_nothrow_move_assignable_v<j2k::decoder>);
+static_assert(!std::is_copy_constructible_v<j2k::cancellation_token>);
+static_assert(std::is_nothrow_move_constructible_v<j2k::cancellation_token>);
 
 int main(int argc, char **argv) {
     if (argc != 2) return 2;
@@ -66,6 +68,25 @@ int main(int argc, char **argv) {
             });
         } catch (const std::logic_error &) { rethrown = true; }
         if (!rethrown) throw std::runtime_error("a row callback exception was not rethrown");
+
+        target.prepare_operations();
+        j2k_operation_options operation = J2K_OPERATION_OPTIONS_INIT;
+        operation.max_working_memory_bytes = UINT64_C(8) << 20;
+        const auto plan = target.plan_region(operation);
+        std::vector<uint8_t> exact(static_cast<size_t>(plan.output.buffer_bytes));
+        const auto actual = target.decode_region_into(exact.data(), exact.size(), 32, operation);
+        if (actual.precision != 8 || exact != pixels)
+            throw std::runtime_error("exact native operation mismatch");
+        j2k::cancellation_token token;
+        j2k::cancellation_token moved_token(std::move(token));
+        operation.cancellation = moved_token.native_handle();
+        moved_token.cancel();
+        rejected = false;
+        try { target.decode_region_into(exact.data(), exact.size(), 32, operation); }
+        catch (const j2k::error &error) { rejected = error.status() == J2K_CANCELLED; }
+        if (!rejected) throw std::runtime_error("cancelled operation was not rejected");
+        operation.cancellation = nullptr;
+        target.set_operation_cache_limit(0);
 
         // Encode and decode again.
         j2k_encode_options options = J2K_ENCODE_OPTIONS_INIT;

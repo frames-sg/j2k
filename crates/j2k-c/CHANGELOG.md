@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Add exact region planning/decoding at native reductions 0–31 without changing
+  existing ABI-1 layouts or the legacy 0–3 API. Native U8/U16/I16 values remain
+  unchanged; explicit sRGB output provides bounded normalized U8 regions.
+- Add optional explicit source preparation, operation working/output controls,
+  owned cancellation tokens with `J2K_CANCELLED`, and a derived-plan cache limit.
+  A controlled operation on an unprepared decoder prepares the source under its
+  own working limit and cancellation, keeping only a successful preparation; raw
+  sRGB calls parse their source under the same controls. ICC conversion under a
+  working limit requires a matrix/TRC or gray-TRC profile with an XYZ
+  connection space. C++ wrappers preserve token and decoder ownership, and
+  exact decode can return actual warning metadata.
+
 - Stream the full image row by row: `j2k_decoder_row_info` reports the layout
   and `j2k_decoder_decode_rows` hands each row to a `j2k_row_callback`, in order
   and once each, holding at most `max_rows_per_stripe` rows. Rows are the

@@ -16,6 +16,8 @@ _Static_assert(sizeof(j2k_component_info) == 24, "ABI 1 component info");
 _Static_assert(sizeof(j2k_output_info) == 64, "ABI 1 output info");
 _Static_assert(sizeof(j2k_encode_options) == 32, "ABI 1 encode options");
 _Static_assert(sizeof(j2k_error) == 260, "ABI 1 error");
+_Static_assert(sizeof(j2k_region_plan) == 104, "exact region plan layout");
+_Static_assert(offsetof(j2k_operation_options, cancellation) == 48, "operation token offset");
 
 /* Copies each row after the previous one; stops after stop_after rows. */
 typedef struct rows {
@@ -103,6 +105,39 @@ int main(int argc, char **argv) {
     REQUIRE(j2k_decoder_decode_rows(decoder, NULL, 0, take_row, &stopped, NULL, &error) == J2K_STOPPED);
     REQUIRE(error.code == J2K_STOPPED && stopped.next_y == 3);
     REQUIRE(j2k_decoder_decode_rows(decoder, NULL, 0, NULL, NULL, NULL, &error) == J2K_INVALID_ARGUMENT);
+
+    /* Additive exact operations preserve ABI-1 native output and token ownership. */
+    /* Preparation is optional: an unprepared decoder prepares its source under
+     * the operation's working limit and keeps only a successful preparation. */
+    j2k_operation_options operation = J2K_OPERATION_OPTIONS_INIT;
+    j2k_region_plan plan = J2K_REGION_PLAN_INIT;
+    operation.max_working_memory_bytes = 1;
+    REQUIRE(j2k_decoder_plan_region(decoder, &operation, &plan, &error) == J2K_RESOURCE_LIMIT);
+    operation.max_working_memory_bytes = UINT64_C(8) << 20;
+    REQUIRE(j2k_decoder_plan_region(decoder, &operation, &plan, &error) == J2K_OK);
+    REQUIRE(j2k_decoder_prepare_operations(decoder, &error) == J2K_OK); /* already prepared */
+    REQUIRE(j2k_decoder_plan_region(decoder, &operation, &plan, &error) == J2K_OK);
+    REQUIRE(plan.output.buffer_bytes == 768 && plan.route == J2K_ROUTE_NATIVE_CPU);
+    uint8_t exact[768];
+    j2k_output_info actual = J2K_OUTPUT_INFO_INIT;
+    REQUIRE(j2k_decoder_decode_region_into(decoder, &operation, exact, sizeof(exact), 32, &actual, &error) == J2K_OK);
+    REQUIRE(memcmp(exact, pixels, sizeof(exact)) == 0 && actual.precision == 8);
+    j2k_cancellation *token = NULL;
+    REQUIRE(j2k_cancellation_create(&token, &error) == J2K_OK);
+    REQUIRE(j2k_cancellation_cancel(token, &error) == J2K_OK);
+    operation.cancellation = token;
+    memset(exact, 0xA5, sizeof(exact));
+    REQUIRE(j2k_decoder_decode_region_into(decoder, &operation, exact, sizeof(exact), 32, NULL, &error) == J2K_CANCELLED);
+    for (size_t i = 0; i < sizeof(exact); ++i) REQUIRE(exact[i] == 0xA5);
+    operation.cancellation = NULL;
+    REQUIRE(j2k_cancellation_free(&token, &error) == J2K_OK && token == NULL);
+    REQUIRE(j2k_decoder_set_operation_cache_limit(decoder, 0, &error) == J2K_OK);
+    operation.max_working_memory_bytes = 0;
+    operation.interpretation = J2K_INTERPRETATION_SRGB8;
+    REQUIRE(j2k_decoder_plan_region(decoder, &operation, &plan, &error) == J2K_OK);
+    REQUIRE(plan.route == J2K_ROUTE_REGION_PLANES && plan.output.sample_type == J2K_U8);
+    REQUIRE(j2k_decoder_decode_region_into(decoder, &operation, exact, sizeof(exact), 32, &actual, &error) == J2K_OK);
+    REQUIRE(memcmp(exact, pixels, sizeof(exact)) == 0);
 
     REQUIRE(j2k_decoder_close(&decoder, &error) == J2K_OK);
     REQUIRE(decoder == NULL);

@@ -5,9 +5,9 @@
 #![forbid(unsafe_code)]
 
 use crate::abi::{
-    J2kCError, J2K_ALLOCATION_FAILED, J2K_BUFFER_TOO_SMALL, J2K_DECODE_FAILED, J2K_ENCODE_FAILED,
-    J2K_INTERNAL_ERROR, J2K_INVALID_ARGUMENT, J2K_INVALID_INPUT, J2K_PANIC, J2K_RESOURCE_LIMIT,
-    J2K_UNSUPPORTED,
+    J2kCError, J2K_ALLOCATION_FAILED, J2K_BUFFER_TOO_SMALL, J2K_CANCELLED, J2K_DECODE_FAILED,
+    J2K_ENCODE_FAILED, J2K_INTERNAL_ERROR, J2K_INVALID_ARGUMENT, J2K_INVALID_INPUT, J2K_PANIC,
+    J2K_RESOURCE_LIMIT, J2K_UNSUPPORTED,
 };
 use j2k::{BatchInfrastructureError, BatchItemError, BufferError, CodecError, J2kError};
 use std::borrow::Cow;
@@ -42,6 +42,7 @@ impl Error {
 
     pub(crate) fn codec(error: &J2kError) -> Self {
         let code = match error {
+            J2kError::Cancelled => J2K_CANCELLED,
             J2kError::Buffer(
                 BufferError::AllocationTooLarge { .. } | BufferError::SizeOverflow { .. },
             )

@@ -46,6 +46,34 @@ int32_t forward_row(void *user_data, uint32_t y, const uint8_t *row, size_t row_
 }
 } // namespace detail
 
+// Move-only token. cancel() may run concurrently; destruction/move may not.
+class cancellation_token {
+public:
+    cancellation_token() {
+        j2k_error detail{};
+        check(j2k_cancellation_create(&handle_, &detail), detail);
+    }
+    ~cancellation_token() noexcept { j2k_cancellation_free(&handle_, nullptr); }
+    cancellation_token(const cancellation_token &) = delete;
+    cancellation_token &operator=(const cancellation_token &) = delete;
+    cancellation_token(cancellation_token &&other) noexcept
+        : handle_(std::exchange(other.handle_, nullptr)) {}
+    cancellation_token &operator=(cancellation_token &&other) noexcept {
+        if (this != &other) {
+            j2k_cancellation_free(&handle_, nullptr);
+            handle_ = std::exchange(other.handle_, nullptr);
+        }
+        return *this;
+    }
+    const j2k_cancellation *native_handle() const noexcept { return handle_; }
+    void cancel() const {
+        j2k_error detail{};
+        check(j2k_cancellation_cancel(handle_, &detail), detail);
+    }
+private:
+    j2k_cancellation *handle_ = nullptr;
+};
+
 // Encode interleaved samples losslessly (see j2k_encode_lossless).
 inline std::vector<uint8_t> encode_lossless(const uint8_t *samples, size_t length,
                                             const j2k_encode_options &options) {
@@ -115,6 +143,35 @@ public:
         j2k_error detail{};
         const auto status = j2k_decoder_decode_into(handle_, &options, output, length, stride, &detail);
         check(status, detail);
+    }
+
+    // Optional explicit input preparation, outside later operation controls.
+    // Controlled native operations prepare an unprepared source themselves.
+    void prepare_operations() {
+        j2k_error detail{};
+        check(j2k_decoder_prepare_operations(handle_, &detail), detail);
+    }
+
+    j2k_region_plan plan_region(
+            const j2k_operation_options &options = J2K_OPERATION_OPTIONS_INIT) {
+        j2k_region_plan result = J2K_REGION_PLAN_INIT;
+        j2k_error detail{};
+        check(j2k_decoder_plan_region(handle_, &options, &result, &detail), detail);
+        return result;
+    }
+
+    j2k_output_info decode_region_into(uint8_t *output, size_t length, size_t stride,
+            const j2k_operation_options &options = J2K_OPERATION_OPTIONS_INIT) {
+        j2k_output_info result = J2K_OUTPUT_INFO_INIT;
+        j2k_error detail{};
+        check(j2k_decoder_decode_region_into(handle_, &options, output, length,
+                                            stride, &result, &detail), detail);
+        return result;
+    }
+
+    void set_operation_cache_limit(size_t bytes) {
+        j2k_error detail{};
+        check(j2k_decoder_set_operation_cache_limit(handle_, bytes, &detail), detail);
     }
 
     // The layout decode_rows delivers: the full image at full resolution.

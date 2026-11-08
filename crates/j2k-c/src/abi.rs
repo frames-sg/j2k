@@ -34,6 +34,17 @@ pub const J2K_DECODE_FAILED: u32 = 10;
 pub const J2K_STOPPED: u32 = 11;
 /// The encoder failed; the message says why.
 pub const J2K_ENCODE_FAILED: u32 = 12;
+/// The operation's cancellation token was cancelled.
+pub const J2K_CANCELLED: u32 = 13;
+
+/// Preserve native integer sample values and alpha association.
+pub const J2K_INTERPRETATION_NATIVE: u32 = 0;
+/// Normalize to eight-bit sRGB with straight alpha.
+pub const J2K_INTERPRETATION_SRGB8: u32 = 1;
+/// The CPU selects a native prepared, streamed, or component route during execution.
+pub const J2K_ROUTE_NATIVE_CPU: u32 = 1;
+/// Bounded native region reconstruction followed by colour normalization.
+pub const J2K_ROUTE_REGION_PLANES: u32 = 2;
 
 /// Open flag: accept the JP2/JPH metadata recoveries of lenient decoding.
 pub const J2K_OPEN_LENIENT: u32 = 1;
@@ -170,6 +181,50 @@ impl Default for J2kCDecodeOptions {
     }
 }
 
+/// Exact region operation. The all-zero source rectangle selects the full image.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct J2kCOperationOptions {
+    /// Initialize to this structure's size and ABI 1.
+    pub header: J2kCHeader,
+    /// Left edge in full-resolution image coordinates.
+    pub x: u32,
+    /// Top edge in full-resolution image coordinates.
+    pub y: u32,
+    /// Source region width.
+    pub width: u32,
+    /// Source region height.
+    pub height: u32,
+    /// Exact wavelet resolution levels to discard, 0–31.
+    pub reduction: u32,
+    /// One of the `J2K_INTERPRETATION_*` constants.
+    pub interpretation: u32,
+    /// Native operation working bound; zero keeps the engine's default.
+    /// Original source preparation and input are separate from this bound.
+    pub max_working_memory_bytes: u64,
+    /// Final output span bound; zero uses the decoder's configured output cap.
+    pub max_output_bytes: u64,
+    /// Optional live cancellation handle. Only cancellation may run concurrently.
+    pub cancellation: *const crate::ffi::J2kCCancellation,
+}
+
+impl Default for J2kCOperationOptions {
+    fn default() -> Self {
+        Self {
+            header: J2kCHeader::of::<Self>(),
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            reduction: 0,
+            interpretation: J2K_INTERPRETATION_NATIVE,
+            max_working_memory_bytes: 0,
+            max_output_bytes: 0,
+            cancellation: std::ptr::null(),
+        }
+    }
+}
+
 /// Source header metadata. Inspection does not establish decodability.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -250,7 +305,7 @@ impl Default for J2kCComponentInfo {
     }
 }
 
-/// Prepared output geometry and native sample interpretation.
+/// Output geometry and sample interpretation.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct J2kCOutputInfo {
@@ -268,7 +323,7 @@ pub struct J2kCOutputInfo {
     pub channels: u32,
     /// One of `J2K_U8`, `J2K_U16_LE`, or `J2K_I16_LE`.
     pub sample_type: u32,
-    /// Significant sample bits; samples retain the native integer range.
+    /// Significant output bits; native operations retain the source integer range.
     pub precision: u32,
     /// One of the `J2K_ALPHA_*` constants.
     pub alpha: u32,
@@ -298,6 +353,49 @@ impl Default for J2kCOutputInfo {
             buffer_bytes: 0,
             warnings: 0,
             reserved: 0,
+        }
+    }
+}
+
+/// Exact operation geometry and output interpretation, without pixel allocation.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct J2kCRegionPlan {
+    /// Initialize to this structure's size and ABI 1.
+    pub header: J2kCHeader,
+    /// Covered output rectangle, packed lengths, and sample metadata.
+    pub output: J2kCOutputInfo,
+    /// Requested full-resolution source left edge.
+    pub source_x: u32,
+    /// Requested full-resolution source top edge.
+    pub source_y: u32,
+    /// Requested source width.
+    pub source_width: u32,
+    /// Requested source height.
+    pub source_height: u32,
+    /// Exact requested reduction.
+    pub reduction: u32,
+    /// Largest reduction common to every source component and tile.
+    pub max_reduction: u32,
+    /// One of the `J2K_INTERPRETATION_*` constants.
+    pub interpretation: u32,
+    /// One of the `J2K_ROUTE_*` constants. Later validation can still fail.
+    pub route: u32,
+}
+
+impl Default for J2kCRegionPlan {
+    fn default() -> Self {
+        Self {
+            header: J2kCHeader::of::<Self>(),
+            output: J2kCOutputInfo::default(),
+            source_x: 0,
+            source_y: 0,
+            source_width: 0,
+            source_height: 0,
+            reduction: 0,
+            max_reduction: 0,
+            interpretation: 0,
+            route: 0,
         }
     }
 }

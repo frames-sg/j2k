@@ -11,6 +11,12 @@ lenient on request, and run on the codec's shared CPU pool or on their own
 threads. GPU decode, lossy encoding, and slide-container readers are not
 exposed.
 
+The additive exact-operation API plans regions at reductions 0–31 and offers
+explicit eight-bit sRGB output. Native and raw sRGB exact operations support
+per-operation working/output limits and cancellation, including the source
+preparation an operation performs itself. Existing ABI-1
+structures and the legacy 0–3 reduction API retain their layouts and behavior.
+
 - [Consumer quickstart](docs/quickstart.md), also the package's `README.md`
 - [C ABI contract](docs/api.md)
 - [Supported configurations](docs/supported.md)

@@ -8,6 +8,9 @@ built and versioned with.
 | Input | JPEG 2000 Part 1 and HTJ2K Part 15 codestreams; JP2/JPH still-image wrappers |
 | Output | Interleaved gray/RGB/RGBA, native U8/U16/I16 samples, explicit precision and alpha metadata |
 | Geometry | Full image, region, half/quarter/eighth resolution, and combined region/reduction when the source supports it |
+| Exact operations | Additive region API with exact 0–31 reductions, effective image-wide maximum, and reference-grid geometry |
+| Explicit sRGB | Bounded gray/RGB/RGBA U8 normalization for supported ICC, palette/channel mapping, and component sampling; straight alpha |
+| Operation controls | Native and raw sRGB working/output limits and cooperative cancellation, including source preparation an operation performs; ICC conversion under a working limit requires an XYZ-connection matrix/TRC or gray-TRC profile |
 | Row streaming | Full image at full resolution, 8-bit unsigned and 9- to 16-bit samples, at most `max_rows_per_stripe` rows held |
 | Encoding | Lossless, classic or HTJ2K, 1- to 16-bit unsigned or signed interleaved samples; raw codestream, JP2, or JPH |
 | Validation | Strict by default; `J2K_OPEN_LENIENT` accepts the codec's JP2/JPH metadata recoveries and reports them |
@@ -15,11 +18,16 @@ built and versioned with.
 | Platforms | Native macOS and GNU/Linux shared-library packages; each binary is specific to its build target, and GNU/Linux packages need the build host's glibc or newer |
 | Consumers | C11 and C++17; no Rust toolchain required for prebuilt packages |
 
-Pixel decode rejects ICC-tagged and palette-mapped inputs, mixed precision or
+Native pixel decode rejects ICC-tagged and palette-mapped inputs, mixed precision or
 signedness, precision above 16 bits, unsupported colors/component counts, and
 uniformly subsampled component grids that cannot represent the image grid.
 J2K handles supported mixed sampling by replicating components onto the output
-grid. Header inspection may still succeed for an image that pixel decode rejects.
+grid. Explicit sRGB operations support additional colour representations through
+the general Rust decoder. Normalization of premultiplied samples unassociates
+them at the source precision before sYCC conversion; premultiplied CIE Lab input,
+and premultiplied subsampled or signed input other than eight-bit mapped samples
+without colour conversion, are unsupported. Header inspection may still succeed for an image that
+pixel decode rejects.
 
 ## Request size
 
@@ -28,7 +36,7 @@ decodes are no longer held to the fixed 512 MiB per-decode working-memory
 ceiling of `j2k` 0.13.1: measured on 8-bit HTJ2K images through this ABI,
 6144x6144 RGB, 8192x8192 gray, and 8192x8192 RGB (2048x2048 tiles) full-frame
 decodes succeed with exact samples. The codec still enforces its own allocation
-budgets, so a request can return `J2K_DECODE_FAILED` ("image is too large")
+budgets, so a request can return `J2K_RESOURCE_LIMIT` ("image is too large")
 from `j2k_decoder_decode_into` after `j2k_decoder_output_info` succeeds.
 Decode such images as regions, at reduced resolution, or row by row with
 `j2k_decoder_decode_rows`, which needs no whole-image buffer. Peak memory of
@@ -36,7 +44,7 @@ Decode such images as regions, at reduced resolution, or row by row with
 addition to the caller's buffer.
 
 GPU decode, lossy encoding, multi-image batch submission, row streaming of
-regions or reduced resolutions, range I/O, sRGB color management, Windows
+regions or reduced resolutions, range I/O, Windows
 packaging, .NET/Java bindings, and slide-container parsing are not exposed by
 this release. Python bindings are the separate
 `j2k-python` crate.

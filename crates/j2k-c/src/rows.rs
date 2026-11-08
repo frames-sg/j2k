@@ -13,7 +13,7 @@ use crate::{
     decoder::{in_pool, warning_bits, Decoder},
     error::{Error, Result},
 };
-use j2k::{DecodeRowsError, J2kDecoder, J2kRowDecodeOptions, RowSink};
+use j2k::{DecodeRequest, DecodeRowsError, J2kDecoder, J2kRowDecodeOptions, Rect, RowSink};
 
 /// Rows a stripe holds when the caller passes zero.
 const DEFAULT_STRIPE_ROWS: u32 = 64;
@@ -46,10 +46,13 @@ impl Decoder {
         // The codec classifies support and sample layout the same for any
         // region, so a one-pixel request yields the layout without planning
         // or limiting a whole-image output.
-        let probe = self.prepare(J2kCDecodeOptions {
-            width: 1,
-            height: 1,
-            ..J2kCDecodeOptions::default()
+        let probe = self.prepare_layout(DecodeRequest::Region {
+            roi: Rect {
+                x: 0,
+                y: 0,
+                w: 1,
+                h: 1,
+            },
         })?;
         let sample_bytes = match (probe.sample_type, probe.precision) {
             (J2K_U8, 8) => 1,

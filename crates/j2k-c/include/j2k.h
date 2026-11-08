@@ -32,6 +32,12 @@ typedef uint32_t j2k_status;
 /* A row callback returned nonzero; rows already delivered stay delivered. */
 #define J2K_STOPPED UINT32_C(11)
 #define J2K_ENCODE_FAILED UINT32_C(12)
+#define J2K_CANCELLED UINT32_C(13)
+
+#define J2K_INTERPRETATION_NATIVE UINT32_C(0)
+#define J2K_INTERPRETATION_SRGB8 UINT32_C(1)
+#define J2K_ROUTE_NATIVE_CPU UINT32_C(1)
+#define J2K_ROUTE_REGION_PLANES UINT32_C(2)
 
 /* j2k_open_options.flags: accept the JP2/JPH metadata recoveries of lenient
  * decoding (malformed trailing or optional boxes, an undeclared alpha). */
@@ -52,6 +58,7 @@ typedef uint32_t j2k_status;
 #define J2K_ALPHA_PREMULTIPLIED UINT32_C(2)
 
 typedef struct j2k_decoder j2k_decoder;
+typedef struct j2k_cancellation j2k_cancellation;
 
 typedef struct j2k_header {
     uint32_t struct_size;
@@ -82,6 +89,21 @@ typedef struct j2k_decode_options {
     uint32_t reduction; /* 0-3, bounded by the source resolution ladder. */
     uint32_t reserved;  /* Must be zero. */
 } j2k_decode_options;
+
+/* Additive exact-operation options. Input and source facts prepared earlier are
+ * outside the working bound. Zero byte limits retain the default/decoder cap. */
+typedef struct j2k_operation_options {
+    j2k_header header;
+    uint32_t x;                 /* Full-resolution source ROI; all zero = full. */
+    uint32_t y;
+    uint32_t width;
+    uint32_t height;
+    uint32_t reduction;          /* Exact wavelet levels, 0-31. */
+    uint32_t interpretation;     /* J2K_INTERPRETATION_*. */
+    uint64_t max_working_memory_bytes;
+    uint64_t max_output_bytes;   /* Includes caller row gaps, excludes final padding. */
+    const j2k_cancellation *cancellation; /* Optional; keep live through the call. */
+} j2k_operation_options;
 
 typedef struct j2k_image_info {
     j2k_header header;
@@ -115,13 +137,28 @@ typedef struct j2k_output_info {
     uint32_t height;
     uint32_t channels;    /* Interleaved: 1 = gray, 3 = RGB, 4 = RGBA. */
     uint32_t sample_type; /* J2K_U8, J2K_U16_LE, or J2K_I16_LE. */
-    uint32_t precision;   /* Significant bits; no range normalization. */
+    uint32_t precision;   /* Significant output bits; native output keeps its range. */
     uint32_t alpha;       /* J2K_ALPHA_*. */
     uint64_t row_bytes;   /* Minimum stride in bytes. */
     uint64_t buffer_bytes;/* Tightly packed byte length. */
     uint32_t warnings;    /* J2K_WARNING_* recoveries the request applies. */
     uint32_t reserved;    /* Written as zero. */
 } j2k_output_info;
+
+/* Geometry and output sizes are exact. Native CPU execution chooses its
+ * prepared/streamed/component route later; planning does not validate entropy. */
+typedef struct j2k_region_plan {
+    j2k_header header;
+    j2k_output_info output;
+    uint32_t source_x;
+    uint32_t source_y;
+    uint32_t source_width;
+    uint32_t source_height;
+    uint32_t reduction;
+    uint32_t max_reduction;  /* Common to every component and tile. */
+    uint32_t interpretation;
+    uint32_t route;          /* J2K_ROUTE_*. */
+} j2k_region_plan;
 
 typedef struct j2k_encode_options {
     j2k_header header;
@@ -141,9 +178,11 @@ typedef int32_t (*j2k_row_callback)(
 #define J2K_HEADER_INIT(type) {(uint32_t)sizeof(type), J2K_ABI_VERSION}
 #define J2K_OPEN_OPTIONS_INIT {J2K_HEADER_INIT(j2k_open_options), 0, 0, 0, 0}
 #define J2K_DECODE_OPTIONS_INIT {J2K_HEADER_INIT(j2k_decode_options), 0, 0, 0, 0, 0, 0}
+#define J2K_OPERATION_OPTIONS_INIT {J2K_HEADER_INIT(j2k_operation_options), 0, 0, 0, 0, 0, J2K_INTERPRETATION_NATIVE, 0, 0, NULL}
 #define J2K_IMAGE_INFO_INIT {J2K_HEADER_INIT(j2k_image_info), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 #define J2K_COMPONENT_INFO_INIT {J2K_HEADER_INIT(j2k_component_info), 0, 0, 0, 0}
 #define J2K_OUTPUT_INFO_INIT {J2K_HEADER_INIT(j2k_output_info), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+#define J2K_REGION_PLAN_INIT {J2K_HEADER_INIT(j2k_region_plan), J2K_OUTPUT_INFO_INIT, 0, 0, 0, 0, 0, 0, 0, 0}
 #define J2K_ENCODE_OPTIONS_INIT {J2K_HEADER_INIT(j2k_encode_options), 0, 0, 0, 0, 0, 0}
 
 /* Pointer contract for every call:
@@ -160,6 +199,14 @@ typedef int32_t (*j2k_row_callback)(
 J2K_API uint32_t j2k_abi_version(void);
 /* Immutable, NUL-terminated string with library lifetime; never free it. */
 J2K_API const char *j2k_version(void);
+
+/* Cancellation is permanent. Only cancel may run concurrently with calls that
+ * use the same token; never free during use. Operations clone the owned token
+ * before codec work. Create requires an unowned output slot and nulls it on
+ * failure; free nulls the slot and accepts a null handle. */
+J2K_API j2k_status j2k_cancellation_create(j2k_cancellation **out, j2k_error *error);
+J2K_API j2k_status j2k_cancellation_cancel(const j2k_cancellation *token, j2k_error *error);
+J2K_API j2k_status j2k_cancellation_free(j2k_cancellation **token, j2k_error *error);
 
 /* Copies input on success. Caller may then release or modify input.
  * out must not already own a decoder; it is set to NULL on failure.
@@ -178,6 +225,33 @@ J2K_API j2k_status j2k_decoder_info(
 J2K_API j2k_status j2k_decoder_component_info(
     j2k_decoder *decoder, uint32_t index,
     j2k_component_info *out, j2k_error *error);
+
+/* Prepare immutable native input facts explicitly, outside per-operation
+ * limits/cancellation. Optional: a native exact operation on an unprepared
+ * decoder prepares it, under that operation's working limit and cancellation
+ * when it has them; only a successful preparation is kept. */
+J2K_API j2k_status j2k_decoder_prepare_operations(j2k_decoder *decoder, j2k_error *error);
+
+/* Native output preserves U8/U16/I16 values and association. Explicit sRGB
+ * output is eight-bit with straight alpha. Raw sRGB operations construct their
+ * source under the operation's working limit and cancellation as well as its
+ * output limit. ICC conversion under a working limit requires a matrix/TRC or
+ * gray-TRC profile with an XYZ connection space. Native
+ * working limits include live derived plans, current owned output and scratch,
+ * not input facts already prepared. */
+J2K_API j2k_status j2k_decoder_plan_region(
+    j2k_decoder *decoder, const j2k_operation_options *options,
+    j2k_region_plan *out, j2k_error *error);
+/* No writes on failure. Optional out receives actual metadata and warnings;
+ * normalized warnings need not be known during planning. */
+J2K_API j2k_status j2k_decoder_decode_region_into(
+    j2k_decoder *decoder, const j2k_operation_options *options,
+    uint8_t *output, size_t output_len, size_t stride,
+    j2k_output_info *out, j2k_error *error);
+/* Bounds only derived native operation-plan retention; zero disables caching.
+ * Original source preparation remains with the decoder until close. */
+J2K_API j2k_status j2k_decoder_set_operation_cache_limit(
+    j2k_decoder *decoder, size_t bytes, j2k_error *error);
 
 /* Prepares and validates an output layout. Does not guarantee valid entropy data
  * or that the codec's working-memory budget suffices; see docs/supported.md. */

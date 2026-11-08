@@ -470,6 +470,12 @@ fn c_layout(name: &str) -> (Vec<(String, usize)>, usize) {
             ("uint32_t", None) => (field, 4, 4),
             ("uint64_t", None) => (field, 8, 8),
             ("j2k_header", None) => (field, 8, 4),
+            ("j2k_output_info", None) => (field, 64, 8),
+            ("const", None) if field == "j2k_cancellation" => (
+                words.next().unwrap().trim_start_matches('*'),
+                size_of::<*const J2kCCancellation>(),
+                std::mem::align_of::<*const J2kCCancellation>(),
+            ),
             _ => panic!("unexpected {name} field: {}", declaration.0),
         };
         offset = offset.next_multiple_of(align);
@@ -530,6 +536,11 @@ fn abi_one_layout_matches_the_c_header_and_accepts_extension_storage() {
             ("J2K_DECODE_FAILED", J2K_DECODE_FAILED),
             ("J2K_STOPPED", J2K_STOPPED),
             ("J2K_ENCODE_FAILED", J2K_ENCODE_FAILED),
+            ("J2K_CANCELLED", J2K_CANCELLED),
+            ("J2K_INTERPRETATION_NATIVE", J2K_INTERPRETATION_NATIVE),
+            ("J2K_INTERPRETATION_SRGB8", J2K_INTERPRETATION_SRGB8),
+            ("J2K_ROUTE_NATIVE_CPU", J2K_ROUTE_NATIVE_CPU),
+            ("J2K_ROUTE_REGION_PLANES", J2K_ROUTE_REGION_PLANES),
             ("J2K_OPEN_LENIENT", J2K_OPEN_LENIENT),
             ("J2K_WARNING_LENIENT_RECOVERY", J2K_WARNING_LENIENT_RECOVERY),
             ("J2K_ENCODE_HTJ2K", J2K_ENCODE_HTJ2K),
@@ -590,6 +601,36 @@ fn abi_one_layout_matches_the_c_header_and_accepts_extension_storage() {
                 tile_y0,
                 tile_width,
                 tile_height
+            }),
+        ),
+        (
+            "j2k_operation_options",
+            rust_layout!(J2kCOperationOptions {
+                header,
+                x,
+                y,
+                width,
+                height,
+                reduction,
+                interpretation,
+                max_working_memory_bytes,
+                max_output_bytes,
+                cancellation
+            }),
+        ),
+        (
+            "j2k_region_plan",
+            rust_layout!(J2kCRegionPlan {
+                header,
+                output,
+                source_x,
+                source_y,
+                source_width,
+                source_height,
+                reduction,
+                max_reduction,
+                interpretation,
+                route
             }),
         ),
         (

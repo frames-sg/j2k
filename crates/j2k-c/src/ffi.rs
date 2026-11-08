@@ -5,13 +5,14 @@
 use crate::{
     abi::{
         J2kCComponentInfo, J2kCDecodeOptions, J2kCEncodeOptions, J2kCError, J2kCHeader,
-        J2kCImageInfo, J2kCOpenOptions, J2kCOutputInfo, J2K_ABI_MISMATCH, J2K_ABI_VERSION,
-        J2K_BUFFER_TOO_SMALL, J2K_INTERNAL_ERROR, J2K_INVALID_ARGUMENT, J2K_INVALID_INPUT,
-        J2K_PANIC,
+        J2kCImageInfo, J2kCOpenOptions, J2kCOperationOptions, J2kCOutputInfo, J2kCRegionPlan,
+        J2K_ABI_MISMATCH, J2K_ABI_VERSION, J2K_BUFFER_TOO_SMALL, J2K_INTERNAL_ERROR,
+        J2K_INVALID_ARGUMENT, J2K_INVALID_INPUT, J2K_PANIC,
     },
     decoder::Decoder,
     encode::encode_lossless,
     error::{Error, Result},
+    operations::OperationRequest,
 };
 use std::{
     ffi::{c_char, c_void},
@@ -24,6 +25,216 @@ use std::{
 #[repr(C)]
 pub struct J2kCDecoder {
     _private: [u8; 0],
+}
+
+/// Opaque shared cancellation token. Cancel may run concurrently; free may not.
+#[repr(C)]
+pub struct J2kCCancellation {
+    _private: [u8; 0],
+}
+
+/// Create an uncancelled token. On failure, the output slot is null.
+///
+/// # Safety
+/// `out` is a valid writable slot that owns no live token. Optional `error`
+/// storage must be valid, aligned, writable, and disjoint from the slot.
+#[no_mangle]
+pub unsafe extern "C" fn j2k_cancellation_create(
+    out: *mut *mut J2kCCancellation,
+    error: *mut J2kCError,
+) -> u32 {
+    if check_pointer(out).is_ok() {
+        // SAFETY: Caller supplies a writable pointer slot; alignment was checked.
+        unsafe { out.write(ptr::null_mut()) };
+    }
+    // SAFETY: The caller supplies valid disjoint storage, checked before use.
+    unsafe {
+        boundary(error, || {
+            check_pointer(out)?;
+            out.write(Box::into_raw(Box::new(j2k::J2kCancellationToken::new())).cast());
+            Ok(())
+        })
+    }
+}
+
+/// Permanently cancel a token. This may run concurrently with decoding or cancellation.
+///
+/// # Safety
+/// The token must be live for this call, and may not be freed concurrently.
+/// Optional writable error storage must be disjoint and exclusively used.
+#[no_mangle]
+pub unsafe extern "C" fn j2k_cancellation_cancel(
+    cancellation: *const J2kCCancellation,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: The caller keeps the token alive; a shared borrow uses atomic cancellation.
+    unsafe {
+        boundary(error, || {
+            let token = cancellation.cast::<j2k::J2kCancellationToken>();
+            check_pointer(token)?;
+            (&*token).cancel();
+            Ok(())
+        })
+    }
+}
+
+/// Free a token and null the caller's slot. A null handle is a no-op.
+///
+/// # Safety
+/// The slot must be valid and contain null or a token created by this library.
+/// No call may use or cancel the token concurrently with free. Optional error
+/// storage must be valid and disjoint from the slot and token.
+#[no_mangle]
+pub unsafe extern "C" fn j2k_cancellation_free(
+    cancellation: *mut *mut J2kCCancellation,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: The caller transfers exclusive token ownership through a valid slot.
+    unsafe {
+        boundary(error, || {
+            check_pointer(cancellation)?;
+            let token = cancellation.read().cast::<j2k::J2kCancellationToken>();
+            if !token.is_null() {
+                check_pointer(token)?;
+                cancellation.write(ptr::null_mut());
+                drop(Box::from_raw(token));
+            }
+            Ok(())
+        })
+    }
+}
+
+unsafe fn operation_request(
+    options: *const J2kCOperationOptions,
+    dimensions: (u32, u32),
+) -> Result<OperationRequest> {
+    // SAFETY: Caller guarantees a readable ABI prefix and any referenced live token.
+    unsafe {
+        let options = read_options(options)?;
+        let cancellation = if options.cancellation.is_null() {
+            None
+        } else {
+            let token = options.cancellation.cast::<j2k::J2kCancellationToken>();
+            check_pointer(token)?;
+            // Own a token clone before any long-running codec work begins.
+            Some((&*token).clone())
+        };
+        OperationRequest::new(options, dimensions, cancellation)
+    }
+}
+
+/// Prepare immutable input facts for later native exact operations.
+/// This explicit input preparation is outside per-operation limits/cancellation;
+/// without it, the first native operation prepares the source under its own controls.
+///
+/// # Safety
+/// The decoder is live and exclusively used. Optional writable error storage
+/// must be valid, aligned, and disjoint from the decoder.
+#[no_mangle]
+pub unsafe extern "C" fn j2k_decoder_prepare_operations(
+    decoder: *mut J2kCDecoder,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: The caller owns a live decoder exclusively; the boundary validates it.
+    unsafe { boundary(error, || with_decoder(decoder, Decoder::prepare_operations)) }
+}
+
+/// Plan an exact native or sRGB region without allocating pixel output.
+///
+/// # Safety
+/// The decoder is live and exclusively used. Options (or null) and their token
+/// are readable and live for the call. `out` is a writable initialized ABI
+/// structure. Optional error storage and every argument are valid and disjoint.
+#[no_mangle]
+pub unsafe extern "C" fn j2k_decoder_plan_region(
+    decoder: *mut J2kCDecoder,
+    options: *const J2kCOperationOptions,
+    out: *mut J2kCRegionPlan,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: Valid disjoint storage is the caller's contract; check ABI prefixes first.
+    unsafe {
+        boundary(error, || {
+            validate_struct(out)?;
+            with_decoder(decoder, |state| {
+                let request = operation_request(options, state.image_size())?;
+                out.write(state.plan_operation(&request)?);
+                Ok(())
+            })
+        })
+    }
+}
+
+/// Decode an exact region into a caller-owned strided buffer. No bytes are
+/// written on failure. Optional `out` receives actual output metadata/warnings.
+///
+/// # Safety
+/// Same handle/options/token requirements as [`j2k_decoder_plan_region`].
+/// `output` covers `output_len` writable bytes. Optional `out` is an initialized
+/// writable ABI structure. All input/output/diagnostic storage is disjoint.
+#[no_mangle]
+pub unsafe extern "C" fn j2k_decoder_decode_region_into(
+    decoder: *mut J2kCDecoder,
+    options: *const J2kCOperationOptions,
+    output: *mut u8,
+    output_len: usize,
+    stride: usize,
+    out: *mut J2kCOutputInfo,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: The caller supplies live non-overlapping storage; validate spans before slicing.
+    unsafe {
+        boundary(error, || {
+            if !out.is_null() {
+                validate_struct(out)?;
+            }
+            check_bytes(output, output_len)?;
+            with_decoder(decoder, |state| {
+                let request = operation_request(options, state.image_size())?;
+                let plan = state.plan_operation(&request)?;
+                let required = state.operation_output_span(&request, plan.output, stride)?;
+                if output_len < required {
+                    return Err(Error::new(
+                        J2K_BUFFER_TOO_SMALL,
+                        "output buffer is shorter than the requested region",
+                    ));
+                }
+                let info = state.decode_operation(
+                    &request,
+                    plan,
+                    slice::from_raw_parts_mut(output, required),
+                    stride,
+                )?;
+                if !out.is_null() {
+                    out.write(info);
+                }
+                Ok(())
+            })
+        })
+    }
+}
+
+/// Bound derived native operation plans retained by this decoder; zero disables caching.
+/// Original input preparation and encoded input are separate owners.
+///
+/// # Safety
+/// The decoder is live and exclusively used. Optional error storage is valid,
+/// aligned, writable, and disjoint from decoder storage.
+#[no_mangle]
+pub unsafe extern "C" fn j2k_decoder_set_operation_cache_limit(
+    decoder: *mut J2kCDecoder,
+    bytes: usize,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: The caller keeps the decoder live and grants exclusive access.
+    unsafe {
+        boundary(error, || {
+            with_decoder(decoder, |state| {
+                state.session.set_operation_cache_limit_bytes(bytes);
+                Ok(())
+            })
+        })
+    }
 }
 
 /// Return the C ABI revision.

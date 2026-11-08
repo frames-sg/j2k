@@ -41,7 +41,7 @@ Signed sources of eight bits or less are sign-extended to I16. Significant bits
 remain explicit; a 12-bit unsigned image keeps its 0–4095 sample range.
 
 J2K performs the codestream's inverse transforms and supported color
-interpretation. The library adds no ICC conversion, display windowing, normalization,
+interpretation. Native output adds no ICC conversion, display windowing, normalization,
 orientation, arbitrary resizing, or alpha compositing. An RGB layout is not a
 promise of color-managed sRGB. Use the alpha field to distinguish straight and
 premultiplied output. Unsupported representations return `J2K_UNSUPPORTED`.
@@ -74,6 +74,67 @@ reduction by `2^r` spans `ceil(x0 / 2^r)` to `ceil((x0 + width) / 2^r)`, where
 `x0` is the image origin. `j2k_image_info` reports that origin
 (`image_x0`, `image_y0`) and the tile grid (`tile_x0`, `tile_y0`,
 `tile_width`, `tile_height`), so callers can align regions with tiles.
+
+## Exact region operations
+
+`j2k_decoder_plan_region` takes `j2k_operation_options` and fills a
+`j2k_region_plan`. Its reduction is an exact count from 0 through 31, bounded
+by the effective component and tile ladders. The plan reports their common
+maximum, the source rectangle, covered output rectangle, interpretation,
+sample metadata, and checked packed lengths. A region with no samples at that
+reduction returns `J2K_UNSUPPORTED`. Geometry uses the same reference-grid
+rules as the legacy API; no scale is inferred from rounded dimensions.
+
+`J2K_INTERPRETATION_NATIVE` retains the native U8/U16/I16 values and alpha
+association. `J2K_ROUTE_NATIVE_CPU` means the CPU selects its prepared,
+streamed, or component route during execution; the query does not guarantee
+entropy validity or that execution scratch will fit.
+`J2K_INTERPRETATION_SRGB8` requests bounded region reconstruction and explicit
+colour normalization, including supported restricted ICC profiles. Its output
+is gray/RGB/RGBA U8 with straight alpha. Premultiplied colour is unassociated at
+the source precision before sYCC conversion and quantization; premultiplied CIE
+Lab input, and premultiplied subsampled or signed input other than eight-bit
+mapped samples without colour conversion, return `J2K_UNSUPPORTED`. Ordinary
+native output retains its existing capabilities.
+
+Allocate from `plan.output`, then call `j2k_decoder_decode_region_into` with
+the same options and a byte stride. As with legacy decoding, errors leave the
+destination unchanged. Its optional `j2k_output_info` result reports actual
+metadata and warnings; normalized warnings need not be known during planning.
+The C++ wrapper exposes `prepare_operations`, `plan_region`, and
+`decode_region_into` on the existing `decoder`.
+
+`j2k_decoder_prepare_operations` prepares immutable input facts explicitly,
+outside any operation's controls. It is optional: the first native operation on
+an unprepared decoder prepares the source itself, under that operation's working
+limit and cancellation when it has them, and a failed or cancelled preparation
+is not kept, so the call can be retried. Once prepared, the source preparation
+and compressed input are input owners; later working limits cover derived
+operation plans, current codec-owned output, and execution scratch. Optional old
+legacy plans and workspaces are released before controlled work. This is not an
+RSS limit and cannot raise the native engine's ceiling.
+
+Nonzero `max_output_bytes` additionally bounds the final caller span including
+row gaps, and cannot raise the decoder's open-time output cap. Nonzero
+`max_working_memory_bytes` sets the native working bound. Raw sRGB operations
+parse their source under the operation's working limit and cancellation, as well
+as its output limit. Under a working limit, ICC conversion charges a bound on its
+colour-management state and returns `J2K_UNSUPPORTED` for profiles outside the
+bounded matrix/TRC or gray-TRC shape with an XYZ connection space.
+
+Create a token with `j2k_cancellation_create`, attach its handle to the options,
+and cancel it with `j2k_cancellation_cancel`. Cancellation is permanent and
+returns `J2K_CANCELLED`; use a new token for independent later work. The token
+is cloned before codec work. Only cancellation may run concurrently with calls
+using that handle; keep it live throughout those calls and never free it during
+use. `j2k_cancellation_free` releases and nulls the slot. C++ callers use the
+move-only `cancellation_token`. Decoder access itself remains serialized.
+
+`j2k_decoder_set_operation_cache_limit` bounds only derived native operation
+plans retained between calls. Zero disables that cache; original warmed source
+preparation remains until decoder close. Controlled operations discard unused
+offset caches and use bounded native execution, so a previous request cannot
+silently retain a different operation's admission decision.
 
 ## Row streaming
 
@@ -123,7 +184,8 @@ and `*out_len` is 0. Encoding runs on the codec's shared CPU pool.
 lenient decoding: malformed trailing or optional boxes and an undeclared alpha
 channel. Codestream validation stays strict. A request that applies a recovery
 reports `J2K_WARNING_LENIENT_RECOVERY` in `j2k_output_info.warnings`, from
-`j2k_decoder_output_info` and from `j2k_decoder_decode_rows`. A strict decoder
+`j2k_decoder_output_info`, `j2k_decoder_decode_rows`, and the optional exact
+decode result. A strict decoder
 rejects such input instead.
 
 ## Limits and threading
@@ -163,8 +225,9 @@ Its code matches the returned status; its message is NUL-terminated UTF-8. A
 successful call clears it. No thread-local "last error" state needs retrieval.
 `J2K_DECODE_FAILED` retains a codec diagnostic when the public J2K error does
 not provide a narrower classification; it does not by itself prove corrupt input.
-This includes truncated or missing tile data and requests that exceed a codec
-memory budget (diagnostic "image is too large").
+Resource-budget refusals return `J2K_RESOURCE_LIMIT`; exact byte counts are not
+always available from the codec. `J2K_CANCELLED` identifies cooperative
+cancellation separately from a row callback's `J2K_STOPPED`.
 
 Result structures are written only on success. Ordinary errors leave pixel
 buffers unchanged because J2K completes native decode before the library copies

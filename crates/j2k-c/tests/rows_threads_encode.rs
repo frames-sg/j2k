@@ -330,6 +330,71 @@ fn rows_stream_an_image_whose_whole_output_passes_the_output_limit() {
 }
 
 #[test]
+fn row_layout_probe_ignores_the_output_cap_without_admitting_cached_output() {
+    for (channels, bits, signed, ht) in [
+        (3, 8, false, true),
+        (1, 12, false, false),
+        (1, 16, true, true),
+    ] {
+        let encoded = image(17, 9, channels, bits, signed, ht);
+        let unrestricted = Handle::open(&encoded, &options(0, 0));
+        let expected_info = unrestricted
+            .output_info(&J2kCDecodeOptions::default())
+            .unwrap();
+        let expected_bytes = unrestricted.decode_full();
+        let handle = Handle::open(
+            &encoded,
+            &J2kCOpenOptions {
+                max_output_bytes: 1,
+                ..J2kCOpenOptions::default()
+            },
+        );
+        assert_eq!(
+            handle.output_info(&J2kCDecodeOptions::default()),
+            Err(J2K_RESOURCE_LIMIT)
+        );
+        assert_eq!(
+            handle
+                .row_info()
+                .expect("row layout ignores packed output cap"),
+            expected_info
+        );
+        let run = handle.decode_rows(2, None);
+        assert_eq!(run.status, J2K_OK, "{}", run.message);
+        assert_eq!(run.out, expected_info);
+        assert_eq!(run.state.ys, (0..9).collect::<Vec<_>>());
+        assert_eq!(run.state.bytes, expected_bytes);
+
+        let probe = J2kCDecodeOptions {
+            width: 1,
+            height: 1,
+            ..J2kCDecodeOptions::default()
+        };
+        assert_eq!(handle.output_info(&probe), Err(J2K_RESOURCE_LIMIT));
+        let pixel_bytes = usize::try_from(expected_info.row_bytes / 17).unwrap();
+        let mut output = vec![0xA5; pixel_bytes];
+        // SAFETY: The live handle is used serially, and the one-pixel output
+        // buffer and options are valid and disjoint for the call.
+        let status = unsafe {
+            j2k_decoder_decode_into(
+                handle.0,
+                &raw const probe,
+                output.as_mut_ptr(),
+                output.len(),
+                pixel_bytes,
+                ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, J2K_RESOURCE_LIMIT);
+        assert!(output.iter().all(|&byte| byte == 0xA5));
+        assert_eq!(
+            handle.output_info(&J2kCDecodeOptions::default()),
+            Err(J2K_RESOURCE_LIMIT)
+        );
+    }
+}
+
+#[test]
 fn a_decoder_with_workers_runs_its_rows_on_its_own_threads() {
     let encoded = image(64, 64, 1, 8, false, true);
     let own = Handle::open(&encoded, &options(2, 0)).decode_rows(16, None);

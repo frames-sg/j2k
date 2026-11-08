@@ -15,8 +15,8 @@ use crate::{
 };
 use j2k::{
     BatchAlpha, BatchDecodeOptions, BatchLayout, CpuBatchDecoder, CpuBatchSamples, DecodeRequest,
-    DecodeSettings, Downscale, EncodedImage, J2kDecodeWarning, J2kDecoder, J2kReferenceGrid,
-    J2kSupportInfo, NativeSampleType, PreparedBatch, Rect,
+    DecodeSettings, Downscale, EncodedImage, J2kDecodeControl, J2kDecodeWarning, J2kDecoder,
+    J2kReferenceGrid, J2kSupportInfo, NativeSampleType, PreparedBatch, Rect,
 };
 use std::{num::NonZeroUsize, sync::Arc};
 
@@ -30,11 +30,12 @@ pub(crate) struct Decoder {
     lenient: bool,
     support: J2kSupportInfo,
     grid: J2kReferenceGrid,
-    session: CpuBatchDecoder,
+    pub(crate) session: CpuBatchDecoder,
     /// The decoder's own threads when `workers` asked for them; otherwise the
     /// codec's shared pool runs its work.
     pub(crate) pool: Option<rayon::ThreadPool>,
     prepared: Option<(DecodeRequest, PreparedBatch, J2kCOutputInfo)>,
+    pub(crate) operation_source: Option<crate::operations::OperationSource>,
     max_output: u64,
     pub(crate) poisoned: bool,
 }
@@ -105,6 +106,7 @@ impl Decoder {
             session: CpuBatchDecoder::new(batch_options),
             pool,
             prepared: None,
+            operation_source: None,
             max_output: if options.max_output_bytes == 0 {
                 DEFAULT_LIMIT
             } else {
@@ -142,6 +144,10 @@ impl Decoder {
         self.support.info.dimensions
     }
 
+    pub(crate) fn reference_grid(&self) -> J2kReferenceGrid {
+        self.grid
+    }
+
     pub(crate) fn component(&self, index: u32) -> Result<J2kCComponentInfo> {
         let value = self
             .support
@@ -159,20 +165,102 @@ impl Decoder {
 
     pub(crate) fn prepare(&mut self, options: J2kCDecodeOptions) -> Result<J2kCOutputInfo> {
         let request = decode_request(options)?;
+        // Codec planning cost follows the declared geometry, so reject forged image or
+        // tile dimensions before planning when even one byte per pixel exceeds the limit.
+        self.check_output_limit(self.minimum_output_bytes(options))?;
+        let info = self.prepare_layout(request)?;
+        // Row layout probes also populate the cache, without packed-output admission.
+        self.check_output_limit(info.buffer_bytes)?;
+        Ok(info)
+    }
+
+    /// Explicit input preparation, outside later operation controls.
+    pub(crate) fn prepare_operations(&mut self) -> Result<()> {
+        self.prepare_operations_with(None)
+    }
+
+    /// Prepare immutable source facts once, under `control`'s working limit
+    /// and cancellation when it is given. Only a successful preparation is
+    /// kept, so a cancelled one can be retried with a fresh token.
+    pub(crate) fn prepare_operations_with(
+        &mut self,
+        control: Option<&J2kDecodeControl>,
+    ) -> Result<()> {
+        if self.operation_source.is_some() {
+            return Ok(());
+        }
+        self.prepare_layout_with(
+            DecodeRequest::Region {
+                roi: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 1,
+                    h: 1,
+                },
+            },
+            control,
+        )?;
+        let (_, batch, _) = self
+            .prepared
+            .as_ref()
+            .ok_or_else(|| Error::internal("source preparation is missing"))?;
+        let [group] = batch.groups() else {
+            return Err(Error::internal("expected one source group"));
+        };
+        let [image] = group.images() else {
+            return Err(Error::internal("expected one source image"));
+        };
+        let image = image.clone();
+        let info = group.info().clone();
+        let max_reduction = match control {
+            None => {
+                let mut decoder = J2kDecoder::new_with_settings(&self.bytes, self.settings)?;
+                in_pool(self.pool.as_ref(), || decoder.max_reduction_levels())?
+            }
+            Some(control) => {
+                let mut decoder =
+                    J2kDecoder::new_with_control(&self.bytes, self.settings, control)?;
+                in_pool(self.pool.as_ref(), || {
+                    decoder.max_reduction_levels_with_control(control)
+                })?
+            }
+        };
+        self.operation_source = Some(crate::operations::OperationSource {
+            image,
+            info,
+            max_reduction,
+        });
+        Ok(())
+    }
+
+    pub(crate) fn release_legacy_preparation(&mut self) {
+        self.prepared = None;
+    }
+
+    /// Classify native output without applying the packed-output byte limit.
+    pub(crate) fn prepare_layout(&mut self, request: DecodeRequest) -> Result<J2kCOutputInfo> {
+        self.prepare_layout_with(request, None)
+    }
+
+    fn prepare_layout_with(
+        &mut self,
+        request: DecodeRequest,
+        control: Option<&J2kDecodeControl>,
+    ) -> Result<J2kCOutputInfo> {
         if let Some((cached, _, info)) = &self.prepared {
             if *cached == request {
                 return Ok(*info);
             }
         }
-        // Codec planning cost follows the declared geometry, so reject forged image or
-        // tile dimensions before planning when even one byte per pixel exceeds the limit.
-        self.check_output_limit(self.minimum_output_bytes(options))?;
         // Keep at most one plan; release it before preparing a different request.
         self.prepared = None;
         let input = Vec::from([EncodedImage::new(Arc::clone(&self.bytes), request)]);
         let Self { session, pool, .. } = self;
-        let batch =
-            in_pool(pool.as_ref(), || session.prepare(input)).map_err(Error::infrastructure)?;
+        let batch = in_pool(pool.as_ref(), || match control {
+            None => session.prepare(input),
+            Some(control) => session.prepare_with_control(input, control),
+        })
+        .map_err(Error::infrastructure)?;
         if let Some(error) = batch.errors().first() {
             return Err(Error::item(&error.source));
         }
@@ -182,58 +270,11 @@ impl Decoder {
         let [image] = group.images() else {
             return Err(Error::internal("expected one prepared image"));
         };
-        let info = group.info();
-        let (sample_type, width) = match info.sample_type {
-            NativeSampleType::U8 => (J2K_U8, 1_u64),
-            NativeSampleType::U16 => (J2K_U16_LE, 2),
-            NativeSampleType::I16 => (J2K_I16_LE, 2),
-            _ => {
-                return Err(Error::new(
-                    J2K_UNSUPPORTED,
-                    "unsupported native sample type",
-                ))
-            }
-        };
-        let alpha = match info.alpha {
-            BatchAlpha::None => J2K_ALPHA_NONE,
-            BatchAlpha::Straight => J2K_ALPHA_STRAIGHT,
-            BatchAlpha::Premultiplied => J2K_ALPHA_PREMULTIPLIED,
-            _ => {
-                return Err(Error::new(
-                    J2K_UNSUPPORTED,
-                    "unsupported alpha interpretation",
-                ))
-            }
-        };
-        let rect = image.plan().output_rect();
-        if rect.w == 0 || rect.h == 0 {
-            return Err(Error::internal("codec planned an empty output rectangle"));
-        }
-        let channels = u32::try_from(info.color.channels())
-            .map_err(|_| Error::internal("channel count does not fit u32"))?;
-        let row_bytes = u64::from(rect.w) * u64::from(channels) * width;
-        let buffer_bytes = row_bytes
-            .checked_mul(u64::from(rect.h))
-            .ok_or_else(|| Error::limit("output size overflow"))?;
-        self.check_output_limit(buffer_bytes)?;
-        let output = J2kCOutputInfo {
-            x: rect.x,
-            y: rect.y,
-            width: rect.w,
-            height: rect.h,
-            channels,
-            sample_type,
-            precision: info.precision.into(),
-            alpha,
-            row_bytes,
-            buffer_bytes,
-            warnings: if image.used_lenient_metadata_recovery() {
-                J2K_WARNING_LENIENT_RECOVERY
-            } else {
-                0
-            },
-            ..Default::default()
-        };
+        let output = native_output_info(
+            group.info(),
+            image.plan().output_rect(),
+            image.used_lenient_metadata_recovery(),
+        )?;
         self.prepared = Some((request, batch, output));
         Ok(output)
     }
@@ -269,7 +310,7 @@ impl Decoder {
         (columns >> options.reduction) * (rows >> options.reduction)
     }
 
-    fn check_output_limit(&self, bytes: u64) -> Result<()> {
+    pub(crate) fn check_output_limit(&self, bytes: u64) -> Result<()> {
         if bytes > self.max_output || bytes > isize::MAX as u64 {
             return Err(Error::limit(
                 "output exceeds max_output_bytes or the host address space",
@@ -311,49 +352,7 @@ impl Decoder {
                 "decoded output disagrees with the prepared contract",
             ));
         }
-        let row_samples = info.width as usize * info.channels as usize;
-        if group.samples().len() != row_samples * info.height as usize {
-            return Err(Error::internal(
-                "decoded sample count disagrees with output geometry",
-            ));
-        }
-        // No writes occur until the complete codec result and layout have succeeded.
-        match (group.samples(), info.sample_type) {
-            (CpuBatchSamples::U8(samples), J2K_U8) => {
-                for (src, dst) in samples
-                    .chunks_exact(row_samples)
-                    .zip(output.chunks_mut(stride))
-                {
-                    dst[..src.len()].copy_from_slice(src);
-                }
-            }
-            (CpuBatchSamples::U16(samples), J2K_U16_LE) => {
-                for (src, dst) in samples
-                    .chunks_exact(row_samples)
-                    .zip(output.chunks_mut(stride))
-                {
-                    for (value, bytes) in src.iter().zip(dst.as_chunks_mut::<2>().0) {
-                        bytes.copy_from_slice(&value.to_le_bytes());
-                    }
-                }
-            }
-            (CpuBatchSamples::I16(samples), J2K_I16_LE) => {
-                for (src, dst) in samples
-                    .chunks_exact(row_samples)
-                    .zip(output.chunks_mut(stride))
-                {
-                    for (value, bytes) in src.iter().zip(dst.as_chunks_mut::<2>().0) {
-                        bytes.copy_from_slice(&value.to_le_bytes());
-                    }
-                }
-            }
-            _ => {
-                return Err(Error::internal(
-                    "decoded sample type disagrees with output layout",
-                ))
-            }
-        }
-        Ok(())
+        write_native_samples(group.samples(), *info, output, stride)
     }
 }
 
@@ -423,4 +422,115 @@ fn decode_request(options: J2kCDecodeOptions) -> Result<DecodeRequest> {
         (false, 0) => DecodeRequest::Region { roi },
         (false, _) => DecodeRequest::RegionReduced { roi, scale },
     })
+}
+
+pub(crate) fn native_output_info(
+    info: &j2k::BatchGroupInfo,
+    rect: Rect,
+    used_recovery: bool,
+) -> Result<J2kCOutputInfo> {
+    let (sample_type, width) = match info.sample_type {
+        NativeSampleType::U8 => (J2K_U8, 1_u64),
+        NativeSampleType::U16 => (J2K_U16_LE, 2),
+        NativeSampleType::I16 => (J2K_I16_LE, 2),
+        _ => {
+            return Err(Error::new(
+                J2K_UNSUPPORTED,
+                "unsupported native sample type",
+            ))
+        }
+    };
+    let alpha = match info.alpha {
+        BatchAlpha::None => J2K_ALPHA_NONE,
+        BatchAlpha::Straight => J2K_ALPHA_STRAIGHT,
+        BatchAlpha::Premultiplied => J2K_ALPHA_PREMULTIPLIED,
+        _ => {
+            return Err(Error::new(
+                J2K_UNSUPPORTED,
+                "unsupported alpha interpretation",
+            ))
+        }
+    };
+    if rect.w == 0 || rect.h == 0 {
+        return Err(Error::internal("codec planned an empty output rectangle"));
+    }
+    let channels = u32::try_from(info.color.channels())
+        .map_err(|_| Error::internal("channel count does not fit u32"))?;
+    let row_bytes = u64::from(rect.w) * u64::from(channels) * width;
+    let buffer_bytes = row_bytes
+        .checked_mul(u64::from(rect.h))
+        .ok_or_else(|| Error::limit("output size overflow"))?;
+    if buffer_bytes > isize::MAX as u64 {
+        return Err(Error::limit("output exceeds the host address space"));
+    }
+    let output = J2kCOutputInfo {
+        x: rect.x,
+        y: rect.y,
+        width: rect.w,
+        height: rect.h,
+        channels,
+        sample_type,
+        precision: info.precision.into(),
+        alpha,
+        row_bytes,
+        buffer_bytes,
+        warnings: if used_recovery {
+            J2K_WARNING_LENIENT_RECOVERY
+        } else {
+            0
+        },
+        ..Default::default()
+    };
+    Ok(output)
+}
+
+pub(crate) fn write_native_samples(
+    samples: &CpuBatchSamples,
+    info: J2kCOutputInfo,
+    output: &mut [u8],
+    stride: usize,
+) -> Result<()> {
+    let row_samples = info.width as usize * info.channels as usize;
+    if samples.len() != row_samples * info.height as usize {
+        return Err(Error::internal(
+            "decoded sample count disagrees with output geometry",
+        ));
+    }
+    // No writes occur until the complete codec result and layout have succeeded.
+    match (samples, info.sample_type) {
+        (CpuBatchSamples::U8(samples), J2K_U8) => {
+            for (src, dst) in samples
+                .chunks_exact(row_samples)
+                .zip(output.chunks_mut(stride))
+            {
+                dst[..src.len()].copy_from_slice(src);
+            }
+        }
+        (CpuBatchSamples::U16(samples), J2K_U16_LE) => {
+            for (src, dst) in samples
+                .chunks_exact(row_samples)
+                .zip(output.chunks_mut(stride))
+            {
+                for (value, bytes) in src.iter().zip(dst.as_chunks_mut::<2>().0) {
+                    bytes.copy_from_slice(&value.to_le_bytes());
+                }
+            }
+        }
+        (CpuBatchSamples::I16(samples), J2K_I16_LE) => {
+            for (src, dst) in samples
+                .chunks_exact(row_samples)
+                .zip(output.chunks_mut(stride))
+            {
+                for (value, bytes) in src.iter().zip(dst.as_chunks_mut::<2>().0) {
+                    bytes.copy_from_slice(&value.to_le_bytes());
+                }
+            }
+        }
+        _ => {
+            return Err(Error::internal(
+                "decoded sample type disagrees with output layout",
+            ))
+        }
+    }
+    Ok(())
 }
