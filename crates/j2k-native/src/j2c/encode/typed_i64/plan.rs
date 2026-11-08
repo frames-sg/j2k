@@ -7,8 +7,9 @@ use alloc::vec::Vec;
 use super::super::allocation::checked_add_bytes;
 use super::super::{
     adjust_component_step_sizes_for_guard_delta, adjust_reversible_step_sizes_for_guard_delta,
-    block_coding_mode, ht_target_coding_passes_for_options, reversible_guard_bits_for_marker_limit,
-    validate_code_block_geometry, BlockCodingMode, EncodeComponentSampleInfo, EncodeOptions,
+    block_coding_mode, ht_target_coding_passes_for_options, max_total_bitplanes_for_components,
+    reversible_guard_bits_for_marker_limit, validate_code_block_geometry,
+    validate_roi_component_shifts, BlockCodingMode, EncodeComponentSampleInfo, EncodeOptions,
     EncodeParams, EncodeTypedComponentPlane, I64SubbandEncodeSettings, NativeEncodePipelineError,
     NativeEncodePipelineResult, NativeEncodeSession, QuantStepSize,
 };
@@ -111,6 +112,19 @@ impl TypedI64HighBitPlan {
                 "25-38 bit typed component-plane encode exceeds the current no-quantization guard/exponent signaling limit",
             ));
         }
+        let max_base_bitplanes =
+            max_total_bitplanes_for_components(&step_sizes, &component_step_sizes, guard_bits)
+                .map_err(NativeEncodePipelineError::internal_invariant)?;
+        validate_roi_component_shifts(
+            options,
+            u16::try_from(planes.len()).map_err(|_| {
+                NativeEncodePipelineError::unsupported(
+                    "component count exceeds the JPEG 2000 Part 1 limit",
+                )
+            })?,
+            max_base_bitplanes,
+            block_coding_mode(options),
+        )?;
         let quant_params = try_quantization(&step_sizes, &mut construction)?;
         let component_quantization_step_sizes =
             try_component_quantization(&component_step_sizes, &mut construction)?;

@@ -35,7 +35,7 @@ fn apply_roi_maxshift_encode_for_session(
     if request.roi_regions.is_empty() {
         for coefficient in coefficients {
             shift_roi_coefficient(coefficient, request.roi_shift)
-                .map_err(NativeEncodePipelineError::arithmetic_overflow)?;
+                .map_err(NativeEncodePipelineError::unsupported)?;
         }
         return Ok(());
     }
@@ -65,17 +65,24 @@ fn apply_roi_maxshift_encode_for_session(
                 }
                 selected[idx] = 1;
                 shift_roi_coefficient(&mut coefficients[idx], request.roi_shift)
-                    .map_err(NativeEncodePipelineError::arithmetic_overflow)?;
+                    .map_err(NativeEncodePipelineError::unsupported)?;
             }
         }
     }
     Ok(())
 }
 
+/// Scale one 32-bit coefficient by the ROI maxshift.
+///
+/// The coded-bitplane limit is checked per block-coding mode, not per storage
+/// width, so a shift can be valid yet not fit a coefficient's 32-bit storage.
+/// A shifted value that would lose high bits or change sign is refused rather
+/// than wrapped.
 fn shift_roi_coefficient(coefficient: &mut i32, roi_shift: u8) -> Result<(), &'static str> {
-    *coefficient = coefficient
-        .checked_shl(u32::from(roi_shift))
-        .ok_or("ROI maxshift coefficient overflow")?;
+    let mut wide = i64::from(*coefficient);
+    shift_roi_coefficient_i64(&mut wide, roi_shift)?;
+    *coefficient =
+        i32::try_from(wide).map_err(|_| "ROI maxshift coefficient exceeds 32-bit storage")?;
     Ok(())
 }
 

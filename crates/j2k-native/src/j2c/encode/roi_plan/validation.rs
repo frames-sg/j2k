@@ -8,6 +8,33 @@ use crate::j2c::encode::{
     NativeEncodePipelineResult, MAX_J2K_SPEC_COMPONENTS,
 };
 
+/// Validate whole-component ROI maxshifts against the component count and the
+/// block coder's coded-bitplane limit.
+pub(in crate::j2c::encode) fn validate_roi_component_shifts(
+    options: &EncodeOptions,
+    num_components: u16,
+    base_bitplanes: u8,
+    block_coding_mode: BlockCodingMode,
+) -> NativeEncodePipelineResult<()> {
+    if num_components > MAX_J2K_SPEC_COMPONENTS {
+        return Err(NativeEncodePipelineError::unsupported(
+            "component count exceeds the JPEG 2000 Part 1 limit",
+        ));
+    }
+    if !options.roi_component_shifts.is_empty()
+        && options.roi_component_shifts.len() != usize::from(num_components)
+    {
+        return Err(NativeEncodePipelineError::invalid_input(
+            "ROI component shift count does not match component count",
+        ));
+    }
+    let max_bitplanes = max_roi_coded_bitplanes(block_coding_mode);
+    for &shift in &options.roi_component_shifts {
+        validate_roi_shift_for_max(shift, base_bitplanes, max_bitplanes)?;
+    }
+    Ok(())
+}
+
 pub(in crate::j2c::encode) fn validate_roi_encode_options_nonallocating(
     options: &EncodeOptions,
     regions: &[EncodeRoiRegion],
@@ -17,22 +44,8 @@ pub(in crate::j2c::encode) fn validate_roi_encode_options_nonallocating(
     base_bitplanes: u8,
     block_coding_mode: BlockCodingMode,
 ) -> NativeEncodePipelineResult<()> {
-    if num_components > MAX_J2K_SPEC_COMPONENTS {
-        return Err(NativeEncodePipelineError::unsupported(
-            "component count exceeds the JPEG 2000 Part 1 limit",
-        ));
-    }
+    validate_roi_component_shifts(options, num_components, base_bitplanes, block_coding_mode)?;
     let max_bitplanes = max_roi_coded_bitplanes(block_coding_mode);
-    if !options.roi_component_shifts.is_empty()
-        && options.roi_component_shifts.len() != usize::from(num_components)
-    {
-        return Err(NativeEncodePipelineError::invalid_input(
-            "ROI component shift count does not match component count",
-        ));
-    }
-    for &shift in &options.roi_component_shifts {
-        validate_roi_shift_for_max(shift, base_bitplanes, max_bitplanes)?;
-    }
 
     let mut region_shifts = [0_u8; MAX_J2K_SPEC_COMPONENTS as usize];
     for region in regions {

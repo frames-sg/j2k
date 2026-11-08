@@ -157,7 +157,7 @@ use self::rate_control::{
 };
 mod roi_plan;
 use self::roi_plan::{
-    max_total_bitplanes_for_components, roi_subband_scale,
+    max_total_bitplanes_for_components, roi_subband_scale, validate_roi_component_shifts,
     validate_roi_encode_options_nonallocating, ComponentRoiEncodePlan, ComponentRoiEncodeRegion,
 };
 mod samples;

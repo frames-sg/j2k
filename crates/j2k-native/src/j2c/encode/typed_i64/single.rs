@@ -14,7 +14,8 @@ use super::super::{
     TilePacketRequest,
 };
 use super::plan::{
-    try_high_bit_options, try_precinct_exponents, TypedI64ExecutionRequest, TypedI64HighBitPlan,
+    try_high_bit_options, try_precinct_exponents, TypedI64ExecutionPlan, TypedI64ExecutionRequest,
+    TypedI64HighBitPlan,
 };
 use super::prepare::{prepare_typed_component_planes_i64_packets, TypedPlanePacketRequest};
 
@@ -82,6 +83,7 @@ pub(super) fn encode_typed_component_planes_53_i64_single(
             component_step_sizes: &execution.component_step_sizes,
             num_levels,
             subband_settings: execution.subband_settings(options),
+            component_roi_shifts: &execution.params.roi_component_shifts,
             retained_base_bytes: checked_add_bytes(
                 planning_bytes,
                 dimension_bytes,
@@ -112,6 +114,17 @@ pub(super) fn encode_typed_component_planes_53_i64_single(
     )?
     .packetized_tile;
     drop(high_bit_options);
+    write_typed_single_tile(execution, &packetized_tile, tile_part_packet_limit, session)
+}
+
+/// Write the codestream of a packetized typed single tile, with the HT
+/// magnitude bound the packetized code blocks require.
+fn write_typed_single_tile(
+    execution: TypedI64ExecutionPlan,
+    packetized_tile: &crate::j2c::packet_encode::PacketizedTileData,
+    tile_part_packet_limit: Option<u16>,
+    session: &NativeEncodeSession<'_>,
+) -> NativeEncodePipelineResult<Vec<u8>> {
     let (mut params, quant_params) = execution.into_final_parts();
     params.required_ht_magnitude_bound = packetized_tile.required_ht_magnitude_bound;
     let final_planning_bytes = checked_add_bytes(
@@ -121,7 +134,7 @@ pub(super) fn encode_typed_component_planes_53_i64_single(
     )?;
     write_single_tile_packetized_codestream_for_session(
         &params,
-        &packetized_tile,
+        packetized_tile,
         &quant_params,
         tile_part_packet_limit,
         final_planning_bytes,

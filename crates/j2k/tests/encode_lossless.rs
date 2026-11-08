@@ -895,6 +895,62 @@ fn cpu_lossless_classic_high_bit_rectangular_roi_rejects_56_coded_bitplanes_expl
     ));
 }
 
+/// The coded-bitplane limit is per block coder (classic allows 55), but the
+/// 8-bit route stores coefficients in 32 bits. A shift whose coefficients fit
+/// must round-trip; one that would wrap must be refused, never written.
+#[test]
+fn cpu_lossless_classic_8_bit_roi_refuses_shifts_that_overflow_32_bit_coefficients() {
+    let pixels: Vec<_> = (0_usize..32 * 32)
+        .map(|idx| u8::try_from((idx * 97 + idx / 7 * 13) % 256).expect("fixture sample fits u8"))
+        .collect();
+    let encode = |levels: u8, shift: u8| {
+        let samples = J2kLosslessSamples::new(&pixels, 32, 32, 1, 8, false).unwrap();
+        let roi = [J2kRoiRegion {
+            component: 0,
+            x: 3,
+            y: 4,
+            width: 17,
+            height: 13,
+            shift,
+        }];
+        encode_j2k_lossless_with_roi_regions(
+            samples,
+            &cpu_options()
+                .with_block_coding_mode(J2kBlockCodingMode::Classic)
+                .with_reversible_transform(ReversibleTransform::None53)
+                .with_max_decomposition_levels(Some(levels))
+                // Skip the facade round trip: the native codestream itself must be
+                // right or refused.
+                .with_validation(J2kEncodeValidation::External),
+            &roi,
+        )
+    };
+    for (levels, shift) in [(5, 21), (5, 24), (0, 23), (0, 24)] {
+        let encoded = encode(levels, shift).expect("ROI shift that fits 32-bit coefficients");
+        assert_eq!(
+            decode_native(&encoded.codestream).data,
+            pixels,
+            "levels {levels} shift {shift}"
+        );
+    }
+    for (levels, shift) in [(5, 31), (0, 31), (5, 32), (5, 40)] {
+        let err = encode(levels, shift).expect_err("ROI shift that overflows 32-bit coefficients");
+        let j2k::J2kError::NativeEncode { source, .. } = &err else {
+            panic!("expected a native encode error, got {err:?}");
+        };
+        assert!(
+            matches!(
+                std::error::Error::source(source)
+                    .and_then(|source| source.downcast_ref::<j2k_native::EncodeError>()),
+                Some(j2k_native::EncodeError::Unsupported {
+                    what: "ROI maxshift coefficient exceeds 32-bit storage",
+                })
+            ),
+            "levels {levels} shift {shift}: {err:?}"
+        );
+    }
+}
+
 fn deinterleave_to_f32_for_test(job: J2kDeinterleaveToF32Job<'_>) -> Vec<Vec<f32>> {
     let num_components = usize::from(job.num_components);
     let bytes_per_sample = if job.bit_depth <= 8 { 1 } else { 2 };

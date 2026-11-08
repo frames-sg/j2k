@@ -6,7 +6,9 @@ use super::{
 };
 
 mod validation;
-pub(super) use validation::validate_roi_encode_options_nonallocating;
+pub(super) use validation::{
+    validate_roi_component_shifts, validate_roi_encode_options_nonallocating,
+};
 
 #[derive(Debug, Default)]
 pub(super) struct ComponentRoiEncodePlan {

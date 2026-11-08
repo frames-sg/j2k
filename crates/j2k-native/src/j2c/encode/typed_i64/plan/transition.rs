@@ -30,7 +30,7 @@ impl TypedI64HighBitPlan {
             "typed i64 precinct exponents",
         )?;
         let roi_bytes =
-            checked_element_bytes::<u8>(usize::from(num_components), "typed i64 zero ROI shifts")?;
+            checked_element_bytes::<u8>(usize::from(num_components), "typed i64 ROI shifts")?;
         session.checked_phase(
             checked_add_bytes(
                 retained_base_bytes,
@@ -43,10 +43,13 @@ impl TypedI64HighBitPlan {
             )?,
             "typed i64 marker plan",
         )?;
+        // Plan construction validated a non-empty shift list against the
+        // component count; an empty list means no component is shifted.
         let mut roi_component_shifts = Vec::new();
         roi_component_shifts
             .try_reserve_exact(usize::from(num_components))
-            .map_err(|_| host_allocation_failed("typed i64 zero ROI shifts", roi_bytes))?;
+            .map_err(|_| host_allocation_failed("typed i64 ROI shifts", roi_bytes))?;
+        roi_component_shifts.extend_from_slice(&options.roi_component_shifts);
         roi_component_shifts.resize(usize::from(num_components), 0);
         let Self {
             num_levels,

@@ -16,6 +16,27 @@ Staged workspace version: `0.13.2`.
   transform to sRGB moves no 8-bit channel or neutral ramp sample by more
   than one code value. Other ICC profiles remain unsupported for these
   outputs (#321).
+- JPEG 2000 ROI encoding no longer writes a wrong codestream when a maxshift
+  pushes 32-bit coefficients past their range. The coded-bitplane limit is
+  checked per block coder (classic allows 55), but inputs of up to 24 bits
+  keep coefficients in 32 bits, and a shifted value that lost high bits or
+  changed sign was coded silently: an 8-bit classic lossless encode with
+  `J2kEncodeValidation::External` and an ROI shift of 31 decoded to the wrong
+  pixels. Such shifts now fail with `EncodeError::Unsupported` ("ROI maxshift
+  coefficient exceeds 32-bit storage"), which also replaces the "size
+  overflow" error that shifts of 32 and more reported. Shifts whose
+  coefficients fit encode exactly as before. Typed component planes above 24
+  bits (`encode_typed_component_planes_53`) now apply
+  `EncodeOptions::roi_component_shifts` and write their `RGN` markers, as
+  narrower planes do, instead of ignoring them, and validate the shift count
+  and coded-bitplane limit like every other route.
+
+- The device DCT window entry points (`device_dct_window_layout`,
+  `decode_device_dct_window_into`) check a window's ends with overflow
+  checks. A `JpegDeviceMcuWindow` whose `col + cols` or `row + rows` wrapped
+  `u32` passed the bounds test in release builds; it is now rejected as
+  outside the scan, as the multi-window transcode path already did.
+
 - Security: an ICC profile's text tags could make decoding allocate memory
   in proportion to the square of the profile's size, outside every decode
   memory limit. One multi-localized Unicode (`mluc`) tag whose records all

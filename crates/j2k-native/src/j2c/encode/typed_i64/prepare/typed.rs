@@ -24,6 +24,8 @@ pub(in crate::j2c::encode::typed_i64) struct TypedPlanePacketRequest<'a, 'input>
     pub(in crate::j2c::encode::typed_i64) component_step_sizes: &'a [Vec<QuantStepSize>],
     pub(in crate::j2c::encode::typed_i64) num_levels: u8,
     pub(in crate::j2c::encode::typed_i64) subband_settings: I64SubbandEncodeSettings<'a>,
+    /// Whole-component ROI maxshift for each component.
+    pub(in crate::j2c::encode::typed_i64) component_roi_shifts: &'a [u8],
     pub(in crate::j2c::encode::typed_i64) retained_base_bytes: usize,
     pub(in crate::j2c::encode::typed_i64) session: &'a NativeEncodeSession<'input>,
 }
@@ -98,7 +100,18 @@ pub(in crate::j2c::encode::typed_i64) fn prepare_typed_component_planes_i64_pack
                             "component quantization step count mismatch",
                         )
                     })?,
-                subband_settings: request.subband_settings,
+                subband_settings: I64SubbandEncodeSettings {
+                    roi_shift: request
+                        .component_roi_shifts
+                        .get(component_idx)
+                        .copied()
+                        .ok_or_else(|| {
+                            NativeEncodePipelineError::internal_invariant(
+                                "component ROI shift count mismatch",
+                            )
+                        })?,
+                    ..request.subband_settings
+                },
                 retained_base_bytes: component_base,
                 session: request.session,
             },

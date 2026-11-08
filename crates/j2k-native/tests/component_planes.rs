@@ -1334,3 +1334,125 @@ fn sampled_components_with_custom_precincts_round_trip_exactly() {
         }
     }
 }
+
+/// Whole-component ROI shifts reach the codestream at every typed bit depth,
+/// including the >24-bit exact route, and the planes still round-trip exactly.
+#[test]
+fn typed_component_planes_keep_whole_component_roi_shifts_at_every_bit_depth() {
+    // HTJ2K codes at most 31 bitplanes, so 29-bit samples plus the shift are
+    // classic-only.
+    for (bit_depth, block_coders) in [
+        (16_u8, &[false, true][..]),
+        (25, &[false, true]),
+        (29, &[false]),
+    ] {
+        let samples: Vec<u32> = (0_u32..16 * 16)
+            .map(|index| index.wrapping_mul(2_654_435_761) & ((1 << bit_depth) - 1))
+            .collect();
+        let data: Vec<u8> = samples
+            .iter()
+            .flat_map(|&sample| {
+                if bit_depth <= 16 {
+                    u16::try_from(sample)
+                        .expect("16-bit fixture sample")
+                        .to_le_bytes()
+                        .to_vec()
+                } else {
+                    sample.to_le_bytes().to_vec()
+                }
+            })
+            .collect();
+        let planes = [
+            EncodeTypedComponentPlane {
+                data: &data,
+                x_rsiz: 1,
+                y_rsiz: 1,
+                bit_depth,
+                signed: false,
+            },
+            EncodeTypedComponentPlane {
+                data: &data,
+                x_rsiz: 1,
+                y_rsiz: 1,
+                bit_depth,
+                signed: false,
+            },
+        ];
+        for (&use_ht_block_coding, tile_size) in block_coders
+            .iter()
+            .flat_map(|ht| [(ht, None), (ht, Some((8, 8)))])
+            // Only the >24-bit typed route encodes several tiles.
+            .filter(|(_, tile_size)| bit_depth > 24 || tile_size.is_none())
+        {
+            let options = EncodeOptions {
+                reversible: true,
+                num_decomposition_levels: 1,
+                use_mct: false,
+                use_ht_block_coding,
+                tile_size,
+                roi_component_shifts: vec![0, 3],
+                ..EncodeOptions::default()
+            };
+            let label = format!("{bit_depth}-bit, HT={use_ht_block_coding}, tiles {tile_size:?}");
+            let encoded = encode_typed_component_planes_53(&planes, 16, 16, &options)
+                .unwrap_or_else(|err| panic!("{label}: {err:?}"));
+            let rgn: Vec<&[u8]> = encoded
+                .windows(7)
+                .filter(|segment| segment[..2] == [0xff, 0x5e])
+                .collect();
+            assert_eq!(
+                rgn,
+                [&[0xff, 0x5e, 0x00, 0x05, 0x01, 0x00, 0x03][..]],
+                "{label}: one RGN for component 1"
+            );
+            let decoded = Image::new(&encoded, &DecodeSettings::strict())
+                .and_then(|image| image.decode_native_components())
+                .unwrap_or_else(|err| panic!("{label}: {err:?}"));
+            for plane in decoded.planes() {
+                assert_eq!(plane.data(), data.as_slice(), "{label}");
+            }
+        }
+    }
+}
+
+/// A >24-bit typed ROI shift list is validated like every other route.
+#[test]
+fn typed_high_bit_component_planes_validate_roi_shifts() {
+    let data: Vec<u8> = (0_u32..8 * 8)
+        .flat_map(|index| ((index * 9_973) & ((1 << 25) - 1)).to_le_bytes())
+        .collect();
+    let planes = [EncodeTypedComponentPlane {
+        data: &data,
+        x_rsiz: 1,
+        y_rsiz: 1,
+        bit_depth: 25,
+        signed: false,
+    }];
+    let encode = |roi_component_shifts: Vec<u8>, use_ht_block_coding: bool| {
+        encode_typed_component_planes_53(
+            &planes,
+            8,
+            8,
+            &EncodeOptions {
+                reversible: true,
+                num_decomposition_levels: 1,
+                use_mct: false,
+                use_ht_block_coding,
+                roi_component_shifts,
+                ..EncodeOptions::default()
+            },
+        )
+    };
+    assert!(matches!(
+        encode(vec![1, 1], false),
+        Err(j2k_native::EncodeError::InvalidInput {
+            what: "ROI component shift count does not match component count",
+        })
+    ));
+    assert!(matches!(
+        encode(vec![30], true),
+        Err(j2k_native::EncodeError::Unsupported {
+            what: "ROI maxshift exceeds supported coded bitplane count",
+        })
+    ));
+}

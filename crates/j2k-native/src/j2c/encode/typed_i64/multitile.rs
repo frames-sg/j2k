@@ -217,6 +217,7 @@ fn encode_one_tile(
             component_step_sizes: &execution.component_step_sizes,
             num_levels,
             subband_settings: execution.subband_settings(request.options),
+            component_roi_shifts: &execution.params.roi_component_shifts,
             retained_base_bytes: checked_add_bytes(
                 iteration_base,
                 checked_add_bytes(
