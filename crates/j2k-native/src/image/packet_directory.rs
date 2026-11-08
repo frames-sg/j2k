@@ -27,6 +27,44 @@ pub(crate) struct PacketDirectoryCache {
 }
 
 impl PacketDirectoryCache {
+    /// Charge a directory during execution, releasing it on an eligible
+    /// capacity retry. Published rows must never be replayed.
+    pub(super) fn decode_with_capacity_retry<'a>(
+        &self,
+        context: &mut crate::DecoderContext<'a>,
+        directory: Option<Arc<PacketDirectory>>,
+        (retained_image_bytes, retained_session_bytes): (usize, usize),
+        mut decode: impl FnMut(
+            &mut crate::DecoderContext<'a>,
+            usize,
+            Option<&Arc<PacketDirectory>>,
+        ) -> crate::Result<()>,
+    ) -> crate::Result<usize> {
+        let mut run = |context: &mut crate::DecoderContext<'a>,
+                       directory: Option<&Arc<PacketDirectory>>| {
+            context.operation_control().check()?;
+            let extra = directory.map_or(0, |value| Self::directory_bytes(value));
+            let source_bytes =
+                super::allocation::combine_retained_bytes(retained_image_bytes, extra)?;
+            let session_bytes =
+                super::allocation::combine_retained_bytes(retained_session_bytes, extra)?;
+            decode(context, source_bytes, directory)?;
+            Ok(session_bytes)
+        };
+        let result = run(context, directory.as_ref());
+        if result.as_ref().is_err_and(crate::j2c::is_capacity_error)
+            && context.tile_decode_context.streamed_samples == 0
+            && directory
+                .as_ref()
+                .is_some_and(|value| self.evict_if_unshared(value))
+        {
+            drop(directory);
+            run(context, None)
+        } else {
+            result
+        }
+    }
+
     pub(crate) fn for_region(
         &self,
         build: impl FnOnce(usize) -> Option<PacketDirectory>,
@@ -279,6 +317,59 @@ mod tests {
         );
         image
             .decode_region_components_with_context(roi, &mut ctx)
+            .unwrap();
+    }
+
+    #[test]
+    fn a_previous_stream_does_not_block_a_new_directory_preflight_retry() {
+        struct CountRows(usize);
+        impl crate::ComponentRowSink for CountRows {
+            fn write_rows(&mut self, _: u32, _: u32, _: &[crate::ComponentPlane<'_>]) {
+                self.0 += 1;
+            }
+        }
+        let pixels = (0..=250_u8).cycle().take(128 * 128).collect::<Vec<_>>();
+        let bytes = crate::encode(
+            &pixels,
+            128,
+            128,
+            1,
+            8,
+            false,
+            &crate::EncodeOptions {
+                num_decomposition_levels: 3,
+                code_block_height_exp: 2,
+                progression_order: crate::EncodeProgressionOrder::Rpcl,
+                ..crate::EncodeOptions::default()
+            },
+        )
+        .unwrap();
+        let image = Image::new(&bytes, &DecodeSettings::default()).unwrap();
+        let roi = (0, 0, 128, 128);
+        let mut context = DecoderContext::default();
+        context.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
+        let mut sink = CountRows(0);
+        for _ in 0..2 {
+            image
+                .decode_region_rows_for_integer_output_with_context(roi, &mut context, &mut sink)
+                .unwrap();
+        }
+        assert!(sink.0 > 2);
+        assert!(context.tile_decode_context.streamed_samples > 0);
+        let directory_bytes = image.packet_cache.retained_bytes();
+        assert!(directory_bytes > 0);
+        let baseline = DEFAULT_MAX_DECODE_BYTES - directory_bytes + 1;
+        let error = image
+            .run_decode(&mut context, Some(roi), None, false, baseline)
+            .unwrap_err();
+        assert!(crate::j2c::is_capacity_error(&error));
+        assert_eq!(
+            image.packet_cache.retained_bytes(),
+            0,
+            "the new request published no rows and must release its optional directory"
+        );
+        image
+            .decode_region_rows_for_integer_output_with_context(roi, &mut context, &mut sink)
             .unwrap();
     }
 

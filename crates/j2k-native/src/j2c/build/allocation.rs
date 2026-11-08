@@ -164,7 +164,6 @@ impl DecompositionAllocationPlan {
             exact_integer_decode,
             include_roi_workspace,
             defer_coefficients: include_roi_workspace
-                && !exact_integer_decode
                 && matches!(workspace, BuildWorkspace::DecodePixels { .. }),
             workspace,
         })
@@ -405,14 +404,24 @@ pub(crate) fn allocate_deferred_coefficients(
         return Ok(());
     };
     let mut live_bytes = storage.structural_workspace_bytes;
+    let idwt_sample_bytes = if storage.exact_integer_decode {
+        size_of::<i64>()
+    } else {
+        size_of::<f32>()
+    };
+    let idwt_bytes = |elements: usize| {
+        elements
+            .checked_mul(idwt_sample_bytes)
+            .ok_or(ValidationError::ImageTooLarge)
+    };
     let coefficient_count = if storage.roi_plan.is_some() {
         let idwt_elements =
             crate::j2c::idwt::roi_idwt_peak_elements(storage, skipped_resolution_levels)?;
         storage.roi_idwt_charge_elements = idwt_elements;
-        checked_include_elements::<f32>(&mut live_bytes, idwt_elements)?;
+        checked_include_elements::<u8>(&mut live_bytes, idwt_bytes(idwt_elements)?)?;
         lay_out_region_coefficients(storage, clip_to_idwt_windows, skipped_resolution_levels)?
     } else {
-        checked_include_elements::<f32>(&mut live_bytes, idwt_workspace_elements)?;
+        checked_include_elements::<u8>(&mut live_bytes, idwt_bytes(idwt_workspace_elements)?)?;
         storage
             .sub_bands
             .iter()
@@ -423,6 +432,10 @@ pub(crate) fn allocate_deferred_coefficients(
     let mut budget = reuse::ReallocationBudget::from_live_bytes(live_bytes)?;
     budget.reserve_zeroed(&mut storage.coefficients, coefficient_count)?;
     crate::try_zero_fill_decode_elements(&mut storage.coefficients, coefficient_count)?;
+    if storage.exact_integer_decode {
+        budget.reserve_zeroed(&mut storage.coefficients_i64, coefficient_count)?;
+        crate::try_zero_fill_decode_elements(&mut storage.coefficients_i64, coefficient_count)?;
+    }
     storage.structural_workspace_bytes = budget.live_bytes();
     Ok(())
 }

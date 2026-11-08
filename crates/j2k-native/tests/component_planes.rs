@@ -931,6 +931,179 @@ fn classic_reversible_i64_decode_native_region_crops_29_bit_bytes() {
     assert_eq!(components.planes()[0].data(), expected);
 }
 
+fn exact_region_pixels(size: (u32, u32), components: u16, bit_depth: u8, signed: bool) -> Vec<u8> {
+    let mask = (1_u64 << bit_depth) - 1;
+    let bytes_per_sample = usize::from(bit_depth.div_ceil(8));
+    (0..u64::from(size.0) * u64::from(size.1) * u64::from(components))
+        .flat_map(|index| {
+            let value = match index % 31 {
+                0 => 0,
+                1 => mask,
+                _ => ((index * 17_000_003) ^ ((index / u64::from(components)) * 9_000_001)) & mask,
+            };
+            let sample = i64::try_from(value).expect("fixture value fits i64")
+                - if signed { 1_i64 << (bit_depth - 1) } else { 0 };
+            sample.to_le_bytes().into_iter().take(bytes_per_sample)
+        })
+        .collect()
+}
+
+fn assert_exact_native_regions(image: &Image<'_>, pixels: Option<&[u8]>, tile_edge: (u32, u32)) {
+    let full = image.decode_native().expect("decode full exact image");
+    if let Some(pixels) = pixels {
+        assert_eq!(full.data, pixels, "full image must equal the reference");
+    }
+    let (width, height) = (image.width(), image.height());
+    let bytes_per_sample = usize::from(full.bytes_per_sample);
+    let pixel_stride = usize::from(full.num_components) * bytes_per_sample;
+    let row_stride = width as usize * pixel_stride;
+    for roi @ (x, y, roi_width, roi_height) in [
+        (0, 0, 1, 1),
+        (width - 1, height - 1, 1, 1),
+        (0, height / 2, width, 1),
+        (width / 2, 0, 1, height),
+        (
+            width / 3,
+            height / 3,
+            (width - width / 3).min(5),
+            (height - height / 3).min(4),
+        ),
+        (tile_edge.0 - 1, tile_edge.1 - 1, 3, 3),
+        (0, 0, width, height),
+    ] {
+        let expected: Vec<u8> = full
+            .data
+            .chunks_exact(row_stride)
+            .skip(y as usize)
+            .take(roi_height as usize)
+            .flat_map(|row| {
+                row[x as usize * pixel_stride..(x + roi_width) as usize * pixel_stride]
+                    .iter()
+                    .copied()
+            })
+            .collect();
+        let native = image.decode_native_region(roi).expect("decode exact ROI");
+        assert_eq!((native.width, native.height), (roi_width, roi_height));
+        assert_eq!(native.bit_depth, full.bit_depth);
+        assert_eq!(native.signed, full.signed);
+        assert_eq!(native.data, expected, "native ROI {roi:?}");
+        let components = image
+            .decode_native_region_components(roi)
+            .expect("decode exact component ROI");
+        assert_eq!(components.dimensions(), (roi_width, roi_height));
+        assert_eq!(components.planes().len(), usize::from(full.num_components));
+        for (index, plane) in components.planes().iter().enumerate() {
+            let expected_plane: Vec<u8> = expected
+                .chunks_exact(pixel_stride)
+                .flat_map(|pixel| {
+                    pixel[index * bytes_per_sample..(index + 1) * bytes_per_sample]
+                        .iter()
+                        .copied()
+                })
+                .collect();
+            assert_eq!(plane.dimensions(), (roi_width, roi_height));
+            assert_eq!(plane.bit_depth(), full.bit_depth);
+            assert_eq!(plane.signed(), full.signed);
+            assert_eq!(
+                plane.data(),
+                expected_plane,
+                "component {index}, ROI {roi:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn exact_native_regions_match_full_decode_across_tiles_and_reductions() {
+    let size = (73, 57);
+    for use_ht_block_coding in [false, true] {
+        for signed in [false, true] {
+            for components in [1, 3] {
+                let pixels = exact_region_pixels(size, components, 29, signed);
+                let levels = if use_ht_block_coding { 0 } else { 2 };
+                let options = EncodeOptions {
+                    reversible: true,
+                    num_decomposition_levels: levels,
+                    tile_size: Some((33, 25)),
+                    use_mct: components == 3,
+                    use_ht_block_coding,
+                    ..EncodeOptions::default()
+                };
+                let bytes = encode(&pixels, size.0, size.1, components, 29, signed, &options)
+                    .expect("encode tiled exact image");
+                for reduction in 0..=levels {
+                    let image =
+                        Image::new_with_reduction(&bytes, &DecodeSettings::strict(), reduction)
+                            .expect("parse tiled exact image");
+                    assert_exact_native_regions(
+                        &image,
+                        (reduction == 0).then_some(pixels.as_slice()),
+                        (
+                            33_u32.div_ceil(1 << reduction),
+                            25_u32.div_ceil(1 << reduction),
+                        ),
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn unsigned_35_bit_rct_regions_preserve_exact_native_bytes() {
+    let size = (73, 57);
+    let pixels = exact_region_pixels(size, 3, 35, false);
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 0,
+        tile_size: Some((33, 25)),
+        use_mct: true,
+        ..EncodeOptions::default()
+    };
+    let bytes = encode(&pixels, size.0, size.1, 3, 35, false, &options)
+        .expect("encode unsigned 35-bit RCT image");
+    let image =
+        Image::new(&bytes, &DecodeSettings::strict()).expect("parse unsigned 35-bit RCT image");
+    assert_exact_native_regions(&image, Some(&pixels), (33, 25));
+}
+
+#[test]
+fn exact_native_regions_match_openjpeg_at_nonzero_image_origin() {
+    let bytes = include_bytes!(
+        "../../j2k-test-support/fixtures/openjpeg_origin/gray29_23x17_origin_3_3.j2k"
+    );
+    let source: Vec<u8> = (0..17_u32)
+        .flat_map(|y| {
+            (0..23_u32).flat_map(move |x| {
+                unsigned_29_bytes((1 << 28) + x * 17_003 + y * 9_001 + x * y * 997)
+            })
+        })
+        .collect();
+    let references: [&[u8]; 3] = [
+        &source,
+        include_bytes!("../../j2k-test-support/fixtures/openjpeg_origin/gray29_reduced_r1.raw"),
+        include_bytes!("../../j2k-test-support/fixtures/openjpeg_origin/gray29_reduced_r2.raw"),
+    ];
+    for (reduction, (reference, dimensions)) in references
+        .iter()
+        .zip([(23, 17), (11, 8), (6, 4)])
+        .enumerate()
+    {
+        let image = Image::new_with_reduction(
+            bytes,
+            &DecodeSettings::strict(),
+            u8::try_from(reduction).expect("fixture reduction fits u8"),
+        )
+        .expect("parse exact image with odd origin");
+        assert_eq!((image.width(), image.height()), dimensions);
+        assert_exact_native_regions(
+            &image,
+            Some(reference),
+            (image.width().div_ceil(2), image.height().div_ceil(2)),
+        );
+    }
+}
+
 #[test]
 fn subsampled_nonzero_origin_decodes_full_and_reduced_regions() {
     // Minimized wsi-rs open_jp2k_codestream_bytes fuzz regression: XOsiz=2,

@@ -145,7 +145,10 @@ macro_rules! __j2k_component_plane_metadata_accessors {
 }
 mod backend;
 mod color;
+mod control;
 mod error;
+#[doc(hidden)]
+pub use control::DecodeOperationControl;
 mod ht_adapter;
 mod inspect;
 #[macro_use]
@@ -206,8 +209,11 @@ pub use direct_plan::{
 #[doc(hidden)]
 pub use direct_roi::{
     idwt_required_input_window_for_rects, idwt_required_input_windows, idwt_required_output_margin,
-    window_referenced_classic_plan_to_stores, window_referenced_htj2k_plan_to_stores,
-    J2kIdwtRequiredInputWindows, J2kRequiredBandRegion,
+    window_referenced_classic_plan_to_stores,
+    window_referenced_classic_plan_to_stores_with_retained_baseline,
+    window_referenced_htj2k_plan_to_stores,
+    window_referenced_htj2k_plan_to_stores_with_retained_baseline, J2kIdwtRequiredInputWindows,
+    J2kRequiredBandRegion,
 };
 pub use inspect::{
     inspect_htj2k_capabilities, inspect_j2k_codestream_header, inspect_j2k_reference_grid,
@@ -219,7 +225,8 @@ pub use j2c::capabilities::required_magnitude_bound as htj2k_required_magnitude_
 pub use j2c::capabilities::{Htj2kCapabilities, Htj2kCapabilityMode, J2kCorrespondingProfile};
 #[doc(hidden)]
 pub use jp2::{
-    extract_jp2_codestream_payload, inspect_jp2_container, inspect_jp2_container_with_settings,
+    extract_jp2_codestream_payload, inspect_jp2_container,
+    inspect_jp2_container_with_operation_control, inspect_jp2_container_with_settings,
     Jp2ChannelAssociation, Jp2ChannelDefinition, Jp2ChannelType, Jp2ColorSpec, Jp2ComponentMapping,
     Jp2ComponentMappingType, Jp2ComponentMetadata, Jp2Container, Jp2FileKind, Jp2FileMetadata,
     Jp2ImageHeaderMetadata, Jp2PaletteColumn, Jp2PaletteMetadata,

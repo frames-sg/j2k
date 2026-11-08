@@ -35,14 +35,19 @@ pub(crate) fn apply(
     parallel: bool,
 ) -> Result<()> {
     tile_ctx.idwt_output.placement = IdwtPlacement::Coefficients;
-    if storage.exact_integer_decode {
-        return apply_i64(storage, tile_ctx, component_idx, header, transform);
+    if storage.exact_integer_decode && transform != WaveletTransform::Reversible53 {
+        bail!(DecodingError::UnsupportedFeature(
+            "25-38 bit integer IDWT currently requires reversible 5/3 coding",
+        ));
     }
-
-    let tile_decompositions = &storage.tile_decompositions[component_idx];
     if storage.roi_plan.is_some() {
         return apply_roi(storage, tile_ctx, component_idx, header, transform);
     }
+    if storage.exact_integer_decode {
+        return apply_full_i64(storage, tile_ctx, component_idx, header);
+    }
+
+    let tile_decompositions = &storage.tile_decompositions[component_idx];
 
     let mut decompositions = &storage.decompositions[tile_decompositions.decompositions.clone()];
     // If we requested a lower resolution level, we can skip some decompositions.
@@ -140,6 +145,7 @@ pub(crate) fn apply(
     };
 
     for (index, decomposition) in decompositions.iter().enumerate() {
+        tile_ctx.operation_control.check()?;
         #[cfg(feature = "parallel")]
         if pair && index + 2 == decompositions.len() {
             let input = match current_source {
@@ -315,23 +321,13 @@ pub(crate) fn planned_workspace_elements(
     }
 }
 
-fn apply_i64(
+fn apply_full_i64(
     storage: &DecompositionStorage<'_>,
     tile_ctx: &mut TileDecodeContext,
     component_idx: usize,
     header: &Header<'_>,
-    transform: WaveletTransform,
 ) -> Result<()> {
-    if transform != WaveletTransform::Reversible53 {
-        bail!(DecodingError::UnsupportedFeature(
-            "25-38 bit integer IDWT currently requires reversible 5/3 coding",
-        ));
-    }
-    if storage.roi_plan.is_some() {
-        bail!(DecodingError::UnsupportedFeature(
-            "25-38 bit region decode requires exact integer region IDWT support",
-        ));
-    }
+    debug_assert!(storage.roi_plan.is_none());
 
     let tile_decompositions = &storage.tile_decompositions[component_idx];
     let mut decompositions = &storage.decompositions[tile_decompositions.decompositions.clone()];
@@ -377,6 +373,7 @@ fn apply_i64(
     };
 
     for decomposition in decompositions {
+        tile_ctx.operation_control.check()?;
         temp_output = match (current_source, use_scratch) {
             (InputSource::SubBand, true) => apply_level_i64(
                 IDWTInputI64::from_sub_band(ll_sub_band, storage),

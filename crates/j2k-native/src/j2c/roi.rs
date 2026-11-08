@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
 use super::build::Decomposition;
-use super::codestream::{Header, SizeData, WaveletTransform};
+use super::codestream::{ComponentInfo, Header, SizeData, WaveletTransform};
 use super::decode::{DecodeAllocationBudget, DecompositionStorage, OutputRegion};
 use super::rect::IntRect;
 use super::tile::{ComponentTile, ResolutionTile, Tile};
@@ -77,6 +77,14 @@ pub(crate) struct RoiPlan {
 crate::move_only::assert_move_only!(RoiPlan);
 
 impl RoiPlan {
+    /// The shared window planner operates on unit-sampled component grids.
+    pub(crate) fn supports_components(components: &[ComponentInfo]) -> bool {
+        components.iter().all(|component| {
+            component.size_info.horizontal_resolution == 1
+                && component.size_info.vertical_resolution == 1
+        })
+    }
+
     pub(crate) fn build(
         tile: &Tile<'_>,
         header: &Header<'_>,
@@ -84,10 +92,7 @@ impl RoiPlan {
         output_region: OutputRegion,
         budget: &mut DecodeAllocationBudget,
     ) -> Result<Option<Self>> {
-        if tile.component_infos.iter().any(|component_info| {
-            component_info.size_info.horizontal_resolution != 1
-                || component_info.size_info.vertical_resolution != 1
-        }) {
+        if !Self::supports_components(&tile.component_infos) {
             return Ok(None);
         }
 

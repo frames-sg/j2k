@@ -148,3 +148,84 @@ fn window_clipped_region_storage_matches_whole_code_blocks_bit_for_bit() {
         }
     }
 }
+
+#[test]
+fn exact_integer_region_uses_existing_pruning_and_fits_below_full_decode_budget() {
+    let (width, height) = (512_u32, 384_u32);
+    let pixels = (0..width * height)
+        .flat_map(|index| (index.wrapping_mul(1_000_003) & ((1 << 29) - 1)).to_le_bytes())
+        .collect::<Vec<_>>();
+    let bytes = encode(
+        &pixels,
+        width,
+        height,
+        1,
+        29,
+        false,
+        &EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 4,
+            use_mct: false,
+            ..EncodeOptions::default()
+        },
+    )
+    .expect("exact integer source");
+    let image = Image::new(&bytes, &DecodeSettings::strict()).unwrap();
+    let mut full_context = DecoderContext::default();
+    full_context.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
+    assert_eq!(
+        image
+            .decode_native_with_context(&mut full_context)
+            .unwrap()
+            .data,
+        pixels
+    );
+    let full_work = full_context.tile_decode_context.debug_counters;
+    drop(full_context);
+
+    let roi = (191_u32, 129_u32, 17_u32, 13_u32);
+    let expected = pixels
+        .chunks_exact(width as usize * 4)
+        .skip(roi.1 as usize)
+        .take(roi.3 as usize)
+        .flat_map(|row| {
+            row[roi.0 as usize * 4..(roi.0 + roi.2) as usize * 4]
+                .iter()
+                .copied()
+        })
+        .collect::<Vec<_>>();
+    let control = crate::DecodeOperationControl::new(Some(512 * 1024), None);
+    let mut full_limited = DecoderContext::default();
+    full_limited.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
+    let refused = full_limited.with_operation_control(control.clone(), |context| {
+        image.decode_native_with_context(context).map(|_| ())
+    });
+    assert!(
+        refused.as_ref().is_err_and(crate::j2c::is_capacity_error),
+        "the small working allowance must reject full-image reconstruction"
+    );
+    drop(full_limited);
+
+    for component_output in [false, true] {
+        let mut context = DecoderContext::default();
+        context.set_cpu_decode_parallelism(CpuDecodeParallelism::Serial);
+        let actual = context
+            .with_operation_control(control.clone(), |context| {
+                if component_output {
+                    image
+                        .decode_native_region_components_with_context(roi, context)
+                        .map(|mut image| image.planes.remove(0).data)
+                } else {
+                    image
+                        .decode_native_region_with_context(roi, context)
+                        .map(|image| image.data)
+                }
+            })
+            .expect("a small exact integer ROI fits without full reconstruction");
+        assert_eq!(actual, expected);
+        let work = &context.tile_decode_context.debug_counters;
+        assert!(work.decoded_code_blocks < full_work.decoded_code_blocks);
+        assert!(work.stored_coefficients < full_work.stored_coefficients);
+        assert!(work.idwt_output_samples < full_work.idwt_output_samples);
+    }
+}

@@ -26,10 +26,14 @@ pub(in crate::jp2) fn parse_jp2_header_box(
     strict: bool,
     retained_baseline_bytes: usize,
 ) -> Result<ImageBoxes> {
-    Ok(
-        parse_jp2_header_box_tracked(data, strict, retained_baseline_bytes, Jp2FileKind::Jp2)?
-            .boxes,
-    )
+    Ok(parse_jp2_header_box_tracked(
+        data,
+        strict,
+        retained_baseline_bytes,
+        Jp2FileKind::Jp2,
+        &crate::DecodeOperationControl::default(),
+    )?
+    .boxes)
 }
 
 pub(super) fn parse_jp2_header_box_tracked(
@@ -37,16 +41,17 @@ pub(super) fn parse_jp2_header_box_tracked(
     strict: bool,
     retained_baseline_bytes: usize,
     file_kind: Jp2FileKind,
+    control: &crate::DecodeOperationControl,
 ) -> Result<ParsedJp2Header> {
     let (color_spec_count, mut used_lenient_metadata_recovery) =
-        count_color_specification_boxes(data, strict)?;
+        count_color_specification_boxes(data, strict, control)?;
     let mut budget = allocation::Jp2AllocationBudget::from_live_bytes(retained_baseline_bytes)?;
     let mut boxes = ImageBoxes {
         color_specifications: budget.try_vec(color_spec_count, "JP2 COLR metadata")?,
         ..ImageBoxes::default()
     };
     let mut saw_image_header = false;
-    let mut reader = BitReader::new(data);
+    let mut reader = BitReader::with_cancellation(data, control.cancellation());
 
     while !reader.at_end() {
         let Some(child_box) = read_recoverable_metadata_box(
@@ -114,10 +119,14 @@ pub(super) fn parse_jp2_header_box_tracked(
     })
 }
 
-fn count_color_specification_boxes(data: &[u8], strict: bool) -> Result<(usize, bool)> {
+fn count_color_specification_boxes(
+    data: &[u8],
+    strict: bool,
+    control: &crate::DecodeOperationControl,
+) -> Result<(usize, bool)> {
     let mut count = 0_usize;
     let mut used_lenient_metadata_recovery = false;
-    let mut reader = BitReader::new(data);
+    let mut reader = BitReader::with_cancellation(data, control.cancellation());
     while !reader.at_end() {
         let Some(child_box) = read_recoverable_metadata_box(
             &mut reader,

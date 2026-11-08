@@ -1462,6 +1462,7 @@ impl ComponentRowSink for StoppingSink {
 /// A sink that stops ends the region decode at that hand-over, serially and
 /// on a pool, with `SinkStopped`: the rest of the region is not decoded for
 /// rows that would go nowhere.
+#[cfg(feature = "parallel")]
 #[test]
 fn a_stopped_sink_ends_the_decode_at_its_hand_over() {
     let bytes = pool_band_fixture(3, 2, 2);
@@ -1517,5 +1518,354 @@ fn a_stopped_sink_ends_the_decode_at_its_hand_over() {
             "{parallelism:?}"
         );
         assert_eq!(calls, 1, "{parallelism:?}: hand-overs after the stop");
+    }
+}
+
+#[test]
+fn a_stopped_sink_is_reported_after_a_component_plane_fallback() {
+    let bytes = include_bytes!(
+        "../../../j2k-test-support/fixtures/openjpeg_origin/rgb_23x17_origin_3_5_ht.j2c"
+    );
+    let image = Image::new(bytes, &DecodeSettings::default()).expect("origin image");
+    assert!(!image.region_decode_streams_rows());
+    let mut sink = StoppingSink { limit: 1, calls: 0 };
+    let decoded = image.decode_region_rows_for_integer_output_with_context(
+        (0, 0, image.width(), image.height()),
+        &mut DecoderContext::default(),
+        &mut sink,
+    );
+    assert_eq!(decoded, Err(crate::DecodingError::SinkStopped.into()));
+    assert_eq!(sink.calls, 1);
+}
+
+#[cfg(feature = "parallel")]
+#[test]
+fn operation_cancellation_stops_rows_and_leaves_the_context_reusable() {
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicBool, Ordering};
+    struct CancelAfterFirst {
+        flag: Arc<AtomicBool>,
+        calls: usize,
+    }
+    impl ComponentRowSink for CancelAfterFirst {
+        fn write_rows(&mut self, _: u32, _: u32, _: &[ComponentPlane<'_>]) {
+            self.calls += 1;
+            self.flag.store(true, Ordering::Relaxed);
+        }
+    }
+    let bytes = pool_band_fixture(3, 2, 2);
+    let image = Image::new(&bytes, &DecodeSettings::default()).unwrap();
+    let roi = (0, 0, image.width(), image.height());
+    let mut context = DecoderContext::default();
+    let flag = Arc::new(AtomicBool::new(false));
+    let mut sink = CancelAfterFirst {
+        flag: flag.clone(),
+        calls: 0,
+    };
+    let result = context.with_operation_control(
+        crate::DecodeOperationControl::new(None, Some(flag)),
+        |context| image.decode_region_rows_for_integer_output_with_context(roi, context, &mut sink),
+    );
+    assert_eq!(result, Err(crate::DecodingError::Cancelled.into()));
+    assert_eq!(
+        sink.calls, 1,
+        "cancellation must prevent another published row"
+    );
+    assert_eq!(
+        context
+            .tile_decode_context
+            .debug_counters
+            .whole_window_reruns,
+        0,
+        "cancellation must not trigger a diagnostic decode"
+    );
+    let mut full = StoppingSink {
+        limit: usize::MAX,
+        calls: 0,
+    };
+    image
+        .decode_region_rows_for_integer_output_with_context(roi, &mut context, &mut full)
+        .unwrap();
+    assert!(
+        full.calls > 1,
+        "cancelled policy must not survive the operation"
+    );
+}
+
+#[test]
+fn operation_working_limit_applies_to_existing_images_and_restores_context() {
+    let bytes = include_bytes!(
+        "../../../j2k-test-support/fixtures/openjpeg_origin/rgb_23x17_origin_3_5_ht.j2c"
+    );
+    let image = Image::new(bytes, &DecodeSettings::default()).unwrap();
+    let mut context = DecoderContext::default();
+    let policy = crate::DecodeOperationControl::new(Some(1), None);
+    let error = context
+        .with_operation_control(policy.clone(), |context| image.decode_with_context(context))
+        .err()
+        .expect("working limit");
+    assert!(matches!(
+        error,
+        crate::DecodeError::AllocationTooLarge {
+            cap: crate::DEFAULT_MAX_DECODE_BYTES,
+            ..
+        }
+    ));
+    let decoded = image.decode_with_context(&mut context).unwrap();
+    assert_eq!((decoded.width, decoded.height), (23, 17));
+}
+
+#[test]
+fn operation_working_limit_includes_borrowed_plane_metadata_handoff() {
+    let bytes = include_bytes!(
+        "../../../j2k-test-support/fixtures/openjpeg_origin/rgb_23x17_origin_3_5_ht.j2c"
+    );
+    let mut image = Image::new(bytes, &DecodeSettings::default()).unwrap();
+    // Native component output carries this metadata without applying a CMS.
+    // Its contents do not affect the copy's allocation size.
+    image.color_space = crate::ColorSpace::Icc {
+        profile: alloc::vec![0; 64 * 1024],
+        num_channels: 3,
+    };
+    let mut context = DecoderContext::default();
+    let control = crate::DecodeOperationControl::new(Some(96 * 1024), None);
+    let result = context.with_operation_control(control, |context| {
+        image
+            .decode_region_components_for_integer_output_with_context((0, 0, 1, 1), context)
+            .map(|_| ())
+    });
+    assert!(
+        matches!(result, Err(crate::DecodeError::AllocationTooLarge { .. })),
+        "metadata clone must fit beside decoded channels and the live image: {result:?}"
+    );
+    assert!(image
+        .decode_region_components_for_integer_output_with_context((0, 0, 1, 1), &mut context)
+        .is_ok());
+}
+
+/// Native region samples as interleaved bytes, or concatenated component planes.
+fn decode_native_region_bytes<'a>(
+    image: &Image<'a>,
+    context: &mut DecoderContext<'a>,
+    rect: (u32, u32, u32, u32),
+    component_planes: bool,
+) -> crate::Result<Vec<u8>> {
+    if component_planes {
+        image
+            .decode_native_region_components_with_context(rect, context)
+            .map(|decoded| {
+                decoded
+                    .planes
+                    .into_iter()
+                    .flat_map(|plane| plane.data)
+                    .collect()
+            })
+    } else {
+        image
+            .decode_native_region_with_context(rect, context)
+            .map(|decoded| decoded.data)
+    }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "raw and component region routes share one sampled 25-bit fixture and budget search"
+)]
+fn high_precision_sampled_regions_decode_without_the_full_output() {
+    let (width, height) = (128_u32, 128_u32);
+    let pixels = (0..width * height)
+        .flat_map(|index| ((index * 104_729) & ((1 << 25) - 1)).to_le_bytes())
+        .collect::<Vec<_>>();
+    // Mixed sampling stays outside the shared window planner, but the integer
+    // store keeps only the region's replicated samples, as the float store
+    // does, so no full output is decoded and cropped.
+    let sampled = (0..width.div_ceil(2) * height.div_ceil(2))
+        .flat_map(|index| ((index * 500_009) & ((1 << 25) - 1)).to_le_bytes())
+        .collect::<Vec<_>>();
+    let expanded = (0..width * height)
+        .flat_map(|index| {
+            let offset =
+                (((index / width) / 2) * width.div_ceil(2) + (index % width) / 2) as usize * 4;
+            sampled[offset..offset + 4].iter().copied()
+        })
+        .collect::<Vec<_>>();
+    let interleaved = pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(expanded.as_chunks::<4>().0)
+        .flat_map(|(first, second)| first.iter().chain(second).copied())
+        .collect::<Vec<_>>();
+    let planes = [
+        crate::EncodeTypedComponentPlane {
+            data: &pixels,
+            x_rsiz: 1,
+            y_rsiz: 1,
+            bit_depth: 25,
+            signed: false,
+        },
+        crate::EncodeTypedComponentPlane {
+            data: &sampled,
+            x_rsiz: 2,
+            y_rsiz: 2,
+            bit_depth: 25,
+            signed: false,
+        },
+    ];
+    let bytes = crate::encode_typed_component_planes_53(
+        &planes,
+        width,
+        height,
+        &crate::EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 2,
+            tile_size: Some((32, 32)),
+            use_mct: false,
+            ..crate::EncodeOptions::default()
+        },
+    )
+    .expect("small tiled high-precision source");
+    let image = Image::new(&bytes, &DecodeSettings::default()).unwrap();
+    let roi = (1, 1, width - 2, height - 2);
+    let crop_bytes = (roi.2 * roi.3 * 8) as usize;
+    let crop_rect = |data: &[u8], pixel_bytes: usize, (x, y, w, h): (u32, u32, u32, u32)| {
+        data.chunks_exact(width as usize * pixel_bytes)
+            .skip(y as usize)
+            .take(h as usize)
+            .flat_map(|row| {
+                row[x as usize * pixel_bytes..(x + w) as usize * pixel_bytes]
+                    .iter()
+                    .copied()
+            })
+            .collect::<Vec<_>>()
+    };
+    let crop = |data: &[u8], pixel_bytes: usize| crop_rect(data, pixel_bytes, roi);
+
+    for component_planes in [false, true] {
+        let expected = if component_planes {
+            [crop(&pixels, 4), crop(&expanded, 4)].concat()
+        } else {
+            crop(&interleaved, 8)
+        };
+        let mut context = DecoderContext::default();
+        let packed_bytes = if component_planes {
+            let full = image
+                .decode_native_components_with_context(&mut context)
+                .unwrap();
+            assert_eq!(full.planes[0].data, pixels);
+            assert_eq!(full.planes[1].data, expanded);
+            full.planes.capacity() * core::mem::size_of::<crate::NativeComponentPlane>()
+                + full
+                    .planes
+                    .iter()
+                    .map(|plane| plane.data.capacity())
+                    .sum::<usize>()
+        } else {
+            let full = image.decode_native_with_context(&mut context).unwrap();
+            assert_eq!(full.data, interleaved);
+            full.data.capacity() + full.component_signed.capacity().div_ceil(8)
+        };
+        // The full output fits with headroom, but a second nearly full-sized
+        // crop could not coexist with it: the region must decode without it.
+        let cap = image.retained_allocation_bytes().unwrap()
+            + context.retained_allocation_bytes().unwrap()
+            + packed_bytes
+            + crop_bytes / 2;
+        assert!(
+            cap < 2 * 1024 * 1024,
+            "representative small working set: {cap}"
+        );
+        drop(context);
+
+        for reserved_owner in [false, true] {
+            let control = if reserved_owner {
+                crate::DecodeOperationControl::default()
+                    .beside_retained_bytes(crate::DEFAULT_MAX_DECODE_BYTES - cap)
+                    .unwrap()
+            } else {
+                crate::DecodeOperationControl::new(Some(cap), None)
+            };
+            let mut context = DecoderContext::default();
+            context
+                .with_operation_control(control.clone(), |context| {
+                    if component_planes {
+                        image
+                            .decode_native_components_with_context(context)
+                            .map(|_| ())
+                    } else {
+                        image.decode_native_with_context(context).map(|_| ())
+                    }
+                })
+                .expect("the full native output fits the same operation budget");
+            let result = context.with_operation_control(control, |context| {
+                decode_native_region_bytes(&image, context, roi, component_planes)
+            });
+            assert_eq!(
+                result.unwrap_or_else(|error| panic!(
+                    "bounded sampled region: planes={component_planes}, reserved={reserved_owner}, cap={cap}: {error:?}"
+                )),
+                expected
+            );
+            let actual = if component_planes {
+                image
+                    .decode_native_region_components_with_context(roi, &mut context)
+                    .unwrap()
+                    .planes
+                    .into_iter()
+                    .flat_map(|plane| plane.data)
+                    .collect::<Vec<_>>()
+            } else {
+                image
+                    .decode_native_region_with_context(roi, &mut context)
+                    .unwrap()
+                    .data
+            };
+            assert_eq!(
+                actual, expected,
+                "uncontrolled reuse preserves native pixels"
+            );
+        }
+
+        // A small region fits an allowance the full output cannot.
+        let small = (5, 7, 17, 13);
+        let small_expected = if component_planes {
+            [crop_rect(&pixels, 4, small), crop_rect(&expanded, 4, small)].concat()
+        } else {
+            crop_rect(&interleaved, 8, small)
+        };
+        let fits = |limit: usize| {
+            DecoderContext::default().with_operation_control(
+                crate::DecodeOperationControl::new(Some(limit), None),
+                |context| decode_native_region_bytes(&image, context, small, component_planes),
+            )
+        };
+        let (mut low, mut high) = (1, cap);
+        assert_eq!(fits(high).expect("small region within cap"), small_expected);
+        while low < high {
+            let middle = low + (high - low) / 2;
+            if fits(middle).is_ok() {
+                high = middle;
+            } else {
+                low = middle + 1;
+            }
+        }
+        assert_eq!(fits(high).expect("smallest allowance"), small_expected);
+        let full = DecoderContext::default().with_operation_control(
+            crate::DecodeOperationControl::new(Some(high), None),
+            |context| {
+                if component_planes {
+                    image
+                        .decode_native_components_with_context(context)
+                        .map(|_| ())
+                } else {
+                    image.decode_native_with_context(context).map(|_| ())
+                }
+            },
+        );
+        assert!(
+            matches!(full, Err(crate::DecodeError::AllocationTooLarge { .. })),
+            "planes={component_planes}: the full output exceeds the small region's {high}-byte allowance: {full:?}"
+        );
     }
 }

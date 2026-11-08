@@ -25,6 +25,7 @@ use allocation::{
 };
 use components::build_component_infos;
 use ppm::try_flatten_ppm_packets;
+pub(crate) use reduction::apply_reduction_to_size;
 use reduction::apply_resolution_reduction;
 
 #[expect(
@@ -65,6 +66,7 @@ pub(crate) fn read_header<'a>(
     let mut ppm_markers = Vec::new();
     let mut capabilities = CapabilityMarkerState::default();
     loop {
+        reader.check_cancelled()?;
         match reader.peek_marker().ok_or(MarkerError::Invalid)? {
             markers::SOT => break,
             markers::CAP => {

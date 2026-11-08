@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Resolution-reduction validation and application for parsed main headers.
+//! Target-size selection and shared exact reduction geometry.
 
 use super::super::super::DecodeSettings;
 use super::super::validation::skipped_levels_to_reach_target;
@@ -45,8 +45,12 @@ pub(super) fn apply_resolution_reduction(
         0
     };
 
-    let Some(resolution_shrink_factor) = 1_u32.checked_shl(u32::from(skipped_resolution_levels))
-    else {
+    apply_reduction_to_size(size_data, skipped_resolution_levels)?;
+    Ok(skipped_resolution_levels)
+}
+
+pub(crate) fn apply_reduction_to_size(size_data: &mut SizeData, levels: u8) -> Result<()> {
+    let Some(resolution_shrink_factor) = 1_u32.checked_shl(u32::from(levels)) else {
         bail!(DecodingError::UnsupportedFeature(
             "requested reduction exceeds supported image geometry",
         ));
@@ -61,5 +65,5 @@ pub(super) fn apply_resolution_reduction(
         .ok_or(ValidationError::InvalidDimensions)?;
     size_data.checked_image_width()?;
     size_data.checked_image_height()?;
-    Ok(skipped_resolution_levels)
+    Ok(())
 }

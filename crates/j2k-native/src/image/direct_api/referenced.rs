@@ -22,7 +22,9 @@ impl<'a> Image<'a> {
     ) -> Result<J2kReferencedClassicPlan> {
         self.with_packet_cache_retry(|| {
             validate_referenced_color_shape(&self.color_space, self.has_alpha)?;
-            let retained_planning_bytes = self.retained_planning_bytes()?;
+            let retained_planning_bytes = decoder_context
+                .operation_control()
+                .baseline(self.retained_planning_bytes()?)?;
             decoder_context.set_output_region(Some(output_region));
             let result = if matches!(self.color_space, ColorSpace::Gray) {
                 j2c::build_referenced_classic_grayscale_plan(
@@ -64,7 +66,9 @@ impl<'a> Image<'a> {
     ) -> Result<J2kReferencedHtj2kPlan> {
         self.with_packet_cache_retry(|| {
             validate_referenced_color_shape(&self.color_space, self.has_alpha)?;
-            let retained_planning_bytes = self.retained_planning_bytes()?;
+            let retained_planning_bytes = decoder_context
+                .operation_control()
+                .baseline(self.retained_planning_bytes()?)?;
             decoder_context.set_output_region(Some(output_region));
             let result = if matches!(self.color_space, ColorSpace::Gray) {
                 j2c::build_referenced_htj2k_grayscale_plan(

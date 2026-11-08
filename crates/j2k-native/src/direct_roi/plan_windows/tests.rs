@@ -195,3 +195,39 @@ fn full_plans_and_regions_covering_most_of_a_small_image_stay_whole() {
         );
     }
 }
+
+#[test]
+fn window_copies_preserve_the_callers_live_preparation_baseline() {
+    let region = (73, 61, 13, 11);
+    for ht in [false, true] {
+        let bytes = gray_fixture(192, 160, ht, true);
+        let image = Image::new(&bytes, &DecodeSettings::default()).unwrap();
+        let error = if ht {
+            let plan = image
+                .build_referenced_htj2k_plan_region_with_context(
+                    &mut DecoderContext::default(),
+                    region,
+                )
+                .unwrap();
+            let baseline =
+                crate::DEFAULT_MAX_DECODE_BYTES - plan.retained_allocation_bytes().unwrap() - 1;
+            super::window_referenced_htj2k_plan_to_stores_with_retained_baseline(&plan, baseline)
+                .unwrap_err()
+        } else {
+            let plan = image
+                .build_referenced_classic_plan_region_with_context(
+                    &mut DecoderContext::default(),
+                    region,
+                )
+                .unwrap();
+            let baseline =
+                crate::DEFAULT_MAX_DECODE_BYTES - plan.retained_allocation_bytes().unwrap() - 1;
+            super::window_referenced_classic_plan_to_stores_with_retained_baseline(&plan, baseline)
+                .unwrap_err()
+        };
+        assert!(
+            matches!(error, crate::DecodeError::AllocationTooLarge { .. }),
+            "{error:?}"
+        );
+    }
+}

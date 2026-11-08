@@ -277,7 +277,8 @@ impl<'a> DecodedComponents<'a> {
         &self.planes
     }
 
-    /// Return retained heap capacity that remains live with this result.
+    /// Return the carried allocation-budget charge, including retained heap
+    /// capacity and any scoped operation reservations. This is not process RSS.
     #[doc(hidden)]
     #[must_use]
     pub fn live_bytes(&self) -> usize {

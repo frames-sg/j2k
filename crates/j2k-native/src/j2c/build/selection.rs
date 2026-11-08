@@ -630,6 +630,7 @@ fn select(
                 // and only the index check of its rectangle remains.
                 let rects = precincts.rect_count();
                 for precinct_idx in 0..precinct_count {
+                    tile.check_cancelled()?;
                     if precinct_idx >= rects {
                         return Err(DecodingError::InvalidPrecinct.into());
                     }
@@ -638,6 +639,7 @@ fn select(
                 continue;
             }
             for precinct_idx in 0..precinct_count {
+                tile.check_cancelled()?;
                 let precinct_rect = precincts
                     .rect_at(precinct_idx)
                     .ok_or(DecodingError::InvalidPrecinct)?;
@@ -818,6 +820,7 @@ fn mark_precincts_parsed_before_last_required(
         })
         .ok_or(ValidationError::ImageTooLarge)?;
     for packet in progression_iterator(tile, retained_live_bytes)?.take(parseable_packets) {
+        tile.check_cancelled()?;
         selection.scanned_packets += 1;
         let Some(index) = selection.index(&packet) else {
             // The parser rejects a packet for a precinct the tile lacks.

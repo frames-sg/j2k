@@ -42,6 +42,46 @@ pub enum RegionRowsBlocker {
 }
 
 impl<'a> Image<'a> {
+    /// Parse exact geometry under a per-operation policy and explicit live owners.
+    ///
+    /// Only actual `retained_bytes` are retained as planning owners on the image;
+    /// the operation's virtual allowance is never cached as a source fact.
+    ///
+    /// # Errors
+    /// Returns cancellation, metadata or allocation errors under the effective cap.
+    #[doc(hidden)]
+    pub fn new_with_operation_control(
+        data: &'a [u8],
+        settings: &crate::DecodeSettings,
+        reduction_levels: u8,
+        retained_bytes: usize,
+        control: &crate::DecodeOperationControl,
+    ) -> Result<Self> {
+        let baseline = control.baseline(retained_bytes)?;
+        if settings.target_resolution.is_some() {
+            return Err(DecodingError::UnsupportedFeature(
+                "exact reduction cannot be combined with a target-resolution hint",
+            )
+            .into());
+        }
+        let mut image = if data.starts_with(super::JP2_MAGIC) {
+            crate::jp2::parse_with_control(
+                data,
+                *settings,
+                baseline,
+                Some(reduction_levels),
+                control,
+            )
+        } else if data.starts_with(super::CODESTREAM_MAGIC) {
+            j2c::parse_with_control(data, settings, baseline, Some(reduction_levels), control)
+        } else {
+            Err(crate::FormatError::InvalidSignature.into())
+        }?;
+        control.check()?;
+        image.retained_baseline_bytes = retained_bytes;
+        Ok(image)
+    }
+
     /// Extract selected native wavelet bands without inverse DWT or color conversion.
     ///
     /// See [`crate::WaveletSelection`] for selection and coefficient semantics.
@@ -266,9 +306,6 @@ impl<'a> Image<'a> {
     ) -> Result<RawBitmap> {
         self.with_packet_cache_retry(|| {
             validate_roi((self.width(), self.height()), roi)?;
-            if self.requires_exact_integer_decode() {
-                return self.decode_native_region_via_full_decode(roi, decoder_context);
-            }
             let bit_depth = self.uniform_header_bit_depth()?;
             let retained_image_bytes = self.retained_header_metadata_bytes()?;
             let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
@@ -457,6 +494,23 @@ impl<'a> Image<'a> {
         }
         Ok(())
     }
+
+    /// Validate the header requirements of the selected packed-region sample path.
+    ///
+    /// `component_planes` selects the float component/row API. Otherwise the
+    /// native interleaved bitmap API requires one common component precision.
+    /// These are the same checks those execution entry points perform.
+    ///
+    /// # Errors
+    /// Rejects unsupported precision or a mixed-precision interleaved request.
+    #[doc(hidden)]
+    pub fn validate_region_sample_layout(&self, component_planes: bool) -> Result<()> {
+        if component_planes {
+            self.validate_component_plane_precision()
+        } else {
+            self.uniform_header_bit_depth().map(|_| ())
+        }
+    }
 }
 
 /// Borrowed component planes rounded for integer output.
@@ -564,12 +618,19 @@ impl<'a> Image<'a> {
         if decoder_context.tile_decode_context.stream_rows {
             return Ok(());
         }
+        let baseline = super::allocation::combine_retained_bytes(
+            decoder_context.operation_control().baseline(baseline)?,
+            decoder_context
+                .tile_decode_context
+                .retained_scratch_bytes()?,
+        )?;
         let DecodedImage {
             decoded_components,
             boxes: _,
         } = self.finish_decoded_image(
             &mut decoder_context.tile_decode_context.channel_data,
             charged_image_bytes,
+            decoder_context.tile_decode_context.straight_alpha_output,
         )?;
         let components = self.try_borrow_component_planes_with_retained_baseline(
             decoded_components.as_slice(),
@@ -578,6 +639,9 @@ impl<'a> Image<'a> {
             baseline,
         )?;
         sink.write_rows(0, 0, &components.planes);
+        if sink.stopped() {
+            return Err(crate::DecodingError::SinkStopped.into());
+        }
         Ok(())
     }
 
@@ -656,14 +720,127 @@ impl<'a> Image<'a> {
     /// meets as well.
     #[doc(hidden)]
     pub fn full_decode_planes_floor(&self, budget: usize) -> Result<Option<usize>> {
+        self.full_decode_planes_floor_with_operation_control(
+            budget,
+            0,
+            &crate::DecodeOperationControl::default(),
+        )
+    }
+
+    /// Plan the same execution floor while checking metadata allocation beside
+    /// additional live owners and the operation's reservations. Those planning
+    /// owners do not inflate the returned execution estimate.
+    ///
+    /// # Errors
+    /// Returns cancellation, tile metadata or aggregate allocation errors.
+    #[doc(hidden)]
+    pub fn full_decode_planes_floor_with_operation_control(
+        &self,
+        budget: usize,
+        retained_capacity: usize,
+        control: &crate::DecodeOperationControl,
+    ) -> Result<Option<usize>> {
+        control.check()?;
         if !self.region_decode_streams_rows() {
             return Ok(None);
         }
+        let image_bytes = self.retained_header_metadata_bytes()?;
+        let planning_bytes = super::allocation::combine_retained_bytes(
+            control.baseline(self.retained_planning_bytes()?)?,
+            retained_capacity,
+        )?;
+        let planning_extra = planning_bytes
+            .checked_sub(image_bytes)
+            .ok_or(ValidationError::ImageTooLarge)?;
         j2c::full_decode_planes_floor(
             self.codestream,
             &self.header,
-            self.retained_header_metadata_bytes()?,
+            image_bytes,
             budget,
+            planning_extra,
+            control,
+        )
+    }
+
+    /// Maximum exact reduction supported by every component and tile header.
+    ///
+    /// This parses tile-part metadata, including COD/COC overrides, without
+    /// decoding samples. The parser's normal aggregate allocation limit applies.
+    /// The result describes the complete image, including tiles outside a region.
+    ///
+    /// # Errors
+    /// Returns a header/tile validation or resource-limit error.
+    #[doc(hidden)]
+    pub fn max_reduction_levels(&self) -> Result<u8> {
+        self.max_reduction_levels_with_operation_control(&crate::DecodeOperationControl::default())
+    }
+
+    /// Query effective reductions under this operation's memory and cancellation policy.
+    ///
+    /// # Errors
+    /// Returns cancellation, metadata or resource-limit errors.
+    #[doc(hidden)]
+    pub fn max_reduction_levels_with_operation_control(
+        &self,
+        control: &crate::DecodeOperationControl,
+    ) -> Result<u8> {
+        j2c::max_reduction_levels_with_control(
+            self.codestream,
+            &self.header,
+            control.baseline(self.retained_planning_bytes()?)?,
+            control,
+        )
+    }
+
+    /// Plan whether this region streams samples using the native execution policy.
+    ///
+    /// Only headers and bounded tile metadata are parsed. The query models a
+    /// fresh context at `parallelism`; retained execution scratch and later
+    /// malformed-input failures remain decode-time concerns.
+    ///
+    /// # Errors
+    /// Returns invalid-region, metadata or resource-limit errors.
+    #[doc(hidden)]
+    pub fn region_rows_plan(
+        &self,
+        roi: (u32, u32, u32, u32),
+        parallelism: CpuDecodeParallelism,
+    ) -> Result<bool> {
+        self.region_rows_plan_with_operation_control(
+            roi,
+            parallelism,
+            0,
+            &crate::DecodeOperationControl::default(),
+        )
+    }
+
+    /// Plan a region beside actual retained execution owners under operation policy.
+    ///
+    /// # Errors
+    /// Returns invalid geometry, metadata, cancellation or allocation errors.
+    #[doc(hidden)]
+    pub fn region_rows_plan_with_operation_control(
+        &self,
+        roi: (u32, u32, u32, u32),
+        parallelism: CpuDecodeParallelism,
+        retained_capacity: usize,
+        control: &crate::DecodeOperationControl,
+    ) -> Result<bool> {
+        control.check()?;
+        validate_roi((self.width(), self.height()), roi)?;
+        if !self.region_decode_streams_rows() {
+            return Ok(false);
+        }
+        j2c::region_rows_plan(
+            self.codestream,
+            &self.header,
+            control.baseline(super::allocation::combine_retained_bytes(
+                self.retained_planning_bytes()?,
+                retained_capacity,
+            )?)?,
+            roi,
+            parallelism,
+            control,
         )
     }
 
@@ -747,7 +924,7 @@ impl<'a> Image<'a> {
             None => (self.width(), self.height()),
         };
         self.validate_component_plane_precision()?;
-        let (decoded_image, _charged_image_bytes) = self.decode_image(
+        let (decoded_image, charged_image_bytes) = self.decode_image(
             decoder_context,
             roi,
             ht_decoder,
@@ -762,7 +939,7 @@ impl<'a> Image<'a> {
             decoded_components.as_slice(),
             decoded_components.capacity(),
             dimensions,
-            self.retained_header_metadata_bytes()?,
+            charged_image_bytes.without_packet_cache,
         )
     }
 }
@@ -782,5 +959,9 @@ impl ComponentRowSink for KeptComponentsSink<'_> {
 
     fn rgb8_region(&mut self, width: u32, height: u32) -> Option<&mut [u8]> {
         self.sink.rgb8_region(width, height)
+    }
+
+    fn stopped(&self) -> bool {
+        self.sink.stopped()
     }
 }

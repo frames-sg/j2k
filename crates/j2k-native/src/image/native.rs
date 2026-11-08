@@ -3,15 +3,12 @@
 use alloc::vec::Vec;
 
 use crate::color::{
-    native_component_plane_dimensions, DecodedNativeComponents, NativeComponentPlane, RawBitmap,
+    native_component_plane_dimensions, DecodedNativeComponents, NativeComponentPlane,
 };
 use crate::error::{DecodingError, Result, ValidationError};
-use crate::j2c::{ComponentData, DecoderContext};
+use crate::j2c::ComponentData;
 use crate::math::{dispatch, Level, Simd};
-use crate::{
-    checked_decode_byte_len2, checked_decode_byte_len3, native_bytes_per_sample,
-    try_reserve_decode_elements,
-};
+use crate::{checked_decode_byte_len2, native_bytes_per_sample, try_reserve_decode_elements};
 
 use super::Image;
 
@@ -79,7 +76,7 @@ mod interleave;
 mod rows;
 pub(super) use allocation::{try_clone_color_space, NativeOutputBudget};
 
-impl<'a> Image<'a> {
+impl Image<'_> {
     pub(super) fn pack_native_component_planes(
         &self,
         components: &[ComponentData],
@@ -162,158 +159,26 @@ impl<'a> Image<'a> {
         Ok(packed)
     }
 
-    pub(super) fn requires_exact_integer_decode(&self) -> bool {
-        for component in &self.header.component_infos {
-            if component.requires_exact_integer_decode() {
-                return true;
-            }
-        }
-        false
-    }
-
-    pub(super) fn decode_native_region_via_full_decode(
+    /// Validate bounded bitmap reconstruction using effective tile styles.
+    /// `retained_capacity` counts additional live owners beside this image and
+    /// its retained planning baseline, such as reusable decoder scratch.
+    ///
+    /// # Errors
+    /// Returns unsupported exact-integer sampled-region reconstruction, cancellation,
+    /// tile metadata or aggregate allocation errors.
+    #[doc(hidden)]
+    pub fn validate_region_bitmap_layout_with_operation_control(
         &self,
-        roi: (u32, u32, u32, u32),
-        decoder_context: &mut DecoderContext<'a>,
-    ) -> Result<RawBitmap> {
-        let full = self.decode_native_with_context(decoder_context)?;
-        let (x, y, width, height) = roi;
-        let bytes_per_pixel = usize::from(full.num_components)
-            .checked_mul(usize::from(full.bytes_per_sample))
-            .ok_or(ValidationError::ImageTooLarge)?;
-        let row_bytes = (width as usize)
-            .checked_mul(bytes_per_pixel)
-            .ok_or(ValidationError::ImageTooLarge)?;
-        let capacity = checked_decode_byte_len3(height as usize, width as usize, bytes_per_pixel)?;
-        let retained_image_bytes = self.retained_metadata_bytes()?;
-        let components = &decoder_context.tile_decode_context.channel_data;
-        let component_owner_capacity = components.capacity();
-        let mut budget = NativeOutputBudget::for_raw_bitmap_with_decoded_channels(
-            retained_image_bytes,
-            components,
-            component_owner_capacity,
-            &full,
+        retained_capacity: usize,
+        control: &crate::DecodeOperationControl,
+    ) -> Result<()> {
+        control.check()?;
+        let retained = super::allocation::combine_retained_bytes(
+            self.retained_planning_bytes()?,
+            retained_capacity,
         )?;
-        budget.include_elements::<u8>(capacity)?;
-        let mut data = Vec::new();
-        try_reserve_decode_elements(&mut data, capacity)?;
-        budget.include_capacity_overage::<u8>(capacity, data.capacity())?;
-        let full_width = full.width as usize;
-        let row_end = y
-            .checked_add(height)
-            .ok_or(ValidationError::ImageTooLarge)?;
-        for row in y as usize..row_end as usize {
-            let start = row
-                .checked_mul(full_width)
-                .and_then(|offset| offset.checked_add(x as usize))
-                .and_then(|sample| sample.checked_mul(bytes_per_pixel))
-                .ok_or(ValidationError::ImageTooLarge)?;
-            data.extend_from_slice(&full.data[start..start + row_bytes]);
-        }
-        if data.len() != capacity {
-            return Err(DecodingError::CodeBlockDecodeFailure.into());
-        }
-        NativeOutputBudget::validate_raw_crop(
-            retained_image_bytes,
-            components,
-            component_owner_capacity,
-            &full,
-            data.capacity(),
-        )?;
-
-        Ok(RawBitmap {
-            data,
-            width,
-            height,
-            bit_depth: full.bit_depth,
-            signed: full.signed,
-            component_signed: full.component_signed,
-            num_components: full.num_components,
-            bytes_per_sample: full.bytes_per_sample,
-        })
-    }
-
-    pub(super) fn decode_native_region_components_via_full_decode(
-        &self,
-        roi: (u32, u32, u32, u32),
-        decoder_context: &mut DecoderContext<'a>,
-    ) -> Result<DecodedNativeComponents> {
-        let full = self.decode_native_components_with_context(decoder_context)?;
-        let (_, _, width, height) = roi;
-        let retained_image_bytes = self.retained_metadata_bytes()?;
-        let decoded_channels = &decoder_context.tile_decode_context.channel_data;
-        let component_owner_capacity = decoded_channels.capacity();
-        let mut budget = NativeOutputBudget::for_native_components_with_decoded_channels(
-            retained_image_bytes,
-            decoded_channels,
-            component_owner_capacity,
-            &full,
-        )?;
-        budget.include_elements::<NativeComponentPlane>(full.planes.len())?;
-        for plane in &full.planes {
-            let crop = native_plane_crop(plane, full.dimensions, roi)?;
-            budget.include_elements::<u8>(crop.capacity)?;
-        }
-
-        let mut planes = Vec::new();
-        try_reserve_decode_elements(&mut planes, full.planes.len())?;
-        budget.include_capacity_overage::<NativeComponentPlane>(
-            full.planes.len(),
-            planes.capacity(),
-        )?;
-        for plane in &full.planes {
-            let crop = native_plane_crop(plane, full.dimensions, roi)?;
-            let mut data = Vec::new();
-            try_reserve_decode_elements(&mut data, crop.capacity)?;
-            budget.include_capacity_overage::<u8>(crop.capacity, data.capacity())?;
-            let full_width = plane.dimensions.0 as usize;
-            let crop_row_end = crop
-                .y
-                .checked_add(crop.height)
-                .ok_or(ValidationError::ImageTooLarge)?;
-            for row in crop.y as usize..crop_row_end as usize {
-                let start = row
-                    .checked_mul(full_width)
-                    .and_then(|offset| offset.checked_add(crop.x as usize))
-                    .and_then(|sample| sample.checked_mul(usize::from(plane.bytes_per_sample)))
-                    .ok_or(ValidationError::ImageTooLarge)?;
-                let end = start
-                    .checked_add(crop.row_bytes)
-                    .ok_or(ValidationError::ImageTooLarge)?;
-                let row = plane
-                    .data
-                    .get(start..end)
-                    .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-                data.extend_from_slice(row);
-            }
-            if data.len() != crop.capacity {
-                return Err(DecodingError::CodeBlockDecodeFailure.into());
-            }
-            planes.push(NativeComponentPlane {
-                data,
-                dimensions: (crop.width, crop.height),
-                bit_depth: plane.bit_depth,
-                signed: plane.signed,
-                sampling: plane.sampling,
-                bytes_per_sample: plane.bytes_per_sample,
-            });
-        }
-
-        NativeOutputBudget::validate_component_crop(
-            retained_image_bytes,
-            decoded_channels,
-            component_owner_capacity,
-            &full,
-            &planes,
-            planes.capacity(),
-        )?;
-
-        Ok(DecodedNativeComponents {
-            dimensions: (width, height),
-            color_space: full.color_space,
-            has_alpha: full.has_alpha,
-            planes,
-        })
+        let baseline = super::allocation::combine_retained_bytes(control.baseline(retained)?, 0)?;
+        crate::j2c::validate_region_bitmap_layout(self.codestream, &self.header, baseline, control)
     }
 
     /// Append the samples in `range` of one component as packed little-endian
@@ -529,97 +394,11 @@ fn convert_samples<S: Simd, const N: usize>(
     }
 }
 
-#[derive(Clone, Copy)]
-struct NativePlaneCrop {
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-    row_bytes: usize,
-    capacity: usize,
-}
-
-fn native_plane_crop(
-    plane: &NativeComponentPlane,
-    full_dimensions: (u32, u32),
-    roi: (u32, u32, u32, u32),
-) -> Result<NativePlaneCrop> {
-    let (x, y, width, height) = roi;
-    let (crop_x, crop_y, crop_width, crop_height) = if plane.dimensions == full_dimensions {
-        (x, y, width, height)
-    } else {
-        let x1 = x.checked_add(width).ok_or(ValidationError::ImageTooLarge)?;
-        let y1 = y
-            .checked_add(height)
-            .ok_or(ValidationError::ImageTooLarge)?;
-        let (x_rsiz, y_rsiz) = plane.sampling;
-        if x_rsiz == 0 || y_rsiz == 0 {
-            return Err(DecodingError::CodeBlockDecodeFailure.into());
-        }
-        let crop_x = x / u32::from(x_rsiz);
-        let crop_y = y / u32::from(y_rsiz);
-        let crop_end_x = x1.div_ceil(u32::from(x_rsiz)).min(plane.dimensions.0);
-        let crop_end_y = y1.div_ceil(u32::from(y_rsiz)).min(plane.dimensions.1);
-        (
-            crop_x,
-            crop_y,
-            crop_end_x.saturating_sub(crop_x),
-            crop_end_y.saturating_sub(crop_y),
-        )
-    };
-    let bytes_per_sample = usize::from(plane.bytes_per_sample);
-    let row_bytes = (crop_width as usize)
-        .checked_mul(bytes_per_sample)
-        .ok_or(ValidationError::ImageTooLarge)?;
-    let capacity =
-        checked_decode_byte_len3(crop_height as usize, crop_width as usize, bytes_per_sample)?;
-    Ok(NativePlaneCrop {
-        x: crop_x,
-        y: crop_y,
-        width: crop_width,
-        height: crop_height,
-        row_bytes,
-        capacity,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use alloc::vec::Vec;
 
-    use super::{native_plane_crop, Image};
-    use crate::error::{DecodeError, DecodingError};
-    use crate::NativeComponentPlane;
-
-    fn plane(dimensions: (u32, u32), sampling: (u8, u8)) -> NativeComponentPlane {
-        NativeComponentPlane {
-            data: Vec::new(),
-            dimensions,
-            bit_depth: 16,
-            signed: false,
-            sampling,
-            bytes_per_sample: 2,
-        }
-    }
-
-    #[test]
-    fn subsampled_native_crop_rounds_outward_to_cover_the_requested_region() {
-        let crop = native_plane_crop(&plane((4, 4), (2, 2)), (8, 8), (1, 1, 4, 4))
-            .expect("valid subsampled crop");
-
-        assert_eq!((crop.x, crop.y), (0, 0));
-        assert_eq!((crop.width, crop.height), (3, 3));
-        assert_eq!(crop.row_bytes, 6);
-        assert_eq!(crop.capacity, 18);
-    }
-
-    #[test]
-    fn subsampled_native_crop_rejects_zero_sampling_without_panicking() {
-        assert!(matches!(
-            native_plane_crop(&plane((4, 4), (0, 2)), (8, 8), (0, 0, 4, 4)),
-            Err(DecodeError::Decoding(DecodingError::CodeBlockDecodeFailure))
-        ));
-    }
+    use super::Image;
 
     #[test]
     fn reversible_integer_packing_keeps_exact_clamping_semantics() {

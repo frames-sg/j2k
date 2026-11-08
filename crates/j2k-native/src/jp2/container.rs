@@ -81,7 +81,33 @@ pub fn inspect_jp2_container_with_settings<'a>(
     data: &'a [u8],
     settings: &DecodeSettings,
 ) -> Result<Jp2Container<'a>> {
-    let parsed = parse_jp2_container_with_strict(data, settings.strict)?;
+    public_container(parse_jp2_container_with_strict(data, settings.strict)?)
+}
+
+/// [`inspect_jp2_container_with_settings`] within one operation's working
+/// allowance, stopping at box checkpoints when the operation is cancelled.
+///
+/// # Errors
+///
+/// Returns cancellation, the working-allowance allocation error, or the
+/// container errors of [`inspect_jp2_container_with_settings`].
+#[doc(hidden)]
+pub fn inspect_jp2_container_with_operation_control<'a>(
+    data: &'a [u8],
+    settings: &DecodeSettings,
+    control: &crate::DecodeOperationControl,
+) -> Result<Jp2Container<'a>> {
+    let parsed = parse_jp2_container_with_strict_and_retained_baseline(
+        data,
+        settings.strict,
+        control.baseline(0)?,
+        control,
+    )?;
+    control.check()?;
+    public_container(parsed)
+}
+
+fn public_container(parsed: ParsedJp2Container<'_>) -> Result<Jp2Container<'_>> {
     let image_header = parsed
         .boxes
         .image_header
@@ -142,14 +168,32 @@ pub(crate) fn parse(
 
 pub(crate) fn parse_with_retained_baseline(
     data: &[u8],
-    mut settings: DecodeSettings,
+    settings: DecodeSettings,
     retained_baseline_bytes: usize,
     exact_reduction_levels: Option<u8>,
 ) -> Result<Image<'_>> {
+    parse_with_control(
+        data,
+        settings,
+        retained_baseline_bytes,
+        exact_reduction_levels,
+        &crate::DecodeOperationControl::default(),
+    )
+}
+
+pub(crate) fn parse_with_control<'a>(
+    data: &'a [u8],
+    mut settings: DecodeSettings,
+    retained_baseline_bytes: usize,
+    exact_reduction_levels: Option<u8>,
+    control: &crate::DecodeOperationControl,
+) -> Result<Image<'a>> {
+    control.check()?;
     let container = parse_jp2_container_with_strict_and_retained_baseline(
         data,
         settings.strict,
         retained_baseline_bytes,
+        control,
     )?;
     if container.boxes.palette.is_some() {
         settings.target_resolution = None;
@@ -163,11 +207,12 @@ pub(crate) fn parse_with_retained_baseline(
     )?;
     let mut codestream_settings = settings;
     codestream_settings.strict = true;
-    let parsed_codestream = crate::j2c::parse_raw_with_retained_baseline(
+    let parsed_codestream = crate::j2c::parse_raw_with_control(
         container.codestream,
         &codestream_settings,
         retained_box_bytes,
         exact_reduction_levels,
+        control,
     )?;
     validate_codestream_file_kind(container.file_kind, &parsed_codestream.header)?;
     validate_image_header_matches_codestream(&image_boxes, &parsed_codestream.header)?;
@@ -238,15 +283,21 @@ pub(super) fn implicit_mapping_budget(
 }
 
 fn parse_jp2_container_with_strict(data: &[u8], strict: bool) -> Result<ParsedJp2Container<'_>> {
-    parse_jp2_container_with_strict_and_retained_baseline(data, strict, 0)
+    parse_jp2_container_with_strict_and_retained_baseline(
+        data,
+        strict,
+        0,
+        &crate::DecodeOperationControl::default(),
+    )
 }
 
-fn parse_jp2_container_with_strict_and_retained_baseline(
-    data: &[u8],
+fn parse_jp2_container_with_strict_and_retained_baseline<'a>(
+    data: &'a [u8],
     strict: bool,
     retained_baseline_bytes: usize,
-) -> Result<ParsedJp2Container<'_>> {
-    let mut reader = BitReader::new(data);
+    control: &crate::DecodeOperationControl,
+) -> Result<ParsedJp2Container<'a>> {
+    let mut reader = BitReader::with_cancellation(data, control.cancellation());
     let signature_box = r#box::read_checked(&mut reader)?;
     if signature_box.box_type != JP2_SIGNATURE || signature_box.data != JP2_SIGNATURE_PAYLOAD {
         bail!(FormatError::InvalidSignature);
@@ -281,6 +332,7 @@ fn parse_jp2_container_with_strict_and_retained_baseline(
                     strict,
                     retained_baseline_bytes,
                     file_kind,
+                    control,
                 )?;
                 used_lenient_metadata_recovery |= parsed_header.used_lenient_metadata_recovery;
                 image_boxes = Some(parsed_header.boxes);
@@ -312,6 +364,7 @@ fn read_recoverable_metadata_box<'a>(
     strict: bool,
     used_lenient_metadata_recovery: &mut bool,
 ) -> Result<Option<r#box::Jp2Box<'a>>> {
+    reader.check_cancelled()?;
     match r#box::read_checked(reader) {
         Ok(parsed) => Ok(Some(parsed)),
         Err(error) if strict => Err(error),

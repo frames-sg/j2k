@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::super::{
-    forward_rct_i64, packet_encode, packetize_i64_component_resolution_packets, EncodeOptions,
-    I64PacketizeRequest, J2kEncodeStageAccelerator, NativeEncodePipelineError,
-    NativeEncodePipelineResult, NativeEncodeSession, MAX_CLASSIC_REVERSIBLE_MARKER_BITPLANES,
+    encode_component_resolution_packets, forward_rct_i64, packet_encode, EncodeOptions,
+    J2kEncodeStageAccelerator, NativeEncodePipelineError, NativeEncodePipelineResult,
+    NativeEncodeSession, TilePacketRequest, MAX_CLASSIC_REVERSIBLE_MARKER_BITPLANES,
 };
 use super::ownership::single_tile_plan_retained_bytes;
 use super::plan::SingleTilePlan;
@@ -63,20 +63,22 @@ pub(super) fn encode_reversible_i64_single_tile_packets<A: J2kEncodeStageAcceler
     let component_resolution_packets =
         prepare_i64_component_packet_tree(&mut components, &plan, retained_plan_bytes, session)?;
     drop(components);
-    let packetized_tile = packetize_i64_component_resolution_packets(
+    let packetized_tile = encode_component_resolution_packets(
         component_resolution_packets,
-        I64PacketizeRequest {
-            tile_origin: plan.tile_origin,
-            width,
-            height,
+        TilePacketRequest {
+            tile_bounds: super::super::tile_grid::tile_bounds(width, height, plan.tile_origin)?,
             num_levels: plan.num_levels,
             params: &plan.params,
             options,
             retained_base_bytes: retained_plan_bytes,
+            phase_owners: &plan,
+            retained_what: "retained typed-i64 packetization owners",
+            profile_enabled: false,
             session,
             accelerator,
         },
-    )?;
+    )?
+    .packetized_tile;
     plan.params.required_ht_magnitude_bound = packetized_tile.required_ht_magnitude_bound;
     Ok((packetized_tile, plan))
 }

@@ -59,6 +59,7 @@ pub(super) fn decode_sub_band_ht_blocks_i64(
                 continue;
             }
 
+            tile_ctx.operation_control.check()?;
             tile_ctx.debug_counters.decoded_code_blocks += 1;
             ht_block_decode::decode_with_stats(
                 code_block,
@@ -180,6 +181,7 @@ pub(super) fn decode_sub_band_ht_blocks(
 
         let output_stride = sub_band.storage_rect.width() as usize;
         for job in batch_jobs {
+            tile_ctx.operation_control.check()?;
             tile_ctx.debug_counters.decoded_code_blocks += 1;
             let base_idx =
                 (job.output_y * sub_band.storage_rect.width()) as usize + job.output_x as usize;
@@ -305,6 +307,7 @@ pub(super) fn decode_sub_band_ht_blocks(
                 tile_ctx.debug_counters.skipped_code_blocks += 1;
                 continue;
             }
+            tile_ctx.operation_control.check()?;
             tile_ctx.debug_counters.decoded_code_blocks += 1;
 
             #[cfg(feature = "simd")]

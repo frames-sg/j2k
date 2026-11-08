@@ -43,19 +43,27 @@ pub(crate) fn full_decode_planes_floor(
     header: &Header<'_>,
     retained_image_bytes: usize,
     budget: usize,
+    planning_extra_bytes: usize,
+    control: &crate::DecodeOperationControl,
 ) -> Result<Option<usize>> {
+    control.check()?;
     let planes = planes_bytes(header)?;
     if header_estimate(header, planes).saturating_mul(2) <= budget {
         return Ok(None);
     }
-    let mut reader = BitReader::new(data);
-    let tiles = tile::parse(&mut reader, header, retained_image_bytes)?;
+    let mut reader = BitReader::with_cancellation(data, control.cancellation());
+    let planning_bytes = retained_image_bytes
+        .checked_add(planning_extra_bytes)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    let tiles = tile::parse(&mut reader, header, planning_bytes)?;
+    control.check()?;
     if tiles.is_empty() {
         return Ok(None);
     }
     let skipped = header.skipped_resolution_levels;
     let mut tile_floor = 0_usize;
     for tile in tiles.iter() {
+        control.check()?;
         if !tile_streams_rows(tile, header.component_infos.len()) {
             return Ok(None);
         }
@@ -64,6 +72,11 @@ pub(crate) fn full_decode_planes_floor(
     Ok(Some(
         tiles
             .structural_workspace_bytes()
+            // These owners are live during metadata parsing, but reusable
+            // context storage can supply the execution's planned planes.
+            // Keep the original execution estimate and route decision.
+            .checked_sub(planning_extra_bytes)
+            .ok_or(ValidationError::ImageTooLarge)?
             .saturating_add(planes)
             .saturating_add(tile_floor),
     ))

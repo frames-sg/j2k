@@ -11,12 +11,7 @@ use super::super::super::{
 use super::super::ordered_candidate_block_count;
 use super::super::{compare_classic_segment_candidates, enforce_classic_assignment_monotonicity};
 
-struct ClassicAssignmentWorkspace {
-    allocator: ClassicLayerBudgetAllocator,
-    block_frontiers: Vec<Option<usize>>,
-    block_min_layers: Vec<usize>,
-    assignments: Vec<usize>,
-}
+use super::AssignmentWorkspace;
 
 pub(in crate::j2c::encode) fn assign_classic_segment_layers_by_slope_accounted(
     candidates: &[ClassicSegmentAssignmentCandidate],
@@ -45,37 +40,13 @@ pub(in crate::j2c::encode) fn assign_classic_segment_layers_by_slope_accounted(
         retained_live_bytes,
     )?;
 
-    for _ in 0..candidates.len() {
-        let candidate_idx = workspace
-            .block_frontiers
-            .iter()
-            .filter_map(|candidate| *candidate)
-            .min_by(|&left, &right| compare_classic_segment_candidates(candidates, left, right))
-            .ok_or_else(|| {
-                NativeEncodePipelineError::internal_invariant(
-                    "classic PCRD candidate queue underflow",
-                )
-            })?;
-        let candidate = candidates[candidate_idx];
-        let min_layer = *workspace
-            .block_min_layers
-            .get(candidate.block_index)
-            .ok_or_else(|| {
-                NativeEncodePipelineError::internal_invariant("classic PCRD block index mismatch")
-            })?;
-        let layer = workspace
-            .allocator
-            .assign_segment(min_layer, candidate.rate)
-            .map_err(NativeEncodePipelineError::arithmetic_overflow)?;
-        workspace.assignments[candidate_idx] = layer;
-        let block_index = candidate.block_index;
-        workspace.block_min_layers[block_index] = layer;
-        workspace.block_frontiers[block_index] = candidate_idx.checked_add(1).filter(|&next| {
-            candidates
-                .get(next)
-                .is_some_and(|candidate| candidate.block_index == block_index)
-        });
-    }
+    workspace.assign_frontiers(
+        candidates,
+        |left, right| compare_classic_segment_candidates(candidates, left, right),
+        |candidate| (candidate.block_index, candidate.rate),
+        "classic PCRD candidate queue underflow",
+        "classic PCRD block index mismatch",
+    )?;
     enforce_classic_assignment_monotonicity(candidates, &mut workspace.assignments);
     Ok(workspace.assignments)
 }
@@ -117,7 +88,7 @@ fn try_classic_assignment_workspace(
     block_count: usize,
     tracker: &mut Tier1PhaseTracker<'_, '_>,
     retained_live_bytes: usize,
-) -> NativeEncodePipelineResult<ClassicAssignmentWorkspace> {
+) -> NativeEncodePipelineResult<AssignmentWorkspace> {
     let candidate_bytes = checked_element_bytes::<ClassicSegmentAssignmentCandidate>(
         candidate_capacity,
         "classic PCRD candidates",
@@ -154,11 +125,11 @@ fn try_classic_assignment_workspace(
         live.into_iter().chain([block_min_bytes, assignment_bytes]),
         "classic PCRD workspace",
     )?;
-    Ok(ClassicAssignmentWorkspace {
+    Ok(AssignmentWorkspace {
         allocator,
+        assignments,
         block_frontiers,
         block_min_layers,
-        assignments,
     })
 }
 

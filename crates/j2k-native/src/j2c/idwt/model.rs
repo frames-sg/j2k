@@ -76,14 +76,14 @@ pub(super) enum InputSource {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct CoefficientSource<'a> {
-    pub(super) coefficients: &'a [f32],
+pub(super) struct CoefficientSource<'a, T = f32> {
+    pub(super) coefficients: &'a [T],
     pub(super) rect: IntRect,
     pub(super) stride: u32,
 }
 
-impl<'a> CoefficientSource<'a> {
-    pub(super) fn new(coefficients: &'a [f32], rect: IntRect, stride: u32) -> Self {
+impl<'a, T: Copy + Default> CoefficientSource<'a, T> {
+    pub(super) fn new(coefficients: &'a [T], rect: IntRect, stride: u32) -> Self {
         Self {
             coefficients,
             rect,
@@ -91,20 +91,17 @@ impl<'a> CoefficientSource<'a> {
         }
     }
 
-    pub(super) fn from_sub_band(
-        sub_band: &'a SubBand,
-        storage: &'a DecompositionStorage<'_>,
-    ) -> Self {
+    pub(super) fn from_sub_band(sub_band: &'a SubBand, coefficients: &'a [T]) -> Self {
         Self {
-            coefficients: &storage.coefficients[sub_band.coefficients.clone()],
+            coefficients: &coefficients[sub_band.coefficients.clone()],
             rect: sub_band.storage_rect,
             stride: sub_band.storage_rect.width(),
         }
     }
 
-    pub(super) fn get(self, x: u32, y: u32) -> f32 {
+    pub(super) fn get(self, x: u32, y: u32) -> T {
         if x < self.rect.x0 || x >= self.rect.x1 || y < self.rect.y0 || y >= self.rect.y1 {
-            return 0.0;
+            return T::default();
         }
         let local_x = (x - self.rect.x0) as usize;
         let local_y = (y - self.rect.y0) as usize;

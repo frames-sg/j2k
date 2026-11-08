@@ -146,6 +146,7 @@ fn run_decode_with_capacity_retry<'a>(
     ctx: &mut DecoderContext<'a>,
     mut decode: impl FnMut(&mut DecoderContext<'a>) -> Result<()>,
 ) -> Result<()> {
+    ctx.operation_control().check()?;
     ctx.storage.release_all_allocations();
     let retained_component_bytes = ctx.tile_decode_context.retained_channel_bytes()?;
     let retained_tier1_bytes = ctx.tile_decode_context.tier1_capacity_bytes()?;
@@ -189,7 +190,7 @@ pub(crate) fn prepare_region_tiles<'a>(
     // from a fresh lifetime-free workspace so its baseline is exact and later
     // stripe allocations can account the retained graph explicitly.
     ctx.release_reusable_allocations();
-    let mut reader = BitReader::new(data);
+    let mut reader = BitReader::with_cancellation(data, ctx.operation_control().cancellation());
     let tiles = tile::parse(&mut reader, header, retained_image_bytes)?;
     if tiles.is_empty() {
         bail!(TileError::Invalid);
@@ -253,7 +254,7 @@ fn decode<'a>(
     let total_start = profile::profile_now(profile_enabled);
     let mut profile_timings = DecodeProfileTimings::default();
     let stage_start = profile::profile_now(profile_enabled);
-    let mut reader = BitReader::new(data);
+    let mut reader = BitReader::with_cancellation(data, ctx.operation_control().cancellation());
     let mut parsed_tiles = tile::parse(&mut reader, header, reused_baseline.parser_live);
     if reused_baseline.scratch_capacity == 0
         && reused_baseline.channel_capacity != 0
@@ -270,7 +271,7 @@ fn decode<'a>(
             channel_capacity: 0,
             scratch_capacity: 0,
         };
-        reader = BitReader::new(data);
+        reader = BitReader::with_cancellation(data, ctx.operation_control().cancellation());
         parsed_tiles = tile::parse(&mut reader, header, reused_baseline.parser_live);
     }
     let tiles = parsed_tiles?;
@@ -362,6 +363,7 @@ fn decode_parsed_tiles<'a>(
 
     tile_ctx.fused_last_level = None;
     for tile in tiles.iter().filter(|_| !decoded_by_workers) {
+        tile_ctx.operation_control.check()?;
         ltrace!(
             "tile {} rect [{},{} {}x{}]",
             tile.idx,
@@ -396,6 +398,7 @@ fn decode_parsed_tiles<'a>(
         )?;
     }
 
+    tile_ctx.operation_control.check()?;
     ensure_every_sample_streamed(header, tile_ctx)?;
     tile_ctx.ensure_unzeroed_planes_overwritten()?;
 
@@ -620,6 +623,41 @@ fn choose_region_idwt(
     Ok((structural_workspace_bytes, reused_baseline, parallelism))
 }
 
+/// Run the execution route decision on parsed headers and a fresh context.
+/// No sample, code-block or transform storage is allocated by this query.
+pub(crate) fn region_rows_plan(
+    data: &[u8],
+    header: &Header<'_>,
+    retained_image_bytes: usize,
+    region: (u32, u32, u32, u32),
+    parallelism: CpuDecodeParallelism,
+    control: &crate::DecodeOperationControl,
+) -> Result<bool> {
+    let mut context = DecoderContext::default();
+    context.set_output_region(Some(region));
+    context.permit_line_region_idwt(true);
+    context.set_cpu_decode_parallelism(if control.has_cancellation() {
+        CpuDecodeParallelism::Serial
+    } else {
+        parallelism
+    });
+    let baseline = context.prepare_reused_decode_baseline(retained_image_bytes)?;
+    let tiles = tile::parse(
+        &mut BitReader::with_cancellation(data, control.cancellation()),
+        header,
+        baseline.parser_live,
+    )?;
+    choose_region_idwt(
+        header,
+        &tiles,
+        &mut context,
+        (false, true),
+        tiles.structural_workspace_bytes(),
+        baseline,
+    )?;
+    Ok(context.tile_decode_context.stream_rows)
+}
+
 /// Whether the output region's component planes would pass the decode
 /// budget beside `structural_workspace_bytes` without the context's
 /// retained capacity, as `reset` charges them; planes too large to count
@@ -835,7 +873,7 @@ impl ParallelCoefficientStats {
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
+    reason = "the tile boundary keeps ordered stages and live selection/workspace owners explicit without extra allocation or indirection"
 )]
 fn decode_tile<'a>(
     tile: &Tile<'a>,
@@ -859,11 +897,6 @@ fn decode_tile<'a>(
     storage.exact_integer_decode = tile_requires_exact_integer_decode(tile);
     if storage.exact_integer_decode {
         validate_exact_integer_decode_tile(tile)?;
-        if tile_ctx.output_region.is_some() {
-            bail!(DecodingError::UnsupportedFeature(
-                "25-38 bit region decode requires exact integer region IDWT support"
-            ));
-        }
     }
 
     // This is the method that orchestrates all steps.

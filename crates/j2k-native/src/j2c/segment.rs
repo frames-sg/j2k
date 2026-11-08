@@ -282,6 +282,9 @@ fn parse_tile_parts<'a>(
                     strict,
                 )
             });
+        if let Some(mut cursor) = tile_part.cursor() {
+            cursor.header().check_cancelled()?;
+        }
         if let Some(error) = storage.packet_workspace_error.take() {
             return Err(error);
         }
@@ -405,6 +408,12 @@ fn parse_inner<'a>(
     // precinct's layers in a row, so it is looked up once for them.
     let mut last_record: Option<((u16, u8, u64), usize)> = None;
     while !tile_part.header().at_end() {
+        // The outer parser restores the typed cancellation error before any
+        // lenient packet recovery; this internal error only unwinds the walk.
+        tile_part
+            .header()
+            .check_cancelled()
+            .map_err(|_| "decode cancelled")?;
         let Some(progression_data) = progression_iterator.next() else {
             // Every packet of the tile has been read. Bytes the tile-part
             // holds after them belong to no packet and are left unread, as

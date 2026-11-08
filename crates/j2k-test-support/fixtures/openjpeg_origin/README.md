@@ -19,6 +19,16 @@ reversible 5/3 lossless coding. The script checks that OpenJPEG decodes both
 to the source at full resolution and to the same samples at every
 reduction.
 
+`gray29_23x17_origin_3_3.j2k` is a 23 x 17 unsigned 29-bit grayscale image
+at origin (3, 3), encoded by OpenJPEG 2.5.4 with two decomposition levels
+and reversible 5/3 lossless coding. Its source sample at `(x, y)` is
+`2^28 + x * 17003 + y * 9001 + x * y * 997`, including low bits that cannot
+be represented exactly by `f32`. The generator verifies the full decode
+against those values. `gray29_reduced_r1.raw` (11 x 8) and
+`gray29_reduced_r2.raw` (6 x 4) are OpenJPEG's independent reduced decodes,
+stored as unsigned 32-bit little-endian samples. The native component
+tests use them to check exact region decoding at a nonzero image origin.
+
 | File | Contents | SHA-256 |
 | --- | --- | --- |
 | `source_23x17.rgb` | 23 x 17 interleaved RGB8 source samples, row-major. Both codestreams decode to these exactly. | `e8eaca5743093c518fba4da973fe1fd9b7e37ac5960d9abf968ec12480b0d5c8` |

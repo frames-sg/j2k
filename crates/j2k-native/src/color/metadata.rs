@@ -260,6 +260,58 @@ pub(crate) fn validate_and_reorder_channels(
     Ok(())
 }
 
+/// Undo premultiplied alpha in source code values.
+///
+/// `components` hold the colour channels followed by one whole-image alpha,
+/// all unsigned on one sampling grid. Each colour sample is divided by the
+/// normalized opacity and clamped to its own range; with `sycc`, chroma is
+/// associated about its mid-range zero. At zero opacity the straight colour
+/// is zero, which for sYCC chroma is the mid-range value.
+pub(crate) fn unassociate_alpha(components: &mut [ComponentData], sycc: bool) -> Result<()> {
+    let Some((alpha, colour)) = components.split_last_mut() else {
+        bail!(ValidationError::InvalidChannelDefinition);
+    };
+    if alpha.signed
+        || colour
+            .iter()
+            .any(|component| component.signed || component.container.len() != alpha.container.len())
+    {
+        bail!(crate::DecodingError::UnsupportedFeature(
+            "premultiplied alpha unassociation requires unsigned samples on one sampling grid"
+        ));
+    }
+    let alpha_max = component_max(alpha.bit_depth);
+    for (index, component) in colour.iter_mut().enumerate() {
+        let max = component_max(component.bit_depth);
+        // The same chroma offset the sYCC conversion subtracts.
+        let zero = if sycc && index > 0 {
+            component_max(component.bit_depth.saturating_sub(1)) + 1.0
+        } else {
+            0.0
+        };
+        for (sample, &opacity) in component.container.iter_mut().zip(alpha.container.iter()) {
+            // Scale before dividing by the raw opacity, so that exact
+            // half-way quotients stay exact in f32 and round as expected.
+            *sample = if opacity > 0.0 {
+                ((*sample - zero) * alpha_max / opacity + zero).clamp(0.0, max)
+            } else {
+                zero
+            };
+        }
+        // Exact integer shadows hold the associated values; drop them.
+        component.integer_container = None;
+    }
+    Ok(())
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "JPEG 2000 colour samples are converted in f32 like the colour transforms"
+)]
+fn component_max(bit_depth: u8) -> f32 {
+    ((1_u64 << u32::from(bit_depth.min(63))) - 1) as f32
+}
+
 const fn channel_association_sort_key(association: ChannelAssociation) -> u16 {
     match association {
         ChannelAssociation::Colour(index) => index,
@@ -287,6 +339,51 @@ mod tests {
             bit_depth: 8,
             signed: false,
         }
+    }
+
+    #[test]
+    fn unassociation_divides_by_opacity_and_keeps_sycc_chroma_about_its_midpoint() {
+        let first = |component: &ComponentData| component.container.truncated()[0];
+        // Opacity 128 of 255; scaling before dividing keeps half-way values
+        // exact, and over-range colour clamps to the component's range.
+        let mut rgba = vec![
+            component(64.0),
+            component(32.0),
+            component(200.0),
+            component(128.0),
+        ];
+        super::unassociate_alpha(&mut rgba, false).unwrap();
+        assert_eq!(
+            rgba[..3].iter().map(first).collect::<Vec<_>>(),
+            [127.5, 63.75, 255.0]
+        );
+        assert!(rgba[0].integer_container.is_none());
+        let mut ycc = vec![
+            component(1.0),
+            component(128.0),
+            component(127.0),
+            component(2.0),
+        ];
+        super::unassociate_alpha(&mut ycc, true).unwrap();
+        assert_eq!(
+            ycc[..3].iter().map(first).collect::<Vec<_>>(),
+            [127.5, 128.0, 0.5]
+        );
+        // At zero opacity the straight colour is zero: black in sYCC.
+        let mut clear = vec![
+            component(9.0),
+            component(100.0),
+            component(50.0),
+            component(0.0),
+        ];
+        super::unassociate_alpha(&mut clear, true).unwrap();
+        assert_eq!(
+            clear[..3].iter().map(first).collect::<Vec<_>>(),
+            [0.0, 128.0, 128.0]
+        );
+        let mut signed = vec![component(1.0), component(2.0)];
+        signed[0].signed = true;
+        assert!(super::unassociate_alpha(&mut signed, false).is_err());
     }
 
     #[test]

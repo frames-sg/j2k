@@ -138,6 +138,7 @@ pub(super) fn decode_sub_band_bitplanes(
     cpu_decode_parallelism: CpuDecodeParallelism,
     profile_enabled: bool,
 ) -> Result<()> {
+    tile_ctx.operation_control.check()?;
     let sub_band = storage.sub_bands[sub_band_idx].clone();
     let SubBandDecodeParameters {
         dequantization_step,

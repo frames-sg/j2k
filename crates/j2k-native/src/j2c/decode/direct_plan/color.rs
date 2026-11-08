@@ -107,7 +107,7 @@ fn build_direct_color_components_plan_inner<'a, const COMPONENT_COUNT: usize>(
     classic_payloads: Option<&mut ClassicPayloadCollector<'_>>,
     component_grid: bool,
 ) -> Result<DirectColorComponentPlans<COMPONENT_COUNT>> {
-    let mut reader = BitReader::new(data);
+    let mut reader = BitReader::with_cancellation(data, ctx.operation_control().cancellation());
     let tiles = tile::parse(&mut reader, header, retained_image_bytes)?;
 
     if tiles.len() != 1 {

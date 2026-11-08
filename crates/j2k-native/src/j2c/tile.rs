@@ -20,6 +20,51 @@ use metadata::{inherit_tile_metadata, TileMetadataBudget};
 pub(crate) use parsed::ParsedTiles;
 use tile_part::parse_tile_part;
 
+/// Common reduction ladder after applying every tile's coding overrides.
+pub(crate) fn max_reduction_levels_with_control(
+    data: &[u8],
+    header: &Header<'_>,
+    retained_baseline_bytes: usize,
+    control: &crate::DecodeOperationControl,
+) -> Result<u8> {
+    control.check()?;
+    let mut reader = BitReader::with_cancellation(data, control.cancellation());
+    let tiles = parse(&mut reader, header, retained_baseline_bytes)?;
+    control.check()?;
+    // Tile components already inherit defaults and apply COD/COC overrides.
+    // A superseded main-header default must not shorten the effective ladder.
+    tiles
+        .iter()
+        .flat_map(|tile| &tile.component_infos)
+        .map(ComponentInfo::num_decomposition_levels)
+        .min()
+        .map(|maximum| maximum.min(31))
+        .ok_or_else(|| ValidationError::InvalidComponentMetadata.into())
+}
+
+/// Match the bitmap region decoder after effective tile coding overrides.
+/// Float bitmaps do not have the borrowed component API's precision limit.
+pub(crate) fn validate_region_bitmap_layout(
+    data: &[u8],
+    header: &Header<'_>,
+    retained_baseline_bytes: usize,
+    control: &crate::DecodeOperationControl,
+) -> Result<()> {
+    control.check()?;
+    if header
+        .component_infos
+        .iter()
+        .all(|component| component.size_info.precision <= 24)
+    {
+        return Ok(());
+    }
+    // Effective tile coding styles must parse within the allowance; every
+    // exact-integer sampling layout then has a bounded region store.
+    let mut reader = BitReader::with_cancellation(data, control.cancellation());
+    parse(&mut reader, header, retained_baseline_bytes)?;
+    control.check()
+}
+
 #[cfg(test)]
 std::thread_local! {
     static TILE_PARSE_CALLS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
@@ -225,6 +270,16 @@ impl Tile<'_> {
         }
     }
 
+    pub(crate) fn check_cancelled(&self) -> Result<()> {
+        if let Some(part) = self.tile_parts.first() {
+            match part {
+                TilePart::Merged(part) => part.data.check_cancelled()?,
+                TilePart::Separated(part) => part.body.check_cancelled()?,
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn component_tiles(&self) -> impl Iterator<Item = ComponentTile<'_>> {
         self.component_infos
             .iter()
@@ -241,6 +296,7 @@ pub(crate) fn parse<'a>(
     #[cfg(test)]
     TILE_PARSE_CALLS.set(TILE_PARSE_CALLS.get().saturating_add(1));
 
+    reader.check_cancelled()?;
     let mut metadata_budget = TileMetadataBudget::for_image(main_header, retained_image_bytes)?;
     let num_tiles = usize::try_from(main_header.size_data.num_tiles())
         .map_err(|_| ValidationError::ImageTooLarge)?;
@@ -248,6 +304,7 @@ pub(crate) fn parse<'a>(
     let mut tiles = Vec::new();
     metadata_budget.try_reserve_retained(&mut tiles, num_tiles)?;
     for idx in 0..main_header.size_data.num_tiles() {
+        reader.check_cancelled()?;
         tiles.push(Tile::new(idx, main_header));
         let tile = tiles.last_mut().ok_or(ValidationError::ImageTooLarge)?;
         inherit_tile_metadata(tile, main_header, &mut metadata_budget)?;
@@ -281,6 +338,7 @@ pub(crate) fn parse<'a>(
         bail!(MarkerError::Expected("EOC"));
     }
 
+    reader.check_cancelled()?;
     metadata_budget.validate_owner_graph(&tiles)?;
     Ok(ParsedTiles::new(
         tiles,

@@ -3,11 +3,12 @@
 //! Non-allocating request checks plus fallible component-sampling materialization.
 
 use crate::j2c::encode::{
-    raw_pixel_bytes_per_sample, validate_code_block_geometry, validate_component_sample_info,
-    validate_irreversible_quantization_profile, validate_reversible_i64_encode_options,
-    BlockCodingMode, CodeBlockGeometry, EncodeComponentSampleInfo, EncodeOptions,
-    NativeEncodePipelineError, NativeEncodePipelineResult, NativeEncodeSession,
-    MAX_J2K_SPEC_COMPONENTS, MAX_PART1_SAMPLE_BIT_DEPTH, MAX_RAW_PIXEL_ENCODE_BIT_DEPTH,
+    raw_pixel_bytes_per_sample, validate_code_block_geometry, validate_common_encode_options,
+    validate_component_sample_info, validate_irreversible_quantization_profile,
+    validate_reversible_i64_encode_options, BlockCodingMode, CodeBlockGeometry,
+    EncodeComponentSampleInfo, EncodeOptions, NativeEncodePipelineError,
+    NativeEncodePipelineResult, NativeEncodeSession, MAX_J2K_SPEC_COMPONENTS,
+    MAX_PART1_SAMPLE_BIT_DEPTH, MAX_RAW_PIXEL_ENCODE_BIT_DEPTH,
 };
 
 use super::construction::{try_component_sampling, validate_component_sampling};
@@ -140,33 +141,7 @@ fn validate_encode_request_header(
     }
     let code_block_geometry =
         validate_code_block_geometry(options).map_err(NativeEncodePipelineError::invalid_input)?;
-    if options.num_layers == 0 {
-        return Err(NativeEncodePipelineError::invalid_input(
-            "quality layer count must be non-zero",
-        ));
-    }
-    if options.num_layers > 32 {
-        return Err(NativeEncodePipelineError::unsupported(
-            "quality layer count exceeds the encoder limit",
-        ));
-    }
-    if options.write_ppm && options.write_ppt {
-        return Err(NativeEncodePipelineError::invalid_input(
-            "PPM and PPT packet header markers are mutually exclusive",
-        ));
-    }
-    if matches!(options.tile_part_packet_limit, Some(0)) {
-        return Err(NativeEncodePipelineError::invalid_input(
-            "tile-part packet limit must be non-zero",
-        ));
-    }
-    if !options.quality_layer_byte_targets.is_empty()
-        && options.quality_layer_byte_targets.len() != usize::from(options.num_layers)
-    {
-        return Err(NativeEncodePipelineError::invalid_input(
-            "quality layer byte target count must match quality layer count",
-        ));
-    }
+    validate_common_encode_options(options)?;
     // Multi-tile planning caps the depth by the smallest edge tile, so profile
     // rows are checked against that same depth here.
     let profile_levels = match options.tile_size {
@@ -230,11 +205,6 @@ fn finish_validate_encode_request(
     }
 
     if let Some((tile_width, tile_height)) = options.tile_size {
-        if tile_width == 0 || tile_height == 0 {
-            return Err(NativeEncodePipelineError::invalid_input(
-                "invalid tile dimensions",
-            ));
-        }
         if component_sampling
             .iter()
             .any(|sampling| *sampling != (1, 1))

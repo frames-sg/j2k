@@ -75,8 +75,8 @@ impl<'a> Image<'a> {
     ) -> Result<DecodedNativeComponents> {
         let dimensions = (roi.2, roi.3);
         let mut sink = NativePlanesSink::new(self, dimensions);
-        self.decode_native_rows(roi, decoder_context, &mut sink)?;
-        let planes = sink.finish()?;
+        let result = self.decode_native_rows(roi, decoder_context, &mut sink);
+        let planes = sink.finish_decode(result)?;
         let color_space = try_clone_color_space(&self.color_space)?;
         Ok(DecodedNativeComponents {
             dimensions,
@@ -126,9 +126,15 @@ struct NativePlanesSink<'i> {
     /// Rectangles handed to the sink.
     #[cfg(test)]
     writes: usize,
+    #[cfg(test)]
+    fail_allocation: bool,
 }
 
 impl ComponentRowSink for NativePlanesSink<'_> {
+    fn stopped(&self) -> bool {
+        self.error.is_some()
+    }
+
     fn write_rows(&mut self, x: u32, y: u32, planes: &[ComponentPlane<'_>]) {
         #[cfg(test)]
         {
@@ -143,8 +149,8 @@ impl ComponentRowSink for NativePlanesSink<'_> {
                 return;
             }
         }
-        if self.try_write_rows(x, y, planes).is_none() {
-            self.error = Some(DecodingError::CodeBlockDecodeFailure.into());
+        if let Err(error) = self.try_write_rows(x, y, planes) {
+            self.error = Some(error);
         }
     }
 }
@@ -165,6 +171,8 @@ impl<'i> NativePlanesSink<'i> {
             allocations: 0,
             #[cfg(test)]
             writes: 0,
+            #[cfg(test)]
+            fail_allocation: false,
         }
     }
 
@@ -185,6 +193,10 @@ impl<'i> NativePlanesSink<'i> {
 
     /// Allocate every component's plane within the output allowance.
     fn allocate(&mut self) -> Result<()> {
+        #[cfg(test)]
+        if self.fail_allocation {
+            return Err(DecodingError::HostAllocationFailed.into());
+        }
         let samples = checked_decode_sample_count(self.dimensions.0, self.dimensions.1)?;
         let mut allowance = self.output_allowance()?;
         let mut planes = Vec::new();
@@ -218,19 +230,20 @@ impl<'i> NativePlanesSink<'i> {
         Ok(())
     }
 
-    /// The packed planes, or the first error a rectangle met. A decode that
-    /// handed over no rows has no planes.
-    fn finish(self) -> Result<Vec<NativeComponentPlane>> {
+    /// Preserve the first sink error ahead of a stop or later decode failure.
+    /// A successful decode that handed over no rows has no planes.
+    fn finish_decode(self, result: Result<()>) -> Result<Vec<NativeComponentPlane>> {
         if let Some(error) = self.error {
             return Err(error);
         }
+        result?;
         if self.planes.is_empty() {
             bail!(DecodingError::CodeBlockDecodeFailure);
         }
         Ok(self.planes)
     }
 
-    fn try_write_rows(&mut self, x: u32, y: u32, sources: &[ComponentPlane<'_>]) -> Option<()> {
+    fn try_write_rows(&mut self, x: u32, y: u32, sources: &[ComponentPlane<'_>]) -> Result<()> {
         dispatch!(Level::new(), simd => self.try_write_rows_at(simd, x, y, sources))
     }
 
@@ -246,13 +259,13 @@ impl<'i> NativePlanesSink<'i> {
         x: u32,
         y: u32,
         sources: &[ComponentPlane<'_>],
-    ) -> Option<()> {
+    ) -> Result<()> {
         if sources.len() != self.planes.len() {
-            return None;
+            bail!(DecodingError::CodeBlockDecodeFailure);
         }
         for (source, target) in sources.iter().zip(self.planes.iter_mut()) {
             if source.bit_depth != target.bit_depth || source.signed != target.signed {
-                return None;
+                bail!(DecodingError::CodeBlockDecodeFailure);
             }
             let width = source.dimensions.0 as usize;
             let height = source.dimensions.1 as usize;
@@ -260,15 +273,36 @@ impl<'i> NativePlanesSink<'i> {
                 continue;
             }
             let bytes_per_sample = usize::from(target.bytes_per_sample);
-            let row_bytes = width.checked_mul(bytes_per_sample)?;
-            let stride = (target.dimensions.0 as usize).checked_mul(bytes_per_sample)?;
+            let row_bytes = width
+                .checked_mul(bytes_per_sample)
+                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+            let stride = (target.dimensions.0 as usize)
+                .checked_mul(bytes_per_sample)
+                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
             let mut start = (y as usize)
-                .checked_mul(stride)?
-                .checked_add((x as usize).checked_mul(bytes_per_sample)?)?;
-            let rows = source.samples.get(..width.checked_mul(height)?)?;
+                .checked_mul(stride)
+                .and_then(|offset| {
+                    (x as usize)
+                        .checked_mul(bytes_per_sample)
+                        .and_then(|x| offset.checked_add(x))
+                })
+                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+            let rows = source
+                .samples
+                .get(
+                    ..width
+                        .checked_mul(height)
+                        .ok_or(DecodingError::CodeBlockDecodeFailure)?,
+                )
+                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
             for samples in rows.chunks_exact(width) {
-                let end = start.checked_add(row_bytes)?;
-                let destination = target.data.get_mut(start..end)?;
+                let end = start
+                    .checked_add(row_bytes)
+                    .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+                let destination = target
+                    .data
+                    .get_mut(start..end)
+                    .ok_or(DecodingError::CodeBlockDecodeFailure)?;
                 pack_native_samples_at(
                     simd,
                     destination,
@@ -276,12 +310,13 @@ impl<'i> NativePlanesSink<'i> {
                     target.bit_depth,
                     target.signed,
                     &mut self.scratch,
-                )
-                .ok()?;
-                start = start.checked_add(stride)?;
+                )?;
+                start = start
+                    .checked_add(stride)
+                    .ok_or(DecodingError::CodeBlockDecodeFailure)?;
             }
         }
-        Some(())
+        Ok(())
     }
 }
 
@@ -334,6 +369,56 @@ mod tests {
         encode, native_bytes_per_sample, CpuDecodeParallelism, DecodeErrorClass, DecodeSettings,
         EncodeOptions,
     };
+
+    #[test]
+    fn native_sink_allocation_error_stops_at_the_first_handover() {
+        let bytes = encode(
+            &vec![7; 96 * 80 * 3],
+            96,
+            80,
+            3,
+            8,
+            false,
+            &EncodeOptions {
+                num_decomposition_levels: 2,
+                tile_size: Some((32, 32)),
+                ..EncodeOptions::default()
+            },
+        )
+        .expect("tiled image");
+        let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+        let mut sink = NativePlanesSink::new(&image, (96, 80));
+        sink.fail_allocation = true;
+        let result = image.decode_native_rows(
+            (0, 0, 96, 80),
+            &mut context(CpuDecodeParallelism::Serial),
+            &mut sink,
+        );
+        assert_eq!(sink.writes, 1);
+        assert_eq!(result, Err(crate::DecodingError::SinkStopped.into()));
+        assert_eq!(
+            sink.finish_decode(result).err(),
+            Some(crate::DecodingError::HostAllocationFailed.into())
+        );
+
+        // A later decoder failure must not hide the sink's original error.
+        let mut sink = NativePlanesSink::new(&image, (96, 80));
+        sink.fail_allocation = true;
+        crate::ComponentRowSink::write_rows(&mut sink, 0, 0, &[]);
+        assert_eq!(
+            sink.finish_decode(Err(crate::DecodingError::CodeBlockDecodeFailure.into()))
+                .err(),
+            Some(crate::DecodingError::HostAllocationFailed.into())
+        );
+
+        // Without a sink error, preserve a decoder failure before any output.
+        let sink = NativePlanesSink::new(&image, (96, 80));
+        assert_eq!(
+            sink.finish_decode(Err(crate::DecodingError::SinkStopped.into()))
+                .err(),
+            Some(crate::DecodingError::SinkStopped.into())
+        );
+    }
 
     /// Samples around every bound and rounding tie of each precision, plus
     /// values far outside it and NaN.
@@ -449,7 +534,7 @@ mod tests {
             assert_eq!(sink.allocations, 1, "{parallelism:?}");
             let writes = sink.writes;
             assert!(writes >= 9, "{parallelism:?}: {writes} rectangles");
-            let streamed = sink.finish().expect("planes");
+            let streamed = sink.finish_decode(Ok(())).expect("planes");
             let expected = image
                 .decode_native_region_components_with_context(roi, &mut context(parallelism))
                 .expect("planes route");

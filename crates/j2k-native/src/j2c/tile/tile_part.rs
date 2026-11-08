@@ -56,6 +56,7 @@ pub(super) fn parse_tile_part<'a>(
 
     apply_tile_part_defaults(reader.clone(), tile, &mut allocations)?;
     loop {
+        reader.check_cancelled()?;
         let Some(marker) = reader.peek_marker() else {
             return if main_header.strict {
                 err!(MarkerError::Invalid)
@@ -216,7 +217,7 @@ pub(super) fn parse_tile_part<'a>(
     headers.extend(
         ppt_headers
             .iter()
-            .map(|ppt_header| BitReader::new(ppt_header.data)),
+            .map(|ppt_header| reader.child(ppt_header.data)),
     );
     packet_length_markers.sort_by_key(|marker| marker.sequence_idx);
     let use_main_header_packet_lengths = !packet_lengths_present
@@ -248,7 +249,7 @@ pub(super) fn parse_tile_part<'a>(
     headers.extend(
         ppm_packets
             .iter()
-            .map(|ppm_packet| BitReader::new(ppm_packet.data)),
+            .map(|ppm_packet| reader.child(ppm_packet.data)),
     );
     *ppm_packet_idx = ppm_packet_end;
 
@@ -264,13 +265,13 @@ pub(super) fn parse_tile_part<'a>(
 
     let tile_part = if headers.is_empty() {
         TilePart::Merged(MergedTilePart {
-            data: BitReader::new(data),
+            data: reader.child(data),
             packet_lengths,
         })
     } else {
         TilePart::Separated(SeparatedTilePart {
             headers,
-            body: BitReader::new(data),
+            body: reader.child(data),
             packet_lengths,
         })
     };
@@ -298,6 +299,7 @@ fn apply_tile_part_defaults(
     allocations: &mut TileMetadataTransaction<'_>,
 ) -> Result<()> {
     loop {
+        reader.check_cancelled()?;
         match reader.peek_marker() {
             Some(markers::COD) => {
                 reader.read_marker()?;

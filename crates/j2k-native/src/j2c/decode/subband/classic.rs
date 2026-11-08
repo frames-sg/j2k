@@ -199,6 +199,7 @@ pub(super) fn decode_sub_band_classic_blocks(
 
         let output_stride = sub_band.storage_rect.width() as usize;
         for job in batch_jobs {
+            tile_ctx.operation_control.check()?;
             tile_ctx.debug_counters.decoded_code_blocks += 1;
             let base_idx =
                 (job.output_y * sub_band.storage_rect.width()) as usize + job.output_x as usize;
@@ -310,6 +311,7 @@ pub(super) fn decode_sub_band_classic_blocks(
                 tile_ctx.debug_counters.skipped_code_blocks += 1;
                 continue;
             }
+            tile_ctx.operation_control.check()?;
             tile_ctx.debug_counters.decoded_code_blocks += 1;
             let placement = stored_placement(code_block, sub_band);
             let output_stride = sub_band.storage_rect.width() as usize;
@@ -372,6 +374,7 @@ fn decode_sub_band_classic_blocks_i64(
                 tile_ctx.debug_counters.skipped_code_blocks += 1;
                 continue;
             }
+            tile_ctx.operation_control.check()?;
             tile_ctx.debug_counters.decoded_code_blocks += 1;
             let placement = stored_placement(code_block, sub_band);
             let output_stride = sub_band.storage_rect.width() as usize;

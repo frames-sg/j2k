@@ -14,9 +14,9 @@ use super::super::tile_parts::{
     consume_packetized_tile_into_tile_parts, encoded_tile_parts_retained_bytes,
 };
 use super::super::{
-    packetize_i64_component_resolution_packets, CpuOnlyJ2kEncodeStageAccelerator, EncodeOptions,
-    EncodeTypedComponentPlane, I64PacketizeRequest, NativeEncodePipelineError,
-    NativeEncodePipelineResult, NativeEncodeSession,
+    encode_component_resolution_packets, CpuOnlyJ2kEncodeStageAccelerator, EncodeOptions,
+    EncodeTypedComponentPlane, NativeEncodePipelineError, NativeEncodePipelineResult,
+    NativeEncodeSession, TilePacketRequest,
 };
 use super::geometry::min_sampled_tile_component_decomposition_levels;
 use super::plan::{
@@ -233,20 +233,27 @@ fn encode_one_tile(
     drop(tile_plane_data);
 
     let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
-    let packetized_tile = packetize_i64_component_resolution_packets(
+    let packet_owners = (execution, child_options, &*tile_bodies);
+    let packetized_tile = encode_component_resolution_packets(
         component_resolution_packets,
-        I64PacketizeRequest {
-            tile_origin: (x0, y0),
-            width: actual_width,
-            height: actual_height,
+        TilePacketRequest {
+            tile_bounds: super::super::tile_grid::tile_bounds(
+                actual_width,
+                actual_height,
+                (x0, y0),
+            )?,
             num_levels,
             params: &execution.params,
             options: child_options,
             retained_base_bytes: iteration_base,
+            phase_owners: &packet_owners,
+            retained_what: "retained typed-i64 packetization owners",
+            profile_enabled: false,
             session: request.session,
             accelerator: &mut accelerator,
         },
-    )?;
+    )?
+    .packetized_tile;
     let new_parts = consume_packetized_tile_into_tile_parts(
         tile_index,
         packetized_tile,

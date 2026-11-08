@@ -8,10 +8,10 @@ use super::super::allocation::{checked_add_bytes, checked_element_bytes, host_al
 use super::super::multitile::{encode_options_retained_bytes, quantization_retained_bytes};
 use super::super::single_tile::ownership::encode_params_retained_bytes;
 use super::super::{
-    maximum_decomposition_levels, packetize_i64_component_resolution_packets,
+    encode_component_resolution_packets, maximum_decomposition_levels,
     write_single_tile_packetized_codestream_for_session, CpuOnlyJ2kEncodeStageAccelerator,
-    EncodeOptions, EncodeTypedComponentPlane, I64PacketizeRequest, NativeEncodePipelineResult,
-    NativeEncodeSession,
+    EncodeOptions, EncodeTypedComponentPlane, NativeEncodePipelineResult, NativeEncodeSession,
+    TilePacketRequest,
 };
 use super::plan::{
     try_high_bit_options, try_precinct_exponents, TypedI64ExecutionRequest, TypedI64HighBitPlan,
@@ -94,20 +94,23 @@ pub(super) fn encode_typed_component_planes_53_i64_single(
 
     let tile_part_packet_limit = high_bit_options.tile_part_packet_limit;
     let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
-    let packetized_tile = packetize_i64_component_resolution_packets(
+    let packet_owners = (&execution, &high_bit_options);
+    let packetized_tile = encode_component_resolution_packets(
         component_resolution_packets,
-        I64PacketizeRequest {
-            tile_origin: (0, 0),
-            width,
-            height,
+        TilePacketRequest {
+            tile_bounds: super::super::tile_grid::tile_bounds(width, height, (0, 0))?,
             num_levels,
             params: &execution.params,
             options: &high_bit_options,
             retained_base_bytes: planning_bytes,
+            phase_owners: &packet_owners,
+            retained_what: "retained typed-i64 packetization owners",
+            profile_enabled: false,
             session,
             accelerator: &mut accelerator,
         },
-    )?;
+    )?
+    .packetized_tile;
     drop(high_bit_options);
     let (mut params, quant_params) = execution.into_final_parts();
     params.required_ht_magnitude_bound = packetized_tile.required_ht_magnitude_bound;

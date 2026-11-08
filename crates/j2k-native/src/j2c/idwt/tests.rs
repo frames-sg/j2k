@@ -325,6 +325,104 @@ fn reversible_i64_filters_preserve_even_and_odd_goldens() {
 }
 
 #[test]
+fn integer_roi_windows_match_full_lifting_at_absolute_origins() {
+    use super::super::build::{Decomposition, SubBand, SubBandType};
+    use super::super::decode::DecompositionStorage;
+    use super::interleave_i64::apply_level_i64;
+    use super::model::IDWTInputI64;
+
+    for (x0, y0) in [(0, 0), (1, 0), (0, 1), (3, 5)] {
+        for (width, height) in [(1, 1), (1, 9), (9, 1), (17, 19), (65, 67)] {
+            let rect = IntRect::from_xywh(x0, y0, width, height);
+            let band_rects = super::banded::packed_band_rects(rect);
+            let bands: [Vec<i64>; 4] = core::array::from_fn(|index| {
+                let band = band_rects[index];
+                pseudo_random_integers(
+                    (band.width() * band.height()) as usize,
+                    index as u64 + 1,
+                    1 << 40,
+                )
+            });
+            let mut storage = DecompositionStorage::default();
+            for index in 0..3 {
+                let start = storage.coefficients_i64.len();
+                storage
+                    .coefficients_i64
+                    .extend_from_slice(&bands[index + 1]);
+                storage.sub_bands.push(SubBand {
+                    sub_band_type: [
+                        SubBandType::HighLow,
+                        SubBandType::LowHigh,
+                        SubBandType::HighHigh,
+                    ][index],
+                    rect: band_rects[index + 1],
+                    storage_rect: band_rects[index + 1],
+                    precincts: 0..0,
+                    coefficients: start..storage.coefficients_i64.len(),
+                });
+            }
+            let decomposition = Decomposition {
+                rect,
+                sub_bands: [0, 1, 2],
+            };
+            let mut full = Vec::new();
+            apply_level_i64(
+                IDWTInputI64::from_output(&bands[0], band_rects[0]),
+                &mut full,
+                &decomposition,
+                &storage,
+            )
+            .expect("existing exact full-level reconstruction");
+            assert!(full.iter().any(|sample| sample.unsigned_abs() > 1 << 24));
+
+            let sources = core::array::from_fn::<_, 4, _>(|index| {
+                CoefficientSource::new(&bands[index], band_rects[index], band_rects[index].width())
+            });
+            for crop in [
+                rect,
+                IntRect::from_xywh(x0, y0, 1, 1),
+                IntRect::from_xywh(rect.x1 - 1, rect.y1 - 1, 1, 1),
+                IntRect::from_xywh(
+                    x0 + width / 3,
+                    y0 + height / 3,
+                    width.div_ceil(3),
+                    height.div_ceil(3),
+                ),
+            ] {
+                let window = crop.expanded_within(16, rect);
+                let mut reconstructed = vec![0_i64; (window.width() * window.height()) as usize];
+                interleave_samples_roi(
+                    sources[0],
+                    sources[1],
+                    sources[2],
+                    sources[3],
+                    &mut reconstructed,
+                    window,
+                );
+                filter_horizontal_i64(&mut reconstructed, window);
+                filter_vertical_i64(&mut reconstructed, window);
+                let crop_samples = |samples: &[i64], source: IntRect| {
+                    samples
+                        .chunks_exact(source.width() as usize)
+                        .skip((crop.y0 - source.y0) as usize)
+                        .take(crop.height() as usize)
+                        .flat_map(|row| {
+                            let start = (crop.x0 - source.x0) as usize;
+                            row[start..start + crop.width() as usize].iter().copied()
+                        })
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(
+                    crop_samples(&reconstructed, window),
+                    crop_samples(&full, rect),
+                    "rect={rect:?}, crop={crop:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn irreversible_97_nonzero_origin_roi_matches_scalar_reference_within_eight_ulps() {
     const EXPECTED: [u32; 12] = [
         1_098_644_014,

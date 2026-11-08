@@ -37,33 +37,6 @@ impl NativeOutputBudget {
         })
     }
 
-    pub(super) fn for_raw_bitmap_with_decoded_channels(
-        retained_image_bytes: usize,
-        components: &[ComponentData],
-        component_owner_capacity: usize,
-        bitmap: &RawBitmap,
-    ) -> Result<Self> {
-        let mut budget =
-            Self::for_decoded_channels(retained_image_bytes, components, component_owner_capacity)?;
-        budget.include_raw_bitmap(bitmap)?;
-        Ok(budget)
-    }
-
-    pub(super) fn for_native_components_with_decoded_channels(
-        retained_image_bytes: usize,
-        decoded_channels: &[ComponentData],
-        component_owner_capacity: usize,
-        components: &DecodedNativeComponents,
-    ) -> Result<Self> {
-        let mut budget = Self::for_decoded_channels(
-            retained_image_bytes,
-            decoded_channels,
-            component_owner_capacity,
-        )?;
-        budget.include_native_components(components)?;
-        Ok(budget)
-    }
-
     /// The allowance of a decode's returned native component planes. They
     /// are its output, like a caller's buffer, so the decode budget, which
     /// holds the working memory they are packed from, does not charge them;
@@ -104,22 +77,6 @@ impl NativeOutputBudget {
         Ok(live_budget.allocation.bytes())
     }
 
-    pub(super) fn validate_raw_crop(
-        retained_image_bytes: usize,
-        components: &[ComponentData],
-        component_owner_capacity: usize,
-        full: &RawBitmap,
-        cropped_capacity: usize,
-    ) -> Result<()> {
-        let mut budget = Self::for_raw_bitmap_with_decoded_channels(
-            retained_image_bytes,
-            components,
-            component_owner_capacity,
-            full,
-        )?;
-        budget.include_elements::<u8>(cropped_capacity)
-    }
-
     pub(in crate::image) fn validate_raw_pack(
         retained_image_bytes: usize,
         components: &[ComponentData],
@@ -142,27 +99,6 @@ impl NativeOutputBudget {
             Self::for_decoded_channels(retained_image_bytes, components, component_owner_capacity)?;
         budget.include_elements::<u8>(packed.data.capacity())?;
         budget.include_color_space(&packed.color_space)
-    }
-
-    pub(super) fn validate_component_crop(
-        retained_image_bytes: usize,
-        decoded_channels: &[ComponentData],
-        component_owner_capacity: usize,
-        full: &DecodedNativeComponents,
-        cropped_planes: &[NativeComponentPlane],
-        cropped_plane_owner_capacity: usize,
-    ) -> Result<()> {
-        let mut budget = Self::for_native_components_with_decoded_channels(
-            retained_image_bytes,
-            decoded_channels,
-            component_owner_capacity,
-            full,
-        )?;
-        budget.include_elements::<NativeComponentPlane>(cropped_plane_owner_capacity)?;
-        for plane in cropped_planes {
-            budget.include_elements::<u8>(plane.data.capacity())?;
-        }
-        Ok(())
     }
 
     pub(in crate::image) fn include_elements<T>(&mut self, count: usize) -> Result<()> {
@@ -239,19 +175,6 @@ impl NativeOutputBudget {
             self.include_elements::<u8>(profile.capacity())?;
         }
         Ok(())
-    }
-
-    fn include_raw_bitmap(&mut self, bitmap: &RawBitmap) -> Result<()> {
-        self.include_elements::<u8>(bitmap.data.capacity())?;
-        self.include_bit_capacity(bitmap.component_signed.capacity())
-    }
-
-    fn include_native_components(&mut self, components: &DecodedNativeComponents) -> Result<()> {
-        self.include_elements::<NativeComponentPlane>(components.planes.capacity())?;
-        for plane in &components.planes {
-            self.include_elements::<u8>(plane.data.capacity())?;
-        }
-        self.include_color_space(&components.color_space)
     }
 }
 

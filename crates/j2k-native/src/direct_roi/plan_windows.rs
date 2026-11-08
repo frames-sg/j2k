@@ -18,7 +18,6 @@ use alloc::vec::Vec;
 use super::{
     idwt_required_input_window_for_rects, idwt_required_output_margin, J2kRequiredBandRegion,
 };
-use crate::j2c::codestream::allocation::try_copy_vec;
 use crate::{
     try_reserve_decode_elements, DecodingError, HtOwnedCodeBlockBatchJob, HtOwnedSubBandPlan,
     J2kDirectBandId, J2kDirectColorPlan, J2kDirectGrayscalePlan, J2kDirectGrayscaleStep,
@@ -27,6 +26,60 @@ use crate::{
     J2kReferencedTilePlan, Result,
 };
 
+/// All new plan owners and temporary windows share the caller's native budget.
+/// Growth charges both old and replacement capacities until allocation returns.
+struct WindowBudget {
+    live: usize,
+}
+
+impl WindowBudget {
+    fn new(retained: usize, source_plan: usize) -> Result<Self> {
+        let live = retained.saturating_add(source_plan);
+        Self::check(live)?;
+        Ok(Self { live })
+    }
+
+    fn check(requested: usize) -> Result<()> {
+        if requested > crate::DEFAULT_MAX_DECODE_BYTES {
+            return Err(crate::DecodeError::AllocationTooLarge {
+                what: "prepared CPU window copies",
+                requested,
+                cap: crate::DEFAULT_MAX_DECODE_BYTES,
+            });
+        }
+        Ok(())
+    }
+
+    fn reserve<T>(&mut self, values: &mut Vec<T>, target: usize) -> Result<()> {
+        if target <= values.capacity() {
+            return Ok(());
+        }
+        let old = values.capacity().saturating_mul(core::mem::size_of::<T>());
+        Self::check(
+            self.live
+                .saturating_add(target.saturating_mul(core::mem::size_of::<T>())),
+        )?;
+        try_reserve_decode_elements(values, target)?;
+        let actual = values.capacity().saturating_mul(core::mem::size_of::<T>());
+        Self::check(self.live.saturating_add(actual))?;
+        self.live = self.live - old + actual;
+        Ok(())
+    }
+
+    fn copy<T: Copy>(&mut self, source: &[T]) -> Result<Vec<T>> {
+        let mut result = Vec::new();
+        self.reserve(&mut result, source.len())?;
+        result.extend_from_slice(source);
+        Ok(result)
+    }
+
+    fn release<T>(&mut self, values: Vec<T>) {
+        let bytes = values.capacity() * core::mem::size_of::<T>();
+        drop(values);
+        self.live -= bytes;
+    }
+}
+
 /// Copy `plan` with every band sized to what its stores read, or return
 /// `None` when that would not pay off: always for full and reduced decodes,
 /// and for regions covering most of a small image.
@@ -34,7 +87,17 @@ use crate::{
 pub fn window_referenced_htj2k_plan_to_stores(
     plan: &J2kReferencedHtj2kPlan,
 ) -> Result<Option<J2kReferencedHtj2kPlan>> {
-    let Some(tiles) = windowed_tiles(plan.tiles())? else {
+    window_referenced_htj2k_plan_to_stores_with_retained_baseline(plan, 0)
+}
+
+/// Window a plan while accounting for other owners kept alive by the caller.
+#[doc(hidden)]
+pub fn window_referenced_htj2k_plan_to_stores_with_retained_baseline(
+    plan: &J2kReferencedHtj2kPlan,
+    retained_baseline: usize,
+) -> Result<Option<J2kReferencedHtj2kPlan>> {
+    let mut budget = WindowBudget::new(retained_baseline, plan.retained_allocation_bytes()?)?;
+    let Some(tiles) = windowed_tiles(plan.tiles(), &mut budget)? else {
         return Ok(None);
     };
     Ok(Some(match plan {
@@ -47,7 +110,7 @@ pub fn window_referenced_htj2k_plan_to_stores(
             tiles,
             *full_dimensions,
             *output_rect,
-            try_copy_vec(payloads)?,
+            budget.copy(payloads)?,
         ),
         J2kReferencedHtj2kPlan::Color {
             full_dimensions,
@@ -58,7 +121,7 @@ pub fn window_referenced_htj2k_plan_to_stores(
             tiles,
             *full_dimensions,
             *output_rect,
-            try_copy_vec(payloads)?,
+            budget.copy(payloads)?,
         ),
         J2kReferencedHtj2kPlan::Rgba {
             full_dimensions,
@@ -69,7 +132,7 @@ pub fn window_referenced_htj2k_plan_to_stores(
             tiles,
             *full_dimensions,
             *output_rect,
-            try_copy_vec(payloads)?,
+            budget.copy(payloads)?,
         ),
     }))
 }
@@ -81,7 +144,17 @@ pub fn window_referenced_htj2k_plan_to_stores(
 pub fn window_referenced_classic_plan_to_stores(
     plan: &J2kReferencedClassicPlan,
 ) -> Result<Option<J2kReferencedClassicPlan>> {
-    let Some(tiles) = windowed_tiles(plan.tiles())? else {
+    window_referenced_classic_plan_to_stores_with_retained_baseline(plan, 0)
+}
+
+/// Window a plan while accounting for other owners kept alive by the caller.
+#[doc(hidden)]
+pub fn window_referenced_classic_plan_to_stores_with_retained_baseline(
+    plan: &J2kReferencedClassicPlan,
+    retained_baseline: usize,
+) -> Result<Option<J2kReferencedClassicPlan>> {
+    let mut budget = WindowBudget::new(retained_baseline, plan.retained_allocation_bytes()?)?;
+    let Some(tiles) = windowed_tiles(plan.tiles(), &mut budget)? else {
         return Ok(None);
     };
     Ok(Some(match plan {
@@ -95,8 +168,8 @@ pub fn window_referenced_classic_plan_to_stores(
             tiles,
             *full_dimensions,
             *output_rect,
-            try_copy_vec(payloads)?,
-            try_copy_vec(ranges)?,
+            budget.copy(payloads)?,
+            budget.copy(ranges)?,
         ),
         J2kReferencedClassicPlan::Color {
             full_dimensions,
@@ -108,8 +181,8 @@ pub fn window_referenced_classic_plan_to_stores(
             tiles,
             *full_dimensions,
             *output_rect,
-            try_copy_vec(payloads)?,
-            try_copy_vec(ranges)?,
+            budget.copy(payloads)?,
+            budget.copy(ranges)?,
         ),
         J2kReferencedClassicPlan::Rgba {
             full_dimensions,
@@ -121,8 +194,8 @@ pub fn window_referenced_classic_plan_to_stores(
             tiles,
             *full_dimensions,
             *output_rect,
-            try_copy_vec(payloads)?,
-            try_copy_vec(ranges)?,
+            budget.copy(payloads)?,
+            budget.copy(ranges)?,
         ),
     }))
 }
@@ -134,14 +207,19 @@ pub fn window_referenced_classic_plan_to_stores(
 const ALWAYS_WINDOW_COEFFICIENTS: u64 = 1 << 24;
 
 /// Windowed copies of `tiles`, or `None` when windowing would not pay off.
-fn windowed_tiles(tiles: &[J2kReferencedTilePlan]) -> Result<Option<Vec<J2kReferencedTilePlan>>> {
+fn windowed_tiles(
+    tiles: &[J2kReferencedTilePlan],
+    budget: &mut WindowBudget,
+) -> Result<Option<Vec<J2kReferencedTilePlan>>> {
     let mut tile_windows = Vec::new();
-    try_reserve_decode_elements(&mut tile_windows, tiles.len())?;
+    budget.reserve(&mut tile_windows, tiles.len())?;
     let (mut whole_area, mut windowed_area) = (0_u64, 0_u64);
     for tile in tiles {
-        let windows = component_plans(tile)
-            .map(band_windows)
-            .collect::<Result<Vec<_>>>()?;
+        let mut windows = Vec::new();
+        budget.reserve(&mut windows, component_plans(tile).count())?;
+        for component in component_plans(tile) {
+            windows.push(band_windows(component, budget)?);
+        }
         for (plan, windows) in component_plans(tile).zip(&windows) {
             let whole = plan_area(plan);
             whole_area = whole_area.saturating_add(whole);
@@ -157,9 +235,9 @@ fn windowed_tiles(tiles: &[J2kReferencedTilePlan]) -> Result<Option<Vec<J2kRefer
     }
 
     let mut windowed = Vec::new();
-    try_reserve_decode_elements(&mut windowed, tiles.len())?;
+    budget.reserve(&mut windowed, tiles.len())?;
     for (tile, windows) in tiles.iter().zip(&tile_windows) {
-        let mut geometry = tile_geometry(tile)?;
+        let mut geometry = tile_geometry(tile, budget)?;
         for (plan, windows) in geometry_component_plans(&mut geometry).zip(windows) {
             if let Some(windows) = windows {
                 apply_band_windows(plan, windows)?;
@@ -170,12 +248,19 @@ fn windowed_tiles(tiles: &[J2kReferencedTilePlan]) -> Result<Option<Vec<J2kRefer
             tile.decoded_rect(),
             tile.destination_rect(),
             tile.payload_records(),
-            try_copy_vec(tile.classic_payloads())?,
-            try_copy_vec(tile.classic_ranges())?,
+            budget.copy(tile.classic_payloads())?,
+            budget.copy(tile.classic_ranges())?,
             tile.wavelet_transform(),
             geometry,
         ));
     }
+    for windows in &mut tile_windows {
+        for bands in windows.iter_mut().filter_map(Option::take) {
+            budget.release(bands.rects);
+        }
+        budget.release(core::mem::take(windows));
+    }
+    budget.release(tile_windows);
     Ok(Some(windowed))
 }
 
@@ -195,13 +280,18 @@ fn component_plans(tile: &J2kReferencedTilePlan) -> impl Iterator<Item = &J2kDir
     plans.iter()
 }
 
-fn tile_geometry(tile: &J2kReferencedTilePlan) -> Result<J2kReferencedTileGeometry> {
+fn tile_geometry(
+    tile: &J2kReferencedTilePlan,
+    budget: &mut WindowBudget,
+) -> Result<J2kReferencedTileGeometry> {
     if let Some(plan) = tile.grayscale_geometry() {
-        return Ok(J2kReferencedTileGeometry::Grayscale(try_copy_plan(plan)?));
+        return Ok(J2kReferencedTileGeometry::Grayscale(try_copy_plan(
+            plan, budget,
+        )?));
     }
     if let Some(plan) = tile.color_geometry() {
         return Ok(J2kReferencedTileGeometry::Color(J2kDirectColorPlan {
-            component_plans: try_copy_plans(&plan.component_plans)?,
+            component_plans: try_copy_plans(&plan.component_plans, budget)?,
             ..*plan
         }));
     }
@@ -209,34 +299,40 @@ fn tile_geometry(tile: &J2kReferencedTilePlan) -> Result<J2kReferencedTileGeomet
         .rgba_geometry()
         .ok_or(DecodingError::CodeBlockDecodeFailure)?;
     Ok(J2kReferencedTileGeometry::Rgba(J2kDirectRgbaPlan {
-        component_plans: try_copy_plans(&plan.component_plans)?,
+        component_plans: try_copy_plans(&plan.component_plans, budget)?,
         ..*plan
     }))
 }
 
-fn try_copy_plans(plans: &[J2kDirectGrayscalePlan]) -> Result<Vec<J2kDirectGrayscalePlan>> {
+fn try_copy_plans(
+    plans: &[J2kDirectGrayscalePlan],
+    budget: &mut WindowBudget,
+) -> Result<Vec<J2kDirectGrayscalePlan>> {
     let mut copies = Vec::new();
-    try_reserve_decode_elements(&mut copies, plans.len())?;
+    budget.reserve(&mut copies, plans.len())?;
     for plan in plans {
-        copies.push(try_copy_plan(plan)?);
+        copies.push(try_copy_plan(plan, budget)?);
     }
     Ok(copies)
 }
 
 /// Copy one component plan through fallible allocations, as the plan
 /// builders allocate it.
-fn try_copy_plan(plan: &J2kDirectGrayscalePlan) -> Result<J2kDirectGrayscalePlan> {
+fn try_copy_plan(
+    plan: &J2kDirectGrayscalePlan,
+    budget: &mut WindowBudget,
+) -> Result<J2kDirectGrayscalePlan> {
     let mut steps = Vec::new();
-    try_reserve_decode_elements(&mut steps, plan.steps.len())?;
+    budget.reserve(&mut steps, plan.steps.len())?;
     for step in &plan.steps {
         steps.push(match step {
             J2kDirectGrayscaleStep::ClassicSubBand(sub_band) => {
                 let mut jobs = Vec::new();
-                try_reserve_decode_elements(&mut jobs, sub_band.jobs.len())?;
+                budget.reserve(&mut jobs, sub_band.jobs.len())?;
                 for job in &sub_band.jobs {
                     jobs.push(J2kOwnedCodeBlockBatchJob {
-                        data: try_copy_vec(&job.data)?,
-                        segments: try_copy_vec(&job.segments)?,
+                        data: budget.copy(&job.data)?,
+                        segments: budget.copy(&job.segments)?,
                         ..*job
                     });
                 }
@@ -244,10 +340,10 @@ fn try_copy_plan(plan: &J2kDirectGrayscalePlan) -> Result<J2kDirectGrayscalePlan
             }
             J2kDirectGrayscaleStep::HtSubBand(sub_band) => {
                 let mut jobs = Vec::new();
-                try_reserve_decode_elements(&mut jobs, sub_band.jobs.len())?;
+                budget.reserve(&mut jobs, sub_band.jobs.len())?;
                 for job in &sub_band.jobs {
                     jobs.push(HtOwnedCodeBlockBatchJob {
-                        data: try_copy_vec(&job.data)?,
+                        data: budget.copy(&job.data)?,
                         ..*job
                     });
                 }
@@ -294,7 +390,10 @@ impl BandWindows {
 
 /// Windows for one component plan, computed from its whole-level geometry,
 /// or `None` when every store reads its whole input band.
-fn band_windows(plan: &J2kDirectGrayscalePlan) -> Result<Option<BandWindows>> {
+fn band_windows(
+    plan: &J2kDirectGrayscalePlan,
+    budget: &mut WindowBudget,
+) -> Result<Option<BandWindows>> {
     let mut required: Vec<(J2kDirectBandId, J2kRequiredBandRegion)> = Vec::new();
     let mut whole = true;
     for step in &plan.steps {
@@ -302,11 +401,12 @@ fn band_windows(plan: &J2kDirectGrayscalePlan) -> Result<Option<BandWindows>> {
             let copy = store_copy_region(store)?;
             whole &= copy.is_some_and(|copy| copy.to_rect() == store.input_rect);
             if let Some(copy) = copy {
-                add_required(&mut required, store.input_band_id, copy)?;
+                add_required(&mut required, store.input_band_id, copy, budget)?;
             }
         }
     }
     if whole {
+        budget.release(required);
         return Ok(None);
     }
 
@@ -324,10 +424,10 @@ fn band_windows(plan: &J2kDirectGrayscalePlan) -> Result<Option<BandWindows>> {
             })
             .filter(|window| window.width() > 0 && window.height() > 0);
         let Some(window) = window else {
-            push_rect(&mut rects, idwt.output_band_id, empty_at(idwt.rect))?;
+            push_rect(&mut rects, idwt.output_band_id, empty_at(idwt.rect), budget)?;
             continue;
         };
-        push_rect(&mut rects, idwt.output_band_id, window.to_rect())?;
+        push_rect(&mut rects, idwt.output_band_id, window.to_rect(), budget)?;
         for (band_id, band_rect, low_x, low_y) in [
             (idwt.ll_band_id, idwt.ll, true, true),
             (idwt.hl_band_id, idwt.hl, false, true),
@@ -337,7 +437,7 @@ fn band_windows(plan: &J2kDirectGrayscalePlan) -> Result<Option<BandWindows>> {
             let input =
                 idwt_required_input_window_for_rects(window, idwt.rect, band_rect, low_x, low_y);
             if input.width() > 0 && input.height() > 0 {
-                add_required(&mut required, band_id, input)?;
+                add_required(&mut required, band_id, input, budget)?;
             }
         }
     }
@@ -376,14 +476,16 @@ fn band_windows(plan: &J2kDirectGrayscalePlan) -> Result<Option<BandWindows>> {
             entry.2 = union(entry.2, jobs);
         } else {
             let len = sub_bands.len() + 1;
-            try_reserve_decode_elements(&mut sub_bands, len)?;
+            budget.reserve(&mut sub_bands, len)?;
             sub_bands.push((band_id, rect, union(lookup(&required, band_id), jobs)));
         }
     }
-    for (band_id, rect, stored) in sub_bands {
+    for &(band_id, rect, stored) in &sub_bands {
         let stored = stored.map_or_else(|| empty_at(rect), |stored| clip(stored.to_rect(), rect));
-        push_rect(&mut rects, band_id, stored)?;
+        push_rect(&mut rects, band_id, stored, budget)?;
     }
+    budget.release(sub_bands);
+    budget.release(required);
     Ok(Some(BandWindows { rects }))
 }
 
@@ -504,12 +606,13 @@ fn add_required(
     required: &mut Vec<(J2kDirectBandId, J2kRequiredBandRegion)>,
     band_id: J2kDirectBandId,
     region: J2kRequiredBandRegion,
+    budget: &mut WindowBudget,
 ) -> Result<()> {
     if let Some(entry) = required.iter_mut().find(|(id, _)| *id == band_id) {
         entry.1 = entry.1.union(region);
     } else {
         let len = required.len() + 1;
-        try_reserve_decode_elements(required, len)?;
+        budget.reserve(required, len)?;
         required.push((band_id, region));
     }
     Ok(())
@@ -519,9 +622,10 @@ fn push_rect(
     rects: &mut Vec<(J2kDirectBandId, J2kRect)>,
     band_id: J2kDirectBandId,
     rect: J2kRect,
+    budget: &mut WindowBudget,
 ) -> Result<()> {
     let len = rects.len() + 1;
-    try_reserve_decode_elements(rects, len)?;
+    budget.reserve(rects, len)?;
     rects.push((band_id, rect));
     Ok(())
 }

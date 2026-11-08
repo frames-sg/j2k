@@ -144,7 +144,7 @@ pub(crate) struct DecompositionStorage<'a> {
     /// Whether every component's IDWT rings are live at once, because the
     /// tile streams its rows to a sink, finishing them in the rings.
     pub(crate) lockstep_lines: bool,
-    /// The f32 samples of IDWT workspace the ROI plan charged for this tile.
+    /// IDWT workspace elements charged for this tile, in its active sample type.
     pub(crate) roi_idwt_charge_elements: usize,
     /// While a band is decoded, the first row of its code-blocks: Tier-1
     /// decodes only the code-blocks that start there, into the rows the
@@ -238,6 +238,8 @@ fn include_capacity<T>(bytes: &mut usize, capacity: usize) -> Result<()> {
     reason = "the rounding, deferred-MCT and row-streamed IDWT switches are independent, and test builds add switches that pin the per-sub-band HT, whole-code-block storage, separate last-level IDWT and staged RGB8 pack paths"
 )]
 pub(crate) struct TileDecodeContext {
+    /// Current operation policy; it is cleared before retaining a workspace.
+    pub(crate) operation_control: crate::DecodeOperationControl,
     /// A reusable buffer for the IDWT output.
     pub(crate) idwt_output: IDWTOutput,
     /// A scratch buffer used during IDWT.
@@ -369,6 +371,9 @@ pub(crate) struct TileDecodeContext {
     /// Whether this decode hands the region's samples to a row sink as the
     /// streamed IDWT finishes them, with no component planes.
     pub(crate) stream_rows: bool,
+    /// Whether decoded output undoes premultiplied alpha in source code
+    /// values before colour conversion, scoped around one decode.
+    pub(crate) straight_alpha_output: bool,
     /// Samples, over all components, handed to the row sink this decode.
     pub(crate) streamed_samples: usize,
     /// Debug counters for tests and ROI instrumentation.
@@ -377,6 +382,7 @@ pub(crate) struct TileDecodeContext {
 
 impl TileDecodeContext {
     pub(super) fn release_all_allocations(&mut self) {
+        let operation_control = core::mem::take(&mut self.operation_control);
         let output_region = self.output_region;
         let round_irreversible_output = self.round_irreversible_output;
         let defer_mct = self.defer_mct;
@@ -402,6 +408,7 @@ impl TileDecodeContext {
         #[cfg(test)]
         let planes_budget = self.planes_budget;
         *self = Self::default();
+        self.operation_control = operation_control;
         self.output_region = output_region;
         self.round_irreversible_output = round_irreversible_output;
         self.defer_mct = defer_mct;

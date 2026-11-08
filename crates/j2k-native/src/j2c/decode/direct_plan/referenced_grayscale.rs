@@ -21,7 +21,7 @@ pub(crate) fn build_referenced_htj2k_grayscale_plan<'a>(
 ) -> Result<J2kReferencedHtj2kPlan> {
     ctx.release_reusable_allocations();
     let result = (|| {
-        let mut reader = BitReader::new(data);
+        let mut reader = BitReader::with_cancellation(data, ctx.operation_control().cancellation());
         let parsed_tiles = tile::parse(&mut reader, header, retained_image_bytes)?;
         let output_region = referenced_output_region(header, ctx);
         let output_rect = output_region_rect(output_region);
@@ -109,7 +109,7 @@ pub(crate) fn build_referenced_classic_grayscale_plan<'a>(
 ) -> Result<J2kReferencedClassicPlan> {
     ctx.release_reusable_allocations();
     let result = (|| {
-        let mut reader = BitReader::new(data);
+        let mut reader = BitReader::with_cancellation(data, ctx.operation_control().cancellation());
         let parsed_tiles = tile::parse(&mut reader, header, retained_image_bytes)?;
         let output_region = referenced_output_region(header, ctx);
         let output_rect = output_region_rect(output_region);

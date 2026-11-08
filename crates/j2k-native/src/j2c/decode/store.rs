@@ -671,6 +671,10 @@ pub(super) fn store_rows(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one integer store retains full/region geometry, shifts, and existing subsampling without duplicating copy kernels"
+)]
 fn store_i64<'a>(
     tile: &'a Tile<'a>,
     header: &Header<'_>,
@@ -678,12 +682,6 @@ fn store_i64<'a>(
     component_info: &ComponentInfo,
     component_idx: usize,
 ) -> Result<()> {
-    if tile_ctx.output_region.is_some() {
-        bail!(DecodingError::UnsupportedFeature(
-            "25-38 bit region decode requires exact integer region IDWT support"
-        ));
-    }
-
     let channel_data = &mut tile_ctx.channel_data[component_idx];
     let idwt_output = &mut tile_ctx.idwt_output;
     let output = channel_data
@@ -711,33 +709,51 @@ fn store_i64<'a>(
     let (image_x_offset, image_y_offset) = output_grid_offset(&header.size_data);
 
     if scale_x == 1 && scale_y == 1 {
-        let source_x = image_x_offset.saturating_sub(idwt_output.rect.x0);
-        let source_y = image_y_offset.saturating_sub(idwt_output.rect.y0);
-        let copy_width = resolution_tile
+        let plane_rect = tile_ctx.output_region.map_or_else(
+            || {
+                IntRect::from_xywh(
+                    image_x_offset,
+                    image_y_offset,
+                    header.size_data.image_width(),
+                    header.size_data.image_height(),
+                )
+            },
+            |region| output_region_rect(&header.size_data, region),
+        );
+        let copy = resolution_tile
             .rect
-            .width()
-            .min(idwt_output.rect.width().saturating_sub(source_x));
-        let copy_height = resolution_tile
-            .rect
-            .height()
-            .min(idwt_output.rect.height().saturating_sub(source_y));
-        let output_x = resolution_tile.rect.x0.saturating_sub(image_x_offset);
-        let output_y = resolution_tile.rect.y0.saturating_sub(image_y_offset);
+            .intersect(idwt_output.rect)
+            .intersect(plane_rect);
+        if copy.is_empty() {
+            return Ok(());
+        }
+        let source_x = copy.x0 - idwt_output.rect.x0;
+        let source_y = copy.y0 - idwt_output.rect.y0;
+        let output_x = copy.x0 - plane_rect.x0;
+        let output_y = copy.y0 - plane_rect.y0;
         let input_width = idwt_output.rect.width() as usize;
-        let image_width = header.size_data.image_width() as usize;
-        let copy_width = copy_width as usize;
+        let output_width = plane_rect.width() as usize;
+        let copy_width = copy.width() as usize;
 
-        for row in 0..copy_height as usize {
+        for row in 0..copy.height() as usize {
+            tile_ctx.operation_control.check()?;
             let src_start = (source_y as usize + row)
                 .checked_mul(input_width)
                 .and_then(|offset| offset.checked_add(source_x as usize))
                 .ok_or(DecodingError::CodeBlockDecodeFailure)?;
             let dst_start = (output_y as usize + row)
-                .checked_mul(image_width)
+                .checked_mul(output_width)
                 .and_then(|offset| offset.checked_add(output_x as usize))
                 .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-            let src = &idwt_output.coefficients_i64[src_start..src_start + copy_width];
-            let dst = &mut output[dst_start..dst_start + copy_width];
+            let src = idwt_output
+                .coefficients_i64
+                .get(src_start..)
+                .and_then(|row| row.get(..copy_width))
+                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+            let dst = output
+                .get_mut(dst_start..)
+                .and_then(|row| row.get_mut(..copy_width))
+                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
             if sign_shift == 0 {
                 dst.copy_from_slice(src);
             } else {
@@ -754,9 +770,19 @@ fn store_i64<'a>(
         let y_shrink_factor = header.size_data.y_shrink_factor;
 
         let (x_offset, y_offset) = output_grid_offset(&header.size_data);
+        // Replicate each sample over its output-grid footprint, keeping only
+        // the requested region's samples in its region-sized plane, as the
+        // float region store does.
+        let (plane_x, plane_y, plane_width, plane_height) = tile_ctx
+            .output_region
+            .map_or((0, 0, image_width, image_height), |region| {
+                (region.x, region.y, region.width, region.height)
+            });
+        let (plane_right, plane_bottom) = (plane_x + plane_width, plane_y + plane_height);
 
         let sample_rect = resolution_tile.rect.intersect(idwt_output.rect);
         for y in sample_rect.y0..sample_rect.y1 {
+            tile_ctx.operation_control.check()?;
             let relative_y = (y - idwt_output.rect.y0) as usize;
             let reference_grid_y = (u32::from(scale_y) * y) / y_shrink_factor;
 
@@ -764,8 +790,10 @@ fn store_i64<'a>(
                 let relative_x = (x - idwt_output.rect.x0) as usize;
                 let reference_grid_x = (u32::from(scale_x) * x) / x_shrink_factor;
 
-                let sample = idwt_output.coefficients_i64
-                    [relative_y * idwt_output.rect.width() as usize + relative_x]
+                let sample = idwt_output
+                    .coefficients_i64
+                    .get(relative_y * idwt_output.rect.width() as usize + relative_x)
+                    .ok_or(DecodingError::CodeBlockDecodeFailure)?
                     + sign_shift;
 
                 for x_position in u32::max(reference_grid_x, x_offset)
@@ -774,16 +802,25 @@ fn store_i64<'a>(
                         image_width + x_offset,
                     )
                 {
+                    let image_x = x_position - x_offset;
+                    if image_x < plane_x || image_x >= plane_right {
+                        continue;
+                    }
                     for y_position in u32::max(reference_grid_y, y_offset)
                         ..u32::min(
                             reference_grid_y + u32::from(scale_y),
                             image_height + y_offset,
                         )
                     {
-                        let pos = (y_position - y_offset) as usize * image_width as usize
-                            + (x_position - x_offset) as usize;
-
-                        output[pos] = sample;
+                        let image_y = y_position - y_offset;
+                        if image_y < plane_y || image_y >= plane_bottom {
+                            continue;
+                        }
+                        let pos = (image_y - plane_y) as usize * plane_width as usize
+                            + (image_x - plane_x) as usize;
+                        *output
+                            .get_mut(pos)
+                            .ok_or(DecodingError::CodeBlockDecodeFailure)? = sample;
                     }
                 }
             }
@@ -1042,6 +1079,44 @@ fn store_region<'a>(
 #[cfg(test)]
 mod tests {
     use super::{SampleShift, WaveletTransform};
+
+    #[test]
+    fn integer_store_uses_region_stride_and_reference_grid_offsets() {
+        use super::{ComponentData, IntRect, OutputRegion, TileDecodeContext};
+        let bytes =
+            include_bytes!("../../../fixtures/image_origin/openjpeg_71x53_origin5x3_53.j2k");
+        let mut image = crate::Image::new(bytes, &crate::DecodeSettings::default()).unwrap();
+        // Reuse the fixture's odd-origin geometry with an exact sample domain;
+        // this test supplies IDWT output directly and never decodes its packets.
+        image.header.component_infos[0].size_info.precision = 29;
+        let tiles = crate::j2c::tile::parse(
+            &mut crate::reader::BitReader::new(image.codestream),
+            &image.header,
+            0,
+        )
+        .unwrap();
+        let tile = &tiles[0];
+        assert!(!tile.mct);
+        let component = &tile.component_infos[0];
+        let mut context = TileDecodeContext {
+            output_region: Some(OutputRegion::from_tuple((2, 4, 3, 2))),
+            ..TileDecodeContext::default()
+        };
+        context.channel_data.push(ComponentData {
+            container: crate::math::SimdBuffer::empty(),
+            integer_container: Some(vec![-1; 6]),
+            bit_depth: 29,
+            signed: false,
+        });
+        context.idwt_output.rect = IntRect::from_xywh(6, 6, 5, 4);
+        context.idwt_output.coefficients_i64 = (0..20).map(|value| (1_i64 << 26) + value).collect();
+        super::store_i64(tile, &image.header, &mut context, component, 0).unwrap();
+        let level_shift = (1_i64 << 28) + (1_i64 << 26);
+        assert_eq!(
+            context.channel_data[0].integer_container.as_ref().unwrap(),
+            &[6, 7, 8, 11, 12, 13].map(|value| value + level_shift)
+        );
+    }
 
     #[test]
     fn irreversible_level_shift_rounds_in_the_centered_domain() {

@@ -6,16 +6,16 @@
 # README.md records the tool versions used and each file's SHA-256.
 #
 # Requires: OpenJPEG `opj_compress` and `opj_decompress`, and OpenJPH
-# `ojph_compress`, on PATH.
+# `ojph_compress`, and `trash` for scratch cleanup, on PATH.
 #   Debian/Ubuntu: apt-get install libopenjp2-tools libopenjph-tools
 #   macOS:         brew install openjpeg openjph
 set -euo pipefail
 
 cd "$(dirname "$0")"
 
-for tool in opj_compress opj_decompress ojph_compress; do
+for tool in opj_compress opj_decompress ojph_compress trash; do
     if ! command -v "$tool" >/dev/null; then
-        echo "error: $tool not on PATH; install OpenJPEG and OpenJPH" >&2
+        echo "error: required tool $tool is not on PATH" >&2
         exit 1
     fi
 done
@@ -92,3 +92,50 @@ done
 rm source_23x17.ppm
 opj_compress -h 2>&1 | grep -m1 -i 'openjp2\|version' || true
 sha256sum ./*.j2k ./*.j2c ./*.rgb 2>/dev/null || shasum -a 256 ./*.j2k ./*.j2c ./*.rgb
+
+# 29-bit grayscale exercises the exact integer inverse transform at an odd
+# image origin. Keep the source formula in the test and the reduced OpenJPEG
+# samples here; these fixtures do not need a second stored source image.
+python3 - <<'PY'
+from pathlib import Path
+import subprocess
+import tempfile
+
+width, height = 23, 17
+samples = [
+    (1 << 28) + x * 17_003 + y * 9_001 + x * y * 997
+    for y in range(height) for x in range(width)
+]
+work = Path(tempfile.mkdtemp(prefix="j2k-gray29-origin-"))
+try:
+    source = work / "source.pgx"
+    source.write_bytes(
+        f"PG ML + 29 {width} {height}\n".encode()
+        + b"".join(value.to_bytes(4, "big") for value in samples)
+    )
+    codestream = "gray29_23x17_origin_3_3.j2k"
+    subprocess.run([
+        "opj_compress", "-i", str(source), "-o", codestream,
+        "-d", "3,3", "-n", "3",
+    ], check=True)
+    for reduction, dimensions in enumerate([(23, 17), (11, 8), (6, 4)]):
+        output = work / f"decoded_r{reduction}.pgx"
+        subprocess.run([
+            "opj_decompress", "-i", codestream, "-o", str(output),
+            "-r", str(reduction), "-quiet",
+        ], check=True)
+        header, body = output.with_name(f"decoded_r{reduction}_0.pgx").read_bytes().split(b"\n", 1)
+        fields = header.split()
+        assert fields[:4] == [b"PG", b"ML", b"+", b"29"]
+        assert tuple(map(int, fields[4:])) == dimensions
+        decoded = [int.from_bytes(body[i:i + 4], "big") for i in range(0, len(body), 4)]
+        assert len(decoded) == dimensions[0] * dimensions[1]
+        if reduction == 0:
+            assert decoded == samples
+        else:
+            Path(f"gray29_reduced_r{reduction}.raw").write_bytes(
+                b"".join(value.to_bytes(4, "little") for value in decoded)
+            )
+finally:
+    subprocess.run(["trash", str(work)], check=True)
+PY

@@ -315,6 +315,7 @@ pub(super) struct RowOutput<'o, 't> {
     tile: &'o Tile<'t>,
     sink: &'o mut dyn ComponentRowSink,
     round_irreversible_output: bool,
+    control: crate::DecodeOperationControl,
     /// Each component's bit depth and signedness.
     depths: [(u8, bool); 4],
     /// The rows, in the coordinates of `region`, that the tile reconstructs.
@@ -351,6 +352,7 @@ impl<'o, 't> RowOutput<'o, 't> {
             tile,
             sink,
             round_irreversible_output: tile_ctx.round_irreversible_output,
+            control: tile_ctx.operation_control.clone(),
             depths,
             copy,
             region,
@@ -405,6 +407,7 @@ impl<'o, 't> RowOutput<'o, 't> {
         let (tile, round_irreversible_output, mct) =
             (self.tile, self.round_irreversible_output, self.mct);
         for y in copy.y0..copy.y1 {
+            self.control.check()?;
             // Every component's row final before any takes the arrival that
             // frees it, so the bands decode in the order rows handed over
             // final read them, and a failing tile meets the same band first.
@@ -896,6 +899,12 @@ pub(super) fn whole_window_tile_error<'a>(
     storage: &mut DecompositionStorage<'a>,
     banded_error: DecodeError,
 ) -> DecodeError {
+    if matches!(
+        banded_error,
+        DecodeError::Decoding(DecodingError::Cancelled | DecodingError::SinkStopped)
+    ) {
+        return banded_error;
+    }
     #[cfg(all(test, feature = "parallel"))]
     {
         let counters = &mut tile_ctx.debug_counters;
@@ -1065,6 +1074,12 @@ pub(super) fn whole_window_error<'a>(
     storage: &mut DecompositionStorage<'a>,
     banded_error: DecodeError,
 ) -> DecodeError {
+    if matches!(
+        banded_error,
+        DecodeError::Decoding(DecodingError::Cancelled | DecodingError::SinkStopped)
+    ) {
+        return banded_error;
+    }
     if build::lay_out_whole_region_coefficients(storage).is_err() {
         return banded_error;
     }

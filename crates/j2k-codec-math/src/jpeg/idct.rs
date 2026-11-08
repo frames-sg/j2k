@@ -4,8 +4,9 @@
 //! bit-exact with libjpeg-turbo's `jidctint.c` (8x8) and `jidctred.c` (4x4,
 //! 2x2, 1x1). The CPU scalar decoder, the CPU transcode oracle, and the
 //! CUDA-Oxide decode and transcode kernels call it; the CPU SIMD kernels take
-//! their constants and [`ISLOW_GAINS`] from it; the Metal shaders include a
-//! constant fragment that `j2k-jpeg-metal`'s build script renders from it.
+//! their constants and [`ISLOW_GAINS`](crate::jpeg::idct::ISLOW_GAINS) from
+//! it; the Metal shaders include a constant fragment that `j2k-jpeg-metal`'s
+//! build script renders from it.
 //!
 //! Inputs are dequantized coefficients in natural (row-major) order. The 8-bit
 //! transforms compute in `i32` with wrapping arithmetic, so intermediate

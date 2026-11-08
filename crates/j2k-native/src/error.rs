@@ -77,6 +77,8 @@ pub enum DecodeErrorClass {
         /// The cap the request exceeded, when known.
         cap: Option<usize>,
     },
+    /// The operation's cooperative cancellation flag was set.
+    Cancelled,
 }
 
 /// Error returned by native JPEG 2000 and HTJ2K encode operations.
@@ -143,6 +145,7 @@ impl DecodeError {
     #[must_use]
     pub const fn classify(&self) -> DecodeErrorClass {
         match *self {
+            Self::Decoding(DecodingError::Cancelled) => DecodeErrorClass::Cancelled,
             Self::Format(FormatError::TooShort { need, have }) => {
                 DecodeErrorClass::InputTooShort { need, have }
             }
@@ -311,6 +314,8 @@ pub enum DecodingError {
     /// `ComponentRowSink::stopped`), so the rest of the region was not
     /// decoded. The sink holds the reason.
     SinkStopped,
+    /// The current decode operation was cooperatively cancelled.
+    Cancelled,
 }
 
 /// Errors related to color space and component handling.
@@ -530,6 +535,7 @@ impl fmt::Display for DecodingError {
                 )
             }
             Self::SinkStopped => write!(f, "the row sink stopped the region decode"),
+            Self::Cancelled => write!(f, "decode operation was cancelled"),
         }
     }
 }

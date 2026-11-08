@@ -157,7 +157,7 @@ fn build_direct_grayscale_plan_inner<'a>(
     ht_payloads: Option<&mut Vec<HtCodeBlockPayloadRanges>>,
     classic_payloads: Option<&mut ClassicPayloadCollector<'_>>,
 ) -> Result<J2kDirectGrayscalePlan> {
-    let mut reader = BitReader::new(data);
+    let mut reader = BitReader::with_cancellation(data, ctx.operation_control().cancellation());
     let tiles = tile::parse(&mut reader, header, retained_image_bytes)?;
 
     if tiles.len() != 1 {

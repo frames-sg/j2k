@@ -107,7 +107,10 @@ mod region_tests;
 
 mod plan_windows;
 pub use plan_windows::{
-    window_referenced_classic_plan_to_stores, window_referenced_htj2k_plan_to_stores,
+    window_referenced_classic_plan_to_stores,
+    window_referenced_classic_plan_to_stores_with_retained_baseline,
+    window_referenced_htj2k_plan_to_stores,
+    window_referenced_htj2k_plan_to_stores_with_retained_baseline,
 };
 
 /// Required input windows for one direct-plan IDWT step.

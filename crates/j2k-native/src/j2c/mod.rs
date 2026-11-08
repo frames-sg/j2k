@@ -60,7 +60,7 @@ pub(crate) use decode::{
     build_referenced_htj2k_grayscale_plan, build_referenced_htj2k_rgba_plan,
     decode_preparsed_with_capacity_retry as decode_preparsed,
     decode_rows_with_capacity_retry as decode_rows, full_decode_planes_floor, image_streams_rows,
-    prepare_region_tiles,
+    prepare_region_tiles, region_rows_plan,
 };
 pub use decode::{CpuDecodeParallelism, DecoderContext, DecoderWorkspace, DecoderWorkspaceStats};
 pub use recode::Reversible53CoefficientImage;
@@ -68,7 +68,9 @@ pub(crate) use roi::output_grid_offset;
 #[cfg(feature = "std")]
 pub(crate) use segment::directory::PacketDirectory;
 pub(crate) use segment::MAX_BITPLANE_COUNT;
-pub(crate) use tile::{tile_rect, ParsedTiles};
+pub(crate) use tile::{
+    max_reduction_levels_with_control, tile_rect, validate_region_bitmap_layout, ParsedTiles,
+};
 
 pub(crate) struct ParsedCodestream<'a> {
     pub(crate) header: Header<'a>,
@@ -99,13 +101,31 @@ pub(crate) fn parse_with_retained_baseline<'a>(
     retained_baseline_bytes: usize,
     exact_reduction_levels: Option<u8>,
 ) -> Result<Image<'a>> {
+    parse_with_control(
+        stream,
+        settings,
+        retained_baseline_bytes,
+        exact_reduction_levels,
+        &crate::DecodeOperationControl::default(),
+    )
+}
+
+pub(crate) fn parse_with_control<'a>(
+    stream: &'a [u8],
+    settings: &DecodeSettings,
+    retained_baseline_bytes: usize,
+    exact_reduction_levels: Option<u8>,
+    control: &crate::DecodeOperationControl,
+) -> Result<Image<'a>> {
+    control.check()?;
     let mut strict_settings = *settings;
     strict_settings.strict = true;
-    let parsed_codestream = parse_raw_with_retained_baseline(
+    let parsed_codestream = parse_raw_with_control(
         stream,
         &strict_settings,
         retained_baseline_bytes,
         exact_reduction_levels,
+        control,
     )?;
     let header = &parsed_codestream.header;
     // Raw codestreams do not carry JP2 channel definitions. Keep the
@@ -165,26 +185,64 @@ pub(crate) fn parse_raw<'a>(
     parse_raw_with_retained_baseline(stream, settings, 0, None)
 }
 
+#[cfg(test)]
 pub(crate) fn parse_raw_with_retained_baseline<'a>(
     stream: &'a [u8],
     settings: &DecodeSettings,
     retained_baseline_bytes: usize,
     exact_reduction_levels: Option<u8>,
 ) -> Result<ParsedCodestream<'a>> {
-    let mut reader = BitReader::new(stream);
+    parse_raw_with_control(
+        stream,
+        settings,
+        retained_baseline_bytes,
+        exact_reduction_levels,
+        &crate::DecodeOperationControl::default(),
+    )
+}
+
+pub(crate) fn parse_raw_with_control<'a>(
+    stream: &'a [u8],
+    settings: &DecodeSettings,
+    retained_baseline_bytes: usize,
+    exact_reduction_levels: Option<u8>,
+    control: &crate::DecodeOperationControl,
+) -> Result<ParsedCodestream<'a>> {
+    control.check()?;
+    let mut reader = BitReader::with_cancellation(stream, control.cancellation());
 
     let marker = reader.read_marker()?;
     if marker != markers::SOC {
         bail!(MarkerError::Expected("SOC"));
     }
 
-    let header = codestream::read_header(
-        &mut reader,
-        settings,
-        retained_baseline_bytes,
-        exact_reduction_levels,
-    )?;
+    let mut header = codestream::read_header(&mut reader, settings, retained_baseline_bytes, None)?;
     let code_stream_data = reader.tail().ok_or(FormatError::MissingCodestream)?;
+
+    if let Some(levels) = exact_reduction_levels {
+        // Tile coding overrides can lengthen the main defaults. Inspect their
+        // effective ladders only when the main header cannot admit the request.
+        let main_maximum = header
+            .component_infos
+            .iter()
+            .map(codestream::ComponentInfo::num_decomposition_levels)
+            .min()
+            .ok_or(crate::ValidationError::InvalidComponentMetadata)?;
+        if levels > main_maximum {
+            let retained = retained_baseline_bytes
+                .checked_add(codestream::allocation::retained_header_bytes(&header)?)
+                .ok_or(crate::ValidationError::ImageTooLarge)?;
+            if levels
+                > max_reduction_levels_with_control(code_stream_data, &header, retained, control)?
+            {
+                bail!(crate::DecodingError::UnsupportedFeature(
+                    "requested reduction exceeds the codestream resolution ladder",
+                ));
+            }
+        }
+        codestream::apply_reduction_to_size(&mut header.size_data, levels)?;
+        header.skipped_resolution_levels = levels;
+    }
 
     Ok(ParsedCodestream {
         header,

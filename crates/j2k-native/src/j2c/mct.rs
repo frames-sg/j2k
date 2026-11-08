@@ -43,26 +43,6 @@ pub(crate) fn apply_inverse(
         bail!(ColorError::Mct);
     }
 
-    let addends = [
-        unsigned_level_shift(&component_infos[0]),
-        unsigned_level_shift(&component_infos[1]),
-        unsigned_level_shift(&component_infos[2]),
-    ];
-    let output = DeferredMct::new(transform, addends, round_irreversible_output);
-
-    if tile_ctx.defer_mct
-        && backend.is_none()
-        && s0.integer_container.is_none()
-        && s1.integer_container.is_none()
-        && s2.integer_container.is_none()
-    {
-        tile_ctx.deferred_mct = Some(DeferredMct {
-            last_level: tile_ctx.fused_last_level.take(),
-            ..output
-        });
-        return Ok(());
-    }
-
     if s0.integer_container.is_some()
         || s1.integer_container.is_some()
         || s2.integer_container.is_some()
@@ -78,6 +58,21 @@ pub(crate) fn apply_inverse(
                 unsigned_level_shift_i64(&component_infos[2]),
             ],
         );
+    }
+
+    let addends = [
+        unsigned_level_shift(&component_infos[0]),
+        unsigned_level_shift(&component_infos[1]),
+        unsigned_level_shift(&component_infos[2]),
+    ];
+    let output = DeferredMct::new(transform, addends, round_irreversible_output);
+
+    if tile_ctx.defer_mct && backend.is_none() {
+        tile_ctx.deferred_mct = Some(DeferredMct {
+            last_level: tile_ctx.fused_last_level.take(),
+            ..output
+        });
+        return Ok(());
     }
 
     let handled = if output.rounding.is_some() {

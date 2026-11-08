@@ -204,7 +204,84 @@ impl Default for DecoderContext<'_> {
     }
 }
 
+struct OperationControlScope<'context, 'data> {
+    context: &'context mut DecoderContext<'data>,
+    previous: crate::DecodeOperationControl,
+}
+
+impl Drop for OperationControlScope<'_, '_> {
+    fn drop(&mut self) {
+        self.context.tile_decode_context.operation_control = core::mem::take(&mut self.previous);
+    }
+}
+
+struct StraightAlphaScope<'context, 'data> {
+    context: &'context mut DecoderContext<'data>,
+    previous: bool,
+}
+
+impl Drop for StraightAlphaScope<'_, '_> {
+    fn drop(&mut self) {
+        self.context.tile_decode_context.straight_alpha_output = self.previous;
+    }
+}
+
 impl DecoderContext<'_> {
+    /// Run one decode whose output undoes premultiplied alpha.
+    ///
+    /// When [`crate::Image::unassociates_alpha_in_source_values`] holds, the
+    /// decode divides colour by opacity in source code values, after palette
+    /// mapping and channel reordering and before native colour conversion or
+    /// quantization, and its output alpha is straight. Other images decode
+    /// unchanged. The previous setting is restored, even during unwinding.
+    #[doc(hidden)]
+    pub fn with_straight_alpha_output<T>(&mut self, operation: impl FnOnce(&mut Self) -> T) -> T {
+        let previous =
+            core::mem::replace(&mut self.tile_decode_context.straight_alpha_output, true);
+        let scope = StraightAlphaScope {
+            context: self,
+            previous,
+        };
+        operation(&mut *scope.context)
+    }
+
+    /// Current operation policy, independent of reusable allocation owners.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn operation_control(&self) -> &crate::DecodeOperationControl {
+        &self.tile_decode_context.operation_control
+    }
+
+    /// Run one operation with scoped policy, restoring it even during unwinding.
+    #[doc(hidden)]
+    pub fn with_operation_control<T>(
+        &mut self,
+        control: crate::DecodeOperationControl,
+        operation: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let previous = core::mem::replace(&mut self.tile_decode_context.operation_control, control);
+        let scope = OperationControlScope {
+            context: self,
+            previous,
+        };
+        operation(&mut *scope.context)
+    }
+
+    /// Discard scratch while preserving the current operation's policy and pool choice.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn fresh_for_operation(&self) -> Self {
+        Self {
+            cpu_decode_parallelism: self.cpu_decode_parallelism,
+            line_region_idwt: self.line_region_idwt,
+            tile_decode_context: TileDecodeContext {
+                shared_pool: self.tile_decode_context.shared_pool,
+                operation_control: self.operation_control().clone(),
+                ..TileDecodeContext::default()
+            },
+            ..Self::default()
+        }
+    }
     /// Create a borrowing decoder context from a lifetime-free reusable workspace.
     #[must_use]
     pub fn from_workspace(mut workspace: DecoderWorkspace) -> Self {
@@ -225,6 +302,8 @@ impl DecoderContext<'_> {
     pub fn into_workspace(mut self) -> DecoderWorkspace {
         self.storage.release_all_allocations();
         self.tile_decode_context.shared_pool = false;
+        self.tile_decode_context.operation_control = crate::DecodeOperationControl::default();
+        self.tile_decode_context.straight_alpha_output = false;
         DecoderWorkspace {
             tile_decode_context: self.tile_decode_context,
             cpu_decode_parallelism: self.cpu_decode_parallelism,
@@ -281,6 +360,15 @@ impl DecoderContext<'_> {
 
     #[cfg(feature = "std")]
     pub(crate) fn retained_decode_bytes(&self) -> crate::Result<usize> {
+        self.retained_allocation_bytes()
+    }
+
+    /// Allocator capacities still owned by this decoder context.
+    ///
+    /// # Errors
+    /// Returns an error if retained allocation arithmetic exceeds the decode cap.
+    #[doc(hidden)]
+    pub fn retained_allocation_bytes(&self) -> crate::Result<usize> {
         let channels = self.tile_decode_context.retained_channel_bytes()?;
         let scratch = self.tile_decode_context.retained_scratch_bytes()?;
         self.storage
@@ -290,7 +378,9 @@ impl DecoderContext<'_> {
             .ok_or(crate::ValidationError::ImageTooLarge.into())
     }
 
-    pub(crate) fn release_reusable_allocations(&mut self) {
+    /// Release optional retained allocations while preserving policy and reuse counters.
+    #[doc(hidden)]
+    pub fn release_reusable_allocations(&mut self) {
         self.tile_decode_context.release_all_allocations();
         self.storage.release_all_allocations();
     }

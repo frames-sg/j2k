@@ -41,6 +41,13 @@ type Rgb8DecodedImage<'ctx, 'boxes> = (
     usize,
 );
 
+/// Post-decode owners carried into output conversion. Borrowed plane handoff
+/// adds the current packet cache itself so that it can evict that optional owner.
+struct DecodeOutputBytes {
+    total: usize,
+    without_packet_cache: usize,
+}
+
 /// Settings to apply during decoding.
 #[derive(Debug, Copy, Clone)]
 pub struct DecodeSettings {
@@ -219,7 +226,9 @@ impl<'a> Image<'a> {
             j2c::prepare_region_tiles(
                 self.codestream,
                 &self.header,
-                self.retained_planning_bytes()?,
+                decoder_context
+                    .operation_control()
+                    .baseline(self.retained_planning_bytes()?)?,
                 decoder_context,
             )
         })?;
@@ -345,15 +354,44 @@ impl<'a> Image<'a> {
         settings: &DecodeSettings,
         reduction_levels: u8,
     ) -> Result<Self> {
+        Self::new_with_reduction_and_retained_baseline(data, settings, reduction_levels, 0)
+    }
+
+    /// Parse an exact reduction beside already-live codec-owned allocations.
+    ///
+    /// The retained baseline is enforced during parsing and later native
+    /// planning, as in [`Self::new_with_retained_baseline`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Self::new_with_reduction`], or a resource-limit
+    /// error when the parsed image and retained baseline exceed the native cap.
+    #[doc(hidden)]
+    pub fn new_with_reduction_and_retained_baseline(
+        data: &'a [u8],
+        settings: &DecodeSettings,
+        reduction_levels: u8,
+        retained_baseline_bytes: usize,
+    ) -> Result<Self> {
         if settings.target_resolution.is_some() {
             return err!(DecodingError::UnsupportedFeature(
                 "exact reduction cannot be combined with a target-resolution hint",
             ));
         }
         if data.starts_with(JP2_MAGIC) {
-            jp2::parse(data, *settings, Some(reduction_levels))
+            jp2::parse_with_retained_baseline(
+                data,
+                *settings,
+                retained_baseline_bytes,
+                Some(reduction_levels),
+            )
         } else if data.starts_with(CODESTREAM_MAGIC) {
-            j2c::parse(data, settings, Some(reduction_levels))
+            j2c::parse_with_retained_baseline(
+                data,
+                settings,
+                retained_baseline_bytes,
+                Some(reduction_levels),
+            )
         } else {
             err!(FormatError::InvalidSignature)
         }
@@ -391,6 +429,158 @@ impl<'a> Image<'a> {
     #[must_use]
     pub fn has_alpha(&self) -> bool {
         self.has_alpha
+    }
+
+    /// Whether the single, whole-image alpha channel premultiplies the colour
+    /// samples. Inferred alpha without channel definitions is straight.
+    ///
+    /// # Errors
+    /// Rejects channel associations that one packed alpha cannot represent.
+    #[doc(hidden)]
+    pub fn alpha_is_premultiplied(&self) -> Result<bool> {
+        use jp2::cdef::{ChannelAssociation, ChannelType};
+
+        if !self.has_alpha {
+            return Ok(false);
+        }
+        let Some(definitions) = self.boxes.channel_definition.as_ref() else {
+            return Ok(false);
+        };
+        let unsupported = || {
+            DecodingError::UnsupportedFeature(
+                "packed output requires one whole-image alpha channel",
+            )
+        };
+        let mut alpha = None;
+        for definition in &definitions.channel_definitions {
+            match (definition.channel_type, definition.association) {
+                (ChannelType::Colour, ChannelAssociation::Colour(_)) => {}
+                (
+                    kind @ (ChannelType::Opacity | ChannelType::PremultipliedOpacity),
+                    ChannelAssociation::WholeImage,
+                ) if alpha.is_none() => alpha = Some(kind),
+                _ => return Err(unsupported().into()),
+            }
+        }
+        alpha
+            .map(|kind| kind == ChannelType::PremultipliedOpacity)
+            .ok_or_else(|| unsupported().into())
+    }
+
+    /// Whether a [`DecoderContext::with_straight_alpha_output`] decode undoes
+    /// this image's premultiplied alpha in source code values: the alpha is
+    /// premultiplied, every component is unsigned and shares one sampling
+    /// grid, and no CIE Lab conversion is selected. sYCC chroma is unassociated
+    /// about its mid-range zero before conversion to RGB.
+    ///
+    /// # Errors
+    /// Rejects channel associations that one packed alpha cannot represent.
+    #[doc(hidden)]
+    pub fn unassociates_alpha_in_source_values(&self) -> Result<bool> {
+        if !self.alpha_is_premultiplied()? {
+            return Ok(false);
+        }
+        let Some(first) = self.header.component_infos.first() else {
+            return Ok(false);
+        };
+        let sampling = (
+            first.size_info.horizontal_resolution,
+            first.size_info.vertical_resolution,
+        );
+        Ok(!self.selects_cielab_conversion()
+            && self.header.component_infos.iter().all(|component| {
+                !component.size_info.signed
+                    && (
+                        component.size_info.horizontal_resolution,
+                        component.size_info.vertical_resolution,
+                    ) == sampling
+            }))
+    }
+
+    fn selects_cielab_conversion(&self) -> bool {
+        matches!(
+            self.boxes
+                .primary_color_specification()
+                .map(|spec| &spec.color_space),
+            Some(jp2::colr::ColorSpace::Enumerated(
+                EnumeratedColorspace::CieLab(_)
+            ))
+        )
+    }
+
+    /// Return the source alpha convention accepted by eight-bit sRGB output.
+    ///
+    /// Premultiplied alpha that [`Self::unassociates_alpha_in_source_values`]
+    /// covers is accepted at any precision, with or without sYCC conversion.
+    /// Otherwise unassociation happens after quantization, so it is accepted
+    /// only for eight-bit mapped samples without native colour conversion.
+    ///
+    /// # Errors
+    /// Rejects unrepresentable packed alpha, premultiplied CIE Lab input, and
+    /// premultiplied inputs that would lose colour by quantizing before
+    /// unassociation.
+    #[doc(hidden)]
+    pub fn srgb8_alpha_is_premultiplied(&self) -> Result<bool> {
+        let premultiplied = self.alpha_is_premultiplied()?;
+        if !premultiplied || self.unassociates_alpha_in_source_values()? {
+            return Ok(premultiplied);
+        }
+        if self.selects_cielab_conversion() {
+            return Err(DecodingError::UnsupportedFeature(
+                "sRGB normalization of premultiplied CIE Lab input is unsupported",
+            )
+            .into());
+        }
+        if matches!(
+            self.boxes
+                .primary_color_specification()
+                .map(|spec| &spec.color_space),
+            Some(jp2::colr::ColorSpace::Enumerated(
+                EnumeratedColorspace::Sycc
+            ))
+        ) {
+            return Err(DecodingError::UnsupportedFeature(
+                "sRGB normalization of premultiplied subsampled sYCC input is unsupported",
+            )
+            .into());
+        }
+        let component_needs_scaling = || {
+            self.header
+                .component_infos
+                .iter()
+                .any(|component| component.size_info.precision != 8)
+        };
+        let needs_scaling = if self.settings.resolve_palette_indices {
+            self.boxes
+                .palette
+                .as_ref()
+                .zip(self.boxes.component_mapping.as_ref())
+                .map_or_else(component_needs_scaling, |(palette, mapping)| {
+                    mapping
+                        .entries
+                        .iter()
+                        .any(|entry| match entry.mapping_type {
+                            jp2::cmap::ComponentMappingType::Direct => self
+                                .header
+                                .component_infos
+                                .get(usize::from(entry.component_index))
+                                .is_some_and(|component| component.size_info.precision != 8),
+                            jp2::cmap::ComponentMappingType::Palette { column } => palette
+                                .columns
+                                .get(usize::from(column))
+                                .is_some_and(|column| column.bit_depth != 8),
+                            jp2::cmap::ComponentMappingType::Unknown { .. } => false,
+                        })
+                })
+        } else {
+            component_needs_scaling()
+        };
+        if needs_scaling {
+            return Err(DecodingError::UnsupportedFeature(
+                    "sRGB normalization of premultiplied subsampled samples requires eight-bit mapped colour and alpha"
+                ).into());
+        }
+        Ok(premultiplied)
     }
 
     /// The color space of the image.
@@ -681,7 +871,7 @@ impl<'a> Image<'a> {
                 decoded_components,
                 component_owner_capacity,
                 (self.width(), self.height()),
-                retained_baseline_bytes,
+                retained_baseline_bytes.total,
                 parallel,
             )
         })
@@ -724,9 +914,6 @@ impl<'a> Image<'a> {
     ) -> Result<DecodedNativeComponents> {
         self.with_packet_cache_retry(|| {
             validate_roi((self.width(), self.height()), roi)?;
-            if self.requires_exact_integer_decode() {
-                return self.decode_native_region_components_via_full_decode(roi, decoder_context);
-            }
             let (_x, _y, width, height) = roi;
             let retained_image_bytes = self.retained_header_metadata_bytes()?;
             let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
@@ -741,7 +928,7 @@ impl<'a> Image<'a> {
                 decoded_components,
                 component_owner_capacity,
                 (width, height),
-                retained_image_bytes,
+                retained_image_bytes.total,
                 parallel,
             )
         })
@@ -779,9 +966,28 @@ impl<'a> Image<'a> {
         roi: (u32, u32, u32, u32),
         decoder_context: &mut DecoderContext<'a>,
     ) -> Result<Bitmap> {
+        self.decode_region_with_context_and_retained_capacity(roi, decoder_context, 0)
+    }
+
+    /// Decode a bounded eight-bit region beside already-live external owners.
+    /// `retained_capacity` counts their allocator capacities, excluding this
+    /// image and the context, which the decoder accounts itself.
+    ///
+    /// # Errors
+    /// Returns a region, aggregate memory, decode or packing error.
+    #[doc(hidden)]
+    pub fn decode_region_with_context_and_retained_capacity(
+        &self,
+        roi: (u32, u32, u32, u32),
+        decoder_context: &mut DecoderContext<'a>,
+        retained_capacity: usize,
+    ) -> Result<Bitmap> {
         validate_roi((self.width(), self.height()), roi)?;
         self.with_packet_cache_retry(|| {
-            let retained_image_bytes = self.retained_header_metadata_bytes()?;
+            let retained_image_bytes = allocation::combine_retained_bytes(
+                retained_capacity,
+                self.retained_header_metadata_bytes()?,
+            )?;
             let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
             let (mct, first_ll, scratch, mut decoded_image, retained_image_bytes) =
                 self.decode_image_for_rgb8(decoder_context, Some(roi), retained_image_bytes)?;
@@ -925,7 +1131,10 @@ impl<'a> Image<'a> {
         ht_decoder: Option<&mut dyn HtCodeBlockDecoder>,
         round_irreversible_output: bool,
         retained_baseline_bytes: usize,
-    ) -> Result<(DecodedImage<'ctx, '_>, usize)> {
+    ) -> Result<(DecodedImage<'ctx, '_>, DecodeOutputBytes)> {
+        let source_bytes = decoder_context
+            .operation_control()
+            .baseline(retained_baseline_bytes)?;
         let retained_baseline_bytes = self.run_decode(
             decoder_context,
             output_region,
@@ -933,11 +1142,25 @@ impl<'a> Image<'a> {
             round_irreversible_output,
             retained_baseline_bytes,
         )?;
+        let without_packet_cache = allocation::combine_retained_bytes(
+            source_bytes,
+            decoder_context
+                .tile_decode_context
+                .retained_scratch_bytes()?,
+        )?;
+        let straight_alpha = decoder_context.tile_decode_context.straight_alpha_output;
         let decoded = self.finish_decoded_image(
             &mut decoder_context.tile_decode_context.channel_data,
             retained_baseline_bytes,
+            straight_alpha,
         )?;
-        Ok((decoded, retained_baseline_bytes))
+        Ok((
+            decoded,
+            DecodeOutputBytes {
+                total: retained_baseline_bytes,
+                without_packet_cache,
+            },
+        ))
     }
 
     /// [`Self::decode_image`] for an RGB8 pack. A plain colour image (see
@@ -965,8 +1188,11 @@ impl<'a> Image<'a> {
         let retained_baseline_bytes = decoded?;
         let tile_ctx = &mut decoder_context.tile_decode_context;
         let mct = tile_ctx.deferred_mct.take();
-        let image =
-            self.finish_decoded_image(&mut tile_ctx.channel_data, retained_baseline_bytes)?;
+        let image = self.finish_decoded_image(
+            &mut tile_ctx.channel_data,
+            retained_baseline_bytes,
+            tile_ctx.straight_alpha_output,
+        )?;
         Ok((
             mct,
             &tile_ctx.idwt_output.coefficients,
@@ -1056,6 +1282,11 @@ impl<'a> Image<'a> {
         output_region: Option<(u32, u32, u32, u32)>,
     ) -> CpuDecodeParallelism {
         let requested = decoder_context.cpu_decode_parallelism();
+        // Cancellable operations use bounded serial blocks/row bands. Bulk
+        // accelerator and pool submissions cannot be interrupted once sent.
+        if decoder_context.operation_control().has_cancellation() {
+            return CpuDecodeParallelism::Serial;
+        }
         if requested != CpuDecodeParallelism::Auto || output_region.is_some() {
             return requested;
         }
@@ -1125,6 +1356,9 @@ impl<'a> Image<'a> {
         retained_baseline_bytes: usize,
         row_sink: Option<&mut dyn crate::ComponentRowSink>,
     ) -> Result<usize> {
+        let retained_baseline_bytes = decoder_context
+            .operation_control()
+            .baseline(retained_baseline_bytes)?;
         let mut ht_decoder = ht_decoder;
         let mut row_sink = row_sink;
         decoder_context.storage.release_all_allocations();
@@ -1135,68 +1369,74 @@ impl<'a> Image<'a> {
             output_region.is_some() && ht_decoder.is_none() && self.permits_line_region_idwt(),
             None,
         );
-        decoder_context.set_output_region(output_region);
-        decoder_context.set_round_irreversible_output(round_irreversible_output);
-        decoder_context.permit_line_region_idwt(self.permits_line_region_idwt());
-        #[cfg(feature = "std")]
-        let decode_result = allocation::combine_retained_bytes(
-            retained_baseline_bytes,
-            directory
-                .as_deref()
-                .map_or(0, packet_directory::PacketDirectoryCache::directory_bytes),
-        )
-        .and_then(|source_bytes| {
-            let index_directory = directory
-                .as_ref()
-                .filter(|_| output_region.is_some() && ht_decoder.is_none());
-            j2c::decode_rows(
-                self.codestream,
-                &self.header,
-                source_bytes,
-                decoder_context,
-                &mut ht_decoder,
-                &mut row_sink,
-                index_directory,
-            )
-            .map(|()| source_bytes)
-        });
-        #[cfg(not(feature = "std"))]
-        let decode_result = j2c::decode_rows(
-            self.codestream,
-            &self.header,
-            retained_baseline_bytes,
+        self.with_region_decode_context(
             decoder_context,
-            &mut ht_decoder,
-            &mut row_sink,
+            output_region,
+            round_irreversible_output,
+            |context| {
+                #[cfg(feature = "std")]
+                {
+                    self.packet_cache.decode_with_capacity_retry(
+                        context,
+                        directory,
+                        (retained_baseline_bytes, retained_baseline_bytes),
+                        |context, source_bytes, directory| {
+                            let index_directory = directory
+                                .filter(|_| output_region.is_some() && ht_decoder.is_none());
+                            j2c::decode_rows(
+                                self.codestream,
+                                &self.header,
+                                source_bytes,
+                                context,
+                                &mut ht_decoder,
+                                &mut row_sink,
+                                index_directory,
+                            )
+                        },
+                    )
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    j2c::decode_rows(
+                        self.codestream,
+                        &self.header,
+                        retained_baseline_bytes,
+                        context,
+                        &mut ht_decoder,
+                        &mut row_sink,
+                    )
+                    .map(|()| retained_baseline_bytes)
+                }
+            },
         )
-        .map(|()| retained_baseline_bytes);
-        // Rows already handed to the sink can't be taken back, so once any
-        // have streamed a rerun would only send them again.
-        #[cfg(feature = "std")]
-        let decode_result = if decode_result.as_ref().is_err_and(j2c::is_capacity_error)
-            && decoder_context.tile_decode_context.streamed_samples == 0
-            && directory
-                .as_ref()
-                .is_some_and(|directory| self.packet_cache.evict_if_unshared(directory))
-        {
-            drop(directory);
-            j2c::decode_rows(
-                self.codestream,
-                &self.header,
-                retained_baseline_bytes,
-                decoder_context,
-                &mut ht_decoder,
-                &mut row_sink,
-                None,
+    }
+
+    fn with_region_decode_context(
+        &self,
+        context: &mut DecoderContext<'a>,
+        output_region: Option<(u32, u32, u32, u32)>,
+        round_irreversible_output: bool,
+        decode: impl FnOnce(&mut DecoderContext<'a>) -> Result<usize>,
+    ) -> Result<usize> {
+        context.operation_control().check()?;
+        // This counter describes only the new operation, including failures
+        // before the core decoder has initialized its own state.
+        context.tile_decode_context.streamed_samples = 0;
+        context.set_output_region(output_region);
+        context.set_round_irreversible_output(round_irreversible_output);
+        context.permit_line_region_idwt(self.permits_line_region_idwt());
+        let result = decode(context);
+        context.set_output_region(None);
+        context.set_round_irreversible_output(false);
+        context.permit_line_region_idwt(false);
+        // Tier-1 and transform buffers remain reusable while output conversion
+        // runs; account their actual capacities beside the component planes.
+        result.and_then(|bytes| {
+            allocation::combine_retained_bytes(
+                bytes,
+                context.tile_decode_context.retained_scratch_bytes()?,
             )
-            .map(|()| retained_baseline_bytes)
-        } else {
-            decode_result
-        };
-        decoder_context.set_output_region(None);
-        decoder_context.set_round_irreversible_output(false);
-        decoder_context.permit_line_region_idwt(false);
-        decode_result
+        })
     }
 
     #[cfg(feature = "std")]
@@ -1224,7 +1464,7 @@ impl<'a> Image<'a> {
                 self.codestream,
                 &self.header,
                 live,
-                &mut DecoderContext::default(),
+                &mut decoder_context.fresh_for_operation(),
             )
             .ok()?;
             let retained = live.checked_add(tiles.metadata_owner_bytes())?;
@@ -1252,6 +1492,7 @@ impl<'a> Image<'a> {
         &self,
         channel_data: &'ctx mut Vec<ComponentData>,
         retained_baseline_bytes: usize,
+        straight_alpha: bool,
     ) -> Result<DecodedImage<'ctx, '_>> {
         let settings = &self.settings;
         let mut decoded_image = DecodedImage {
@@ -1277,6 +1518,20 @@ impl<'a> Image<'a> {
             )?;
         }
         self.drop_ignored_components(decoded_image.decoded_components);
+        // Undo association in source code values, before native colour
+        // conversion and before any quantization changes the colour.
+        if straight_alpha && self.unassociates_alpha_in_source_values()? {
+            let sycc = matches!(
+                decoded_image
+                    .boxes
+                    .primary_color_specification()
+                    .map(|spec| &spec.color_space),
+                Some(jp2::colr::ColorSpace::Enumerated(
+                    EnumeratedColorspace::Sycc
+                ))
+            );
+            crate::color::unassociate_alpha(decoded_image.decoded_components, sycc)?;
+        }
 
         let bit_depth = decoded_image
             .decoded_components
@@ -1342,64 +1597,65 @@ impl<'a> Image<'a> {
         round_irreversible_output: bool,
         decoder_context: &'ctx mut DecoderContext<'a>,
     ) -> Result<DecodedComponents<'ctx>> {
+        let retained_image_bytes = decoder_context
+            .operation_control()
+            .baseline(retained_image_bytes)?;
+        let retained_session_bytes = decoder_context
+            .operation_control()
+            .baseline(retained_session_bytes)?;
         validate_roi((self.width(), self.height()), roi)?;
         self.validate_component_plane_precision()?;
         #[cfg(feature = "std")]
         tiles.set_packet_directory(None);
         #[cfg(feature = "std")]
-        let mut directory = self.region_packet_directory(
+        let directory = self.region_packet_directory(
             retained_session_bytes,
             decoder_context,
             self.permits_line_region_idwt(),
             Some(tiles),
         );
-        #[cfg(feature = "std")]
-        let extra_bytes = directory
-            .as_deref()
-            .map_or(0, packet_directory::PacketDirectoryCache::directory_bytes);
-        #[cfg(not(feature = "std"))]
-        let extra_bytes = 0;
-        #[cfg(feature = "std")]
-        tiles.set_packet_directory(directory.clone());
-        decoder_context.set_output_region(Some(roi));
-        decoder_context.set_round_irreversible_output(round_irreversible_output);
-        decoder_context.permit_line_region_idwt(self.permits_line_region_idwt());
-        let decode_result = allocation::combine_retained_bytes(retained_image_bytes, extra_bytes)
-            .and_then(|source_bytes| {
-                let session_bytes =
-                    allocation::combine_retained_bytes(retained_session_bytes, extra_bytes)?;
-                j2c::decode_preparsed(&self.header, source_bytes, tiles, decoder_context)
-                    .map(|()| session_bytes)
-            });
-        #[cfg(feature = "std")]
-        let decode_result = if decode_result.as_ref().is_err_and(j2c::is_capacity_error) {
-            tiles.set_packet_directory(None);
-            if directory
-                .as_ref()
-                .is_some_and(|directory| self.packet_cache.evict_if_unshared(directory))
-            {
-                drop(directory.take());
-                j2c::decode_preparsed(&self.header, retained_image_bytes, tiles, decoder_context)
-                    .map(|()| retained_session_bytes)
-            } else {
-                decode_result
-            }
-        } else {
-            decode_result
-        };
-        decoder_context.set_output_region(None);
-        decoder_context.set_round_irreversible_output(false);
-        decoder_context.permit_line_region_idwt(false);
-        #[cfg(feature = "std")]
-        {
-            tiles.set_packet_directory(None);
-            drop(directory);
-        }
+        let decode_result = self.with_region_decode_context(
+            decoder_context,
+            Some(roi),
+            round_irreversible_output,
+            |context| {
+                #[cfg(feature = "std")]
+                {
+                    self.packet_cache.decode_with_capacity_retry(
+                        context,
+                        directory,
+                        (retained_image_bytes, retained_session_bytes),
+                        |context, source_bytes, directory| {
+                            tiles.set_packet_directory(directory.cloned());
+                            let result =
+                                j2c::decode_preparsed(&self.header, source_bytes, tiles, context);
+                            // Remove the execution reference before the shared helper
+                            // decides whether this cache can be evicted and retried.
+                            tiles.set_packet_directory(None);
+                            result
+                        },
+                    )
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    j2c::decode_preparsed(&self.header, retained_image_bytes, tiles, context)
+                        .map(|()| retained_session_bytes)
+                }
+            },
+        );
         let charged_session_bytes = decode_result?;
+        let retained_session_bytes = allocation::combine_retained_bytes(
+            retained_session_bytes,
+            decoder_context
+                .tile_decode_context
+                .retained_scratch_bytes()?,
+        )?;
         let (_x, _y, width, height) = roi;
+        let straight_alpha = decoder_context.tile_decode_context.straight_alpha_output;
         let decoded_image = self.finish_decoded_image(
             &mut decoder_context.tile_decode_context.channel_data,
             charged_session_bytes,
+            straight_alpha,
         )?;
         let DecodedImage {
             decoded_components,

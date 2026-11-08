@@ -232,6 +232,50 @@ pub(super) fn validate_irreversible_quantization_profile(
     }
 }
 
+/// Packet and tile option invariants shared by raw and exact-integer input routes.
+/// Keep these malformed-request checks ahead of route-specific capabilities.
+pub(super) fn validate_common_encode_options(
+    options: &EncodeOptions,
+) -> super::NativeEncodePipelineResult<()> {
+    use super::NativeEncodePipelineError;
+    if options.num_layers == 0 {
+        return Err(NativeEncodePipelineError::invalid_input(
+            "quality layer count must be non-zero",
+        ));
+    }
+    if options.num_layers > 32 {
+        return Err(NativeEncodePipelineError::unsupported(
+            "quality layer count exceeds the encoder limit",
+        ));
+    }
+    if options.write_ppm && options.write_ppt {
+        return Err(NativeEncodePipelineError::invalid_input(
+            "PPM and PPT packet header markers are mutually exclusive",
+        ));
+    }
+    if matches!(options.tile_part_packet_limit, Some(0)) {
+        return Err(NativeEncodePipelineError::invalid_input(
+            "tile-part packet limit must be non-zero",
+        ));
+    }
+    if !options.quality_layer_byte_targets.is_empty()
+        && options.quality_layer_byte_targets.len() != usize::from(options.num_layers)
+    {
+        return Err(NativeEncodePipelineError::invalid_input(
+            "quality layer byte target count must match quality layer count",
+        ));
+    }
+    if options
+        .tile_size
+        .is_some_and(|(width, height)| width == 0 || height == 0)
+    {
+        return Err(NativeEncodePipelineError::invalid_input(
+            "invalid tile dimensions",
+        ));
+    }
+    Ok(())
+}
+
 /// Validated Part 1 code-block dimensions derived from COD's stored
 /// exponent-minus-two fields.
 pub(super) type CodeBlockGeometry = EncodeCodeBlockDimensions;

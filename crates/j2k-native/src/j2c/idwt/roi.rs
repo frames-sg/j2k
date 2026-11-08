@@ -5,12 +5,15 @@ use core::mem::size_of;
 
 use super::super::build::{Decomposition, SubBand};
 use super::super::codestream::WaveletTransform;
-use super::super::decode::{DecompositionStorage, TileDecodeContext, WorkspaceBytes};
+use super::super::decode::{
+    DecodeAllocationBudget, DecodeDebugCounters, DecompositionStorage, TileDecodeContext,
+    WorkspaceBytes,
+};
 use super::super::rect::IntRect;
-use super::horizontal::filter_horizontal_codestream;
+use super::horizontal::{filter_horizontal_codestream, filter_horizontal_i64};
 use super::lines::{reconstruct_rows, ring_samples, LineReconstruction, StoredRows, SubBandRows};
-use super::model::{CoefficientSource, IDWTOutput, IdwtPlacement};
-use super::vertical::filter_vertical_codestream;
+use super::model::{CoefficientSource, IdwtPlacement};
+use super::vertical::{filter_vertical_codestream, filter_vertical_i64};
 use crate::error::{DecodingError, ValidationError};
 use crate::j2c::roi::output_region_rect;
 use crate::j2c::Header;
@@ -60,7 +63,8 @@ pub(crate) fn streamed_batch_rows(width: usize, height: usize, one_batch: bool) 
     rows.min(height / STREAMED_MIN_BATCHES).clamp(1, 512)
 }
 
-/// The most f32 samples [`apply_roi`] holds at once for any one component.
+/// The most coefficient samples [`apply_roi`] holds at once for one component.
+/// Whole-window storage uses the selected sample width; streamed rings use f32.
 ///
 /// Each level reads the previous level's window and writes a new one, so both
 /// are live together. With no active level, the copied sub-band window is the
@@ -224,108 +228,170 @@ pub(super) fn apply_roi(
         .as_ref()
         .ok_or(DecodingError::CodeBlockDecodeFailure)?;
     let tile_decompositions = &storage.tile_decompositions[component_idx];
-    let output = &mut tile_ctx.idwt_output;
-    let ll_sub_band = &storage.sub_bands[tile_decompositions.first_ll_sub_band];
-
     let decompositions = &storage.decompositions[tile_decompositions.decompositions.clone()];
     let active_len = decompositions
         .len()
-        .saturating_sub(header.skipped_resolution_levels as usize);
-
+        .saturating_sub(usize::from(header.skipped_resolution_levels));
     if active_len == 0 {
         return apply_roi_without_levels(storage, tile_ctx, component_idx, header);
     }
 
-    // The previous component's output is never reused here, so release it
-    // before allocating this component's windows.
-    output.coefficients = Vec::new();
-    output.rect = IntRect::from_xywh(0, 0, 0, 0);
-    if storage.line_region_idwt {
-        return apply_roi_lines(
+    // The previous component's output is no longer used. Drop it before
+    // sampling owners and allocating this component's level windows.
+    tile_ctx.idwt_output.rect = IntRect::from_xywh(0, 0, 0, 0);
+    if storage.exact_integer_decode {
+        tile_ctx.idwt_output.coefficients_i64 = Vec::new();
+        let workspace = WorkspaceBytes::sample(tile_ctx, storage)?;
+        let (coefficients, rect, placement) = reconstruct_window_levels(
             storage,
-            tile_ctx,
-            component_idx,
-            &decompositions[..active_len],
-            header,
-            transform,
-        );
+            &storage.coefficients_i64,
+            (component_idx, active_len),
+            None,
+            (
+                &tile_ctx.operation_control,
+                &mut tile_ctx.debug_counters,
+                workspace,
+            ),
+            |target, window| {
+                filter_horizontal_i64(target, window);
+                filter_vertical_i64(target, window);
+            },
+        )?;
+        tile_ctx.idwt_output.coefficients_i64 = coefficients;
+        tile_ctx.idwt_output.rect = rect;
+        tile_ctx.idwt_output.placement = placement;
+    } else {
+        tile_ctx.idwt_output.coefficients = Vec::new();
+        if storage.line_region_idwt {
+            return apply_roi_lines(
+                storage,
+                tile_ctx,
+                component_idx,
+                &decompositions[..active_len],
+                header,
+                transform,
+            );
+        }
+        let workspace = WorkspaceBytes::sample(tile_ctx, storage)?;
+        let last_window = storage
+            .last_idwt_level_in_channels
+            .then(|| {
+                roi_plan.idwt_window(tile_decompositions.decompositions.start + active_len - 1)
+            })
+            .flatten();
+        let final_target = match last_window {
+            Some(window) => Some(
+                tile_ctx.channel_data[component_idx]
+                    .container
+                    .padded_scratch(window_elements(window)?)
+                    .ok_or(DecodingError::CodeBlockDecodeFailure)?,
+            ),
+            None => None,
+        };
+        let (coefficients, rect, placement) = reconstruct_window_levels(
+            storage,
+            &storage.coefficients,
+            (component_idx, active_len),
+            final_target,
+            (
+                &tile_ctx.operation_control,
+                &mut tile_ctx.debug_counters,
+                workspace,
+            ),
+            |target, window| {
+                filter_horizontal_codestream(target, window, transform);
+                filter_vertical_codestream(target, window, transform);
+            },
+        )?;
+        tile_ctx.idwt_output.coefficients = coefficients;
+        tile_ctx.idwt_output.rect = rect;
+        tile_ctx.idwt_output.placement = placement;
     }
-    // Everything else the decode holds stays the same while the level
-    // windows below come and go, so sample it once.
-    let workspace = WorkspaceBytes::sample(tile_ctx, storage)?;
-    let output = &mut tile_ctx.idwt_output;
+    Ok(())
+}
 
+/// Reconstruct the same planned windows for either sample representation.
+/// Only the coefficient storage and existing lifting filters are specialized.
+fn reconstruct_window_levels<T: Copy + Default>(
+    storage: &DecompositionStorage<'_>,
+    coefficients: &[T],
+    (component_idx, active_len): (usize, usize),
+    mut final_target: Option<&mut [T]>,
+    (control, counters, workspace): (
+        &crate::DecodeOperationControl,
+        &mut DecodeDebugCounters,
+        WorkspaceBytes,
+    ),
+    mut filter: impl FnMut(&mut [T], IntRect),
+) -> Result<(Vec<T>, IntRect, IdwtPlacement)> {
+    let roi_plan = storage
+        .roi_plan
+        .as_ref()
+        .ok_or(DecodingError::CodeBlockDecodeFailure)?;
+    let tile_decompositions = &storage.tile_decompositions[component_idx];
+    let ll_sub_band = &storage.sub_bands[tile_decompositions.first_ll_sub_band];
+    let decompositions = &storage.decompositions[tile_decompositions.decompositions.clone()];
     let mut current_coefficients = Vec::new();
     let mut current_rect = IntRect::from_xywh(0, 0, 0, 0);
     let mut have_current = false;
-
     for (local_idx, decomposition) in decompositions.iter().take(active_len).enumerate() {
+        control.check()?;
         let decomposition_idx = tile_decompositions.decompositions.start + local_idx;
         let Some(output_window) = roi_plan.idwt_window(decomposition_idx) else {
             if !have_current && decomposition.rect.is_empty() {
-                // A coarse level with no samples: the next level's LL input is empty.
                 continue;
             }
-            output.coefficients.clear();
-            output.rect = IntRect::from_xywh(0, 0, 0, 0);
-            return Ok(());
+            return Ok((
+                Vec::new(),
+                IntRect::from_xywh(0, 0, 0, 0),
+                IdwtPlacement::Coefficients,
+            ));
         };
-
         let ll_input = if have_current {
             CoefficientSource::new(&current_coefficients, current_rect, current_rect.width())
         } else {
-            CoefficientSource::from_sub_band(ll_sub_band, storage)
+            CoefficientSource::from_sub_band(ll_sub_band, coefficients)
         };
-
-        if storage.last_idwt_level_in_channels && local_idx + 1 == active_len {
-            // The plane reserved this window's padding; `store` compacts it.
-            let target = tile_ctx.channel_data[component_idx]
-                .container
-                .padded_scratch(window_elements(output_window)?)
-                .ok_or(DecodingError::CodeBlockDecodeFailure)?;
-            fill_level_roi(
-                ll_input,
-                target,
-                output_window,
-                decomposition,
-                transform,
-                storage,
-                &mut tile_ctx.debug_counters.idwt_output_samples,
-            );
-            let window_bytes = current_coefficients.capacity() * size_of::<f32>();
-            tile_ctx
-                .debug_counters
-                .workspace_peak
-                .record(workspace.with_idwt(window_bytes));
-            output.coefficients = Vec::new();
-            output.rect = output_window;
-            output.placement = IdwtPlacement::ChannelPadding;
-            return Ok(());
+        if local_idx + 1 == active_len {
+            if let Some(target) = final_target.take() {
+                fill_level_roi(
+                    ll_input,
+                    target,
+                    output_window,
+                    decomposition,
+                    (storage, coefficients),
+                    &mut counters.idwt_output_samples,
+                    &mut filter,
+                );
+                counters
+                    .workspace_peak
+                    .record(workspace.with_idwt(current_coefficients.capacity() * size_of::<T>()));
+                return Ok((Vec::new(), output_window, IdwtPlacement::ChannelPadding));
+            }
         }
-
         let mut next = Vec::new();
         apply_level_roi(
             ll_input,
-            &mut next,
+            (&mut next, current_coefficients.capacity()),
             output_window,
             decomposition,
-            transform,
-            storage,
-            &mut tile_ctx.debug_counters.idwt_output_samples,
+            (storage, coefficients),
+            &mut counters.idwt_output_samples,
+            &mut filter,
         )?;
-        let window_bytes = (current_coefficients.capacity() + next.capacity()) * size_of::<f32>();
-        tile_ctx
-            .debug_counters
+        let window_bytes = (current_coefficients.capacity() + next.capacity()) * size_of::<T>();
+        counters
             .workspace_peak
             .record(workspace.with_idwt(window_bytes));
         current_coefficients = next;
         current_rect = output_window;
         have_current = true;
     }
-
-    output.coefficients = current_coefficients;
-    output.rect = current_rect;
-    Ok(())
+    Ok((
+        current_coefficients,
+        current_rect,
+        IdwtPlacement::Coefficients,
+    ))
 }
 
 /// Stream the component's active levels a row at a time and write the last
@@ -359,6 +425,7 @@ fn apply_roi_lines(
 /// decode context until [`Self::finish`] returns them. While it runs, the
 /// rows it reads may be decoded on demand.
 pub(crate) struct ComponentLines {
+    control: crate::DecodeOperationControl,
     component_idx: usize,
     plan: LinePlan,
     ring: Vec<f32>,
@@ -494,6 +561,7 @@ impl ComponentLines {
             SimdBuffer::empty(),
         );
         Ok(Some(Self {
+            control: tile_ctx.operation_control.clone(),
             component_idx,
             plan,
             ring,
@@ -511,6 +579,7 @@ impl ComponentLines {
         let plane = &mut self.plane;
         let plane_width = region.width() as usize;
         let mut write_row = |y: u32, samples: &[f32]| -> Result<()> {
+            self.control.check()?;
             let start = (y - region.y0) as usize * plane_width + (copy.x0 - region.x0) as usize;
             plane
                 .get_mut(start..start + samples.len())
@@ -564,19 +633,37 @@ fn apply_roi_without_levels(
         .sub_band_window(first_ll_sub_band)
         .or_else(|| roi_plan.final_window(component_idx))
     else {
-        output.coefficients.clear();
+        if storage.exact_integer_decode {
+            output.coefficients_i64.clear();
+        } else {
+            output.coefficients.clear();
+        }
         output.rect = IntRect::from_xywh(0, 0, 0, 0);
         return Ok(());
     };
-    if storage.line_region_idwt {
+    if !storage.exact_integer_decode && storage.line_region_idwt {
         return copy_ll_window_into_plane(storage, tile_ctx, component_idx, window, header);
     }
-    copy_sub_band_window_to_output(
-        &storage.sub_bands[first_ll_sub_band],
-        storage,
-        window,
-        output,
-    )
+    let sub_band = &storage.sub_bands[first_ll_sub_band];
+    if storage.exact_integer_decode {
+        copy_sub_band_window_to_output(
+            sub_band,
+            (storage, &storage.coefficients_i64),
+            window,
+            &mut output.coefficients_i64,
+            &tile_ctx.operation_control,
+        )?;
+    } else {
+        copy_sub_band_window_to_output(
+            sub_band,
+            (storage, &storage.coefficients),
+            window,
+            &mut output.coefficients,
+            &tile_ctx.operation_control,
+        )?;
+    }
+    output.rect = window;
+    Ok(())
 }
 
 /// With no level left to reconstruct, write the LL sub-band's overlap with
@@ -603,10 +690,11 @@ fn copy_ll_window_into_plane(
     let region = output_region_rect(&header.size_data, output_region);
     let ll_sub_band =
         &storage.sub_bands[storage.tile_decompositions[component_idx].first_ll_sub_band];
-    let source = CoefficientSource::from_sub_band(ll_sub_band, storage);
+    let source = CoefficientSource::from_sub_band(ll_sub_band, &storage.coefficients);
     let plane = &mut tile_ctx.channel_data[component_idx].container;
     let plane_width = region.width() as usize;
     for y in copy.y0..copy.y1 {
+        tile_ctx.operation_control.check()?;
         let start = (y - region.y0) as usize * plane_width + (copy.x0 - region.x0) as usize;
         let row = plane
             .get_mut(start..start + copy.width() as usize)
@@ -631,85 +719,116 @@ fn record_workspace_now(
     Ok(())
 }
 
-fn copy_sub_band_window_to_output(
+fn copy_sub_band_window_to_output<T: Copy + Default>(
     sub_band: &SubBand,
-    storage: &DecompositionStorage<'_>,
+    (storage, coefficients): (&DecompositionStorage<'_>, &[T]),
     window: IntRect,
-    output: &mut IDWTOutput,
+    output: &mut Vec<T>,
+    control: &crate::DecodeOperationControl,
 ) -> Result<()> {
-    output.coefficients.clear();
+    output.clear();
     let required_len =
         checked_decode_usize_product2(window.width() as usize, window.height() as usize)?;
-    try_resize_decode_elements(&mut output.coefficients, required_len, 0.0)?;
-    let source = CoefficientSource::from_sub_band(sub_band, storage);
+    let grows = required_len > output.capacity();
+    if grows {
+        // Previous component samples are dead; drop them before replacement.
+        *output = Vec::new();
+    }
+    let mut budget = DecodeAllocationBudget::for_storage(storage)?;
+    try_resize_decode_elements(output, required_len, T::default())?;
+    if grows {
+        budget
+            .include_capacity_overage::<T>(storage.roi_idwt_charge_elements, output.capacity())?;
+    }
+    let source = CoefficientSource::from_sub_band(sub_band, coefficients);
     for y in window.y0..window.y1 {
+        control.check()?;
         for x in window.x0..window.x1 {
             let dst = (y - window.y0) as usize * window.width() as usize + (x - window.x0) as usize;
-            output.coefficients[dst] = source.get(x, y);
+            output[dst] = source.get(x, y);
         }
     }
-    output.rect = window;
     Ok(())
 }
 
-fn apply_level_roi(
-    ll: CoefficientSource<'_>,
-    target: &mut Vec<f32>,
+fn apply_level_roi<T: Copy + Default>(
+    ll: CoefficientSource<'_, T>,
+    (target, previous_capacity): (&mut Vec<T>, usize),
     output_window: IntRect,
     decomposition: &Decomposition,
-    transform: WaveletTransform,
-    storage: &DecompositionStorage<'_>,
+    sources: (&DecompositionStorage<'_>, &[T]),
     idwt_output_samples: &mut usize,
+    filter: &mut impl FnMut(&mut [T], IntRect),
 ) -> Result<()> {
     target.clear();
     let required_len = checked_decode_usize_product2(
         output_window.width() as usize,
         output_window.height() as usize,
     )?;
-    try_resize_decode_elements(target, required_len, 0.0)?;
+    let budget = DecodeAllocationBudget::for_storage(sources.0)?;
+    let mut planned = budget;
+    planned.include_capacity_overage::<T>(
+        sources.0.roi_idwt_charge_elements,
+        previous_capacity
+            .checked_add(required_len)
+            .ok_or(ValidationError::ImageTooLarge)?,
+    )?;
+    try_resize_decode_elements(target, required_len, T::default())?;
+    let mut actual = budget;
+    actual.include_capacity_overage::<T>(
+        sources.0.roi_idwt_charge_elements,
+        previous_capacity
+            .checked_add(target.capacity())
+            .ok_or(ValidationError::ImageTooLarge)?,
+    )?;
     fill_level_roi(
         ll,
         target,
         output_window,
         decomposition,
-        transform,
-        storage,
+        sources,
         idwt_output_samples,
+        filter,
     );
     Ok(())
 }
 
 /// Apply one level into `target`, which holds exactly `output_window`.
-fn fill_level_roi(
-    ll: CoefficientSource<'_>,
-    target: &mut [f32],
+fn fill_level_roi<T: Copy + Default>(
+    ll: CoefficientSource<'_, T>,
+    target: &mut [T],
     output_window: IntRect,
     decomposition: &Decomposition,
-    transform: WaveletTransform,
-    storage: &DecompositionStorage<'_>,
+    (storage, coefficients): (&DecompositionStorage<'_>, &[T]),
     idwt_output_samples: &mut usize,
+    filter: &mut impl FnMut(&mut [T], IntRect),
 ) {
-    let hl =
-        CoefficientSource::from_sub_band(&storage.sub_bands[decomposition.sub_bands[0]], storage);
-    let lh =
-        CoefficientSource::from_sub_band(&storage.sub_bands[decomposition.sub_bands[1]], storage);
-    let hh =
-        CoefficientSource::from_sub_band(&storage.sub_bands[decomposition.sub_bands[2]], storage);
+    let hl = CoefficientSource::from_sub_band(
+        &storage.sub_bands[decomposition.sub_bands[0]],
+        coefficients,
+    );
+    let lh = CoefficientSource::from_sub_band(
+        &storage.sub_bands[decomposition.sub_bands[1]],
+        coefficients,
+    );
+    let hh = CoefficientSource::from_sub_band(
+        &storage.sub_bands[decomposition.sub_bands[2]],
+        coefficients,
+    );
     *idwt_output_samples = idwt_output_samples.saturating_add(target.len());
 
     interleave_samples_roi(ll, hl, lh, hh, target, output_window);
     if output_window.width() > 0 && output_window.height() > 0 {
-        filter_horizontal_codestream(target, output_window, transform);
-        filter_vertical_codestream(target, output_window, transform);
+        filter(target, output_window);
     }
 }
 
-pub(super) fn interleave_samples_roi(
-    ll: CoefficientSource<'_>,
-    hl: CoefficientSource<'_>,
-    lh: CoefficientSource<'_>,
-    hh: CoefficientSource<'_>,
-    output: &mut [f32],
+pub(super) fn interleave_samples_roi<T: Copy + Default>(
+    ll: CoefficientSource<'_, T>,
+    hl: CoefficientSource<'_, T>,
+    lh: CoefficientSource<'_, T>,
+    hh: CoefficientSource<'_, T>,
+    output: &mut [T],
     output_window: IntRect,
 ) {
     // Interleaved output coordinate u reads band coordinate u / 2 on each

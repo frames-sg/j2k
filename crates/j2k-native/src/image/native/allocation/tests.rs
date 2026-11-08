@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{bit_capacity_bytes, NativeOutputBudget};
+use super::NativeOutputBudget;
 use crate::error::DecodeError;
 use crate::j2c::{ComponentData, DecoderContext};
 use crate::math::{SimdBuffer, SIMD_WIDTH};
 use crate::DEFAULT_MAX_DECODE_BYTES;
 use crate::{
     encode, ColorSpace, ComponentPlane, CpuDecodeParallelism, DecodeErrorClass, DecodeSettings,
-    DecodedComponents, EncodeOptions, Image, RawBitmap,
+    DecodedComponents, EncodeOptions, Image,
 };
 use alloc::{vec, vec::Vec};
 use core::mem::size_of;
@@ -92,53 +92,6 @@ fn retained_image_metadata_shares_the_output_cap() {
         error,
         DecodeError::AllocationTooLarge { requested, cap, .. }
             if requested > cap && cap == DEFAULT_MAX_DECODE_BYTES
-    ));
-}
-
-#[test]
-fn full_decode_crop_budget_counts_retained_channels_at_exact_boundary() {
-    let components = vec![ComponentData {
-        container: SimdBuffer::<SIMD_WIDTH>::new(vec![1.0]),
-        integer_container: None,
-        bit_depth: 8,
-        signed: false,
-    }];
-    let bitmap = RawBitmap {
-        data: vec![1],
-        width: 1,
-        height: 1,
-        bit_depth: 8,
-        signed: false,
-        component_signed: vec![false],
-        num_components: 1,
-        bytes_per_sample: 1,
-    };
-    let channel_bytes = components.capacity() * size_of::<ComponentData>()
-        + components[0].container.capacity() * size_of::<f32>();
-    let bitmap_bytes =
-        bitmap.data.capacity() + bit_capacity_bytes(bitmap.component_signed.capacity());
-    let retained = DEFAULT_MAX_DECODE_BYTES - channel_bytes - bitmap_bytes;
-
-    let exact = NativeOutputBudget::for_raw_bitmap_with_decoded_channels(
-        retained,
-        &components,
-        components.capacity(),
-        &bitmap,
-    )
-    .expect("decoded channels plus full bitmap fit exact cap");
-    assert_eq!(exact.allocation.bytes(), DEFAULT_MAX_DECODE_BYTES);
-    assert!(matches!(
-        NativeOutputBudget::for_raw_bitmap_with_decoded_channels(
-            retained + 1,
-            &components,
-            components.capacity(),
-            &bitmap,
-        ),
-        Err(DecodeError::AllocationTooLarge {
-            requested,
-            cap: DEFAULT_MAX_DECODE_BYTES,
-            ..
-        }) if requested == DEFAULT_MAX_DECODE_BYTES + 1
     ));
 }
 

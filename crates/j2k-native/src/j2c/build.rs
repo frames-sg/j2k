@@ -308,6 +308,7 @@ fn build_precincts(
     let precinct_count = usize::try_from(resolution_tile.num_precincts())
         .map_err(|_| ValidationError::ImageTooLarge)?;
     for precinct_idx in 0..precinct_count {
+        tile.check_cancelled()?;
         let precinct_use = keep.and_then(|keep| keep.get(precinct_idx).copied());
         if precinct_use == Some(PrecinctUse::Unused) {
             // Region decode never parses this precinct's packets, so it gets
@@ -408,6 +409,7 @@ fn build_code_blocks(
     let start = storage.code_blocks.len();
 
     for y_idx in 0..code_blocks_y {
+        tile.check_cancelled()?;
         let mut x = code_block_area.x0;
 
         for x_idx in 0..code_blocks_x {

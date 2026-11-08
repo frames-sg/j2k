@@ -66,6 +66,106 @@ fn metadata_plan_retains_logical_samples_without_allocating_pixel_storage() {
 }
 
 #[test]
+fn exact_region_coefficients_and_integer_windows_share_the_live_budget() {
+    use crate::j2c::build::CoefficientLayout;
+    use crate::j2c::decode::OutputRegion;
+    use crate::{DecodeSettings, EncodeOptions, Image};
+
+    let pixels: Vec<u8> = (0..128 * 128)
+        .flat_map(|_| ((1_u32 << 28) + 17).to_le_bytes())
+        .collect();
+    let bytes = crate::encode(
+        &pixels,
+        128,
+        128,
+        1,
+        29,
+        false,
+        &EncodeOptions {
+            reversible: true,
+            use_mct: false,
+            num_decomposition_levels: 3,
+            ..EncodeOptions::default()
+        },
+    )
+    .unwrap();
+    let image = Image::new(&bytes, &DecodeSettings::default()).unwrap();
+    let tiles = crate::j2c::tile::parse(
+        &mut crate::reader::BitReader::new(image.codestream),
+        &image.header,
+        0,
+    )
+    .unwrap();
+    let build = || {
+        let mut storage = DecompositionStorage {
+            exact_integer_decode: true,
+            ..DecompositionStorage::default()
+        };
+        let selection = crate::j2c::build::select_region_precincts(
+            &tiles[0],
+            &image.header,
+            &mut storage,
+            OutputRegion::from_tuple((59, 53, 7, 9)),
+            0,
+        )
+        .unwrap();
+        let baseline = selection
+            .as_ref()
+            .map_or(0, crate::j2c::build::PrecinctSelection::owned_bytes);
+        crate::j2c::build::build(
+            &tiles[0],
+            &mut storage,
+            baseline,
+            true,
+            BuildWorkspace::DecodePixels {
+                skipped_resolution_levels: 0,
+                coefficient_layout: CoefficientLayout::Component,
+            },
+            selection.as_ref(),
+        )
+        .unwrap();
+        (storage, selection)
+    };
+    let (mut storage, _selection) = build();
+    assert_eq!(
+        (
+            storage.coefficients.capacity(),
+            storage.coefficients_i64.capacity()
+        ),
+        (0, 0),
+        "ROI planning must precede coefficient allocation for exact samples too"
+    );
+    let before = storage.structural_workspace_bytes;
+    super::allocate_deferred_coefficients(&mut storage, 0, true).unwrap();
+    let count = storage.coefficients_i64.len();
+    assert!(
+        count > 0 && count < 128 * 128,
+        "only ROI support windows are stored"
+    );
+    assert_eq!(storage.coefficients.len(), count);
+    let window_elements = crate::j2c::idwt::roi_idwt_peak_elements(&storage, 0).unwrap();
+    assert!(window_elements > 0);
+    let added = window_elements * size_of::<i64>()
+        + storage.coefficients.capacity() * size_of::<f32>()
+        + storage.coefficients_i64.capacity() * size_of::<i64>();
+    assert_eq!(storage.structural_workspace_bytes - before, added);
+    for extra in [0, 1] {
+        let (mut storage, _selection) = build();
+        storage.structural_workspace_bytes = DEFAULT_MAX_DECODE_BYTES - added + extra;
+        let result = super::allocate_deferred_coefficients(&mut storage, 0, true);
+        if extra == 0 {
+            result.expect("exact boundary fits");
+            assert_eq!(storage.structural_workspace_bytes, DEFAULT_MAX_DECODE_BYTES);
+        } else {
+            assert!(
+                result.is_err(),
+                "one byte beyond the combined owners must fail"
+            );
+        }
+    }
+}
+
+#[test]
 fn allocation_plan_tag_tree_count_matches_builder_for_edge_shapes() {
     for (width, height) in [
         (0, 0),

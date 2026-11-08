@@ -1,18 +1,44 @@
 //! Combined byte and bit reader utilities.
 
 use crate::error::{bail, MarkerError, Result};
+use alloc::sync::Arc;
 use core::fmt::Debug;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Debug, Clone)]
 pub(crate) struct BitReader<'a> {
     data: &'a [u8],
     cur_pos: usize,
+    cancellation: Option<Arc<AtomicBool>>,
 }
 
 impl<'a> BitReader<'a> {
     #[inline]
     pub(crate) fn new(data: &'a [u8]) -> Self {
-        Self { data, cur_pos: 0 }
+        Self::with_cancellation(data, None)
+    }
+
+    pub(crate) fn with_cancellation(data: &'a [u8], cancellation: Option<Arc<AtomicBool>>) -> Self {
+        Self {
+            data,
+            cur_pos: 0,
+            cancellation,
+        }
+    }
+
+    pub(crate) fn child(&self, data: &'a [u8]) -> Self {
+        Self::with_cancellation(data, self.cancellation.clone())
+    }
+
+    pub(crate) fn check_cancelled(&self) -> Result<()> {
+        if self
+            .cancellation
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+        {
+            return Err(crate::DecodingError::Cancelled.into());
+        }
+        Ok(())
     }
 
     #[inline]
@@ -176,6 +202,7 @@ impl<'a> BitReader<'a> {
 
     #[inline]
     pub(crate) fn read_marker(&mut self) -> Result<u8> {
+        self.check_cancelled()?;
         if self.peek_byte().ok_or(MarkerError::Invalid)? != 0xFF {
             bail!(MarkerError::Invalid);
         }
@@ -200,6 +227,7 @@ mod tests {
         let mut reader = BitReader {
             data: &[],
             cur_pos: 7,
+            cancellation: None,
         };
 
         assert_eq!(reader.read_bits_with_stuffing(1), None);

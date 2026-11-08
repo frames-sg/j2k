@@ -1,21 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::super::allocation::{checked_add_bytes, checked_element_bytes};
-use super::super::magnitude::required_ht_magnitude_bound;
+use super::super::allocation::checked_add_bytes;
 use super::super::{
-    encode_prepared_resolution_packets_for_session,
-    encode_prepared_resolution_packets_layered_for_session,
-    ordered_prepared_resolution_packets_for_session, packet_descriptors_for_session, packet_encode,
-    packetization_requires_scalar, packetize_resolution_packets_with_options_for_session, profile,
-    split_component_resolution_packets_by_precinct_for_session, EncodeComponentSampleInfo,
-    EncodeOptions, J2kEncodeStageAccelerator, J2kPacketizationPacketDescriptor,
-    NativeEncodePipelineResult, NativeEncodeSession,
+    encode_component_resolution_packets, packet_encode, EncodeComponentSampleInfo, EncodeOptions,
+    J2kEncodeStageAccelerator, NativeEncodePipelineResult, NativeEncodeSession, TilePacketRequest,
 };
 use super::coefficient_source::DwtComponentSource;
-use super::ownership::{
-    prepared_packet_tree_retained_bytes, prepared_packets_retained_bytes,
-    single_tile_plan_retained_bytes,
-};
+use super::ownership::single_tile_plan_retained_bytes;
 use super::plan::SingleTilePlan;
 
 mod components;
@@ -32,10 +23,6 @@ pub(super) struct EncodedTilePackets {
 #[expect(
     clippy::too_many_arguments,
     reason = "this codec boundary keeps geometry, state buffers, and validated options explicit without allocation or indirection"
-)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the ordered JPEG 2000 state machine stays cohesive to preserve marker, packet, pass, and sample order"
 )]
 pub(super) fn encode_tile_packets<S: DwtComponentSource>(
     width: u32,
@@ -84,119 +71,25 @@ pub(super) fn encode_tile_packets<S: DwtComponentSource>(
         .ok_or(crate::EncodeError::InternalInvariant {
             what: "released DWT sources exceed the retained baseline",
         })?;
-    let required_ht_magnitude_bound = required_ht_magnitude_bound(
-        component_resolution_packets.iter().flatten(),
-        plan.num_levels,
-        options.reversible,
-        accelerator.prefer_parallel_cpu_code_block_fallback(),
-    )?;
-
-    let component_resolution_packets = split_component_resolution_packets_by_precinct_for_session(
+    let encoded = encode_component_resolution_packets(
         component_resolution_packets,
-        super::super::tile_grid::tile_bounds(width, height, plan.tile_origin)?,
-        &plan.params.component_sampling,
-        plan.num_levels,
-        &plan.params.precinct_exponents,
-        session,
-        retained_base_bytes,
-    )?;
-    session.checked_phase(
-        checked_add_bytes(
+        TilePacketRequest {
+            tile_bounds: super::super::tile_grid::tile_bounds(width, height, plan.tile_origin)?,
+            num_levels: plan.num_levels,
+            params: &plan.params,
+            options,
             retained_base_bytes,
-            prepared_packet_tree_retained_bytes(
-                &component_resolution_packets,
-                component_resolution_packets.capacity(),
-            )?,
-            "precinct-split prepared packet tree",
-        )?,
-        "precinct-split prepared packet tree",
-    )?;
-    let prepared_resolution_packets = ordered_prepared_resolution_packets_for_session(
-        component_resolution_packets,
-        options,
-        session,
-        retained_base_bytes,
-    )?;
-    session.checked_phase(
-        checked_add_bytes(
-            retained_base_bytes,
-            prepared_packets_retained_bytes(
-                &prepared_resolution_packets,
-                prepared_resolution_packets.capacity(),
-            )?,
-            "ordered prepared packet tree",
-        )?,
-        "ordered prepared packet tree",
-    )?;
-    let stage_start = profile::profile_now(profile_enabled);
-    let (resolution_packets, mut packet_descriptors, allow_packetization_accelerator) =
-        if options.num_layers > 1 {
-            let (resolution_packets, packet_descriptors) =
-                encode_prepared_resolution_packets_layered_for_session(
-                    prepared_resolution_packets,
-                    options.num_layers,
-                    &options.quality_layer_byte_targets,
-                    session,
-                    retained_base_bytes,
-                    accelerator,
-                )?;
-            (resolution_packets, packet_descriptors, false)
-        } else {
-            let packet_descriptors = packet_descriptors_for_session(
-                &prepared_resolution_packets,
-                prepared_resolution_packets.capacity(),
-                session,
-                retained_base_bytes,
-            )?;
-            let descriptor_bytes = checked_element_bytes::<J2kPacketizationPacketDescriptor>(
-                packet_descriptors.capacity(),
-                "packet descriptor owners",
-            )?;
-            let resolution_packets = encode_prepared_resolution_packets_for_session(
-                prepared_resolution_packets,
-                session,
-                checked_add_bytes(
-                    retained_base_bytes,
-                    descriptor_bytes,
-                    "Tier-1 packet descriptor baseline",
-                )?,
-                accelerator,
-            )?;
-            (resolution_packets, packet_descriptors, true)
-        };
-    let block_encode_us = profile::elapsed_us(stage_start);
-
-    let stage_start = profile::profile_now(profile_enabled);
-    let packet_session = session.checked_child_session(
-        plan,
-        retained_base_bytes,
-        "retained transform and single-tile plan owners",
-    )?;
-    let descriptor_capacity = packet_descriptors.capacity();
-    let mut packetized_tile = packetize_resolution_packets_with_options_for_session(
-        &resolution_packets,
-        resolution_packets.capacity(),
-        &mut packet_descriptors,
-        descriptor_capacity,
-        &plan.params,
-        super::super::tile_grid::tile_bounds(width, height, plan.tile_origin)?,
-        packet_encode::PacketMarkerOptions {
-            write_sop: plan.params.write_sop,
-            write_eph: plan.params.write_eph,
-            separate_packet_headers: plan.params.write_ppm || plan.params.write_ppt,
+            phase_owners: plan,
+            retained_what: "retained transform and single-tile plan owners",
+            profile_enabled,
+            session,
+            accelerator,
         },
-        allow_packetization_accelerator,
-        packetization_requires_scalar(&plan.params, options.tile_part_packet_limit),
-        &packet_session,
-        accelerator,
     )?;
-    packetized_tile.required_ht_magnitude_bound = required_ht_magnitude_bound;
-    let packetize_us = profile::elapsed_us(stage_start);
-
     Ok(EncodedTilePackets {
-        packetized_tile,
+        packetized_tile: encoded.packetized_tile,
         subband_prepare_us,
-        block_encode_us,
-        packetize_us,
+        block_encode_us: encoded.block_encode_us,
+        packetize_us: encoded.packetize_us,
     })
 }

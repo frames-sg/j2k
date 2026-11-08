@@ -74,8 +74,9 @@ use self::retained_input::{
 };
 mod options;
 use self::options::{
-    validate_code_block_geometry, validate_irreversible_quantization_profile,
-    validate_precinct_exponents_for_options, CodeBlockGeometry,
+    validate_code_block_geometry, validate_common_encode_options,
+    validate_irreversible_quantization_profile, validate_precinct_exponents_for_options,
+    CodeBlockGeometry,
 };
 pub use self::options::{
     EncodeComponentPlane, EncodeOptions, EncodeProgressionOrder, EncodeRoiRegion,
@@ -88,9 +89,7 @@ mod exact;
 use self::exact::{
     forward_rct_i64, validate_htj2k_codestream, validate_reversible_i64_encode_options,
 };
-mod i64_packetize;
 mod magnitude;
-use self::i64_packetize::{packetize_i64_component_resolution_packets, I64PacketizeRequest};
 mod multitile;
 mod tile_grid;
 mod tile_parts;
@@ -131,8 +130,8 @@ use self::precomputed_batch::prepare_precomputed_htj2k97_image_for_batch;
 use self::precomputed_batch::{copy_code_block_coefficients, downcast_i64_coefficients_to_i32};
 mod prepared_packets;
 use self::prepared_packets::{
-    encode_prepared_resolution_packets_for_session,
-    encode_prepared_resolution_packets_layered_for_session,
+    encode_component_resolution_packets, encode_prepared_resolution_packets_for_session,
+    TilePacketRequest,
 };
 mod packet_plan;
 use self::packet_plan::{
