@@ -280,69 +280,71 @@ fn submitted_distinct_full_rgb_tiles_stay_resident_when_batch_route_falls_back()
         return;
     }
 
-    let rgb_tiles = [
-        fixture_direct_rgb8_variant(0),
-        fixture_direct_rgb8_variant(5),
-        fixture_direct_rgb8_variant(11),
-    ];
-    assert_ne!(rgb_tiles[0], rgb_tiles[1], "RGB batch fixtures must differ");
-    assert_ne!(rgb_tiles[1], rgb_tiles[2], "RGB batch fixtures must differ");
-    let mut ctx = J2kContext::default();
-    let mut session = MetalSession::default();
-    let mut pool = J2kScratchPool::new();
+    for fmt in [PixelFormat::Rgb8, PixelFormat::Rgba8] {
+        let rgb_tiles = [
+            fixture_direct_rgb8_variant(0),
+            fixture_direct_rgb8_variant(5),
+            fixture_direct_rgb8_variant(11),
+        ];
+        assert_ne!(rgb_tiles[0], rgb_tiles[1], "RGB batch fixtures must differ");
+        assert_ne!(rgb_tiles[1], rgb_tiles[2], "RGB batch fixtures must differ");
+        let mut ctx = J2kContext::default();
+        let mut session = MetalSession::default();
+        let mut pool = J2kScratchPool::new();
 
-    let submissions = rgb_tiles
-        .iter()
-        .map(|bytes| {
-            Codec::submit_tile_to_device(
-                &mut ctx,
-                &mut session,
-                &mut pool,
-                bytes,
-                PixelFormat::Rgb8,
-                BackendRequest::Metal,
-            )
-            .expect("submit distinct rgb tile")
-        })
-        .collect::<Vec<_>>();
+        let submissions = rgb_tiles
+            .iter()
+            .map(|bytes| {
+                Codec::submit_tile_to_device(
+                    &mut ctx,
+                    &mut session,
+                    &mut pool,
+                    bytes,
+                    fmt,
+                    BackendRequest::Metal,
+                )
+                .expect("submit distinct rgb tile")
+            })
+            .collect::<Vec<_>>();
 
-    assert_eq!(
-        session.submissions().expect("session submissions"),
-        0,
-        "distinct RGB tile surfaces should stay queued until a wait flushes the session"
-    );
-
-    let expected = rgb_tiles
-        .iter()
-        .map(|bytes| {
-            let mut host_decoder = J2kDecoder::new(bytes).expect("host decoder");
-            let stride = 8 * 3;
-            let mut host = vec![0u8; stride * 8];
-            host_decoder
-                .decode_into(&mut host, stride, PixelFormat::Rgb8)
-                .expect("host decode");
-            host
-        })
-        .collect::<Vec<_>>();
-
-    let mut surfaces = Vec::with_capacity(submissions.len());
-    for (submission, host) in submissions.into_iter().zip(expected) {
-        let surface = submission.wait().expect("surface");
-        assert_eq!(surface.backend_kind(), BackendKind::Metal);
-        assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
         assert_eq!(
-            surface.as_bytes().expect("surface byte access"),
-            host.as_slice()
+            session.submissions().expect("session submissions"),
+            0,
+            "distinct RGB tile surfaces should stay queued until a wait flushes the session"
         );
-        surfaces.push(surface);
-    }
-    assert!(
-        session.submissions().expect("session submissions") >= 1,
-        "queued RGB tiles should submit at least one resident Metal decode"
-    );
-    for surface in surfaces {
-        assert!(completed_surface_metal_buffer(&surface).is_some());
-        assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
+
+        let expected = rgb_tiles
+            .iter()
+            .map(|bytes| {
+                let mut host_decoder = J2kDecoder::new(bytes).expect("host decoder");
+                let stride = 8 * fmt.bytes_per_pixel();
+                let mut host = vec![0u8; stride * 8];
+                host_decoder
+                    .decode_into(&mut host, stride, fmt)
+                    .expect("host decode");
+                host
+            })
+            .collect::<Vec<_>>();
+
+        let mut surfaces = Vec::with_capacity(submissions.len());
+        for (submission, host) in submissions.into_iter().zip(expected) {
+            let surface = submission.wait().expect("surface");
+            assert_eq!(surface.backend_kind(), BackendKind::Metal);
+            assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
+            assert_eq!(
+                surface.as_bytes().expect("surface byte access"),
+                host.as_slice()
+            );
+            surfaces.push(surface);
+        }
+        assert!(
+            session.submissions().expect("session submissions") >= 1,
+            "queued RGB tiles should submit at least one resident Metal decode"
+        );
+        for surface in surfaces {
+            assert!(completed_surface_metal_buffer(&surface).is_some());
+            assert_eq!(surface.residency(), SurfaceResidency::MetalResidentDecode);
+        }
     }
 }
 

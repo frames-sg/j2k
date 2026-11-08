@@ -2,14 +2,16 @@
 
 //! Persistent shared-contract Metal batch decoder.
 
+use j2k::PreparedImageOperation;
+
+#[cfg(target_os = "macos")]
+use super::{
+    resident::ResidentGroupView, IndexedBatchError, MetalImageDestination, PixelFormat,
+    PreparedColorPlanCache, PreparedGrayPlanCache, SubmittedMetalPreparedBatch,
+};
 use super::{
     BatchDecodeOptions, EncodedImage, Error, MetalBackendSession, MetalBatchDecodeResult,
     MetalBatchGroup, MetalBatchGroupError, PreparedBatch, PreparedBatchGroup, PreparedImage,
-};
-#[cfg(target_os = "macos")]
-use super::{
-    MetalImageDestination, PixelFormat, PreparedColorPlanCache, PreparedGrayPlanCache,
-    SubmittedMetalPreparedBatch,
 };
 
 /// Persistent Metal batch decoder.
@@ -201,43 +203,139 @@ impl MetalBatchDecoder {
         &mut self,
         prepared: &PreparedBatch,
     ) -> Result<SubmittedMetalPreparedBatch, Error> {
+        let groups = prepared.groups();
+        self.submit_group_views(
+            groups.len(),
+            groups.iter().map(ResidentGroupView::from),
+            prepared.errors(),
+            prepared.options(),
+        )
+    }
+
+    /// Decode regions at exact wavelet reductions of existing prepared
+    /// sources into Metal-resident groups.
+    ///
+    /// Output geometry, native sample values and grouping match
+    /// [`j2k::CpuBatchDecoder::decode_operations`], and source indices refer to
+    /// positions in `operations`. Shapes the prepared Metal route cannot
+    /// describe, such as subsampled components below full resolution, fail
+    /// per group with a capability error.
+    ///
+    /// A [`j2k::J2kDecodeControl`]'s output limit applies to each operation's
+    /// output, and its cancellation token is checked during preparation, before
+    /// each group's Metal storage is allocated and before its command buffers
+    /// are committed; committed GPU work runs to completion. Operations share a
+    /// group only with operations carrying the same token, so a cancelled group
+    /// fails only its own operations. A working-memory limit fails the
+    /// operation as unsupported: Metal working memory is not accounted against
+    /// a host allowance.
+    ///
+    /// # Errors
+    /// Returns [`Error`] when operation metadata cannot be allocated or the
+    /// Metal session becomes unusable; other failures are reported per
+    /// operation or group in the result.
+    pub fn decode_operations(
+        &mut self,
+        operations: &[PreparedImageOperation<'_>],
+    ) -> Result<MetalBatchDecodeResult, Error> {
+        #[cfg(target_os = "macos")]
+        {
+            self.submit_operations(operations)?.wait()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (self, operations);
+            Err(Error::MetalUnavailable)
+        }
+    }
+
+    /// Commit exact operations to codec-owned Metal output storage without
+    /// waiting on the CPU. See [`Self::decode_operations`].
+    ///
+    /// # Errors
+    /// As [`Self::decode_operations`].
+    #[cfg(target_os = "macos")]
+    pub fn submit_operations(
+        &mut self,
+        operations: &[PreparedImageOperation<'_>],
+    ) -> Result<SubmittedMetalPreparedBatch, Error> {
+        let prepared = j2k::prepare_device_operations(operations, self.options)?;
+        let groups = prepared.groups();
+        self.submit_group_views(
+            groups.len(),
+            groups.iter().map(ResidentGroupView::from),
+            prepared.errors(),
+            self.options,
+        )
+    }
+
+    /// Prepare and commit homogeneous groups, keeping indexed preparation
+    /// errors and per-group failures in group order.
+    #[cfg(target_os = "macos")]
+    fn submit_group_views<'g>(
+        &mut self,
+        group_count: usize,
+        groups: impl Iterator<Item = ResidentGroupView<'g>>,
+        preparation_errors: &[IndexedBatchError],
+        options: BatchDecodeOptions,
+    ) -> Result<SubmittedMetalPreparedBatch, Error> {
         let mut budget = crate::batch_allocation::BatchMetadataBudget::new(
             "J2K submitted shared prepared Metal batch",
         );
-        let mut pending_groups = budget.try_vec(
-            prepared.groups().len(),
-            "J2K submitted shared prepared Metal groups",
-        )?;
+        let mut pending_groups =
+            budget.try_vec(group_count, "J2K submitted shared prepared Metal groups")?;
         let mut errors = budget.try_vec(
-            prepared.errors().len(),
+            preparation_errors.len(),
             "J2K submitted shared prepared indexed errors",
         )?;
-        errors.extend_from_slice(prepared.errors());
+        errors.extend_from_slice(preparation_errors);
         let mut indexed_group_errors = budget.try_vec(
-            prepared.groups().len(),
+            group_count,
             "J2K submitted shared prepared indexed group errors",
         )?;
-        let mut residents = budget.try_vec(
-            prepared.groups().len(),
-            "J2K submitted shared prepared resident groups",
-        )?;
+        let mut residents =
+            budget.try_vec(group_count, "J2K submitted shared prepared resident groups")?;
         let mut resident_indices = budget.try_vec(
-            prepared.groups().len(),
+            group_count,
             "J2K submitted shared prepared resident group indices",
         )?;
 
-        for (index, group) in prepared.groups().iter().enumerate() {
-            match self.prepare_resident_group(group, prepared.options()) {
+        for (index, group) in groups.enumerate() {
+            match group
+                .check_cancelled()
+                .and_then(|()| self.prepare_resident_group_view(group, options))
+            {
                 Ok(resident) => {
                     residents.push(resident);
                     resident_indices.push(index);
                 }
                 Err(source) if source.session_is_unusable() => return Err(source),
                 Err(source) => {
-                    indexed_group_errors.push((index, MetalBatchGroupError::new(group, source)));
+                    indexed_group_errors.push((
+                        index,
+                        MetalBatchGroupError::for_sources(group.source_indices, source),
+                    ));
                 }
             }
         }
+        // Cancellation observed after allocation still stops the group before
+        // its command buffers are committed.
+        let mut committed = budget.try_vec(residents.len(), "J2K committed resident groups")?;
+        let mut committed_indices =
+            budget.try_vec(residents.len(), "J2K committed resident group indices")?;
+        for (index, resident) in resident_indices.into_iter().zip(residents) {
+            match resident.group.check_cancelled() {
+                Ok(()) => {
+                    committed.push(resident);
+                    committed_indices.push(index);
+                }
+                Err(source) => indexed_group_errors.push((
+                    index,
+                    MetalBatchGroupError::for_sources(resident.group.source_indices, source),
+                )),
+            }
+        }
+        let (residents, resident_indices) = (committed, committed_indices);
         let (submitted, _) = self.submit_resident_groups(residents, Vec::new())?;
         for (index, result) in resident_indices.into_iter().zip(submitted) {
             match result {
@@ -246,10 +344,8 @@ impl MetalBatchDecoder {
             }
         }
         indexed_group_errors.sort_by_key(|(index, _)| *index);
-        let mut group_errors = budget.try_vec(
-            prepared.groups().len(),
-            "J2K submitted shared prepared group errors",
-        )?;
+        let mut group_errors =
+            budget.try_vec(group_count, "J2K submitted shared prepared group errors")?;
         group_errors.extend(indexed_group_errors.into_iter().map(|(_, error)| error));
         Ok(SubmittedMetalPreparedBatch {
             pending_groups,

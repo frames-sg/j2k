@@ -32,6 +32,24 @@ pub(in crate::engine) fn prepared_direct_color_plan_supports_runtime(
             .all(prepared_direct_component_plan_supports_runtime)
 }
 
+/// Reject, before any command is encoded, a grayscale plan whose Metal Tier-1
+/// jobs exceed the kernels' limits. Like the colour batch preflight, this is a
+/// pre-execution rejection that may take another route; a kernel status
+/// reported after dispatch is not.
+pub(in crate::engine) fn ensure_direct_grayscale_plan_supports_runtime(
+    plan: &PreparedDirectGrayscalePlan,
+) -> Result<(), crate::Error> {
+    if plan.tier1_prepare_mode != DirectTier1Mode::Metal
+        || prepared_direct_component_plan_supports_runtime(plan)
+    {
+        return Ok(());
+    }
+    Err(crate::Error::MetalDirectFallback {
+        message: "unsupported Tier-1 kernel input in direct grayscale plan".to_string(),
+        reason: crate::MetalDirectFallbackReason::UnsupportedPlan,
+    })
+}
+
 fn prepared_direct_component_plan_supports_runtime(plan: &PreparedDirectGrayscalePlan) -> bool {
     plan.tier1_prepare_mode == DirectTier1Mode::Metal
         && plan.steps.iter().all(|step| match step {

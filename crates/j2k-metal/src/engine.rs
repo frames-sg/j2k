@@ -121,8 +121,8 @@ use self::direct_profile::{
 mod direct_plan_validation;
 use self::direct_plan_validation::{
     classic_group_shapes_match, classic_sub_band_shapes_match, direct_preflight_invariant,
-    ht_group_shapes_match, ht_sub_band_shapes_match, idwt_shapes_match,
-    prepared_direct_color_plan_supports_runtime, store_shapes_match,
+    ensure_direct_grayscale_plan_supports_runtime, ht_group_shapes_match, ht_sub_band_shapes_match,
+    idwt_shapes_match, prepared_direct_color_plan_supports_runtime, store_shapes_match,
 };
 mod direct_scratch;
 #[cfg(target_os = "macos")]

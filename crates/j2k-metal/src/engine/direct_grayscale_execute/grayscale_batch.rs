@@ -5,8 +5,9 @@ use super::{
     encode_prepared_direct_grayscale_plan_in_command_buffer,
     encode_repeated_direct_grayscale_plan_in_command_buffer,
     encode_repeated_gray_plane_to_surfaces_in_command_buffer,
-    encode_stacked_direct_component_plane_batch, new_command_buffer, recycle_scratch_buffers,
-    retire_direct_status_checks, supports_stacked_direct_component_plane_batch, with_runtime, Arc,
+    encode_stacked_direct_component_plane_batch, ensure_direct_grayscale_plan_supports_runtime,
+    new_command_buffer, recycle_scratch_buffers, retire_direct_status_checks,
+    supports_stacked_direct_component_plane_batch, with_runtime, Arc,
     DirectColorBatchCommandBuffers, DirectExecutionMetadata, DirectHybridStageTimings,
     DirectStatusRetirementMode, DirectTier1Mode, Error, PixelFormat, PreparedDirectGrayscalePlan,
     RepeatedDirectGrayscalePlanRequest, StackedDirectComponentPlaneBatchRequest, Surface,
@@ -17,6 +18,7 @@ pub(crate) fn execute_repeated_prepared_direct_grayscale_plan(
     fmt: PixelFormat,
     count: usize,
 ) -> Result<Vec<Surface>, Error> {
+    ensure_direct_grayscale_plan_supports_runtime(plan)?;
     with_runtime(|runtime| {
         let DirectExecutionMetadata {
             mut retained_buffers,
@@ -67,6 +69,9 @@ pub(crate) fn execute_prepared_direct_grayscale_plan_batch(
     let Some(first) = plans.first() else {
         return Ok(Vec::new());
     };
+    for plan in plans {
+        ensure_direct_grayscale_plan_supports_runtime(plan)?;
+    }
 
     with_runtime(|runtime| {
         let step_count = crate::batch_allocation::checked_count_sum(

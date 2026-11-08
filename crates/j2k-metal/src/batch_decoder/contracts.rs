@@ -37,15 +37,13 @@ pub struct MetalBatchGroupCompletion {
 
 impl MetalBatchGroupCompletion {
     #[cfg(target_os = "macos")]
-    pub(super) fn from_prepared(group: &PreparedBatchGroup) -> Result<Self, Error> {
+    pub(super) fn from_view(group: super::resident::ResidentGroupView<'_>) -> Result<Self, Error> {
         let mut budget =
             crate::batch_allocation::BatchMetadataBudget::new("J2K Metal group completion");
-        let mut decoded_rects =
-            budget.try_vec(group.images().len(), "J2K Metal completed rectangles")?;
-        let mut warnings =
-            budget.try_vec(group.images().len(), "J2K Metal completed warning owners")?;
+        let mut decoded_rects = budget.try_vec(group.len(), "J2K Metal completed rectangles")?;
+        let mut warnings = budget.try_vec(group.len(), "J2K Metal completed warning owners")?;
         for image in group.images() {
-            decoded_rects.push(image.plan().output_rect());
+            decoded_rects.push(image.output_rect());
             let mut image_warnings = Vec::new();
             if image.used_lenient_metadata_recovery() {
                 // `J2kDecodeWarning` is a ZST, so this push does not allocate.
@@ -186,13 +184,17 @@ pub struct MetalBatchGroupError {
 }
 
 impl MetalBatchGroupError {
+    pub(super) fn new(group: &PreparedBatchGroup, source: Error) -> Self {
+        Self::for_sources(group.source_indices(), source)
+    }
+
     #[allow(
         clippy::disallowed_methods,
         reason = "error construction preserves its infallible public signature while retaining affected source indices"
     )]
-    pub(super) fn new(group: &PreparedBatchGroup, source: Error) -> Self {
+    pub(super) fn for_sources(source_indices: &[usize], source: Error) -> Self {
         Self {
-            source_indices: group.source_indices().to_vec(),
+            source_indices: source_indices.to_vec(),
             source: Box::new(source),
         }
     }

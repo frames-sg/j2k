@@ -4,7 +4,9 @@ mod runtime;
 mod shape;
 
 pub(in crate::engine) use self::runtime::classic_prepared_job_supports_runtime;
-pub(super) use self::runtime::prepared_direct_color_plan_supports_runtime;
+pub(super) use self::runtime::{
+    ensure_direct_grayscale_plan_supports_runtime, prepared_direct_color_plan_supports_runtime,
+};
 pub(super) use self::shape::{
     classic_group_shapes_match, classic_sub_band_shapes_match, ht_group_shapes_match,
     ht_sub_band_shapes_match, idwt_shapes_match, store_shapes_match,

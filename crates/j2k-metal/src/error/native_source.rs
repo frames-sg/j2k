@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(any(test, target_os = "macos"))]
+use std::sync::Arc;
+
+#[cfg(any(test, target_os = "macos"))]
 use j2k_native::{DecodeError, DecodeErrorClass, EncodeError};
 
 /// Opaque, Metal-adapter-owned source for native codec failures.
@@ -9,7 +12,7 @@ use j2k_native::{DecodeError, DecodeErrorClass, EncodeError};
 /// [`core::error::Error::source`] without becoming part of this crate's public
 /// type signatures. Classify the enclosing [`crate::Error`] through
 /// [`j2k_core::CodecError`].
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeBackendError {
     #[cfg(any(test, target_os = "macos"))]
     source: NativeBackendErrorSource,
@@ -18,10 +21,10 @@ pub struct NativeBackendError {
 }
 
 #[cfg(any(test, target_os = "macos"))]
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum NativeBackendErrorSource {
     Decode(DecodeError),
-    Encode(EncodeError),
+    Encode(Arc<EncodeError>),
 }
 
 #[cfg(any(test, target_os = "macos"))]
@@ -32,9 +35,9 @@ impl NativeBackendError {
         }
     }
 
-    pub(crate) const fn encode(source: EncodeError) -> Self {
+    pub(crate) fn encode(source: EncodeError) -> Self {
         Self {
-            source: NativeBackendErrorSource::Encode(source),
+            source: NativeBackendErrorSource::Encode(Arc::new(source)),
         }
     }
 
@@ -55,8 +58,9 @@ impl NativeBackendError {
             NativeBackendErrorSource::Decode(source) => {
                 matches!(source.classify(), DecodeErrorClass::Unsupported { .. })
             }
-            NativeBackendErrorSource::Encode(EncodeError::Unsupported { .. }) => true,
-            NativeBackendErrorSource::Encode(_) => false,
+            NativeBackendErrorSource::Encode(source) => {
+                matches!(source.as_ref(), EncodeError::Unsupported { .. })
+            }
         }
     }
 }
@@ -94,7 +98,7 @@ impl core::error::Error for NativeBackendError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         Some(match &self.source {
             NativeBackendErrorSource::Decode(source) => source,
-            NativeBackendErrorSource::Encode(source) => source,
+            NativeBackendErrorSource::Encode(source) => source.as_ref(),
         })
     }
 }

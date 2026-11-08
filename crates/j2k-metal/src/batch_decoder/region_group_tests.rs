@@ -119,7 +119,7 @@ fn large_region_batches_stay_within_the_metal_buffer_cap() {
                 .expect("prepare large region batch");
             for group in prepared.groups() {
                 for plan in decoder
-                    .prepared_color_group_plans(group, PixelFormat::Rgb8)
+                    .prepared_color_group_plans(group.into(), PixelFormat::Rgb8)
                     .expect("large region plans")
                 {
                     let (_, coefficients) = plan.geometry_for_test();

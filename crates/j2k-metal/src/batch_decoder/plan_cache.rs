@@ -2,25 +2,12 @@
 
 //! Persistent prepared-plan caches for exact Metal batch output.
 
-use super::{
-    Arc, DecodeRequest, Error, MetalBackendSession, MetalBatchDecoder, PixelFormat,
-    PreparedBatchGroup, PreparedImage,
-};
-
-/// Whether `request` stores only part of the decoded level. Referenced plans
-/// for such requests already store just their output region, but keep
-/// whole-level coefficient and IDWT windows unless pruned to their stores;
-/// at full resolution on large images those exceed Metal's buffer cap.
-fn stores_a_region(request: DecodeRequest) -> bool {
-    matches!(
-        request,
-        DecodeRequest::Region { .. } | DecodeRequest::RegionReduced { .. }
-    )
-}
+use super::resident::{GroupImage, ResidentGroupView};
+use super::{Arc, Error, MetalBackendSession, MetalBatchDecoder, PixelFormat};
 
 fn prepare_referenced_gray_plan(
     session: &MetalBackendSession,
-    image: &PreparedImage,
+    image: GroupImage<'_>,
 ) -> Result<Option<crate::engine::PreparedDirectGrayscalePlan>, Error> {
     let mut plan = if let Some(prepared) = image.htj2k_plan() {
         if !prepared.is_grayscale() {
@@ -42,7 +29,7 @@ fn prepare_referenced_gray_plan(
             crate::engine::prepare_referenced_classic_grayscale_plan(referenced, image.bytes())
         })?
     };
-    if stores_a_region(image.request()) {
+    if image.stores_a_region() {
         crate::engine::prune_prepared_direct_grayscale_plan_to_stores(&mut plan)?;
     }
     Ok(Some(plan))
@@ -51,7 +38,7 @@ fn prepare_referenced_gray_plan(
 #[cfg(target_os = "macos")]
 fn prepare_referenced_color_plan(
     session: &MetalBackendSession,
-    image: &PreparedImage,
+    image: GroupImage<'_>,
     fmt: PixelFormat,
 ) -> Result<Option<crate::engine::PreparedDirectColorPlan>, Error> {
     let rgba = matches!(
@@ -82,10 +69,7 @@ fn prepare_referenced_color_plan(
                 crate::engine::prepare_referenced_classic_color_plan(referenced, image.bytes())
             }
         })?
-    } else if !rgba
-        && image.request() == DecodeRequest::Full
-        && image.support().has_component_subsampling()
-    {
+    } else if !rgba && image.is_full_resolution_image() && image.has_component_subsampling() {
         // Offset plans require unit-sampled components. Full subsampled RGB
         // decodes each component on its own grid and replicates it in the
         // group's command buffer; other geometry keeps the capability error.
@@ -99,7 +83,7 @@ fn prepare_referenced_color_plan(
     } else {
         return Ok(None);
     };
-    if stores_a_region(image.request()) {
+    if image.stores_a_region() {
         crate::engine::prune_prepared_direct_color_plan_to_stores(&mut plan)?;
     }
     Ok(Some(plan))
@@ -119,23 +103,23 @@ impl MetalBatchDecoder {
     #[cfg(target_os = "macos")]
     pub(super) fn prepared_gray_group_plans(
         &mut self,
-        group: &PreparedBatchGroup,
+        group: ResidentGroupView<'_>,
         fmt: PixelFormat,
         asynchronous: bool,
     ) -> Result<Vec<Arc<crate::engine::PreparedDirectGrayscalePlan>>, Error> {
         let mut plans = Vec::new();
-        plans
-            .try_reserve_exact(group.images().len())
-            .map_err(|source| Error::PreparedPlanCacheAllocation {
+        plans.try_reserve_exact(group.len()).map_err(|source| {
+            Error::PreparedPlanCacheAllocation {
                 context: "J2K Metal prepared grayscale group destination",
                 source,
-            })?;
+            }
+        })?;
         for image in group.images() {
             if let Some(plan) = self.prepared_gray_plan_for_image(image, fmt)? {
                 plans.push(plan);
                 continue;
             }
-            if image.request() != DecodeRequest::Full {
+            if !image.is_full_resolution_image() {
                 let reason = if asynchronous {
                     "J2K Metal asynchronous external ROI/reduction requires a prepared HTJ2K offset plan"
                 } else {
@@ -159,16 +143,16 @@ impl MetalBatchDecoder {
     #[cfg(target_os = "macos")]
     pub(super) fn prepared_color_group_plans(
         &mut self,
-        group: &PreparedBatchGroup,
+        group: ResidentGroupView<'_>,
         fmt: PixelFormat,
     ) -> Result<Vec<Arc<crate::engine::PreparedDirectColorPlan>>, Error> {
         let mut plans = Vec::new();
-        plans
-            .try_reserve_exact(group.images().len())
-            .map_err(|source| Error::PreparedPlanCacheAllocation {
+        plans.try_reserve_exact(group.len()).map_err(|source| {
+            Error::PreparedPlanCacheAllocation {
                 context: "J2K Metal prepared exact color group destination",
                 source,
-            })?;
+            }
+        })?;
         for image in group.images() {
             let Some(plan) = self.prepared_color_plan_for_image(image, fmt)? else {
                 let reason = if matches!(
@@ -191,14 +175,10 @@ impl MetalBatchDecoder {
     #[cfg(target_os = "macos")]
     fn prepared_gray_plan_for_image(
         &mut self,
-        image: &PreparedImage,
+        image: GroupImage<'_>,
         fmt: PixelFormat,
     ) -> Result<Option<Arc<crate::engine::PreparedDirectGrayscalePlan>>, Error> {
-        let key = crate::session::PreparedPlanCacheKey::prepared_gray(
-            image.bytes(),
-            image.request(),
-            fmt,
-        );
+        let key = image.plan_cache_key(fmt, false);
         if let Some(plan) = self.prepared_gray_plans.get(key) {
             return Ok(Some(plan.clone()));
         }
@@ -220,14 +200,10 @@ impl MetalBatchDecoder {
     #[cfg(target_os = "macos")]
     fn prepared_color_plan_for_image(
         &mut self,
-        image: &PreparedImage,
+        image: GroupImage<'_>,
         fmt: PixelFormat,
     ) -> Result<Option<Arc<crate::engine::PreparedDirectColorPlan>>, Error> {
-        let key = crate::session::PreparedPlanCacheKey::prepared_color(
-            image.bytes(),
-            image.request(),
-            fmt,
-        );
+        let key = image.plan_cache_key(fmt, true);
         if let Some(plan) = self.prepared_color_plans.get(key) {
             return Ok(Some(plan.clone()));
         }

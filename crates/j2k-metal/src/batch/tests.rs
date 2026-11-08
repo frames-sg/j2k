@@ -6,14 +6,16 @@ use j2k_core::{BackendRequest, Downscale, PixelFormat, Rect};
 
 use crate::{Error, MetalSession};
 
-use super::execute::complete_repeated_device_failure;
+use super::execute::complete_device_failure;
 use super::heuristics::{
     can_decode_requests_as_repeated_full_color_batch,
     can_decode_requests_as_repeated_full_grayscale_batch, group_metal_requests,
     profile_route_label, same_input_bytes, BatchRoute,
 };
 use super::request::{BatchOp, QueuedRequest};
-use super::session::{queue_tile_request_shared, release_surface_slot, SessionState};
+use super::session::{
+    queue_tile_request_shared, queue_tile_request_shared_with_retained, SessionState,
+};
 
 fn auto_rgb_region_scaled_request(input: Arc<[u8]>) -> QueuedRequest {
     QueuedRequest::new(
@@ -101,7 +103,7 @@ fn dropping_an_unwaited_submission_releases_and_reuses_its_session_slot() {
 
     let state = session.shared.lock().expect("session");
     assert!(state.queued.is_empty());
-    assert_eq!(state.free_slots, [first_slot]);
+    assert!(state.completed.is_empty());
     drop(state);
 
     let next = queue_tile_request_shared(
@@ -116,17 +118,92 @@ fn dropping_an_unwaited_submission_releases_and_reuses_its_session_slot() {
 }
 
 #[test]
-fn slot_release_reports_missing_reserved_capacity_without_panicking() {
+fn slot_release_reports_an_inactive_slot_without_panicking() {
     let mut state = SessionState::default();
 
-    assert!(matches!(
-        release_surface_slot(&mut state, 0),
-        Err(Error::MetalStateInvariant {
-            state: "J2K Metal batch free-slot ledger",
-            ..
+    assert!(state.completed.release(0).is_none());
+    assert!(state.completed.is_empty());
+}
+
+#[test]
+fn queue_growth_checks_old_and_replacement_storage_before_mutation() {
+    use core::mem::size_of;
+    use j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES as CAP;
+    use j2k_metal_support::CompletionSlot;
+
+    let mut session = MetalSession::default();
+    let input = Arc::<[u8]>::from([0xff_u8, 0x4f]);
+    let submissions = (0..16)
+        .map(|_| {
+            queue_tile_request_shared(
+                &mut session,
+                input.clone(),
+                PixelFormat::Gray8,
+                BackendRequest::Cpu,
+                BatchOp::Full,
+            )
+            .expect("initial pending request")
         })
+        .collect::<Vec<_>>();
+    let (retained_capacity, before) = {
+        let state = session.shared.lock().expect("queued state");
+        assert_eq!(state.queued.len(), state.queued.capacity());
+        assert_eq!(state.completed.len(), state.completed.capacity());
+        let old_bytes = state.queued.capacity() * size_of::<QueuedRequest>()
+            + state.completed.capacity()
+                * size_of::<CompletionSlot<Result<crate::Surface, Error>>>();
+        let replacement_bytes = old_bytes * 2;
+        let retained_capacity =
+            (CAP - replacement_bytes) / size_of::<super::session::MetalSubmission>();
+        let retained_bytes = retained_capacity * size_of::<super::session::MetalSubmission>();
+        assert!(retained_bytes + replacement_bytes <= CAP);
+        assert!(retained_bytes + replacement_bytes + old_bytes > CAP);
+        (
+            retained_capacity,
+            (
+                state.queued.as_ptr(),
+                state.queued.len(),
+                state.queued.capacity(),
+                state.completed.get(0).map(core::ptr::from_ref),
+                state.completed.len(),
+                state.completed.capacity(),
+            ),
+        )
+    };
+
+    let error = queue_tile_request_shared_with_retained(
+        &mut session,
+        input,
+        PixelFormat::Gray8,
+        BackendRequest::Cpu,
+        BatchOp::Full,
+        retained_capacity,
+    )
+    .err()
+    .expect("final storage fits, but old plus replacement storage must be refused");
+    assert!(matches!(
+        error,
+        Error::BatchInfrastructure(j2k_core::BatchInfrastructureError::AllocationTooLarge {
+            requested,
+            cap: CAP,
+            ..
+        }) if requested > CAP
     ));
-    assert_eq!(state.free_slots, [] as [usize; 0]);
+    let state = session.shared.lock().expect("state after refused growth");
+    assert_eq!(
+        before,
+        (
+            state.queued.as_ptr(),
+            state.queued.len(),
+            state.queued.capacity(),
+            state.completed.get(0).map(core::ptr::from_ref),
+            state.completed.len(),
+            state.completed.capacity(),
+        )
+    );
+    assert!(!state.completed.can_reuse());
+    drop(state);
+    drop(submissions);
 }
 
 #[test]
@@ -139,14 +216,16 @@ fn selected_repeated_device_failure_is_reported_without_cpu_retry() {
             request
         })
         .collect::<Vec<_>>();
-    let mut session = SessionState {
-        submissions: 0,
-        queued: Vec::new(),
-        completed: (0..requests.len()).map(|_| None).collect(),
-        free_slots: Vec::new(),
-    };
+    let mut session = SessionState::default();
+    for _ in &requests {
+        session
+            .completed
+            .try_reserve_slot("test completions")
+            .expect("reserve slot");
+        session.completed.allocate().expect("pending slot");
+    }
 
-    complete_repeated_device_failure(
+    complete_device_failure(
         &mut session,
         &requests,
         &Error::MetalKernel {
@@ -158,8 +237,8 @@ fn selected_repeated_device_failure_is_reported_without_cpu_retry() {
     assert!(session.completed.iter().all(|result| {
         matches!(
             result,
-            Some(Err(Error::MetalRuntime { message }))
-                if message.contains("synthetic dispatch failure")
+            Some(Err(Error::MetalKernel { message }))
+                if message == "synthetic dispatch failure"
         )
     }));
 }

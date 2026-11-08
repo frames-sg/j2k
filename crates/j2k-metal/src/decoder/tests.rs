@@ -23,6 +23,8 @@ use crate::{hybrid, MetalBackendSession, MetalDirectFallbackReason};
 
 #[cfg(target_os = "macos")]
 mod region_scaled_routing;
+#[cfg(target_os = "macos")]
+mod session_routing;
 
 #[cfg(target_os = "macos")]
 fn should_run_metal_runtime() -> bool {
@@ -34,14 +36,105 @@ fn should_run_metal_runtime() -> bool {
 fn direct_runtime_fallback_classification_uses_structured_variant() {
     let fallback = Error::MetalDirectFallback {
         message: "arbitrary fallback text".to_string(),
-        reason: MetalDirectFallbackReason::UnsupportedRuntimeInput,
+        reason: MetalDirectFallbackReason::UnsupportedPlan,
     };
     assert!(is_direct_runtime_fallback_error(&fallback));
+
+    let completed_kernel_rejection = Error::MetalDirectFallback {
+        message: "GPU rejected runtime input".to_string(),
+        reason: MetalDirectFallbackReason::UnsupportedRuntimeInput,
+    };
+    assert!(!is_direct_runtime_fallback_error(
+        &completed_kernel_rejection
+    ));
 
     let message_only = Error::MetalKernel {
         message: "unsupported classic kernel input in direct component plan".to_string(),
     };
     assert!(!is_direct_runtime_fallback_error(&message_only));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn direct_color_preflight_rejection_allows_another_route_without_commands() {
+    let bytes = j2k_native::encode(
+        &[128; 2 * 2 * 3],
+        2,
+        2,
+        3,
+        8,
+        false,
+        &j2k_native::EncodeOptions::default(),
+    )
+    .expect("encode RGB fixture");
+    let image = j2k_native::Image::new(&bytes, &j2k_native::DecodeSettings::default())
+        .expect("parse RGB fixture");
+    let native = image
+        .build_direct_color_plan_with_context(&mut j2k_native::DecoderContext::default())
+        .expect("direct RGB plan");
+    let prepared =
+        Arc::new(crate::engine::prepare_direct_color_plan(&native).expect("prepare RGB"));
+    crate::engine::reset_metal_command_buffers_for_test();
+    let error = crate::engine::execute_prepared_direct_color_plan(prepared, PixelFormat::Rgba8)
+        .err()
+        .expect("three-component direct plan needs another RGBA route");
+
+    assert!(matches!(
+        error,
+        Error::MetalDirectFallback {
+            reason: MetalDirectFallbackReason::UnsupportedPlan,
+            ..
+        }
+    ));
+    assert!(is_direct_runtime_fallback_error(&error));
+    assert_eq!(crate::engine::metal_command_buffers_for_test(), 0);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn direct_gray_preflight_rejects_oversized_ht_blocks_without_commands() {
+    // 512 x 8 code-blocks (COD exponents 7 and 1) exceed the HT kernels'
+    // 256-sample width; the host must reject them before dispatch so the
+    // caller can take another route.
+    let pixels: Vec<u8> = (0..=u8::MAX).cycle().take(512 * 8).collect();
+    let bytes = j2k_native::encode_htj2k(
+        &pixels,
+        512,
+        8,
+        1,
+        8,
+        false,
+        &j2k_native::EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 0,
+            code_block_width_exp: 7,
+            code_block_height_exp: 1,
+            guard_bits: 2,
+            ..j2k_native::EncodeOptions::default()
+        },
+    )
+    .expect("encode HTJ2K with 512-wide code-blocks");
+    let image = j2k_native::Image::new(&bytes, &j2k_native::DecodeSettings::default())
+        .expect("parse gray fixture");
+    let native = image
+        .build_direct_grayscale_plan_with_context(&mut j2k_native::DecoderContext::default())
+        .expect("direct gray plan");
+    let prepared = crate::engine::prepare_direct_grayscale_plan(&native).expect("prepare gray");
+    crate::engine::reset_metal_command_buffers_for_test();
+    let error =
+        crate::engine::execute_prepared_direct_grayscale_plan(&prepared, PixelFormat::Gray8)
+            .err()
+            .expect("oversized HT code-blocks need another route");
+
+    assert!(matches!(
+        error,
+        Error::MetalDirectFallback {
+            reason: MetalDirectFallbackReason::UnsupportedPlan,
+            ..
+        }
+    ));
+    assert!(is_direct_runtime_fallback_error(&error));
+    assert_eq!(crate::engine::metal_command_buffers_for_test(), 0);
 }
 
 #[cfg(target_os = "macos")]

@@ -3,6 +3,7 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use j2k_core::{BackendRequest, DeviceSubmission, PixelFormat};
+use j2k_metal_support::{CompletionSlot, CompletionSlots};
 
 use crate::{profile, Error, MetalBackendSession, MetalSession, Surface};
 
@@ -14,8 +15,7 @@ use super::request::{batch_scheduler_invariant, BatchOp, QueuedRequest};
 pub(crate) struct SessionState {
     pub(crate) submissions: u64,
     pub(super) queued: Vec<QueuedRequest>,
-    pub(super) completed: Vec<Option<Result<Surface, Error>>>,
-    pub(super) free_slots: Vec<usize>,
+    pub(super) completed: CompletionSlots<Result<Surface, Error>>,
 }
 
 #[derive(Clone)]
@@ -83,17 +83,10 @@ impl Drop for MetalSubmission {
         let Ok(mut session) = self.session.lock() else {
             return;
         };
-        if let Some(position) = session
-            .queued
-            .iter()
-            .position(|request| request.output_slot == slot)
-        {
-            session.queued.remove(position);
-        }
-        if let Some(completed) = session.completed.get_mut(slot) {
-            *completed = None;
-        }
-        let _release_result = release_surface_slot(&mut session, slot);
+        let SessionState {
+            queued, completed, ..
+        } = &mut *session;
+        completed.cancel(queued, slot, |request| request.output_slot);
     }
 }
 
@@ -126,48 +119,11 @@ pub(crate) fn queue_tile_request_shared_with_retained(
     retained_submission_capacity: usize,
 ) -> Result<MetalSubmission, Error> {
     let mut state = session.shared.lock()?;
-    let reuses_slot = !state.free_slots.is_empty();
-    if !reuses_slot {
-        let slot_capacity = state.completed.len().checked_add(1).ok_or_else(|| {
-            Error::BatchInfrastructure(j2k_core::BatchInfrastructureError::AllocationTooLarge {
-                what: "J2K Metal reusable completion slots",
-                requested: usize::MAX,
-                cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
-            })
-        })?;
-        crate::batch_allocation::try_reserve_for_push(
-            &mut state.completed,
-            "J2K Metal queued completion slots",
-        )?;
-        j2k_core::try_batch_reserve_to(
-            &mut state.free_slots,
-            slot_capacity,
-            "J2K Metal reusable completion slots",
-        )?;
-    }
-    crate::batch_allocation::try_reserve_for_push(&mut state.queued, "J2K Metal queued requests")?;
-    let aggregate =
-        crate::batch_allocation::BatchMetadataBudget::new("J2K Metal queued request state");
-    aggregate.preflight(&[
-        crate::batch_allocation::BatchMetadataRequest::of::<MetalSubmission>(
-            retained_submission_capacity,
-        ),
-        crate::batch_allocation::BatchMetadataRequest::of::<QueuedRequest>(state.queued.capacity()),
-        crate::batch_allocation::BatchMetadataRequest::of::<Option<Result<Surface, Error>>>(
-            state.completed.capacity(),
-        ),
-        crate::batch_allocation::BatchMetadataRequest::of::<usize>(state.free_slots.capacity()),
-    ])?;
-    let slot = if reuses_slot {
-        state
-            .free_slots
-            .pop()
-            .ok_or_else(|| batch_scheduler_invariant("reusable slot disappeared"))?
-    } else {
-        let slot = state.completed.len();
-        state.completed.push(None);
-        slot
-    };
+    reserve_queue_metadata(&mut state, retained_submission_capacity)?;
+    let slot = state
+        .completed
+        .allocate()
+        .ok_or_else(|| batch_scheduler_invariant("completion slot capacity was not reserved"))?;
     state
         .queued
         .push(QueuedRequest::new(input, fmt, backend, op, slot));
@@ -176,6 +132,71 @@ pub(crate) fn queue_tile_request_shared_with_retained(
         session: session.shared.clone(),
         slot: Some(slot),
     })
+}
+
+fn reserve_queue_metadata(
+    state: &mut SessionState,
+    retained_submission_capacity: usize,
+) -> Result<(), Error> {
+    use crate::batch_allocation::{BatchMetadataBudget, BatchMetadataRequest};
+
+    let grows_queued = state.queued.len() == state.queued.capacity();
+    let grows_completed =
+        !state.completed.can_reuse() && state.completed.len() == state.completed.capacity();
+    let next_capacity = |len: usize, capacity: usize| {
+        len.checked_add(1)
+            .and_then(|required| capacity.checked_mul(2).map(|doubled| doubled.max(required)))
+            .ok_or(j2k_core::BatchInfrastructureError::AllocationTooLarge {
+                what: "J2K Metal queued request state",
+                requested: usize::MAX,
+                cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
+            })
+    };
+    let queued_capacity = if grows_queued {
+        next_capacity(state.queued.len(), state.queued.capacity())?
+    } else {
+        0
+    };
+    let completed_capacity = if grows_completed {
+        next_capacity(state.completed.len(), state.completed.capacity())?
+    } else {
+        0
+    };
+    let mut budget = BatchMetadataBudget::new("J2K Metal queued request state");
+    budget.account_capacity::<MetalSubmission>(retained_submission_capacity)?;
+    budget.account_capacity::<QueuedRequest>(state.queued.capacity())?;
+    budget
+        .account_capacity::<CompletionSlot<Result<Surface, Error>>>(state.completed.capacity())?;
+    // Old storage stays live until both replacements fit, including their
+    // allocator-reported capacities. A refusal leaves the session untouched.
+    budget.preflight(&[
+        BatchMetadataRequest::of::<QueuedRequest>(queued_capacity),
+        BatchMetadataRequest::of::<CompletionSlot<Result<Surface, Error>>>(completed_capacity),
+    ])?;
+    let queued = grows_queued
+        .then(|| budget.try_vec::<QueuedRequest>(queued_capacity, "J2K Metal queued requests"))
+        .transpose()?;
+    let completed = grows_completed
+        .then(|| {
+            budget.try_vec::<CompletionSlot<Result<Surface, Error>>>(
+                completed_capacity,
+                "J2K Metal queued completion slots",
+            )
+        })
+        .transpose()?;
+
+    if let Some(completed) = completed {
+        if !state.completed.replace_storage(completed) {
+            return Err(batch_scheduler_invariant(
+                "replacement completion capacity is too small",
+            ));
+        }
+    }
+    if let Some(mut queued) = queued {
+        queued.append(&mut state.queued);
+        state.queued = queued;
+    }
+    Ok(())
 }
 
 fn flush_if_needed(session: &mut SessionState, backend: Option<&MetalBackendSession>) {
@@ -235,27 +256,57 @@ fn flush_if_needed(session: &mut SessionState, backend: Option<&MetalBackendSess
 }
 
 fn take_surface(session: &mut SessionState, slot: usize) -> Result<Surface, Error> {
-    let result = session
+    session
         .completed
-        .get_mut(slot)
-        .and_then(Option::take)
+        .release(slot)
+        .flatten()
         .ok_or_else(|| Error::MetalKernel {
             message: format!("missing queued J2K Metal surface for slot {slot}"),
-        });
-    release_surface_slot(session, slot)?;
-    result?
+        })?
 }
 
-pub(super) fn release_surface_slot(session: &mut SessionState, slot: usize) -> Result<(), Error> {
-    if session.free_slots.contains(&slot) {
-        return Ok(());
-    }
-    if session.free_slots.len() >= session.free_slots.capacity() {
-        return Err(Error::MetalStateInvariant {
-            state: "J2K Metal batch free-slot ledger",
-            reason: "slot creation did not retain capacity for its eventual release",
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn abandoned_metal_completion_releases_its_device_buffer() {
+        if !j2k_test_support::metal_runtime_gate(module_path!()) {
+            return;
+        }
+        let device = j2k_metal_support::system_default_device().expect("required Metal device");
+        let shared = SharedSession::default();
+        let (submission, weak) = objc2::rc::autoreleasepool(|_| {
+            let buffer = j2k_metal_support::checked_shared_buffer(&device, 64)
+                .expect("Metal completion buffer");
+            let weak = objc2::rc::Weak::from_retained(&buffer);
+            let surface = Surface::from_metal_buffer(buffer, (8, 8), PixelFormat::Gray8)
+                .expect("completed Metal surface");
+            let mut state = shared.lock().expect("completion state");
+            state
+                .completed
+                .try_reserve_slot("test Metal completion")
+                .expect("reserve completion");
+            let slot = state.completed.allocate().expect("active completion");
+            state.completed[slot] = Some(Ok(surface));
+            (
+                MetalSubmission {
+                    session: shared.clone(),
+                    slot: Some(slot),
+                },
+                weak,
+            )
         });
+        assert!(weak.load().is_some());
+        drop(submission);
+        assert!(shared
+            .lock()
+            .expect("released Metal state")
+            .completed
+            .is_empty());
+        assert!(
+            weak.load().is_none(),
+            "the abandoned completion was the device buffer's last owner"
+        );
     }
-    session.free_slots.push(slot);
-    Ok(())
 }

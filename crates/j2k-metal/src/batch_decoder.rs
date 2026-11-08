@@ -33,6 +33,8 @@ mod decoder;
 mod encoder_count_tests;
 #[cfg(target_os = "macos")]
 mod external;
+#[cfg(all(test, target_os = "macos"))]
+mod operation_tests;
 #[cfg(target_os = "macos")]
 mod plan_cache;
 #[cfg(all(test, target_os = "macos"))]

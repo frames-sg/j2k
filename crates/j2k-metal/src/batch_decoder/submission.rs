@@ -2,6 +2,7 @@
 
 //! Metal submission ownership, allocation, and completion.
 
+use super::resident::ResidentGroupView;
 use super::{
     validate_group_contract, BatchColor, BatchDecodeOptions, BatchGroupInfo, BatchLayout, Buffer,
     DeviceSubmission, Error, IndexedBatchError, J2kDecodeWarning, MetalBatchDecodeResult,
@@ -178,21 +179,28 @@ pub(super) struct MetalResidentGroupMetadata {
 impl MetalResidentGroupMetadata {
     pub(super) fn from_prepared(
         group: &PreparedBatchGroup,
+        options: BatchDecodeOptions,
+    ) -> Result<Self, Error> {
+        Self::from_view(group.into(), options)
+    }
+
+    pub(super) fn from_view(
+        group: ResidentGroupView<'_>,
         _options: BatchDecodeOptions,
     ) -> Result<Self, Error> {
         let MetalBatchGroupCompletion {
             decoded_rects,
             warnings,
-        } = MetalBatchGroupCompletion::from_prepared(group)?;
+        } = MetalBatchGroupCompletion::from_view(group)?;
         let mut budget =
             crate::batch_allocation::BatchMetadataBudget::new("J2K Metal resident group metadata");
         let mut source_indices = budget.try_vec(
-            group.source_indices().len(),
+            group.source_indices.len(),
             "J2K Metal resident source indices",
         )?;
-        source_indices.extend_from_slice(group.source_indices());
+        source_indices.extend_from_slice(group.source_indices);
         Ok(Self {
-            info: group.info().clone(),
+            info: group.info.clone(),
             source_indices,
             decoded_rects,
             warnings,
@@ -209,10 +217,10 @@ pub(super) struct CodecOwnedMetalGroupDestination {
 
 #[cfg(target_os = "macos")]
 pub(super) fn validate_codec_owned_resident_group(
-    group: &PreparedBatchGroup,
+    group: ResidentGroupView<'_>,
 ) -> Result<PixelFormat, Error> {
-    let format = validate_group_contract(group.info())?;
-    if group.images().is_empty() {
+    let format = validate_group_contract(group.info)?;
+    if group.is_empty() {
         return Err(Error::MetalStateInvariant {
             state: "J2K submitted codec-owned Metal group",
             reason: "prepared homogeneous group contains no images",
@@ -224,10 +232,10 @@ pub(super) fn validate_codec_owned_resident_group(
 #[cfg(target_os = "macos")]
 pub(super) fn allocate_codec_owned_group_destination(
     session: &crate::MetalBackendSession,
-    group: &PreparedBatchGroup,
+    group: ResidentGroupView<'_>,
     fmt: PixelFormat,
 ) -> Result<CodecOwnedMetalGroupDestination, Error> {
-    allocate_codec_owned_destination(session, group.info().dimensions, group.images().len(), fmt)
+    allocate_codec_owned_destination(session, group.info.dimensions, group.len(), fmt)
 }
 
 /// A dense group output for the caller, from the session runtime's output

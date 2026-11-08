@@ -16,6 +16,8 @@ enum PreparedPlanKind {
     RegionScaledColor,
     PreparedGray,
     PreparedColor,
+    PreparedOperationGray,
+    PreparedOperationColor,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -29,7 +31,7 @@ pub(crate) struct PreparedPlanCacheKey<'a> {
     input: PreparedPlanInput<'a>,
     format: PixelFormat,
     roi: Option<Rect>,
-    scale: Downscale,
+    reduction_levels: u8,
     request: Option<DecodeRequest>,
     kind: PreparedPlanKind,
 }
@@ -39,7 +41,7 @@ impl Hash for PreparedPlanCacheKey<'_> {
         self.kind.hash(state);
         self.format.hash(state);
         self.roi.hash(state);
-        self.scale.hash(state);
+        self.reduction_levels.hash(state);
         self.request.hash(state);
         match self.input {
             PreparedPlanInput::Contents(input) => {
@@ -61,7 +63,7 @@ impl<'a> PreparedPlanCacheKey<'a> {
             input: PreparedPlanInput::Contents(input),
             format,
             roi: None,
-            scale: Downscale::None,
+            reduction_levels: 0,
             request: None,
             kind: PreparedPlanKind::DirectGray,
         }
@@ -72,13 +74,13 @@ impl<'a> PreparedPlanCacheKey<'a> {
             input: PreparedPlanInput::Contents(input),
             format,
             roi: None,
-            scale: Downscale::None,
+            reduction_levels: 0,
             request: None,
             kind: PreparedPlanKind::DirectColor,
         }
     }
 
-    pub(crate) const fn region_scaled_color(
+    pub(crate) fn region_scaled_color(
         input: &'a [u8],
         format: PixelFormat,
         roi: Rect,
@@ -88,9 +90,32 @@ impl<'a> PreparedPlanCacheKey<'a> {
             input: PreparedPlanInput::Contents(input),
             format,
             roi: Some(roi),
-            scale,
+            reduction_levels: u8::try_from(scale.denominator().trailing_zeros()).unwrap_or(u8::MAX),
             request: None,
             kind: PreparedPlanKind::RegionScaledColor,
+        }
+    }
+
+    /// An exact operation's plan, keyed by its source identity, source region
+    /// and reduction so it never matches the source's own prepared plan.
+    pub(crate) const fn prepared_operation(
+        input: &'a Arc<[u8]>,
+        roi: Rect,
+        reduction_levels: u8,
+        format: PixelFormat,
+        color: bool,
+    ) -> Self {
+        Self {
+            input: PreparedPlanInput::ArcIdentity(input),
+            format,
+            roi: Some(roi),
+            reduction_levels,
+            request: None,
+            kind: if color {
+                PreparedPlanKind::PreparedOperationColor
+            } else {
+                PreparedPlanKind::PreparedOperationGray
+            },
         }
     }
 
@@ -103,7 +128,7 @@ impl<'a> PreparedPlanCacheKey<'a> {
             input: PreparedPlanInput::ArcIdentity(input),
             format,
             roi: None,
-            scale: Downscale::None,
+            reduction_levels: 0,
             request: Some(request),
             kind: PreparedPlanKind::PreparedGray,
         }
@@ -118,7 +143,7 @@ impl<'a> PreparedPlanCacheKey<'a> {
             input: PreparedPlanInput::ArcIdentity(input),
             format,
             roi: None,
-            scale: Downscale::None,
+            reduction_levels: 0,
             request: Some(request),
             kind: PreparedPlanKind::PreparedColor,
         }
@@ -141,7 +166,7 @@ pub(super) struct OwnedPreparedPlanCacheKey {
     input: OwnedPreparedPlanInput,
     format: PixelFormat,
     roi: Option<Rect>,
-    scale: Downscale,
+    reduction_levels: u8,
     request: Option<DecodeRequest>,
     kind: PreparedPlanKind,
 }
@@ -165,7 +190,7 @@ impl OwnedPreparedPlanCacheKey {
             input,
             format: key.format,
             roi: key.roi,
-            scale: key.scale,
+            reduction_levels: key.reduction_levels,
             request: key.request,
             kind: key.kind,
         })
@@ -185,7 +210,7 @@ impl OwnedPreparedPlanCacheKey {
         input_matches
             && self.format == key.format
             && self.roi == key.roi
-            && self.scale == key.scale
+            && self.reduction_levels == key.reduction_levels
             && self.request == key.request
             && self.kind == key.kind
     }
@@ -208,7 +233,7 @@ impl OwnedPreparedPlanCacheKey {
             input: OwnedPreparedPlanInput::Contents(owned),
             format: PixelFormat::Rgb8,
             roi: None,
-            scale: Downscale::None,
+            reduction_levels: 0,
             request: None,
             kind: PreparedPlanKind::DirectColor,
         }

@@ -71,34 +71,35 @@ fn complete_batch_surfaces(
     true
 }
 
-pub(super) fn complete_repeated_device_failure(
+pub(super) fn complete_device_failure(
     session: &mut SessionState,
     requests: &[QueuedRequest],
     source: &crate::Error,
 ) {
-    let message = format!("selected repeated Metal batch failed without CPU retry: {source}");
     session.submissions = session.submissions.saturating_add(1);
     for request in requests {
-        session.completed[request.output_slot] = Some(Err(crate::Error::MetalRuntime {
-            message: message.clone(),
-        }));
+        session.completed[request.output_slot] = Some(Err(source.clone()));
     }
 }
 
-fn complete_repeated_device_result(
+fn complete_device_result(
     session: &mut SessionState,
     requests: &[QueuedRequest],
     decoded: Option<Result<Vec<Surface>, crate::Error>>,
 ) -> bool {
     match decoded {
-        None => false,
+        None
+        | Some(Err(crate::Error::MetalDirectFallback {
+            reason: crate::MetalDirectFallbackReason::UnsupportedPlan,
+            ..
+        })) => false,
         Some(Ok(surfaces)) => {
             if !complete_batch_surfaces(session, requests, surfaces) {
-                complete_repeated_device_failure(
+                complete_device_failure(
                     session,
                     requests,
                     &crate::Error::MetalStateInvariant {
-                        state: "J2K Metal repeated batch output",
+                        state: "J2K Metal batch output",
                         reason: "surface count does not match request count",
                     },
                 );
@@ -106,7 +107,7 @@ fn complete_repeated_device_result(
             true
         }
         Some(Err(error)) => {
-            complete_repeated_device_failure(session, requests, &error);
+            complete_device_failure(session, requests, &error);
             true
         }
     }
@@ -162,39 +163,36 @@ fn process_batch_inner(
 
     if can_decode_requests_as_repeated_full_grayscale_batch(&requests) {
         let decoded = decode_repeated_full_grayscale(&requests[0], requests.len(), backend);
-        if complete_repeated_device_result(session, &requests, decoded) {
+        if complete_device_result(session, &requests, decoded) {
             return;
         }
     }
 
     if can_decode_requests_as_repeated_full_color_batch(&requests) {
         let decoded = decode_repeated_full_color(&requests[0], requests.len(), backend);
-        if complete_repeated_device_result(session, &requests, decoded) {
+        if complete_device_result(session, &requests, decoded) {
             return;
         }
     }
 
     if requests.len() > 1 {
-        if let Some(Ok(surfaces)) = decode_distinct_full_grayscale_batch(&requests, backend) {
-            if complete_batch_surfaces(session, &requests, surfaces) {
-                return;
-            }
+        let decoded = decode_distinct_full_grayscale_batch(&requests, backend);
+        if complete_device_result(session, &requests, decoded) {
+            return;
         }
     }
 
     if requests.len() > 1 {
-        if let Some(Ok(surfaces)) = decode_distinct_full_color_batch(&requests, backend) {
-            if complete_batch_surfaces(session, &requests, surfaces) {
-                return;
-            }
+        let decoded = decode_distinct_full_color_batch(&requests, backend);
+        if complete_device_result(session, &requests, decoded) {
+            return;
         }
     }
 
     if requests.len() > 1 {
-        if let Some(Ok(surfaces)) = decode_distinct_region_scaled_direct_batch(&requests, backend) {
-            if complete_batch_surfaces(session, &requests, surfaces) {
-                return;
-            }
+        let decoded = decode_distinct_region_scaled_direct_batch(&requests, backend);
+        if complete_device_result(session, &requests, decoded) {
+            return;
         }
     }
 
@@ -275,6 +273,152 @@ fn profile_completed_outcome(session: &SessionState, slots: &[usize]) -> &'stati
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    fn requests(distinct: bool) -> Vec<QueuedRequest> {
+        let shared = Arc::<[u8]>::from([1_u8]);
+        (0..2)
+            .map(|slot| {
+                QueuedRequest::new(
+                    if distinct {
+                        Arc::from([u8::try_from(slot).unwrap()])
+                    } else {
+                        shared.clone()
+                    },
+                    PixelFormat::Gray8,
+                    BackendRequest::Metal,
+                    super::super::BatchOp::Full,
+                    slot,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn batch_completion_only_retries_pre_execution_capability_rejections() {
+        for decoded in [
+            None,
+            Some(Err(crate::Error::MetalDirectFallback {
+                message: "unsupported prepared plan".into(),
+                reason: crate::MetalDirectFallbackReason::UnsupportedPlan,
+            })),
+        ] {
+            let requests = requests(true);
+            let mut session = SessionState::default();
+            for _ in &requests {
+                session
+                    .completed
+                    .try_reserve_slot("test batch outputs")
+                    .unwrap();
+                session.completed.allocate().unwrap();
+            }
+            assert!(!complete_device_result(&mut session, &requests, decoded,));
+            assert_eq!(session.submissions, 0);
+            assert!(session.completed.iter().all(Option::is_none));
+        }
+    }
+
+    #[test]
+    fn selected_batch_failures_and_wrong_output_counts_are_terminal() {
+        use j2k_core::CodecError;
+        let flags = |error: &crate::Error| {
+            (
+                error.is_truncated(),
+                error.is_not_implemented(),
+                error.is_unsupported(),
+                error.is_buffer_error(),
+                error.session_is_unusable(),
+            )
+        };
+        let native =
+            j2k_native::DecodeError::Format(j2k_native::FormatError::TooShort { need: 9, have: 3 });
+        let count_error = crate::Error::MetalStateInvariant {
+            state: "J2K Metal batch output",
+            reason: "surface count does not match request count",
+        };
+        for distinct in [false, true] {
+            for decoded in [
+                Err(crate::error::native_decode_error(native)),
+                Err(crate::Error::Decode(j2k::J2kError::NotImplemented(
+                    j2k_core::NotImplemented {
+                        what: "test feature",
+                    },
+                ))),
+                Err(crate::Error::Buffer(
+                    j2k_core::BufferError::OutputTooSmall {
+                        required: 9,
+                        have: 3,
+                    },
+                )),
+                Err(crate::Error::UnsupportedMetalRequest {
+                    reason: "unsupported image contract",
+                }),
+                Err(crate::Error::MetalKernel {
+                    message: "synthetic dispatch failure".into(),
+                }),
+                Err(crate::Error::MetalDirectFallback {
+                    message: "GPU rejected runtime input".into(),
+                    reason: crate::MetalDirectFallbackReason::UnsupportedRuntimeInput,
+                }),
+                Err(crate::Error::MetalSupport {
+                    message: "command creation failed".into(),
+                    source: j2k_metal_support::MetalSupportError::CommandBufferUnavailable,
+                }),
+                Err(crate::Error::MetalRuntime {
+                    message: "runtime creation failed".into(),
+                }),
+                Ok(Vec::new()),
+            ] {
+                let expected = decoded.as_ref().err().unwrap_or(&count_error);
+                let expected_variant = core::mem::discriminant(expected);
+                let expected_flags = flags(expected);
+                let expected_message = expected.to_string();
+                let requests = requests(distinct);
+                let mut session = SessionState::default();
+                for _ in &requests {
+                    session
+                        .completed
+                        .try_reserve_slot("test batch outputs")
+                        .unwrap();
+                    session.completed.allocate().unwrap();
+                }
+                assert!(complete_device_result(
+                    &mut session,
+                    &requests,
+                    Some(decoded)
+                ));
+                assert_eq!(session.submissions, 1);
+                for result in session.completed.iter() {
+                    let Some(Err(error)) = result else {
+                        panic!("a selected failure must complete every request");
+                    };
+                    assert_eq!(core::mem::discriminant(error), expected_variant);
+                    assert_eq!(flags(error), expected_flags);
+                    assert_eq!(error.to_string(), expected_message);
+                    match error {
+                        crate::Error::NativeDecode { .. } => {
+                            let opaque =
+                                core::error::Error::source(error).expect("opaque native source");
+                            assert!(opaque.is::<crate::NativeBackendError>());
+                            assert_eq!(
+                                opaque.source().and_then(
+                                    |source| source.downcast_ref::<j2k_native::DecodeError>()
+                                ),
+                                Some(&native)
+                            );
+                        }
+                        crate::Error::MetalSupport { .. } => assert_eq!(
+                            core::error::Error::source(error)
+                                .and_then(|source| source
+                                    .downcast_ref::<j2k_metal_support::MetalSupportError>()),
+                            Some(&j2k_metal_support::MetalSupportError::CommandBufferUnavailable),
+                        ),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn uniform_profile_values_distinguish_empty_uniform_and_mixed_inputs() {

@@ -7,7 +7,7 @@ use objc2::Message as _;
 #[cfg(target_os = "macos")]
 use crate::metal_types::prelude::*;
 
-use super::resident::GroupPlans;
+use super::resident::{GroupPlans, ResidentGroupView};
 use super::{
     validate_group_contract, BatchColor, Error, MetalBatchDecoder, MetalBatchGroupCompletion,
     MetalBatchGroupError, MetalImageDestination, PreparedBatchGroup, SubmittedMetalGroupDecodeInto,
@@ -56,7 +56,7 @@ impl MetalBatchDecoder {
             })?;
         match group.info().color {
             BatchColor::Gray => {
-                let plans = self.prepared_gray_group_plans(group, fmt, false)?;
+                let plans = self.prepared_gray_group_plans(group.into(), fmt, false)?;
                 let runtime = self.backend_session().runtime()?;
                 crate::engine::submit_prepared_direct_grayscale_plan_batch_into_group(
                     runtime,
@@ -69,7 +69,7 @@ impl MetalBatchDecoder {
                 .wait()?;
             }
             BatchColor::Rgb | BatchColor::Rgba => {
-                let plans = self.prepared_color_group_plans(group, fmt)?;
+                let plans = self.prepared_color_group_plans(group.into(), fmt)?;
                 let runtime = self.backend_session().runtime()?;
                 crate::engine::submit_prepared_direct_color_plan_batch_into_group(
                     runtime,
@@ -108,7 +108,25 @@ impl MetalBatchDecoder {
         destination: MetalImageDestination,
     ) -> Result<SubmittedMetalGroupDecodeInto, Error> {
         self.submit_prepared_group_into_with_ordering(
-            group,
+            group.into(),
+            destination,
+            crate::engine::DirectDestinationConsumerOrdering::Deferred,
+        )
+    }
+
+    /// Submit one group of exact operations, prepared by
+    /// [`j2k::prepare_device_operations`], directly into one caller-owned Metal
+    /// allocation without waiting on the CPU. Behaves as
+    /// [`Self::submit_prepared_group_into`].
+    #[doc(hidden)]
+    #[cfg(target_os = "macos")]
+    pub fn submit_operation_group_into(
+        &mut self,
+        group: &j2k::PreparedDeviceOperationGroup,
+        destination: MetalImageDestination,
+    ) -> Result<SubmittedMetalGroupDecodeInto, Error> {
+        self.submit_prepared_group_into_with_ordering(
+            group.into(),
             destination,
             crate::engine::DirectDestinationConsumerOrdering::Deferred,
         )
@@ -132,7 +150,7 @@ impl MetalBatchDecoder {
         let consumer_registry_id = consumer_queue.device().registryID();
         validate_consumer_registry_ids(producer_registry_id, consumer_registry_id)?;
         self.submit_prepared_group_into_with_ordering(
-            group,
+            group.into(),
             destination,
             crate::engine::DirectDestinationConsumerOrdering::Known {
                 consumer_queue: consumer_queue.retain(),
@@ -168,11 +186,13 @@ impl MetalBatchDecoder {
                 &mut prepared,
                 "J2K prepared external groups",
             )?;
-            prepared.push(match self.prepare_external_group(group, destination) {
-                Ok(external) => Ok(external),
-                Err(source) if source.session_is_unusable() => return Err(source),
-                Err(source) => Err(MetalBatchGroupError::new(group, source)),
-            });
+            prepared.push(
+                match self.prepare_external_group(group.into(), destination) {
+                    Ok(external) => Ok(external),
+                    Err(source) if source.session_is_unusable() => return Err(source),
+                    Err(source) => Err(MetalBatchGroupError::new(group, source)),
+                },
+            );
         }
 
         let runtime = self.backend_session().runtime()?;
@@ -182,9 +202,9 @@ impl MetalBatchDecoder {
                 color.push(crate::engine::ColorGroupSubmission {
                     plans,
                     fmt: external.fmt,
-                    layout: external.group.info().layout,
+                    layout: external.group.info.layout,
                     destination: &external.destination,
-                    source_indices: Some(external.group.source_indices()),
+                    source_indices: Some(external.group.source_indices),
                     consumer_ordering: crate::engine::DirectDestinationConsumerOrdering::Deferred,
                 });
             }
@@ -217,7 +237,7 @@ impl MetalBatchDecoder {
                         plans,
                         external.fmt,
                         &external.destination,
-                        Some(external.group.source_indices()),
+                        Some(external.group.source_indices),
                         crate::engine::DirectDestinationConsumerOrdering::Deferred,
                     )
                 }
@@ -232,7 +252,10 @@ impl MetalBatchDecoder {
                     }));
                 }
                 Err(source) if source.session_is_unusable() => return Err(source),
-                Err(source) => results.push(Err(MetalBatchGroupError::new(external.group, source))),
+                Err(source) => results.push(Err(MetalBatchGroupError::for_sources(
+                    external.group.source_indices,
+                    source,
+                ))),
             }
         }
         Ok(results)
@@ -240,11 +263,13 @@ impl MetalBatchDecoder {
 
     fn submit_prepared_group_into_with_ordering(
         &mut self,
-        group: &PreparedBatchGroup,
+        group: ResidentGroupView<'_>,
         destination: MetalImageDestination,
         consumer_ordering: crate::engine::DirectDestinationConsumerOrdering,
     ) -> Result<SubmittedMetalGroupDecodeInto, Error> {
+        group.check_cancelled()?;
         let external = self.prepare_external_group(group, destination)?;
+        group.check_cancelled()?;
         let runtime = self.backend_session().runtime()?;
         let submission = match &external.plans {
             GroupPlans::Gray(plans) => {
@@ -253,7 +278,7 @@ impl MetalBatchDecoder {
                     plans,
                     external.fmt,
                     &external.destination,
-                    Some(group.source_indices()),
+                    Some(group.source_indices),
                     consumer_ordering,
                 )?
             }
@@ -262,9 +287,9 @@ impl MetalBatchDecoder {
                     runtime,
                     plans,
                     external.fmt,
-                    group.info().layout,
+                    group.info.layout,
                     &external.destination,
-                    Some(group.source_indices()),
+                    Some(group.source_indices),
                     consumer_ordering,
                 )?
             }
@@ -279,15 +304,13 @@ impl MetalBatchDecoder {
 
     fn prepare_external_group<'g>(
         &mut self,
-        group: &'g PreparedBatchGroup,
+        group: ResidentGroupView<'g>,
         destination: MetalImageDestination,
     ) -> Result<ExternalGroup<'g>, Error> {
-        let fmt = validate_group_contract(group.info())?;
+        let fmt = validate_group_contract(group.info)?;
         destination
             .validate_device(self.backend_session().device())
-            .and_then(|()| {
-                destination.validate_batch(group.info().dimensions, fmt, group.images().len())
-            })
+            .and_then(|()| destination.validate_batch(group.info.dimensions, fmt, group.len()))
             .map_err(|source| {
                 crate::error::metal_kernel_support_error(
                     "J2K Metal submitted prepared group destination validation failed",
@@ -300,7 +323,7 @@ impl MetalBatchDecoder {
             fmt,
             plans,
             destination,
-            completion: MetalBatchGroupCompletion::from_prepared(group)?,
+            completion: MetalBatchGroupCompletion::from_view(group)?,
         })
     }
 }
@@ -308,7 +331,7 @@ impl MetalBatchDecoder {
 /// An external group whose destination is validated and plans resolved.
 #[cfg(target_os = "macos")]
 struct ExternalGroup<'g> {
-    group: &'g PreparedBatchGroup,
+    group: ResidentGroupView<'g>,
     fmt: j2k_core::PixelFormat,
     plans: GroupPlans,
     destination: MetalImageDestination,

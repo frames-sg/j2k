@@ -16,7 +16,7 @@ use j2k_native::{DecodeError as NativeDecodeError, EncodeError as NativeEncodeEr
 
 pub use native_source::NativeBackendError;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 /// Errors returned by the Metal J2K backend.
 pub enum Error {
     /// Error returned while decoding through the shared facade contract.
@@ -139,9 +139,9 @@ pub enum Error {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum MetalDirectFallbackReason {
-    /// Native direct-plan construction rejected the codestream or image shape.
+    /// Direct-plan construction or a pre-execution capability check rejected the request.
     UnsupportedPlan,
-    /// A prepared direct plan cannot be executed by the Metal runtime path.
+    /// A dispatched Metal kernel rejected its input.
     UnsupportedRuntimeInput,
 }
 
@@ -201,11 +201,6 @@ impl Error {
             Self::MetalKernelRetryable { retry_class, .. } => retry_class.applies_to(requested),
             _ => false,
         }
-    }
-
-    #[cfg(target_os = "macos")]
-    pub(crate) fn is_direct_fallback(&self) -> bool {
-        matches!(self, Self::MetalDirectFallback { .. })
     }
 }
 
@@ -368,9 +363,12 @@ mod tests {
                         }
                     )
         ));
-        let opaque = std::error::Error::source(&error).expect("opaque adapter source");
+        let cloned = error.clone();
+        let opaque = std::error::Error::source(&cloned).expect("opaque adapter source");
         assert!(opaque.downcast_ref::<NativeBackendError>().is_some());
         let concrete = opaque.source().expect("concrete native encode source");
+        let original = std::error::Error::source(&error).unwrap().source().unwrap();
+        assert!(core::ptr::eq(concrete, original));
         assert!(matches!(
             concrete.downcast_ref::<NativeEncodeError>(),
             Some(NativeEncodeError::ArithmeticOverflow {

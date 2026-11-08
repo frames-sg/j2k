@@ -231,7 +231,7 @@ impl MetalBatchDecoder {
         else {
             return Ok(None);
         };
-        let plans = match self.prepared_color_group_plans(group, PixelFormat::Rgb8) {
+        let plans = match self.prepared_color_group_plans(group.into(), PixelFormat::Rgb8) {
             Ok(plans) => plans,
             Err(source) if source.session_is_unusable() => return Err(source),
             // Ordinary group validation will report this through the existing GPU path.
@@ -349,7 +349,7 @@ impl CooperativeParts {
         let metadata = MetalResidentGroupMetadata::from_prepared(group, group.options())?;
         let output = super::allocate_codec_owned_group_destination(
             decoder.backend_session(),
-            group,
+            group.into(),
             PixelFormat::Rgb8,
         )?;
         let cpu = Cohort::new(decoder, group, split, true)?;

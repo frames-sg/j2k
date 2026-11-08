@@ -32,19 +32,20 @@ use super::{
     encode_repeated_gray_plane_to_surfaces_in_command_buffer,
     encode_stacked_direct_component_plane_batch,
     encode_stacked_direct_component_plane_batch_with_shared_tier1,
-    encode_stacked_direct_gray_batch, j2k_scalar_pack_params, lookup_direct_band_slice,
-    lookup_direct_band_slice_entry, metal_profile_stages_enabled, new_command_buffer,
-    new_compute_command_encoder, prepared_direct_color_plan_supports_runtime,
-    push_member_band_slices, recycle_scratch_buffers, retire_direct_status_checks,
-    supports_stacked_direct_component_plane_batch, take_f32_scratch_buffer,
-    try_encode_stacked_mct_rgb8_direct_color_batch, wait_for_completion_metal, with_runtime,
-    with_runtime_for_device, Buffer, CommandBuffer, CommandBufferRef,
-    DecodeHybridSplitCommandBuffers, Device, DirectBandSlice, DirectColorBatchCommandBuffers,
-    DirectColorPlanRequest, DirectHybridStageTimings, DirectScratchBuffer, DirectStatusCheck,
-    DirectStatusRetirementMode, DirectTier1Mode, Error, J2kWaveletTransform, MetalRuntime,
-    PixelFormat, PreparedDirectColorPlan, PreparedDirectGrayscalePlan, PreparedDirectGrayscaleStep,
-    RepeatedDirectGrayscalePlanRequest, StackedDirectColorBatchRequest,
-    StackedDirectComponentPlaneBatchRequest, StackedGrayBatch, StackedGrayOutput, Surface,
+    encode_stacked_direct_gray_batch, ensure_direct_grayscale_plan_supports_runtime,
+    j2k_scalar_pack_params, lookup_direct_band_slice, lookup_direct_band_slice_entry,
+    metal_profile_stages_enabled, new_command_buffer, new_compute_command_encoder,
+    prepared_direct_color_plan_supports_runtime, push_member_band_slices, recycle_scratch_buffers,
+    retire_direct_status_checks, supports_stacked_direct_component_plane_batch,
+    take_f32_scratch_buffer, try_encode_stacked_mct_rgb8_direct_color_batch,
+    wait_for_completion_metal, with_runtime, with_runtime_for_device, Buffer, CommandBuffer,
+    CommandBufferRef, DecodeHybridSplitCommandBuffers, Device, DirectBandSlice,
+    DirectColorBatchCommandBuffers, DirectColorPlanRequest, DirectHybridStageTimings,
+    DirectScratchBuffer, DirectStatusCheck, DirectStatusRetirementMode, DirectTier1Mode, Error,
+    J2kWaveletTransform, MetalRuntime, PixelFormat, PreparedDirectColorPlan,
+    PreparedDirectGrayscalePlan, PreparedDirectGrayscaleStep, RepeatedDirectGrayscalePlanRequest,
+    StackedDirectColorBatchRequest, StackedDirectComponentPlaneBatchRequest, StackedGrayBatch,
+    StackedGrayOutput, Surface,
 };
 mod allocation;
 mod color_batch_completion;
@@ -98,6 +99,7 @@ pub(crate) fn execute_prepared_direct_grayscale_plan(
     plan: &PreparedDirectGrayscalePlan,
     fmt: PixelFormat,
 ) -> Result<Surface, Error> {
+    ensure_direct_grayscale_plan_supports_runtime(plan)?;
     with_runtime(|runtime| {
         let DirectExecutionMetadata {
             mut retained_buffers,
@@ -147,6 +149,7 @@ pub(crate) fn execute_prepared_direct_grayscale_plan_into(
     fmt: PixelFormat,
     destination: &MetalImageDestination,
 ) -> Result<(), Error> {
+    ensure_direct_grayscale_plan_supports_runtime(plan)?;
     with_runtime(|runtime| {
         let DirectExecutionMetadata {
             mut retained_buffers,
@@ -513,7 +516,7 @@ pub(super) fn execute_direct_color_plan_batch_with_tier1_options(
     {
         return Err(Error::MetalDirectFallback {
             message: "unsupported classic kernel input in direct component plan".to_string(),
-            reason: crate::MetalDirectFallbackReason::UnsupportedRuntimeInput,
+            reason: crate::MetalDirectFallbackReason::UnsupportedPlan,
         });
     }
 

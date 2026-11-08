@@ -29,20 +29,21 @@ pub(super) fn decode_repeated_full_grayscale(
 
     #[cfg(target_os = "macos")]
     {
-        let result =
-            J2kDecoder::new(request.input.as_ref()).and_then(|mut decoder| match request.backend {
-                BackendRequest::Auto => {
-                    decoder.decode_repeated_grayscale_auto_to_device(request.fmt, count)
-                }
-                BackendRequest::Metal => decoder.decode_repeated_grayscale_direct_to_device_routed(
-                    request.fmt,
-                    count,
-                    backend,
-                ),
-                _ => Err(batch_scheduler_invariant(
-                    "repeated grayscale batch contains an unsupported backend",
-                )),
-            });
+        let result = J2kDecoder::new(request.input.as_ref()).and_then(|mut decoder| match request
+            .backend
+        {
+            BackendRequest::Auto => {
+                decoder.decode_repeated_grayscale_auto_to_device_routed(request.fmt, count, backend)
+            }
+            BackendRequest::Metal => decoder.decode_repeated_grayscale_direct_to_device_routed(
+                request.fmt,
+                count,
+                backend,
+            ),
+            _ => Err(batch_scheduler_invariant(
+                "repeated grayscale batch contains an unsupported backend",
+            )),
+        });
         Some(result)
     }
 

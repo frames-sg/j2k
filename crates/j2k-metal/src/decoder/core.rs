@@ -6,7 +6,6 @@ use std::sync::Arc;
 use j2k::{
     DeviceDecodePlan, J2kDecoder as CpuDecoder, J2kScratchPool as CpuJ2kScratchPool, J2kView,
 };
-use j2k_core::BackendRequest;
 #[cfg(target_os = "macos")]
 use j2k_native::{DecoderContext as NativeDecoderContext, Image as NativeImage};
 
@@ -15,7 +14,7 @@ use super::request::{
 };
 #[cfg(target_os = "macos")]
 use super::surface::{allocate_cpu_surface, upload_surface_to_metal_with_device};
-use crate::{routing, Error, MetalBackendSession, Surface};
+use crate::{Error, MetalBackendSession, Surface};
 
 /// JPEG 2000 decoder that can return host or Metal-resident surfaces.
 pub struct J2kDecoder<'a> {
@@ -121,62 +120,7 @@ impl<'a> J2kDecoder<'a> {
         request: MetalDecodeRequest,
         session: &MetalBackendSession,
     ) -> Result<Surface, Error> {
-        if request.backend != BackendRequest::Metal {
-            return self.decode_request_to_device(request);
-        }
-        if let Some(error) =
-            routing::decision_error(routing::decide_route(BackendRequest::Metal, request.fmt))
-        {
-            return Err(error);
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            let plan = DeviceDecodePlan::for_reference_grid(
-                self.inner.reference_grid(),
-                request.op.device_request(),
-            )?;
-            match request.op {
-                MetalDecodeOp::Full => crate::engine::with_runtime_for_session(session, |_| {
-                    self.decode_direct_to_surface_with_session(request.fmt, session)?
-                        .map_or_else(
-                            || {
-                                self.decode_full_to_metal_surface_with_device(
-                                    request.fmt,
-                                    session.device_handle(),
-                                )
-                            },
-                            Ok,
-                        )
-                }),
-                MetalDecodeOp::Region(roi) => self
-                    .decode_region_scaled_to_metal_surface_with_session(
-                        request.fmt,
-                        roi,
-                        j2k_core::Downscale::None,
-                        session,
-                    ),
-                MetalDecodeOp::Scaled(scale) => self
-                    .decode_region_scaled_to_metal_surface_with_session(
-                        request.fmt,
-                        plan.source_rect(),
-                        scale,
-                        session,
-                    ),
-                MetalDecodeOp::RegionScaled { roi, scale } => self
-                    .decode_region_scaled_to_metal_surface_with_session(
-                        request.fmt,
-                        roi,
-                        scale,
-                        session,
-                    ),
-            }
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = session;
-            Err(Error::MetalUnavailable)
-        }
+        self.decode_op_to_surface_impl_with_session(request, Some(session))
     }
 
     /// Decode into a host-backed surface using a request object.

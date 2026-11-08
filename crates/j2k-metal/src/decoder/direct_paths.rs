@@ -16,8 +16,6 @@ use j2k_native::{
     Image as NativeImage,
 };
 
-#[cfg(target_os = "macos")]
-use super::surface::CPU_STAGED_METAL_REQUIRES_EXPLICIT_API;
 use super::J2kDecoder;
 #[cfg(target_os = "macos")]
 use crate::direct;
@@ -400,6 +398,16 @@ impl J2kDecoder<'_> {
         fmt: PixelFormat,
         count: usize,
     ) -> Result<Vec<Surface>, Error> {
+        self.decode_repeated_grayscale_auto_to_device_routed(fmt, count, None)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn decode_repeated_grayscale_auto_to_device_routed(
+        &mut self,
+        fmt: PixelFormat,
+        count: usize,
+        session: Option<&MetalBackendSession>,
+    ) -> Result<Vec<Surface>, Error> {
         if count == 0 {
             return Ok(Vec::new());
         }
@@ -416,34 +424,13 @@ impl J2kDecoder<'_> {
         ) {
             return self.decode_repeated_cpu_to_surfaces(fmt, count);
         }
-        let device_registry_id = crate::engine::current_runtime_device_registry_id()?;
-        if self.native_prepared_direct_gray_plan.is_some()
-            && self.native_prepared_direct_gray_device_registry_id != Some(device_registry_id)
-        {
-            self.native_prepared_direct_gray_plan = None;
-            self.native_prepared_direct_gray_device_registry_id = None;
+        match self.decode_repeated_grayscale_direct_to_device_routed(fmt, count, session) {
+            Err(Error::MetalDirectFallback {
+                reason: MetalDirectFallbackReason::UnsupportedPlan,
+                ..
+            }) => self.decode_repeated_cpu_to_surfaces(fmt, count),
+            result => result,
         }
-        if self.native_prepared_direct_gray_plan.is_none() {
-            self.ensure_native_image()?;
-            let (Some(image), native_context) =
-                (self.native_image.as_ref(), &mut self.native_context)
-            else {
-                return Err(Error::Decode(adapter_backend_error(
-                    "native image cache missing".to_string(),
-                )));
-            };
-            let Ok(plan) = image.build_direct_grayscale_plan_with_context(native_context) else {
-                return self.decode_repeated_cpu_to_surfaces(fmt, count);
-            };
-            let plan = Arc::new(plan);
-            let prepared = Arc::new(crate::engine::prepare_direct_grayscale_plan(plan.as_ref())?);
-            self.native_prepared_direct_gray_plan = Some(prepared);
-            self.native_prepared_direct_gray_device_registry_id = Some(device_registry_id);
-        }
-        let Some(prepared) = self.native_prepared_direct_gray_plan.as_ref() else {
-            return self.decode_repeated_cpu_to_surfaces(fmt, count);
-        };
-        crate::engine::execute_repeated_prepared_direct_grayscale_plan(prepared, fmt, count)
     }
 
     #[cfg(target_os = "macos")]
@@ -469,9 +456,10 @@ impl J2kDecoder<'_> {
             return self.decode_repeated_cpu_to_surfaces(fmt, count);
         }
         match self.decode_repeated_color_direct_to_device_routed(fmt, count, session) {
-            Err(error) if error.is_direct_fallback() => {
-                self.decode_repeated_cpu_to_surfaces(fmt, count)
-            }
+            Err(Error::MetalDirectFallback {
+                reason: MetalDirectFallbackReason::UnsupportedPlan,
+                ..
+            }) => self.decode_repeated_cpu_to_surfaces(fmt, count),
             result => result,
         }
     }
@@ -479,7 +467,13 @@ impl J2kDecoder<'_> {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn is_direct_runtime_fallback_error(error: &Error) -> bool {
-    error.is_direct_fallback()
+    matches!(
+        error,
+        Error::MetalDirectFallback {
+            reason: MetalDirectFallbackReason::UnsupportedPlan,
+            ..
+        }
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -558,20 +552,11 @@ pub(crate) fn decode_full_color_batch_direct_to_device_routed(
         };
         plans.push(plan);
     }
-    let result = match session {
+    match session {
         Some(session) => crate::engine::with_runtime_for_session(session, |_| {
             crate::engine::execute_prepared_direct_color_plan_batch(&plans, fmt)
         }),
         None => crate::engine::execute_prepared_direct_color_plan_batch(&plans, fmt),
-    };
-    match result {
-        Ok(surfaces) => Ok(surfaces),
-        Err(error) if is_direct_runtime_fallback_error(&error) => Err(Error::capability_rejected(
-            j2k_core::CapabilityRejection::unsupported_operation(
-                CPU_STAGED_METAL_REQUIRES_EXPLICIT_API,
-            ),
-        )),
-        Err(error) => Err(error),
     }
 }
 
