@@ -6,15 +6,14 @@
 use super::IndexedBatchError;
 #[cfg(feature = "cuda-runtime")]
 use super::{
-    decode_warnings, group_pixel_format, native_color_inputs, native_decode_settings,
-    native_referenced_classic_plan, native_referenced_htj2k_plan, validate_layout,
-    CudaExternalBatchGroup, PixelFormat, PreparedBatchGroup, SubmittedCudaCodecBatch,
-    SubmittedCudaExternalBatch,
+    decode_warnings, grayscale_inputs, group_pixel_format, native_color_inputs, validate_layout,
+    CudaExternalBatchGroup, CudaGroupView, PixelFormat, PreparedBatchGroup,
+    SubmittedCudaCodecBatch, SubmittedCudaExternalBatch,
 };
 use super::{
     prepare_batch, prepare_batch_from_images, BatchDecodeOptions, BatchDecoder,
     BatchInfrastructureError, CudaBatchDecodeResult, CudaBatchError, CudaSession, EncodedImage,
-    Error, PreparedBatch, PreparedImage,
+    Error, PreparedBatch, PreparedImage, PreparedImageOperation,
 };
 
 /// Persistent CUDA batch decoder that reuses one [`CudaSession`].
@@ -141,25 +140,55 @@ impl CudaBatchDecoder {
         }
         #[cfg(not(feature = "cuda-runtime"))]
         {
-            if let Some(group) = prepared.groups().first() {
-                return Err(CudaBatchError::group(group, Error::CudaUnavailable));
-            }
-            let mut errors = Vec::new();
-            errors
-                .try_reserve_exact(prepared.errors().len())
-                .map_err(|_| BatchInfrastructureError::HostAllocationFailed {
-                    what: "CUDA stub indexed errors",
-                    bytes: prepared
-                        .errors()
-                        .len()
-                        .saturating_mul(core::mem::size_of::<IndexedBatchError>()),
-                })?;
-            errors.extend_from_slice(prepared.errors());
-            Ok(CudaBatchDecodeResult {
-                groups: Vec::new(),
-                errors,
-                group_errors: Vec::new(),
-            })
+            unavailable(
+                prepared
+                    .groups()
+                    .first()
+                    .map(j2k::PreparedBatchGroup::source_indices),
+                prepared.errors(),
+            )
+        }
+    }
+
+    /// Decode regions at exact wavelet reductions of existing prepared
+    /// sources into CUDA-resident groups.
+    ///
+    /// Output geometry, native sample values and grouping match
+    /// [`j2k::CpuBatchDecoder::decode_operations`], and source indices refer to
+    /// positions in `operations`. Exact operations decode only through their
+    /// prepared offset plans; a shape the prepared CUDA route cannot describe
+    /// fails its group with a capability error.
+    ///
+    /// A [`j2k::J2kDecodeControl`]'s output limit applies to each operation's
+    /// output, and its cancellation token is checked during preparation and
+    /// before each group is planned and submitted; submitted CUDA work runs to
+    /// completion. Operations share a group only with operations carrying the
+    /// same token, so a cancelled group fails only its own operations. A
+    /// working-memory limit fails the operation as unsupported: CUDA working
+    /// memory is not accounted against a host allowance.
+    ///
+    /// # Errors
+    /// Returns [`CudaBatchError`] when operation metadata cannot be allocated
+    /// or the CUDA session becomes unusable; other failures are reported per
+    /// operation or group in the result.
+    pub fn decode_operations(
+        &mut self,
+        operations: &[PreparedImageOperation<'_>],
+    ) -> Result<CudaBatchDecodeResult, CudaBatchError> {
+        #[cfg(feature = "cuda-runtime")]
+        {
+            self.submit_operations(operations)?.wait()
+        }
+        #[cfg(not(feature = "cuda-runtime"))]
+        {
+            let prepared = j2k::prepare_device_operations(operations, self.options)?;
+            unavailable(
+                prepared
+                    .groups()
+                    .first()
+                    .map(j2k::PreparedDeviceOperationGroup::source_indices),
+                prepared.errors(),
+            )
         }
     }
 
@@ -215,12 +244,59 @@ impl CudaBatchDecoder {
         group: &PreparedBatchGroup,
         destination: &mut j2k_cuda_runtime::CudaExternalDeviceBufferViewMut<'_>,
     ) -> Result<SubmittedCudaExternalBatch, CudaBatchError> {
-        let fmt = group_pixel_format(group.info())
+        self.submit_group_view_into(group.into(), destination)
+    }
+
+    /// Decode one group of exact operations, prepared by
+    /// [`j2k::prepare_device_operations`], directly into a validated
+    /// caller-owned CUDA allocation range. See [`Self::decode_operations`]
+    /// and [`Self::decode_batch_into`].
+    ///
+    /// # Safety
+    ///
+    /// As [`Self::decode_batch_into`].
+    #[cfg(feature = "cuda-runtime")]
+    #[doc(hidden)]
+    pub unsafe fn decode_operation_group_into(
+        &mut self,
+        group: &j2k::PreparedDeviceOperationGroup,
+        destination: &mut j2k_cuda_runtime::CudaExternalDeviceBufferViewMut<'_>,
+    ) -> Result<CudaExternalBatchGroup, CudaBatchError> {
+        // SAFETY: this synchronous convenience immediately waits while the
+        // caller's external view and exclusive managed-owner borrow are live.
+        unsafe { self.submit_operation_group_into(group, destination) }?.wait()
+    }
+
+    /// Submit one group of exact operations into CUDA storage, leaving its
+    /// final store pending. A cancelled group is not submitted.
+    ///
+    /// # Safety
+    ///
+    /// As [`Self::submit_batch_into`].
+    #[cfg(feature = "cuda-runtime")]
+    #[doc(hidden)]
+    pub unsafe fn submit_operation_group_into(
+        &mut self,
+        group: &j2k::PreparedDeviceOperationGroup,
+        destination: &mut j2k_cuda_runtime::CudaExternalDeviceBufferViewMut<'_>,
+    ) -> Result<SubmittedCudaExternalBatch, CudaBatchError> {
+        self.submit_group_view_into(group.into(), destination)
+    }
+
+    #[cfg(feature = "cuda-runtime")]
+    fn submit_group_view_into(
+        &mut self,
+        group: CudaGroupView<'_>,
+        destination: &mut j2k_cuda_runtime::CudaExternalDeviceBufferViewMut<'_>,
+    ) -> Result<SubmittedCudaExternalBatch, CudaBatchError> {
+        let group_error = |source| CudaBatchError::group(group.source_indices, source);
+        group.check_cancelled().map_err(group_error)?;
+        let fmt = group_pixel_format(group.info)
             .and_then(|fmt| {
-                validate_layout(group.info())?;
+                validate_layout(group.info)?;
                 Ok(fmt)
             })
-            .map_err(|source| CudaBatchError::group(group, source))?;
+            .map_err(group_error)?;
         let pending = if matches!(
             fmt,
             PixelFormat::Rgb8
@@ -230,78 +306,52 @@ impl CudaBatchDecoder {
                 | PixelFormat::Rgba16
                 | PixelFormat::RgbaI16
         ) {
-            let inputs = native_color_inputs(group)
-                .map_err(|source| CudaBatchError::group(group, source))?;
+            let inputs = native_color_inputs(group).map_err(group_error)?;
             SubmittedCudaCodecBatch::Color(
                 crate::decoder::submit_native_color_resident_prepared_batch_into(
                     &inputs,
                     &mut self.session,
                     fmt,
-                    group.info().layout,
+                    group.info.layout,
                     destination,
                 )
-                .map_err(|source| CudaBatchError::group(group, source))?,
+                .map_err(group_error)?,
             )
         } else if matches!(
             fmt,
             PixelFormat::Gray8 | PixelFormat::Gray16 | PixelFormat::GrayI16
         ) {
-            let inputs = group
-                .images()
-                .iter()
-                .zip(group.source_indices().iter().copied())
-                .map(|(image, source_index)| {
-                    let referenced_plan = image.htj2k_plan().map(native_referenced_htj2k_plan);
-                    let referenced_classic_plan =
-                        image.classic_plan().map(native_referenced_classic_plan);
-                    Ok(crate::decoder::grayscale_batch::GrayscaleBatchInput {
-                        source_index,
-                        bytes: image.bytes().as_ref(),
-                        device_plan: Some(image.plan()),
-                        referenced_plan,
-                        referenced_classic_plan,
-                    })
-                })
-                .collect::<Result<Vec<_>, Error>>()
-                .map_err(|source| CudaBatchError::group(group, source))?;
             SubmittedCudaCodecBatch::Grayscale(
                 crate::decoder::grayscale_batch::submit_grayscale_cuda_resident_prepared_batch_into(
-                    &inputs,
-                    native_decode_settings(group.options().settings),
+                    &grayscale_inputs(group),
+                    group.fallback_settings(),
                     &mut self.session,
                     fmt,
                     destination,
                 )
-                .map_err(|source| CudaBatchError::group(group, source))?,
+                .map_err(group_error)?,
             )
         } else {
-            return Err(CudaBatchError::group(
-                group,
-                Error::capability_rejected(j2k_core::CapabilityRejection::unsupported_format(
+            return Err(group_error(Error::capability_rejected(
+                j2k_core::CapabilityRejection::unsupported_format(
                     "direct external CUDA batch decode requires exact Gray, RGB, or RGBA output",
-                )),
-            ));
+                ),
+            )));
         };
         let mut metadata_budget =
             crate::allocation::HostPhaseBudget::new("CUDA external batch result metadata");
         let source_indices = metadata_budget
-            .try_clone_slice(group.source_indices())
-            .map_err(|source| CudaBatchError::group(group, source))?;
+            .try_clone_slice(group.source_indices)
+            .map_err(|source| group_error(source.into()))?;
         let decoded_rects = metadata_budget
-            .try_collect_exact(
-                group
-                    .images()
-                    .iter()
-                    .map(|image| image.plan().output_rect()),
-            )
-            .map_err(|source| CudaBatchError::group(group, source))?;
-        let warnings = decode_warnings(group.images())
-            .map_err(|source| CudaBatchError::group(group, source))?;
+            .try_collect_exact(group.images().map(super::input::GroupImage::output_rect))
+            .map_err(|source| group_error(source.into()))?;
+        let warnings = decode_warnings(group).map_err(group_error)?;
         let ranges = metadata_budget
             .try_clone_slice(pending.ranges())
-            .map_err(|source| CudaBatchError::group(group, source))?;
+            .map_err(|source| group_error(source.into()))?;
         let external_group = CudaExternalBatchGroup {
-            info: group.info().clone(),
+            info: group.info.clone(),
             source_indices,
             decoded_rects,
             warnings,
@@ -312,6 +362,36 @@ impl CudaBatchDecoder {
             pending,
         })
     }
+}
+
+/// A build without the CUDA runtime fails its first group and reports
+/// preparation errors unchanged.
+#[cfg(not(feature = "cuda-runtime"))]
+fn unavailable(
+    first_group: Option<&[usize]>,
+    preparation_errors: &[IndexedBatchError],
+) -> Result<CudaBatchDecodeResult, CudaBatchError> {
+    if let Some(source_indices) = first_group {
+        return Err(CudaBatchError::group(
+            source_indices,
+            Error::CudaUnavailable,
+        ));
+    }
+    let mut errors = Vec::new();
+    errors
+        .try_reserve_exact(preparation_errors.len())
+        .map_err(|_| BatchInfrastructureError::HostAllocationFailed {
+            what: "CUDA stub indexed errors",
+            bytes: preparation_errors
+                .len()
+                .saturating_mul(core::mem::size_of::<IndexedBatchError>()),
+        })?;
+    errors.extend_from_slice(preparation_errors);
+    Ok(CudaBatchDecodeResult {
+        groups: Vec::new(),
+        errors,
+        group_errors: Vec::new(),
+    })
 }
 
 impl BatchDecoder for CudaBatchDecoder {

@@ -46,6 +46,49 @@ pub(super) use self::grayscale::{
     build_cuda_htj2k_grayscale_plans_from_referenced_with_profile,
 };
 
+/// Output geometry of one prepared CUDA batch input.
+#[cfg(feature = "cuda-runtime")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PreparedInputGeometry {
+    /// A legacy prepared request, which can also be planned from its bytes.
+    Request(DeviceDecodePlan),
+    /// An exact operation's decoded rectangle, in reduced-image coordinates.
+    /// Only the operation's offset plan describes it.
+    Exact(Rect),
+}
+
+#[cfg(feature = "cuda-runtime")]
+impl PreparedInputGeometry {
+    /// Decoded width and height.
+    pub(crate) fn output_dims(self) -> (u32, u32) {
+        match self {
+            Self::Request(plan) => plan.output_dims(),
+            Self::Exact(rect) => (rect.w, rect.h),
+        }
+    }
+
+    /// Decoded rectangle in the coordinates of the decoded level.
+    pub(crate) fn output_rect(self) -> Rect {
+        match self {
+            Self::Request(plan) => plan.output_rect(),
+            Self::Exact(rect) => rect,
+        }
+    }
+
+    /// The legacy request the parse-from-bytes route plans. Exact operations
+    /// have no such fallback.
+    pub(crate) fn request_plan(self) -> Result<DeviceDecodePlan, Error> {
+        match self {
+            Self::Request(plan) => Ok(plan),
+            Self::Exact(_) => Err(Error::capability_rejected(
+                j2k_core::CapabilityRejection::missing_prepared_plan(
+                    "exact CUDA operations require a prepared offset plan",
+                ),
+            )),
+        }
+    }
+}
+
 #[cfg(feature = "cuda-runtime")]
 const fn rgba_bit_depths_from_rgb(bit_depths: [u8; 3]) -> [u8; 4] {
     [bit_depths[0], bit_depths[1], bit_depths[2], 0]
@@ -164,6 +207,7 @@ pub(super) fn next_payload_base(payload_base: u64, payload_len: usize) -> Result
 pub(super) fn parse_with_host_cap<'a>(
     input: &'a [u8],
     settings: &DecodeSettings,
+    scale: Option<Downscale>,
     host_cap: usize,
     what: &'static str,
 ) -> Result<(NativeImage<'a>, HostPhaseBudget), Error> {
@@ -174,8 +218,11 @@ pub(super) fn parse_with_host_cap<'a>(
             cap: j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES,
             what,
         })?;
-    let image = NativeImage::new_with_retained_baseline(input, settings, retained_baseline)
-        .map_err(native_decode_error)?;
+    let image = match scale {
+        Some(scale) => parse_at_scale(input, settings, scale, retained_baseline)?,
+        None => NativeImage::new_with_retained_baseline(input, settings, retained_baseline)
+            .map_err(native_decode_error)?,
+    };
     let mut budget = HostPhaseBudget::with_cap(what, host_cap);
     budget.account_bytes(
         image
@@ -183,6 +230,29 @@ pub(super) fn parse_with_host_cap<'a>(
             .map_err(native_decode_error)?,
     )?;
     Ok((image, budget))
+}
+
+/// Preserve an exact reduction across native planning, including its live owners.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Downscale denominators are 1, 2, 4 or 8"
+)]
+fn parse_at_scale<'a>(
+    input: &'a [u8],
+    settings: &DecodeSettings,
+    scale: Downscale,
+    retained_baseline: usize,
+) -> Result<NativeImage<'a>, Error> {
+    NativeImage::new_with_reduction_and_retained_baseline(
+        input,
+        &DecodeSettings {
+            target_resolution: None,
+            ..*settings
+        },
+        scale.denominator().trailing_zeros() as u8,
+        retained_baseline,
+    )
+    .map_err(native_decode_error)
 }
 
 /// Color stores share one signedness across their component planes. Validate

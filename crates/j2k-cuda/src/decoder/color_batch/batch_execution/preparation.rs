@@ -164,8 +164,13 @@ fn build_referenced_color_plans_with_cap<'a>(
     host_cap: usize,
 ) -> Result<Option<PreparedColorInput<'a>>, Error> {
     let total_start = profile::profile_now(true);
-    let (image, mut host_budget) =
-        parse_with_host_cap(input, &DecodeSettings::default(), host_cap, PLAN_OWNERS)?;
+    let (image, mut host_budget) = parse_with_host_cap(
+        input,
+        &DecodeSettings::default(),
+        None,
+        host_cap,
+        PLAN_OWNERS,
+    )?;
     let eligible = matches!(image.color_space(), ColorSpace::RGB)
         && !image.has_alpha()
         && image.tile_count() == 1
@@ -198,7 +203,7 @@ fn build_referenced_color_plans_with_cap<'a>(
         input,
         &referenced,
         fmt,
-        device_plan,
+        device_plan.output_dims(),
         &mut host_budget,
     )?;
     let (mut color, payload) = if let Some(color) = direct {
@@ -216,7 +221,7 @@ fn build_referenced_color_plans_with_cap<'a>(
             input,
             &referenced,
             fmt,
-            device_plan,
+            device_plan.output_dims(),
             &mut payload,
             &mut host_budget,
         )?;

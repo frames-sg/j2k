@@ -4,10 +4,10 @@
 
 use super::{
     flatten_cuda_color_components, flatten_cuda_color_components_with_budget, native_decode_error,
-    parse_with_host_cap, profile, rgba_bit_depths_from_rgb, CudaHtj2kColorDecodePlans,
-    CudaHtj2kDecodePlan, CudaHtj2kDecodeProfileDetail, CudaHtj2kProfileReport, CudaHtj2kTransform,
-    DecodeSettings, DeviceDecodePlan, Downscale, Error, NativeDecoderContext, NativeImage,
-    PixelFormat, Rect,
+    parse_at_scale, parse_with_host_cap, profile, rgba_bit_depths_from_rgb,
+    CudaHtj2kColorDecodePlans, CudaHtj2kDecodePlan, CudaHtj2kDecodeProfileDetail,
+    CudaHtj2kProfileReport, CudaHtj2kTransform, DecodeSettings, DeviceDecodePlan, Downscale, Error,
+    NativeDecoderContext, PixelFormat, Rect,
 };
 
 #[cfg(feature = "cuda-runtime")]
@@ -20,24 +20,7 @@ pub(in crate::decoder) fn build_cuda_color_plan_from_bytes_for_device_plan_with_
 ) -> Result<CudaHtj2kColorDecodePlans, Error> {
     let total_start = profile::profile_now(true);
     let parse_start = profile::profile_now(true);
-    let target_resolution = (device_plan.scale() != Downscale::None).then_some((
-        device_plan
-            .source_dims()
-            .0
-            .div_ceil(device_plan.scale().denominator()),
-        device_plan
-            .source_dims()
-            .1
-            .div_ceil(device_plan.scale().denominator()),
-    ));
-    let image = NativeImage::new(
-        input,
-        &DecodeSettings {
-            target_resolution,
-            ..settings
-        },
-    )
-    .map_err(native_decode_error)?;
+    let image = parse_at_scale(input, &settings, device_plan.scale(), 0)?;
     let parse_us = profile::elapsed_us(parse_start);
 
     let plan_start = profile::profile_now(true);
@@ -129,6 +112,7 @@ pub(in crate::decoder) fn build_cuda_htj2k_color_plans_from_bytes_with_profile_a
     let (image, mut host_budget) = parse_with_host_cap(
         input,
         &DecodeSettings::default(),
+        None,
         host_cap,
         "j2k CUDA bounded color planning",
     )?;

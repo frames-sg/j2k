@@ -187,7 +187,7 @@ fn native_color_output_bytes(
     inputs
         .iter()
         .try_fold(0usize, |total, input| {
-            let (width, height) = input.device_plan.output_dims();
+            let (width, height) = input.geometry.output_dims();
             (width as usize)
                 .checked_mul(height as usize)?
                 .checked_mul(fmt.bytes_per_pixel())?

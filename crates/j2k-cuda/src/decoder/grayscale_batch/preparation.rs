@@ -6,13 +6,14 @@ use super::{
     build_cuda_classic_grayscale_plans_from_referenced_with_profile,
     build_cuda_htj2k_grayscale_plan_from_bytes_for_device_plan_with_profile_and_cap,
     build_cuda_htj2k_grayscale_plans_from_referenced_with_profile, profile, CudaHtj2kDecodePlan,
-    CudaHtj2kProfileReport, DecodeSettings, DeviceDecodePlan, Error, HostPhaseBudget,
-    NativeDecoderContext, PixelFormat,
+    CudaHtj2kProfileReport, DecodeSettings, Error, HostPhaseBudget, NativeDecoderContext,
+    PixelFormat,
 };
 use crate::decoder::decode_profile::share_plan_wall_time;
 use crate::decoder::plan::{
     next_payload_base, plan_in_waves, referenced_classic_payload_bytes, referenced_ht_payload_bytes,
 };
+use crate::decoder::PreparedInputGeometry;
 
 pub(super) struct PreparedGrayscaleBatch {
     pub(super) plans: Vec<CudaHtj2kDecodePlan>,
@@ -32,7 +33,7 @@ pub(super) struct PreparedGrayscaleBatch {
 pub(crate) struct GrayscaleBatchInput<'a> {
     pub(crate) source_index: usize,
     pub(crate) bytes: &'a [u8],
-    pub(crate) device_plan: Option<DeviceDecodePlan>,
+    pub(crate) geometry: Option<PreparedInputGeometry>,
     pub(crate) referenced_plan: Option<&'a j2k_native::J2kReferencedHtj2kPlan>,
     pub(crate) referenced_classic_plan: Option<&'a j2k_native::J2kReferencedClassicPlan>,
 }
@@ -42,7 +43,7 @@ impl<'a> GrayscaleBatchInput<'a> {
         Self {
             source_index: 0,
             bytes,
-            device_plan: None,
+            geometry: None,
             referenced_plan: None,
             referenced_classic_plan: None,
         }
@@ -152,7 +153,7 @@ fn build_grayscale_input_with_cap<'a>(
         (Some(referenced), None) => {
             payload = host_budget
                 .try_vec_with_capacity(referenced_ht_payload_bytes(referenced.payloads())?)?;
-            let device_plan = input.device_plan.ok_or(Error::capability_rejected(
+            let geometry = input.geometry.ok_or(Error::capability_rejected(
                 j2k_core::CapabilityRejection::geometry_mismatch(
                     "prepared CUDA HTJ2K plan is missing normalized output geometry",
                 ),
@@ -161,7 +162,7 @@ fn build_grayscale_input_with_cap<'a>(
                 input.bytes,
                 referenced,
                 fmt,
-                device_plan,
+                geometry.output_dims(),
                 &mut payload,
                 &mut host_budget,
             )?
@@ -169,7 +170,7 @@ fn build_grayscale_input_with_cap<'a>(
         (None, Some(referenced)) => {
             payload = host_budget
                 .try_vec_with_capacity(referenced_classic_payload_bytes(referenced.tiles())?)?;
-            let device_plan = input.device_plan.ok_or(Error::capability_rejected(
+            let geometry = input.geometry.ok_or(Error::capability_rejected(
                 j2k_core::CapabilityRejection::geometry_mismatch(
                     "prepared CUDA classic plan is missing normalized output geometry",
                 ),
@@ -178,13 +179,17 @@ fn build_grayscale_input_with_cap<'a>(
                 input.bytes,
                 referenced,
                 fmt,
-                device_plan,
+                geometry.output_dims(),
                 &mut payload,
                 &mut host_budget,
             )?
         }
         (None, None) => {
-            let plan_settings = if input.device_plan.is_some() {
+            let device_plan = input
+                .geometry
+                .map(PreparedInputGeometry::request_plan)
+                .transpose()?;
+            let plan_settings = if device_plan.is_some() {
                 settings
             } else {
                 DecodeSettings::default()
@@ -193,7 +198,7 @@ fn build_grayscale_input_with_cap<'a>(
                 build_cuda_htj2k_grayscale_plan_from_bytes_for_device_plan_with_profile_and_cap(
                     input.bytes,
                     fmt,
-                    input.device_plan,
+                    device_plan,
                     plan_settings,
                     native_context,
                     host_cap,
@@ -235,8 +240,8 @@ fn append_grayscale_input(
         ));
     };
     let dimensions = input
-        .device_plan
-        .map_or(first.0.dimensions(), DeviceDecodePlan::output_dims);
+        .geometry
+        .map_or(first.0.dimensions(), PreparedInputGeometry::output_dims);
     for (plan, _) in &mut input_plans {
         plan.rebase_payload_offsets(*payload_base)?;
     }

@@ -13,6 +13,9 @@ mod classic_native;
 #[path = "batch_decoder_api/exact_color.rs"]
 mod exact_color;
 #[cfg(feature = "cuda-runtime")]
+#[path = "batch_decoder_api/exact_operations.rs"]
+mod exact_operations;
+#[cfg(feature = "cuda-runtime")]
 #[path = "batch_decoder_api/external_lifecycle.rs"]
 mod external_lifecycle;
 #[cfg(feature = "cuda-runtime")]

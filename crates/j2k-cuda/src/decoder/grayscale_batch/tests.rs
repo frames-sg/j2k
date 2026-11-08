@@ -11,6 +11,7 @@ use j2k_native::{encode_htj2k, DecodeSettings, EncodeOptions};
 
 use super::completion::{map_grayscale_status_error, GrayscaleJobIdentity};
 use super::{prepare_grayscale_batch, prepare_grayscale_batch_with_cap, GrayscaleBatchInput};
+use crate::decoder::PreparedInputGeometry;
 
 #[test]
 fn grayscale_kernel_failure_maps_to_responsible_source_index() {
@@ -183,7 +184,7 @@ fn prepared_htj2k_batch_uses_retained_offsets_without_reparsing() {
         &[GrayscaleBatchInput {
             source_index: 0,
             bytes: image.bytes(),
-            device_plan: Some(image.plan()),
+            geometry: Some(PreparedInputGeometry::Request(image.plan())),
             referenced_plan: Some(referenced_plan),
             referenced_classic_plan: None,
         }],
@@ -242,14 +243,14 @@ fn grayscale_batch_prepares_roi_and_reduced_requests_in_one_payload_arena() {
             GrayscaleBatchInput {
                 source_index: 0,
                 bytes: &encoded,
-                device_plan: Some(roi_plan),
+                geometry: Some(PreparedInputGeometry::Request(roi_plan)),
                 referenced_plan: None,
                 referenced_classic_plan: None,
             },
             GrayscaleBatchInput {
                 source_index: 1,
                 bytes: &encoded,
-                device_plan: Some(reduced_plan),
+                geometry: Some(PreparedInputGeometry::Request(reduced_plan)),
                 referenced_plan: None,
                 referenced_classic_plan: None,
             },

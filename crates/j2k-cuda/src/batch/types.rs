@@ -5,8 +5,8 @@
 #[cfg(feature = "cuda-runtime")]
 use super::Arc;
 use super::{
-    BatchGroupInfo, BatchInfrastructureError, Error, IndexedBatchError, J2kDecodeWarning,
-    PreparedBatchGroup, Rect, Surface,
+    BatchGroupInfo, BatchInfrastructureError, Error, IndexedBatchError, J2kDecodeWarning, Rect,
+    Surface,
 };
 use crate::CudaHtj2kProfileReport;
 
@@ -35,9 +35,9 @@ impl CudaBatchError {
         clippy::disallowed_methods,
         reason = "error construction preserves its infallible public signature while retaining affected source indices"
     )]
-    pub(super) fn group(group: &PreparedBatchGroup, source: impl Into<Error>) -> Self {
+    pub(super) fn group(source_indices: &[usize], source: impl Into<Error>) -> Self {
         Self::GroupExecution {
-            source_indices: group.source_indices().to_vec(),
+            source_indices: source_indices.to_vec(),
             source: Box::new(source.into()),
         }
     }
@@ -112,9 +112,9 @@ impl CudaBatchGroupError {
         clippy::disallowed_methods,
         reason = "error construction preserves its infallible public signature while retaining affected source indices"
     )]
-    pub(super) fn new(group: &PreparedBatchGroup, source: Error) -> Self {
+    pub(super) fn new(source_indices: &[usize], source: Error) -> Self {
         Self {
-            source_indices: group.source_indices().to_vec(),
+            source_indices: source_indices.to_vec(),
             source: Box::new(source),
         }
     }

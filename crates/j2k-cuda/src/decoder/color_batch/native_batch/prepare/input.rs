@@ -26,7 +26,7 @@ pub(super) fn prepare_native_color_input<'a>(
                 input.bytes,
                 referenced_plan,
                 fmt,
-                input.device_plan,
+                input.geometry.output_dims(),
                 shared_payload,
                 &mut budget,
             )
@@ -42,7 +42,7 @@ pub(super) fn prepare_native_color_input<'a>(
                 input.bytes,
                 referenced_plan,
                 fmt,
-                input.device_plan,
+                input.geometry.output_dims(),
                 shared_payload,
                 &mut budget,
             )
@@ -68,7 +68,7 @@ fn prepare_native_color_from_bytes<'a>(
     let mut color = build_cuda_color_plan_from_bytes_for_device_plan_with_profile(
         input.bytes,
         fmt,
-        input.device_plan,
+        input.geometry.request_plan()?,
         input.settings,
         native_context,
     )?;

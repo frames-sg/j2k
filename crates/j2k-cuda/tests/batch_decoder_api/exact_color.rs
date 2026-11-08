@@ -10,6 +10,33 @@ use j2k_cuda::{CudaBatchDecoder, CudaSession, Surface};
 use j2k_cuda_runtime::{CudaContext, CudaExternalDeviceBufferViewMut};
 
 #[test]
+fn exact_origin_reduction_prepared_batches_match_cpu_when_runtime_required() {
+    if !j2k_test_support::cuda_runtime_gate(module_path!()) {
+        return;
+    }
+    let context = CudaContext::system_default().expect("CUDA context");
+    let encoded = Arc::<[u8]>::from(j2k_test_support::OPENJPH_ORIGIN_23X17_AT_3_5);
+    for request in [
+        DecodeRequest::Reduced {
+            scale: Downscale::Half,
+        },
+        DecodeRequest::RegionReduced {
+            roi: Rect {
+                x: 15,
+                y: 9,
+                w: 8,
+                h: 8,
+            },
+            scale: Downscale::Half,
+        },
+    ] {
+        for layout in [BatchLayout::Nhwc, BatchLayout::Nchw] {
+            assert_exact_rgb_case(&context, &encoded, false, layout, request);
+        }
+    }
+}
+
+#[test]
 fn exact_rgb_external_and_resident_batches_match_cpu_for_geometry_and_layout_when_runtime_required()
 {
     if !j2k_test_support::cuda_runtime_gate(module_path!()) {

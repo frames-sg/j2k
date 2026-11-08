@@ -8,8 +8,7 @@ use j2k_native::{
 use super::super::{
     flatten_referenced_classic_cuda_color_tile_components, profile, rgba_bit_depths_from_rgb,
     CudaHtj2kColorDecodePlans, CudaHtj2kDecodePlan, CudaHtj2kDecodeProfileDetail,
-    CudaHtj2kProfileReport, CudaHtj2kTransform, DeviceDecodePlan, Error, HostPhaseBudget,
-    PixelFormat,
+    CudaHtj2kProfileReport, CudaHtj2kTransform, Error, HostPhaseBudget, PixelFormat,
 };
 use super::ReferencedTileColorGeometry;
 
@@ -17,7 +16,7 @@ pub(in crate::decoder) fn build_cuda_classic_color_plans_from_referenced_with_pr
     input: &[u8],
     referenced: &J2kReferencedClassicPlan,
     fmt: PixelFormat,
-    device_plan: DeviceDecodePlan,
+    output_dimensions: (u32, u32),
     shared_payload: &mut Vec<u8>,
     host_budget: &mut HostPhaseBudget,
 ) -> Result<Vec<CudaHtj2kColorDecodePlans>, Error> {
@@ -27,7 +26,6 @@ pub(in crate::decoder) fn build_cuda_classic_color_plans_from_referenced_with_pr
         referenced.ranges(),
     )?;
     let output_rect = referenced.output_rect();
-    let output_dimensions = device_plan.output_dims();
     if (output_rect.width(), output_rect.height()) != output_dimensions {
         return Err(Error::capability_rejected(
             j2k_core::CapabilityRejection::geometry_mismatch(

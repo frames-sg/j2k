@@ -5,13 +5,80 @@
 
 #![cfg(feature = "cuda-runtime")]
 
-use j2k_core::{BackendRequest, Downscale, ImageDecode, ImageDecodeDevice, PixelFormat, Rect};
+use j2k_core::{
+    BackendRequest, DeviceSurface, Downscale, ImageDecode, ImageDecodeDevice, PixelFormat, Rect,
+};
 use j2k_cuda::{J2kDecoder, J2kScratchPool, SurfaceResidency};
 use j2k_native::{encode, encode_htj2k, EncodeOptions};
 use j2k_test_support::cuda_runtime_and_strict_oxide_gate;
 
 const WIDTH: u32 = 600;
 const HEIGHT: u32 = 440;
+
+#[test]
+fn cuda_scaled_origin_images_and_edge_regions_match_reference_pixels() {
+    use j2k::{DeviceDecodePlan, DeviceDecodeRequest};
+    use j2k_test_support::{
+        OPENJPEG_ORIGIN_23X17_AT_3_5, OPENJPH_ORIGIN_23X17_AT_3_5, ORIGIN_REDUCED_RGB,
+    };
+    if !cuda_runtime_and_strict_oxide_gate(module_path!()) {
+        return;
+    }
+    let roi = Rect {
+        x: 15,
+        y: 9,
+        w: 8,
+        h: 8,
+    };
+    for bytes in [OPENJPEG_ORIGIN_23X17_AT_3_5, OPENJPH_ORIGIN_23X17_AT_3_5] {
+        let mut device = J2kDecoder::new(bytes).expect("device decoder");
+        let mut cpu = j2k::J2kDecoder::new(bytes).expect("CPU decoder");
+        for (scale, (dimensions, expected)) in
+            [Downscale::Half, Downscale::Quarter, Downscale::Eighth]
+                .into_iter()
+                .zip(ORIGIN_REDUCED_RGB)
+        {
+            let surface = device
+                .decode_scaled_to_device(PixelFormat::Rgb8, scale, BackendRequest::Cuda)
+                .expect("exact scaled surface");
+            assert_eq!(surface.dimensions(), dimensions);
+            assert_eq!(surface.residency(), SurfaceResidency::CudaResidentDecode);
+            let mut actual = vec![0; expected.len()];
+            surface
+                .download_into(&mut actual, dimensions.0 as usize * 3)
+                .expect("download");
+            assert_eq!(actual, expected);
+
+            let plan = DeviceDecodePlan::for_reference_grid(
+                cpu.reference_grid(),
+                DeviceDecodeRequest::RegionScaled { roi, scale },
+            )
+            .expect("edge geometry");
+            let dimensions = plan.output_dims();
+            let stride = dimensions.0 as usize * 3;
+            let mut expected = vec![0; stride * dimensions.1 as usize];
+            cpu.decode_region_scaled_into(
+                &mut J2kScratchPool::new(),
+                &mut expected,
+                stride,
+                PixelFormat::Rgb8,
+                roi,
+                scale,
+            )
+            .expect("CPU edge region");
+            let surface = device
+                .decode_region_scaled_to_device(PixelFormat::Rgb8, roi, scale, BackendRequest::Cuda)
+                .expect("exact scaled edge surface");
+            assert_eq!(surface.dimensions(), dimensions);
+            assert_eq!(surface.residency(), SurfaceResidency::CudaResidentDecode);
+            let mut actual = vec![0; expected.len()];
+            surface
+                .download_into(&mut actual, stride)
+                .expect("download edge");
+            assert_eq!(actual, expected);
+        }
+    }
+}
 
 fn codestream(components: u16, reversible: bool, ht: bool) -> Vec<u8> {
     let mut pixels = Vec::new();

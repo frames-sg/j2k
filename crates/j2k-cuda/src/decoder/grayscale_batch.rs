@@ -24,8 +24,8 @@ use super::resident::{
 use super::{
     cuda_error, cuda_range_storage, profile, BackendKind, CudaComponentDecodeWork,
     CudaDecodedComponent, CudaHtj2kDecodePlan, CudaHtj2kProfileReport, CudaQueuedIdwtBatch,
-    CudaSession, CudaSurfaceStats, DecodeSettings, DeviceDecodePlan, Error, NativeDecoderContext,
-    PixelFormat, Surface, SurfaceResidency, CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
+    CudaSession, CudaSurfaceStats, DecodeSettings, Error, NativeDecoderContext, PixelFormat,
+    Surface, SurfaceResidency, CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED,
 };
 use crate::allocation::HostPhaseBudget;
 

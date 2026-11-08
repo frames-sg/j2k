@@ -14,7 +14,7 @@ use super::color_batch::native_batch::{
 use super::grayscale_batch::{
     decode_grayscale_cuda_resident_prepared_batch_surfaces_with_profile, GrayscaleBatchInput,
 };
-use super::{CudaSession, DecodeSettings, J2kDecoder};
+use super::{CudaSession, DecodeSettings, J2kDecoder, PreparedInputGeometry};
 
 const SIZE: u32 = 32;
 
@@ -151,7 +151,7 @@ fn prepared_signed_gray_requested_formats_match_cpu() {
                     let input = GrayscaleBatchInput {
                         source_index: 0,
                         bytes: &bytes,
-                        device_plan: Some(image.plan()),
+                        geometry: Some(PreparedInputGeometry::Request(image.plan())),
                         referenced_plan: referenced
                             .then(|| image.htj2k_plan().map(j2k::PreparedHtj2kPlan::geometry))
                             .flatten(),
@@ -270,7 +270,7 @@ fn prepared_native_color_matches_cpu_and_signed_format_conversions() {
                                     let input = NativeColorBatchInput {
                                         source_index: 0,
                                         bytes: &bytes,
-                                        device_plan: image.plan(),
+                                        geometry: PreparedInputGeometry::Request(image.plan()),
                                         settings: DecodeSettings::strict(),
                                         referenced_plan: referenced
                                             .then(|| {
@@ -400,11 +400,13 @@ fn mixed_signedness_is_rejected_on_single_and_batch_routes() {
                     let input = NativeColorBatchInput {
                         source_index: 0,
                         bytes: &bytes,
-                        device_plan: j2k::DeviceDecodePlan::for_image(
-                            (SIZE, SIZE),
-                            DeviceDecodeRequest::Full,
-                        )
-                        .expect("geometry"),
+                        geometry: PreparedInputGeometry::Request(
+                            j2k::DeviceDecodePlan::for_image(
+                                (SIZE, SIZE),
+                                DeviceDecodeRequest::Full,
+                            )
+                            .expect("geometry"),
+                        ),
                         referenced_plan: ht_plan.as_ref(),
                         referenced_classic_plan: classic_plan.as_ref(),
                         settings: DecodeSettings::strict(),

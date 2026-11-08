@@ -4,9 +4,10 @@
 
 use super::{
     build_cuda_htj2k_color_plans_from_bytes_with_profile, flatten_cuda_color_components,
-    native_decode_error, profile, rgba_bit_depths_from_rgb, CudaHtj2kColorDecodePlans,
-    CudaHtj2kDecodePlan, CudaHtj2kDecodeProfileDetail, CudaHtj2kProfileReport, CudaHtj2kTransform,
-    DecodeSettings, Error, J2kDecoder, NativeDecoderContext, NativeImage, PixelFormat, Rect,
+    native_decode_error, parse_at_scale, profile, rgba_bit_depths_from_rgb,
+    CudaHtj2kColorDecodePlans, CudaHtj2kDecodePlan, CudaHtj2kDecodeProfileDetail,
+    CudaHtj2kProfileReport, CudaHtj2kTransform, DecodeSettings, Downscale, Error, J2kDecoder,
+    NativeDecoderContext, NativeImage, PixelFormat, Rect,
 };
 
 impl J2kDecoder<'_> {
@@ -24,19 +25,12 @@ impl J2kDecoder<'_> {
     pub(in crate::decoder) fn build_cuda_htj2k_color_scaled_plans_with_profile(
         &mut self,
         fmt: PixelFormat,
-        output_dimensions: (u32, u32),
+        scale: Downscale,
     ) -> Result<CudaHtj2kColorDecodePlans, Error> {
         let total_start = profile::profile_now(true);
 
         let parse_start = profile::profile_now(true);
-        let image = NativeImage::new(
-            self.bytes,
-            &DecodeSettings {
-                target_resolution: Some(output_dimensions),
-                ..DecodeSettings::default()
-            },
-        )
-        .map_err(native_decode_error)?;
+        let image = parse_at_scale(self.bytes, &DecodeSettings::default(), scale, 0)?;
         let parse_us = profile::elapsed_us(parse_start);
 
         let plan_start = profile::profile_now(true);
@@ -172,19 +166,12 @@ impl J2kDecoder<'_> {
         &mut self,
         fmt: PixelFormat,
         scaled_roi: Rect,
-        output_dimensions: (u32, u32),
+        scale: Downscale,
     ) -> Result<CudaHtj2kColorDecodePlans, Error> {
         let total_start = profile::profile_now(true);
 
         let parse_start = profile::profile_now(true);
-        let image = NativeImage::new(
-            self.bytes,
-            &DecodeSettings {
-                target_resolution: Some(output_dimensions),
-                ..DecodeSettings::default()
-            },
-        )
-        .map_err(native_decode_error)?;
+        let image = parse_at_scale(self.bytes, &DecodeSettings::default(), scale, 0)?;
         let parse_us = profile::elapsed_us(parse_start);
 
         let plan_start = profile::profile_now(true);
@@ -260,4 +247,71 @@ fn final_band_dimensions(components: &[CudaHtj2kDecodePlan]) -> (u32, u32) {
                 store.input_rect.y1.saturating_sub(store.input_rect.y0),
             )
         })
+}
+
+#[cfg(test)]
+mod reduction_tests {
+    use super::*;
+    use crate::decoder::plan::build_cuda_color_plan_from_bytes_for_device_plan_with_profile;
+    use j2k::{DeviceDecodePlan, DeviceDecodeRequest};
+    use j2k_test_support::{OPENJPEG_ORIGIN_23X17_AT_3_5, OPENJPH_ORIGIN_23X17_AT_3_5};
+
+    #[test]
+    fn scaled_color_plan_preserves_reference_grid_reduction() {
+        for bytes in [OPENJPEG_ORIGIN_23X17_AT_3_5, OPENJPH_ORIGIN_23X17_AT_3_5] {
+            let mut decoder = J2kDecoder::new(bytes).expect("origin fixture");
+            for (scale, dimensions) in [
+                (Downscale::Half, (11, 8)),
+                (Downscale::Quarter, (6, 4)),
+                (Downscale::Eighth, (3, 2)),
+            ] {
+                let full = decoder
+                    .build_cuda_htj2k_color_scaled_plans_with_profile(PixelFormat::Rgb8, scale)
+                    .expect("scaled plan");
+                assert_eq!(full.dimensions, dimensions);
+                assert_eq!(full.mct_dimensions, dimensions);
+                for component in &full.components {
+                    assert_eq!(component.dimensions(), dimensions);
+                }
+                for request in [
+                    DeviceDecodeRequest::Scaled { scale },
+                    DeviceDecodeRequest::RegionScaled {
+                        roi: Rect {
+                            x: 15,
+                            y: 9,
+                            w: 8,
+                            h: 8,
+                        },
+                        scale,
+                    },
+                ] {
+                    let request_plan = DeviceDecodePlan::for_reference_grid(
+                        decoder.inner.reference_grid(),
+                        request,
+                    )
+                    .expect("geometry plan");
+                    let prepared = build_cuda_color_plan_from_bytes_for_device_plan_with_profile(
+                        bytes,
+                        PixelFormat::Rgb8,
+                        request_plan,
+                        DecodeSettings::default(),
+                        &mut NativeDecoderContext::default(),
+                    )
+                    .expect("prepared plan");
+                    assert_eq!(prepared.dimensions, request_plan.output_dims());
+                    assert_eq!(prepared.mct_dimensions, dimensions);
+                    if let DeviceDecodeRequest::RegionScaled { .. } = request {
+                        let region = decoder
+                            .build_cuda_htj2k_color_region_scaled_plans_with_profile(
+                                PixelFormat::Rgb8,
+                                request_plan.output_rect(),
+                                scale,
+                            )
+                            .expect("scaled edge region");
+                        assert_eq!(region.dimensions, request_plan.output_dims());
+                    }
+                }
+            }
+        }
+    }
 }

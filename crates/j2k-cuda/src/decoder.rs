@@ -91,6 +91,8 @@ use self::decode_profile::CudaDecodeStageTimings;
 use self::decode_profile::{format_cuda_idwt_batch_host_trace_row, CudaIdwtBatchHostTraceRow};
 #[cfg(all(test, feature = "cuda-runtime"))]
 use self::plan::build_cuda_htj2k_color_plans_from_bytes_with_profile;
+#[cfg(feature = "cuda-runtime")]
+pub(crate) use self::plan::PreparedInputGeometry;
 #[cfg(all(test, feature = "cuda-runtime"))]
 use self::resident::{cuda_code_block_job_from_plan_block, htj2k_batched_cleanup_dispatches};
 #[cfg(all(test, feature = "cuda-runtime"))]

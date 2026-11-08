@@ -1,5 +1,5 @@
 use crate::{CudaHtj2kTransform, J2kDecoder, SurfaceResidency};
-use j2k_core::{PixelFormat, Rect};
+use j2k_core::{Downscale, PixelFormat, Rect};
 #[cfg(feature = "cuda-runtime")]
 use j2k_cuda_j2k_engine::{CudaHtj2kCodeBlockJob, CudaHtj2kDecodeTables, J2kCudaEngine};
 use j2k_cuda_runtime::CudaContext;
@@ -153,7 +153,7 @@ fn flat_htj2k_region_plan_prunes_code_blocks() {
     let bytes = ht_gray8_large_fixture();
     let mut full_decoder = J2kDecoder::new(&bytes).expect("full decoder");
     let (full_cuda_plan, _) = full_decoder
-        .build_cuda_htj2k_grayscale_scaled_plan_with_profile(PixelFormat::Gray8, (64, 64))
+        .build_cuda_htj2k_grayscale_scaled_plan_with_profile(PixelFormat::Gray8, Downscale::Quarter)
         .expect("CUDA full flat plan");
 
     let mut roi_decoder = J2kDecoder::new(&bytes).expect("ROI decoder");
@@ -166,7 +166,7 @@ fn flat_htj2k_region_plan_prunes_code_blocks() {
                 w: 8,
                 h: 8,
             },
-            (64, 64),
+            Downscale::Quarter,
         )
         .expect("CUDA ROI flat plan");
 
@@ -195,7 +195,7 @@ fn flat_htj2k_scaled_region_plan_stores_compact_scaled_rect() {
                 w: 2,
                 h: 3,
             },
-            (4, 4),
+            Downscale::Half,
         )
         .expect("CUDA scaled ROI flat plan");
 

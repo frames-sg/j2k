@@ -3,7 +3,7 @@
 //! Grayscale plan construction for prepared and one-shot inputs.
 
 use super::{
-    native_decode_error, parse_with_host_cap, profile, CudaHtj2kDecodePlan,
+    native_decode_error, parse_at_scale, parse_with_host_cap, profile, CudaHtj2kDecodePlan,
     CudaHtj2kDecodeProfileDetail, CudaHtj2kProfileReport, DecodeSettings, DeviceDecodePlan,
     Downscale, Error, HostPhaseBudget, J2kDecoder, J2kReferencedClassicPlan,
     J2kReferencedHtj2kPlan, NativeDecoderContext, NativeImage, PixelFormat, Rect,
@@ -36,17 +36,12 @@ pub(in crate::decoder) fn build_cuda_htj2k_grayscale_plan_from_bytes_for_device_
 ) -> Result<(CudaHtj2kDecodePlan, CudaHtj2kProfileReport), Error> {
     let total_start = profile::profile_now(true);
     let parse_start = profile::profile_now(true);
-    let target_resolution = match device_plan {
-        Some(plan) if plan.scale() != Downscale::None => Some(plan.reduced_image_dims()),
-        _ => settings.target_resolution,
-    };
-    let decode_settings = DecodeSettings {
-        target_resolution,
-        ..settings
-    };
     let (image, mut host_budget) = parse_with_host_cap(
         input,
-        &decode_settings,
+        &settings,
+        device_plan
+            .filter(|plan| plan.scale() != Downscale::None)
+            .map(j2k::DeviceDecodePlan::scale),
         host_cap,
         "j2k CUDA bounded grayscale planning",
     )?;
@@ -122,13 +117,12 @@ pub(in crate::decoder) fn build_cuda_htj2k_grayscale_plans_from_referenced_with_
     input: &[u8],
     referenced: &J2kReferencedHtj2kPlan,
     fmt: PixelFormat,
-    device_plan: DeviceDecodePlan,
+    output_dimensions: (u32, u32),
     shared_payload: &mut Vec<u8>,
     host_budget: &mut HostPhaseBudget,
 ) -> Result<Vec<(CudaHtj2kDecodePlan, CudaHtj2kProfileReport)>, Error> {
     let total_start = profile::profile_now(true);
     let output_rect = referenced.output_rect();
-    let output_dimensions = device_plan.output_dims();
     if (output_rect.width(), output_rect.height()) != output_dimensions {
         return Err(Error::capability_rejected(
             j2k_core::CapabilityRejection::geometry_mismatch(
@@ -216,7 +210,7 @@ pub(in crate::decoder) fn build_cuda_classic_grayscale_plans_from_referenced_wit
     input: &[u8],
     referenced: &J2kReferencedClassicPlan,
     fmt: PixelFormat,
-    device_plan: DeviceDecodePlan,
+    output_dimensions: (u32, u32),
     shared_payload: &mut Vec<u8>,
     host_budget: &mut HostPhaseBudget,
 ) -> Result<Vec<(CudaHtj2kDecodePlan, CudaHtj2kProfileReport)>, Error> {
@@ -226,7 +220,6 @@ pub(in crate::decoder) fn build_cuda_classic_grayscale_plans_from_referenced_wit
         referenced.ranges(),
     )?;
     let output_rect = referenced.output_rect();
-    let output_dimensions = device_plan.output_dims();
     if (output_rect.width(), output_rect.height()) != output_dimensions {
         return Err(Error::capability_rejected(
             j2k_core::CapabilityRejection::geometry_mismatch(
@@ -374,19 +367,12 @@ impl J2kDecoder<'_> {
     pub(crate) fn build_cuda_htj2k_grayscale_scaled_plan_with_profile(
         &mut self,
         fmt: PixelFormat,
-        output_dimensions: (u32, u32),
+        scale: Downscale,
     ) -> Result<(CudaHtj2kDecodePlan, CudaHtj2kProfileReport), Error> {
         let total_start = profile::profile_now(true);
 
         let parse_start = profile::profile_now(true);
-        let image = NativeImage::new(
-            self.bytes,
-            &DecodeSettings {
-                target_resolution: Some(output_dimensions),
-                ..DecodeSettings::default()
-            },
-        )
-        .map_err(native_decode_error)?;
+        let image = parse_at_scale(self.bytes, &DecodeSettings::default(), scale, 0)?;
         let parse_us = profile::elapsed_us(parse_start);
 
         let plan_start = profile::profile_now(true);
@@ -424,19 +410,12 @@ impl J2kDecoder<'_> {
         &mut self,
         fmt: PixelFormat,
         scaled_roi: Rect,
-        output_dimensions: (u32, u32),
+        scale: Downscale,
     ) -> Result<(CudaHtj2kDecodePlan, CudaHtj2kProfileReport), Error> {
         let total_start = profile::profile_now(true);
 
         let parse_start = profile::profile_now(true);
-        let image = NativeImage::new(
-            self.bytes,
-            &DecodeSettings {
-                target_resolution: Some(output_dimensions),
-                ..DecodeSettings::default()
-            },
-        )
-        .map_err(native_decode_error)?;
+        let image = parse_at_scale(self.bytes, &DecodeSettings::default(), scale, 0)?;
         let parse_us = profile::elapsed_us(parse_start);
 
         let plan_start = profile::profile_now(true);
@@ -474,5 +453,72 @@ impl J2kDecoder<'_> {
         };
         report.emit("plan");
         Ok((cuda_plan, report))
+    }
+}
+
+#[cfg(test)]
+mod reduction_tests {
+    use super::*;
+    use j2k::DeviceDecodeRequest;
+
+    #[test]
+    fn scaled_gray_plans_share_exact_reduction_and_bounded_preparation() {
+        let bytes = j2k_native::encode_htj2k(
+            &[42; 23 * 17],
+            23,
+            17,
+            1,
+            8,
+            false,
+            &j2k_native::EncodeOptions {
+                num_decomposition_levels: 3,
+                ..j2k_native::EncodeOptions::default()
+            },
+        )
+        .expect("gray fixture");
+        let mut decoder = J2kDecoder::new(&bytes).expect("decoder");
+        let scale = Downscale::Half;
+        let (full, _) = decoder
+            .build_cuda_htj2k_grayscale_scaled_plan_with_profile(PixelFormat::Gray8, scale)
+            .expect("scaled gray plan");
+        assert_eq!(full.dimensions(), (12, 9));
+        let request_plan = DeviceDecodePlan::for_reference_grid(
+            decoder.inner.reference_grid(),
+            DeviceDecodeRequest::RegionScaled {
+                roi: Rect {
+                    x: 15,
+                    y: 9,
+                    w: 8,
+                    h: 8,
+                },
+                scale,
+            },
+        )
+        .expect("region plan");
+        let (region, _) = decoder
+            .build_cuda_htj2k_grayscale_region_scaled_plan_with_profile(
+                PixelFormat::Gray8,
+                request_plan.output_rect(),
+                scale,
+            )
+            .expect("scaled gray region");
+        let build = |cap| {
+            build_cuda_htj2k_grayscale_plan_from_bytes_for_device_plan_with_profile_and_cap(
+                &bytes,
+                PixelFormat::Gray8,
+                Some(request_plan),
+                DecodeSettings::default(),
+                &mut NativeDecoderContext::default(),
+                cap,
+            )
+        };
+        let (prepared, _) =
+            build(j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES).expect("prepared gray");
+        assert_eq!(region.dimensions(), request_plan.output_dims());
+        assert_eq!(prepared.dimensions(), region.dimensions());
+        assert_eq!(prepared.output_origin(), region.output_origin());
+        assert!(build(1)
+            .expect_err("retained parser baseline must be enforced")
+            .is_host_planning_limit());
     }
 }

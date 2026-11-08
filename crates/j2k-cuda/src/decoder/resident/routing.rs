@@ -205,18 +205,17 @@ pub(in crate::decoder) fn decode_scaled_to_cuda_resident_surface_impl(
     if scale == Downscale::None {
         return decode_to_cuda_resident_surface_impl(decoder, session, fmt);
     }
-    let output_dimensions = DeviceDecodePlan::for_reference_grid(
+    DeviceDecodePlan::for_reference_grid(
         decoder.inner.reference_grid(),
         DeviceDecodeRequest::Scaled { scale },
-    )?
-    .output_dims();
+    )?;
 
     match fmt {
         PixelFormat::Gray8 | PixelFormat::Gray16 => {
-            decode_grayscale_cuda_resident_scaled_surface(decoder, session, fmt, output_dimensions)
+            decode_grayscale_cuda_resident_scaled_surface(decoder, session, fmt, scale)
         }
         PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Rgb16 | PixelFormat::Rgba16 => {
-            decode_color_cuda_resident_scaled_surface(decoder, session, fmt, output_dimensions)
+            decode_color_cuda_resident_scaled_surface(decoder, session, fmt, scale)
         }
         _ => Err(Error::capability_rejected(
             j2k_core::CapabilityRejection::unsupported_format(CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED),
@@ -239,26 +238,17 @@ pub(in crate::decoder) fn decode_region_scaled_to_cuda_resident_surface_impl(
         decoder.inner.reference_grid(),
         DeviceDecodeRequest::RegionScaled { roi, scale },
     )?;
-    let scaled_dimensions = plan.reduced_image_dims();
     let scaled_roi = plan.output_rect();
 
     match fmt {
         PixelFormat::Gray8 | PixelFormat::Gray16 => {
             decode_grayscale_cuda_resident_region_scaled_surface(
-                decoder,
-                session,
-                fmt,
-                scaled_roi,
-                scaled_dimensions,
+                decoder, session, fmt, scaled_roi, scale,
             )
         }
         PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Rgb16 | PixelFormat::Rgba16 => {
             decode_color_cuda_resident_region_scaled_surface(
-                decoder,
-                session,
-                fmt,
-                scaled_roi,
-                scaled_dimensions,
+                decoder, session, fmt, scaled_roi, scale,
             )
         }
         _ => Err(Error::capability_rejected(
@@ -313,12 +303,12 @@ fn decode_grayscale_cuda_resident_scaled_surface(
     decoder: &mut J2kDecoder<'_>,
     session: &mut CudaSession,
     fmt: PixelFormat,
-    output_dimensions: (u32, u32),
+    scale: Downscale,
 ) -> Result<Surface, Error> {
     let collect_stage_timings = profile::profile_stages_enabled();
     let wall_started = profile::profile_now(collect_stage_timings);
     let (plan, mut report) =
-        decoder.build_cuda_htj2k_grayscale_scaled_plan_with_profile(fmt, output_dimensions)?;
+        decoder.build_cuda_htj2k_grayscale_scaled_plan_with_profile(fmt, scale)?;
     decode_grayscale_cuda_resident_surface_with_plan_profile(
         session,
         fmt,
@@ -336,15 +326,12 @@ fn decode_grayscale_cuda_resident_region_scaled_surface(
     session: &mut CudaSession,
     fmt: PixelFormat,
     scaled_roi: Rect,
-    scaled_dimensions: (u32, u32),
+    scale: Downscale,
 ) -> Result<Surface, Error> {
     let collect_stage_timings = profile::profile_stages_enabled();
     let wall_started = profile::profile_now(collect_stage_timings);
-    let (plan, mut report) = decoder.build_cuda_htj2k_grayscale_region_scaled_plan_with_profile(
-        fmt,
-        scaled_roi,
-        scaled_dimensions,
-    )?;
+    let (plan, mut report) = decoder
+        .build_cuda_htj2k_grayscale_region_scaled_plan_with_profile(fmt, scaled_roi, scale)?;
     decode_grayscale_cuda_resident_surface_with_plan_profile(
         session,
         fmt,

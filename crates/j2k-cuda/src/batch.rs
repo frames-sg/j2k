@@ -2,11 +2,11 @@
 
 use j2k::{
     prepare_batch, prepare_batch_from_images, BatchDecodeOptions, BatchDecoder, BatchGroupInfo,
-    EncodedImage, IndexedBatchError, J2kDecodeWarning, PreparedBatch, PreparedBatchGroup,
-    PreparedImage,
+    EncodedImage, IndexedBatchError, J2kDecodeWarning, PreparedBatch, PreparedImage,
+    PreparedImageOperation,
 };
 #[cfg(feature = "cuda-runtime")]
-use j2k::{BatchColor, BatchLayout};
+use j2k::{BatchColor, BatchLayout, PreparedBatchGroup};
 #[cfg(feature = "cuda-runtime")]
 use j2k_core::{BackendKind, PixelFormat};
 use j2k_core::{BatchInfrastructureError, Rect};
@@ -43,9 +43,8 @@ pub use self::types::{CudaBatchDecodeResult, CudaBatchError, CudaBatchGroup, Cud
 use self::external::SubmittedCudaCodecBatch;
 #[cfg(feature = "cuda-runtime")]
 use self::input::{
-    decode_warnings, group_pixel_format, native_color_group_storage, native_color_inputs,
-    native_decode_settings, native_referenced_classic_plan, native_referenced_htj2k_plan,
-    validate_layout,
+    decode_warnings, grayscale_inputs, group_pixel_format, native_color_group_storage,
+    native_color_inputs, validate_layout, CudaGroupView,
 };
 
 #[cfg(all(test, feature = "cuda-runtime"))]
@@ -58,7 +57,10 @@ mod tests {
     };
     use j2k_core::{Colorspace, CompressedPayloadKind, CompressedTransferSyntax, PixelFormat};
 
-    use super::{group_pixel_format, native_color_inputs, validate_layout};
+    use super::{
+        group_pixel_format, native_color_inputs, validate_layout, CudaBatchDecoder, CudaGroupView,
+    };
+    use crate::CudaSession;
 
     #[test]
     fn signed_grayscale_group_selects_native_i16_cuda_store() {
@@ -139,7 +141,7 @@ mod tests {
         };
         assert!(group.images()[0].htj2k_plan().is_none());
 
-        native_color_inputs(group).expect("classic RGB exact CUDA input");
+        native_color_inputs(group.into()).expect("classic RGB exact CUDA input");
     }
 
     #[test]
@@ -190,5 +192,74 @@ mod tests {
             assert_eq!(group_pixel_format(&info).unwrap(), expected);
             validate_layout(&info).expect("exact CUDA RGBA layout");
         }
+    }
+
+    #[test]
+    fn resident_submission_stops_a_group_cancelled_after_preparation_when_runtime_required() {
+        if !j2k_test_support::cuda_runtime_gate(module_path!()) {
+            return;
+        }
+        let pixels = (0_u8..=255).collect::<Vec<_>>();
+        let encoded = Arc::<[u8]>::from(
+            j2k_native::encode_htj2k(
+                &pixels,
+                16,
+                16,
+                1,
+                8,
+                false,
+                &j2k_native::EncodeOptions {
+                    reversible: true,
+                    num_decomposition_levels: 2,
+                    ..j2k_native::EncodeOptions::default()
+                },
+            )
+            .expect("encode gray fixture"),
+        );
+        let options = BatchDecodeOptions::default();
+        let prepared =
+            prepare_batch(vec![EncodedImage::full(encoded)], options).expect("prepare source");
+        let image = &prepared.groups()[0].images()[0];
+        let token = j2k::J2kCancellationToken::new();
+        let mut control = j2k::J2kDecodeControl::default();
+        control.cancellation = Some(token.clone());
+        let operations = [
+            j2k::PreparedImageOperation::new(image, j2k::Rect::full((16, 16)), 1)
+                .with_control(&control),
+        ];
+        let device =
+            j2k::prepare_device_operations(&operations, options).expect("device operations");
+        assert!(device.errors().is_empty(), "{:?}", device.errors());
+        token.cancel();
+
+        let context = j2k_cuda_runtime::CudaContext::system_default().expect("CUDA context");
+        let mut decoder = CudaBatchDecoder::with_session_and_options(
+            CudaSession::with_context(context.clone()),
+            options,
+        );
+        let launches = || context.diagnostics().expect("diagnostics").kernel_launches;
+        let before = launches();
+        let submitted = decoder
+            .submit_group_views(
+                device.groups().len(),
+                device.groups().iter().map(CudaGroupView::from),
+                device.errors(),
+            )
+            .expect("resident submission");
+        assert_eq!(submitted.pending_group_count(), 0);
+        let result = submitted.wait().expect("wait for no pending groups");
+        assert!(result.groups().is_empty());
+        let [group_error] = result.group_errors() else {
+            panic!("one cancelled group, got {:?}", result.group_errors());
+        };
+        assert_eq!(group_error.source_indices(), [0]);
+        assert!(
+            matches!(
+                group_error.source(),
+                crate::Error::Decode(j2k::J2kError::Cancelled)
+            ),
+            "{group_error}"
+        );
+        assert_eq!(launches(), before);
     }
 }

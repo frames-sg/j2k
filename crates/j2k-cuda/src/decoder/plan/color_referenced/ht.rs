@@ -9,8 +9,7 @@ use super::super::{
     flatten_direct_source_cuda_color_tile_components,
     flatten_referenced_cuda_color_tile_components, profile, rgba_bit_depths_from_rgb,
     CudaHtj2kColorDecodePlans, CudaHtj2kDecodePlan, CudaHtj2kDecodeProfileDetail,
-    CudaHtj2kProfileReport, CudaHtj2kTransform, DeviceDecodePlan, Error, HostPhaseBudget,
-    PixelFormat,
+    CudaHtj2kProfileReport, CudaHtj2kTransform, Error, HostPhaseBudget, PixelFormat,
 };
 use super::ReferencedTileColorGeometry;
 
@@ -21,7 +20,7 @@ pub(in crate::decoder) fn build_cuda_htj2k_color_plan_from_referenced_direct_sou
     input: &[u8],
     referenced: &J2kReferencedHtj2kPlan,
     fmt: PixelFormat,
-    device_plan: DeviceDecodePlan,
+    output_dimensions: (u32, u32),
     host_budget: &mut HostPhaseBudget,
 ) -> Result<Option<CudaHtj2kColorDecodePlans>, Error> {
     let [tile] = referenced.tiles() else {
@@ -47,7 +46,6 @@ pub(in crate::decoder) fn build_cuda_htj2k_color_plan_from_referenced_direct_sou
         return Ok(None);
     }
     let output_rect = referenced.output_rect();
-    let output_dimensions = device_plan.output_dims();
     if (output_rect.width(), output_rect.height()) != output_dimensions {
         return Err(Error::capability_rejected(
             j2k_core::CapabilityRejection::geometry_mismatch(
@@ -102,13 +100,12 @@ pub(in crate::decoder) fn build_cuda_htj2k_color_plans_from_referenced_with_prof
     input: &[u8],
     referenced: &J2kReferencedHtj2kPlan,
     fmt: PixelFormat,
-    device_plan: DeviceDecodePlan,
+    output_dimensions: (u32, u32),
     shared_payload: &mut Vec<u8>,
     host_budget: &mut HostPhaseBudget,
 ) -> Result<Vec<CudaHtj2kColorDecodePlans>, Error> {
     let total_start = profile::profile_now(true);
     let output_rect = referenced.output_rect();
-    let output_dimensions = device_plan.output_dims();
     if (output_rect.width(), output_rect.height()) != output_dimensions {
         return Err(Error::capability_rejected(
             j2k_core::CapabilityRejection::geometry_mismatch(

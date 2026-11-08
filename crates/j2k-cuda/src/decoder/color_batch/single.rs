@@ -7,6 +7,7 @@ use super::{
     CudaSession, Error, FinishColorCudaResidentSurfaceRequest, HostPhaseBudget, J2kDecoder,
     PixelFormat, Rect, Surface, CUDA_HTJ2K_KERNELS_NOT_READY,
 };
+use j2k_core::Downscale;
 use j2k_cuda_j2k_engine::J2kCudaEngine;
 
 pub(in crate::decoder) fn decode_color_cuda_resident_surface_with_profile(
@@ -31,11 +32,11 @@ pub(in crate::decoder) fn decode_color_cuda_resident_scaled_surface(
     decoder: &mut J2kDecoder<'_>,
     session: &mut CudaSession,
     fmt: PixelFormat,
-    output_dimensions: (u32, u32),
+    scale: Downscale,
 ) -> Result<Surface, Error> {
     let collect_stage_timings = profile::profile_stages_enabled();
     let wall_started = profile::profile_now(collect_stage_timings);
-    let color = decoder.build_cuda_htj2k_color_scaled_plans_with_profile(fmt, output_dimensions)?;
+    let color = decoder.build_cuda_htj2k_color_scaled_plans_with_profile(fmt, scale)?;
     decode_color_cuda_resident_surface_with_plans_profile(
         session,
         fmt,
@@ -72,15 +73,12 @@ pub(in crate::decoder) fn decode_color_cuda_resident_region_scaled_surface(
     session: &mut CudaSession,
     fmt: PixelFormat,
     scaled_roi: Rect,
-    scaled_dimensions: (u32, u32),
+    scale: Downscale,
 ) -> Result<Surface, Error> {
     let collect_stage_timings = profile::profile_stages_enabled();
     let wall_started = profile::profile_now(collect_stage_timings);
-    let color = decoder.build_cuda_htj2k_color_region_scaled_plans_with_profile(
-        fmt,
-        scaled_roi,
-        scaled_dimensions,
-    )?;
+    let color =
+        decoder.build_cuda_htj2k_color_region_scaled_plans_with_profile(fmt, scaled_roi, scale)?;
     decode_color_cuda_resident_surface_with_plans_profile(
         session,
         fmt,

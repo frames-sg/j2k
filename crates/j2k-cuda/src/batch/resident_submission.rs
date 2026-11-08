@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use j2k::{
-    EncodedImage, IndexedBatchError, J2kDecodeWarning, PreparedBatch, PreparedBatchGroup, Rect,
+    EncodedImage, IndexedBatchError, J2kDecodeWarning, PreparedBatch, PreparedImageOperation, Rect,
 };
 use j2k_core::{BatchInfrastructureError, PixelFormat};
 
 use super::{
-    decode_warnings, group_pixel_format, native_color_group_storage, native_color_inputs,
-    native_decode_settings, native_referenced_classic_plan, native_referenced_htj2k_plan,
-    validate_layout, CudaBatchDecodeResult, CudaBatchDecoder, CudaBatchError, CudaBatchGroup,
-    CudaBatchGroupError, CudaResidentBatchBuffer, Error, Surface,
+    decode_warnings, grayscale_inputs, group_pixel_format, native_color_group_storage,
+    native_color_inputs, validate_layout, CudaBatchDecodeResult, CudaBatchDecoder, CudaBatchError,
+    CudaBatchGroup, CudaBatchGroupError, CudaGroupView, CudaResidentBatchBuffer, Error, Surface,
 };
 use crate::CudaHtj2kProfileReport;
 
@@ -21,19 +20,15 @@ struct ResidentGroupMetadata {
 }
 
 impl ResidentGroupMetadata {
-    fn from_prepared(group: &PreparedBatchGroup) -> Result<Self, Error> {
+    fn from_view(group: CudaGroupView<'_>) -> Result<Self, Error> {
         let mut budget =
             crate::allocation::HostPhaseBudget::new("CUDA resident batch result metadata");
         Ok(Self {
-            info: group.info().clone(),
-            source_indices: budget.try_clone_slice(group.source_indices())?,
-            decoded_rects: budget.try_collect_exact(
-                group
-                    .images()
-                    .iter()
-                    .map(|image| image.plan().output_rect()),
-            )?,
-            warnings: decode_warnings(group.images())?,
+            info: group.info.clone(),
+            source_indices: budget.try_clone_slice(group.source_indices)?,
+            decoded_rects: budget
+                .try_collect_exact(group.images().map(super::input::GroupImage::output_rect))?,
+            warnings: decode_warnings(group)?,
         })
     }
 
@@ -223,61 +218,91 @@ impl CudaBatchDecoder {
         &mut self,
         prepared: &PreparedBatch,
     ) -> Result<SubmittedCudaResidentBatch, CudaBatchError> {
+        let groups = prepared.groups();
+        self.submit_group_views(
+            groups.len(),
+            groups.iter().map(CudaGroupView::from),
+            prepared.errors(),
+        )
+    }
+
+    /// Submit exact operations to codec-owned CUDA output, leaving each
+    /// group's final store pending. See [`Self::decode_operations`].
+    ///
+    /// # Errors
+    /// As [`Self::decode_operations`].
+    pub fn submit_operations(
+        &mut self,
+        operations: &[PreparedImageOperation<'_>],
+    ) -> Result<SubmittedCudaResidentBatch, CudaBatchError> {
+        let prepared = j2k::prepare_device_operations(operations, self.options)?;
+        let groups = prepared.groups();
+        self.submit_group_views(
+            groups.len(),
+            groups.iter().map(CudaGroupView::from),
+            prepared.errors(),
+        )
+    }
+
+    /// Submit homogeneous groups in order, keeping indexed preparation errors
+    /// and recoverable per-group failures.
+    pub(super) fn submit_group_views<'g>(
+        &mut self,
+        group_count: usize,
+        groups: impl Iterator<Item = CudaGroupView<'g>>,
+        preparation_errors: &[IndexedBatchError],
+    ) -> Result<SubmittedCudaResidentBatch, CudaBatchError> {
         let mut pending = Vec::new();
-        pending
-            .try_reserve_exact(prepared.groups().len())
-            .map_err(|_| BatchInfrastructureError::HostAllocationFailed {
+        pending.try_reserve_exact(group_count).map_err(|_| {
+            BatchInfrastructureError::HostAllocationFailed {
                 what: "submitted CUDA resident groups",
-                bytes: prepared
-                    .groups()
-                    .len()
-                    .saturating_mul(core::mem::size_of::<SubmittedResidentGroup>()),
-            })?;
+                bytes: group_count.saturating_mul(core::mem::size_of::<SubmittedResidentGroup>()),
+            }
+        })?;
         let mut group_errors = Vec::new();
-        group_errors
-            .try_reserve_exact(prepared.groups().len())
-            .map_err(|_| BatchInfrastructureError::HostAllocationFailed {
+        group_errors.try_reserve_exact(group_count).map_err(|_| {
+            BatchInfrastructureError::HostAllocationFailed {
                 what: "submitted CUDA resident group failures",
-                bytes: prepared
-                    .groups()
+                bytes: group_count.saturating_mul(core::mem::size_of::<CudaBatchGroupError>()),
+            }
+        })?;
+        let mut errors = Vec::new();
+        errors
+            .try_reserve_exact(preparation_errors.len())
+            .map_err(|_| BatchInfrastructureError::HostAllocationFailed {
+                what: "submitted CUDA resident indexed errors",
+                bytes: preparation_errors
                     .len()
-                    .saturating_mul(core::mem::size_of::<CudaBatchGroupError>()),
+                    .saturating_mul(core::mem::size_of::<IndexedBatchError>()),
             })?;
-        for group in prepared.groups() {
-            match self.submit_resident_group(group) {
+        errors.extend_from_slice(preparation_errors);
+        for group in groups {
+            match group
+                .check_cancelled()
+                .and_then(|()| self.submit_resident_group(group))
+            {
                 Ok(submitted) => pending.push(submitted),
                 Err(source) if source.session_is_unusable() => {
-                    return Err(CudaBatchError::group(group, source));
+                    return Err(CudaBatchError::group(group.source_indices, source));
                 }
-                Err(source) => group_errors.push(CudaBatchGroupError::new(group, source)),
+                Err(source) => {
+                    group_errors.push(CudaBatchGroupError::new(group.source_indices, source));
+                }
             }
         }
         Ok(SubmittedCudaResidentBatch {
             pending,
-            errors: {
-                let mut errors = Vec::new();
-                errors
-                    .try_reserve_exact(prepared.errors().len())
-                    .map_err(|_| BatchInfrastructureError::HostAllocationFailed {
-                        what: "submitted CUDA resident indexed errors",
-                        bytes: prepared
-                            .errors()
-                            .len()
-                            .saturating_mul(core::mem::size_of::<IndexedBatchError>()),
-                    })?;
-                errors.extend_from_slice(prepared.errors());
-                errors
-            },
+            errors,
             group_errors,
         })
     }
 
     fn submit_resident_group(
         &mut self,
-        group: &PreparedBatchGroup,
+        group: CudaGroupView<'_>,
     ) -> Result<SubmittedResidentGroup, Error> {
-        let fmt = group_pixel_format(group.info())?;
-        validate_layout(group.info())?;
+        let fmt = group_pixel_format(group.info)?;
+        validate_layout(group.info)?;
         let pending = if matches!(
             fmt,
             PixelFormat::Rgb8
@@ -293,18 +318,18 @@ impl CudaBatchDecoder {
                     &inputs,
                     &mut self.session,
                     fmt,
-                    group.info().layout,
+                    group.info.layout,
                 )?,
             )
         } else if matches!(
             fmt,
             PixelFormat::Gray8 | PixelFormat::Gray16 | PixelFormat::GrayI16
         ) {
-            let inputs = resident_grayscale_inputs(group)?;
+            let inputs = grayscale_inputs(group);
             SubmittedResidentCodecGroup::Grayscale(
                 crate::decoder::grayscale_batch::submit_grayscale_cuda_resident_prepared_batch(
                     &inputs,
-                    native_decode_settings(group.options().settings),
+                    group.fallback_settings(),
                     &mut self.session,
                     fmt,
                 )?,
@@ -317,29 +342,8 @@ impl CudaBatchDecoder {
             ));
         };
         Ok(SubmittedResidentGroup {
-            metadata: ResidentGroupMetadata::from_prepared(group)?,
+            metadata: ResidentGroupMetadata::from_view(group)?,
             pending,
         })
     }
-}
-
-fn resident_grayscale_inputs(
-    group: &PreparedBatchGroup,
-) -> Result<Vec<crate::decoder::grayscale_batch::GrayscaleBatchInput<'_>>, Error> {
-    group
-        .images()
-        .iter()
-        .zip(group.source_indices().iter().copied())
-        .map(|(image, source_index)| {
-            let referenced_plan = image.htj2k_plan().map(native_referenced_htj2k_plan);
-            let referenced_classic_plan = image.classic_plan().map(native_referenced_classic_plan);
-            Ok(crate::decoder::grayscale_batch::GrayscaleBatchInput {
-                source_index,
-                bytes: image.bytes().as_ref(),
-                device_plan: Some(image.plan()),
-                referenced_plan,
-                referenced_classic_plan,
-            })
-        })
-        .collect()
 }

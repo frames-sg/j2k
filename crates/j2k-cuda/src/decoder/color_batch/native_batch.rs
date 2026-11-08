@@ -6,7 +6,7 @@ mod execution;
 mod prepare;
 mod store;
 
-use j2k::{BatchLayout, DeviceDecodePlan};
+use j2k::BatchLayout;
 use j2k_core::{DeviceSubmitSession, PixelFormat};
 use j2k_cuda_j2k_engine::CudaQueuedJ2kStoreBatch;
 use j2k_cuda_runtime::{CudaDeviceBuffer, CudaDeviceBufferRange, CudaExternalDeviceBufferViewMut};
@@ -27,7 +27,7 @@ use crate::decoder::plan::{
 use crate::decoder::resident::{
     enqueue_chunked_htj2k_cleanup_dequant, enqueue_component_classic_batches, ChunkedHtj2kCleanup,
 };
-use crate::decoder::CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED;
+use crate::decoder::{PreparedInputGeometry, CUDA_HTJ2K_OUTPUT_FORMAT_UNSUPPORTED};
 
 use self::chunked::{submit_native_color_chunks_into, submit_native_color_resident_chunks};
 use self::completion::{
@@ -45,7 +45,7 @@ use self::store::finish_and_store_native_color;
 pub(crate) struct NativeColorBatchInput<'a> {
     pub(crate) source_index: usize,
     pub(crate) bytes: &'a [u8],
-    pub(crate) device_plan: DeviceDecodePlan,
+    pub(crate) geometry: PreparedInputGeometry,
     pub(crate) referenced_plan: Option<&'a j2k_native::J2kReferencedHtj2kPlan>,
     pub(crate) referenced_classic_plan: Option<&'a j2k_native::J2kReferencedClassicPlan>,
     pub(crate) settings: j2k_native::DecodeSettings,
@@ -152,6 +152,7 @@ mod tests {
         prepare_native_color_batch, submit_native_color_resident_prepared_batch,
         NativeColorBatchInput,
     };
+    use crate::decoder::PreparedInputGeometry;
     use crate::CudaSession;
 
     #[test]
@@ -215,7 +216,7 @@ mod tests {
                 &[NativeColorBatchInput {
                     source_index: 0,
                     bytes: &encoded,
-                    device_plan: plan,
+                    geometry: PreparedInputGeometry::Request(plan),
                     referenced_plan: Some(&referenced),
                     referenced_classic_plan: None,
                     settings: DecodeSettings::strict(),
@@ -276,7 +277,7 @@ mod tests {
             &[NativeColorBatchInput {
                 source_index: 0,
                 bytes: &encoded,
-                device_plan: image.plan(),
+                geometry: PreparedInputGeometry::Request(image.plan()),
                 referenced_plan: Some(referenced_plan),
                 referenced_classic_plan: None,
                 settings: DecodeSettings::strict(),
