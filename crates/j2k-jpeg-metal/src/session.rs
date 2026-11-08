@@ -10,6 +10,7 @@ use j2k_jpeg::adapter::{
 };
 #[cfg(target_os = "macos")]
 use j2k_jpeg::Decoder as CpuDecoder;
+use j2k_metal_support::{CompletionSlot, CompletionSlots};
 #[cfg(target_os = "macos")]
 use j2k_metal_support::{MetalRuntimeSession, MetalSupportError};
 #[cfg(target_os = "macos")]
@@ -147,7 +148,7 @@ impl ResolvedJpegPlan {
 pub(crate) struct SessionState {
     pub(crate) submissions: u64,
     pub(crate) queued: Vec<crate::batch::QueuedRequest>,
-    pub(crate) completed: Vec<Option<Result<crate::Surface, crate::Error>>>,
+    pub(crate) completed: CompletionSlots<Result<crate::Surface, crate::Error>>,
     #[cfg(target_os = "macos")]
     pub(crate) backend_session: Option<MetalBackendSession>,
     jpeg_plans: JpegPlanCache,
@@ -197,11 +198,15 @@ impl SessionState {
             &request,
             self.jpeg_plans.diagnostics().retained_bytes,
         )?;
-        let projected_completed_capacity = projected_push_capacity(
-            self.completed.len(),
-            self.completed.capacity(),
-            "JPEG Metal queued completion capacity",
-        )?;
+        let projected_completed_capacity = if self.completed.can_reuse() {
+            self.completed.capacity()
+        } else {
+            projected_push_capacity(
+                self.completed.len(),
+                self.completed.capacity(),
+                "JPEG Metal queued completion capacity",
+            )?
+        };
         let projected_queued_capacity = projected_push_capacity(
             self.queued.len(),
             self.queued.capacity(),
@@ -229,20 +234,27 @@ impl SessionState {
             final_completed_capacity,
         )?;
 
-        // All fallible work is complete. Moving elements into admitted
+        // All fallible reservations are complete. Moving elements into admitted
         // replacements and pushing one slot cannot allocate at these capacities.
         if let Some(mut queued) = growth.queued.take() {
             debug_assert!(queued.capacity() > self.queued.len());
             queued.append(&mut self.queued);
             self.queued = queued;
         }
-        if let Some(mut completed) = growth.completed.take() {
-            debug_assert!(completed.capacity() > self.completed.len());
-            completed.append(&mut self.completed);
-            self.completed = completed;
+        if let Some(completed) = growth.completed.take() {
+            if !self.completed.replace_storage(completed) {
+                return Err(j2k_jpeg::adapter::JpegPlanCacheError::Invariant(
+                    "JPEG Metal replacement completion capacity is too small",
+                )
+                .into());
+            }
         }
-        let slot = self.completed.len();
-        self.completed.push(None);
+        let slot =
+            self.completed
+                .allocate()
+                .ok_or(j2k_jpeg::adapter::JpegPlanCacheError::Invariant(
+                    "JPEG Metal completion slot capacity was not reserved",
+                ))?;
         self.queued.push(request.with_output_slot(slot));
         self.queued_plan_ledger.commit(owner_admission);
         self.retained_execution_metadata_bytes = execution_metadata_bytes;
@@ -415,7 +427,7 @@ impl SessionState {
             self.queued.capacity(),
             "JPEG Metal queued request metadata",
         )?;
-        let completed_bytes = capacity_bytes::<Option<Result<crate::Surface, crate::Error>>>(
+        let completed_bytes = capacity_bytes::<CompletionSlot<Result<crate::Surface, crate::Error>>>(
             self.completed.capacity(),
             "JPEG Metal completion metadata",
         )?;
@@ -456,7 +468,7 @@ impl SessionState {
                     queued_capacity,
                 ),
                 crate::batch_allocation::BatchMetadataRequest::of::<
-                    Option<Result<crate::Surface, crate::Error>>,
+                    CompletionSlot<Result<crate::Surface, crate::Error>>,
                 >(completed_capacity),
             ])
             .map_err(Error::from)
@@ -474,7 +486,7 @@ impl SessionState {
             "JPEG Metal queued request metadata",
         )?;
         let completed_metadata_bytes = capacity_bytes::<
-            Option<Result<crate::Surface, crate::Error>>,
+            CompletionSlot<Result<crate::Surface, crate::Error>>,
         >(
             completed_capacity, "JPEG Metal completion metadata"
         )?;

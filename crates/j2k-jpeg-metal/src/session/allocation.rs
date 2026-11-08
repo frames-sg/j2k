@@ -3,10 +3,11 @@
 //! Checked capacity projections for session-owned metadata vectors.
 
 use crate::Error;
+use j2k_metal_support::CompletionSlot;
 
 pub(super) struct QueueGrowth {
     pub(super) queued: Option<Vec<crate::batch::QueuedRequest>>,
-    pub(super) completed: Option<Vec<Option<Result<crate::Surface, crate::Error>>>>,
+    pub(super) completed: Option<Vec<CompletionSlot<Result<crate::Surface, crate::Error>>>>,
 }
 
 impl QueueGrowth {
@@ -27,7 +28,8 @@ pub(super) fn prepare_queue_growth(
     projected_completed_capacity: usize,
 ) -> Result<QueueGrowth, Error> {
     let queued_needs_growth = state.queued.len() == state.queued.capacity();
-    let completed_needs_growth = state.completed.len() == state.completed.capacity();
+    let completed_needs_growth =
+        !state.completed.can_reuse() && state.completed.len() == state.completed.capacity();
     if !queued_needs_growth && !completed_needs_growth {
         state.preflight_collective_queue_state(
             queued_owner_bytes,
@@ -80,7 +82,7 @@ pub(super) fn prepare_queue_growth(
                 queued_capacity.saturating_sub(actual_queued),
             ),
             crate::batch_allocation::BatchMetadataRequest::of::<
-                Option<Result<crate::Surface, crate::Error>>,
+                CompletionSlot<Result<crate::Surface, crate::Error>>,
             >(completed_capacity.saturating_sub(actual_completed)),
         ])?;
     }

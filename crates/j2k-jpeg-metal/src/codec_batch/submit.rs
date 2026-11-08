@@ -31,7 +31,7 @@ impl Codec {
         };
         Ok(batch::MetalSubmission {
             session: session.shared.clone(),
-            slot,
+            slot: Some(slot),
         })
     }
 }

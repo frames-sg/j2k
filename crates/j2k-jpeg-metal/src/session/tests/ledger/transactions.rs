@@ -17,7 +17,6 @@ fn transactional_queue_growth_rejects_live_old_plus_new_without_mutating_session
         .queue_request(request_from_plan(plan))
         .expect("initial request");
     session.queued.shrink_to_fit();
-    session.completed.shrink_to_fit();
     assert_eq!(session.queued.len(), session.queued.capacity());
     assert_eq!(session.completed.len(), session.completed.capacity());
 
@@ -57,7 +56,7 @@ fn transactional_queue_growth_rejects_live_old_plus_new_without_mutating_session
         session.queued.as_ptr(),
         session.queued.len(),
         session.queued.capacity(),
-        session.completed.as_ptr(),
+        session.completed.get(0).map(core::ptr::from_ref),
         session.completed.len(),
         session.completed.capacity(),
         session.queued_plan_ledger.retained_bytes(),
@@ -80,7 +79,7 @@ fn transactional_queue_growth_rejects_live_old_plus_new_without_mutating_session
             session.queued.as_ptr(),
             session.queued.len(),
             session.queued.capacity(),
-            session.completed.as_ptr(),
+            session.completed.get(0).map(core::ptr::from_ref),
             session.completed.len(),
             session.completed.capacity(),
             session.queued_plan_ledger.retained_bytes(),
@@ -105,14 +104,13 @@ fn transactional_queue_growth_rolls_back_injected_allocator_overcapacity() {
         .queue_request(request_from_plan(plan))
         .expect("initial request");
     session.queued.shrink_to_fit();
-    session.completed.shrink_to_fit();
     session.queue_growth_capacity_override = Some((usize::MAX, 0));
 
     let before = (
         session.queued.as_ptr(),
         session.queued.len(),
         session.queued.capacity(),
-        session.completed.as_ptr(),
+        session.completed.get(0).map(core::ptr::from_ref),
         session.completed.len(),
         session.completed.capacity(),
         session.queued_plan_ledger.retained_bytes(),
@@ -135,7 +133,7 @@ fn transactional_queue_growth_rolls_back_injected_allocator_overcapacity() {
             session.queued.as_ptr(),
             session.queued.len(),
             session.queued.capacity(),
-            session.completed.as_ptr(),
+            session.completed.get(0).map(core::ptr::from_ref),
             session.completed.len(),
             session.completed.capacity(),
             session.queued_plan_ledger.retained_bytes(),

@@ -180,17 +180,6 @@ fn store_completion_or_error(
     }
 }
 
-pub(super) fn take_surface(
-    session: &mut crate::session::SessionState,
-    slot: usize,
-) -> Result<Surface, Error> {
-    let result = session.take_completed_result(slot)?;
-    if session.queued.is_empty() && session.completed.iter().all(Option::is_none) {
-        session.completed.clear();
-    }
-    result
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

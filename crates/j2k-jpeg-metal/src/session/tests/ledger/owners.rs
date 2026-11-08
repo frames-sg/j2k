@@ -21,15 +21,24 @@ fn repeated_fully_shared_plan_is_charged_once_in_the_queue() {
         shape: plan.shape,
     };
 
-    session
+    let first_slot = session
         .queue_request(request_from_plan(plan))
         .expect("first shared request");
-    session
+    let repeated_slot = session
         .queue_request(request_from_plan(repeated))
         .expect("repeated shared request");
 
     assert_eq!(session.queued.len(), 2);
     assert_eq!(session.queued_plan_ledger.retained_bytes(), owner_bytes);
+    session
+        .cancel_submission(first_slot)
+        .expect("cancel first shared request");
+    assert_eq!(session.queued_plan_ledger.retained_bytes(), owner_bytes);
+    session
+        .cancel_submission(repeated_slot)
+        .expect("cancel last shared request");
+    assert_eq!(session.queued_plan_ledger.retained_bytes(), 0);
+    assert!(session.completed.is_empty());
 }
 
 #[test]
@@ -45,7 +54,7 @@ fn same_input_adds_a_later_distinct_packet_owner() {
         .queued_plan_ledger
         .set_host_byte_limit(input_bytes + packet_bytes);
 
-    session
+    let input_slot = session
         .queue_request(crate::batch::QueuedRequest::new_shared(
             input.clone(),
             PixelFormat::Rgb8,
@@ -57,7 +66,7 @@ fn same_input_adds_a_later_distinct_packet_owner() {
         .expect("input-only request");
     assert_eq!(session.queued_plan_ledger.retained_bytes(), input_bytes);
 
-    session
+    let packet_slot = session
         .queue_request(crate::batch::QueuedRequest::new_shared(
             input,
             PixelFormat::Rgb8,
@@ -71,6 +80,14 @@ fn same_input_adds_a_later_distinct_packet_owner() {
         session.queued_plan_ledger.retained_bytes(),
         input_bytes + packet_bytes
     );
+    session
+        .cancel_submission(packet_slot)
+        .expect("release unshared packet");
+    assert_eq!(session.queued_plan_ledger.retained_bytes(), input_bytes);
+    session
+        .cancel_submission(input_slot)
+        .expect("release final input owner");
+    assert_eq!(session.queued_plan_ledger.retained_bytes(), 0);
 }
 
 #[test]

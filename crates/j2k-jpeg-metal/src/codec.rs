@@ -36,7 +36,7 @@ impl<'a> ImageDecodeSubmit<'a> for Decoder<'a> {
             ))?;
         Ok(batch::MetalSubmission {
             session: session.shared.clone(),
-            slot,
+            slot: Some(slot),
         })
     }
 
@@ -61,7 +61,7 @@ impl<'a> ImageDecodeSubmit<'a> for Decoder<'a> {
             ))?;
         Ok(batch::MetalSubmission {
             session: session.shared.clone(),
-            slot,
+            slot: Some(slot),
         })
     }
 
@@ -86,7 +86,7 @@ impl<'a> ImageDecodeSubmit<'a> for Decoder<'a> {
             ))?;
         Ok(batch::MetalSubmission {
             session: session.shared.clone(),
-            slot,
+            slot: Some(slot),
         })
     }
 
@@ -112,7 +112,7 @@ impl<'a> ImageDecodeSubmit<'a> for Decoder<'a> {
             ))?;
         Ok(batch::MetalSubmission {
             session: session.shared.clone(),
-            slot,
+            slot: Some(slot),
         })
     }
 }
@@ -253,7 +253,7 @@ impl TileBatchDecodeManyDevice for Codec {
             };
             submissions.push(batch::MetalSubmission {
                 session: session.shared.clone(),
-                slot,
+                slot: Some(slot),
             });
         }
 

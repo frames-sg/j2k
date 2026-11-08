@@ -76,20 +76,51 @@ impl SessionState {
     ) -> Result<Result<Surface, Error>, Error> {
         let result = self
             .completed
-            .get_mut(slot)
-            .and_then(Option::take)
+            .get(slot)
+            .and_then(Option::as_ref)
             .ok_or_else(|| Error::MetalKernel {
                 message: format!("missing queued Metal surface for slot {slot}"),
             })?;
         let result_host_bytes = result
             .as_ref()
             .map_or(0, Surface::retained_host_capacity_bytes);
-        self.completed_host_bytes = self
+        let completed_host_bytes = self
             .completed_host_bytes
             .checked_sub(result_host_bytes)
             .ok_or(j2k_jpeg::adapter::JpegPlanCacheError::Invariant(
                 "JPEG Metal completed-host ledger underflow",
             ))?;
+        let result = self.completed.release(slot).flatten().ok_or(
+            j2k_jpeg::adapter::JpegPlanCacheError::Invariant(
+                "JPEG Metal completion disappeared during consumption",
+            ),
+        )?;
+        self.completed_host_bytes = completed_host_bytes;
         Ok(result)
+    }
+
+    pub(crate) fn cancel_submission(&mut self, slot: usize) -> Result<(), Error> {
+        let Some((request, result)) = self
+            .completed
+            .cancel(&mut self.queued, slot, |request| request.output_slot)
+        else {
+            return Ok(());
+        };
+        if let Some(request) = request {
+            self.queued_plan_ledger.remove(&self.queued, &request)?;
+        }
+        if self.queued.is_empty() {
+            self.retained_execution_metadata_bytes = 0;
+        }
+        let host_bytes = result
+            .as_ref()
+            .and_then(|result| result.as_ref().ok())
+            .map_or(0, Surface::retained_host_capacity_bytes);
+        self.completed_host_bytes = self.completed_host_bytes.checked_sub(host_bytes).ok_or(
+            j2k_jpeg::adapter::JpegPlanCacheError::Invariant(
+                "JPEG Metal cancelled completion ledger underflow",
+            ),
+        )?;
+        Ok(())
     }
 }

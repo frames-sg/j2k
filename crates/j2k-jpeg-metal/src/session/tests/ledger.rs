@@ -167,7 +167,9 @@ fn collective_queue_preflight_composes_nonzero_owners_and_metadata_exactly() {
         .and_then(|bytes| {
             bytes.checked_add(
                 completed_capacity
-                    * std::mem::size_of::<Option<Result<crate::Surface, crate::Error>>>(),
+                    * std::mem::size_of::<
+                        j2k_metal_support::CompletionSlot<Result<crate::Surface, crate::Error>>,
+                    >(),
             )
         })
         .expect("collective fixed bytes");
@@ -217,7 +219,9 @@ fn execution_stamp_includes_completed_and_submission_capacities() {
     let queued_bytes =
         session.queued.capacity() * std::mem::size_of::<crate::batch::QueuedRequest>();
     let completed_bytes = session.completed.capacity()
-        * std::mem::size_of::<Option<Result<crate::Surface, crate::Error>>>();
+        * std::mem::size_of::<
+            j2k_metal_support::CompletionSlot<Result<crate::Surface, crate::Error>>,
+        >();
     let submission_bytes =
         submission_capacity * std::mem::size_of::<crate::batch::MetalSubmission>();
     assert!(completed_bytes > 0);

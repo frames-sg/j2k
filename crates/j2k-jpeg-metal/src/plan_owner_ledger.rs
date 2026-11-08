@@ -109,6 +109,42 @@ impl PlanOwnerLedger {
         self.retained_bytes = admission.into_retained_bytes();
     }
 
+    /// Release only owners the remaining queued requests no longer share.
+    pub(crate) fn remove(
+        &mut self,
+        retained: &[QueuedRequest],
+        removed: &QueuedRequest,
+    ) -> Result<(), Error> {
+        let input_bytes = if retained
+            .iter()
+            .any(|request| SharedJpegInput::ptr_eq(&request.input, &removed.input))
+        {
+            0
+        } else {
+            removed.retained_input_bytes()?
+        };
+        let packet_bytes = if removed.fast_packet.as_ref().is_some_and(|packet| {
+            retained.iter().any(|request| {
+                request
+                    .fast_packet
+                    .as_ref()
+                    .is_some_and(|retained| SharedJpegFastPacket::ptr_eq(retained, packet))
+            })
+        }) {
+            0
+        } else {
+            removed.retained_packet_bytes()?
+        };
+        self.retained_bytes = self
+            .retained_bytes
+            .checked_sub(input_bytes)
+            .and_then(|bytes| bytes.checked_sub(packet_bytes))
+            .ok_or(JpegPlanCacheError::Invariant(
+                "JPEG Metal cancelled plan owner ledger underflow",
+            ))?;
+        Ok(())
+    }
+
     pub(crate) const fn reset(&mut self) {
         self.retained_bytes = 0;
     }

@@ -11,10 +11,13 @@
 
 #![warn(unreachable_pub)]
 #![warn(clippy::non_send_fields_in_send_ty)]
+mod completion_slots;
 mod error;
 mod route;
 mod submission_queue;
 
+#[doc(hidden)]
+pub use completion_slots::{CompletionSlot, CompletionSlots};
 pub use error::{MetalCommandEncoderKind, MetalSupportError};
 pub use route::{
     cpu_host_route, metal_kernel_route, metal_unavailable_route, reject_explicit_metal_route,

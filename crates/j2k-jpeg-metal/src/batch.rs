@@ -13,7 +13,7 @@ use crate::{session::SharedSession, Error, SharedJpegFastPacket, SharedJpegInput
 mod flush;
 mod grouping;
 
-use flush::{flush_if_needed, take_surface};
+use flush::flush_if_needed;
 #[cfg(test)]
 use grouping::grouped_request_metadata_bytes;
 use grouping::{add_execution_external_live_bytes, group_compatible_requests};
@@ -314,7 +314,7 @@ pub(crate) fn stamp_execution_collective_owner_bytes(
 
 pub struct MetalSubmission {
     pub(crate) session: SharedSession,
-    pub(crate) slot: usize,
+    pub(crate) slot: Option<usize>,
 }
 
 #[doc(hidden)]
@@ -322,10 +322,28 @@ impl DeviceSubmission for MetalSubmission {
     type Output = Surface;
     type Error = Error;
 
-    fn wait(self) -> Result<Self::Output, Self::Error> {
+    fn wait(mut self) -> Result<Self::Output, Self::Error> {
+        let slot = self.slot.ok_or(JpegPlanCacheError::Invariant(
+            "JPEG Metal submission slot was already consumed",
+        ))?;
         let mut session = self.session.lock()?;
         flush_if_needed(&mut session)?;
-        take_surface(&mut session, self.slot)
+        let result = session.take_completed_result(slot)?;
+        drop(session);
+        self.slot = None;
+        result
+    }
+}
+
+impl Drop for MetalSubmission {
+    fn drop(&mut self) {
+        let Some(slot) = self.slot.take() else {
+            return;
+        };
+        let Ok(mut session) = self.session.lock() else {
+            return;
+        };
+        let _released = session.cancel_submission(slot);
     }
 }
 

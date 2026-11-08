@@ -133,7 +133,7 @@ impl JpegTileBatch {
                 drop(state);
                 Ok(batch::MetalSubmission {
                     session: session.shared.clone(),
-                    slot,
+                    slot: Some(slot),
                 })
             },
         )
