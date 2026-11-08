@@ -185,6 +185,63 @@ fn cuda_lossy_htj2k_facade_require_device_dispatches_supported_stages_when_runti
     assert_eq!(accelerator.packetization_dispatches(), 1);
 }
 
+/// PPM, PPT and a tile-part packet limit are packetized on the CPU by the
+/// native encoder, so a `RequireDevice` lossy encode with any of them succeeds
+/// on CUDA with every other stage on the device, rather than failing for a
+/// device packetization stage it was never offered (99181b91).
+#[cfg(feature = "cuda-runtime")]
+#[test]
+fn cuda_lossy_htj2k_require_device_accepts_cpu_packetization_options_when_runtime_required() {
+    if !j2k_test_support::cuda_runtime_gate(module_path!()) {
+        return;
+    }
+
+    let pixels: Vec<u8> = (0u32..64 * 64)
+        .map(|value| u8::try_from((value * 41 + 17) & 0xFF).expect("masked value fits in u8"))
+        .collect();
+    let samples = J2kLossySamples::new(&pixels, 64, 64, 1, 8, false).expect("valid gray8 samples");
+    let base = J2kLossyEncodeOptions::default()
+        .with_backend(EncodeBackendPreference::RequireDevice)
+        .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+        .with_max_decomposition_levels(Some(1))
+        .with_validation(J2kEncodeValidation::CpuRoundTrip);
+    for (name, options) in [
+        (
+            "PPM",
+            base.clone()
+                .with_marker_segments(vec![j2k::J2kMarkerSegment::Ppm]),
+        ),
+        (
+            "PPT",
+            base.clone()
+                .with_marker_segments(vec![j2k::J2kMarkerSegment::Ppt]),
+        ),
+        (
+            "tile-part limit",
+            base.clone().with_tile_part_packet_limit(Some(1)),
+        ),
+    ] {
+        let mut accelerator = CudaEncodeStageAccelerator::default();
+        let encoded = encode_j2k_lossy_with_accelerator(
+            samples,
+            &options,
+            BackendKind::Cuda,
+            &mut accelerator,
+        )
+        .unwrap_or_else(|err| panic!("{name}: strict CUDA lossy encode failed: {err:?}"));
+        let decoded = Image::new(&encoded.codestream, &DecodeSettings::default())
+            .unwrap_or_else(|err| panic!("{name}: codestream does not parse: {err:?}"))
+            .decode_native()
+            .unwrap_or_else(|err| panic!("{name}: codestream does not decode: {err:?}"));
+
+        assert_eq!(encoded.backend, BackendKind::Cuda, "{name}");
+        assert_eq!((decoded.width, decoded.height), (64, 64), "{name}");
+        assert_eq!(accelerator.deinterleave_dispatches(), 1, "{name}");
+        assert!(accelerator.forward_dwt97_dispatches() > 0, "{name}");
+        assert_eq!(accelerator.packetization_dispatches(), 0, "{name}");
+    }
+}
+
 #[cfg(feature = "cuda-runtime")]
 #[test]
 fn cuda_auto_host_output_lossy_matches_cpu_for_rgb_fixture_when_runtime_required() {
