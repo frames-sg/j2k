@@ -438,6 +438,9 @@ fn j2k_decode_store_ptx() -> &'static [u8] {
 }
 
 #[cfg(test)]
+mod ptx_rounding_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
