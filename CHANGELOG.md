@@ -1014,6 +1014,142 @@ Staged workspace version: `0.14.0`.
   narrower regions keep one batch of rows without it. A 5661 x 8287 RGB
   image's overviews at 1/2, 1/4 and 1/8 scale peak about 5.5, 2.5 and 1 MiB
   lower at 12 threads or more, and 1024 x 1024 regions about 2.3 MiB lower.
+- Baseline JPEG encode writes the same bytes on every backend and platform.
+  The CPU, Metal and CUDA encoders compute the forward DCT and quantization
+  with the exact integer transform in `j2k_codec_math::jpeg::fdct`
+  (`fdct_quantize`, `fdct_quantize_coefficient`, `BASIS_HIGH`, `BASIS_LOW`,
+  `FRACTION_BITS`), so macOS aarch64, Linux x86-64, Apple M4 and M5 GPUs and
+  NVIDIA GPUs agree. Output changes only for coefficients on or within 2^-20
+  of a rounding tie, where the previous floating-point fallback took its
+  cosines from the platform libm and differed between aarch64 and x86-64.
+  CPU encode is up to 4% faster on x86-64, Metal up to 14% faster, and CUDA
+  staged encode 30% faster for 8 x 512 x 512 and 45% faster for 64 x 64.
+- The RGB/YCbCr constants and libjpeg fancy-upsampling rounding have one
+  owner, `j2k_codec_math::jpeg::{ycbcr, upsample}`, which the CPU, Metal and
+  CUDA JPEG codecs share. CUDA JPEG decode now matches the CPU decoder byte
+  for byte: 4:2:2 fancy upsampling rounds as the CPU does (it was up to 2
+  levels off) and dequantized coefficients clamp to i16. Metal and CUDA
+  encode pad a frame larger than its input by repeating the last column and
+  row, as the CPU does, instead of with zeros.
+- GPU baseline JPEG batch encode (Metal, CUDA) no longer fails with
+  `MemoryCapExceeded` when only the batch's combined worst case exceeds the
+  512 MiB host cap: it encodes in consecutive chunks and counts frames
+  already encoded at their actual size. A tile whose own worst case exceeds
+  the cap is still rejected before any submission.
+- JPEG: a reserved Adobe APP14 transform byte (not 0, 1 or 2) on a three- or
+  four-component frame decodes again under `DecodeOptions::with_strict(false)`,
+  read as libjpeg-turbo reads it: YCbCr for three components and YCCK for
+  four, with `Warning::AdobeApp14Ambiguous` kept and the image reported as
+  recovered. Strict decode, the default, still returns
+  `JpegError::AmbiguousColorTransform`, whose message now names
+  `strict(false)` and the three-component `ColorTransform::ForceRgb` and
+  `ForceYCbCr` hints. Four-component files with a reserved byte, which no
+  option could decode since 0.13.0, decode leniently to the pixels 0.12 and
+  libjpeg-turbo produce. Python `strict=False` behaves the same.
+- Output change: the lossy 9/7 JPEG-to-HTJ2K transcode computes its IDCT,
+  lifting and quantization in canonical binary32 arithmetic
+  (`j2k_codec_math::transcode97`) on the CPU, Metal and CUDA, which now write
+  identical codestreams. Measured on the 60-case transcode matrix as the 0.13
+  JPEG encoder produced it, 19 outputs changed bytes, none changed length,
+  and the worst PSNR change was -0.0019 dB. The new
+  non-exhaustive `TranscodePrecision` (`F32`, the default, and `F64`) and
+  `JpegToHtj2kOptions::precision` select it; `F64` reproduces the 0.13
+  binary64 CPU bytes. Explicit Metal and CUDA requests reject `F64` with
+  `Unsupported`, and Auto runs it on the CPU.
+  `DctToWaveletStageAccelerator::check_dwt97_precision` is a provided method,
+  so existing accelerators compile unchanged. Code that builds
+  `JpegToHtj2kOptions` with a struct literal must add `precision` or use a
+  constructor. The CPU 9/7 transcode is 45-80% faster for one tile and
+  46-57% faster for a batch of 16, Metal's IDCT/DWT stage 59-94% faster, and
+  CUDA end to end 3-4% faster. The Metal 9/7 code-block route accepts axes
+  over 1024, which returned `UnsupportedJob`, and the CUDA IDCT constant C1,
+  one ulp high, is fixed.
+- GPU JPEG 2000 output matches the CPU byte for byte in more cases. CUDA
+  decode rounds irreversible images coded without a colour transform, and
+  the separate inverse-ICT route, before the level shift, as the CPU does.
+  Metal's resident HTJ2K lossless encode writes the measured CAP magnitude
+  bound (Bp) the CPU writes. The J2K Metal libraries compile with safe math
+  and no implicit FMA contraction, and the Metal quantizer builds its step
+  size exactly, with no measured output or speed change. Metal and CUDA
+  reject explicit decodes of components wider than 16 bits; Auto decodes
+  them on the CPU. Metal classic Tier-1 batch encode splits a batch that
+  exceeds one Metal allocation (a 2048 x 2048 RGB image needed about 1 GB
+  against a 512 MiB limit and failed, under Auto too) and writes the CPU's
+  bytes.
+- `j2k_codec_math` adds `htj2k::MEL_EXPONENTS` and the generated Metal
+  fragments `generated::{CLASSIC_TABLES_METAL, HTJ2K_CONSTANTS_METAL,
+  MCT_CONSTANTS_METAL}`; the Metal Tier-1, HTJ2K and ICT tables are generated
+  from the Rust owners, and repo-lint fails when product code outside the
+  owning module spells a canonical codec literal. GPU-gated tests that skip
+  print a visible SKIPPED line, and the GPU test runners report a skip count
+  per gate.
+- CUDA HTJ2K encode masks unsigned 9-16-bit samples to their declared
+  precision, as the CPU does; samples with bits above the precision made the
+  CUDA encode fail or differ from the CPU. Whole-tile encodes whose code-block
+  grids exceed the packetizer's tag-tree bound (for example 2048 x 2048 in
+  4 x 4 blocks) take the staged route instead of failing, and device-resident
+  input gets a typed unsupported error. The forward 9/7 transform uses
+  explicit fused multiply-adds and the forward MCT takes its constants from
+  `j2k_codec_math`, so CUDA/CPU parity no longer depends on compiler
+  contraction. Each CUDA encode stage waits once instead of after every
+  kernel: encodes are 5-24% faster (512 x 512 RGB lossless 8.57 to 7.49 ms)
+  with identical output.
+- Output change: `Gray16`/`Rgb16`/`Rgba16` output of signed sources of at
+  most 8 bits holds each value as 16-bit two's complement on the CPU, Metal
+  and CUDA, as signed 9-16-bit sources and the `I16` native samples already
+  did. It widened the two's-complement byte, which turned every negative
+  1-7-bit sample into 65535 and wrote 8-bit samples as the byte times 257.
+- Full-image Auto decodes on a multi-thread pool zero their coefficient
+  buffer while they parse packets (HTJ2K full decodes 2-4% faster on M5
+  Max), and native-depth full decodes (`decode_native*`, HTJ2K encode
+  self-validation) move onto the Rayon pool at their start, as `decode_into`
+  does (12-bit HTJ2K 4-5% faster). Output is unchanged.
+  `J2kNativeRegionDecodePlan`, `native_region_decode_plan` and
+  `J2kSampleInterpretation::Native16` say which output each part of a plan
+  describes.
+- Classic (Part 1) CPU encodes pull Tier-1 code blocks from one queue in
+  shrinking batches and reuse one scratch workspace per worker for each
+  wave; waves with fewer than two blocks per worker keep one task per block.
+  9/7 RGB8 4096² with 1024 tiles at 2 bpp is about 9% faster on an M5 Max,
+  9/7 RGB8 4096² 2-8% faster on a Ryzen 7 5800X3D, and lossless 256² RGB8
+  and 512² encodes 4-9% faster. Output is unchanged.
+- CPU encodes of inputs other than 8-bit RGB fill their sample planes in
+  loops specialized to the sample width, and on the Rayon pool for images of
+  at least 3 x 65536 samples, as 8-bit RGB already did. 2048² Gray8 and
+  Gray16 HTJ2K encodes are 43-61% faster and classic Gray encodes 9-26%
+  faster. Output is unchanged.
+- CPU encodes called from outside the Rayon pool (`encode`, `encode_htj2k`,
+  `encode_htj2k_with_qfactor`, `encode_with_roi_regions`, the
+  component-plane encoders and each rate-search candidate) run on a pool
+  worker when the pool has more than one thread, no other such encode is in
+  flight and the input holds at least 64 KiB of samples, so the workers stay
+  awake between stages. HTJ2K RGB8 encodes are 5-23% faster and tiled
+  classic 9/7 RGB8 at 2 bpp 5-10% faster; concurrent callers keep their own
+  threads as before. Encodes through an accelerator that hands every
+  remaining stage back to the CPU (`declines_every_stage`), as Metal's Auto
+  route does for lossless input and outside its measured sizes, move the
+  same way once it has declined: a 4096x2048 RGB8 HTJ2K lossless encode
+  through Metal Auto is 11% faster on an M5 Max, level with the CPU encode.
+  Output is unchanged.
+- IIIF support. `J2kDecoder::inspect_coding_style` returns the main-header
+  `J2kCodingStyle` (progression, quality layers, decomposition levels,
+  code-block size) and `J2kReferenceGrid::reduced_area` the ISO/IEC 15444-1
+  B.5 area of a region at a reduction; j2k-native adds
+  `inspect_j2k_coding_style`. Python `inspect()` reports resolution levels,
+  maximum reduction, image and tile-grid origins, tile size and grid,
+  quality layers, progression order and code-block size, enough for an IIIF
+  info.json. `docs/iiif.md` maps IIIF Image API 3.0 onto the Rust, C, Python
+  and CLI interfaces and gives a Cantaloupe configuration.
+- Python decode, inspection and planning entry points accept any bytes-like
+  input (`bytearray`, `memoryview`, `mmap`, `array`, NumPy `uint8`); other
+  layouts raise `BufferError`. `bytes` and read-only memory maps are read in
+  place without a copy. The wheel now requires CPython 3.11 or later
+  (abi3-py311); Python 3.10 reached end of life in October 2026.
+- `j2k decode`, and the binary run as `opj_decompress`, decode JPEG 2000 and
+  HTJ2K to BMP, PNG, TIFF and PNM with opj_decompress options (`-i`, `-o`,
+  `-r`, `-d`, `-threads`, `-force-rgb`, `-l 0`, `-quiet`, `-h`), so
+  Cantaloupe's OpenJpegProcessor can run j2k; options j2k cannot honour
+  exactly are rejected with exit status 1.
 
 ## [0.13.1] - 2026-10-29
 
