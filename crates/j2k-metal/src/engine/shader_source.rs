@@ -2,7 +2,11 @@
 
 //! Separate compiler inputs prevent optional encode/profile kernels from blocking decode.
 
-const PRELUDE: &str = "#include <metal_stdlib>\nusing namespace metal;\n";
+/// Every J2K library compiles under safe math without implicit FMA
+/// contraction, so each float operation rounds as the CPU reference's does;
+/// kernels that mirror a CPU `mul_add` call `fma` explicitly.
+pub(super) const PRELUDE: &str = "#include <metal_stdlib>\nusing namespace metal;\n\
+#pragma METAL fp math_mode(safe)\n#pragma METAL fp contract(off)\n";
 
 pub(super) fn decode_shader_source() -> String {
     [

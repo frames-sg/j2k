@@ -21,13 +21,29 @@ inline int j2k_quantize_round_to_i32(float sample) {
     return int(rounded);
 }
 
+// 2^exponent built from its IEEE-754 bits, exact in every math mode as the
+// CPU's `pow2i` is; fast-math `exp2` is an approximation.
+inline float j2k_quantize_pow2i(int exponent) {
+    if (exponent > 127) {
+        return INFINITY;
+    }
+    if (exponent >= -126) {
+        return as_type<float>(uint(exponent + 127) << 23u);
+    }
+    if (exponent >= -149) {
+        return as_type<float>(1u << uint(exponent + 149));
+    }
+    return 0.0f;
+}
+
 inline int j2k_quantize_sample(float sample, constant J2kQuantizeSubbandParams &params) {
     if (params.reversible != 0u) {
         return j2k_quantize_round_to_i32(sample);
     }
 
+    // The mantissa factor has at most 12 significant bits, so `delta` is exact.
     const int exponent = int(params.range_bits) - int(params.step_exponent);
-    const float base = exp2(float(exponent));
+    const float base = j2k_quantize_pow2i(exponent);
     const float delta = base * (1.0f + float(params.step_mantissa) / 2048.0f);
     if (delta <= 0.0f) {
         return 0;

@@ -9,6 +9,7 @@ mod grouping;
 mod ht_zero_rects;
 mod hybrid;
 mod hybrid_support;
+mod math_mode;
 mod output_heap;
 mod referenced_plan;
 mod reuse;
