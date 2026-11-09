@@ -12,6 +12,7 @@ use crate::command_support::{
     command_output_os, run_cargo, run_cargo_with_env, run_nightly_cargo,
     run_nightly_cargo_in_dir_owned, run_program, rust_sources,
 };
+use crate::gpu_validation::{GpuSkipLog, GPU_TEST_SKIP_LOG_ENV};
 use crate::panic_surface::panic_surface;
 use crate::release_commands::published_library_packages;
 
@@ -227,19 +228,26 @@ const STRICT_CLIPPY_BASELINE_ALLOWED_LINTS: &[&str] = &[
 ];
 
 pub(super) fn test() -> Result<(), String> {
+    let skips = GpuSkipLog::new("xtask-test")?;
+    let skip_env = [(GPU_TEST_SKIP_LOG_ENV, skips.path())];
     if env::consts::OS != "macos" {
-        test_workspace_without_benches(&[])?;
+        test_workspace_without_benches(&[], &skip_env)?;
         test_alloc_probe()?;
-        return test_downstream_examples();
+        test_downstream_examples()?;
+        return skips.report("cargo xtask test");
     }
 
-    test_workspace_without_benches(&["--exclude", "j2k-metal"])?;
+    test_workspace_without_benches(&["--exclude", "j2k-metal"], &skip_env)?;
     test_alloc_probe()?;
-    test_j2k_metal_without_benches()?;
-    test_downstream_examples()
+    test_j2k_metal_without_benches(&skip_env)?;
+    test_downstream_examples()?;
+    skips.report("cargo xtask test")
 }
 
-fn test_workspace_without_benches(extra_args: &[&str]) -> Result<(), String> {
+fn test_workspace_without_benches(
+    extra_args: &[&str],
+    skip_env: &[(&str, &str)],
+) -> Result<(), String> {
     let mut test_args = vec![
         "test",
         "--workspace",
@@ -253,7 +261,7 @@ fn test_workspace_without_benches(extra_args: &[&str]) -> Result<(), String> {
         "j2k-jpeg",
     ];
     test_args.extend_from_slice(extra_args);
-    run_cargo(&test_args)?;
+    run_cargo_with_env(&test_args, skip_env)?;
 
     // JPEG's scalar-only feature changes runtime dispatch. Keep it out of
     // the all-feature workspace graph so normal callers and SIMD parity tests
@@ -313,7 +321,9 @@ fn test_facade_cuda_stub() -> Result<(), String> {
     ])
 }
 
-fn test_j2k_metal_without_benches() -> Result<(), String> {
+fn test_j2k_metal_without_benches(skip_env: &[(&str, &str)]) -> Result<(), String> {
+    let mut envs = vec![("RUST_TEST_THREADS", "1")];
+    envs.extend_from_slice(skip_env);
     run_cargo_with_env(
         &[
             "test",
@@ -324,7 +334,7 @@ fn test_j2k_metal_without_benches() -> Result<(), String> {
             "--bins",
             "--tests",
         ],
-        &[("RUST_TEST_THREADS", "1")],
+        &envs,
     )?;
     run_cargo(&["test", "-p", "j2k-metal", "--all-features", "--doc"])
 }

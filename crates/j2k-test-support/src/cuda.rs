@@ -2,7 +2,7 @@
 
 //! Environment gates used by CUDA tests and benches.
 
-use crate::{gpu_device_unavailable_is_skip, gpu_test_gate, GPU_TEST_SKIP_MARKER};
+use crate::{gpu_device_unavailable_is_skip, gpu_test_gate};
 
 const CUDA_RUNTIME_GATE: &str = "J2K_REQUIRE_CUDA_RUNTIME";
 const CUDA_OXIDE_BUILD_GATE: &str = "J2K_REQUIRE_CUDA_OXIDE_BUILD";
@@ -80,8 +80,10 @@ fn oxide_ptx_missing_is_skip<E: core::fmt::Debug + ?Sized>(
         !required,
         "{CUDA_OXIDE_BUILD_GATE} is set but cuda-oxide PTX was not built for {context}: {error}"
     );
-    eprintln!(
-        "{GPU_TEST_SKIP_MARKER} gate={CUDA_OXIDE_BUILD_GATE} context={context} reason=oxide-ptx-not-built"
+    crate::gpu_gate::report_gpu_test_skip(
+        CUDA_OXIDE_BUILD_GATE,
+        context,
+        Some("oxide-ptx-not-built"),
     );
     true
 }

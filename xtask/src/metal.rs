@@ -4,7 +4,7 @@
 
 use std::{collections::BTreeSet, env};
 
-use crate::gpu_validation::ValidationMode;
+use crate::gpu_validation::{GpuSkipLog, ValidationMode, GPU_TEST_SKIP_LOG_ENV};
 use crate::process::{self, cargo, CommandContext};
 
 const METAL_GPU_TEST_SKIP_MARKER: &str = "J2K_GPU_TEST_SKIPPED gate=J2K_REQUIRE_METAL_RUNTIME";
@@ -165,11 +165,14 @@ fn run_metal_compile() -> Result<(), String> {
         "--tests",
     ];
     append_packages(&mut test_args);
-    process::run_command(
-        cargo(),
-        &test_args,
-        CommandContext::new().envs(METAL_COMPILE_ENV),
-    )?;
+    let skips = GpuSkipLog::new("metal-compile")?;
+    let test_envs = METAL_COMPILE_ENV
+        .iter()
+        .copied()
+        .chain([(GPU_TEST_SKIP_LOG_ENV, skips.path())])
+        .collect::<Vec<_>>();
+    process::run_command(cargo(), &test_args, CommandContext::new().envs(&test_envs))?;
+    skips.report("cargo xtask metal-compile")?;
 
     let mut doc_args = vec!["test", "--release", "--all-features", "--doc"];
     append_packages(&mut doc_args);

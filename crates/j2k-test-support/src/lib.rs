@@ -68,7 +68,9 @@ pub use fixtures::{
     htj2k_rgb8_fixture_with_pixels, htj2k_rgb8_pattern_fixture, Htj2kRgbaAlpha, Htj2kRgbaFixture,
     Htj2kRgbaSampleProfile, Htj2kRgbaSamples,
 };
-pub use gpu_gate::{gpu_device_unavailable_is_skip, gpu_test_gate, GPU_TEST_SKIP_MARKER};
+pub use gpu_gate::{
+    gpu_device_unavailable_is_skip, gpu_test_gate, GPU_TEST_SKIP_LOG_ENV, GPU_TEST_SKIP_MARKER,
+};
 /// Convenience prelude for the intentionally broad JPEG fixture catalog.
 ///
 /// Keeping this facade synchronized by hand would duplicate the catalog in

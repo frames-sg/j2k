@@ -16,7 +16,8 @@ fn quality_command_plans_are_complete_and_never_launch_real_tools() {
     clippy().expect("Clippy plan");
     clippy_strict().expect("strict Clippy plan");
     test().expect("test plan");
-    test_workspace_without_benches(&["--exclude", "fixture-package"]).expect("custom test plan");
+    test_workspace_without_benches(&["--exclude", "fixture-package"], &[])
+        .expect("custom test plan");
     doc().expect("documentation plan");
     fuzz_build().expect("fuzz build plan");
     repo_lint(std::iter::empty()).expect("repo-lint plan");
