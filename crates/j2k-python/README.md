@@ -60,9 +60,9 @@ small = decoder.decode(data, reduction=1).to_numpy()  # [C,H,W], half resolution
 `reduction` is an exact count from 0 through 31; 0–3 retain their full, half,
 quarter, and eighth meanings. MPS and CUDA decoders decode exact requests and
 prepared operations on the device with the CPU's rectangles and, for reversible
-inputs, its samples (CUDA's irreversible 9/7 output stays within one sample
-value); device operations honor output limits and cancellation and reject
-working limits explicitly. CUDA operations require an offset plan, so an
+and irreversible 9/7 inputs alike, its samples; device operations honor output
+limits and cancellation and reject working limits explicitly. CUDA operations
+require an offset plan, so an
 image with subsampled colour components is a group error on CUDA; MPS also
 decodes the whole such image at full resolution.
 Each halving comes from the codestream's wavelet ladder, so `reduction` cannot

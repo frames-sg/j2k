@@ -161,16 +161,14 @@ fn expected_host_decode_case(
     expected
 }
 
-fn assert_bytes_within(actual: &[u8], expected: &[u8], tolerance: u8, label: &str) {
+/// Reversible and irreversible 9/7 surfaces both match the CPU exactly.
+fn assert_bytes_equal(actual: &[u8], expected: &[u8], label: &str) {
     assert_eq!(actual.len(), expected.len(), "{label} length");
     let mut max_delta = 0u8;
     for (&lhs, &rhs) in actual.iter().zip(expected) {
         max_delta = max_delta.max(lhs.abs_diff(rhs));
     }
-    assert!(
-        max_delta <= tolerance,
-        "{label} max byte delta {max_delta} exceeded tolerance {tolerance}"
-    );
+    assert_eq!(max_delta, 0, "{label} max byte delta {max_delta}");
 }
 
 #[test]
@@ -341,7 +339,6 @@ fn explicit_cuda_classic_image_contract_matches_native() {
         let gray_jp2 = wrap_jp2_codestream(&gray_raw, dimensions.0, dimensions.1, 1, 8, 17);
         let color_raw = fixture_classic(dimensions.0, dimensions.1, 3, reversible);
         let color_jp2 = wrap_jp2_codestream(&color_raw, dimensions.0, dimensions.1, 3, 8, 16);
-        let tolerance = if reversible { 0 } else { 2 };
 
         for bytes in [&gray_raw, &gray_jp2] {
             for format in [PixelFormat::Gray8, PixelFormat::Gray16] {
@@ -354,10 +351,9 @@ fn explicit_cuda_classic_image_contract_matches_native() {
                         .download_into(&mut actual, surface.pitch_bytes())
                         .expect("download classic grayscale surface");
                     let expected = expected_host_decode_case(bytes, format, case, dimensions);
-                    assert_bytes_within(
+                    assert_bytes_equal(
                         &actual,
                         &expected,
-                        tolerance,
                         &format!("classic reversible={reversible} grayscale {format:?} {case:?}"),
                     );
                 }
@@ -380,10 +376,9 @@ fn explicit_cuda_classic_image_contract_matches_native() {
                         .download_into(&mut actual, surface.pitch_bytes())
                         .expect("download classic color surface");
                     let expected = expected_host_decode_case(bytes, format, case, dimensions);
-                    assert_bytes_within(
+                    assert_bytes_equal(
                         &actual,
                         &expected,
-                        tolerance,
                         &format!("classic reversible={reversible} color {format:?} {case:?}"),
                     );
                 }
@@ -1101,10 +1096,9 @@ fn explicit_cuda_irreversible_97_surfaces_match_host_when_cuda_runtime_required(
             .download_into(&mut downloaded, surface.pitch_bytes())
             .expect("download irreversible Gray8 cuda surface");
         let expected = expected_host_decode_case(&gray_bytes, PixelFormat::Gray8, case, (4, 4));
-        assert_bytes_within(
+        assert_bytes_equal(
             &downloaded,
             &expected,
-            2,
             &format!("irreversible Gray8 {case:?}"),
         );
     }
@@ -1123,10 +1117,9 @@ fn explicit_cuda_irreversible_97_surfaces_match_host_when_cuda_runtime_required(
             .download_into(&mut downloaded, surface.pitch_bytes())
             .expect("download irreversible Rgb8 cuda surface");
         let expected = expected_host_decode_case(&rgb_bytes, PixelFormat::Rgb8, case, (4, 4));
-        assert_bytes_within(
+        assert_bytes_equal(
             &downloaded,
             &expected,
-            2,
             &format!("irreversible Rgb8 {case:?}"),
         );
     }

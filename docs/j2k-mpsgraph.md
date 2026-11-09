@@ -89,7 +89,7 @@ not described as zero-copy because MPSGraph may copy internally.
 
 Portable tests cover every shape/dtype mapping and overflow. Apple Silicon
 tests cover every color/dtype/layout combination, all request geometries,
-irreversible output within one LSB, F32 graph output against a
+irreversible 9/7 output equal to the CPU's, F32 graph output against a
 higher-precision CPU calculation,
 completed/pipelined/nonblocking execution, immediate-drop safety, same-device
 checks, and session reuse. The full Metal release run also runs the ignored

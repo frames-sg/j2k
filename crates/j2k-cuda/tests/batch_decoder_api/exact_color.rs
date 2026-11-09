@@ -253,8 +253,7 @@ fn assert_exact_resident(
 }
 
 #[test]
-fn irreversible_rgb8_external_and_resident_outputs_match_cpu_within_one_lsb_when_runtime_required()
-{
+fn irreversible_rgb8_external_and_resident_outputs_match_cpu_exactly_when_runtime_required() {
     if !j2k_test_support::cuda_runtime_gate(module_path!()) {
         return;
     }
@@ -327,7 +326,7 @@ fn irreversible_rgb8_external_and_resident_outputs_match_cpu_within_one_lsb_when
     allocation
         .copy_to_host(&mut external)
         .expect("download irreversible RGB8 external output");
-    assert_u8_within_one_lsb(&external, expected, "external");
+    assert_u8_exact(&external, expected, "external");
 
     let resident = decoder
         .decode_prepared(&prepared)
@@ -341,14 +340,14 @@ fn irreversible_rgb8_external_and_resident_outputs_match_cpu_within_one_lsb_when
         .buffer()
         .copy_range_to_host(dense.ranges()[0].offset, &mut resident_bytes)
         .expect("download irreversible RGB8 resident output");
-    assert_u8_within_one_lsb(&resident_bytes, expected, "resident");
+    assert_u8_exact(&resident_bytes, expected, "resident");
 }
 
-fn assert_u8_within_one_lsb(actual: &[u8], expected: &[u8], route: &str) {
+fn assert_u8_exact(actual: &[u8], expected: &[u8], route: &str) {
     assert_eq!(actual.len(), expected.len(), "{route} output length");
     for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
-        assert!(
-            actual.abs_diff(expected) <= 1,
+        assert_eq!(
+            actual, expected,
             "{route} sample {index}: actual={actual}, expected={expected}"
         );
     }

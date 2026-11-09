@@ -51,8 +51,8 @@ fn metal_multi_tile_origins_match_source_and_cpu_reconstruction() {
                 .expect("CPU reconstruction");
             assert_eq!(decoded.len(), expected.len());
             for (index, (&actual, &reference)) in decoded.iter().zip(&expected).enumerate() {
-                assert!(
-                    actual.abs_diff(reference) <= 1,
+                assert_eq!(
+                    actual, reference,
                     "9/7 sample {index}: Metal={actual}, CPU={reference}"
                 );
             }

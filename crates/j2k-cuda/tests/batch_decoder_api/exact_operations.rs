@@ -151,9 +151,8 @@ fn cuda_operations(
     images
 }
 
-/// Reversible paths match the CPU exactly; CUDA's irreversible 9/7 path is
-/// held to one sample value.
-fn assert_operations_match(actual: &[Decoded], expected: &[Decoded], tolerance: u8, label: &str) {
+/// Reversible and irreversible 9/7 paths both match the CPU exactly.
+fn assert_operations_match(actual: &[Decoded], expected: &[Decoded], label: &str) {
     assert_eq!(actual.len(), expected.len(), "{label}");
     for (index, ((rect, samples), (expected_rect, expected_samples))) in
         actual.iter().zip(expected).enumerate()
@@ -166,10 +165,7 @@ fn assert_operations_match(actual: &[Decoded], expected: &[Decoded], tolerance: 
             .map(|(&sample, &expected)| sample.abs_diff(expected))
             .max()
             .unwrap_or(0);
-        assert!(
-            worst <= tolerance,
-            "{label} op={index}: samples differ by {worst}"
-        );
+        assert_eq!(worst, 0, "{label} op={index}: samples differ by {worst}");
     }
 }
 
@@ -223,7 +219,6 @@ fn exact_operations_match_the_cpu_at_deep_reductions_and_edge_regions_when_runti
         assert_operations_match(
             &cuda_operations(&mut decoder, &operations),
             &cpu_operations(&operations, layout),
-            u8::from(!reversible),
             &format!("components={components} ht={ht} reversible={reversible} {layout:?}"),
         );
     }
@@ -261,7 +256,6 @@ fn exact_operations_of_an_odd_origin_image_match_the_cpu_at_every_level_when_run
         assert_operations_match(
             &cuda_operations(&mut decoder, &operations),
             &cpu_operations(&operations, BatchLayout::Nhwc),
-            0,
             "odd origin",
         );
     }
@@ -323,7 +317,7 @@ fn exact_operation_groups_decode_into_external_destinations_when_runtime_require
             actual[index] = (rect, samples[position * per_image..][..per_image].to_vec());
         }
     }
-    assert_operations_match(&actual, &expected, 0, "external");
+    assert_operations_match(&actual, &expected, "external");
 }
 
 #[test]
@@ -384,7 +378,6 @@ fn operation_controls_fail_only_their_own_operations_when_runtime_required() {
     assert_operations_match(
         &cuda_operations(&mut decoder, &[unbounded.with_control(&fits)]),
         &cpu_operations(&[unbounded], BatchLayout::Nhwc),
-        0,
         "bounded",
     );
 }

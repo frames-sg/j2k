@@ -193,10 +193,10 @@ Its Burn targets test the same dtypes, requests, and layouts through staged
 tensor uploads, plus prepared regrouping, group isolation, drop-safe reuse,
 and a 1,000-batch soak. A focused direct-destination test verifies exact Burn
 tensor values and confirms that codec D2H traffic contains status validation
-only, with no decoded-pixel readback. Reversible output is bit-exact;
-irreversible 9/7 output is within one integer LSB of the CPU output. These tests
-check correctness, not speed. An explicit CUDA request fails, rather than
-decoding on the CPU, if the runtime or plan checks fail.
+only, with no decoded-pixel readback. Reversible and irreversible 9/7 output
+are bit-exact against the CPU output. These tests check correctness, not
+speed. An explicit CUDA request fails, rather than decoding on the CPU, if the
+runtime or plan checks fail.
 
 Focused Metal hardware cases collectively exercise classic and HT inputs,
 `U8`/`U16`/`I16`, Gray/RGB/RGBA, all four requests, both layouts, resident
@@ -231,8 +231,10 @@ pass-homogeneous chunks without changing the output grouping. A single job
 that exceeds the configured limits returns an error; it does not fall back to
 the host.
 
-Reversible 5/3 output must match the CPU output bit for bit. Irreversible 9/7
-output may differ from it by at most one integer LSB.
+Reversible 5/3 and irreversible 9/7 output must match the CPU output bit for
+bit. For 9/7 the GPU backends round each centered sample ties-to-even before
+adding the level shift and apply the inverse ICT with the CPU's nested
+single-rounding multiply-adds.
 
 ## Validation and benchmarks
 

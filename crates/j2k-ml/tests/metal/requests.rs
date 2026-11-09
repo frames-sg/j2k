@@ -236,7 +236,7 @@ fn staged_metal_burn_classic_rgb_u16_is_exact_for_both_layouts() {
 }
 
 #[test]
-fn staged_metal_burn_irreversible_rgb_u8_is_within_one_lsb_of_cpu() {
+fn staged_metal_burn_irreversible_rgb_u8_matches_cpu_exactly() {
     if !metal_runtime_gate("j2k-ml irreversible RGB U8 Metal batch") {
         return;
     }
@@ -270,12 +270,8 @@ fn staged_metal_burn_irreversible_rgb_u8_is_within_one_lsb_of_cpu() {
         panic!("expected native irreversible RGB U8 Metal tensor")
     };
     let actual = tensor.into_data().into_vec::<u8>().expect("RGB U8 data");
-    assert_eq!(actual.len(), expected.len());
     assert!(
-        actual
-            .iter()
-            .zip(expected.iter())
-            .all(|(metal, cpu)| metal.abs_diff(*cpu) <= 1),
-        "irreversible 9/7 Metal reconstruction must stay within one integer LSB of CPU"
+        actual[..] == expected[..],
+        "irreversible 9/7 Metal reconstruction must match the CPU exactly"
     );
 }

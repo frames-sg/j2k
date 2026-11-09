@@ -410,7 +410,7 @@ fn identity_graph_matches_cpu_for_layouts_and_all_request_shapes() {
 }
 
 #[test]
-fn irreversible_identity_graph_stays_within_one_integer_lsb() {
+fn irreversible_identity_graph_matches_cpu_exactly() {
     if !metal_runtime_gate("j2k-mpsgraph irreversible identity parity") {
         return;
     }
@@ -436,11 +436,7 @@ fn irreversible_identity_graph_stays_within_one_integer_lsb() {
     let output = decoder
         .run_prepared_group(&identity_program(spec), group)
         .expect("irreversible direct identity run");
-    let actual = read_u8_result(&output, expected.len());
-    assert!(actual
-        .iter()
-        .zip(expected)
-        .all(|(actual, expected)| actual.abs_diff(*expected) <= 1));
+    assert_eq!(read_u8_result(&output, expected.len()), *expected);
 }
 
 #[test]

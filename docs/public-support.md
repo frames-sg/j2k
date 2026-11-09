@@ -139,9 +139,9 @@ operations share a group only with operations carrying the same token. A
 working limit fails the operation as unsupported, because Metal working memory
 is not accounted against a host allowance. `CudaBatchDecoder::decode_operations`
 and `submit_operations` accept the same descriptors and return CUDA-resident
-groups with the CPU path's geometry and grouping; reversible inputs reproduce the
-CPU's samples and irreversible 9/7 inputs stay within one sample value, as CUDA
-prepared batches do. Operations decode only through their offset plans, so shapes
+groups with the CPU path's geometry and grouping; reversible and irreversible
+9/7 inputs both reproduce the CPU's samples, as CUDA prepared batches do.
+Operations decode only through their offset plans, so shapes
 without one, such as subsampled colour components, fail per group with a
 capability error, as in CUDA prepared batches. CUDA applies a
 `J2kDecodeControl`'s output limit and cancellation: tokens are checked during
