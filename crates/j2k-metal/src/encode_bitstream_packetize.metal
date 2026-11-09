@@ -41,7 +41,9 @@ struct J2kPacketBlock {
     uint previously_included;
     uint l_block;
     uint block_coding_mode;
-    uint reserved0;
+    // Tier-1 failure detail when `block_coding_mode` is invalid; otherwise a
+    // resident HT block's cleanup magnitude bit width, zero for host blocks.
+    uint aux;
 };
 
 struct J2kResidentPacketBlock {
@@ -196,12 +198,50 @@ inline bool j2k_codestream_write_marker(
        j2k_codestream_write_u8(out, capacity, cursor, marker);
 }
 
+inline uint j2k_bit_width(uint value) {
+    return value == 0u ? 0u : 32u - clz(value);
+}
+
+// The widest cleanup magnitude among a tile's coded HT blocks. Only the
+// resident codestream assembly needs it, so it is measured here rather than
+// in the single-thread packetization loops every encode route runs.
+inline uint j2k_packet_cleanup_magnitude_bits(device const J2kPacketBlock *blocks, uint block_count) {
+    uint widest = 0u;
+    for (uint idx = 0u; idx < block_count; ++idx) {
+        const J2kPacketBlock block = blocks[idx];
+        if (block.block_coding_mode == 1u && block.num_coding_passes > 0u) {
+            widest = max(widest, block.aux);
+        }
+    }
+    return widest;
+}
+
+// The CAP `Bp` field: the smallest T.814 Table 4 magnitude set covering the
+// measured reversible cleanup bound (T.814 8.7.3), as the CPU encoder writes.
+inline uint j2k_ht_cap_magnitude_parameter(uint cleanup_magnitude_bits) {
+    const uint bound = clamp(cleanup_magnitude_bits, 8u, 74u);
+    if (bound <= 27u) {
+        return bound - 8u;
+    }
+    if (bound <= 31u) {
+        return 20u;
+    }
+    if (bound <= 71u) {
+        return 20u + (bound - 28u) / 4u;
+    }
+    return 31u;
+}
+
+// `blocks` and `packet_params` are the tile's packetization inputs; HT tiles
+// read them for the CAP magnitude bound.
 kernel void j2k_assemble_lossless_classic_codestream(
     device const uchar *tile_data [[buffer(0)]],
     device const J2kPacketEncodeStatus *tile_status [[buffer(1)]],
     device uchar *out [[buffer(2)]],
     constant J2kLosslessCodestreamAssemblyParams &params [[buffer(3)]],
     device J2kCodestreamAssemblyStatus *status [[buffer(4)]],
+    device const J2kPacketBlock *blocks [[buffer(5)]],
+    constant J2kPacketEncodeParams &packet_params [[buffer(6)]],
     uint gid [[thread_position_in_grid]]
 ) {
     if (gid != 0u) {
@@ -254,9 +294,8 @@ kernel void j2k_assemble_lossless_classic_codestream(
     }
 
     if (params.high_throughput != 0u) {
-        const uint magnitude_bits = params.bit_depth - 1u;
-        const uint bp = magnitude_bits <= 8u ? 0u :
-            (magnitude_bits < 28u ? magnitude_bits - 8u : 13u + (magnitude_bits >> 2u));
+        const uint bp = j2k_ht_cap_magnitude_parameter(
+            j2k_packet_cleanup_magnitude_bits(blocks, packet_params.code_block_count));
         ok = ok && j2k_codestream_write_marker(out, params.output_capacity, cursor, 0x50u);
         ok = ok && j2k_codestream_write_u16(out, params.output_capacity, cursor, 8u);
         ok = ok && j2k_codestream_write_u32(out, params.output_capacity, cursor, 0x00020000u);
@@ -340,12 +379,38 @@ struct J2kBatchedCodestreamAssemblyJob {
     uint output_capacity;
 };
 
+struct J2kBatchedPacketEncodeJob {
+    uint resolution_offset;
+    uint subband_offset;
+    uint block_offset;
+    uint descriptor_offset;
+    uint state_block_offset;
+    uint output_offset;
+    uint header_offset;
+    uint scratch_offset;
+    uint payload_copy_offset;
+    uint payload_copy_capacity;
+    uint resolution_count;
+    uint num_layers;
+    uint num_components;
+    uint code_block_count;
+    uint subband_count;
+    uint descriptor_count;
+    uint output_capacity;
+    uint header_capacity;
+    uint scratch_node_capacity;
+};
+
+// `packet_blocks` and `packet_jobs` are the batch's packetization inputs; HT
+// tiles read them for the CAP magnitude bound.
 kernel void j2k_assemble_lossless_codestream_batched(
     device const uchar *tile_data [[buffer(0)]],
     device const J2kPacketEncodeStatus *tile_status [[buffer(1)]],
     device uchar *out [[buffer(2)]],
     device const J2kBatchedCodestreamAssemblyJob *jobs [[buffer(3)]],
     device J2kCodestreamAssemblyStatus *status [[buffer(4)]],
+    device const J2kPacketBlock *packet_blocks [[buffer(5)]],
+    device const J2kBatchedPacketEncodeJob *packet_jobs [[buffer(6)]],
     uint gid [[thread_position_in_grid]]
 ) {
     const J2kBatchedCodestreamAssemblyJob job = jobs[gid];
@@ -398,9 +463,10 @@ kernel void j2k_assemble_lossless_codestream_batched(
     }
 
     if (job.high_throughput != 0u) {
-        const uint magnitude_bits = job.bit_depth - 1u;
-        const uint bp = magnitude_bits <= 8u ? 0u :
-            (magnitude_bits < 28u ? magnitude_bits - 8u : 13u + (magnitude_bits >> 2u));
+        const J2kBatchedPacketEncodeJob packet_job = packet_jobs[gid];
+        const uint bp = j2k_ht_cap_magnitude_parameter(j2k_packet_cleanup_magnitude_bits(
+            packet_blocks + packet_job.block_offset,
+            packet_job.code_block_count));
         ok = ok && j2k_codestream_write_marker(tile_out, job.output_capacity, cursor, 0x50u);
         ok = ok && j2k_codestream_write_u16(tile_out, job.output_capacity, cursor, 8u);
         ok = ok && j2k_codestream_write_u32(tile_out, job.output_capacity, cursor, 0x00020000u);
@@ -478,7 +544,7 @@ inline J2kPacketBlock j2k_classic_packet_block_from_resident(
     packet.previously_included = resident.previously_included;
     packet.l_block = resident.l_block;
     packet.block_coding_mode = 0xFFFFFFFFu;
-    packet.reserved0 = 0u;
+    packet.aux = 0u;
 
     if (resident.tier1_job_index < tier1_job_count) {
         const J2kClassicEncodeBatchJob job = tier1_jobs[resident.tier1_job_index];
@@ -496,7 +562,7 @@ inline J2kPacketBlock j2k_classic_packet_block_from_resident(
             packet.num_zero_bitplanes = tier1_status.missing_bit_planes;
             packet.block_coding_mode = resident.block_coding_mode;
         } else {
-            packet.reserved0 = tier1_status.detail;
+            packet.aux = tier1_status.detail;
         }
     }
 
@@ -519,7 +585,7 @@ inline J2kPacketBlock j2k_ht_packet_block_from_resident(
     packet.previously_included = resident.previously_included;
     packet.l_block = resident.l_block;
     packet.block_coding_mode = 0xFFFFFFFFu;
-    packet.reserved0 = 0u;
+    packet.aux = 0u;
 
     if (resident.tier1_job_index < tier1_job_count) {
         const J2kHtEncodeBatchJob job = tier1_jobs[resident.tier1_job_index];
@@ -531,8 +597,11 @@ inline J2kPacketBlock j2k_ht_packet_block_from_resident(
             packet.num_coding_passes = tier1_status.num_coding_passes;
             packet.num_zero_bitplanes = tier1_status.num_zero_bitplanes;
             packet.block_coding_mode = resident.block_coding_mode;
+            // A successful HT status details the block's largest magnitude;
+            // the cleanup pass codes it above `cleanup_bitplane`.
+            packet.aux = j2k_bit_width(tier1_status.detail >> job.cleanup_bitplane);
         } else {
-            packet.reserved0 = tier1_status.detail;
+            packet.aux = tier1_status.detail;
         }
     }
 
@@ -1224,7 +1293,7 @@ kernel void j2k_encode_packetization(
                        j2k_packet_encode_num_ht_passes(block.num_coding_passes, writer);
                        j2k_packet_encode_length(block.data_len, local_l_block, num_bits, writer);
                     } else {
-                       j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 7u, block.reserved0);
+                       j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 7u, block.aux);
                         return;
                     }
                     if (has_descriptor) {
@@ -1325,28 +1394,6 @@ inline bool j2k_packet_push_payload_copy_job(
     );
     return true;
 }
-
-struct J2kBatchedPacketEncodeJob {
-    uint resolution_offset;
-    uint subband_offset;
-    uint block_offset;
-    uint descriptor_offset;
-    uint state_block_offset;
-    uint output_offset;
-    uint header_offset;
-    uint scratch_offset;
-    uint payload_copy_offset;
-    uint payload_copy_capacity;
-    uint resolution_count;
-    uint num_layers;
-    uint num_components;
-    uint code_block_count;
-    uint subband_count;
-    uint descriptor_count;
-    uint output_capacity;
-    uint header_capacity;
-    uint scratch_node_capacity;
-};
 
 kernel void j2k_encode_packetization_batched(
     device const J2kPacketResolution *all_resolutions [[buffer(0)]],
@@ -1540,7 +1587,7 @@ kernel void j2k_encode_packetization_batched(
                        j2k_packet_encode_num_ht_passes(block.num_coding_passes, writer);
                        j2k_packet_encode_length(block.data_len, local_l_block, num_bits, writer);
                     } else {
-                       j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 7u, block.reserved0);
+                       j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 7u, block.aux);
                         return;
                     }
                     if (has_descriptor) {
@@ -1809,7 +1856,7 @@ kernel void j2k_encode_packetization_resident_classic_batched(
                         const J2kResidentPacketBlock resident =
                             resident_blocks[subband.block_offset + block_idx];
                         if (resident.tier1_job_index >= resident_params.tier1_job_count) {
-                           j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 7u, block.reserved0);
+                           j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 7u, block.aux);
                             return;
                         }
                         const J2kClassicEncodeBatchJob tier1_job =
@@ -1823,11 +1870,11 @@ kernel void j2k_encode_packetization_resident_classic_batched(
                                 tier1_segments,
                                 local_l_block,
                                 writer)) {
-                           j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 9u, block.reserved0);
+                           j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 9u, block.aux);
                             return;
                         }
                     } else {
-                       j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 7u, block.reserved0);
+                       j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 7u, block.aux);
                         return;
                     }
                     if (has_descriptor) {

@@ -201,7 +201,7 @@ fn plan_tier2_packetization(
                         J2kPacketizationBlockCodingMode::Classic => 0,
                         J2kPacketizationBlockCodingMode::HighThroughput => 1,
                     },
-                    reserved0: 0,
+                    aux: 0,
                 });
             }
             subbands.push(J2kPacketSubband {

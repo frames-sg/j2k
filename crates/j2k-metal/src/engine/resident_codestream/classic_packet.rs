@@ -314,6 +314,10 @@ fn submit_classic_packet_stages(
     encoder.set_buffer(2, Some(&codestream_buffer), 0);
     encoder.set_buffer(3, Some(&codestream_job_buffer), 0);
     encoder.set_buffer(4, Some(&codestream_status_buffer), 0);
+    // Only HT tiles read the packet blocks (for the CAP marker); classic
+    // tiles never do, so the resident blocks just keep the slot bound.
+    encoder.set_buffer(5, Some(&resident_block_buffer), 0);
+    encoder.set_buffer(6, Some(&packet_job_buffer), 0);
     encoder.dispatchThreads_threadsPerThreadgroup(
         j2k_metal_support::mtl_size(tile_count, 1, 1),
         j2k_metal_support::mtl_size(

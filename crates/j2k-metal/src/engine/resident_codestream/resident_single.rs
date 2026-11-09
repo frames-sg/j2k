@@ -811,6 +811,9 @@ fn submit_resident_single_plan<T: ResidentLosslessTier1Metal>(
     encoder.set_buffer(2, Some(&codestream_buffer), 0);
     encoder.set_bytes::<J2kLosslessCodestreamAssemblyParams>(3, &codestream_params);
     encoder.set_buffer(4, Some(&codestream_status_buffer), 0);
+    // An HT tile's CAP magnitude bound comes from its packet blocks.
+    encoder.set_buffer(5, Some(&packet_block_buffer), 0);
+    encoder.set_bytes::<J2kPacketEncodeParams>(6, &params);
     dispatch_single_thread(&encoder);
     encoder.endEncoding();
     command_buffer.commit();

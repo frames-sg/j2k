@@ -352,6 +352,9 @@ fn submit_ht_packet_stages(
     encoder.set_buffer(2, Some(&codestream_buffer), 0);
     encoder.set_buffer(3, Some(&codestream_job_buffer), 0);
     encoder.set_buffer(4, Some(&codestream_status_buffer), 0);
+    // Each tile's CAP magnitude bound comes from its packet blocks.
+    encoder.set_buffer(5, Some(&packet_block_buffer), 0);
+    encoder.set_buffer(6, Some(&packet_job_buffer), 0);
     encoder.dispatchThreads_threadsPerThreadgroup(
         j2k_metal_support::mtl_size(tile_count, 1, 1),
         j2k_metal_support::mtl_size(

@@ -647,3 +647,184 @@ fn perf_shape_ht_private_batch_has_no_warm_pool_misses_or_evictions() {
     })
     .expect("isolated 16x512 RGB8 HTJ2K resident batch");
 }
+
+/// The CAP marker's `Bp` field (Part 15 Table A.4 magnitude bound), or `None`
+/// when the codestream has no CAP marker.
+#[cfg(target_os = "macos")]
+fn cap_magnitude_bound_field(codestream: &[u8]) -> Option<u16> {
+    let cap = codestream
+        .windows(2)
+        .position(|window| window == [0xFF, 0x50])?;
+    // Marker, Lcap, Pcap (4 bytes), then the Part 15 capability word.
+    let word = codestream.get(cap + 8..cap + 10)?;
+    Some(u16::from_be_bytes([word[0], word[1]]) & 0x1F)
+}
+
+#[cfg(target_os = "macos")]
+const CAP_FIXTURE_SIZE: u32 = 128;
+#[cfg(target_os = "macos")]
+const CAP_FIXTURE_LEVELS: u8 = 2;
+
+/// Two noisy RGB8 frames and the CPU HTJ2K lossless codestream of each.
+/// Noise keeps the RCT chroma and its 5/3 detail bands above eight magnitude
+/// bits, so the measured CAP bound exceeds `bit_depth - 1`.
+#[cfg(target_os = "macos")]
+fn cap_fixture() -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+    const SIZE: u32 = CAP_FIXTURE_SIZE;
+    let frames: Vec<Vec<u8>> = [0x2545_f491_u32, 0x9e37_79b9]
+        .into_iter()
+        .map(|mut state| {
+            (0..SIZE * SIZE * 3)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 17;
+                    state ^= state << 5;
+                    state.to_le_bytes()[1]
+                })
+                .collect()
+        })
+        .collect();
+    // The CPU encoder with the resident route's fixed choices: 32x32 code
+    // blocks, the RCT, and two guard bits for three components.
+    let cpu_options = EncodeOptions {
+        num_decomposition_levels: CAP_FIXTURE_LEVELS,
+        reversible: true,
+        code_block_width_exp: 3,
+        code_block_height_exp: 3,
+        guard_bits: 2,
+        use_mct: true,
+        ..EncodeOptions::default()
+    };
+    let expected: Vec<Vec<u8>> = frames
+        .iter()
+        .map(|pixels| {
+            j2k_native::encode_htj2k(pixels, SIZE, SIZE, 3, 8, false, &cpu_options)
+                .expect("CPU HTJ2K lossless encode")
+        })
+        .collect();
+    for codestream in &expected {
+        assert!(
+            cap_magnitude_bound_field(codestream).is_some_and(|bp| bp >= 1),
+            "fixture must need more than eight magnitude bits"
+        );
+    }
+    (frames, expected)
+}
+
+#[cfg(target_os = "macos")]
+fn cap_fixture_options() -> J2kLosslessEncodeOptions {
+    lossless_options! {
+        backend: EncodeBackendPreference::RequireDevice,
+        block_coding_mode: J2kBlockCodingMode::HighThroughput,
+        max_decomposition_levels: Some(CAP_FIXTURE_LEVELS),
+        validation: J2kEncodeValidation::External,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn cap_fixture_tile(
+    buffer: &crate::metal_types::Buffer,
+) -> super::super::MetalLosslessEncodeTile<'_> {
+    super::super::MetalLosslessEncodeTile {
+        buffer,
+        byte_offset: 0,
+        width: CAP_FIXTURE_SIZE,
+        height: CAP_FIXTURE_SIZE,
+        pitch_bytes: CAP_FIXTURE_SIZE as usize * 3,
+        output_width: CAP_FIXTURE_SIZE,
+        output_height: CAP_FIXTURE_SIZE,
+        format: PixelFormat::Rgb8,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn assert_codestream_matches_cpu(actual: &[u8], expected: &[u8], label: &str) {
+    assert_eq!(
+        cap_magnitude_bound_field(actual),
+        cap_magnitude_bound_field(expected),
+        "{label}: CAP magnitude bound"
+    );
+    let first_difference = actual
+        .iter()
+        .zip(expected)
+        .position(|(actual, expected)| actual != expected);
+    assert!(
+        actual == expected,
+        "{label}: resident codestream differs from the CPU \
+         (lengths {} / {}, first difference at byte {first_difference:?})",
+        actual.len(),
+        expected.len(),
+    );
+}
+
+/// The batched resident route measures each tile's CAP bound in its batched
+/// codestream assembly.
+#[cfg(target_os = "macos")]
+#[test]
+fn metal_resident_rgb8_ht_lossless_codestreams_match_cpu_bytes_including_cap() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let (frames, expected) = cap_fixture();
+    let session = crate::MetalBackendSession::system_default().expect("Metal session");
+    let buffers: Vec<_> = frames
+        .iter()
+        .map(|pixels| {
+            crate::benchmark_private_buffer_with_bytes(&session, pixels)
+                .expect("private benchmark input buffer")
+        })
+        .collect();
+    let options = cap_fixture_options();
+    for count in [1, 2] {
+        let tiles: Vec<_> = buffers[..count].iter().map(cap_fixture_tile).collect();
+        let encoded = super::super::encode_lossless_from_padded_metal_buffers_to_metal_with_report(
+            &tiles, &options, &session,
+        )
+        .expect("resident Metal HTJ2K lossless encode");
+        assert_eq!(encoded.len(), count);
+        for (index, (frame, expected)) in encoded.iter().zip(&expected).enumerate() {
+            assert!(frame.resident.codestream_assembly_used);
+            let actual = frame
+                .encoded
+                .codestream_bytes()
+                .expect("Metal codestream bytes are CPU-readable");
+            assert_codestream_matches_cpu(
+                &actual,
+                expected,
+                &format!("batch of {count}, tile {index}"),
+            );
+        }
+    }
+}
+
+/// The single-tile resident route measures the CAP bound in its own
+/// codestream assembly kernel.
+#[cfg(target_os = "macos")]
+#[test]
+fn metal_single_tile_resident_rgb8_ht_lossless_codestream_matches_cpu_bytes_including_cap() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let (frames, expected) = cap_fixture();
+    let session = crate::MetalBackendSession::system_default().expect("Metal session");
+    for (index, (pixels, expected)) in frames.iter().zip(&expected).enumerate() {
+        let buffer = crate::benchmark_private_buffer_with_bytes(&session, pixels)
+            .expect("private benchmark input buffer");
+        let outcome = super::super::try_encode_lossless_tile_device_resident_with_report(
+            cap_fixture_tile(&buffer),
+            cap_fixture_options(),
+            &session,
+            super::super::MetalEncodeInputStaging::AlreadyPaddedContiguous,
+        )
+        .expect("single-tile resident Metal HTJ2K lossless encode")
+        .expect("the tile qualifies for the single-tile resident route");
+        assert!(outcome.resident.codestream_assembly_used);
+        assert_codestream_matches_cpu(
+            &outcome.encoded.codestream,
+            expected,
+            &format!("single tile {index}"),
+        );
+    }
+}

@@ -1025,7 +1025,9 @@ pub(crate) struct J2kPacketBlock {
     pub(crate) previously_included: u32,
     pub(crate) l_block: u32,
     pub(crate) block_coding_mode: u32,
-    pub(crate) reserved0: u32,
+    /// Tier-1 failure detail when `block_coding_mode` is invalid; otherwise a
+    /// resident HT block's cleanup magnitude bit width, zero for host blocks.
+    pub(crate) aux: u32,
 }
 
 #[cfg(target_os = "macos")]
