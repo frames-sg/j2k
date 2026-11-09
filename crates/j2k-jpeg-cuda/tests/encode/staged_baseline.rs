@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Exact, independently decoded matrix for promoted staged CUDA baseline encode.
+//! Exact, independently decoded matrix for promoted staged CUDA baseline
+//! encode. Every frame equals the CPU encoder's frame of the same samples.
 
 use std::io::Cursor;
 
 use j2k_core::PixelFormat;
-use j2k_jpeg::{DecodeRequest, Decoder, JpegBackend, JpegEncodeOptions, JpegSubsampling};
+use j2k_jpeg::{
+    encode_jpeg_baseline, DecodeRequest, Decoder, JpegBackend, JpegEncodeOptions, JpegSamples,
+    JpegSubsampling,
+};
 use j2k_jpeg_cuda::{
     encode_jpeg_baseline_batch_from_cuda_buffers, CudaSession, JpegBaselineCudaEncodeTile,
 };
@@ -17,12 +21,6 @@ const EXACT_MATRIX_INPUT_HASH_DOMAIN: &[u8] = b"P18-CUDA-STAGED-JPEG-EXACT-INPUT
 const EXACT_MATRIX_HASH_DOMAIN: &[u8] = b"P18-CUDA-STAGED-JPEG-EXACT-MATRIX\0";
 const EXACT_MATRIX_INPUT_SHA256: &str =
     "5fbd44a6890bfe562d66709eda023f0b5b8f942f0e113824399cfd39f06fe570";
-/// The encode kernel's forward DCT is the integer definition of
-/// `j2k_codec_math::jpeg::fdct`. This digest changed from `99b76d5a...` when
-/// the f32 transform, whose rounding ties differed from the CPU encoder's,
-/// became the shared integer one.
-const EXACT_MATRIX_OUTPUT_SHA256: &str =
-    "9142035809fa5d46b7ea18277e0ed828e65d30e0b8d30c4428ec9ddb37ef8ade";
 
 #[test]
 fn rtx_cuda_promoted_staged_baseline_encode_is_exact_across_matrix_when_required() {
@@ -39,15 +37,11 @@ fn rtx_cuda_promoted_staged_baseline_encode_is_exact_across_matrix_when_required
     let input_sha256 = format!("{:x}", input_hasher.finalize());
     let output_sha256 = framed_sha256(EXACT_MATRIX_HASH_DOMAIN, frames.iter().map(Vec::as_slice));
     eprintln!(
-        "cuda_staged_exact_matrix frames=16 input_sha256={input_sha256} output_sha256={output_sha256} deterministic=true repository_decode=true independent_decode=true"
+        "cuda_staged_exact_matrix frames=16 input_sha256={input_sha256} output_sha256={output_sha256} deterministic=true cpu_equal=true repository_decode=true independent_decode=true"
     );
     assert_eq!(
         input_sha256, EXACT_MATRIX_INPUT_SHA256,
         "staged exact-matrix input digest changed"
-    );
-    assert_eq!(
-        output_sha256, EXACT_MATRIX_OUTPUT_SHA256,
-        "staged exact-matrix output digest changed"
     );
 }
 
@@ -200,6 +194,33 @@ fn update_framed_sha256<'a>(hasher: &mut Sha256, frames: impl IntoIterator<Item 
     }
 }
 
+/// The CPU encoder's frame of `samples`, the bytes every baseline backend
+/// produces for them.
+fn cpu_frame(samples: JpegSamples<'_>, options: JpegEncodeOptions) -> Vec<u8> {
+    encode_jpeg_baseline(
+        samples,
+        JpegEncodeOptions {
+            backend: JpegBackend::Cpu,
+            ..options
+        },
+    )
+    .expect("CPU reference encode")
+    .data
+}
+
+/// `samples` of `input` size placed in a black frame of `output` size, the
+/// image the GPU encoders code when the frame extends beyond the input.
+fn black_padded_gray(samples: &[u8], input: (u32, u32), output: (u32, u32)) -> Vec<u8> {
+    let mut padded = vec![0u8; output.0 as usize * output.1 as usize];
+    for (row, source) in padded
+        .chunks_exact_mut(output.0 as usize)
+        .zip(samples.chunks_exact(input.0 as usize))
+    {
+        row[..input.0 as usize].copy_from_slice(source);
+    }
+    padded
+}
+
 fn assert_rgb_matrix(
     context: &j2k_cuda_runtime::CudaContext,
     input_hasher: &mut Sha256,
@@ -247,7 +268,7 @@ fn assert_rgb_matrix(
             frames, repeat,
             "serial RGB route must be exact for {subsampling:?}, restart={restart_interval:?}, quality={quality}"
         );
-        for frame in frames {
+        for (frame, tile) in frames.into_iter().zip(pixels.chunks_exact(tile_bytes)) {
             assert_entropy_byte_stuffing_and_restart_markers(&frame.data);
             assert_decoders_accept(
                 &frame.data,
@@ -255,6 +276,18 @@ fn assert_rgb_matrix(
                 height,
                 PixelFormat::Rgb8,
                 jpeg_decoder::PixelFormat::RGB24,
+            );
+            let cpu = cpu_frame(
+                JpegSamples::Rgb8 {
+                    data: tile,
+                    width,
+                    height,
+                },
+                options,
+            );
+            assert!(
+                frame.data == cpu,
+                "CUDA and CPU bytes differ for {subsampling:?}, restart={restart_interval:?}, quality={quality}"
             );
             exact_frames.push(frame.data);
         }
@@ -311,7 +344,7 @@ fn assert_gray_matrix(
             frames, repeat,
             "serial grayscale route must be exact for restart={restart_interval:?}, quality={quality}"
         );
-        for frame in frames {
+        for (frame, tile) in frames.into_iter().zip(pixels.chunks_exact(tile_bytes)) {
             assert_entropy_byte_stuffing_and_restart_markers(&frame.data);
             assert_decoders_accept(
                 &frame.data,
@@ -319,6 +352,19 @@ fn assert_gray_matrix(
                 output_height,
                 PixelFormat::Gray8,
                 jpeg_decoder::PixelFormat::L8,
+            );
+            let padded = black_padded_gray(tile, (width, height), (output_width, output_height));
+            let cpu = cpu_frame(
+                JpegSamples::Gray8 {
+                    data: &padded,
+                    width: output_width,
+                    height: output_height,
+                },
+                options,
+            );
+            assert!(
+                frame.data == cpu,
+                "CUDA and CPU bytes differ for restart={restart_interval:?}, quality={quality}"
             );
             exact_frames.push(frame.data);
         }

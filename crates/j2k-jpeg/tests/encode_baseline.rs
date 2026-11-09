@@ -2,7 +2,10 @@ use j2k_jpeg::{
     encode_jpeg_baseline, encode_jpeg_baseline_optimized, DecodeRequest, Decoder, EncodedJpeg,
     JpegBackend, JpegEncodeError, JpegEncodeOptions, JpegSamples, JpegSubsampling, PixelFormat,
 };
-use j2k_test_support::{patterned_gray8, patterned_rgb8};
+use j2k_test_support::{
+    jpeg_encode_matrix_cases, jpeg_encode_matrix_digest, patterned_gray8, patterned_rgb8,
+    JpegEncodeMatrixCase, JpegEncodeMatrixSampling, JPEG_ENCODE_MATRIX_SHA256,
+};
 use std::io::Cursor;
 
 fn encode_rgb(subsampling: JpegSubsampling) -> EncodedJpeg {
@@ -57,46 +60,54 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
     })
 }
 
-#[test]
-fn baseline_codestream_bytes_match_goldens() {
-    let gray = patterned_gray8(13, 11);
-    let gray = encode_jpeg_baseline(
+fn matrix_subsampling(sampling: JpegEncodeMatrixSampling) -> JpegSubsampling {
+    match sampling {
+        JpegEncodeMatrixSampling::Gray => JpegSubsampling::Gray,
+        JpegEncodeMatrixSampling::Ybr444 => JpegSubsampling::Ybr444,
+        JpegEncodeMatrixSampling::Ybr422 => JpegSubsampling::Ybr422,
+        JpegEncodeMatrixSampling::Ybr420 => JpegSubsampling::Ybr420,
+    }
+}
+
+fn encode_matrix_case(case: JpegEncodeMatrixCase) -> Vec<u8> {
+    let data = case.samples();
+    let (width, height) = (case.width, case.height);
+    let samples = if case.sampling == JpegEncodeMatrixSampling::Gray {
         JpegSamples::Gray8 {
-            data: &gray,
-            width: 13,
-            height: 11,
-        },
-        JpegEncodeOptions {
-            quality: 85,
-            subsampling: JpegSubsampling::Gray,
-            restart_interval: Some(4),
-            backend: JpegBackend::Cpu,
-        },
-    )
-    .expect("encode grayscale golden");
-    let actual = [
-        ("gray-restart", gray.data.len(), fnv1a64(&gray.data)),
-        {
-            let encoded = encode_rgb(JpegSubsampling::Ybr444);
-            ("rgb-444", encoded.data.len(), fnv1a64(&encoded.data))
-        },
-        {
-            let encoded = encode_rgb(JpegSubsampling::Ybr422);
-            ("rgb-422", encoded.data.len(), fnv1a64(&encoded.data))
-        },
-        {
-            let encoded = encode_rgb(JpegSubsampling::Ybr420);
-            ("rgb-420", encoded.data.len(), fnv1a64(&encoded.data))
-        },
-    ];
+            data: &data,
+            width,
+            height,
+        }
+    } else {
+        JpegSamples::Rgb8 {
+            data: &data,
+            width,
+            height,
+        }
+    };
+    let options = JpegEncodeOptions {
+        quality: case.quality,
+        subsampling: matrix_subsampling(case.sampling),
+        restart_interval: case.restart_interval,
+        backend: JpegBackend::Cpu,
+    };
+    encode_jpeg_baseline(samples, options)
+        .unwrap_or_else(|error| panic!("{}: {error}", case.label()))
+        .data
+}
+
+/// The CPU encoder produces the bytes every baseline backend produces. Its
+/// SIMD and scalar transforms all yield the integer coefficients of
+/// `j2k_codec_math::jpeg::fdct`, so the golden holds on every target.
+#[test]
+fn baseline_encoder_matches_the_cross_backend_golden() {
+    let frames = jpeg_encode_matrix_cases()
+        .into_iter()
+        .map(encode_matrix_case)
+        .collect::<Vec<_>>();
+    let digest = jpeg_encode_matrix_digest(frames.iter().map(Vec::as_slice));
     assert_eq!(
-        actual,
-        [
-            ("gray-restart", 450, 0xb49e_4d37_8d96_2fa0),
-            ("rgb-444", 1094, 0xe3db_ce49_8363_0bf8),
-            ("rgb-422", 1000, 0x0837_394c_3c14_12b3),
-            ("rgb-420", 977, 0xc966_bef1_7b8d_b2a8),
-        ],
+        digest, JPEG_ENCODE_MATRIX_SHA256,
         "baseline JPEG codestream bytes changed"
     );
 }

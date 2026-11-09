@@ -7,6 +7,9 @@ use j2k_jpeg::{
 };
 
 #[cfg(feature = "cuda-runtime")]
+#[path = "encode/cross_backend.rs"]
+mod cross_backend;
+#[cfg(feature = "cuda-runtime")]
 #[path = "encode/staged_baseline.rs"]
 mod staged_baseline;
 #[cfg(feature = "cuda-runtime")]

@@ -14,6 +14,7 @@ mod cuda;
 mod dicom_matrix;
 mod fixtures;
 mod gpu_gate;
+mod jpeg_encode_matrix;
 mod jpeg_fixtures;
 mod lossless_matrix;
 mod manifest;
@@ -70,6 +71,10 @@ pub use fixtures::{
 };
 pub use gpu_gate::{
     gpu_device_unavailable_is_skip, gpu_test_gate, GPU_TEST_SKIP_LOG_ENV, GPU_TEST_SKIP_MARKER,
+};
+pub use jpeg_encode_matrix::{
+    jpeg_encode_matrix_cases, jpeg_encode_matrix_digest, JpegEncodeMatrixCase,
+    JpegEncodeMatrixSampling, JPEG_ENCODE_MATRIX_SHA256,
 };
 /// Convenience prelude for the intentionally broad JPEG fixture catalog.
 ///

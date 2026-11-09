@@ -524,17 +524,28 @@ fn shared_session_concurrent_encodes_keep_scratch_isolated() {
     }
 }
 
+/// The CPU encoder's frame of `samples`, the bytes every baseline backend
+/// produces for them.
 #[cfg(target_os = "macos")]
-fn update_staged_rgb_matrix_digest(
-    session: &j2k_jpeg_metal::MetalBackendSession,
-    digest: &mut sha2::Sha256,
-) {
+fn cpu_frame(samples: j2k_jpeg::JpegSamples<'_>, options: j2k_jpeg::JpegEncodeOptions) -> Vec<u8> {
+    j2k_jpeg::encode_jpeg_baseline(
+        samples,
+        j2k_jpeg::JpegEncodeOptions {
+            backend: JpegBackend::Cpu,
+            ..options
+        },
+    )
+    .expect("CPU reference encode")
+    .data
+}
+
+#[cfg(target_os = "macos")]
+fn assert_staged_rgb_matrix_matches_cpu(session: &j2k_jpeg_metal::MetalBackendSession) {
     use j2k_core::PixelFormat;
-    use j2k_jpeg::{JpegBackend, JpegEncodeOptions, JpegSubsampling};
+    use j2k_jpeg::{JpegBackend, JpegEncodeOptions, JpegSamples, JpegSubsampling};
     use j2k_jpeg_metal::{
         encode_jpeg_baseline_batch_from_metal_buffers, JpegBaselineMetalEncodeTile,
     };
-    use sha2::Digest;
 
     let rgb_size = (23u32, 19u32);
     let rgb_tile_count = 2usize;
@@ -581,7 +592,7 @@ fn update_staged_rgb_matrix_digest(
             repeat.iter().map(|frame| &frame.data).collect::<Vec<_>>(),
             "RGB route must be deterministic for {subsampling:?}, restart={restart_interval:?}, quality={quality}"
         );
-        for frame in frames {
+        for (frame, tile) in frames.iter().zip(rgb.chunks_exact(rgb_tile_bytes)) {
             assert_entropy_byte_stuffing_and_restart_markers(&frame.data);
             assert_independent_decoder_accepts(
                 &frame.data,
@@ -589,23 +600,43 @@ fn update_staged_rgb_matrix_digest(
                 rgb_size.1,
                 jpeg_decoder::PixelFormat::RGB24,
             );
-            digest.update((frame.data.len() as u64).to_le_bytes());
-            digest.update(&frame.data);
+            let cpu = cpu_frame(
+                JpegSamples::Rgb8 {
+                    data: tile,
+                    width: rgb_size.0,
+                    height: rgb_size.1,
+                },
+                options,
+            );
+            assert!(
+                frame.data == cpu,
+                "Metal and CPU bytes differ for {subsampling:?}, restart={restart_interval:?}, quality={quality}"
+            );
         }
     }
 }
 
+/// `samples` of `input` size placed in a black frame of `output` size, the
+/// image the GPU encoders code when the frame extends beyond the input.
 #[cfg(target_os = "macos")]
-fn update_staged_gray_matrix_digest(
-    session: &j2k_jpeg_metal::MetalBackendSession,
-    digest: &mut sha2::Sha256,
-) {
+fn black_padded_gray(samples: &[u8], input: (u32, u32), output: (u32, u32)) -> Vec<u8> {
+    let mut padded = vec![0u8; output.0 as usize * output.1 as usize];
+    for (row, source) in padded
+        .chunks_exact_mut(output.0 as usize)
+        .zip(samples.chunks_exact(input.0 as usize))
+    {
+        row[..input.0 as usize].copy_from_slice(source);
+    }
+    padded
+}
+
+#[cfg(target_os = "macos")]
+fn assert_staged_gray_matrix_matches_cpu(session: &j2k_jpeg_metal::MetalBackendSession) {
     use j2k_core::PixelFormat;
-    use j2k_jpeg::{JpegBackend, JpegEncodeOptions, JpegSubsampling};
+    use j2k_jpeg::{JpegBackend, JpegEncodeOptions, JpegSamples, JpegSubsampling};
     use j2k_jpeg_metal::{
         encode_jpeg_baseline_batch_from_metal_buffers, JpegBaselineMetalEncodeTile,
     };
-    use sha2::Digest;
 
     let gray_input = (7u32, 5u32);
     let gray_output = (13u32, 11u32);
@@ -654,7 +685,7 @@ fn update_staged_gray_matrix_digest(
             repeat.iter().map(|frame| &frame.data).collect::<Vec<_>>(),
             "grayscale route must be deterministic for restart={restart_interval:?}, quality={quality}"
         );
-        for frame in frames {
+        for (frame, tile) in frames.iter().zip(gray.chunks_exact(gray_tile_bytes)) {
             assert_entropy_byte_stuffing_and_restart_markers(&frame.data);
             assert_independent_decoder_accepts(
                 &frame.data,
@@ -662,39 +693,35 @@ fn update_staged_gray_matrix_digest(
                 gray_output.1,
                 jpeg_decoder::PixelFormat::L8,
             );
-            digest.update((frame.data.len() as u64).to_le_bytes());
-            digest.update(&frame.data);
+            let padded = black_padded_gray(tile, gray_input, gray_output);
+            let cpu = cpu_frame(
+                JpegSamples::Gray8 {
+                    data: &padded,
+                    width: gray_output.0,
+                    height: gray_output.1,
+                },
+                options,
+            );
+            assert!(
+                frame.data == cpu,
+                "Metal and CPU bytes differ for restart={restart_interval:?}, quality={quality}"
+            );
         }
     }
 }
 
-#[cfg(target_os = "macos")]
-fn staged_route_matrix_digest() -> String {
-    use sha2::{Digest, Sha256};
-
-    let session =
-        j2k_jpeg_metal::MetalBackendSession::system_default().expect("Metal backend session");
-    let mut digest = Sha256::new();
-    update_staged_rgb_matrix_digest(&session, &mut digest);
-    update_staged_gray_matrix_digest(&session, &mut digest);
-
-    format!("{:x}", digest.finalize())
-}
-
-/// The FDCT and quantization are the integer definition of
-/// `j2k_codec_math::jpeg::fdct`, so this digest is the same on every Metal GPU
-/// and under any shader math mode. It changed from `b9af03a1...` when the f32
-/// FDCT, whose rounding ties depended on the GPU's fast-math code generation,
-/// became the shared integer one.
+/// The staged route produces the CPU encoder's bytes for every tile: the
+/// stages share the CPU's colour conversion, sampling, tables and entropy
+/// coding, and the integer forward DCT of `j2k_codec_math::jpeg::fdct`, so
+/// the result is the same on every Metal GPU and under any shader math mode.
 #[cfg(target_os = "macos")]
 #[test]
-fn staged_metal_encoder_matches_pinned_matrix_hash() {
+fn staged_metal_encoder_matches_the_cpu_encoder() {
     if !should_run_metal_runtime() {
         return;
     }
-    assert_eq!(
-        staged_route_matrix_digest(),
-        "624e91d7b52aad907e4cae7eeda45f38537b7af8aa6b525356c3ef3b93ba19e6",
-        "staged route must match the pinned, device-independent matrix hash"
-    );
+    let session =
+        j2k_jpeg_metal::MetalBackendSession::system_default().expect("Metal backend session");
+    assert_staged_rgb_matrix_matches_cpu(&session);
+    assert_staged_gray_matrix_matches_cpu(&session);
 }
