@@ -4,6 +4,7 @@
 
 use crate::sample::floor_f32;
 use cuda_device::ptx_asm;
+use j2k_codec_math::mct::{ICT_INV_B_CB, ICT_INV_G_CB, ICT_INV_G_CR, ICT_INV_R_CR, RCT_QUARTER};
 
 #[inline(always)]
 pub(crate) fn fused_mul_add_f32(multiplicand: f32, multiplier: f32, addend: f32) -> f32 {
@@ -32,12 +33,12 @@ pub(crate) fn inverse_mct_sample(
 ) -> (f32, f32, f32) {
     if irreversible97 != 0 {
         (
-            fused_mul_add_f32(src2, 1.402, src0),
-            fused_mul_add_f32(src2, -0.71414, fused_mul_add_f32(src1, -0.34413, src0)),
-            fused_mul_add_f32(src1, 1.772, src0),
+            fused_mul_add_f32(src2, ICT_INV_R_CR, src0),
+            fused_mul_add_f32(src2, ICT_INV_G_CR, fused_mul_add_f32(src1, ICT_INV_G_CB, src0)),
+            fused_mul_add_f32(src1, ICT_INV_B_CB, src0),
         )
     } else {
-        let green = src0 - floor_f32((src2 + src1) * 0.25);
+        let green = src0 - floor_f32((src2 + src1) * RCT_QUARTER);
         (src2 + green, green, src1 + green)
     }
 }

@@ -346,9 +346,8 @@ fn mel_read_bits(decoder: &mut MelDecoder, count: u32, value: &mut u32) -> bool 
 
 #[inline(always)]
 fn mel_decode_more_runs(decoder: &mut MelDecoder) -> bool {
-    const MEL_EXP: [u32; 13] = [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 4, 5];
     while decoder.num_runs < 8 {
-        let eval = MEL_EXP[decoder.k as usize];
+        let eval = u32::from(j2k_codec_math::htj2k::MEL_EXPONENTS[decoder.k as usize]);
         let mut first = 0;
         if !mel_read_bit(decoder, &mut first) {
             return false;
