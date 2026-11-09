@@ -13,8 +13,10 @@ use super::repo_root;
 /// suffixes, and the one path that may spell each in code.
 const OWNED_LITERALS: &[(&str, &[&str])] = &[
     (
-        "crates/j2k-codec-math/src/jpeg.rs",
-        &["91881", "22554", "46802", "116130"],
+        "crates/j2k-codec-math/src/jpeg/ycbcr.rs",
+        &[
+            "91881", "22554", "46802", "116130", "19595", "7471", "11059", "5329",
+        ],
     ),
     (
         "crates/j2k-codec-math/src/jpeg/idct.rs",
@@ -51,10 +53,6 @@ const OWNED_LITERALS: &[(&str, &[&str])] = &[
     (
         "crates/j2k-native/src/color/sycc.rs",
         &["0.344136", "0.714136"],
-    ),
-    (
-        "crates/j2k-jpeg/src/encoder/sample_planes.rs",
-        &["19595", "7471", "11059", "5329"],
     ),
     // Derived Q14/Q15 forms of the YCbCr matrix (see DERIVED_FORM_PATHS).
     (
