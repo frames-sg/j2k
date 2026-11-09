@@ -50,7 +50,6 @@ pub(super) fn encode_entropy(
     q_chroma: &[u8; 64],
     dc_tables: [&JpegBaselineHuffmanTable; 2],
     ac_tables: [&JpegBaselineHuffmanTable; 2],
-    cosine: &[[f64; 8]; 8],
     restart_interval: Option<u16>,
     entropy_capacity: usize,
     external_live_bytes: usize,
@@ -65,7 +64,6 @@ pub(super) fn encode_entropy(
             q_chroma,
             dc_tables,
             ac_tables,
-            cosine,
             restart_interval,
             entropy_capacity,
             external_live_bytes,
@@ -80,7 +78,6 @@ pub(super) fn encode_entropy(
         q_chroma,
         dc_tables,
         ac_tables,
-        cosine,
         None,
         entropy_capacity,
         external_live_bytes,
@@ -100,7 +97,6 @@ pub(super) fn encode_entropy_serial(
     q_chroma: &[u8; 64],
     dc_tables: [&JpegBaselineHuffmanTable; 2],
     ac_tables: [&JpegBaselineHuffmanTable; 2],
-    cosine: &[[f64; 8]; 8],
     restart_interval: Option<u16>,
     entropy_capacity: usize,
     external_live_bytes: usize,
@@ -125,7 +121,6 @@ pub(super) fn encode_entropy_serial(
             q_chroma,
             dc_tables,
             ac_tables,
-            cosine,
             mcus_per_row,
             total_mcus,
             restart_interval,
@@ -150,7 +145,6 @@ pub(super) fn encode_entropy_serial(
             q_chroma,
             dc_tables,
             ac_tables,
-            cosine,
             mcus_per_row,
             0,
             total_mcus,
@@ -166,7 +160,6 @@ pub(super) fn encode_entropy_serial(
             q_chroma,
             dc_tables,
             ac_tables,
-            cosine,
             mcus_per_row,
             0,
             total_mcus,
@@ -182,7 +175,6 @@ pub(super) fn encode_entropy_serial(
             q_chroma,
             dc_tables,
             ac_tables,
-            cosine,
             mcus_per_row,
             0,
             total_mcus,
@@ -199,7 +191,6 @@ pub(super) fn encode_entropy_serial(
         q_chroma,
         dc_tables,
         ac_tables,
-        cosine,
         mcus_per_row,
         0,
         total_mcus,
@@ -257,7 +248,6 @@ fn encode_entropy_mcu_range_into(
     q_chroma: &[u8; 64],
     dc_tables: [&JpegBaselineHuffmanTable; 2],
     ac_tables: [&JpegBaselineHuffmanTable; 2],
-    cosine: &[[f64; 8]; 8],
     mcus_per_row: u32,
     start_mcu: u32,
     end_mcu: u32,
@@ -288,7 +278,6 @@ fn encode_entropy_mcu_range_into(
                 q_chroma,
                 dc_tables,
                 ac_tables,
-                cosine,
                 mcus_per_row,
                 start_mcu,
                 end_mcu,
@@ -396,7 +385,6 @@ fn encode_entropy_mcu_range_into_mode<
     q_chroma: &[u8; 64],
     dc_tables: [&JpegBaselineHuffmanTable; 2],
     ac_tables: [&JpegBaselineHuffmanTable; 2],
-    cosine: &[[f64; 8]; 8],
     mcus_per_row: u32,
     start_mcu: u32,
     end_mcu: u32,
@@ -480,7 +468,6 @@ fn encode_entropy_mcu_range_into_mode<
                                     &samples,
                                     quant,
                                     divisors,
-                                    cosine,
                                     &mut edge_coeffs,
                                 );
                             } else {
@@ -495,7 +482,6 @@ fn encode_entropy_mcu_range_into_mode<
                                     &samples,
                                     quant,
                                     divisors,
-                                    cosine,
                                     &mut edge_coeffs,
                                 );
                             }
@@ -548,7 +534,7 @@ fn encode_entropy_mcu_range_into_mode<
                     reason = "AC token preparation mutates coefficients only on AArch64"
                 )
             )]
-            let mut coeffs = fdct_quantize(block, quant, divisors, cosine);
+            let mut coeffs = fdct_quantize(block, quant, divisors);
             #[cfg(target_arch = "aarch64")]
             if AC_TOKENS {
                 let ac_state =
@@ -648,7 +634,6 @@ fn encode_entropy_thin_mcu_range_into<const AXIS: u8>(
     q_chroma: &[u8; 64],
     dc_tables: [&JpegBaselineHuffmanTable; 2],
     ac_tables: [&JpegBaselineHuffmanTable; 2],
-    cosine: &[[f64; 8]; 8],
     mcus_per_row: u32,
     start_mcu: u32,
     end_mcu: u32,
@@ -694,8 +679,7 @@ fn encode_entropy_thin_mcu_range_into<const AXIS: u8>(
                     let samples = sample_repeated_axis::<AXIS>(
                         planes, width, height, sampling, component, mcu_x, mcu_y, block_x, block_y,
                     );
-                    let coeffs =
-                        fdct_quantize_repeated_axis::<AXIS>(&samples, quant, divisors, cosine);
+                    let coeffs = fdct_quantize_repeated_axis::<AXIS>(&samples, quant, divisors);
                     if let ThinLumaCacheAction::Store(slot) = action {
                         luma_cache[slot] = Some(coeffs);
                         emit(
@@ -792,7 +776,6 @@ where
 mod tests {
     use super::*;
     use crate::adapter::baseline_encode_tables;
-    use crate::encoder::transform::cosine_table;
     use crate::encoder::{JpegBackend, JpegEncodeOptions, JpegSubsampling};
 
     fn assert_thin_entropy_matches_ordinary<const AXIS: u8>(
@@ -834,7 +817,6 @@ mod tests {
             &tables.q_chroma,
             [&tables.huff_dc_luma, &tables.huff_dc_chroma],
             [&tables.huff_ac_luma, &tables.huff_ac_chroma],
-            cosine_table(),
             mcus_per_row,
             0,
             total_mcus,
@@ -851,7 +833,6 @@ mod tests {
             &tables.q_chroma,
             [&tables.huff_dc_luma, &tables.huff_dc_chroma],
             [&tables.huff_ac_luma, &tables.huff_ac_chroma],
-            cosine_table(),
             mcus_per_row,
             0,
             total_mcus,
@@ -977,7 +958,6 @@ mod tests {
                 &tables.q_chroma,
                 [&tables.huff_dc_luma, &tables.huff_dc_chroma],
                 [&tables.huff_ac_luma, &tables.huff_ac_chroma],
-                cosine_table(),
                 mcus_per_row,
                 0,
                 total_mcus,
@@ -993,7 +973,6 @@ mod tests {
                 &tables.q_chroma,
                 [&tables.huff_dc_luma, &tables.huff_dc_chroma],
                 [&tables.huff_ac_luma, &tables.huff_ac_chroma],
-                cosine_table(),
                 mcus_per_row,
                 0,
                 total_mcus,

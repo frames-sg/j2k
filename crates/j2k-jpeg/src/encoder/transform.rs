@@ -3,14 +3,32 @@
 use core::f64::consts::PI;
 use std::sync::OnceLock;
 
-use j2k_codec_math::jpeg::ZIGZAG;
+use j2k_codec_math::jpeg::{fdct::fdct_quantize_coefficient, ZIGZAG};
 
 #[cfg(target_arch = "aarch64")]
 #[path = "transform_neon.rs"]
 mod neon;
 
+/// Quantized-unit distance from a half-integer within which the f64 path
+/// defers to the canonical integer transform: it exceeds that transform's
+/// `2^-20` error plus the f64 path's, so outside it both round as the real
+/// DCT does.
+const SCALAR_CANONICAL_GUARD: f64 = 1.0 / 524_288.0;
+
+/// Whether natural coefficient `natural` has the rational basis `+-1/8`
+/// (`u` and `v` in `{0, 4}`), where the canonical transform is exact.
+#[cfg(target_arch = "aarch64")]
+const fn has_rational_basis(natural: usize) -> bool {
+    natural.is_multiple_of(4) && (natural / 8).is_multiple_of(4)
+}
+
+/// The canonical coefficient `j2k_codec_math::jpeg::fdct` defines for every
+/// baseline encoder backend.
+fn canonical_coefficient(block: &[u8; 64], quant: &[u8; 64], natural: usize) -> i16 {
+    fdct_quantize_coefficient(block, quant[natural], natural)
+}
+
 pub(super) struct QuantizationDivisors {
-    values: [f64; 64],
     reciprocals: [f64; 64],
     #[cfg(target_arch = "aarch64")]
     f32_reciprocals: [f32; 64],
@@ -44,9 +62,6 @@ impl QuantizedBlock {
 }
 
 const NATURAL_TO_ZIGZAG: [usize; 64] = natural_to_zigzag();
-
-#[cfg(target_arch = "aarch64")]
-const EXACT_INTEGER_AC_MASK: u64 = (1u64 << 4) | (1u64 << 32) | (1u64 << 36);
 
 const fn natural_to_zigzag() -> [usize; 64] {
     let mut inverse = [0usize; 64];
@@ -116,7 +131,6 @@ impl QuantizationDivisors {
             }
         };
         Self {
-            values,
             reciprocals,
             #[cfg(target_arch = "aarch64")]
             f32_reciprocals: {
@@ -139,7 +153,16 @@ impl QuantizationDivisors {
                     // The directed DC reciprocal above makes rounding exact.
                     0.0
                 } else {
-                    F32_QUANTIZATION_ERROR_BOUNDS_Q1[natural] / f32::from(quant[natural])
+                    // Outside the canonical transform's 2^-20 error of a tie,
+                    // it rounds as the real DCT does; it is exact on the
+                    // rational basis.
+                    let canonical_error = if has_rational_basis(natural) {
+                        0.0
+                    } else {
+                        CANONICAL_ERROR_BOUND_Q1
+                    };
+                    (F32_QUANTIZATION_ERROR_BOUNDS_Q1[natural] + canonical_error)
+                        / f32::from(quant[natural])
                 };
                 f32_boundary_threshold(error_bound)
             }),
@@ -218,7 +241,6 @@ pub(super) fn fdct_quantize(
     block: &[u8; 64],
     quant: &[u8; 64],
     divisors: &QuantizationDivisors,
-    cosine: &[[f64; 8]; 8],
 ) -> QuantizedBlock {
     let prefix = u64::from_ne_bytes(
         block[..8]
@@ -243,11 +265,9 @@ pub(super) fn fdct_quantize(
         }
     };
     if is_constant {
-        let first = block[0];
-        let value = f64::from((i32::from(first) - 128) * 64);
-        let dc = quantize_exact_boundary(block, quant, cosine, 0, value, divisors.values[0]);
+        // A constant block has only the exact DC 8 * (sample - 128).
         return QuantizedBlock {
-            dc,
+            dc: canonical_coefficient(block, quant, 0),
             ac_coefficients: [0; 64],
             nonzero_ac: 0,
         };
@@ -278,7 +298,7 @@ pub(super) fn fdct_quantize(
         let ambiguous =
             neon::fdct_quantize_q16(neon, block, &divisors.q31_quarter_reciprocals, &mut output);
         if ambiguous != 0 {
-            correct_ambiguous_coefficients(block, quant, divisors, cosine, ambiguous, &mut output);
+            correct_ambiguous_coefficients(block, quant, ambiguous, &mut output);
         }
         return output;
     }
@@ -288,20 +308,12 @@ pub(super) fn fdct_quantize(
     let mut ac_coefficients = [0i16; 64];
     let mut nonzero_ac = 0u64;
     for (natural, value) in values.into_iter().enumerate() {
-        let fast_quantized = value * divisors.reciprocals[natural];
-        // A reciprocal multiply is substantially cheaper than a division. Its
-        // worst-case error over an eight-bit JPEG block is far below this
-        // guard band, so only values close enough to change integer rounding
-        // repeat the original division.
-        let quantized = if (fast_quantized.abs().fract() - 0.5).abs() < 1e-7 {
-            value / divisors.values[natural]
-        } else {
-            fast_quantized
-        };
-        // Reassociation can move an exact half-integer across the rounding
-        // boundary. Preserve the original codestream on those rare ties.
-        let coefficient = if (quantized.abs().fract() - 0.5).abs() < 1e-9 {
-            quantize_direct(block, quant, cosine, natural)
+        // The f64 transform and reciprocal multiply err by far less than the
+        // guard, so outside it this rounds as the real DCT and the canonical
+        // transform do; inside it the canonical transform decides.
+        let quantized = value * divisors.reciprocals[natural];
+        let coefficient = if (quantized.abs().fract() - 0.5).abs() < SCALAR_CANONICAL_GUARD {
+            canonical_coefficient(block, quant, natural)
         } else {
             quantized.round() as i16
         };
@@ -331,10 +343,9 @@ pub(super) fn fdct_quantize_repeated_axis<const AXIS: u8>(
     samples: &[u8; 8],
     quant: &[u8; 64],
     divisors: &QuantizationDivisors,
-    cosine: &[[f64; 8]; 8],
 ) -> QuantizedBlock {
     let mut output = QuantizedBlock::zeroed();
-    fdct_quantize_repeated_axis_core::<AXIS>(samples, quant, divisors, cosine, &mut output);
+    fdct_quantize_repeated_axis_core::<AXIS>(samples, quant, divisors, &mut output);
     output
 }
 
@@ -349,10 +360,9 @@ pub(super) fn fdct_quantize_repeated_axis_into<const AXIS: u8>(
     samples: &[u8; 8],
     quant: &[u8; 64],
     divisors: &QuantizationDivisors,
-    cosine: &[[f64; 8]; 8],
     output: &mut QuantizedBlock,
 ) {
-    fdct_quantize_repeated_axis_core::<AXIS>(samples, quant, divisors, cosine, output);
+    fdct_quantize_repeated_axis_core::<AXIS>(samples, quant, divisors, output);
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -366,7 +376,6 @@ fn fdct_quantize_repeated_axis_core<const AXIS: u8>(
     samples: &[u8; 8],
     quant: &[u8; 64],
     divisors: &QuantizationDivisors,
-    cosine: &[[f64; 8]; 8],
     output: &mut QuantizedBlock,
 ) {
     debug_assert!(AXIS == 1 || AXIS == 2);
@@ -392,9 +401,9 @@ fn fdct_quantize_repeated_axis_core<const AXIS: u8>(
             return;
         }
     }
-    // Scalar-only builds and the rare guarded coefficient retain the complete
-    // established transform and exact-boundary correction path.
-    fdct_quantize_repeated_axis_fallback_into::<AXIS>(samples, quant, divisors, cosine, output);
+    // Scalar-only builds and the rare guarded coefficient use the complete
+    // transform, whose guarded coefficients the canonical transform decides.
+    fdct_quantize_repeated_axis_fallback_into::<AXIS>(samples, quant, divisors, output);
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -407,7 +416,6 @@ fn fdct_quantize_repeated_axis_fallback_into<const AXIS: u8>(
     samples: &[u8; 8],
     quant: &[u8; 64],
     divisors: &QuantizationDivisors,
-    cosine: &[[f64; 8]; 8],
     output: &mut QuantizedBlock,
 ) {
     let block: [u8; 64] = match AXIS {
@@ -415,7 +423,7 @@ fn fdct_quantize_repeated_axis_fallback_into<const AXIS: u8>(
         2 => core::array::from_fn(|index| samples[index / 8]),
         _ => unreachable!("repeated JPEG FDCT axis is rows or columns"),
     };
-    *output = fdct_quantize(&block, quant, divisors, cosine);
+    *output = fdct_quantize(&block, quant, divisors);
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -423,45 +431,17 @@ fn fdct_quantize_repeated_axis_fallback_into<const AXIS: u8>(
 fn correct_ambiguous_coefficients(
     block: &[u8; 64],
     quant: &[u8; 64],
-    divisors: &QuantizationDivisors,
-    cosine: &[[f64; 8]; 8],
     mut ambiguous: u64,
     output: &mut QuantizedBlock,
 ) {
-    // Natural frequencies 4, 32, and 36 use only the u/v=0 or 4
-    // add/subtract butterflies, whose AAN scales are one. Their transform
-    // value K and every intermediate are exactly representable integers;
-    // K is in [-8160, 8160], and the divisor is the exact integer 8*q. For
-    // every q in 1..=255, a value K/(8*q) that is not a tie is at least
-    // 1/(8*q) from a half-integer. The former f32 path's conservative error
-    // bound plus its rounded threshold is far below that gap. For the Q16
-    // path, these frequencies have at most about 0.0000381 quantized units of
-    // error and use a zero-unit guard that selects only exact Q14
-    // half-integers. That error remains below the minimum non-tie gap of
-    // 1/(8*255) > 0.00049. Either ambiguity guard can therefore select these
-    // bits only for true half-integers. Those ties are exactly representable
-    // in f64, so the former exact-boundary path necessarily selected the same
-    // direct quantizer. Call it without first computing the complete f64 AAN
-    // transform.
-    let exact_values =
-        ((ambiguous & !EXACT_INTEGER_AC_MASK) != 0).then(|| fdct_values(block, divisors));
+    // The Q16 guard selects every coefficient that may lie within its error
+    // plus the canonical transform's 2^-20 error of a rounding tie. Outside
+    // it, the Q16 result rounds as the real DCT and the canonical transform
+    // do, so the canonical transform decides exactly the selected ones.
     while ambiguous != 0 {
         let natural = ambiguous.trailing_zeros() as usize;
         ambiguous &= ambiguous - 1;
-        let coefficient = if EXACT_INTEGER_AC_MASK & (1u64 << natural) != 0 {
-            quantize_direct(block, quant, cosine, natural)
-        } else {
-            quantize_exact_boundary(
-                block,
-                quant,
-                cosine,
-                natural,
-                exact_values
-                    .as_ref()
-                    .expect("ambiguous SIMD coefficient has exact transform values")[natural],
-                divisors.values[natural],
-            )
-        };
+        let coefficient = canonical_coefficient(block, quant, natural);
         let zigzag_index = NATURAL_TO_ZIGZAG[natural];
         if zigzag_index == 0 {
             output.dc = coefficient;
@@ -487,69 +467,6 @@ fn update_nonzero_ac(bitmap: &mut u64, zigzag: usize, coefficient: i16) {
     } else {
         *bitmap |= mask;
     }
-}
-
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "validated baseline samples and quantizers bound the rounded coefficient to i16"
-)]
-fn quantize_exact_boundary(
-    block: &[u8; 64],
-    quant: &[u8; 64],
-    cosine: &[[f64; 8]; 8],
-    natural: usize,
-    value: f64,
-    divisor: f64,
-) -> i16 {
-    let quantized = value / divisor;
-    if (quantized.abs().fract() - 0.5).abs() < 1e-9 {
-        return quantize_direct(block, quant, cosine, natural);
-    }
-    quantized.round() as i16
-}
-
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "the direct baseline DCT proof bounds the rounded coefficient to i16"
-)]
-fn quantize_direct(
-    block: &[u8; 64],
-    quant: &[u8; 64],
-    cosine: &[[f64; 8]; 8],
-    natural: usize,
-) -> i16 {
-    let v = natural / 8;
-    let u = natural % 8;
-    let direct = if natural == 0 {
-        // cosine[0] is exactly one. Centering and summing eight-bit samples is
-        // exact in both i32 and f64, so this preserves the original operation
-        // result while avoiding 128 multiplications by one.
-        f64::from(
-            block
-                .iter()
-                .map(|&sample| i32::from(sample) - 128)
-                .sum::<i32>(),
-        )
-    } else {
-        let mut direct = 0.0;
-        for y in 0..8 {
-            for x in 0..8 {
-                direct += (f64::from(block[y * 8 + x]) - 128.0) * cosine[u][x] * cosine[v][y];
-            }
-        }
-        direct
-    };
-    let cu = if u == 0 {
-        core::f64::consts::FRAC_1_SQRT_2
-    } else {
-        1.0
-    };
-    let cv = if v == 0 {
-        core::f64::consts::FRAC_1_SQRT_2
-    } else {
-        1.0
-    };
-    (0.25 * cu * cv * direct / f64::from(quant[natural])).round() as i16
 }
 
 fn fdct_values(block: &[u8; 64], divisors: &QuantizationDivisors) -> [f64; 64] {
@@ -582,8 +499,8 @@ fn fdct_values_scalar(block: &[u8; 64]) -> [f64; 64] {
 }
 
 // Arai–Agui–Nakajima scaling: the five-multiply 1-D transform defers
-// normalization to quantization. F64 plus the tie fallback above preserves
-// the existing encoder's rounding, including its byte-level golden fixtures.
+// normalization to quantization. Within the guard of a rounding tie, the
+// canonical integer transform decides the coefficient instead.
 const AAN_SCALE: [f64; 8] = [
     1.0,
     1.387_039_845_322_147_5,
@@ -594,6 +511,11 @@ const AAN_SCALE: [f64; 8] = [
     0.541_196_100_146_197_1,
     0.275_899_379_282_943_1,
 ];
+
+/// Twice the canonical transform's `2^-20` error at q=1, which also covers the
+/// f32 rounding of its sum with an error-table entry.
+#[cfg(target_arch = "aarch64")]
+const CANONICAL_ERROR_BOUND_Q1: f32 = 1.0 / 524_288.0;
 
 // Conservative absolute error, in quantization-bin units, for the f32 AAN
 // transform plus reciprocal quantization at q=1. Each output is tracked as an
@@ -773,10 +695,15 @@ mod tests {
             let divisors = QuantizationDivisors::new(&[q; 64]);
             for (natural, &base_error_bound) in F32_QUANTIZATION_ERROR_BOUNDS_Q1.iter().enumerate()
             {
+                let canonical_error = if has_rational_basis(natural) {
+                    0.0
+                } else {
+                    CANONICAL_ERROR_BOUND_Q1
+                };
                 let error_bound = if natural == 0 {
                     0.0
                 } else {
-                    base_error_bound / f32::from(q)
+                    (base_error_bound + canonical_error) / f32::from(q)
                 };
                 let threshold = divisors.f32_boundary_thresholds[natural];
                 let exact_threshold = 0.5_f64 - f64::from(error_bound);
@@ -804,7 +731,6 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[test]
     fn repeated_axis_fdct_matches_the_complete_transform() {
-        let cosine = cosine_table();
         let mut seed = 29u32;
         for case in 0..384 {
             let samples: [u8; 8] = core::array::from_fn(|index| {
@@ -829,9 +755,8 @@ mod tests {
             ];
             for quant in quantizers {
                 let divisors = QuantizationDivisors::new(&quant);
-                let expected_rows = fdct_quantize(&repeated_rows, &quant, &divisors, cosine);
-                let actual_rows =
-                    fdct_quantize_repeated_axis::<1>(&samples, &quant, &divisors, cosine);
+                let expected_rows = fdct_quantize(&repeated_rows, &quant, &divisors);
+                let actual_rows = fdct_quantize_repeated_axis::<1>(&samples, &quant, &divisors);
                 assert_eq!(actual_rows.dc, expected_rows.dc, "row DC case {case}");
                 assert_eq!(
                     actual_rows.ac_coefficients, expected_rows.ac_coefficients,
@@ -842,9 +767,8 @@ mod tests {
                     "row bitmap case {case}"
                 );
 
-                let expected_columns = fdct_quantize(&repeated_columns, &quant, &divisors, cosine);
-                let actual_columns =
-                    fdct_quantize_repeated_axis::<2>(&samples, &quant, &divisors, cosine);
+                let expected_columns = fdct_quantize(&repeated_columns, &quant, &divisors);
+                let actual_columns = fdct_quantize_repeated_axis::<2>(&samples, &quant, &divisors);
                 assert_eq!(
                     actual_columns.dc, expected_columns.dc,
                     "column DC case {case}"
@@ -861,16 +785,45 @@ mod tests {
         }
     }
 
+    /// Every quantizing path of the CPU encoder yields the canonical
+    /// coefficients of `j2k_codec_math::jpeg::fdct`, including at rounding ties.
+    fn assert_canonical(
+        block: &[u8; 64],
+        quant: &[u8; 64],
+        divisors: &QuantizationDivisors,
+        context: &str,
+    ) {
+        let actual = fdct_quantize(block, quant, divisors);
+        let canonical = j2k_codec_math::jpeg::fdct::fdct_quantize(block, quant);
+        let actual_natural: [i16; 64] = core::array::from_fn(|natural| {
+            let zigzag = NATURAL_TO_ZIGZAG[natural];
+            if zigzag == 0 {
+                actual.dc
+            } else {
+                actual.ac_coefficients[zigzag]
+            }
+        });
+        assert_eq!(actual_natural, canonical, "{context}");
+        let expected_nonzero = (1..64).fold(0u64, |bitmap, zigzag| {
+            bitmap | u64::from(actual.ac_coefficients[zigzag] != 0) << (64 - zigzag)
+        });
+        assert_eq!(actual.nonzero_ac, expected_nonzero, "{context}");
+    }
+
     #[test]
     #[expect(
         clippy::cast_possible_truncation,
-        clippy::too_many_lines,
-        reason = "the reference transform covers bounded eight-bit samples and quantized coefficients"
+        reason = "the corpus covers bounded eight-bit samples and quantized coefficients"
     )]
-    fn separable_dct_preserves_quantization_including_rounding_ties() {
-        let cosine = cosine_table();
+    fn every_quantizing_path_matches_the_canonical_transform_including_ties() {
         let mut seed = 17u32;
-        for case in 0..390 {
+        for case in 0..1414 {
+            // Two-level blocks put exact ties on rational and irrational
+            // frequencies alike.
+            let levels = (
+                u8::try_from(case % 256).expect("level fits u8"),
+                u8::try_from((case * 97) % 256).expect("level fits u8"),
+            );
             let block = core::array::from_fn(|i| {
                 seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
                 match case {
@@ -910,6 +863,13 @@ mod tests {
                     // each signed half boundary in the Q16 SIMD path.
                     388 => 128 + u8::from(i == 0) * 4,
                     389 => 128 - u8::from(i == 0) * 4,
+                    390.. => {
+                        if (seed >> 24) & 1 == 1 {
+                            levels.0
+                        } else {
+                            levels.1
+                        }
+                    }
                     _ => (seed >> 24) as u8,
                 }
             });
@@ -948,43 +908,15 @@ mod tests {
                         "energy gate case {case}, quantizer case {quant_case}"
                     );
                 }
-                let actual = fdct_quantize(&block, &quant, &divisors, cosine);
-                let reference: [i32; 64] = core::array::from_fn(|k| {
-                    let (v, u) = (k / 8, k % 8);
-                    let mut sum = 0.0;
-                    for y in 0..8 {
-                        for x in 0..8 {
-                            sum +=
-                                (f64::from(block[y * 8 + x]) - 128.0) * cosine[u][x] * cosine[v][y];
-                        }
-                    }
-                    let cu = if u == 0 {
-                        core::f64::consts::FRAC_1_SQRT_2
-                    } else {
-                        1.0
-                    };
-                    let cv = if v == 0 {
-                        core::f64::consts::FRAC_1_SQRT_2
-                    } else {
-                        1.0
-                    };
-                    (0.25 * cu * cv * sum / f64::from(quant[k])).round() as i32
-                });
-                let actual_natural: [i32; 64] = core::array::from_fn(|natural| {
-                    let zigzag = NATURAL_TO_ZIGZAG[natural];
-                    if zigzag == 0 {
-                        return i32::from(actual.dc);
-                    }
-                    i32::from(actual.ac_coefficients[zigzag])
-                });
-                assert_eq!(
-                    actual_natural, reference,
-                    "case {case}, quantizer case {quant_case}"
-                );
-                let expected_nonzero = (1..64).fold(0u64, |bitmap, zigzag| {
-                    bitmap | u64::from(actual.ac_coefficients[zigzag] != 0) << (64 - zigzag)
-                });
-                assert_eq!(actual.nonzero_ac, expected_nonzero);
+                let context = format!("case {case}, quantizer case {quant_case}");
+                assert_canonical(&block, &quant, &divisors, &context);
+                // The f64 path that scalar-only and non-NEON builds use.
+                #[cfg(target_arch = "aarch64")]
+                {
+                    let mut scalar = QuantizationDivisors::new(&quant);
+                    scalar.neon = None;
+                    assert_canonical(&block, &quant, &scalar, &format!("scalar {context}"));
+                }
             }
         }
     }

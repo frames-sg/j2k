@@ -15,7 +15,6 @@ use super::entropy::{
 };
 use super::planning::{checked_cpu_encode_capacity_plan, component_plane_capacity_bytes};
 use super::sample_planes::component_planes;
-use super::transform::cosine_table;
 use super::{
     encode_jpeg_baseline, JpegBackend, JpegEncodeError, JpegEncodeOptions, JpegSamples,
     JpegSubsampling,
@@ -259,7 +258,6 @@ fn assert_restart_entropy_matches_serial(
     })
     .unwrap();
     let sampling = tables.sampling;
-    let cosine = cosine_table();
     let pixels = patterned_rgb(width, height);
     let planes = component_planes(
         JpegSamples::Rgb8 {
@@ -286,7 +284,6 @@ fn assert_restart_entropy_matches_serial(
         &tables.q_chroma,
         [&tables.huff_dc_luma, &tables.huff_dc_chroma],
         [&tables.huff_ac_luma, &tables.huff_ac_chroma],
-        cosine,
         Some(restart_interval),
         entropy_capacity,
         plane_live_bytes,
@@ -307,7 +304,6 @@ fn assert_restart_entropy_matches_serial(
                 &tables.q_chroma,
                 [&tables.huff_dc_luma, &tables.huff_dc_chroma],
                 [&tables.huff_ac_luma, &tables.huff_ac_chroma],
-                cosine,
                 restart_interval,
                 entropy_capacity,
                 plane_live_bytes,

@@ -30,7 +30,6 @@ pub use self::optimized::encode_jpeg_baseline_optimized;
 use self::planning::{checked_cpu_encode_capacity_plan, component_plane_capacity_bytes};
 use self::profile::{emit_cpu_encode_profile, JpegEncodeProfile};
 use self::sample_planes::{component_planes, validate_sample_layout};
-use self::transform::cosine_table;
 
 /// Encode grayscale or RGB samples as a baseline JPEG codestream.
 ///
@@ -83,7 +82,6 @@ fn encode_jpeg_baseline_cpu(
             actual: samples.data_len(),
         });
     }
-    let cosine = cosine_table();
     if let Some(start) = setup_start {
         profile.setup = start.elapsed();
     }
@@ -111,7 +109,6 @@ fn encode_jpeg_baseline_cpu(
         &tables.q_chroma,
         [&tables.huff_dc_luma, &tables.huff_dc_chroma],
         [&tables.huff_ac_luma, &tables.huff_ac_chroma],
-        cosine,
         options.restart_interval,
         capacity_plan.entropy_capacity,
         plane_live_bytes,

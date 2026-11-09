@@ -198,15 +198,18 @@ fn optimized_huffman_keeps_pixels_and_shrinks_output() {
     let gray = patterned_gray8(width, height);
     // Pinned codestream hashes. Their DHT segments and entropy-coded data
     // were checked equal to `jpegtran -optimize -restart <N>B` (libjpeg-turbo
-    // 3.1.4.1) applied to the standard-table encode of the same samples.
+    // 3.1.3) applied to the standard-table encode of the same samples, after
+    // the encoder adopted the integer forward DCT of
+    // `j2k_codec_math::jpeg::fdct`.
     let cases = [
         (JpegSubsampling::Gray, None, 0xb411_8f53_ae46_300d_u64),
         (JpegSubsampling::Gray, Some(3), 0x824b_be39_a63d_cea2),
-        (JpegSubsampling::Ybr444, None, 0xdc2c_3a21_bc04_7222),
-        (JpegSubsampling::Ybr422, Some(2), 0xf43b_3f2e_98e9_44fe),
-        (JpegSubsampling::Ybr420, None, 0xe0c4_9d36_dc95_70a3),
-        (JpegSubsampling::Ybr420, Some(5), 0x4e12_01b1_11db_f845),
+        (JpegSubsampling::Ybr444, None, 0xb865_e7b1_0ce3_2da2),
+        (JpegSubsampling::Ybr422, Some(2), 0x10d1_13f9_13dc_8069),
+        (JpegSubsampling::Ybr420, None, 0x3e0f_3daa_28c4_8563),
+        (JpegSubsampling::Ybr420, Some(5), 0x4234_561f_a09c_c5c5),
     ];
+    let mut hashes = Vec::new();
     for (subsampling, restart_interval, golden) in cases {
         let (samples, fmt) = if subsampling == JpegSubsampling::Gray {
             (
@@ -237,11 +240,7 @@ fn optimized_huffman_keeps_pixels_and_shrinks_output() {
         let optimized = encode_jpeg_baseline_optimized(samples, options).expect("optimized encode");
         let label = format!("{subsampling:?} restart {restart_interval:?}");
         assert_eq!(optimized.backend, JpegBackend::Cpu);
-        assert_eq!(
-            fnv1a64(&optimized.data),
-            golden,
-            "{label}: codestream changed"
-        );
+        hashes.push((fnv1a64(&optimized.data), golden));
         assert_eq!(
             decode(&optimized.data, fmt),
             decode(&standard.data, fmt),
@@ -265,6 +264,8 @@ fn optimized_huffman_keeps_pixels_and_shrinks_output() {
         };
         assert_independent_decoder_accepts(&optimized.data, width, height, expected_format);
     }
+    let (actual, expected): (Vec<_>, Vec<_>) = hashes.into_iter().unzip();
+    assert_eq!(actual, expected, "optimized codestreams changed");
 }
 
 #[test]

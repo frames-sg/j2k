@@ -55,13 +55,25 @@ const Q16_QUANTIZATION_GUARD_Q14: [i32; 64] = [
 
 // Map each inclusive distance guard G to the unsigned magnitude threshold
 // used after shifting the low Q14 fraction into the signed high bits. Every
-// retained guard is in 0..=9. For G=0, wrapping the shift preserves the
+// retained guard is in 0..=10. For G=0, wrapping the shift preserves the
 // unsigned half-center threshold 0x8000_0000 in its i32 storage.
+//
+// Off the rational basis, one more Q14 unit covers the canonical integer
+// transform's 2^-20 error: since G = floor(bound * 2^14), an unguarded
+// distance d >= G + 2 leaves the real value more than 2^-14 from the tie, so
+// the Q16 result rounds as the canonical transform does. On the rational
+// basis the canonical transform is exact and the guard stays unchanged.
 const fn q16_guard_magnitude_thresholds() -> [i32; 64] {
     let mut thresholds = [0i32; 64];
     let mut natural = 0;
     while natural < 64 {
-        thresholds[natural] = ((1i32 << 13) - Q16_QUANTIZATION_GUARD_Q14[natural]).wrapping_shl(18);
+        let guard = Q16_QUANTIZATION_GUARD_Q14[natural]
+            + if super::has_rational_basis(natural) {
+                0
+            } else {
+                1
+            };
+        thresholds[natural] = ((1i32 << 13) - guard).wrapping_shl(18);
         natural += 1;
     }
     thresholds
