@@ -118,6 +118,46 @@ For `wsi_rs.CompressedTile` values, pass each tile's `data` and
 `color_transform` to an `ImageRequest`; this preserves the reader's effective
 photometric interpretation even when a JPEG header is ambiguous.
 
+## Image-server metadata (IIIF)
+
+`inspect(data)` also reports what an image server's IIIF `info.json` needs:
+`resolution_levels`; `max_reduction`, the deepest reduction every tile and
+component supports (tile-part COD/COC markers can lower it below the main
+header's `decomposition_levels`, so use it, not the COD value, for scale
+factors); `tile_width`/`tile_height` and the `tiles_x`/`tiles_y` grid;
+`image_x0`/`image_y0` and `tile_x0`/`tile_y0`, the reference-grid origins; and
+the main-header `quality_layers`, `progression_order` and
+`code_block_width`/`code_block_height`. Tile headers are parsed for
+`max_reduction`, but no pixels are decoded.
+
+Scale factors are powers of two up to `2**max_reduction`. Take each size from
+`plan_region`, which reports the exact output of a reduced decode, including
+images whose origin moves the reduced grid:
+
+```python
+info = j2k.inspect(data)
+decoder = j2k.Decoder()
+reductions = range(info["max_reduction"] + 1)
+sizes = []
+for reduction in reversed(reductions):
+    plan = decoder.plan_region(data, reduction=reduction)
+    sizes.append({"width": plan["width"], "height": plan["height"]})
+info_json = {
+    "@context": "http://iiif.io/api/image/3/context.json",
+    "id": identifier,
+    "type": "ImageService3",
+    "protocol": "http://iiif.io/api/image",
+    "profile": "level1",
+    "width": info["width"],
+    "height": info["height"],
+    "tiles": [{"width": info["tile_width"], "height": info["tile_height"],
+               "scaleFactors": [2**reduction for reduction in reductions]}],
+    "sizes": sizes,
+}
+```
+
+`tests/test_iiif.py` runs this construction against tiled and offset images.
+
 ## Batching, labels, and reuse
 
 ```python

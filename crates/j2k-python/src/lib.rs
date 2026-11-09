@@ -50,16 +50,52 @@ fn owned_capacity<T>(capacity: usize) -> PyResult<Vec<T>> {
 }
 
 /// Inspect JPEG 2000/HTJ2K metadata without decoding pixels.
+///
+/// Tile headers are parsed for `max_reduction`, the reduction every tile and
+/// component supports; coding-style keys report the main-header defaults.
 #[pyfunction]
 fn inspect<'py>(py: Python<'py>, data: &Bound<'_, PyBytes>) -> PyResult<Bound<'py, PyDict>> {
     let bytes = data.as_bytes();
-    let support = py.detach(|| j2k::J2kDecoder::inspect_support(bytes).map_err(value_error))?;
+    let (support, grid, style, max_reduction) = py
+        .detach(|| {
+            let support = j2k::J2kDecoder::inspect_support(bytes)?;
+            let grid = j2k::J2kDecoder::inspect_reference_grid(bytes)?;
+            let style = j2k::J2kDecoder::inspect_coding_style(bytes)?;
+            let max_reduction = j2k::J2kDecoder::new(bytes)?.max_reduction_levels()?;
+            Ok::<_, j2k::J2kError>((support, grid, style, max_reduction))
+        })
+        .map_err(value_error)?;
     let out = PyDict::new(py);
     out.set_item("width", support.info.dimensions.0)?;
     out.set_item("height", support.info.dimensions.1)?;
     out.set_item("components", support.info.components)?;
     out.set_item("bit_depth", support.info.bit_depth)?;
     out.set_item("signed", support.has_signed_components())?;
+    out.set_item("resolution_levels", support.info.resolution_levels)?;
+    out.set_item("decomposition_levels", style.decomposition_levels)?;
+    out.set_item("max_reduction", max_reduction)?;
+    out.set_item("image_x0", grid.image_origin.0)?;
+    out.set_item("image_y0", grid.image_origin.1)?;
+    out.set_item("tile_x0", grid.tile_origin.0)?;
+    out.set_item("tile_y0", grid.tile_origin.1)?;
+    out.set_item("tile_width", grid.tile_size.0)?;
+    out.set_item("tile_height", grid.tile_size.1)?;
+    let tiles = support.info.tile_layout;
+    out.set_item("tiles_x", tiles.map(|layout| layout.tiles_x))?;
+    out.set_item("tiles_y", tiles.map(|layout| layout.tiles_y))?;
+    out.set_item("quality_layers", style.quality_layers)?;
+    out.set_item(
+        "progression_order",
+        match style.progression_order {
+            j2k::J2kProgressionOrder::Lrcp => "lrcp",
+            j2k::J2kProgressionOrder::Rlcp => "rlcp",
+            j2k::J2kProgressionOrder::Rpcl => "rpcl",
+            j2k::J2kProgressionOrder::Pcrl => "pcrl",
+            j2k::J2kProgressionOrder::Cprl => "cprl",
+        },
+    )?;
+    out.set_item("code_block_width", style.code_block_size.0)?;
+    out.set_item("code_block_height", style.code_block_size.1)?;
     out.set_item(
         "component_precision",
         support

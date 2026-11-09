@@ -100,6 +100,12 @@ class WaveletImage:
 # Keys include color_specification ("none", "enumerated", "icc", "unknown": the
 # first COLR box, which decoding applies), enumerated_colorspace (its EnumCS, or
 # None), and icc_profile (the applied profile's bytes, or None).
+# Geometry for image servers: resolution_levels, max_reduction (the reduction
+# every tile and component supports, which tile COD/COC markers can lower),
+# image_x0/image_y0 and tile_x0/tile_y0 (reference-grid origins),
+# tile_width/tile_height, tiles_x/tiles_y. Main-header COD defaults:
+# decomposition_levels, quality_layers, progression_order (a Progression), and
+# code_block_width/code_block_height.
 def inspect(data: bytes) -> dict[str, Any]: ...
 def decode_wavelets(data: bytes, *, tiles: list[int] | None = None, components: list[int] | None = None, resolutions: list[int] | None = None, bands: list[Literal["LL", "HL", "LH", "HH"]] | None = None) -> WaveletImage: ...
 
