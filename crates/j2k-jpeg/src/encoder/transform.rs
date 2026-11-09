@@ -811,10 +811,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the corpus covers bounded eight-bit samples and quantized coefficients"
-    )]
     fn every_quantizing_path_matches_the_canonical_transform_including_ties() {
         let mut seed = 17u32;
         for case in 0..1414 {
@@ -896,8 +892,9 @@ mod tests {
                         .map(|sample| sample * sample)
                         .sum::<u32>();
                     let energy = 64 * square_sum - sum * sum;
-                    let expected =
-                        (energy < divisors.ac_zero_energy_threshold).then_some(sum as i16 - 8_192);
+                    let centered =
+                        i16::try_from(sum).expect("64 eight-bit samples fit i16") - 8_192;
+                    let expected = (energy < divisors.ac_zero_energy_threshold).then_some(centered);
                     assert_eq!(
                         neon::ac_zero_energy_centered_sum(
                             neon,
