@@ -464,9 +464,8 @@ fn canonical_reference_bands(
 
     assert_eq!(blocks.len(), block_cols * block_rows * 64);
     let mut plane = vec![0.0f32; width * height];
-    for (block_index, block) in blocks.chunks_exact(64).enumerate() {
-        let coefficients: [f32; 64] = block.try_into().expect("64 coefficients");
-        let samples = idct8x8::<HostArithmetic>(&coefficients);
+    for (block_index, coefficients) in blocks.as_chunks::<64>().0.iter().enumerate() {
+        let samples = idct8x8::<HostArithmetic>(coefficients);
         let (block_x, block_y) = (block_index % block_cols, block_index / block_cols);
         for local_y in 0..8 {
             for local_x in 0..8 {
