@@ -30,3 +30,5 @@ pub mod generated {
 pub mod jpeg;
 /// JPEG 2000 multi-component transform constants.
 pub mod mct;
+/// Canonical binary32 arithmetic for the JPEG-to-HTJ2K 9/7 transcode.
+pub mod transcode97;
