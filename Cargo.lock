@@ -2496,7 +2496,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "j2k"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "criterion",
  "j2k-alloc-probe",
@@ -2512,7 +2512,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-alloc-probe"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "j2k-native",
  "j2k-profile",
@@ -2522,7 +2522,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-c"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "j2k",
  "j2k-test-support",
@@ -2531,7 +2531,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-cli"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "j2k",
  "j2k-jpeg",
@@ -2541,7 +2541,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-codec-math"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "j2k-types",
 ]
@@ -2562,7 +2562,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-core"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "libc",
  "thiserror 2.0.18",
@@ -2571,7 +2571,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-cuda"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "criterion",
  "j2k",
@@ -2588,11 +2588,11 @@ dependencies = [
 
 [[package]]
 name = "j2k-cuda-build-support"
-version = "0.13.2"
+version = "0.14.0"
 
 [[package]]
 name = "j2k-cuda-j2k-engine"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "criterion",
  "j2k-codec-math",
@@ -2606,7 +2606,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-cuda-jpeg-engine"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "j2k-codec-math",
  "j2k-core",
@@ -2617,7 +2617,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-cuda-runtime"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "j2k-codec-math",
  "j2k-core",
@@ -2629,7 +2629,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-cuda-transcode-engine"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "j2k-core",
  "j2k-cuda-build-support",
@@ -2639,7 +2639,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-jpeg"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "criterion",
  "fearless_simd",
@@ -2658,7 +2658,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-jpeg-cuda"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "criterion",
  "j2k-core",
@@ -2674,7 +2674,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-jpeg-metal"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "criterion",
  "dispatch2",
@@ -2694,7 +2694,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-metal"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "cc",
  "criterion",
@@ -2715,7 +2715,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-metal-support"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "j2k-core",
  "j2k-test-support",
@@ -2727,7 +2727,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-ml"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "burn-core",
  "burn-cubecl",
@@ -2752,7 +2752,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-mpsgraph"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "j2k",
  "j2k-core",
@@ -2771,7 +2771,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-mpsgraph-support"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "block2",
  "objc2",
@@ -2782,7 +2782,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-native"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "bytemuck",
  "criterion",
@@ -2798,11 +2798,11 @@ dependencies = [
 
 [[package]]
 name = "j2k-profile"
-version = "0.13.2"
+version = "0.14.0"
 
 [[package]]
 name = "j2k-python"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "j2k",
  "j2k-cuda",
@@ -2819,7 +2819,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-t803"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "image",
  "j2k",
@@ -2842,7 +2842,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-test-support"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "j2k-core",
  "j2k-native",
@@ -2853,7 +2853,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-tilecodec"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "criterion",
  "flate2",
@@ -2865,7 +2865,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-transcode"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "criterion",
  "j2k",
@@ -2882,7 +2882,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-transcode-cuda"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "criterion",
  "j2k-core",
@@ -2899,7 +2899,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-transcode-metal"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "criterion",
  "j2k-codec-math",
@@ -2921,7 +2921,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-transcode-test-support"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "j2k-native",
  "j2k-transcode",
@@ -2930,7 +2930,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-types"
-version = "0.13.2"
+version = "0.14.0"
 
 [[package]]
 name = "jni-sys"

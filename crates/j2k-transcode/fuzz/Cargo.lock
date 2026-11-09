@@ -15,6 +15,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
+name = "bytemuck"
+version = "1.25.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95832e849adfb21180ccb6826a99da14e5d266ae5c2e668e1602cf234f153797"
+
+[[package]]
 name = "cc"
 version = "1.2.65"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -89,25 +95,26 @@ dependencies = [
 
 [[package]]
 name = "j2k"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "j2k-core",
  "j2k-native",
  "j2k-types",
  "moxcms",
+ "rayon",
  "thiserror",
 ]
 
 [[package]]
 name = "j2k-codec-math"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "j2k-types",
 ]
 
 [[package]]
 name = "j2k-core"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "libc",
  "thiserror",
@@ -116,7 +123,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-jpeg"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "fearless_simd",
  "j2k-codec-math",
@@ -129,8 +136,9 @@ dependencies = [
 
 [[package]]
 name = "j2k-native"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
+ "bytemuck",
  "fearless_simd",
  "j2k-codec-math",
  "j2k-profile",
@@ -141,11 +149,11 @@ dependencies = [
 
 [[package]]
 name = "j2k-profile"
-version = "0.13.2"
+version = "0.14.0"
 
 [[package]]
 name = "j2k-transcode"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "j2k",
  "j2k-codec-math",
@@ -167,7 +175,7 @@ dependencies = [
 
 [[package]]
 name = "j2k-types"
-version = "0.13.2"
+version = "0.14.0"
 
 [[package]]
 name = "jobserver"

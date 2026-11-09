@@ -8,8 +8,8 @@ used only for shapes where it was tested and measured faster.
 
 ## Release status
 
-Development is staged for `0.13.2`, with the public API compared against
-`v0.13.1` in its [API review](release-evidence/public-api/public-api-review-0.13.2.yml).
+Development is staged for `0.14.0`, with the public API compared against
+`v0.13.1` in its [API review](release-evidence/public-api/public-api-review-0.14.0.yml).
 It has not been released; the published release remains `0.13.1`.
 
 Version `0.13.1` is published. Its
@@ -506,7 +506,7 @@ other item.
 Every `cargo xtask semver` run generates both passes, compares them with the
 committed files, and checks the added/removed fingerprints and the hidden-item
 count against
-`xtask/release-evidence/public-api/public-api-review-0.13.2.yml`. A package with
+`xtask/release-evidence/public-api/public-api-review-0.14.0.yml`. A package with
 hidden items must give a reason for them in that file.
 
 Any removed item must be listed in the review file with its package, a summary,
@@ -528,7 +528,7 @@ item list into the docs.
 
 | Release | Compared with | Report |
 | --- | --- | --- |
-| 0.13.2 (unreleased) | 0.13.1 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.13.2.md), [review](release-evidence/public-api/public-api-review-0.13.2.yml) |
+| 0.14.0 (unreleased) | 0.13.1 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.14.0.md), [review](release-evidence/public-api/public-api-review-0.14.0.yml) |
 | 0.13.1 | 0.13.0 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.13.1.md), [review](release-evidence/public-api/public-api-review-0.13.1.yml) |
 | 0.13.0 | 0.12.0 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.13.0.md), [review](release-evidence/public-api/public-api-review-0.13.0.yml) |
 | 0.12.0 | 0.11.3 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.12.0.md), [review](release-evidence/public-api/public-api-review-0.12.0.yml) |

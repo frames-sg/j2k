@@ -76,7 +76,7 @@ fn committed_candidate_semver_inputs_match_the_pinned_workspace_contract() {
     assert!(hidden.starts_with("# J2K 1.0 Rustdoc-Hidden Public API Snapshot"));
 
     let versions = workspace_package_versions().expect("workspace package versions");
-    assert_eq!(versions.get("j2k").map(String::as_str), Some("0.13.2"));
+    assert_eq!(versions.get("j2k").map(String::as_str), Some("0.14.0"));
     assert!(versions.keys().collect::<BTreeSet<_>>().len() > 10);
 }
 
@@ -91,11 +91,25 @@ fn baseline_revision_validation_accepts_only_the_pinned_commit() {
 #[test]
 fn committed_review_config_covers_the_exact_release_scope() {
     let config = load_review_config().expect("load committed API review config");
-    assert_eq!(config.candidate_version, "0.13.2");
-    assert!(
-        config.break_ledger.is_empty(),
-        "patch release must not carry a consumed breaking-change ledger"
+    assert_eq!(config.candidate_version, "0.14.0");
+    // A minor release may consume reviewed source breaks; 0.14.0 carries only
+    // the Box<Self> respelling of eight CUDA error fields.
+    let [entry] = config.break_ledger.as_slice() else {
+        panic!(
+            "0.14.0 records exactly one reviewed break: {:?}",
+            config.break_ledger
+        );
+    };
+    assert_eq!(entry.id, "cuda-box-self-spelling");
+    assert_eq!(entry.kind, super::super::review::BreakKind::Source);
+    assert_eq!(
+        entry.packages,
+        ["j2k-cuda", "j2k-cuda-runtime", "j2k-jpeg-cuda"]
+            .map(str::to_string)
+            .into_iter()
+            .collect::<BTreeSet<_>>()
     );
+    assert_eq!(entry.removed_items.len(), 8);
     let expected_packages = SEMVER_BASELINE_PACKAGES
         .iter()
         .chain(SEMVER_NEW_PACKAGES)

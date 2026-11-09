@@ -9,6 +9,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3bc62ac97cc33321f50863d514c3bc38a453947a8f9e781137e47c7401020aed"
 
 [[package]]
+name = "bytemuck"
+version = "1.25.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95832e849adfb21180ccb6826a99da14e5d266ae5c2e668e1602cf234f153797"
+
+[[package]]
 name = "cc"
 version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -82,15 +88,16 @@ dependencies = [
 
 [[package]]
 name = "j2k-codec-math"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "j2k-types",
 ]
 
 [[package]]
 name = "j2k-native"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
+ "bytemuck",
  "fearless_simd",
  "j2k-codec-math",
  "j2k-profile",
@@ -109,11 +116,11 @@ dependencies = [
 
 [[package]]
 name = "j2k-profile"
-version = "0.13.2"
+version = "0.14.0"
 
 [[package]]
 name = "j2k-types"
-version = "0.13.2"
+version = "0.14.0"
 
 [[package]]
 name = "jobserver"

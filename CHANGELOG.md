@@ -5,7 +5,7 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
-Staged workspace version: `0.13.2`.
+Staged workspace version: `0.14.0`.
 
 - Exact-operation planning for bindings: `CpuBatchDecoder::plan_operations`
   plans exact operations as `decode_operations` prepares them and returns each
