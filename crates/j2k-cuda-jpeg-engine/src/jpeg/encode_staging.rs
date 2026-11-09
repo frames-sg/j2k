@@ -5,7 +5,10 @@
 use super::CudaJpegBaselineEncodeParams;
 use crate::{error::CudaError, kernels::CudaLaunchGeometry};
 
-const PRECOMPUTE_THREADS: u32 = 128;
+/// Threads per precompute CTA. The kernel's `PRECOMPUTE_LANES` must match:
+/// one CTA computes one MCU, with one thread per sample and per coefficient
+/// of each block.
+const PRECOMPUTE_THREADS: u32 = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct CudaJpegStagedEncodePlan {
@@ -79,7 +82,7 @@ pub(super) fn checked_staged_encode_plan(
             len: coefficient_count,
         })?;
     let precompute_geometry = CudaLaunchGeometry::new(
-        (total_mcus.div_ceil(PRECOMPUTE_THREADS), 1, 1),
+        (total_mcus, 1, 1),
         (PRECOMPUTE_THREADS, 1, 1),
     )
     .ok_or_else(|| CudaError::InvalidArgument {
@@ -118,15 +121,15 @@ mod tests {
     }
 
     #[test]
-    fn staged_plan_counts_one_precompute_work_item_per_mcu_and_exact_scratch() {
+    fn staged_plan_launches_one_64_thread_cta_per_mcu_and_exact_scratch() {
         let plan = checked_staged_encode_plan(&[params(3, 2, 3), params(1, 1, 2)])
             .expect("checked staged encode plan");
 
         // First tile: 6 MCUs * 4 blocks. Second: 2 MCUs * 1 block.
         assert_eq!(plan.total_mcus, 8);
         assert_eq!(plan.coefficient_bytes, (6 * 4 + 2) * 64 * 4);
-        assert_eq!(plan.precompute_geometry.grid(), (1, 1, 1));
-        assert_eq!(plan.precompute_geometry.block(), (128, 1, 1));
+        assert_eq!(plan.precompute_geometry.grid(), (8, 1, 1));
+        assert_eq!(plan.precompute_geometry.block(), (64, 1, 1));
     }
 
     #[test]

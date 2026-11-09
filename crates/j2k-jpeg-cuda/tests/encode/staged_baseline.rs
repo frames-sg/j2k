@@ -17,8 +17,12 @@ const EXACT_MATRIX_INPUT_HASH_DOMAIN: &[u8] = b"P18-CUDA-STAGED-JPEG-EXACT-INPUT
 const EXACT_MATRIX_HASH_DOMAIN: &[u8] = b"P18-CUDA-STAGED-JPEG-EXACT-MATRIX\0";
 const EXACT_MATRIX_INPUT_SHA256: &str =
     "5fbd44a6890bfe562d66709eda023f0b5b8f942f0e113824399cfd39f06fe570";
+/// The encode kernel's forward DCT is the integer definition of
+/// `j2k_codec_math::jpeg::fdct`. This digest changed from `99b76d5a...` when
+/// the f32 transform, whose rounding ties differed from the CPU encoder's,
+/// became the shared integer one.
 const EXACT_MATRIX_OUTPUT_SHA256: &str =
-    "99b76d5a103ed958e4a4cdef80fb8e48cd8f2c6e28ababbf4ff787fea67ab314";
+    "9142035809fa5d46b7ea18277e0ed828e65d30e0b8d30c4428ec9ddb37ef8ade";
 
 #[test]
 fn rtx_cuda_promoted_staged_baseline_encode_is_exact_across_matrix_when_required() {

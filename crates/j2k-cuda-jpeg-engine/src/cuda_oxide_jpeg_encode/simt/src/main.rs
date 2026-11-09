@@ -11,8 +11,7 @@
     clippy::too_many_arguments,
     reason = "flat device helpers mirror CUDA ABI buffers and launch metadata"
 )]
-
-use cuda_device::{kernel, thread};
+use cuda_device::{kernel, thread, SharedArray};
 use cuda_host::cuda_module;
 
 include!("../../../cuda_oxide_simt_prelude.rs");
@@ -25,80 +24,6 @@ const JPEG_BASELINE_ENCODE_STATUS_MISSING_HUFFMAN: u32 = 2;
 const JPEG_BASELINE_ENCODE_STATUS_INVALID_PARAMS: u32 = 3;
 
 const ZIGZAG: [u8; 64] = j2k_codec_math::jpeg::ZIGZAG;
-
-const COS_TABLE: [[f32; 8]; 8] = [
-    [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
-    [
-        0.98078525,
-        0.8314696,
-        0.55557024,
-        0.19509032,
-        -0.19509032,
-        -0.55557024,
-        -0.8314696,
-        -0.98078525,
-    ],
-    [
-        0.9238795,
-        0.38268343,
-        -0.38268343,
-        -0.9238795,
-        -0.9238795,
-        -0.38268343,
-        0.38268343,
-        0.9238795,
-    ],
-    [
-        0.8314696,
-        -0.19509032,
-        -0.98078525,
-        -0.55557024,
-        0.55557024,
-        0.98078525,
-        0.19509032,
-        -0.8314696,
-    ],
-    [
-        0.70710677,
-        -0.70710677,
-        -0.70710677,
-        0.70710677,
-        0.70710677,
-        -0.70710677,
-        -0.70710677,
-        0.70710677,
-    ],
-    [
-        0.55557024,
-        -0.98078525,
-        0.19509032,
-        0.8314696,
-        -0.8314696,
-        -0.19509032,
-        0.98078525,
-        -0.55557024,
-    ],
-    [
-        0.38268343,
-        -0.9238795,
-        0.9238795,
-        -0.38268343,
-        -0.38268343,
-        0.9238795,
-        -0.9238795,
-        0.38268343,
-    ],
-    [
-        0.19509032,
-        -0.55557024,
-        0.8314696,
-        -0.98078525,
-        0.98078525,
-        -0.8314696,
-        0.55557024,
-        -0.19509032,
-    ],
-];
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -163,15 +88,6 @@ fn clamp_u8(value: i32) -> u8 {
         255
     } else {
         value as u8
-    }
-}
-
-#[inline(always)]
-fn round_to_i32(value: f32) -> i32 {
-    if value >= 0.0 {
-        (value + 0.5) as i32
-    } else {
-        (value - 0.5) as i32
     }
 }
 
@@ -274,7 +190,10 @@ fn jpeg_encode_sample_component(
     )
 }
 
-fn jpeg_encode_sample_block(
+/// Sample `(x, y)` of block `(block_x, block_y)` of `component` in MCU
+/// `(mcu_x, mcu_y)`: the frame sample for luma and unsubsampled components,
+/// and the truncated mean of its subsampling cell for chroma.
+fn jpeg_encode_block_sample(
     input: *const u8,
     params: J2kJpegBaselineEncodeParams,
     component: u32,
@@ -282,79 +201,37 @@ fn jpeg_encode_sample_block(
     mcu_y: u32,
     block_x: u32,
     block_y: u32,
-    block: &mut [u8; 64],
-) {
-    let comp_h = component_h(params, component);
-    let comp_v = component_v(params, component);
-    let x_scale = params.max_h / comp_h;
-    let y_scale = params.max_v / comp_v;
+    x: u32,
+    y: u32,
+) -> u8 {
     let mcu_origin_x = mcu_x * params.max_h * 8;
     let mcu_origin_y = mcu_y * params.max_v * 8;
-
-    let mut y = 0;
-    while y < 8 {
-        let mut x = 0;
-        while x < 8 {
-            let value = if component == 0 || params.components == 1 {
-                let sx = min_u32(mcu_origin_x + block_x * 8 + x, params.output_width - 1);
-                let sy = min_u32(mcu_origin_y + block_y * 8 + y, params.output_height - 1);
-                jpeg_encode_sample_component(input, params, component, sx, sy)
-            } else {
-                let mut sum = 0u32;
-                let mut dy = 0;
-                while dy < y_scale {
-                    let mut dx = 0;
-                    while dx < x_scale {
-                        let sx = min_u32(
-                            mcu_origin_x + (block_x * 8 + x) * x_scale + dx,
-                            params.output_width - 1,
-                        );
-                        let sy = min_u32(
-                            mcu_origin_y + (block_y * 8 + y) * y_scale + dy,
-                            params.output_height - 1,
-                        );
-                        sum += jpeg_encode_sample_component(input, params, component, sx, sy)
-                            as u32;
-                        dx += 1;
-                    }
-                    dy += 1;
-                }
-                (sum / (x_scale * y_scale)) as u8
-            };
-            block[(y * 8 + x) as usize] = value;
-            x += 1;
-        }
-        y += 1;
+    if component == 0 || params.components == 1 {
+        let sx = min_u32(mcu_origin_x + block_x * 8 + x, params.output_width - 1);
+        let sy = min_u32(mcu_origin_y + block_y * 8 + y, params.output_height - 1);
+        return jpeg_encode_sample_component(input, params, component, sx, sy);
     }
-}
-
-fn jpeg_encode_fdct_quantize(block: &[u8; 64], quant: *const u8, coeffs: &mut [i32; 64]) {
-    const INV_SQRT_2: f32 = 0.70710677;
-    let mut v = 0;
-    while v < 8 {
-        let mut u = 0;
-        while u < 8 {
-            let mut sum = 0.0f32;
-            let mut y = 0;
-            while y < 8 {
-                let mut x = 0;
-                while x < 8 {
-                    let sample = block[(y * 8 + x) as usize] as f32 - 128.0;
-                    sum += sample * COS_TABLE[u as usize][x as usize] * COS_TABLE[v as usize][y as usize];
-                    x += 1;
-                }
-                y += 1;
-            }
-            let cu = if u == 0 { INV_SQRT_2 } else { 1.0 };
-            let cv = if v == 0 { INV_SQRT_2 } else { 1.0 };
-            let natural = v * 8 + u;
-            let transformed = 0.25 * cu * cv * sum;
-            let divisor = load_u8(quant, natural) as f32;
-            coeffs[natural as usize] = round_to_i32(transformed / divisor);
-            u += 1;
+    let x_scale = params.max_h / component_h(params, component);
+    let y_scale = params.max_v / component_v(params, component);
+    let mut sum = 0u32;
+    let mut dy = 0;
+    while dy < y_scale {
+        let mut dx = 0;
+        while dx < x_scale {
+            let sx = min_u32(
+                mcu_origin_x + (block_x * 8 + x) * x_scale + dx,
+                params.output_width - 1,
+            );
+            let sy = min_u32(
+                mcu_origin_y + (block_y * 8 + y) * y_scale + dy,
+                params.output_height - 1,
+            );
+            sum += jpeg_encode_sample_component(input, params, component, sx, sy) as u32;
+            dx += 1;
         }
-        v += 1;
+        dy += 1;
     }
+    (sum / (x_scale * y_scale)) as u8
 }
 
 fn jpeg_encode_push_raw_byte(
@@ -569,7 +446,18 @@ fn jpeg_encode_blocks_per_mcu(params: J2kJpegBaselineEncodeParams) -> u32 {
     blocks
 }
 
-fn jpeg_encode_precompute_one_mcu(
+/// Threads per precompute CTA: one per sample and per coefficient of a block.
+/// The host launches one CTA of exactly this many threads per MCU.
+const PRECOMPUTE_LANES: u32 = 64;
+
+/// The quantized coefficients of one MCU, computed by the CTA's
+/// [`PRECOMPUTE_LANES`] threads one block at a time. Lane `lane` samples
+/// position `lane` of the block into the shared `block`, and after a barrier
+/// computes natural-order coefficient `lane` with
+/// `j2k_codec_math::jpeg::fdct::fdct_quantize_coefficient`, the integer
+/// definition every baseline encoder backend shares. Every lane runs the same
+/// block loop, so every barrier is reached by the whole CTA.
+fn jpeg_encode_precompute_mcu_lane(
     input: *const u8,
     coefficients: *mut i32,
     params: J2kJpegBaselineEncodeParams,
@@ -577,49 +465,43 @@ fn jpeg_encode_precompute_one_mcu(
     coefficient_block_base: u32,
     q_luma: *const u8,
     q_chroma: *const u8,
+    block: *mut u8,
+    lane: u32,
 ) {
     let blocks_per_mcu = jpeg_encode_blocks_per_mcu(params);
     let mcu_x = local_mcu % params.mcus_per_row;
     let mcu_y = local_mcu / params.mcus_per_row;
+    let (x, y) = (lane % 8, lane / 8);
     let mut block_index = 0;
     let mut component = 0;
     while component < params.components {
         let h = component_h(params, component);
         let v = component_v(params, component);
+        let quantizer = load_u8(if component == 0 { q_luma } else { q_chroma }, lane);
         let mut block_y = 0;
         while block_y < v {
             let mut block_x = 0;
             while block_x < h {
-                let mut block = [0u8; 64];
-                let mut block_coefficients = [0i32; 64];
-                jpeg_encode_sample_block(
-                    input,
-                    params,
-                    component,
-                    mcu_x,
-                    mcu_y,
-                    block_x,
-                    block_y,
-                    &mut block,
+                let sample = jpeg_encode_block_sample(
+                    input, params, component, mcu_x, mcu_y, block_x, block_y, x, y,
                 );
-                jpeg_encode_fdct_quantize(
-                    &block,
-                    if component == 0 { q_luma } else { q_chroma },
-                    &mut block_coefficients,
+                simt_store(block, lane as usize, sample);
+                thread::sync_threads();
+                let samples = unsafe {
+                    // SAFETY: `block` is the CTA's 64-byte shared array, and the
+                    // barrier above completed every lane's store into it.
+                    &*block.cast_const().cast::<[u8; 64]>()
+                };
+                let coefficient = j2k_codec_math::jpeg::fdct::fdct_quantize_coefficient(
+                    samples,
+                    quantizer,
+                    lane as usize,
                 );
-                let destination = (coefficient_block_base
-                    + local_mcu * blocks_per_mcu
-                    + block_index)
-                    * 64;
-                let mut index = 0;
-                while index < 64 {
-                    simt_store(
-                        coefficients,
-                        (destination + index) as usize,
-                        block_coefficients[index as usize],
-                    );
-                    index += 1;
-                }
+                let destination =
+                    (coefficient_block_base + local_mcu * blocks_per_mcu + block_index) * 64;
+                simt_store(coefficients, (destination + lane) as usize, coefficient as i32);
+                // No lane overwrites the block until every lane has read it.
+                thread::sync_threads();
                 block_index += 1;
                 block_x += 1;
             }
@@ -753,6 +635,10 @@ fn jpeg_encode_baseline_entropy_from_coeffs_one(
 mod kernels {
     use super::*;
 
+    #[expect(
+        static_mut_refs,
+        reason = "CUDA block-shared storage is exposed by SharedArray through this kernel only"
+    )]
     #[kernel]
     pub unsafe fn j2k_jpeg_encode_baseline_precompute_batch(
         input: *const u8,
@@ -763,11 +649,19 @@ mod kernels {
         tile_count: u32,
         total_mcus: u32,
     ) {
-        let raw_gid = thread::index_1d().get();
-        if raw_gid >= total_mcus as usize {
+        static mut BLOCK: SharedArray<u8, 64> = SharedArray::UNINIT;
+        // One CTA of `PRECOMPUTE_LANES` threads per MCU. Every exit below is
+        // uniform across the CTA, so no lane misses a barrier.
+        let lane = thread::threadIdx_x();
+        let mcu = thread::blockIdx_x();
+        if mcu >= total_mcus
+            || lane >= PRECOMPUTE_LANES
+            || thread::blockDim_x() != PRECOMPUTE_LANES
+        {
             return;
         }
-        let mut local_mcu = raw_gid as u32;
+        let block = unsafe { BLOCK.as_mut_ptr() };
+        let mut local_mcu = mcu;
         let mut tile_index = 0;
         let mut coefficient_block_base = 0;
         while tile_index < tile_count {
@@ -779,7 +673,7 @@ mod kernels {
                     // footprint remain inside the input allocation.
                     input.add(tile_params.input_offset_bytes as usize)
                 };
-                jpeg_encode_precompute_one_mcu(
+                jpeg_encode_precompute_mcu_lane(
                     tile_input,
                     coefficients,
                     tile_params,
@@ -787,6 +681,8 @@ mod kernels {
                     coefficient_block_base,
                     q_luma,
                     q_chroma,
+                    block,
+                    lane,
                 );
                 return;
             }
