@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! T.800 F-11 lifting evaluated at local positions, with absolute parity.
+//!
+//! Each lifting step is `target + coefficient * (left + right)` rounded once,
+//! as the CPU encoder's `mul_add` computes it, so every sample is bit-exact
+//! with the CPU transform whatever FMA contraction the PTX compiler applies.
 
 use crate::{
     constants::{
         J2K_FDWT97_ALPHA, J2K_FDWT97_BETA, J2K_FDWT97_DELTA, J2K_FDWT97_GAMMA,
         J2K_FDWT97_INV_KAPPA, J2K_FDWT97_KAPPA,
     },
-    helpers::load_f32,
+    helpers::{fused_mul_add_f32, load_f32},
 };
 
 #[inline(always)]
@@ -25,33 +29,41 @@ fn neighbors(index: u32, length: u32) -> (u32, u32) {
 #[inline(always)]
 fn high1(src: *const f32, base: u32, stride: u32, length: u32, index: u32) -> f32 {
     let (left, right) = neighbors(index, length);
-    load_f32(src, base + index * stride)
-        + J2K_FDWT97_ALPHA
-            * (load_f32(src, base + left * stride) + load_f32(src, base + right * stride))
+    fused_mul_add_f32(
+        J2K_FDWT97_ALPHA,
+        load_f32(src, base + left * stride) + load_f32(src, base + right * stride),
+        load_f32(src, base + index * stride),
+    )
 }
 
 #[inline(always)]
 fn low1(src: *const f32, base: u32, stride: u32, length: u32, index: u32) -> f32 {
     let (left, right) = neighbors(index, length);
-    load_f32(src, base + index * stride)
-        + J2K_FDWT97_BETA
-            * (high1(src, base, stride, length, left) + high1(src, base, stride, length, right))
+    fused_mul_add_f32(
+        J2K_FDWT97_BETA,
+        high1(src, base, stride, length, left) + high1(src, base, stride, length, right),
+        load_f32(src, base + index * stride),
+    )
 }
 
 #[inline(always)]
 fn high2(src: *const f32, base: u32, stride: u32, length: u32, index: u32) -> f32 {
     let (left, right) = neighbors(index, length);
-    high1(src, base, stride, length, index)
-        + J2K_FDWT97_GAMMA
-            * (low1(src, base, stride, length, left) + low1(src, base, stride, length, right))
+    fused_mul_add_f32(
+        J2K_FDWT97_GAMMA,
+        low1(src, base, stride, length, left) + low1(src, base, stride, length, right),
+        high1(src, base, stride, length, index),
+    )
 }
 
 #[inline(always)]
 fn low2(src: *const f32, base: u32, stride: u32, length: u32, index: u32) -> f32 {
     let (left, right) = neighbors(index, length);
-    low1(src, base, stride, length, index)
-        + J2K_FDWT97_DELTA
-            * (high2(src, base, stride, length, left) + high2(src, base, stride, length, right))
+    fused_mul_add_f32(
+        J2K_FDWT97_DELTA,
+        high2(src, base, stride, length, left) + high2(src, base, stride, length, right),
+        low1(src, base, stride, length, index),
+    )
 }
 
 #[inline(always)]

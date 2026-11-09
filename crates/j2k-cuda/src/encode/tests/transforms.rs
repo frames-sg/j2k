@@ -160,21 +160,18 @@ fn cuda_forward_ict_dispatches_when_runtime_required() {
 
 #[cfg(feature = "cuda-runtime")]
 #[test]
-fn cuda_forward_ict_matches_native_for_external_parity_fixture_when_required() {
+fn cuda_forward_ict_matches_native_for_parity_fixture_when_required() {
     if !j2k_test_support::cuda_runtime_gate(module_path!()) {
         return;
     }
-    let Some(path) = std::env::var_os("J2K_CUDA_LOSSY_PARITY_PNM") else {
-        return;
-    };
-    let image = j2k_test_support::read_pnm_image(path).expect("read parity PNM fixture");
-    assert_eq!(image.channels, 3, "ICT parity fixture must be RGB");
-    let num_pixels = usize::try_from(image.width)
+    let (pixels, width, height, channels) = super::lossy_parity_fixture();
+    assert_eq!(channels, 3, "ICT parity fixture must be RGB");
+    let num_pixels = usize::try_from(width)
         .expect("fixture width fits usize")
-        .checked_mul(usize::try_from(image.height).expect("fixture height fits usize"))
+        .checked_mul(usize::try_from(height).expect("fixture height fits usize"))
         .expect("fixture sample count");
-    let native_planes = try_deinterleave_reference(&image.pixels, num_pixels, 3, 8, false)
-        .expect("native deinterleave");
+    let native_planes =
+        try_deinterleave_reference(&pixels, num_pixels, 3, 8, false).expect("native deinterleave");
     let expected = forward_ict_reference(native_planes.clone());
     let mut actual = native_planes;
     let context = CudaContext::system_default().expect("CUDA context");
@@ -190,7 +187,7 @@ fn cuda_forward_ict_matches_native_for_external_parity_fixture_when_required() {
             .zip(expected_plane)
             .position(|(actual, expected)| actual.to_bits() != expected.to_bits())
         {
-            let pixel = &image.pixels[index * 3..index * 3 + 3];
+            let pixel = &pixels[index * 3..index * 3 + 3];
             panic!(
                 "forward ICT differs at component {component}, sample {index}, RGB={pixel:?}: CPU={:?} ({:x?}), CUDA={:?} ({:x?})",
                 expected.iter().map(|plane| plane[index]).collect::<Vec<_>>(),
@@ -210,29 +207,26 @@ fn cuda_forward_ict_matches_native_for_external_parity_fixture_when_required() {
 
 #[cfg(feature = "cuda-runtime")]
 #[test]
-fn cuda_forward_dwt97_matches_native_for_external_parity_fixture_when_required() {
+fn cuda_forward_dwt97_matches_native_for_parity_fixture_when_required() {
     if !j2k_test_support::cuda_runtime_gate(module_path!()) {
         return;
     }
-    let Some(path) = std::env::var_os("J2K_CUDA_LOSSY_PARITY_PNM") else {
-        return;
-    };
-    let image = j2k_test_support::read_pnm_image(path).expect("read parity PNM fixture");
-    assert_eq!(image.channels, 3, "DWT parity fixture must be RGB");
-    let num_pixels = usize::try_from(image.width)
+    let (pixels, width, height, channels) = super::lossy_parity_fixture();
+    assert_eq!(channels, 3, "DWT parity fixture must be RGB");
+    let num_pixels = usize::try_from(width)
         .expect("fixture width fits usize")
-        .checked_mul(usize::try_from(image.height).expect("fixture height fits usize"))
+        .checked_mul(usize::try_from(height).expect("fixture height fits usize"))
         .expect("fixture sample count");
-    let native_planes = try_deinterleave_reference(&image.pixels, num_pixels, 3, 8, false)
-        .expect("native deinterleave");
+    let native_planes =
+        try_deinterleave_reference(&pixels, num_pixels, 3, 8, false).expect("native deinterleave");
     let transformed = forward_ict_reference(native_planes);
     let context = CudaContext::system_default().expect("CUDA context");
 
     for (component, plane) in transformed.iter().enumerate() {
-        let expected = forward_dwt97_reference(plane, image.width, image.height, 3)
+        let expected = forward_dwt97_reference(plane, width, height, 3)
             .expect("native forward DWT 9/7 reference");
         let cuda = j2k_cuda_j2k_engine::J2kCudaEngine::new(&context)
-            .j2k_forward_dwt97(plane, image.width, image.height, 3)
+            .j2k_forward_dwt97(plane, width, height, 3)
             .expect("CUDA forward DWT 9/7");
         let actual = cuda_dwt97_output_to_j2k(&cuda).expect("reshape CUDA forward DWT 9/7");
 

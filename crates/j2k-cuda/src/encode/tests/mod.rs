@@ -123,3 +123,36 @@ fn encode_with_cuda_test_accelerator(request: CudaTestEncodeRequest<'_>) -> Enco
         accelerator,
     )
 }
+
+/// RGB8 fixture for the CUDA lossy parity tests: the PNM named by
+/// `J2K_CUDA_LOSSY_PARITY_PNM` when set, else a generated 640x480 image, so
+/// the tests always run under `J2K_REQUIRE_CUDA_RUNTIME`.
+#[cfg(feature = "cuda-runtime")]
+fn lossy_parity_fixture() -> (Vec<u8>, u32, u32, u16) {
+    const WIDTH: u32 = 640;
+    const HEIGHT: u32 = 480;
+    if let Some(path) = std::env::var_os("J2K_CUDA_LOSSY_PARITY_PNM") {
+        let image = j2k_test_support::read_pnm_image(path).expect("read parity PNM fixture");
+        return (
+            image.pixels,
+            image.width,
+            image.height,
+            u16::try_from(image.channels).expect("PNM component count fits u16"),
+        );
+    }
+    let pixels = (0u32..WIDTH * HEIGHT)
+        .flat_map(|index| {
+            let x = index % WIDTH;
+            let y = index / WIDTH;
+            [
+                u8::try_from((x * 17 + y * 31 + index / 7) & 0xFF)
+                    .expect("masked red sample fits u8"),
+                u8::try_from((x * 11 + y * 47 + index / 13) & 0xFF)
+                    .expect("masked green sample fits u8"),
+                u8::try_from((x * 43 + y * 5 + index / 29) & 0xFF)
+                    .expect("masked blue sample fits u8"),
+            ]
+        })
+        .collect();
+    (pixels, WIDTH, HEIGHT, 3)
+}
