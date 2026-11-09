@@ -7,6 +7,16 @@ and stale roadmap entries have been removed from the public documentation set.
 
 Staged workspace version: `0.13.2`.
 
+- Exact-operation planning for bindings: `CpuBatchDecoder::plan_operations`
+  plans exact operations as `decode_operations` prepares them and returns each
+  operation's output contract (`PreparedOperationPlan`) or the error its decode
+  would report; `J2kDecoder::native_region_decode_plan` and
+  `native_region_decode_plan_with_control` plan a region in native integer
+  samples and report the sample type, precision and signedness;
+  `EncodedImage::operation_source` constructs a source for exact operations;
+  and `J2kSrgb8Image::into_planar_data_with_control` stores sRGB channels as
+  planes within a working limit. The C and Python bindings plan through these
+  instead of re-deriving output geometry and native formats themselves.
 - CPU packetization of large single-layer tiles builds packet tag trees,
   forms packet headers and copies code-block bodies into the tile data on the
   pool. Output is unchanged.

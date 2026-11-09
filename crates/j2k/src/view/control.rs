@@ -167,6 +167,29 @@ impl super::J2kDecoder<'_> {
         result
     }
 
+    /// Plan native-sample region output under operation-specific limits and
+    /// cancellation, as [`Self::native_region_decode_plan`] plans it.
+    ///
+    /// The output limit is checked against tight packing.
+    /// # Errors
+    /// Returns the errors of [`Self::native_region_decode_plan`], or a
+    /// resource-limit or cancellation error.
+    pub fn native_region_decode_plan_with_control(
+        &mut self,
+        roi: crate::Rect,
+        levels: u8,
+        control: &J2kDecodeControl,
+    ) -> Result<super::J2kNativeRegionDecodePlan, J2kError> {
+        let result = self
+            .native_region_decode_plan_with_interpretation(roi, levels, control)
+            .and_then(|plan| {
+                control.check_output(plan.region.buffer_bytes)?;
+                Ok(plan)
+            });
+        self.trim_preparation_cache();
+        result
+    }
+
     /// Plan a packed region under operation-specific limits and cancellation.
     ///
     /// The output limit is checked against tight packing here; decoding also

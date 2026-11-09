@@ -15,6 +15,8 @@ mod errors_and_requests;
 mod grouping;
 #[path = "owned_batch/native_types_and_requests.rs"]
 mod native_types_and_requests;
+#[path = "owned_batch/operation_plans.rs"]
+mod operation_plans;
 #[path = "owned_batch/payload_ranges.rs"]
 mod payload_ranges;
 #[path = "owned_batch/reduced_region_tiles.rs"]

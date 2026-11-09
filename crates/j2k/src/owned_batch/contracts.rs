@@ -96,6 +96,25 @@ impl EncodedImage {
     pub fn full(bytes: Arc<[u8]>) -> Self {
         Self::new(bytes, DecodeRequest::Full)
     }
+
+    /// Construct an input prepared only as a source for exact operations
+    /// ([`crate::PreparedImageOperation`]), which choose their own region and
+    /// reduction. Its own request is the smallest region, so preparation builds
+    /// no image-sized plan for it.
+    #[must_use]
+    pub fn operation_source(bytes: Arc<[u8]>) -> Self {
+        Self::new(
+            bytes,
+            DecodeRequest::Region {
+                roi: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 1,
+                    h: 1,
+                },
+            },
+        )
+    }
 }
 
 /// Options shared by preparation and CPU batch decode.

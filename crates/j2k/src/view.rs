@@ -24,8 +24,8 @@ pub use control::{J2kCancellationToken, J2kDecodeControl};
 mod plan;
 mod rows;
 pub use plan::{
-    J2kDecodePlan, J2kDecodeRoute, J2kRegionDecodePlan, J2kSampleInterpretation,
-    J2kStreamingBlocker,
+    J2kDecodePlan, J2kDecodeRoute, J2kNativeRegionDecodePlan, J2kRegionDecodePlan,
+    J2kSampleInterpretation, J2kStreamingBlocker,
 };
 mod srgb8;
 mod traits;

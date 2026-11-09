@@ -59,8 +59,8 @@ pub use j2k_types::{
 mod view;
 pub use view::{
     J2kCancellationToken, J2kCodec, J2kDecodeControl, J2kDecodePlan, J2kDecodeRoute, J2kDecoder,
-    J2kRegionDecodePlan, J2kRowDecodeOptions, J2kSampleInterpretation, J2kStreamingBlocker,
-    J2kView,
+    J2kNativeRegionDecodePlan, J2kRegionDecodePlan, J2kRowDecodeOptions, J2kSampleInterpretation,
+    J2kStreamingBlocker, J2kView,
 };
 
 pub use batch::{
@@ -99,7 +99,7 @@ pub use owned_batch::{
     EncodedImage, Htj2kPayloadRanges, Htj2kPreparedGeometry, IndexedBatchError, J2kCodestreamRange,
     NativeSampleType, NonRepresentableReason, PreparationDepth, PreparedBatch, PreparedBatchGroup,
     PreparedClassicPlan, PreparedHtj2kPlan, PreparedImage, PreparedImageGeometry,
-    PreparedImageOperation,
+    PreparedImageOperation, PreparedOperationPlan,
 };
 #[doc(hidden)]
 pub use owned_batch::{

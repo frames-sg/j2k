@@ -94,6 +94,48 @@ impl J2kSrgb8Image {
         self.data
     }
 
+    /// Consume the image and return its samples as channel planes: every
+    /// pixel's first channel, then every pixel's second, and so on, as planar
+    /// (NCHW) layouts store them. Gray output is already one plane.
+    ///
+    /// The packed samples and their planar copy are both live while the layout
+    /// converts, within `control`'s working limit.
+    ///
+    /// # Errors
+    /// Returns a resource-limit error when both copies exceed the working
+    /// limit, or a buffer error when the planar copy cannot be allocated.
+    pub fn into_planar_data_with_control(
+        self,
+        control: &J2kDecodeControl,
+    ) -> Result<Vec<u8>, J2kError> {
+        let channels = self.layout.channels();
+        if channels == 1 {
+            return Ok(self.data);
+        }
+        let budget = control
+            .to_native()
+            .beside_retained_bytes(self.data.capacity())
+            .map_err(J2kError::from_native_decode_error)?;
+        budget
+            .clone()
+            .beside_retained_bytes(self.data.len())
+            .map_err(J2kError::from_native_decode_error)?;
+        let mut planar = Vec::new();
+        planar.try_reserve_exact(self.data.len()).map_err(|_| {
+            BufferError::HostAllocationFailed {
+                bytes: self.data.len(),
+                what: "J2K planar sRGB8 output",
+            }
+        })?;
+        budget
+            .beside_retained_bytes(planar.capacity())
+            .map_err(J2kError::from_native_decode_error)?;
+        for channel in 0..channels {
+            planar.extend(self.data.iter().skip(channel).step_by(channels).copied());
+        }
+        Ok(planar)
+    }
+
     fn with_warnings(mut self, warnings: Vec<J2kDecodeWarning>) -> Self {
         self.warnings = warnings;
         self

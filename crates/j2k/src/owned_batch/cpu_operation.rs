@@ -405,7 +405,55 @@ fn prepare_operation(
     })
 }
 
+/// What one exact operation decodes to, planned before any sample is decoded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct PreparedOperationPlan {
+    /// The output contract of the group [`CpuBatchDecoder::decode_operations`]
+    /// returns for the operation: reduced region dimensions, colour channels,
+    /// alpha, native sample type and precision.
+    pub info: BatchGroupInfo,
+    /// Covered rectangle relative to the reduced image's origin.
+    pub output_rect: Rect,
+    /// Whether preparation applied a lenient JP2/JPH metadata recovery.
+    pub used_lenient_metadata_recovery: bool,
+}
+
 impl CpuBatchDecoder {
+    /// Plan exact operations as [`Self::decode_operations`] prepares them,
+    /// without decoding: each operation's output contract, or the preparation
+    /// error its decode would report. Results follow `operations`' order.
+    ///
+    /// Each operation is planned under its own control, with no sibling plans
+    /// live. Planning goes through the session's exact-operation cache, so an
+    /// uncontrolled operation decoded next can reuse its preparation.
+    ///
+    /// # Errors
+    /// Returns [`BatchInfrastructureError`] when the session's workers are
+    /// poisoned or the result list cannot be allocated.
+    pub fn plan_operations(
+        &mut self,
+        operations: &[PreparedImageOperation<'_>],
+    ) -> Result<Vec<Result<PreparedOperationPlan, BatchItemError>>, BatchInfrastructureError> {
+        let workers = self
+            .workers
+            .get_mut()
+            .map_err(|_| BatchInfrastructureError::SchedulerPoisoned)?;
+        let mut plans = try_vec_with_capacity(operations.len(), "J2K operation plans")?;
+        for &operation in operations {
+            let plan = self
+                .operation_cache
+                .prepare(operation, self.options, &mut workers[0], 0)
+                .map(|preparation| PreparedOperationPlan {
+                    info: preparation.info.clone(),
+                    output_rect: preparation.output_rect,
+                    used_lenient_metadata_recovery: preparation.used_lenient_metadata_recovery,
+                });
+            plans.push(plan);
+        }
+        Ok(plans)
+    }
+
     /// Limit derived exact-operation plan capacities retained between calls.
     /// Zero disables the one-entry cache. Source input remains caller-owned;
     /// execution workspace and in-flight operation plans are separate.

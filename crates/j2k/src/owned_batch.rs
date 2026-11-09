@@ -62,7 +62,7 @@ mod cpu;
 mod cpu_operation;
 pub use self::cpu_operation::{
     prepare_device_operations, PreparedDeviceOperation, PreparedDeviceOperationGroup,
-    PreparedDeviceOperations, PreparedImageOperation,
+    PreparedDeviceOperations, PreparedImageOperation, PreparedOperationPlan,
 };
 use self::cpu_operation::{CpuOperationCache, CpuPreparedImage};
 mod cpu_materialize;

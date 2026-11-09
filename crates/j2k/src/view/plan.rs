@@ -10,7 +10,7 @@ use crate::{
         region_decode_uses_rows, resolve_u8_color_space, rows_stream_whole, srgb8_output_layout,
         FullImageRoute, RouteRequest,
     },
-    BatchAlpha, J2kError, J2kReferenceGrid,
+    BatchAlpha, BatchDecodeOptions, BatchGroupInfo, BatchItemError, J2kError, J2kReferenceGrid,
 };
 use j2k_core::{Downscale, PixelFormat, Rect, Unsupported};
 use j2k_native::RegionRowsBlocker;
@@ -157,6 +157,18 @@ impl J2kRegionDecodePlan {
     }
 }
 
+/// Native-sample region output: the packed region plan and the sample
+/// contract (type, precision, signedness, colour channels and alpha) its
+/// native integer samples carry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct J2kNativeRegionDecodePlan {
+    /// Geometry, packed layout and expected route of the region.
+    pub region: J2kRegionDecodePlan,
+    /// The samples' contract, with the region's reduced output dimensions.
+    pub samples: BatchGroupInfo,
+}
+
 impl J2kDecoder<'_> {
     /// Largest representable native reduction common to every component and tile.
     ///
@@ -191,6 +203,57 @@ impl J2kDecoder<'_> {
         let result = self.region_decode_plan_with_interpretation(Some(fmt), roi, reduction_levels);
         self.trim_preparation_cache();
         result
+    }
+
+    /// Plan a region in the image's native integer samples at an exact
+    /// reduction: the packed layout [`Self::region_decode_plan`] plans for the
+    /// native pixel format, and the sample contract the native samples carry.
+    /// Signed 16-bit samples plan their word layout and keep their signedness
+    /// in [`J2kNativeRegionDecodePlan::samples`].
+    ///
+    /// # Errors
+    /// Returns the errors of [`Self::region_decode_plan`], or an unsupported
+    /// error when the native samples have no single packed layout.
+    pub fn native_region_decode_plan(
+        &mut self,
+        roi: Rect,
+        reduction_levels: u8,
+    ) -> Result<J2kNativeRegionDecodePlan, J2kError> {
+        let result = self.native_region_decode_plan_with_interpretation(
+            roi,
+            reduction_levels,
+            &crate::J2kDecodeControl::default(),
+        );
+        self.trim_preparation_cache();
+        result
+    }
+
+    pub(super) fn native_region_decode_plan_with_interpretation(
+        &mut self,
+        roi: Rect,
+        reduction_levels: u8,
+        control: &crate::J2kDecodeControl,
+    ) -> Result<J2kNativeRegionDecodePlan, J2kError> {
+        control.check_cancelled()?;
+        let support = Self::inspect_support_with_settings(self.bytes, self.settings)?;
+        let options = BatchDecodeOptions {
+            settings: self.settings,
+            ..BatchDecodeOptions::default()
+        };
+        let mut samples =
+            BatchGroupInfo::classify_native_output(&support, self.info.dimensions, options)
+                .map_err(|error| native_output_error(&error))?;
+        let format = native_planning_format(&samples).ok_or(Unsupported {
+            what: "unsupported native output layout",
+        })?;
+        let region = self.region_decode_plan_with_interpretation_and_control(
+            Some(format),
+            roi,
+            reduction_levels,
+            control,
+        )?;
+        samples.dimensions = (region.output_region.w, region.output_region.h);
+        Ok(J2kNativeRegionDecodePlan { region, samples })
     }
 
     /// Plan explicit sRGB output for a source-coordinate region at an exact
@@ -537,5 +600,28 @@ fn native_blocker(blocker: RegionRowsBlocker) -> J2kStreamingBlocker {
         // `ComponentCount`, and any later native reason, which this facade
         // names by the condition it extends.
         _ => J2kStreamingBlocker::ComponentCount,
+    }
+}
+
+/// The packed pixel format a native region plans: signed 16-bit samples plan
+/// the word layout of their unsigned format, keeping their signedness in the
+/// sample contract.
+fn native_planning_format(samples: &BatchGroupInfo) -> Option<PixelFormat> {
+    Some(match samples.native_pixel_format()? {
+        PixelFormat::GrayI16 => PixelFormat::Gray16,
+        PixelFormat::RgbI16 => PixelFormat::Rgb16,
+        PixelFormat::RgbaI16 => PixelFormat::Rgba16,
+        format => format,
+    })
+}
+
+/// The facade error of a native output classification failure.
+fn native_output_error(error: &BatchItemError) -> J2kError {
+    match error {
+        BatchItemError::Codec { source, .. } => J2kError::clone(source),
+        _ => Unsupported {
+            what: "unsupported native output layout",
+        }
+        .into(),
     }
 }
