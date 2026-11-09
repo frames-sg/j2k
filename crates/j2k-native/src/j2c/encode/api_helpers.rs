@@ -82,7 +82,7 @@ pub(crate) fn deinterleave_to_f32(
 }
 
 /// Fallible production deinterleave used by the phase-bounded encode path.
-/// `parallel` lets 8-bit RGB planes fill on the Rayon pool.
+/// `parallel` lets the planes of a large image fill on the Rayon pool.
 #[expect(
     clippy::cast_precision_loss,
     reason = "the codec float domain intentionally receives bounded integer samples at this rounding boundary"
@@ -125,7 +125,6 @@ pub(crate) fn try_deinterleave_to_f32(
                 what: "deinterleaved component samples",
                 bytes: plane_bytes,
             })?;
-        component.resize(num_pixels, 0.0);
         components.push(component);
     }
 
@@ -136,22 +135,124 @@ pub(crate) fn try_deinterleave_to_f32(
     };
     let bytes_per_sample =
         raw_pixel_bytes_per_sample(bit_depth).map_err(|what| EncodeError::InvalidInput { what })?;
-    for (sample_index, pixel) in pixels
-        .chunks_exact(component_count * bytes_per_sample)
-        .take(num_pixels)
-        .enumerate()
-    {
-        for (component_index, component) in components.iter_mut().enumerate() {
-            let offset = component_index * bytes_per_sample;
-            let raw = read_le_sample_value(&pixel[offset..offset + bytes_per_sample], bit_depth);
-            component[sample_index] = if signed {
-                sign_extend_sample(raw, bit_depth) as f32
-            } else {
-                raw as f32 - unsigned_offset
-            };
+    let sample = move |bytes: &[u8]| {
+        let raw = read_le_sample_value(bytes, bit_depth);
+        if signed {
+            sign_extend_sample(raw, bit_depth) as f32
+        } else {
+            raw as f32 - unsigned_offset
         }
+    };
+    let pixel_bytes = component_count * bytes_per_sample;
+    if pixel_bytes == 0 {
+        return Err(EncodeError::InvalidInput {
+            what: "deinterleave needs at least one component",
+        });
+    }
+    let whole_pixels = (pixels.len() / pixel_bytes).min(num_pixels);
+    let pixels = &pixels[..whole_pixels * pixel_bytes];
+    if !fill_planes_on_pool(pixels, &mut components, bytes_per_sample, parallel, sample) {
+        fill_planes_serially(pixels, &mut components, bytes_per_sample, sample);
+    }
+    // A short pixel buffer leaves the rest of each plane zero.
+    for component in &mut components {
+        component.resize(num_pixels, 0.0);
     }
     Ok(components)
+}
+
+/// Fill each plane on this thread. Samples of one to four bytes take loops
+/// specialized to their width; the function stays out of line, so its loops
+/// compile the same for every caller (inlined, their speed moved by up to
+/// half between builds).
+#[inline(never)]
+fn fill_planes_serially(
+    pixels: &[u8],
+    planes: &mut [Vec<f32>],
+    bytes_per_sample: usize,
+    sample: impl Fn(&[u8]) -> f32,
+) {
+    match bytes_per_sample {
+        1 => fill_planes_of::<1>(pixels, planes, sample),
+        2 => fill_planes_of::<2>(pixels, planes, sample),
+        3 => fill_planes_of::<3>(pixels, planes, sample),
+        4 => fill_planes_of::<4>(pixels, planes, sample),
+        _ => {
+            let pixel_bytes = planes.len() * bytes_per_sample;
+            for (index, plane) in planes.iter_mut().enumerate() {
+                let offset = index * bytes_per_sample;
+                plane.extend(
+                    pixels
+                        .chunks_exact(pixel_bytes)
+                        .map(|pixel| sample(&pixel[offset..offset + bytes_per_sample])),
+                );
+            }
+        }
+    }
+}
+
+/// Fill each plane from samples of `BYTES` bytes, one plane at a time.
+fn fill_planes_of<const BYTES: usize>(
+    pixels: &[u8],
+    planes: &mut [Vec<f32>],
+    sample: impl Fn(&[u8]) -> f32,
+) {
+    let pixel_bytes = planes.len() * BYTES;
+    for (index, plane) in planes.iter_mut().enumerate() {
+        let offset = index * BYTES;
+        plane.extend(
+            pixels
+                .chunks_exact(pixel_bytes)
+                .map(|pixel| sample(&pixel[offset..offset + BYTES])),
+        );
+    }
+}
+
+/// Images of fewer samples fill their planes on one thread: the floor of the
+/// 8-bit RGB path, counted in samples.
+#[cfg(feature = "parallel")]
+const PARALLEL_DEINTERLEAVE_SAMPLES: usize = 3 * PARALLEL_DEINTERLEAVE_PIXELS;
+
+/// Fill each plane on the Rayon pool when that is allowed and worth it: one
+/// thread converting every sample of a large image dominates its encode.
+#[cfg(feature = "parallel")]
+fn fill_planes_on_pool(
+    pixels: &[u8],
+    planes: &mut [Vec<f32>],
+    bytes_per_sample: usize,
+    parallel: bool,
+    sample: impl Fn(&[u8]) -> f32 + Sync,
+) -> bool {
+    use rayon::prelude::*;
+    let pixel_bytes = planes.len() * bytes_per_sample;
+    if !parallel
+        || pixel_bytes == 0
+        || pixels.len() / bytes_per_sample < PARALLEL_DEINTERLEAVE_SAMPLES
+        || rayon::current_num_threads() < 2
+    {
+        return false;
+    }
+    for (index, plane) in planes.iter_mut().enumerate() {
+        let offset = index * bytes_per_sample;
+        plane.par_extend(
+            pixels
+                .par_chunks_exact(pixel_bytes)
+                .with_min_len(1 << 14)
+                .map(|pixel| sample(&pixel[offset..offset + bytes_per_sample])),
+        );
+    }
+    true
+}
+
+#[cfg(not(feature = "parallel"))]
+fn fill_planes_on_pool(
+    _: &[u8],
+    _: &mut [Vec<f32>],
+    _: usize,
+    _: bool,
+    _: impl Fn(&[u8]) -> f32,
+) -> bool {
+    false
 }
 
 fn try_deinterleave_rgb8_unsigned_to_f32(

@@ -31,3 +31,46 @@ fn fallible_signed_multibyte_deinterleave_preserves_samples() {
         deinterleave_to_f32(&pixels, 3, 2, 12, true)
     );
 }
+
+#[test]
+fn fallible_deinterleave_matches_the_reference_on_and_off_the_pool() {
+    // Images of at least 3 x 65536 samples fill their planes on the Rayon pool
+    // when allowed; a short buffer leaves the rest of each plane zero.
+    for (num_components, bit_depth, signed) in [
+        (1_u16, 8_u8, false),
+        (1, 16, false),
+        (2, 12, true),
+        (3, 16, false),
+        (4, 8, false),
+        (1, 24, true),
+        (1, 32, false),
+        (2, 38, false),
+    ] {
+        let bytes_per_sample = usize::from(bit_depth).div_ceil(8);
+        for num_pixels in [32_usize, 200_000] {
+            let pixels = (0..num_pixels * usize::from(num_components) * bytes_per_sample)
+                .map(|index| u8::try_from((index * 37 + 11) & 0xff).expect("byte fits u8"))
+                .collect::<Vec<_>>();
+            for (pixels, parallel) in [
+                (&pixels[..], false),
+                (&pixels[..], true),
+                (&pixels[..=pixels.len() / 2], true),
+            ] {
+                assert_eq!(
+                    try_deinterleave_to_f32(
+                        pixels,
+                        num_pixels,
+                        num_components,
+                        bit_depth,
+                        signed,
+                        parallel
+                    )
+                    .expect("fallible deinterleave"),
+                    deinterleave_to_f32(pixels, num_pixels, num_components, bit_depth, signed),
+                    "{num_components}x{bit_depth} bits, {num_pixels} pixels, {} bytes, parallel {parallel}",
+                    pixels.len()
+                );
+            }
+        }
+    }
+}
