@@ -291,8 +291,9 @@ pub(crate) struct TileDecodeContext {
     /// compared against it.
     #[cfg(test)]
     pub(crate) whole_window_tier1: bool,
-    /// Test-only: the first pool worker to start a band abandons it, so the
-    /// band is left running with no worker to finish it.
+    /// Test-only: the first band task started, by a pool worker or by a
+    /// reader decoding bands itself, is abandoned, so the band is left
+    /// running with nobody to finish it.
     #[cfg(all(test, feature = "parallel"))]
     pub(crate) strand_pool_band: bool,
     /// Test-only: with `strand_pool_band`, the band task started after this

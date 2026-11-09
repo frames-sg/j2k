@@ -485,7 +485,9 @@ fn pool_bands_reject_corrupt_code_blocks_as_serial_whole_window_tier1_does() {
 
 /// A band left running with no worker to finish it, as an earlier build's
 /// fuzz once found, must not hang the decode: the component gives up the
-/// pool and decodes over whole windows, with the same output.
+/// pool and decodes over whole windows, with the same output. The first
+/// component's first band task strands whichever thread starts it, so the
+/// fallback does not depend on when the pool's threads get to run.
 #[test]
 fn a_stranded_band_falls_back_to_whole_windows() {
     let bytes = rgb_fixture();

@@ -1444,8 +1444,8 @@ struct Shared<'p, 'c, 'w, W> {
     /// The slot of each band decoding in parts, which its parts share.
     outputs: Vec<Mutex<&'c mut [f32]>>,
     max_workers: usize,
-    /// Test-only: the worker that starts the band task after this many
-    /// abandons it (a negative count: none does).
+    /// Test-only: the worker or reader that starts the band task after this
+    /// many abandons it (a negative count: none does).
     #[cfg(test)]
     strand_after: core::sync::atomic::AtomicIsize,
     state: Mutex<State<'c, 'w, W>>,
@@ -2008,6 +2008,13 @@ where
     /// Decode `task`, a band or part this reader, another one or the drain
     /// will take, and hand it over as a worker does.
     fn decode_for_pool(&mut self, task: Task<'c>) -> Result<()> {
+        // A reader's band task counts toward a test's strand as a worker's
+        // does: a reader may decode every band before a worker runs at all.
+        #[cfg(test)]
+        if test_countdown_ends(&self.shared.strand_after) {
+            // Leave the band running with nobody to finish it.
+            return Ok(());
+        }
         let start = profile::profile_now(self.profile_enabled);
         let result = run_task(self.shared, self.decode, task, self.workspace, self.scratch);
         self.tier1_us += profile::elapsed_us(start);
