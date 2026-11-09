@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Relocatable: pkg-config and pkgconf set ${pcfiledir} to this file's directory.
+# The shared library is not on the default loader path: link with an rpath to
+# ${libdir}, or install it where the loader looks.
+prefix=${pcfiledir}/../..
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: j2k
+Description: C ABI and C++17 wrapper for the j2k JPEG 2000 / HTJ2K codec
+URL: @URL@
+Version: @VERSION@
+Libs: -L${libdir} -lj2k
+Cflags: -I${includedir}

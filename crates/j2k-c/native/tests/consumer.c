@@ -18,6 +18,9 @@ _Static_assert(sizeof(j2k_encode_options) == 32, "ABI 1 encode options");
 _Static_assert(sizeof(j2k_error) == 260, "ABI 1 error");
 _Static_assert(sizeof(j2k_region_plan) == 104, "exact region plan layout");
 _Static_assert(offsetof(j2k_operation_options, cancellation) == 48, "operation token offset");
+_Static_assert(sizeof(j2k_encode_report) == 40, "encode report layout");
+_Static_assert(sizeof(j2k_color_info) == 32, "colour info layout");
+_Static_assert(offsetof(j2k_encode_params, targets) == 56, "encode params array offset");
 
 /* Copies each row after the previous one; stops after stop_after rows. */
 typedef struct rows {
@@ -66,6 +69,12 @@ int main(int argc, char **argv) {
     REQUIRE(j2k_decoder_component_info(decoder, 0, &component, &error) == J2K_OK);
     REQUIRE(component.precision == 8 && component.is_signed == 0);
     REQUIRE(component.sampling_x == 1 && component.sampling_y == 1);
+    /* A raw codestream carries no colour specification and so no ICC profile. */
+    j2k_color_info color = J2K_COLOR_INFO_INIT;
+    REQUIRE(j2k_decoder_color_info(decoder, &color, &error) == J2K_OK);
+    REQUIRE(color.specification == J2K_COLOR_NONE && color.specifications == 0);
+    uint8_t no_profile[4];
+    REQUIRE(j2k_decoder_icc_profile(decoder, no_profile, sizeof(no_profile), &error) == J2K_INVALID_ARGUMENT);
 
     j2k_output_info output = J2K_OUTPUT_INFO_INIT;
     REQUIRE(j2k_decoder_output_info(decoder, NULL, &output, &error) == J2K_OK);
@@ -163,5 +172,38 @@ int main(int argc, char **argv) {
     REQUIRE(j2k_encode_lossless(pixels, sizeof(pixels), &encode, &file_bytes, &file_length, &error) == J2K_INVALID_ARGUMENT);
     REQUIRE(file_bytes == NULL && file_length == 0);
     j2k_buffer_free(NULL, 0);
+
+    /* Lossy to a rate target, as a JP2 file with an ICC profile, reporting the result. */
+    static const uint8_t profile[] = "test-icc-profile";
+    const double rate[] = {2.0};
+    j2k_encode_params params = J2K_ENCODE_PARAMS_INIT;
+    REQUIRE(params.mode == J2K_MODE_LOSSLESS && params.levels == J2K_LEVELS_AUTO);
+    params.mode = J2K_MODE_LOSSY;
+    params.rate = J2K_RATE_BITS_PER_PIXEL;
+    params.target_count = 1;
+    params.targets = rate;
+    params.progression = J2K_PROGRESSION_RPCL;
+    params.markers = J2K_MARKER_TLM | J2K_MARKER_PLT;
+    params.icc_profile = profile;
+    params.icc_profile_len = sizeof(profile) - 1;
+    encode.bit_depth = 8;
+    encode.flags = J2K_ENCODE_FILE;
+    j2k_encode_report report = J2K_ENCODE_REPORT_INIT;
+    REQUIRE(j2k_encode(pixels, sizeof(pixels), &encode, &params, &file_bytes, &file_length, &report, &error) == J2K_OK);
+    REQUIRE(report.codestream_bytes > 0 && report.codestream_bytes < file_length);
+    REQUIRE(report.bits_per_pixel > 0.0 && report.quality_layers == 1);
+    REQUIRE(j2k_decoder_open(file_bytes, file_length, NULL, &decoder, &error) == J2K_OK);
+    j2k_buffer_free(file_bytes, file_length);
+    REQUIRE(j2k_decoder_color_info(decoder, &color, &error) == J2K_OK);
+    REQUIRE(color.specification == J2K_COLOR_ICC && color.specifications == 1);
+    REQUIRE(color.icc_profile_bytes == sizeof(profile) - 1);
+    uint8_t copied[sizeof(profile) - 1];
+    REQUIRE(j2k_decoder_icc_profile(decoder, copied, sizeof(copied) - 1, &error) == J2K_BUFFER_TOO_SMALL);
+    REQUIRE(j2k_decoder_icc_profile(decoder, copied, sizeof(copied), &error) == J2K_OK);
+    REQUIRE(memcmp(copied, profile, sizeof(copied)) == 0);
+    REQUIRE(j2k_decoder_close(&decoder, &error) == J2K_OK);
+    params.qfactor = 50; /* The codec refuses a qfactor beside a rate target. */
+    REQUIRE(j2k_encode(pixels, sizeof(pixels), &encode, &params, &file_bytes, &file_length, NULL, &error) == J2K_UNSUPPORTED);
+    REQUIRE(file_bytes == NULL && file_length == 0 && error.message[0] != '\0');
     return 0;
 }

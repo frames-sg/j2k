@@ -1,8 +1,9 @@
 # C ABI contract
 
 The C header is `include/j2k.h`. It decodes full images, regions, and reduced
-resolutions into caller-owned buffers, streams full images row by row, and
-encodes interleaved samples losslessly. The C++17 wrapper in `j2k.hpp` adds
+resolutions into caller-owned buffers, streams full images row by row, reports
+the colour specification decoding applies, and encodes interleaved samples
+losslessly or lossy to rate, size, or quality targets. The C++17 wrapper in `j2k.hpp` adds
 move-only ownership and converts error statuses to `j2k::error` exceptions.
 The library is built from the `j2k` CPU codec in the same workspace and is
 versioned with it.
@@ -165,7 +166,22 @@ blocks. It is never called concurrently, must not unwind, and must not call
 back into the same decoder. The C++ wrapper's `decoder::decode_rows` catches an
 exception from its callable, stops the decode, and rethrows it after the call.
 
-## Lossless encoding
+## Colour specification
+
+`j2k_decoder_color_info` describes the JP2/JPH Colour Specification (COLR) box
+decoding applies: the first in the file, as ISO/IEC 15444-1 I.5.3.3 directs.
+`specification` is `J2K_COLOR_ENUMERATED` with the `EnumCS` value in `value`
+(16 sRGB, 17 greyscale, 18 sYCC), `J2K_COLOR_ICC` with the profile length in
+`icc_profile_bytes`, `J2K_COLOR_UNKNOWN` with the uninterpreted COLR method in
+`value`, or `J2K_COLOR_NONE` for a raw codestream. `specifications` counts every
+COLR box; later boxes are preserved but not applied, and `has_icc_profile` in
+`j2k_image_info` covers all of them. `j2k_decoder_icc_profile` copies the
+applied profile into a caller buffer of at least `icc_profile_bytes` bytes: a
+shorter buffer returns `J2K_BUFFER_TOO_SMALL` untouched, and an image without
+an applied profile returns `J2K_INVALID_ARGUMENT`. Native output applies no ICC
+conversion; explicit sRGB operations convert supported profiles.
+
+## Encoding
 
 `j2k_encode_lossless` encodes interleaved samples described by a
 `j2k_encode_options` (`J2K_ENCODE_OPTIONS_INIT`): width, height, components,
@@ -177,6 +193,40 @@ codestream. The encoder decodes its result and compares it with the samples
 before returning it. On success the library allocates the result; release it
 with `j2k_buffer_free(data, length)` exactly once. On failure `*out` is `NULL`
 and `*out_len` is 0. Encoding runs on the codec's shared CPU pool.
+
+`j2k_encode` takes the same samples and options plus a `j2k_encode_params`
+(`J2K_ENCODE_PARAMS_INIT`; `NULL` encodes exactly as `j2k_encode_lossless`) and
+an optional `j2k_encode_report`. The parameters map one to one onto the codec's
+encode options, and the codec validates every combination:
+
+- `mode`: `J2K_MODE_LOSSLESS` (reversible 5/3; `J2K_PARAMS_NO_COLOR_TRANSFORM`
+  codes three components without the reversible colour transform) or
+  `J2K_MODE_LOSSY` (irreversible 9/7; three components use the irreversible
+  colour transform).
+- `levels`: the maximum decomposition count, or `J2K_LEVELS_AUTO`; the image
+  and tile geometry can lower it.
+- `progression`: `J2K_PROGRESSION_LRCP`, `RLCP`, `RPCL`, `PCRL`, or `CPRL`.
+- `tile_width`/`tile_height`: both zero for one tile; `tile_part_packets` caps
+  the complete packets per tile-part.
+- `markers`: any of `J2K_MARKER_SOP`, `EPH`, `TLM`, `PLT`, `PLM`, `PPM`, `PPT`.
+- `quality_layers`: lossless layers, 1–32 (zero writes one).
+- Lossy targets: `rate` names the unit (`J2K_RATE_BITS_PER_PIXEL`,
+  `J2K_RATE_BYTES`, or `J2K_RATE_PSNR_DB`), and `targets` holds `target_count`
+  ascending values: one codestream target, or 2–32 cumulative layer targets.
+  Byte targets are whole numbers. `qfactor` (1–100) selects HTJ2K's visual
+  quality factor instead of a target.
+- `icc_profile`/`icc_profile_len`: with `J2K_ENCODE_FILE`, the COLR ICC
+  profile; otherwise the file declares the enumerated colour space its samples
+  imply.
+
+Invalid field values or field combinations the shim can see return
+`J2K_INVALID_ARGUMENT`; coding combinations the codec refuses, such as a Qfactor
+with classic block coding or beside a rate target, return `J2K_UNSUPPORTED`; an
+unreachable target returns `J2K_ENCODE_FAILED`. On success the report carries
+the codestream length (without the file wrapper), its bits per image pixel, the
+PSNR when the encode measured it (otherwise 0), and its quality-layer count.
+The CPU encoder decodes its own output before returning it; lossless output
+must reproduce the samples exactly.
 
 ## Lenient decoding
 

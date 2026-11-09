@@ -469,12 +469,14 @@ fn c_layout(name: &str) -> (Vec<(String, usize)>, usize) {
             }
             ("uint32_t", None) => (field, 4, 4),
             ("uint64_t", None) => (field, 8, 8),
+            ("double", None) => (field, 8, std::mem::align_of::<f64>()),
+            ("size_t", None) => (field, size_of::<usize>(), std::mem::align_of::<usize>()),
             ("j2k_header", None) => (field, 8, 4),
             ("j2k_output_info", None) => (field, 64, 8),
-            ("const", None) if field == "j2k_cancellation" => (
+            ("const", None) if ["j2k_cancellation", "double", "uint8_t"].contains(&field) => (
                 words.next().unwrap().trim_start_matches('*'),
-                size_of::<*const J2kCCancellation>(),
-                std::mem::align_of::<*const J2kCCancellation>(),
+                size_of::<*const u8>(),
+                std::mem::align_of::<*const u8>(),
             ),
             _ => panic!("unexpected {name} field: {}", declaration.0),
         };
@@ -511,6 +513,10 @@ fn abi_one_layout_matches_the_c_header_and_accepts_extension_storage() {
     assert_eq!(size_of::<J2kCComponentInfo>(), 24);
     assert_eq!(size_of::<J2kCOutputInfo>(), 64);
     assert_eq!(size_of::<J2kCEncodeOptions>(), 32);
+    assert_eq!(size_of::<J2kCEncodeReport>(), 40);
+    assert_eq!(size_of::<J2kCColorInfo>(), 32);
+    #[cfg(target_pointer_width = "64")]
+    assert_eq!(size_of::<J2kCEncodeParams>(), 80);
     assert_eq!(size_of::<J2kCError>(), 260);
     let defined: Vec<(&str, u32)> = HEADER
         .lines()
@@ -546,6 +552,33 @@ fn abi_one_layout_matches_the_c_header_and_accepts_extension_storage() {
             ("J2K_ENCODE_HTJ2K", J2K_ENCODE_HTJ2K),
             ("J2K_ENCODE_SIGNED", J2K_ENCODE_SIGNED),
             ("J2K_ENCODE_FILE", J2K_ENCODE_FILE),
+            ("J2K_MODE_LOSSLESS", J2K_MODE_LOSSLESS),
+            ("J2K_MODE_LOSSY", J2K_MODE_LOSSY),
+            (
+                "J2K_PARAMS_NO_COLOR_TRANSFORM",
+                J2K_PARAMS_NO_COLOR_TRANSFORM
+            ),
+            ("J2K_LEVELS_AUTO", J2K_LEVELS_AUTO),
+            ("J2K_PROGRESSION_LRCP", J2K_PROGRESSION_LRCP),
+            ("J2K_PROGRESSION_RLCP", J2K_PROGRESSION_RLCP),
+            ("J2K_PROGRESSION_RPCL", J2K_PROGRESSION_RPCL),
+            ("J2K_PROGRESSION_PCRL", J2K_PROGRESSION_PCRL),
+            ("J2K_PROGRESSION_CPRL", J2K_PROGRESSION_CPRL),
+            ("J2K_RATE_NONE", J2K_RATE_NONE),
+            ("J2K_RATE_BITS_PER_PIXEL", J2K_RATE_BITS_PER_PIXEL),
+            ("J2K_RATE_BYTES", J2K_RATE_BYTES),
+            ("J2K_RATE_PSNR_DB", J2K_RATE_PSNR_DB),
+            ("J2K_MARKER_SOP", J2K_MARKER_SOP),
+            ("J2K_MARKER_EPH", J2K_MARKER_EPH),
+            ("J2K_MARKER_TLM", J2K_MARKER_TLM),
+            ("J2K_MARKER_PLT", J2K_MARKER_PLT),
+            ("J2K_MARKER_PLM", J2K_MARKER_PLM),
+            ("J2K_MARKER_PPM", J2K_MARKER_PPM),
+            ("J2K_MARKER_PPT", J2K_MARKER_PPT),
+            ("J2K_COLOR_NONE", J2K_COLOR_NONE),
+            ("J2K_COLOR_ENUMERATED", J2K_COLOR_ENUMERATED),
+            ("J2K_COLOR_ICC", J2K_COLOR_ICC),
+            ("J2K_COLOR_UNKNOWN", J2K_COLOR_UNKNOWN),
             ("J2K_U8", J2K_U8),
             ("J2K_U16_LE", J2K_U16_LE),
             ("J2K_I16_LE", J2K_I16_LE),
@@ -671,6 +704,49 @@ fn abi_one_layout_matches_the_c_header_and_accepts_extension_storage() {
                 bit_depth,
                 flags,
                 reserved
+            }),
+        ),
+        (
+            "j2k_encode_params",
+            rust_layout!(J2kCEncodeParams {
+                header,
+                mode,
+                flags,
+                levels,
+                progression,
+                tile_width,
+                tile_height,
+                markers,
+                tile_part_packets,
+                quality_layers,
+                qfactor,
+                rate,
+                target_count,
+                targets,
+                icc_profile,
+                icc_profile_len
+            }),
+        ),
+        (
+            "j2k_encode_report",
+            rust_layout!(J2kCEncodeReport {
+                header,
+                codestream_bytes,
+                bits_per_pixel,
+                psnr_db,
+                quality_layers,
+                reserved
+            }),
+        ),
+        (
+            "j2k_color_info",
+            rust_layout!(J2kCColorInfo {
+                header,
+                specification,
+                value,
+                specifications,
+                reserved,
+                icc_profile_bytes
             }),
         ),
     ] {

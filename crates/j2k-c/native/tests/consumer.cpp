@@ -96,6 +96,28 @@ int main(int argc, char **argv) {
         std::vector<uint8_t> decoded(pixels.size());
         again.decode_into(decoded.data(), decoded.size(), 32);
         if (decoded != pixels) throw std::runtime_error("encode round trip mismatch");
+        if (!again.icc_profile().empty() || again.color_info().specification != J2K_COLOR_NONE)
+            throw std::runtime_error("a raw codestream reported a colour specification");
+
+        // Lossy to a rate target, as a JP2 file with an ICC profile.
+        const std::vector<uint8_t> profile{'t', 'e', 's', 't', '-', 'i', 'c', 'c'};
+        const double rate[] = {1.5};
+        j2k_encode_params params = J2K_ENCODE_PARAMS_INIT;
+        params.mode = J2K_MODE_LOSSY;
+        params.rate = J2K_RATE_BITS_PER_PIXEL;
+        params.target_count = 1;
+        params.targets = rate;
+        params.icc_profile = profile.data();
+        params.icc_profile_len = profile.size();
+        options.flags = J2K_ENCODE_FILE;
+        j2k_encode_report report = J2K_ENCODE_REPORT_INIT;
+        const auto tagged_file = j2k::encode(pixels.data(), pixels.size(), options, params, &report);
+        j2k::decoder tagged(tagged_file.data(), tagged_file.size());
+        if (tagged.icc_profile() != profile || report.codestream_bytes == 0)
+            throw std::runtime_error("ICC-tagged lossy encode mismatch");
+        options.flags = 0;
+        if (j2k::encode(pixels.data(), pixels.size(), options) != codestream)
+            throw std::runtime_error("default parameters differ from lossless encode");
         rejected = false;
         options.flags = 64;
         try { j2k::encode_lossless(pixels.data(), pixels.size(), options); }

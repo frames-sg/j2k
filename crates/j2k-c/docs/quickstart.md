@@ -1,7 +1,7 @@
 # j2k for C and C++
 
-This package contains a CPU JPEG 2000/HTJ2K decoder, C and C++17 headers, and
-CMake integration. It is licensed under either of `LICENSE-MIT` or
+This package contains a CPU JPEG 2000/HTJ2K decoder and encoder, C and C++17
+headers, and CMake and pkg-config integration. It is licensed under either of `LICENSE-MIT` or
 `LICENSE-APACHE` at your option; `NOTICES.md` records source provenance, and
 third-party licenses are included under `licenses/`.
 
@@ -32,6 +32,14 @@ target_link_libraries(your_application PRIVATE J2K::j2k)
 Set `CMAKE_PREFIX_PATH` to the package directory. C callers include `j2k.h`;
 C++17 callers may use the move-only `j2k::decoder` in `j2k.hpp`.
 
+Other build systems use pkg-config. The file is relocatable; the library is
+not on the default loader path, so also link with a runtime search path:
+
+```sh
+export PKG_CONFIG_PATH="/path/to/package/lib/pkgconfig"
+cc app.c $(pkg-config --cflags --libs j2k) -Wl,-rpath,"$(pkg-config --variable=libdir j2k)"
+```
+
 ```cpp
 j2k::decoder decoder(encoded.data(), encoded.size());
 auto info = decoder.output_info();
@@ -52,6 +60,24 @@ decoder.decode_rows([&](uint32_t y, const uint8_t *row, size_t row_bytes) {
 
 `j2k::encode_lossless(samples, length, options)` encodes interleaved samples
 with a `j2k_encode_options` initialized by `J2K_ENCODE_OPTIONS_INIT`.
+`j2k::encode(samples, length, options, params, &report)` adds coding parameters
+from `J2K_ENCODE_PARAMS_INIT`: for example lossy coding to a rate target, with
+an ICC profile when `J2K_ENCODE_FILE` writes a JP2/JPH file:
+
+```cpp
+const double bits_per_pixel[] = {2.0};
+j2k_encode_params params = J2K_ENCODE_PARAMS_INIT;
+params.mode = J2K_MODE_LOSSY;
+params.rate = J2K_RATE_BITS_PER_PIXEL;
+params.target_count = 1;
+params.targets = bits_per_pixel;
+params.progression = J2K_PROGRESSION_RPCL;
+params.markers = J2K_MARKER_TLM | J2K_MARKER_PLT;
+auto codestream = j2k::encode(samples, length, options, params);
+```
+
+`decoder.color_info()` and `decoder.icc_profile()` report the colour
+specification decoding applies.
 For region decode, initialize `j2k_decode_options` with
 `J2K_DECODE_OPTIONS_INIT`, set x/y/width/height and optional reduction, and pass
 the same options to `output_info` and `decode_into`.

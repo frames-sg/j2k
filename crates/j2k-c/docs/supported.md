@@ -12,11 +12,12 @@ built and versioned with.
 | Explicit sRGB | Bounded gray/RGB/RGBA U8 normalization for supported ICC, palette/channel mapping, and component sampling; straight alpha |
 | Operation controls | Native and raw sRGB working/output limits and cooperative cancellation, including source preparation an operation performs; ICC conversion under a working limit requires an XYZ-connection matrix/TRC or gray-TRC profile |
 | Row streaming | Full image at full resolution, 8-bit unsigned and 9- to 16-bit samples, at most `max_rows_per_stripe` rows held |
-| Encoding | Lossless, classic or HTJ2K, 1- to 16-bit unsigned or signed interleaved samples; raw codestream, JP2, or JPH |
+| Encoding | Lossless or lossy, classic or HTJ2K, 1- to 16-bit unsigned or signed interleaved samples; bits-per-pixel, byte, or PSNR targets, cumulative quality layers, HTJ2K Qfactor; decomposition levels, progression order, tiles, tile-part packet limits, and SOP/EPH/TLM/PLT/PLM/PPM/PPT markers; raw codestream, JP2, or JPH with an optional ICC profile |
+| Colour metadata | The applied (first) COLR box: enumerated `EnumCS`, ICC profile bytes, or an uninterpreted method |
 | Validation | Strict by default; `J2K_OPEN_LENIENT` accepts the codec's JP2/JPH metadata recoveries and reports them |
 | Threads | The codec's shared pool, or a decoder's own pool of 1–64 threads |
 | Platforms | Native macOS and GNU/Linux shared-library packages; each binary is specific to its build target, and GNU/Linux packages need the build host's glibc or newer |
-| Consumers | C11 and C++17; no Rust toolchain required for prebuilt packages |
+| Consumers | C11 and C++17 through CMake (`J2K::j2k`) or pkg-config (`j2k`); no Rust toolchain required for prebuilt packages |
 
 Native pixel decode rejects ICC-tagged and palette-mapped inputs, mixed precision or
 signedness, precision above 16 bits, unsupported colors/component counts, and
@@ -43,7 +44,7 @@ Decode such images as regions, at reduced resolution, or row by row with
 `j2k_decoder_decode_into` includes the codec-owned copy of the output in
 addition to the caller's buffer.
 
-GPU decode, lossy encoding, multi-image batch submission, row streaming of
+GPU decode and encode, multi-image batch submission, row streaming of
 regions or reduced resolutions, range I/O, Windows
 packaging, .NET/Java bindings, and slide-container parsing are not exposed by
 this release. Python bindings are the separate

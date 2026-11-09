@@ -62,6 +62,60 @@ pub const J2K_ENCODE_FILE: u32 = 4;
 /// Every encode flag this ABI revision defines.
 pub(crate) const J2K_ENCODE_FLAGS: u32 = J2K_ENCODE_HTJ2K | J2K_ENCODE_SIGNED | J2K_ENCODE_FILE;
 
+/// Encode mode: reversible 5/3 coding that reproduces the samples exactly.
+pub const J2K_MODE_LOSSLESS: u32 = 0;
+/// Encode mode: irreversible 9/7 coding, optionally to rate or quality targets.
+pub const J2K_MODE_LOSSY: u32 = 1;
+/// Parameter flag: code three lossless components without the reversible colour transform.
+pub const J2K_PARAMS_NO_COLOR_TRANSFORM: u32 = 1;
+/// Every parameter flag this ABI revision defines.
+pub(crate) const J2K_PARAMS_FLAGS: u32 = J2K_PARAMS_NO_COLOR_TRANSFORM;
+/// Decomposition levels: the codec's default for the image geometry.
+pub const J2K_LEVELS_AUTO: u32 = u32::MAX;
+/// Layer-resolution-component-position packet progression (the default).
+pub const J2K_PROGRESSION_LRCP: u32 = 0;
+/// Resolution-layer-component-position packet progression.
+pub const J2K_PROGRESSION_RLCP: u32 = 1;
+/// Resolution-position-component-layer packet progression.
+pub const J2K_PROGRESSION_RPCL: u32 = 2;
+/// Position-component-resolution-layer packet progression.
+pub const J2K_PROGRESSION_PCRL: u32 = 3;
+/// Component-position-resolution-layer packet progression.
+pub const J2K_PROGRESSION_CPRL: u32 = 4;
+/// Lossy targets: none; the codec's default quantization.
+pub const J2K_RATE_NONE: u32 = 0;
+/// Lossy targets in codestream bits per image pixel.
+pub const J2K_RATE_BITS_PER_PIXEL: u32 = 1;
+/// Lossy targets in codestream bytes.
+pub const J2K_RATE_BYTES: u32 = 2;
+/// Lossy targets in PSNR decibels against the samples.
+pub const J2K_RATE_PSNR_DB: u32 = 3;
+/// Marker segment: SOP before each packet.
+pub const J2K_MARKER_SOP: u32 = 1;
+/// Marker segment: EPH after each packet header.
+pub const J2K_MARKER_EPH: u32 = 2;
+/// Marker segment: TLM tile-part lengths.
+pub const J2K_MARKER_TLM: u32 = 4;
+/// Marker segment: PLT packet lengths in each tile-part header.
+pub const J2K_MARKER_PLT: u32 = 8;
+/// Marker segment: PLM packet lengths in the main header.
+pub const J2K_MARKER_PLM: u32 = 16;
+/// Marker segment: PPM packed packet headers in the main header.
+pub const J2K_MARKER_PPM: u32 = 32;
+/// Marker segment: PPT packed packet headers in each tile-part header.
+pub const J2K_MARKER_PPT: u32 = 64;
+/// Every marker segment bit this ABI revision defines.
+pub(crate) const J2K_MARKERS: u32 = 127;
+
+/// Colour specification: none; a raw codestream carries no COLR box.
+pub const J2K_COLOR_NONE: u32 = 0;
+/// Colour specification: an enumerated colour space (`value` holds `EnumCS`).
+pub const J2K_COLOR_ENUMERATED: u32 = 1;
+/// Colour specification: an embedded ICC profile.
+pub const J2K_COLOR_ICC: u32 = 2;
+/// Colour specification: a COLR method this codec does not interpret (`value` holds it).
+pub const J2K_COLOR_UNKNOWN: u32 = 3;
+
 /// Unsigned eight-bit samples.
 pub const J2K_U8: u32 = 1;
 /// Unsigned sixteen-bit samples, stored little-endian.
@@ -431,6 +485,132 @@ impl Default for J2kCEncodeOptions {
             bit_depth: 0,
             flags: 0,
             reserved: 0,
+        }
+    }
+}
+
+/// Coding parameters for [`crate::j2k_encode`]. Zero fields select defaults,
+/// except `levels`, whose default is [`J2K_LEVELS_AUTO`].
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct J2kCEncodeParams {
+    /// Initialize to this structure's size and ABI 1.
+    pub header: J2kCHeader,
+    /// `J2K_MODE_LOSSLESS` or `J2K_MODE_LOSSY`.
+    pub mode: u32,
+    /// `J2K_PARAMS_*` flags; other bits must be zero.
+    pub flags: u32,
+    /// Maximum wavelet decompositions, or `J2K_LEVELS_AUTO`; the image and
+    /// tile geometry can lower it.
+    pub levels: u32,
+    /// One of the `J2K_PROGRESSION_*` constants.
+    pub progression: u32,
+    /// Tile width; zero with a zero tile height codes one tile.
+    pub tile_width: u32,
+    /// Tile height; zero with a zero tile width codes one tile.
+    pub tile_height: u32,
+    /// `J2K_MARKER_*` segments to write; other bits must be zero.
+    pub markers: u32,
+    /// Complete packets per tile-part, 1–65535; zero places no limit.
+    pub tile_part_packets: u32,
+    /// Lossless quality layers, 1–32; zero writes one. Lossy layers come from `targets`.
+    pub quality_layers: u32,
+    /// Lossy HTJ2K visual quality factor, 1–100; zero uses none.
+    pub qfactor: u32,
+    /// Lossy: one of the `J2K_RATE_*` constants, the unit of `targets`.
+    pub rate: u32,
+    /// Lossy: zero, one codestream target, or 2–32 cumulative layer targets.
+    pub target_count: u32,
+    /// `target_count` ascending targets in `rate` units; byte targets are whole numbers.
+    pub targets: *const f64,
+    /// With `J2K_ENCODE_FILE`: the ICC profile for the COLR box. Null writes
+    /// the enumerated colour space the samples imply.
+    pub icc_profile: *const u8,
+    /// Byte length of `icc_profile`.
+    pub icc_profile_len: usize,
+}
+
+impl Default for J2kCEncodeParams {
+    fn default() -> Self {
+        Self {
+            header: J2kCHeader::of::<Self>(),
+            mode: J2K_MODE_LOSSLESS,
+            flags: 0,
+            levels: J2K_LEVELS_AUTO,
+            progression: J2K_PROGRESSION_LRCP,
+            tile_width: 0,
+            tile_height: 0,
+            markers: 0,
+            tile_part_packets: 0,
+            quality_layers: 0,
+            qfactor: 0,
+            rate: J2K_RATE_NONE,
+            target_count: 0,
+            targets: std::ptr::null(),
+            icc_profile: std::ptr::null(),
+            icc_profile_len: 0,
+        }
+    }
+}
+
+/// What an encode produced, measured on its codestream.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct J2kCEncodeReport {
+    /// Initialize to this structure's size and ABI 1.
+    pub header: J2kCHeader,
+    /// Codestream length, excluding any JP2/JPH wrapper.
+    pub codestream_bytes: u64,
+    /// Codestream bits per image pixel.
+    pub bits_per_pixel: f64,
+    /// PSNR against the samples when the encode measured it, otherwise zero.
+    pub psnr_db: f64,
+    /// Quality layers in the codestream.
+    pub quality_layers: u32,
+    /// Written as zero.
+    pub reserved: u32,
+}
+
+impl Default for J2kCEncodeReport {
+    fn default() -> Self {
+        Self {
+            header: J2kCHeader::of::<Self>(),
+            codestream_bytes: 0,
+            bits_per_pixel: 0.0,
+            psnr_db: 0.0,
+            quality_layers: 0,
+            reserved: 0,
+        }
+    }
+}
+
+/// The colour specification decoding applies: the file's first COLR box.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct J2kCColorInfo {
+    /// Initialize to this structure's size and ABI 1.
+    pub header: J2kCHeader,
+    /// One of the `J2K_COLOR_*` constants.
+    pub specification: u32,
+    /// `EnumCS` for an enumerated space, the COLR method for an unknown one, else zero.
+    pub value: u32,
+    /// COLR boxes in the file; boxes after the first are preserved, not applied.
+    pub specifications: u32,
+    /// Written as zero.
+    pub reserved: u32,
+    /// Byte length of the applied ICC profile; zero without one.
+    pub icc_profile_bytes: u64,
+}
+
+impl Default for J2kCColorInfo {
+    fn default() -> Self {
+        Self {
+            header: J2kCHeader::of::<Self>(),
+            specification: J2K_COLOR_NONE,
+            value: 0,
+            specifications: 0,
+            reserved: 0,
+            icc_profile_bytes: 0,
         }
     }
 }

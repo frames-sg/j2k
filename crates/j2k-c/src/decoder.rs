@@ -6,8 +6,9 @@
 
 use crate::{
     abi::{
-        J2kCComponentInfo, J2kCDecodeOptions, J2kCImageInfo, J2kCOpenOptions, J2kCOutputInfo,
-        J2K_ALLOCATION_FAILED, J2K_ALPHA_NONE, J2K_ALPHA_PREMULTIPLIED, J2K_ALPHA_STRAIGHT,
+        J2kCColorInfo, J2kCComponentInfo, J2kCDecodeOptions, J2kCImageInfo, J2kCOpenOptions,
+        J2kCOutputInfo, J2K_ALLOCATION_FAILED, J2K_ALPHA_NONE, J2K_ALPHA_PREMULTIPLIED,
+        J2K_ALPHA_STRAIGHT, J2K_COLOR_ENUMERATED, J2K_COLOR_ICC, J2K_COLOR_NONE, J2K_COLOR_UNKNOWN,
         J2K_I16_LE, J2K_INVALID_INPUT, J2K_OPEN_FLAGS, J2K_OPEN_LENIENT, J2K_U16_LE, J2K_U8,
         J2K_UNSUPPORTED, J2K_WARNING_LENIENT_RECOVERY,
     },
@@ -15,8 +16,8 @@ use crate::{
 };
 use j2k::{
     BatchAlpha, BatchDecodeOptions, BatchLayout, CpuBatchDecoder, CpuBatchSamples, DecodeRequest,
-    DecodeSettings, Downscale, EncodedImage, J2kDecodeControl, J2kDecodeWarning, J2kDecoder,
-    J2kReferenceGrid, J2kSupportInfo, NativeSampleType, PreparedBatch, Rect,
+    DecodeSettings, Downscale, EncodedImage, J2kColorSpec, J2kDecodeControl, J2kDecodeWarning,
+    J2kDecoder, J2kReferenceGrid, J2kSupportInfo, NativeSampleType, PreparedBatch, Rect,
 };
 use std::{num::NonZeroUsize, sync::Arc};
 
@@ -137,6 +138,31 @@ impl Decoder {
             tile_height: self.grid.tile_size.1,
             ..Default::default()
         }
+    }
+
+    /// The colour specification decoding applies: the file's first COLR box.
+    pub(crate) fn color_info(&self) -> J2kCColorInfo {
+        let Some(metadata) = self.support.file_metadata.as_ref() else {
+            return J2kCColorInfo::default();
+        };
+        let (specification, value) = match metadata.primary_color_spec() {
+            None => (J2K_COLOR_NONE, 0),
+            Some(J2kColorSpec::Enumerated { value }) => (J2K_COLOR_ENUMERATED, *value),
+            Some(J2kColorSpec::IccProfile { .. }) => (J2K_COLOR_ICC, 0),
+            Some(J2kColorSpec::Unknown { method }) => (J2K_COLOR_UNKNOWN, u32::from(*method)),
+        };
+        J2kCColorInfo {
+            specification,
+            value,
+            specifications: u32::try_from(metadata.color_specs.len()).unwrap_or(u32::MAX),
+            icc_profile_bytes: self.icc_profile().map_or(0, |profile| profile.len() as u64),
+            ..Default::default()
+        }
+    }
+
+    /// The ICC profile decoding applies, when the first COLR box carries one.
+    pub(crate) fn icc_profile(&self) -> Option<&[u8]> {
+        self.support.file_metadata.as_ref()?.icc_profile()
     }
 
     /// The source image's width and height.

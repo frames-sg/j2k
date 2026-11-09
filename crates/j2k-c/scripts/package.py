@@ -215,6 +215,13 @@ def main():
         raise RuntimeError("Unexpanded placeholder in crates/j2k-c/cmake/J2KConfig.cmake.in")
     config_dir = output / "lib" / "cmake" / "J2K"
     (config_dir / "J2KConfig.cmake").write_text(config, encoding="utf-8")
+    pkgconfig_dir = output / "lib" / "pkgconfig"
+    pkgconfig_dir.mkdir()
+    pkgconfig = (CRATE / "pkgconfig" / "j2k.pc.in").read_text(encoding="utf-8")
+    pkgconfig = pkgconfig.replace("@VERSION@", version).replace("@URL@", package["repository"] or "")
+    if re.search(r"@[A-Z_]+@", pkgconfig):
+        raise RuntimeError("Unexpanded placeholder in crates/j2k-c/pkgconfig/j2k.pc.in")
+    (pkgconfig_dir / "j2k.pc").write_text(pkgconfig, encoding="utf-8")
     (config_dir / "J2KConfigVersion.cmake").write_text(
         f'set(PACKAGE_VERSION "{version}")\n'
         'if(PACKAGE_FIND_VERSION VERSION_EQUAL PACKAGE_VERSION)\n'

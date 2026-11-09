@@ -74,13 +74,9 @@ private:
     j2k_cancellation *handle_ = nullptr;
 };
 
-// Encode interleaved samples losslessly (see j2k_encode_lossless).
-inline std::vector<uint8_t> encode_lossless(const uint8_t *samples, size_t length,
-                                            const j2k_encode_options &options) {
-    uint8_t *data = nullptr;
-    size_t size = 0;
-    j2k_error detail{};
-    check(j2k_encode_lossless(samples, length, &options, &data, &size, &detail), detail);
+namespace detail {
+// Copies a library-allocated buffer into a vector and releases it either way.
+inline std::vector<uint8_t> take_buffer(uint8_t *data, size_t size) {
     try {
         std::vector<uint8_t> result(data, data + size);
         j2k_buffer_free(data, size);
@@ -89,6 +85,30 @@ inline std::vector<uint8_t> encode_lossless(const uint8_t *samples, size_t lengt
         j2k_buffer_free(data, size);
         throw;
     }
+}
+} // namespace detail
+
+// Encode interleaved samples losslessly (see j2k_encode_lossless).
+inline std::vector<uint8_t> encode_lossless(const uint8_t *samples, size_t length,
+                                            const j2k_encode_options &options) {
+    uint8_t *data = nullptr;
+    size_t size = 0;
+    j2k_error detail{};
+    check(j2k_encode_lossless(samples, length, &options, &data, &size, &detail), detail);
+    return detail::take_buffer(data, size);
+}
+
+// Encode interleaved samples with coding parameters (see j2k_encode). report,
+// when given, receives what the codec measured.
+inline std::vector<uint8_t> encode(const uint8_t *samples, size_t length,
+                                   const j2k_encode_options &options,
+                                   const j2k_encode_params &params = J2K_ENCODE_PARAMS_INIT,
+                                   j2k_encode_report *report = nullptr) {
+    uint8_t *data = nullptr;
+    size_t size = 0;
+    j2k_error detail{};
+    check(j2k_encode(samples, length, &options, &params, &data, &size, report, &detail), detail);
+    return detail::take_buffer(data, size);
 }
 
 // Move-only; serial access per instance. The constructor copies encoded bytes.
@@ -126,6 +146,24 @@ public:
         j2k_error detail{};
         const auto status = j2k_decoder_component_info(handle_, index, &result, &detail);
         check(status, detail);
+        return result;
+    }
+
+    // The first COLR box, which decoding applies.
+    j2k_color_info color_info() {
+        j2k_color_info result = J2K_COLOR_INFO_INIT;
+        j2k_error detail{};
+        check(j2k_decoder_color_info(handle_, &result, &detail), detail);
+        return result;
+    }
+
+    // The ICC profile decoding applies; empty without one.
+    std::vector<uint8_t> icc_profile() {
+        const auto color = color_info();
+        if (color.specification != J2K_COLOR_ICC) return {};
+        std::vector<uint8_t> result(static_cast<size_t>(color.icc_profile_bytes));
+        j2k_error detail{};
+        check(j2k_decoder_icc_profile(handle_, result.data(), result.size(), &detail), detail);
         return result;
     }
 

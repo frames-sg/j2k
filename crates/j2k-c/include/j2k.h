@@ -49,6 +49,39 @@ typedef uint32_t j2k_status;
 #define J2K_ENCODE_HTJ2K UINT32_C(1)
 #define J2K_ENCODE_SIGNED UINT32_C(2)
 #define J2K_ENCODE_FILE UINT32_C(4)
+/* j2k_encode_params.mode: reversible lossless coding (the default), or
+ * irreversible lossy coding, optionally to rate or quality targets. */
+#define J2K_MODE_LOSSLESS UINT32_C(0)
+#define J2K_MODE_LOSSY UINT32_C(1)
+/* j2k_encode_params.flags: code three lossless components without the
+ * reversible colour transform. */
+#define J2K_PARAMS_NO_COLOR_TRANSFORM UINT32_C(1)
+/* j2k_encode_params.levels: the codec's default for the image geometry. */
+#define J2K_LEVELS_AUTO UINT32_C(4294967295)
+/* j2k_encode_params.progression: packet progression order. */
+#define J2K_PROGRESSION_LRCP UINT32_C(0)
+#define J2K_PROGRESSION_RLCP UINT32_C(1)
+#define J2K_PROGRESSION_RPCL UINT32_C(2)
+#define J2K_PROGRESSION_PCRL UINT32_C(3)
+#define J2K_PROGRESSION_CPRL UINT32_C(4)
+/* j2k_encode_params.rate: the unit of lossy targets. */
+#define J2K_RATE_NONE UINT32_C(0)
+#define J2K_RATE_BITS_PER_PIXEL UINT32_C(1)
+#define J2K_RATE_BYTES UINT32_C(2)
+#define J2K_RATE_PSNR_DB UINT32_C(3)
+/* j2k_encode_params.markers: optional marker segments to write. */
+#define J2K_MARKER_SOP UINT32_C(1)
+#define J2K_MARKER_EPH UINT32_C(2)
+#define J2K_MARKER_TLM UINT32_C(4)
+#define J2K_MARKER_PLT UINT32_C(8)
+#define J2K_MARKER_PLM UINT32_C(16)
+#define J2K_MARKER_PPM UINT32_C(32)
+#define J2K_MARKER_PPT UINT32_C(64)
+/* j2k_color_info.specification: the first COLR box, which decoding applies. */
+#define J2K_COLOR_NONE UINT32_C(0)
+#define J2K_COLOR_ENUMERATED UINT32_C(1)
+#define J2K_COLOR_ICC UINT32_C(2)
+#define J2K_COLOR_UNKNOWN UINT32_C(3)
 
 #define J2K_U8 UINT32_C(1)
 #define J2K_U16_LE UINT32_C(2)
@@ -170,6 +203,49 @@ typedef struct j2k_encode_options {
     uint32_t reserved;   /* Must be zero. */
 } j2k_encode_options;
 
+/* Coding parameters for j2k_encode. Zero fields select defaults, except
+ * levels, whose default J2K_LEVELS_AUTO the init macro sets. The codec
+ * validates every combination; see docs/api.md. */
+typedef struct j2k_encode_params {
+    j2k_header header;
+    uint32_t mode;              /* J2K_MODE_*. */
+    uint32_t flags;             /* J2K_PARAMS_*; other bits must be zero. */
+    uint32_t levels;            /* Maximum wavelet decompositions, or J2K_LEVELS_AUTO. */
+    uint32_t progression;       /* J2K_PROGRESSION_*. */
+    uint32_t tile_width;        /* Both zero = one tile. */
+    uint32_t tile_height;
+    uint32_t markers;           /* J2K_MARKER_* bits; other bits must be zero. */
+    uint32_t tile_part_packets; /* Complete packets per tile-part, 1-65535; 0 = no limit. */
+    uint32_t quality_layers;    /* Lossless only: 1-32; 0 = one. */
+    uint32_t qfactor;           /* Lossy HTJ2K only: 1-100; 0 = none. */
+    uint32_t rate;              /* Lossy: J2K_RATE_*, the unit of targets. */
+    uint32_t target_count;      /* Lossy: 0, 1 codestream target, or 2-32 cumulative layers. */
+    const double *targets;      /* Ascending targets in rate units; bytes are whole numbers. */
+    const uint8_t *icc_profile; /* With J2K_ENCODE_FILE: the COLR ICC profile; NULL = enumerated. */
+    size_t icc_profile_len;
+} j2k_encode_params;
+
+/* What an encode produced, measured on its codestream. */
+typedef struct j2k_encode_report {
+    j2k_header header;
+    uint64_t codestream_bytes; /* Excluding any JP2/JPH wrapper. */
+    double bits_per_pixel;     /* Codestream bits per image pixel. */
+    double psnr_db;            /* When the encode measured it; otherwise 0. */
+    uint32_t quality_layers;
+    uint32_t reserved;         /* Written as zero. */
+} j2k_encode_report;
+
+/* The colour specification decoding applies: the file's first COLR box. */
+typedef struct j2k_color_info {
+    j2k_header header;
+    uint32_t specification;     /* J2K_COLOR_*. */
+    uint32_t value;             /* EnumCS when ENUMERATED (16 sRGB, 17 greyscale, 18 sYCC),
+                                 * the COLR method when UNKNOWN, otherwise 0. */
+    uint32_t specifications;    /* COLR boxes; later boxes are preserved, not applied. */
+    uint32_t reserved;          /* Written as zero. */
+    uint64_t icc_profile_bytes; /* Applied ICC profile length; 0 without one. */
+} j2k_color_info;
+
 /* Receives one row of row_bytes bytes, valid only during the call. Return 0 to
  * continue or nonzero to stop the decode with J2K_STOPPED. */
 typedef int32_t (*j2k_row_callback)(
@@ -184,6 +260,9 @@ typedef int32_t (*j2k_row_callback)(
 #define J2K_OUTPUT_INFO_INIT {J2K_HEADER_INIT(j2k_output_info), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 #define J2K_REGION_PLAN_INIT {J2K_HEADER_INIT(j2k_region_plan), J2K_OUTPUT_INFO_INIT, 0, 0, 0, 0, 0, 0, 0, 0}
 #define J2K_ENCODE_OPTIONS_INIT {J2K_HEADER_INIT(j2k_encode_options), 0, 0, 0, 0, 0, 0}
+#define J2K_ENCODE_PARAMS_INIT {J2K_HEADER_INIT(j2k_encode_params), J2K_MODE_LOSSLESS, 0, J2K_LEVELS_AUTO, J2K_PROGRESSION_LRCP, 0, 0, 0, 0, 0, 0, J2K_RATE_NONE, 0, NULL, NULL, 0}
+#define J2K_ENCODE_REPORT_INIT {J2K_HEADER_INIT(j2k_encode_report), 0, 0, 0, 0, 0}
+#define J2K_COLOR_INFO_INIT {J2K_HEADER_INIT(j2k_color_info), J2K_COLOR_NONE, 0, 0, 0, 0}
 
 /* Pointer contract for every call:
  * - Pointers must reference valid, aligned storage for their declared lengths.
@@ -225,6 +304,16 @@ J2K_API j2k_status j2k_decoder_info(
 J2K_API j2k_status j2k_decoder_component_info(
     j2k_decoder *decoder, uint32_t index,
     j2k_component_info *out, j2k_error *error);
+
+/* The first COLR box, which decoding applies; a raw codestream reports
+ * J2K_COLOR_NONE. has_icc_profile in j2k_image_info covers every COLR box. */
+J2K_API j2k_status j2k_decoder_color_info(
+    j2k_decoder *decoder, j2k_color_info *out, j2k_error *error);
+
+/* Copies the applied ICC profile (j2k_color_info.icc_profile_bytes long).
+ * J2K_INVALID_ARGUMENT without one; J2K_BUFFER_TOO_SMALL leaves output untouched. */
+J2K_API j2k_status j2k_decoder_icc_profile(
+    j2k_decoder *decoder, uint8_t *output, size_t output_len, j2k_error *error);
 
 /* Prepare immutable native input facts explicitly, outside per-operation
  * limits/cancellation. Optional: a native exact operation on an unprepared
@@ -298,7 +387,19 @@ J2K_API j2k_status j2k_encode_lossless(
     const uint8_t *samples, size_t samples_len, const j2k_encode_options *options,
     uint8_t **out, size_t *out_len, j2k_error *error);
 
-/* Releases a buffer from j2k_encode_lossless with its length. NULL is ignored. */
+/* Encodes interleaved samples with coding parameters (NULL = lossless
+ * defaults, as j2k_encode_lossless) into a buffer this library allocates. The
+ * encoder decodes its result before returning it; lossless output must match
+ * the samples. On success *out and *out_len describe the encoded bytes and
+ * report (may be NULL) what the codec measured; release the bytes with
+ * j2k_buffer_free. On failure *out is NULL, *out_len 0, and report unwritten. */
+J2K_API j2k_status j2k_encode(
+    const uint8_t *samples, size_t samples_len, const j2k_encode_options *options,
+    const j2k_encode_params *params, uint8_t **out, size_t *out_len,
+    j2k_encode_report *report, j2k_error *error);
+
+/* Releases a buffer from j2k_encode or j2k_encode_lossless with its length.
+ * NULL is ignored. */
 J2K_API void j2k_buffer_free(uint8_t *data, size_t length);
 
 #ifdef __cplusplus

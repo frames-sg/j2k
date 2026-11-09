@@ -4,13 +4,14 @@
 
 use crate::{
     abi::{
-        J2kCComponentInfo, J2kCDecodeOptions, J2kCEncodeOptions, J2kCError, J2kCHeader,
-        J2kCImageInfo, J2kCOpenOptions, J2kCOperationOptions, J2kCOutputInfo, J2kCRegionPlan,
-        J2K_ABI_MISMATCH, J2K_ABI_VERSION, J2K_BUFFER_TOO_SMALL, J2K_INTERNAL_ERROR,
-        J2K_INVALID_ARGUMENT, J2K_INVALID_INPUT, J2K_PANIC,
+        J2kCColorInfo, J2kCComponentInfo, J2kCDecodeOptions, J2kCEncodeOptions, J2kCEncodeParams,
+        J2kCEncodeReport, J2kCError, J2kCHeader, J2kCImageInfo, J2kCOpenOptions,
+        J2kCOperationOptions, J2kCOutputInfo, J2kCRegionPlan, J2K_ABI_MISMATCH, J2K_ABI_VERSION,
+        J2K_BUFFER_TOO_SMALL, J2K_INTERNAL_ERROR, J2K_INVALID_ARGUMENT, J2K_INVALID_INPUT,
+        J2K_PANIC,
     },
     decoder::Decoder,
-    encode::encode_lossless,
+    encode::{encode, EncodeParams},
     error::{Error, Result},
     operations::OperationRequest,
 };
@@ -362,6 +363,62 @@ pub unsafe extern "C" fn j2k_decoder_component_info(
     }
 }
 
+/// Read the colour specification decoding applies: the file's first COLR box.
+///
+/// # Safety
+/// Same storage and exclusivity requirements as [`j2k_decoder_info`].
+#[no_mangle]
+pub unsafe extern "C" fn j2k_decoder_color_info(
+    decoder: *mut J2kCDecoder,
+    out: *mut J2kCColorInfo,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: Caller supplies exclusive live storage; validate the output prefix before mutation.
+    unsafe {
+        boundary(error, || {
+            validate_struct(out)?;
+            with_decoder(decoder, |state| {
+                out.write(state.color_info());
+                Ok(())
+            })
+        })
+    }
+}
+
+/// Copy the ICC profile decoding applies into caller-owned storage.
+///
+/// # Safety
+/// The decoder must be live and exclusively used. `output` must cover
+/// `output_len` writable bytes disjoint from every other argument. `error` may
+/// be null; otherwise it must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn j2k_decoder_icc_profile(
+    decoder: *mut J2kCDecoder,
+    output: *mut u8,
+    output_len: usize,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: Caller supplies live disjoint storage; the copy is bounded by the checked length.
+    unsafe {
+        boundary(error, || {
+            check_bytes(output, output_len)?;
+            with_decoder(decoder, |state| {
+                let profile = state.icc_profile().ok_or_else(|| {
+                    Error::argument("the applied colour specification has no ICC profile")
+                })?;
+                if output_len < profile.len() {
+                    return Err(Error::new(
+                        J2K_BUFFER_TOO_SMALL,
+                        "output is shorter than the ICC profile",
+                    ));
+                }
+                ptr::copy_nonoverlapping(profile.as_ptr(), output, profile.len());
+                Ok(())
+            })
+        })
+    }
+}
+
 /// Prepare a decode request and report its exact native output layout.
 ///
 /// # Safety
@@ -516,7 +573,8 @@ impl RowTarget {
     }
 }
 
-/// Encode interleaved samples losslessly into a buffer this library allocates.
+/// Encode interleaved samples losslessly into a buffer this library allocates:
+/// [`j2k_encode`] with default lossless parameters and no report.
 ///
 /// # Safety
 /// `samples` must cover `samples_len` readable bytes. `options` must be a valid
@@ -532,6 +590,42 @@ pub unsafe extern "C" fn j2k_encode_lossless(
     out_len: *mut usize,
     error: *mut J2kCError,
 ) -> u32 {
+    // SAFETY: The caller's contract for this call is j2k_encode's with null
+    // parameters (lossless defaults) and a null report.
+    unsafe {
+        j2k_encode(
+            samples,
+            samples_len,
+            options,
+            ptr::null(),
+            out,
+            out_len,
+            ptr::null_mut(),
+            error,
+        )
+    }
+}
+
+/// Encode interleaved samples with coding parameters into a buffer this
+/// library allocates, optionally reporting what the codec measured.
+///
+/// # Safety
+/// As [`j2k_encode_lossless`]. `params` may be null for lossless defaults;
+/// otherwise it must be a valid ABI structure whose `targets` cover
+/// `target_count` readable values and whose `icc_profile` covers
+/// `icc_profile_len` readable bytes. `report` may be null; otherwise it must
+/// be a writable, initialized ABI structure disjoint from all other arguments.
+#[no_mangle]
+pub unsafe extern "C" fn j2k_encode(
+    samples: *const u8,
+    samples_len: usize,
+    options: *const J2kCEncodeOptions,
+    params: *const J2kCEncodeParams,
+    out: *mut *mut u8,
+    out_len: *mut usize,
+    report: *mut J2kCEncodeReport,
+    error: *mut J2kCError,
+) -> u32 {
     if check_pointer(out).is_ok() && check_pointer(out_len).is_ok() {
         // SAFETY: Both slots are non-null, aligned and writable by contract;
         // clearing them first keeps the empty-on-failure promise.
@@ -545,22 +639,73 @@ pub unsafe extern "C" fn j2k_encode_lossless(
         boundary(error, || {
             check_pointer(out)?;
             check_pointer(out_len)?;
+            if !report.is_null() {
+                validate_struct(report)?;
+            }
             if options.is_null() {
                 return Err(Error::argument("encode options are required"));
             }
             let options = read_options(options)?;
+            let params = encode_params(params)?;
             check_bytes(samples, samples_len)?;
-            let encoded = encode_lossless(slice::from_raw_parts(samples, samples_len), options)?;
-            let encoded = encoded.into_boxed_slice();
-            let length = encoded.len();
-            out.write(Box::into_raw(encoded).cast::<u8>());
+            let encoded = encode(
+                slice::from_raw_parts(samples, samples_len),
+                &options,
+                &params,
+            )?;
+            let bytes = encoded.bytes.into_boxed_slice();
+            let length = bytes.len();
+            out.write(Box::into_raw(bytes).cast::<u8>());
             out_len.write(length);
+            if !report.is_null() {
+                report.write(encoded.report);
+            }
             Ok(())
         })
     }
 }
 
-/// Release a buffer from [`j2k_encode_lossless`]. A null buffer is a no-op.
+/// The parameters `params` points at, with its arrays as slices, or lossless
+/// defaults for a null pointer.
+///
+/// # Safety
+/// `params` is null or a readable ABI structure whose `targets` and
+/// `icc_profile` arrays are readable for their declared lengths while the
+/// returned borrow is used.
+unsafe fn encode_params<'a>(params: *const J2kCEncodeParams) -> Result<EncodeParams<'a>> {
+    if params.is_null() {
+        return Ok(EncodeParams::default());
+    }
+    // SAFETY: Caller supplies a readable structure prefix.
+    let fields = unsafe { read_options(params)? };
+    let targets = match usize::try_from(fields.target_count) {
+        Ok(0) => &[][..],
+        Ok(count) => {
+            check_slice(fields.targets, count)?;
+            // SAFETY: The checked, aligned pointer covers `count` values by contract.
+            unsafe { slice::from_raw_parts(fields.targets, count) }
+        }
+        Err(_) => return Err(Error::argument("target count exceeds the address space")),
+    };
+    let icc_profile = match (fields.icc_profile.is_null(), fields.icc_profile_len) {
+        (true, 0) => None,
+        (true, _) => return Err(Error::argument("an ICC profile length without a profile")),
+        (false, 0) => return Err(Error::argument("an empty ICC profile")),
+        (false, length) => {
+            check_bytes(fields.icc_profile, length)?;
+            // SAFETY: The checked pointer covers `length` bytes by contract.
+            Some(unsafe { slice::from_raw_parts(fields.icc_profile, length) })
+        }
+    };
+    Ok(EncodeParams {
+        fields,
+        targets,
+        icc_profile,
+    })
+}
+
+/// Release a buffer from [`j2k_encode`] or [`j2k_encode_lossless`]. A null
+/// buffer is a no-op.
 ///
 /// # Safety
 /// `data` must be null or a buffer this library returned, with the length it
@@ -568,7 +713,7 @@ pub unsafe extern "C" fn j2k_encode_lossless(
 #[no_mangle]
 pub unsafe extern "C" fn j2k_buffer_free(data: *mut u8, length: usize) {
     if !data.is_null() {
-        // SAFETY: `j2k_encode_lossless` made this pointer and length from a
+        // SAFETY: `j2k_encode` made this pointer and length from a
         // boxed slice, which the caller hands back once.
         drop(unsafe { Box::from_raw(ptr::slice_from_raw_parts_mut(data, length)) });
     }
@@ -582,8 +727,14 @@ fn check_pointer<T>(pointer: *const T) -> Result<()> {
 }
 
 fn check_bytes(pointer: *const u8, length: usize) -> Result<()> {
+    check_slice(pointer, length)
+}
+
+/// A non-null, aligned pointer to `length` values within the address space.
+fn check_slice<T>(pointer: *const T, length: usize) -> Result<()> {
     check_pointer(pointer)?;
-    if length > isize::MAX as usize || (pointer as usize).checked_add(length).is_none() {
+    let bytes = length.saturating_mul(size_of::<T>());
+    if bytes > isize::MAX as usize || (pointer as usize).checked_add(bytes).is_none() {
         return Err(Error::argument(
             "buffer length exceeds the host address space",
         ));

@@ -11,6 +11,12 @@ Staged workspace version: `0.14.0`.
   return the Colour Specification box decoding applies (the first, per ISO/IEC
   15444-1 I.5.3.3) and its ICC profile; `has_icc_profile` still covers every
   box.
+- The C ABI completes encoding and colour reporting: `j2k_encode` with
+  `j2k_encode_params` and `j2k_encode_report` (lossy rate/size/PSNR targets,
+  quality layers, Qfactor, levels, progression, tiles, tile-part packets,
+  markers, ICC profiles in JP2/JPH output), `j2k_decoder_color_info`,
+  `j2k_decoder_icc_profile`, and a relocatable pkg-config file; existing ABI-1
+  layouts are unchanged. See `crates/j2k-c/CHANGELOG.md`.
 - Exact-operation planning for bindings: `CpuBatchDecoder::plan_operations`
   plans exact operations as `decode_operations` prepares them and returns each
   operation's output contract (`PreparedOperationPlan`) or the error its decode

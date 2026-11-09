@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Encode with coding parameters through `j2k_encode`, a `j2k_encode_params`
+  (`J2K_ENCODE_PARAMS_INIT`), and an optional `j2k_encode_report`: lossy
+  coding to bits-per-pixel, byte, or PSNR targets or cumulative quality
+  layers, HTJ2K Qfactor, decomposition levels, progression order, tiles,
+  tile-part packet limits, SOP/EPH/TLM/PLT/PLM/PPM/PPT markers, lossless
+  quality layers and colour-transform control, and an ICC profile in JP2/JPH
+  output. Fields map one to one onto the codec's encode options, which
+  validate them. `j2k_encode_lossless` is `j2k_encode` with `NULL` parameters.
+  C++ callers use `j2k::encode`.
+- Report the colour specification decoding applies, the file's first COLR box,
+  with `j2k_decoder_color_info`, and copy its ICC profile with
+  `j2k_decoder_icc_profile`; C++ adds `decoder::color_info` and
+  `decoder::icc_profile`. Existing ABI-1 structures keep their layouts.
+- Packages ship a relocatable pkg-config file, `lib/pkgconfig/j2k.pc`, beside
+  the CMake package; the package tests build a consumer through it.
+
 - Add exact region planning/decoding at native reductions 0–31 without changing
   existing ABI-1 layouts or the legacy 0–3 API. Native U8/U16/I16 values remain
   unchanged; explicit sRGB output provides bounded normalized U8 regions.
