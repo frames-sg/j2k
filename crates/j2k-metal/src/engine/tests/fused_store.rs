@@ -103,6 +103,62 @@ fn fused_last_level_stores_match_the_cpu_for_every_gray_output() {
     }
 }
 
+/// Signed sources of at most eight bits written to Gray16 keep their values
+/// as 16-bit two's complement on Metal, byte for byte as on the CPU.
+#[test]
+fn signed_narrow_gray16_stores_match_the_cpu() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+    let (width, height) = (65_u32, 49_u32);
+    for bit_depth in [1_u8, 4, 7, 8] {
+        // Every value of the precision, one two's-complement byte each.
+        let span = 1_i32 << bit_depth;
+        let samples: Vec<u8> = (0..i32::try_from(width * height).expect("fits i32"))
+            .map(|index| ((index * 7 + 3) % span - span / 2).to_le_bytes()[0])
+            .collect();
+        let options = EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 2,
+            ..EncodeOptions::default()
+        };
+        let bytes = encode_htj2k(&samples, width, height, 1, bit_depth, true, &options)
+            .expect("encode signed ramp");
+        let row_bytes = width as usize * 2;
+        let mut expected = vec![0; row_bytes * height as usize];
+        j2k::J2kDecoder::new(&bytes)
+            .expect("CPU decoder")
+            .decode_into(&mut expected, row_bytes, PixelFormat::Gray16)
+            .expect("CPU decode");
+        let mut cpu = j2k::J2kDecoder::new(&bytes).expect("CPU decoder");
+        let planes = cpu.decode_components().expect("CPU planes").planes()[0]
+            .samples()
+            .to_vec();
+        let values: Vec<f32> = expected
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|sample| f32::from(i16::from_le_bytes(*sample)))
+            .collect();
+        assert_eq!(
+            values, planes,
+            "{bit_depth}-bit CPU Gray16 keeps the values"
+        );
+        let surface = J2kDecoder::new(&bytes)
+            .expect("decoder")
+            .decode_request_to_device(MetalDecodeRequest::full(
+                PixelFormat::Gray16,
+                BackendRequest::Metal,
+            ))
+            .unwrap_or_else(|error| panic!("{bit_depth}-bit: {error}"));
+        assert_eq!(
+            surface.as_bytes().expect("surface bytes").as_ref(),
+            expected.as_slice(),
+            "{bit_depth}-bit Metal Gray16"
+        );
+    }
+}
+
 fn cpu_samples_bytes(samples: &j2k::CpuBatchSamples) -> Vec<u8> {
     match samples {
         j2k::CpuBatchSamples::U8(values) => values.clone(),
@@ -234,7 +290,7 @@ fn stacked_groups_split_into_runs_keep_every_image_in_place() {
 }
 
 #[test]
-fn separate_signed_seven_bit_store_uses_requested_gray16_widening() {
+fn separate_signed_seven_bit_store_keeps_gray16_values() {
     if !should_run_metal_runtime() {
         return;
     }
@@ -269,9 +325,9 @@ fn separate_signed_seven_bit_store_uses_requested_gray16_widening() {
         ))
         .unwrap();
     assert_eq!(fused_idwt_stores_for_test(), 0);
-    let expected: Vec<_> = [65535_u16, 65535, 0, 32509]
+    let expected: Vec<_> = [-64_i16, -1, 0, 63]
         .into_iter()
-        .flat_map(u16::to_le_bytes)
+        .flat_map(i16::to_le_bytes)
         .collect();
     assert_eq!(surface.as_bytes().unwrap().as_ref(), expected);
 }

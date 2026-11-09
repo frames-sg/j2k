@@ -97,12 +97,11 @@ pub enum J2kSampleInterpretation {
     /// Eight-bit sRGB colour, including restricted ICC conversion, with
     /// straight alpha when the output has an alpha channel.
     Srgb8,
-    /// Sixteen-bit samples in native-endian bytes. Components of more than
-    /// eight bits hold their integer values clamped to sixteen bits (two's
-    /// complement when signed). Components of at most eight bits are widened
-    /// across the 16-bit range: unsigned ones from their precision, signed
-    /// ones from their two's-complement byte, widened using the declared
-    /// precision and saturating at 65535.
+    /// Sixteen-bit samples in native-endian bytes. Signed components, and
+    /// unsigned ones of more than eight bits, hold their integer values
+    /// clamped to sixteen bits (two's complement when signed). Unsigned
+    /// components of at most eight bits are widened across the 16-bit range
+    /// from their precision.
     Native16,
 }
 
@@ -168,9 +167,8 @@ impl J2kRegionDecodePlan {
 /// describes the samples that
 /// [`CpuBatchDecoder::decode_operations`](crate::CpuBatchDecoder::decode_operations)
 /// returns for the region. A [`J2kDecoder`] decode to `region.format` writes
-/// what `region.sample_interpretation` describes instead: it scales unsigned
-/// precisions below eight bits to 0–255 and widens signed components of at
-/// most eight bits across the 16-bit range.
+/// what `region.sample_interpretation` describes: the same values, except
+/// that it scales unsigned precisions below eight bits to 0–255.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct J2kNativeRegionDecodePlan {

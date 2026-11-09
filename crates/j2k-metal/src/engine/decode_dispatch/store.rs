@@ -339,7 +339,7 @@ pub(in crate::engine) enum GrayStoreKind {
     U8 = 0,
     U16 = 1,
     I16 = 2,
-    /// A signed source of at most eight bits widened to Gray16.
+    /// A signed source of at most eight bits written to Gray16.
     I8WidenedU16 = 3,
 }
 

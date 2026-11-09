@@ -505,15 +505,18 @@ fn requested_format_precision_thresholds_preserve_native_store_contract() {
 
 #[test]
 fn signed_requested_u16_samples_match_cpu_storage() {
-    // As the CPU decoder: two's complement above eight bits; at most eight
-    // bits, the two's-complement byte widened by the declared precision.
+    // As the CPU decoder: two's complement at every precision.
     for (bits, sample, expected) in [
-        (4, -8.0, 65535),
-        (4, -1.0, 65535),
-        (4, 7.0, 30583),
-        (8, -128.0, 0x8080),
-        (8, -1.0, 65535),
-        (8, 127.0, 0x7f7f),
+        (1, -1.0, 0xffff),
+        (1, 0.0, 0),
+        (4, -8.0, 0xfff8),
+        (4, -1.0, 0xffff),
+        (4, 7.0, 7),
+        (7, -64.0, 0xffc0),
+        (7, 63.0, 63),
+        (8, -128.0, 0xff80),
+        (8, -1.0, 0xffff),
+        (8, 127.0, 127),
         (12, -2048.0, 0xf800),
         (12, -1.0, 0xffff),
         (12, 2047.0, 2047),

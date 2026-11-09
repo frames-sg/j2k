@@ -400,7 +400,7 @@ fn native_and_requested_formats_have_distinct_precision_contracts() {
                                 )
                                 .unwrap();
                                 vec![value]
-                            } else if bits <= 8 {
+                            } else if bits <= 8 && !signed {
                                 let storage = i32::from(v.to_le_bytes()[0]);
                                 let value = u16::try_from(
                                     ((storage * 65535 + unsigned_max / 2) / unsigned_max)

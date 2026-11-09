@@ -370,9 +370,8 @@ kernel void j2k_store_component_gray_u16(
     output[indices.dst_idx] = pack_to_u16(j2k_shift_centered_sample(input[indices.src_idx], params.addend, true), params.max_value, params.u16_scale);
 }
 
-// Signed sources of at most eight bits written to Gray16: the CPU takes the
-// sample's two's-complement byte and widens it using the declared precision.
-// At eight bits this is x * 257, so -128 becomes 0x8080.
+// Signed sources of at most eight bits written to Gray16 keep their values as
+// 16-bit two's complement, as the CPU writes them: -128 becomes 0xff80.
 kernel void j2k_store_component_gray_i8_widened_u16(
     device const float *input [[buffer(0)]],
     device ushort *output [[buffer(1)]],

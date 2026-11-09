@@ -484,8 +484,8 @@ impl<'a> J2kDecoder<'a> {
     /// are finished instead of holding the planes: at 8 bits, and at 16 bits
     /// for images whose components share one precision of at most 24 bits.
     /// A 16-bit output holds each sample's value clamped to the 16-bit range
-    /// (two's complement when signed); samples of at most 8 bits are widened
-    /// across it.
+    /// (two's complement when signed); unsigned samples of at most 8 bits are
+    /// widened across it.
     ///
     /// # Errors
     /// Returns [`J2kError`] when the format is unsupported, the output buffer

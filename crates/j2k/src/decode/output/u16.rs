@@ -249,23 +249,25 @@ fn write_color_component_rows_u16(
 /// How [`U16Conversion`] turns a rounded sample into its output. Every kind
 /// rounds and clamps through [`j2k_native::round_clamped_native`], whose low
 /// bits hold the clamped value's two's complement, so a signed component
-/// differs from an unsigned one only in its bounds.
+/// differs from an unsigned one of the same kind only in its bounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum U16Kind {
     /// Unsigned 8 bits: the byte times 257, which is its widened value.
     Byte,
-    /// Other components of at most 8 bits: the low byte's widened value from
-    /// the table.
+    /// Unsigned components of fewer than 8 bits: the byte's widened value
+    /// from the table.
     Table,
-    /// 9 to 16 bits, and deeper components clamped to 16: the low 16 bits.
+    /// Signed components, unsigned ones of 9 to 16 bits, and deeper
+    /// components clamped to 16: the low 16 bits.
     Wide,
 }
 
 /// Converts the decoded samples of one component of `bit_depth` bits to
 /// 16-bit output: rounded, clamped to the component's signed or unsigned
-/// range, and to 16 bits past 16, and, for at most 8 bits, clamped to a
-/// byte and widened across the 16-bit range as [`write_u16_output`] widens
-/// native 8-bit samples. The choices are made once per plane.
+/// range, and to 16 bits past 16 (two's complement when signed), and, for
+/// at most 8 unsigned bits, clamped to a byte and widened across the 16-bit
+/// range as [`write_u16_output`] widens native 8-bit samples. The choices
+/// are made once per plane.
 #[derive(Debug, PartialEq)]
 struct U16Conversion {
     kind: U16Kind,
@@ -277,19 +279,17 @@ struct U16Conversion {
 
 impl U16Conversion {
     fn new(bit_depth: u8, signed: bool) -> Self {
-        if bit_depth <= 8 {
+        if bit_depth <= 8 && !signed {
             // Unsigned samples clamp to a byte, not to their own range, and
             // the table widens every byte.
-            let (kind, bounds) = if signed {
-                (U16Kind::Table, j2k_native::signed_native_bounds(bit_depth))
-            } else if bit_depth == 8 {
-                (U16Kind::Byte, (0.0, f32::from(u8::MAX)))
+            let kind = if bit_depth == 8 {
+                U16Kind::Byte
             } else {
-                (U16Kind::Table, (0.0, f32::from(u8::MAX)))
+                U16Kind::Table
             };
             return Self {
                 kind,
-                bounds,
+                bounds: (0.0, f32::from(u8::MAX)),
                 widened: widened_u8_samples(bit_depth),
             };
         }
@@ -641,7 +641,7 @@ fn output_u16_sample(
 ) -> u16 {
     let offset = channel * bytes_per_sample;
     match bytes_per_sample {
-        1 => widened[usize::from(src_pixel[offset])],
+        1 => byte_sample_as_u16(src_pixel[offset], signed, widened),
         2 => u16::from_le_bytes([src_pixel[offset], src_pixel[offset + 1]]),
         _ => clamped_wide_sample(&src_pixel[offset..offset + bytes_per_sample], signed),
     }
@@ -664,6 +664,17 @@ fn clamped_wide_sample(bytes: &[u8], signed: bool) -> u16 {
         return u16::from_le_bytes(i16::try_from(clamped).unwrap_or(i16::MAX).to_le_bytes());
     }
     u16::try_from(u64::from_le_bytes(le)).unwrap_or(u16::MAX)
+}
+
+/// The 16-bit output of a one-byte native sample: a signed sample's value
+/// as 16-bit two's complement, as [`U16Conversion`] writes it, and an
+/// unsigned one widened across the 16-bit range by `widened` (see
+/// [`widened_u8_samples`]).
+fn byte_sample_as_u16(sample: u8, signed: bool, widened: &[u16; 256]) -> u16 {
+    if signed {
+        return u16::from_le_bytes(i16::from(i8::from_le_bytes([sample])).to_le_bytes());
+    }
+    widened[usize::from(sample)]
 }
 
 fn widen_u8_sample_to_u16(sample: u8, bit_depth: u8) -> u16 {
@@ -710,6 +721,17 @@ fn convert_or_copy_u16(
             }
             continue;
         }
+        if signed.contains(&true) {
+            for (index, (sample, dst_sample)) in src_row
+                .iter()
+                .zip(dst_row.as_chunks_mut::<2>().0)
+                .enumerate()
+            {
+                *dst_sample =
+                    byte_sample_as_u16(*sample, signed[index % channels], &widened).to_le_bytes();
+            }
+            continue;
+        }
         for (sample, dst_sample) in src_row.iter().zip(dst_row.as_chunks_mut::<2>().0) {
             *dst_sample = widened[usize::from(*sample)].to_le_bytes();
         }
@@ -733,15 +755,6 @@ mod tests {
     fn component_sample_as_u16(sample: f32, bit_depth: u8, signed: bool) -> u16 {
         let rounded = sample.round();
         if signed {
-            if bit_depth <= 8 {
-                let magnitude_bits = u32::from(bit_depth.saturating_sub(1));
-                let min = -(1_i16 << magnitude_bits);
-                let max = (1_i16 << magnitude_bits) - 1;
-                return widen_u8_sample_to_u16(
-                    (rounded.clamp(f32::from(min), f32::from(max)) as i8) as u8,
-                    bit_depth,
-                );
-            }
             let magnitude_bits = u32::from(bit_depth.min(16).saturating_sub(1));
             let min = i16::try_from(-(1_i32 << magnitude_bits)).unwrap_or(i16::MIN);
             let max = i16::try_from((1_i32 << magnitude_bits) - 1).unwrap_or(i16::MAX);
@@ -860,6 +873,53 @@ mod tests {
                         component_sample_as_u16(*sample, bit_depth, signed),
                         "{sample} at {bit_depth} bits, signed {signed}"
                     );
+                }
+            }
+        }
+    }
+
+    /// One-byte native samples, as `decode_native` packs components of at
+    /// most 8 bits (two's complement when signed), convert as their decoded
+    /// values do: a signed one keeps its value as 16-bit two's complement.
+    #[test]
+    fn narrow_native_samples_convert_as_their_decoded_values_do() {
+        for bit_depth in 1..=8_u8 {
+            for signed in [false, true] {
+                let (min, max) = if signed {
+                    (-(1_i16 << (bit_depth - 1)), (1_i16 << (bit_depth - 1)) - 1)
+                } else {
+                    (0, (1_i16 << bit_depth) - 1)
+                };
+                let values: Vec<i16> = (min..=max).collect();
+                let samples: Vec<f32> = values.iter().map(|value| f32::from(*value)).collect();
+                let native: Vec<u8> = values.iter().map(|value| value.to_le_bytes()[0]).collect();
+                let mut expected = vec![0; samples.len() * 2];
+                U16Conversion::new(bit_depth, signed).visit(ChannelWriter {
+                    src: &samples,
+                    dst: &mut expected,
+                    channels: 1,
+                    channel: 0,
+                });
+                let stride = samples.len() * 2;
+                let mut out = vec![0; stride];
+                convert_or_copy_u16(
+                    &native,
+                    1,
+                    bit_depth,
+                    &[signed],
+                    &mut out,
+                    stride,
+                    (samples.len(), 1),
+                );
+                assert_eq!(out, expected, "{bit_depth} bits, signed {signed}");
+                if signed {
+                    let decoded: Vec<i16> = out
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|bytes| i16::from_le_bytes(*bytes))
+                        .collect();
+                    assert_eq!(decoded, values, "{bit_depth} bits keep their values");
                 }
             }
         }

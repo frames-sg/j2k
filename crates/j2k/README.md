@@ -90,11 +90,10 @@ it does not exhaustively enumerate potentially non-monotonic quality islands.
 Prepared native batches preserve significant sample values and signed storage.
 For the supported 1–16-bit source routes, requested `Gray8`/`Rgb8`/`Rgba8`
 output scales unsigned sample ranges to 0–255 (negative samples clamp to zero).
-Requested `Gray16`/`Rgb16`/`Rgba16` output widens sources of at most eight bits
-to 0–65535 and preserves native values for 9–16-bit sources. Signed sources
-above eight bits preserve their two's-complement storage; signed sources of at
-most eight bits first form their two's-complement byte and widen that byte using
-the declared precision, saturating at 65535. Synthesized alpha uses the
+Requested `Gray16`/`Rgb16`/`Rgba16` output widens unsigned sources of at most
+eight bits to 0–65535 and preserves native values for 9–16-bit sources. Signed
+sources of every precision keep their values as 16-bit two's complement, as the
+`I16` native samples hold them. Synthesized alpha uses the
 output storage maximum (the native significant maximum above eight bits), while
 genuine alpha is converted as a source component. Irreversible integer output
 rounds the centered 9/7 sample ties-to-even before applying the unsigned level

@@ -90,25 +90,19 @@ inline short j2k_pack_native_i16(float value, float positive_max) {
     return short(rint(clamp(value, negative_min, positive_max)));
 }
 
-// Match native signed-byte storage followed by the requested Gray16 widening.
-// Sub-eight-bit negative bytes exceed the declared unsigned range and saturate.
+// A signed source of at most eight bits requested as Gray16 keeps its value
+// as 16-bit two's complement, as wider signed sources and the CPU decoder do.
 inline ushort j2k_pack_signed_narrow_u16(float value, float positive_max) {
-    const short sample = j2k_pack_native_i16(value, positive_max);
-    const uint stored = uint(uchar(char(sample)));
-    const uint maximum = uint(positive_max) * 2u + 1u;
-    return ushort(min((stored * 65535u + maximum / 2u) / maximum, 65535u));
+    return ushort(j2k_pack_native_i16(value, positive_max));
 }
 
-// As the CPU decoder: a signed sample of more than eight bits keeps its
-// two's-complement 16-bit pattern, one of at most eight bits is widened from
-// its two's-complement byte.
+// As the CPU decoder: a signed sample of any precision keeps its
+// two's-complement 16-bit pattern.
 inline ushort pack_sample_to_u16(float sample, float max_value, float scale, bool is_signed) {
     if (!is_signed) {
         return pack_to_u16(sample, max_value, scale);
     }
-    const float positive_max = floor(max_value * 0.5f);
-    return max_value > 255.0f ? ushort(j2k_pack_native_i16(sample, positive_max))
-                              : j2k_pack_signed_narrow_u16(sample, positive_max);
+    return ushort(j2k_pack_native_i16(sample, floor(max_value * 0.5f)));
 }
 
 inline ushort pack_channel_to_u16(float sample, constant J2kPackParams &params, uint channel) {

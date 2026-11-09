@@ -6,8 +6,9 @@
 use std::{num::NonZeroUsize, sync::Arc};
 
 use j2k::{
-    prepare_batch, BatchDecodeOptions, CpuBatchDecoder, EncodedImage, J2kDecodeControl, J2kDecoder,
-    J2kError, NativeSampleType, PixelFormat, PreparedImageOperation, Rect,
+    prepare_batch, BatchDecodeOptions, CpuBatchDecoder, CpuBatchSamples, EncodedImage,
+    J2kDecodeControl, J2kDecoder, J2kError, J2kSampleInterpretation, J2kScratchPool,
+    NativeSampleType, PixelFormat, PreparedImageOperation, Rect,
 };
 
 use super::fixtures::htj2k_native_fixture_with_levels;
@@ -213,4 +214,113 @@ fn planar_srgb8_output_keeps_both_copies_within_the_working_limit() {
         matches!(refused, Err(J2kError::ResourceLimit { .. })),
         "{refused:?}"
     );
+}
+
+/// A signed ramp over every value of `precision` bits, one byte per sample.
+fn signed_narrow_fixture(precision: u8) -> Arc<[u8]> {
+    let span = 1_i32 << precision;
+    let count = i32::try_from(SIZE.0 * SIZE.1).unwrap();
+    let pixels: Vec<u8> = (0..count)
+        .map(|index| {
+            let value = (index * 7 + 3) % span - span / 2;
+            i8::try_from(value).unwrap().to_le_bytes()[0]
+        })
+        .collect();
+    j2k_native::encode_htj2k(
+        &pixels,
+        SIZE.0,
+        SIZE.1,
+        1,
+        precision,
+        true,
+        &j2k_native::EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 2,
+            ..j2k_native::EncodeOptions::default()
+        },
+    )
+    .unwrap()
+    .into()
+}
+
+/// 16-bit output samples read back as their signed values.
+fn signed_values(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|sample| f32::from(i16::from_le_bytes(*sample)))
+        .collect()
+}
+
+/// Signed sources of at most eight bits keep their values in 16-bit output,
+/// as 16-bit two's complement: a whole-image and a region decode to Gray16
+/// match the decoded component planes and the I16 samples of the native
+/// batch operations, which the native region plan describes.
+#[test]
+fn signed_narrow_sources_keep_their_values_in_sixteen_bit_output() {
+    for precision in [1, 4, 7, 8] {
+        let bytes = signed_narrow_fixture(precision);
+        let planes = J2kDecoder::new(&bytes)
+            .unwrap()
+            .decode_components()
+            .unwrap()
+            .planes()[0]
+            .samples()
+            .to_vec();
+        assert!(planes.iter().any(|sample| *sample < 0.0));
+        let row_bytes = usize::try_from(SIZE.0).unwrap() * 2;
+        let mut gray16 = vec![0_u8; row_bytes * usize::try_from(SIZE.1).unwrap()];
+        J2kDecoder::new(&bytes)
+            .unwrap()
+            .decode_into(&mut gray16, row_bytes, PixelFormat::Gray16)
+            .unwrap();
+        assert_eq!(signed_values(&gray16), planes, "{precision}-bit image");
+        let prepared = prepare_batch(
+            vec![EncodedImage::operation_source(Arc::clone(&bytes))],
+            BatchDecodeOptions::default(),
+        )
+        .unwrap();
+        let image = &prepared.groups()[0].images()[0];
+        let mut session = CpuBatchDecoder::new(BatchDecodeOptions::default());
+        for roi in regions() {
+            let label = format!("{precision}-bit {roi:?}");
+            let decoded = session
+                .decode_operations(&[PreparedImageOperation::new(image, roi, 0)])
+                .unwrap();
+            let [group] = decoded.groups() else {
+                panic!("{label}: one group");
+            };
+            let CpuBatchSamples::I16(batch) = group.samples() else {
+                panic!("{label}: I16 samples");
+            };
+            let batch: Vec<f32> = batch.iter().copied().map(f32::from).collect();
+            if roi == Rect::full(SIZE) {
+                assert_eq!(batch, planes, "{label}");
+            }
+            let plan = J2kDecoder::new(&bytes)
+                .unwrap()
+                .native_region_decode_plan(roi, 0)
+                .unwrap();
+            assert_eq!(plan.samples.sample_type, NativeSampleType::I16, "{label}");
+            assert_eq!(plan.region.format, PixelFormat::Gray16, "{label}");
+            assert_eq!(
+                plan.region.sample_interpretation,
+                J2kSampleInterpretation::Native16,
+                "{label}"
+            );
+            let mut region = vec![0_u8; plan.region.buffer_bytes];
+            J2kDecoder::new(&bytes)
+                .unwrap()
+                .decode_region_into(
+                    &mut J2kScratchPool::new(),
+                    &mut region,
+                    plan.region.row_bytes,
+                    PixelFormat::Gray16,
+                    roi,
+                )
+                .unwrap();
+            assert_eq!(signed_values(&region), batch, "{label}");
+        }
+    }
 }
