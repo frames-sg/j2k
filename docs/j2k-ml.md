@@ -234,7 +234,8 @@ the host.
 Reversible 5/3 and irreversible 9/7 output must match the CPU output bit for
 bit. For 9/7 the GPU backends round each centered sample ties-to-even before
 adding the level shift and apply the inverse ICT with the CPU's nested
-single-rounding multiply-adds.
+single-rounding multiply-adds. Components wider than 16 bits are not decoded
+on a GPU.
 
 ## Validation and benchmarks
 

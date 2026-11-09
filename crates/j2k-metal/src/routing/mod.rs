@@ -8,7 +8,12 @@ pub(crate) mod promotion;
 mod rejection;
 mod telemetry;
 
-pub(crate) use decision::{decide_route, decision_error, RouteDecision};
+#[cfg(target_os = "macos")]
+pub(crate) use decision::precision_rejection;
+pub(crate) use decision::{
+    decide_route_for_precision, decision_error, exceeds_metal_decode_precision, RouteDecision,
+    MAX_METAL_DECODE_PRECISION,
+};
 #[cfg(any(test, target_os = "macos"))]
 pub(crate) use promotion::{
     auto_full_decode_uses_metal, auto_repeated_decode_uses_metal, auto_scaled_decode_uses_metal,

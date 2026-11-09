@@ -159,7 +159,18 @@ impl J2kDecoder<'_> {
         };
         #[cfg(not(target_os = "macos"))]
         let selected = request.backend;
-        let route = routing::decide_route(selected, request.fmt);
+        // Metal declines components wider than it decodes exactly: Auto stays
+        // on the CPU despite the promotion above, and explicit Metal is
+        // rejected.
+        let max_precision = self.inner.info().bit_depth;
+        let selected = if request.backend == BackendRequest::Auto
+            && max_precision > routing::MAX_METAL_DECODE_PRECISION
+        {
+            BackendRequest::Auto
+        } else {
+            selected
+        };
+        let route = routing::decide_route_for_precision(selected, request.fmt, max_precision);
         if let Some(error) = routing::decision_error(route) {
             return Err(error);
         }

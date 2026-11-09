@@ -13,6 +13,8 @@ use super::super::color_batch::{
 use super::super::decode_profile::add_decode_report;
 #[cfg(feature = "cuda-runtime")]
 use super::super::grayscale_batch::decode_grayscale_cuda_resident_batch_surfaces_with_profile;
+#[cfg(feature = "cuda-runtime")]
+use super::super::{precision_rejection, MAX_CUDA_DECODE_PRECISION};
 use super::super::{
     profile, CudaHtj2kProfileReport, CudaSession, DeviceDecodePlan, DeviceDecodeRequest, Downscale,
     Error, J2kDecoder, PixelFormat, Rect, Surface, SurfaceResidency,
@@ -22,6 +24,15 @@ use super::super::{
 use super::surface::decode_grayscale_cuda_resident_surface_with_plan_profile;
 #[cfg(feature = "cuda-runtime")]
 use crate::allocation::try_vec_with_capacity;
+
+/// Reject a decoder whose widest component CUDA cannot decode exactly.
+#[cfg(feature = "cuda-runtime")]
+fn check_precision(decoder: &J2kDecoder<'_>) -> Result<(), Error> {
+    if decoder.inner.info().bit_depth > MAX_CUDA_DECODE_PRECISION {
+        return Err(precision_rejection());
+    }
+    Ok(())
+}
 
 #[cfg(feature = "cuda-runtime")]
 pub(in crate::decoder) fn decode_to_cuda_resident_surface_impl(
@@ -49,6 +60,7 @@ fn decode_to_cuda_resident_surface_with_profile_control(
     fmt: PixelFormat,
     collect_stage_timings: bool,
 ) -> Result<(Surface, CudaHtj2kProfileReport), Error> {
+    check_precision(decoder)?;
     let collect_stage_timings = collect_stage_timings || profile::profile_stages_enabled();
     let wall_started = profile::profile_now(collect_stage_timings);
     match fmt {
@@ -95,6 +107,13 @@ pub(in crate::decoder) fn decode_batch_to_cuda_resident_surface_with_profile_con
                 ..CudaHtj2kProfileReport::default()
             },
         ));
+    }
+    // Inputs that fail to parse are reported by the decode below.
+    if inputs.iter().any(|input| {
+        j2k::J2kDecoder::inspect_support(input)
+            .is_ok_and(|support| support.info.bit_depth > MAX_CUDA_DECODE_PRECISION)
+    }) {
+        return Err(precision_rejection());
     }
     match fmt {
         PixelFormat::Gray8 | PixelFormat::Gray16 | PixelFormat::GrayI16 => {
@@ -174,6 +193,7 @@ pub(in crate::decoder) fn decode_region_to_cuda_resident_surface_impl(
     fmt: PixelFormat,
     roi: Rect,
 ) -> Result<Surface, Error> {
+    check_precision(decoder)?;
     let plan = DeviceDecodePlan::for_reference_grid(
         decoder.inner.reference_grid(),
         DeviceDecodeRequest::Region { roi },
@@ -202,6 +222,7 @@ pub(in crate::decoder) fn decode_scaled_to_cuda_resident_surface_impl(
     fmt: PixelFormat,
     scale: Downscale,
 ) -> Result<Surface, Error> {
+    check_precision(decoder)?;
     if scale == Downscale::None {
         return decode_to_cuda_resident_surface_impl(decoder, session, fmt);
     }
@@ -231,6 +252,7 @@ pub(in crate::decoder) fn decode_region_scaled_to_cuda_resident_surface_impl(
     roi: Rect,
     scale: Downscale,
 ) -> Result<Surface, Error> {
+    check_precision(decoder)?;
     if scale == Downscale::None {
         return decode_region_to_cuda_resident_surface_impl(decoder, session, fmt, roi);
     }

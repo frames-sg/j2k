@@ -53,7 +53,7 @@ mod tests {
 
     use super::{fields, labels};
     #[cfg(target_os = "macos")]
-    use crate::routing::rejection::unsupported_metal_format;
+    use crate::routing::rejection::{unsupported_metal_format, ExplicitMetalRejection};
     use crate::routing::RouteDecision;
 
     #[test]
@@ -88,6 +88,12 @@ mod tests {
                     reason: unsupported_metal_format(PixelFormat::Rgba16),
                 },
                 ("reject_explicit_metal", "unsupported_format"),
+            ),
+            (
+                RouteDecision::RejectExplicitMetal {
+                    reason: ExplicitMetalRejection::PrecisionAboveSixteen,
+                },
+                ("reject_explicit_metal", "precision_above_sixteen"),
             ),
             (
                 RouteDecision::RejectUnsupportedBackend {

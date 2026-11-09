@@ -276,14 +276,16 @@ impl TileBatchDecodeManyDevice for Codec {
             && inputs_repeat_one_slice(inputs)
         {
             let support = CpuDecoder::inspect_support(inputs[0])?;
-            if auto_repeated_decode_uses_cuda(
-                support.info.dimensions,
-                support.info.components,
-                fmt,
-                support.transfer_syntax,
-                support.payload_kind,
-                inputs.len(),
-            ) && auto_cuda_available(&mut session)?
+            if support.info.bit_depth <= crate::decoder::MAX_CUDA_DECODE_PRECISION
+                && auto_repeated_decode_uses_cuda(
+                    support.info.dimensions,
+                    support.info.components,
+                    fmt,
+                    support.transfer_syntax,
+                    support.payload_kind,
+                    inputs.len(),
+                )
+                && auto_cuda_available(&mut session)?
             {
                 return Self::decode_tiles_to_cuda_batch(inputs, fmt, &mut session);
             }

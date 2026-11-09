@@ -115,8 +115,11 @@ impl<'a> J2kDecoder<'a> {
             } => Some(AutoDecodeOperation::ScaledHalf),
             DeviceDecodeRequest::Scaled { .. } | DeviceDecodeRequest::RegionScaled { .. } => None,
         };
+        // Auto keeps components wider than CUDA decodes exactly on the CPU;
+        // an explicit CUDA request is rejected by the resident decode.
         let use_cuda = backend == BackendRequest::Cuda
             || (backend == BackendRequest::Auto
+                && self.inner.info().bit_depth <= super::MAX_CUDA_DECODE_PRECISION
                 && auto_operation
                     .is_some_and(|operation| self.auto_decode_uses_cuda(dims, fmt, operation))
                 && auto_cuda_available(session)?);

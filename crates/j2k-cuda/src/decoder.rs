@@ -61,6 +61,21 @@ const CUDA_HTJ2K_BATCH_PAYLOAD_TOO_LARGE: &str =
 #[cfg(feature = "cuda-runtime")]
 const CUDA_IDWT_TRACE_ENV_VAR: &str = "J2K_CUDA_IDWT_TRACE";
 
+/// The widest component precision CUDA decodes. The transforms and stores
+/// run in f32, which holds every integer only below 2^24, and the 5/3 and
+/// RCT sums of wider planes leave that range; the output scales also assume
+/// samples of at most 16 bits.
+pub(crate) const MAX_CUDA_DECODE_PRECISION: u8 = 16;
+
+/// The capability rejection for a component wider than
+/// [`MAX_CUDA_DECODE_PRECISION`].
+#[cfg(feature = "cuda-runtime")]
+fn precision_rejection() -> Error {
+    Error::capability_rejected(j2k_core::CapabilityRejection::unsupported_bit_depth(
+        "J2K CUDA decode supports component precisions of at most 16 bits",
+    ))
+}
+
 mod api;
 #[cfg(feature = "cuda-runtime")]
 mod color_batch;

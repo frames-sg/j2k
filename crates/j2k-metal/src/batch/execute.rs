@@ -161,6 +161,20 @@ fn process_batch_inner(
         return;
     }
 
+    // The grouped Metal routes below do not check precision; each request's
+    // own route keeps components wider than Metal decodes exactly on the CPU
+    // for Auto and rejects them for explicit Metal.
+    if requests
+        .iter()
+        .any(|request| crate::routing::exceeds_metal_decode_precision(&request.input))
+    {
+        for request in requests {
+            session.submissions = session.submissions.saturating_add(1);
+            session.completed[request.output_slot] = Some(decode_individual(&request, backend));
+        }
+        return;
+    }
+
     if can_decode_requests_as_repeated_full_grayscale_batch(&requests) {
         let decoded = decode_repeated_full_grayscale(&requests[0], requests.len(), backend);
         if complete_device_result(session, &requests, decoded) {

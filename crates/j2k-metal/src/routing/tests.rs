@@ -6,7 +6,8 @@ use crate::Error;
 
 use super::{
     auto_full_decode_uses_metal, auto_repeated_decode_uses_metal, auto_scaled_decode_uses_metal,
-    decide_route, decision_error, rejection::ExplicitMetalRejection, RouteDecision,
+    decide_route_for_precision, decision::decide_route, decision_error,
+    rejection::ExplicitMetalRejection, RouteDecision,
 };
 
 #[test]
@@ -176,6 +177,39 @@ fn explicit_metal_unsupported_format_is_rejected_before_launch() {
             }
         }
     ));
+}
+
+#[test]
+fn components_wider_than_sixteen_bits_reject_explicit_metal_and_keep_auto_on_cpu() {
+    for precision in [17, 24, 38] {
+        let decision =
+            decide_route_for_precision(BackendRequest::Metal, PixelFormat::Rgb8, precision);
+        assert_eq!(
+            decision,
+            RouteDecision::RejectExplicitMetal {
+                reason: ExplicitMetalRejection::PrecisionAboveSixteen
+            }
+        );
+        let error = decision_error(decision).expect("explicit Metal rejection");
+        assert!(
+            error
+                .to_string()
+                .contains("J2K Metal decode supports component precisions of at most 16 bits"),
+            "{error}"
+        );
+        for backend in [BackendRequest::Auto, BackendRequest::Cpu] {
+            assert_eq!(
+                decide_route_for_precision(backend, PixelFormat::Gray16, precision),
+                RouteDecision::CpuHost
+            );
+        }
+    }
+    for precision in [1, 8, 12, 16] {
+        assert_eq!(
+            decide_route_for_precision(BackendRequest::Metal, PixelFormat::Rgb8, precision),
+            decide_route(BackendRequest::Metal, PixelFormat::Rgb8)
+        );
+    }
 }
 
 #[cfg(not(target_os = "macos"))]

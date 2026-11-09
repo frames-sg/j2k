@@ -686,3 +686,79 @@ fn metal_validation_decodes_and_compares_lossless_codestream_on_device() {
     super::super::validate_lossless_roundtrip_on_metal(samples, &encoded.codestream)
         .expect("Metal lossless validation");
 }
+
+/// f32 holds every integer only below 2^24, and the RCT and 5/3 lifting sums
+/// of 17- to 24-bit planes leave that range. The Metal deinterleave refuses
+/// such planes before RCT or 5/3 can see them, so an explicit Metal encode
+/// fails instead of transforming them, and the automatic host-output
+/// accelerator leaves the whole encode to the CPU.
+#[cfg(target_os = "macos")]
+#[test]
+fn metal_rct_and_dwt53_refuse_planes_wider_than_sixteen_bits() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let (width, height) = (32_u32, 24_u32);
+    for bit_depth in [17_u8, 24] {
+        let mask = (1_u32 << bit_depth) - 1;
+        let mut state = 0x2545_f491_u32;
+        let pixels: Vec<u8> = (0..width * height * 3)
+            .flat_map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                let [low, middle, high, _] = (state & mask).to_le_bytes();
+                [low, middle, high]
+            })
+            .collect();
+        let options = EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 2,
+            ..EncodeOptions::default()
+        };
+        let cpu = j2k_native::encode(&pixels, width, height, 3, bit_depth, false, &options)
+            .expect("CPU wide-plane lossless encode");
+        let encode = |accelerator: &mut MetalEncodeStageAccelerator| {
+            let result = j2k_native::encode_with_accelerator(
+                &pixels,
+                width,
+                height,
+                3,
+                bit_depth,
+                false,
+                &options,
+                accelerator,
+            );
+            assert_eq!(
+                accelerator.forward_rct_dispatches(),
+                0,
+                "{bit_depth}-bit RCT"
+            );
+            assert_eq!(
+                accelerator.forward_dwt53_dispatches(),
+                0,
+                "{bit_depth}-bit 5/3 DWT"
+            );
+            result
+        };
+        for mut explicit in [
+            MetalEncodeStageAccelerator::default(),
+            MetalEncodeStageAccelerator::with_cpu_forward_rct(),
+        ] {
+            let error = encode(&mut explicit).expect_err("explicit Metal must refuse wide planes");
+            assert!(
+                error
+                    .to_string()
+                    .contains("J2K Metal encode deinterleave supports 1-16 bits per sample"),
+                "{bit_depth}-bit: {error}"
+            );
+        }
+        let automatic = encode(&mut MetalEncodeStageAccelerator::for_auto_host_output())
+            .unwrap_or_else(|error| panic!("{bit_depth}-bit automatic encode: {error}"));
+        assert!(
+            automatic == cpu,
+            "{bit_depth}-bit codestream differs from the CPU"
+        );
+    }
+}

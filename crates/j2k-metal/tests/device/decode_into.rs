@@ -193,7 +193,20 @@ fn decode_into_rejects_mismatched_destinations_without_writing() {
     let session = MetalBackendSession::system_default().expect("Metal session");
     let gray8 = fixture_ht_gray8_offset_sized(37, 29, 11);
     let rgb8 = fixture_ht_rgb_u8_sized(33, 21, 7);
+    let gray17 = fixture_wide_plane(1, 17, false);
     for (codestream, dimensions, fmt, label) in [
+        (
+            &gray17,
+            (64, 64),
+            PixelFormat::Gray16,
+            "17-bit gray into Gray16",
+        ),
+        (
+            &gray17,
+            (64, 64),
+            PixelFormat::Gray8,
+            "17-bit gray into Gray8",
+        ),
         (&gray8, (36, 29), PixelFormat::Gray8, "narrow"),
         (&gray8, (37, 30), PixelFormat::Gray8, "tall"),
         (&gray8, (37, 29), PixelFormat::Rgb8, "gray image into RGB"),

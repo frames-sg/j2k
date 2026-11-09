@@ -359,6 +359,34 @@ fn fixture_rgb12_with_height(height: u8) -> Vec<u8> {
     encode(&pixels, 2, u32::from(height), 3, 12, false, &options).expect("encode rgb12")
 }
 
+/// A 64x64 reversible codestream of full-range noise whose components are
+/// `bit_depth` (17 to 24) bits wide: its 5/3 and RCT sums leave the integers
+/// f32 holds exactly.
+fn fixture_wide_plane(components: u16, bit_depth: u8, ht: bool) -> Vec<u8> {
+    let mask = (1_u32 << bit_depth) - 1;
+    let mut state = 0x2545_f491_u32;
+    let pixels: Vec<u8> = (0..64 * 64 * u32::from(components))
+        .flat_map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            let [low, middle, high, _] = (state & mask).to_le_bytes();
+            [low, middle, high]
+        })
+        .collect();
+    let options = EncodeOptions {
+        reversible: true,
+        num_decomposition_levels: 5,
+        ..EncodeOptions::default()
+    };
+    if ht {
+        encode_htj2k(&pixels, 64, 64, components, bit_depth, false, &options)
+    } else {
+        encode(&pixels, 64, 64, components, bit_depth, false, &options)
+    }
+    .unwrap_or_else(|error| panic!("encode {bit_depth}-bit fixture: {error}"))
+}
+
 fn fixture_ht_gray8() -> Vec<u8> {
     let pixels: Vec<u8> = (0..16).collect();
     let options = EncodeOptions {

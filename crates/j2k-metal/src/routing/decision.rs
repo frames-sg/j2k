@@ -26,6 +26,41 @@ pub(crate) enum RouteDecision {
     MetalUnavailable,
 }
 
+/// The widest component precision Metal decodes. The transforms and stores
+/// run in f32, which holds every integer only below 2^24, and the 5/3 and
+/// RCT sums of wider planes leave that range; the output scales also assume
+/// samples of at most 16 bits.
+pub(crate) const MAX_METAL_DECODE_PRECISION: u8 = 16;
+
+/// Whether a codestream has a component wider than Metal decodes.
+pub(crate) fn exceeds_metal_decode_precision(bytes: &[u8]) -> bool {
+    j2k::J2kDecoder::inspect_support(bytes).is_ok_and(|support| {
+        support
+            .components
+            .iter()
+            .any(|component| component.bit_depth > MAX_METAL_DECODE_PRECISION)
+    })
+}
+
+/// [`decide_route`] for an image whose widest component has
+/// `max_precision` bits: Metal declines planes wider than
+/// [`MAX_METAL_DECODE_PRECISION`], rejecting an explicit Metal request and
+/// leaving Auto on the CPU.
+pub(crate) fn decide_route_for_precision(
+    backend: BackendRequest,
+    fmt: PixelFormat,
+    max_precision: u8,
+) -> RouteDecision {
+    if max_precision <= MAX_METAL_DECODE_PRECISION || backend != BackendRequest::Metal {
+        return decide_route(backend, fmt);
+    }
+    let decision = RouteDecision::RejectExplicitMetal {
+        reason: ExplicitMetalRejection::PrecisionAboveSixteen,
+    };
+    telemetry::observe(backend, fmt, decision);
+    decision
+}
+
 pub(crate) fn decide_route(backend: BackendRequest, fmt: PixelFormat) -> RouteDecision {
     let decision = match backend {
         BackendRequest::Cpu | BackendRequest::Auto => RouteDecision::CpuHost,
@@ -58,11 +93,16 @@ pub(crate) fn decide_route(backend: BackendRequest, fmt: PixelFormat) -> RouteDe
     decision
 }
 
+/// The capability rejection for a component wider than
+/// [`MAX_METAL_DECODE_PRECISION`].
+#[cfg(target_os = "macos")]
+pub(crate) fn precision_rejection() -> Error {
+    ExplicitMetalRejection::PrecisionAboveSixteen.error()
+}
+
 pub(crate) fn decision_error(decision: RouteDecision) -> Option<Error> {
     match decision {
-        RouteDecision::RejectExplicitMetal { reason } => Some(Error::capability_rejected(
-            j2k_core::CapabilityRejection::unsupported_operation(reason.error_reason()),
-        )),
+        RouteDecision::RejectExplicitMetal { reason } => Some(reason.error()),
         RouteDecision::RejectUnsupportedBackend { request } => {
             Some(Error::UnsupportedBackend { request })
         }

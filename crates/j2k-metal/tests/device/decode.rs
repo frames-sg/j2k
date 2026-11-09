@@ -630,3 +630,105 @@ fn decode_to_device_with_session_unsupported_rgba16_is_rejected() {
         ),
     }
 }
+
+fn assert_rejects_wide_precision<T>(result: Result<T, Error>, label: &str) {
+    match result {
+        Err(error) => assert!(
+            error
+                .to_string()
+                .contains("component precisions of at most 16 bits"),
+            "{label}: unexpected error {error}"
+        ),
+        Ok(_) => panic!("{label}: explicit Metal must refuse components wider than 16 bits"),
+    }
+}
+
+/// Components wider than 16 bits leave the integers the f32 Metal 5/3, RCT
+/// and stores reproduce exactly, and the output scales assume 16 bits.
+/// Explicit Metal once decoded them anyway: a 17-bit RGB image to Rgb8
+/// differed from the CPU in 12231 of 12288 bytes. Every Metal route now
+/// refuses them, and Auto decodes them on the CPU.
+#[test]
+fn metal_decode_refuses_components_wider_than_sixteen_bits() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let region = Rect {
+        x: 8,
+        y: 8,
+        w: 32,
+        h: 32,
+    };
+    for (components, bit_depth, ht) in [
+        (1_u16, 17_u8, false),
+        (1, 17, true),
+        (3, 17, false),
+        (3, 17, true),
+        (1, 24, false),
+        (3, 24, false),
+    ] {
+        let bytes = fixture_wide_plane(components, bit_depth, ht);
+        let formats = if components == 1 {
+            [PixelFormat::Gray8, PixelFormat::Gray16]
+        } else {
+            [PixelFormat::Rgb8, PixelFormat::Rgb16]
+        };
+        for fmt in formats {
+            let label = format!("{bit_depth}-bit {components}-component ht={ht} {fmt:?}");
+            let cpu = J2kDecoder::new(&bytes)
+                .expect("CPU decoder")
+                .decode_to_device(fmt, BackendRequest::Cpu)
+                .expect("CPU decode");
+            let cpu = cpu.as_bytes().expect("CPU bytes").into_owned();
+
+            for request in [
+                MetalDecodeRequest::full(fmt, BackendRequest::Metal),
+                MetalDecodeRequest::region(fmt, region, BackendRequest::Metal),
+                MetalDecodeRequest::scaled(fmt, Downscale::Half, BackendRequest::Metal),
+            ] {
+                let result = J2kDecoder::new(&bytes)
+                    .expect("Metal decoder")
+                    .decode_request_to_device(request);
+                assert_rejects_wide_precision(result, &label);
+            }
+            let auto = J2kDecoder::new(&bytes)
+                .expect("Auto decoder")
+                .decode_to_device(fmt, BackendRequest::Auto)
+                .expect("Auto decode");
+            assert_eq!(auto.backend_kind(), BackendKind::Cpu, "{label}");
+            assert!(
+                auto.as_bytes().expect("Auto bytes").as_ref() == cpu.as_slice(),
+                "{label}: Auto differs from the CPU"
+            );
+
+            let inputs = [bytes.as_slice(), bytes.as_slice()];
+            let mut ctx = J2kContext::default();
+            let mut pool = J2kScratchPool::new();
+            let explicit = Codec::decode_tiles_to_device(
+                &mut ctx,
+                &mut pool,
+                &inputs,
+                fmt,
+                BackendRequest::Metal,
+            );
+            assert_rejects_wide_precision(explicit, &label);
+            let surfaces = Codec::decode_tiles_to_device(
+                &mut ctx,
+                &mut pool,
+                &inputs,
+                fmt,
+                BackendRequest::Auto,
+            )
+            .expect("Auto tile batch");
+            assert_eq!(surfaces.len(), 2, "{label}");
+            for surface in &surfaces {
+                assert_eq!(surface.backend_kind(), BackendKind::Cpu, "{label}");
+                assert!(
+                    surface.as_bytes().expect("tile bytes").as_ref() == cpu.as_slice(),
+                    "{label}: Auto tile differs from the CPU"
+                );
+            }
+        }
+    }
+}

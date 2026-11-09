@@ -17,7 +17,7 @@ impl J2kDecoder<'_> {
     /// offset. Its pixel format selects the output, with the same samples
     /// [`Self::decode_request_to_device`] produces for that format:
     ///
-    /// - `Gray8` or `Gray16` for single-component images, at any precision.
+    /// - `Gray8` or `Gray16` for single-component images of 1 to 16 bits.
     /// - `Rgb8` for 8-bit three-component images, and `Rgb16` for
     ///   three-component images of 9 to 16 bits.
     ///
@@ -34,7 +34,8 @@ impl J2kDecoder<'_> {
     ///
     /// Returns a Metal support error when the destination's device, size, or
     /// pixel format does not fit the image; a capability rejection for other
-    /// formats and precisions; [`Error::MetalDirectFallback`] with
+    /// formats and precisions, including any component wider than 16 bits;
+    /// [`Error::MetalDirectFallback`] with
     /// [`MetalDirectFallbackReason::UnsupportedPlan`] when the codestream
     /// cannot take the direct Metal route, in which case
     /// [`Self::decode_request_to_device`] still decodes it; and a decode error
@@ -78,6 +79,9 @@ impl J2kDecoder<'_> {
                     source,
                 )
             })?;
+        if bit_depth > crate::routing::MAX_METAL_DECODE_PRECISION {
+            return Err(crate::routing::precision_rejection());
+        }
         let supported = match (fmt, components) {
             (PixelFormat::Gray8 | PixelFormat::Gray16, 1) => true,
             // The color destination store writes samples at their native
