@@ -261,6 +261,10 @@ pub(super) fn run_color_mct(
             CUDA_HTJ2K_KERNELS_NOT_READY,
         ))
     })?;
+    // The planes keep centered samples and the store adds the level shift
+    // after rounding them ties-to-even, as the CPU does. Shifting here would
+    // round the shifted 9/7 value, and adding the shift first loses f32
+    // precision, so `k + 0.5 - ulp` would become a tie.
     let (stats, elapsed_us) = inputs
         .context
         .time_default_stream_named_us_if(collect_stage_timings, "j2k.htj2k.decode.mct", || {
@@ -271,15 +275,15 @@ pub(super) fn run_color_mct(
                 CudaJ2kInverseMctJob {
                     len: mct_len,
                     irreversible97,
-                    addend0: mct_store_addends[0],
-                    addend1: mct_store_addends[1],
-                    addend2: mct_store_addends[2],
+                    addend0: 0.0,
+                    addend1: 0.0,
+                    addend2: 0.0,
                 },
             )
         })
         .map_err(cuda_error)?;
     Ok(ColorMctOutcome {
-        store_addends: [0.0, 0.0, 0.0],
+        store_addends: mct_store_addends,
         store_route,
         kernel_dispatches: stats.kernel_dispatches(),
         decode_kernel_dispatches: stats.decode_kernel_dispatches(),
@@ -482,5 +486,128 @@ mod tests {
         let mismatched = color_store_steps([64, 64, 32]);
         let mismatched_refs = [&mismatched[0], &mismatched[1], &mismatched[2]];
         assert!(!can_fuse_mct_store_for_stores(mismatched_refs));
+    }
+
+    /// The CPU's ICT and integer-output rounding: nested single-rounding
+    /// `mul_add`, ties-to-even on the centered value, then the level shift.
+    fn cpu_ict_rounded(samples: [f32; 3], shift: f32) -> [f32; 3] {
+        use j2k_codec_math::mct;
+        let [luma, cb, cr] = samples;
+        [
+            cr.mul_add(mct::ICT_INV_R_CR, luma),
+            cr.mul_add(mct::ICT_INV_G_CR, cb.mul_add(mct::ICT_INV_G_CB, luma)),
+            cb.mul_add(mct::ICT_INV_B_CB, luma),
+        ]
+        .map(|centered| centered.round_ties_even() + shift)
+    }
+
+    /// Stores whose geometry cannot fuse the MCT into the store, over planes
+    /// `width` samples wide and one row high.
+    fn separate_route_steps(width: u32) -> [CudaHtj2kStoreStep; 3] {
+        core::array::from_fn(|_| CudaHtj2kStoreStep {
+            input_band_id: 0,
+            input_rect: CudaHtj2kRect {
+                x0: 0,
+                y0: 0,
+                x1: width,
+                y1: 1,
+            },
+            source_x: 0,
+            source_y: 0,
+            copy_width: width,
+            copy_height: 1,
+            output_width: width,
+            output_height: 1,
+            output_x: 0,
+            output_y: 0,
+            addend: 0.0,
+        })
+    }
+
+    #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the oracle clamps rounded samples to the stored precision before narrowing"
+    )]
+    fn separate_irreversible_mct_route_rounds_near_ties_like_the_cpu_when_runtime_required() {
+        if !j2k_test_support::cuda_runtime_gate(module_path!()) {
+            return;
+        }
+        // Centered values one f32 step below or above `k + 0.5`: adding a
+        // 2^(b-1) level shift first rounds them onto the tie.
+        let below = |value: f32| f32::from_bits(value.to_bits() - 1);
+        let above = |value: f32| f32::from_bits(value.to_bits() + 1);
+        let luma = [
+            below(1.5),
+            below(3.5),
+            above(-0.5),
+            below(-2.5),
+            -9.5,
+            2.5,
+            below(100.5),
+            12.25,
+        ];
+        let cb = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -3.125];
+        let cr = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 7.75];
+        let width = u32::try_from(luma.len()).expect("fixture width");
+        let context = CudaContext::system_default().expect("CUDA context");
+        let mut stores = separate_route_steps(width);
+        for store in &mut stores {
+            store.copy_width = width - 1;
+            store.output_width = width - 1;
+        }
+        // A one-sample offset on one component keeps the store unfused.
+        stores[1].source_x = 1;
+        let store_refs = [&stores[0], &stores[1], &stores[2]];
+        assert!(!can_fuse_mct_store_for_stores(store_refs));
+
+        for (fmt, bit_depth) in [(PixelFormat::Rgb8, 8_u8), (PixelFormat::Rgb16, 16)] {
+            let planes = [&luma, &cb, &cr].map(|plane| {
+                context
+                    .upload_f32(plane.as_slice())
+                    .expect("upload centered plane")
+            });
+            let inputs = ColorStoreInputs {
+                context: &context,
+                buffers: [&planes[0], &planes[1], &planes[2]],
+                stores: store_refs,
+                bit_depths: [bit_depth; 3],
+                signed: false,
+            };
+            let mct = run_color_mct(
+                inputs,
+                (width, 1),
+                true,
+                CudaHtj2kTransform::Irreversible97,
+                false,
+            )
+            .expect("separate inverse MCT");
+            assert_eq!(mct.store_route, ColorStoreRoute::Separate);
+            let (surface, _) = dispatch_color_store(inputs, mct, fmt)
+                .expect("separate color store")
+                .into_parts();
+            let shift = f32::from(1_u16 << (bit_depth - 1));
+            let max = f32::from(u16::MAX >> (16 - bit_depth));
+            let mut expected = Vec::new();
+            for x in 0..luma.len() - 1 {
+                let [red, _, blue] = cpu_ict_rounded([luma[x], cb[x], cr[x]], shift);
+                // Component 1 reads one sample to the right.
+                let green = cpu_ict_rounded([luma[x + 1], cb[x + 1], cr[x + 1]], shift)[1];
+                for value in [red, green, blue] {
+                    let sample = value.clamp(0.0, max) as u16;
+                    if bit_depth == 8 {
+                        expected.push(sample as u8);
+                    } else {
+                        expected.extend_from_slice(&sample.to_ne_bytes());
+                    }
+                }
+            }
+            let mut actual = vec![0_u8; expected.len()];
+            surface
+                .copy_to_host(&mut actual)
+                .expect("download separate store");
+            assert_eq!(actual, expected, "{fmt:?} separate 9/7 route");
+        }
     }
 }

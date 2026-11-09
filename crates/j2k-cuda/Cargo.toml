@@ -47,6 +47,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+j2k-codec-math = { path = "../j2k-codec-math", version = "=0.14.0" }
 j2k-test-support = { path = "../j2k-test-support", features = ["j2k-native-fixtures"] }
 sha2 = { workspace = true }
 

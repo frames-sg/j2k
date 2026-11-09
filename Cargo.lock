@@ -2575,6 +2575,7 @@ version = "0.14.0"
 dependencies = [
  "criterion",
  "j2k",
+ "j2k-codec-math",
  "j2k-core",
  "j2k-cuda-j2k-engine",
  "j2k-cuda-runtime",
