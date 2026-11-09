@@ -226,3 +226,31 @@ fn metal_htj2k_fragment_matches_rust_constants() {
         htj2k::HT_MAX_SCRATCH
     )));
 }
+
+#[test]
+fn metal_mct_fragment_matches_rust_constants() {
+    use j2k_codec_math::mct;
+
+    let source = include_str!("../generated/mct_constants.metal");
+    for (name, value) in [
+        ("ICT_FWD_Y_R", mct::ICT_FWD_Y_R),
+        ("ICT_FWD_Y_G", mct::ICT_FWD_Y_G),
+        ("ICT_FWD_Y_B", mct::ICT_FWD_Y_B),
+        ("ICT_FWD_CB_R", mct::ICT_FWD_CB_R),
+        ("ICT_FWD_CB_G", mct::ICT_FWD_CB_G),
+        ("ICT_FWD_CB_B", mct::ICT_FWD_CB_B),
+        ("ICT_FWD_CR_R", mct::ICT_FWD_CR_R),
+        ("ICT_FWD_CR_G", mct::ICT_FWD_CR_G),
+        ("ICT_FWD_CR_B", mct::ICT_FWD_CR_B),
+        ("ICT_INV_R_CR", mct::ICT_INV_R_CR),
+        ("ICT_INV_G_CB", mct::ICT_INV_G_CB),
+        ("ICT_INV_G_CR", mct::ICT_INV_G_CR),
+        ("ICT_INV_B_CB", mct::ICT_INV_B_CB),
+    ] {
+        let line = format!(
+            "constant float CODEC_MATH_{name} = {}f;",
+            compact_f32(value)
+        );
+        assert!(source.contains(&line), "generated Metal omits `{line}`");
+    }
+}

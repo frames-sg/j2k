@@ -23,6 +23,8 @@ pub mod generated {
     pub const CLASSIC_TABLES_METAL: &str = include_str!("../generated/classic_tables.metal");
     /// Metal source fragment defining the HTJ2K MEL exponents and scratch limit.
     pub const HTJ2K_CONSTANTS_METAL: &str = include_str!("../generated/htj2k_constants.metal");
+    /// Metal source fragment defining the JPEG 2000 ICT coefficients.
+    pub const MCT_CONSTANTS_METAL: &str = include_str!("../generated/mct_constants.metal");
 }
 /// Baseline JPEG constants.
 pub mod jpeg;

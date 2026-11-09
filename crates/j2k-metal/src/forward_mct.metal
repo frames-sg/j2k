@@ -45,9 +45,12 @@ kernel void j2k_forward_ict(
     const float b = plane2[gid];
 
     // Match the CPU transform's target-independent nested fused rounding.
-    plane0[gid] = fma(0.114f, b, fma(0.299f, r, 0.587f * g));
-    plane1[gid] = fma(0.5f, b, fma(-0.16875f, r, -0.33126f * g));
-    plane2[gid] = fma(-0.08131f, b, fma(0.5f, r, -0.41869f * g));
+    plane0[gid] = fma(
+        CODEC_MATH_ICT_FWD_Y_B, b, fma(CODEC_MATH_ICT_FWD_Y_R, r, CODEC_MATH_ICT_FWD_Y_G * g));
+    plane1[gid] = fma(
+        CODEC_MATH_ICT_FWD_CB_B, b, fma(CODEC_MATH_ICT_FWD_CB_R, r, CODEC_MATH_ICT_FWD_CB_G * g));
+    plane2[gid] = fma(
+        CODEC_MATH_ICT_FWD_CR_B, b, fma(CODEC_MATH_ICT_FWD_CR_R, r, CODEC_MATH_ICT_FWD_CR_G * g));
 
     if (gid == 0) {
         status->code = J2K_MCT_STATUS_OK;
@@ -91,9 +94,12 @@ kernel void j2k_encode_deinterleave_mct(
     }
 
     // Match the CPU ICT's target-independent nested fused rounding.
-    plane0[gid] = fma(0.114f, b, fma(0.299f, r, 0.587f * g));
-    plane1[gid] = fma(0.5f, b, fma(-0.16875f, r, -0.33126f * g));
-    plane2[gid] = fma(-0.08131f, b, fma(0.5f, r, -0.41869f * g));
+    plane0[gid] = fma(
+        CODEC_MATH_ICT_FWD_Y_B, b, fma(CODEC_MATH_ICT_FWD_Y_R, r, CODEC_MATH_ICT_FWD_Y_G * g));
+    plane1[gid] = fma(
+        CODEC_MATH_ICT_FWD_CB_B, b, fma(CODEC_MATH_ICT_FWD_CB_R, r, CODEC_MATH_ICT_FWD_CB_G * g));
+    plane2[gid] = fma(
+        CODEC_MATH_ICT_FWD_CR_B, b, fma(CODEC_MATH_ICT_FWD_CR_R, r, CODEC_MATH_ICT_FWD_CR_G * g));
 }
 
 kernel void j2k_lossless_deinterleave_rct_rgb8_to_planes(

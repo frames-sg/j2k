@@ -22,6 +22,7 @@ const CODEC_MATH_CLASSIC_METAL_FRAGMENT: &str =
     "crates/j2k-codec-math/generated/classic_tables.metal";
 const CODEC_MATH_HTJ2K_METAL_FRAGMENT: &str =
     "crates/j2k-codec-math/generated/htj2k_constants.metal";
+const CODEC_MATH_MCT_METAL_FRAGMENT: &str = "crates/j2k-codec-math/generated/mct_constants.metal";
 
 pub(super) fn stable_api(args: impl Iterator<Item = String>) -> Result<(), String> {
     let mut write_snapshot = false;
@@ -92,6 +93,10 @@ pub(super) fn codec_math_codegen(args: impl Iterator<Item = String>) -> Result<(
         (
             CODEC_MATH_HTJ2K_METAL_FRAGMENT,
             render_codec_math_htj2k_metal_fragment(),
+        ),
+        (
+            CODEC_MATH_MCT_METAL_FRAGMENT,
+            render_codec_math_mct_metal_fragment(),
         ),
     ];
 
@@ -353,6 +358,35 @@ fn render_codec_math_htj2k_metal_fragment() -> String {
         mel.len(),
         mel.join(", ")
     )
+}
+
+fn render_codec_math_mct_metal_fragment() -> String {
+    use j2k_codec_math::mct;
+
+    let constants = [
+        ("ICT_FWD_Y_R", mct::ICT_FWD_Y_R),
+        ("ICT_FWD_Y_G", mct::ICT_FWD_Y_G),
+        ("ICT_FWD_Y_B", mct::ICT_FWD_Y_B),
+        ("ICT_FWD_CB_R", mct::ICT_FWD_CB_R),
+        ("ICT_FWD_CB_G", mct::ICT_FWD_CB_G),
+        ("ICT_FWD_CB_B", mct::ICT_FWD_CB_B),
+        ("ICT_FWD_CR_R", mct::ICT_FWD_CR_R),
+        ("ICT_FWD_CR_G", mct::ICT_FWD_CR_G),
+        ("ICT_FWD_CR_B", mct::ICT_FWD_CR_B),
+        ("ICT_INV_R_CR", mct::ICT_INV_R_CR),
+        ("ICT_INV_G_CB", mct::ICT_INV_G_CB),
+        ("ICT_INV_G_CR", mct::ICT_INV_G_CR),
+        ("ICT_INV_B_CB", mct::ICT_INV_B_CB),
+    ];
+    let mut out = String::from("// Generated from crates/j2k-codec-math/src/mct.rs.\n");
+    for (name, value) in constants {
+        let _ = writeln!(
+            out,
+            "constant float CODEC_MATH_{name} = {}f;",
+            compact_f32(value)
+        );
+    }
+    out
 }
 
 fn render_stable_api_snapshots() -> Result<(String, String), String> {

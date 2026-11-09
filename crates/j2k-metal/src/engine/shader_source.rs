@@ -7,6 +7,7 @@ const PRELUDE: &str = "#include <metal_stdlib>\nusing namespace metal;\n";
 pub(super) fn decode_shader_source() -> String {
     [
         PRELUDE,
+        j2k_codec_math::generated::MCT_CONSTANTS_METAL,
         include_str!("../pack.metal"),
         include_str!("../classic/abi.metal"),
         include_str!("../classic/constants.metal"),
@@ -49,6 +50,7 @@ pub(super) fn encode_shader_source() -> String {
         j2k_codec_math::generated::DWT97_CONSTANTS_METAL,
         include_str!("../fdwt.metal"),
         include_str!("../mct_abi.metal"),
+        j2k_codec_math::generated::MCT_CONSTANTS_METAL,
         include_str!("../forward_mct.metal"),
         include_str!("../quantize.metal"),
     ]

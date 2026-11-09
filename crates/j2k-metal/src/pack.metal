@@ -69,9 +69,9 @@ inline float3 j2k_inverse_ict_centered(float y0, float y1, float y2) {
 #pragma clang fp reassociate(off)
 #pragma clang fp contract(off)
     return float3(
-        fma(y2, 1.402f, y0),
-        fma(y2, -0.71414f, fma(y1, -0.34413f, y0)),
-        fma(y1, 1.772f, y0)
+        fma(y2, CODEC_MATH_ICT_INV_R_CR, y0),
+        fma(y2, CODEC_MATH_ICT_INV_G_CR, fma(y1, CODEC_MATH_ICT_INV_G_CB, y0)),
+        fma(y1, CODEC_MATH_ICT_INV_B_CB, y0)
     );
 }
 
