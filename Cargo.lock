@@ -2533,10 +2533,12 @@ dependencies = [
 name = "j2k-cli"
 version = "0.14.0"
 dependencies = [
+ "image",
  "j2k",
  "j2k-jpeg",
  "j2k-test-support",
  "j2k-transcode",
+ "rayon",
 ]
 
 [[package]]

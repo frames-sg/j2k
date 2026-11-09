@@ -99,12 +99,21 @@ crates follow normal semver for the major version.
 
 - `j2k inspect <file>`
 - `j2k transcode <input.jpg> <output.j2k> --htj2k --lossless-53`
+- `j2k decode <opj_decompress options>`, and the binary invoked as
+  `opj_decompress`
 
 Argument errors return exit code `2`: an unknown subcommand, a missing
-`inspect` file, or malformed or unsupported `transcode` arguments. Runtime
-failures, such as unreadable files or unsupported input, return exit code `1`.
-Successful commands return `0` and print one summary line to stdout. Help, and
-running with no subcommand, also return `0` and print usage to stderr.
+`inspect` file, or malformed or unsupported `transcode` or `decode` arguments.
+Runtime failures, such as unreadable files or unsupported input, return exit
+code `1`. Successful `inspect` and `transcode` commands return `0` and print
+one summary line to stdout; a successful `decode` returns `0`, writes only the
+`-o` file and prints nothing to stdout. Help, and running with no subcommand,
+also return `0` and print usage to stderr.
+
+Invoked as `opj_decompress`, the binary follows that tool's contract instead:
+every failure, including argument errors, returns `1`, and `-h` prints usage
+to stdout and returns `1`. Options and output formats are described in
+`crates/j2k-cli/README.md`.
 
 Extra arguments after the `inspect` file are currently ignored. Do not rely on
 this; it may become an error.

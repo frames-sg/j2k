@@ -124,10 +124,14 @@ More runnable examples are in `crates/*/examples/`, for example
 cargo install j2k-cli
 j2k inspect image.jp2       # size, color space, bit depth, components, levels, tiles
 j2k transcode input.jpg output.j2k --htj2k --lossless-53   # JPEG to HTJ2K
+j2k decode -i image.jp2 -d 0,0,1024,1024 -r 2 -o tile.png  # opj_decompress options
 ```
 
-The CLI only has these two commands. To decode or encode images, use the
-library.
+`j2k decode` takes OpenJPEG `opj_decompress` options with the same meanings,
+and the binary run as `opj_decompress` (for example through a symlink) behaves
+as that tool, so image servers that call `opj_decompress` can run j2k. See
+[`crates/j2k-cli/README.md`](crates/j2k-cli/README.md) for the options and the
+differences. To encode images, use the library.
 
 ## C and C++
 

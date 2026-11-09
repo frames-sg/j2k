@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+mod opj;
+
 use std::io::{self, Read};
 use std::path::Path;
 use std::process::ExitCode;
@@ -7,9 +9,17 @@ use std::process::ExitCode;
 const INSPECT_READ_LIMIT: usize = 64 * 1024 * 1024;
 
 fn main() -> ExitCode {
-    let mut args = std::env::args().skip(1);
+    let mut args = std::env::args();
+    if args
+        .next()
+        .as_deref()
+        .is_some_and(invoked_as_opj_decompress)
+    {
+        return opj::run(opj::Flavor::OpjDecompress, args);
+    }
     let subcommand = args.next();
     match subcommand.as_deref() {
+        Some("decode") => opj::run(opj::Flavor::J2kDecode, args),
         Some("inspect") => {
             let Some(path) = args.next() else {
                 eprintln!("usage: j2k inspect <file>");
@@ -29,7 +39,9 @@ fn main() -> ExitCode {
             eprintln!("j2k {}", env!("CARGO_PKG_VERSION"));
             eprintln!("Usage:");
             eprintln!("  j2k inspect <file>                                      Parse JPEG or JPEG 2000 headers");
+            eprintln!("  j2k decode -i <input> -o <output> [opj_decompress options] Decode to BMP, PNG, TIFF or PNM");
             eprintln!("  j2k transcode <input.jpg> <output.j2k> --htj2k --lossless-53");
+            eprintln!("Run as opj_decompress (for example through a symlink), j2k takes opj_decompress options.");
             ExitCode::SUCCESS
         }
         Some(other) => {
@@ -37,6 +49,14 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// Whether the binary was started as `opj_decompress`, such as
+/// through an `opj_decompress` symlink an image server is configured to run.
+fn invoked_as_opj_decompress(program: &str) -> bool {
+    Path::new(program)
+        .file_stem()
+        .is_some_and(|stem| stem == opj::OPJ_DECOMPRESS)
 }
 
 const TRANSCODE_USAGE: &str = "usage: j2k transcode <input.jpg> <output.j2k> --htj2k --lossless-53";
