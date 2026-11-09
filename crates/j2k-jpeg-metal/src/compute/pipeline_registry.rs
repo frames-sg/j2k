@@ -86,10 +86,10 @@ impl PipelineRegistryCache {
     }
 }
 
-/// The shader source. It opens with the IDCT constants `build.rs` renders
-/// from `j2k_codec_math::jpeg::idct`.
+/// The shader source. It opens with the constants `build.rs` renders from
+/// `j2k_codec_math::jpeg`.
 pub(in crate::compute) const SHADER_SOURCE: &str = concat!(
-    include_str!(concat!(env!("OUT_DIR"), "/jpeg_idct_constants.metal")),
+    include_str!(concat!(env!("OUT_DIR"), "/jpeg_codec_math.metal")),
     include_str!("../shaders_shared.metal"),
     include_str!("../shaders_encode.metal"),
     include_str!("../shaders_encode_staged.metal"),

@@ -681,6 +681,11 @@ fn staged_route_matrix_digest() -> String {
     format!("{:x}", digest.finalize())
 }
 
+/// The FDCT and quantization are the integer definition of
+/// `j2k_codec_math::jpeg::fdct`, so this digest is the same on every Metal GPU
+/// and under any shader math mode. It changed from `b9af03a1...` when the f32
+/// FDCT, whose rounding ties depended on the GPU's fast-math code generation,
+/// became the shared integer one.
 #[cfg(target_os = "macos")]
 #[test]
 fn staged_metal_encoder_matches_pinned_matrix_hash() {
@@ -689,7 +694,7 @@ fn staged_metal_encoder_matches_pinned_matrix_hash() {
     }
     assert_eq!(
         staged_route_matrix_digest(),
-        "b9af03a1a522926f3bee386fd554f146db773cf8287cef91d9001335c88c3a26",
-        "staged route must match the pinned fused/staged matrix hash"
+        "624e91d7b52aad907e4cae7eeda45f38537b7af8aa6b525356c3ef3b93ba19e6",
+        "staged route must match the pinned, device-independent matrix hash"
     );
 }

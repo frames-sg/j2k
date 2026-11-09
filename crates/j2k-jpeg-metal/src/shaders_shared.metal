@@ -363,10 +363,6 @@ inline uint component_v(constant JpegBaselineEncodeParams &params, uint componen
     return params.v2;
 }
 
-inline int round_to_int(float value) {
-    return value >= 0.0f ? int(value + 0.5f) : int(value - 0.5f);
-}
-
 inline uchar rgb_to_ycbcr_component(uchar3 rgb, uint component) {
     const int r = int(rgb.x);
     const int g = int(rgb.y);
@@ -455,31 +451,73 @@ inline void jpeg_encode_sample_block(
     }
 }
 
+// The 16 coefficients whose (u, v) parities are (u_odd, v_odd), exactly as
+// j2k_codec_math::jpeg::fdct defines them for every baseline encoder backend.
+// Integer arithmetic keeps the result independent of the GPU and of the
+// compiler's floating-point math mode. Each coefficient is F(u, v) * 2^32 as
+// the fold against the generated basis, whose entries are split into a signed
+// high half and an unsigned low half so both 16-term sums stay inside int.
+inline void jpeg_encode_fdct_quadrant(
+    thread const int folded[16],
+    uint u_odd,
+    uint v_odd,
+    constant uchar *quant,
+    thread int coeffs[64]
+) {
+    for (uint v = v_odd; v < 8u; v += 2u) {
+        for (uint u = u_odd; u < 8u; u += 2u) {
+            const uint natural = v * 8u + u;
+            constant short *basis_high = CODEC_MATH_JPEG_FDCT_BASIS_HIGH + natural * 16u;
+            constant ushort *basis_low = CODEC_MATH_JPEG_FDCT_BASIS_LOW + natural * 16u;
+            int high = 0;
+            int low = 0;
+            for (uint index = 0u; index < 16u; index++) {
+                high += folded[index] * int(basis_high[index]);
+                low += folded[index] * int(basis_low[index]);
+            }
+            const long scaled = long(high) * 65536 + long(low);
+            const ulong magnitude = ulong(scaled < 0 ? -scaled : scaled);
+            // Round half away from zero:
+            // floor((|S| + q * 2^31) / (q * 2^32)) = floor(floor(... / 2^32) / q).
+            // A zero quantizer divides by one, as in codec-math.
+            const uint divisor = max(uint(quant[natural]), 1u);
+            const ulong half_step = ulong(divisor) << (CODEC_MATH_JPEG_FDCT_FRACTION_BITS - 1u);
+            const uint quotient =
+                uint((magnitude + half_step) >> CODEC_MATH_JPEG_FDCT_FRACTION_BITS) / divisor;
+            coeffs[natural] = scaled < 0 ? -int(quotient) : int(quotient);
+        }
+    }
+}
+
+// Forward DCT and quantization, in natural order. Because
+// K_u(7 - x) = (-1)^u K_u(x), the 8x8 block folds exactly into four 4x4
+// integer quadrants, one per (u, v) parity, before the fixed-point basis.
 inline void jpeg_encode_fdct_quantize(
     thread const uchar block[64],
     constant uchar *quant,
     thread int coeffs[64]
 ) {
-    constexpr float pi = 3.14159265358979323846f;
-    constexpr float inv_sqrt_2 = 0.70710678118654752440f;
-    for (uint v = 0u; v < 8u; v++) {
-        for (uint u = 0u; u < 8u; u++) {
-            float sum = 0.0f;
-            for (uint y = 0u; y < 8u; y++) {
-                for (uint x = 0u; x < 8u; x++) {
-                    const float sample = float(block[y * 8u + x]) - 128.0f;
-                    const float cx = cos(((float(2u * x + 1u) * float(u) * pi) / 16.0f));
-                    const float cy = cos(((float(2u * y + 1u) * float(v) * pi) / 16.0f));
-                    sum += sample * cx * cy;
-                }
-            }
-            const float cu = (u == 0u) ? inv_sqrt_2 : 1.0f;
-            const float cv = (v == 0u) ? inv_sqrt_2 : 1.0f;
-            const uint natural = v * 8u + u;
-            const float transformed = 0.25f * cu * cv * sum;
-            coeffs[natural] = round_to_int(transformed / float(quant[natural]));
+    thread int even_even[16];
+    thread int odd_even[16];
+    thread int even_odd[16];
+    thread int odd_odd[16];
+    for (uint y = 0u; y < 4u; y++) {
+        for (uint x = 0u; x < 4u; x++) {
+            const int near_near = int(block[y * 8u + x]) - 128;
+            const int near_far = int(block[y * 8u + 7u - x]) - 128;
+            const int far_near = int(block[(7u - y) * 8u + x]) - 128;
+            const int far_far = int(block[(7u - y) * 8u + 7u - x]) - 128;
+            const uint index = y * 4u + x;
+            even_even[index] = (near_near + near_far) + (far_near + far_far);
+            odd_even[index] = (near_near - near_far) + (far_near - far_far);
+            even_odd[index] = (near_near + near_far) - (far_near + far_far);
+            odd_odd[index] = (near_near - near_far) - (far_near - far_far);
         }
     }
+    jpeg_encode_fdct_quadrant(even_even, 0u, 0u, quant, coeffs);
+    jpeg_encode_fdct_quadrant(odd_even, 1u, 0u, quant, coeffs);
+    jpeg_encode_fdct_quadrant(even_odd, 0u, 1u, quant, coeffs);
+    jpeg_encode_fdct_quadrant(odd_odd, 1u, 1u, quant, coeffs);
 }
 
 inline void jpeg_encode_push_raw_byte(
