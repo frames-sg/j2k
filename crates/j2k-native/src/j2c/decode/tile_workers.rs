@@ -285,4 +285,8 @@ fn add_counts(into: &mut DecodeDebugCounters, from: &DecodeDebugCounters) {
     into.skipped_code_blocks += from.skipped_code_blocks;
     into.idwt_output_samples += from.idwt_output_samples;
     into.stored_coefficients += from.stored_coefficients;
+    #[cfg(test)]
+    {
+        into.deferred_zeroed_coefficients += from.deferred_zeroed_coefficients;
+    }
 }

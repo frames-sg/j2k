@@ -319,6 +319,54 @@ fn decode_into_enters_the_pool_with_the_same_bytes() {
     assert!(!image.enters_pool(&pooled));
 }
 
+/// A full-image `Auto` decode on a pool too large for zeroed allocations
+/// zeroes its coefficients beside packet parsing; on a smaller pool it takes
+/// them zeroed from the allocator. Both give the bytes of a serial decode and
+/// store, reserve and account the same coefficients.
+#[cfg(feature = "parallel")]
+#[test]
+fn coefficients_zeroed_beside_packet_parsing_keep_the_bytes_and_accounting() {
+    for (ht, reversible) in [(false, true), (true, true), (true, false)] {
+        let bytes = parallel_gray_fixture(1024, 1024, ht, reversible);
+        let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+        let len = usize::try_from(image.width() * image.height()).expect("pixels");
+        let mut expected = alloc::vec![0_u8; len];
+        let mut serial = DecoderContext::default();
+        serial.set_cpu_decode_parallelism(crate::CpuDecodeParallelism::Serial);
+        image
+            .decode_into(&mut expected, &mut serial)
+            .expect("serial decode");
+        let decode_on = |threads: usize| {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("pool");
+            let mut context = DecoderContext::default();
+            let mut actual = alloc::vec![0_u8; len];
+            pool.install(|| image.decode_into(&mut actual, &mut context))
+                .expect("pool decode");
+            assert_eq!(
+                actual, expected,
+                "ht {ht} reversible {reversible} threads {threads}"
+            );
+            (
+                context.tile_decode_context.debug_counters,
+                context.storage.coefficients.capacity(),
+            )
+        };
+        let (zeroed, zeroed_capacity) = decode_on(4);
+        let (deferred, deferred_capacity) = decode_on(12);
+        assert_eq!(zeroed.deferred_zeroed_coefficients, 0);
+        assert!(deferred.deferred_zeroed_coefficients > 0);
+        assert_eq!(deferred.stored_coefficients, zeroed.stored_coefficients);
+        assert_eq!(deferred_capacity, zeroed_capacity);
+        assert_eq!(
+            deferred.workspace_peak.bytes().coefficients,
+            zeroed.workspace_peak.bytes().coefficients
+        );
+    }
+}
+
 /// An `Auto` decode of an image too small to repay forking runs serially,
 /// with the same bytes, and leaves the context's policy as it was.
 #[cfg(feature = "parallel")]

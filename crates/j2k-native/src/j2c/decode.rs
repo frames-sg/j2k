@@ -769,6 +769,9 @@ pub(crate) struct DecodeDebugCounters {
     pub(crate) idwt_output_samples: usize,
     /// Sub-band coefficients held in storage, summed over decoded tiles.
     pub(crate) stored_coefficients: usize,
+    /// Of those, the coefficients zeroed beside packet parsing.
+    #[cfg(test)]
+    pub(crate) deferred_zeroed_coefficients: usize,
     /// Code-blocks built, and the layer records built for them, summed over
     /// decoded tiles. Region decodes give layers only to code-blocks they read.
     pub(crate) built_code_blocks: usize,
@@ -898,6 +901,8 @@ fn decode_tile<'a>(
     if storage.exact_integer_decode {
         validate_exact_integer_decode_tile(tile)?;
     }
+    storage.defer_coefficient_zeroing =
+        defers_coefficient_zeroing(cpu_decode_parallelism, tile_ctx);
 
     // This is the method that orchestrates all steps.
 
@@ -962,15 +967,14 @@ fn decode_tile<'a>(
             cpu_decode_parallelism,
         )?;
     }
-    tile_ctx.debug_counters.stored_coefficients += storage.coefficients.len();
-    tile_ctx.debug_counters.built_code_blocks += storage.code_blocks.len();
-    tile_ctx.debug_counters.built_layer_records += storage.layers.len();
-    tile_ctx.debug_counters.built_precincts += storage.precincts.len();
+    count_built_storage(tile_ctx, storage);
     record_workspace(tile_ctx, storage, selection_bytes)?;
     profile_timings.build_us += profile::elapsed_us(stage_start);
     // Next, we parse the layers/segments for each code block.
     let stage_start = profile::profile_now(profile_enabled);
-    let packet_stats = segment::parse_selected(tile, header, storage, selection.as_ref())?;
+    let packet_stats = zero_coefficients_while(storage, |storage| {
+        segment::parse_selected(tile, header, storage, selection.as_ref())
+    })?;
     #[cfg(not(test))]
     let _ = packet_stats;
     #[cfg(test)]
@@ -997,6 +1001,61 @@ fn decode_tile<'a>(
         output,
     )?;
     Ok(())
+}
+
+/// Count what `build` stored: the coefficients, zeroed or reserved for
+/// zeroing beside packet parsing, and the code-blocks, layer records and
+/// precincts.
+fn count_built_storage(tile_ctx: &mut TileDecodeContext, storage: &DecompositionStorage<'_>) {
+    let counters = &mut tile_ctx.debug_counters;
+    counters.stored_coefficients += storage.coefficients.len() + storage.unzeroed_coefficients;
+    #[cfg(test)]
+    {
+        counters.deferred_zeroed_coefficients += storage.unzeroed_coefficients;
+    }
+    counters.built_code_blocks += storage.code_blocks.len();
+    counters.built_layer_records += storage.layers.len();
+    counters.built_precincts += storage.precincts.len();
+}
+
+/// Whether `build` may leave the coefficients unzeroed for packet parsing,
+/// which never reads them, so that another pool thread zeroes them while this
+/// one parses: an `Auto` full-image decode running on a pool of two or more
+/// threads. Region decodes size their coefficients after `build`.
+fn defers_coefficient_zeroing(
+    cpu_decode_parallelism: CpuDecodeParallelism,
+    tile_ctx: &TileDecodeContext,
+) -> bool {
+    #[cfg(feature = "parallel")]
+    let pooled = rayon::current_thread_index().is_some() && rayon::current_num_threads() > 1;
+    #[cfg(not(feature = "parallel"))]
+    let pooled = false;
+    pooled
+        && cpu_decode_parallelism == CpuDecodeParallelism::Auto
+        && tile_ctx.output_region.is_none()
+}
+
+/// Run `parse`, which never reads the coefficients, while another pool
+/// thread zeroes those `build` only reserved. `build` reserved them, so the
+/// zeroing does not allocate; it ends before this returns, also on error.
+fn zero_coefficients_while<'a, R: Send>(
+    storage: &mut DecompositionStorage<'a>,
+    parse: impl FnOnce(&mut DecompositionStorage<'a>) -> Result<R> + Send,
+) -> Result<R> {
+    let unzeroed = core::mem::take(&mut storage.unzeroed_coefficients);
+    if unzeroed == 0 {
+        return parse(storage);
+    }
+    let mut coefficients = core::mem::take(&mut storage.coefficients);
+    #[cfg(feature = "parallel")]
+    let parsed = rayon::join(|| parse(storage), || coefficients.resize(unzeroed, 0.0)).0;
+    #[cfg(not(feature = "parallel"))]
+    let parsed = {
+        coefficients.resize(unzeroed, 0.0);
+        parse(storage)
+    };
+    storage.coefficients = coefficients;
+    parsed
 }
 
 /// After `build`, choose how a region decode's IDWT and Tier-1 run and size
@@ -1544,8 +1603,8 @@ fn emit_decode_profile_row(
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_classic_code_block_data, CodeBlock, DecodeAllocationBudget, DecoderContext,
-        DecompositionStorage, Layer, Segment,
+        collect_classic_code_block_data, zero_coefficients_while, CodeBlock,
+        DecodeAllocationBudget, DecoderContext, DecompositionStorage, Layer, Segment,
     };
     use crate::error::DecodingError;
     #[cfg(feature = "parallel")]
@@ -1553,6 +1612,33 @@ mod tests {
     use crate::j2c::codestream::CodeBlockStyle;
     use crate::j2c::rect::IntRect;
     use alloc::vec;
+
+    /// Coefficients `build` only reserved are zeroed, without allocating,
+    /// by the time packet parsing returns, also when parsing fails.
+    #[test]
+    fn coefficients_reserved_for_parsing_are_zeroed_when_it_returns() {
+        for fails in [false, true] {
+            let mut storage = DecompositionStorage {
+                coefficients: vec![7.0; 64],
+                unzeroed_coefficients: 64,
+                ..DecompositionStorage::default()
+            };
+            storage.coefficients.clear();
+            let capacity = storage.coefficients.capacity();
+            let parsed = zero_coefficients_while(&mut storage, |storage| {
+                assert_eq!(storage.coefficients, Vec::<f32>::new());
+                if fails {
+                    Err(DecodingError::InvalidPrecinct.into())
+                } else {
+                    Ok(3)
+                }
+            });
+            assert_eq!(parsed.is_err(), fails);
+            assert_eq!(storage.coefficients, vec![0.0; 64]);
+            assert_eq!(storage.coefficients.capacity(), capacity);
+            assert_eq!(storage.unzeroed_coefficients, 0);
+        }
+    }
 
     fn classic_test_style() -> CodeBlockStyle {
         CodeBlockStyle {

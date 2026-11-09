@@ -399,11 +399,7 @@ pub(crate) fn try_zero_fill_decode_elements<T: Copy + Default + bytemuck::Zeroab
     values: &mut Vec<T>,
     target_len: usize,
 ) -> Result<()> {
-    zero_fill_decode_elements(
-        values,
-        target_len,
-        cpu_decode_pool_threads() <= MAX_POOL_THREADS_FOR_ZEROED_BUFFERS,
-    )
+    zero_fill_decode_elements(values, target_len, fresh_decode_buffers_come_zeroed())
 }
 
 /// Most pool threads for which fresh decode buffers come zeroed from the
@@ -413,6 +409,12 @@ pub(crate) fn try_zero_fill_decode_elements<T: Copy + Default + bytemuck::Zeroab
 /// 15%, but on 18 threads the faults took about four times the system time
 /// and HTJ2K images, which decode each page quickly, lost 3 to 7%.
 const MAX_POOL_THREADS_FOR_ZEROED_BUFFERS: usize = 10;
+
+/// Whether [`try_zero_fill_decode_elements`] takes an empty buffer that
+/// needs a new allocation zeroed from the allocator instead of zeroing it.
+pub(crate) fn fresh_decode_buffers_come_zeroed() -> bool {
+    cpu_decode_pool_threads() <= MAX_POOL_THREADS_FOR_ZEROED_BUFFERS
+}
 
 /// [`try_zero_fill_decode_elements`] with the choice made. An empty buffer
 /// short of capacity holds nothing that is read, so it is released rather

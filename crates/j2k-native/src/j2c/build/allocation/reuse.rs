@@ -182,7 +182,19 @@ pub(super) fn reserve_decomposition_storage(
     budget.reserve(&mut storage.code_blocks, plan.code_blocks)?;
     budget.reserve(&mut storage.layers, plan.layers)?;
     budget.reserve(&mut storage.tag_tree_nodes, plan.tag_tree_nodes)?;
-    budget.reserve_zeroed(&mut storage.coefficients, plan.coefficient_storage_len())?;
+    let coefficients = plan.coefficient_storage_len();
+    // Packet parsing never reads the coefficients, so a decode that may zero
+    // them beside it (see `DecompositionStorage::defer_coefficient_zeroing`)
+    // only reserves them, unless a new allocation would come zeroed anyway.
+    if storage.defer_coefficient_zeroing
+        && (storage.coefficients.capacity() >= coefficients
+            || !crate::fresh_decode_buffers_come_zeroed())
+    {
+        budget.reserve(&mut storage.coefficients, coefficients)?;
+        storage.unzeroed_coefficients = coefficients;
+    } else {
+        budget.reserve_zeroed(&mut storage.coefficients, coefficients)?;
+    }
     if storage.exact_integer_decode {
         budget.reserve(
             &mut storage.coefficients_i64,

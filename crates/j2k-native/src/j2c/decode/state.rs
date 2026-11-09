@@ -88,7 +88,7 @@ impl Iterator for SubBandIter {
 #[derive(Default)]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "the integer, stale-plane, in-channel last level, row-streamed IDWT and banded Tier-1 switches are independent"
+    reason = "the integer, stale-plane, deferred-zeroing, in-channel last level, row-streamed IDWT and banded Tier-1 switches are independent"
 )]
 pub(crate) struct DecompositionStorage<'a> {
     pub(crate) segments: Vec<Segment<'a>>,
@@ -108,6 +108,11 @@ pub(crate) struct DecompositionStorage<'a> {
     /// Whether `coefficients` still holds the previous component's samples.
     /// Tier-1 must zero what it does not decode before the IDWT reads it.
     pub(crate) stale_coefficients: bool,
+    /// Whether `build` may only reserve `coefficients`, leaving the tile
+    /// decode to zero the `unzeroed_coefficients` it reserved on another pool
+    /// thread while this one parses the packets, which never read them.
+    pub(crate) defer_coefficient_zeroing: bool,
+    pub(crate) unzeroed_coefficients: usize,
     /// Whether the region IDWT writes each component's last level into the
     /// padding of its `channel_data` plane, for `store` to compact in place.
     pub(crate) last_idwt_level_in_channels: bool,
@@ -178,6 +183,8 @@ impl DecompositionStorage<'_> {
         self.exact_integer_decode = false;
         self.coefficient_layout = build::CoefficientLayout::Tile;
         self.stale_coefficients = false;
+        self.defer_coefficient_zeroing = false;
+        self.unzeroed_coefficients = 0;
         self.last_idwt_level_in_channels = false;
         self.line_region_idwt = false;
         self.banded_tier1 = false;

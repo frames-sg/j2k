@@ -225,7 +225,11 @@ fn resize_planned_coefficients(
     storage: &mut DecompositionStorage<'_>,
     plan: &DecompositionAllocationPlan,
 ) -> Result<()> {
-    try_zero_fill_decode_elements(&mut storage.coefficients, plan.coefficient_storage_len())?;
+    // Coefficients the reservation left unzeroed are zeroed while the
+    // packets are parsed (see `DecompositionStorage::unzeroed_coefficients`).
+    if storage.unzeroed_coefficients == 0 {
+        try_zero_fill_decode_elements(&mut storage.coefficients, plan.coefficient_storage_len())?;
+    }
     if storage.exact_integer_decode {
         try_resize_decode_elements(
             &mut storage.coefficients_i64,
@@ -271,7 +275,7 @@ fn validate_built_storage(
 ) -> Result<()> {
     let stored_coefficients = plan.coefficient_storage_len();
     let coefficient_lengths_match = coefficient_count == plan.coefficients
-        && stored_coefficients == storage.coefficients.len()
+        && stored_coefficients == storage.coefficients.len() + storage.unzeroed_coefficients
         && storage.coefficients_i64.len()
             == usize::from(storage.exact_integer_decode) * stored_coefficients;
     let structural_lengths_match = storage.tile_decompositions.len() == plan.tile_decompositions
