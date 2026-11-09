@@ -1074,7 +1074,8 @@ impl<'a> Image<'a> {
         self.decode_into_here(buf, decoder_context)
     }
 
-    /// Whether [`Self::decode_into`] moves onto the pool: an `Auto` decode
+    /// Whether [`Self::decode_into`] and the native-depth full decode move
+    /// onto the pool: an `Auto` decode
     /// called from outside a pool of two or more threads whose estimated
     /// serial time is at least 1.25 times the fork cost, unless stage
     /// profiling is on (a pool thread would keep its rows). With one thread

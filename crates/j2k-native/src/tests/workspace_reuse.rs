@@ -367,6 +367,28 @@ fn coefficients_zeroed_beside_packet_parsing_keep_the_bytes_and_accounting() {
     }
 }
 
+/// A native-depth full decode from outside the pool runs on it with the same
+/// samples as one on the calling thread.
+#[cfg(feature = "parallel")]
+#[test]
+fn native_decode_enters_the_pool_with_the_same_samples() {
+    let bytes = parallel_gray_fixture(1024, 1024, true, true);
+    let image = Image::new(&bytes, &DecodeSettings::default()).expect("image");
+    let expected = image
+        .decode_native_with_context(&mut DecoderContext::default())
+        .expect("decode here");
+    let mut pooled = DecoderContext::default();
+    pooled.tile_decode_context.enter_pool = true;
+    let actual = image
+        .decode_native_with_context(&mut pooled)
+        .expect("decode on the pool");
+    assert_eq!(actual.data, expected.data);
+    assert_eq!(
+        (actual.width, actual.height, actual.bit_depth),
+        (expected.width, expected.height, expected.bit_depth)
+    );
+}
+
 /// An `Auto` decode of an image too small to repay forking runs serially,
 /// with the same bytes, and leaves the context's policy as it was.
 #[cfg(feature = "parallel")]

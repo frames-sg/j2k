@@ -219,6 +219,22 @@ impl<'a> Image<'a> {
         decoder_context: &mut DecoderContext<'a>,
         retained_baseline_bytes: usize,
     ) -> Result<RawBitmap> {
+        #[cfg(feature = "parallel")]
+        if self.enters_pool(decoder_context) {
+            // As in `decode_into`: one entry into the pool for the whole
+            // decode, so its later parallel stages start from a pool thread.
+            return rayon::scope(|_| {
+                self.decode_native_here(decoder_context, retained_baseline_bytes)
+            });
+        }
+        self.decode_native_here(decoder_context, retained_baseline_bytes)
+    }
+
+    fn decode_native_here(
+        &self,
+        decoder_context: &mut DecoderContext<'a>,
+        retained_baseline_bytes: usize,
+    ) -> Result<RawBitmap> {
         self.with_packet_cache_retry(|| {
             let bit_depth = self.uniform_header_bit_depth()?;
             let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
