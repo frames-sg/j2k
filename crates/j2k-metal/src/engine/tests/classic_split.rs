@@ -19,6 +19,42 @@ use j2k_native::{encode, encode_htj2k, EncodeOptions, J2kWaveletTransform};
 const LARGE: (u32, u32) = (1024, 512);
 const SMALL: (u32, u32) = (128, 128);
 
+fn encoded_ht_rgb() -> Vec<u8> {
+    let pixels = j2k_test_support::patterned_rgb8(LARGE.0, LARGE.1);
+    let options = EncodeOptions {
+        reversible: false,
+        ..EncodeOptions::default()
+    };
+    encode_htj2k(&pixels, LARGE.0, LARGE.1, 3, 8, false, &options).expect("encode HT")
+}
+
+/// A single-tile 8-bit RGB 5/3 codestream, `size` x `size`, with 5 levels,
+/// 64 x 64 code blocks, MCT and one layer, whose 18 packets are all empty, so
+/// it costs nothing to make however large it is.
+fn empty_rgb_codestream(size: u32) -> Vec<u8> {
+    let mut bytes = vec![0xFF, 0x4F, 0xFF, 0x51, 0x00, 0x2F, 0x00, 0x00];
+    for value in [size, size, 0, 0, size, size, 0, 0] {
+        bytes.extend(value.to_be_bytes());
+    }
+    bytes.extend([
+        0x00, 0x03, 0x07, 0x01, 0x01, 0x07, 0x01, 0x01, 0x07, 0x01, 0x01,
+    ]);
+    // COD: LRCP, one layer, MCT, 5 levels, 64 x 64 blocks, 5/3.
+    bytes.extend([
+        0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, 0x01, 0x05, 0x04, 0x04, 0x00, 0x01,
+    ]);
+    // QCD: no quantization, 2 guard bits, exponent 10 in all 16 sub-bands.
+    bytes.extend([0xFF, 0x5C, 0x00, 0x13, 0x40]);
+    bytes.extend([10 << 3; 16]);
+    // One 32-byte tile-part: SOT, SOD, an empty packet per resolution and component.
+    bytes.extend([
+        0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 32, 0x00, 0x01, 0xFF, 0x93,
+    ]);
+    bytes.extend([0x00; 18]);
+    bytes.extend([0xFF, 0xD9]);
+    bytes
+}
+
 fn transform(reversible: bool) -> J2kWaveletTransform {
     if reversible {
         J2kWaveletTransform::Reversible53
@@ -167,7 +203,8 @@ fn split_classic_tier1_failure_reports_the_gpu_error_and_keeps_the_runtime() {
 }
 
 /// Region and region-scaled colour decodes run Tier-1 on the Metal route, a
-/// classic one split with the CPU pool, and match the host's region decode.
+/// classic one split with the CPU pool, store only the region's code blocks,
+/// and match the host's region decode.
 #[test]
 fn colour_region_decodes_run_metal_tier1_and_match_host() {
     if !should_run_metal_runtime() {
@@ -180,30 +217,47 @@ fn colour_region_decodes_run_metal_tier1_and_match_host() {
         w: 384,
         h: 256,
     };
-    // (row, HT, reversible, scale, split)
+    // A whole-sub-band layout of this image's finest sub-band would exceed the
+    // 512 MiB buffer cap.
+    let large_roi = Rect {
+        x: 12000,
+        y: 12000,
+        w: 256,
+        h: 256,
+    };
+    // (row, image, roi, scale, split)
     let rows = [
-        ("classic 5/3 region", false, true, Downscale::None, true),
+        (
+            "classic 5/3 region",
+            encoded_rgb(LARGE, true, false),
+            roi,
+            Downscale::None,
+            true,
+        ),
         (
             "classic 9/7 half-scale region",
-            false,
-            false,
+            encoded_rgb(LARGE, false, false),
+            roi,
             Downscale::Half,
             true,
         ),
-        ("HT 9/7 region", true, false, Downscale::None, false),
+        (
+            "HT 9/7 region",
+            encoded_ht_rgb(),
+            roi,
+            Downscale::None,
+            false,
+        ),
+        (
+            "24000 x 24000 image region",
+            empty_rgb_codestream(24000),
+            large_roi,
+            Downscale::None,
+            false,
+        ),
     ];
-    for (row, ht, reversible, scale, split) in rows {
+    for (row, bytes, roi, scale, split) in rows {
         with_isolated_runtime_for_device_for_test(&device, || {
-            let bytes = if ht {
-                let pixels = j2k_test_support::patterned_rgb8(LARGE.0, LARGE.1);
-                let options = EncodeOptions {
-                    reversible,
-                    ..EncodeOptions::default()
-                };
-                encode_htj2k(&pixels, LARGE.0, LARGE.1, 3, 8, false, &options).expect("encode HT")
-            } else {
-                encoded_rgb(LARGE, reversible, false)
-            };
             reset_metal_command_buffers_for_test();
             let request = MetalDecodeRequest::region_scaled(
                 PixelFormat::Rgb8,
