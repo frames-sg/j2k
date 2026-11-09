@@ -186,19 +186,11 @@ fn prepare_exact_with(
 ) -> PyResult<ExactPrepared> {
     let count = inputs.len();
     let requests = owned_items(inputs.iter().map(|input| input.request))?;
-    let inputs = owned_items(inputs.into_iter().map(|input| {
-        EncodedImage::new(
-            input.bytes,
-            DecodeRequest::Region {
-                roi: Rect {
-                    x: 0,
-                    y: 0,
-                    w: 1,
-                    h: 1,
-                },
-            },
-        )
-    }))?;
+    let inputs = owned_items(
+        inputs
+            .into_iter()
+            .map(|input| EncodedImage::operation_source(input.bytes)),
+    )?;
     let sources = prepare_sources(inputs)?;
     let mut operations = owned_capacity(count)?;
     let mut errors = owned_capacity(count)?;
@@ -214,42 +206,24 @@ fn prepare_exact_with(
             let request = requests[image.source_index()];
             let grid = image.reference_grid();
             let roi = request.source_region(grid.image_size);
-            let plan = (|| {
-                let output = grid
-                    .reduced_region(roi, request.levels)
-                    .ok_or_else(|| "invalid source region or reduction".to_owned())?;
-                if output.w == 0 || output.h == 0 {
-                    return Err("region has no samples at the requested reduction".to_owned());
-                }
-                let format = native_planning_format(group.info())
-                    .ok_or_else(|| "unsupported native output layout".to_owned())?;
-                match control {
-                    None => J2kDecoder::new_with_settings(image.bytes(), image.decode_settings())
+            let plan = match control {
+                None => J2kDecoder::new_with_settings(image.bytes(), image.decode_settings())
+                    .and_then(|mut decoder| decoder.native_region_decode_plan(roi, request.levels)),
+                Some(control) => {
+                    J2kDecoder::new_with_control(image.bytes(), image.decode_settings(), control)
                         .and_then(|mut decoder| {
-                            decoder.region_decode_plan(format, roi, request.levels)
-                        }),
-                    Some(control) => J2kDecoder::new_with_control(
-                        image.bytes(),
-                        image.decode_settings(),
-                        control,
-                    )
-                    .and_then(|mut decoder| {
-                        decoder.region_decode_plan_with_control(
-                            format,
-                            roi,
-                            request.levels,
-                            control,
-                        )
-                    }),
+                            decoder.native_region_decode_plan_with_control(
+                                roi,
+                                request.levels,
+                                control,
+                            )
+                        })
                 }
-                .map_err(|error| error.to_string())
-            })();
+            };
             match plan {
                 Ok(plan) => {
-                    let mut info = group.info().clone();
-                    info.dimensions = (plan.output_region.w, plan.output_region.h);
-                    if !groups.contains(&info) {
-                        groups.push(info);
+                    if !groups.contains(&plan.samples) {
+                        groups.push(plan.samples);
                     }
                     operations.push(ExactPreparedOperation {
                         image: image.clone(),
@@ -257,7 +231,7 @@ fn prepare_exact_with(
                         levels: request.levels,
                     });
                 }
-                Err(error) => errors.push((image.source_index(), error)),
+                Err(error) => errors.push((image.source_index(), error.to_string())),
             }
         }
     }
@@ -390,20 +364,13 @@ pub(crate) fn plan_region<'py>(
                 "uint8",
             ));
         }
-        let info = if let Some(support) = view.support_info() {
-            BatchGroupInfo::classify_native_output(support, view.info().dimensions, options)
-                .map_err(value_error)?
-        } else {
-            let support = J2kDecoder::inspect_support_with_settings(data, options.settings)
-                .map_err(value_error)?;
-            BatchGroupInfo::classify_native_output(&support, view.info().dimensions, options)
-                .map_err(value_error)?
-        };
         let mut decoder = J2kDecoder::from_view(view).map_err(value_error)?;
-        let format = native_planning_format(&info)
-            .ok_or_else(|| value_error("unsupported native layout"))?;
-        let plan = decoder
-            .region_decode_plan(format, roi, request.levels)
+        let j2k::J2kNativeRegionDecodePlan {
+            region: plan,
+            samples: info,
+            ..
+        } = decoder
+            .native_region_decode_plan(roi, request.levels)
             .map_err(value_error)?;
         let sample_type = match info.sample_type {
             j2k::NativeSampleType::U8 => "uint8",
@@ -506,15 +473,4 @@ pub(crate) fn checked_normalized_control(
         return Err(PyValueError::new_err("decode operation was cancelled"));
     }
     Ok(control)
-}
-
-// General packed Native16 uses word layouts while preserving source
-// signedness. Typed batch/GPU layouts name signed words separately.
-fn native_planning_format(info: &BatchGroupInfo) -> Option<j2k::PixelFormat> {
-    Some(match info.native_pixel_format()? {
-        j2k::PixelFormat::GrayI16 => j2k::PixelFormat::Gray16,
-        j2k::PixelFormat::RgbI16 => j2k::PixelFormat::Rgb16,
-        j2k::PixelFormat::RgbaI16 => j2k::PixelFormat::Rgba16,
-        format => format,
-    })
 }

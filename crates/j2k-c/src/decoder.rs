@@ -189,21 +189,16 @@ impl Decoder {
         if self.operation_source.is_some() {
             return Ok(());
         }
-        self.prepare_layout_with(
-            DecodeRequest::Region {
-                roi: Rect {
-                    x: 0,
-                    y: 0,
-                    w: 1,
-                    h: 1,
-                },
-            },
-            control,
-        )?;
-        let (_, batch, _) = self
-            .prepared
-            .as_ref()
-            .ok_or_else(|| Error::internal("source preparation is missing"))?;
+        let input = Vec::from([EncodedImage::operation_source(Arc::clone(&self.bytes))]);
+        let Self { session, pool, .. } = self;
+        let batch = in_pool(pool.as_ref(), || match control {
+            None => session.prepare(input),
+            Some(control) => session.prepare_with_control(input, control),
+        })
+        .map_err(Error::infrastructure)?;
+        if let Some(error) = batch.errors().first() {
+            return Err(Error::item(&error.source));
+        }
         let [group] = batch.groups() else {
             return Err(Error::internal("expected one source group"));
         };
@@ -211,7 +206,6 @@ impl Decoder {
             return Err(Error::internal("expected one source image"));
         };
         let image = image.clone();
-        let info = group.info().clone();
         let max_reduction = match control {
             None => {
                 let mut decoder = J2kDecoder::new_with_settings(&self.bytes, self.settings)?;
@@ -227,7 +221,6 @@ impl Decoder {
         };
         self.operation_source = Some(crate::operations::OperationSource {
             image,
-            info,
             max_reduction,
         });
         Ok(())

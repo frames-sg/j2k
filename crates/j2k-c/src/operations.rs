@@ -14,14 +14,13 @@ use crate::{
     error::{Error, Result},
 };
 use j2k::{
-    BatchGroupInfo, J2kCancellationToken, J2kDecodeControl, J2kDecoder, J2kSrgb8Layout,
-    PreparedImage, PreparedImageOperation, Rect,
+    J2kCancellationToken, J2kDecodeControl, J2kDecoder, J2kSrgb8Layout, PreparedImage,
+    PreparedImageOperation, Rect,
 };
 use std::num::NonZeroUsize;
 
 pub(crate) struct OperationSource {
     pub(crate) image: PreparedImage,
-    pub(crate) info: BatchGroupInfo,
     pub(crate) max_reduction: u8,
 }
 
@@ -95,6 +94,17 @@ impl OperationRequest {
         })
     }
 
+    /// The exact operation of this request over `image`, under the request's
+    /// control when it has one.
+    fn operation<'a>(&'a self, image: &'a PreparedImage) -> PreparedImageOperation<'a> {
+        let operation = PreparedImageOperation::new(image, self.roi, self.levels);
+        if self.has_execution_control() {
+            operation.with_control(&self.control)
+        } else {
+            operation
+        }
+    }
+
     fn has_execution_control(&self) -> bool {
         self.control.max_working_memory_bytes.is_some() || self.control.cancellation.is_some()
     }
@@ -137,6 +147,83 @@ impl Decoder {
         Ok(())
     }
 
+    /// The native-sample output of `request`, as the session plans the
+    /// operation its decode prepares, and the source's largest reduction.
+    fn plan_native_operation(
+        &mut self,
+        request: &OperationRequest,
+    ) -> Result<(J2kCOutputInfo, u8)> {
+        self.prepare_operation_source(request)?;
+        let Self {
+            session,
+            pool,
+            operation_source,
+            ..
+        } = self;
+        let source = operation_source
+            .as_ref()
+            .ok_or_else(|| Error::internal("prepared source is missing"))?;
+        if request.levels > source.max_reduction {
+            return Err(Error::new(
+                J2K_UNSUPPORTED,
+                "requested reduction exceeds a component or tile resolution ladder",
+            ));
+        }
+        // The session plans the operation exactly as its decode prepares it.
+        let operation = request.operation(&source.image);
+        let plans = in_pool(pool.as_ref(), || session.plan_operations(&[operation]))
+            .map_err(Error::infrastructure)?;
+        let [plan] = plans.as_slice() else {
+            return Err(Error::internal("expected one operation plan"));
+        };
+        let plan = plan.as_ref().map_err(Error::item)?;
+        let info = native_output_info(
+            &plan.info,
+            plan.output_rect,
+            plan.used_lenient_metadata_recovery,
+        )?;
+        Ok((info, source.max_reduction))
+    }
+
+    /// The explicit sRGB output of `request` and the source's largest reduction.
+    fn plan_srgb8_operation(&mut self, request: &OperationRequest) -> Result<(J2kCOutputInfo, u8)> {
+        let mut decoder =
+            J2kDecoder::new_with_control(&self.bytes, self.settings, &request.control)?;
+        let (plan, max_reduction) = in_pool(self.pool.as_ref(), || {
+            let plan = decoder.srgb8_region_decode_plan_with_control(
+                request.roi,
+                request.levels,
+                &request.control,
+            )?;
+            Ok::<_, j2k::J2kError>((
+                plan,
+                decoder.max_reduction_levels_with_control(&request.control)?,
+            ))
+        })?;
+        let channels = u32::try_from(plan.format.bytes_per_pixel())
+            .map_err(|_| Error::internal("sRGB channel count overflow"))?;
+        let output = J2kCOutputInfo {
+            x: plan.output_region.x,
+            y: plan.output_region.y,
+            width: plan.output_region.w,
+            height: plan.output_region.h,
+            channels,
+            sample_type: J2K_U8,
+            precision: 8,
+            alpha: if channels == 4 {
+                J2K_ALPHA_STRAIGHT
+            } else {
+                J2K_ALPHA_NONE
+            },
+            row_bytes: u64::try_from(plan.row_bytes)
+                .map_err(|_| Error::limit("row size overflow"))?,
+            buffer_bytes: u64::try_from(plan.buffer_bytes)
+                .map_err(|_| Error::limit("output size overflow"))?,
+            ..Default::default()
+        };
+        Ok((output, max_reduction))
+    }
+
     pub(crate) fn plan_operation(&mut self, request: &OperationRequest) -> Result<J2kCRegionPlan> {
         request.check_cancelled()?;
         let covered = self
@@ -156,58 +243,10 @@ impl Decoder {
         request.check_output(minimum_bytes)?;
         let (output, max_reduction, route) = if request.interpretation == J2K_INTERPRETATION_NATIVE
         {
-            self.prepare_operation_source(request)?;
-            let source = self
-                .operation_source
-                .as_ref()
-                .ok_or_else(|| Error::internal("prepared source is missing"))?;
-            if request.levels > source.max_reduction {
-                return Err(Error::new(
-                    J2K_UNSUPPORTED,
-                    "requested reduction exceeds a component or tile resolution ladder",
-                ));
-            }
-            let info = native_output_info(
-                &source.info,
-                covered,
-                source.image.used_lenient_metadata_recovery(),
-            )?;
-            (info, source.max_reduction, J2K_ROUTE_NATIVE_CPU)
+            let (output, max_reduction) = self.plan_native_operation(request)?;
+            (output, max_reduction, J2K_ROUTE_NATIVE_CPU)
         } else {
-            let mut decoder =
-                J2kDecoder::new_with_control(&self.bytes, self.settings, &request.control)?;
-            let (plan, max_reduction) = in_pool(self.pool.as_ref(), || {
-                let plan = decoder.srgb8_region_decode_plan_with_control(
-                    request.roi,
-                    request.levels,
-                    &request.control,
-                )?;
-                Ok::<_, j2k::J2kError>((
-                    plan,
-                    decoder.max_reduction_levels_with_control(&request.control)?,
-                ))
-            })?;
-            let channels = u32::try_from(plan.format.bytes_per_pixel())
-                .map_err(|_| Error::internal("sRGB channel count overflow"))?;
-            let output = J2kCOutputInfo {
-                x: plan.output_region.x,
-                y: plan.output_region.y,
-                width: plan.output_region.w,
-                height: plan.output_region.h,
-                channels,
-                sample_type: J2K_U8,
-                precision: 8,
-                alpha: if channels == 4 {
-                    J2K_ALPHA_STRAIGHT
-                } else {
-                    J2K_ALPHA_NONE
-                },
-                row_bytes: u64::try_from(plan.row_bytes)
-                    .map_err(|_| Error::limit("row size overflow"))?,
-                buffer_bytes: u64::try_from(plan.buffer_bytes)
-                    .map_err(|_| Error::limit("output size overflow"))?,
-                ..Default::default()
-            };
+            let (output, max_reduction) = self.plan_srgb8_operation(request)?;
             (output, max_reduction, J2K_ROUTE_REGION_PLANES)
         };
         self.check_output_limit(output.buffer_bytes)?;
@@ -306,10 +345,7 @@ impl Decoder {
             .operation_source
             .as_ref()
             .ok_or_else(|| Error::internal("native source is not prepared"))?;
-        let mut operation = PreparedImageOperation::new(&source.image, request.roi, request.levels);
-        if request.has_execution_control() {
-            operation = operation.with_control(&request.control);
-        }
+        let operation = request.operation(&source.image);
         let result = in_pool(self.pool.as_ref(), || {
             self.session.decode_operations(&[operation])
         })

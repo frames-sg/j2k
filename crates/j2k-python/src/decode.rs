@@ -552,39 +552,18 @@ impl Decoder {
                 .map(ToString::to_string)
                 .collect::<Vec<_>>();
             let dimensions = image.dimensions();
-            let layout = image.layout();
-            let data = image.into_data();
-            let channels = match layout {
+            let channels = match image.layout() {
                 j2k::J2kSrgb8Layout::Gray => 1,
                 j2k::J2kSrgb8Layout::Rgb => 3,
                 j2k::J2kSrgb8Layout::Rgba => 4,
                 _ => return Err(value_error("unsupported sRGB output layout")),
             };
-            let data = if self.options.layout == BatchLayout::Nchw && channels > 1 {
-                // The packed output and its planar copy are both codec-owned
-                // while the layout converts, within the caller's working limit.
-                let budget = j2k_native::DecodeOperationControl::new(
-                    control
-                        .max_working_memory_bytes
-                        .map(core::num::NonZeroUsize::get),
-                    None,
-                )
-                .beside_retained_bytes(data.capacity())
-                .map_err(value_error)?;
-                budget
-                    .clone()
-                    .beside_retained_bytes(data.len())
-                    .map_err(value_error)?;
-                let mut planar = crate::owned_capacity(data.len())?;
-                budget
-                    .beside_retained_bytes(planar.capacity())
-                    .map_err(value_error)?;
-                for channel in 0..channels {
-                    planar.extend(data.iter().skip(channel).step_by(channels).copied());
-                }
-                planar
+            let data = if self.options.layout == BatchLayout::Nchw {
+                image
+                    .into_planar_data_with_control(&control)
+                    .map_err(value_error)?
             } else {
-                data
+                image.into_data()
             };
             let mut tensor = Tensor::new(
                 Samples::U8(data),
