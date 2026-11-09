@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 use super::{encode_jpeg_baseline_gpu_tile_with_tables, ensure_entropy_output_within_plan};
 use crate::adapter::baseline_encode::allocation::{
     checked_encode_host_live_bytes, checked_gpu_batch_live_bytes, encoded_frame_capacity_bytes,
-    try_encode_metadata_vec, GpuBatchAllocationBudget,
+    gpu_chunk_len, try_encode_metadata_vec, GpuBatchAllocationBudget,
 };
 use crate::adapter::baseline_encode::planning::same_source_buffer_batch_end;
 use crate::adapter::baseline_encode::tables::baseline_encode_tables;
@@ -21,6 +21,15 @@ use group::encode_same_source_group;
 ///
 /// The driver groups only contiguous tiles that share the same resident source
 /// allocation, preserving input order in the returned frames.
+///
+/// The live host cap bounds each submission, not the whole batch. A group
+/// whose worst-case entropy and frame owners exceed the cap is submitted in
+/// consecutive chunks that fit beside the frames already produced, counted at
+/// their actual capacities. The call fails with
+/// [`JpegEncodeError::MemoryCapExceeded`](crate::JpegEncodeError::MemoryCapExceeded)
+/// before any submission when one tile's worst case alone exceeds the cap,
+/// and part-way only when the frames already produced leave no room for the
+/// next tile.
 pub fn encode_jpeg_baseline_gpu_batch<T, A>(
     tiles: &[T],
     options: JpegEncodeOptions,
@@ -72,10 +81,19 @@ where
     .map_err(|error| adapter.map_plan_error(error))?;
     let mut start = 0usize;
     while start < tiles.len() {
-        let end = same_source_buffer_batch_end(tiles, start, |tile| adapter.source_key(tile));
+        let group_end = same_source_buffer_batch_end(tiles, start, |tile| adapter.source_key(tile));
         let prior_frame_bytes = encoded_frame_capacity_bytes(&encoded)?;
         let external_live_bytes =
             checked_encode_host_live_bytes([metadata_live_bytes, prior_frame_bytes])?;
+        let end = start
+            + gpu_chunk_len(
+                &gpu_tiles[start..group_end],
+                options,
+                backend,
+                tables.sampling,
+                external_live_bytes,
+            )
+            .map_err(|error| adapter.map_plan_error(error))?;
         if end - start == 1 {
             encoded.push(encode_jpeg_baseline_gpu_tile_with_tables(
                 tiles[start],

@@ -86,6 +86,48 @@ fn gpu_batch_carries_retained_frames_across_source_groups() {
     assert!(second_peak > first_peak);
 }
 
+/// A chunk is the longest run whose worst case fits beside the live bytes,
+/// down to one tile; only a tile that cannot fit beside them fails.
+#[test]
+fn gpu_chunk_takes_the_longest_run_that_fits_beside_the_live_bytes() {
+    let options = JpegEncodeOptions {
+        subsampling: crate::encoder::JpegSubsampling::Gray,
+        backend: JpegBackend::Cuda,
+        ..JpegEncodeOptions::default()
+    };
+    let sampling = super::super::tables::jpeg_baseline_sampling_for(options.subsampling);
+    let tile = JpegBaselineGpuEncodeTile {
+        byte_offset: 0,
+        width: 1,
+        height: 1,
+        pitch_bytes: 1,
+        output_width: 2_048,
+        output_height: 2_048,
+        format: crate::PixelFormat::Gray8,
+        buffer_len: 1,
+    };
+    let group = [tile; 9];
+    let chunk =
+        |live_bytes| gpu_chunk_len(&group, options, JpegBackend::Cuda, sampling, live_bytes);
+    // 256x256 blocks at 512 entropy bytes each plus 16, and a frame 768 bytes
+    // larger than the entropy.
+    let entropy = 512 * 256 * 256 + 16;
+    let tile_peak = 2 * entropy + JPEG_BASELINE_FRAME_OVERHEAD_CAPACITY;
+
+    assert_eq!(chunk(0).expect("seven tiles fit"), 7);
+    assert_eq!(
+        chunk(DEFAULT_MAX_HOST_ALLOCATION_BYTES - tile_peak).expect("one tile fits exactly"),
+        1
+    );
+    assert!(matches!(
+        chunk(DEFAULT_MAX_HOST_ALLOCATION_BYTES - tile_peak + 1),
+        Err(JpegBaselineGpuEncodeError::Encode(JpegEncodeError::MemoryCapExceeded {
+            requested,
+            cap: DEFAULT_MAX_HOST_ALLOCATION_BYTES
+        })) if requested == DEFAULT_MAX_HOST_ALLOCATION_BYTES + 1
+    ));
+}
+
 #[test]
 fn gpu_runtime_params_and_returned_outer_metadata_share_the_group_cap() {
     let retained = DEFAULT_MAX_HOST_ALLOCATION_BYTES - 3;

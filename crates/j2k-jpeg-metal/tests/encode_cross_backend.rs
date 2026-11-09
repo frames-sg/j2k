@@ -10,7 +10,8 @@ use j2k_jpeg::{
     encode_jpeg_baseline, JpegBackend, JpegEncodeOptions, JpegSamples, JpegSubsampling,
 };
 use j2k_jpeg_metal::{
-    encode_jpeg_baseline_from_metal_buffer, JpegBaselineMetalEncodeTile, MetalBackendSession,
+    encode_jpeg_baseline_batch_from_metal_buffers, encode_jpeg_baseline_from_metal_buffer,
+    JpegBaselineMetalEncodeTile, MetalBackendSession,
 };
 use j2k_test_support::{
     jpeg_encode_matrix_cases, jpeg_encode_matrix_digest, jpeg_encode_padded_cases,
@@ -140,6 +141,66 @@ fn metal_encodes_the_transcode_fixtures_as_the_cpu_does() {
         JPEG_ENCODE_TRANSCODE_FIXTURES_SHA256,
         "Metal transcode fixture bytes changed"
     );
+}
+
+/// Three 2048x2048 4:4:4 tiles of one buffer have a worst case of 192 MiB
+/// each, over the 512 MiB live host cap together. The batch encodes as a
+/// chunk of two and then one, to the CPU's bytes.
+#[test]
+fn metal_batch_over_the_host_cap_encodes_in_chunks_as_the_cpu_does() {
+    if !j2k_test_support::metal_runtime_gate(module_path!()) {
+        return;
+    }
+    let (size, count) = (2048_u32, 3_usize);
+    let pitch = size as usize * 3;
+    let tile_bytes = pitch * size as usize;
+    let rgb = j2k_test_support::patterned_rgb8_tiles(size, size, count);
+    let options = |backend| JpegEncodeOptions {
+        quality: 90,
+        subsampling: JpegSubsampling::Ybr444,
+        restart_interval: None,
+        backend,
+    };
+    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let buffer = j2k_metal_support::checked_shared_buffer_with_slice(session.device(), &rgb)
+        .expect("upload batch samples");
+    let tiles = (0..count)
+        .map(|tile| {
+            // SAFETY: the buffer was initialized before tile construction and
+            // no CPU or GPU writer accesses it while the tiles are alive.
+            unsafe {
+                JpegBaselineMetalEncodeTile::new(
+                    &buffer,
+                    tile * tile_bytes,
+                    (size, size),
+                    pitch,
+                    (size, size),
+                    PixelFormat::Rgb8,
+                )
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let frames = encode_jpeg_baseline_batch_from_metal_buffers(
+        &tiles,
+        options(JpegBackend::Metal),
+        &session,
+    )
+    .expect("Metal batch over the worst-case cap");
+
+    assert_eq!(frames.len(), count);
+    for (index, (frame, data)) in frames.iter().zip(rgb.chunks_exact(tile_bytes)).enumerate() {
+        let samples = JpegSamples::Rgb8 {
+            data,
+            width: size,
+            height: size,
+        };
+        let cpu = encode_jpeg_baseline(samples, options(JpegBackend::Cpu)).expect("CPU encode");
+        assert!(
+            frame.data == cpu.data,
+            "tile {index}: Metal and CPU bytes differ"
+        );
+    }
 }
 
 /// A frame beyond its input codes the input's last column and row, as the

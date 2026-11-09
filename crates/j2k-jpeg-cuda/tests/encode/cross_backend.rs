@@ -152,6 +152,62 @@ fn cuda_encodes_the_transcode_fixtures_as_the_cpu_does() {
     );
 }
 
+/// Three 2048x2048 4:4:4 tiles of one buffer have a worst case of 192 MiB
+/// each, over the 512 MiB live host cap together. The batch encodes as a
+/// chunk of two and then one, to the CPU's bytes.
+#[test]
+fn cuda_batch_over_the_host_cap_encodes_in_chunks_as_the_cpu_does() {
+    if !j2k_test_support::cuda_runtime_gate(module_path!()) {
+        return;
+    }
+    let (size, count) = (2048_u32, 3_usize);
+    let pitch = size as usize * 3;
+    let tile_bytes = pitch * size as usize;
+    let rgb = j2k_test_support::patterned_rgb8_tiles(size, size, count);
+    let options = |backend| JpegEncodeOptions {
+        quality: 90,
+        subsampling: JpegSubsampling::Ybr444,
+        restart_interval: None,
+        backend,
+    };
+    let context = j2k_cuda_runtime::CudaContext::system_default().expect("CUDA context");
+    let mut session = CudaSession::default();
+    let buffer = context.upload(&rgb).expect("upload batch samples");
+    let tiles = (0..count)
+        .map(|tile| JpegBaselineCudaEncodeTile {
+            buffer: &buffer,
+            byte_offset: tile * tile_bytes,
+            width: size,
+            height: size,
+            pitch_bytes: pitch,
+            output_width: size,
+            output_height: size,
+            format: PixelFormat::Rgb8,
+        })
+        .collect::<Vec<_>>();
+
+    let frames = encode_jpeg_baseline_batch_from_cuda_buffers(
+        &tiles,
+        options(JpegBackend::Cuda),
+        &mut session,
+    )
+    .expect("CUDA batch over the worst-case cap");
+
+    assert_eq!(frames.len(), count);
+    for (index, (frame, data)) in frames.iter().zip(rgb.chunks_exact(tile_bytes)).enumerate() {
+        let samples = JpegSamples::Rgb8 {
+            data,
+            width: size,
+            height: size,
+        };
+        let cpu = encode_jpeg_baseline(samples, options(JpegBackend::Cpu)).expect("CPU encode");
+        assert!(
+            frame.data == cpu.data,
+            "tile {index}: CUDA and CPU bytes differ"
+        );
+    }
+}
+
 /// A frame beyond its input codes the input's last column and row, as the
 /// CPU encoder codes the samples beyond its image.
 #[test]

@@ -63,6 +63,15 @@ batched fast-packet kernels cannot share are hybrid-decoded into their slots.
 `encode_jpeg_baseline_from_metal_buffer` (and its batch form) encodes
 Metal-resident `Gray8`/`Rgb8` images as baseline JPEG entirely on the GPU.
 
+The batch form submits consecutive tiles of one Metal buffer as one entropy
+batch. The 512 MiB live host cap (`j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES`)
+bounds each submission, not the batch: a batch whose worst-case entropy and
+frame output exceeds it, such as eight 2048×2048 4:2:2 tiles, is encoded in
+consecutive chunks, and the frames already encoded count at their actual sizes.
+`MemoryCapExceeded` comes before any submission when one tile's worst case
+alone exceeds the cap, and part-way only when the frames already encoded leave
+no room for the next tile.
+
 `encode_jpeg_lossless_from_metal_buffer` encodes a Metal-resident `Gray8`,
 `Gray16`, `Rgb8`, or `Rgb16` image as lossless (SOF3) JPEG with the options of
 `j2k_jpeg::encode_jpeg_lossless`. Metal predicts and categorizes every sample,

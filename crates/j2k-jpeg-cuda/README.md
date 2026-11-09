@@ -12,6 +12,15 @@ its CUDA-Oxide kernels share the CPU encoder's prediction code from
 `j2k-codec-math`. Explicit CUDA requests
 return an error for unsupported JPEGs; they do not fall back to the CPU.
 
+Batch baseline encode submits consecutive tiles of one CUDA buffer as one
+entropy batch. The 512 MiB live host cap (`j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES`)
+bounds each submission, not the batch: a batch whose worst-case entropy and
+frame output exceeds it, such as eight 2048×2048 4:2:2 tiles, is encoded in
+consecutive chunks, and the frames already encoded count at their actual sizes.
+`MemoryCapExceeded` comes before any submission when one tile's worst case
+alone exceeds the cap, and part-way only when the frames already encoded leave
+no room for the next tile.
+
 The adapter, session, and error types build by default. Enable `cuda-runtime`
 for CUDA Driver API dispatch, the CUDA buffer and output-tile types, and actual
 decode or encode. Without it, explicit CUDA operations return `CudaUnavailable`.

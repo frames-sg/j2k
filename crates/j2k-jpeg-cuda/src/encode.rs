@@ -100,6 +100,13 @@ pub fn encode_jpeg_baseline_from_cuda_buffer(
 ///
 /// Consecutive tiles that share a source CUDA buffer are submitted through a
 /// single entropy-kernel batch. The returned frames preserve input order.
+///
+/// The live host cap bounds each submission, not the whole batch: a group
+/// whose worst-case entropy and frame output exceeds the cap is submitted in
+/// consecutive chunks that fit beside the frames already encoded, counted at
+/// their actual sizes. `MemoryCapExceeded` comes before any submission when
+/// one tile's worst case alone exceeds the cap, and part-way only when the
+/// frames already encoded leave no room for the next tile.
 pub fn encode_jpeg_baseline_batch_from_cuda_buffers(
     tiles: &[JpegBaselineCudaEncodeTile<'_>],
     options: JpegEncodeOptions,

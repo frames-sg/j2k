@@ -187,7 +187,12 @@ impl GpuBatchAllocationBudget {
     }
 }
 
-/// Validate the whole batch lifecycle before any backend entropy submission.
+/// Validate every tile before any backend entropy submission.
+///
+/// Each tile must plan, and its own worst-case entropy and frame owners must
+/// fit the live host cap beside the call's fixed metadata. The batch as a whole
+/// is not held to its worst case: [`gpu_chunk_len`] sizes each submission
+/// against the frames the call actually holds by then.
 pub(super) fn checked_gpu_batch_live_bytes<T, K>(
     gpu_tiles: &[JpegBaselineGpuEncodeTile],
     source_tiles: &[T],
@@ -207,31 +212,84 @@ where
         .into());
     }
 
-    let mut budget = GpuBatchAllocationBudget::with_fixed_metadata_bytes(fixed_metadata_bytes)?;
+    let mut peak = checked_encode_host_live_bytes([fixed_metadata_bytes])?;
     let mut start = 0usize;
     while start < gpu_tiles.len() {
         let end = same_source_buffer_batch_end(source_tiles, start, &mut source_key);
-        let mut group = GpuEncodeGroupAllocation::default();
-        for tile in &gpu_tiles[start..end] {
-            let input_offset = if end - start == 1 {
-                0
-            } else {
-                tile.byte_offset
-            };
-            let tile_plan = jpeg_baseline_gpu_encode_tile_plan(
+        let group = &gpu_tiles[start..end];
+        for tile in group {
+            // Charged as a submission of this tile alone.
+            let mut alone = GpuEncodeGroupAllocation::default();
+            alone.add_tile(gpu_tile_entropy_capacity(
                 *tile,
+                group,
                 options,
                 expected_backend,
                 sampling,
-                input_offset,
-                0,
-            )?;
-            group.add_tile(tile_plan.entropy_capacity)?;
+            )?)?;
+            let mut budget =
+                GpuBatchAllocationBudget::with_fixed_metadata_bytes(fixed_metadata_bytes)?;
+            budget.add_group(&alone)?;
+            peak = peak.max(budget.peak_bytes());
         }
-        budget.add_group(&group)?;
         start = end;
     }
-    Ok(budget.peak_bytes())
+    Ok(peak)
+}
+
+/// Length of the next submission from the front of `group`, the unsubmitted
+/// rest of one same-source group.
+///
+/// The submission is the longest run whose worst-case entropy, plan and frame
+/// owners fit the live host cap beside `live_bytes`: the call's metadata and
+/// the frames it already holds, counted at their actual capacities. Fails with
+/// [`JpegEncodeError::MemoryCapExceeded`] only when those leave no room for
+/// even one more tile.
+pub(super) fn gpu_chunk_len(
+    group: &[JpegBaselineGpuEncodeTile],
+    options: JpegEncodeOptions,
+    expected_backend: JpegBackend,
+    sampling: JpegBaselineSampling,
+    live_bytes: usize,
+) -> Result<usize, JpegBaselineGpuEncodeError> {
+    let mut chunk = GpuEncodeGroupAllocation::default();
+    for (len, tile) in group.iter().enumerate() {
+        let entropy_capacity =
+            gpu_tile_entropy_capacity(*tile, group, options, expected_backend, sampling)?;
+        let fits = chunk.add_tile(entropy_capacity).and_then(|()| {
+            GpuBatchAllocationBudget::with_fixed_metadata_bytes(live_bytes)?.add_group(&chunk)
+        });
+        match fits {
+            Ok(()) => {}
+            Err(error) if len == 0 => return Err(error.into()),
+            Err(_) => return Ok(len),
+        }
+    }
+    Ok(group.len())
+}
+
+/// Worst-case entropy bytes of one tile of a same-source `group`.
+fn gpu_tile_entropy_capacity(
+    tile: JpegBaselineGpuEncodeTile,
+    group: &[JpegBaselineGpuEncodeTile],
+    options: JpegEncodeOptions,
+    expected_backend: JpegBackend,
+    sampling: JpegBaselineSampling,
+) -> Result<usize, JpegBaselineGpuEncodeError> {
+    let input_offset = if group.len() == 1 {
+        0
+    } else {
+        tile.byte_offset
+    };
+    let plan = jpeg_baseline_gpu_encode_tile_plan(
+        tile,
+        options,
+        expected_backend,
+        sampling,
+        input_offset,
+        0,
+    )?;
+    Ok(plan.entropy_capacity)
 }
 
 /// Check CPU plane, entropy-workspace, and final-frame copy phases.

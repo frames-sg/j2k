@@ -241,6 +241,9 @@ struct RecordingAdapter {
     oversize_batch_last_output: bool,
     oversize_batch_outer: bool,
     output_dimensions: Option<(u32, u32)>,
+    /// The tile, by entropy byte, coded as a 6144x6144 frame, whose worst case
+    /// alone exceeds the live host cap.
+    oversize_tile: Option<u8>,
 }
 
 impl JpegBaselineGpuEncodeHostAdapter<MockTile> for RecordingAdapter {
@@ -255,8 +258,12 @@ impl JpegBaselineGpuEncodeHostAdapter<MockTile> for RecordingAdapter {
         tile.source
     }
 
-    fn gpu_tile(&self, _tile: MockTile) -> Result<JpegBaselineGpuEncodeTile, Self::Error> {
-        let (output_width, output_height) = self.output_dimensions.unwrap_or((8, 8));
+    fn gpu_tile(&self, tile: MockTile) -> Result<JpegBaselineGpuEncodeTile, Self::Error> {
+        let (output_width, output_height) = if self.oversize_tile == Some(tile.entropy_byte) {
+            (6_144, 6_144)
+        } else {
+            self.output_dimensions.unwrap_or((8, 8))
+        };
         Ok(JpegBaselineGpuEncodeTile {
             byte_offset: 0,
             width: 1,
@@ -446,8 +453,30 @@ fn gpu_batch_rejects_adapter_outer_capacity_above_the_tile_count() {
     ));
 }
 
+/// Three 4096x4096 tiles have worst-case frames above the cap together, but
+/// the frames they actually produce are small, so all three encode.
 #[test]
-fn gpu_batch_rejects_retained_frames_across_source_groups_before_submission() {
+fn gpu_batch_counts_retained_frames_at_their_actual_capacity() {
+    let tiles = [1, 2, 3].map(|source| MockTile {
+        source,
+        entropy_byte: 9 + source,
+    });
+    let mut adapter = RecordingAdapter {
+        output_dimensions: Some((4_096, 4_096)),
+        ..RecordingAdapter::default()
+    };
+
+    let encoded = encode_jpeg_baseline_gpu_batch(&tiles, mock_gpu_options(), &mut adapter)
+        .expect("actual retained frames fit the live host cap");
+
+    assert_eq!(adapter.submissions, [10, 11, 12].map(MockSubmission::Tile));
+    assert_eq!(encoded.len(), tiles.len());
+}
+
+/// A tile whose own worst case exceeds the cap fails the batch before the
+/// tiles ahead of it are submitted.
+#[test]
+fn gpu_batch_rejects_a_tile_over_the_cap_alone_before_submission() {
     let tiles = [
         MockTile {
             source: 1,
@@ -457,18 +486,14 @@ fn gpu_batch_rejects_retained_frames_across_source_groups_before_submission() {
             source: 2,
             entropy_byte: 11,
         },
-        MockTile {
-            source: 3,
-            entropy_byte: 12,
-        },
     ];
     let mut adapter = RecordingAdapter {
-        output_dimensions: Some((4_096, 4_096)),
+        oversize_tile: Some(11),
         ..RecordingAdapter::default()
     };
 
     let error = encode_jpeg_baseline_gpu_batch(&tiles, mock_gpu_options(), &mut adapter)
-        .expect_err("three retained frame capacities exceed the live host cap");
+        .expect_err("one tile's worst case exceeds the live host cap");
 
     assert!(matches!(
         error,
@@ -476,4 +501,35 @@ fn gpu_batch_rejects_retained_frames_across_source_groups_before_submission() {
             if requested > cap && cap == j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES
     ));
     assert!(adapter.submissions.is_empty(), "{:?}", adapter.submissions);
+}
+
+/// Nine 2048x2048 tiles of one source, 64 MiB of worst case each, go to the
+/// backend as the seven that fit the cap and then the other two, in order.
+#[test]
+fn gpu_batch_splits_a_source_group_into_chunks_within_the_cap() {
+    let tiles = (10..=18)
+        .map(|entropy_byte| MockTile {
+            source: 1,
+            entropy_byte,
+        })
+        .collect::<Vec<_>>();
+    let mut adapter = RecordingAdapter {
+        output_dimensions: Some((2_048, 2_048)),
+        ..RecordingAdapter::default()
+    };
+
+    let encoded = encode_jpeg_baseline_gpu_batch(&tiles, mock_gpu_options(), &mut adapter)
+        .expect("chunked batch encode");
+
+    assert_eq!(
+        adapter.submissions,
+        [
+            MockSubmission::Batch((10..=16).collect()),
+            MockSubmission::Batch(vec![17, 18]),
+        ]
+    );
+    assert_eq!(encoded.len(), tiles.len());
+    for (frame, tile) in encoded.iter().zip(tiles) {
+        assert_eq!(frame.data[frame.data.len() - 3], tile.entropy_byte);
+    }
 }
