@@ -11,8 +11,9 @@ use j2k_jpeg_cuda::{
     encode_jpeg_baseline_batch_from_cuda_buffers, CudaSession, JpegBaselineCudaEncodeTile,
 };
 use j2k_test_support::{
-    jpeg_encode_matrix_cases, jpeg_encode_matrix_digest, jpeg_encode_padded_cases, replicate_edges,
-    JpegEncodeMatrixCase, JpegEncodeMatrixSampling, JPEG_ENCODE_MATRIX_SHA256,
+    jpeg_encode_matrix_cases, jpeg_encode_matrix_digest, jpeg_encode_padded_cases,
+    jpeg_encode_transcode_fixtures, replicate_edges, JpegEncodeMatrixCase,
+    JpegEncodeMatrixSampling, JPEG_ENCODE_MATRIX_SHA256, JPEG_ENCODE_TRANSCODE_FIXTURES_SHA256,
 };
 
 fn matrix_subsampling(sampling: JpegEncodeMatrixSampling) -> JpegSubsampling {
@@ -118,6 +119,36 @@ fn cuda_encoder_matches_the_cpu_encoder_and_the_cross_backend_golden() {
         jpeg_encode_matrix_digest(frames.iter().map(Vec::as_slice)),
         JPEG_ENCODE_MATRIX_SHA256,
         "CUDA baseline JPEG bytes changed"
+    );
+}
+
+/// The transcode tests' synthetic inputs, which the CPU once encoded
+/// differently on aarch64 and x86-64, encode to the CPU's bytes.
+#[test]
+fn cuda_encodes_the_transcode_fixtures_as_the_cpu_does() {
+    if !j2k_test_support::cuda_runtime_gate(module_path!()) {
+        return;
+    }
+    let context = j2k_cuda_runtime::CudaContext::system_default().expect("CUDA context");
+    let mut session = CudaSession::default();
+    let frames = jpeg_encode_transcode_fixtures()
+        .into_iter()
+        .map(|fixture| {
+            let case = fixture.case;
+            let size = (case.width, case.height);
+            let cuda = cuda_frame(case, &fixture.samples, size, &context, &mut session);
+            assert!(
+                cuda == cpu_frame(case, &fixture.samples),
+                "{}: CUDA and CPU bytes differ",
+                fixture.name
+            );
+            cuda
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        jpeg_encode_matrix_digest(frames.iter().map(Vec::as_slice)),
+        JPEG_ENCODE_TRANSCODE_FIXTURES_SHA256,
+        "CUDA transcode fixture bytes changed"
     );
 }
 

@@ -3,9 +3,10 @@ use j2k_jpeg::{
     JpegBackend, JpegEncodeError, JpegEncodeOptions, JpegSamples, JpegSubsampling, PixelFormat,
 };
 use j2k_test_support::{
-    jpeg_encode_matrix_cases, jpeg_encode_matrix_digest, jpeg_entropy_segment,
-    jpeg_entropy_stage_cases, jpeg_entropy_stage_digest, jpeg_standard_tables, patterned_gray8,
-    patterned_rgb8, JpegEncodeMatrixCase, JpegEncodeMatrixSampling, JPEG_ENCODE_MATRIX_SHA256,
+    jpeg_encode_matrix_cases, jpeg_encode_matrix_digest, jpeg_encode_transcode_fixtures,
+    jpeg_entropy_segment, jpeg_entropy_stage_cases, jpeg_entropy_stage_digest,
+    jpeg_standard_tables, patterned_gray8, patterned_rgb8, JpegEncodeMatrixCase,
+    JpegEncodeMatrixSampling, JPEG_ENCODE_MATRIX_SHA256, JPEG_ENCODE_TRANSCODE_FIXTURES_SHA256,
     JPEG_ENTROPY_STAGE_SHA256,
 };
 use std::io::Cursor;
@@ -72,17 +73,20 @@ fn matrix_subsampling(sampling: JpegEncodeMatrixSampling) -> JpegSubsampling {
 }
 
 fn encode_matrix_case(case: JpegEncodeMatrixCase) -> Vec<u8> {
-    let data = case.samples();
+    encode_case_samples(case, &case.samples())
+}
+
+fn encode_case_samples(case: JpegEncodeMatrixCase, data: &[u8]) -> Vec<u8> {
     let (width, height) = (case.width, case.height);
     let samples = if case.sampling == JpegEncodeMatrixSampling::Gray {
         JpegSamples::Gray8 {
-            data: &data,
+            data,
             width,
             height,
         }
     } else {
         JpegSamples::Rgb8 {
-            data: &data,
+            data,
             width,
             height,
         }
@@ -111,6 +115,25 @@ fn baseline_encoder_matches_the_cross_backend_golden() {
     assert_eq!(
         digest, JPEG_ENCODE_MATRIX_SHA256,
         "baseline JPEG codestream bytes changed"
+    );
+}
+
+/// The transcode tests' synthetic inputs encode to the same bytes on aarch64
+/// and x86-64, where six RGB ones used to differ.
+#[test]
+fn transcode_fixtures_match_the_cross_backend_golden() {
+    let fixtures = jpeg_encode_transcode_fixtures();
+    let frames = fixtures
+        .iter()
+        .map(|fixture| encode_case_samples(fixture.case, &fixture.samples))
+        .collect::<Vec<_>>();
+    for (fixture, frame) in fixtures.iter().zip(&frames) {
+        eprintln!("{} fnv1a64 {:#018x}", fixture.name, fnv1a64(frame));
+    }
+    assert_eq!(
+        jpeg_encode_matrix_digest(frames.iter().map(Vec::as_slice)),
+        JPEG_ENCODE_TRANSCODE_FIXTURES_SHA256,
+        "transcode fixture JPEG bytes changed"
     );
 }
 

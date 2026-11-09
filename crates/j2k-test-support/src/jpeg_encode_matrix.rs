@@ -119,6 +119,87 @@ fn texture_sample(x: u32, y: u32, channel: u32, noise: u32) -> u8 {
     u8::try_from(value & 0xff).expect("masked sample fits u8")
 }
 
+/// Framed SHA-256 of [`jpeg_encode_transcode_fixtures`], in order, encoded
+/// by any baseline encoder backend.
+pub const JPEG_ENCODE_TRANSCODE_FIXTURES_SHA256: &str =
+    "f095869ddad3f3937dd986676051ab4d1e240d4be9865298b5ab9d8631277ea3";
+
+/// One named input of [`jpeg_encode_transcode_fixtures`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JpegEncodeFixture {
+    /// The fixture's name in the JPEG-to-HTJ2K transcode matrix.
+    pub name: &'static str,
+    /// Sampling, size, quality and restart interval.
+    pub case: JpegEncodeMatrixCase,
+    /// Interleaved Gray8 or Rgb8 samples, row-major and tightly packed.
+    pub samples: Vec<u8>,
+}
+
+/// The synthetic inputs of the JPEG-to-HTJ2K transcode test matrix.
+///
+/// The transcode tests encode them with the baseline encoder; before the
+/// encoders shared `j2k_codec_math::jpeg::fdct`, six of the RGB ones encoded
+/// differently on aarch64 and x86-64. The samples are smooth ramps with
+/// wrap-around edges under a checkerboard, at quality 90.
+pub fn jpeg_encode_transcode_fixtures() -> Vec<JpegEncodeFixture> {
+    use JpegEncodeMatrixSampling::{Gray, Ybr420, Ybr422, Ybr444};
+    let specs = [
+        ("synthetic_444_224_restart", Ybr444, (224, 224), Some(28)),
+        ("synthetic_420_224_restart", Ybr420, (224, 224), Some(28)),
+        ("synthetic_420_512_restart", Ybr420, (512, 512), Some(64)),
+        ("synthetic_gray_100x37_restart", Gray, (100, 37), Some(3)),
+        ("synthetic_422_131x77", Ybr422, (131, 77), None),
+        ("synthetic_420_97x61_restart", Ybr420, (97, 61), Some(5)),
+        ("synthetic_444_45x67_restart", Ybr444, (45, 67), Some(1)),
+        ("synthetic_gray_1031x9", Gray, (1031, 9), None),
+        (
+            "synthetic_420_1100x1030_restart",
+            Ybr420,
+            (1100, 1030),
+            Some(69),
+        ),
+    ];
+    specs
+        .into_iter()
+        .map(|(name, sampling, (width, height), restart_interval)| {
+            let channels = if sampling == Gray { 1 } else { 3 };
+            let mut samples = Vec::new();
+            for y in 0..height {
+                for x in 0..width {
+                    samples.extend((0..channels).map(|channel| pattern_sample(x, y, channel)));
+                }
+            }
+            JpegEncodeFixture {
+                name,
+                case: JpegEncodeMatrixCase {
+                    sampling,
+                    width,
+                    height,
+                    quality: 90,
+                    restart_interval,
+                },
+                samples,
+            }
+        })
+        .collect()
+}
+
+/// The transcode matrix's sample: ramps that wrap around, plus a
+/// checkerboard of 3x5 cells, so every subband carries energy.
+fn pattern_sample(x: u32, y: u32, channel: u32) -> u8 {
+    let ramp = match channel {
+        0 => x * 5 + y * 3 + 17,
+        1 => (x ^ y) * 2 + 41,
+        _ => x * 11 + y * 13 + 73,
+    };
+    let checker = if (x / 3 + y / 5).is_multiple_of(2) {
+        0
+    } else {
+        37
+    };
+    u8::try_from((ramp + checker) & 0xff).expect("masked sample fits u8")
+}
+
 /// Every case of the matrix: each sampling, size, quality and restart
 /// setting.
 pub fn jpeg_encode_matrix_cases() -> Vec<JpegEncodeMatrixCase> {

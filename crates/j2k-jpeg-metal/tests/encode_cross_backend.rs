@@ -13,8 +13,9 @@ use j2k_jpeg_metal::{
     encode_jpeg_baseline_from_metal_buffer, JpegBaselineMetalEncodeTile, MetalBackendSession,
 };
 use j2k_test_support::{
-    jpeg_encode_matrix_cases, jpeg_encode_matrix_digest, jpeg_encode_padded_cases, replicate_edges,
-    JpegEncodeMatrixCase, JpegEncodeMatrixSampling, JPEG_ENCODE_MATRIX_SHA256,
+    jpeg_encode_matrix_cases, jpeg_encode_matrix_digest, jpeg_encode_padded_cases,
+    jpeg_encode_transcode_fixtures, replicate_edges, JpegEncodeMatrixCase,
+    JpegEncodeMatrixSampling, JPEG_ENCODE_MATRIX_SHA256, JPEG_ENCODE_TRANSCODE_FIXTURES_SHA256,
 };
 
 fn matrix_subsampling(sampling: JpegEncodeMatrixSampling) -> JpegSubsampling {
@@ -110,6 +111,34 @@ fn metal_encoder_matches_the_cpu_encoder_and_the_cross_backend_golden() {
         jpeg_encode_matrix_digest(frames.iter().map(Vec::as_slice)),
         JPEG_ENCODE_MATRIX_SHA256,
         "Metal baseline JPEG bytes changed"
+    );
+}
+
+/// The transcode tests' synthetic inputs, which the CPU once encoded
+/// differently on aarch64 and x86-64, encode to the CPU's bytes.
+#[test]
+fn metal_encodes_the_transcode_fixtures_as_the_cpu_does() {
+    if !j2k_test_support::metal_runtime_gate(module_path!()) {
+        return;
+    }
+    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    let frames = jpeg_encode_transcode_fixtures()
+        .into_iter()
+        .map(|fixture| {
+            let case = fixture.case;
+            let metal = metal_frame(case, &fixture.samples, (case.width, case.height), &session);
+            assert!(
+                metal == cpu_frame(case, &fixture.samples),
+                "{}: Metal and CPU bytes differ",
+                fixture.name
+            );
+            metal
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        jpeg_encode_matrix_digest(frames.iter().map(Vec::as_slice)),
+        JPEG_ENCODE_TRANSCODE_FIXTURES_SHA256,
+        "Metal transcode fixture bytes changed"
     );
 }
 
