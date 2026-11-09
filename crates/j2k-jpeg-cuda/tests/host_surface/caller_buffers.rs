@@ -7,7 +7,7 @@ use j2k_jpeg::DecodeRequest;
 use j2k_jpeg_cuda::{Codec, CudaSession};
 use j2k_test_support::cuda_jpeg_hardware_decode_gate;
 
-use super::support::{BASELINE_420, BASELINE_422, BASELINE_444, OWNED_CUDA_RGB8_MAX_CHANNEL_DELTA};
+use super::support::{BASELINE_420, BASELINE_422, BASELINE_444};
 
 #[test]
 fn explicit_cuda_session_batch_records_owned_packet_cache_when_required() {
@@ -65,15 +65,9 @@ fn explicit_cuda_decodes_into_caller_owned_buffer_when_required() {
         .expect("host decoder")
         .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("host decode");
-    let max_delta = downloaded
-        .iter()
-        .zip(expected)
-        .map(|(actual, expected)| actual.abs_diff(expected))
-        .max()
-        .unwrap_or(0);
     assert!(
-        max_delta <= OWNED_CUDA_RGB8_MAX_CHANNEL_DELTA,
-        "direct J2K-owned CUDA decode differed from the CPU reference by max channel delta {max_delta}"
+        downloaded == expected,
+        "direct J2K-owned CUDA decode differs from the CPU reference"
     );
 }
 
@@ -113,15 +107,9 @@ fn explicit_cuda_decodes_422_and_444_into_caller_owned_buffers_when_required() {
             .expect("host decoder")
             .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
             .expect("host decode");
-        let max_delta = downloaded
-            .iter()
-            .zip(expected)
-            .map(|(actual, expected)| actual.abs_diff(expected))
-            .max()
-            .unwrap_or(0);
         assert!(
-            max_delta <= OWNED_CUDA_RGB8_MAX_CHANNEL_DELTA,
-            "direct J2K-owned CUDA decode differed from the CPU reference by max channel delta {max_delta}"
+            downloaded == expected,
+            "direct J2K-owned CUDA decode differs from the CPU reference"
         );
     }
 }
@@ -174,15 +162,9 @@ fn explicit_cuda_decodes_batch_into_caller_owned_buffers_when_required() {
             .expect("host decoder")
             .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
             .expect("host decode");
-        let max_delta = downloaded
-            .iter()
-            .zip(expected)
-            .map(|(actual, expected)| actual.abs_diff(expected))
-            .max()
-            .unwrap_or(0);
         assert!(
-            max_delta <= OWNED_CUDA_RGB8_MAX_CHANNEL_DELTA,
-            "direct J2K-owned CUDA batch decode differed from the CPU reference by max channel delta {max_delta}"
+            downloaded == expected,
+            "direct J2K-owned CUDA batch decode differs from the CPU reference"
         );
     }
 }

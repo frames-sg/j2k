@@ -8,7 +8,6 @@ use j2k_test_support::cuda_jpeg_hardware_decode_gate;
 pub(super) const BASELINE_420: &[u8] = include_bytes!("../../fixtures/jpeg/baseline_420_16x16.jpg");
 pub(super) const BASELINE_422: &[u8] = include_bytes!("../../fixtures/jpeg/baseline_422_16x8.jpg");
 pub(super) const BASELINE_444: &[u8] = include_bytes!("../../fixtures/jpeg/baseline_444_8x8.jpg");
-pub(super) const OWNED_CUDA_RGB8_MAX_CHANNEL_DELTA: u8 = 2;
 
 #[cfg(feature = "cuda-runtime")]
 pub(super) fn generated_rgb_jpeg(
@@ -49,27 +48,23 @@ pub(super) fn assert_cuda_surface(surface: &j2k_jpeg_cuda::Surface) {
     assert!(cuda.stats().kernel_dispatches() > 0);
 }
 
-pub(super) fn assert_surface_bytes_match_or_are_close(
+/// Every CUDA decode route, the J2K-owned kernels included, produces the CPU
+/// decoder's bytes.
+pub(super) fn assert_surface_bytes_match_cpu(
     surface: &j2k_jpeg_cuda::Surface,
     actual: &[u8],
     expected: &[u8],
 ) {
     assert_eq!(actual.len(), expected.len());
-    let stats = surface.cuda_surface().expect("cuda surface").stats();
-    if stats.used_owned_cuda_decode() {
-        let max_delta = actual
-            .iter()
-            .zip(expected)
-            .map(|(actual, expected)| actual.abs_diff(*expected))
-            .max()
-            .unwrap_or(0);
-        assert!(
-            max_delta <= OWNED_CUDA_RGB8_MAX_CHANNEL_DELTA,
-            "J2K-owned CUDA decode differed from the CPU reference by max channel delta {max_delta}"
-        );
-        return;
-    }
-    assert_eq!(actual, expected);
+    let owned = surface
+        .cuda_surface()
+        .expect("cuda surface")
+        .stats()
+        .used_owned_cuda_decode();
+    assert!(
+        actual == expected,
+        "CUDA decode (J2K-owned: {owned}) differs from the CPU reference"
+    );
 }
 
 pub(super) fn assert_full_frame_owned_cuda_decode_when_required(
@@ -101,5 +96,5 @@ pub(super) fn assert_full_frame_owned_cuda_decode_when_required(
         .expect("host decoder")
         .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("host decode");
-    assert_surface_bytes_match_or_are_close(&surface, &downloaded, &expected);
+    assert_surface_bytes_match_cpu(&surface, &downloaded, &expected);
 }

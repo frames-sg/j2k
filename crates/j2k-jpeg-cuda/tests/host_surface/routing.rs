@@ -7,7 +7,7 @@ use j2k_jpeg::DecodeRequest;
 use j2k_jpeg_cuda::{Decoder, Error};
 use j2k_test_support::cuda_runtime_gate;
 
-use super::support::{assert_cuda_surface, assert_surface_bytes_match_or_are_close, BASELINE_420};
+use super::support::{assert_cuda_surface, assert_surface_bytes_match_cpu, BASELINE_420};
 
 #[test]
 fn auto_falls_back_to_cpu_surface() {
@@ -82,7 +82,7 @@ fn explicit_cuda_request_returns_cuda_surface_when_cuda_runtime_required() {
         .expect("host decoder")
         .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
         .expect("host decode");
-    assert_surface_bytes_match_or_are_close(&surface, &downloaded, &expected);
+    assert_surface_bytes_match_cpu(&surface, &downloaded, &expected);
 }
 
 #[test]
@@ -156,7 +156,7 @@ fn explicit_cuda_download_respects_padded_stride_when_cuda_runtime_required() {
         .expect("host decode");
     for (row, expected_row) in expected.chunks(row_bytes).enumerate() {
         let start = row * stride;
-        assert_surface_bytes_match_or_are_close(
+        assert_surface_bytes_match_cpu(
             &surface,
             &downloaded[start..start + row_bytes],
             expected_row,

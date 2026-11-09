@@ -85,6 +85,23 @@ fn explicit_cuda_odd_subsampled_dimensions_match_cpu_when_required() {
     }
 }
 
+/// h2v1 upsampling rounds even output columns down and odd ones up, so a
+/// textured 4:2:2 frame several chroma blocks wide decodes exactly as the CPU
+/// decodes it.
+#[cfg(feature = "cuda-runtime")]
+#[test]
+fn explicit_cuda_textured_422_matches_cpu_exactly_when_required() {
+    for (dimensions, restart_interval) in [((101, 37), None), ((64, 24), Some(2))] {
+        let input = generated_rgb_jpeg_with_restart(
+            j2k_jpeg::JpegSubsampling::Ybr422,
+            dimensions.0,
+            dimensions.1,
+            restart_interval,
+        );
+        assert_full_frame_owned_cuda_decode_when_required(&input, dimensions);
+    }
+}
+
 #[test]
 fn explicit_cuda_restart_checkpoint_420_uses_owned_decode_when_required() {
     let input = generated_rgb_jpeg_with_restart(j2k_jpeg::JpegSubsampling::Ybr420, 32, 16, Some(1));

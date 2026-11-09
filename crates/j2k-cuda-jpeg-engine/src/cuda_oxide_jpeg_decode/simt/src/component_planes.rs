@@ -1,3 +1,5 @@
+use j2k_codec_math::jpeg::upsample;
+
 use super::{
     load_u8, min_u32, store_u8, ycbcr_to_rgb, J2kJpeg420Params, Rgb420McuBlocks,
     Rgb422McuBlocks,
@@ -178,6 +180,25 @@ pub(super) fn store_422_mcu(
     );
 }
 
+/// `j2k_codec_math::jpeg::upsample::h2v2_column_sum` of chroma column
+/// `sample` between rows `nearer_y` and `farther_y`.
+#[inline(always)]
+fn h2v2_column(
+    planes: *const u8,
+    plane_offset: u32,
+    chroma_width: u32,
+    nearer_y: u32,
+    farther_y: u32,
+    sample: u32,
+) -> u32 {
+    upsample::h2v2_column_sum(
+        load_u8(planes, plane_offset + nearer_y * chroma_width + sample),
+        load_u8(planes, plane_offset + farther_y * chroma_width + sample),
+    )
+}
+
+/// h2v2 fancy upsampling of `j2k_codec_math::jpeg::upsample`, the formula
+/// every decoder backend applies.
 #[inline(always)]
 fn h2v2_sample(
     planes: *const u8,
@@ -194,30 +215,20 @@ fn h2v2_sample(
         min_u32(chroma_y + 1, chroma_height - 1)
     };
     let sample = min_u32(output_x / 2, chroma_width - 1);
-    let current = load_u8(planes, plane_offset + chroma_y * chroma_width + sample) as u32;
-    let near = load_u8(planes, plane_offset + near_y * chroma_width + sample) as u32;
-    let current_sum = 3 * current + near;
-    if chroma_width == 1 || output_x == 0 {
-        return ((4 * current_sum + 8) >> 4) as u8;
-    }
-    if output_x == chroma_width * 2 - 1 {
-        return ((4 * current_sum + 7) >> 4) as u8;
-    }
-    if (output_x & 1) == 0 {
-        let previous = sample - 1;
-        let previous_current =
-            load_u8(planes, plane_offset + chroma_y * chroma_width + previous) as u32;
-        let previous_near =
-            load_u8(planes, plane_offset + near_y * chroma_width + previous) as u32;
-        return ((3 * current_sum + 3 * previous_current + previous_near + 8) >> 4) as u8;
-    }
+    let previous = if sample == 0 { 0 } else { sample - 1 };
     let next = min_u32(sample + 1, chroma_width - 1);
-    let next_current =
-        load_u8(planes, plane_offset + chroma_y * chroma_width + next) as u32;
-    let next_near = load_u8(planes, plane_offset + near_y * chroma_width + next) as u32;
-    ((3 * current_sum + 3 * next_current + next_near + 7) >> 4) as u8
+    upsample::h2v2_fancy(
+        h2v2_column(planes, plane_offset, chroma_width, chroma_y, near_y, previous),
+        h2v2_column(planes, plane_offset, chroma_width, chroma_y, near_y, sample),
+        h2v2_column(planes, plane_offset, chroma_width, chroma_y, near_y, next),
+        output_x as usize,
+        chroma_width as usize,
+        (chroma_width * 2) as usize,
+    )
 }
 
+/// h2v1 fancy upsampling of `j2k_codec_math::jpeg::upsample`, the formula
+/// every decoder backend applies.
 #[inline(always)]
 fn h2v1_sample(
     planes: *const u8,
@@ -227,20 +238,16 @@ fn h2v1_sample(
     output_y: u32,
 ) -> u8 {
     let row = plane_offset + output_y * chroma_width;
-    if chroma_width == 1 || output_x == 0 {
-        return load_u8(planes, row);
-    }
-    if output_x == chroma_width * 2 - 1 {
-        return load_u8(planes, row + chroma_width - 1);
-    }
     let sample = min_u32(output_x / 2, chroma_width - 1);
-    let current = load_u8(planes, row + sample) as u32;
-    if (output_x & 1) == 0 {
-        let previous = load_u8(planes, row + sample - 1) as u32;
-        return ((3 * current + previous + 2) >> 2) as u8;
-    }
-    let next = load_u8(planes, row + min_u32(sample + 1, chroma_width - 1)) as u32;
-    ((3 * current + next + 2) >> 2) as u8
+    let previous = if sample == 0 { 0 } else { sample - 1 };
+    let next = min_u32(sample + 1, chroma_width - 1);
+    upsample::h2v1_fancy(
+        load_u8(planes, row + previous),
+        load_u8(planes, row + sample),
+        load_u8(planes, row + next),
+        output_x as usize,
+        chroma_width as usize,
+    )
 }
 
 #[inline(always)]

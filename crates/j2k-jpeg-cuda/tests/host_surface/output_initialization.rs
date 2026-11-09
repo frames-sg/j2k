@@ -7,7 +7,7 @@ use j2k_jpeg::DecodeRequest;
 use j2k_jpeg_cuda::{Codec, CudaSession};
 use j2k_test_support::cuda_jpeg_hardware_decode_gate;
 
-use super::support::{BASELINE_420, OWNED_CUDA_RGB8_MAX_CHANNEL_DELTA};
+use super::support::BASELINE_420;
 
 #[test]
 fn caller_owned_pitched_decode_initializes_every_addressable_output_byte() {
@@ -63,13 +63,11 @@ fn caller_owned_pitched_decode_initializes_every_addressable_output_byte() {
     for row in 0..dimensions.1 {
         let output_start = row * pitch_bytes;
         let expected_start = row * row_bytes;
-        let max_delta = downloaded[output_start..output_start + row_bytes]
-            .iter()
-            .zip(&expected[expected_start..expected_start + row_bytes])
-            .map(|(actual, expected)| actual.abs_diff(*expected))
-            .max()
-            .unwrap_or(0);
-        assert!(max_delta <= OWNED_CUDA_RGB8_MAX_CHANNEL_DELTA);
+        assert_eq!(
+            downloaded[output_start..output_start + row_bytes],
+            expected[expected_start..expected_start + row_bytes],
+            "row {row} differs from the CPU reference"
+        );
         if row + 1 < dimensions.1 {
             assert!(
                 downloaded[output_start + row_bytes..output_start + pitch_bytes]

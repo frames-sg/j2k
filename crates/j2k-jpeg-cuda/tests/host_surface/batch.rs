@@ -7,7 +7,7 @@ use j2k_test_support::cuda_jpeg_hardware_decode_gate;
 
 #[cfg(feature = "cuda-runtime")]
 use super::support::generated_rgb_jpeg_with_restart;
-use super::support::{assert_cuda_surface, assert_surface_bytes_match_or_are_close, BASELINE_420};
+use super::support::{assert_cuda_surface, assert_surface_bytes_match_cpu, BASELINE_420};
 
 #[test]
 fn decode_tiles_to_device_auto_preserves_order_and_matches_host_bytes() {
@@ -40,7 +40,7 @@ fn decode_tiles_to_device_auto_preserves_order_and_matches_host_bytes() {
                 surface
                     .download_into(&mut downloaded, surface.pitch_bytes())
                     .expect("download cuda surface");
-                assert_surface_bytes_match_or_are_close(&surface, &downloaded, &expected);
+                assert_surface_bytes_match_cpu(&surface, &downloaded, &expected);
             }
             j2k_core::BackendKind::Metal => panic!("JPEG CUDA batch returned Metal surface"),
         }
@@ -76,7 +76,7 @@ fn decode_tiles_to_device_with_session_auto_preserves_order_and_matches_host_byt
                 surface
                     .download_into(&mut downloaded, surface.pitch_bytes())
                     .expect("download cuda surface");
-                assert_surface_bytes_match_or_are_close(&surface, &downloaded, &expected);
+                assert_surface_bytes_match_cpu(&surface, &downloaded, &expected);
             }
             j2k_core::BackendKind::Metal => panic!("JPEG CUDA batch returned Metal surface"),
         }

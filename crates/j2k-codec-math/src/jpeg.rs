@@ -10,6 +10,8 @@ pub mod fdct;
 pub mod idct;
 /// Lossless (SOF3) prediction and difference coding.
 pub mod lossless;
+/// libjpeg's "fancy" (triangle-filter) 2:1 chroma upsampling.
+pub mod upsample;
 /// Fixed-point JPEG (JFIF) colour conversion, in units of `2^-16`.
 pub mod ycbcr;
 
