@@ -16,7 +16,9 @@ enum PreparedPlanKind {
     RegionScaledColor,
     PreparedGray,
     PreparedColor,
+    #[cfg(target_os = "macos")]
     PreparedOperationGray,
+    #[cfg(target_os = "macos")]
     PreparedOperationColor,
 }
 
@@ -98,6 +100,8 @@ impl<'a> PreparedPlanCacheKey<'a> {
 
     /// An exact operation's plan, keyed by its source identity, source region
     /// and reduction so it never matches the source's own prepared plan.
+    /// Only the macOS resident batch decoder builds these.
+    #[cfg(target_os = "macos")]
     pub(crate) const fn prepared_operation(
         input: &'a Arc<[u8]>,
         roi: Rect,
