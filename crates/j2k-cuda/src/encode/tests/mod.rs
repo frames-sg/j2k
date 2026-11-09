@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 mod facade;
+mod host_waits;
 mod htj2k;
 mod packet_parity;
 mod packetization;

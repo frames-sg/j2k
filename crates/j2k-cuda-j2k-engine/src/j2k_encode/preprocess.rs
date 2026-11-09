@@ -89,14 +89,17 @@ impl crate::J2kCudaEngine<'_> {
         }
 
         let pixels = self.upload(&pixels[..expected_len])?;
-        self.launch_j2k_deinterleave_to_f32(
-            &pixels,
-            &output,
-            num_pixels,
-            num_components,
-            bit_depth,
-            signed,
-        )?;
+        // The uploaded pixels are released on return, so wait for the kernel.
+        self.complete_launches(|| {
+            self.launch_j2k_deinterleave_to_f32(
+                &pixels,
+                &output,
+                num_pixels,
+                num_components,
+                bit_depth,
+                signed,
+            )
+        })?;
 
         Ok(CudaJ2kResidentComponents {
             buffer: output,
@@ -206,7 +209,7 @@ impl crate::J2kCudaEngine<'_> {
             bit_depth,
             signed,
         };
-        self.launch_j2k_deinterleave_strided_to_f32(launch)?;
+        self.complete_launches(|| self.launch_j2k_deinterleave_strided_to_f32(launch))?;
 
         Ok(CudaJ2kResidentComponents {
             buffer: output,
@@ -242,7 +245,9 @@ impl crate::J2kCudaEngine<'_> {
         let plane0 = components.component_plane_device_ptr(0)?;
         let plane1 = components.component_plane_device_ptr(1)?;
         let plane2 = components.component_plane_device_ptr(2)?;
-        self.launch_j2k_forward_rct_ptrs(plane0, plane1, plane2, components.num_pixels)?;
+        self.complete_launches(|| {
+            self.launch_j2k_forward_rct_ptrs(plane0, plane1, plane2, components.num_pixels)
+        })?;
 
         Ok(CudaExecutionStats::new(1, 0, 0, false))
     }
@@ -273,7 +278,9 @@ impl crate::J2kCudaEngine<'_> {
         let plane0 = components.component_plane_device_ptr(0)?;
         let plane1 = components.component_plane_device_ptr(1)?;
         let plane2 = components.component_plane_device_ptr(2)?;
-        self.launch_j2k_forward_ict_ptrs(plane0, plane1, plane2, components.num_pixels)?;
+        self.complete_launches(|| {
+            self.launch_j2k_forward_ict_ptrs(plane0, plane1, plane2, components.num_pixels)
+        })?;
 
         Ok(CudaExecutionStats::new(1, 0, 0, false))
     }
@@ -301,7 +308,9 @@ impl crate::J2kCudaEngine<'_> {
         let buffer0 = self.upload(f32_slice_as_bytes(plane0))?;
         let buffer1 = self.upload(f32_slice_as_bytes(plane1))?;
         let buffer2 = self.upload(f32_slice_as_bytes(plane2))?;
-        self.launch_j2k_forward_rct_buffers(&buffer0, &buffer1, &buffer2, plane0.len())?;
+        self.complete_launches(|| {
+            self.launch_j2k_forward_rct_buffers(&buffer0, &buffer1, &buffer2, plane0.len())
+        })?;
         buffer0.copy_to_host(f32_slice_as_bytes_mut(plane0))?;
         buffer1.copy_to_host(f32_slice_as_bytes_mut(plane1))?;
         buffer2.copy_to_host(f32_slice_as_bytes_mut(plane2))?;
@@ -332,7 +341,9 @@ impl crate::J2kCudaEngine<'_> {
         let buffer0 = self.upload(f32_slice_as_bytes(plane0))?;
         let buffer1 = self.upload(f32_slice_as_bytes(plane1))?;
         let buffer2 = self.upload(f32_slice_as_bytes(plane2))?;
-        self.launch_j2k_forward_ict_buffers(&buffer0, &buffer1, &buffer2, plane0.len())?;
+        self.complete_launches(|| {
+            self.launch_j2k_forward_ict_buffers(&buffer0, &buffer1, &buffer2, plane0.len())
+        })?;
         buffer0.copy_to_host(f32_slice_as_bytes_mut(plane0))?;
         buffer1.copy_to_host(f32_slice_as_bytes_mut(plane1))?;
         buffer2.copy_to_host(f32_slice_as_bytes_mut(plane2))?;

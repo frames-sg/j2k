@@ -63,7 +63,9 @@ impl crate::J2kCudaEngine<'_> {
                 .checked_mul(std::mem::size_of::<i32>())
                 .ok_or(CudaError::LengthTooLarge { len: sample_count })?,
         )?;
-        self.launch_j2k_quantize_subband(samples, &coefficient_buffer, sample_count, job)?;
+        self.complete_launches(|| {
+            self.launch_j2k_quantize_subband(samples, &coefficient_buffer, sample_count, job)
+        })?;
 
         Ok(CudaJ2kResidentQuantizedSubband {
             coefficients: coefficient_buffer,
@@ -150,17 +152,21 @@ impl crate::J2kCudaEngine<'_> {
         }
 
         self.prepare_operation()?;
-        let mut offset = offset;
-        let mut dispatches = 0usize;
-        for job in jobs {
-            let count = checked_image_words(job.width, job.height, 1)?;
-            if count != 0 {
-                self.launch_j2k_quantize_subband_region(samples, coefficients, offset, *job)?;
-                offset += count;
-                dispatches += 1;
+        // One wait covers every region: the launches only write disjoint
+        // coefficient ranges and run in order on the default stream.
+        self.complete_launches(|| {
+            let mut offset = offset;
+            let mut dispatches = 0usize;
+            for job in jobs {
+                let count = checked_image_words(job.width, job.height, 1)?;
+                if count != 0 {
+                    self.launch_j2k_quantize_subband_region(samples, coefficients, offset, *job)?;
+                    offset += count;
+                    dispatches += 1;
+                }
             }
-        }
-        Ok(dispatches)
+            Ok(dispatches)
+        })
     }
 }
 

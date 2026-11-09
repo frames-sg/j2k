@@ -37,7 +37,7 @@ impl crate::J2kCudaEngine<'_> {
         );
         let geometry = j2k_forward_rct_launch_geometry(num_pixels)
             .ok_or(CudaError::LengthTooLarge { len: num_pixels })?;
-        self.launch_kernel(function, geometry, &mut params)
+        self.launch_kernel_async(function, geometry, &mut params)
     }
 
     pub(in crate::j2k_encode) fn launch_j2k_deinterleave_strided_to_f32(
@@ -74,7 +74,7 @@ impl crate::J2kCudaEngine<'_> {
         let num_pixels = strided_pixel_count(request)?;
         let geometry = j2k_forward_rct_launch_geometry(num_pixels)
             .ok_or(CudaError::LengthTooLarge { len: num_pixels })?;
-        self.launch_kernel(function, geometry, &mut params)
+        self.launch_kernel_async(function, geometry, &mut params)
     }
 }
 

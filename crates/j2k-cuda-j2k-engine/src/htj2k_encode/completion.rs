@@ -61,17 +61,19 @@ impl crate::J2kCudaEngine<'_> {
         let mut statuses =
             host_budget.try_vec_filled(kernel_jobs.len(), CudaHtj2kEncodeStatus::default())?;
 
-        let ((), ht_encode_us) =
-            self.time_default_stream_named_us("j2k.htj2k.encode.codeblocks", || {
-                self.launch_htj2k_encode_codeblocks(&CudaHtj2kEncodeCodeblocksLaunch {
-                    coefficients: coefficient_buffer,
-                    output: pooled_device_buffer(&output_buffer)?,
-                    jobs: pooled_device_buffer(&jobs_buffer)?,
-                    tables: resources.launch_tables(),
-                    statuses: pooled_device_buffer(&status_buffer)?,
-                    job_count: kernel_jobs.len(),
-                })
-            })?;
+        // The status readback below blocks behind the queued kernel on the
+        // default stream, so the kernel needs no wait of its own; every
+        // buffer it touches lives until this function returns.
+        let ht_encode = self.queue_timed_stage("j2k.htj2k.encode.codeblocks", || {
+            self.launch_htj2k_encode_codeblocks(&CudaHtj2kEncodeCodeblocksLaunch {
+                coefficients: coefficient_buffer,
+                output: pooled_device_buffer(&output_buffer)?,
+                jobs: pooled_device_buffer(&jobs_buffer)?,
+                tables: resources.launch_tables(),
+                statuses: pooled_device_buffer(&status_buffer)?,
+                job_count: kernel_jobs.len(),
+            })
+        })?;
         let ((), status_readback_us) = self.time_default_stream_named_us(
             "j2k.htj2k.encode.codeblocks.status_readback",
             || {
@@ -86,26 +88,29 @@ impl crate::J2kCudaEngine<'_> {
                 Ok(())
             },
         )?;
+        let ht_encode_us = ht_encode.elapsed_us()?;
 
         let (compact_jobs, compact_output_bytes) =
             htj2k_encode_compact_jobs(&statuses, kernel_jobs, &mut host_budget)?;
         let compact_output_buffer = pool.take(compact_output_bytes)?;
         let compact_dispatched = compact_output_bytes != 0;
-        let compact_us = if compact_dispatched {
+        // The output readback blocks behind the queued compaction, and the
+        // compaction jobs buffer is held until then: a pooled buffer must not
+        // return to the pool while queued work still reads it.
+        let compact = if compact_dispatched {
             let compact_jobs_buffer =
                 pool.upload(htj2k_encode_compact_jobs_as_bytes(&compact_jobs))?;
-            let ((), compact_us) =
-                self.time_default_stream_named_us("j2k.htj2k.encode.codeblocks.compact", || {
-                    self.launch_htj2k_compact_codeblocks(
-                        pooled_device_buffer(&output_buffer)?,
-                        pooled_device_buffer(&compact_output_buffer)?,
-                        pooled_device_buffer(&compact_jobs_buffer)?,
-                        compact_jobs.len(),
-                    )
-                })?;
-            compact_us
+            let timing = self.queue_timed_stage("j2k.htj2k.encode.codeblocks.compact", || {
+                self.launch_htj2k_compact_codeblocks(
+                    pooled_device_buffer(&output_buffer)?,
+                    pooled_device_buffer(&compact_output_buffer)?,
+                    pooled_device_buffer(&compact_jobs_buffer)?,
+                    compact_jobs.len(),
+                )
+            })?;
+            Some((compact_jobs_buffer, timing))
         } else {
-            0
+            None
         };
         let (output, output_readback_us) = if compact_output_bytes == 0 {
             (Vec::new(), 0)
@@ -120,6 +125,13 @@ impl crate::J2kCudaEngine<'_> {
                     )
                 },
             )?
+        };
+        let compact_us = match compact {
+            Some((compact_jobs_buffer, timing)) => {
+                drop(compact_jobs_buffer);
+                timing.elapsed_us()?
+            }
+            None => 0,
         };
         let mut code_blocks = host_budget.try_vec_with_capacity(statuses.len())?;
         for ((status, job), compact_job) in statuses
@@ -221,8 +233,10 @@ impl crate::J2kCudaEngine<'_> {
             "j2k_htj2k_encode_codeblocks_multi_input"
         };
 
-        let ((), ht_encode_us) =
-            self.time_default_stream_named_us("j2k.htj2k.encode.codeblocks.multi_input", || {
+        // As in the single-input path, the status readback below blocks
+        // behind the queued kernel.
+        let ht_encode =
+            self.queue_timed_stage("j2k.htj2k.encode.codeblocks.multi_input", || {
                 if cleanup_only_64 {
                     self.launch_htj2k_encode_codeblocks_multi_input_cleanup_64(
                         &CudaHtj2kEncodeMultiInputLaunch {
@@ -269,28 +283,29 @@ impl crate::J2kCudaEngine<'_> {
                 Ok(())
             },
         )?;
+        let ht_encode_us = ht_encode.elapsed_us()?;
 
         let (compact_jobs, compact_output_bytes) =
             htj2k_encode_compact_jobs_multi_input(&statuses, kernel_jobs, &mut host_budget)?;
         let compact_output_buffer = pool.take(compact_output_bytes)?;
         let compact_dispatched = compact_output_bytes != 0;
-        let compact_us = if compact_dispatched {
+        // As in the single-input path, the output readback below blocks
+        // behind the queued compaction, which keeps its jobs buffer until then.
+        let compact = if compact_dispatched {
             let compact_jobs_buffer =
                 pool.upload(htj2k_encode_compact_jobs_as_bytes(&compact_jobs))?;
-            let ((), compact_us) = self.time_default_stream_named_us(
-                "j2k.htj2k.encode.codeblocks.multi_input.compact",
-                || {
+            let timing =
+                self.queue_timed_stage("j2k.htj2k.encode.codeblocks.multi_input.compact", || {
                     self.launch_htj2k_compact_codeblocks(
                         pooled_device_buffer(&output_buffer)?,
                         pooled_device_buffer(&compact_output_buffer)?,
                         pooled_device_buffer(&compact_jobs_buffer)?,
                         compact_jobs.len(),
                     )
-                },
-            )?;
-            compact_us
+                })?;
+            Some((compact_jobs_buffer, timing))
         } else {
-            0
+            None
         };
         let (output, output_readback_us) = if compact_output_bytes == 0 {
             (Vec::new(), 0)
@@ -305,6 +320,13 @@ impl crate::J2kCudaEngine<'_> {
                     )
                 },
             )?
+        };
+        let compact_us = match compact {
+            Some((compact_jobs_buffer, timing)) => {
+                drop(compact_jobs_buffer);
+                timing.elapsed_us()?
+            }
+            None => 0,
         };
         let mut code_blocks = host_budget.try_vec_with_capacity(statuses.len())?;
         for ((status, job), compact_job) in statuses

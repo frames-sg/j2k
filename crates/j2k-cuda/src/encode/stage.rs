@@ -318,6 +318,14 @@ fn cuda_runtime_required() -> bool {
     std::env::var_os("J2K_REQUIRE_CUDA_RUNTIME").is_some()
 }
 
+/// Run one CUDA encode stage, timing it with default-stream events when
+/// profiling.
+///
+/// Every stage closure calls one `J2kCudaEngine` method, and each of those
+/// waits for its own kernels (or reads their results back) before returning,
+/// so the stage's buffers are idle when `work` returns. Without profiling, a
+/// further context synchronization would only add host latency and is
+/// skipped; the stage reports 0 µs then, as before.
 #[cfg(feature = "cuda-runtime")]
 pub(super) fn time_cuda_stage<T>(
     name: &'static str,
@@ -325,7 +333,13 @@ pub(super) fn time_cuda_stage<T>(
     collect_profile: bool,
     work: impl FnMut() -> core::result::Result<T, CudaError>,
 ) -> core::result::Result<(T, u128), CudaError> {
-    context.time_default_stream_named_us_if(collect_profile, name, work)
+    if collect_profile {
+        return context.time_default_stream_named_us(name, work);
+    }
+    context.prepare_operation()?;
+    context
+        .with_nvtx_range(name, work)
+        .map(|output| (output, 0))
 }
 
 /// Cumulative CUDA encode-stage timings collected by `CudaEncodeStageAccelerator`.

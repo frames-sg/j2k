@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+//! Encode kernel launches. Each helper only queues its kernel on the default
+//! stream; the engine method that calls it establishes completion once, with
+//! `complete_launches` or a blocking readback, before it returns.
+
 mod input;
 
 use crate::{
@@ -48,7 +52,7 @@ impl crate::J2kCudaEngine<'_> {
         let geometry =
             j2k_forward_rct_launch_geometry(len).ok_or(CudaError::LengthTooLarge { len })?;
 
-        self.launch_kernel(function, geometry, &mut params)
+        self.launch_kernel_async(function, geometry, &mut params)
     }
 
     pub(super) fn launch_j2k_forward_ict_buffers(
@@ -82,7 +86,7 @@ impl crate::J2kCudaEngine<'_> {
         let geometry =
             j2k_forward_rct_launch_geometry(len).ok_or(CudaError::LengthTooLarge { len })?;
 
-        self.launch_kernel(function, geometry, &mut params)
+        self.launch_kernel_async(function, geometry, &mut params)
     }
 
     pub(super) fn launch_j2k_forward_dwt53_pass(
@@ -116,7 +120,7 @@ impl crate::J2kCudaEngine<'_> {
                 channels: 1,
             },
         )?;
-        self.launch_kernel(function, geometry, &mut params)
+        self.launch_kernel_async(function, geometry, &mut params)
     }
 
     pub(super) fn launch_j2k_quantize_subband(
@@ -146,7 +150,7 @@ impl crate::J2kCudaEngine<'_> {
         let geometry =
             j2k_forward_rct_launch_geometry(len).ok_or(CudaError::LengthTooLarge { len })?;
 
-        self.launch_kernel(function, geometry, &mut params)
+        self.launch_kernel_async(function, geometry, &mut params)
     }
 
     /// Quantize `job` into `coefficients` starting at coefficient `offset`;
@@ -194,6 +198,6 @@ impl crate::J2kCudaEngine<'_> {
                 channels: 1,
             })?;
 
-        self.launch_kernel(function, geometry, &mut params)
+        self.launch_kernel_async(function, geometry, &mut params)
     }
 }

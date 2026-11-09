@@ -281,32 +281,41 @@ impl crate::J2kCudaEngine<'_> {
             self.upload(htj2k_packetization_statuses_as_bytes(&initial_statuses))?;
         drop(initial_statuses);
 
-        let ((), packetize_us) =
-            self.time_default_stream_named_us("j2k.htj2k.encode.packetize", || {
-                self.launch_htj2k_packetize_cleanup(Htj2kPacketizeCleanupLaunch {
-                    payload: &payload_buffer,
-                    payload_len: payload.len(),
-                    packets: &packet_buffer,
-                    subbands: &subband_buffer,
-                    blocks: &block_buffer,
-                    subband_tag_states: &subband_tag_state_buffer,
-                    tag_nodes: &tag_node_buffer,
-                    subband_tag_state_count: subband_tag_states.len(),
-                    tag_node_count: tag_nodes.len(),
-                    output: &output_buffer,
-                    statuses: &status_buffer,
-                    packet_count: packets.len(),
-                })
-            })?;
-        let stage_timings = CudaHtj2kPacketizationStageTimings { packetize_us };
-        complete_htj2k_packetization(CompleteHtj2kPacketization {
+        // The status readback in `complete_htj2k_packetization` blocks behind
+        // the queued kernel on the default stream, and every buffer the kernel
+        // touches lives until this function returns.
+        let packetize = self.queue_timed_stage("j2k.htj2k.encode.packetize", || {
+            self.launch_htj2k_packetize_cleanup(Htj2kPacketizeCleanupLaunch {
+                payload: &payload_buffer,
+                payload_len: payload.len(),
+                packets: &packet_buffer,
+                subbands: &subband_buffer,
+                blocks: &block_buffer,
+                subband_tag_states: &subband_tag_state_buffer,
+                tag_nodes: &tag_node_buffer,
+                subband_tag_state_count: subband_tag_states.len(),
+                tag_node_count: tag_nodes.len(),
+                output: &output_buffer,
+                statuses: &status_buffer,
+                packet_count: packets.len(),
+            })
+        })?;
+        let completed = complete_htj2k_packetization(CompleteHtj2kPacketization {
             kernel_packets,
             output_buffer: &output_buffer,
             status_buffer: &status_buffer,
             packet_count: packets.len(),
             live_host_bytes,
-            stage_timings,
-        })
+        });
+        let mut packetized = match completed {
+            Ok(packetized) => packetized,
+            // A failed readback leaves the kernel's completion unproven.
+            Err(error) => return self.synchronize_then_error(error),
+        };
+        packetized.stage_timings = CudaHtj2kPacketizationStageTimings {
+            packetize_us: packetize.elapsed_us()?,
+        };
+        Ok(packetized)
     }
 
     fn launch_htj2k_packetize_cleanup(
@@ -357,7 +366,7 @@ impl crate::J2kCudaEngine<'_> {
                 len: request.packet_count,
             },
         )?;
-        self.launch_kernel(function, geometry, &mut params)
+        self.launch_kernel_async(function, geometry, &mut params)
     }
 
     fn htj2k_packetize_kernel_function(kernel: CudaKernel) -> Result<CuFunction, CudaError> {
@@ -371,7 +380,6 @@ struct CompleteHtj2kPacketization<'a> {
     status_buffer: &'a CudaDeviceBuffer,
     packet_count: usize,
     live_host_bytes: usize,
-    stage_timings: CudaHtj2kPacketizationStageTimings,
 }
 
 fn complete_htj2k_packetization(
@@ -383,7 +391,6 @@ fn complete_htj2k_packetization(
         status_buffer,
         packet_count,
         live_host_bytes,
-        stage_timings,
     } = request;
     let mut completion_budget =
         HostPhaseBudget::with_live_bytes("CUDA HTJ2K packetization host outputs", live_host_bytes)?;
@@ -430,7 +437,7 @@ fn complete_htj2k_packetization(
             decode_kernel_dispatches: 0,
             hardware_decode: false,
         },
-        stage_timings,
+        stage_timings: CudaHtj2kPacketizationStageTimings::default(),
     })
 }
 

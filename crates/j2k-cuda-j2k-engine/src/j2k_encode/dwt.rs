@@ -181,27 +181,33 @@ impl crate::J2kCudaEngine<'_> {
         let mut dispatches = 0usize;
         let mut active_is_a = true;
 
-        for _ in 0..num_levels {
-            if current_width < 2 && current_height < 2 {
-                break;
+        // The level passes ping-pong between the two buffers in queue order on
+        // the default stream; one wait at the end lets the idle buffer be
+        // released and the caller use the active one.
+        self.complete_launches(|| {
+            for _ in 0..num_levels {
+                if current_width < 2 && current_height < 2 {
+                    break;
+                }
+                let (level_dispatches, level_shape) = self.launch_j2k_forward_dwt53_level(
+                    &buffer_a,
+                    &buffer_b,
+                    &mut active_is_a,
+                    CudaDwt53LevelPass {
+                        origin: level_origin,
+                        full_width: width,
+                        current_width,
+                        current_height,
+                    },
+                )?;
+                dispatches = dispatches.saturating_add(level_dispatches);
+                levels.push(level_shape);
+                current_width = level_shape.low_width;
+                current_height = level_shape.low_height;
+                level_origin = (level_origin.0.div_ceil(2), level_origin.1.div_ceil(2));
             }
-            let (level_dispatches, level_shape) = self.launch_j2k_forward_dwt53_level(
-                &buffer_a,
-                &buffer_b,
-                &mut active_is_a,
-                CudaDwt53LevelPass {
-                    origin: level_origin,
-                    full_width: width,
-                    current_width,
-                    current_height,
-                },
-            )?;
-            dispatches = dispatches.saturating_add(level_dispatches);
-            levels.push(level_shape);
-            current_width = level_shape.low_width;
-            current_height = level_shape.low_height;
-            level_origin = (level_origin.0.div_ceil(2), level_origin.1.div_ceil(2));
-        }
+            Ok(())
+        })?;
 
         let buffer = if active_is_a { buffer_a } else { buffer_b };
         Ok(CudaResidentDwt53Output {
@@ -378,27 +384,33 @@ impl crate::J2kCudaEngine<'_> {
         let mut dispatches = 0usize;
         let mut active_is_a = true;
 
-        for _ in 0..num_levels {
-            if current_width < 2 && current_height < 2 {
-                break;
+        // The level passes ping-pong between the two buffers in queue order on
+        // the default stream; one wait at the end lets the idle buffer be
+        // released and the caller use the active one.
+        self.complete_launches(|| {
+            for _ in 0..num_levels {
+                if current_width < 2 && current_height < 2 {
+                    break;
+                }
+                let (level_dispatches, level_shape) = self.launch_j2k_forward_dwt97_level(
+                    &buffer_a,
+                    &buffer_b,
+                    &mut active_is_a,
+                    CudaDwt53LevelPass {
+                        origin: level_origin,
+                        full_width: width,
+                        current_width,
+                        current_height,
+                    },
+                )?;
+                dispatches = dispatches.saturating_add(level_dispatches);
+                levels.push(level_shape);
+                current_width = level_shape.low_width;
+                current_height = level_shape.low_height;
+                level_origin = (level_origin.0.div_ceil(2), level_origin.1.div_ceil(2));
             }
-            let (level_dispatches, level_shape) = self.launch_j2k_forward_dwt97_level(
-                &buffer_a,
-                &buffer_b,
-                &mut active_is_a,
-                CudaDwt53LevelPass {
-                    origin: level_origin,
-                    full_width: width,
-                    current_width,
-                    current_height,
-                },
-            )?;
-            dispatches = dispatches.saturating_add(level_dispatches);
-            levels.push(level_shape);
-            current_width = level_shape.low_width;
-            current_height = level_shape.low_height;
-            level_origin = (level_origin.0.div_ceil(2), level_origin.1.div_ceil(2));
-        }
+            Ok(())
+        })?;
 
         let buffer = if active_is_a { buffer_a } else { buffer_b };
         Ok(CudaResidentDwt97Output {

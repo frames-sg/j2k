@@ -89,6 +89,24 @@ impl J2kCudaEngine<'_> {
         self.context.synchronize_then_error(error)
     }
 
+    /// Run `submit`, which queues kernels with [`Self::launch_kernel_async`],
+    /// then wait once for the context, so callers may read, reuse or release
+    /// every buffer those kernels touch. A failed submission also waits
+    /// before returning, so buffers referenced by kernels it already queued
+    /// stay allocated until those kernels finish.
+    ///
+    /// Kernels queued on the legacy default stream run in submission order,
+    /// so a sequence of dependent launches needs only this one wait.
+    pub(crate) fn complete_launches<T>(
+        &self,
+        submit: impl FnOnce() -> Result<T, CudaError>,
+    ) -> Result<T, CudaError> {
+        match submit() {
+            Ok(output) => self.synchronize().map(|()| output),
+            Err(error) => self.synchronize_then_error(error),
+        }
+    }
+
     pub(crate) fn copy_device_range_to_device_with_kernel(
         &self,
         src: &j2k_cuda_runtime::CudaDeviceBuffer,
@@ -123,6 +141,29 @@ impl J2kCudaEngine<'_> {
         }
     }
 
+    /// Queue `submit` on the default stream between two timing events,
+    /// without waiting for it. The returned timing is read after a later
+    /// blocking readback that follows the work in stream order. A failed
+    /// submission waits before returning, as [`Self::complete_launches`] does.
+    pub(crate) fn queue_timed_stage(
+        &self,
+        name: &str,
+        submit: impl FnOnce() -> Result<(), CudaError>,
+    ) -> Result<QueuedStageTiming, CudaError> {
+        let queued = self.context.with_nvtx_range(name, || {
+            let start = self.create_event()?;
+            let end = self.create_event()?;
+            start.record_default_stream()?;
+            submit()?;
+            end.record_default_stream()?;
+            Ok(QueuedStageTiming { start, end })
+        });
+        match queued {
+            Ok(timing) => Ok(timing),
+            Err(error) => self.synchronize_then_error(error),
+        }
+    }
+
     pub(crate) fn time_default_stream_named_us<T>(
         &self,
         name: &str,
@@ -138,5 +179,21 @@ impl J2kCudaEngine<'_> {
     ) -> Result<T, CudaError> {
         // SAFETY: the engine caller retains every resource reachable by work.
         unsafe { self.context.submit_default_stream_named(name, work) }
+    }
+}
+
+/// Timing events around work queued by
+/// [`J2kCudaEngine::queue_timed_stage`].
+pub(crate) struct QueuedStageTiming {
+    start: j2k_cuda_runtime::CudaEvent,
+    end: j2k_cuda_runtime::CudaEvent,
+}
+
+impl QueuedStageTiming {
+    /// Elapsed device time of the queued work, in whole microseconds. Call it
+    /// only after a wait that follows the work on the default stream; before
+    /// then the driver reports the end event as not ready, an error.
+    pub(crate) fn elapsed_us(&self) -> Result<u128, CudaError> {
+        j2k_cuda_runtime::elapsed_event_us_ceil(&self.start, &self.end)
     }
 }

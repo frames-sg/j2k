@@ -141,6 +141,7 @@ fn cuda_status_and_packet_owners_exist_before_launch_or_completion() {
             &[
                 "HostPhaseBudget::with_live_bytes",
                 "try_vec_filled",
+                "queue_timed_stage",
                 "time_default_stream_named_us",
             ],
         );
@@ -159,7 +160,7 @@ fn cuda_status_and_packet_owners_exist_before_launch_or_completion() {
             "htj2k_packetization_kernel_packets",
             "try_vec_filled",
             "drop",
-            "time_default_stream_named_us",
+            "queue_timed_stage",
             "complete_htj2k_packetization",
         ],
     );
