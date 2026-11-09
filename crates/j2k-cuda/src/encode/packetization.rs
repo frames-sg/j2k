@@ -18,6 +18,8 @@ pub(super) use self::runtime::{
     cuda_packetization_blocks, cuda_packetization_packets, cuda_packetization_subbands,
     cuda_packetization_tag_nodes, cuda_packetization_tag_states,
 };
+#[cfg(feature = "cuda-runtime")]
+pub(super) use self::tag_tree::cuda_htj2k_tag_tree_fits;
 pub(super) use self::types::CudaHtj2kPacketizationPlanError;
 
 #[cfg(test)]

@@ -96,6 +96,34 @@ pub(super) fn validate_cuda_htj2k_tile_job(
     Ok(())
 }
 
+/// Whether the CUDA packetizer's tag trees hold every sub-band's code-block
+/// grid of a whole-tile encode, which has one precinct per resolution. A tile
+/// whose trees do not fit must take the staged route, where packetization can
+/// run on the host.
+#[cfg(feature = "cuda-runtime")]
+pub(super) fn cuda_tile_tag_trees_fit(job: J2kResidentHtj2kTileEncodeJob<'_>) -> bool {
+    let band_fits = |width: u32, height: u32| {
+        crate::encode::packetization::cuda_htj2k_tag_tree_fits(
+            width.div_ceil(job.code_block_width),
+            height.div_ceil(job.code_block_height),
+        )
+    };
+    let (mut width, mut height) = (job.input.width(), job.input.height());
+    for _ in 0..job.num_decomposition_levels {
+        // Zero-origin split: the low band takes the extra odd sample.
+        let (low_width, low_height) = (width.div_ceil(2), height.div_ceil(2));
+        let (high_width, high_height) = (width / 2, height / 2);
+        if !(band_fits(high_width, low_height)
+            && band_fits(low_width, high_height)
+            && band_fits(high_width, high_height))
+        {
+            return false;
+        }
+        (width, height) = (low_width, low_height);
+    }
+    band_fits(width, height)
+}
+
 #[cfg(all(test, feature = "cuda-runtime"))]
 mod tests {
     use super::*;
@@ -130,5 +158,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn whole_tile_tag_tree_check_matches_the_packetizer_bound() {
+        let job = |width, height, levels, block| J2kResidentHtj2kTileEncodeJob {
+            input: J2kResidentEncodeInput::new(width, height, 1, 8, false).expect("logical input"),
+            num_decomposition_levels: levels,
+            reversible: true,
+            use_mct: false,
+            guard_bits: 1,
+            code_block_width: block,
+            code_block_height: block,
+            progression_order: j2k::J2kPacketizationProgressionOrder::Lrcp,
+            component_sampling: &[(1, 1)],
+            quantization_steps: &[(8_u16, 0_u16); 16],
+        };
+        // A 39x39 grid needs 1521 + 400 + 100 + 25 + 9 + 4 + 1 = 2060 nodes,
+        // past the 2048 bound; 38x38 needs 1944.
+        assert!(!cuda_tile_tag_trees_fit(job(156, 156, 0, 4)));
+        assert!(cuda_tile_tag_trees_fit(job(152, 152, 0, 4)));
+        // One level halves the bands: 80x80 high bands of 20x20 blocks fit.
+        assert!(cuda_tile_tag_trees_fit(job(160, 160, 1, 4)));
+        // 64x64 blocks at five levels: 2048-wide finest bands hold 32x32
+        // grids, which fit; 4096-wide ones hold 64x64 grids, which do not.
+        assert!(cuda_tile_tag_trees_fit(job(4096, 4096, 5, 64)));
+        assert!(!cuda_tile_tag_trees_fit(job(8192, 8192, 5, 64)));
+        // The odd sample goes to the low band: 305 splits into a 153-sample
+        // low band of 39 blocks and a 152-sample high band of 38.
+        assert!(cuda_tile_tag_trees_fit(job(304, 304, 1, 4)));
+        assert!(!cuda_tile_tag_trees_fit(job(305, 305, 1, 4)));
     }
 }

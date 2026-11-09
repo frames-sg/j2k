@@ -28,7 +28,9 @@ use super::types::{
     CudaEncodedHtj2kResolution, CudaEncodedHtj2kSubband, CudaEncodedHtj2kTile,
     CudaHtj2kEncodeRuntime, CudaHtj2kTileEncodeStats, CudaTileSubbandKind, CudaTileSubbandRegion,
 };
-use super::validation::{resident_job_from_host, validate_cuda_htj2k_tile_job};
+use super::validation::{
+    cuda_tile_tag_trees_fit, resident_job_from_host, validate_cuda_htj2k_tile_job,
+};
 
 #[cfg(feature = "cuda-runtime")]
 pub(in crate::encode) fn cuda_encode_htj2k_tile_body(
@@ -40,6 +42,11 @@ pub(in crate::encode) fn cuda_encode_htj2k_tile_body(
 ) -> CudaStageResult<Option<CudaEncodedHtj2kTile>> {
     let resident_job = resident_job_from_host(job)?;
     validate_cuda_htj2k_tile_job(resident_job)?;
+    if !cuda_tile_tag_trees_fit(resident_job) {
+        // Decline before any device work: the staged route encodes the same
+        // tile with CUDA stages and packetizes the large grids on the host.
+        return Ok(None);
+    }
     let num_components = cuda_component_count_u8(
         resident_job.input.num_components(),
         "CUDA HTJ2K tile encode supports at most 255 components",
@@ -83,6 +90,11 @@ pub(in crate::encode) fn cuda_encode_htj2k_device_tile_body(
     collect_profile: bool,
 ) -> CudaStageResult<Option<CudaEncodedHtj2kTile>> {
     validate_cuda_htj2k_tile_job(job)?;
+    if !cuda_tile_tag_trees_fit(job) {
+        return Err(J2kEncodeStageError::unsupported(
+            "CUDA resident HTJ2K encode packetizes at most 2048 tag-tree nodes per sub-band; use larger code blocks, more decomposition levels, or host-input encode",
+        ));
+    }
     let num_components = cuda_component_count_u8(
         job.input.num_components(),
         "CUDA HTJ2K tile encode supports at most 255 components",

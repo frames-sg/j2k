@@ -38,6 +38,50 @@ pub(super) fn cuda_htj2k_packetization_block_xy(
     Ok((index % num_cbs_x, index / num_cbs_x))
 }
 
+/// Whether the CUDA packetizer can hold the tag trees of a `width` x `height`
+/// code-block grid: at most 16 levels and 2048 nodes per tree.
+#[cfg(feature = "cuda-runtime")]
+pub(in crate::encode) fn cuda_htj2k_tag_tree_fits(width: u32, height: u32) -> bool {
+    width == 0 || height == 0 || for_each_tag_tree_level(width, height, |_, _, _| {}).is_ok()
+}
+
+/// Visits each level of a nonempty tag tree over a `width` x `height` grid,
+/// leaves first, with its dimensions and first node offset, and returns the
+/// node count; fails when the tree exceeds the kernel's level or node bounds.
+fn for_each_tag_tree_level(
+    width: u32,
+    height: u32,
+    mut visit: impl FnMut(u32, u32, usize),
+) -> PacketizationPlanResult<usize> {
+    let exceeds = || {
+        CudaHtj2kPacketizationPlanError::Invalid(
+            "CUDA HTJ2K packetization tag-tree exceeds kernel bounds",
+        )
+    };
+    let mut levels = 0usize;
+    let mut total_nodes = 0usize;
+    let mut w = width;
+    let mut h = height;
+    loop {
+        if levels >= CUDA_HTJ2K_PACKET_MAX_TAG_LEVELS {
+            return Err(exceeds());
+        }
+        let nodes = (w as usize).checked_mul(h as usize).ok_or_else(exceeds)?;
+        let next_total = total_nodes.checked_add(nodes).ok_or_else(exceeds)?;
+        if next_total > CUDA_HTJ2K_PACKET_MAX_TAG_NODES {
+            return Err(exceeds());
+        }
+        visit(w, h, total_nodes);
+        levels += 1;
+        total_nodes = next_total;
+        if w <= 1 && h <= 1 {
+            return Ok(total_nodes);
+        }
+        w = w.div_ceil(2);
+        h = h.div_ceil(2);
+    }
+}
+
 impl CudaHtj2kPacketizationTagTreeState {
     pub(super) fn new(
         width: u32,
@@ -62,41 +106,11 @@ impl CudaHtj2kPacketizationTagTreeState {
             try_tag_tree_vec_with_capacity(host_budget, CUDA_HTJ2K_PACKET_MAX_TAG_LEVELS)?;
         let mut offsets =
             try_tag_tree_vec_with_capacity(host_budget, CUDA_HTJ2K_PACKET_MAX_TAG_LEVELS)?;
-        let mut total_nodes = 0usize;
-        let mut w = width;
-        let mut h = height;
-        loop {
-            if widths.len() >= CUDA_HTJ2K_PACKET_MAX_TAG_LEVELS {
-                return Err(CudaHtj2kPacketizationPlanError::Invalid(
-                    "CUDA HTJ2K packetization tag-tree exceeds kernel bounds",
-                ));
-            }
-            let nodes = (w as usize).checked_mul(h as usize).ok_or(
-                CudaHtj2kPacketizationPlanError::Invalid(
-                    "CUDA HTJ2K packetization tag-tree exceeds kernel bounds",
-                ),
-            )?;
-            let next_total =
-                total_nodes
-                    .checked_add(nodes)
-                    .ok_or(CudaHtj2kPacketizationPlanError::Invalid(
-                        "CUDA HTJ2K packetization tag-tree exceeds kernel bounds",
-                    ))?;
-            if next_total > CUDA_HTJ2K_PACKET_MAX_TAG_NODES {
-                return Err(CudaHtj2kPacketizationPlanError::Invalid(
-                    "CUDA HTJ2K packetization tag-tree exceeds kernel bounds",
-                ));
-            }
-            offsets.push(total_nodes);
+        let total_nodes = for_each_tag_tree_level(width, height, |w, h, offset| {
+            offsets.push(offset);
             widths.push(w);
             heights.push(h);
-            total_nodes = next_total;
-            if w <= 1 && h <= 1 {
-                break;
-            }
-            w = w.div_ceil(2);
-            h = h.div_ceil(2);
-        }
+        })?;
 
         let values = try_tag_tree_vec_filled(host_budget, total_nodes, 0)?;
         let current = try_tag_tree_vec_filled(host_budget, total_nodes, 0)?;
