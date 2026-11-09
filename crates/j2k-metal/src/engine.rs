@@ -202,7 +202,7 @@ mod test_counters;
 #[cfg(test)]
 pub(crate) use self::test_counters::{
     classic_gpu_token_pack_dispatches_for_test,
-    classic_split_mq_byte_gpu_token_pack_dispatches_for_test,
+    classic_split_mq_byte_gpu_token_pack_dispatches_for_test, classic_tier1_runs_for_test,
     direct_destination_event_bridge_for_test, direct_tier1_input_buffer_prepares_for_test,
     direct_tier1_input_buffer_runtime_for_test, flattened_hybrid_cpu_decode_batches_for_test,
     ht_batch_coefficient_copy_blits_for_test, hybrid_cpu_decode_inputs_for_test,
@@ -212,7 +212,7 @@ pub(crate) use self::test_counters::{
     metal_command_buffers_for_test, metal_compute_encoders_for_test,
     reset_classic_gpu_token_pack_dispatches_for_test,
     reset_classic_split_mq_byte_gpu_token_pack_dispatches_for_test,
-    reset_direct_destination_event_bridge_for_test,
+    reset_classic_tier1_runs_for_test, reset_direct_destination_event_bridge_for_test,
     reset_direct_tier1_input_buffer_prepares_for_test,
     reset_flattened_hybrid_cpu_decode_batches_for_test,
     reset_ht_batch_coefficient_copy_blits_for_test, reset_hybrid_cpu_decode_inputs_for_test,
@@ -225,8 +225,8 @@ pub(crate) use self::test_counters::{
     reset_resident_gpu_timestamp_queries_for_test, reset_shared_classic_tier1_passes_for_test,
     reset_stacked_component_batches_for_test, reset_thread_hybrid_cpu_decode_inputs_for_test,
     resident_codestream_command_buffer_waits_for_test, resident_gpu_timestamp_queries_for_test,
-    shared_classic_tier1_passes_for_test, stacked_component_batches_for_test,
-    thread_hybrid_cpu_decode_inputs_for_test,
+    set_classic_tier1_buffer_limit_for_test, shared_classic_tier1_passes_for_test,
+    stacked_component_batches_for_test, thread_hybrid_cpu_decode_inputs_for_test,
 };
 
 #[cfg(target_os = "macos")]

@@ -52,6 +52,8 @@ macro_rules! lossless_options {
 mod auto_ht_host_output;
 mod batch;
 #[cfg(target_os = "macos")]
+mod classic_tier1_chunks;
+#[cfg(target_os = "macos")]
 mod dwt_parity;
 #[cfg(target_os = "macos")]
 mod kernels;

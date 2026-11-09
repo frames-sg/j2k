@@ -38,6 +38,10 @@ fn checked_type_buffer_bytes<T>(count: usize, context: &'static str) -> Result<u
         })
 }
 #[cfg(target_os = "macos")]
+mod classic_chunks;
+#[cfg(target_os = "macos")]
+pub(crate) use self::classic_chunks::encode_classic_tier1_code_blocks;
+#[cfg(target_os = "macos")]
 mod ht_batch;
 #[cfg(target_os = "macos")]
 pub(crate) use self::ht_batch::{encode_ht_cleanup_code_blocks, encode_ht_code_block_sets};
@@ -237,12 +241,14 @@ pub(super) fn read_classic_encoded_code_block(
     })
 }
 
+/// Encodes one run of a classic Tier-1 batch in a single dispatch; the
+/// caller sizes runs so every batch buffer fits one allocation.
 #[cfg(target_os = "macos")]
 #[expect(
     clippy::too_many_lines,
     reason = "batched Tier-1 submission keeps buffer slices and status ordering aligned"
 )]
-pub(crate) fn encode_classic_tier1_code_blocks(
+fn encode_classic_tier1_chunk(
     jobs: &[J2kTier1CodeBlockEncodeJob<'_>],
 ) -> Result<Vec<EncodedJ2kCodeBlock>, Error> {
     with_runtime(|runtime| {

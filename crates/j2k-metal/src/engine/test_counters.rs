@@ -66,6 +66,31 @@ std::thread_local! {
     static DIRECT_DESTINATION_EVENT_WAITS: Cell<usize> = const { Cell::new(0) };
     static SHARED_CLASSIC_TIER1_PASSES: Cell<usize> = const { Cell::new(0) };
     static FUSED_IDWT_STORES: Cell<usize> = const { Cell::new(0) };
+    static CLASSIC_TIER1_RUNS: Cell<usize> = const { Cell::new(0) };
+    /// Per-buffer byte limit for classic Tier-1 runs; zero keeps the device's.
+    static CLASSIC_TIER1_BUFFER_LIMIT: Cell<usize> = const { Cell::new(0) };
+}
+
+pub(crate) fn reset_classic_tier1_runs_for_test() {
+    CLASSIC_TIER1_RUNS.with(|count| count.set(0));
+}
+
+pub(crate) fn classic_tier1_runs_for_test() -> usize {
+    CLASSIC_TIER1_RUNS.with(Cell::get)
+}
+
+pub(crate) fn record_classic_tier1_run() {
+    CLASSIC_TIER1_RUNS.with(|count| count.set(count.get().saturating_add(1)));
+}
+
+/// Overrides this thread's classic Tier-1 buffer limit; zero restores it.
+pub(crate) fn set_classic_tier1_buffer_limit_for_test(limit: usize) {
+    CLASSIC_TIER1_BUFFER_LIMIT.with(|slot| slot.set(limit));
+}
+
+pub(crate) fn classic_tier1_buffer_limit_for_test() -> Option<usize> {
+    let limit = CLASSIC_TIER1_BUFFER_LIMIT.with(Cell::get);
+    (limit != 0).then_some(limit)
 }
 
 pub(crate) fn reset_shared_classic_tier1_passes_for_test() {
