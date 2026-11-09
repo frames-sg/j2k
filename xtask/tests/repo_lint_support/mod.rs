@@ -9,6 +9,7 @@ use std::{
 
 pub(crate) mod allocation_policy;
 pub(crate) mod architecture_policy;
+pub(crate) mod constant_ownership_policy;
 pub(crate) mod corpus_policy;
 pub(crate) mod dependency_policy;
 pub(crate) mod docs_and_workflows_policy;
