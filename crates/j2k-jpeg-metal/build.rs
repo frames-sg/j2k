@@ -88,9 +88,13 @@ fn render_fdct(source: &mut String) -> Result<(), Box<dyn Error>> {
 }
 
 fn render_ycbcr(source: &mut String) -> Result<(), Box<dyn Error>> {
-    let constants: [(&str, i32); 10] = [
+    let constants: [(&str, i32); 14] = [
         ("FRACTION_BITS", ycbcr::FRACTION_BITS),
         ("ROUND", ycbcr::ROUND),
+        ("FIX_1_40200", ycbcr::FIX_1_40200),
+        ("FIX_0_34414", ycbcr::FIX_0_34414),
+        ("FIX_0_71414", ycbcr::FIX_0_71414),
+        ("FIX_1_77200", ycbcr::FIX_1_77200),
         ("FIX_0_29900", ycbcr::FIX_0_29900),
         ("FIX_0_58700", ycbcr::FIX_0_58700),
         ("FIX_0_11400", ycbcr::FIX_0_11400),

@@ -647,14 +647,21 @@ fn clamp_i32(value: i32) -> u8 {
     }
 }
 
+/// `j2k_jpeg::color::ycbcr::ycbcr_to_rgb` with the constants of
+/// `j2k_codec_math::jpeg::ycbcr`.
 #[inline(always)]
 fn ycbcr_to_rgb(y: u8, cb: u8, cr: u8, r: &mut u8, g: &mut u8, b: &mut u8) {
+    use j2k_codec_math::jpeg::ycbcr::{
+        FIX_0_34414, FIX_0_71414, FIX_1_40200, FIX_1_77200, FRACTION_BITS, ROUND,
+    };
     let yy = y as i32;
     let cb_centered = cb as i32 - 128;
     let cr_centered = cr as i32 - 128;
-    *r = clamp_i32(yy + ((91881 * cr_centered + (1 << 15)) >> 16));
-    *g = clamp_i32(yy - ((22554 * cb_centered + 46802 * cr_centered + (1 << 15)) >> 16));
-    *b = clamp_i32(yy + ((116130 * cb_centered + (1 << 15)) >> 16));
+    *r = clamp_i32(yy + ((FIX_1_40200 * cr_centered + ROUND) >> FRACTION_BITS));
+    *g = clamp_i32(
+        yy - ((FIX_0_34414 * cb_centered + FIX_0_71414 * cr_centered + ROUND) >> FRACTION_BITS),
+    );
+    *b = clamp_i32(yy + ((FIX_1_77200 * cb_centered + ROUND) >> FRACTION_BITS));
 }
 
 #[inline(always)]

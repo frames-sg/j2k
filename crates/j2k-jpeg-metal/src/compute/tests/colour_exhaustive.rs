@@ -29,6 +29,31 @@ kernel void test_rgb_to_ycbcr_every_colour(
 }
 ";
 
+const DECODE_KERNEL: &str = r"
+kernel void test_ycbcr_to_rgb_every_colour(
+    device uchar *hybrid [[buffer(0)]],
+    device uchar *store [[buffer(1)]],
+    device uchar *float_rgba [[buffer(2)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= (1u << 24)) {
+        return;
+    }
+    const uchar cb = uchar(gid >> 16);
+    const uchar cr = uchar(gid >> 8);
+    const uchar y = uchar(gid);
+    const uint3 rgb = hybrid_ycbcr8_to_rgb(int(y), int(cb), int(cr));
+    hybrid[gid * 3u] = uchar(rgb.x);
+    hybrid[gid * 3u + 1u] = uchar(rgb.y);
+    hybrid[gid * 3u + 2u] = uchar(rgb.z);
+    store_rgb_ycbcr(store, gid * 3u, y, cb, cr);
+    const float4 rgba = rgba_float_ycbcr(y, cb, cr, 255u);
+    float_rgba[gid * 3u] = uchar(rint(rgba.x * 255.0f));
+    float_rgba[gid * 3u + 1u] = uchar(rint(rgba.y * 255.0f));
+    float_rgba[gid * 3u + 2u] = uchar(rint(rgba.z * 255.0f));
+}
+";
+
 /// Runs `kernel` from `source` over every colour, one thread per colour, and
 /// reads back the three bytes per colour of each of its `outputs` buffers.
 fn run_every_colour(source: &str, kernel: &str, outputs: usize) -> Vec<Vec<[u8; 3]>> {
@@ -90,5 +115,101 @@ fn encode_rgb_to_ycbcr_matches_the_cpu_for_every_colour() {
             outputs[0][colour],
             cpu_rgb_to_ycbcr(colour)
         );
+    }
+}
+
+/// The CPU decoder's YCbCr to RGB conversion of every `(Y, Cb, Cr)`, indexed
+/// `cb << 16 | cr << 8 | y`.
+///
+/// For each Cb it decodes a 4:4:4 frame of 256 x 256 blocks: block
+/// `(Y, Cr)` carries only a DC of `8 * (sample - 128)` per component under
+/// quantizers of one, whose inverse DCT is exactly the flat sample, so the
+/// block's pixels are the conversion of `(Y, Cb, Cr)`.
+fn cpu_ycbcr_to_rgb_every_colour() -> Vec<[u8; 3]> {
+    use j2k_core::PixelFormat;
+    use j2k_jpeg::transcode::{encode_baseline_dct_image, extract_dct_blocks, DctExtractOptions};
+    use j2k_jpeg::{
+        DecodeRequest, Decoder, JpegBackend, JpegEncodeOptions, JpegSamples, JpegSubsampling,
+    };
+
+    const SIDE: u32 = 256 * 8;
+    let grey = vec![128u8; SIDE as usize * SIDE as usize * 3];
+    let template = j2k_jpeg::encode_jpeg_baseline(
+        JpegSamples::Rgb8 {
+            data: &grey,
+            width: SIDE,
+            height: SIDE,
+        },
+        JpegEncodeOptions {
+            quality: 100,
+            subsampling: JpegSubsampling::Ybr444,
+            restart_interval: None,
+            backend: JpegBackend::Cpu,
+        },
+    )
+    .expect("template encode");
+    let mut image =
+        extract_dct_blocks(&template.data, DctExtractOptions::default()).expect("template blocks");
+    let mut expected = vec![[0u8; 3]; COLOURS];
+    for cb in 0..=255u8 {
+        for component in &mut image.components {
+            assert!(component
+                .quant_table
+                .iter()
+                .all(|&quantizer| quantizer == 1));
+            let columns = component.block_cols as usize;
+            let blocks = component
+                .quantized_blocks
+                .iter_mut()
+                .zip(component.dequantized_blocks.iter_mut());
+            for (index, (quantized, dequantized)) in blocks.enumerate() {
+                let value = match component.component_index {
+                    0 => index % columns,
+                    1 => usize::from(cb),
+                    _ => index / columns,
+                };
+                let value = i16::try_from(value).expect("sample fits i16");
+                *quantized = [0; 64];
+                quantized[0] = 8 * (value - 128);
+                *dequantized = *quantized;
+            }
+        }
+        let jpeg = encode_baseline_dct_image(&image).expect("flat-block frame");
+        let (rgb, _) = Decoder::new(&jpeg)
+            .expect("CPU decoder")
+            .decode_request(DecodeRequest::full(PixelFormat::Rgb8))
+            .expect("CPU decode");
+        let pixels = rgb.as_chunks::<3>().0;
+        for cr in 0..256usize {
+            for y in 0..256usize {
+                expected[(usize::from(cb) << 16) | (cr << 8) | y] =
+                    pixels[cr * 8 * SIDE as usize + y * 8];
+            }
+        }
+    }
+    expected
+}
+
+#[test]
+fn decode_ycbcr_to_rgb_matches_the_cpu_for_every_colour() {
+    if !super::should_run_metal_runtime() {
+        return;
+    }
+    let outputs = run_every_colour(DECODE_KERNEL, "test_ycbcr_to_rgb_every_colour", 3);
+    let expected = cpu_ycbcr_to_rgb_every_colour();
+    for (name, actual) in [
+        "hybrid_ycbcr8_to_rgb",
+        "store_rgb_ycbcr",
+        "rgba_float_ycbcr",
+    ]
+    .into_iter()
+    .zip(&outputs)
+    {
+        if let Some(colour) = (0..COLOURS).find(|&colour| actual[colour] != expected[colour]) {
+            panic!(
+                "{name}: (Cb, Cr, Y) {colour:06x} gives {:?}, the CPU {:?}",
+                actual[colour], expected[colour]
+            );
+        }
     }
 }

@@ -328,9 +328,13 @@ inline uint hybrid_component_sample(
 inline uint3 hybrid_ycbcr8_to_rgb(int y, int cb, int cr) {
     cb -= 128;
     cr -= 128;
-    const int r = y + ((91881 * cr + 32768) >> 16);
-    const int g = y - ((22554 * cb + 46802 * cr + 32768) >> 16);
-    const int b = y + ((116130 * cb + 32768) >> 16);
+    const int r = y + ((CODEC_MATH_JPEG_YCBCR_FIX_1_40200 * cr + CODEC_MATH_JPEG_YCBCR_ROUND)
+        >> CODEC_MATH_JPEG_YCBCR_FRACTION_BITS);
+    const int g = y - ((CODEC_MATH_JPEG_YCBCR_FIX_0_34414 * cb
+        + CODEC_MATH_JPEG_YCBCR_FIX_0_71414 * cr + CODEC_MATH_JPEG_YCBCR_ROUND)
+        >> CODEC_MATH_JPEG_YCBCR_FRACTION_BITS);
+    const int b = y + ((CODEC_MATH_JPEG_YCBCR_FIX_1_77200 * cb + CODEC_MATH_JPEG_YCBCR_ROUND)
+        >> CODEC_MATH_JPEG_YCBCR_FRACTION_BITS);
     return uint3(clamp(int3(r, g, b), int3(0), int3(255)));
 }
 
@@ -338,9 +342,13 @@ inline uint3 hybrid_ycbcr8_to_rgb(int y, int cb, int cr) {
 inline uint3 hybrid_ycbcr12_to_rgb(int y, int cb, int cr) {
     cb -= 2048;
     cr -= 2048;
-    const int r = y + ((91881 * cr + 32768) >> 16);
-    const int g = y + ((-22554 * cb - 46802 * cr + 32768) >> 16);
-    const int b = y + ((116130 * cb + 32768) >> 16);
+    const int r = y + ((CODEC_MATH_JPEG_YCBCR_FIX_1_40200 * cr + CODEC_MATH_JPEG_YCBCR_ROUND)
+        >> CODEC_MATH_JPEG_YCBCR_FRACTION_BITS);
+    const int g = y + ((-CODEC_MATH_JPEG_YCBCR_FIX_0_34414 * cb
+        - CODEC_MATH_JPEG_YCBCR_FIX_0_71414 * cr + CODEC_MATH_JPEG_YCBCR_ROUND)
+        >> CODEC_MATH_JPEG_YCBCR_FRACTION_BITS);
+    const int b = y + ((CODEC_MATH_JPEG_YCBCR_FIX_1_77200 * cb + CODEC_MATH_JPEG_YCBCR_ROUND)
+        >> CODEC_MATH_JPEG_YCBCR_FRACTION_BITS);
     return uint3(clamp(int3(r, g, b), int3(0), int3(4095)));
 }
 
@@ -633,9 +641,13 @@ inline uint3 lossless_ycbcr_to_rgb(long y, long cb, long cr, uint precision) {
     const long max_value = (center << 1) - 1;
     cb -= center;
     cr -= center;
-    const long r = y + ((long(91881) * cr + 32768) >> 16);
-    const long g = y - ((long(22554) * cb + long(46802) * cr + 32768) >> 16);
-    const long b = y + ((long(116130) * cb + 32768) >> 16);
+    const long r = y + ((long(CODEC_MATH_JPEG_YCBCR_FIX_1_40200) * cr + CODEC_MATH_JPEG_YCBCR_ROUND)
+        >> CODEC_MATH_JPEG_YCBCR_FRACTION_BITS);
+    const long g = y - ((long(CODEC_MATH_JPEG_YCBCR_FIX_0_34414) * cb
+        + long(CODEC_MATH_JPEG_YCBCR_FIX_0_71414) * cr + CODEC_MATH_JPEG_YCBCR_ROUND)
+        >> CODEC_MATH_JPEG_YCBCR_FRACTION_BITS);
+    const long b = y + ((long(CODEC_MATH_JPEG_YCBCR_FIX_1_77200) * cb + CODEC_MATH_JPEG_YCBCR_ROUND)
+        >> CODEC_MATH_JPEG_YCBCR_FRACTION_BITS);
     return uint3(uint(clamp(r, long(0), max_value)),
                  uint(clamp(g, long(0), max_value)),
                  uint(clamp(b, long(0), max_value)));

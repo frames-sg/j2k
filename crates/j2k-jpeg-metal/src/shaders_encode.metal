@@ -1651,9 +1651,13 @@ inline void store_rgb_ycbcr(
     const int y = int(y_value);
     const int cb_centered = int(cb_value) - 128;
     const int cr_centered = int(cr_value) - 128;
-    out[out_idx] = clamp_u8(y + ((91881 * cr_centered + (1 << 15)) >> 16));
-    out[out_idx + 1u] = clamp_u8(y - ((22554 * cb_centered + 46802 * cr_centered + (1 << 15)) >> 16));
-    out[out_idx + 2u] = clamp_u8(y + ((116130 * cb_centered + (1 << 15)) >> 16));
+    out[out_idx] = clamp_u8(y + ((CODEC_MATH_JPEG_YCBCR_FIX_1_40200 * cr_centered
+        + CODEC_MATH_JPEG_YCBCR_ROUND) >> CODEC_MATH_JPEG_YCBCR_FRACTION_BITS));
+    out[out_idx + 1u] = clamp_u8(y - ((CODEC_MATH_JPEG_YCBCR_FIX_0_34414 * cb_centered
+        + CODEC_MATH_JPEG_YCBCR_FIX_0_71414 * cr_centered
+        + CODEC_MATH_JPEG_YCBCR_ROUND) >> CODEC_MATH_JPEG_YCBCR_FRACTION_BITS));
+    out[out_idx + 2u] = clamp_u8(y + ((CODEC_MATH_JPEG_YCBCR_FIX_1_77200 * cb_centered
+        + CODEC_MATH_JPEG_YCBCR_ROUND) >> CODEC_MATH_JPEG_YCBCR_FRACTION_BITS));
 }
 
 inline void store_rgba_ycbcr(
@@ -1677,9 +1681,13 @@ inline float4 rgba_float_ycbcr(
     const int y = int(y_value);
     const int cb_centered = int(cb_value) - 128;
     const int cr_centered = int(cr_value) - 128;
-    const uchar r = clamp_u8(y + ((91881 * cr_centered + (1 << 15)) >> 16));
-    const uchar g = clamp_u8(y - ((22554 * cb_centered + 46802 * cr_centered + (1 << 15)) >> 16));
-    const uchar b = clamp_u8(y + ((116130 * cb_centered + (1 << 15)) >> 16));
+    const uchar r = clamp_u8(y + ((CODEC_MATH_JPEG_YCBCR_FIX_1_40200 * cr_centered
+        + CODEC_MATH_JPEG_YCBCR_ROUND) >> CODEC_MATH_JPEG_YCBCR_FRACTION_BITS));
+    const uchar g = clamp_u8(y - ((CODEC_MATH_JPEG_YCBCR_FIX_0_34414 * cb_centered
+        + CODEC_MATH_JPEG_YCBCR_FIX_0_71414 * cr_centered
+        + CODEC_MATH_JPEG_YCBCR_ROUND) >> CODEC_MATH_JPEG_YCBCR_FRACTION_BITS));
+    const uchar b = clamp_u8(y + ((CODEC_MATH_JPEG_YCBCR_FIX_1_77200 * cb_centered
+        + CODEC_MATH_JPEG_YCBCR_ROUND) >> CODEC_MATH_JPEG_YCBCR_FRACTION_BITS));
     return float4(float(r), float(g), float(b), float(uchar(alpha))) / 255.0f;
 }
 

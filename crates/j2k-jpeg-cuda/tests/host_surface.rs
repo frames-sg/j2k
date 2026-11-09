@@ -4,6 +4,8 @@ mod batch;
 mod batch_ownership;
 #[path = "host_surface/caller_buffers.rs"]
 mod caller_buffers;
+#[path = "host_surface/colour_exhaustive.rs"]
+mod colour_exhaustive;
 #[path = "host_surface/diagnostics.rs"]
 mod diagnostics;
 #[path = "host_surface/output_initialization.rs"]
