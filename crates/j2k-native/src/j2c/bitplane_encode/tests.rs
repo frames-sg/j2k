@@ -17,7 +17,8 @@ use super::{
     classic_worker_allocation, coded_bitplanes, encode_code_block, encode_code_block_i64,
     encode_code_block_segments_with_style, encode_code_block_segments_with_style_i64,
     encode_code_block_view, pack_classic_selective_bypass_tier1_tokens, try_encode_code_block,
-    try_encode_neighbor_byte_passes, ClassicTier1TokenSegment, CodedBlock, EncodedCodeBlock,
+    try_encode_neighbor_byte_passes, ClassicEncodeWorkspace, ClassicTier1TokenSegment, CodedBlock,
+    EncodedCodeBlock,
 };
 
 fn assert_encoded_blocks_equal(actual: &EncodedCodeBlock, expected: &EncodedCodeBlock) {
@@ -529,7 +530,8 @@ fn column_word_passes_match_neighbor_byte_passes() {
         SubBandType::LowHigh,
         SubBandType::HighHigh,
     ];
-    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    // One workspace for every case, as a worker reuses it across blocks.
+    let (mut state, mut workspace) = (0x9e37_79b9_7f4a_7c15_u64, ClassicEncodeWorkspace::default());
     for (case, &(width, height, total_bitplanes)) in shapes.iter().enumerate() {
         let full = (1_u64 << total_bitplanes) - 1;
         // Draws: zero, sparse, uniform, mostly small, and alternating bits.
@@ -570,6 +572,7 @@ fn column_word_passes_match_neighbor_byte_passes() {
                     num_bitplanes,
                     style,
                     allocation.payload_bytes,
+                    &mut workspace,
                 )
                 .expect("column-word passes");
                 let neighbor = try_encode_neighbor_byte_passes(

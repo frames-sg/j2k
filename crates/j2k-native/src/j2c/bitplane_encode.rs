@@ -26,6 +26,7 @@ mod tokens;
 
 pub(crate) use self::allocation::classic_worker_allocation;
 use self::allocation::ClassicWorkerAllocation;
+pub(crate) use self::flag_passes::ClassicEncodeWorkspace;
 use self::passes::{
     cleanup_pass, clear_coded_in_current_pass, magnitude_refinement_pass,
     significance_propagation_pass,
@@ -130,6 +131,46 @@ pub(crate) fn try_encode_code_block_with_style_view<T: SignedCoefficient>(
     total_bitplanes: u8,
     style: &CodeBlockStyle,
 ) -> EncodeResult<EncodedCodeBlock> {
+    try_encode_code_block_with_style_in_workspace(
+        coefficients,
+        sub_band_type,
+        total_bitplanes,
+        style,
+        &mut ClassicEncodeWorkspace::default(),
+    )
+}
+
+/// Encode one block of a worker that codes many, reusing its `workspace`.
+pub(crate) fn try_encode_code_block_in_workspace(
+    coefficients: &[i32],
+    width: u32,
+    height: u32,
+    sub_band_type: SubBandType,
+    total_bitplanes: u8,
+    workspace: &mut ClassicEncodeWorkspace,
+) -> EncodeResult<EncodedCodeBlock> {
+    let coefficients =
+        CoefficientBlockView::try_contiguous(coefficients, width as usize, height as usize)?;
+    try_encode_code_block_with_style_in_workspace(
+        coefficients,
+        sub_band_type,
+        total_bitplanes,
+        &CodeBlockStyle::default(),
+        workspace,
+    )
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the stable Tier-1 entrypoint borrows the caller's code-block style"
+)]
+fn try_encode_code_block_with_style_in_workspace<T: SignedCoefficient>(
+    coefficients: CoefficientBlockView<'_, T>,
+    sub_band_type: SubBandType,
+    total_bitplanes: u8,
+    style: &CodeBlockStyle,
+    workspace: &mut ClassicEncodeWorkspace,
+) -> EncodeResult<EncodedCodeBlock> {
     let allocation =
         classic_worker_allocation(coefficients.width(), coefficients.height(), total_bitplanes)?;
     // Empty blocks and invalid magnitudes need no pass scratch.
@@ -146,6 +187,7 @@ pub(crate) fn try_encode_code_block_with_style_view<T: SignedCoefficient>(
                         num_bitplanes,
                         style,
                         allocation.payload_bytes,
+                        workspace,
                     )?
                 } else {
                     try_encode_neighbor_byte_passes(

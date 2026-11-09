@@ -16,7 +16,7 @@ use super::super::bitplane::flags::{
 use super::super::build::SubBandType;
 use super::super::codestream::CodeBlockStyle;
 use super::super::coefficient_view::{CoefficientBlockView, SignedCoefficient};
-use super::super::encode::allocation::try_untracked_vec_filled;
+use super::super::encode::allocation::try_reserve_untracked;
 use super::{code_passes, CodedBlock, CodingPass};
 use crate::EncodeResult;
 
@@ -44,16 +44,36 @@ fn propagation_rows(own: u32) -> u32 {
 /// Sample words keep the magnitude below the sign in bit 31.
 pub(super) const MAX_BITPLANES: u8 = 31;
 
-/// One word per sample, the four rows of a stripe column consecutive and rows
-/// past the block's end zero: magnitude in bits 0-30, sign in bit 31. The
-/// caller checks that every magnitude fits before building these words.
+/// The column samples and flags of one classic worker, kept from block to
+/// block so that a worker allocates them once per wave instead of per block.
+/// Both grow to exactly the largest block the worker codes.
+#[derive(Debug, Default)]
+pub(crate) struct ClassicEncodeWorkspace {
+    samples: Vec<u32>,
+    flags: Vec<u32>,
+}
+
+/// Zero `buffer` at `len` words, growing it to exactly `len` only when it is
+/// too short.
+fn try_zeroed(buffer: &mut Vec<u32>, len: usize, what: &'static str) -> EncodeResult<()> {
+    buffer.clear();
+    try_reserve_untracked(buffer, len, what)?;
+    buffer.resize(len, 0);
+    Ok(())
+}
+
+/// Fill `samples` with one word per sample, the four rows of a stripe column
+/// consecutive and rows past the block's end zero: magnitude in bits 0-30,
+/// sign in bit 31. The caller checks that every magnitude fits before
+/// building these words.
 fn try_column_samples<T: SignedCoefficient>(
     coefficients: CoefficientBlockView<'_, T>,
-) -> EncodeResult<Vec<u32>> {
+    samples: &mut Vec<u32>,
+) -> EncodeResult<()> {
     let width = coefficients.width();
-    let mut samples = try_untracked_vec_filled(
+    try_zeroed(
+        samples,
         coefficients.height().div_ceil(4) * width * 4,
-        0_u32,
         "classic Tier-1 column samples",
     )?;
     for (y, row) in coefficients.rows().enumerate() {
@@ -68,7 +88,7 @@ fn try_column_samples<T: SignedCoefficient>(
             *word = low | u32::from(coefficient.is_negative()) << 31;
         }
     }
-    Ok(samples)
+    Ok(())
 }
 
 /// Everything one pass touches.
@@ -249,14 +269,16 @@ pub(super) fn try_encode_column_passes<T: SignedCoefficient>(
     num_bitplanes: u8,
     style: &CodeBlockStyle,
     payload_bytes: usize,
+    workspace: &mut ClassicEncodeWorkspace,
 ) -> EncodeResult<CodedBlock> {
     debug_assert!(num_bitplanes <= MAX_BITPLANES);
-    let samples = try_column_samples(coefficients)?;
+    let ClassicEncodeWorkspace { samples, flags } = workspace;
+    try_column_samples(coefficients, samples)?;
     let (width, height) = (coefficients.width(), coefficients.height());
     let stride = width + 2;
-    let mut flags = try_untracked_vec_filled(
+    try_zeroed(
+        flags,
         (height.div_ceil(4) + 2) * stride,
-        0_u32,
         "classic Tier-1 column flags",
     )?;
     let zero_coding = zero_coding_table(sub_band_type);
@@ -268,8 +290,8 @@ pub(super) fn try_encode_column_passes<T: SignedCoefficient>(
             let mut scan = Scan {
                 encoder,
                 contexts,
-                flags: &mut flags,
-                samples: &samples,
+                flags: flags.as_mut_slice(),
+                samples: samples.as_slice(),
                 zero_coding,
                 width,
                 height,
