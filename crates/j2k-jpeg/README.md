@@ -134,8 +134,16 @@ restart and marker errors remain errors under either policy. Optional metadata
 not affecting samples remains a warning. Missing EOI is accepted only after
 completeness is verified; progressive EOF requires every coefficient band at
 final approximation for every component. An actual EOI can terminate a legal
-partial progressive script. Unresolved Adobe APP14 interpretation requires an
-explicit color hint. Leniency never authorizes precision loss.
+partial progressive script. Leniency never authorizes precision loss.
+
+A reserved Adobe APP14 transform byte leaves the color interpretation of a
+three- or four-component frame unresolved. Strict decode refuses it with
+`JpegError::AmbiguousColorTransform`. Lenient decode reads the samples as
+libjpeg-turbo does, YCbCr for three components and YCCK for four, keeps the
+`AdobeApp14Ambiguous` warning and reports the image as recovered. For three
+components, `ColorTransform::ForceRgb` or `ColorTransform::ForceYCbCr` resolves
+the interpretation under either policy, without recovery. Four-component
+frames have no hint, and grayscale and two-component frames are unaffected.
 
 `DecodeOutcome::recovered`, `DecodedTile::recovered`, and
 `JpegBatchGroup::recovered()` identify lenient recovery. Cosmetic warnings leave

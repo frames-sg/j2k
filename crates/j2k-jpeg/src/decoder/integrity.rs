@@ -22,6 +22,19 @@ const fn converts_colour(component_count: usize) -> bool {
     matches!(component_count, 3 | 4)
 }
 
+/// `options` with only the colour hints that apply to the frame.
+///
+/// `ColorTransform` overrides apply only to three-component frames. An ignored
+/// RGB or YCbCr hint cannot establish CMYK versus YCCK interpretation, so a
+/// four-component frame keeps automatic detection.
+fn applicable_hints(options: DecodeOptions, component_count: usize) -> DecodeOptions {
+    if component_count == 3 {
+        options
+    } else {
+        options.with_color_transform(ColorTransform::Auto)
+    }
+}
+
 impl DecodeIntegrity {
     #[expect(
         clippy::inline_always,
@@ -40,13 +53,7 @@ impl DecodeIntegrity {
                 converts_colour,
             });
         }
-        // ColorTransform overrides apply only to three-component frames. An
-        // ignored RGB hint cannot establish CMYK versus YCCK interpretation.
-        let options = if header.component_ids.as_slice().len() == 3 {
-            options
-        } else {
-            options.with_color_transform(ColorTransform::Auto)
-        };
+        let options = applicable_hints(options, header.component_ids.len());
         let eof_complete = !header.warnings.contains(&Warning::MissingEoi)
             || !matches!(
                 header.sof_kind,
@@ -61,25 +68,40 @@ impl DecodeIntegrity {
         // Reject an unresolved interpretation before output allocation. Recovery
         // and EOF policy is checked after entropy validation so existing typed
         // entropy errors are preserved rather than masked by a recovery notice.
-        for warning in &header.warnings {
-            policy.validate_interpretation(warning)?;
-        }
+        policy.validate_header_warnings(&header.warnings)?;
         Ok(policy)
     }
 
-    pub(super) const fn sequential(options: DecodeOptions, component_count: usize) -> Self {
+    pub(super) fn sequential(options: DecodeOptions, component_count: usize) -> Self {
         Self {
-            options,
+            options: applicable_hints(options, component_count),
             eof_complete: true,
             converts_colour: converts_colour(component_count),
         }
     }
 
+    /// Reject an unresolved interpretation among header warnings before any
+    /// output is allocated, for a parsed header or a cached header template.
+    pub(super) fn validate_header_warnings(self, warnings: &[Warning]) -> Result<(), JpegError> {
+        warnings
+            .iter()
+            .try_for_each(|warning| self.validate_interpretation(warning))
+    }
+
+    /// Whether a reserved Adobe transform leaves the colour interpretation to
+    /// the libjpeg-turbo default: a colour frame without an applicable hint.
+    fn defaults_interpretation(self) -> bool {
+        self.converts_colour && self.options.color_transform() == ColorTransform::Auto
+    }
+
     fn validate_interpretation(self, warning: &Warning) -> Result<(), JpegError> {
         match warning {
+            // libjpeg-turbo reads a reserved transform as YCbCr for three
+            // components and YCCK for four, the colour space the header
+            // reports. Strict decode refuses that guess; lenient decode makes
+            // it and `validate` reports the image as recovered.
             Warning::AdobeApp14Ambiguous { raw_transform }
-                if self.converts_colour
-                    && self.options.color_transform() == ColorTransform::Auto =>
+                if self.defaults_interpretation() && self.options.is_strict() =>
             {
                 Err(JpegError::AmbiguousColorTransform {
                     raw_transform: *raw_transform,
@@ -103,11 +125,13 @@ impl DecodeIntegrity {
             self.validate_interpretation(warning)?;
             let needs_recovery = match warning {
                 Warning::MissingEoi => !self.eof_complete,
+                // Only lenient decode gets here with the interpretation left
+                // to the libjpeg-turbo default; strict was rejected above.
+                Warning::AdobeApp14Ambiguous { .. } => self.defaults_interpretation(),
                 // Current producers do not emit these notices. A future
                 // supported salvage must initialize all output before success.
                 Warning::SofDimensionsPatched { .. } | Warning::RestartRecovered { .. } => true,
                 Warning::NonstandardTables
-                | Warning::AdobeApp14Ambiguous { .. }
                 | Warning::IccProfileIgnored { .. }
                 | Warning::UnknownAppMarker { .. }
                 | Warning::UnknownColorProfile
@@ -237,18 +261,36 @@ mod tests {
                 Err(JpegError::RecoveryRequired { .. })
             ));
             let ambiguous = Warning::AdobeApp14Ambiguous { raw_transform: 7 };
-            assert!(matches!(
-                policy.validate(core::slice::from_ref(&ambiguous)),
-                Err(JpegError::AmbiguousColorTransform { raw_transform: 7 })
-            ));
-            for hint in [ColorTransform::ForceRgb, ColorTransform::ForceYCbCr] {
-                let hinted = DecodeIntegrity::sequential(options.with_color_transform(hint), 3);
-                assert!(!hinted.validate(core::slice::from_ref(&ambiguous)).unwrap());
+            for hint in [
+                ColorTransform::Auto,
+                ColorTransform::ForceRgb,
+                ColorTransform::ForceYCbCr,
+            ] {
+                let hinted = options.with_color_transform(hint);
+                // Strict refuses libjpeg-turbo's guess; lenient makes it and
+                // reports recovery. Three-component hints resolve the
+                // interpretation outright; four-component frames ignore them.
+                for components in [3, 4] {
+                    let result = DecodeIntegrity::sequential(hinted, components)
+                        .validate(core::slice::from_ref(&ambiguous));
+                    if components == 3 && hint != ColorTransform::Auto {
+                        assert!(!result.unwrap(), "{hint:?} resolves three components");
+                    } else if strict {
+                        assert!(matches!(
+                            result,
+                            Err(JpegError::AmbiguousColorTransform { raw_transform: 7 })
+                        ));
+                    } else {
+                        assert!(result.unwrap(), "{hint:?} with {components} components");
+                    }
+                    let header = DecodeIntegrity::sequential(hinted, components)
+                        .validate_header_warnings(core::slice::from_ref(&ambiguous));
+                    assert_eq!(
+                        header.is_err(),
+                        strict && (components == 4 || hint == ColorTransform::Auto)
+                    );
+                }
             }
-            assert!(matches!(
-                DecodeIntegrity::sequential(options, 4).validate(core::slice::from_ref(&ambiguous)),
-                Err(JpegError::AmbiguousColorTransform { raw_transform: 7 })
-            ));
             for components in [1, 2] {
                 let uncoloured = DecodeIntegrity::sequential(options, components);
                 assert!(!uncoloured

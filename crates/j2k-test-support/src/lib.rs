@@ -8,6 +8,7 @@ use std::{
     path::Path,
 };
 
+mod adobe_app14;
 mod auto_routing;
 mod corpus;
 mod cuda;
@@ -24,6 +25,7 @@ mod packet_edits;
 mod pixels;
 mod scaled_matrix;
 
+pub use adobe_app14::{with_adobe_transform, RESERVED_ADOBE_TRANSFORMS};
 pub use auto_routing::{
     append_auto_routing_output, auto_routing_operation_label, auto_routing_route_cell,
     auto_routing_sha256, load_auto_routing_manifest, load_auto_routing_pnm,

@@ -204,7 +204,18 @@ pub enum JpegError {
         warning: Warning,
     },
     /// A reserved APP14 transform leaves the requested color interpretation unresolved.
-    #[error("unresolved Adobe APP14 transform {raw_transform}; provide a color-transform hint")]
+    ///
+    /// Strict decode returns this rather than guess. Lenient decode
+    /// ([`crate::DecodeOptions::with_strict`] set to false) reads the samples
+    /// as libjpeg-turbo does, YCbCr for three components and YCCK for four,
+    /// and reports the image as recovered. A three-component frame can instead be
+    /// resolved with [`crate::ColorTransform::ForceRgb`] or
+    /// [`crate::ColorTransform::ForceYCbCr`].
+    #[error(
+        "unresolved Adobe APP14 transform {raw_transform}: decode with strict(false) to read it \
+         as libjpeg-turbo does (YCbCr for three components, YCCK for four), or resolve a \
+         three-component frame with ColorTransform::ForceRgb or ColorTransform::ForceYCbCr"
+    )]
     AmbiguousColorTransform {
         /// Reserved APP14 transform value.
         raw_transform: u8,

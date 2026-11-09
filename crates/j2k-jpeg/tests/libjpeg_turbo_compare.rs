@@ -496,8 +496,10 @@ mod turbo_codec {
     const TJPARAM_LOSSLESS: c_int = 15;
     const TJPARAM_LOSSLESSPSV: c_int = 16;
     const TJPARAM_RESTARTROWS: c_int = 19;
+    const TJERR_WARNING: c_int = 0;
     pub(crate) const TJPF_RGB: c_int = 0;
     pub(crate) const TJPF_GRAY: c_int = 6;
+    pub(crate) const TJPF_CMYK: c_int = 11;
     pub(crate) const TJSAMP_444: c_int = 0;
     pub(crate) const TJSAMP_422: c_int = 1;
     pub(crate) const TJSAMP_420: c_int = 2;
@@ -508,6 +510,7 @@ mod turbo_codec {
         fn tj3Init(init_type: c_int) -> *mut c_void;
         fn tj3Destroy(handle: *mut c_void);
         fn tj3GetErrorStr(handle: *mut c_void) -> *mut c_char;
+        fn tj3GetErrorCode(handle: *mut c_void) -> c_int;
         fn tj3Set(handle: *mut c_void, param: c_int, value: c_int) -> c_int;
         fn tj3Free(buffer: *mut c_void);
         fn tj3Compress8(
@@ -601,9 +604,22 @@ mod turbo_codec {
             if rc == 0 {
                 return;
             }
+            panic!("{what}: {}", self.error_message());
+        }
+
+        /// Require a warning and nothing worse. TurboJPEG writes the whole
+        /// image before it reports a warning as -1.
+        fn check_warned(&self, rc: c_int, what: &str) {
+            assert_ne!(rc, 0, "{what}: libjpeg-turbo did not warn");
+            // SAFETY: the handle is live.
+            let code = unsafe { tj3GetErrorCode(self.0) };
+            assert_eq!(code, TJERR_WARNING, "{what}: {}", self.error_message());
+        }
+
+        fn error_message(&self) -> String {
             // SAFETY: the handle is live; TurboJPEG returns a static C string.
             let message = unsafe { CStr::from_ptr(tj3GetErrorStr(self.0)) };
-            panic!("{what}: {}", message.to_string_lossy());
+            message.to_string_lossy().into_owned()
         }
 
         fn configure(&self, spec: Encode) {
@@ -639,10 +655,10 @@ mod turbo_codec {
     }
 
     fn channels(pixel_format: c_int) -> usize {
-        if pixel_format == TJPF_GRAY {
-            1
-        } else {
-            3
+        match pixel_format {
+            TJPF_GRAY => 1,
+            TJPF_CMYK => 4,
+            _ => 3,
         }
     }
 
@@ -773,6 +789,56 @@ mod turbo_codec {
             )
         };
         handle.check(rc, "tj3Decompress8");
+        out
+    }
+
+    /// Full-frame 8-bit decode of a stream libjpeg-turbo warns about.
+    pub(crate) fn decompress8_warned(
+        jpeg: &[u8],
+        width: u32,
+        height: u32,
+        pixel_format: c_int,
+    ) -> Vec<u8> {
+        let handle = Handle::new(TJINIT_DECOMPRESS);
+        let pitch = width as usize * channels(pixel_format);
+        let mut out = vec![0u8; pitch * height as usize];
+        // SAFETY: `out` holds `height` rows of `pitch` samples.
+        let rc = unsafe {
+            tj3Decompress8(
+                handle.0,
+                jpeg.as_ptr(),
+                jpeg.len(),
+                out.as_mut_ptr(),
+                c(pitch),
+                pixel_format,
+            )
+        };
+        handle.check_warned(rc, "tj3Decompress8");
+        out
+    }
+
+    /// Full-frame 12-bit decode of a stream libjpeg-turbo warns about.
+    pub(crate) fn decompress12_warned(
+        jpeg: &[u8],
+        width: u32,
+        height: u32,
+        pixel_format: c_int,
+    ) -> Vec<i16> {
+        let handle = Handle::new(TJINIT_DECOMPRESS);
+        let pitch = width as usize * channels(pixel_format);
+        let mut out = vec![0i16; pitch * height as usize];
+        // SAFETY: `out` holds `height` rows of `pitch` samples.
+        let rc = unsafe {
+            tj3Decompress12(
+                handle.0,
+                jpeg.as_ptr(),
+                jpeg.len(),
+                out.as_mut_ptr(),
+                c(pitch),
+                pixel_format,
+            )
+        };
+        handle.check_warned(rc, "tj3Decompress12");
         out
     }
 
@@ -1071,4 +1137,88 @@ fn progressive_decodes_match_turbo() {
             }
         }
     }
+}
+
+/// djpeg's CMYK-to-RGB rule (`cmyk_to_rgb`): each channel times K over the
+/// sample maximum, rounded half up.
+#[cfg(all(has_libjpeg_turbo, has_libjpeg_turbo_v3))]
+fn cmyk_to_rgb(cmyk: &[u16], max: u32) -> Vec<u16> {
+    cmyk.as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|&[c, m, y, k]| {
+            [c, m, y].map(|ink| {
+                u16::try_from((u32::from(ink) * u32::from(k) + max / 2) / max)
+                    .expect("product over the maximum is a sample")
+            })
+        })
+        .collect()
+}
+
+/// A reserved Adobe APP14 transform byte. libjpeg-turbo warns and reads the
+/// samples as YCbCr for three components and YCCK for four; lenient j2k
+/// decode produces the same image, byte for byte, across every color layout,
+/// coding and precision of the scaled-decode matrix. Four-component output
+/// goes through djpeg's CMYK-to-RGB rule, as j2k's RGB output does.
+#[cfg(all(has_libjpeg_turbo, has_libjpeg_turbo_v3))]
+#[test]
+fn reserved_adobe_transforms_decode_as_turbo_when_lenient() {
+    use j2k_jpeg::{DecodeOptions, JpegView};
+    use j2k_test_support::{scaled_matrix_cases, with_adobe_transform, RESERVED_ADOBE_TRANSFORMS};
+    use turbo_codec::{TJPF_CMYK, TJPF_RGB};
+
+    if !turbo_available() {
+        return;
+    }
+    let lenient = DecodeOptions::default().with_strict(false);
+    let mut compared = 0;
+    for case in scaled_matrix_cases()
+        .into_iter()
+        .filter(|case| !case.is_gray())
+    {
+        let four = case.layout.starts_with("cmyk") || case.layout.starts_with("ycck");
+        let pixel_format = if four { TJPF_CMYK } else { TJPF_RGB };
+        for transform in RESERVED_ADOBE_TRANSFORMS {
+            let label = format!("{} transform {transform}", case.name);
+            let jpeg = with_adobe_transform(case.jpeg, transform);
+            let (max, turbo, format) = if case.precision > 8 {
+                let samples =
+                    turbo_codec::decompress12_warned(&jpeg, case.width, case.height, pixel_format)
+                        .into_iter()
+                        .map(|sample| u16::try_from(sample).expect("12-bit sample"))
+                        .collect::<Vec<_>>();
+                (4095, samples, PixelFormat::Rgb16)
+            } else {
+                let samples =
+                    turbo_codec::decompress8_warned(&jpeg, case.width, case.height, pixel_format)
+                        .into_iter()
+                        .map(u16::from)
+                        .collect::<Vec<_>>();
+                (255, samples, PixelFormat::Rgb8)
+            };
+            let expected = if four {
+                cmyk_to_rgb(&turbo, max)
+            } else {
+                turbo
+            };
+            let (bytes, outcome) = JpegView::parse_with_options(&jpeg, lenient)
+                .and_then(Decoder::from_view)
+                .and_then(|decoder| decoder.decode_request(DecodeRequest::full(format)))
+                .unwrap_or_else(|err| panic!("{label}: {err}"));
+            let actual: Vec<u16> = if case.precision > 8 {
+                bytes
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|pair| u16::from_le_bytes(*pair))
+                    .collect()
+            } else {
+                bytes.into_iter().map(u16::from).collect()
+            };
+            assert!(actual == expected, "{label}: differs from libjpeg-turbo");
+            assert!(outcome.recovered, "{label}");
+            compared += 1;
+        }
+    }
+    assert!(compared > 500, "compared {compared}");
 }

@@ -210,9 +210,17 @@ class AdapterTests(unittest.TestCase):
                 self.assertEqual(result.groups[0].source_indices, [0, 2])
         ambiguous = bytearray(jpeg_fixture("rgb_app14_8x8_jpeg"))
         ambiguous[ambiguous.index(b"Adobe") + 11] = 7
+        # Strict refuses a reserved Adobe transform and names the remedy;
+        # lenient reads it as libjpeg-turbo does (YCbCr) and reports recovery.
+        with self.assertRaisesRegex(ValueError, r"strict\(false\)"):
+            strict.decode(bytes(ambiguous))
+        self.assertEqual([index for index, _ in strict.decode_batch([bytes(ambiguous)]).errors], [0])
+        as_ycbcr = strict.decode(j2k.ImageRequest(bytes(ambiguous), color_transform="ycbcr")).to_numpy()
+        with self.assertWarns(j2k.RecoveredImageWarning):
+            image = lenient.decode(bytes(ambiguous)).to_numpy()
+        np.testing.assert_array_equal(image, as_ycbcr)
+        self.assertEqual(lenient.decode_batch([bytes(ambiguous)]).groups[0].recovered, [True])
         for decoder in (strict, lenient):
-            with self.assertRaises(ValueError):
-                decoder.decode(bytes(ambiguous))
             result = decoder.decode_batch([j2k.ImageRequest(bytes(ambiguous), color_transform="none")])
             self.assertFalse(result.errors)
             self.assertEqual(result.groups[0].recovered, [False])

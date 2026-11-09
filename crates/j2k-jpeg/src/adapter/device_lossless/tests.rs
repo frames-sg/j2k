@@ -219,3 +219,67 @@ fn device_lossless_reference_matches_cpu_on_lossless_matrix() {
     assert_eq!(rejected, 0);
     assert!(unparsed.is_empty(), "unparsed {unparsed:?}");
 }
+
+/// A reserved Adobe transform on a lossless color frame: strict decode
+/// refuses it, and a lenient decoder reads it as YCbCr, as libjpeg-turbo
+/// does, on the CPU and through the device contract alike.
+#[test]
+fn device_lossless_reference_matches_lenient_cpu_on_reserved_adobe_transforms() {
+    fn decoder_with(jpeg: &[u8], options: crate::DecodeOptions) -> Result<Decoder<'_>, JpegError> {
+        Decoder::from_view(crate::JpegView::parse_with_options(jpeg, options)?)
+    }
+    let lenient = crate::DecodeOptions::default().with_strict(false);
+    let as_ycbcr =
+        crate::DecodeOptions::default().with_color_transform(crate::ColorTransform::ForceYCbCr);
+    let mut compared = 0;
+    for case in j2k_test_support::lossless_matrix_cases() {
+        if case.is_gray() {
+            continue;
+        }
+        let jpeg = j2k_test_support::with_adobe_transform(case.jpeg, 7);
+        assert!(
+            matches!(
+                Decoder::new(&jpeg),
+                Err(JpegError::AmbiguousColorTransform { raw_transform: 7 })
+            ),
+            "{}: strict decode refuses the reserved transform",
+            case.name
+        );
+        let decoder = decoder_with(&jpeg, lenient).expect("lenient decoder");
+        let hinted = decoder_with(&jpeg, as_ycbcr).expect("hinted decoder");
+        let fmt = if case.precision > 8 {
+            PixelFormat::Rgb16
+        } else {
+            PixelFormat::Rgb8
+        };
+        let request = DecodeRequest::full(fmt);
+        match (
+            decoder.decode_request(request),
+            hinted.decode_request(request),
+        ) {
+            (Ok((expected, outcome)), Ok((ycbcr, hinted_outcome))) => {
+                assert!(
+                    outcome.recovered && !hinted_outcome.recovered,
+                    "{}",
+                    case.name
+                );
+                assert_eq!(expected, ycbcr, "{}", case.name);
+                assert_eq!(
+                    render_reference(&decoder, request),
+                    Some(expected),
+                    "{}",
+                    case.name
+                );
+                compared += 1;
+            }
+            (Err(lenient), Err(hinted)) => assert_eq!(lenient, hinted, "{}", case.name),
+            (lenient, hinted) => panic!(
+                "{}: lenient {:?}, ForceYCbCr {:?}",
+                case.name,
+                lenient.map(|_| ()),
+                hinted.map(|_| ())
+            ),
+        }
+    }
+    assert!(compared > 20, "compared {compared}");
+}

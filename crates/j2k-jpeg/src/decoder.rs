@@ -493,6 +493,9 @@ impl<'a> Decoder<'a> {
             return Ok(None);
         };
         let integrity = DecodeIntegrity::sequential(options, info.sampling.len());
+        // A lenient decode may have cached a header whose interpretation is
+        // the libjpeg-turbo default; a strict caller still refuses it upfront.
+        integrity.validate_header_warnings(&warnings)?;
         Ok(Some(Self {
             bytes,
             info,

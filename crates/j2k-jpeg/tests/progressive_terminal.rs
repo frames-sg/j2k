@@ -74,18 +74,43 @@ fn strict_progressive_eof_requires_all_bands_at_final_approximation() {
     }
 }
 
+fn decode_full_with(
+    bytes: &[u8],
+    options: DecodeOptions,
+) -> Result<(Vec<u8>, j2k_jpeg::DecodeOutcome), JpegError> {
+    Decoder::from_view(JpegView::parse_with_options(bytes, options)?)?
+        .decode_request(j2k_jpeg::DecodeRequest::full(PixelFormat::Rgb8))
+}
+
 #[test]
-fn ambiguous_adobe_transform_requires_an_explicit_hint_in_both_policies() {
+fn ambiguous_adobe_transform_is_refused_strictly_and_read_as_ycbcr_leniently() {
     let mut bytes = j2k_test_support::rgb_app14_8x8_jpeg();
     let adobe = bytes.windows(5).position(|part| part == b"Adobe").unwrap();
     bytes[adobe + 11] = 7;
+    let as_ycbcr = decode_full_with(
+        &bytes,
+        DecodeOptions::default().with_color_transform(j2k_jpeg::ColorTransform::ForceYCbCr),
+    )
+    .unwrap()
+    .0;
     for strict in [true, false] {
         let options = DecodeOptions::default().with_strict(strict);
-        let view = JpegView::parse_with_options(&bytes, options).unwrap();
-        assert!(matches!(
-            Decoder::from_view(view),
-            Err(JpegError::AmbiguousColorTransform { raw_transform: 7 })
-        ));
+        let automatic = decode_full_with(&bytes, options);
+        if strict {
+            assert!(matches!(
+                automatic,
+                Err(JpegError::AmbiguousColorTransform { raw_transform: 7 })
+            ));
+        } else {
+            // libjpeg-turbo assumes YCbCr for a reserved three-component transform.
+            let (pixels, outcome) = automatic.unwrap();
+            assert_eq!(pixels, as_ycbcr);
+            assert!(outcome.recovered);
+            assert_eq!(
+                outcome.warnings,
+                [Warning::AdobeApp14Ambiguous { raw_transform: 7 }]
+            );
+        }
         let view = JpegView::parse_with_options(
             &bytes,
             options.with_color_transform(j2k_jpeg::ColorTransform::ForceRgb),
@@ -108,6 +133,10 @@ fn ambiguous_adobe_transform_requires_an_explicit_hint_in_both_policies() {
 fn ambiguous_four_component_transform_is_not_resolved_by_rgb_hints() {
     let mut bytes = j2k_test_support::cmyk_8x8_jpeg();
     let adobe = bytes.windows(5).position(|part| part == b"Adobe").unwrap();
+    bytes[adobe + 11] = 2;
+    let as_ycck = decode_full_with(&bytes, DecodeOptions::default())
+        .unwrap()
+        .0;
     bytes[adobe + 11] = 7;
     for strict in [true, false] {
         for transform in [
@@ -118,14 +147,21 @@ fn ambiguous_four_component_transform_is_not_resolved_by_rgb_hints() {
             let options = DecodeOptions::default()
                 .with_strict(strict)
                 .with_color_transform(transform);
-            let view = JpegView::parse_with_options(&bytes, options).unwrap();
-            assert!(
-                matches!(
-                    Decoder::from_view(view),
-                    Err(JpegError::AmbiguousColorTransform { raw_transform: 7 })
-                ),
-                "a three-component hint cannot resolve a four-component frame"
-            );
+            let decoded = decode_full_with(&bytes, options);
+            if strict {
+                assert!(
+                    matches!(
+                        decoded,
+                        Err(JpegError::AmbiguousColorTransform { raw_transform: 7 })
+                    ),
+                    "a three-component hint cannot resolve a four-component frame"
+                );
+                continue;
+            }
+            // The ignored hint leaves libjpeg-turbo's YCCK assumption.
+            let (pixels, outcome) = decoded.unwrap();
+            assert_eq!(pixels, as_ycck, "{transform:?}");
+            assert!(outcome.recovered, "{transform:?}");
         }
     }
 }
@@ -179,7 +215,7 @@ fn reserved_adobe_transform_without_colour_conversion_decodes_as_before() {
     // The transform byte only selects a colour conversion, so a reserved value
     // cannot change grayscale or two-component samples. These frames decode
     // exactly as they do without the byte, in both policies; only three- and
-    // four-component frames reject the ambiguity.
+    // four-component frames depend on it.
     let grayscale = j2k_test_support::grayscale_8x8_jpeg();
     let two_component = two_component_8x8_jpeg();
     for (source, format) in [

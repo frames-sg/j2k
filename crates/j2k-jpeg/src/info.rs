@@ -360,6 +360,9 @@ impl DownscaleFactor {
 }
 
 /// Override for APP14 color-transform detection.
+///
+/// The overrides apply to three-component frames only; other frames ignore
+/// them and keep automatic detection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ColorTransform {
@@ -392,6 +395,15 @@ impl DecodeOptions {
     ///
     /// Defaults to true. False permits supported salvage, with explicit
     /// recovery metadata; it does not permit precision loss or invalid tables.
+    ///
+    /// A reserved Adobe APP14 transform byte leaves the color interpretation
+    /// of a three- or four-component frame unresolved. Strict decode returns
+    /// [`crate::JpegError::AmbiguousColorTransform`]. Lenient decode reads the
+    /// samples as libjpeg-turbo does, YCbCr for three components and YCCK for
+    /// four, keeps [`crate::Warning::AdobeApp14Ambiguous`], and reports the
+    /// image as recovered. [`ColorTransform::ForceRgb`] and
+    /// [`ColorTransform::ForceYCbCr`] resolve a three-component frame under
+    /// either policy, without recovery.
     #[must_use]
     pub fn with_strict(mut self, strict: bool) -> Self {
         self.set_strict(strict);

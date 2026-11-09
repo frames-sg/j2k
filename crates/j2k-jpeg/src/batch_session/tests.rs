@@ -132,6 +132,53 @@ fn exact_header_template_preserves_warnings_across_distinct_payloads() {
     }
 }
 
+/// A lenient decode caches a header whose reserved Adobe transform it read as
+/// libjpeg-turbo does. A later strict call that matches the template refuses
+/// it before decoding, exactly as a fresh parse would; lenient calls reuse it.
+#[test]
+fn exact_header_template_applies_each_calls_reserved_adobe_policy() {
+    let jpeg = j2k_test_support::with_adobe_transform(JPEG_BASELINE_420_16X16, 7);
+    let mut first = jpeg.clone();
+    first.push(0);
+    let mut second = jpeg;
+    second.push(1);
+    let lenient = DecodeOptions::default().with_strict(false);
+    let ambiguous = [crate::Warning::AdobeApp14Ambiguous { raw_transform: 7 }];
+    let mut ctx = crate::DecoderContext::new();
+
+    let cached = prepare_jpeg_tile_decode(&first, &mut ctx, PixelFormat::Rgb8, lenient, 0)
+        .expect("lenient decode reads the reserved transform");
+    assert_eq!(cached.decoder.warnings, ambiguous);
+    let (expected, outcome) = cached
+        .decoder
+        .decode_request(crate::DecodeRequest::full(PixelFormat::Rgb8))
+        .expect("lenient decode");
+    assert!(outcome.recovered);
+    drop(cached);
+
+    for _ in 0..2 {
+        assert!(matches!(
+            prepare_jpeg_tile_decode(
+                &second,
+                &mut ctx,
+                PixelFormat::Rgb8,
+                DecodeOptions::default(),
+                0,
+            ),
+            Err(crate::JpegError::AmbiguousColorTransform { raw_transform: 7 })
+        ));
+        let reused = prepare_jpeg_tile_decode(&second, &mut ctx, PixelFormat::Rgb8, lenient, 0)
+            .expect("lenient template reuse");
+        assert_eq!(reused.decoder.warnings, ambiguous);
+        let (pixels, outcome) = reused
+            .decoder
+            .decode_request(crate::DecodeRequest::full(PixelFormat::Rgb8))
+            .expect("lenient template decode");
+        assert_eq!(pixels, expected);
+        assert!(outcome.recovered);
+    }
+}
+
 #[test]
 fn exact_header_template_keeps_truncated_tail_errors_input_specific() {
     assert_eq!(

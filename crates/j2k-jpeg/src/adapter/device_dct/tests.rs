@@ -441,6 +441,42 @@ fn device_reference_matches_cpu_on_four_component_and_rgb_fixtures() {
     assert!(compared > 32 * 8, "compared {compared}");
 }
 
+/// A reserved Adobe transform reaches device adapters only through a lenient
+/// decoder, which reads it as libjpeg-turbo does (YCbCr for three components,
+/// YCCK for four). The device contract renders the color space that decoder
+/// reports, so device output equals lenient CPU output.
+#[test]
+fn device_reference_matches_lenient_cpu_on_reserved_adobe_transforms() {
+    let lenient = crate::DecodeOptions::default().with_strict(false);
+    let mut compared = 0;
+    for case in j2k_test_support::scaled_matrix_cases() {
+        if case.is_gray() {
+            continue;
+        }
+        let jpeg = j2k_test_support::with_adobe_transform(case.jpeg, 7);
+        assert!(
+            matches!(
+                Decoder::new(&jpeg),
+                Err(JpegError::AmbiguousColorTransform { raw_transform: 7 })
+            ),
+            "{}: strict decode refuses the reserved transform",
+            case.name
+        );
+        let view = crate::JpegView::parse_with_options(&jpeg, lenient).expect("view");
+        let decoder = Decoder::from_view(view).expect("lenient decoder");
+        for request in requests_for(case.precision, (case.width, case.height)) {
+            let Ok((expected, outcome)) = decoder.decode_request(request) else {
+                continue;
+            };
+            assert!(outcome.recovered, "{} {request:?}", case.name);
+            let actual = render_reference(&decoder, request);
+            assert!(actual == expected, "{} {request:?}", case.name);
+            compared += 1;
+        }
+    }
+    assert!(compared > 3000, "compared {compared}");
+}
+
 /// A device window whose end wraps `u32` is outside the scan, in release
 /// builds too (they do not check arithmetic overflow).
 #[test]

@@ -100,7 +100,12 @@ warnings leave it false. Single-image lenient recovery emits
 `j2k.RecoveredImageWarning`; use `decode_batch([request])` for structured status.
 Strict progressive EOF acceptance requires every coefficient band of every
 component through final approximation. An actual EOI may terminate a legal
-partial script. The current J2K lenient path tolerates selected metadata errors
+partial script. A JPEG whose Adobe APP14 transform byte is reserved is an
+indexed error under `strict=True`, unless an `ImageRequest` `color_transform`
+of `ycbcr` or `none` resolves a three-component image. `strict=False` decodes
+it as libjpeg-turbo does (YCbCr for three components, YCCK for four) and marks
+the row recovered.
+The current J2K lenient path tolerates selected metadata errors
 and performs no entropy salvage. The guarantee is detection based; corruption
 that still forms a valid, indistinguishable codestream cannot always be detected.
 There is no `channels` option yet; the names `default`, `native`, and `rgb` are
