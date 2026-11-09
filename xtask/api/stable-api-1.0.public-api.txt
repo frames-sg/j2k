@@ -32,6 +32,7 @@ It is the item-level companion to `docs/stable-api-1.0.md`: every public module,
 #[non_exhaustive] pub enum j2k::NonRepresentableReason
 #[non_exhaustive] pub enum j2k::PreparationDepth
 #[non_exhaustive] pub struct j2k::BatchDecodeOptions
+#[non_exhaustive] pub struct j2k::J2kCodingStyle
 #[non_exhaustive] pub struct j2k::J2kDecodeControl
 #[non_exhaustive] pub struct j2k::J2kDecodePlan
 #[non_exhaustive] pub struct j2k::J2kLosslessEncodeOptions
@@ -313,6 +314,7 @@ pub fn j2k::J2kDecoder<'a>::decode_wavelets(&mut self, &j2k_types::wavelet::Wave
 pub fn j2k::J2kDecoder<'a>::from_view(j2k::J2kView<'a>) -> core::result::Result<Self, j2k::J2kError>
 pub fn j2k::J2kDecoder<'a>::info(&self) -> &j2k_core::types::Info
 pub fn j2k::J2kDecoder<'a>::inspect(&'a [u8]) -> core::result::Result<j2k_core::types::Info, j2k::J2kError>
+pub fn j2k::J2kDecoder<'a>::inspect_coding_style(&'a [u8]) -> core::result::Result<j2k::J2kCodingStyle, j2k::J2kError>
 pub fn j2k::J2kDecoder<'a>::inspect_reference_grid(&'a [u8]) -> core::result::Result<j2k::J2kReferenceGrid, j2k::J2kError>
 pub fn j2k::J2kDecoder<'a>::inspect_support(&'a [u8]) -> core::result::Result<j2k::J2kSupportInfo, j2k::J2kError>
 pub fn j2k::J2kDecoder<'a>::inspect_support_with_settings(&'a [u8], j2k::DecodeSettings) -> core::result::Result<j2k::J2kSupportInfo, j2k::J2kError>
@@ -361,6 +363,7 @@ pub fn j2k::J2kNativeComponentPlane::data(&self) -> &[u8]
 pub fn j2k::J2kNativeComponentPlane::dimensions(&self) -> (u32, u32)
 pub fn j2k::J2kNativeComponentPlane::sampling(&self) -> (u8, u8)
 pub fn j2k::J2kNativeComponentPlane::signed(&self) -> bool
+pub fn j2k::J2kReferenceGrid::reduced_area(&self, j2k_core::types::Rect, u8) -> core::option::Option<j2k_core::types::Rect>
 pub fn j2k::J2kReferenceGrid::reduced_region(&self, j2k_core::types::Rect, u8) -> core::option::Option<j2k_core::types::Rect>
 pub fn j2k::J2kRegionDecodePlan::buffer_len(&self, usize) -> core::result::Result<usize, j2k::J2kError>
 pub fn j2k::J2kRowDecodeOptions::default() -> Self
@@ -544,6 +547,10 @@ pub j2k::J2kChannelType::PremultipliedOpacity
 pub j2k::J2kChannelType::Unknown
 pub j2k::J2kChannelType::Unknown::value: u16
 pub j2k::J2kChannelType::Unspecified
+pub j2k::J2kCodingStyle::code_block_size: (u32, u32)
+pub j2k::J2kCodingStyle::decomposition_levels: u8
+pub j2k::J2kCodingStyle::progression_order: j2k::J2kProgressionOrder
+pub j2k::J2kCodingStyle::quality_layers: u16
 pub j2k::J2kColorSpec::Enumerated
 pub j2k::J2kColorSpec::Enumerated::value: u32
 pub j2k::J2kColorSpec::IccProfile
@@ -1482,6 +1489,8 @@ pub const fn j2k_codec_math::dwt::Dwt53LinearTap::weight(self) -> f64
 pub const fn j2k_codec_math::dwt::max_decomposition_levels(u32, u32) -> u8
 pub const fn j2k_codec_math::dwt::reflect_index(i64, u32) -> u32
 pub const fn j2k_codec_math::jpeg::derive_canonical_huffman(&[u8; 16], usize) -> core::result::Result<j2k_codec_math::jpeg::CanonicalHuffmanDerivation, j2k_codec_math::jpeg::CanonicalHuffmanError>
+pub const fn j2k_codec_math::jpeg::fdct::fdct_quantize(&[u8; 64], &[u8; 64]) -> [i16; 64]
+pub const fn j2k_codec_math::jpeg::fdct::fdct_quantize_coefficient(&[u8; 64], u8, usize) -> i16
 pub const fn j2k_codec_math::jpeg::idct::descale(i32, i32) -> i32
 pub const fn j2k_codec_math::jpeg::idct::islow_1d([i32; 8]) -> [i32; 8]
 pub const fn j2k_codec_math::jpeg::idct::islow_1d_2([i32; 8]) -> [i32; 2]
@@ -1502,6 +1511,12 @@ pub const fn j2k_codec_math::jpeg::lossless::difference_category(u16) -> (u8, u1
 pub const fn j2k_codec_math::jpeg::lossless::initial_predictor(u8, u8) -> core::option::Option<u16>
 pub const fn j2k_codec_math::jpeg::lossless::predict(u8, u16, u16, u16) -> u16
 pub const fn j2k_codec_math::jpeg::lossless::predict_at(u8, u16, usize, usize, [u16; 3]) -> u16
+pub const fn j2k_codec_math::jpeg::upsample::h2v1_fancy(u8, u8, u8, usize, usize) -> u8
+pub const fn j2k_codec_math::jpeg::upsample::h2v2_column_sum(u8, u8) -> u32
+pub const fn j2k_codec_math::jpeg::upsample::h2v2_fancy(u32, u32, u32, usize, usize, usize) -> u8
+pub const fn j2k_codec_math::jpeg::ycbcr::rgb_to_cb(i32, i32, i32, i32) -> i32
+pub const fn j2k_codec_math::jpeg::ycbcr::rgb_to_cr(i32, i32, i32, i32) -> i32
+pub const fn j2k_codec_math::jpeg::ycbcr::rgb_to_y(i32, i32, i32) -> i32
 pub const j2k_codec_math::classic::MQ_QE_VALUES: [u32; 47]
 pub const j2k_codec_math::classic::MQ_STATES: [j2k_codec_math::classic::ClassicMqState; 47]
 pub const j2k_codec_math::classic::PACKED_MQ_TRANSITION_VALUES: [u32; 47]
@@ -1537,9 +1552,16 @@ pub const j2k_codec_math::dwt::IDWT_HORIZONTAL_TILE_HALO: u32
 pub const j2k_codec_math::dwt::IDWT_HORIZONTAL_TILE_ROWS: u32
 pub const j2k_codec_math::dwt::IDWT_HORIZONTAL_TILE_THREADS: u32
 pub const j2k_codec_math::dwt::IDWT_VERTICAL_STRIP_COLUMNS: u32
+pub const j2k_codec_math::generated::CLASSIC_TABLES_METAL: &str
 pub const j2k_codec_math::generated::DWT97_CONSTANTS_METAL: &str
+pub const j2k_codec_math::generated::HTJ2K_CONSTANTS_METAL: &str
+pub const j2k_codec_math::generated::MCT_CONSTANTS_METAL: &str
 pub const j2k_codec_math::htj2k::HT_MAX_SCRATCH: usize
+pub const j2k_codec_math::htj2k::MEL_EXPONENTS: [u8; 13]
 pub const j2k_codec_math::jpeg::ZIGZAG: [u8; 64]
+pub const j2k_codec_math::jpeg::fdct::BASIS_HIGH: [i16; 1024]
+pub const j2k_codec_math::jpeg::fdct::BASIS_LOW: [u16; 1024]
+pub const j2k_codec_math::jpeg::fdct::FRACTION_BITS: u32
 pub const j2k_codec_math::jpeg::idct::CONST_BITS: usize
 pub const j2k_codec_math::jpeg::idct::DC_ROUNDING: i32
 pub const j2k_codec_math::jpeg::idct::DC_SHIFT: i32
@@ -1578,10 +1600,19 @@ pub const j2k_codec_math::jpeg::lossless::DIFFERENCE_SYMBOLS: usize
 pub const j2k_codec_math::jpeg::lossless::MAX_DIFFERENCE_BITS: u32
 pub const j2k_codec_math::jpeg::lossless::MAX_DIFFERENCE_CATEGORY: u8
 pub const j2k_codec_math::jpeg::lossless::MAX_PREDICTOR: u8
+pub const j2k_codec_math::jpeg::ycbcr::FIX_0_08131: i32
+pub const j2k_codec_math::jpeg::ycbcr::FIX_0_11400: i32
+pub const j2k_codec_math::jpeg::ycbcr::FIX_0_16874: i32
+pub const j2k_codec_math::jpeg::ycbcr::FIX_0_29900: i32
+pub const j2k_codec_math::jpeg::ycbcr::FIX_0_33126: i32
 pub const j2k_codec_math::jpeg::ycbcr::FIX_0_34414: i32
+pub const j2k_codec_math::jpeg::ycbcr::FIX_0_41869: i32
+pub const j2k_codec_math::jpeg::ycbcr::FIX_0_50000: i32
+pub const j2k_codec_math::jpeg::ycbcr::FIX_0_58700: i32
 pub const j2k_codec_math::jpeg::ycbcr::FIX_0_71414: i32
 pub const j2k_codec_math::jpeg::ycbcr::FIX_1_40200: i32
 pub const j2k_codec_math::jpeg::ycbcr::FIX_1_77200: i32
+pub const j2k_codec_math::jpeg::ycbcr::FRACTION_BITS: i32
 pub const j2k_codec_math::jpeg::ycbcr::ROUND: i32
 pub const j2k_codec_math::mct::ICT_FWD_CB_B: f32
 pub const j2k_codec_math::mct::ICT_FWD_CB_G: f32
@@ -1597,6 +1628,11 @@ pub const j2k_codec_math::mct::ICT_INV_G_CB: f32
 pub const j2k_codec_math::mct::ICT_INV_G_CR: f32
 pub const j2k_codec_math::mct::ICT_INV_R_CR: f32
 pub const j2k_codec_math::mct::RCT_QUARTER: f32
+pub const j2k_codec_math::transcode97::DWT97_HIGH_SCALE_F32: f32
+pub const j2k_codec_math::transcode97::DWT97_LIFT_STEPS_F32: [f32; 4]
+pub const j2k_codec_math::transcode97::DWT97_LOW_SCALE_F32: f32
+pub const j2k_codec_math::transcode97::IDCT8_BASIS_F32: [[f32; 8]; 8]
+pub const j2k_codec_math::transcode97::IDCT8_COS_F32: [f32; 8]
 pub enum j2k_codec_math::dwt::Dwt53Band
 pub enum j2k_codec_math::jpeg::CanonicalHuffmanError
 pub fn j2k_codec_math::dwt::Dwt53LinearRow::taps(&self) -> &[j2k_codec_math::dwt::Dwt53LinearTap]
@@ -1610,6 +1646,15 @@ pub fn j2k_codec_math::jpeg::idct::islow_block_2x2(&[i16; 64], &mut [u8; 4])
 pub fn j2k_codec_math::jpeg::idct::islow_block_4x4(&[i16; 64], &mut [u8; 16])
 pub fn j2k_codec_math::jpeg::idct::islow_block_top_half<T: core::marker::Copy + core::convert::Into<i32>>(&[T; 64], &mut [u8; 64])
 pub fn j2k_codec_math::jpeg::idct::sample_12bit(i64) -> u16
+pub fn j2k_codec_math::transcode97::Transcode97Arithmetic::add(f32, f32) -> f32
+pub fn j2k_codec_math::transcode97::Transcode97Arithmetic::fma(f32, f32, f32) -> f32
+pub fn j2k_codec_math::transcode97::Transcode97Arithmetic::mul(f32, f32) -> f32
+pub fn j2k_codec_math::transcode97::forward_lift97<A: j2k_codec_math::transcode97::Transcode97Arithmetic>(&mut [f32])
+pub fn j2k_codec_math::transcode97::idct8_dot<A: j2k_codec_math::transcode97::Transcode97Arithmetic>(&[f32; 8], &[f32; 8]) -> f32
+pub fn j2k_codec_math::transcode97::idct8x8<A: j2k_codec_math::transcode97::Transcode97Arithmetic>(&[f32; 64]) -> [f32; 64]
+pub fn j2k_codec_math::transcode97::lift97_update<A: j2k_codec_math::transcode97::Transcode97Arithmetic>(f32, f32, f32, f32) -> f32
+pub fn j2k_codec_math::transcode97::quantize97<A: j2k_codec_math::transcode97::Transcode97Arithmetic>(f32, f32) -> i32
+pub fn j2k_codec_math::transcode97::quantize97_inv_delta(f64) -> f32
 pub j2k_codec_math::classic::ClassicMqState::nlps: u8
 pub j2k_codec_math::classic::ClassicMqState::nmps: u8
 pub j2k_codec_math::classic::ClassicMqState::qe: u32
@@ -1631,14 +1676,18 @@ pub mod j2k_codec_math::dwt
 pub mod j2k_codec_math::generated
 pub mod j2k_codec_math::htj2k
 pub mod j2k_codec_math::jpeg
+pub mod j2k_codec_math::jpeg::fdct
 pub mod j2k_codec_math::jpeg::idct
 pub mod j2k_codec_math::jpeg::lossless
+pub mod j2k_codec_math::jpeg::upsample
 pub mod j2k_codec_math::jpeg::ycbcr
 pub mod j2k_codec_math::mct
+pub mod j2k_codec_math::transcode97
 pub struct j2k_codec_math::classic::ClassicMqState
 pub struct j2k_codec_math::dwt::Dwt53LinearRow
 pub struct j2k_codec_math::dwt::Dwt53LinearTap
 pub struct j2k_codec_math::jpeg::CanonicalHuffmanDerivation
+pub trait j2k_codec_math::transcode97::Transcode97Arithmetic
 ```
 
 ## `j2k-jpeg`
@@ -3294,6 +3343,7 @@ pub enum j2k_transcode::TranscodePipelineStageKind
 pub enum j2k_transcode::TranscodeStageDispatchMode
 pub enum j2k_transcode::TranscodeStageProcessor
 pub fn j2k_transcode::DctGridError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn j2k_transcode::DctToWaveletStageAccelerator::check_dwt97_precision(&self, crate::TranscodePrecision) -> core::result::Result<(), j2k_transcode::TranscodeStageError>
 pub fn j2k_transcode::DctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_compact_preencoded_batch(&mut self, &[j2k_transcode::DctGridI16ToHtj2k97CodeBlockJob<'_>], j2k_transcode::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<j2k_transcode::PreencodedHtj2k97CompactBatch>, j2k_transcode::TranscodeStageError>
 pub fn j2k_transcode::DctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_compact_preencoded_batch_groups(&mut self, &[j2k_transcode::DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>], j2k_transcode::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<j2k_transcode::PreencodedHtj2k97CompactBatchGroups>, j2k_transcode::TranscodeStageError>
 pub fn j2k_transcode::DctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_preencoded_batch(&mut self, &[j2k_transcode::DctGridI16ToHtj2k97CodeBlockJob<'_>], j2k_transcode::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<alloc::vec::Vec<j2k_types::prepared_plan::PreencodedHtj2k97Component>>, j2k_transcode::TranscodeStageError>
@@ -3640,6 +3690,7 @@ pub use j2k_transcode::PrequantizedHtj2k97Subband
 pub use j2k_transcode::TranscodeBatchProfileRequest
 pub use j2k_transcode::TranscodeBatchProfileRow
 pub use j2k_transcode::TranscodeComponentReport
+pub use j2k_transcode::TranscodePrecision
 pub use j2k_transcode::TranscodeReport
 pub use j2k_transcode::TranscodeTimingReport
 pub use j2k_transcode::TranscodeValidationClassification
@@ -4005,6 +4056,7 @@ pub struct j2k_transcode_metal::MetalTranscodeSession
 #[non_exhaustive] pub enum j2k_native::MarkerError
 #[non_exhaustive] pub enum j2k_native::TileError
 #[non_exhaustive] pub enum j2k_native::ValidationError
+#[non_exhaustive] pub struct j2k_native::J2kCodestreamCodingStyle
 #[non_exhaustive] pub struct j2k_native::J2kCodestreamReferenceGrid
 impl core::convert::From<j2k_native::ColorError> for j2k_native::DecodeError
 impl core::convert::From<j2k_native::DecodingError> for j2k_native::DecodeError
@@ -4158,6 +4210,7 @@ pub fn j2k_native::encode_typed_component_planes_53(&[j2k_native::EncodeTypedCom
 pub fn j2k_native::encode_with_roi_regions(&[u8], u32, u32, u16, u8, bool, &j2k_native::EncodeOptions, &[j2k_native::EncodeRoiRegion]) -> j2k_native::EncodeResult<alloc::vec::Vec<u8>>
 pub fn j2k_native::inspect_htj2k_capabilities(&[u8]) -> core::result::Result<core::option::Option<j2k_native::Htj2kCapabilities>, j2k_native::J2kCodestreamHeaderError>
 pub fn j2k_native::inspect_j2k_codestream_header(&[u8]) -> core::result::Result<j2k_native::J2kCodestreamHeaderMetadata, j2k_native::J2kCodestreamHeaderError>
+pub fn j2k_native::inspect_j2k_coding_style(&[u8]) -> core::result::Result<j2k_native::J2kCodestreamCodingStyle, j2k_native::J2kCodestreamHeaderError>
 pub fn j2k_native::inspect_j2k_reference_grid(&[u8]) -> core::result::Result<j2k_native::J2kCodestreamReferenceGrid, j2k_native::J2kCodestreamHeaderError>
 pub fn j2k_native::looks_like_j2k_codestream(&[u8]) -> bool
 pub j2k_native::Bitmap::color_space: j2k_native::ColorSpace
@@ -4318,6 +4371,10 @@ pub j2k_native::FormatError::Unsupported
 pub j2k_native::Htj2kCapabilityMode::HtDeclared
 pub j2k_native::Htj2kCapabilityMode::HtOnly
 pub j2k_native::Htj2kCapabilityMode::Mixed
+pub j2k_native::J2kCodestreamCodingStyle::code_block_size: (u32, u32)
+pub j2k_native::J2kCodestreamCodingStyle::decomposition_levels: u8
+pub j2k_native::J2kCodestreamCodingStyle::progression_order: u8
+pub j2k_native::J2kCodestreamCodingStyle::quality_layers: u16
 pub j2k_native::J2kCodestreamComponentHeader::bit_depth: u8
 pub j2k_native::J2kCodestreamComponentHeader::signed: bool
 pub j2k_native::J2kCodestreamComponentHeader::x_rsiz: u8

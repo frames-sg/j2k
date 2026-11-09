@@ -1919,6 +1919,7 @@ pub unsafe fn j2k_cuda::CudaBatchDecoder::submit_operation_group_into(&mut self,
 
 ```text
 #[non_exhaustive] pub enum j2k_transcode::Htj2kEncodeErrorKind
+#[non_exhaustive] pub enum j2k_transcode::TranscodePrecision
 #[non_exhaustive] pub enum j2k_transcode::accelerator::TranscodeStageError
 #[non_exhaustive] pub enum j2k_transcode::metrics::MetricsError
 impl core::convert::From<j2k_jpeg::error::JpegError> for j2k_transcode::JpegToHtj2kError
@@ -1965,6 +1966,7 @@ pub enum j2k_transcode::accelerator::DctToWaveletStageCounterEvent
 pub enum j2k_transcode::accelerator::TranscodeStageDispatchMode
 pub fn j2k_transcode::BatchTranscodeReport::pipeline_map(&self) -> j2k_transcode::TranscodePipelineMap
 pub fn j2k_transcode::BatchTranscodeReport::profile_row(&self, impl core::convert::AsRef<str>, j2k_transcode::TranscodeBatchProfileRequest) -> j2k_profile::error::ProfileResult<j2k_transcode::TranscodeBatchProfileRow>
+pub fn j2k_transcode::CpuOnlyDctToWaveletStageAccelerator::check_dwt97_precision(&self, j2k_transcode::TranscodePrecision) -> core::result::Result<(), j2k_transcode::TranscodeStageError>
 pub fn j2k_transcode::CpuOnlyDctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_compact_preencoded_batch(&mut self, &[j2k_transcode::DctGridI16ToHtj2k97CodeBlockJob<'_>], j2k_transcode::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<j2k_transcode::PreencodedHtj2k97CompactBatch>, j2k_transcode::TranscodeStageError>
 pub fn j2k_transcode::CpuOnlyDctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_compact_preencoded_batch_groups(&mut self, &[j2k_transcode::DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>], j2k_transcode::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<j2k_transcode::PreencodedHtj2k97CompactBatchGroups>, j2k_transcode::TranscodeStageError>
 pub fn j2k_transcode::CpuOnlyDctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_preencoded_batch(&mut self, &[j2k_transcode::DctGridI16ToHtj2k97CodeBlockJob<'_>], j2k_transcode::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<alloc::vec::Vec<j2k_types::prepared_plan::PreencodedHtj2k97Component>>, j2k_transcode::TranscodeStageError>
@@ -1982,6 +1984,7 @@ pub fn j2k_transcode::CpuOnlyDctToWaveletStageAccelerator::supports_dwt97_batch(
 pub fn j2k_transcode::CpuOnlyDctToWaveletStageAccelerator::supports_htj2k97_codeblock_batch(&self) -> bool
 pub fn j2k_transcode::CpuOnlyDctToWaveletStageAccelerator::supports_htj2k97_compact_preencoded_batch(&self) -> bool
 pub fn j2k_transcode::CpuOnlyDctToWaveletStageAccelerator::supports_htj2k97_i16_preencoded_batch(&self) -> bool
+pub fn j2k_transcode::DctToWaveletStageAccelerator::check_dwt97_precision(&self, j2k_transcode::TranscodePrecision) -> core::result::Result<(), j2k_transcode::TranscodeStageError>
 pub fn j2k_transcode::Htj2kEncodeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn j2k_transcode::Htj2kEncodeError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn j2k_transcode::JpegToHtj2kEncodeOptions::default() -> Self
@@ -1998,6 +2001,7 @@ pub fn j2k_transcode::JpegToHtj2kTranscoder::transcode_batch_with_accelerator<A:
 pub fn j2k_transcode::JpegToHtj2kTranscoder::transcode_batch_with_accelerators<A: j2k_transcode::DctToWaveletStageAccelerator, E: j2k_types::dispatch::accelerator::J2kEncodeStageAccelerator>(&mut self, &[j2k_transcode::JpegTileBatchInput<'_>], &j2k_transcode::JpegToHtj2kOptions, &mut A, &mut E) -> core::result::Result<j2k_transcode::EncodedTranscodeBatch, j2k_transcode::JpegToHtj2kError>
 pub fn j2k_transcode::JpegToHtj2kTranscoder::transcode_with_accelerator<A: j2k_transcode::DctToWaveletStageAccelerator>(&mut self, &[u8], &j2k_transcode::JpegToHtj2kOptions, &mut A) -> core::result::Result<j2k_transcode::EncodedTranscode, j2k_transcode::JpegToHtj2kError>
 pub fn j2k_transcode::JpegToHtj2kTranscoder::transcode_with_accelerators<A: j2k_transcode::DctToWaveletStageAccelerator, E: j2k_types::dispatch::accelerator::J2kEncodeStageAccelerator>(&mut self, &[u8], &j2k_transcode::JpegToHtj2kOptions, &mut A, &mut E) -> core::result::Result<j2k_transcode::EncodedTranscode, j2k_transcode::JpegToHtj2kError>
+pub fn j2k_transcode::RayonReversibleDwt53Accelerator::check_dwt97_precision(&self, j2k_transcode::TranscodePrecision) -> core::result::Result<(), j2k_transcode::TranscodeStageError>
 pub fn j2k_transcode::RayonReversibleDwt53Accelerator::dct_grid_i16_to_htj2k97_compact_preencoded_batch(&mut self, &[j2k_transcode::DctGridI16ToHtj2k97CodeBlockJob<'_>], j2k_transcode::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<j2k_transcode::PreencodedHtj2k97CompactBatch>, j2k_transcode::TranscodeStageError>
 pub fn j2k_transcode::RayonReversibleDwt53Accelerator::dct_grid_i16_to_htj2k97_compact_preencoded_batch_groups(&mut self, &[j2k_transcode::DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>], j2k_transcode::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<j2k_transcode::PreencodedHtj2k97CompactBatchGroups>, j2k_transcode::TranscodeStageError>
 pub fn j2k_transcode::RayonReversibleDwt53Accelerator::dct_grid_i16_to_htj2k97_preencoded_batch(&mut self, &[j2k_transcode::DctGridI16ToHtj2k97CodeBlockJob<'_>], j2k_transcode::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<alloc::vec::Vec<j2k_types::prepared_plan::PreencodedHtj2k97Component>>, j2k_transcode::TranscodeStageError>
@@ -2025,6 +2029,7 @@ pub fn j2k_transcode::TranscodeStageDispatchMode::recover<T, E>(self, E, impl co
 pub fn j2k_transcode::TranscodeTimingReport::accelerator_work_observed(&self) -> bool
 pub fn j2k_transcode::TranscodeTimingReport::pipeline_map(&self) -> j2k_transcode::TranscodePipelineMap
 pub fn j2k_transcode::TranscodeValidationClassification::classify_metrics(&j2k_transcode::TranscodeValidationMetrics) -> Self
+pub fn j2k_transcode::accelerator::DctToWaveletStageAccelerator::check_dwt97_precision(&self, j2k_transcode::TranscodePrecision) -> core::result::Result<(), j2k_transcode::TranscodeStageError>
 pub fn j2k_transcode::accelerator::DctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_compact_preencoded_batch(&mut self, &[j2k_transcode::DctGridI16ToHtj2k97CodeBlockJob<'_>], j2k_transcode::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<j2k_transcode::PreencodedHtj2k97CompactBatch>, j2k_transcode::TranscodeStageError>
 pub fn j2k_transcode::accelerator::DctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_compact_preencoded_batch_groups(&mut self, &[j2k_transcode::DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>], j2k_transcode::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<j2k_transcode::PreencodedHtj2k97CompactBatchGroups>, j2k_transcode::TranscodeStageError>
 pub fn j2k_transcode::accelerator::DctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_preencoded_batch(&mut self, &[j2k_transcode::DctGridI16ToHtj2k97CodeBlockJob<'_>], j2k_transcode::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<alloc::vec::Vec<j2k_types::prepared_plan::PreencodedHtj2k97Component>>, j2k_transcode::TranscodeStageError>
@@ -2130,6 +2135,7 @@ pub j2k_transcode::JpegToHtj2kError::Unsupported(&'static str)
 pub j2k_transcode::JpegToHtj2kError::Validation(&'static str)
 pub j2k_transcode::JpegToHtj2kOptions::coefficient_path: j2k_transcode::JpegToHtj2kCoefficientPath
 pub j2k_transcode::JpegToHtj2kOptions::encode_options: j2k_transcode::JpegToHtj2kEncodeOptions
+pub j2k_transcode::JpegToHtj2kOptions::precision: j2k_transcode::TranscodePrecision
 pub j2k_transcode::JpegToHtj2kOptions::validate_against_float_reference: bool
 pub j2k_transcode::JpegToHtj2kOptions::validate_against_integer_reference: bool
 pub j2k_transcode::TranscodeBatchProfileRequest::Cpu
@@ -2142,6 +2148,8 @@ pub j2k_transcode::TranscodeComponentReport::height: u32
 pub j2k_transcode::TranscodeComponentReport::width: u32
 pub j2k_transcode::TranscodeComponentReport::x_rsiz: u8
 pub j2k_transcode::TranscodeComponentReport::y_rsiz: u8
+pub j2k_transcode::TranscodePrecision::F32
+pub j2k_transcode::TranscodePrecision::F64
 pub j2k_transcode::TranscodeReport::coefficient_path: j2k_transcode::JpegToHtj2kCoefficientPath
 pub j2k_transcode::TranscodeReport::component_count: usize
 pub j2k_transcode::TranscodeReport::components: alloc::vec::Vec<j2k_transcode::TranscodeComponentReport>
@@ -2383,6 +2391,7 @@ pub use j2k_transcode::accelerator::PrequantizedHtj2k97Subband
 ```text
 impl core::convert::From<j2k_core::host_allocation::HostPhaseError> for j2k_transcode_cuda::CudaTranscodeError
 impl j2k_transcode::accelerator_contracts::DctToWaveletStageAccelerator for j2k_transcode_cuda::CudaDctToWaveletStageAccelerator
+pub fn j2k_transcode_cuda::CudaDctToWaveletStageAccelerator::check_dwt97_precision(&self, j2k_transcode::jpeg_to_htj2k::options::TranscodePrecision) -> core::result::Result<(), j2k_transcode::transcode_stage_error::TranscodeStageError>
 pub fn j2k_transcode_cuda::CudaDctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_compact_preencoded_batch(&mut self, &[j2k_transcode::accelerator_contracts::DctGridI16ToHtj2k97CodeBlockJob<'_>], j2k_transcode::accelerator_contracts::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<j2k_transcode::accelerator_contracts::PreencodedHtj2k97CompactBatch>, j2k_transcode::transcode_stage_error::TranscodeStageError>
 pub fn j2k_transcode_cuda::CudaDctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_compact_preencoded_batch_groups(&mut self, &[j2k_transcode::accelerator_contracts::DctGridI16ToHtj2k97CodeBlockBatch<'_, '_>], j2k_transcode::accelerator_contracts::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<j2k_transcode::accelerator_contracts::PreencodedHtj2k97CompactBatchGroups>, j2k_transcode::transcode_stage_error::TranscodeStageError>
 pub fn j2k_transcode_cuda::CudaDctToWaveletStageAccelerator::dct_grid_i16_to_htj2k97_preencoded_batch(&mut self, &[j2k_transcode::accelerator_contracts::DctGridI16ToHtj2k97CodeBlockJob<'_>], j2k_transcode::accelerator_contracts::Htj2k97CodeBlockOptions) -> core::result::Result<core::option::Option<alloc::vec::Vec<j2k_types::prepared_plan::PreencodedHtj2k97Component>>, j2k_transcode::transcode_stage_error::TranscodeStageError>
@@ -2453,6 +2462,7 @@ impl j2k_transcode_metal::weights::Dwt97WeightRows
 impl j2k_transcode_metal::weights::SparseDwt53WeightRows
 impl j2k_transcode_metal::weights::SparseDwt97WeightRows
 pub enum j2k_transcode_metal::weights::SparseWeightRowsError
+pub fn j2k_transcode_metal::MetalDctToWaveletStageAccelerator::check_dwt97_precision(&self, j2k_transcode::jpeg_to_htj2k::options::TranscodePrecision) -> core::result::Result<(), j2k_transcode::transcode_stage_error::TranscodeStageError>
 pub fn j2k_transcode_metal::MetalDctToWaveletStageAccelerator::dct_grid_to_dwt53(&mut self, j2k_transcode::accelerator_contracts::DctGridToDwt53Job<'_>) -> core::result::Result<core::option::Option<j2k_transcode::Dwt53TwoDimensional<f64>>, j2k_transcode::transcode_stage_error::TranscodeStageError>
 pub fn j2k_transcode_metal::MetalDctToWaveletStageAccelerator::dct_grid_to_dwt97(&mut self, j2k_transcode::accelerator_contracts::DctGridToDwt97Job<'_>) -> core::result::Result<core::option::Option<j2k_transcode::Dwt97TwoDimensional<f64>>, j2k_transcode::transcode_stage_error::TranscodeStageError>
 pub fn j2k_transcode_metal::MetalDctToWaveletStageAccelerator::dct_grid_to_dwt97_batch(&mut self, &[j2k_transcode::accelerator_contracts::DctGridToDwt97Job<'_>]) -> core::result::Result<core::option::Option<alloc::vec::Vec<j2k_transcode::Dwt97TwoDimensional<f64>>>, j2k_transcode::transcode_stage_error::TranscodeStageError>
