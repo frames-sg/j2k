@@ -177,6 +177,7 @@ info_json = {
 ```
 
 `tests/test_iiif.py` runs this construction against tiled and offset images.
+[`docs/iiif.md`](../../docs/iiif.md) covers the image requests themselves.
 
 ## Batching, labels, and reuse
 

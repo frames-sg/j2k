@@ -101,6 +101,9 @@ Differences from `opj_decompress` 2.5.4:
 - The input is read whole; JPT (JPIP) streams and partial codestreams are not
   decoded.
 
+[`docs/iiif.md`](../../docs/iiif.md) describes the parity sweep that measured
+these differences and the Cantaloupe configuration.
+
 ## Links
 
 - Package page: <https://docs.rs/j2k-cli>

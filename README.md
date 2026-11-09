@@ -133,6 +133,10 @@ as that tool, so image servers that call `opj_decompress` can run j2k. See
 [`crates/j2k-cli/README.md`](crates/j2k-cli/README.md) for the options and the
 differences. To encode images, use the library.
 
+[`docs/iiif.md`](docs/iiif.md) shows how to serve IIIF Image API 3.0 requests
+and `info.json` with the Rust, C, Python and command-line interfaces, and how
+to run j2k behind Cantaloupe.
+
 ## C and C++
 
 [`j2k-c`](crates/j2k-c/README.md) is a CPU C ABI (`j2k.h`), a
