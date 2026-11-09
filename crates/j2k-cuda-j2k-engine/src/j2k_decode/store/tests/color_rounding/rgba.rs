@@ -31,6 +31,37 @@ fn irreversible_native_rgba_rounds_rgb_and_alpha_before_shift_when_runtime_requi
     assert_eq!(actual, [128, 128, 128, 130]);
 }
 
+#[test]
+fn irreversible_native_rgba_without_mct_rounds_every_plane_before_shift_when_runtime_required() {
+    if !j2k_test_support::cuda_runtime_gate(module_path!()) {
+        return;
+    }
+
+    let context = CudaContext::system_default().expect("CUDA context");
+    let plane0 = context.upload_f32(&[-9.5]).expect("plane 0");
+    let plane1 = context.upload_f32(&[2.5]).expect("plane 1");
+    let plane2 = context.upload_f32(&[-1.5]).expect("plane 2");
+    let plane3 = context.upload_f32(&[0.5]).expect("plane 3");
+    let mut job = irreversible_rgba_job();
+    job.transform = 3;
+    let output = crate::J2kCudaEngine::new(&context)
+        .j2k_store_rgba8_native_batch_contiguous_device(&[CudaJ2kStoreRgbaNativeTarget {
+            output_index: 0,
+            plane0: &plane0,
+            plane1: &plane1,
+            plane2: &plane2,
+            plane3: &plane3,
+            job,
+        }])
+        .expect("irreversible RGBA U8 batch store without MCT");
+    let mut actual = [0_u8; 4];
+    output
+        .output()
+        .copy_to_host(&mut actual)
+        .expect("download irreversible RGBA U8 without MCT");
+    assert_eq!(actual, [118, 130, 126, 128]);
+}
+
 fn irreversible_rgba_job() -> CudaJ2kStoreRgbaNativeJob {
     CudaJ2kStoreRgbaNativeJob {
         input_width0: 1,

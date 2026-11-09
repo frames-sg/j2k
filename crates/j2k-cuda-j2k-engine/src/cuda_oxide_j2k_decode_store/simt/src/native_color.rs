@@ -10,9 +10,21 @@ use crate::{
     transform::inverse_mct_sample,
 };
 
+// Transform selectors written by the host: 0 reversible 5/3 without MCT,
+// 1 RCT, 2 ICT, 3 irreversible 9/7 without MCT.
+const TRANSFORM_RCT: u32 = 1;
+const TRANSFORM_ICT: u32 = 2;
+
+#[inline(always)]
+fn applies_mct(transform: u32) -> bool {
+    transform == TRANSFORM_RCT || transform == TRANSFORM_ICT
+}
+
+// Every 9/7 selector rounds the centered sample ties-to-even before the level
+// shift, as the CPU store does, whether or not an ICT ran.
 #[inline(always)]
 fn add_native_level_shift(sample: f32, addend: f32, transform: u32) -> f32 {
-    let centered = if transform == 2 {
+    let centered = if transform >= TRANSFORM_ICT {
         round_ties_even_f32(sample)
     } else {
         sample
@@ -37,15 +49,15 @@ pub(crate) fn exact_rgb_samples(
         load_f32(plane1, src1),
         load_f32(plane2, src2),
     );
-    let (out0, out1, out2) = if job.transform == 0 {
-        samples
-    } else {
+    let (out0, out1, out2) = if applies_mct(job.transform) {
         inverse_mct_sample(
             samples.0,
             samples.1,
             samples.2,
-            u32::from(job.transform == 2),
+            u32::from(job.transform == TRANSFORM_ICT),
         )
+    } else {
+        samples
     };
     (
         add_native_level_shift(out0, job.addend0, job.transform),
@@ -173,10 +185,15 @@ pub(crate) fn exact_rgba_samples(
         load_f32(plane1, src1),
         load_f32(plane2, src2),
     );
-    let (out0, out1, out2) = if job.transform == 0 {
-        rgb
+    let (out0, out1, out2) = if applies_mct(job.transform) {
+        inverse_mct_sample(
+            rgb.0,
+            rgb.1,
+            rgb.2,
+            u32::from(job.transform == TRANSFORM_ICT),
+        )
     } else {
-        inverse_mct_sample(rgb.0, rgb.1, rgb.2, u32::from(job.transform == 2))
+        rgb
     };
     (
         add_native_level_shift(out0, job.addend0, job.transform),

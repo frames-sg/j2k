@@ -5,13 +5,15 @@ use j2k_cuda_j2k_engine::{CudaJ2kStoreRgbNativeJob, CudaJ2kStoreRgbaNativeJob};
 
 use crate::decoder::CudaHtj2kTransform;
 
+/// The exact-native store's transform selector. The wavelet, not `mct`,
+/// decides whether centered samples round before the level shift: 9/7 output
+/// without MCT still rounds ties-to-even first, as the CPU store does.
 pub(super) fn transform_selector(mct: bool, transform: CudaHtj2kTransform) -> u32 {
-    if !mct {
-        return 0;
-    }
-    match transform {
-        CudaHtj2kTransform::Reversible53 => 1,
-        CudaHtj2kTransform::Irreversible97 => 2,
+    match (mct, transform) {
+        (false, CudaHtj2kTransform::Reversible53) => 0,
+        (true, CudaHtj2kTransform::Reversible53) => 1,
+        (true, CudaHtj2kTransform::Irreversible97) => 2,
+        (false, CudaHtj2kTransform::Irreversible97) => 3,
     }
 }
 

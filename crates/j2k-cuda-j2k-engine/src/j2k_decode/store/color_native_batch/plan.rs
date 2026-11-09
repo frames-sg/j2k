@@ -20,7 +20,7 @@ const RGB_CHANNELS: usize = 3;
 pub(super) const RGB_LAYOUT_NHWC: u32 = 0;
 pub(super) const RGB_LAYOUT_NCHW: u32 = 1;
 const RGB_TRANSFORM_NONE: u32 = 0;
-const RGB_TRANSFORM_ICT: u32 = 2;
+const RGB_TRANSFORM_IRREVERSIBLE_NO_MCT: u32 = 3;
 
 #[derive(Clone, Copy)]
 pub(super) enum NativeRgbStorage {
@@ -149,7 +149,7 @@ fn validate_native_rgb_target(
             message: "exact-native RGB layout must be NHWC or NCHW".to_string(),
         });
     }
-    if !(RGB_TRANSFORM_NONE..=RGB_TRANSFORM_ICT).contains(&job.transform) {
+    if !(RGB_TRANSFORM_NONE..=RGB_TRANSFORM_IRREVERSIBLE_NO_MCT).contains(&job.transform) {
         return Err(CudaError::InvalidArgument {
             message: "exact-native RGB transform selector is invalid".to_string(),
         });

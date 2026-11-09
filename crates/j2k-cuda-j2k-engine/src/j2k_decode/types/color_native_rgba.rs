@@ -65,7 +65,9 @@ pub struct CudaJ2kStoreRgbaNativeJob {
     pub bit_depth3: u32,
     /// Zero for NHWC, one for NCHW.
     pub layout: u32,
-    /// Zero for none, one for reversible RCT, two for irreversible ICT.
+    /// Zero for reversible 5/3 without MCT, one for reversible RCT, two for
+    /// irreversible ICT, three for irreversible 9/7 without MCT. Selectors two
+    /// and three round centered samples ties-to-even before the level shift.
     pub transform: u32,
     /// Reserved and initialized to zero.
     pub reserved: u32,

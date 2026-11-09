@@ -19,6 +19,9 @@ mod exact_operations;
 #[path = "batch_decoder_api/external_lifecycle.rs"]
 mod external_lifecycle;
 #[cfg(feature = "cuda-runtime")]
+#[path = "batch_decoder_api/irreversible_no_mct.rs"]
+mod irreversible_no_mct;
+#[cfg(feature = "cuda-runtime")]
 #[path = "batch_decoder_api/multitile.rs"]
 mod multitile;
 #[cfg(feature = "cuda-runtime")]

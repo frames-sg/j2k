@@ -114,7 +114,7 @@ fn validate_target(
             message: "exact-native RGBA layout must be NHWC or NCHW".to_string(),
         });
     }
-    if job.transform > 2 || job.reserved != 0 {
+    if job.transform > 3 || job.reserved != 0 {
         return Err(CudaError::InvalidArgument {
             message: "exact-native RGBA transform or reserved field is invalid".to_string(),
         });
