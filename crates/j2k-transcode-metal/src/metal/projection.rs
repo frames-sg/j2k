@@ -2,12 +2,10 @@
 
 use super::{
     checked_command_buffer, checked_compute_command_encoder, checked_dwt_level_shape,
-    commit_and_wait, dispatch_band, dispatch_projection_batch_bands, dwt97_batch_blocks_buffer,
-    dwt97_blocks_buffer, mtl_size, output_buffer, projection_batch_output_buffers,
-    projection_batch_shape, projection_batch_weight_buffers, read_f32_buffer,
-    read_projected_batch_outputs, u32_param, upload_sparse_rows, BandGeometry, Buffer,
-    ComputeCommandEncoderRef, DctGridToDwt97Job, MTLSize, MetalRuntime, MetalTranscodeError,
-    SparseWeightRow, TranscodeComputeEncoderExt, DWT97_STAGED_THREADS_PER_GROUP,
+    commit_and_wait, dispatch_band, dwt97_blocks_buffer, mtl_size, output_buffer, read_f32_buffer,
+    u32_param, upload_sparse_rows, BandGeometry, Buffer, ComputeCommandEncoderRef, MTLSize,
+    MetalRuntime, MetalTranscodeError, SparseWeightRow, TranscodeComputeEncoderExt,
+    DWT97_STAGED_THREADS_PER_GROUP,
 };
 use objc2_foundation::NSString;
 use objc2_metal::{MTLCommandBuffer as _, MTLCommandEncoder as _, MTLComputeCommandEncoder as _};
@@ -73,21 +71,6 @@ pub(super) fn bind_projection_band_buffers(
 pub(super) struct ProjectionJob<'a> {
     pub(super) blocks: &'a [[[f64; 8]; 8]],
     pub(super) block_cols: usize,
-    pub(super) width: usize,
-    pub(super) height: usize,
-    pub(super) x_low: &'a [SparseWeightRow],
-    pub(super) x_high: &'a [SparseWeightRow],
-    pub(super) y_low: &'a [SparseWeightRow],
-    pub(super) y_high: &'a [SparseWeightRow],
-    pub(super) unsupported_grid: &'static str,
-    pub(super) label: &'static str,
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct ProjectionBatchJob<'a, 'b> {
-    pub(super) jobs: &'a [DctGridToDwt97Job<'b>],
-    pub(super) block_cols: usize,
-    pub(super) block_rows: usize,
     pub(super) width: usize,
     pub(super) height: usize,
     pub(super) x_low: &'a [SparseWeightRow],
@@ -233,20 +216,4 @@ fn checked_band_len(
     width
         .checked_mul(height)
         .ok_or(MetalTranscodeError::UnsupportedJob(unsupported_grid))
-}
-
-pub(super) fn dispatch_projected_bands_batch_with_runtime(
-    runtime: &MetalRuntime,
-    job: ProjectionBatchJob<'_, '_>,
-) -> Result<Vec<ProjectedBands>, MetalTranscodeError> {
-    let Some(shape) = projection_batch_shape(job)? else {
-        return Ok(Vec::new());
-    };
-
-    let weights = projection_batch_weight_buffers(runtime, job)?;
-    let blocks = dwt97_batch_blocks_buffer(&runtime.device, job.jobs)?;
-    let outputs = projection_batch_output_buffers(runtime, shape, job.unsupported_grid)?;
-
-    dispatch_projection_batch_bands(runtime, job, shape, &weights, &blocks, &outputs)?;
-    read_projected_batch_outputs(&outputs, shape, job.unsupported_grid)
 }

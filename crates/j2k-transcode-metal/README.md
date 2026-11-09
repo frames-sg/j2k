@@ -18,6 +18,13 @@ skips the staged 9/7 batch path when either tile side is over 1024 samples.
 Explicit Metal requests and lowered thresholds are used as given. Meeting a
 threshold does not guarantee a speedup.
 
+The 9/7 kernels compute the canonical binary32 transform from
+`j2k_codec_math::transcode97`, so Metal codestreams are byte-identical to CPU
+and CUDA ones. Components with a side over 1024 samples use global-memory
+kernels instead of the threadgroup-staged ones, and produce the same bits.
+`TranscodePrecision::F64` is CPU-only. An explicit Metal accelerator rejects
+it with `TranscodeStageError::Unsupported`; `Auto` leaves it on the CPU.
+
 High-level route-report example:
 
 ```bash

@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(target_os = "macos")]
-use j2k_transcode_test_support::max_abs_diff_97 as max_abs_diff;
-
-#[cfg(target_os = "macos")]
 use j2k_transcode::accelerator::PrequantizedHtj2k97Component;
 use j2k_transcode::accelerator::TranscodeStageError;
 use j2k_transcode::accelerator::{
@@ -11,11 +8,14 @@ use j2k_transcode::accelerator::{
     Htj2k97CodeBlockOptions, IrreversibleQuantizationSubbandScales,
 };
 #[cfg(target_os = "macos")]
-use j2k_transcode::dct8x8_blocks_then_dwt97_float;
+use j2k_transcode::Dwt97TwoDimensional;
+use j2k_transcode::TranscodePrecision;
 use j2k_transcode_metal::weights::{Dwt97WeightRows, SparseDwt97WeightRows};
 use j2k_transcode_metal::MetalDctToWaveletStageAccelerator;
 #[cfg(target_os = "macos")]
-use j2k_transcode_test_support::prequantized_component_from_dwt97;
+use j2k_transcode_test_support::{
+    canonical_dwt97_from_blocks, canonical_prequantized_component_from_dwt97,
+};
 
 #[cfg(target_os = "macos")]
 fn should_run_metal_runtime() -> bool {
@@ -93,9 +93,23 @@ fn auto_metal_uses_cpu_for_97_jobs_by_default() {
     assert_eq!(accelerator.dwt97_dispatches(), 0);
 }
 
+#[test]
+fn explicit_metal_rejects_f64_precision_and_auto_leaves_it_to_cpu() {
+    let explicit = MetalDctToWaveletStageAccelerator::new_explicit();
+    assert!(matches!(
+        explicit.check_dwt97_precision(TranscodePrecision::F64),
+        Err(TranscodeStageError::Unsupported(reason)) if reason.contains("F64")
+    ));
+    assert!(explicit
+        .check_dwt97_precision(TranscodePrecision::F32)
+        .is_ok());
+    let auto = MetalDctToWaveletStageAccelerator::for_auto();
+    assert!(auto.check_dwt97_precision(TranscodePrecision::F64).is_ok());
+}
+
 #[cfg(target_os = "macos")]
 #[test]
-fn explicit_metal_dct97_matches_scalar_for_structured_cases() {
+fn explicit_metal_dct97_matches_canonical_bits_for_structured_cases() {
     if !should_run_metal_runtime() {
         return;
     }
@@ -103,7 +117,7 @@ fn explicit_metal_dct97_matches_scalar_for_structured_cases() {
     let blocks = structured_blocks(2, 2);
     let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
 
-    for (width, height) in [(8, 8), (13, 11), (16, 16)] {
+    for (width, height) in [(8, 8), (13, 11), (16, 16), (1, 9), (9, 1), (1, 1)] {
         let actual = match accelerator.dct_grid_to_dwt97(DctGridToDwt97Job {
             blocks: &blocks,
             block_cols: 2,
@@ -119,22 +133,54 @@ fn explicit_metal_dct97_matches_scalar_for_structured_cases() {
             }
             Err(message) => panic!("explicit Metal accelerator failed: {message}"),
         };
-        let expected = dct8x8_blocks_then_dwt97_float(&blocks, 2, 2, width, height)
-            .expect("scalar 9/7 IDCT path accepts covered grid");
-
-        let max_diff = max_abs_diff(&actual, &expected);
-        assert!(
-            max_diff <= 2.0e-2,
-            "Metal 9/7 DCT transform diverged for {width}x{height}: {max_diff}"
-        );
+        let expected = canonical_dwt97_from_blocks(&blocks, 2, 2, width, height);
+        assert_dwt97_bits_eq(&actual, &expected, &format!("{width}x{height}"));
     }
 
-    assert_eq!(accelerator.dwt97_dispatches(), 3);
+    assert_eq!(accelerator.dwt97_dispatches(), 6);
+}
+
+/// Components with an axis above the 1024-sample threadgroup limit run the
+/// global-memory kernels, which must produce the same bits.
+#[cfg(target_os = "macos")]
+#[test]
+fn explicit_metal_dct97_large_axes_match_canonical_bits() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
+    for (width, height) in [(1031_usize, 9_usize), (9, 1100), (1100, 1030), (1025, 1)] {
+        let (block_cols, block_rows) = (width.div_ceil(8), height.div_ceil(8));
+        let first = structured_blocks_with_offset(block_cols, block_rows, 5.0);
+        let second = structured_blocks_with_offset(block_cols, block_rows, -11.0);
+        let jobs = [&first, &second].map(|blocks| DctGridToDwt97Job {
+            blocks,
+            block_cols,
+            block_rows,
+            width,
+            height,
+        });
+        let actual = match accelerator.dct_grid_to_dwt97_batch(&jobs) {
+            Ok(Some(output)) => output,
+            Ok(None) => panic!("explicit Metal batch accelerator must not silently fall back"),
+            Err(TranscodeStageError::DeviceUnavailable) => {
+                j2k_test_support::metal_device_unavailable_is_skip(module_path!());
+                return;
+            }
+            Err(message) => panic!("explicit Metal large-axis batch failed: {message}"),
+        };
+        for (index, (actual, job)) in actual.iter().zip(&jobs).enumerate() {
+            let expected =
+                canonical_dwt97_from_blocks(job.blocks, block_cols, block_rows, width, height);
+            assert_dwt97_bits_eq(actual, &expected, &format!("{width}x{height} item {index}"));
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
 #[test]
-fn explicit_metal_dct97_batch_matches_scalar_for_structured_cases() {
+fn explicit_metal_dct97_batch_matches_canonical_bits_for_structured_cases() {
     if !should_run_metal_runtime() {
         return;
     }
@@ -170,21 +216,15 @@ fn explicit_metal_dct97_batch_matches_scalar_for_structured_cases() {
     };
 
     assert_eq!(actual.len(), jobs.len());
-    for (actual, job) in actual.iter().zip(jobs.iter()) {
-        let expected = dct8x8_blocks_then_dwt97_float(
+    for (index, (actual, job)) in actual.iter().zip(jobs.iter()).enumerate() {
+        let expected = canonical_dwt97_from_blocks(
             job.blocks,
             job.block_cols,
             job.block_rows,
             job.width,
             job.height,
-        )
-        .expect("scalar 9/7 IDCT path accepts covered grid");
-
-        let max_diff = max_abs_diff(actual, &expected);
-        assert!(
-            max_diff <= 2.0e-2,
-            "Metal 9/7 batch transform diverged: {max_diff}"
         );
+        assert_dwt97_bits_eq(actual, &expected, &format!("batch item {index}"));
     }
 
     assert_eq!(accelerator.dwt97_batch_dispatches(), 1);
@@ -235,7 +275,7 @@ fn explicit_metal_dct97_batch_reports_idct_row_and_column_stage_timings() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn explicit_metal_dct97_codeblock_batch_matches_scalar_quantized_layout() {
+fn explicit_metal_dct97_codeblock_batch_matches_canonical_quantized_layout() {
     if !should_run_metal_runtime() {
         return;
     }
@@ -287,18 +327,9 @@ fn explicit_metal_dct97_codeblock_batch_matches_scalar_quantized_layout() {
 
     assert_eq!(actual.len(), jobs.len());
     for (actual, job) in actual.iter().zip(jobs.iter()) {
-        let dwt = dct8x8_blocks_then_dwt97_float(
-            job.blocks,
-            job.block_cols,
-            job.block_rows,
-            job.width,
-            job.height,
-        )
-        .expect("scalar 9/7 IDCT path accepts covered grid");
-        let expected = prequantized_component_from_dwt97(&dwt, options, job.x_rsiz, job.y_rsiz);
-
+        let expected = canonical_codeblock_component(job, options);
         assert_prequantized_component_layout_eq(actual, &expected);
-        assert_prequantized_component_coefficients_close(actual, &expected, 1);
+        assert_prequantized_component_coefficients_eq(actual, &expected);
     }
 
     assert_eq!(accelerator.dwt97_batch_dispatches(), 1);
@@ -320,7 +351,7 @@ fn explicit_metal_dct97_codeblock_batch_matches_scalar_quantized_layout() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn explicit_metal_dct97_codeblock_batch_accepts_zero_guard_bits_and_matches_scalar() {
+fn explicit_metal_dct97_codeblock_batch_accepts_zero_guard_bits_and_matches_canonical() {
     if !should_run_metal_runtime() {
         return;
     }
@@ -367,19 +398,106 @@ fn explicit_metal_dct97_codeblock_batch_accepts_zero_guard_bits_and_matches_scal
     };
 
     assert_eq!(actual.len(), jobs.len());
-    let job = &jobs[0];
-    let dwt = dct8x8_blocks_then_dwt97_float(
+    let expected = canonical_codeblock_component(&jobs[0], options);
+    assert_prequantized_component_layout_eq(&actual[0], &expected);
+    assert_prequantized_component_coefficients_eq(&actual[0], &expected);
+}
+
+/// The code-block route on a component wider than the staged limit runs the
+/// global-memory kernels and still quantizes canonical bits.
+#[cfg(target_os = "macos")]
+#[test]
+fn explicit_metal_dct97_codeblock_batch_above_staged_axis_matches_canonical() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let blocks = structured_blocks_with_offset(129, 2, 23.0);
+    let jobs = [DctGridToHtj2k97CodeBlockJob {
+        blocks: &blocks,
+        block_cols: 129,
+        block_rows: 2,
+        width: 1027,
+        height: 13,
+        x_rsiz: 1,
+        y_rsiz: 1,
+    }];
+    let options = Htj2k97CodeBlockOptions {
+        bit_depth: 8,
+        guard_bits: 2,
+        code_block_width_exp: 4,
+        code_block_height_exp: 2,
+        irreversible_quantization_scale: 1.9,
+        irreversible_quantization_subband_scales: IrreversibleQuantizationSubbandScales::default(),
+    };
+    let mut accelerator = MetalDctToWaveletStageAccelerator::new_explicit();
+    let actual = match accelerator.dct_grid_to_htj2k97_codeblock_batch(&jobs, options) {
+        Ok(Some(output)) => output,
+        Ok(None) => {
+            panic!("explicit Metal code-block batch accelerator must not silently fall back")
+        }
+        Err(TranscodeStageError::DeviceUnavailable) => {
+            j2k_test_support::metal_device_unavailable_is_skip(module_path!());
+            return;
+        }
+        Err(message) => panic!("explicit Metal large-axis code-block batch failed: {message}"),
+    };
+    let expected = canonical_codeblock_component(&jobs[0], options);
+    assert_prequantized_component_layout_eq(&actual[0], &expected);
+    assert_prequantized_component_coefficients_eq(&actual[0], &expected);
+}
+
+#[cfg(target_os = "macos")]
+fn canonical_codeblock_component(
+    job: &DctGridToHtj2k97CodeBlockJob<'_>,
+    options: Htj2k97CodeBlockOptions,
+) -> PrequantizedHtj2k97Component {
+    let dwt = canonical_dwt97_from_blocks(
         job.blocks,
         job.block_cols,
         job.block_rows,
         job.width,
         job.height,
-    )
-    .expect("scalar 9/7 IDCT path accepts covered grid");
-    let expected = prequantized_component_from_dwt97(&dwt, options, job.x_rsiz, job.y_rsiz);
+    );
+    canonical_prequantized_component_from_dwt97(&dwt, options, job.x_rsiz, job.y_rsiz)
+}
 
-    assert_prequantized_component_layout_eq(&actual[0], &expected);
-    assert_prequantized_component_coefficients_close(&actual[0], &expected, 1);
+#[cfg(target_os = "macos")]
+fn assert_dwt97_bits_eq(
+    actual: &Dwt97TwoDimensional<f64>,
+    expected: &Dwt97TwoDimensional<f64>,
+    label: &str,
+) {
+    assert_eq!(
+        (
+            actual.low_width,
+            actual.low_height,
+            actual.high_width,
+            actual.high_height
+        ),
+        (
+            expected.low_width,
+            expected.low_height,
+            expected.high_width,
+            expected.high_height
+        ),
+        "{label}: band geometry"
+    );
+    for (name, actual, expected) in [
+        ("ll", &actual.ll, &expected.ll),
+        ("hl", &actual.hl, &expected.hl),
+        ("lh", &actual.lh, &expected.lh),
+        ("hh", &actual.hh, &expected.hh),
+    ] {
+        assert_eq!(actual.len(), expected.len(), "{label}: {name} length");
+        for (index, (a, e)) in actual.iter().zip(expected).enumerate() {
+            assert_eq!(
+                a.to_bits(),
+                e.to_bits(),
+                "{label}: {name}[{index}] {a} vs {e}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -537,10 +655,9 @@ fn assert_prequantized_component_layout_eq(
 }
 
 #[cfg(target_os = "macos")]
-fn assert_prequantized_component_coefficients_close(
+fn assert_prequantized_component_coefficients_eq(
     actual: &PrequantizedHtj2k97Component,
     expected: &PrequantizedHtj2k97Component,
-    max_abs_error: i32,
 ) {
     for (actual_resolution, expected_resolution) in
         actual.resolutions.iter().zip(expected.resolutions.iter())
@@ -560,9 +677,9 @@ fn assert_prequantized_component_coefficients_close(
                     .iter()
                     .zip(expected_block.coefficients.iter())
                 {
-                    assert!(
-                        (actual_coefficient - expected_coefficient).abs() <= max_abs_error,
-                        "quantized coefficient diverged: actual {actual_coefficient}, expected {expected_coefficient}"
+                    assert_eq!(
+                        actual_coefficient, expected_coefficient,
+                        "quantized coefficient diverged from the canonical quantizer"
                     );
                 }
             }

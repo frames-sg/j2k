@@ -363,6 +363,10 @@ fn ycbcr_420_batch_transcodes_with_explicit_metal_97_codeblock_path() {
         assert_eq!(decoded.num_components, 3);
         assert_eq!(decoded.data, expected.data);
         assert_eq!(
+            tile.codestream, reference.codestream,
+            "Metal and CPU 9/7 transcodes must emit identical bytes"
+        );
+        assert_eq!(
             tile.report.coefficient_path,
             JpegToHtj2kCoefficientPath::FloatDirectLinear97
         );

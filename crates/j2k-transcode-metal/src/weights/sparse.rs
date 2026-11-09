@@ -31,18 +31,6 @@ impl SparseDwt97WeightRows {
         })
     }
 
-    #[cfg(target_os = "macos")]
-    pub(crate) fn allocation_bytes_for_len(
-        sample_len: usize,
-    ) -> Result<usize, SparseWeightRowsError> {
-        sparse_allocation_bytes(sample_len, WaveletKind::Irreversible97)
-    }
-
-    #[cfg(target_os = "macos")]
-    pub(crate) fn metal_bytes_for_len(sample_len: usize) -> Result<usize, SparseWeightRowsError> {
-        sparse_metal_bytes(sample_len, WaveletKind::Irreversible97)
-    }
-
     /// Largest tap count across low-pass and high-pass rows.
     #[must_use]
     pub fn max_taps_per_row(&self) -> usize {

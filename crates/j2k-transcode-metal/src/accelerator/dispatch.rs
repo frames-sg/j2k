@@ -4,17 +4,36 @@ use j2k_transcode::{
     DctGridToDwt53Job, DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob,
     DctGridToReversibleDwt53Job, DctToWaveletStageAccelerator, Dwt53TwoDimensional,
     Dwt97BatchStageTimings, Dwt97TwoDimensional, Htj2k97CodeBlockOptions,
-    PrequantizedHtj2k97Component, ReversibleDwt53FirstLevel, TranscodeStageError,
+    PrequantizedHtj2k97Component, ReversibleDwt53FirstLevel, TranscodePrecision,
+    TranscodeStageError,
 };
 
 use super::{CounterEvent, MetalDctToWaveletStageAccelerator, MAX_AUTO_DWT97_STAGED_BATCH_AXIS};
 #[cfg(target_os = "macos")]
 use crate::metal;
 
+/// Why an explicit Metal accelerator refuses `TranscodePrecision::F64`.
+const METAL_DWT97_F64_UNSUPPORTED: &str =
+    "Metal computes the 9/7 transcode in binary32 only; TranscodePrecision::F64 is CPU-only";
+
 #[doc(hidden)]
 impl DctToWaveletStageAccelerator for MetalDctToWaveletStageAccelerator {
     fn supports_dwt97_batch(&self) -> bool {
         true
+    }
+
+    /// Explicit Metal refuses binary64 9/7 work instead of falling back to
+    /// the CPU; Auto leaves it to the CPU path, which handles it.
+    fn check_dwt97_precision(
+        &self,
+        precision: TranscodePrecision,
+    ) -> Result<(), TranscodeStageError> {
+        if precision == TranscodePrecision::F64 && !self.mode.is_auto() {
+            return Err(TranscodeStageError::Unsupported(
+                METAL_DWT97_F64_UNSUPPORTED,
+            ));
+        }
+        Ok(())
     }
 
     fn supports_htj2k97_codeblock_batch(&self) -> bool {

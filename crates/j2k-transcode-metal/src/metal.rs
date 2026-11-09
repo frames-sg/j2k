@@ -123,15 +123,15 @@ impl TranscodeComputeEncoderExt for ProtocolObject<dyn MTLComputeCommandEncoder>
     }
 }
 
-use crate::weights::{SparseDwt53WeightRows, SparseDwt97WeightRows, SparseWeightRow};
+use crate::weights::{SparseDwt53WeightRows, SparseWeightRow};
 use crate::MetalTranscodeError;
 
 mod runtime;
 pub use self::runtime::MetalTranscodeSession;
 use self::runtime::{
-    Dct97ColumnLiftParams, Dct97IdctRowLiftParams, Dct97QuantizeCodeblocksParams,
-    DctBatchProjectionParams, DctProjectionParams, MetalRuntime, MetalSparseRow, MetalSparseRows,
-    MetalWeightTap, Reversible53ProjectionParams,
+    Dct97ColumnLiftParams, Dct97IdctRowLiftParams, Dct97PlaneParams, Dct97QuantizeCodeblocksParams,
+    DctProjectionParams, MetalRuntime, MetalSparseRow, MetalSparseRows, MetalWeightTap,
+    Reversible53ProjectionParams,
 };
 mod allocation;
 use self::allocation::{
@@ -154,18 +154,15 @@ mod projection;
 #[cfg(test)]
 use self::projection::projection_dispatch_sizes;
 use self::projection::{
-    bind_projection_band_buffers, bind_projection_input_buffers,
-    dispatch_projected_bands_batch_with_runtime, dispatch_projected_bands_with_runtime,
-    dispatch_projection_threads, staged_threads_per_group, ProjectedBands, ProjectionBatchJob,
-    ProjectionJob,
+    bind_projection_band_buffers, dispatch_projected_bands_with_runtime,
+    dispatch_projection_threads, staged_threads_per_group, ProjectedBands, ProjectionJob,
 };
 mod resident;
 use self::resident::{
-    dispatch_projection_batch_bands, dwt97_codeblock_output_buffers,
-    dwt97_codeblock_output_transfer_bytes, dwt97_codeblock_output_transfer_count,
-    projection_batch_output_buffers, projection_batch_output_transfer_bytes,
-    projection_batch_output_transfer_count, projection_batch_private_output_buffers,
-    projection_batch_shape, projection_batch_weight_buffers, read_projected_batch_outputs,
+    dwt97_codeblock_output_buffers, dwt97_codeblock_output_transfer_bytes,
+    dwt97_codeblock_output_transfer_count, projection_batch_output_buffers,
+    projection_batch_output_transfer_bytes, projection_batch_output_transfer_count,
+    projection_batch_private_output_buffers, read_projected_batch_outputs,
     validate_resident_dct_handoffs_for_dwt97_jobs, validate_resident_dct_handoffs_for_htj2k_jobs,
     validate_resident_dwt_handoffs_for_dwt97_jobs, validate_resident_dwt_handoffs_for_htj2k_jobs,
     Dwt97CodeBlockOutputBuffers, ProjectionBatchOutputBuffers, ProjectionBatchShape,
@@ -177,12 +174,12 @@ use self::codeblock_output::{
 mod geometry;
 use self::geometry::{
     checked_batch_len, checked_dwt_level_shape, code_block_len_from_exp, dispatch_band,
-    dispatch_band_batch, dispatch_reversible_band, dwt97_quantize_inv_delta, dwt97_total_bitplanes,
+    dispatch_reversible_band, dwt97_quantize_inv_delta, dwt97_total_bitplanes,
     reversible_band_geometry, u32_param, upload_sparse_rows,
     validate_codeblock_projection_allocations, validate_dwt97_batch_geometry,
     validate_dwt97_codeblock_batch_geometry, validate_float_projection_allocations, validate_grid,
     validate_htj2k97_codeblock_options, validate_reversible_batch_geometry, BandGeometry,
-    BatchBandGeometry, ReversibleBatchKernelGeometry,
+    ReversibleBatchKernelGeometry,
 };
 mod buffers;
 use self::buffers::{

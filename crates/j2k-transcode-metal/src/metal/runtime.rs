@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use j2k_codec_math::transcode97::{
+    DWT97_HIGH_SCALE_F32, DWT97_LIFT_STEPS_F32, DWT97_LOW_SCALE_F32, IDCT8_BASIS_F32,
+};
+
 use super::{
     checked_command_queue, idct8_basis_table, shared_buffer_with_slice, system_default_device, Arc,
     Buffer, CommandQueue, ComputePipelineState, Device, MetalPipelineLoader, MetalTranscodeError,
@@ -12,21 +16,61 @@ pub(super) fn shader_source() -> String {
 #include <metal_stdlib>
 using namespace metal;
 ",
-        j2k_codec_math::generated::DWT97_CONSTANTS_METAL,
-        "\n",
+        &transcode97_constants_metal(),
         include_str!("../dct97.metal"),
     ]
     .concat()
+}
+
+/// MSL declarations of the canonical 9/7 transcode constants, emitted from
+/// `j2k_codec_math::transcode97` so the shader never carries its own copy.
+///
+/// Each value is written as its shortest round-trip decimal with an `f`
+/// suffix, which the Metal compiler rounds back to the identical binary32.
+fn transcode97_constants_metal() -> String {
+    let basis_rows = IDCT8_BASIS_F32
+        .iter()
+        .map(|row| format!("    {{{}}},", msl_float_list(row)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "// Generated at runtime from j2k_codec_math::transcode97.\n\
+         constant float TRANSCODE97_IDCT_BASIS[8][8] = {{\n{basis_rows}\n}};\n\
+         constant float TRANSCODE97_LIFT_STEPS[4] = {{{}}};\n\
+         constant float TRANSCODE97_LOW_SCALE = {};\n\
+         constant float TRANSCODE97_HIGH_SCALE = {};\n",
+        msl_float_list(&DWT97_LIFT_STEPS_F32),
+        msl_float_literal(DWT97_LOW_SCALE_F32),
+        msl_float_literal(DWT97_HIGH_SCALE_F32),
+    )
+}
+
+fn msl_float_list(values: &[f32]) -> String {
+    values
+        .iter()
+        .map(|&value| msl_float_literal(value))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Shortest round-trip decimal for a finite `f32`, as an MSL float literal.
+fn msl_float_literal(value: f32) -> String {
+    format!("{value:?}f")
 }
 pub(super) struct MetalRuntime {
     pub(super) device: Device,
     pub(super) queue: CommandQueue,
     pub(super) dct_project_band: ComputePipelineState,
-    pub(super) dct_project_band_batch: ComputePipelineState,
     pub(super) dct97_idct_row_lift_batch: ComputePipelineState,
     pub(super) dct97_column_lift_batch: ComputePipelineState,
+    pub(super) dct97_idct_plane_batch: ComputePipelineState,
+    pub(super) dct97_lift_plane_step_batch: ComputePipelineState,
+    pub(super) dct97_scale_plane_rows_batch: ComputePipelineState,
+    pub(super) dct97_split_plane_batch: ComputePipelineState,
     pub(super) dct97_quantize_codeblocks_batch: ComputePipelineState,
     pub(super) reversible53_project_band: ComputePipelineState,
+    /// IDCT basis consumed by the 5/3 float projection kernels; the 9/7
+    /// kernels use the canonical `TRANSCODE97_IDCT_BASIS` constants instead.
     pub(super) idct_basis: Buffer,
 }
 
@@ -118,18 +162,6 @@ pub(super) struct DctProjectionParams {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub(super) struct DctBatchProjectionParams {
-    pub(super) width: u32,
-    pub(super) height: u32,
-    pub(super) block_cols: u32,
-    pub(super) blocks_per_item: u32,
-    pub(super) band_width: u32,
-    pub(super) band_height: u32,
-    pub(super) output_stride: u32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
 pub(super) struct Dct97IdctRowLiftParams {
     pub(super) width: u32,
     pub(super) height: u32,
@@ -153,6 +185,28 @@ pub(super) struct Dct97ColumnLiftParams {
     pub(super) hl_stride: u32,
     pub(super) lh_stride: u32,
     pub(super) hh_stride: u32,
+}
+
+/// Parameters shared by the global-memory canonical 9/7 plane kernels.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(super) struct Dct97PlaneParams {
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) block_cols: u32,
+    pub(super) blocks_per_item: u32,
+    pub(super) low_width: u32,
+    pub(super) high_width: u32,
+    pub(super) low_height: u32,
+    pub(super) high_height: u32,
+    pub(super) ll_stride: u32,
+    pub(super) hl_stride: u32,
+    pub(super) lh_stride: u32,
+    pub(super) hh_stride: u32,
+    /// Nonzero for a column lifting step.
+    pub(super) vertical: u32,
+    /// Lifting step index `0..4`.
+    pub(super) step: u32,
 }
 
 #[repr(C)]
@@ -245,15 +299,6 @@ impl_gpu_parameter_abi!(
         band_width: u32,
         band_height: u32,
     },
-    DctBatchProjectionParams {
-        width: u32,
-        height: u32,
-        block_cols: u32,
-        blocks_per_item: u32,
-        band_width: u32,
-        band_height: u32,
-        output_stride: u32,
-    },
     Dct97IdctRowLiftParams {
         width: u32,
         height: u32,
@@ -274,6 +319,22 @@ impl_gpu_parameter_abi!(
         hl_stride: u32,
         lh_stride: u32,
         hh_stride: u32,
+    },
+    Dct97PlaneParams {
+        width: u32,
+        height: u32,
+        block_cols: u32,
+        blocks_per_item: u32,
+        low_width: u32,
+        high_width: u32,
+        low_height: u32,
+        high_height: u32,
+        ll_stride: u32,
+        hl_stride: u32,
+        lh_stride: u32,
+        hh_stride: u32,
+        vertical: u32,
+        step: u32,
     },
     Dct97QuantizeCodeblocksParams {
         band_width: u32,
@@ -350,9 +411,12 @@ impl MetalRuntime {
                 .map_err(|error| MetalTranscodeError::support("Metal pipeline creation", error))
         };
         let dct_project_band = pipeline("dct97_project_band")?;
-        let dct_project_band_batch = pipeline("dct97_project_band_batch")?;
         let dct97_idct_row_lift_batch = pipeline("dct97_idct_row_lift_batch")?;
         let dct97_column_lift_batch = pipeline("dct97_column_lift_batch")?;
+        let dct97_idct_plane_batch = pipeline("dct97_idct_plane_batch")?;
+        let dct97_lift_plane_step_batch = pipeline("dct97_lift_plane_step_batch")?;
+        let dct97_scale_plane_rows_batch = pipeline("dct97_scale_plane_rows_batch")?;
+        let dct97_split_plane_batch = pipeline("dct97_split_plane_batch")?;
         let dct97_quantize_codeblocks_batch = pipeline("dct97_quantize_codeblocks_batch")?;
         let reversible53_project_band = pipeline("reversible53_project_band")?;
         let queue = checked_command_queue(&device).map_err(|error| {
@@ -366,12 +430,50 @@ impl MetalRuntime {
             device,
             queue,
             dct_project_band,
-            dct_project_band_batch,
             dct97_idct_row_lift_batch,
             dct97_column_lift_batch,
+            dct97_idct_plane_batch,
+            dct97_lift_plane_step_batch,
+            dct97_scale_plane_rows_batch,
+            dct97_split_plane_batch,
             dct97_quantize_codeblocks_batch,
             reversible53_project_band,
             idct_basis,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        transcode97_constants_metal, DWT97_HIGH_SCALE_F32, DWT97_LIFT_STEPS_F32,
+        DWT97_LOW_SCALE_F32, IDCT8_BASIS_F32,
+    };
+
+    /// Every literal in the emitted prelude, in declaration order.
+    fn prelude_literals(source: &str) -> Vec<f32> {
+        source
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .flat_map(|line| line.split(['{', '}', ',', '=', ';']))
+            .filter_map(|token| token.trim().strip_suffix('f'))
+            .map(|literal| literal.parse::<f32>().expect("prelude literal parses"))
+            .collect()
+    }
+
+    #[test]
+    fn transcode97_prelude_literals_round_trip_to_the_codec_math_constants() {
+        let literals = prelude_literals(&transcode97_constants_metal());
+        let expected: Vec<f32> = IDCT8_BASIS_F32
+            .iter()
+            .flatten()
+            .chain(&DWT97_LIFT_STEPS_F32)
+            .chain([&DWT97_LOW_SCALE_F32, &DWT97_HIGH_SCALE_F32])
+            .copied()
+            .collect();
+        assert_eq!(literals.len(), expected.len());
+        for (index, (literal, constant)) in literals.iter().zip(&expected).enumerate() {
+            assert_eq!(literal.to_bits(), constant.to_bits(), "literal {index}");
+        }
     }
 }

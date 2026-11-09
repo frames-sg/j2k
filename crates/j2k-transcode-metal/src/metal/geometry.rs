@@ -3,10 +3,10 @@
 use super::{
     bind_projection_band_buffers, buffer_with_slice, dispatch_projection_threads,
     htj2k97_subband_delta, htj2k97_subband_total_bitplanes, try_transcode_vec_with_capacity,
-    Buffer, ComputeCommandEncoderRef, DctBatchProjectionParams, DctGridToDwt97Job,
-    DctGridToHtj2k97CodeBlockJob, DctGridToReversibleDwt53Job, DctProjectionParams, Device,
-    Htj2k97CodeBlockOptions, J2kSubBandType, MetalSparseRow, MetalSparseRows, MetalTranscodeError,
-    MetalWeightTap, Reversible53ProjectionParams, SparseWeightRow, TranscodeComputeEncoderExt,
+    Buffer, ComputeCommandEncoderRef, DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob,
+    DctGridToReversibleDwt53Job, DctProjectionParams, Device, Htj2k97CodeBlockOptions,
+    J2kSubBandType, MetalSparseRow, MetalSparseRows, MetalTranscodeError, MetalWeightTap,
+    Reversible53ProjectionParams, SparseWeightRow, TranscodeComputeEncoderExt,
     METAL_DCT97_UNSUPPORTED_GRID, METAL_REVERSIBLE_DCT53_UNSUPPORTED_GRID,
 };
 use j2k_types::encode_geometry::encode_dwt_level_dimensions_for_input;
@@ -53,18 +53,6 @@ pub(super) fn checked_dwt_level_shape(
         high_height: usize::try_from(dimensions.high_height)
             .map_err(|_| MetalTranscodeError::UnsupportedJob(unsupported_grid))?,
     })
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct BatchBandGeometry {
-    pub(super) width: u32,
-    pub(super) height: u32,
-    pub(super) block_cols: u32,
-    pub(super) blocks_per_item: u32,
-    pub(super) band_width: u32,
-    pub(super) band_height: u32,
-    pub(super) output_stride: u32,
-    pub(super) batch_count: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -168,37 +156,6 @@ pub(super) fn dispatch_band(
         u64::from(geometry.band_width),
         u64::from(geometry.band_height),
         1,
-    );
-    Ok(())
-}
-
-pub(super) fn dispatch_band_batch(
-    encoder: &ComputeCommandEncoderRef,
-    x_weights: (&Buffer, &Buffer),
-    y_weights: (&Buffer, &Buffer),
-    output: &Buffer,
-    geometry: BatchBandGeometry,
-) -> Result<(), MetalTranscodeError> {
-    if geometry.band_width == 0 || geometry.band_height == 0 {
-        return Ok(());
-    }
-
-    let params = DctBatchProjectionParams {
-        width: geometry.width,
-        height: geometry.height,
-        block_cols: geometry.block_cols,
-        blocks_per_item: geometry.blocks_per_item,
-        band_width: geometry.band_width,
-        band_height: geometry.band_height,
-        output_stride: geometry.output_stride,
-    };
-    bind_projection_band_buffers(encoder, x_weights, y_weights, output)?;
-    encoder.set_bytes::<DctBatchProjectionParams>(7, &params)?;
-    dispatch_projection_threads(
-        encoder,
-        u64::from(geometry.band_width),
-        u64::from(geometry.band_height),
-        u64::from(geometry.batch_count),
     );
     Ok(())
 }
@@ -367,15 +324,12 @@ pub(super) fn dwt97_total_bitplanes(
     htj2k97_subband_total_bitplanes(options, sub_band_type)
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "the Metal quantization ABI intentionally consumes an f32 inverse delta"
-)]
+/// The canonical binary32 reciprocal step every 9/7 transcode backend uses.
 pub(super) fn dwt97_quantize_inv_delta(
     options: Htj2k97CodeBlockOptions,
     sub_band_type: J2kSubBandType,
 ) -> f32 {
-    (1.0 / htj2k97_subband_delta(options, sub_band_type)) as f32
+    j2k_codec_math::transcode97::quantize97_inv_delta(htj2k97_subband_delta(options, sub_band_type))
 }
 
 pub(super) fn checked_batch_len(
