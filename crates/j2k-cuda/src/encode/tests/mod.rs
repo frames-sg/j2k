@@ -2,6 +2,7 @@
 
 mod facade;
 mod htj2k;
+mod packet_parity;
 mod packetization;
 mod resident;
 mod resident_session;
