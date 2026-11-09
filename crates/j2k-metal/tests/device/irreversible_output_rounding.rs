@@ -4,7 +4,8 @@
 //! rounds each centered sample ties-to-even and only then adds the unsigned
 //! level shift (`round_ties_even_then_add`). Adding the shift first costs one
 //! bit of f32 precision, so `k + 0.5 - ulp` becomes a tie and rounds up: Metal
-//! was one code value high on roughly ten samples per million.
+//! was one code value high on roughly ten samples per million. Integer output
+//! of wider samples, including their scaling to `U8`, must match it too.
 
 use super::*;
 
@@ -104,8 +105,6 @@ fn shifted_tie_count(bytes: &[u8]) -> usize {
         .count()
 }
 
-type RequestBuilder = fn(PixelFormat, BackendRequest) -> MetalDecodeRequest;
-
 fn decode_single(
     bytes: &[u8],
     request: MetalDecodeRequest,
@@ -157,6 +156,55 @@ fn compare(label: &str, cpu: &[u8], metal: &[u8], failures: &mut Vec<String>) {
     }
 }
 
+/// Compare the CPU and explicit Metal output of `bytes` for every pixel
+/// format of its component count, through full, region and half-resolution
+/// single decodes and a full-image tile batch.
+fn compare_requests(
+    label: &str,
+    bytes: &[u8],
+    components: u16,
+    roi: Rect,
+    session: &MetalBackendSession,
+    failures: &mut Vec<String>,
+) {
+    let shared: Arc<[u8]> = Arc::from(bytes);
+    let formats: &[PixelFormat] = if components == 1 {
+        &[PixelFormat::Gray8, PixelFormat::Gray16]
+    } else {
+        &[PixelFormat::Rgb8, PixelFormat::Rgba8, PixelFormat::Rgb16]
+    };
+    for &fmt in formats {
+        let requests = [
+            ("full", MetalDecodeRequest::full(fmt, BackendRequest::Cpu)),
+            (
+                "roi",
+                MetalDecodeRequest::region(fmt, roi, BackendRequest::Cpu),
+            ),
+            (
+                "half",
+                MetalDecodeRequest::scaled(fmt, Downscale::Half, BackendRequest::Cpu),
+            ),
+        ];
+        for (operation, request) in requests {
+            let cpu = decode_single(bytes, request, session);
+            let metal = MetalDecodeRequest {
+                backend: BackendRequest::Metal,
+                ..request
+            };
+            let metal = decode_single(bytes, metal, session);
+            compare(
+                &format!("{label} {fmt:?} {operation}"),
+                &cpu,
+                &metal,
+                failures,
+            );
+        }
+        let cpu = decode_batch(&shared, fmt, BackendRequest::Cpu);
+        let metal = decode_batch(&shared, fmt, BackendRequest::Metal);
+        compare(&format!("{label} {fmt:?} batch"), &cpu, &metal, failures);
+    }
+}
+
 #[test]
 fn explicit_metal_irreversible_integer_output_matches_cpu_rounding() {
     if !should_run_metal_runtime() {
@@ -171,38 +219,145 @@ fn explicit_metal_irreversible_integer_output_matches_cpu_rounding() {
             shifted_tie_count(&bytes) > 0,
             "{case:?}: fixture has no shifted ties, so it cannot detect the rounding order"
         );
-        let shared: Arc<[u8]> = Arc::from(bytes.as_slice());
-        let formats: &[PixelFormat] = if case.components == 1 {
-            &[PixelFormat::Gray8, PixelFormat::Gray16]
-        } else {
-            &[PixelFormat::Rgb8, PixelFormat::Rgba8, PixelFormat::Rgb16]
-        };
-        for &fmt in formats {
-            let requests: [(&str, RequestBuilder); 3] = [
-                ("full", MetalDecodeRequest::full),
-                ("roi", |fmt, backend| {
-                    MetalDecodeRequest::region(fmt, ROI, backend)
-                }),
-                ("half", |fmt, backend| {
-                    MetalDecodeRequest::scaled(fmt, Downscale::Half, backend)
-                }),
-            ];
-            for (operation, request) in requests {
-                let cpu = decode_single(&bytes, request(fmt, BackendRequest::Cpu), &session);
-                let metal = decode_single(&bytes, request(fmt, BackendRequest::Metal), &session);
+        compare_requests(
+            &format!("{case:?}"),
+            &bytes,
+            case.components,
+            ROI,
+            &session,
+            &mut failures,
+        );
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+const WIDE_SIZE: u32 = 128;
+
+/// A 9/7 image of `bit_depth` (9 to 16) bit samples: ramps with noise, every
+/// sample in two native-endian bytes.
+fn lossy_wide_fixture(components: u16, bit_depth: u8, ht: bool) -> Vec<u8> {
+    let span = 1_u32 << bit_depth;
+    let channels = u32::from(components);
+    let mut state = 0x9e37_79b9_u32;
+    let pixels: Vec<u8> = (0..WIDE_SIZE * WIDE_SIZE * channels)
+        .flat_map(|index| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            let (pixel, component) = (index / channels, index % channels);
+            let (x, y) = (pixel % WIDE_SIZE, pixel / WIDE_SIZE);
+            let ramp = (x * 7 + y * 11 + component * 29) * (span / 256);
+            let sample = (ramp + state % (span / 8)) & (span - 1);
+            u16::try_from(sample)
+                .expect("sample fits u16")
+                .to_ne_bytes()
+        })
+        .collect();
+    let options = EncodeOptions {
+        reversible: false,
+        use_mct: components == 3,
+        irreversible_quantization_scale: 4.0,
+        ..EncodeOptions::default()
+    };
+    if ht {
+        encode_htj2k(
+            &pixels, WIDE_SIZE, WIDE_SIZE, components, bit_depth, false, &options,
+        )
+    } else {
+        encode(
+            &pixels, WIDE_SIZE, WIDE_SIZE, components, bit_depth, false, &options,
+        )
+    }
+    .unwrap_or_else(|error| panic!("encode {bit_depth}-bit 9/7 fixture: {error}"))
+}
+
+/// `U8` output of a 9- to 16-bit sample `x` is `round(x / max * 255)`, which
+/// lands within `1 / (2 * max)` of a half for some codes; f32 rounding there
+/// must agree with the CPU. A lossless image holding every code value once,
+/// in each component, checks all of them.
+#[test]
+fn metal_u8_output_scales_every_code_value_like_the_cpu() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let session = MetalBackendSession::system_default().expect("Metal session");
+    let mut failures = Vec::new();
+    for bit_depth in 9_u8..=16 {
+        let codes = 1_u32 << bit_depth;
+        let (width, height) = (256, codes / 256);
+        for components in [1_u16, 3] {
+            let pixels: Vec<u8> = (0..codes)
+                .flat_map(|code| {
+                    // Each component visits every code in its own order.
+                    (0..u32::from(components)).flat_map(move |component| {
+                        let value = (code + component * (codes / 3 + 1)) % codes;
+                        u16::try_from(value).expect("code fits u16").to_ne_bytes()
+                    })
+                })
+                .collect();
+            let options = EncodeOptions {
+                reversible: true,
+                num_decomposition_levels: 2,
+                ..EncodeOptions::default()
+            };
+            let bytes = encode(
+                &pixels, width, height, components, bit_depth, false, &options,
+            )
+            .expect("encode every-code fixture");
+            let formats: &[PixelFormat] = if components == 1 {
+                &[PixelFormat::Gray8]
+            } else {
+                &[PixelFormat::Rgb8, PixelFormat::Rgba8]
+            };
+            for &fmt in formats {
+                let cpu = decode_single(
+                    &bytes,
+                    MetalDecodeRequest::full(fmt, BackendRequest::Cpu),
+                    &session,
+                );
+                let metal = decode_single(
+                    &bytes,
+                    MetalDecodeRequest::full(fmt, BackendRequest::Metal),
+                    &session,
+                );
                 compare(
-                    &format!("{case:?} {fmt:?} {operation}"),
+                    &format!("{bit_depth}-bit {components}-component every code {fmt:?}"),
                     &cpu,
                     &metal,
                     &mut failures,
                 );
             }
-            let cpu = decode_batch(&shared, fmt, BackendRequest::Cpu);
-            let metal = decode_batch(&shared, fmt, BackendRequest::Metal);
-            compare(
-                &format!("{case:?} {fmt:?} batch"),
-                &cpu,
-                &metal,
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Irreversible 9- to 16-bit output scales to `U8` and stores at native
+/// precision in `U16`; both must match the CPU byte for byte.
+#[test]
+fn explicit_metal_irreversible_wide_output_matches_cpu() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let session = MetalBackendSession::system_default().expect("Metal session");
+    let roi = Rect {
+        x: WIDE_SIZE / 4,
+        y: WIDE_SIZE / 4,
+        w: WIDE_SIZE / 2,
+        h: WIDE_SIZE / 2,
+    };
+    let mut failures = Vec::new();
+    for bit_depth in 9_u8..=16 {
+        for (components, ht) in [(3_u16, true), (3, false), (1, true), (1, false)] {
+            let bytes = lossy_wide_fixture(components, bit_depth, ht);
+            compare_requests(
+                &format!("{bit_depth}-bit {components}-component ht={ht}"),
+                &bytes,
+                components,
+                roi,
+                &session,
                 &mut failures,
             );
         }

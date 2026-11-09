@@ -39,18 +39,22 @@ fn metal_forward_dwt53_handles_single_sample_edge_dimensions() {
 }
 
 #[cfg(target_os = "macos")]
+fn assert_exact(actual: &[f32], expected: &[f32], label: &str) {
+    assert_eq!(actual.len(), expected.len(), "{label} length mismatch");
+    for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
+        assert_eq!(
+            actual.to_bits(),
+            expected.to_bits(),
+            "{label}[{index}] mismatch: actual={actual:?}, expected={expected:?}"
+        );
+    }
+}
+
+/// The 5/3 lifting steps only add and scale by powers of two, so Metal
+/// reproduces the CPU reference bit for bit even on fractional samples.
+#[cfg(target_os = "macos")]
 #[test]
 fn metal_forward_dwt53_matches_reference_for_fractional_stage_samples() {
-    fn assert_slice_near(actual: &[f32], expected: &[f32], label: &str) {
-        assert_eq!(actual.len(), expected.len(), "{label} length mismatch");
-        for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
-            assert!(
-                (actual - expected).abs() <= 0.0001,
-                "{label}[{index}] mismatch: actual={actual}, expected={expected}"
-            );
-        }
-    }
-
     if !should_run_metal_runtime() {
         return;
     }
@@ -95,7 +99,7 @@ fn metal_forward_dwt53_matches_reference_for_fractional_stage_samples() {
 
         assert_eq!(actual.ll_width, expected.ll_width);
         assert_eq!(actual.ll_height, expected.ll_height);
-        assert_slice_near(&actual.ll, &expected.ll, "LL");
+        assert_exact(&actual.ll, &expected.ll, "LL");
         assert_eq!(actual.levels.len(), expected.levels.len());
         for (index, (actual, expected)) in actual.levels.iter().zip(&expected.levels).enumerate() {
             assert_eq!(actual.width, expected.width, "level {index} width");
@@ -116,9 +120,9 @@ fn metal_forward_dwt53_matches_reference_for_fractional_stage_samples() {
                 actual.high_height, expected.high_height,
                 "level {index} high height"
             );
-            assert_slice_near(&actual.hl, &expected.hl, "HL");
-            assert_slice_near(&actual.lh, &expected.lh, "LH");
-            assert_slice_near(&actual.hh, &expected.hh, "HH");
+            assert_exact(&actual.hl, &expected.hl, "HL");
+            assert_exact(&actual.lh, &expected.lh, "LH");
+            assert_exact(&actual.hh, &expected.hh, "HH");
         }
     }
 }
@@ -202,17 +206,6 @@ fn metal_forward_dwt97_multi_level_matches_native_encode_output() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_forward_dwt97_matches_fractional_cpu_reference_exactly() {
-    fn assert_exact(actual: &[f32], expected: &[f32], label: &str) {
-        assert_eq!(actual.len(), expected.len(), "{label} length mismatch");
-        for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
-            assert_eq!(
-                actual.to_bits(),
-                expected.to_bits(),
-                "{label}[{index}] mismatch: actual={actual:?}, expected={expected:?}"
-            );
-        }
-    }
-
     if !should_run_metal_runtime() {
         return;
     }

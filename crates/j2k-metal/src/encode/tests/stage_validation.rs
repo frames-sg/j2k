@@ -97,97 +97,149 @@ fn metal_encode_deinterleave_compute_rejects_invalid_shape_structured() {
 }
 
 #[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug)]
+struct QuantizeCase {
+    step_exponent: u16,
+    step_mantissa: u16,
+    range_bits: u8,
+    reversible: bool,
+}
+
+/// Metal's quantized coefficients for `case` against the CPU reference, on
+/// mixed fractional samples and on both sides of the deadzone boundaries.
+#[cfg(target_os = "macos")]
+fn assert_quantize_matches_cpu(name: &str, case: QuantizeCase) {
+    let mut coefficients = (0_u16..257)
+        .map(|idx| {
+            let centered = f32::from(idx) - 128.0;
+            centered * 0.375 + f32::from(idx % 7) * 0.125 - if idx % 5 == 0 { 0.5 } else { 0.0 }
+        })
+        .collect::<Vec<_>>();
+    if !case.reversible {
+        let exponent = i32::from(case.range_bits) - i32::from(case.step_exponent);
+        let base = 2.0_f32.powi(exponent);
+        let delta = base * (1.0 + f32::from(case.step_mantissa) / 2048.0);
+        for magnitude in [1_u16, 2, 5, 30, 255, 4_096] {
+            let boundary = delta * f32::from(magnitude);
+            let below = f32::from_bits(boundary.to_bits() - 1);
+            let above = f32::from_bits(boundary.to_bits() + 1);
+            coefficients.extend([below, boundary, above, -below, -boundary, -above]);
+        }
+    }
+    let expected = quantize_reference(
+        &coefficients,
+        case.step_exponent,
+        case.step_mantissa,
+        case.range_bits,
+        case.reversible,
+    );
+    let actual = compute::encode_quantize_subband(J2kQuantizeSubbandJob {
+        coefficients: &coefficients,
+        step_exponent: case.step_exponent,
+        step_mantissa: case.step_mantissa,
+        range_bits: case.range_bits,
+        reversible: case.reversible,
+    })
+    .unwrap_or_else(|err| panic!("Metal quantize_subband failed for {name}: {err}"));
+
+    assert_eq!(actual.len(), expected.len(), "{name} length");
+    if let Some((index, (&actual, &expected))) = actual
+        .iter()
+        .zip(&expected)
+        .enumerate()
+        .find(|(_, (actual, expected))| actual != expected)
+    {
+        panic!(
+            "{name} coefficient[{index}]={:?} (bits={:#010x}): Metal={actual}, CPU={expected}",
+            coefficients[index],
+            coefficients[index].to_bits()
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
 #[test]
 fn metal_quantize_subband_kernel_matches_cpu_reference_at_boundaries() {
-    #[derive(Clone, Copy)]
-    struct Case {
-        name: &'static str,
-        step_exponent: u16,
-        step_mantissa: u16,
-        range_bits: u8,
-        reversible: bool,
-    }
-
     if !should_run_metal_runtime() {
         return;
     }
 
-    for case in [
-        Case {
-            name: "reversible",
-            step_exponent: 12,
-            step_mantissa: 0,
-            range_bits: 8,
-            reversible: true,
-        },
-        Case {
-            name: "irreversible_delta_1",
-            step_exponent: 8,
-            step_mantissa: 0,
-            range_bits: 8,
-            reversible: false,
-        },
-        Case {
-            name: "irreversible_fractional_delta",
-            step_exponent: 9,
-            step_mantissa: 512,
-            range_bits: 8,
-            reversible: false,
-        },
-        Case {
-            name: "irreversible_large_delta",
-            step_exponent: 6,
-            step_mantissa: 1024,
-            range_bits: 10,
-            reversible: false,
-        },
+    for (name, case) in [
+        (
+            "reversible",
+            QuantizeCase {
+                step_exponent: 12,
+                step_mantissa: 0,
+                range_bits: 8,
+                reversible: true,
+            },
+        ),
+        (
+            "irreversible_delta_1",
+            QuantizeCase {
+                step_exponent: 8,
+                step_mantissa: 0,
+                range_bits: 8,
+                reversible: false,
+            },
+        ),
+        (
+            "irreversible_fractional_delta",
+            QuantizeCase {
+                step_exponent: 9,
+                step_mantissa: 512,
+                range_bits: 8,
+                reversible: false,
+            },
+        ),
+        (
+            "irreversible_large_delta",
+            QuantizeCase {
+                step_exponent: 6,
+                step_mantissa: 1024,
+                range_bits: 10,
+                reversible: false,
+            },
+        ),
     ] {
-        let mut coefficients = (0_u16..257)
-            .map(|idx| {
-                let centered = f32::from(idx) - 128.0;
-                centered * 0.375 + f32::from(idx % 7) * 0.125 - if idx % 5 == 0 { 0.5 } else { 0.0 }
-            })
-            .collect::<Vec<_>>();
-        if !case.reversible {
-            let exponent = i32::from(case.range_bits) - i32::from(case.step_exponent);
-            let base = 2.0_f32.powi(exponent);
-            let delta = base * (1.0 + f32::from(case.step_mantissa) / 2048.0);
-            for magnitude in [1_u16, 2, 5, 30, 255, 4_096] {
-                let boundary = delta * f32::from(magnitude);
-                let below = f32::from_bits(boundary.to_bits() - 1);
-                let above = f32::from_bits(boundary.to_bits() + 1);
-                coefficients.extend([below, boundary, above, -below, -boundary, -above]);
-            }
-        }
-        let expected = quantize_reference(
-            &coefficients,
-            case.step_exponent,
-            case.step_mantissa,
-            case.range_bits,
-            case.reversible,
-        );
-        let actual = compute::encode_quantize_subband(J2kQuantizeSubbandJob {
-            coefficients: &coefficients,
-            step_exponent: case.step_exponent,
-            step_mantissa: case.step_mantissa,
-            range_bits: case.range_bits,
-            reversible: case.reversible,
-        })
-        .unwrap_or_else(|err| panic!("Metal quantize_subband failed for {}: {err}", case.name));
+        assert_quantize_matches_cpu(name, case);
+    }
+}
 
-        assert_eq!(actual.len(), expected.len(), "{} length", case.name);
-        if let Some((index, (&actual, &expected))) = actual
-            .iter()
-            .zip(&expected)
-            .enumerate()
-            .find(|(_, (actual, expected))| actual != expected)
-        {
-            panic!(
-                "{} coefficient[{index}]={:?} (bits={:#010x}): Metal={actual}, CPU={expected}",
-                case.name,
-                coefficients[index],
-                coefficients[index].to_bits()
-            );
+/// The step size `2^(range_bits - step_exponent) * (1 + mantissa / 2048)`
+/// across the exponents codestreams use, from steps far below one sample to
+/// steps of millions, with the extreme and a fractional mantissa each.
+#[cfg(target_os = "macos")]
+#[test]
+fn metal_quantize_subband_matches_cpu_across_step_exponents() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    for (range_bits, step_exponent) in [
+        (8_u8, 31_u16),
+        (8, 28),
+        (10, 22),
+        (12, 18),
+        (9, 13),
+        (12, 14),
+        (12, 11),
+        (16, 14),
+        (16, 8),
+        (20, 8),
+        (24, 8),
+        (24, 4),
+        (24, 0),
+    ] {
+        for step_mantissa in [0_u16, 1, 777, 2047] {
+            let case = QuantizeCase {
+                step_exponent,
+                step_mantissa,
+                range_bits,
+                reversible: false,
+            };
+            let exponent = i32::from(range_bits) - i32::from(step_exponent);
+            assert_quantize_matches_cpu(&format!("exponent {exponent} {case:?}"), case);
         }
     }
 }
