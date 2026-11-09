@@ -18,6 +18,14 @@ const MAX_PRECINCT_EXPONENT: u8 = 31;
 const MAX_CODE_BLOCK_EXPONENT: u8 = 10;
 const MAX_CODE_BLOCK_AREA_EXPONENT: u8 = 12;
 
+/// Whether code-block width and height exponents (`xcb + 2`, `ycb + 2`) lie
+/// within Table A.18, as COD and COC parsing requires.
+pub(crate) fn code_block_exponents_are_valid(width: u16, height: u16) -> bool {
+    width <= u16::from(MAX_CODE_BLOCK_EXPONENT)
+        && height <= u16::from(MAX_CODE_BLOCK_EXPONENT)
+        && width + height <= u16::from(MAX_CODE_BLOCK_AREA_EXPONENT)
+}
+
 #[expect(
     clippy::trivially_copy_pass_by_ref,
     reason = "the stable codec boundary borrows shared Copy metadata used across nested calls"

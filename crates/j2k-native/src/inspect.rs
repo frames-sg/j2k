@@ -221,10 +221,64 @@ pub struct J2kCodestreamReferenceGrid {
     pub tile_size: (u32, u32),
 }
 
+/// Inspect the coding-style defaults of a codestream's main-header COD
+/// marker (ITU-T T.800 A.6.1) without decoding tile data.
+///
+/// The existing [`inspect_j2k_codestream_header`] metadata layout remains
+/// unchanged; this expert API carries the COD facts it omits. Tile-part COD
+/// and COC markers can override these defaults for a tile or component.
+///
+/// # Errors
+///
+/// Returns the errors of [`inspect_j2k_codestream_header`], or
+/// [`J2kCodestreamHeaderError::InvalidCod`] when the progression order or the
+/// code-block size is outside ITU-T T.800 Tables A.16 and A.18.
+pub fn inspect_j2k_coding_style(
+    input: &[u8],
+) -> Result<J2kCodestreamCodingStyle, J2kCodestreamHeaderError> {
+    let cod = inspect_main_header(input)?.cod;
+    if cod.progression_order > MAX_PROGRESSION_ORDER {
+        return Err(J2kCodestreamHeaderError::InvalidCod {
+            what: "progression order is outside Table A.16",
+        });
+    }
+    let (width_exponent, height_exponent) = cod.code_block_exponents;
+    if !crate::j2c::codestream::code_block_exponents_are_valid(width_exponent, height_exponent) {
+        return Err(J2kCodestreamHeaderError::InvalidCod {
+            what: "code-block size is outside Table A.18",
+        });
+    }
+    Ok(J2kCodestreamCodingStyle {
+        progression_order: cod.progression_order,
+        quality_layers: u16::from(cod.quality_layers),
+        decomposition_levels: cod.resolution_levels.saturating_sub(1),
+        code_block_size: (1 << width_exponent, 1 << height_exponent),
+    })
+}
+
+/// Coding-style defaults from a codestream's main-header COD marker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct J2kCodestreamCodingStyle {
+    /// Progression order from `SGcod` (ITU-T T.800 Table A.16): 0 LRCP,
+    /// 1 RLCP, 2 RPCL, 3 PCRL or 4 CPRL.
+    pub progression_order: u8,
+    /// Number of quality layers from `SGcod`.
+    pub quality_layers: u16,
+    /// Number of wavelet decomposition levels from `SPcod`.
+    pub decomposition_levels: u8,
+    /// Nominal code-block width and height from `SPcod`.
+    pub code_block_size: (u32, u32),
+}
+
+/// Largest progression-order value in ITU-T T.800 Table A.16 (CPRL).
+const MAX_PROGRESSION_ORDER: u8 = 4;
+
 struct InspectedMainHeader {
     metadata: J2kCodestreamHeaderMetadata,
     htj2k: Option<Htj2kCapabilities>,
     reference_grid: J2kCodestreamReferenceGrid,
+    cod: ParsedCod,
 }
 
 fn inspect_main_header(input: &[u8]) -> Result<InspectedMainHeader, J2kCodestreamHeaderError> {
@@ -311,6 +365,7 @@ fn inspect_main_header(input: &[u8]) -> Result<InspectedMainHeader, J2kCodestrea
         tile_size: siz.tile_size,
     };
     Ok(InspectedMainHeader {
+        cod,
         reference_grid,
         metadata: J2kCodestreamHeaderMetadata {
             dimensions: siz.dimensions,
@@ -365,6 +420,9 @@ struct ParsedSiz {
 struct ParsedCod {
     resolution_levels: u8,
     quality_layers: u8,
+    progression_order: u8,
+    /// Code-block width and height exponents (`xcb + 2`, `ycb + 2`), as coded.
+    code_block_exponents: (u16, u16),
     has_mct: bool,
     reversible: bool,
     high_throughput: bool,
@@ -592,6 +650,8 @@ fn parse_cod(payload: &[u8]) -> Result<ParsedCod, J2kCodestreamHeaderError> {
                 what: "quality-layer count does not fit the inspection model",
             }
         })?,
+        progression_order: payload[1],
+        code_block_exponents: (u16::from(payload[6]) + 2, u16::from(payload[7]) + 2),
         has_mct: payload[4] != 0,
         reversible: payload[9] == 1,
         high_throughput: default_ht_block_coding,
@@ -615,8 +675,65 @@ fn read_u32(bytes: &[u8], offset: usize) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{inspect_j2k_codestream_header, J2kCodestreamHeaderError};
+    use super::{
+        inspect_j2k_codestream_header, inspect_j2k_coding_style, J2kCodestreamHeaderError,
+    };
     use alloc::{vec, vec::Vec};
+
+    /// Offset of the first COD payload byte (`Scod`) in `bytes`.
+    fn cod_payload_offset(bytes: &[u8]) -> usize {
+        bytes
+            .windows(2)
+            .position(|marker| marker == [0xFF, 0x52])
+            .expect("COD marker")
+            + 4
+    }
+
+    #[test]
+    fn inspect_coding_style_reports_main_cod_defaults() {
+        let style = inspect_j2k_coding_style(&minimal_codestream()).expect("coding style");
+
+        assert_eq!(style.progression_order, 0);
+        assert_eq!(style.quality_layers, 1);
+        assert_eq!(style.decomposition_levels, 5);
+        assert_eq!(style.code_block_size, (64, 64));
+    }
+
+    #[test]
+    fn inspect_coding_style_reads_progression_layers_and_block_size() {
+        let mut bytes = minimal_codestream();
+        let cod = cod_payload_offset(&bytes);
+        bytes[cod + 1] = 2; // RPCL
+        bytes[cod + 3] = 3; // three quality layers
+        bytes[cod + 5] = 2; // two decomposition levels
+        bytes[cod + 6] = 3; // 32-wide code-blocks
+        bytes[cod + 7] = 2; // 16-high code-blocks
+
+        let style = inspect_j2k_coding_style(&bytes).expect("coding style");
+
+        assert_eq!(style.progression_order, 2);
+        assert_eq!(style.quality_layers, 3);
+        assert_eq!(style.decomposition_levels, 2);
+        assert_eq!(style.code_block_size, (32, 16));
+    }
+
+    #[test]
+    fn inspect_coding_style_rejects_values_outside_the_cod_tables() {
+        let mut bytes = minimal_codestream();
+        let cod = cod_payload_offset(&bytes);
+        bytes[cod + 1] = 5;
+        let err = inspect_j2k_coding_style(&bytes).expect_err("progression order 5");
+        assert!(matches!(err, J2kCodestreamHeaderError::InvalidCod { .. }));
+
+        let mut bytes = minimal_codestream();
+        bytes[cod + 6] = 7; // a 512-wide code-block
+        bytes[cod + 7] = 5; // with a 128-high one exceeds 4096 samples
+        let err = inspect_j2k_coding_style(&bytes).expect_err("oversized code-block");
+        assert!(matches!(err, J2kCodestreamHeaderError::InvalidCod { .. }));
+
+        // The lighter header inspection keeps accepting what it accepted.
+        assert!(inspect_j2k_codestream_header(&bytes).is_ok());
+    }
 
     #[test]
     fn inspect_j2k_codestream_header_accepts_minimal_main_header() {

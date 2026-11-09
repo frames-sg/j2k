@@ -14,7 +14,7 @@ mod validation;
 #[cfg(test)]
 pub(crate) use auxiliary::decode_packet_lengths;
 pub(crate) use auxiliary::{marker_segment_payload, plt_marker, rgn_marker, skip_marker_segment};
-pub(crate) use coding::{coc_marker, cod_marker, MAX_LAYER_COUNT};
+pub(crate) use coding::{coc_marker, cod_marker, code_block_exponents_are_valid, MAX_LAYER_COUNT};
 pub(crate) use header::{apply_reduction_to_size, read_header};
 pub(crate) use model::{
     CodeBlockStyle, CodingStyleComponent, CodingStyleDefault, CodingStyleFlags,

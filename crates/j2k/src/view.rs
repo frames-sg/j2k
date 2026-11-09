@@ -11,7 +11,8 @@ use crate::{
     },
     parse::{parse_image_info, parse_image_info_with_settings, parse_info},
     scratch::J2kScratchPool,
-    CpuDecodeParallelism, DecodeSettings, J2kError, J2kReferenceGrid, J2kSupportInfo,
+    CpuDecodeParallelism, DecodeSettings, J2kCodingStyle, J2kError, J2kReferenceGrid,
+    J2kSupportInfo,
 };
 use j2k_core::{
     CompressedPayloadKind, CompressedTransferSyntax, Downscale, Info, PassthroughCandidate,
@@ -249,6 +250,18 @@ impl<'a> J2kDecoder<'a> {
     /// file, or its main header is malformed.
     pub fn inspect_reference_grid(input: &'a [u8]) -> Result<J2kReferenceGrid, J2kError> {
         crate::parse::parse_reference_grid(input)
+    }
+
+    /// Inspect the progression order, quality layers, decomposition levels
+    /// and code-block size that the codestream's main-header COD marker
+    /// declares, without building a decoder. Tile-part markers can override
+    /// them; see [`J2kCodingStyle`].
+    ///
+    /// # Errors
+    /// Returns [`J2kError`] when the input is not a raw codestream or JP2/JPH
+    /// file, or its main header is malformed.
+    pub fn inspect_coding_style(input: &'a [u8]) -> Result<J2kCodingStyle, J2kError> {
+        crate::parse::parse_coding_style(input)
     }
 
     /// Create a decoder from compressed bytes.

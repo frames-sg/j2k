@@ -99,6 +99,13 @@ pub(crate) fn parse_reference_grid(input: &[u8]) -> Result<crate::J2kReferenceGr
     codestream::parse_reference_grid(payload.codestream())
 }
 
+/// The main-header coding-style defaults of `input`, a raw codestream or
+/// JP2/JPH file.
+pub(crate) fn parse_coding_style(input: &[u8]) -> Result<crate::J2kCodingStyle, J2kError> {
+    let payload = extract_j2k_codestream_payload(input)?;
+    codestream::parse_coding_style(payload.codestream())
+}
+
 /// Borrowed raw codestream slice extracted from raw JPEG 2000 bytes or a JP2/JPH wrapper.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct J2kCodestreamPayload<'a> {

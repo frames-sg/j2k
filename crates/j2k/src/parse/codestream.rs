@@ -34,6 +34,30 @@ pub(crate) fn parse_reference_grid(input: &[u8]) -> Result<crate::J2kReferenceGr
     })
 }
 
+/// The coding-style defaults of raw codestream `input`'s main-header COD
+/// marker.
+pub(crate) fn parse_coding_style(input: &[u8]) -> Result<crate::J2kCodingStyle, J2kError> {
+    let style = j2k_native::inspect_j2k_coding_style(input).map_err(map_header_error)?;
+    let progression_order = match style.progression_order {
+        0 => crate::J2kProgressionOrder::Lrcp,
+        1 => crate::J2kProgressionOrder::Rlcp,
+        2 => crate::J2kProgressionOrder::Rpcl,
+        3 => crate::J2kProgressionOrder::Pcrl,
+        4 => crate::J2kProgressionOrder::Cprl,
+        _ => {
+            return Err(J2kError::InvalidCod {
+                what: "progression order is outside Table A.16",
+            })
+        }
+    };
+    Ok(crate::J2kCodingStyle {
+        progression_order,
+        quality_layers: style.quality_layers,
+        decomposition_levels: style.decomposition_levels,
+        code_block_size: style.code_block_size,
+    })
+}
+
 pub(crate) fn parse_codestream(
     input: &[u8],
     retained_bytes: usize,

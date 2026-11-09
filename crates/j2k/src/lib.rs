@@ -86,9 +86,9 @@ pub use j2k_types::{
 };
 
 pub use metadata::{
-    J2kChannelAssociation, J2kChannelDefinition, J2kChannelType, J2kColorSpec, J2kComponentInfo,
-    J2kComponentMapping, J2kComponentMappingType, J2kFileMetadata, J2kPaletteColumn,
-    J2kPaletteMetadata, J2kReferenceGrid, J2kSupportInfo,
+    J2kChannelAssociation, J2kChannelDefinition, J2kChannelType, J2kCodingStyle, J2kColorSpec,
+    J2kComponentInfo, J2kComponentMapping, J2kComponentMappingType, J2kFileMetadata,
+    J2kPaletteColumn, J2kPaletteMetadata, J2kReferenceGrid, J2kSupportInfo,
 };
 
 pub use owned_batch::{

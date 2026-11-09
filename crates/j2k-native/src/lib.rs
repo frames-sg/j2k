@@ -216,9 +216,10 @@ pub use direct_roi::{
     J2kRequiredBandRegion,
 };
 pub use inspect::{
-    inspect_htj2k_capabilities, inspect_j2k_codestream_header, inspect_j2k_reference_grid,
-    looks_like_j2k_codestream, J2kCodestreamComponentHeader, J2kCodestreamHeaderError,
-    J2kCodestreamHeaderMetadata, J2kCodestreamReferenceGrid,
+    inspect_htj2k_capabilities, inspect_j2k_codestream_header, inspect_j2k_coding_style,
+    inspect_j2k_reference_grid, looks_like_j2k_codestream, J2kCodestreamCodingStyle,
+    J2kCodestreamComponentHeader, J2kCodestreamHeaderError, J2kCodestreamHeaderMetadata,
+    J2kCodestreamReferenceGrid,
 };
 #[doc(hidden)]
 pub use j2c::capabilities::required_magnitude_bound as htj2k_required_magnitude_bound;

@@ -87,6 +87,57 @@ impl J2kReferenceGrid {
             )
         })
     }
+
+    /// The samples of the image reduced by `levels` resolution levels that
+    /// lie inside `region` of the full-resolution image, in reduced image
+    /// coordinates. Each axis spans `[ceil((origin + x) / s), ceil((origin +
+    /// x + w) / s))` of the reduced reference grid (ITU-T T.800 B.5), the
+    /// area `opj_decompress -d` decodes. The result lies within
+    /// [`Self::reduced_region`], which also counts samples whose footprints
+    /// only partly overlap `region`, and it can be empty. `None` when
+    /// `region` is empty or leaves the image, or `levels` is 32 or more.
+    #[must_use]
+    pub fn reduced_area(&self, region: j2k_core::Rect, levels: u8) -> Option<j2k_core::Rect> {
+        let denominator = 1_u32.checked_shl(u32::from(levels))?;
+        (region.w > 0 && region.h > 0 && region.is_within(self.image_size)).then(|| {
+            let (x, w) = area_axis(region.x, region.w, self.image_origin.0, denominator);
+            let (y, h) = area_axis(region.y, region.h, self.image_origin.1, denominator);
+            j2k_core::Rect { x, y, w, h }
+        })
+    }
+}
+
+/// [`J2kReferenceGrid::reduced_area`] on one axis: the first reduced sample,
+/// relative to the reduced image's `ceil(origin / s)`, and the count.
+fn area_axis(start: u32, length: u32, origin: u32, denominator: u32) -> (u32, u32) {
+    let denominator = u64::from(denominator);
+    let origin = u64::from(origin);
+    let start = origin + u64::from(start);
+    let low = start.div_ceil(denominator);
+    let high = (start + u64::from(length)).div_ceil(denominator);
+    // Both lie within the reduced image, whose size is at most the full size.
+    let offset = u32::try_from(low - origin.div_ceil(denominator)).unwrap_or(u32::MAX);
+    let count = u32::try_from(high - low).unwrap_or(u32::MAX);
+    (offset, count)
+}
+
+/// Coding-style defaults from a codestream's main-header COD marker.
+///
+/// The marker is described in ITU-T T.800 A.6.1. Tile-part COD and COC
+/// markers can override these defaults for a tile or a component;
+/// [`crate::J2kDecoder::max_reduction_levels`] reports the reduction every
+/// tile and component supports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct J2kCodingStyle {
+    /// Packet progression order.
+    pub progression_order: crate::J2kProgressionOrder,
+    /// Number of quality layers.
+    pub quality_layers: u16,
+    /// Number of wavelet decomposition levels.
+    pub decomposition_levels: u8,
+    /// Nominal code-block width and height.
+    pub code_block_size: (u32, u32),
 }
 
 /// Full parsed JPEG 2000 / HTJ2K support metadata.
