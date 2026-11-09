@@ -21,7 +21,7 @@ use crate::{encode::allocation as encode_allocation, Error};
 // One baseline MCU has at most six 8x8 blocks. A block needs at most 250 raw
 // entropy bytes: one 31-bit DC code/value, up to 63 31-bit AC code/values, and
 // a 16-bit EOB. Leave the remainder for whole-byte addressing in the shader.
-const JPEG_BASELINE_ENCODE_SEGMENT_BYTES: u32 = 1536;
+pub(in crate::compute) const JPEG_BASELINE_ENCODE_SEGMENT_BYTES: u32 = 1536;
 
 fn staged_coefficient_plan(params: &[JpegBaselineEncodeParams]) -> Result<(usize, u32), Error> {
     let mut coefficient_count = 0usize;
@@ -83,7 +83,7 @@ fn staged_coefficient_plan(params: &[JpegBaselineEncodeParams]) -> Result<(usize
     Ok((coefficient_count, mcu_count))
 }
 
-fn record_baseline_entropy_passes(
+pub(in crate::compute) fn record_baseline_entropy_passes(
     runtime: &MetalRuntime,
     command_buffer: &CommandBufferRef,
     buffers: [&BufferRef; 6],

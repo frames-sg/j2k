@@ -3,8 +3,10 @@ use j2k_jpeg::{
     JpegBackend, JpegEncodeError, JpegEncodeOptions, JpegSamples, JpegSubsampling, PixelFormat,
 };
 use j2k_test_support::{
-    jpeg_encode_matrix_cases, jpeg_encode_matrix_digest, patterned_gray8, patterned_rgb8,
-    JpegEncodeMatrixCase, JpegEncodeMatrixSampling, JPEG_ENCODE_MATRIX_SHA256,
+    jpeg_encode_matrix_cases, jpeg_encode_matrix_digest, jpeg_entropy_segment,
+    jpeg_entropy_stage_cases, jpeg_entropy_stage_digest, jpeg_standard_tables, patterned_gray8,
+    patterned_rgb8, JpegEncodeMatrixCase, JpegEncodeMatrixSampling, JPEG_ENCODE_MATRIX_SHA256,
+    JPEG_ENTROPY_STAGE_SHA256,
 };
 use std::io::Cursor;
 
@@ -109,6 +111,42 @@ fn baseline_encoder_matches_the_cross_backend_golden() {
     assert_eq!(
         digest, JPEG_ENCODE_MATRIX_SHA256,
         "baseline JPEG codestream bytes changed"
+    );
+}
+
+/// The GPU entropy-stage tests that cannot call the CPU encoder take their
+/// tables from `jpeg_standard_tables` and check `JPEG_ENTROPY_STAGE_SHA256`;
+/// both are the CPU encoder's.
+#[test]
+fn entropy_stage_tables_and_golden_are_the_cpu_encoders() {
+    for quality in [20, 100] {
+        let tables = j2k_jpeg::adapter::baseline_encode_tables(JpegEncodeOptions {
+            quality,
+            subsampling: JpegSubsampling::Ybr444,
+            restart_interval: None,
+            backend: JpegBackend::Cpu,
+        })
+        .expect("standard tables");
+        let standard = jpeg_standard_tables(quality);
+        assert_eq!(tables.q_luma, standard.q_luma, "quality {quality}");
+        assert_eq!(tables.q_chroma, standard.q_chroma, "quality {quality}");
+        let huffman = [
+            tables.huff_dc_luma,
+            tables.huff_ac_luma,
+            tables.huff_dc_chroma,
+            tables.huff_ac_chroma,
+        ]
+        .map(|table| (table.codes, table.lens));
+        assert_eq!(huffman, standard.huffman, "quality {quality}");
+    }
+    let frames = jpeg_entropy_stage_cases()
+        .into_iter()
+        .map(encode_matrix_case)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        jpeg_entropy_stage_digest(frames.iter().map(|frame| jpeg_entropy_segment(frame))),
+        JPEG_ENTROPY_STAGE_SHA256,
+        "entropy-stage segments changed"
     );
 }
 

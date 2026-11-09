@@ -27,6 +27,8 @@ mod encode_staging_execution;
 #[cfg(feature = "cuda-oxide-jpeg-encode")]
 mod encode_staging_launch;
 mod encode_validation;
+#[cfg(all(test, feature = "cuda-oxide-jpeg-encode"))]
+mod entropy_stage_tests;
 mod lossless_encode;
 mod types;
 mod validation;

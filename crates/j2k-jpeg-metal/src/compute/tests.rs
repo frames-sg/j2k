@@ -2132,5 +2132,6 @@ fn single_scratch_recovers_after_gpu_entropy_failure() {
 
 mod colour_exhaustive;
 mod decode_kernel_harness;
+mod entropy_stage;
 mod fdct_canonical;
 mod surface_output_reuse;

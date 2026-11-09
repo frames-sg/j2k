@@ -15,6 +15,7 @@ mod dicom_matrix;
 mod fixtures;
 mod gpu_gate;
 mod jpeg_encode_matrix;
+mod jpeg_entropy_stage;
 mod jpeg_fixtures;
 mod lossless_matrix;
 mod manifest;
@@ -75,6 +76,11 @@ pub use gpu_gate::{
 pub use jpeg_encode_matrix::{
     jpeg_encode_matrix_cases, jpeg_encode_matrix_digest, jpeg_encode_padded_cases, replicate_edges,
     JpegEncodeMatrixCase, JpegEncodeMatrixSampling, JPEG_ENCODE_MATRIX_SHA256,
+};
+pub use jpeg_entropy_stage::{
+    jpeg_entropy_segment, jpeg_entropy_stage_cases, jpeg_entropy_stage_coefficients,
+    jpeg_entropy_stage_digest, jpeg_standard_tables, JpegHuffmanBySymbol, JpegStandardTables,
+    JPEG_ENTROPY_STAGE_SHA256, JPEG_ENTROPY_STAGE_SIZE,
 };
 /// Convenience prelude for the intentionally broad JPEG fixture catalog.
 ///
