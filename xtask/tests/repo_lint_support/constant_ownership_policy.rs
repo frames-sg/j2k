@@ -83,111 +83,6 @@ const DERIVED_FORM_PROOF: (&str, &str) = (
     "fn detected_backend_ycbcr_matches_scalar_for_every_chroma_pair()",
 );
 
-/// Copies other agents are removing in this release: `(path, literal,
-/// occurrences)`. The list may only shrink: an entry whose count no longer
-/// matches fails, so integration deletes or lowers it, and the total may not
-/// exceed `ALLOWLISTED_COPY_CEILING`.
-const ALLOWLISTED_COPIES: &[(&str, &str, usize)] = &[
-    // Agent A: CUDA and Metal JPEG colour conversion.
-    (
-        "crates/j2k-cuda-jpeg-engine/src/cuda_oxide_jpeg_decode/simt/src/main.rs",
-        "91881",
-        1,
-    ),
-    (
-        "crates/j2k-cuda-jpeg-engine/src/cuda_oxide_jpeg_decode/simt/src/main.rs",
-        "22554",
-        1,
-    ),
-    (
-        "crates/j2k-cuda-jpeg-engine/src/cuda_oxide_jpeg_decode/simt/src/main.rs",
-        "46802",
-        1,
-    ),
-    (
-        "crates/j2k-cuda-jpeg-engine/src/cuda_oxide_jpeg_decode/simt/src/main.rs",
-        "116130",
-        1,
-    ),
-    (
-        "crates/j2k-cuda-jpeg-engine/src/cuda_oxide_jpeg_encode/simt/src/main.rs",
-        "19595",
-        1,
-    ),
-    (
-        "crates/j2k-cuda-jpeg-engine/src/cuda_oxide_jpeg_encode/simt/src/main.rs",
-        "7471",
-        1,
-    ),
-    (
-        "crates/j2k-cuda-jpeg-engine/src/cuda_oxide_jpeg_encode/simt/src/main.rs",
-        "11059",
-        1,
-    ),
-    (
-        "crates/j2k-cuda-jpeg-engine/src/cuda_oxide_jpeg_encode/simt/src/main.rs",
-        "5329",
-        1,
-    ),
-    ("crates/j2k-jpeg-metal/src/shaders_encode.metal", "91881", 2),
-    ("crates/j2k-jpeg-metal/src/shaders_encode.metal", "22554", 2),
-    ("crates/j2k-jpeg-metal/src/shaders_encode.metal", "46802", 2),
-    (
-        "crates/j2k-jpeg-metal/src/shaders_encode.metal",
-        "116130",
-        2,
-    ),
-    ("crates/j2k-jpeg-metal/src/shaders_hybrid.metal", "91881", 3),
-    ("crates/j2k-jpeg-metal/src/shaders_hybrid.metal", "22554", 3),
-    ("crates/j2k-jpeg-metal/src/shaders_hybrid.metal", "46802", 3),
-    (
-        "crates/j2k-jpeg-metal/src/shaders_hybrid.metal",
-        "116130",
-        3,
-    ),
-    ("crates/j2k-jpeg-metal/src/shaders_shared.metal", "19595", 1),
-    ("crates/j2k-jpeg-metal/src/shaders_shared.metal", "7471", 1),
-    ("crates/j2k-jpeg-metal/src/shaders_shared.metal", "11059", 1),
-    ("crates/j2k-jpeg-metal/src/shaders_shared.metal", "5329", 1),
-    // Agent D: CUDA J2K encode forward ICT.
-    (
-        "crates/j2k-cuda-j2k-engine/src/cuda_oxide_j2k_encode/simt/src/helpers.rs",
-        "0.299",
-        1,
-    ),
-    (
-        "crates/j2k-cuda-j2k-engine/src/cuda_oxide_j2k_encode/simt/src/helpers.rs",
-        "0.587",
-        1,
-    ),
-    (
-        "crates/j2k-cuda-j2k-engine/src/cuda_oxide_j2k_encode/simt/src/helpers.rs",
-        "0.114",
-        1,
-    ),
-    (
-        "crates/j2k-cuda-j2k-engine/src/cuda_oxide_j2k_encode/simt/src/helpers.rs",
-        "0.16875",
-        1,
-    ),
-    (
-        "crates/j2k-cuda-j2k-engine/src/cuda_oxide_j2k_encode/simt/src/helpers.rs",
-        "0.33126",
-        1,
-    ),
-    (
-        "crates/j2k-cuda-j2k-engine/src/cuda_oxide_j2k_encode/simt/src/helpers.rs",
-        "0.41869",
-        1,
-    ),
-    (
-        "crates/j2k-cuda-j2k-engine/src/cuda_oxide_j2k_encode/simt/src/helpers.rs",
-        "0.08131",
-        1,
-    ),
-];
-const ALLOWLISTED_COPY_CEILING: usize = 39;
-
 const SCANNED_EXTENSIONS: &[&str] = &["rs", "metal", "cu", "h", "c", "cc", "cpp", "hpp", "py"];
 
 /// Generated fragments, independent test oracles, benches and the xtask that
@@ -260,29 +155,7 @@ fn ownership_failures(
             ));
         }
     }
-    let allowlisted_total: usize = ALLOWLISTED_COPIES.iter().map(|(_, _, count)| count).sum();
-    if allowlisted_total > ALLOWLISTED_COPY_CEILING {
-        failures.push(format!(
-            "ALLOWLISTED_COPIES holds {allowlisted_total} copies above the ceiling of {ALLOWLISTED_COPY_CEILING}; the list may only shrink"
-        ));
-    }
-    for (path, literal, allowed) in ALLOWLISTED_COPIES {
-        let found = copies
-            .get(&((*path).to_string(), (*literal).to_string()))
-            .map_or(0, Vec::len);
-        if found != *allowed {
-            failures.push(format!(
-                "allowlisted copy {path} `{literal}` occurs {found} times, not {allowed}; shrink or delete the ALLOWLISTED_COPIES entry"
-            ));
-        }
-    }
     for ((path, literal), lines) in copies {
-        let allowlisted = ALLOWLISTED_COPIES
-            .iter()
-            .any(|(entry, value, _)| entry == path && value == literal);
-        if allowlisted {
-            continue;
-        }
         let owner = owners[literal.as_str()];
         for line in lines {
             failures.push(format!(
