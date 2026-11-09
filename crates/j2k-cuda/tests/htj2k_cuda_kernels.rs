@@ -10,8 +10,8 @@ use j2k_cuda_j2k_engine::{
 use j2k_cuda_runtime::CudaContext;
 #[cfg(feature = "cuda-runtime")]
 use j2k_native::{
-    decode_ht_code_block_scalar, encode_ht_code_block_scalar, ht_uvlc_encode_table_bytes,
-    ht_vlc_encode_table0, ht_vlc_encode_table1, HtCodeBlockDecodeJob,
+    decode_ht_code_block_scalar, encode_ht_code_block_scalar, forward_ict_reference,
+    ht_uvlc_encode_table_bytes, ht_vlc_encode_table0, ht_vlc_encode_table1, HtCodeBlockDecodeJob,
     J2kPacketizationBlockCodingMode, J2kPacketizationCodeBlock, J2kPacketizationEncodeJob,
     J2kPacketizationPacketDescriptor, J2kPacketizationProgressionOrder, J2kPacketizationResolution,
     J2kPacketizationSubband,
@@ -609,15 +609,40 @@ fn cuda_forward_ict_kernel_matches_cpu_transform_when_required() {
         return;
     }
 
-    let mut red = [12.0f32, 25.0, 40.0, 60.0];
-    let mut green = [5.0f32, 15.0, 45.0, 100.0];
-    let mut blue = [90.0f32, 70.0, 30.0, 10.0];
-    let mut expected = Vec::with_capacity(red.len() * 3);
-    for ((r, g), b) in red.iter().copied().zip(green).zip(blue) {
-        expected.push(0.299 * r + 0.587 * g + 0.114 * b);
-        expected.push(-0.16875 * r - 0.33126 * g + 0.5 * b);
-        expected.push(0.5 * r - 0.41869 * g - 0.08131 * b);
+    // Level-shifted 8- and 16-bit samples, signed extremes and fractions: the
+    // CUDA kernel must reproduce the CPU transform's fused rounding exactly.
+    let values = [
+        -32768.0f32,
+        -128.0,
+        -127.0,
+        -64.5,
+        -1.0,
+        -0.25,
+        0.0,
+        0.125,
+        1.0,
+        3.0,
+        37.0,
+        63.75,
+        100.0,
+        127.0,
+        255.0,
+        4095.0,
+        32767.0,
+    ];
+    let mut red = Vec::new();
+    let mut green = Vec::new();
+    let mut blue = Vec::new();
+    for &r in &values {
+        for &g in &values {
+            for &b in &values {
+                red.push(r);
+                green.push(g);
+                blue.push(b);
+            }
+        }
     }
+    let expected = forward_ict_reference(vec![red.clone(), green.clone(), blue.clone()]);
 
     let runtime = CudaContext::system_default().expect("CUDA context");
     let engine = J2kCudaEngine::new(&runtime);
@@ -626,15 +651,20 @@ fn cuda_forward_ict_kernel_matches_cpu_transform_when_required() {
         .expect("CUDA forward ICT");
 
     assert_eq!(stats.kernel_dispatches(), 1);
-    for (((actual_y, actual_cb), actual_cr), expected) in red
-        .into_iter()
-        .zip(green)
-        .zip(blue)
-        .zip(expected.as_chunks::<3>().0)
-    {
-        assert!((actual_y - expected[0]).abs() < 0.0001);
-        assert!((actual_cb - expected[1]).abs() < 0.0001);
-        assert!((actual_cr - expected[2]).abs() < 0.0001);
+    for (component, (actual, expected)) in [red, green, blue].iter().zip(&expected).enumerate() {
+        if let Some(index) = actual
+            .iter()
+            .zip(expected)
+            .position(|(actual, expected)| actual.to_bits() != expected.to_bits())
+        {
+            panic!(
+                "forward ICT component {component} sample {index}: CPU={} ({:#010x}), CUDA={} ({:#010x})",
+                expected[index],
+                expected[index].to_bits(),
+                actual[index],
+                actual[index].to_bits(),
+            );
+        }
     }
 }
 

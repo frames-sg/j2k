@@ -2,6 +2,7 @@
 
 use crate::{simt_load, simt_store};
 use cuda_device::ptx_asm;
+use j2k_codec_math::mct;
 
 #[inline(always)]
 pub(crate) fn load_u8(ptr: *const u8, index: u64) -> u8 {
@@ -95,11 +96,24 @@ pub(crate) fn fused_mul_add_f32(
 
 #[inline(always)]
 pub(crate) fn forward_ict_rgb(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
-    // Match the CPU transform's target-independent nested fused rounding.
+    // Match the CPU transform's coefficients and target-independent nested
+    // fused rounding.
     (
-        fused_mul_add_f32(b, 0.114, fused_mul_add_f32(r, 0.299, 0.587 * g)),
-        fused_mul_add_f32(b, 0.5, fused_mul_add_f32(r, -0.16875, -0.33126 * g)),
-        fused_mul_add_f32(b, -0.08131, fused_mul_add_f32(r, 0.5, -0.41869 * g)),
+        fused_mul_add_f32(
+            b,
+            mct::ICT_FWD_Y_B,
+            fused_mul_add_f32(r, mct::ICT_FWD_Y_R, mct::ICT_FWD_Y_G * g),
+        ),
+        fused_mul_add_f32(
+            b,
+            mct::ICT_FWD_CB_B,
+            fused_mul_add_f32(r, mct::ICT_FWD_CB_R, mct::ICT_FWD_CB_G * g),
+        ),
+        fused_mul_add_f32(
+            b,
+            mct::ICT_FWD_CR_B,
+            fused_mul_add_f32(r, mct::ICT_FWD_CR_R, mct::ICT_FWD_CR_G * g),
+        ),
     )
 }
 

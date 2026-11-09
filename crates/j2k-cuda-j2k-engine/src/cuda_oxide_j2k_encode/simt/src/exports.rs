@@ -129,7 +129,11 @@ mod kernels {
         let r = load_f32_u64(plane0.cast_const(), idx);
         let g = load_f32_u64(plane1.cast_const(), idx);
         let b = load_f32_u64(plane2.cast_const(), idx);
-        store_f32_u64(plane0, idx, floor_f32((r + 2.0 * g + b) * 0.25));
+        store_f32_u64(
+            plane0,
+            idx,
+            floor_f32((r + 2.0 * g + b) * j2k_codec_math::mct::RCT_QUARTER),
+        );
         store_f32_u64(plane1, idx, b - g);
         store_f32_u64(plane2, idx, r - g);
     }
