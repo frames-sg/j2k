@@ -6,7 +6,7 @@
 // CI CUDA runner.
 
 #[cfg(feature = "cuda-runtime")]
-use j2k_cuda_j2k_engine::{CudaJ2kQuantizeJob, J2kCudaEngine};
+use j2k_cuda_j2k_engine::{CudaJ2kQuantizeJob, CudaJ2kStridedInterleavedPixels, J2kCudaEngine};
 #[cfg(feature = "cuda-runtime")]
 use j2k_cuda_runtime::CudaContext;
 #[cfg(feature = "cuda-runtime")]
@@ -297,6 +297,107 @@ fn cuda_deinterleave_matches_native_reference_when_required() {
             native.as_slice(),
             "12-bit signed deinterleave mismatch"
         );
+    }
+
+    // --- 4f: 10-, 12- and 14-bit unsigned samples in u16 words whose padding
+    // bits are set (12-bit DICOM, for example), through the host and the
+    // strided device kernels: both ignore the padding, as the CPU does ---
+    for bit_depth in [10u8, 12, 14] {
+        for num_components in [1u8, 3] {
+            let (width, height) = (37u32, 5u32);
+            let num_pixels = usize::try_from(width * height).expect("pixel count fits usize");
+            let pixels =
+                padded_unsigned_samples(num_pixels * usize::from(num_components), bit_depth);
+            let native = try_deinterleave_reference(
+                &pixels,
+                num_pixels,
+                u16::from(num_components),
+                bit_depth,
+                false,
+            )
+            .expect("valid native padded deinterleave input");
+            let label = format!("{bit_depth}-bit unsigned, {num_components} components");
+
+            let host = engine
+                .j2k_deinterleave_to_f32(&pixels, num_pixels, num_components, bit_depth, false)
+                .expect("CUDA deinterleave padded unsigned samples");
+            assert_f32_planes_bit_exact(host.components(), &native, &format!("host {label}"));
+
+            // Rows at a padded pitch and a nonzero offset exercise the strided kernel.
+            let row_bytes =
+                usize::try_from(width).expect("width fits usize") * usize::from(num_components) * 2;
+            let pitch_bytes = row_bytes + 6;
+            let byte_offset = 4usize;
+            let rows = usize::try_from(height).expect("height fits usize");
+            let mut device_bytes = vec![0xffu8; byte_offset + pitch_bytes * rows];
+            for (row, source) in pixels.chunks_exact(row_bytes).enumerate() {
+                let start = byte_offset + row * pitch_bytes;
+                device_bytes[start..start + row_bytes].copy_from_slice(source);
+            }
+            let buffer = runtime
+                .upload(&device_bytes)
+                .expect("upload strided pixels");
+            let strided = engine
+                .j2k_deinterleave_strided_to_f32_resident(CudaJ2kStridedInterleavedPixels {
+                    buffer: &buffer,
+                    byte_offset,
+                    width,
+                    height,
+                    pitch_bytes,
+                    num_components,
+                    bit_depth,
+                    signed: false,
+                })
+                .expect("CUDA strided deinterleave padded unsigned samples")
+                .download_components()
+                .expect("download strided deinterleave output");
+            assert_f32_planes_bit_exact(&strided, &native, &format!("strided {label}"));
+        }
+    }
+}
+
+/// Little-endian u16 samples of `bit_depth` bits whose padding bits above the
+/// precision are set, wholly or partly, in most words.
+#[cfg(feature = "cuda-runtime")]
+fn padded_unsigned_samples(count: usize, bit_depth: u8) -> Vec<u8> {
+    let mask = (1u32 << bit_depth) - 1;
+    let padding = 0xffff & !mask;
+    (0..count)
+        .flat_map(|index| {
+            let index = u32::try_from(index).expect("sample index fits u32");
+            let value = (index.wrapping_mul(2_654_435_761) >> 9) & mask;
+            let high = match index % 4 {
+                0 => padding,
+                1 => 0xf800 & padding,
+                2 => 0,
+                _ => padding & (padding << 1),
+            };
+            u16::try_from(value | high)
+                .expect("sample fits u16")
+                .to_le_bytes()
+        })
+        .collect()
+}
+
+#[cfg(feature = "cuda-runtime")]
+fn assert_f32_planes_bit_exact(actual: &[Vec<f32>], expected: &[Vec<f32>], label: &str) {
+    assert_eq!(actual.len(), expected.len(), "{label}: component count");
+    for (component, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+        assert_eq!(
+            actual.len(),
+            expected.len(),
+            "{label}: component {component} length"
+        );
+        if let Some(index) = actual
+            .iter()
+            .zip(expected)
+            .position(|(actual, expected)| actual.to_bits() != expected.to_bits())
+        {
+            panic!(
+                "{label}: component {component} sample {index}: CPU={} CUDA={}",
+                expected[index], actual[index]
+            );
+        }
     }
 }
 

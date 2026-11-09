@@ -46,6 +46,9 @@ mod kernels {
         } else {
             (1_u32 << (bit_depth - 1)) as f32
         };
+        // Bits above the precision are container padding (12-bit DICOM in u16
+        // words, for example); the CPU encoder ignores them, so mask them off.
+        let sample_mask = (1_u32 << bit_depth) - 1;
         let pixel_base = idx * num_components as u64 * bytes_per_sample as u64;
         let mut component = 0_u32;
         while component < num_components {
@@ -59,7 +62,7 @@ mod kernels {
             let sample = if is_signed != 0 {
                 sign_extend_u32(raw, bit_depth) as f32
             } else {
-                raw as f32 - unsigned_offset
+                (raw & sample_mask) as f32 - unsigned_offset
             };
             store_f32_u64(components, component as u64 * num_pixels + idx, sample);
             component += 1;
@@ -90,6 +93,9 @@ mod kernels {
         } else {
             (1_u32 << (bit_depth - 1)) as f32
         };
+        // Bits above the precision are container padding (12-bit DICOM in u16
+        // words, for example); the CPU encoder ignores them, so mask them off.
+        let sample_mask = (1_u32 << bit_depth) - 1;
         let y = idx / width;
         let x = idx - y * width;
         let pixel_base =
@@ -106,7 +112,7 @@ mod kernels {
             let sample = if is_signed != 0 {
                 sign_extend_u32(raw, bit_depth) as f32
             } else {
-                raw as f32 - unsigned_offset
+                (raw & sample_mask) as f32 - unsigned_offset
             };
             store_f32_u64(components, component as u64 * num_pixels + idx, sample);
             component += 1;

@@ -7,6 +7,7 @@ mod resident;
 mod resident_session;
 mod resident_tiles;
 mod routing;
+mod sample_precision;
 mod transforms;
 
 #[cfg(feature = "cuda-runtime")]
