@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+// The workers' reviewed Send impls expect this nursery lint; enable it so
+// every lint run, not only the strict gate, checks those expectations.
+#![warn(clippy::non_send_fields_in_send_ty)]
+
 use core::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use criterion::{criterion_group, criterion_main, Criterion};

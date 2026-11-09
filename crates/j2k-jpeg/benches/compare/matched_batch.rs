@@ -9,6 +9,14 @@ use crate::common::{libjpeg_turbo_available, DecodeMode, TurboJpegDecoder};
 
 struct WorkerDecoder(TurboJpegDecoder);
 
+// Without libjpeg-turbo the decoder is a field-less stand-in, which is Send.
+#[cfg_attr(
+    has_libjpeg_turbo,
+    expect(
+        clippy::non_send_fields_in_send_ty,
+        reason = "the libjpeg-turbo handle moves to one scoped worker at a time, as the SAFETY comment states"
+    )
+)]
 // SAFETY: Each TurboJPEG instance owns independent state. This wrapper transfers
 // exclusive access to one scoped worker at a time; no handle is shared between
 // concurrent decodes, and all workers join before the handles can be destroyed.

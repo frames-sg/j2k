@@ -22,6 +22,10 @@ struct TurboWorker {
     job_encoder_indices: Vec<usize>,
 }
 
+#[expect(
+    clippy::non_send_fields_in_send_ty,
+    reason = "the libjpeg-turbo handle moves to one scoped worker at a time, as the SAFETY comment states"
+)]
 // SAFETY: every TurboEncoder owns an independent compressor. The common
 // scoped runner lends each worker exclusively to one thread, joins that thread
 // before returning, and never shares a compressor between workers.
