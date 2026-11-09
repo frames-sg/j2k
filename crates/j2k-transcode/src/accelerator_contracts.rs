@@ -395,7 +395,33 @@ impl TranscodeStageDispatchMode {
 }
 
 /// Optional backend for SIMD, GPU, or other accelerated transform stages.
+///
+/// # 9/7 precision contract
+///
+/// The 9/7 hooks are offered only for the default
+/// [`TranscodePrecision::F32`](crate::TranscodePrecision::F32) transcode. Their
+/// results must be bit-identical to the canonical binary32 sequence in
+/// `j2k_codec_math::transcode97`: float bands carry those `f32` values widened
+/// to `f64`, and quantized or preencoded code blocks use its reciprocal-step
+/// quantizer. [`TranscodePrecision::F64`](crate::TranscodePrecision::F64)
+/// always runs on the CPU; see [`Self::check_dwt97_precision`].
 pub trait DctToWaveletStageAccelerator {
+    /// Check whether an irreversible 9/7 transcode at `precision` may run with
+    /// this accelerator.
+    ///
+    /// Only [`TranscodePrecision::F32`](crate::TranscodePrecision::F32) work is
+    /// offered to the 9/7 hooks; `F64` work always runs on the CPU. An
+    /// accelerator the caller requested explicitly for device execution
+    /// returns [`TranscodeStageError::Unsupported`] for `F64` so the request
+    /// fails instead of silently running on the CPU. The default accepts every
+    /// precision.
+    fn check_dwt97_precision(
+        &self,
+        _precision: crate::TranscodePrecision,
+    ) -> Result<(), TranscodeStageError> {
+        Ok(())
+    }
+
     /// Whether this accelerator wants same-geometry 9/7 batch jobs offered.
     ///
     /// The default is false so CPU-only fallback paths do not pay the memory

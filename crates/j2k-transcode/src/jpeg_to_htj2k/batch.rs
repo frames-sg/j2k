@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::{
-    dct_blocks_to_8x8_f64, decompose_97_from_first_level,
+    check_accelerator_precision, dct_blocks_to_8x8_f64,
     encode_precomputed_htj2k_53_with_accelerator_and_max_host_bytes,
     encode_precomputed_htj2k_97_batch_owned_with_accelerator_and_max_host_bytes,
     encode_precomputed_htj2k_97_with_accelerator_and_max_host_bytes,
@@ -11,25 +11,23 @@ use super::{
     encode_preencoded_htj2k_97_owned_with_accelerator_and_max_host_bytes_and_required_magnitude_bound,
     encode_prequantized_htj2k_97_with_accelerator_and_max_host_bytes,
     encoded_transcode_retained_bytes, error_metrics_i32_with_live_budget, flatten_integer_wavelet,
-    float97_reference_coefficients, float_direct_97_wavelet_from_component,
-    float_reference_coefficients, integer_dct_job_for_component,
+    float97_reference_coefficients, float_reference_coefficients, integer_dct_job_for_component,
     integer_direct_wavelet_from_component, integer_reference_coefficients,
-    integer_wavelet_from_first_level, j2k_dwt97_from_wavelet, j2k_dwt_from_integer_wavelet,
-    jpeg_to_htj2k_with_scratch, map_encode_error, rounded_wavelet97_i32, transcode_path_name,
-    validate_component_block_grid, validate_jpeg_transcode_workspace, validate_transcode_options,
-    BatchTranscodeReport, ComponentWavelet97, CpuOnlyJ2kEncodeStageAccelerator,
-    DctGridI16ToHtj2k97CodeBlockBatch, DctGridI16ToHtj2k97CodeBlockJob, DctGridToDwt97Job,
-    DctGridToHtj2k97CodeBlockJob, DctToWaveletStageAccelerator, Dwt97BatchStageTimings,
-    EncodedTranscode, EncodedTranscodeBatch, HostLiveBudget, Htj2k97CodeBlockOptions,
-    IndexedParallelIterator, Instant, IntegerWavelet, IntoParallelIterator,
-    IntoParallelRefIterator, J2kEncodeDispatchReport, J2kEncodeStageAccelerator, JpegDctImage,
-    JpegTileBatchInput, JpegToHtj2kCoefficientPath, JpegToHtj2kEncodeOptions, JpegToHtj2kError,
-    JpegToHtj2kOptions, JpegToHtj2kScratch, JpegToHtj2kTranscoder, ParallelIterator,
-    PrecomputedHtj2k53Component, PrecomputedHtj2k53Image, PrecomputedHtj2k97Component,
-    PrecomputedHtj2k97Image, PreencodedHtj2k97CompactComponent, PreencodedHtj2k97CompactImage,
-    PreencodedHtj2k97Component, PreencodedHtj2k97Image, PrequantizedHtj2k97Component,
-    PrequantizedHtj2k97Image, TranscodeComponentReport, TranscodeReport, TranscodeTimingReport,
-    TranscodeValidationClassification,
+    integer_wavelet_from_first_level, j2k_dwt_from_integer_wavelet, jpeg_to_htj2k_with_scratch,
+    map_encode_error, transcode_path_name, validate_component_block_grid,
+    validate_jpeg_transcode_workspace, validate_transcode_options, BatchTranscodeReport,
+    CpuOnlyJ2kEncodeStageAccelerator, DctGridI16ToHtj2k97CodeBlockBatch,
+    DctGridI16ToHtj2k97CodeBlockJob, DctGridToDwt97Job, DctGridToHtj2k97CodeBlockJob,
+    DctToWaveletStageAccelerator, Dwt97BatchStageTimings, EncodedTranscode, EncodedTranscodeBatch,
+    HostLiveBudget, Htj2k97CodeBlockOptions, IndexedParallelIterator, Instant, IntegerWavelet,
+    IntoParallelIterator, IntoParallelRefIterator, J2kEncodeDispatchReport,
+    J2kEncodeStageAccelerator, JpegDctImage, JpegTileBatchInput, JpegToHtj2kCoefficientPath,
+    JpegToHtj2kEncodeOptions, JpegToHtj2kError, JpegToHtj2kOptions, JpegToHtj2kScratch,
+    JpegToHtj2kTranscoder, ParallelIterator, PrecomputedHtj2k53Component, PrecomputedHtj2k53Image,
+    PrecomputedHtj2k97Component, PrecomputedHtj2k97Image, PreencodedHtj2k97CompactComponent,
+    PreencodedHtj2k97CompactImage, PreencodedHtj2k97Component, PreencodedHtj2k97Image,
+    PrequantizedHtj2k97Component, PrequantizedHtj2k97Image, TranscodeComponentReport,
+    TranscodePrecision, TranscodeReport, TranscodeTimingReport, TranscodeValidationClassification,
 };
 use crate::allocation::try_vec_with_capacity;
 mod group_budget;
@@ -92,13 +90,16 @@ fn validate_batch_route(
     accelerator: &impl DctToWaveletStageAccelerator,
 ) -> Result<BatchExecutionRoute, JpegToHtj2kError> {
     validate_transcode_options(options)?;
+    check_accelerator_precision(options, accelerator)?;
     let (route, workspace_kind) = match options.coefficient_path {
         JpegToHtj2kCoefficientPath::IntegerDirect53 => {
             (BatchExecutionRoute::Integer53, BatchWorkspaceKind::Integer)
         }
+        // Binary64 9/7 is CPU-only and runs tile by tile.
         JpegToHtj2kCoefficientPath::FloatDirectLinear97
-            if accelerator.supports_dwt97_batch()
-                || accelerator.supports_htj2k97_codeblock_batch() =>
+            if options.precision == TranscodePrecision::F32
+                && (accelerator.supports_dwt97_batch()
+                    || accelerator.supports_htj2k97_codeblock_batch()) =>
         {
             (
                 BatchExecutionRoute::AcceleratedFloat97,

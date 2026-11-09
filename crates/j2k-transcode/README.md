@@ -12,6 +12,21 @@ errors retain input order. Explicit accelerator calls keep their component
 batching. Parallel CPU stage reports sum per-tile intervals, so they can exceed
 elapsed batch latency.
 
+## 9/7 precision
+
+The irreversible 9/7 path computes in IEEE binary32 by default
+(`TranscodePrecision::F32`). The IDCT, lifting and quantizer follow one
+operation sequence, defined in `j2k_codec_math::transcode97`, that the CPU,
+Metal and CUDA backends all evaluate. The same JPEG and options therefore give
+byte-identical codestreams on every backend. The quantizer multiplies by the
+binary32 reciprocal of each step size.
+
+`TranscodePrecision::F64` keeps the binary64 path that was the default before
+this release. It reproduces that release's CPU output byte for byte. It runs
+only on the CPU, and its output differs from GPU output. An explicit Metal or
+CUDA accelerator rejects it with `TranscodeStageError::Unsupported`; `Auto`
+runs it on the CPU.
+
 `ResidentJpegDctGrid`, `ResidentDwtSubband`, and `ResidentCodestreamBuffer`
 describe GPU buffers for adapters that keep transcode stages in device memory;
 their constructors check the metadata.

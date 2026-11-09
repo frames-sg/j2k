@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // j2k-coverage: shared-accelerator-host
 
+use super::super::canonical97::canonical_prequantized_route;
 use super::{
     add_dwt97_batch_stage_timings, dct_blocks_to_8x8_f64, htj2k97_codeblock_options,
     i16_htj2k97_jobs_for_batch_group, record_accelerator_attempt, record_batch_dispatch,
@@ -78,6 +79,7 @@ pub(in super::super) fn try_store_grouped_i16_preencoded_float97_batches<
     let mut handled = try_vec_filled(groups.len(), false)?;
     if !accelerator.supports_htj2k97_i16_preencoded_batch()
         || options.validate_against_float_reference
+        || !canonical_prequantized_route(&options.encode_options)
         || groups.len() <= 1
     {
         return Ok(handled);
@@ -253,9 +255,13 @@ pub(in super::super) fn try_store_prequantized_float97_batch_group<
     accelerator: &mut A,
     timings: &mut TranscodeTimingReport,
 ) -> Result<bool, JpegToHtj2kError> {
+    // Device code blocks use the canonical quantizer, which the CPU applies
+    // only on the prequantized route; other options keep float bands so the
+    // native encoder quantizes every backend's output identically.
     if !(accelerator.supports_htj2k97_codeblock_batch()
         || accelerator.supports_htj2k97_i16_preencoded_batch())
         || options.validate_against_float_reference
+        || !canonical_prequantized_route(&options.encode_options)
         || group
             .iter()
             .any(|component_ref| tiles[component_ref.tile_index].decomposition_levels != 1)

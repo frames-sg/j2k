@@ -16,14 +16,40 @@ pub fn htj2k97_subband_delta(
     options: Htj2k97CodeBlockOptions,
     sub_band_type: J2kSubBandType,
 ) -> f64 {
+    htj2k97_level_delta(options, sub_band_type, 1, 1)
+}
+
+/// Deadzone step `Δ` for a subband at decomposition `level` (1 is finest; LL
+/// lies at `levels`) of a `levels`-deep 9/7 decomposition.
+pub(crate) fn htj2k97_level_delta(
+    options: Htj2k97CodeBlockOptions,
+    sub_band_type: J2kSubBandType,
+    level: u8,
+    levels: u8,
+) -> f64 {
     let log_gain = match sub_band_type {
         J2kSubBandType::LowLow => 0,
         J2kSubBandType::HighLow | J2kSubBandType::LowHigh => 1,
         J2kSubBandType::HighHigh => 2,
     };
     let range_bits = i32::from(options.bit_depth) + log_gain;
-    let (exponent, mantissa) = htj2k97_step(options, sub_band_type);
+    let (exponent, mantissa) = htj2k97_level_step(options, sub_band_type, level, levels);
     pow2i_f64(range_bits - i32::from(exponent)) * (1.0 + f64::from(mantissa) / 2048.0)
+}
+
+/// Declared bitplanes for every code-block of a subband at decomposition
+/// `level` of a `levels`-deep 9/7 decomposition.
+pub(crate) fn htj2k97_level_total_bitplanes(
+    options: Htj2k97CodeBlockOptions,
+    sub_band_type: J2kSubBandType,
+    level: u8,
+    levels: u8,
+) -> u8 {
+    let (exponent, _) = htj2k97_level_step(options, sub_band_type, level, levels);
+    options
+        .guard_bits
+        .saturating_add(exponent)
+        .saturating_sub(1)
 }
 
 /// Total declared bitplanes for every code-block in a subband.
@@ -36,11 +62,7 @@ pub fn htj2k97_subband_total_bitplanes(
     options: Htj2k97CodeBlockOptions,
     sub_band_type: J2kSubBandType,
 ) -> u8 {
-    let (exponent, _) = htj2k97_step(options, sub_band_type);
-    options
-        .guard_bits
-        .saturating_add(exponent)
-        .saturating_sub(1)
+    htj2k97_level_total_bitplanes(options, sub_band_type, 1, 1)
 }
 
 /// Validate 9/7 code-block options against the numeric limits both GPU
@@ -129,15 +151,27 @@ fn checked_code_block_dim(
 ///
 /// Code-block jobs carry one decomposition level, so every subband uses the
 /// steps the native encoder signals for a one-level 9/7 decomposition.
+#[cfg(test)]
 fn htj2k97_step(options: Htj2k97CodeBlockOptions, sub_band_type: J2kSubBandType) -> (u8, u16) {
+    htj2k97_level_step(options, sub_band_type, 1, 1)
+}
+
+/// `(exponent, mantissa)` the native encoder signals for a subband at
+/// decomposition `level` of a `levels`-deep 9/7 decomposition.
+fn htj2k97_level_step(
+    options: Htj2k97CodeBlockOptions,
+    sub_band_type: J2kSubBandType,
+    level: u8,
+    levels: u8,
+) -> (u8, u16) {
     let step = irreversible_quantization_step_for_subband(
         options.bit_depth,
         options.guard_bits,
         options.irreversible_quantization_scale,
         options.irreversible_quantization_subband_scales,
         sub_band_type,
-        1,
-        1,
+        level,
+        levels,
     );
     (step.exponent, step.mantissa)
 }

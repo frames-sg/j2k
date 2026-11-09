@@ -9,6 +9,10 @@ use super::{
     PrecomputedComponentBatch, PrecomputedHtj2k53Component, PrecomputedHtj2k97Component,
     TranscodeReport, TranscodeValidationMetrics,
 };
+use crate::{
+    PrequantizedHtj2k97CodeBlock, PrequantizedHtj2k97Component, PrequantizedHtj2k97Resolution,
+    PrequantizedHtj2k97Subband,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct HostLiveBudget {
@@ -101,6 +105,29 @@ pub(super) fn precomputed_batch_retained_bytes(
             budget.add_capacity::<PrecomputedHtj2k97Component>(components.capacity())?;
             for component in components {
                 budget.add_bytes(dwt97_retained_bytes(&component.dwt)?)?;
+            }
+        }
+        PrecomputedComponentBatch::Prequantized97(components) => {
+            budget.add_capacity::<PrequantizedHtj2k97Component>(components.capacity())?;
+            for component in components {
+                budget.add_bytes(prequantized97_retained_bytes(component)?)?;
+            }
+        }
+    }
+    Ok(budget.live_bytes())
+}
+
+pub(super) fn prequantized97_retained_bytes(
+    component: &PrequantizedHtj2k97Component,
+) -> Result<usize, JpegToHtj2kError> {
+    let mut budget = HostLiveBudget::process_cap();
+    budget.add_capacity::<PrequantizedHtj2k97Resolution>(component.resolutions.capacity())?;
+    for resolution in &component.resolutions {
+        budget.add_capacity::<PrequantizedHtj2k97Subband>(resolution.subbands.capacity())?;
+        for subband in &resolution.subbands {
+            budget.add_capacity::<PrequantizedHtj2k97CodeBlock>(subband.code_blocks.capacity())?;
+            for block in &subband.code_blocks {
+                budget.add_capacity::<i32>(block.coefficients.capacity())?;
             }
         }
     }

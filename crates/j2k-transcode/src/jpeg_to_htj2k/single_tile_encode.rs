@@ -2,10 +2,11 @@
 
 use super::{
     encode_precomputed_htj2k_53_with_accelerator_and_max_host_bytes,
-    encode_precomputed_htj2k_97_with_accelerator_and_max_host_bytes, map_encode_error,
+    encode_precomputed_htj2k_97_with_accelerator_and_max_host_bytes,
+    encode_prequantized_htj2k_97_with_accelerator_and_max_host_bytes, map_encode_error,
     record_encode_dispatch_delta, Instant, J2kEncodeStageAccelerator, JpegToHtj2kError,
     JpegToHtj2kOptions, PrecomputedComponentBatch, PrecomputedHtj2k53Image,
-    PrecomputedHtj2k97Image, TranscodeTimingReport,
+    PrecomputedHtj2k97Image, PrequantizedHtj2k97Image, TranscodeTimingReport,
 };
 
 pub(super) fn encode_component_batch<E: J2kEncodeStageAccelerator>(
@@ -47,6 +48,22 @@ pub(super) fn encode_component_batch<E: J2kEncodeStageAccelerator>(
             };
             encode_precomputed_htj2k_97_with_accelerator_and_max_host_bytes(
                 &precomputed,
+                &native_encode_options,
+                encode_accelerator,
+                max_host_bytes,
+            )
+            .map_err(map_encode_error)?
+        }
+        PrecomputedComponentBatch::Prequantized97(components) => {
+            let prequantized = PrequantizedHtj2k97Image {
+                width,
+                height,
+                bit_depth: 8,
+                signed: false,
+                components,
+            };
+            encode_prequantized_htj2k_97_with_accelerator_and_max_host_bytes(
+                &prequantized,
                 &native_encode_options,
                 encode_accelerator,
                 max_host_bytes,

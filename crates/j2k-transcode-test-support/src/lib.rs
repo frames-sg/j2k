@@ -4,11 +4,15 @@
 
 #![forbid(unsafe_code)]
 
+mod canonical97;
 pub mod corpus_validation;
 pub mod dct53_1d;
 pub mod dct53_multilevel;
 mod dwt_diff;
 mod move_only;
+pub mod transcode97_matrix;
+
+pub use canonical97::{canonical_dwt97_from_blocks, canonical_prequantized_component_from_dwt97};
 
 use j2k_transcode::{
     htj2k97_subband_delta, htj2k97_subband_total_bitplanes, Dwt97TwoDimensional,
@@ -34,13 +38,47 @@ pub fn prequantized_component_from_dwt97(
     x_rsiz: u8,
     y_rsiz: u8,
 ) -> PrequantizedHtj2k97Component {
+    let quantize = |values: &[f64], sub_band_type| {
+        quantize_subband_coefficients(values, sub_band_type, options)
+    };
+    codeblock_component_from_quantized(
+        &QuantizedBands {
+            ll: quantize(&dwt.ll, J2kSubBandType::LowLow),
+            hl: quantize(&dwt.hl, J2kSubBandType::HighLow),
+            lh: quantize(&dwt.lh, J2kSubBandType::LowHigh),
+            hh: quantize(&dwt.hh, J2kSubBandType::HighHigh),
+        },
+        dwt,
+        options,
+        x_rsiz,
+        y_rsiz,
+    )
+}
+
+/// Quantized coefficients of one decomposition level, row-major per band.
+struct QuantizedBands {
+    ll: Vec<i32>,
+    hl: Vec<i32>,
+    lh: Vec<i32>,
+    hh: Vec<i32>,
+}
+
+/// Nest quantized single-level bands into resolutions: resolution 0 holds
+/// `[LL]`, resolution 1 holds `[HL, LH, HH]`.
+fn codeblock_component_from_quantized(
+    bands: &QuantizedBands,
+    dwt: &Dwt97TwoDimensional<f64>,
+    options: Htj2k97CodeBlockOptions,
+    x_rsiz: u8,
+    y_rsiz: u8,
+) -> PrequantizedHtj2k97Component {
     PrequantizedHtj2k97Component {
         x_rsiz,
         y_rsiz,
         resolutions: vec![
             PrequantizedHtj2k97Resolution {
-                subbands: vec![quantize_codeblock_subband(
-                    &dwt.ll,
+                subbands: vec![slice_codeblock_subband(
+                    &bands.ll,
                     dwt.low_width,
                     dwt.low_height,
                     J2kSubBandType::LowLow,
@@ -49,22 +87,22 @@ pub fn prequantized_component_from_dwt97(
             },
             PrequantizedHtj2k97Resolution {
                 subbands: vec![
-                    quantize_codeblock_subband(
-                        &dwt.hl,
+                    slice_codeblock_subband(
+                        &bands.hl,
                         dwt.high_width,
                         dwt.low_height,
                         J2kSubBandType::HighLow,
                         options,
                     ),
-                    quantize_codeblock_subband(
-                        &dwt.lh,
+                    slice_codeblock_subband(
+                        &bands.lh,
                         dwt.low_width,
                         dwt.high_height,
                         J2kSubBandType::LowHigh,
                         options,
                     ),
-                    quantize_codeblock_subband(
-                        &dwt.hh,
+                    slice_codeblock_subband(
+                        &bands.hh,
                         dwt.high_width,
                         dwt.high_height,
                         J2kSubBandType::HighHigh,
@@ -94,6 +132,16 @@ pub fn quantize_codeblock_subband(
     options: Htj2k97CodeBlockOptions,
 ) -> PrequantizedHtj2k97Subband {
     let quantized = quantize_subband_coefficients(coefficients, sub_band_type, options);
+    slice_codeblock_subband(&quantized, width, height, sub_band_type, options)
+}
+
+fn slice_codeblock_subband(
+    quantized: &[i32],
+    width: usize,
+    height: usize,
+    sub_band_type: J2kSubBandType,
+    options: Htj2k97CodeBlockOptions,
+) -> PrequantizedHtj2k97Subband {
     let cb_width = htj2k97_code_block_dim(options.code_block_width_exp);
     let cb_height = htj2k97_code_block_dim(options.code_block_height_exp);
     let num_cbs_x = width.div_ceil(cb_width);

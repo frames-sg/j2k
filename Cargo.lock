@@ -2924,7 +2924,10 @@ dependencies = [
 name = "j2k-transcode-test-support"
 version = "0.14.0"
 dependencies = [
+ "j2k-codec-math",
+ "j2k-jpeg",
  "j2k-native",
+ "j2k-test-support",
  "j2k-transcode",
  "j2k-types",
 ]

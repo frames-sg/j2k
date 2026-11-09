@@ -51,7 +51,7 @@ use crate::{
 
 mod options;
 pub use self::options::{
-    JpegToHtj2kCoefficientPath, JpegToHtj2kEncodeOptions, JpegToHtj2kOptions,
+    JpegToHtj2kCoefficientPath, JpegToHtj2kEncodeOptions, JpegToHtj2kOptions, TranscodePrecision,
     JPEG_TO_HTJ2K_LOSSY_97_QUANTIZATION_SCALE,
 };
 mod report;
@@ -65,7 +65,7 @@ use self::error::{dct53_transform_error, dct97_transform_error, map_encode_error
 pub use self::error::{Htj2kEncodeError, Htj2kEncodeErrorKind, JpegToHtj2kError};
 mod validation;
 use self::validation::{
-    component_sampling_for_jpeg, decomposition_levels_for_components,
+    check_accelerator_precision, component_sampling_for_jpeg, decomposition_levels_for_components,
     validate_component_block_grid, validate_transcode_options,
 };
 mod workspace;
@@ -88,10 +88,11 @@ mod component_groups;
 use self::component_groups::same_geometry_component_groups;
 mod float_reference;
 use self::float_reference::{
-    dct_blocks_to_8x8_f64, decompose_97_from_first_level, float97_reference_coefficients,
-    float_direct_97_wavelet_from_component, float_direct_wavelet_from_component,
-    float_reference_coefficients, ComponentWavelet, ComponentWavelet97,
+    dct_blocks_to_8x8_f64, float97_reference_coefficients, float_direct_97_wavelet_from_component,
+    float_direct_wavelet_from_component, float_reference_coefficients, ComponentWavelet,
+    ComponentWavelet97,
 };
+mod canonical97;
 mod float_output;
 use self::float_output::{
     j2k_dwt97_from_wavelet, j2k_dwt_from_integer_wavelet, j2k_dwt_from_wavelet,

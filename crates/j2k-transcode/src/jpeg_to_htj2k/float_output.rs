@@ -152,7 +152,7 @@ fn append_rounded_i32(values: &[f64], output: &mut Vec<i32>) -> Result<(), JpegT
     clippy::cast_possible_truncation,
     reason = "the finite rounded coefficient is explicitly checked against the complete i32 range"
 )]
-fn round_f64_to_i32(value: f64) -> Result<i32, JpegToHtj2kError> {
+pub(super) fn round_f64_to_i32(value: f64) -> Result<i32, JpegToHtj2kError> {
     let rounded = value.round();
     if !rounded.is_finite() {
         return Err(JpegToHtj2kError::Validation(

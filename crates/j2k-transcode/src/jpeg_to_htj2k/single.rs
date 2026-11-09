@@ -3,10 +3,10 @@
 use std::time::Instant;
 
 use super::{
-    component_sampling_for_jpeg, decomposition_levels_for_components, encode_component_batch,
-    encoded_transcode_retained_bytes, extract_dct_blocks, precomputed_batch_retained_bytes,
-    transcode_component_batch, transcode_path_name, try_vec_with_capacity,
-    validate_jpeg_transcode_workspace, validate_transcode_options,
+    check_accelerator_precision, component_sampling_for_jpeg, decomposition_levels_for_components,
+    encode_component_batch, encoded_transcode_retained_bytes, extract_dct_blocks,
+    precomputed_batch_retained_bytes, transcode_component_batch, transcode_path_name,
+    try_vec_with_capacity, validate_jpeg_transcode_workspace, validate_transcode_options,
     validation_metrics_retained_bytes, ComponentBatchRequest, ComponentTranscodeBatch,
     DctExtractOptions, DctToWaveletStageAccelerator, EncodedTranscode, HostLiveBudget,
     J2kEncodeStageAccelerator, JpegDctImage, JpegToHtj2kError, JpegToHtj2kOptions,
@@ -169,6 +169,7 @@ pub(super) fn jpeg_to_htj2k_with_scratch<
     encode_accelerator: &mut E,
     external_live_bytes: usize,
 ) -> Result<EncodedTranscode, JpegToHtj2kError> {
+    check_accelerator_precision(options, accelerator)?;
     let (
         PreparedJpegTranscode {
             jpeg,

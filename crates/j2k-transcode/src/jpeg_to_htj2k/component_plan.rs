@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use super::canonical97::{
+    canonical_97_wavelet_from_component, canonical_encode_component, rounded_wavelet97_f32_i32,
+};
 use super::{
     error_metrics_i32_with_live_budget, flatten_integer_wavelet, float97_reference_coefficients,
     float_direct_97_wavelet_from_component, float_direct_wavelet_from_component,
@@ -10,10 +13,11 @@ use super::{
     same_geometry_component_groups, validate_component_block_grid, DctGridToReversibleDwt53Job,
     DctToWaveletStageAccelerator, HostLiveBudget, Instant, IntegerWavelet, JpegDctComponent,
     JpegToHtj2kCoefficientPath, JpegToHtj2kError, JpegToHtj2kOptions, JpegToHtj2kScratch,
-    PrecomputedHtj2k53Component, PrecomputedHtj2k97Component, TranscodeTimingReport,
-    TranscodeValidationMetrics,
+    PrecomputedHtj2k53Component, PrecomputedHtj2k97Component, TranscodePrecision,
+    TranscodeTimingReport, TranscodeValidationMetrics,
 };
 use crate::allocation::{try_extend_from_slice, try_vec_from_slice, try_vec_with_capacity};
+use crate::{CpuOnlyDctToWaveletStageAccelerator, PrequantizedHtj2k97Component};
 
 pub(super) struct ComponentTranscodeBatch {
     pub(super) precomputed_components: PrecomputedComponentBatch,
@@ -24,6 +28,7 @@ pub(super) struct ComponentTranscodeBatch {
 pub(super) enum PrecomputedComponentBatch {
     Dwt53(Vec<PrecomputedHtj2k53Component>),
     Dwt97(Vec<PrecomputedHtj2k97Component>),
+    Prequantized97(Vec<PrequantizedHtj2k97Component>),
 }
 
 pub(super) struct ComponentTranscodeResult {
@@ -35,6 +40,7 @@ pub(super) struct ComponentTranscodeResult {
 pub(super) enum PrecomputedComponent {
     Dwt53(PrecomputedHtj2k53Component),
     Dwt97(PrecomputedHtj2k97Component),
+    Prequantized97(PrequantizedHtj2k97Component),
 }
 
 #[derive(Clone, Copy)]
@@ -78,6 +84,7 @@ pub(super) fn transcode_component_batch(
     } = request;
     let mut precomputed_53 = try_vec_with_capacity(components.len())?;
     let mut precomputed_97 = try_vec_with_capacity(components.len())?;
+    let mut prequantized_97 = Vec::new();
     let mut float_validation_actual = Vec::new();
     let mut float_validation_expected = Vec::new();
     let mut integer_validation_actual = Vec::new();
@@ -99,6 +106,12 @@ pub(super) fn transcode_component_batch(
         match component_result.precomputed {
             PrecomputedComponent::Dwt53(precomputed) => precomputed_53.push(precomputed),
             PrecomputedComponent::Dwt97(precomputed) => precomputed_97.push(precomputed),
+            PrecomputedComponent::Prequantized97(prequantized) => {
+                if prequantized_97.capacity() == 0 {
+                    prequantized_97 = try_vec_with_capacity(components.len())?;
+                }
+                prequantized_97.push(prequantized);
+            }
         }
         if let Some((actual, expected)) = component_result.float_validation_coefficients {
             try_extend_from_slice(&mut float_validation_actual, &actual)?;
@@ -110,13 +123,22 @@ pub(super) fn transcode_component_batch(
         }
     }
 
-    let precomputed_components = if matches!(
-        options.coefficient_path,
-        JpegToHtj2kCoefficientPath::FloatDirectLinear97
-    ) {
-        PrecomputedComponentBatch::Dwt97(precomputed_97)
-    } else {
-        PrecomputedComponentBatch::Dwt53(precomputed_53)
+    let precomputed_components = match options.coefficient_path {
+        JpegToHtj2kCoefficientPath::FloatDirectLinear97 if !prequantized_97.is_empty() => {
+            if !precomputed_97.is_empty() {
+                return Err(JpegToHtj2kError::InternalInvariant {
+                    what: "9/7 components mixed prequantized and precomputed encode routes",
+                });
+            }
+            PrecomputedComponentBatch::Prequantized97(prequantized_97)
+        }
+        JpegToHtj2kCoefficientPath::FloatDirectLinear97 => {
+            PrecomputedComponentBatch::Dwt97(precomputed_97)
+        }
+        JpegToHtj2kCoefficientPath::IntegerDirect53
+        | JpegToHtj2kCoefficientPath::FloatDirectLinear53 => {
+            PrecomputedComponentBatch::Dwt53(precomputed_53)
+        }
     };
     finish_component_batch(
         precomputed_components,
@@ -418,25 +440,7 @@ pub(super) fn component_to_precomputed_htj2k(
             )
         }
         JpegToHtj2kCoefficientPath::FloatDirectLinear97 => {
-            let wavelet = float_direct_97_wavelet_from_component(
-                component,
-                decomposition_levels,
-                scratch,
-                accelerator,
-                timings,
-            )?;
-            (
-                PrecomputedComponent::Dwt97(PrecomputedHtj2k97Component {
-                    x_rsiz,
-                    y_rsiz,
-                    dwt: j2k_dwt97_from_wavelet(
-                        &wavelet,
-                        component.width as usize,
-                        component.height as usize,
-                    )?,
-                }),
-                rounded_wavelet97_i32(&wavelet)?,
-            )
+            irreversible97_component(plan, scratch, accelerator, timings)?
         }
     };
     let float_validation_coefficients = if options.validate_against_float_reference {
@@ -465,6 +469,65 @@ pub(super) fn component_to_precomputed_htj2k(
         float_validation_coefficients,
         integer_validation_coefficients,
     })
+}
+
+/// Irreversible 9/7 bands and validation coefficients at the requested
+/// [`TranscodePrecision`].
+fn irreversible97_component(
+    plan: ComponentTranscodePlan<'_>,
+    scratch: &mut JpegToHtj2kScratch,
+    accelerator: &mut impl DctToWaveletStageAccelerator,
+    timings: &mut TranscodeTimingReport,
+) -> Result<(PrecomputedComponent, Vec<i32>), JpegToHtj2kError> {
+    let ComponentTranscodePlan {
+        component,
+        x_rsiz,
+        y_rsiz,
+        decomposition_levels,
+        options,
+    } = plan;
+    match options.precision {
+        TranscodePrecision::F32 => {
+            let wavelet = canonical_97_wavelet_from_component(
+                component,
+                decomposition_levels,
+                scratch,
+                accelerator,
+                timings,
+            )?;
+            let actual = if options.validate_against_float_reference {
+                rounded_wavelet97_f32_i32(&wavelet)?
+            } else {
+                Vec::new()
+            };
+            Ok((
+                canonical_encode_component(&wavelet, component, x_rsiz, y_rsiz, options)?,
+                actual,
+            ))
+        }
+        TranscodePrecision::F64 => {
+            // Binary64 is CPU-only: no 9/7 job reaches the accelerator.
+            let wavelet = float_direct_97_wavelet_from_component(
+                component,
+                decomposition_levels,
+                scratch,
+                &mut CpuOnlyDctToWaveletStageAccelerator,
+                timings,
+            )?;
+            Ok((
+                PrecomputedComponent::Dwt97(PrecomputedHtj2k97Component {
+                    x_rsiz,
+                    y_rsiz,
+                    dwt: j2k_dwt97_from_wavelet(
+                        &wavelet,
+                        component.width as usize,
+                        component.height as usize,
+                    )?,
+                }),
+                rounded_wavelet97_i32(&wavelet)?,
+            ))
+        }
+    }
 }
 
 pub(super) fn transcode_path_name(

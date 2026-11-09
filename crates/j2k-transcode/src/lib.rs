@@ -130,6 +130,7 @@ pub struct Dwt97BatchStageTimings {
 
 mod dct53_2d;
 mod dct97_2d;
+mod dct97_f32;
 mod dct_grid;
 #[cfg(feature = "dev-support")]
 #[doc(hidden)]
@@ -217,7 +218,7 @@ pub use jpeg_to_htj2k::{
     EncodedTranscodeBatch, Htj2kEncodeError, Htj2kEncodeErrorKind, JpegTileBatchInput,
     JpegToHtj2kCoefficientPath, JpegToHtj2kEncodeOptions, JpegToHtj2kError, JpegToHtj2kOptions,
     JpegToHtj2kTranscoder, TranscodeBatchProfileRequest, TranscodeBatchProfileRow,
-    TranscodeComponentReport, TranscodeReport, TranscodeTimingReport,
+    TranscodeComponentReport, TranscodePrecision, TranscodeReport, TranscodeTimingReport,
     TranscodeValidationClassification, TranscodeValidationMetrics,
     JPEG_TO_HTJ2K_LOSSY_97_QUANTIZATION_SCALE,
 };

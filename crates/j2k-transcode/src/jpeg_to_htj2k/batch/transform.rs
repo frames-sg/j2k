@@ -1,19 +1,22 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use super::super::canonical97::{
+    canonical_97_wavelet_from_component, canonical_bands_from_accelerator,
+    decompose_97_f32_from_first_level, ComponentWavelet97F32,
+};
 use super::{
-    batch_component_groups, dct_blocks_to_8x8_f64, decompose_97_from_first_level,
-    float97_batch_component_groups, float_direct_97_wavelet_from_component,
+    batch_component_groups, dct_blocks_to_8x8_f64, float97_batch_component_groups,
     integer_dct_job_for_component, integer_direct_wavelet_from_component,
     integer_wavelet_from_first_level, store_float97_batch_wavelet, store_integer_batch_wavelet,
     try_store_grouped_i16_preencoded_float97_batches, try_store_prequantized_float97_batch_group,
-    validate_component_block_grid, BatchComponentRef, ComponentWavelet97,
-    DctGridI16ToHtj2k97CodeBlockJob, DctGridToDwt97Job, DctToWaveletStageAccelerator,
-    Dwt97BatchStageTimings, Float97BatchTile, Htj2k97CodeBlockOptions, IndexedParallelIterator,
-    Instant, IntegerBatchTile, IntegerWavelet, IntoParallelIterator, IntoParallelRefIterator,
-    JpegToHtj2kEncodeOptions, JpegToHtj2kError, JpegToHtj2kOptions, JpegToHtj2kScratch,
-    ParallelIterator, TranscodeTimingReport,
+    validate_component_block_grid, BatchComponentRef, DctGridI16ToHtj2k97CodeBlockJob,
+    DctGridToDwt97Job, DctToWaveletStageAccelerator, Dwt97BatchStageTimings, Float97BatchTile,
+    Htj2k97CodeBlockOptions, IndexedParallelIterator, Instant, IntegerBatchTile, IntegerWavelet,
+    IntoParallelIterator, IntoParallelRefIterator, JpegToHtj2kEncodeOptions, JpegToHtj2kError,
+    JpegToHtj2kOptions, JpegToHtj2kScratch, ParallelIterator, TranscodeTimingReport,
 };
 use crate::allocation::try_vec_with_capacity;
+use crate::dct97_f32::Dct97F32Scratch;
 
 pub(in super::super) fn transform_integer_batch_tiles<A: DctToWaveletStageAccelerator>(
     tiles: &mut [IntegerBatchTile],
@@ -174,13 +177,16 @@ pub(in super::super) fn htj2k97_codeblock_options(
     }
 }
 
+/// Canonical binary32 wavelets for one same-geometry group: the first level
+/// from the accelerator's batch hook when it serves the group, otherwise from
+/// the per-component path; later levels always on the CPU.
 pub(in super::super) fn float97_wavelets_for_batch_group<A: DctToWaveletStageAccelerator>(
     group: &[BatchComponentRef],
     tiles: &[Float97BatchTile],
     scratch: &mut JpegToHtj2kScratch,
     accelerator: &mut A,
     timings: &mut TranscodeTimingReport,
-) -> Result<Vec<ComponentWavelet97>, JpegToHtj2kError> {
+) -> Result<Vec<ComponentWavelet97F32>, JpegToHtj2kError> {
     let repack_start = Instant::now();
     let mut block_storage = try_vec_with_capacity(group.len())?;
     for component_ref in group {
@@ -233,9 +239,10 @@ pub(in super::super) fn float97_wavelets_for_batch_group<A: DctToWaveletStageAcc
             .into_par_iter()
             .zip(group.par_iter().copied())
             .map(|(first_level, component_ref)| {
-                decompose_97_from_first_level(
-                    first_level,
+                decompose_97_f32_from_first_level(
+                    canonical_bands_from_accelerator(&first_level)?,
                     usize::from(tiles[component_ref.tile_index].decomposition_levels),
+                    &mut Dct97F32Scratch::default(),
                 )
             })
             .collect_into_vec(&mut wavelet_results);
@@ -251,7 +258,7 @@ pub(in super::super) fn float97_wavelets_for_batch_group<A: DctToWaveletStageAcc
 
     let mut wavelets = try_vec_with_capacity(group.len())?;
     for component_ref in group {
-        wavelets.push(float_direct_97_wavelet_from_component(
+        wavelets.push(canonical_97_wavelet_from_component(
             &tiles[component_ref.tile_index].jpeg.components[component_ref.component_index],
             tiles[component_ref.tile_index].decomposition_levels,
             scratch,

@@ -142,6 +142,31 @@ impl JpegToHtj2kEncodeOptions {
     }
 }
 
+/// Arithmetic precision of the irreversible 9/7 coefficient path
+/// ([`JpegToHtj2kCoefficientPath::FloatDirectLinear97`]).
+///
+/// The reversible 5/3 paths are unaffected.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum TranscodePrecision {
+    /// Canonical binary32 arithmetic (the default).
+    ///
+    /// The CPU (scalar and SIMD), Metal, and CUDA backends evaluate one
+    /// fixed sequence of single-rounded `f32` operations, defined by
+    /// `j2k_codec_math::transcode97`, and therefore produce byte-identical
+    /// codestreams. Quantization multiplies by the reciprocal step.
+    #[default]
+    F32,
+    /// Binary64 CPU arithmetic, the default before 0.14.
+    ///
+    /// CPU-only: the transform always runs on the CPU and its output differs
+    /// from [`Self::F32`] and from every GPU backend. Explicitly requested
+    /// Metal or CUDA accelerators reject it with
+    /// [`TranscodeStageError::Unsupported`](crate::TranscodeStageError::Unsupported);
+    /// Auto-mode accelerators leave the work to the CPU.
+    F64,
+}
+
 /// Options for the experimental JPEG-to-HTJ2K path.
 #[derive(Debug, Clone)]
 pub struct JpegToHtj2kOptions {
@@ -149,6 +174,12 @@ pub struct JpegToHtj2kOptions {
     pub encode_options: JpegToHtj2kEncodeOptions,
     /// Coefficient production path used for HTJ2K precomputed bands.
     pub coefficient_path: JpegToHtj2kCoefficientPath,
+    /// Arithmetic precision of the irreversible 9/7 coefficient path.
+    ///
+    /// Defaults to the canonical [`TranscodePrecision::F32`], which every
+    /// backend reproduces bit for bit. [`TranscodePrecision::F64`] is a
+    /// CPU-only opt-in whose output differs from the GPU backends.
+    pub precision: TranscodePrecision,
     /// Materialize the float IDCT-then-DWT oracle and report rounded
     /// coefficient differences. This is intended for validation and tests, not
     /// the production direct path.
@@ -173,12 +204,14 @@ impl JpegToHtj2kOptions {
         Self {
             encode_options: transcode_encode_options(true),
             coefficient_path: JpegToHtj2kCoefficientPath::IntegerDirect53,
+            precision: TranscodePrecision::F32,
             validate_against_float_reference: false,
             validate_against_integer_reference: false,
         }
     }
 
-    /// Options for the irreversible 9/7 HTJ2K float-linear coefficient path.
+    /// Options for the irreversible 9/7 HTJ2K float-linear coefficient path
+    /// at the canonical [`TranscodePrecision::F32`] precision.
     #[must_use]
     pub fn lossy_97() -> Self {
         let mut encode_options = transcode_encode_options(false);
@@ -186,6 +219,7 @@ impl JpegToHtj2kOptions {
         Self {
             encode_options,
             coefficient_path: JpegToHtj2kCoefficientPath::FloatDirectLinear97,
+            precision: TranscodePrecision::F32,
             validate_against_float_reference: false,
             validate_against_integer_reference: false,
         }
@@ -218,7 +252,8 @@ pub enum JpegToHtj2kCoefficientPath {
     FloatDirectLinear53,
     /// Floating-point linear composition of IDCT and irreversible 9/7
     /// analysis. This is a lossy experimental path and must be paired with an
-    /// irreversible HTJ2K encode.
+    /// irreversible HTJ2K encode. [`JpegToHtj2kOptions::precision`] selects
+    /// its arithmetic.
     FloatDirectLinear97,
 }
 

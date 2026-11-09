@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use super::{JpegDctComponent, JpegToHtj2kCoefficientPath, JpegToHtj2kError, JpegToHtj2kOptions};
+use super::{
+    DctToWaveletStageAccelerator, JpegDctComponent, JpegToHtj2kCoefficientPath, JpegToHtj2kError,
+    JpegToHtj2kOptions,
+};
 use crate::allocation::{
     checked_add_allocation_bytes, checked_allocation_bytes, try_vec_with_capacity,
 };
@@ -40,6 +43,23 @@ pub(super) fn validate_transcode_options(
             ))
         }
     }
+}
+
+/// Let an explicitly requested accelerator refuse a 9/7 precision it cannot
+/// compute (binary64 is CPU-only) instead of silently running on the CPU.
+pub(super) fn check_accelerator_precision(
+    options: &JpegToHtj2kOptions,
+    accelerator: &impl DctToWaveletStageAccelerator,
+) -> Result<(), JpegToHtj2kError> {
+    if matches!(
+        options.coefficient_path,
+        JpegToHtj2kCoefficientPath::FloatDirectLinear97
+    ) {
+        accelerator
+            .check_dwt97_precision(options.precision)
+            .map_err(JpegToHtj2kError::Accelerator)?;
+    }
+    Ok(())
 }
 
 fn validate_option_allocation(options: &JpegToHtj2kOptions) -> Result<(), JpegToHtj2kError> {
