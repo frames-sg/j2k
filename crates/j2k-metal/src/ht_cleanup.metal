@@ -57,7 +57,6 @@ constant uint J2K_HT_MAX_WIDTH = 256u;
 constant uint J2K_HT_MAX_HEIGHT = 256u;
 constant uint J2K_HT_MAX_COEFFICIENTS = 4096u;
 constant uint J2K_HT_MAX_SSTR = 264u;
-constant uint J2K_HT_MAX_SCRATCH = 3096u;
 constant uint J2K_HT_MAX_VN = 130u;
 constant uint J2K_HT_MAX_MSTR = 72u;
 constant uint J2K_HT_MAX_SIGMA = 528u;
@@ -129,10 +128,8 @@ inline bool mel_read_bits(thread MelDecoder &decoder, uint count, thread uint &v
 }
 
 inline bool mel_decode_more_runs(thread MelDecoder &decoder) {
-    constexpr uint MEL_EXP[13] = {0u, 0u, 0u, 1u, 1u, 1u, 2u, 2u, 2u, 3u, 3u, 4u, 5u};
-
     while (decoder.num_runs < 8u) {
-        const uint eval = MEL_EXP[decoder.k];
+        const uint eval = J2K_HT_MEL_EXP[decoder.k];
         uint first = 0u;
         if (!mel_read_bit(decoder, first)) {
             return false;

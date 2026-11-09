@@ -106,13 +106,17 @@ pub(super) fn write_generated_pair_transactionally(
 fn stage_generated_entries(
     generated: &[(&str, String)],
 ) -> Result<Vec<GeneratedPairEntry>, String> {
-    if generated.len() != 2 {
+    if generated.len() < 2 {
         return Err(format!(
-            "generated-file transaction requires exactly two files, found {}",
+            "generated-file transaction requires at least two files, found {}",
             generated.len()
         ));
     }
-    if generated[0].0 == generated[1].0 {
+    let distinct = generated
+        .iter()
+        .map(|(path, _)| *path)
+        .collect::<std::collections::BTreeSet<_>>();
+    if distinct.len() != generated.len() {
         return Err("generated-file transaction paths must be distinct".to_string());
     }
 

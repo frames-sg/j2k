@@ -57,10 +57,6 @@ struct J2kHtMagSgnEncoder {
     uint capacity;
 };
 
-constant uint J2K_HT_MEL_EXP[13] = {
-    0u, 0u, 0u, 1u, 1u, 1u, 2u, 2u, 2u, 3u, 3u, 4u, 5u
-};
-
 inline uint j2k_ht_scaled_scratch_size(uint max_size, uint sample_count) {
     const ulong scaled =
         (ulong(max_size) * ulong(sample_count) + ulong(J2K_HT_MAX_SAMPLES - 1u)) /

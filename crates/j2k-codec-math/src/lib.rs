@@ -19,6 +19,10 @@ pub mod htj2k;
 pub mod generated {
     /// Metal source fragment defining JPEG 2000 DWT 9/7 constants.
     pub const DWT97_CONSTANTS_METAL: &str = include_str!("../generated/dwt97_constants.metal");
+    /// Metal source fragment defining the classic Tier-1 MQ and context tables.
+    pub const CLASSIC_TABLES_METAL: &str = include_str!("../generated/classic_tables.metal");
+    /// Metal source fragment defining the HTJ2K MEL exponents and scratch limit.
+    pub const HTJ2K_CONSTANTS_METAL: &str = include_str!("../generated/htj2k_constants.metal");
 }
 /// Baseline JPEG constants.
 pub mod jpeg;

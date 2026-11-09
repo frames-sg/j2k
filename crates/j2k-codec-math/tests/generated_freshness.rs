@@ -124,3 +124,105 @@ fn compact_f32(value: f32) -> String {
 fn generated_source_matches(actual: &str, expected: &str) -> bool {
     actual.replace("\r\n", "\n") == expected.replace("\r\n", "\n")
 }
+
+/// The integers of the Metal initializer `name[...] = { ... };`, without
+/// vector constructors, casts, or `u` suffixes.
+fn metal_array(source: &str, name: &str) -> Vec<u32> {
+    let start = source
+        .find(&format!("{name}["))
+        .unwrap_or_else(|| panic!("generated Metal omits {name}"));
+    let body = &source[start..];
+    let body = &body[body.find('{').expect("initializer opens") + 1..];
+    let body = &body[..body.find("};").expect("initializer closes")];
+    body.split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|token| token.starts_with(|first: char| first.is_ascii_digit()))
+        .map(|token| {
+            let token = token.trim_end_matches('u');
+            token.strip_prefix("0x").map_or_else(
+                || token.parse().expect("decimal literal"),
+                |hex| u32::from_str_radix(hex, 16).expect("hex literal"),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn metal_classic_fragment_matches_rust_tables() {
+    use j2k_codec_math::classic;
+
+    let source = include_str!("../generated/classic_tables.metal");
+    let states = classic::MQ_STATES
+        .iter()
+        .flat_map(|state| {
+            [
+                state.qe,
+                u32::from(state.nmps),
+                u32::from(state.nlps),
+                u32::from(state.switch),
+            ]
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(metal_array(source, "J2K_QE_TABLE"), states);
+    let packed = classic::MQ_STATES
+        .iter()
+        .map(|state| {
+            state.qe
+                | u32::from(state.nmps) << 16
+                | u32::from(state.nlps) << 22
+                | u32::from(state.switch) << 28
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(metal_array(source, "J2K_PACKED_QE_TABLE"), packed);
+    let sign = classic::SIGN_CONTEXT_LOOKUP
+        .iter()
+        .flat_map(|&(context, xor)| [u32::from(context), u32::from(xor)])
+        .collect::<Vec<_>>();
+    assert_eq!(metal_array(source, "SIGN_CONTEXT_LOOKUP"), sign);
+    let tables = [
+        ("ZERO_CTX_LL_LH_LOOKUP", &classic::ZERO_CTX_LL_LH_LOOKUP),
+        ("ZERO_CTX_HL_LOOKUP", &classic::ZERO_CTX_HL_LOOKUP),
+        ("ZERO_CTX_HH_LOOKUP", &classic::ZERO_CTX_HH_LOOKUP),
+    ];
+    for (name, table) in tables {
+        let expected = table.iter().copied().map(u32::from).collect::<Vec<_>>();
+        assert_eq!(metal_array(source, name), expected, "{name}");
+    }
+    // Nine-bit stripe neighborhoods: bit 4 is the sample itself; the other
+    // bits are the eight-bit neighbor index with horizontal pairs swapped.
+    let plain = metal_array(source, "PLAIN_ZERO_CONTEXTS");
+    assert_eq!(plain.len(), 512);
+    for (neighborhood, &value) in plain.iter().enumerate() {
+        let index = [
+            (0, 1),
+            (1, 0),
+            (2, 3),
+            (3, 2),
+            (5, 4),
+            (6, 5),
+            (7, 6),
+            (8, 7),
+        ]
+        .into_iter()
+        .filter(|&(from, _)| neighborhood >> from & 1 != 0)
+        .fold(0_usize, |index, (_, to)| index | 1 << to);
+        let expected = u32::from(classic::ZERO_CTX_LL_LH_LOOKUP[index])
+            | u32::from(classic::ZERO_CTX_HL_LOOKUP[index]) << 4
+            | u32::from(classic::ZERO_CTX_HH_LOOKUP[index]) << 8;
+        assert_eq!(value, expected, "PLAIN_ZERO_CONTEXTS[{neighborhood}]");
+    }
+}
+
+#[test]
+fn metal_htj2k_fragment_matches_rust_constants() {
+    use j2k_codec_math::htj2k;
+
+    let source = include_str!("../generated/htj2k_constants.metal");
+    assert_eq!(
+        metal_array(source, "J2K_HT_MEL_EXP"),
+        htj2k::MEL_EXPONENTS.map(u32::from)
+    );
+    assert!(source.contains(&format!(
+        "constant uint J2K_HT_MAX_SCRATCH = {}u;",
+        htj2k::HT_MAX_SCRATCH
+    )));
+}

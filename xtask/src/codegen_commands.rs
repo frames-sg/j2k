@@ -18,6 +18,10 @@ use crate::stable_api::{
 const CODEC_MATH_DWT97_METAL_FRAGMENT: &str =
     "crates/j2k-codec-math/generated/dwt97_constants.metal";
 const CODEC_MATH_DWT97_RUST_FRAGMENT: &str = "crates/j2k-codec-math/generated/dwt97_constants.rs";
+const CODEC_MATH_CLASSIC_METAL_FRAGMENT: &str =
+    "crates/j2k-codec-math/generated/classic_tables.metal";
+const CODEC_MATH_HTJ2K_METAL_FRAGMENT: &str =
+    "crates/j2k-codec-math/generated/htj2k_constants.metal";
 
 pub(super) fn stable_api(args: impl Iterator<Item = String>) -> Result<(), String> {
     let mut write_snapshot = false;
@@ -80,6 +84,14 @@ pub(super) fn codec_math_codegen(args: impl Iterator<Item = String>) -> Result<(
         (
             CODEC_MATH_DWT97_RUST_FRAGMENT,
             render_codec_math_dwt97_rust_fragment(),
+        ),
+        (
+            CODEC_MATH_CLASSIC_METAL_FRAGMENT,
+            render_codec_math_classic_metal_fragment(),
+        ),
+        (
+            CODEC_MATH_HTJ2K_METAL_FRAGMENT,
+            render_codec_math_htj2k_metal_fragment(),
         ),
     ];
 
@@ -208,6 +220,139 @@ fn render_codec_math_dwt97_rust_fragment() -> String {
 
 fn compact_f32(value: f32) -> String {
     format!("{value:?}")
+}
+
+/// Render `values` as a Metal initializer body, `per_line` entries a line.
+fn metal_initializer_rows(values: &[String], per_line: usize) -> String {
+    values.chunks(per_line).fold(String::new(), |mut out, row| {
+        let _ = writeln!(out, "    {},", row.join(", "));
+        out
+    })
+}
+
+fn render_codec_math_classic_metal_fragment() -> String {
+    use j2k_codec_math::classic;
+
+    let qe_states = classic::MQ_STATES
+        .iter()
+        .map(|state| {
+            format!(
+                "{{{:#06X}u, uchar({}u), uchar({}u), uchar({}u)}}",
+                state.qe,
+                state.nmps,
+                state.nlps,
+                u8::from(state.switch)
+            )
+            .replacen("0X", "0x", 1)
+        })
+        .collect::<Vec<_>>();
+    let packed_qe = classic::MQ_STATES
+        .iter()
+        .map(|state| {
+            let packed = state.qe
+                | (u32::from(state.nmps) << 16)
+                | (u32::from(state.nlps) << 22)
+                | (u32::from(state.switch) << 28);
+            format!("{packed:#010x}u")
+        })
+        .collect::<Vec<_>>();
+    let sign = classic::SIGN_CONTEXT_LOOKUP
+        .iter()
+        .map(|(context, xor)| format!("uchar2({context}, {xor})"))
+        .collect::<Vec<_>>();
+    let zero_tables = [
+        ("ZERO_CTX_LL_LH_LOOKUP", &classic::ZERO_CTX_LL_LH_LOOKUP),
+        ("ZERO_CTX_HL_LOOKUP", &classic::ZERO_CTX_HL_LOOKUP),
+        ("ZERO_CTX_HH_LOOKUP", &classic::ZERO_CTX_HH_LOOKUP),
+    ];
+    let mut out = String::from("// Generated from crates/j2k-codec-math/src/classic.rs.\n");
+    let _ = write!(
+        out,
+        "constant J2kQeData J2K_QE_TABLE[{}] = {{\n{}}};\n",
+        qe_states.len(),
+        metal_initializer_rows(&qe_states, 2)
+    );
+    out.push_str("// qe | nmps << 16 | nlps << 22 | switch << 28\n");
+    let _ = write!(
+        out,
+        "constant uint J2K_PACKED_QE_TABLE[{}] = {{\n{}}};\n",
+        packed_qe.len(),
+        metal_initializer_rows(&packed_qe, 6)
+    );
+    let _ = write!(
+        out,
+        "constant uchar2 SIGN_CONTEXT_LOOKUP[{}] = {{\n{}}};\n",
+        sign.len(),
+        metal_initializer_rows(&sign, 8)
+    );
+    for (name, table) in zero_tables {
+        let values = table.iter().map(u8::to_string).collect::<Vec<_>>();
+        let _ = write!(
+            out,
+            "constant uchar {name}[{}] = {{\n{}}};\n",
+            values.len(),
+            metal_initializer_rows(&values, 32)
+        );
+    }
+    let plain = plain_zero_contexts()
+        .iter()
+        .map(|value| format!("{value:#05x}"))
+        .collect::<Vec<_>>();
+    out.push_str(
+        "// Stripe-neighborhood bits 0..8 index the table directly; bit 4 (self) is ignored.\n\
+         // The three nibbles hold the LL/LH, HL, and HH contexts of the tables above.\n",
+    );
+    let _ = write!(
+        out,
+        "constant ushort PLAIN_ZERO_CONTEXTS[{}] = {{\n{}}};\n",
+        plain.len(),
+        metal_initializer_rows(&plain, 16)
+    );
+    out
+}
+
+/// The zero-coding contexts indexed by a nine-bit stripe neighborhood: bit 4
+/// is the sample itself, and the other bits map onto the eight-bit neighbor
+/// index of the `ZERO_CTX_*` tables with each horizontal pair swapped.
+fn plain_zero_contexts() -> [u16; 512] {
+    use j2k_codec_math::classic;
+
+    const NEIGHBOR_BITS: [(usize, usize); 8] = [
+        (0, 1),
+        (1, 0),
+        (2, 3),
+        (3, 2),
+        (5, 4),
+        (6, 5),
+        (7, 6),
+        (8, 7),
+    ];
+    core::array::from_fn(|neighborhood| {
+        let index = NEIGHBOR_BITS
+            .iter()
+            .filter(|(from, _)| neighborhood >> from & 1 != 0)
+            .fold(0_usize, |index, (_, to)| index | 1 << to);
+        u16::from(classic::ZERO_CTX_LL_LH_LOOKUP[index])
+            | u16::from(classic::ZERO_CTX_HL_LOOKUP[index]) << 4
+            | u16::from(classic::ZERO_CTX_HH_LOOKUP[index]) << 8
+    })
+}
+
+fn render_codec_math_htj2k_metal_fragment() -> String {
+    use j2k_codec_math::htj2k;
+
+    let mel = htj2k::MEL_EXPONENTS
+        .iter()
+        .map(|exponent| format!("{exponent}u"))
+        .collect::<Vec<_>>();
+    format!(
+        "// Generated from crates/j2k-codec-math/src/htj2k.rs.\n\
+         constant uint J2K_HT_MAX_SCRATCH = {}u;\n\
+         constant uint J2K_HT_MEL_EXP[{}] = {{{}}};\n",
+        htj2k::HT_MAX_SCRATCH,
+        mel.len(),
+        mel.join(", ")
+    )
 }
 
 fn render_stable_api_snapshots() -> Result<(String, String), String> {

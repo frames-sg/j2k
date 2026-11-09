@@ -163,7 +163,7 @@ inline int ht_simd_mel_get_run(thread HtSimdMel &mel) {
         mel.unstuff = byte == 0xFFu ? 1u : 0u;
     }
 
-    // MEL_EXP = {0,0,0,1,1,1,2,2,2,3,3,4,5}
+    // J2K_HT_MEL_EXP[k] without a table load: k / 3 below 11, then k - 7.
     const uint eval = mel.k < 11u ? mel.k / 3u : mel.k - 7u;
     if ((mel.acc >> 63) != 0ul) {
         mel.k = min(mel.k + 1u, 12u);

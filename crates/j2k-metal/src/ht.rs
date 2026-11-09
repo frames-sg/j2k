@@ -163,7 +163,8 @@ pub(crate) fn supports_metal_ht_geometry(width: u32, height: u32) -> bool {
     const MAX_HEIGHT: u32 = 256;
     const MAX_COEFFICIENTS: u32 = 4096;
     const MAX_SSTR: u32 = 264;
-    const MAX_SCRATCH: u32 = 3096;
+    // The decode kernels size their symbol scratch from the same owner.
+    const HT_MAX_SCRATCH_U64: u64 = j2k_codec_math::htj2k::HT_MAX_SCRATCH as u64;
     const MAX_VN: u32 = 130;
     const MAX_MSTR: u32 = 72;
     const MAX_SIGMA: u32 = 528;
@@ -184,7 +185,7 @@ pub(crate) fn supports_metal_ht_geometry(width: u32, height: u32) -> bool {
     if sstr > MAX_SSTR
         || sstr
             .checked_mul(quad_rows + 1)
-            .is_none_or(|scratch| scratch > MAX_SCRATCH)
+            .is_none_or(|scratch| u64::from(scratch) > HT_MAX_SCRATCH_U64)
     {
         return false;
     }
