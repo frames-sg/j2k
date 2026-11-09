@@ -559,20 +559,8 @@ fn decode_block(
     ) {
         return false;
     }
-    *prev_dc = match (*prev_dc).checked_add(diff) {
-        Some(value) => value,
-        None => {
-            set_error(status, JPEG_STATUS_HUFFMAN, ssss as u32, reader.pos);
-            return false;
-        }
-    };
-    coeffs[0] = match (*prev_dc).checked_mul(load_u16(context.quant, 0) as i32) {
-        Some(value) => value,
-        None => {
-            set_error(status, JPEG_STATUS_HUFFMAN, 0, reader.pos);
-            return false;
-        }
-    };
+    *prev_dc = (*prev_dc).wrapping_add(diff);
+    coeffs[0] = dequantize(*prev_dc, load_u16(context.quant, 0));
 
     let mut k = 1;
     while k < 64 {
@@ -624,16 +612,25 @@ fn decode_block(
         ) {
             return false;
         }
-        coeffs[zigzag(k) as usize] = match value.checked_mul(load_u16(context.quant, k) as i32) {
-            Some(value) => value,
-            None => {
-                set_error(status, JPEG_STATUS_HUFFMAN, k, reader.pos);
-                return false;
-            }
-        };
+        coeffs[zigzag(k) as usize] = dequantize(value, load_u16(context.quant, k));
         k += 1;
     }
     true
+}
+
+/// The CPU decoder's dequantization: the wrapping product of a coefficient
+/// and its quantizer, clamped to the `i16` range the CPU and Metal decoders
+/// store before the inverse DCT.
+#[inline(always)]
+fn dequantize(value: i32, quantizer: u16) -> i32 {
+    let product = value.wrapping_mul(quantizer as i32);
+    if product > i16::MAX as i32 {
+        i16::MAX as i32
+    } else if product < i16::MIN as i32 {
+        i16::MIN as i32
+    } else {
+        product
+    }
 }
 
 #[inline(always)]

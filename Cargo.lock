@@ -2663,6 +2663,7 @@ name = "j2k-jpeg-cuda"
 version = "0.14.0"
 dependencies = [
  "criterion",
+ "j2k-codec-math",
  "j2k-core",
  "j2k-cuda-jpeg-engine",
  "j2k-cuda-runtime",
