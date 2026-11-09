@@ -2,6 +2,9 @@
 
 use core::fmt;
 
+/// Integer forward DCT and quantization of baseline JPEG, the coefficients
+/// every baseline encoder backend produces.
+pub mod fdct;
 /// Integer "slow" inverse DCT (ISLOW): fixed-point constants and the 1-D,
 /// pass, and block transforms shared by CPU and device backends.
 pub mod idct;
