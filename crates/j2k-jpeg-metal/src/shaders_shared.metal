@@ -363,17 +363,30 @@ inline uint component_v(constant JpegBaselineEncodeParams &params, uint componen
     return params.v2;
 }
 
+// j2k_codec_math::jpeg::ycbcr::rgb_to_y, rgb_to_cb and rgb_to_cr at 8 bits,
+// the forward transform every baseline encoder backend applies, clamped.
 inline uchar rgb_to_ycbcr_component(uchar3 rgb, uint component) {
     const int r = int(rgb.x);
     const int g = int(rgb.y);
     const int b = int(rgb.z);
+    const int chroma_offset =
+        (128 << CODEC_MATH_JPEG_YCBCR_FRACTION_BITS) + CODEC_MATH_JPEG_YCBCR_ROUND;
     if (component == 0u) {
-        return clamp_u8((19595 * r + 38470 * g + 7471 * b + 32768) >> 16);
+        return clamp_u8((CODEC_MATH_JPEG_YCBCR_FIX_0_29900 * r
+            + CODEC_MATH_JPEG_YCBCR_FIX_0_58700 * g
+            + CODEC_MATH_JPEG_YCBCR_FIX_0_11400 * b
+            + CODEC_MATH_JPEG_YCBCR_ROUND) >> CODEC_MATH_JPEG_YCBCR_FRACTION_BITS);
     }
     if (component == 1u) {
-        return clamp_u8((-11059 * r - 21709 * g + 32768 * b + 8421376) >> 16);
+        return clamp_u8((-CODEC_MATH_JPEG_YCBCR_FIX_0_16874 * r
+            - CODEC_MATH_JPEG_YCBCR_FIX_0_33126 * g
+            + CODEC_MATH_JPEG_YCBCR_FIX_0_50000 * b
+            + chroma_offset) >> CODEC_MATH_JPEG_YCBCR_FRACTION_BITS);
     }
-    return clamp_u8((32768 * r - 27439 * g - 5329 * b + 8421376) >> 16);
+    return clamp_u8((CODEC_MATH_JPEG_YCBCR_FIX_0_50000 * r
+        - CODEC_MATH_JPEG_YCBCR_FIX_0_41869 * g
+        - CODEC_MATH_JPEG_YCBCR_FIX_0_08131 * b
+        + chroma_offset) >> CODEC_MATH_JPEG_YCBCR_FRACTION_BITS);
 }
 
 inline uchar3 jpeg_encode_read_rgb(

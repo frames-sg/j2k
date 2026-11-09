@@ -10,6 +10,8 @@ pub mod fdct;
 pub mod idct;
 /// Lossless (SOF3) prediction and difference coding.
 pub mod lossless;
+/// Fixed-point JPEG (JFIF) colour conversion, in units of `2^-16`.
+pub mod ycbcr;
 
 /// T.81 zigzag order from stream coefficient index to natural 8x8 index.
 #[rustfmt::skip]
@@ -148,20 +150,6 @@ pub const fn derive_canonical_huffman(
         huffsize,
         huffsize_len,
     })
-}
-
-/// Fixed-point constants used by JPEG YCbCr to RGB conversion.
-pub mod ycbcr {
-    /// Fixed-point integer approximation of 1.40200 * 2^16.
-    pub const FIX_1_40200: i32 = 91_881;
-    /// Fixed-point integer approximation of 0.34414 * 2^16.
-    pub const FIX_0_34414: i32 = 22_554;
-    /// Fixed-point integer approximation of 0.71414 * 2^16.
-    pub const FIX_0_71414: i32 = 46_802;
-    /// Fixed-point integer approximation of 1.77200 * 2^16.
-    pub const FIX_1_77200: i32 = 116_130;
-    /// Rounding addend for 16-bit fixed-point color conversion.
-    pub const ROUND: i32 = 1 << 15;
 }
 
 #[cfg(test)]

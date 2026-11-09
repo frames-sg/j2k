@@ -2,6 +2,8 @@
 
 #[cfg(test)]
 mod abi_tests;
+#[cfg(all(test, feature = "cuda-oxide-jpeg-encode"))]
+mod colour_exhaustive_tests;
 mod decode;
 #[cfg(feature = "cuda-oxide-jpeg-decode")]
 mod decode_launch;

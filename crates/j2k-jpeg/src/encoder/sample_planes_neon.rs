@@ -12,7 +12,28 @@ use core::arch::aarch64::{
     vst1q_u8, vsub_s16,
 };
 
+use j2k_codec_math::jpeg::ycbcr;
+
 use super::PrecomputedChromaLayout;
+
+// The forward transform of `j2k_codec_math::jpeg::ycbcr`, factored around G.
+// Its neutral-axis identities make the factoring exact: the Y weights sum to
+// 2^16, and each chroma row sums to zero with a 2^15 weight on its own primary,
+// which VSHLL by 15 supplies.
+const RGB_FIXED_SHIFT: i32 = ycbcr::FRACTION_BITS;
+const RGB_Y_RED: i16 = lane_weight(ycbcr::FIX_0_29900);
+const RGB_Y_BLUE: i16 = lane_weight(ycbcr::FIX_0_11400);
+const RGB_CB_RED: i16 = lane_weight(ycbcr::FIX_0_16874);
+const RGB_CR_BLUE: i16 = lane_weight(ycbcr::FIX_0_08131);
+
+/// A forward weight below `2^15` as the `i16` lane scalar NEON multiplies by.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the factored forward weights are below 2^15"
+)]
+const fn lane_weight(weight: i32) -> i16 {
+    weight as i16
+}
 
 const LANES: usize = 16;
 const RGB_BYTES: usize = LANES * 3;
@@ -1338,21 +1359,21 @@ fn convert_4(r: uint16x4_t, g: uint16x4_t, b: uint16x4_t) -> (uint16x4_t, uint16
     let red_difference = vsub_s16(r, g);
     let blue_difference = vsub_s16(b, g);
 
-    let mut y = vmull_n_s16(red_difference, super::RGB_Y_RED);
-    y = vmlal_n_s16(y, blue_difference, super::RGB_Y_BLUE);
-    let y = vadd_s16(vrshrn_n_s32::<{ super::RGB_FIXED_SHIFT }>(y), g);
+    let mut y = vmull_n_s16(red_difference, RGB_Y_RED);
+    y = vmlal_n_s16(y, blue_difference, RGB_Y_BLUE);
+    let y = vadd_s16(vrshrn_n_s32::<{ RGB_FIXED_SHIFT }>(y), g);
 
-    let mut cb = vshll_n_s16::<{ super::RGB_FIXED_SHIFT - 1 }>(blue_difference);
-    cb = vmlsl_n_s16(cb, red_difference, super::RGB_CB_RED);
+    let mut cb = vshll_n_s16::<{ RGB_FIXED_SHIFT - 1 }>(blue_difference);
+    cb = vmlsl_n_s16(cb, red_difference, RGB_CB_RED);
     let cb = vadd_s16(
-        vrshrn_n_s32::<{ super::RGB_FIXED_SHIFT }>(cb),
+        vrshrn_n_s32::<{ RGB_FIXED_SHIFT }>(cb),
         vdup_n_s16(super::RGB8_CHROMA_CENTER),
     );
 
-    let mut cr = vshll_n_s16::<{ super::RGB_FIXED_SHIFT - 1 }>(red_difference);
-    cr = vmlsl_n_s16(cr, blue_difference, super::RGB_CR_BLUE);
+    let mut cr = vshll_n_s16::<{ RGB_FIXED_SHIFT - 1 }>(red_difference);
+    cr = vmlsl_n_s16(cr, blue_difference, RGB_CR_BLUE);
     let cr = vadd_s16(
-        vrshrn_n_s32::<{ super::RGB_FIXED_SHIFT }>(cr),
+        vrshrn_n_s32::<{ RGB_FIXED_SHIFT }>(cr),
         vdup_n_s16(super::RGB8_CHROMA_CENTER),
     );
 
@@ -1374,6 +1395,40 @@ mod tests {
     use super::*;
     use crate::adapter::baseline_encode_tables;
     use crate::encoder::{JpegBackend, JpegEncodeOptions, JpegSubsampling};
+
+    /// The factored NEON transform converts every 8-bit RGB colour, all
+    /// 2^24, exactly as the scalar reference does.
+    #[test]
+    fn neon_rgb_to_ycbcr_matches_scalar_for_every_colour() {
+        let Some(neon) = fearless_simd::Level::new().as_neon() else {
+            return;
+        };
+        let pixels = 1usize << 16;
+        for red in 0..=255u8 {
+            let data = (0..=u16::MAX)
+                .flat_map(|green_blue| {
+                    let [green, blue] = green_blue.to_be_bytes();
+                    [red, green, blue]
+                })
+                .collect::<Vec<_>>();
+            let mut expected_y = Vec::new();
+            let mut expected_cb = Vec::new();
+            let mut expected_cr = Vec::new();
+            super::super::fill_rgb_to_ycbcr_scalar(
+                &data,
+                &mut expected_y,
+                &mut expected_cb,
+                &mut expected_cr,
+            );
+            let mut actual_y = Vec::with_capacity(pixels);
+            let mut actual_cb = Vec::with_capacity(pixels);
+            let mut actual_cr = Vec::with_capacity(pixels);
+            rgb_to_ycbcr_planes(neon, &data, &mut actual_y, &mut actual_cb, &mut actual_cr);
+            assert!(actual_y == expected_y, "Y red={red}");
+            assert!(actual_cb == expected_cb, "Cb red={red}");
+            assert!(actual_cr == expected_cr, "Cr red={red}");
+        }
+    }
 
     #[test]
     #[expect(

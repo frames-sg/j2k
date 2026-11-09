@@ -153,17 +153,20 @@ fn component_v(params: J2kJpegBaselineEncodeParams, component: u32) -> u32 {
     }
 }
 
+/// The forward transform of `j2k_codec_math::jpeg::ycbcr` at 8 bits, which
+/// every baseline encoder backend applies, clamped.
 #[inline(always)]
 fn rgb_to_ycbcr_component(r: u8, g: u8, b: u8, component: u32) -> u8 {
+    use j2k_codec_math::jpeg::ycbcr::{rgb_to_cb, rgb_to_cr, rgb_to_y};
     let r = r as i32;
     let g = g as i32;
     let b = b as i32;
     if component == 0 {
-        clamp_u8((19_595 * r + 38_470 * g + 7_471 * b + 32_768) >> 16)
+        clamp_u8(rgb_to_y(r, g, b))
     } else if component == 1 {
-        clamp_u8((-11_059 * r - 21_709 * g + 32_768 * b + 8_421_376) >> 16)
+        clamp_u8(rgb_to_cb(r, g, b, 128))
     } else {
-        clamp_u8((32_768 * r - 27_439 * g - 5_329 * b + 8_421_376) >> 16)
+        clamp_u8(rgb_to_cr(r, g, b, 128))
     }
 }
 

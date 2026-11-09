@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 // The JPEG Metal kernels open with the constants build.rs renders from
-// j2k_codec_math::jpeg (the IDCT constants and the forward DCT basis), then
-// are split across:
+// j2k_codec_math::jpeg (the IDCT constants, the forward DCT basis and the
+// colour conversion constants), then are split across:
 // - shaders_shared.metal
 // - shaders_encode.metal
 // - shaders_encode_staged.metal

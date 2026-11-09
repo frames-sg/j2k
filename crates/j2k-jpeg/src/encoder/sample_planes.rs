@@ -4,6 +4,8 @@ use alloc::borrow::Cow;
 use alloc::vec::Vec;
 use core::mem::MaybeUninit;
 
+use j2k_codec_math::jpeg::ycbcr;
+
 use crate::adapter::JpegBaselineSampling;
 use crate::allocation::try_new_vec_with_live_budget;
 
@@ -1073,33 +1075,19 @@ fn fill_rgb_to_ycbcr_420_block_planes_scalar(
     }
 }
 
-// JPEG's forward full-range transform, rounded by adding half a fixed-point
-// unit before the signed shift, then clamped by the caller to its precision.
-// Keep the neutral-axis identities exact: Y coefficients sum to one, and each
-// chroma row sums to zero. NEON factors this same matrix around G.
-const RGB_FIXED_SHIFT: i32 = 16;
-const RGB_Y_RED: i16 = 19_595;
-const RGB_Y_BLUE: i16 = 7_471;
-const RGB_CB_RED: i16 = 11_059;
-const RGB_CR_BLUE: i16 = 5_329;
 const RGB8_CHROMA_CENTER: i16 = 128;
 
-/// Scalar reference for the existing 8- and 12-bit encoders. Inputs are unsigned
+/// Scalar reference for the 8- and 12-bit encoders: JPEG's forward full-range
+/// transform of `j2k_codec_math::jpeg::ycbcr`, which every baseline encoder
+/// backend applies, clamped by the caller to its precision. Inputs are unsigned
 /// samples at one precision; `center` is half that precision's sample range.
-/// Products and accumulated numerators fit i32 through 12-bit input.
 #[inline]
 pub(super) fn rgb_to_ycbcr_samples(r: i32, g: i32, b: i32, center: i32) -> (i32, i32, i32) {
-    let half = 1 << (RGB_FIXED_SHIFT - 1);
-    let y_red = i32::from(RGB_Y_RED);
-    let y_blue = i32::from(RGB_Y_BLUE);
-    let y_green = (1 << RGB_FIXED_SHIFT) - y_red - y_blue;
-    let cb_red = i32::from(RGB_CB_RED);
-    let cr_blue = i32::from(RGB_CR_BLUE);
-    let offset = (center << RGB_FIXED_SHIFT) + half;
-    let y = (y_red * r + y_green * g + y_blue * b + half) >> RGB_FIXED_SHIFT;
-    let cb = (-cb_red * r - (half - cb_red) * g + half * b + offset) >> RGB_FIXED_SHIFT;
-    let cr = (half * r - (half - cr_blue) * g - cr_blue * b + offset) >> RGB_FIXED_SHIFT;
-    (y, cb, cr)
+    (
+        ycbcr::rgb_to_y(r, g, b),
+        ycbcr::rgb_to_cb(r, g, b, center),
+        ycbcr::rgb_to_cr(r, g, b, center),
+    )
 }
 
 fn rgb_to_ycbcr(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
