@@ -21,7 +21,8 @@ provides type information, and Maturin generates the wheel's import loader.
 
 Use the workspace's pinned Rust toolchain and an existing Python environment.
 Maturin builds the native extension; the wheel uses CPython's stable ABI from
-3.10 onward. NumPy 2 and PyTorch 2.12 are the initial consumer targets.
+3.11 onward, the first stable ABI with the buffer protocol that lets encoded
+input be read in place. NumPy 2 and PyTorch 2.12 are the initial consumer targets.
 
 From the workspace root:
 
@@ -63,10 +64,18 @@ Every decode, inspection and planning call (`inspect`, `Decoder.decode`,
 other one-dimensional, C-contiguous buffer of unsigned bytes: `bytearray`,
 `memoryview`, `mmap.mmap`, `array.array("B")` or a `uint8` NumPy array. Other
 buffer layouts, such as a strided `memoryview`, raise `BufferError`; pass
-`bytes(view)` to copy one. A `bytes` object is read in place. Any other buffer
-is copied once before decoding starts, so a later write to it cannot change
-what the codec reads; no buffer export outlives the call. Batch inputs,
-`ImageRequest` and prepared batches keep their own copy of the encoded bytes.
+`bytes(view)` to copy one. `inspect`, `plan_region`, `decode_srgb8`,
+`decode_wavelets` and `decode_rgb` read `bytes`, and a read-only `memoryview`
+of `bytes` or of a read-only `mmap.mmap` (`access=mmap.ACCESS_READ`), in place,
+holding the buffer export only for the call. Any other buffer, including a
+writable `bytearray` or `mmap` and a read-only view of one, is copied once
+before decoding starts, so a write to it during the call cannot change what
+the codec reads. A mapped file must stay unchanged and untruncated while a call
+reads it: another writer changes the bytes under the decoder (usually a decode
+error or wrong pixels, but not a guaranteed one), and truncation raises
+`SIGBUS`, as reading the map from Python would. Pass `bytes` when that cannot
+be guaranteed. Batch inputs, `ImageRequest` and prepared batches keep their own
+copy of the encoded bytes, because batch preparation owns its inputs.
 
 `reduction` is an exact count from 0 through 31; 0–3 retain their full, half,
 quarter, and eighth meanings. MPS and CUDA decoders decode exact requests and
