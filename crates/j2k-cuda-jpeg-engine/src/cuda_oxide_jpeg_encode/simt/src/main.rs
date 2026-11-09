@@ -170,6 +170,10 @@ fn rgb_to_ycbcr_component(r: u8, g: u8, b: u8, component: u32) -> u8 {
     }
 }
 
+/// The sample at `(x, y)` of the frame. The CPU encoder codes every sample
+/// beyond its image as the nearest image sample, so a frame that extends
+/// beyond the input repeats the input's last column and row. The host
+/// validates a non-empty input.
 fn jpeg_encode_sample_component(
     input: *const u8,
     params: J2kJpegBaselineEncodeParams,
@@ -177,10 +181,8 @@ fn jpeg_encode_sample_component(
     x: u32,
     y: u32,
 ) -> u8 {
-    if x >= params.input_width || y >= params.input_height {
-        return 0;
-    }
-    let row = y * params.pitch_bytes;
+    let x = min_u32(x, params.input_width - 1);
+    let row = min_u32(y, params.input_height - 1) * params.pitch_bytes;
     if params.format == JPEG_BASELINE_ENCODE_FORMAT_GRAY8 {
         return load_u8(input, row + x);
     }

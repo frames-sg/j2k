@@ -73,8 +73,8 @@ pub use gpu_gate::{
     gpu_device_unavailable_is_skip, gpu_test_gate, GPU_TEST_SKIP_LOG_ENV, GPU_TEST_SKIP_MARKER,
 };
 pub use jpeg_encode_matrix::{
-    jpeg_encode_matrix_cases, jpeg_encode_matrix_digest, JpegEncodeMatrixCase,
-    JpegEncodeMatrixSampling, JPEG_ENCODE_MATRIX_SHA256,
+    jpeg_encode_matrix_cases, jpeg_encode_matrix_digest, jpeg_encode_padded_cases, replicate_edges,
+    JpegEncodeMatrixCase, JpegEncodeMatrixSampling, JPEG_ENCODE_MATRIX_SHA256,
 };
 /// Convenience prelude for the intentionally broad JPEG fixture catalog.
 ///

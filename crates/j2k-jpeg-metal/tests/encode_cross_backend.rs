@@ -13,8 +13,8 @@ use j2k_jpeg_metal::{
     encode_jpeg_baseline_from_metal_buffer, JpegBaselineMetalEncodeTile, MetalBackendSession,
 };
 use j2k_test_support::{
-    jpeg_encode_matrix_cases, jpeg_encode_matrix_digest, JpegEncodeMatrixCase,
-    JpegEncodeMatrixSampling, JPEG_ENCODE_MATRIX_SHA256,
+    jpeg_encode_matrix_cases, jpeg_encode_matrix_digest, jpeg_encode_padded_cases, replicate_edges,
+    JpegEncodeMatrixCase, JpegEncodeMatrixSampling, JPEG_ENCODE_MATRIX_SHA256,
 };
 
 fn matrix_subsampling(sampling: JpegEncodeMatrixSampling) -> JpegSubsampling {
@@ -55,7 +55,14 @@ fn cpu_frame(case: JpegEncodeMatrixCase, data: &[u8]) -> Vec<u8> {
         .data
 }
 
-fn metal_frame(case: JpegEncodeMatrixCase, data: &[u8], session: &MetalBackendSession) -> Vec<u8> {
+/// The Metal frame of `case`'s input `data`, coded as a frame of `output`
+/// size.
+fn metal_frame(
+    case: JpegEncodeMatrixCase,
+    data: &[u8],
+    output: (u32, u32),
+    session: &MetalBackendSession,
+) -> Vec<u8> {
     let format = if case.sampling == JpegEncodeMatrixSampling::Gray {
         PixelFormat::Gray8
     } else {
@@ -71,7 +78,7 @@ fn metal_frame(case: JpegEncodeMatrixCase, data: &[u8], session: &MetalBackendSe
             0,
             (case.width, case.height),
             case.width as usize * case.channels(),
-            (case.width, case.height),
+            output,
             format,
         )
     };
@@ -90,7 +97,7 @@ fn metal_encoder_matches_the_cpu_encoder_and_the_cross_backend_golden() {
         .into_iter()
         .map(|case| {
             let data = case.samples();
-            let metal = metal_frame(case, &data, &session);
+            let metal = metal_frame(case, &data, (case.width, case.height), &session);
             assert!(
                 metal == cpu_frame(case, &data),
                 "{}: Metal and CPU bytes differ",
@@ -104,4 +111,33 @@ fn metal_encoder_matches_the_cpu_encoder_and_the_cross_backend_golden() {
         JPEG_ENCODE_MATRIX_SHA256,
         "Metal baseline JPEG bytes changed"
     );
+}
+
+/// A frame beyond its input codes the input's last column and row, as the
+/// CPU encoder codes the samples beyond its image.
+#[test]
+fn metal_padded_frames_match_the_cpu_encoding_of_the_edge_replicated_image() {
+    if !j2k_test_support::metal_runtime_gate(module_path!()) {
+        return;
+    }
+    let session = MetalBackendSession::system_default().expect("Metal backend session");
+    for (case, frame) in jpeg_encode_padded_cases() {
+        let data = case.samples();
+        let metal = metal_frame(case, &data, frame, &session);
+        let input = (case.width, case.height);
+        let replicated = replicate_edges(&data, input, case.channels(), frame);
+        let cpu = cpu_frame(
+            JpegEncodeMatrixCase {
+                width: frame.0,
+                height: frame.1,
+                ..case
+            },
+            &replicated,
+        );
+        assert!(
+            metal == cpu,
+            "{} in a {frame:?} frame: Metal and CPU bytes differ",
+            case.label()
+        );
+    }
 }

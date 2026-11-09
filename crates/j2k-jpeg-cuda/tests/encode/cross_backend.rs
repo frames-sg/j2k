@@ -11,8 +11,8 @@ use j2k_jpeg_cuda::{
     encode_jpeg_baseline_batch_from_cuda_buffers, CudaSession, JpegBaselineCudaEncodeTile,
 };
 use j2k_test_support::{
-    jpeg_encode_matrix_cases, jpeg_encode_matrix_digest, JpegEncodeMatrixCase,
-    JpegEncodeMatrixSampling, JPEG_ENCODE_MATRIX_SHA256,
+    jpeg_encode_matrix_cases, jpeg_encode_matrix_digest, jpeg_encode_padded_cases, replicate_edges,
+    JpegEncodeMatrixCase, JpegEncodeMatrixSampling, JPEG_ENCODE_MATRIX_SHA256,
 };
 
 fn matrix_subsampling(sampling: JpegEncodeMatrixSampling) -> JpegSubsampling {
@@ -53,9 +53,12 @@ fn cpu_frame(case: JpegEncodeMatrixCase, data: &[u8]) -> Vec<u8> {
         .data
 }
 
+/// The CUDA frame of `case`'s input `data`, coded as a frame of `output`
+/// size.
 fn cuda_frame(
     case: JpegEncodeMatrixCase,
     data: &[u8],
+    output: (u32, u32),
     context: &j2k_cuda_runtime::CudaContext,
     session: &mut CudaSession,
 ) -> Vec<u8> {
@@ -71,8 +74,8 @@ fn cuda_frame(
         width: case.width,
         height: case.height,
         pitch_bytes: case.width as usize * case.channels(),
-        output_width: case.width,
-        output_height: case.height,
+        output_width: output.0,
+        output_height: output.1,
         format,
     };
     let mut frames = encode_jpeg_baseline_batch_from_cuda_buffers(
@@ -96,7 +99,13 @@ fn cuda_encoder_matches_the_cpu_encoder_and_the_cross_backend_golden() {
         .into_iter()
         .map(|case| {
             let data = case.samples();
-            let cuda = cuda_frame(case, &data, &context, &mut session);
+            let cuda = cuda_frame(
+                case,
+                &data,
+                (case.width, case.height),
+                &context,
+                &mut session,
+            );
             assert!(
                 cuda == cpu_frame(case, &data),
                 "{}: CUDA and CPU bytes differ",
@@ -110,4 +119,34 @@ fn cuda_encoder_matches_the_cpu_encoder_and_the_cross_backend_golden() {
         JPEG_ENCODE_MATRIX_SHA256,
         "CUDA baseline JPEG bytes changed"
     );
+}
+
+/// A frame beyond its input codes the input's last column and row, as the
+/// CPU encoder codes the samples beyond its image.
+#[test]
+fn cuda_padded_frames_match_the_cpu_encoding_of_the_edge_replicated_image() {
+    if !j2k_test_support::cuda_runtime_gate(module_path!()) {
+        return;
+    }
+    let context = j2k_cuda_runtime::CudaContext::system_default().expect("CUDA context");
+    let mut session = CudaSession::default();
+    for (case, frame) in jpeg_encode_padded_cases() {
+        let data = case.samples();
+        let cuda = cuda_frame(case, &data, frame, &context, &mut session);
+        let input = (case.width, case.height);
+        let replicated = replicate_edges(&data, input, case.channels(), frame);
+        let cpu = cpu_frame(
+            JpegEncodeMatrixCase {
+                width: frame.0,
+                height: frame.1,
+                ..case
+            },
+            &replicated,
+        );
+        assert!(
+            cuda == cpu,
+            "{} in a {frame:?} frame: CUDA and CPU bytes differ",
+            case.label()
+        );
+    }
 }

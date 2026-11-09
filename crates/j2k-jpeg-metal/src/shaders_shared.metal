@@ -389,16 +389,26 @@ inline uchar rgb_to_ycbcr_component(uchar3 rgb, uint component) {
         + chroma_offset) >> CODEC_MATH_JPEG_YCBCR_FRACTION_BITS);
 }
 
+// The CPU encoder codes every sample beyond its image as the nearest image
+// sample, so a frame that extends beyond the input repeats the input's last
+// column and row. The host validates a non-empty input.
+inline uint jpeg_encode_input_offset(
+    constant JpegBaselineEncodeParams &params,
+    uint x,
+    uint y,
+    uint bytes_per_pixel
+) {
+    return min(y, params.input_height - 1u) * params.pitch_bytes
+        + min(x, params.input_width - 1u) * bytes_per_pixel;
+}
+
 inline uchar3 jpeg_encode_read_rgb(
     device const uchar *input,
     constant JpegBaselineEncodeParams &params,
     uint x,
     uint y
 ) {
-    if (x >= params.input_width || y >= params.input_height) {
-        return uchar3(0, 0, 0);
-    }
-    const uint offset = y * params.pitch_bytes + x * 3u;
+    const uint offset = jpeg_encode_input_offset(params, x, y, 3u);
     return uchar3(input[offset], input[offset + 1u], input[offset + 2u]);
 }
 
@@ -410,10 +420,7 @@ inline uchar jpeg_encode_sample_component(
     uint y
 ) {
     if (params.format == JPEG_BASELINE_ENCODE_FORMAT_GRAY8) {
-        if (x >= params.input_width || y >= params.input_height) {
-            return 0;
-        }
-        return input[y * params.pitch_bytes + x];
+        return input[jpeg_encode_input_offset(params, x, y, 1u)];
     }
     return rgb_to_ycbcr_component(jpeg_encode_read_rgb(input, params, x, y), component);
 }

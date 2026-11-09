@@ -146,6 +146,73 @@ pub fn jpeg_encode_matrix_cases() -> Vec<JpegEncodeMatrixCase> {
     cases
 }
 
+/// Inputs smaller than the frames a GPU encoder codes them in.
+///
+/// Each case comes with its frame size. They cover every sampling, a frame
+/// that ends inside the input's last MCU and one several MCUs past it, odd
+/// heights, and restart intervals.
+pub fn jpeg_encode_padded_cases() -> Vec<(JpegEncodeMatrixCase, (u32, u32))> {
+    use JpegEncodeMatrixSampling::{Gray, Ybr420, Ybr422, Ybr444};
+    let geometries = [
+        (Ybr444, (17, 9), (24, 13)),
+        (Ybr420, (17, 9), (24, 13)),
+        (Ybr422, (17, 9), (24, 13)),
+        (Gray, (17, 9), (24, 13)),
+        (Ybr420, (5, 3), (40, 21)),
+        (Ybr444, (33, 31), (35, 33)),
+    ];
+    let mut cases = Vec::new();
+    for (sampling, (width, height), frame) in geometries {
+        for (quality, restart_interval) in [(20, None), (100, Some(1))] {
+            let case = JpegEncodeMatrixCase {
+                sampling,
+                width,
+                height,
+                quality,
+                restart_interval,
+            };
+            cases.push((case, frame));
+        }
+    }
+    cases
+}
+
+/// `samples`, tightly packed at `size` with `channels` interleaved samples per
+/// pixel, extended to `frame` by repeating the last column and row.
+///
+/// The CPU encoder codes every sample beyond its image as the nearest image
+/// sample, so this is the image a GPU encoder codes when its frame extends
+/// beyond its input.
+///
+/// # Panics
+///
+/// Panics if `samples` does not hold `size`, or `frame` is smaller than
+/// `size` or empty.
+pub fn replicate_edges(
+    samples: &[u8],
+    size: (u32, u32),
+    channels: usize,
+    frame: (u32, u32),
+) -> Vec<u8> {
+    let (width, height) = (size.0 as usize, size.1 as usize);
+    assert_eq!(
+        samples.len(),
+        width * height * channels,
+        "samples hold size"
+    );
+    assert!(width > 0 && height > 0 && frame.0 >= size.0 && frame.1 >= size.1);
+    let mut extended = Vec::new();
+    for y in 0..frame.1 as usize {
+        let row = &samples[y.min(height - 1) * width * channels..][..width * channels];
+        extended.extend_from_slice(row);
+        let last = &row[(width - 1) * channels..];
+        for _ in width..frame.0 as usize {
+            extended.extend_from_slice(last);
+        }
+    }
+    extended
+}
+
 /// The framed SHA-256 of encoded frames: each frame's length, then its bytes.
 ///
 /// # Panics
@@ -168,6 +235,19 @@ pub fn jpeg_encode_matrix_digest<'a>(frames: impl IntoIterator<Item = &'a [u8]>)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replicate_edges_repeats_the_last_column_and_row() {
+        let samples = [1u8, 2, 3, 4, 5, 6];
+        assert_eq!(
+            replicate_edges(&samples, (3, 2), 1, (4, 3)),
+            [1, 2, 3, 3, 4, 5, 6, 6, 4, 5, 6, 6]
+        );
+        assert_eq!(
+            replicate_edges(&[7, 8, 9], (1, 1), 3, (2, 2)),
+            [7, 8, 9, 7, 8, 9, 7, 8, 9, 7, 8, 9]
+        );
+    }
 
     #[test]
     fn matrix_covers_every_sampling_size_quality_and_restart() {

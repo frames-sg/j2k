@@ -616,20 +616,6 @@ fn assert_staged_rgb_matrix_matches_cpu(session: &j2k_jpeg_metal::MetalBackendSe
     }
 }
 
-/// `samples` of `input` size placed in a black frame of `output` size, the
-/// image the GPU encoders code when the frame extends beyond the input.
-#[cfg(target_os = "macos")]
-fn black_padded_gray(samples: &[u8], input: (u32, u32), output: (u32, u32)) -> Vec<u8> {
-    let mut padded = vec![0u8; output.0 as usize * output.1 as usize];
-    for (row, source) in padded
-        .chunks_exact_mut(output.0 as usize)
-        .zip(samples.chunks_exact(input.0 as usize))
-    {
-        row[..input.0 as usize].copy_from_slice(source);
-    }
-    padded
-}
-
 #[cfg(target_os = "macos")]
 fn assert_staged_gray_matrix_matches_cpu(session: &j2k_jpeg_metal::MetalBackendSession) {
     use j2k_core::PixelFormat;
@@ -693,7 +679,7 @@ fn assert_staged_gray_matrix_matches_cpu(session: &j2k_jpeg_metal::MetalBackendS
                 gray_output.1,
                 jpeg_decoder::PixelFormat::L8,
             );
-            let padded = black_padded_gray(tile, gray_input, gray_output);
+            let padded = j2k_test_support::replicate_edges(tile, gray_input, 1, gray_output);
             let cpu = cpu_frame(
                 JpegSamples::Gray8 {
                     data: &padded,
