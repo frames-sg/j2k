@@ -169,6 +169,24 @@ impl J2kFileMetadata {
             .iter()
             .any(|color_spec| matches!(color_spec, J2kColorSpec::IccProfile { .. }))
     }
+
+    /// Return the Colour Specification box decoding applies: the first in file
+    /// order, as ISO/IEC 15444-1 I.5.3.3 directs Part 1 readers. Later boxes
+    /// are preserved in [`Self::color_specs`] but not applied.
+    #[must_use]
+    pub fn primary_color_spec(&self) -> Option<&J2kColorSpec> {
+        self.color_specs.first()
+    }
+
+    /// Return the ICC profile decoding applies: the primary Colour
+    /// Specification box's profile, when that box carries one.
+    #[must_use]
+    pub fn icc_profile(&self) -> Option<&[u8]> {
+        match self.primary_color_spec()? {
+            J2kColorSpec::IccProfile { profile } => Some(profile),
+            J2kColorSpec::Enumerated { .. } | J2kColorSpec::Unknown { .. } => None,
+        }
+    }
 }
 
 /// Parsed JP2/JPH Palette box.

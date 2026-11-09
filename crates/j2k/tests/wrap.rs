@@ -377,6 +377,44 @@ fn wrap_ht_codestream_as_jph_inspects_and_decodes() {
 }
 
 #[test]
+fn file_metadata_reports_the_colour_specification_decoding_applies() {
+    let codestream = classic_codestream();
+    let enumerated = J2kFileColorSpec::Enumerated(Colorspace::SGray);
+    let icc = J2kFileColorSpec::IccProfile(b"test-icc");
+    let primary = |colors: &[J2kFileColorSpec<'_>]| {
+        let jp2 = wrap_j2k_codestream(
+            &codestream,
+            J2kFileWrapOptions::jp2().with_color_specs(colors),
+        )
+        .expect("wrap JP2 with multiple COLR boxes");
+        J2kDecoder::inspect_support(&jp2)
+            .expect("inspect")
+            .file_metadata
+            .expect("JP2 metadata")
+    };
+    // A later ICC box is preserved but not applied.
+    let metadata = primary(&[enumerated, icc]);
+    assert!(metadata.has_icc_profile());
+    assert_eq!(
+        metadata.primary_color_spec(),
+        Some(&J2kColorSpec::Enumerated { value: 17 })
+    );
+    assert_eq!(metadata.icc_profile(), None);
+    // A primary ICC box is the profile decoding applies.
+    let metadata = primary(&[icc, enumerated]);
+    assert_eq!(metadata.icc_profile(), Some(&b"test-icc"[..]));
+    assert!(matches!(
+        metadata.primary_color_spec(),
+        Some(J2kColorSpec::IccProfile { profile }) if profile == b"test-icc"
+    ));
+    // A raw codestream has no file wrapper and so no colour specification.
+    assert!(J2kDecoder::inspect_support(&codestream)
+        .expect("inspect codestream")
+        .file_metadata
+        .is_none());
+}
+
+#[test]
 fn wrap_jph_rejects_classic_codestream() {
     let err =
         wrap_j2k_codestream(&classic_codestream(), J2kFileWrapOptions::jph()).expect_err("reject");

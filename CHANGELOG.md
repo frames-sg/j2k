@@ -7,6 +7,10 @@ and stale roadmap entries have been removed from the public documentation set.
 
 Staged workspace version: `0.14.0`.
 
+- `J2kFileMetadata::primary_color_spec` and `J2kFileMetadata::icc_profile`
+  return the Colour Specification box decoding applies (the first, per ISO/IEC
+  15444-1 I.5.3.3) and its ICC profile; `has_icc_profile` still covers every
+  box.
 - Exact-operation planning for bindings: `CpuBatchDecoder::plan_operations`
   plans exact operations as `decode_operations` prepares them and returns each
   operation's output contract (`PreparedOperationPlan`) or the error its decode
