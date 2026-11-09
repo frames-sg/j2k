@@ -36,9 +36,11 @@ It is the item-level companion to `docs/stable-api-1.0.md`: every public module,
 #[non_exhaustive] pub struct j2k::J2kDecodePlan
 #[non_exhaustive] pub struct j2k::J2kLosslessEncodeOptions
 #[non_exhaustive] pub struct j2k::J2kLossyEncodeOptions
+#[non_exhaustive] pub struct j2k::J2kNativeRegionDecodePlan
 #[non_exhaustive] pub struct j2k::J2kReferenceGrid
 #[non_exhaustive] pub struct j2k::J2kRegionDecodePlan
 #[non_exhaustive] pub struct j2k::J2kToHtj2kOptions
+#[non_exhaustive] pub struct j2k::PreparedOperationPlan
 impl core::default::Default for j2k::BatchDecodeOptions
 impl core::default::Default for j2k::DecodeSettings
 impl core::default::Default for j2k::J2kLosslessEncodeOptions
@@ -228,6 +230,7 @@ pub fn j2k::CpuBatchDecoder::new(j2k::BatchDecodeOptions) -> Self
 pub fn j2k::CpuBatchDecoder::operation_cache_retained_bytes(&self) -> usize
 pub fn j2k::CpuBatchDecoder::operation_cache_stats(&self) -> j2k_core::context::CacheStats
 pub fn j2k::CpuBatchDecoder::options(&self) -> j2k::BatchDecodeOptions
+pub fn j2k::CpuBatchDecoder::plan_operations(&mut self, &[j2k::PreparedImageOperation<'_>]) -> core::result::Result<alloc::vec::Vec<core::result::Result<j2k::PreparedOperationPlan, j2k::BatchItemError>>, j2k_core::batch::BatchInfrastructureError>
 pub fn j2k::CpuBatchDecoder::prepare(&self, alloc::vec::Vec<j2k::EncodedImage>) -> core::result::Result<j2k::PreparedBatch, j2k_core::batch::BatchInfrastructureError>
 pub fn j2k::CpuBatchDecoder::prepare_batch(&self, alloc::vec::Vec<j2k::EncodedImage>) -> core::result::Result<j2k::PreparedBatch, Self::Error>
 pub fn j2k::CpuBatchDecoder::prepare_prepared_images(&self, alloc::vec::Vec<j2k::PreparedImage>) -> core::result::Result<j2k::PreparedBatch, Self::Error>
@@ -256,6 +259,7 @@ pub fn j2k::DeviceDecodePlan::source_rect(self) -> j2k_core::types::Rect
 pub fn j2k::DeviceDecodePlan::target_resolution(self) -> core::option::Option<(u32, u32)>
 pub fn j2k::EncodedImage::full(alloc::sync::Arc<[u8]>) -> Self
 pub fn j2k::EncodedImage::new(alloc::sync::Arc<[u8]>, j2k::DecodeRequest) -> Self
+pub fn j2k::EncodedImage::operation_source(alloc::sync::Arc<[u8]>) -> Self
 pub fn j2k::J2kCancellationToken::cancel(&self)
 pub fn j2k::J2kCancellationToken::is_cancelled(&self) -> bool
 pub fn j2k::J2kCancellationToken::new() -> Self
@@ -288,6 +292,8 @@ pub fn j2k::J2kDecoder<'_>::decode_srgb8_with_control(&mut self, &j2k::J2kDecode
 pub fn j2k::J2kDecoder<'_>::full_decode_plan(&mut self, j2k_core::pixel::PixelFormat) -> core::result::Result<j2k::J2kDecodePlan, j2k::J2kError>
 pub fn j2k::J2kDecoder<'_>::max_reduction_levels(&mut self) -> core::result::Result<u8, j2k::J2kError>
 pub fn j2k::J2kDecoder<'_>::max_reduction_levels_with_control(&mut self, &j2k::J2kDecodeControl) -> core::result::Result<u8, j2k::J2kError>
+pub fn j2k::J2kDecoder<'_>::native_region_decode_plan(&mut self, j2k_core::types::Rect, u8) -> core::result::Result<j2k::J2kNativeRegionDecodePlan, j2k::J2kError>
+pub fn j2k::J2kDecoder<'_>::native_region_decode_plan_with_control(&mut self, j2k_core::types::Rect, u8, &j2k::J2kDecodeControl) -> core::result::Result<j2k::J2kNativeRegionDecodePlan, j2k::J2kError>
 pub fn j2k::J2kDecoder<'_>::region_decode_plan(&mut self, j2k_core::pixel::PixelFormat, j2k_core::types::Rect, u8) -> core::result::Result<j2k::J2kRegionDecodePlan, j2k::J2kError>
 pub fn j2k::J2kDecoder<'_>::region_decode_plan_with_control(&mut self, j2k_core::pixel::PixelFormat, j2k_core::types::Rect, u8, &j2k::J2kDecodeControl) -> core::result::Result<j2k::J2kRegionDecodePlan, j2k::J2kError>
 pub fn j2k::J2kDecoder<'_>::rows_decode_plan(&mut self) -> core::result::Result<j2k::J2kDecodePlan, j2k::J2kError>
@@ -321,6 +327,8 @@ pub fn j2k::J2kFileBoxMetadata<'a>::from_file_metadata(&'a j2k::J2kFileMetadata)
 pub fn j2k::J2kFileColorSpec<'a>::from_file_metadata(&'a j2k::J2kFileMetadata) -> core::option::Option<Self>
 pub fn j2k::J2kFileColorSpec<'a>::from_inspected(&'a j2k::J2kColorSpec) -> core::option::Option<Self>
 pub fn j2k::J2kFileMetadata::has_icc_profile(&self) -> bool
+pub fn j2k::J2kFileMetadata::icc_profile(&self) -> core::option::Option<&[u8]>
+pub fn j2k::J2kFileMetadata::primary_color_spec(&self) -> core::option::Option<&j2k::J2kColorSpec>
 pub fn j2k::J2kLosslessComponentSamples<'a>::components(&self) -> u16
 pub fn j2k::J2kLosslessComponentSamples<'a>::new(&'a [j2k::J2kLosslessComponentPlane<'a>], u32, u32, u8, bool) -> core::result::Result<Self, j2k::J2kError>
 pub fn j2k::J2kLosslessEncodeOptions::default() -> Self
@@ -358,6 +366,7 @@ pub fn j2k::J2kRegionDecodePlan::buffer_len(&self, usize) -> core::result::Resul
 pub fn j2k::J2kRowDecodeOptions::default() -> Self
 pub fn j2k::J2kSrgb8Image::data(&self) -> &[u8]
 pub fn j2k::J2kSrgb8Image::into_data(self) -> alloc::vec::Vec<u8>
+pub fn j2k::J2kSrgb8Image::into_planar_data_with_control(self, &j2k::J2kDecodeControl) -> core::result::Result<alloc::vec::Vec<u8>, j2k::J2kError>
 pub fn j2k::J2kSrgb8Image::warnings(&self) -> &[j2k::J2kDecodeWarning]
 pub fn j2k::J2kSupportInfo::component_count(&self) -> u16
 pub fn j2k::J2kSupportInfo::has_component_subsampling(&self) -> bool
@@ -727,6 +736,8 @@ pub j2k::J2kMarkerSegment::Ppm
 pub j2k::J2kMarkerSegment::Ppt
 pub j2k::J2kMarkerSegment::Sop
 pub j2k::J2kMarkerSegment::Tlm
+pub j2k::J2kNativeRegionDecodePlan::region: j2k::J2kRegionDecodePlan
+pub j2k::J2kNativeRegionDecodePlan::samples: j2k::BatchGroupInfo
 pub j2k::J2kPaletteColumn::bit_depth: u8
 pub j2k::J2kPaletteColumn::signed: bool
 pub j2k::J2kPaletteMetadata::columns: alloc::vec::Vec<j2k::J2kPaletteColumn>
@@ -810,6 +821,9 @@ pub j2k::NonRepresentableReason::UnsupportedComponentCount
 pub j2k::PreparationDepth::ClassicOffsetPlan
 pub j2k::PreparationDepth::Htj2kOffsetPlan
 pub j2k::PreparationDepth::MetadataOnly
+pub j2k::PreparedOperationPlan::info: j2k::BatchGroupInfo
+pub j2k::PreparedOperationPlan::output_rect: j2k_core::types::Rect
+pub j2k::PreparedOperationPlan::used_lenient_metadata_recovery: bool
 pub j2k::ReencodedHtj2k::bytes: alloc::vec::Vec<u8>
 pub j2k::ReencodedHtj2k::report: j2k::J2kToHtj2kReport
 pub j2k::ReversibleTransform::None53
