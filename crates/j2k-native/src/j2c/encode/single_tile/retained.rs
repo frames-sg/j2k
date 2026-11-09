@@ -97,32 +97,34 @@ impl<'a> IrreversibleScaleEncoder<'a> {
     /// Returns the error [`encode_with_roi_regions`](crate::encode_with_roi_regions)
     /// returns for the same request at this scale.
     pub fn encode_at_scale(&mut self, quantization_scale: f32) -> EncodeResult<Vec<u8>> {
-        self.options.irreversible_quantization_scale = quantization_scale;
-        if self.reuse && self.transform.is_none() {
-            // A failure here is the ordinary encode's own, returned below.
-            if let Ok(transform) = self.transform_tile() {
-                self.reuse = transform.is_some();
-                self.transform = transform;
+        crate::j2c::encode::on_pool_worker_for(self.pixels.len(), || {
+            self.options.irreversible_quantization_scale = quantization_scale;
+            if self.reuse && self.transform.is_none() {
+                // A failure here is the ordinary encode's own, returned below.
+                if let Ok(transform) = self.transform_tile() {
+                    self.reuse = transform.is_some();
+                    self.transform = transform;
+                }
             }
-        }
-        if let Some(mut transform) = self.transform.take() {
-            if let Ok(codestream) = self.encode_transformed(&mut transform) {
-                self.transform = Some(transform);
-                return Ok(codestream);
+            if let Some(mut transform) = self.transform.take() {
+                if let Ok(codestream) = self.encode_transformed(&mut transform) {
+                    self.transform = Some(transform);
+                    return Ok(codestream);
+                }
+                // Not a silent failure: the ordinary encode below is authoritative.
+                self.reuse = false;
             }
-            // Not a silent failure: the ordinary encode below is authoritative.
-            self.reuse = false;
-        }
-        crate::encode_with_roi_regions(
-            self.pixels,
-            self.width,
-            self.height,
-            self.num_components,
-            self.bit_depth,
-            self.signed,
-            &self.options,
-            self.roi_regions,
-        )
+            crate::encode_with_roi_regions(
+                self.pixels,
+                self.width,
+                self.height,
+                self.num_components,
+                self.bit_depth,
+                self.signed,
+                &self.options,
+                self.roi_regions,
+            )
+        })
     }
 
     /// Heap bytes kept live between calls: retained coefficients and options.

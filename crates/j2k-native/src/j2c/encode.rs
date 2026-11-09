@@ -229,17 +229,46 @@ pub fn encode(
     signed: bool,
     options: &EncodeOptions,
 ) -> crate::EncodeResult<Vec<u8>> {
-    let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
-    encode_with_accelerator(
-        pixels,
-        width,
-        height,
-        num_components,
-        bit_depth,
-        signed,
-        options,
-        &mut accelerator,
-    )
+    on_pool_worker_for(pixels.len(), || {
+        let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
+        encode_with_accelerator(
+            pixels,
+            width,
+            height,
+            num_components,
+            bit_depth,
+            signed,
+            options,
+            &mut accelerator,
+        )
+    })
+}
+
+/// Encodes of fewer input bytes than this run on the calling thread: moving
+/// one to a pool worker and back costs more than its few parallel stages
+/// gain. On an M5 Max, a moved 128x128 RGB8 encode (48 KiB) took 5% longer
+/// and a moved 256x256 Gray8 HTJ2K encode (64 KiB) 14% less.
+#[cfg(feature = "parallel")]
+const MIN_POOL_WORKER_INPUT_BYTES: usize = 1 << 16;
+
+/// Run a CPU encode of `input_bytes` sample bytes through
+/// [`profile::on_pool_worker`] when it is large enough to gain from it.
+#[cfg(feature = "parallel")]
+pub(crate) fn on_pool_worker_for<R: Send>(
+    input_bytes: usize,
+    work: impl FnOnce() -> R + Send,
+) -> R {
+    if input_bytes < MIN_POOL_WORKER_INPUT_BYTES {
+        work()
+    } else {
+        profile::on_pool_worker(work)
+    }
+}
+
+/// Without a pool, every encode runs on the calling thread.
+#[cfg(not(feature = "parallel"))]
+pub(crate) fn on_pool_worker_for<R>(_input_bytes: usize, work: impl FnOnce() -> R) -> R {
+    profile::on_pool_worker(work)
 }
 
 /// Encode an irreversible HTJ2K codestream using OpenHTJ2K-compatible
@@ -269,18 +298,20 @@ pub fn encode_htj2k_with_qfactor(
     qfactor: u8,
     options: &EncodeOptions,
 ) -> crate::EncodeResult<Vec<u8>> {
-    let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
-    encode_htj2k_with_qfactor_and_accelerator(
-        pixels,
-        width,
-        height,
-        num_components,
-        bit_depth,
-        signed,
-        qfactor,
-        options,
-        &mut accelerator,
-    )
+    on_pool_worker_for(pixels.len(), || {
+        let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
+        encode_htj2k_with_qfactor_and_accelerator(
+            pixels,
+            width,
+            height,
+            num_components,
+            bit_depth,
+            signed,
+            qfactor,
+            options,
+            &mut accelerator,
+        )
+    })
 }
 
 /// Accelerator-aware counterpart to [`encode_htj2k_with_qfactor`].
@@ -503,18 +534,20 @@ pub fn encode_with_roi_regions(
     options: &EncodeOptions,
     roi_regions: &[EncodeRoiRegion],
 ) -> crate::EncodeResult<Vec<u8>> {
-    let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
-    encode_with_accelerator_and_roi_regions(
-        pixels,
-        width,
-        height,
-        num_components,
-        bit_depth,
-        signed,
-        options,
-        roi_regions,
-        &mut accelerator,
-    )
+    on_pool_worker_for(pixels.len(), || {
+        let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
+        encode_with_accelerator_and_roi_regions(
+            pixels,
+            width,
+            height,
+            num_components,
+            bit_depth,
+            signed,
+            options,
+            roi_regions,
+            &mut accelerator,
+        )
+    })
 }
 
 /// Encode pixel data with rectangular ROI maxshift and optional stage hooks.
@@ -588,21 +621,23 @@ pub fn encode_htj2k(
     signed: bool,
     options: &EncodeOptions,
 ) -> crate::EncodeResult<Vec<u8>> {
-    let session = NativeEncodeSession::try_new(NativeEncodeRetainedInput::none())?;
-    let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
-    encode_with_accelerator_and_mode_for_session(
-        pixels,
-        width,
-        height,
-        num_components,
-        bit_depth,
-        signed,
-        options,
-        &[],
-        BlockCodingMode::HighThroughput,
-        &session,
-        &mut accelerator,
-    )
+    on_pool_worker_for(pixels.len(), || {
+        let session = NativeEncodeSession::try_new(NativeEncodeRetainedInput::none())?;
+        let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
+        encode_with_accelerator_and_mode_for_session(
+            pixels,
+            width,
+            height,
+            num_components,
+            bit_depth,
+            signed,
+            options,
+            &[],
+            BlockCodingMode::HighThroughput,
+            &session,
+            &mut accelerator,
+        )
+    })
 }
 
 /// Encode reversible 5/3 component planes into a classic J2K or HTJ2K
@@ -650,14 +685,16 @@ pub fn encode_component_planes_53(
         actual_bytes,
         "component-plane typed descriptor owners",
     )?;
-    encode_typed_component_planes_53_for_session(
-        &typed_planes,
-        width,
-        height,
-        options,
-        &typed_session,
-    )
-    .map_err(NativeEncodePipelineError::into_encode_error)
+    on_pool_worker_for(planes.iter().map(|plane| plane.data.len()).sum(), || {
+        encode_typed_component_planes_53_for_session(
+            &typed_planes,
+            width,
+            height,
+            options,
+            &typed_session,
+        )
+        .map_err(NativeEncodePipelineError::into_encode_error)
+    })
 }
 
 /// Encode reversible 5/3 typed component planes into a classic J2K or HTJ2K
@@ -678,9 +715,11 @@ pub fn encode_typed_component_planes_53(
     height: u32,
     options: &EncodeOptions,
 ) -> crate::EncodeResult<Vec<u8>> {
-    let session = NativeEncodeSession::try_new(NativeEncodeRetainedInput::none())?;
-    encode_typed_component_planes_53_for_session(planes, width, height, options, &session)
-        .map_err(NativeEncodePipelineError::into_encode_error)
+    on_pool_worker_for(planes.iter().map(|plane| plane.data.len()).sum(), || {
+        let session = NativeEncodeSession::try_new(NativeEncodeRetainedInput::none())?;
+        encode_typed_component_planes_53_for_session(planes, width, height, options, &session)
+            .map_err(NativeEncodePipelineError::into_encode_error)
+    })
 }
 
 /// Encode precomputed reversible 5/3 wavelet coefficients into a classic

@@ -432,6 +432,47 @@ fn cpu_only_accelerator_opts_into_parallel_block_fallback_only_for_native_cpu() 
     assert!(!external.prefer_parallel_cpu_code_block_fallback());
 }
 
+#[cfg(feature = "parallel")]
+#[test]
+fn cpu_encodes_match_from_any_calling_thread() {
+    // Called from outside the pool, a large enough encode may move to a pool
+    // worker; from a pool thread, beside other calls or when small, it runs
+    // where it is called. 384x200 Gray8 is above the move threshold.
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(3)
+        .build()
+        .expect("test pool should build");
+    for (width, height, use_ht_block_coding) in [
+        (96, 80, false),
+        (96, 80, true),
+        (384, 200, false),
+        (384, 200, true),
+    ] {
+        let pixels = gradient_u8(width, height);
+        let options = EncodeOptions {
+            num_decomposition_levels: 2,
+            code_block_width_exp: 3,
+            code_block_height_exp: 3,
+            use_ht_block_coding,
+            ..EncodeOptions::default()
+        };
+        let encode_once =
+            || encode(&pixels, width, height, 1, 8, false, &options).expect("CPU encode");
+        let expected = encode_once();
+        assert_eq!(pool.install(encode_once), expected, "pool thread");
+        std::thread::scope(|scope| {
+            let callers: Vec<_> = (0..4).map(|_| scope.spawn(encode_once)).collect();
+            for caller in callers {
+                assert_eq!(
+                    caller.join().expect("caller"),
+                    expected,
+                    "concurrent caller"
+                );
+            }
+        });
+    }
+}
+
 #[test]
 fn cpu_parallel_block_fallback_matches_serial_classic_and_htj2k_output() {
     #[derive(Default)]
