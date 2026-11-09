@@ -2,8 +2,10 @@
 
 //
 // Batch parity (Gap B): the CUDA same-geometry 9/7 batch must produce the exact
-// same bands as the per-job CUDA 9/7 path (identical f32 kernels with per-item
-// offsets, --fmad=false), and must report real (non-zero) staged batch timings.
+// same bands as the per-job CUDA 9/7 path (the same canonical binary32 kernels
+// with per-item offsets; every operation is an explicitly rounded PTX
+// instruction, so no --fmad setting can fuse or split them), and must report
+// real (non-zero) staged batch timings.
 //
 // Compiled only with `cuda-runtime`; asserts only on the CUDA runner.
 #![cfg(feature = "cuda-runtime")]

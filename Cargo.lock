@@ -2632,6 +2632,7 @@ dependencies = [
 name = "j2k-cuda-transcode-engine"
 version = "0.14.0"
 dependencies = [
+ "j2k-codec-math",
  "j2k-core",
  "j2k-cuda-build-support",
  "j2k-cuda-runtime",
@@ -2886,6 +2887,7 @@ name = "j2k-transcode-cuda"
 version = "0.14.0"
 dependencies = [
  "criterion",
+ "j2k-codec-math",
  "j2k-core",
  "j2k-cuda-j2k-engine",
  "j2k-cuda-runtime",

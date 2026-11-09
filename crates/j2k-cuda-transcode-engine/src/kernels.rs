@@ -205,4 +205,28 @@ mod tests {
             assert!(source.contains(&format!(".visible .entry {entrypoint}(")));
         }
     }
+
+    /// The canonical 9/7 arithmetic must stay in self-contained PTX. A float
+    /// intrinsic such as `f32::abs` makes CUDA-Oxide call libdevice
+    /// (`__nv_*`), which switches its output to NVVM IR and drops the PTX.
+    #[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
+    #[test]
+    fn transcode_ptx_has_no_libdevice_calls_and_keeps_explicit_rounding() {
+        let source =
+            std::str::from_utf8(&transcode_ptx()[..transcode_ptx().len() - 1]).expect("PTX UTF-8");
+        assert!(
+            !source.contains("__nv_"),
+            "transcode PTX references a libdevice function"
+        );
+        assert!(
+            !source.contains(".extern .func"),
+            "transcode PTX declares an external function"
+        );
+        for instruction in ["fma.rn.f32", "mul.rn.f32", "add.rn.f32"] {
+            assert!(
+                source.contains(instruction),
+                "transcode PTX lacks the canonical {instruction}"
+            );
+        }
+    }
 }

@@ -14,6 +14,12 @@ other builds may embed placeholder PTX. Set `J2K_REQUIRE_CUDA_OXIDE_BUILD=1` on
 CUDA test and benchmark hosts to make missing PTX a build error. Calling a
 placeholder kernel returns an error saying the PTX was not built.
 
+The 9/7 kernels compute the canonical binary32 transform from
+`j2k_codec_math::transcode97`. Each operation is an explicitly rounded PTX
+instruction, so CUDA codestreams are byte-identical to CPU and Metal ones.
+`TranscodePrecision::F64` is CPU-only. An explicit CUDA accelerator rejects it
+with `TranscodeStageError::Unsupported`; `Auto` leaves it on the CPU.
+
 `Auto` sends a single transform job to CUDA only from `224 * 224` component
 samples, and same-shape reversible 5/3 and 9/7 batches from 32 jobs and
 `224 * 224 * 32` samples (the same as the Metal adapter). Lower the batch

@@ -33,6 +33,8 @@ fn ycbcr_420_batch_transcodes_to_htj2k_with_explicit_cuda_97_codeblock_path() {
         4
     ];
     let options = JpegToHtj2kOptions::lossy_97();
+    let reference = j2k_transcode::jpeg_to_htj2k(&jpeg, &options)
+        .expect("CPU reference transcodes the code-block fixture");
     let mut transcoder = JpegToHtj2kTranscoder::default();
     let mut accelerator = CudaDctToWaveletStageAccelerator::new_explicit();
 
@@ -73,6 +75,10 @@ fn ycbcr_420_batch_transcodes_to_htj2k_with_explicit_cuda_97_codeblock_path() {
             .expect("native decoder accepts generated CUDA code-block 9/7 HTJ2K");
         assert_eq!((decoded.width, decoded.height), (16, 16));
         assert_eq!(decoded.num_components, 3);
+        assert_eq!(
+            tile.codestream, reference.codestream,
+            "CUDA and CPU 9/7 transcodes must emit identical bytes"
+        );
         assert_eq!(
             tile.report.coefficient_path,
             JpegToHtj2kCoefficientPath::FloatDirectLinear97

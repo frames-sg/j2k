@@ -182,42 +182,37 @@ fn cuda_oxide_dwt97_transcode_matches_scalar_fixture_when_required() {
 
     assert_eq!((bands.low_width, bands.low_height), (4, 4));
     assert_eq!((bands.high_width, bands.high_height), (4, 4));
-    assert_f32_slice_close(
-        &bands.ll,
-        &[
-            12.144_072, 8.567_899, 11.216_426, 20.388_594, 11.476_019, 7.618_125, 12.952_319,
-            19.958_328, 7.468_019, 6.779_34, 10.701_953, 14.315_73, 4.983_001, 3.069_523,
-            4.546_064, 6.695_241,
-        ],
-        0.02,
-    );
-    assert_f32_slice_close(
-        &bands.hl,
-        &[
-            0.579_117, -0.765_21, -1.113_766, 3.008_691, 1.415_966, -2.878_618, 2.173_036,
-            -0.629_188, -0.239_748, 0.239_237, -0.885_278, 2.500_556, 1.929_175, -2.255_519,
-            1.123_41, 0.191_912,
-        ],
-        0.02,
-    );
-    assert_f32_slice_close(
-        &bands.lh,
-        &[
-            -0.314_113, 0.534_82, -1.107_942, 1.062_559, 0.976_02, -1.180_377, 1.861_77,
-            -0.696_248, -1.241_956, 2.006_542, -1.112_403, 0.853_18, 0.104_077, -3.326_791,
-            0.079_872, -2.094_714,
-        ],
-        0.02,
-    );
-    assert_f32_slice_close(
-        &bands.hh,
-        &[
-            -0.434_17, 1.497_277, -0.967_611, -6.657_543, 1.496_545, -1.963_292, -2.252_154,
-            3.941_389, -0.968_106, -2.252_748, 1.867_451, -1.252_69, -6.656_182, 3.949_171,
-            -1.248_663, 0.544_539,
-        ],
-        0.02,
-    );
+    assert_dwt97_bands_bits_eq(&bands, &canonical_reference_bands(&blocks, 1, 1, 8, 8));
+
+    // Odd sizes, one-sample axes, and an axis above the cooperative
+    // shared-memory row limit.
+    for (block_cols, block_rows, width, height) in [
+        (2, 2, 13, 11),
+        (1, 2, 1, 9),
+        (2, 1, 9, 1),
+        (130, 1, 1033, 7),
+    ] {
+        let grid = (0..block_cols * block_rows * 64)
+            .map(|index| blocks[index % 64] - f32::from(u8::try_from(index % 13).expect("small")))
+            .collect::<Vec<_>>();
+        let (batch, _) = CudaTranscodeEngine::new(&context)
+            .j2k_transcode_dwt97_batch_with_pool(super::CudaDwt97BatchWithPoolRequest {
+                blocks: &grid,
+                geometry: CudaDwt97BatchGeometry {
+                    item_count: 1,
+                    block_cols,
+                    block_rows,
+                    width,
+                    height,
+                },
+                pool: &context.buffer_pool(),
+            })
+            .expect("cuda-oxide 9/7 batch transcode");
+        assert_dwt97_bands_bits_eq(
+            &batch[0],
+            &canonical_reference_bands(&grid, block_cols, block_rows, width, height),
+        );
+    }
 }
 
 #[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
@@ -266,8 +261,9 @@ fn cuda_oxide_dwt97_batch_and_quantize_paths_match_reference_when_required() {
         })
         .expect("cuda-oxide DWT97 batch");
     assert_eq!(batch.len(), 2);
-    assert_dwt97_bands_close(&batch[0], &expected_first, 0.02);
-    assert_dwt97_bands_close(&batch[1], &expected_second, 0.02);
+    assert_dwt97_bands_bits_eq(&batch[0], &expected_first);
+    assert_dwt97_bands_bits_eq(&batch[1], &expected_second);
+    assert_dwt97_bands_bits_eq(&batch[0], &canonical_reference_bands(&first, 1, 1, 8, 8));
 
     let wide_block_cols = 129;
     let wide_width = 1032;
@@ -293,7 +289,11 @@ fn cuda_oxide_dwt97_batch_and_quantize_paths_match_reference_when_required() {
         })
         .expect("wide cuda-oxide DWT97 batch");
     assert_eq!(wide_batch.len(), 1);
-    assert_dwt97_bands_close(&wide_batch[0], &wide_expected, 0.02);
+    assert_dwt97_bands_bits_eq(&wide_batch[0], &wide_expected);
+    assert_dwt97_bands_bits_eq(
+        &wide_batch[0],
+        &canonical_reference_bands(&wide_blocks, wide_block_cols, 1, wide_width, wide_height),
+    );
 
     let params = super::CudaHtj2k97QuantizeParams {
         inv_delta_ll: 1.0,
@@ -396,21 +396,21 @@ fn cuda_oxide_dwt97_batch_and_quantize_paths_match_reference_when_required() {
 }
 
 #[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
-fn assert_f32_slice_close(actual: &[f32], expected: &[f32], tolerance: f32) {
-    assert_eq!(actual.len(), expected.len());
+fn assert_f32_slice_bits_eq(actual: &[f32], expected: &[f32], band: &str) {
+    assert_eq!(actual.len(), expected.len(), "{band} length");
     for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
-        assert!(
-            (actual - expected).abs() <= tolerance,
-            "index {index}: actual={actual}, expected={expected}, tolerance={tolerance}"
+        assert_eq!(
+            actual.to_bits(),
+            expected.to_bits(),
+            "{band}[{index}]: actual={actual}, expected={expected}"
         );
     }
 }
 
 #[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
-fn assert_dwt97_bands_close(
+fn assert_dwt97_bands_bits_eq(
     actual: &super::CudaTranscodeDwt97Bands,
     expected: &super::CudaTranscodeDwt97Bands,
-    tolerance: f32,
 ) {
     assert_eq!(
         (
@@ -426,10 +426,87 @@ fn assert_dwt97_bands_close(
             expected.high_height,
         )
     );
-    assert_f32_slice_close(&actual.ll, &expected.ll, tolerance);
-    assert_f32_slice_close(&actual.hl, &expected.hl, tolerance);
-    assert_f32_slice_close(&actual.lh, &expected.lh, tolerance);
-    assert_f32_slice_close(&actual.hh, &expected.hh, tolerance);
+    assert_f32_slice_bits_eq(&actual.ll, &expected.ll, "ll");
+    assert_f32_slice_bits_eq(&actual.hl, &expected.hl, "hl");
+    assert_f32_slice_bits_eq(&actual.lh, &expected.lh, "lh");
+    assert_f32_slice_bits_eq(&actual.hh, &expected.hh, "hh");
+}
+
+#[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
+struct HostArithmetic;
+
+#[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
+impl j2k_codec_math::transcode97::Transcode97Arithmetic for HostArithmetic {
+    fn fma(a: f32, b: f32, c: f32) -> f32 {
+        a.mul_add(b, c)
+    }
+
+    fn mul(a: f32, b: f32) -> f32 {
+        a * b
+    }
+
+    fn add(a: f32, b: f32) -> f32 {
+        a + b
+    }
+}
+
+/// Canonical binary32 bands from `j2k_codec_math::transcode97`: per-block
+/// IDCT, then interleaved lifting of every row and every column.
+#[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
+fn canonical_reference_bands(
+    blocks: &[f32],
+    block_cols: usize,
+    block_rows: usize,
+    width: usize,
+    height: usize,
+) -> super::CudaTranscodeDwt97Bands {
+    use j2k_codec_math::transcode97::{forward_lift97, idct8x8};
+
+    assert_eq!(blocks.len(), block_cols * block_rows * 64);
+    let mut plane = vec![0.0f32; width * height];
+    for (block_index, block) in blocks.chunks_exact(64).enumerate() {
+        let coefficients: [f32; 64] = block.try_into().expect("64 coefficients");
+        let samples = idct8x8::<HostArithmetic>(&coefficients);
+        let (block_x, block_y) = (block_index % block_cols, block_index / block_cols);
+        for local_y in 0..8 {
+            for local_x in 0..8 {
+                let (x, y) = (block_x * 8 + local_x, block_y * 8 + local_y);
+                if x < width && y < height {
+                    plane[y * width + x] = samples[local_y * 8 + local_x];
+                }
+            }
+        }
+    }
+    for row in plane.chunks_mut(width) {
+        forward_lift97::<HostArithmetic>(row);
+    }
+    for x in 0..width {
+        let mut column = (0..height)
+            .map(|y| plane[y * width + x])
+            .collect::<Vec<_>>();
+        forward_lift97::<HostArithmetic>(&mut column);
+        for (y, value) in column.into_iter().enumerate() {
+            plane[y * width + x] = value;
+        }
+    }
+    let (low_width, high_width) = (width.div_ceil(2), width / 2);
+    let (low_height, high_height) = (height.div_ceil(2), height / 2);
+    let band = |x_parity: usize, y_parity: usize, band_width: usize, band_height: usize| {
+        (0..band_height)
+            .flat_map(|y| (0..band_width).map(move |x| (x, y)))
+            .map(|(x, y)| plane[(2 * y + y_parity) * width + 2 * x + x_parity])
+            .collect::<Vec<_>>()
+    };
+    super::CudaTranscodeDwt97Bands {
+        ll: band(0, 0, low_width, low_height),
+        hl: band(1, 0, high_width, low_height),
+        lh: band(0, 1, low_width, high_height),
+        hh: band(1, 1, high_width, high_height),
+        low_width,
+        low_height,
+        high_width,
+        high_height,
+    }
 }
 
 #[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
@@ -533,13 +610,8 @@ fn expected_dwt97_codeblocks(
 }
 
 #[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "test mirrors CUDA deadzone quantization for bounded fixture coefficients"
-)]
 fn quantize_dwt97_deadzone(value: f32, inv_delta: f32) -> i32 {
-    let sign = if value < 0.0 { -1 } else { 1 };
-    sign * (value.abs() * inv_delta).floor() as i32
+    j2k_codec_math::transcode97::quantize97::<HostArithmetic>(value, inv_delta)
 }
 
 #[cfg(all(feature = "cuda-oxide-transcode", j2k_cuda_oxide_transcode_built))]

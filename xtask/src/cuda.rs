@@ -45,7 +45,7 @@ const HTJ2K_ENCODE_PARITY_TESTS: &[&str] = &[
 const TRANSCODE_PARITY_TESTS: &[&str] = &[
     "cuda_dwt97_batch_matches_per_job_and_reports_stage_timings_when_required",
     "cuda_dwt97_batch_non_uniform_geometry_falls_back_to_per_job_when_required",
-    "cuda_dwt97_matches_scalar_oracle_within_tolerance_when_required",
+    "cuda_dwt97_matches_canonical_bits_when_required",
     "cuda_htj2k97_codeblock_batch_matches_oracle_when_required",
     "cuda_htj2k97_codeblock_batch_rejects_non_uniform_geometry_when_required",
     "cuda_resident_htj2k97_batch_matches_host_bounce_codestream_when_required",

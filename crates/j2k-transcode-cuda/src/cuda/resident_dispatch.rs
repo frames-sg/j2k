@@ -181,16 +181,15 @@ pub(crate) fn dispatch_htj2k97_compact_preencoded_i16_batch(
     )
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "the CUDA quantization ABI intentionally consumes f32 inverse deltas"
-)]
+/// Quantizer parameters with the canonical binary32 reciprocal steps every
+/// 9/7 transcode backend uses.
 pub(super) fn htj2k97_quantize_params(
     options: Htj2k97CodeBlockOptions,
 ) -> Result<CudaHtj2k97QuantizeParams, CudaTranscodeError> {
     let (cb_width, cb_height) = validate_htj2k97_codeblock_options(options)?;
-    let inv_delta =
-        |sub: J2kSubBandType| -> f32 { (1.0 / htj2k97_subband_delta(options, sub)) as f32 };
+    let inv_delta = |sub: J2kSubBandType| -> f32 {
+        j2k_codec_math::transcode97::quantize97_inv_delta(htj2k97_subband_delta(options, sub))
+    };
     Ok(CudaHtj2k97QuantizeParams {
         inv_delta_ll: inv_delta(J2kSubBandType::LowLow),
         inv_delta_hl: inv_delta(J2kSubBandType::HighLow),

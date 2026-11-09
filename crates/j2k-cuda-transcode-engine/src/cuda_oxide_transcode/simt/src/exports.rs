@@ -6,15 +6,18 @@ use cuda_host::cuda_module;
 mod kernels {
     use crate::{
         constants::{
-            DWT97_ALPHA, DWT97_BETA, DWT97_DELTA, DWT97_GAMMA, DWT97_INV_KAPPA, DWT97_KAPPA,
             DWT97_ROW_LIFT_MAX_WIDTH, DWT97_ROW_LIFT_ROWS_PER_BLOCK, DWT97_ROW_LIFT_SHARED_SAMPLES,
         },
-        dwt97::{forward_lift_97, idct8x8_sample, idct8x8_sample_i16, shared_row_index},
+        dwt97::{
+            coop_lift_step, coop_scale, forward_lift_97, idct8x8_sample, idct8x8_sample_i16,
+            shared_row_index,
+        },
         helpers::{load_f32, load_i32, offset_f32_mut, offset_i32_mut, store_f32, store_i32},
         quantization::{dwt97_codeblock_major_offset, quantize_dwt97_deadzone},
         reversible53::{idct_islow_signed, reversible_lift_row, vertical_high, vertical_low},
     };
     use cuda_device::{SharedArray, kernel, thread};
+    use j2k_codec_math::transcode97::DWT97_LIFT_STEPS_F32;
 
     #[kernel]
     pub unsafe fn transcode_reversible53_idct(
@@ -360,99 +363,26 @@ mod kernels {
         thread::sync_threads();
 
         if width >= 2 && width <= DWT97_ROW_LIFT_MAX_WIDTH as i32 {
+            // Steps alternate odd (1) and even (0) samples; every thread
+            // reaches each barrier.
             if valid {
-                let last_even = if width % 2 == 0 { width - 2 } else { width - 1 };
-                let mut i = tid * 2 + 1;
-                while i < width {
-                    let left = load_f32(rows.cast_const(), shared_row_index(row_lane, i - 1));
-                    let right = if i + 1 < width {
-                        load_f32(rows.cast_const(), shared_row_index(row_lane, i + 1))
-                    } else {
-                        load_f32(rows.cast_const(), shared_row_index(row_lane, last_even))
-                    };
-                    let value = load_f32(rows.cast_const(), shared_row_index(row_lane, i))
-                        + DWT97_ALPHA * (left + right);
-                    store_f32(rows, shared_row_index(row_lane, i), value);
-                    i += block_step * 2;
-                }
+                coop_lift_step(rows, row_lane, width, tid, block_step, 1, DWT97_LIFT_STEPS_F32[0]);
             }
             thread::sync_threads();
-
             if valid {
-                let mut i = tid * 2;
-                while i < width {
-                    let left = if i > 0 {
-                        load_f32(rows.cast_const(), shared_row_index(row_lane, i - 1))
-                    } else {
-                        load_f32(rows.cast_const(), shared_row_index(row_lane, 1))
-                    };
-                    let right = if i + 1 < width {
-                        load_f32(rows.cast_const(), shared_row_index(row_lane, i + 1))
-                    } else {
-                        left
-                    };
-                    let value = load_f32(rows.cast_const(), shared_row_index(row_lane, i))
-                        + DWT97_BETA * (left + right);
-                    store_f32(rows, shared_row_index(row_lane, i), value);
-                    i += block_step * 2;
-                }
+                coop_lift_step(rows, row_lane, width, tid, block_step, 0, DWT97_LIFT_STEPS_F32[1]);
             }
             thread::sync_threads();
-
             if valid {
-                let last_even = if width % 2 == 0 { width - 2 } else { width - 1 };
-                let mut i = tid * 2 + 1;
-                while i < width {
-                    let left = load_f32(rows.cast_const(), shared_row_index(row_lane, i - 1));
-                    let right = if i + 1 < width {
-                        load_f32(rows.cast_const(), shared_row_index(row_lane, i + 1))
-                    } else {
-                        load_f32(rows.cast_const(), shared_row_index(row_lane, last_even))
-                    };
-                    let value = load_f32(rows.cast_const(), shared_row_index(row_lane, i))
-                        + DWT97_GAMMA * (left + right);
-                    store_f32(rows, shared_row_index(row_lane, i), value);
-                    i += block_step * 2;
-                }
+                coop_lift_step(rows, row_lane, width, tid, block_step, 1, DWT97_LIFT_STEPS_F32[2]);
             }
             thread::sync_threads();
-
             if valid {
-                let mut i = tid * 2;
-                while i < width {
-                    let left = if i > 0 {
-                        load_f32(rows.cast_const(), shared_row_index(row_lane, i - 1))
-                    } else {
-                        load_f32(rows.cast_const(), shared_row_index(row_lane, 1))
-                    };
-                    let right = if i + 1 < width {
-                        load_f32(rows.cast_const(), shared_row_index(row_lane, i + 1))
-                    } else {
-                        left
-                    };
-                    let value = load_f32(rows.cast_const(), shared_row_index(row_lane, i))
-                        + DWT97_DELTA * (left + right);
-                    store_f32(rows, shared_row_index(row_lane, i), value);
-                    i += block_step * 2;
-                }
+                coop_lift_step(rows, row_lane, width, tid, block_step, 0, DWT97_LIFT_STEPS_F32[3]);
             }
             thread::sync_threads();
-
             if valid {
-                let mut i = tid * 2;
-                while i < width {
-                    let value = load_f32(rows.cast_const(), shared_row_index(row_lane, i))
-                        * DWT97_INV_KAPPA;
-                    store_f32(rows, shared_row_index(row_lane, i), value);
-                    i += block_step * 2;
-                }
-                let mut i = tid * 2 + 1;
-                while i < width {
-                    let value =
-                        load_f32(rows.cast_const(), shared_row_index(row_lane, i)) * DWT97_KAPPA;
-                    store_f32(rows, shared_row_index(row_lane, i), value);
-                    i += block_step * 2;
-                }
+                coop_scale(rows, row_lane, width, tid, block_step);
             }
             thread::sync_threads();
         }

@@ -2,9 +2,9 @@
 
 //
 // Fused code-block parity (Gap C): the CUDA staged 9/7 + deadzone quantization
-// batch must match the shared j2k-transcode code-block oracle in layout
-// exactly and in quantized coefficients within +/-1 (device math is f32 vs the
-// oracle's f64 at deadzone boundaries), and must report all five stage timings.
+// batch must match the canonical binary32 code-block reference exactly, in
+// layout and in every quantized coefficient, and must report all five stage
+// timings.
 //
 // Compiled only with `cuda-runtime`; asserts only on the CUDA runner.
 #![cfg(feature = "cuda-runtime")]
@@ -13,11 +13,11 @@ use j2k_transcode::accelerator::{
     DctGridToHtj2k97CodeBlockJob, DctToWaveletStageAccelerator, Htj2k97CodeBlockOptions,
     IrreversibleQuantizationSubbandScales, PrequantizedHtj2k97Component,
 };
-use j2k_transcode::{
-    dct8x8_blocks_then_dwt97_float, JpegTileBatchInput, JpegToHtj2kOptions, JpegToHtj2kTranscoder,
-};
+use j2k_transcode::{JpegTileBatchInput, JpegToHtj2kOptions, JpegToHtj2kTranscoder};
 use j2k_transcode_cuda::CudaDctToWaveletStageAccelerator;
-use j2k_transcode_test_support::prequantized_component_from_dwt97;
+use j2k_transcode_test_support::{
+    canonical_dwt97_from_blocks, canonical_prequantized_component_from_dwt97,
+};
 
 use j2k_test_support::{cuda_runtime_gate, minimal_baseline_420_jpeg};
 
@@ -73,11 +73,10 @@ fn assert_layout_eq(
     }
 }
 
-/// Quantized coefficients must agree within `max_abs_error` (f32 GPU vs f64 oracle).
-fn assert_coefficients_close(
+/// Quantized coefficients must equal the canonical quantizer's.
+fn assert_coefficients_eq(
     actual: &PrequantizedHtj2k97Component,
     expected: &PrequantizedHtj2k97Component,
-    max_abs_error: i32,
 ) {
     for (actual_res, expected_res) in actual.resolutions.iter().zip(expected.resolutions.iter()) {
         for (actual_sub, expected_sub) in
@@ -93,9 +92,9 @@ fn assert_coefficients_close(
                     .iter()
                     .zip(expected_block.coefficients.iter())
                 {
-                    assert!(
-                        (actual_coeff - expected_coeff).abs() <= max_abs_error,
-                        "quantized coefficient diverged: actual {actual_coeff}, expected {expected_coeff}"
+                    assert_eq!(
+                        actual_coeff, expected_coeff,
+                        "quantized coefficient diverged from the canonical quantizer"
                     );
                 }
             }
@@ -155,17 +154,17 @@ fn cuda_htj2k97_codeblock_batch_matches_oracle_when_required() {
 
     assert_eq!(actual.len(), jobs.len());
     for (job, component) in jobs.iter().zip(actual.iter()) {
-        let dwt = dct8x8_blocks_then_dwt97_float(
+        let dwt = canonical_dwt97_from_blocks(
             job.blocks,
             job.block_cols,
             job.block_rows,
             job.width,
             job.height,
-        )
-        .expect("scalar 9/7 oracle accepts the job");
-        let expected = prequantized_component_from_dwt97(&dwt, options, job.x_rsiz, job.y_rsiz);
+        );
+        let expected =
+            canonical_prequantized_component_from_dwt97(&dwt, options, job.x_rsiz, job.y_rsiz);
         assert_layout_eq(component, &expected);
-        assert_coefficients_close(component, &expected, 1);
+        assert_coefficients_eq(component, &expected);
     }
 
     let timings = accelerator

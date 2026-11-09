@@ -28,7 +28,7 @@ use j2k_transcode::{
     DctToWaveletStageCounters, Dwt53TwoDimensional, Dwt97BatchStageTimings, Dwt97TwoDimensional,
     Htj2k97CodeBlockOptions, PreencodedHtj2k97CompactBatch, PreencodedHtj2k97CompactBatchGroups,
     PreencodedHtj2k97Component, PrequantizedHtj2k97Component, ReversibleDwt53FirstLevel,
-    TranscodeStageDispatchMode, TranscodeStageError,
+    TranscodePrecision, TranscodeStageDispatchMode, TranscodeStageError,
 };
 
 /// Default minimum component sample count before Auto mode offers a single
@@ -242,10 +242,26 @@ impl Default for CudaDctToWaveletStageAccelerator {
     }
 }
 
+/// Why an explicit CUDA accelerator refuses `TranscodePrecision::F64`.
+const CUDA_DWT97_F64_UNSUPPORTED: &str =
+    "CUDA computes the 9/7 transcode in binary32 only; TranscodePrecision::F64 is CPU-only";
+
 #[doc(hidden)]
 impl DctToWaveletStageAccelerator for CudaDctToWaveletStageAccelerator {
     fn supports_dwt97_batch(&self) -> bool {
         true
+    }
+
+    /// Explicit CUDA refuses binary64 9/7 work instead of falling back to the
+    /// CPU; Auto leaves it to the CPU path, which handles it.
+    fn check_dwt97_precision(
+        &self,
+        precision: TranscodePrecision,
+    ) -> Result<(), TranscodeStageError> {
+        if precision == TranscodePrecision::F64 && !self.mode.is_auto() {
+            return Err(TranscodeStageError::Unsupported(CUDA_DWT97_F64_UNSUPPORTED));
+        }
+        Ok(())
     }
 
     // The fused DCT->9/7->prequantized-codeblock path runs the staged 9/7

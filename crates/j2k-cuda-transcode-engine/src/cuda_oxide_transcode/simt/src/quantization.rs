@@ -1,28 +1,19 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-pub(crate) fn floor_f32(value: f32) -> f32 {
-    let truncated = value as i32 as f32;
-    if truncated > value {
-        truncated - 1.0
-    } else {
-        truncated
-    }
-}
+use j2k_codec_math::transcode97::quantize97;
 
-#[inline(always)]
-pub(crate) fn abs_f32(value: f32) -> f32 {
-    if value < 0.0 { -value } else { value }
-}
+use crate::helpers::PtxArithmetic;
 
 #[inline(always)]
 pub(crate) fn min_i32(a: i32, b: i32) -> i32 {
     if a < b { a } else { b }
 }
 
+/// Canonical deadzone quantizer, `sign(value) * trunc(|value| * inv_delta)`,
+/// with the host-rounded binary32 reciprocal step.
 #[inline(always)]
 pub(crate) fn quantize_dwt97_deadzone(value: f32, inv_delta: f32) -> i32 {
-    let sign = if value < 0.0 { -1 } else { 1 };
-    sign * floor_f32(abs_f32(value) * inv_delta) as i32
+    quantize97::<PtxArithmetic>(value, inv_delta)
 }
 
 #[inline(always)]
