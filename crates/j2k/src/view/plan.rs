@@ -97,8 +97,12 @@ pub enum J2kSampleInterpretation {
     /// Eight-bit sRGB colour, including restricted ICC conversion, with
     /// straight alpha when the output has an alpha channel.
     Srgb8,
-    /// Native integer samples clamped to sixteen bits, in native-endian bytes.
-    /// Component signedness is preserved (signed values use two's complement).
+    /// Sixteen-bit samples in native-endian bytes. Components of more than
+    /// eight bits hold their integer values clamped to sixteen bits (two's
+    /// complement when signed). Components of at most eight bits are widened
+    /// across the 16-bit range: unsigned ones from their precision, signed
+    /// ones from their two's-complement byte, widened using the declared
+    /// precision and saturating at 65535.
     Native16,
 }
 
@@ -157,15 +161,23 @@ impl J2kRegionDecodePlan {
     }
 }
 
-/// Native-sample region output: the packed region plan and the sample
-/// contract (type, precision, signedness, colour channels and alpha) its
-/// native integer samples carry.
+/// Native-sample region output: the packed region plan for the native pixel
+/// format, and the contract of the region's native integer samples.
+///
+/// The contract (type, precision, signedness, colour channels and alpha)
+/// describes the samples that
+/// [`CpuBatchDecoder::decode_operations`](crate::CpuBatchDecoder::decode_operations)
+/// returns for the region. A [`J2kDecoder`] decode to `region.format` writes
+/// what `region.sample_interpretation` describes instead: it scales unsigned
+/// precisions below eight bits to 0–255 and widens signed components of at
+/// most eight bits across the 16-bit range.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct J2kNativeRegionDecodePlan {
     /// Geometry, packed layout and expected route of the region.
     pub region: J2kRegionDecodePlan,
-    /// The samples' contract, with the region's reduced output dimensions.
+    /// The native samples' contract, with the region's reduced output
+    /// dimensions.
     pub samples: BatchGroupInfo,
 }
 
@@ -207,9 +219,11 @@ impl J2kDecoder<'_> {
 
     /// Plan a region in the image's native integer samples at an exact
     /// reduction: the packed layout [`Self::region_decode_plan`] plans for the
-    /// native pixel format, and the sample contract the native samples carry.
-    /// Signed 16-bit samples plan their word layout and keep their signedness
-    /// in [`J2kNativeRegionDecodePlan::samples`].
+    /// native pixel format, and the contract of the native samples the CPU
+    /// batch operations return for the region (see
+    /// [`J2kNativeRegionDecodePlan`]). Signed samples plan the word layout of
+    /// their unsigned 16-bit format and keep their signedness in
+    /// [`J2kNativeRegionDecodePlan::samples`].
     ///
     /// # Errors
     /// Returns the errors of [`Self::region_decode_plan`], or an unsupported
@@ -603,9 +617,9 @@ fn native_blocker(blocker: RegionRowsBlocker) -> J2kStreamingBlocker {
     }
 }
 
-/// The packed pixel format a native region plans: signed 16-bit samples plan
-/// the word layout of their unsigned format, keeping their signedness in the
-/// sample contract.
+/// The packed pixel format a native region plans: signed samples plan the
+/// word layout of their unsigned 16-bit format, keeping their signedness in
+/// the sample contract.
 fn native_planning_format(samples: &BatchGroupInfo) -> Option<PixelFormat> {
     Some(match samples.native_pixel_format()? {
         PixelFormat::GrayI16 => PixelFormat::Gray16,
