@@ -17,6 +17,7 @@ use pyo3::{
 mod cuda;
 mod decode;
 mod encode;
+mod input;
 #[cfg(all(feature = "metal", target_os = "macos", target_arch = "aarch64"))]
 mod metal;
 mod operations;
@@ -54,8 +55,9 @@ fn owned_capacity<T>(capacity: usize) -> PyResult<Vec<T>> {
 /// Tile headers are parsed for `max_reduction`, the reduction every tile and
 /// component supports; coding-style keys report the main-header defaults.
 #[pyfunction]
-fn inspect<'py>(py: Python<'py>, data: &Bound<'_, PyBytes>) -> PyResult<Bound<'py, PyDict>> {
-    let bytes = data.as_bytes();
+fn inspect<'py>(py: Python<'py>, data: &Bound<'_, PyAny>) -> PyResult<Bound<'py, PyDict>> {
+    let input = input::EncodedInput::extract(data)?;
+    let bytes = input.as_bytes();
     let (support, grid, style, max_reduction) = py
         .detach(|| {
             let support = j2k::J2kDecoder::inspect_support(bytes)?;

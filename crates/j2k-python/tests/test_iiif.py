@@ -2,7 +2,11 @@
 
 """Image-server facts: inspect metadata for IIIF info.json."""
 
+import array
+import mmap
+import os
 import struct
+import tempfile
 import unittest
 
 import numpy as np
@@ -116,6 +120,119 @@ class InspectTests(unittest.TestCase):
         # A nonzero image origin moves the reduced grid: sizes come from the plan.
         origin = info_json((ORIGIN / "rgb_23x17_origin_3_5.j2k").read_bytes(), "origin")
         self.assertEqual(origin["sizes"][-1], {"width": 23, "height": 17})
+
+
+class BufferInputTests(unittest.TestCase):
+    """Every decode, inspect and plan entry point takes any bytes-like input."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.data = tiled(levels=3)
+        cls.directory = tempfile.TemporaryDirectory()
+        cls.path = os.path.join(cls.directory.name, "image.j2c")
+        with open(cls.path, "wb") as file:
+            file.write(cls.data)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.directory.cleanup()
+
+    def mapped(self, access):
+        with open(self.path, "r+b") as file:
+            return mmap.mmap(file.fileno(), 0, access=access)
+
+    def buffers(self):
+        data = self.data
+        padded = b"head" + data + b"tail"
+        return {
+            "bytes": data,
+            "bytearray": bytearray(data),
+            "memoryview": memoryview(data),
+            "memoryview slice": memoryview(padded)[4:-4],
+            "read-only memoryview of bytearray": memoryview(bytearray(data)).toreadonly(),
+            "array": array.array("B", data),
+            "numpy": np.frombuffer(data, dtype=np.uint8),
+            "read-only mmap": self.mapped(mmap.ACCESS_READ),
+            "writable mmap": self.mapped(mmap.ACCESS_WRITE),
+            "copy-on-write mmap": self.mapped(mmap.ACCESS_COPY),
+        }
+
+    def test_every_entry_point_accepts_every_buffer_type(self):
+        decoder = j2k.Decoder(layout="nhwc")
+        expected = decoder.decode(self.data, region=(5, 7, 70, 50), reduction=1).to_numpy()
+        expected_srgb = decoder.decode_srgb8(self.data, reduction=1).to_numpy()
+        expected_plan = decoder.plan_region(self.data, region=(5, 7, 70, 50), reduction=1)
+        expected_info = j2k.inspect(self.data)
+        expected_bands = [band.tensor.to_numpy() for component in
+                          j2k.decode_wavelets(self.data, resolutions=[0]).components
+                          for band in component.bands]
+        for name, buffer in self.buffers().items():
+            with self.subTest(buffer=name):
+                self.assertEqual(j2k.inspect(buffer), expected_info)
+                self.assertEqual(
+                    decoder.plan_region(buffer, region=(5, 7, 70, 50), reduction=1), expected_plan)
+                np.testing.assert_array_equal(
+                    decoder.decode(buffer, region=(5, 7, 70, 50), reduction=1).to_numpy(), expected)
+                np.testing.assert_array_equal(
+                    decoder.decode_srgb8(buffer, reduction=1).to_numpy(), expected_srgb)
+                request = j2k.ImageRequest(buffer, region=(5, 7, 70, 50), reduction=1)
+                np.testing.assert_array_equal(decoder.decode(request).to_numpy(), expected)
+                batch = decoder.decode_batch([buffer, request])
+                self.assertFalse(batch.errors or batch.group_errors)
+                prepared = decoder.prepare([buffer], region=(5, 7, 70, 50), reduction=1)
+                np.testing.assert_array_equal(
+                    decoder.decode_prepared(prepared).groups[0].tensor.to_numpy()[0], expected)
+                bands = [band.tensor.to_numpy() for component in
+                         j2k.decode_wavelets(buffer, resolutions=[0]).components
+                         for band in component.bands]
+                self.assertEqual(len(bands), len(expected_bands))
+                for band, expected_band in zip(bands, expected_bands):
+                    np.testing.assert_array_equal(band, expected_band)
+                if isinstance(buffer, mmap.mmap):
+                    # No buffer export outlives the calls: the map can close.
+                    buffer.close()
+
+    def test_rgb_helper_accepts_buffers(self):
+        pixels = (np.arange(24 * 16 * 3) % 251).astype(np.uint8).tobytes()
+        data = j2k.encode_rgb(pixels, 24, 16, codec="j2k")
+        expected = j2k.decode_rgb(data)
+        for buffer in (bytearray(data), memoryview(data), np.frombuffer(data, np.uint8)):
+            self.assertEqual(j2k.decode_rgb(buffer), expected)
+
+    def test_requests_own_their_bytes(self):
+        source = bytearray(self.data)
+        request = j2k.ImageRequest(source)
+        source[:] = bytes(len(source))
+        decoder = j2k.Decoder(layout="nhwc")
+        np.testing.assert_array_equal(
+            decoder.decode(request).to_numpy(), decoder.decode(self.data).to_numpy())
+
+    def test_other_layouts_and_types_are_rejected_clearly(self):
+        decoder = j2k.Decoder()
+        strided = memoryview(self.data)[::2]
+        two_d = memoryview(self.data[:150 * 2]).cast("B", (2, 150))
+        for name, call in [
+            ("inspect", j2k.inspect),
+            ("decode", decoder.decode),
+            ("decode_srgb8", decoder.decode_srgb8),
+            ("plan_region", decoder.plan_region),
+            ("ImageRequest", j2k.ImageRequest),
+            ("decode_wavelets", j2k.decode_wavelets),
+        ]:
+            with self.subTest(entry=name):
+                with self.assertRaisesRegex(BufferError, "one-dimensional C-contiguous"):
+                    call(strided)
+                with self.assertRaisesRegex(BufferError, "one-dimensional C-contiguous"):
+                    call(two_d)
+                with self.assertRaisesRegex(TypeError, "unsigned bytes"):
+                    call(array.array("i", [1, 2, 3]))
+                with self.assertRaisesRegex(TypeError, "bytes-like"):
+                    call("image.jp2")
+        with self.assertRaisesRegex(TypeError, "input 1: expected bytes, a bytes-like object"):
+            decoder.decode_batch([self.data, "image.jp2"])
+        with self.assertRaisesRegex(BufferError, "input 0: .*C-contiguous"):
+            decoder.prepare([strided])
+
 
 if __name__ == "__main__":
     unittest.main()

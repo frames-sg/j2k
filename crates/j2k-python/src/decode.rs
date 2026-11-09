@@ -13,12 +13,13 @@ use j2k_jpeg::{
     ColorTransform, DecodeOptions as JpegOptions, JpegBatchDecoder, JpegBatchGroup, JpegBatchInput,
 };
 use pyo3::{
-    exceptions::{PyRuntimeError, PyTypeError, PyValueError},
+    exceptions::{PyBufferError, PyRuntimeError, PyTypeError, PyValueError},
     prelude::*,
-    types::{PyBytes, PyDict},
+    types::PyDict,
 };
 
 use crate::{
+    input::EncodedInput,
     is_jpeg,
     operations::{self, DecodeControl, PreparedState, RegionRequest},
     owned_items,
@@ -42,11 +43,12 @@ impl ImageRequest {
     #[new]
     #[pyo3(signature = (data, *, region=None, reduction=0, color_transform="auto"))]
     fn new(
-        data: &Bound<'_, PyBytes>,
+        data: &Bound<'_, PyAny>,
         region: Option<(u32, u32, u32, u32)>,
         reduction: u8,
         color_transform: &str,
     ) -> PyResult<Self> {
+        let data = EncodedInput::extract(data)?;
         let transform = match color_transform {
             "auto" => ColorTransform::Auto,
             "ycbcr" => ColorTransform::ForceYCbCr,
@@ -63,7 +65,7 @@ impl ImageRequest {
             ));
         }
         Ok(Self {
-            bytes: Arc::from(data.as_bytes()),
+            bytes: data.to_shared(),
             request: RegionRequest::new(region, reduction)?,
             jpeg_options: JpegOptions::default().with_color_transform(transform),
         })
@@ -434,7 +436,11 @@ impl Decoder {
     ) -> PyResult<Tensor> {
         self.check_process()?;
         let default_request = RegionRequest::new(region, reduction)?;
-        let mut decoded = if let Ok(data) = data.cast::<PyBytes>() {
+        let mut decoded = if data.cast::<ImageRequest>().is_ok() {
+            let inputs = encoded_inputs(owned_items([data.clone()].into_iter())?, default_request)?;
+            self.decode_encoded(py, inputs)?
+        } else {
+            let data = EncodedInput::extract(data)?;
             #[cfg(feature = "cuda")]
             if let Some(cuda) = &self.cuda {
                 if !is_jpeg(data.as_bytes()) {
@@ -447,16 +453,13 @@ impl Decoder {
                 py,
                 owned_items(
                     [ImageRequest {
-                        bytes: Arc::from(data.as_bytes()),
+                        bytes: data.to_shared(),
                         request: default_request,
                         jpeg_options: JpegOptions::default(),
                     }]
                     .into_iter(),
                 )?,
             )?
-        } else {
-            let inputs = encoded_inputs(owned_items([data.clone()].into_iter())?, default_request)?;
-            self.decode_encoded(py, inputs)?
         };
         if let Some((_, error)) = decoded.errors.pop() {
             return Err(PyValueError::new_err(error));
@@ -486,7 +489,7 @@ impl Decoder {
     fn plan_region<'py>(
         &self,
         py: Python<'py>,
-        data: &Bound<'_, PyBytes>,
+        data: &Bound<'_, PyAny>,
         region: Option<(u32, u32, u32, u32)>,
         reduction: u8,
         interpretation: &str,
@@ -495,6 +498,7 @@ impl Decoder {
         if self.has_device_backend() {
             return Err(value_error("exact region planning requires a CPU decoder"));
         }
+        let data = EncodedInput::extract(data)?;
         operations::plan_region(
             py,
             data.as_bytes(),
@@ -511,7 +515,7 @@ impl Decoder {
     fn decode_srgb8(
         &self,
         py: Python<'_>,
-        data: &Bound<'_, PyBytes>,
+        data: &Bound<'_, PyAny>,
         region: Option<(u32, u32, u32, u32)>,
         reduction: u8,
         control: Option<&DecodeControl>,
@@ -520,6 +524,7 @@ impl Decoder {
         if self.has_device_backend() {
             return Err(value_error("explicit sRGB output requires a CPU decoder"));
         }
+        let data = EncodedInput::extract(data)?;
         if is_jpeg(data.as_bytes()) {
             return Err(value_error(
                 "explicit sRGB output supports JPEG 2000 inputs only",
@@ -963,22 +968,15 @@ fn encoded_inputs(
         .into_iter()
         .enumerate()
         .map(|(index, item)| {
-            if let Ok(bytes) = item.cast::<PyBytes>() {
+            let Ok(request) = item.extract::<PyRef<'_, ImageRequest>>() else {
+                let bytes = EncodedInput::extract(&item)
+                    .map_err(|error| indexed_input_error(&item, index, &error))?;
                 return Ok(ImageRequest {
-                    bytes: Arc::from(bytes.as_bytes()),
+                    bytes: bytes.to_shared(),
                     request: default_request,
                     jpeg_options: JpegOptions::default(),
                 });
-            }
-            let request = item.extract::<PyRef<'_, ImageRequest>>().map_err(|_| {
-                let kind = item
-                    .get_type()
-                    .name()
-                    .map_or_else(|_| String::from("object"), |name| name.to_string());
-                PyTypeError::new_err(format!(
-                    "input {index}: expected bytes or ImageRequest, not {kind}"
-                ))
-            })?;
+            };
             if default_request != RegionRequest::default() {
                 return Err(PyValueError::new_err(format!(
                     "input {index}: use per-image ImageRequest options or batch options, not both"
@@ -987,6 +985,21 @@ fn encoded_inputs(
             Ok((*request).clone())
         })
         .collect()
+}
+
+/// `error`, of the same type, naming the batch position of the input it rejects.
+fn indexed_input_error(item: &Bound<'_, PyAny>, index: usize, error: &PyErr) -> PyErr {
+    let py = item.py();
+    if !error.is_instance_of::<PyTypeError>(py) {
+        return PyBufferError::new_err(format!("input {index}: {}", error.value(py)));
+    }
+    let kind = item
+        .get_type()
+        .name()
+        .map_or_else(|_| String::from("object"), |name| name.to_string());
+    PyTypeError::new_err(format!(
+        "input {index}: expected bytes, a bytes-like object or ImageRequest, not {kind}"
+    ))
 }
 
 pub(crate) fn shape(info: &BatchGroupInfo, batch: usize) -> PyResult<Vec<usize>> {

@@ -57,6 +57,17 @@ image = decoder.decode(data).to_torch()  # [C,H,W], U8/U16/I16
 small = decoder.decode(data, reduction=1).to_numpy()  # [C,H,W], half resolution
 ```
 
+Every decode, inspection and planning call (`inspect`, `Decoder.decode`,
+`decode_batch`, `prepare`, `plan_region`, `decode_srgb8`, `ImageRequest`,
+`decode_wavelets` and `decode_rgb`) takes the encoded image as `bytes` or any
+other one-dimensional, C-contiguous buffer of unsigned bytes: `bytearray`,
+`memoryview`, `mmap.mmap`, `array.array("B")` or a `uint8` NumPy array. Other
+buffer layouts, such as a strided `memoryview`, raise `BufferError`; pass
+`bytes(view)` to copy one. A `bytes` object is read in place. Any other buffer
+is copied once before decoding starts, so a later write to it cannot change
+what the codec reads; no buffer export outlives the call. Batch inputs,
+`ImageRequest` and prepared batches keep their own copy of the encoded bytes.
+
 `reduction` is an exact count from 0 through 31; 0–3 retain their full, half,
 quarter, and eighth meanings. MPS and CUDA decoders decode exact requests and
 prepared operations on the device with the CPU's rectangles and, for reversible

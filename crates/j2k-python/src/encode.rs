@@ -335,9 +335,10 @@ pub(crate) fn encode_rgb<'py>(
 #[pyfunction]
 pub(crate) fn decode_rgb<'py>(
     py: Python<'py>,
-    data: &Bound<'_, PyBytes>,
+    data: &Bound<'_, PyAny>,
 ) -> PyResult<(u32, u32, Bound<'py, PyBytes>)> {
-    let encoded = data.as_bytes();
+    let input = crate::input::EncodedInput::extract(data)?;
+    let encoded = input.as_bytes();
     let (width, height, pixels) = py.detach(|| {
         if crate::is_jpeg(encoded) {
             let decoder = j2k_jpeg::Decoder::new(encoded).map_err(value_error)?;

@@ -6,7 +6,7 @@ use crate::{
     value_error,
 };
 use j2k::{J2kDecoder, WaveletBandKind, WaveletSamples, WaveletSelection, WaveletTransform};
-use pyo3::{exceptions::PyValueError, prelude::*, types::PyBytes};
+use pyo3::{exceptions::PyValueError, prelude::*};
 
 #[pyclass(name = "WaveletBand", module = "j2k", frozen)]
 pub(crate) struct Band {
@@ -64,7 +64,7 @@ pub(crate) struct Wavelets {
 #[pyo3(signature = (data, *, tiles=None, components=None, resolutions=None, bands=None))]
 pub(crate) fn decode_wavelets(
     py: Python<'_>,
-    data: &Bound<'_, PyBytes>,
+    data: &Bound<'_, PyAny>,
     tiles: Option<Vec<u32>>,
     components: Option<Vec<u16>>,
     resolutions: Option<Vec<u8>>,
@@ -86,9 +86,8 @@ pub(crate) fn decode_wavelets(
             })
             .collect::<PyResult<_>>()?,
     };
-    // PyBytes is immutable and the borrowed Python argument retains its owner
-    // for the entire call, including while the interpreter is detached.
-    let bytes = data.as_bytes();
+    let input = crate::input::EncodedInput::extract(data)?;
+    let bytes = input.as_bytes();
     let output = py.detach(|| {
         J2kDecoder::new(bytes)
             .and_then(|mut d| d.decode_wavelets(&selection))
