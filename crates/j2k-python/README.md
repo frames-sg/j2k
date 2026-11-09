@@ -2,7 +2,7 @@
 
 `j2k-python` implements the `j2k` native extension entirely in Rust. It
 exposes JPEG 2000/HTJ2K inspection, CPU pixel batches that also accept 8-bit
-JPEG, selected native wavelet bands, CPU RGB research helpers, and optional
+JPEG, CPU encoding, selected native wavelet bands, CPU RGB research helpers, and optional
 direct CUDA and MPS output for PyTorch. NumPy and PyTorch are
 optional consumers. Bare `device="cuda"` imports PyTorch at construction to bind
 the current CUDA device for the decoder lifetime; explicit `cuda:N` remains explicit.
@@ -305,6 +305,28 @@ are errors. Selection skips unrequested Tier-1 entropy decoding and all inverse
 DWT/color/pixel-packing work. Packet headers are still parsed and coefficient
 storage is still allocated for the active tile. It does not promise proportional
 I/O or peak-memory savings, or incremental refinement across separate calls.
+
+## Encoding
+
+`encode(data, width, height, components=3, bit_depth=8, signed=False, ...)`
+encodes interleaved samples on the CPU; samples of up to 8 bits take one byte
+and deeper ones two, little-endian. It is lossless by default
+(`color_transform="none"` codes three components without the reversible colour
+transform, and `quality_layers` sets the layer count). `mode="lossy"` codes
+lossy, to at most one of `target_bpp`, `target_bytes`, or `target_psnr` (a list
+gives cumulative quality layers) or to an HTJ2K `qfactor`. Both modes take
+`codec` (`"j2k"` or `"htj2k"`), `levels`, `progression` (`"lrcp"`, `"rlcp"`,
+`"rpcl"`, `"pcrl"`, `"cprl"`), `tile_size`, `tile_part_packets`, and `markers`
+(`"sop"`, `"eph"`, `"tlm"`, `"plt"`, `"plm"`, `"ppm"`, `"ppt"`). `file=True`
+writes a JP2 (or JPH with HTJ2K) file, with `icc_profile` in its COLR box when
+given. `return_report=True` also returns the codestream length, bits per pixel,
+measured PSNR (or `None`), and quality-layer count. The keywords translate one
+to one into the `j2k` crate's encode options, which validate every combination;
+invalid combinations raise `ValueError`.
+
+`inspect(data)` reports `color_specification` (`"none"`, `"enumerated"`,
+`"icc"`, or `"unknown"`): the first COLR box, which decoding applies, with its
+`enumerated_colorspace` (EnumCS, such as 16 for sRGB) or `icc_profile` bytes.
 
 ## CPU research helpers
 

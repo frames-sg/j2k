@@ -85,6 +85,31 @@ fn inspect<'py>(py: Python<'py>, data: &Bound<'_, PyBytes>) -> PyResult<Bound<'p
             .collect::<Vec<_>>(),
     )?;
     out.set_item("colorspace", format!("{:?}", support.info.colorspace))?;
+    // The first COLR box, which decoding applies; a raw codestream has none.
+    let metadata = support.file_metadata.as_ref();
+    let applied = metadata.and_then(j2k::J2kFileMetadata::primary_color_spec);
+    out.set_item(
+        "color_specification",
+        match applied {
+            None => "none",
+            Some(j2k::J2kColorSpec::Enumerated { .. }) => "enumerated",
+            Some(j2k::J2kColorSpec::IccProfile { .. }) => "icc",
+            Some(j2k::J2kColorSpec::Unknown { .. }) => "unknown",
+        },
+    )?;
+    out.set_item(
+        "enumerated_colorspace",
+        match applied {
+            Some(j2k::J2kColorSpec::Enumerated { value }) => Some(*value),
+            _ => None,
+        },
+    )?;
+    out.set_item(
+        "icc_profile",
+        metadata
+            .and_then(j2k::J2kFileMetadata::icc_profile)
+            .map(|profile| PyBytes::new(py, profile)),
+    )?;
     out.set_item("transfer_syntax", format!("{:?}", support.transfer_syntax))?;
     Ok(out)
 }
@@ -118,6 +143,7 @@ fn j2k_python(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<wavelets::Component>()?;
     module.add_class::<wavelets::Band>()?;
     module.add_function(wrap_pyfunction!(inspect, module)?)?;
+    module.add_function(wrap_pyfunction!(encode::encode, module)?)?;
     module.add_function(wrap_pyfunction!(encode::encode_rgb, module)?)?;
     module.add_function(wrap_pyfunction!(encode::decode_rgb, module)?)?;
     module.add_function(wrap_pyfunction!(wavelets::decode_wavelets, module)?)?;

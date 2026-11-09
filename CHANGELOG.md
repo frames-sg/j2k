@@ -17,6 +17,11 @@ Staged workspace version: `0.14.0`.
   markers, ICC profiles in JP2/JPH output), `j2k_decoder_color_info`,
   `j2k_decoder_icc_profile`, and a relocatable pkg-config file; existing ABI-1
   layouts are unchanged. See `crates/j2k-c/CHANGELOG.md`.
+- Python adds `j2k.encode` with the same lossless and lossy coding controls as
+  keyword arguments, and `j2k.inspect` reports `color_specification`,
+  `enumerated_colorspace`, and `icc_profile`. Both bindings only translate
+  arguments into the facade's encode options; the codec validates every
+  combination.
 - Exact-operation planning for bindings: `CpuBatchDecoder::plan_operations`
   plans exact operations as `decode_operations` prepares them and returns each
   operation's output contract (`PreparedOperationPlan`) or the error its decode

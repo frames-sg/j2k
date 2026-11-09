@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
-from typing import Any, Literal
+from collections.abc import Sequence
+from typing import Any, Literal, overload
 import numpy as np
 import torch
 
@@ -96,11 +97,27 @@ class WaveletImage:
     rect: Region
     components: list[WaveletComponent]
 
+# Keys include color_specification ("none", "enumerated", "icc", "unknown": the
+# first COLR box, which decoding applies), enumerated_colorspace (its EnumCS, or
+# None), and icc_profile (the applied profile's bytes, or None).
 def inspect(data: bytes) -> dict[str, Any]: ...
 def decode_wavelets(data: bytes, *, tiles: list[int] | None = None, components: list[int] | None = None, resolutions: list[int] | None = None, bands: list[Literal["LL", "HL", "LH", "HH"]] | None = None) -> WaveletImage: ...
 
 def forward_rgb97(data: bytes, width: int, height: int, *, levels: int = 5, color: Literal["rgb", "ict"] = "ict") -> list[tuple[int, int, str, int, int, bytes]]: ...
 def inverse_rgb97(bands: list[tuple[int, int, str, bytes]], width: int, height: int, *, levels: int = 5, color: Literal["rgb", "ict"] = "ict") -> bytes: ...
+
+Progression = Literal["lrcp", "rlcp", "rpcl", "pcrl", "cprl"]
+Marker = Literal["sop", "eph", "tlm", "plt", "plm", "ppm", "ppt"]
+
+# Interleaved samples on the CPU: lossless by default, or mode="lossy" with at
+# most one of target_bpp, target_bytes, target_psnr (a list gives cumulative
+# quality layers). Samples of up to 8 bits take one byte; deeper ones two, little-endian.
+# return_report=True also returns codestream_bytes, bits_per_pixel, psnr_db
+# (None when not measured), and quality_layers.
+@overload
+def encode(data: bytes, width: int, height: int, *, components: int = 3, bit_depth: int = 8, signed: bool = False, codec: Literal["j2k", "htj2k"] = "htj2k", mode: Literal["lossless", "lossy"] = "lossless", levels: int | None = None, progression: Progression = "lrcp", tile_size: tuple[int, int] | None = None, tile_part_packets: int | None = None, markers: Sequence[Marker] = (), quality_layers: int | None = None, color_transform: Literal["auto", "none"] = "auto", qfactor: int | None = None, target_bpp: float | Sequence[float] | None = None, target_bytes: int | Sequence[int] | None = None, target_psnr: float | Sequence[float] | None = None, file: bool = False, icc_profile: bytes | None = None, return_report: Literal[False] = False) -> bytes: ...
+@overload
+def encode(data: bytes, width: int, height: int, *, components: int = 3, bit_depth: int = 8, signed: bool = False, codec: Literal["j2k", "htj2k"] = "htj2k", mode: Literal["lossless", "lossy"] = "lossless", levels: int | None = None, progression: Progression = "lrcp", tile_size: tuple[int, int] | None = None, tile_part_packets: int | None = None, markers: Sequence[Marker] = (), quality_layers: int | None = None, color_transform: Literal["auto", "none"] = "auto", qfactor: int | None = None, target_bpp: float | Sequence[float] | None = None, target_bytes: int | Sequence[int] | None = None, target_psnr: float | Sequence[float] | None = None, file: bool = False, icc_profile: bytes | None = None, return_report: Literal[True]) -> tuple[bytes, dict[str, Any]]: ...
 
 # RGB research encoding uses CPU, JPEG 4:4:4 and the wavelet codec's ICT.
 def encode_rgb(data: bytes, width: int, height: int, *, codec: Literal["jpeg", "j2k", "htj2k"] = "htj2k", quality: int | None = None, target_bpp: float | None = None, levels: int = 5, profile: list[list[float]] | None = None) -> bytes: ...
