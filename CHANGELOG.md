@@ -5,6 +5,155 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [0.14.0] - 2026-11-10
 
+### Upgrading from 0.13
+
+- **Rust code mostly builds unchanged.** The public API grows. Outside
+  eight CUDA error fields now spelled `Box<Self>`, which callers build and
+  match as before, the reviewed API diff removes nothing. Three changes can
+  need an edit:
+  - Code that builds `JpegToHtj2kOptions` with a struct literal must add
+    the new `precision` field or use a constructor.
+  - Decodes that exceed a memory or image-size limit fail with
+    `J2kError::ResourceLimit` instead of `J2kError::NativeDecode`.
+  - Metal Tier-1 device failures are `Error::Decode` and
+    `J2kError::Backend` (displayed as `backend failed (decode):`) instead
+    of `Error::MetalKernel`.
+- **Python wheels require CPython 3.11 or later** (abi3-py311).
+- **Security:** a JP2 with a crafted ICC profile could make decoding
+  allocate memory quadratic in the profile's size, outside every decode
+  limit (a 29 KB profile held about 200 MB). Upgrade if you decode
+  untrusted files.
+- **Output that changes bytes:**
+  - `Gray16`/`Rgb16`/`Rgba16` output of signed sources of at most 8 bits
+    is 16-bit two's complement on the CPU, Metal and CUDA; 0.13 turned
+    negative samples into 65535.
+  - 16-bit output of images deeper than 16 bits holds each sample clamped
+    to 16 bits, and 8-bit output of such images is quantized over the
+    component's range; 0.13 wrote bytes of the wider samples as samples.
+  - The lossy 9/7 JPEG-to-HTJ2K transcode computes in canonical binary32
+    on every backend: 19 of 60 test outputs changed bytes, none changed
+    length, and the worst PSNR change was -0.0019 dB.
+    `TranscodePrecision::F64` reproduces the 0.13 CPU bytes.
+  - Baseline JPEG encode writes the same bytes on the CPU, Metal and CUDA
+    and on every platform. Coefficients within 2^-20 of a rounding tie can
+    round differently from 0.13, and Metal and CUDA pad partial edge
+    blocks by repeating the edge, as the CPU does, instead of with zeros.
+  - Lossy encodes to a byte or bits-per-pixel target can choose a
+    different quantization within the size allowance.
+  - CUDA JPEG decode, and more GPU JPEG 2000 decode and encode paths, now
+    match the CPU byte for byte.
+  - Reduced-resolution decodes of images whose reference-grid origin is
+    not a multiple of the scale return the samples the standard places
+    there, as OpenJPEG does, which can be one sample narrower. Images at
+    origin zero are unchanged.
+  - Fixed wrong output: the last row of a strided caller buffer, region
+    decodes of tiles with empty coarse resolutions, ROI encodes whose
+    shift overflowed 32-bit coefficients, and reduced decodes that skipped
+    packets by a too-short PLT length.
+- **Stricter validation.** Files that 0.13 accepted can now fail:
+  - SOP segments need `Lsop` 4 and the right `Nsop`;
+  - a PLT length too short for a packet that a region or reduced decode
+    skips is a packet error;
+  - ICC profiles with repeated tags or more than 256 tags are rejected,
+    and lookup-table tags are refused before allocation;
+  - GPU and batch plans reject a one-component codestream that asks for a
+    colour transform, as single decodes already did.
+- **More files decode:** tile-parts with data after the last packet; tile
+  COD markers that turn packet markers off; JP2 files with extra
+  unspecified components (such as Kakadu RGBA files written without
+  `-jp2_alpha`); ICC profiles equivalent to sRGB into `Rgb8`/`Rgba8`; and
+  images whose component planes would exceed the decode budget, which now
+  stream their rows instead of failing.
+- **JPEG files with a reserved Adobe APP14 transform byte:** strict
+  decoding, the default, still returns `JpegError::AmbiguousColorTransform`.
+  `DecodeOptions::with_strict(false)` (Python `strict=False`) now reads
+  them as libjpeg-turbo does, as YCbCr for three components and YCCK for
+  four, with a warning.
+- **C and C++:** the C API now lives in this repository as `crates/j2k-c`;
+  ABI 1 layouts are unchanged. See `crates/j2k-c/CHANGELOG.md`.
+- New dependency: `bytemuck`.
+
+### Highlights
+
+New:
+
+- **Exact regions and resolutions.** `J2kDecoder::region_decode_plan`
+  plans a region at an exact JPEG 2000 reduction before decoding (output
+  rectangle, buffer size and route). `PreparedImageOperation` with
+  `decode_operations` decodes such regions of a prepared image on the CPU,
+  Metal and CUDA without parsing it again, and `decode_region_srgb8`
+  decodes sRGB regions from the region's wavelet window instead of
+  cropping a full decode.
+- **Decode controls.** `J2kDecodeControl` gives one operation a working
+  memory limit, an output limit and a `J2kCancellationToken`, from parsing
+  through planning, batch preparation and decoding.
+- **Streaming instead of failing.** 8-bit and 16-bit full-image and region
+  decodes whose component planes would exceed the decode budget stream
+  their rows: a 5661 x 8287 RGB image decodes with about 100 MiB peak
+  heap, where the planes route needs about 980 MiB. `full_decode_plan` and
+  `rows_decode_plan` report the planned route and why rows cannot stream.
+- **C and C++ API** in the repository: the C ABI, a header-only C++17
+  wrapper and relocatable `libj2k` packages for CMake and pkg-config. It
+  adds encoding (rate, size and PSNR targets, quality layers, Qfactor,
+  tiles, markers, ICC profiles), colour reporting, exact region operations
+  and cancellation.
+- **Python:** `j2k.encode`; `j2k.inspect` reports colour, ICC, resolution
+  levels, tiling, quality layers and progression; `Decoder.plan_region`,
+  `decode_srgb8`, `DecodeControl` and `CancellationToken`; any bytes-like
+  input, read in place where possible; and CUDA and MPS decoders run exact
+  operations.
+- **IIIF and Cantaloupe.** `inspect_coding_style` and `J2kReferenceGrid`
+  report what an image server needs, and `docs/iiif.md` maps the IIIF
+  Image API 3.0 onto the Rust, C, Python and CLI interfaces. `j2k decode`,
+  also run as `opj_decompress`, writes BMP, PNG, TIFF and PNM with
+  opj_decompress options, so Cantaloupe's OpenJpegProcessor can use it.
+- **JPEG:** lossless MCU-aligned crops of baseline and progressive files,
+  and coefficient extraction that keeps only the quantized blocks it
+  needs.
+- **Same bytes on every backend.** Baseline JPEG encode, CUDA JPEG decode,
+  the 9/7 transcode and more GPU JPEG 2000 paths now match the CPU byte for
+  byte. Their constants have one owner, `j2k_codec_math`, and the Metal
+  tables are generated from it.
+
+Faster. Measured end to end against the pre-release `main` (f1a5441e), in
+ten interleaved rounds, on an Apple M5 Max, an Apple M4, and a Ryzen 7
+5800X3D with an RTX 4070 SUPER:
+
+- **Encoding to a size or bits-per-pixel target takes 77-86% less time**
+  (4-7x as fast), because the rate search runs about 3 encodes instead of
+  about 15. A 4096 x 2048 RGB8 classic encode at 2 bpp went from 316 to
+  54 ms on the M5 Max.
+- **Gray and high-bit-depth HTJ2K lossless encodes take 47-66% less
+  time:** 4096 x 2048 Gray8 from 14.7 to 5.7 ms, and a 12-bit
+  2394 x 3062 mammogram from 13.8 to 4.7 ms, on the M5 Max. Classic Gray
+  encodes at 2 bpp take 55-59% less, 12-bit CT HTJ2K encodes 17-32% less
+  and 512 x 512 RGB8 HTJ2K encodes 14-21% less.
+- **Metal decode:** classic lossless 4096 x 2048 RGB takes 48-70% less
+  time (57.5 to 29.9 ms on the M5 Max, 209 to 63 ms on the M4), and HTJ2K
+  1024 x 1024 regions 58-69% less (11.1 to 3.4 ms on the M5 Max).
+- **GPU JPEG encode:** a CUDA batch of sixteen 512 x 512 tiles takes 52%
+  less time, and a Metal batch 14-19% less.
+- **CPU JPEG decode takes 4-31% less time in every baseline case
+  measured:** a batch of 64 slide tiles 17-31%, full 4096 x 2048 images
+  8-25% and 1024 x 1024 regions 4-14%. Metal JPEG decode takes 10-15%
+  less.
+- **CPU JPEG 2000 decode on x86-64:** on the Ryzen, most full decodes of
+  gray, 12-bit and 16-bit images take 16-35% less time; RGB decodes are
+  unchanged. On the Apple CPUs, JPEG 2000 decode times are unchanged or
+  up to 3.5% shorter, apart from the case below.
+- **Measured slower:** a one-thread 4096 x 2048 HTJ2K 9/7 RGB decode on the
+  Ryzen takes 3.4% longer, and a 512 x 512 12-bit classic lossless decode
+  on the M4 takes 1.2-1.8% longer.
+
+The end-to-end figures leave out changes that were already on `main`
+before f1a5441e. The entries below give each change's own measurements,
+for example: bounded row decodes 10-14x as fast (12.9 to 1.34 s for a
+5661 x 8287 RGB image on one thread), overviews of an 18000 x 12000 image
+47-53% faster at 18 threads, warm JPEG device DCT windows 3.3-180x as
+fast, and repeated deep seeks into restart-coded JPEGs 25-128x as fast.
+
+### All changes
+
 - `J2kFileMetadata::primary_color_spec` and `J2kFileMetadata::icc_profile`
   return the Colour Specification box decoding applies (the first, per ISO/IEC
   15444-1 I.5.3.3) and its ICC profile; `has_icc_profile` still covers every
