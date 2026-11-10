@@ -131,4 +131,3 @@ extern "C" int j2k_openhtj2k_decode_u8(
     return 0;
   }
 }
-

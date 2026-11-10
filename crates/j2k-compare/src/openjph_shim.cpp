@@ -97,4 +97,3 @@ extern "C" int j2k_openjph_decode_u8(
     return 0;
   }
 }
-
