@@ -528,7 +528,7 @@ item list into the docs.
 
 | Release | Compared with | Report |
 | --- | --- | --- |
-| 0.14.0 (unreleased) | 0.13.1 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.14.0.md), [review](release-evidence/public-api/public-api-review-0.14.0.yml) |
+| 0.14.0 | 0.13.1 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.14.0.md), [review](release-evidence/public-api/public-api-review-0.14.0.yml) |
 | 0.13.1 | 0.13.0 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.13.1.md), [review](release-evidence/public-api/public-api-review-0.13.1.yml) |
 | 0.13.0 | 0.12.0 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.13.0.md), [review](release-evidence/public-api/public-api-review-0.13.0.yml) |
 | 0.12.0 | 0.11.3 | [API diff](release-evidence/public-api/reviewed-public-api-diff-0.12.0.md), [review](release-evidence/public-api/public-api-review-0.12.0.yml) |

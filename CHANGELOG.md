@@ -3,9 +3,7 @@
 This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
-## [Unreleased]
-
-Staged workspace version: `0.14.0`.
+## [0.14.0] - 2026-11-10
 
 - `J2kFileMetadata::primary_color_spec` and `J2kFileMetadata::icc_profile`
   return the Colour Specification box decoding applies (the first, per ISO/IEC
