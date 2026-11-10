@@ -251,6 +251,19 @@ pub fn encode(
 #[cfg(feature = "parallel")]
 const MIN_POOL_WORKER_INPUT_BYTES: usize = 1 << 16;
 
+/// Whether [`on_pool_worker_for`] may move a CPU encode of `input_bytes`
+/// sample bytes to a pool worker.
+#[cfg(feature = "parallel")]
+pub(crate) const fn pool_worker_sized(input_bytes: usize) -> bool {
+    input_bytes >= MIN_POOL_WORKER_INPUT_BYTES
+}
+
+/// Without a pool, no encode moves.
+#[cfg(not(feature = "parallel"))]
+pub(crate) const fn pool_worker_sized(_input_bytes: usize) -> bool {
+    false
+}
+
 /// Run a CPU encode of `input_bytes` sample bytes through
 /// [`profile::on_pool_worker`] when it is large enough to gain from it.
 #[cfg(feature = "parallel")]
@@ -258,10 +271,10 @@ pub(crate) fn on_pool_worker_for<R: Send>(
     input_bytes: usize,
     work: impl FnOnce() -> R + Send,
 ) -> R {
-    if input_bytes < MIN_POOL_WORKER_INPUT_BYTES {
-        work()
-    } else {
+    if pool_worker_sized(input_bytes) {
         profile::on_pool_worker(work)
+    } else {
+        work()
     }
 }
 

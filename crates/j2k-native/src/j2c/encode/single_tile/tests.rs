@@ -589,3 +589,63 @@ fn staged_encodes_drop_each_component_source_once_its_code_blocks_are_prepared()
         assert_eq!(dropped.get(), 3, "{mode:?}");
     }
 }
+
+/// Declines every stage after `begin_encode`, as Metal's Auto route does
+/// outside its measured cells, and is bound to its thread.
+struct ThreadBoundDecliningAccelerator {
+    parallel_code_blocks: bool,
+    _thread_bound: core::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+impl crate::J2kEncodeStageAccelerator for ThreadBoundDecliningAccelerator {
+    fn prefer_parallel_cpu_code_block_fallback(&self) -> bool {
+        self.parallel_code_blocks
+    }
+
+    fn declines_every_stage(&self) -> bool {
+        true
+    }
+}
+
+#[test]
+fn declining_thread_bound_accelerator_encodes_the_cpu_only_bytes() {
+    // 192 KiB of RGB8, above the size at which CPU encodes move to a pool worker.
+    let (width, height) = (256_u32, 256_u32);
+    let pixels: Vec<u8> = (0..width * height * 3)
+        .map(|idx| u8::try_from((idx * 29 + idx / 7) & 0xff).expect("masked sample fits u8"))
+        .collect();
+    for (reversible, use_ht_block_coding) in
+        [(true, true), (true, false), (false, true), (false, false)]
+    {
+        let options = EncodeOptions {
+            reversible,
+            use_ht_block_coding,
+            use_mct: true,
+            ..EncodeOptions::default()
+        };
+        let expected = encode(&pixels, width, height, 3, 8, false, &options)
+            .expect("CPU-only encode succeeds");
+        for parallel_code_blocks in [true, false] {
+            let mut accelerator = ThreadBoundDecliningAccelerator {
+                parallel_code_blocks,
+                _thread_bound: core::marker::PhantomData,
+            };
+            let actual = encode_with_accelerator(
+                &pixels,
+                width,
+                height,
+                3,
+                8,
+                false,
+                &options,
+                &mut accelerator,
+            )
+            .expect("declined-stage encode succeeds");
+            assert_eq!(
+                codestream_fingerprint(&actual),
+                codestream_fingerprint(&expected),
+                "reversible={reversible} ht={use_ht_block_coding} parallel={parallel_code_blocks}"
+            );
+        }
+    }
+}

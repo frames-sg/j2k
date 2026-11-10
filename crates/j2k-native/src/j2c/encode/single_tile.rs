@@ -303,7 +303,7 @@ fn prepare_validated_single_tile(
         });
     }
 
-    let request = AcceleratedComponentRequest {
+    let staged = StagedSingleTileRequest {
         pixels,
         width,
         height,
@@ -311,14 +311,95 @@ fn prepare_validated_single_tile(
         bit_depth,
         signed,
         options,
-        plan: &plan,
+        component_sample_info,
         profile_enabled,
         session,
     };
-    let prepared = prepare_accelerated_components(&request, accelerator)?;
-    let (encoded, transform_timings) =
-        encode_prepared_components(&request, component_sample_info, prepared, accelerator)?;
-    Ok(finish_staged_preparation(encoded, plan, transform_timings))
+    // Every hook left declines, so the CPU stages need only the policies
+    // `DeclinedEncodeStages` keeps, not the caller's accelerator, which may
+    // be bound to its thread. They run on a pool worker, as a CPU-only
+    // encode does.
+    if accelerator.declines_every_stage() && super::pool_worker_sized(pixels.len()) {
+        let mut declined = DeclinedEncodeStages::of(accelerator);
+        return super::on_pool_worker_for(pixels.len(), move || staged.encode(plan, &mut declined));
+    }
+    staged.encode(plan, accelerator)
+}
+
+/// The inputs of a single-tile encode's staged transform, Tier-1 and Tier-2
+/// path, which runs once the whole-tile hooks have declined.
+struct StagedSingleTileRequest<'a, 'input> {
+    pixels: &'a [u8],
+    width: u32,
+    height: u32,
+    num_components: u16,
+    bit_depth: u8,
+    signed: bool,
+    options: &'a EncodeOptions,
+    component_sample_info: &'a [EncodeComponentSampleInfo],
+    profile_enabled: bool,
+    session: &'a NativeEncodeSession<'input>,
+}
+
+impl StagedSingleTileRequest<'_, '_> {
+    fn encode(
+        self,
+        plan: SingleTilePlan,
+        accelerator: &mut impl J2kEncodeStageAccelerator,
+    ) -> NativeEncodePipelineResult<PreparedSingleTile> {
+        let request = AcceleratedComponentRequest {
+            pixels: self.pixels,
+            width: self.width,
+            height: self.height,
+            num_components: self.num_components,
+            bit_depth: self.bit_depth,
+            signed: self.signed,
+            options: self.options,
+            plan: &plan,
+            profile_enabled: self.profile_enabled,
+            session: self.session,
+        };
+        let prepared = prepare_accelerated_components(&request, accelerator)?;
+        let (encoded, transform_timings) = encode_prepared_components(
+            &request,
+            self.component_sample_info,
+            prepared,
+            accelerator,
+        )?;
+        Ok(finish_staged_preparation(encoded, plan, transform_timings))
+    }
+}
+
+/// Stands in for an accelerator whose remaining hooks all decline (see
+/// [`J2kEncodeStageAccelerator::declines_every_stage`]): it keeps the CPU
+/// policies the remaining stages read and declines every hook.
+#[derive(Debug, Clone, Copy)]
+struct DeclinedEncodeStages {
+    parallel_code_blocks: bool,
+    parallel_tiles: bool,
+}
+
+impl DeclinedEncodeStages {
+    fn of(accelerator: &impl J2kEncodeStageAccelerator) -> Self {
+        Self {
+            parallel_code_blocks: accelerator.prefer_parallel_cpu_code_block_fallback(),
+            parallel_tiles: accelerator.prefer_parallel_cpu_tile_encode(),
+        }
+    }
+}
+
+impl J2kEncodeStageAccelerator for DeclinedEncodeStages {
+    fn prefer_parallel_cpu_code_block_fallback(&self) -> bool {
+        self.parallel_code_blocks
+    }
+
+    fn prefer_parallel_cpu_tile_encode(&self) -> bool {
+        self.parallel_tiles
+    }
+
+    fn declines_every_stage(&self) -> bool {
+        true
+    }
 }
 
 /// Encode the prepared components, freeing each one's coefficients once its
