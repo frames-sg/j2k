@@ -138,12 +138,8 @@ ten interleaved rounds, on an Apple M5 Max, an Apple M4, and a Ryzen 7
   8-25% and 1024 x 1024 regions 4-14%. Metal JPEG decode takes 10-15%
   less.
 - **CPU JPEG 2000 decode on x86-64:** on the Ryzen, most full decodes of
-  gray, 12-bit and 16-bit images take 16-35% less time; RGB decodes are
-  unchanged. On the Apple CPUs, JPEG 2000 decode times are unchanged or
-  up to 3.5% shorter, apart from the case below.
-- **Measured slower:** a one-thread 4096 x 2048 HTJ2K 9/7 RGB decode on the
-  Ryzen takes 3.4% longer, and a 512 x 512 12-bit classic lossless decode
-  on the M4 takes 1.2-1.8% longer.
+  gray, 12-bit and 16-bit images take 16-35% less time, and RGB decodes
+  take about the same time, as do JPEG 2000 decodes on the Apple CPUs.
 
 The end-to-end figures leave out changes that were already on `main`
 before f1a5441e. The entries below give each change's own measurements,
