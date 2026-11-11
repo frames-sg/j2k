@@ -56,6 +56,7 @@ and stale roadmap entries have been removed from the public documentation set.
     skips is a packet error;
   - ICC profiles with repeated tags or more than 256 tags are rejected,
     and lookup-table tags are refused before allocation;
+  - JP2 palette columns deeper than 38 bits are an invalid box;
   - GPU and batch plans reject a one-component codestream that asks for a
     colour transform, as single decodes already did.
 - **More files decode:** tile-parts with data after the last packet; tile
@@ -69,9 +70,21 @@ and stale roadmap entries have been removed from the public documentation set.
   `DecodeOptions::with_strict(false)` (Python `strict=False`) now reads
   them as libjpeg-turbo does, as YCbCr for three components and YCCK for
   four, with a warning.
+- **JPEG region decodes reject empty regions.** A region with zero width
+  or height returns `JpegError::RectOutOfBounds`, as a region outside the
+  image and `lossless_crop` already do.
 - **C and C++:** the C API now lives in this repository as `crates/j2k-c`;
   ABI 1 layouts are unchanged. See `crates/j2k-c/CHANGELOG.md`.
 - New dependency: `bytemuck`.
+- **Known issue: reversible coding of 23- and 24-bit samples is not
+  exact.** The reversible colour transform and 5/3 wavelet run in `f32` up
+  to 24 bits, which does not hold every intermediate value at 23 and 24
+  bits. A lossless encode can write, and a decode of another encoder's
+  lossless codestream can return, samples a few code values off.
+  `encode_j2k_lossless` with the default round-trip validation reports
+  such an encode as an error instead of returning it. Samples of 22 bits
+  and fewer, and the exact-integer path for 25 to 38 bits, did not show
+  the problem in testing. 0.13 has the same code.
 
 ### Highlights
 
@@ -150,6 +163,23 @@ fast, and repeated deep seeks into restart-coded JPEGs 25-128x as fast.
 
 ### All changes
 
+- A JP2 palette (`pclr`) column deeper than 38 bits, the limit in ISO/IEC
+  15444-1 I.5.3.4, is an invalid box, as it already is in `ihdr` and `bpcc`.
+  Columns of 64 bits and more overflowed a shift when packing 8-bit output:
+  builds with overflow checks panicked and release builds returned wrong
+  pixels.
+- JPEG region decodes, region component rows, owned decode requests and tile
+  planning return `JpegError::RectOutOfBounds` for a region with zero width or
+  height. An empty region underflowed the last-row computation of the fast
+  4:2:0 route, a panic in builds with overflow checks, and the component-row
+  and tile-planning entry points returned `Ok` for it.
+- Metal resident lossless encode fails when a command buffer before the final
+  one did not complete. Only the final command buffer's status was checked,
+  so a failed prepare or Tier-1 command buffer left stale coefficients in a
+  pooled buffer that the final stage assembled with an OK status. The
+  split-command decode used for stage profiling
+  (`J2K_METAL_PROFILE_DECODE_SPLIT_COMMANDS`) checks its four earlier stages
+  the same way.
 - `J2kFileMetadata::primary_color_spec` and `J2kFileMetadata::icc_profile`
   return the Colour Specification box decoding applies (the first, per ISO/IEC
   15444-1 I.5.3.3) and its ICC profile; `has_icc_profile` still covers every
