@@ -764,8 +764,10 @@ impl PerfGuardOptions {
                     options.threshold_percent = value
                         .parse::<f64>()
                         .map_err(|err| format!("invalid --threshold-percent `{value}`: {err}"))?;
-                    if options.threshold_percent < 0.0 {
-                        return Err("--threshold-percent must be non-negative".to_string());
+                    if !options.threshold_percent.is_finite() || options.threshold_percent < 0.0 {
+                        return Err(
+                            "--threshold-percent must be a finite, non-negative number".to_string()
+                        );
                     }
                 }
                 "--quick" => options.quick = true,
@@ -935,6 +937,32 @@ mod tests {
         );
         assert_eq!(options.lane, PerfLane::Cuda);
         assert!((options.threshold_percent - 7.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn perf_guard_rejects_thresholds_that_disable_the_comparison() {
+        // `NaN` and infinities parse as `f64`, but no regression compares
+        // greater than them, so the guard could never fail.
+        for threshold in ["NaN", "inf", "-inf", "-1"] {
+            let error = PerfGuardOptions::parse(
+                [
+                    "--lane",
+                    "host",
+                    "--compare-current",
+                    "baseline",
+                    "--threshold-percent",
+                    threshold,
+                ]
+                .into_iter()
+                .map(str::to_string),
+            )
+            .unwrap_err();
+
+            assert!(
+                error.contains("--threshold-percent must be a finite, non-negative number"),
+                "threshold `{threshold}`: unexpected error: {error}"
+            );
+        }
     }
 
     #[test]
