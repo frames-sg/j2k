@@ -9,18 +9,18 @@ use super::{
     compare_classic_tier1_symbol_plan_and_split_token_emit_counters,
     compare_classic_tier1_symbol_plan_and_token_emit_counters,
     completed_command_buffers_gpu_duration_and_elapsed_window, duration_share, encode_status_error,
-    hybrid_stage_signpost, metal_profile_stages_enabled, packet_encode_status_error,
-    profile_classic_tier1_token_pack, record_classic_tier1_density_counters,
-    record_classic_tier1_pass_plan_counters, record_classic_tier1_symbol_plan_counters,
-    record_classic_tier1_token_emit_counters, record_completed_resident_encode_gpu_stages,
-    recycle_private_buffers, recycle_shared_buffers,
-    validate_classic_tier1_split_token_emit_counters, wait_for_completion_metal, CommandBufferRef,
-    Error, Instant, J2kClassicEncodeStatus, J2kCodestreamAssemblyStatus, J2kHtEncodeStatus,
-    J2kPacketEncodeStatus, J2kPendingResidentLosslessCodestreamBatch, J2kResidentEncodeStageStats,
-    J2kResidentLosslessCodestream, J2kResidentLosslessCodestreamBatchResult,
-    J2kResidentTier1StatusKind, J2kResidentTier1StatusReadback, J2K_ENCODE_STATUS_OK,
-    PACKET_PAYLOAD_COPY_STRIPES_PER_JOB, SIGNPOST_ENCODE_HYBRID_COMMAND_WAIT,
-    SIGNPOST_ENCODE_HYBRID_RESULT_HARVEST,
+    ensure_completed_metal, hybrid_stage_signpost, metal_profile_stages_enabled,
+    packet_encode_status_error, profile_classic_tier1_token_pack,
+    record_classic_tier1_density_counters, record_classic_tier1_pass_plan_counters,
+    record_classic_tier1_symbol_plan_counters, record_classic_tier1_token_emit_counters,
+    record_completed_resident_encode_gpu_stages, recycle_private_buffers, recycle_shared_buffers,
+    validate_classic_tier1_split_token_emit_counters, wait_for_completion_metal, CommandBuffer,
+    CommandBufferRef, Error, Instant, J2kClassicEncodeStatus, J2kCodestreamAssemblyStatus,
+    J2kHtEncodeStatus, J2kPacketEncodeStatus, J2kPendingResidentLosslessCodestreamBatch,
+    J2kResidentEncodeStageStats, J2kResidentLosslessCodestream,
+    J2kResidentLosslessCodestreamBatchResult, J2kResidentTier1StatusKind,
+    J2kResidentTier1StatusReadback, J2K_ENCODE_STATUS_OK, PACKET_PAYLOAD_COPY_STRIPES_PER_JOB,
+    SIGNPOST_ENCODE_HYBRID_COMMAND_WAIT, SIGNPOST_ENCODE_HYBRID_RESULT_HARVEST,
 };
 
 #[cfg(target_os = "macos")]
@@ -230,6 +230,22 @@ pub(in crate::engine) fn wait_resident_codestream_command_buffer(
     test_counters::record_resident_codestream_command_buffer_wait();
     let _signpost = hybrid_stage_signpost(SIGNPOST_ENCODE_HYBRID_COMMAND_WAIT);
     wait_for_completion_metal(command_buffer)
+}
+
+/// Fail when a command buffer the final one read from did not complete.
+///
+/// The prepare and Tier-1 command buffers write coefficients into pooled
+/// buffers that the final command buffer assembles. When one of them fails,
+/// the final command buffer still completes and its assembly status reads OK
+/// over the pool's stale coefficients. Call this after the final command
+/// buffer has completed: it was committed last on the same queue.
+#[cfg(target_os = "macos")]
+pub(in crate::engine) fn ensure_resident_codestream_dependencies_completed(
+    retained_command_buffers: &[CommandBuffer],
+) -> Result<(), Error> {
+    retained_command_buffers
+        .iter()
+        .try_for_each(|command_buffer| ensure_completed_metal(command_buffer))
 }
 
 #[cfg(target_os = "macos")]

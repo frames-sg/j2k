@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #[cfg(target_os = "macos")]
+use super::super::resident_tier1::ensure_resident_codestream_dependencies_completed;
+#[cfg(target_os = "macos")]
 use super::super::{
-    checked_metal_surface_len, decode_region_scaled_to_surface, j2k_pack_kernel_name_for,
-    j2k_pack_scale_arrays, output_shape_for, reset_shared_buffer_pool_misses_for_test,
-    runtime_initialization_error, shared_buffer_pool_misses_for_test, with_runtime_for_device,
-    MetalRuntime, MetalSupportError,
+    checked_metal_surface_len, commit_and_wait_metal, decode_region_scaled_to_surface,
+    j2k_pack_kernel_name_for, j2k_pack_scale_arrays, new_command_buffer, output_shape_for,
+    reset_shared_buffer_pool_misses_for_test, runtime_initialization_error,
+    shared_buffer_pool_misses_for_test, wait_for_completion_metal, with_runtime_for_device,
+    DecodeHybridSplitCommandBuffers, MetalRuntime, MetalSupportError,
 };
 use j2k_core::PixelFormat;
 use j2k_native::{
@@ -31,6 +34,53 @@ fn rgb16_with_alpha_is_rejected() {
         &runtime,
     );
     assert!(result.is_err(), "RGBA input must not silently map to Rgb16");
+}
+
+#[test]
+fn resident_codestream_dependencies_must_have_completed() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let runtime = MetalRuntime::new().expect("Metal runtime");
+    let completed = new_command_buffer(&runtime.queue).expect("Metal command buffer");
+    commit_and_wait_metal(&completed).expect("empty command buffer completes");
+    ensure_resident_codestream_dependencies_completed(core::slice::from_ref(&completed))
+        .expect("completed dependencies pass");
+
+    // A dependency that never ran leaves its pooled coefficient buffer stale.
+    let never_committed = new_command_buffer(&runtime.queue).expect("Metal command buffer");
+    let error = ensure_resident_codestream_dependencies_completed(&[completed, never_committed])
+        .expect_err("an unfinished dependency must fail the encode");
+
+    assert!(
+        matches!(error, crate::Error::MetalSupport { .. }),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn split_decode_stages_must_all_complete_before_the_final_stage_is_trusted() {
+    if !should_run_metal_runtime() {
+        return;
+    }
+
+    let runtime = MetalRuntime::new().expect("Metal runtime");
+    let command_buffers =
+        DecodeHybridSplitCommandBuffers::new(&runtime).expect("split command buffers");
+    let error = command_buffers
+        .ensure_earlier_stages_completed()
+        .expect_err("stages that never ran have not completed");
+    assert!(
+        matches!(error, crate::Error::MetalSupport { .. }),
+        "{error:?}"
+    );
+
+    command_buffers.commit_in_order();
+    wait_for_completion_metal(&command_buffers.mct_pack).expect("final stage completes");
+    command_buffers
+        .ensure_earlier_stages_completed()
+        .expect("every earlier stage completed before the final one");
 }
 
 #[test]

@@ -67,7 +67,8 @@ pub(super) fn complete_split_direct_color_batch_command(
 ) -> Result<(), Error> {
     let wait_started = Instant::now();
     let _wait_signpost = hybrid_stage_signpost(SIGNPOST_DECODE_HYBRID_COMMAND_WAIT);
-    let completion = wait_for_completion_metal(&command_buffers.mct_pack);
+    let completion = wait_for_completion_metal(&command_buffers.mct_pack)
+        .and_then(|()| command_buffers.ensure_earlier_stages_completed());
     if completion.is_ok() {
         stage_timings.command_wait += elapsed_us(wait_started);
         record_completed_decode_split_gpu_stages(stage_timings, command_buffers);

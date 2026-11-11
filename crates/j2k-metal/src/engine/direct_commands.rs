@@ -13,7 +13,7 @@ use j2k_metal_support::{
 use crate::error::metal_kernel_support_error;
 use crate::profile_env::label_command_buffer;
 
-use super::{Error, MetalRuntime};
+use super::{ensure_completed_metal, Error, MetalRuntime};
 
 pub(in crate::engine) fn new_command_buffer(
     queue: &CommandQueueRef,
@@ -127,5 +127,19 @@ impl DecodeHybridSplitCommandBuffers {
         self.idwt_vertical.commit();
         self.store.commit();
         self.mct_pack.commit();
+    }
+
+    /// Fail when a stage before the final `mct_pack` command buffer did not
+    /// complete. A failed stage leaves stale planes that the final stage still
+    /// packs. Call this once `mct_pack`, committed last, has completed.
+    pub(super) fn ensure_earlier_stages_completed(&self) -> Result<(), Error> {
+        [
+            &self.idwt_interleave,
+            &self.idwt_horizontal,
+            &self.idwt_vertical,
+            &self.store,
+        ]
+        .into_iter()
+        .try_for_each(|command_buffer| ensure_completed_metal(command_buffer))
     }
 }

@@ -14,8 +14,8 @@ use std::{
 
 use crate::metal_types::{Buffer, CommandBufferRef, CommandQueue, Device};
 use j2k_metal_support::{
-    checked_command_queue, checked_shared_buffer, commit_and_wait, wait_for_completion,
-    MetalSupportError,
+    checked_command_queue, checked_shared_buffer, commit_and_wait, ensure_completed,
+    wait_for_completion, MetalSupportError,
 };
 use j2k_native::J2kWaveletTransform;
 
@@ -310,6 +310,15 @@ pub(super) fn commit_and_wait_metal(command_buffer: &CommandBufferRef) -> Result
 
 pub(super) fn wait_for_completion_metal(command_buffer: &CommandBufferRef) -> Result<(), Error> {
     wait_for_completion(command_buffer)
+        .map_err(|error| metal_kernel_support_error(error.to_string(), error))
+}
+
+/// Surface a failed or unfinished command buffer that a completed one read from.
+///
+/// This reads the status without waiting: the caller has already synchronized a
+/// command buffer committed later on the same queue.
+pub(super) fn ensure_completed_metal(command_buffer: &CommandBufferRef) -> Result<(), Error> {
+    ensure_completed(command_buffer)
         .map_err(|error| metal_kernel_support_error(error.to_string(), error))
 }
 

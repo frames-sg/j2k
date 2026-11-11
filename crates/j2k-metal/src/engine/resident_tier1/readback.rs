@@ -5,6 +5,7 @@ use crate::metal_types::prelude::*;
 
 use super::{
     checked_buffer_read, completed_command_buffers_gpu_duration, encode_status_error,
+    ensure_resident_codestream_dependencies_completed,
     finish_completed_resident_lossless_codestream_batch, new_blit_command_encoder,
     new_shared_buffer, size_of, wait_resident_codestream_command_buffer, Buffer, CommandBufferRef,
     Error, J2kClassicEncodeBatchJob, J2kClassicEncodeStatus, J2kCodestreamAssemblyStatus,
@@ -19,6 +20,7 @@ pub(crate) fn wait_resident_lossless_codestream(
     pending: J2kPendingResidentLosslessCodestream,
 ) -> Result<J2kResidentLosslessCodestream, Error> {
     wait_resident_codestream_command_buffer(&pending.command_buffer)?;
+    ensure_resident_codestream_dependencies_completed(&pending.retained_command_buffers)?;
     let gpu_duration = completed_command_buffers_gpu_duration(
         &pending.retained_command_buffers,
         &pending.command_buffer,
@@ -56,6 +58,7 @@ pub(crate) fn wait_resident_lossless_codestream_batch(
     pending: J2kPendingResidentLosslessCodestreamBatch,
 ) -> Result<J2kResidentLosslessCodestreamBatchResult, Error> {
     wait_resident_codestream_command_buffer(&pending.command_buffer)?;
+    ensure_resident_codestream_dependencies_completed(&pending.retained_command_buffers)?;
     finish_completed_resident_lossless_codestream_batch(pending)
 }
 

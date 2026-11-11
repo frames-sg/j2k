@@ -32,11 +32,11 @@ use super::{
     classic_encode_code_blocks_pipeline_kind, classic_tier1_gpu_token_pack_supported,
     classic_tier1_pass_class_counts, completed_command_buffers_gpu_duration,
     completed_command_buffers_gpu_duration_and_elapsed_window, duration_share,
-    new_blit_command_encoder, new_compute_command_encoder, new_private_buffer, new_shared_buffer,
-    pack_j2k_code_block_scalar_from_tier1_tokens, record_completed_resident_encode_gpu_stages,
-    recycle_private_buffers, recycle_shared_buffers, take_recyclable_private_buffer,
-    wait_for_completion_metal, Buffer, BufferRef, CommandBuffer, CommandBufferRef,
-    ComputePipelineState, EncodeProgressionOrder, Error, IntoParallelIterator,
+    ensure_completed_metal, new_blit_command_encoder, new_compute_command_encoder,
+    new_private_buffer, new_shared_buffer, pack_j2k_code_block_scalar_from_tier1_tokens,
+    record_completed_resident_encode_gpu_stages, recycle_private_buffers, recycle_shared_buffers,
+    take_recyclable_private_buffer, wait_for_completion_metal, Buffer, BufferRef, CommandBuffer,
+    CommandBufferRef, ComputePipelineState, EncodeProgressionOrder, Error, IntoParallelIterator,
     J2kClassicEncodePipelineKind, J2kPacketizationPacketDescriptor,
     J2kPendingResidentLosslessCodestream, J2kResidentEncodeGpuStageCommandBuffer,
     J2kResidentEncodeStageStats, J2kResidentLosslessCodestream,
@@ -76,6 +76,7 @@ pub(crate) use self::readback::{
     wait_resident_lossless_codestream, wait_resident_lossless_codestream_batch,
 };
 pub(in crate::engine) use self::result_harvest::{
+    ensure_resident_codestream_dependencies_completed,
     finish_completed_resident_lossless_codestream_batch, wait_resident_codestream_command_buffer,
 };
 pub(in crate::engine) use self::types::{

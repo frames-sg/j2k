@@ -250,7 +250,8 @@ mod runtime;
 pub(crate) use self::runtime::with_isolated_runtime_for_device_for_test;
 #[cfg(target_os = "macos")]
 use self::runtime::{
-    commit_and_wait_metal, wait_for_completion_metal, with_runtime, with_runtime_for_device,
+    commit_and_wait_metal, ensure_completed_metal, wait_for_completion_metal, with_runtime,
+    with_runtime_for_device,
 };
 #[cfg(target_os = "macos")]
 pub(crate) use self::runtime::{
