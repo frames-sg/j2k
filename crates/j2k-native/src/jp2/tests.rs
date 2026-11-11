@@ -131,6 +131,42 @@ fn non_strict_mid_palette_error_keeps_the_previous_complete_owner() {
 }
 
 #[test]
+fn palette_columns_deeper_than_38_bits_are_rejected() {
+    // T.800 I.5.3.4 defines palette column depths of 1 to 38 bits, the same
+    // range as `ihdr` and `bpcc`. Deeper columns used to reach the 8-bit
+    // packer, whose `1 << depth` overflows from 64 bits up.
+    for descriptor in [38_u8, 63, 71, 127, 0x80 | 63] {
+        let mut header = required_header_prefix(&[1, 0, 0, 0, 0, 0, 17]);
+        push_child(
+            &mut header,
+            *b"pclr",
+            &palette_payload_with_depth(descriptor),
+        );
+        push_child(&mut header, *b"cmap", &[0, 0, 1, 0]);
+
+        assert!(
+            matches!(
+                parse_jp2_header_box(&header, true, 0),
+                Err(crate::DecodeError::Format(crate::FormatError::InvalidBox))
+            ),
+            "palette depth descriptor {descriptor:#04x} must be rejected"
+        );
+    }
+
+    let mut header = required_header_prefix(&[1, 0, 0, 0, 0, 0, 17]);
+    push_child(&mut header, *b"pclr", &palette_payload_with_depth(37));
+    push_child(&mut header, *b"cmap", &[0, 0, 1, 0]);
+    let boxes = parse_jp2_header_box(&header, true, 0).expect("38-bit palette column parses");
+    assert_eq!(
+        boxes
+            .palette
+            .as_ref()
+            .map(|palette| palette.columns[0].bit_depth),
+        Some(38)
+    );
+}
+
+#[test]
 fn public_conversion_moves_icc_and_palette_payload_owners() {
     let mut header = required_header_prefix(&[2, 0, 0, 1, 2, 3, 4]);
     push_child(&mut header, *b"pclr", &palette_payload(11));
@@ -228,6 +264,14 @@ fn wrapper_without_colr(brand: [u8; 4], cdef: Option<&[u8]>, codestream: &[u8]) 
 
 fn palette_payload(value: u8) -> Vec<u8> {
     vec![0, 1, 1, 7, value]
+}
+
+/// One palette row with one column whose depth descriptor is `descriptor`.
+fn palette_payload_with_depth(descriptor: u8) -> Vec<u8> {
+    let entry_bytes = (usize::from(descriptor & 0x7F) + 1).div_ceil(8);
+    let mut payload = vec![0, 1, 1, descriptor];
+    payload.extend(core::iter::repeat_n(0x40, entry_bytes));
+    payload
 }
 
 fn cdef_payload(channel_type: u16) -> Vec<u8> {

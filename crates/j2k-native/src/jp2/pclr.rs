@@ -2,6 +2,8 @@
 
 use alloc::vec::Vec;
 
+use j2k_types::MAX_JPEG2000_PART1_SAMPLE_BIT_DEPTH;
+
 use crate::error::{bail, FormatError, Result};
 use crate::jp2::{allocation::Jp2AllocationBudget, ImageBoxes};
 use crate::reader::BitReader;
@@ -25,6 +27,11 @@ pub(super) fn parse(
         let bit_depth = (descriptor & 0x7F)
             .checked_add(1)
             .ok_or(FormatError::InvalidBox)?;
+        // I.5.3.4 defines column depths of 1 to 38 bits, like `ihdr` and
+        // `bpcc`. Colour conversion and packing shift by this depth.
+        if bit_depth > MAX_JPEG2000_PART1_SAMPLE_BIT_DEPTH {
+            bail!(FormatError::InvalidBox);
+        }
         let signed = (descriptor & 0x80) != 0;
 
         columns.push(PaletteColumn { bit_depth, signed });

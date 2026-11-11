@@ -130,6 +130,39 @@ fn paired_comparison_preserves_palette_integers_above_f32_precision() {
 }
 
 #[test]
+fn palette_column_deeper_than_38_bits_fails_decode_instead_of_overflowing() {
+    let indices = vec![0_u8; 16];
+    let codestream = encode(
+        &indices,
+        4,
+        4,
+        1,
+        8,
+        false,
+        &EncodeOptions {
+            reversible: true,
+            num_decomposition_levels: 1,
+            ..EncodeOptions::default()
+        },
+    )
+    .expect("encode index fixture");
+
+    // 64-, 72- and 128-bit palette columns. T.800 I.5.3.4 stops at 38 bits;
+    // these overflowed the `1 << depth` in the 8-bit packer.
+    for descriptor in [63_u8, 71, 127] {
+        let jp2 =
+            jp2_with_header_payload(&codestream, &palette_depth_jp2h_payload(4, 4, descriptor));
+
+        let result = Image::new(&jp2, &DecodeSettings::default()).and_then(|image| image.decode());
+
+        assert!(
+            matches!(result, Err(DecodeError::Format(FormatError::InvalidBox))),
+            "palette depth descriptor {descriptor} must be rejected, got {result:?}"
+        );
+    }
+}
+
+#[test]
 fn high_precision_sycc_palette_does_not_reuse_pretransform_integer_shadow() {
     let indices = vec![0_u8; 16];
     let codestream = encode(
@@ -600,6 +633,28 @@ fn high_precision_palette_jp2h_payload(width: u32, height: u32, value: u32) -> V
     palette.extend_from_slice(&1_u16.to_be_bytes());
     palette.extend_from_slice(&[1, 24]);
     palette.extend_from_slice(&value.to_be_bytes());
+
+    let mut jp2h_payload = Vec::new();
+    jp2h_payload.extend_from_slice(&jp2_box(*b"ihdr", &ihdr));
+    jp2h_payload.extend_from_slice(&jp2_box(*b"colr", &[1, 0, 0, 0, 0, 0, 17]));
+    jp2h_payload.extend_from_slice(&jp2_box(*b"pclr", &palette));
+    jp2h_payload.extend_from_slice(&jp2_box(*b"cmap", &[0, 0, 1, 0]));
+    jp2h_payload
+}
+
+/// A one-entry, one-column palette whose column depth descriptor is `descriptor`.
+fn palette_depth_jp2h_payload(width: u32, height: u32, descriptor: u8) -> Vec<u8> {
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&height.to_be_bytes());
+    ihdr.extend_from_slice(&width.to_be_bytes());
+    ihdr.extend_from_slice(&1_u16.to_be_bytes());
+    ihdr.extend_from_slice(&[7, 7, 0, 0]);
+
+    let entry_bytes = (usize::from(descriptor & 0x7F) + 1).div_ceil(8);
+    let mut palette = Vec::new();
+    palette.extend_from_slice(&1_u16.to_be_bytes());
+    palette.extend_from_slice(&[1, descriptor]);
+    palette.extend(std::iter::repeat_n(0x40, entry_bytes));
 
     let mut jp2h_payload = Vec::new();
     jp2h_payload.extend_from_slice(&jp2_box(*b"ihdr", &ihdr));
