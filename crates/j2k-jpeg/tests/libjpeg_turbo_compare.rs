@@ -607,7 +607,7 @@ mod turbo_codec {
             panic!("{what}: {}", self.error_message());
         }
 
-        /// Require a warning and nothing worse. TurboJPEG writes the whole
+        /// Require a warning and nothing worse. `TurboJPEG` writes the whole
         /// image before it reports a warning as -1.
         fn check_warned(&self, rc: c_int, what: &str) {
             assert_ne!(rc, 0, "{what}: libjpeg-turbo did not warn");
