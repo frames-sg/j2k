@@ -201,7 +201,7 @@ pub(crate) fn forward_dwt(
         .expect("test forward DWT geometry and allocation")
 }
 
-/// Forward 5-3 reversible lifting (integer arithmetic).
+/// Forward 5-3 reversible lifting, computed on `f32` samples.
 ///
 /// Equations F-2 and F-3 from ITU-T T.800:
 ///   d(n) = x(2n+1) - floor((x(2n) + x(2n+2)) / 2)

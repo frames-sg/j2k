@@ -36,29 +36,21 @@ println!(
 let bitmap = image.decode().unwrap();
 ```
 
-If you want to see a more comprehensive example, please take a look
-at the example in [GitHub](https://github.com/knopkem/dicom-toolkit-rs/blob/main/crates/dicom-toolkit-jpeg2000/examples/png.rs),
-which shows the main steps needed to convert a JPEG 2000 image into PNG.
-
 # Testing
-The decoder has been tested against 20.000+ images scraped from random PDFs
-on the internet and also passes a large part of the `OpenJPEG` test suite. So you
-can expect the crate to perform decently in terms of decoding correctness.
+What this crate supports, and the tests behind each entry, are listed in
+`docs/public-support.md`. ITU-T T.803 conformance results are in
+`docs/t803-conformance.md`.
 
 # Performance
-A decent amount of effort has already been put into optimizing this crate
-(both raw throughput and memory allocations), with remaining optimization work planned.
-
-Overall, you should expect this crate to have worse performance than `OpenJPEG`,
-but the difference gap should not be too large.
+Benchmark commands, results, and the machines they ran on are in
+`docs/benchmark-evidence.md`.
 
 # Safety
-By default, the crate has the `simd` feature enabled, which uses the
-[`fearless_simd`](https://github.com/linebender/fearless_simd) crate to accelerate
-important parts of the pipeline. If you want to eliminate any usage of unsafe
-in this crate as well as its dependencies, you can simply disable this
-feature, at the cost of worse decoding performance. Unsafe code is forbidden
-via a crate-level attribute.
+Unsafe code is forbidden in this crate via a crate-level attribute. Its
+dependencies are not all free of it: the default `simd` feature uses the
+[`fearless_simd`](https://github.com/linebender/fearless_simd) crate and the
+default `parallel` feature uses `rayon`. Disabling them selects the scalar and
+serial paths, at the cost of worse performance.
 
 The crate is `no_std` compatible but requires an allocator to be available.
 */
