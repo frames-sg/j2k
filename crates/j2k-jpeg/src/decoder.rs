@@ -56,8 +56,8 @@ mod allocation;
 mod output_format;
 use self::output_format::{
     allocate_output_buffer_with_live_budget, checked_output_geometry, downscale_profile_name,
-    jpeg_downscale, output_format_from_parts, output_format_profile_name, scaled_dimensions,
-    scaled_rect_covering,
+    ensure_decodable_rect, jpeg_downscale, output_format_from_parts, output_format_profile_name,
+    scaled_dimensions, scaled_rect_covering,
 };
 mod extended12;
 use self::extended12::lossless_color_sampling;

@@ -62,6 +62,52 @@ fn component_rows_expose_ycbcr_rows_for_full_decode() {
 }
 
 #[test]
+fn component_rows_reject_empty_regions_without_writing_rows() {
+    let mut pool = ScratchPool::new();
+    let jpeg = fixtures::minimal_baseline_420_jpeg();
+    let decoder = Decoder::new(&jpeg).expect("decoder");
+    let (width, height) = decoder.info().dimensions;
+
+    for roi in [
+        Rect {
+            x: 0,
+            y: 0,
+            w: width,
+            h: 0,
+        },
+        Rect {
+            x: 0,
+            y: 0,
+            w: 0,
+            h: height,
+        },
+        Rect {
+            x: 4,
+            y: 4,
+            w: 0,
+            h: 0,
+        },
+    ] {
+        let mut rows = CollectRows::default();
+
+        let error = decoder
+            .decode_region_component_rows_with_scratch(&mut pool, &mut rows, roi, Downscale::None)
+            .expect_err("an empty region has nothing to decode");
+
+        assert_eq!(
+            error,
+            j2k_jpeg::JpegError::RectOutOfBounds {
+                rect: roi,
+                width,
+                height
+            },
+            "{roi:?}"
+        );
+        assert!(rows.gray.is_empty() && rows.ycbcr.is_empty() && rows.rgb.is_empty());
+    }
+}
+
+#[test]
 fn component_rows_region_scaled_rebases_output_rows() {
     let mut pool = ScratchPool::new();
     let mut rows = CollectRows::default();

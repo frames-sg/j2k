@@ -3,8 +3,9 @@
 //! Sequential 12-bit routing and grayscale rendering.
 
 use super::super::{
-    finish_scan, merged_warnings, scaled_rect_covering, BitReader, CoefficientBlock, ColorSpace,
-    DecodeOutcome, Decoder, DownscaleFactor, JpegError, Rect, SofKind,
+    ensure_decodable_rect, finish_scan, merged_warnings, scaled_rect_covering, BitReader,
+    CoefficientBlock, ColorSpace, DecodeOutcome, Decoder, DownscaleFactor, JpegError, Rect,
+    SofKind,
 };
 use super::sampling::{
     extended12_color_layout, extended12_four_component_layout, Extended12ColorSampling,
@@ -118,13 +119,7 @@ impl Decoder<'_> {
                 sof: self.info.sof_kind,
             });
         }
-        if !roi.is_within(self.info.dimensions) {
-            return Err(JpegError::RectOutOfBounds {
-                rect: roi,
-                width: self.info.dimensions.0,
-                height: self.info.dimensions.1,
-            });
-        }
+        ensure_decodable_rect(roi, self.info.dimensions)?;
         let scaled_route = needs_scaled_extended12_route(
             &ScaledSampling::new(self.plan.sampling, downscale, self.info.dimensions),
             downscale,

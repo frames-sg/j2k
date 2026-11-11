@@ -746,6 +746,53 @@ fn tile_planning_accounts_full_roi_and_rejects_out_of_bounds_roi() {
 }
 
 #[test]
+fn tile_planning_rejects_empty_regions() {
+    let mut context = DecoderContext::new();
+
+    for roi in [
+        Rect {
+            x: 0,
+            y: 0,
+            w: 16,
+            h: 0,
+        },
+        Rect {
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 16,
+        },
+        Rect {
+            x: 8,
+            y: 8,
+            w: 0,
+            h: 0,
+        },
+    ] {
+        let error = planned_jpeg_tile_decode_live_bytes(
+            JPEG,
+            &mut context,
+            PixelFormat::Rgb8,
+            Some(roi),
+            Downscale::None,
+            DecodeOptions::default(),
+            0,
+        )
+        .expect_err("an empty region has nothing to plan");
+
+        assert_eq!(
+            error,
+            JpegError::RectOutOfBounds {
+                rect: roi,
+                width: 16,
+                height: 16
+            },
+            "{roi:?}"
+        );
+    }
+}
+
+#[test]
 fn checkpoint_planning_only_reserves_for_partial_nonrestart_decode() {
     let full_decoder = Decoder::new(JPEG).expect("fixture decoder");
     let full = Rect::full(full_decoder.info().dimensions);

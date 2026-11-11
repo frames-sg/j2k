@@ -166,6 +166,22 @@ pub(super) fn scaled_dimensions(dims: (u32, u32), factor: DownscaleFactor) -> (u
     (dims.0.div_ceil(denom), dims.1.div_ceil(denom))
 }
 
+/// Reject a source rectangle that has no pixels or leaves the image.
+///
+/// The region routes compute the last row and column as `y + h - 1` and
+/// `x + w - 1`, so an empty rectangle is rejected like one out of bounds, as
+/// `lossless_crop` already does.
+pub(super) fn ensure_decodable_rect(rect: Rect, dimensions: (u32, u32)) -> Result<(), JpegError> {
+    if rect.w == 0 || rect.h == 0 || !rect.is_within(dimensions) {
+        return Err(JpegError::RectOutOfBounds {
+            rect,
+            width: dimensions.0,
+            height: dimensions.1,
+        });
+    }
+    Ok(())
+}
+
 pub(super) fn scaled_rect_covering(rect: Rect, factor: DownscaleFactor) -> Result<Rect, JpegError> {
     let denom = factor.denominator();
     let x_end = rect

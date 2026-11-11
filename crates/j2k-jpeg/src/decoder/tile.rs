@@ -4,10 +4,10 @@
 
 use super::warning_ownership::merged_warning_capacity_bytes;
 use super::{
-    additional_decode_scratch_bytes, output_format_from_parts, scaled_dimensions,
-    scaled_rect_covering, DecodeOptions, DecodeOutcome, DecodedTile, Decoder, DecoderContext,
-    Downscale, JpegError, JpegView, PixelFormat, PreparedJpeg, PreparedJpegTileJob, Rect,
-    ScratchPool, TileBatchError, TileBatchOptions, TileDecodeJob, TileDecodeOutput,
+    additional_decode_scratch_bytes, ensure_decodable_rect, output_format_from_parts,
+    scaled_dimensions, scaled_rect_covering, DecodeOptions, DecodeOutcome, DecodedTile, Decoder,
+    DecoderContext, Downscale, JpegError, JpegView, PixelFormat, PreparedJpeg, PreparedJpegTileJob,
+    Rect, ScratchPool, TileBatchError, TileBatchOptions, TileDecodeJob, TileDecodeOutput,
     TileRegionScaledDecodeJob, TileScaledDecodeJob, Vec, DEFAULT_CONTEXT, DEFAULT_MAX_DECODE_BYTES,
 };
 use crate::allocation::checked_add_allocation_bytes;
@@ -195,13 +195,7 @@ pub(crate) fn planned_jpeg_tile_decode_for_decoder(
     scale: Downscale,
 ) -> Result<PlannedJpegTileDecode, JpegError> {
     let source_rect = roi.unwrap_or_else(|| Rect::full(decoder.info.dimensions));
-    if !source_rect.is_within(decoder.info.dimensions) {
-        return Err(JpegError::RectOutOfBounds {
-            rect: source_rect,
-            width: decoder.info.dimensions.0,
-            height: decoder.info.dimensions.1,
-        });
-    }
+    ensure_decodable_rect(source_rect, decoder.info.dimensions)?;
 
     let output_format = output_format_from_parts(decoder.info.sof_kind, fmt, scale)?;
     let downscale = output_format.downscale();

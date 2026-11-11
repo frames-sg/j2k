@@ -3,10 +3,11 @@
 //! Public output-buffer routing for full, scaled, and region decodes.
 
 use super::{
-    additional_decode_scratch_bytes, jpeg_profile_stages_enabled, output_format_from_parts,
-    scaled_dimensions, scaled_rect_covering, validate_buffer, DecodeOutcome, Decoder, Downscale,
-    DownscaleFactor, Instant, JpegError, LosslessRegionRequest, LosslessRgbRegionFallback,
-    LosslessRgbaAlpha, OutputFormat, PixelFormat, Rect, ScratchPool, DEFAULT_SCRATCH,
+    additional_decode_scratch_bytes, ensure_decodable_rect, jpeg_profile_stages_enabled,
+    output_format_from_parts, scaled_dimensions, scaled_rect_covering, validate_buffer,
+    DecodeOutcome, Decoder, Downscale, DownscaleFactor, Instant, JpegError, LosslessRegionRequest,
+    LosslessRgbRegionFallback, LosslessRgbaAlpha, OutputFormat, PixelFormat, Rect, ScratchPool,
+    DEFAULT_SCRATCH,
 };
 
 mod dispatch;
@@ -318,13 +319,7 @@ impl Decoder<'_> {
     ) -> Result<DecodeOutcome, JpegError> {
         let profile_enabled = jpeg_profile_stages_enabled();
         let total_start = profile_enabled.then(Instant::now);
-        if !roi.is_within(self.info.dimensions) {
-            return Err(JpegError::RectOutOfBounds {
-                rect: roi,
-                width: self.info.dimensions.0,
-                height: self.info.dimensions.1,
-            });
-        }
+        ensure_decodable_rect(roi, self.info.dimensions)?;
 
         if roi == Rect::full(self.info.dimensions) {
             return self.decode_into_output_format_with_scratch_and_external(

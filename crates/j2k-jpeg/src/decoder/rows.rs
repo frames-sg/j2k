@@ -3,9 +3,9 @@
 //! Row-oriented decode entry points and component-row routing.
 
 use super::{
-    checked_scratch_len, jpeg_downscale, scaled_rect_covering, ColorSpace, ComponentRowWriter,
-    CroppedWriter, DecodeOutcome, Decoder, Downscale, DownscaleFactor, JpegError, Rect, RowSink,
-    ScratchPool, SinkWriter, DEFAULT_SCRATCH,
+    checked_scratch_len, ensure_decodable_rect, jpeg_downscale, scaled_rect_covering, ColorSpace,
+    ComponentRowWriter, CroppedWriter, DecodeOutcome, Decoder, Downscale, DownscaleFactor,
+    JpegError, Rect, RowSink, ScratchPool, SinkWriter, DEFAULT_SCRATCH,
 };
 
 impl Decoder<'_> {
@@ -192,13 +192,7 @@ impl Decoder<'_> {
     where
         W: ComponentRowWriter,
     {
-        if !roi.is_within(self.info.dimensions) {
-            return Err(JpegError::RectOutOfBounds {
-                rect: roi,
-                width: self.info.dimensions.0,
-                height: self.info.dimensions.1,
-            });
-        }
+        ensure_decodable_rect(roi, self.info.dimensions)?;
 
         let downscale = jpeg_downscale(scale);
         let scaled_roi = scaled_rect_covering(roi, downscale)?;

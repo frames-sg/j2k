@@ -3,8 +3,8 @@
 //! Progressive 12-bit routing and grayscale rendering.
 
 use super::super::{
-    decode_progressive_dct_blocks, scaled_rect_covering, try_clone_warnings, ColorSpace,
-    DecodeOutcome, Decoder, DownscaleFactor, JpegError, Rect, SofKind,
+    decode_progressive_dct_blocks, ensure_decodable_rect, scaled_rect_covering, try_clone_warnings,
+    ColorSpace, DecodeOutcome, Decoder, DownscaleFactor, JpegError, Rect, SofKind,
 };
 use super::planes::{dequantize_progressive12_block, ensure_progressive12_coefficient_capacities};
 use super::sampling::{
@@ -81,13 +81,7 @@ impl Decoder<'_> {
                 sof: self.info.sof_kind,
             });
         }
-        if !roi.is_within(self.info.dimensions) {
-            return Err(JpegError::RectOutOfBounds {
-                rect: roi,
-                width: self.info.dimensions.0,
-                height: self.info.dimensions.1,
-            });
-        }
+        ensure_decodable_rect(roi, self.info.dimensions)?;
         let scaled_route = needs_scaled_extended12_route(
             &ScaledSampling::new(plan.sampling, downscale, self.info.dimensions),
             downscale,

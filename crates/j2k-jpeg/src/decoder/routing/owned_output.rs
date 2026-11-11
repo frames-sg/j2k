@@ -8,8 +8,9 @@ use crate::allocation::checked_add_allocation_bytes;
 
 use super::super::{
     additional_decode_scratch_bytes, allocate_output_buffer_with_live_budget,
-    checked_output_geometry, output_format_from_parts, scaled_dimensions, scaled_rect_covering,
-    DecodeOutcome, DecodeRequest, Decoder, JpegError, Rect, ScratchPool, DEFAULT_SCRATCH,
+    checked_output_geometry, ensure_decodable_rect, output_format_from_parts, scaled_dimensions,
+    scaled_rect_covering, DecodeOutcome, DecodeRequest, Decoder, JpegError, Rect, ScratchPool,
+    DEFAULT_SCRATCH,
 };
 
 impl Decoder<'_> {
@@ -66,13 +67,7 @@ impl Decoder<'_> {
         let source_roi = request
             .region
             .unwrap_or_else(|| Rect::full(self.info.dimensions));
-        if !source_roi.is_within(self.info.dimensions) {
-            return Err(JpegError::RectOutOfBounds {
-                rect: source_roi,
-                width: self.info.dimensions.0,
-                height: self.info.dimensions.1,
-            });
-        }
+        ensure_decodable_rect(source_roi, self.info.dimensions)?;
         let output_rect = if request.region.is_some() {
             scaled_rect_covering(source_roi, legacy.downscale())?
         } else {
