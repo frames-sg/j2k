@@ -3,7 +3,7 @@
 This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
-## [0.14.0] - 2026-11-10
+## [0.14.0] - 2026-11-12
 
 ### Upgrading from 0.13
 
