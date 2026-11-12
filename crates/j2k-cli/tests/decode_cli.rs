@@ -8,7 +8,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::{Command, Output, Stdio},
+    process::{Command, Output},
 };
 
 use j2k_test_support::{OPENJPEG_ORIGIN_23X17_AT_3_5, ORIGIN_REDUCED_RGB, ORIGIN_SOURCE_23X17_RGB};
@@ -22,11 +22,21 @@ fn temp_dir(name: &str) -> PathBuf {
     dir
 }
 
-/// A directory holding `opj_decompress`, a symlink to the j2k binary.
+/// `opj_decompress` in `dir`: a symlink to the j2k binary, or on Windows,
+/// where symlinks need a privilege, a copy of it named `opj_decompress.exe`.
+/// The binary recognizes either by its file stem.
+#[cfg(unix)]
 fn opj_link(dir: &Path) -> PathBuf {
     let link = dir.join("opj_decompress");
     std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_j2k"), &link).expect("link opj_decompress");
     link
+}
+
+#[cfg(not(unix))]
+fn opj_link(dir: &Path) -> PathBuf {
+    let copy = dir.join(format!("opj_decompress{}", std::env::consts::EXE_SUFFIX));
+    fs::copy(env!("CARGO_BIN_EXE_j2k"), &copy).expect("copy opj_decompress");
+    copy
 }
 
 fn run(program: &Path, args: &[&str]) -> Output {
@@ -309,8 +319,12 @@ fn signed_8_bit_samples_keep_their_values() {
     assert_eq!(gray(&area), (4, 3, window));
 }
 
+/// Image servers name `/dev/stdout` as the output file, which only Unix has.
+#[cfg(unix)]
 #[test]
 fn an_output_linked_to_stdout_carries_only_the_image() {
+    use std::process::Stdio;
+
     let dir = temp_dir("stdout");
     let opj = opj_link(&dir);
     let input = origin_fixture(&dir);
