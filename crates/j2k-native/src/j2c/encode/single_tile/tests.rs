@@ -66,7 +66,7 @@ fn public_encode_distinguishes_malformed_and_unsupported_requests() {
     assert_eq!(
         high_bit_sampled,
         crate::EncodeError::Unsupported {
-            what: "25-38 bit encode currently requires full-resolution components"
+            what: "reversible encode of samples deeper than 20 bits requires full-resolution components"
         }
     );
 }
@@ -296,6 +296,87 @@ fn ht_accelerator_hooks_keep_pipeline_order() {
             Stage::Packetization,
         ]
     );
+}
+
+/// Past the precision its `f32` transforms are exact through, a reversible
+/// encode transforms with integers on the host. An accelerator is still
+/// offered the pixel stage first: one that must run on its device refuses
+/// the planes there, and one that declines leaves the encode to the host
+/// without being offered a transform.
+#[test]
+fn integer_reversible_encode_offers_an_accelerator_the_pixel_stage_first() {
+    #[derive(Default)]
+    struct PixelStage {
+        refuses: bool,
+        offered: usize,
+        transforms: usize,
+    }
+
+    impl crate::J2kEncodeStageAccelerator for PixelStage {
+        fn encode_deinterleave(
+            &mut self,
+            job: crate::J2kDeinterleaveToF32Job<'_>,
+        ) -> crate::J2kEncodeStageResult<Option<Vec<Vec<f32>>>> {
+            assert_eq!(job.bit_depth, 24);
+            self.offered += 1;
+            if self.refuses {
+                return Err(crate::J2kEncodeStageError::Unsupported {
+                    what: "device planes hold at most 16 bits per sample",
+                });
+            }
+            Ok(None)
+        }
+
+        fn encode_forward_rct(
+            &mut self,
+            _job: crate::J2kForwardRctJob<'_>,
+        ) -> crate::J2kEncodeStageResult<bool> {
+            self.transforms += 1;
+            Ok(false)
+        }
+
+        fn encode_forward_dwt53(
+            &mut self,
+            _job: crate::J2kForwardDwt53Job<'_>,
+        ) -> crate::J2kEncodeStageResult<Option<crate::J2kForwardDwt53Output>> {
+            self.transforms += 1;
+            Ok(None)
+        }
+    }
+
+    let pixels: Vec<u8> = textured_samples(16 * 12 * 3, 0x00ff_ffff)
+        .into_iter()
+        .flat_map(|sample| {
+            let [low, middle, high, _] = sample.to_le_bytes();
+            [low, middle, high]
+        })
+        .collect();
+    let options = EncodeOptions {
+        num_decomposition_levels: 2,
+        reversible: true,
+        ..EncodeOptions::default()
+    };
+    let expected = encode(&pixels, 16, 12, 3, 24, false, &options).expect("host encode");
+
+    let mut declining = PixelStage::default();
+    let actual = encode_with_accelerator(&pixels, 16, 12, 3, 24, false, &options, &mut declining)
+        .expect("an accelerator that declines leaves the encode to the host");
+    assert_eq!(actual, expected);
+    assert_eq!((declining.offered, declining.transforms), (1, 0));
+
+    let mut refusing = PixelStage {
+        refuses: true,
+        ..PixelStage::default()
+    };
+    let error = encode_with_accelerator(&pixels, 16, 12, 3, 24, false, &options, &mut refusing)
+        .expect_err("an accelerator that refuses the planes fails the encode");
+    assert!(
+        error
+            .to_string()
+            .contains("device planes hold at most 16 bits per sample"),
+        "{error}"
+    );
+    assert_eq!((refusing.offered, refusing.transforms), (1, 0));
 }
 
 fn textured_samples(count: usize, mask: u32) -> Vec<u32> {

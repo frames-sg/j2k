@@ -37,6 +37,7 @@ pub use self::samples::{
 };
 
 pub(crate) use self::cpu::native_progression_order;
+pub(crate) use self::high_bit::htj2k_lossless_refuses_dwt;
 #[doc(hidden)]
 pub use self::resident::encode_j2k_lossless_resident_with_accelerator;
 

@@ -4,8 +4,8 @@ use j2k_core::{BackendKind, Unsupported};
 
 use super::accelerator::{required_resident_encode_stages, resolve_accelerated_encode_backend};
 use super::contracts::{
-    EncodeBackendPreference, EncodedJ2k, J2kBlockCodingMode, J2kEncodeValidation,
-    J2kLosslessEncodeOptions, MAX_RAW_PIXEL_ENCODE_BIT_DEPTH,
+    reversible_coding_needs_integers, EncodeBackendPreference, EncodedJ2k, J2kBlockCodingMode,
+    J2kEncodeValidation, J2kLosslessEncodeOptions,
 };
 use super::cpu::encode_resident_with_native_accelerator;
 use crate::{J2kEncodeStageAccelerator, J2kError, J2kResidentEncodeInput};
@@ -43,9 +43,9 @@ pub fn encode_j2k_lossless_resident_with_accelerator(
             what: "resident JPEG 2000 encode requires external validation",
         }));
     }
-    if input.bit_depth() > MAX_RAW_PIXEL_ENCODE_BIT_DEPTH {
+    if reversible_coding_needs_integers(input.bit_depth()) {
         return Err(J2kError::Unsupported(Unsupported {
-            what: "resident JPEG 2000 encode supports at most 24 bits per sample",
+            what: "resident JPEG 2000 lossless encode supports at most 20 bits per sample",
         }));
     }
 

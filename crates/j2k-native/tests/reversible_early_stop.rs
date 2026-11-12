@@ -103,7 +103,7 @@ fn early_stopped_roi_maxshift_matches_openjpeg_on_native_decode() {
 
 #[test]
 fn early_stopped_code_blocks_decode_exactly_on_the_exact_integer_path() {
-    // Reversible components above 24 bits decode through exact `i64`
+    // Reversible components above 20 bits decode through exact `i64`
     // coefficients. Raising the lossless fixture's SIZ precision from 16 to 25
     // bits takes that path without touching its Tier-1 data; each sample
     // moves by the change in the DC level shift, 2^24 - 2^15.

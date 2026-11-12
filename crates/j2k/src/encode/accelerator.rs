@@ -6,9 +6,9 @@ use alloc::vec::Vec;
 use j2k_core::{BackendKind, Unsupported};
 
 use super::contracts::{
-    EncodeBackendPreference, EncodedJ2k, EncodedLossyJ2k, J2kBlockCodingMode,
-    J2kLosslessEncodeOptions, J2kLossyEncodeOptions, J2kMarkerSegment, ReversibleTransform,
-    MAX_RAW_PIXEL_ENCODE_BIT_DEPTH,
+    reversible_coding_needs_integers, EncodeBackendPreference, EncodedJ2k, EncodedLossyJ2k,
+    J2kBlockCodingMode, J2kLosslessEncodeOptions, J2kLossyEncodeOptions, J2kMarkerSegment,
+    ReversibleTransform,
 };
 use super::cpu::{native_lossless_options, native_lossy_options};
 use super::geometry::{
@@ -62,13 +62,10 @@ pub(super) fn encode_lossless(
     if options.backend == EncodeBackendPreference::CpuOnly {
         return lossless::encode(samples, options);
     }
-    if samples.bit_depth > MAX_RAW_PIXEL_ENCODE_BIT_DEPTH {
-        if options.backend == EncodeBackendPreference::Auto {
-            return lossless::encode(samples, options);
-        }
-        return Err(J2kError::Unsupported(Unsupported {
-            what: "25-38 bit lossless encode currently uses the CPU classic reversible path only",
-        }));
+    if reversible_coding_needs_integers(samples.bit_depth) {
+        // The integer path runs on the CPU; `validate_lossless_options` has
+        // refused a request that requires a device.
+        return lossless::encode(samples, options);
     }
 
     let before = accelerator.dispatch_report();

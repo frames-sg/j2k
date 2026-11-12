@@ -18,6 +18,7 @@ mod packet_directory;
 #[cfg(feature = "parallel")]
 mod parallel_bands;
 mod progression_matrix;
+mod reversible_exactness;
 mod row_sink;
 mod streamed_publication;
 mod workspace_peak;

@@ -649,6 +649,25 @@ pub(crate) const J2K_ENCODE_STATUS_OK: u32 = 0;
 pub(crate) const J2K_ENCODE_STATUS_FAIL: u32 = 1;
 #[cfg(target_os = "macos")]
 pub(crate) const J2K_ENCODE_STATUS_UNSUPPORTED: u32 = 2;
+/// Failure details that mean an output buffer was too small, as
+/// `encode_bitstream_shared.metal` defines them.
+#[cfg(target_os = "macos")]
+pub(crate) const J2K_CLASSIC_TIER1_FAIL_PASS_CAPACITY: u32 = 4;
+#[cfg(target_os = "macos")]
+pub(crate) const J2K_CLASSIC_TIER1_FAIL_SEGMENT_CAPACITY: u32 = 5;
+#[cfg(target_os = "macos")]
+pub(crate) const J2K_CODESTREAM_FAIL_TILE_CAPACITY: u32 = 2;
+#[cfg(target_os = "macos")]
+pub(crate) const J2K_CODESTREAM_FAIL_EOC_CAPACITY: u32 = 3;
+#[cfg(target_os = "macos")]
+pub(crate) const J2K_PACKET_FAIL_HEADER_CAPACITY: u32 = 3;
+#[cfg(target_os = "macos")]
+pub(crate) const J2K_PACKET_FAIL_STUFFING_CAPACITY: u32 = 4;
+#[cfg(target_os = "macos")]
+pub(crate) const J2K_PACKET_FAIL_BODY_CAPACITY: u32 = 5;
+#[cfg(target_os = "macos")]
+pub(crate) const J2K_PACKET_FAIL_TIER1: u32 = 7;
+
 #[cfg(target_os = "macos")]
 pub(crate) const J2K_HT_ENCODE_MEL_SIZE: usize = 192;
 #[cfg(target_os = "macos")]
@@ -1275,5 +1294,63 @@ mod gpu_readback_abi_tests {
         assert_eq!(size_of::<J2kHtUvlcEncodeTableEntry>(), 6);
         assert_eq!(align_of::<J2kHtUvlcEncodeTableEntry>(), 1);
         assert_eq!(bytes, j2k_native::ht_uvlc_encode_table_bytes());
+    }
+}
+
+#[cfg(test)]
+mod shared_shader_constants {
+    use super::{
+        J2K_CLASSIC_TIER1_FAIL_PASS_CAPACITY, J2K_CLASSIC_TIER1_FAIL_SEGMENT_CAPACITY,
+        J2K_CODESTREAM_FAIL_EOC_CAPACITY, J2K_CODESTREAM_FAIL_TILE_CAPACITY,
+        J2K_PACKET_FAIL_BODY_CAPACITY, J2K_PACKET_FAIL_HEADER_CAPACITY,
+        J2K_PACKET_FAIL_STUFFING_CAPACITY, J2K_PACKET_FAIL_TIER1,
+    };
+
+    /// The host classifies kernel failures by these details, so each must
+    /// equal the shader constant of its name, and the kernels must write the
+    /// name rather than a bare number.
+    #[test]
+    fn encode_failure_details_match_the_shared_shader_constants() {
+        let shared = include_str!("../encode_bitstream_shared.metal");
+        let kernels = [
+            include_str!("../encode_bitstream_classic_core.metal"),
+            include_str!("../encode_bitstream_packetize.metal"),
+        ]
+        .concat();
+        for (name, value) in [
+            (
+                "J2K_CLASSIC_TIER1_FAIL_PASS_CAPACITY",
+                J2K_CLASSIC_TIER1_FAIL_PASS_CAPACITY,
+            ),
+            (
+                "J2K_CLASSIC_TIER1_FAIL_SEGMENT_CAPACITY",
+                J2K_CLASSIC_TIER1_FAIL_SEGMENT_CAPACITY,
+            ),
+            (
+                "J2K_CODESTREAM_FAIL_TILE_CAPACITY",
+                J2K_CODESTREAM_FAIL_TILE_CAPACITY,
+            ),
+            (
+                "J2K_CODESTREAM_FAIL_EOC_CAPACITY",
+                J2K_CODESTREAM_FAIL_EOC_CAPACITY,
+            ),
+            (
+                "J2K_PACKET_FAIL_HEADER_CAPACITY",
+                J2K_PACKET_FAIL_HEADER_CAPACITY,
+            ),
+            (
+                "J2K_PACKET_FAIL_STUFFING_CAPACITY",
+                J2K_PACKET_FAIL_STUFFING_CAPACITY,
+            ),
+            (
+                "J2K_PACKET_FAIL_BODY_CAPACITY",
+                J2K_PACKET_FAIL_BODY_CAPACITY,
+            ),
+            ("J2K_PACKET_FAIL_TIER1", J2K_PACKET_FAIL_TIER1),
+        ] {
+            let declaration = format!("constant uint {name} = {value}u;");
+            assert!(shared.contains(&declaration), "missing `{declaration}`");
+            assert!(kernels.contains(name), "no kernel writes {name}");
+        }
     }
 }

@@ -3,13 +3,14 @@
 use super::super::{
     profile, BlockCodingMode, EncodeOptions, J2kEncodeStageAccelerator, J2kResidentEncodeInput,
     NativeEncodePipelineError, NativeEncodeRetainedInput, NativeEncodeSession,
-    ResidentHtj2kEncodeError, Vec, MAX_RAW_PIXEL_ENCODE_BIT_DEPTH,
+    ResidentHtj2kEncodeError, Vec, MAX_F32_PLANE_PRECISION,
 };
 use super::accelerator::encode_complete_resident_ht_tile;
 use super::finalize::finalize_accelerated_codestream;
 use super::plan::{
     build_single_tile_plan, validate_non_pixel_single_tile_request, NonPixelSingleTileRequest,
 };
+use crate::j2c::encode::reversible_encode_needs_integers;
 
 pub(in crate::j2c::encode) fn encode_resident_impl(
     input: J2kResidentEncodeInput,
@@ -27,9 +28,14 @@ pub(in crate::j2c::encode) fn encode_resident_impl(
             "resident HTJ2K encode requires external validation",
         ));
     }
-    if input.bit_depth() > MAX_RAW_PIXEL_ENCODE_BIT_DEPTH {
+    if input.bit_depth() > MAX_F32_PLANE_PRECISION {
         return Err(ResidentHtj2kEncodeError::Unsupported(
             "resident HTJ2K encode supports at most 24 bits per sample",
+        ));
+    }
+    if reversible_encode_needs_integers(input.bit_depth(), options.reversible, &[]) {
+        return Err(ResidentHtj2kEncodeError::Unsupported(
+            "resident HTJ2K reversible encode supports at most 20 bits per sample",
         ));
     }
 

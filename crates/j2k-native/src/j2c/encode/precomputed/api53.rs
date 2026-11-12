@@ -7,9 +7,10 @@ use super::{
     CpuOnlyJ2kEncodeStageAccelerator, EncodeComponentSampleInfo, EncodeOptions,
     J2kEncodeStageAccelerator, NativeEncodePipelineError, NativeEncodePipelineResult,
     NativeEncodeRetainedInput, NativeEncodeSession, PrecomputedHtj2k53Image, PrecomputedOptionMode,
-    PrecomputedStageAccelerator, Vec, MAX_J2K_SPEC_COMPONENTS, MAX_RAW_PIXEL_ENCODE_BIT_DEPTH,
+    PrecomputedStageAccelerator, Vec, MAX_F32_PLANE_PRECISION, MAX_J2K_SPEC_COMPONENTS,
 };
 use crate::j2c::encode::multitile::encode_options_retained_bytes;
+use crate::j2c::encode::reversible_encode_needs_integers;
 
 /// This mirrors [`encode_precomputed_htj2k_53`] while selecting classic EBCOT
 /// block coding. It reuses the same quantization, packetization, and codestream
@@ -220,13 +221,18 @@ pub(in crate::j2c::encode) fn encode_precomputed_53_with_component_sample_info_f
             "bit depth must be non-zero",
         ));
     }
-    if image.bit_depth > MAX_RAW_PIXEL_ENCODE_BIT_DEPTH {
+    if image.bit_depth > MAX_F32_PLANE_PRECISION {
         return Err(NativeEncodePipelineError::unsupported(
             "precomputed 5/3 bit depth exceeds the native encode limit",
         ));
     }
     validate_component_sample_info(component_sample_info, image.components.len())
         .map_err(NativeEncodePipelineError::invalid_input)?;
+    if reversible_encode_needs_integers(image.bit_depth, true, component_sample_info) {
+        return Err(NativeEncodePipelineError::unsupported(
+            "precomputed 5/3 coefficients are single precision, which holds reversible samples of at most 20 bits",
+        ));
+    }
     if image
         .components
         .iter()

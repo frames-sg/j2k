@@ -113,6 +113,51 @@ fn per_block_midpoint_reconstruction_matches_the_reference_bit_for_bit() {
     }
 }
 
+/// T.800 H.2: region coefficients are those of magnitude at least `2^s`, so a
+/// background coefficient between `2^(s-1)` and `2^s` keeps its value. The
+/// irreversible reconstruction holds magnitudes doubled for the half-bin term
+/// and must classify them as the reversible path does: with every pass
+/// decoded, dropping its midpoint leaves the reversible result.
+#[test]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "every magnitude here is below 2^22, which f32 holds exactly"
+)]
+fn irreversible_roi_classifies_coefficients_as_the_reversible_path_does() {
+    for roi_shift in 1_u8..=16 {
+        let decoded_bitplanes = roi_shift + 8;
+        let every_pass = 3 * decoded_bitplanes - 2;
+        let block = MidpointReconstructor::new(decoded_bitplanes, every_pass, roi_shift);
+        let threshold = 1_u64 << roi_shift;
+        for magnitude in [
+            1,
+            threshold >> 1,
+            (threshold >> 1) + 1,
+            threshold - 1,
+            threshold,
+            threshold + 1,
+            3 * threshold - 1,
+            threshold << 5,
+        ] {
+            for sign in [0_u8, 1] {
+                let mut coefficient = Coefficient::default();
+                for bit in 0..63 {
+                    coefficient.push_bit_at(u32::from(magnitude >> bit & 1 == 1), bit);
+                }
+                coefficient.set_sign(sign);
+                let expected =
+                    crate::apply_roi_maxshift_inverse_i64(coefficient.get_i64(), roi_shift);
+                let reconstructed = block.reconstruct(coefficient);
+                assert_eq!(
+                    reconstructed.trunc(),
+                    expected as f32,
+                    "roi {roi_shift} magnitude {magnitude:#x} sign {sign}: {reconstructed}"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn row_dequantization_matches_per_coefficient_reconstruction_bit_for_bit() {
     let steps = [1.0_f32, 0.007_812_5, 3.3, 1.0e-3, 257.5, 0.123_456_7];

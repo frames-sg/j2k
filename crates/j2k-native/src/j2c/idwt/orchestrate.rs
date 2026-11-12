@@ -37,7 +37,7 @@ pub(crate) fn apply(
     tile_ctx.idwt_output.placement = IdwtPlacement::Coefficients;
     if storage.exact_integer_decode && transform != WaveletTransform::Reversible53 {
         bail!(DecodingError::UnsupportedFeature(
-            "25-38 bit integer IDWT currently requires reversible 5/3 coding",
+            "integer IDWT requires reversible 5/3 coding",
         ));
     }
     if storage.roi_plan.is_some() {

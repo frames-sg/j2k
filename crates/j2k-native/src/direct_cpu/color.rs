@@ -1,5 +1,5 @@
 use super::{
-    bail, dispatch, execute_component_plan, prepare_direct_scratch, round_f32, DecodingError,
+    bail, dispatch, execute_component_plan, prepare_direct_scratch, DecodingError,
     DirectComponentPlane, J2kDirectColorPlan, J2kDirectCpuScratch, J2kRect, J2kWaveletTransform,
     Level, Result,
 };
@@ -215,7 +215,7 @@ fn write_rgb8_region(
                 for channel in 0..3 {
                     let plane = planes[channel];
                     let sample = plane.samples[src_y * plane.width as usize + src_x];
-                    dst[channel] = sample_as_u8(sample, bit_depths[channel]);
+                    dst[channel] = crate::sample_as_u8_native(sample, bit_depths[channel]);
                 }
                 if matches!(output, DirectColorU8Output::Rgba8) {
                     dst[3] = u8::MAX;
@@ -268,28 +268,8 @@ fn validate_output_region(
 
 #[expect(
     clippy::cast_precision_loss,
-    reason = "direct CPU color math intentionally uses the decoder's f32 sample representation"
+    reason = "a power of two at most 2^37 is exact in f32"
 )]
 fn sign_addend(bit_depth: u8) -> f32 {
-    (1_u32 << (bit_depth - 1)) as f32
-}
-
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::inline_always,
-    reason = "samples are rounded and clamped before stable 8-bit output quantization; inlined into the dispatched pixel loop"
-)]
-#[inline(always)]
-fn sample_as_u8(sample: f32, bit_depth: u8) -> u8 {
-    let rounded = round_f32(sample);
-    if bit_depth == 8 {
-        return rounded.clamp(0.0, f32::from(u8::MAX)) as u8;
-    }
-    let max_value = if bit_depth >= 16 {
-        f32::from(u16::MAX)
-    } else {
-        f32::from(((1_u16 << bit_depth) - 1).max(1))
-    };
-    round_f32((rounded.clamp(0.0, max_value) / max_value) * f32::from(u8::MAX)) as u8
+    crate::j2c::codestream::unsigned_level_shift_for_precision(bit_depth) as f32
 }

@@ -1049,7 +1049,7 @@ inline void j2k_encode_classic_code_block_impl_with_scratch(
         coded_marker += uchar(1u);
 
         if (encoder.failed != 0u) {
-           j2k_set_encode_status(status, J2K_ENCODE_STATUS_FAIL, 4u, 0u, 0u, 0u, 0u);
+           j2k_set_encode_status(status, J2K_ENCODE_STATUS_FAIL, J2K_CLASSIC_TIER1_FAIL_PASS_CAPACITY, 0u, 0u, 0u, 0u);
             return;
         }
     }
@@ -1057,7 +1057,7 @@ inline void j2k_encode_classic_code_block_impl_with_scratch(
     const uint payload_skip = 1u;
     const uint data_len = j2k_classic_finish_arithmetic_segment_unshifted(encoder);
     if (encoder.failed != 0u || encoder.len == 0u) {
-       j2k_set_encode_status(status, J2K_ENCODE_STATUS_FAIL, 5u, 0u, 0u, 0u, 0u);
+       j2k_set_encode_status(status, J2K_ENCODE_STATUS_FAIL, J2K_CLASSIC_TIER1_FAIL_SEGMENT_CAPACITY, 0u, 0u, 0u, 0u);
         return;
     }
     uint segment_count = 0u;
@@ -1240,7 +1240,7 @@ inline void j2k_encode_classic_code_block_impl_style0_with_scratch(
         coded_marker += uchar(1u);
 
         if (encoder.failed != 0u) {
-           j2k_set_encode_status(status, J2K_ENCODE_STATUS_FAIL, 4u, 0u, 0u, 0u, 0u);
+           j2k_set_encode_status(status, J2K_ENCODE_STATUS_FAIL, J2K_CLASSIC_TIER1_FAIL_PASS_CAPACITY, 0u, 0u, 0u, 0u);
             return;
         }
     }
@@ -1248,7 +1248,7 @@ inline void j2k_encode_classic_code_block_impl_style0_with_scratch(
     const uint payload_skip = 1u;
     const uint data_len = j2k_classic_finish_arithmetic_segment_unshifted(encoder);
     if (encoder.failed != 0u || encoder.len == 0u) {
-       j2k_set_encode_status(status, J2K_ENCODE_STATUS_FAIL, 5u, 0u, 0u, 0u, 0u);
+       j2k_set_encode_status(status, J2K_ENCODE_STATUS_FAIL, J2K_CLASSIC_TIER1_FAIL_SEGMENT_CAPACITY, 0u, 0u, 0u, 0u);
         return;
     }
     uint segment_count = 0u;

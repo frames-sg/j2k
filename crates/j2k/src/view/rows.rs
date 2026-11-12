@@ -123,7 +123,7 @@ impl J2kDecoder<'_> {
             let (stripe_rows, max_stripe_len) =
                 bounded_row_stripe_layout(row_bytes, height, options)
                     .map_err(DecodeRowsError::Decode)?;
-            if self.info.bit_depth > 24 {
+            if self.info.bit_depth > j2k_types::MAX_F32_PLANE_SAMPLE_BIT_DEPTH {
                 let stripes = WholeStripes {
                     fmt,
                     row_bytes,
@@ -264,7 +264,7 @@ impl J2kDecoder<'_> {
                 stripe_rows,
                 max_stripe_len,
             };
-            if self.info.bit_depth > 24 {
+            if self.info.bit_depth > j2k_types::MAX_F32_PLANE_SAMPLE_BIT_DEPTH {
                 let stripes = WholeStripes {
                     fmt,
                     row_bytes,

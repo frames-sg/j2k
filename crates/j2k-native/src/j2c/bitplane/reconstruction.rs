@@ -4,6 +4,7 @@ use super::state::Coefficient;
 #[cfg(target_arch = "x86_64")]
 use crate::math::{dispatch, Level};
 use j2k_codec_math::classic::irreversible_midpoint_bit;
+use j2k_codec_math::roi::roi_maxshift_is_region;
 
 /// Reconstruct an irreversible coefficient at the centre of its final
 /// decoded quantization interval, as permitted by T.800 E.1.1.2.
@@ -33,13 +34,11 @@ pub(super) fn reconstruct_irreversible_midpoint(
     };
 
     // A doubled unsigned representation preserves the half-bin term and has
-    // headroom for the decoder's 63-bit coefficient limit.
+    // headroom for the decoder's 63-bit coefficient limit. The ROI rule reads
+    // the undoubled magnitude.
     let mut fixed_magnitude = (u128::from(magnitude) << 1) | (1_u128 << lowest_decoded_bit);
-    if roi_shift != 0 {
-        let threshold = 1_u128 << u32::from(roi_shift);
-        if fixed_magnitude >= threshold {
-            fixed_magnitude >>= roi_shift;
-        }
+    if roi_maxshift_is_region(magnitude, u32::from(roi_shift)) {
+        fixed_magnitude >>= roi_shift;
     }
 
     let reconstructed = fixed_magnitude as f32 * 0.5;

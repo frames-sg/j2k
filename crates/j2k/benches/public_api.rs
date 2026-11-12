@@ -587,11 +587,18 @@ fn bench_tile_batch(c: &mut Criterion) {
     reason = "the benchmark keeps one cohesive region-and-scale matrix in a single Criterion group"
 )]
 fn bench_tile_batch_region_scaled_rgb(c: &mut Criterion) {
-    let repeated_classic = encode_rgb8_codestream(CPU_MATRIX_SIDE, CPU_MATRIX_SIDE);
-    let repeated_htj2k = encode_ht_rgb8_codestream(CPU_MATRIX_SIDE, CPU_MATRIX_SIDE);
+    // A quarter-scale decode needs two decomposition levels, deeper than the
+    // default LRCP lossless encode writes.
+    let classic_options = bench_encode_options().with_max_decomposition_levels(Some(2));
+    let ht_options = ht_encode_options().with_max_decomposition_levels(Some(2));
+    let encode_with = |side: u32, options: J2kLosslessEncodeOptions| {
+        encode_rgb8_codestream_from_pixels(side, side, &patterned_rgb8(side, side), options)
+    };
+    let repeated_classic = encode_with(CPU_MATRIX_SIDE, classic_options);
+    let repeated_htj2k = encode_with(CPU_MATRIX_SIDE, ht_options);
     let repeated_htj2k_jph =
         wrap_j2k_codestream(&repeated_htj2k, J2kFileWrapOptions::jph()).expect("wrap HTJ2K JPH");
-    let repeated_htj2k_256 = encode_ht_rgb8_codestream(256, 256);
+    let repeated_htj2k_256 = encode_with(256, ht_options);
     let repeated_htj2k_256_jph =
         wrap_j2k_codestream(&repeated_htj2k_256, J2kFileWrapOptions::jph())
             .expect("wrap 256 HTJ2K JPH");
@@ -604,13 +611,13 @@ fn bench_tile_batch_region_scaled_rgb(c: &mut Criterion) {
             CPU_MATRIX_SIDE,
             CPU_MATRIX_SIDE,
             &pixels,
-            bench_encode_options(),
+            classic_options,
         ));
         distinct_htj2k.push(encode_rgb8_codestream_from_pixels(
             CPU_MATRIX_SIDE,
             CPU_MATRIX_SIDE,
             &pixels,
-            ht_encode_options(),
+            ht_options,
         ));
     }
 

@@ -30,5 +30,7 @@ pub mod generated {
 pub mod jpeg;
 /// JPEG 2000 multi-component transform constants.
 pub mod mct;
+/// JPEG 2000 region-of-interest maxshift rule shared by every decoder.
+pub mod roi;
 /// Canonical binary32 arithmetic for the JPEG-to-HTJ2K 9/7 transcode.
 pub mod transcode97;

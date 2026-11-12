@@ -6,6 +6,13 @@ use j2k::{
 };
 use j2k_core::{Downscale, PixelFormat, Rect};
 use j2k_test_support::{gradient_u8, read_pnm_pixels, write_pnm};
+#[path = "support/deep_samples.rs"]
+mod deep_samples;
+use deep_samples::{
+    deep_sample_bytes, deep_samples_from_bytes, hostile_deep_samples, DEEP_HEIGHT, DEEP_PRECISIONS,
+    DEEP_WIDTH,
+};
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -191,6 +198,177 @@ fn classic_lossless_encode_decodes_with_openjpeg() {
 
     let decoded = decode_j2k_with_openjpeg(&paths, "j2k_encode_rgb", &encoded.codestream);
     assert_eq!(decoded, pixels);
+}
+
+/// One unsigned component plane as an `OpenJPEG` PGX file: a text header,
+/// then big-endian samples of four bytes above 16 bits.
+fn write_pgx(path: &Path, plane: &[i64], depth: u8) {
+    assert!(depth > 16, "these tests write only four-byte PGX samples");
+    let mut bytes = format!("PG ML + {depth} {DEEP_WIDTH} {DEEP_HEIGHT}\n").into_bytes();
+    for &sample in plane {
+        let sample = u32::try_from(sample).expect("unsigned sample fits 32 bits");
+        bytes.extend_from_slice(&sample.to_be_bytes());
+    }
+    fs::write(path, bytes).expect("write pgx");
+}
+
+/// The samples of a PGX file `OpenJPEG` wrote.
+fn read_pgx(path: &Path, depth: u8, signed: bool) -> Vec<i64> {
+    let bytes = fs::read(path).expect("read pgx");
+    let header_end = bytes
+        .iter()
+        .position(|&byte| byte == b'\n')
+        .expect("pgx header");
+    let header = std::str::from_utf8(&bytes[..header_end]).expect("pgx header text");
+    let fields: Vec<&str> = header.split_whitespace().collect();
+    assert_eq!(fields[0], "PG");
+    assert_eq!(fields[1], "ML", "big-endian PGX");
+    let precision: u8 = fields[fields.len() - 3]
+        .trim_start_matches(['+', '-'])
+        .parse()
+        .unwrap();
+    assert_eq!(precision, depth);
+    assert_eq!(header.contains('-'), signed);
+    let shift = 64 - u32::from(depth);
+    let (samples, rest) = bytes[header_end + 1..].as_chunks::<4>();
+    assert!(rest.is_empty(), "whole four-byte PGX samples");
+    samples
+        .iter()
+        .map(|&sample| {
+            let raw = u64::from(u32::from_be_bytes(sample)) << shift;
+            if signed {
+                raw.cast_signed() >> shift
+            } else {
+                (raw >> shift).cast_signed()
+            }
+        })
+        .collect()
+}
+
+/// The samples `OpenJPEG` decodes `codestream` to, interleaved.
+fn decode_deep_with_openjpeg(
+    paths: &OpenJpegPaths,
+    stem: &str,
+    codestream: &[u8],
+    depth: u8,
+    signed: bool,
+    components: usize,
+) -> Vec<i64> {
+    let dir = temp_dir();
+    let input_path = dir.join(format!("{stem}.j2k"));
+    fs::write(&input_path, codestream).expect("write j2k");
+    let status = Command::new(&paths.decompress)
+        .arg("-i")
+        .arg(&input_path)
+        .arg("-o")
+        .arg(dir.join(format!("{stem}.pgx")))
+        .arg("-quiet")
+        .status()
+        .expect("run opj_decompress");
+    assert!(status.success(), "opj_decompress failed");
+    let planes: Vec<Vec<i64>> = (0..components)
+        .map(|component| {
+            let numbered = dir.join(format!("{stem}_{component}.pgx"));
+            let path = if numbered.exists() {
+                numbered
+            } else {
+                dir.join(format!("{stem}.pgx"))
+            };
+            read_pgx(&path, depth, signed)
+        })
+        .collect();
+    (0..planes[0].len())
+        .flat_map(|at| planes.iter().map(move |plane| plane[at]))
+        .collect()
+}
+
+#[test]
+fn deep_lossless_encode_decodes_exactly_with_openjpeg() {
+    let Some(paths) = OpenJpegPaths::discover() else {
+        return;
+    };
+    for depth in DEEP_PRECISIONS {
+        for (signed, components) in [(false, 1), (false, 3), (true, 1)] {
+            let source = hostile_deep_samples(depth, signed, components);
+            let pixels = deep_sample_bytes(&source, depth);
+            let samples = J2kLosslessSamples::new(
+                &pixels,
+                DEEP_WIDTH,
+                DEEP_HEIGHT,
+                u16::try_from(components).unwrap(),
+                depth,
+                signed,
+            )
+            .unwrap();
+            let encoded = encode_j2k_lossless(
+                samples,
+                &J2kLosslessEncodeOptions::default().with_backend(EncodeBackendPreference::CpuOnly),
+            )
+            .unwrap_or_else(|error| panic!("{depth}-bit x{components} encode: {error}"));
+
+            let stem = format!("deep_encode_{depth}_{components}_{signed}");
+            let decoded = decode_deep_with_openjpeg(
+                &paths,
+                &stem,
+                &encoded.codestream,
+                depth,
+                signed,
+                components,
+            );
+            assert!(
+                decoded == source,
+                "{depth}-bit x{components} signed={signed}: OpenJPEG decodes other samples"
+            );
+        }
+    }
+}
+
+#[test]
+fn openjpeg_deep_lossless_encode_decodes_as_openjpeg_decodes_it() {
+    let Some(paths) = OpenJpegPaths::discover() else {
+        return;
+    };
+    // Unsigned only: `opj_compress` reads signed PGX samples deeper than 16
+    // bits as 16-bit ones. The reference is OpenJPEG's own decode of its
+    // codestream, not the source: on this input at 24 bits its encoder
+    // overflows, and its codestream no longer holds the source.
+    for depth in DEEP_PRECISIONS {
+        let source = hostile_deep_samples(depth, false, 1);
+        let dir = temp_dir();
+        let stem = format!("deep_decode_{depth}");
+        let pgx = dir.join(format!("{stem}.pgx"));
+        let j2k = dir.join(format!("{stem}.j2k"));
+        write_pgx(&pgx, &source, depth);
+        let status = Command::new(&paths.compress)
+            .arg("-i")
+            .arg(&pgx)
+            .arg("-o")
+            .arg(&j2k)
+            .status()
+            .expect("run opj_compress");
+        assert!(status.success(), "opj_compress failed");
+        let codestream = fs::read(&j2k).expect("read j2k");
+        let expected = decode_deep_with_openjpeg(
+            &paths,
+            &format!("{stem}_reference"),
+            &codestream,
+            depth,
+            false,
+            1,
+        );
+        if depth < 24 {
+            assert!(expected == source, "{depth}-bit: OpenJPEG round trip");
+        }
+
+        let image = j2k_native::Image::new(&codestream, &j2k_native::DecodeSettings::default())
+            .expect("parse");
+        let decoded = image.decode_native().expect("native decode");
+        assert_eq!(decoded.bit_depth, depth);
+        assert!(
+            deep_samples_from_bytes(&decoded.data, depth, false) == expected,
+            "{depth}-bit: other samples than OpenJPEG decodes"
+        );
+    }
 }
 
 #[derive(Clone)]

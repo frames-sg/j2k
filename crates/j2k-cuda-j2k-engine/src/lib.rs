@@ -32,6 +32,7 @@ mod tests;
 pub use classic_decode::{
     CudaClassicCodeBlockJob, CudaClassicDecodeStageTimings, CudaClassicDecodeTableResources,
     CudaClassicDecodeTarget, CudaClassicSegment, CudaClassicStatus, CudaQueuedClassicDecode,
+    CUDA_CLASSIC_DECODE_KERNEL_NAME,
 };
 pub use htj2k_decode::{
     htj2k_cleanup_multi_descriptor_bytes, CudaHtj2kCleanupTarget, CudaHtj2kCodeBlockJob,

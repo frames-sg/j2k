@@ -65,8 +65,8 @@ pub(crate) use self::planes_floor::full_decode_planes_floor;
 pub(crate) use self::reuse::is_capacity_error;
 pub(crate) use self::state::{DecompositionStorage, TileDecodeContext, TileDecompositions};
 use self::store::{
-    apply_inverse_mct_per_tile, apply_sign_shift_after_mct, component_unsigned_level_shift,
-    fused_last_level, store, store_last_level_bands,
+    apply_inverse_mct_per_tile, apply_sign_shift_after_mct, fused_last_level,
+    publish_exact_planes_as_floats, store, store_last_level_bands,
 };
 #[cfg(feature = "parallel")]
 use self::store::{store_rows, TileRows};
@@ -414,6 +414,7 @@ fn decode_parsed_tiles<'a>(
     if tile_ctx.fused_last_level.take().is_some() {
         bail!(DecodingError::IncompletePlaneStore);
     }
+    publish_exact_planes_as_floats(tile_ctx)?;
 
     if profile_enabled {
         emit_decode_profile_row(tile_ctx, &profile_timings, total_start);
@@ -1502,19 +1503,19 @@ pub(crate) fn decode_selected_wavelet_bands<'a>(
 
 fn validate_exact_integer_decode_tile(tile: &Tile<'_>) -> Result<()> {
     for component in &tile.component_infos {
-        if component.size_info.precision > 38 {
+        if component.size_info.precision > j2k_types::MAX_JPEG2000_PART1_SAMPLE_BIT_DEPTH {
             bail!(DecodingError::UnsupportedFeature(
                 "JPEG 2000 Part 1 component precision is limited to 38 bits"
             ));
         }
         if component.wavelet_transform() != WaveletTransform::Reversible53 {
             bail!(DecodingError::UnsupportedFeature(
-                "25-38 bit decode currently requires reversible 5/3 coding"
+                "a tile with reversible samples deeper than 20 bits needs reversible 5/3 coding in every component"
             ));
         }
         if component.quantization_info.quantization_style != QuantizationStyle::NoQuantization {
             bail!(DecodingError::UnsupportedFeature(
-                "25-38 bit decode currently requires reversible no-quantization coding"
+                "a tile with reversible samples deeper than 20 bits needs no quantization in every component"
             ));
         }
     }

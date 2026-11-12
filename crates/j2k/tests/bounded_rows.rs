@@ -256,6 +256,7 @@ fn fixtures() -> Vec<Fixture> {
             streams: false,
         },
         deep_fixture(&base),
+        integer_fixture(&base),
         // No wavelet levels to stream through.
         Fixture {
             name: "rgb without decomposition levels",
@@ -280,6 +281,19 @@ fn deep_fixture(base: &EncodeOptions) -> Fixture {
     Fixture {
         name: "gray 29-bit 5/3",
         bytes: codestream(1, 29, base),
+        components: 1,
+        wide: true,
+        streams: false,
+    }
+}
+
+/// Reversible samples deeper than the 20 bits its transforms are exact
+/// through in `f32`, but not than the 24 an `f32` plane holds: decoded with
+/// integers on component planes, a stripe at a time.
+fn integer_fixture(base: &EncodeOptions) -> Fixture {
+    Fixture {
+        name: "gray 22-bit 5/3",
+        bytes: codestream(1, 22, base),
         components: 1,
         wide: true,
         streams: false,
@@ -435,6 +449,7 @@ fn decode_plans_name_each_route_and_why_rows_cannot_stream() {
         "rgb tiles side by side" => Some(Blocker::TilesSideBySide),
         "rgba with channel definition" => Some(Blocker::ChannelDefinitions),
         "gray 29-bit 5/3" => Some(Blocker::PrecisionAbove24Bits),
+        "gray 22-bit 5/3" => Some(Blocker::TileCoding),
         "rgb without decomposition levels" => Some(Blocker::NoDecompositionLevels),
         _ => None,
     };
@@ -472,6 +487,7 @@ fn decode_plans_name_each_route_and_why_rows_cannot_stream() {
         let region_blocker = match fixture.name {
             "rgba with channel definition" => Some(Blocker::ChannelDefinitions),
             "gray 29-bit 5/3" => Some(Blocker::PrecisionAbove24Bits),
+            "gray 22-bit 5/3" => Some(Blocker::TileCoding),
             _ => None,
         };
         assert_eq!(

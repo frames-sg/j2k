@@ -54,6 +54,22 @@ pub(crate) struct ComponentInfo {
     pub(crate) roi_shift: u8,
 }
 
+/// The bytes of a component index in COC, QCC, RGN and POC (T.800 A.6):
+/// one while `Csiz` is below 257, two from there.
+pub(crate) const fn component_index_bytes(num_components: u16) -> u16 {
+    if num_components < 257 {
+        1
+    } else {
+        2
+    }
+}
+
+/// The DC level shift of unsigned `precision`-bit samples (T.800 G.1.2),
+/// `2^(precision - 1)`. Precision reaches 38 bits, so it needs more than 32.
+pub(crate) const fn unsigned_level_shift_for_precision(precision: u8) -> i64 {
+    1_i64 << (precision - 1)
+}
+
 impl ComponentInfo {
     pub(crate) fn exponent_mantissa(
         &self,
@@ -109,8 +125,31 @@ impl ComponentInfo {
         self.coding_style.parameters.transformation
     }
 
+    /// The DC level shift a decode adds back to this component's samples
+    /// (T.800 G.1.2): 2^(precision - 1) for unsigned samples, 0 for signed.
+    /// Precision reaches 38 bits, so the shift needs more than 32.
+    pub(crate) fn unsigned_level_shift_i64(&self) -> i64 {
+        if self.size_info.signed {
+            0
+        } else {
+            unsigned_level_shift_for_precision(self.size_info.precision)
+        }
+    }
+
+    /// [`Self::unsigned_level_shift_i64`] in the `f32` domain, where the power
+    /// of two is exact.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a power of two at most 2^37 is exact in f32"
+    )]
+    pub(crate) fn unsigned_level_shift(&self) -> f32 {
+        self.unsigned_level_shift_i64() as f32
+    }
+
+    /// Whether this component decodes with integers: reversible coding of
+    /// samples too deep for the `f32` transforms to be exact.
     pub(crate) fn requires_exact_integer_decode(&self) -> bool {
-        self.size_info.precision > 24
+        crate::j2c::reversible_coding_needs_integers(self.size_info.precision)
             && self.wavelet_transform() == WaveletTransform::Reversible53
             && self.quantization_info.quantization_style == QuantizationStyle::NoQuantization
     }

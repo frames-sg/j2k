@@ -6,7 +6,7 @@ use super::super::{
     allocation::{checked_add_bytes, checked_element_bytes, host_allocation_failed},
     raw_pixel_bytes_per_sample, read_le_sample_value, sign_extend_sample,
     EncodeComponentSampleInfo, NativeEncodePipelineResult, NativeEncodeSession, Vec,
-    MAX_RAW_PIXEL_ENCODE_BIT_DEPTH,
+    MAX_F32_PLANE_PRECISION,
 };
 
 pub(in crate::j2c::encode) fn validate_deinterleaved_components(
@@ -118,7 +118,7 @@ pub(in crate::j2c::encode) fn validate_component_sample_info(
     }
     if component_sample_info
         .iter()
-        .any(|info| info.bit_depth == 0 || info.bit_depth > MAX_RAW_PIXEL_ENCODE_BIT_DEPTH)
+        .any(|info| info.bit_depth == 0 || info.bit_depth > MAX_F32_PLANE_PRECISION)
     {
         return Err("unsupported bit depth");
     }

@@ -53,17 +53,17 @@ pub(crate) fn apply_inverse(
             s1,
             s2,
             [
-                unsigned_level_shift_i64(&component_infos[0]),
-                unsigned_level_shift_i64(&component_infos[1]),
-                unsigned_level_shift_i64(&component_infos[2]),
+                component_infos[0].unsigned_level_shift_i64(),
+                component_infos[1].unsigned_level_shift_i64(),
+                component_infos[2].unsigned_level_shift_i64(),
             ],
         );
     }
 
     let addends = [
-        unsigned_level_shift(&component_infos[0]),
-        unsigned_level_shift(&component_infos[1]),
-        unsigned_level_shift(&component_infos[2]),
+        component_infos[0].unsigned_level_shift(),
+        component_infos[1].unsigned_level_shift(),
+        component_infos[2].unsigned_level_shift(),
     ];
     let output = DeferredMct::new(transform, addends, round_irreversible_output);
 
@@ -154,9 +154,9 @@ impl DeferredMct {
         round_irreversible_output: bool,
     ) -> Self {
         let addends = [
-            unsigned_level_shift(&component_infos[0]),
-            unsigned_level_shift(&component_infos[1]),
-            unsigned_level_shift(&component_infos[2]),
+            component_infos[0].unsigned_level_shift(),
+            component_infos[1].unsigned_level_shift(),
+            component_infos[2].unsigned_level_shift(),
         ];
         Self::new(
             component_infos[0].wavelet_transform(),
@@ -654,26 +654,6 @@ fn apply_inverse_i64(
     }
 
     Ok(())
-}
-
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "the codec float domain intentionally receives bounded integer samples or metadata at this rounding boundary"
-)]
-fn unsigned_level_shift(component_info: &ComponentInfo) -> f32 {
-    if component_info.size_info.signed {
-        0.0
-    } else {
-        (1_u32 << (component_info.size_info.precision - 1)) as f32
-    }
-}
-
-fn unsigned_level_shift_i64(component_info: &ComponentInfo) -> i64 {
-    if component_info.size_info.signed {
-        0
-    } else {
-        1_i64 << (component_info.size_info.precision - 1)
-    }
 }
 
 #[expect(

@@ -2786,6 +2786,7 @@ pub fn j2k_native::quantize_subband_reference(&[f32], u16, u16, u8, bool) -> all
 pub fn j2k_native::referenced_classic_plan_execution_bytes(&j2k_types::decode_plan::referenced::J2kReferencedClassicPlan, bool) -> j2k_native::Result<usize>
 pub fn j2k_native::referenced_htj2k_plan_execution_bytes(&j2k_types::decode_plan::referenced::J2kReferencedHtj2kPlan, bool) -> j2k_native::Result<usize>
 pub fn j2k_native::round_clamped_native(f32, f32, f32) -> u32
+pub fn j2k_native::sample_as_u8_native(f32, u8) -> u8
 pub fn j2k_native::signed_native_bounds(u8) -> (f32, f32)
 pub fn j2k_native::try_deinterleave_reference(&[u8], usize, u16, u8, bool) -> j2k_native::Result<alloc::vec::Vec<alloc::vec::Vec<f32>>>
 pub fn j2k_native::unsigned_native_max(u8) -> f32
@@ -3181,8 +3182,15 @@ pub const fn j2k_types::encode_geometry::lossless_decomposition_levels(u32, u32,
 pub const fn j2k_types::encode_geometry::maximum_decomposition_levels(u32, u32) -> u8
 pub const fn j2k_types::encode_geometry::reversible_subband_total_bitplanes(u8, u8, j2k_types::J2kSubBandType) -> u8
 pub const fn j2k_types::encode_geometry::tiled_decomposition_levels(u32, u32, u32, u32, u8) -> u8
+pub const fn j2k_types::reversible_coding_needs_integers(u8) -> bool
+pub const j2k_types::MAX_CLASSIC_REVERSIBLE_MARKER_BITPLANES: u16
+pub const j2k_types::MAX_F32_EXACT_REVERSIBLE_SAMPLE_BIT_DEPTH: u8
+pub const j2k_types::MAX_F32_PLANE_SAMPLE_BIT_DEPTH: u8
+pub const j2k_types::MAX_HTJ2K_CODED_BITPLANES: u8
 pub const j2k_types::MAX_JPEG2000_PART1_COMPONENTS: u16
 pub const j2k_types::MAX_JPEG2000_PART1_SAMPLE_BIT_DEPTH: u8
+pub const j2k_types::MAX_QUANTIZATION_EXPONENT: u16
+pub const j2k_types::MAX_QUANTIZATION_GUARD_BITS: u8
 pub enum j2k_types::encode_geometry::CodeBlockGeometryError
 pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::begin_encode(&mut self, j2k_types::J2kEncodeContext) -> j2k_types::J2kEncodeStageResult<()>
 pub fn j2k_types::CpuOnlyJ2kEncodeStageAccelerator::declines_every_stage(&self) -> bool
@@ -3738,6 +3746,7 @@ pub const fn j2k_cuda_j2k_engine::CudaQueuedHtj2kCleanupGroup::retained_host_byt
 pub const fn j2k_cuda_j2k_engine::CudaQueuedHtj2kCleanupGroup::status_count(&self) -> usize
 pub const fn j2k_cuda_j2k_engine::CudaQueuedJ2kStoreBatch::execution(&self) -> j2k_cuda_runtime::execution::queued::CudaExecutionStats
 pub const fn j2k_cuda_j2k_engine::htj2k_cleanup_multi_descriptor_bytes() -> usize
+pub const j2k_cuda_j2k_engine::CUDA_CLASSIC_DECODE_KERNEL_NAME: &str
 pub const j2k_cuda_j2k_engine::CudaClassicStatus::NAME: &'static str
 pub const j2k_cuda_j2k_engine::CudaHtj2kEncodeStatus::NAME: &'static str
 pub const j2k_cuda_j2k_engine::CudaHtj2kPacketizationBlock::NAME: &'static str

@@ -273,42 +273,23 @@ fn write_samples_as_u8(src: &[f32], bit_depth: u8, dst: &mut [u8]) {
 /// [`sample_as_u8`] for an 8-bit sample: rounded and clamped to a byte as
 /// native packing does (see [`j2k_native::round_clamped_native`]).
 #[expect(
-    clippy::cast_possible_truncation,
     clippy::inline_always,
-    reason = "samples are rounded and clamped to the unsigned 8-bit output domain before conversion; inlined into the callers' SIMD dispatch"
+    reason = "inlined into the callers' SIMD dispatch"
 )]
 #[inline(always)]
 pub(super) fn sample_as_u8_depth8(sample: f32) -> u8 {
-    j2k_native::round_clamped_native(sample, 0.0, f32::from(u8::MAX)) as u8
+    j2k_native::sample_as_u8_native(sample, 8)
 }
 
+/// One decoded sample as an 8-bit output sample, as native packing and the
+/// direct CPU plans convert it (see [`j2k_native::sample_as_u8_native`]).
 #[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss,
     clippy::inline_always,
-    reason = "samples are rounded and clamped to the unsigned 8-bit output domain before conversion; inlined into the callers' SIMD dispatch"
+    reason = "inlined into the callers' SIMD dispatch"
 )]
 #[inline(always)]
 fn sample_as_u8(sample: f32, bit_depth: u8) -> u8 {
-    if bit_depth == 8 {
-        return sample_as_u8_depth8(sample);
-    }
-    if bit_depth > 16 {
-        // The sample over the component's range, as the 8-bit planes of a
-        // full-image decode quantize it.
-        let source_max = ((1_u64 << bit_depth.min(63)) - 1) as f32;
-        return ((sample / source_max) * f32::from(u8::MAX)).round() as u8;
-    }
-    let max_value = if bit_depth >= 16 {
-        f32::from(u16::MAX)
-    } else {
-        f32::from(((1_u16 << bit_depth) - 1).max(1))
-    };
-    // The low 16 bits hold the rounded sample clamped to `[0, max_value]`,
-    // NaN as zero, which scales to zero as NaN rounds to it.
-    let clamped = f32::from(j2k_native::round_clamped_native(sample, 0.0, max_value) as u16);
-    ((clamped / max_value) * f32::from(u8::MAX)).round() as u8
+    j2k_native::sample_as_u8_native(sample, bit_depth)
 }
 
 pub(in crate::decode) fn write_u8_output(

@@ -54,7 +54,7 @@ pub(crate) fn validate_region_bitmap_layout(
     if header
         .component_infos
         .iter()
-        .all(|component| component.size_info.precision <= 24)
+        .all(|component| component.size_info.precision <= super::MAX_F32_PLANE_PRECISION)
     {
         return Ok(());
     }

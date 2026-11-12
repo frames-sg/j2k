@@ -16,7 +16,7 @@ pub(crate) use tile_candidates::{
     HtCandidateSelection,
 };
 
-pub(super) const MAX_HT_BITPLANES: u8 = 31;
+pub(super) use j2k_types::MAX_HTJ2K_CODED_BITPLANES as MAX_HT_BITPLANES;
 
 fn validate_set_request(
     total_bitplanes: u8,

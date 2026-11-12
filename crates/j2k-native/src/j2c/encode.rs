@@ -43,17 +43,35 @@ use crate::{
 };
 
 const HT_CPU_PARALLEL_FALLBACK_MIN_JOBS: usize = 4;
-const MAX_RAW_PIXEL_ENCODE_BIT_DEPTH: u8 = 24;
+/// Raw-pixel, component-plane, resident and precomputed encodes hold samples
+/// in `f32` planes.
+use super::MAX_F32_PLANE_PRECISION;
+
+/// Whether a reversible encode takes the integer path: its samples, or any
+/// component's own, are too deep for the `f32` transforms to be exact (see
+/// [`j2k_types::MAX_F32_EXACT_REVERSIBLE_SAMPLE_BIT_DEPTH`]).
+fn reversible_encode_needs_integers(
+    bit_depth: u8,
+    reversible: bool,
+    component_sample_info: &[EncodeComponentSampleInfo],
+) -> bool {
+    reversible
+        && (super::reversible_coding_needs_integers(bit_depth)
+            || component_sample_info
+                .iter()
+                .any(|info| super::reversible_coding_needs_integers(info.bit_depth)))
+}
 const MAX_PART1_SAMPLE_BIT_DEPTH: u8 = j2k_types::MAX_JPEG2000_PART1_SAMPLE_BIT_DEPTH;
-const MAX_REVERSIBLE_NO_QUANT_EXPONENT: u16 = 31;
-const MAX_REVERSIBLE_NO_QUANT_GUARD_BITS: u8 = 7;
-const MAX_CLASSIC_REVERSIBLE_MARKER_BITPLANES: u16 =
-    MAX_REVERSIBLE_NO_QUANT_GUARD_BITS as u16 + MAX_REVERSIBLE_NO_QUANT_EXPONENT - 1;
+use j2k_types::{
+    MAX_CLASSIC_REVERSIBLE_MARKER_BITPLANES,
+    MAX_QUANTIZATION_EXPONENT as MAX_REVERSIBLE_NO_QUANT_EXPONENT,
+    MAX_QUANTIZATION_GUARD_BITS as MAX_REVERSIBLE_NO_QUANT_GUARD_BITS,
+};
 // Classic packet headers can signal at most 164 coding passes, i.e.
 // 1 cleanup pass for the first bitplane plus 3 passes for each additional
 // bitplane: 1 + 3 * (55 - 1) = 163.
 const MAX_CLASSIC_ROI_CODED_BITPLANES: u8 = 55;
-const MAX_HT_ROI_CODED_BITPLANES: u8 = 31;
+use j2k_types::MAX_HTJ2K_CODED_BITPLANES as MAX_HT_ROI_CODED_BITPLANES;
 
 mod api_helpers;
 pub(crate) use self::api_helpers::try_deinterleave_to_f32;

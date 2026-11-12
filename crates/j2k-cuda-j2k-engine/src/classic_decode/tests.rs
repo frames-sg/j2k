@@ -10,6 +10,19 @@ fn classic_launch_geometry_uses_one_32_thread_block_per_code_block() {
 }
 
 #[test]
+fn classic_kernel_name_and_entrypoint_name_the_device_function() {
+    assert_eq!(
+        super::launch::CLASSIC_KERNEL_ENTRYPOINT,
+        [super::CUDA_CLASSIC_DECODE_KERNEL_NAME.as_bytes(), b"\0"].concat()
+    );
+    let device = include_str!("../cuda_oxide_j2k_classic_decode/simt/src/main.rs");
+    assert!(device.contains(&format!(
+        "pub unsafe fn {}(",
+        super::CUDA_CLASSIC_DECODE_KERNEL_NAME
+    )));
+}
+
+#[test]
 fn classic_device_validates_job_before_using_job_dimensions() {
     let device = include_str!("../cuda_oxide_j2k_classic_decode/simt/src/main.rs");
     let entrypoint = device

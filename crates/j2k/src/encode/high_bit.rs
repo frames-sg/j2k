@@ -6,9 +6,10 @@ use j2k_core::Unsupported;
 
 use super::allocation::try_collect_exact;
 use super::contracts::{
-    EncodeBackendPreference, J2kBlockCodingMode, J2kEncodeValidation, J2kLosslessEncodeOptions,
-    J2kLossyEncodeOptions, ReversibleTransform, MAX_CLASSIC_REVERSIBLE_MARKER_BITPLANES,
-    MAX_HTJ2K_ENCODE_BITPLANES, MAX_RAW_PIXEL_ENCODE_BIT_DEPTH,
+    reversible_coding_needs_integers, EncodeBackendPreference, J2kBlockCodingMode,
+    J2kEncodeValidation, J2kLosslessEncodeOptions, J2kLossyEncodeOptions, ReversibleTransform,
+    MAX_CLASSIC_REVERSIBLE_MARKER_BITPLANES, MAX_F32_PLANE_SAMPLE_BIT_DEPTH,
+    MAX_HTJ2K_CODED_BITPLANES,
 };
 use super::cpu::interleave_component_planes;
 use super::geometry::j2k_lossless_decomposition_levels_for_options;
@@ -76,23 +77,48 @@ fn encode_sampled_components(
     super::lossless::encode_typed_components(typed_samples, options)
 }
 
+/// Whether an HTJ2K lossless encode of `bit_depth`-bit samples is refused a
+/// wavelet: samples past what an `f32` plane holds.
+pub(crate) const fn htj2k_lossless_refuses_dwt(bit_depth: u8) -> bool {
+    bit_depth > MAX_F32_PLANE_SAMPLE_BIT_DEPTH
+}
+
 pub(super) fn validate_lossless_options(
     samples: J2kLosslessSamples<'_>,
     options: &J2kLosslessEncodeOptions,
 ) -> Result<(), J2kError> {
-    if samples.bit_depth <= MAX_RAW_PIXEL_ENCODE_BIT_DEPTH {
+    if !reversible_coding_needs_integers(samples.bit_depth) {
         return Ok(());
     }
+    if samples.bit_depth > MAX_F32_PLANE_SAMPLE_BIT_DEPTH {
+        validate_lossless_options_past_f32_planes(samples, options)?;
+    }
+    if options.backend == EncodeBackendPreference::RequireDevice {
+        return Err(J2kError::Unsupported(Unsupported {
+            what:
+                "lossless encode of samples deeper than 20 bits uses the CPU reversible path only",
+        }));
+    }
+    Ok(())
+}
+
+fn validate_lossless_options_past_f32_planes(
+    samples: J2kLosslessSamples<'_>,
+    options: &J2kLosslessEncodeOptions,
+) -> Result<(), J2kError> {
     let decomposition_levels = j2k_lossless_decomposition_levels_for_options(samples, *options);
     let reversible_gain = if decomposition_levels == 0 { 0 } else { 2 };
     let coded_bitplanes = u16::from(samples.bit_depth) + reversible_gain;
-    if options.block_coding_mode == J2kBlockCodingMode::HighThroughput && decomposition_levels > 0 {
+    if options.block_coding_mode == J2kBlockCodingMode::HighThroughput
+        && decomposition_levels > 0
+        && htj2k_lossless_refuses_dwt(samples.bit_depth)
+    {
         return Err(J2kError::Unsupported(Unsupported {
             what: "HTJ2K high-bit lossless encode with DWT remains blocked by the current HT integer coefficient path",
         }));
     }
     if options.block_coding_mode == J2kBlockCodingMode::HighThroughput
-        && coded_bitplanes > MAX_HTJ2K_ENCODE_BITPLANES
+        && coded_bitplanes > u16::from(MAX_HTJ2K_CODED_BITPLANES)
     {
         return Err(J2kError::Unsupported(Unsupported {
             what: "HTJ2K high-bit lossless encode exceeds the current HT block bitplane limit",
@@ -105,19 +131,6 @@ pub(super) fn validate_lossless_options(
             what: "25-38 bit classic lossless encode exceeds the current no-quantization guard/exponent signaling limit",
         }));
     }
-    if !matches!(
-        options.block_coding_mode,
-        J2kBlockCodingMode::Classic | J2kBlockCodingMode::HighThroughput
-    ) {
-        return Err(J2kError::Unsupported(Unsupported {
-            what: "25-38 bit lossless encode currently requires classic J2K or HTJ2K block coding",
-        }));
-    }
-    if options.backend == EncodeBackendPreference::RequireDevice {
-        return Err(J2kError::Unsupported(Unsupported {
-            what: "25-38 bit lossless encode currently uses the CPU reversible path only",
-        }));
-    }
     Ok(())
 }
 
@@ -125,7 +138,7 @@ pub(super) fn validate_lossy_options(
     samples: J2kLossySamples<'_>,
     options: &J2kLossyEncodeOptions,
 ) -> Result<(), J2kError> {
-    if samples.bit_depth <= MAX_RAW_PIXEL_ENCODE_BIT_DEPTH {
+    if samples.bit_depth <= MAX_F32_PLANE_SAMPLE_BIT_DEPTH {
         return Ok(());
     }
     if options.block_coding_mode == J2kBlockCodingMode::HighThroughput {

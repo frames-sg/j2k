@@ -414,6 +414,57 @@ fn cpu_classic_lossy_gray38_decodes_native_bytes() {
     assert_eq!(decoded.data.len(), pixels.len());
 }
 
+/// The irreversible colour transform adds back each component's level shift,
+/// 2^37 for unsigned 38-bit samples, which needs more than 32 bits.
+#[test]
+fn cpu_classic_lossy_rgb38_with_colour_transform_decodes_near_the_source() {
+    let (width, height) = (16_u64, 16_u64);
+    let source = (0..width * height)
+        .flat_map(|index| {
+            let (x, y) = (index % width, index / width);
+            [x << 33, y << 33, (x + y) << 32].map(|value| value + (1 << 36))
+        })
+        .collect::<Vec<_>>();
+    let pixels = source
+        .iter()
+        .copied()
+        .flat_map(unsigned_38_bytes)
+        .collect::<Vec<_>>();
+    let samples = J2kLossySamples::new(&pixels, 16, 16, 3, 38, false).unwrap();
+
+    let encoded = encode_j2k_lossy(
+        samples,
+        &J2kLossyEncodeOptions::default()
+            .with_backend(EncodeBackendPreference::CpuOnly)
+            .with_block_coding_mode(J2kBlockCodingMode::Classic)
+            .with_max_decomposition_levels(Some(1)),
+    )
+    .expect("classic rgb38 lossy encode");
+    assert!(
+        marker_offset(&encoded.codestream, 0x52)
+            .is_some_and(|cod| encoded.codestream[cod + 8] == 1),
+        "the encode applies the colour transform"
+    );
+
+    let decoded = decode_native(&encoded.codestream);
+    assert_eq!(decoded.bytes_per_sample, 5);
+    let worst = decoded
+        .data
+        .as_chunks::<5>()
+        .0
+        .iter()
+        .map(|bytes| {
+            let mut wide = [0_u8; 8];
+            wide[..5].copy_from_slice(bytes);
+            u64::from_le_bytes(wide)
+        })
+        .zip(&source)
+        .map(|(decoded, &source)| decoded.abs_diff(source))
+        .max()
+        .expect("samples decoded");
+    assert!(worst < 1 << 30, "worst sample error {worst}");
+}
+
 #[test]
 fn cpu_lossy_htj2k_high_bit_rejects_explicitly() {
     let pixels = (0_u32..16 * 16)

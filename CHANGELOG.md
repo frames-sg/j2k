@@ -46,10 +46,23 @@ and stale roadmap entries have been removed from the public documentation set.
     not a multiple of the scale return the samples the standard places
     there, as OpenJPEG does, which can be one sample narrower. Images at
     origin zero are unchanged.
+  - Lossless coding of samples deeper than 20 bits is exact. It ran in
+    `f32`, which holds the reversible transforms' values only through 20
+    bits: a lossless encode of 21- to 24-bit samples could decode to other
+    samples in any decoder, and a lossless file from another encoder could
+    decode a few code values off. These encodes and decodes now use
+    integers, as 25- to 38-bit ones already did. They take 2 to 7 times as
+    long and about 2.6 times the memory, and a full-image decode past about
+    15 megapixels of one such component reaches the decode limit; region
+    and bounded-row decodes do not.
   - Fixed wrong output: the last row of a strided caller buffer, region
     decodes of tiles with empty coarse resolutions, ROI encodes whose
-    shift overflowed 32-bit coefficients, and reduced decodes that skipped
-    packets by a too-short PLT length.
+    shift overflowed 32-bit coefficients, reduced decodes that skipped
+    packets by a too-short PLT length, irreversible ROI decodes whose
+    background reached half the maxshift threshold, 33- to 38-bit unsigned
+    colour-transformed images, 8-bit direct-plan output of samples deeper
+    than 16 bits, and CUDA reversible JPEG-to-HTJ2K transcodes of blocks
+    with very large DC terms.
 - **Stricter validation.** Files that 0.13 accepted can now fail:
   - SOP segments need `Lsop` 4 and the right `Nsop`;
   - a PLT length too short for a packet that a region or reduced decode
@@ -57,6 +70,9 @@ and stale roadmap entries have been removed from the public documentation set.
   - ICC profiles with repeated tags or more than 256 tags are rejected,
     and lookup-table tags are refused before allocation;
   - JP2 palette columns deeper than 38 bits are an invalid box;
+  - a lossless image of 21- to 24-bit samples whose tiles or components mix
+    the reversible and irreversible wavelets, or whose tiles differ in the
+    colour transform, is unsupported, as deeper ones already were;
   - GPU and batch plans reject a one-component codestream that asks for a
     colour transform, as single decodes already did.
 - **More files decode:** tile-parts with data after the last packet; tile
@@ -76,15 +92,6 @@ and stale roadmap entries have been removed from the public documentation set.
 - **C and C++:** the C API now lives in this repository as `crates/j2k-c`;
   ABI 1 layouts are unchanged. See `crates/j2k-c/CHANGELOG.md`.
 - New dependency: `bytemuck`.
-- **Known issue: reversible coding of 23- and 24-bit samples is not
-  exact.** The reversible colour transform and 5/3 wavelet run in `f32` up
-  to 24 bits, which does not hold every intermediate value at 23 and 24
-  bits. A lossless encode can write, and a decode of another encoder's
-  lossless codestream can return, samples a few code values off.
-  `encode_j2k_lossless` with the default round-trip validation reports
-  such an encode as an error instead of returning it. Samples of 22 bits
-  and fewer, and the exact-integer path for 25 to 38 bits, did not show
-  the problem in testing. 0.13 has the same code.
 
 ### Highlights
 
@@ -162,6 +169,77 @@ for example: bounded row decodes 10-14x as fast (12.9 to 1.34 s for a
 fast, and repeated deep seeks into restart-coded JPEGs 25-128x as fast.
 
 ### All changes
+
+- Reversible (lossless) coding of samples deeper than 20 bits uses integers,
+  on encode and on decode. The reversible colour transform and the 5/3
+  wavelet ran in `f32` for samples of up to 24 bits, and `f32` holds whole
+  numbers only to 2^24. The sums the lifting steps take of two neighbours
+  reach nearly 16 times the largest value entering the wavelet, so they are
+  exact through 20 bits; past that the predict step's sums lose their low
+  bit, from the third decomposition level at 21 bits with a colour
+  transform. A lossless encode of such samples could then write a
+  codestream that decodes to other samples in any decoder
+  (`encode_j2k_lossless` with the default round-trip validation reported
+  those as errors; `j2k_native::encode` and `External` validation returned
+  them), and a lossless codestream of another encoder could decode with
+  samples a few code values off. A 2048 x 2048 RGB image of ordinary
+  24-bit content did not round-trip. 0.13 has the same code.
+
+  One rule, `MAX_F32_EXACT_REVERSIBLE_PRECISION` in `j2k-native`, now picks
+  the arithmetic for the raw-pixel, component-plane and typed-plane
+  encoders and for every decode route, and a test holds it in place from
+  both sides on the input that drives the sums highest. Samples of 21 to 24
+  bits take the integer path that 25- to 38-bit samples already took, and
+  their decoded planes are handed over as `f32`, which holds finished
+  samples of that range exactly, so `decode_components`, region decodes and
+  bounded rows serve them as before. OpenJPEG 2.5.4 decodes the encoder's
+  17- to 24-bit lossless output to the source, and this decoder returns
+  what OpenJPEG returns for its own.
+
+  What it costs, on a 2048 x 2048 24-bit gray image on an Apple M4 Pro:
+  classic decode 47 to 318 ms, HTJ2K decode 15 to 31 ms, classic encode 41
+  to 101 ms, HTJ2K encode 29 to 96 ms, and peak decode heap 53 to 136 MiB.
+  The integer path decodes its code-blocks on one thread and holds 64-bit
+  coefficients. A full-image decode of one such component past about 15
+  megapixels reaches the decode memory limit, where the `f32` path decoded
+  it; region decodes and bounded rows are not affected, and bounded rows of
+  these images decode a stripe at a time (`J2kStreamingBlocker::TileCoding`).
+  Samples of 20 bits and fewer keep their routes, speed and memory.
+
+  Requests the integer path cannot serve are refused instead of coded in
+  `f32`: resident and precomputed-coefficient reversible encodes of samples
+  deeper than 20 bits (they took 24); raw-pixel lossless encodes of such
+  samples with component subsampling or per-component metadata, which the
+  component-plane and typed-plane encoders take; and decodes of such images
+  whose tiles or components mix the two wavelets or whose tiles differ in
+  the colour transform. Lossless encodes of such samples that require a
+  device (`EncodeBackendPreference::RequireDevice`) are unsupported, as
+  25- to 38-bit ones already were; `Auto` encodes them on the CPU without
+  offering the device a stage whose result the integer path discards.
+
+- Irreversible (9/7) ROI decodes classify coefficients by T.800 H.2: a
+  coefficient belongs to the region when its decoded magnitude reaches
+  `2^s`. The classic decoders on the CPU, Metal and CUDA held magnitudes
+  doubled and compared the doubled value, so a background coefficient from
+  `2^(s-1)` was scaled down by `2^s` as a region one. OpenJPEG 2.5.4 does
+  the same, for reversible decodes too, where this decoder was already
+  right. Encoders that choose the smallest legal shift produce such
+  coefficients; this encoder's irreversible shifts left headroom. The rule
+  is now one function, `j2k_codec_math::roi::roi_maxshift_is_region`, that
+  native and CUDA call and the Metal shader mirrors.
+- Unsigned 33- to 38-bit images with the irreversible colour transform
+  decode right. The colour transform and the direct colour plan added the
+  level shift `2^(precision-1)` through a 32-bit shift, which overflowed:
+  a panic in debug builds and wrong samples in release builds. One
+  level-shift formula now serves every native decode route.
+- 8-bit output of a direct colour plan scales samples deeper than 16 bits
+  over the component's range, as full-image decodes and the `j2k` crate
+  do; it saturated them at 16 bits, so most decoded white. Both now convert
+  through `j2k_native::sample_as_u8_native`.
+- The CUDA reversible JPEG-to-HTJ2K transcode takes the IDCT's AC-zero row
+  shortcut, as the CPU oracle does. Computing such a row in full wraps once
+  its DC reaches 2^18, which dequantized `i16` coefficients can produce, so
+  CUDA returned other samples than the CPU for those blocks.
 
 - A JP2 palette (`pclr`) column deeper than 38 bits, the limit in ISO/IEC
   15444-1 I.5.3.4, is an invalid box, as it already is in `ihdr` and `bpcc`.

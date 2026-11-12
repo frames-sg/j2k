@@ -1517,6 +1517,7 @@ pub const fn j2k_codec_math::jpeg::upsample::h2v2_fancy(u32, u32, u32, usize, us
 pub const fn j2k_codec_math::jpeg::ycbcr::rgb_to_cb(i32, i32, i32, i32) -> i32
 pub const fn j2k_codec_math::jpeg::ycbcr::rgb_to_cr(i32, i32, i32, i32) -> i32
 pub const fn j2k_codec_math::jpeg::ycbcr::rgb_to_y(i32, i32, i32) -> i32
+pub const fn j2k_codec_math::roi::roi_maxshift_is_region(u64, u32) -> bool
 pub const j2k_codec_math::classic::MQ_QE_VALUES: [u32; 47]
 pub const j2k_codec_math::classic::MQ_STATES: [j2k_codec_math::classic::ClassicMqState; 47]
 pub const j2k_codec_math::classic::PACKED_MQ_TRANSITION_VALUES: [u32; 47]
@@ -1682,6 +1683,7 @@ pub mod j2k_codec_math::jpeg::lossless
 pub mod j2k_codec_math::jpeg::upsample
 pub mod j2k_codec_math::jpeg::ycbcr
 pub mod j2k_codec_math::mct
+pub mod j2k_codec_math::roi
 pub mod j2k_codec_math::transcode97
 pub struct j2k_codec_math::classic::ClassicMqState
 pub struct j2k_codec_math::dwt::Dwt53LinearRow

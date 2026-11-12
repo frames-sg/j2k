@@ -77,6 +77,18 @@ pub(crate) struct ParsedCodestream<'a> {
     pub(crate) data: &'a [u8],
 }
 
+#[cfg(test)]
+pub(crate) use j2k_types::MAX_F32_EXACT_REVERSIBLE_SAMPLE_BIT_DEPTH as MAX_F32_EXACT_REVERSIBLE_PRECISION;
+/// The deepest sample precision at which reversible coding may run in `f32`,
+/// the deepest samples an `f32` plane holds as whole numbers, and whether
+/// reversible coding of a precision needs integers. They live in `j2k-types`,
+/// with the reasoning, so the `j2k` facade routes on the same numbers;
+/// `tests/reversible_exactness.rs` holds the reversible limit in place from
+/// both sides.
+pub(crate) use j2k_types::{
+    reversible_coding_needs_integers, MAX_F32_PLANE_SAMPLE_BIT_DEPTH as MAX_F32_PLANE_PRECISION,
+};
+
 #[derive(Debug)]
 pub(crate) struct ComponentData {
     pub(crate) container: SimdBuffer<{ SIMD_WIDTH }>,

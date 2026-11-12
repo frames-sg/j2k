@@ -2,6 +2,7 @@
 
 use crate::error::bail;
 use crate::{DecodingError, Result, ValidationError};
+use j2k_codec_math::roi::roi_maxshift_is_region;
 
 /// Maps an output coordinate within an IDWT step to the source sub-band index.
 ///
@@ -42,8 +43,7 @@ pub(crate) fn apply_roi_maxshift_inverse_i64(coefficient: i64, roi_shift: u8) ->
     }
 
     let magnitude = coefficient.unsigned_abs();
-    let threshold = 1_u64.checked_shl(u32::from(roi_shift)).unwrap_or(u64::MAX);
-    if magnitude < threshold {
+    if !roi_maxshift_is_region(magnitude, u32::from(roi_shift)) {
         return coefficient;
     }
 

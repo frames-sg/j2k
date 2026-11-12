@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::progression::read_component_index;
-use super::{PpmMarkerData, RgnMarkerData};
+use super::{component_index_bytes, PpmMarkerData, RgnMarkerData};
 use crate::error::{MarkerError, Result};
 use crate::reader::BitReader;
 
@@ -45,8 +45,7 @@ pub(super) fn ppm_marker<'a>(reader: &mut BitReader<'a>) -> Result<PpmMarkerData
 /// RGN marker (A.6.3).
 pub(crate) fn rgn_marker(reader: &mut BitReader<'_>, csiz: u16) -> Option<RgnMarkerData> {
     let length = reader.read_u16()?;
-    let component_index_bytes = if csiz < 257 { 1 } else { 2 };
-    if length != 4 + component_index_bytes {
+    if length != 4 + component_index_bytes(csiz) {
         return None;
     }
 

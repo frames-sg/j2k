@@ -8,7 +8,7 @@ use crate::error::{bail, MarkerError, Result, ValidationError};
 use crate::reader::BitReader;
 use crate::{try_reserve_decode_elements, MAX_J2K_SPEC_COMPONENTS};
 
-const MAX_PART1_COMPONENT_PRECISION: u8 = 38;
+use j2k_types::MAX_JPEG2000_PART1_SAMPLE_BIT_DEPTH as MAX_PART1_COMPONENT_PRECISION;
 
 /// SIZ marker (A.5.1).
 pub(super) fn size_marker(

@@ -26,6 +26,19 @@ fn make_blocks(block_cols: usize, block_rows: usize) -> Vec<[i16; 64]> {
     blocks
 }
 
+/// Blocks whose only coefficients are the first two of column 0, at the `i16`
+/// extremes: every row then has zero AC terms, and rows 0 and 1 carry a DC past
+/// 2^18, where the oracle's AC-zero row shortcut and the full row pass differ.
+fn make_wide_dc_blocks(block_cols: usize, block_rows: usize) -> Vec<[i16; 64]> {
+    let mut blocks = vec![[0i16; 64]; block_cols * block_rows];
+    for (bi, block) in blocks.iter_mut().enumerate() {
+        let extreme = if bi % 2 == 0 { i16::MAX } else { -i16::MAX };
+        block[0] = extreme;
+        block[8] = extreme;
+    }
+    blocks
+}
+
 #[test]
 fn cuda_reversible_dwt53_matches_scalar_oracle_when_required() {
     if !cuda_runtime_gate(module_path!()) {
@@ -42,8 +55,17 @@ fn cuda_reversible_dwt53_matches_scalar_oracle_when_required() {
         (2, 3, 16, 23),
     ];
 
-    for (block_cols, block_rows, width, height) in cases {
-        let blocks = make_blocks(block_cols, block_rows);
+    for (block_cols, block_rows, width, height, blocks) in
+        cases
+            .iter()
+            .flat_map(|&(block_cols, block_rows, width, height)| {
+                [
+                    make_blocks(block_cols, block_rows),
+                    make_wide_dc_blocks(block_cols, block_rows),
+                ]
+                .map(|blocks| (block_cols, block_rows, width, height, blocks))
+            })
+    {
         let job = DctGridToReversibleDwt53Job {
             dequantized_blocks: &blocks,
             block_cols,

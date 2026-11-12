@@ -12,7 +12,10 @@ use crate::profile_env::{label_command_buffer, label_compute_encoder};
 use super::abi::{
     J2kClassicEncodeBatchJob, J2kClassicEncodeParams, J2kClassicEncodeStatus, J2kClassicSegment,
     J2kHtEncodeBatchJob, J2kHtEncodeParams, J2kHtEncodeStatus, J2kPacketEncodeStatus,
-    J2K_ENCODE_STATUS_FAIL, J2K_ENCODE_STATUS_OK, J2K_ENCODE_STATUS_UNSUPPORTED,
+    J2K_CLASSIC_TIER1_FAIL_PASS_CAPACITY, J2K_CLASSIC_TIER1_FAIL_SEGMENT_CAPACITY,
+    J2K_CODESTREAM_FAIL_EOC_CAPACITY, J2K_CODESTREAM_FAIL_TILE_CAPACITY, J2K_ENCODE_STATUS_FAIL,
+    J2K_ENCODE_STATUS_OK, J2K_ENCODE_STATUS_UNSUPPORTED, J2K_PACKET_FAIL_BODY_CAPACITY,
+    J2K_PACKET_FAIL_HEADER_CAPACITY, J2K_PACKET_FAIL_STUFFING_CAPACITY, J2K_PACKET_FAIL_TIER1,
 };
 use super::resident_tier1::{
     J2kResidentHtEncodedBlock, J2kResidentLosslessHtCodeBlocks, J2kResidentLosslessTier1CodeBlocks,
@@ -88,23 +91,39 @@ pub(super) fn encode_status_retry_class(
         return None;
     }
     match (stage, detail) {
-        ("classic Tier-1", 4 | 5) | ("J2K batched codestream assembly", 2 | 3) => {
-            Some(ResidentClassicBatch)
-        }
-        ("packetization", 3..=5) => Some(ResidentClassicOrHtBatch),
-        ("HTJ2K batched codestream assembly", 2 | 3) => Some(ResidentHtBatch),
+        (
+            "classic Tier-1",
+            J2K_CLASSIC_TIER1_FAIL_PASS_CAPACITY | J2K_CLASSIC_TIER1_FAIL_SEGMENT_CAPACITY,
+        )
+        | (
+            "J2K batched codestream assembly",
+            J2K_CODESTREAM_FAIL_TILE_CAPACITY | J2K_CODESTREAM_FAIL_EOC_CAPACITY,
+        ) => Some(ResidentClassicBatch),
+        (
+            "packetization",
+            J2K_PACKET_FAIL_HEADER_CAPACITY
+            | J2K_PACKET_FAIL_STUFFING_CAPACITY
+            | J2K_PACKET_FAIL_BODY_CAPACITY,
+        ) => Some(ResidentClassicOrHtBatch),
+        (
+            "HTJ2K batched codestream assembly",
+            J2K_CODESTREAM_FAIL_TILE_CAPACITY | J2K_CODESTREAM_FAIL_EOC_CAPACITY,
+        ) => Some(ResidentHtBatch),
         _ => None,
     }
 }
 
 #[cfg(target_os = "macos")]
 pub(super) fn packet_encode_status_error(status: J2kPacketEncodeStatus) -> Error {
-    if status.code == J2K_ENCODE_STATUS_FAIL && status.detail == 7 {
+    if status.code == J2K_ENCODE_STATUS_FAIL && status.detail == J2K_PACKET_FAIL_TIER1 {
         let message = format!(
-            "packetization Metal encode kernel failure (detail=7, tier1_detail={})",
+            "packetization Metal encode kernel failure (detail={J2K_PACKET_FAIL_TIER1}, tier1_detail={})",
             status.data_len
         );
-        return if matches!(status.data_len, 4 | 5) {
+        return if matches!(
+            status.data_len,
+            J2K_CLASSIC_TIER1_FAIL_PASS_CAPACITY | J2K_CLASSIC_TIER1_FAIL_SEGMENT_CAPACITY
+        ) {
             Error::MetalKernelRetryable {
                 message,
                 retry_class: crate::MetalKernelRetryClass::ResidentClassicBatch,

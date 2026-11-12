@@ -489,7 +489,7 @@ impl<'a> Image<'a> {
                 "decode_native requires uniform component bit depths; use decode_components for mixed-depth images"
             ));
         }
-        if first.size_info.precision > 38 {
+        if first.size_info.precision > j2k_types::MAX_JPEG2000_PART1_SAMPLE_BIT_DEPTH {
             bail!(DecodingError::UnsupportedFeature(
                 "decode_native supports JPEG 2000 Part 1 component precision up to 38 bits"
             ));
@@ -502,7 +502,7 @@ impl<'a> Image<'a> {
             .header
             .component_infos
             .iter()
-            .any(|component| component.size_info.precision > 24)
+            .any(|component| component.size_info.precision > crate::j2c::MAX_F32_PLANE_PRECISION)
         {
             bail!(DecodingError::UnsupportedFeature(
                 "decode_components currently supports component planes up to 24 bits per component"
@@ -696,7 +696,7 @@ impl<'a> Image<'a> {
         let components = &self.header.component_infos;
         if components
             .iter()
-            .any(|component| component.size_info.precision > 24)
+            .any(|component| component.size_info.precision > crate::j2c::MAX_F32_PLANE_PRECISION)
         {
             return Some(RegionRowsBlocker::PrecisionAbove24Bits);
         }

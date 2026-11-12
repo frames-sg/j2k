@@ -51,11 +51,30 @@ fn high_bit_guards_preserve_supported_cpu_shapes_and_specific_rejections() {
         block_coding_mode: J2kBlockCodingMode::HighThroughput,
         ..J2kLosslessEncodeOptions::default()
     };
+    // Past 20 bits reversible coding runs on the CPU integer path, so a
+    // request that requires a device is refused; through 20 bits it passes.
     assert!(validate_lossless_high_bit_options(
-        lossless_samples(&sample_24, 24, 1, 1),
+        lossless_samples(&sample_24, 20, 1, 1),
         &permissive
     )
     .is_ok());
+    for depth in [21, 24] {
+        assert!(validate_lossless_high_bit_options(
+            lossless_samples(&sample_24, depth, 1, 1),
+            &permissive
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("CPU reversible path only"));
+        assert!(validate_lossless_high_bit_options(
+            lossless_samples(&sample_24, depth, 1, 1),
+            &J2kLosslessEncodeOptions {
+                backend: EncodeBackendPreference::CpuOnly,
+                ..permissive
+            }
+        )
+        .is_ok());
+    }
 
     let classic_cpu = J2kLosslessEncodeOptions {
         backend: EncodeBackendPreference::CpuOnly,

@@ -507,6 +507,8 @@ mod auto_single_routing;
 mod auto_tile_batch;
 #[path = "device/batch_sessions.rs"]
 mod batch_sessions;
+#[path = "device/classic_roi.rs"]
+mod classic_roi;
 #[path = "device/color_batch.rs"]
 mod color_batch;
 #[path = "device/color_mct_group.rs"]

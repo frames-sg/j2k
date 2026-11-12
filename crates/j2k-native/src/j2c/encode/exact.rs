@@ -91,22 +91,24 @@ pub(super) fn validate_reversible_i64_encode_options(
     component_sampling: &[(u8, u8)],
 ) -> Result<(), &'static str> {
     if !options.reversible {
-        return Err("25-38 bit encode currently requires reversible 5/3 coding");
+        return Err("integer encode of samples deeper than 20 bits requires reversible 5/3 coding");
     }
     if !matches!(
         block_coding_mode,
         BlockCodingMode::Classic | BlockCodingMode::HighThroughput
     ) {
-        return Err("25-38 bit encode requires classic J2K or HTJ2K block coding");
+        return Err("reversible encode of samples deeper than 20 bits requires classic J2K or HTJ2K block coding");
     }
     if !component_sample_info.is_empty() {
-        return Err("25-38 bit encode currently requires uniform raw-pixel component metadata");
+        return Err("reversible encode of samples deeper than 20 bits requires uniform raw-pixel component metadata");
     }
     if component_sampling
         .iter()
         .any(|sampling| *sampling != (1, 1))
     {
-        return Err("25-38 bit encode currently requires full-resolution components");
+        return Err(
+            "reversible encode of samples deeper than 20 bits requires full-resolution components",
+        );
     }
     Ok(())
 }

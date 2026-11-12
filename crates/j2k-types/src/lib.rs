@@ -51,7 +51,12 @@ pub fn sort_packet_descriptors_for_progression(
 
 mod limits;
 #[doc(hidden)]
-pub use limits::{MAX_JPEG2000_PART1_COMPONENTS, MAX_JPEG2000_PART1_SAMPLE_BIT_DEPTH};
+pub use limits::{
+    reversible_coding_needs_integers, MAX_CLASSIC_REVERSIBLE_MARKER_BITPLANES,
+    MAX_F32_EXACT_REVERSIBLE_SAMPLE_BIT_DEPTH, MAX_F32_PLANE_SAMPLE_BIT_DEPTH,
+    MAX_HTJ2K_CODED_BITPLANES, MAX_JPEG2000_PART1_COMPONENTS, MAX_JPEG2000_PART1_SAMPLE_BIT_DEPTH,
+    MAX_QUANTIZATION_EXPONENT, MAX_QUANTIZATION_GUARD_BITS,
+};
 mod move_only;
 
 mod packetization;

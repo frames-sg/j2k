@@ -2,11 +2,13 @@
 
 use super::super::{
     encode_component_resolution_packets, forward_rct_i64, packet_encode, EncodeOptions,
-    J2kEncodeStageAccelerator, NativeEncodePipelineError, NativeEncodePipelineResult,
-    NativeEncodeSession, TilePacketRequest, MAX_CLASSIC_REVERSIBLE_MARKER_BITPLANES,
+    J2kDeinterleaveToF32Job, J2kEncodeStageAccelerator, NativeEncodePipelineError,
+    NativeEncodePipelineResult, NativeEncodeSession, TilePacketRequest,
+    MAX_CLASSIC_REVERSIBLE_MARKER_BITPLANES,
 };
 use super::ownership::single_tile_plan_retained_bytes;
 use super::plan::SingleTilePlan;
+use crate::j2c::MAX_F32_PLANE_PRECISION;
 
 mod input;
 mod prepare;
@@ -48,6 +50,25 @@ pub(super) fn encode_reversible_i64_single_tile_packets<A: J2kEncodeStageAcceler
         ));
     }
     let retained_plan_bytes = single_tile_plan_retained_bytes(&plan)?;
+    // The integer path transforms on the host. An accelerator is still
+    // offered the pixel stage it would get on the `f32` path, so that one
+    // required to run on its device refuses these planes, as it refuses
+    // them there, instead of the encode quietly running without it. Planes
+    // it returned would be `f32` and are not used.
+    if bit_depth <= MAX_F32_PLANE_PRECISION {
+        accelerator
+            .encode_deinterleave(J2kDeinterleaveToF32Job {
+                pixels,
+                num_pixels: plan.num_pixels,
+                num_components,
+                bit_depth,
+                signed,
+            })
+            .map_err(|source| crate::EncodeError::Accelerator {
+                operation: "pixel deinterleave",
+                source,
+            })?;
+    }
     let mut components = try_deinterleave_to_i64(&I64DeinterleaveRequest {
         pixels,
         num_pixels: plan.num_pixels,

@@ -14,6 +14,7 @@ use crate::j2c::idwt::{IdwtPlacement, LastLevel};
 use crate::j2c::mct::SampleShift;
 use crate::j2c::rect::IntRect;
 use crate::j2c::roi::{output_grid_offset, output_region_rect};
+use crate::j2c::MAX_F32_PLANE_PRECISION;
 use crate::math::SIMD_WIDTH;
 
 mod upsample;
@@ -30,12 +31,12 @@ pub(super) fn apply_sign_shift_after_mct(
         .skip(3)
     {
         if let Some(samples) = channel_data.integer_container.as_mut() {
-            let addend = component_unsigned_level_shift_i64(component_info);
+            let addend = component_info.unsigned_level_shift_i64();
             for sample in samples {
                 *sample += addend;
             }
         } else {
-            let addend = component_unsigned_level_shift(component_info);
+            let addend = component_info.unsigned_level_shift();
             SampleShift::for_transform(
                 addend,
                 component_info.wavelet_transform(),
@@ -44,6 +45,41 @@ pub(super) fn apply_sign_shift_after_mct(
             .apply(&mut channel_data.container);
         }
     }
+}
+
+/// Hand an exact-integer decode's samples to the `f32` planes when every
+/// component fits one, as every consumer of such images reads them.
+///
+/// Reversible samples too deep for the `f32` transforms decode with
+/// integers, but at 24 bits and fewer the finished samples are whole numbers
+/// an `f32` holds, so the conversion is exact. A corrupt stream's values
+/// outside the component's range round here and clamp wherever they are
+/// packed. Images with a component past 24 bits keep their integer planes.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "finished samples of at most 24 bits are whole numbers f32 holds"
+)]
+pub(super) fn publish_exact_planes_as_floats(tile_ctx: &mut TileDecodeContext) -> Result<()> {
+    let planes = &mut tile_ctx.channel_data;
+    if planes.iter().all(|plane| plane.integer_container.is_none())
+        || planes
+            .iter()
+            .any(|plane| plane.bit_depth > MAX_F32_PLANE_PRECISION)
+    {
+        return Ok(());
+    }
+    for plane in planes {
+        let Some(integers) = plane.integer_container.take() else {
+            bail!(DecodingError::IncompletePlaneStore);
+        };
+        if plane.container.truncated().len() != integers.len() {
+            bail!(DecodingError::IncompletePlaneStore);
+        }
+        for (float, integer) in plane.container.iter_mut().zip(&integers) {
+            *float = *integer as f32;
+        }
+    }
+    Ok(())
 }
 
 /// The inverse MCT, and the shift of the components after the first three,
@@ -123,7 +159,7 @@ pub(super) fn apply_inverse_mct_per_tile(
             mct::apply_inverse_rows(infos, round_irreversible_output, rows);
             for (plane, info) in extra.iter_mut().zip(&infos[3..]) {
                 SampleShift::for_transform(
-                    component_unsigned_level_shift(info),
+                    info.unsigned_level_shift(),
                     info.wavelet_transform(),
                     round_irreversible_output,
                 )
@@ -147,7 +183,7 @@ pub(super) fn transform_streamed_rows(
     if !tile.mct {
         for (row, component_info) in rows.iter_mut().zip(&tile.component_infos) {
             SampleShift::for_transform(
-                component_unsigned_level_shift(component_info),
+                component_info.unsigned_level_shift(),
                 component_info.wavelet_transform(),
                 round_irreversible_output,
             )
@@ -165,7 +201,7 @@ pub(super) fn transform_streamed_rows(
     );
     for (row, component_info) in extra.iter_mut().zip(&tile.component_infos[3..]) {
         SampleShift::for_transform(
-            component_unsigned_level_shift(component_info),
+            component_info.unsigned_level_shift(),
             component_info.wavelet_transform(),
             round_irreversible_output,
         )
@@ -214,7 +250,7 @@ pub(super) fn store<'a>(
     let sign_shift = if tile.mct {
         0.0
     } else {
-        component_unsigned_level_shift(component_info)
+        component_info.unsigned_level_shift()
     };
 
     let (scale_x, scale_y) = (
@@ -641,7 +677,7 @@ pub(super) fn store_rows(
     let sign_shift = if tile.mct {
         0.0
     } else {
-        component_unsigned_level_shift(component_info)
+        component_info.unsigned_level_shift()
     };
     let shift = SampleShift::for_transform(
         sign_shift,
@@ -698,7 +734,7 @@ fn store_i64<'a>(
     let sign_shift = if tile.mct {
         0
     } else {
-        component_unsigned_level_shift_i64(component_info)
+        component_info.unsigned_level_shift_i64()
     };
 
     let (scale_x, scale_y) = (
@@ -828,26 +864,6 @@ fn store_i64<'a>(
     }
 
     Ok(())
-}
-
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "the codec float domain intentionally receives bounded integer samples or metadata at this rounding boundary"
-)]
-pub(super) fn component_unsigned_level_shift(component_info: &ComponentInfo) -> f32 {
-    if component_info.size_info.signed {
-        0.0
-    } else {
-        (1_u64 << (component_info.size_info.precision - 1)) as f32
-    }
-}
-
-fn component_unsigned_level_shift_i64(component_info: &ComponentInfo) -> i64 {
-    if component_info.size_info.signed {
-        0
-    } else {
-        1_i64 << (component_info.size_info.precision - 1)
-    }
 }
 
 #[expect(

@@ -3,7 +3,7 @@
 //! Lossless encode orchestration and result construction.
 
 use super::accelerator::resolve_encode_backend;
-use super::contracts::{EncodedJ2k, J2kLosslessEncodeOptions, MAX_RAW_PIXEL_ENCODE_BIT_DEPTH};
+use super::contracts::{EncodedJ2k, J2kLosslessEncodeOptions, MAX_F32_PLANE_SAMPLE_BIT_DEPTH};
 use super::cpu::{encode_cpu, encode_cpu_components, encode_cpu_typed_components};
 use super::high_bit;
 use super::samples::{
@@ -39,7 +39,9 @@ pub(super) fn encode_components(
     samples: J2kLosslessComponentSamples<'_>,
     options: &J2kLosslessEncodeOptions,
 ) -> Result<EncodedJ2k, J2kError> {
-    if samples.bit_depth > MAX_RAW_PIXEL_ENCODE_BIT_DEPTH {
+    // Native component planes hold samples in `f32`; deeper ones go through
+    // the typed planes, which hold integers.
+    if samples.bit_depth > MAX_F32_PLANE_SAMPLE_BIT_DEPTH {
         return high_bit::encode_components(samples, options);
     }
     let backend = resolve_encode_backend(options.backend)?;

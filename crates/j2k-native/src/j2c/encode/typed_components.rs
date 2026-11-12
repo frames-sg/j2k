@@ -17,8 +17,8 @@ use super::{
     EncodeTypedComponentPlane, J2kForwardDwt53Output, NativeEncodePipelineError,
     NativeEncodePipelineResult, NativeEncodeSession, PrecomputedHtj2k53Component,
     PrecomputedHtj2k53Image, MAX_J2K_SPEC_COMPONENTS, MAX_PART1_SAMPLE_BIT_DEPTH,
-    MAX_RAW_PIXEL_ENCODE_BIT_DEPTH,
 };
+use crate::j2c::reversible_coding_needs_integers;
 
 struct TypedComponentPlan {
     num_levels: u8,
@@ -37,7 +37,7 @@ pub(super) fn encode_typed_component_planes_53_for_session(
     validate_typed_component_request(planes, width, height, options)?;
     if planes
         .iter()
-        .any(|plane| plane.bit_depth > MAX_RAW_PIXEL_ENCODE_BIT_DEPTH)
+        .any(|plane| reversible_coding_needs_integers(plane.bit_depth))
     {
         return encode_typed_component_planes_53_i64(planes, width, height, options, session);
     }

@@ -45,7 +45,7 @@ pub(super) fn parse_bits_per_component(
 
 fn parse_component_descriptor(descriptor: u8) -> Result<ComponentDescriptor> {
     let bit_depth = (descriptor & 0x7F) + 1;
-    if bit_depth > 38 {
+    if bit_depth > j2k_types::MAX_JPEG2000_PART1_SAMPLE_BIT_DEPTH {
         bail!(FormatError::InvalidBox);
     }
     Ok(ComponentDescriptor {

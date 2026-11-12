@@ -129,14 +129,10 @@ fn dimension_usize(value: u32, reference_dimensions: (u32, u32)) -> Result<usize
 }
 
 fn bytes_per_sample(bit_depth: u8) -> Result<usize, J2kError> {
-    match bit_depth {
-        1..=8 => Ok(1),
-        9..=16 => Ok(2),
-        17..=24 => Ok(3),
-        25..=32 => Ok(4),
-        33..=38 => Ok(5),
-        _ => Err(J2kError::Unsupported(Unsupported {
+    if !(1..=j2k_types::MAX_JPEG2000_PART1_SAMPLE_BIT_DEPTH).contains(&bit_depth) {
+        return Err(J2kError::Unsupported(Unsupported {
             what: "JPEG 2000 component planes support 1-38 bits per sample",
-        })),
+        }));
     }
+    Ok(usize::from(bit_depth.div_ceil(8)))
 }

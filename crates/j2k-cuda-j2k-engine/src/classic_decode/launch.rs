@@ -24,8 +24,8 @@ use j2k_cuda_runtime::{
     CudaExecutionStats, CudaKernelSpec, CudaLaunchGeometry, CudaPooledDeviceBuffer,
 };
 
-const CLASSIC_KERNEL_NAME: &str = "j2k_decode_classic_codeblocks_multi";
-const CLASSIC_KERNEL_ENTRYPOINT: &[u8] = b"j2k_decode_classic_codeblocks_multi\0";
+use super::CUDA_CLASSIC_DECODE_KERNEL_NAME as CLASSIC_KERNEL_NAME;
+pub(super) const CLASSIC_KERNEL_ENTRYPOINT: &[u8] = b"j2k_decode_classic_codeblocks_multi\0";
 const CLASSIC_DECODE_CODEBLOCK_THREADS: u32 = 32;
 const STATUS_RESOURCE_INDEX: usize = 3;
 

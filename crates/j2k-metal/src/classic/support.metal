@@ -99,6 +99,14 @@ inline bool classic_lowest_decoded_bit(
     return lowest_decoded_bit < 32u;
 }
 
+// Whether a decoded magnitude belongs to the region of interest under ROI
+// maxshift `roi_shift`, as j2k_codec_math::roi::roi_maxshift_is_region: region
+// coefficients are those of magnitude at least 2^s. Callers holding a doubled
+// magnitude must pass the undoubled one.
+inline bool roi_maxshift_is_region(uint magnitude, uint roi_shift) {
+    return roi_shift != 0u && roi_shift < 32u && (magnitude >> roi_shift) != 0u;
+}
+
 inline float reconstructed_classic_sample(
     uint coefficient,
     J2kClassicCleanupBatchJob job
@@ -117,8 +125,7 @@ inline float reconstructed_classic_sample(
         if (decoded) {
             uint fixed_magnitude =
                 (magnitude << 1u) | (1u << lowest_decoded_bit);
-            if (job.roi_shift != 0u &&
-                fixed_magnitude >= (1u << job.roi_shift)) {
+            if (roi_maxshift_is_region(magnitude, job.roi_shift)) {
                 fixed_magnitude >>= job.roi_shift;
             }
             reconstructed = float(fixed_magnitude) * 0.5f;
@@ -134,8 +141,7 @@ inline float reconstructed_classic_sample(
             // bits are zero, so OR adds the offset.
             reconstructed_magnitude |= 1u << (lowest_decoded_bit - 1u);
         }
-        if (job.roi_shift != 0u &&
-            reconstructed_magnitude >= (1u << job.roi_shift)) {
+        if (roi_maxshift_is_region(reconstructed_magnitude, job.roi_shift)) {
             reconstructed_magnitude >>= job.roi_shift;
         }
         reconstructed = float(reconstructed_magnitude);

@@ -7,7 +7,7 @@ use super::{
     bytes::classic_statuses_as_bytes_mut, CudaClassicDecodeStageTimings, CudaClassicStatus,
 };
 
-const CLASSIC_KERNEL_NAME: &str = "j2k_decode_classic_codeblocks_multi";
+use super::CUDA_CLASSIC_DECODE_KERNEL_NAME as CLASSIC_KERNEL_NAME;
 
 /// Enqueued classic Tier-1 work retained until one deferred status readback.
 #[doc(hidden)]

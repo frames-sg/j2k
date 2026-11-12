@@ -3,11 +3,11 @@
 //! Direct RGB/RGBA plan construction.
 
 use super::{
-    bail, build_and_parse_direct_tile_metadata, build_component_plan_from_storage,
-    component_unsigned_level_shift, tile, BitReader, ClassicPayloadCollector, ColorError,
-    DecodeAllocationBudget, DecoderContext, DecodingError, DirectPlanUnsupportedReason, Header,
-    HtCodeBlockPayloadRanges, J2kDirectBandId, J2kDirectColorPlan, J2kDirectGrayscalePlan,
-    J2kDirectRgbaPlan, J2kWaveletTransform, PayloadRangeOwner, Result, Tile, Vec,
+    bail, build_and_parse_direct_tile_metadata, build_component_plan_from_storage, tile, BitReader,
+    ClassicPayloadCollector, ColorError, DecodeAllocationBudget, DecoderContext, DecodingError,
+    DirectPlanUnsupportedReason, Header, HtCodeBlockPayloadRanges, J2kDirectBandId,
+    J2kDirectColorPlan, J2kDirectGrayscalePlan, J2kDirectRgbaPlan, J2kWaveletTransform,
+    PayloadRangeOwner, Result, Tile, Vec,
 };
 
 pub(crate) fn build_direct_color_plan<'a>(
@@ -215,7 +215,7 @@ pub(super) fn build_direct_color_tile_components_plan<'a, const COMPONENT_COUNT:
         let addend = if tile.mct && component_idx < 3 {
             0.0
         } else {
-            component_unsigned_level_shift(component_info)
+            component_info.unsigned_level_shift()
         };
         component_plans.push(build_component_plan_from_storage(
             PayloadRangeOwner {

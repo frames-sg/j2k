@@ -6,6 +6,7 @@
 use cuda_device::{SharedArray, kernel, thread};
 use cuda_host::cuda_module;
 use j2k_codec_math::classic::{irreversible_midpoint_bit, reversible_midpoint_bit};
+use j2k_codec_math::roi::roi_maxshift_is_region;
 include!("../../../cuda_oxide_simt_prelude.rs");
 
 // One u32 describes a four-row stripe column. Bits 0..17 cache the
@@ -154,8 +155,9 @@ fn reconstructed_classic_sample(coefficient: u32, job: ClassicJob) -> f32 {
             decoded_bitplanes,
             job.number_of_coding_passes,
         ) {
+            // The ROI rule reads the undoubled magnitude, as native does.
             let mut fixed_magnitude = (magnitude << 1) | (1 << lowest_decoded_bit);
-            if job.roi_shift != 0 && fixed_magnitude >= 1 << job.roi_shift {
+            if roi_maxshift_is_region(u64::from(magnitude), job.roi_shift) {
                 fixed_magnitude >>= job.roi_shift;
             }
             reconstructed = fixed_magnitude as f32 * 0.5;
@@ -172,7 +174,7 @@ fn reconstructed_classic_sample(coefficient: u32, job: ClassicJob) -> f32 {
             // before undoing ROI maxshift, as the native and Metal decoders do.
             reconstructed_magnitude |= 1 << midpoint_bit;
         }
-        if job.roi_shift != 0 && reconstructed_magnitude >= 1 << job.roi_shift {
+        if roi_maxshift_is_region(u64::from(reconstructed_magnitude), job.roi_shift) {
             reconstructed_magnitude >>= job.roi_shift;
         }
         reconstructed = reconstructed_magnitude as f32;

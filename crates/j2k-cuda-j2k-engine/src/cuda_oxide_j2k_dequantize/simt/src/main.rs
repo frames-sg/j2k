@@ -1,5 +1,6 @@
 use cuda_device::{kernel, thread};
 use cuda_host::cuda_module;
+use j2k_codec_math::roi::roi_maxshift_is_region;
 
 include!("../../../cuda_oxide_simt_prelude.rs");
 
@@ -96,7 +97,7 @@ fn coefficient_to_float_bits(value: u32, k_max: u32, scale: f32, reconstruction:
         } else {
             coefficient as u32
         };
-        let shifted = if roi_shift != 0 && magnitude >= 1 << roi_shift {
+        let shifted = if roi_maxshift_is_region(u64::from(magnitude), roi_shift) {
             (magnitude >> roi_shift) as i32
         } else {
             magnitude as i32

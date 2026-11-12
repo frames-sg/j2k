@@ -3,6 +3,7 @@
 //! Exact sizing for the allocation-free codestream main-header writer.
 
 use super::super::{BlockCodingMode, EncodeParams};
+use crate::j2c::codestream::component_index_bytes;
 use crate::j2c::encode::allocation::{checked_add_bytes, checked_element_bytes};
 use crate::{EncodeError, EncodeResult};
 
@@ -48,7 +49,7 @@ pub(super) fn main_header_prefix_len(
         .take(usize::from(params.num_components))
     {
         if !steps.is_empty() {
-            let component_bytes = if params.num_components < 257 { 1 } else { 2 };
+            let component_bytes = usize::from(component_index_bytes(params.num_components));
             bytes = checked_add_bytes(
                 bytes,
                 quantization_marker_bytes(
@@ -61,7 +62,8 @@ pub(super) fn main_header_prefix_len(
             )?;
         }
     }
-    let rgn_bytes = if params.num_components < 257 { 7 } else { 8 };
+    // Marker, Lrgn, Crgn, Srgn and SPrgn.
+    let rgn_bytes = 6 + usize::from(component_index_bytes(params.num_components));
     for shift in params
         .roi_component_shifts
         .iter()

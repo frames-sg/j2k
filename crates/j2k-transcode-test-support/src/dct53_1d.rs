@@ -187,13 +187,25 @@ pub fn dct8_to_dwt53_reversible_i16(coefficients: [i16; 8]) -> Dwt53OneLevel<i32
 
 /// Reference path for the reversible 1D experiment:
 /// DCT coefficients -> rounded IDCT samples -> reversible 5/3.
+///
+/// The 5/3 step is the lifting of T.800 Annex F written out here, with
+/// whole-sample symmetric extension at both ends, and shares no code with the
+/// production lift that [`dct8_to_dwt53_reversible_i16`] runs, so comparing
+/// the two checks that lift.
 #[must_use]
 pub fn idct8_rounded_then_dwt53_reversible(coefficients: [i16; 8]) -> Dwt53OneLevel<i32> {
-    let mut samples = [0; 8];
-    for (idx, sample) in samples.iter_mut().enumerate() {
-        *sample = rounded_idct8_sample(&coefficients, idx);
-    }
-    reversible_53_from_samples(samples)
+    let x: [i32; 8] = core::array::from_fn(|idx| rounded_idct8_sample(&coefficients, idx));
+    // Y(2n+1) = X(2n+1) - floor((X(2n) + X(2n+2)) / 2), with X(8) = X(6).
+    let high: [i32; 4] = core::array::from_fn(|n| {
+        let right = x.get(2 * n + 2).copied().unwrap_or(x[2 * n]);
+        x[2 * n + 1] - (x[2 * n] + right).div_euclid(2)
+    });
+    // Y(2n) = X(2n) + floor((Y(2n-1) + Y(2n+1) + 2) / 4), with Y(-1) = Y(1).
+    let low: [i32; 4] = core::array::from_fn(|n| {
+        let left = high[n.saturating_sub(1)];
+        x[2 * n] + (left + high[n] + 2).div_euclid(4)
+    });
+    Dwt53OneLevel { low, high }
 }
 
 fn dct_row_projection(sample_weights: &[f64; 8], coefficients: &[f64; 8]) -> f64 {

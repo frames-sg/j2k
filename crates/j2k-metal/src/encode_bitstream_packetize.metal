@@ -343,7 +343,7 @@ kernel void j2k_assemble_lossless_classic_codestream(
     ok = ok && j2k_codestream_write_marker(out, params.output_capacity, cursor, 0x93u);
 
     if (!ok || cursor + tile_len + 2u > params.output_capacity) {
-       j2k_set_codestream_status(status, J2K_ENCODE_STATUS_FAIL, 2u, cursor);
+       j2k_set_codestream_status(status, J2K_ENCODE_STATUS_FAIL, J2K_CODESTREAM_FAIL_TILE_CAPACITY, cursor);
         return;
     }
     for (uint idx = 0u; idx < tile_len; ++idx) {
@@ -352,7 +352,7 @@ kernel void j2k_assemble_lossless_classic_codestream(
     cursor += tile_len;
     ok = ok && j2k_codestream_write_marker(out, params.output_capacity, cursor, 0xD9u);
     if (!ok) {
-       j2k_set_codestream_status(status, J2K_ENCODE_STATUS_FAIL, 3u, cursor);
+       j2k_set_codestream_status(status, J2K_ENCODE_STATUS_FAIL, J2K_CODESTREAM_FAIL_EOC_CAPACITY, cursor);
         return;
     }
 
@@ -515,13 +515,13 @@ kernel void j2k_assemble_lossless_codestream_batched(
     const uint payload_offset = cursor;
 
     if (!ok || cursor + tile_len + 2u > job.output_capacity) {
-       j2k_set_codestream_status(tile_status_out, J2K_ENCODE_STATUS_FAIL, 2u, cursor);
+       j2k_set_codestream_status(tile_status_out, J2K_ENCODE_STATUS_FAIL, J2K_CODESTREAM_FAIL_TILE_CAPACITY, cursor);
         return;
     }
     cursor += tile_len;
     ok = ok && j2k_codestream_write_marker(tile_out, job.output_capacity, cursor, 0xD9u);
     if (!ok) {
-       j2k_set_codestream_status(tile_status_out, J2K_ENCODE_STATUS_FAIL, 3u, cursor);
+       j2k_set_codestream_status(tile_status_out, J2K_ENCODE_STATUS_FAIL, J2K_CODESTREAM_FAIL_EOC_CAPACITY, cursor);
         return;
     }
 
@@ -1109,7 +1109,7 @@ inline bool j2k_packet_append_header(
     device J2kPacketEncodeStatus *status
 ) {
     if (writer.failed != 0u || out_len + writer.len > output_capacity) {
-       j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 3u, 0u);
+       j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, J2K_PACKET_FAIL_HEADER_CAPACITY, 0u);
         return false;
     }
     for (uint idx = 0u; idx < writer.len; ++idx) {
@@ -1118,7 +1118,7 @@ inline bool j2k_packet_append_header(
     out_len += writer.len;
     if (writer.len > 0u && header[writer.len - 1u] == uchar(0xFFu)) {
         if (out_len >= output_capacity) {
-           j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 4u, 0u);
+           j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, J2K_PACKET_FAIL_STUFFING_CAPACITY, 0u);
             return false;
         }
         out[out_len] = uchar(0u);
@@ -1293,7 +1293,7 @@ kernel void j2k_encode_packetization(
                        j2k_packet_encode_num_ht_passes(block.num_coding_passes, writer);
                        j2k_packet_encode_length(block.data_len, local_l_block, num_bits, writer);
                     } else {
-                       j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 7u, block.aux);
+                       j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, J2K_PACKET_FAIL_TIER1, block.aux);
                         return;
                     }
                     if (has_descriptor) {
@@ -1318,7 +1318,7 @@ kernel void j2k_encode_packetization(
                         continue;
                     }
                     if (out_len + block.data_len > params.output_capacity) {
-                       j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 5u, 0u);
+                       j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, J2K_PACKET_FAIL_BODY_CAPACITY, 0u);
                         return;
                     }
                     for (uint byte_idx = 0u; byte_idx < block.data_len; ++byte_idx) {
@@ -1587,7 +1587,7 @@ kernel void j2k_encode_packetization_batched(
                        j2k_packet_encode_num_ht_passes(block.num_coding_passes, writer);
                        j2k_packet_encode_length(block.data_len, local_l_block, num_bits, writer);
                     } else {
-                       j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 7u, block.aux);
+                       j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, J2K_PACKET_FAIL_TIER1, block.aux);
                         return;
                     }
                     if (has_descriptor) {
@@ -1612,7 +1612,7 @@ kernel void j2k_encode_packetization_batched(
                         continue;
                     }
                     if (out_len + block.data_len > params.output_capacity) {
-                       j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 5u, 0u);
+                       j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, J2K_PACKET_FAIL_BODY_CAPACITY, 0u);
                         return;
                     }
                     if (!j2k_packet_push_payload_copy_job(
@@ -1856,7 +1856,7 @@ kernel void j2k_encode_packetization_resident_classic_batched(
                         const J2kResidentPacketBlock resident =
                             resident_blocks[subband.block_offset + block_idx];
                         if (resident.tier1_job_index >= resident_params.tier1_job_count) {
-                           j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 7u, block.aux);
+                           j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, J2K_PACKET_FAIL_TIER1, block.aux);
                             return;
                         }
                         const J2kClassicEncodeBatchJob tier1_job =
@@ -1874,7 +1874,7 @@ kernel void j2k_encode_packetization_resident_classic_batched(
                             return;
                         }
                     } else {
-                       j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 7u, block.aux);
+                       j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, J2K_PACKET_FAIL_TIER1, block.aux);
                         return;
                     }
                     if (has_descriptor) {
@@ -1905,7 +1905,7 @@ kernel void j2k_encode_packetization_resident_classic_batched(
                         continue;
                     }
                     if (out_len + block.data_len > params.output_capacity) {
-                       j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, 5u, 0u);
+                       j2k_set_packet_status(status, J2K_ENCODE_STATUS_FAIL, J2K_PACKET_FAIL_BODY_CAPACITY, 0u);
                         return;
                     }
                     if (!j2k_packet_push_payload_copy_job(

@@ -143,7 +143,8 @@ impl<'a> ResolvedComponents<'a> {
             let component = self.component(index).ok_or(J2kError::InternalInvariant {
                 what: "validated JP2/JPH component became unresolved",
             })?;
-            if !(1..=38).contains(&component.bit_depth) {
+            if !(1..=j2k_types::MAX_JPEG2000_PART1_SAMPLE_BIT_DEPTH).contains(&component.bit_depth)
+            {
                 return Err(J2kError::Unsupported(Unsupported {
                     what: "JP2/JPH component precision must be 1-38 bits",
                 }));
@@ -256,7 +257,7 @@ fn validate_component_mapping(
 }
 
 fn validate_palette_column(column: J2kPaletteColumn) -> Result<(), J2kError> {
-    if !(1..=38).contains(&column.bit_depth) {
+    if !(1..=j2k_types::MAX_JPEG2000_PART1_SAMPLE_BIT_DEPTH).contains(&column.bit_depth) {
         return Err(J2kError::Unsupported(Unsupported {
             what: "JP2/JPH palette column precision must be 1-38 bits",
         }));

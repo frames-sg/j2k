@@ -10,10 +10,10 @@ use super::super::tile_parts::{encoded_tile_parts_retained_bytes, EncodedTilePar
 use super::super::{
     adjust_component_step_sizes_for_guard_delta, adjust_reversible_step_sizes_for_guard_delta,
     max_total_bitplanes_for_components, quantize, requested_guard_bits,
-    reversible_guard_bits_for_marker_limit, validate_precinct_exponents_for_options,
-    validate_roi_encode_options_nonallocating, BlockCodingMode, EncodeComponentSampleInfo,
-    EncodeOptions, EncodeParams, EncodeRoiRegion, NativeEncodePipelineError,
-    NativeEncodePipelineResult, NativeEncodeSession, QuantStepSize, MAX_RAW_PIXEL_ENCODE_BIT_DEPTH,
+    reversible_encode_needs_integers, reversible_guard_bits_for_marker_limit,
+    validate_precinct_exponents_for_options, validate_roi_encode_options_nonallocating,
+    BlockCodingMode, EncodeComponentSampleInfo, EncodeOptions, EncodeParams, EncodeRoiRegion,
+    NativeEncodePipelineError, NativeEncodePipelineResult, NativeEncodeSession, QuantStepSize,
 };
 use super::ownership::encode_options_retained_bytes;
 use j2k_types::encode_geometry::tiled_decomposition_levels;
@@ -105,8 +105,12 @@ pub(super) fn build_loop_plan(
         use_mct,
         request.session.openhtj2k_qfactor().is_some(),
     );
-    let high_bit_exact = request.bit_depth > MAX_RAW_PIXEL_ENCODE_BIT_DEPTH;
-    let guard_bits = if high_bit_exact && request.options.reversible {
+    let high_bit_exact = reversible_encode_needs_integers(
+        request.bit_depth,
+        request.options.reversible,
+        request.component_sample_info,
+    );
+    let guard_bits = if high_bit_exact {
         reversible_guard_bits_for_marker_limit(request.bit_depth, num_levels, requested_guard_bits)
             .map_err(NativeEncodePipelineError::unsupported)?
     } else {

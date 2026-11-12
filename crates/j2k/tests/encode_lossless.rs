@@ -21,6 +21,13 @@ use j2k::{
 use j2k_core::{BackendKind, CodecError};
 use j2k_native::{inspect_j2k_codestream_header, DecodeSettings, DecoderContext, Image};
 
+#[path = "support/deep_samples.rs"]
+mod deep_samples;
+use deep_samples::{
+    deep_sample_bytes, deep_samples_from_bytes, hostile_deep_samples, DEEP_HEIGHT, DEEP_PRECISIONS,
+    DEEP_WIDTH,
+};
+
 fn masked_u8(value: usize) -> u8 {
     u8::try_from(value & 0xff).expect("masked fixture byte fits u8")
 }
@@ -1689,6 +1696,93 @@ fn cpu_lossless_round_trips_gray24() {
     assert_eq!(decoded.bit_depth, 24);
     assert_eq!(decoded.bytes_per_sample, 3);
     assert_eq!(decoded.data, pixels);
+}
+
+/// Reversible coding runs in `f32` through 20 bits and with integers past
+/// them. Both must return hostile samples exactly, with the default
+/// validation, which decodes each codestream and compares it.
+#[test]
+fn cpu_lossless_round_trips_hostile_samples_on_both_sides_of_the_float_limit() {
+    for depth in DEEP_PRECISIONS {
+        for (signed, components) in [(false, 1_u16), (true, 1), (false, 3)] {
+            for mode in [
+                J2kBlockCodingMode::Classic,
+                J2kBlockCodingMode::HighThroughput,
+            ] {
+                let label = format!("{depth}-bit signed={signed} x{components} {mode:?}");
+                let source = hostile_deep_samples(depth, signed, usize::from(components));
+                let pixels = deep_sample_bytes(&source, depth);
+                let samples = J2kLosslessSamples::new(
+                    &pixels,
+                    DEEP_WIDTH,
+                    DEEP_HEIGHT,
+                    components,
+                    depth,
+                    signed,
+                )
+                .unwrap();
+
+                let encoded =
+                    encode_j2k_lossless(samples, &cpu_options().with_block_coding_mode(mode))
+                        .unwrap_or_else(|error| panic!("{label}: {error}"));
+
+                let decoded = decode_native(&encoded.codestream);
+                assert_eq!(decoded.bit_depth, depth, "{label}");
+                assert!(
+                    deep_samples_from_bytes(&decoded.data, depth, signed) == source,
+                    "{label}: decoded other samples"
+                );
+            }
+        }
+    }
+}
+
+/// Subsampled planes past the float limit take the integer path too.
+#[test]
+fn lossless_component_planes_round_trip_hostile_sampled_planes_past_the_float_limit() {
+    for depth in [21_u8, 22, 24] {
+        let luma_samples = hostile_deep_samples(depth, false, 1);
+        let chroma_samples: Vec<i64> = (0..DEEP_HEIGHT / 2)
+            .flat_map(|y| {
+                let row = (y * 2 * DEEP_WIDTH) as usize;
+                let luma = &luma_samples;
+                (0..DEEP_WIDTH / 2).map(move |x| luma[row + (x * 2) as usize + 1])
+            })
+            .collect();
+        let luma = deep_sample_bytes(&luma_samples, depth);
+        let chroma = deep_sample_bytes(&chroma_samples, depth);
+        let planes = [
+            J2kLosslessComponentPlane {
+                data: &luma,
+                x_rsiz: 1,
+                y_rsiz: 1,
+            },
+            J2kLosslessComponentPlane {
+                data: &chroma,
+                x_rsiz: 2,
+                y_rsiz: 2,
+            },
+        ];
+        let samples =
+            J2kLosslessComponentSamples::new(&planes, DEEP_WIDTH, DEEP_HEIGHT, depth, false)
+                .expect("sampled component samples");
+
+        let encoded = encode_j2k_lossless_components(
+            samples,
+            &cpu_options()
+                .with_block_coding_mode(J2kBlockCodingMode::Classic)
+                .with_reversible_transform(ReversibleTransform::None53)
+                .with_max_decomposition_levels(Some(3)),
+        )
+        .unwrap_or_else(|error| panic!("{depth}-bit sampled planes: {error}"));
+
+        let image = Image::new(&encoded.codestream, &DecodeSettings::default()).expect("parse");
+        let decoded = image.decode_native_components().expect("decode components");
+        assert_eq!(decoded.planes().len(), 2);
+        assert!(decoded.planes()[0].data() == luma, "{depth}-bit luma");
+        let expanded = expand_component_plane_bytes(&chroma, DEEP_WIDTH, DEEP_HEIGHT, 2, 2, 3);
+        assert!(decoded.planes()[1].data() == expanded, "{depth}-bit chroma");
+    }
 }
 
 #[test]

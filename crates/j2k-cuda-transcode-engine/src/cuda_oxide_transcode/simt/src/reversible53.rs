@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::helpers::{floor_div_pos, load_i16, load_i32, store_i32};
-use j2k_codec_math::jpeg::idct::{islow_pass1, islow_pass2, sample_centered};
+use j2k_codec_math::jpeg::idct::{islow_column, islow_row, sample_centered};
 
-/// The 8-bit ISLOW of one block to samples centred on zero, with both passes
-/// computed in full: no zero shortcuts.
+/// The 8-bit ISLOW of one block to samples centred on zero, with
+/// `jidctint.c`'s AC-zero shortcuts, as the CPU oracle
+/// (`j2k_codec_math::jpeg::idct::islow_block`) takes them. The row shortcut is
+/// not an optimisation only: a row whose DC reaches 2^18 wraps in the full
+/// pass, so computing every row in full returns other samples.
 #[inline(always)]
 pub(crate) fn idct_islow_signed(input: *const i16, output: *mut i32) {
     let mut work = [0_i32; 64];
@@ -16,7 +19,7 @@ pub(crate) fn idct_islow_signed(input: *const i16, output: *mut i32) {
             p[row] = load_i16(input, (row * 8 + col) as u64) as i32;
             row += 1;
         }
-        let out = islow_pass1(p);
+        let out = islow_column(p);
         let mut row = 0_usize;
         while row < 8 {
             work[row * 8 + col] = out[row];
@@ -28,7 +31,7 @@ pub(crate) fn idct_islow_signed(input: *const i16, output: *mut i32) {
     let mut row = 0_usize;
     while row < 8 {
         let base = row * 8;
-        let out = islow_pass2([
+        let out = islow_row([
             work[base],
             work[base + 1],
             work[base + 2],

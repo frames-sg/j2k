@@ -154,11 +154,8 @@ pub(crate) fn coc_marker(
     // Length.
     let _ = reader.read_u16().ok_or(MarkerError::ParseFailure("COC"))?;
 
-    let component_index = if csiz < 257 {
-        u16::from(reader.read_byte().ok_or(MarkerError::ParseFailure("COC"))?)
-    } else {
-        reader.read_u16().ok_or(MarkerError::ParseFailure("COC"))?
-    };
+    let component_index = super::progression::read_component_index(reader, csiz)
+        .ok_or(MarkerError::ParseFailure("COC"))?;
     let coding_style =
         CodingStyleFlags::from_u8(reader.read_byte().ok_or(MarkerError::ParseFailure("COC"))?);
 

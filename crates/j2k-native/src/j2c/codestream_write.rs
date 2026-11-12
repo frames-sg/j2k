@@ -8,7 +8,7 @@
 use alloc::vec::Vec;
 
 use super::capabilities::encode_magnitude_bound;
-use super::codestream::markers;
+use super::codestream::{component_index_bytes, markers};
 use super::encode::EncodeProgressionOrder;
 
 mod accounting;
@@ -463,7 +463,7 @@ fn write_rgn_markers(out: &mut Vec<u8>, params: &EncodeParams) {
             continue;
         }
         write_marker(out, markers::RGN);
-        if params.num_components < 257 {
+        if component_index_bytes(params.num_components) == 1 {
             out.extend_from_slice(&5u16.to_be_bytes());
             // This branch limits the loop to one-byte Crgn component indices.
             out.push(component_index.to_be_bytes()[1]);
@@ -566,11 +566,7 @@ fn write_qcc_marker(
     component_index: u16,
     step_sizes: &[(u16, u16)],
 ) -> Result<(), &'static str> {
-    let component_index_len = if params.num_components < 257 {
-        1_u16
-    } else {
-        2_u16
-    };
+    let component_index_len = component_index_bytes(params.num_components);
     let step_count = u16::try_from(step_sizes.len())
         .map_err(|_| "QCC step-size count exceeds marker capacity")?;
     let step_bytes = if params.reversible {
@@ -589,7 +585,7 @@ fn write_qcc_marker(
     }
     write_marker(out, markers::QCC);
     out.extend_from_slice(&marker_len.to_be_bytes());
-    if params.num_components < 257 {
+    if component_index_bytes(params.num_components) == 1 {
         out.push(u8::try_from(component_index).map_err(|_| "QCC component index exceeds u8")?);
     } else {
         out.extend_from_slice(&component_index.to_be_bytes());

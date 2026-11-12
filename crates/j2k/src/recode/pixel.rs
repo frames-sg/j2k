@@ -8,9 +8,9 @@ use super::{
 };
 use crate::{
     encode::{
-        encode_j2k_lossless_typed_components, J2kBlockCodingMode, J2kEncodeValidation,
-        J2kLosslessEncodeOptions, J2kLosslessTypedComponentPlane, J2kLosslessTypedComponentSamples,
-        ReversibleTransform,
+        encode_j2k_lossless_typed_components, htj2k_lossless_refuses_dwt, J2kBlockCodingMode,
+        J2kEncodeValidation, J2kLosslessEncodeOptions, J2kLosslessTypedComponentPlane,
+        J2kLosslessTypedComponentSamples, ReversibleTransform,
     },
     parse::ParsedImageInfo,
     J2kError,
@@ -156,7 +156,7 @@ fn encode_options(
         max_decomposition_levels: parsed
             .components
             .iter()
-            .any(|component| component.bit_depth > 24)
+            .any(|component| htj2k_lossless_refuses_dwt(component.bit_depth))
             .then_some(0),
         reversible_transform: ReversibleTransform::None53,
         validation: J2kEncodeValidation::External,

@@ -25,7 +25,7 @@ use super::{
     PreparedCompactSubband, PreparedEncodeCodeBlock, PreparedEncodeSubband,
     PreparedResolutionPacket, PrequantizedHtj2k97Component, PrequantizedHtj2k97Image,
     PrequantizedHtj2k97Resolution, PrequantizedHtj2k97Subband, QuantStepSize, Range,
-    ResolutionPacket, Vec, MAX_J2K_SPEC_COMPONENTS, MAX_RAW_PIXEL_ENCODE_BIT_DEPTH,
+    ResolutionPacket, Vec, MAX_F32_PLANE_PRECISION, MAX_J2K_SPEC_COMPONENTS,
 };
 
 mod accelerator;

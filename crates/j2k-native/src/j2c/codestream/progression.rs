@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 use core::mem::size_of;
 
-use super::{ProgressionChange, ProgressionOrder};
+use super::{component_index_bytes, ProgressionChange, ProgressionOrder};
 use crate::error::{MarkerError, Result, ValidationError};
 use crate::reader::BitReader;
 use crate::try_reserve_decode_elements;
@@ -19,7 +19,7 @@ pub(crate) fn poc_marker(
     let remaining_bytes = length
         .checked_sub(2)
         .ok_or(MarkerError::ParseFailure("POC"))?;
-    let component_index_size = if csiz < 257 { 1u16 } else { 2u16 };
+    let component_index_size = component_index_bytes(csiz);
     let change_size = 1 + component_index_size + 2 + 1 + component_index_size + 1;
     if remaining_bytes == 0 || remaining_bytes % change_size != 0 {
         return Err(MarkerError::ParseFailure("POC").into());
@@ -69,7 +69,7 @@ pub(crate) fn poc_marker(
 }
 
 pub(super) fn read_component_index(reader: &mut BitReader<'_>, csiz: u16) -> Option<u16> {
-    if csiz < 257 {
+    if component_index_bytes(csiz) == 1 {
         Some(u16::from(reader.read_byte()?))
     } else {
         reader.read_u16()

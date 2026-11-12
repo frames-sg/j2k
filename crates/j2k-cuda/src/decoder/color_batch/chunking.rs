@@ -57,7 +57,7 @@ pub(in crate::decoder) fn offset_color_batch_error(
 fn cuda_error_is_classic_tier1(error: &j2k_cuda_runtime::CudaError) -> bool {
     match error {
         j2k_cuda_runtime::CudaError::KernelJobStatus { kernel, .. } => {
-            *kernel == "j2k_decode_classic_codeblocks_multi"
+            *kernel == j2k_cuda_j2k_engine::CUDA_CLASSIC_DECODE_KERNEL_NAME
         }
         j2k_cuda_runtime::CudaError::CompletionFailed { primary, .. }
         | j2k_cuda_runtime::CudaError::ResourceReleaseFailed { primary, .. } => {
@@ -100,7 +100,7 @@ mod tests {
                 source_index: 3,
                 original_job_index: 5,
                 source: j2k_cuda_runtime::CudaError::KernelJobStatus {
-                    kernel: "j2k_decode_classic_codeblocks_multi",
+                    kernel: j2k_cuda_j2k_engine::CUDA_CLASSIC_DECODE_KERNEL_NAME,
                     job_index: 5,
                     code: 1,
                     detail: 2,

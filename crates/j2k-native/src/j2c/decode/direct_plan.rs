@@ -2,15 +2,14 @@
 
 use super::{
     add_roi_shift_to_bitplanes, bail, build, classic_decode_job_parameters,
-    code_block_required_by_index, component_unsigned_level_shift, count_classic_code_blocks,
-    count_ht_code_blocks, ht_block_decode, ht_code_block_has_decodable_passes, segment,
-    sub_band_decode_parameters, tile, BitReader, ColorError, ComponentInfo, ComponentTile,
-    DecodeAllocationBudget, DecoderContext, DecodingError, DecompositionStorage,
-    DirectPlanUnsupportedReason, Header, HtOwnedCodeBlockBatchJob, HtOwnedSubBandPlan,
-    J2kDirectBandId, J2kDirectColorPlan, J2kDirectGrayscalePlan, J2kDirectGrayscaleStep,
-    J2kDirectIdwtStep, J2kDirectStoreStep, J2kOwnedCodeBlockBatchJob, J2kOwnedSubBandPlan, J2kRect,
-    J2kWaveletTransform, ResolutionTile, Result, SubBand, SubBandDecodeParameters, Tile,
-    ValidationError, Vec,
+    code_block_required_by_index, count_classic_code_blocks, count_ht_code_blocks, ht_block_decode,
+    ht_code_block_has_decodable_passes, segment, sub_band_decode_parameters, tile, BitReader,
+    ColorError, ComponentInfo, ComponentTile, DecodeAllocationBudget, DecoderContext,
+    DecodingError, DecompositionStorage, DirectPlanUnsupportedReason, Header,
+    HtOwnedCodeBlockBatchJob, HtOwnedSubBandPlan, J2kDirectBandId, J2kDirectColorPlan,
+    J2kDirectGrayscalePlan, J2kDirectGrayscaleStep, J2kDirectIdwtStep, J2kDirectStoreStep,
+    J2kOwnedCodeBlockBatchJob, J2kOwnedSubBandPlan, J2kRect, J2kWaveletTransform, ResolutionTile,
+    Result, SubBand, SubBandDecodeParameters, Tile, ValidationError, Vec,
 };
 use crate::j2c::rect::IntRect;
 use crate::j2c::roi::tile_intersects_output_region;
@@ -240,7 +239,7 @@ fn build_direct_grayscale_tile_plan<'a>(
         header,
         &ctx.storage,
         0,
-        component_unsigned_level_shift(component_info),
+        component_info.unsigned_level_shift(),
         &mut budget,
         next_band_id,
         store_region,

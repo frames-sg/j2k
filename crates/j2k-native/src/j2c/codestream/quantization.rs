@@ -2,7 +2,8 @@
 
 use alloc::vec::Vec;
 
-use super::{QuantizationInfo, QuantizationStyle, StepSize};
+use super::progression::read_component_index;
+use super::{component_index_bytes, QuantizationInfo, QuantizationStyle, StepSize};
 use crate::error::{MarkerError, Result};
 use crate::reader::BitReader;
 use crate::try_reserve_decode_elements;
@@ -34,18 +35,15 @@ pub(crate) fn qcd_marker(reader: &mut BitReader<'_>) -> Result<QuantizationInfo>
 pub(crate) fn qcc_marker(reader: &mut BitReader<'_>, csiz: u16) -> Result<(u16, QuantizationInfo)> {
     let length = reader.read_u16().ok_or(MarkerError::ParseFailure("QCC"))?;
 
-    let component_index = if csiz < 257 {
-        u16::from(reader.read_byte().ok_or(MarkerError::ParseFailure("QCC"))?)
-    } else {
-        reader.read_u16().ok_or(MarkerError::ParseFailure("QCC"))?
-    };
+    let component_index =
+        read_component_index(reader, csiz).ok_or(MarkerError::ParseFailure("QCC"))?;
 
     let sqcc_val = reader.read_byte().ok_or(MarkerError::ParseFailure("QCC"))?;
     let quantization_style = QuantizationStyle::from_u8(sqcc_val & 0x1F)
         .map_err(|_| MarkerError::ParseFailure("QCC"))?;
     let guard_bits = (sqcc_val >> 5) & 0x07;
 
-    let component_index_size = if csiz < 257 { 1 } else { 2 };
+    let component_index_size = component_index_bytes(csiz);
     let remaining_bytes = length
         .checked_sub(2)
         .and_then(|remaining| remaining.checked_sub(component_index_size))

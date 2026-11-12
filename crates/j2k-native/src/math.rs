@@ -983,6 +983,42 @@ pub fn round_clamped_native(sample: f32, min: f32, max: f32) -> u32 {
     }
 }
 
+/// An unsigned `bit_depth`-bit decoded sample as an 8-bit output sample:
+/// rounded, clamped to the component's range, and scaled to `0..=255`.
+///
+/// Deeper than 16 bits it scales by the component's whole range, as the
+/// 8-bit planes of a full-image decode quantize it, rather than saturating at
+/// 16 bits. The `j2k` crate's 8-bit outputs and the direct CPU plans convert
+/// through it.
+#[doc(hidden)]
+#[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::inline_always,
+    reason = "samples are rounded and clamped to the unsigned 8-bit output domain before conversion; inlined into the callers' SIMD dispatch"
+)]
+#[inline(always)]
+pub fn sample_as_u8_native(sample: f32, bit_depth: u8) -> u8 {
+    if bit_depth == 8 {
+        return round_clamped_native(sample, 0.0, f32::from(u8::MAX)) as u8;
+    }
+    if bit_depth > 16 {
+        let source_max = ((1_u64 << bit_depth.min(63)) - 1) as f32;
+        return round_f32((sample / source_max) * f32::from(u8::MAX)) as u8;
+    }
+    let max_value = if bit_depth >= 16 {
+        f32::from(u16::MAX)
+    } else {
+        f32::from(((1_u16 << bit_depth) - 1).max(1))
+    };
+    // The low 16 bits hold the rounded sample clamped to `[0, max_value]`,
+    // NaN as zero, which scales to zero as NaN rounds to it.
+    let clamped = f32::from(round_clamped_native(sample, 0.0, max_value) as u16);
+    round_f32((clamped / max_value) * f32::from(u8::MAX)) as u8
+}
+
 /// A wrapper around `Vec<f32>` that pads the vector to a multiple of `N` elements.
 /// This allows SIMD operations to safely process the data without bounds checking
 /// at the end of the buffer.

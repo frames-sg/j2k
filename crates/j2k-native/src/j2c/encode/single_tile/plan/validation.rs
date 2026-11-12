@@ -3,12 +3,12 @@
 //! Non-allocating request checks plus fallible component-sampling materialization.
 
 use crate::j2c::encode::{
-    raw_pixel_bytes_per_sample, validate_code_block_geometry, validate_common_encode_options,
-    validate_component_sample_info, validate_irreversible_quantization_profile,
-    validate_reversible_i64_encode_options, BlockCodingMode, CodeBlockGeometry,
-    EncodeComponentSampleInfo, EncodeOptions, NativeEncodePipelineError,
-    NativeEncodePipelineResult, NativeEncodeSession, MAX_J2K_SPEC_COMPONENTS,
-    MAX_PART1_SAMPLE_BIT_DEPTH, MAX_RAW_PIXEL_ENCODE_BIT_DEPTH,
+    raw_pixel_bytes_per_sample, reversible_encode_needs_integers, validate_code_block_geometry,
+    validate_common_encode_options, validate_component_sample_info,
+    validate_irreversible_quantization_profile, validate_reversible_i64_encode_options,
+    BlockCodingMode, CodeBlockGeometry, EncodeComponentSampleInfo, EncodeOptions,
+    NativeEncodePipelineError, NativeEncodePipelineResult, NativeEncodeSession,
+    MAX_J2K_SPEC_COMPONENTS, MAX_PART1_SAMPLE_BIT_DEPTH,
 };
 
 use super::construction::{try_component_sampling, validate_component_sampling};
@@ -193,8 +193,9 @@ fn finish_validate_encode_request(
     validate_component_sampling(options, num_components)
         .map_err(NativeEncodePipelineError::invalid_input)?;
     let component_sampling = options.component_sampling.as_deref().unwrap_or(&[]);
-    let high_bit_exact = bit_depth > MAX_RAW_PIXEL_ENCODE_BIT_DEPTH;
-    if high_bit_exact && options.reversible {
+    let high_bit_exact =
+        reversible_encode_needs_integers(bit_depth, options.reversible, component_sample_info);
+    if high_bit_exact {
         validate_reversible_i64_encode_options(
             options,
             block_coding_mode,

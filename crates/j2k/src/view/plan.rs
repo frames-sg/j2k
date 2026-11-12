@@ -402,7 +402,7 @@ impl J2kDecoder<'_> {
     pub fn rows_decode_plan(&mut self) -> Result<J2kDecodePlan, J2kError> {
         let result = (|| {
             self.ensure_image()?;
-            if self.info.bit_depth > 24 {
+            if self.info.bit_depth > j2k_types::MAX_F32_PLANE_SAMPLE_BIT_DEPTH {
                 return Ok(J2kDecodePlan {
                     route: J2kDecodeRoute::WholeImageThenRows,
                     blocker: Some(J2kStreamingBlocker::PrecisionAbove24Bits),
