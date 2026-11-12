@@ -90,6 +90,10 @@ fn configure_openhtj2k(config: &StaticReferenceConfig) {
         .file("src/openhtj2k_shim.cpp")
         .include(config.source_dir.join("source/core/interface"))
         .include(config.source_dir.join("source/core/common"))
+        // The reference library is built static. OpenHTJ2K's headers mark
+        // its API `__declspec(dllimport)` under MSVC unless OHTJ2K_STATIC is
+        // defined, a definition its CMake passes only to CMake consumers.
+        .define("OHTJ2K_STATIC", None)
         .std("c++17")
         .warnings(true)
         .extra_warnings(true)
