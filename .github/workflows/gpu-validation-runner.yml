@@ -149,7 +149,7 @@ jobs:
     needs: [validate-inputs]
     if: ${{ github.repository == 'frames-sg/j2k' && github.event_name == 'workflow_dispatch' && github.actor == 'jcwal1516' && github.triggering_actor == 'jcwal1516' && (inputs.mode == 'full' && inputs.target == 'all') }}
     runs-on: [self-hosted, Linux, X64, cuda]
-    timeout-minutes: 90
+    timeout-minutes: 150
     env:
       J2K_REQUIRE_CUDA_RUNTIME: "1"
       J2K_REQUIRE_CUDA_OXIDE_BUILD: "1"
@@ -242,7 +242,7 @@ jobs:
     needs: [validate-inputs]
     if: ${{ github.repository == 'frames-sg/j2k' && github.event_name == 'workflow_dispatch' && github.actor == 'jcwal1516' && github.triggering_actor == 'jcwal1516' && (inputs.mode == 'full' && inputs.target == 'all') }}
     runs-on: [self-hosted, macOS, ARM64, metal]
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       J2K_REQUIRE_METAL_RUNTIME: "1"
       RUST_TEST_THREADS: "1"
