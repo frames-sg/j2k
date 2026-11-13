@@ -69,7 +69,7 @@ jobs:
     uses: ./.github/workflows/secret-scan.yml
 
   device-crates-msrv:
-    name: Shared device crates on Rust 1.96
+    name: Minimum supported Rust 1.97 (device crates 1.96)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -78,6 +78,11 @@ jobs:
         with:
           toolchain: "1.96"
       - run: cargo +1.96 check -p j2k-types -p j2k-codec-math --no-default-features
+      # 1.97 is the workspace's minimum supported Rust.
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: "1.97"
+      - run: cargo +1.97 check --workspace --all-targets --all-features --locked
 
   rust-quality:
     name: Rust quality

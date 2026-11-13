@@ -277,7 +277,8 @@ The GPU, transcode, and ML crates are experimental: patch releases don't
 break them, but a `0.x` minor release can (every break is listed with
 migration notes). See [docs/stable-api-1.0.md](docs/stable-api-1.0.md).
 
-The minimum supported Rust version is 1.99.0.
+The minimum supported Rust version is 1.97. CI checks the whole workspace
+with Rust 1.97 and builds and tests everything with Rust 1.99.0.
 
 ## Documentation
 

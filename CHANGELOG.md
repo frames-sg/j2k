@@ -3,6 +3,12 @@
 This changelog tracks the current release line. Historical phase notes
 and stale roadmap entries have been removed from the public documentation set.
 
+## [Unreleased]
+
+- Lowers the minimum supported Rust version from 1.99.0 to 1.97. CI checks
+  the whole workspace with Rust 1.97; every other job still uses 1.99.0.
+  `j2k-types` and `j2k-codec-math` still build with Rust 1.96.
+
 ## [0.14.0] - 2026-11-12
 
 ### Upgrading from 0.13
