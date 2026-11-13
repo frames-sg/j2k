@@ -1,8 +1,8 @@
 # ISO/IEC 15444-4 / ITU-T T.803 Conformance
 
-Status: **Part 1 and selected Part 15 conformance published for 0.13.1**
+Status: **Part 1 and selected Part 15 conformance published for 0.14.0**
 
-Conformance stated for release `0.13.1`:
+Conformance stated for release `0.14.0`:
 
 - `j2k` CPU decoder:
   - JPEG 2000 Part 1: **Profile-1 Cclass-1, Profile-1 Cclass-1HF, and the
@@ -18,7 +18,7 @@ The test harness implements ISO/IEC 15444-4:2024 / ITU-T T.803 v3. Part 4
 defines how to test JPEG 2000 conformance against reference outputs; it is not
 a codestream format or a performance benchmark. The statements above are based
 on the five reports attached to the
-[v0.13.1 release](https://github.com/frames-sg/j2k/releases/tag/v0.13.1), all
+[v0.14.0 release](https://github.com/frames-sg/j2k/releases/tag/v0.14.0), all
 generated from the same release commit with no development-only features.
 
 ## Scope
@@ -39,6 +39,20 @@ Cclass-2h-scale resource and boundary tests are not a substitute.
 The project does not describe J2K as "fully Part 1 compliant" or "fully
 Part 15 compliant". Every Profile/Cclass/MMAGB statement refers to published
 reports for one release commit.
+
+## 0.14.0 results
+
+All five reports on the [0.14.0 release](https://github.com/frames-sg/j2k/releases/tag/v0.14.0)
+pass all 160 selected decoder cases (90 Part 1, 70 Part 15) with no skips,
+and their encoder checks pass. The CPU reports are from Linux x86-64,
+macOS arm64, and Windows x86-64. CUDA ran on an NVIDIA GeForce RTX 4070 SUPER
+and Metal on an Apple M4.
+
+Both GPU reports have 81 hybrid cases and 79 CPU-only cases out of 160;
+none runs entirely on the GPU. The release verifier checked the reports
+for the tagged source after [hosted validation](https://github.com/frames-sg/j2k/actions/runs/43311353177)
+and [hardware validation](https://github.com/frames-sg/j2k/actions/runs/43311370162)
+passed.
 
 ## 0.13.1 results
 

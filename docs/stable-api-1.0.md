@@ -6,7 +6,13 @@ release tooling; see [`xtask/RELEASING.md`](../xtask/RELEASING.md#public-api-sna
 
 ## Breaking releases
 
-The currently published stable contract is the `0.13.x` line. The `0.13.0`
+The currently published stable contract is the `0.14.x` line. The `0.14.0`
+release adds the `precision` field to `JpegToHtj2kOptions`, reports memory and
+image-size limit failures as `J2kError::ResourceLimit` instead of
+`J2kError::NativeDecode`, and reports Metal Tier-1 device failures as
+`Error::Decode` and `J2kError::Backend` instead of `Error::MetalKernel`. See the
+[review](../xtask/release-evidence/public-api/public-api-review-0.14.0.yml)
+and [changelog](../CHANGELOG.md) for migration instructions. The `0.13.0`
 release adds the required `signed` field to `J2kDirectGrayscalePlan`, makes
 the batch and Burn types non-exhaustive, and makes JPEG decode strict by
 default. See the
@@ -35,13 +41,16 @@ consumers to retain pooled surfaces until their GPU work completes.
 `0.8.0` could only be compared against `v0.7.5`, and `0.9.0` only against
 `v0.8.1`. `0.10.0` was compared directly with `v0.9.0` under a one-time
 exception for the crate split, which is now disabled. The current semver
-baseline is `v0.13.1`. Development for `0.14.0` is reviewed in the
+baseline is `v0.13.1`. The `0.14.0` release is reviewed in the
 [0.14.0 API review](../xtask/release-evidence/public-api/public-api-review-0.14.0.yml).
-It adds resource-limit error variants to existing non-exhaustive enums and
-two rustdoc-hidden batch execution-size helpers. No existing API item is
-removed or changed. Resource-limit failures now have their own error class,
-and `CpuBatchDecoder` preparation checks planned execution memory before decoding;
-the review records these error-behavior corrections.
+It adds `J2kDecoder::region_decode_plan`, `PreparedImageOperation`,
+`J2kDecodeControl`, resource-limit error variants on existing non-exhaustive
+enums, and the `JpegToHtj2kOptions::precision` field, which struct literals
+must now set. No existing API item is removed; eight CUDA error fields are now
+spelled `Box<Self>`, which names the same type. Resource-limit failures now
+have their own error class, and `CpuBatchDecoder` preparation checks planned
+execution memory before decoding; the review records these error-behavior
+corrections.
 The `0.13.1` release is reviewed in the
 [0.13.1 API review](../xtask/release-evidence/public-api/public-api-review-0.13.1.yml);
 it changes no ordinary API item and only adds rustdoc-hidden `j2k-native`
