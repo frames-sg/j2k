@@ -9,6 +9,13 @@ stay on the CPU. Explicit CUDA decode supports both classic JPEG 2000 and HTJ2K 
 adapter's supported image and code-block profiles, including reversible 5/3 and
 irreversible 9/7 transforms. Unsupported explicit CUDA requests return an error.
 
+`Auto` sends a decode to CUDA only for the measured cases listed in
+[`xtask/routing-promotion-evidence.json`](https://github.com/frames-sg/j2k/blob/main/xtask/routing-promotion-evidence.json):
+`Gray8` or `Rgb8` output of classic codestreams, lossy HTJ2K codestreams, and
+lossless HTJ2K JPH files, as a full image, a region, a half-scale image, or a
+batch of 16 copies of one input, each above a minimum size. Components wider
+than 16 bits are not decoded on CUDA.
+
 Device decodes follow the CPU's sample conversion for signed grayscale and
 color sources, including prepared and referenced batches. Grayscale and color
 region decodes plan only the code blocks, packets, and wavelet levels the region
@@ -28,15 +35,19 @@ requests return `CudaUnavailable` or an unsupported-request error.
 ## Host-input lossless encode routing
 
 `CudaLosslessEncoder::encode` follows the `EncodeBackendPreference` in each
-job's options. `CpuOnly` never touches CUDA. `Auto` uses CUDA for the stages it
-supports and returns a CPU result when no device is available or CUDA cannot
-run every stage. `RequireDevice` fails unless CUDA runs the whole encode. A
-CUDA error is never hidden by retrying on the CPU.
+job's options:
 
-The result reports the requested preference, the backend that completed the
-encode, the reason for any `Auto` fallback, and the number of CUDA dispatches
-per stage. A CPU backend with nonzero CUDA dispatches means CUDA ran some
-stages and the CPU finished the encode.
+- `CpuOnly` never touches CUDA.
+- `Auto` uses CUDA only for a shape whose CUDA route was measured faster than
+  the CPU, as decode routing does. No encode shape is listed in the routing
+  evidence today, so `Auto` encodes on the CPU. That is the chosen route, not
+  a fallback, so the result carries no fallback reason.
+- `RequireDevice` fails unless CUDA runs the whole encode.
+
+A CUDA error is never hidden by retrying on the CPU. The result reports the
+requested preference, the backend that completed the encode, the reason when
+an `Auto` encode offered to CUDA fell back to the CPU, and the number of CUDA
+dispatches per stage.
 
 ```rust
 use j2k::{

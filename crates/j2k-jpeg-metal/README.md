@@ -6,9 +6,8 @@ macOS.
 Explicit Metal requests decode every JPEG the CPU decoder supports into Metal
 memory and return an error for anything else.
 
-Since version 0.9, the session, buffer, and texture APIs take retained or
-borrowed `objc2-metal` protocol objects. The older `metal-rs` types are not
-accepted.
+The session, buffer, and texture APIs take retained or borrowed `objc2-metal`
+protocol objects, not `metal-rs` types.
 
 ## JPEG Decode Scope
 
@@ -80,6 +79,13 @@ from the GPU histogram and copies the packed stream out with byte stuffing.
 Output is byte-identical to CPU lossless encode. The `jpeg_lossless_encode`
 group of `benches/encode_baseline.rs` uses synthetic CT/CR-like phantoms,
 including a 2048×2500 16-bit SV1 case.
+
+## Third-party code
+
+Parts of this crate are derived from libjpeg-turbo and are covered by its
+licenses: see `LICENSE.libjpeg-turbo` and `README.ijg` in this crate, and
+[`NOTICES.md`](https://github.com/frames-sg/j2k/blob/main/NOTICES.md). This
+software is based in part on the work of the Independent JPEG Group.
 
 ## Links
 

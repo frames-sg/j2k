@@ -1,51 +1,37 @@
-# J2K pixels and wavelets in PyTorch
+# J2K for Python: pixels and wavelets for PyTorch and NumPy
 
-`j2k-python` implements the `j2k` native extension entirely in Rust. It
-exposes JPEG 2000/HTJ2K inspection, CPU pixel batches that also accept 8-bit
-JPEG, CPU encoding, selected native wavelet bands, CPU RGB research helpers, and optional
-direct CUDA and MPS output for PyTorch. NumPy and PyTorch are
-optional consumers. Bare `device="cuda"` imports PyTorch at construction to bind
-the current CUDA device for the decoder lifetime; explicit `cuda:N` remains explicit.
+`j2k` is a Python extension written in Rust. It decodes JPEG 2000 and HTJ2K
+(and 8-bit JPEG in batches) to tensors of the image's own sample type, encodes
+on the CPU, extracts wavelet coefficients, and can decode straight into
+PyTorch CUDA or MPS memory.
 
-The extension is experimental and is built as the `j2k` wheel. This does not
-mean a wheel has been published to PyPI. Ordinary Rust builds do not activate
-PyO3; the extension is enabled only by its `python`, `extension-module`, or
-`cuda`/`metal` Cargo features. The Rust crate is not published separately on crates.io.
-
-The distribution and Python import are both named `j2k`; the workspace crate
-remains `j2k-python`. All codec and adapter implementation is Rust. The only
-Python source maintained here is the consumer integration tests; `j2k.pyi`
-provides type information, and Maturin generates the wheel's import loader.
+It is experimental and is built from this repository as the `j2k` wheel; a
+wheel on PyPI is not implied. The import name and the distribution are both
+`j2k`; the workspace crate is `j2k-python` and is not published to crates.io.
+NumPy and PyTorch are optional: install them only if you call `to_numpy()` or
+`to_torch()`.
 
 ## Build and install
 
-Use the workspace's pinned Rust toolchain and an existing Python environment.
-Maturin builds the native extension; the wheel uses CPython's stable ABI from
-3.11 onward, the first stable ABI with the buffer protocol that lets encoded
-input be read in place. NumPy 2 and PyTorch 2.12 are the initial consumer targets.
-
-From the workspace root:
+You need the workspace's pinned Rust toolchain and CPython 3.11 or later (the
+wheel uses the stable ABI from 3.11). NumPy 2 and PyTorch 2.12 are the tested
+consumers. From the workspace root:
 
 ```sh
 uvx maturin build --manifest-path crates/j2k-python/Cargo.toml --release --out target/wheels
 python -m pip install --no-deps --no-index --find-links target/wheels j2k
 ```
 
-Install the appropriate NumPy/PyTorch distribution in that environment if it
-is not already available. Runtime checks are exercised against the installed
-consumer versions; the wheel ABI tag alone does not establish every
-Python/PyTorch/platform combination as hardware-validated.
+- **CUDA** (Linux): add `--features cuda` to the Maturin command. It needs the
+  CUDA build requirements of `j2k-cuda`, an NVIDIA driver, and a CUDA-enabled
+  PyTorch. `j2k.cuda_enabled` reports whether the wheel has it.
+- **MPS** (Apple Silicon macOS): add `--features metal`. `j2k.metal_enabled`
+  reports whether the wheel has it.
 
-On a supported Linux CUDA build host, add `--features cuda` to the Maturin
-command. Follow the existing CUDA codec build requirements. CUDA wheels require
-the driver, supported hardware, and a CUDA-enabled PyTorch installation. A CPU
-wheel rejects `device="cuda"`; an explicit GPU request never silently uses CPU.
+A wheel without a backend rejects that `device`. An explicit GPU request
+never falls back to the CPU.
 
-On Apple Silicon macOS, add `--features metal` for `device="mps"` or `device="mps:0"` support.
-The macOS wheel workflow enables this feature. `j2k.metal_enabled` reports
-whether the extension includes it; `j2k.cuda_enabled` reports CUDA build support.
-
-## Pixels and native sample types
+## Decode
 
 ```python
 from pathlib import Path
@@ -54,105 +40,211 @@ import j2k
 data = Path("image.jp2").read_bytes()
 print(j2k.inspect(data))
 decoder = j2k.Decoder(layout="nchw", workers=1)
-image = decoder.decode(data).to_torch()  # [C,H,W], U8/U16/I16
-small = decoder.decode(data, reduction=1).to_numpy()  # [C,H,W], half resolution
+image = decoder.decode(data).to_torch()               # [C,H,W], uint8/uint16/int16
+small = decoder.decode(data, reduction=1).to_numpy()  # half resolution
 ```
 
-Every decode, inspection and planning call (`inspect`, `Decoder.decode`,
-`decode_batch`, `prepare`, `plan_region`, `decode_srgb8`, `ImageRequest`,
-`decode_wavelets` and `decode_rgb`) takes the encoded image as `bytes` or any
-other one-dimensional, C-contiguous buffer of unsigned bytes: `bytearray`,
-`memoryview`, `mmap.mmap`, `array.array("B")` or a `uint8` NumPy array. Other
-buffer layouts, such as a strided `memoryview`, raise `BufferError`; pass
-`bytes(view)` to copy one. `inspect`, `plan_region`, `decode_srgb8`,
-`decode_wavelets` and `decode_rgb` read `bytes`, and a read-only `memoryview`
-of `bytes` or of a read-only `mmap.mmap` (`access=mmap.ACCESS_READ`), in place,
-holding the buffer export only for the call. Any other buffer, including a
-writable `bytearray` or `mmap` and a read-only view of one, is copied once
-before decoding starts, so a write to it during the call cannot change what
-the codec reads. A mapped file must stay unchanged and untruncated while a call
-reads it: another writer changes the bytes under the decoder (usually a decode
-error or wrong pixels, but not a guaranteed one), and truncation raises
-`SIGBUS`, as reading the map from Python would. Pass `bytes` when that cannot
-be guaranteed. Batch inputs, `ImageRequest` and prepared batches keep their own
-copy of the encoded bytes, because batch preparation owns its inputs.
+`Decoder(layout="nchw", workers=None, strict=True, device="cpu")`. A single
+NHWC image is `[H,W,C]`; batches add a leading `N`.
 
-`reduction` is an exact count from 0 through 31; 0–3 retain their full, half,
-quarter, and eighth meanings. MPS and CUDA decoders decode exact requests and
-prepared operations on the device with the CPU's rectangles and, for reversible
-and irreversible 9/7 inputs alike, its samples; device operations honor output
-limits and cancellation and reject working limits explicitly. CUDA operations
-require an offset plan, so an
-image with subsampled colour components is a group error on CUDA; MPS also
-decodes the whole such image at full resolution.
-Each halving comes from the codestream's wavelet ladder, so `reduction` cannot
-exceed the decomposition levels; a deeper request raises `ValueError` (or an
-indexed batch error) rather than resampling or cropping a shallower reduction.
-`region=(x,y,width,height)` uses full-resolution source coordinates and can be
-combined with reduction. NHWC single-image output is `[H,W,C]`. Actual batch
-rectangles are returned with each group.
+### Requests
 
-Pixel decoding uses the existing homogeneous batch contract: uniform Gray,
-RGB, or RGBA with U8, U16, or I16 output. When components use different
-sampling factors, the subsampled ones are replicated onto the image grid.
-ICC-tagged, palette-mapped, uniformly subsampled, mixed-precision/signedness,
-and above-16-bit pixel-batch inputs are rejected.
-The general Rust decoder and explicit `decode_srgb8` support additional colour cases.
-Inspection reports per-component precision, signedness, and sampling. The
-native adapter does not apply orientation, display normalization, arbitrary
-resizing, padding, or alpha compositing. Explicit sRGB output is described below.
+- `region=(x, y, width, height)` is in full-resolution image coordinates and
+  can be combined with `reduction`.
+- `reduction` is an exact count from 0 through 31: 1 is half resolution, 2 a
+  quarter. It cannot exceed the image's decomposition levels; a deeper request
+  raises `ValueError` (or an indexed batch error). Nothing is resampled.
+- `decode_batch` and `prepare` take the same `region` and `reduction` for
+  every input, or per-input `ImageRequest(data, region=..., reduction=...)`
+  values, but not both.
 
-`decode` and `decode_batch` also accept complete 8-bit JPEG files, detected by
-their SOI marker, in the same call as JPEG 2000 inputs. JPEG groups are always
-RGB `uint8` (grayscale is expanded to RGB) and are grouped by size;
-`source_indices` and errors refer to positions in the original input list.
-JPEG inputs support full-image decode only: a region or reduction is reported
-as an indexed error. `prepare` and `decode_prepared` remain JPEG 2000 only, and
-a CUDA or MPS decoder reports JPEG inputs as indexed errors rather than decoding them
-on the CPU.
+### What decodes
 
-JPEG tensor output remains RGB uint8 by default, with grayscale expanded to three identical channels. Grayscale JPEG 2000 and HTJ2K remain one channel. Output metadata describes the returned tensor. A later explicit `channels="native"` option may preserve grayscale JPEG as one channel without changing existing defaults. Source component counts, when exposed, are per input row and remain aligned with source_indices.
+- Gray, RGB, or RGBA with unsigned samples up to 16 bits or signed samples up
+  to 16 bits, as `uint8`, `uint16`, or `int16`.
+- Components with different sampling factors are replicated onto the image
+  grid.
+- Rejected in pixel decoding: ICC-tagged and palette images, images whose
+  components are all subsampled alike, mixed precision or signedness, and
+  samples deeper than 16 bits. `decode_srgb8` (below) handles ICC and palette
+  images. `inspect` still reports per-component precision, signedness, and
+  sampling for images that pixel decoding rejects.
+- No orientation, display normalization, resizing, padding, or alpha
+  compositing is applied.
 
-`Decoder(strict=True)` is the default for every supported codec. A normal success must have completely decoded the required image data without damage concealment, missing-data substitution or unverified completion, under the requested interpretation and output contract. Detected violations produce indexed batch errors and no tensor row for the affected image. Proven non-pixel-affecting irregularities may remain warnings; missing EOI is harmless only when completeness is established, and arbitrary stray-byte skipping is not automatically harmless. `strict=False` permits supported salvage with explicit per-index recovery status and warnings. It does not suppress unrecoverable errors, safety checks, precision requirements or device policy. A recovered row is not also an error entry.
+### JPEG
 
-`BatchGroup.recovered` aligns with `source_indices` and tensor rows. Cosmetic
-warnings leave it false. Single-image lenient recovery emits
-`j2k.RecoveredImageWarning`; use `decode_batch([request])` for structured status.
-Strict progressive EOF acceptance requires every coefficient band of every
-component through final approximation. An actual EOI may terminate a legal
-partial script. A JPEG whose Adobe APP14 transform byte is reserved is an
-indexed error under `strict=True`, unless an `ImageRequest` `color_transform`
-of `ycbcr` or `none` resolves a three-component image. `strict=False` decodes
-it as libjpeg-turbo does (YCbCr for three components, YCCK for four) and marks
-the row recovered.
-The current J2K lenient path tolerates selected metadata errors
-and performs no entropy salvage. The guarantee is detection based; corruption
-that still forms a valid, indistinguishable codestream cannot always be detected.
-There is no `channels` option yet; the names `default`, `native`, and `rgb` are
-reserved for a future explicit policy.
+`decode` and `decode_batch` also take complete 8-bit JPEG files, recognized
+by their SOI marker, in the same call as JPEG 2000.
 
-`ImageRequest(data, color_transform="auto")` accepts `auto`, `ycbcr`, or `none`
-to carry a JPEG color hint from the slide container. `ycbcr` forces conversion to RGB;
-`none` treats the components as RGB. Overrides are rejected for JPEG 2000.
-For `wsi_rs.CompressedTile` values, pass each tile's `data` and
-`color_transform` to an `ImageRequest`; this preserves the reader's effective
-photometric interpretation even when a JPEG header is ambiguous.
+- Output is always RGB `uint8`; grayscale is expanded to three channels.
+  Grayscale JPEG 2000 stays one channel. There is no `channels` option.
+- Full image only. A region or reduction is an indexed error.
+- `prepare` and `decode_prepared` are JPEG 2000 only.
+- CUDA and MPS decoders report JPEG inputs as indexed errors.
+- `ImageRequest(data, color_transform="auto")` carries a color hint from the
+  container: `ycbcr` converts to RGB, `none` treats the components as RGB.
+  A slide reader that knows a tile's photometric interpretation should pass
+  it this way. Hints are rejected for JPEG 2000.
+
+### Encoded input
+
+Every decode, inspection, and planning call takes `bytes` or any other
+one-dimensional, C-contiguous buffer of unsigned bytes: `bytearray`,
+`memoryview`, `mmap.mmap`, `array.array("B")`, or a `uint8` NumPy array.
+Other buffer layouts raise `BufferError`, and non-buffers raise `TypeError`.
+
+- `inspect`, `plan_region`, `decode_srgb8`, `decode_wavelets`, and
+  `decode_rgb` read `bytes` and read-only memory maps
+  (`mmap.mmap(..., access=mmap.ACCESS_READ)`, or a `memoryview` of either) in
+  place.
+- Any other buffer is copied once before decoding, so a write during the call
+  cannot change what the codec reads.
+- Batch inputs, `ImageRequest`, and prepared batches always keep their own
+  copy.
+- A mapped file must not change or shrink while a call reads it. A writer can
+  cause a decode error or wrong pixels, and truncation raises `SIGBUS`. Pass
+  `bytes` if you cannot guarantee that.
+
+### Strict and lenient
+
+`strict=True` is the default. A successful strict decode has all the required
+image data, with no damage concealment, substituted data, or unverified
+completion. A violation is an indexed error with no tensor row.
+
+`strict=False` allows the supported recoveries. It does not suppress
+unrecoverable errors, safety checks, or device rules.
+
+- **JPEG.** A recovered image is returned with `BatchGroup.recovered` set for
+  its row and no error entry. `decode` emits `j2k.RecoveredImageWarning`
+  instead; use `decode_batch([request])` for per-row status. A missing EOI is
+  accepted only when completeness is verified: a progressive file without one
+  needs every coefficient band at its final approximation. A file that does
+  end with EOI may stop its progressive script early. A
+  reserved Adobe APP14 transform byte is an error when strict, unless
+  `color_transform` resolves a three-component image; lenient decoding reads
+  it as libjpeg-turbo does (YCbCr for three components, YCCK for four).
+- **JPEG 2000.** Lenient decoding tolerates selected JP2/JPH metadata errors
+  and never salvages entropy data. `recovered` stays false; the recovery is
+  listed in `BatchGroup.warnings`, and `decode` and `decode_srgb8` emit
+  `RecoveredImageWarning` for it.
+
+Detection has limits: corruption that still forms a valid codestream cannot
+always be detected.
+
+## Batches
+
+```python
+inputs = [data, j2k.ImageRequest(data, reduction=1), data]
+labels = [0, 1, 2]
+prepared = decoder.prepare(inputs)
+
+for epoch in range(2):
+    result = decoder.decode_prepared(prepared)
+    if result.errors or result.group_errors:
+        raise RuntimeError((result.errors, result.group_errors))
+    for group in result.groups:
+        images = group.tensor.to_torch()  # [N,C,H,W]
+        ordered_labels = [labels[i] for i in group.source_indices]
+        # Example scaling; choose what your model needs.
+        images = images.float()
+        if not group.signed:
+            images = images - 2 ** (group.precision - 1)
+        images = images / 2 ** (group.precision - int(group.signed))
+```
+
+- Images of different shapes or sample types come back in separate groups. A
+  group is not a training batch. Group order is unspecified.
+- `group.source_indices` gives each row's position in the original input
+  list, including when other inputs fail.
+- `errors` is a list of `(input_index, message)` and `group_errors` a list of
+  `([source_indices], message)`. Successful groups are still returned. Check
+  both lists.
+- Each group has `precision`, `signed`, `color`, `alpha`, `layout`,
+  `decoded_rects`, `warnings`, and `recovered`.
+- Allocation and scheduling failures raise instead of returning a partial
+  result.
+- JPEG output and the session's worker storage share the codec's 512 MiB
+  budget. An input that cannot fit is an indexed error, and large groups are
+  split before allocation.
+
+## Limits and cancellation
+
+```python
+prepared = decoder.prepare([data], control=j2k.DecodeControl(
+    max_working_memory_bytes=64 << 20))
+token = j2k.CancellationToken()
+control = j2k.DecodeControl(
+    max_working_memory_bytes=32 << 20,
+    max_output_bytes=8 << 20,
+    cancellation=token,
+)
+batch = decoder.decode_prepared(prepared, region=(16, 16, 128, 128),
+                                reduction=4, control=control)
+# Another thread can call token.cancel() while the decode runs.
+```
+
+- `decode_prepared` takes optional `region`, `reduction`, and `control`
+  overrides. Omitted overrides keep each prepared request. The decoder must
+  have the layout the batch was prepared with.
+- A `DecodeControl` applies to one call. `prepare(control=...)` bounds
+  preparation only, one input at a time; a failing input is an indexed
+  preparation error.
+- `max_working_memory_bytes` bounds the codec's plans, scratch, and its own
+  output for the operation. It must be positive and cannot raise the engine's
+  ceiling. Compressed input, the prepared source, and outputs you already
+  hold are not counted, so it is not a process memory limit.
+- `max_output_bytes` bounds the decoded output; 0 rejects any non-empty
+  output.
+- Cancellation is permanent for a token and is reported in the indexed error
+  messages. A failed or cancelled item returns no tensor row.
+- `decode` and `decode_batch` take no control: prepare first.
+- `Decoder.set_operation_cache_limit(bytes)` bounds the derived plans a CPU
+  session keeps between calls; 0 disables that cache.
+
+## Region plans and sRGB output
+
+`Decoder.plan_region(data, region=..., reduction=..., interpretation="native")`
+returns a dict describing a decode without running it: source and output
+rectangles, the image origin, the maximum reduction, sample metadata, shape,
+strides, row bytes, and total bytes, in the decoder's layout. It allocates no
+pixels. The decode can still fail later on a bad packet or a working-memory
+limit. `interpretation="srgb8"` plans the output of `decode_srgb8`.
+
+`Decoder.decode_srgb8(data, region=..., reduction=..., control=...)` returns a
+CPU `uint8` tensor in 8-bit sRGB, converting gray and RGB, ICC profiles,
+palettes, channel definitions, and subsampled components. RGBA output has
+straight alpha.
+
+- Premultiplied color is un-premultiplied at the source precision before
+  conversion. Premultiplied CIE Lab input is rejected, as is premultiplied
+  input with subsampled or signed components unless it is 8-bit mapped
+  samples that need no color conversion.
+- With a working-memory limit, ICC conversion needs a matrix/TRC or gray-TRC
+  profile with an XYZ connection space, and NCHW output counts both layouts
+  against the limit.
+
+Both methods are CPU-only and JPEG 2000-only.
 
 ## Image-server metadata (IIIF)
 
-`inspect(data)` also reports what an image server's IIIF `info.json` needs:
-`resolution_levels`; `max_reduction`, the deepest reduction every tile and
-component supports (tile-part COD/COC markers can lower it below the main
-header's `decomposition_levels`, so use it, not the COD value, for scale
-factors); `tile_width`/`tile_height` and the `tiles_x`/`tiles_y` grid;
-`image_x0`/`image_y0` and `tile_x0`/`tile_y0`, the reference-grid origins; and
-the main-header `quality_layers`, `progression_order` and
-`code_block_width`/`code_block_height`. Tile headers are parsed for
-`max_reduction`, but no pixels are decoded.
+`inspect(data)` reports what an IIIF `info.json` needs, without decoding
+pixels:
 
-Scale factors are powers of two up to `2**max_reduction`. Take each size from
-`plan_region`, which reports the exact output of a reduced decode, including
-images whose origin moves the reduced grid:
+- `width`, `height`, `resolution_levels`;
+- `max_reduction`, the deepest reduction every tile and component supports.
+  Tile-part COD/COC markers can make it lower than the main header's
+  `decomposition_levels`, so use it for scale factors;
+- `tile_width`, `tile_height`, and the `tiles_x` by `tiles_y` grid;
+- `image_x0`, `image_y0`, `tile_x0`, `tile_y0`, the reference-grid origins;
+- the main-header `quality_layers`, `progression_order`, `code_block_width`,
+  and `code_block_height`;
+- `color_specification` (`"none"`, `"enumerated"`, `"icc"`, or `"unknown"`),
+  for the first COLR box, which decoding applies, with its
+  `enumerated_colorspace` (such as 16 for sRGB) or `icc_profile` bytes.
+
+Take each size from `plan_region`, which gives the exact output of a reduced
+decode, including for images whose origin shifts the reduced grid:
 
 ```python
 info = j2k.inspect(data)
@@ -176,161 +268,37 @@ info_json = {
 }
 ```
 
-`tests/test_iiif.py` runs this construction against tiled and offset images.
-[`docs/iiif.md`](../../docs/iiif.md) covers the image requests themselves.
+`tests/test_iiif.py` runs this against tiled and offset images. The image
+requests themselves are covered in
+[docs/iiif.md](https://github.com/frames-sg/j2k/blob/main/docs/iiif.md).
 
-## Batching, labels, and reuse
+## Using it in a DataLoader
 
-```python
-inputs = [data, j2k.ImageRequest(data, reduction=1), data]
-labels = [0, 1, 2]
-prepared = decoder.prepare(inputs)
-
-for epoch in range(2):
-    result = decoder.decode_prepared(prepared)
-    if result.errors or result.group_errors:
-        raise RuntimeError((result.errors, result.group_errors))
-    for group in result.groups:
-        images = group.tensor.to_torch()  # [N,C,H,W]
-        ordered_labels = [labels[i] for i in group.source_indices]
-        # Example native-range centering; choose the policy your model requires.
-        images = images.float()
-        if not group.signed:
-            images = images - 2 ** (group.precision - 1)
-        images = images / 2 ** (group.precision - int(group.signed))
-```
-
-Different shapes produce separate groups; grouping is not training-batch
-collation. `source_indices` refers to the original submission, including when
-other inputs fail. `errors` contains `(input_index, message)` and `group_errors`
-contains `([source_indices], message)`. Successful groups remain available.
-Group order is unspecified. `source_indices` is authoritative for submission
-order and label alignment. Allocation or scheduling failures abort the entire
-call with an exception instead of returning partial results. Dense JPEG output and the session's worker storage share the 512 MiB codec
-budget. Inputs that cannot fit individually are indexed errors. Groups are
-split into bounded subgroups before allocation. Retaining returned groups
-retains their owned outputs, independently of future session calls.
-
-Each group preserves precision, signedness, color/alpha interpretation,
-warnings, and decoded rectangles. Do not discard the error lists silently.
-
-## Exact plans and controlled prepared operations
-
-`Decoder.plan_region(data, region=..., reduction=..., interpretation="native")`
-returns source and output rectangles, the reference-grid origin, the effective
-image-wide maximum reduction, native sample metadata, shape, byte strides,
-row bytes, and total bytes. `interpretation="srgb8"` plans explicit normalized
-output. Shape and strides use the decoder's NCHW/NHWC layout. `native_cpu`
-means the native route is selected at execution; later packet validation or
-working-memory admission may still fail. Planning initializes source facts,
-does not allocate decoded pixels, and is outside operation controls.
-
-CPU `ImageRequest`, `prepare`, `decode`, and `decode_batch` accept exact
-reductions 0–31. Exact preparations retain native source owners and request
-facts; bounded derived plans are selected by the receiving CPU session.
-Original input indices, preparation errors, integer ranges, and tensor/DLPack
-ownership remain unchanged. No legacy `Downscale` is fabricated for a deep
-request.
-
-Preparation and each prepared decode take independent operation controls:
-
-```python
-prepared = decoder.prepare([data], control=j2k.DecodeControl(
-    max_working_memory_bytes=64 << 20))
-token = j2k.CancellationToken()
-control = j2k.DecodeControl(
-    max_working_memory_bytes=32 << 20,
-    max_output_bytes=8 << 20,
-    cancellation=token,
-)
-batch = decoder.decode_prepared(prepared, region=(16, 16, 128, 128),
-                                reduction=4, control=control)
-# Another thread can call token.cancel() while CPU work releases the interpreter.
-```
-
-The source's validation settings stay fixed. Omitted region/reduction overrides
-retain each prepared request; original preparation errors remain indexed errors.
-Exact/overridden/controlled prepared decoding requires a decoder with the same
-output layout used for preparation. A mismatched layout is rejected explicitly.
-On MPS and CUDA, output limits and cancellation apply (a token is checked before
-each Metal group is committed or each CUDA group is submitted; submitted GPU
-work completes), while a working limit is an indexed capability error because
-device working memory is not accounted against a host allowance.
-
-`prepare(inputs, control=...)` prepares on a CPU decoder one input at a time:
-the working limit bounds each input's parsing and planning beside the plans
-already kept for earlier inputs, the output limit rejects inputs whose decoded
-output would exceed it, and cancellation stops at the next checkpoint. Failing
-inputs are indexed preparation errors. The control applies to preparation only;
-a prepared batch keeps its actual plans, never the allowance.
-Legacy `decode_prepared(prepared)` without new arguments keeps its existing
-behavior. Independent decoders with matching layouts can share preparation and
-use different operation controls.
-
-Working memory includes live derived plans, the current codec-owned output,
-and native scratch. Original immutable source preparation, compressed input,
-and completed sibling outputs are separate domains; this is not an RSS bound.
-`max_working_memory_bytes` must be positive when supplied and cannot raise the
-engine's ceiling. `max_output_bytes=0` rejects nonempty output. Cancellation
-is permanent for a token and appears in the existing indexed error messages;
-create another token for independent work. No tensor row is returned for a
-failed or cancelled item. Raw `decode`/`decode_batch` do not accept controls;
-prepare with a control, then decode the prepared batch with one.
-
-`Decoder.set_operation_cache_limit(bytes)` bounds only derived native plans
-retained by the session; zero disables their cache. Caller-held `PreparedBatch`
-source owners remain live until the caller releases them. Controlled work drops
-unused offset caches, so earlier requests cannot change its admission.
-
-## Explicit sRGB output
-
-`Decoder.decode_srgb8(data, region=..., reduction=...)` returns a CPU U8 tensor
-in the decoder's layout. It reconstructs the exact reduced region before
-normalizing supported gray/RGB, ICC, palette/channel mapping, and subsampled
-inputs. RGBA output has straight alpha. Premultiplied colour is unassociated
-at the source precision before sYCC conversion and quantization. Premultiplied
-CIE Lab input, and premultiplied subsampled or signed input other than eight-bit
-mapped samples without colour conversion, fail explicitly.
-Ordinary native samples retain their existing interpretation.
-
-This raw-input method accepts a `DecodeControl`: the input is parsed and
-decoded under its working limit and cancellation, and the output limit bounds
-the result. NCHW conversion charges both layouts against the working limit.
-ICC conversion under a working limit requires a matrix/TRC or gray-TRC profile
-with an XYZ connection space. Lenient metadata recoveries emit the
-existing `RecoveredImageWarning`. The method and region planner reject JPEG
-and device backends rather than silently changing codecs or devices.
-
-For CPU decoding, create one CPU decoder lazily inside each DataLoader worker,
-with a small explicit worker count, and convert outputs to ordinary CPU torch
-tensors before returning them. The decoder releases the interpreter during CPU
-work and locks its session only after detaching. Use spawn; sessions inherited
-across fork are rejected.
-
-For CUDA or MPS, reader workers return built-in Python records containing bytes,
-hints, coordinates and labels. One persistent GPU decoder in each training
-process or distributed rank constructs ImageRequest values and decodes the
-received batch there. Keep GPU decode out of multiworker collate functions.
-Use pin_memory=False for MPS. j2k Decoder, PreparedBatch, ImageRequest and Tensor
-owners have no documented multiprocessing serialization contract.
+- **CPU.** Create one CPU decoder lazily inside each DataLoader worker, with
+  a small explicit `workers` count, and return ordinary CPU torch tensors.
+  The decoder releases the interpreter while it decodes. Use the `spawn`
+  start method: a session inherited across `fork` is rejected.
+- **CUDA or MPS.** Have reader workers return plain Python records (bytes,
+  hints, coordinates, labels). Decode them with one persistent GPU decoder in
+  the training process or distributed rank, not in a multiworker collate
+  function. Use `pin_memory=False` for MPS.
+- `Decoder`, `PreparedBatch`, `ImageRequest`, and `Tensor` have no
+  multiprocessing serialization support. Do not send them between processes.
 
 ## Tensor ownership
 
-`Tensor.to_torch()`, `Tensor.to_numpy()`, and `torch.from_dlpack(tensor)` consume
-the output owner's DLPack export exactly once. CPU data is shared with the
-consumer without copying decoded samples. Rust retains no readable or mutable
-view of exported samples, so consumer in-place operations are safe. The
-returned framework tensor outlives the decoder and preparation objects.
-
-For a second view, use the returned framework tensor's APIs. Re-exporting the
-original `j2k.Tensor` raises `RuntimeError`. DLPack `copy=True` and device
-conversion are rejected rather than performed implicitly. NumPy's consumer
-normally exposes a read-only array. Convert or copy explicitly if necessary.
-`to_numpy()` rejects GPU storage before transferring ownership, so a rejected
-call can still be followed by `to_torch()`. A foreign consumer that rejects an unconsumed capsule returns storage to the
-original live `j2k.Tensor`, which can then be imported successfully. If the
-producer has already been destroyed, capsule destruction frees storage. Once a
-consumer consumes the capsule, the consumer owns storage until its deleter runs.
+- `Tensor.to_torch()`, `Tensor.to_numpy()`, and `torch.from_dlpack(tensor)`
+  hand the samples to the consumer through DLPack without copying. Each
+  `j2k.Tensor` can be exported once; a second export raises `RuntimeError`.
+  Make further views with the framework tensor.
+- After export, Rust keeps no view of the samples, so in-place operations are
+  safe, and the framework tensor outlives the decoder.
+- DLPack `copy=True` and device conversion are rejected, not performed.
+- `to_numpy()` rejects GPU storage before transferring ownership, so
+  `to_torch()` still works afterwards. NumPy usually exposes a read-only
+  array.
+- If a consumer rejects the capsule without consuming it, the storage goes
+  back to the `j2k.Tensor`, which can be exported again.
 
 ## Wavelet coefficients
 
@@ -345,151 +313,139 @@ for component in coarse.components:
         values = band.tensor.to_torch()  # [band_height, band_width]
 ```
 
-Extraction currently runs on CPU, for classic JPEG 2000 and HTJ2K. Reversible
-5/3 coefficients use exact `int64` storage; irreversible 9/7 values use
-dequantized `float32`, including midpoint reconstruction of incomplete coding
-passes. `quantization_step` is already applied. No model normalization is
-performed. Reversible coefficients require no-quantization coding; other
-native codec precision/style limits still apply.
-
-Resolution 0 is the coarsest LL band. Resolutions 1 through N contain detail
-bands from coarsest to finest. `HL` is high-pass in x and low-pass in y; `LH`
-is low-pass in x and high-pass in y. Each band retains its own rectangle, so
-odd sizes and tile-origin phase are explicit. Rectangle tuples are `(x,y,w,h)`.
-The flattened component list retains tile index/rectangle, component index,
-precision, signedness, sampling, transform, and decomposition count.
-
-These are codestream components before inverse color conversion, unsigned
-level restoration, JP2 palette/channel mapping, or ICC processing.
-`uses_color_transform=True` means the first three components are in the
-RCT/ICT domain, not RGB. Tile boundaries are retained, never stitched silently.
-Neither a wavelet band nor its LL plane is promised to equal a display-ready
-reduced-resolution RGB image.
-
-Empty selector lists mean all. Invalid indices and selectors matching no bands
-are errors. Selection skips unrequested Tier-1 entropy decoding and all inverse
-DWT/color/pixel-packing work. Packet headers are still parsed and coefficient
-storage is still allocated for the active tile. It does not promise proportional
-I/O or peak-memory savings, or incremental refinement across separate calls.
+- CPU only, for classic JPEG 2000 and HTJ2K.
+- Reversible 5/3 coefficients are exact `int64`. Irreversible 9/7
+  coefficients are `float32` with `quantization_step` already applied.
+  Reversible output needs a codestream coded without quantization.
+- Resolution 0 is the coarsest LL band; resolutions 1 through N are detail
+  bands from coarsest to finest. `HL` is high-pass in x and low-pass in y;
+  `LH` is the reverse. Each band has its own `(x, y, w, h)` rectangle.
+- `components` is a flat list across tiles. Each entry has its tile index and
+  rectangle, component index, precision, signedness, sampling, transform, and
+  decomposition count. Tiles are not stitched.
+- These are codestream components before the inverse color transform, level
+  shift, palette or channel mapping, and ICC. `uses_color_transform=True`
+  means the first three components are in the RCT/ICT domain, not RGB. A
+  wavelet band is not a display-ready reduced image.
+- `tiles`, `components`, `resolutions`, and `bands` select what is returned;
+  an omitted or empty selector means all. An invalid index, or a selection
+  that matches no band, is an error.
+- Selection skips the entropy decoding of unrequested bands and all inverse
+  transform, color, and packing work. Packet headers are still parsed and
+  coefficient storage is still allocated for the tile, so memory and I/O do
+  not shrink in proportion.
 
 ## Encoding
 
-`encode(data, width, height, components=3, bit_depth=8, signed=False, ...)`
-encodes interleaved samples on the CPU; samples of up to 8 bits take one byte
-and deeper ones two, little-endian. It is lossless by default
-(`color_transform="none"` codes three components without the reversible colour
-transform, and `quality_layers` sets the layer count). `mode="lossy"` codes
-lossy, to at most one of `target_bpp`, `target_bytes`, or `target_psnr` (a list
-gives cumulative quality layers) or to an HTJ2K `qfactor`. Both modes take
-`codec` (`"j2k"` or `"htj2k"`), `levels`, `progression` (`"lrcp"`, `"rlcp"`,
-`"rpcl"`, `"pcrl"`, `"cprl"`), `tile_size`, `tile_part_packets`, and `markers`
-(`"sop"`, `"eph"`, `"tlm"`, `"plt"`, `"plm"`, `"ppm"`, `"ppt"`). `file=True`
-writes a JP2 (or JPH with HTJ2K) file, with `icc_profile` in its COLR box when
-given. `return_report=True` also returns the codestream length, bits per pixel,
-measured PSNR (or `None`), and quality-layer count. The keywords translate one
-to one into the `j2k` crate's encode options, which validate every combination;
-invalid combinations raise `ValueError`.
+```python
+codestream = j2k.encode(samples, width, height, components=3, bit_depth=8)
+jph, report = j2k.encode(samples, width, height, mode="lossy", target_bpp=2.0,
+                         file=True, return_report=True)
+```
 
-`inspect(data)` reports `color_specification` (`"none"`, `"enumerated"`,
-`"icc"`, or `"unknown"`): the first COLR box, which decoding applies, with its
-`enumerated_colorspace` (EnumCS, such as 16 for sRGB) or `icc_profile` bytes.
+`encode` takes interleaved samples as `bytes` on the CPU: one byte per sample
+up to 8 bits, two little-endian bytes above. Defaults are `codec="htj2k"`,
+`mode="lossless"`, `progression="lrcp"`, and `color_transform="auto"`.
 
-## CPU research helpers
+| Keyword | Meaning |
+| --- | --- |
+| `components`, `bit_depth`, `signed` | Sample description |
+| `codec` | `"j2k"` or `"htj2k"` |
+| `mode` | `"lossless"` or `"lossy"` |
+| `target_bpp`, `target_bytes`, `target_psnr` | Lossy target; at most one. A list gives cumulative quality layers |
+| `qfactor` | HTJ2K quality factor, instead of a target |
+| `quality_layers` | Lossless layer count |
+| `color_transform` | `"none"` codes three components without the reversible color transform |
+| `levels`, `progression`, `tile_size`, `tile_part_packets` | Coding parameters; `progression` is `"lrcp"`, `"rlcp"`, `"rpcl"`, `"pcrl"`, or `"cprl"` |
+| `markers` | Any of `"sop"`, `"eph"`, `"tlm"`, `"plt"`, `"plm"`, `"ppm"`, `"ppt"` |
+| `file`, `icc_profile` | `file=True` writes JP2 (JPH with HTJ2K); `icc_profile` goes in its COLR box |
+| `return_report` | Also return `codestream_bytes`, `bits_per_pixel`, `psnr_db` (or `None`), and `quality_layers` |
 
-`encode_rgb(data, width, height, codec=...)` encodes interleaved 8-bit RGB
-bytes on the CPU as baseline JPEG 4:4:4 (`codec="jpeg"`), classic JPEG 2000
-(`"j2k"`), or HTJ2K (`"htj2k"`, the default) with the ICT. `quality` is the JPEG
-quality or the HTJ2K Qfactor; the wavelet codecs also take `target_bpp`,
-`levels`, and a per-component quantization `profile`. `quality` and
-`target_bpp` are mutually exclusive. `decode_rgb(data)` returns
-`(width, height, rgb_bytes)` for an 8-bit JPEG or a three-component 8-bit
-JPEG 2000 image.
+The keywords map one to one onto the `j2k` crate's encode options, which
+validate every combination. An invalid combination raises `ValueError`.
 
-`forward_rgb97` and `inverse_rgb97` run the float 9/7 wavelet transform on
-little-endian `float32` interleaved RGB samples, with or without the ICT
-(`color="ict"` or `"rgb"`), using `j2k-native`'s reference implementations.
+### RGB helpers
 
-## Direct CUDA-to-PyTorch output
+- `encode_rgb(data, width, height, codec="htj2k")` encodes interleaved 8-bit
+  RGB as baseline JPEG 4:4:4 (`"jpeg"`), classic JPEG 2000 (`"j2k"`), or
+  HTJ2K with the ICT. `quality` is the JPEG quality or the HTJ2K Qfactor; the
+  wavelet codecs also take `target_bpp`, `levels`, and a per-component
+  quantization `profile`. `quality` and `target_bpp` are mutually exclusive.
+- `decode_rgb(data)` returns `(width, height, rgb_bytes)` for an 8-bit JPEG
+  or a three-component 8-bit JPEG 2000 image.
+- `forward_rgb97` and `inverse_rgb97` run the float 9/7 wavelet transform on
+  little-endian `float32` interleaved RGB, with (`color="ict"`) or without
+  (`"rgb"`) the ICT. Here level 1 is the finest detail level, the opposite of
+  `decode_wavelets`.
+
+`encode`, `encode_rgb`, and `forward_rgb97` take `bytes` only.
+
+## GPU output
 
 ```python
-decoder = j2k.Decoder(device="cuda:0")
+decoder = j2k.Decoder(device="cuda:0")   # or "mps"
 image = decoder.decode(data).to_torch()
 assert image.device.type == "cuda"
 ```
 
-The adapter retains that device's CUDA primary context, allocates a fresh
-contiguous PyTorch tensor, and decodes directly into its validated allocation.
-It orders allocation-stream work before codec access and waits for decode and
-entropy-status validation before exposing the tensor. There is no application
-pixel readback, host staging, or intermediate decoded-pixel upload. PyTorch
-owns subsequent model-use lifetimes and allocation reuse. A completion failure
-that cannot establish safety quarantines the unpublished allocation.
+Both GPU decoders are blocking: a call returns after the GPU work and the
+codec's status checks finish. Decoded pixels never pass through host memory.
 
-This first interface is blocking. It does not claim host-asynchronous model
-overlap. Direct CUDA output inherits the codec's input coverage and supports
-the same layout/native integer types as the adapter. Wavelet output remains
-CPU-only.
+- **CUDA.** The decoder keeps the device's primary context, allocates a
+  PyTorch tensor, and decodes into it. `device="cuda"` binds PyTorch's current
+  CUDA device when the decoder is created; `"cuda:N"` is explicit. PyTorch
+  owns the tensor afterwards.
+- **MPS** (Apple Silicon). The decoder decodes each group into a new private
+  Metal buffer on the system default GPU and hands it to PyTorch as DLPack
+  device `(8, 0)`. `"mps"` and `"mps:0"` are the same device.
 
-## Direct Metal-to-PyTorch MPS output
+| | CPU | CUDA | MPS |
+| --- | --- | --- | --- |
+| `decode`, `decode_batch`, `prepare`, `decode_prepared` | Yes | Yes | Yes |
+| Regions, reductions 0-31, prepared overrides | Yes | Yes | Yes |
+| Both layouts; Gray, RGB, RGBA; `uint8`, `uint16`, `int16` | Yes | Yes | Yes |
+| Components with different sampling | Yes | Group error | Full image at full resolution only |
+| JPEG inputs | Yes | Indexed error | Indexed error |
+| `max_output_bytes` and cancellation | Yes | Yes | Yes |
+| `max_working_memory_bytes` | Yes | Indexed error | Indexed error |
+| `prepare(control=...)`, `plan_region`, `decode_srgb8`, `set_operation_cache_limit` | Yes | No | No |
 
-```python
-decoder = j2k.Decoder(device="mps")
-image = decoder.decode(data).to_torch()
-assert image.device.type == "mps"
-```
+GPU output matches the CPU's rectangles and samples, for reversible and
+irreversible 9/7 images. On a GPU a cancellation token is checked before each
+group is submitted; submitted work runs to completion. `decode_wavelets` and
+encoding always run on the CPU.
 
-On Apple Silicon, the adapter decodes each homogeneous group into a fresh
-private Metal buffer on the system default GPU, then transfers ownership to
-PyTorch using DLPack's Metal device `(8, 0)`. It waits for GPU completion and
-codec-status validation before returning. Decoded pixels stay on the GPU;
-there is no host pixel staging or upload into a second framework allocation.
-
-The buffer is exclusively owned by the consumer after export, so in-place
-PyTorch operations are safe and tensors survive decoder reuse or destruction.
-Both layouts, native U8/U16/I16 samples, Gray/RGB/RGBA, and region/reduction
-requests use the shared batch contract. JPEG on MPS is not yet supported.
-Metal DLPack exports accept no stream argument. Allocations start at byte
-offset zero; importing external buffers or suballocations is not exposed.
-This interface is blocking and supports only Apple Silicon macOS.
-
-## Validation and compatibility
+## Tests
 
 ```sh
 cargo test -p j2k --test wavelets
-cargo test -p j2k-native --lib selected_ll_bands_skip_entropy_work
 python -m unittest discover -s crates/j2k-python/tests -v
 ```
 
-CPU contract tests use existing independent OpenJPH fixtures and exercise exact
-native dtypes, source alignment, ROI/reduction, ownership, and spawned workers.
-Rust tests reconstruct both wavelet families, check odd multi-tile origins and
-29-bit precision, and verify selection actually skips entropy work. CUDA tests
-exercise default/nondefault streams, native dtypes, prepared reuse, and lifetime.
-Run CUDA tests with `J2K_REQUIRE_CUDA=1`; a missing CUDA build/device then fails
-instead of skipping. Local compile-only checks are not CUDA hardware validation.
+Set `J2K_REQUIRE_CUDA=1` or `J2K_REQUIRE_METAL=1` to make the GPU tests fail,
+rather than skip, when the build or device is missing. The MPS path is tested
+with PyTorch 2.12.1 on Apple Silicon.
 
-MPS tests cover native types, layouts, region/reduction, consumer mutation,
-prepared reuse, export-once semantics, and destruction from a worker thread.
-Run with `J2K_REQUIRE_METAL=1` to fail if the Metal build or MPS device is
-missing. The direct path is exercised with PyTorch 2.12.1 on Apple Silicon.
+Patch releases keep this API. A pre-1.0 minor release may change it, with
+migration notes.
 
-Patch releases preserve the adapter's documented API; pre-1.0 minor changes
-require migration notes. Compatibility claims should name the consumer and
-hardware combinations actually exercised. Normalization and labels remain
-application responsibilities.
+## Licenses
+
+`j2k` is licensed under MIT or Apache-2.0. Its JPEG codec includes code
+derived from libjpeg-turbo, covered by the licenses in `LICENSE.libjpeg-turbo`
+and `README.ijg`. This software is based in part on the work of the
+Independent JPEG Group.
 
 ## Publishing
 
-The `python-bindings.yml` workflow builds and tests CPU wheels for Linux and
-CPU/MPS wheels for Apple Silicon macOS. MPS tests skip on runners without GPU
-access. Linux release wheels use manylinux containers and PyPI-compatible tags.
-Publishing runs only for an explicit manual dispatch from `main` with `publish`
-enabled by the repository maintainer, after the wheel tests and any requested
-CUDA checks succeed. CUDA builds are validation-only in this workflow.
+The `python-bindings.yml` workflow builds and tests CPU wheels for Linux
+(manylinux) and CPU/MPS wheels for Apple Silicon macOS. MPS tests skip on
+runners without GPU access, and CUDA builds are validation-only.
 
-Configure a PyPI pending Trusted Publisher with project `j2k`, GitHub owner
-`frames-sg`, repository `j2k`, workflow `python-bindings.yml`, and environment
-`pypi`. The publish job uses that GitHub environment and short-lived OIDC
-credentials. The first successful upload creates the PyPI project; a pending
-publisher does not reserve the name. The workflow and package changes must be
-on `main` before publishing. Each release needs a new workspace version.
+Publishing runs only on a manual dispatch from `main` with `publish` enabled,
+after the wheel tests and any requested CUDA checks pass. It uses the `pypi`
+GitHub environment and short-lived OIDC credentials. To set it up, configure a
+PyPI pending Trusted Publisher with project `j2k`, owner `frames-sg`,
+repository `j2k`, workflow `python-bindings.yml`, and environment `pypi`. The
+first upload creates the PyPI project; a pending publisher does not reserve
+the name. Each release needs a new workspace version.

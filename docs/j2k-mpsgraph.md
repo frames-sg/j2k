@@ -79,10 +79,10 @@ must match the higher-precision CPU calculation within `1e-5`. The order of the
 timed paths is rotated between samples, and every result is checked again.
 Rows report a mean and a two-sided 95% Student-t interval (runs above 30
 samples use the 30-sample critical value; runs below 30 report no interval).
-Unsupported platform cells are printed as such. The benchmark prints
-`speed_claim_qualified=true` only when there are at least 30 samples, pipelined
-direct execution is at least 10% faster than staged MPSGraph, and the intervals
-do not overlap. No MPSGraph speedup has been published yet, and the adapter is
+Unsupported platform cells are printed as such. The benchmark's
+`speed_claim_qualified` row is `true` only when there are at least 30 samples,
+pipelined direct execution is at least 10% faster than staged MPSGraph, and the
+intervals do not overlap. No MPSGraph speedup has been published yet, and the adapter is
 not described as zero-copy because MPSGraph may copy internally.
 
 ## Validation

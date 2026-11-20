@@ -5,47 +5,27 @@
 | Version | Status |
 | --- | --- |
 | `0.14.0` | Latest published and security-supported release |
-| `0.13.1` | Previous published release; security-supported |
-| `0.13.0` | Previous published release; security-supported |
-| `0.12.0` | Previous published release; security-supported |
-| `0.11.3` | Previous published release; security-supported |
-| `0.11.2` | Previous published release; security-supported |
-| `0.11.1` | Previous published release; security-supported |
-| `0.11.0` | Previous published release; security-supported |
-| `0.10.0` | Previous published release line; security-supported |
-| `0.9.0` | Previous published release line; security-supported |
-| `0.8.1` | Previous published release line; security-supported |
-| `0.8.0` | Previous published release line; security-supported |
-| `0.7.5` | Previous published release line; security-supported, except for the documented `j2k-ml` CUDA and Metal packaging defect |
-| `0.7.3` | Previous published release line; security-supported |
-| `0.7.2` | Previous published release line; security-supported |
-| `0.7.1` | Previous published release line; security-supported |
-| `0.7.0` | Previous published release line; security-supported |
-| `0.6.x` | Supported for security fixes during the pre-1.0 transition |
+| `0.7.0` to `0.13.1` | Security-supported, except the `j2k-ml` `cuda` and `metal` features of `0.7.5`, which do not build for registry users |
+| `0.6.x` | Security fixes only, until 1.0 |
 | Earlier than `0.6` | Unsupported |
 
 Security fixes are developed on the current workspace line and backported to
-older supported lines when applicable. See
-[`CHANGELOG.md`](CHANGELOG.md) for published releases.
+older supported lines when applicable. Published releases are listed in
+[`CHANGELOG.md`](CHANGELOG.md).
 
 ## Reporting vulnerabilities
 
-When the repository **Security** tab shows **Report a vulnerability**, report
-suspected vulnerabilities through the corresponding
-[GitHub private reporting form](https://github.com/frames-sg/j2k/security/advisories/new).
-If that button is unavailable, do not put vulnerability details in a public
-issue. Open a [minimal issue](https://github.com/frames-sg/j2k/issues/new)
-asking the maintainers for a private contact, without naming the affected code
-or including proof-of-concept details. Future releases require a published,
-verified private channel.
+Report suspected vulnerabilities through the
+[GitHub private reporting form](https://github.com/frames-sg/j2k/security/advisories/new)
+(**Security** tab, **Report a vulnerability**). If the form is unavailable, do
+not put vulnerability details in a public issue: open a
+[minimal issue](https://github.com/frames-sg/j2k/issues/new) asking the
+maintainers for a private contact, without naming the affected code or
+including proof-of-concept details.
 
-The tag-publish preflight checks the repository's private vulnerability
-reporting setting through the GitHub API and stops the publish unless it is
-`enabled: true`; API authorization failures and malformed responses also stop
-it. Before creating a release tag, a repository admin must enable
-**Security > Private vulnerability reporting** and confirm that **Report a
-vulnerability** is visible. The offline repository checks do not make this
-request.
+A release cannot be published while private vulnerability reporting is off:
+the release-candidate and tag checks query the setting through the GitHub API
+and stop unless it is enabled.
 
 Response expectations:
 

@@ -10,13 +10,10 @@ The CPU decoder is the reference implementation. Unsupported JPEG types return
 an error. The CPU encoders are the reference for the Metal and CUDA adapter
 crates' GPU baseline and lossless encode.
 
-`cargo xtask test` runs JPEG with normal CPU dispatch and the internal SIMD
-parity tests enabled, then checks decode/encode byte regressions and backend
-selection separately with `scalar-only`. Avoid `--all-features` when testing
-SIMD dispatch: it enables `scalar-only` and forces the portable backend.
-The exhaustive scaled-region boundary sweep runs in `cargo xtask j2k-bench-signoff`
-(the full-validation comparator gate). Ordinary tests retain the smaller
-scaled-region matrix and exact pixel references.
+When testing, avoid `--all-features`: it enables `scalar-only`, which forces
+the portable backend. `cargo xtask test` runs the SIMD and `scalar-only`
+configurations separately, and `cargo xtask j2k-bench-signoff` runs the
+exhaustive scaled-region sweep.
 
 Pathology-oriented integrations can use `prepare_tiff_jpeg_tile` to normalize
 TIFF `JPEGTables` plus abbreviated strip/tile payloads, including zero-SOF
@@ -28,6 +25,8 @@ Use this crate directly for JPEG input; use `j2k` for JPEG 2000 / HTJ2K and
 `j2k-transcode` for JPEG-to-HTJ2K coefficient-domain transcode paths.
 
 ## Lossless JPEG crops
+
+The `transcode` module is experimental and hidden from the rendered docs.
 
 `transcode::lossless_crop(bytes, rect, LosslessCropOptions::default())` copies
 quantized DCT coefficients into a standalone baseline JPEG, preserving the
@@ -41,8 +40,8 @@ For several windows from one source, use `transcode::extract_dct_windows` with
 once and retains only the requested blocks, using restart markers to skip to
 the first window. `estimate_dct_windows` estimates the extraction working set
 before entropy decoding; `LosslessCropOptions::max_working_bytes` limits crop
-admission. Progressive and multi-scan inputs remain supported, with whole-image
-coefficient accumulation included in the estimate.
+admission. Progressive and multi-scan inputs accumulate whole-image
+coefficients, which the estimate includes.
 
 ## Dense owned batches
 
@@ -58,7 +57,7 @@ Group order is unspecified. NCHW produces `[N, 3, H, W]`; NHWC produces
 `[N, H, W, 3]`. Source indices, warnings and recovery flags follow successful
 rows. Unsupported, oversized and implausible images fail by index before output
 allocation. Valid groups are split to fit the shared output and worker budget.
-Allocation or scheduling failures remain batch infrastructure errors.
+Allocation and scheduling failures fail the whole call.
 
 `JpegBatchSession` is the lower-level interface for caller-owned tile buffers.
 Its jobs use the same central DecodeOptions integrity policy. Read dimensions
@@ -124,17 +123,20 @@ converted.
 
 ## Strict pixel integrity
 
-`DecodeOptions` defaults to strict: input that needs recovery, or whose
-completion cannot be verified, returns `JpegError::RecoveryRequired`. Use
-`with_strict(false)` or `set_strict(false)` only to permit supported recovery or
-unverified completion. Strict success
-requires complete required image data under the requested interpretation, with
-no damage concealment or missing-data substitution. Existing fatal entropy,
-restart and marker errors remain errors under either policy. Optional metadata
-not affecting samples remains a warning. Missing EOI is accepted only after
-completeness is verified; progressive EOF requires every coefficient band at
-final approximation for every component. An actual EOI can terminate a legal
-partial progressive script. Leniency never authorizes precision loss.
+`DecodeOptions` is strict by default: input that needs recovery, or whose
+completion cannot be verified, returns `JpegError::RecoveryRequired`.
+`with_strict(false)` or `set_strict(false)` permits the supported recoveries.
+
+- A strict success has all the required image data, with no damage
+  concealment or substituted data.
+- Fatal entropy, restart, and marker errors are errors under either policy.
+  Optional metadata that does not affect samples is a warning.
+- A missing EOI is accepted only when completeness is verified: a progressive
+  file without one needs every coefficient band of every component at its
+  final approximation. A file that ends with EOI may stop its progressive
+  script early.
+- Lenient decoding never reduces precision.
+- Coefficient extraction and transcode use the same policy.
 
 A reserved Adobe APP14 transform byte leaves the color interpretation of a
 three- or four-component frame unresolved. Strict decode refuses it with
@@ -143,15 +145,18 @@ libjpeg-turbo does, YCbCr for three components and YCCK for four, keeps the
 `AdobeApp14Ambiguous` warning and reports the image as recovered. For three
 components, `ColorTransform::ForceRgb` or `ColorTransform::ForceYCbCr` resolves
 the interpretation under either policy, without recovery. Four-component
-frames have no hint, and grayscale and two-component frames are unaffected.
+frames have no hint, and grayscale frames are unaffected.
 
 `DecodeOutcome::recovered`, `DecodedTile::recovered`, and
 `JpegBatchGroup::recovered()` identify lenient recovery. Cosmetic warnings leave
 them false. A recovered image is returned once, without an indexed error.
-This default tightens acceptance of damaged progressive JPEGs, including callers
-using coefficient extraction and transcode; accepted intact pixels are unchanged.
 
-JPEG tensor output remains RGB uint8 by default, with grayscale expanded to three identical channels. Grayscale JPEG 2000 and HTJ2K remain one channel. Output metadata describes the returned tensor. A later explicit `channels="native"` option may preserve grayscale JPEG as one channel without changing existing defaults. Source component counts, when exposed, are per input row and remain aligned with source_indices.
+## Third-party code
+
+Parts of this crate are derived from libjpeg-turbo and are covered by its
+licenses: see `LICENSE.libjpeg-turbo` and `README.ijg` in this crate, and
+[`NOTICES.md`](https://github.com/frames-sg/j2k/blob/main/NOTICES.md). This
+software is based in part on the work of the Independent JPEG Group.
 
 ## Links
 

@@ -78,26 +78,23 @@ decoder.decode_region_scaled_pow2_into(
 )?;
 ```
 
-The plan reports the actual reduced rectangle, reference grid, packed sample
-interpretation and expected decode route, including images with nonzero origins.
-Use `plan.buffer_len(stride)` for padded output and `decoder.max_reduction_levels()`
-to query the common component/tile resolution ladder. Unavailable exact reductions
-and regions with no reduced samples are rejected explicitly.
+Related calls:
 
-For explicit colour normalization, use `srgb8_region_decode_plan` and
-`decode_region_srgb8_at_reduction`. These reconstruct the requested native region
-before converting it to eight-bit sRGB with straight alpha. Native-component
-decoding keeps the original precision and interpretation.
+- `plan.buffer_len(stride)` sizes a padded buffer, and
+  `decoder.max_reduction_levels()` is the deepest reduction every tile and
+  component supports. A reduction the image does not have, or a region with no
+  samples at that reduction, is an error.
+- `srgb8_region_decode_plan` and `decode_region_srgb8_at_reduction` return
+  8-bit sRGB with straight alpha, applying palettes and ICC profiles.
+- `PixelFormat::Gray16` and `Rgb16` give 16-bit output, and
+  `decode_native_components()` gives each component at its original bit depth.
+- The `*_with_control` methods take a `J2kDecodeControl`: a working-memory
+  limit, an output-size limit, and a cancellation token for one operation.
+- `PreparedImageOperation` with `CpuBatchDecoder::decode_operations` decodes
+  many regions of one prepared image without parsing it again.
 
-The corresponding `*_with_control` methods accept `J2kDecodeControl` for a
-working-memory bound, packed-output limit, and cooperative cancellation token.
-These are operation limits, not process-memory limits. Repeated CPU requests can
-use `PreparedImageOperation` with `CpuBatchDecoder::decode_operations` to vary the
-region and exact reduction while sharing the owned source preparation. See
-[the supported combinations and limits](docs/public-support.md#region-planning).
-
-For 16-bit images, use `PixelFormat::Gray16` or `Rgb16`, or
-`decode_native_components()` to get each component at its original bit depth.
+Supported combinations and limits are in
+[docs/public-support.md](docs/public-support.md#region-planning).
 
 Encode 8-bit RGB pixels as lossless HTJ2K:
 
@@ -139,16 +136,17 @@ to run j2k behind Cantaloupe.
 
 ## C and C++
 
-[`j2k-c`](crates/j2k-c/README.md) is a CPU C ABI (`j2k.h`), a header-only C++17
-wrapper (`j2k.hpp`), and a relocatable shared-library package with CMake
-configuration; Cargo also emits a static archive. It offers batch and explicit
-core whole-image decode routes, inspects images, keeps one decoder across
-codestreams and reports their compressed transfer syntax, and decodes full
-images, regions, and reduced resolutions into caller-owned buffers as native
-U8, U16, or I16 samples. It streams full images row by row without a
-whole-image buffer, and encodes losslessly. Build a package with
+[`j2k-c`](crates/j2k-c/README.md) is a CPU C ABI (`j2k.h`), a
+header-only C++17 wrapper (`j2k.hpp`), and a relocatable shared-library
+package with CMake configuration; Cargo also emits a static archive. It offers
+batch and explicit core whole-image decode routes, inspects images, keeps one
+decoder across codestreams and reports their compressed transfer syntax, and
+decodes full images, regions, and reduced resolutions into caller-owned buffers
+as native U8, U16, or I16 samples. It streams full images row by row without a
+whole-image buffer, and encodes losslessly or to a rate, size, or PSNR target.
+Build a package with
 `python3 crates/j2k-c/scripts/package.py --output dist/j2k-c`; consumers need
-only a C/C++ compiler and CMake.
+only a C/C++ compiler and either CMake or pkg-config.
 
 ## GPU support
 
@@ -160,16 +158,19 @@ straight into a GPU-side pipeline without a copy back to the CPU.
 You choose the backend with `BackendRequest`:
 
 - **`Auto`** (the default) uses the GPU only for image types and sizes where it
-  was measured to be faster than the CPU and to give identical output. Everything
-  else runs on the CPU. On the cited HTJ2K routing benchmark, `Auto` picks the GPU
-  for all 8 decode cells on CUDA and 3 of 8 on Metal. The 2 encode cells stay on
-  the CPU for both backends
-  ([results](docs/benchmark-evidence.md)).
+  was measured to be faster than the CPU and to give identical output.
+  Everything else runs on the CPU. The routed cases are listed in
+  [`xtask/routing-promotion-evidence.json`](xtask/routing-promotion-evidence.json):
+  8-bit gray and RGB decodes of classic JPEG 2000 and HTJ2K above a minimum
+  size per case on both backends, and some 8-bit encodes on Metal.
+  [How a case gets routed](docs/benchmark-evidence.md#how-auto-routing-thresholds-are-chosen).
 - **`Cuda`** or **`Metal`** forces the GPU. If the GPU path can't handle the
-  image, you get an error. J2K never retries on the CPU: an explicit GPU
-  request returns an error, and so does a GPU failure after `Auto` chose the
-  GPU.
+  image, you get an error.
 - **`Cpu`** never touches the GPU.
+
+A decode never retries on the CPU after a GPU error, whether the GPU was
+requested or chosen by `Auto`. JPEG-to-HTJ2K transcode under `Auto` runs a
+stage on the CPU when the GPU is unavailable or does not support the job.
 
 GPU support lives in separate crates: `j2k-cuda` (Linux, needs an NVIDIA
 driver; enable the `cuda-runtime` feature) and `j2k-metal` (macOS). See their
@@ -178,34 +179,23 @@ READMEs for which paths run on the GPU. Benchmark numbers are in
 
 ## Machine learning
 
-The optional [Rust-written PyTorch/NumPy extension](crates/j2k-python/README.md)
-exposes native pixel tensors, batches that can mix 8-bit JPEG with JPEG 2000
-inputs, reusable prepared batches, region/reduced decode, and selected wavelet
-bands. Its optional CUDA route decodes directly into PyTorch-owned device
-storage, and its optional Metal route returns PyTorch `mps` tensors on Apple
-Silicon. Python is only needed by users of that extension.
-
-Rust callers can use `J2kDecoder::decode_wavelets` to obtain exact reversible
-5/3 coefficients or dequantized 9/7 coefficients, with tile/component metadata.
-The decoder skips entropy work for unrequested bands and omits inverse DWT.
-
-`j2k-ml` adapts JPEG, JPEG 2000, and HTJ2K batches to [Burn](https://burn.dev)
-tensors (`U8`, `U16`, or `I16`, NCHW or NHWC).
-`CpuBurnDecoder::decode_batch` accepts either codec family or mixed inputs and
-returns a common `BurnBatchDecode` with homogeneous tensor groups, source
-indices, and codec-tagged errors. A GPU Burn destination uploads the
-CPU-decoded pixels normally.
-
-For JPEG 2000 and HTJ2K, `CudaDirectBurnDecoder` decodes directly into
-Burn-owned CUDA storage and waits for completion and status validation before
-returning the tensors. `CudaUploadBurnDecoder` and `MetalUploadBurnDecoder`
-decode on the GPU, copy decoded pixels to host memory, and upload them through
-Burn. See [docs/j2k-ml.md](docs/j2k-ml.md).
-
-`j2k-mpsgraph` is an experimental Apple Silicon adapter for JPEG 2000 and
-HTJ2K. It wraps completed Metal batches as `MPSGraphTensorData` or queues
-decode and graph execution on one Metal command queue, without decoded-pixel
-host readback. See [docs/j2k-mpsgraph.md](docs/j2k-mpsgraph.md).
+- **PyTorch and NumPy.** The optional [`j2k` Python extension](crates/j2k-python/README.md),
+  written in Rust, decodes to tensors of the image's own sample type: single
+  images, batches that can mix 8-bit JPEG with JPEG 2000, regions, reduced
+  resolutions, and selected wavelet bands. It also encodes. Built with CUDA
+  it decodes into PyTorch-owned device memory; built with Metal it returns
+  `mps` tensors on Apple Silicon.
+- **Burn.** [`j2k-ml`](docs/j2k-ml.md) returns `U8`, `U16`, or `I16` tensors
+  in NCHW or NHWC. `CpuBurnDecoder` (feature `cpu`) takes JPEG and JPEG 2000
+  in one batch. `CudaDirectBurnDecoder` decodes into Burn-owned CUDA memory.
+  `CudaUploadBurnDecoder` and `MetalUploadBurnDecoder` decode on the GPU and
+  upload through host memory.
+- **MPSGraph.** [`j2k-mpsgraph`](docs/j2k-mpsgraph.md) is an experimental
+  Apple Silicon adapter that hands Metal-resident batches to MPSGraph without
+  reading pixels back to the CPU.
+- **Wavelet coefficients in Rust.** `J2kDecoder::decode_wavelets` returns
+  exact 5/3 or dequantized 9/7 coefficients for the bands you select, and
+  does not run the inverse transform.
 
 ## Which crate do I need?
 
@@ -279,8 +269,9 @@ The GPU, transcode, and ML crates are experimental: patch releases don't
 break them, but a `0.x` minor release can (every break is listed with
 migration notes). See [docs/stable-api-1.0.md](docs/stable-api-1.0.md).
 
-The minimum supported Rust version is 1.97. CI checks the whole workspace
-with Rust 1.97 and builds and tests everything with Rust 1.99.0.
+The minimum supported Rust version on `main` is 1.97; the published 0.14.0
+crates need 1.99.0. Pull-request CI checks the whole workspace with Rust 1.97
+and tests with the pinned 1.99.0 toolchain.
 
 ## Documentation
 

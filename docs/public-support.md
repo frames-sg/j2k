@@ -1,264 +1,239 @@
-# Public J2K/HTJ2K Support Matrix
+# JPEG 2000 and HTJ2K support
 
-Which JPEG 2000 Part 1 and HTJ2K Part 15 features are implemented. This is
-not a conformance statement; ISO/IEC 15444-4 conformance results are in
-[`docs/t803-conformance.md`](t803-conformance.md). Keep this page in sync with
-`corpus/j2k-conformance/support-inventory.tsv`, the tests it names, and the
-benchmark rules. Check it with:
+Which JPEG 2000 Part 1 and HTJ2K Part 15 features are implemented, and their
+limits. This is not a conformance statement; ISO/IEC 15444-4 results are in
+[`docs/t803-conformance.md`](t803-conformance.md).
 
-```bash
-cargo xtask public-support
-```
+## Support matrix
 
-For `--final`, every row must be `Done` or `Out of scope` (for features outside
-Part 1 and Part 15).
+| ID | Status | Supported | Remaining limitation |
+| --- | --- | --- | --- |
+| part1-signed-samples | Done | Signed 8- and 16-bit components decode and encode, with signedness reported per component. Component-plane output returns signed samples. Typed component-plane encode can mix signed and unsigned components. | None known. |
+| part1-high-bit-depths | Done | Inspect and decode up to 38 bits per component, the Part 1 maximum. Lossless coding is exact at every depth. Lossless encode: classic up to 35 bits with a wavelet transform and 37 without; HTJ2K up to 24 bits with a wavelet transform and 31 without. Lossy encode: classic up to 38 bits, HTJ2K up to 24. | See [High bit depths](#high-bit-depths). |
+| part1-component-counts | Done | Up to 16,384 components in inspect, decode, and lossless and lossy encode. Component-plane decode and encode keep each component's sampling. | Interleaved raw-pixel encode rejects subsampled components; use the component-plane encoder. Very large counts are bounded by resource limits. |
+| part1-progression-tileparts | Done | All five progression orders. POC in the main header and in tile-part headers. Multi-tile and multi-tile-part encode. TLM is written and checked against the tile-part lengths. | At most 32 quality layers, in decode and encode. |
+| part1-packet-markers | Done | PLT, PLM, PPM, PPT, SOP, and EPH in decode and in lossless and lossy encode, for single-tile, multi-tile, and multi-tile-part codestreams. Oversized PPM and PPT payloads are split across markers. | T.803 has no case with PLM (`plm_iso_vector_absent`), so PLM is covered by this repository's tests only. |
+| part1-roi-maxshift | Done | Maxshift ROI decode on the CPU, CUDA, and Metal, from RGN in the main header or a tile-part header. Whole-component and rectangular ROI encode, lossless and lossy, including multi-tile. | RGN with any other style is rejected. Coded bitplanes including the shift: classic up to 55, HTJ2K up to 31; more is `Unsupported`. One request cannot mix whole-component and rectangular ROI. |
+| jp2-color-component-metadata | Done | Reads and writes IHDR, one or more COLR boxes (enumerated or ICC), BPCC, PCLR, CMAP, and CDEF, including signed palette columns. Decode resolves palettes and component mapping and checks IHDR and BPCC against the codestream. Rewrapping JP2 or JPH keeps the metadata. | ICC round trips are tested against this repository's fixtures only (`icc_roundtrip_deferred`). |
+| part15-ht-refinement-decode | Done | HT cleanup, SigProp, and MagRef decode. The selected T.803 Part 15 cases pass. | None known. |
+| part15-ht-refinement-encode | Done | Lossy HTJ2K to a byte or bits-per-pixel target with SigProp and MagRef refinement passes and quality layers, on the CPU, CUDA, and Metal. Lossless HTJ2K with quality layers. | A block's selected passes all go into one layer. On CUDA, entropy writing is serial within a code block. |
+| part15-openhtj2k-qfactor | Done | Opt-in HTJ2K Qfactor 1-100 for grayscale and three-component 4:4:4 RGB, writing the QCD and QCC values OpenHTJ2K writes. | Not combined with a byte, bits-per-pixel, or PSNR target, ROI encode, or a quantization profile. More than 16 decomposition levels is rejected. |
+| jph-wrapper | Done | Reads and writes JPH. The file type must match the codestream: HTJ2K in a JP2 file, or classic JPEG 2000 in a JPH file, is rejected. An HTJ2K codestream can be wrapped as JPH unchanged. | None known. |
+| j2k-to-htj2k-recode | Done | Lossless recode to HTJ2K with identical pixels, as a raw codestream or JPH. Reversible 5/3 gray and RGB sources with unsigned 8- or 16-bit samples, subsampled ones included, are recoded in the coefficient domain and keep COLR, ICC, and CDEF metadata. Other sources are decoded and re-encoded losslessly. | The pixel path drops palette, component-mapping, and channel-definition boxes, because it works on resolved pixels. |
+| benchmark-publication-gates | Done | `adoption-report` accepts a benchmark bundle for publication only with the required external corpora and comparator results (`publication_eligible`). | None. |
+| external-speed-comparisons | Done | Comparison harnesses against OpenJPEG and Grok, with optional OpenJPH and Kakadu rows. | OpenJPH and Kakadu rows are command-line runs and are reported separately. |
+| bounded-row-decode | Done | `decode_rows_u8_bounded` and `decode_rows_u16_bounded` stream the rows of classic and HTJ2K images, parsing the tile graph once. | Above 24 bits a row decode is a whole-image decode. |
+| jpx_part2_deferred | Out of scope | | JPX and other Part 2 extensions are Out of scope, except what JP2/JPH still-image decoding needs. |
 
-| ID | Status | Existing subsystem to extend | Reused helpers/APIs | Self-check test | Comparator/publication gate | Remaining limitation |
-| --- | --- | --- | --- | --- | --- | --- |
-| part1-signed-samples | Done | `j2k-native::j2c::codestream`, component decode/encode paths, `j2k` facade | SIZ component metadata, native component planes, public `decode_components`, lossless round-trip validation | `signed_gray8_roundtrips_through_component_planes_and_native_bytes`; `signed_gray16_roundtrips_through_native_bytes`; `decode_components_exposes_signed_gray8_public_samples`; `decode_components_exposes_signed_gray16_public_samples`; `typed_component_plane_encode_preserves_mixed_metadata_for_classic_and_htj2k`; `lossless_typed_component_plane_encode_preserves_mixed_metadata`; `cpu_classic_lossy_preserves_signed_component_metadata` | `cargo test -p j2k-native`; OpenJPEG/Grok signed fixture parity | Native encode/decode preserves signed 8/16-bit component samples, exposes per-component signedness, the public component-plane API returns signed samples without lossy PixelFormat reinterpretation, typed component-plane encode can mix signed and unsigned components through per-component SIZ/QCC metadata, and the lossy facade preserves signed component metadata. External signed fixture parity still needs expansion. |
-| part1-high-bit-depths | Done | `j2k-native` decode/encode, `j2k` component-plane facade | `inspect_j2k_codestream_header`, `J2kSupportInfo`, native component planes, raw-pixel encode byte-width helpers | `inspect_accepts_legal_38_bit_component_metadata`; `inspect_reports_legal_38_bit_component_metadata`; `classic_coefficient_state_preserves_38_bit_magnitude`; `classic_tier1_round_trips_38_bit_coefficients`; `direct_ht_block_roundtrip_31_bit_cleanup_path`; `classic_decode_adapter_accepts_legal_38_bit_roi_bitplane_count`; `cpu_lossless_classic_high_bit_rectangular_roi_roundtrips_at_50_coded_bitplanes`; `cpu_lossless_classic_high_bit_rectangular_roi_rejects_56_coded_bitplanes_explicitly`; `forward_53_i64_round_trips_38_bit_values`; `forward_dwt_i64_matches_f32_path_for_exact_range`; `classic_reversible_i64_encode_writes_29_bit_codestream_metadata`; `classic_reversible_i64_decode_round_trips_29_bit_native_bytes`; `classic_reversible_i64_decode_native_components_preserves_29_bit_plane`; `classic_reversible_i64_decode_round_trips_signed_29_bit_native_bytes`; `classic_reversible_i64_decode_round_trips_rgb29_rct_native_bytes`; `classic_reversible_i64_decode_native_region_crops_29_bit_bytes`; `classic_reversible_i64_decode_round_trips_31_bit_native_bytes_without_dwt`; `htj2k_reversible_i64_decode_round_trips_29_bit_native_bytes_without_dwt`; `htj2k_reversible_i64_decode_round_trips_31_bit_native_bytes_without_dwt`; `classic_reversible_i64_encode_rejects_38_bit_beyond_no_quant_bitplane_limit`; `cpu_lossless_classic_gray29_round_trips_native_bytes`; `cpu_lossless_classic_gray32_dwt_round_trips_native_bytes`; `cpu_lossless_classic_gray35_dwt_round_trips_native_bytes`; `cpu_lossless_classic_gray37_without_dwt_round_trips_native_bytes`; `cpu_lossless_classic_gray29_multi_tile_round_trips_native_bytes`; `cpu_lossless_classic_signed_gray29_round_trips_native_bytes`; `cpu_lossless_classic_rgb29_rct_round_trips_native_bytes`; `cpu_lossless_classic_rejects_gray38_explicitly`; `cpu_lossless_htj2k_gray31_without_dwt_round_trips_native_bytes`; `cpu_lossless_htj2k_high_bit_dwt_rejects_explicitly`; `cpu_lossless_htj2k_gray29_without_dwt_round_trips_native_bytes`; `lossy_sample_descriptor_accepts_part1_high_bit_depths`; `cpu_classic_lossy_gray29_decodes_native_bytes`; `cpu_classic_lossy_gray38_decodes_native_bytes`; `cpu_lossy_htj2k_high_bit_rejects_explicitly`; `lossless_component_plane_encode_round_trips_full_resolution_gray29_planes`; `lossless_component_plane_encode_round_trips_full_resolution_gray35_planes`; `lossless_component_plane_encode_round_trips_sampled_high_bit_planes`; `lossless_component_plane_encode_round_trips_sampled_high_bit_multi_tile_planes`; `lossless_component_plane_encode_round_trips_unaligned_sampled_high_bit_multi_tile_planes`; `write_siz_marker_uses_per_component_sample_info`; `write_qcc_marker_for_component_quantization_override`; `written_qcc_marker_overrides_component_quantization_on_parse`; `ht_capability_word_uses_max_component_precision`; `decoder_exposes_component_planes`; `decode_region_components_exposes_plane_dimensions`; `decode_native_components_handles_mixed_component_metadata`; `decode_native_region_components_preserves_plane_metadata`; `decode_native_components_exposes_mixed_public_planes`; `decode_native_components_exposes_high_bit_public_plane`; `decode_native_region_components_exposes_high_bit_public_plane`; `decode_native_region_components_covers_sampled_high_bit_public_planes`; `typed_component_plane_encode_preserves_mixed_metadata_for_classic_and_htj2k`; `lossless_typed_component_plane_encode_preserves_mixed_metadata`; `lossless_typed_component_plane_encode_round_trips_mixed_high_bit_metadata`; `lossless_typed_component_plane_encode_round_trips_mixed_35_bit_metadata`; `lossless_typed_component_plane_encode_round_trips_mixed_high_bit_multi_tile_metadata`; `native_bytes_per_sample_tracks_high_bit_depths`; `native_sample_packing_writes_high_bit_unsigned_little_endian_bytes`; `native_sample_packing_writes_high_bit_signed_little_endian_bytes`; `unsigned_gray24_roundtrips_through_native_bytes`; `signed_gray24_roundtrips_through_native_bytes`; `cpu_lossless_round_trips_gray24`; `cpu_lossless_round_trips_signed_gray24`; `decode_native_rejects_mixed_component_bit_depths`; `decode_native_accepts_gt24_bit_integer_packed_output`; `decode_components_rejects_gt24_bit_float_planes`; `float_wavelet_matches_integers_on_worst_case_input_at_its_precision_limit`; `float_wavelet_is_inexact_one_bit_past_its_precision_limit`; `lossless_round_trips_worst_case_samples_at_every_precision`; `every_decode_route_is_exact_on_both_sides_of_the_float_limit`; `cpu_lossless_round_trips_hostile_samples_on_both_sides_of_the_float_limit`; `lossless_component_planes_round_trip_hostile_sampled_planes_past_the_float_limit`; `deep_lossless_encode_decodes_exactly_with_openjpeg`; `openjpeg_deep_lossless_encode_decodes_as_openjpeg_decodes_it` | OpenJPEG/Grok high-bit-depth fixture parity; `encode_gt16_deferred` | Inspect can represent legal 38-bit SIZ component metadata, the codestream writer can emit per-component SIZ precision/signedness and QCC quantization overrides, the parser consumes written QCC component overrides, and HT CAP precision is derived from the maximum component precision. Classic Tier-1 coefficient state can now store and round-trip 38-bit magnitudes internally, and the public scalar classic block-decode adapter now accepts legal 38-bit coded bitplane counts instead of keeping the stale 32-bit ceiling. Component-plane decode carries per-component bit depths and decoded plane dimensions, owned native component-plane decode now preserves mixed per-component bit depth/signedness and ROI dimensions up to the existing exact `f32` ceiling, typed component-plane encode now writes and round-trips mixed per-component precision/signedness for classic J2K and HTJ2K up to the existing 24-bit exact ceiling, native byte packing reports/writes the correct packed byte width, and raw-pixel encode/decode now round-trips exact signed/unsigned 24-bit samples through the CPU facade. Exact integer sidecar decode/storage now round-trips signed and unsigned classic reversible 29-bit DWT codestreams, including RGB reversible color transform, high-bit native region cropping, and high-bit multi-tile raw-pixel codestreams; classic reversible guard/exponent adjustment now round-trips 32-bit and 35-bit DWT codestreams plus 37-bit no-DWT codestreams, while 31-bit classic no-DWT codestreams and 29-bit and 31-bit HTJ2K no-DWT codestreams round-trip through native packed and owned component-plane outputs. The public facade round-trips signed, unsigned, RGB/RCT, multi-tile, full-resolution 29/35-bit, sampled 29-bit, sampling-aligned sampled multi-tile 29-bit, and unaligned sampled multi-tile 29-bit component-plane DWT-safe profiles, classic 32/35-bit DWT and 37-bit no-DWT profiles, 29-bit and 31-bit HTJ2K no-DWT profiles, classic irreversible 29/38-bit lossy output, and mixed full-resolution typed 29/12-bit and 35/12-bit single-tile profiles plus 29/12-bit multi-tile profiles while exposing owned high-bit component planes, full-resolution regions, and sampled component-plane regions. Classic lossless encode covers the Part 1 no-quantization signaling range through 37 coded magnitude bitplanes and rejects full-range classic reversible requests that would require more than QCD/QCC can signal, including 36-38 bit DWT and 38-bit no-DWT raw-pixel requests, as `Unsupported`; HTJ2K high-bit lossless/lossy encode similarly rejects requests above the Part 15 31 coded-bitplane HT block limit. Classic high-bit ROI round-trips a 50 coded-bitplane no-DWT profile, and classic 56 coded-bitplane plus HT >31 coded-bitplane ROI requests reject explicitly as `Unsupported`. External high-bit parity fixtures remain publication evidence, not an additional repo-local support blocker. Reversible coding runs in `f32` through 20 bits, the deepest precision at which its transforms are exact for every input, and with integers from 21 to 38 bits on encode and decode; the integer path decodes code-blocks on one thread and holds 64-bit coefficients, so a full-image decode of one 21- to 38-bit component past about 15 megapixels reaches the decode memory limit while region and bounded-row decodes do not. |
-| part1-component-counts | Done | `j2k-core::Info`, `j2k` parse/view, native decode limits, raw-pixel encode paths | `J2kSupportInfo`, `PassthroughRequirements::with_component_count`, native SIZ inspector, `j2k-native::j2c::progression`, shared `j2k-types` encode jobs | `inspect_spec_valid_component_count_above_u8_is_reported_exactly`; `native_parse_accepts_spec_component_count_above_u8`; `poc_marker_preserves_wide_component_bounds`; `classic_encode_roundtrips_more_than_four_components`; `htj2k_encode_roundtrips_more_than_four_components`; `precomputed_53_encode_roundtrips_more_than_four_components`; `precomputed_97_encode_roundtrips_more_than_four_components`; `precomputed_encode_writes_component_sampling_in_siz`; `precomputed_classic_53_encode_preserves_component_sampling_in_siz`; `raw_pixel_encode_rejects_component_sampling_without_component_sized_dwt`; `lossless_component_plane_encode_preserves_sampling_for_classic_and_htj2k`; `decode_components_exposes_public_sampling_metadata`; `lossless_encode_facade_roundtrips_more_than_four_components`; `cpu_lossless_round_trips_component_count_above_u8`; `cpu_classic_lossy_roundtrips_more_than_four_components` | `cargo test -p j2k`; conformance manifest sync | Inspect, passthrough, native parse, color-space fallback, RawBitmap metadata, POC component bounds, raw native encode/decode above the old `u8` boundary, precomputed classic J2K/HTJ2K coefficient encode, public lossless component-plane encode, public interleaved lossless encode, and public lossy encode now carry `u16` component counts. Precomputed and public component-plane encode preserve component SIZ sampling, decoded component planes expose their `XRsiz/YRsiz` sampling metadata through the public decoder component-plane path, and direct interleaved raw-pixel encode rejects sampled component metadata unless component-sized DWT geometry is supplied by the existing component-plane/precomputed route. Spec-cap stress coverage remains bounded by resource limits rather than a known `u8` API ceiling. |
-| part1-progression-tileparts | Done | `j2k-native::j2c::progression`, tile-part parser, packet iterator, `j2k` encode facade | Existing progression-order structs and packet math; public lossless/lossy encode options | `main_header_poc_changes_packet_iteration_order`; `tile_header_poc_changes_packet_iteration_order`; `main_header_poc_sentinel_end_bounds_are_clamped_to_tile_shape`; `poc_marker_accepts_wide_all_components_sentinel`; `cpu_lossless_multi_tile_codestream_decodes`; `cpu_classic_lossy_multi_tile_codestream_decodes`; `cpu_lossless_emits_multiple_tile_parts_that_strict_decode_uses`; `cpu_classic_lossy_emits_multiple_tile_parts_that_strict_decode_uses`; `cpu_lossless_emits_tlm_for_multiple_tile_parts`; `cpu_classic_lossy_emits_tlm_for_multiple_tile_parts` | OpenJPEG/Grok parity for `part1_poc_tlm_sop` and `part1_plt_sop_eph` | Main-header and tile-header POC decode fixtures pass, including sentinel bounds and wide component POC parsing. Public lossless and lossy facades can emit multi-tile and packet-boundary multi-tile-part codestreams with sequenced SOT `TPsot/TNsot` fields that decode through native, and TLM marker entries are checked against actual SOT `Psot` lengths for multi-tile-part output; broader external parity still needs pinned fixtures. |
-| part1-packet-markers | Done | `j2k-native::j2c::codestream`, `tile`, packet encode/decode | Existing PLM/PLT/PPM/PPT/SOP/EPH marker parsing and packetization helpers | `strict_decode_accepts_matching_plt_packet_length`; `strict_decode_accepts_matching_plm_packet_length`; `strict_decode_accepts_ppt_separated_packet_header`; `strict_decode_accepts_ppm_separated_packet_header`; `cpu_lossless_emits_packet_markers_that_strict_decode_uses`; `cpu_lossless_emits_ppm_and_ppt_that_strict_decode_uses`; `cpu_lossless_multi_tile_emits_ppm_and_ppt_that_strict_decode_uses`; `cpu_lossless_emits_ppm_and_ppt_across_multiple_tile_parts_that_strict_decode_uses`; `ppm_marker_writer_splits_at_packet_header_boundaries`; `ppt_marker_writer_splits_large_payloads`; `packet_header_validation_allows_chunked_ppm_and_ppt_payloads`; `cpu_classic_lossy_emits_plt_and_plm_that_strict_decode_uses`; `cpu_classic_lossy_emits_sop_and_eph_that_strict_decode_uses`; `cpu_classic_lossy_emits_ppm_and_ppt_that_strict_decode_uses`; `cpu_classic_lossy_multi_tile_emits_ppm_and_ppt_that_strict_decode_uses`; `cpu_classic_lossy_emits_ppm_and_ppt_across_multiple_tile_parts_that_strict_decode_uses` | OpenJPEG/Grok parity for `part1_core_lossy_97_layers_precincts`, `part1_poc_tlm_sop`, `part1_plt_sop_eph`, `plm_iso_vector_absent` | PLM/PLT packet lengths, PPM/PPT separated packet headers, and SOP/EPH encode/decode are repo-local blocking tests now for public lossless and lossy encode routes. Public encode can emit PPM or PPT by separating scalar packet headers from SOD packet bodies for single-tile, multi-tile, and packet-limited multi-tile-part codestreams; the writer now chunks oversized PPM at packet-header boundaries and oversized PPT on byte boundaries instead of rejecting valid multi-marker payloads. Broader marker-combination and external parity still need pinned fixtures. |
-| part1-roi-maxshift | Done | `j2k-native::j2c::roi`, RGN parsing, decode/encode quantization | Existing RGN marker metadata, `roi_shift` decode plumbing, scalar code-block helpers | `roi_maxshift_inverse_preserves_background_and_unshifts_roi_coefficients`; `classic_scalar_decode_applies_nonzero_roi_maxshift`; `early_stopped_roi_maxshift_matches_openjpeg_on_native_decode`; `tile_header_rgn_marker_with_zero_shift_is_a_noop`; `encode_whole_component_roi_maxshift_roundtrips_and_writes_rgn`; `encode_rectangular_roi_maxshift_roundtrips_and_writes_rgn`; `encode_rejects_ambiguous_whole_component_and_rectangular_roi`; `cpu_lossless_rectangular_roi_roundtrips_and_writes_rgn`; `cpu_lossless_multi_tile_rectangular_roi_roundtrips_and_writes_rgn`; `cpu_lossless_htj2k_rectangular_roi_roundtrips_at_31_coded_bitplanes`; `cpu_lossless_classic_high_bit_rectangular_roi_roundtrips_at_50_coded_bitplanes`; `cpu_lossless_classic_high_bit_rectangular_roi_rejects_56_coded_bitplanes_explicitly`; `cpu_lossy_rectangular_roi_writes_rgn_and_decodes`; `tile_header_rgn_with_explicit_style_is_rejected`; `main_header_rgn_with_explicit_style_is_rejected`; `iso_p0_03_tile_header_roi_maxshift_matches_reference_when_available` | OpenJPEG/Grok ROI fixture parity | Decode-side maxshift handling is covered from marker parsing through code-block coefficient inverse shift, including an always-on OpenJPEG fixture that combines early-stopped reversible coding passes with ROI maxshift and optional ISO p0_03 parity. Reversible midpoint reconstruction is applied in the coded coefficient domain before the ROI inverse on native, CUDA, and Metal paths. Native encode can emit whole-component maxshift ROI by shifting all coefficients for selected components, and rectangular ROI requests by mapping reference-grid rectangles to component-grid coefficient windows before scalar code-block encoding, while writing matching RGN markers. The public lossless and lossy facades expose rectangular ROI encode, and lossless multi-tile ROI clips reference-grid regions to each tile before assembling the final codestream. HTJ2K lossless ROI round-trips at the 31 coded-bitplane edge, classic high-bit ROI round-trips at 50 coded bitplanes, and requests beyond the classic 55/HT 31 coded-bitplane packet limits reject as `Unsupported` with the native limit reason. Broader external ROI fixture coverage remains incomplete. |
-| jp2-color-component-metadata | Done | `j2k-native::jp2`, `j2k::parse::boxes`, JP2 writer support | Existing `ihdr`, `colr`, `pclr`, `cmap`, `cdef`, `icc` modules; SIZ metadata; `wrap_j2k_codestream`; `J2kSupportInfo::file_metadata`; `J2kFileColorSpec::from_inspected`; `J2kFileColorSpec::from_file_metadata`; `J2kFileBoxMetadata::from_file_metadata` | `wrap_writes_bpcc_for_mixed_precision_and_signedness`; `wrap_allows_icc_color_spec_for_non_enumerated_component_counts`; `wrap_preserves_inspected_icc_metadata_when_rewrapping`; `wrap_preserves_inspected_icc_metadata_when_rewrapping_jph`; `wrap_preserves_multiple_colr_boxes_when_rewrapping`; `wrap_writes_cdef_for_explicit_srgb_alpha`; `wrap_preserves_premultiplied_alpha_cdef_and_decodes_rgba`; `inspect_and_decode_jp2_palette_component_mapping_metadata`; `inspect_and_decode_jp2_signed_palette_metadata`; `wrap_writes_palette_component_mapping_and_channel_definitions`; `missing_ihdr_returns_invalid_box`; `missing_colr_returns_invalid_box`; `invalid_ihdr_compression_type_returns_invalid_box`; `ihdr_dimension_mismatch_returns_invalid_box`; `ihdr_bpc_mismatch_returns_invalid_box`; `bpcc_precision_mismatch_returns_invalid_box`; `premultiplied_opacity_cdef_sets_alpha`; `unspecified_cdef_association_decodes`; `decode_rgba16_roi_scaled_and_region_scaled_preserve_alpha`; `inspect_rejects_missing_colr`; `inspect_rejects_invalid_ihdr_compression_type`; `inspect_rejects_ihdr_dimension_mismatch`; `inspect_rejects_ihdr_bpc_mismatch`; `inspect_rejects_bpcc_precision_mismatch`; `recode_jph_preserves_input_icc_color_spec`; `recode_jph_preserves_multiple_colr_boxes_for_coefficient_path`; `recode_jph_preserves_channel_definition_metadata_for_coefficient_path` | OpenJPEG/Grok JP2 metadata parity; `icc_roundtrip_deferred` tracks external fixture coverage | JP2/JPH wrapping now writes IHDR, one or more COLR boxes, BPCC for mixed precision/signedness, CDEF for explicit sRGB/premultiplied alpha, and explicit PCLR/CMAP/CDEF metadata through the public wrapper options. For paletted output, wrapper IHDR/BPCC metadata is derived from resolved image components rather than raw codestream component count. Public inspect preserves COLR/BPCC/PCLR/CMAP/CDEF/ICC metadata, including signed PCLR columns. Public helpers can borrow directly representable inspected COLR/PCLR/CMAP/CDEF metadata for JP2 and JPH rewrapping, and public/native decode validates required IHDR/COLR presence, IHDR compression type, full-resolution dimensions, and BPC/BPCC precision consistency against the resolved JP2 image components without rejecting reduced-resolution decode targets. Native decode resolves JP2 palette/component mapping for covered still-image cases, accepts premultiplied opacity and unspecified CDEF associations, including signed palette columns through component-plane output; J2K-to-JPH coefficient recode preserves directly representable COLR/ICC/CDEF metadata, including multiple COLR boxes. Broader external JP2/JPH metadata parity remains incomplete. |
-| part15-ht-refinement-decode | Done | `j2k-native::j2c::ht_block_decode`, segment/packet decode, `j2k` public facade | Existing HT cleanup/refinement decoder, packet metadata, OpenHTJ2K fixtures, public `J2kDecoder::decode_into` | `openhtj2k_ds0_ht_12_b11`, `openhtj2k_ds0_ht_09_b11`; `public_decode_matches_openhtj2k_refinement_fixtures` | OpenJPH and Kakadu context rows plus OpenJPEG/Grok where supported | Native refinement vectors and public facade decode coverage exist for the pinned OpenHTJ2K fixtures. The complete selected official T.803 v3 Part 15 decoder matrix is now blocking candidate evidence in `docs/t803-conformance.md`; additional non-ETS comparator expansion remains adoption evidence. |
-| part15-ht-refinement-encode | Done | `j2k-native::j2c::ht_block_encode`, packet encode, whole-tile PCRD/layer logic, CUDA and Metal encode stages | Exact cleanup/SigProp/MagRef lengths, bounded consecutive-set generation, tile-wide convex-hull selection, distortion deltas, encode-stage candidate-set hook | `explicit_cleanup_bitplane_selects_the_requested_ht_set`; `bounded_candidate_generation_produces_two_consecutive_ht_sets`; `tile_candidate_selection_spends_the_shared_budget_on_the_best_block`; `tile_candidate_hull_can_switch_to_a_better_alternate_set`; `tile_candidate_selection_keeps_the_cheapest_cleanup_when_under_budget`; `cpu_htj2k_lossy_reports_rate_granularity`; `cpu_htj2k_lossy_three_quality_layers_use_three_pass_segment_granularity`; `ht_target_coding_passes_tracks_ht_quality_layers`; `preencoded_htj2k97_preserves_refinement_segments_in_packet_body`; `prequantized_htj2k97_accepts_empty_high_subbands`; `ht_cpu_fallback_encodes_two_pass_sigprop_refinement`; `ht_cpu_fallback_sigprop_refinement_encodes_new_significance_bits`; `ht_cpu_fallback_encodes_three_pass_magref_refinement`; `ht_cpu_fallback_rejects_unsupported_refinement_pass_count`; `accelerator_facade_ht_lossless_quality_layers_keep_cleanup_only`; `ht_layer_contributions_emit_the_selected_ht_set_atomically`; `ht_layer_contributions_preserve_refinement_metadata_when_co_located`; `htj2k_lossy_quality_layers_decode_atomic_ht_sets`; `htj2k_bounded_candidate_rate_control_emits_one_decodable_set`; `htj2k_bounded_rate_control_offers_two_set_jobs_to_accelerators`; `htj2k_bounded_rate_control_accepts_exact_accelerator_sets`; `cuda_htj2k_codeblock_candidates_preserve_exact_pass_boundaries_when_runtime_required`; `metal_htj2k_quality_layers_use_native_candidates_and_match_scalar_output`; `metal_htj2k_candidate_sets_preserve_exact_refinement_boundaries`; `all_t804_supported_cpu_matrix_cases_decode_with_openjpeg` | Balanced OpenJPH encoder/cross-decoder matrix; strict CUDA runtime lane; strict Metal lane | Byte-targeted lossy HTJ2K generates consecutive alternate HT sets, scores legal truncation points with per-pass distortion reduction, builds a convex frontier for each block, and spends one shared tile payload budget on the best legal frontier transitions. It emits exactly one selected set per block and preserves cleanup/SigProp/MagRef dependencies and boundaries. A selected set is emitted atomically in the layer containing its final selected pass, while different blocks can enter different layers; this preserves unambiguous cleanup boundaries across external decoders. Cleanup-only encoding does not pay distortion-scoring overhead. CUDA preserves native candidate boundaries, but entropy writing remains serial within each code block; a 128-lane coefficient-analysis prototype was removed after RTX A/B testing found no measurable end-to-end gain. Metal natively emits the richer candidate sets with exact segment metadata. The focused OpenJPH matrix covers Gray8, RGB8, and unsigned Gray16 for reversible 5/3 and Qfactor 90, through raw codestream and JPH inputs, requiring exact lossless output and at most one sample-value cross-decoder delta for irreversible output. |
-| part15-openhtj2k-qfactor | Done | `j2k-native::j2c::quantize`, native/facade lossy encode | `J2kLossyEncodeOptions::with_qfactor`, native Qfactor entry points, expounded QCD/QCC writer | `openhtj2k_qfactor_90_matches_reference_qcd_and_qcc`; `qfactor_encode_writes_openhtj2k_compatible_qcd_and_qcc`; `htj2k_qfactor_is_opt_in_and_round_trips` | In-process OpenHTJ2K 0.19 decode and marker-tuple oracle | Opt-in grayscale and three-component 4:4:4 RGB encode reproduces OpenHTJ2K's per-resolution luma/chroma visual weighting and QCD/QCC tuples for Qfactor `1..=100`. Existing defaults and rate-target behavior are unchanged. Qfactor is not combined with byte/BPP/PSNR targets or ROI encode, and the implementation rejects more than 16 decomposition levels rather than extrapolating the reference profile. |
-| jph-wrapper | Done | `j2k::parse::boxes`, `j2k-core::CompressedPayloadKind`, JP2/JPH writer path | Existing JP2 signature/box parser, native JP2 decode path, passthrough model, `wrap_j2k_codestream` | `inspect_ht_jph_reports_file_wrapper`; `inspect_ht_jp2_rejects_file_type_mismatch`; `wrap_ht_codestream_as_jph_inspects_and_decodes`; `wrap_jph_rejects_classic_codestream`; `inspect_rejects_jp2_file_type_with_ht_codestream`; `jph_file_type_rejects_classic_codestream`; `jp2_file_type_rejects_htj2k_codestream`; `jph_file_type_accepts_htj2k_codestream`; `test_write_ht_lossless_codestream_headers`; `materializes_source_images_into_decode_and_encode_manifests` | OpenJPH/Kakadu JPH fixture context rows | JPH inspect classification, JPH write wrapping, JP2/JPH codestream-brand validation in both the public parser and native JP2 reader, and native decode through the existing JP2 reader are covered for minimal still-image files. Public inspect/view tests now use JPH for HTJ2K files and reject HT codestreams mislabeled as JP2. The HTJ2K codestream writer sets the Part 15 Rsiz capability bit, and adoption materialization emits JPH wrappers for HTJ2K rather than invalid HTJ2K-in-JP2 files; broader JPH metadata preservation and external JPH fixture parity remain publication evidence. |
-| j2k-to-htj2k-recode | Done | `j2k::recode`, `j2k-native::j2c::recode`, encode fallback | Existing coefficient-domain reversible 5/3 recode, native `decode_native`, native component-plane decode, public typed lossless HTJ2K encode, `wrap_j2k_codestream` | `lossy_97_source_uses_pixel_preserving_recode`; `signed_source_uses_pixel_preserving_recode`; `four_component_source_uses_pixel_preserving_recode`; `mixed_typed_source_uses_pixel_preserving_recode`; `high_bit_source_uses_pixel_preserving_recode`; `lossy_sampled_source_uses_pixel_fallback_and_preserves_sampling`; `raw_htj2k_lossless_can_be_wrapped_as_jph_without_reencode`; `recode_can_emit_jph_file_wrapper`; `recode_jph_preserves_input_icc_color_spec`; `recode_jph_preserves_channel_definition_metadata_for_coefficient_path`; `recode_jph_drops_palette_metadata_on_pixel_fallback`; `recode_jph_drops_component_mapping_metadata_on_sampled_pixel_fallback`; `recode_subsampled_classic_53_uses_coefficient_path_and_preserves_sampling` | OpenJPEG/Grok/OpenJPH/Kakadu recode validation rows | Coefficient-domain recode remains the preferred path where valid and now preserves directly representable JPH COLR/ICC/CDEF metadata because codestream component semantics are unchanged. Already-HTJ2K raw codestreams can be copied unchanged into a JPH wrapper, preserving HT segment/layer details. Valid sampled reversible 5/3 classic sources now stay on the coefficient-preserving path and keep codestream SIZ sampling in the HTJ2K output. Pixel-preserving fallback carries `u16` component counts, preserves mixed bit depth and mixed signedness through native component-plane decode plus public typed HTJ2K encode, preserves sampled lossy component grids through component-plane fallback, routes palette/component-mapped file inputs away from coefficient recode when codestream component semantics are not the output image semantics, covers sampled direct component mappings through resolved-pixel fallback, covers 29-bit high-bit fallback by forcing the current no-DWT HT-safe route, keeps directly representable non-palette COLR/ICC metadata, and intentionally drops palette/component-mapping/channel-definition boxes plus palette-dependent COLR when the fallback must operate on resolved pixels. External recode parity remains publication evidence, not an additional repo-local support blocker. |
-| benchmark-publication-gates | Done | `xtask adoption-report`, `xtask/BENCHMARKS.md`, comparator harnesses | Existing adoption benchmark/report tooling | `cargo run -p xtask --features adoption -- adoption-report` | Requires external corpora, `publication_eligible`, OpenJPEG, Grok, OpenJPH, and Kakadu availability where claimed | Gate policy exists; it accepts adoption reports only when independent external evidence is included. |
-| external-speed-comparisons | Done | `j2k-compare`, `xtask adoption-benchmark`, `xtask adoption-report` | Existing fixture, batch, ROI, and encode comparator binaries | `cargo xtask bench-build`; adoption benchmark smoke rows | Speed reports must include codec, container, profile, operation, corpus, tool version, thread policy, batch size, skipped rows, and publication eligibility | OpenJPH and Kakadu remain optional context rows and must be labeled separately from default OpenJPEG/Grok/J2K rows. |
-| bounded-row-decode | Done | `j2k-native::PreparedRegionDecoder`, `j2k::J2kDecoder` row facade | Scoped parsed-tile ownership, reusable decoder context, bounded packed-row scratch | `prepared_region_decoder_parses_tile_graph_once_across_regions`; `prepared_region_decoder_reuses_one_htj2k_tile_graph`; `decode_rows_u8_matches_full_rgb8_decode`; `decode_rows_u16_matches_full_gray16_decode`; `decode_rows_u16_matches_full_decode_for_signed_samples`; `decode_rows_u16_preserves_exact_high_bit_fallback`; `decode_rows_u8_matches_full_gray8_decode_for_htj2k`; one-row-at-a-time RGBA8/RGBA16 parity | CPU classic and HTJ2K row parity | Through the exact `f32` component-plane ceiling, one bounded row operation parses the tile graph once and reuses it across stripes for classic JPEG 2000 and HTJ2K. Parsed metadata remains in every stripe's aggregate allocation baseline; component, Tier-1, and IDWT owners remain reusable without retaining graphs across unrelated images. Above 24-bit precision, row decode preserves the existing exact-integer full-decode/crop fallback until the prepared session can borrow integer sidecar planes. |
-| jpx_part2_deferred | Out of scope | N/A | N/A | N/A | N/A | JPX/Part 2 is explicitly Out of scope for the Part 1 plus Part 15 support claim unless required for standard JP2/JPH still-image correctness. |
+Also:
 
-Multi-tile encoding supports absolute tile origins, including odd wavelet phases
-and clipped code-block/precinct boundaries, with the existing smallest-edge
-policy for decomposition depth. Header inspection accepts dimensions beyond
-60,000 pixels; decode resource budgets still apply. See the
-[geometry and implementation scope](architecture.md#encode-geometry-and-implementation-scope).
+- A tile-part coding style with fewer decomposition levels than the requested
+  reduction is rejected; `max_reduction_levels` reports what every tile
+  supports.
+- Tiles that differ in the multi-component transform need components sampled
+  1x1.
+- Header inspection accepts dimensions beyond 60,000 pixels; decode resource
+  limits still apply. Multi-tile encode supports absolute tile origins. See
+  [geometry](architecture.md#geometry-and-provenance).
+
+### High bit depths
+
+Reversible coding runs in `f32` through 20 bits and in integers from 21 to 38
+bits, on encode and decode.
+
+| | Classic JPEG 2000 | HTJ2K |
+| --- | --- | --- |
+| Decode | Up to 38 bits | Up to 31 coded bitplanes |
+| Lossless encode with a wavelet transform | Up to 35 bits | Up to 24 bits |
+| Lossless encode without one | Up to 37 bits | Up to 31 bits |
+| Lossy encode | Up to 38 bits | Up to 24 bits |
+
+- Requests beyond these are `Unsupported`: Part 1 cannot signal more than 37
+  coded bitplanes without quantization, and an HT code block carries at most
+  31.
+- Lossless encode above 20 bits and lossy encode above 24 bits run on the CPU
+  only. Nothing above 16 bits decodes on a GPU.
+- The `f32` component-plane APIs (`decode_components` and its region forms)
+  stop at 24 bits. `decode_native_components` and `decode_native` return
+  deeper samples.
+- A tile with a reversible component deeper than 20 bits needs the 5/3
+  wavelet and no quantization in every component. Tiles that mix this with
+  irreversible coding, or that differ in the color transform, are rejected.
+- The integer path decodes code blocks on one thread and holds 64-bit
+  coefficients, so a full-image decode of one 21- to 38-bit component past
+  about 15 megapixels reaches the decode memory limit. Region decodes do not.
+  Bounded-row decodes do not for 21 to 24 bits.
 
 ## Region planning
 
-`J2kDecoder::region_decode_plan` reports the source and reduced rectangles,
-reference-grid origin, packed layout, sample and alpha interpretation, exact tight
-or padded buffer span, and the native decoder's header-planned reconstruction route.
-It parses bounded metadata without allocating decoded pixels. A later decode can
-still reject malformed entropy data or exceed its working-memory allowance.
+`J2kDecoder::region_decode_plan` describes a region decode without running it:
+the source and reduced rectangles, the reference-grid origin, the packed
+layout, the sample and alpha interpretation, the buffer span (tight or
+padded), and the decode route the headers imply. It parses bounded metadata
+and allocates no pixels. The decode can still fail on bad entropy data or a
+working-memory limit.
 
-`max_reduction_levels` reports the common effective component/tile ladder,
-including COD/COC overrides that shorten or lengthen main-header defaults.
-Exact reductions are never silently clamped. Invalid source regions, regions
-with no samples at a reduction, unsupported output interpretations and resource
-failures remain distinct errors. The ordinary packed query does not request ICC
-normalization; native component APIs preserve their original sample metadata.
+- `max_reduction_levels` is the deepest reduction every tile and component
+  supports, counting COD and COC overrides. A reduction is never clamped.
+- An invalid source region, a region with no samples at the reduction, an
+  unsupported output interpretation, and a resource failure are distinct
+  errors.
+- A region decode reconstructs only the wavelet window it needs or, for some
+  subsampled images, only the tiles it touches. It never decodes and crops
+  the full image.
 
-`srgb8_region_decode_plan` and `decode_region_srgb8_at_reduction` explicitly request
-eight-bit sRGB output for a bounded native region. They share full-image colour
-classification, supported restricted ICC conversion, palette/sampling handling,
-and straight-alpha interpretation. Ordinary packed eight-bit routes also accept
-recognized sRGB-equivalent ICC profiles. Other profiles require explicit
-normalization; unsupported profiles remain errors. Premultiplied normalization
-unassociates colour in source code values at the source precision, after palette
-mapping and before sYCC conversion or quantization, so low-alpha colour is kept.
-Premultiplied CIE Lab input is rejected, and premultiplied input with subsampled
-or signed components still requires eight-bit mapped samples without native
-colour conversion. Native output
-retains its original alpha association and precision. Exact-integer reversible
-5/3 regions with unit-sampled components reuse the bounded window planner and
-the existing integer lifting filters. Subsampled exact-integer regions, which
-the window planner does not cover, reconstruct the tiles they touch and store
-only the region's replicated samples, as floating-point regions do, so neither
-native nor normalized regions decode and crop the full image. Integer row
-streaming is not implied by window support.
+`srgb8_region_decode_plan` and `decode_region_srgb8_at_reduction` return 8-bit
+sRGB with straight alpha for a region, applying palettes, component sampling,
+and the supported ICC profiles.
 
-`J2kDecodeControl` supplies per-operation working and output limits plus an
-optional `J2kCancellationToken`. Working allocations include newly parsed native
-metadata, derived operation plans, scratch and codec-owned conversion/output
-buffers while they are built. Caller-owned compressed input, immutable source
-preparation and caller-supplied output are separate ownership domains. Output
-limits check the required packed span, including stride gaps. Neither option is
-an RSS limit or a way to raise the native ceiling. Under an explicit working
-limit, ICC classification and normalization charge a bound on the pinned
-colour-management crate's state (the profile copy, its tone curves and the fixed
-8-bit transform tables) before creating it; profiles outside the bounded
-matrix/TRC or gray-TRC shape with an XYZ connection space return `Unsupported`.
-Output limits and cancellation apply to every ICC operation.
+- The ordinary packed 8-bit routes also accept ICC profiles recognized as
+  equivalent to sRGB. Other profiles need the sRGB calls; unsupported
+  profiles are errors.
+- Premultiplied color is un-premultiplied at the source precision, after
+  palette mapping and before sYCC conversion or quantization. Premultiplied
+  CIE Lab is rejected. Premultiplied input with subsampled or signed
+  components is accepted only as 8-bit mapped samples that need no color
+  conversion.
+- Native output keeps its alpha association and precision.
 
-Cancellation is permanent for a token and checked before preparation and between
-native marker, packet, code-block, transform and row work. A cancellable native
-operation selects serial blocks/row bands; it cannot preempt a submitted GPU
-command or an individual library call. Failure can leave a prefix of a caller
-buffer written. Published rows are not replayed, and later operations with a
-fresh token can reuse the decoder. `J2kView::parse_with_control` and
-`J2kDecoder::new_with_control` parse the source itself under a control, and
-`CpuBatchDecoder::prepare_with_control` prepares inputs one at a time so a
-working limit bounds each input beside the plans already kept for earlier
-inputs; inputs failing a limit or observing cancellation become indexed
-preparation errors. Neither retains the control's allowance.
+## Decode controls
 
-Borrowed decoders retain at most one native reduction's parsed image and packet
-information across regions. `set_preparation_cache_limit_bytes` bounds that
-retention; zero disables it. CPU sessions separately bound their most recent
-derived exact-operation plan with `set_operation_cache_limit_bytes`. The source
-owner and concurrent operations' mutable scratch remain independent.
+A `J2kDecodeControl` gives one operation a working-memory limit, an output
+limit, and an optional `J2kCancellationToken`.
+
+- **Working memory** counts newly parsed metadata, derived plans, scratch, and
+  the codec's own conversion and output buffers. It does not count the
+  caller's compressed input, an existing source preparation, or the caller's
+  output buffer. It is not a process memory limit and cannot raise the native
+  ceiling.
+- **Output** is the packed span, stride gaps included.
+- **ICC under a working limit** needs a matrix/TRC or gray-TRC profile with an
+  XYZ connection space; other profiles are `Unsupported`.
+- **Cancellation** is permanent for a token. It is checked before preparation
+  and between marker, packet, code-block, transform, and row work. A
+  cancellable native operation runs its blocks and row bands serially. It
+  cannot interrupt a submitted GPU command or a library call. A cancelled
+  decode can leave the start of the caller's buffer written, rows already
+  delivered are not replayed, and the decoder can be reused with a new token.
+- `J2kView::parse_with_control` and `J2kDecoder::new_with_control` parse under
+  a control. `CpuBatchDecoder::prepare_with_control` prepares one input at a
+  time; an input that fails a limit or sees a cancellation becomes an indexed
+  preparation error.
+- A borrowed decoder keeps at most one reduction's parsed image and packet
+  information between regions; `set_preparation_cache_limit_bytes` bounds it,
+  and 0 turns it off. A CPU session bounds its most recent derived operation
+  plan with `set_operation_cache_limit_bytes`.
 
 ## Owned batch decoding
 
-The owned-batch decoder accepts full, region, reduced, and region-plus-reduced
-requests and groups Gray, RGB, or RGBA output by shape without padding. Output
-is `U8`, `U16`, or `I16` samples in NCHW or NHWC layout. When components
-use different sampling factors, the subsampled ones are replicated onto the
-image grid, as the single-image decoders do. On the CPU, a region request runs a
-copy of the prepared plan sized to the region when that copy holds at most
-half the coefficients, or when the whole-level plan holds 16 Mi or more;
-otherwise it keeps whole levels. The prepared geometry GPU backends read
-always keeps whole levels. Images whose components all
-share one subsampling decode to that smaller grid and are not batched. Other
-component counts, mixed component metadata, and precision above 16 bits use
-the component-plane APIs. Explicit GPU requests return an error for
-inputs their plans cannot describe; they do not fall back to the CPU.
-Preparation failures are reported per input. A GPU decode error tied to a
-specific job names that job's source; a command-buffer failure fails the whole
-group.
+The batch decoders take full, region, reduced, and region-and-reduced
+requests and group Gray, RGB, or RGBA output by shape without padding, as
+`U8`, `U16`, or `I16` samples in NCHW or NHWC.
 
-`PreparedImageOperation` adds exact JPEG 2000 reduction counts and source regions
-to `CpuBatchDecoder::decode_operations` without changing the legacy
-`PreparedImage::plan()` or shared JPEG `Downscale` semantics. The receiving CPU
-session chooses admission afresh. Controlled operations use native execution
-and separate output groups so one operation's limits do not pool unrelated
-outputs; source indices refer to the submitted operation slice.
-`MetalBatchDecoder::decode_operations` and `submit_operations` accept the same
-descriptors and return the CPU path's geometry, native samples and grouping at
-any reduction the source supports. The Metal route requires an offset plan, so
-shapes it cannot describe, such as subsampled components below full resolution,
-fail per group with a capability error. Metal applies a `J2kDecodeControl`'s
-output limit and cancellation: tokens are checked during preparation, before a
-group's storage is allocated and before its command buffers are committed, and
-operations share a group only with operations carrying the same token. A
-working limit fails the operation as unsupported, because Metal working memory
-is not accounted against a host allowance. `CudaBatchDecoder::decode_operations`
-and `submit_operations` accept the same descriptors and return CUDA-resident
-groups with the CPU path's geometry and grouping; reversible and irreversible
-9/7 inputs both reproduce the CPU's samples, as CUDA prepared batches do.
-Operations decode only through their offset plans, so shapes
-without one, such as subsampled colour components, fail per group with a
-capability error, as in CUDA prepared batches. CUDA applies a
-`J2kDecodeControl`'s output limit and cancellation: tokens are checked during
-preparation and before each group is planned and submitted, submitted CUDA work
-runs to completion, and operations share a group only with operations carrying
-the same token. A working limit fails the operation as unsupported, because CUDA
-working memory is not accounted against a host allowance.
+- Components with different sampling factors are replicated onto the image
+  grid.
+- Images whose components all share one subsampling, other component counts,
+  mixed precision or signedness, and precision above 16 bits are not batched;
+  use the component-plane APIs.
+- On the CPU, a region request decodes a copy of the plan sized to the region
+  when that copy holds at most half the coefficients, or when the whole-level
+  plan holds 16 Mi or more. The GPU backends always keep whole levels.
+- Preparation failures are reported per input. An explicit GPU request is an
+  error for inputs its plans cannot describe; it does not fall back to the
+  CPU. A GPU error tied to one job names its source image; a command-buffer
+  failure fails the whole group.
 
-The additive C exact-operation API preserves ABI 1 layouts. Use
-`j2k_decoder_prepare_operations` for immutable input preparation, then
-`j2k_decoder_plan_region` and `j2k_decoder_decode_region_into` with
-`J2K_OPERATION_OPTIONS_INIT`. Explicit preparation is optional: a controlled
-native operation on an unprepared decoder prepares the source under its own
-working limit and cancellation, keeping only a successful preparation. Raw sRGB
-binding operations parse their source under the same controls; ICC conversion
-under a working limit requires a bounded matrix/TRC or gray-TRC profile with an
-XYZ connection space. The C++ wrapper exposes the same calls and an owned
-cancellation token. Existing C decode options keep their original reduction
-range. See [the C API documentation](../crates/j2k-c/docs/api.md).
+`PreparedImageOperation` adds an exact reduction and source region to a
+prepared image:
 
-Python CPU `ImageRequest`, single/batch decode and prepared operations accept
-exact JPEG 2000 reductions through 31, subject to the source's actual ladder.
-`Decoder.plan_region` borrows input for geometry and native/sRGB metadata;
-`Decoder.decode_srgb8` produces explicit display output under a control's
-working limit, output limit and cancellation. CPU `prepare(control=...)` and
-`decode_prepared(control=...)` apply controls to preparation and to each prepared
-decode separately. New prepared overrides require the receiving decoder to use
-the captured layout, so adding a control cannot silently change axis order. MPS
-decoders run exact requests and prepared operations on Metal, with output limits
-and cancellation; working limits, controlled preparation, explicit sRGB output
-and region planning remain CPU-only. CUDA and JPEG retain their documented subsets and reject unavailable
-exact-operation/control requests explicitly. See
-[the Python API and capability notes](../crates/j2k-python/README.md).
+| | `CpuBatchDecoder` | `MetalBatchDecoder` | `CudaBatchDecoder` |
+| --- | --- | --- | --- |
+| `decode_operations` | Yes | Yes, and `submit_operations` | Yes, and `submit_operations` |
+| Geometry, samples, and grouping | Reference | Same as the CPU | Same as the CPU, for 5/3 and 9/7 |
+| Output limit and cancellation | Yes | Yes | Yes |
+| Working-memory limit | Yes | `Unsupported` | `Unsupported` |
+| Components with different sampling | Yes | Full-image RGB only; other requests fail per group | Fail per group |
 
-Separately, the legacy Metal full-image/tile-batch display APIs can decode
-unsigned origin-zero single-tile sampled RGB codestreams without MCT using
-resident component plans and GPU sample replication. This covers full 4:2:2 and
-4:2:0 display tiles without changing the dense owned-batch boundary above.
-`sampled_color_batch_keeps_one_resident_submission` checks exact reversible
-pixels, odd dimensions, RGB8/RGBA8/RGB16 output, and one submission per batch.
-Other component-grid layouts use the existing CPU path. See
-[the architecture notes](architecture.md#metal-sampled-component-decode).
+On a GPU, a token is checked during preparation and before each group is
+submitted; submitted work runs to completion. Operations share a group only
+when they carry the same token. An operation with a control is placed in its
+own output groups on the CPU.
 
-The Burn adapter is described in [`docs/j2k-ml.md`](j2k-ml.md), and hardware
-and throughput results in [`docs/benchmark-evidence.md`](benchmark-evidence.md).
+Other interfaces to the same operations:
 
-The experimental Apple Silicon MPSGraph integration is described in
-[`docs/j2k-mpsgraph.md`](j2k-mpsgraph.md). It handles static rank-four integer
-groups and adds no codec features beyond this table.
+- **C**: `j2k_decoder_plan_region` and `j2k_decoder_decode_region_into` with
+  `J2K_OPERATION_OPTIONS_INIT`, and the optional
+  `j2k_decoder_prepare_operations`. See the
+  [C API](../crates/j2k-c/docs/api.md).
+- **Python**: `ImageRequest`, `Decoder.plan_region`, `Decoder.decode_srgb8`,
+  and `DecodeControl`. See the [Python README](../crates/j2k-python/README.md).
+- **Burn**: [`docs/j2k-ml.md`](j2k-ml.md). **MPSGraph**:
+  [`docs/j2k-mpsgraph.md`](j2k-mpsgraph.md).
+
+The Metal full-image and tile-batch display APIs also decode subsampled RGB;
+see [Metal sampled-component decode](architecture.md#metal-sampled-component-decode).
+`sampled_color_batch_keeps_one_resident_submission` tests it.
 
 ## Native wavelet output
 
-The public CPU `J2kDecoder::decode_wavelets` API extracts classic/HTJ2K
-reversible 5/3 bands as exact I64 and irreversible 9/7 bands as dequantized F32.
-It preserves tile and component geometry, sampling, precision, signedness,
-transform, color-transform status, and per-band quantization steps. Selected
-tiles/components/resolutions/orientations skip unrequested entropy work;
-packet parsing and active-tile coefficient allocation remain. No inverse DWT,
-color conversion, JP2 component mapping, or ICC transformation is performed.
-Reversible output requires no-quantization coding; native decode style and
-precision bounds still apply. There is no incremental-refinement or GPU
-coefficient-output contract in this version.
+`J2kDecoder::decode_wavelets` (CPU) returns reversible 5/3 bands as exact
+`I64` and irreversible 9/7 bands as dequantized `F32`, for classic and HTJ2K.
 
-`classic_and_ht_bands_reconstruct_original_odd_sized_image`,
+- It keeps tile and component geometry, sampling, precision, signedness, the
+  transform, whether a color transform applies, and each band's quantization
+  step.
+- Selecting tiles, components, resolutions, or orientations skips the entropy
+  decoding of everything else. Packets are still parsed and coefficient
+  storage is still allocated for the active tile.
+- It runs no inverse DWT, color conversion, JP2 component mapping, or ICC.
+- Reversible output needs a codestream coded without quantization.
+- There is no incremental refinement and no GPU coefficient output.
+
+Tests: `classic_and_ht_bands_reconstruct_original_odd_sized_image`,
 `irreversible_coefficients_reconstruct_within_one_lsb_of_pixel_decode`,
 `independent_signed_multitile_coefficients_preserve_origins_and_selection`,
 `high_precision_coefficients_never_round_through_float_storage`, and
-`selected_ll_bands_skip_entropy_work_and_never_run_inverse_dwt` check this
-contract. The [optional PyTorch/NumPy adapter](../crates/j2k-python/README.md)
-preserves it; its pixel tensors retain the narrower owned-batch input contract.
+`selected_ll_bands_skip_entropy_work_and_never_run_inverse_dwt`.
 
-## Local checks
-
-Run these while changing individual rows:
+## Checking this page
 
 ```bash
+cargo xtask public-support          # this page, the inventory, and the test list
+cargo xtask public-support --final  # also requires the core rows to be Done
 cargo test -p j2k-native
 cargo test -p j2k
-cargo test -p j2k-core
-cargo test -p j2k-compare
-cargo xtask stable-api
-cargo xtask public-support
 ```
 
-Before marking the matrix final, also run these (the full release checklist
-is in [`xtask/RELEASING.md`](../xtask/RELEASING.md)):
+`cargo xtask public-support` checks that this page has every required row and
+comparator and names every row of
+`corpus/j2k-conformance/support-inventory.tsv`, and that every test backing
+the matrix (listed in `xtask/src/public_support.rs`) still exists in the
+source tree. It does not run the tests. Full validation runs `--final`.
+Benchmark publication is checked separately:
 
 ```bash
-cargo xtask public-support --final
-cargo xtask ci
-cargo xtask release-integrity
-cargo xtask bench-build
 cargo run -p xtask --features adoption -- adoption-report
 ```
 
-Use `cargo run -p xtask --features adoption -- adoption-report`, not
-`cargo xtask adoption-report` (which is built without the feature).
-`adoption-report` rejects reports that lack the required external corpora and
-comparator results.
+Run it that way, not as `cargo xtask adoption-report`, which is built without
+the feature.
 
-## Conformance Manifest Row Mapping
+## Support inventory rows
 
-- `part1_core_lossless_53`: Part 1 reversible 5/3 core coverage.
+Rows of `corpus/j2k-conformance/support-inventory.tsv`:
+
+- `part1_core_lossless_53`: Part 1 reversible 5/3.
 - `part1_core_lossy_97_layers_precincts`: Part 1 irreversible 9/7, quality
-  layer, precinct, and progression coverage.
-- `part1_poc_tlm_sop`: POC, TLM, SOP, and progression-order coverage.
-- `part1_plt_sop_eph`: PLT, SOP, EPH, and POC coverage.
-- `openhtj2k_ds0_ht_12_b11`: HTJ2K refinement-pass vector coverage.
-- `openhtj2k_ds0_ht_09_b11`: HTJ2K refinement-pass vector coverage.
-- `plm_iso_vector_absent`: PLM behavior must be covered by repo-local tests
-  until an external PLM-bearing vector is pinned.
-- `icc_roundtrip_deferred`: JP2/JPH ICC round-trip is covered locally for
-  wrapper rewrap and coefficient-preserving JPH recode; external ICC parity
-  fixtures remain pending.
-- `encode_gt16_deferred`: 25-38 bit encode is in scope; exact classic
-  reversible raw-pixel encode/decode is covered locally for current 29-bit
-  DWT-safe single-tile and multi-tile profiles, 32/35-bit DWT profiles,
-  31/37-bit no-DWT profiles, and sampled component-plane multi-tile profiles,
-  while external parity coverage remains a publication gate; classic reversible requests beyond the Part 1 no-quantization bitplane field and HTJ2K requests beyond the Part 15 31-bitplane HT block limit reject explicitly.
-- `jpx_part2_deferred`: Part 2 extension support is out of scope.
+  layers, precincts, and progression orders.
+- `part1_poc_tlm_sop`: POC, TLM, SOP, and progression orders.
+- `part1_plt_sop_eph`: PLT, SOP, EPH, and POC.
+- `openhtj2k_ds0_ht_12_b11`, `openhtj2k_ds0_ht_09_b11`: HTJ2K refinement-pass
+  fixtures.
+- `plm_iso_vector_absent`: no external vector has PLM; this repository's
+  tests cover it.
+- `icc_roundtrip_deferred`: ICC write, rewrap, and recode are covered locally;
+  external ICC fixtures are not.
+- `encode_gt16_deferred`: encode above 16 bits is covered locally at the
+  limits in [High bit depths](#high-bit-depths); external encoder parity is
+  not.
+- `jpx_part2_deferred`: Part 2 extensions are out of scope.

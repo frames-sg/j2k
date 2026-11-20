@@ -9,7 +9,7 @@ command buffers and encoders are retained into owned Rust handles before the
 constructor returns. Codec-specific kernels stay in the codec
 adapter crates.
 
-Version 0.9 exposes this ownership model directly. Owned expert values are
+Owned expert values are
 `objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn MTL...>>`; borrowed
 values are `&ProtocolObject<dyn MTL...>`. Submission guards retain command
 buffers, resources, and events until `wait` or blocking `Drop`, and exact

@@ -22,8 +22,8 @@ byte-identical codestreams on every backend. The quantizer multiplies by the
 binary32 reciprocal of each step size.
 
 `TranscodePrecision::F64` keeps the binary64 path that was the default before
-this release. It reproduces that release's CPU output byte for byte. It runs
-only on the CPU, and its output differs from GPU output. An explicit Metal or
+0.14 and reproduces 0.13's CPU output byte for byte. It runs only on the CPU,
+and its output differs from GPU output. An explicit Metal or
 CUDA accelerator rejects it with `TranscodeStageError::Unsupported`; `Auto`
 runs it on the CPU.
 

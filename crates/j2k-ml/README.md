@@ -29,22 +29,17 @@ operations.
 With the `cpu` feature, `CpuBurnDecoder::decode_batch(&[ImageInput])` accepts
 JPEG and JPEG 2000 or HTJ2K together. `ImageInput::Jpeg` carries a
 `j2k_jpeg::JpegBatchInput`; `ImageInput::Jpeg2000` borrows an `EncodedImage`.
-The common `BurnBatchDecode` exposes groups, indexed codec-tagged errors and
-group failures through accessors. Group order is unspecified; `source_indices()`
-is authoritative. Each group exposes returned sample metadata, typed warnings,
-`recovered()`, and optional `j2k_info()` for JPEG 2000 details. Session strictness
-controls both codec families while retaining JPEG color hints. The existing
-J2K `decode` and prepared paths remain available. JPEG region, reduction and GPU
-codec execution remain unsupported; a GPU Burn destination uses an ordinary upload.
 
-JPEG tensor output remains RGB uint8 by default, with grayscale expanded to three identical channels. Grayscale JPEG 2000 and HTJ2K remain one channel. Output metadata describes the returned tensor. A later explicit `channels="native"` option may preserve grayscale JPEG as one channel without changing existing defaults. Source component counts, when exposed, are per input row and remain aligned with source_indices.
-
-The Rust session defaults to strict decoding with the same pixel-integrity
-contract as Python: complete required image data, no damage concealment,
-missing-data substitution or unverified completion. Leniency permits supported
-recovery, records it per row, and never also reports that row as an error.
-Cosmetic warnings do not set `recovered()`. Unknown intent at progressive EOF
-is rejected by default. No channels option is currently exposed.
+- The returned `BurnBatchDecode` exposes groups, per-input errors tagged with
+  their codec, and group failures. Group order is unspecified; use
+  `source_indices()`.
+- JPEG decodes on the CPU, full image only, to RGB `U8` with grayscale
+  expanded to three channels. Grayscale JPEG 2000 stays one channel.
+- Decoding is strict by default for both codecs: an image that needs
+  recovery, or whose completion cannot be verified, is an error. A lenient
+  session returns such a JPEG with `recovered()` set and no error. A lenient
+  JPEG 2000 metadata recovery is reported as a group warning instead.
+- `j2k_info()` gives the JPEG 2000 metadata of a group.
 
 CUDA can decode directly into Burn-owned device storage:
 
@@ -95,8 +90,8 @@ The adapter returns ordinary rank-4 NCHW or NHWC `U8`, `U16`, or `I16` Burn
 tensors. It does not own normalization, augmentation, dataset policy, or a
 second decoding pipeline.
 
-See the [Burn integration guide](../../docs/j2k-ml.md) for the full API,
-support matrix, safety notes, test commands, and benchmark results. The API docs
+See the [Burn integration guide](../../docs/j2k-ml.md) for the GPU support
+matrix, error behavior, tests, and benchmarks. The API docs
 are on [docs.rs](https://docs.rs/j2k-ml), the source is in the
 [J2K repository](https://github.com/frames-sg/j2k), and codec support is listed
 in [public support](../../docs/public-support.md).

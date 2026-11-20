@@ -97,7 +97,7 @@ input is never offered for byte copying, and it decodes on the CPU only.
 
 `prepare_batch` and `CpuBatchDecoder::new` take `BatchDecodeOptions`, which is
 `#[non_exhaustive]`. Start from `BatchDecodeOptions::default()` and assign
-`layout`, `settings`, and `workers`:
+`layout`, `settings`, `workers`, or `max_working_memory_bytes`:
 
 ```rust
 let mut options = j2k::BatchDecodeOptions::default();
@@ -107,52 +107,41 @@ let decoder = j2k::CpuBatchDecoder::new(options);
 
 `BatchLayout` is defined in `j2k-core` and re-exported here.
 
-## Encode depth, quantization, and output samples
+## Lossy encode behavior
 
-The decomposition option selects a depth under the existing progression policy;
-images narrower than 64 samples retain the undecomposed default. The encoder
-then constrains that selection by the smallest tile component, including partial
-edge tiles and component sampling. The effective-depth helper, transform plan,
-profile row length (`1 + 3 * depth`), and COD signaling use that resolved depth.
+- **Decomposition depth.** The requested depth is capped by the smallest tile
+  component, counting partial edge tiles and component sampling. By default,
+  images narrower than 64 samples are not decomposed. A quantization profile
+  has `1 + 3 * depth` entries for the resolved depth, which COD also signals.
+- **Component quantization profile.** Weights multiply the nominal step before
+  it is rounded to a stored step, and a weighted step that cannot be stored is
+  an error. A profile of all ones is the same as no profile, whose steps may
+  saturate instead. For example, with 30-bit input and two guard bits the
+  nominal step 0.25 clips to the finest stored step, 0.5: weights near one are
+  rejected and weight two is accepted.
+- **Byte and bits-per-pixel targets.** The encoder searches for a quantization
+  scale; each probe is a full encode. It returns the first result within 1% of
+  the target, or the finest admissible scale if that fits. After
+  `psnr_iteration_budget` bracketed probes it returns the candidate closest to
+  the target within the size allowance.
+- **PSNR targets** are a minimum quality within `psnr_tolerance_db`. The
+  search doubles, then bisects, and validates the codestream it returns. It
+  does not enumerate every scale if quality is not monotonic in scale.
 
-An active component quantization profile weights the unrounded nominal step,
-before stored-step rounding. It rejects unrepresentable weighted steps. An exact
-all-ones profile is the explicit identity/disabled profile and preserves the
-no-profile codestream, whose global steps may saturate. This distinction matters
-at high precision: with 30-bit input and two guard bits, nominal 0.25 clips to the
-finest stored step 0.5. Active weights near one remain below the representable
-range; weight two reaches it. Applying weights to an already clipped rate-search
-candidate would change that contract and the profile's ratios.
+## Output sample conversion
 
-Rate search uses scales at or above one within the common admissible interval of
-all weighted steps. Byte/BPP targets return the first candidate within 1% of the
-target: each probe is a full encode, the first at a scale guessed from the
-target bits per sample, the bit depth and whether the multi-component transform
-applies, and the next scale is interpolated from
-the measured log sizes, bisecting a bracket that fails to halve. The finest
-admissible scale is returned when it fits. After
-`psnr_iteration_budget` bracketed probes, the candidate closest to the target
-within the size allowance is re-encoded. CPU searches return the selected probe
-directly; accelerator searches re-encode the selected scale.
-PSNR specifies a minimum quality within `psnr_tolerance_db`; its search uses
-doubling and bounded bisection, evaluates an encountered admissible boundary,
-retains a feasible candidate, and validates the returned codestream. It also probes
-beyond an initial quality miss and checks the endpoint if no probe succeeds;
-it does not exhaustively enumerate potentially non-monotonic quality islands.
+For 1- to 16-bit sources:
 
-Prepared native batches preserve significant sample values and signed storage.
-For the supported 1–16-bit source routes, requested `Gray8`/`Rgb8`/`Rgba8`
-output scales unsigned sample ranges to 0–255 (negative samples clamp to zero).
-Requested `Gray16`/`Rgb16`/`Rgba16` output widens unsigned sources of at most
-eight bits to 0–65535 and preserves native values for 9–16-bit sources. Signed
-sources of every precision keep their values as 16-bit two's complement, as the
-`I16` native samples hold them. Synthesized alpha uses the
-output storage maximum (the native significant maximum above eight bits), while
-genuine alpha is converted as a source component. Irreversible integer output
-rounds the centered 9/7 sample ties-to-even before applying the unsigned level
-shift. CUDA and Metal device decodes apply the same conversion to signed
-grayscale and color sources. Supported formats and backend routing remain
-API-specific.
+- Native batch output (`U8`, `U16`, `I16`) keeps sample values and signedness.
+- `Gray8`/`Rgb8`/`Rgba8` output scales the unsigned sample range to 0–255;
+  negative samples clamp to zero.
+- `Gray16`/`Rgb16`/`Rgba16` output widens unsigned sources of at most 8 bits
+  to 0–65535 and keeps native values for 9- to 16-bit sources. Signed sources
+  keep their values as 16-bit two's complement.
+- Alpha the decoder synthesizes is the output maximum (above 8 bits, the
+  native maximum). Real alpha is converted like any other component.
+- Irreversible 9/7 output rounds ties to even before the level shift.
+- CUDA and Metal decodes apply the same conversions.
 
 ## Links
 

@@ -35,13 +35,12 @@ pixel decode rejects.
 
 ## Request size
 
-`max_output_bytes` (512 MiB by default) bounds a request's output. Full-frame
-decodes are no longer held to the fixed 512 MiB per-decode working-memory
-ceiling of `j2k` 0.13.1: measured on 8-bit HTJ2K images through this ABI,
-6144x6144 RGB, 8192x8192 gray, and 8192x8192 RGB (2048x2048 tiles) full-frame
-decodes succeed with exact samples. The codec still enforces its own allocation
-budgets, so a request can return `J2K_RESOURCE_LIMIT` ("image is too large")
-from `j2k_decoder_decode_into` after `j2k_decoder_output_info` succeeds.
+`max_output_bytes` (512 MiB by default) bounds a request's output. The codec
+also enforces its own allocation budgets, so a request can return
+`J2K_RESOURCE_LIMIT` ("image is too large") from `j2k_decoder_decode_into`
+after `j2k_decoder_output_info` succeeds. Measured through this ABI on 8-bit
+HTJ2K images, full-frame decodes of 6144x6144 RGB, 8192x8192 gray, and
+8192x8192 RGB (2048x2048 tiles) succeed.
 Decode such images as regions, at reduced resolution, or row by row with
 `j2k_decoder_decode_rows`, which needs no whole-image buffer. Peak memory of
 `j2k_decoder_decode_into` includes the codec-owned copy of the output in

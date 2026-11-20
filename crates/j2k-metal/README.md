@@ -6,10 +6,10 @@ The crate decodes into Metal buffers and runs encode stages on Metal for the
 supported workloads. Runtime setup comes from `j2k-metal-support`; the codec
 kernels live in this crate.
 
-Since version 0.9, the expert constructors and raw buffer handoffs take
-`objc2-metal` protocol objects. Pass retained protocol objects for devices,
-queues, command buffers, and buffers that J2K should own, and borrowed
-references otherwise. The older `metal-rs` types are no longer accepted.
+The expert constructors and raw buffer handoffs take `objc2-metal` protocol
+objects. Pass retained protocol objects for devices, queues, command buffers,
+and buffers that J2K should own, and borrowed references otherwise. `metal-rs`
+types are not accepted.
 
 Device decodes follow the CPU's sample conversion for signed grayscale and
 color sources, including prepared, referenced, repeated, and distinct batches.
@@ -27,8 +27,11 @@ of CPU workers for part of a large classic RGB8 group while Metal runs. The spli
 uses code-block dimensions, coding passes, and payload sizes. Reconstruction,
 color conversion, and final packing stay on Metal, with exact resident output in
 the requested NHWC or NCHW layout. Small batches, repeated plans, grayscale,
-higher bit depths, and HTJ2K use the existing GPU path. The ordinary `decode_prepared`
-and submission methods retain GPU Tier-1 execution.
+higher bit depths, and HTJ2K run entirely on the GPU.
+
+`decode_prepared` and `submit_prepared` also move Tier-1 to CPU workers on
+their own for one shape: a group of at least eight distinct classic JPEG 2000
+images with unsigned 8-bit RGB and subsampled components.
 
 ```rust
 let mut decoder = j2k_metal::MetalBatchDecoder::system_default()?;
@@ -38,34 +41,32 @@ let decoded = decoder.decode_prepared_cooperative(&prepared, workers)?;
 // Inspect decoded.errors() and decoded.group_errors() before consuming groups.
 ```
 
-The cooperative policy currently requires a compatible group of at least eight
-distinct, full-resolution, reversible RGB8 images, each with at least 16,384
-pixels. Its benefit depends on input complexity, CPU budget, and device. Each
-group's dispatch report exposes `cpu_tier1_images` so callers can identify when
-CPU entropy work was used.
+The cooperative mode needs a compatible group of at least eight distinct,
+full-resolution, reversible RGB8 images, each with at least 16,384 pixels.
+Its benefit depends on input complexity, CPU budget, and device. CPU workers
+share a queue ordered by estimated work; the initial CPU share was calibrated
+on an Apple M4 Pro and scales with the worker budget. Each group's dispatch
+report has `cpu_tier1_images`, the number of images whose entropy decoding ran
+on the CPU.
 
-CPU workers share a queue ordered by estimated work, taking another item when
-they finish. The initial CPU share is calibrated on the M4 Pro and scales with
-the requested worker budget.
+## Encode routing
 
-Encoding runs stage by stage on Metal unless one of the resident paths below
-accepts the shape. For lossless HTJ2K encode to host memory, `Auto` runs
-coefficient preparation and HT Tier-1 on Metal and packetizes on the CPU for
-RGB8 at 1,024 x 1,024 and Gray8/RGB8 at 2,048 x 2,048. The 512 x 512 cells and
-Gray8 at 1,024 x 1,024 stay on the CPU. These thresholds were measured on an
-Apple M4 Pro.
+`Auto` uses Metal for an encode only in the cases measured faster on an Apple
+M4 Pro:
 
-Fully resident packetization and codestream assembly is a separate batch
-path: batched Gray8 can use it from 512 x 512, and batched RGB8 from
-1,024 x 1,024. Explicit Metal requests run on Metal when the shape is
-supported and otherwise return `UnsupportedMetalRequest`; they never switch to
-another backend.
+- **Lossless HTJ2K to host memory**, in batches of more than one image: RGB8
+  at 1,024 x 1,024, and Gray8 or RGB8 at 2,048 x 2,048. Metal runs coefficient
+  preparation and HT Tier-1; the CPU packetizes.
+- **Lossy 8-bit RGB** of at least 4,194,304 pixels (2,048 x 2,048): Metal runs
+  its transform and quantization stages.
 
-`Auto` skips Metal for small tiles, irregular packets, and stages where
-transfer and dispatch cost more than they save. In the host-output encode
-cells listed above, `Auto` can run deinterleave, forward RCT/ICT, forward 5/3
-and 9/7 DWT, subband quantization, and HT Tier-1 on Metal. Classic Tier-1,
-packetization, and codestream assembly stay on the CPU for that path.
+Everything else encodes on the CPU under `Auto`, including 512 x 512 images
+and Gray8 at 1,024 x 1,024. Classic Tier-1, packetization, and codestream
+assembly stay on the CPU for host output.
+
+Explicit Metal requests have no size threshold. They run on Metal when the
+shape is supported and otherwise return `UnsupportedMetalRequest`; they never
+switch to another backend.
 
 ## Fully resident encode
 

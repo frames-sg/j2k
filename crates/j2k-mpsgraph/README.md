@@ -14,7 +14,7 @@ cargo run -p j2k-mpsgraph --example resident_reference_graph
 ```
 
 The example builds a graph and runs it three ways (on completed buffers,
-pipelined and blocking, and nonblocking), checking each against the CPU
-decoder. See
+pipelined and blocking, and nonblocking), checking each result against a
+higher-precision CPU calculation. See
 [`../../docs/j2k-mpsgraph.md`](../../docs/j2k-mpsgraph.md) for the API, safety
 notes, tests, and benchmarks.

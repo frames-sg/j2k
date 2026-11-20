@@ -40,7 +40,7 @@ the decoder executable SHA-256 was
 `483c92fa604823f98d899642367f68a1ae62a91276600aeb68cdfbaddbcd0fa4`.
 
 OpenJPH 0.27.0 produces a materially different result for this deliberately
-overlapping refinement stream: 305 of its output bytes differ from OpenHTJ2K
+overlapping refinement stream: 290 of its output bytes differ from OpenHTJ2K
 by more than one LSB. That output is retained as
 `.openjph.oracle.raw` (SHA-256
 `dddeda5af064c87abfce577ea1e6c2d714c203cef87ebb5bd3bf2507efe052b0`)

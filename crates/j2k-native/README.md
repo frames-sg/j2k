@@ -18,20 +18,17 @@ Most application code should use `j2k` instead.
 
 ## Repeated region decoding
 
-With `std`, existing region decode calls automatically retain a bounded packet
-boundary directory after the second eligible request through the same `Image`.
-This includes the component-plane and prepared-region APIs. Independent contexts
-share the immutable directory; no new decoder API, setting, or feature is needed.
-The first request avoids a full preparation scan. Unsupported layouts and failed
-optional scans keep the ordinary parser. Preparation currently covers one RPCL
-tile with one tile-part, inline headers, no POC, and no PLT, with at most 16 MiB
-retained per image. Allocation pressure can evict an unshared directory before
-retrying. `no_std` builds keep the existing parser.
+With `std`, the second eligible region decode through one `Image` builds a
+packet boundary directory that later region decodes reuse, including the
+component-plane and prepared-region APIs. It needs no setting, holds at most
+16 MiB per image, and is shared between contexts.
 
-The native benchmark uses the existing integer-output component method. Its
-control constructs a fresh `Image` per request outside the decode timer to
-prevent reuse. Image setup is measured separately. To run 1024² regions on a local workload with twelve shared
-workers:
+The directory covers images with one RPCL tile in one tile-part, inline packet
+headers, no POC, and no PLT. Other layouts, and `no_std` builds, parse packets
+on every request. Under allocation pressure an unshared directory can be
+evicted.
+
+To benchmark 1024x1024 regions of a local image with twelve workers:
 
 ```
 J2K_PACKET_DIRECTORY_SOURCE=/path/to/large.jp2 \
@@ -39,10 +36,10 @@ J2K_PACKET_DIRECTORY_REGION_SIDE=1024 J2K_PACKET_DIRECTORY_THREADS=12 \
 cargo bench -p j2k-native --bench direct_cpu -- packet_directory
 ```
 
-Keep `J2K_PROFILE_STAGES` unset for timing. Results include bit-for-bit plane
-checks, interleaved A/A and A/B latency, fresh/reused contexts, retained capacity,
-and eight concurrent requests on the same worker pool. Benchmark names include
-the input name, dimensions, region size and worker count.
+Keep `J2K_PROFILE_STAGES` unset for timing. The bench checks planes bit for
+bit and reports latency with fresh and reused contexts and with eight
+concurrent requests. Its control builds a fresh `Image` per request outside
+the timer.
 
 ## Links
 

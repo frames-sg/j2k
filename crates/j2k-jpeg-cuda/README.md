@@ -31,9 +31,11 @@ other builds may embed placeholder PTX. Set `J2K_REQUIRE_CUDA_OXIDE_BUILD=1` on
 CUDA test and benchmark hosts to make missing PTX a build error. Calling a
 placeholder kernel returns an error saying the PTX was not built.
 
-Scaled and region-scaled decodes run on the CPU, follow the CPU JPEG sampling
-rules, and report the scaled output dimensions. Scaled JPEG decoding does not
-run on the GPU.
+An explicit CUDA decode covers full-image `Rgb8` output of single-scan
+baseline or extended 8-bit YCbCr JPEGs at 4:2:0, 4:2:2, or 4:4:4. Region,
+scaled, and region-scaled requests are an error with an explicit CUDA request.
+`Auto` never selects CUDA for JPEG decode: it decodes on the CPU, including
+those requests.
 
 ## Links
 

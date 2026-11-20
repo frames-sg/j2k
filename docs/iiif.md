@@ -263,9 +263,9 @@ arguments in Cantaloupe's order.
 | Both tools fail (no samples left at a reduction, unsupported precision or components) | 60 |
 | One tool fails | 36 |
 
-The 36 are differences listed in the CLI README: samples deeper than 16 bits
-(j2k refuses BMP, OpenJPEG writes it), components with different sampling
-(j2k refuses; OpenJPEG writes one PNM per component or the first component
-to BMP), a palette image at a reduction (j2k fails, OpenJPEG writes an image),
-and a 6x6 image whose coarse levels are empty, which OpenJPEG fails to decode
-at reduction 1.
+Three of the four causes are differences listed in the CLI README: samples
+deeper than 16 bits (j2k refuses BMP, OpenJPEG writes it), components with
+different sampling (j2k refuses; OpenJPEG writes one PNM per component or the
+first component to BMP), and a palette image at a reduction (j2k fails,
+OpenJPEG writes an image). The fourth is a 6x6 image whose coarse levels are
+empty, which OpenJPEG fails to decode at reduction 1.

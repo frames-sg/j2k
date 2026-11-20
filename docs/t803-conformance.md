@@ -23,12 +23,6 @@ generated from the same release commit with no development-only features.
 
 ## Scope
 
-| Implementation under test | Result | Where stages run |
-| --- | --- | --- |
-| `j2k` CPU | Part 1 Profile-1 Cclass-1, Profile-1 Cclass-1HF, Annex G JP2 reader; Part 15 DS1-HM Cclass-1h at MMAGB 15, Cclass-1HFh at MMAGB 20, Annex G JPH reader at MMAGB 15. | CPU. |
-| `j2k-cuda` | Same Part 1 and Part 15 points. | Each case reports parsing, Tier-1, transforms, output, and transfers as CPU, CUDA, or not used. |
-| `j2k-metal` | Same Part 1 and Part 15 points. | Each case reports parsing, Tier-1, transforms, output, and transfers as CPU, Metal, or not used. |
-
 The GPU adapters may run some stages on the CPU; such cases are labelled
 `hybrid`. Annex G JP2 color and component normalization currently runs on the
 CPU for both GPU adapters. JPX / Part 2 is out of scope, except for the
@@ -43,147 +37,31 @@ reports for one release commit.
 ## 0.14.0 results
 
 All five reports on the [0.14.0 release](https://github.com/frames-sg/j2k/releases/tag/v0.14.0)
-pass all 160 selected decoder cases (90 Part 1, 70 Part 15) with no skips,
-and their encoder checks pass. The CPU reports are from Linux x86-64,
-macOS arm64, and Windows x86-64. CUDA ran on an NVIDIA GeForce RTX 4070 SUPER
-and Metal on an Apple M4.
-
-Both GPU reports have 81 hybrid cases and 79 CPU-only cases out of 160;
-none runs entirely on the GPU. The release verifier checked the reports
-for the tagged source after [hosted validation](https://github.com/frames-sg/j2k/actions/runs/43311353177)
-and [hardware validation](https://github.com/frames-sg/j2k/actions/runs/43311370162)
-passed.
-
-## 0.13.1 results
-
-All five reports on the [0.13.1 release](https://github.com/frames-sg/j2k/releases/tag/v0.13.1)
-pass all 160 selected decoder cases (90 Part 1, 70 Part 15) with no skips,
-and their encoder checks pass. The CPU reports are from Linux x86-64,
-macOS arm64, and Windows x86-64. CUDA ran on an NVIDIA GeForce RTX 4070 SUPER
-and Metal on an Apple M4 Pro.
-
-Both GPU reports have 81 hybrid cases and 79 CPU-only cases out of 160;
-none runs entirely on the GPU. The release verifier checked the reports
-for the tagged source after [hosted validation](https://github.com/frames-sg/j2k/actions/runs/40942188426)
-and [hardware validation](https://github.com/frames-sg/j2k/actions/runs/40942189496)
-passed.
-
-## 0.13.0 results
-
-All four reports on the [0.13.0 release](https://github.com/frames-sg/j2k/releases/tag/v0.13.0)
-pass all 160 selected decoder cases (90 Part 1, 70 Part 15) with no skips,
-and their encoder checks pass. The CPU reports are from Linux x86-64,
-macOS arm64, and Windows x86-64. Metal ran on an Apple M4.
-
-The Metal report has 81 hybrid cases and 79 CPU-only cases out of 160;
-none runs entirely on the GPU. The release verifier checked the reports
-for the tagged source after [hosted validation](https://github.com/frames-sg/j2k/actions/runs/40364458826)
-and [Metal hardware validation](https://github.com/frames-sg/j2k/actions/runs/40364512496)
-passed. The CUDA report is pending under the
-[CUDA waiver](../xtask/release-evidence/cuda-waiver-0.13.0.md).
-
-## 0.12.0 results
-
-All five reports on the [0.12.0 release](https://github.com/frames-sg/j2k/releases/tag/v0.12.0)
-pass all 160 selected decoder cases (90 Part 1, 70 Part 15) with no skips,
-and their encoder checks pass. The CPU reports are from Linux x86-64,
-macOS arm64, and Windows x86-64. CUDA ran on an NVIDIA GeForce RTX 4070 SUPER
-and Metal on an Apple M4.
-
-Both GPU reports have 81 hybrid cases and 79 CPU-only cases out of 160;
-none runs entirely on the GPU. The release verifier checked the reports
-for the tagged source after [hosted validation](https://github.com/frames-sg/j2k/actions/runs/37427079958)
-and [hardware validation](https://github.com/frames-sg/j2k/actions/runs/37431440941)
-passed.
-
-## 0.11.2 results
-
-The [0.11.2 release](https://github.com/frames-sg/j2k/releases/tag/v0.11.2)
-has all five JSON reports and their Markdown versions for commit
-`75a3e0618e1963d8403e4edad0fa95ee1c217ec1`. Each report passes all 160
-selected decoder cases (90 Part 1, 70 Part 15) with no skips. The CPU reports
+pass all 160 selected decoder cases with no skips, and their encoder checks
+pass: 90 Part 1 decoder and JP2 cases, and 70 Part 15 cases (60 codestream
+comparisons plus the ten Annex G JPH families). For each BSET, the harness
+picks the largest BMAGB that does not exceed the stated MMAGB. The CPU reports
 are from Linux x86-64, macOS arm64, and Windows x86-64. CUDA ran on an NVIDIA
 GeForce RTX 4070 SUPER and Metal on an Apple M4.
 
 Both GPU reports have 81 hybrid cases and 79 CPU-only cases out of 160; none
-runs entirely on the GPU. The release verifier checked the reports after the
-[hosted validation](https://github.com/frames-sg/j2k/actions/runs/36353712175)
-and [hardware validation](https://github.com/frames-sg/j2k/actions/runs/36355267186)
+runs entirely on the GPU. Parsing runs on the CPU in every case; hybrid cases
+run the supported Tier-1, dequantization, IDWT, MCT, color/output, and transfer
+stages on the GPU. The stage labels come from dispatch counters recorded
+during the run. The release verifier checked the reports for the tagged source
+after [hosted validation](https://github.com/frames-sg/j2k/actions/runs/43311353177)
+and [hardware validation](https://github.com/frames-sg/j2k/actions/runs/43311370162)
 passed.
 
-## 0.11.0 results
+The report also decodes, with the vendored OpenJPEG 2.5.3, every selected
+codestream whose COD enables the multi-component transform and whose SIZ has
+more than four components (`p0_13.j2k`, with 257 components), and compares
+component metadata and samples before any T.803 normalization.
 
-All five reports on [release 0.11.0](https://github.com/frames-sg/j2k/releases/tag/v0.11.0)
-are for commit `09d746a7b040258eb5dd505b44384eec0152a8b9` and pass all 160
-selected decoder cases with no skips. The CPU reports are from Linux x86-64,
-macOS arm64, and Windows x86-64, and the CUDA and Metal reports from real
-hardware. The release verifier checked them after the hosted and GPU release
-workflows passed.
-
-## 0.9.0 results
-
-The macOS arm64, Linux x86-64, and Windows x86-64 (MSVC) CPU reports on
-[release 0.9.0](https://github.com/frames-sg/j2k/releases/tag/v0.9.0) each pass
-all **160 selected cases with no skips** at commit
-`b197f01ab4b9271f1cbc36921755a5b9d588bd5a`: 90 Part 1 decoder/JP2 cases and
-70 Part 15 decoder/JPH cases. The 70 Part 15 cases are 60 codestream
-comparisons plus the ten Annex G JPH families. For each BSET, the harness picks
-the largest BMAGB that does not exceed the stated MMAGB.
-
-Both GPU reports also pass 160/160, with 81 hybrid and 79 CPU-only cases and
-none entirely on the GPU. Part 1 has 48 hybrid and 42 CPU-only cases; Part 15
-has 33 and 37. CUDA ran on an NVIDIA GeForce RTX 4070 SUPER and Metal on an
-Apple M4 Pro. Parsing ran on the CPU in every case; hybrid cases ran the
-supported Tier-1, dequantization, IDWT, MCT, color/output, and transfer stages
-on the GPU. The totals happen to match, but the per-case dispatch counts differ
-between backends (for example, CUDA records uploaded bytes and Metal records
-host-input counts). The stage labels come from dispatch counters recorded
-during the run.
-
-The CPU Annex D/F encoder matrix passes 56/56 cases. 55 are decoded by the
-pinned T.804 OpenJPEG decoder. OpenJPEG 2.5.3 rejects the required HT+RGN case,
-so that case is decoded by a separately pinned OpenHTJ2K decoder instead. The
-CUDA and Metal matrices each pass 35/35 through OpenJPEG; CUDA has 34 hybrid
-cases and one CPU-only case, Metal 33 hybrid and two CPU-only. Encoder results
-are informative and are not part of the decoder conformance statement.
-
-All five reports are for the commit above. The release assets include JSON and
-Markdown versions listed in `SHA256SUMS`; the schema-7 JSON SHA-256 hashes are:
-
-| Implementation/platform | Report SHA-256 |
-| --- | --- |
-| CPU/macOS arm64 | `9638c41d41842e99f385ea71fd8c83791416d512233a5fed43081c9964d5092b` |
-| CPU/Linux x86-64 | `509502eddf48ebe5d77d614234746693be30e1c537f1890af67edf4593de64eb` |
-| CPU/Windows x86-64 MSVC | `57569214409450b27edb8ba1634e4e2fc6778f52370ef4b98a0ed94b093c3a9a` |
-| CUDA/Linux x86-64, RTX 4070 SUPER | `84c52044254278bb45e48664d94765d8fd44bdd07fc6b03d610fa983f5944039` |
-| Metal/macOS arm64, M4 Pro | `2206dd313ad5f10a16652ecc8b08e5c9f4a5f72eb0b31be361411a0462644d0c` |
-
-### The `c1-c0p0-13` fix
-
-`c1-c0p0-13` used to fail because of a bug in the test harness, not the
-decoder. The codestream has 257 components and uses the reversible component
-transform. T.803 B.2.5 compares Cclass-0 output before the inverse MCT, so the
-first component's reference value is 1; the Cclass-1 component-0 reference
-after the inverse RCT is 0. The harness guessed whether MCT was used from the
-display colorspace, which is unknown for 257 components. It now reads the COD
-transform flag and transform kind with the codestream inspector, reconstructs
-the pre-MCT component for Cclass-0, and reports the MCT stage from the same
-data. A 257-component regression test covers this.
-
-The report now also decodes, with a second decoder, every selected codestream
-whose COD enables MCT and whose SIZ has more than four components. For
-`p0_13.j2k`, J2K and the vendored OpenJPEG 2.5.3 produced identical component
-metadata and samples for all 257 components before any T.803 normalization;
-both output hashes are
-`a01808e0cbf14288274188c8bebb5ef8c2aa46304eca964a2ac71bed1713c1fd`.
-OpenJPEG CLI 2.5.4 also wrote 257 PGX components with no sample differences;
-the SHA-256 of the concatenated one-sample components was
-`54acfbfedc4d8da40f76f275e1a98f10af8ef1fb9fb39e5a67a00aabcbe6597c`.
-
-`p0_13.j2k`, `c0p0_13.pgx`, and `c1p0_13-0.pgx` are byte-identical in ITU's
-current attachment, ISO's 2024 electronic insert, and ITU's 2002 suite. No
-corpus mapping, hash, dimension, precision, signedness, reduction, crop,
-tolerance, or comparison arithmetic was changed to make the case pass.
+Releases 0.9.0, 0.11.0, 0.11.2, 0.12.0, 0.13.0, and 0.13.1 passed the same 160
+cases; their reports are attached to their GitHub releases. The 0.13.0 release
+has no CUDA report: it was published under a
+[CUDA waiver](../xtask/release-evidence/cuda-waiver-0.13.0.md).
 
 ## Running the tests
 
@@ -221,8 +99,9 @@ cargo xtask t803 verify --scope metal --candidate-sha "$RC_SHA" \
   --report path/to/metal.json
 ```
 
-`--scope all` verifies all five reports together; the tag-publish workflow uses
-it for releases that include Part 15.
+`--scope all` verifies all five reports together. The tag-publish workflow
+uses it for every release, except one with a reviewed CUDA waiver, which it
+verifies with `--scope cpu` and `--scope metal`.
 
 Verification requires all 160 selected Part 1/Part 15 decoder and JP2/JPH cases
 with no skips, every report passing, matching source and corpus hashes, and the

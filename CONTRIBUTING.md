@@ -38,21 +38,34 @@ The GPU validation workflow only runs on `workflow_dispatch`, not on
 `pull_request` or `push`, because it uses paid self-hosted CUDA and Metal
 runners.
 
-Pull requests that touch CUDA, Metal, shared GPU-profile paths, or
-`.github/workflows/gpu-validation.yml` must record a successful manual
-`gpu-validation.yml` dispatch for the PR head SHA before merge. The normal CI
-planner checks the PR diff, queries `gpu-validation.yml` runs by head SHA, and
-fails until the required quick backend job names have succeeded:
+A pull request needs a successful manual `gpu-validation.yml` dispatch for its
+head SHA before merge when it changes any of:
 
-- `CUDA quick validation` for CUDA or shared GPU changes.
-- `Metal quick validation` for Metal or shared GPU changes.
+- a CUDA or Metal crate, or a crate one of them depends on (`j2k`,
+  `j2k-native`, `j2k-core`, and so on);
+- `.cargo/`, `.github/workflows/`, `scripts/`, or `xtask/`;
+- `Cargo.toml`, `Cargo.lock`, `deny.toml`, `rust-toolchain.toml`, or
+  `typos.toml`.
 
-Successful GPU validation automatically retries failed jobs in the latest PR checks run for that exact head SHA if its GPU evidence job failed.
-This includes fork PRs validated through a maintainer review branch.
+Markdown in `docs/`, `crates/`, `xtask/`, and `corpus/` is documentation and
+does not count, except files under a `src/` directory or
+`xtask/release-evidence/`. A documentation-only change runs the Documentation
+job: the rustdoc build, `release-integrity`, `public-support`, and
+`repo-lint`.
+
+`scripts/ci_plan.py` decides this from the PR diff. CI then queries
+`gpu-validation.yml` runs by head SHA and fails until the required jobs have
+succeeded:
+
+- `GPU / CUDA quick validation` for changes that can affect CUDA.
+- `GPU / Metal quick validation` for changes that can affect Metal.
+
+When GPU validation succeeds, it reruns the failed jobs of the latest PR
+checks run for that head SHA, if the GPU evidence job was what failed.
 
 A release candidate needs one `target=all`, `mode=full` dispatch for its exact
-commit in which `CUDA full release validation` and `Metal full release
-validation` both succeed. Performance and profiling runs go in the separate
+commit in which `GPU / CUDA full release validation` and `GPU / Metal full
+release validation` both succeed. Performance and profiling runs go in the separate
 `gpu-benchmarks.yml` workflow so they do not compete with validation.
 
 Hosted macOS CI runs `cargo xtask metal-compile`, which only compiles and runs
@@ -89,5 +102,6 @@ pull request, so the change is reviewed before it reaches `main`.
 The release process and its required checks are in
 [`xtask/RELEASING.md`](xtask/RELEASING.md).
 
-Publish `j2k-mpsgraph-support` before using it in a registry-only build of the
-JPEG XR consumer. Local Cargo source patches validate development changes only.
+`j2k-mpsgraph-support` is also used by a JPEG XR adapter outside this
+repository. Publish it before building that adapter from the registry; local
+Cargo source patches only validate development changes.

@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+The library is versioned with the `j2k` workspace.
+
+## 0.14.0
 
 - Build `libj2k_c.a` beside the shared library for consumers that link the C
   ABI statically. Binary packages ship the static archive as `lib/libj2k.a`
@@ -127,5 +129,5 @@
   containment with poisoned-handle rejection.
 - Add a move-only C++17 wrapper, C/C++ examples, and relocatable native packaging.
 
-This is an evaluation SDK. GPU, encoding, slide containers, and regulated-use
-qualification are not included. See `docs/supported.md` for the supported subset.
+0.1.0 was an evaluation SDK without encoding. See `docs/supported.md` for
+what the current library supports.

@@ -6,64 +6,25 @@ release tooling; see [`xtask/RELEASING.md`](../xtask/RELEASING.md#public-api-sna
 
 ## Breaking releases
 
-The currently published stable contract is the `0.14.x` line. The `0.14.0`
-release adds the `precision` field to `JpegToHtj2kOptions`, reports memory and
-image-size limit failures as `J2kError::ResourceLimit` instead of
-`J2kError::NativeDecode`, and reports Metal Tier-1 device failures as
-`Error::Decode` and `J2kError::Backend` instead of `Error::MetalKernel`. See the
-[review](../xtask/release-evidence/public-api/public-api-review-0.14.0.yml)
-and [changelog](../CHANGELOG.md) for migration instructions. The `0.13.0`
-release adds the required `signed` field to `J2kDirectGrayscalePlan`, makes
-the batch and Burn types non-exhaustive, and makes JPEG decode strict by
-default. See the
-[review](../xtask/release-evidence/public-api/public-api-review-0.13.0.yml)
-and [changelog](../CHANGELOG.md) for migration instructions. The `0.12.0`
-release changed three rustdoc-hidden CUDA engine signatures and requires
-consumers to retain pooled surfaces until their GPU work completes.
+The currently published stable contract is the `0.14.x` line.
 
-- `0.7.0` removed parts of the `0.6.2` API; it is not source compatible with
-  `0.6.x`.
-- `0.7.5` was a one-time exception to the patch-release rule: it removed
-  pass-through public wrappers, and its API diff and changelog list every
-  removed item with migration notes.
-- `0.8.0` changed strict-decoding behavior and one warning variant; it is not
-  source or behavior compatible with `0.7.x`. The review file lists the changes
-  and migrations.
-- `0.8.1` added exact-resolution and sRGB/ICC decode APIs and encode-stage
-  context without changing any 0.8.0 item.
-- `0.9.0` replaced the `metal-rs` types and `*Ref` wrappers in the Metal expert
-  APIs with retained or borrowed `objc2-metal` protocol objects. Texture
-  descriptors are now built with objc2-metal directly, and only the typed
-  allocation and availability errors remain. The 0.9.0 review file lists every
-  removed signature in `j2k-metal-support`, `j2k-jpeg-metal`, `j2k-metal`, and
-  `j2k-transcode-metal` with migration notes; there is no compatibility layer.
+Before `1.0`, a minor release may break the API. Each release's generated API
+diff and review file are in
+[`xtask/release-evidence/public-api/`](../xtask/release-evidence/public-api/),
+and the [changelog](../CHANGELOG.md) has the migration notes. `cargo xtask
+semver` compares against the `v0.13.1` baseline.
 
-`0.8.0` could only be compared against `v0.7.5`, and `0.9.0` only against
-`v0.8.1`. `0.10.0` was compared directly with `v0.9.0` under a one-time
-exception for the crate split, which is now disabled. The current semver
-baseline is `v0.13.1`. The `0.14.0` release is reviewed in the
-[0.14.0 API review](../xtask/release-evidence/public-api/public-api-review-0.14.0.yml).
-It adds `J2kDecoder::region_decode_plan`, `PreparedImageOperation`,
-`J2kDecodeControl`, resource-limit error variants on existing non-exhaustive
-enums, and the `JpegToHtj2kOptions::precision` field, which struct literals
-must now set. No existing API item is removed; eight CUDA error fields are now
-spelled `Box<Self>`, which names the same type. Resource-limit failures now
-have their own error class, and `CpuBatchDecoder` preparation checks planned
-execution memory before decoding; the review records these error-behavior
-corrections.
-The `0.13.1` release is reviewed in the
-[0.13.1 API review](../xtask/release-evidence/public-api/public-api-review-0.13.1.yml);
-it changes no ordinary API item and only adds rustdoc-hidden `j2k-native`
-items. The `0.13.0` release was compared with `v0.12.0` in the
-[0.13.0 API review](../xtask/release-evidence/public-api/public-api-review-0.13.0.yml).
-The review includes source migrations for exhaustive native encode option
-literals, JPEG enum matches, and the hidden quantization helper arguments.
-`J2kDirectGrayscalePlan` adds the required `signed` field, set from the source
-component signedness. `BatchDecodeOptions`, `j2k_jpeg::ColorTransform` and the
-Burn tensor and error enums become non-exhaustive, the JPEG decode outcomes add
-`recovered`, Burn batch results move behind accessors, and JPEG decode is strict
-by default. `BatchLayout` moves to `j2k-core` and is still re-exported by `j2k`,
-and the `cuda-oxide-j2k-ml` feature of `j2k-cuda-j2k-engine` is removed.
+| Release | What breaks |
+| --- | --- |
+| `0.14.0` | Struct literals of `JpegToHtj2kOptions` must set the new `precision` field. Memory and image-size limit failures are `J2kError::ResourceLimit`, not `J2kError::NativeDecode`. Metal Tier-1 device failures are `Error::Decode` and `J2kError::Backend`, not `Error::MetalKernel`. |
+| `0.13.0` | `J2kDirectGrayscalePlan` has a required `signed` field. `BatchDecodeOptions`, `j2k_jpeg::ColorTransform`, and the Burn tensor and error enums are non-exhaustive. Burn batch results are read through accessors. JPEG decode is strict by default. `BatchLayout` is defined in `j2k-core` (still re-exported by `j2k`). The `cuda-oxide-j2k-ml` feature of `j2k-cuda-j2k-engine` is gone. |
+| `0.12.0` | Three rustdoc-hidden CUDA engine signatures changed. Pooled surfaces must be kept until their GPU work completes. |
+| `0.11.0` | The experimental MPSGraph adapter dropped four demonstration helpers. |
+| `0.10.0` | Crate split: defining paths changed, root re-exports kept. `transcode_kernels_built` moved to `j2k-cuda-transcode-engine`. |
+| `0.9.0` | The Metal expert APIs take `objc2-metal` protocol objects instead of `metal-rs` types. There is no compatibility layer. |
+| `0.8.0` | Decoding is strict by default. `J2kDecodeWarning::LenientDecodeMode` became `LenientMetadataRecovery`. |
+| `0.7.5` | A one-time exception to the patch-release rule: it removed pass-through public wrappers. |
+| `0.7.0` | Removed parts of the `0.6.2` API. |
 
 ## Stability tiers
 
@@ -94,9 +55,9 @@ or item privacy over `#[doc(hidden)]` for internals.
 - `binary`: `j2k-cli`. Its commands, output, and exit codes are described in
   the CLI section below instead of an API snapshot.
 
-`j2k-codec-math` and `j2k-ml` are part of the published `0.7.5` semver
-baseline. Test-support crates, comparators, and xtask helpers are not
-published and have no compatibility promise.
+The semver baseline covers all 24 published libraries. `j2k-c` (versioned by
+its own C ABI revision), `j2k-python`, test-support crates, comparators, and
+xtask helpers are not published to crates.io and have no Rust API promise.
 
 Before `1.0`, a minor release may break the API only with a generated diff, a
 break list in the review file, and migration notes. From `1.0`, the stable

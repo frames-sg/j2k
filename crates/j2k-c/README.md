@@ -16,11 +16,9 @@ codec's shared CPU pool or on their own threads. Packages include CMake and
 pkg-config files; Cargo also emits a static archive for consumers that link the
 C ABI statically. GPU decode and slide-container readers are not exposed.
 
-The additive exact-operation API plans regions at reductions 0–31 and offers
-explicit eight-bit sRGB output. Native and raw sRGB exact operations support
-per-operation working/output limits and cancellation, including the source
-preparation an operation performs itself. Existing ABI-1
-structures and the legacy 0–3 reduction API retain their layouts and behavior.
+The exact-operation API plans regions at reductions 0-31 and offers 8-bit
+sRGB output, with per-operation working-memory and output limits and
+cancellation. The original decode API takes reductions 0-3. Both are ABI 1.
 
 - [Consumer quickstart](docs/quickstart.md), also the package's `README.md`
 - [C ABI contract](docs/api.md)
@@ -30,8 +28,8 @@ structures and the legacy 0–3 reduction API retain their layouts and behavior.
 
 ## Build and use
 
-Use the workspace's pinned Rust toolchain, Python 3, and CMake 3.20+. From the
-repository root:
+Use the workspace's pinned Rust toolchain, Python 3, and CMake 3.20+ (the
+native consumer tests also need pkg-config). From the repository root:
 
 ```sh
 cargo test -p j2k-c --locked
@@ -44,9 +42,9 @@ target/examples/j2k_decode_cpp image.jp2
 
 The default build produces the shared library and `libj2k_c.a`. The package
 contains headers, the versioned shared library, the static archive
-`lib/libj2k.a`, CMake configuration, examples, documentation, and license
-notices for the packages the library links. Consumers of the binary package
-need no Rust toolchain. Packaging uses the host
+`lib/libj2k.a`, CMake and pkg-config files, examples, documentation, the
+changelog, and license notices for the packages the library links or builds
+with. Consumers of the binary package need no Rust toolchain. Packaging uses the host
 target and supports macOS and GNU/Linux; it does not cross-compile, and it
 refuses to overwrite an existing output directory.
 

@@ -6,9 +6,8 @@ macOS.
 This crate runs the supported transform stages on Metal and uses
 `j2k-metal-support` for runtime setup.
 
-Since version 0.9, device constructors take a retained `objc2-metal`
-`ProtocolObject<dyn MTLDevice>`. The `metal-rs::Device` constructors were
-removed.
+Device constructors take a retained `objc2-metal`
+`ProtocolObject<dyn MTLDevice>`.
 
 By default `Auto` keeps single tiles on the CPU: the single-job reversible
 5/3 and 9/7 thresholds are `usize::MAX` unless you lower them with

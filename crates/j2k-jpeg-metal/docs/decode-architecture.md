@@ -1,119 +1,67 @@
 # JPEG Metal decode architecture and measurements
 
-Measured on an Apple M4 Pro, macOS 26.5.2, Rust 1.96.0, using the workspace
-`release-bench` profile, on September 5–6, 2026. These changes concern baseline
-JPEG; JPEG 2000 implementations are unchanged.
+How `j2k-jpeg-metal` decodes on the GPU, and the measurements behind the
+design. Routing rules are in [routing-benchmarks.md](routing-benchmarks.md).
 
-## Execution and ownership
+## Batch decode with the fast-packet kernels
 
-Supported 4:2:0 and 4:2:2 full texture batches now decode entropy and perform IDCT
-in one grid spanning the compatible tiles. The grid writes three reusable private
-component planes. A subsequent GPU pass performs chroma reconstruction, color
-conversion, and writes the caller's existing private RGBA textures. Coefficients
-are not materialized in a full-image intermediate. The direct 4:4:4 texture path
-is retained: it has no subsampled chroma repair and its plane decoder uses a
-different ABI.
+- **4:2:0 and 4:2:2 texture batches** run entropy decode and IDCT in one grid
+  spanning the compatible tiles, writing three reusable private component
+  planes. A second GPU pass reconstructs chroma, converts color, and writes
+  the caller's private RGBA textures. Coefficients are never held in a
+  full-image intermediate. Sixteen 256x256 4:2:0 tiles need 1.5 MiB of plane
+  storage, which later calls reuse.
+- **4:4:4** uses a direct texture path: it has no subsampled chroma to repair,
+  and its plane decoder has a different ABI.
+- **Packet entropy** is copied straight into reusable shared Metal storage;
+  only offsets, lengths, and checkpoint metadata live in host vectors.
+  CPU-populated data uses shared storage and GPU-only planes and textures stay
+  private, following
+  [Apple's storage-mode guidance](https://developer.apple.com/documentation/metal/choosing-a-resource-storage-mode-for-apple-gpus).
+- **Scratch.** Each runtime has two independently locked scratch slots, so two
+  callers can stage batches at once; further callers block. A lease lasts
+  through command-buffer completion and the CPU reading the status. Callers
+  are woken when a slot is returned, including when its owner unwinds, and a
+  poisoned slot is a typed error.
+- **Pipelines** are built once per Metal device (by registry ID) and kept for
+  the life of the process. Sessions share them but own their queues and
+  mutable state. A failed initialization is not cached.
+- **Validation is eager.** Building a packet validates the entropy stream, so
+  a malformed Huffman stream fails in the constructor. Checkpoint traversal
+  uses the entropy-only `skip_block` and builds no coefficient blocks.
 
-The prior direct subsampled texture shader ran a separate encoder per tile,
-retained substantial per-thread pixel state, and required additional horizontal,
-vertical, and corner repair passes. Avoiding component-plane storage did not
-compensate for those costs in the measured workloads. The component-plane route
-requires 1.5 MiB of private intermediate storage for sixteen 256×256 4:2:0 tiles,
-reused on subsequent calls.
+### Why component planes
 
-Packet entropy is copied directly into reusable shared Metal storage. Only the
-offset, length, and checkpoint metadata is materialized in host vectors. Retained
-packet owners and metadata remain budgeted; shared Metal allocations retain the
-existing device and repository size limits. Shared storage is appropriate for
-CPU-populated data, while GPU-only planes and textures stay private, following
-[Apple's storage-mode guidance](https://developer.apple.com/documentation/metal/choosing-a-resource-storage-mode-for-apple-gpus).
+An earlier design decoded straight into subsampled textures, with one encoder
+per tile and extra horizontal, vertical, and corner repair passes. The ignored
+`texture_scheduling_experiment` test compares the two in one optimized binary
+on identical distinct tiles, checking every tile against the CPU. Median batch
+time for 16 distinct 4:2:0 tiles on an Apple M4 Pro (macOS 26.5.2, Rust
+1.96.0, `release-bench`, September 2026; five warm and fifteen measured
+iterations):
 
-Each runtime has two independently locked scratch slots. Concurrent callers can
-stage separate batches without overwriting each other's inputs or statuses;
-further callers block instead of allocating additional slots. Each lease lasts
-through command-buffer completion **and CPU status consumption**. An availability
-gate wakes callers when either slot is returned, including when an owner
-unwinds; poisoned state remains a typed error. The public
-synchronous and deferred-submit contracts remain unchanged; this does not add an
-asynchronous API. Reusing the same output still requires its existing access gate.
-Two concurrent callers can retain two sets of scratch capacity.
-
-Successful immutable pipeline registries are retained per Metal device registry
-ID for the process lifetime. Independently created sessions share those pipelines
-but own separate queues and mutable runtime state. Initialization is serialized
-per device, failures are not published, and a poisoned cache or failed metadata
-reservation falls back to an uncached load while preserving loader errors.
-
-## Preparation and compatibility
-
-Checkpoint traversal now uses the existing entropy-only `skip_block` operation
-instead of constructing dequantized coefficient blocks it discards. Differential
-tests preserve bit-reader snapshots, DC prediction, and exact errors.
-
-Full entropy validation remains eager. Deferring packet construction or deriving
-restart work only from marker offsets would move malformed-Huffman errors out of
-the current constructor and is not part of this change. Small/one-shot `Auto`
-routing and explicit Metal rejection behavior are unchanged. (Explicit Metal
-coverage was widened later; see [Hybrid decode](#hybrid-decode).)
-
-## Controlled implementation comparison
-
-The ignored `texture_scheduling_experiment` test compares the direct and
-component-plane implementations in the same optimized executable, with identical
-distinct JPEG tiles, reusable sessions/textures, CPU output parity checks for
-every tile, five warm iterations, and fifteen measured iterations per variant.
-The table shows median batch wall time using the existing 256-thread cap.
-
-| 4:2:0 workload, 16 distinct tiles | Direct textures | Component planes |
+| Workload | Direct textures | Component planes |
 |---|---:|---:|
-| 256×256, no restart | 6.723 ms | 0.517 ms |
-| 256×256, restart interval 2 | 12.127 ms | 0.755 ms |
-| 512×512, no restart | 6.993 ms | 1.200 ms |
-| 512×512, restart interval 4 | 26.683 ms | 1.644 ms |
+| 256x256, no restart | 6.723 ms | 0.517 ms |
+| 256x256, restart interval 2 | 12.127 ms | 0.755 ms |
+| 512x512, no restart | 6.993 ms | 1.200 ms |
+| 512x512, restart interval 4 | 26.683 ms | 1.644 ms |
 
-The public-API Criterion benchmark also confirms the improvement. The original
-run used ten samples, one second of warmup and two seconds of measurement. The
-final run used ten samples, two seconds of warmup and five seconds of measurement:
+The public-API Criterion bench (warm 256x256 RGBA texture batch of 16, ten
+samples, two-second warm-up, five-second measurement) measured 0.677 ms
+without restart markers and 0.914 ms with restart interval 2, against 6.635 ms
+and 12.029 ms before.
 
-| Warm 256×256 RGBA texture batch, 16 tiles | Original estimate | Final estimate (95% interval) |
-|---|---:|---:|
-| No restart markers | 6.635 ms | 0.677 ms (0.625–0.730 ms) |
-| Restart interval 2 | 12.029 ms | 0.914 ms (0.907–0.918 ms) |
-
-An intervening run was substantially noisier, including a slower CPU-only
-restart control. Repeating that control without source changes measured
-0.314 ms (0.312–0.317 ms), close to the original 0.311 ms; the apparent CPU
-regression was not reproduced. These are throughput comparisons for warm
-resident batches, not latency claims for all JPEG requests.
-
-Additional comparisons covered batch sizes 1, 2, and 4, 16×16 and 64×64 inputs,
-and 4:2:2 at 256×256 and 512×512. Component planes also won those comparisons,
-although the small-workload measurements were noisier. Separate correctness
-coverage includes distinct odd-sized edge tiles, restart streams, mixed tables,
-reused output, and concurrent calls sharing a backend session.
-
-Threadgroup widths of 32, 64, 128, and 256 were compared. Smaller groups modestly
-helped the direct shader, but there was no consistent additional benefit once
-using component planes. Production therefore retains the existing threadgroup
-policy. This follows Apple's advice to measure work distribution rather than
-assuming a particular group size is universally best:
-[Scale compute workloads across Apple GPUs](https://developer.apple.com/videos/play/wwdc2022/10159/).
-
-An earlier experiment tested a different design: GPU entropy decoding into
-full-image coefficient scratch followed by a separate IDCT pass. That design was
-slower; its result does not apply to this component-plane intermediate.
-
-The existing fast-packet planning benchmark measured about 301 µs without
-restarts and 312 µs with restart interval 2 after the entropy-only traversal
-change. Neither comparison showed a statistically supported improvement; no
-planning speedup is claimed. No isolated speedup is claimed for direct shared
-staging or the two-slot pool either.
-
-These measurements are local diagnostics, not a cross-device performance
-guarantee. Variant order was fixed, the desktop was not isolated, and no GPU
-occupancy or spill counters were captured. Warm measurements exclude packet and
-pipeline initialization. The original unmodified warm baseline varied roughly
-6.6–7.2 ms across separate runs.
+- Component planes also won at batch sizes 1, 2, and 4, at 16x16 and 64x64,
+  and for 4:2:2 at 256x256 and 512x512, with noisier small-workload results.
+- Threadgroup widths of 32, 64, 128, and 256 made no consistent difference
+  with component planes, so the width was left alone.
+- GPU entropy decode into full-image coefficient scratch followed by a
+  separate IDCT pass was slower and was not adopted.
+- These are warm-batch throughput figures from one machine with the desktop
+  not isolated. They are not a latency claim for every JPEG request, and no
+  speedup is claimed for fast-packet planning, shared staging, or the two-slot
+  pool on their own.
 
 ## Hybrid decode
 
@@ -158,15 +106,15 @@ Metal does the rest. This is the split nvJPEG uses for its hybrid backend.
 - **Composition.** Viewports and heterogeneous RGB8 tile batches without fast
   packets pack several source rectangles into one zero-filled pooled output.
   Reusable batch buffers and RGBA textures decode each tile through the hybrid
-  route, then reuse the existing GPU copy passes.
+  route, then use the GPU copy passes.
 
 Coefficient, difference, and plane storage are leased from the runtime's two
 scratch slots and retained for the next call. Output surfaces come from the
-existing surface pool. Every allocation stays within the device's
+surface pool. Every allocation stays within the device's
 `maxBufferLength` and the repository's allocation cap, and an oversized request
 fails with a typed error. A whole-image progressive or 12-bit coefficient set
 can therefore exceed the cap on very large slides where CPU decode succeeds.
-`Auto` routing still picks CPU for these classes.
+`Auto` routing picks the CPU for these classes.
 
 Parity tests (`tests/hybrid.rs`) compare every route byte for byte with CPU
 decode. Inputs cover:
@@ -205,12 +153,10 @@ others are synthetic CT/CR-like phantoms encoded with libjpeg-turbo 3.1.4
 `cjpeg` (`-precision 16 -lossless 1|7`, `-precision 12 -quality 95`, and
 `-lossless 1 -rgb`) and passed through `J2K_BENCH_INPUTS`. Before the
 row-parallel predictor-1 kernel, the wavefront took 2.155 ms (512×512) and
-35.862 ms (2048×2500) for predictor-1 lossless. Predictor 7 still uses the
-wavefront. `Decoder::new` builds its plan directly; it used to resolve it
-through a cache local to the call, which hashed the whole input twice (about
-2.7 ms of the 2048×2500 lossless decode). Real speedups over CPU need GPU
-entropy decode for these classes, or
-CPU entropy overlapped with GPU work across tiles. Neither is part of this change.
+35.862 ms (2048×2500) for predictor-1 lossless. Predictor 7 uses the
+wavefront. A real speedup over the CPU for these classes needs GPU entropy
+decode, or CPU entropy decode overlapped with GPU work across tiles; neither
+exists yet.
 
 ## Reproduction and checks
 
@@ -242,5 +188,5 @@ cargo clippy --locked -p j2k-jpeg-metal --lib -- -D warnings
 cargo clippy --locked -p j2k-jpeg-metal --tests --benches --bins -- -D warnings -A clippy::disallowed_methods -A clippy::disallowed_macros
 ```
 
-The non-library Clippy allowances match the repository's existing Metal check
-policy. They do not apply to production library checks.
+The non-library Clippy allowances match the repository's Metal check policy
+and do not apply to library checks.

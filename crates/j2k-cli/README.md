@@ -1,12 +1,7 @@
 # j2k-cli
 
-Command-line entry point for J2K.
-
-The CLI covers inspection, JPEG-to-HTJ2K transcoding and an
-`opj_decompress`-compatible decoder. Full compress CLI parity is not claimed
-by this package.
-
-Supported commands:
+The `j2k` command: inspect an image, transcode JPEG to HTJ2K, and decode with
+`opj_decompress` options. It does not encode; use the library for that.
 
 ```bash
 j2k inspect <file>
@@ -14,8 +9,10 @@ j2k transcode <input.jpg> <output.j2k> --htj2k --lossless-53
 j2k decode -i <input> -o <output> [opj_decompress options]
 ```
 
-`transcode` writes an HTJ2K codestream from a supported JPEG input and reports
-the source geometry, component count, output bytes, and timing/dispatch summary.
+`inspect` reads JPEG 2000, HTJ2K, and JPEG files and prints one summary line.
+`transcode` needs both `--htj2k` and `--lossless-53`; it writes an HTJ2K
+codestream from a supported JPEG and prints the source geometry, component
+count, output bytes, and a timing and dispatch summary.
 
 ## `opj_decompress` interface
 
@@ -34,21 +31,21 @@ opj_decompress -quiet -i image.jp2 -d 512,512,1536,1536 -r 1 -o tile.bmp
 | `-i <file>` | JP2, JPH or raw J2K/HTJ2K codestream, recognised by its signature, so names without an extension work |
 | `-o <file>` | output file; the extension picks the format: `.bmp`, `.png`, `.tif`/`.tiff`, `.pgm`, `.ppm`, `.pnm` |
 | `-r <n>` | discard the `n` highest resolution levels; at most the smallest decomposition count of any tile and component |
-| `-d <x0,y0,x1,y1>` | decode area on the full-resolution reference grid, so the image's first sample is at its origin (`XOsiz`, `YOsiz`); at reduction `r` it keeps `[ceil(x0 / 2^r), ceil(x1 / 2^r))` of the reduced grid (ITU-T T.800 B.5). Coordinates outside the image area are clamped with a warning; `0,0,0,0` is the whole image |
+| `-d <x0,y0,x1,y1>` | decode area on the full-resolution reference grid, so the image's first sample is at its origin (`XOsiz`, `YOsiz`); at reduction `r` it keeps `[ceil(x0 / 2^r), ceil(x1 / 2^r))` of the reduced grid (ITU-T T.800 B.5). A start before the image area or an end past it is clamped with a warning; an area that lies wholly outside the image, or is empty, is an error. `0,0,0,0` is the whole image |
 | `-threads <n\|ALL_CPUS>` | decode threads; without it, `OPJ_NUM_THREADS` (`ALL_CPUS`, or a count capped at twice the processors), else one |
 | `-force-rgb` | write gray images as RGB |
 | `-l 0` | decode every quality layer (the default) |
 | `-quiet` | print no notes or warnings |
 | `-h` | print the option summary |
 
-Rejected with an error naming the option and exit status 1: `-l` above 0,
-`-t`, `-c`, `-p`, `-x`, `-upsample`, `-split-pnm`, `-allow-partial`,
-`-ImgDir`, `-OutFor`, `.jpt` input, and `.pgx`, `.raw`, `.rawl`, `.yuv` and
-`.tga` output. j2k cannot honour them exactly, and an ignored option would
-change what the caller receives.
+Rejected with an error naming the option: `-l` above 0, `-t`, `-c`, `-p`,
+`-x`, `-upsample`, `-split-pnm`, `-allow-partial`, `-ImgDir`, `-OutFor`,
+`.jpt` input, and `.pgx`, `.raw`, `.rawl`, `.yuv` and `.tga` output. j2k
+cannot honour them exactly, and an ignored option would change what the
+caller receives.
 
-Nothing is printed to stdout: notes, warnings and errors go to stderr, so an
-`-o` path linked to `/dev/stdout` carries only the image, as Cantaloupe
+A decode prints nothing to stdout: notes, warnings and errors go to stderr, so
+an `-o` path linked to `/dev/stdout` carries only the image, as Cantaloupe
 expects. An input that is not JPEG 2000 fails with
 `Unknown input file format`, the message Cantaloupe maps to a source-format
 error. The help text names no `vX.Y.Z` version; Cantaloupe reads one from

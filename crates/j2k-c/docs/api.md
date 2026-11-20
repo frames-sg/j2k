@@ -200,9 +200,11 @@ select the full image at reduction 0; other requests return
 The library holds at most `max_rows_per_stripe` decoded rows at a time (`0`
 selects 64), so no whole-image output buffer or `max_output_bytes` limit
 applies: an image too large for `j2k_decoder_output_info` can still stream.
-Decoder working memory still depends on the image; a codestream whose tiles or
-coding keep its rows from streaming natively decodes whole before its rows are
-handed over (the `j2k` crate's `rows_decode_plan` describes when).
+Decoder working memory still depends on the image. An image whose tiles do
+not span its width decodes each stripe as its own region. Coding that the
+header plan cannot see, such as HTJ2K code-blocks mixed with classic ones,
+makes the image decode whole before its rows are handed over (the `j2k`
+crate's `rows_decode_plan` reports the plan).
 
 Rows keep native values for 8-bit unsigned and 9- to 16-bit samples, unsigned
 or signed. Other precisions (unsigned below 8 bits, signed of 8 bits or less)
@@ -342,8 +344,8 @@ Pointers must reference live, appropriately aligned allocations of the declared
 size. Output arguments cannot overlap other arguments or handle storage. Null,
 alignment, and length checks do not make dangling or forged pointers valid.
 
-Initialize all versioned structs using their `*_INIT` macros. ABI 1 uses fixed
-integer fields and a size/version prefix. Too-small prefixes and different ABI
+Initialize all versioned structs using their `*_INIT` macros. ABI 1 structs
+start with a size/version prefix. Too-small prefixes and different ABI
 revisions fail. Larger ABI-1 structures are accepted; only the current prefix is
 read/written, and trailing storage is left untouched. An output's header reports
 the written prefix size. Future extension fields must be optional for older

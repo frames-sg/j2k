@@ -230,11 +230,13 @@ fixtures that should not be re-encoded by this repo.
 ## Auto-routing workload manifest
 
 `Auto` routing decisions use a smaller JSON manifest instead of the adoption
-TSVs. Schema version 1 contains a corpus label, an HTTPS provenance URL, and a
-non-empty `cases` array. Each case has a unique safe `id`, a relative `path`, a
-`kind` of `decode` or `encode`, a `pixel_format` of `gray8` or `rgb8`, and the
+TSVs. It contains a corpus label, an HTTPS provenance URL, and a non-empty
+`cases` array. Each case has a unique safe `id`, a relative `path`, a `kind`
+of `decode` or `encode`, a `pixel_format` of `gray8` or `rgb8`, and the
 lowercase SHA-256 of the exact input bytes. Decode cases are J2K/JP2 inputs;
-encode cases are binary 8-bit PGM/PPM files.
+encode cases are binary 8-bit PGM/PPM files. Schema version 2 also requires a
+`codec` (`jpeg-2000-part-1` or `htj2k-part-15`) and a `container`
+(`codestream`, `jp2`, or `jph`) on each case; the example below is schema 1.
 
 ```json
 {
@@ -439,6 +441,9 @@ The adoption bundle contains these result sets:
   OpenJPEG/Grok CLI encoders.
   CUDA encode emits `j2k_cuda_encode_io_policy`; staged PNM pixels are preloaded
   and filesystem I/O is outside the timed loop.
+- `metal-decode-benchmark` and `metal-transcode-benchmark`: hardware Criterion
+  rows from the J2K Metal decode benches and the Metal JPEG-to-HTJ2K transcode
+  bench.
 - `metal-encode-auto-routing`: hardware component microbenchmarks for generated
   encode stages plus external staged PGM/PPM host-input auto-routing rows when
   `--encode-fixtures` / `--encode-manifest` are supplied. These compare J2K CPU
@@ -567,7 +572,7 @@ output and inspects the produced JP2 codestream for single-tile LRCP,
 reversible 5/3, three resolution levels, 64x64 code blocks, no precinct
 overrides, no SOP/EPH markers, and classic block coding. The default
 publication shape measures per-source detail rows at batch `1` and mixed-source
-encode throughput rows at `1,16,256`; use the mixed rows and MiB/s columns, not
+encode throughput rows at `1,16,256,1024`; use the mixed rows and MiB/s columns, not
 only images/sec or tiles/sec, for large batches of mixed sizes. The encode
 publication gate requires separate gray/RGB mixed groups with at least two
 independent inputs, and the report includes a dedicated CPU encode mixed-batch
@@ -621,17 +626,11 @@ J2K_REQUIRE_OPENJPEG=1 J2K_REQUIRE_GROK=1 J2K_REQUIRE_LIBJPEG_TURBO=1 \
   cargo xtask j2k-bench-signoff
 ```
 
-Signoff records:
-
-- OpenJPEG CLI versions from `opj_compress` and `opj_decompress`, plus the
-  in-process OpenJPEG library version reported by `j2k-compare`.
-- Grok CLI versions from `grk_compress` and `grk_decompress`, plus the
-  in-process Grok version and library path from `pkg-config libgrokj2k` or
-  `J2K_GROK_ROOT`.
-- libjpeg-turbo from `pkg-config --modversion libturbojpeg`.
-
 Signoff fails unless each comparator runs at least the expected number of
-parity tests, so a missing tool or an all-skipped test binary cannot pass.
+parity tests, so a missing tool or an all-skipped test binary cannot pass. It
+does not record tool versions: the CI job prints the tool paths and the
+`pkg-config --modversion` of `libgrokj2k` and `libturbojpeg` before it runs.
+Record the OpenJPEG and Grok CLI versions yourself when you publish numbers.
 
 External fixtures that inspect successfully but are outside the benchmark
 surface, for example unsupported component counts or bit depths, fail the run
