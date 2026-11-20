@@ -122,14 +122,23 @@ class ClassificationTests(unittest.TestCase):
         self.assertFalse(plan.metal)
 
     def test_docs_only_change_stays_cheap(self) -> None:
-        plan = self.classify("docs/architecture.md")
-
-        self.assertTrue(plan.docs)
-        self.assertFalse(plan.rust)
-        self.assertFalse(plan.cuda)
-        self.assertFalse(plan.metal)
-        self.assertFalse(plan.metal_compile)
-        self.assertFalse(plan.public_api)
+        for path in (
+            "AGENTS.md",
+            "CLAUDE.md",
+            "book/decoding.md",
+            "book/SUMMARY.md",
+            "book/book.toml",
+            "contributor-book/architecture.md",
+            "docs/index.html",
+        ):
+            with self.subTest(path=path):
+                plan = self.classify(path)
+                self.assertTrue(plan.docs)
+                self.assertFalse(plan.rust)
+                self.assertFalse(plan.cuda)
+                self.assertFalse(plan.metal)
+                self.assertFalse(plan.metal_compile)
+                self.assertFalse(plan.public_api)
 
     def test_markdown_beside_code_is_documentation(self) -> None:
         for path in (
@@ -138,8 +147,6 @@ class ClassificationTests(unittest.TestCase):
             "crates/j2k-c/docs/api.md",
             "crates/j2k-native/fixtures/htj2k/README.md",
             "crates/j2k-cuda/tests/fixtures/htj2k/README.md",
-            "xtask/RELEASING.md",
-            "xtask/BENCHMARKS.md",
             "corpus/README.md",
             "corpus/j2k-conformance/README.md",
         ):
@@ -286,7 +293,7 @@ class ClassificationTests(unittest.TestCase):
             "crates/j2k-metal/src/lib.rs",
             "crates/j2k-cuda/src/lib.rs",
             "crates/j2k-python/src/lib.rs",
-            "docs/architecture.md",
+            "contributor-book/architecture.md",
             ".github/CODEOWNERS",
         ):
             with self.subTest(path=path):

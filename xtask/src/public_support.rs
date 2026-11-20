@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::command_support::rust_sources;
 
-const SUPPORT_DOC: &str = "docs/public-support.md";
+const SUPPORT_DOC: &str = "book/format-support.md";
 const SUPPORT_INVENTORY: &str = "corpus/j2k-conformance/support-inventory.tsv";
 
 /// Directories whose Rust sources must define every required test.
@@ -13,7 +13,8 @@ const SOURCE_ROOTS: &[&str] = &["crates", "xtask/src", "xtask/tests"];
 const REQUIRED_COLUMNS: &[&str] = &["ID", "Status", "Supported", "Remaining limitation"];
 
 /// Commands the support page must name.
-const REQUIRED_DOC_REFERENCES: &[&str] = &["cargo xtask adoption-report"];
+const REQUIRED_DOC_REFERENCES: &[&str] =
+    &["cargo run -p xtask --features adoption -- adoption-report"];
 
 const REQUIRED_SUPPORT_IDS: &[&str] = &[
     "part1-signed-samples",

@@ -34,10 +34,12 @@ METAL_ROOTS = frozenset(
 SHARED_GPU_PACKAGES = frozenset({"j2k-ml"})
 # The C/C++ API (j2k-c) builds a native package and runs C and C++ consumers against it.
 C_API_ROOTS = frozenset({"j2k-c"})
-DOCUMENTATION_PREFIXES = ("docs/",)
+DOCUMENTATION_PREFIXES = ("book/", "contributor-book/", "docs/")
 DOCUMENTATION_PATHS = frozenset(
     {
+        "AGENTS.md",
         "CHANGELOG.md",
+        "CLAUDE.md",
         "CODE_OF_CONDUCT.md",
         "CONTRIBUTING.md",
         "LICENSE",

@@ -47,9 +47,9 @@ fn release_integrity_publish_mode_requires_approval_for_every_workspace_path_pat
     .expect("write workspace path patches");
     std::fs::write(
         release_root.join("CHANGELOG.md"),
-        "# Changelog\n\n## [0.7.4] - 2026-07-16\n",
+        "# Changelog\n\n## Unreleased\n\n- Release notes.\n",
     )
-    .expect("write finalized changelog fixture");
+    .expect("write release-ready changelog fixture");
     std::fs::write(
         release_root.join("third_party/first-patched/PATCH_PROVENANCE.md"),
         "## Release approval\n\n- Reviewer identity: `maintainer-one`\n- Approval date: `2026-07-20`\n",

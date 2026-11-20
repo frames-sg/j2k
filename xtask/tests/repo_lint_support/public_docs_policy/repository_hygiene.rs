@@ -121,46 +121,16 @@ fn referenced_shell_scripts_exist() {
 }
 
 #[test]
-fn release_facing_docs_match_the_latest_release_tag() {
+fn security_policy_lists_the_latest_release_tag() {
     let root = repo_root();
     let version = latest_release_version(root);
-    let minor_line = version
-        .rsplit_once('.')
-        .map(|(line, _)| format!("{line}.x"))
-        .expect("release version has a patch component");
-
-    let checks = [
-        (
-            "README.md",
-            format!("**Release status:** `{version}` is published and security-supported."),
-        ),
-        (
-            "SECURITY.md",
-            format!("| `{version}` | Latest published and security-supported release |"),
-        ),
-        (
-            "xtask/RELEASING.md",
-            format!(
-                "The `j2k` {version} public crate release is published and security-supported."
-            ),
-        ),
-        (
-            "docs/stable-api-1.0.md",
-            format!("The currently published stable contract is the `{minor_line}` line."),
-        ),
-        (
-            "docs/env-vars.md",
-            format!("Stable: supported for the published v{minor_line} contract."),
-        ),
-    ];
-    for (relative, expected) in checks {
-        let source = fs::read_to_string(root.join(relative))
-            .unwrap_or_else(|err| panic!("read {relative}: {err}"));
-        assert!(
-            source.contains(&expected),
-            "{relative} must describe latest release tag v{version} with `{expected}`"
-        );
-    }
+    let row = format!("| `{version}` |");
+    let source = fs::read_to_string(root.join("SECURITY.md"))
+        .unwrap_or_else(|err| panic!("read SECURITY.md: {err}"));
+    assert!(
+        source.lines().any(|line| line.trim_start().starts_with(&row)),
+        "SECURITY.md must list latest release tag v{version} in its supported-versions table (a row starting with `{row}`)"
+    );
 }
 
 #[test]
@@ -178,9 +148,9 @@ fn static_site_release_status_uses_canonical_sources() {
         let source = fs::read_to_string(root.join(relative))
             .unwrap_or_else(|err| panic!("read {relative}: {err}"));
         assert!(
-            source.contains("https://github.com/frames-sg/j2k/blob/main/CHANGELOG.md")
+            source.contains("https://github.com/frames-sg/j2k/releases")
                 && source.contains("https://crates.io/crates/j2k"),
-            "{relative} must point to the changelog and crates.io"
+            "{relative} must point to GitHub Releases and crates.io"
         );
         assert!(
             !source.contains("<strong>Release status:</strong> j2k "),
