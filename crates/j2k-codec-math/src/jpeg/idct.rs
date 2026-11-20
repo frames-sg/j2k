@@ -14,6 +14,15 @@
 //! instead of panicking. The 12-bit transforms compute in `i64` (`JLONG`),
 //! where `i16` inputs cannot overflow.
 //!
+//! # Attribution
+//!
+//! Derived from libjpeg-turbo's `jidctint.c` (Copyright (C) 1991-1998, Thomas
+//! G. Lane; modification developed 2002-2018 by Guido Vollbeding; libjpeg-turbo
+//! modifications Copyright (C) 2015, 2020, 2022, 2026, D. R. Commander) and
+//! `jidctred.c` (Copyright (C) 1994-1998, Thomas G. Lane; libjpeg-turbo
+//! modifications Copyright (C) 2015, 2022, 2026, D. R. Commander), rewritten in
+//! Rust. See `LICENSE.libjpeg-turbo` and `README.ijg` in this crate.
+//!
 //! Every transform is `#[inline]`, which exports the MIR the cuda-oxide device
 //! compiler needs; rustc exports it unprompted only for leaf functions. The
 //! passes and row loads the block loops call are `#[inline(always)]`: left to

@@ -21,6 +21,22 @@ and stale roadmap entries have been removed from the public documentation set.
 - Lowers the minimum supported Rust version from 1.99.0 to 1.97. CI checks
   the whole workspace with Rust 1.97; every other job still uses 1.99.0.
   `j2k-types` and `j2k-codec-math` still build with Rust 1.96.
+- `CudaLosslessEncoder::encode` under `EncodeBackendPreference::Auto` uses
+  CUDA only for a shape whose CUDA route was measured faster than the CPU, as
+  decode routing does. No encode shape is listed yet, so `Auto` now encodes on
+  the CPU; `fallback_reason()` is `None` for it, because the CPU is the chosen
+  route. It used to run every CUDA stage it had, and the routing runs
+  measured CUDA-assisted encode slower than the CPU in every cell (528%
+  slower for HTJ2K lossless). `RequireDevice` still forces CUDA. The public
+  API is unchanged.
+- Python `Decoder.decode` emits `RecoveredImageWarning` when a lenient JPEG
+  2000 decode used a metadata recovery, as `decode_srgb8` does. It dropped
+  the warning before.
+- Licensing: parts of the JPEG codec are derived from libjpeg-turbo, which
+  `NOTICES.md` denied. `j2k-jpeg`, `j2k-codec-math`, `j2k-jpeg-metal`, and
+  the Python wheel now carry libjpeg-turbo's license texts
+  (`LICENSE.libjpeg-turbo`, `README.ijg`), and the derived files name their
+  upstream sources.
 - Codestreams that are cut off, such as the bytes a progressive viewer has
   fetched so far, can be decoded with
   `DecodeSettings::with_partial_codestream(true)`.

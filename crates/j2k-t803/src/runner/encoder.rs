@@ -12,7 +12,7 @@ use std::{fs, path::Path};
 
 use j2k::J2kEncodeDispatchReport;
 #[cfg(feature = "cuda-runner")]
-use j2k_cuda::CudaLosslessEncoder;
+use j2k_cuda::CudaEncodeStageAccelerator;
 use sha2::{Digest, Sha256};
 
 use crate::encoder::{
@@ -51,11 +51,11 @@ pub(super) fn run_cpu() -> Result<EncoderEvidence, String> {
 
 #[cfg(feature = "cuda-runner")]
 pub(super) fn run_cuda() -> Result<EncoderEvidence, String> {
-    let mut lossless_encoder = CudaLosslessEncoder::new();
+    let mut lossless_accelerator = CudaEncodeStageAccelerator::default();
     run(
         EncoderIut::Cuda,
         Some(ExecutionLocation::Cuda),
-        move |case, input| encode_cuda_case(&mut lossless_encoder, case, input),
+        move |case, input| encode_cuda_case(&mut lossless_accelerator, case, input),
     )
 }
 

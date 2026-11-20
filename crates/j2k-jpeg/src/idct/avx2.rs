@@ -3,6 +3,13 @@
 //! `x86_64` AVX2 integer ISLOW IDCT. Bit-exact with `super::scalar::idct_islow`
 //! on every input, including crafted out-of-range coefficient blocks.
 //!
+//! Attribution: the hot kernel follows libjpeg-turbo's `jidctint-avx2.asm`
+//! (Copyright 2009 Pierre Ossman for Cendio AB; Copyright (C) 2009, 2016, 2018,
+//! 2020, 2024-2025, D. R. Commander; Copyright (C) 2018, Matthias Räncker;
+//! based on the x86 SIMD extension for IJG JPEG library, Copyright (C)
+//! 1999-2006, MIYASAKA Masaru). See `LICENSE.libjpeg-turbo` and `README.ijg`
+//! in this crate.
+//!
 //! Two kernels share the dispatch in [`idct_islow`]:
 //!
 //! - The hot kernel keeps samples in 16-bit lanes of 256-bit registers, as

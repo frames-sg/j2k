@@ -1,17 +1,19 @@
+use std::collections::BTreeSet;
 use std::fs;
+use std::path::Path;
+
+use crate::command_support::rust_sources;
 
 const SUPPORT_DOC: &str = "docs/public-support.md";
 const SUPPORT_INVENTORY: &str = "corpus/j2k-conformance/support-inventory.tsv";
 
-const REQUIRED_COLUMNS: &[&str] = &[
-    "ID",
-    "Status",
-    "Existing subsystem to extend",
-    "Reused helpers/APIs",
-    "Self-check test",
-    "Comparator/publication gate",
-    "Remaining limitation",
-];
+/// Directories whose Rust sources must define every required test.
+const SOURCE_ROOTS: &[&str] = &["crates", "xtask/src", "xtask/tests"];
+
+const REQUIRED_COLUMNS: &[&str] = &["ID", "Status", "Supported", "Remaining limitation"];
+
+/// Commands the support page must name.
+const REQUIRED_DOC_REFERENCES: &[&str] = &["cargo xtask adoption-report"];
 
 const REQUIRED_SUPPORT_IDS: &[&str] = &[
     "part1-signed-samples",
@@ -29,6 +31,8 @@ const REQUIRED_SUPPORT_IDS: &[&str] = &[
     "external-speed-comparisons",
 ];
 
+/// Tests that back the support matrix. Each must exist as a function under
+/// [`SOURCE_ROOTS`]; the gate does not run them.
 const REQUIRED_TEST_REFERENCES: &[&str] = &[
     "inspect_spec_valid_component_count_above_u8_is_reported_exactly",
     "native_parse_accepts_spec_component_count_above_u8",
@@ -215,7 +219,6 @@ const REQUIRED_TEST_REFERENCES: &[&str] = &[
     "ht_layer_contributions_emit_the_selected_ht_set_atomically",
     "htj2k_lossy_quality_layers_decode_atomic_ht_sets",
     "public_decode_matches_openhtj2k_refinement_fixtures",
-    "cargo xtask adoption-report",
 ];
 
 const REQUIRED_COMPARATOR_REFERENCES: &[&str] = &[
@@ -239,8 +242,9 @@ const REQUIRED_MANIFEST_IDS: &[&str] = &[
     "encode_gt16_deferred",
 ];
 
-/// Verify the public J2K/HTJ2K support matrix stays synchronized with tests,
-/// conformance rows, and publication gates.
+/// Verify the public J2K/HTJ2K support matrix stays synchronized with the
+/// support inventory and publication gates, and that every test backing it
+/// still exists in the source tree.
 pub(crate) fn public_support(args: impl IntoIterator<Item = String>) -> Result<(), String> {
     let mut require_final_statuses = false;
     for arg in args {
@@ -262,7 +266,7 @@ pub(crate) fn public_support(args: impl IntoIterator<Item = String>) -> Result<(
 
     require_contains_all(&doc, REQUIRED_COLUMNS, SUPPORT_DOC, &mut failures);
     require_contains_all(&doc, REQUIRED_SUPPORT_IDS, SUPPORT_DOC, &mut failures);
-    require_contains_all(&doc, REQUIRED_TEST_REFERENCES, SUPPORT_DOC, &mut failures);
+    require_contains_all(&doc, REQUIRED_DOC_REFERENCES, SUPPORT_DOC, &mut failures);
     require_contains_all(
         &doc,
         REQUIRED_COMPARATOR_REFERENCES,
@@ -293,6 +297,14 @@ pub(crate) fn public_support(args: impl IntoIterator<Item = String>) -> Result<(
         );
     }
 
+    let defined = defined_function_names(Path::new("."))?;
+    for name in undefined_tests(&defined, REQUIRED_TEST_REFERENCES) {
+        failures.push(format!(
+            "required test `{name}` is not defined under {}",
+            SOURCE_ROOTS.join(", ")
+        ));
+    }
+
     if require_final_statuses {
         require_final_support_statuses(&doc, &mut failures);
     }
@@ -318,6 +330,53 @@ fn require_contains_all(haystack: &str, needles: &[&str], path: &str, failures: 
             failures.push(format!("{path} is missing `{needle}`"));
         }
     }
+}
+
+/// Names of the functions `source` defines: each `fn` keyword followed by an
+/// identifier and then `(` or `<`.
+fn function_names(source: &str) -> impl Iterator<Item = &str> {
+    source
+        .match_indices("fn")
+        .filter_map(move |(start, keyword)| {
+            if source[..start].ends_with(is_identifier_char) {
+                return None;
+            }
+            let rest = &source[start + keyword.len()..];
+            let name = rest.trim_start_matches([' ', '\t']);
+            if name.len() == rest.len() {
+                return None;
+            }
+            let end = name
+                .find(|c: char| !is_identifier_char(c))
+                .unwrap_or(name.len());
+            let (name, after) = name.split_at(end);
+            (!name.is_empty() && after.starts_with(['(', '<'])).then_some(name)
+        })
+}
+
+fn is_identifier_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// Every function name defined in the Rust sources under [`SOURCE_ROOTS`].
+fn defined_function_names(workspace_root: &Path) -> Result<BTreeSet<String>, String> {
+    let mut names = BTreeSet::new();
+    for source_root in SOURCE_ROOTS {
+        for path in rust_sources(&workspace_root.join(source_root))? {
+            let source = fs::read_to_string(&path)
+                .map_err(|err| format!("read {}: {err}", path.display()))?;
+            names.extend(function_names(&source).map(str::to_owned));
+        }
+    }
+    Ok(names)
+}
+
+fn undefined_tests<'a>(defined: &BTreeSet<String>, required: &[&'a str]) -> Vec<&'a str> {
+    required
+        .iter()
+        .copied()
+        .filter(|name| !defined.contains(*name))
+        .collect()
 }
 
 fn inventory_ids(inventory: &str) -> impl Iterator<Item = &str> {
@@ -360,7 +419,57 @@ fn support_row_status<'a>(doc: &'a str, id: &str) -> Option<&'a str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{inventory_ids, support_row_status};
+    use std::collections::BTreeSet;
+    use std::path::Path;
+
+    use super::{
+        defined_function_names, function_names, inventory_ids, support_row_status, undefined_tests,
+        REQUIRED_TEST_REFERENCES,
+    };
+
+    #[test]
+    fn function_names_finds_definitions_with_modifiers_and_generics() {
+        let source = "fn plain() {}\n\
+                      pub(crate) async fn with_modifiers<T>(value: T) {}\n    \
+                      #[test]\n    fn indented_test() {}\n";
+
+        let names = function_names(source).collect::<Vec<_>>();
+
+        assert_eq!(names, ["plain", "with_modifiers", "indented_test"]);
+    }
+
+    #[test]
+    fn function_names_ignores_text_that_is_not_a_definition() {
+        let source = "let define_fn = call_fn(1);\n\
+                      struct Hook { call: fn(u8) -> u8 }\n\
+                      // the fn elsewhere covers this\n\
+                      impl Fn() for Hook {}\n";
+
+        assert_eq!(function_names(source).count(), 0);
+    }
+
+    #[test]
+    fn undefined_tests_lists_required_names_without_a_definition() {
+        let defined = BTreeSet::from(["alpha_round_trips".to_string()]);
+
+        let missing = undefined_tests(&defined, &["alpha_round_trips", "beta_round_trips"]);
+
+        assert_eq!(missing, ["beta_round_trips"]);
+    }
+
+    #[test]
+    fn every_required_test_is_defined_in_the_workspace() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask sits in the workspace root");
+
+        let defined = defined_function_names(root).expect("scan workspace Rust sources");
+
+        assert_eq!(
+            undefined_tests(&defined, REQUIRED_TEST_REFERENCES),
+            Vec::<&str>::new()
+        );
+    }
 
     #[test]
     fn inventory_ids_skips_header_comments() {

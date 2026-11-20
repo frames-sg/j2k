@@ -10,7 +10,7 @@ use super::{
 
 #[cfg(not(feature = "cuda-runtime"))]
 #[test]
-fn cuda_encoder_auto_reports_unavailable_fallback_and_reuses_after_success() {
+fn cuda_encoder_auto_reports_unavailable_fallback_for_a_promoted_shape_and_reuses_after_success() {
     let pixels = vec![17u8; 16 * 16];
     let samples =
         J2kLosslessSamples::new(&pixels, 16, 16, 1, 8, false).expect("valid gray8 samples");
@@ -22,8 +22,9 @@ fn cuda_encoder_auto_reports_unavailable_fallback_and_reuses_after_success() {
     let mut encoder = CudaLosslessEncoder::new();
 
     for _ in 0..2 {
+        // Route as `Auto` does for a shape the routing evidence promotes.
         let result = encoder
-            .encode(samples, &options)
+            .encode_routed(samples, options, true)
             .expect("Auto must fall back when CUDA support is not compiled");
 
         assert_eq!(result.requested_backend(), EncodeBackendPreference::Auto);
@@ -37,6 +38,40 @@ fn cuda_encoder_auto_reports_unavailable_fallback_and_reuses_after_success() {
             j2k::J2kEncodeDispatchReport::default()
         );
         assert_ne!(result.encoded().codestream, b"");
+    }
+}
+
+#[test]
+fn cuda_encoder_auto_stays_on_the_cpu_without_a_measured_route() {
+    let pixels = vec![17u8; 16 * 16];
+    let samples =
+        J2kLosslessSamples::new(&pixels, 16, 16, 1, 8, false).expect("valid gray8 samples");
+    let options = J2kLosslessEncodeOptions::default()
+        .with_backend(EncodeBackendPreference::Auto)
+        .with_block_coding_mode(J2kBlockCodingMode::HighThroughput)
+        .with_max_decomposition_levels(Some(0))
+        .with_validation(J2kEncodeValidation::CpuRoundTrip);
+    let cpu = j2k::encode_j2k_lossless(
+        samples,
+        &options.with_backend(EncodeBackendPreference::CpuOnly),
+    )
+    .expect("CPU reference encode");
+    let mut encoder = CudaLosslessEncoder::new();
+
+    for _ in 0..2 {
+        let result = encoder
+            .encode(samples, &options)
+            .expect("Auto encodes on the CPU when no CUDA route is promoted");
+
+        assert_eq!(result.requested_backend(), EncodeBackendPreference::Auto);
+        assert_eq!(result.actual_backend(), BackendKind::Cpu);
+        // The CPU was the route `Auto` chose, not a fallback from the device.
+        assert_eq!(result.fallback_reason(), None);
+        assert_eq!(
+            result.dispatch_report(),
+            j2k::J2kEncodeDispatchReport::default()
+        );
+        assert_eq!(result.encoded().codestream, cpu.codestream);
     }
 }
 

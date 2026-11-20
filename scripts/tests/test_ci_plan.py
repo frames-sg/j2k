@@ -131,6 +131,49 @@ class ClassificationTests(unittest.TestCase):
         self.assertFalse(plan.metal_compile)
         self.assertFalse(plan.public_api)
 
+    def test_markdown_beside_code_is_documentation(self) -> None:
+        for path in (
+            "crates/j2k-metal/README.md",
+            "crates/j2k-cuda/README.md",
+            "crates/j2k-c/docs/api.md",
+            "crates/j2k-native/fixtures/htj2k/README.md",
+            "crates/j2k-cuda/tests/fixtures/htj2k/README.md",
+            "xtask/RELEASING.md",
+            "xtask/BENCHMARKS.md",
+            "corpus/README.md",
+            "corpus/j2k-conformance/README.md",
+        ):
+            with self.subTest(path=path):
+                plan = self.classify(path)
+                self.assertTrue(plan.docs)
+                self.assertFalse(plan.rust)
+                self.assertFalse(plan.cuda)
+                self.assertFalse(plan.metal)
+                self.assertFalse(plan.metal_compile)
+                self.assertFalse(plan.public_api)
+                self.assertFalse(plan.c_api)
+
+    def test_markdown_that_code_or_release_checks_consume_stays_code(self) -> None:
+        for path in (
+            "xtask/src/adoption_report/golden/minimal-diagnostic-report.md",
+            "crates/j2k-ml/src/notes.md",
+            "xtask/release-evidence/cuda-waiver-0.13.0.md",
+        ):
+            with self.subTest(path=path):
+                plan = self.classify(path)
+                self.assertTrue(plan.rust)
+                self.assertTrue(plan.cuda)
+                self.assertTrue(plan.metal)
+
+    def test_markdown_next_to_a_code_change_does_not_hide_it(self) -> None:
+        plan = ci_plan.classify_paths(
+            ("crates/j2k-metal/README.md", "crates/j2k-metal/src/lib.rs"), metadata()
+        )
+
+        self.assertTrue(plan.docs)
+        self.assertTrue(plan.rust)
+        self.assertTrue(plan.metal)
+
     def test_published_crate_changes_require_public_api_review(self) -> None:
         for path in (
             "crates/j2k-core/src/lib.rs",

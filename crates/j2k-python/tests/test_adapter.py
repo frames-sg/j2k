@@ -11,6 +11,7 @@ import random
 import re
 import struct
 import unittest
+import warnings
 
 import numpy as np
 import torch
@@ -171,6 +172,26 @@ class AdapterTests(unittest.TestCase):
             actual = result.groups[0].tensor.to_numpy()
             for row in actual:
                 np.testing.assert_array_equal(row, expected)
+
+    def test_jpeg2000_lenient_metadata_recovery_is_reported(self):
+        pixels = bytes(range(64))
+        jp2 = j2k.encode(pixels, 8, 8, components=1, codec="j2k", file=True)
+        # A truncated trailing box: strict parsing rejects it, lenient ignores it.
+        damaged = jp2 + bytes([0, 0, 0, 16]) + b"xml "
+        expected = j2k.Decoder().decode(jp2).to_numpy()
+        with self.assertRaises(ValueError):
+            j2k.Decoder().decode(damaged)
+        lenient = j2k.Decoder(strict=False)
+        for request in (damaged, j2k.ImageRequest(damaged)):
+            with self.assertWarns(j2k.RecoveredImageWarning):
+                image = lenient.decode(request).to_numpy()
+            np.testing.assert_array_equal(image, expected)
+        group = lenient.decode_batch([damaged]).groups[0]
+        self.assertEqual(group.recovered, [False])
+        self.assertEqual(len(group.warnings[0]), 1)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", j2k.RecoveredImageWarning)
+            np.testing.assert_array_equal(lenient.decode(jp2).to_numpy(), expected)
 
     def test_jpeg_integrity_and_recovery_metadata(self):
         complete = jpeg_fixture("progressive_8x8_jpeg")
