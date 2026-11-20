@@ -1,44 +1,55 @@
-# j2k-jpeg-cuda
+# J2K JPEG CUDA
 
-CUDA adapter for J2K baseline JPEG decode and baseline and lossless JPEG
-encode surfaces.
+> CUDA JPEG decode and encode for [J2K](https://github.com/frames-sg/j2k)
 
-The CUDA paths use J2K's own kernels and decode into CUDA device memory.
-Baseline encode takes Gray8 or Rgb8 CUDA buffers and returns host
-`EncodedJpeg` output, for single images and batches. Lossless encode
-(`encode_jpeg_lossless_from_cuda_buffer`) takes Gray8, Gray16, Rgb8, or Rgb16
-CUDA buffers and produces the same bytes as `j2k_jpeg::encode_jpeg_lossless`;
-its CUDA-Oxide kernels share the CPU encoder's prediction code from
-`j2k-codec-math`. Explicit CUDA requests
-return an error for unsupported JPEGs; they do not fall back to the CPU.
+[![Current Crates.io Version](https://img.shields.io/crates/v/j2k-jpeg-cuda.svg)](https://crates.io/crates/j2k-jpeg-cuda)
+[![Documentation](https://docs.rs/j2k-jpeg-cuda/badge.svg)](https://docs.rs/j2k-jpeg-cuda)
+[![license](https://shields.io/badge/license-MIT%2FApache--2.0-blue)](https://github.com/frames-sg/j2k#license)
 
-Batch baseline encode submits consecutive tiles of one CUDA buffer as one
-entropy batch. The 512 MiB live host cap (`j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES`)
-bounds each submission, not the batch: a batch whose worst-case entropy and
-frame output exceeds it, such as eight 2048×2048 4:2:2 tiles, is encoded in
-consecutive chunks, and the frames already encoded count at their actual sizes.
-`MemoryCapExceeded` comes before any submission when one tile's worst case
-alone exceeds the cap, and part-way only when the frames already encoded leave
-no room for the next tile.
+Decode baseline JPEG into CUDA device memory, and encode baseline and lossless
+JPEG from CUDA buffers, with J2K's own kernels. CUDA decodes full images of
+single-scan 8-bit YCbCr JPEG at 4:2:0, 4:2:2, or 4:4:4 to `Rgb8`. Baseline
+encode takes `Gray8` or `Rgb8` buffers, one image or a batch. Lossless encode
+takes `Gray8`, `Gray16`, `Rgb8`, or `Rgb16` and writes the same bytes as
+`j2k_jpeg::encode_jpeg_lossless`. Encoded JPEGs are returned in host memory.
 
-The adapter, session, and error types build by default. Enable `cuda-runtime`
-for CUDA Driver API dispatch, the CUDA buffer and output-tile types, and actual
-decode or encode. Without it, explicit CUDA operations return `CudaUnavailable`.
+`BackendRequest::Auto` always decodes on the CPU with
+[`j2k-jpeg`](https://crates.io/crates/j2k-jpeg). `Cuda` returns an error for
+any JPEG or request outside the scope above, including regions and scaled
+output; it never falls back to the CPU.
 
-Enabling `cuda-runtime` does not guarantee that the CUDA Oxide kernels were
-built. PTX is only generated on Linux hosts with the cuda-oxide toolchain;
-other builds may embed placeholder PTX. Set `J2K_REQUIRE_CUDA_OXIDE_BUILD=1` on
-CUDA test and benchmark hosts to make missing PTX a build error. Calling a
-placeholder kernel returns an error saying the PTX was not built.
+CUDA needs Linux, an NVIDIA driver, and the `cuda-runtime` feature. The
+kernels are compiled to PTX at build time with CUDA-Oxide (`cargo oxide`), for
+compute capability 8.0 and newer unless `J2K_CUDA_OXIDE_ARCH` says otherwise.
+Without CUDA-Oxide the crate still builds, and the kernels return an error
+when called. The API is experimental, so a minor release can change it (see
+[API stability](https://github.com/frames-sg/j2k/blob/main/book/stability.md)).
 
-An explicit CUDA decode covers full-image `Rgb8` output of single-scan
-baseline or extended 8-bit YCbCr JPEGs at 4:2:0, 4:2:2, or 4:4:4. Region,
-scaled, and region-scaled requests are an error with an explicit CUDA request.
-`Auto` never selects CUDA for JPEG decode: it decodes on the CPU, including
-those requests.
+## Usage
 
-## Links
+```rust
+use j2k_core::{BackendRequest, DeviceSurface, ImageDecodeDevice, PixelFormat};
+use j2k_jpeg_cuda::Decoder;
 
-- API docs: <https://docs.rs/j2k-jpeg-cuda>
-- Repository: <https://github.com/frames-sg/j2k>
-- Support policy: <https://github.com/frames-sg/j2k/blob/main/docs/public-support.md>
+let bytes = std::fs::read("photo.jpg")?;
+let mut decoder = Decoder::new(&bytes)?;
+let surface = decoder.decode_to_device(PixelFormat::Rgb8, BackendRequest::Cuda)?;
+println!("{:?} {:?}", surface.residency(), surface.dimensions());
+```
+
+The [GPU JPEG](https://github.com/frames-sg/j2k/blob/main/book/jpeg.md#gpu-jpeg)
+section of the J2K Book covers batch encode and its memory limits.
+
+## Feature flags
+
+- `cuda-runtime`: CUDA dispatch, the kernels, and the CUDA buffer and
+  output-tile types. Without it, the API still builds, and CUDA requests
+  return `Error::CudaUnavailable`.
+
+<!-- j2k-crate-footer -->
+
+---
+
+Part of [J2K](https://github.com/frames-sg/j2k), a JPEG 2000 and HTJ2K codec
+for Rust. See the [J2K Book](https://github.com/frames-sg/j2k/tree/main/book)
+and the [API documentation](https://docs.rs/j2k).

@@ -7,10 +7,10 @@
 //! helpers on macOS. Non-macOS builds keep the same API surface and return
 //! `Error::MetalUnavailable` for explicit Metal-only requests.
 //!
-//! The 0.9 expert surface uses `objc2-metal` directly: owned devices, queues,
-//! command buffers, and resources are retained protocol objects, while
-//! borrowed parameters are protocol-object references. This intentionally
-//! replaces the former `metal-rs` types without an adapter layer.
+//! The expert API uses `objc2-metal` directly: owned devices, queues, command
+//! buffers, and resources are retained protocol objects, and borrowed
+//! parameters are protocol-object references. `metal-rs` types are not
+//! accepted.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(unreachable_pub)]

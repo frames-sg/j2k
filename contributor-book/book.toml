@@ -1,0 +1,12 @@
+[book]
+title = "The J2K Contributor Book"
+description = "Working on the J2K codebase"
+language = "en"
+src = "."
+
+[build]
+build-dir = "../target/contributor-book"
+
+[output.html]
+git-repository-url = "https://github.com/frames-sg/j2k"
+edit-url-template = "https://github.com/frames-sg/j2k/edit/main/contributor-book/{path}"

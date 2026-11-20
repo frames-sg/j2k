@@ -1,114 +1,49 @@
-# j2k-metal
+# J2K Metal
 
-Metal adapter for JPEG 2000 / HTJ2K decode and encode stages on macOS.
+> Metal decode and encode for [J2K](https://github.com/frames-sg/j2k)
 
-The crate decodes into Metal buffers and runs encode stages on Metal for the
-supported workloads. Runtime setup comes from `j2k-metal-support`; the codec
-kernels live in this crate.
+[![Current Crates.io Version](https://img.shields.io/crates/v/j2k-metal.svg)](https://crates.io/crates/j2k-metal)
+[![Documentation](https://docs.rs/j2k-metal/badge.svg)](https://docs.rs/j2k-metal)
+[![license](https://shields.io/badge/license-MIT%2FApache--2.0-blue)](https://github.com/frames-sg/j2k#license)
 
-The expert constructors and raw buffer handoffs take `objc2-metal` protocol
-objects. Pass retained protocol objects for devices, queues, command buffers,
-and buffers that J2K should own, and borrowed references otherwise. `metal-rs`
-types are not accepted.
+Decode JPEG 2000 and HTJ2K on an Apple GPU, and encode lossless HTJ2K there.
+`J2kDecoder` decodes whole images, regions, and reduced resolutions into Metal
+buffers; `MetalBatchDecoder` decodes batches into NCHW or NHWC buffers that
+can stay on the GPU for the next stage. Lossless encode can take its input
+from Metal buffers and leave the codestream in one.
 
-Device decodes follow the CPU's sample conversion for signed grayscale and
-color sources, including prepared, referenced, repeated, and distinct batches.
+You choose the backend per call with `BackendRequest`. `Auto` uses Metal only
+for the image types and sizes where it was measured to be faster than the CPU
+and to give identical output, and runs everything else on the CPU. `Metal`
+always uses Metal and returns an error for an image it can't handle; it never
+falls back to the CPU.
 
-`J2kDecoder::decode_into_metal` (or `decode_into_metal_with_session`) decodes
-one full image into a caller-owned `MetalImageDestination`, so a stream of
-same-sized frames can reuse one output allocation. It writes `Gray8` or
-`Gray16` for one component, `Rgb8` for 8-bit RGB, and `Rgb16` for 9- to 16-bit
-RGB, and returns after the GPU work completes. Codestreams without a direct
-Metal plan return `MetalDirectFallback`.
+Metal needs macOS. On other platforms the crate builds, and explicit Metal
+requests return `Error::MetalUnavailable`. The expert APIs take
+[`objc2-metal`](https://crates.io/crates/objc2-metal) types, not `metal-rs`.
+The API is experimental, so a minor release can change it (see
+[API stability](https://github.com/frames-sg/j2k/blob/main/book/stability.md)).
 
-`MetalBatchDecoder::decode_prepared_cooperative` is an explicit CPU/Metal batch
-decode mode. It queues GPU entropy work first, then uses a caller-bounded number
-of CPU workers for part of a large classic RGB8 group while Metal runs. The split
-uses code-block dimensions, coding passes, and payload sizes. Reconstruction,
-color conversion, and final packing stay on Metal, with exact resident output in
-the requested NHWC or NCHW layout. Small batches, repeated plans, grayscale,
-higher bit depths, and HTJ2K run entirely on the GPU.
-
-`decode_prepared` and `submit_prepared` also move Tier-1 to CPU workers on
-their own for one shape: a group of at least eight distinct classic JPEG 2000
-images with unsigned 8-bit RGB and subsampled components.
+## Usage
 
 ```rust
-let mut decoder = j2k_metal::MetalBatchDecoder::system_default()?;
-let prepared = decoder.prepare(inputs)?;
-let workers = std::num::NonZeroUsize::new(8).unwrap();
-let decoded = decoder.decode_prepared_cooperative(&prepared, workers)?;
-// Inspect decoded.errors() and decoded.group_errors() before consuming groups.
+use j2k_core::{BackendRequest, DeviceSurface, ImageDecodeDevice, PixelFormat};
+use j2k_metal::J2kDecoder;
+
+let bytes = std::fs::read("image.jph")?;
+let mut decoder = J2kDecoder::new(&bytes)?;
+let surface = decoder.decode_to_device(PixelFormat::Rgb8, BackendRequest::Auto)?;
+println!("{:?} {:?}", surface.residency(), surface.dimensions());
 ```
 
-The cooperative mode needs a compatible group of at least eight distinct,
-full-resolution, reversible RGB8 images, each with at least 16,384 pixels.
-Its benefit depends on input complexity, CPU budget, and device. CPU workers
-share a queue ordered by estimated work; the initial CPU share was calibrated
-on an Apple M4 Pro and scales with the worker budget. Each group's dispatch
-report has `cpu_tier1_images`, the number of images whose entropy decoding ran
-on the CPU.
+The [GPU chapter](https://github.com/frames-sg/j2k/blob/main/book/gpu.md) of
+the J2K Book covers batches, routing, encoding, and decoding into your own
+Metal buffers.
 
-## Encode routing
+<!-- j2k-crate-footer -->
 
-`Auto` uses Metal for an encode only in the cases measured faster on an Apple
-M4 Pro:
+---
 
-- **Lossless HTJ2K to host memory**, in batches of more than one image: RGB8
-  at 1,024 x 1,024, and Gray8 or RGB8 at 2,048 x 2,048. Metal runs coefficient
-  preparation and HT Tier-1; the CPU packetizes.
-- **Lossy 8-bit RGB** of at least 4,194,304 pixels (2,048 x 2,048): Metal runs
-  its transform and quantization stages.
-
-Everything else encodes on the CPU under `Auto`, including 512 x 512 images
-and Gray8 at 1,024 x 1,024. Classic Tier-1, packetization, and codestream
-assembly stay on the CPU for host output.
-
-Explicit Metal requests have no size threshold. They run on Metal when the
-shape is supported and otherwise return `UnsupportedMetalRequest`; they never
-switch to another backend.
-
-## Fully resident encode
-
-Use `submit_lossless_batch_to_metal` when the encoded codestream should stay in
-a Metal buffer. An encode counts as fully resident only when
-`MetalLosslessEncodeResidency` reports `true` for coefficient prep,
-packetization, and codestream assembly.
-
-For no-copy input from Metal buffers, pass `MetalLosslessEncodeTile` inputs
-with `MetalEncodeInputStaging::AlreadyPaddedContiguous`. To get host output,
-call `submit_lossless_batch(...).wait()`, which returns `Vec<EncodedJ2k>`. The
-hidden `encode_lossless_batch_with_report` helper is for internal benchmarks
-and diagnostics. When benchmarking, time host readback separately from the
-resident buffer work.
-
-Compare `resident_host_ms` with the CPU only when `packetization_used=true`,
-`codestream_assembly_used=true`, and `batch_size > 1`. `resident_buffer_ms` is
-only meaningful if the consumer keeps the codestream in GPU memory.
-
-See which backend `Auto` picks for decoding, and how explicit Metal requests
-behave:
-
-```bash
-cargo run -p j2k-metal --example decode_route_report
-```
-
-See the final backend and per-stage Metal dispatch counts for `Auto` HTJ2K
-encoding:
-
-```bash
-cargo run -p j2k-metal --example htj2k_encode_auto_report
-```
-
-Encode an HTJ2K codestream into a Metal buffer and check it with the CPU
-decoder:
-
-```bash
-cargo run -p j2k-metal --example resident_encode_buffer
-```
-
-## Links
-
-- API docs: <https://docs.rs/j2k-metal>
-- Repository: <https://github.com/frames-sg/j2k>
-- Support policy: <https://github.com/frames-sg/j2k/blob/main/docs/public-support.md>
+Part of [J2K](https://github.com/frames-sg/j2k), a JPEG 2000 and HTJ2K codec
+for Rust. See the [J2K Book](https://github.com/frames-sg/j2k/tree/main/book)
+and the [API documentation](https://docs.rs/j2k).

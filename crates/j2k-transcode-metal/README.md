@@ -1,45 +1,56 @@
-# j2k-transcode-metal
+# J2K Transcode Metal
 
-Metal acceleration for J2K's JPEG-to-HTJ2K coefficient-domain transcode on
-macOS.
+> Metal acceleration for [J2K](https://github.com/frames-sg/j2k)'s JPEG-to-HTJ2K transcode
 
-This crate runs the supported transform stages on Metal and uses
-`j2k-metal-support` for runtime setup.
+[![Current Crates.io Version](https://img.shields.io/crates/v/j2k-transcode-metal.svg)](https://crates.io/crates/j2k-transcode-metal)
+[![Documentation](https://docs.rs/j2k-transcode-metal/badge.svg)](https://docs.rs/j2k-transcode-metal)
+[![license](https://shields.io/badge/license-MIT%2FApache--2.0-blue)](https://github.com/frames-sg/j2k#license)
 
-Device constructors take a retained `objc2-metal`
-`ProtocolObject<dyn MTLDevice>`.
+Run the transform stages of
+[`j2k-transcode`](https://crates.io/crates/j2k-transcode)'s JPEG-to-HTJ2K
+conversion on an Apple GPU. `jpeg_to_htj2k_with_metal_route` takes a
+`BackendRequest` and reports where each stage ran, and
+`MetalDctToWaveletStageAccelerator` plugs into the `j2k-transcode` API
+directly. The output is byte-identical to the CPU and CUDA backends. `Auto`
+keeps single tiles on the CPU and sends only large batches of same-shape tiles
+to Metal; an explicit `Metal` request returns an error for anything Metal
+can't run.
 
-By default `Auto` keeps single tiles on the CPU: the single-job reversible
-5/3 and 9/7 thresholds are `usize::MAX` unless you lower them with
-`with_auto_reversible_min_samples` or `with_auto_dwt97_min_samples`. Same-shape
-batches go to Metal from 32 jobs and `224 * 224 * 32` samples. `Auto` also
-skips the staged 9/7 batch path when either tile side is over 1024 samples.
-Explicit Metal requests and lowered thresholds are used as given. Meeting a
-threshold does not guarantee a speedup.
+Metal needs macOS. On other platforms the crate builds, and explicit Metal
+requests return `MetalTranscodeError::MetalUnavailable`. Device constructors
+take [`objc2-metal`](https://crates.io/crates/objc2-metal) types, not
+`metal-rs`. The API is experimental, so a minor release can change it (see
+[API stability](https://github.com/frames-sg/j2k/blob/main/book/stability.md)).
 
-The 9/7 kernels compute the canonical binary32 transform from
-`j2k_codec_math::transcode97`, so Metal codestreams are byte-identical to CPU
-and CUDA ones. Components with a side over 1024 samples use global-memory
-kernels instead of the threadgroup-staged ones, and produce the same bits.
-`TranscodePrecision::F64` is CPU-only. An explicit Metal accelerator rejects
-it with `TranscodeStageError::Unsupported`; `Auto` leaves it on the CPU.
+## Usage
 
-High-level route-report example:
+```rust
+use j2k_core::BackendRequest;
+use j2k_transcode::JpegToHtj2kOptions;
+use j2k_transcode_metal::jpeg_to_htj2k_with_metal_route;
 
-```bash
-cargo run -p j2k-transcode-metal --example jpeg_to_htj2k_route_report
+let jpeg = std::fs::read("tile.jpg")?;
+let routed = jpeg_to_htj2k_with_metal_route(
+    &jpeg,
+    &JpegToHtj2kOptions::lossless_53(),
+    BackendRequest::Auto,
+)?;
+println!("{:?}", routed.route.selected_transform_backend);
+std::fs::write("tile.j2c", &routed.encoded.codestream)?;
 ```
 
-The example prints the requested backend, selected transform backend, final
-codestream output backend, structured Auto fallback reason, transfer bytes, and
-where each transcode stage ran.
+The [GPU acceleration](https://github.com/frames-sg/j2k/blob/main/book/transcoding.md#gpu-acceleration)
+section of the J2K Book covers batches, the `Auto` thresholds, and how to
+change them.
 
-On macOS, `resident_codestream_buffer_from_metal_encoded_j2k` converts
-buffer-backed `j2k-metal` encode output into the shared
-`ResidentCodestreamBuffer` descriptor, checking the allocation and capacity.
+## Feature flags
 
-## Links
+- `bench-internals`: internal, for this crate's benchmarks.
 
-- API docs: <https://docs.rs/j2k-transcode-metal>
-- Repository: <https://github.com/frames-sg/j2k>
-- Support policy: <https://github.com/frames-sg/j2k/blob/main/docs/public-support.md>
+<!-- j2k-crate-footer -->
+
+---
+
+Part of [J2K](https://github.com/frames-sg/j2k), a JPEG 2000 and HTJ2K codec
+for Rust. See the [J2K Book](https://github.com/frames-sg/j2k/tree/main/book)
+and the [API documentation](https://docs.rs/j2k).

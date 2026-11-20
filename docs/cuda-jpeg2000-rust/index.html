@@ -61,7 +61,7 @@
             <a class="button primary" href="https://crates.io/crates/j2k-cuda">j2k-cuda</a>
             <a class="button" href="https://docs.rs/j2k-cuda">CUDA API docs</a>
           </div>
-          <p class="note"><strong>Release status:</strong> See the <a href="https://github.com/frames-sg/j2k/blob/main/CHANGELOG.md">changelog</a> and <a href="https://crates.io/crates/j2k">crates.io</a> for the current published version.</p>
+          <p class="note"><strong>Release status:</strong> See <a href="https://github.com/frames-sg/j2k/releases">GitHub Releases</a> and <a href="https://crates.io/crates/j2k">crates.io</a> for the current version.</p>
         </div>
         <img class="diagram" src="../assets/j2k-gpu-pipeline.svg?v=4" alt="CUDA JPEG2000 Rust pipeline">
       </div>
@@ -91,7 +91,7 @@
         <p>CUDA performance numbers come from self-hosted NVIDIA benchmark runs; hosted CI does not measure GPU performance.</p>
         <p><code>cuda-runtime</code> exposes CUDA Driver API dispatch, but product CUDA Oxide PTX is built only on supported Linux cuda-oxide hosts. Set <code>J2K_REQUIRE_CUDA_OXIDE_BUILD=1</code> on CUDA validation and benchmark hosts so placeholder PTX fails the build; runtime errors for placeholder kernels state that CUDA Oxide PTX was not built.</p>
         <p>The CUDA backends support the same formats as the main crate: JPEG 2000 Part 1, JP2 files, HTJ2K Part 15, and JPH files. Unsupported shapes return an error for explicit CUDA requests and stay on the CPU under <code>Auto</code>. Device decodes of signed grayscale and color sources follow the CPU's sample conversion.</p>
-        <p class="note">Benchmark results are in <a href="https://github.com/frames-sg/j2k/blob/main/docs/benchmark-evidence.md">docs/benchmark-evidence.md</a>. Published speed comparisons need an external benchmark bundle with <code>publication_eligible=true</code>; results on generated fixtures alone are not published.</p>
+        <p class="note">Benchmark results, with the hardware and commands used, are in the <a href="https://github.com/frames-sg/j2k/blob/main/book/performance.md">J2K Book</a>.</p>
       </div>
     </section>
   </main>

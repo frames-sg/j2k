@@ -1,8 +1,8 @@
 # Large-coordinate decode fixtures
 
 These two synthetic grayscale images were encoded with OpenJPEG 2.5.4. Their
-dimensions are 65,537 x 4 and 4 x 65,537, so each crosses the former dimension
-cap while remaining small enough for whole-image correctness checks.
+dimensions are 65,537 x 4 and 4 x 65,537, so one side of each is longer than
+65,536 while the image stays small enough to check whole.
 
 The unsigned 8-bit sample at `(x, y)` is:
 

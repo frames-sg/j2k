@@ -1,40 +1,28 @@
-# j2k-cuda-runtime
+# J2K CUDA Runtime
 
-Codec-neutral CUDA Driver API runtime for the J2K CUDA engine and adapter crates.
+> CUDA Driver API runtime for [J2K](https://github.com/frames-sg/j2k)'s CUDA crates
 
-It provides device memory allocation and copies, streams and events, PTX module
-loading, launch validation, and completion-aware pooled resources. Codec kernels
-and stage dispatch live in `j2k-cuda-j2k-engine`, `j2k-cuda-jpeg-engine`, and
-`j2k-cuda-transcode-engine`; those engines supply kernel specifications to this
-runtime. The runtime retains the generic byte-copy kernel.
+[![Current Crates.io Version](https://img.shields.io/crates/v/j2k-cuda-runtime.svg)](https://crates.io/crates/j2k-cuda-runtime)
+[![Documentation](https://docs.rs/j2k-cuda-runtime/badge.svg)](https://docs.rs/j2k-cuda-runtime)
+[![license](https://shields.io/badge/license-MIT%2FApache--2.0-blue)](https://github.com/frames-sg/j2k#license)
 
-CUDA performance numbers come from self-hosted benchmark runs, not from this
-crate's tests.
+This crate shares CUDA runtime code between J2K's CUDA crates; use
+[`j2k-cuda`](https://crates.io/crates/j2k-cuda),
+[`j2k-jpeg-cuda`](https://crates.io/crates/j2k-jpeg-cuda), or
+[`j2k-transcode-cuda`](https://crates.io/crates/j2k-transcode-cuda) instead.
+It loads the NVIDIA driver at run time and manages device memory, streams,
+events, PTX modules, and kernel launches. Launch geometry is checked before it
+reaches the driver, and a pooled buffer is not reused until the GPU work that
+used it has finished. The codec kernels are in the engine crates.
 
-## Launch geometry policy
+## Feature flags
 
-Launch geometry is checked on the host before calling the CUDA Driver API. Grid
-axes must be nonzero and no larger than `2^31 - 1` for x or `65,535` for y/z;
-block axes must be nonzero and no larger than `1,024` for x/y or `64` for z,
-with at most `1,024` threads per block. Safe operations also check geometry
-derived from caller input before uploading or allocating output, where
-possible.
+The features are internal. The J2K CUDA crates enable the ones they need.
 
-These are NVIDIA's documented limits for the compute capabilities this crate
-supports. The Driver API can still reject a launch on a specific device. See NVIDIA's [compute-capability
-limits](https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/compute-capabilities.html)
-and [Driver API device
-attributes](https://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__TYPES.html).
+<!-- j2k-crate-footer -->
 
-## Resource completion policy
+---
 
-Submitting CUDA work is not treated as completing it. Pooled resources used by
-asynchronous work are not reused until the work is known to have finished in
-the same context. A safe API that returns a pooled buffer initialized by an
-asynchronous memset synchronizes before returning it.
-
-## Links
-
-- API docs: <https://docs.rs/j2k-cuda-runtime>
-- Repository: <https://github.com/frames-sg/j2k>
-- Support policy: <https://github.com/frames-sg/j2k/blob/main/docs/public-support.md>
+Part of [J2K](https://github.com/frames-sg/j2k), a JPEG 2000 and HTJ2K codec
+for Rust. See the [J2K Book](https://github.com/frames-sg/j2k/tree/main/book)
+and the [API documentation](https://docs.rs/j2k).

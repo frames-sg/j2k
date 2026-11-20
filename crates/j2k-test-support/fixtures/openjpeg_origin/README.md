@@ -1,4 +1,6 @@
-OpenJPEG and OpenJPH odd-origin fixtures.
+# Odd-origin fixtures
+
+OpenJPEG and OpenJPH fixtures placed at odd reference-grid origins.
 
 `rgb_23x17_origin_3_5.j2k` (classic block coding, from OpenJPEG) and
 `rgb_23x17_origin_3_5_ht.j2c` (HTJ2K block coding, from OpenJPH) place one
@@ -7,9 +9,9 @@ resolution. A reduced image spans `[ceil(origin / s), ceil(extent / s))` on
 each axis (ITU-T T.800 B.5), so at every reduction it is narrower than
 `ceil(size / s)`: 11 x 8 rather than 12 x 9 at one level, 6 x 4 rather than
 6 x 5 at two, and 3 x 2 rather than 3 x 3 at three. The `reduced_r*.rgb`
-files are OpenJPEG's own decodes at those reductions, an independent
-reference for j2k's reduced-resolution and region decodes of images with
-such origins.
+files are OpenJPEG's own decodes at those reductions, which the tests use as
+an independent reference for reduced-resolution and region decodes of images
+with such origins.
 
 `generate.sh` regenerates every file with OpenJPEG 2.5.4 (`opj_compress` and
 `opj_decompress`, openjp2 library v2.5.4, Homebrew `openjpeg`) and OpenJPH

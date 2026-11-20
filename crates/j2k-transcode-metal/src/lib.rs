@@ -11,9 +11,8 @@
 //! `usize::MAX`, so single-tile requests stay on the CPU unless callers opt in
 //! with `with_auto_reversible_min_samples` or `with_auto_dwt97_min_samples`.
 //!
-//! Device-accepting expert constructors use retained `objc2-metal`
-//! `ProtocolObject<dyn MTLDevice>` owners as of 0.9. There is no `metal-rs`
-//! constructor compatibility layer.
+//! Constructors that take a device take a retained `objc2-metal`
+//! `ProtocolObject<dyn MTLDevice>`. `metal-rs` types are not accepted.
 
 #![warn(clippy::non_send_fields_in_send_ty)]
 

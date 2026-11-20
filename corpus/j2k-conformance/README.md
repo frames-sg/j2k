@@ -1,35 +1,38 @@
-# J2K Conformance Metadata
+# JPEG 2000 conformance manifests
 
-This directory contains authored metadata only. The official ISO/IEC 15444-4 /
-ITU-T T.803 v3 copyrighted electronic attachment remains external. It must not be committed,
-copied into a package, or uploaded as a CI artifact.
+This directory holds manifests we wrote, not test data. The official
+ISO/IEC 15444-4 / ITU-T T.803 v3 electronic attachment is copyrighted and
+stays external: don't commit it, copy it into a package, or upload it as a CI
+artifact.
 
-The blocking Part 1 and Part 15 decoder inventory is `t803-v3.toml`. It pins
-the official attachment URL, archive size and SHA-256, and every selected
-codestream and reference hash: all entries in the five selected Part 1 decoder
-tables, the nine Annex G JP2 files, 26 HTJ2K BSETs, and ten Annex G JPH BSETs. `cargo xtask t803 fetch` materializes the verified corpus
-only under `target/t803/`; `run` fails when that corpus is absent or altered.
+`t803-v3.toml` is the Part 1 and Part 15 decoder inventory. It pins the
+attachment's URL, archive size and SHA-256, and the hash of every selected
+codestream and reference: all entries in the five selected Part 1 decoder
+tables, the nine Annex G JP2 files, 26 HTJ2K BSETs, and ten Annex G JPH
+BSETs. `cargo xtask t803 fetch` downloads and verifies the corpus into
+`target/t803/`, and `cargo xtask t803 run` fails if that corpus is missing or
+altered.
 
-The deterministic encoder procedure is described by:
+The deterministic encoder tests are defined by:
 
 - `encoder-ics-cpu.toml`
 - `encoder-ics-cuda.toml`
 - `encoder-ics-metal.toml`
 - `encoder-matrix-v2.toml`
 
-Those Annex D/F results are informative under T.803 and are not decoder
-conformance results. Supported cases use the vendored OpenJPEG 2.5.3 T.804
-decoder. OpenJPEG rejects HT code-blocks carrying RGN before decoding, so the
-HT+RGN capability case is decoded by a clean, pinned OpenHTJ2K 0.23.4
-executable instead, as a labelled Part 15 interoperability check. Run
-`scripts/prepare-openhtj2k-reference.sh` before the CPU matrix; the report
-records the OpenHTJ2K source revision and executable hash and marks this case as
-not a T.804 result.
+Under T.803, these Annex D/F results are informative; they are not decoder
+conformance results. Supported cases are decoded by the vendored OpenJPEG
+2.5.3 T.804 decoder. OpenJPEG rejects HT code blocks that carry RGN before
+decoding them, so the HT+RGN case is decoded by a pinned, unmodified
+OpenHTJ2K 0.23.4 executable instead, as a Part 15 interoperability check.
+Run `scripts/prepare-openhtj2k-reference.sh` before the CPU matrix. The
+report records the OpenHTJ2K source revision and executable hash, and marks
+the case as not a T.804 result.
 
-`support-inventory.tsv` is the feature-support ledger used by `cargo xtask
-public-support`; it contains no corpus paths, is not consumed by the T.803
-runner, and is not a conformance result.
+`support-inventory.tsv` is the feature-support table that
+`cargo xtask public-support` reads. It names no corpus paths, the T.803
+runner doesn't use it, and it is not a conformance result.
 
-The generated JSON and Markdown reports are the release results, not any
-summary of them. What is stated and why is in
-[`docs/t803-conformance.md`](../../docs/t803-conformance.md).
+The results are the JSON and Markdown reports the runner writes, not any
+summary of them. The [conformance page](../../book/conformance.md) explains
+what they cover.
