@@ -107,6 +107,7 @@ const STRICT_CLIPPY_PACKAGES: &[&str] = &[
     "j2k-jpeg",
     "j2k-jpeg-cuda",
     "j2k-jpeg-metal",
+    "j2k-jpegls",
     "j2k-metal",
     "j2k-metal-support",
     "j2k-ml",
@@ -373,6 +374,11 @@ pub(super) fn fuzz_build() -> Result<(), String> {
     run_cargo(&[
         "check",
         "--manifest-path",
+        "crates/j2k-jpegls/fuzz/Cargo.toml",
+    ])?;
+    run_cargo(&[
+        "check",
+        "--manifest-path",
         "crates/j2k-tilecodec/fuzz/Cargo.toml",
     ])?;
     run_cargo(&[
@@ -402,6 +408,9 @@ const FUZZ_TARGETS: &[(&str, &str)] = &[
     ("crates/j2k-jpeg", "parse_fuzz"),
     ("crates/j2k-jpeg", "region_scaled_fuzz"),
     ("crates/j2k-jpeg", "row_stream_fuzz"),
+    ("crates/j2k-jpegls", "parse_fuzz"),
+    ("crates/j2k-jpegls", "decode_fuzz"),
+    ("crates/j2k-jpegls", "roundtrip_fuzz"),
     ("crates/j2k-tilecodec", "decompress_fuzz"),
     ("crates/j2k-tilecodec", "rle_fuzz"),
     ("crates/j2k-transcode", "jpeg_to_htj2k_fuzz"),

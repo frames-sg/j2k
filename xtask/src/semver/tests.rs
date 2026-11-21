@@ -99,7 +99,7 @@ fn intentional_break_transition_is_exact_and_names_the_next_baseline() {
 
 #[test]
 fn package_partition_tracks_baselines_and_exact_first_release_packages() {
-    assert_eq!(SEMVER_NEW_PACKAGES, [] as [&str; 0]);
+    assert_eq!(SEMVER_NEW_PACKAGES, ["j2k-jpegls"]);
     assert!(SEMVER_BASELINE_PACKAGES.contains(&"j2k-mpsgraph-support"));
     for package in [
         "j2k-cuda-build-support",
@@ -121,7 +121,12 @@ fn package_partition_tracks_baselines_and_exact_first_release_packages() {
         .copied()
         .collect::<Vec<_>>();
     assert!(validate_package_partition(&published).is_ok());
-    assert!(validate_package_partition(SEMVER_BASELINE_PACKAGES).is_ok());
+    // The baseline alone is the complete partition only while no new
+    // packages await their first release.
+    assert_eq!(
+        validate_package_partition(SEMVER_BASELINE_PACKAGES).is_ok(),
+        SEMVER_NEW_PACKAGES.is_empty()
+    );
 
     let mut incomplete = published.clone();
     incomplete.pop();

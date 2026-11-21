@@ -2698,6 +2698,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "j2k-jpegls"
+version = "0.14.0"
+dependencies = [
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "j2k-metal"
 version = "0.14.0"
 dependencies = [

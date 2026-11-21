@@ -77,6 +77,21 @@ determination.
   `README.md`. The retained upstream MIT license is
   `crates/j2k-tilecodec/tests/fixtures/dicom_rle/LICENSE.pydicom`.
 
+- **ITU-T Recommendation T.87 (06/98)** / ISO/IEC 14495-1 — *Lossless and
+  near-lossless compression of continuous-tone still images — Baseline.*
+  Primary reference for `crates/j2k-jpegls`: context modelling, prediction,
+  Golomb coding, run mode, preset coding parameters, and marker segments.
+
+- **CharLS** <https://github.com/team-charls/charls> — Oracle for the
+  JPEG-LS fixtures in `crates/j2k-jpegls/fixtures/jpegls_matrix/`: CharLS
+  2.4.2, called through its C API by `corpus/conformance/jpegls_matrix.py`,
+  encoded the synthetic codestreams and decoded every reference. That
+  directory also holds the JPEG-LS codestream of pydicom 2.4.4's
+  `MR_small_jpeg_ls_lossless.dcm`; provenance is in its `README.md`, and the
+  retained upstream MIT license is
+  `crates/j2k-jpegls/fixtures/jpegls_matrix/LICENSE.pydicom`. No CharLS
+  source code is incorporated into `j2k`.
+
 - **OpenJPEG** <https://www.openjpeg.org/> — Reference implementation used as
   an encoder and oracle for small test assets. The synthetic codestreams in
   `crates/j2k-native/fixtures/reversible_early_stop/` (such as

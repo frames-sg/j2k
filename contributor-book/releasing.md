@@ -174,7 +174,7 @@ must not keep their own lists. Each entry has the crate's `name` and its
 The publish order is: `j2k-core`, `j2k-profile`, `j2k-types`, `j2k-codec-math`,
 `j2k-cuda-build-support`, `j2k-cuda-runtime`, `j2k-cuda-j2k-engine`,
 `j2k-cuda-jpeg-engine`, `j2k-cuda-transcode-engine`, `j2k-metal-support`,
-`j2k-mpsgraph-support`, `j2k-native`, `j2k-jpeg`, `j2k-tilecodec`, `j2k`,
+`j2k-mpsgraph-support`, `j2k-native`, `j2k-jpeg`, `j2k-jpegls`, `j2k-tilecodec`, `j2k`,
 `j2k-transcode`, `j2k-transcode-cuda`, `j2k-jpeg-metal`, `j2k-metal`,
 `j2k-transcode-metal`, `j2k-jpeg-cuda`, `j2k-cuda`, `j2k-ml`, `j2k-mpsgraph`,
 and `j2k-cli`.

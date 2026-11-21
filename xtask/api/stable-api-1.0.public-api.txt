@@ -5632,6 +5632,185 @@ pub struct j2k_mpsgraph_support::MpsGraphSubmission<InputOwner>
 pub unsafe fn j2k_mpsgraph_support::MpsGraphSubmission<InputOwner>::submit(&objc2_metal_performance_shaders_graph::generated::__MPSGraph::MPSGraph, &objc2_metal_performance_shaders_graph::generated::__MPSGraphTensor::MPSGraphTensor, &[objc2::rc::retained::Retained<objc2_metal_performance_shaders_graph::generated::__MPSGraphTensor::MPSGraphTensor>], &objc2::runtime::protocol_object::ProtocolObject<dyn objc2_metal::generated::__MTLCommandQueue::MTLCommandQueue>, &objc2_metal_performance_shaders_graph::generated::__MPSGraphTensorData::MPSGraphTensorData, InputOwner) -> Self
 ```
 
+## `j2k-jpegls`
+
+```text
+#[non_exhaustive] pub enum j2k_jpegls::DecodedSamples
+#[non_exhaustive] pub enum j2k_jpegls::JpegLsEncodeError
+#[non_exhaustive] pub enum j2k_jpegls::JpegLsError
+#[non_exhaustive] pub enum j2k_jpegls::JpegLsSamples<'a>
+#[non_exhaustive] pub enum j2k_jpegls::UnsupportedFeature
+#[non_exhaustive] pub struct j2k_jpegls::DecodedImage
+#[non_exhaustive] pub struct j2k_jpegls::EncodedJpegLs
+#[non_exhaustive] pub struct j2k_jpegls::Info
+#[non_exhaustive] pub struct j2k_jpegls::JpegLsEncodeOptions
+#[non_exhaustive] pub struct j2k_jpegls::ScanInfo
+impl core::default::Default for j2k_jpegls::DecodeOptions
+impl j2k_jpegls::DecodeOptions
+impl j2k_jpegls::Info
+impl j2k_jpegls::InterleaveMode
+impl j2k_jpegls::JpegLsEncodeOptions
+impl j2k_jpegls::JpegLsSamples<'_>
+impl j2k_jpegls::PresetCodingParameters
+impl<'a> j2k_jpegls::Decoder<'a>
+pub const fn j2k_jpegls::DecodeOptions::max_output_bytes(&self) -> usize
+pub const fn j2k_jpegls::DecodeOptions::with_max_output_bytes(self, usize) -> Self
+pub const fn j2k_jpegls::Decoder<'a>::info(&self) -> &j2k_jpegls::Info
+pub const fn j2k_jpegls::Info::bytes_per_sample(&self) -> usize
+pub const fn j2k_jpegls::InterleaveMode::code(self) -> u8
+pub const fn j2k_jpegls::JpegLsEncodeOptions::new(u8) -> Self
+pub const fn j2k_jpegls::JpegLsEncodeOptions::with_interleave(self, j2k_jpegls::InterleaveMode) -> Self
+pub const fn j2k_jpegls::JpegLsEncodeOptions::with_near(self, u8) -> Self
+pub const fn j2k_jpegls::JpegLsEncodeOptions::with_preset(self, j2k_jpegls::PresetCodingParameters) -> Self
+pub const fn j2k_jpegls::JpegLsEncodeOptions::with_restart_interval(self, u16) -> Self
+pub const fn j2k_jpegls::JpegLsEncodeOptions::with_validation(self, j2k_jpegls::JpegLsEncodeValidation) -> Self
+pub const fn j2k_jpegls::JpegLsSamples<'_>::components(&self) -> u8
+pub const fn j2k_jpegls::JpegLsSamples<'_>::dimensions(&self) -> (u32, u32)
+pub enum j2k_jpegls::InterleaveMode
+pub enum j2k_jpegls::JpegLsEncodeValidation
+pub fn j2k_jpegls::DecodeOptions::default() -> Self
+pub fn j2k_jpegls::Decoder<'a>::decode(&self) -> core::result::Result<j2k_jpegls::DecodedImage, j2k_jpegls::JpegLsError>
+pub fn j2k_jpegls::Decoder<'a>::decode_into(&self, &mut [u8], usize) -> core::result::Result<(), j2k_jpegls::JpegLsError>
+pub fn j2k_jpegls::Decoder<'a>::inspect(&[u8]) -> core::result::Result<j2k_jpegls::Info, j2k_jpegls::JpegLsError>
+pub fn j2k_jpegls::Decoder<'a>::new(&'a [u8]) -> core::result::Result<Self, j2k_jpegls::JpegLsError>
+pub fn j2k_jpegls::Decoder<'a>::with_options(&'a [u8], j2k_jpegls::DecodeOptions) -> core::result::Result<Self, j2k_jpegls::JpegLsError>
+pub fn j2k_jpegls::Info::output_len(&self) -> core::option::Option<usize>
+pub fn j2k_jpegls::Info::row_bytes(&self) -> core::option::Option<usize>
+pub fn j2k_jpegls::PresetCodingParameters::defaults(u16, u8) -> Self
+pub fn j2k_jpegls::encode_jpegls(j2k_jpegls::JpegLsSamples<'_>, &j2k_jpegls::JpegLsEncodeOptions) -> core::result::Result<j2k_jpegls::EncodedJpegLs, j2k_jpegls::JpegLsEncodeError>
+pub j2k_jpegls::DecodedImage::bit_depth: u8
+pub j2k_jpegls::DecodedImage::components: u8
+pub j2k_jpegls::DecodedImage::height: u32
+pub j2k_jpegls::DecodedImage::samples: j2k_jpegls::DecodedSamples
+pub j2k_jpegls::DecodedImage::width: u32
+pub j2k_jpegls::DecodedSamples::U16(alloc::vec::Vec<u16>)
+pub j2k_jpegls::DecodedSamples::U8(alloc::vec::Vec<u8>)
+pub j2k_jpegls::EncodedJpegLs::data: alloc::vec::Vec<u8>
+pub j2k_jpegls::Info::bit_depth: u8
+pub j2k_jpegls::Info::component_ids: alloc::vec::Vec<u8>
+pub j2k_jpegls::Info::components: u8
+pub j2k_jpegls::Info::dimensions: (u32, u32)
+pub j2k_jpegls::Info::interleave: j2k_jpegls::InterleaveMode
+pub j2k_jpegls::Info::near: u8
+pub j2k_jpegls::Info::preset: core::option::Option<j2k_jpegls::PresetCodingParameters>
+pub j2k_jpegls::Info::restart_interval: core::option::Option<u32>
+pub j2k_jpegls::Info::scans: alloc::vec::Vec<j2k_jpegls::ScanInfo>
+pub j2k_jpegls::InterleaveMode::Line
+pub j2k_jpegls::InterleaveMode::None
+pub j2k_jpegls::InterleaveMode::Sample
+pub j2k_jpegls::JpegLsEncodeError::AllocationFailed
+pub j2k_jpegls::JpegLsEncodeError::AllocationFailed::bytes: usize
+pub j2k_jpegls::JpegLsEncodeError::DimensionsTooLarge
+pub j2k_jpegls::JpegLsEncodeError::DimensionsTooLarge::height: u32
+pub j2k_jpegls::JpegLsEncodeError::DimensionsTooLarge::width: u32
+pub j2k_jpegls::JpegLsEncodeError::EmptyDimensions
+pub j2k_jpegls::JpegLsEncodeError::InvalidBitDepth
+pub j2k_jpegls::JpegLsEncodeError::InvalidBitDepth::bit_depth: u8
+pub j2k_jpegls::JpegLsEncodeError::InvalidBitDepth::sample_type: &'static str
+pub j2k_jpegls::JpegLsEncodeError::InvalidInterleave
+pub j2k_jpegls::JpegLsEncodeError::InvalidInterleave::components: u8
+pub j2k_jpegls::JpegLsEncodeError::InvalidInterleave::interleave: j2k_jpegls::InterleaveMode
+pub j2k_jpegls::JpegLsEncodeError::InvalidNear
+pub j2k_jpegls::JpegLsEncodeError::InvalidNear::max: u16
+pub j2k_jpegls::JpegLsEncodeError::InvalidNear::near: u8
+pub j2k_jpegls::JpegLsEncodeError::InvalidPresetParameters
+pub j2k_jpegls::JpegLsEncodeError::InvalidPresetParameters::reason: &'static str
+pub j2k_jpegls::JpegLsEncodeError::InvalidRestartInterval
+pub j2k_jpegls::JpegLsEncodeError::NoComponents
+pub j2k_jpegls::JpegLsEncodeError::SampleLength
+pub j2k_jpegls::JpegLsEncodeError::SampleLength::actual: usize
+pub j2k_jpegls::JpegLsEncodeError::SampleLength::expected: usize
+pub j2k_jpegls::JpegLsEncodeError::SampleOutOfRange
+pub j2k_jpegls::JpegLsEncodeError::SampleOutOfRange::index: usize
+pub j2k_jpegls::JpegLsEncodeError::SampleOutOfRange::max_value: u16
+pub j2k_jpegls::JpegLsEncodeError::SampleOutOfRange::value: u16
+pub j2k_jpegls::JpegLsEncodeError::ValidationDecode(j2k_jpegls::JpegLsError)
+pub j2k_jpegls::JpegLsEncodeError::ValidationMismatch
+pub j2k_jpegls::JpegLsEncodeError::ValidationMismatch::decoded: u16
+pub j2k_jpegls::JpegLsEncodeError::ValidationMismatch::expected: u16
+pub j2k_jpegls::JpegLsEncodeError::ValidationMismatch::index: usize
+pub j2k_jpegls::JpegLsEncodeError::ValidationMismatch::near: u8
+pub j2k_jpegls::JpegLsEncodeOptions::bit_depth: u8
+pub j2k_jpegls::JpegLsEncodeOptions::interleave: j2k_jpegls::InterleaveMode
+pub j2k_jpegls::JpegLsEncodeOptions::near: u8
+pub j2k_jpegls::JpegLsEncodeOptions::preset: core::option::Option<j2k_jpegls::PresetCodingParameters>
+pub j2k_jpegls::JpegLsEncodeOptions::restart_interval: core::option::Option<u16>
+pub j2k_jpegls::JpegLsEncodeOptions::validation: j2k_jpegls::JpegLsEncodeValidation
+pub j2k_jpegls::JpegLsEncodeValidation::RoundTrip
+pub j2k_jpegls::JpegLsEncodeValidation::Skip
+pub j2k_jpegls::JpegLsError::AllocationFailed
+pub j2k_jpegls::JpegLsError::AllocationFailed::bytes: usize
+pub j2k_jpegls::JpegLsError::InvalidEntropyData
+pub j2k_jpegls::JpegLsError::InvalidEntropyData::line: u32
+pub j2k_jpegls::JpegLsError::InvalidEntropyData::scan: usize
+pub j2k_jpegls::JpegLsError::InvalidPresetParameters
+pub j2k_jpegls::JpegLsError::InvalidPresetParameters::reason: &'static str
+pub j2k_jpegls::JpegLsError::InvalidSegment
+pub j2k_jpegls::JpegLsError::InvalidSegment::marker: u8
+pub j2k_jpegls::JpegLsError::InvalidSegment::offset: usize
+pub j2k_jpegls::JpegLsError::InvalidSegment::reason: &'static str
+pub j2k_jpegls::JpegLsError::InvalidStride
+pub j2k_jpegls::JpegLsError::InvalidStride::row_bytes: usize
+pub j2k_jpegls::JpegLsError::InvalidStride::stride: usize
+pub j2k_jpegls::JpegLsError::MissingComponent
+pub j2k_jpegls::JpegLsError::MissingComponent::component_id: u8
+pub j2k_jpegls::JpegLsError::MissingMarker
+pub j2k_jpegls::JpegLsError::MissingMarker::marker: &'static str
+pub j2k_jpegls::JpegLsError::MissingSoi
+pub j2k_jpegls::JpegLsError::OutputBufferTooSmall
+pub j2k_jpegls::JpegLsError::OutputBufferTooSmall::actual: usize
+pub j2k_jpegls::JpegLsError::OutputBufferTooSmall::required: usize
+pub j2k_jpegls::JpegLsError::OutputLimitExceeded
+pub j2k_jpegls::JpegLsError::OutputLimitExceeded::limit: usize
+pub j2k_jpegls::JpegLsError::OutputLimitExceeded::required: u64
+pub j2k_jpegls::JpegLsError::RestartMarker
+pub j2k_jpegls::JpegLsError::RestartMarker::expected: u8
+pub j2k_jpegls::JpegLsError::RestartMarker::offset: usize
+pub j2k_jpegls::JpegLsError::TrailingEntropyData
+pub j2k_jpegls::JpegLsError::TrailingEntropyData::scan: usize
+pub j2k_jpegls::JpegLsError::Truncated
+pub j2k_jpegls::JpegLsError::Truncated::offset: usize
+pub j2k_jpegls::JpegLsError::UnexpectedMarker
+pub j2k_jpegls::JpegLsError::UnexpectedMarker::marker: u8
+pub j2k_jpegls::JpegLsError::UnexpectedMarker::offset: usize
+pub j2k_jpegls::JpegLsError::Unsupported(j2k_jpegls::UnsupportedFeature)
+pub j2k_jpegls::JpegLsSamples::U16
+pub j2k_jpegls::JpegLsSamples::U16::components: u8
+pub j2k_jpegls::JpegLsSamples::U16::data: &'a [u16]
+pub j2k_jpegls::JpegLsSamples::U16::height: u32
+pub j2k_jpegls::JpegLsSamples::U16::width: u32
+pub j2k_jpegls::JpegLsSamples::U8
+pub j2k_jpegls::JpegLsSamples::U8::components: u8
+pub j2k_jpegls::JpegLsSamples::U8::data: &'a [u8]
+pub j2k_jpegls::JpegLsSamples::U8::height: u32
+pub j2k_jpegls::JpegLsSamples::U8::width: u32
+pub j2k_jpegls::PresetCodingParameters::max_value: u16
+pub j2k_jpegls::PresetCodingParameters::reset: u16
+pub j2k_jpegls::PresetCodingParameters::t1: u16
+pub j2k_jpegls::PresetCodingParameters::t2: u16
+pub j2k_jpegls::PresetCodingParameters::t3: u16
+pub j2k_jpegls::ScanInfo::components: alloc::vec::Vec<usize>
+pub j2k_jpegls::ScanInfo::interleave: j2k_jpegls::InterleaveMode
+pub j2k_jpegls::ScanInfo::near: u8
+pub j2k_jpegls::ScanInfo::parameters: j2k_jpegls::PresetCodingParameters
+pub j2k_jpegls::ScanInfo::restart_interval: core::option::Option<u32>
+pub j2k_jpegls::UnsupportedFeature::ColorTransform(u8)
+pub j2k_jpegls::UnsupportedFeature::DeferredHeight
+pub j2k_jpegls::UnsupportedFeature::MappingTable
+pub j2k_jpegls::UnsupportedFeature::NonJpegLsFrame
+pub j2k_jpegls::UnsupportedFeature::NonJpegLsFrame::marker: u8
+pub j2k_jpegls::UnsupportedFeature::OversizeDimensions
+pub j2k_jpegls::UnsupportedFeature::PointTransform(u8)
+pub j2k_jpegls::UnsupportedFeature::SamplingFactors
+pub j2k_jpegls::UnsupportedFeature::SamplingFactors::component_id: u8
+pub j2k_jpegls::UnsupportedFeature::SamplingFactors::horizontal: u8
+pub j2k_jpegls::UnsupportedFeature::SamplingFactors::vertical: u8
+pub mod j2k_jpegls
+pub struct j2k_jpegls::DecodeOptions
+pub struct j2k_jpegls::Decoder<'a>
+pub struct j2k_jpegls::PresetCodingParameters
+```
+
 ## `j2k-cli`
 
 `j2k-cli` is a binary package. Its stable command, stdout/stderr, and exit-code contract is documented in `book/stability.md`.

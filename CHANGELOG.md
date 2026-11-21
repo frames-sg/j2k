@@ -31,6 +31,14 @@ To add an entry, see [the changelog guide](contributor-book/documentation.md#cha
   `partial_codestream`. Code that builds the struct with a literal must set
   it, or start from `DecodeSettings::strict()` or `DecodeSettings::lenient()`.
 
+### JPEG-LS
+
+- New crate `j2k-jpegls` decodes and encodes JPEG-LS (ISO/IEC 14495-1)
+  codestreams, lossless and near-lossless, as used by DICOM: 2 to 16 bits,
+  all interleave modes, restart intervals and preset coding parameters. Its
+  output matches CharLS for the same parameters; mapping tables, subsampling
+  and HP color transforms return an error.
+
 ### Tile codecs
 
 - `j2k-tilecodec` decompresses TIFF PackBits tiles (`PackBitsCodec`), and

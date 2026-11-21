@@ -27,6 +27,7 @@ const CPU_RELEASE_PACKAGES: &[&str] = &[
     "j2k-core",
     "j2k-codec-math",
     "j2k-jpeg",
+    "j2k-jpegls",
     "j2k-types",
     "j2k-native",
     "j2k",
