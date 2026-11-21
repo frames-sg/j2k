@@ -123,6 +123,7 @@ class ClassificationTests(unittest.TestCase):
 
     def test_docs_only_change_stays_cheap(self) -> None:
         for path in (
+            ".github/pull_request_template.md",
             "AGENTS.md",
             "CLAUDE.md",
             "book/decoding.md",

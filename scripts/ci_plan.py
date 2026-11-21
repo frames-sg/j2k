@@ -37,6 +37,7 @@ C_API_ROOTS = frozenset({"j2k-c"})
 DOCUMENTATION_PREFIXES = ("book/", "contributor-book/", "docs/")
 DOCUMENTATION_PATHS = frozenset(
     {
+        ".github/pull_request_template.md",
         "AGENTS.md",
         "CHANGELOG.md",
         "CLAUDE.md",

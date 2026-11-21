@@ -47,6 +47,12 @@ resource use come before speed.
 - Public API changes need updated snapshots; see
   [Public API changes](contributor-book/public-api.md).
 
+## Pull requests
+
+- When you open or update a pull request, read
+  [.github/pull_request_template.md](.github/pull_request_template.md) and use
+  its sections. `gh pr create --body` doesn't fill in the template for you.
+
 ## Writing documentation and changelog entries
 
 Follow [Writing documentation](contributor-book/documentation.md). In short:

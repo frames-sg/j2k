@@ -29,10 +29,11 @@ decides which of the other jobs are needed.
 The planner classifies each changed path:
 
 - **Documentation:** anything under `book/`, `contributor-book/`, or `docs/`;
-  the root `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`,
-  `CODE_OF_CONDUCT.md`, `SECURITY.md`, `NOTICES.md`, and license files; and
-  Markdown under `corpus/`, `crates/`, or `xtask/`, except inside a `src/`
-  directory or under `xtask/release-evidence/`.
+  the root `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `AGENTS.md`,
+  `CLAUDE.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, `NOTICES.md`, and license
+  files; `.github/pull_request_template.md`; and Markdown under `corpus/`,
+  `crates/`, or `xtask/`, except inside a `src/` directory or under
+  `xtask/release-evidence/`.
 - **Everything:** `Cargo.toml`, `Cargo.lock`, `deny.toml`,
   `rust-toolchain.toml`, `typos.toml`, and anything under `.cargo/`,
   `.github/workflows/`, `scripts/`, or `xtask/`. The API snapshots under
