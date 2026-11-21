@@ -36,6 +36,10 @@ pub const J2K_STOPPED: u32 = 11;
 pub const J2K_ENCODE_FAILED: u32 = 12;
 /// The operation's cancellation token was cancelled.
 pub const J2K_CANCELLED: u32 = 13;
+/// A decoder opened with [`J2K_OPEN_PARTIAL`] does not yet hold every part of
+/// the codestream this decode needs; more input or a deeper reduction can
+/// succeed.
+pub const J2K_INCOMPLETE: u32 = 14;
 
 /// Preserve native integer sample values and alpha association.
 pub const J2K_INTERPRETATION_NATIVE: u32 = 0;
@@ -48,8 +52,11 @@ pub const J2K_ROUTE_REGION_PLANES: u32 = 2;
 
 /// Open flag: accept the JP2/JPH metadata recoveries of lenient decoding.
 pub const J2K_OPEN_LENIENT: u32 = 1;
+/// Open flag: the input may be only the start of a codestream, such as the
+/// bytes a progressive viewer has fetched so far.
+pub const J2K_OPEN_PARTIAL: u32 = 2;
 /// Every open flag this ABI revision defines.
-pub(crate) const J2K_OPEN_FLAGS: u32 = J2K_OPEN_LENIENT;
+pub(crate) const J2K_OPEN_FLAGS: u32 = J2K_OPEN_LENIENT | J2K_OPEN_PARTIAL;
 /// Output warning: a lenient JP2/JPH metadata recovery was applied.
 pub const J2K_WARNING_LENIENT_RECOVERY: u32 = 1;
 
@@ -142,6 +149,19 @@ pub const J2K_ALPHA_NONE: u32 = 0;
 pub const J2K_ALPHA_STRAIGHT: u32 = 1;
 /// Output has premultiplied alpha.
 pub const J2K_ALPHA_PREMULTIPLIED: u32 = 2;
+
+/// JPEG-LS interleave mode: one component per scan (`ILV = 0`).
+pub const J2K_JPEGLS_INTERLEAVE_NONE: u32 = 0;
+/// JPEG-LS interleave mode: one line of each component in turn (`ILV = 1`).
+pub const J2K_JPEGLS_INTERLEAVE_LINE: u32 = 1;
+/// JPEG-LS interleave mode: all components of each pixel in turn (`ILV = 2`).
+pub const J2K_JPEGLS_INTERLEAVE_SAMPLE: u32 = 2;
+/// DICOM RLE layout flag, for decoding only: accept the segment data some
+/// encoders write past the end of a segment's rows, and nonzero unused
+/// header offsets, and report them.
+pub const J2K_RLE_LENIENT: u32 = 1;
+/// Every DICOM RLE layout flag this ABI revision defines.
+pub(crate) const J2K_RLE_FLAGS: u32 = J2K_RLE_LENIENT;
 
 /// Prefix of every extensible options or result structure.
 #[repr(C)]
@@ -289,6 +309,33 @@ impl Default for J2kCOperationOptions {
             max_working_memory_bytes: 0,
             max_output_bytes: 0,
             cancellation: std::ptr::null(),
+        }
+    }
+}
+
+/// Which reductions of a partial codestream decode exactly.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct J2kCCompleteness {
+    /// Initialize to this structure's size and ABI 1.
+    pub header: J2kCHeader,
+    /// One if every packet of every tile is present, otherwise zero.
+    pub complete: u32,
+    /// One if `min_exact_reduction` holds a value, otherwise zero: some tile
+    /// still lacks part of its lowest resolution.
+    pub has_exact_reduction: u32,
+    /// The fewest resolution levels to drop for a whole-image decode that
+    /// reads only data that is present. Zero when `complete` is one.
+    pub min_exact_reduction: u32,
+}
+
+impl Default for J2kCCompleteness {
+    fn default() -> Self {
+        Self {
+            header: J2kCHeader::of::<Self>(),
+            complete: 0,
+            has_exact_reduction: 0,
+            min_exact_reduction: 0,
         }
     }
 }
@@ -625,6 +672,150 @@ impl Default for J2kCColorInfo {
             specifications: 0,
             reserved: 0,
             icc_profile_bytes: 0,
+        }
+    }
+}
+
+/// Header metadata of a JPEG-LS image, and the layout `j2k_jpegls_decode`
+/// writes.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct J2kCJpegLsInfo {
+    /// Initialize to this structure's size and ABI 1.
+    pub header: J2kCHeader,
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// Components (samples per pixel).
+    pub components: u32,
+    /// Bits per sample, 2 to 16.
+    pub bit_depth: u32,
+    /// Maximum absolute error `NEAR`; zero for lossless.
+    pub near: u32,
+    /// One of the `J2K_JPEGLS_INTERLEAVE_*` constants.
+    pub interleave: u32,
+    /// Lines per restart interval; zero without restart markers.
+    pub restart_interval: u32,
+    /// Written as zero.
+    pub reserved: u32,
+    /// Bytes in one row of decoded samples, the minimum stride.
+    pub row_bytes: u64,
+    /// Tightly packed byte length of the decoded image.
+    pub buffer_bytes: u64,
+}
+
+impl Default for J2kCJpegLsInfo {
+    fn default() -> Self {
+        Self {
+            header: J2kCHeader::of::<Self>(),
+            width: 0,
+            height: 0,
+            components: 0,
+            bit_depth: 0,
+            near: 0,
+            interleave: J2K_JPEGLS_INTERLEAVE_NONE,
+            restart_interval: 0,
+            reserved: 0,
+            row_bytes: 0,
+            buffer_bytes: 0,
+        }
+    }
+}
+
+/// Samples and coding parameters for `j2k_jpegls_encode`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct J2kCJpegLsEncodeOptions {
+    /// Initialize to this structure's size and ABI 1.
+    pub header: J2kCHeader,
+    /// Width in pixels, 1 to 65535.
+    pub width: u32,
+    /// Height in pixels, 1 to 65535.
+    pub height: u32,
+    /// Interleaved samples per pixel, 1 to 255.
+    pub components: u32,
+    /// Bits per sample, 2 to 16. Up to 8 bits take one byte; more take two (LE).
+    pub bit_depth: u32,
+    /// Maximum absolute error `NEAR`; zero for lossless.
+    pub near: u32,
+    /// One of the `J2K_JPEGLS_INTERLEAVE_*` constants; ignored for one component.
+    pub interleave: u32,
+    /// Lines per restart interval, 1 to 65535; zero for none.
+    pub restart_interval: u32,
+    /// Must be zero.
+    pub reserved: u32,
+}
+
+impl Default for J2kCJpegLsEncodeOptions {
+    fn default() -> Self {
+        Self {
+            header: J2kCHeader::of::<Self>(),
+            width: 0,
+            height: 0,
+            components: 0,
+            bit_depth: 0,
+            near: 0,
+            interleave: J2K_JPEGLS_INTERLEAVE_NONE,
+            restart_interval: 0,
+            reserved: 0,
+        }
+    }
+}
+
+/// Geometry and sample format of one DICOM RLE frame, from its data set.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct J2kCRleLayout {
+    /// Initialize to this structure's size and ABI 1.
+    pub header: J2kCHeader,
+    /// Rows (0028,0010), 1 to 65535.
+    pub rows: u32,
+    /// Columns (0028,0011), 1 to 65535.
+    pub columns: u32,
+    /// Samples per Pixel (0028,0002), 1 to 65535.
+    pub samples_per_pixel: u32,
+    /// Bits Allocated (0028,0100): 8, 16 or 32.
+    pub bits_allocated: u32,
+    /// Layout of the native samples: 0 for color-by-pixel, 1 for color-by-plane.
+    pub planar_configuration: u32,
+    /// `J2K_RLE_*` flags; other bits must be zero.
+    pub flags: u32,
+}
+
+impl Default for J2kCRleLayout {
+    fn default() -> Self {
+        Self {
+            header: J2kCHeader::of::<Self>(),
+            rows: 0,
+            columns: 0,
+            samples_per_pixel: 0,
+            bits_allocated: 0,
+            planar_configuration: 0,
+            flags: 0,
+        }
+    }
+}
+
+/// What a lenient DICOM RLE decode accepted.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct J2kCRleReport {
+    /// Initialize to this structure's size and ABI 1.
+    pub header: J2kCHeader,
+    /// Segments whose data ran past the end of their rows, as a bit mask:
+    /// bit `i` for segment `i` in header order. The extra data was discarded.
+    pub overlong_segments: u32,
+    /// One if header offsets after the last segment were not zero.
+    pub nonzero_unused_offsets: u32,
+}
+
+impl Default for J2kCRleReport {
+    fn default() -> Self {
+        Self {
+            header: J2kCHeader::of::<Self>(),
+            overlong_segments: 0,
+            nonzero_unused_offsets: 0,
         }
     }
 }

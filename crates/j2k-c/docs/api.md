@@ -3,7 +3,8 @@
 `include/j2k.h` declares the C API. It decodes full images, regions and
 reduced resolutions into buffers you own, streams full images row by row,
 reports the color specification that decoding applies, and encodes
-interleaved samples losslessly or lossy to rate, size or quality targets. One
+interleaved samples losslessly or lossy to rate, size or quality targets. It
+also decodes and encodes JPEG-LS codestreams and DICOM RLE Lossless frames. One
 decoder can move to a new codestream with `j2k_decoder_feed`, and
 `j2k_decoder_transfer_syntax` reports how the codestream it holds is coded.
 Full images decode through the batch route or the core whole-image route.
@@ -20,12 +21,15 @@ statuses into `j2k::error` exceptions. The library is the CPU codec of the
 | `j2k_decoder_feed`, `j2k_decoder_transfer_syntax` | Move a decoder to a new codestream, keeping its threads, settings and limits, and report how the codestream it holds is coded. |
 | `j2k_decoder_info`, `j2k_decoder_component_info` | Image size, component count, resolution levels, reference grid, and per-component precision, signedness and sampling. |
 | `j2k_decoder_color_info`, `j2k_decoder_icc_profile` | The color specification decoding applies, and its ICC profile. |
+| `j2k_decoder_completeness` | Which reductions of a codestream opened with `J2K_OPEN_PARTIAL` decode exactly. |
 | `j2k_decoder_output_info`, `j2k_decoder_decode_into` | Plan and decode a full image, region or reduction (0 to 3) in native samples. |
 | `j2k_decoder_output_info_native`, `j2k_decoder_decode_full_into` | Plan and decode a full image through the core whole-image route. |
 | `j2k_decoder_row_info`, `j2k_decoder_decode_rows` | Stream the full image row by row through a callback. |
 | `j2k_decoder_prepare_operations`, `j2k_decoder_plan_region`, `j2k_decoder_decode_region_into`, `j2k_decoder_set_operation_cache_limit` | Exact region operations: reductions 0 to 31, 8-bit sRGB output, memory limits and cancellation. |
 | `j2k_cancellation_create`, `j2k_cancellation_cancel`, `j2k_cancellation_free` | Cancellation tokens for exact operations. |
 | `j2k_encode_lossless`, `j2k_encode`, `j2k_buffer_free` | Encode interleaved samples, and free the encoded buffer. |
+| `j2k_jpegls_inspect`, `j2k_jpegls_decode`, `j2k_jpegls_encode` | Read, decode and encode JPEG-LS (see [JPEG-LS](#jpeg-ls)). |
+| `j2k_rle_decode`, `j2k_rle_encode` | Decode and encode DICOM RLE Lossless frames (see [DICOM RLE](#dicom-rle)). |
 
 In C++, `j2k::decoder` has `info()`, `component(index)`, `color_info()`,
 `icc_profile()`, `output_info()`, `decode_into()`, `row_info()`,
@@ -33,6 +37,9 @@ In C++, `j2k::decoder` has `info()`, `component(index)`, `color_info()`,
 `decode_region_into()` and `set_operation_cache_limit()`.
 `j2k::cancellation_token` has `cancel()` and `native_handle()`, and
 `j2k::encode_lossless()` and `j2k::encode()` return a `std::vector<uint8_t>`.
+`j2k::jpegls_inspect()` returns a `j2k_jpegls_info`, and
+`j2k::jpegls_decode()`, `j2k::jpegls_encode()`, `j2k::rle_decode()` and
+`j2k::rle_encode()` return a `std::vector<uint8_t>`.
 `j2k::error::status()` gives the failing `j2k_status`.
 
 ## Persistent feed and transfer syntax
@@ -59,10 +66,11 @@ value. It describes the compressed coding, not the decoded sample layout; use
 
 1. Initialize a `j2k_open_options` with `J2K_OPEN_OPTIONS_INIT`, or pass
    `NULL` for the defaults. `flags` can set `J2K_OPEN_LENIENT` (see
-   [Lenient decoding](#lenient-decoding)); `workers` picks the threads (see
+   [Lenient decoding](#lenient-decoding)) and `J2K_OPEN_PARTIAL` (see
+   [Partial codestreams](#partial-codestreams)); `workers` picks the threads (see
    [Limits and threading](#limits-and-threading)).
 2. Call `j2k_decoder_open` with a complete raw codestream, JP2 file or JPH
-   file. Input that starts with neither the JP2/JPH signature box nor the SOC
+   file (or, with `J2K_OPEN_PARTIAL`, the start of one). Input that starts with neither the JP2/JPH signature box nor the SOC
    and SIZ markers returns `J2K_INVALID_INPUT`. On success the decoder owns a
    copy of the input, so you can release yours. Opening reads the headers
    only: it doesn't prove the pixel data is valid or that a given output can
@@ -332,6 +340,96 @@ recovery sets `J2K_WARNING_LENIENT_RECOVERY` in `j2k_output_info.warnings`,
 as returned by `j2k_decoder_output_info`, `j2k_decoder_decode_rows` and
 `j2k_decoder_decode_region_into`. A strict decoder rejects such input.
 
+## Partial codestreams
+
+`J2K_OPEN_PARTIAL` opens input that may be only the start of a codestream,
+such as the bytes a progressive viewer has fetched so far. The main header
+must be complete; a JP2 or JPH file may stop inside its codestream box.
+
+`j2k_decoder_completeness` fills a `j2k_completeness`
+(`J2K_COMPLETENESS_INIT`) by reading packet headers, without decoding
+samples:
+
+- `complete` is 1 when every packet of every tile is present.
+- `has_exact_reduction` is 1 when `min_exact_reduction` holds a value.
+- `min_exact_reduction` is the fewest resolution levels to drop for a decode
+  of the whole image that reads only data that is present.
+
+A decode at that reduction or deeper returns the same samples as the complete
+file. A decode that needs data that hasn't arrived returns `J2K_INCOMPLETE`;
+missing data is never filled in. Open a new decoder once more input arrives.
+
+## JPEG-LS
+
+The JPEG-LS calls read ISO/IEC 14495-1 codestreams, as stored under the DICOM
+JPEG-LS lossless (1.2.840.10008.1.2.4.80) and near-lossless
+(1.2.840.10008.1.2.4.81) transfer syntaxes. They take the input for the
+duration of the call and need no decoder handle.
+
+`j2k_jpegls_inspect` fills a `j2k_jpegls_info` (`J2K_JPEGLS_INFO_INIT`) from
+the headers: `width`, `height`, `components`, `bit_depth` (2 to 16), `near`
+(0 for lossless), `interleave` (`J2K_JPEGLS_INTERLEAVE_NONE`, `_LINE` or
+`_SAMPLE`, of the first scan) and `restart_interval` (lines, or 0 without
+restart markers). `row_bytes` and `buffer_bytes` give the layout
+`j2k_jpegls_decode` writes. Inspection walks every marker segment but doesn't
+decode samples.
+
+`j2k_jpegls_decode` writes interleaved samples, whatever the file's interleave
+mode: one byte per sample up to 8 bits, two little-endian bytes above. Rows
+are `stride` bytes apart; `stride` must be at least `row_bytes`, and the
+buffer must hold `stride * (height - 1) + row_bytes` bytes. Only that span is
+written. Your buffer is the only bound on the image size. On error the
+buffer may hold part of the image.
+
+`j2k_jpegls_encode` encodes samples in the same layout, described by a
+`j2k_jpegls_encode_options` (`J2K_JPEGLS_ENCODE_OPTIONS_INIT`): `width` and
+`height` (1 to 65535), `components` (1 to 255), `bit_depth` (2 to 16),
+`near` (0 for lossless, at most 255 and half the largest sample value),
+`interleave` (ignored for one component; line and sample interleaving take at
+most four components) and `restart_interval` (1 to 65535 lines, or 0 for
+none). The encoder decodes its result and checks it against the samples
+before returning it. Release the output with `j2k_buffer_free`. Invalid
+options, a sample length that doesn't match, or a sample above
+`2^bit_depth - 1` return `J2K_INVALID_ARGUMENT`.
+
+Decoding rejects mapping tables, subsampled components, point transforms, HP
+color transforms and images wider or taller than 65535 with
+`J2K_UNSUPPORTED`, and other frame types, such as baseline JPEG, the same way.
+
+## DICOM RLE
+
+`j2k_rle_decode` and `j2k_rle_encode` handle one DICOM RLE Lossless frame
+(transfer syntax 1.2.840.10008.1.2.5). Describe the frame with a
+`j2k_rle_layout` (`J2K_RLE_LAYOUT_INIT`) from the data set: `rows`,
+`columns`, `samples_per_pixel` (each 1 to 65535) and `bits_allocated` (8, 16
+or 32). Other bit widths, and layouts needing more than the 15 segments an
+RLE header holds (samples per pixel times bytes per sample), return
+`J2K_UNSUPPORTED`.
+
+Native samples are `bits_allocated / 8` little-endian bytes each.
+`planar_configuration` chooses their layout: 0 puts the samples of each pixel
+together, 1 stores each sample as its own plane. The RLE frame itself always
+stores each sample separately, whatever the data set's Planar Configuration
+says; the attribute describes the decoded pixel data. Choose 0 for a pixel
+array, or the attribute's value when the decoded frame replaces the
+encapsulated Pixel Data. With one sample per pixel both give the same bytes.
+
+`j2k_rle_decode` writes the first `rows * columns * samples_per_pixel *
+bits_allocated / 8` bytes of the output; the buffer may be longer. Decoding is
+strict. With `J2K_RLE_LENIENT` in `flags`, it also accepts frames whose
+segments carry data past the end of their rows, or whose unused header
+offsets aren't zero, as some encoders write them. The optional
+`j2k_rle_report` (`J2K_RLE_REPORT_INIT`) then lists what was accepted:
+`overlong_segments` has bit `i` set for segment `i`, and
+`nonzero_unused_offsets` is 1. A conformant frame reports zeros. Other
+violations, including a segment that ends before its rows, are errors in both
+modes. On error the buffer may hold part of the frame.
+
+`j2k_rle_encode` takes exactly one frame of native samples and writes the RLE
+encoding of DICOM PS3.5 Annex G.3, byte for byte the same as pydicom's.
+Release the output with `j2k_buffer_free`. `J2K_RLE_LENIENT` is for decoding
+only; encoding with it returns `J2K_INVALID_ARGUMENT`.
+
 ## Limits and threading
 
 `max_input_bytes` and `max_output_bytes` in `j2k_open_options` default to
@@ -375,7 +473,7 @@ no thread-local "last error".
 | `J2K_OK` | Success. |
 | `J2K_INVALID_ARGUMENT` | A null or out-of-range argument, unknown flag bits, a nonzero reserved field, or a combination the library rejects. |
 | `J2K_ABI_MISMATCH` | A struct's header names another ABI revision or a smaller size than this library needs. |
-| `J2K_INVALID_INPUT` | The input isn't JPEG 2000, or is malformed or truncated. |
+| `J2K_INVALID_INPUT` | The input isn't in the expected format, or is malformed or truncated. |
 | `J2K_UNSUPPORTED` | A valid request the library can't serve. |
 | `J2K_BUFFER_TOO_SMALL` | The output buffer is shorter than required. |
 | `J2K_RESOURCE_LIMIT` | A size or memory limit was exceeded. Exact byte counts aren't always available. |
@@ -386,11 +484,13 @@ no thread-local "last error".
 | `J2K_STOPPED` | A row callback asked to stop. |
 | `J2K_ENCODE_FAILED` | The encoder failed, for example on an unreachable target. |
 | `J2K_CANCELLED` | A cancellation token stopped the operation. |
+| `J2K_INCOMPLETE` | A decoder opened with `J2K_OPEN_PARTIAL` doesn't yet have the data this decode needs. More input or a deeper reduction can succeed. |
 
 Result structures are written only on success. Ordinary errors leave pixel
 buffers unchanged, because J2K finishes decoding before it copies samples.
-`j2k_decoder_decode_full_into` is the exception: it decodes straight into your
-buffer, so a failure partway through may leave some rows written.
+`j2k_decoder_decode_full_into`, `j2k_jpegls_decode` and `j2k_rle_decode` are
+the exception: they decode straight into your buffer, which may hold part of an
+image after an error.
 After `J2K_PANIC` or `J2K_INTERNAL_ERROR`, discard any output and close the
 decoder: every later call on it returns `J2K_PANIC`. A panic hook may still
 write to stderr. Process aborts and invalid pointer accesses can't be caught.

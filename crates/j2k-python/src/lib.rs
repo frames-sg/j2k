@@ -18,9 +18,11 @@ mod cuda;
 mod decode;
 mod encode;
 mod input;
+mod jpegls;
 #[cfg(all(feature = "metal", target_os = "macos", target_arch = "aarch64"))]
 mod metal;
 mod operations;
+mod rle;
 mod tensor;
 mod transforms;
 mod wavelets;
@@ -48,6 +50,34 @@ fn owned_capacity<T>(capacity: usize) -> PyResult<Vec<T>> {
         .try_reserve_exact(capacity)
         .map_err(|error| PyMemoryError::new_err(error.to_string()))?;
     Ok(output)
+}
+
+/// Report which reductions of a JPEG 2000 / HTJ2K input that may be cut off,
+/// such as the bytes fetched so far, decode exactly.
+///
+/// Returns `complete`, whether every packet is present;
+/// `min_exact_reduction`, the fewest resolution levels to drop for a decode
+/// of the whole image with `Decoder(partial=True)` that reads only data
+/// that is present, or `None` while the lowest resolution is incomplete; and
+/// `tile_min_exact_reduction`, the same per tile in raster order.
+#[pyfunction]
+fn completeness<'py>(py: Python<'py>, data: &Bound<'_, PyAny>) -> PyResult<Bound<'py, PyDict>> {
+    let input = input::EncodedInput::extract(data)?;
+    let bytes = input.as_bytes();
+    let report = py
+        .detach(|| {
+            let settings = j2k::DecodeSettings::strict().with_partial_codestream(true);
+            j2k::J2kDecoder::new_with_settings(bytes, settings)?.codestream_completeness()
+        })
+        .map_err(value_error)?;
+    let out = PyDict::new(py);
+    out.set_item("complete", report.is_complete())?;
+    out.set_item("min_exact_reduction", report.min_exact_reduction())?;
+    out.set_item(
+        "tile_min_exact_reduction",
+        report.tile_min_exact_reduction(),
+    )?;
+    Ok(out)
 }
 
 /// Inspect JPEG 2000/HTJ2K metadata without decoding pixels.
@@ -181,9 +211,15 @@ fn j2k_python(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<wavelets::Component>()?;
     module.add_class::<wavelets::Band>()?;
     module.add_function(wrap_pyfunction!(inspect, module)?)?;
+    module.add_function(wrap_pyfunction!(completeness, module)?)?;
     module.add_function(wrap_pyfunction!(encode::encode, module)?)?;
     module.add_function(wrap_pyfunction!(encode::encode_rgb, module)?)?;
     module.add_function(wrap_pyfunction!(encode::decode_rgb, module)?)?;
+    module.add_function(wrap_pyfunction!(jpegls::inspect_jpegls, module)?)?;
+    module.add_function(wrap_pyfunction!(jpegls::decode_jpegls, module)?)?;
+    module.add_function(wrap_pyfunction!(jpegls::encode_jpegls, module)?)?;
+    module.add_function(wrap_pyfunction!(rle::decode_rle, module)?)?;
+    module.add_function(wrap_pyfunction!(rle::encode_rle, module)?)?;
     module.add_function(wrap_pyfunction!(wavelets::decode_wavelets, module)?)?;
     module.add_function(wrap_pyfunction!(transforms::forward_rgb97, module)?)?;
     module.add_function(wrap_pyfunction!(transforms::inverse_rgb97, module)?)?;

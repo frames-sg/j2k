@@ -37,6 +37,9 @@ typedef uint32_t j2k_status;
 #define J2K_STOPPED UINT32_C(11)
 #define J2K_ENCODE_FAILED UINT32_C(12)
 #define J2K_CANCELLED UINT32_C(13)
+/* A decoder opened with J2K_OPEN_PARTIAL does not yet hold every part of the
+ * codestream this decode needs; more input or a deeper reduction can succeed. */
+#define J2K_INCOMPLETE UINT32_C(14)
 
 #define J2K_INTERPRETATION_NATIVE UINT32_C(0)
 #define J2K_INTERPRETATION_SRGB8 UINT32_C(1)
@@ -46,6 +49,11 @@ typedef uint32_t j2k_status;
 /* j2k_open_options.flags: accept the JP2/JPH metadata recoveries of lenient
  * decoding (malformed trailing or optional boxes, an undeclared alpha). */
 #define J2K_OPEN_LENIENT UINT32_C(1)
+/* j2k_open_options.flags: the input may be only the start of a codestream,
+ * such as the bytes a progressive viewer has fetched so far. Decodes whose
+ * data is all present succeed with the samples of the complete codestream;
+ * others return J2K_INCOMPLETE. See j2k_decoder_completeness. */
+#define J2K_OPEN_PARTIAL UINT32_C(2)
 /* j2k_output_info.warnings: a lenient metadata recovery applies. */
 #define J2K_WARNING_LENIENT_RECOVERY UINT32_C(1)
 /* j2k_encode_options.flags: HTJ2K (Part 15) instead of classic Part 1;
@@ -103,6 +111,16 @@ typedef uint32_t j2k_status;
 #define J2K_ALPHA_NONE UINT32_C(0)
 #define J2K_ALPHA_STRAIGHT UINT32_C(1)
 #define J2K_ALPHA_PREMULTIPLIED UINT32_C(2)
+
+/* j2k_jpegls_info.interleave and j2k_jpegls_encode_options.interleave: the
+ * JPEG-LS interleave mode (the SOS ILV field). */
+#define J2K_JPEGLS_INTERLEAVE_NONE UINT32_C(0)
+#define J2K_JPEGLS_INTERLEAVE_LINE UINT32_C(1)
+#define J2K_JPEGLS_INTERLEAVE_SAMPLE UINT32_C(2)
+/* j2k_rle_layout.flags, decoding only: accept segment data past the end of a
+ * segment's rows and nonzero unused header offsets, as some encoders write
+ * them, and report them in j2k_rle_report. */
+#define J2K_RLE_LENIENT UINT32_C(1)
 
 typedef struct j2k_decoder j2k_decoder;
 typedef struct j2k_cancellation j2k_cancellation;
@@ -167,6 +185,15 @@ typedef struct j2k_image_info {
     uint32_t tile_width;  /* Nominal tile size (XTsiz, YTsiz). */
     uint32_t tile_height;
 } j2k_image_info;
+
+typedef struct j2k_completeness {
+    j2k_header header;
+    uint32_t complete;            /* 1 when every packet of every tile is present. */
+    uint32_t has_exact_reduction; /* 1 when min_exact_reduction holds a value. */
+    /* Fewest resolution levels to drop for a whole-image decode that reads
+     * only data that is present, or 0 when complete. */
+    uint32_t min_exact_reduction;
+} j2k_completeness;
 
 typedef struct j2k_component_info {
     j2k_header header;
@@ -260,6 +287,53 @@ typedef struct j2k_color_info {
     uint64_t icc_profile_bytes; /* Applied ICC profile length; 0 without one. */
 } j2k_color_info;
 
+/* Header metadata of a JPEG-LS codestream, and the layout j2k_jpegls_decode
+ * writes: interleaved samples, one byte each up to 8 bits, two (LE) above. */
+typedef struct j2k_jpegls_info {
+    j2k_header header;
+    uint32_t width;
+    uint32_t height;
+    uint32_t components;
+    uint32_t bit_depth;        /* 2-16. */
+    uint32_t near;             /* Maximum absolute error; 0 = lossless. */
+    uint32_t interleave;       /* J2K_JPEGLS_INTERLEAVE_*, of the first scan. */
+    uint32_t restart_interval; /* Lines per restart interval; 0 = none. */
+    uint32_t reserved;         /* Written as zero. */
+    uint64_t row_bytes;        /* Minimum stride in bytes. */
+    uint64_t buffer_bytes;     /* Tightly packed byte length. */
+} j2k_jpegls_info;
+
+typedef struct j2k_jpegls_encode_options {
+    j2k_header header;
+    uint32_t width;            /* 1-65535. */
+    uint32_t height;           /* 1-65535. */
+    uint32_t components;       /* Interleaved samples per pixel, 1-255. */
+    uint32_t bit_depth;        /* 2-16; up to 8 bits take one byte, more take two (LE). */
+    uint32_t near;             /* Maximum absolute error; 0 = lossless. */
+    uint32_t interleave;       /* J2K_JPEGLS_INTERLEAVE_*; ignored for one component. */
+    uint32_t restart_interval; /* Lines per restart interval, 1-65535; 0 = none. */
+    uint32_t reserved;         /* Must be zero. */
+} j2k_jpegls_encode_options;
+
+/* One DICOM RLE Lossless frame, from its data set. Native samples are
+ * bits_allocated / 8 bytes each, little-endian. */
+typedef struct j2k_rle_layout {
+    j2k_header header;
+    uint32_t rows;                 /* Rows (0028,0010), 1-65535. */
+    uint32_t columns;              /* Columns (0028,0011), 1-65535. */
+    uint32_t samples_per_pixel;    /* Samples per Pixel (0028,0002). */
+    uint32_t bits_allocated;       /* Bits Allocated (0028,0100): 8, 16 or 32. */
+    uint32_t planar_configuration; /* Native layout: 0 = by pixel, 1 = by plane. */
+    uint32_t flags;                /* J2K_RLE_*; other bits must be zero. */
+} j2k_rle_layout;
+
+/* What a J2K_RLE_LENIENT decode accepted; all zero for a conformant frame. */
+typedef struct j2k_rle_report {
+    j2k_header header;
+    uint32_t overlong_segments;      /* Bit i: segment i ran past its rows. */
+    uint32_t nonzero_unused_offsets; /* 0 or 1. */
+} j2k_rle_report;
+
 /* Receives one row of row_bytes bytes, valid only during the call. Return 0 to
  * continue or nonzero to stop the decode with J2K_STOPPED. */
 typedef int32_t (*j2k_row_callback)(
@@ -270,6 +344,7 @@ typedef int32_t (*j2k_row_callback)(
 #define J2K_DECODE_OPTIONS_INIT {J2K_HEADER_INIT(j2k_decode_options), 0, 0, 0, 0, 0, 0}
 #define J2K_OPERATION_OPTIONS_INIT {J2K_HEADER_INIT(j2k_operation_options), 0, 0, 0, 0, 0, J2K_INTERPRETATION_NATIVE, 0, 0, NULL}
 #define J2K_IMAGE_INFO_INIT {J2K_HEADER_INIT(j2k_image_info), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+#define J2K_COMPLETENESS_INIT {J2K_HEADER_INIT(j2k_completeness), 0, 0, 0}
 #define J2K_COMPONENT_INFO_INIT {J2K_HEADER_INIT(j2k_component_info), 0, 0, 0, 0}
 #define J2K_OUTPUT_INFO_INIT {J2K_HEADER_INIT(j2k_output_info), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 #define J2K_REGION_PLAN_INIT {J2K_HEADER_INIT(j2k_region_plan), J2K_OUTPUT_INFO_INIT, 0, 0, 0, 0, 0, 0, 0, 0}
@@ -277,6 +352,10 @@ typedef int32_t (*j2k_row_callback)(
 #define J2K_ENCODE_PARAMS_INIT {J2K_HEADER_INIT(j2k_encode_params), J2K_MODE_LOSSLESS, 0, J2K_LEVELS_AUTO, J2K_PROGRESSION_LRCP, 0, 0, 0, 0, 0, 0, J2K_RATE_NONE, 0, NULL, NULL, 0}
 #define J2K_ENCODE_REPORT_INIT {J2K_HEADER_INIT(j2k_encode_report), 0, 0, 0, 0, 0}
 #define J2K_COLOR_INFO_INIT {J2K_HEADER_INIT(j2k_color_info), J2K_COLOR_NONE, 0, 0, 0, 0}
+#define J2K_JPEGLS_INFO_INIT {J2K_HEADER_INIT(j2k_jpegls_info), 0, 0, 0, 0, 0, J2K_JPEGLS_INTERLEAVE_NONE, 0, 0, 0, 0}
+#define J2K_JPEGLS_ENCODE_OPTIONS_INIT {J2K_HEADER_INIT(j2k_jpegls_encode_options), 0, 0, 0, 0, 0, J2K_JPEGLS_INTERLEAVE_NONE, 0, 0}
+#define J2K_RLE_LAYOUT_INIT {J2K_HEADER_INIT(j2k_rle_layout), 0, 0, 0, 0, 0, 0}
+#define J2K_RLE_REPORT_INIT {J2K_HEADER_INIT(j2k_rle_report), 0, 0}
 
 /* Pointer contract for every call:
  * - Pointers must reference valid, aligned storage for their declared lengths.
@@ -314,6 +393,11 @@ J2K_API j2k_status j2k_decoder_close(
 
 J2K_API j2k_status j2k_decoder_info(
     j2k_decoder *decoder, j2k_image_info *out, j2k_error *error);
+
+/* Which reductions of a J2K_OPEN_PARTIAL input decode exactly. Reads the
+ * packet headers of every tile without decoding samples. */
+J2K_API j2k_status j2k_decoder_completeness(
+    j2k_decoder *decoder, j2k_completeness *out, j2k_error *error);
 
 J2K_API j2k_status j2k_decoder_component_info(
     j2k_decoder *decoder, uint32_t index,
@@ -451,8 +535,48 @@ J2K_API j2k_status j2k_encode(
     const j2k_encode_params *params, uint8_t **out, size_t *out_len,
     j2k_encode_report *report, j2k_error *error);
 
-/* Releases a buffer from j2k_encode or j2k_encode_lossless with its length.
- * NULL is ignored. */
+/* JPEG-LS (ISO/IEC 14495-1), as in DICOM transfer syntaxes 1.2.840.10008.1.2.4.80
+ * and .81. These calls take no decoder: they read the input during the call. */
+
+/* Reads the headers without decoding samples. */
+J2K_API j2k_status j2k_jpegls_inspect(
+    const uint8_t *input, size_t input_len, j2k_jpegls_info *out, j2k_error *error);
+
+/* Decodes interleaved samples whatever the file's interleave mode: one byte
+ * each up to 8 bits, two (LE) above. stride >= row_bytes; required span =
+ * stride*(height-1)+row_bytes, and only that span is written. The buffer
+ * bounds the image; there is no other output limit. On error the output may
+ * hold part of the image. */
+J2K_API j2k_status j2k_jpegls_decode(
+    const uint8_t *input, size_t input_len,
+    uint8_t *output, size_t output_len, size_t stride, j2k_error *error);
+
+/* Encodes interleaved samples, lossless or near-lossless, into a buffer this
+ * library allocates, and decodes the result to check it before returning it.
+ * Release it with j2k_buffer_free. On failure *out is NULL and *out_len 0. */
+J2K_API j2k_status j2k_jpegls_encode(
+    const uint8_t *samples, size_t samples_len, const j2k_jpegls_encode_options *options,
+    uint8_t **out, size_t *out_len, j2k_error *error);
+
+/* DICOM RLE Lossless frames (transfer syntax 1.2.840.10008.1.2.5). */
+
+/* Decodes one frame into the first rows*columns*samples_per_pixel*
+ * (bits_allocated/8) bytes of output; output_len may be larger. Strict unless
+ * layout->flags has J2K_RLE_LENIENT. report (may be NULL) receives what a
+ * lenient decode accepted. On error the output may hold part of the frame. */
+J2K_API j2k_status j2k_rle_decode(
+    const uint8_t *input, size_t input_len, const j2k_rle_layout *layout,
+    uint8_t *output, size_t output_len, j2k_rle_report *report, j2k_error *error);
+
+/* Encodes one frame of exactly rows*columns*samples_per_pixel*
+ * (bits_allocated/8) native bytes into a buffer this library allocates.
+ * Release it with j2k_buffer_free. On failure *out is NULL and *out_len 0. */
+J2K_API j2k_status j2k_rle_encode(
+    const uint8_t *samples, size_t samples_len, const j2k_rle_layout *layout,
+    uint8_t **out, size_t *out_len, j2k_error *error);
+
+/* Releases a buffer from j2k_encode, j2k_encode_lossless, j2k_jpegls_encode
+ * or j2k_rle_encode with its length. NULL is ignored. */
 J2K_API void j2k_buffer_free(uint8_t *data, size_t length);
 
 #ifdef __cplusplus

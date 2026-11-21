@@ -21,6 +21,11 @@ _Static_assert(offsetof(j2k_operation_options, cancellation) == 48, "operation t
 _Static_assert(sizeof(j2k_encode_report) == 40, "encode report layout");
 _Static_assert(sizeof(j2k_color_info) == 32, "colour info layout");
 _Static_assert(offsetof(j2k_encode_params, targets) == 56, "encode params array offset");
+_Static_assert(sizeof(j2k_jpegls_info) == 56, "JPEG-LS info layout");
+_Static_assert(offsetof(j2k_jpegls_info, row_bytes) == 40, "JPEG-LS info row bytes offset");
+_Static_assert(sizeof(j2k_jpegls_encode_options) == 40, "JPEG-LS encode options layout");
+_Static_assert(sizeof(j2k_rle_layout) == 32, "DICOM RLE layout");
+_Static_assert(sizeof(j2k_rle_report) == 16, "DICOM RLE report layout");
 
 /* Copies each row after the previous one; stops after stop_after rows. */
 typedef struct rows {
@@ -205,5 +210,53 @@ int main(int argc, char **argv) {
     params.qfactor = 50; /* The codec refuses a qfactor beside a rate target. */
     REQUIRE(j2k_encode(pixels, sizeof(pixels), &encode, &params, &file_bytes, &file_length, NULL, &error) == J2K_UNSUPPORTED);
     REQUIRE(file_bytes == NULL && file_length == 0 && error.message[0] != '\0');
+
+    /* JPEG-LS: near-lossless encode, inspect, and decode with a padded stride. */
+    j2k_jpegls_encode_options jpegls = J2K_JPEGLS_ENCODE_OPTIONS_INIT;
+    jpegls.width = 32; jpegls.height = 24; jpegls.components = 1; jpegls.bit_depth = 8; jpegls.near = 2;
+    uint8_t *jpegls_bytes = NULL;
+    size_t jpegls_length = 0;
+    REQUIRE(j2k_jpegls_encode(pixels, sizeof(pixels), &jpegls, &jpegls_bytes, &jpegls_length, &error) == J2K_OK);
+    j2k_jpegls_info jpegls_info = J2K_JPEGLS_INFO_INIT;
+    REQUIRE(j2k_jpegls_inspect(jpegls_bytes, jpegls_length, &jpegls_info, &error) == J2K_OK);
+    REQUIRE(jpegls_info.width == 32 && jpegls_info.height == 24 && jpegls_info.near == 2);
+    REQUIRE(jpegls_info.row_bytes == 32 && jpegls_info.buffer_bytes == sizeof(pixels));
+    uint8_t near_lossless[24 * 40];
+    memset(near_lossless, 0xA5, sizeof(near_lossless));
+    REQUIRE(j2k_jpegls_decode(jpegls_bytes, jpegls_length, near_lossless, sizeof(near_lossless), 40, &error) == J2K_OK);
+    for (size_t y = 0; y < 24; ++y) {
+        for (size_t x = 0; x < 32; ++x) {
+            const int difference = (int)near_lossless[y * 40 + x] - (int)pixels[y * 32 + x];
+            REQUIRE(difference >= -2 && difference <= 2);
+        }
+        if (y + 1 < 24) REQUIRE(near_lossless[y * 40 + 32] == 0xA5);
+    }
+    REQUIRE(j2k_jpegls_decode(jpegls_bytes, jpegls_length, near_lossless, 100, 40, &error) == J2K_BUFFER_TOO_SMALL);
+    j2k_buffer_free(jpegls_bytes, jpegls_length);
+    jpegls.interleave = 3;
+    REQUIRE(j2k_jpegls_encode(pixels, sizeof(pixels), &jpegls, &jpegls_bytes, &jpegls_length, &error) == J2K_INVALID_ARGUMENT);
+    REQUIRE(jpegls_bytes == NULL && jpegls_length == 0);
+
+    /* DICOM RLE: a 16-bit frame round trip, strict and lenient. */
+    j2k_rle_layout rle = J2K_RLE_LAYOUT_INIT;
+    rle.rows = 24; rle.columns = 16; rle.samples_per_pixel = 1; rle.bits_allocated = 16;
+    uint8_t *rle_bytes = NULL;
+    size_t rle_length = 0;
+    REQUIRE(j2k_rle_encode(pixels, sizeof(pixels), &rle, &rle_bytes, &rle_length, &error) == J2K_OK);
+    REQUIRE(rle_length > 64 && rle_bytes[0] == 2); /* Two segments: high and low bytes. */
+    uint8_t frame[sizeof(pixels)];
+    j2k_rle_report rle_report = J2K_RLE_REPORT_INIT;
+    REQUIRE(j2k_rle_decode(rle_bytes, rle_length, &rle, frame, sizeof(frame), &rle_report, &error) == J2K_OK);
+    REQUIRE(memcmp(frame, pixels, sizeof(frame)) == 0);
+    REQUIRE(rle_report.overlong_segments == 0 && rle_report.nonzero_unused_offsets == 0);
+    rle_bytes[60] = 1; /* A nonzero unused header offset. */
+    REQUIRE(j2k_rle_decode(rle_bytes, rle_length, &rle, frame, sizeof(frame), &rle_report, &error) == J2K_INVALID_INPUT);
+    rle.flags = J2K_RLE_LENIENT;
+    REQUIRE(j2k_rle_decode(rle_bytes, rle_length, &rle, frame, sizeof(frame), &rle_report, &error) == J2K_OK);
+    REQUIRE(rle_report.nonzero_unused_offsets == 1 && memcmp(frame, pixels, sizeof(frame)) == 0);
+    REQUIRE(j2k_rle_decode(rle_bytes, rle_length, &rle, frame, sizeof(frame) - 1, NULL, &error) == J2K_BUFFER_TOO_SMALL);
+    j2k_buffer_free(rle_bytes, rle_length);
+    REQUIRE(j2k_rle_encode(pixels, sizeof(pixels), &rle, &rle_bytes, &rle_length, &error) == J2K_INVALID_ARGUMENT);
+    REQUIRE(rle_bytes == NULL && rle_length == 0);
     return 0;
 }
