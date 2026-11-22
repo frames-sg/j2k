@@ -259,9 +259,8 @@ fn publish_workflow_validation_reports_parse_and_release_contract_failures() {
     let mut errors = Vec::new();
     validate_publish_workflow_source(workflow, &mut errors).expect("valid workflow YAML");
 
-    assert!(errors
-        .iter()
-        .any(|error| error.contains("exactly preflight and publish jobs")));
+    assert!(errors.iter().any(|error| error
+        .contains("exactly the preflight, c-packages, publish and c-release-assets jobs")));
     assert!(errors.iter().any(|error| error.contains(
         "does not enforce publication preflight `python3 scripts/publish_release.py publish`"
     )));
