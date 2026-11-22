@@ -114,8 +114,9 @@ Python tests is covered in [Testing](testing.md#python-tests).
 ## C and C++ package
 
 `crates/j2k-c` is the C ABI and C++ wrapper. You need Python 3, CMake 3.20 or
-later, and pkg-config. `scripts/package.py` builds a relocatable package for
-the host; it refuses to overwrite an existing output directory.
+later, and pkg-config (except on Windows, which needs Visual Studio's C++
+tools). `scripts/package.py` builds a relocatable package for the host; it
+refuses to overwrite an existing output directory.
 
 ```bash
 cargo test -p j2k-c --locked
@@ -125,6 +126,18 @@ cmake -S crates/j2k-c/native/tests -B target/native-tests \
   -DCMAKE_PREFIX_PATH="$PWD/dist/j2k-c" -DJ2K_FIXTURE="$PWD/target/fixture.j2c"
 cmake --build target/native-tests
 ctest --test-dir target/native-tests --output-on-failure
+```
+
+Release archives come from `package.py --name NAME --archive tar.gz` (or
+`zip`), which also writes `NAME.tar.gz.sha256`. `scripts/test_package.py`
+tests an archive the way the release does: it checks the checksum, unpacks the
+archive into a new directory, and builds and runs the consumer tests and the
+examples against it:
+
+```bash
+python3 crates/j2k-c/scripts/package.py --name j2k-c-test --archive tar.gz
+python3 crates/j2k-c/scripts/test_package.py dist/j2k-c-test.tar.gz \
+  --fixture target/fixture.j2c --work target/consumer
 ```
 
 Keep `include/j2k.h`, the Rust ABI definitions in `src/abi.rs`, the examples,

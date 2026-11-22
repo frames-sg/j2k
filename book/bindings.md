@@ -48,8 +48,14 @@ your buffers as native U8, U16, or I16 samples; streams full images row by row;
 and encodes losslessly or to a rate, size, or PSNR target. It runs on the
 CPU only.
 
-Build the package from the repository root. Programs that use it need only a
-C or C++ compiler and CMake or pkg-config, not a Rust toolchain:
+Each [GitHub release](https://github.com/frames-sg/j2k/releases) has a
+prebuilt package for Linux x86-64 and arm64 (glibc 2.28 or newer), macOS 11
+or newer on Apple silicon, and Windows x86-64 (MSVC), with a SHA-256 checksum
+for each. Programs that use a package need only a C or C++ compiler and CMake
+or pkg-config, not a Rust toolchain. The
+[quickstart](../crates/j2k-c/docs/quickstart.md#download-a-prebuilt-package)
+says which archive to pick and how to check it. To build a package for your
+own machine instead, from the repository root:
 
 ```sh
 python3 crates/j2k-c/scripts/package.py --output dist/j2k-c

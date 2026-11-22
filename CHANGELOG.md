@@ -92,6 +92,12 @@ To add an entry, see [the changelog guide](contributor-book/documentation.md#cha
   subsampling (mixed sampling stays supported). The output samples and stride
   contract match `j2k_decoder_decode_into`. C++ adds
   `decoder::output_info_native` and `decoder::decode_full_into`.
+- Each GitHub release now has prebuilt C/C++ packages for Linux x86-64 and
+  arm64 (glibc 2.28 or newer), macOS 11 or newer on Apple silicon, and
+  Windows x86-64 (MSVC), each with a SHA-256 checksum, so C and C++ programs
+  no longer need a Rust toolchain to build J2K. The Windows package holds
+  `bin/j2k.dll` and its import library `lib/j2k.dll.lib`, and the
+  quickstart covers downloading, checking and linking each one.
 - `J2K_OPEN_PARTIAL` opens a codestream that may be cut off, and
   `j2k_decoder_completeness` reports which reductions decode exactly. A decode
   that needs missing data returns the new status `J2K_INCOMPLETE`.
