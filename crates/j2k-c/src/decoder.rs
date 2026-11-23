@@ -9,15 +9,18 @@ use crate::{
         J2kCColorInfo, J2kCComponentInfo, J2kCDecodeOptions, J2kCImageInfo, J2kCOpenOptions,
         J2kCOutputInfo, J2K_ALLOCATION_FAILED, J2K_ALPHA_NONE, J2K_ALPHA_PREMULTIPLIED,
         J2K_ALPHA_STRAIGHT, J2K_COLOR_ENUMERATED, J2K_COLOR_ICC, J2K_COLOR_NONE, J2K_COLOR_UNKNOWN,
-        J2K_I16_LE, J2K_INVALID_INPUT, J2K_OPEN_FLAGS, J2K_OPEN_LENIENT, J2K_U16_LE, J2K_U8,
-        J2K_UNSUPPORTED, J2K_WARNING_LENIENT_RECOVERY,
+        J2K_I16_LE, J2K_INVALID_INPUT, J2K_OPEN_FLAGS, J2K_OPEN_LENIENT,
+        J2K_SYNTAX_HT_JPEG2000_LOSSLESS, J2K_SYNTAX_HT_JPEG2000_LOSSY,
+        J2K_SYNTAX_JPEG2000_LOSSLESS, J2K_SYNTAX_JPEG2000_LOSSY, J2K_SYNTAX_OTHER, J2K_U16_LE,
+        J2K_U8, J2K_UNSUPPORTED, J2K_WARNING_LENIENT_RECOVERY,
     },
     error::{Error, Result},
 };
 use j2k::{
-    BatchAlpha, BatchDecodeOptions, BatchLayout, CpuBatchDecoder, CpuBatchSamples, DecodeRequest,
-    DecodeSettings, Downscale, EncodedImage, J2kColorSpec, J2kDecodeControl, J2kDecodeWarning,
-    J2kDecoder, J2kReferenceGrid, J2kSupportInfo, NativeSampleType, PreparedBatch, Rect,
+    BatchAlpha, BatchDecodeOptions, BatchLayout, CompressedTransferSyntax, CpuBatchDecoder,
+    CpuBatchSamples, DecodeRequest, DecodeSettings, Downscale, EncodedImage, J2kColorSpec,
+    J2kDecodeControl, J2kDecodeWarning, J2kDecoder, J2kReferenceGrid, J2kSupportInfo,
+    NativeSampleType, PreparedBatch, Rect,
 };
 use std::{num::NonZeroUsize, sync::Arc};
 
@@ -38,6 +41,8 @@ pub(crate) struct Decoder {
     prepared: Option<(DecodeRequest, PreparedBatch, J2kCOutputInfo)>,
     pub(crate) operation_source: Option<crate::operations::OperationSource>,
     max_output: u64,
+    /// The input limit this decoder enforces on every feed; set at open.
+    max_input: u64,
     pub(crate) poisoned: bool,
 }
 
@@ -113,8 +118,47 @@ impl Decoder {
             } else {
                 options.max_output_bytes
             },
+            max_input: Self::input_limit(options)?,
             poisoned: false,
         })
+    }
+
+    /// Replace the codestream this decoder holds, keeping its
+    /// threads, session, settings and limits. The new input is
+    /// fully inspected before any state is replaced, so a failed feed keeps
+    /// the previous codestream inspectable and decodable.
+    pub(crate) fn feed(&mut self, input: &[u8]) -> Result<()> {
+        if input.is_empty() {
+            return Err(Error::new(J2K_INVALID_INPUT, "encoded input is empty"));
+        }
+        if input.len() as u64 > self.max_input {
+            return Err(Error::limit("encoded input exceeds max_input_bytes"));
+        }
+        if !is_jpeg2000(input) {
+            return Err(Error::new(
+                J2K_INVALID_INPUT,
+                "input is not a JP2/JPH file or a raw JPEG 2000 codestream",
+            ));
+        }
+        let support = J2kDecoder::inspect_support_with_settings(input, self.settings)?;
+        let grid = J2kDecoder::inspect_reference_grid(input)?;
+        self.bytes = Arc::from(input);
+        self.support = support;
+        self.grid = grid;
+        self.prepared = None;
+        self.operation_source = None;
+        Ok(())
+    }
+
+    /// The compressed transfer syntax class of the held codestream.
+    pub(crate) fn transfer_syntax(&self) -> u32 {
+        match self.support.transfer_syntax {
+            CompressedTransferSyntax::Jpeg2000Lossless => J2K_SYNTAX_JPEG2000_LOSSLESS,
+            CompressedTransferSyntax::Jpeg2000Lossy => J2K_SYNTAX_JPEG2000_LOSSY,
+            CompressedTransferSyntax::HtJpeg2000Lossless => J2K_SYNTAX_HT_JPEG2000_LOSSLESS,
+            CompressedTransferSyntax::HtJpeg2000Lossy => J2K_SYNTAX_HT_JPEG2000_LOSSY,
+            _ => J2K_SYNTAX_OTHER,
+        }
     }
 
     pub(crate) fn info(&self) -> J2kCImageInfo {

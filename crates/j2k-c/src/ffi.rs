@@ -479,6 +479,63 @@ pub unsafe extern "C" fn j2k_decoder_decode_into(
     }
 }
 
+/// Replace the codestream a persistent decoder holds, keeping
+/// its threads, session, settings and limits. Inspection fully
+/// validates the new input before any state is replaced, so a failed feed
+/// keeps the previous codestream inspectable and decodable. The same limits
+/// and signature checks as [`j2k_decoder_open`] apply.
+///
+/// # Safety
+/// The decoder must be live and exclusively used. `input` must cover
+/// `input_len` readable bytes and must not overlap decoder storage. `error`
+/// follows [`j2k_decoder_output_info`].
+#[no_mangle]
+pub unsafe extern "C" fn j2k_decoder_feed(
+    decoder: *mut J2kCDecoder,
+    input: *const u8,
+    input_len: usize,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: Caller provides the readable input documented above; lengths are
+    // checked before any byte is read.
+    unsafe {
+        boundary(error, || {
+            check_bytes(input, input_len)?;
+            if input_len == 0 {
+                return Err(Error::new(J2K_INVALID_INPUT, "encoded input is empty"));
+            }
+            with_decoder(decoder, |state| {
+                state.feed(slice::from_raw_parts(input, input_len))
+            })
+        })
+    }
+}
+
+/// The compressed transfer syntax class of the held codestream,
+/// one of the `J2K_SYNTAX_*` values.
+///
+/// # Safety
+/// The decoder must be live and exclusively used. `out` must be a writable,
+/// aligned `uint32_t` slot, disjoint from decoder storage. `error` follows
+/// [`j2k_decoder_output_info`].
+#[no_mangle]
+pub unsafe extern "C" fn j2k_decoder_transfer_syntax(
+    decoder: *mut J2kCDecoder,
+    out: *mut u32,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: Caller provides the writable slot documented above.
+    unsafe {
+        boundary(error, || {
+            check_pointer(out)?;
+            with_decoder(decoder, |state| {
+                out.write(state.transfer_syntax());
+                Ok(())
+            })
+        })
+    }
+}
+
 /// `j2k_row_callback`: receives one row of `row_bytes` bytes at `row`, valid
 /// only during the call. Returns zero to continue and nonzero to stop.
 pub type J2kCRowCallback = Option<

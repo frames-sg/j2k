@@ -8,6 +8,7 @@ built and versioned with.
 | Input | JPEG 2000 Part 1 and HTJ2K Part 15 codestreams; JP2/JPH still-image wrappers |
 | Output | Interleaved gray/RGB/RGBA, native U8/U16/I16 samples, explicit precision and alpha metadata |
 | Geometry | Full image, region, half/quarter/eighth resolution, and combined region/reduction when the source supports it |
+| Codestream lifecycle | One live decoder moves to a new codestream with `j2k_decoder_feed`, keeping its threads, settings, and limits; `j2k_decoder_transfer_syntax` reports classic JPEG 2000 or HTJ2K, reversible or irreversible, or `J2K_SYNTAX_OTHER` (`J2K_SYNTAX_*`, callers must check status) |
 | Exact operations | Additive region API with exact 0–31 reductions, effective image-wide maximum, and reference-grid geometry |
 | Explicit sRGB | Bounded gray/RGB/RGBA U8 normalization for supported ICC, palette/channel mapping, and component sampling; straight alpha |
 | Operation controls | Native and raw sRGB working/output limits and cooperative cancellation, including source preparation an operation performs; ICC conversion under a working limit requires an XYZ-connection matrix/TRC or gray-TRC profile |

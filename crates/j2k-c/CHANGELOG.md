@@ -7,6 +7,15 @@
   alongside the versioned shared library, and the CMake package exports
   `J2K::j2k_static` with `J2K_STATIC` and the archive's private link
   libraries.
+- Keep a decoder across codestreams with `j2k_decoder_feed`, which keeps its
+  threads, settings, and limits and replaces the input only after the new
+  headers pass inspection. Report the compressed transfer syntax with
+  `j2k_decoder_transfer_syntax` (`J2K_SYNTAX_*`: `J2K_SYNTAX_UNKNOWN` = 0,
+  `J2K_SYNTAX_JPEG2000_LOSSLESS` = 1, `J2K_SYNTAX_JPEG2000_LOSSY` = 2,
+  `J2K_SYNTAX_HT_JPEG2000_LOSSLESS` = 3, `J2K_SYNTAX_HT_JPEG2000_LOSSY` = 4,
+  or `J2K_SYNTAX_OTHER` = 5); callers must check the status before interpreting
+  a `J2K_SYNTAX_*` output. C++ adds `decoder::feed` and
+  `decoder::transfer_syntax`.
 - Encode with coding parameters through `j2k_encode`, a `j2k_encode_params`
   (`J2K_ENCODE_PARAMS_INIT`), and an optional `j2k_encode_report`: lossy
   coding to bits-per-pixel, byte, or PSNR targets or cumulative quality

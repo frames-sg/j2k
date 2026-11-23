@@ -2,11 +2,13 @@
 
 A CPU C ABI, a C++17 ownership wrapper, and relocatable native binary packages
 for the `j2k` JPEG 2000 / HTJ2K codec. It inspects headers, components, and the
-reference grid; decodes full images, regions, and reduced resolutions into
-caller-owned buffers; streams full images row by row through a callback without
-a whole-image buffer; reports the colour specification and ICC profile
-decoding applies; and encodes interleaved samples, losslessly or lossy to rate,
-size, or PSNR targets, with progression, tile, marker, and quality-layer control
+reference grid; keeps one decoder across codestreams and reports their
+compressed transfer syntax; decodes full images, regions, and reduced
+resolutions into caller-owned buffers; streams full images row by row through
+a callback without a whole-image buffer; reports the colour specification and
+ICC profile decoding applies; and encodes interleaved samples, losslessly or
+lossy to rate, size, or PSNR targets, with progression, tile, marker, and
+quality-layer control
 (classic or HTJ2K, raw, JP2, or JPH with an optional ICC profile). Output
 preserves native U8/U16/I16 sample values with explicit precision and alpha
 metadata. Decoders are strict by default or lenient on request, and run on the

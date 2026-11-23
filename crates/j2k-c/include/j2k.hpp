@@ -239,6 +239,21 @@ public:
         return result;
     }
 
+    // Replace this decoder's codestream, keeping its threads,
+    // session, settings and limits.
+    void feed(const uint8_t *input, size_t length) {
+        j2k_error detail{};
+        check(j2k_decoder_feed(handle_, input, length, &detail), detail);
+    }
+
+    // The compressed transfer syntax class (J2K_SYNTAX_*).
+    uint32_t transfer_syntax() {
+        uint32_t result = J2K_SYNTAX_OTHER;
+        j2k_error detail{};
+        check(j2k_decoder_transfer_syntax(handle_, &result, &detail), detail);
+        return result;
+    }
+
 private:
     j2k_decoder *handle_ = nullptr;
 };

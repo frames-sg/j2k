@@ -3,10 +3,12 @@
 The C header is `include/j2k.h`. It decodes full images, regions, and reduced
 resolutions into caller-owned buffers, streams full images row by row, reports
 the colour specification decoding applies, and encodes interleaved samples
-losslessly or lossy to rate, size, or quality targets. The C++17 wrapper in `j2k.hpp` adds
-move-only ownership and converts error statuses to `j2k::error` exceptions.
-The library is built from the `j2k` CPU codec in the same workspace and is
-versioned with it.
+losslessly or lossy to rate, size, or quality targets. One decoder can be
+moved to a new codestream with `j2k_decoder_feed`, and reports the compressed
+transfer syntax class of the codestream it holds. The C++17 wrapper in
+`j2k.hpp` adds move-only ownership and converts error statuses to
+`j2k::error` exceptions. The library is built from the `j2k` codec in the same
+workspace and is versioned with it.
 
 ## Lifecycle and ownership
 
@@ -19,20 +21,44 @@ versioned with it.
    A successful open owns a copy of the input; the caller can then release it.
    Open inspects headers. It does not guarantee that the pixel data is valid or
    that the requested output is representable.
-3. Inspect source metadata and individual component precision/sampling as needed.
-4. Call `j2k_decoder_output_info` to prepare a request and discover its native
+3. Optionally call `j2k_decoder_feed` to replace the codestream while keeping
+   the decoder's threads, settings, and limits (see
+   [Persistent feed and transfer syntax](#persistent-feed-and-transfer-syntax)).
+4. Inspect source metadata and individual component precision/sampling as needed.
+5. Call `j2k_decoder_output_info` to prepare a request and discover its native
    sample type, dimensions, channel count, significant bits, and alpha meaning.
-5. Allocate an output buffer and call `j2k_decoder_decode_into` with the same
+6. Allocate an output buffer and call `j2k_decoder_decode_into` with the same
    options. The library checks the layout again; a prior query is not mandatory.
    To avoid holding the whole image, stream it with `j2k_decoder_decode_rows`
    instead (see [Row streaming](#row-streaming)).
-6. Call `j2k_decoder_close(&decoder, ...)`. The slot becomes `NULL`; repeating
+7. Call `j2k_decoder_close(&decoder, ...)`. The slot becomes `NULL`; repeating
    close on that null slot succeeds. Never call `free` on a decoder handle.
 
 The latest prepared request is cached. Repeating it reuses its plan and the
 codec's retained CPU worker workspaces. A different request replaces the plan.
 Input storage is owned through J2K's `EncodedImage`; no borrowed Rust decoder
 is given an artificial lifetime.
+
+## Persistent feed and transfer syntax
+
+`j2k_decoder_feed` replaces the codestream a live decoder holds and keeps its
+threads, settings, input and output limits. It
+applies the same signature and input-limit checks as `j2k_decoder_open` and
+inspects the new headers completely before replacing any state, so a failed
+feed leaves the previous codestream inspectable and decodable. The decoder owns
+a copy of the fed input; the caller may release it after the call. Feed is for
+successive independent images through one decoder configuration; it does not
+append or combine codestreams into one image.
+
+`j2k_decoder_transfer_syntax` reports the compressed coding of the held
+codestream as one of `J2K_SYNTAX_UNKNOWN` (0),
+`J2K_SYNTAX_JPEG2000_LOSSLESS` (1), `J2K_SYNTAX_JPEG2000_LOSSY` (2),
+`J2K_SYNTAX_HT_JPEG2000_LOSSLESS` (3), `J2K_SYNTAX_HT_JPEG2000_LOSSY` (4),
+or `J2K_SYNTAX_OTHER` (5) when this ABI revision does not name the class.
+Callers must check the returned status before interpreting a `J2K_SYNTAX_*`
+output. The value describes the compressed coding, not the decoded sample
+layout; use `j2k_decoder_output_info` for that. C++ callers use
+`decoder::feed` and `decoder::transfer_syntax`.
 
 ## Output interpretation
 
@@ -297,8 +323,10 @@ the written prefix size. Future extension fields must be optional for older
 libraries; required new behavior needs explicit version/capability negotiation.
 
 ABI 1 is the first C ABI revision. ABI-1 field layouts, status values,
-function signatures, and ownership rules must not be changed in place. A
-breaking ABI change requires a new revision and corresponding migration notes.
+function signatures, and ownership rules must not be changed in place. The
+feed and transfer-syntax entry points are additive; they introduce no
+structure layouts and no new status values. A breaking ABI change requires a
+new revision and corresponding migration notes.
 
 ## Static linking
 

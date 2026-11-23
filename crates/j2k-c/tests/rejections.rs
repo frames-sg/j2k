@@ -579,6 +579,15 @@ fn abi_one_layout_matches_the_c_header_and_accepts_extension_storage() {
             ("J2K_COLOR_ENUMERATED", J2K_COLOR_ENUMERATED),
             ("J2K_COLOR_ICC", J2K_COLOR_ICC),
             ("J2K_COLOR_UNKNOWN", J2K_COLOR_UNKNOWN),
+            ("J2K_SYNTAX_UNKNOWN", J2K_SYNTAX_UNKNOWN),
+            ("J2K_SYNTAX_JPEG2000_LOSSLESS", J2K_SYNTAX_JPEG2000_LOSSLESS),
+            ("J2K_SYNTAX_JPEG2000_LOSSY", J2K_SYNTAX_JPEG2000_LOSSY),
+            (
+                "J2K_SYNTAX_HT_JPEG2000_LOSSLESS",
+                J2K_SYNTAX_HT_JPEG2000_LOSSLESS
+            ),
+            ("J2K_SYNTAX_HT_JPEG2000_LOSSY", J2K_SYNTAX_HT_JPEG2000_LOSSY),
+            ("J2K_SYNTAX_OTHER", J2K_SYNTAX_OTHER),
             ("J2K_U8", J2K_U8),
             ("J2K_U16_LE", J2K_U16_LE),
             ("J2K_I16_LE", J2K_I16_LE),
