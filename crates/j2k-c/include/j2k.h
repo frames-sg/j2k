@@ -392,11 +392,12 @@ J2K_API j2k_status j2k_decoder_decode_rows(
     uint32_t max_rows_per_stripe, j2k_row_callback callback, void *user_data,
     j2k_output_info *out, j2k_error *error);
 
-/* Additive ABI-1 API: persistent-decoder feed and transfer-syntax queries.
- * They introduce no ABI-1 structure layouts and no new status values. */
+/* Additive ABI-1 API: persistent-decoder feed, header-fact output layout,
+ * and the core whole-image decode route. They introduce no ABI-1 structure
+ * layouts and no new status values. */
 
 /* Replaces the codestream the decoder holds, keeping its threads, session,
- * settings and limits. Same input checks as j2k_decoder_open.
+ * settings, and limits. Same input checks as j2k_decoder_open.
  * The new input is fully inspected before any state is replaced, so a failed
  * feed keeps the previous codestream inspectable and decodable. */
 J2K_API j2k_status j2k_decoder_feed(
@@ -406,7 +407,31 @@ J2K_API j2k_status j2k_decoder_feed(
 /* The compressed transfer syntax class of the held codestream, one of the
  * J2K_SYNTAX_* values. */
 J2K_API j2k_status j2k_decoder_transfer_syntax(
-    j2k_decoder *decoder, uint32_t *out_syntax, j2k_error *error);
+    j2k_decoder *decoder, uint32_t *out, j2k_error *error);
+
+/* The native output layout of a full-image, full-resolution request, derived
+ * from header facts alone without batch-engine planning. Covers raw
+ * zero-origin codestreams with one or three unsigned components of equal 8- to
+ * 16-bit precision; any other request returns J2K_UNSUPPORTED
+ * (j2k_decoder_output_info stays the general route). Images whose components
+ * all share a non-1:1 sampling pair are rejected; mixed component sampling
+ * stays supported. Sub-8-bit samples stay on the batch route because the core
+ * decoder widens them to the full 8-bit container range; nonzero image origins
+ * stay there because the core and batch region paths do not agree on some
+ * samples at image and tile boundaries. */
+J2K_API j2k_status j2k_decoder_output_info_native(
+    j2k_decoder *decoder, const j2k_decode_options *options,
+    j2k_output_info *out, j2k_error *error);
+
+/* Decodes a full-image, full-resolution request through the core whole-image
+ * decoder, skipping the batch engine's per-image planning. For layouts
+ * j2k_decoder_output_info_native represents, the output bytes equal those of
+ * j2k_decoder_decode_into on the same codestream. Other requests return
+ * J2K_UNSUPPORTED. The core decoder writes directly into the caller's buffer,
+ * so a failure during pixel decode may leave some rows written. */
+J2K_API j2k_status j2k_decoder_decode_full_into(
+    j2k_decoder *decoder, const j2k_decode_options *options,
+    uint8_t *output, size_t output_len, size_t stride, j2k_error *error);
 
 /* Encodes interleaved samples losslessly into a buffer this library allocates.
  * The encoder decodes its result and compares it with the samples before

@@ -4,8 +4,10 @@ The C header is `include/j2k.h`. It decodes full images, regions, and reduced
 resolutions into caller-owned buffers, streams full images row by row, reports
 the colour specification decoding applies, and encodes interleaved samples
 losslessly or lossy to rate, size, or quality targets. One decoder can be
-moved to a new codestream with `j2k_decoder_feed`, and reports the compressed
-transfer syntax class of the codestream it holds. The C++17 wrapper in
+moved to a new codestream with `j2k_decoder_feed`, and
+`j2k_decoder_transfer_syntax` reports the compressed transfer syntax class of
+the codestream it holds. Full-image requests can use the general batch route
+or the explicit core whole-image route. The C++17 wrapper in
 `j2k.hpp` adds move-only ownership and converts error statuses to
 `j2k::error` exceptions. The library is built from the `j2k` codec in the same
 workspace and is versioned with it.
@@ -83,6 +85,28 @@ stride * (height - 1) + row_bytes
 Trailing padding after the last row is unnecessary. Inter-row padding and bytes
 beyond the required span remain untouched. Do not cast 16-bit output to a host
 integer pointer without considering alignment and little-endian byte order.
+
+## Core whole-image route
+
+`j2k_decoder_output_info_native` derives the output layout from header facts
+alone for a full-image, full-resolution request, without the batch engine's
+per-image planning. It covers raw codestreams with a zero image origin and one
+or three unsigned components of equal 8- to 16-bit precision. JP2/JPH files,
+regions, reductions, nonzero image origins, signed components, mixed
+precision, sub-8-bit or above-16-bit samples, uniform component subsampling,
+and other channel counts return `J2K_UNSUPPORTED`; `j2k_decoder_output_info`
+remains the general route for those inputs. Mixed component sampling stays
+supported (it is upsampled onto the output grid). A successful result carries
+the same layout fields as `j2k_decoder_output_info` for the same request.
+
+`j2k_decoder_decode_full_into` decodes such a request through the core
+whole-image decoder, using the same stride contract as
+`j2k_decoder_decode_into`. For layouts the route represents, the output bytes
+equal those of `j2k_decoder_decode_into` on the same codestream. The core
+decoder writes directly into the caller's buffer, so a failure during pixel
+decode may leave some rows written; check the status before using the result.
+C++ callers use `decoder::output_info_native` and
+`decoder::decode_full_into`.
 
 ## Regions and reduction
 
@@ -307,9 +331,12 @@ cancellation separately from a row callback's `J2K_STOPPED`.
 
 Result structures are written only on success. Ordinary errors leave pixel
 buffers unchanged because J2K completes native decode before the library copies
-samples. A contained Rust panic or internal invariant failure poisons the
-handle; discard any output and close/recreate it. Panic hooks may still write to
-stderr. Process aborts and invalid C pointer accesses cannot be contained.
+samples. The explicit `j2k_decoder_decode_full_into` route decodes directly
+into the caller's buffer, so a failure during pixel decode may leave some rows
+written; check the status before using the result. A contained Rust panic or
+internal invariant failure poisons the handle; discard any output and
+close/recreate it. Panic hooks may still write to stderr. Process aborts and
+invalid C pointer accesses cannot be contained.
 
 Pointers must reference live, appropriately aligned allocations of the declared
 size. Output arguments cannot overlap other arguments or handle storage. Null,
@@ -324,9 +351,9 @@ libraries; required new behavior needs explicit version/capability negotiation.
 
 ABI 1 is the first C ABI revision. ABI-1 field layouts, status values,
 function signatures, and ownership rules must not be changed in place. The
-feed and transfer-syntax entry points are additive; they introduce no
-structure layouts and no new status values. A breaking ABI change requires a
-new revision and corresponding migration notes.
+feed, transfer-syntax, and core whole-image entry points are additive; they
+introduce no structure layouts and no new status values. A breaking ABI change
+requires a new revision and corresponding migration notes.
 
 ## Static linking
 

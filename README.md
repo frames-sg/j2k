@@ -141,10 +141,11 @@ to run j2k behind Cantaloupe.
 
 [`j2k-c`](crates/j2k-c/README.md) is a CPU C ABI (`j2k.h`), a header-only C++17
 wrapper (`j2k.hpp`), and a relocatable shared-library package with CMake
-configuration; Cargo also emits a static archive. It inspects images, keeps one
-decoder across codestreams and reports their compressed transfer syntax, and
-decodes full images, regions, and reduced resolutions into caller-owned buffers
-as native U8, U16, or I16 samples. It streams full images row by row without a
+configuration; Cargo also emits a static archive. It offers batch and explicit
+core whole-image decode routes, inspects images, keeps one decoder across
+codestreams and reports their compressed transfer syntax, and decodes full
+images, regions, and reduced resolutions into caller-owned buffers as native
+U8, U16, or I16 samples. It streams full images row by row without a
 whole-image buffer, and encodes losslessly. Build a package with
 `python3 crates/j2k-c/scripts/package.py --output dist/j2k-c`; consumers need
 only a C/C++ compiler and CMake.

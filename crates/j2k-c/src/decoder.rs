@@ -8,9 +8,9 @@ use crate::{
     abi::{
         J2kCColorInfo, J2kCComponentInfo, J2kCDecodeOptions, J2kCImageInfo, J2kCOpenOptions,
         J2kCOutputInfo, J2K_ALLOCATION_FAILED, J2K_ALPHA_NONE, J2K_ALPHA_PREMULTIPLIED,
-        J2K_ALPHA_STRAIGHT, J2K_COLOR_ENUMERATED, J2K_COLOR_ICC, J2K_COLOR_NONE, J2K_COLOR_UNKNOWN,
-        J2K_I16_LE, J2K_INVALID_INPUT, J2K_OPEN_FLAGS, J2K_OPEN_LENIENT,
-        J2K_SYNTAX_HT_JPEG2000_LOSSLESS, J2K_SYNTAX_HT_JPEG2000_LOSSY,
+        J2K_ALPHA_STRAIGHT, J2K_BUFFER_TOO_SMALL, J2K_COLOR_ENUMERATED, J2K_COLOR_ICC,
+        J2K_COLOR_NONE, J2K_COLOR_UNKNOWN, J2K_I16_LE, J2K_INVALID_INPUT, J2K_OPEN_FLAGS,
+        J2K_OPEN_LENIENT, J2K_SYNTAX_HT_JPEG2000_LOSSLESS, J2K_SYNTAX_HT_JPEG2000_LOSSY,
         J2K_SYNTAX_JPEG2000_LOSSLESS, J2K_SYNTAX_JPEG2000_LOSSY, J2K_SYNTAX_OTHER, J2K_U16_LE,
         J2K_U8, J2K_UNSUPPORTED, J2K_WARNING_LENIENT_RECOVERY,
     },
@@ -20,7 +20,7 @@ use j2k::{
     BatchAlpha, BatchDecodeOptions, BatchLayout, CompressedTransferSyntax, CpuBatchDecoder,
     CpuBatchSamples, DecodeRequest, DecodeSettings, Downscale, EncodedImage, J2kColorSpec,
     J2kDecodeControl, J2kDecodeWarning, J2kDecoder, J2kReferenceGrid, J2kSupportInfo,
-    NativeSampleType, PreparedBatch, Rect,
+    NativeSampleType, PixelFormat, PreparedBatch, Rect,
 };
 use std::{num::NonZeroUsize, sync::Arc};
 
@@ -124,7 +124,7 @@ impl Decoder {
     }
 
     /// Replace the codestream this decoder holds, keeping its
-    /// threads, session, settings and limits. The new input is
+    /// threads, session, settings, and limits. The new input is
     /// fully inspected before any state is replaced, so a failed feed keeps
     /// the previous codestream inspectable and decodable.
     pub(crate) fn feed(&mut self, input: &[u8]) -> Result<()> {
@@ -159,6 +159,172 @@ impl Decoder {
             CompressedTransferSyntax::HtJpeg2000Lossy => J2K_SYNTAX_HT_JPEG2000_LOSSY,
             _ => J2K_SYNTAX_OTHER,
         }
+    }
+
+    /// The native output layout of a full-image, full-resolution
+    /// request, derived from header facts alone, without batch-engine planning. The
+    /// layout is that of the core whole-image decoder: raw codestreams with a
+    /// zero image origin, one or three unsigned components of equal 8- to
+    /// 16-bit precision, without uniform component subsampling. Any other request
+    /// returns `J2K_UNSUPPORTED` so callers keep `prepare`/`prepare_layout` (the
+    /// batch route) as their general path. Sub-8-bit samples stay on the batch
+    /// route because the core decoder widens them to the full 8-bit container
+    /// range; nonzero origins stay there because the core and batch region paths
+    /// do not agree on some samples at image and tile boundaries.
+    pub(crate) fn output_info_native(&self, options: J2kCDecodeOptions) -> Result<J2kCOutputInfo> {
+        if options.reserved != 0 {
+            return Err(Error::argument("reserved decode options must be zero"));
+        }
+        if [
+            options.x,
+            options.y,
+            options.width,
+            options.height,
+            options.reduction,
+        ] != [0; 5]
+        {
+            return Err(Error::new(
+                J2K_UNSUPPORTED,
+                "the core whole-image route covers the full image at full resolution",
+            ));
+        }
+        let precision = self.native_precision()?;
+        let (width, height) = self.support.info.dimensions;
+        let components = u32::from(self.support.component_count());
+        let (sample_type, sample_bytes) = match precision {
+            8 => (J2K_U8, 1_u64),
+            9..=16 => (J2K_U16_LE, 2),
+            _ => {
+                return Err(Error::internal(
+                    "native output precision is outside the representable range",
+                ));
+            }
+        };
+        let row_bytes = u64::from(width) * u64::from(components) * sample_bytes;
+        let buffer_bytes = row_bytes
+            .checked_mul(u64::from(height))
+            .ok_or_else(|| Error::limit("output size overflow"))?;
+        self.check_output_limit(buffer_bytes)?;
+        Ok(J2kCOutputInfo {
+            x: 0,
+            y: 0,
+            width,
+            height,
+            channels: components,
+            sample_type,
+            precision,
+            alpha: J2K_ALPHA_NONE,
+            row_bytes,
+            buffer_bytes,
+            warnings: 0,
+            ..Default::default()
+        })
+    }
+
+    /// Return the uniform bit depth when the codestream qualifies for the core
+    /// whole-image route.
+    fn native_precision(&self) -> Result<u32> {
+        if self.support.file_metadata.is_some() {
+            return Err(Error::new(
+                J2K_UNSUPPORTED,
+                "the core whole-image route covers raw codestreams; file-wrapped inputs use the general route",
+            ));
+        }
+        if self.grid.image_origin != (0, 0) {
+            return Err(Error::new(
+                J2K_UNSUPPORTED,
+                "the core whole-image route covers images with a zero origin",
+            ));
+        }
+        let components = u32::from(self.support.component_count());
+        if components != 1 && components != 3 {
+            return Err(Error::new(
+                J2K_UNSUPPORTED,
+                "the core whole-image route covers one or three interleaved components",
+            ));
+        }
+        let precision = self.uniform_precision()?;
+        if has_uniform_component_subsampling(&self.support) {
+            return Err(Error::new(
+                J2K_UNSUPPORTED,
+                "the core whole-image route rejects uniform component subsampling",
+            ));
+        }
+        Ok(precision)
+    }
+
+    /// The common bit depth of unsigned components; the core whole-image
+    /// decoder's interleaved output requires this.
+    fn uniform_precision(&self) -> Result<u32> {
+        if self.support.has_signed_components() {
+            return Err(Error::new(
+                J2K_UNSUPPORTED,
+                "the core whole-image route covers unsigned components",
+            ));
+        }
+        let first = self
+            .support
+            .components
+            .first()
+            .ok_or_else(|| Error::internal("codestream has no components"))?;
+        let precision = u32::from(first.bit_depth);
+        if self
+            .support
+            .components
+            .iter()
+            .any(|component| u32::from(component.bit_depth) != precision)
+        {
+            return Err(Error::new(
+                J2K_UNSUPPORTED,
+                "the core whole-image route covers components of uniform precision",
+            ));
+        }
+        if !(8..=16).contains(&precision) {
+            return Err(Error::new(
+                J2K_UNSUPPORTED,
+                "the core whole-image route covers 8- to 16-bit unsigned components",
+            ));
+        }
+        Ok(precision)
+    }
+
+    /// Decode a full-image, full-resolution request through the core whole-image
+    /// decoder instead of the prepared batch session. The caller may already have
+    /// prepared a plan; this method ignores it. For layouts this route represents,
+    /// the output bytes match `j2k_decoder_decode_into` on the same codestream.
+    pub(crate) fn decode_full_core(
+        &mut self,
+        options: J2kCDecodeOptions,
+        output: &mut [u8],
+        stride: usize,
+    ) -> Result<J2kCOutputInfo> {
+        let info = self.output_info_native(options)?;
+        let required = self.output_span(info, stride)?;
+        if output.len() < required {
+            return Err(Error::new(
+                J2K_BUFFER_TOO_SMALL,
+                "output buffer is shorter than the requested strided image",
+            ));
+        }
+        let fmt = core_pixel_format(&info).ok_or_else(|| {
+            Error::new(
+                J2K_UNSUPPORTED,
+                "the core whole-image route does not represent this layout",
+            )
+        })?;
+        let bytes = Arc::clone(&self.bytes);
+        let settings = self.settings;
+        let outcome = in_pool(self.pool.as_ref(), move || {
+            let mut decoder = j2k::J2kDecoder::new_with_settings(&bytes, settings)?;
+            decoder.decode_into(output, stride, fmt)
+        })
+        .map_err(|error| Error::codec(&error))?;
+        if !outcome.warnings.iter().all(|warning| self.allows(*warning)) {
+            return Err(Error::internal(
+                "decode reported a warning its settings do not allow",
+            ));
+        }
+        Ok(info)
     }
 
     pub(crate) fn info(&self) -> J2kCImageInfo {
@@ -487,6 +653,18 @@ fn decode_request(options: J2kCDecodeOptions) -> Result<DecodeRequest> {
     })
 }
 
+/// The core decoder's whole-image pixel format matching a native C output
+/// layout, or `None` when the core whole-image path cannot represent it.
+fn core_pixel_format(info: &J2kCOutputInfo) -> Option<PixelFormat> {
+    match (info.channels, info.sample_type, info.alpha) {
+        (1, J2K_U8, J2K_ALPHA_NONE) => Some(PixelFormat::Gray8),
+        (1, J2K_U16_LE, J2K_ALPHA_NONE) => Some(PixelFormat::Gray16),
+        (3, J2K_U8, J2K_ALPHA_NONE) => Some(PixelFormat::Rgb8),
+        (3, J2K_U16_LE, J2K_ALPHA_NONE) => Some(PixelFormat::Rgb16),
+        _ => None,
+    }
+}
+
 pub(crate) fn native_output_info(
     info: &j2k::BatchGroupInfo,
     rect: Rect,
@@ -596,4 +774,16 @@ pub(crate) fn write_native_samples(
         }
     }
     Ok(())
+}
+
+fn has_uniform_component_subsampling(support: &J2kSupportInfo) -> bool {
+    let Some(first) = support.components.first() else {
+        return false;
+    };
+    let sampling = (first.x_rsiz, first.y_rsiz);
+    sampling != (1, 1)
+        && support
+            .components
+            .iter()
+            .all(|component| (component.x_rsiz, component.y_rsiz) == sampling)
 }

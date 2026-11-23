@@ -25,6 +25,9 @@ mod packet_edits;
 mod pixels;
 mod scaled_matrix;
 
+#[cfg(feature = "j2k-native-fixtures")]
+pub use j2k_native;
+
 pub use adobe_app14::{with_adobe_transform, RESERVED_ADOBE_TRANSFORMS};
 pub use auto_routing::{
     append_auto_routing_output, auto_routing_operation_label, auto_routing_route_cell,

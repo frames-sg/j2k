@@ -17,7 +17,7 @@ j2k = { path = "../j2k" }
 rayon = { workspace = true }
 
 [dev-dependencies]
-j2k-test-support = { path = "../j2k-test-support" }
+j2k-test-support = { path = "../j2k-test-support", features = ["j2k-native-fixtures"] }
 
 # The workspace forbids unsafe code; this crate is the C ABI boundary, so it
 # keeps every raw-pointer operation in `src/ffi.rs` behind documented blocks.

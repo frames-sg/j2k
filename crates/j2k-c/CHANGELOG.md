@@ -16,6 +16,13 @@
   or `J2K_SYNTAX_OTHER` = 5); callers must check the status before interpreting
   a `J2K_SYNTAX_*` output. C++ adds `decoder::feed` and
   `decoder::transfer_syntax`.
+- Decode a full image through the core whole-image decoder with
+  `j2k_decoder_output_info_native` and `j2k_decoder_decode_full_into`, which
+  skip the batch engine's per-image planning for raw zero-origin one- or
+  three-component unsigned 8- to 16-bit images without uniform component
+  subsampling (mixed sampling stays supported). The output samples and stride
+  contract match `j2k_decoder_decode_into`. C++ adds
+  `decoder::output_info_native` and `decoder::decode_full_into`.
 - Encode with coding parameters through `j2k_encode`, a `j2k_encode_params`
   (`J2K_ENCODE_PARAMS_INIT`), and an optional `j2k_encode_report`: lossy
   coding to bits-per-pixel, byte, or PSNR targets or cumulative quality
