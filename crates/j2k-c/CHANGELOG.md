@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Build `libj2k_c.a` beside the shared library for consumers that link the C
+  ABI statically. Binary packages ship the static archive as `lib/libj2k.a`
+  alongside the versioned shared library, and the CMake package exports
+  `J2K::j2k_static` with `J2K_STATIC` and the archive's private link
+  libraries.
 - Encode with coding parameters through `j2k_encode`, a `j2k_encode_params`
   (`J2K_ENCODE_PARAMS_INIT`), and an optional `j2k_encode_report`: lossy
   coding to bits-per-pixel, byte, or PSNR targets or cumulative quality

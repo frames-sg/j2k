@@ -16,8 +16,8 @@ built and versioned with.
 | Colour metadata | The applied (first) COLR box: enumerated `EnumCS`, ICC profile bytes, or an uninterpreted method |
 | Validation | Strict by default; `J2K_OPEN_LENIENT` accepts the codec's JP2/JPH metadata recoveries and reports them |
 | Threads | The codec's shared pool, or a decoder's own pool of 1–64 threads |
-| Platforms | Native macOS and GNU/Linux shared-library packages; each binary is specific to its build target, and GNU/Linux packages need the build host's glibc or newer |
-| Consumers | C11 and C++17 through CMake (`J2K::j2k`) or pkg-config (`j2k`); no Rust toolchain required for prebuilt packages |
+| Platforms | Native macOS and GNU/Linux packages (shared library and static archive); each binary is specific to its build target, and GNU/Linux packages need the build host's glibc or newer |
+| Consumers | C11 and C++17 through CMake (`J2K::j2k`, `J2K::j2k_static`) or pkg-config (`j2k`); no Rust toolchain required for prebuilt packages |
 
 Native pixel decode rejects ICC-tagged and palette-mapped inputs, mixed precision or
 signedness, precision above 16 bits, unsupported colors/component counts, and
@@ -65,6 +65,10 @@ equal to the package version. Each `lib/` also has an unversioned `libj2k.so` or
 `libj2k.dylib` symlink for linking. Applications load the versioned name, so
 deploy that file. The library is stripped to its exported `j2k_*` symbols
 and embeds no build-machine paths.
+
+Cargo also builds a static archive, `libj2k_c.a`, for source consumers that
+link the C ABI statically. The binary package ships the static archive as
+`lib/libj2k.a` alongside the versioned shared library above.
 
 A GNU/Linux package requires at least the glibc version of its build host; no
 older glibc baseline is claimed. Find the newest glibc symbol version a package

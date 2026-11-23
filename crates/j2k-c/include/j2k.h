@@ -6,7 +6,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#if defined(_WIN32)
+/* Consumers linking libj2k.a statically must define J2K_STATIC so Windows
+ * declarations do not expect dllimport. */
+#if defined(J2K_STATIC)
+#define J2K_API
+#elif defined(_WIN32)
 #define J2K_API __declspec(dllimport)
 #else
 #define J2K_API

@@ -16,6 +16,10 @@ CRATE = Path(__file__).resolve().parents[1]
 ROOT = CRATE.parents[1]
 ABI_SOURCE = CRATE / "src" / "abi.rs"
 ABI_HEADER = CRATE / "include" / "j2k.h"
+# Cargo may color stderr (CARGO_TERM_COLOR=always is set on GitHub runners);
+# a trailing reset would otherwise become part of the last native library flag.
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]")
 # The workspace's own license texts, for members without a crate-local copy.
 WORKSPACE_LICENSES = ("LICENSE", "LICENSE-MIT", "LICENSE-APACHE")
 # Cargo's file name, the packaged real file, its development symlink, and the
@@ -26,6 +30,32 @@ Library = namedtuple("Library", "built packaged link soname linker_args")
 def run(*args, env=None):
     """Run a command in the workspace; a nonzero exit raises CalledProcessError."""
     subprocess.run(args, cwd=ROOT, check=True, text=True, env=env)
+
+
+def run_and_capture_stderr(*args, env=None):
+    """Run a command in the workspace and return stderr; a nonzero exit raises CalledProcessError."""
+    proc = subprocess.run(args, cwd=ROOT, text=True, stderr=subprocess.PIPE, env=env)
+    sys.stderr.write(proc.stderr)
+    sys.stderr.flush()
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(proc.returncode, args, output=proc.stdout, stderr=proc.stderr)
+    return proc.stderr
+
+
+def parse_native_static_libs(stderr):
+    """Parse the native-static-libs line emitted by rustc."""
+    # Strip ANSI escapes before parsing: colored Cargo output would otherwise
+    # leave a reset sequence attached to the final library flag.
+    stderr = ANSI_ESCAPE.sub("", stderr)
+    match = re.search(r"native-static-libs:[ \t]*([^\r\n]*)", stderr)
+    if not match:
+        raise RuntimeError("Could not find 'native-static-libs:' in cargo rustc output")
+    libs = match.group(1).strip()
+    if not libs:
+        raise RuntimeError("'native-static-libs:' output was empty")
+    if CONTROL_CHARACTERS.search(libs):
+        raise RuntimeError("'native-static-libs:' output contains control characters")
+    return libs
 
 
 def command_output(*args):
@@ -165,6 +195,40 @@ def collect_notices(packages, workspace_members, destination):
         + "\n".join(entries) + "\n", encoding="utf-8")
 
 
+def stage_static_archive(built_static, output):
+    """Copy the built static archive into the package's lib/ directory."""
+    if not built_static.is_file():
+        raise RuntimeError(f"Expected static archive was not built: {built_static}")
+    destination = output / "lib" / "libj2k.a"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(built_static, destination)
+    return destination
+
+
+def render_cmake_config(template, library, static_libs):
+    """Render J2KConfig.cmake from its template and reject unexpanded placeholders."""
+    config = (template
+              .replace("@LIBRARY_FILE@", library.packaged)
+              .replace("@LIBRARY_SONAME@", library.soname)
+              .replace("@STATIC_LIBS@", static_libs))
+    if re.search(r"@[A-Z_]+@", config):
+        raise RuntimeError("Unexpanded placeholder in crates/j2k-c/cmake/J2KConfig.cmake.in")
+    return config
+
+
+def render_pkgconfig(template, version, url, private_libs):
+    """Render j2k.pc from its template and reject empty private libs or unexpanded placeholders."""
+    if not private_libs or not private_libs.strip():
+        raise RuntimeError("Derived PRIVATE_LIBS is empty")
+    pkgconfig = (template
+                 .replace("@VERSION@", version)
+                 .replace("@URL@", url or "")
+                 .replace("@PRIVATE_LIBS@", private_libs))
+    if re.search(r"@[A-Z_]+@", pkgconfig):
+        raise RuntimeError("Unexpanded placeholder in crates/j2k-c/pkgconfig/j2k.pc.in")
+    return pkgconfig
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, help="New output directory; defaults to dist/version-host")
@@ -186,20 +250,29 @@ def main():
     target_dir = Path(metadata["target_directory"])
     remaps = path_remaps(sysroot, target_dir)
     env = {name: value for name, value in os.environ.items() if name != "RUSTFLAGS"}
+    env["CARGO_TERM_COLOR"] = "never"
     env["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(
         user_rustflags() + [f"--remap-path-prefix={source}={virtual}" for source, virtual in remaps.items()])
     # Keep only exported/dynamic symbols in the distributed library.
-    run("cargo", "rustc", "--locked", "--release", "-p", "j2k-c", "--lib",
-        "--target", host, "--", "-C", "strip=symbols", *library.linker_args, env=env)
+    stderr = run_and_capture_stderr("cargo", "rustc", "--locked", "--release", "-p", "j2k-c", "--lib",
+                                    "--target", host, "--", "-C", "strip=symbols",
+                                    "--print", "native-static-libs",
+                                    *library.linker_args, env=env)
+    private_libs = parse_native_static_libs(stderr)
     built = target_dir / host / "release" / library.built
+    built_static = target_dir / host / "release" / "libj2k_c.a"
     if not built.is_file():
         raise RuntimeError(f"Expected library was not built: {built}")
+    if not built_static.is_file():
+        raise RuntimeError(f"Expected static archive was not built: {built_static}")
+    require_no_build_paths(built_static, remaps)
     require_no_build_paths(built, remaps)
 
     output.mkdir(parents=True)
     (output / "lib" / "cmake" / "J2K").mkdir(parents=True)
     shutil.copy2(built, output / "lib" / library.packaged)
     (output / "lib" / library.link).symlink_to(library.packaged)
+    stage_static_archive(built_static, output)
     for source, directory in (("include", "include"), ("native/examples", "examples"), ("docs", "docs")):
         shutil.copytree(CRATE / source, output / directory)
     quickstart = (CRATE / "docs" / "quickstart.md").read_text(encoding="utf-8")
@@ -209,18 +282,21 @@ def main():
     for name in (*WORKSPACE_LICENSES, "NOTICES.md"):
         shutil.copy2(ROOT / name, output / name)
     shutil.copy2(CRATE / "CHANGELOG.md", output / "CHANGELOG.md")
-    config = (CRATE / "cmake" / "J2KConfig.cmake.in").read_text(encoding="utf-8")
-    config = config.replace("@LIBRARY_FILE@", library.packaged).replace("@LIBRARY_SONAME@", library.soname)
-    if re.search(r"@[A-Z_]+@", config):
-        raise RuntimeError("Unexpanded placeholder in crates/j2k-c/cmake/J2KConfig.cmake.in")
+    config = render_cmake_config(
+        (CRATE / "cmake" / "J2KConfig.cmake.in").read_text(encoding="utf-8"),
+        library,
+        private_libs,
+    )
     config_dir = output / "lib" / "cmake" / "J2K"
     (config_dir / "J2KConfig.cmake").write_text(config, encoding="utf-8")
     pkgconfig_dir = output / "lib" / "pkgconfig"
     pkgconfig_dir.mkdir()
-    pkgconfig = (CRATE / "pkgconfig" / "j2k.pc.in").read_text(encoding="utf-8")
-    pkgconfig = pkgconfig.replace("@VERSION@", version).replace("@URL@", package["repository"] or "")
-    if re.search(r"@[A-Z_]+@", pkgconfig):
-        raise RuntimeError("Unexpanded placeholder in crates/j2k-c/pkgconfig/j2k.pc.in")
+    pkgconfig = render_pkgconfig(
+        (CRATE / "pkgconfig" / "j2k.pc.in").read_text(encoding="utf-8"),
+        version,
+        package["repository"],
+        private_libs,
+    )
     (pkgconfig_dir / "j2k.pc").write_text(pkgconfig, encoding="utf-8")
     (config_dir / "J2KConfigVersion.cmake").write_text(
         f'set(PACKAGE_VERSION "{version}")\n'
@@ -237,7 +313,8 @@ def main():
     shutil.copytree(rust_notices / "licenses", runtime_notices / "licenses")
     print(f"Package: {output}")
     codec = next(item["version"] for item in metadata["packages"] if item["name"] == "j2k")
-    print(f"Host: {host}; codec: j2k {codec}; package: {version}; library: lib/{library.packaged} ({library.soname})")
+    print(f"Host: {host}; codec: j2k {codec}; package: {version}; "
+          f"library: lib/{library.packaged} ({library.soname}); static: lib/libj2k.a")
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ publish = false
 
 [lib]
 name = "j2k_c"
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib", "rlib", "staticlib"]
 
 [dependencies]
 j2k = { path = "../j2k" }

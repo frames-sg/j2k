@@ -299,3 +299,19 @@ libraries; required new behavior needs explicit version/capability negotiation.
 ABI 1 is the first C ABI revision. ABI-1 field layouts, status values,
 function signatures, and ownership rules must not be changed in place. A
 breaking ABI change requires a new revision and corresponding migration notes.
+
+## Static linking
+
+To link the C ABI statically, define `J2K_STATIC` and link `lib/libj2k.a`
+explicitly. `pkg-config --static --libs j2k` reports the archive's private
+dependencies but also includes `-lj2k`; remove that entry so the linker does
+not select the shared library:
+
+```sh
+cc -DJ2K_STATIC app.c /path/to/package/lib/libj2k.a \
+    $(pkg-config --cflags j2k) \
+    $(pkg-config --static --libs-only-l j2k | sed 's/-lj2k//')
+```
+
+CMake consumers link the exported `J2K::j2k_static` target, which defines
+`J2K_STATIC` and carries the archive's private link libraries.
