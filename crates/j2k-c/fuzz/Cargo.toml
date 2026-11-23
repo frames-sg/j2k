@@ -1,0 +1,31 @@
+[package]
+name = "j2k-c-fuzz"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+j2k-c = { path = ".." }
+
+[[bin]]
+name = "c_full_route_differential_fuzz"
+path = "fuzz_targets/c_full_route_differential_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "c_decoder_lifecycle_fuzz"
+path = "fuzz_targets/c_decoder_lifecycle_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1
+
+[workspace]
