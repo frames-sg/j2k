@@ -118,7 +118,8 @@ jobs:
           if-no-files-found: error
 
   comparator-parity:
-    runs-on: ubuntu-latest
+    # Ubuntu 26.04 doesn't package Grok, so this job stays on 24.04.
+    runs-on: ubuntu-24.04
     env:
       J2K_OPENJPEG_BIN: /usr/bin/opj_decompress
       J2K_OPENJPEG_DECOMPRESS_BIN: /usr/bin/opj_decompress
