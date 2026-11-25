@@ -78,6 +78,20 @@ pub(super) fn scale_one_row(row: &mut [f32], factor: f32) {
     dispatch!(Level::new(), simd => scale_row(simd, row, factor));
 }
 
+/// The reversible 5-3 one-sample scaling: a lone high-pass sample is divided
+/// by two in integer arithmetic, as the integer path does, not multiplied by
+/// 0.5.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "reversible 5-3 f32 samples are integer-valued and remain in the exact f32 range"
+)]
+pub(super) fn scale_one_row_53(row: &mut [f32]) {
+    for sample in row {
+        *sample = floor_div_i64(*sample as i64, 2) as f32;
+    }
+}
+
 /// Apply `step` to `row` from the rows above and below it.
 #[expect(
     clippy::inline_always,
@@ -317,7 +331,11 @@ fn filter_vertical_impl<S: Simd>(
 
     if height == 1 {
         if !rect.y0.is_multiple_of(2) {
-            scale_row(simd, &mut scanline[..width], 0.5);
+            if transform == WaveletTransform::Reversible53 {
+                scale_one_row_53(&mut scanline[..width]);
+            } else {
+                scale_row(simd, &mut scanline[..width], 0.5);
+            }
         }
         return;
     }
