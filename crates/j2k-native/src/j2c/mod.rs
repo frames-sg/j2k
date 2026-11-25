@@ -7,6 +7,7 @@ pub(crate) mod capabilities;
 pub(crate) mod codestream;
 pub(crate) mod codestream_write;
 pub(crate) mod coefficient_view;
+mod completeness;
 mod decode;
 #[cfg(all(test, feature = "parallel"))]
 pub(crate) use decode::MIN_BAND_WORK;
@@ -21,6 +22,7 @@ pub(crate) mod idwt;
 pub(crate) mod mct;
 mod mq;
 pub(crate) mod packet_encode;
+mod partial;
 mod progression;
 pub(crate) mod quantize;
 pub(crate) mod recode;
@@ -47,6 +49,8 @@ use crate::{resolve_alpha_and_color_space, DecodeSettings, Image};
 
 use crate::math::{SimdBuffer, SIMD_WIDTH};
 pub(crate) use codestream::Header;
+pub(crate) use completeness::codestream_completeness;
+pub use completeness::CodestreamCompleteness;
 #[cfg(test)]
 pub(crate) use decode::decode_with_capacity_retry as decode;
 #[cfg(any(test, feature = "std"))]
@@ -223,6 +227,13 @@ pub(crate) fn parse_raw_with_control<'a>(
     control.check()?;
     let mut reader = BitReader::with_cancellation(stream, control.cancellation());
 
+    if settings.partial_codestream && !partial::header_is_present(stream, 2, markers::SOT) {
+        // A partial codestream needs its main header in full.
+        bail!(FormatError::TruncatedAt {
+            offset: stream.len(),
+            segment: "codestream main header",
+        });
+    }
     let marker = reader.read_marker()?;
     if marker != markers::SOC {
         bail!(MarkerError::Expected("SOC"));

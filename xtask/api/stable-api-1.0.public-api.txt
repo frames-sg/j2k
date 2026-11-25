@@ -68,6 +68,7 @@ impl j2k::DeviceDecodePlan
 impl j2k::EncodedImage
 impl j2k::J2kCancellationToken
 impl j2k::J2kChannelDefinition
+impl j2k::J2kCodestreamCompleteness
 impl j2k::J2kContext
 impl j2k::J2kDecodedNativeComponents
 impl j2k::J2kDecoder<'_>
@@ -134,10 +135,12 @@ pub const fn j2k::CpuBatchWorkspaceStats::retained_scratch_bytes(self) -> usize
 pub const fn j2k::CpuBatchWorkspaceStats::retained_tier1_bytes(self) -> usize
 pub const fn j2k::CpuBatchWorkspaceStats::scratch_capacity_retries(self) -> u64
 pub const fn j2k::CpuBatchWorkspaceStats::tier1_owner_reuses(self) -> u64
+pub const fn j2k::DecodeSettings::is_partial_codestream(self) -> bool
 pub const fn j2k::DecodeSettings::is_strict(self) -> bool
 pub const fn j2k::DecodeSettings::lenient() -> Self
 pub const fn j2k::DecodeSettings::lenient_tolerance_enabled(self) -> bool
 pub const fn j2k::DecodeSettings::strict() -> Self
+pub const fn j2k::DecodeSettings::with_partial_codestream(self, bool) -> Self
 pub const fn j2k::J2kChannelDefinition::association_raw(&self) -> u16
 pub const fn j2k::J2kChannelDefinition::channel_type_raw(&self) -> u16
 pub const fn j2k::J2kCodestreamPayload<'a>::codestream(self) -> &'a [u8]
@@ -264,6 +267,9 @@ pub fn j2k::EncodedImage::operation_source(alloc::sync::Arc<[u8]>) -> Self
 pub fn j2k::J2kCancellationToken::cancel(&self)
 pub fn j2k::J2kCancellationToken::is_cancelled(&self) -> bool
 pub fn j2k::J2kCancellationToken::new() -> Self
+pub fn j2k::J2kCodestreamCompleteness::is_complete(&self) -> bool
+pub fn j2k::J2kCodestreamCompleteness::min_exact_reduction(&self) -> core::option::Option<u8>
+pub fn j2k::J2kCodestreamCompleteness::tile_min_exact_reduction(&self) -> &[core::option::Option<u8>]
 pub fn j2k::J2kComponentPlane<'a>::bit_depth(&self) -> u8
 pub fn j2k::J2kComponentPlane<'a>::dimensions(&self) -> (u32, u32)
 pub fn j2k::J2kComponentPlane<'a>::samples(&self) -> &'a [f32]
@@ -280,6 +286,7 @@ pub fn j2k::J2kDecodedNativeComponents::color_space(&self) -> &j2k::J2kDecodedCo
 pub fn j2k::J2kDecodedNativeComponents::dimensions(&self) -> (u32, u32)
 pub fn j2k::J2kDecodedNativeComponents::has_alpha(&self) -> bool
 pub fn j2k::J2kDecodedNativeComponents::planes(&self) -> &[j2k::J2kNativeComponentPlane]
+pub fn j2k::J2kDecoder<'_>::codestream_completeness(&mut self) -> core::result::Result<j2k::J2kCodestreamCompleteness, j2k::J2kError>
 pub fn j2k::J2kDecoder<'_>::decode_native_components_at_reduction(&mut self, u8) -> core::result::Result<j2k::J2kDecodedNativeComponents, j2k::J2kError>
 pub fn j2k::J2kDecoder<'_>::decode_region_scaled_pow2_into(&mut self, &mut j2k::J2kScratchPool, &mut [u8], usize, j2k_core::pixel::PixelFormat, j2k_core::types::Rect, u8) -> core::result::Result<j2k_core::types::DecodeOutcome<j2k::J2kDecodeWarning>, j2k::J2kError>
 pub fn j2k::J2kDecoder<'_>::decode_region_scaled_pow2_into_with_control(&mut self, &mut [u8], usize, j2k_core::pixel::PixelFormat, j2k_core::types::Rect, u8, &j2k::J2kDecodeControl) -> core::result::Result<j2k_core::types::DecodeOutcome<j2k::J2kDecodeWarning>, j2k::J2kError>
@@ -604,6 +611,7 @@ pub j2k::J2kError::CodestreamHeader::source: j2k::NativeBackendError
 pub j2k::J2kError::DimensionOverflow
 pub j2k::J2kError::DimensionOverflow::height: u32
 pub j2k::J2kError::DimensionOverflow::width: u32
+pub j2k::J2kError::IncompleteCodestream
 pub j2k::J2kError::Input(j2k_core::error::InputError)
 pub j2k::J2kError::InternalInvariant
 pub j2k::J2kError::InternalInvariant::what: &'static str
@@ -854,6 +862,7 @@ pub struct j2k::IndexedBatchError
 pub struct j2k::J2kCancellationToken
 pub struct j2k::J2kChannelDefinition
 pub struct j2k::J2kCodec
+pub struct j2k::J2kCodestreamCompleteness
 pub struct j2k::J2kCodestreamPayload<'a>
 pub struct j2k::J2kComponentInfo
 pub struct j2k::J2kComponentMapping
@@ -4090,6 +4099,7 @@ impl core::fmt::Display for j2k_native::J2kCodestreamHeaderError
 impl core::fmt::Display for j2k_native::MarkerError
 impl core::fmt::Display for j2k_native::TileError
 impl core::fmt::Display for j2k_native::ValidationError
+impl j2k_native::CodestreamCompleteness
 impl j2k_native::ColorSpace
 impl j2k_native::DecodeError
 impl j2k_native::DecodeSettings
@@ -4107,6 +4117,7 @@ pub const fn j2k_native::DecodeError::classify(&self) -> j2k_native::DecodeError
 pub const fn j2k_native::DecodeSettings::lenient() -> Self
 pub const fn j2k_native::DecodeSettings::lenient_tolerance_enabled(&self) -> bool
 pub const fn j2k_native::DecodeSettings::strict() -> Self
+pub const fn j2k_native::DecodeSettings::with_partial_codestream(self, bool) -> Self
 pub const fn j2k_native::DecoderContext<'_>::workspace_stats(&self) -> j2k_native::DecoderWorkspaceStats
 pub const fn j2k_native::DecoderWorkspace::stats(&self) -> j2k_native::DecoderWorkspaceStats
 pub const fn j2k_native::DecoderWorkspaceStats::component_owner_reuses(self) -> u64
@@ -4134,6 +4145,10 @@ pub enum j2k_native::ColorSpace
 pub enum j2k_native::CpuDecodeParallelism
 pub enum j2k_native::EncodeProgressionOrder
 pub enum j2k_native::Htj2kCapabilityMode
+pub fn j2k_native::CodestreamCompleteness::into_tile_min_exact_reduction(self) -> alloc::vec::Vec<core::option::Option<u8>>
+pub fn j2k_native::CodestreamCompleteness::is_complete(&self) -> bool
+pub fn j2k_native::CodestreamCompleteness::min_exact_reduction(&self) -> core::option::Option<u8>
+pub fn j2k_native::CodestreamCompleteness::tile_min_exact_reduction(&self) -> &[core::option::Option<u8>]
 pub fn j2k_native::ColorError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn j2k_native::ColorSpace::num_channels(&self) -> u16
 pub fn j2k_native::ComponentPlane<'a>::bit_depth(&self) -> u8
@@ -4169,6 +4184,7 @@ pub fn j2k_native::EncodeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> cor
 pub fn j2k_native::EncodeError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn j2k_native::EncodeOptions::default() -> Self
 pub fn j2k_native::FormatError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn j2k_native::Image<'a>::codestream_completeness(&self) -> j2k_native::Result<j2k_native::CodestreamCompleteness>
 pub fn j2k_native::Image<'a>::color_space(&self) -> &j2k_native::ColorSpace
 pub fn j2k_native::Image<'a>::decode(&self) -> j2k_native::Result<alloc::vec::Vec<u8>>
 pub fn j2k_native::Image<'a>::decode_components_with_context<'ctx>(&self, &'ctx mut j2k_native::DecoderContext<'a>) -> j2k_native::Result<j2k_native::DecodedComponents<'ctx>>
@@ -4250,6 +4266,7 @@ pub j2k_native::DecodeError::Tile(j2k_native::TileError)
 pub j2k_native::DecodeError::Validation(j2k_native::ValidationError)
 pub j2k_native::DecodeErrorClass::Backend
 pub j2k_native::DecodeErrorClass::Cancelled
+pub j2k_native::DecodeErrorClass::IncompleteCodestream
 pub j2k_native::DecodeErrorClass::InputTooShort
 pub j2k_native::DecodeErrorClass::InputTooShort::have: usize
 pub j2k_native::DecodeErrorClass::InputTooShort::need: usize
@@ -4261,6 +4278,7 @@ pub j2k_native::DecodeErrorClass::ResourceLimit::cap: core::option::Option<usize
 pub j2k_native::DecodeErrorClass::ResourceLimit::requested: core::option::Option<usize>
 pub j2k_native::DecodeErrorClass::Unsupported
 pub j2k_native::DecodeErrorClass::Unsupported::what: &'static str
+pub j2k_native::DecodeSettings::partial_codestream: bool
 pub j2k_native::DecodeSettings::resolve_palette_indices: bool
 pub j2k_native::DecodeSettings::strict: bool
 pub j2k_native::DecodeSettings::target_resolution: core::option::Option<(u32, u32)>
@@ -4269,6 +4287,7 @@ pub j2k_native::DecodingError::CodeBlockDecodeFailure
 pub j2k_native::DecodingError::CodeBlockDecodeFailureWithContext(&'static str)
 pub j2k_native::DecodingError::DirectPlanUnsupported(j2k_native::DirectPlanUnsupportedReason)
 pub j2k_native::DecodingError::HostAllocationFailed
+pub j2k_native::DecodingError::IncompleteCodestream
 pub j2k_native::DecodingError::IncompletePlaneStore
 pub j2k_native::DecodingError::InvalidBitplaneCount
 pub j2k_native::DecodingError::InvalidPrecinct
@@ -4458,6 +4477,7 @@ pub j2k_native::ValidationError::TooManyChannels
 pub j2k_native::ValidationError::TooManyTiles
 pub mod j2k_native
 pub struct j2k_native::Bitmap
+pub struct j2k_native::CodestreamCompleteness
 pub struct j2k_native::ComponentPlane<'a>
 pub struct j2k_native::DecodeSettings
 pub struct j2k_native::DecodedComponents<'a>

@@ -27,6 +27,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "partial_decode_fuzz"
+path = "fuzz_targets/partial_decode_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "region_scaled_fuzz"
 path = "fuzz_targets/region_scaled_fuzz.rs"
 test = false

@@ -19,6 +19,9 @@ pub(crate) struct Header<'a> {
     pub(crate) skipped_resolution_levels: u8,
     /// Whether strict mode is enabled for decoding.
     pub(crate) strict: bool,
+    /// Whether the codestream may be cut off after its main header; see
+    /// [`crate::DecodeSettings::partial_codestream`].
+    pub(crate) partial: bool,
 }
 
 #[derive(Debug)]

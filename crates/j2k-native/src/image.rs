@@ -48,6 +48,24 @@ struct DecodeOutputBytes {
     without_packet_cache: usize,
 }
 
+/// The error for input that starts with neither signature. A partial
+/// codestream shorter than a signature it begins is cut off, not foreign.
+pub(crate) fn unrecognized_signature(data: &[u8], settings: &DecodeSettings) -> crate::DecodeError {
+    let prefix_of = |magic: &[u8]| data.len() < magic.len() && magic.starts_with(data);
+    if settings.partial_codestream && (prefix_of(JP2_MAGIC) || prefix_of(CODESTREAM_MAGIC)) {
+        return FormatError::TooShort {
+            need: if prefix_of(JP2_MAGIC) {
+                JP2_MAGIC.len()
+            } else {
+                CODESTREAM_MAGIC.len()
+            },
+            have: data.len(),
+        }
+        .into();
+    }
+    FormatError::InvalidSignature.into()
+}
+
 /// Settings to apply during decoding.
 #[derive(Debug, Copy, Clone)]
 pub struct DecodeSettings {
@@ -71,6 +89,20 @@ pub struct DecodeSettings {
     pub strict: bool,
     /// A hint for the target resolution that the image should be decoded at.
     pub target_resolution: Option<(u32, u32)>,
+    /// Whether the input may be the beginning of a codestream that was cut
+    /// off, as when a progressive viewer has fetched only part of a file.
+    ///
+    /// The main header must be complete. A tile part the input ends inside is
+    /// read up to the last byte present, and its packets after the last
+    /// complete one are treated as missing; a parse failure inside that tile
+    /// part marks where the usable data ends instead of failing the decode.
+    /// Every other tile part is validated as strictly as without this
+    /// setting. A decode that needs a missing packet fails with
+    /// [`crate::DecodingError::IncompleteCodestream`];
+    /// [`crate::Image::codestream_completeness`] reports which reductions can
+    /// be decoded. Input that is complete decodes as it would without this
+    /// setting.
+    pub partial_codestream: bool,
 }
 
 impl DecodeSettings {
@@ -96,6 +128,7 @@ impl DecodeSettings {
             resolve_palette_indices: true,
             strict: false,
             target_resolution: None,
+            partial_codestream: false,
         }
     }
 
@@ -106,7 +139,16 @@ impl DecodeSettings {
             resolve_palette_indices: true,
             strict: true,
             target_resolution: None,
+            partial_codestream: false,
         }
+    }
+
+    /// These settings, accepting a codestream that may be cut off: see
+    /// [`DecodeSettings::partial_codestream`].
+    #[must_use]
+    pub const fn with_partial_codestream(mut self, partial: bool) -> Self {
+        self.partial_codestream = partial;
+        self
     }
 
     /// Whether the settings permit lenient tolerance of malformed optional
@@ -316,6 +358,25 @@ impl<'a> Image<'a> {
         self.retained_metadata_bytes()
     }
 
+    /// Report which reductions of a partial codestream decode exactly.
+    ///
+    /// For an image parsed with [`DecodeSettings::partial_codestream`], this
+    /// reads the packet headers of every tile, without decoding coefficients,
+    /// and reports the resolution levels whose packets are all present. A
+    /// complete codestream reports `Some(0)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a tile part that is present in full is
+    /// malformed, a resource limit is reached, or the parse is cancelled.
+    pub fn codestream_completeness(&self) -> Result<crate::CodestreamCompleteness> {
+        crate::j2c::codestream_completeness(
+            self.codestream,
+            &self.header,
+            self.retained_planning_bytes()?,
+        )
+    }
+
     /// Whether parsing used an explicitly documented lenient metadata recovery.
     #[doc(hidden)]
     #[must_use]
@@ -334,7 +395,7 @@ impl<'a> Image<'a> {
         } else if data.starts_with(CODESTREAM_MAGIC) {
             j2c::parse(data, settings, None)
         } else {
-            err!(FormatError::InvalidSignature)
+            Err(unrecognized_signature(data, settings))
         }
     }
 
@@ -393,7 +454,7 @@ impl<'a> Image<'a> {
                 Some(reduction_levels),
             )
         } else {
-            err!(FormatError::InvalidSignature)
+            Err(unrecognized_signature(data, settings))
         }
     }
 
@@ -421,7 +482,7 @@ impl<'a> Image<'a> {
         } else if data.starts_with(CODESTREAM_MAGIC) {
             j2c::parse_with_retained_baseline(data, settings, retained_baseline_bytes, None)
         } else {
-            err!(FormatError::InvalidSignature)
+            Err(unrecognized_signature(data, settings))
         }
     }
 

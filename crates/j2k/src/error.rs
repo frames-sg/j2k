@@ -311,6 +311,13 @@ pub enum J2kError {
     /// The operation's cooperative cancellation token was cancelled.
     #[error("decode operation was cancelled")]
     Cancelled,
+
+    /// A partial codestream (see [`crate::DecodeSettings::with_partial_codestream`])
+    /// does not yet hold every packet this decode needs. More of the
+    /// codestream, or a deeper reduction, can succeed;
+    /// [`crate::J2kDecoder::codestream_completeness`] says which.
+    #[error("partial codestream does not yet hold the packets this decode needs")]
+    IncompleteCodestream,
 }
 
 // Operation limits can be projected without a trustworthy requested byte count.
@@ -352,6 +359,7 @@ impl J2kError {
     ) -> Self {
         match error.classify() {
             NativeDecodeErrorClass::Cancelled => Self::Cancelled,
+            NativeDecodeErrorClass::IncompleteCodestream => Self::IncompleteCodestream,
             NativeDecodeErrorClass::InputTooShort { need, have } => {
                 Self::Input(InputError::TooShort { need, have })
             }
@@ -415,6 +423,7 @@ impl CodecError for J2kError {
         matches!(
             self,
             Self::Input(InputError::TooShort { .. } | InputError::TruncatedAt { .. })
+                | Self::IncompleteCodestream
         ) || matches!(
             self,
             Self::Backend(error) if error.kind() == BackendErrorKind::Truncated

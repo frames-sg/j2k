@@ -19,8 +19,10 @@ use j2k_core::{
     PixelFormat, Rect,
 };
 
+mod completeness;
 mod control;
 mod deep_scale;
+pub use completeness::J2kCodestreamCompleteness;
 pub use control::{J2kCancellationToken, J2kDecodeControl};
 mod plan;
 mod rows;
@@ -113,8 +115,11 @@ impl<'a> J2kView<'a> {
         let (info, support_info, passthrough) = match parsed {
             Ok(parsed) => {
                 let support_info = parsed.into_support_info();
-                let passthrough = (!image.used_lenient_metadata_recovery())
-                    .then_some((support_info.transfer_syntax, support_info.payload_kind));
+                // A partial codestream may be cut off, so its bytes are never
+                // copied as a complete one.
+                let passthrough = (!image.used_lenient_metadata_recovery()
+                    && !settings.is_partial_codestream())
+                .then_some((support_info.transfer_syntax, support_info.payload_kind));
                 (support_info.info.clone(), Some(support_info), passthrough)
             }
             // A control's own stop is never a reason to fall back.

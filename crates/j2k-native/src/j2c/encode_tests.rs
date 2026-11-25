@@ -1778,6 +1778,7 @@ fn assert_htj2k_lossless_roundtrip(
             resolve_palette_indices: true,
             strict: true,
             target_resolution: None,
+            partial_codestream: false,
         },
     )
     .expect("parse HT codestream");
@@ -1830,6 +1831,7 @@ fn lossy_htj2k_roundtrip_u8(
             resolve_palette_indices: true,
             strict: true,
             target_resolution: None,
+            partial_codestream: false,
         },
     )
     .expect("parse lossy HT codestream");
@@ -2133,6 +2135,7 @@ fn test_encode_decode_roundtrip_gray_8bit() {
         resolve_palette_indices: false,
         strict: false,
         target_resolution: None,
+        partial_codestream: false,
     };
     let image = Image::new(&encoded, &settings).expect("parse failed");
     let decoded = image.decode_native().expect("decode failed");
@@ -2287,6 +2290,7 @@ fn native_htj2k_roundtrips_two_component_lossless() {
             resolve_palette_indices: true,
             strict: true,
             target_resolution: None,
+            partial_codestream: false,
         },
     )
     .expect("native 2-component HTJ2K parse failed");
@@ -2351,6 +2355,7 @@ fn native_htj2k_roundtrips_four_component_lossless() {
             resolve_palette_indices: true,
             strict: true,
             target_resolution: None,
+            partial_codestream: false,
         },
     )
     .expect("native 4-component HTJ2K parse failed");
@@ -2654,6 +2659,7 @@ fn htj2k_lossy_quality_layers_decode_atomic_ht_sets() {
             resolve_palette_indices: true,
             strict: true,
             target_resolution: None,
+            partial_codestream: false,
         },
     )
     .expect("parse layered HT codestream");
@@ -2700,6 +2706,7 @@ fn htj2k_bounded_candidate_rate_control_emits_one_decodable_set() {
             resolve_palette_indices: true,
             strict: true,
             target_resolution: None,
+            partial_codestream: false,
         },
     )
     .expect("parse bounded HT candidate codestream");

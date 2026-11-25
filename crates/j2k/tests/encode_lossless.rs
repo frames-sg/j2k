@@ -1560,6 +1560,7 @@ fn cpu_lossless_round_trips_two_component_no_mct_with_strict_decode() {
             resolve_palette_indices: true,
             strict: true,
             target_resolution: None,
+            partial_codestream: false,
         },
     )
     .expect("strict parse of 2-component codestream");

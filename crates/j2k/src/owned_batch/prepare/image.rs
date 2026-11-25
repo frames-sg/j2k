@@ -312,6 +312,11 @@ pub(in crate::owned_batch) fn prepare_classic_offset_plan(
                 | j2k_native::DecodingError::UnsupportedFeature(_),
             ),
         ) if !exceeds_tile_resolution_ladder(&source) => Ok(None),
+        // A partial codestream lacks packets this plan reads; the decode that
+        // needs them reports it, and other requests need no plan.
+        Err(j2k_native::DecodeError::Decoding(j2k_native::DecodingError::IncompleteCodestream)) => {
+            Ok(None)
+        }
         Err(source) => Err(plan_error(source, control)),
     }
 }
@@ -348,6 +353,11 @@ pub(in crate::owned_batch) fn prepare_htj2k_offset_plan(
                 j2k_native::DecodeErrorClass::Unsupported { .. }
             ) && !exceeds_tile_resolution_ladder(&source) =>
         {
+            Ok(None)
+        }
+        // A partial codestream lacks packets this plan reads; the decode that
+        // needs them reports it, and other requests need no plan.
+        Err(j2k_native::DecodeError::Decoding(j2k_native::DecodingError::IncompleteCodestream)) => {
             Ok(None)
         }
         Err(source) => Err(plan_error(source, control)),

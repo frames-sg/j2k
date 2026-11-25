@@ -125,6 +125,13 @@ pub(crate) struct Tile<'a> {
     pub(crate) progression_changes: Vec<ProgressionChange>,
     pub(crate) num_layers: u8,
     pub(crate) mct: bool,
+    /// A partial codestream ended before its EOC marker, so packets of this
+    /// tile that the walk does not reach may follow in the bytes not yet
+    /// present (see [`crate::DecodeSettings::partial_codestream`]).
+    pub(crate) stream_truncated: bool,
+    /// This tile's last tile part is the one the partial codestream ends
+    /// inside: a packet that fails to parse there marks the end of the data.
+    pub(crate) truncated_last_part: bool,
     #[cfg(feature = "std")]
     pub(crate) packet_directory:
         Option<alloc::sync::Arc<super::segment::directory::PacketDirectory>>,
@@ -267,6 +274,8 @@ impl Tile<'_> {
             progression_changes: Vec::new(),
             mct: header.global_coding_style.mct,
             num_layers: header.global_coding_style.num_layers,
+            stream_truncated: false,
+            truncated_last_part: false,
         }
     }
 
@@ -311,31 +320,42 @@ pub(crate) fn parse<'a>(
     }
 
     let mut ppm_packet_idx = 0;
-
-    parse_tile_part(
-        reader,
-        main_header,
-        &mut tiles,
-        &mut ppm_packet_idx,
-        &mut metadata_budget,
-    )?;
-
-    while reader.peek_marker() == Some(markers::SOT) {
-        parse_tile_part(
+    let mut stream_truncated = false;
+    let mut first = true;
+    while first || reader.peek_marker() == Some(markers::SOT) {
+        first = false;
+        let end = parse_tile_part(
             reader,
             main_header,
             &mut tiles,
             &mut ppm_packet_idx,
             &mut metadata_budget,
         )?;
+        if end == TilePartEnd::Truncated {
+            stream_truncated = true;
+            break;
+        }
+    }
+    // A partial codestream that stops between tile parts, or inside the
+    // marker after one, may still have tile parts to come.
+    if main_header.partial && !stream_truncated && reader.tail().is_none_or(|tail| tail.len() < 2) {
+        stream_truncated = true;
     }
 
-    if main_header.strict && ppm_packet_idx != main_header.ppm_packets.len() {
-        bail!(TileError::Invalid);
-    }
+    if stream_truncated {
+        // PPM headers of tile parts not yet present stay unused, and the
+        // codestream has no EOC yet.
+        for tile in &mut tiles {
+            tile.stream_truncated = true;
+        }
+    } else {
+        if main_header.strict && ppm_packet_idx != main_header.ppm_packets.len() {
+            bail!(TileError::Invalid);
+        }
 
-    if main_header.strict && reader.read_marker()? != markers::EOC {
-        bail!(MarkerError::Expected("EOC"));
+        if main_header.strict && reader.read_marker()? != markers::EOC {
+            bail!(MarkerError::Expected("EOC"));
+        }
     }
 
     reader.check_cancelled()?;
@@ -344,7 +364,18 @@ pub(crate) fn parse<'a>(
         tiles,
         metadata_budget.retained_bytes(),
         metadata_budget.retained_owner_bytes(),
+        stream_truncated,
     ))
+}
+
+/// How a tile part ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TilePartEnd {
+    /// The tile part is present in full.
+    Complete,
+    /// A partial codestream ends inside the tile part (or before its data):
+    /// nothing after it is present.
+    Truncated,
 }
 
 /// A tile, instantiated to a specific component.
@@ -886,6 +917,8 @@ mod tests {
                 progression_changes: vec![],
                 mct: false,
                 num_layers: 1,
+                stream_truncated: false,
+                truncated_last_part: false,
             };
             let component = ComponentTile::new(&tile, &tile.component_infos[0]);
             let precincts = ResolutionTile::new(component, 0)
@@ -936,6 +969,8 @@ mod tests {
             progression_changes: vec![],
             mct: false,
             num_layers: 1,
+            stream_truncated: false,
+            truncated_last_part: false,
         };
         let component = ComponentTile::new(&tile, &tile.component_infos[0]);
         let precincts = ResolutionTile::new(component, 0)
@@ -998,6 +1033,8 @@ mod tests {
                 progression_changes: vec![],
                 mct: false,
                 num_layers: 1,
+                stream_truncated: false,
+                truncated_last_part: false,
             };
             let component = ComponentTile::new(&tile, &tile.component_infos[0]);
             for resolution in 0..4 {
@@ -1127,6 +1164,7 @@ mod tests {
             ppm_packets: vec![],
             skipped_resolution_levels: 0,
             strict: false,
+            partial: false,
         };
 
         let tile_0_0 = Tile::new(0, &header);

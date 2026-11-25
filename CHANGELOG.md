@@ -14,6 +14,17 @@ and stale roadmap entries have been removed from the public documentation set.
 - Lowers the minimum supported Rust version from 1.99.0 to 1.97. CI checks
   the whole workspace with Rust 1.97; every other job still uses 1.99.0.
   `j2k-types` and `j2k-codec-math` still build with Rust 1.96.
+- Codestreams that are cut off, such as the bytes a progressive viewer has
+  fetched so far, can be decoded with
+  `DecodeSettings::with_partial_codestream(true)`.
+  `J2kDecoder::codestream_completeness` reports the smallest reduction whose
+  data is all present, and a decode at that reduction or deeper returns the
+  same samples as the complete file. A decode that needs missing data fails
+  with the new `J2kError::IncompleteCodestream`. Raw codestreams and JP2/JPH
+  files cut inside their codestream box are accepted; decoding runs on the CPU.
+- **Breaking:** `j2k_native::DecodeSettings` has a new public field,
+  `partial_codestream`. Code that builds the struct with a literal must set
+  it, or start from `DecodeSettings::strict()` or `DecodeSettings::lenient()`.
 
 ## [0.14.0] - 2026-11-12
 

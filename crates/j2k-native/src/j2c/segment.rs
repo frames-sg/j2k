@@ -35,6 +35,14 @@ struct PacketWalk<'d> {
     #[cfg(feature = "std")]
     indexed: Option<&'d directory::PacketDirectory>,
     next_packet: usize,
+    /// Component and resolution of the packet being read, until it has been
+    /// read in full: where a walk over a partial codestream stopped.
+    in_flight: Option<(u16, u8)>,
+    /// For a completeness scan of a partial codestream: each component's
+    /// count of leading resolution levels whose packets were all read. The
+    /// walk lowers it for every packet it did not read, and no decode guard
+    /// applies.
+    completeness: Option<&'d mut Vec<u8>>,
     marker: core::marker::PhantomData<&'d ()>,
 }
 
@@ -145,6 +153,49 @@ pub(crate) fn parse<'a>(
     parse_selected(tile, header, storage, None).map(|_| ())
 }
 
+/// For each component of `tile`, how many of its resolution levels, counted
+/// from the lowest, have every packet present in a partial codestream. Reads
+/// packet headers only; no coefficients are allocated.
+pub(crate) fn complete_resolution_levels(
+    tile: &Tile<'_>,
+    header: &Header<'_>,
+    live_bytes: usize,
+) -> Result<Vec<u8>> {
+    let mut levels = Vec::new();
+    try_reserve_decode_elements(&mut levels, tile.component_infos.len())?;
+    levels.extend(
+        tile.component_infos
+            .iter()
+            .map(ComponentInfo::num_resolution_levels),
+    );
+    if !tile.stream_truncated {
+        return Ok(levels);
+    }
+    let live_bytes = live_bytes
+        .checked_add(levels.capacity())
+        .ok_or(ValidationError::ImageTooLarge)?;
+    let mut storage = DecompositionStorage::default();
+    super::build::build(
+        tile,
+        &mut storage,
+        live_bytes,
+        false,
+        super::build::BuildWorkspace::MetadataOnly,
+        None,
+    )?;
+    parse_with_walk(
+        tile,
+        header,
+        &mut storage,
+        None,
+        &mut PacketWalk {
+            completeness: Some(&mut levels),
+            ..PacketWalk::default()
+        },
+    )?;
+    Ok(levels)
+}
+
 /// Parse a tile's packets. With a region decode's `selection`, packets of
 /// unused precincts are skipped or parsed only to reach later packets, and
 /// parsing stops once every required packet has been read.
@@ -201,7 +252,21 @@ fn parse_with_walk<'a>(
         storage,
         selection,
         walk,
-    );
+    )
+    .and_then(|remaining_required| {
+        if tile.stream_truncated {
+            finish_partial_walk(
+                tile,
+                header,
+                &mut progression_iterator,
+                selection.is_some(),
+                remaining_required,
+                walk,
+            )
+        } else {
+            Ok(())
+        }
+    });
     #[cfg(feature = "std")]
     let result = result.and_then(|()| {
         if walk.recording.is_some() && progression_iterator.next().is_some() {
@@ -227,7 +292,7 @@ fn parse_selected_inner<'a>(
     storage: &mut DecompositionStorage<'a>,
     selection: Option<&PrecinctSelection>,
     walk: &mut PacketWalk<'_>,
-) -> Result<()> {
+) -> Result<usize> {
     let mut relevance = selection.map(|selection| PacketRelevance::new(selection, storage));
     let result = parse_tile_parts(
         tile,
@@ -238,10 +303,75 @@ fn parse_selected_inner<'a>(
         relevance.as_mut(),
         walk,
     );
+    let remaining_required = relevance
+        .as_ref()
+        .map_or(0, |relevance| relevance.remaining_packets);
     if let Some(mut scratch) = relevance.and_then(|relevance| relevance.scratch) {
         scratch.give_all_back(&mut storage.precincts);
     }
-    result
+    result.map(|()| remaining_required)
+}
+
+/// End a walk over a tile of a partial codestream. The packet it stopped in
+/// and every packet the progression had yet to reach are missing. A
+/// completeness scan records them; a decode fails if it needs one: one of
+/// the resolutions it keeps or, for a region, a packet its plan requires.
+fn finish_partial_walk(
+    tile: &Tile<'_>,
+    header: &Header<'_>,
+    progression_iterator: &mut ProgressionIterator<'_>,
+    selection: bool,
+    remaining_required: usize,
+    walk: &mut PacketWalk<'_>,
+) -> Result<()> {
+    if let Some(levels) = walk.completeness.as_deref_mut() {
+        let mut lower = |component: u16, resolution: u8| {
+            if let Some(level) = levels.get_mut(usize::from(component)) {
+                *level = (*level).min(resolution);
+            }
+        };
+        if let Some((component, resolution)) = walk.in_flight {
+            lower(component, resolution);
+        }
+        for (index, packet) in progression_iterator.by_ref().enumerate() {
+            if index.is_multiple_of(4096) {
+                tile.check_cancelled()?;
+            }
+            lower(packet.component, packet.resolution);
+        }
+        return Ok(());
+    }
+    if selection {
+        if remaining_required > 0 {
+            bail!(DecodingError::IncompleteCodestream);
+        }
+        return Ok(());
+    }
+    let needed = |component: u16, resolution: u8| {
+        tile.component_infos
+            .get(usize::from(component))
+            .is_none_or(|info| {
+                resolution
+                    < info
+                        .num_resolution_levels()
+                        .saturating_sub(header.skipped_resolution_levels)
+            })
+    };
+    if walk
+        .in_flight
+        .is_some_and(|(component, resolution)| needed(component, resolution))
+    {
+        bail!(DecodingError::IncompleteCodestream);
+    }
+    for (index, packet) in progression_iterator.by_ref().enumerate() {
+        if index.is_multiple_of(4096) {
+            tile.check_cancelled()?;
+        }
+        if needed(packet.component, packet.resolution) {
+            bail!(DecodingError::IncompleteCodestream);
+        }
+    }
+    Ok(())
 }
 
 fn parse_tile_parts<'a>(
@@ -257,7 +387,8 @@ fn parse_tile_parts<'a>(
     let strict = header.strict || walk.recording.is_some();
     #[cfg(not(feature = "std"))]
     let strict = header.strict;
-    for tile_part in &tile.tile_parts {
+    let last_part = tile.tile_parts.len().checked_sub(1);
+    for (part_index, tile_part) in tile.tile_parts.iter().enumerate() {
         if relevance
             .as_ref()
             .is_some_and(|relevance| relevance.remaining_packets == 0)
@@ -289,6 +420,12 @@ fn parse_tile_parts<'a>(
             return Err(error);
         }
         if let Err(context) = parsed {
+            if tile.truncated_last_part && Some(part_index) == last_part {
+                // A partial codestream ends inside this tile part: the packet
+                // that failed and every one after it are missing.
+                lwarn!("partial codestream ends inside a packet: {context}");
+                break;
+            }
             if strict {
                 bail!(DecodingError::PacketParseFailure(context));
             }
@@ -423,6 +560,7 @@ fn parse_inner<'a>(
         };
         let ordinal = walk.next_packet;
         walk.next_packet = ordinal.checked_add(1).ok_or("packet ordinal overflows")?;
+        walk.in_flight = Some((progression_data.component, progression_data.resolution));
         #[cfg(feature = "std")]
         {
             if let Some(directory) = walk.indexed {
@@ -442,6 +580,7 @@ fn parse_inner<'a>(
                     {
                         walk.stats.skipped_packets += 1;
                     }
+                    walk.in_flight = None;
                     continue;
                 }
             }
@@ -503,6 +642,7 @@ fn parse_inner<'a>(
             if !complete {
                 return Err("PLT packet length runs past the tile-part");
             }
+            walk.in_flight = None;
             continue;
         }
 
@@ -669,6 +809,7 @@ fn parse_inner<'a>(
             }
         }
 
+        walk.in_flight = None;
         if PacketRelevance::record_parsed(relevance.as_deref_mut(), &progression_data) {
             return Ok(true);
         }
