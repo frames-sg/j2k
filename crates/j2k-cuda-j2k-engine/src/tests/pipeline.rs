@@ -3,6 +3,7 @@
 use super::*;
 
 mod forward_reference;
+mod lone_sample;
 mod native_store;
 
 use forward_reference::{cpu_forward_dwt53_buffer, cpu_forward_dwt97_buffer};

@@ -8,6 +8,13 @@ and stale roadmap entries have been removed from the public documentation set.
 - A final tile part with `Psot = 0` now ends at the EOC marker, as T.800
   specifies. Before, the decoder read EOC and any bytes after it, such as the
   padding at the end of a DICOM frame, as packet data.
+- **Output change:** lossless (reversible 5/3) decodes on the CPU, CUDA and
+  Metal return whole numbers where a resolution is one sample wide or tall at
+  an odd position, which can happen in images with a nonzero origin. That
+  sample was halved to a fraction such as 169.5, which each decode route
+  rounded its own way, so pixels could be one code value off.
+  ([#332](https://github.com/frames-sg/j2k/pull/332),
+  [#333](https://github.com/frames-sg/j2k/issues/333))
 - Python wheels and command-line builds use libz-sys 1.1.33, whose bundled
   zlib fixes RUSTSEC-2026-0544. j2k calls only zlib's `inflate` and
   `deflate`, not the affected `gzprintf` and `gzwrite`.

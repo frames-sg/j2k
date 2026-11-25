@@ -199,6 +199,18 @@ fn lift_53_sample(sample: f32, left: f32, right: f32, update_even: bool) -> f32 
     }
 }
 
+/// A window one sample wide or tall at an odd coordinate holds one high-pass
+/// sample. The reversible 5/3 inverse divides it by two with floor division, as
+/// the CPU does; the 9/7 inverse multiplies it by 0.5.
+#[inline(always)]
+fn lone_high_pass_sample(sample: f32, irreversible: bool) -> f32 {
+    if irreversible {
+        sample * 0.5
+    } else {
+        floor_f32(sample * 0.5)
+    }
+}
+
 #[inline(always)]
 fn filter_step_horizontal_53(scanline: *mut f32, width: u32, first: u32, update_even: bool) {
     if first == 0 {
@@ -298,7 +310,12 @@ fn idwt_high_pass(transform_mode: u32) -> f32 {
 fn filter_horizontal_scanline(scanline: *mut f32, width: u32, rect_x0: u32, transform_mode: u32) {
     if width == 1 {
         if (rect_x0 & 1) != 0 {
-            store_f32(scanline, 0, load_f32(scanline.cast_const(), 0) * 0.5);
+            let sample = load_f32(scanline.cast_const(), 0);
+            store_f32(
+                scanline,
+                0,
+                lone_high_pass_sample(sample, transform_mode != 0),
+            );
         }
         return;
     }
@@ -399,7 +416,12 @@ fn filter_vertical_column(
 ) {
     if height == 1 {
         if (rect_y0 & 1) != 0 {
-            store_f32(output, col, load_f32(output.cast_const(), col) * 0.5);
+            let sample = load_f32(output.cast_const(), col);
+            store_f32(
+                output,
+                col,
+                lone_high_pass_sample(sample, transform_mode != 0),
+            );
         }
         return;
     }
@@ -519,12 +541,18 @@ fn multi_job_pointers(item: CudaJ2kIdwtMultiJob) -> IdwtPointers {
 }
 
 #[inline(always)]
-fn filter_shared_single_sample(line: SharedLine, index: u32, len: u32, origin: u32) -> bool {
+fn filter_shared_single_sample(
+    line: SharedLine,
+    index: u32,
+    len: u32,
+    origin: u32,
+    irreversible: bool,
+) -> bool {
     if len != 1 {
         return false;
     }
     if line.active && index == 0 && (origin & 1) != 0 {
-        line.store(0, line.load(0) * 0.5);
+        line.store(0, lone_high_pass_sample(line.load(0), irreversible));
     }
     thread::sync_threads();
     true
@@ -551,7 +579,7 @@ fn filter_shared_53_step(line: SharedLine, index: u32, len: u32, first: u32, upd
 
 #[inline(always)]
 fn filter_shared_53(line: SharedLine, index: u32, len: u32, origin: u32) {
-    if filter_shared_single_sample(line, index, len, origin) {
+    if filter_shared_single_sample(line, index, len, origin, false) {
         return;
     }
 
@@ -642,7 +670,7 @@ fn filter_shared_97_step(line: SharedLine, index: u32, len: u32, first: u32, coe
 
 #[inline(always)]
 fn filter_shared_97(line: SharedLine, index: u32, len: u32, origin: u32, high_pass: f32) {
-    if filter_shared_single_sample(line, index, len, origin) {
+    if filter_shared_single_sample(line, index, len, origin, true) {
         return;
     }
 
@@ -770,7 +798,13 @@ fn run_vertical_strip<const MAX_ROWS: u32>(
     }
     thread::sync_threads();
 
-    if !filter_shared_single_sample(line, thread::threadIdx_y(), height, job.rect.y0) {
+    if !filter_shared_single_sample(
+        line,
+        thread::threadIdx_y(),
+        height,
+        job.rect.y0,
+        irreversible,
+    ) {
         let even = job.rect.y0 & 1;
         let odd = 1 - even;
         if irreversible {
@@ -904,7 +938,7 @@ mod kernels {
                         if job.rect.x0 & 1 == 0 {
                             value
                         } else {
-                            value * 0.5
+                            lone_high_pass_sample(value, job.irreversible97 != 0)
                         },
                     );
                     row_offset += 1;
