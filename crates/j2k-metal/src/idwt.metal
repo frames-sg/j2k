@@ -88,6 +88,13 @@ inline float reversible53_update(float s, float left, float right) {
     return s + floor((left + right) * 0.5f);
 }
 
+// A window one sample wide or tall at an odd coordinate holds one high-pass
+// sample. The reversible 5/3 inverse divides it by two with floor division, as
+// the CPU does; the 9/7 inverse multiplies it by 0.5.
+inline float reversible53_lone_sample(float s) {
+    return floor(s * 0.5f);
+}
+
 kernel void j2k_idwt_interleave(
     device const float *ll [[buffer(0)]],
     device const float *hl [[buffer(1)]],
@@ -326,7 +333,7 @@ kernel void j2k_idwt_reversible53_horizontal_pass(
 
     if (params.width == 1u) {
         if (((params.x0 + params.output_x) & 1u) != 0u) {
-            row_ptr[0] *= 0.5f;
+            row_ptr[0] = reversible53_lone_sample(row_ptr[0]);
         }
         return;
     }
@@ -385,7 +392,7 @@ kernel void j2k_idwt_reversible53_horizontal_pass_batched(
 
     if (params.width == 1u) {
         if (((params.x0 + params.output_x) & 1u) != 0u) {
-            row_ptr[0] *= 0.5f;
+            row_ptr[0] = reversible53_lone_sample(row_ptr[0]);
         }
         return;
     }
@@ -441,7 +448,7 @@ kernel void j2k_idwt_reversible53_vertical_pass(
 
     if (params.height == 1u) {
         if (((params.y0 + params.output_y) & 1u) != 0u) {
-            out[gid] *= 0.5f;
+            out[gid] = reversible53_lone_sample(out[gid]);
         }
         return;
     }
@@ -486,7 +493,7 @@ kernel void j2k_idwt_reversible53_vertical_pass_batched(
 
     if (params.height == 1u) {
         if (((params.y0 + params.output_y) & 1u) != 0u) {
-            plane[gid.x] *= 0.5f;
+            plane[gid.x] = reversible53_lone_sample(plane[gid.x]);
         }
         return;
     }
@@ -689,7 +696,7 @@ inline void idwt53_interleave_horizontal_fused_core(
 
     if (row_active && width == 1u) {
         if (local.x == 0u && first_even_x != 0u) {
-            row[0] *= 0.5f;
+            row[0] = reversible53_lone_sample(row[0]);
         }
     } else if (row_active) {
         const uint lo = tile_start > 1u ? tile_start - 1u : 0u;
@@ -1111,7 +1118,7 @@ inline void idwt53_vertical_fused_core(
 
         if (column_active && height == 1u) {
             if (local.y == 0u && first_even_y != 0u) {
-                columns[local.x] *= 0.5f;
+                columns[local.x] = reversible53_lone_sample(columns[local.x]);
             }
         } else if (column_active) {
             const uint lo = tile_start > 1u ? tile_start - 1u : 0u;
