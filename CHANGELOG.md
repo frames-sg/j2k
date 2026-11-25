@@ -5,6 +5,9 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- Python wheels and command-line builds use libz-sys 1.1.33, whose bundled
+  zlib fixes RUSTSEC-2026-0544. j2k calls only zlib's `inflate` and
+  `deflate`, not the affected `gzprintf` and `gzwrite`.
 - Lowers the minimum supported Rust version from 1.99.0 to 1.97. CI checks
   the whole workspace with Rust 1.97; every other job still uses 1.99.0.
   `j2k-types` and `j2k-codec-math` still build with Rust 1.96.
