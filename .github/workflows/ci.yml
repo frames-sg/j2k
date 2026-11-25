@@ -190,6 +190,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
           toolchain: "1.99.0"
+      - if: runner.os == 'macOS'
+        run: rustup component add llvm-tools-preview
       - run: cargo test -p j2k-c --locked
       - run: python3 crates/j2k-c/scripts/package.py --output dist/j2k-c
       - name: Inspect the packaged shared library
@@ -228,7 +230,10 @@ jobs:
           if [[ "$RUNNER_OS" == "Linux" ]]; then
             symbols=$(nm -g --defined-only "$archive" | awk 'NF == 3 && $2 == "T" { print $3 }')
           else
-            symbols=$(nm -gU "$archive" | awk 'NF == 3 && $2 == "T" { sub(/^_/, "", $3); print $3 }')
+            # Xcode's nm predates the LLVM version that produced the archive.
+            llvm_nm="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-nm"
+            symbols=$("$llvm_nm" --extern-only --defined-only "$archive" \
+              | awk 'NF == 3 && $2 == "T" { sub(/^_/, "", $3); print $3 }')
           fi
           for sym in \
             j2k_decoder_feed \
