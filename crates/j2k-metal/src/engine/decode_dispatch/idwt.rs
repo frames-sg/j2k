@@ -41,6 +41,8 @@ fn checked_host_output_layout(
 mod batched_irreversible;
 #[cfg(target_os = "macos")]
 mod irreversible;
+#[cfg(all(test, target_os = "macos"))]
+mod reversible_tests;
 #[cfg(target_os = "macos")]
 pub(in crate::engine) use batched_irreversible::{
     dispatch_irreversible97_repeated_buffers_in_command_buffer_with_offsets,

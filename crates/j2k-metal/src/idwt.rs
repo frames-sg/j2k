@@ -228,6 +228,44 @@ mod tests {
     }
 
     #[test]
+    fn metal_idwt_decoder_matches_native_decode_for_lone_odd_row() {
+        #[cfg(target_os = "macos")]
+        if !should_run_metal_runtime() {
+            return;
+        }
+
+        // The first reduction is one sample tall at row 7: the 5/3 inverse
+        // divides that lone high-pass row by two with floor division.
+        let image = Image::new(
+            j2k_test_support::NONZERO_ORIGIN_GRAY8_53X2,
+            &DecodeSettings::default(),
+        )
+        .expect("image");
+        let mut expected_context = DecoderContext::default();
+        let expected = image
+            .decode_components_with_context(&mut expected_context)
+            .expect("native decode");
+
+        let mut hooked_context = DecoderContext::default();
+        let mut decoder = MetalIdwtDecoder::default();
+        let actual = image
+            .decode_components_with_ht_decoder(&mut hooked_context, &mut decoder)
+            .expect("hooked decode");
+
+        assert_eq!(actual.dimensions(), expected.dimensions());
+        assert_eq!(
+            actual.planes()[0].samples(),
+            expected.planes()[0].samples(),
+            "Metal IDWT output must match native decode for a lone odd row"
+        );
+        #[cfg(target_os = "macos")]
+        assert!(
+            decoder.kernel_dispatches() > 0,
+            "the odd-origin fixture must exercise the Metal IDWT kernel"
+        );
+    }
+
+    #[test]
     fn metal_idwt_decoder_matches_native_decode_for_irreversible_image() {
         #[cfg(target_os = "macos")]
         if !should_run_metal_runtime() {

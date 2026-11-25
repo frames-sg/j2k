@@ -30,6 +30,25 @@ pub const OPENJPEG_ORIGIN_23X17_AT_3_5: &[u8] =
 /// reduction.
 pub const OPENJPH_ORIGIN_23X17_AT_3_5: &[u8] =
     include_bytes!("../fixtures/openjpeg_origin/rgb_23x17_origin_3_5_ht.j2c");
+/// Reversible 5/3 Gray8 codestream of a 53 x 2 image at reference-grid origin
+/// (0, 14).
+///
+/// It has 16 x 16 tiles and two decomposition levels. Its first reduction is
+/// one sample tall at row 7, so the inverse transform meets a lone high-pass
+/// sample there. Only tile 0 of its four tile columns is complete. It comes
+/// from frames-sg/j2k#328.
+pub const NONZERO_ORIGIN_GRAY8_53X2: &[u8] =
+    include_bytes!("../fixtures/nonzero_origin/classic_gray8_nonzero_origin.j2c");
+/// The two rows of tile 0 of [`NONZERO_ORIGIN_GRAY8_53X2`], as the CPU decodes
+/// them.
+pub const NONZERO_ORIGIN_GRAY8_53X2_TILE0: [[u8; 16]; 2] = [
+    [
+        169, 104, 24, 127, 144, 125, 118, 153, 134, 105, 130, 126, 116, 156, 89, 197,
+    ],
+    [
+        121, 177, 253, 129, 119, 117, 127, 151, 122, 103, 138, 128, 112, 151, 84, 192,
+    ],
+];
 /// Interleaved RGB8 source samples of the odd-origin fixtures.
 pub const ORIGIN_SOURCE_23X17_RGB: &[u8] =
     include_bytes!("../fixtures/openjpeg_origin/source_23x17.rgb");
