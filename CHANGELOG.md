@@ -5,6 +5,9 @@ and stale roadmap entries have been removed from the public documentation set.
 
 ## [Unreleased]
 
+- A final tile part with `Psot = 0` now ends at the EOC marker, as T.800
+  specifies. Before, the decoder read EOC and any bytes after it, such as the
+  padding at the end of a DICOM frame, as packet data.
 - Python wheels and command-line builds use libz-sys 1.1.33, whose bundled
   zlib fixes RUSTSEC-2026-0544. j2k calls only zlib's `inflate` and
   `deflate`, not the affected `gzprintf` and `gzwrite`.

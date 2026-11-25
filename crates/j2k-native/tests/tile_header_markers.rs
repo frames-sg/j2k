@@ -67,6 +67,25 @@ fn insert_tile_header_rgn(mut codestream: Vec<u8>, roi_shift: u8, style: u8) -> 
 }
 
 #[test]
+fn open_ended_final_tile_part_stops_at_eoc() {
+    let pixels = patterned_pixels(64 * 64);
+    let mut stream = encode(&pixels, 64, 64, 1, 8, false, &EncodeOptions::default()).unwrap();
+    let sot = marker_offset(&stream, 0x90);
+    stream[sot + 6..sot + 10].fill(0);
+    // An encapsulated DICOM frame may also have a trailing pad after EOC.
+    for tail in [false, true] {
+        if tail {
+            stream.push(0);
+        }
+        let decoded = Image::new(&stream, &DecodeSettings::default())
+            .unwrap()
+            .decode_native()
+            .unwrap();
+        assert_eq!(decoded.data, pixels);
+    }
+}
+
+#[test]
 fn tile_header_rgn_marker_with_zero_shift_is_a_noop() {
     let pixels = patterned_pixels(64 * 64);
     let codestream = encode(&pixels, 64, 64, 1, 8, false, &EncodeOptions::default())
