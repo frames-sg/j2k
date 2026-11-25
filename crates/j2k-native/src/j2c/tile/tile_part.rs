@@ -35,15 +35,10 @@ pub(super) fn parse_tile_part<'a>(
         bail!(TileError::InvalidIndex);
     }
 
-    let data_len = if tile_part_header.tile_part_length == 0 {
-        reader.tail().map_or(0, <[u8]>::len)
-    } else {
-        // Subtract 12 to account for the marker length.
-        (tile_part_header.tile_part_length as usize)
-            .checked_sub(12)
-            .ok_or(TileError::Invalid)?
+    let data_len = match tile_part_header.tile_part_length {
+        0 => None,
+        psot => Some((psot as usize).checked_sub(12).ok_or(TileError::Invalid)?),
     };
-
     let start = reader.offset();
 
     let tile = &mut tiles[tile_part_header.tile_index as usize];
@@ -179,12 +174,17 @@ pub(super) fn parse_tile_part<'a>(
         ));
     }
 
-    let Some(remaining_bytes) = data_len.checked_sub(reader.offset() - start) else {
-        return if main_header.strict {
-            err!(TileError::Invalid)
-        } else {
-            Ok(())
+    let remaining_bytes = if let Some(data_len) = data_len {
+        let Some(len) = data_len.checked_sub(reader.offset() - start) else {
+            return if main_header.strict {
+                err!(TileError::Invalid)
+            } else {
+                Ok(())
+            };
         };
+        len
+    } else {
+        open_ended_packet_length(reader, main_header.strict)?
     };
 
     let packet_length_marker_capacity = packet_length_markers.capacity();
@@ -286,6 +286,37 @@ pub(super) fn parse_tile_part<'a>(
     tile.tile_parts.push(tile_part);
 
     Ok(())
+}
+
+/// Psot=0 extends the final tile part up to, but excludes, EOC (T.800 A.4.2).
+/// Start after SOD so marker-like bytes in header segments are never examined.
+fn open_ended_packet_length(reader: &BitReader<'_>, strict: bool) -> Result<usize> {
+    let data = reader.tail().ok_or(TileError::Invalid)?;
+    let mut offset = 0;
+    while let Some(tail) = data.get(offset..) {
+        reader.check_cancelled()?;
+        let Some(skip) = tail.iter().position(|&byte| byte == 0xff) else {
+            break;
+        };
+        offset += skip;
+        match data.get(offset + 1) {
+            Some(&markers::EOC) => return Ok(offset),
+            // The two-byte SOP packet sequence number can itself equal FFD9.
+            Some(&markers::SOP) => {
+                if !data[offset + 2..].starts_with(&[0, 4]) {
+                    bail!(MarkerError::ParseFailure("SOP"));
+                }
+                offset += 6;
+            }
+            Some(&markers::SOT) => bail!(TileError::Invalid),
+            _ => offset += 1,
+        }
+    }
+    if strict {
+        err!(MarkerError::Expected("EOC"))
+    } else {
+        Ok(data.len())
+    }
 }
 
 /// Apply the COD and QCD of the tile-part header `reader` starts in to every
