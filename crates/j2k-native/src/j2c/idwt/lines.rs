@@ -27,7 +27,9 @@ use super::banded::{
 use super::horizontal::filter_row;
 use super::model::CoefficientSource;
 use super::roi::interleave_samples_roi;
-use super::vertical::{irreversible_row_scale, scale_one_row, vertical_step_count, vertical_steps};
+use super::vertical::{
+    irreversible_row_scale, scale_one_row, scale_one_row_53, vertical_step_count, vertical_steps,
+};
 use crate::error::{DecodingError, ValidationError};
 use crate::Result;
 
@@ -571,7 +573,11 @@ fn feed_row(levels: &mut [LevelRows<'_>], level: usize, inputs: &mut Inputs<'_>)
     );
     if height == 1 {
         if !y.is_multiple_of(2) {
-            scale_one_row(target, 0.5);
+            if inputs.transform == WaveletTransform::Reversible53 {
+                scale_one_row_53(target);
+            } else {
+                scale_one_row(target, 0.5);
+            }
         }
     } else if inputs.transform == WaveletTransform::Irreversible97 {
         scale_one_row(

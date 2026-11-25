@@ -80,6 +80,11 @@ pub(super) fn filter_row(
     clippy::inline_always,
     reason = "inlined into each SIMD dispatch target"
 )]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "reversible 5-3 f32 samples are integer-valued and remain in the exact f32 range"
+)]
 #[inline(always)]
 pub(super) fn filter_row_at<S: Simd>(
     _simd: S,
@@ -91,7 +96,11 @@ pub(super) fn filter_row_at<S: Simd>(
 ) {
     if width == 1 {
         if !x0.is_multiple_of(2) {
-            scanline[0] *= 0.5;
+            if transform == WaveletTransform::Reversible53 {
+                scanline[0] = floor_div_i64(scanline[0] as i64, 2) as f32;
+            } else {
+                scanline[0] *= 0.5;
+            }
         }
 
         return;
