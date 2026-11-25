@@ -818,9 +818,17 @@ fn parse_inner<'a>(
     // PLT entries left once the tile's last packet has been read describe no
     // packet, like bytes after it. Only a walk that stops at an error looks
     // ahead: one that goes on needs the next packet for the next tile-part.
-    if tile_part.validate_all_packet_lengths_consumed().is_none()
-        && (!strict || progression_iterator.next().is_some())
-    {
+    if tile_part.validate_all_packet_lengths_consumed().is_some() {
+        return Ok(false);
+    }
+    if !strict {
+        return Err("packet length markers contain unused entries");
+    }
+    if let Some(next) = progression_iterator.next() {
+        // The look-ahead took the next packet from the progression. A
+        // partial codestream that ends here doesn't hold it, so it is the
+        // packet the walk stopped in.
+        walk.in_flight = Some((next.component, next.resolution));
         return Err("packet length markers contain unused entries");
     }
 
