@@ -81,7 +81,11 @@ pub fn inspect_jp2_container_with_settings<'a>(
     data: &'a [u8],
     settings: &DecodeSettings,
 ) -> Result<Jp2Container<'a>> {
-    public_container(parse_jp2_container_with_strict(data, settings.strict)?)
+    public_container(parse_jp2_container_with_policy(
+        data,
+        settings.strict,
+        settings.partial_codestream,
+    )?)
 }
 
 /// [`inspect_jp2_container_with_settings`] within one operation's working
@@ -99,7 +103,10 @@ pub fn inspect_jp2_container_with_operation_control<'a>(
 ) -> Result<Jp2Container<'a>> {
     let parsed = parse_jp2_container_with_strict_and_retained_baseline(
         data,
-        settings.strict,
+        ContainerPolicy {
+            strict: settings.strict,
+            partial: settings.partial_codestream,
+        },
         control.baseline(0)?,
         control,
     )?;
@@ -191,7 +198,10 @@ pub(crate) fn parse_with_control<'a>(
     control.check()?;
     let container = parse_jp2_container_with_strict_and_retained_baseline(
         data,
-        settings.strict,
+        ContainerPolicy {
+            strict: settings.strict,
+            partial: settings.partial_codestream,
+        },
         retained_baseline_bytes,
         control,
     )?;
@@ -282,10 +292,23 @@ pub(super) fn implicit_mapping_budget(
     allocation::Jp2AllocationBudget::from_live_bytes(live_bytes)
 }
 
-fn parse_jp2_container_with_strict(data: &[u8], strict: bool) -> Result<ParsedJp2Container<'_>> {
+/// How strictly a JP2/JPH container is read.
+#[derive(Clone, Copy)]
+struct ContainerPolicy {
+    strict: bool,
+    /// The file may be cut off inside its codestream box; see
+    /// [`DecodeSettings::partial_codestream`].
+    partial: bool,
+}
+
+fn parse_jp2_container_with_policy(
+    data: &[u8],
+    strict: bool,
+    partial: bool,
+) -> Result<ParsedJp2Container<'_>> {
     parse_jp2_container_with_strict_and_retained_baseline(
         data,
-        strict,
+        ContainerPolicy { strict, partial },
         0,
         &crate::DecodeOperationControl::default(),
     )
@@ -293,10 +316,11 @@ fn parse_jp2_container_with_strict(data: &[u8], strict: bool) -> Result<ParsedJp
 
 fn parse_jp2_container_with_strict_and_retained_baseline<'a>(
     data: &'a [u8],
-    strict: bool,
+    policy: ContainerPolicy,
     retained_baseline_bytes: usize,
     control: &crate::DecodeOperationControl,
 ) -> Result<ParsedJp2Container<'a>> {
+    let strict = policy.strict;
     let mut reader = BitReader::with_cancellation(data, control.cancellation());
     let signature_box = r#box::read_checked(&mut reader)?;
     if signature_box.box_type != JP2_SIGNATURE || signature_box.data != JP2_SIGNATURE_PAYLOAD {
@@ -313,6 +337,21 @@ fn parse_jp2_container_with_strict_and_retained_baseline<'a>(
     let mut codestream = None;
     let mut used_lenient_metadata_recovery = false;
     while !reader.at_end() {
+        if policy.partial {
+            if codestream.is_some() {
+                // A partial file ends at or after its codestream box; boxes
+                // after it carry nothing the decode reads.
+                break;
+            }
+            if let Some(partial_box) = r#box::read_partial_codestream(&mut reader)? {
+                if image_boxes.is_none() {
+                    bail!(FormatError::InvalidBox);
+                }
+                let codestream_offset = partial_box.data.as_ptr() as usize - data.as_ptr() as usize;
+                codestream = Some((codestream_offset, partial_box.data));
+                continue;
+            }
+        }
         let Some(current_box) = read_recoverable_metadata_box(
             &mut reader,
             strict,
@@ -348,6 +387,13 @@ fn parse_jp2_container_with_strict_and_retained_baseline<'a>(
         }
     }
 
+    if policy.partial && codestream.is_none() && reader.at_end() {
+        // The file is cut off before its codestream box.
+        bail!(FormatError::TruncatedAt {
+            offset: reader.offset(),
+            segment: "codestream box",
+        });
+    }
     let boxes = image_boxes.ok_or(FormatError::MissingRequiredBox("jp2h"))?;
     let (codestream_offset, codestream) = codestream.ok_or(FormatError::MissingCodestream)?;
     Ok(ParsedJp2Container {

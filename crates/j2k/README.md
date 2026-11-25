@@ -40,6 +40,59 @@ checks, and allocation limits are the same as in strict mode.
 A successful lenient decode reports `J2kDecodeWarning::LenientMetadataRecovery`
 only when one of those recoveries was actually used.
 
+## Partial codestreams
+
+A viewer that fetches a file a piece at a time can show a low-resolution
+image before the rest arrives. With
+`DecodeSettings::with_partial_codestream(true)`, the decoder accepts input
+that stops anywhere after the codestream's main header:
+
+```rust
+use j2k::{DecodeSettings, J2kDecoder, J2kScratchPool, PixelFormat, Rect};
+
+let settings = DecodeSettings::strict().with_partial_codestream(true);
+let mut decoder = J2kDecoder::new_with_settings(&bytes_so_far, settings)?;
+if let Some(reduction) = decoder.codestream_completeness()?.min_exact_reduction() {
+    let (width, height) = decoder.info().dimensions;
+    let area = Rect { x: 0, y: 0, w: width, h: height };
+    let plan = decoder.region_decode_plan(PixelFormat::Gray16, area, reduction)?;
+    let mut pixels = vec![0_u8; plan.buffer_bytes];
+    decoder.decode_region_scaled_pow2_into(
+        &mut J2kScratchPool::new(), &mut pixels, plan.row_bytes, PixelFormat::Gray16,
+        area, reduction,
+    )?;
+}
+```
+
+`codestream_completeness` reads the packet headers without decoding samples
+and reports:
+
+- `min_exact_reduction`: the fewest resolution levels to drop for a decode
+  of the whole image that only reads data that is present. A decode at that
+  reduction or deeper returns the same samples as the complete file decoded
+  at the same reduction. It is `None` until the lowest resolution of every
+  tile has arrived, and `Some(0)` once every packet is present.
+- `tile_min_exact_reduction`: the same for each tile, so a region over tiles
+  that have arrived can be decoded while others are still missing.
+- `is_complete`: whether every packet is present. The final EOC marker may
+  still be missing.
+
+A decode that needs data that hasn't arrived fails with
+`J2kError::IncompleteCodestream`, which counts as truncated input
+(`is_truncated()`). Decoding never fills in missing data.
+
+How quickly resolutions become usable depends on the progression order.
+With a resolution-first order (RPCL or RLCP), each resolution level is
+complete as soon as its bytes arrive, which makes RPCL the order to choose
+for progressive delivery. With a layer-first order (LRCP), a resolution is
+complete only once every quality layer of it has arrived.
+
+The input can be a raw codestream or a JP2/JPH file that stops inside its
+codestream box; the boxes before it must be complete. The JP2/JPH container
+is otherwise read as strictly as without the setting, and so is every tile
+part that is present in full: a malformed one is still an error. Partial
+input is never offered for byte copying, and it decodes on the CPU only.
+
 ## Batch decode
 
 `prepare_batch` and `CpuBatchDecoder::new` take `BatchDecodeOptions`, which is

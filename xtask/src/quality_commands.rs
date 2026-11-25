@@ -394,6 +394,7 @@ const FUZZ_TARGETS: &[(&str, &str)] = &[
     ("crates/j2k", "srgb8_fuzz"),
     ("crates/j2k", "parse_fuzz"),
     ("crates/j2k", "region_scaled_fuzz"),
+    ("crates/j2k", "partial_decode_fuzz"),
     ("crates/j2k-native", "native_decode_fuzz"),
     ("crates/j2k-native", "lossless_roundtrip_fuzz"),
     ("crates/j2k-jpeg", "decode_fuzz"),

@@ -245,6 +245,7 @@ pub(crate) fn read_header<'a>(
         ppm_packets: try_flatten_ppm_packets(ppm_markers, &mut marker_budget)?,
         skipped_resolution_levels,
         strict: settings.strict,
+        partial: settings.partial_codestream,
     };
 
     validate(&header)?;

@@ -167,6 +167,7 @@ pub(super) fn native_decode_settings(settings: j2k::DecodeSettings) -> j2k_nativ
         resolve_palette_indices: true,
         strict: settings.is_strict(),
         target_resolution: None,
+        partial_codestream: false,
     }
 }
 

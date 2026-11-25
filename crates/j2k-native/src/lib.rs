@@ -271,8 +271,8 @@ pub use j2c::encode::{
     ResidentHtj2kEncodeError,
 };
 pub use j2c::{
-    CpuDecodeParallelism, DecoderContext, DecoderWorkspace, DecoderWorkspaceStats,
-    Reversible53CoefficientImage,
+    CodestreamCompleteness, CpuDecodeParallelism, DecoderContext, DecoderWorkspace,
+    DecoderWorkspaceStats, Reversible53CoefficientImage,
 };
 #[doc(hidden)]
 pub use j2k_types::{

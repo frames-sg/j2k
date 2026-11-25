@@ -952,6 +952,8 @@ mod tests {
             progression_changes,
             num_layers: 2,
             mct: false,
+            stream_truncated: false,
+            truncated_last_part: false,
         }
     }
 
@@ -1084,6 +1086,8 @@ mod tests {
             progression_changes: vec![],
             num_layers: 1,
             mct: false,
+            stream_truncated: false,
+            truncated_last_part: false,
         };
 
         assert!(matches!(
@@ -1178,6 +1182,8 @@ mod tests {
                 progression_changes: vec![],
                 num_layers: 2,
                 mct: false,
+                stream_truncated: false,
+                truncated_last_part: false,
             };
             for (leading, order) in orders {
                 let input = IteratorInput::new(&tile).expect("progression input");
@@ -1214,6 +1220,8 @@ mod tests {
             progression_changes,
             num_layers: 1,
             mct: false,
+            stream_truncated: false,
+            truncated_last_part: false,
         };
         progression_iterator(&tile, 0)
             .expect("valid progression")

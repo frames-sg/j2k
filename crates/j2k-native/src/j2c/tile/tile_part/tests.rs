@@ -75,6 +75,7 @@ pub(super) fn header() -> Header<'static> {
         ppm_packets: Vec::new(),
         skipped_resolution_levels: 0,
         strict: true,
+        partial: false,
     }
 }
 

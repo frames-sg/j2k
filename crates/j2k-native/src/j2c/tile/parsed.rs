@@ -11,6 +11,9 @@ pub(crate) struct ParsedTiles<'a> {
     tiles: Vec<Tile<'a>>,
     structural_workspace_bytes: usize,
     metadata_owner_bytes: usize,
+    /// A partial codestream ended before its EOC marker.
+    #[cfg(feature = "std")]
+    stream_truncated: bool,
 }
 
 impl<'a> ParsedTiles<'a> {
@@ -21,7 +24,9 @@ impl<'a> ParsedTiles<'a> {
         retained_live_bytes: usize,
         max_directory_bytes: usize,
     ) -> Option<super::super::segment::directory::PacketDirectory> {
-        if self.tiles.len() != 1 || max_directory_bytes == 0 {
+        // A directory covers every packet of the tile, which a codestream
+        // that has not arrived in full may not hold.
+        if self.tiles.len() != 1 || max_directory_bytes == 0 || self.stream_truncated {
             return None;
         }
         super::super::segment::directory::PacketDirectory::prepare(
@@ -48,11 +53,17 @@ impl<'a> ParsedTiles<'a> {
         tiles: Vec<Tile<'a>>,
         structural_workspace_bytes: usize,
         metadata_owner_bytes: usize,
+        stream_truncated: bool,
     ) -> Self {
+        // Only the packet directory, a std feature, needs to know.
+        #[cfg(not(feature = "std"))]
+        let _ = stream_truncated;
         Self {
             tiles,
             structural_workspace_bytes,
             metadata_owner_bytes,
+            #[cfg(feature = "std")]
+            stream_truncated,
         }
     }
 

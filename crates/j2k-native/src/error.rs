@@ -79,6 +79,10 @@ pub enum DecodeErrorClass {
     },
     /// The operation's cooperative cancellation flag was set.
     Cancelled,
+    /// A partial codestream does not yet hold every packet the requested
+    /// decode needs. More of the codestream, or a deeper reduction, can
+    /// succeed.
+    IncompleteCodestream,
 }
 
 /// Error returned by native JPEG 2000 and HTJ2K encode operations.
@@ -146,6 +150,9 @@ impl DecodeError {
     pub const fn classify(&self) -> DecodeErrorClass {
         match *self {
             Self::Decoding(DecodingError::Cancelled) => DecodeErrorClass::Cancelled,
+            Self::Decoding(DecodingError::IncompleteCodestream) => {
+                DecodeErrorClass::IncompleteCodestream
+            }
             Self::Format(FormatError::TooShort { need, have }) => {
                 DecodeErrorClass::InputTooShort { need, have }
             }
@@ -316,6 +323,10 @@ pub enum DecodingError {
     SinkStopped,
     /// The current decode operation was cooperatively cancelled.
     Cancelled,
+    /// A partial codestream (see
+    /// [`crate::DecodeSettings::partial_codestream`]) does not yet hold
+    /// every packet this decode needs.
+    IncompleteCodestream,
 }
 
 /// Errors related to color space and component handling.
@@ -536,6 +547,10 @@ impl fmt::Display for DecodingError {
             }
             Self::SinkStopped => write!(f, "the row sink stopped the region decode"),
             Self::Cancelled => write!(f, "decode operation was cancelled"),
+            Self::IncompleteCodestream => write!(
+                f,
+                "partial codestream does not yet hold the packets this decode needs"
+            ),
         }
     }
 }

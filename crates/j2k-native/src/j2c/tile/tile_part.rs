@@ -8,7 +8,7 @@ use super::metadata::{
     try_clone_coding_parameters, try_clone_quantization_info, TileMetadataBudget,
     TileMetadataTransaction,
 };
-use super::{MergedTilePart, PacketLengthMetadata, SeparatedTilePart, Tile, TilePart};
+use super::{MergedTilePart, PacketLengthMetadata, SeparatedTilePart, Tile, TilePart, TilePartEnd};
 use crate::error::{bail, err, DecodingError, MarkerError, Result, TileError, ValidationError};
 use crate::j2c::codestream::{self, markers, skip_marker_segment, Header, PacketLengthMarker};
 use crate::reader::BitReader;
@@ -23,7 +23,12 @@ pub(super) fn parse_tile_part<'a>(
     tiles: &mut [Tile<'a>],
     ppm_packet_idx: &mut usize,
     metadata_budget: &mut TileMetadataBudget,
-) -> Result<()> {
+) -> Result<TilePartEnd> {
+    if main_header.partial && !tile_part_header_is_present(reader) {
+        // The data ends inside this tile part's header: none of it is used,
+        // and nothing after it is present.
+        return Ok(TilePartEnd::Truncated);
+    }
     let mut allocations = metadata_budget.transaction();
     if reader.read_marker()? != markers::SOT {
         bail!(MarkerError::Expected("SOT"));
@@ -56,7 +61,7 @@ pub(super) fn parse_tile_part<'a>(
             return if main_header.strict {
                 err!(MarkerError::Invalid)
             } else {
-                Ok(())
+                Ok(TilePartEnd::Complete)
             };
         };
 
@@ -174,18 +179,31 @@ pub(super) fn parse_tile_part<'a>(
         ));
     }
 
-    let remaining_bytes = if let Some(data_len) = data_len {
+    let mut truncated = false;
+    let mut remaining_bytes = if let Some(data_len) = data_len {
         let Some(len) = data_len.checked_sub(reader.offset() - start) else {
             return if main_header.strict {
                 err!(TileError::Invalid)
             } else {
-                Ok(())
+                Ok(TilePartEnd::Complete)
             };
         };
         len
     } else {
-        open_ended_packet_length(reader, main_header.strict)?
+        let (len, found_eoc) =
+            open_ended_packet_length(reader, main_header.strict && !main_header.partial)?;
+        truncated = main_header.partial && !found_eoc;
+        len
     };
+    if main_header.partial {
+        // A partial codestream holds the tile part's data up to its last
+        // byte present; the packets past it are missing.
+        let available = reader.tail().map_or(0, <[u8]>::len);
+        if remaining_bytes > available {
+            remaining_bytes = available;
+            truncated = true;
+        }
+    }
 
     let packet_length_marker_capacity = packet_length_markers.capacity();
     let temporary_packet_length_capacity =
@@ -285,12 +303,32 @@ pub(super) fn parse_tile_part<'a>(
     retain_tile_part_metadata(&mut allocations, &tile_part)?;
     tile.tile_parts.push(tile_part);
 
-    Ok(())
+    if truncated {
+        tile.truncated_last_part = true;
+        return Ok(TilePartEnd::Truncated);
+    }
+    Ok(TilePartEnd::Complete)
+}
+
+/// Whether a partial codestream holds the tile-part header that starts at
+/// `reader`'s SOT marker in full, up to its SOD marker. A header that is
+/// present but malformed counts as present, for the parser to reject.
+fn tile_part_header_is_present(reader: &BitReader<'_>) -> bool {
+    let Some(data) = reader.tail() else {
+        return false;
+    };
+    if data.len() >= 2 && data[..2] != [0xff, markers::SOT] {
+        return true;
+    }
+    // After the SOT marker and its fixed ten-byte segment.
+    data.len() >= 12 && crate::j2c::partial::header_is_present(data, 12, markers::SOD)
 }
 
 /// Psot=0 extends the final tile part up to, but excludes, EOC (T.800 A.4.2).
 /// Start after SOD so marker-like bytes in header segments are never examined.
-fn open_ended_packet_length(reader: &BitReader<'_>, strict: bool) -> Result<usize> {
+/// Returns the data length and whether EOC was found; without `strict`, data
+/// with no EOC runs to the end of the input.
+fn open_ended_packet_length(reader: &BitReader<'_>, strict: bool) -> Result<(usize, bool)> {
     let data = reader.tail().ok_or(TileError::Invalid)?;
     let mut offset = 0;
     while let Some(tail) = data.get(offset..) {
@@ -300,9 +338,13 @@ fn open_ended_packet_length(reader: &BitReader<'_>, strict: bool) -> Result<usiz
         };
         offset += skip;
         match data.get(offset + 1) {
-            Some(&markers::EOC) => return Ok(offset),
+            Some(&markers::EOC) => return Ok((offset, true)),
             // The two-byte SOP packet sequence number can itself equal FFD9.
             Some(&markers::SOP) => {
+                if !strict && data.len() < offset + 6 {
+                    // The data ends inside this SOP marker segment.
+                    return Ok((data.len(), false));
+                }
                 if !data[offset + 2..].starts_with(&[0, 4]) {
                     bail!(MarkerError::ParseFailure("SOP"));
                 }
@@ -315,7 +357,7 @@ fn open_ended_packet_length(reader: &BitReader<'_>, strict: bool) -> Result<usiz
     if strict {
         err!(MarkerError::Expected("EOC"))
     } else {
-        Ok(data.len())
+        Ok((data.len(), false))
     }
 }
 

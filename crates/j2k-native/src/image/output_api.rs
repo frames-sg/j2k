@@ -75,7 +75,7 @@ impl<'a> Image<'a> {
         } else if data.starts_with(super::CODESTREAM_MAGIC) {
             j2c::parse_with_control(data, settings, baseline, Some(reduction_levels), control)
         } else {
-            Err(crate::FormatError::InvalidSignature.into())
+            Err(super::unrecognized_signature(data, settings))
         }?;
         control.check()?;
         image.retained_baseline_bytes = retained_bytes;

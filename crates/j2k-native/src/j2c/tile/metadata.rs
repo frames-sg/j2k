@@ -597,6 +597,7 @@ mod tests {
             ppm_packets: Vec::new(),
             skipped_resolution_levels: 0,
             strict: false,
+            partial: false,
         }
     }
 

@@ -84,6 +84,49 @@ pub(crate) fn read_checked<'a>(reader: &mut BitReader<'a>) -> Result<Jp2Box<'a>>
     })
 }
 
+/// In a file that may be cut off, read a contiguous codestream box whose
+/// declared length runs past the end of the data: its payload is every byte
+/// present. Returns `None`, consuming nothing, for any other box, including
+/// a codestream box present in full.
+pub(crate) fn read_partial_codestream<'a>(
+    reader: &mut BitReader<'a>,
+) -> Result<Option<Jp2Box<'a>>> {
+    let Some(header) = reader.peek_bytes(8) else {
+        return Ok(None);
+    };
+    let l_box = u32::from_be_bytes([header[0], header[1], header[2], header[3]]);
+    let t_box = u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
+    if t_box != CONTIGUOUS_CODESTREAM {
+        return Ok(None);
+    }
+    let available = reader.tail().map_or(0, <[u8]>::len);
+    let (header_len, declared) = match l_box {
+        0 => return Ok(None),
+        1 => {
+            let Some(extended) = reader.peek_bytes(16) else {
+                return Ok(None);
+            };
+            let mut xl_box = [0_u8; 8];
+            xl_box.copy_from_slice(&extended[8..16]);
+            (16_usize, u64::from_be_bytes(xl_box))
+        }
+        length => (8, u64::from(length)),
+    };
+    let present = u64::try_from(available).map_err(|_| FormatError::InvalidBox)?;
+    if declared < header_len as u64 || declared <= present {
+        return Ok(None);
+    }
+    reader
+        .skip_bytes(header_len)
+        .ok_or(FormatError::InvalidBox)?;
+    let data = reader.tail().unwrap_or_default();
+    reader.jump_to_end();
+    Ok(Some(Jp2Box {
+        data,
+        box_type: t_box,
+    }))
+}
+
 fn read_box_payload<'a>(reader: &mut BitReader<'a>, len: usize) -> Result<&'a [u8]> {
     let offset = reader.offset();
     let bytes = reader.read_bytes(len).ok_or(FormatError::TruncatedAt {

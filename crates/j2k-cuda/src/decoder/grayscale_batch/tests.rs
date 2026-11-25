@@ -178,6 +178,7 @@ fn prepared_htj2k_batch_uses_retained_offsets_without_reparsing() {
         resolve_palette_indices: true,
         strict: group.options().settings.is_strict(),
         target_resolution: None,
+        partial_codestream: false,
     };
 
     let cuda = prepare_grayscale_batch(
