@@ -238,6 +238,62 @@ fn htj2k_rpcl_with_packet_markers_and_lengths() {
     assert!(seen.contains(&LEVELS), "{seen:?}");
 }
 
+/// A cut that falls exactly between two packets of a codestream with PLT
+/// markers leaves the next packet missing. Every prefix length is tried so
+/// that each packet boundary is one of the cuts. The first prefix to report
+/// a reduction must decode to the complete file's samples at it, and the
+/// first to report the image complete must decode in full.
+#[test]
+fn cuts_between_packets_with_lengths_count_the_next_packet_as_missing() {
+    let source = gray12();
+    for (mode, layers) in [
+        (J2kBlockCodingMode::HighThroughput, 1),
+        (J2kBlockCodingMode::Classic, 3),
+    ] {
+        let codestream = encode(
+            &source,
+            &options(mode, J2kProgressionOrder::Rpcl)
+                .with_quality_layers(layers)
+                .with_marker_segments(&[J2kMarkerSegment::Plt]),
+        );
+        let references = references(&codestream, source.format);
+        let mut previous = None;
+        for len in 1..=codestream.len() {
+            let Ok(mut decoder) = J2kDecoder::new_with_settings(&codestream[..len], partial())
+            else {
+                continue;
+            };
+            let completeness = decoder
+                .codestream_completeness()
+                .unwrap_or_else(|error| panic!("{mode:?}: prefix {len}: completeness: {error}"));
+            let reduction = completeness.min_exact_reduction();
+            if reduction == previous {
+                continue;
+            }
+            previous = reduction;
+            let Some(reduction) = reduction else {
+                continue;
+            };
+            let samples = decode_at(&mut decoder, source.format, whole_image(), reduction)
+                .unwrap_or_else(|error| panic!("{mode:?}: prefix {len} at {reduction}: {error}"));
+            assert_eq!(
+                samples,
+                references[usize::from(reduction)],
+                "{mode:?}: prefix {len} at reduction {reduction}"
+            );
+            if completeness.is_complete() {
+                let mut out = vec![0_u8; (WIDTH * HEIGHT * 2) as usize];
+                J2kDecoder::new_with_settings(&codestream[..len], partial())
+                    .expect("decoder")
+                    .decode_into(&mut out, WIDTH as usize * 2, PixelFormat::Gray16)
+                    .unwrap_or_else(|error| panic!("{mode:?}: prefix {len}: decode_into: {error}"));
+                assert_eq!(out, references[0], "{mode:?}: prefix {len}: decode_into");
+            }
+        }
+        assert_eq!(previous, Some(0), "{mode:?}: the complete codestream");
+    }
+}
+
 #[test]
 fn classic_rpcl_rgb_with_layers_and_packed_headers() {
     let source = rgb8();
