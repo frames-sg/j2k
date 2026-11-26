@@ -411,14 +411,12 @@ J2K_API j2k_status j2k_decoder_transfer_syntax(
 
 /* The native output layout of a full-image, full-resolution request, derived
  * from header facts alone without batch-engine planning. Covers raw
- * zero-origin codestreams with one or three unsigned components of equal 8- to
+ * codestreams with one or three unsigned components of equal 8- to
  * 16-bit precision; any other request returns J2K_UNSUPPORTED
  * (j2k_decoder_output_info stays the general route). Images whose components
  * all share a non-1:1 sampling pair are rejected; mixed component sampling
  * stays supported. Sub-8-bit samples stay on the batch route because the core
- * decoder widens them to the full 8-bit container range; nonzero image origins
- * stay there because the core and batch region paths do not agree on some
- * samples at image and tile boundaries. */
+ * decoder widens them to the full 8-bit container range. */
 J2K_API j2k_status j2k_decoder_output_info_native(
     j2k_decoder *decoder, const j2k_decode_options *options,
     j2k_output_info *out, j2k_error *error);

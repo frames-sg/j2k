@@ -457,13 +457,15 @@ fn native_route_rejects_precisions_the_core_decoder_does_not_preserve() {
 }
 
 #[test]
-fn native_route_rejects_images_with_a_nonzero_origin() {
+fn native_route_decodes_images_with_a_nonzero_origin() {
     use j2k_test_support::{OPENJPEG_ORIGIN_23X17_AT_3_5, ORIGIN_SOURCE_23X17_RGB};
 
     let handle = Handle::open(OPENJPEG_ORIGIN_23X17_AT_3_5, None);
     let options = J2kCDecodeOptions::default();
     let general = handle.layout(&options);
     assert_eq!((general.width, general.height), (23, 17));
+    let native = handle.try_layout_native(&options).unwrap();
+    assert_eq!(native, general);
     let row_bytes = usize::try_from(general.row_bytes).unwrap();
     let height = usize::try_from(general.height).unwrap();
     let stride = row_bytes + 2;
@@ -476,12 +478,14 @@ fn native_route_rejects_images_with_a_nonzero_origin() {
         ORIGIN_SOURCE_23X17_RGB
     );
 
-    let (status, text) = handle.try_layout_native(&options).unwrap_err();
-    assert_eq!(status, J2K_UNSUPPORTED, "{text}");
     let mut full = vec![0xA5; length];
     let (status, text) = handle.decode(true, &options, &mut full, stride);
-    assert_eq!(status, J2K_UNSUPPORTED, "{text}");
-    assert!(full.iter().all(|&value| value == 0xA5));
+    assert_eq!(status, J2K_OK, "{text}");
+    assert_eq!(
+        tight_rows(&full, stride, row_bytes, height),
+        ORIGIN_SOURCE_23X17_RGB
+    );
+    assert_rows_match(&output, &full, stride, row_bytes, height);
 }
 
 #[test]

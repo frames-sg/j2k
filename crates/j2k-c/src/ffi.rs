@@ -538,14 +538,12 @@ pub unsafe extern "C" fn j2k_decoder_transfer_syntax(
 
 /// The native output layout of a full-image, full-resolution
 /// request, derived from header facts alone without the batch engine's
-/// per-image planning. Covers raw zero-origin codestreams with one or three
-/// unsigned components of equal 8- to 16-bit precision, without uniform component
+/// per-image planning. Covers raw codestreams with one or three unsigned
+/// components of equal 8- to 16-bit precision, without uniform component
 /// subsampling; any other request
 /// returns `J2K_UNSUPPORTED` and callers keep [`j2k_decoder_output_info`] as
 /// their general route. Sub-8-bit samples stay on the batch route because the
-/// core decoder widens them to the full 8-bit container range; nonzero image
-/// origins stay there because the core and batch region paths do not agree on
-/// some samples at image and tile boundaries.
+/// core decoder widens them to the full 8-bit container range.
 ///
 /// # Safety
 /// Same requirements as [`j2k_decoder_output_info`].

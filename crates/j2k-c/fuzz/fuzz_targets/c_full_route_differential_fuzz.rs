@@ -6,9 +6,8 @@
 //! zero. The input length selects inter-row padding only. For representable
 //! layouts the target compares the header-fact core route with the batch
 //! route, checks row padding, and probes the documented short-buffer and
-//! invalid-stride errors. The native route rejects nonzero image origins, so this target only compares
-//! decoded pixels for zero-origin images; unrepresented layouts (including nonzero
-//! origins) exercise the matching rejection path.
+//! invalid-stride errors. Unrepresented layouts exercise the matching
+//! rejection path.
 
 mod common;
 
@@ -210,8 +209,7 @@ fuzz_target!(|data: &[u8]| {
     assert_padding(&batch, stride, row_bytes, height, 0x5A);
 
     // A full-image region request stays on the batch engine. Compare it with
-    // the header-fact core route; both are zero-origin here because the native
-    // route rejects other origins.
+    // the header-fact core route.
     let region = J2kCDecodeOptions {
         x: 0,
         y: 0,

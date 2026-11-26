@@ -163,14 +163,12 @@ impl Decoder {
 
     /// The native output layout of a full-image, full-resolution
     /// request, derived from header facts alone, without batch-engine planning. The
-    /// layout is that of the core whole-image decoder: raw codestreams with a
-    /// zero image origin, one or three unsigned components of equal 8- to
-    /// 16-bit precision, without uniform component subsampling. Any other request
-    /// returns `J2K_UNSUPPORTED` so callers keep `prepare`/`prepare_layout` (the
-    /// batch route) as their general path. Sub-8-bit samples stay on the batch
-    /// route because the core decoder widens them to the full 8-bit container
-    /// range; nonzero origins stay there because the core and batch region paths
-    /// do not agree on some samples at image and tile boundaries.
+    /// layout is that of the core whole-image decoder: raw codestreams with one
+    /// or three unsigned components of equal 8- to 16-bit precision, without
+    /// uniform component subsampling. Any other request returns
+    /// `J2K_UNSUPPORTED` so callers keep `prepare`/`prepare_layout` (the batch
+    /// route) as their general path. Sub-8-bit samples stay on the batch route
+    /// because the core decoder widens them to the full 8-bit container range.
     pub(crate) fn output_info_native(&self, options: J2kCDecodeOptions) -> Result<J2kCOutputInfo> {
         if options.reserved != 0 {
             return Err(Error::argument("reserved decode options must be zero"));
@@ -228,12 +226,6 @@ impl Decoder {
             return Err(Error::new(
                 J2K_UNSUPPORTED,
                 "the core whole-image route covers raw codestreams; file-wrapped inputs use the general route",
-            ));
-        }
-        if self.grid.image_origin != (0, 0) {
-            return Err(Error::new(
-                J2K_UNSUPPORTED,
-                "the core whole-image route covers images with a zero origin",
             ));
         }
         let components = u32::from(self.support.component_count());

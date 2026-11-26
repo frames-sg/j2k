@@ -90,14 +90,14 @@ integer pointer without considering alignment and little-endian byte order.
 
 `j2k_decoder_output_info_native` derives the output layout from header facts
 alone for a full-image, full-resolution request, without the batch engine's
-per-image planning. It covers raw codestreams with a zero image origin and one
-or three unsigned components of equal 8- to 16-bit precision. JP2/JPH files,
-regions, reductions, nonzero image origins, signed components, mixed
-precision, sub-8-bit or above-16-bit samples, uniform component subsampling,
-and other channel counts return `J2K_UNSUPPORTED`; `j2k_decoder_output_info`
-remains the general route for those inputs. Mixed component sampling stays
-supported (it is upsampled onto the output grid). A successful result carries
-the same layout fields as `j2k_decoder_output_info` for the same request.
+per-image planning. It covers raw codestreams with one or three unsigned
+components of equal 8- to 16-bit precision. JP2/JPH files, regions,
+reductions, signed components, mixed precision, sub-8-bit or above-16-bit
+samples, uniform component subsampling, and other channel counts return
+`J2K_UNSUPPORTED`; `j2k_decoder_output_info` remains the general route for
+those inputs. Mixed component sampling stays supported (it is upsampled onto
+the output grid). A successful result carries the same layout fields as
+`j2k_decoder_output_info` for the same request.
 
 `j2k_decoder_decode_full_into` decodes such a request through the core
 whole-image decoder, using the same stride contract as

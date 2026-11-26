@@ -23,11 +23,13 @@ also embeds the 16x16 HTJ2K RGB8 seed as its baseline codestream.
 
 `classic_gray8_nonzero_origin.j2c` is a minimized codestream from the
 differential target's first CI run. It is a valid 53x2 gray 8-bit image whose
-reference-grid origin is `(0, 14)`; the core whole-image route and the batch
-region route produce different samples at a few positions there. The native route
-rejects nonzero origins, and the differential target actively exercises this
-rejection path by asserting that `decode_full_into` matches `output_info_native`'s
-rejection status and leaves caller canary buffers untouched.
+reference-grid origin is `(0, 14)`; it exposed a core-versus-batch sample
+disagreement at a few positions, since fixed in the reversible 5/3 inverse
+transform. The differential target now compares both routes on it like any
+other representable codestream, and still exercises the rejection path for
+layouts the native route does not represent by asserting that `decode_full_into`
+matches `output_info_native`'s rejection status and leaves caller canary
+buffers untouched.
 
 ## Running
 
