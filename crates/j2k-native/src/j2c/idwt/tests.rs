@@ -739,6 +739,7 @@ fn banded_2d_matches_plain_2d_bit_for_bit() {
                     transform,
                     &storage,
                     false,
+                    crate::j2c::mct::SampleShift::Copy,
                 )
                 .expect("serial banded level");
                 assert_eq!(bits(&serial), bits(&plain), "serial {label}");
@@ -821,6 +822,7 @@ fn banded_2d_matches_plain_2d_bit_for_bit() {
                             transform,
                             &storage,
                             true,
+                            crate::j2c::mct::SampleShift::Copy,
                         )
                     })
                     .expect("parallel banded level");

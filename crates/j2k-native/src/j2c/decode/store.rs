@@ -338,12 +338,18 @@ pub(super) fn store<'a>(
         let input_rows = idwt_output.rect.height() as usize;
         let output_width = header.size_data.image_width() as usize;
         // The level shift is applied while copying: one pass instead of a
-        // shift over the whole IDWT output followed by a copy.
-        let shift = SampleShift::for_transform(
-            sign_shift,
-            component_info.wavelet_transform(),
-            round_irreversible_output,
-        );
+        // shift over the whole IDWT output followed by a copy. If the final
+        // IDWT level already fused the shift into each strip, `store` only
+        // needs to move or copy the shifted samples.
+        let shift = if idwt_output.shift_applied {
+            SampleShift::Copy
+        } else {
+            SampleShift::for_transform(
+                sign_shift,
+                component_info.wavelet_transform(),
+                round_irreversible_output,
+            )
+        };
         // Each row returns the samples it wrote, so a reused plane's coverage
         // is counted from what was actually stored.
         let copy_row = |input_row: &[f32], output_row: &mut [f32]| {
@@ -352,8 +358,9 @@ pub(super) fn store<'a>(
             shift.copy(input_row, output_row);
             output_row.len()
         };
-        // An unshifted whole-plane copy is a buffer swap: the IDWT output
-        // becomes the plane, and the plane's allocation the next IDWT output.
+        // A whole-plane store with matching geometry and no remaining shift
+        // (including when the final banded IDWT level fused the shift) can
+        // take the IDWT output buffer directly instead of copying it.
         if matches!(shift, SampleShift::Copy)
             && (skip_x, skip_y, output_x, output_y) == (0, 0, 0, 0)
             && input_width == output_width
@@ -492,17 +499,56 @@ pub(super) fn fused_last_level(
     if tile_ctx.staged_rgb8_pack {
         return None;
     }
-    if !tile_ctx.defer_mct
-        || hooked
-        || !tile.mct
+    if hooked
         || tile_ctx.output_region.is_some()
         || storage.exact_integer_decode
         || storage.roi_plan.is_some()
         || storage.coefficient_layout != CoefficientLayout::Component
         || header.skipped_resolution_levels != 0
+        || !storage.coefficients.len().is_multiple_of(SIMD_WIDTH)
+    {
+        return None;
+    }
+    if tile_ctx.defer_gray_last_level
+        && !tile.mct
+        && header.component_infos.len() == 1
+        && tile_ctx.channel_data.len() == 1
+    {
+        let (x0, y0) = output_grid_offset(&header.size_data);
+        let (width, height) = (
+            header.size_data.image_width(),
+            header.size_data.image_height(),
+        );
+        let image = IntRect::from_xywh(x0, y0, width, height);
+        let info = &header.component_infos[0];
+        let channel = &tile_ctx.channel_data[0];
+        let transform = tile.component_infos.first()?.wavelet_transform();
+        let decompositions = storage.tile_decompositions.first()?.decompositions.clone();
+        let decompositions = &storage.decompositions[decompositions];
+        let last = decompositions
+            .last()
+            .filter(|_| decompositions.len() >= 2)?;
+        let size = &info.size_info;
+        let bands = last.sub_bands.map(|band| &storage.sub_bands[band]);
+        let plane_len = tile_ctx
+            .deferred_plane
+            .unwrap_or_else(|| channel.container.truncated().len());
+        if !(1..=16).contains(&size.precision)
+            || (size.horizontal_resolution, size.vertical_resolution) != (1, 1)
+            || channel.integer_container.is_some()
+            || plane_len != storage.coefficients.len()
+            || last.rect != image
+            || bands.iter().any(|band| band.storage_rect != band.rect)
+        {
+            return None;
+        }
+        let bands = bands.map(|band| (band.rect, band.coefficients.clone()));
+        return LastLevel::new(last.rect, bands, transform);
+    }
+    if !tile_ctx.defer_mct
+        || !tile.mct
         || header.component_infos.len() != 3
         || tile_ctx.channel_data.len() != 3
-        || !storage.coefficients.len().is_multiple_of(SIMD_WIDTH)
     {
         return None;
     }
@@ -563,8 +609,9 @@ pub(super) fn store_last_level_bands(
         bail!(DecodingError::CodeBlockDecodeFailure);
     }
     let samples = storage.coefficients.len();
+    let is_last_component = component_idx + 1 == tile_ctx.channel_data.len();
     let plane = &mut tile_ctx.channel_data[component_idx].container;
-    if component_idx == 2 && tile_ctx.deferred_plane.take().is_some() {
+    if is_last_component && tile_ctx.deferred_plane.take().is_some() {
         // The last plane was left unallocated: it takes the buffer, which
         // no later component needs.
         if !plane.adopt_samples(&mut storage.coefficients) {

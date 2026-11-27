@@ -40,7 +40,7 @@ use j2k_codec_math::dwt;
 
 mod last_level;
 
-pub(crate) use last_level::{pack_last_level, LastLevel};
+pub(crate) use last_level::{pack_last_level, pack_last_level_gray, GrayRowEmitter, LastLevel};
 
 /// Halo rows needed on each side of a band: one per vertical lifting step.
 const HALO_ROWS_53: usize = 2;
@@ -360,6 +360,10 @@ pub(super) struct RowGeometry {
     pub(super) high_pass: f32,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "banded 2D IDWT keeps transform geometry, buffers, and fused final shift explicit"
+)]
 pub(super) fn filter_2d_banded(
     input: IDWTInput<'_>,
     decomposition: &Decomposition,
@@ -368,6 +372,7 @@ pub(super) fn filter_2d_banded(
     transform: WaveletTransform,
     storage: &DecompositionStorage<'_>,
     parallel: bool,
+    final_shift: crate::j2c::mct::SampleShift,
 ) -> Result<IDWTTempOutput> {
     let band = |index: usize| {
         &storage.coefficients[storage.sub_bands[decomposition.sub_bands[index]]
@@ -379,7 +384,7 @@ pub(super) fn filter_2d_banded(
         decomposition.rect.height() as usize,
     )?;
     try_grow_level_buffer(target, required_len)?;
-    filter_2d_banded_from_bands(
+    filter_2d_banded_from_bands_with_shift(
         decomposition.rect,
         [input.coefficients, band(0), band(1), band(2)],
         target,
@@ -387,6 +392,7 @@ pub(super) fn filter_2d_banded(
         transform,
         super::OPENJPEG_NORMALIZED_HIGH_PASS_F32,
         parallel,
+        final_shift,
     )?;
     Ok(IDWTTempOutput {
         rect: decomposition.rect,
@@ -419,6 +425,32 @@ pub(super) fn filter_2d_banded_from_bands(
     high_pass: f32,
     parallel: bool,
 ) -> Result<()> {
+    filter_2d_banded_from_bands_with_shift(
+        rect,
+        bands,
+        target,
+        band_scratch,
+        transform,
+        high_pass,
+        parallel,
+        crate::j2c::mct::SampleShift::Copy,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "level geometry, bands, scratch, and optional fused output shift stay explicit"
+)]
+fn filter_2d_banded_from_bands_with_shift(
+    rect: IntRect,
+    bands: [&[f32]; 4],
+    target: &mut [f32],
+    band_scratch: &mut Vec<f32>,
+    transform: WaveletTransform,
+    high_pass: f32,
+    parallel: bool,
+    final_shift: crate::j2c::mct::SampleShift,
+) -> Result<()> {
     let width = rect.width() as usize;
     let height = rect.height() as usize;
     let required_len = checked_decode_usize_product2(width, height)?;
@@ -428,12 +460,15 @@ pub(super) fn filter_2d_banded_from_bands(
     let Some(parallel_layout) = parallel_strip_layout(width, height, parallel)? else {
         let scratch_len = horizontal_scratch_elements(width)?;
         try_grow_level_buffer(band_scratch, scratch_len)?;
-        dispatch!(Level::new(), simd => stream_level(
-            simd,
-            level,
-            target,
-            &mut band_scratch[..scratch_len],
-        ));
+        dispatch!(Level::new(), simd => {
+            stream_level(
+                simd,
+                level,
+                target,
+                &mut band_scratch[..scratch_len],
+            );
+            final_shift.apply(target);
+        });
         return Ok(());
     };
     #[cfg(not(feature = "parallel"))]
@@ -456,6 +491,7 @@ pub(super) fn filter_2d_banded_from_bands(
             #[inline(always)]
             |simd, first_row, output, worker_scratch| {
                 stream_strip(simd, level, first_row, output, worker_scratch);
+                final_shift.apply(output);
             },
         ));
     }
@@ -532,6 +568,7 @@ pub(super) fn filter_2d_banded_pair(
     band_scratch: &mut Vec<f32>,
     transform: WaveletTransform,
     storage: &DecompositionStorage<'_>,
+    final_shift: crate::j2c::mct::SampleShift,
 ) -> Result<IDWTTempOutput> {
     let band = |decomposition: &Decomposition, index: usize| {
         &storage.coefficients[storage.sub_bands[decomposition.sub_bands[index]]
@@ -556,7 +593,12 @@ pub(super) fn filter_2d_banded_pair(
         transform,
         high_pass,
     );
-    filter_levels_pair([inner_level, outer_level], target, band_scratch)?;
+    filter_levels_pair(
+        [inner_level, outer_level],
+        target,
+        band_scratch,
+        final_shift,
+    )?;
     Ok(IDWTTempOutput { rect: outer.rect })
 }
 
@@ -566,6 +608,7 @@ fn filter_levels_pair(
     [inner_level, outer_level]: [Level2d<'_>; 2],
     target: &mut [f32],
     band_scratch: &mut Vec<f32>,
+    final_shift: crate::j2c::mct::SampleShift,
 ) -> Result<()> {
     let (width, height) = (outer_level.width, outer_level.height);
     let required_len = checked_decode_usize_product2(width, height)?;
@@ -595,6 +638,7 @@ fn filter_levels_pair(
                 worker_scratch,
                 scratch.rows_len,
             );
+            final_shift.apply(output);
         },
     ));
     Ok(())
@@ -2517,8 +2561,15 @@ mod tests {
                 assert!(pool.install(|| pair_runs_on_pool(inner_rect, outer_rect, true)));
                 let mut actual = alloc::vec![f32::NAN; size(outer_rect)];
                 let mut scratch = Vec::new();
-                pool.install(|| filter_levels_pair(levels, &mut actual, &mut scratch))
-                    .expect("level pair");
+                pool.install(|| {
+                    filter_levels_pair(
+                        levels,
+                        &mut actual,
+                        &mut scratch,
+                        crate::j2c::mct::SampleShift::Copy,
+                    )
+                })
+                .expect("level pair");
                 assert_eq!(
                     actual
                         .iter()
@@ -2582,7 +2633,13 @@ mod tests {
                     let mut scratch = Vec::new();
                     let charged = pool.install(|| {
                         assert!(pair_runs_on_pool(inner_rect, outer_rect, true), "{label}");
-                        filter_levels_pair(levels, &mut target, &mut scratch).expect("level pair");
+                        filter_levels_pair(
+                            levels,
+                            &mut target,
+                            &mut scratch,
+                            crate::j2c::mct::SampleShift::Copy,
+                        )
+                        .expect("level pair");
                         planned_pair_band_scratch_elements(inner_rect, outer_rect, transform)
                             .expect("planned scratch")
                     });

@@ -239,15 +239,17 @@ impl TileDecodeContext {
             0
         };
         self.stored_plane_samples = 0;
-        // A fused RGB8 decode moves the last component's coefficients into
-        // its plane, so a fresh plane allocated now would only be freed
-        // unused: leave it to that move, or to `prepare_deferred_plane`.
+        // A fused RGB8 or single-component grayscale decode moves the last
+        // component's coefficients into its plane, so a fresh plane allocated
+        // now would only be freed unused: leave it to that move, or to
+        // `prepare_deferred_plane`.
         let defer_last_plane = store_overwrites_planes
-            && self.defer_mct
-            && initial_tile.mct
-            && initial_tile.component_infos.len() == 3
             && header.size_data.num_x_tiles() == 1
-            && header.size_data.num_y_tiles() == 1;
+            && header.size_data.num_y_tiles() == 1
+            && ((self.defer_mct && initial_tile.mct && initial_tile.component_infos.len() == 3)
+                || (self.defer_gray_last_level
+                    && !initial_tile.mct
+                    && initial_tile.component_infos.len() == 1));
 
         let actual_retained = self.retained_channel_bytes()?;
         if actual_retained != retained_channel_bytes {

@@ -921,19 +921,42 @@ impl<'a> Image<'a> {
     ) -> Result<DecodedNativeComponents> {
         self.with_packet_cache_retry(|| {
             let parallel = decoder_context.cpu_decode_parallelism() == CpuDecodeParallelism::Auto;
-            let (decoded_image, retained_baseline_bytes) =
-                self.decode_image(decoder_context, None, None, true, retained_baseline_bytes)?;
+            let defer_gray = self.permits_line_region_idwt()
+                && self.header.component_infos.len() == 1
+                && !self.has_alpha;
+            decoder_context.set_defer_gray_last_level(defer_gray);
+            let decoded =
+                self.run_decode(decoder_context, None, None, true, retained_baseline_bytes);
+            decoder_context.set_defer_gray_last_level(false);
+            let retained_baseline_bytes = decoded?;
+            let tile_ctx = &mut decoder_context.tile_decode_context;
+            let fused_gray = tile_ctx.deferred_gray_last_level.take();
+            let decoded_image = self.finish_decoded_image(
+                &mut tile_ctx.channel_data,
+                retained_baseline_bytes,
+                tile_ctx.straight_alpha_output,
+            )?;
             let DecodedImage {
                 decoded_components,
                 boxes: _,
             } = decoded_image;
             let component_owner_capacity = decoded_components.capacity();
+            let fused_gray = fused_gray.map(|(level, shift)| native::FusedGrayLastLevel {
+                level,
+                shift,
+                ll: tile_ctx.idwt_output.coefficients.as_slice(),
+                scratch: [
+                    tile_ctx.idwt_scratch_buffer.as_mut_slice(),
+                    tile_ctx.idwt_band_scratch.as_mut_slice(),
+                ],
+            });
             self.pack_native_component_planes(
                 decoded_components,
                 component_owner_capacity,
                 (self.width(), self.height()),
-                retained_baseline_bytes.total,
+                retained_baseline_bytes,
                 parallel,
+                fused_gray,
             )
         })
     }
@@ -991,6 +1014,7 @@ impl<'a> Image<'a> {
                 (width, height),
                 retained_image_bytes.total,
                 parallel,
+                None,
             )
         })
     }

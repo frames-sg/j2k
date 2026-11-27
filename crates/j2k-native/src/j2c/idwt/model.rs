@@ -36,6 +36,9 @@ pub(crate) struct IDWTOutput {
     pub(crate) rect: IntRect,
     /// Where the region IDWT left the last level.
     pub(crate) placement: IdwtPlacement,
+    /// Whether the final level already applied the tile component's
+    /// `SampleShift` in place so `store` can skip a second full-plane pass.
+    pub(crate) shift_applied: bool,
 }
 
 /// Where [`IDWTOutput`] holds the last level for `store`.
@@ -60,6 +63,7 @@ impl Default for IDWTOutput {
             coefficients_i64: Vec::new(),
             rect: IntRect::from_ltrb(0, 0, u32::MAX, u32::MAX),
             placement: IdwtPlacement::Coefficients,
+            shift_applied: false,
         }
     }
 }
