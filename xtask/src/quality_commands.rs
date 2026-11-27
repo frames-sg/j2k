@@ -403,6 +403,7 @@ const FUZZ_TARGETS: &[(&str, &str)] = &[
     ("crates/j2k-jpeg", "region_scaled_fuzz"),
     ("crates/j2k-jpeg", "row_stream_fuzz"),
     ("crates/j2k-tilecodec", "decompress_fuzz"),
+    ("crates/j2k-tilecodec", "rle_fuzz"),
     ("crates/j2k-transcode", "jpeg_to_htj2k_fuzz"),
     ("crates/j2k-t803", "pgx_fuzz"),
     ("crates/j2k-t803", "archive_fuzz"),

@@ -70,6 +70,13 @@ determination.
   directory's `README.md`. The retained upstream MIT license is
   `crates/j2k-native/fixtures/reversible_early_stop/LICENSE.pydicom-data`.
 
+- **pydicom** <https://github.com/pydicom/pydicom> — The DICOM RLE fixtures in
+  `crates/j2k-tilecodec/tests/fixtures/dicom_rle/` include frames taken from
+  the RLE test files bundled with pydicom 2.4.4, and pydicom's encoder wrote
+  their reference encodings; provenance and hashes are in that directory's
+  `README.md`. The retained upstream MIT license is
+  `crates/j2k-tilecodec/tests/fixtures/dicom_rle/LICENSE.pydicom`.
+
 - **OpenJPEG** <https://www.openjpeg.org/> — Reference implementation used as
   an encoder and oracle for small test assets. The synthetic codestreams in
   `crates/j2k-native/fixtures/reversible_early_stop/` (such as

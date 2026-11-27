@@ -35,10 +35,30 @@ pub enum TileCodecError {
         #[source]
         source: std::io::Error,
     },
+    #[error("{what}: expected {expected} bytes, got {actual}")]
+    /// A caller-supplied buffer is not exactly the length the operation
+    /// requires, such as a DICOM RLE frame buffer that does not match its
+    /// layout.
+    LengthMismatch {
+        /// Buffer that has the wrong length.
+        what: &'static str,
+        /// Required length in bytes.
+        expected: usize,
+        /// Supplied length in bytes.
+        actual: usize,
+    },
 }
 
 pub(crate) fn truncated_input(segment: &'static str) -> TileCodecError {
-    TileCodecError::Input(InputError::TruncatedAt { offset: 0, segment })
+    truncated_input_at(0, segment)
+}
+
+pub(crate) fn truncated_input_at(offset: usize, segment: &'static str) -> TileCodecError {
+    TileCodecError::Input(InputError::TruncatedAt { offset, segment })
+}
+
+pub(crate) fn unsupported(what: &'static str) -> TileCodecError {
+    TileCodecError::Unsupported(Unsupported { what })
 }
 
 pub(crate) fn malformed_input(context: &'static str, message: impl Into<String>) -> TileCodecError {
@@ -90,7 +110,7 @@ impl CodecError for TileCodecError {
     }
 
     fn is_buffer_error(&self) -> bool {
-        matches!(self, Self::Buffer(_))
+        matches!(self, Self::Buffer(_) | Self::LengthMismatch { .. })
     }
 }
 
@@ -221,6 +241,22 @@ mod tests {
         error
             .source()
             .and_then(|source| source.downcast_ref::<Error>())
+    }
+
+    #[test]
+    fn length_mismatch_is_a_buffer_error_that_names_both_lengths() {
+        let error = TileCodecError::LengthMismatch {
+            what: "DICOM RLE output buffer",
+            expected: 12,
+            actual: 10,
+        };
+        assert!(error.is_buffer_error());
+        assert!(!error.is_truncated());
+        assert!(!error.is_unsupported());
+        assert_eq!(
+            error.to_string(),
+            "DICOM RLE output buffer: expected 12 bytes, got 10"
+        );
     }
 
     #[test]

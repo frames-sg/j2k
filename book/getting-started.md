@@ -72,7 +72,7 @@ Most code only needs `j2k`. Add a GPU crate if you want GPU decoding.
 | Feed decoded images to MPSGraph | `j2k-mpsgraph` |
 | Feed pixels or wavelet bands to PyTorch or NumPy | The `j2k` Python package (`pip install j2k`) |
 | Extract selected wavelet coefficients in Rust | `j2k::J2kDecoder::decode_wavelets` |
-| Decompress Deflate, Zstd, or LZW tiles (as in TIFF) | `j2k-tilecodec` |
+| Decompress Deflate, Zstd, LZW, or PackBits tiles (as in TIFF), or decode and encode DICOM RLE frames | `j2k-tilecodec` |
 | A command-line tool | `j2k-cli` |
 | Decode or encode from C or C++ | `j2k-c`, built from source |
 
