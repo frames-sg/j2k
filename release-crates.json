@@ -54,6 +54,10 @@
       "api_contract": "stable"
     },
     {
+      "name": "j2k-jpegls",
+      "api_contract": "experimental"
+    },
+    {
       "name": "j2k-tilecodec",
       "api_contract": "stable"
     },

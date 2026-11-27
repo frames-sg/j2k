@@ -15,6 +15,7 @@ members = [
     "crates/j2k-jpeg",
     "crates/j2k-jpeg-cuda",
     "crates/j2k-jpeg-metal",
+    "crates/j2k-jpegls",
     "crates/j2k-metal",
     "crates/j2k-metal-support",
     "crates/j2k-mpsgraph",

@@ -68,7 +68,7 @@ const SEMVER_BASELINE_PACKAGES: &[&str] = &[
     "j2k-mpsgraph-support",
 ];
 
-const SEMVER_NEW_PACKAGES: &[&str] = &[];
+const SEMVER_NEW_PACKAGES: &[&str] = &["j2k-jpegls"];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct Version {

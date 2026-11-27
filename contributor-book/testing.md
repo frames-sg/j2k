@@ -121,7 +121,7 @@ Ubuntu.
 ## Fuzzing
 
 Fuzz targets are in separate `fuzz/` workspaces under `j2k`, `j2k-native`,
-`j2k-jpeg`, `j2k-tilecodec`, `j2k-transcode`, and `j2k-t803`. They need nightly
+`j2k-jpeg`, `j2k-jpegls`, `j2k-tilecodec`, `j2k-transcode`, and `j2k-t803`. They need nightly
 and [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz).
 
 ```bash

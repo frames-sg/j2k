@@ -65,6 +65,7 @@ Most code only needs `j2k`. Add a GPU crate if you want GPU decoding.
 | Decode with an NVIDIA GPU | `j2k` + `j2k-cuda` |
 | Decode with an Apple GPU | `j2k` + `j2k-metal` |
 | Read or write regular JPEG | `j2k-jpeg` |
+| Read or write JPEG-LS, as in DICOM | `j2k-jpegls` |
 | Decode batches of JPEGs into dense RGB8 tensors | `j2k_jpeg::JpegBatchDecoder` |
 | Convert JPEG to HTJ2K | `j2k-transcode` (+ `j2k-transcode-cuda` or `j2k-transcode-metal`) |
 | JPEG on the GPU | `j2k-jpeg-cuda` or `j2k-jpeg-metal` |

@@ -21,6 +21,7 @@ needs. The detailed list is in [Format support](../book/format-support.md).
 | `j2k-codec-math` | support | `no_std` constants and math shared by the CPU, CUDA, and Metal code so they produce identical results. |
 | `j2k-native` | engine | The CPU JPEG 2000 / HTJ2K engine behind `j2k` and the adapters. |
 | `j2k-jpeg` | codec | CPU JPEG codec. |
+| `j2k-jpegls` | codec | JPEG-LS codec, as DICOM uses it. |
 | `j2k-tilecodec` | codec | Tile decompression (Deflate, Zstd, LZW, PackBits) and the DICOM RLE frame codec. |
 | `j2k-transcode` | transcode | JPEG to HTJ2K in the coefficient domain. |
 | `j2k-profile` | support | Profiling rows used by the codec and adapter crates. |
