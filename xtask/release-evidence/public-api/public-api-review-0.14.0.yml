@@ -117,6 +117,13 @@ reviews:
     hidden_fingerprint: "fnv1a64:ec777d18cfbd1c9f"
     rationale: "Adds DctWindowOutOfBounds and InvalidDctExtractOptions to the non-exhaustive JpegError enum for caller-input validation of windowed DCT extraction. Existing signatures and exhaustive JpegEncodeError variants are unchanged; metadata errors use its existing InvalidDctImage variant. No caller migration is required."
     hidden_rationale: "Adds bench_support::bench_huffman_scan behind bench-internals for entropy-only measurements. Rustdoc also records the JpegFastPacketFamily inherent impl used by the shared streaming routes; its methods remain crate-private. Adds quantized_only and estimate to DctExtractOptions, with retain_dequantized_blocks on that non-exhaustive struct; existing default and dequantized_only behavior is preserved. Adds MCU-window extraction, extraction working-set estimates, a baseline writer with source metadata, and standalone lossless crops under the experimental transcode module. InvalidMetadata extends the non-exhaustive JpegDctImageError enum. Baseline quantized-only windows are estimated and admitted without the whole-image coefficient matrix they never allocate; progressive and multi-scan windows retain whole-image coefficient accumulation, reflected in the estimate. Existing extraction and canonical re-emission signatures and behavior are unchanged."
+  j2k-jpegls:
+    removed_fingerprint: "none"
+    added_fingerprint: "fnv1a64:83129ef62c1e7b4c"
+    hidden_count: 0
+    hidden_fingerprint: "none"
+    rationale: "Reviewed the 174-item first-release API of the experimental JPEG-LS crate: Decoder (new, with_options, inspect, info, decode_into, decode), Info and ScanInfo header metadata, DecodeOptions with its output-size limit, DecodedImage and DecodedSamples, encode_jpegls with JpegLsSamples, JpegLsEncodeOptions, JpegLsEncodeValidation and EncodedJpegLs, InterleaveMode, PresetCodingParameters, and the non-exhaustive JpegLsError, JpegLsEncodeError and UnsupportedFeature error types. The crate has no workspace dependencies and no rustdoc-hidden items."
+    hidden_rationale: "The crate has no rustdoc-hidden public items."
   j2k-tilecodec:
     removed_fingerprint: "none"
     added_fingerprint: "fnv1a64:71b040c3b06676a5"
