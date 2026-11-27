@@ -109,6 +109,16 @@ impl<'a> NativeEncodeSession<'a> {
         Self::try_with_cap(retained_input, DEFAULT_MAX_CODEC_BYTES)
     }
 
+    /// Construct a session with the caller's
+    /// [`EncodeOptions::max_host_allocation_bytes`](crate::EncodeOptions::max_host_allocation_bytes),
+    /// or the default cap when it is unset.
+    pub(crate) fn try_for_options(
+        retained_input: NativeEncodeRetainedInput<'a>,
+        options: &crate::EncodeOptions,
+    ) -> EncodeResult<Self> {
+        Self::try_with_cap(retained_input, options.host_allocation_cap())
+    }
+
     /// Construct a session whose cap can only be lower than the process-wide
     /// codec ceiling. Cross-codec pipelines use this to reserve part of the
     /// shared host budget for owners that remain live outside native encode.
@@ -136,11 +146,17 @@ impl<'a> NativeEncodeSession<'a> {
 
     pub(crate) fn try_new_with_openhtj2k_qfactor(
         retained_input: NativeEncodeRetainedInput<'a>,
+        options: &crate::EncodeOptions,
         qfactor: u8,
     ) -> EncodeResult<Self> {
-        let mut session = Self::try_new(retained_input)?;
+        let mut session = Self::try_for_options(retained_input, options)?;
         session.openhtj2k_qfactor = Some(qfactor);
         Ok(session)
+    }
+
+    /// Maximum simultaneously live host bytes of every phase in this session.
+    pub(crate) const fn cap(&self) -> usize {
+        self.cap
     }
 
     pub(crate) const fn openhtj2k_qfactor(&self) -> Option<u8> {

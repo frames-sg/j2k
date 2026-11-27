@@ -9,6 +9,19 @@ To add an entry, see [the changelog guide](contributor-book/documentation.md#cha
 
 ### Decoding
 
+- Lossless encodes can hold more than 512 MiB of host memory in one phase
+  when the caller asks for it, for images such as 4096 x 4096 RGBA and
+  larger. `J2kLosslessEncodeOptions::max_host_allocation_bytes` (and
+  `with_max_host_allocation_bytes`) sets the per-phase cap on the CPU encode
+  route; `None`, the default, keeps 512 MiB, so existing encodes are
+  unchanged. A lower value makes the encoder refuse sooner. The
+  `CpuRoundTrip` validation decode still uses the decoder's 512 MiB cap, so
+  an image whose decode needs more must use `J2kEncodeValidation::External`.
+  ([#335](https://github.com/frames-sg/j2k/issues/335))
+- **Breaking:** `j2k_native::EncodeOptions` has a new public field,
+  `max_host_allocation_bytes`, the same cap for native encode. Code that
+  builds the struct with a literal must set it, or start from
+  `EncodeOptions::default()`.
 - A final tile part with `Psot = 0` now ends at the EOC marker, as T.800
   specifies. Before, the decoder read EOC and any bytes after it, such as the
   padding at the end of a DICOM frame, as packet data.

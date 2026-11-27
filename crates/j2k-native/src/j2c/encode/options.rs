@@ -100,6 +100,15 @@ pub struct EncodeOptions {
     pub tile_part_packet_limit: Option<u16>,
     /// Optional precinct exponents in COD order, one per resolution level.
     pub precinct_exponents: Vec<(u8, u8)>,
+    /// Optional cap, in bytes, on the host memory one encode phase may hold
+    /// at once.
+    ///
+    /// `None` keeps the default, [`DEFAULT_MAX_CODEC_BYTES`](crate::DEFAULT_MAX_CODEC_BYTES)
+    /// (512 MiB). The input pixels already belong to the caller, so a caller
+    /// encoding large images may raise it; values above `isize::MAX` act as
+    /// `isize::MAX`. The precomputed-coefficient entry points and the HTJ2K
+    /// self-validation decode keep their own caps.
+    pub max_host_allocation_bytes: Option<usize>,
 }
 
 /// Borrowed component-plane samples for reversible 5/3 component-plane encode.
@@ -151,6 +160,16 @@ pub struct EncodeRoiRegion {
     pub shift: u8,
 }
 
+impl EncodeOptions {
+    /// Per-phase host cap for sessions built from these options.
+    pub(crate) fn host_allocation_cap(&self) -> usize {
+        self.max_host_allocation_bytes
+            .map_or(crate::DEFAULT_MAX_CODEC_BYTES, |cap| {
+                cap.min(super::allocation::MAX_ENCODE_ALLOCATION_CAP)
+            })
+    }
+}
+
 impl Default for EncodeOptions {
     fn default() -> Self {
         Self {
@@ -181,6 +200,7 @@ impl Default for EncodeOptions {
             tile_size: None,
             tile_part_packet_limit: None,
             precinct_exponents: Vec::new(),
+            max_host_allocation_bytes: None,
         }
     }
 }

@@ -161,6 +161,7 @@ pub const fn j2k::J2kLosslessEncodeOptions::with_backend(self, j2k::EncodeBacken
 pub const fn j2k::J2kLosslessEncodeOptions::with_block_coding_mode(self, j2k::J2kBlockCodingMode) -> Self
 pub const fn j2k::J2kLosslessEncodeOptions::with_cpu_only_backend(self) -> Self
 pub const fn j2k::J2kLosslessEncodeOptions::with_max_decomposition_levels(self, core::option::Option<u8>) -> Self
+pub const fn j2k::J2kLosslessEncodeOptions::with_max_host_allocation_bytes(self, core::option::Option<usize>) -> Self
 pub const fn j2k::J2kLosslessEncodeOptions::with_progression(self, j2k::J2kProgressionOrder) -> Self
 pub const fn j2k::J2kLosslessEncodeOptions::with_quality_layers(self, u8) -> Self
 pub const fn j2k::J2kLosslessEncodeOptions::with_reversible_transform(self, j2k::ReversibleTransform) -> Self
@@ -689,6 +690,7 @@ pub j2k::J2kLosslessComponentSamples::width: u32
 pub j2k::J2kLosslessEncodeOptions::backend: j2k::EncodeBackendPreference
 pub j2k::J2kLosslessEncodeOptions::block_coding_mode: j2k::J2kBlockCodingMode
 pub j2k::J2kLosslessEncodeOptions::max_decomposition_levels: core::option::Option<u8>
+pub j2k::J2kLosslessEncodeOptions::max_host_allocation_bytes: core::option::Option<usize>
 pub j2k::J2kLosslessEncodeOptions::progression: j2k::J2kProgressionOrder
 pub j2k::J2kLosslessEncodeOptions::quality_layers: u8
 pub j2k::J2kLosslessEncodeOptions::reversible_transform: j2k::ReversibleTransform
@@ -4370,6 +4372,7 @@ pub j2k_native::EncodeOptions::guard_bits: u8
 pub j2k_native::EncodeOptions::irreversible_quantization_profile: core::option::Option<alloc::vec::Vec<alloc::vec::Vec<f32>>>
 pub j2k_native::EncodeOptions::irreversible_quantization_scale: f32
 pub j2k_native::EncodeOptions::irreversible_quantization_subband_scales: j2k_types::transform::quantization::IrreversibleQuantizationSubbandScales
+pub j2k_native::EncodeOptions::max_host_allocation_bytes: core::option::Option<usize>
 pub j2k_native::EncodeOptions::num_decomposition_levels: u8
 pub j2k_native::EncodeOptions::num_layers: u8
 pub j2k_native::EncodeOptions::precinct_exponents: alloc::vec::Vec<(u8, u8)>

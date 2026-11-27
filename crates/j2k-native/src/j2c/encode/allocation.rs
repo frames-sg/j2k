@@ -16,6 +16,8 @@ use crate::{EncodeError, EncodeResult, DEFAULT_MAX_CODEC_BYTES};
 
 const SEALED_BIT: usize = 1usize << (usize::BITS - 1);
 const LIVE_BYTES_MASK: usize = !SEALED_BIT;
+/// Largest cap a ledger can hold; larger caller requests are clamped to it.
+pub(crate) const MAX_ENCODE_ALLOCATION_CAP: usize = LIVE_BYTES_MASK;
 
 /// Atomic accounting domain for simultaneously live native encode bytes.
 #[derive(Debug)]

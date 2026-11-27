@@ -365,6 +365,7 @@ pub fn encode_htj2k_with_qfactor_and_accelerator(
     validate_openhtj2k_qfactor_request(qfactor, num_components, options)?;
     let session = NativeEncodeSession::try_new_with_openhtj2k_qfactor(
         NativeEncodeRetainedInput::none(),
+        options,
         qfactor,
     )?;
     let component_sample_info = [EncodeComponentSampleInfo { bit_depth, signed }; 3];
@@ -598,7 +599,7 @@ pub fn encode_with_accelerator_and_roi_regions(
     roi_regions: &[EncodeRoiRegion],
     accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> crate::EncodeResult<Vec<u8>> {
-    let session = NativeEncodeSession::try_new(NativeEncodeRetainedInput::none())?;
+    let session = NativeEncodeSession::try_for_options(NativeEncodeRetainedInput::none(), options)?;
     let block_coding_mode = block_coding_mode(options);
     let codestream = encode_impl(
         pixels,
@@ -653,7 +654,8 @@ pub fn encode_htj2k(
     options: &EncodeOptions,
 ) -> crate::EncodeResult<Vec<u8>> {
     on_pool_worker_for(pixels.len(), || {
-        let session = NativeEncodeSession::try_new(NativeEncodeRetainedInput::none())?;
+        let session =
+            NativeEncodeSession::try_for_options(NativeEncodeRetainedInput::none(), options)?;
         let mut accelerator = CpuOnlyJ2kEncodeStageAccelerator;
         encode_with_accelerator_and_mode_for_session(
             pixels,
@@ -690,7 +692,7 @@ pub fn encode_component_planes_53(
     signed: bool,
     options: &EncodeOptions,
 ) -> crate::EncodeResult<Vec<u8>> {
-    let session = NativeEncodeSession::try_new(NativeEncodeRetainedInput::none())?;
+    let session = NativeEncodeSession::try_for_options(NativeEncodeRetainedInput::none(), options)?;
     let requested_bytes = checked_element_bytes::<EncodeTypedComponentPlane<'_>>(
         planes.len(),
         "component-plane typed descriptor owners",
@@ -747,7 +749,8 @@ pub fn encode_typed_component_planes_53(
     options: &EncodeOptions,
 ) -> crate::EncodeResult<Vec<u8>> {
     on_pool_worker_for(planes.iter().map(|plane| plane.data.len()).sum(), || {
-        let session = NativeEncodeSession::try_new(NativeEncodeRetainedInput::none())?;
+        let session =
+            NativeEncodeSession::try_for_options(NativeEncodeRetainedInput::none(), options)?;
         encode_typed_component_planes_53_for_session(planes, width, height, options, &session)
             .map_err(NativeEncodePipelineError::into_encode_error)
     })

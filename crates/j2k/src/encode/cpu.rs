@@ -8,7 +8,7 @@ use j2k_native::{
     EncodeTypedComponentPlane as NativeEncodeTypedComponentPlane,
 };
 
-use super::allocation::{try_collect_exact, try_vec};
+use super::allocation::{try_collect_exact, try_vec, try_vec_with_host_cap};
 #[cfg(test)]
 use super::contracts::EncodeBackendPreference;
 use super::contracts::{
@@ -108,6 +108,7 @@ pub(super) fn encode_cpu_components(
 
 pub(super) fn interleave_component_planes(
     samples: J2kLosslessComponentSamples<'_>,
+    max_host_allocation_bytes: Option<usize>,
 ) -> Result<Vec<u8>, J2kError> {
     let bytes_per_sample = raw_pixel_bytes_per_sample(samples.bit_depth);
     let pixel_count = (samples.width as usize)
@@ -123,7 +124,11 @@ pub(super) fn interleave_component_planes(
             width: samples.width,
             height: samples.height,
         })?;
-    let mut interleaved = try_vec(capacity, "high-bit interleaved component samples")?;
+    let mut interleaved = try_vec_with_host_cap(
+        capacity,
+        "high-bit interleaved component samples",
+        max_host_allocation_bytes,
+    )?;
     for sample_idx in 0..pixel_count {
         let start =
             sample_idx
@@ -234,6 +239,7 @@ fn native_lossless_options_for_geometry(
         tile_part_packet_limit: options.tile_part_packet_limit,
         num_layers: options.quality_layers,
         validate_high_throughput_codestream: false,
+        max_host_allocation_bytes: options.max_host_allocation_bytes,
         ..EncodeOptions::default()
     }
 }

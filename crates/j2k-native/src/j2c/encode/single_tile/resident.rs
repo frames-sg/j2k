@@ -39,7 +39,7 @@ pub(in crate::j2c::encode) fn encode_resident_impl(
         ));
     }
 
-    let session = NativeEncodeSession::try_new(NativeEncodeRetainedInput::none())
+    let session = NativeEncodeSession::try_for_options(NativeEncodeRetainedInput::none(), options)
         .map_err(resident_error_from_encode_error)?;
     let validated = validate_non_pixel_single_tile_request(&NonPixelSingleTileRequest {
         width: input.width(),

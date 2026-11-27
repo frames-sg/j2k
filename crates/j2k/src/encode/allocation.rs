@@ -13,6 +13,19 @@ pub(super) fn try_vec<T>(count: usize, what: &'static str) -> Result<Vec<T>, J2k
     try_vec_with_cap(count, what, DEFAULT_MAX_HOST_ALLOCATION_BYTES)
 }
 
+/// [`try_vec`] under a caller-chosen cap; `None` keeps the default.
+pub(super) fn try_vec_with_host_cap<T>(
+    count: usize,
+    what: &'static str,
+    cap: Option<usize>,
+) -> Result<Vec<T>, J2kError> {
+    try_vec_with_cap(
+        count,
+        what,
+        cap.unwrap_or(DEFAULT_MAX_HOST_ALLOCATION_BYTES),
+    )
+}
+
 pub(super) fn try_collect_exact<T>(
     items: impl ExactSizeIterator<Item = T>,
     what: &'static str,

@@ -22,7 +22,7 @@ use super::{
     validate_encode_request, AcceleratedComponentRequest, OwnedDwtComponent, SingleTilePlan,
     TransformStageTimings, ValidatedEncodeRoute,
 };
-use crate::{EncodeResult, DEFAULT_MAX_CODEC_BYTES};
+use crate::EncodeResult;
 
 /// CPU encoder for one image at a sequence of irreversible quantization scales.
 ///
@@ -75,6 +75,7 @@ impl<'a> IrreversibleScaleEncoder<'a> {
         roi_regions: &'a [EncodeRoiRegion],
     ) -> Self {
         let reuse = !options.reversible && !options.validate_high_throughput_codestream;
+        let cap = options.host_allocation_cap();
         Self {
             pixels,
             width,
@@ -84,7 +85,7 @@ impl<'a> IrreversibleScaleEncoder<'a> {
             signed,
             options,
             roi_regions,
-            cap: DEFAULT_MAX_CODEC_BYTES,
+            cap,
             transform: None,
             reuse,
         }

@@ -2904,3 +2904,164 @@ fn sample_descriptor_rejects_short_pixel_buffers() {
 
     assert!(err.to_string().contains("pixel data too short"));
 }
+
+fn host_cap_fixture(width: u32, height: u32, components: u16) -> Vec<u8> {
+    (0..usize::try_from(width * height).expect("fixture size") * usize::from(components))
+        .map(|index| masked_u8(index.wrapping_mul(7) ^ (index >> 5)))
+        .collect()
+}
+
+#[test]
+fn lossless_encode_host_allocation_cap_defaults_to_512_mib_and_follows_the_caller() {
+    assert_eq!(cpu_options().max_host_allocation_bytes, None);
+    assert_eq!(
+        J2kLosslessEncodeOptions::new(
+            EncodeBackendPreference::CpuOnly,
+            J2kBlockCodingMode::Classic,
+            J2kProgressionOrder::Lrcp,
+            None,
+            ReversibleTransform::Rct53,
+            J2kEncodeValidation::CpuRoundTrip,
+        )
+        .max_host_allocation_bytes,
+        None
+    );
+
+    let pixels = host_cap_fixture(128, 128, 3);
+    let samples = J2kLosslessSamples::new(&pixels, 128, 128, 3, 8, false).expect("samples");
+    let default = encode_j2k_lossless(samples, &cpu_options()).expect("default-cap encode");
+
+    // A 128x128 RGB image holds more than 64 KiB in its transform phases.
+    for mode in [
+        J2kBlockCodingMode::Classic,
+        J2kBlockCodingMode::HighThroughput,
+    ] {
+        let capped = cpu_options()
+            .with_block_coding_mode(mode)
+            .with_max_host_allocation_bytes(Some(64 * 1024));
+        let error = encode_j2k_lossless(samples, &capped).expect_err("64 KiB cap refuses");
+        assert!(
+            error.to_string().contains("exceeding the 65536-byte cap"),
+            "{error}"
+        );
+    }
+
+    // A cap above the default changes nothing for an image that fits either.
+    for cap in [
+        None,
+        Some(j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES),
+        Some(usize::MAX),
+    ] {
+        let encoded =
+            encode_j2k_lossless(samples, &cpu_options().with_max_host_allocation_bytes(cap))
+                .expect("encode within the cap");
+        assert_eq!(encoded.codestream, default.codestream, "cap {cap:?}");
+    }
+}
+
+#[test]
+fn tiled_lossless_encode_follows_the_host_allocation_cap() {
+    let pixels = host_cap_fixture(96, 96, 4);
+    let samples = J2kLosslessSamples::new(&pixels, 96, 96, 4, 8, false).expect("samples");
+    let tiled = cpu_options().with_tile_size(Some((32, 32)));
+    let default = encode_j2k_lossless(samples, &tiled).expect("default-cap tiled encode");
+
+    // One 32x32 RGBA tile holds more than 4 KiB in its transform phases.
+    let error = encode_j2k_lossless(samples, &tiled.with_max_host_allocation_bytes(Some(4096)))
+        .expect_err("4 KiB cap refuses a tile");
+    assert!(
+        error.to_string().contains("exceeding the 4096-byte cap"),
+        "{error}"
+    );
+
+    let raised = encode_j2k_lossless(
+        samples,
+        &tiled.with_max_host_allocation_bytes(Some(usize::MAX)),
+    )
+    .expect("raised-cap tiled encode");
+    assert_eq!(raised.codestream, default.codestream);
+}
+
+#[test]
+fn high_bit_component_interleave_follows_the_host_allocation_cap() {
+    let width = 64;
+    let height = 64;
+    let plane_bytes = deep_plane_bytes(width, height);
+    let planes =
+        [plane_bytes.as_slice(), plane_bytes.as_slice()].map(|data| J2kLosslessComponentPlane {
+            data,
+            x_rsiz: 1,
+            y_rsiz: 1,
+        });
+    let samples =
+        J2kLosslessComponentSamples::new(&planes, width, height, 29, false).expect("samples");
+    // The interleaved copy of two 64x64 planes of 4-byte samples is 32 KiB.
+    let error = encode_j2k_lossless_components(
+        samples,
+        &cpu_options().with_max_host_allocation_bytes(Some(16 * 1024)),
+    )
+    .expect_err("16 KiB cap refuses the interleaved copy");
+    assert!(
+        error
+            .to_string()
+            .contains("high-bit interleaved component samples"),
+        "{error}"
+    );
+    encode_j2k_lossless_components(samples, &cpu_options()).expect("default-cap encode");
+}
+
+fn deep_plane_bytes(width: u32, height: u32) -> Vec<u8> {
+    (0..width * height)
+        .flat_map(|index| (index.wrapping_mul(40_503) & 0x1fff_ffff).to_le_bytes())
+        .collect()
+}
+
+/// The untiled 8192x8192 RGBA8 encode from issue #335 needs 1 GiB in its
+/// deinterleave phase. The default cap refuses it before transforming, so
+/// this is cheap: the zeroed input is never touched.
+#[test]
+fn lossless_encode_past_the_default_host_cap_is_refused_by_default() {
+    let pixels = vec![0_u8; 8192 * 8192 * 4];
+    let samples = J2kLosslessSamples::new(&pixels, 8192, 8192, 4, 8, false).expect("samples");
+    let error = encode_j2k_lossless(samples, &cpu_options()).expect_err("default cap refuses");
+    let message = error.to_string();
+    assert!(
+        message.contains("deinterleave phase")
+            && message.contains(&format!(
+                "exceeding the {}-byte cap",
+                j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES
+            )),
+        "{message}"
+    );
+}
+
+/// Untiled 8192x8192 RGBA encodes from issue #335: refused by default,
+/// accepted with a raised cap.
+#[test]
+#[ignore = "encodes 8192x8192 RGBA8 and RGBA16 images; run with --release --ignored"]
+fn lossless_encode_past_the_default_host_cap_succeeds_with_a_raised_cap() {
+    let default_cap = j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES;
+    let pixels = host_cap_fixture(8192, 8192, 8);
+    for bit_depth in [8_u8, 16] {
+        let bytes = 8192 * 8192 * 4 * usize::from(bit_depth / 8);
+        let samples = J2kLosslessSamples::new(&pixels[..bytes], 8192, 8192, 4, bit_depth, false)
+            .expect("samples");
+        let options = cpu_options().with_validation(J2kEncodeValidation::External);
+        let error = encode_j2k_lossless(samples, &options).expect_err("default cap refuses");
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("exceeding the {default_cap}-byte cap")),
+            "{bit_depth}-bit: {error}"
+        );
+
+        let encoded = encode_j2k_lossless(
+            samples,
+            &options.with_max_host_allocation_bytes(Some(16 * default_cap)),
+        )
+        .expect("raised-cap encode");
+        let header = inspect_j2k_codestream_header(&encoded.codestream).expect("header");
+        assert_eq!(header.dimensions, (8192, 8192));
+        assert_eq!(header.bit_depth, bit_depth);
+    }
+}
