@@ -440,6 +440,158 @@ pub(crate) fn try_forward_dwt_packed_f32(
     Ok(shape)
 }
 
+/// [`try_forward_dwt_packed_f32`] for a single grayscale component of `1..=16`
+/// bits per sample in packed little-endian `pixels`, directly into `output`.
+/// The first DWT level reads the raw pixels in one pass of cache-sized bands,
+/// applying the bit mask, sign extension / unsigned level shift, and level-0
+/// lifting without writing a deinterleaved plane or allocating a spare plane;
+/// later levels run in place in `output`.
+#[expect(
+    clippy::too_many_arguments,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_wrap,
+    reason = "the plane geometry, pixel format and scratch are independent inputs; bounded integer samples convert to f32 identically to try_deinterleave_to_f32"
+)]
+pub(crate) fn try_forward_dwt_packed_f32_from_gray(
+    pixels: &[u8],
+    output: &mut [f32],
+    width: u32,
+    height: u32,
+    bit_depth: u8,
+    signed: bool,
+    num_levels: u8,
+    reversible: bool,
+    line_scratch: &mut [f32],
+    origin: (u32, u32),
+) -> EncodeResult<PackedDwtShape> {
+    if bit_depth == 0 || bit_depth > 16 {
+        return Err(EncodeError::InvalidInput {
+            what: "gray fused forward DWT supports 1-16 bits per sample",
+        });
+    }
+    validate_packed_dwt_plane(output.len(), width, height)?;
+    validate_line_scratch(line_scratch.len(), width, height)?;
+    let workers = line_scratch.len() / lifting::packed_dwt_scratch_len(width, height)?;
+    let bytes_per_sample = if bit_depth <= 8 { 1usize } else { 2usize };
+    let required_bytes =
+        output
+            .len()
+            .checked_mul(bytes_per_sample)
+            .ok_or(EncodeError::ArithmeticOverflow {
+                what: "gray forward DWT pixel bytes",
+            })?;
+    if workers == 0 || pixels.len() < required_bytes {
+        return Err(EncodeError::InvalidInput {
+            what: "gray forward DWT needs every pixel and strip scratch",
+        });
+    }
+    let stride = usize_from_u32(width, "packed forward DWT width")?;
+    let height_usize = usize_from_u32(height, "packed forward DWT height")?;
+    let transform = (stride, height_usize, num_levels, line_scratch, origin);
+
+    if bit_depth <= 8 {
+        let mask = u8::MAX >> (8 - bit_depth);
+        if signed {
+            let shift = 8_u8 - bit_depth;
+            let read_row = move |y: usize, first: usize, [dst]: [&mut [f32]; 1]| {
+                dispatch!(Level::new(), _simd => {
+                    let src = &pixels[y * stride + first..][..dst.len()];
+                    for (out, &b) in dst.iter_mut().zip(src) {
+                        let s = ((b & mask) << shift) as i8 >> shift;
+                        *out = f32::from(s);
+                    }
+                });
+            };
+            forward_gray(&read_row, output, transform, workers, reversible)
+        } else {
+            let offset = f32::from(1_u16 << (bit_depth - 1));
+            let read_row = move |y: usize, first: usize, [dst]: [&mut [f32]; 1]| {
+                dispatch!(Level::new(), _simd => {
+                    let src = &pixels[y * stride + first..][..dst.len()];
+                    for (out, &b) in dst.iter_mut().zip(src) {
+                        *out = f32::from(b & mask) - offset;
+                    }
+                });
+            };
+            forward_gray(&read_row, output, transform, workers, reversible)
+        }
+    } else {
+        let pixels16 = pixels.as_chunks::<2>().0;
+        let mask = u16::MAX >> (16 - bit_depth);
+        if signed {
+            let shift = 16_u8 - bit_depth;
+            let read_row = move |y: usize, first: usize, [dst]: [&mut [f32]; 1]| {
+                dispatch!(Level::new(), _simd => {
+                    let src = &pixels16[y * stride + first..][..dst.len()];
+                    for (out, &pair) in dst.iter_mut().zip(src) {
+                        let raw = u16::from_le_bytes(pair) & mask;
+                        let s = (raw << shift) as i16 >> shift;
+                        *out = f32::from(s);
+                    }
+                });
+            };
+            forward_gray(&read_row, output, transform, workers, reversible)
+        } else {
+            let offset = (1_u32 << (bit_depth - 1)) as f32;
+            let read_row = move |y: usize, first: usize, [dst]: [&mut [f32]; 1]| {
+                dispatch!(Level::new(), _simd => {
+                    let src = &pixels16[y * stride + first..][..dst.len()];
+                    for (out, &pair) in dst.iter_mut().zip(src) {
+                        let raw = u16::from_le_bytes(pair) & mask;
+                        *out = f32::from(raw) - offset;
+                    }
+                });
+            };
+            forward_gray(&read_row, output, transform, workers, reversible)
+        }
+    }
+}
+
+/// A reader of one plane's rows for `lifting::transform_planes_from`.
+type GrayRows<'a> = dyn Fn(usize, usize, [&mut [f32]; 1]) + Sync + 'a;
+
+fn forward_gray(
+    read_rows: &GrayRows<'_>,
+    output: &mut [f32],
+    (width, height, num_levels, line_scratch, origin): (usize, usize, u8, &mut [f32], (u32, u32)),
+    workers: usize,
+    reversible: bool,
+) -> EncodeResult<PackedDwtShape> {
+    match first_level_region(width, height, num_levels, origin)? {
+        Some(level) => dispatch!(Level::new(), simd => lifting::transform_planes_from(
+            simd,
+            read_rows,
+            [output],
+            line_scratch,
+            workers,
+            level,
+            reversible,
+        ))?,
+        None => {
+            for y in 0..height {
+                read_rows(y, 0, [&mut output[y * width..][..width]]);
+            }
+        }
+    }
+    let mut first_level = true;
+    forward_dwt_packed_core(
+        output,
+        width,
+        height,
+        num_levels,
+        line_scratch,
+        origin,
+        |plane, scratch, level| {
+            if core::mem::take(&mut first_level) {
+                return Ok(());
+            }
+            dispatch!(Level::new(), simd => {
+                lifting::transform_level(simd, plane, scratch, workers, level, reversible)
+            })
+        },
+    )
+}
+
 /// [`try_forward_dwt_packed_f32`] for the three components of 8-bit RGB
 /// `pixels` under the forward RCT (reversible) or ICT, into `outputs`. The
 /// first level of all three runs in one pass of cache-sized bands that read
@@ -1199,6 +1351,79 @@ mod tests {
             (4096, 100, 6400),
         ] {
             assert_eq!(packed_dwt_scratch_len(width, height), Ok(expected));
+        }
+    }
+
+    #[test]
+    fn fused_gray_forward_dwt_matches_deinterleaved_for_signed_unsigned_and_depths() {
+        for (width, height, bit_depth, signed, reversible, origin) in [
+            (17_u32, 13_u32, 8_u8, false, true, (0, 0)),
+            (17, 13, 8, true, true, (1, 0)),
+            (19, 15, 12, false, true, (0, 1)),
+            (19, 15, 12, true, false, (1, 1)),
+            (25, 21, 16, false, false, (0, 0)),
+            (25, 21, 16, true, true, (1, 1)),
+        ] {
+            let n = (width * height) as usize;
+            let bytes_per_sample = if bit_depth <= 8 { 1 } else { 2 };
+            let mut pixels = Vec::with_capacity(n * bytes_per_sample);
+            let mut expected = Vec::with_capacity(n);
+            for i in 0..n {
+                let raw = ((i * 251 + 17) as u16) & (u16::MAX >> (16 - bit_depth));
+                if bytes_per_sample == 1 {
+                    let b = raw as u8;
+                    pixels.push(b);
+                    if signed {
+                        let shift = 8 - bit_depth;
+                        expected.push(f32::from(((b << shift) as i8) >> shift));
+                    } else {
+                        expected.push(f32::from(b) - f32::from(1_u16 << (bit_depth - 1)));
+                    }
+                } else {
+                    pixels.extend_from_slice(&raw.to_le_bytes());
+                    if signed {
+                        let shift = 16 - bit_depth;
+                        expected.push(f32::from(((raw << shift) as i16) >> shift));
+                    } else {
+                        expected.push(f32::from(raw) - (1_u32 << (bit_depth - 1)) as f32);
+                    }
+                }
+            }
+            let num_levels = 3;
+            let scratch_len = packed_dwt_scratch_len(width, height).unwrap();
+            let mut scratch = vec![0.0_f32; scratch_len];
+            let mut actual = vec![0.0_f32; n];
+            let actual_shape = try_forward_dwt_packed_f32_from_gray(
+                &pixels,
+                &mut actual,
+                width,
+                height,
+                bit_depth,
+                signed,
+                num_levels,
+                reversible,
+                &mut scratch,
+                origin,
+            )
+            .unwrap();
+            let expected_shape = try_forward_dwt_packed_f32(
+                &mut expected,
+                width,
+                height,
+                num_levels,
+                reversible,
+                &mut scratch,
+                None,
+                origin,
+            )
+            .unwrap();
+            assert_eq!(actual_shape, expected_shape);
+            let actual_bits: Vec<u32> = actual.iter().map(|v| v.to_bits()).collect();
+            let expected_bits: Vec<u32> = expected.iter().map(|v| v.to_bits()).collect();
+            assert_eq!(
+                actual_bits, expected_bits,
+                "mismatch for {width}x{height} b={bit_depth} signed={signed} rev={reversible} origin={origin:?}"
+            );
         }
     }
 }
