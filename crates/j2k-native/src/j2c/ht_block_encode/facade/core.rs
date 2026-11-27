@@ -68,6 +68,7 @@ pub(super) fn try_encode_code_block_set_view_in_workspace(
         coefficients,
         missing_msbs,
         total_bitplanes,
+        Some(max_magnitude),
         workspace,
     )?;
     if cleanup.len() > allocation.cleanup_bytes {

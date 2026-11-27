@@ -15,11 +15,15 @@ const QUADS: usize = ROW_PAIR_COLUMNS / 2;
 pub(super) struct RowPair {
     exponents: [[u8; ROW_PAIR_COLUMNS]; 2],
     values: [[u32; ROW_PAIR_COLUMNS]; 2],
-    /// Per quad: its significance pattern `rho`, largest exponent, and which
-    /// samples reach it.
-    rho: [u8; QUADS],
+    /// Per quad: its significance pattern `rho` (padded with a leading 0 at
+    /// index 0 so `rho[0..quads]` is `left_rho` without copying or stack
+    /// zeroing), largest exponent, and which samples reach it.
+    rho: [u8; QUADS + 1],
     e_qmax: [u8; QUADS],
     reach: [u8; QUADS],
+    /// Scratch for `fill_above`, kept in `RowPair` so each row pair avoids
+    /// zero-initializing 515 bytes on the stack.
+    pair_max: [u8; QUADS + 1],
     /// Per quad, from the row above it (the previous pair's lower row): its
     /// context bits 0 and 2, and the largest exponent of the four samples
     /// above and diagonally above it.
@@ -37,9 +41,10 @@ impl RowPair {
         Self {
             exponents: [[0; ROW_PAIR_COLUMNS]; 2],
             values: [[0; ROW_PAIR_COLUMNS]; 2],
-            rho: [0; QUADS],
+            rho: [0; QUADS + 1],
             e_qmax: [0; QUADS],
             reach: [0; QUADS],
+            pair_max: [0; QUADS + 1],
             above_context: [0; QUADS],
             above_exponent: [0; QUADS],
             index: [0; QUADS],
@@ -49,6 +54,11 @@ impl RowPair {
     }
 
     /// Load rows `y` and `y + 1` of a `width` x `height` block at cleanup shift `p`.
+    #[expect(
+        clippy::inline_always,
+        reason = "inlined into the SIMD-dispatched cleanup row loop"
+    )]
+    #[inline(always)]
     pub(super) fn fill<C: CleanupCoefficientSource + ?Sized>(
         &mut self,
         coefficients: &C,
@@ -75,10 +85,10 @@ impl RowPair {
         // An indexed loop over quads vectorizes; the walk then loads each
         // quad's pattern and maximum instead of deriving them per sample.
         let [upper, lower] = &self.exponents;
-        for quad in 0..width / 2 + 2 {
+        for quad in 0..quads {
             let (left, right) = (2 * quad, 2 * quad + 1);
             let samples = [upper[left], lower[left], upper[right], lower[right]];
-            self.rho[quad] = u8::from(samples[0] != 0)
+            self.rho[quad + 1] = u8::from(samples[0] != 0)
                 | u8::from(samples[1] != 0) << 1
                 | u8::from(samples[2] != 0) << 2
                 | u8::from(samples[3] != 0) << 3;
@@ -98,15 +108,19 @@ impl RowPair {
     /// columns `2j - 1` and `2j` (column -1 lies outside the block); quad `j`
     /// sees column pairs `j` and `j + 1`. Zipped slices keep both passes
     /// vectorized.
+    #[expect(
+        clippy::inline_always,
+        reason = "inlined into the SIMD-dispatched cleanup row loop"
+    )]
+    #[inline(always)]
     fn fill_above(&mut self, quads: usize) {
-        let mut pair_max = [0_u8; QUADS + 1];
         let above = &self.exponents[1][..=2 * quads];
-        pair_max[0] = above[0];
+        self.pair_max[0] = above[0];
         let pairs = above[1..].as_chunks::<2>().0;
-        for (max, pair) in pair_max[1..=quads].iter_mut().zip(pairs) {
+        for (max, pair) in self.pair_max[1..=quads].iter_mut().zip(pairs) {
             *max = pair[0].max(pair[1]);
         }
-        let (left, right) = (&pair_max[..quads], &pair_max[1..=quads]);
+        let (left, right) = (&self.pair_max[..quads], &self.pair_max[1..=quads]);
         let targets = self.above_exponent[..quads].iter_mut();
         let contexts = self.above_context[..quads].iter_mut();
         for (((exponent, context), &left), &right) in targets.zip(contexts).zip(left).zip(right) {
@@ -119,12 +133,15 @@ impl RowPair {
     /// context comes from its left neighbor alone and its `kappa` is 1; below
     /// the first row the context adds the row above, and a quad with two or
     /// more significant samples takes `kappa` from the exponents above it.
+    #[expect(
+        clippy::inline_always,
+        reason = "inlined into the SIMD-dispatched cleanup row loop"
+    )]
+    #[inline(always)]
     fn fill_coding(&mut self, quads: usize, initial: bool) {
-        let mut left_rho = [0_u8; QUADS];
-        left_rho[1..quads].copy_from_slice(&self.rho[..quads - 1]);
-        let fields = self.rho[..quads]
+        let fields = self.rho[1..=quads]
             .iter()
-            .zip(&left_rho[..quads])
+            .zip(&self.rho[..quads])
             .zip(&self.e_qmax[..quads])
             .zip(&self.reach[..quads])
             .zip(&self.above_context[..quads])

@@ -45,6 +45,7 @@ pub(super) fn try_encode_cleanup_segment_from_view(
         coefficients,
         missing_msbs,
         total_bitplanes,
+        None,
         &mut workspace,
     )
 }
@@ -53,9 +54,13 @@ pub(super) fn try_encode_cleanup_segment_from_view_in_workspace(
     coefficients: CoefficientBlockView<'_, i32>,
     missing_msbs: u8,
     total_bitplanes: u8,
+    max_magnitude: Option<u32>,
     workspace: &mut HtEncodeWorkspace,
 ) -> EncodeResult<Vec<u8>> {
     let shift = u32::from(31_u8.saturating_sub(total_bitplanes));
+    let p = 30_u32.saturating_sub(u32::from(missing_msbs));
+    let fast_exponent =
+        p >= shift && max_magnitude.is_some_and(|maximum| (maximum >> (p - shift)) <= (1 << 23));
     // Gap-free blocks index samples directly; the strided view divides by
     // the width for every sample.
     if let Some(samples) = coefficients.contiguous() {
@@ -63,6 +68,7 @@ pub(super) fn try_encode_cleanup_segment_from_view_in_workspace(
             &I32CleanupCoefficients {
                 coefficients: samples,
                 shift,
+                fast_exponent,
             },
             missing_msbs,
             coefficients.width(),
@@ -118,25 +124,9 @@ fn try_encode_cleanup_segment_from_source<S: CleanupCoefficientSource + ?Sized>(
     } = workspace;
 
     let p = 30_u32.saturating_sub(u32::from(missing_msbs));
-    for y in (0..height).step_by(2) {
-        rows.fill(coefficients, y, width, height, p)
-            .map_err(ht_cleanup_invariant)?;
-        for x in (0..width).step_by(4) {
-            if rows.pair_is_zero(x, width) {
-                mel.encode(false).map_err(ht_cleanup_invariant)?;
-                if x + 2 < width {
-                    mel.encode(false).map_err(ht_cleanup_invariant)?;
-                }
-                continue;
-            }
-            if y == 0 {
-                encode_quad_pair::<true>(rows, width, x, mel, vlc, ms)
-            } else {
-                encode_quad_pair::<false>(rows, width, x, mel, vlc, ms)
-            }
-            .map_err(ht_cleanup_invariant)?;
-        }
-    }
+    crate::math::dispatch!(crate::math::Level::new(), _simd => {
+        encode_cleanup_rows(coefficients, width, height, p, rows, mel, vlc, ms)
+    })?;
 
     terminate_mel_vlc(mel, vlc).map_err(ht_cleanup_invariant)?;
     ms.terminate().map_err(ht_cleanup_invariant)?;
@@ -161,6 +151,44 @@ fn try_encode_cleanup_segment_from_source<S: CleanupCoefficientSource + ?Sized>(
     data[prev] = (data[prev] & 0xF0) | ((locator_bytes as u8) & 0x0F);
 
     Ok(data)
+}
+
+#[expect(
+    clippy::inline_always,
+    clippy::too_many_arguments,
+    reason = "inlined into the SIMD dispatch target so row preparation and quad prep vectorize with AVX2"
+)]
+#[inline(always)]
+fn encode_cleanup_rows<S: CleanupCoefficientSource + ?Sized>(
+    coefficients: &S,
+    width: usize,
+    height: usize,
+    p: u32,
+    rows: &mut super::quad::RowPair,
+    mel: &mut super::writers::MelEncoder,
+    vlc: &mut super::writers::VlcEncoder,
+    ms: &mut super::writers::MagSgnEncoder,
+) -> EncodeResult<()> {
+    for y in (0..height).step_by(2) {
+        rows.fill(coefficients, y, width, height, p)
+            .map_err(ht_cleanup_invariant)?;
+        for x in (0..width).step_by(4) {
+            if rows.pair_is_zero(x, width) {
+                mel.encode(false).map_err(ht_cleanup_invariant)?;
+                if x + 2 < width {
+                    mel.encode(false).map_err(ht_cleanup_invariant)?;
+                }
+                continue;
+            }
+            if y == 0 {
+                encode_quad_pair::<true>(rows, width, x, mel, vlc, ms)
+            } else {
+                encode_quad_pair::<false>(rows, width, x, mel, vlc, ms)
+            }
+            .map_err(ht_cleanup_invariant)?;
+        }
+    }
+    Ok(())
 }
 
 fn ht_cleanup_invariant(what: &'static str) -> EncodeError {

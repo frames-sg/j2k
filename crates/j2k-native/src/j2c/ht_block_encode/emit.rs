@@ -29,13 +29,24 @@ impl PairVlc {
         self.bits |= (u64::from(codeword) & ((1 << len) - 1)) << self.len;
         self.len += len;
     }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "runs once per quad pair with pre-masked bits"
+    )]
+    #[inline(always)]
+    fn push_masked(&mut self, codeword: u32, len: u8) {
+        self.bits |= u64::from(codeword) << self.len;
+        self.len += len;
+    }
 }
 
 impl EncodeQuadSink<'_> {
     #[expect(clippy::inline_always, reason = "runs once per quad pair")]
     #[inline(always)]
     fn flush_pair_vlc(&mut self) -> Result<(), &'static str> {
-        self.vlc.encode(self.pair_vlc.bits, self.pair_vlc.len)
+        self.vlc
+            .encode_masked(self.pair_vlc.bits, self.pair_vlc.len)
     }
 }
 
@@ -131,26 +142,52 @@ fn encode_mag_signs(
     // Payloads go out least significant first, as separate writes would. An
     // insignificant sample has a 0-bit payload, so packing needs no branches.
     // U <= 32 bounds a payload; with U <= 16 the quad fits one 64-bit word.
-    let pack = |first: usize, count: usize| {
-        let (mut word, mut word_bits) = (0_u64, 0_u32);
-        for (sample, &value) in s.iter().enumerate().skip(first).take(count) {
-            let significant = (rho >> sample) & 1;
-            let magnitude_bits = significant * (u_q - ((e_k >> sample) & 1));
-            let payload = u64::from(value) & ((1_u64 << magnitude_bits) - 1);
-            word |= payload << word_bits;
-            word_bits += magnitude_bits;
-        }
-        (word, word_bits)
-    };
+    let m0 = (rho & 1) * (u_q - (e_k & 1));
+    let m1 = ((rho >> 1) & 1) * (u_q - ((e_k >> 1) & 1));
+    let m2 = ((rho >> 2) & 1) * (u_q - ((e_k >> 2) & 1));
+    let m3 = ((rho >> 3) & 1) * (u_q - ((e_k >> 3) & 1));
+    let p0 = u64::from(s[0]) & ((1_u64 << m0) - 1);
+    let p1 = u64::from(s[1]) & ((1_u64 << m1) - 1);
+    let p2 = u64::from(s[2]) & ((1_u64 << m2) - 1);
+    let p3 = u64::from(s[3]) & ((1_u64 << m3) - 1);
     if u_q <= 16 {
-        let (word, word_bits) = pack(0, 4);
-        return ms.encode(word, word_bits);
+        let b1 = m0;
+        let b2 = b1 + m1;
+        let b3 = b2 + m2;
+        let word = p0 | (p1 << b1) | (p2 << b2) | (p3 << b3);
+        return ms.encode_masked(word, b3 + m3);
     }
-    let (word, word_bits) = pack(0, 2);
-    ms.encode(word, word_bits)?;
-    let (word, word_bits) = pack(2, 2);
-    ms.encode(word, word_bits)
+    let w01 = p0 | (p1 << m0);
+    ms.encode_masked(w01, m0 + m1)?;
+    let w23 = p2 | (p3 << m2);
+    ms.encode_masked(w23, m2 + m3)
 }
+
+/// Precomputed non-initial UVLC `(bits, len)` for `(u_q0, u_q1)` in `0..16 x 0..16`.
+/// Packs `first.pre | second.pre | first.suf | second.suf` in one table lookup.
+const UVLC_PAIR_TABLE: [(u32, u8); 256] = {
+    let mut table = [(0_u32, 0_u8); 256];
+    let mut i = 0;
+    while i < 16 {
+        let first = HT_UVLC_ENCODE_TABLE[i];
+        let mut j = 0;
+        while j < 16 {
+            let second = HT_UVLC_ENCODE_TABLE[j];
+            let mut bits = (first.pre as u32) & ((1_u32 << first.pre_len) - 1);
+            let mut len = first.pre_len;
+            bits |= ((second.pre as u32) & ((1_u32 << second.pre_len) - 1)) << len;
+            len += second.pre_len;
+            bits |= ((first.suf as u32) & ((1_u32 << first.suf_len) - 1)) << len;
+            len += first.suf_len;
+            bits |= ((second.suf as u32) & ((1_u32 << second.suf_len) - 1)) << len;
+            len += second.suf_len;
+            table[i * 16 + j] = (bits, len);
+            j += 1;
+        }
+        i += 1;
+    }
+    table
+};
 
 #[expect(
     clippy::cast_sign_loss,
@@ -163,34 +200,41 @@ fn encode_mag_signs(
 #[inline(always)]
 fn encode_uvlc(u_q0: i32, u_q1: i32, vlc: &mut PairVlc) {
     if u_q0 > 2 && u_q1 > 2 {
-        let first = HT_UVLC_ENCODE_TABLE[(u_q0 - 2) as usize];
-        let second = HT_UVLC_ENCODE_TABLE[(u_q1 - 2) as usize];
-        encode_uvlc_pair(vlc, first, second);
+        encode_uvlc_pair_fast(u_q0 - 2, u_q1 - 2, vlc);
     } else if u_q0 > 2 && u_q1 > 0 {
         let first = HT_UVLC_ENCODE_TABLE[u_q0 as usize];
         vlc.push(u32::from(first.pre), first.pre_len);
         vlc.push((u_q1 - 1) as u32, 1);
         vlc.push(u32::from(first.suf), first.suf_len);
     } else {
-        let first = HT_UVLC_ENCODE_TABLE[u_q0.max(0) as usize];
-        let second = HT_UVLC_ENCODE_TABLE[u_q1.max(0) as usize];
-        encode_uvlc_pair(vlc, first, second);
+        encode_uvlc_pair_fast(u_q0.max(0), u_q1.max(0), vlc);
     }
 }
 
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "max with zero makes both non-initial UVLC table indices nonnegative"
-)]
 #[expect(
     clippy::inline_always,
     reason = "runs once per quad pair in the cleanup hot path"
 )]
 #[inline(always)]
 fn encode_uvlc_non_initial(u_q0: i32, u_q1: i32, vlc: &mut PairVlc) {
-    let first = HT_UVLC_ENCODE_TABLE[u_q0.max(0) as usize];
-    let second = HT_UVLC_ENCODE_TABLE[u_q1.max(0) as usize];
-    encode_uvlc_pair(vlc, first, second);
+    encode_uvlc_pair_fast(u_q0.max(0), u_q1.max(0), vlc);
+}
+
+#[expect(
+    clippy::cast_sign_loss,
+    clippy::inline_always,
+    reason = "nonnegative indices use the 16x16 packed pair lookup table when in range"
+)]
+#[inline(always)]
+fn encode_uvlc_pair_fast(u_q0: i32, u_q1: i32, vlc: &mut PairVlc) {
+    let a = u_q0 as usize;
+    let b = u_q1 as usize;
+    if (a | b) < 16 {
+        let (bits, len) = UVLC_PAIR_TABLE[a * 16 + b];
+        vlc.push_masked(bits, len);
+    } else {
+        encode_uvlc_pair(vlc, HT_UVLC_ENCODE_TABLE[a], HT_UVLC_ENCODE_TABLE[b]);
+    }
 }
 
 #[expect(

@@ -115,3 +115,63 @@ fn writers_ignore_bits_above_the_declared_codeword_length() {
         &magsgn_b.buffer[..magsgn_b.pos]
     );
 }
+
+#[test]
+fn vlc_swar_bulk_drain_matches_bytewise_stuffing_boundaries() {
+    let patterns: &[&[(u64, u8)]] = &[
+        // Full 64-bit word with no 0x7F/0xFF low-7-bit bytes (exercises SWAR fast path).
+        &[(0x1234_5678_9ABC_DE01, 60), (0x0A, 4), (0x33, 8)],
+        // Byte boundary transitions around 0x8F -> 0x7F / 0x90 -> 0x7F / 0xFF.
+        &[
+            (0x7F, 8),
+            (0x90, 8),
+            (0x7F, 8),
+            (0x8F, 8),
+            (0xFF, 8),
+            (0x7F, 8),
+            (0x00, 8),
+            (0x91, 8),
+        ],
+        // Mix of safe 64-bit chunks and stuffed chunks.
+        &[
+            (0x0102_0304_0506_0708, 60),
+            (0x09, 4),
+            (0xFF, 8),
+            (0x7F, 8),
+            (0x1020_3040_5060_7080, 60),
+            (0x05, 4),
+        ],
+    ];
+    for pattern in patterns {
+        let mut vlc_fast = VlcEncoder::new();
+        let mut mel_fast = MelEncoder::new();
+        for &(cw, len) in *pattern {
+            vlc_fast.encode(cw, len).expect("fast VLC encode");
+        }
+        terminate_mel_vlc(&mut mel_fast, &mut vlc_fast).expect("terminate fast");
+
+        // Compare against byte-at-a-time insertion (never fills 64 bits at once).
+        let mut vlc_ref = VlcEncoder::new();
+        let mut mel_ref = MelEncoder::new();
+        for &(cw, len) in *pattern {
+            let mut rem = len;
+            let mut val = cw;
+            while rem > 0 {
+                let step = rem.min(4);
+                vlc_ref.encode(val, step).expect("ref VLC encode");
+                val >>= step;
+                rem -= step;
+            }
+        }
+        terminate_mel_vlc(&mut mel_ref, &mut vlc_ref).expect("terminate ref");
+
+        assert_eq!(
+            &vlc_fast.buffer[vlc_fast.buffer.len() - vlc_fast.pos..],
+            &vlc_ref.buffer[vlc_ref.buffer.len() - vlc_ref.pos..]
+        );
+        assert_eq!(
+            &mel_fast.buffer[..mel_fast.pos],
+            &mel_ref.buffer[..mel_ref.pos]
+        );
+    }
+}

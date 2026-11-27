@@ -799,17 +799,11 @@ fn encode_preencoded_ht_block(
     buffer
         .try_reserve_exact((width * height) as usize)
         .map_err(|_| host_allocation_failed("preencoded HT block buffer", block_bytes))?;
-    for y in y0..y0 + height {
-        let row = view.row(y).ok_or_else(|| {
+    let maximum = quantizer
+        .fill_packed_block_and_max(buffer, view, x0, y0, width, height)
+        .ok_or_else(|| {
             NativeEncodePipelineError::internal_invariant("packed subband row is missing")
         })?;
-        quantizer.extend(buffer, &row[x0 as usize..][..width as usize]);
-    }
-    let maximum = buffer
-        .iter()
-        .map(|value| value.unsigned_abs())
-        .max()
-        .unwrap_or(0);
     let workspace = match workspace {
         Some(workspace) => workspace,
         None => workspace.insert(ht_block_encode::HtEncodeWorkspace::try_new()?),
