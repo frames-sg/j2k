@@ -77,7 +77,7 @@ You must understand and be able to explain every change in your pull request,
 whether you wrote it yourself, adapted it from another project, or used an AI
 tool to help. Using AI tools is fine. You're still the author, so read and
 test what you submit, and edit generated text down to what's accurate and
-necessary. Mention in the description if an agent did most of the work.
+necessary.
 
 ### Review
 
