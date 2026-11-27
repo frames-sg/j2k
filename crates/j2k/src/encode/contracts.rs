@@ -174,6 +174,19 @@ pub struct J2kLosslessEncodeOptions {
     pub reversible_transform: ReversibleTransform,
     /// Validation policy applied before returning encoded bytes.
     pub validation: J2kEncodeValidation,
+    /// Optional cap, in bytes, on the host memory one encode phase may hold
+    /// at once.
+    ///
+    /// `None` keeps the default of 512 MiB
+    /// ([`j2k_core::DEFAULT_MAX_HOST_ALLOCATION_BYTES`]). The pixels being
+    /// encoded already belong to the caller, so a caller encoding large
+    /// images may raise it; a lower value makes the encoder refuse sooner.
+    /// The cap applies to the CPU encode route; device routes keep their own
+    /// limits.
+    /// [`J2kEncodeValidation::CpuRoundTrip`] decodes the result with the
+    /// decoder's own 512 MiB cap, so an image whose decode needs more must use
+    /// [`J2kEncodeValidation::External`].
+    pub max_host_allocation_bytes: Option<usize>,
 }
 
 impl Default for J2kLosslessEncodeOptions {
@@ -195,6 +208,7 @@ impl Default for J2kLosslessEncodeOptions {
             write_eph: false,
             reversible_transform: ReversibleTransform::Rct53,
             validation: J2kEncodeValidation::CpuRoundTrip,
+            max_host_allocation_bytes: None,
         }
     }
 }
@@ -226,6 +240,7 @@ impl J2kLosslessEncodeOptions {
             write_eph: false,
             reversible_transform,
             validation,
+            max_host_allocation_bytes: None,
         }
     }
 
@@ -341,6 +356,17 @@ impl J2kLosslessEncodeOptions {
     #[must_use]
     pub const fn with_validation(mut self, validation: J2kEncodeValidation) -> Self {
         self.validation = validation;
+        self
+    }
+
+    /// Return options with a different per-phase host allocation cap. See the
+    /// `max_host_allocation_bytes` field; `None` restores the 512 MiB default.
+    #[must_use]
+    pub const fn with_max_host_allocation_bytes(
+        mut self,
+        max_host_allocation_bytes: Option<usize>,
+    ) -> Self {
+        self.max_host_allocation_bytes = max_host_allocation_bytes;
         self
     }
 }

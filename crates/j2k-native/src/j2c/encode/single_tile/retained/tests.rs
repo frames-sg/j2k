@@ -5,7 +5,7 @@ use alloc::vec;
 use super::*;
 use crate::{
     encode_with_roi_regions, irreversible_quantization_profile_scale_ceiling,
-    irreversible_quantization_scale_bounds, EncodeProgressionOrder,
+    irreversible_quantization_scale_bounds, EncodeProgressionOrder, DEFAULT_MAX_CODEC_BYTES,
 };
 
 struct Case {

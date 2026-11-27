@@ -138,6 +138,7 @@ impl JpegToHtj2kEncodeOptions {
             tile_part_packet_limit: self.tile_part_packet_limit,
             precinct_exponents: try_vec_from_slice(&self.precinct_exponents)?,
             roi_component_shifts: Vec::new(),
+            max_host_allocation_bytes: None,
         })
     }
 }

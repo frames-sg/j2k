@@ -32,7 +32,7 @@ pub(super) fn encode_components(
         return encode_sampled_components(samples, options);
     }
 
-    let interleaved = interleave_component_planes(samples)?;
+    let interleaved = interleave_component_planes(samples, options.max_host_allocation_bytes)?;
     let raw_samples = J2kLosslessSamples::new(
         &interleaved,
         samples.width,

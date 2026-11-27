@@ -201,6 +201,7 @@ pub(super) fn packetize_resolution_packets_with_options_for_session(
             packet_descriptors,
             marker_options,
             retained_packet_bytes,
+            session.cap(),
         )?,
     )
 }

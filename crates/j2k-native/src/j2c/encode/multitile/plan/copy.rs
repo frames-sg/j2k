@@ -124,6 +124,7 @@ pub(in crate::j2c::encode) fn try_clone_options_with_component_sampling(
             &options.precinct_exponents,
             "multi-tile precinct exponents",
         )?,
+        max_host_allocation_bytes: options.max_host_allocation_bytes,
     })
 }
 

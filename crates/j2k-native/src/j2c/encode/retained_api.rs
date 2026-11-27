@@ -31,7 +31,7 @@ pub(crate) fn encode_with_accelerator_and_retained_input(
     retained_input: NativeEncodeRetainedInput<'_>,
     accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> crate::EncodeResult<Vec<u8>> {
-    let session = NativeEncodeSession::try_new(retained_input)?;
+    let session = NativeEncodeSession::try_for_options(retained_input, options)?;
     encode_with_accelerator_and_component_sample_info_for_session(
         pixels,
         width,

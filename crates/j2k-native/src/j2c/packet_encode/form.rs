@@ -17,7 +17,7 @@ use crate::j2c::encode::allocation::{
 };
 use crate::{
     EncodeError, EncodeResult, J2kPacketizationEncodeJob, J2kPacketizationPacketDescriptor,
-    J2kPacketizationProgressionOrder, J2kPacketizationResolution,
+    J2kPacketizationProgressionOrder, J2kPacketizationResolution, DEFAULT_MAX_CODEC_BYTES,
 };
 
 const SOP_BYTES: usize = 6;
@@ -203,13 +203,15 @@ pub(crate) fn form_tile_bitstream_with_public_descriptors_and_retained_baseline(
     descriptors: &[J2kPacketizationPacketDescriptor],
     marker_options: PacketMarkerOptions,
     retained_baseline_bytes: usize,
+    cap: usize,
 ) -> EncodeResult<PacketizedTileData> {
     validate_ht_segment_lengths(resolution_packets)?;
-    form_with_retained_baseline(
+    form_with_retained_baseline_and_cap(
         resolution_packets,
         descriptors,
         marker_options,
         retained_baseline_bytes,
+        cap,
     )
 }
 
@@ -319,7 +321,31 @@ where
     R: ResolutionView,
     D: DescriptorView,
 {
-    let allocations = EncodeAllocationLedger::new(retained_baseline_bytes)?;
+    form_with_retained_baseline_and_cap(
+        packets,
+        descriptors,
+        marker_options,
+        retained_baseline_bytes,
+        DEFAULT_MAX_CODEC_BYTES,
+    )
+}
+
+fn form_with_retained_baseline_and_cap<R, D>(
+    packets: &[R],
+    descriptors: &[D],
+    marker_options: PacketMarkerOptions,
+    retained_baseline_bytes: usize,
+    cap: usize,
+) -> EncodeResult<PacketizedTileData>
+where
+    R: ResolutionView,
+    D: DescriptorView,
+{
+    let allocations = EncodeAllocationLedger::with_phase_cap(
+        retained_baseline_bytes,
+        cap,
+        "retained native encode inputs",
+    )?;
     let tracked = form_tracked(packets, descriptors, marker_options, &allocations)?;
     finish_tracked(tracked, &allocations)
 }

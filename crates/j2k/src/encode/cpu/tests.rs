@@ -250,7 +250,7 @@ fn component_interleave_preserves_little_endian_sample_and_plane_order() {
     let samples = J2kLosslessComponentSamples::new(&planes, 2, 1, 16, false).unwrap();
 
     assert_eq!(
-        interleave_component_planes(samples).unwrap(),
+        interleave_component_planes(samples, None).unwrap(),
         [1, 2, 11, 12, 3, 4, 13, 14]
     );
 }

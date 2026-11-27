@@ -102,5 +102,6 @@ pub(super) fn try_precomputed_options(
         tile_size: options.tile_size,
         tile_part_packet_limit: options.tile_part_packet_limit,
         precinct_exponents,
+        max_host_allocation_bytes: options.max_host_allocation_bytes,
     })
 }
