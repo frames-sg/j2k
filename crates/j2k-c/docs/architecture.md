@@ -1,13 +1,14 @@
 # j2k-c module layout
 
-`j2k-c` is a thin adapter over the `j2k` crate in the same workspace. It
-doesn't fork or reimplement any codec code.
+`j2k-c` is a thin adapter over the `j2k` crate, plus `j2k-metal` behind the
+optional `metal` feature, in the same workspace. It doesn't fork or
+reimplement any codec code.
 
 | Path | Responsibility |
 | --- | --- |
 | `src/abi.rs` | Fixed-width C values and versioned structs |
 | `src/ffi.rs` | Raw pointers, handle ownership, struct-header checks, catching panics |
-| `src/decoder.rs` | The owned decoder: one cached prepared request, limits, native sample copies, the decoder's own thread pool |
+| `src/decoder.rs` | The owned decoder: one cached prepared request, limits, native sample copies, the decoder's own thread pool, and the optional persistent Metal session |
 | `src/operations.rs` | Exact region planning and decoding, sRGB output, operation limits and cancellation |
 | `src/rows.rs` | Row streaming through the caller's callback |
 | `src/encode.rs` | Lossless and lossy encoding, JP2/JPH wrapping |
@@ -22,9 +23,11 @@ doesn't fork or reimplement any codec code.
 `j2k` does the parsing, support checks, geometry, preparation, entropy
 decoding, inverse transforms, color interpretation and encoding. The adapter
 keeps the input and workspaces in `EncodedImage`, `CpuBatchDecoder` and
-`PreparedBatch`, and uses `J2kDecoder` for row streaming and sRGB regions. It
-copies finished samples into the caller's buffer, and returns encoded output
-in a buffer the caller frees with `j2k_buffer_free`. A decoder opened with
+`PreparedBatch`, and uses `J2kDecoder` for row streaming and sRGB regions.
+With the `metal` feature it also holds a `j2k-metal` session and routes the
+explicit Metal full-image calls through it; the default packages stay
+CPU-only. It copies finished samples into the caller's buffer, and returns
+encoded output in a buffer the caller frees with `j2k_buffer_free`. A decoder opened with
 `workers` from 1 to 64 owns a Rayon pool of that size; otherwise work runs on
 the codec's shared pool. The adapter adds no codec algorithms and no color or
 sample transforms of its own.

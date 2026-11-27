@@ -159,6 +159,12 @@ of `objc2` and `objc2-metal` as `j2k-metal` so that the types match; any patch
 release works. When J2K moves to a new minor of either, the release notes list
 it as a breaking change.
 
+The C ABI exposes the full-image route in builds with the `metal` feature:
+`j2k_decoder_metal_init` creates one persistent session per decoder and
+`j2k_decoder_metal_decode_into` reuses it, with no CPU fallback. Both symbols
+are exported in every build and return `J2K_UNSUPPORTED` without the feature.
+See [Metal decode](../crates/j2k-c/docs/api.md#metal-decode).
+
 - `J2kDecoder::decode_into_metal` decodes a full image into a caller-owned
   `MetalImageDestination`, so a stream of same-size frames can reuse one
   allocation. It writes `Gray8` or `Gray16` for one component, `Rgb8` for

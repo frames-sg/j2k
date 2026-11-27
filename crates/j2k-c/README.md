@@ -4,9 +4,9 @@
 
 [![license](https://shields.io/badge/license-MIT%2FApache--2.0-blue)](https://github.com/frames-sg/j2k#license)
 
-`j2k-c` is a C ABI over the `j2k` CPU codec, a header-only C++17 wrapper,
-and a script that packages both as a relocatable shared library with CMake
-and pkg-config files, plus a static archive. Applications that consume the
+`j2k-c` is a C ABI over the `j2k` codec, a header-only C++17 wrapper, and a
+script that packages both as a relocatable shared library with CMake and
+pkg-config files, plus a static archive. Applications that consume the
 package need no Rust toolchain.
 
 It inspects headers, components and the reference grid; keeps one decoder
@@ -16,8 +16,9 @@ native `uint8`, `uint16` or `int16` samples, through the batch route or the
 core whole-image route; streams full images row by row through a callback;
 converts regions to 8-bit sRGB; and encodes interleaved samples losslessly or
 lossy to a rate, size or PSNR target, as a raw codestream, JP2 or JPH. It also
-decodes and encodes JPEG-LS codestreams and DICOM RLE Lossless frames. GPU
-decoding and slide-container readers are not part of this API.
+decodes and encodes JPEG-LS codestreams and DICOM RLE Lossless frames. Builds
+with the `metal` feature add a strict full-image Metal GPU decode route with
+no CPU fallback. Slide-container readers are not part of this API.
 
 The crate isn't published to crates.io. It ships as the native packages that
 `scripts/package.py` builds, attached to each GitHub release.
@@ -58,6 +59,26 @@ Applications call `find_package(J2K CONFIG REQUIRED)` and link `J2K::j2k`, or
 `J2K::j2k_static` for the static archive. C code includes `j2k.h`; C++17 code
 can use `j2k::decoder` from `j2k.hpp`.
 
+## Metal decode
+
+The default build and the prebuilt packages are CPU-only. On macOS, build with
+the `metal` feature to enable strict full-image GPU decoding:
+
+```sh
+cargo build -p j2k-c --release --features metal
+```
+
+`j2k_decoder_metal_init` creates one persistent Metal session per decoder and
+returns `J2K_UNSUPPORTED` when Metal is unavailable. Every
+`j2k_decoder_metal_decode_into` call reuses that session, decodes the full
+image at full resolution without CPU fallback, and leaves the destination
+untouched on failure. C++ callers use `decoder::metal_init` and
+`decoder::metal_decode_into`.
+
+Both entry points are exported in every build; without the `metal` feature
+they return `J2K_UNSUPPORTED`. On non-macOS hosts the feature builds, but
+initialization returns `J2K_UNSUPPORTED`.
+
 - [Quickstart](docs/quickstart.md), which is also the package's `README.md`
 - [API reference](docs/api.md)
 - [Supported configurations](docs/supported.md)
@@ -71,9 +92,10 @@ programs against an assembled package. Before changing the ABI or packaging,
 run:
 
 ```sh
-cargo clippy -p j2k-c --lib --locked -- -D warnings
-cargo clippy -p j2k-c --tests --examples --locked -- -D warnings -A clippy::disallowed_methods -A clippy::disallowed_macros
+cargo clippy -p j2k-c --lib --all-features --locked -- -D warnings
+cargo clippy -p j2k-c --tests --examples --all-features --locked -- -D warnings -A clippy::disallowed_methods -A clippy::disallowed_macros
 cargo test -p j2k-c --locked
+J2K_REQUIRE_METAL_RUNTIME=1 cargo test -p j2k-c --features metal --locked
 python3 crates/j2k-c/scripts/package.py --output dist/j2k-c
 cargo run -p j2k-c --locked --example make_fixture -- target/fixture.j2c
 cmake -S crates/j2k-c/native/tests -B target/native-tests -DCMAKE_PREFIX_PATH="$PWD/dist/j2k-c" -DJ2K_FIXTURE="$PWD/target/fixture.j2c"

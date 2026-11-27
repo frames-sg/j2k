@@ -8,8 +8,9 @@ versioned with, through the batch route and the core whole-image route.
 | Input | JPEG 2000 Part 1 and HTJ2K (Part 15) codestreams, and JP2 and JPH files holding a still image |
 | Output | Interleaved gray, RGB or RGBA in native `U8`, `U16` or `I16` samples, with precision and alpha reported |
 | Geometry | Full image, region, half, quarter or eighth resolution, and a region at a reduced resolution when the image has the levels |
-| Codestream lifecycle | `j2k_decoder_feed` moves a decoder to a new codestream and keeps its threads, settings and limits. `j2k_decoder_transfer_syntax` reports classic JPEG 2000 or HTJ2K, reversible or irreversible, or `J2K_SYNTAX_OTHER`; check the call's status before reading it |
+| Codestream lifecycle | `j2k_decoder_feed` moves a decoder to a new codestream and keeps its threads, settings, limits and Metal session. `j2k_decoder_transfer_syntax` reports classic JPEG 2000 or HTJ2K, reversible or irreversible, or `J2K_SYNTAX_OTHER`; check the call's status before reading it |
 | Whole-image route | Raw one- or three-component unsigned 8- to 16-bit images at full resolution, without uniform component subsampling, through the core whole-image decoder. Samples and stride match the batch route |
+| Metal decode | Optional full-image, full-resolution decode on macOS through the `metal` feature, reusing one session per decoder. Strict, with no CPU fallback. Prebuilt packages are CPU-only; build from source with `--features metal` |
 | Exact operations | Regions at any reduction from 0 to 31 that every component and tile supports, with reference-grid geometry |
 | sRGB output | 8-bit gray, RGB or RGBA with straight alpha, converting supported ICC profiles, palettes, channel mapping and component sampling |
 | Operation limits | Working-memory and output limits and cancellation, for native and sRGB operations, including the preparation an operation does itself. ICC conversion under a working limit needs a matrix/TRC or gray-TRC profile with an XYZ connection space |
@@ -41,9 +42,10 @@ RLE supports neither 1-bit frames nor bit widths other than 8, 16 or 32.
 
 ## Large images
 
-`max_output_bytes` (512 MiB by default) bounds a request's output. The codec
-also enforces its own allocation budgets, so `j2k_decoder_decode_into` can
-return `J2K_RESOURCE_LIMIT` ("image is too large") after
+`max_output_bytes` (512 MiB by default) bounds a request's output, including
+Metal decode. The codec also enforces its own allocation budgets, so
+`j2k_decoder_decode_into` can return `J2K_RESOURCE_LIMIT` ("image is too
+large") after
 `j2k_decoder_output_info` succeeds. In our measurements through this API,
 full decodes of 8-bit HTJ2K images of 6144 x 6144 RGB, 8192 x 8192 gray, and
 8192 x 8192 RGB with 2048 x 2048 tiles succeed. Decode larger images as
@@ -54,17 +56,19 @@ as your buffer.
 
 ## Not supported
 
-GPU decoding and encoding, submitting several images in one call, streaming
+GPU encoding, CUDA decode, submitting several images in one call, streaming
 rows of a region or a reduced resolution, range I/O, prebuilt packages for
 Intel Macs, Windows on Arm or musl-based Linux, MinGW import libraries, .NET
-or Java bindings, and parsing slide containers. Python bindings are the
-separate `j2k` package on PyPI.
+or Java bindings, and parsing slide containers. Metal decode requires a
+source build with the `metal` feature and a macOS host. Python bindings are
+the separate `j2k` package on PyPI.
 
 The library's tests cover its ownership rules and decoded sample values.
-They are not a new ISO conformance run or a medical-device validation. Each
-prebuilt package is unpacked and passes the same C and C++ consumer tests and
-examples on its own platform before it is released; passing on one platform
-says nothing about another.
+They are not a new ISO conformance run or a medical-device validation. Metal
+tests run on a Metal host when `J2K_REQUIRE_METAL_RUNTIME=1` and otherwise
+skip. Each prebuilt package is unpacked and passes the same C and C++
+consumer tests and examples on its own platform before it is released;
+passing on one platform says nothing about another.
 
 ## Packaged libraries
 
