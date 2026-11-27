@@ -119,11 +119,11 @@ reviews:
     hidden_rationale: "Adds bench_support::bench_huffman_scan behind bench-internals for entropy-only measurements. Rustdoc also records the JpegFastPacketFamily inherent impl used by the shared streaming routes; its methods remain crate-private. Adds quantized_only and estimate to DctExtractOptions, with retain_dequantized_blocks on that non-exhaustive struct; existing default and dequantized_only behavior is preserved. Adds MCU-window extraction, extraction working-set estimates, a baseline writer with source metadata, and standalone lossless crops under the experimental transcode module. InvalidMetadata extends the non-exhaustive JpegDctImageError enum. Baseline quantized-only windows are estimated and admitted without the whole-image coefficient matrix they never allocate; progressive and multi-scan windows retain whole-image coefficient accumulation, reflected in the estimate. Existing extraction and canonical re-emission signatures and behavior are unchanged."
   j2k-tilecodec:
     removed_fingerprint: "none"
-    added_fingerprint: "none"
-    hidden_count: 32
-    hidden_fingerprint: "fnv1a64:eb677842559d9b0e"
-    rationale: "Compared the complete ordinary API inventory against v0.13.1; no signatures were added, removed, or changed."
-    hidden_rationale: "Compared the complete hidden API inventory against v0.13.1; it is unchanged."
+    added_fingerprint: "fnv1a64:71b040c3b06676a5"
+    hidden_count: 37
+    hidden_fingerprint: "fnv1a64:2da7004e281b4a1c"
+    rationale: "Compared the complete ordinary API inventory against v0.13.1. Adds PackBitsCodec (TIFF PackBits, implementing TileDecompress like the existing codecs) and DICOM RLE Lossless frame decode and encode through DicomRleCodec, DicomRleLayout, DicomRlePlanarConfiguration and DicomRleDecodeReport, plus LengthMismatch at the end of the existing non-exhaustive TileCodecError. No existing signature or codec behavior changes."
+    hidden_rationale: "The hidden inventory grows by PackBitsCodec's TileDecompress implementation items, which are doc(hidden) as for the existing codecs. No hidden signatures are removed or changed."
   j2k:
     removed_fingerprint: "none"
     added_fingerprint: "fnv1a64:e7614504375e427c"
