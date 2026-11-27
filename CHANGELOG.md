@@ -31,6 +31,14 @@ To add an entry, see [the changelog guide](contributor-book/documentation.md#cha
   `partial_codestream`. Code that builds the struct with a literal must set
   it, or start from `DecodeSettings::strict()` or `DecodeSettings::lenient()`.
 
+### Tile codecs
+
+- `j2k-tilecodec` decompresses TIFF PackBits tiles (`PackBitsCodec`), and
+  decodes and encodes DICOM RLE Lossless frames (`DicomRleCodec`) at 8, 16 and
+  32 bits allocated. Decoding is strict by default; `decode_frame_lenient`
+  also reads frames with extra data after a segment or nonzero unused header
+  offsets, as some encoders write them, and reports what it accepted.
+
 ### GPU
 
 - **Behavior change:** `CudaLosslessEncoder::encode` with

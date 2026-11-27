@@ -9,7 +9,8 @@ outside the repository.
   installed, `dicom_matrix.py`, which write the matrices under
   `crates/j2k-test-support/fixtures/`. That crate's `fixtures/conformance/`
   holds identical copies, and the xtask repository lint checks both against
-  the manifest.
+  the manifest. `rle_matrix.py`, run by hand with pydicom 2.4.4, writes the
+  DICOM RLE fixtures under `crates/j2k-tilecodec/tests/fixtures/dicom_rle/`.
 - `j2k-conformance/`: the ITU-T T.803 decoder inventory, the encoder test
   matrices and the feature-support inventory. See its README.
 - `wsi-samples/`: where `scripts/parity-corpus-fetch.sh` downloads whole-slide

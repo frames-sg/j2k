@@ -2430,20 +2430,44 @@ pub use j2k_jpeg::TileDecompress
 #[non_exhaustive] pub enum j2k_tilecodec::TileCodecError
 impl j2k_core::error::CodecError for j2k_tilecodec::TileCodecError
 impl j2k_tilecodec::DeflatePool
+impl j2k_tilecodec::DicomRleCodec
+impl j2k_tilecodec::DicomRleDecodeReport
+impl j2k_tilecodec::DicomRleLayout
 impl j2k_tilecodec::LzwPool
 impl j2k_tilecodec::ZstdPool
+pub const fn j2k_tilecodec::DicomRleDecodeReport::has_nonzero_unused_offsets(&self) -> bool
+pub const fn j2k_tilecodec::DicomRleDecodeReport::is_conformant(&self) -> bool
+pub const fn j2k_tilecodec::DicomRleDecodeReport::overlong_segments(&self) -> u16
+pub const fn j2k_tilecodec::DicomRleLayout::columns(&self) -> u16
+pub const fn j2k_tilecodec::DicomRleLayout::frame_len(&self) -> usize
+pub const fn j2k_tilecodec::DicomRleLayout::planar_configuration(&self) -> j2k_tilecodec::DicomRlePlanarConfiguration
+pub const fn j2k_tilecodec::DicomRleLayout::rows(&self) -> u16
+pub const fn j2k_tilecodec::DicomRleLayout::samples_per_pixel(&self) -> u16
+pub enum j2k_tilecodec::DicomRlePlanarConfiguration
 pub fn j2k_tilecodec::DeflatePool::new() -> Self
+pub fn j2k_tilecodec::DicomRleCodec::decode_frame(&[u8], j2k_tilecodec::DicomRleLayout, &mut [u8]) -> core::result::Result<(), j2k_tilecodec::TileCodecError>
+pub fn j2k_tilecodec::DicomRleCodec::decode_frame_lenient(&[u8], j2k_tilecodec::DicomRleLayout, &mut [u8]) -> core::result::Result<j2k_tilecodec::DicomRleDecodeReport, j2k_tilecodec::TileCodecError>
+pub fn j2k_tilecodec::DicomRleCodec::encode_frame(&[u8], j2k_tilecodec::DicomRleLayout, &mut alloc::vec::Vec<u8>) -> core::result::Result<(), j2k_tilecodec::TileCodecError>
+pub fn j2k_tilecodec::DicomRleLayout::bits_allocated(&self) -> u16
+pub fn j2k_tilecodec::DicomRleLayout::new(u16, u16, u16, u16, j2k_tilecodec::DicomRlePlanarConfiguration) -> core::result::Result<Self, j2k_tilecodec::TileCodecError>
+pub fn j2k_tilecodec::DicomRleLayout::segment_count(&self) -> usize
 pub fn j2k_tilecodec::LzwPool::new() -> Self
 pub fn j2k_tilecodec::TileCodecError::is_buffer_error(&self) -> bool
 pub fn j2k_tilecodec::TileCodecError::is_not_implemented(&self) -> bool
 pub fn j2k_tilecodec::TileCodecError::is_truncated(&self) -> bool
 pub fn j2k_tilecodec::TileCodecError::is_unsupported(&self) -> bool
 pub fn j2k_tilecodec::ZstdPool::new() -> Self
+pub j2k_tilecodec::DicomRlePlanarConfiguration::Interleaved
+pub j2k_tilecodec::DicomRlePlanarConfiguration::Planar
 pub j2k_tilecodec::TileCodecError::Buffer(j2k_core::error::BufferError)
 pub j2k_tilecodec::TileCodecError::Input(j2k_core::error::InputError)
 pub j2k_tilecodec::TileCodecError::Io
 pub j2k_tilecodec::TileCodecError::Io::context: &'static str
 pub j2k_tilecodec::TileCodecError::Io::source: core::io::error::Error
+pub j2k_tilecodec::TileCodecError::LengthMismatch
+pub j2k_tilecodec::TileCodecError::LengthMismatch::actual: usize
+pub j2k_tilecodec::TileCodecError::LengthMismatch::expected: usize
+pub j2k_tilecodec::TileCodecError::LengthMismatch::what: &'static str
 pub j2k_tilecodec::TileCodecError::Malformed
 pub j2k_tilecodec::TileCodecError::Malformed::context: &'static str
 pub j2k_tilecodec::TileCodecError::Malformed::source: core::io::error::Error
@@ -2451,9 +2475,13 @@ pub j2k_tilecodec::TileCodecError::Unsupported(j2k_core::error::Unsupported)
 pub mod j2k_tilecodec
 pub struct j2k_tilecodec::DeflateCodec
 pub struct j2k_tilecodec::DeflatePool
+pub struct j2k_tilecodec::DicomRleCodec
+pub struct j2k_tilecodec::DicomRleDecodeReport
+pub struct j2k_tilecodec::DicomRleLayout
 pub struct j2k_tilecodec::LzwCodec
 pub struct j2k_tilecodec::LzwPool
 pub struct j2k_tilecodec::NoPool
+pub struct j2k_tilecodec::PackBitsCodec
 pub struct j2k_tilecodec::UncompressedCodec
 pub struct j2k_tilecodec::ZstdCodec
 pub struct j2k_tilecodec::ZstdPool
