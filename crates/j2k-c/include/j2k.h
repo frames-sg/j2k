@@ -477,11 +477,13 @@ J2K_API j2k_status j2k_decoder_decode_rows(
     j2k_output_info *out, j2k_error *error);
 
 /* Additive ABI-1 API: persistent-decoder feed, header-fact output layout,
- * and the core whole-image decode route. They introduce no ABI-1 structure
- * layouts and no new status values. */
+ * the core whole-image decode route, and the optional Metal GPU backend.
+ * They introduce no ABI-1 structure layouts and no new status values. The
+ * Metal functions are exported in every build and return J2K_UNSUPPORTED
+ * when the `metal` feature is off. */
 
 /* Replaces the codestream the decoder holds, keeping its threads, session,
- * settings, and limits. Same input checks as j2k_decoder_open.
+ * settings, limits, and Metal session. Same input checks as j2k_decoder_open.
  * The new input is fully inspected before any state is replaced, so a failed
  * feed keeps the previous codestream inspectable and decodable. */
 J2K_API j2k_status j2k_decoder_feed(
@@ -512,6 +514,24 @@ J2K_API j2k_status j2k_decoder_output_info_native(
  * J2K_UNSUPPORTED. The core decoder writes directly into the caller's buffer,
  * so a failure during pixel decode may leave some rows written. */
 J2K_API j2k_status j2k_decoder_decode_full_into(
+    j2k_decoder *decoder, const j2k_decode_options *options,
+    uint8_t *output, size_t output_len, size_t stride, j2k_error *error);
+
+/* Creates the decoder's persistent Metal session and reuses it for every
+ * Metal decode on this decoder; idempotent. Returns J2K_UNSUPPORTED when Metal
+ * is unavailable on this host or when compiled without the `metal` feature.
+ * This symbol is exported in every build. */
+J2K_API j2k_status j2k_decoder_metal_init(
+    j2k_decoder *decoder, j2k_error *error);
+
+/* Decodes the full image at full resolution on the Metal GPU backend,
+ * strictly without CPU fallback, into a caller-owned strided buffer (same
+ * stride/span contract as j2k_decoder_decode_into). Requires a prior
+ * successful j2k_decoder_metal_init; the decode reuses that session. Every
+ * failure leaves the output untouched, and no error path substitutes CPU
+ * output for Metal output. Returns J2K_UNSUPPORTED when compiled without the
+ * `metal` feature. This symbol is exported in every build. */
+J2K_API j2k_status j2k_decoder_metal_decode_into(
     j2k_decoder *decoder, const j2k_decode_options *options,
     uint8_t *output, size_t output_len, size_t stride, j2k_error *error);
 

@@ -71,6 +71,13 @@ To add an entry, see [the changelog guide](contributor-book/documentation.md#cha
 
 ### C and C++
 
+- Decode full images on the Apple GPU with the optional `metal` feature.
+  `j2k_decoder_metal_init` creates one persistent Metal session per decoder
+  and `j2k_decoder_metal_decode_into` reuses it, strictly without CPU
+  fallback. Both symbols are exported in every build and return
+  `J2K_UNSUPPORTED` when the feature is off; every failure leaves the output
+  untouched. C++ adds `decoder::metal_init` and
+  `decoder::metal_decode_into`.
 - Build `libj2k_c.a` beside the shared library for consumers that link the C
   ABI statically. Binary packages ship the static archive as `lib/libj2k.a`
   alongside the versioned shared library, and the CMake package exports

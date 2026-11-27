@@ -2526,6 +2526,7 @@ version = "0.14.0"
 dependencies = [
  "j2k",
  "j2k-jpegls",
+ "j2k-metal",
  "j2k-test-support",
  "j2k-tilecodec",
  "rayon",

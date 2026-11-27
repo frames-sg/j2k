@@ -12,9 +12,16 @@ publish = false
 name = "j2k_c"
 crate-type = ["cdylib", "rlib", "staticlib"]
 
+[features]
+# Enable the Metal GPU decode backend through the C ABI. The
+# j2k_decoder_metal_* entry points are exported in every build and return
+# J2K_UNSUPPORTED when this feature is off.
+metal = ["dep:j2k-metal"]
+
 [dependencies]
 j2k = { path = "../j2k" }
 j2k-jpegls = { path = "../j2k-jpegls" }
+j2k-metal = { path = "../j2k-metal", optional = true }
 # DICOM RLE only: the TIFF codecs, and the zstd C library, stay out.
 j2k-tilecodec = { path = "../j2k-tilecodec", default-features = false }
 rayon = { workspace = true }

@@ -248,7 +248,9 @@ jobs:
             j2k_decoder_transfer_syntax \
             j2k_decoder_output_info_native \
             j2k_decoder_decode_full_into \
-            j2k_decoder_decode_region_into; do
+            j2k_decoder_decode_region_into \
+            j2k_decoder_metal_init \
+            j2k_decoder_metal_decode_into; do
             grep -qxF "$sym" <<< "$symbols" || {
               echo "::error::Missing expected symbol $sym in $archive"
               exit 1

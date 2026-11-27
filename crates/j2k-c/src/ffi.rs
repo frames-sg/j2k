@@ -635,6 +635,120 @@ pub unsafe extern "C" fn j2k_decoder_decode_full_into(
     }
 }
 
+/// Create the decoder's persistent Metal session. Idempotent; the session is
+/// reused by every [`j2k_decoder_metal_decode_into`] call on this decoder.
+/// Returns `J2K_UNSUPPORTED` when Metal is unavailable on this host or when
+/// the build has no `metal` feature. This symbol is exported in every build.
+///
+/// # Safety
+/// The decoder must be live and exclusively used. `error` follows
+/// [`j2k_decoder_output_info`].
+#[cfg(feature = "metal")]
+#[no_mangle]
+pub unsafe extern "C" fn j2k_decoder_metal_init(
+    decoder: *mut J2kCDecoder,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: Caller guarantees a live, exclusively used decoder handle.
+    unsafe { boundary(error, || with_decoder(decoder, Decoder::metal_init)) }
+}
+
+/// Create the decoder's persistent Metal session. This build has no `metal`
+/// feature, so the call always reports `J2K_UNSUPPORTED`. This symbol is
+/// exported in every build so the ABI does not depend on the feature.
+///
+/// # Safety
+/// The decoder must be live and exclusively used. `error` follows
+/// [`j2k_decoder_output_info`].
+#[cfg(not(feature = "metal"))]
+#[no_mangle]
+pub unsafe extern "C" fn j2k_decoder_metal_init(
+    decoder: *mut J2kCDecoder,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: Caller guarantees a live, exclusively used decoder handle.
+    unsafe {
+        boundary(error, || {
+            with_decoder(decoder, |_state| {
+                Err(Error::new(
+                    crate::abi::J2K_UNSUPPORTED,
+                    "this build was compiled without the Metal feature",
+                ))
+            })
+        })
+    }
+}
+
+/// Decode the full image at full resolution on the Metal GPU backend,
+/// strictly without CPU fallback, into a caller-owned strided buffer through
+/// the session created by [`j2k_decoder_metal_init`]. Every failure leaves the
+/// output untouched, and no error path substitutes CPU output for Metal
+/// output. Returns `J2K_UNSUPPORTED` without the `metal` feature; this symbol
+/// is exported in every build.
+///
+/// # Safety
+/// Same requirements as [`j2k_decoder_decode_into`].
+#[cfg(feature = "metal")]
+#[no_mangle]
+pub unsafe extern "C" fn j2k_decoder_metal_decode_into(
+    decoder: *mut J2kCDecoder,
+    options: *const J2kCDecodeOptions,
+    output: *mut u8,
+    output_len: usize,
+    stride: usize,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: Caller owns the destination and handle; sizes are validated
+    // before a mutable slice is formed.
+    unsafe {
+        boundary(error, || {
+            let options = read_options(options)?;
+            check_bytes(output, output_len)?;
+            with_decoder(decoder, |state| {
+                state.metal_decode_full(
+                    options,
+                    slice::from_raw_parts_mut(output, output_len),
+                    stride,
+                )?;
+                Ok(())
+            })
+        })
+    }
+}
+
+/// Decode the full image on the Metal GPU backend. This build has no `metal`
+/// feature, so the call always reports `J2K_UNSUPPORTED` and leaves the output
+/// untouched. This symbol is exported in every build so the ABI does not
+/// depend on the feature.
+///
+/// # Safety
+/// Same requirements as [`j2k_decoder_decode_into`].
+#[cfg(not(feature = "metal"))]
+#[no_mangle]
+pub unsafe extern "C" fn j2k_decoder_metal_decode_into(
+    decoder: *mut J2kCDecoder,
+    options: *const J2kCDecodeOptions,
+    output: *mut u8,
+    output_len: usize,
+    _stride: usize,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: Caller guarantees a live, exclusively used decoder handle; the
+    // destination and options are validated before any access.
+    unsafe {
+        boundary(error, || {
+            let _options = read_options(options)?;
+            check_bytes(output, output_len)?;
+            with_decoder(decoder, |_state| {
+                Err(Error::new(
+                    crate::abi::J2K_UNSUPPORTED,
+                    "this build was compiled without the Metal feature",
+                ))
+            })
+        })
+    }
+}
+
 /// `j2k_row_callback`: receives one row of `row_bytes` bytes at `row`, valid
 /// only during the call. Returns zero to continue and nonzero to stop.
 pub type J2kCRowCallback = Option<
