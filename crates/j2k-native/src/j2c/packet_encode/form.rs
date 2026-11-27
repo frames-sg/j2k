@@ -568,12 +568,10 @@ where
     R: ResolutionView,
     D: DescriptorView,
 {
-    // This final capacity is claimed while states, tag trees, descriptors,
-    // packet lengths, and all retained headers are still live.
-    let mut data = allocations
-        .try_vec_with_capacity(plan.tile_len, "packetized tile-data capacity exhausted")?;
-    // On the pool, subband bodies are zero-filled here and copied, a subband
-    // per task, once all of their offsets are known.
+    // On the pool, subband bodies are deferred and copied in parallel once all
+    // of their offsets are known. When fresh OS pages come zeroed, allocate via
+    // calloc (`try_zeroed_bytes`) so thread 0 does not fault and memset the
+    // whole tile buffer before workers overwrite it.
     #[cfg(feature = "parallel")]
     let mut deferred = if pool && plan.tile_len >= MIN_POOL_COPY_BYTES {
         let count = packets.iter().map(|packet| packet.subbands().len()).sum();
@@ -586,6 +584,21 @@ where
         let _ = pool;
         None
     };
+    #[cfg(feature = "parallel")]
+    if let Some(deferred) = deferred.as_mut() {
+        if crate::fresh_decode_buffers_come_zeroed() {
+            return assemble_tile_data_zeroed(
+                packets,
+                descriptors,
+                plan,
+                marker_options,
+                allocations,
+                deferred,
+            );
+        }
+    }
+    let mut data = allocations
+        .try_vec_with_capacity(plan.tile_len, "packetized tile-data capacity exhausted")?;
     for (packet_sequence, descriptor) in descriptors.iter().enumerate() {
         let start_len = data.len();
         if marker_options.write_sop {
@@ -631,6 +644,89 @@ where
     if let Some(deferred) = deferred {
         copy_bodies_on_pool(&mut data, &deferred, allocations)?;
     }
+    Ok(data)
+}
+
+#[cfg(feature = "parallel")]
+fn assemble_tile_data_zeroed<'a, 'p, R, D>(
+    packets: &'p [R],
+    descriptors: &[D],
+    plan: &PacketAssemblyPlan<'_>,
+    marker_options: PacketMarkerOptions,
+    allocations: &'a EncodeAllocationLedger,
+    deferred: &mut BudgetedVec<'a, (Range<usize>, &'p R::Subband)>,
+) -> EncodeResult<BudgetedVec<'a, u8>>
+where
+    R: ResolutionView,
+    D: DescriptorView,
+{
+    let mut data =
+        allocations.try_zeroed_bytes(plan.tile_len, "packetized tile-data capacity exhausted")?;
+    let mut cursor = 0usize;
+    for (packet_sequence, descriptor) in descriptors.iter().enumerate() {
+        let start_len = cursor;
+        if marker_options.write_sop {
+            let sop = sop_bytes(packet_sequence)?;
+            let end = checked_add_bytes(cursor, sop.len(), "packetized SOP end")?;
+            data.get_mut(cursor..end)
+                .ok_or(EncodeError::InternalInvariant {
+                    what: "packetized tile-data length exceeded checked plan",
+                })?
+                .copy_from_slice(&sop);
+            cursor = end;
+        }
+        if !marker_options.separate_packet_headers {
+            let header = plan.headers.get(packet_sequence)?;
+            let end = checked_add_bytes(cursor, header.len(), "packetized header end")?;
+            data.get_mut(cursor..end)
+                .ok_or(EncodeError::InternalInvariant {
+                    what: "packetized tile-data length exceeded checked plan",
+                })?
+                .copy_from_slice(header);
+            cursor = end;
+        }
+        let packet_index =
+            usize::try_from(descriptor.packet_index()).map_err(|_| EncodeError::InvalidInput {
+                what: "packet descriptor packet index out of range",
+            })?;
+        let packet = packets.get(packet_index).ok_or(EncodeError::InvalidInput {
+            what: "packet descriptor packet index out of range",
+        })?;
+        for subband in packet.subbands() {
+            let body_start = cursor;
+            let body_end = subband_body(subband).try_fold(body_start, |end, block| {
+                checked_add_bytes(end, block.data().len(), "deferred packet body end")
+            })?;
+            if body_end > plan.tile_len {
+                return Err(EncodeError::InternalInvariant {
+                    what: "packetized tile-data length exceeded checked plan",
+                });
+            }
+            cursor = body_end;
+            deferred.try_push((body_start..body_end, subband))?;
+        }
+        let expected_len = usize::try_from(plan.packet_lengths[packet_sequence]).map_err(|_| {
+            EncodeError::InternalInvariant {
+                what: "packet length does not fit host usize",
+            }
+        })?;
+        let actual_len = cursor
+            .checked_sub(start_len)
+            .ok_or(EncodeError::InternalInvariant {
+                what: "packetized tile-data length regressed",
+            })?;
+        if actual_len != expected_len {
+            return Err(EncodeError::InternalInvariant {
+                what: "assembled packet length differs from checked plan",
+            });
+        }
+    }
+    if cursor != plan.tile_len {
+        return Err(EncodeError::InternalInvariant {
+            what: "assembled tile length differs from checked plan",
+        });
+    }
+    copy_bodies_on_pool(&mut data, deferred, allocations)?;
     Ok(data)
 }
 
@@ -725,14 +821,14 @@ fn finish_tracked(
     })
 }
 
-fn append_sop(data: &mut BudgetedVec<'_, u8>, packet_sequence: usize) -> EncodeResult<()> {
+fn sop_bytes(packet_sequence: usize) -> EncodeResult<[u8; SOP_BYTES]> {
     let sequence_modulus = usize::from(u16::MAX) + 1;
     let sequence = u16::try_from(packet_sequence % sequence_modulus).map_err(|_| {
         EncodeError::InternalInvariant {
             what: "SOP packet sequence modulo 65536 did not fit u16",
         }
     })?;
-    data.try_extend_from_slice(&[
+    Ok([
         0xFF,
         markers::SOP,
         0x00,
@@ -740,6 +836,11 @@ fn append_sop(data: &mut BudgetedVec<'_, u8>, packet_sequence: usize) -> EncodeR
         sequence.to_be_bytes()[0],
         sequence.to_be_bytes()[1],
     ])
+}
+
+fn append_sop(data: &mut BudgetedVec<'_, u8>, packet_sequence: usize) -> EncodeResult<()> {
+    let bytes = sop_bytes(packet_sequence)?;
+    data.try_extend_from_slice(&bytes)
 }
 
 fn append_packet_body<R: ResolutionView>(

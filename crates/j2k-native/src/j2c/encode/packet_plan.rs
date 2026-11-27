@@ -158,7 +158,10 @@ pub(super) fn packetize_resolution_packets_with_options_for_session(
         packet_descriptor_capacity,
         0,
     )?;
-    if allow_packetization_accelerator && !force_scalar_packetization {
+    if allow_packetization_accelerator
+        && !force_scalar_packetization
+        && !accelerator.declines_every_stage()
+    {
         let packetization_resolutions =
             try_public_packetization_resolutions(resolution_packets, session, owned_packet_bytes)?;
         let accelerator_phase_bytes = packet_encode::packet_metadata_retained_bytes(

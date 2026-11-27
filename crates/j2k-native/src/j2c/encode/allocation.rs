@@ -108,6 +108,15 @@ impl EncodeAllocationLedger {
         BudgetedVec::try_with_capacity(self, count, what)
     }
 
+    #[cfg(feature = "parallel")]
+    pub(crate) fn try_zeroed_bytes(
+        &self,
+        count: usize,
+        what: &'static str,
+    ) -> EncodeResult<BudgetedVec<'_, u8>> {
+        BudgetedVec::try_zeroed_bytes(self, count, what)
+    }
+
     /// Prevent every subsequent claim before tracked outputs are handed off.
     pub(crate) fn seal(&self) -> EncodeResult<()> {
         self.ensure_healthy("native encode allocation ledger was poisoned")?;
@@ -383,6 +392,25 @@ impl<'a, T> BudgetedVec<'a, T> {
         } = self;
         drop(claim);
         Ok(values)
+    }
+}
+
+#[cfg(feature = "parallel")]
+impl<'a> BudgetedVec<'a, u8> {
+    pub(crate) fn try_zeroed_bytes(
+        ledger: &'a EncodeAllocationLedger,
+        count: usize,
+        what: &'static str,
+    ) -> EncodeResult<Self> {
+        let mut claim = ledger.claim(count, what)?;
+        let values = bytemuck::allocation::try_zeroed_vec::<u8>(count)
+            .map_err(|()| host_allocation_failed(what, count))?;
+        claim.reconcile(values.capacity(), what)?;
+        Ok(Self {
+            values,
+            claim,
+            what,
+        })
     }
 }
 
