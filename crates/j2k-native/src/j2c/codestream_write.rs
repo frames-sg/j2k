@@ -219,6 +219,20 @@ pub(crate) fn write_codestream_tiles_accounted_with_peak_check(
 ) -> EncodeResult<AccountedCodestream> {
     let output_len = codestream_tiles_output_len(params, tiles, quantization_step_sizes)?;
     check_writer_peak(output_len)?;
+    #[cfg(feature = "parallel")]
+    if tiles.len() == 1
+        && tiles[0].data.len() >= (4 << 20)
+        && rayon::current_num_threads() > 1
+        && crate::fresh_decode_buffers_come_zeroed()
+    {
+        return write_single_tile_codestream_parallel(
+            params,
+            tiles,
+            quantization_step_sizes,
+            output_len,
+            check_writer_peak,
+        );
+    }
     let mut out = Vec::new();
     out.try_reserve_exact(output_len)
         .map_err(|_| host_allocation_failed("codestream output", output_len))?;
@@ -262,6 +276,77 @@ pub(crate) fn write_codestream_tiles_accounted_with_peak_check(
             what: "accounted codestream length changed after exact preflight",
         });
     }
+    Ok(AccountedCodestream {
+        codestream: out,
+        writer_peak_bytes: output_capacity,
+    })
+}
+
+#[cfg(feature = "parallel")]
+fn write_single_tile_codestream_parallel(
+    params: &EncodeParams,
+    tiles: &[TilePartData<'_>],
+    quantization_step_sizes: &[(u16, u16)],
+    output_len: usize,
+    mut check_writer_peak: impl FnMut(usize) -> EncodeResult<()>,
+) -> EncodeResult<AccountedCodestream> {
+    use rayon::prelude::*;
+
+    let tile = &tiles[0];
+    let prefix_len = output_len - tile.data.len() - 2;
+    let mut header = Vec::new();
+    header
+        .try_reserve_exact(prefix_len)
+        .map_err(|_| host_allocation_failed("codestream header", prefix_len))?;
+    write_main_header_prefix(&mut header, params, quantization_step_sizes)
+        .map_err(|what| EncodeError::InvalidInput { what })?;
+    if params.write_plm {
+        write_plm_markers(&mut header, tiles)?;
+    }
+    if params.write_ppm {
+        write_ppm_markers(&mut header, tiles)?;
+    }
+    if params.write_tlm {
+        for tile in tiles {
+            write_tlm_marker(&mut header, tile.tile_index, tile_part_len(params, tile)?);
+        }
+    }
+    let part_len = tile_part_len(params, tile)?;
+    write_sot_marker(
+        &mut header,
+        tile.tile_index,
+        part_len - 2,
+        tile.tile_part_index,
+        tile.num_tile_parts,
+    );
+    if params.write_plt {
+        write_plt_markers(&mut header, tile.packet_lengths)?;
+    }
+    if params.write_ppt {
+        write_ppt_markers(&mut header, tile.packet_headers)?;
+    }
+    write_marker(&mut header, markers::SOD);
+    if header.len() != prefix_len {
+        return Err(EncodeError::InternalInvariant {
+            what: "accounted codestream length changed after exact preflight",
+        });
+    }
+    let mut out = bytemuck::allocation::try_zeroed_vec::<u8>(output_len)
+        .map_err(|()| host_allocation_failed("codestream output", output_len))?;
+    let output_capacity = out.capacity();
+    check_writer_peak(output_capacity)?;
+    out[..prefix_len].copy_from_slice(&header);
+    let body = &mut out[prefix_len..prefix_len + tile.data.len()];
+    let chunk = tile
+        .data
+        .len()
+        .div_ceil(rayon::current_num_threads().max(1))
+        .max(256 * 1024);
+    body.par_chunks_mut(chunk)
+        .zip(tile.data.par_chunks(chunk))
+        .for_each(|(dst, src)| dst.copy_from_slice(src));
+    out[output_len - 2] = 0xFF;
+    out[output_len - 1] = markers::EOC;
     Ok(AccountedCodestream {
         codestream: out,
         writer_peak_bytes: output_capacity,

@@ -44,6 +44,13 @@ To add an entry, see [the changelog guide](contributor-book/documentation.md#cha
   `partial_codestream`. Code that builds the struct with a literal must set
   it, or start from `DecodeSettings::strict()` or `DecodeSettings::lenient()`.
 
+### Encoding
+
+- Parallel CPU packet assembly and large single-tile codestream writes now
+  use zero-initialized buffers and parallel chunk copies to avoid
+  main-thread page-fault stalls before worker copies.
+  ([#346](https://github.com/frames-sg/j2k/issues/346))
+
 ### JPEG-LS
 
 - New crate `j2k-jpegls` decodes and encodes JPEG-LS (ISO/IEC 14495-1)
