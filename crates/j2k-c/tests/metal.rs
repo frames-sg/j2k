@@ -163,3 +163,38 @@ fn metal_decode_matches_the_cpu_samples_and_never_falls_back() {
         replacement_pixels
     );
 }
+
+#[test]
+fn metal_decode_leaves_the_output_untouched_on_a_corrupt_payload() {
+    if !j2k_test_support::metal_runtime_gate(module_path!()) {
+        return;
+    }
+    let (mut encoded, _) = support::gray_fixture(true);
+    let sod = encoded
+        .windows(2)
+        .position(|marker| marker == [0xFF, 0x93])
+        .expect("fixture has an SOD marker");
+    let start = encoded.len() - 18;
+    assert!(start > sod + 2, "corruption must land in the tile data");
+    encoded[start..start + 16].fill(0xFF);
+
+    let handle = Handle::open(&encoded);
+    match handle.metal_init() {
+        J2K_OK => {}
+        J2K_UNSUPPORTED => {
+            j2k_test_support::metal_device_unavailable_is_skip(module_path!());
+            return;
+        }
+        status => panic!("j2k_decoder_metal_init returned {status}"),
+    }
+    let options = J2kCDecodeOptions::default();
+    let layout = handle.layout(&options);
+    let stride = usize::try_from(layout.row_bytes).unwrap();
+    let mut output = vec![0xA5; usize::try_from(layout.buffer_bytes).unwrap()];
+    let (status, text) = handle.metal_decode(&options, &mut output, stride);
+    assert_ne!(status, J2K_OK, "{text}");
+    assert!(
+        output.iter().all(|&value| value == 0xA5),
+        "metal decode wrote to the output buffer before reporting the corrupt payload"
+    );
+}

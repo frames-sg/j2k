@@ -33,10 +33,11 @@ Rust crate it is built and versioned with.
 | `j2k_jpegls_inspect`, `j2k_jpegls_decode`, `j2k_jpegls_encode` | Read, decode and encode JPEG-LS (see [JPEG-LS](#jpeg-ls)). |
 | `j2k_rle_decode`, `j2k_rle_encode` | Decode and encode DICOM RLE Lossless frames (see [DICOM RLE](#dicom-rle)). |
 
-In C++, `j2k::decoder` has `info()`, `component(index)`, `color_info()`,
-`icc_profile()`, `output_info()`, `decode_into()`, `row_info()`,
-`decode_rows()`, `prepare_operations()`, `plan_region()`,
-`decode_region_into()` and `set_operation_cache_limit()`.
+In C++, `j2k::decoder` has `info()`, `completeness()`, `component(index)`,
+`color_info()`, `icc_profile()`, `output_info()`, `decode_into()`, `feed()`,
+`transfer_syntax()`, `output_info_native()`, `decode_full_into()`, `row_info()`,
+`decode_rows()`, `prepare_operations()`, `plan_region()`, `decode_region_into()`,
+`set_operation_cache_limit()`, `metal_init()` and `metal_decode_into()`.
 `j2k::cancellation_token` has `cancel()` and `native_handle()`, and
 `j2k::encode_lossless()` and `j2k::encode()` return a `std::vector<uint8_t>`.
 `j2k::jpegls_inspect()` returns a `j2k_jpegls_info`, and
@@ -276,9 +277,11 @@ host. A successful `j2k_decoder_feed` keeps the session. Every
 `j2k_decoder_metal_decode_into` decodes the full image at full resolution into
 a caller-owned strided buffer with the same stride and span contract as
 `j2k_decoder_decode_into`. The request must be the full image at reduction 0
-and representable by the core whole-image route, and `j2k_decoder_metal_init`
-must have succeeded first. The call never falls back to the CPU: a Metal
-failure returns its `J2K_*` status, and no error path substitutes CPU output.
+and representable by the core whole-image route, which accepts raw codestreams
+only; `J2K_OPEN_LENIENT` and `J2K_OPEN_PARTIAL` therefore do not apply.
+`j2k_decoder_metal_init` must have succeeded first. The call never falls back
+to the CPU: a Metal failure returns its `J2K_*` status, and no error path
+substitutes CPU output.
 The decoder downloads the result into its own staging buffer and copies rows
 only after a successful decode, so every failure leaves the destination
 untouched.

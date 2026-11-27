@@ -10,7 +10,7 @@ versioned with, through the batch route and the core whole-image route.
 | Geometry | Full image, region, half, quarter or eighth resolution, and a region at a reduced resolution when the image has the levels |
 | Codestream lifecycle | `j2k_decoder_feed` moves a decoder to a new codestream and keeps its threads, settings, limits and Metal session. `j2k_decoder_transfer_syntax` reports classic JPEG 2000 or HTJ2K, reversible or irreversible, or `J2K_SYNTAX_OTHER`; check the call's status before reading it |
 | Whole-image route | Raw one- or three-component unsigned 8- to 16-bit images at full resolution, without uniform component subsampling, through the core whole-image decoder. Samples and stride match the batch route |
-| Metal decode | Optional full-image, full-resolution decode on macOS through the `metal` feature, reusing one session per decoder. Strict, with no CPU fallback. Prebuilt packages are CPU-only; build from source with `--features metal` |
+| Metal decode | Optional full-image, full-resolution decode of raw codestreams on macOS through the `metal` feature, reusing one session per decoder. No CPU fallback. Prebuilt packages are CPU-only; build from source with `--features metal` |
 | Exact operations | Regions at any reduction from 0 to 31 that every component and tile supports, with reference-grid geometry |
 | sRGB output | 8-bit gray, RGB or RGBA with straight alpha, converting supported ICC profiles, palettes, channel mapping and component sampling |
 | Operation limits | Working-memory and output limits and cancellation, for native and sRGB operations, including the preparation an operation does itself. ICC conversion under a working limit needs a matrix/TRC or gray-TRC profile with an XYZ connection space |

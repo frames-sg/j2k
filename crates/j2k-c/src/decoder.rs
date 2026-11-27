@@ -657,6 +657,10 @@ impl Decoder {
             .ok_or_else(|| Error::new(J2K_UNSUPPORTED, "the Metal backend is not initialized"))?;
         let bytes = Arc::clone(&self.bytes);
         let request = j2k_metal::MetalDecodeRequest::full(fmt, BackendRequest::Metal);
+        // The whole-image route is raw-codestream-only: `output_info_native`
+        // rejects file-wrapped inputs, so `J2K_OPEN_LENIENT` metadata recovery
+        // cannot apply, and a partial codestream cannot satisfy a full-image
+        // request. Parse with the codec defaults.
         let mut decoder =
             j2k_metal::J2kDecoder::new(&bytes).map_err(|error| metal_error(&error))?;
         let surface = decoder
