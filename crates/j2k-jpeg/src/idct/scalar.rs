@@ -13,12 +13,6 @@
 //! Arithmetic wraps modulo 2^32, so intermediate overflow on adversarial
 //! (malformed) inputs wraps rather than panicking in debug builds.
 //! libjpeg-turbo exhibits the same modular behavior in release.
-//!
-//! Attribution: derived from libjpeg-turbo's `jidctint.c` (Copyright (C)
-//! 1991-1998, Thomas G. Lane; modification developed 2002-2018 by Guido
-//! Vollbeding; libjpeg-turbo modifications Copyright (C) 2015, 2020, 2022,
-//! 2026, D. R. Commander). See `LICENSE.libjpeg-turbo` and `README.ijg` in
-//! this crate.
 
 use j2k_codec_math::jpeg::idct;
 

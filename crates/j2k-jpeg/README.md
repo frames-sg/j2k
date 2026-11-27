@@ -51,13 +51,6 @@ spaces, and the encoders.
 - `bench-libjpeg-turbo` and `bench-internals` are for this crate's
   benchmarks.
 
-## Third-party code
-
-Parts of this crate are derived from libjpeg-turbo and are covered by its
-licenses: see `LICENSE.libjpeg-turbo` and `README.ijg` in this crate, and
-[`NOTICES.md`](https://github.com/frames-sg/j2k/blob/main/NOTICES.md). This
-software is based in part on the work of the Independent JPEG Group.
-
 <!-- j2k-crate-footer -->
 
 ---

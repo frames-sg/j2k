@@ -1,21 +1,14 @@
 //!
-//! The YCbCr to RGB constants are libjpeg-turbo's, which every decoder
-//! backend applies. The full-range RGB to YCbCr transform below is the one
-//! every baseline encoder backend applies: the CPU encoder calls these
-//! functions, the CUDA-Oxide encode kernel calls them on the device, and the
-//! Metal encode shaders read the constants from a fragment that
-//! `j2k-jpeg-metal`'s build script renders.
+//! Every decoder backend applies the YCbCr to RGB constants here, which give
+//! the same output as libjpeg-turbo. The full-range RGB to YCbCr transform
+//! below is the one every baseline encoder backend applies: the CPU encoder
+//! calls these functions, the CUDA-Oxide encode kernel calls them on the
+//! device, and the Metal encode shaders read the constants from a fragment
+//! that `j2k-jpeg-metal`'s build script renders.
 //!
 //! The forward weights are the T.871 coefficients rounded to `2^-16`. Each row
 //! is exact on the neutral axis: the Y weights sum to `2^16` and each chroma
 //! row sums to zero, so a grey `(v, v, v)` converts to `(v, center, center)`.
-//!
-//! Attribution: the YCbCr to RGB constants are from libjpeg-turbo's
-//! `jdcolor.c` (Copyright (C) 1991-1997, Thomas G. Lane; modified 2011 by
-//! Guido Vollbeding; libjpeg-turbo modifications Copyright 2009 Pierre Ossman
-//! for Cendio AB; Copyright (C) 2009, 2011-2012, 2014-2015, 2022, 2024, D. R.
-//! Commander; Copyright (C) 2013, Linaro Limited). See
-//! `LICENSE.libjpeg-turbo` and `README.ijg` in this crate.
 
 /// Fraction bits of every fixed-point constant in this module.
 pub const FRACTION_BITS: i32 = 16;

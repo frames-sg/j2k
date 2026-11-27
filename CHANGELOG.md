@@ -73,11 +73,6 @@ To add an entry, see [the changelog guide](contributor-book/documentation.md#cha
 
 - The minimum supported Rust version is 1.97, down from 1.99. `j2k-types` and
   `j2k-codec-math` still build with Rust 1.96.
-- Parts of the JPEG codec are derived from libjpeg-turbo. `j2k-jpeg`,
-  `j2k-codec-math`, `j2k-jpeg-metal` and the Python wheel now ship
-  libjpeg-turbo's license texts (`LICENSE.libjpeg-turbo` and `README.ijg`),
-  the derived source files name their upstream files, and `NOTICES.md`
-  credits libjpeg-turbo.
 - Python wheels and command-line builds use libz-sys 1.1.33, whose bundled
   zlib fixes RUSTSEC-2026-0544. j2k calls only zlib's `inflate` and
   `deflate`, not the affected `gzprintf` and `gzwrite`.

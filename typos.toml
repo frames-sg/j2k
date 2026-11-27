@@ -4,9 +4,6 @@ extend-exclude = [
     "target",
     "corpus/conformance",
     "**/*.rgb",
-    # Third-party license texts, kept verbatim.
-    "**/LICENSE.libjpeg-turbo",
-    "**/README.ijg",
 ]
 
 [default]

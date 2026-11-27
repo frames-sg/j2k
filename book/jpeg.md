@@ -277,10 +277,3 @@ together. Each submission is limited to 512 MiB of worst-case output, so a
 large batch is encoded in chunks. A `MemoryCapExceeded` error means one tile
 alone needs more than that, or the frames already encoded leave no room for
 the next tile.
-
-## Third-party code
-
-Parts of `j2k-jpeg` and `j2k-jpeg-metal` are derived from libjpeg-turbo and
-covered by its licenses; see
-[`NOTICES.md`](../NOTICES.md). This software is based in part on the work of
-the Independent JPEG Group.

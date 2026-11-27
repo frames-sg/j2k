@@ -4,14 +4,6 @@
 //! take the input samples around the output column, so a backend can read
 //! them from whatever memory holds its rows; every JPEG decoder backend
 //! upsamples with these formulas.
-//!
-//! Attribution: the formulas follow `h2v1_fancy_upsample` and
-//! `h2v2_fancy_upsample` in libjpeg-turbo's `jdsample.c` (Copyright (C)
-//! 1991-1996, Thomas G. Lane; libjpeg-turbo modifications Copyright 2009
-//! Pierre Ossman for Cendio AB; Copyright (C) 2010, 2015-2016, 2022,
-//! 2024-2026, D. R. Commander; Copyright (C) 2014, MIPS Technologies, Inc.,
-//! California; Copyright (C) 2015, Google, Inc.; Copyright (C) 2019-2020, Arm
-//! Limited). See `LICENSE.libjpeg-turbo` and `README.ijg` in this crate.
 
 /// Output column `x` of a chroma row upsampled 2:1 horizontally (h2v1).
 ///

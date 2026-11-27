@@ -9,7 +9,7 @@ description = "JPEG 2000 and HTJ2K pixels and wavelet tensors, decoded by Rust"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT OR Apache-2.0"
-license-files = ["LICENSE-MIT", "LICENSE-APACHE", "LICENSE.libjpeg-turbo", "README.ijg"]
+license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
 
 [project.urls]
 Homepage = "https://frames-sg.com/j2k/rust-jpeg2000-codec/"

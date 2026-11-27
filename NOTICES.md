@@ -16,35 +16,9 @@ determination.
   sequential, progressive, lossless Annex H), marker semantics, Huffman coding,
   and color transform behavior.
 
-- **libjpeg-turbo** <https://libjpeg-turbo.org/> and the Independent JPEG
-  Group's software — The JPEG codec reproduces libjpeg-turbo's output bit for
-  bit, and parts of it are derived from libjpeg-turbo source, rewritten in
-  Rust and Metal Shading Language:
-  - the integer ISLOW inverse DCTs, full size and reduced, from `jidctint.c`,
-    `jidctred.c`, and `jidctint-avx2.asm`:
-    `crates/j2k-codec-math/src/jpeg/idct.rs`, `crates/j2k-jpeg/src/idct/`, and
-    the JPEG Metal shaders;
-  - the "fancy" chroma upsampling filters, from `jdsample.c`:
-    `crates/j2k-codec-math/src/jpeg/upsample.rs`,
-    `crates/j2k-jpeg/src/color/upsample.rs`, and the JPEG Metal shaders;
-  - the YCbCr to RGB conversion constants, from `jdcolor.c` and
-    `jdcolor-neon.c`: `crates/j2k-codec-math/src/jpeg/ycbcr.rs`,
-    `crates/j2k-jpeg/src/color/ycbcr.rs`, and
-    `crates/j2k-jpeg/src/backend/neon.rs`;
-  - optimal Huffman table construction, from `jpeg_gen_optimal_table` in
-    `jchuff.c`: `crates/j2k-jpeg/src/optimal_huffman.rs`.
-
-  Marker handling, color-space selection, YCCK conversion, lossless
-  prediction, and the bit reader's fill policy were written to match
-  libjpeg-turbo's behavior. These parts of libjpeg-turbo are covered by the
-  IJG License; its SIMD sources also bear the zlib License. The license text
-  is in `LICENSE.libjpeg-turbo` and `README.ijg` in `crates/j2k-codec-math/`,
-  `crates/j2k-jpeg/`, `crates/j2k-jpeg-metal/`, and `crates/j2k-python/`, and
-  each derived Rust file names its upstream file and copyright holders. This
-  software is based in part on the work of the Independent JPEG Group.
-
-  libjpeg-turbo is also the oracle for parity verification. Expected outputs
-  in `corpus/conformance/` and in the `conformance`, `lossless_matrix`, and
+- **libjpeg-turbo** <https://libjpeg-turbo.org/> — Reference implementation
+  used as an oracle for parity verification. Expected outputs in
+  `corpus/conformance/` and in the `conformance`, `lossless_matrix`, and
   `scaled_matrix` directories of `crates/j2k-test-support/fixtures/` are
   generated using libjpeg-turbo's `cjpeg` and `djpeg` command-line tools and
   are committed to the repository; the pinned version is recorded in

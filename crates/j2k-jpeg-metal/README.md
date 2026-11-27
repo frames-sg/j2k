@@ -44,13 +44,6 @@ The [GPU JPEG](https://github.com/frames-sg/j2k/blob/main/book/jpeg.md#gpu-jpeg)
 section of the J2K Book lists which JPEG types run where, and covers batches
 and encode.
 
-## Third-party code
-
-Parts of this crate are derived from libjpeg-turbo and are covered by its
-licenses: see `LICENSE.libjpeg-turbo` and `README.ijg` in this crate, and
-[`NOTICES.md`](https://github.com/frames-sg/j2k/blob/main/NOTICES.md). This
-software is based in part on the work of the Independent JPEG Group.
-
 <!-- j2k-crate-footer -->
 
 ---

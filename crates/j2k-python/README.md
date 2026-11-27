@@ -367,10 +367,7 @@ Patch releases keep this API. Before 1.0, a minor release may change it; the
 
 ## License
 
-`j2k` is licensed under MIT or Apache-2.0. Its JPEG codec includes code
-derived from libjpeg-turbo, covered by the licenses in `LICENSE.libjpeg-turbo`
-and `README.ijg`. This software is based in part on the work of the
-Independent JPEG Group.
+`j2k` is licensed under MIT or Apache-2.0.
 
 <!-- j2k-crate-footer -->
 

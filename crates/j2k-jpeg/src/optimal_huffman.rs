@@ -2,15 +2,9 @@
 
 //! Huffman tables built from symbol statistics (T.81 Annex K.2).
 //!
-//! The construction follows libjpeg's `jpeg_gen_optimal_table`, tie-breaking
-//! included, so tables match `jpegtran -optimize` and `cjpeg -optimize` for
-//! the same statistics. One code point is reserved so that no symbol is coded
-//! with all ones, which T.81 forbids.
-//!
-//! Attribution: `jpeg_gen_optimal_table` is in libjpeg-turbo's `jchuff.c`
-//! (Copyright (C) 1991-1997, Thomas G. Lane, with later libjpeg-turbo
-//! modifications). See `LICENSE.libjpeg-turbo` and `README.ijg` in this
-//! crate.
+//! The tables match `jpegtran -optimize` and `cjpeg -optimize` for the same
+//! statistics, including how ties are broken. One code point is reserved so
+//! that no symbol is coded with all ones, which T.81 forbids.
 
 use crate::adapter::JpegBaselineHuffmanTable;
 use crate::encoder::JpegEncodeError;

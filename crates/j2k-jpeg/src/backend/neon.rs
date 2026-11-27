@@ -1524,11 +1524,9 @@ fn fill_chunk_from_vectors(y: uint8x8_t, cb: uint8x8_t, cr: uint8x8_t, dst_chunk
     fill_chunk_from_vectors_u16(y, cb16, cr16, dst_chunk);
 }
 
-// Q14/Q15 constants from libjpeg-turbo's NEON converter, `jdcolor-neon.c`
-// (Copyright (C) 2020, Arm Limited; Copyright (C) 2024, D. R. Commander; zlib
-// License). Across the complete centered 8-bit chroma domain (-128..=127),
-// these produce the same rounded integer offsets as the scalar Q16
-// conversion.
+// Q14/Q15 constants matching libjpeg-turbo's NEON converter. Across the
+// complete centered 8-bit chroma domain (-128..=127), these produce the same
+// rounded integer offsets as the scalar Q16 conversion.
 const R_CR_Q14: i16 = 22_971;
 const G_CB_Q15: i16 = -11_277;
 const G_CR_Q15: i16 = -23_401;
