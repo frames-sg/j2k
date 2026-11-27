@@ -116,6 +116,20 @@ pub const J2K_COLOR_ICC: u32 = 2;
 /// Colour specification: a COLR method this codec does not interpret (`value` holds it).
 pub const J2K_COLOR_UNKNOWN: u32 = 3;
 
+/// Transfer syntax: zero is reserved for an unset or unknown value; callers
+/// must check the call status before interpreting the output.
+pub const J2K_SYNTAX_UNKNOWN: u32 = 0;
+/// Transfer syntax: classic JPEG 2000 (Part 1), reversible coding.
+pub const J2K_SYNTAX_JPEG2000_LOSSLESS: u32 = 1;
+/// Transfer syntax: classic JPEG 2000 (Part 1), irreversible coding.
+pub const J2K_SYNTAX_JPEG2000_LOSSY: u32 = 2;
+/// Transfer syntax: HTJ2K (Part 15), reversible coding.
+pub const J2K_SYNTAX_HT_JPEG2000_LOSSLESS: u32 = 3;
+/// Transfer syntax: HTJ2K (Part 15), irreversible coding.
+pub const J2K_SYNTAX_HT_JPEG2000_LOSSY: u32 = 4;
+/// Transfer syntax: anything this ABI revision does not name.
+pub const J2K_SYNTAX_OTHER: u32 = 5;
+
 /// Unsigned eight-bit samples.
 pub const J2K_U8: u32 = 1;
 /// Unsigned sixteen-bit samples, stored little-endian.

@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- Build `libj2k_c.a` beside the shared library for consumers that link the C
+  ABI statically. Binary packages ship the static archive as `lib/libj2k.a`
+  alongside the versioned shared library, and the CMake package exports
+  `J2K::j2k_static` with `J2K_STATIC` and the archive's private link
+  libraries.
+- Keep a decoder across codestreams with `j2k_decoder_feed`, which keeps its
+  threads, settings, and limits and replaces the input only after the new
+  headers pass inspection. Report the compressed transfer syntax with
+  `j2k_decoder_transfer_syntax` (`J2K_SYNTAX_*`: `J2K_SYNTAX_UNKNOWN` = 0,
+  `J2K_SYNTAX_JPEG2000_LOSSLESS` = 1, `J2K_SYNTAX_JPEG2000_LOSSY` = 2,
+  `J2K_SYNTAX_HT_JPEG2000_LOSSLESS` = 3, `J2K_SYNTAX_HT_JPEG2000_LOSSY` = 4,
+  or `J2K_SYNTAX_OTHER` = 5); callers must check the status before interpreting
+  a `J2K_SYNTAX_*` output. C++ adds `decoder::feed` and
+  `decoder::transfer_syntax`.
+- Decode a full image through the core whole-image decoder with
+  `j2k_decoder_output_info_native` and `j2k_decoder_decode_full_into`, which
+  skip the batch engine's per-image planning for raw one- or
+  three-component unsigned 8- to 16-bit images without uniform component
+  subsampling (mixed sampling stays supported). The output samples and stride
+  contract match `j2k_decoder_decode_into`. C++ adds
+  `decoder::output_info_native` and `decoder::decode_full_into`.
 - Encode with coding parameters through `j2k_encode`, a `j2k_encode_params`
   (`J2K_ENCODE_PARAMS_INIT`), and an optional `j2k_encode_report`: lossy
   coding to bits-per-pixel, byte, or PSNR targets or cumulative quality

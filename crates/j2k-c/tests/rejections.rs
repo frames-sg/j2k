@@ -579,6 +579,15 @@ fn abi_one_layout_matches_the_c_header_and_accepts_extension_storage() {
             ("J2K_COLOR_ENUMERATED", J2K_COLOR_ENUMERATED),
             ("J2K_COLOR_ICC", J2K_COLOR_ICC),
             ("J2K_COLOR_UNKNOWN", J2K_COLOR_UNKNOWN),
+            ("J2K_SYNTAX_UNKNOWN", J2K_SYNTAX_UNKNOWN),
+            ("J2K_SYNTAX_JPEG2000_LOSSLESS", J2K_SYNTAX_JPEG2000_LOSSLESS),
+            ("J2K_SYNTAX_JPEG2000_LOSSY", J2K_SYNTAX_JPEG2000_LOSSY),
+            (
+                "J2K_SYNTAX_HT_JPEG2000_LOSSLESS",
+                J2K_SYNTAX_HT_JPEG2000_LOSSLESS
+            ),
+            ("J2K_SYNTAX_HT_JPEG2000_LOSSY", J2K_SYNTAX_HT_JPEG2000_LOSSY),
+            ("J2K_SYNTAX_OTHER", J2K_SYNTAX_OTHER),
             ("J2K_U8", J2K_U8),
             ("J2K_U16_LE", J2K_U16_LE),
             ("J2K_I16_LE", J2K_I16_LE),
@@ -845,5 +854,369 @@ fn valid_high_precision_input_is_inspectable_but_not_silently_narrowed() {
             J2K_UNSUPPORTED
         );
         assert_eq!(j2k_decoder_close(&raw mut handle, ptr::null_mut()), J2K_OK);
+    }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "covers null arguments and invalid options for persistent and native entry points"
+)]
+fn null_arguments_and_invalid_options_are_rejected_by_persistent_and_native_entry_points() {
+    let (encoded, _) = support::gray_fixture(false);
+    let mut error = J2kCError::default();
+    let mut handle = ptr::null_mut();
+    // SAFETY: Open valid decoder handle.
+    unsafe {
+        assert_eq!(
+            j2k_decoder_open(
+                encoded.as_ptr(),
+                encoded.len(),
+                ptr::null(),
+                &raw mut handle,
+                &raw mut error,
+            ),
+            J2K_OK
+        );
+    }
+    assert!(!handle.is_null());
+
+    // 1. j2k_decoder_feed:
+    // SAFETY: Testing null decoder and null buffer inputs.
+    unsafe {
+        // null decoder
+        assert_eq!(
+            j2k_decoder_feed(
+                ptr::null_mut(),
+                encoded.as_ptr(),
+                encoded.len(),
+                &raw mut error
+            ),
+            J2K_INVALID_ARGUMENT
+        );
+        // null input with nonzero length
+        assert_eq!(
+            j2k_decoder_feed(handle, ptr::null(), 16, &raw mut error),
+            J2K_INVALID_ARGUMENT
+        );
+    }
+
+    // 2. j2k_decoder_transfer_syntax:
+    let mut syntax = 0x1234_5678_u32;
+    // SAFETY: Testing null decoder and null output pointers.
+    unsafe {
+        // null decoder
+        assert_eq!(
+            j2k_decoder_transfer_syntax(ptr::null_mut(), &raw mut syntax, &raw mut error),
+            J2K_INVALID_ARGUMENT
+        );
+        assert_eq!(syntax, 0x1234_5678, "syntax was written on null decoder");
+        // null out
+        assert_eq!(
+            j2k_decoder_transfer_syntax(handle, ptr::null_mut(), &raw mut error),
+            J2K_INVALID_ARGUMENT
+        );
+    }
+
+    // 3. j2k_decoder_output_info_native:
+    let default_options = J2kCDecodeOptions::default();
+    let mut native_info = J2kCOutputInfo::default();
+    // SAFETY: Testing null arguments, bad options, and reserved fields.
+    unsafe {
+        // null decoder
+        assert_eq!(
+            j2k_decoder_output_info_native(
+                ptr::null_mut(),
+                &raw const default_options,
+                &raw mut native_info,
+                &raw mut error,
+            ),
+            J2K_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            native_info.width, 0,
+            "native_info was written on null decoder"
+        );
+
+        // null options -> succeeds using default options
+        assert_eq!(
+            j2k_decoder_output_info_native(
+                handle,
+                ptr::null(),
+                &raw mut native_info,
+                &raw mut error,
+            ),
+            J2K_OK
+        );
+        assert_eq!(native_info.width, 32);
+
+        // invalid options header (abi mismatch)
+        let mut bad_options = J2kCDecodeOptions::default();
+        bad_options.header.abi_version = 99;
+        native_info = J2kCOutputInfo::default();
+        assert_eq!(
+            j2k_decoder_output_info_native(
+                handle,
+                &raw const bad_options,
+                &raw mut native_info,
+                &raw mut error,
+            ),
+            J2K_ABI_MISMATCH
+        );
+        assert_eq!(
+            native_info.width, 0,
+            "native_info was written on bad options"
+        );
+
+        // null out
+        assert_eq!(
+            j2k_decoder_output_info_native(
+                handle,
+                &raw const default_options,
+                ptr::null_mut(),
+                &raw mut error,
+            ),
+            J2K_INVALID_ARGUMENT
+        );
+
+        // reserved != 0
+        let reserved_options = J2kCDecodeOptions {
+            reserved: 1,
+            ..Default::default()
+        };
+        native_info = J2kCOutputInfo::default();
+        assert_eq!(
+            j2k_decoder_output_info_native(
+                handle,
+                &raw const reserved_options,
+                &raw mut native_info,
+                &raw mut error,
+            ),
+            J2K_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            native_info.width, 0,
+            "native_info was written on reserved != 0"
+        );
+    }
+
+    // 4. j2k_decoder_decode_full_into:
+    let row_bytes = 32_usize;
+    let height = 24_usize;
+    let stride = row_bytes + 4;
+    let length = stride * (height - 1) + row_bytes;
+    let mut output = vec![0xA5_u8; length];
+    // SAFETY: Testing invalid decoder, null options, bad options, null buffer, bad stride and short buffer.
+    unsafe {
+        // null decoder
+        assert_eq!(
+            j2k_decoder_decode_full_into(
+                ptr::null_mut(),
+                &raw const default_options,
+                output.as_mut_ptr(),
+                output.len(),
+                stride,
+                &raw mut error,
+            ),
+            J2K_INVALID_ARGUMENT
+        );
+        assert!(output.iter().all(|&b| b == 0xA5));
+
+        // null options -> succeeds using default options
+        assert_eq!(
+            j2k_decoder_decode_full_into(
+                handle,
+                ptr::null(),
+                output.as_mut_ptr(),
+                output.len(),
+                stride,
+                &raw mut error,
+            ),
+            J2K_OK
+        );
+
+        // invalid options header (abi mismatch)
+        output.fill(0xA5);
+        let mut bad_options = J2kCDecodeOptions::default();
+        bad_options.header.abi_version = 99;
+        assert_eq!(
+            j2k_decoder_decode_full_into(
+                handle,
+                &raw const bad_options,
+                output.as_mut_ptr(),
+                output.len(),
+                stride,
+                &raw mut error,
+            ),
+            J2K_ABI_MISMATCH
+        );
+        assert!(output.iter().all(|&b| b == 0xA5));
+
+        // null output with nonzero length
+        assert_eq!(
+            j2k_decoder_decode_full_into(
+                handle,
+                &raw const default_options,
+                ptr::null_mut(),
+                output.len(),
+                stride,
+                &raw mut error,
+            ),
+            J2K_INVALID_ARGUMENT
+        );
+
+        // stride < row_bytes
+        assert_eq!(
+            j2k_decoder_decode_full_into(
+                handle,
+                &raw const default_options,
+                output.as_mut_ptr(),
+                output.len(),
+                row_bytes - 1,
+                &raw mut error,
+            ),
+            J2K_INVALID_ARGUMENT
+        );
+        assert!(output.iter().all(|&b| b == 0xA5));
+
+        // short buffer
+        assert_eq!(
+            j2k_decoder_decode_full_into(
+                handle,
+                &raw const default_options,
+                output.as_mut_ptr(),
+                length - 1,
+                stride,
+                &raw mut error,
+            ),
+            J2K_BUFFER_TOO_SMALL
+        );
+        assert!(output.iter().all(|&b| b == 0xA5));
+    }
+
+    // SAFETY: `handle` was opened above and is closed exactly once here.
+    unsafe {
+        assert_eq!(j2k_decoder_close(&raw mut handle, &raw mut error), J2K_OK);
+    }
+}
+
+fn samples(width: u32, height: u32, channels: u32, bits: u8) -> Vec<u8> {
+    let mut samples = Vec::new();
+    for index in 0..width * height * channels {
+        let value = (index * 37 + 11) % (1_u32 << bits);
+        if bits <= 8 {
+            samples.push(u8::try_from(value).unwrap());
+        } else {
+            samples.extend_from_slice(&u16::try_from(value).unwrap().to_le_bytes());
+        }
+    }
+    samples
+}
+
+#[test]
+fn mixed_precision_codestreams_are_rejected_by_native_route_without_writing() {
+    let pixels = samples(32, 24, 3, 8);
+    let mut encoded = support::encode(&pixels, 32, 24, 3, 8, false, false);
+    let siz_marker = [0xFF, 0x51];
+    let pos = encoded
+        .windows(2)
+        .position(|w| w == siz_marker)
+        .expect("SIZ marker present");
+    // SIZ component entries are 3 bytes each starting at pos + 40 (Component 0 Ssiz).
+    assert_eq!(encoded[pos + 40], 7); // 8-bit unsigned
+    assert_eq!(encoded[pos + 43], 7);
+    // Patch component 1 to declare 12-bit unsigned (11)
+    encoded[pos + 43] = 11;
+
+    let mut handle = ptr::null_mut();
+    let mut error = J2kCError::default();
+    // SAFETY: Open valid decoder handle on patched codestream.
+    unsafe {
+        assert_eq!(
+            j2k_decoder_open(
+                encoded.as_ptr(),
+                encoded.len(),
+                ptr::null(),
+                &raw mut handle,
+                &raw mut error,
+            ),
+            J2K_OK
+        );
+    }
+    assert!(!handle.is_null());
+
+    let options = J2kCDecodeOptions::default();
+    let mut native_info = J2kCOutputInfo::default();
+    // SAFETY: Query native layout and decode full with valid output pointers.
+    unsafe {
+        let status = j2k_decoder_output_info_native(
+            handle,
+            &raw const options,
+            &raw mut native_info,
+            &raw mut error,
+        );
+        assert_eq!(status, J2K_UNSUPPORTED);
+        assert_eq!(native_info.width, 0);
+
+        let mut canary = vec![0xA5_u8; 1024];
+        let status = j2k_decoder_decode_full_into(
+            handle,
+            &raw const options,
+            canary.as_mut_ptr(),
+            canary.len(),
+            64,
+            &raw mut error,
+        );
+        assert_eq!(status, J2K_UNSUPPORTED);
+        assert!(
+            canary.iter().all(|&b| b == 0xA5),
+            "canary buffer modified on mixed precision rejection"
+        );
+
+        assert_eq!(j2k_decoder_close(&raw mut handle, &raw mut error), J2K_OK);
+    }
+}
+
+#[test]
+fn transfer_syntax_zero_sentinel_and_status_distinction() {
+    assert_eq!(J2K_SYNTAX_UNKNOWN, 0);
+    let (encoded, _) = support::gray_fixture(false);
+    let mut handle = ptr::null_mut();
+    let mut error = J2kCError::default();
+    // SAFETY: Open valid decoder handle.
+    unsafe {
+        assert_eq!(
+            j2k_decoder_open(
+                encoded.as_ptr(),
+                encoded.len(),
+                ptr::null(),
+                &raw mut handle,
+                &raw mut error,
+            ),
+            J2K_OK
+        );
+    }
+    assert!(!handle.is_null());
+
+    // Callers cannot distinguish an uninitialized or unchanged zero sentinel
+    // from J2K_SYNTAX_UNKNOWN without checking the return status.
+    let mut syntax = 0_u32;
+    // SAFETY: Testing null decoder and valid decoder handles.
+    unsafe {
+        assert_eq!(
+            j2k_decoder_transfer_syntax(ptr::null_mut(), &raw mut syntax, &raw mut error),
+            J2K_INVALID_ARGUMENT
+        );
+        assert_eq!(syntax, J2K_SYNTAX_UNKNOWN);
+
+        assert_eq!(
+            j2k_decoder_transfer_syntax(handle, &raw mut syntax, &raw mut error),
+            J2K_OK
+        );
+        assert_ne!(syntax, J2K_SYNTAX_UNKNOWN);
+        assert!((1..=5).contains(&syntax));
+        assert_eq!(syntax, J2K_SYNTAX_JPEG2000_LOSSLESS);
+
+        assert_eq!(j2k_decoder_close(&raw mut handle, &raw mut error), J2K_OK);
     }
 }

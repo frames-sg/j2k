@@ -384,7 +384,8 @@ pub(super) fn fuzz_build() -> Result<(), String> {
         "check",
         "--manifest-path",
         "crates/j2k-t803/fuzz/Cargo.toml",
-    ])
+    ])?;
+    run_cargo(&["check", "--manifest-path", "crates/j2k-c/fuzz/Cargo.toml"])
 }
 
 const FUZZ_TARGETS: &[(&str, &str)] = &[
@@ -405,6 +406,8 @@ const FUZZ_TARGETS: &[(&str, &str)] = &[
     ("crates/j2k-transcode", "jpeg_to_htj2k_fuzz"),
     ("crates/j2k-t803", "pgx_fuzz"),
     ("crates/j2k-t803", "archive_fuzz"),
+    ("crates/j2k-c", "c_full_route_differential_fuzz"),
+    ("crates/j2k-c", "c_decoder_lifecycle_fuzz"),
 ];
 
 pub(super) fn fuzz_run() -> Result<(), String> {
@@ -413,6 +416,10 @@ pub(super) fn fuzz_run() -> Result<(), String> {
     let fuzz_target = fuzz_target_triple()?;
 
     for (crate_dir, target) in FUZZ_TARGETS {
+        let artifact_dir = format!("{crate_dir}/fuzz/artifacts/{target}");
+        fs::create_dir_all(&artifact_dir)
+            .map_err(|err| format!("failed to create artifact directory {artifact_dir}: {err}"))?;
+
         let mut args = vec![
             "fuzz".to_string(),
             "run".to_string(),
@@ -425,6 +432,8 @@ pub(super) fn fuzz_run() -> Result<(), String> {
         if let Some(seconds) = &max_total_time {
             args.push(format!("-max_total_time={seconds}"));
         }
+        args.push("-print_final_stats=1".to_string());
+        args.push(format!("-artifact_prefix=fuzz/artifacts/{target}/"));
         run_nightly_cargo_in_dir_owned(crate_dir, &args)?;
     }
     Ok(())

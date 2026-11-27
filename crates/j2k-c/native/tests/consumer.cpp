@@ -27,13 +27,26 @@ int main(int argc, char **argv) {
         const auto component = target.component(0);
         if (source.width != 32 || source.height != 24 || component.precision != 8)
             throw std::runtime_error("source metadata mismatch");
+        const auto syntax = target.transfer_syntax();
+        if (syntax == J2K_SYNTAX_UNKNOWN || syntax > J2K_SYNTAX_OTHER)
+            throw std::runtime_error("transfer syntax out of range");
+        bool rejected = false;
+        target.feed(encoded.data(), encoded.size());
+        if (target.transfer_syntax() != syntax)
+            throw std::runtime_error("valid feed changed transfer syntax");
+        rejected = false;
+        try { target.feed(encoded.data(), 0); }
+        catch (const j2k::error &error) { rejected = error.status() == J2K_INVALID_INPUT; }
+        if (!rejected) throw std::runtime_error("empty feed was not rejected");
+        if (target.transfer_syntax() != syntax || target.info().width != 32)
+            throw std::runtime_error("failed feed replaced the codestream");
         const auto info = target.output_info();
         std::vector<uint8_t> pixels(static_cast<size_t>(info.buffer_bytes));
         target.decode_into(pixels.data(), pixels.size(), static_cast<size_t>(info.row_bytes));
         if (pixels.size() != 768) throw std::runtime_error("output size mismatch");
         for (size_t i = 0; i < pixels.size(); ++i)
             if (pixels[i] != (i * 13 + 7) % 256) throw std::runtime_error("pixel mismatch");
-        bool rejected = false;
+        rejected = false;
         try { j2k::decoder empty(encoded.data(), 0); }
         catch (const j2k::error &error) {
             rejected = error.status() == J2K_INVALID_INPUT && error.what()[0] != '\0';

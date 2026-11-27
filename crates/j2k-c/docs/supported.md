@@ -1,13 +1,16 @@
 # Supported configurations
 
-The library targets the CPU native-integer batch contract of the `j2k` crate it is
-built and versioned with.
+The library targets the native-integer contract of the `j2k` crate it is
+built and versioned with, supporting the batch and core whole-image CPU
+routes.
 
 | Surface | Scope |
 | --- | --- |
 | Input | JPEG 2000 Part 1 and HTJ2K Part 15 codestreams; JP2/JPH still-image wrappers |
 | Output | Interleaved gray/RGB/RGBA, native U8/U16/I16 samples, explicit precision and alpha metadata |
 | Geometry | Full image, region, half/quarter/eighth resolution, and combined region/reduction when the source supports it |
+| Codestream lifecycle | One live decoder moves to a new codestream with `j2k_decoder_feed`, keeping its threads, settings, and limits; `j2k_decoder_transfer_syntax` reports classic JPEG 2000 or HTJ2K, reversible or irreversible, or `J2K_SYNTAX_OTHER` (`J2K_SYNTAX_*`, callers must check status) |
+| Whole-image route | Raw one- or three-component unsigned 8- to 16-bit full-resolution images through the core whole-image decoder, with the same samples and stride contract as the batch route, without uniform component subsampling |
 | Exact operations | Additive region API with exact 0–31 reductions, effective image-wide maximum, and reference-grid geometry |
 | Explicit sRGB | Bounded gray/RGB/RGBA U8 normalization for supported ICC, palette/channel mapping, and component sampling; straight alpha |
 | Operation controls | Native and raw sRGB working/output limits and cooperative cancellation, including source preparation an operation performs; ICC conversion under a working limit requires an XYZ-connection matrix/TRC or gray-TRC profile |
@@ -16,8 +19,8 @@ built and versioned with.
 | Colour metadata | The applied (first) COLR box: enumerated `EnumCS`, ICC profile bytes, or an uninterpreted method |
 | Validation | Strict by default; `J2K_OPEN_LENIENT` accepts the codec's JP2/JPH metadata recoveries and reports them |
 | Threads | The codec's shared pool, or a decoder's own pool of 1–64 threads |
-| Platforms | Native macOS and GNU/Linux shared-library packages; each binary is specific to its build target, and GNU/Linux packages need the build host's glibc or newer |
-| Consumers | C11 and C++17 through CMake (`J2K::j2k`) or pkg-config (`j2k`); no Rust toolchain required for prebuilt packages |
+| Platforms | Native macOS and GNU/Linux packages (shared library and static archive); each binary is specific to its build target, and GNU/Linux packages need the build host's glibc or newer |
+| Consumers | C11 and C++17 through CMake (`J2K::j2k`, `J2K::j2k_static`) or pkg-config (`j2k`); no Rust toolchain required for prebuilt packages |
 
 Native pixel decode rejects ICC-tagged and palette-mapped inputs, mixed precision or
 signedness, precision above 16 bits, unsupported colors/component counts, and
@@ -65,6 +68,10 @@ equal to the package version. Each `lib/` also has an unversioned `libj2k.so` or
 `libj2k.dylib` symlink for linking. Applications load the versioned name, so
 deploy that file. The library is stripped to its exported `j2k_*` symbols
 and embeds no build-machine paths.
+
+Cargo also builds a static archive, `libj2k_c.a`, for source consumers that
+link the C ABI statically. The binary package ships the static archive as
+`lib/libj2k.a` alongside the versioned shared library above.
 
 A GNU/Linux package requires at least the glibc version of its build host; no
 older glibc baseline is claimed. Find the newest glibc symbol version a package

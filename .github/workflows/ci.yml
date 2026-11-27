@@ -190,6 +190,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
           toolchain: "1.99.0"
+      - if: runner.os == 'macOS'
+        run: rustup component add llvm-tools-preview
       - run: cargo test -p j2k-c --locked
       - run: python3 crates/j2k-c/scripts/package.py --output dist/j2k-c
       - name: Inspect the packaged shared library
@@ -216,6 +218,39 @@ jobs:
           fi
           if strings "$lib" | grep -F "$HOME/"; then
             echo "::error::$lib embeds runner-local paths"
+            exit 1
+          fi
+      - name: Inspect the packaged static archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="dist/j2k-c/lib/libj2k.a"
+          test -f "$archive"
+          test -s "$archive"
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            symbols=$(nm -g --defined-only "$archive" | awk 'NF == 3 && $2 == "T" { print $3 }')
+          else
+            # Xcode's nm predates the LLVM version that produced the archive.
+            llvm_nm="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-nm"
+            symbols=$("$llvm_nm" --extern-only --defined-only "$archive" \
+              | awk 'NF == 3 && $2 == "T" { sub(/^_/, "", $3); print $3 }')
+          fi
+          for sym in \
+            j2k_decoder_feed \
+            j2k_decoder_transfer_syntax \
+            j2k_decoder_output_info_native \
+            j2k_decoder_decode_full_into \
+            j2k_decoder_decode_region_into; do
+            grep -qxF "$sym" <<< "$symbols" || {
+              echo "::error::Missing expected symbol $sym in $archive"
+              exit 1
+            }
+          done
+          j2k_count=$(grep -c '^j2k_' <<< "$symbols" || true)
+          echo "Exported j2k_* symbols in $archive: $j2k_count"
+          test "$j2k_count" -ge 20
+          if strings "$archive" | grep -F "$HOME/"; then
+            echo "::error::$archive embeds runner-local paths"
             exit 1
           fi
       - name: Test a relocated package from C and C++

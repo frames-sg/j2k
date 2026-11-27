@@ -479,6 +479,133 @@ pub unsafe extern "C" fn j2k_decoder_decode_into(
     }
 }
 
+/// Replace the codestream a persistent decoder holds, keeping
+/// its threads, session, settings, and limits. Inspection fully
+/// validates the new input before any state is replaced, so a failed feed
+/// keeps the previous codestream inspectable and decodable. The same limits
+/// and signature checks as [`j2k_decoder_open`] apply.
+///
+/// # Safety
+/// The decoder must be live and exclusively used. `input` must cover
+/// `input_len` readable bytes and must not overlap decoder storage. `error`
+/// follows [`j2k_decoder_output_info`].
+#[no_mangle]
+pub unsafe extern "C" fn j2k_decoder_feed(
+    decoder: *mut J2kCDecoder,
+    input: *const u8,
+    input_len: usize,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: Caller provides the readable input documented above; lengths are
+    // checked before any byte is read.
+    unsafe {
+        boundary(error, || {
+            check_bytes(input, input_len)?;
+            if input_len == 0 {
+                return Err(Error::new(J2K_INVALID_INPUT, "encoded input is empty"));
+            }
+            with_decoder(decoder, |state| {
+                state.feed(slice::from_raw_parts(input, input_len))
+            })
+        })
+    }
+}
+
+/// The compressed transfer syntax class of the held codestream,
+/// one of the `J2K_SYNTAX_*` values.
+///
+/// # Safety
+/// The decoder must be live and exclusively used. `out` must be a writable,
+/// aligned `uint32_t` slot, disjoint from decoder storage. `error` follows
+/// [`j2k_decoder_output_info`].
+#[no_mangle]
+pub unsafe extern "C" fn j2k_decoder_transfer_syntax(
+    decoder: *mut J2kCDecoder,
+    out: *mut u32,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: Caller provides the writable slot documented above.
+    unsafe {
+        boundary(error, || {
+            check_pointer(out)?;
+            with_decoder(decoder, |state| {
+                out.write(state.transfer_syntax());
+                Ok(())
+            })
+        })
+    }
+}
+
+/// The native output layout of a full-image, full-resolution
+/// request, derived from header facts alone without the batch engine's
+/// per-image planning. Covers raw codestreams with one or three unsigned
+/// components of equal 8- to 16-bit precision, without uniform component
+/// subsampling; any other request
+/// returns `J2K_UNSUPPORTED` and callers keep [`j2k_decoder_output_info`] as
+/// their general route. Sub-8-bit samples stay on the batch route because the
+/// core decoder widens them to the full 8-bit container range.
+///
+/// # Safety
+/// Same requirements as [`j2k_decoder_output_info`].
+#[no_mangle]
+pub unsafe extern "C" fn j2k_decoder_output_info_native(
+    decoder: *mut J2kCDecoder,
+    options: *const J2kCDecodeOptions,
+    out: *mut J2kCOutputInfo,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: Caller supplies live disjoint storage; prefixes are validated first.
+    unsafe {
+        boundary(error, || {
+            validate_struct(out)?;
+            let options = read_options(options)?;
+            with_decoder(decoder, |state| {
+                out.write(state.output_info_native(options)?);
+                Ok(())
+            })
+        })
+    }
+}
+
+/// Decode a full-image, full-resolution request through the
+/// core whole-image decoder, skipping the batch engine's per-image planning.
+/// For layouts [`j2k_decoder_output_info_native`] represents, the output bytes
+/// equal those of [`j2k_decoder_decode_into`] on the same codestream. Any
+/// other request returns `J2K_UNSUPPORTED`.
+///
+/// The core decoder writes directly into the caller's buffer, so a failure
+/// during pixel decode may leave some output rows written. Check the returned
+/// status before using any output.
+///
+/// # Safety
+/// Same requirements as [`j2k_decoder_decode_into`].
+#[no_mangle]
+pub unsafe extern "C" fn j2k_decoder_decode_full_into(
+    decoder: *mut J2kCDecoder,
+    options: *const J2kCDecodeOptions,
+    output: *mut u8,
+    output_len: usize,
+    stride: usize,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: Caller owns the destination and handle; sizes are validated
+    // before a mutable slice is formed.
+    unsafe {
+        boundary(error, || {
+            let options = read_options(options)?;
+            check_bytes(output, output_len)?;
+            with_decoder(decoder, |state| {
+                state.decode_full_core(
+                    options,
+                    slice::from_raw_parts_mut(output, output_len),
+                    stride,
+                )?;
+                Ok(())
+            })
+        })
+    }
+}
+
 /// `j2k_row_callback`: receives one row of `row_bytes` bytes at `row`, valid
 /// only during the call. Returns zero to continue and nonzero to stop.
 pub type J2kCRowCallback = Option<

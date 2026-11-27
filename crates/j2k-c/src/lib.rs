@@ -26,15 +26,18 @@ pub use abi::{
     J2K_PARAMS_NO_COLOR_TRANSFORM, J2K_PROGRESSION_CPRL, J2K_PROGRESSION_LRCP,
     J2K_PROGRESSION_PCRL, J2K_PROGRESSION_RLCP, J2K_PROGRESSION_RPCL, J2K_RATE_BITS_PER_PIXEL,
     J2K_RATE_BYTES, J2K_RATE_NONE, J2K_RATE_PSNR_DB, J2K_RESOURCE_LIMIT, J2K_ROUTE_NATIVE_CPU,
-    J2K_ROUTE_REGION_PLANES, J2K_STOPPED, J2K_U16_LE, J2K_U8, J2K_UNSUPPORTED,
+    J2K_ROUTE_REGION_PLANES, J2K_STOPPED, J2K_SYNTAX_HT_JPEG2000_LOSSLESS,
+    J2K_SYNTAX_HT_JPEG2000_LOSSY, J2K_SYNTAX_JPEG2000_LOSSLESS, J2K_SYNTAX_JPEG2000_LOSSY,
+    J2K_SYNTAX_OTHER, J2K_SYNTAX_UNKNOWN, J2K_U16_LE, J2K_U8, J2K_UNSUPPORTED,
     J2K_WARNING_LENIENT_RECOVERY,
 };
 pub use ffi::{
     j2k_abi_version, j2k_buffer_free, j2k_cancellation_cancel, j2k_cancellation_create,
     j2k_cancellation_free, j2k_decoder_close, j2k_decoder_color_info, j2k_decoder_component_info,
-    j2k_decoder_decode_into, j2k_decoder_decode_region_into, j2k_decoder_decode_rows,
-    j2k_decoder_icc_profile, j2k_decoder_info, j2k_decoder_open, j2k_decoder_output_info,
+    j2k_decoder_decode_full_into, j2k_decoder_decode_into, j2k_decoder_decode_region_into,
+    j2k_decoder_decode_rows, j2k_decoder_feed, j2k_decoder_icc_profile, j2k_decoder_info,
+    j2k_decoder_open, j2k_decoder_output_info, j2k_decoder_output_info_native,
     j2k_decoder_plan_region, j2k_decoder_prepare_operations, j2k_decoder_row_info,
-    j2k_decoder_set_operation_cache_limit, j2k_encode, j2k_encode_lossless, j2k_version,
-    J2kCCancellation, J2kCDecoder, J2kCRowCallback,
+    j2k_decoder_set_operation_cache_limit, j2k_decoder_transfer_syntax, j2k_encode,
+    j2k_encode_lossless, j2k_version, J2kCCancellation, J2kCDecoder, J2kCRowCallback,
 };

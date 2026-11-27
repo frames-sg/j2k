@@ -239,6 +239,43 @@ public:
         return result;
     }
 
+    // Replace this decoder's codestream, keeping its threads,
+    // session, settings, and limits.
+    void feed(const uint8_t *input, size_t length) {
+        j2k_error detail{};
+        check(j2k_decoder_feed(handle_, input, length, &detail), detail);
+    }
+
+    // The compressed transfer syntax class (J2K_SYNTAX_*).
+    uint32_t transfer_syntax() {
+        uint32_t result = J2K_SYNTAX_UNKNOWN;
+        j2k_error detail{};
+        check(j2k_decoder_transfer_syntax(handle_, &result, &detail), detail);
+        return result;
+    }
+
+    // The native output layout of a full-image, full-resolution
+    // request, from header facts alone. Throws a j2k::error carrying
+    // J2K_UNSUPPORTED for requests the core whole-image decoder does not
+    // represent.
+    j2k_output_info output_info_native(
+            const j2k_decode_options &options = J2K_DECODE_OPTIONS_INIT) {
+        j2k_output_info result = J2K_OUTPUT_INFO_INIT;
+        j2k_error detail{};
+        check(j2k_decoder_output_info_native(handle_, &options, &result, &detail), detail);
+        return result;
+    }
+
+    // Decode the full image through the core whole-image
+    // decoder, without the batch engine's per-image planning. A failed pixel
+    // decode may leave some rows of output written.
+    void decode_full_into(uint8_t *output, size_t length, size_t stride,
+                          const j2k_decode_options &options = J2K_DECODE_OPTIONS_INIT) {
+        j2k_error detail{};
+        check(j2k_decoder_decode_full_into(handle_, &options, output, length, stride, &detail),
+              detail);
+    }
+
 private:
     j2k_decoder *handle_ = nullptr;
 };

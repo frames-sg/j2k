@@ -6,7 +6,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#if defined(_WIN32)
+/* Consumers linking libj2k.a statically must define J2K_STATIC so Windows
+ * declarations do not expect dllimport. */
+#if defined(J2K_STATIC)
+#define J2K_API
+#elif defined(_WIN32)
 #define J2K_API __declspec(dllimport)
 #else
 #define J2K_API
@@ -82,6 +86,16 @@ typedef uint32_t j2k_status;
 #define J2K_COLOR_ENUMERATED UINT32_C(1)
 #define J2K_COLOR_ICC UINT32_C(2)
 #define J2K_COLOR_UNKNOWN UINT32_C(3)
+
+/* Transfer syntax classes reported by j2k_decoder_transfer_syntax.
+ * Zero is reserved for an unset or unknown value; callers must check the
+ * call status before interpreting the output. */
+#define J2K_SYNTAX_UNKNOWN UINT32_C(0)
+#define J2K_SYNTAX_JPEG2000_LOSSLESS UINT32_C(1)
+#define J2K_SYNTAX_JPEG2000_LOSSY UINT32_C(2)
+#define J2K_SYNTAX_HT_JPEG2000_LOSSLESS UINT32_C(3)
+#define J2K_SYNTAX_HT_JPEG2000_LOSSY UINT32_C(4)
+#define J2K_SYNTAX_OTHER UINT32_C(5)
 
 #define J2K_U8 UINT32_C(1)
 #define J2K_U16_LE UINT32_C(2)
@@ -377,6 +391,45 @@ J2K_API j2k_status j2k_decoder_decode_rows(
     j2k_decoder *decoder, const j2k_decode_options *options,
     uint32_t max_rows_per_stripe, j2k_row_callback callback, void *user_data,
     j2k_output_info *out, j2k_error *error);
+
+/* Additive ABI-1 API: persistent-decoder feed, header-fact output layout,
+ * and the core whole-image decode route. They introduce no ABI-1 structure
+ * layouts and no new status values. */
+
+/* Replaces the codestream the decoder holds, keeping its threads, session,
+ * settings, and limits. Same input checks as j2k_decoder_open.
+ * The new input is fully inspected before any state is replaced, so a failed
+ * feed keeps the previous codestream inspectable and decodable. */
+J2K_API j2k_status j2k_decoder_feed(
+    j2k_decoder *decoder, const uint8_t *input, size_t input_len,
+    j2k_error *error);
+
+/* The compressed transfer syntax class of the held codestream, one of the
+ * J2K_SYNTAX_* values. */
+J2K_API j2k_status j2k_decoder_transfer_syntax(
+    j2k_decoder *decoder, uint32_t *out, j2k_error *error);
+
+/* The native output layout of a full-image, full-resolution request, derived
+ * from header facts alone without batch-engine planning. Covers raw
+ * codestreams with one or three unsigned components of equal 8- to
+ * 16-bit precision; any other request returns J2K_UNSUPPORTED
+ * (j2k_decoder_output_info stays the general route). Images whose components
+ * all share a non-1:1 sampling pair are rejected; mixed component sampling
+ * stays supported. Sub-8-bit samples stay on the batch route because the core
+ * decoder widens them to the full 8-bit container range. */
+J2K_API j2k_status j2k_decoder_output_info_native(
+    j2k_decoder *decoder, const j2k_decode_options *options,
+    j2k_output_info *out, j2k_error *error);
+
+/* Decodes a full-image, full-resolution request through the core whole-image
+ * decoder, skipping the batch engine's per-image planning. For layouts
+ * j2k_decoder_output_info_native represents, the output bytes equal those of
+ * j2k_decoder_decode_into on the same codestream. Other requests return
+ * J2K_UNSUPPORTED. The core decoder writes directly into the caller's buffer,
+ * so a failure during pixel decode may leave some rows written. */
+J2K_API j2k_status j2k_decoder_decode_full_into(
+    j2k_decoder *decoder, const j2k_decode_options *options,
+    uint8_t *output, size_t output_len, size_t stride, j2k_error *error);
 
 /* Encodes interleaved samples losslessly into a buffer this library allocates.
  * The encoder decodes its result and compares it with the samples before

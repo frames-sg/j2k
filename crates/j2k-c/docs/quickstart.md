@@ -1,9 +1,9 @@
 # j2k for C and C++
 
 This package contains a CPU JPEG 2000/HTJ2K decoder and encoder, C and C++17
-headers, and CMake and pkg-config integration. It is licensed under either of `LICENSE-MIT` or
-`LICENSE-APACHE` at your option; `NOTICES.md` records source provenance, and
-third-party licenses are included under `licenses/`.
+headers, and CMake and pkg-config integration. It is licensed under either of
+`LICENSE-MIT` or `LICENSE-APACHE` at your option; `NOTICES.md` records source
+provenance, and third-party licenses are included under `licenses/`.
 
 ## Build the examples
 
@@ -38,6 +38,26 @@ not on the default loader path, so also link with a runtime search path:
 ```sh
 export PKG_CONFIG_PATH="/path/to/package/lib/pkgconfig"
 cc app.c $(pkg-config --cflags --libs j2k) -Wl,-rpath,"$(pkg-config --variable=libdir j2k)"
+```
+
+To link the static archive, define `J2K_STATIC` and pass `lib/libj2k.a`
+explicitly. `pkg-config --static --libs j2k` reports the archive's private
+dependencies but also includes `-lj2k`; remove that entry so the linker does
+not select the shared library:
+
+```sh
+export PKG_CONFIG_PATH="/path/to/package/lib/pkgconfig"
+cc -DJ2K_STATIC app.c /path/to/package/lib/libj2k.a \
+    $(pkg-config --cflags j2k) \
+    $(pkg-config --static --libs-only-l j2k | sed 's/-lj2k//')
+```
+
+CMake consumers can link the exported static target instead; it defines
+`J2K_STATIC` and carries the archive's private link libraries:
+
+```cmake
+find_package(J2K CONFIG REQUIRED)
+target_link_libraries(your_application PRIVATE J2K::j2k_static)
 ```
 
 ```cpp

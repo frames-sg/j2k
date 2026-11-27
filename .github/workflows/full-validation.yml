@@ -412,6 +412,15 @@ jobs:
         env:
           J2K_FUZZ_RUNS: "512"
           J2K_FUZZ_MAX_TOTAL_TIME_SECONDS: "60"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: j2k-fuzz-artifacts
+          path: |
+            crates/*/fuzz/corpus
+            crates/*/fuzz/artifacts
+          if-no-files-found: ignore
+          retention-days: 7
 
   fuzz-run-long:
     if: ${{ github.event_name == 'schedule' }}
@@ -428,6 +437,15 @@ jobs:
         env:
           J2K_FUZZ_RUNS: "20000"
           J2K_FUZZ_MAX_TOTAL_TIME_SECONDS: "900"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: j2k-fuzz-artifacts-long
+          path: |
+            crates/*/fuzz/corpus
+            crates/*/fuzz/artifacts
+          if-no-files-found: ignore
+          retention-days: 7
 
   package:
     runs-on: ubuntu-latest
