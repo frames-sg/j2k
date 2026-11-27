@@ -149,24 +149,17 @@ impl VlcEncoder {
     }
 
     #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the mask is bounded by the available byte bits before packing into the VLC reservoir"
-    )]
-    #[expect(
         clippy::inline_always,
-        reason = "runs once per quad pair in the cleanup hot path"
+        reason = "runs once per quad pair in the cleanup hot path when codeword is already masked"
     )]
     #[inline(always)]
-    pub(super) fn encode(
+    pub(super) fn encode_masked(
         &mut self,
         mut codeword: u64,
         mut codeword_len: u8,
     ) -> Result<(), &'static str> {
         if codeword_len == 0 {
             return Ok(());
-        }
-        if codeword_len < u64::BITS as u8 {
-            codeword &= (1u64 << codeword_len) - 1;
         }
         loop {
             let available = 64 - self.used_bits;
@@ -185,13 +178,60 @@ impl VlcEncoder {
         }
     }
 
+    #[cfg(test)]
     #[expect(
         clippy::cast_possible_truncation,
+        reason = "the mask is bounded by the available byte bits before packing into the VLC reservoir"
+    )]
+    #[expect(
         clippy::inline_always,
+        reason = "runs once per quad pair in the cleanup hot path"
+    )]
+    #[inline(always)]
+    pub(super) fn encode(
+        &mut self,
+        mut codeword: u64,
+        codeword_len: u8,
+    ) -> Result<(), &'static str> {
+        if codeword_len == 0 {
+            return Ok(());
+        }
+        if codeword_len < u64::BITS as u8 {
+            codeword &= (1u64 << codeword_len) - 1;
+        }
+        self.encode_masked(codeword, codeword_len)
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
         reason = "the reservoir mask bounds the emitted value to one byte in this hot path"
     )]
     #[inline(always)]
     fn drain(&mut self) -> Result<(), &'static str> {
+        const ONES: u64 = 0x0101_0101_0101_0101;
+        const HIGHS: u64 = 0x8080_8080_8080_8080;
+        const LOW7: u64 = 0x7F7F_7F7F_7F7F_7F7F;
+
+        // Fast SWAR path: if no byte in `self.tmp` has low 7 bits == 0x7F,
+        // stuffing cannot trigger for any of the 8 bytes, so all 8 can be
+        // stored backwards in one reversed 64-bit word.
+        if self.used_bits == 64 {
+            let inv = (!self.tmp) & LOW7;
+            if (inv.wrapping_sub(ONES) & HIGHS) == 0 {
+                let end = self.pos + 8;
+                if end > self.buffer.len() {
+                    return Err("HTJ2K VLC encoder buffer is full");
+                }
+                let write_start = self.buffer.len() - end;
+                self.buffer[write_start..write_start + 8].copy_from_slice(&self.tmp.to_be_bytes());
+                self.last_greater_than_8f = (self.tmp >> 56) > 0x8F;
+                self.pos = end;
+                self.tmp = 0;
+                self.used_bits = 0;
+                return Ok(());
+            }
+        }
+
         while self.used_bits >= 8 {
             if self.pos >= self.buffer.len() {
                 return Err("HTJ2K VLC encoder buffer is full");
@@ -246,19 +286,16 @@ impl MagSgnEncoder {
     #[expect(
         clippy::cast_possible_truncation,
         clippy::inline_always,
-        reason = "take and the flushed reservoir are byte-bounded in this magnitude/sign hot path"
+        reason = "fast path for already-masked MagSgn quad words"
     )]
     #[inline(always)]
-    pub(super) fn encode(
+    pub(super) fn encode_masked(
         &mut self,
         mut codeword: u64,
         mut codeword_len: u32,
     ) -> Result<(), &'static str> {
         if codeword_len == 0 {
             return Ok(());
-        }
-        if codeword_len < u64::BITS {
-            codeword &= (1u64 << codeword_len) - 1;
         }
         loop {
             let available = 64 - u32::from(self.used_bits);
@@ -275,6 +312,27 @@ impl MagSgnEncoder {
             }
             self.drain()?;
         }
+    }
+
+    #[cfg(test)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::inline_always,
+        reason = "take and the flushed reservoir are byte-bounded in this magnitude/sign hot path"
+    )]
+    #[inline(always)]
+    pub(super) fn encode(
+        &mut self,
+        mut codeword: u64,
+        codeword_len: u32,
+    ) -> Result<(), &'static str> {
+        if codeword_len == 0 {
+            return Ok(());
+        }
+        if codeword_len < u64::BITS {
+            codeword &= (1u64 << codeword_len) - 1;
+        }
+        self.encode_masked(codeword, codeword_len)
     }
 
     #[expect(

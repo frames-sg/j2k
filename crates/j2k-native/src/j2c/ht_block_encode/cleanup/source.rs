@@ -101,9 +101,49 @@ impl CleanupCoefficientSource for [u32] {
 pub(in crate::j2c::ht_block_encode) struct I32CleanupCoefficients<'a> {
     pub(in crate::j2c::ht_block_encode) coefficients: &'a [i32],
     pub(in crate::j2c::ht_block_encode) shift: u32,
+    pub(in crate::j2c::ht_block_encode) fast_exponent: bool,
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::inline_always,
+    reason = "for doubled <= 2^24, doubled.saturating_sub(1) fits f32's 24-bit significand exactly so IEEE exponent extraction matches bit_width() without vector clz"
+)]
+#[inline(always)]
+fn fill_samples_i32_fast(row: &[i32], rshift: u32, exponents: &mut [u8], values: &mut [u32]) {
+    let samples = row.len().min(exponents.len()).min(values.len());
+    if rshift == 0 {
+        for index in 0..samples {
+            let coefficient = row[index];
+            let doubled = coefficient.unsigned_abs() << 1;
+            let x = doubled.saturating_sub(1);
+            exponents[index] = (((x as i32) as f32).to_bits() >> 23).saturating_sub(126) as u8;
+            values[index] = doubled
+                .wrapping_sub(2)
+                .wrapping_add((coefficient as u32) >> 31);
+        }
+    } else {
+        for index in 0..samples {
+            let coefficient = row[index];
+            let doubled = (coefficient.unsigned_abs() >> rshift) << 1;
+            let x = doubled.saturating_sub(1);
+            exponents[index] = (((x as i32) as f32).to_bits() >> 23).saturating_sub(126) as u8;
+            values[index] = doubled
+                .wrapping_sub(2)
+                .wrapping_add((coefficient as u32) >> 31);
+        }
+    }
 }
 
 impl CleanupCoefficientSource for I32CleanupCoefficients<'_> {
+    #[expect(
+        clippy::inline_always,
+        reason = "inlined into the SIMD-dispatched cleanup row loop"
+    )]
+    #[inline(always)]
     fn fill_row(
         &self,
         start: usize,
@@ -112,8 +152,12 @@ impl CleanupCoefficientSource for I32CleanupCoefficients<'_> {
         values: &mut [u32],
     ) -> Result<(), &'static str> {
         let row = &self.coefficients[start..start + exponents.len()];
-        let aligned = |value| aligned_sign_magnitude(value, self.shift);
-        fill_samples(row, aligned, p, exponents, values);
+        if self.fast_exponent {
+            fill_samples_i32_fast(row, p - self.shift, exponents, values);
+        } else {
+            let aligned = |value| aligned_sign_magnitude(value, self.shift);
+            fill_samples(row, aligned, p, exponents, values);
+        }
         Ok(())
     }
 }

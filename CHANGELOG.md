@@ -44,6 +44,13 @@ To add an entry, see [the changelog guide](contributor-book/documentation.md#cha
   `partial_codestream`. Code that builds the struct with a literal must set
   it, or start from `DecodeSettings::strict()` or `DecodeSettings::lenient()`.
 
+### Encoding
+
+- CPU HTJ2K block encoding now uses SIMD-dispatched cleanup, paired UVLC
+  lookups, 8-byte SWAR VLC drains, and single-dispatch block quantization
+  while remaining safe Rust (`#![forbid(unsafe_code)]`).
+  ([#346](https://github.com/frames-sg/j2k/issues/346))
+
 ### JPEG-LS
 
 - New crate `j2k-jpegls` decodes and encodes JPEG-LS (ISO/IEC 14495-1)

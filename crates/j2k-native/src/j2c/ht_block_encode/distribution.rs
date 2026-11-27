@@ -121,6 +121,7 @@ pub(crate) fn collect_encode_distribution(
     let source = I32CleanupCoefficients {
         coefficients,
         shift: u32::from(31_u8.saturating_sub(total_bitplanes)),
+        fast_exponent: false,
     };
     let mut distribution = HtCleanupEncodeDistribution::default();
     let missing_msbs = total_bitplanes.saturating_sub(1);

@@ -795,6 +795,55 @@ impl Quantizer {
         self.extend_with(quantized, coefficients, false);
     }
 
+    /// Quantize a rectangular block from a packed subband into `quantized`
+    /// (which must be empty with enough reserved capacity) under a single SIMD
+    /// dispatch, returning the maximum coefficient magnitude.
+    #[expect(
+        clippy::redundant_closure,
+        reason = "the closures carry #[inline(always)], which a function item's Fn shim lacks"
+    )]
+    pub(crate) fn fill_packed_block_and_max(
+        self,
+        quantized: &mut Vec<i32>,
+        view: crate::j2c::fdwt::PackedSubbandView<'_, f32>,
+        x0: u32,
+        y0: u32,
+        width: u32,
+        height: u32,
+    ) -> Option<u32> {
+        let count = (width as usize) * (height as usize);
+        quantized.resize(count, 0);
+        match self {
+            Self::Zero => Some(0),
+            Self::Round => dispatch!(Level::new(), simd => {
+                fill_packed_block_at(
+                    simd,
+                    quantized,
+                    view,
+                    x0,
+                    y0,
+                    width,
+                    height,
+                    #[inline(always)]
+                    |c| round_sample(c),
+                )
+            }),
+            Self::Deadzone(delta) => dispatch!(Level::new(), simd => {
+                fill_packed_block_at(
+                    simd,
+                    quantized,
+                    view,
+                    x0,
+                    y0,
+                    width,
+                    height,
+                    #[inline(always)]
+                    move |c| deadzone_sample(c, delta),
+                )
+            }),
+        }
+    }
+
     /// [`Self::extend`], splitting large subbands across the pool when
     /// `parallel`.
     #[expect(
@@ -872,6 +921,38 @@ fn extend_quantized(
     }
     let _ = parallel;
     dispatch!(Level::new(), simd => quantize_at(simd, output, coefficients, &quantize));
+}
+
+#[expect(
+    clippy::inline_always,
+    clippy::too_many_arguments,
+    reason = "inlined into each SIMD dispatch target so block quantization and max reduction run in one pass"
+)]
+#[inline(always)]
+fn fill_packed_block_at<S: crate::math::Simd>(
+    _simd: S,
+    output: &mut [i32],
+    view: crate::j2c::fdwt::PackedSubbandView<'_, f32>,
+    x0: u32,
+    y0: u32,
+    width: u32,
+    height: u32,
+    quantize: impl Fn(f32) -> i32,
+) -> Option<u32> {
+    let w = width as usize;
+    let x = x0 as usize;
+    let mut maximum = 0_u32;
+    for (dy, out_row) in output.chunks_exact_mut(w).take(height as usize).enumerate() {
+        let dy_u32 = u32::try_from(dy).ok()?;
+        let row = view.row(y0 + dy_u32)?;
+        let src = &row[x..][..w];
+        for (dst, &coefficient) in out_row.iter_mut().zip(src) {
+            let q = quantize(coefficient);
+            *dst = q;
+            maximum = maximum.max(q.unsigned_abs());
+        }
+    }
+    Some(maximum)
 }
 
 /// The loop of [`extend_quantized`] at the dispatched SIMD level.
