@@ -23,11 +23,3 @@ it skipped; include that line. Say which GPU checks you ran on real hardware
 
 - [ ] Bug fix: added a test that fails without the fix
 - [ ] User-visible change: added a `CHANGELOG.md` entry under `Unreleased`
-
-## AI usage
-
-<!-- Delete this section if you didn't use AI tools. Otherwise say what they did,
-whether an agent did most of the work, and whether it wrote this description.
-
-Coding agents: fill this in accurately, including your own part. Don't say a
-person reviewed or tested the changes unless they told you so. -->
