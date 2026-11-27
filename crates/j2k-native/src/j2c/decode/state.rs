@@ -350,11 +350,17 @@ pub(crate) struct TileDecodeContext {
     /// Whether the inverse MCT is left to the caller's RGB8 pack, set
     /// around a decode like `round_irreversible_output`.
     pub(crate) defer_mct: bool,
+    /// Whether a single-component grayscale decode may leave its final IDWT
+    /// level to the caller's native sample pack.
+    pub(crate) defer_gray_last_level: bool,
     /// Whether this context's decodes share their pool with other images
     /// decoding at the same time (see `DecoderContext::set_shared_pool`).
     pub(crate) shared_pool: bool,
     /// The inverse MCT this decode left to the caller.
     pub(crate) deferred_mct: Option<mct::DeferredMct>,
+    /// The final IDWT level and shift a single-component grayscale decode left
+    /// to the caller's native sample pack.
+    pub(crate) deferred_gray_last_level: Option<(idwt::LastLevel, mct::SampleShift)>,
     /// The last IDWT level this decode leaves to the RGB8 pack with the
     /// deferred MCT: the IDWT stops one level short, at the level's LL band,
     /// and each plane receives the level's other sub-bands instead of samples.
@@ -394,6 +400,7 @@ impl TileDecodeContext {
         let output_region = self.output_region;
         let round_irreversible_output = self.round_irreversible_output;
         let defer_mct = self.defer_mct;
+        let defer_gray_last_level = self.defer_gray_last_level;
         let line_region_idwt_permitted = self.line_region_idwt_permitted;
         #[cfg(all(test, feature = "parallel"))]
         let force_per_sub_band = self.force_per_sub_band;
@@ -420,6 +427,7 @@ impl TileDecodeContext {
         self.output_region = output_region;
         self.round_irreversible_output = round_irreversible_output;
         self.defer_mct = defer_mct;
+        self.defer_gray_last_level = defer_gray_last_level;
         self.line_region_idwt_permitted = line_region_idwt_permitted;
         #[cfg(all(test, feature = "parallel"))]
         {

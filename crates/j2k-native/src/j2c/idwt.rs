@@ -16,7 +16,10 @@ mod orchestrate;
 mod roi;
 mod vertical;
 
-pub(crate) use banded::{banded_scratch_elements_for_execution, pack_last_level, LastLevel};
+pub(crate) use banded::{
+    banded_scratch_elements_for_execution, pack_last_level, pack_last_level_gray, GrayRowEmitter,
+    LastLevel,
+};
 pub(in crate::j2c) use banded::{lift_rows, scale_samples};
 pub(crate) use direct::apply_codestream_single_decomposition_idwt_job;
 pub(crate) use direct::apply_single_decomposition_idwt_job;

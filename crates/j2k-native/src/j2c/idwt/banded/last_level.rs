@@ -389,3 +389,256 @@ fn stream_rows<S: Simd>(
         emit_rows(rings, index, emitted..end);
     }
 }
+
+/// Scratch one worker needs for a single-component fused last level.
+fn worker_scratch_elements_gray(width: usize, batch: usize, split: bool) -> Result<usize> {
+    let strips = if split {
+        (width / STRIP_COLUMNS).max(1)
+    } else {
+        1
+    };
+    strips
+        .checked_mul(RING_ROW_PAD)
+        .and_then(|pads| pads.checked_add(width))
+        .and_then(|row| row.checked_mul(ring_rows(batch)))
+        .and_then(|rings| rings.checked_add(horizontal_scratch_elements(width).ok()?))
+        .ok_or(ValidationError::ImageTooLarge.into())
+}
+
+/// Row packer specialized inside the SIMD dispatch scope of
+/// [`pack_last_level_gray`] so rounding and clamping vectorize with AVX2/NEON
+/// instead of calling scalar `libm` outside the target-feature scope.
+pub(crate) trait GrayRowEmitter: Sync {
+    fn emit<S: Simd>(&self, simd: S, row: &mut [f32], out_row: &mut [u8]);
+}
+
+/// Reconstruct `level` of one grayscale component from its high-band `plane`
+/// and `ll` band directly into `output` (`bytes_per_sample` bytes per sample),
+/// handing each finished row to `emitter` while it stays in the L1/L2 ring.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "single-component fused last-level reconstruction keeps geometry, buffers, and packer explicit"
+)]
+pub(crate) fn pack_last_level_gray<E: GrayRowEmitter>(
+    level: LastLevel,
+    plane: &[f32],
+    ll: &[f32],
+    scratch: [&mut [f32]; 2],
+    output: &mut [u8],
+    bytes_per_sample: usize,
+    parallel: bool,
+    emitter: &E,
+) -> Result<()> {
+    let Some(level) = level.level(plane, ll) else {
+        bail!(DecodingError::CodeBlockDecodeFailure);
+    };
+    let (width, height) = (level.width, level.height);
+    let row_bytes = bytes_per_sample
+        .checked_mul(width)
+        .ok_or(ValidationError::ImageTooLarge)?;
+    if output.len() != row_bytes * height {
+        bail!(DecodingError::OutputBufferTooSmall);
+    }
+    let Some(layout) = parallel_strip_layout(width, height, parallel)? else {
+        // A single-component ring of 8 arrivals + halo is ~220 KiB at 4K wide
+        // (well inside L2), so streaming whole rows avoids column-strip
+        // re-synthesis and strided page faults into the output buffer.
+        let batch = 8;
+        let mut owned = Vec::new();
+        try_resize_decode_elements(
+            &mut owned,
+            worker_scratch_elements_gray(width, batch, false)?,
+            0.0,
+        )?;
+        dispatch!(Level::new(), simd => stream_rows_gray(
+            simd, level, 0, batch, false, bytes_per_sample, output, &mut owned, emitter,
+        ));
+        return Ok(());
+    };
+    #[cfg(feature = "parallel")]
+    {
+        let strip_bytes = layout.strip_len / width * row_bytes;
+        let workers = layout.concurrent_strips;
+        let per_worker = worker_scratch_elements_gray(width, PARALLEL_BATCH_ROWS, false)?;
+        let complete = dispatch!(Level::new(), simd => run_strips_gray(
+            simd, level, bytes_per_sample, output, strip_bytes, workers, per_worker, scratch, emitter,
+        ));
+        if !complete {
+            bail!(DecodingError::HostAllocationFailed);
+        }
+    }
+    #[cfg(not(feature = "parallel"))]
+    let _ = (layout, scratch);
+    Ok(())
+}
+
+#[cfg(feature = "parallel")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the strip driver keeps geometry and reused scratch explicit at the SIMD dispatch boundary"
+)]
+fn run_strips_gray<S: Simd, E: GrayRowEmitter>(
+    simd: S,
+    level: Level2d<'_>,
+    bytes_per_sample: usize,
+    output: &mut [u8],
+    strip_bytes: usize,
+    workers: usize,
+    per_worker: usize,
+    scratch: [&mut [f32]; 2],
+    emitter: &E,
+) -> bool {
+    use core::sync::atomic::{AtomicBool, Ordering};
+    use rayon::prelude::*;
+    use std::sync::Mutex;
+
+    let row_bytes = bytes_per_sample * level.width;
+    let strips = Mutex::new(output.chunks_mut(strip_bytes).enumerate());
+    let next = || strips.lock().ok().and_then(|mut strips| strips.next());
+    let [coarse, bands] = scratch;
+    let spare = Mutex::new(
+        coarse
+            .chunks_exact_mut(per_worker)
+            .chain(bands.chunks_exact_mut(per_worker)),
+    );
+    let failed = AtomicBool::new(false);
+    (0..workers).into_par_iter().with_max_len(1).for_each(|_| {
+        let mut owned = Vec::new();
+        let scratch = if let Some(scratch) = spare.lock().ok().and_then(|mut spare| spare.next()) {
+            scratch
+        } else {
+            if try_resize_decode_elements(&mut owned, per_worker, 0.0).is_err() {
+                failed.store(true, Ordering::Relaxed);
+                return;
+            }
+            &mut owned
+        };
+        #[cfg(feature = "simd")]
+        simd.vectorize(
+            #[inline(always)]
+            || {
+                while let Some((strip, output)) = next() {
+                    let first_row = strip * strip_bytes / row_bytes;
+                    stream_rows_gray(
+                        simd,
+                        level,
+                        first_row,
+                        PARALLEL_BATCH_ROWS,
+                        false,
+                        bytes_per_sample,
+                        output,
+                        scratch,
+                        emitter,
+                    );
+                }
+            },
+        );
+        #[cfg(not(feature = "simd"))]
+        while let Some((strip, output)) = next() {
+            let first_row = strip * strip_bytes / row_bytes;
+            stream_rows_gray(
+                simd,
+                level,
+                first_row,
+                PARALLEL_BATCH_ROWS,
+                false,
+                bytes_per_sample,
+                output,
+                scratch,
+                emitter,
+            );
+        }
+    });
+    !failed.load(Ordering::Relaxed)
+}
+
+#[expect(
+    clippy::inline_always,
+    clippy::too_many_arguments,
+    reason = "the single-component row stream is specialized at the SIMD dispatch boundary"
+)]
+#[inline(always)]
+fn stream_rows_gray<S: Simd, E: GrayRowEmitter>(
+    simd: S,
+    level: Level2d<'_>,
+    first_row: usize,
+    batch: usize,
+    split: bool,
+    bytes_per_sample: usize,
+    output: &mut [u8],
+    scratch: &mut [f32],
+    emitter: &E,
+) {
+    let width = level.width;
+    let height = level.height;
+    let row_bytes = bytes_per_sample * width;
+    let end = first_row + output.len() / row_bytes;
+    let (_, count) = vertical_steps(level.lifting());
+    let lo = first_row.saturating_sub(count);
+    let hi = (end + count).min(height);
+    let ring_rows = ring_rows(batch);
+    let strips = if split {
+        column_strips(level)
+    } else {
+        (width, 1)
+    };
+    let rings_len: usize = (0..strips.1)
+        .map(|index| ring_rows * (strip_range(index, strips, width).len() + RING_ROW_PAD))
+        .sum();
+    let (rings, horizontal_scratch) = scratch.split_at_mut(rings_len);
+    let (low, high) = split_horizontal_scratch(level, horizontal_scratch);
+    let strip_ring = |index: usize, stride: usize| -> Range<usize> {
+        let start = index * ring_rows * (strips.0 + RING_ROW_PAD);
+        start..start + ring_rows * stride
+    };
+    let mut row_cursor = first_row;
+    for first in (lo..hi + count).step_by(batch) {
+        let arrivals = first..(first + batch).min(hi + count);
+        let unread = (arrivals.end - 1).saturating_sub(count).min(end);
+        for index in 0..strips.1 {
+            let columns = strip_range(index, strips, width);
+            let stride = columns.len() + RING_ROW_PAD;
+            let ring = &mut rings[strip_ring(index, stride)];
+            let mut rows = RingRows {
+                rows: ring,
+                width: columns.len(),
+                stride,
+                slots: ring_rows,
+            };
+            for first in arrivals.clone().step_by(WAVEFRONT_ARRIVALS) {
+                let ahead = first..(first + WAVEFRONT_ARRIVALS).min(arrivals.end);
+                for arrival in ahead.start..ahead.end.min(hi) {
+                    let row = rows.row_mut(arrival);
+                    synthesize_level_columns(simd, level, arrival, row, columns.clone(), low, high);
+                }
+                lift_arrivals(simd, level.lifting(), ahead, lo..hi, &mut rows);
+            }
+            for row in row_cursor..unread.max(row_cursor) {
+                let start = row % ring_rows * stride;
+                let samples = &mut ring[start..][..columns.len()];
+                let out_row = &mut output[(row - first_row) * row_bytes..][..row_bytes];
+                emitter.emit(
+                    simd,
+                    samples,
+                    &mut out_row[bytes_per_sample * columns.start..bytes_per_sample * columns.end],
+                );
+            }
+        }
+        row_cursor = row_cursor.max(unread);
+    }
+    for index in 0..strips.1 {
+        let columns = strip_range(index, strips, width);
+        let stride = columns.len() + RING_ROW_PAD;
+        let ring = &mut rings[strip_ring(index, stride)];
+        for row in row_cursor..end {
+            let start = row % ring_rows * stride;
+            let samples = &mut ring[start..][..columns.len()];
+            let out_row = &mut output[(row - first_row) * row_bytes..][..row_bytes];
+            emitter.emit(
+                simd,
+                samples,
+                &mut out_row[bytes_per_sample * columns.start..bytes_per_sample * columns.end],
+            );
+        }
+    }
+}

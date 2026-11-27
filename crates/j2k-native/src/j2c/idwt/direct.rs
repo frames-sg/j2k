@@ -20,7 +20,7 @@ use crate::{
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "the level driver keeps both IDWT buffers, the band scratch, and the backend hook explicit"
+    reason = "the level driver keeps both IDWT buffers, the band scratch, backend hook, and optional fused output shift explicit"
 )]
 pub(super) fn apply_level(
     input: IDWTInput<'_>,
@@ -31,7 +31,8 @@ pub(super) fn apply_level(
     storage: &DecompositionStorage<'_>,
     backend: &mut Option<&mut dyn HtCodeBlockDecoder>,
     parallel: bool,
-) -> Result<IDWTTempOutput> {
+    final_shift: crate::j2c::mct::SampleShift,
+) -> Result<(IDWTTempOutput, bool)> {
     let handled = if let Some(backend) = backend.as_deref_mut() {
         let required_len = checked_decode_usize_product2(
             decomposition.rect.width() as usize,
@@ -51,14 +52,17 @@ pub(super) fn apply_level(
     };
 
     if handled {
-        Ok(IDWTTempOutput {
-            rect: decomposition.rect,
-        })
+        Ok((
+            IDWTTempOutput {
+                rect: decomposition.rect,
+            },
+            false,
+        ))
     } else if use_banded(
         decomposition.rect.width() as usize,
         decomposition.rect.height() as usize,
     ) {
-        filter_2d_banded(
+        let output = filter_2d_banded(
             input,
             decomposition,
             target,
@@ -66,9 +70,17 @@ pub(super) fn apply_level(
             transform,
             storage,
             parallel,
-        )
+            final_shift,
+        )?;
+        Ok((
+            output,
+            !matches!(final_shift, crate::j2c::mct::SampleShift::Copy),
+        ))
     } else {
-        filter_2d(input, target, decomposition, transform, storage)
+        Ok((
+            filter_2d(input, target, decomposition, transform, storage)?,
+            false,
+        ))
     }
 }
 

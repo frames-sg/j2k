@@ -397,6 +397,10 @@ impl DecoderContext<'_> {
         self.tile_decode_context.defer_mct = enabled;
     }
 
+    pub(crate) fn set_defer_gray_last_level(&mut self, enabled: bool) {
+        self.tile_decode_context.defer_gray_last_level = enabled;
+    }
+
     /// Return the native CPU decode parallelism policy.
     #[must_use]
     pub fn cpu_decode_parallelism(&self) -> CpuDecodeParallelism {

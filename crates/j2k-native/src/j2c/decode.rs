@@ -297,6 +297,33 @@ fn decode<'a>(
     )
 }
 
+fn finalize_deferred_last_level(
+    tiles: &ParsedTiles<'_>,
+    tile_ctx: &mut TileDecodeContext,
+) -> Result<()> {
+    // Planes holding a last level's sub-bands need the deferred MCT's pack or
+    // the single-component native grayscale pack.
+    let Some(level) = tile_ctx.fused_last_level.take() else {
+        return Ok(());
+    };
+    if tile_ctx.defer_gray_last_level
+        && tiles.len() == 1
+        && !tiles[0].mct
+        && tile_ctx.channel_data.len() == 1
+    {
+        let info = &tiles[0].component_infos[0];
+        let shift = mct::SampleShift::for_transform(
+            info.unsigned_level_shift(),
+            info.wavelet_transform(),
+            tile_ctx.round_irreversible_output,
+        );
+        tile_ctx.deferred_gray_last_level = Some((level, shift));
+        Ok(())
+    } else {
+        bail!(DecodingError::IncompletePlaneStore);
+    }
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "the parsed decode boundary keeps graph ownership, allocation baseline, adapter, and profiling state explicit"
@@ -403,6 +430,7 @@ fn decode_parsed_tiles<'a>(
     tile_ctx.ensure_unzeroed_planes_overwritten()?;
 
     tile_ctx.deferred_mct = None;
+    tile_ctx.deferred_gray_last_level = None;
     // Streamed rows were transformed on the way to the sink.
     if tiles.iter().any(|tile| tile.mct) && !stream_rows {
         let stage_start = profile::profile_now(profile_enabled);
@@ -410,10 +438,7 @@ fn decode_parsed_tiles<'a>(
         apply_inverse_mct(tile_ctx, header, tiles, ht_decoder, parallel)?;
         profile_timings.mct_us += profile::elapsed_us(stage_start);
     }
-    // Planes holding a last level's sub-bands need the deferred MCT's pack.
-    if tile_ctx.fused_last_level.take().is_some() {
-        bail!(DecodingError::IncompletePlaneStore);
-    }
+    finalize_deferred_last_level(tiles, tile_ctx)?;
     publish_exact_planes_as_floats(tile_ctx)?;
 
     if profile_enabled {
@@ -1281,6 +1306,22 @@ fn decode_components<'a>(
             // Next, we apply the inverse discrete wavelet transform. A last level
             // left to the pack ends at its LL band.
             let stage_start = profile::profile_now(profile_enabled);
+            let idwt_final_shift = if !tile.mct
+                && tile_ctx.output_region.is_none()
+                && tile_ctx.fused_last_level.is_none()
+                && ht_decoder.is_none()
+                && matches!(output, TileOutput::Planes)
+                && component_info.size_info.horizontal_resolution == 1
+                && component_info.size_info.vertical_resolution == 1
+            {
+                mct::SampleShift::for_transform(
+                    component_info.unsigned_level_shift(),
+                    component_info.wavelet_transform(),
+                    tile_ctx.round_irreversible_output,
+                )
+            } else {
+                mct::SampleShift::Copy
+            };
             let idwt_result = idwt::apply(
                 storage,
                 tile_ctx,
@@ -1289,6 +1330,7 @@ fn decode_components<'a>(
                 component_info.wavelet_transform(),
                 ht_decoder,
                 cpu_decode_parallelism == CpuDecodeParallelism::Auto,
+                idwt_final_shift,
             );
             idwt_result?;
             record_workspace(tile_ctx, storage, 0)?;

@@ -23,7 +23,8 @@ use crate::{
 /// decomposition level.
 #[expect(
     clippy::too_many_lines,
-    reason = "the level loop keeps both ping-pong buffers, band scratch, and the backend hook in one place"
+    clippy::too_many_arguments,
+    reason = "the level loop keeps both ping-pong buffers, band scratch, backend hook, and optional fused output shift in one place"
 )]
 pub(crate) fn apply(
     storage: &DecompositionStorage<'_>,
@@ -33,8 +34,10 @@ pub(crate) fn apply(
     transform: WaveletTransform,
     backend: &mut Option<&mut dyn HtCodeBlockDecoder>,
     parallel: bool,
+    final_shift: crate::j2c::mct::SampleShift,
 ) -> Result<()> {
     tile_ctx.idwt_output.placement = IdwtPlacement::Coefficients;
+    tile_ctx.idwt_output.shift_applied = false;
     if storage.exact_integer_decode && transform != WaveletTransform::Reversible53 {
         bail!(DecodingError::UnsupportedFeature(
             "integer IDWT requires reversible 5/3 coding",
@@ -115,10 +118,20 @@ pub(crate) fn apply(
     let writes = decompositions.len() - usize::from(pair);
 
     // The coefficient array will always be the one that holds the coefficients
-    // from the highest decomposition. Therefore, reserve as much.
+    // from the highest decomposition. Therefore, reserve as much. When fresh
+    // buffers come zeroed from the allocator, allocate zeroed directly so
+    // `try_grow_level_buffer` does not serially zero-fill an uninitialized
+    // `try_reserve_exact` buffer before parallel workers write it.
     let (s_min, s_max) = idwt_buffer_size(decompositions.last().unwrap().rect)?;
     if prefix.is_none() && output.coefficients.len() < s_min {
-        try_reserve_decode_elements(&mut output.coefficients, s_max)?;
+        if output.coefficients.is_empty()
+            && output.coefficients.capacity() < s_max
+            && crate::fresh_decode_buffers_come_zeroed()
+        {
+            super::try_grow_level_buffer(&mut output.coefficients, s_max)?;
+        } else {
+            try_reserve_decode_elements(&mut output.coefficients, s_max)?;
+        }
     }
 
     if writes > 1 {
@@ -128,7 +141,14 @@ pub(crate) fn apply(
         let (s_min, s_max) = idwt_buffer_size(decompositions[writes - 2].rect)?;
 
         if scratch_buf.len() < s_min {
-            try_reserve_decode_elements(scratch_buf, s_max)?;
+            if scratch_buf.is_empty()
+                && scratch_buf.capacity() < s_max
+                && crate::fresh_decode_buffers_come_zeroed()
+            {
+                super::try_grow_level_buffer(scratch_buf, s_max)?;
+            } else {
+                try_reserve_decode_elements(scratch_buf, s_max)?;
+            }
         }
     }
 
@@ -160,6 +180,11 @@ pub(crate) fn apply(
                 outer.rect.width() as usize,
                 outer.rect.height() as usize,
             )?;
+            let pair_shift = if prefix.is_none() {
+                final_shift
+            } else {
+                crate::j2c::mct::SampleShift::Copy
+            };
             let target = if let Some(prefix) = prefix.as_deref_mut() {
                 prefix
             } else {
@@ -173,7 +198,9 @@ pub(crate) fn apply(
                 band_scratch,
                 transform,
                 storage,
+                pair_shift,
             )?;
+            output.shift_applied = !matches!(pair_shift, crate::j2c::mct::SampleShift::Copy);
             let inner_len = checked_decode_usize_product2(
                 decomposition.rect.width() as usize,
                 decomposition.rect.height() as usize,
@@ -186,9 +213,13 @@ pub(crate) fn apply(
             current_len = outer_len;
             break;
         }
-        #[cfg(not(feature = "parallel"))]
-        let _ = index;
-        temp_output = match (current_source, use_scratch) {
+        let is_final_output = index + 1 == decompositions.len() && !use_scratch && prefix.is_none();
+        let level_shift = if is_final_output {
+            final_shift
+        } else {
+            crate::j2c::mct::SampleShift::Copy
+        };
+        let (level_output, level_shift_applied) = match (current_source, use_scratch) {
             (InputSource::SubBand, true) => apply_level(
                 IDWTInput::from_sub_band(ll_sub_band, storage),
                 scratch_buf,
@@ -198,25 +229,32 @@ pub(crate) fn apply(
                 storage,
                 backend,
                 parallel,
+                crate::j2c::mct::SampleShift::Copy,
             )?,
-            (InputSource::SubBand, false) if prefix.is_some() => apply_level_into(
-                IDWTInput::from_sub_band(ll_sub_band, storage),
-                prefix.as_deref_mut().unwrap(),
-                band_scratch,
-                decomposition,
-                transform,
-                storage,
-                parallel,
-            )?,
-            (InputSource::Scratch, false) if prefix.is_some() => apply_level_into(
-                IDWTInput::from_output(&scratch_buf[..current_len], current_rect),
-                prefix.as_deref_mut().unwrap(),
-                band_scratch,
-                decomposition,
-                transform,
-                storage,
-                parallel,
-            )?,
+            (InputSource::SubBand, false) if prefix.is_some() => (
+                apply_level_into(
+                    IDWTInput::from_sub_band(ll_sub_band, storage),
+                    prefix.as_deref_mut().unwrap(),
+                    band_scratch,
+                    decomposition,
+                    transform,
+                    storage,
+                    parallel,
+                )?,
+                false,
+            ),
+            (InputSource::Scratch, false) if prefix.is_some() => (
+                apply_level_into(
+                    IDWTInput::from_output(&scratch_buf[..current_len], current_rect),
+                    prefix.as_deref_mut().unwrap(),
+                    band_scratch,
+                    decomposition,
+                    transform,
+                    storage,
+                    parallel,
+                )?,
+                false,
+            ),
             (InputSource::SubBand, false) => apply_level(
                 IDWTInput::from_sub_band(ll_sub_band, storage),
                 &mut output.coefficients,
@@ -226,6 +264,7 @@ pub(crate) fn apply(
                 storage,
                 backend,
                 parallel,
+                level_shift,
             )?,
             (InputSource::Scratch, false) => apply_level(
                 IDWTInput::from_output(&scratch_buf[..current_len], current_rect),
@@ -236,6 +275,7 @@ pub(crate) fn apply(
                 storage,
                 backend,
                 parallel,
+                level_shift,
             )?,
             (InputSource::Output, true) => apply_level(
                 IDWTInput::from_output(
@@ -249,9 +289,14 @@ pub(crate) fn apply(
                 storage,
                 backend,
                 parallel,
+                crate::j2c::mct::SampleShift::Copy,
             )?,
             (InputSource::Scratch, true) | (InputSource::Output, false) => unreachable!(),
         };
+        temp_output = level_output;
+        if is_final_output {
+            output.shift_applied = level_shift_applied;
+        }
         current_source = if use_scratch {
             InputSource::Scratch
         } else {

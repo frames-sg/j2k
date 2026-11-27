@@ -76,6 +76,13 @@ mod interleave;
 mod rows;
 pub(super) use allocation::{try_clone_color_space, NativeOutputBudget};
 
+pub(super) struct FusedGrayLastLevel<'a> {
+    pub(super) level: crate::j2c::idwt::LastLevel,
+    pub(super) shift: crate::j2c::mct::SampleShift,
+    pub(super) ll: &'a [f32],
+    pub(super) scratch: [&'a mut [f32]; 2],
+}
+
 impl Image<'_> {
     pub(super) fn pack_native_component_planes(
         &self,
@@ -84,6 +91,7 @@ impl Image<'_> {
         dimensions: (u32, u32),
         retained_baseline_bytes: usize,
         parallel: bool,
+        mut fused_gray: Option<FusedGrayLastLevel<'_>>,
     ) -> Result<DecodedNativeComponents> {
         // The decode budget holds the `f32` planes the pack reads; the packed
         // planes are the output and have their own allowance.
@@ -125,16 +133,17 @@ impl Image<'_> {
             let plane_dimensions =
                 native_component_plane_dimensions(dimensions, sampling, sample_count)?;
             let capacity = checked_decode_byte_len2(sample_count, bytes_per_sample)?;
-            let mut data = Vec::new();
-            try_reserve_decode_elements(&mut data, capacity)?;
-            budget.include_capacity_overage::<u8>(capacity, data.capacity())?;
-            Self::extend_component_native_sample_bytes(
-                &mut data,
+            let fused = (component_idx == 0 && components.len() == 1)
+                .then(|| fused_gray.take())
+                .flatten();
+            let data = Self::pack_native_component_bytes(
                 component,
-                0..sample_count,
-                component.bit_depth,
+                sample_count,
+                capacity,
                 parallel,
-            );
+                &mut budget,
+                fused,
+            )?;
             if data.len() != capacity {
                 return Err(DecodingError::CodeBlockDecodeFailure.into());
             }
@@ -159,6 +168,65 @@ impl Image<'_> {
         Ok(packed)
     }
 
+    fn pack_native_component_bytes(
+        component: &ComponentData,
+        sample_count: usize,
+        capacity: usize,
+        parallel: bool,
+        budget: &mut NativeOutputBudget,
+        fused_gray: Option<FusedGrayLastLevel<'_>>,
+    ) -> Result<Vec<u8>> {
+        let mut data = Vec::new();
+        if let Some(fused) = fused_gray {
+            crate::try_zero_fill_decode_elements(&mut data, capacity)?;
+            budget.include_capacity_overage::<u8>(capacity, data.capacity())?;
+            pack_last_level_gray_native(
+                fused.level,
+                fused.shift,
+                component.container.truncated(),
+                fused.ll,
+                fused.scratch,
+                &mut data,
+                component.bit_depth,
+                component.signed,
+                parallel,
+            )?;
+            return Ok(data);
+        }
+        #[cfg(feature = "parallel")]
+        let zeroed_parallel = parallel
+            && sample_count >= PARALLEL_PACK_SAMPLES
+            && component.integer_container.is_none()
+            && (1..=16).contains(&component.bit_depth)
+            && crate::fresh_decode_buffers_come_zeroed();
+        #[cfg(not(feature = "parallel"))]
+        let zeroed_parallel = false;
+        if zeroed_parallel {
+            crate::try_zero_fill_decode_elements(&mut data, capacity)?;
+        } else {
+            try_reserve_decode_elements(&mut data, capacity)?;
+        }
+        budget.include_capacity_overage::<u8>(capacity, data.capacity())?;
+        if zeroed_parallel {
+            #[cfg(feature = "parallel")]
+            Self::write_component_native_sample_bytes_parallel(
+                &mut data,
+                component,
+                0..sample_count,
+                component.bit_depth,
+            );
+        } else {
+            Self::extend_component_native_sample_bytes(
+                &mut data,
+                component,
+                0..sample_count,
+                component.bit_depth,
+                parallel,
+            );
+        }
+        Ok(data)
+    }
+
     /// Validate bounded bitmap reconstruction using effective tile styles.
     /// `retained_capacity` counts additional live owners beside this image and
     /// its retained planning baseline, such as reusable decoder scratch.
@@ -179,6 +247,28 @@ impl Image<'_> {
         )?;
         let baseline = super::allocation::combine_retained_bytes(control.baseline(retained)?, 0)?;
         crate::j2c::validate_region_bitmap_layout(self.codestream, &self.header, baseline, control)
+    }
+
+    /// Write the samples in `range` of one component into a pre-sized native
+    /// buffer in parallel chunks.
+    #[cfg(feature = "parallel")]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "samples are rounded and clamped to the component's 8- or 16-bit range before packing"
+    )]
+    fn write_component_native_sample_bytes_parallel(
+        out: &mut [u8],
+        component: &ComponentData,
+        range: core::ops::Range<usize>,
+        bit_depth: u8,
+    ) {
+        let samples = &component.container.truncated()[range];
+        with_native_converter!(
+            bit_depth,
+            component.signed,
+            write_converted_parallel(out, samples),
+            _ => {},
+        );
     }
 
     /// Append the samples in `range` of one component as packed little-endian
@@ -338,6 +428,187 @@ const PARALLEL_PACK_SAMPLES: usize = 1 << 20;
 #[cfg(all(feature = "parallel", test))]
 const PARALLEL_PACK_SAMPLES: usize = 1024;
 
+/// Reconstruct a single-component grayscale image's final IDWT level and pack
+/// each finished row straight into `output` while it stays in the L1/L2 ring.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "single-component fused last-level reconstruction keeps geometry, buffers, and packer explicit"
+)]
+fn pack_last_level_gray_native(
+    level: crate::j2c::idwt::LastLevel,
+    shift: crate::j2c::mct::SampleShift,
+    plane: &[f32],
+    ll: &[f32],
+    scratch: [&mut [f32]; 2],
+    output: &mut [u8],
+    bit_depth: u8,
+    signed: bool,
+    parallel: bool,
+) -> Result<()> {
+    match (bit_depth, signed) {
+        (bit_depth @ 1..=8, true) => {
+            let (min, max) = crate::math::signed_native_bounds(bit_depth);
+            crate::j2c::idwt::pack_last_level_gray(
+                level,
+                plane,
+                ll,
+                scratch,
+                output,
+                1,
+                parallel,
+                &NativeGrayU8Emitter { shift, min, max },
+            )
+        }
+        (bit_depth @ 1..=8, false) => {
+            let max = crate::math::unsigned_native_max(bit_depth);
+            crate::j2c::idwt::pack_last_level_gray(
+                level,
+                plane,
+                ll,
+                scratch,
+                output,
+                1,
+                parallel,
+                &NativeGrayU8Emitter {
+                    shift,
+                    min: 0.0,
+                    max,
+                },
+            )
+        }
+        (bit_depth @ 9..=16, true) => {
+            let (min, max) = crate::math::signed_native_bounds(bit_depth);
+            crate::j2c::idwt::pack_last_level_gray(
+                level,
+                plane,
+                ll,
+                scratch,
+                output,
+                2,
+                parallel,
+                &NativeGrayU16Emitter { shift, min, max },
+            )
+        }
+        (bit_depth @ 9..=16, false) => {
+            let max = crate::math::unsigned_native_max(bit_depth);
+            crate::j2c::idwt::pack_last_level_gray(
+                level,
+                plane,
+                ll,
+                scratch,
+                output,
+                2,
+                parallel,
+                &NativeGrayU16Emitter {
+                    shift,
+                    min: 0.0,
+                    max,
+                },
+            )
+        }
+        _ => Err(DecodingError::CodeBlockDecodeFailure.into()),
+    }
+}
+
+struct NativeGrayU8Emitter {
+    shift: crate::j2c::mct::SampleShift,
+    min: f32,
+    max: f32,
+}
+
+impl crate::j2c::idwt::GrayRowEmitter for NativeGrayU8Emitter {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::inline_always,
+        reason = "samples are clamped to 8-bit bounds and inlined into the dispatched SIMD target"
+    )]
+    #[inline(always)]
+    fn emit<S: Simd>(&self, _simd: S, row: &mut [f32], out_row: &mut [u8]) {
+        let (min, max) = (self.min, self.max);
+        match self.shift {
+            crate::j2c::mct::SampleShift::Copy => {
+                for (dst, &sample) in out_row.iter_mut().zip(row.iter()) {
+                    *dst = crate::math::round_clamped_native(sample, min, max) as u8;
+                }
+            }
+            crate::j2c::mct::SampleShift::Add(addend) => {
+                for (dst, &sample) in out_row.iter_mut().zip(row.iter()) {
+                    *dst = crate::math::round_clamped_native(sample + addend, min, max) as u8;
+                }
+            }
+            crate::j2c::mct::SampleShift::RoundThenAdd(addend) => {
+                for (dst, &sample) in out_row.iter_mut().zip(row.iter()) {
+                    *dst = crate::math::round_clamped_native(
+                        crate::math::round_ties_even_then_add(sample, addend),
+                        min,
+                        max,
+                    ) as u8;
+                }
+            }
+        }
+    }
+}
+
+struct NativeGrayU16Emitter {
+    shift: crate::j2c::mct::SampleShift,
+    min: f32,
+    max: f32,
+}
+
+impl crate::j2c::idwt::GrayRowEmitter for NativeGrayU16Emitter {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::inline_always,
+        reason = "samples are clamped to 16-bit bounds and inlined into the dispatched SIMD target"
+    )]
+    #[inline(always)]
+    fn emit<S: Simd>(&self, _simd: S, row: &mut [f32], out_row: &mut [u8]) {
+        let (min, max) = (self.min, self.max);
+        let dst = out_row.as_chunks_mut::<2>().0;
+        match self.shift {
+            crate::j2c::mct::SampleShift::Copy => {
+                for (dst, &sample) in dst.iter_mut().zip(row.iter()) {
+                    *dst =
+                        (crate::math::round_clamped_native(sample, min, max) as u16).to_le_bytes();
+                }
+            }
+            crate::j2c::mct::SampleShift::Add(addend) => {
+                for (dst, &sample) in dst.iter_mut().zip(row.iter()) {
+                    *dst = (crate::math::round_clamped_native(sample + addend, min, max) as u16)
+                        .to_le_bytes();
+                }
+            }
+            crate::j2c::mct::SampleShift::RoundThenAdd(addend) => {
+                for (dst, &sample) in dst.iter_mut().zip(row.iter()) {
+                    *dst = (crate::math::round_clamped_native(
+                        crate::math::round_ties_even_then_add(sample, addend),
+                        min,
+                        max,
+                    ) as u16)
+                        .to_le_bytes();
+                }
+            }
+        }
+    }
+}
+
+/// Write `convert(sample)` for every sample into `out` in parallel chunks.
+#[cfg(feature = "parallel")]
+fn write_converted_parallel<const N: usize>(
+    out: &mut [u8],
+    samples: &[f32],
+    convert: impl Fn(f32) -> [u8; N] + Send + Sync,
+) {
+    use rayon::prelude::*;
+    out.as_chunks_mut::<N>()
+        .0
+        .par_chunks_mut(16 * 1024)
+        .zip(samples.par_chunks(16 * 1024))
+        .for_each(|(destination, source)| {
+            dispatch!(Level::new(), simd => convert_samples(simd, destination, source, &convert));
+        });
+}
+
 /// Append `convert(sample)` for every sample, in chunks the compiler
 /// vectorizes, splitting large planes across threads when `parallel`.
 fn extend_converted<const N: usize>(
@@ -349,18 +620,10 @@ fn extend_converted<const N: usize>(
     const CHUNK: usize = 64;
     #[cfg(feature = "parallel")]
     if parallel && samples.len() >= PARALLEL_PACK_SAMPLES {
-        use rayon::prelude::*;
         // Callers reserve the full output first, so this does not reallocate.
         let start = out.len();
         out.resize(start + samples.len() * N, 0);
-        out[start..]
-            .as_chunks_mut::<N>()
-            .0
-            .par_chunks_mut(16 * 1024)
-            .zip(samples.par_chunks(16 * 1024))
-            .for_each(|(destination, source)| {
-                dispatch!(Level::new(), simd => convert_samples(simd, destination, source, &convert));
-            });
+        write_converted_parallel(&mut out[start..], samples, convert);
         return;
     }
     #[cfg(not(feature = "parallel"))]
@@ -413,5 +676,59 @@ mod tests {
             Image::push_native_i64_sample_bytes(&mut out, sample, 8, false);
         }
         assert_eq!(out, [0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn fused_gray_last_level_native_decode_matches_separate_idwt() {
+        use crate::{DecodeSettings, DecoderContext, EncodeOptions};
+
+        let (width, height) = (131_u32, 97_u32);
+        let n = (width * height) as usize;
+        for (bit_depth, signed, reversible) in [
+            (8_u8, false, true),
+            (8, true, true),
+            (12, false, true),
+            (12, true, false),
+            (16, false, false),
+            (16, true, true),
+        ] {
+            let bytes_per_sample = if bit_depth <= 8 { 1 } else { 2 };
+            let mut pixels = Vec::with_capacity(n * bytes_per_sample);
+            for i in 0..n {
+                let raw = ((i * 197 + 13) as u16) & (u16::MAX >> (16 - bit_depth));
+                if bytes_per_sample == 1 {
+                    pixels.push(raw as u8);
+                } else {
+                    pixels.extend_from_slice(&raw.to_le_bytes());
+                }
+            }
+            let opts = EncodeOptions {
+                reversible,
+                num_decomposition_levels: 3,
+                ..EncodeOptions::default()
+            };
+            let encoded = crate::encode_htj2k(&pixels, width, height, 1, bit_depth, signed, &opts)
+                .expect("encode HTJ2K grayscale");
+            let image = Image::new(&encoded, &DecodeSettings::default()).expect("parse image");
+            let mut fused_ctx = DecoderContext::default();
+            let fused = image
+                .decode_native_components_with_context(&mut fused_ctx)
+                .expect("fused native decode");
+            let mut separate_ctx = DecoderContext::default();
+            separate_ctx.tile_decode_context.separate_last_idwt_level = true;
+            let separate = image
+                .decode_native_components_with_context(&mut separate_ctx)
+                .expect("separate native decode");
+            assert_eq!(
+                fused.planes[0].data, separate.planes[0].data,
+                "fused vs separate mismatch for b={bit_depth} signed={signed} rev={reversible}"
+            );
+            if reversible {
+                assert_eq!(
+                    fused.planes[0].data, pixels,
+                    "lossless round-trip mismatch for b={bit_depth} signed={signed}"
+                );
+            }
+        }
     }
 }

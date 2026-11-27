@@ -558,6 +558,7 @@ impl SampleShift {
     }
 
     /// Transform `samples` in place, as [`Self::copy`] would.
+    #[inline]
     pub(crate) fn apply(self, samples: &mut [f32]) {
         match self {
             Self::Copy => {}
