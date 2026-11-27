@@ -607,7 +607,7 @@ fn staged_encodes_drop_each_component_source_once_its_code_blocks_are_prepared()
         .expect("encode request") else {
             panic!("fixture must be single tile");
         };
-        let plan = build_single_tile_plan(
+        let mut plan = build_single_tile_plan(
             validated,
             SIDE,
             SIDE,
@@ -657,7 +657,7 @@ fn staged_encodes_drop_each_component_source_once_its_code_blocks_are_prepared()
             8,
             &options,
             &[],
-            &plan,
+            &mut plan,
             sources.into_iter(),
             source_bytes,
             0,
@@ -726,6 +726,78 @@ fn declining_thread_bound_accelerator_encodes_the_cpu_only_bytes() {
                 codestream_fingerprint(&actual),
                 codestream_fingerprint(&expected),
                 "reversible={reversible} ht={use_ht_block_coding} parallel={parallel_code_blocks}"
+            );
+        }
+    }
+}
+
+#[test]
+fn reversible_53_high_contrast_bumps_subband_exponents_losslessly() {
+    use crate::{DecodeSettings, Image};
+
+    // High-contrast 2D checkerboard / alternating bands maximize 5/3 lifting
+    // overshoot across decomposition levels, exceeding nominal bit_depth + gain
+    // bitplanes when guard_bits = 1.
+    let (width, height) = (128_u32, 128_u32);
+    for (num_components, bit_depth, num_levels) in [(1_u16, 8_u8, 1_u8), (1, 12, 5), (3, 8, 5)] {
+        let max_val: u16 = u16::MAX >> (16 - bit_depth);
+        let bps = if bit_depth <= 8 { 1 } else { 2 };
+        let mut pixels =
+            Vec::with_capacity((width * height) as usize * usize::from(num_components) * bps);
+        for y in 0..height {
+            for x in 0..width {
+                for c in 0..num_components {
+                    // Mix 1-pixel and 2-pixel alternating patterns so both
+                    // low and high subbands at multiple levels overshoot.
+                    let phase = match c {
+                        0 => ((x ^ y) & 1) == 0,
+                        1 => (((x >> 1) ^ (y >> 1)) & 1) == 0,
+                        _ => ((x + y * 3) & 1) == 0,
+                    };
+                    let v = if phase { max_val } else { 0 };
+                    if bps == 1 {
+                        pixels.push(v as u8);
+                    } else {
+                        pixels.extend_from_slice(&v.to_le_bytes());
+                    }
+                }
+            }
+        }
+        for use_ht in [true, false] {
+            let options = EncodeOptions {
+                reversible: true,
+                use_ht_block_coding: use_ht,
+                num_decomposition_levels: num_levels,
+                use_mct: num_components == 3,
+                ..EncodeOptions::default()
+            };
+            let codestream = encode(
+                &pixels,
+                width,
+                height,
+                num_components,
+                bit_depth,
+                false,
+                &options,
+            )
+            .unwrap_or_else(|e| {
+                panic!(
+                    "encode failed (c={num_components} b={bit_depth} lv={num_levels} ht={use_ht}): {e:?}"
+                )
+            });
+            let image = Image::new(&codestream, &DecodeSettings::default()).expect("parse");
+            let decoded = image.decode_native_components().expect("decode");
+            assert_eq!(decoded.planes.len(), usize::from(num_components));
+            let mut roundtrip = Vec::with_capacity(pixels.len());
+            for i in 0..(width * height) as usize {
+                for plane in &decoded.planes {
+                    let start = i * bps;
+                    roundtrip.extend_from_slice(&plane.data[start..start + bps]);
+                }
+            }
+            assert_eq!(
+                roundtrip, pixels,
+                "lossless mismatch (c={num_components} b={bit_depth} lv={num_levels} ht={use_ht})"
             );
         }
     }
