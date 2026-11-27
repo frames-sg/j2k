@@ -479,8 +479,8 @@ pub(super) fn store<'a>(
 /// MCT, or `None` to store samples. The tile must cover the whole image with
 /// three 8-bit components at full resolution that share one transform, each
 /// ending in a banded level of at least two whose sub-bands are packed as
-/// built, and each coefficient buffer must fit its plane without padding,
-/// so that [`store_last_level_bands`] can swap one for the other.
+/// built, and each coefficient buffer must hold enough capacity for SIMD tail
+/// padding, so that [`store_last_level_bands`] can swap one for the other.
 pub(super) fn fused_last_level(
     tile: &Tile<'_>,
     header: &Header<'_>,
@@ -502,7 +502,11 @@ pub(super) fn fused_last_level(
         || header.skipped_resolution_levels != 0
         || header.component_infos.len() != 3
         || tile_ctx.channel_data.len() != 3
-        || !storage.coefficients.len().is_multiple_of(SIMD_WIDTH)
+        || storage
+            .coefficients
+            .len()
+            .checked_next_multiple_of(SIMD_WIDTH)
+            .is_none_or(|padded| storage.coefficients.capacity() < padded)
     {
         return None;
     }

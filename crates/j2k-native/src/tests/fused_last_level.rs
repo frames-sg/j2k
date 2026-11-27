@@ -54,8 +54,10 @@ const CASES: [Case; 10] = [
     rgb((64, 2_048), 5, true),
     rgb((97, 88), 3, true),
     rgb((96, 75), 2, true),
-    // A coefficient buffer that needs padding, a single level, and tiles.
-    rgb((203, 157), 4, false),
+    // A plane whose sample count is not a multiple of SIMD_WIDTH (203 * 157 = 31,871)
+    // still fuses because component-layout coefficient storage reserves SIMD tail capacity.
+    rgb((203, 157), 4, true),
+    // A single level, tiles, 4 components, and >8-bit stay staged.
     rgb((96, 75), 1, false),
     Case {
         tile: Some((128, 64)),
