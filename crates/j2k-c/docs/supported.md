@@ -17,6 +17,9 @@ versioned with, through the batch route and the core whole-image route.
 | Encoding | Lossless or lossy, classic or HTJ2K, 1- to 16-bit unsigned or signed interleaved samples. Bits-per-pixel, byte or PSNR targets, cumulative quality layers, HTJ2K Qfactor. Decomposition levels, progression order, tiles, tile-part packet limits, and SOP, EPH, TLM, PLT, PLM, PPM and PPT markers. Raw codestream, JP2 or JPH output, with an optional ICC profile |
 | Color metadata | The first COLR box, which decoding applies: an enumerated `EnumCS`, ICC profile bytes, or an uninterpreted method |
 | Validation | Strict by default; `J2K_OPEN_LENIENT` accepts the codec's JP2/JPH metadata recoveries and reports them |
+| Partial input | `J2K_OPEN_PARTIAL` accepts a codestream that is cut off after its main header and decodes the reductions whose data is present |
+| JPEG-LS | Decoding and encoding of 2- to 16-bit lossless and near-lossless codestreams, as in DICOM, with every interleave mode and restart intervals. Decoding also reads preset coding parameters |
+| DICOM RLE | Decoding and encoding of RLE Lossless frames with 8, 16 or 32 bits allocated and up to 15 segments, into color-by-pixel or color-by-plane samples. Strict by default, with a lenient mode that reports what it accepted |
 | Threads | The codec's shared pool, or a decoder's own pool of 1 to 64 threads |
 | Platforms | macOS and GNU/Linux shared libraries and static archives, each specific to the target it was built for. A GNU/Linux package needs the build host's glibc or newer |
 | Consumers | C11 and C++17, through CMake (`J2K::j2k` or `J2K::j2k_static`) or pkg-config (`j2k`). Prebuilt packages need no Rust toolchain |
@@ -31,6 +34,10 @@ un-premultiply premultiplied samples at the source precision before sYCC
 conversion, and reject premultiplied CIE Lab and premultiplied subsampled or
 signed input, except 8-bit mapped samples that need no color conversion.
 Header inspection can succeed for an image that pixel decoding rejects.
+
+JPEG-LS decoding rejects mapping tables, subsampled components, point
+transforms, HP color transforms and images over 65535 pixels on a side. DICOM
+RLE supports neither 1-bit frames nor bit widths other than 8, 16 or 32.
 
 ## Large images
 

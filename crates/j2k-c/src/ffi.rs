@@ -4,16 +4,19 @@
 
 use crate::{
     abi::{
-        J2kCColorInfo, J2kCComponentInfo, J2kCDecodeOptions, J2kCEncodeOptions, J2kCEncodeParams,
-        J2kCEncodeReport, J2kCError, J2kCHeader, J2kCImageInfo, J2kCOpenOptions,
-        J2kCOperationOptions, J2kCOutputInfo, J2kCRegionPlan, J2K_ABI_MISMATCH, J2K_ABI_VERSION,
-        J2K_BUFFER_TOO_SMALL, J2K_INTERNAL_ERROR, J2K_INVALID_ARGUMENT, J2K_INVALID_INPUT,
-        J2K_PANIC,
+        J2kCColorInfo, J2kCCompleteness, J2kCComponentInfo, J2kCDecodeOptions, J2kCEncodeOptions,
+        J2kCEncodeParams, J2kCEncodeReport, J2kCError, J2kCHeader, J2kCImageInfo,
+        J2kCJpegLsEncodeOptions, J2kCJpegLsInfo, J2kCOpenOptions, J2kCOperationOptions,
+        J2kCOutputInfo, J2kCRegionPlan, J2kCRleLayout, J2kCRleReport, J2K_ABI_MISMATCH,
+        J2K_ABI_VERSION, J2K_BUFFER_TOO_SMALL, J2K_INTERNAL_ERROR, J2K_INVALID_ARGUMENT,
+        J2K_INVALID_INPUT, J2K_PANIC,
     },
     decoder::Decoder,
     encode::{encode, EncodeParams},
     error::{Error, Result},
+    jpegls,
     operations::OperationRequest,
+    rle,
 };
 use std::{
     ffi::{c_char, c_void},
@@ -334,6 +337,32 @@ pub unsafe extern "C" fn j2k_decoder_info(
             validate_struct(out)?;
             with_decoder(decoder, |state| {
                 out.write(state.info());
+                Ok(())
+            })
+        })
+    }
+}
+
+/// Report which reductions of the decoder's input decode exactly.
+///
+/// Meant for decoders opened with `J2K_OPEN_PARTIAL`. Reads the packet
+/// headers of every tile without decoding samples.
+///
+/// # Safety
+/// Same storage and exclusivity requirements as [`j2k_decoder_info`].
+#[no_mangle]
+pub unsafe extern "C" fn j2k_decoder_completeness(
+    decoder: *mut J2kCDecoder,
+    out: *mut J2kCCompleteness,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: Caller supplies exclusive live storage; validate the output prefix before mutation.
+    unsafe {
+        boundary(error, || {
+            validate_struct(out)?;
+            with_decoder(decoder, |state| {
+                let report = state.completeness()?;
+                out.write(report);
                 Ok(())
             })
         })
@@ -831,8 +860,209 @@ unsafe fn encode_params<'a>(params: *const J2kCEncodeParams) -> Result<EncodePar
     })
 }
 
-/// Release a buffer from [`j2k_encode`] or [`j2k_encode_lossless`]. A null
-/// buffer is a no-op.
+/// Read the header metadata of a JPEG-LS codestream without decoding samples.
+///
+/// # Safety
+/// `input` must cover `input_len` readable bytes. `out` must be a writable,
+/// initialized ABI structure disjoint from the input. `error` may be null.
+#[no_mangle]
+pub unsafe extern "C" fn j2k_jpegls_inspect(
+    input: *const u8,
+    input_len: usize,
+    out: *mut J2kCJpegLsInfo,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: Caller provides the valid storage documented above; the prefix
+    // and the input span are checked before access.
+    unsafe {
+        boundary(error, || {
+            validate_struct(out)?;
+            check_bytes(input, input_len)?;
+            out.write(jpegls::inspect(slice::from_raw_parts(input, input_len))?);
+            Ok(())
+        })
+    }
+}
+
+/// Decode a JPEG-LS codestream into a caller-owned strided buffer of
+/// interleaved samples.
+///
+/// # Safety
+/// `input` must cover `input_len` readable bytes and `output` `output_len`
+/// writable bytes; the two must not overlap. `error` may be null.
+#[no_mangle]
+pub unsafe extern "C" fn j2k_jpegls_decode(
+    input: *const u8,
+    input_len: usize,
+    output: *mut u8,
+    output_len: usize,
+    stride: usize,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: Caller provides the disjoint storage documented above; both
+    // spans are checked before the slices are made.
+    unsafe {
+        boundary(error, || {
+            check_bytes(input, input_len)?;
+            check_bytes(output, output_len)?;
+            jpegls::decode(
+                slice::from_raw_parts(input, input_len),
+                slice::from_raw_parts_mut(output, output_len),
+                stride,
+            )
+        })
+    }
+}
+
+/// Encode interleaved samples as a JPEG-LS codestream into a buffer this
+/// library allocates.
+///
+/// # Safety
+/// `samples` must cover `samples_len` readable bytes. `options` must be a
+/// valid ABI structure. `out` and `out_len` must be writable and disjoint from
+/// all other arguments. `error` may be null. Release a successful result with
+/// [`j2k_buffer_free`] exactly once.
+#[no_mangle]
+pub unsafe extern "C" fn j2k_jpegls_encode(
+    samples: *const u8,
+    samples_len: usize,
+    options: *const J2kCJpegLsEncodeOptions,
+    out: *mut *mut u8,
+    out_len: *mut usize,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: Caller provides the valid storage documented above.
+    unsafe { clear_buffer(out, out_len) };
+    // SAFETY: Caller provides the valid storage documented above; the prefix
+    // and the sample span are checked before access.
+    unsafe {
+        boundary(error, || {
+            check_pointer(out)?;
+            check_pointer(out_len)?;
+            if options.is_null() {
+                return Err(Error::argument("JPEG-LS encode options are required"));
+            }
+            let options = read_options(options)?;
+            check_bytes(samples, samples_len)?;
+            let encoded = jpegls::encode(slice::from_raw_parts(samples, samples_len), &options)?;
+            hand_over(encoded, out, out_len);
+            Ok(())
+        })
+    }
+}
+
+/// Decode one DICOM RLE Lossless frame into the first `rows * columns *
+/// samples_per_pixel * bits_allocated / 8` bytes of a caller-owned buffer.
+///
+/// # Safety
+/// `input` must cover `input_len` readable bytes and `output` `output_len`
+/// writable bytes; the two must not overlap. `layout` must be a valid ABI
+/// structure. `report` may be null; otherwise it must be a writable,
+/// initialized ABI structure disjoint from all other arguments. `error` may be
+/// null.
+#[no_mangle]
+pub unsafe extern "C" fn j2k_rle_decode(
+    input: *const u8,
+    input_len: usize,
+    layout: *const J2kCRleLayout,
+    output: *mut u8,
+    output_len: usize,
+    report: *mut J2kCRleReport,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: Caller provides the disjoint storage documented above; prefixes
+    // and spans are checked before access.
+    unsafe {
+        boundary(error, || {
+            if !report.is_null() {
+                validate_struct(report)?;
+            }
+            if layout.is_null() {
+                return Err(Error::argument("a DICOM RLE layout is required"));
+            }
+            let layout = read_options(layout)?;
+            check_bytes(input, input_len)?;
+            check_bytes(output, output_len)?;
+            let findings = rle::decode(
+                slice::from_raw_parts(input, input_len),
+                &layout,
+                slice::from_raw_parts_mut(output, output_len),
+            )?;
+            if !report.is_null() {
+                report.write(findings);
+            }
+            Ok(())
+        })
+    }
+}
+
+/// Encode one frame of native samples as a DICOM RLE Lossless frame into a
+/// buffer this library allocates.
+///
+/// # Safety
+/// As [`j2k_jpegls_encode`], with `layout` a valid ABI structure.
+#[no_mangle]
+pub unsafe extern "C" fn j2k_rle_encode(
+    samples: *const u8,
+    samples_len: usize,
+    layout: *const J2kCRleLayout,
+    out: *mut *mut u8,
+    out_len: *mut usize,
+    error: *mut J2kCError,
+) -> u32 {
+    // SAFETY: Caller provides the valid storage documented above.
+    unsafe { clear_buffer(out, out_len) };
+    // SAFETY: Caller provides the valid storage documented above; the prefix
+    // and the sample span are checked before access.
+    unsafe {
+        boundary(error, || {
+            check_pointer(out)?;
+            check_pointer(out_len)?;
+            if layout.is_null() {
+                return Err(Error::argument("a DICOM RLE layout is required"));
+            }
+            let layout = read_options(layout)?;
+            check_bytes(samples, samples_len)?;
+            let encoded = rle::encode(slice::from_raw_parts(samples, samples_len), &layout)?;
+            hand_over(encoded, out, out_len);
+            Ok(())
+        })
+    }
+}
+
+/// Empty the output slots of a buffer-returning call, so a failure leaves
+/// them null and zero. Slots that are null or misaligned are left alone; the
+/// call then reports them.
+///
+/// # Safety
+/// Non-null, aligned slots must be writable.
+unsafe fn clear_buffer(out: *mut *mut u8, out_len: *mut usize) {
+    if check_pointer(out).is_ok() && check_pointer(out_len).is_ok() {
+        // SAFETY: Both slots are non-null, aligned and writable by contract.
+        unsafe {
+            out.write(ptr::null_mut());
+            out_len.write(0);
+        }
+    }
+}
+
+/// Give `bytes` to the caller, who releases them with [`j2k_buffer_free`].
+///
+/// # Safety
+/// `out` and `out_len` are checked, writable slots.
+unsafe fn hand_over(bytes: Vec<u8>, out: *mut *mut u8, out_len: *mut usize) {
+    let bytes = bytes.into_boxed_slice();
+    let length = bytes.len();
+    // SAFETY: The caller checked both slots; `j2k_buffer_free` rebuilds the
+    // boxed slice from this pointer and length.
+    unsafe {
+        out.write(Box::into_raw(bytes).cast::<u8>());
+        out_len.write(length);
+    }
+}
+
+/// Release a buffer from [`j2k_encode`], [`j2k_encode_lossless`],
+/// [`j2k_jpegls_encode`] or [`j2k_rle_encode`]. A null buffer is a no-op.
 ///
 /// # Safety
 /// `data` must be null or a buffer this library returned, with the length it
@@ -840,7 +1070,7 @@ unsafe fn encode_params<'a>(params: *const J2kCEncodeParams) -> Result<EncodePar
 #[no_mangle]
 pub unsafe extern "C" fn j2k_buffer_free(data: *mut u8, length: usize) {
     if !data.is_null() {
-        // SAFETY: `j2k_encode` made this pointer and length from a
+        // SAFETY: An encode function made this pointer and length from a
         // boxed slice, which the caller hands back once.
         drop(unsafe { Box::from_raw(ptr::slice_from_raw_parts_mut(data, length)) });
     }

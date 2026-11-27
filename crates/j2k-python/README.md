@@ -7,7 +7,8 @@
 own sample type (`uint8`, `uint16` or `int16`). It decodes batches for
 training, regions at reduced resolution and raw wavelet coefficients, and it
 encodes on the CPU. A GPU build decodes straight into PyTorch CUDA or MPS
-memory. Batches can also contain 8-bit JPEG files. The codec is written in
+memory. Batches can also contain 8-bit JPEG files, and the JPEG-LS and RLE
+frames of DICOM files decode and encode as bytes. The codec is written in
 Rust. NumPy and PyTorch are optional: you need them only for `to_numpy()` and
 `to_torch()`.
 
@@ -111,7 +112,7 @@ always run on the CPU.
 
 ## Decoding
 
-`Decoder(*, layout="nchw", workers=None, strict=True, device="cpu")`. One
+`Decoder(*, layout="nchw", workers=None, strict=True, device="cpu", partial=False)`. One
 image is `[C, H, W]` (NCHW) or `[H, W, C]` (NHWC); batches add a leading `N`.
 `workers=None` uses every core.
 
@@ -173,6 +174,28 @@ reserved Adobe APP14 transforms, which `color_transform` can resolve.
   `BatchGroup.warnings`, `recovered` stays false, and `decode` and
   `decode_srgb8` emit `RecoveredImageWarning`.
 - Corruption that still forms a valid codestream can't always be detected.
+
+### Partial codestreams
+
+A viewer that fetches a JPEG 2000 file a piece at a time can decode what has
+arrived. `j2k.completeness(data)` reads the packet headers of a codestream
+that may be cut off and returns `complete`, `min_exact_reduction` (the fewest
+resolution levels to drop for a whole-image decode that reads only data that
+is present, or `None` while the lowest resolution is incomplete) and
+`tile_min_exact_reduction`, the same for each tile:
+
+```python
+decoder = j2k.Decoder(partial=True)
+report = j2k.completeness(bytes_so_far)
+if report["min_exact_reduction"] is not None:
+    preview = decoder.decode(bytes_so_far, reduction=report["min_exact_reduction"])
+```
+
+That decode returns the same samples as the complete file at that reduction.
+A decode that needs data that hasn't arrived raises `ValueError`; missing
+data is never filled in. A resolution-first progression (`"rpcl"`) makes each
+resolution usable as soon as it arrives. `partial=True` decodes on the CPU
+only.
 
 ### Batch results
 
@@ -355,6 +378,38 @@ Three helpers work on 8-bit RGB:
   detail resolutions the other way.
 
 `encode`, `encode_rgb` and `forward_rgb97` take `bytes` only.
+
+## JPEG-LS and DICOM RLE
+
+These functions read and write the frames that DICOM stores under the JPEG-LS
+and RLE Lossless transfer syntaxes. They take and return native sample bytes
+rather than tensors, ready for Pixel Data or `numpy.frombuffer`.
+
+```python
+pixels = j2k.decode_jpegls(frame)               # interleaved; 2 bytes LE above 8 bits
+info = j2k.inspect_jpegls(frame)                # width, height, components, bit_depth,
+                                                # near, interleave, restart_interval
+frame = j2k.encode_jpegls(pixels, width, height, bit_depth=12)       # lossless
+frame = j2k.encode_jpegls(pixels, width, height, bit_depth=12, near=2)
+
+# Rows, Columns, Samples per Pixel, Bits Allocated, Planar Configuration
+pixels = j2k.decode_rle(frame, rows, columns, samples_per_pixel=3, bits_allocated=8)
+frame = j2k.encode_rle(pixels, rows, columns, bits_allocated=16)
+image = np.frombuffer(pixels, dtype="<u2").reshape(rows, columns)
+```
+
+- `encode_jpegls` takes `components` (default 1), `bit_depth` (2-16), `near`
+  (0, the default, is lossless), `interleave` (`"none"`, `"line"` or
+  `"sample"`) and `restart_interval` in lines. It decodes its output and
+  compares it with the samples before returning it. Mapping tables,
+  subsampled components and HP color transforms raise `ValueError` on decode.
+- RLE samples take `bits_allocated / 8` bytes (8, 16 or 32 bits),
+  little-endian, color-by-pixel with `planar_configuration=0` (the default)
+  or color-by-plane with 1. `encode_rle` writes the same bytes as pydicom's
+  RLE encoder.
+- `decode_rle` is strict. `lenient=True` also reads frames with data after a
+  segment's rows or nonzero unused header offsets, as some encoders write
+  them, and emits a `RecoveredImageWarning` saying what it accepted.
 
 ## Tests and versioning
 

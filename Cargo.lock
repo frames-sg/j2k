@@ -2525,7 +2525,9 @@ name = "j2k-c"
 version = "0.14.0"
 dependencies = [
  "j2k",
+ "j2k-jpegls",
  "j2k-test-support",
+ "j2k-tilecodec",
  "rayon",
 ]
 
@@ -2820,9 +2822,11 @@ dependencies = [
  "j2k-cuda",
  "j2k-cuda-runtime",
  "j2k-jpeg",
+ "j2k-jpegls",
  "j2k-metal",
  "j2k-metal-support",
  "j2k-native",
+ "j2k-tilecodec",
  "objc2",
  "objc2-metal",
  "pyo3",

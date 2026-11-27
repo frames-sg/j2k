@@ -60,6 +60,14 @@ To add an entry, see [the changelog guide](contributor-book/documentation.md#cha
 
 - `Decoder.decode` emits `RecoveredImageWarning` when a lenient JPEG 2000
   decode recovers from malformed metadata, as `decode_srgb8` already did.
+- `Decoder(partial=True)` decodes codestreams that are cut off, and
+  `j2k.completeness(data)` reports which reductions of such input decode
+  exactly.
+- `decode_jpegls`, `encode_jpegls` and `inspect_jpegls` read and write
+  JPEG-LS codestreams, and `decode_rle` and `encode_rle` DICOM RLE frames,
+  as native sample bytes. `decode_rle(..., lenient=True)` accepts the
+  non-conformant frames some encoders write and emits a
+  `RecoveredImageWarning`.
 
 ### C and C++
 
@@ -84,6 +92,13 @@ To add an entry, see [the changelog guide](contributor-book/documentation.md#cha
   subsampling (mixed sampling stays supported). The output samples and stride
   contract match `j2k_decoder_decode_into`. C++ adds
   `decoder::output_info_native` and `decoder::decode_full_into`.
+- `J2K_OPEN_PARTIAL` opens a codestream that may be cut off, and
+  `j2k_decoder_completeness` reports which reductions decode exactly. A decode
+  that needs missing data returns the new status `J2K_INCOMPLETE`.
+- `j2k_jpegls_inspect`, `j2k_jpegls_decode` and `j2k_jpegls_encode` read and
+  write JPEG-LS codestreams, and `j2k_rle_decode` and `j2k_rle_encode` DICOM
+  RLE frames, with C++ wrappers in `j2k.hpp`. `J2K_RLE_LENIENT` accepts the
+  non-conformant RLE frames some encoders write and reports what it accepted.
 
 ### Build and licensing
 

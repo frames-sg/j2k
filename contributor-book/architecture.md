@@ -36,8 +36,8 @@ needs. The detailed list is in [Format support](../book/format-support.md).
 | `j2k-mpsgraph-support` | support | Codec-independent MPSGraph submission and lifetime handling. |
 | `j2k-mpsgraph` | framework | Experimental bridge from Metal-resident batches to MPSGraph. |
 | `j2k-ml` | framework | Burn tensors from JPEG, JPEG 2000, and HTJ2K batches. |
-| `j2k-python` | binding | The `j2k` Python wheel (PyO3): decode to DLPack tensors, sRGB and region planning, encode, wavelet bands, optional CUDA or MPS output. Not on crates.io. |
-| `j2k-c` | binding | C ABI, C++17 wrapper, and native packages: decode, row streaming, sRGB regions, encode. Not on crates.io. |
+| `j2k-python` | binding | The `j2k` Python wheel (PyO3): decode to DLPack tensors, sRGB and region planning, encode, wavelet bands, JPEG-LS and DICOM RLE frames, optional CUDA or MPS output. Not on crates.io. |
+| `j2k-c` | binding | C ABI, C++17 wrapper, and native packages: decode, row streaming, sRGB regions, encode, JPEG-LS and DICOM RLE frames. Not on crates.io. |
 | `j2k-cli` | CLI | The `j2k` command: inspect, JPEG to HTJ2K transcode, and an `opj_decompress`-compatible decoder. |
 | `j2k-test-support`, `j2k-transcode-test-support` | dev | Fixtures, benchmark inputs, and transcode oracles for tests, benches, and examples. |
 | `j2k-alloc-probe` | dev | Counts allocations and requested bytes at codec boundaries. |
@@ -130,8 +130,8 @@ j2k-cuda-j2k-engine -> j2k-codec-math, j2k-core, j2k-cuda-runtime, j2k-types
 j2k-cuda-jpeg-engine -> j2k-codec-math, j2k-core, j2k-cuda-runtime
 j2k-cuda-transcode-engine -> j2k-core, j2k-cuda-runtime
 j2k-ml -> j2k, j2k-core, j2k-cuda, j2k-cuda-runtime, j2k-jpeg, j2k-metal, j2k-metal-support
-j2k-python -> j2k, j2k-cuda, j2k-cuda-runtime, j2k-jpeg, j2k-metal, j2k-metal-support, j2k-native
-j2k-c -> j2k
+j2k-python -> j2k, j2k-cuda, j2k-cuda-runtime, j2k-jpeg, j2k-jpegls, j2k-metal, j2k-metal-support, j2k-native, j2k-tilecodec
+j2k-c -> j2k, j2k-jpegls, j2k-tilecodec
 j2k-mpsgraph -> j2k, j2k-core, j2k-metal, j2k-metal-support, j2k-mpsgraph-support
 j2k-transcode-metal -> j2k-codec-math, j2k-core, j2k-metal-support, j2k-transcode, j2k-types
 j2k-transcode-cuda -> j2k-codec-math, j2k-core, j2k-cuda-j2k-engine, j2k-cuda-runtime, j2k-cuda-transcode-engine, j2k-native, j2k-transcode

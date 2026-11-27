@@ -136,6 +136,26 @@ int main(int argc, char **argv) {
         try { j2k::encode_lossless(pixels.data(), pixels.size(), options); }
         catch (const j2k::error &error) { rejected = error.status() == J2K_INVALID_ARGUMENT; }
         if (!rejected) throw std::runtime_error("an unknown encode flag was not rejected");
+
+        // JPEG-LS and DICOM RLE round trips through the wrappers.
+        j2k_jpegls_encode_options jpegls = J2K_JPEGLS_ENCODE_OPTIONS_INIT;
+        jpegls.width = 32; jpegls.height = 24; jpegls.components = 1; jpegls.bit_depth = 8;
+        const auto jpegls_bytes = j2k::jpegls_encode(pixels.data(), pixels.size(), jpegls);
+        if (j2k::jpegls_inspect(jpegls_bytes.data(), jpegls_bytes.size()).buffer_bytes != pixels.size() ||
+            j2k::jpegls_decode(jpegls_bytes.data(), jpegls_bytes.size()) != pixels)
+            throw std::runtime_error("JPEG-LS round trip mismatch");
+        j2k_rle_layout rle = J2K_RLE_LAYOUT_INIT;
+        rle.rows = 24; rle.columns = 32; rle.samples_per_pixel = 1; rle.bits_allocated = 8;
+        const auto rle_bytes = j2k::rle_encode(pixels.data(), pixels.size(), rle);
+        j2k_rle_report rle_report = J2K_RLE_REPORT_INIT;
+        if (j2k::rle_decode(rle_bytes.data(), rle_bytes.size(), rle, &rle_report) != pixels ||
+            rle_report.overlong_segments != 0)
+            throw std::runtime_error("DICOM RLE round trip mismatch");
+        rejected = false;
+        rle.bits_allocated = 12;
+        try { j2k::rle_encode(pixels.data(), pixels.size(), rle); }
+        catch (const j2k::error &error) { rejected = error.status() == J2K_UNSUPPORTED; }
+        if (!rejected) throw std::runtime_error("12 bits allocated was not rejected");
         return 0;
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';

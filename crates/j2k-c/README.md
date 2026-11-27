@@ -15,7 +15,9 @@ images, regions and reduced resolutions into buffers you own, in the image's
 native `uint8`, `uint16` or `int16` samples, through the batch route or the
 core whole-image route; streams full images row by row through a callback;
 converts regions to 8-bit sRGB; and encodes interleaved samples losslessly or
-lossy to a rate, size or PSNR target, as a raw codestream, JP2 or JPH. GPU decoding and slide-container readers are not part of this API.
+lossy to a rate, size or PSNR target, as a raw codestream, JP2 or JPH. It also
+decodes and encodes JPEG-LS codestreams and DICOM RLE Lossless frames. GPU
+decoding and slide-container readers are not part of this API.
 
 The crate isn't published to crates.io. It ships as the native package that
 `scripts/package.py` builds.

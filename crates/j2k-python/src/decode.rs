@@ -255,13 +255,14 @@ pub(crate) struct Decoder {
 #[pymethods]
 impl Decoder {
     #[new]
-    #[pyo3(signature = (*, layout="nchw", workers=None, strict=true, device="cpu"))]
+    #[pyo3(signature = (*, layout="nchw", workers=None, strict=true, device="cpu", partial=false))]
     fn new(
         py: Python<'_>,
         layout: &str,
         workers: Option<usize>,
         strict: bool,
         device: &str,
+        partial: bool,
     ) -> PyResult<Self> {
         #[cfg(not(feature = "cuda"))]
         let _ = py;
@@ -285,9 +286,15 @@ impl Decoder {
                 DecodeSettings::strict()
             } else {
                 DecodeSettings::lenient()
-            };
+            }
+            .with_partial_codestream(partial);
             options
         };
+        if partial && device != "cpu" {
+            return Err(PyValueError::new_err(
+                "partial codestreams decode on the CPU only; use device=\"cpu\"",
+            ));
+        }
         let is_cuda = device == "cuda" || device.starts_with("cuda:");
         match device {
             "cpu" => {}
