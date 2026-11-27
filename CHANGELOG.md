@@ -44,6 +44,14 @@ To add an entry, see [the changelog guide](contributor-book/documentation.md#cha
   `partial_codestream`. Code that builds the struct with a literal must set
   it, or start from `DecodeSettings::strict()` or `DecodeSettings::lenient()`.
 
+### Encoding
+
+- Reversible 5/3 lossless encodes now dynamically raise a subband's `QCD`
+  or `QCC` exponent when multi-level lifting coefficients exceed the
+  nominal bitplane range, fixing failures on high-contrast 8- and 12-bit
+  images for both HTJ2K and Classic J2K.
+  ([#345](https://github.com/frames-sg/j2k/issues/345))
+
 ### JPEG-LS
 
 - New crate `j2k-jpegls` decodes and encodes JPEG-LS (ISO/IEC 14495-1)

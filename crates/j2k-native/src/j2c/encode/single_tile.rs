@@ -344,28 +344,26 @@ struct StagedSingleTileRequest<'a, 'input> {
 impl StagedSingleTileRequest<'_, '_> {
     fn encode(
         self,
-        plan: SingleTilePlan,
+        mut plan: SingleTilePlan,
         accelerator: &mut impl J2kEncodeStageAccelerator,
     ) -> NativeEncodePipelineResult<PreparedSingleTile> {
-        let request = AcceleratedComponentRequest {
-            pixels: self.pixels,
-            width: self.width,
-            height: self.height,
-            num_components: self.num_components,
-            bit_depth: self.bit_depth,
-            signed: self.signed,
-            options: self.options,
-            plan: &plan,
-            profile_enabled: self.profile_enabled,
-            session: self.session,
+        let prepared = {
+            let request = AcceleratedComponentRequest {
+                pixels: self.pixels,
+                width: self.width,
+                height: self.height,
+                num_components: self.num_components,
+                bit_depth: self.bit_depth,
+                signed: self.signed,
+                options: self.options,
+                plan: &plan,
+                profile_enabled: self.profile_enabled,
+                session: self.session,
+            };
+            prepare_accelerated_components(&request, accelerator)?
         };
-        let prepared = prepare_accelerated_components(&request, accelerator)?;
-        let (encoded, transform_timings) = encode_prepared_components(
-            &request,
-            self.component_sample_info,
-            prepared,
-            accelerator,
-        )?;
+        let (encoded, transform_timings) =
+            encode_prepared_components(&self, &mut plan, prepared, accelerator)?;
         Ok(finish_staged_preparation(encoded, plan, transform_timings))
     }
 }
@@ -405,8 +403,8 @@ impl J2kEncodeStageAccelerator for DeclinedEncodeStages {
 /// Encode the prepared components, freeing each one's coefficients once its
 /// code blocks are prepared, and the vector that held them after the last.
 fn encode_prepared_components(
-    request: &AcceleratedComponentRequest<'_, '_>,
-    component_sample_info: &[EncodeComponentSampleInfo],
+    request: &StagedSingleTileRequest<'_, '_>,
+    plan: &mut SingleTilePlan,
     prepared: PreparedComponentTransforms,
     accelerator: &mut impl J2kEncodeStageAccelerator,
 ) -> NativeEncodePipelineResult<(EncodedTilePackets, TransformStageTimings)> {
@@ -426,8 +424,8 @@ fn encode_prepared_components(
         request.num_components,
         request.bit_depth,
         request.options,
-        component_sample_info,
-        request.plan,
+        request.component_sample_info,
+        plan,
         prepared.decompositions.into_iter(),
         source_bytes,
         source_owner_bytes,

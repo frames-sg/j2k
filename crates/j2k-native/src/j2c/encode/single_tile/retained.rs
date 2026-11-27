@@ -235,7 +235,7 @@ impl<'a> IrreversibleScaleEncoder<'a> {
             self.bit_depth,
             &self.options,
             &[],
-            &plan,
+            &mut plan,
             transform.decompositions.iter(),
             0,
             0,

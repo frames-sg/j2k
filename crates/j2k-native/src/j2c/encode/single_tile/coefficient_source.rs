@@ -10,6 +10,7 @@ mod packed;
 
 pub(in crate::j2c::encode) use packed::{OwnedDwtComponent, PackedF32DwtComponent};
 
+#[derive(Clone, Copy)]
 pub(super) enum DwtBandView<'a> {
     Contiguous {
         coefficients: &'a [f32],
